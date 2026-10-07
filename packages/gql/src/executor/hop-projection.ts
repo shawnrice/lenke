@@ -1367,6 +1367,37 @@ const walkFarSide = (graph: Graph, plan: WalkPlan, take: (el: Vertex) => void): 
   }
 };
 
+/**
+ * The walk plan for ONE call, with `needsFar` decided against this graph.
+ *
+ * `needsFar` says whether the walk must RESOLVE the far endpoint — a string-keyed `Map.get`, ~190ns
+ * (item 194). When the dedup is keyed on the START the far end is wanted for one reason only: to
+ * test its LABEL. So a VACUOUS far label — one every vertex carries — makes the resolve pure waste,
+ * and whether a label is vacuous is a RUNTIME property of the graph, which is why this is decided
+ * per call exactly as the far-driven choice is (items 195, 198).
+ *
+ * Measured on 200,000 vertices at degree 5, `MATCH (f)<-[:KNOWS]-(a:Person) RETURN DISTINCT f.age`
+ * against the FORWARD spelling of the same question, which takes the far-driven walk (item 215):
+ *
+ *     compile-time `needsFar`, no break        304ns an edge
+ *     + break at the first qualifying edge     123ns
+ *     + a vacuous far label skips the resolve   see the audit entry
+ *     the forward spelling, for comparison      66ns an edge
+ */
+const planFor = (
+  graph: Graph,
+  w: {
+    startLabel: LabelExpr | undefined;
+    farLabel: LabelExpr | undefined;
+    adjacency: Adjacency | undefined;
+    direct: DirectHop | undefined;
+    onStart: boolean;
+  },
+): WalkPlan => ({
+  ...w,
+  needsFar: !w.onStart || (w.farLabel !== undefined && !vacuousLabel(graph, w.farLabel)),
+});
+
 const walkStartSide = (graph: Graph, plan: WalkPlan, take: (el: Vertex) => void): void => {
   const { startLabel, farLabel, adjacency, direct, needsFar, onStart } = plan;
 
@@ -1400,6 +1431,27 @@ const walkStartSide = (graph: Graph, plan: WalkPlan, take: (el: Vertex) => void)
         }
 
         take(onStart ? v : far);
+
+        // STOP at the first qualifying edge when the dedup is keyed on the START. `take(v)` is
+        // idempotent — the dedup keeps one entry per value, and the count variant increments only
+        // for a value it has not seen — so every later edge of this vertex re-offers the SAME
+        // element and can only repeat work. The bucket is walked at all because the OTHER end may
+        // carry a label, and one passing edge already settles that this `v` is reached.
+        //
+        // What it costs without the break: `needsFar` is true whenever the far end has a label,
+        // so each edge pays an endpoint resolution — a string-keyed `Map.get`, ~190ns (item 194) —
+        // across every edge in the graph rather than one per vertex. Measured on 200,000 vertices
+        // at degree 5, `MATCH (f)<-[:KNOWS]-(a:Person) RETURN DISTINCT f.age`:
+        //
+        //     before   304ns an edge   (1520ns a vertex)
+        //     after     see audit item 215
+        //
+        // The forward spelling of the same question, `(a:Person)-[:KNOWS]->(f)` deduped on `f`,
+        // takes the FAR-driven walk and costs 344ns a VERTEX — so this was a 4.4x gap between two
+        // spellings of one query, which is the bug class this engine is named after.
+        if (onStart) {
+          break;
+        }
       }
 
       continue;
@@ -1447,8 +1499,7 @@ export const detectDistinctCount = (
     adjacency !== undefined && adjacency.direction !== 'both' && adjacency.label?.kind === 'label'
       ? { forward: adjacency.direction === 'out', type: adjacency.label.name }
       : undefined;
-  const needsFar = !onStart || farLabel !== undefined;
-  const plan: WalkPlan = { startLabel, farLabel, adjacency, direct, needsFar, onStart };
+  const planParts = { startLabel, farLabel, adjacency, direct, onStart };
 
   return (graph, params) => {
     const seen = valueSet();
@@ -1476,9 +1527,9 @@ export const detectDistinctCount = (
     };
 
     if (farDrivenFits(graph, direct, onStart, startLabel)) {
-      walkFarSide(graph, plan, take);
+      walkFarSide(graph, planFor(graph, planParts), take);
     } else {
-      walkStartSide(graph, plan, take);
+      walkStartSide(graph, planFor(graph, planParts), take);
     }
 
     return [{ [outName]: n }];
@@ -1504,8 +1555,7 @@ export const detectDistinctProjection = (
     adjacency !== undefined && adjacency.direction !== 'both' && adjacency.label?.kind === 'label'
       ? { forward: adjacency.direction === 'out', type: adjacency.label.name }
       : undefined;
-  const needsFar = !onStart || farLabel !== undefined;
-  const plan: WalkPlan = { startLabel, farLabel, adjacency, direct, needsFar, onStart };
+  const planParts = { startLabel, farLabel, adjacency, direct, onStart };
 
   return (graph, params) => {
     // `LIMIT 0` emits nothing and must not EVALUATE: the general path returns `[]` from
@@ -1544,9 +1594,9 @@ export const detectDistinctProjection = (
     // FAR-driven one asks one adjacency lookup per far VERTEX where the start-driven one
     // resolves an endpoint per EDGE — see `farDrivenFits` for the two conditions.
     if (farDrivenFits(graph, direct, onStart, startLabel)) {
-      walkFarSide(graph, plan, take);
+      walkFarSide(graph, planFor(graph, planParts), take);
     } else {
-      walkStartSide(graph, plan, take);
+      walkStartSide(graph, planFor(graph, planParts), take);
     }
 
     if (sort !== undefined) {

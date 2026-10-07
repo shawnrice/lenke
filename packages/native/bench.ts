@@ -267,6 +267,19 @@ const CASES: Case[] = [
     ),
   },
   {
+    // The REVERSE spelling of the row above — one question, two arrows. It keys the dedup on the
+    // pattern's START, which `farDrivenFits` refuses by design, so it takes the start-driven walk;
+    // that walk resolved the far endpoint for EVERY edge (~190ns, item 194) only to test the other
+    // end's label. 304 -> 92ns an edge via a break at the first qualifying edge plus a runtime
+    // vacuous-label check, closing a 4.6x spelling gap to 1.33x (audit item 215).
+    name: 'query: distinct over a reversed hop',
+    ...onGraph(
+      () => graphDoc,
+      (e, g) =>
+        void e.query(g, 'MATCH (f)<-[:KNOWS]-(a:Person) RETURN DISTINCT f.age AS x ORDER BY x'),
+    ),
+  },
+  {
     // The same dedup with a WINDOW on it. Item 189 sorted the walk's output but left paging
     // with the general path, so adding `LIMIT 5` to the row below took it from 14.1ms back to
     // 142.1ms — a cheap addition undoing the fix. Item 191 takes the window too, applied AFTER
