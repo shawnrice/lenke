@@ -120,6 +120,27 @@ const tallyGroupShapes = (cov: Record<string, number>, q: string, nonEmpty: bool
     }
   }
 
+  // The SUBQUERY-PREDICATE placements (item 255). `EXISTS`/`COUNT`/`VALUE` under a bare
+  // predicate and an AND-conjunct were covered; `NOT` and `OR` were generated zero times. The
+  // non-empty floor is what matters as always: a `COUNT { … }` in boolean context is a static
+  // type error in BOTH engines, so a counter on generation alone would be satisfied by queries
+  // that compare two identical refusals.
+  if (q.includes('(NOT ') && /(EXISTS|COUNT|VALUE) \{/.test(q)) {
+    cov.subNotGenerated++;
+
+    if (nonEmpty) {
+      cov.subNotNonEmpty++;
+    }
+  }
+
+  if (/ OR (EXISTS|COUNT|VALUE) \{/.test(q)) {
+    cov.subOrGenerated++;
+
+    if (nonEmpty) {
+      cov.subOrNonEmpty++;
+    }
+  }
+
   // An INNER unit's own per-rep `WHERE` (items 252/253): a `WHERE` that sits before the INNER
   // group's `)` rather than the outer one. Detected on the nested spelling `(((x)` plus a
   // `WHERE` outside the edge brackets, which is what `unbracketed` already strips.
@@ -779,12 +800,23 @@ const genCall = (r: () => number): string => {
  * so the guard could not see the collision, substituted, and the projected output overlaid on the
  * binding then bound the alias to the COUNT VALUE, which the sub-pattern matched against a number.
  */
-const genSubquery = (r: () => number, inner: string): string => {
+/**
+ * A correlated subquery BODY — `MATCH (n)<dir>(<inner>)[ WHERE … ]`, reading the outer `n`.
+ *
+ * Factored out of `genSubquery` so the boolean placements (item 255) build their own body
+ * rather than reusing one already wrapped in a `COUNT`/`VALUE` that cannot be negated.
+ */
+const subqueryBody = (r: () => number, inner = 'b'): string => {
   const et = pick(r, ['E', 'F', 'E|F']);
   const dir = r() < 0.5 ? `-[:${et}]->` : `<-[:${et}]-`;
   const label = r() < 0.4 ? `${inner}:T` : inner;
   const where = r() < 0.4 ? ` WHERE ${inner}.n ${pick(r, CMP)} ${pick(r, ['2', '5', '0'])}` : '';
-  const body = `MATCH (n)${dir}(${label})${where}`;
+
+  return `MATCH (n)${dir}(${label})${where}`;
+};
+
+const genSubquery = (r: () => number, inner: string): string => {
+  const body = subqueryBody(r, inner);
   const k = r();
 
   if (k < 0.45) {
@@ -898,7 +930,36 @@ const genPred = (r: () => number, depth: number, allowSub = false): string => {
   // cheap conjunct, which is what item 175's seed gate orders and items 207/209 reasoned about.
   const sub = genSubquery(r, pick(r, ['b', 'x', 'c']));
 
-  return r() < 0.5 ? `(${sub})` : `(n.n ${pick(r, CMP)} 4 AND ${sub})`;
+  // FOUR placements, not two. `NOT <sub>` and a subquery under `OR` were generated ZERO times
+  // (audit item 255) — the wrapper only ever built a bare one or an AND-conjunct — and they are
+  // not variations on a theme:
+  //
+  //   - `NOT EXISTS { … }` is the documented ReBAC DENY pattern (`rebac-authz-on-lenke`), so it
+  //     is a shape users are told to write and nothing compared it across the engines.
+  //   - A subquery under `OR` is a DIFFERENT placement question from the AND case item 190
+  //     fixed. That item's rule was that an EXISTS/COUNT conjunct must not fold into a node
+  //     predicate nor ride a hop seed gate, and it leaned on `AND` never short-circuiting. `OR`
+  //     has the opposite skew: the cheap side being TRUE makes the subquery unnecessary, so an
+  //     engine that evaluates it anyway and one that skips it agree on the value and can differ
+  //     on whether it FAULTS.
+  //   - `NOT (… AND <sub>)` puts the negation outside a conjunction, which is where a planner
+  //     that pushes the negation down has to get De Morgan right.
+  // The NOT/OR placements take a BOOLEAN-valued subquery rather than the general one. Measured
+  // first: with the general draw they ran 28-46 generated but only 6-15 NON-EMPTY, because
+  // `COUNT { … }` and `VALUE { … }` in boolean context are a static type error in both engines
+  // — so two of three draws compared two identical refusals and taught nothing the bare
+  // placement already covers. `EXISTS { … }` and `COUNT { … } <cmp> 0` are both boolean AND
+  // reach different code, so they are the two worth negating.
+  const boolSub =
+    r() < 0.5 ? `EXISTS { ${subqueryBody(r)} }` : `COUNT { ${subqueryBody(r)} } ${pick(r, CMP)} 0`;
+
+  return pick(r, [
+    `(${sub})`,
+    `(n.n ${pick(r, CMP)} 4 AND ${sub})`,
+    `(NOT ${boolSub})`,
+    `(n.n ${pick(r, CMP)} 4 OR ${boolSub})`,
+    `(NOT (n.n ${pick(r, CMP)} 4 AND ${boolSub}))`,
+  ]);
 };
 
 // The ABBREVIATED quantified form — `-[]->{n,m}`, no subpath parens — which nothing here
@@ -1678,6 +1739,10 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       groupHopPredNonEmpty: 0,
       innerWhereGenerated: 0,
       innerWhereNonEmpty: 0,
+      subNotGenerated: 0,
+      subNotNonEmpty: 0,
+      subOrGenerated: 0,
+      subOrNonEmpty: 0,
       predGenerated: 0,
       predRows: 0,
       sinkGenerated: 0,
@@ -1806,6 +1871,8 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
         `simpleGroup=${cov.simpleGroupGenerated}/${cov.simpleGroupNonEmpty} ` +
         `groupHopPred=${cov.groupHopPredGenerated}/${cov.groupHopPredNonEmpty} ` +
         `innerWhere=${cov.innerWhereGenerated}/${cov.innerWhereNonEmpty} ` +
+        `subNot=${cov.subNotGenerated}/${cov.subNotNonEmpty} ` +
+        `subOr=${cov.subOrGenerated}/${cov.subOrNonEmpty} ` +
         `sink=${cov.sinkGenerated}/${cov.sinkNonZero} peel=${cov.peelGenerated}/${cov.peelNonZero} ` +
         `cross=${cov.crossGenerated}/${cov.crossNonEmpty} ` +
         `cntProp=${cov.cntPropGenerated}/${cov.cntPropNonZero} ` +
@@ -1862,6 +1929,15 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       // reaches different code on both sides.
       innerWhereGenerated: cov.innerWhereGenerated > 105,
       innerWhereNonEmpty: cov.innerWhereNonEmpty > 90,
+      // The subquery-predicate placements `NOT` and `OR` (item 255), which were generated ZERO
+      // times. MEASURED over ELEVEN seeds: subNot 19-42 generated / 16-39 non-empty, subOr
+      // 14-21 / 11-20. Floors ~25% under the minima. These are small populations because the
+      // band is a tail carve-out, so their job is strictly the one this block's note states —
+      // catch a shape falling silently to ZERO — not to resolve a drift of a few percent.
+      subNotGenerated: cov.subNotGenerated > 14,
+      subNotNonEmpty: cov.subNotNonEmpty > 12,
+      subOrGenerated: cov.subOrGenerated > 10,
+      subOrNonEmpty: cov.subOrNonEmpty > 8,
       predGenerated: cov.predGenerated > 2_000,
       predRows: cov.predRows > 1_000,
       sinkGenerated: cov.sinkGenerated > 200,
@@ -1927,6 +2003,10 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       groupHopPredNonEmpty: true,
       innerWhereGenerated: true,
       innerWhereNonEmpty: true,
+      subNotGenerated: true,
+      subNotNonEmpty: true,
+      subOrGenerated: true,
+      subOrNonEmpty: true,
       predGenerated: true,
       predRows: true,
       sinkGenerated: true,
