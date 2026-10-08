@@ -1400,6 +1400,116 @@ export const twoHopSide = (graph: Graph, id: string, w: TwoHopSide): number => {
 /** 2-hop `(a)-[:T1]->(b)-[:T2]->(c)` count via the degree product
  * `Σ_b (edges reaching a valid a) × (edges reaching a valid c)`. `null` unless
  * both rels are anonymous + directed and the node variables are distinct. */
+/**
+ * `MATCH (a)-[:T]->(b)-[:T]->(c)-[:T]->(d) RETURN count(*)` — the THREE-segment degree product.
+ *
+ * The two-segment product iterates the middle VERTEX and multiplies the two degrees either side of
+ * it. One position along, the interior is an EDGE rather than a vertex, and the count is
+ *
+ *     Σ over middle edges (b → c) of indeg(b) · outdeg(c)
+ *
+ * which checks against the engine's own answer before a line of this was written: 1,000,000 edges
+ * at in-degree 5 and out-degree 5 gives 25,000,000, exactly what the row pipeline returned in
+ * 13.2 SECONDS — the slowest shape in the corpus, at 529ns a counted path against the two-segment
+ * tally's 21 (audit item 221).
+ *
+ * Driven from the `b` VERTEX rather than from a global edge list, because no such list exists: the
+ * adjacency index is per vertex. `indeg(b)` is then hoisted out of the inner loop, so it is one
+ * lookup per vertex plus one per middle edge, not two per edge.
+ *
+ * Only the UNFILTERED shape routes here. A predicate at any of the four positions still declines,
+ * as it did before — the start-driven walk would have to grow a leg, which is a separate question
+ * with its own measurement.
+ */
+const buildThreeHopCount = <T>(
+  s1: Segment,
+  s2: Segment,
+  s3: Segment,
+  start: NodePattern,
+  rowOf: (n: number) => T,
+): CountOf<T> | null => {
+  const rels = [s1.rel, s2.rel, s3.rel];
+
+  if (
+    rels.some((r) => !plainRel(r) || r.variable !== undefined || r.direction === 'both') ||
+    !plainNode(s1.node) ||
+    !plainNode(s2.node) ||
+    !plainNode(s3.node)
+  ) {
+    return null;
+  }
+
+  const vars = [start.variable, s1.node.variable, s2.node.variable, s3.node.variable].filter(
+    (v): v is string => v !== undefined,
+  );
+
+  if (new Set(vars).size !== vars.length) {
+    return null; // a shared node variable is a self-join the product cannot express
+  }
+
+  const types = [
+    relTypeNames(s1.rel.label),
+    relTypeNames(s2.rel.label),
+    relTypeNames(s3.rel.label),
+  ];
+
+  if (types.some((t) => t === null)) {
+    return null;
+  }
+
+  const [t1, t2, t3] = types as (string[] | undefined)[];
+  const aLabel = start.label;
+  const bLabel = s1.node.label;
+  const cLabel = s2.node.label;
+  const dLabel = s3.node.label;
+  // `a` is reached from b's reverse side; `d` from c's forward side; the middle leg runs b -> c.
+  const toAOut = s1.rel.direction === 'in';
+  const fromDOut = s3.rel.direction === 'out';
+  const midOut = s2.rel.direction === 'out';
+
+  return (graph) => {
+    const aEff = effectiveLabel(graph, aLabel);
+    const cEff = effectiveLabel(graph, cLabel);
+    const dEff = effectiveLabel(graph, dLabel);
+    const midIndex = midOut ? graph.edgesFromByLabel : graph.edgesToByLabel;
+    let count = 0;
+
+    for (const b of candidateVertexSource(graph, bLabel)) {
+      if (!matchesLabel(b, bLabel)) {
+        continue;
+      }
+
+      // Hoisted: the `a` side depends only on `b`, so it is one lookup per VERTEX rather than one
+      // per middle edge. Zero here prunes the whole inner loop.
+      const waysToA = side(graph, b.id, toAOut, t1, aEff);
+
+      if (waysToA === 0) {
+        continue;
+      }
+
+      for (const e of edgesOfTypes(midIndex.get(b.id), t2)) {
+        // The `c` VERTEX is wanted only for its label; its ID is what the `d` side counts from,
+        // and the edge already holds that (items 140, 218).
+        if (cEff === undefined) {
+          count += waysToA * side(graph, midOut ? e.toId : e.fromId, fromDOut, t3, dEff);
+
+          continue;
+        }
+
+        const c = midOut ? e.to : e.from;
+
+        if (!matchesLabel(c, cEff)) {
+          continue;
+        }
+
+        count += waysToA * side(graph, c.id, fromDOut, t3, dEff);
+      }
+    }
+
+    return rowOf(count);
+  };
+};
+
 const buildTwoHopCount = <T>(
   s1: Segment,
   s2: Segment,
@@ -1711,6 +1821,35 @@ const patternCountOf = <T>(
       cstart,
       cend,
     });
+  }
+
+  // THREE segments, and only the unfiltered shape. A clause `WHERE` has already declined above
+  // (the gate admits one and two segments), so what is left to refuse here is an INLINE constraint
+  // at any of the four positions — the product reaches two of them only as degrees, and the other
+  // two have no gate yet.
+  if (segments.length === 3) {
+    const [s1, s2, s3] = segments;
+
+    // `inlineOf(start)` directly, NOT the `inStart` above: that is computed only for one and two
+    // segments, so it is `undefined` here whether or not the start carries a constraint, and
+    // reading it would let `MATCH (a {k: 1})-[:T]->…` through un-applied. A non-`undefined` result
+    // is either a constraint to apply or one `inlineOf` refuses, and both decline.
+    //
+    // The START check is the load-bearing one; mutation says the three NODE checks are currently
+    // redundant with `buildThreeHopCount`'s own `plainNode` guards, which refuse the same patterns
+    // one level down. They stay anyway, because item 219 RELAXED exactly such a guard one position
+    // over — the two-hop product now accepts a constrained middle — so the inner guard is not a
+    // fixed property to lean on, and the ladder saying what it will not route is cheap.
+    if (
+      inlineOf(start) !== undefined ||
+      inlineOf(s1.node) !== undefined ||
+      inlineOf(s2.node) !== undefined ||
+      inlineOf(s3.node) !== undefined
+    ) {
+      return null;
+    }
+
+    return buildThreeHopCount(s1, s2, s3, start, rowOf);
   }
 
   return null;

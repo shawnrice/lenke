@@ -465,6 +465,22 @@ const CASES: Case[] = [
     // the existing walk answers it once the planner reverses the pattern. The forward spelling was
     // 2363.5ms against the hand-reversed spelling's 118.1 — 20x for the same question and the same
     // answer (audit item 220).
+    // THREE segments, which the count ladder stopped short of entirely — so this fell to the row
+    // pipeline at 13.2 SECONDS, the slowest shape in the corpus, 529ns a counted path against the
+    // two-segment tally's 21. The two-segment product iterates the middle VERTEX; one position
+    // along the interior is an EDGE, and the count is the sum over middle edges of
+    // indeg(b) x outdeg(c) (audit item 221).
+    name: 'count 3-hop',
+    ...onGraph(
+      () => graphDoc,
+      (e, g) =>
+        void e.query(
+          g,
+          'MATCH (a:Person)-[:KNOWS]->(b)-[:KNOWS]->(c)-[:KNOWS]->(d) RETURN count(*) AS c',
+        ),
+    ),
+  },
+  {
     name: 'count 2-hop + end filter',
     ...onGraph(
       () => graphDoc,
