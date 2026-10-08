@@ -98,6 +98,26 @@ const tally = (
     }
   }
 
+  // The ABBREVIATED quantified form, which takes a DIFFERENT path from the group form above:
+  // `trailEnds` synthesises a one-hop unit where a group builds a multi-hop one. Detected by a
+  // quantifier directly after the edge brackets, which the group form never has — its quantifier
+  // follows a `)`. Without this counter the arm could silently stop generating and the suite would
+  // pass exactly as it does now, which is the failure items 115 and 125 both hit.
+  if (/\]-(>?)(\{|\+)/.test(q)) {
+    cov.abbrevGenerated++;
+
+    if (nonEmpty) {
+      cov.abbrevNonEmpty++;
+    }
+
+    // A PATH VARIABLE over it is the only shape that makes the walk reconstruct itself
+    // (`wantPath`) rather than yield bare ends, and it is a minority of the arm's forms — so it
+    // gets its own floor rather than hiding inside the arm's.
+    if (q.includes('MATCH p = ')) {
+      cov.abbrevPath++;
+    }
+  }
+
   // TRAILING SKIP/LIMIT over an ORDER BY. Counted because the count-shortcut family above was
   // widened at this band's expense (0.03 of the space to 0.015, the only band that paid), and a
   // band with no counter is a band whose coverage can be halved again by the next person without
@@ -168,6 +188,18 @@ const NDJSON = [
   // forward-then-reverse pair specifically went from 0 rows to 2. Coverage of those shapes
   // was therefore vacuous, which is how a per-rep filter over one stayed broken (item 51).
   '{"type":"edge","id":"e3","labels":["E"],"from":"1","to":"3","properties":{"w":9}}',
+  // A CYCLE on `E` — 1 -> 2 -> 3 -> 1 — without which the four PATH MODES are
+  // INDISTINGUISHABLE. `trail` forbids repeating an edge, `simple`/`acyclic` a vertex, `walk`
+  // nothing; on an acyclic fixture none of those restrictors can ever fire, so generating the
+  // modes compares nothing. Measured: the mutant that forces WALK mode for the abbreviated
+  // quantified form SURVIVED the whole fuzzer before this edge and is caught after it (audit
+  // item 238).
+  //
+  // Safe against a runaway because the abbreviated arm pairs a MODE only with a BOUNDED
+  // quantifier; `+` is generated under the default (trail) mode, where the restrictor bounds the
+  // walk. An unbounded WALK over this cycle would terminate only on the trail budget, and a
+  // resource limit is a poor thing to compare two engines on.
+  '{"type":"edge","id":"e6","labels":["E"],"from":"3","to":"1","properties":{"w":7}}',
   // STORED STRING VALUES that differ from the ASCII ones above in the ways string handling can
   // go wrong. `genString` already emits a '😀' LITERAL, so surrogate pairs were covered on one
   // side of a comparison and never on the other: no stored value had one. Vertex 4's `s` is a
@@ -784,6 +816,121 @@ const genPred = (r: () => number, depth: number, allowSub = false): string => {
   return r() < 0.5 ? `(${sub})` : `(n.n ${pick(r, CMP)} 4 AND ${sub})`;
 };
 
+// The ABBREVIATED quantified form — `-[]->{n,m}`, no subpath parens — which nothing here
+// produced. The two arms above both emit the GROUP form `((x)…){n,m}`, and the two spellings
+// take DIFFERENT code: a group builds a multi-hop unit, while the abbreviated form routes
+// through `trailEnds`, which synthesises a one-hop unit of its own. So the group arms covered
+// the nested machinery and left the one-hop path — the shape `bench:usage`'s two var-length
+// rows actually use — with no cross-engine comparison at all (audit items 237, 238).
+//
+// ITS BAND IS 1% TAKEN FROM THE GROUP ARM BELOW — 0.88-0.89 here, leaving it 0.89-0.93 — and
+// the size was settled by measurement, not by eye. Splitting that arm in HALF was the first
+// attempt and the coverage floors caught it: `sinkGenerated` fell below its threshold, which
+// is exactly what those floors are for. Routing it through the FALLBACK's 1.5% share was the
+// second attempt and gave only ~110 queries of 20,000 — too thin for 6 modes x 5 bounds. 1%
+// leaves the group arm at ~80% of its old rate, which its own floors clear comfortably.
+//
+// THE PATH MODE is generated here and nowhere else in this file. `WALK`/`TRAIL`/`SIMPLE`/
+// `ACYCLIC` are contextual keywords before the pattern, the default is TRAIL, and the mode is
+// what decides whether `hopCollides`/`hopMark` mark EDGES (trail) or VERTICES (simple/acyclic)
+// or nothing (walk) — three different restrictors that had no differential coverage.
+//
+// A mode is paired only with a BOUNDED quantifier. `WALK` with an unbounded `+` has no
+// restrictor to stop it, so on a cyclic fixture it terminates only on the trail budget — a
+// resource limit is a poor thing to compare two engines on. `+` therefore appears under the
+// default mode, where the trail restrictor bounds it.
+//
+// Its own function, not inline in the generator: that function is at the complexity gate and
+// adding this arm's five `pick`s to it pushed it from 35 to 36. The file already factors
+// `genPred`/`genExpr`/`genSubquery` out for the same reason.
+/**
+ * The quantified-subpath-GROUP arm's body.
+ *
+ * Lifted out of the generator because that function sits on the complexity gate: adding the
+ * abbreviated arm above took it from 35 to 36, and moving this body — whose `end === '(b)'`
+ * ternary is a branch of its own — brings it back to 35. Nothing about what it generates
+ * changed (audit item 238).
+ */
+const genQuantifiedGroup = (r: () => number): string => {
+  const h1 = pick(r, ['-[e1:E]->', '<-[e1:E]-', '-[e1:F]->', '<-[e1:F]-']);
+  const h2 = pick(r, ['-[:E]->', '<-[:E]-', '-[:F]->', '<-[:F]-']);
+  const q = pick(r, ['{1,2}', '{1,1}', '{1,3}', '+']);
+  // A PER-REPETITION `WHERE`, after the unit and INSIDE the parens (inside the edge
+  // brackets is a per-HOP predicate, a different thing). Reads a NODE property and an
+  // EDGE property, because those land in different columns of the per-rep mini-batch and
+  // exactly that distinction was broken: native built the mini-batch boxed where the
+  // single-direction path builds it typed, so any predicate touching a node read NULL and
+  // pruned every repetition — a silent wrong answer against TS, on a shape this generator
+  // already produced but never filtered (item 51).
+  const perRep = pick(r, [
+    '',
+    '',
+    ' WHERE x.n >= 0',
+    ' WHERE x.n <> 999',
+    ' WHERE e1.w >= 0',
+    ' WHERE e1.w > 2',
+    ' WHERE m.n <> x.n',
+    ' WHERE x.n + e1.w > 4',
+  ]);
+  // The endpoint pattern varies, and `U` is the load-bearing one: every vertex in this fixture
+  // carries `T`, so `(b:T)` is a filter that excludes nothing — native dropping the endpoint
+  // predicate entirely was invisible under it. Only vertex 3 carries `U` (item 63).
+  const end = pick(r, ['(b:T)', '(b:U)', '(b:U)', '(b)']);
+  const body = `(a:T)((x)${h1}(m)${h2}(y)${perRep})${q}${end}`;
+
+  // UNANCHORED, kept at its own frequency: a label on either endpoint used to put the count
+  // back on the materializing path, so native's counting sink was reached only by this
+  // spelling, and until it existed no cross-engine comparison ran through the sink at all
+  // (item 61). The sink now applies an endpoint filter itself, so the ANCHORED forms reach it
+  // too — by a different route, which is why both spellings stay.
+  const unanchored = `MATCH ((x)${h1}(m)${h2}(y)${perRep})${q} RETURN count(*) AS x`;
+  // With no endpoint pattern there is no `b` to project.
+  const forms =
+    end === '(b)'
+      ? [`MATCH ${body} RETURN count(*) AS x`, unanchored]
+      : [
+          `MATCH ${body} RETURN count(*) AS x`,
+          `MATCH ${body} RETURN b.n AS x, a.n AS t ORDER BY t, x`,
+          unanchored,
+        ];
+
+  return pick(r, forms);
+};
+
+const genAbbrevQuantified = (r: () => number): string => {
+  const hop = pick(r, [
+    '-[:E]->',
+    '<-[:E]-',
+    '-[:F]->',
+    '<-[:F]-',
+    // An edge VARIABLE (a per-hop scalar, not a group list) and a per-HOP predicate inside the
+    // brackets — distinct from the group arm's per-REPETITION `WHERE` after the unit.
+    '-[e:E]->',
+    '-[e:E WHERE e.w > 2]->',
+    '<-[e:E WHERE e.w >= 0]-',
+  ]);
+  const bounded = pick(r, ['{1,1}', '{1,2}', '{1,3}', '{2,2}', '{0,2}']);
+  const mode = pick(r, ['', '', 'TRAIL ', 'WALK ', 'SIMPLE ', 'ACYCLIC ']);
+  // `(b:U)` is the load-bearing endpoint for the same reason the group arm records: every
+  // vertex carries `T`, so `(b:T)` excludes nothing and a dropped endpoint predicate would be
+  // invisible under it. Only vertex 3 carries `U`.
+  const end = pick(r, ['(b:T)', '(b:U)', '(b:U)', '(b)']);
+
+  return pick(r, [
+    `MATCH ${mode}(a:T)${hop}${bounded}${end} RETURN count(*) AS x`,
+    // UNBOUNDED, under the default (trail) mode only — see above.
+    `MATCH (a:T)${hop}+${end} RETURN count(*) AS x`,
+    // A PATH VARIABLE over the abbreviated form, which is the only thing that makes
+    // `trailEnds` reconstruct the walk (`wantPath`) rather than yield bare ends. Totalised by
+    // the ORDER BY, since several paths share a length.
+    `MATCH p = ${mode}(a:T)${hop}${bounded}${end} RETURN size(nodes(p)) AS x ORDER BY x`,
+    `MATCH p = (a:T)${hop}${bounded}${end} RETURN size(edges(p)) AS x ORDER BY x`,
+    // The ENDPOINT projected rather than counted, so a wrong end is visible where a count
+    // would agree.
+    `MATCH ${mode}(a:T)${hop}${bounded}${end} RETURN b.n AS x ORDER BY x`,
+  ]);
+};
+
 const genQuery = (r: () => number): string => {
   const p = r();
 
@@ -1161,54 +1308,16 @@ const genQuery = (r: () => number): string => {
     return `MATCH pp = (a:T)((x)-[:E]->(m))${q}(b:T) RETURN ${acc} AS x, b.n AS t ORDER BY t, x`;
   }
 
+  if (p < 0.89) {
+    return genAbbrevQuantified(r);
+  }
+
   // A quantified subpath group whose two hops DISAGREE on direction and/or edge type
   // (`((x)-[d1:t1]->(m)-[d2:t2]->(y)){n,m}`). Native used to reject any non-uniform unit;
   // it now routes to the per-hop nested-group machinery, byte-identical to TS. `count(*)`
   // and the endpoint keep the comparison order-free / totalised.
   if (p < 0.93) {
-    const h1 = pick(r, ['-[e1:E]->', '<-[e1:E]-', '-[e1:F]->', '<-[e1:F]-']);
-    const h2 = pick(r, ['-[:E]->', '<-[:E]-', '-[:F]->', '<-[:F]-']);
-    const q = pick(r, ['{1,2}', '{1,1}', '{1,3}', '+']);
-    // A PER-REPETITION `WHERE`, after the unit and INSIDE the parens (inside the edge
-    // brackets is a per-HOP predicate, a different thing). Reads a NODE property and an
-    // EDGE property, because those land in different columns of the per-rep mini-batch and
-    // exactly that distinction was broken: native built the mini-batch boxed where the
-    // single-direction path builds it typed, so any predicate touching a node read NULL and
-    // pruned every repetition — a silent wrong answer against TS, on a shape this generator
-    // already produced but never filtered (item 51).
-    const perRep = pick(r, [
-      '',
-      '',
-      ' WHERE x.n >= 0',
-      ' WHERE x.n <> 999',
-      ' WHERE e1.w >= 0',
-      ' WHERE e1.w > 2',
-      ' WHERE m.n <> x.n',
-      ' WHERE x.n + e1.w > 4',
-    ]);
-    // The endpoint pattern varies, and `U` is the load-bearing one: every vertex in this fixture
-    // carries `T`, so `(b:T)` is a filter that excludes nothing — native dropping the endpoint
-    // predicate entirely was invisible under it. Only vertex 3 carries `U` (item 63).
-    const end = pick(r, ['(b:T)', '(b:U)', '(b:U)', '(b)']);
-    const body = `(a:T)((x)${h1}(m)${h2}(y)${perRep})${q}${end}`;
-
-    // UNANCHORED, kept at its own frequency: a label on either endpoint used to put the count
-    // back on the materializing path, so native's counting sink was reached only by this
-    // spelling, and until it existed no cross-engine comparison ran through the sink at all
-    // (item 61). The sink now applies an endpoint filter itself, so the ANCHORED forms reach it
-    // too — by a different route, which is why both spellings stay.
-    const unanchored = `MATCH ((x)${h1}(m)${h2}(y)${perRep})${q} RETURN count(*) AS x`;
-    // With no endpoint pattern there is no `b` to project.
-    const forms =
-      end === '(b)'
-        ? [`MATCH ${body} RETURN count(*) AS x`, unanchored]
-        : [
-            `MATCH ${body} RETURN count(*) AS x`,
-            `MATCH ${body} RETURN b.n AS x, a.n AS t ORDER BY t, x`,
-            unanchored,
-          ];
-
-    return pick(r, forms);
+    return genQuantifiedGroup(r);
   }
 
   // CROSS-SLOT property comparison over a hop — `WHERE a.k <op> b.k` across two bound
@@ -1409,6 +1518,9 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
     const cov = {
       perRepGenerated: 0,
       perRepNonEmpty: 0,
+      abbrevGenerated: 0,
+      abbrevNonEmpty: 0,
+      abbrevPath: 0,
       predGenerated: 0,
       predRows: 0,
       sinkGenerated: 0,
@@ -1533,6 +1645,7 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
     console.log(
       `PRED generated=${cov.predGenerated} rows=${cov.predRows} ` +
         `perRep=${cov.perRepGenerated}/${cov.perRepNonEmpty} ` +
+        `abbrev=${cov.abbrevGenerated}/${cov.abbrevNonEmpty}/${cov.abbrevPath} ` +
         `sink=${cov.sinkGenerated}/${cov.sinkNonZero} peel=${cov.peelGenerated}/${cov.peelNonZero} ` +
         `cross=${cov.crossGenerated}/${cov.crossNonEmpty} ` +
         `cntProp=${cov.cntPropGenerated}/${cov.cntPropNonZero} ` +
@@ -1543,6 +1656,17 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
     expect({
       perRepGenerated: cov.perRepGenerated > 350,
       perRepNonEmpty: cov.perRepNonEmpty > 175,
+      // The abbreviated quantified form (audit item 238). MEASURED 190-209 generated, 159-183 of
+      // those non-empty and 76-88 carrying a path variable, over seeds 1-3 of 20,000. Floors at
+      // roughly half, so a re-balanced band shows up as a FAILURE rather than as silence.
+      //
+      // Giving this arm its 1% also moved the GROUP arm's shares, and the rule below says to
+      // re-measure and say so rather than lower anything: `perRep` went 709-771 to 572-617
+      // (floor 350), `sink` 358-400 to 288-320 (200), `peel` 153-185 to 120-151 (75) and
+      // `peelNonZero` 34-51 to 25-42 (15). All still clear, none lowered.
+      abbrevGenerated: cov.abbrevGenerated > 100,
+      abbrevNonEmpty: cov.abbrevNonEmpty > 80,
+      abbrevPath: cov.abbrevPath > 35,
       predGenerated: cov.predGenerated > 2_000,
       predRows: cov.predRows > 1_000,
       sinkGenerated: cov.sinkGenerated > 200,
@@ -1590,6 +1714,9 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
     }).toEqual({
       perRepGenerated: true,
       perRepNonEmpty: true,
+      abbrevGenerated: true,
+      abbrevNonEmpty: true,
+      abbrevPath: true,
       predGenerated: true,
       predRows: true,
       sinkGenerated: true,
