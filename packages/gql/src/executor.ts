@@ -2632,8 +2632,8 @@ export type CPredicate = {
   props: readonly CProp[];
   where?: CompiledExpr;
   /**
-   * An inline `WHERE` that is exactly one `<ownVar>.<key> = <non-null literal>`, compiled to read
-   * the ELEMENT directly instead of looking it up in the binding. See {@link directEqProps}.
+   * The conjuncts of a `WHERE` that are `<ownVar>.<key> = <non-null literal>`, compiled to read the
+   * ELEMENT directly instead of looking it up in the binding. See {@link directEqProps}.
    *
    * Deliberately NOT merged into `props`: `indexCandidates` reads `props` to decide seeding, so
    * moving a predicate there would change which vertices seed FIRST. That is an observable
@@ -2777,56 +2777,93 @@ const compileProps = (props: readonly PropertyConstraint[] | undefined): CProp[]
  * stays, because that upstream refusal is not a property to lean on, but the reason params do not
  * arrive is the refusal and not the semantics.
  *
- * **Exactly one comparison, never an AND-chain.** `AND` does not short-circuit here, by design and
- * for byte-identity: `FALSE AND <data exception>` must still raise. Hoisting one conjunct into a
- * property check would let `satisfies` reject the element before evaluating the other, swallowing a
- * raise the general path produces.
+ * **An AND-chain only when EVERY conjunct is such a comparison** (item 230 — item 224 took exactly
+ * one). `AND` does not short-circuit here, by design and for byte-identity: `FALSE AND <data
+ * exception>` must still raise, so hoisting one conjunct ahead of a sibling that RAISES would
+ * swallow the raise. The admission rule answers that directly rather than avoiding it: every
+ * conjunct must be `<ownVar>.<key> <op> <closed value>` with `op` of `=`, and a closed `=` cannot
+ * raise — cross-type `=` is a NO-MATCH in this engine where `<=` throws, and `structuralEq` ends in
+ * `===`. With nothing in the chain able to raise there is nothing for a reordering to swallow, so
+ * the LITERAL-valued conjuncts lift into `eqProps` and any PARAM-valued ones stay behind in
+ * `where`, in their original order relative to each other.
+ *
+ * One mixed conjunct of any other shape (an inequality, a function call, a second variable)
+ * declines the WHOLE chain. That is not caution: a residual that CAN raise is exactly the case the
+ * paragraph above forbids, and telling the two apart conjunct-by-conjunct is a harder property
+ * than this is worth.
  */
-const directEqProps = (where: Expr, ownVar: string | undefined): CProp[] | null => {
-  if (ownVar === undefined || where.kind !== 'compare' || where.op !== '=') {
+const directEqProps = (
+  where: Expr,
+  ownVar: string | undefined,
+): { eq: CProp[]; residual: Expr | undefined } | null => {
+  if (ownVar === undefined) {
     return null;
   }
 
-  // Both operand orders, because `n.k = 2` and `2 = n.k` are one question and this engine's named
-  // bug class is the two costing differently.
-  const { left, right } = where;
-  let propSide: Extract<Expr, { kind: 'prop' }> | null = null;
-  let valueSide: Expr | null = null;
+  // A nested `and` under an `and` is not flattened here — it declines below as a non-`compare`
+  // conjunct. The parser produces one flat `items` list for `a AND b AND c`, so the nested shape
+  // arrives only from parenthesisation, and declining it is a missed optimisation, not a wrong
+  // answer.
+  const conjuncts = where.kind === 'and' ? where.items : [where];
+  const eq: CProp[] = [];
+  const residual: Expr[] = [];
 
-  if (left.kind === 'prop') {
-    [propSide, valueSide] = [left, right];
-  } else if (right.kind === 'prop') {
-    [propSide, valueSide] = [right, left];
+  for (const conjunct of conjuncts) {
+    if (conjunct.kind !== 'compare') {
+      return null;
+    }
+
+    // `asPropCompare` is the seed-hint extractor's own reader: it handles both operand orders
+    // (because `n.k = 2` and `2 = n.k` are one question and this engine's named bug class is the
+    // two costing differently) and already requires a CLOSED value side.
+    const pc = asPropCompare(conjunct);
+
+    if (pc?.op !== '=' || pc.variable !== ownVar) {
+      return null;
+    }
+
+    if (pc.value.kind === 'lit' && pc.value.value !== null && pc.value.value !== undefined) {
+      eq.push({ key: pc.key, value: compileExpr(pc.value) });
+    } else {
+      // A PARAM, or a `null` literal. Both stay with the general evaluator: a param's value is not
+      // known here, and `$p` resolving to null would make `structuralEq` match a stored null where
+      // `=` yields UNKNOWN. Lifting params needs a per-execution safety check on the resolved
+      // value; it is a follow-up, and until then this is the spelling that keeps the row honest.
+      residual.push(conjunct);
+    }
   }
 
-  if (
-    propSide === null ||
-    valueSide === null ||
-    propSide.variable !== ownVar ||
-    valueSide.kind !== 'lit' ||
-    valueSide.value === null ||
-    valueSide.value === undefined
-  ) {
+  if (eq.length === 0) {
     return null;
   }
 
-  return [{ key: propSide.key, value: compileExpr(valueSide) }];
+  // Rebuilt as a single conjunct when only one is left, so the general evaluator sees the same
+  // shape it would have for that predicate written alone — not an `and` of one.
+  if (residual.length === 0) {
+    return { eq, residual: undefined };
+  }
+
+  return { eq, residual: residual.length === 1 ? residual[0] : { kind: 'and', items: residual } };
 };
 
 export const compilePredicate = (
   properties: readonly PropertyConstraint[] | undefined,
   where: Expr | undefined,
-  // The element's OWN variable, supplied only for an INLINE predicate — where `inlineOf` has
-  // already proved the `WHERE` reads nothing else. Omitted for a clause `WHERE`, which may read
-  // any variable and so cannot be element-local.
+  // The element's OWN variable, supplied by a caller that has PROVED the `WHERE` reads nothing
+  // else — `inlineOf` for an inline predicate, and `freePredicateVars` for the clause `WHERE` the
+  // node-count tally carries (item 230). Omitted where no such proof exists, which is any clause
+  // `WHERE` that may read another variable and so cannot be element-local.
   ownVar?: string,
 ): CPredicate => {
   const direct = where !== undefined ? directEqProps(where, ownVar) : null;
+  // What the general evaluator still has to do: the whole `WHERE` when nothing lifted, or just the
+  // conjuncts `directEqProps` left behind.
+  const generic = direct === null ? where : direct.residual;
 
   return {
     props: compileProps(properties),
-    where: where !== undefined && direct === null ? compileExpr(where) : undefined,
-    ...(direct === null ? {} : { eqProps: direct }),
+    where: generic === undefined ? undefined : compileExpr(generic),
+    ...(direct === null ? {} : { eqProps: direct.eq }),
   };
 };
 

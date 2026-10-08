@@ -1716,7 +1716,16 @@ const patternCountOf = <T>(
         }
       }
 
-      preds.push({ pred: compilePredicate(undefined, where), bindVar: start.variable });
+      // `start.variable` is passed as the predicate's OWN variable, which lets `directEqProps`
+      // read the element directly instead of through the binding. Sound because the loop above has
+      // just proved exactly the precondition that argument documents: every free variable of
+      // `where` IS `start.variable`, so the predicate is element-local. Without it the clause
+      // spelling paid 29.0 ns a vertex against the inline spelling's 17.2 for the same answer, and
+      // 47.4 against 21.1 for an AND of two equalities (audit item 230).
+      preds.push({
+        pred: compilePredicate(undefined, where, start.variable),
+        bindVar: start.variable,
+      });
     }
 
     return buildNodeCount(start, rowOf, preds, cstart);
@@ -1787,7 +1796,10 @@ const patternCountOf = <T>(
           relVar: undefined,
         };
       } else if (readsOnly(midName)) {
-        midPred = { pred: compilePredicate(undefined, where), bindVar: midName };
+        // `midName` doubles as the predicate's OWN variable: `readsOnly(midName)` has just proved
+        // the predicate is element-local, which is what lets `directEqProps` read the element
+        // directly rather than through the binding (item 230).
+        midPred = { pred: compilePredicate(undefined, where, midName), bindVar: midName };
       } else if (readsOnly(endName)) {
         // The END is admissible too, as the START of the REVERSED pattern — see `reversedTwoHop`.
         // The predicate is shaped for the reversed reading, where the end node IS the start.
@@ -1916,7 +1928,7 @@ const interiorPredOf = (
 
   // `bindVar` is load-bearing: the predicate reads `b.k`, so `inlineHolds` has to bind the element
   // under that name before evaluating it. Dropping it evaluates against an empty binding.
-  return { pred: { pred: compilePredicate(undefined, where), bindVar }, onB };
+  return { pred: { pred: compilePredicate(undefined, where, bindVar), bindVar }, onB };
 };
 
 /**
@@ -3574,7 +3586,10 @@ export const detectGroupedNodeCount = (clauses: readonly Clause[]): ReachFn | nu
       }
     }
 
-    preds.push({ pred: compilePredicate(undefined, where), bindVar: start.variable });
+    preds.push({
+      pred: compilePredicate(undefined, where, start.variable),
+      bindVar: start.variable,
+    });
   }
 
   // Fold the (at most two) predicates into ONE gate at compile time, or `undefined` when
@@ -3791,7 +3806,10 @@ export const detectGroupedHopCount = (clauses: readonly Clause[]): ReachFn | nul
       }
     }
 
-    preds.push({ pred: compilePredicate(undefined, where), bindVar: keyed.variable });
+    preds.push({
+      pred: compilePredicate(undefined, where, keyed.variable),
+      bindVar: keyed.variable,
+    });
   }
 
   const gate = preds.reduceRight<InlineGate | undefined>(

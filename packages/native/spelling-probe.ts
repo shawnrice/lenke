@@ -209,6 +209,30 @@ const GROUPS: [string, readonly string[]][] = [
       "MATCH (n:P) WHERE n.s = 's1' AND n.k = 2 RETURN count(*) AS c",
     ],
   ],
+  // An AND of two equalities against the SAME question written inline, and the two half-and-half
+  // spellings between them. Added in audit item 230, which closed it: the clause chain cost
+  // 47.4 ns a vertex against the inline form's 21.1 for an identical answer, because the chain
+  // went to the general evaluator — which reads its element back out of the BINDING — while the
+  // inline form compared the element directly. `directEqProps` now lifts the literal-valued
+  // conjuncts of an all-`=` chain, which is sound precisely because a closed `=` cannot raise and
+  // so a reordering has nothing to swallow.
+  //
+  // The REVERSED-operand member is here because `asPropCompare` is what reads each conjunct, and a
+  // flip it mishandled would show up as one member of this group drifting rather than as a wrong
+  // answer. (A param conjunct is the other member worth having — a param does NOT lift, since its
+  // value is unknown at compile time — but this probe runs every query without parameters, so it
+  // has no place to bind one. It is covered by `bench:usage`'s `read: keyed dedup lookup`, which
+  // is exactly that mixed shape.)
+  [
+    'an AND of two equalities: clause vs inline vs mixed (item 230)',
+    [
+      "MATCH (n:P) WHERE n.k = 2 AND n.s = 's1' RETURN count(*) AS c",
+      "MATCH (n:P {k: 2, s: 's1'}) RETURN count(*) AS c",
+      "MATCH (n:P {k: 2}) WHERE n.s = 's1' RETURN count(*) AS c",
+      "MATCH (n:P WHERE n.k = 2 AND n.s = 's1') RETURN count(*) AS c",
+      "MATCH (n:P) WHERE 2 = n.k AND 's1' = n.s RETURN count(*) AS c",
+    ],
+  ],
   // The multi-segment count families, added in audit item 225 because items 219-222 each closed a
   // spelling gap that this standing instrument did not guard. Every one of them was found by a
   // throwaway probe at the time, and every one was ALREADY OPEN before the item that fixed it:
