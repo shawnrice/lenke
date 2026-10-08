@@ -3078,6 +3078,59 @@ export const relHasPredicate = (rel: RelPattern): boolean =>
  *  subpath (`( ((x)-[e]->(y)){a,b} ){n,m}`) recurses: the outer unit's sole element is a
  *  `Sub` wrapping the inner subpath's unit, so its variables nest one list level deeper.
  *  Otherwise it's the inner hop chain. Mirrors native `plan::Lowerer::subpath_unit`. */
+/**
+ * Is this inline hop `WHERE` provably about its OWN EDGE and nothing else?
+ *
+ * A plain hop's inline `WHERE` is normally LIFTED to the repetition's unit predicate, because
+ * it may reference the repetition's other variables — `-[e:R WHERE e.w > x.n]->` needs `x`,
+ * which is only bound once the rep completes. But the matcher evaluates only the OUTERMOST
+ * unit's `where`, so a lifted predicate inside a NESTED sub-unit was carried by the compiler
+ * and then never evaluated: `(((x)-[e:E WHERE e.w > 2]->(y)){1,1}){1,2}` returned the
+ * UNFILTERED answer, while the equivalent flat `((x)-[e:E WHERE e.w > 2]->(y)){1,2}` filtered
+ * correctly (audit item 249).
+ *
+ * An edge-only predicate needs no lifting at all: left on the hop, `expandFilteredArr` applies
+ * it during expansion — correct at any nesting depth, and EARLIER than rep completion.
+ *
+ * An ALLOWLIST, not a free-variable check. `freePredicateVars` does not descend into a
+ * subquery (see `order-by-subquery-alias-collision`), so it reports the empty set for
+ * `EXISTS { … }` and would call a predicate edge-only that reads half the row. Every node kind
+ * admitted here is one whose operands are fully walked below; anything else — a subquery, a
+ * `let`, a function call, a reference to another variable — lifts as before.
+ */
+const edgeOnlyWhere = (expr: Expr | undefined, edgeVar: string | undefined): boolean => {
+  if (expr === undefined || edgeVar === undefined) {
+    return false; // no predicate, or an anonymous hop whose WHERE cannot be about its own edge
+  }
+
+  const ok = (e: Expr): boolean => {
+    switch (e.kind) {
+      case 'prop':
+      case 'property_exists':
+        return e.variable === edgeVar;
+      case 'lit':
+      case 'param':
+        return true;
+      case 'not':
+      case 'neg':
+        return ok(e.expr);
+      case 'compare':
+        return ok(e.left) && ok(e.right);
+      case 'arith':
+        return ok(e.head) && e.tail.every(([, operand]) => ok(operand));
+      case 'and':
+      case 'or':
+      case 'xor':
+      case 'list':
+        return e.items.every(ok);
+      default:
+        return false;
+    }
+  };
+
+  return ok(expr);
+};
+
 const compileSubpathUnit = (seg: Segment): CUnit => {
   if (seg.nested !== undefined) {
     const inner = seg.nested;
@@ -3112,9 +3165,13 @@ const compileSubpathUnit = (seg: Segment): CUnit => {
   // The subpath-level WHERE is the per-repetition predicate; a PLAIN hop's inline WHERE is
   // also lifted to the unit level; a NESTED hop's WHERE (`-[e WHERE …]->{a,b}`) is a
   // per-inner-edge predicate that STAYS on the `Sub`'s inner hop (not lifted).
+  // ...EXCEPT when it is provably about its own edge, which needs no lifting and must not be
+  // lifted inside a nested sub-unit, where the matcher never evaluates it (item 249).
   const whereExprs = [
     seg.subpathWhere,
-    ...astElems.filter((h) => h.q === undefined).map((h) => h.rel.where),
+    ...astElems
+      .filter((h) => h.q === undefined && !edgeOnlyWhere(h.rel.where, h.rel.variable))
+      .map((h) => h.rel.where),
   ].filter((w): w is Expr => w !== undefined);
   let unitWhere: Expr | undefined;
 
@@ -3126,9 +3183,15 @@ const compileSubpathUnit = (seg: Segment): CUnit => {
 
   const hopOrSub = (h: { rel: RelPattern; targetVar?: string; q?: Quantifier }): CElem => {
     if (h.q === undefined) {
-      // Plain hop: its WHERE was lifted, so strip it from the hop predicate.
+      // Plain hop: its WHERE was lifted, so strip it from the hop predicate — unless it is
+      // edge-only, in which case it was NOT lifted and stays here to filter at expansion.
+      const keep = edgeOnlyWhere(h.rel.where, h.rel.variable);
       const chop: CHop = {
-        rel: compileRel({ ...h.rel, where: undefined, quantifier: undefined }),
+        rel: compileRel({
+          ...h.rel,
+          ...(keep ? {} : { where: undefined }),
+          quantifier: undefined,
+        }),
         ...(h.targetVar !== undefined ? { targetVar: h.targetVar } : {}),
       };
 

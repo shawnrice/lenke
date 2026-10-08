@@ -83,11 +83,30 @@ const tallyGroupShapes = (cov: Record<string, number>, q: string, nonEmpty: bool
     }
   }
 
-  if (q.includes('((x)') && q.includes(' WHERE ')) {
+  // The PER-REPETITION `WHERE` sits after the unit and may read nodes; a PER-HOP one sits
+  // inside the edge brackets and reads one edge. Stripping `[...]` first is what tells them
+  // apart — without it, item 248's hop-predicate spellings inflated this counter from 352-422
+  // to 486-527 by being counted as per-rep predicates. That is the same over-matching item 246
+  // caught in `hopFilter`, found this time by the number moving the WRONG WAY: a counter that
+  // RISES when a new spelling is added is as suspicious as one that falls.
+  const unbracketed = q.replace(/\[[^\]]*\]/g, '');
+
+  if (unbracketed.includes('((x)') && unbracketed.includes(' WHERE ')) {
     cov.perRepGenerated++;
 
     if (nonEmpty) {
       cov.perRepNonEmpty++;
+    }
+  }
+
+  // The PER-HOP predicate on a group hop (item 248), which native refused outright until then.
+  // Its own counter, because it is a different code path from the per-rep one on both sides —
+  // native lowers it to a per-rep conjunct at mini-scope slot `2p+1`, TS leaves it on the hop.
+  if (q.includes('((x)') && /\[[^\]]*(WHERE|\{w:)/.test(q)) {
+    cov.groupHopPredGenerated++;
+
+    if (nonEmpty) {
+      cov.groupHopPredNonEmpty++;
     }
   }
 };
@@ -897,8 +916,32 @@ const genPred = (r: () => number, depth: number, allowSub = false): string => {
  * changed (audit item 238).
  */
 const genQuantifiedGroup = (r: () => number): string => {
-  const h1 = pick(r, ['-[e1:E]->', '<-[e1:E]-', '-[e1:F]->', '<-[e1:F]-']);
-  const h2 = pick(r, ['-[:E]->', '<-[:E]-', '-[:F]->', '<-[:F]-']);
+  // A PER-HOP edge predicate / inline prop on a group hop. Native REFUSED every one of these
+  // until item 248 (`E_NOT_IMPLEMENTED: edge properties / a per-hop WHERE on a subpath group`)
+  // while TS answered them, and this arm generated none — so a hand-written probe found the
+  // gap, not the fuzzer. A refusal against an answer IS a divergence here, so generating the
+  // shape is all the guard needs. Distinct from the per-REPETITION `WHERE` below, which sits
+  // after the unit and may read nodes: these sit inside the brackets and read one edge.
+  const h1 = pick(r, [
+    '-[e1:E]->',
+    '<-[e1:E]-',
+    '-[e1:F]->',
+    '<-[e1:F]-',
+    '-[e1:E WHERE e1.w > 2]->',
+    '<-[e1:E WHERE e1.w >= 0]-',
+    '-[e1:E {w: 2}]->',
+  ]);
+  const h2 = pick(r, [
+    '-[:E]->',
+    '<-[:E]-',
+    '-[:F]->',
+    '<-[:F]-',
+    // A SECOND hop's predicate, which is the case that needs each hop addressed to its OWN
+    // mini-scope slot (`2p + 1`): a fix that hard-coded slot 1 would answer hop 1 correctly
+    // and hop 2 against the wrong edge.
+    '-[e2:E WHERE e2.w <> 5]->',
+    '-[:E {w: 5}]->',
+  ]);
   const q = pick(r, ['{1,2}', '{1,1}', '{1,3}', '+']);
   // THE PATH MODE. Until item 244 this arm generated none at all, so every group pattern
   // ran under the default (TRAIL) and the mode's restrictors had differential coverage on
@@ -1604,6 +1647,8 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       abbrevPath: 0,
       simpleGroupGenerated: 0,
       simpleGroupNonEmpty: 0,
+      groupHopPredGenerated: 0,
+      groupHopPredNonEmpty: 0,
       predGenerated: 0,
       predRows: 0,
       sinkGenerated: 0,
@@ -1730,6 +1775,7 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
         `perRep=${cov.perRepGenerated}/${cov.perRepNonEmpty} ` +
         `abbrev=${cov.abbrevGenerated}/${cov.abbrevNonEmpty}/${cov.abbrevPath} ` +
         `simpleGroup=${cov.simpleGroupGenerated}/${cov.simpleGroupNonEmpty} ` +
+        `groupHopPred=${cov.groupHopPredGenerated}/${cov.groupHopPredNonEmpty} ` +
         `sink=${cov.sinkGenerated}/${cov.sinkNonZero} peel=${cov.peelGenerated}/${cov.peelNonZero} ` +
         `cross=${cov.crossGenerated}/${cov.crossNonEmpty} ` +
         `cntProp=${cov.cntPropGenerated}/${cov.cntPropNonZero} ` +
@@ -1770,6 +1816,14 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       // close, which the fixture's `3 -> 1` edge supplies.
       simpleGroupGenerated: cov.simpleGroupGenerated > 55,
       simpleGroupNonEmpty: cov.simpleGroupNonEmpty > 40,
+      // A PER-HOP edge predicate on a group hop (item 248) — the shape native refused outright
+      // while TS answered it, and which no generator produced. MEASURED 415-454 generated and
+      // 261-294 non-empty over four seeds of 20,000; floors ~25% under the minimum. It also
+      // guards the SECOND hop's predicate, which is the half that needs each hop addressed to
+      // its own mini-scope slot (`2p + 1`) — a fix hard-coding slot 1 answers hop 1 correctly
+      // and hop 2 against the wrong edge.
+      groupHopPredGenerated: cov.groupHopPredGenerated > 300,
+      groupHopPredNonEmpty: cov.groupHopPredNonEmpty > 190,
       predGenerated: cov.predGenerated > 2_000,
       predRows: cov.predRows > 1_000,
       sinkGenerated: cov.sinkGenerated > 200,
@@ -1831,6 +1885,8 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       abbrevPath: true,
       simpleGroupGenerated: true,
       simpleGroupNonEmpty: true,
+      groupHopPredGenerated: true,
+      groupHopPredNonEmpty: true,
       predGenerated: true,
       predRows: true,
       sinkGenerated: true,

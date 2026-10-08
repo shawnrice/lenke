@@ -3522,13 +3522,20 @@ impl Parser {
         let mut etypes: Option<Vec<String>> = None;
         // One or more hops, each `-[e:R]->(n)`; all hops must agree on direction and
         // edge type (a mixed-type/-direction unit is not supported).
+        // A PER-HOP edge predicate (`-[e:R WHERE e.w > 2]->` or an inline `-[:R {w: 9}]->`)
+        // on hop `p`, built over mini-scope slot `2p + 1` — the slot `rep_pred_ok` puts that
+        // hop's edge in. These are ANDed with each other and with the group's own per-rep
+        // `WHERE` below, so the group needs no new evaluation machinery: a per-hop predicate
+        // IS a per-repetition conjunct that happens to read one edge (audit item 248).
+        //
+        // They were refused outright until then, while the NESTED parser supported them via
+        // `edge_pred_from_rel` and `nested.rs`' `do_hop` already evaluated them — so the only
+        // thing missing was this lowering, and the TS engine answered queries native refused.
+        let mut hop_preds: Vec<Expr> = Vec::new();
         loop {
             let rel = self.rel(false)?;
-            if !rel.props.is_empty() || rel.where_range.is_some() {
-                return Err(
-                    "E_NOT_IMPLEMENTED: edge properties / a per-hop WHERE on a subpath group are not supported yet"
-                        .into(),
-                );
+            if let Some(e) = self.edge_pred_at(&rel, 2 * edge_vars.len() + 1)? {
+                hop_preds.push(e);
             }
             match dir {
                 None => dir = Some(rel.dir),
@@ -3558,6 +3565,19 @@ impl Parser {
                     return Err(
                         "a label/property/WHERE on a subpath-group inner node is not \
                                 supported yet"
+                            .into(),
+                    );
+                }
+                // Both shapes below return EARLY, past the point where `hop_preds` is folded
+                // into the per-rep predicate — and the `{m,m}` one rewrites `edge_vars` so a
+                // single parsed edge var stands for all `m` hops, which makes "which slot does
+                // this predicate address" ambiguous rather than merely unimplemented. Refuse
+                // loudly instead of dropping it silently, which is what returning here would
+                // do (audit item 248).
+                if !hop_preds.is_empty() {
+                    return Err(
+                        "E_NOT_IMPLEMENTED: an edge property / per-hop WHERE on a QUANTIFIED \
+                         subpath-group body is not supported yet"
                             .into(),
                     );
                 }
@@ -3658,6 +3678,14 @@ impl Parser {
         } else {
             None
         };
+        // The per-hop predicates join the per-rep one. Order is `hop1 AND … AND hopk AND
+        // <WHERE>`: `And` is not short-circuiting here (both engines evaluate to a value and
+        // combine), so the order is not answer-load-bearing, but it is fixed so the rendered
+        // plan is stable.
+        let per_rep_pred = hop_preds
+            .into_iter()
+            .chain(per_rep_pred)
+            .reduce(|a, b| Expr::And(Box::new(a), Box::new(b)));
         self.expect(&Tok::RParen)?; // close the group
         let (min, max) = self
             .opt_quantifier()?
@@ -3687,6 +3715,18 @@ impl Parser {
     /// (`{k:v}` → `e.k = v`) and inline `WHERE` — both over the edge at mini-scope
     /// slot 0 (the shape `edge_pred_ok` evaluates). `None` when the hop is unfiltered.
     fn edge_pred_from_rel(&mut self, rel: &Rel) -> Result<Option<Expr>, String> {
+        self.edge_pred_at(rel, 0)
+    }
+
+    /// As [`Self::edge_pred_from_rel`], but over the edge at mini-scope slot `slot`.
+    ///
+    /// A nested inner hop evaluates its predicate alone, so slot 0 is the edge. A SUBPATH
+    /// GROUP evaluates all of a repetition's conjuncts together in `rep_pred_ok`'s mini-batch,
+    /// where node position `p` is at `2p` and edge position `p` at `2p + 1` — so hop `p`'s
+    /// predicate is just a per-repetition conjunct at `2p + 1`, and the group needs no new
+    /// evaluation machinery at all (audit item 248). Parameterising the slot is why: it builds
+    /// the predicate already addressed correctly rather than rewriting slots afterwards.
+    fn edge_pred_at(&mut self, rel: &Rel, slot: usize) -> Result<Option<Expr>, String> {
         let and = |p: Option<Expr>, c: Expr| {
             Some(match p {
                 None => c,
@@ -3700,7 +3740,7 @@ impl Parser {
                 Expr::Compare {
                     op: CompareOp::Eq,
                     left: Box::new(Expr::Prop {
-                        slot: 0,
+                        slot,
                         key: k.clone(),
                     }),
                     right: Box::new(Expr::Lit(val.clone())),
@@ -3712,10 +3752,10 @@ impl Parser {
             let saved_slots = self.slots;
             let mut mini: HashMap<String, usize> = HashMap::new();
             if let Some(ev) = &rel.var {
-                mini.insert(ev.clone(), 0);
+                mini.insert(ev.clone(), slot);
             }
             self.scope = mini;
-            self.slots = 1;
+            self.slots = slot + 1;
             let w = self.parse_captured_where(r)?;
             self.scope = saved;
             self.slots = saved_slots;

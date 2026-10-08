@@ -8224,6 +8224,190 @@ fn a_path_variable_sees_the_gated_close() {
     assert_eq!(got, vec!["Num(2.0)", "Num(3.0)"], "no 4-node closed path");
 }
 
+// --- A per-hop edge predicate on a subpath group (item 248) ---
+
+/// `0 -(w5)-> 1 -(w5)-> 2 -(w1)-> 3`. Small enough to count by hand, and the LAST edge is the
+/// only one that fails `w > 2` — so a predicate that is applied changes the answer and one
+/// that is dropped does not.
+fn weighted_chain() -> Store {
+    let mut b = Builder::default();
+    for i in 0..4 {
+        b.node(&["N"], &[("n", n(f64::from(i)))]);
+    }
+    b.edge(0, 1, "R");
+    b.edge(1, 2, "R");
+    b.edge(2, 3, "R");
+    let mut st = b.build();
+    st.set_edge_prop(0, "w", n(5.0));
+    st.set_edge_prop(1, "w", n(5.0));
+    st.set_edge_prop(2, "w", n(1.0));
+    st
+}
+
+/// A per-hop `WHERE` inside the brackets of a subpath-group hop was REFUSED outright
+/// (`E_NOT_IMPLEMENTED: edge properties / a per-hop WHERE on a subpath group`), while the
+/// NESTED parser supported it via `edge_pred_from_rel` and `nested.rs`' `do_hop` already
+/// evaluated it — so the only thing missing was this lowering, and the TS engine answered
+/// queries native refused. Over a 300-query cross-engine sweep native refused 300 of 300
+/// before and agrees on 300 of 300 after.
+///
+/// By hand, unfiltered `{1,2}`: the 1-rep walks `0->1`, `1->2`, `2->3` and the 2-rep walks
+/// `0->1->2`, `1->2->3` = 5. With `w > 2` the `2->3` edge is out, leaving `0->1`, `1->2` and
+/// `0->1->2` = 3.
+#[test]
+fn a_per_hop_where_on_a_group_is_applied() {
+    let store = weighted_chain();
+    assert_eq!(
+        num1(
+            "MATCH (a:N)((x)-[e:R]->(y)){1,2} RETURN count(*) AS c",
+            &store
+        ),
+        5.0,
+        "the unfiltered count, so the filtered one below means something"
+    );
+    assert_eq!(
+        num1(
+            "MATCH (a:N)((x)-[e:R WHERE e.w > 2]->(y)){1,2} RETURN count(*) AS c",
+            &store
+        ),
+        3.0,
+    );
+}
+
+/// The inline-property spelling of the same constraint must answer the same — the repo's
+/// equivalent-spellings rule, and it lowers through the same `edge_pred_at` path.
+#[test]
+fn the_inline_prop_spelling_on_a_group_is_applied() {
+    let store = weighted_chain();
+    // Only the two `w = 5` edges qualify: 1-rep `0->1`, `1->2` and 2-rep `0->1->2` = 3.
+    assert_eq!(
+        num1(
+            "MATCH (a:N)((x)-[:R {w: 5}]->(y)){1,2} RETURN count(*) AS c",
+            &store
+        ),
+        3.0,
+    );
+    // And the other value picks out exactly the one edge, reachable only as a 1-rep walk.
+    assert_eq!(
+        num1(
+            "MATCH (a:N)((x)-[:R {w: 1}]->(y)){1,2} RETURN count(*) AS c",
+            &store
+        ),
+        1.0,
+    );
+}
+
+/// **Each hop's predicate must address ITS OWN edge.** A two-hop unit puts hop `p`'s edge at
+/// mini-scope slot `2p + 1`, so a lowering that hard-coded slot 1 would answer the first hop
+/// correctly and test the SECOND hop's predicate against the FIRST hop's edge. The fixture
+/// makes that visible: the two hops of the only qualifying repetition have different weights.
+#[test]
+fn each_group_hop_predicate_addresses_its_own_edge() {
+    let mut b = Builder::default();
+    for i in 0..4 {
+        b.node(&["N"], &[("n", n(f64::from(i)))]);
+    }
+    b.edge(0, 1, "R"); // w = 1
+    b.edge(1, 2, "R"); // w = 9
+    b.edge(2, 3, "R"); // w = 1
+    let mut store = b.build();
+    store.set_edge_prop(0, "w", n(1.0));
+    store.set_edge_prop(1, "w", n(9.0));
+    store.set_edge_prop(2, "w", n(1.0));
+    let c = |q: &str| num1(q, &store);
+    // The only two-hop repetitions are `0->1->2` (w 1 then 9) and `1->2->3` (w 9 then 1).
+    assert_eq!(
+        c("MATCH (a:N)((x)-[e1:R]->(m)-[e2:R]->(y)){1,1} RETURN count(*) AS c"),
+        2.0
+    );
+    // First hop light, second heavy: only `0->1->2`.
+    assert_eq!(
+        c(
+            "MATCH (a:N)((x)-[e1:R WHERE e1.w < 5]->(m)-[e2:R WHERE e2.w > 5]->(y)){1,1} \
+           RETURN count(*) AS c"
+        ),
+        1.0,
+    );
+    // The MIRROR constraint selects the OTHER repetition. If both predicates read the same
+    // edge, these two numbers could not differ this way.
+    assert_eq!(
+        c(
+            "MATCH (a:N)((x)-[e1:R WHERE e1.w > 5]->(m)-[e2:R WHERE e2.w < 5]->(y)){1,1} \
+           RETURN count(*) AS c"
+        ),
+        1.0,
+    );
+    // And a constraint no repetition satisfies.
+    assert_eq!(
+        c(
+            "MATCH (a:N)((x)-[e1:R WHERE e1.w > 5]->(m)-[e2:R WHERE e2.w > 5]->(y)){1,1} \
+           RETURN count(*) AS c"
+        ),
+        0.0,
+    );
+}
+
+/// A per-hop predicate and the group's OWN per-repetition `WHERE` must AND, not replace each
+/// other — they are folded into one predicate, so a fold that dropped either side would pass
+/// a test exercising only one.
+#[test]
+fn a_per_hop_predicate_ands_with_the_per_rep_where() {
+    let store = weighted_chain();
+    let c = |q: &str| num1(q, &store);
+    let hop_only = c("MATCH (a:N)((x)-[e:R WHERE e.w > 2]->(y)){1,2} RETURN count(*) AS c");
+    let rep_only = c("MATCH (a:N)((x)-[e:R]->(y) WHERE x.n <> 1){1,2} RETURN count(*) AS c");
+    let both =
+        c("MATCH (a:N)((x)-[e:R WHERE e.w > 2]->(y) WHERE x.n <> 1){1,2} RETURN count(*) AS c");
+    assert_eq!(hop_only, 3.0);
+    assert!(
+        rep_only < 5.0 && rep_only > 0.0,
+        "the per-rep side must bite: {rep_only}"
+    );
+    // The conjunction is at most either side, and strictly less than the looser one — so
+    // neither side was dropped.
+    assert!(
+        both < hop_only,
+        "the per-rep side was dropped: {both} vs {hop_only}"
+    );
+    assert!(
+        both < rep_only,
+        "the per-hop side was dropped: {both} vs {rep_only}"
+    );
+}
+
+/// A QUANTIFIED group body — `((x)-[e:R WHERE …]->{2,2}(y)){1,2}` — is routed to the NESTED
+/// parser by the dispatcher (a `]` followed by a quantifier is what selects it), which has
+/// supported per-hop predicates all along. So it must APPLY the predicate, not refuse it.
+///
+/// Verified against the TS engine before being written down: both answer 2 unfiltered and 1
+/// filtered for `{2,2}`, and 9 / 4 for `{1,2}`. The guard added in `parse_subpath_group`'s own
+/// inner-quantifier branch is therefore defensive — that branch returns EARLY, past the point
+/// where the hop predicates are folded in, so a predicate reaching it would be dropped
+/// SILENTLY; no spelling is currently known to reach it, and the guard is there so that if one
+/// ever does it fails loudly instead.
+#[test]
+fn a_quantified_group_body_applies_its_per_hop_predicate() {
+    let store = weighted_chain();
+    let c = |q: &str| num1(q, &store);
+    assert_eq!(
+        c("MATCH (a:N)((x)-[e:R]->{2,2}(y)){1,2} RETURN count(*) AS c"),
+        2.0,
+        "the unfiltered count, so the filtered one means something"
+    );
+    assert_eq!(
+        c("MATCH (a:N)((x)-[e:R WHERE e.w > 2]->{2,2}(y)){1,2} RETURN count(*) AS c"),
+        1.0,
+    );
+    assert_eq!(
+        c("MATCH (a:N)((x)-[e:R]->{1,2}(y)){1,2} RETURN count(*) AS c"),
+        9.0
+    );
+    assert_eq!(
+        c("MATCH (a:N)((x)-[e:R WHERE e.w > 2]->{1,2}(y)){1,2} RETURN count(*) AS c"),
+        4.0,
+    );
+}
+
 // --- A SIMPLE closing hop in a GROUP pattern (item 244) ---
 
 /// `0 -> 1`, `1 -> 0`, `2 -> 2` (a self-loop), `2 -> 0`, `0 -> 2`. Small enough that every
