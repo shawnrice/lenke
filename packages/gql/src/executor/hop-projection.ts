@@ -1550,6 +1550,124 @@ const planFor = (
   needsFar: !w.onStart || (w.farLabel !== undefined && !vacuousLabel(graph, w.farLabel)),
 });
 
+/**
+ * Whether a START-keyed dedup is cheaper driven from the FAR end — and why this one needs a COST
+ * PROBE where item 232's twin needed only two bucket sizes.
+ *
+ * Item 232 could compare vertex counts alone because a plain projection emits one row per edge, so
+ * both walks visit the same qualifying edges and the edge term CANCELS. A dedup keyed on the start
+ * does not: `walkStartSide` BREAKS at the first qualifying edge, so its edge term is sublinear and
+ * workload-dependent. The adversarial case is real — 100 far vertices of degree 10,000 (1,000,000
+ * incident edges) against 200,000 starts whose break fires on edge one (200,000 edge visits) — and
+ * a bucket comparison would switch into it and be 2.5x WORSE.
+ *
+ * So the cost is measured instead of guessed, which keeps this inside item 223's rule (fire only on
+ * a provable win):
+ *
+ *   - `|S|` — `candidateCount(startLabel)` — is a LOWER BOUND on the start-driven walk: every start
+ *     candidate costs a bucket lookup even when it has no edges.
+ *   - `|F| + E_F` is EXACTLY the far-driven walk: one lookup per far candidate plus one visit per
+ *     incident edge of the type. Each `E_F` term is an O(1) adjacency `size` read, and it is work
+ *     the far-driven walk pays anyway.
+ *
+ * **The early exit is what makes the probe safe**, not just tidy: it abandons as soon as the running
+ * cost reaches `|S|`, so the probe can never spend more than the walk it is deciding against. In the
+ * adversarial case it gives up after 200,000 increments and keeps the start-driven walk.
+ *
+ * `needsFar` is required because a FALSE one means the start-driven walk already asks one
+ * `bucket.size` per start and reads no edges at all — already optimal, nothing to win.
+ *
+ * Measured (200,000 vertices, one edge each, `:Few` on a tenth — audit item 233):
+ *
+ *     MATCH (a:Few)-[:E]->(f) RETURN DISTINCT f.t     8.9ms   dedup keyed on the FAR end
+ *     MATCH (f)<-[:E]-(a:Few) RETURN DISTINCT f.t   111.4ms   keyed on the START, drove 200,000
+ *
+ * and the same asymmetry is in the general path, so declining the shortcut does not help: forcing
+ * both queries off the fast path leaves them at 111.1 and 8.9.
+ */
+export const dedupDrivesFar = (graph: Graph, plan: WalkPlan): boolean => {
+  const { direct, startLabel, farLabel, onStart, needsFar } = plan;
+
+  if (direct === undefined || !onStart || !needsFar) {
+    return false;
+  }
+
+  const starts = candidateCount(graph, startLabel);
+
+  // The cheap precondition first, so the probe below is never paid where it cannot pay off. As in
+  // item 232, `candidateCount` scores a label it cannot seed from as the whole graph, so this also
+  // establishes that the far label has a bucket to enumerate.
+  if (candidateCount(graph, farLabel) >= starts) {
+    return false;
+  }
+
+  const index = direct.forward ? graph.edgesToByLabel : graph.edgesFromByLabel;
+  let cost = 0;
+
+  for (const far of candidateVertexSource(graph, farLabel)) {
+    cost += 1 + (index.get(far.id)?.get(direct.type)?.size ?? 0);
+
+    if (cost >= starts) {
+      return false;
+    }
+  }
+
+  return true;
+};
+
+/**
+ * The FAR-driven walk for a START-keyed dedup: enumerate the far candidates, resolve the START
+ * endpoint per edge, and offer THAT to the dedup.
+ *
+ * Not `walkFarSide`, which offers the FAR element and only asks whether its bucket exists — that
+ * answers "which far vertices are reached" and is the `!onStart` question. This one answers "which
+ * START vertices reach a qualifying far vertex", so it has to read the edges.
+ *
+ * `take` is offered the same start vertex once per qualifying edge rather than once, where the
+ * start-driven walk breaks after one. That is sound because `take` is IDEMPOTENT for a dedup — the
+ * value set keeps one entry per value, and the counting twin increments only for a value it has not
+ * seen — and the extra calls are counted in the `E_F` term `dedupDrivesFar` compares. A gate is
+ * likewise evaluated per edge instead of per vertex; it is pure, so the only observable is a RAISE,
+ * which happens on the first evaluation either way.
+ */
+const walkFarSideResolvingStart = (
+  graph: Graph,
+  plan: WalkPlan,
+  take: (el: Vertex) => void,
+): void => {
+  const { startLabel, farLabel } = plan;
+  const direct = plan.direct as DirectHop;
+  const index = direct.forward ? graph.edgesToByLabel : graph.edgesFromByLabel;
+
+  for (const far of candidateVertexSource(graph, farLabel)) {
+    const bucket = index.get(far.id)?.get(direct.type);
+
+    if (bucket === undefined) {
+      continue;
+    }
+
+    // Defensive, exactly as in item 232's mirror: `dedupDrivesFar`'s strict comparison already
+    // implies a seekable far label, and this keeps a wrong answer from resting on that argument
+    // holding elsewhere. One comparison per far VERTEX.
+    if (farLabel !== undefined && !matchesLabel(far, farLabel)) {
+      continue;
+    }
+
+    for (const edge of bucket) {
+      const v: Vertex = direct.forward ? edge.from : edge.to;
+
+      // The START label is implicit in the start-driven walk's enumeration, so it has to be
+      // applied HERE — and before `take`, which is where the gate runs: the start-driven walk
+      // never gates a vertex its enumeration excluded.
+      if (startLabel !== undefined && !matchesLabel(v, startLabel)) {
+        continue;
+      }
+
+      take(v);
+    }
+  }
+};
+
 const walkStartSide = (graph: Graph, plan: WalkPlan, take: (el: Vertex) => void): void => {
   const { startLabel, farLabel, adjacency, direct, needsFar, onStart } = plan;
 
@@ -1716,10 +1834,16 @@ export const detectDistinctCount = (
       }
     };
 
+    // THREE walks, chosen per call because every input is a runtime property of the graph. The
+    // plan is built once here rather than per branch.
+    const plan = planFor(graph, planParts);
+
     if (farDrivenFits(graph, direct, onStart, startLabel)) {
-      walkFarSide(graph, planFor(graph, planParts), take);
+      walkFarSide(graph, plan, take);
+    } else if (dedupDrivesFar(graph, plan)) {
+      walkFarSideResolvingStart(graph, plan, take);
     } else {
-      walkStartSide(graph, planFor(graph, planParts), take);
+      walkStartSide(graph, plan, take);
     }
 
     return [{ [outName]: n }];
@@ -1787,13 +1911,24 @@ export const detectDistinctProjection = (
       }
     };
 
-    // Which walk answers this? Both live at module scope; the closure only dispatches. The
-    // FAR-driven one asks one adjacency lookup per far VERTEX where the start-driven one
-    // resolves an endpoint per EDGE — see `farDrivenFits` for the two conditions.
+    // Which walk answers this? All three live at module scope; the closure only dispatches, and
+    // every input to the choice is a runtime property of the graph.
+    //
+    //   `walkFarSide`              the dedup is keyed on the FAR end, so reachability is one
+    //                              adjacency lookup per far VERTEX — see `farDrivenFits`.
+    //   `walkFarSideResolvingStart` keyed on the START, but the far end is narrow enough that
+    //                              enumerating it and resolving starts beats scanning the start
+    //                              side — see `dedupDrivesFar`, which MEASURES that rather than
+    //                              guessing it (audit item 233).
+    //   `walkStartSide`            otherwise.
+    const plan = planFor(graph, planParts);
+
     if (farDrivenFits(graph, direct, onStart, startLabel)) {
-      walkFarSide(graph, planFor(graph, planParts), take);
+      walkFarSide(graph, plan, take);
+    } else if (dedupDrivesFar(graph, plan)) {
+      walkFarSideResolvingStart(graph, plan, take);
     } else {
-      walkStartSide(graph, planFor(graph, planParts), take);
+      walkStartSide(graph, plan, take);
     }
 
     if (sort !== undefined) {
