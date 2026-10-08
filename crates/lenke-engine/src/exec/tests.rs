@@ -10866,7 +10866,7 @@ fn expression_cost_by_kind() {
 
 // --- Boolean coercion is a second raising hazard ---
 
-/// A non-boolean operand of `AND`/`OR` faults when coerced, and narrowing must not skip that.
+/// A non-boolean operand of `OR` faults when coerced, and narrowing must not skip that.
 ///
 /// `fold_operand` evaluates the second operand only over the rows the first left undecided. When
 /// the first is true on EVERY row, an `OR`'s second operand is narrowed to a ZERO-ROW batch, and
@@ -10877,8 +10877,12 @@ fn expression_cost_by_kind() {
 /// only about whether EVALUATION raises, which a literal never does; the fix is that the operand
 /// must definitely YIELD a boolean, so a bare literal or property read is not narrowable even
 /// though evaluating it is perfectly safe.
+///
+/// `AND` used to be asserted here too and now goes the OTHER WAY, deliberately — see the test
+/// below. The transparency gate still governs `OR`, which is the half this keeps, and keeping it
+/// is what stops the `AND` decision from leaking across the connective.
 #[test]
-fn a_non_boolean_operand_still_faults_when_the_other_decides_every_row() {
+fn a_non_boolean_or_operand_still_faults_when_the_other_decides_every_row() {
     let store = chain_store(8);
     // The left operand is TRUE for every row, so the right is what narrowing would skip.
     for q in [
@@ -10889,12 +10893,57 @@ fn a_non_boolean_operand_still_faults_when_the_other_decides_every_row() {
         let err = try_gql(q, &store).expect_err("a non-boolean OR operand must fault");
         assert!(err.contains("E_INVALID_VALUE"), "{q} -> {err}");
     }
-    // And the AND mirror: a FALSE left operand settles every row.
+}
+
+/// The `AND` mirror of the test above goes the OTHER way, on purpose: a conjunct that settles the
+/// row `FALSE` means the remaining conjunct is an INESSENTIAL part of the search condition, and
+/// it is not evaluated — so a throwing one does not throw.
+///
+/// ISO/IEC 39075 leaves both halves of this to the implementation, in its FREE
+/// `-implementation-dependent.xml` artifact: `US008` (the actual order of expression evaluation)
+/// and `UA004` (whether an exception from the evaluation of an inessential part is actually
+/// raised). Both outcomes conform, so the choice is ours to make on cost, and a `FALSE` is
+/// cheaper than an exception (user, 2026-10-08).
+///
+/// This side is `fold_operand`'s `must_narrow`, which makes the skip MANDATORY rather than the
+/// sampled perf choice it is for a transparent operand; the TS engine's `and` arm partitions its
+/// conjuncts to reach the same place. `OR` is NOT symmetric — the decision was taken for `AND`.
+#[test]
+fn a_false_conjunct_leaves_a_throwing_conjunct_unevaluated() {
+    let store = chain_store(8);
+    // `RETURN` form: the expression must ANSWER, once per row, rather than fault.
     for q in [
         "MATCH (n:N) RETURN ((3 IS UNKNOWN) AND 'nan') AS x",
         "MATCH (n:N) RETURN ((3 IS UNKNOWN) AND n.name) AS x",
+        "MATCH (n:N) RETURN ((3 IS UNKNOWN) AND (1.0 / 0.0)) AS x",
     ] {
-        let err = try_gql(q, &store).expect_err("a non-boolean AND operand must fault");
+        assert_eq!(
+            try_gql(q, &store).unwrap_or_else(|e| panic!("{q} must not fault: {e}")),
+            8,
+            "{q} must answer one row per vertex"
+        );
+    }
+    // `WHERE` form, which pins the VALUE and not merely the absence of a fault: the conjunction
+    // is FALSE, so no row passes. A short-circuit that returned UNKNOWN would also be
+    // fault-free and would also admit nothing, so the TRUE cases below are what separate them.
+    for q in [
+        "MATCH (n:N) WHERE (3 IS UNKNOWN) AND n.name RETURN n.name AS x",
+        "MATCH (n:N) WHERE (3 IS UNKNOWN) AND (1.0 / 0.0) > 1 RETURN n.name AS x",
+    ] {
+        assert_eq!(
+            try_gql(q, &store).unwrap_or_else(|e| panic!("{q} must not fault: {e}")),
+            0,
+            "{q} must admit no row"
+        );
+    }
+    // The CONTROL, and the thing a too-eager short-circuit would break: when the other conjunct
+    // does NOT settle the row, the throwing one is essential and still throws. Without this, an
+    // `and` arm that simply never evaluated its tail would pass everything above.
+    for q in [
+        "MATCH (n:N) WHERE (NOT (3 IS UNKNOWN)) AND n.name RETURN n.name AS x",
+        "MATCH (n:N) RETURN ((NOT (3 IS UNKNOWN)) AND 'nan') AS x",
+    ] {
+        let err = try_gql(q, &store).expect_err("an ESSENTIAL non-boolean conjunct must fault");
         assert!(err.contains("E_INVALID_VALUE"), "{q} -> {err}");
     }
 }

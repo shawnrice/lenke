@@ -142,10 +142,16 @@ describe('RESTRICTION: a non-null LITERAL, never a param', () => {
 });
 
 describe('RESTRICTION: one comparison, never an AND-chain', () => {
-  test('a FALSE conjunct does not suppress a raise from another', () => {
-    // `AND` does not short-circuit here, by design and for byte-identity. `n.k = 999` matches
-    // nothing, yet the CAST still raises. Hoisting that conjunct into a property check would let
-    // `satisfies` reject the element first and swallow the raise.
+  test('a non-matching conjunct does not suppress a raise from another', () => {
+    // `n.k = 999` matches nothing, yet the CAST still raises. Hoisting that conjunct into a
+    // property check would let `satisfies` reject the element first and swallow the raise.
+    //
+    // `AND` DOES short-circuit on FALSE now (2026-10-08), and this still raises — for a reason
+    // worth being explicit about, because it reads like a contradiction. "Matches nothing" is
+    // not the same as "FALSE on every row": `absent` has no `k` and `nulled` stores a null, so
+    // `n.k = 999` is UNKNOWN on three of the five vertices. `and(null, false)` is `false`, so
+    // UNKNOWN cannot settle the chain, and the CAST is therefore an ESSENTIAL part of the
+    // search condition on exactly those rows. The restriction this describes is unaffected.
     expect(() =>
       query(g, 'MATCH (n:P WHERE n.k = 999 AND CAST(n.s AS INTEGER) > 0) RETURN count(*) AS c'),
     ).toThrow();

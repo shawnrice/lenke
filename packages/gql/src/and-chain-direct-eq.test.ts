@@ -105,24 +105,35 @@ describe('a conjunct the rule cannot admit declines the WHOLE chain', () => {
     expect(count('MATCH (n:P) WHERE n.j > 2 AND n.k = 1 RETURN count(*) AS c')).toBe(1);
   });
 
-  test('a RAISING conjunct still raises when NO row satisfies the liftable one', () => {
-    // THE decisive case for the reordering, and the reason the admission rule is phrased as it is.
-    // `AND` here evaluates every item (see the `and` arm of `compileExpr`) — it does NOT
-    // short-circuit — so `trim(n.k)` on a number is a data exception on the FIRST vertex even
-    // though nothing has `k = 999`. `eqProps` DOES short-circuit, so a chain split between the two
-    // would answer 0 and swallow the raise. Declining the whole chain is what keeps them the same
-    // question.
-    expect(() =>
-      count("MATCH (n:P) WHERE n.k = 999 AND trim(n.k) = 'x' RETURN count(*) AS c"),
-    ).toThrow();
+  test('a RAISING conjunct is SETTLED OUT when no row satisfies the liftable one', () => {
+    // THE decisive case for the reordering, and it has changed direction. This test used to
+    // assert a raise, on the premise that "`AND` evaluates every item — it does NOT
+    // short-circuit", and reasoned that `eqProps` DOES short-circuit, so a chain split between
+    // the two "would answer 0 and swallow the raise", which declining the whole chain avoided.
+    //
+    // `AND` now short-circuits on FALSE in both places (user, 2026-10-08), so the two paths
+    // AGREE and 0 is the answer either way. `trim(n.k)` on a number is still a data exception —
+    // it is simply never reached, because `n.k = 999` settles every row first.
+    expect(count("MATCH (n:P) WHERE n.k = 999 AND trim(n.k) = 'x' RETURN count(*) AS c")).toBe(0);
+    // Written order DOES matter, and this is the half that is still a declared divergence:
+    // spelled the other way the raising conjunct comes first, so it is evaluated and raises.
+    // The native engine answers 0 here instead, because its optimizer can seed `n.k = 999`
+    // out of the chain and never reaches the sibling — a reordering this engine has nothing
+    // to match (it has no seek to hoist). Covered by the
+    // `boolean-context-dynamic-operand-under-seek` entry in the divergence registry, which is
+    // exactly what that entry is now reduced to.
     expect(() =>
       count("MATCH (n:P) WHERE trim(n.k) = 'x' AND n.k = 999 RETURN count(*) AS c"),
     ).toThrow();
 
-    // And with the liftable conjunct matching, so the raise is reached either way — the pair makes
-    // the test about ORDER rather than about raising at all.
+    // CONTROL, and now the load-bearing half: with the liftable conjunct MATCHING, the raising
+    // one is essential and is reached. Without this the test would pass for a chain that had
+    // simply stopped evaluating its tail at all.
     expect(() =>
       count("MATCH (n:P) WHERE n.k = 1 AND trim(n.k) = 'x' RETURN count(*) AS c"),
+    ).toThrow();
+    expect(() =>
+      count("MATCH (n:P) WHERE trim(n.k) = 'x' AND n.k = 1 RETURN count(*) AS c"),
     ).toThrow();
   });
 

@@ -105,17 +105,32 @@ describe('a subquery conjunct is held back from the node fold (item 174)', () =>
     ).toBe(true);
   });
 
-  test('a NON-subquery faulting conjunct is untouched (audit item 115 stays reserved)', () => {
-    // Still pushed into the node, so it still runs for every vertex and still raises even
-    // when nothing matches. Native returns [] here; that divergence is recorded and is a
-    // decision about seeding, NOT something this change may settle by accident.
-    expect(raised(`MATCH (u:P) WHERE u.k = 'nobody' AND 1.0 / 0.0 > 0 RETURN u.k AS k`)).toBe(true);
+  test('a NON-subquery faulting conjunct is ALSO gated now (the AND decision)', () => {
+    // This was the recorded divergence: the conjunct was pushed into the node, so it ran for
+    // every vertex and raised even when nothing matched, while native returned []. The
+    // comment here used to say the divergence "is a decision about seeding, NOT something
+    // this change may settle by accident" — the decision has since been taken (user,
+    // 2026-10-08) and native's answer is the intended one. A conjunct a FALSE sibling has
+    // already settled is an INESSENTIAL part of the search condition and is not evaluated.
+    expect(raised(`MATCH (u:P) WHERE u.k = 'nobody' AND 1.0 / 0.0 > 0 RETURN u.k AS k`)).toBe(
+      false,
+    );
+    // CONTROL, and the half that must not move: when the cheap conjunct ADMITS the vertex the
+    // faulting one is essential, so it runs and still raises.
+    expect(raised(`MATCH (u:P) WHERE u.k = 'a' AND 1.0 / 0.0 > 0 RETURN u.k AS k`)).toBe(true);
   });
 
-  test('the bare-expression no-short-circuit contract is unaffected', () => {
-    // Byte-identity with native, which raises on both of these too.
-    expect(raised(`RETURN false AND (1.0 / 0.0) AS r`)).toBe(true);
+  test('a bare-expression AND short-circuits on FALSE; OR still evaluates both', () => {
+    // Byte-identity with native, verified against it directly: `AND` skips the inessential
+    // operand and `OR` does not. The asymmetry is deliberate — the decision was taken for
+    // `AND`, and native has no counterpart to the conjunct split on the OR side to seed from.
+    expect(raised(`RETURN false AND (1.0 / 0.0) AS r`)).toBe(false);
     expect(raised(`RETURN true OR (1.0 / 0.0) AS r`)).toBe(true);
+    // The value, not just the absence of a fault.
+    expect(rows(`RETURN false AND (1.0 / 0.0) AS r`)).toEqual([{ r: false }]);
+    // And the order that a short-circuit does NOT save: the throwing operand comes first and
+    // neither operand is safe to hoist, so it is reached. Native agrees.
+    expect(raised(`RETURN (1.0 / 0.0) AND false AS r`)).toBe(true);
   });
 
   test('the walker finds a subquery NESTED inside a conjunct, not just at its top', () => {

@@ -6305,8 +6305,14 @@ fn slots_read(e: &Expr, out: &mut Vec<usize>) -> bool {
 ///
 /// 1. **Evaluation** can raise: arithmetic on a zero divisor or a non-number, a function or CAST
 ///    that faults. ISO permits skipping those (US008 / UA004, see `research/iso-39075/`) and the
-///    optimizer takes that latitude elsewhere, but the TS engine does not narrow and cross-engine
-///    byte-identity is a stricter promise than conformance.
+///    optimizer takes that latitude elsewhere, but the TS engine narrows only an `AND` and
+///    cross-engine byte-identity is a stricter promise than conformance.
+///
+/// Since 2026-10-08 this answers a NARROWER question than it used to: whether narrowing is safe
+/// FOR SPEED. An `AND` whose operand can raise narrows anyway (`fold_operand`'s `must_narrow`),
+/// because there the skip is the decided semantics rather than an optimization. So a `false` here
+/// no longer means "do not narrow" — it means "narrowing this is observable", which for `OR` is
+/// still a refusal and for `AND` is now the reason it is mandatory.
 /// 2. **Boolean coercion** can raise, independently of evaluation. An `AND`/`OR` operand is put
 ///    through `as_truth`, which faults on a non-boolean — so a perfectly safe `Lit` or `Prop` as a
 ///    direct operand is NOT narrowable: reducing it to zero rows makes `eval` short-circuit on the
@@ -6423,13 +6429,27 @@ fn narrow_to_slots(batch: &Batch, keep: &[usize], read: &[usize]) -> Batch {
 /// everything is worth 9.1x; with a plain compare, 2.1x. At 100% surviving — nothing eliminated —
 /// it is a LOSS of 2% to 16%, which is what the sampled decision below avoids paying.
 ///
-/// Declines, and evaluates over the whole batch, unless all of:
+/// # Two reasons to narrow, and they have opposite gates
+///
+/// **For SPEED**, when the operand is TRANSPARENT (it cannot raise, so skipping rows is
+/// unobservable). Optional, and declined unless all of:
 /// * the sampled prefix says at least half the rows are settled, so the gather is paid on at most
 ///   half of them;
-/// * the slot set is KNOWN, because narrowing replaces unnamed slots with placeholders;
-/// * narrowing is TRANSPARENT — the operand cannot raise, so skipping rows cannot change which
-///   queries error. The TS engine does not narrow, and cross-engine byte-identity is a stricter
-///   promise than conformance (ISO's US008 / UA004 would permit the divergence).
+/// * the slot set is KNOWN, because narrowing replaces unnamed slots with placeholders.
+///
+/// **FOR THE ANSWER**, when the operand can raise and this is an `AND` (`must_narrow`). An
+/// `AND` settled FALSE on a row makes its other operand an INESSENTIAL part of the search
+/// condition, and an inessential part is not evaluated — so the skip is mandatory and the sample
+/// does not get a vote. ISO/IEC 39075 leaves this open (`US008` order of evaluation, `UA004`
+/// exceptions from inessential parts), and the choice between the two conformant outcomes was
+/// made on cost: a FALSE is cheaper than an exception (user, 2026-10-08). The TS engine's `and`
+/// arm short-circuits to match; `OR` is excluded because that decision was taken for `AND` and
+/// the TS engine evaluates both `OR` operands.
+///
+/// This gate used to read the other way round — transparency was required for ANY narrowing,
+/// because "the TS engine does not narrow, and cross-engine byte-identity is a stricter promise
+/// than conformance". That premise is what changed; the transparency gate survives verbatim on
+/// the speed path, which is the only one `OR` can take.
 fn fold_operand(
     a: &mut [Option<bool>],
     r: &Expr,
@@ -6440,7 +6460,38 @@ fn fold_operand(
 ) -> Result<(), String> {
     let n = a.len();
     let mut read = Vec::new();
-    let narrowable = n > 0 && narrowing_is_transparent(r) && slots_read(r, &mut read);
+    // THE SHORT-CIRCUIT, and it leaves by its own door. If the operand can raise, the rows the
+    // first operand already SETTLED must not be evaluated at all — that is the decided
+    // semantics, not an optimization, so it does not get the sample's vote and it does not
+    // belong in the gate below.
+    //
+    // `AND` ONLY, which `!settled` selects. The decision was taken for `AND`; the symmetric
+    // `TRUE OR <data exception>` was not, so `OR` keeps evaluating both operands, which is what
+    // the TS engine does and agreeing with it is the constraint. Lifting it to `OR` is a
+    // one-word change here plus the matching short-circuit in `compileExpr`'s `or` arm; doing
+    // it here alone diverges (measured: `RETURN true OR (1.0 / 0.0)` answers `true` in native
+    // and raises in TS).
+    //
+    // SEPARATE FUNCTION, and that is load-bearing for SPEED rather than for clarity. Folding
+    // this into the gate and the branches below — two extra conditions on the gate, two extra
+    // branches and a `Vec` before the gather — cost a measured **1.17x** on BOTH of
+    // `query_bench`'s `AND` rows, including `project bool AND`, whose operands are transparent
+    // compares and which the new path therefore never touches. A null control (the same HEAD
+    // with one error string lengthened, md5-distinct binary) moved those rows 1.003x and
+    // 1.007x, so it was not the layout toll items 90 and 250 describe — it was this function
+    // getting bigger. Keeping the transparent path's body exactly as it was is what gives it
+    // back.
+    let transparent = narrowing_is_transparent(r);
+
+    if n > 0 && !settled && !transparent {
+        return fold_raising_conjunct(a, r, store, batch, combine);
+    }
+
+    // Unchanged, and the `transparent` term still has to be here: what reaches this line is
+    // either an `AND` with a transparent operand or an `OR` with any operand, and an `OR` whose
+    // operand can raise must NOT narrow. Dropping this term is mutant N4, which
+    // `a_non_boolean_or_operand_still_faults_when_the_other_decides_every_row` catches.
+    let narrowable = n > 0 && transparent && slots_read(r, &mut read);
 
     // DECIDE FROM A SAMPLE, so the decision costs the same whichever way it goes. Counting the
     // whole mask first cost a 10% regression on the DECLINED case (a cheap operand at 53%
@@ -6480,6 +6531,65 @@ fn fold_operand(
     // Only the undecided rows are written: a settled row already holds `Some(settled)`, which is
     // the combination's answer whatever the second operand would have said. That is what lets this
     // run with no second full-length allocation and no scatter.
+    for (j, &i) in keep.iter().enumerate() {
+        a[i] = combine(a[i], m[j]);
+    }
+    Ok(())
+}
+
+/// Fold a RAISING conjunct of an `AND` into `a`, evaluating it over only the rows the first
+/// conjunct left undecided — because a conjunct a `FALSE` sibling has already settled is an
+/// INESSENTIAL part of the search condition and is not evaluated at all.
+///
+/// This is the decided semantics (`UA004`; see `fold_operand`, and the TS engine's `and` arm
+/// which short-circuits to match), so unlike `fold_operand`'s narrowing it is unconditional —
+/// no sample, and no transparency gate, since a raising operand is the whole reason to be here.
+/// It lives in its own function to keep `fold_operand`'s hot path the size it was; inlining it
+/// there cost 1.17x on both of `query_bench`'s `AND` rows.
+fn fold_raising_conjunct(
+    a: &mut [Option<bool>],
+    r: &Expr,
+    store: &Store,
+    batch: &Batch,
+    combine: impl Fn(Option<bool>, Option<bool>) -> Option<bool>,
+) -> Result<(), String> {
+    let n = a.len();
+    // `settled` is `false` here by construction — only an `AND` reaches this.
+    let keep: Vec<usize> = (0..n).filter(|&i| a[i] != Some(false)).collect();
+
+    // Every row settled, which is the `FALSE AND <data exception>` case itself. The early
+    // return is PURELY an optimization — it skips a gather that would produce a zero-row batch
+    // — and NOT what stops the raise; the narrowing does that, because `eval_mask` over an
+    // empty batch faults on nothing. Mutating this branch out leaves the whole suite green,
+    // which is how that was established rather than assumed.
+    if keep.is_empty() {
+        return Ok(());
+    }
+
+    // NOTHING settled, so narrowing would gather every row to save no evaluation at all, and an
+    // `AND` whose first conjunct is true throughout is the ordinary shape. Evaluating over the
+    // whole batch is cheaper and, with nothing to skip, identical.
+    if keep.len() == n {
+        let b = eval_mask(r, store, batch)?;
+        let n = n.min(b.len());
+        for i in 0..n {
+            a[i] = combine(a[i], b[i]);
+        }
+        return Ok(());
+    }
+
+    // A raising operand whose slot set is UNKNOWN still must not see the settled rows, and
+    // `narrow_to_slots` substitutes placeholders only for the slots it is NOT told to gather —
+    // so naming every slot turns it into a plain full gather. Slower than the targeted one and
+    // correct, which is the right way round for a path the answer depends on.
+    let mut read = Vec::new();
+    if !slots_read(r, &mut read) {
+        read = (0..batch.slots.len()).collect();
+    }
+    read.sort_unstable();
+    read.dedup();
+    let sub = narrow_to_slots(batch, &keep, &read);
+    let m = eval_mask(r, store, &sub)?;
     for (j, &i) in keep.iter().enumerate() {
         a[i] = combine(a[i], m[j]);
     }

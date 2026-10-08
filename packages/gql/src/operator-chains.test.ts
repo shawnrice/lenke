@@ -85,12 +85,24 @@ describe('operator-chain semantics (n-ary refactor regression guard)', () => {
     expect(val("null || 'y'")).toBe(null);
   });
 
-  test('the evaluator does NOT short-circuit: a fault in any operand propagates', () => {
-    // `false AND …` / `true OR …` still evaluate the other operand, so a
-    // division-by-zero in it raises rather than being skipped. The n-ary fold
-    // must preserve this (evaluate every element).
-    expect(errs('false AND (1.0 / 0.0)')).toBe(true);
+  test('AND short-circuits on FALSE; OR and XOR evaluate every operand', () => {
+    // `AND` resolves by the cheapest path and a FALSE settles it, so the other operand is an
+    // INESSENTIAL part of the expression and its division-by-zero is never reached. ISO
+    // leaves this open (`US008` order of evaluation, `UA004` exceptions from inessential
+    // parts), so the choice is on cost: a FALSE is cheaper than an exception (user,
+    // 2026-10-08). Mirrored in the Rust engine by `fold_operand`'s `must_narrow`.
+    expect(val('false AND (1.0 / 0.0)')).toBe(false);
+    // `OR` is NOT symmetric: the decision was taken for `AND` only, and the Rust engine has
+    // nothing on the OR side to settle a row out of the chain, so both engines evaluate both
+    // operands here. `XOR` can never short-circuit — neither operand is ever inessential.
     expect(errs('true OR (1.0 / 0.0)')).toBe(true);
+    expect(errs('false XOR (1.0 / 0.0)')).toBe(true);
+    // The order a short-circuit does NOT rescue: with no operand safe to hoist, the written
+    // order stands and the throwing one comes first.
+    expect(errs('(1.0 / 0.0) AND false')).toBe(true);
+    // UNKNOWN settles nothing — a later FALSE still decides the chain, so the fault is
+    // reachable through a null operand.
+    expect(errs('null AND (1.0 / 0.0)')).toBe(true);
   });
 
   test('long chains evaluate to the right value (not just "not a crash")', () => {

@@ -70,6 +70,7 @@ _decides_ something independently, not another unspelled form.
 | `null`                                                                      | A **stored, present value**, distinct from absence. Delete via `.properties(k).drop()` / `REMOVE`, never `SET null`                                                                 | settled                                   |
 | Parallel names across GQL and Gremlin                                       | **Intentional** — users pick one surface. Not a collision                                                                                                                           | settled; do not relitigate                |
 | A label / property / `WHERE` on a subpath-group **inner node**              | **Both engines refuse, consistently**, and the per-rep `WHERE` spelling expresses the same constraint (verified equal). A shared deliberate limitation with a workaround, not a gap | probed 2026-10-08                         |
+| `FALSE AND <data exception>`                                                | **`AND` short-circuits on FALSE, in WRITTEN ORDER, in both engines.** `OR`/`XOR` stay eager. ISO leaves it open (`US008`, `UA004`), so the choice was made on cost                  | **user**, 2026-10-08; **item 258**        |
 
 ---
 
@@ -89,16 +90,62 @@ _decides_ something independently, not another unspelled form.
 
 ## 4. Open — needs a decision, not a measurement
 
-| question                                | state                                                                                                                                                                                                                                                                                                                                                                                              |
-| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **The var-length trail budget's shape** | `limits.trail` drives **two** quantities (a per-source hop budget and a global emitted-row cap) and the lean count walker enforces **neither**. Budget EXISTS and stays (user, 2026-10-08); its SHAPE is what is open — context written up in [`../design/trail-budget.md`](../design/trail-budget.md).                                                                                            |
-| **`{k: null}`**                         | **BOTH engines, verified 2026-10-08 — not native-only.** Each returns 2 rows (stored-null **and** absent-key) where `WHERE n.k = null` returns 0 in each. The free ISO artifacts prove it is **not** implementation-defined or -dependent, so one of the two behaviours is wrong; the reduction rule is paywalled prose. Blocks a measured **1.16x** on every filtered write. Items 180, 210, 257. |
-| **`FALSE AND <data exception>`**        | **DECIDED 2026-10-08 (user): take the fastest path — evaluate the `FALSE` and do not evaluate the throwing arm.** Native already does this; TS raises and must change. See §6 for the consequence.                                                                                                                                                                                                 |
+| question                                | state                                                                                                                                                                                                                                                                                                                                                               |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **The var-length trail budget's shape** | `limits.trail` drives **two** quantities (a per-source hop budget and a global emitted-row cap) and the lean count walker enforces **neither**. Budget EXISTS and stays (user, 2026-10-08); its SHAPE is what is open — context written up in [`../design/trail-budget.md`](../design/trail-budget.md).                                                             |
+| **`{k: null}`**                         | **BOTH engines, verified 2026-10-08 — not native-only.** Each returns 2 rows (stored-null **and** absent-key) where `WHERE n.k = null` returns 0 in each. The free ISO artifacts prove it is **not** implementation-defined or -dependent, so one of the two behaviours is wrong; the reduction rule is paywalled prose. Items 180, 210, 257, and the matrix below. |
+| **`FALSE AND <data exception>`**        | **SETTLED AND SHIPPED 2026-10-08 — item 258.** See §2.                                                                                                                                                                                                                                                                                                              |
 
 ---
 
+### The `{k: null}` matrix, and the thing it corrects
+
+Measured 2026-10-08 on a three-state fixture — a value, a stored **present** null, and an
+**absent** key — in both engines. All ten spellings agree between the engines, so nothing here is
+a divergence; it is one shared conformance question.
+
+| spelling                                      | matches                    |
+| --------------------------------------------- | -------------------------- |
+| `MATCH (n:P {k: null})`                       | stored-null **and** absent |
+| `WHERE n.k IS NULL`                           | stored-null **and** absent |
+| `WHERE n.k = null`                            | nothing                    |
+| `WHERE n.k IS NOT NULL`                       | value                      |
+| `WHERE property_exists(n, k)`                 | value **and** stored-null  |
+| `WHERE NOT property_exists(n, k)`             | absent                     |
+| `WHERE property_exists(n, k) AND n.k IS NULL` | **stored-null alone**      |
+| `MATCH (n:P {k: 1})` / `WHERE n.k = 1`        | value (the two agree)      |
+
+Two things follow, and the second corrects how this question has been framed since item 180.
+
+1. **Nothing is inexpressible.** `property_exists(n, k) AND n.k IS NULL` isolates the stored null
+   on its own, and `NOT property_exists` isolates the absent key. So whichever way `{k: null}`
+   goes, a user who needs the distinction has an exact spelling for it — the inline form is
+   convenience, not the only access to the three states.
+2. **The 1.16x is NOT blocked by the nullish reading. It is blocked by the MISMATCH.** The lever
+   is lifting an equality conjunct into `props`, and it needs `{k: v}` and `n.k = v` to agree for
+   **every** `v`, which a `$param` makes undecidable at compile time. A nullish `{k: null}` keeps
+   them disagreeing; only "matches nothing" makes them agree. **But item 210's second route —
+   giving `props` an entry kind that carries expression-equality semantics — unblocks the 1.16x
+   under either semantics.** So the perf argument should not drive this decision at all, and
+   recording it as "blocks a measured 1.16x" (items 180, 210, 257, and this file until now) was
+   overstating the coupling. The two questions are separable and the perf one has a route that
+   does not wait on the semantics one.
+
+What is genuinely at stake, then, is only: conformance (ISO specifies this and we cannot choose;
+the prose direction points at "matches nothing", so the current behaviour is a bet), and the
+collision with the project's own rule that **a null is a stored, present value distinct from
+absence** — `{k: null}` is the one place in a pattern where that distinction is erased.
+
 ## 5. Open — unblocked and priced
 
+- **The REVERSED AND spelling** — `WHERE <raising> AND <seekable>`, where native's seek hoists the
+  seekable conjunct out of the chain and never visits the faulting row, while TS evaluates in
+  written order and raises. The written-order spelling of the same query now agrees (item 258), so
+  this is half of what it was. **Nothing guards it:** it is an error against a NON-EMPTY result, so
+  `divergence-registry.ts` may not declare it (that refusal is how it detects the `CALL`-body
+  laziness bug), and the differential fuzzer does not generate the shape. Fixing it means TS
+  replicating the seeding or native dropping the seed, which is not perf-neutral. Repro in
+  [[and-chain-seeding-divergence]]; items 115, 174, 258.
 - **`addVertex`** — the single target behind the three `bench:usage` rows TS loses, all a 3.7x
   constant factor (§1). Reopening means arguing with item 203's conclusion, with numbers.
 - Nothing else in the TS **query** surface is above 5x once the adjacency floor is accounted for
@@ -106,17 +153,26 @@ _decides_ something independently, not another unspelled form.
 
 ---
 
-## 6. Consequence of the AND decision that must not be missed
+## 6. Consequences of the AND decision — RESOLVED by item 258, and not as predicted
 
-Item **190** (`subquery-conjunct-placement`) rests on _"`AND` never short-circuits"_: an
-`EXISTS`/`COUNT{}` conjunct must not fold into a node predicate **nor ride a hop seed gate
-unordered**, because byte-identity required both sides to be evaluated. Item **175** then made the
-hop seed gate _"evaluate cheap conjuncts first"_, and recorded an error-vs-non-empty divergence as
-the price.
+This section was written before the change and asked three questions. All three are now answered by
+measurement, and **two of its three guesses were wrong.** Kept rather than rewritten, because the
+wrong guesses are the useful part: each was a plausible inference from "`AND` now short-circuits"
+that the engine did not bear out.
 
-Short-circuiting `AND` changes the premise both items reasoned from. Whatever lands for the decision
-above has to say explicitly what happens to:
+| the question §6 asked                                                  | the answer                                                                                                                                                                                                                                                                                                                |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1. Item 190's placement rule — is a subquery conjunct free to reorder? | **No, and the guard is now MORE load-bearing.** `opt.rs`'s `can_raise` declines the US008/UA004 latitude for relocation; short-circuiting makes that a correctness condition rather than a courtesy, because relocating a raising conjunct EARLIER would make it raise where the written order skips it.                  |
+| 2. Item 175's divergence — does it become the intended behaviour?      | **No — it is what is LEFT.** The hop seed gate's cheap-conjunct-first ordering is a reordering the TS engine has no seek to match, so it is now one of the two surviving routes in the registry entry.                                                                                                                    |
+| 3. The registry entry — delete it?                                     | **NARROWED, not deleted.** _§6 said "it should be **deleted**, not widened"; that was written before measuring and it was wrong._ Traffic on the differential fuzzer at 20,000 queries a run went from **~4 uses to ~1**. Two routes survive, both about ORDER rather than the connective — see the entry's own `reason`. |
 
-1. the item-190 placement rule — is a subquery conjunct now free to be reordered?
-2. item 175's recorded divergence — does it become the _intended_ behaviour rather than a price?
-3. the divergence-registry entry for the AND chain — it should be **deleted**, not widened.
+**What the change also exposed**, which §6 did not anticipate at all: the two engines had been
+agreeing on `WHERE … AND VALUE { … RETURN count(*) }` **by two different routes** — native rejecting
+it statically at plan time, TS catching it per row — both as `E_INVALID_VALUE`, so nothing noticed.
+Short-circuiting removed TS's route and the agreement with it. Fixed by giving TS's
+`definitelyNonBool` the `valueSubquery` arm it never had: **a static reject is order-independent, so
+it is the route that survives short-circuiting.**
+
+The generalisable lesson, which is why this stays in `CLOSED.md` rather than only in the audit:
+**two engines returning the same error code are not necessarily implementing the same rule.** Any
+change that removes one engine's path to an error can reveal that the other's was the only real one.

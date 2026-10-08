@@ -42,6 +42,35 @@ export type Statement = Query | TxControl;
 /** Narrow a parsed statement to a {@link TxControl} (vs a {@link Query}). */
 export const isTxControl = (stmt: Statement): stmt is TxControl => 'kind' in stmt;
 
+/**
+ * The aggregate function names — the set that makes a `func` node a group fold rather than a
+ * scalar call.
+ *
+ * It lives HERE, in the shared AST layer, because both the parser and the executor need it and
+ * the parser must not import executor code: the static boolean-context check reads it to decide
+ * whether a `VALUE { … RETURN <agg> }` subquery is statically non-boolean, and the executor
+ * reads it to decide implicit grouping. It was duplicated for exactly one commit before this
+ * note existed; one copy is the point.
+ *
+ * Mirrors the native engine's aggregate table (`crates/lenke-engine/src/gql.rs`).
+ */
+export const AGGREGATES: ReadonlySet<string> = new Set([
+  'count',
+  'sum',
+  'avg',
+  'min',
+  'max',
+  'collect_list',
+  // `collect` is the ISO/Cypher-familiar alias of `collect_list` — the native engine
+  // registers it as a superset alias, so accept it here too (both reduce to the group's
+  // value list).
+  'collect',
+  'percentile_cont',
+  'percentile_disc',
+  'stddev_pop',
+  'stddev_samp',
+]);
+
 /** `UNION` / `EXCEPT` / `INTERSECT`, optionally `ALL` (keep duplicates). */
 export type SetOp = {
   op: 'union' | 'except' | 'intersect';

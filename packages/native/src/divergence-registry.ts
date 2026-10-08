@@ -335,12 +335,20 @@ export const REGISTRY: readonly Entry[] = [
     reason:
       'Both engines run the same STATIC (plan-time) boolean-context type check, so a ' +
       'statically non-boolean value in a truth position is rejected before execution by ' +
-      'both. One case is irreducible in a schemaless engine: a DYNAMICALLY typed operand ' +
-      '(a bare property, `NOT n.s`, an unclassified function result) AND-ed with a ' +
-      'comparison that a selective seek narrows to zero rows. The row-dependent `as_truth` ' +
-      'reject then fires on the engine that evaluates the operand and not on the one whose ' +
-      'seek eliminated every row first. ISO US008/UA004 make both outcomes conformant. ' +
-      'Fixing it means abandoning the seek, which is not perf-neutral.',
+      'both. What is left is a DYNAMICALLY typed operand (a bare property, `NOT n.s`, an ' +
+      'unclassified function result) AND-ed with a comparison, where the comparison ' +
+      'eliminates every row BY A ROUTE THE OTHER ENGINE DOES NOT HAVE. Two such routes ' +
+      'survive, and both are about ORDER rather than about the connective: (1) the ' +
+      'comparison is UNKNOWN on every row — a filter keeps only TRUE, so native drops the ' +
+      'row, while Kleene `AND` does not settle on UNKNOWN and reaches the operand; (2) the ' +
+      'comparison is written AFTER the raising operand and native’s seek hoists it out of ' +
+      'the chain, which the TS engine has no seek to match. ISO US008/UA004 make both ' +
+      'outcomes conformant. Fixing either means abandoning the seek, which is not ' +
+      'perf-neutral. ' +
+      'NARROWED on 2026-10-08: `AND` now short-circuits on FALSE in both engines, so the ' +
+      'whole class where the comparison is simply FALSE on every row — which was most of ' +
+      'this entry’s traffic — is FIXED and no longer declared. Measured on the differential ' +
+      'fuzzer at 20,000 queries a run: ~4 uses a run before, ~1 after.',
     // NARROW: always `E_INVALID_VALUE` on one side against an EMPTY result on the other.
     // "Malformed predicate" against "no rows" — never wrong data, and never rows. An error
     // against a NON-EMPTY result is a different thing entirely (that is the `CALL`-body

@@ -74,7 +74,7 @@ import type {
   LetClause,
   ForClause,
 } from './ast.js';
-import { isTxControl } from './ast.js';
+import { AGGREGATES, isTxControl } from './ast.js';
 import { GqlSyntaxError, isReserved, type Token, type TokenType, tokenize } from './lexer.js';
 
 /**
@@ -116,6 +116,19 @@ const definitelyNonBool = (e: Expr): boolean => {
     case 'record':
     case 'countSubquery':
       return true;
+    case 'valueSubquery':
+      // A `VALUE { … RETURN <aggregate> }` lowers to the engine's `AggSubquery` /
+      // `CollectSubquery` / count subquery, all of which its `definitely_non_bool` flags; a
+      // non-aggregate `RETURN` lowers to `ScalarSubquery`, which it does not, because the
+      // body's type is as unknowable as a bare property's.
+      //
+      // This arm was missing, and until `AND` short-circuited nothing noticed: the engine
+      // rejected `WHERE n.n = 4 AND VALUE { … RETURN count(*) }` at PLAN time while this
+      // engine reached the operand per row and rejected it there — the same `E_INVALID_VALUE`
+      // by two different routes, which looked like agreement. Once a FALSE conjunct stopped
+      // the operand being evaluated, the runtime route was gone and the agreement with it.
+      // A static reject is order-independent, so it is the route that survives short-circuiting.
+      return e.ret.kind === 'func' && AGGREGATES.has(e.ret.name);
     case 'func': {
       if (e.name !== 'cast') {
         return false;

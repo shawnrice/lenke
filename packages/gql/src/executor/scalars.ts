@@ -23,6 +23,7 @@ import { mathSign } from '@lenke/core';
 import type { GraphLimits, Temporal } from '@lenke/core';
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
+import { AGGREGATES } from '../ast.js';
 import type { ArithOp, CompareOp, Expr } from '../ast.js';
 // Shared element guards + ordering comparator live in the executor trunk; used
 // lazily inside scalar fns, so this back-edge is a safe function-level cycle.
@@ -334,22 +335,9 @@ export const COMPARE: Record<CompareOp, (a: number | string, b: number | string)
 
 export type FuncExpr = Extract<Expr, { kind: 'func' }>;
 
-export const AGGREGATES = new Set([
-  'count',
-  'sum',
-  'avg',
-  'min',
-  'max',
-  'collect_list',
-  // `collect` is the ISO/Cypher-familiar alias of `collect_list` — the native engine
-  // registers it as a superset alias, so accept it here too (both reduce to the group's
-  // value list).
-  'collect',
-  'percentile_cont',
-  'percentile_disc',
-  'stddev_pop',
-  'stddev_samp',
-]);
+// Re-exported from the shared AST layer, which is where it has to live: the parser's static
+// boolean-context check needs it too and must not import executor code. See `AGGREGATES` there.
+export { AGGREGATES } from '../ast.js';
 
 // Scalar-function arities, mirroring the native engine's parse-time arity table
 // (`crates/lenke-engine/src/gql.rs`). Kept byte-exact so the two engines accept and

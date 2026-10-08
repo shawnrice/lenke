@@ -315,7 +315,7 @@ import {
   temporalSum,
   unsupportedTemporalAgg,
 } from './executor/scalars.js';
-import type { FuncExpr } from './executor/scalars.js';
+import type { FuncExpr, Truth } from './executor/scalars.js';
 
 // --- expression compilation --------------------------------------------------
 
@@ -522,9 +522,57 @@ export const compileExpr = (expr: Expr): CompiledExpr => {
 
       return (env) => not3(asTruth(fn(env)));
     }
-    case 'and':
+    case 'and': {
+      // `AND` SHORT-CIRCUITS ON FALSE: a conjunct that settles the chain false makes every
+      // later conjunct an INESSENTIAL part of the expression, and an inessential part is not
+      // evaluated — so a throwing one does not throw. ISO/IEC 39075 leaves both halves of
+      // this to the implementation, in its free `-implementation-dependent.xml`: `US008`
+      // (the actual order of expression evaluation) and `UA004` (whether an exception from
+      // the evaluation of an inessential part is actually raised). Both outcomes conform, so
+      // the choice is ours to make on cost, and a FALSE is cheaper than an exception (user,
+      // 2026-10-08).
+      //
+      // The matching side in Rust is `fold_operand`'s `must_narrow`, which evaluates the
+      // second operand only over the rows the first left undecided and, when that operand can
+      // raise, does so unconditionally rather than as a sampled perf choice.
+      //
+      // WRITTEN ORDER, deliberately — no cost-based reordering. A version of this partitioned
+      // the conjuncts so the ones that cannot fault ran first, which agreed with Rust on more
+      // WHERE shapes and disagreed on others it had no business touching: Rust reorders only
+      // where its optimizer can seed a conjunct out of the chain, and in a projection it does
+      // not reorder at all, so `RETURN (0 AND (1 IS NULL))` raised there and answered here.
+      // Written order is the one rule both engines can hold everywhere. What that leaves is
+      // the residual the divergence registry still declares: a filter whose settling conjunct
+      // is UNKNOWN (Rust's filter drops the row, Kleene `AND` does not settle on it) or whose
+      // cheap conjunct Rust's seek hoisted past a raising sibling.
+      const fn = BOOL3.and;
+      const parts = expr.items.map(compileExpr);
+
+      return (env) => {
+        let acc: Truth = true;
+
+        for (const part of parts) {
+          acc = fn(acc, asTruth(part(env)));
+
+          // FALSE settles `AND` whatever the rest would say; UNKNOWN settles nothing (a
+          // later FALSE still makes it false), which is why the test is `=== false` and not
+          // `!== true`.
+          if (acc === false) {
+            return false;
+          }
+        }
+
+        return acc;
+      };
+    }
     case 'or':
     case 'xor': {
+      // NOT short-circuited, and deliberately. `OR` has no counterpart to the conjunct
+      // split in the Rust optimizer — there is nothing to seed an OR from — so both engines
+      // evaluate every operand and both raise on `n.n > 0 OR n.s`. Skipping the second
+      // operand here would AGREE with no one and would need the Rust `fold_operand`
+      // transparency gate lifted to match. `XOR` cannot short-circuit at all: neither
+      // operand is ever inessential.
       const fn = BOOL3[expr.kind];
       const parts = expr.items.map(compileExpr);
 
