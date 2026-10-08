@@ -296,7 +296,10 @@ const inlineOf = (n: NodePattern): InlinePred | null | undefined => {
   }
 
   return {
-    pred: compilePredicate(n.properties, n.where),
+    // The node's OWN variable is passed, which is sound exactly here: the loop above has just
+    // proved the inline `WHERE` reads nothing but it. A clause `WHERE` cannot make that claim and
+    // so never takes this route.
+    pred: compilePredicate(n.properties, n.where, n.variable),
     ...(n.variable !== undefined ? { bindVar: n.variable } : {}),
   };
 };

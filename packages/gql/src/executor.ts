@@ -2628,7 +2628,20 @@ export const applyProjection = (
 
 /** A compiled property map + inline WHERE (the ISO element-pattern predicate). */
 export type CProp = { key: string; value: CompiledExpr };
-export type CPredicate = { props: readonly CProp[]; where?: CompiledExpr };
+export type CPredicate = {
+  props: readonly CProp[];
+  where?: CompiledExpr;
+  /**
+   * An inline `WHERE` that is exactly one `<ownVar>.<key> = <non-null literal>`, compiled to read
+   * the ELEMENT directly instead of looking it up in the binding. See {@link directEqProps}.
+   *
+   * Deliberately NOT merged into `props`: `indexCandidates` reads `props` to decide seeding, so
+   * moving a predicate there would change which vertices seed FIRST. That is an observable
+   * row-order change, and the fuzzers canonicalise unordered row order, so its byte-identity
+   * against native cannot be verified here (audit item 224).
+   */
+  eqProps?: readonly CProp[];
+};
 
 /** Range bounds whose endpoints are compiled value closures (resolved per seed). */
 export type CRangeBound = {
@@ -2730,13 +2743,92 @@ export type CPath = {
 const compileProps = (props: readonly PropertyConstraint[] | undefined): CProp[] =>
   (props ?? []).map(({ key, value }) => ({ key, value: compileExpr(value) }));
 
+/**
+ * An inline `WHERE` that is exactly one `<ownVar>.<key> = <non-null literal>`, as a property-style
+ * constraint — or `null` when it is anything else.
+ *
+ * ### Why
+ *
+ * An inline PROPERTY compiles to `structuralEq(propOf(element, key), …)`, a direct read. An inline
+ * `WHERE` compiles to the generic expression evaluator, which reads its element back out of the
+ * binding — so it pays a `Map.set` by the caller plus a `Map.get` per property read to hand over an
+ * element `satisfies` already holds. That is item 216's finding in a second place, and the spelling
+ * probe had been flagging it for three shapes at once (audit item 224):
+ *
+ *     MATCH (n:P {k: 2}) RETURN count(*)              3.82ms
+ *     MATCH (n:P) WHERE n.k = 2 RETURN count(*)       5.80
+ *     MATCH (n:P WHERE n.k = 2) RETURN count(*)       8.51      ← 2.2x the first
+ *
+ * ### The three restrictions, each forced by semantics rather than caution
+ *
+ * **`=` only.** For `=`, a nullish property gives UNKNOWN through `compare` (and `asTruth(null)`
+ * is not `true`, so the row is rejected) and `structuralEq(null, 2)` is `false` — the same outcome.
+ * For `<>` they DIVERGE: `compare` still yields UNKNOWN, where a negated structural check would
+ * yield `true`.
+ *
+ * **A non-null LITERAL.** The null case is the load-bearing half: `{k: null}` matches a stored null
+ * AND an absent key, while `n.k = null` matches neither, so a null value makes the two forms
+ * different questions. A `null` literal is therefore genuinely excluded here.
+ *
+ * The `param` half of that test is DEFENSIVE and currently UNREACHABLE, which mutation established
+ * rather than my reading it off the code: accepting params survives the whole suite, because
+ * `inlineOf` refuses an inline `WHERE` containing `$p` before this is ever called —
+ * `freePredicateVars` reports the param as a free name that is not the node's variable. The clause
+ * stays, because that upstream refusal is not a property to lean on, but the reason params do not
+ * arrive is the refusal and not the semantics.
+ *
+ * **Exactly one comparison, never an AND-chain.** `AND` does not short-circuit here, by design and
+ * for byte-identity: `FALSE AND <data exception>` must still raise. Hoisting one conjunct into a
+ * property check would let `satisfies` reject the element before evaluating the other, swallowing a
+ * raise the general path produces.
+ */
+const directEqProps = (where: Expr, ownVar: string | undefined): CProp[] | null => {
+  if (ownVar === undefined || where.kind !== 'compare' || where.op !== '=') {
+    return null;
+  }
+
+  // Both operand orders, because `n.k = 2` and `2 = n.k` are one question and this engine's named
+  // bug class is the two costing differently.
+  const { left, right } = where;
+  let propSide: Extract<Expr, { kind: 'prop' }> | null = null;
+  let valueSide: Expr | null = null;
+
+  if (left.kind === 'prop') {
+    [propSide, valueSide] = [left, right];
+  } else if (right.kind === 'prop') {
+    [propSide, valueSide] = [right, left];
+  }
+
+  if (
+    propSide === null ||
+    valueSide === null ||
+    propSide.variable !== ownVar ||
+    valueSide.kind !== 'lit' ||
+    valueSide.value === null ||
+    valueSide.value === undefined
+  ) {
+    return null;
+  }
+
+  return [{ key: propSide.key, value: compileExpr(valueSide) }];
+};
+
 export const compilePredicate = (
   properties: readonly PropertyConstraint[] | undefined,
   where: Expr | undefined,
-): CPredicate => ({
-  props: compileProps(properties),
-  where: where ? compileExpr(where) : undefined,
-});
+  // The element's OWN variable, supplied only for an INLINE predicate — where `inlineOf` has
+  // already proved the `WHERE` reads nothing else. Omitted for a clause `WHERE`, which may read
+  // any variable and so cannot be element-local.
+  ownVar?: string,
+): CPredicate => {
+  const direct = where !== undefined ? directEqProps(where, ownVar) : null;
+
+  return {
+    props: compileProps(properties),
+    where: where !== undefined && direct === null ? compileExpr(where) : undefined,
+    ...(direct === null ? {} : { eqProps: direct }),
+  };
+};
 
 // --- seed-hint extraction ----------------------------------------------------
 
@@ -3143,6 +3235,16 @@ export const satisfies = (
     // inline constraint never match (a fresh array is never `===` the stored one).
     if (!structuralEq(propOf(element, key), value(env))) {
       return false;
+    }
+  }
+
+  // The same check for an inline `WHERE` that reduced to one equality (`directEqProps`). A separate
+  // list rather than extra `props` entries, because `props` is what `indexCandidates` seeds from.
+  if (pred.eqProps !== undefined) {
+    for (const { key, value } of pred.eqProps) {
+      if (!structuralEq(propOf(element, key), value(env))) {
+        return false;
+      }
     }
   }
 
