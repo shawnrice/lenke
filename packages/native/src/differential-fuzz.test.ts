@@ -1121,7 +1121,10 @@ const genAbbrevQuantified = (r: () => number): string => {
     '-[e:E WHERE e.w > 2]->',
     '<-[e:E WHERE e.w >= 0]-',
   ]);
-  const bounded = pick(r, ['{1,1}', '{1,2}', '{1,3}', '{2,2}', '{0,2}']);
+  // `{2}` is the SINGLE-NUMBER spelling of `{2,2}` — the same question, two parses, which is
+  // the bug class this repo is named after. Added to the existing pick rather than given a band
+  // of its own, so no boundary moves and the arm's counters keep their meaning (item 256).
+  const bounded = pick(r, ['{1,1}', '{1,2}', '{1,3}', '{2,2}', '{0,2}', '{2}', '{1}']);
   const mode = pick(r, ['', '', 'TRAIL ', 'WALK ', 'SIMPLE ', 'ACYCLIC ']);
   // `(b:U)` is the load-bearing endpoint for the same reason the group arm records: every
   // vertex carries `T`, so `(b:T)` excludes nothing and a dropped endpoint predicate would be
@@ -1130,8 +1133,11 @@ const genAbbrevQuantified = (r: () => number): string => {
 
   return pick(r, [
     `MATCH ${mode}(a:T)${hop}${bounded}${end} RETURN count(*) AS x`,
-    // UNBOUNDED, under the default (trail) mode only — see above.
-    `MATCH (a:T)${hop}+${end} RETURN count(*) AS x`,
+    // UNBOUNDED, under the default (trail) mode only — see above. `{1,}` and `{2,}` are the
+    // explicit spellings of an open upper bound; `+` is `{1,}` and was the only one generated,
+    // so a `min > 1` with `max = null` had no coverage at all. WALK is excluded for these by
+    // construction: this line carries no mode.
+    `MATCH (a:T)${hop}${pick(r, ['+', '{1,}', '{2,}'])}${end} RETURN count(*) AS x`,
     // A PATH VARIABLE over the abbreviated form, which is the only thing that makes
     // `trailEnds` reconstruct the walk (`wantPath`) rather than yield bare ends. Totalised by
     // the ORDER BY, since several paths share a length.
@@ -1140,6 +1146,12 @@ const genAbbrevQuantified = (r: () => number): string => {
     // The ENDPOINT projected rather than counted, so a wrong end is visible where a count
     // would agree.
     `MATCH ${mode}(a:T)${hop}${bounded}${end} RETURN b.n AS x ORDER BY x`,
+    // COMPOSITION: a quantified hop FOLLOWED BY another segment, which this arm emitted zero
+    // times. The quantified segment's endpoint feeds the next hop, a different planner path
+    // from a quantified segment that ends the pattern. A second edge TYPE for the tail, so the
+    // two segments cannot be confused with one longer walk.
+    `MATCH ${mode}(a:T)${hop}${bounded}(b)-[:F]->(c) RETURN count(*) AS x`,
+    `MATCH ${mode}(a:T)${hop}${bounded}(b)-[:F]->(c) RETURN c.n AS x, a.n AS t ORDER BY t, x`,
   ]);
 };
 
@@ -1904,6 +1916,12 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       // `peelNonZero` 34-51 to 25-42 (15). All still clear, none lowered.
       abbrevGenerated: cov.abbrevGenerated > 100,
       abbrevNonEmpty: cov.abbrevNonEmpty > 80,
+      // RE-MEASURED at item 256, not lowered: the two COMPOSITION shapes added to this arm
+      // dilute the `MATCH p = ` share, so `abbrevPath` reads 48-55 over five seeds where it
+      // read 68-88 before. The floor stays at 35 — that is 27% under the new minimum, the same
+      // margin this block uses throughout — and `abbrevGenerated`/`abbrevNonEmpty` did not move
+      // (185-209 / 144-172). Recorded because item 244's rule is to re-measure and SAY SO
+      // rather than let a margin narrow in silence.
       abbrevPath: cov.abbrevPath > 35,
       // A GROUP pattern under an explicit SIMPLE (audit item 244) — the shape that hid a wrong
       // answer in BOTH engines. MEASURED over nine seeds of 20,000: 75-126 generated, 57-103 of
