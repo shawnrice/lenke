@@ -602,6 +602,123 @@ const anyFarMatches = (
   return false;
 };
 
+/**
+ * Which END of a one-hop pattern is cheaper to DRIVE — and why it is a provable win rather than an
+ * estimate.
+ *
+ * Both walks visit the same qualifying edges, so the EDGE term is the same; they differ only in how
+ * many vertices they enumerate to find them. So driving the side with the smaller candidate set is
+ * strictly cheaper by the difference, with no selectivity to guess at. (It is usually better than
+ * that: driving the LABELLED side walks only the edges incident to that label, where driving the
+ * unlabelled side walks every edge of the type and then tests the label per edge.)
+ *
+ * That is the bar item 223 set for firing at all — "fire only on a provable win; the speculative
+ * case needs a cardinality estimate" — and it is why this is not the reversal that item declined.
+ * That one trades a seed PRE-filter for a post-filter on the strength of an unindexed predicate's
+ * guessed selectivity. This reads two bucket sizes, both O(1), and no predicate enters into it.
+ *
+ * STRICTLY smaller, so a tie keeps the current side: the two walks meet rows in different orders,
+ * and reordering an un-ordered projection for no gain is churn. `candidateCount` already returns
+ * the whole graph for a label it cannot seed from, so the strict comparison ALSO establishes that
+ * the far label is seedable — a non-simple far label scores the whole graph, which can never be
+ * strictly less than the start's own count.
+ *
+ * What it fixed (200,000 vertices, one edge each, `:A` on a tenth of them, audit item 232):
+ *
+ *     MATCH (a:A)-[:E]->(f) RETURN f.t     7.5ms    drives the 20,000-vertex `:A` bucket
+ *     MATCH (f)<-[:E]-(a:A) RETURN f.t   130.2ms    drove all 200,000, same 20,000 rows
+ *
+ * 17.4x for one question written two ways, with no predicate anywhere in it. The second spelling
+ * reads the START, which routes it to `filteredHopWalk` (`needsStart`), and that walk had no
+ * far-driven option — where the first spelling reads the FAR end and takes the plain pair, whose
+ * own dispatch happens to drive the labelled side.
+ */
+export const hopDrivesFar = (
+  graph: Graph,
+  startLabel: LabelExpr | undefined,
+  farLabel: LabelExpr | undefined,
+): boolean => candidateCount(graph, farLabel) < candidateCount(graph, startLabel);
+
+/**
+ * The mirror of `filteredHopWalk`'s general closure: it enumerates the FAR candidates and resolves
+ * the START endpoint per edge, instead of the other way round.
+ *
+ * Its own closure, not a branch inside the other one, for the reason item 159 recorded about this
+ * very function: a branch added to a hot inner loop cost the unfiltered shape 1.6x, and a SHARED
+ * module-scope walk cost 1.29x because its call sites go polymorphic across compiles. This is
+ * built per compile and holds one loop, which is what both effects want.
+ *
+ * `farPred` is checked INSIDE the edge loop even though `far` is fixed for the whole loop and the
+ * predicate is element-local, so hoisting it would be free. It is not free in RAISES: a far vertex
+ * reachable only from vertices that fail the START label is never reached by the start-driven walk,
+ * so a `farPred` that faults on it must not fault here either. Checking it after the start-label
+ * test keeps the set of evaluated (start, far) pairs identical to the walk this replaces.
+ */
+const farDrivenFilteredHopWalk = (w: {
+  startLabel: LabelExpr | undefined;
+  typeName: string;
+  out: boolean;
+  farVar: string;
+  farLabel: LabelExpr | undefined;
+  proj: CProjection;
+  farPred: CPredicate | undefined;
+  gate: CompiledExpr | undefined;
+  startVar: string | undefined;
+}): ((graph: Graph, params: Params) => Row[]) => {
+  const { startLabel, typeName, out, farVar, farLabel, proj, farPred, gate, startVar } = w;
+
+  return (graph, params) => {
+    const rows: Row[] = [];
+    const binding = new Map<string, unknown>();
+    // The OPPOSITE index from the start-driven walk: for an `out` hop the far end is the edge's
+    // TARGET, so the far endpoints are the keys of the reverse index.
+    const index = out ? graph.edgesToByLabel : graph.edgesFromByLabel;
+
+    for (const far of candidateVertexSource(graph, farLabel)) {
+      const bucket = index.get(far.id)?.get(typeName);
+
+      if (bucket === undefined) {
+        continue;
+      }
+
+      // `hopDrivesFar` only fires when the far count is STRICTLY smaller, which already implies a
+      // seekable far label (`candidateCount` scores a non-simple one as the whole graph, and that
+      // cannot be strictly less than the start's own count) — so this test should never fail. It
+      // stays because the alternative is a silent wrong answer resting on that argument holding
+      // somewhere else, and it is one comparison per far VERTEX.
+      if (farLabel !== undefined && !matchesLabel(far, farLabel)) {
+        continue;
+      }
+
+      binding.set(farVar, far);
+
+      for (const edge of bucket) {
+        const v: Vertex = out ? edge.from : edge.to;
+
+        if (startLabel !== undefined && !matchesLabel(v, startLabel)) {
+          continue;
+        }
+
+        if (startVar !== undefined) {
+          binding.set(startVar, v);
+        }
+
+        if (farPred !== undefined && !satisfies(far, farPred, binding, params, graph)) {
+          continue;
+        }
+
+        if (gate !== undefined && asTruth(gate({ binding, params, graph })) !== true) {
+          continue;
+        }
+
+        rows.push(projectRow(proj, binding, params, graph));
+      }
+    }
+
+    return rows;
+  };
+};
+
 const filteredHopWalk = (w: {
   startLabel: LabelExpr | undefined;
   typeName: string;
@@ -618,6 +735,20 @@ const filteredHopWalk = (w: {
 }): RowsFn => {
   const { startLabel, typeName, out, farVar, farLabel, proj, farPred, gate, startVar, cfar } = w;
   const { startOnly, cstart } = w;
+  // Built per compile, like the two walks below it, and consulted only by the general closure —
+  // the START-ONLY walk already gates a vertex before reading its adjacency and seeds the start
+  // through `hopSeek`, which is the good case this is for.
+  const farDriven = farDrivenFilteredHopWalk({
+    startLabel,
+    typeName,
+    out,
+    farVar,
+    farLabel,
+    proj,
+    farPred,
+    gate,
+    startVar,
+  });
 
   // A START-ONLY predicate gets its own walk, which gates a vertex BEFORE reading its adjacency.
   // Its own closure rather than a branch in the loop below, for the reason item 159 recorded
@@ -752,6 +883,14 @@ const filteredHopWalk = (w: {
       if (narrowest * SEEK_MARGIN < candidateCount(graph, startLabel)) {
         return null;
       }
+    }
+
+    // Drive whichever end enumerates fewer vertices — a PER-CALL decision, since bucket sizes are
+    // a runtime property of the graph, so the inner loop below pays nothing for the choice. One
+    // early return rather than a restructuring, which keeps that loop byte-for-byte: item 159
+    // measured 1.6x on the hot shape from adding even a branch inside it. See `hopDrivesFar`.
+    if (hopDrivesFar(graph, startLabel, farLabel)) {
+      return farDriven(graph, params);
     }
 
     const rows: Row[] = [];
