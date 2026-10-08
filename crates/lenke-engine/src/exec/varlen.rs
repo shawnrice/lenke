@@ -1066,7 +1066,18 @@ pub(super) fn varlen_walk<S: VarlenEmit>(
                     if len + 1 >= min && (len + 1).is_multiple_of(k) {
                         node_stack.push(a.nbr);
                         edge_stack.push(a.eid);
-                        sink.emit(row, node_stack, edge_stack);
+                        // A closing hop is still a HOP, so the per-repetition `WHERE` gates it
+                        // exactly as it gates an ordinary one. The `Go` path reaches that check
+                        // inside `varlen_enter`, which a close never calls — so without this the
+                        // close emitted a path across an edge its own predicate forbids (a
+                        // cross-engine wrong answer, item 242: `FUZZ_SEED=2419630540`).
+                        // `until_stop`/`body_filter` need no twin here: both are Gremlin-only and
+                        // `Close` is reachable only in Simple mode, which only GQL sets.
+                        if per_rep_pred.is_none_or(|p| {
+                            rep_pred_ok(p, store, node_stack, edge_stack, len + 1, k)
+                        }) {
+                            sink.emit(row, node_stack, edge_stack);
+                        }
                         node_stack.pop();
                         edge_stack.pop();
                     }
@@ -1249,10 +1260,15 @@ pub(super) fn varlen_dfs<S: VarlenEmit>(
                 // Emit the closing endpoint (the start) at this length, no descent —
                 // only at a rep boundary for a multi-hop unit. Push the closing node/edge
                 // so the path (and its `node_stack.last()` endpoint) is complete, then pop.
+                // The per-rep `WHERE` gates the closing hop too — see the iterative twin.
                 if len + 1 >= min && (len + 1).is_multiple_of(k) {
                     node_stack.push(a.nbr);
                     edge_stack.push(a.eid);
-                    sink.emit(row, node_stack, edge_stack);
+                    if per_rep_pred
+                        .is_none_or(|p| rep_pred_ok(p, store, node_stack, edge_stack, len + 1, k))
+                    {
+                        sink.emit(row, node_stack, edge_stack);
+                    }
                     node_stack.pop();
                     edge_stack.pop();
                 }

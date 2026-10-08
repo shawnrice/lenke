@@ -29,6 +29,7 @@ fn iterative_varlen_matches_recursive() {
         max: u32,
         k: u32,
         double_loops: bool,
+        per_rep: Option<&Expr>,
         iterative: bool,
     ) -> Vec<(Vec<u32>, Vec<u32>)> {
         let node_unique = matches!(mode, PathMode::Simple | PathMode::Acyclic);
@@ -54,7 +55,7 @@ fn iterative_varlen_matches_recursive() {
                     v as usize,
                     &mut ns,
                     &mut es,
-                    None,
+                    per_rep,
                     k,
                     None,
                     None,
@@ -76,7 +77,7 @@ fn iterative_varlen_matches_recursive() {
                     v as usize,
                     &mut ns,
                     &mut es,
-                    None,
+                    per_rep,
                     k,
                     None,
                     None,
@@ -131,10 +132,30 @@ fn iterative_varlen_matches_recursive() {
                     (0, 4, 1),
                 ] {
                     for double_loops in [false, true] {
-                        let rec =
-                            collect(&store, n_nodes, mode, dir, min, max, k, double_loops, false);
-                        let itr =
-                            collect(&store, n_nodes, mode, dir, min, max, k, double_loops, true);
+                        let rec = collect(
+                            &store,
+                            n_nodes,
+                            mode,
+                            dir,
+                            min,
+                            max,
+                            k,
+                            double_loops,
+                            None,
+                            false,
+                        );
+                        let itr = collect(
+                            &store,
+                            n_nodes,
+                            mode,
+                            dir,
+                            min,
+                            max,
+                            k,
+                            double_loops,
+                            None,
+                            true,
+                        );
                         assert_eq!(
                                 rec, itr,
                                 "mode={mode:?} dir={dir:?} {min}..={max} k={k} dl={double_loops} ecount={ecount}"
@@ -214,6 +235,115 @@ fn iterative_varlen_matches_recursive() {
             }
         }
     }
+
+    // --- The same A/B, but WITH a per-repetition predicate (item 243) ---
+    //
+    // The sweep above passes `None` for `per_rep_pred`, so it could not see either driver's
+    // handling of it. That blindness is what let item 242's bug live: the `Close` arm emitted
+    // without applying the predicate, and NO unit test reached the combination (a cycle, SIMPLE
+    // mode, a bound long enough to close, and a predicate the closing edge fails) — only the
+    // cross-engine differential fuzzer did, once item 238 gave its fixture a cycle. Proven by
+    // mutation: dropping the gate from the recursive twin SURVIVED the whole suite until this
+    // sweep existed, while inverting it was caught, because an inverted gate also fires when the
+    // predicate is `None`.
+    //
+    // Edges carry `w` in 0..4 and the predicate is `w > 1`, so it is selective rather than
+    // vacuous — an always-true predicate cannot distinguish applying it from dropping it.
+    let mut seed2: u64 = 0xD1B54A32D192ED03;
+    let mut rng2 = || {
+        seed2 ^= seed2 << 13;
+        seed2 ^= seed2 >> 7;
+        seed2 ^= seed2 << 17;
+        seed2
+    };
+    let mut saw_predicate_prune = false;
+    for _trial in 0..40 {
+        let n_nodes = 3 + (rng2() % 5) as u32;
+        let mut nd = String::new();
+        for i in 0..n_nodes {
+            nd.push_str(&format!(
+                "{{\"id\":\"n{i}\",\"labels\":[\"P\"],\"props\":{{}}}}\n"
+            ));
+        }
+        // A dense-ish edge count, so cycles (and so closes) are common in the small graphs.
+        let ecount = (rng2() % (u64::from(n_nodes) * 3 + 1)) as u32;
+        for e in 0..ecount {
+            let f = (rng2() % u64::from(n_nodes)) as u32;
+            let t = (rng2() % u64::from(n_nodes)) as u32;
+            let w = rng2() % 4;
+            nd.push_str(&format!(
+                "{{\"id\":\"e{e}\",\"from\":\"n{f}\",\"to\":\"n{t}\",\"labels\":[\"R\"],\
+                 \"props\":{{\"w\":{w}}}}}\n"
+            ));
+        }
+        let store = crate::ndjson::from_ndjson(&nd).unwrap();
+        // `rep_pred_ok` binds node position `p` at mini-scope slot `2p` and edge position `p` at
+        // `2p + 1`, so slot 1 is the repetition's FIRST edge — valid for every `k`.
+        let pred = cmp(CompareOp::Gt, prop(1, "w"), lit(n(1.0)));
+        for mode in [
+            PathMode::Walk,
+            PathMode::Trail,
+            PathMode::Simple,
+            PathMode::Acyclic,
+        ] {
+            for dir in [Dir::Out, Dir::In, Dir::Both] {
+                for (min, max, k) in [(0u32, 3u32, 1u32), (1, 4, 1), (1, 6, 2), (2, 2, 1)] {
+                    for double_loops in [false, true] {
+                        let rec = collect(
+                            &store,
+                            n_nodes,
+                            mode,
+                            dir,
+                            min,
+                            max,
+                            k,
+                            double_loops,
+                            Some(&pred),
+                            false,
+                        );
+                        let itr = collect(
+                            &store,
+                            n_nodes,
+                            mode,
+                            dir,
+                            min,
+                            max,
+                            k,
+                            double_loops,
+                            Some(&pred),
+                            true,
+                        );
+                        assert_eq!(
+                            rec, itr,
+                            "per-rep: mode={mode:?} dir={dir:?} {min}..={max} k={k} \
+                             dl={double_loops} ecount={ecount}"
+                        );
+                        // The predicate must actually PRUNE somewhere, or the sweep compares two
+                        // unfiltered walks and proves nothing about applying it.
+                        if !saw_predicate_prune {
+                            let open = collect(
+                                &store,
+                                n_nodes,
+                                mode,
+                                dir,
+                                min,
+                                max,
+                                k,
+                                double_loops,
+                                None,
+                                true,
+                            );
+                            saw_predicate_prune = open.len() > itr.len();
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        saw_predicate_prune,
+        "the per-rep sweep never pruned a single path — it cannot discriminate"
+    );
 }
 
 /// The iterative walk uses O(1) call stack regardless of closure depth: a 40k-deep
@@ -7941,6 +8071,157 @@ fn a_group_that_returns_rows_still_trips_the_trail_budget() {
     .expect_err("a row-returning group must still trip the budget");
     assert!(err.starts_with("E_RESOURCE_EXHAUSTED"), "{err}");
     assert!(err.contains("trail limit"), "{err}");
+}
+
+// --- A SIMPLE closing hop is gated by the per-hop predicate (item 242) ---
+
+/// A 3-cycle `a -> b -> c -> a` whose CLOSING edge is the only one that fails `w > 2`:
+/// weights 9, 9, and `close_w`. So with `close_w = 1` a `SIMPLE …{1,3}` reaches `b` and
+/// `c`, and the hop that would close back on `a` is forbidden by the pattern's own
+/// predicate — while `close_w = 9` makes that close legal.
+///
+/// The weight is the whole discriminator. A fixture whose closing edge PASSES cannot show
+/// the bug at all, which is why it went unnoticed until the differential fuzzer generated
+/// a graph with a cycle AND a selective per-hop predicate.
+fn cycle_closing_on(close_w: f64) -> Store {
+    let mut b = Builder::default();
+    let a = b.node(&["N"], &[("name", s("a"))]);
+    let bb = b.node(&["N"], &[("name", s("b"))]);
+    let c = b.node(&["N"], &[("name", s("c"))]);
+    b.edge(a, bb, "R");
+    b.edge(bb, c, "R");
+    b.edge(c, a, "R");
+    let mut st = b.build();
+    st.set_edge_prop(0, "w", n(9.0));
+    st.set_edge_prop(1, "w", n(9.0));
+    st.set_edge_prop(2, "w", n(close_w));
+    st
+}
+
+/// The single column of a GQL query's rows, rendered and sorted.
+fn sorted_col0(q: &str, store: &Store) -> Vec<String> {
+    let out = crate::exec::try_run(&opt_plan(q, store), store).expect("query must run");
+    let mut got: Vec<String> = out
+        .rows
+        .iter()
+        .map(|r| match &r[0] {
+            Value::Str(x) => x.to_string(),
+            o => format!("{o:?}"),
+        })
+        .collect();
+    got.sort();
+    got
+}
+
+/// THE BUG (item 242). The `Close` arm emits without ever calling `varlen_enter`, which is
+/// where the `Go` path applies the per-repetition `WHERE` — so the closing hop crossed an
+/// edge its own predicate forbids. Found by the differential fuzzer against the TS engine
+/// (`FUZZ_SEED=2419630540`), which has no such hole because it filters the adjacency
+/// before the walk ever sees it.
+#[test]
+fn a_simple_close_applies_the_per_hop_predicate() {
+    let store = cycle_closing_on(1.0);
+    let got = sorted_col0(
+        "MATCH SIMPLE (x:N {name: 'a'})-[e:R WHERE e.w > 2]->{1,3}(y) RETURN y.name AS n",
+        &store,
+    );
+    assert_eq!(got, vec!["b", "c"], "the closing hop has w = 1, so no `a`");
+}
+
+/// The control that makes the test above mean something: the SAME query over the SAME
+/// shape with a closing edge that PASSES must still close. Without this, deleting the
+/// `Close` arm outright would also pass.
+#[test]
+fn a_simple_close_still_emits_when_the_predicate_holds() {
+    let store = cycle_closing_on(9.0);
+    let got = sorted_col0(
+        "MATCH SIMPLE (x:N {name: 'a'})-[e:R WHERE e.w > 2]->{1,3}(y) RETURN y.name AS n",
+        &store,
+    );
+    assert_eq!(got, vec!["a", "b", "c"], "a legal close must emit `a`");
+}
+
+/// TRAIL agreeing is what proved the predicate IS applied on an ordinary hop, leaving the
+/// close as the only candidate — keep that pinned. Only SIMPLE takes the `Close` arm, so
+/// every mode must now reach the same two endpoints over this fixture.
+#[test]
+fn every_path_mode_agrees_once_the_close_is_gated() {
+    let store = cycle_closing_on(1.0);
+    let ends = |mode: &str| {
+        sorted_col0(
+            &format!(
+                "MATCH {mode} (x:N {{name: 'a'}})-[e:R WHERE e.w > 2]->{{1,3}}(y) \
+                 RETURN y.name AS n"
+            ),
+            &store,
+        )
+    };
+    assert_eq!(ends("SIMPLE"), vec!["b", "c"]);
+    assert_eq!(ends("TRAIL"), vec!["b", "c"]);
+    assert_eq!(ends("WALK"), vec!["b", "c"]);
+    assert_eq!(ends("ACYCLIC"), vec!["b", "c"]);
+}
+
+/// The bound must REACH the close for the hole to open: `{1,2}` cannot take the third hop
+/// at all, so it agreed with TS even while `{1,3}` diverged. This is about the close, not
+/// about the predicate in general.
+#[test]
+fn a_bound_short_of_the_close_was_never_affected() {
+    let store = cycle_closing_on(1.0);
+    let got = sorted_col0(
+        "MATCH SIMPLE (x:N {name: 'a'})-[e:R WHERE e.w > 2]->{1,2}(y) RETURN y.name AS n",
+        &store,
+    );
+    assert_eq!(got, vec!["b", "c"]);
+}
+
+/// The inline edge-property spelling of the same constraint must answer the same (the
+/// repo's equivalent-spellings rule). `{w: 9}` lowers to a per-rep predicate too, so it
+/// went through the same hole.
+#[test]
+fn the_inline_edge_spelling_gates_the_close_too() {
+    let store = cycle_closing_on(1.0);
+    let got = sorted_col0(
+        "MATCH SIMPLE (x:N {name: 'a'})-[e:R {w: 9}]->{1,3}(y) RETURN y.name AS n",
+        &store,
+    );
+    assert_eq!(got, vec!["b", "c"], "the w = 1 closing edge is excluded");
+}
+
+/// The COUNTING driver shares `varlen_walk`, so it shared the bug — and a count is where
+/// one wrong extra row is least visible. Two endpoints, not three.
+#[test]
+fn the_count_driver_gates_the_close_too() {
+    let store = cycle_closing_on(1.0);
+    assert_eq!(
+        num1(
+            "MATCH SIMPLE (x:N {name: 'a'})-[e:R WHERE e.w > 2]->{1,3}(y) RETURN count(*) AS c",
+            &store,
+        ),
+        2.0,
+    );
+    // And the legal close is still counted, or this asserts only that something was lost.
+    assert_eq!(
+        num1(
+            "MATCH SIMPLE (x:N {name: 'a'})-[e:R WHERE e.w > 2]->{1,3}(y) RETURN count(*) AS c",
+            &cycle_closing_on(9.0),
+        ),
+        3.0,
+    );
+}
+
+/// A PATH variable takes a different sink over the same walk, so it must agree with the
+/// plain projection. `size(nodes(p))` is the fuzzer's own spelling of the divergence: the
+/// forbidden close showed up there as a fourth node.
+#[test]
+fn a_path_variable_sees_the_gated_close() {
+    let store = cycle_closing_on(1.0);
+    let got = sorted_col0(
+        "MATCH p = SIMPLE (x:N {name: 'a'})-[e:R WHERE e.w > 2]->{1,3}(y) \
+         RETURN size(nodes(p)) AS k ORDER BY k",
+        &store,
+    );
+    assert_eq!(got, vec!["Num(2.0)", "Num(3.0)"], "no 4-node closed path");
 }
 
 // --- Counting a NESTED group without materializing it ---
