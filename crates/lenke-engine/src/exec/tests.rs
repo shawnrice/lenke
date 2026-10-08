@@ -8224,6 +8224,205 @@ fn a_path_variable_sees_the_gated_close() {
     assert_eq!(got, vec!["Num(2.0)", "Num(3.0)"], "no 4-node closed path");
 }
 
+// --- A SIMPLE closing hop in a GROUP pattern (item 244) ---
+
+/// `0 -> 1`, `1 -> 0`, `2 -> 2` (a self-loop), `2 -> 0`, `0 -> 2`. Small enough that every
+/// expected count below is derived by hand, and it carries the three things a closing hop
+/// needs to be observable: a 2-cycle, a self-loop (a close in ONE hop) and a way back into
+/// the self-loop vertex.
+fn closable_store() -> Store {
+    let mut b = Builder::default();
+    for i in 0..3 {
+        b.node(&["N"], &[("n", n(f64::from(i)))]);
+    }
+    b.edge(0, 1, "R");
+    b.edge(1, 0, "R");
+    b.edge(2, 2, "R");
+    b.edge(2, 0, "R");
+    b.edge(0, 2, "R");
+    b.build()
+}
+
+/// **The equivalence that settles it without appealing to the other engine.** One outer
+/// repetition of an inner 1..2-hop group is exactly a flat 1..2-hop group, and
+/// `{1,1}`-of-`{1,2}` and `{1,2}`-of-`{1,1}` are the same question again. All three must
+/// agree, under every mode.
+///
+/// They did not. `exec/nested.rs` had no closing-hop concept at all — it simply skipped any
+/// already-marked node — so the two NESTED spellings dropped every closing repetition while
+/// the flat one (which lowers onto the var-length walk) kept them. Under SIMPLE that is 11
+/// against 6, a silent wrong answer; the other three modes agreed all along, because only
+/// SIMPLE has a close.
+#[test]
+fn the_three_spellings_of_one_group_agree_under_every_mode() {
+    let store = closable_store();
+    let c = |q: &str| num1(q, &store);
+    for mode in ["SIMPLE", "ACYCLIC", "TRAIL", "WALK"] {
+        let flat = c(&format!(
+            "MATCH {mode} (a:N)((x)-[:R]->(y)){{1,2}} RETURN count(*) AS c"
+        ));
+        let nested_inner = c(&format!(
+            "MATCH {mode} (a:N)(((x)-[:R]->(y)){{1,2}}){{1,1}} RETURN count(*) AS c"
+        ));
+        let nested_outer = c(&format!(
+            "MATCH {mode} (a:N)(((x)-[:R]->(y)){{1,1}}){{1,2}} RETURN count(*) AS c"
+        ));
+        assert_eq!(flat, nested_inner, "{mode}: flat vs {{1,2}}x{{1,1}}");
+        assert_eq!(flat, nested_outer, "{mode}: flat vs {{1,1}}x{{1,2}}");
+    }
+}
+
+/// The hand-derived numbers, so the test above cannot be satisfied by three spellings all
+/// going wrong together. From each source, SIMPLE admits 1-2 hop paths with distinct
+/// interior nodes, a hop back onto the source permitted as the final one:
+///
+/// from `0`: `0->1`, `0->2`, `0->1->0` (close), `0->2->0` (close) = 4
+/// from `1`: `1->0`, `1->0->1` (close), `1->0->2` = 3
+/// from `2`: `2->2` (close in one hop), `2->0`, `2->0->1`, `2->0->2` (close) = 4
+///
+/// ACYCLIC forbids all five of those closes, leaving 6. That ACYCLIC number is what makes
+/// the SIMPLE one mean something: `node_unique` is true for both modes and the close is the
+/// ONLY difference between them.
+#[test]
+fn simple_admits_the_closes_acyclic_forbids() {
+    let store = closable_store();
+    let c = |q: &str| num1(q, &store);
+    assert_eq!(
+        c("MATCH SIMPLE (a:N)((x)-[:R]->(y)){1,2} RETURN count(*) AS c"),
+        11.0,
+    );
+    assert_eq!(
+        c("MATCH ACYCLIC (a:N)((x)-[:R]->(y)){1,2} RETURN count(*) AS c"),
+        6.0,
+    );
+    // 11 - 6 = the five closing paths. Spelled out so a change to either number has to
+    // explain itself.
+    assert_eq!(
+        c("MATCH SIMPLE (a:N)(((x)-[:R]->(y)){1,2}){1,1} RETURN count(*) AS c"),
+        11.0,
+    );
+    assert_eq!(
+        c("MATCH ACYCLIC (a:N)(((x)-[:R]->(y)){1,2}){1,1} RETURN count(*) AS c"),
+        6.0,
+    );
+}
+
+/// A MIXED-direction unit is the shape that has no var-length twin at all — it lowers to
+/// `NestedGroup` and is answered only by `exec/nested.rs`. On a 4-cycle `0->1->2->3->0` with
+/// a `1->3` chord, one repetition of `(x)-[:R]->(m)<-[:R]-(y)` ends at `y`, and from `x = 0`
+/// the only out-edge is `0->1`, whose only in-edge is `0->1` again — so `y = 0`, a closing
+/// repetition. Native returned nothing for it.
+#[test]
+fn a_mixed_direction_unit_closes_on_its_start() {
+    let mut b = Builder::default();
+    for i in 0..4 {
+        b.node(&["N"], &[("n", n(f64::from(i)))]);
+    }
+    b.edge(0, 1, "R");
+    b.edge(1, 2, "R");
+    b.edge(2, 3, "R");
+    b.edge(3, 0, "R");
+    b.edge(1, 3, "R");
+    let store = b.build();
+    let ends = |q: &str| {
+        let out = crate::exec::try_run(&opt_plan(q, &store), &store).expect("must run");
+        let mut got: Vec<String> = out
+            .rows
+            .iter()
+            .map(|r| format!("{:?}", r[0]))
+            .collect::<Vec<_>>();
+        got.sort();
+        got
+    };
+    // From 0: y=0 (close). From 1: 1->2 closes (y=1), 1->3 gives y=2 and closes (y=1).
+    // From 2: 2->3 closes (y=2) and gives y=1. From 3: 3->0 closes (y=3).
+    let got = ends("MATCH SIMPLE (a:N)((x)-[:R]->(m)<-[:R]-(y)){1,2} (z) RETURN z.n AS n");
+    assert_eq!(got.len(), 7, "{got:?}");
+    // ACYCLIC keeps only the two that do not close.
+    let acyclic = ends("MATCH ACYCLIC (a:N)((x)-[:R]->(m)<-[:R]-(y)){1,2} (z) RETURN z.n AS n");
+    assert_eq!(acyclic.len(), 2, "{acyclic:?}");
+}
+
+/// A close MID-unit must match NOTHING, not terminate early: a path may not stop part-way
+/// through a repetition, and an interior repeat of a node is forbidden outright. The
+/// self-loop on `2` is the probe — a unit of two hops starting at `2` takes the self-loop
+/// first, which lands back on the start with one element of the unit still to go.
+///
+/// Without this, admitting the close and simply stopping there would pass every test above.
+#[test]
+fn a_close_part_way_through_a_unit_matches_nothing() {
+    let mut b = Builder::default();
+    for i in 0..3 {
+        b.node(&["N"], &[("n", n(f64::from(i)))]);
+    }
+    b.edge(2, 2, "R"); // the self-loop: one hop from `2` back onto `2`
+    b.edge(2, 1, "R");
+    b.edge(1, 0, "R");
+    let store = b.build();
+    // One repetition of a TWO-hop unit from `2`: the self-loop closes after hop 1, so the
+    // unit cannot complete — `2 -> 2 -> 1` would repeat the start as an interior node. The
+    // only completing repetition is `2 -> 1 -> 0`.
+    assert_eq!(
+        num1(
+            "MATCH SIMPLE (a:N {n: 2})((x)-[:R]->(m)-[:R]->(y)){1,1} RETURN count(*) AS c",
+            &store,
+        ),
+        1.0,
+    );
+}
+
+/// A close must NOT leave the walk's START unmarked for its siblings. Native pushes the
+/// close's target onto `used_nodes` and pops it symmetrically, so a duplicate push is safe —
+/// but the TS twin marks into a `Set`, where adding an already-present start is a no-op and
+/// the matching delete UNMARKS it. This fixture is what makes the difference observable, and
+/// it is here so the two engines are held to it by the same test rather than by one of them.
+///
+/// `0`'s out-edges in this order: `0->1`, then `1->0` closes rep 1 at the unit end, then
+/// `1->2` completes rep 1 at `2`, then `2->0` is MID-unit of rep 2 and must be refused —
+/// which would otherwise let `0->3` complete rep 2 at `3`. Node `3` has no out-edge and
+/// nothing else reaches it, so an end of `3` means the walk passed through `0` twice.
+#[test]
+fn a_close_does_not_unmark_the_start_for_its_siblings() {
+    let mut b = Builder::default();
+    for i in 0..4 {
+        b.node(&["N"], &[("n", n(f64::from(i)))]);
+    }
+    b.edge(0, 1, "R");
+    b.edge(1, 0, "R"); // closes rep 1 at the unit end
+    b.edge(1, 2, "R");
+    b.edge(2, 0, "R"); // mid-unit of rep 2: must be refused
+    b.edge(0, 3, "R"); // would complete rep 2 at 3
+    let store = b.build();
+    for q in [
+        "MATCH SIMPLE (a:N {n: 0})((x)-[:R]->(m)-[:R]->(y)){1,2} (z) RETURN z.n AS n",
+        "MATCH SIMPLE (a:N {n: 0})(((x)-[:R]->(m)-[:R]->(y)){1,1}){1,2} (z) RETURN z.n AS n",
+    ] {
+        let out = crate::exec::try_run(&opt_plan(q, &store), &store).expect("must run");
+        let mut got: Vec<String> = out.rows.iter().map(|r| format!("{:?}", r[0])).collect();
+        got.sort();
+        assert_eq!(got, vec!["Num(0.0)", "Num(2.0)"], "{q}");
+    }
+}
+
+/// The per-repetition `WHERE` still prunes a repetition that CLOSES — the close is admitted
+/// by the mode, not exempted from the predicate (which is item 243's lesson on the
+/// var-length side, and the nested walker evaluates the predicate at the same boundary).
+#[test]
+fn a_per_rep_where_prunes_a_closing_repetition() {
+    let store = closable_store();
+    let all = num1(
+        "MATCH SIMPLE (a:N)((x)-[:R]->(y)){1,2} RETURN count(*) AS c",
+        &store,
+    );
+    let some = num1(
+        "MATCH SIMPLE (a:N)((x)-[:R]->(y) WHERE x.n <> 2){1,2} RETURN count(*) AS c",
+        &store,
+    );
+    assert_eq!(all, 11.0);
+    assert!(some < all, "a selective per-rep filter must prune: {some}");
+    assert!(some > 0.0, "and must not prune everything: {some}");
+}
+
 // --- Counting a NESTED group without materializing it ---
 
 /// A tiny fixture whose nested-group counts are small enough to derive BY HAND: two sources

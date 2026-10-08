@@ -1454,10 +1454,22 @@ export const trailEndsUnit = function* (
     top.edgeIdx += 1;
     const { after } = top.moves[top.moveIdx];
 
-    // Does this hop finish the TOP unit's rep? (The position is back to a single cursor
-    // sitting at its unit's end.)
-    const completesTop = after.length === 1 && after[0].elem === after[0].unit.elems.length;
-    const isClose = mode === 'simple' && completesTop && nbr === from;
+    // Does this hop finish the OUTER unit's rep? Only then may a SIMPLE path close on its
+    // own start, because a close terminates the path and a path may not stop part-way
+    // through a repetition. That question is `resolve`'s `completedOuter`, AFTER the
+    // epsilon-closure: the raw position `after` sits at the INNERMOST unit's end, and for a
+    // nested unit the closure is what pops the finished inner reps up to the outer end.
+    // Testing the raw position instead (`after.length === 1 && at its unit's end`) is true
+    // only for a single-level unit, so a nested group closed on nothing and
+    // `((x)-[:R]->(y)){1,2}` and `(((x)-[:R]->(y)){1,2}){1,1}` — one outer rep of an inner
+    // 1..2, the same question — answered 11 and 6 (audit item 244).
+    //
+    // Resolved LAZILY, because `nbr === from` is rare and `resolve` allocates: hoisting it
+    // above the collide check unconditionally would run it for every rejected hop of every
+    // simple/acyclic walk. No admitted hop resolves twice.
+    const [{ rep: outerRep }] = after;
+    const closeResolved = mode === 'simple' && nbr === from ? resolve(after) : null;
+    const isClose = closeResolved?.completedOuter === true;
 
     if (!isClose && hopCollides(mode, marks, edge, nbr)) {
       continue;
@@ -1465,8 +1477,7 @@ export const trailEndsUnit = function* (
 
     // Resolve the epsilon-closure: does the top unit ACCEPT here, did an OUTER rep just
     // complete (the per-rep `WHERE` hook), and the onward hops.
-    const [{ rep: outerRep }] = after;
-    const resolved = resolve(after);
+    const resolved = closeResolved ?? resolve(after);
     const { completedOuter } = resolved;
     let { emit, moves: nextMoves } = resolved;
 

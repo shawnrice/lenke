@@ -223,6 +223,16 @@ struct M<'a> {
     omax: u32,
     trail: bool,
     node_unique: bool,
+    /// SIMPLE only, where a hop back onto `start` CLOSES the path: it is admissible even
+    /// though `start` is already marked, but nothing may follow it. `node_unique` is also
+    /// true for ACYCLIC, which forbids that hop outright — the single distinction between
+    /// the two modes.
+    simple: bool,
+    /// The source of the walk in progress, so a closing hop can be recognised.
+    start: u32,
+    /// Set while a closing hop is on the path: no further hop may be taken, and no further
+    /// outer repetition started. See [`M::do_hop`].
+    closed: bool,
     used_edges: Vec<u32>,
     used_nodes: Vec<u32>,
     steps: Vec<StepRec>,
@@ -232,6 +242,12 @@ impl M<'_> {
     // One hop from `v` (edge types `want`, direction `dir`, per-hop `epred`), tagged
     // with `levels`. Calls `f(target)` per admissible neighbour, StepRec pushed;
     // restores on return.
+    //
+    // SIMPLE's closing hop lives here (audit item 244): a hop onto `start` is admitted
+    // although `start` is marked, and sets `closed` for the duration of the continuation.
+    // `closed` then bars every further hop, so the close can only complete the unit it is
+    // the last element of — a close MID-unit matches nothing beyond itself and so emits
+    // nothing, which is exactly right, since an interior repeat of a node is forbidden.
     fn do_hop(
         &mut self,
         v: u32,
@@ -241,6 +257,9 @@ impl M<'_> {
         levels: Vec<(u32, usize)>,
         f: &mut dyn FnMut(&mut Self, u32),
     ) {
+        if self.closed {
+            return; // a closed SIMPLE path cannot be extended
+        }
         let mut adjs: Vec<crate::store::Adj> = Vec::new();
         if matches!(dir, Dir::Out | Dir::Both) {
             adjs.extend_from_slice(self.store.out(v));
@@ -258,7 +277,8 @@ impl M<'_> {
             if self.trail && self.used_edges.contains(&a.eid) {
                 continue;
             }
-            if self.node_unique && self.used_nodes.contains(&a.nbr) {
+            let is_close = self.simple && a.nbr == self.start;
+            if self.node_unique && !is_close && self.used_nodes.contains(&a.nbr) {
                 continue;
             }
             self.steps.push(StepRec {
@@ -273,7 +293,9 @@ impl M<'_> {
             if self.node_unique {
                 self.used_nodes.push(a.nbr);
             }
+            self.closed = is_close;
             f(self, a.nbr);
+            self.closed = false;
             if self.node_unique {
                 self.used_nodes.pop();
             }
@@ -431,7 +453,10 @@ impl M<'_> {
         if orep >= self.omin {
             emit(self, v);
         }
-        if orep < self.omax {
+        // `closed`: a SIMPLE path that has hopped back onto its start terminates there, so a
+        // further repetition is not offered. `do_hop` would refuse every hop of it anyway;
+        // this makes the termination the structure rather than a consequence.
+        if orep < self.omax && !self.closed {
             let mut c = |slf: &mut Self, end: u32| {
                 if slf.rep_ok(orep) {
                     slf.outer_walk(end, orep + 1, emit);
@@ -481,11 +506,15 @@ fn drive_nested(
         omax: max,
         trail: matches!(mode, PathMode::Trail),
         node_unique: matches!(mode, PathMode::Simple | PathMode::Acyclic),
+        simple: matches!(mode, PathMode::Simple),
+        start: 0, // set per source row below
+        closed: false,
         used_edges: Vec::new(),
         used_nodes: Vec::new(),
         steps: Vec::new(),
     };
     for (row, &s) in src.iter().enumerate() {
+        m.start = s;
         if m.node_unique {
             m.used_nodes.push(s);
         }

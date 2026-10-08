@@ -31,6 +31,67 @@ import {
 import { accept, resetUsage, usageCounts } from './divergence-registry.js';
 import { graphFromNdjson } from './graph.js';
 
+/// The quantified-subpath-GROUP counters: the peeled-endpoint form, the unanchored form that
+/// reaches native's counting sink, the per-repetition `WHERE`, and a group under an explicit
+/// SIMPLE. Lifted out of `tally` because that function sits on the complexity gate and item
+/// 244's two new blocks took it from 35 to 37 — the same reason `genQuantifiedGroup` is its own
+/// function. Nothing about what is counted changed in the move.
+const tallyGroupShapes = (cov: Record<string, number>, q: string, nonEmpty: boolean): void => {
+  // The optional path mode sits between `MATCH` and the pattern (item 244), so it is part of
+  // the detector — `startsWith('MATCH (a:T)((x)')` counted only the no-mode third of the arm.
+  // The optional third `(` is the NESTED sub-group spelling of the same unit: it is still a
+  // peeled group count, so counting it here is what keeps the new arm from diluting this floor
+  // instead of contributing to it.
+  if (
+    /^MATCH (?:WALK |TRAIL |SIMPLE |ACYCLIC )?\(a:T\)\(\(\(?x\)/.test(q) &&
+    q.includes('(b:U)') &&
+    q.includes('RETURN count(*)')
+  ) {
+    cov.peelGenerated++;
+
+    if (nonEmpty) {
+      cov.peelNonZero++;
+    }
+  }
+
+  // The UNANCHORED group form, which is how native's counting sink is reached. The optional
+  // path mode is part of the pattern now (item 244), so it has to be part of the detector:
+  // `startsWith('MATCH ((x)')` would have kept matching only the no-mode third of the arm and
+  // quietly cut this floor, which is the floor's whole purpose.
+  if (
+    /^MATCH (?:WALK |TRAIL |SIMPLE |ACYCLIC )?\(\(\(?x\)/.test(q) &&
+    q.includes('RETURN count(*)')
+  ) {
+    cov.sinkGenerated++;
+
+    if (nonEmpty) {
+      cov.sinkNonZero++;
+    }
+  }
+
+  // A GROUP pattern under an explicit SIMPLE, the shape that hid a wrong answer in BOTH
+  // engines until item 244. `(` before the mode's pattern and no `]-{`/`]-+` is what tells a
+  // group from the abbreviated form. Non-empty matters here beyond the usual reason: a SIMPLE
+  // group whose closes are all dropped still returns rows, so the floor that discriminates is
+  // the one on queries that actually CLOSE — and the fixture's `3 -> 1` edge is what supplies
+  // them.
+  if (q.includes('SIMPLE ') && q.includes('((x)') && !/\]-(>?)(\{|\+)/.test(q)) {
+    cov.simpleGroupGenerated++;
+
+    if (nonEmpty) {
+      cov.simpleGroupNonEmpty++;
+    }
+  }
+
+  if (q.includes('((x)') && q.includes(' WHERE ')) {
+    cov.perRepGenerated++;
+
+    if (nonEmpty) {
+      cov.perRepNonEmpty++;
+    }
+  }
+};
+
 /// Coverage tallies for the shapes this fuzzer is supposed to keep generating. Kept out of the
 /// fuzz loop itself so that loop stays under the complexity gate; the floors it feeds are asserted
 /// at the end of the run.
@@ -74,29 +135,7 @@ const tally = (
     }
   }
 
-  if (q.startsWith('MATCH (a:T)((x)') && q.includes('(b:U)') && q.includes('RETURN count(*)')) {
-    cov.peelGenerated++;
-
-    if (nonEmpty) {
-      cov.peelNonZero++;
-    }
-  }
-
-  if (q.startsWith('MATCH ((x)') && q.includes('RETURN count(*)')) {
-    cov.sinkGenerated++;
-
-    if (nonEmpty) {
-      cov.sinkNonZero++;
-    }
-  }
-
-  if (q.includes('((x)') && q.includes(' WHERE ')) {
-    cov.perRepGenerated++;
-
-    if (nonEmpty) {
-      cov.perRepNonEmpty++;
-    }
-  }
+  tallyGroupShapes(cov, q, nonEmpty);
 
   // The ABBREVIATED quantified form, which takes a DIFFERENT path from the group form above:
   // `trailEnds` synthesises a one-hop unit where a group builds a multi-hop one. Detected by a
@@ -136,7 +175,13 @@ const tally = (
   // carried a predicate here — which is how a filtered count over an untyped `-[]->` answered
   // 0 for two commits with this fuzzer green. The non-zero floor is what matters: a filtered
   // count that matches nothing agrees with a broken one trivially.
-  if (/^MATCH \([ab]?[^)]*\)[-<]/.test(q) && q.includes(' WHERE ') && q.includes('count(*)')) {
+  // `[^()]*`, not `[^)]*`: the loose class let the UNANCHORED GROUP form in, because
+  // `MATCH ((x)-[e1:E]->…` satisfies it with `[^)]*` swallowing `(x`. So this counter had
+  // been tallying group queries as one-hop filtered counts — about 35% of its total, which
+  // only showed when item 244 put a mode prefix on the group arm and the "drop" turned out
+  // to be the pollution leaving. Forbidding a nested paren keeps it to genuine one-hop
+  // patterns; the floors below were re-measured against the honest population and say so.
+  if (/^MATCH \([ab]?[^()]*\)[-<]/.test(q) && q.includes(' WHERE ') && q.includes('count(*)')) {
     cov.hopFilterGenerated++;
 
     if (nonEmpty) {
@@ -855,6 +900,33 @@ const genQuantifiedGroup = (r: () => number): string => {
   const h1 = pick(r, ['-[e1:E]->', '<-[e1:E]-', '-[e1:F]->', '<-[e1:F]-']);
   const h2 = pick(r, ['-[:E]->', '<-[:E]-', '-[:F]->', '<-[:F]-']);
   const q = pick(r, ['{1,2}', '{1,1}', '{1,3}', '+']);
+  // THE PATH MODE. Until item 244 this arm generated none at all, so every group pattern
+  // ran under the default (TRAIL) and the mode's restrictors had differential coverage on
+  // the abbreviated form ONLY. That gap hid two wrong answers at once: native's nested
+  // walker had no closing-hop concept and silently dropped every closing repetition, and
+  // TS tested for the close on the RAW position, which is true only for a single-level
+  // unit — so TS answered `((x)-[:R]->(y)){1,2}` and `(((x)-[:R]->(y)){1,2}){1,1}`, the
+  // same question, 11 and 6.
+  //
+  // Bounded quantifiers only, for the reason the abbreviated arm records: `WALK` with an
+  // unbounded `+` has no restrictor, so on a cyclic fixture it stops only on the trail
+  // budget, and a resource limit is a poor thing to compare two engines on.
+  const mode = q === '+' ? '' : pick(r, ['', '', 'TRAIL ', 'WALK ', 'SIMPLE ', 'ACYCLIC ']);
+  // A NESTED sub-group unit, `( ((x)-[e]->(y)){i,j} ){q}`, which `exec/nested.rs` documents
+  // as "the 2-level shape the corpus and fuzzer produce" and which NOTHING generated — not
+  // this fuzzer, not the corpus. Zero differential coverage, and that is what let TS's close
+  // test (which read the RAW cursor position, true only for a single-level unit) answer
+  // `((x)-[:R]->(y)){1,2}` and `(((x)-[:R]->(y)){1,2}){1,1}` — the same question — 11 and 6
+  // (item 244). Verified by mutation: reinstating that test SURVIVES the fuzzer without this
+  // arm and is caught with it.
+  //
+  // ITS SHARE IS 1 IN 6, settled by measurement in both directions. At 1 in 2 it halved three
+  // neighbouring floors at once — `perRep` 573 to 299 (floor 350), `sink` 292 to 135 (200) and
+  // `peel` 123 to 54 (75) — because the nested spelling carries no per-repetition `WHERE` and
+  // writes `(((x)` where those detectors look for `((x)`. Three failing floors is the system
+  // working; lowering them to fit a new arm is not. At 1 in 6 all three clear, and mutation
+  // confirms this share still catches the bug it is here for.
+  const inner = pick(r, ['', '', '', '', '{1,1}', '{1,2}']);
   // A PER-REPETITION `WHERE`, after the unit and INSIDE the parens (inside the edge
   // brackets is a per-HOP predicate, a different thing). Reads a NODE property and an
   // EDGE property, because those land in different columns of the per-rep mini-batch and
@@ -862,7 +934,7 @@ const genQuantifiedGroup = (r: () => number): string => {
   // single-direction path builds it typed, so any predicate touching a node read NULL and
   // pruned every repetition — a silent wrong answer against TS, on a shape this generator
   // already produced but never filtered (item 51).
-  const perRep = pick(r, [
+  const perRepPick = pick(r, [
     '',
     '',
     ' WHERE x.n >= 0',
@@ -875,22 +947,31 @@ const genQuantifiedGroup = (r: () => number): string => {
   // The endpoint pattern varies, and `U` is the load-bearing one: every vertex in this fixture
   // carries `T`, so `(b:T)` is a filter that excludes nothing — native dropping the endpoint
   // predicate entirely was invisible under it. Only vertex 3 carries `U` (item 63).
+  // The per-rep `WHERE` stays on the FLAT unit only: one nesting level down, `x` and `e1` are
+  // genuinely LISTS in the outer per-rep view rather than scalars, so a predicate reading
+  // `x.n` there is a different question (and the flat unit already covers the scalar one).
+  // Picked either way so the arm consumes the same number of draws regardless.
+  const perRep = inner === '' ? perRepPick : '';
+  const unit = inner === '' ? `(x)${h1}(m)${h2}(y)${perRep}` : `((x)${h1}(y))${inner}`;
+  // The endpoint pattern varies, and `U` is the load-bearing one: every vertex in this fixture
+  // carries `T`, so `(b:T)` is a filter that excludes nothing — native dropping the endpoint
+  // predicate entirely was invisible under it. Only vertex 3 carries `U` (item 63).
   const end = pick(r, ['(b:T)', '(b:U)', '(b:U)', '(b)']);
-  const body = `(a:T)((x)${h1}(m)${h2}(y)${perRep})${q}${end}`;
+  const body = `(a:T)(${unit})${q}${end}`;
 
   // UNANCHORED, kept at its own frequency: a label on either endpoint used to put the count
   // back on the materializing path, so native's counting sink was reached only by this
   // spelling, and until it existed no cross-engine comparison ran through the sink at all
   // (item 61). The sink now applies an endpoint filter itself, so the ANCHORED forms reach it
   // too — by a different route, which is why both spellings stay.
-  const unanchored = `MATCH ((x)${h1}(m)${h2}(y)${perRep})${q} RETURN count(*) AS x`;
+  const unanchored = `MATCH ${mode}(${unit})${q} RETURN count(*) AS x`;
   // With no endpoint pattern there is no `b` to project.
   const forms =
     end === '(b)'
-      ? [`MATCH ${body} RETURN count(*) AS x`, unanchored]
+      ? [`MATCH ${mode}${body} RETURN count(*) AS x`, unanchored]
       : [
-          `MATCH ${body} RETURN count(*) AS x`,
-          `MATCH ${body} RETURN b.n AS x, a.n AS t ORDER BY t, x`,
+          `MATCH ${mode}${body} RETURN count(*) AS x`,
+          `MATCH ${mode}${body} RETURN b.n AS x, a.n AS t ORDER BY t, x`,
           unanchored,
         ];
 
@@ -1521,6 +1602,8 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       abbrevGenerated: 0,
       abbrevNonEmpty: 0,
       abbrevPath: 0,
+      simpleGroupGenerated: 0,
+      simpleGroupNonEmpty: 0,
       predGenerated: 0,
       predRows: 0,
       sinkGenerated: 0,
@@ -1646,6 +1729,7 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       `PRED generated=${cov.predGenerated} rows=${cov.predRows} ` +
         `perRep=${cov.perRepGenerated}/${cov.perRepNonEmpty} ` +
         `abbrev=${cov.abbrevGenerated}/${cov.abbrevNonEmpty}/${cov.abbrevPath} ` +
+        `simpleGroup=${cov.simpleGroupGenerated}/${cov.simpleGroupNonEmpty} ` +
         `sink=${cov.sinkGenerated}/${cov.sinkNonZero} peel=${cov.peelGenerated}/${cov.peelNonZero} ` +
         `cross=${cov.crossGenerated}/${cov.crossNonEmpty} ` +
         `cntProp=${cov.cntPropGenerated}/${cov.cntPropNonZero} ` +
@@ -1654,8 +1738,19 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
         `page=${cov.pageGenerated}/${cov.pageRows}`,
     );
     expect({
-      perRepGenerated: cov.perRepGenerated > 350,
-      perRepNonEmpty: cov.perRepNonEmpty > 175,
+      // RE-MEASURED AND LOWERED at item 244. The group arm gained a NESTED sub-group unit at a
+      // 1-in-6 share, and that spelling carries no per-repetition `WHERE` — one nesting level
+      // down `x`/`e1` are lists rather than scalars, a different question — so this shape
+      // genuinely loses a sixth of the arm. Observed 352-422 generated and 215-243 non-empty
+      // over five seeds, against 572-617/304-359 before; `> 350` cleared the minimum by two
+      // queries, which is not a floor. Floors ~26% under the observed minimum, the margin the
+      // rest of this block uses. The other two neighbours did NOT need lowering: making the
+      // `sink` and `peel` detectors recognise the nested spelling put both ABOVE their old
+      // rates (sink 283-333 against 288-320, peel 117-145 against 120-151), because the new
+      // arm contributes to them rather than diluting them. Lowering a floor is the last
+      // resort, after the detector has been checked.
+      perRepGenerated: cov.perRepGenerated > 260,
+      perRepNonEmpty: cov.perRepNonEmpty > 150,
       // The abbreviated quantified form (audit item 238). MEASURED 190-209 generated, 159-183 of
       // those non-empty and 76-88 carrying a path variable, over seeds 1-3 of 20,000. Floors at
       // roughly half, so a re-balanced band shows up as a FAILURE rather than as silence.
@@ -1667,6 +1762,14 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       abbrevGenerated: cov.abbrevGenerated > 100,
       abbrevNonEmpty: cov.abbrevNonEmpty > 80,
       abbrevPath: cov.abbrevPath > 35,
+      // A GROUP pattern under an explicit SIMPLE (audit item 244) — the shape that hid a wrong
+      // answer in BOTH engines. MEASURED over nine seeds of 20,000: 75-126 generated, 57-103 of
+      // those non-empty. Floors ~25% under the observed minimum, the margin the rest of this
+      // block uses. The non-empty one is what discriminates: a SIMPLE group whose closes are all
+      // dropped still returns rows, so what the comparison needs is queries that actually reach a
+      // close, which the fixture's `3 -> 1` edge supplies.
+      simpleGroupGenerated: cov.simpleGroupGenerated > 55,
+      simpleGroupNonEmpty: cov.simpleGroupNonEmpty > 40,
       predGenerated: cov.predGenerated > 2_000,
       predRows: cov.predRows > 1_000,
       sinkGenerated: cov.sinkGenerated > 200,
@@ -1702,8 +1805,17 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       // `hopFilterNonZero > 250` became unreachable at the low end (248), which is what failed.
       // The floors below sit ~15-25% under the observed minimum, the same margin the old ones
       // had, and their job is unchanged: catch a shape falling silently to ZERO.
-      hopFilterGenerated: cov.hopFilterGenerated > 320,
-      hopFilterNonZero: cov.hopFilterNonZero > 210,
+      //
+      // RE-MEASURED AND LOWERED at item 244, because those figures were never this shape's.
+      // The detector's `[^)]*` admitted the UNANCHORED GROUP form (`MATCH ((x)-[e1:E]->…`
+      // satisfies it, with the class swallowing `(x`), so roughly 35% of the tally was group
+      // queries counted as one-hop filtered counts. Tightening it to `[^()]*` leaves the honest
+      // population at 117-158 generated and 108-141 non-zero over nine seeds, so 320/210 were
+      // unreachable by the queries this counter is actually for. Floors ~25% under the observed
+      // minimum. The LESSON is the counter's, not the floor's: a floor met by the wrong queries
+      // reads exactly like a floor met.
+      hopFilterGenerated: cov.hopFilterGenerated > 90,
+      hopFilterNonZero: cov.hopFilterNonZero > 80,
       hopUntypedGenerated: cov.hopUntypedGenerated > 28,
       hopUntypedNonZero: cov.hopUntypedNonZero > 20,
       // Measured 263-311 generated and 109-128 of those with rows, AFTER this band gave half
@@ -1717,6 +1829,8 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       abbrevGenerated: true,
       abbrevNonEmpty: true,
       abbrevPath: true,
+      simpleGroupGenerated: true,
+      simpleGroupNonEmpty: true,
       predGenerated: true,
       predRows: true,
       sinkGenerated: true,
