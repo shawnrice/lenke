@@ -3295,25 +3295,29 @@ const nodeWhereOf = (where: Expr, nodeVar: string): InlinePred | 'decline' => {
     }
   }
 
-  // `props` is EMPTY on both branches here, and saying so is the THIRD version of this comment —
-  // the first two were wrong in different ways, and item 210 measured the truth.
-  // `compilePredicate(properties, where)` compiles the `properties` it is GIVEN into `props` and
-  // the `where` into an expression; it does not lift equalities out of the `where`. Called with
-  // `undefined` properties, as here, it yields `{ props: [], where: compileExpr(where) }`.
+  // `props` used to be EMPTY on both branches, and item 210's version of this comment said so
+  // correctly: `compilePredicate(properties, where)` compiled the `properties` it was GIVEN and
+  // left the `where` an expression, lifting nothing out of it. That stopped being true in item
+  // 224, which added `eqProps` — the conjuncts of a `WHERE` that are `<ownVar>.<key> = <non-null
+  // literal>`, compiled to read the ELEMENT directly rather than through the binding — and item
+  // 230, which extended it from one comparison to an all-`=` AND-chain.
   //
-  // So the only difference between these two branches is `gatePredicate` against `compileExpr`,
-  // and the mutant that routes EVERY predicate through `gatePredicate` costs 18% on the indexed
-  // point lookup (95.4k -> 80.8k ops/s) because of that indirection — NOT because any `props`
-  // were lost, and not the 50x a lost SEEK would be (seeding reads the compiled `CNode` via
-  // `indexCandidates`, independently of this).
+  // `nodeVar` is passed as that own variable, and the free-variable loop directly above is the
+  // proof the argument requires: every free name of `where` IS `nodeVar`, so the predicate is
+  // element-local. Without it the clause spelling of a filtered projection cost 9.64 ms against
+  // the inline spelling's 6.78 on 200,000 vertices — 1.42x for one question, and the last group
+  // the spelling probe still flagged (audit item 231).
   //
-  // The discrimination is still worth keeping for those 18%, and a subquery-bearing predicate has
-  // nothing else available anyway: `compilePredicate` does not know about subqueries, and a
-  // correlated sub-pattern is not a property equality.
+  // The two branches still differ by `gatePredicate` against `compileExpr`, and that
+  // discrimination is load-bearing for a measured reason: the mutant routing EVERY predicate
+  // through `gatePredicate` costs 18% on the indexed point lookup (95.4k -> 80.8k ops/s) from the
+  // indirection alone. A subquery-bearing predicate has nothing else available anyway —
+  // `compilePredicate` does not know about subqueries, and a correlated sub-pattern is not a
+  // property equality — so `ownVar` would buy it nothing even if it were passed.
   return {
     pred: hasSubqueryExpr(where)
       ? { props: [], where: gatePredicate(where) }
-      : compilePredicate(undefined, where),
+      : compilePredicate(undefined, where, nodeVar),
     bindVar: nodeVar,
   };
 };
