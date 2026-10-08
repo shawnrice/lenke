@@ -16,6 +16,7 @@ import { countShortcut } from './count-shortcut.js';
 import { applyStep } from './dispatch.js';
 import { hopValuesShortcut } from './hop-values.js';
 import { seedFromIndex } from './index-seed.js';
+import { groupCountShortcut } from './projection.js';
 import { newContext, planReadsPath, type Traverser, unwrap } from './runtime.js';
 import { applySource } from './sources.js';
 
@@ -559,6 +560,19 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
 
   if (shortcut !== undefined) {
     return [shortcut];
+  }
+
+  // `V().groupCount().by(k)` answers the whole plan too — a tally over the vertex set, 34.7ns a
+  // vertex down to ~16. The gap it removes is the generator LAYERING and not the per-element
+  // traverser, which measures free; see `groupCountShortcut` for the elimination.
+  //
+  // Unguarded by `tracksPath`, unlike the walk below: this plan is exactly `V()` + `groupCount`, so
+  // there is no path-consuming step in it, and the step it replaces would discard any path it was
+  // handed — a `groupCount` yields one Map and carries nothing forward.
+  const grouped = groupCountShortcut(effective, graph);
+
+  if (grouped !== undefined) {
+    return [grouped];
   }
 
   // `V().out(T).values(k)` likewise answers the whole plan — one walk instead of the traverser
