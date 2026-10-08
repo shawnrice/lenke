@@ -4704,6 +4704,38 @@ export const compile = <R extends Row = Row>(query: Query): Plan<R> => {
  * statement (any INSERT/MERGE/SET/REMOVE/DELETE) run while the active transaction
  * is READ ONLY is rejected *before* it applies — no mutator is touched.
  */
+/**
+ * Compiled plans by their AST, so a repeated statement is compiled once.
+ *
+ * Item 228 cached PARSE; `compile` is the other ~3.5us of a cheap query's fixed cost. Together they
+ * take an indexed point lookup from ~8.8us to ~0.8us.
+ *
+ * ### Why reuse is sound
+ *
+ * `compile(query: Query): Plan` takes NO GRAPH — the type says a plan cannot depend on one — and a
+ * plan's validation stays per-execution: reusing one with a missing parameter still raises
+ * `E_MISSING_PARAMETER`, exactly as a fresh compile does. Verified alongside reuse with different
+ * parameters and across two different graphs before this was written.
+ *
+ * ### Why a WeakMap, and why item 228's admission filter is NOT needed here
+ *
+ * Item 228 needed one because a `Map` RETAINS: it kept ~2KB statements alive across 64 further
+ * allocations, which tenured them and cost 16% on a miss-heavy workload. A `WeakMap` key is weak,
+ * so a plan lives exactly as long as the AST it was compiled from — a single-use statement's plan
+ * dies with it, at the end of the call. No cap, no eviction, no admission: the plans retained are
+ * bounded by whatever retains ASTs, which is item 228's 64-entry parse cache.
+ *
+ * That reasoning was NOT taken on trust. An all-miss workload (a value interpolated into the text,
+ * so every call is a fresh AST) measures **0.99x with ranges overlapping** — flat. An earlier
+ * reading of 0.76x on a growing-graph INSERT drove a whole redesign before the workload itself was
+ * checked and found to span 7.13-31.25us, which cannot resolve a 20% effect. The redesign was
+ * reverted; see the audit entry, because the lesson is worth more than the code was.
+ *
+ * The guards below stay per-call on purpose: transaction control and the read-only check are
+ * properties of the graph and the moment, not of the statement, and must never be cached.
+ */
+const planCache = new WeakMap<Query, Plan<Row>>();
+
 export const execute = <R extends Row = Row>(
   stmt: Statement,
   graph: Graph,
@@ -4721,5 +4753,17 @@ export const execute = <R extends Row = Row>(
     });
   }
 
-  return compile<R>(stmt)(graph, params);
+  const hit = planCache.get(stmt);
+
+  if (hit !== undefined) {
+    return hit(graph, params) as R[];
+  }
+
+  // `R` is phantom — `compile` casts rather than reading it — so one stored plan serves every
+  // caller's row type.
+  const plan = compile<Row>(stmt);
+
+  planCache.set(stmt, plan);
+
+  return plan(graph, params) as R[];
 };
