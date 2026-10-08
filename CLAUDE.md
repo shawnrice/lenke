@@ -163,6 +163,28 @@ and add the new form's spellings to it. It has already earned itself twice: a
 item 125), and a 2.9x gap between three spellings of a node count (item 126) that
 nobody had measured. Both returned the correct answer.
 
+## Closed work: check the list before measuring or flagging
+
+`docs/reviews/CLOSED.md` is the index of **refuted perf levers, settled semantics, stale claims and
+what is genuinely open.** Read it before pricing a target or raising a conformance question.
+
+The multi-pass audit it summarises (`docs/reviews/2026-08-31-ts-audit.md`) is append-only and 23,000
+lines: it records what was _decided_, in the order it was decided, so searching it answers "what did
+we conclude about X" and not "has X already been closed". Three passes in one session re-derived a
+closed target — the per-frame adjacency hash (rejected at item 172), the type-first adjacency
+inversion (refuted at 200) and an ISO artifact check recorded two days earlier. Each pass searched
+something first and searched the wrong store.
+
+So: match the store to the kind of fact.
+
+- **"has this lever been tried?"** → `CLOSED.md`, then the audit item it cites.
+- **"what does ISO say?"** → the session notes, then `docs/conformance/references.md`. NOT the
+  audit, which holds the decision the question blocks rather than the evidence already gathered.
+- **"what did that measurement say?"** → the audit item that measured it.
+
+When a change refutes a lever or settles a question, add its line to `CLOSED.md` **in the same
+commit**. A list that lags is the failure it exists to prevent.
+
 ## Gates
 
 `bun run lint` and `cargo clippy --all-targets -- -D warnings` are separate from
