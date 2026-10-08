@@ -8224,6 +8224,183 @@ fn a_path_variable_sees_the_gated_close() {
     assert_eq!(got, vec!["Num(2.0)", "Num(3.0)"], "no 4-node closed path");
 }
 
+// --- An INNER subpath's own per-repetition WHERE (item 252) ---
+
+/// `0 -(w5)-> 1 -(w5)-> 2 -(w1)-> 3`, so both `n` and `w` discriminate and every count below
+/// is derivable by hand.
+fn inner_where_chain() -> Store {
+    let mut b = Builder::default();
+    for i in 0..4 {
+        b.node(&["N"], &[("n", n(f64::from(i)))]);
+    }
+    b.edge(0, 1, "R");
+    b.edge(1, 2, "R");
+    b.edge(2, 3, "R");
+    let mut st = b.build();
+    st.set_edge_prop(0, "w", n(5.0));
+    st.set_edge_prop(1, "w", n(5.0));
+    st.set_edge_prop(2, "w", n(1.0));
+    st
+}
+
+/// **The equivalence that pins the answer without appealing to the other engine.** An inner
+/// `{1,1}` of a one-hop unit, repeated 1..2 times by the outer, accepts exactly the 1-2 hop
+/// walks whose every hop satisfies the `WHERE` — which is the flat `{1,2}` with the same
+/// `WHERE`. So the two spellings must agree, and the flat one predates this work.
+///
+/// `x.n <> 1` excludes the hop out of node 1, leaving `0->1` and `2->3`, which do not compose
+/// — so 2, where the unfiltered shape gives 5.
+#[test]
+fn an_inner_where_matches_the_flat_spelling() {
+    let store = inner_where_chain();
+    let c = |q: &str| num1(q, &store);
+    let flat = c("MATCH (a:N)((x)-[e:R]->(y) WHERE x.n <> 1){1,2} RETURN count(*) AS c");
+    let nested = c("MATCH (a:N)(((x)-[e:R]->(y) WHERE x.n <> 1){1,1}){1,2} RETURN count(*) AS c");
+    assert_eq!(flat, 2.0, "the flat spelling, which predates this");
+    assert_eq!(
+        nested, flat,
+        "an inner {{1,1}} x outer {{1,2}} is the flat {{1,2}}"
+    );
+    // Unfiltered, so "2" is not what this shape returns regardless.
+    assert_eq!(
+        c("MATCH (a:N)(((x)-[e:R]->(y)){1,1}){1,2} RETURN count(*) AS c"),
+        5.0,
+    );
+}
+
+/// An inner `WHERE` was a PARSE ERROR before this (`expected RParen`), so the first thing to
+/// pin is that it parses and prunes at all — on the shape the equivalence above cannot cover,
+/// where both quantifiers are ranges.
+///
+/// `x.n <> 1` leaves `0->1` and `2->3` admissible and uncomposable, so 2 again; unfiltered the
+/// nested `{1,2}x{1,2}` reaches 9.
+#[test]
+fn an_inner_where_prunes_a_ranged_nested_group() {
+    let store = inner_where_chain();
+    let c = |q: &str| num1(q, &store);
+    assert_eq!(
+        c("MATCH (a:N)(((x)-[e:R]->(y)){1,2}){1,2} RETURN count(*) AS c"),
+        9.0,
+        "unfiltered, so the filtered count means something"
+    );
+    assert_eq!(
+        c("MATCH (a:N)(((x)-[e:R]->(y) WHERE x.n <> 1){1,2}){1,2} RETURN count(*) AS c"),
+        2.0,
+    );
+}
+
+/// The inner `WHERE` sees its rep's EDGE and its NODES at the right slots — the parser binds
+/// the rep source at 0, hop `p`'s edge at `2p + 1` and its target at `2p + 2`, and the
+/// executor builds the mini-batch to match. A predicate mixing the two is what tests the
+/// pairing: `e.w > x.n` admits `0->1` (5 > 0) and `1->2` (5 > 1) but not `2->3` (1 > 2).
+#[test]
+fn an_inner_where_reads_both_its_edge_and_its_nodes() {
+    let store = inner_where_chain();
+    let c = |q: &str| num1(q, &store);
+    // Admissible hops `0->1` and `1->2` compose, and the nested shape reaches the two-hop walk
+    // both as one inner rep of two and as two outer reps of one — so 2 one-hop + 2 two-hop.
+    assert_eq!(
+        c("MATCH (a:N)(((x)-[e:R]->(y) WHERE e.w > x.n){1,2}){1,2} RETURN count(*) AS c"),
+        4.0,
+    );
+    // The EDGE alone, for the same reason: `w > 2` excludes only `2->3`.
+    assert_eq!(
+        c("MATCH (a:N)(((x)-[e:R]->(y) WHERE e.w > 2){1,2}){1,2} RETURN count(*) AS c"),
+        4.0,
+    );
+    // The TARGET node, at `2p + 2` — a DIFFERENT slot from the source, and the two give
+    // different answers, which is what says the mini-batch does not confuse them. `y.n <> 1`
+    // excludes the hop INTO node 1, i.e. `0->1`, leaving `1->2` and `2->3` — and those DO
+    // compose, so 2 one-hop plus the two-hop walk reached two ways = 4. (The source-keyed
+    // `x.n <> 1` above leaves two hops that do NOT compose, and gives 2. I predicted 2 here
+    // by reading `y` as the source; the test is kept because the two numbers differing is the
+    // actual discriminator.)
+    assert_eq!(
+        c("MATCH (a:N)(((x)-[e:R]->(y) WHERE y.n <> 1){1,2}){1,2} RETURN count(*) AS c"),
+        4.0,
+    );
+    assert_ne!(
+        c("MATCH (a:N)(((x)-[e:R]->(y) WHERE y.n <> 1){1,2}){1,2} RETURN count(*) AS c"),
+        c("MATCH (a:N)(((x)-[e:R]->(y) WHERE x.n <> 1){1,2}){1,2} RETURN count(*) AS c"),
+        "source and target must not resolve to the same slot"
+    );
+}
+
+/// A MULTI-HOP inner unit, so the slots `2p + 1` / `2p + 2` are exercised past `p = 0`. A
+/// lowering that bound every hop to the same slot would answer the single-hop cases above
+/// correctly and this one wrong.
+#[test]
+fn an_inner_where_over_a_multi_hop_unit_addresses_each_position() {
+    let store = inner_where_chain();
+    let c = |q: &str| num1(q, &store);
+    // The only two-hop inner reps are `0->1->2` (w 5 then 5) and `1->2->3` (w 5 then 1).
+    assert_eq!(
+        c("MATCH (a:N)(((x)-[e1:R]->(m)-[e2:R]->(y)){1,1}){1,1} RETURN count(*) AS c"),
+        2.0,
+    );
+    // Second hop heavy: only `0->1->2`.
+    assert_eq!(
+        c(
+            "MATCH (a:N)(((x)-[e1:R]->(m)-[e2:R]->(y) WHERE e2.w > 2){1,1}){1,1} \
+           RETURN count(*) AS c"
+        ),
+        1.0,
+    );
+    // First hop heavy: BOTH qualify, so this number differs from the one above — which it
+    // could not if the two edge positions shared a slot.
+    assert_eq!(
+        c(
+            "MATCH (a:N)(((x)-[e1:R]->(m)-[e2:R]->(y) WHERE e1.w > 2){1,1}){1,1} \
+           RETURN count(*) AS c"
+        ),
+        2.0,
+    );
+    // And the interior node `m`, at slot 2.
+    assert_eq!(
+        c(
+            "MATCH (a:N)(((x)-[e1:R]->(m)-[e2:R]->(y) WHERE m.n = 1){1,1}){1,1} \
+           RETURN count(*) AS c"
+        ),
+        1.0,
+    );
+}
+
+/// The inner `WHERE` must AND with the OUTER one rather than replace it — they live in
+/// different places (the inner on `GUnit::per_rep`, the outer on the `Plan`), so a fold that
+/// dropped either would pass a test exercising only one.
+#[test]
+fn the_inner_and_outer_per_rep_wheres_both_apply() {
+    let store = inner_where_chain();
+    let c = |q: &str| num1(q, &store);
+    let inner_only =
+        c("MATCH (a:N)(((x)-[e:R]->(y) WHERE e.w > 2){1,2}){1,2} RETURN count(*) AS c");
+    let both = c(
+        "MATCH (a:N)(((x)-[e:R]->(y) WHERE e.w > 2){1,2} WHERE x[0].n <> 1){1,2} \
+         RETURN count(*) AS c",
+    );
+    assert_eq!(inner_only, 4.0);
+    assert!(
+        both < inner_only,
+        "the outer side was dropped: {both} vs {inner_only}"
+    );
+}
+
+/// An inner `WHERE` referencing a variable the inner rep does not bind is an ERROR, not a
+/// silent null that prunes everything. The mini-scope REPLACES the outer scope while parsing,
+/// which is what makes it loud — the same discipline the per-hop and outer per-rep predicates
+/// already follow.
+#[test]
+fn an_inner_where_referencing_an_outer_variable_is_rejected() {
+    let store = inner_where_chain();
+    let _ = &store; // the rejection is at PARSE time, before any store is consulted
+    let err = crate::gql::parse(
+        "MATCH (a:N)(((x)-[e:R]->(y) WHERE a.n <> 1){1,2}){1,2} (t) RETURN t.n AS n",
+    )
+    .expect_err("an inner WHERE cannot see the outer anchor");
+    assert!(err.contains("unknown variable"), "{err}");
+    assert!(err.contains('a'), "{err}");
+}
+
 // --- A per-hop edge predicate on a subpath group (item 248) ---
 
 /// `0 -(w5)-> 1 -(w5)-> 2 -(w1)-> 3`. Small enough to count by hand, and the LAST edge is the

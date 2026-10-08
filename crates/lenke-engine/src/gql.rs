@@ -3787,6 +3787,10 @@ impl Parser {
                 min: u32,
                 max: u32,
                 target: Option<String>,
+                /// The INNER unit's own per-repetition `WHERE`, captured here and lowered
+                /// once the inner positions are known — `( (x)-[e]->(y) WHERE x.n <> 1 )
+                /// {1,2}`. A parse error before audit item 252.
+                where_range: Option<(usize, usize)>,
             },
         }
         let bad_inner =
@@ -3826,6 +3830,14 @@ impl Parser {
                     break;
                 }
             }
+            // The INNER unit's own per-rep `WHERE`, between its body and its `)`. Captured
+            // rather than parsed here, because its mini-scope depends on the inner positions
+            // which are only assigned at lowering (audit item 252).
+            let inner_where = if self.eat_kw("WHERE") {
+                Some(self.capture_inline_where())
+            } else {
+                None
+            };
             self.expect(&Tok::RParen)?; // inner group `)`
             let (imin, imax) = self
                 .opt_quantifier()?
@@ -3838,6 +3850,7 @@ impl Parser {
                     min: imin,
                     max: imax,
                     target: None,
+                    where_range: inner_where,
                 }],
             )
         } else {
@@ -3867,6 +3880,9 @@ impl Parser {
                         min: imin,
                         max: imax,
                         target: n.0,
+                        // A quantified HOP `-[e]->{lo,hi}` has no body to put a `WHERE`
+                        // after; its edge predicate is `epred`, already on the hop.
+                        where_range: None,
                     });
                 } else {
                     let n = self.node_plain()?;
@@ -3963,6 +3979,7 @@ impl Parser {
                     min,
                     max,
                     target,
+                    where_range,
                 } => {
                     let sub_start = assign(self, start, false, 2);
                     let mut inner_elems: Vec<GElem> = Vec::with_capacity(inner.len());
@@ -3988,10 +4005,45 @@ impl Parser {
                         });
                     }
                     let sub_target = assign(self, target, false, 1);
+                    // The INNER unit's per-rep `WHERE`, over ITS repetition's mini-scope:
+                    // node position `p` at slot `2p`, edge position `p` at `2p + 1` — the
+                    // shape `rep_ok`/`rep_pred_ok` build, one nesting level down. Parsed with
+                    // the scope temporarily REPLACED by that mini-scope, the way the per-hop
+                    // and outer per-rep predicates both do, so a reference to anything else
+                    // is an unbound-variable error rather than a silent null.
+                    let inner_per_rep = match where_range {
+                        None => None,
+                        Some(r) => {
+                            let saved_scope = std::mem::take(&mut self.scope);
+                            let saved_slots = self.slots;
+                            let mut mini: HashMap<String, usize> = HashMap::new();
+                            if let Some(n) = start.as_ref() {
+                                mini.insert(n.clone(), 0);
+                            }
+                            for (p, h) in inner.iter().enumerate() {
+                                let Seg::Hop { edge, target, .. } = h else {
+                                    unreachable!("a Sub's inner is flat (hops only)")
+                                };
+                                if let Some(n) = edge.as_ref() {
+                                    mini.insert(n.clone(), 2 * p + 1);
+                                }
+                                if let Some(n) = target.as_ref() {
+                                    mini.insert(n.clone(), 2 * p + 2);
+                                }
+                            }
+                            self.scope = mini;
+                            self.slots = 2 * inner.len() + 1;
+                            let pred = self.parse_captured_where(*r)?;
+                            self.scope = saved_scope;
+                            self.slots = saved_slots;
+                            Some(Box::new(pred))
+                        }
+                    };
                     elems.push(GElem::Sub {
                         unit: Box::new(GUnit {
                             start_slot: sub_start,
                             elems: inner_elems,
+                            per_rep: inner_per_rep,
                         }),
                         min: *min,
                         max: *max,
@@ -4003,6 +4055,9 @@ impl Parser {
         let unit = GUnit {
             start_slot: outer_start_slot,
             elems,
+            // The OUTERMOST unit's per-rep `WHERE` rides on `Plan::NestedGroup` instead,
+            // because the driver evaluates it where it already knows the outer rep boundary.
+            per_rep: None,
         };
 
         // The PER-REP `WHERE` sees each variable ONE nesting level shallower (the

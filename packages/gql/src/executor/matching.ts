@@ -1174,16 +1174,32 @@ export const bindGroupVarsPerRep = (
  *  completing rep's hops; bind the unit's variables to their per-rep values — a direct
  *  variable is a SCALAR, a variable inside a nested `Sub` is a LIST over the inner reps
  *  (`bindGroupVarsPerRep`) — then test the predicate. Mirrors native `where_ok`. */
-export const unitWherePasses = (
+export const unitWherePasses = (unit: CUnit, repSteps: readonly StepRec[], env: EvalEnv): boolean =>
+  unitWherePassesAt(unit, repSteps, env, [], 1);
+
+/**
+ * `unitWherePasses` at an arbitrary nesting DEPTH — the form an INNER unit's own per-repetition
+ * `WHERE` needs (audit item 253).
+ *
+ * `bindUnit` already takes exactly the two parameters that locate a unit in the step tree:
+ * `treePath`, the elem index at each enclosing level, and `keyStart`, the level at which this
+ * unit's own reps begin. `bindGroupVarsPerRep` is its depth-0 case (`[]`, `1`), so an inner unit
+ * at depth `d` is `(treePath, d + 1)` and nothing new has to be built.
+ */
+export const unitWherePassesAt = (
   unit: CUnit,
   repSteps: readonly StepRec[],
   env: EvalEnv,
+  treePath: readonly number[],
+  keyStart: number,
 ): boolean => {
   if (unit.where === undefined) {
     return true;
   }
 
-  const wb = bindGroupVarsPerRep(env.binding, unit, repSteps);
+  const wb = new Map(env.binding);
+
+  bindUnit(wb, unit, treePath, keyStart, repSteps);
 
   return asTruth(unit.where({ ...env, binding: wb })) === true;
 };
@@ -1251,6 +1267,22 @@ export type HopMove = { rel: CRel; after: Cursor[] };
  *  min-0 epsilon cycles. Mirrors native `resolve`. */
 export const resolve = (
   start: Cursor[],
+  /**
+   * An INNER unit's own per-repetition `WHERE`, consulted at the moment that unit's rep
+   * completes (audit item 253). `false` means the rep is rejected, and NEITHER continuation is
+   * created: not the `close` that leaves the unit, nor the `again` that starts another rep —
+   * the failed rep is on the path either way.
+   *
+   * It lives here rather than in the caller because `resolve` merges every branch into ONE
+   * `moves` list and one `emit` flag, so "prune the branch that went through this inner
+   * completion" is not expressible afterwards. Gating inside the closure keeps provenance
+   * implicit.
+   *
+   * The OUTERMOST unit (`p.length === 1`) is NOT gated here — the caller already checks it at
+   * `completedOuter`, where it can also suppress the emit. Double-applying would be harmless
+   * but the caller's version additionally filters `nextMoves`, so it stays the one authority.
+   */
+  gate?: (unit: CUnit, rep: number, depth: number, treePath: readonly number[]) => boolean,
 ): { emit: boolean; completedOuter: boolean; moves: HopMove[] } => {
   let emit = false;
   let completedOuter = false;
@@ -1295,10 +1327,31 @@ export const resolve = (
       // any max=0) unit would otherwise emit a 1-rep completion (`1 >= 0`) even though
       // its max forbids it. The `again` guard below already stops FURTHER reps, but the
       // first over-max completion must be rejected here too.
+      // The inner unit's own `WHERE`, computed at most ONCE per work item and only when there
+      // is one — `top.unit.where === undefined` is the overwhelmingly common case and must
+      // cost nothing. `treePath` is the elem index at each ENCLOSING level, which is what
+      // `bindUnit`'s `within` consumes; the enclosing cursor still points AT the `Sub`, since
+      // `close` is what advances it.
+      let cached: boolean | undefined;
+      const repOk = (): boolean => {
+        if (p.length === 1 || gate === undefined || top.unit.where === undefined) {
+          return true;
+        }
+
+        cached ??= gate(
+          top.unit,
+          top.rep,
+          p.length - 1,
+          p.slice(0, -1).map((c) => c.elem),
+        );
+
+        return cached;
+      };
+
       if (rep2 >= top.min && (top.max === null || rep2 <= top.max)) {
         if (p.length === 1) {
           emit = true;
-        } else {
+        } else if (repOk()) {
           const close = p.map((c) => ({ ...c }));
           close.pop();
           close[close.length - 1].elem += 1;
@@ -1311,7 +1364,7 @@ export const resolve = (
         completedOuter = true;
       }
 
-      if (top.max === null || rep2 < top.max) {
+      if ((top.max === null || rep2 < top.max) && repOk()) {
         const again = p.map((c) => ({ ...c }));
         again[again.length - 1] = { ...again[again.length - 1], rep: rep2, elem: 0 };
         work.push(again);
@@ -1488,7 +1541,32 @@ export const trailEndsUnit = function* (
     // above the collide check unconditionally would run it for every rejected hop of every
     // simple/acyclic walk. No admitted hop resolves twice.
     const [{ rep: outerRep }] = after;
-    const closeResolved = mode === 'simple' && nbr === from ? resolve(after) : null;
+    // An INNER unit's own per-repetition `WHERE` is evaluated by `resolve` at the moment that
+    // unit's rep completes, because only there is the branch still separable (item 253). The
+    // steps of that rep are addressable from `levels`: level 0 is the outer rep, level `depth`
+    // this unit's. Two levels is the deepest shape the engine supports, so pinning levels 0 and
+    // `depth` pins the rep exactly.
+    const innerGate = (
+      u: CUnit,
+      rep: number,
+      depth: number,
+      treePath: readonly number[],
+    ): boolean =>
+      unitWherePassesAt(
+        u,
+        buildSteps(nbr, edge).filter(
+          (st) =>
+            st.levels.length > depth && st.levels[depth][0] === rep && st.levels[0][0] === outerRep,
+        ),
+        { binding, params, graph },
+        treePath,
+        depth + 1,
+      );
+    // Passed to BOTH resolves. The close path recomputed nothing and REUSED its ungated
+    // result as `resolved`, so a closing repetition skipped the inner `WHERE` entirely and TS
+    // over-counted (11 against native's 9 on `SIMPLE (((x)-[e1:E]->(y) WHERE e1.w > 2){1,2})
+    // {1,2}`). Found by the fuzzer arm added in the same change, on its first run.
+    const closeResolved = mode === 'simple' && nbr === from ? resolve(after, innerGate) : null;
     const isClose = closeResolved?.completedOuter === true;
 
     if (!isClose && hopCollides(mode, marks, edge, nbr)) {
@@ -1497,7 +1575,7 @@ export const trailEndsUnit = function* (
 
     // Resolve the epsilon-closure: does the top unit ACCEPT here, did an OUTER rep just
     // complete (the per-rep `WHERE` hook), and the onward hops.
-    const resolved = closeResolved ?? resolve(after);
+    const resolved = closeResolved ?? resolve(after, innerGate);
     const { completedOuter } = resolved;
     let { emit, moves: nextMoves } = resolved;
 

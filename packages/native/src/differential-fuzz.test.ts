@@ -91,7 +91,17 @@ const tallyGroupShapes = (cov: Record<string, number>, q: string, nonEmpty: bool
   // RISES when a new spelling is added is as suspicious as one that falls.
   const unbracketed = q.replace(/\[[^\]]*\]/g, '');
 
-  if (unbracketed.includes('((x)') && unbracketed.includes(' WHERE ')) {
+  // ...and NOT the nested spelling, whose INNER `WHERE` has its own counter below. `(((x)` is
+  // what tells them apart, and `((x)` is a substring of it — so this counter was inflated a
+  // THIRD time (352-398 to 494-543) by item 252's arm, after item 248's inflated it via the
+  // brackets. Three times is the pattern, not bad luck: a detector written as "contains the
+  // group opener AND contains WHERE" matches every `WHERE` anywhere in a group, and each new
+  // predicate POSITION borrows this counter until told not to.
+  if (
+    unbracketed.includes('((x)') &&
+    !unbracketed.includes('(((x)') &&
+    unbracketed.includes(' WHERE ')
+  ) {
     cov.perRepGenerated++;
 
     if (nonEmpty) {
@@ -107,6 +117,17 @@ const tallyGroupShapes = (cov: Record<string, number>, q: string, nonEmpty: bool
 
     if (nonEmpty) {
       cov.groupHopPredNonEmpty++;
+    }
+  }
+
+  // An INNER unit's own per-rep `WHERE` (items 252/253): a `WHERE` that sits before the INNER
+  // group's `)` rather than the outer one. Detected on the nested spelling `(((x)` plus a
+  // `WHERE` outside the edge brackets, which is what `unbracketed` already strips.
+  if (unbracketed.includes('(((x)') && unbracketed.includes(' WHERE ')) {
+    cov.innerWhereGenerated++;
+
+    if (nonEmpty) {
+      cov.innerWhereNonEmpty++;
     }
   }
 };
@@ -995,7 +1016,13 @@ const genQuantifiedGroup = (r: () => number): string => {
   // `x.n` there is a different question (and the flat unit already covers the scalar one).
   // Picked either way so the arm consumes the same number of draws regardless.
   const perRep = inner === '' ? perRepPick : '';
-  const unit = inner === '' ? `(x)${h1}(m)${h2}(y)${perRep}` : `((x)${h1}(y))${inner}`;
+  // The INNER unit's OWN per-repetition `WHERE` — `( ((x)-[e1]->(y) WHERE …){a,b} ){c,d}`.
+  // Native refused to PARSE it and TS silently IGNORED it (returning that shape's unfiltered
+  // answer) until items 252/253, and nothing generated it. It is a different code path from
+  // both the per-hop predicate and the outer per-rep one: native evaluates it at inner-rep
+  // completion off `GUnit::per_rep`, TS through `resolve`'s gate.
+  const innerWhere = pick(r, ['', '', ' WHERE x.n >= 0', ' WHERE x.n <> 999', ' WHERE e1.w > 2']);
+  const unit = inner === '' ? `(x)${h1}(m)${h2}(y)${perRep}` : `((x)${h1}(y)${innerWhere})${inner}`;
   // The endpoint pattern varies, and `U` is the load-bearing one: every vertex in this fixture
   // carries `T`, so `(b:T)` is a filter that excludes nothing — native dropping the endpoint
   // predicate entirely was invisible under it. Only vertex 3 carries `U` (item 63).
@@ -1649,6 +1676,8 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       simpleGroupNonEmpty: 0,
       groupHopPredGenerated: 0,
       groupHopPredNonEmpty: 0,
+      innerWhereGenerated: 0,
+      innerWhereNonEmpty: 0,
       predGenerated: 0,
       predRows: 0,
       sinkGenerated: 0,
@@ -1776,6 +1805,7 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
         `abbrev=${cov.abbrevGenerated}/${cov.abbrevNonEmpty}/${cov.abbrevPath} ` +
         `simpleGroup=${cov.simpleGroupGenerated}/${cov.simpleGroupNonEmpty} ` +
         `groupHopPred=${cov.groupHopPredGenerated}/${cov.groupHopPredNonEmpty} ` +
+        `innerWhere=${cov.innerWhereGenerated}/${cov.innerWhereNonEmpty} ` +
         `sink=${cov.sinkGenerated}/${cov.sinkNonZero} peel=${cov.peelGenerated}/${cov.peelNonZero} ` +
         `cross=${cov.crossGenerated}/${cov.crossNonEmpty} ` +
         `cntProp=${cov.cntPropGenerated}/${cov.cntPropNonZero} ` +
@@ -1824,6 +1854,14 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       // and hop 2 against the wrong edge.
       groupHopPredGenerated: cov.groupHopPredGenerated > 300,
       groupHopPredNonEmpty: cov.groupHopPredNonEmpty > 190,
+      // An INNER unit's own per-rep `WHERE` (items 252/253) — native refused to PARSE it and
+      // TS silently IGNORED it, each for as long as nothing generated it. MEASURED 142-182
+      // generated and 126-161 non-empty over five seeds of 20,000; floors ~25% under the
+      // minimum. It is a third predicate POSITION, distinct from the per-hop one (inside the
+      // brackets) and the outer per-rep one (after the outer body), and each of the three
+      // reaches different code on both sides.
+      innerWhereGenerated: cov.innerWhereGenerated > 105,
+      innerWhereNonEmpty: cov.innerWhereNonEmpty > 90,
       predGenerated: cov.predGenerated > 2_000,
       predRows: cov.predRows > 1_000,
       sinkGenerated: cov.sinkGenerated > 200,
@@ -1887,6 +1925,8 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       simpleGroupNonEmpty: true,
       groupHopPredGenerated: true,
       groupHopPredNonEmpty: true,
+      innerWhereGenerated: true,
+      innerWhereNonEmpty: true,
       predGenerated: true,
       predRows: true,
       sinkGenerated: true,

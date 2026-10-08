@@ -367,9 +367,58 @@ impl M<'_> {
         }
         if irep < smax {
             self.sub_rep(v, sub, 0, orep, es, irep, &mut |slf, end| {
-                slf.sub_walk(end, sub, smin, smax, orep, es, irep + 1, cont)
+                // The inner unit's per-rep `WHERE` gates the rep that just completed, BEFORE
+                // the recursion — which gates both its emit (at the top of the next
+                // `sub_walk`) and any further inner rep. Earlier reps were gated when they
+                // completed, so a surviving branch has had every one of its reps tested.
+                if slf.inner_rep_ok(sub, orep, irep) {
+                    slf.sub_walk(end, sub, smin, smax, orep, es, irep + 1, cont);
+                }
             });
         }
+    }
+
+    // The INNER unit's own per-repetition `WHERE`, evaluated at the boundary of inner rep
+    // `irep` of outer rep `orep` (audit item 252).
+    //
+    // Built DIRECTLY as typed columns rather than through `bind_nested` like `rep_ok`: that
+    // route exists because an OUTER rep's bindings can be nested lists, while an inner rep's
+    // are all scalars — its source is one node, each hop one edge and one node. Slots match
+    // what the parser bound: the rep's source at 0, hop `p`'s edge at `2p + 1` and its target
+    // at `2p + 2`.
+    //
+    // `levels` is what makes the rep addressable: `sub_rep` tags each of its hops
+    // `[(orep, es), (irep, ihop + 1)]`, so this rep's steps are exactly those whose first
+    // level is `orep` and whose second is `irep`.
+    fn inner_rep_ok(&self, sub: &crate::ir::GUnit, orep: u32, irep: u32) -> bool {
+        let Some(pred) = sub.per_rep.as_deref() else {
+            return true;
+        };
+        let rep: Vec<&StepRec> = self
+            .steps
+            .iter()
+            .filter(|s| {
+                s.levels.first().is_some_and(|(r, _)| *r == orep)
+                    && s.levels.get(1).is_some_and(|(r, _)| *r == irep)
+            })
+            .collect();
+        let Some(first) = rep.first() else {
+            // No hops recorded for this rep: nothing to test, so nothing to prune. A zero-hop
+            // rep cannot arise from `sub_rep` (it matches the unit's hops), but a predicate
+            // over an empty binding would evaluate to null and prune every branch, which is
+            // exactly the silent-wrong-answer shape item 51 recorded.
+            return true;
+        };
+        let mut cols: Vec<Col> = Vec::with_capacity(2 * rep.len() + 1);
+        cols.push(Col::Nodes(vec![first.source]));
+        for s in &rep {
+            cols.push(Col::Edges(vec![s.edge]));
+            cols.push(Col::Nodes(vec![s.target]));
+        }
+        let mini = Batch::of(cols);
+        eval(pred, self.store, &mini)
+            .map(|c| c.value_at(0).is_true())
+            .unwrap_or(false)
     }
 
     // Match one inner rep (the Sub's flat hops) from `v`, then `cont(end)`.

@@ -72,6 +72,16 @@ pub struct GUnit {
     /// The unit's source node variable (`x` in `(x)-[e]->(y)`), bound once per rep.
     pub start_slot: Option<usize>,
     pub elems: Vec<GElem>,
+    /// This unit's own per-REPETITION `WHERE` — `( (x)-[e]->(y) WHERE x.n <> 1 ){1,2}` —
+    /// evaluated at each of ITS rep boundaries over that rep's bindings, in the same
+    /// mini-scope shape the outer `per_rep_pred` uses: node position `p` at slot `2p`, edge
+    /// position `p` at `2p + 1`.
+    ///
+    /// Only an INNER unit uses this. The outermost unit's per-rep `WHERE` rides on
+    /// `Plan::NestedGroup`/`Plan::RepeatGroup` instead, because the driver evaluates it where
+    /// it already knows the outer rep boundary. An inner unit has no such home, which is why
+    /// an inner subpath `WHERE` was a parse error before audit item 252.
+    pub per_rep: Option<Box<Expr>>,
 }
 
 /// One element of a [`GUnit`]: a single hop, or a nested quantified sub-unit.
