@@ -3063,7 +3063,7 @@ const compileNode = (node: NodePattern): CNode => {
 // applied to every edge of the walk; the optional edge variable names each hop's
 // edge in turn for that predicate (it is not yet a group/list variable exposed to
 // the outer query). `trailEnds` binds and filters each hop.
-const compileRel = (rel: RelPattern): CRel => ({
+export const compileRel = (rel: RelPattern): CRel => ({
   variable: rel.variable,
   label: rel.label,
   direction: rel.direction,

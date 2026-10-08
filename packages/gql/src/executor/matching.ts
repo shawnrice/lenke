@@ -1682,18 +1682,20 @@ export type TrailOpts = {
   wantPath?: boolean;
 };
 
-export const trailEnds = function* (
+/**
+ * The abbreviated `-[]->{n,m}` form through the GENERAL matcher — a one-hop repetition unit.
+ *
+ * EXPORTED only so `trailEnds`' fast path can be differentially tested against it: the two must
+ * agree on the emission SEQUENCE, not merely on the set of ends, and once the fast path is wired
+ * the general one is otherwise unreachable for this shape (audit item 239).
+ */
+export const trailEndsViaUnit = function* (
   graph: Graph,
   from: Vertex,
   rel: CRel,
   q: NonNullable<CRel['quantifier']>,
   opts: TrailOpts,
 ): Iterable<TrailEnd> {
-  // A single edge is a one-hop repetition unit — the abbreviated `-[]->{n,m}` form is
-  // just the general lazy matcher with a `k = 1` unit, so there is ONE traversal
-  // implementation and no hand-tuned twin to drift. The unit exposes no group
-  // variables (its edge var is a per-hop predicate scalar, not a list); `wantPath` here
-  // only rebuilds the path for a path-variable caller. Mirrors native `reachable_each`.
   const unit: CUnit = { elems: [{ hop: { rel } }] };
 
   yield* trailEndsUnit(graph, from, unit, q, {
@@ -1702,4 +1704,129 @@ export const trailEnds = function* (
     params: opts.params,
     wantPath: opts.wantPath ?? false,
   });
+};
+
+export const trailEnds = function* (
+  graph: Graph,
+  from: Vertex,
+  rel: CRel,
+  q: NonNullable<CRel['quantifier']>,
+  opts: TrailOpts,
+): Iterable<TrailEnd> {
+  // A single edge is a one-hop repetition unit, and until item 239 this delegated to the general
+  // matcher for every case — on the stated grounds that "there is ONE traversal implementation and
+  // no hand-tuned twin to drift". That is still the right default and the general path below still
+  // answers every shape this one declines. What changed is the measurement: the general matcher
+  // costs 7.82us an outer row where a hand-written walk of the same question costs 0.82 — 9.5x,
+  // decomposing into ~2.7us of per-EXECUTION setup and ~1.2-2.0us per repetition (audit item 237).
+  //
+  // The general matcher pays that for generality this shape does not use. Per hop it calls
+  // `resolve`, which allocates two arrays and a `Set` and builds a STRING KEY per work item to
+  // break min-0 epsilon cycles — and a one-hop unit has no epsilon moves at all, so the visited
+  // set can never fire. Per execution it builds a `CUnit` from compile-time data, a cursor stack,
+  // a `buildSteps` closure and a seed `resolve`.
+  //
+  // So: a flat walk for the case with NO path reconstruction, which is the one the serving
+  // benchmarks use. `wantPath` keeps the general path, because reconstructing the walk is where
+  // the cursor machinery earns itself.
+  //
+  // THE RULES IT MUST MATCH, read off `resolve` for a one-hop unit rather than reasoned about:
+  // every hop completes the top rep (`elem` reaches `elems.length` of 1), so after hop `k` the
+  // rep count IS `k` — `emit` iff `k >= min && (max === null || k <= max)`, and a further rep is
+  // offered iff `max === null || k < max`. `min === 0` yields the empty walk at the seed first.
+  // `completesTop` is therefore always true, which makes `isClose` simply SIMPLE mode returning to
+  // the seed. The order within a hop is collision check, budget, mark, emit, descend — the
+  // general loop's order, because the emission SEQUENCE is observable and a differential test
+  // compares it.
+  if (opts.wantPath === true) {
+    yield* trailEndsViaUnit(graph, from, rel, q, opts);
+
+    return;
+  }
+
+  const { mode, binding, params } = opts;
+  const vertexMode = mode === 'simple' || mode === 'acyclic';
+  // WALK marks nothing, so it allocates nothing. The other three need the set: `hopCollides` and
+  // `hopMark` read EDGES under trail and VERTICES under simple/acyclic.
+  const marks: Set<Edge | Vertex> | undefined = mode === 'walk' ? undefined : new Set();
+
+  if (vertexMode) {
+    (marks as Set<Edge | Vertex>).add(from);
+  }
+
+  if (q.min === 0) {
+    yield { end: from, verts: [], edges: [], steps: [] };
+  }
+
+  type FlatFrame = {
+    edges: { edge: Edge; node: Vertex }[];
+    idx: number;
+    // The mark this frame's entry hop added, deleted when the frame pops — the general matcher's
+    // `entryMark`.
+    mark: Edge | Vertex | null;
+  };
+
+  let steps = 0;
+  const stack: FlatFrame[] = [
+    { edges: expandFilteredArr(graph, from, rel, binding, params), idx: 0, mark: null },
+  ];
+
+  while (stack.length > 0) {
+    const top = stack[stack.length - 1];
+
+    if (top.idx >= top.edges.length) {
+      if (top.mark !== null) {
+        (marks as Set<Edge | Vertex>).delete(top.mark);
+      }
+
+      stack.pop();
+      continue;
+    }
+
+    const { edge, node: nbr } = top.edges[top.idx];
+    top.idx += 1;
+    // `stack.length` hops have been taken counting this one: the seed frame is depth 1.
+    const rep = stack.length;
+    const isClose = mode === 'simple' && nbr === from;
+
+    if (!isClose && marks !== undefined && (mode === 'trail' ? marks.has(edge) : marks.has(nbr))) {
+      continue;
+    }
+
+    steps += 1;
+
+    if (steps > graph.limits.trail) {
+      throw new LenkeError(
+        'Variable-length pattern exceeded the trail budget; add a tighter bound',
+        { code: ErrorCode.ResourceExhausted },
+      );
+    }
+
+    // `hopMark`'s rule, spelled out: a SIMPLE close marks nothing (it emits without extending),
+    // WALK marks nothing at all, TRAIL marks the EDGE and SIMPLE/ACYCLIC the target VERTEX.
+    let mark: Edge | Vertex | null = null;
+
+    if (!isClose && mode !== 'walk') {
+      mark = mode === 'trail' ? edge : nbr;
+    }
+
+    if (mark !== null) {
+      (marks as Set<Edge | Vertex>).add(mark);
+    }
+
+    if (rep >= q.min && (q.max === null || rep <= q.max)) {
+      yield { end: nbr, verts: [], edges: [], steps: [] };
+    }
+
+    // A SIMPLE close emits but does not extend; nor does a rep that has reached `max`.
+    if (isClose || !(q.max === null || rep < q.max)) {
+      if (mark !== null) {
+        (marks as Set<Edge | Vertex>).delete(mark);
+      }
+
+      continue;
+    }
+
+    stack.push({ edges: expandFilteredArr(graph, nbr, rel, binding, params), idx: 0, mark });
+  }
 };
