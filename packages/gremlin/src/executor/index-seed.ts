@@ -184,8 +184,17 @@ const seedForPred = <E>(
   }
 };
 
-/** The seed a single leading filter step offers, if any. */
-const seedForStep = <E>(step: Step, index: PropertyIndex<E>): Candidate<E> | null => {
+/**
+ * The seed a single leading filter step offers, if any.
+ *
+ * EXPORTED so a count shortcut can ask whether the index would seed this filter WITHOUT building
+ * the seed: `countShortcut` runs before `seedFromIndex`, so a shortcut that scans would preempt a
+ * seek and answer in O(V) where the general path answers in O(matches). The `count` on the returned
+ * candidate is an O(1) estimate and `build()` is not called, so asking costs nothing (audit item
+ * 234; the failure it avoids is item 149's, where a fast path lost the index and the tell was two
+ * identical `bench:usage` columns).
+ */
+export const seedForStep = <E>(step: Step, index: PropertyIndex<E>): Candidate<E> | null => {
   if (step.kind !== 'has' && step.kind !== 'hasLabelAnd') {
     return null;
   }

@@ -2,6 +2,7 @@ import type { Edge, Graph } from '@lenke/core';
 
 import type { Plan, Step } from '../ast.js';
 import { matches } from '../predicates.js';
+import { seedForStep } from './index-seed.js';
 
 /**
  * `g.…count()` answered from the graph's counters instead of by enumerating.
@@ -296,10 +297,62 @@ const vertexStepCount = (step: Step, graph: Graph): number | undefined => {
     return adjacentCount(step.labels, graph);
   }
 
+  if (step.kind === 'has') {
+    return propertyCount(step, graph);
+  }
+
   // `both` is NOT here on purpose: it walks a vertex's out-edges and then its
   // in-edges, so a self-loop is incident twice and the total is not a bucket size.
   // The general path already gets that right; a shortcut would have to re-derive it.
   return undefined;
+};
+
+/**
+ * `V().has(k, pred).count()` — tallied over the vertex set instead of run through the traverser
+ * pipeline.
+ *
+ * The ONE shape in this file that is not a counter or a bucket read, and it earns that by being
+ * measured against a hand-written floor rather than against the engine it replaces. On 200,000
+ * vertices (audit item 234):
+ *
+ *     the traverser pipeline                    7.65ms   38.2ns a vertex
+ *     a hand-written tally, same answer          2.30ms   11.5ns
+ *     the scan alone, touching no property       0.91ms    4.6ns
+ *
+ * So 3.3x of that row is the pipeline, not the predicate — a traverser allocated per vertex to be
+ * filtered and discarded. The same measurement RETRACTED this item's other two candidates:
+ * `V().out().has().count()` is 50.62ms against a 44.24ms floor, so its 32.6x gap to the native
+ * engine is a data-layout difference and not an overhead to recover.
+ *
+ * **It declines when the index could seed**, which is the load-bearing condition rather than a
+ * nicety. `countShortcut` is consulted BEFORE `seedFromIndex`, so a tally that scanned anyway
+ * would answer in O(V) where the general path's seed answers in O(matches) — a fast path LOSING an
+ * index, which is item 149's failure (the tell there was two identical `bench:usage` columns). The
+ * tally therefore fires exactly where the general path would have scanned, so it cannot be slower
+ * than what it replaces.
+ *
+ * Raise parity is free, and for a stronger reason than usual: `matches` is applied to every vertex
+ * in `verticesById` order, which is precisely what `V()` emits and what the `has` step filters. The
+ * evaluated set and its order are identical, so no fault can appear or disappear. (`matches` is
+ * total in any case — the ordering predicates return false for a missing or incomparable value
+ * rather than throwing.)
+ */
+const propertyCount = (step: Extract<Step, { kind: 'has' }>, graph: Graph): number | undefined => {
+  if (seedForStep(step, graph.vertexPropertyIndex) !== null) {
+    return undefined;
+  }
+
+  let n = 0;
+
+  // `verticesById.values()` rather than the `vertices` view, which allocates an object per access
+  // to wrap this very iterator.
+  for (const v of graph.verticesById.values()) {
+    if (matches(step.pred, v.properties[step.key])) {
+      n += 1;
+    }
+  }
+
+  return n;
 };
 
 /**
