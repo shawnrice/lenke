@@ -209,6 +209,71 @@ const GROUPS: [string, readonly string[]][] = [
       "MATCH (n:P) WHERE n.s = 's1' AND n.k = 2 RETURN count(*) AS c",
     ],
   ],
+  // The multi-segment count families, added in audit item 225 because items 219-222 each closed a
+  // spelling gap that this standing instrument did not guard. Every one of them was found by a
+  // throwaway probe at the time, and every one was ALREADY OPEN before the item that fixed it:
+  //
+  //   219  2-hop middle   WHERE 2331.7ms / inline WHERE 1183.1 / inline prop 482.3   (2.4x, 13.3x)
+  //   220  2-hop end      forward 2363.5 against the hand-reversed spelling's 118.1  (20.0x)
+  //   222  3-hop interior WHERE 9360.5 / inline WHERE 3945.9 / inline prop 560.7      (2.4x, 13.3x)
+  //
+  // So these are regression guards for four fixes, not speculative coverage.
+  //
+  // What is deliberately NOT here: the 3-hop END-filtered question. Item 223 established that it
+  // stays on the row pipeline ON PURPOSE in both engines — reversing it is a selectivity gamble
+  // native priced and declined — so it is ~9s on this fixture, and a group whose slowest member
+  // takes seconds would make a probe nobody can afford to run.
+  [
+    'hop, MIDDLE filtered (item 219)',
+    [
+      'MATCH (a:P)-[:E]->(b)-[:E]->(c) WHERE b.k = 2 RETURN count(*) AS c',
+      'MATCH (a:P)-[:E]->(b WHERE b.k = 2)-[:E]->(c) RETURN count(*) AS c',
+      'MATCH (a:P)-[:E]->(b {k: 2})-[:E]->(c) RETURN count(*) AS c',
+    ],
+  ],
+  [
+    // The reversed-arrow member is the one that matters most: item 220's whole finding was that
+    // the forward spelling and the same question written backwards were 20x apart, and the fix
+    // was a planner reversal rather than a new walk. If that reversal ever stops firing, THIS
+    // member is what notices.
+    'hop, END filtered, including the reversed arrows (item 220)',
+    [
+      'MATCH (a:P)-[:E]->(b)-[:E]->(c) WHERE c.k = 2 RETURN count(*) AS c',
+      'MATCH (a:P)-[:E]->(b)-[:E]->(c WHERE c.k = 2) RETURN count(*) AS c',
+      'MATCH (a:P)-[:E]->(b)-[:E]->(c {k: 2}) RETURN count(*) AS c',
+      'MATCH (c)<-[:E]-(b)<-[:E]-(a:P) WHERE c.k = 2 RETURN count(*) AS c',
+    ],
+  ],
+  [
+    'three hops, SECOND position filtered (item 222)',
+    [
+      'MATCH (a:P)-[:E]->(b)-[:E]->(c)-[:E]->(d) WHERE b.k = 2 RETURN count(*) AS c',
+      'MATCH (a:P)-[:E]->(b WHERE b.k = 2)-[:E]->(c)-[:E]->(d) RETURN count(*) AS c',
+      'MATCH (a:P)-[:E]->(b {k: 2})-[:E]->(c)-[:E]->(d) RETURN count(*) AS c',
+    ],
+  ],
+  [
+    // The third position is gated once per MIDDLE EDGE where the second is gated once per vertex,
+    // so these two groups are different questions with different costs — which is why they are two
+    // groups and not one. Within each, the three spellings must agree.
+    'three hops, THIRD position filtered (item 222)',
+    [
+      'MATCH (a:P)-[:E]->(b)-[:E]->(c)-[:E]->(d) WHERE c.k = 2 RETURN count(*) AS c',
+      'MATCH (a:P)-[:E]->(b)-[:E]->(c WHERE c.k = 2)-[:E]->(d) RETURN count(*) AS c',
+      'MATCH (a:P)-[:E]->(b)-[:E]->(c {k: 2})-[:E]->(d) RETURN count(*) AS c',
+    ],
+  ],
+  [
+    // `P` is carried by every vertex in this fixture, so the label constrains nothing and the two
+    // are one question. Item 221's three-hop tally reads a VACUOUS end label as absent, decided
+    // per execution; if that collapse regresses, the labelled member pays an endpoint resolve per
+    // edge and this group spreads.
+    'three hops: a vacuous start label vs none (item 221)',
+    [
+      'MATCH (a:P)-[:E]->(b)-[:E]->(c)-[:E]->(d) RETURN count(*) AS c',
+      'MATCH (a)-[:E]->(b)-[:E]->(c)-[:E]->(d) RETURN count(*) AS c',
+    ],
+  ],
 ];
 
 const timed = (q: string): { ms: number; answer: string } => {
