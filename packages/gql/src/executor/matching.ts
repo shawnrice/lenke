@@ -1322,6 +1322,26 @@ export const resolve = (
   return { emit, completedOuter, moves };
 };
 
+/**
+ * Does this hop carry an inline predicate that `satisfies` would apply?
+ *
+ * ALL THREE of `CPredicate`'s fields, because `satisfies` checks all three: `props`, then
+ * `eqProps`, then `where`. The check this replaces read only `props` and `where`.
+ *
+ * `eqProps` is unreachable for a REL today — `compileRel` calls `compilePredicate` with no
+ * `ownVar`, so `directEqProps` never lifts anything out of an edge's `WHERE` — which is why
+ * nothing was wrong. But the omission would have DROPPED an edge predicate silently the moment
+ * it did, and passing `ownVar` on a pattern is live work: item 230 added the lifting and left
+ * `compileNode` not passing it as an open question. A skipped predicate filter returns a
+ * SUPERSET, so no correctness test on a fixture lacking that spelling can see it, and the
+ * fuzzer's edge predicates are all `>` / `>=` — never the `=` against a literal that `eqProps`
+ * is for. Defensive, and the test that pins it builds the `CRel` by hand for that reason.
+ */
+export const relHasInlinePred = (rel: CRel): boolean =>
+  rel.pred.props.length > 0 ||
+  rel.pred.where !== undefined ||
+  (rel.pred.eqProps !== undefined && rel.pred.eqProps.length > 0);
+
 /** A hop's out-edges materialized and filtered by its inline predicate. Mirrors native
  *  `expand_filtered`. */
 export const expandFilteredArr = (
@@ -1331,7 +1351,7 @@ export const expandFilteredArr = (
   binding: Binding,
   params: Params,
 ): { edge: Edge; node: Vertex }[] => {
-  const hasPred = rel.pred.props.length > 0 || rel.pred.where !== undefined;
+  const hasPred = relHasInlinePred(rel);
   const out: { edge: Edge; node: Vertex }[] = [];
 
   for (const step of expand(graph, v, rel)) {
