@@ -1059,8 +1059,15 @@ pub(super) fn varlen_walk<S: VarlenEmit>(
                 VarStep::Skip => continue,
                 VarStep::Close => {
                     // A CLOSING hop is a step — TS's `isClose` bypasses the collision test but
-                    // still reaches `steps += 1`.
-                    sink.note_step();
+                    // still reaches `steps += 1`. ONLY at a repetition boundary, though: TS's
+                    // `isClose` requires `completedOuter`, so a hop onto the start MID-unit is
+                    // a plain collision there and costs nothing, while native was charging it.
+                    // The budget's contract above says it "mirrors the TS matcher exactly, so
+                    // the two engines agree on which queries raise", and for a `k > 1` unit it
+                    // did not: native raised where TS answered (audit item 254).
+                    if (len + 1).is_multiple_of(k) {
+                        sink.note_step();
+                    }
                     // Closing hop (Simple cycle back to `start`): emit at a rep boundary,
                     // never descend. Push/emit/pop so the path is complete for the sink.
                     if len + 1 >= min && (len + 1).is_multiple_of(k) {

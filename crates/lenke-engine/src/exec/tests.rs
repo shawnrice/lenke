@@ -8224,6 +8224,102 @@ fn a_path_variable_sees_the_gated_close() {
     assert_eq!(got, vec!["Num(2.0)", "Num(3.0)"], "no 4-node closed path");
 }
 
+// --- The hop budget charges a close only at a rep boundary (item 254) ---
+
+/// `K6` — six nodes, every ordered pair an edge. Dense enough that a `SIMPLE` `k = 2` unit has
+/// many hops back onto the start MID-unit, which is the only position the change affects.
+fn k6_store() -> Store {
+    let mut b = Builder::default();
+    for i in 0..6 {
+        b.node(&["N"], &[("n", n(f64::from(i)))]);
+    }
+    for i in 0..6 {
+        for j in 0..6 {
+            if i != j {
+                b.edge(i, j, "R");
+            }
+        }
+    }
+    b.build()
+}
+
+/// `varlen.rs`' budget contract says the per-source hop budget "mirrors the TS matcher exactly,
+/// so the two engines agree on which queries raise". For a `k > 1` unit it did not: TS's
+/// `isClose` requires `completedOuter`, so a hop onto the start MID-unit is a plain collision
+/// there and costs nothing, while native charged it a step.
+///
+/// **These tests pin the THRESHOLD exactly**, because that is the contract — and because a
+/// looser test does not discriminate. Measured by binary-searching the smallest `trail` limit
+/// at which each engine stops raising, on a ONE-SOURCE query (so native's separate GLOBAL
+/// emitted-row cap, which has no TS twin and is deliberately stricter, cannot contribute):
+///
+/// | variant                              | k=2 `{1,3}` | k=3 `{1,2}` |
+/// |--------------------------------------|------------:|------------:|
+/// | **TS, and native after the fix**     |     **510** |     **465** |
+/// | native before (charge every close)   |         650 |         650 |
+/// | never charge a close                 |         325 |         325 |
+/// | charge mid-unit instead of boundary  |         465 |         385 |
+///
+/// So "answers at N" alone catches only the first variant; "raises at N-1" is what catches the
+/// other two, which charge LESS. Both assertions are needed, and together they say the
+/// threshold IS TS's. If either engine's accounting changes, these numbers must move together.
+///
+/// My first attempt here asserted a raise at a limit of 4, reasoning that a dense two-hop unit
+/// would be dominated by closing hops. It is not — the ordinary `Go` hops blow a budget that
+/// small on their own, so the test passed under both under-charging mutants. A test whose
+/// comment claims to avoid the wrong-reason trap is not thereby exempt from it.
+#[test]
+fn a_mid_unit_close_costs_no_hop_budget() {
+    let mut store = k6_store();
+    let q = "MATCH SIMPLE (a:N {n: 0})((x)-[:R]->(m)-[:R]->(y)){1,3} (t) RETURN t.n AS n";
+    // AT the threshold it answers. Charging every close (the pre-fix behaviour) needs 650.
+    store.set_limit(crate::store::ConfigId::LimitsTrail, 510);
+    assert!(
+        crate::exec::try_run(&opt_plan(q, &store), &store).is_ok(),
+        "k=2 must answer at TS's threshold of 510"
+    );
+    // ONE BELOW it, it raises. Charging less than TS — never charging a close (325), or
+    // charging the mid-unit position instead of the boundary (465) — would answer here.
+    store.set_limit(crate::store::ConfigId::LimitsTrail, 509);
+    let err = try_gql(q, &store).expect_err("and raise one below it");
+    assert!(err.starts_with("E_RESOURCE_EXHAUSTED"), "{err}");
+    assert!(err.contains("trail limit"), "{err}");
+}
+
+/// The same pin for a THREE-hop unit, where the two under-charging variants separate from each
+/// other (325 and 385 against the correct 465) — so this catches a change that happened to
+/// leave the `k = 2` numbers alone.
+#[test]
+fn a_three_hop_unit_pins_its_own_threshold() {
+    let mut store = k6_store();
+    let q = "MATCH SIMPLE (a:N {n: 0})((x)-[:R]->(p)-[:R]->(q)-[:R]->(y)){1,2} (t) \
+             RETURN t.n AS n";
+    store.set_limit(crate::store::ConfigId::LimitsTrail, 465);
+    assert!(
+        crate::exec::try_run(&opt_plan(q, &store), &store).is_ok(),
+        "k=3 must answer at TS's threshold of 465"
+    );
+    store.set_limit(crate::store::ConfigId::LimitsTrail, 464);
+    assert!(try_gql(q, &store).is_err(), "and raise one below it");
+}
+
+/// The `k = 1` control, pinned the same way: there every hop completes a repetition, so every
+/// close IS at a boundary and the accounting is unchanged by this fix. All four variants above
+/// measure 110 here. If this moved, the change was not confined to the mid-unit position.
+#[test]
+fn a_one_hop_unit_charges_every_close_as_before() {
+    let mut store = k6_store();
+    let q = "MATCH SIMPLE (a:N {n: 0})-[:R]->{1,3}(b) RETURN b.n AS n";
+    store.set_limit(crate::store::ConfigId::LimitsTrail, 110);
+    assert!(
+        crate::exec::try_run(&opt_plan(q, &store), &store).is_ok(),
+        "k=1 must answer at its own threshold"
+    );
+    store.set_limit(crate::store::ConfigId::LimitsTrail, 109);
+    let err = try_gql(q, &store).expect_err("and raise one below it");
+    assert!(err.starts_with("E_RESOURCE_EXHAUSTED"), "{err}");
+}
+
 // --- An INNER subpath's own per-repetition WHERE (item 252) ---
 
 /// `0 -(w5)-> 1 -(w5)-> 2 -(w1)-> 3`, so both `n` and `w` discriminate and every count below
