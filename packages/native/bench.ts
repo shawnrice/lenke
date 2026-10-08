@@ -470,6 +470,22 @@ const CASES: Case[] = [
     // two-segment tally's 21. The two-segment product iterates the middle VERTEX; one position
     // along the interior is an EDGE, and the count is the sum over middle edges of
     // indeg(b) x outdeg(c) (audit item 221).
+    // The interior-filtered sibling, and the cheapest of the four filtered three-hop positions:
+    // the product's walk ITERATES the second position, so a constraint there is gated once per
+    // vertex and prunes before either degree is read. It fell to the row pipeline at 9360.5ms,
+    // where the inline spelling of the same question took 3945.9 and the inline EQUALITY 560.7 —
+    // three readings of one query, 13.3x apart (audit item 222).
+    name: 'count 3-hop + interior filter',
+    ...onGraph(
+      () => graphDoc,
+      (e, g) =>
+        void e.query(
+          g,
+          'MATCH (a:Person)-[:KNOWS]->(b)-[:KNOWS]->(c)-[:KNOWS]->(d) WHERE b.age > 60 RETURN count(*) AS c',
+        ),
+    ),
+  },
+  {
     name: 'count 3-hop',
     ...onGraph(
       () => graphDoc,

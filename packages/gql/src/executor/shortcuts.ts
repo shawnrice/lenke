@@ -1427,13 +1427,23 @@ const buildThreeHopCount = <T>(
   s3: Segment,
   start: NodePattern,
   rowOf: (n: number) => T,
+  // The two INTERIOR positions' constraints, however spelled. REQUIRED for the same reason
+  // `buildTwoHopCount`'s is: the single caller derives them from `s1.node` and `s2.node`, so the
+  // relaxed `plainNode` guards below cannot be reached by a path that forgot to carry one.
+  //
+  // `b` is the vertex this walk iterates, so its gate runs once per VERTEX. `c` is the far end of
+  // each middle edge, so its gate runs once per MIDDLE EDGE. Both are positions the walk already
+  // visits, which is why they are carryable at all — item 219's point one segment along. The `a`
+  // and `d` ends are reached only as DEGREES and still decline.
+  interior: { b: readonly InlinePred[]; c: readonly InlinePred[] },
 ): CountOf<T> | null => {
   const rels = [s1.rel, s2.rel, s3.rel];
 
   if (
     rels.some((r) => !plainRel(r) || r.variable !== undefined || r.direction === 'both') ||
-    !plainNode(s1.node) ||
-    !plainNode(s2.node) ||
+    // `s1.node` (b) and `s2.node` (c) may now carry a constraint, because `interior` gates each
+    // one exactly once per visit. `s3.node` — the END — still may not: the product reaches it only
+    // as a degree, so a constraint there has no once-per-element place to go.
     !plainNode(s3.node)
   ) {
     return null;
@@ -1467,15 +1477,35 @@ const buildThreeHopCount = <T>(
   const fromDOut = s3.rel.direction === 'out';
   const midOut = s2.rel.direction === 'out';
 
-  return (graph) => {
+  const gateOfPreds = (preds: readonly InlinePred[]): InlineGate | undefined =>
+    preds.reduceRight<InlineGate | undefined>(
+      (rest, ip) => (v, binding, params, graph) =>
+        inlineHolds(ip, v, binding, params, graph) &&
+        (rest === undefined || rest(v, binding, params, graph)),
+      undefined,
+    );
+  const bGate = gateOfPreds(interior.b);
+  const cGate = gateOfPreds(interior.c);
+
+  return (graph, params) => {
     const aEff = effectiveLabel(graph, aLabel);
     const cEff = effectiveLabel(graph, cLabel);
     const dEff = effectiveLabel(graph, dLabel);
     const midIndex = midOut ? graph.edgesFromByLabel : graph.edgesToByLabel;
+    // The `c` VERTEX has to be resolved when anything reads it — its label or its gate. With
+    // neither, the edge's stored ID is all the `d` side needs (items 140, 218).
+    const needsC = cEff !== undefined || cGate !== undefined;
+    const binding = new Map<string, unknown>();
     let count = 0;
 
     for (const b of candidateVertexSource(graph, bLabel)) {
       if (!matchesLabel(b, bLabel)) {
+        continue;
+      }
+
+      // Once per VERTEX, before either degree is read — the whole reason a `b` constraint belongs
+      // on this shape.
+      if (bGate !== undefined && !bGate(b, binding, params, graph)) {
         continue;
       }
 
@@ -1488,9 +1518,7 @@ const buildThreeHopCount = <T>(
       }
 
       for (const e of edgesOfTypes(midIndex.get(b.id), t2)) {
-        // The `c` VERTEX is wanted only for its label; its ID is what the `d` side counts from,
-        // and the edge already holds that (items 140, 218).
-        if (cEff === undefined) {
+        if (!needsC) {
           count += waysToA * side(graph, midOut ? e.toId : e.fromId, fromDOut, t3, dEff);
 
           continue;
@@ -1498,7 +1526,14 @@ const buildThreeHopCount = <T>(
 
         const c = midOut ? e.to : e.from;
 
-        if (!matchesLabel(c, cEff)) {
+        if (cEff !== undefined && !matchesLabel(c, cEff)) {
+          continue;
+        }
+
+        // Once per MIDDLE EDGE. A `c` reached by several middle edges is gated once per edge
+        // rather than once per vertex, which is the honest cost of this position: the walk meets
+        // `c` as an edge endpoint, not as something it enumerates.
+        if (cGate !== undefined && !cGate(c, binding, params, graph)) {
           continue;
         }
 
@@ -1696,11 +1731,23 @@ const patternCountOf = <T>(
   let midPred: InlinePred | undefined;
   // An END-only clause predicate, shaped for the REVERSED reading where the end node is the start.
   let endPred: HopPred | undefined;
+  // A THREE-segment clause predicate over one INTERIOR node, and which of the two it reads.
+  // `null` means the predicate names something this shape cannot gate, which declines.
+  let interiorPred: { pred: InlinePred; onB: boolean } | null | undefined;
 
   if (where !== undefined) {
-    // The node shape returned above, having folded its clause `WHERE` into the
-    // tally; of what is left only the 1-hop tally can answer one.
-    if (segments.length !== 1 && segments.length !== 2) {
+    // THREE segments admit a clause predicate over exactly ONE INTERIOR node, which is the pair
+    // of positions the degree product's walk visits. Anything else — the two ends, several
+    // variables, four or more segments — still declines.
+    if (segments.length === 3) {
+      interiorPred = interiorPredOf(where, segments[0], segments[1]);
+
+      if (interiorPred === null) {
+        return null;
+      }
+    } else if (segments.length !== 1 && segments.length !== 2) {
+      // The node shape returned above, having folded its clause `WHERE` into the
+      // tally; of what is left only the 1-hop and 2-hop tallies can answer one.
       return null;
     }
 
@@ -1828,31 +1875,94 @@ const patternCountOf = <T>(
   // at any of the four positions — the product reaches two of them only as degrees, and the other
   // two have no gate yet.
   if (segments.length === 3) {
-    const [s1, s2, s3] = segments;
-
-    // `inlineOf(start)` directly, NOT the `inStart` above: that is computed only for one and two
-    // segments, so it is `undefined` here whether or not the start carries a constraint, and
-    // reading it would let `MATCH (a {k: 1})-[:T]->…` through un-applied. A non-`undefined` result
-    // is either a constraint to apply or one `inlineOf` refuses, and both decline.
-    //
-    // The START check is the load-bearing one; mutation says the three NODE checks are currently
-    // redundant with `buildThreeHopCount`'s own `plainNode` guards, which refuse the same patterns
-    // one level down. They stay anyway, because item 219 RELAXED exactly such a guard one position
-    // over — the two-hop product now accepts a constrained middle — so the inner guard is not a
-    // fixed property to lean on, and the ladder saying what it will not route is cheap.
-    if (
-      inlineOf(start) !== undefined ||
-      inlineOf(s1.node) !== undefined ||
-      inlineOf(s2.node) !== undefined ||
-      inlineOf(s3.node) !== undefined
-    ) {
-      return null;
-    }
-
-    return buildThreeHopCount(s1, s2, s3, start, rowOf);
+    return threeSegmentCount(start, segments[0], segments[1], segments[2], rowOf, interiorPred);
   }
 
   return null;
+};
+
+/**
+ * A three-segment clause predicate over exactly ONE INTERIOR node — the pair of positions the
+ * degree product's walk visits. `null` declines the shape.
+ *
+ * A CONSTANT predicate (`WHERE 1 = 1`) is not admitted: it would have to pick a position
+ * arbitrarily. The two-segment gate keeps one because a route already existed there to preserve;
+ * a three-segment shape had none, so there is nothing to keep.
+ */
+const interiorPredOf = (
+  where: Expr,
+  s1: Segment,
+  s2: Segment,
+): { pred: InlinePred; onB: boolean } | null => {
+  const free = freePredicateVars(where);
+  const bName = s1.node.variable;
+  const cName = s2.node.variable;
+  const readsOnly = (name: string | undefined): boolean =>
+    name !== undefined && [...free].every((n) => n === name);
+  const onB = readsOnly(bName);
+
+  if (free.size === 0 || !(onB || readsOnly(cName))) {
+    return null;
+  }
+
+  const bindVar = onB ? bName : cName;
+
+  if (bindVar === undefined) {
+    return null;
+  }
+
+  // `bindVar` is load-bearing: the predicate reads `b.k`, so `inlineHolds` has to bind the element
+  // under that name before evaluating it. Dropping it evaluates against an empty binding.
+  return { pred: { pred: compilePredicate(undefined, where), bindVar }, onB };
+};
+
+/**
+ * The three-segment count. Its own function because `patternCountOf` is at the complexity gate,
+ * and because the ROUTING is the point: the two INTERIOR positions are carried and the two ENDS
+ * are not.
+ *
+ * The product reaches `a` and `d` only as DEGREES, so a constraint there has no once-per-element
+ * place to go. It ITERATES `b` and meets `c` as each middle edge's far end, so both are gated
+ * where they are visited — item 219's reasoning one segment along.
+ */
+const threeSegmentCount = <T>(
+  start: NodePattern,
+  s1: Segment,
+  s2: Segment,
+  s3: Segment,
+  rowOf: (n: number) => T,
+  interiorPred: { pred: InlinePred; onB: boolean } | null | undefined,
+): CountOf<T> | null => {
+  // `inlineOf(start)` directly, NOT `patternCountOf`'s `inStart`: that is computed only for one and
+  // two segments, so it is `undefined` here whether or not the start carries a constraint, and
+  // reading it would let `MATCH (a {k: 1})-[:T]->…` through un-applied.
+  const inB = inlineOf(s1.node);
+  const inC = inlineOf(s2.node);
+
+  if (
+    inlineOf(start) !== undefined ||
+    // Mutually redundant with `buildThreeHopCount`'s own `plainNode(s3.node)`: single mutation
+    // cannot expose either, because whichever one goes the other still declines the pattern.
+    // Removing BOTH is caught, which is what establishes the pair protects anything at all.
+    inlineOf(s3.node) !== undefined ||
+    // `null` is a constraint `inlineOf` refuses (a correlated property value), which declines.
+    inB === null ||
+    inC === null
+  ) {
+    return null;
+  }
+
+  const bPreds = inB === undefined ? [] : [inB];
+  const cPreds = inC === undefined ? [] : [inC];
+
+  // The CLAUSE spelling joins the inline ones here, so `WHERE b.k > 1`, `(b WHERE b.k > 1)` and
+  // `(b {k: 2})` are one question on one route. They were 9360.5, 3945.9 and 560.7ms before this
+  // item — a 2.4x and a 13.3x equivalent-spelling gap, sitting in the open.
+  if (interiorPred !== null && interiorPred !== undefined) {
+    (interiorPred.onB ? bPreds : cPreds).push(interiorPred.pred);
+  }
+
+  return buildThreeHopCount(s1, s2, s3, start, rowOf, { b: bPreds, c: cPreds });
 };
 
 /**
