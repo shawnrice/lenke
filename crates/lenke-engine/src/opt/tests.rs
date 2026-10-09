@@ -53,6 +53,20 @@ fn assert_rows_preserved(plan: &Plan, store: &Store) -> Plan {
     opt
 }
 
+/// The same invariant through the INDEXED optimizer. `assert_rows_preserved` uses `optimize`,
+/// whose oracle reports no indexes — fine for a rule that seeds anyway, but a rule that REQUIRES
+/// an index (the multi-value seed) declines there and would be tested vacuously.
+fn assert_rows_preserved_indexed(plan: &Plan, store: &Store) -> Plan {
+    let before = bag(&run(plan, store));
+    let opt = optimize_indexed(plan.clone(), store);
+    assert_eq!(
+        before,
+        bag(&run(&opt, store)),
+        "optimize_indexed changed the rows"
+    );
+    opt
+}
+
 /// `Scan(label) + Filter(prop = lit)` seeds to `IndexSeek` — for BOTH
 /// spellings, which must land on the SAME seek target (the
 /// equivalent-spellings-cost-the-same invariant) and preserve the rows.
@@ -2062,5 +2076,257 @@ fn an_expand_rooted_split_walks_two_hops_to_its_right() {
             "Str(\"end\")".to_string()
         ],
         "slots crossed"
+    );
+}
+
+// ───────────────────────────────────────────────── multi-value index seeding ───
+
+/// `social()` with a HASH index on `name`, which is what a multi-value seed requires: unlike the
+/// single-value rule it declines without one, because N arms with no index are N column scans.
+fn social_hashed() -> Store {
+    let mut store = social();
+    store.create_index("name");
+    store
+}
+
+/// The arms of a `UNION ALL` tree, left to right, or `None` if `p` is not one.
+fn union_arms(p: &Plan) -> Vec<&Plan> {
+    let mut out = Vec::new();
+
+    fn walk<'a>(p: &'a Plan, out: &mut Vec<&'a Plan>) {
+        match p {
+            Plan::Union {
+                left,
+                right,
+                all: true,
+                op: crate::ir::CombineOp::Union,
+            } => {
+                walk(left, out);
+                walk(right, out);
+            }
+            other => out.push(other),
+        }
+    }
+
+    walk(p, &mut out);
+    out
+}
+
+/// The `(key, value)` each arm seeks, panicking if an arm is not an `IndexSeek` on `label`.
+fn seek_targets(p: &Plan, label: &str) -> Vec<(String, Value)> {
+    union_arms(p)
+        .into_iter()
+        .map(|arm| {
+            let Plan::IndexSeek {
+                label: l,
+                key,
+                value,
+            } = arm
+            else {
+                panic!("expected every arm to be an IndexSeek, got {arm:?}")
+            };
+            assert_eq!(l.as_deref(), Some(label), "every arm keeps the label");
+            (key.clone(), value.clone())
+        })
+        .collect()
+}
+
+fn in_list(key: &str, vals: &[&str]) -> Expr {
+    Expr::In {
+        needle: Box::new(prop(0, key)),
+        haystack: Box::new(Expr::Lit(Value::List(
+            vals.iter().map(|v| s(v)).collect::<Vec<_>>(),
+        ))),
+    }
+}
+
+/// `Filter(name IN [..])` over `Scan(label)` seeds ONE `IndexSeek` per value, concatenated with
+/// `UNION ALL` — and the rows are preserved, which is the invariant that matters.
+///
+/// Neither this spelling nor the OR-chain below seeded at all before: `seek_target` matches a
+/// single `Compare { op: Eq }`, so an `IN` of any length scanned the whole label. Measured on
+/// 200,000 vertices with a hash index: 5.24ms -> 0.07ms for 33 items (75x).
+#[test]
+fn in_list_over_a_scan_seeds_one_index_seek_per_value() {
+    let store = social_hashed();
+    let plan = Plan::Scan {
+        label: Some("Person".into()),
+    }
+    .filter(in_list("name", &["alice", "bob"]))
+    .project(vec![("name".into(), prop(0, "name"))]);
+
+    let opt = assert_rows_preserved_indexed(&plan, &store);
+
+    let Plan::Project { input, .. } = &opt else {
+        panic!("expected Project, got {opt:?}")
+    };
+    let targets = seek_targets(input, "Person");
+
+    assert_eq!(targets.len(), 2, "one arm per value: {targets:?}");
+    assert!(targets.iter().all(|(k, _)| k == "name"));
+    assert_eq!(
+        bag(&run(&opt, &store)),
+        vec!["Str(\"alice\");", "Str(\"bob\");"]
+    );
+}
+
+/// The `=`-OR-chain spelling of the same question lands the SAME plan shape. `normalize_pred`
+/// rewrites `x IN [literals]` to an OR-chain at 32 items or fewer and leaves `Expr::In` above
+/// that, so handling one spelling and not the other would make 32-vs-33 a PLAN boundary — which
+/// is the bug class this engine is named after. Measured: both 65-75x, and within 0.95x of each
+/// other afterwards.
+#[test]
+fn an_or_chain_of_equalities_on_one_key_seeds_the_same_way() {
+    let store = social_hashed();
+    let or_pred = Expr::Or(
+        Box::new(cmp(CompareOp::Eq, prop(0, "name"), Expr::Lit(s("alice")))),
+        Box::new(cmp(CompareOp::Eq, prop(0, "name"), Expr::Lit(s("bob")))),
+    );
+    let plan = Plan::Scan {
+        label: Some("Person".into()),
+    }
+    .filter(or_pred)
+    .project(vec![("name".into(), prop(0, "name"))]);
+
+    let opt = assert_rows_preserved_indexed(&plan, &store);
+
+    let Plan::Project { input, .. } = &opt else {
+        panic!("expected Project, got {opt:?}")
+    };
+
+    assert_eq!(seek_targets(input, "Person").len(), 2);
+    assert_eq!(
+        bag(&run(&opt, &store)),
+        vec!["Str(\"alice\");", "Str(\"bob\");"]
+    );
+}
+
+/// A REPEATED value becomes ONE arm. The arms concatenate without a dedup pass (`all: true`), so
+/// a duplicate value would emit its vertex twice — a wrong answer, not a slower one.
+#[test]
+fn a_repeated_value_seeds_one_arm_and_does_not_double_a_row() {
+    let store = social_hashed();
+    let plan = Plan::Scan {
+        label: Some("Person".into()),
+    }
+    .filter(in_list("name", &["alice", "alice", "bob", "alice"]))
+    .project(vec![("name".into(), prop(0, "name"))]);
+
+    let opt = assert_rows_preserved_indexed(&plan, &store);
+
+    let Plan::Project { input, .. } = &opt else {
+        panic!("expected Project, got {opt:?}")
+    };
+
+    assert_eq!(
+        seek_targets(input, "Person").len(),
+        2,
+        "three `alice`s are one arm"
+    );
+    assert_eq!(
+        bag(&run(&opt, &store)),
+        vec!["Str(\"alice\");", "Str(\"bob\");"],
+        "alice appears ONCE"
+    );
+}
+
+/// A NULL in the list is DROPPED rather than declining the rewrite: `name = null` is UNKNOWN and a
+/// `Filter` keeps only TRUE, so a null arm contributes no rows either way.
+#[test]
+fn a_null_in_the_list_is_dropped_not_declined() {
+    let store = social_hashed();
+    let plan = Plan::Scan {
+        label: Some("Person".into()),
+    }
+    .filter(Expr::In {
+        needle: Box::new(prop(0, "name")),
+        haystack: Box::new(Expr::Lit(Value::List(vec![
+            s("alice"),
+            Value::Null,
+            s("bob"),
+        ]))),
+    })
+    .project(vec![("name".into(), prop(0, "name"))]);
+
+    let opt = assert_rows_preserved_indexed(&plan, &store);
+
+    let Plan::Project { input, .. } = &opt else {
+        panic!("expected Project, got {opt:?}")
+    };
+
+    assert_eq!(
+        seek_targets(input, "Person").len(),
+        2,
+        "the null is not an arm"
+    );
+    assert_eq!(
+        bag(&run(&opt, &store)),
+        vec!["Str(\"alice\");", "Str(\"bob\");"]
+    );
+}
+
+/// WITHOUT a hash index the rewrite DECLINES, and that is the one place this rule differs from the
+/// single-value seed — which seeds anyway because the seek degrades to a typed column scan that
+/// beats `Filter(Scan)`. That argument does not survive multiplication: N arms with no index are N
+/// column scans.
+#[test]
+fn no_hash_index_declines_the_multi_seek() {
+    let store = social(); // no index
+    let plan = Plan::Scan {
+        label: Some("Person".into()),
+    }
+    .filter(in_list("name", &["alice", "bob"]))
+    .project(vec![("name".into(), prop(0, "name"))]);
+
+    let opt = assert_rows_preserved_indexed(&plan, &store);
+    let Plan::Project { input, .. } = &opt else {
+        panic!("expected Project, got {opt:?}")
+    };
+
+    assert!(
+        !matches!(input.as_ref(), Plan::Union { .. }),
+        "must stay a Filter(Scan), got {input:?}"
+    );
+}
+
+/// An OR-chain whose disjuncts read DIFFERENT keys is not one multi-value seek, and declines. A
+/// single value still cannot reach this rule either — that is the existing single-`IndexSeek`
+/// path, which must keep its own shape.
+#[test]
+fn a_mixed_key_or_chain_and_a_single_value_both_decline_the_multi_seek() {
+    let store = social_hashed();
+    let mixed = Expr::Or(
+        Box::new(cmp(CompareOp::Eq, prop(0, "name"), Expr::Lit(s("alice")))),
+        Box::new(cmp(CompareOp::Eq, prop(0, "age"), Expr::Lit(n(25.0)))),
+    );
+    let plan_of = |pred| {
+        Plan::Scan {
+            label: Some("Person".into()),
+        }
+        .filter(pred)
+        .project(vec![("name".into(), prop(0, "name"))])
+    };
+
+    let opt = assert_rows_preserved_indexed(&plan_of(mixed), &store);
+    let Plan::Project { input, .. } = &opt else {
+        panic!("expected Project, got {opt:?}")
+    };
+    assert!(
+        !matches!(input.as_ref(), Plan::Union { .. }),
+        "a mixed-key OR is not a multi-seek, got {input:?}"
+    );
+
+    // One value: the ordinary single `IndexSeek`, NOT a one-armed Union. NOTE it declines for a
+    // reason this test does not pin — `normalize_pred` turns a one-element `IN` into a plain
+    // `Compare { op: Eq }` and the single-seek branch takes it before `multi_seek` is consulted,
+    // so `multi_seek`'s own `< 2` guard is unreachable (mutating it out survives the suite). The
+    // assertion is still worth having: it is the OUTCOME that matters, whichever rule delivers it.
+    let one = assert_rows_preserved_indexed(&plan_of(in_list("name", &["alice"])), &store);
+    let Plan::Project { input, .. } = &one else {
+        panic!("expected Project, got {one:?}")
+    };
+    assert!(
+        !matches!(input.as_ref(), Plan::Union { .. }),
+        "a single value must not build a Union, got {input:?}"
     );
 }

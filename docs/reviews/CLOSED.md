@@ -142,6 +142,16 @@ absence** — `{k: null}` is the one place in a pattern where that distinction i
 
 ## 5. Open — unblocked and priced
 
+- ~~**Native never index-SEEDS from `IN`**~~ — **CLOSED by item 261** (2026-10-09), at **65-75x**,
+  and the recorded price was wrong three ways. It was carried as a "residual 3.3x 32→33 cliff"
+  needing "a multi-value `Seed` variant plus a physical operator, with row-order/byte-identity
+  work". Measured before building: **the cliff is 1.03x** (item 185's membership set already
+  flattened it), **an `=`-OR-chain does not multi-seek either** (`IN` 33 and OR 33 cost the same,
+  1.00x — so the ≤32 rewrite bought a cheaper evaluator form and no seed), and **no new operator
+  was needed** because `Plan::Union { all: true }` already concatenates without deduping, so a
+  union tree of the existing `IndexSeek` is the whole change. Row order changes, which is
+  unspecified and already true of the single-value seek, so there was no byte-identity work either.
+  **Re-price a carried number before building against it.**
 - ~~**The REVERSED AND spelling**~~ — **CLOSED by item 259** (2026-10-09). `WHERE <raising> AND
 <seekable>` now answers the same in both engines. It did NOT need TS to replicate the seeding or
   native to drop it, which is what this entry assumed and priced as "not perf-neutral": a filter

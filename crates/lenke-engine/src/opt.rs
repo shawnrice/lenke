@@ -1813,6 +1813,11 @@ fn apply_local(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
                         },
                         true,
                     )
+                } else if let Some(seeks) = multi_seek(&pred, l.clone(), idx) {
+                    // An `IN` list or a same-key `=`-OR-chain: one seek per distinct value,
+                    // concatenated. Neither spelling seeded at all before — `seek_target` matches
+                    // only a single `Compare { op: Eq }` — so both scanned the whole label.
+                    (seeks, true)
                 } else if let Some((key, op, value)) = range_seek_target(&pred)
                     .filter(|(k, _, _)| idx.has_range_index(k))
                     .filter(|(k, op, v)| seek_beats_scan(idx, k, *op, v))
@@ -2844,6 +2849,150 @@ fn seek_beats_scan(idx: &dyn IndexOracle, key: &str, op: CompareOp, value: &Valu
 /// the scan-fallback seek effectively IS), not a different index decision; see E75.
 fn eq_seek_worth_it(idx: &dyn IndexOracle, key: &str, value: &Value) -> bool {
     !idx.has_hash_index(key) || seek_beats_scan(idx, key, CompareOp::Eq, value)
+}
+
+/// How many `IndexSeek` arms a multi-value seed will build. A plan is a tree, so each arm is a
+/// `Union` node and the depth is the arm count; this bounds both the tree and the per-arm
+/// constant, and the selectivity gate below bites long before it in practice.
+const MULTI_SEEK_MAX_ARMS: usize = 256;
+
+/// The one key and the DISTINCT literal values an `x IN [..]` or a same-key `=`-OR-chain selects,
+/// or `None` for anything else.
+///
+/// Both spellings, because they are one question: `normalize_pred` rewrites `x IN [literals]` to
+/// an OR-chain at 32 items or fewer and leaves it as `Expr::In` above that, so handling only one
+/// of them would make the 32/33 boundary a plan boundary — which is this engine's named bug class.
+///
+/// DECLINES rather than drops on an unseekable value, because dropping one would return fewer
+/// rows. The exception is NULL, which is dropped: `key = null` is UNKNOWN, a `Filter` keeps only
+/// TRUE, so a null arm contributes no rows either way. Values are restricted to the kinds an
+/// index bucket keys cleanly — `Bool`, `Str` and a FINITE `Num` — the same restriction `in_set`
+/// applies, and for the same reason: `group_key` puts two NaNs in one bucket where `=` makes NaN
+/// equal to nothing.
+fn multi_eq_target(pred: &Expr) -> Option<(String, Vec<Value>)> {
+    let seekable = |v: &Value| match v {
+        Value::Bool(_) | Value::Str(_) => true,
+        Value::Num(n) => n.is_finite(),
+        _ => false,
+    };
+
+    let (key, raw): (String, Vec<Value>) = match pred {
+        Expr::In { needle, haystack } => {
+            let Expr::Lit(Value::List(items)) = haystack.as_ref() else {
+                return None;
+            };
+            (prop_path(needle)?, items.clone())
+        }
+        Expr::Or(_, _) => {
+            let mut disj = Vec::new();
+            flatten_or(pred.clone(), &mut disj);
+            let mut key: Option<String> = None;
+            let mut vals = Vec::with_capacity(disj.len());
+
+            for d in &disj {
+                let (k, v) = seek_target(d)?;
+
+                match &key {
+                    Some(seen) if *seen != k => return None,
+                    Some(_) => {}
+                    None => key = Some(k),
+                }
+
+                vals.push(v);
+            }
+
+            (key?, vals)
+        }
+        _ => return None,
+    };
+
+    let mut values: Vec<Value> = Vec::with_capacity(raw.len());
+
+    for v in raw {
+        if matches!(v, Value::Null) {
+            continue;
+        }
+
+        if !seekable(&v) {
+            return None;
+        }
+
+        // DEDUP, or a vertex whose key appears twice in the list would be emitted twice — the
+        // arms concatenate without a dedup pass (`all: true`).
+        if !values.iter().any(|x| crate::value::equals(x, &v)) {
+            values.push(v);
+        }
+    }
+
+    Some((key, values))
+}
+
+/// `Filter(key IN [literals])` or `Filter(key = a OR key = b OR …)` over `Scan(label)` → a
+/// `UNION ALL` of one `IndexSeek` per distinct value.
+///
+/// Same rows as `Scan + Filter` as a MULTISET: the values are distinct so the arms select disjoint
+/// vertex sets, and `all: true` concatenates without deduping. Row ORDER changes, which is
+/// unspecified without an `ORDER BY` and is already how the single-value `IndexSeek` behaves.
+///
+/// # Why this requires a real hash index where the single-value seed does not
+///
+/// `eq_seek_worth_it` seeds even with NO hash index, because `index_seek_ids` then degrades to a
+/// typed column scan that beats the `Filter(Scan)` it replaces (E75). That argument does not
+/// survive multiplication: N arms without an index are N column scans, strictly worse than the one
+/// scan they replace. So an absent index declines here — which `seed_fraction` does for free, by
+/// returning `None` when `index_bucket_len` has no bucket to measure.
+///
+/// The gate is the SUMMED selectivity against the same [`SEEK_MAX_FRACTION`] the single-value seed
+/// uses, which is the right shape: 33 values each selecting 0.02% is a seek, 33 values each
+/// selecting 2% is a scan, and summing is what tells them apart. For `Eq` the oracle's fraction is
+/// an exact bucket length rather than a capped probe, so the sum is exact too.
+fn multi_seek(pred: &Expr, label: Option<String>, idx: &dyn IndexOracle) -> Option<Plan> {
+    let (key, values) = multi_eq_target(pred)?;
+
+    // The `< 2` half is DEFENSIVE and currently UNREACHABLE, which mutation established rather
+    // than my reading it off the code: accepting a single value survives the whole suite, because
+    // `normalize_pred` turns a one-element `IN` into a plain `Compare { op: Eq }` and the
+    // single-seek branch above takes it first. The clause stays because that upstream ordering is
+    // not a property to lean on, and a one-armed `Union` would be a worse plan than the
+    // `IndexSeek` it wrapped — but it is not what makes the single-value case decline.
+    if values.len() < 2 || values.len() > MULTI_SEEK_MAX_ARMS {
+        return None;
+    }
+
+    // An index is required at EVERY size — see the doc comment: N arms without one are N column
+    // scans, which is the one argument that does not survive multiplication.
+    if !idx.has_hash_index(&key) {
+        return None;
+    }
+
+    // A TINY graph always seeds, for the reason `seek_beats_scan` gives: below a few thousand
+    // nodes neither choice is measurable, so the rule would be deciding nothing while churning
+    // plans. Stated the same way here so the two seed rules do not disagree about small graphs.
+    if idx.live_nodes().is_none_or(|n| n >= SEEK_FLOOR_NODES) {
+        let mut total = 0.0;
+
+        for v in &values {
+            total += idx.seed_fraction(&key, CompareOp::Eq, v)?;
+
+            if total > SEEK_MAX_FRACTION {
+                return None;
+            }
+        }
+    }
+
+    let mut arms = values.into_iter().map(|value| Plan::IndexSeek {
+        label: label.clone(),
+        key: key.clone(),
+        value,
+    });
+    let first = arms.next()?;
+
+    Some(arms.fold(first, |acc, arm| Plan::Union {
+        left: Box::new(acc),
+        right: Box::new(arm),
+        all: true,
+        op: crate::ir::CombineOp::Union,
+    }))
 }
 
 /// Below this many live nodes the seek-vs-scan choice is unmeasurable, so the planner
