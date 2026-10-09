@@ -142,6 +142,13 @@ absence** — `{k: null}` is the one place in a pattern where that distinction i
 
 ## 5. Open — unblocked and priced
 
+- ~~**Neither engine seeds from a same-key `=`-OR-chain**~~ — **CLOSED by item 263** (2026-10-09),
+  at **115-269x** in the TS engine. `collectHints` descended only `and`, so `k IN [a,b]` seeded
+  (item 184) and `k = a OR k = b` scanned — one of the spelling pairs `CLAUDE.md` names among the
+  100-300x seeding gaps. Found by grepping the pattern across engines right after item 261 closed
+  it in Rust. A residual stays, measured and recorded: `OR` 33 is **2.68x** the `IN` spelling
+  because the surviving rows re-check O(terms) where `IN` is one hashed test — below
+  `spelling_probe`'s own 1ms floor, so not yet worth the evaluator rewrite.
 - ~~**Native never index-SEEDS from `IN`**~~ — **CLOSED by item 261** (2026-10-09), at **65-75x**,
   and the recorded price was wrong three ways. It was carried as a "residual 3.3x 32→33 cliff"
   needing "a multi-value `Seed` variant plus a physical operator, with row-order/byte-identity

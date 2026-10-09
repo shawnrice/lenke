@@ -3013,6 +3013,67 @@ const BOUND_OF: Partial<Record<CompareOp, keyof CRangeBound>> = {
  * single-conjunct seed would miss, so those (and every non-seekable shape) are
  * left entirely to the residual WHERE.
  */
+/**
+ * The one variable, key and values of a disjunction every branch of which is `<var>.<key> = v`
+ * for the SAME var and key — or `undefined` for any other `or`.
+ *
+ * Nested disjunctions are flattened: a same-operator run folds into one n-ary `or` in this AST,
+ * but a parenthesized group does not, so `(k = a OR k = b) OR k = c` arrives as two items. The
+ * engine's `multi_eq_target` flattens its binary `Or` tree for the same reason.
+ *
+ * ONE non-conforming branch gives up the whole chain, and that is required rather than cautious:
+ * `k = a OR j = b` selects vertices a `k`-only seek would miss, so a partial seed would be a
+ * SUBSET of the matches — the one thing a seed may not be.
+ */
+export const uniformEqChain = (
+  e: Expr,
+): { variable: string; key: string; values: Expr[] } | undefined => {
+  const branches: Expr[] = [];
+  const flatten = (x: Expr): void => {
+    if (x.kind === 'or') {
+      for (const item of x.items) {
+        flatten(item);
+      }
+
+      return;
+    }
+
+    branches.push(x);
+  };
+
+  flatten(e);
+
+  if (branches.length < 2) {
+    return undefined;
+  }
+
+  let variable: string | undefined;
+  let key: string | undefined;
+  const values: Expr[] = [];
+
+  for (const branch of branches) {
+    if (branch.kind !== 'compare') {
+      return undefined;
+    }
+
+    const pc = asPropCompare(branch);
+
+    if (pc?.op !== '=') {
+      return undefined;
+    }
+
+    if (variable === undefined) {
+      ({ variable, key } = pc);
+    } else if (pc.variable !== variable || pc.key !== key) {
+      return undefined;
+    }
+
+    values.push(pc.value);
+  }
+
+  return variable !== undefined && key !== undefined ? { variable, key, values } : undefined;
+};
+
 const collectHints = (where: Expr, into: HintMap): void => {
   switch (where.kind) {
     case 'and':
@@ -3056,6 +3117,31 @@ const collectHints = (where: Expr, into: HintMap): void => {
       }
 
       return;
+    case 'or': {
+      // A UNIFORM same-key `=`-chain is ONE multi-value seek, not a disjunction the seed layer
+      // has to give up on. `k = a OR k = b` and `k IN [a, b]` are one question — `CLAUDE.md`
+      // lists that exact pair among the spellings whose seeding gap cost 100-300x — and until
+      // now only the `IN` spelling seeded, because this switch descended `and` and nothing else.
+      //
+      // Sound because the union of `equals(k, v_i)` IS the predicate's row set, and because a
+      // hint only narrows the SEED: `seedVertices` picks the cheapest candidate and the
+      // predicate still runs during matching, so a seed may be a superset but never a subset.
+      // That is also why nothing here drops a null or checks closedness — the `within` consumer
+      // already skips the hint unless every resolved value `isScalar`, and a skipped hint falls
+      // back to the label bucket. (The engine's twin rewrite has to be exact instead, because
+      // there the seeks REPLACE the predicate — see `multi_seek` in `opt.rs`.)
+      const chain = uniformEqChain(where);
+
+      if (chain) {
+        pushHint(into, chain.variable, {
+          kind: 'within',
+          key: chain.key,
+          values: compileExpr({ kind: 'list', items: chain.values }),
+        });
+      }
+
+      return;
+    }
     default:
   }
 };
