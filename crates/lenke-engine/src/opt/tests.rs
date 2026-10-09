@@ -2330,3 +2330,117 @@ fn a_mixed_key_or_chain_and_a_single_value_both_decline_the_multi_seek() {
         "a single value must not build a Union, got {input:?}"
     );
 }
+
+/// A multi-value conjunct seeds too — `Filter(k IN [..] AND other)` over a `Scan` becomes the
+/// union of seeks with the OTHER conjunct kept as a residual filter above it.
+///
+/// Item 261 only rewrote a WHOLE predicate, so one extra conjunct lost the seed entirely:
+/// `WHERE k IN [33 items] AND other > 5` with only `k` indexed measured 5.64ms against 0.08ms for
+/// the same `IN` alone — a 69x cost for the extra conjunct. Now 0.10ms.
+#[test]
+fn an_in_list_conjunct_seeds_a_union_and_keeps_the_residual() {
+    let store = social_hashed();
+    let pred = Expr::And(
+        Box::new(in_list("name", &["alice", "bob"])),
+        Box::new(cmp(CompareOp::Gt, prop(0, "age"), Expr::Lit(n(20.0)))),
+    );
+    let plan = Plan::Scan {
+        label: Some("Person".into()),
+    }
+    .filter(pred)
+    .project(vec![("name".into(), prop(0, "name"))]);
+
+    let opt = assert_rows_preserved_indexed(&plan, &store);
+
+    let Plan::Project { input, .. } = &opt else {
+        panic!("expected Project, got {opt:?}")
+    };
+    // The residual must survive as a Filter ABOVE the union — dropping it would widen the answer.
+    let Plan::Filter {
+        input: seeks,
+        pred: residual,
+    } = input.as_ref()
+    else {
+        panic!("expected the residual Filter over the seeks, got {input:?}")
+    };
+
+    assert!(
+        matches!(
+            residual,
+            Expr::Compare {
+                op: CompareOp::Gt,
+                ..
+            }
+        ),
+        "the residual is the other conjunct, got {residual:?}"
+    );
+    assert_eq!(seek_targets(seeks, "Person").len(), 2);
+    // alice is 30 and bob 25, so both pass `age > 20`.
+    assert_eq!(
+        bag(&run(&opt, &store)),
+        vec!["Str(\"alice\");", "Str(\"bob\");"]
+    );
+}
+
+/// The `=`-OR-chain spelling of the same conjunction lands the same plan. Measured 0.93ms -> 0.01ms.
+#[test]
+fn an_or_chain_conjunct_seeds_a_union_too() {
+    let store = social_hashed();
+    let pred = Expr::And(
+        Box::new(Expr::Or(
+            Box::new(cmp(CompareOp::Eq, prop(0, "name"), Expr::Lit(s("alice")))),
+            Box::new(cmp(CompareOp::Eq, prop(0, "name"), Expr::Lit(s("bob")))),
+        )),
+        Box::new(cmp(CompareOp::Gt, prop(0, "age"), Expr::Lit(n(26.0)))),
+    );
+    let plan = Plan::Scan {
+        label: Some("Person".into()),
+    }
+    .filter(pred)
+    .project(vec![("name".into(), prop(0, "name"))]);
+
+    let opt = assert_rows_preserved_indexed(&plan, &store);
+
+    let Plan::Project { input, .. } = &opt else {
+        panic!("expected Project, got {opt:?}")
+    };
+    let Plan::Filter { input: seeks, .. } = input.as_ref() else {
+        panic!("expected the residual Filter over the seeks, got {input:?}")
+    };
+
+    assert_eq!(seek_targets(seeks, "Person").len(), 2);
+    // Only alice (30) passes `age > 26`; bob is 25 — so the residual is doing its job.
+    assert_eq!(bag(&run(&opt, &store)), vec!["Str(\"alice\");"]);
+}
+
+/// An INDEXED SINGLE equality still outranks a multi-value conjunct, which is why the new rung
+/// sits below it: one selective seek beats a union of them, and keeping that order leaves every
+/// plan that already seeded untouched.
+#[test]
+fn an_indexed_single_equality_still_outranks_a_multi_value_conjunct() {
+    let store = social_hashed();
+    let pred = Expr::And(
+        Box::new(cmp(CompareOp::Eq, prop(0, "name"), Expr::Lit(s("alice")))),
+        Box::new(in_list("name", &["alice", "bob"])),
+    );
+    let plan = Plan::Scan {
+        label: Some("Person".into()),
+    }
+    .filter(pred)
+    .project(vec![("name".into(), prop(0, "name"))]);
+
+    let opt = assert_rows_preserved_indexed(&plan, &store);
+
+    let Plan::Project { input, .. } = &opt else {
+        panic!("expected Project, got {opt:?}")
+    };
+    let Plan::Filter { input: seek, .. } = input.as_ref() else {
+        panic!("expected a residual Filter, got {input:?}")
+    };
+
+    assert!(
+        matches!(seek.as_ref(), Plan::IndexSeek { .. }),
+        "the single equality must win the pick, got {seek:?}"
+    );
+    assert_eq!(bag(&run(&opt, &store)), vec!["Str(\"alice\");"]);
+}

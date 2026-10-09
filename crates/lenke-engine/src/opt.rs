@@ -1342,6 +1342,10 @@ fn map_children(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
 enum Seed {
     Index(String, Value),
     Range(String, CompareOp, Value),
+    /// One key, several DISTINCT values — an `IN` list or a same-key `=`-OR-chain appearing as a
+    /// CONJUNCT. Lowers to the same `UNION ALL` of `IndexSeek`s that `multi_seek` builds for a
+    /// whole predicate; see `union_of_seeks`.
+    Multi(String, Vec<Value>),
 }
 
 /// Given a conjunction `a AND b AND …`, pick ONE conjunct to seed and return it
@@ -1421,9 +1425,25 @@ fn seed_from_conjuncts(pred: &Expr, idx: &dyn IndexOracle) -> Option<(Seed, Opti
                 .filter_map(|(i, c)| range_cand(i, c)),
         )
     })
+    // A MULTI-VALUE conjunct sits BELOW an indexed eq/range and ABOVE the unindexed-eq fallback.
+    // Below, because a single indexed seek on a selective key beats a union of them and because
+    // keeping that rung first leaves every existing plan untouched. Above, because the fallback's
+    // "seek" is a typed COLUMN SCAN, and a real indexed union beats a scan — which is the whole
+    // gap: `WHERE k IN [33 items] AND other > 5` with only `k` indexed measured 5.64ms against
+    // 0.08ms for the same `IN` alone, a 69x cost for the extra conjunct, because no rung could
+    // seed from the `IN`.
+    .or_else(|| {
+        conjuncts.iter().position(|c| {
+            multi_eq_target(c).is_some_and(|(k, vs)| multi_seek_worth_it(&k, &vs, idx))
+        })
+    })
     .or_else(|| conjuncts.iter().position(|c| eq_worth_it(c)))?;
     let seed = if let Some((k, v)) = seek_target(conjuncts[pick]) {
         Seed::Index(k, v)
+    } else if let Some((k, vs)) =
+        multi_eq_target(conjuncts[pick]).filter(|(k, vs)| multi_seek_worth_it(k, vs, idx))
+    {
+        Seed::Multi(k, vs)
     } else {
         let (k, op, v) = range_seek_target(conjuncts[pick])?;
         Seed::Range(k, op, v)
@@ -1857,6 +1877,12 @@ fn apply_local(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
                             op,
                             value,
                         },
+                        // An `IN`/`=`-OR-chain conjunct: the same union of seeks a whole-predicate
+                        // one builds. `expect` is sound because `seed_from_conjuncts` only emits
+                        // `Multi` once `multi_seek_worth_it` has passed, which requires >= 2
+                        // values.
+                        Seed::Multi(key, values) => union_of_seeks(l, &key, values)
+                            .expect("Seed::Multi carries at least two values"),
                     };
                     let out = match residual {
                         Some(pred) => Plan::Filter {
@@ -2958,40 +2984,31 @@ fn multi_eq_target(pred: &Expr) -> Option<(String, Vec<Value>)> {
 fn multi_seek(pred: &Expr, label: Option<String>, idx: &dyn IndexOracle) -> Option<Plan> {
     let (key, values) = multi_eq_target(pred)?;
 
-    // The `< 2` half is DEFENSIVE and currently UNREACHABLE, which mutation established rather
-    // than my reading it off the code: accepting a single value survives the whole suite, because
-    // `normalize_pred` turns a one-element `IN` into a plain `Compare { op: Eq }` and the
-    // single-seek branch above takes it first. The clause stays because that upstream ordering is
-    // not a property to lean on, and a one-armed `Union` would be a worse plan than the
-    // `IndexSeek` it wrapped — but it is not what makes the single-value case decline.
-    if values.len() < 2 || values.len() > MULTI_SEEK_MAX_ARMS {
+    // The cost question lives in `multi_seek_worth_it`, shared with the conjunct rung: an index is
+    // required at EVERY size (N arms without one are N column scans — the one argument that does
+    // not survive multiplication), a tiny graph always seeds as `seek_beats_scan` does, and the
+    // gate is the SUMMED selectivity.
+    //
+    // Its `< 2` clause is DEFENSIVE and currently UNREACHABLE here, which mutation established
+    // rather than my reading it off the code: accepting a single value survives the whole suite,
+    // because `normalize_pred` turns a one-element `IN` into a plain `Compare { op: Eq }` and the
+    // single-seek branch above takes it first.
+    if !multi_seek_worth_it(&key, &values, idx) {
         return None;
     }
 
-    // An index is required at EVERY size — see the doc comment: N arms without one are N column
-    // scans, which is the one argument that does not survive multiplication.
-    if !idx.has_hash_index(&key) {
-        return None;
-    }
+    union_of_seeks(label, &key, values)
+}
 
-    // A TINY graph always seeds, for the reason `seek_beats_scan` gives: below a few thousand
-    // nodes neither choice is measurable, so the rule would be deciding nothing while churning
-    // plans. Stated the same way here so the two seed rules do not disagree about small graphs.
-    if idx.live_nodes().is_none_or(|n| n >= SEEK_FLOOR_NODES) {
-        let mut total = 0.0;
-
-        for v in &values {
-            total += idx.seed_fraction(&key, CompareOp::Eq, v)?;
-
-            if total > SEEK_MAX_FRACTION {
-                return None;
-            }
-        }
-    }
-
+/// A left-leaning `UNION ALL` of one `IndexSeek` per value. `None` for an empty value list.
+///
+/// `all: true` concatenates WITHOUT deduping, which is correct only because the callers hand over
+/// DISTINCT values — the arms then select disjoint vertex sets. Row order differs from a scan,
+/// which is unspecified without an `ORDER BY` and already true of a single `IndexSeek`.
+fn union_of_seeks(label: Option<String>, key: &str, values: Vec<Value>) -> Option<Plan> {
     let mut arms = values.into_iter().map(|value| Plan::IndexSeek {
         label: label.clone(),
-        key: key.clone(),
+        key: key.to_owned(),
         value,
     });
     let first = arms.next()?;
@@ -3002,6 +3019,32 @@ fn multi_seek(pred: &Expr, label: Option<String>, idx: &dyn IndexOracle) -> Opti
         all: true,
         op: crate::ir::CombineOp::Union,
     }))
+}
+
+/// Is a multi-value seed on `key` over `values` worth it — a real hash index, a sane arm count,
+/// and a SUMMED selectivity inside [`SEEK_MAX_FRACTION`]? Shared by the whole-predicate rewrite
+/// and the conjunct rung so the two cannot drift on the cost question.
+fn multi_seek_worth_it(key: &str, values: &[Value], idx: &dyn IndexOracle) -> bool {
+    if values.len() < 2 || values.len() > MULTI_SEEK_MAX_ARMS || !idx.has_hash_index(key) {
+        return false;
+    }
+
+    if idx.live_nodes().is_none_or(|n| n >= SEEK_FLOOR_NODES) {
+        let mut total = 0.0;
+
+        for v in values {
+            match idx.seed_fraction(key, CompareOp::Eq, v) {
+                Some(f) => total += f,
+                None => return false,
+            }
+
+            if total > SEEK_MAX_FRACTION {
+                return false;
+            }
+        }
+    }
+
+    true
 }
 
 /// Below this many live nodes the seek-vs-scan choice is unmeasurable, so the planner

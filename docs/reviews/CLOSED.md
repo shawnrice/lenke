@@ -142,6 +142,14 @@ absence** — `{k: null}` is the one place in a pattern where that distinction i
 
 ## 5. Open — unblocked and priced
 
+- ~~**A multi-value seed only fired for a WHOLE predicate**~~ — **CLOSED by item 264**
+  (2026-10-09), at **56-93x**. `WHERE k IN [..] AND other > 5` with only `k` indexed cost **69x**
+  the same `IN` alone, because `seed_from_conjuncts` picks one conjunct and `Seed` had no
+  multi-value variant. The new rung sits BELOW an indexed eq/range (one selective seek beats a
+  union, and that order leaves every existing plan untouched) and ABOVE the unindexed-eq fallback
+  (whose "seek" is a column scan). **Mutant C1 survived all 1015 tests before three tests were
+  added — the second time in one session that a new planner rung turned out to be unreached by
+  `rewrite_fuzz`'s generator.**
 - ~~**Neither engine seeds from a same-key `=`-OR-chain**~~ — **CLOSED by item 263** (2026-10-09),
   at **115-269x** in the TS engine. `collectHints` descended only `and`, so `k IN [a,b]` seeded
   (item 184) and `k = a OR k = b` scanned — one of the spelling pairs `CLAUDE.md` names among the
