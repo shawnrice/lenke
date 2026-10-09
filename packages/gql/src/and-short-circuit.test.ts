@@ -80,22 +80,30 @@ describe('AND short-circuits on FALSE', () => {
     expect(raised(`MATCH (n:P) WHERE n.n = 1 AND n.s RETURN n.n AS x`)).toBe(true);
   });
 
-  test('UNKNOWN does not settle the chain, so a later conjunct is still reached', () => {
-    // `n.zz = 'a'` is UNKNOWN (the key is absent everywhere), and `and(null, false)` is
-    // `false` — so UNKNOWN cannot settle an AND and the throwing conjunct is essential. An
-    // implementation that stopped at "not TRUE" would answer here instead of raising.
+  test('UNKNOWN settles a FILTER but not a VALUE, so the position decides', () => {
+    // The distinction this test exists for, and it changed direction on 2026-10-09 for the
+    // filter half only.
     //
-    // THE ONE CASE IN THIS FILE WHERE THE ENGINES DIFFER: native answers [] because a FILTER
-    // keeps only TRUE rows, so its conjunct split drops the UNKNOWN row before the sibling is
-    // reached. A value context has no such luxury — UNKNOWN is a value there and the chain
-    // must carry it. Declared in `divergence-registry.ts` under
-    // `boolean-context-dynamic-operand-under-seek`, route (1); every other assertion here was
-    // cross-checked against native and agrees.
-    expect(raised(`MATCH (n:P) WHERE n.zz = 'a' AND n.s RETURN n.n AS x`)).toBe(true);
-    // And the value side of the same rule, with no fault in play: UNKNOWN AND FALSE is FALSE,
-    // not UNKNOWN. A chain that returned early on UNKNOWN would give `null` here.
+    // `n.zz = 'a'` is UNKNOWN on every row (the key is absent everywhere). In a FILTER that
+    // settles the row: the clause keeps only a clean TRUE (ISO §14.6), so an UNKNOWN row is
+    // dropped whatever its siblings would say, which makes `n.s` an inessential part of the
+    // search condition and it is not evaluated. `filterPredicate` is where that happens, and
+    // its test is `!== true`.
+    expect(raised(`MATCH (n:P) WHERE n.zz = 'a' AND n.s RETURN n.n AS x`)).toBe(false);
+    expect(rows(`MATCH (n:P) WHERE n.zz = 'a' AND n.s RETURN n.n AS x`)).toEqual([]);
+    // In a VALUE position it settles nothing, and that is NOT a second policy — it is Kleene
+    // arithmetic. `and(null, false)` is `false`, so a later conjunct can still change the
+    // answer and must be evaluated. The same two conjuncts therefore raise here.
+    expect(raised(`MATCH (n:P) RETURN (n.zz = 'a' AND n.s) AS x`)).toBe(true);
+    // The value rule with no fault in play, which is what makes the line above a consequence
+    // rather than a choice: a chain that returned early on UNKNOWN would give `null` for the
+    // first of these.
     expect(rows(`RETURN (null AND false) AS r`)).toEqual([{ r: false }]);
     expect(rows(`RETURN (null AND true) AS r`)).toEqual([{ r: null }]);
+    // This was the last traffic on the divergence registry's
+    // `boolean-context-dynamic-operand-under-seek` entry: the engine already answered [] for
+    // the filter line, by its own conjunct split, while this engine raised. Both now agree,
+    // and they agree on the value line too.
   });
 
   test('the bare-expression form, where there is no filter and no seek', () => {

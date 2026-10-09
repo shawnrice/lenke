@@ -145,19 +145,79 @@ suite('AND short-circuit: the TS and native engines agree', () => {
     ).toContain('"x":1');
   });
 
-  test('THE DECLARED RESIDUAL: an UNKNOWN settling conjunct still differs', () => {
-    // Pinned as a difference, not asserted away. `n.zz = 'a'` is UNKNOWN on every row (the key
-    // is absent), and `and(null, false)` is `false`, so UNKNOWN cannot settle a Kleene `AND` —
-    // the TS chain reaches `n.s` and raises. Native answers [] because a FILTER keeps only TRUE
-    // rows, so its conjunct split drops the UNKNOWN row before the sibling is reached.
+  test('WAS THE DECLARED RESIDUAL: an UNKNOWN settling conjunct now agrees', () => {
+    // This test asserted a DIFFERENCE until 2026-10-09 — `ERR E_INVALID_VALUE` against
+    // `ok []` — and its comment said that if it ever started agreeing it should move up into
+    // the agreeing set rather than be deleted, because it was the last of the
+    // `boolean-context-dynamic-operand-under-seek` entry's traffic and the entry goes when it
+    // does. Both halves of that happened: the entry is gone from `divergence-registry.ts`.
     //
-    // Declared in `divergence-registry.ts` under
-    // `boolean-context-dynamic-operand-under-seek`, route (1). If this ever starts AGREEING,
-    // that is good news and this test should be moved up into the agreeing set rather than
-    // deleted — it is the last of that entry's traffic, and the entry goes when it does.
-    const q = "MATCH (n:P) WHERE n.zz = 'a' AND n.s RETURN n.n AS x";
+    // `n.zz = 'a'` is UNKNOWN on every row (the key is absent). Native always answered []
+    // because a FILTER keeps only TRUE rows and its conjunct split drops the UNKNOWN row
+    // before the sibling is reached; TS now reads a filter the same way (`filterPredicate`,
+    // testing `!== true`) instead of applying Kleene `AND`'s weaker FALSE-only settling.
+    expect(agree("MATCH (n:P) WHERE n.zz = 'a' AND n.s RETURN n.n AS x")).toBe('ok []');
+  });
 
-    expect(outcome('ts', q)).toBe('ERR E_INVALID_VALUE');
-    expect(outcome('native', q)).toBe('ok []');
+  test('WAS THE OTHER RESIDUAL: the REVERSED spelling now agrees', () => {
+    // `WHERE <raising> AND <seekable>`, the error-against-a-NON-EMPTY-result shape the
+    // registry was not permitted to declare and the differential fuzzer does not generate.
+    // Native never raised — its seek hoists the seekable conjunct and never visits the
+    // faulting row. TS now puts the conjunct that cannot raise first, for the same reason it
+    // may: in a filter, conjunct order is unobservable.
+    expect(agree('MATCH (n:P) WHERE n.s AND n.n = 99 RETURN n.n AS x')).toBe('ok []');
+    expect(agree('MATCH (n:P) FILTER n.s AND n.n = 99 RETURN n.n AS x')).toBe('ok []');
+    expect(agree('MATCH (n:P) WITH n WHERE n.s AND n.n = 99 RETURN n.n AS x')).toBe('ok []');
+    // A bare literal conjunct takes a different route in the engine (`try_filter_keep`
+    // declines it, so it reaches the general path), which is why it is listed separately.
+    expect(agree('MATCH (n:P) WHERE n.s AND false RETURN n.n AS x')).toBe('ok []');
+    // CONTROL: the seekable conjunct MATCHES, so the raising one is essential either way.
+    expect(agree('MATCH (n:P) WHERE n.s AND n.n = 1 RETURN n.n AS x')).toBe('ERR E_INVALID_VALUE');
+  });
+
+  test('THE ORDERING KEY IS SHARED: each of these was a divergence until it was', () => {
+    // A filter reorders its conjuncts in BOTH engines, so the two must agree on WHICH conjuncts
+    // cannot raise. They did not, three times, and each mismatch was found by the differential
+    // fuzzer on random seeds — so each is pinned here deterministically. A narrower key in one
+    // engine is not caution, it is disagreement.
+    //
+    // THE SAFE CONJUNCT IS WRITTEN SECOND IN EVERY LINE, and that is the whole point. Written
+    // FIRST, these pass whatever the ordering key says — item 258's FALSE short-circuit already
+    // settles the row in written order and the raising sibling is never reached. Mutation caught
+    // exactly that: narrowing the key back to `=`/`<>` (T4) and dropping the negated-literal arm
+    // (T5) both SURVIVED the first version of this test, which had them the other way round.
+    // Only the reversed spelling makes the REORDER observable.
+    //
+    // 1. ORDERED comparisons. TS admitted only `=` and `<>` at first, on the sound-looking
+    //    ground that a cross-type `<=` throws where `=` is a no-match. The engine admits any
+    //    operator. 41 divergences in one 20,000-query run.
+    expect(agree('MATCH (n:P) WHERE n.s AND n.n < 0 RETURN n.n AS x')).toBe('ok []');
+    expect(agree('MATCH (n:P) WHERE n.s AND n.n > 99 RETURN n.n AS x')).toBe('ok []');
+    expect(agree('MATCH (n:P) WHERE n.s AND n.n >= 99 RETURN n.n AS x')).toBe('ok []');
+    // 2. A NEGATED NUMERIC LITERAL. `-1` is `neg(lit)` in the TS AST and a folded
+    //    `Lit(Num(-1.0))` in the engine, where a `Lit` is operand-safe and a `Neg` is not.
+    expect(agree('MATCH (n:P) WHERE n.s AND n.n = -1 RETURN n.n AS x')).toBe('ok []');
+    expect(agree('MATCH (n:P) WHERE n.s AND n.n < -1 RETURN n.n AS x')).toBe('ok []');
+    // 3. NESTED parenthesized groups. A same-operator run folds into one n-ary `and` in the TS
+    //    AST but a parenthesized group does not, so `(A AND B) AND (C AND D)` is two conjuncts
+    //    there and four in the engine — which could hoist a safe conjunct out of the second
+    //    group where TS could not. Each group here holds one raising and one safe conjunct, so
+    //    only a RECURSIVE flatten finds a safe conjunct to put first.
+    expect(
+      agree('MATCH (n:P) WHERE (n.s AND n.n > 99) AND (n.n < 0 AND n.s) RETURN n.n AS x'),
+    ).toBe('ok []');
+    // CONTROL for all three: a safe conjunct that MATCHES leaves the raising one essential,
+    // whichever side it is written.
+    expect(agree('MATCH (n:P) WHERE n.s AND n.n < 99 RETURN n.n AS x')).toBe('ERR E_INVALID_VALUE');
+    expect(agree('MATCH (n:P) WHERE n.n > -1 AND n.s RETURN n.n AS x')).toBe('ERR E_INVALID_VALUE');
+  });
+
+  test('a VALUE position keeps written order in both, which is what bounds the above', () => {
+    // The filter rule must not leak into a value context: there the conjunction's VALUE is the
+    // answer, UNKNOWN is one of its three values, and `and(null, false)` is `false` — so a
+    // later conjunct can still change the result and is essential. Same two conjuncts as the
+    // filter case above, opposite outcome, both engines.
+    expect(agree("MATCH (n:P) RETURN (n.zz = 'a' AND n.s) AS x")).toBe('ERR E_INVALID_VALUE');
+    expect(agree('MATCH (n:P) RETURN (n.s AND n.n = 99) AS x')).toBe('ERR E_INVALID_VALUE');
   });
 });

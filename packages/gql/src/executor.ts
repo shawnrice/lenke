@@ -2238,7 +2238,7 @@ const compileProjection = (projection: Projection): CProjection => {
   // Explicit GROUP BY keys DRIVE grouping (and force it on, even without an
   // aggregate); absent → implicit grouping by the non-aggregate items.
   const groupByExprs = projection.groupBy ?? [];
-  const having = projection.having ? compileExpr(projection.having) : undefined;
+  const having = projection.having ? filterPredicate(projection.having) : undefined;
   const aggregating =
     !projection.star &&
     (items.some((i) => i.isAgg) || groupByExprs.length > 0 || having !== undefined);
@@ -2910,7 +2910,12 @@ export const compilePredicate = (
 
   return {
     props: compileProps(properties),
-    where: generic === undefined ? undefined : compileExpr(generic),
+    // FILTER position: `matchesPredicate` reads this as `asTruth(...) === true`, below a `props`
+    // and an `eqProps` loop that both `return false` outright. So a conjunct that is not cleanly
+    // TRUE settles the element and its siblings need not be evaluated — see `filterPredicate`.
+    // This is the site a clause `WHERE` on a single-node pattern actually lands on, because
+    // `pushWhereIntoNode` moves it here before `compileClause` compiles anything.
+    where: generic === undefined ? undefined : filterPredicate(generic),
     ...(direct === null ? {} : { eqProps: direct.eq }),
   };
 };
@@ -4076,10 +4081,13 @@ const pushWhereIntoNode = (clause: Extract<Clause, { kind: 'match' }>): typeof c
   // SURVIVING binding. For an ordinary comparison those are the same count and the
   // merge is free, but a conjunct carrying `EXISTS {…}` / `COUNT {…}` / `VALUE {…}`
   // runs a correlated sub-pattern each time, so pushing it costs one subquery per
-  // vertex in the label — and a cheap conjunct beside it cannot gate it, because the
-  // evaluator does not short-circuit (`operator-chains.test.ts` pins that, and native
-  // raises on `false AND (1.0 / 0.0)` too, so it is a byte-identity contract, not an
-  // oversight). Measured on 20,000 users with a FOLLOWS ring (audit item 174):
+  // vertex in the label. A cheap conjunct beside it DOES now gate it: the merged predicate
+  // compiles through `filterPredicate`, which exits at the first conjunct that is not cleanly
+  // TRUE — so the subquery is reached only for an element the cheap conjunct accepted. (This
+  // comment said the opposite until 2026-10-09, and was right when written: the evaluator
+  // short-circuited nothing, and `operator-chains.test.ts` pinned that as a byte-identity
+  // contract.) What the split still buys is the SEEK, which ordering cannot substitute for.
+  // Measured on 20,000 users with a FOLLOWS ring (audit item 174):
   //
   //   MATCH (u:User) WHERE u.name = $n AND EXISTS { (u)-[:FOLLOWS]->{2,4}(u) }   265.48ms
   //   MATCH (u:User {name: $n}) WHERE EXISTS { (u)-[:FOLLOWS]->{2,4}(u) }           2.38ms
@@ -4217,6 +4225,179 @@ export const gatePredicate = (where: Expr): CompiledExpr => {
   };
 };
 
+/**
+ * Every conjunct of an `AND`, flattened RECURSIVELY.
+ *
+ * The engine's `filter_conjuncts_reordered` flattens its binary `And` tree all the way down, and
+ * the two have to agree on what the conjuncts ARE before they can agree on their order. A
+ * same-operator run folds into one n-ary `and` in this AST, but a parenthesized group does not —
+ * `(A AND B) AND (C AND D)` arrives as two items where the engine sees four. Taking only the top
+ * level left the differential fuzzer finding shapes like
+ * `FILTER ((n.n > 4 AND VALUE {…}) AND ((n.m.k < 3) AND (n.n = n.x)))`, where the engine could
+ * hoist a safe conjunct out of the second group and this engine could not.
+ *
+ * Module scope, not a closure inside `filterPredicate`: it captures nothing, and a function
+ * defined inside a returned closure's builder is a shape this engine has been bitten by
+ * (`ts-closure-size-is-load-bearing`). The linter asks for the same thing.
+ */
+const flattenConjuncts = (e: Expr): readonly Expr[] =>
+  e.kind === 'and' ? e.items.flatMap(flattenConjuncts) : [e];
+
+/**
+ * Whether an `AND` holds BOTH a conjunct that cannot raise and one that can — the only case
+ * {@link filterPredicate} reorders — decided WITHOUT ALLOCATING. Returns a bitmask: 1 = saw one
+ * that cannot raise, 2 = saw one that can, so `3` is mixed.
+ *
+ * Allocation-free is the whole point, and it was measured. Deciding this with
+ * `flattenConjuncts` plus two `.filter` passes cost a real **1.7x** on two spellings in
+ * `bun run spelling` — `MATCH (n:P WHERE n.k = 2 AND n.s = 's1')` and
+ * `MATCH (n:P) WHERE 2 = n.k AND 's1' = n.s` went from ~4.3ms to ~7.2ms at SPELL_N=200000, where
+ * a door-shut build measured 4.24/4.37 exactly as HEAD did. They are the two spellings of that
+ * group whose predicate reaches here as a MULTI-CONJUNCT `AND` — the others have their
+ * equalities lifted into `props`/`eqProps` first, or arrive with a single conjunct — which is
+ * also what makes them the ones that pay: **this runs per EXECUTION for those shapes, not once
+ * per plan**, so anything allocated on the decline path is on the hot path. The engine's
+ * `filter_conjuncts_reordered` is allocation-free on its decline path for the same reason; this
+ * was not, which is the inconsistency the probe caught.
+ */
+const conjunctMix = (e: Expr): number => {
+  if (e.kind !== 'and') {
+    return truthCannotRaise(e) ? 1 : 2;
+  }
+
+  let acc = 0;
+
+  for (const it of e.items) {
+    acc |= conjunctMix(it);
+  }
+
+  return acc;
+};
+
+/**
+ * Whether evaluating `e` to a VALUE cannot raise. A deliberately tiny whitelist: a lookup or a
+ * literal reads something that is already there, and a missing property is null rather than a
+ * fault. Everything else — arithmetic (`1.0 / 0.0`), a `CAST`, any function, a subquery, a list
+ * or record constructor — is assumed to raise, because a false negative here only forgoes a
+ * reorder while a false positive would move a raise.
+ */
+const valueCannotRaise = (e: Expr): boolean =>
+  e.kind === 'lit' ||
+  e.kind === 'param' ||
+  e.kind === 'var' ||
+  e.kind === 'prop' ||
+  e.kind === 'property_exists' ||
+  e.kind === 'isLabeled' ||
+  // A NEGATED NUMERIC LITERAL, because `-1` is one of these here and a folded `Lit(Num(-1.0))`
+  // in the engine, where `Lit` is operand-safe. Without this arm the two engines partition
+  // `n.x > -1` differently and the one that calls it unsafe reaches a raising sibling the other
+  // skips — four of the five divergences left in a 20,000-query differential run after the
+  // comparison arm was widened, all of them this. Only a numeric LITERAL: `-n.s` negates a
+  // string and faults, which is why this is not `neg` of anything value-safe.
+  (e.kind === 'neg' && e.expr.kind === 'lit' && typeof e.expr.value === 'number');
+
+/**
+ * Whether evaluating `e` as a TRUTH VALUE cannot raise — the question a conjunct of a filter
+ * poses, which is stricter than {@link valueCannotRaise} because the coercion itself can fault:
+ * a bare `n.s` holding a string is the whole shape this exists to recognize as UNSAFE.
+ *
+ * `=` and `<>` are included and the ORDERED comparisons are not, which is not an oversight:
+ * cross-type `=` is a no-match while cross-type `<=` throws (`cross-type-comparison-no-error`).
+ * `isTruth` / `isTyped` / `isLabeled` are left out for now — they always yield a boolean, but
+ * their operands reach code this has not been checked against, and a conservative omission
+ * costs only a missed reorder.
+ */
+const truthCannotRaise = (e: Expr): boolean => {
+  switch (e.kind) {
+    case 'lit':
+      // A non-boolean literal in a truth position is a fault — and a statically detectable
+      // one, so `validateBoolContexts` has already rejected it before this runs. Tested
+      // anyway: this helper must be sound on its own, not because of a caller.
+      return typeof e.value === 'boolean' || e.value === null;
+    case 'property_exists':
+      return true;
+    case 'isLabeled':
+      return true;
+    case 'isNull':
+      return valueCannotRaise(e.expr);
+    case 'compare':
+      // EVERY operator, not just `=` and `<>`. A first version restricted it to the two that
+      // cannot fault on a cross-type pair (`cross-type-comparison-no-error`: `=` is a no-match
+      // where `<=` throws), which is the more cautious reading and was WRONG — the engine's
+      // `narrowing_is_transparent` admits any operator, so the two engines partitioned
+      // differently and the differential fuzzer found 41 divergences in one 20,000-query run,
+      // all of them TS raising where the engine answered no rows. The ordering key has to be
+      // the SAME key on both sides or the reorder is not shared; being conservative in one
+      // engine is not safety, it is disagreement. (And it costs nothing in raises: hoisting a
+      // comparison that CAN fault makes it run earlier, never makes a skipped fault appear.)
+      return valueCannotRaise(e.left) && valueCannotRaise(e.right);
+    case 'not':
+      return truthCannotRaise(e.expr);
+    case 'and':
+    case 'or':
+    case 'xor':
+      return e.items.every(truthCannotRaise);
+    default:
+      return false;
+  }
+};
+
+/**
+ * Compile a predicate in FILTER position — a clause `WHERE`, a `FILTER`, a `HAVING` — where the
+ * only question asked of the predicate is keep/skip and a row is kept only on a clean TRUE
+ * (ISO §14.6; every call site reads `asTruth(pred(env)) === true`).
+ *
+ * That contract buys two things, and NEITHER is a reordering of what `AND` evaluates to:
+ *
+ *  1. **Any conjunct that is not cleanly TRUE settles the row, UNKNOWN included.** This is
+ *     strictly stronger than `compileExpr`'s `and` arm, which must produce the conjunction's
+ *     VALUE and so can only settle on FALSE — `and(null, false)` is `false`, so an UNKNOWN
+ *     conjunct cannot settle a Kleene `AND`. Here it can, because an UNKNOWN row is dropped
+ *     whatever its siblings say. The test is `!== true`, not `=== false`.
+ *  2. **Conjunct ORDER is therefore unobservable**, which is what lets the conjuncts that
+ *     cannot raise go first. In a value position that reordering is a real choice with a real
+ *     cost (it answered `false` for `RETURN (0 AND (1 IS NULL))` where the engine raised, one
+ *     of 5 divergences the differential fuzzer found); here it cannot change the row set at
+ *     all, only whether a row the filter has already lost pays for a fault.
+ *
+ * So `WHERE <raising> AND <seekable>` keeps its rows instead of raising, and no exception is
+ * constructed on the way — which is the cheapest possible answer rather than a cheaper throw
+ * (user, 2026-10-09). The engine reaches the same outcome by a different mechanism: its filter
+ * narrows a mask batch-wise in `filter_keep`, where this exits early per row. Same algorithm,
+ * different mechanics, same answer.
+ *
+ * NOT TAKEN when every conjunct is safe. The semantics then cannot differ — nothing can raise,
+ * so there is nothing to skip — and leaving `compileExpr` to it keeps the ordinary filter on
+ * exactly the closure it has today, which on this engine is load-bearing
+ * (`ts-closure-size-is-load-bearing`).
+ */
+const filterPredicate = (where: Expr): CompiledExpr => {
+  // DECLINE WITHOUT ALLOCATING — see `conjunctMix`, and the 1.7x that measured why. Nothing can
+  // raise, or nothing cannot: in the first case this path is unobservable, in the second there is
+  // no safe conjunct to put in front and the early exit is all that is left, which
+  // `compileExpr`'s `and` arm already does for the FALSE half.
+  if (where.kind !== 'and' || conjunctMix(where) !== 3) {
+    return compileExpr(where);
+  }
+
+  const conjuncts = flattenConjuncts(where);
+  const safe = conjuncts.filter(truthCannotRaise);
+  const parts = [...safe, ...conjuncts.filter((c) => !truthCannotRaise(c))].map(compileExpr);
+
+  return (env) => {
+    for (const part of parts) {
+      // `!== true` — see (1). A row that is FALSE or UNKNOWN on any conjunct is already lost,
+      // so the remaining conjuncts are an inessential part of the search condition and are
+      // not evaluated.
+      if (asTruth(part(env)) !== true) {
+        return false;
+      }
+    }
+
+    return true;
+  };
+};
+
 const seedPrefilter = (
   clause: Extract<Clause, { kind: 'match' }>,
 ): { readonly var: string; readonly pred: CompiledExpr } | undefined => {
@@ -4288,7 +4469,7 @@ const compileClause = (rawClause: Clause): CClause => {
         kind: 'match',
         optional: clause.optional,
         patterns,
-        where: clause.where ? compileExpr(clause.where) : undefined,
+        where: clause.where ? filterPredicate(clause.where) : undefined,
         nullVars: clause.optional ? patternVars(clause.patterns) : [],
         ...matchVarSets(clause.patterns, clause.where),
       };
@@ -4297,10 +4478,10 @@ const compileClause = (rawClause: Clause): CClause => {
       return {
         kind: 'with',
         projection: compileProjection(clause.projection),
-        where: clause.where ? compileExpr(clause.where) : undefined,
+        where: clause.where ? filterPredicate(clause.where) : undefined,
       };
     case 'filter':
-      return { kind: 'filter', where: compileExpr(clause.where) };
+      return { kind: 'filter', where: filterPredicate(clause.where) };
     case 'page':
       // Sort keys are ordinary expressions over the CURRENT scope (the working
       // table), so they compile exactly like a FILTER predicate — no projection,

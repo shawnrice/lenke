@@ -2183,8 +2183,154 @@ pub(super) fn filter_keep(pred: &Expr, store: &Store, batch: &Batch) -> Result<V
     if let Some(keep) = try_filter_keep(pred, store, batch) {
         return Ok(keep);
     }
+    // A FILTER keeps a row only on a clean TRUE, so a conjunct that is not cleanly TRUE settles
+    // it and the rest are an inessential part of the search condition — which makes conjunct
+    // ORDER unobservable here and lets the ones that cannot raise go first. Its own door, for
+    // the same reason `fold_raising_conjunct` has one: the `eval_mask` tail below is the hot
+    // path and stays the size it was.
+    if let Some(parts) = filter_conjuncts_reordered(pred) {
+        return filter_keep_ordered(&parts, store, batch);
+    }
     let mask = eval_mask(pred, store, batch)?;
     Ok((0..mask.len()).filter(|&i| mask[i] == Some(true)).collect())
+}
+
+/// The top-level conjuncts of a FILTER predicate with the ones that cannot raise moved to the
+/// front — or `None` when that reordering cannot be observed and the caller should take its
+/// ordinary whole-predicate path.
+///
+/// `None` covers both degenerate partitions. With nothing that can raise there is nothing to
+/// defer; with nothing that cannot, there is no safe conjunct to put in front. Only a MIXED
+/// predicate reaches the ordered path, which is what keeps this off every filter in the corpus.
+///
+/// `narrowing_is_transparent` is the test, reused through `filter_conjunct_cannot_raise`:
+/// "definitely yields a boolean and cannot fault" is exactly the question a filter conjunct
+/// poses. The TS engine's `truthCannotRaise` is the same whitelist on the same reasoning.
+/// Whether a FILTER conjunct can be left unevaluated safely — `narrowing_is_transparent` plus the
+/// one case it deliberately excludes.
+///
+/// It refuses a bare `Lit` because an `AND` operand is put through `as_truth`, which faults on a
+/// non-boolean, and narrowing a faulting literal to zero rows would hide that fault. A `Bool` or
+/// `Null` literal has no such hazard: it is exactly the complement of the literal arm of
+/// `gql::definitely_non_bool`, so any other literal has already been rejected at plan time. Kept
+/// here rather than widened in `narrowing_is_transparent`, which `fold_operand`'s sampled speed
+/// path and `plan_is_transparent` also read and which is tuned.
+fn filter_conjunct_cannot_raise(e: &Expr) -> bool {
+    match e {
+        Expr::Lit(v) => matches!(v, Value::Bool(_) | Value::Null),
+        _ => narrowing_is_transparent(e),
+    }
+}
+
+fn filter_conjuncts_reordered(pred: &Expr) -> Option<Vec<&Expr>> {
+    fn flatten<'a>(e: &'a Expr, out: &mut Vec<&'a Expr>) {
+        match e {
+            Expr::And(a, b) => {
+                flatten(a, out);
+                flatten(b, out);
+            }
+            _ => out.push(e),
+        }
+    }
+
+    // Decide WITHOUT ALLOCATING, because this runs once per filter call per batch and declines
+    // for nearly every predicate in the corpus — a `Vec` built and dropped on the decline path
+    // is a per-block allocation on the hot filter.
+    fn scan(e: &Expr, safe: &mut bool, risky: &mut bool) {
+        match e {
+            Expr::And(a, b) => {
+                scan(a, safe, risky);
+                scan(b, safe, risky);
+            }
+            _ => {
+                if filter_conjunct_cannot_raise(e) {
+                    *safe = true;
+                } else {
+                    *risky = true;
+                }
+            }
+        }
+    }
+
+    if !matches!(pred, Expr::And(..)) {
+        return None;
+    }
+
+    let (mut safe_seen, mut risky_seen) = (false, false);
+    scan(pred, &mut safe_seen, &mut risky_seen);
+
+    if !(safe_seen && risky_seen) {
+        return None;
+    }
+
+    let mut parts = Vec::new();
+    flatten(pred, &mut parts);
+
+    let mut safe = Vec::with_capacity(parts.len());
+    let mut risky = Vec::new();
+
+    for p in parts {
+        if filter_conjunct_cannot_raise(p) {
+            safe.push(p);
+        } else {
+            risky.push(p);
+        }
+    }
+
+    safe.extend(risky);
+    Some(safe)
+}
+
+/// Keep the rows every conjunct answers TRUE for, evaluating each conjunct over only the rows its
+/// predecessors left alive.
+///
+/// This is `fold_raising_conjunct`'s narrowing applied to a whole conjunct list rather than one
+/// operand, and with the stronger settling rule a filter allows: there, only `Some(false)`
+/// settles, because an `AND` must still produce a value and `and(null, false)` is `false`; here
+/// anything that is not `Some(true)` settles, because the row is dropped whatever its siblings
+/// say. That difference is the whole reason `WHERE n.zz = 'a' AND n.s` answers no rows instead of
+/// faulting on `n.s` — an UNKNOWN conjunct cannot settle a Kleene `AND` but does settle a filter.
+fn filter_keep_ordered(
+    parts: &[&Expr],
+    store: &Store,
+    batch: &Batch,
+) -> Result<Vec<usize>, String> {
+    let n = batch.rows();
+    let mut keep: Vec<usize> = (0..n).collect();
+
+    for p in parts {
+        if keep.is_empty() {
+            return Ok(keep);
+        }
+
+        // While nothing has been eliminated, `keep[j] == j`, so the whole batch is both cheaper
+        // and indexed the same way as the narrowed one — no special case needed below.
+        let mask = if keep.len() == n {
+            eval_mask(p, store, batch)?
+        } else {
+            // An unknown slot set becomes a full gather rather than a refusal: `narrow_to_slots`
+            // substitutes placeholders only for the slots it is NOT told to gather, so naming
+            // every slot is correct and merely slower (same argument as `fold_raising_conjunct`).
+            let mut read = Vec::new();
+
+            if !slots_read(p, &mut read) {
+                read = (0..batch.slots.len()).collect();
+            }
+
+            read.sort_unstable();
+            read.dedup();
+            eval_mask(p, store, &narrow_to_slots(batch, &keep, &read))?
+        };
+
+        keep = keep
+            .iter()
+            .enumerate()
+            .filter(|&(j, _)| mask.get(j) == Some(&Some(true)))
+            .map(|(_, &i)| i)
+            .collect();
+    }
+
+    Ok(keep)
 }
 
 fn guard_intermediate(batch: Batch, store: &Store) -> Result<Batch, String> {
@@ -3070,8 +3216,30 @@ fn optional_expand(
             }
             cand.push(Col::Nodes(cand_nbr.clone()));
             let cb = Batch::of(cand);
-            let m = eval_mask(pred, store, &cb)?;
-            Some(m.into_iter().map(|t| t == Some(true)).collect())
+            // FILTER ORDER, as in `filter_keep` and `pull_body` — a candidate survives only on
+            // a clean TRUE, which is this arm's own stated rule, so conjunct order is
+            // unobservable and the ones that cannot raise go first. The third site that needed
+            // it: the differential fuzzer found an inline landing `WHERE` on an OPTIONAL expand
+            // answering rows in TS and raising here, because the TS engine reorders every
+            // filter position and this one did not.
+            let m = match filter_conjuncts_reordered(pred) {
+                Some(parts) => {
+                    let keep = filter_keep_ordered(&parts, store, &cb)?;
+                    let mut out = vec![false; cb.rows()];
+
+                    for i in keep {
+                        out[i] = true;
+                    }
+
+                    out
+                }
+                None => eval_mask(pred, store, &cb)?
+                    .into_iter()
+                    .map(|t| t == Some(true))
+                    .collect(),
+            };
+
+            Some(m)
         }
     };
     // Pass 2: per source, emit its surviving candidates in order; if none survive, land
@@ -4986,6 +5154,25 @@ fn pull_body(plan: &Plan, store: &Store, seed: &Batch) -> Result<Batch, String> 
             // not just subquery bodies). `as_truth` over the evaluated column is what
             // `filter_keep`'s own general path reduces to, so the semantics are its semantics —
             // the three-valued mask, UNKNOWN dropped — at the cost this arm already paid.
+            // FILTER ORDER, the same rule as `filter_keep`'s and for the same reason — and it
+            // has to be stated twice because this arm deliberately is not that function. This
+            // one serves the STREAMING driver where the main `Plan::Filter` arm serves the
+            // materialized one, and `the_streamed_and_materialized_projections_agree` compares
+            // them: applying the reordering to only one side made seed 107 raise
+            // "division by zero" streamed and answer rows materialized, which is the sharpest
+            // possible reminder that "which rows does this predicate keep" has two derivations
+            // here. The ordered path uses `eval_mask`, which this arm's own comment below
+            // records as the semantics it reduces to.
+            //
+            // Behind its own door, so the ~20% this arm exists to keep is untouched: only a
+            // MIXED conjunction (something that can raise beside something that cannot) leaves
+            // the three lines below, and they are unchanged.
+            if let Some(parts) = filter_conjuncts_reordered(pred) {
+                let keep = filter_keep_ordered(&parts, store, &b)?;
+
+                return Ok(b.gather(&keep));
+            }
+
             let mask = as_truth(&eval(pred, store, &b)?)?;
             let keep: Vec<usize> = (0..mask.len()).filter(|&i| mask[i] == Some(true)).collect();
 

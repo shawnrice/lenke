@@ -10948,6 +10948,122 @@ fn a_false_conjunct_leaves_a_throwing_conjunct_unevaluated() {
     }
 }
 
+/// A FILTER keeps a row only on a clean TRUE, so a conjunct that is not cleanly TRUE settles it —
+/// UNKNOWN included, unlike the Kleene `AND` above, where `and(null, false)` is `false` and only
+/// FALSE can settle. `n.zz` is absent on every vertex, so `n.zz = 'a'` is UNKNOWN throughout.
+#[test]
+fn a_filter_settles_on_unknown_and_leaves_a_raising_sibling_unevaluated() {
+    let store = chain_store(8);
+    let q = "MATCH (n:N) WHERE n.zz = 'a' AND n.name RETURN n.name AS x";
+
+    assert_eq!(
+        try_gql(q, &store).unwrap_or_else(|e| panic!("{q} must not fault: {e}")),
+        0,
+        "an UNKNOWN conjunct settles every row, so no row survives"
+    );
+
+    // CONTROL: `n.zz IS NULL` is TRUE on every vertex (an absent key reads as null), so it
+    // settles nothing and the raising conjunct is essential.
+    let ctl = "MATCH (n:N) WHERE n.zz IS NULL AND n.name RETURN n.name AS x";
+    let err = try_gql(ctl, &store).expect_err("an ESSENTIAL raising conjunct must fault");
+
+    assert!(err.contains("E_INVALID_VALUE"), "{ctl} -> {err}");
+}
+
+/// Conjunct ORDER is unobservable in a filter, so the conjuncts that cannot raise go FIRST. This
+/// is the REVERSED spelling — the raising conjunct written first — which used to fault here and
+/// answer in the TS engine, the last residual of the `boolean-context-dynamic-operand-under-seek`
+/// registry entry (now deleted).
+#[test]
+fn a_filter_evaluates_the_conjunct_that_cannot_raise_first() {
+    let store = chain_store(8);
+
+    for q in [
+        "MATCH (n:N) WHERE n.name AND n.name = 'zz' RETURN n.name AS x",
+        "MATCH (n:N) WHERE n.name AND n.zz = 'a' RETURN n.name AS x",
+    ] {
+        assert_eq!(
+            try_gql(q, &store).unwrap_or_else(|e| panic!("{q} must not fault: {e}")),
+            0,
+            "{q} must admit no row"
+        );
+    }
+
+    // CONTROL: the safe conjunct MATCHES one vertex, so the raising one is reached on it.
+    let ctl = "MATCH (n:N) WHERE n.name AND n.name = 'v1' RETURN n.name AS x";
+    let err = try_gql(ctl, &store).expect_err("a reached raising conjunct must fault");
+
+    assert!(err.contains("E_INVALID_VALUE"), "{ctl} -> {err}");
+}
+
+/// A BOOLEAN or NULL literal conjunct settles a filter from either side. `narrowing_is_transparent`
+/// deliberately refuses a bare `Lit` — an `AND` operand goes through `as_truth`, which faults on a
+/// non-boolean — so `filter_conjunct_cannot_raise` adds back exactly the literals that cannot.
+#[test]
+fn a_literal_false_conjunct_settles_a_filter_from_either_side() {
+    let store = chain_store(8);
+
+    for q in [
+        "MATCH (n:N) WHERE n.name AND false RETURN n.name AS x",
+        "MATCH (n:N) WHERE false AND n.name RETURN n.name AS x",
+    ] {
+        assert_eq!(
+            try_gql(q, &store).unwrap_or_else(|e| panic!("{q} must not fault: {e}")),
+            0,
+            "{q} must admit no row"
+        );
+    }
+}
+
+/// The BOUND on all of the above: a VALUE position keeps written order and settles only on FALSE,
+/// because there the conjunction's value IS the answer and UNKNOWN is one of its three values. The
+/// same two conjuncts as the filter cases therefore fault here.
+#[test]
+fn a_value_position_keeps_written_order_where_a_filter_reorders() {
+    let store = chain_store(8);
+
+    for q in [
+        "MATCH (n:N) RETURN ((n.zz = 'a') AND n.name) AS x",
+        "MATCH (n:N) RETURN (n.name AND (n.name = 'zz')) AS x",
+    ] {
+        let err = try_gql(q, &store).expect_err("a value position must not reorder");
+
+        assert!(err.contains("E_INVALID_VALUE"), "{q} -> {err}");
+    }
+}
+
+/// The ordering KEY, which has to match the TS engine's `truthCannotRaise` arm for arm — a
+/// narrower key in one engine is not caution, it is disagreement (the differential fuzzer found 41
+/// divergences in one run from exactly that). Each line here is one mismatch that happened.
+#[test]
+fn the_filter_ordering_key_admits_any_comparison_a_negated_literal_and_nests() {
+    let store = chain_store(8);
+
+    // THE SAFE CONJUNCT IS WRITTEN SECOND, and that is the whole point: written FIRST these pass
+    // whatever the ordering key says, because item 258's FALSE short-circuit already settles the
+    // row in written order and the raising sibling is never reached. Mutation caught exactly that
+    // — narrowing the key back to `=`/`<>` SURVIVED the first version of this test. Only the
+    // reversed spelling makes the REORDER observable.
+    for q in [
+        // An ORDERED comparison, not just `=`/`<>`: every name is `v<i>`, so `< 'a'` is false
+        // throughout. The TS engine admitted only `=` and `<>` at first.
+        "MATCH (n:N) WHERE n.name AND n.name < 'a' RETURN n.name AS x",
+        // A NEGATED NUMERIC LITERAL, folded to `Lit(Num(-1.0))` here and a `neg` node there.
+        // Cross-type `=` is a no-match, so this is false throughout rather than a fault.
+        "MATCH (n:N) WHERE n.name AND n.name = -1 RETURN n.name AS x",
+        // NESTED parenthesized groups, each holding one raising and one safe conjunct — so only
+        // a RECURSIVE flatten of the `And` tree finds a safe conjunct to put first.
+        "MATCH (n:N) WHERE (n.name AND n.name = 'zz') AND (n.name < 'a' AND n.name) \
+         RETURN n.name AS x",
+    ] {
+        assert_eq!(
+            try_gql(q, &store).unwrap_or_else(|e| panic!("{q} must not fault: {e}")),
+            0,
+            "{q} must admit no row"
+        );
+    }
+}
+
 /// The shapes that ARE narrowable must still be, or the fix above would have bought correctness by
 /// turning the optimization off. A comparison and an `EXISTS` are the two that matter — the
 /// measured 9x lives on the second.

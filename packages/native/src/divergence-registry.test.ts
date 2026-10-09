@@ -97,13 +97,15 @@ describe('accept refuses what no entry may excuse', () => {
   });
 });
 
-describe('the declared boolean-context residual', () => {
+describe('the declared static-boolean-context residual', () => {
   beforeEach(resetUsage);
 
   test('is accepted in both directions, against an EMPTY result', () => {
     const tsRaised = accept(c(err('E_INVALID_VALUE'), ok('[]')));
     expect(tsRaised.accepted).toBe(true);
-    expect(tsRaised.accepted && tsRaised.by).toBe('boolean-context-dynamic-operand-under-seek');
+    expect(tsRaised.accepted && tsRaised.by).toBe(
+      'static-bool-check-misses-inline-pattern-predicates',
+    );
 
     const nativeRaised = accept(c(ok('[]'), err('E_INVALID_VALUE')));
     expect(nativeRaised.accepted).toBe(true);
@@ -118,10 +120,10 @@ describe('the declared boolean-context residual', () => {
   });
 
   test('records its usage, so an entry that stops matching can be found', () => {
-    expect(usageCounts().get('boolean-context-dynamic-operand-under-seek') ?? 0).toBe(0);
+    expect(usageCounts().get('static-bool-check-misses-inline-pattern-predicates') ?? 0).toBe(0);
     accept(c(err('E_INVALID_VALUE'), ok('[]')));
     accept(c(ok('[]'), err('E_INVALID_VALUE')));
-    expect(usageCounts().get('boolean-context-dynamic-operand-under-seek')).toBe(2);
+    expect(usageCounts().get('static-bool-check-misses-inline-pattern-predicates')).toBe(2);
   });
 });
 
@@ -129,9 +131,9 @@ describe('the registry cannot rot unnoticed', () => {
   beforeEach(resetUsage);
 
   test('unused reports an entry nothing exercised', () => {
-    expect(unused(false)).toContain('boolean-context-dynamic-operand-under-seek');
+    expect(unused(false)).toContain('static-bool-check-misses-inline-pattern-predicates');
     accept(c(err('E_INVALID_VALUE'), ok('[]')));
-    expect(unused(false)).not.toContain('boolean-context-dynamic-operand-under-seek');
+    expect(unused(false)).not.toContain('static-bool-check-misses-inline-pattern-predicates');
   });
 
   test('every entry carries the reasoning a human needs to audit it', () => {

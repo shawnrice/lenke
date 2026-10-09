@@ -326,33 +326,61 @@ export const accept = (c: DivergenceCase): Verdict => {
  * product, not a way to make a suite pass — see the header, and record the reasoning in the
  * audit before adding.
  */
+/**
+ * EMPTY, as of 2026-10-09 — and that is the state to defend, not a gap to fill.
+ *
+ * The one entry that lived here was `boolean-context-dynamic-operand-under-seek`: a dynamically
+ * typed operand (a bare property, `NOT n.s`, an unclassified function result) AND-ed with a
+ * comparison that eliminated every row by a route the other engine did not have. It was
+ * narrowed on 2026-10-08 when `AND` began short-circuiting on FALSE in both engines (~4 uses a
+ * run to ~1), and removed on 2026-10-09 when both of its surviving routes closed. Both were
+ * about ORDER rather than about the connective, and both closed the same way — a FILTER keeps
+ * only a clean TRUE, so a conjunct that is not cleanly TRUE settles the row, which makes
+ * conjunct order unobservable there and lets either engine put the conjuncts that cannot raise
+ * first:
+ *
+ *   (1) the comparison is UNKNOWN on every row. Native always dropped the row; the TS engine
+ *       applied Kleene `AND`, where `and(null, false)` is `false` so UNKNOWN settles nothing,
+ *       and reached the raising operand. `filterPredicate` now tests `!== true`.
+ *   (2) the comparison is written AFTER the raising operand and native's seek hoisted it out of
+ *       the chain. The TS engine has no seek to match, but it does not need one: it reorders
+ *       the conjuncts instead, which in a filter is not a reordering of anything observable.
+ *       This route was the error-against-a-NON-EMPTY-result shape this registry is deliberately
+ *       not permitted to declare, so it was never covered here in the first place.
+ *
+ * Pinned by `and-short-circuit-conformance.test.ts`, which holds both as AGREEMENTS now, plus a
+ * value-position case that must keep written order — the bound on the rule above.
+ */
 export const REGISTRY: readonly Entry[] = [
   {
-    id: 'boolean-context-dynamic-operand-under-seek',
+    id: 'static-bool-check-misses-inline-pattern-predicates',
     axis: 'evaluation-order',
     direction: 'either',
-    recorded: 'docs/reviews/2026-08-31-ts-audit.md, boolean-context static check',
+    recorded: 'docs/reviews/2026-08-31-ts-audit.md, item 259',
     reason:
-      'Both engines run the same STATIC (plan-time) boolean-context type check, so a ' +
-      'statically non-boolean value in a truth position is rejected before execution by ' +
-      'both. What is left is a DYNAMICALLY typed operand (a bare property, `NOT n.s`, an ' +
-      'unclassified function result) AND-ed with a comparison, where the comparison ' +
-      'eliminates every row BY A ROUTE THE OTHER ENGINE DOES NOT HAVE. Two such routes ' +
-      'survive, and both are about ORDER rather than about the connective: (1) the ' +
-      'comparison is UNKNOWN on every row — a filter keeps only TRUE, so native drops the ' +
-      'row, while Kleene `AND` does not settle on UNKNOWN and reaches the operand; (2) the ' +
-      'comparison is written AFTER the raising operand and native’s seek hoists it out of ' +
-      'the chain, which the TS engine has no seek to match. ISO US008/UA004 make both ' +
-      'outcomes conformant. Fixing either means abandoning the seek, which is not ' +
-      'perf-neutral. ' +
-      'NARROWED on 2026-10-08: `AND` now short-circuits on FALSE in both engines, so the ' +
-      'whole class where the comparison is simply FALSE on every row — which was most of ' +
-      'this entry’s traffic — is FIXED and no longer declared. Measured on the differential ' +
-      'fuzzer at 20,000 queries a run: ~4 uses a run before, ~1 after.',
-    // NARROW: always `E_INVALID_VALUE` on one side against an EMPTY result on the other.
-    // "Malformed predicate" against "no rows" — never wrong data, and never rows. An error
-    // against a NON-EMPTY result is a different thing entirely (that is the `CALL`-body
-    // laziness bug) and is NOT covered here.
+      'A STATICALLY non-boolean operand inside an INLINE PATTERN predicate — ' +
+      "`(n:T WHERE ((n.n IS NULL) AND ((3.14 OR 'a') < 3)))` — where `3.14 OR 'a'` has " +
+      'literal operands in a truth position. Both engines run the same plan-time ' +
+      'boolean-context check, but they disagree about WHERE it applies. This engine does not ' +
+      'apply it to inline pattern predicates at all, only to clause-level ones. The Rust ' +
+      'engine applies it to whatever lowers to a `Plan::Filter`, which an inline predicate on ' +
+      'a QUANTIFIED-path endpoint (`->*(n WHERE …)`, `ANY SHORTEST`) does and one on a plain ' +
+      'node pattern does not — so the Rust engine rejects this at plan time and this engine ' +
+      'reorders the filter, loses every row on the safe conjunct, and never reaches the ' +
+      'operand. ISO US008/UA004 make both conformant. ' +
+      "MEASURED, not assumed, and the obvious fix is the wrong one: extending this engine's " +
+      'check to inline pattern predicates was tried on 2026-10-09 and made things WORSE — it ' +
+      'then rejected `(n WHERE CAST(x AS STRING))` and `(n WHERE n.n - head(n.n))` at plan ' +
+      'time where the Rust engine answers no rows, turning 1 divergence a run into 7. The ' +
+      "real inconsistency is the Rust engine's position-dependence, and closing it properly " +
+      'means deciding whether a static boolean-context check covers inline pattern ' +
+      'predicates in BOTH engines — which would reject queries that answer today, so it is a ' +
+      'conformance decision and not a bug fix. ' +
+      'Frequency: ~1 per 120,000 generated queries (6 runs of 20,000).',
+    // NARROW: `E_INVALID_VALUE` on one side against an EMPTY result on the other. "Malformed
+    // predicate" against "no rows" — never wrong data, and never rows. An error against a
+    // NON-EMPTY result is a different thing entirely (that is the `CALL`-body laziness bug)
+    // and is NOT covered here.
     matches: (c) =>
       (erroredWith(c.ts, 'E_INVALID_VALUE') && isEmptyResult(c.native)) ||
       (erroredWith(c.native, 'E_INVALID_VALUE') && isEmptyResult(c.ts)),

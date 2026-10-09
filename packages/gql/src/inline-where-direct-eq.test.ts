@@ -142,24 +142,47 @@ describe('RESTRICTION: a non-null LITERAL, never a param', () => {
 });
 
 describe('RESTRICTION: one comparison, never an AND-chain', () => {
-  test('a non-matching conjunct does not suppress a raise from another', () => {
-    // `n.k = 999` matches nothing, yet the CAST still raises. Hoisting that conjunct into a
-    // property check would let `satisfies` reject the element first and swallow the raise.
+  test('a non-matching conjunct settles the element, so the raising one is not reached', () => {
+    // This asserted a RAISE until 2026-10-09, and the two revisions of its comment are worth
+    // keeping because each was right about a different rule.
     //
-    // `AND` DOES short-circuit on FALSE now (2026-10-08), and this still raises — for a reason
-    // worth being explicit about, because it reads like a contradiction. "Matches nothing" is
-    // not the same as "FALSE on every row": `absent` has no `k` and `nulled` stores a null, so
-    // `n.k = 999` is UNKNOWN on three of the five vertices. `and(null, false)` is `false`, so
-    // UNKNOWN cannot settle the chain, and the CAST is therefore an ESSENTIAL part of the
-    // search condition on exactly those rows. The restriction this describes is unaffected.
-    expect(() =>
-      query(g, 'MATCH (n:P WHERE n.k = 999 AND CAST(n.s AS INTEGER) > 0) RETURN count(*) AS c'),
-    ).toThrow();
+    // The first said: hoisting `n.k = 999` into a property check would let `satisfies` reject
+    // the element and swallow the CAST's raise, so the chain must decline the rewrite. The
+    // second said: `AND` short-circuits on FALSE, but "matches nothing" is not "FALSE on every
+    // row" — `absent` has no `k` and `nulled` stores a null, so `n.k = 999` is UNKNOWN on
+    // three of the five vertices, and `and(null, false)` is `false`, so UNKNOWN cannot settle
+    // a Kleene AND and the CAST stays essential.
+    //
+    // Both are still true of the AND's VALUE. Neither is the question an inline `WHERE` asks:
+    // it is a FILTER, read as `asTruth(...) === true`, so a conjunct that is not cleanly TRUE
+    // settles the element — UNKNOWN included. `n.k = 999` is never TRUE on any of the five, so
+    // no element survives it and the CAST is inessential everywhere. 0, and the engine agrees.
+    //
+    // The RESTRICTION this block describes is untouched: `directEqProps` still declines a
+    // chain. What changed is only which rows reach the residual.
+    expect(
+      countOf('MATCH (n:P WHERE n.k = 999 AND CAST(n.s AS INTEGER) > 0) RETURN count(*) AS c'),
+    ).toBe(0);
   });
 
-  test('the raise is the same one the clause spelling produces', () => {
+  test('the clause spelling answers the same, as it did when both raised', () => {
+    // The point of this test is the AGREEMENT of the two spellings, which is why it survives
+    // the direction change unaltered in purpose: it tracked the raise and now tracks the 0.
+    expect(
+      countOf('MATCH (n:P) WHERE n.k = 999 AND CAST(n.s AS INTEGER) > 0 RETURN count(*) AS c'),
+    ).toBe(0);
+  });
+
+  test('CONTROL: the raise IS reached when the other conjunct admits the element', () => {
+    // Without this the pair above would pass for an engine that had stopped evaluating the
+    // tail of a chain entirely. `n.k = 2` is TRUE on `has2`, whose `s` is `'xx'`, so the CAST
+    // is essential on that element and must fault. (`n.k = 1` would NOT do: this fixture has
+    // no `k: 1` vertex, so the control would be vacuous — it was, for one revision.)
     expect(() =>
-      query(g, 'MATCH (n:P) WHERE n.k = 999 AND CAST(n.s AS INTEGER) > 0 RETURN count(*) AS c'),
+      query(g, 'MATCH (n:P WHERE n.k = 2 AND CAST(n.s AS INTEGER) > 0) RETURN count(*) AS c'),
+    ).toThrow();
+    expect(() =>
+      query(g, 'MATCH (n:P) WHERE n.k = 2 AND CAST(n.s AS INTEGER) > 0 RETURN count(*) AS c'),
     ).toThrow();
   });
 

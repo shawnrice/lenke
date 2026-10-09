@@ -115,16 +115,13 @@ describe('a conjunct the rule cannot admit declines the WHOLE chain', () => {
     // AGREE and 0 is the answer either way. `trim(n.k)` on a number is still a data exception —
     // it is simply never reached, because `n.k = 999` settles every row first.
     expect(count("MATCH (n:P) WHERE n.k = 999 AND trim(n.k) = 'x' RETURN count(*) AS c")).toBe(0);
-    // Written order DOES matter, and this is the half that is still a declared divergence:
-    // spelled the other way the raising conjunct comes first, so it is evaluated and raises.
-    // The native engine answers 0 here instead, because its optimizer can seed `n.k = 999`
-    // out of the chain and never reaches the sibling — a reordering this engine has nothing
-    // to match (it has no seek to hoist). Covered by the
-    // `boolean-context-dynamic-operand-under-seek` entry in the divergence registry, which is
-    // exactly what that entry is now reduced to.
-    expect(() =>
-      count("MATCH (n:P) WHERE trim(n.k) = 'x' AND n.k = 999 RETURN count(*) AS c"),
-    ).toThrow();
+    // THE REVERSED SPELLING, which used to raise here and answer 0 in the engine — the last
+    // open residual of that divergence. It now answers 0 in both (2026-10-09). Written order
+    // no longer decides in a FILTER, because a filter keeps only a clean TRUE: `n.k = 999` is
+    // never TRUE on any row, so the row is lost whichever conjunct is read first, and
+    // `filterPredicate` therefore puts the conjunct that cannot raise in front. The engine
+    // reaches the same answer by its seek and by `filter_conjuncts_reordered`.
+    expect(count("MATCH (n:P) WHERE trim(n.k) = 'x' AND n.k = 999 RETURN count(*) AS c")).toBe(0);
 
     // CONTROL, and now the load-bearing half: with the liftable conjunct MATCHING, the raising
     // one is essential and is reached. Without this the test would pass for a chain that had
