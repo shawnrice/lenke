@@ -229,6 +229,25 @@ fn main() {
             ],
         ),
         (
+            // The 2-term group above cannot see this: `normalize_pred` rewrites an `IN` of
+            // <=32 literals INTO an OR-chain, so at two terms both spellings become the
+            // same chain and the plans match trivially. PAST the gate the `IN` stays an
+            // `Expr::In` served by the hashed `in_set` while a user-written chain stays a
+            // chain -- so 33 terms is the first length at which the two can diverge, and
+            // nothing tested it. (Item 270 found and fixed exactly this in the TS engine,
+            // where the group was also 2 terms.) `age` is `i % 100`, so both spellings
+            // admit ages 0..32 and the answer check is meaningful.
+            "IN list vs OR chain, 33 terms (past normalize_pred's 32 gate)",
+            &[
+                (Gql, "MATCH (n:Person) WHERE n.age IN [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32] RETURN count(*) AS c"),
+                (
+                    Gql,
+                    "MATCH (n:Person) WHERE n.age = 0 OR n.age = 1 OR n.age = 2 OR n.age = 3 OR n.age = 4 OR n.age = 5 OR n.age = 6 OR n.age = 7 OR n.age = 8 OR n.age = 9 OR n.age = 10 OR n.age = 11 OR n.age = 12 OR n.age = 13 OR n.age = 14 OR n.age = 15 OR n.age = 16 OR n.age = 17 OR n.age = 18 OR n.age = 19 OR n.age = 20 OR n.age = 21 OR n.age = 22 OR n.age = 23 OR n.age = 24 OR n.age = 25 OR n.age = 26 OR n.age = 27 OR n.age = 28 OR n.age = 29 OR n.age = 30 OR n.age = 31 OR n.age = 32 \
+                     RETURN count(*) AS c",
+                ),
+            ],
+        ),
+        (
             "range AND (two spellings of 30<=age<40)",
             &[
                 (Gql, "MATCH (n:Person) WHERE n.age >= 30 AND n.age < 40 RETURN count(*) AS c"),
