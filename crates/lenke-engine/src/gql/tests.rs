@@ -6276,3 +6276,182 @@ fn a_non_boolean_predicate_in_an_exists_body_is_rejected() {
         "an EXISTS body shares `pull_body`, so it must reject a non-boolean too"
     );
 }
+
+// ───────────────────────────────────────── the IN-list desugaring boundary ───
+
+/// `IN <list literal>` desugared into an OR-chain of ANY length, which is linear in the list PER
+/// ROW; the param spelling of the same question keeps `Expr::In` and gets `in_set`'s hashed
+/// membership, which is flat. So the two prices diverged with length — measured on 200,000
+/// vertices with an unindexed key:
+///
+/// | items | inline (OR-chain) | param (`in_set`) |
+/// | ----- | ----------------- | ---------------- |
+/// |    32 |  5.08 ms          | 5.08 ms          |
+/// |   100 | 15.25 ms          | 5.75 ms          |
+/// |   500 | 73.21 ms          | 6.14 ms          |
+///
+/// Capped at `IN_CHAIN_MAX` (32, the same line `opt::normalize_pred` draws for a `Lit(List)`), a
+/// long all-literal list now folds to `Lit(List)` and both spellings land at 1.00x.
+///
+/// The FOLD is what makes the cap safe: capping alone left an inline `Expr::List` as the haystack,
+/// which `in_set` declines, so `eval` broadcast it across the batch — 172.98ms at 33 items against
+/// the OR-chain's 5.18, which is item 185's original defect re-created. Measured, not reasoned.
+fn in_shape(src: &str) -> crate::ir::Expr {
+    let plan = crate::gql::parse(src).expect("parses");
+
+    fn find(p: &crate::ir::Plan) -> Option<crate::ir::Expr> {
+        match p {
+            crate::ir::Plan::Filter { input, pred } => find(input).or_else(|| Some(pred.clone())),
+            crate::ir::Plan::Project { input, .. }
+            | crate::ir::Plan::Aggregate { input, .. }
+            | crate::ir::Plan::Expand { input, .. } => find(input),
+            _ => None,
+        }
+    }
+
+    find(&plan).expect("a Filter predicate")
+}
+
+fn list_of(n: usize) -> String {
+    (0..n).map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
+}
+
+#[test]
+fn a_short_in_list_still_desugars_to_an_or_chain() {
+    // 32 is the last length the chain wins at, so it must KEEP the chain.
+    assert!(
+        matches!(
+            in_shape(&format!(
+                "MATCH (n:Person) WHERE n.age IN [{}] RETURN n.name AS x",
+                list_of(32)
+            )),
+            crate::ir::Expr::Or(_, _)
+        ),
+        "32 items must stay an OR-chain"
+    );
+}
+
+#[test]
+fn a_long_all_literal_in_list_folds_to_a_constant_list() {
+    let pred = in_shape(&format!(
+        "MATCH (n:Person) WHERE n.age IN [{}] RETURN n.name AS x",
+        list_of(33)
+    ));
+    let crate::ir::Expr::In { haystack, .. } = &pred else {
+        panic!("33 items must stay an `In`, got {pred:?}")
+    };
+    // `Lit(List)` and NOT `Expr::List` — the distinction `in_set` turns on.
+    assert!(
+        matches!(haystack.as_ref(), crate::ir::Expr::Lit(Value::List(v)) if v.len() == 33),
+        "the haystack must be folded to a constant list, got {haystack:?}"
+    );
+}
+
+#[test]
+fn a_long_in_list_with_a_non_literal_keeps_the_or_chain() {
+    // `in_set` needs a CONSTANT list, so a list the parser cannot fold must keep the chain —
+    // linear beats broadcast.
+    let mut items = list_of(40);
+    items.push_str(", n.age");
+
+    assert!(
+        matches!(
+            in_shape(&format!(
+                "MATCH (n:Person) WHERE n.age IN [{items}] RETURN n.name AS x"
+            )),
+            crate::ir::Expr::Or(_, _)
+        ),
+        "a non-literal element must keep the OR-chain"
+    );
+}
+
+/// An INFINITE literal is FOLDED, because `in_set` accepts it — `Inf == Inf` under `equals` and
+/// `group_key` agrees, so only NaN disagrees. The first version of this test asserted the
+/// opposite, using `(0.0 / 0.0)`: that is an `Arith`, not a literal, so it was really a duplicate
+/// of the non-literal case above and left this path untested. A mutant widening the guard to
+/// every literal survived until it was fixed, which is how the error was found.
+#[test]
+fn a_long_in_list_with_an_infinite_literal_is_still_folded() {
+    let mut items = list_of(40);
+    items.push_str(", 1e400");
+
+    let pred = in_shape(&format!(
+        "MATCH (n:Person) WHERE n.age IN [{items}] RETURN n.name AS x"
+    ));
+    let crate::ir::Expr::In { haystack, .. } = &pred else {
+        panic!("an infinite literal must not force the OR-chain, got {pred:?}")
+    };
+
+    assert!(
+        matches!(haystack.as_ref(), crate::ir::Expr::Lit(Value::List(v)) if v.len() == 41),
+        "the haystack must still fold, got {haystack:?}"
+    );
+}
+
+/// The ANSWER must not move across the desugaring boundary, and a NULL element is the case a
+/// membership test cannot see: `in_set` carries it as `has_null`, so a non-match stays UNKNOWN
+/// rather than becoming FALSE. Asserted against the 31-item answer — always an OR-chain — so the
+/// comparison is to a spelling the cap cannot have changed.
+#[test]
+fn the_answer_is_unchanged_across_the_desugaring_boundary() {
+    let store = social();
+    let run_gql = |src: &str| {
+        let plan = crate::opt::optimize(crate::gql::parse(src).expect("parses"));
+        bag(&run(&plan, &store))
+    };
+    // alice 30, bob 25, carol 40. The list is ALWAYS `25, 30` plus filler from 1000 upward, so
+    // the match set is alice+bob at EVERY length — otherwise lengthening the list would change
+    // the answer by itself (a `0..n` filler pulls in 25, then 30, then 40) and the assertion
+    // below would be false by construction rather than by a bug. The first version of this test
+    // used `0..n` and failed for exactly that reason.
+    let ages = |n: usize| {
+        let mut v = vec!["25".to_string(), "30".to_string()];
+        v.extend((0..n.saturating_sub(2)).map(|i| (1000 + i).to_string()));
+        v.join(", ")
+    };
+
+    let base = run_gql(&format!(
+        "MATCH (p:Person) WHERE p.age IN [{}] RETURN p.name AS x",
+        ages(31)
+    ));
+    assert_eq!(
+        base,
+        vec!["x=Str(\"alice\");", "x=Str(\"bob\");"],
+        "the 25/30 list matches alice and bob at every length"
+    );
+
+    for n_items in [32usize, 33, 64, 100] {
+        assert_eq!(
+            run_gql(&format!(
+                "MATCH (p:Person) WHERE p.age IN [{}] RETURN p.name AS x",
+                ages(n_items)
+            )),
+            base,
+            "{n_items} items must answer as 31 does"
+        );
+
+        // A NULL element must not turn a non-match into a match, at either side of the cap.
+        assert_eq!(
+            run_gql(&format!(
+                "MATCH (p:Person) WHERE p.age IN [null, {}] RETURN p.name AS x",
+                ages(n_items)
+            )),
+            base,
+            "{n_items} items with a NULL must answer as 31 does"
+        );
+
+        // And the NEGATED spelling, where UNKNOWN stays dropped while FALSE is kept — the
+        // distinction a plain count cannot see (`in-param-list-seeds`).
+        assert_eq!(
+            run_gql(&format!(
+                "MATCH (p:Person) WHERE NOT (p.age IN [{}]) RETURN p.name AS x",
+                ages(n_items)
+            )),
+            run_gql(&format!(
+                "MATCH (p:Person) WHERE NOT (p.age IN [{}]) RETURN p.name AS x",
+                ages(31)
+            )),
+            "{n_items} items negated must answer as 31 does"
+        );
+    }
+}

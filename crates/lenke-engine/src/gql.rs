@@ -401,6 +401,39 @@ impl RetItem {
 /// `left IN [items]` desugared to `left = i0 OR left = i1 OR …`. An empty list is
 /// a constant FALSE (`1 = 0`), so `x IN []` never matches; a non-empty list keeps
 /// the `=` operator's three-valued semantics (a NULL element/operand → UNKNOWN).
+/// The longest list literal `IN` desugars into an OR-chain, above which it stays an `Expr::In`
+/// so the evaluator's hashed `in_set` serves it. Deliberately the SAME 32 that
+/// `opt::normalize_pred` uses for a `Lit(List)` haystack: the two spellings must cross over at
+/// the same length or they are two prices for one question.
+const IN_CHAIN_MAX: usize = 32;
+
+/// Is this expression a literal that `in_set` will actually accept as a set element?
+///
+/// Folding a long list to `Lit(List)` only pays if `in_set` then takes it, so this predicate
+/// MIRRORS `in_set`'s element filter exactly — `Bool`, `Str`, `Null` (carried as `has_null`, which
+/// is what preserves the FALSE-vs-UNKNOWN distinction a membership test cannot otherwise see) and
+/// any `Num` that is not NaN. If the two ever disagree the fold is wrong in one direction or the
+/// other: too strict keeps a chain `in_set` would have hashed, too loose folds a list `in_set`
+/// declines, and `eval` then BROADCASTS the haystack across the batch (item 185's defect).
+///
+/// NOT `is_finite`, which was the first version here and is over-strict: `in_set` accepts
+/// INFINITY because `equals` compares `Num`s with `==`, so `Inf == Inf` is true and `group_key`
+/// agrees. Only NaN disagrees, and `in_set`'s own comment records that a mutant accepting
+/// non-finites "changed no answer". `1e400` is a reachable way to write an infinite literal; a
+/// NaN literal has no GQL spelling, so that half of this test is defensive.
+fn is_in_set_lit(e: &Expr) -> bool {
+    match e {
+        Expr::Lit(v) => match v {
+            crate::value::Value::Bool(_)
+            | crate::value::Value::Str(_)
+            | crate::value::Value::Null => true,
+            crate::value::Value::Num(x) => !x.is_nan(),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 fn in_chain(left: &Expr, items: Vec<Expr>) -> Expr {
     let eq = |item: Expr| Expr::Compare {
         op: CompareOp::Eq,
@@ -5590,11 +5623,51 @@ impl Parser {
         let negated_in = !self.suppress_in && self.eat_kw("NOT");
         if !self.suppress_in && self.eat_kw("IN") {
             let rhs = self.concat_expr()?;
-            // A list LITERAL desugars to an OR-chain (more optimizable); any other
-            // list expression (a property, param, function result) uses the runtime
-            // `Expr::In`. Both are three-valued identically.
+            // A SHORT list LITERAL desugars to an OR-chain (more optimizable); any other list
+            // expression (a property, param, function result) uses the runtime `Expr::In`. Both
+            // are three-valued identically.
+            //
+            // CAPPED at `IN_CHAIN_MAX`, and the cap is the point. The OR-chain is linear in list
+            // length PER ROW, while `Expr::In` over a constant list gets `in_set`'s hashed
+            // membership (item 185) and is FLAT. Uncapped, the two spellings of one question
+            // diverged with length — measured on 200,000 vertices with an unindexed key:
+            //
+            //   items   inline (OR-chain)   param (`in_set`)
+            //      32   5.04 ms             5.07 ms            1.00x
+            //      33   5.18 ms             5.63 ms            0.92x
+            //     100  15.13 ms             5.74 ms            2.63x
+            //
+            // So the OR-chain WINS up to about 32 and loses past it, which is exactly where
+            // `normalize_pred` already draws the same line for a `Lit(List)` haystack. Matching
+            // the two means a long inline list now reaches `in_set` instead of expanding into
+            // hundreds of comparisons evaluated per row.
             let member = match rhs {
-                Expr::List { items } => in_chain(&left, items),
+                // Short enough for the OR-chain to win, OR not all literals — in which case the
+                // chain is the only safe form, because `in_set` needs a CONSTANT list and
+                // `eval`ing a non-constant one broadcasts it across the batch.
+                Expr::List { items }
+                    if items.len() <= IN_CHAIN_MAX || !items.iter().all(is_in_set_lit) =>
+                {
+                    in_chain(&left, items)
+                }
+                // A LONG all-literal list: fold it to a `Lit(List)` so the evaluator's hashed
+                // `in_set` serves it. Folding is what makes the cap above safe — leaving an
+                // inline `Expr::List` here instead measured 172.98ms at 33 items against
+                // 5.18ms for the OR-chain, because `in_set` declines a non-`Lit` haystack and
+                // `eval` then BROADCASTS the list across the batch (item 185's original defect,
+                // 200,000 rows x 100 elements = 20,000,000 `Value` clones).
+                Expr::List { items } => Expr::In {
+                    needle: Box::new(left),
+                    haystack: Box::new(Expr::Lit(crate::value::Value::List(
+                        items
+                            .into_iter()
+                            .map(|it| match it {
+                                Expr::Lit(v) => v,
+                                _ => unreachable!("guarded by is_in_set_lit above"),
+                            })
+                            .collect(),
+                    ))),
+                },
                 haystack => Expr::In {
                     needle: Box::new(left),
                     haystack: Box::new(haystack),
