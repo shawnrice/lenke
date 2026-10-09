@@ -428,6 +428,51 @@ const closedListValues = (e: Expr): readonly unknown[] | null => {
 };
 
 /**
+ * A uniform same-key `=`-OR-chain rewritten as the membership test it is, or `null`.
+ *
+ * `k = a OR k = b OR …` and `k IN [a, b, …]` are the same question, and `CLAUDE.md`
+ * names that exact pair among the 100-300x spelling gaps this engine exists to not
+ * have. Item 263 made the chain SEED an index; unindexed it still re-tested every term
+ * per row where `IN` is one hashed probe — 200,000 rows, 33 terms: 91.52ms against
+ * 8.83ms (item 270).
+ *
+ * THE EQUIVALENCE IS EXACT IN THREE-VALUED LOGIC, which is the part that needs care. A
+ * null needle makes every `=` UNKNOWN and `OR` of UNKNOWNs is UNKNOWN, which is `IN`'s
+ * null-needle answer; a NULL element makes a miss UNKNOWN (`UNKNOWN OR FALSE`) and
+ * leaves a hit TRUE (`UNKNOWN OR TRUE`), which is exactly what the hashed haystack's
+ * `hasNull` encodes.
+ *
+ * THE `kind` CHECK IS NOT REDUNDANT, though three other things also stop an `xor` here:
+ * `uniformEqChain` flattens only `or` nodes, so an `xor` arrives as one branch and is
+ * rejected by the `>= 2` floor and again by its `kind !== 'compare'` test. A mutant
+ * removing this check alone therefore SURVIVES. But a mutant that first makes `flatten`
+ * descend `xor` — a plausible edit if someone ever wants xor chains — survives WITH this
+ * check and is caught WITHOUT it, so it defends a reachable drift. (Item 270: mutants
+ * N6/N7. A single mutant could not have shown that; the layer that makes a guard
+ * redundant has to be removed in the same mutant.)
+ *
+ * Applied in `compileExpr` rather than to the AST so every analysis pass still sees the
+ * original `or` — `collectHints` in particular, whose own `uniformEqChain` seeding must
+ * keep firing.
+ */
+const membershipFromEqChain = (e: Expr): Expr | null => {
+  if (e.kind !== 'or') {
+    return null;
+  }
+
+  const chain = uniformEqChain(e);
+
+  return chain === undefined
+    ? null
+    : {
+        kind: 'in',
+        expr: { kind: 'prop', variable: chain.variable, key: chain.key },
+        list: { kind: 'list', items: chain.values },
+        negated: false,
+      };
+};
+
+/**
  * Lower an expression to a closure. Every `case` resolves its sub-expressions
  * to closures *now* and captures them, so the run-time path is plain function
  * application — no AST re-traversal, no `kind`/`op` dispatch.
@@ -675,6 +720,35 @@ export const compileExpr = (expr: Expr): CompiledExpr => {
     }
     case 'or':
     case 'xor': {
+      // A UNIFORM SAME-KEY `=`-CHAIN IS A MEMBERSHIP TEST, so it is lowered to one.
+      // `k = a OR k = b OR …` and `k IN [a, b, …]` are the same question, and
+      // `CLAUDE.md` names that exact pair among the 100-300x spelling gaps this engine
+      // exists to not have. Item 263 made the chain SEED an index; unindexed, it still
+      // re-tested every term per row where `IN` is one hashed probe — measured at
+      // 200,000 rows: 33 terms 91.52ms against 8.83ms, 100 terms 263.82 against 9.51.
+      //
+      // The equivalence is exact in THREE-VALUED logic, which is the only part that
+      // needs care: a null needle makes every `=` UNKNOWN and `OR` of UNKNOWNs is
+      // UNKNOWN, matching `IN`'s null-needle answer; a NULL element makes a non-match
+      // UNKNOWN (`UNKNOWN OR FALSE`) and leaves a match TRUE (`UNKNOWN OR TRUE`), which
+      // is exactly what `hasNull` encodes.
+      //
+      // AND IT DOES NOT CONTRADICT THE PARAGRAPH BELOW. `OR` is not short-circuited
+      // because an operand can RAISE and both engines must raise alike. Every operand
+      // here is `prop <=> const` — `uniformEqChain` admits nothing else — and neither a
+      // property read nor a structural `=` can raise (a cross-type `=` is a non-match,
+      // not an error). So collapsing N non-raising operands into one probe is
+      // unobservable, by item 259's rule that only non-raising operands may be moved.
+      //
+      // Done HERE rather than in the AST so every analysis pass still sees the original
+      // `or` — `collectHints` in particular, whose `uniformEqChain` seeding must keep
+      // firing.
+      const membership = membershipFromEqChain(expr);
+
+      if (membership !== null) {
+        return compileExpr(membership);
+      }
+
       // NOT short-circuited, and deliberately. `OR` has no counterpart to the conjunct
       // split in the Rust optimizer — there is nothing to seed an OR from — so both engines
       // evaluate every operand and both raise on `n.n > 0 OR n.s`. Skipping the second

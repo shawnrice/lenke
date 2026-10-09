@@ -47,6 +47,7 @@ produces the same answer.
 | **Keying the TS `IN` haystack cache on the ARRAY'S IDENTITY**                      | **A 2.9x REGRESSION on the sibling spelling — superseded at 269 by keying on EXECUTION.** `case 'list'` rebuilds its array per ROW, so an inline list of params (`IN [$a, $b, …]`, the injection-safe spelling applications actually write) missed the identity check every row and re-hashed the whole haystack: 203.73ms pre-268 → 587.42ms at 100 terms, against 8.42ms once keyed on `execEpoch`. **A per-execution epoch counter is therefore REQUIRED, not dead code** — item 268 deleted one after the mutant removing it survived, which was correct for the identity key (`reviveParamValue`'s per-execution copy already guaranteed a fresh array) and is wrong for this one: mutant M7 (never bump the epoch) is caught by three tests. **A guard's necessity is a property of the design it guards, not of the guard.** | 268, **269**                               |
 | **Capping the GQL parser's `IN` OR-chain WITHOUT folding the list to `Lit(List)`** | **AN ACTIVE REGRESSION, 33x.** The cap alone measured **172.98ms at 33 items** against 5.18ms for the OR-chain it replaced, and 2819ms at 500: `in_set` matches ONLY `Expr::Lit(Value::List)`, so an inline `Expr::List` haystack makes it decline and `eval` BROADCASTS the list across the batch (200,000 rows x 100 elements = 20,000,000 `Value` clones) — item 185's original defect, re-created. **The cap and the fold are correct only together**, and a non-foldable list must KEEP the chain: linear beats broadcast.                                                                                                                                                                                                                                                                                                     | **267**                                    |
 | **`eval_vec`'s missing `CExpr` arms (2.7-8.0x)**                                   | **STALE — `eval_vec` NO LONGER EXISTS.** Only `examples/README.md` and `examples/support/storage.rs` mention it; it was `lenke-core`, deleted. Do not reach for those figures.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | checked 2026-10-08                         |
+| **Mutating a guard that sits BEHIND other layers, as a single point**              | **REPORTS VACUITY, NOT DEADNESS — and the two look identical.** Item 270's rewrite is gated on `e.kind !== 'or'`; the mutant removing that gate SURVIVES, because `uniformEqChain`'s `flatten` descends only `or`, so an `xor` arrives as one branch and is rejected twice more. The gate still defends a reachable drift: with `flatten` made to descend `xor`, the gate present SURVIVES (N6) and the gate removed is CAUGHT (N7). **To falsify such a guard the mutant must remove the layer that makes it redundant, in the same mutant.** Complement of item 269, where the counter really was dead against its key — only the right mutant distinguishes the two.                                                                                                                                                             | **270**, cf. 269                           |
 
 ### Clean negatives — coverage added, no bug found
 
@@ -162,14 +163,18 @@ absence** — `{k: null}` is the one place in a pattern where that distinction i
   it in Rust. A residual stays, measured and recorded: `OR` 33 is **2.68x** the `IN` spelling
   because the surviving rows re-check O(terms) where `IN` is one hashed test — below
   `spelling_probe`'s own 1ms floor, so not yet worth the evaluator rewrite.
-  **RE-MEASURED AT ITEM 268 AND NOW MUCH WIDER: 10.36x at 33 terms, 27.74x at 100** (unindexed
-  key, 200,000 rows). The OR spelling did NOT regress — item 268 touched only the `in` arm, and
-  the TS parser never desugars `IN` to a chain — the ratio grew because `IN` became a flat hashed
-  test. So this is an UNCAPTURED WIN rather than a regression, and it is now the live target: a
-  uniform same-key `=`-OR-chain over closed values should lower to the `in` arm and take the same
-  hashed path. Still above `spelling_probe`'s 1ms floor only at 8+ terms, and its own `OR vs IN`
-  group is 2 terms, which is why the probe reports no group over 2x while the 33-term gap is
-  10x — **a probe group's SIZE is part of what it can see.**
+  It widened to 10.36x at 33 terms / 27.74x at 100 once item 268 hashed `IN` (an uncaptured win,
+  not a regression — the OR spelling never changed), and is now **CLOSED by item 270 at 29.3x**:
+  a uniform same-key `=`-chain is lowered to the hashed membership test in `compileExpr`, so the
+  two spellings land within 6% at every length. Sound because `uniformEqChain` admits only
+  `prop <=> const` operands, none of which can raise — so collapsing them does not conflict with
+  the `or` arm's deliberate no-short-circuit rule — and because the equivalence is exact in
+  three-valued logic (a null needle → UNKNOWN both ways; a NULL term leaves a hit TRUE and makes
+  a miss UNKNOWN, which is what `hasNull` encodes). Applied in `compileExpr` rather than to the
+  AST so `collectHints`' own seeding still sees the original `or`.
+  **A note on the probe:** `spelling_probe` reported "no group over 2x" throughout, because its
+  `OR vs IN` group is **2 terms**, where the ratio really was 1.19x — **a probe group's SIZE is
+  part of what it can see.**
 - ~~**Native never index-SEEDS from `IN`**~~ — **CLOSED by item 261** (2026-10-09), at **65-75x**,
   and the recorded price was wrong three ways. It was carried as a "residual 3.3x 32→33 cliff"
   needing "a multi-value `Seed` variant plus a physical operator, with row-order/byte-identity
