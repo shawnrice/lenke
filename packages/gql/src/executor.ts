@@ -319,6 +319,20 @@ import type { FuncExpr, Truth } from './executor/scalars.js';
 
 // --- expression compilation --------------------------------------------------
 
+/**
+ * Bumped once per plan execution, so a compiled closure can cache something that is
+ * constant WITHIN a run but not across runs — see the `in` arm's closed haystack.
+ *
+ * A compiled plan is cached and reused (item 229), so a closure outlives any one run
+ * and cannot simply compute such a value once. Keying on this counter is what lets a
+ * `$param` haystack be hashed per EXECUTION instead of per row.
+ *
+ * Re-entrant execution (a nested plan run inside one) only ever bumps it again, which
+ * forces an extra rebuild of an execution-constant value — wasteful at worst, never
+ * stale.
+ */
+let execEpoch = 0;
+
 /** A haystack hashed for membership: the set, plus whether a NULL element was dropped. */
 type Haystack = { set: ReadonlySet<unknown>; hasNull: boolean };
 
@@ -769,44 +783,50 @@ export const compileExpr = (expr: Expr): CompiledExpr => {
 
       const list = compileExpr(expr.list);
 
-      // Not closed, or not all-hashable. A `$param` list is still ONE array
-      // reference for every row of the query, so a one-entry memo keyed on that
-      // reference hashes it once per execution instead of once per row. A haystack
-      // that genuinely varies (a property, a function result) misses the memo every
-      // row and keeps the linear `inList` — which is the right answer for it, since
-      // hashing a fresh list per row could only add work.
+      // A CLOSED haystack that is not all-literal — a `$ids` param, or an inline list
+      // whose items are params — has a value that is constant WITHIN an execution but
+      // not across executions. `closedList` is the same predicate the seeding path
+      // uses for exactly this set of shapes (item 184). Hash it ONCE per execution,
+      // keyed on `execEpoch`.
       //
-      // KEYING ON THE ARRAY'S IDENTITY IS SOUND, AND IT RESTS ON SOMETHING
-      // NON-OBVIOUS. A compiled plan is cached and reused across executions (item
-      // 229), so this closure outlives any one run — and a caller may mutate its
-      // param list IN PLACE and re-run, which the linear scan honoured because it
-      // re-read the array every row. Identity still catches that only because
-      // `reviveParamValue` rebuilds every list param (`v.map(reviveParamValue)`) on
-      // every execution, so the array this sees is a FRESH instance per run and the
-      // memo misses exactly when it must.
+      // Evaluating the haystack against the first row's env and reusing it is sound
+      // precisely BECAUSE it is closed: a `lit`/`param` tree never reads the binding,
+      // so every row would compute the same value.
       //
-      // That makes the copy in `reviveParams` load-bearing for this memo, which is
-      // not a thing anyone editing it would guess — so it is pinned by a test ("the
-      // SAME array mutated in place between runs is re-hashed") rather than left to
-      // a comment. A per-execution epoch counter was built here first and REMOVED:
-      // a mutant that dropped it survived, because the copy already does the work.
-      let seenArr: unknown;
-      let seenHay: Haystack | null = null;
+      // KEYING ON THE ARRAY'S IDENTITY INSTEAD WAS A 2.9x REGRESSION, and it is worth
+      // saying why, because identity looks like the obvious key. `case 'list'` rebuilds
+      // its array per ROW, so for an inline list of params the identity check missed on
+      // every row and re-hashed the whole haystack each time — strictly worse than the
+      // linear scan it replaced. Measured at 100 terms, 200,000 rows:
+      // `IN [$a, …]` went 203.73ms (pre-268) -> 587.42ms (identity memo) -> hashed here.
+      // An execution-scoped key cannot have that failure mode, because it never hashes
+      // anything that varies per row.
+      if (closedList(expr.list)) {
+        let epoch = -1;
+        let hay: unknown;
+        let hashed: Haystack | null = null;
 
-      return (env) => {
-        const hay = list(env);
-        let result: Truth;
-
-        if (Array.isArray(hay)) {
-          if (hay !== seenArr) {
-            seenArr = hay;
-            seenHay = hashValues(hay);
+        return (env) => {
+          if (epoch !== execEpoch) {
+            epoch = execEpoch;
+            hay = list(env);
+            hashed = Array.isArray(hay) ? hashValues(hay) : null;
           }
 
-          result = seenHay === null ? inList(e(env), hay) : hashedIn(e(env), seenHay);
-        } else {
-          result = inList(e(env), hay);
-        }
+          // `hashed` is null for a non-array binding (`$ids` bound to a number → the
+          // whole predicate is UNKNOWN) or a non-hashable element (a NaN param), and
+          // both keep `inList` over the cached value.
+          const result = hashed === null ? inList(e(env), hay) : hashedIn(e(env), hashed);
+
+          return negated ? not3(result) : result;
+        };
+      }
+
+      // A haystack that genuinely varies per row — a property, a function result. It is
+      // re-evaluated and scanned linearly, which is the right answer for it: hashing a
+      // fresh list per row could only add work.
+      return (env) => {
+        const result = inList(e(env), list(env));
 
         return negated ? not3(result) : result;
       };
@@ -5243,6 +5263,15 @@ export const compile = <R extends Row = Row>(query: Query): Plan<R> => {
     // an input param. The Rust engine already does this while parsing its param
     // string (`temporal_object`); this closes the byte-identity gap.
     const params = reviveParams(rawParams);
+
+    // A new run: invalidate anything this plan's closures cached for the LAST run
+    // (see `execEpoch` — currently the `in` arm's hashed closed haystack). Bumped
+    // before any row is produced, so the haystack is rebuilt from THIS call's params.
+    //
+    // Only plan execution needs this. `compileValidator` passes `params: {}`, so a
+    // validator's closed haystack is either all-literal (hashed at compile time and
+    // never re-read) or an unbound param, whose value is the same on every call.
+    execEpoch++;
 
     // Eager param validation: a `$name` the query references but the caller
     // didn't bind is a programming error — throw before running, not a silent

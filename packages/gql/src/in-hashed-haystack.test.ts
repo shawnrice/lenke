@@ -177,6 +177,20 @@ describe('the memo cannot serve a stale set across executions', () => {
     expect(second).toEqual(['c']);
   });
 
+  // The shape item 269 regressed: an INLINE list of PARAM references. `case 'list'`
+  // rebuilds that array per row, so it is cached per EXECUTION rather than keyed on
+  // the array's identity — and the cache must still see each run's own params.
+  test('an inline list of PARAMS is re-read on each execution', () => {
+    const graph = g();
+    const q = 'MATCH (p:P) WHERE p.k IN [$a, $b] RETURN p.n AS n';
+
+    const first = (query(graph, q, { a: 1, b: 2 }) as { n: string }[]).map((r) => r.n).sort();
+    const second = (query(graph, q, { a: 3, b: 3 }) as { n: string }[]).map((r) => r.n);
+
+    expect(first).toEqual(['a', 'b']);
+    expect(second).toEqual(['c']);
+  });
+
   // THE CASE THE EPOCH KEY EXISTS FOR, and the only one that makes it observable:
   // the SAME array instance, mutated IN PLACE between runs. Array identity is
   // unchanged, so a memo keyed on identity alone hands run 2 the set it hashed for
