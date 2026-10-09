@@ -124,15 +124,16 @@ Two things follow, and the second corrects how this question has been framed sin
    on its own, and `NOT property_exists` isolates the absent key. So whichever way `{k: null}`
    goes, a user who needs the distinction has an exact spelling for it — the inline form is
    convenience, not the only access to the three states.
-2. **The 1.16x is NOT blocked by the nullish reading. It is blocked by the MISMATCH.** The lever
-   is lifting an equality conjunct into `props`, and it needs `{k: v}` and `n.k = v` to agree for
-   **every** `v`, which a `$param` makes undecidable at compile time. A nullish `{k: null}` keeps
-   them disagreeing; only "matches nothing" makes them agree. **But item 210's second route —
-   giving `props` an entry kind that carries expression-equality semantics — unblocks the 1.16x
-   under either semantics.** So the perf argument should not drive this decision at all, and
-   recording it as "blocks a measured 1.16x" (items 180, 210, 257, and this file until now) was
-   overstating the coupling. The two questions are separable and the perf one has a route that
-   does not wait on the semantics one.
+2. ~~**The 1.16x**~~ — **GONE as an argument entirely, by item 260 (2026-10-09), and the 1.16x
+   itself did not reproduce.** This file already said the perf question was separable and that
+   item 210's second route (an entry carrying expression-equality semantics) would unblock it
+   under either semantics. That route is now **taken**: the `eqProps` loop rejects a null
+   right-hand side, which makes a lifted entry mean `n.k = v` rather than `{k: v}`, so a `$param`
+   needs no compile-time decision — and `compileNode` now passes an own-var, which it never did,
+   so the general scan path lifts at all. **But HEAD's real spelling gap on a 200,000-vertex
+   `User` fixture is 7.3%, not 16%**, so the recorded 1.16x was fixture-specific; the lift pays
+   **0.944x** on clause `WHERE` with a flat control. Nothing about `{k: null}` is waiting on perf,
+   and nothing about perf is waiting on `{k: null}`.
 
 What is genuinely at stake, then, is only: conformance (ISO specifies this and we cannot choose;
 the prose direction points at "matches nothing", so the current behaviour is a bet), and the

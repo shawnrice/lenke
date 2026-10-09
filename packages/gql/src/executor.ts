@@ -2832,13 +2832,17 @@ const compileProps = (props: readonly PropertyConstraint[] | undefined): CProp[]
  * conjunct must be `<ownVar>.<key> <op> <closed value>` with `op` of `=`, and a closed `=` cannot
  * raise — cross-type `=` is a NO-MATCH in this engine where `<=` throws, and `structuralEq` ends in
  * `===`. With nothing in the chain able to raise there is nothing for a reordering to swallow, so
- * the LITERAL-valued conjuncts lift into `eqProps` and any PARAM-valued ones stay behind in
- * `where`, in their original order relative to each other.
+ * EVERY admitted conjunct lifts into `eqProps` — literal and param alike since 2026-10-09, when
+ * the `eqProps` loop gained the null-right-hand-side guard that makes a lifted entry mean `=`
+ * rather than `{k: v}`. (It previously said params "stay behind in `where`"; they no longer do,
+ * and that is item 210's route two.)
  *
  * One mixed conjunct of any other shape (an inequality, a function call, a second variable)
- * declines the WHOLE chain. That is not caution: a residual that CAN raise is exactly the case the
- * paragraph above forbids, and telling the two apart conjunct-by-conjunct is a harder property
- * than this is worth.
+ * declines the WHOLE chain. That WAS forced: a residual that can raise is the case the paragraph
+ * above forbids. It is now merely unimplemented — item 259 made conjunct order unobservable in a
+ * FILTER, which is the only position this predicate is read in, so lifting the equalities and
+ * leaving a raising residual behind is sound. Telling the two apart conjunct-by-conjunct is the
+ * next step, not a property this avoids.
  */
 const directEqProps = (
   where: Expr,
@@ -2854,7 +2858,6 @@ const directEqProps = (
   // answer.
   const conjuncts = where.kind === 'and' ? where.items : [where];
   const eq: CProp[] = [];
-  const residual: Expr[] = [];
 
   for (const conjunct of conjuncts) {
     if (conjunct.kind !== 'compare') {
@@ -2870,28 +2873,32 @@ const directEqProps = (
       return null;
     }
 
-    if (pc.value.kind === 'lit' && pc.value.value !== null && pc.value.value !== undefined) {
-      eq.push({ key: pc.key, value: compileExpr(pc.value) });
-    } else {
-      // A PARAM, or a `null` literal. Both stay with the general evaluator: a param's value is not
-      // known here, and `$p` resolving to null would make `structuralEq` match a stored null where
-      // `=` yields UNKNOWN. Lifting params needs a per-execution safety check on the resolved
-      // value; it is a follow-up, and until then this is the spelling that keeps the row honest.
-      residual.push(conjunct);
-    }
+    // EVERY closed value lifts, params and `null` literals included — which this refused until
+    // 2026-10-09. The refusal was right at the time and its reason is recorded above: `$p`
+    // resolving to null would make `structuralEq` match a stored null where `=` yields UNKNOWN,
+    // and "lifting params needs a per-execution safety check on the resolved value". That check
+    // now exists, in `matchesPredicate`'s `eqProps` loop: a null right-hand side rejects the row,
+    // which IS `=`'s answer. So the entry carries expression equality and the value may be
+    // anything closed.
+    //
+    // This is what unblocks item 210's measured 1.16x WITHOUT the `{k: null}` semantics decision,
+    // which is exactly what that item said route two would do — the bench row it was measured on
+    // (`WHERE u.name = $n`) is param-valued, so lifting literals alone would not have moved it.
+    eq.push({ key: pc.key, value: compileExpr(pc.value) });
   }
 
   if (eq.length === 0) {
     return null;
   }
 
-  // Rebuilt as a single conjunct when only one is left, so the general evaluator sees the same
-  // shape it would have for that predicate written alone — not an `and` of one.
-  if (residual.length === 0) {
-    return { eq, residual: undefined };
-  }
-
-  return { eq, residual: residual.length === 1 ? residual[0] : { kind: 'and', items: residual } };
+  // `residual` is ALWAYS undefined now, and the plumbing for it is gone rather than left looking
+  // live. Every admitted conjunct lifts (the param and null-literal exceptions were the only
+  // things that ever stayed behind), and a conjunct this does NOT admit declines the whole chain
+  // above — so there is no partial outcome left to express. `compilePredicate` keeps reading
+  // `direct.residual` because the shape is what a future MIXED chain would need: item 259 made
+  // reordering a FILTER's conjuncts unobservable, so lifting the equalities and leaving the rest
+  // is now sound where it previously was not, and that is the next step rather than this one.
+  return { eq, residual: undefined };
 };
 
 export const compilePredicate = (
@@ -3107,7 +3114,19 @@ const compileNode = (node: NodePattern): CNode => {
   return {
     variable: node.variable,
     label: node.label,
-    pred: compilePredicate(node.properties, node.where),
+    // `node.variable` as the own-var, which this did NOT pass until 2026-10-09 — so
+    // `directEqProps` returned `null` on its first line and the general scan path never lifted an
+    // equality at all, while every SHORTCUT path (which does pass one) did. That asymmetry IS item
+    // 210's measured 1.16x: 83ns a vertex for a compiled expression against 71 for a direct
+    // property check, on every node scan the shortcuts decline — which is every filtered WRITE,
+    // because `detectNodeProjection` requires a `RETURN`.
+    //
+    // Safe without a separate proof that the predicate is element-local, because `directEqProps`
+    // checks `pc.variable !== ownVar` per conjunct and declines the WHOLE chain on the first
+    // conjunct that reads anything else. `pushWhereIntoNode` deliberately does not restrict free
+    // variables, so that per-conjunct check is the thing standing between this and a
+    // mis-attributed property read.
+    pred: compilePredicate(node.properties, node.where, node.variable),
     seedHints: seedHints.length > 0 ? seedHints : undefined,
   };
 };
@@ -3392,10 +3411,30 @@ export const satisfies = (
   }
 
   // The same check for an inline `WHERE` that reduced to one equality (`directEqProps`). A separate
-  // list rather than extra `props` entries, because `props` is what `indexCandidates` seeds from.
+  // list rather than extra `props` entries, because `props` is what `indexCandidates` seeds from —
+  // and because these carry EXPRESSION equality, not inline-property equality. That is the whole
+  // difference between the two loops and it is item 210's "route two":
+  //
+  //   `{k: null}`        matches a stored null AND an absent key
+  //   `WHERE n.k = null` matches NEITHER (`=` yields UNKNOWN, and a filter keeps only TRUE)
+  //
+  // `propOf` returns `null` for both an absent key and a stored null, so `structuralEq` alone
+  // cannot tell them apart and gives the INLINE reading. Rejecting a null right-hand side here
+  // gives the EXPRESSION reading instead, which is what lets a `$param` be lifted at all: its
+  // value is unknown at compile time, and the only unsafe resolution is null.
+  //
+  // For every non-null right-hand side the two notions already agree, which is why only this one
+  // guard is needed: a missing or stored-null property reads as `null`, `structuralEq(null, 2)` is
+  // false, and `=` yields UNKNOWN — both reject the row.
   if (pred.eqProps !== undefined) {
     for (const { key, value } of pred.eqProps) {
-      if (!structuralEq(propOf(element, key), value(env))) {
+      const rhs = value(env);
+
+      if (rhs === null || rhs === undefined) {
+        return false;
+      }
+
+      if (!structuralEq(propOf(element, key), rhs)) {
         return false;
       }
     }
