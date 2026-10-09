@@ -2851,10 +2851,19 @@ fn eq_seek_worth_it(idx: &dyn IndexOracle, key: &str, value: &Value) -> bool {
     !idx.has_hash_index(key) || seek_beats_scan(idx, key, CompareOp::Eq, value)
 }
 
-/// How many `IndexSeek` arms a multi-value seed will build. A plan is a tree, so each arm is a
-/// `Union` node and the depth is the arm count; this bounds both the tree and the per-arm
-/// constant, and the selectivity gate below bites long before it in practice.
-const MULTI_SEEK_MAX_ARMS: usize = 256;
+/// How many `IndexSeek` arms a multi-value seed will build — a DEPTH SAFETY VALVE, deliberately
+/// far above where the selectivity gate bites, and that distance is the point.
+///
+/// A plan is a tree, so each arm is a `Union` node and the depth is the arm count. A cap is also
+/// a PLAN BOUNDARY, which is the class of defect this whole rewrite exists to remove — so it
+/// must not be the binding constraint. At 256 it was: `IN` with 256 items measured 0.87ms and
+/// with 257 measured 40.01ms, a **46x step between adjacent spellings**. (Not a regression — 257
+/// is just the un-seeded cost — but a trap, and exactly the shape of the bug this fixed.)
+///
+/// The gate is what should decide, and it does: at `SEEK_MAX_FRACTION` of a 200,000-vertex graph
+/// with ~40 rows a value, it admits roughly 770 values and declines past that on COST. 4096
+/// leaves the gate binding in every measured case while still bounding the tree.
+const MULTI_SEEK_MAX_ARMS: usize = 4096;
 
 /// The one key and the DISTINCT literal values an `x IN [..]` or a same-key `=`-OR-chain selects,
 /// or `None` for anything else.
