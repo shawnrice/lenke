@@ -319,6 +319,100 @@ import type { FuncExpr, Truth } from './executor/scalars.js';
 
 // --- expression compilation --------------------------------------------------
 
+/** A haystack hashed for membership: the set, plus whether a NULL element was dropped. */
+type Haystack = { set: ReadonlySet<unknown>; hasNull: boolean };
+
+/**
+ * Can this value go in a `Set` and give the same answer `structuralEq` would?
+ *
+ * For a primitive, `structuralEq` bottoms out at `a === b`, and `Set.has` is
+ * SameValueZero — the two agree on everything including `0`/`-0`, and disagree on
+ * exactly one value: **NaN**, which `Set.has` finds and `===` does not. So NaN is
+ * excluded and `nan-comparison-policy`'s "predicates keep NaN JS-unordered" holds.
+ *
+ * The needle needs no such check. A list, record or temporal needle is absent from a
+ * set of primitives, and `structuralEq(<primitive>, <non-primitive>)` is false as
+ * well — every branch of it returns false before reaching `===`. Deliberately the
+ * same whitelist as the Rust engine's `in_set` (item 185): `Bool`, `Str`, non-NaN
+ * `Num`, with `Null` carried separately because a membership test cannot otherwise
+ * tell FALSE from UNKNOWN.
+ */
+const hashableElement = (v: unknown): boolean =>
+  typeof v === 'string' || typeof v === 'boolean' || (typeof v === 'number' && !Number.isNaN(v));
+
+/** Hash a list of values for membership, or `null` if any element is not hashable. */
+const hashValues = (items: readonly unknown[]): Haystack | null => {
+  const set = new Set<unknown>();
+  let hasNull = false;
+
+  for (const v of items) {
+    if (isNullish(v)) {
+      hasNull = true;
+      continue;
+    }
+
+    if (!hashableElement(v)) {
+      return null;
+    }
+
+    set.add(v);
+  }
+
+  return { set, hasNull };
+};
+
+/**
+ * Membership against a hashed haystack, answering exactly what `inList` answers.
+ *
+ * The empty-list case is why the `size`/`hasNull` test comes FIRST: `inList` loops
+ * over the elements and only reaches its `sawUnknown` branch inside the loop, so
+ * `null IN []` is **FALSE**, not UNKNOWN. Checking the needle first would quietly
+ * turn that into null.
+ */
+const hashedIn = (v: unknown, { set, hasNull }: Haystack): Truth => {
+  if (set.size === 0 && !hasNull) {
+    return false;
+  }
+
+  if (isNullish(v)) {
+    return null;
+  }
+
+  if (set.has(v)) {
+    return true;
+  }
+
+  // A miss is only definitely FALSE when nothing was dropped: a NULL element makes
+  // it UNKNOWN instead, which is the distinction a bare set cannot carry.
+  return hasNull ? null : false;
+};
+
+/**
+ * The literal values of a CLOSED list expression, or `null` if it is not one.
+ *
+ * `case 'list'` compiles to `items.map((f) => f(env))`, which rebuilds the array and
+ * calls every element closure **per row**. For a constant haystack that is pure
+ * waste, and it is why the inline spelling measured ~3x the `$param` one at every
+ * length (item 268) before this existed.
+ */
+const closedListValues = (e: Expr): readonly unknown[] | null => {
+  if (e.kind !== 'list') {
+    return null;
+  }
+
+  const values: unknown[] = [];
+
+  for (const it of e.items) {
+    if (it.kind !== 'lit') {
+      return null;
+    }
+
+    values.push(it.value);
+  }
+
+  return values;
+};
+
 /**
  * Lower an expression to a closure. Every `case` resolves its sub-expressions
  * to closures *now* and captures them, so the run-time path is plain function
@@ -655,11 +749,64 @@ export const compileExpr = (expr: Expr): CompiledExpr => {
     }
     case 'in': {
       const e = compileExpr(expr.expr);
-      const list = compileExpr(expr.list);
       const { negated } = expr;
 
+      // A CLOSED all-literal haystack is hashed ONCE, here at compile time. That
+      // removes BOTH costs the linear form paid per row: `case 'list'` rebuilding
+      // the array and calling an element closure per item, and `inList` then
+      // scanning it. Measured at 200,000 rows on an unindexed key, `IN` over 500
+      // inline literals went 312.98ms -> 7.07ms (item 268).
+      const closed = closedListValues(expr.list);
+      const constHay = closed === null ? null : hashValues(closed);
+
+      if (constHay !== null) {
+        return (env) => {
+          const r = hashedIn(e(env), constHay);
+
+          return negated ? not3(r) : r;
+        };
+      }
+
+      const list = compileExpr(expr.list);
+
+      // Not closed, or not all-hashable. A `$param` list is still ONE array
+      // reference for every row of the query, so a one-entry memo keyed on that
+      // reference hashes it once per execution instead of once per row. A haystack
+      // that genuinely varies (a property, a function result) misses the memo every
+      // row and keeps the linear `inList` — which is the right answer for it, since
+      // hashing a fresh list per row could only add work.
+      //
+      // KEYING ON THE ARRAY'S IDENTITY IS SOUND, AND IT RESTS ON SOMETHING
+      // NON-OBVIOUS. A compiled plan is cached and reused across executions (item
+      // 229), so this closure outlives any one run — and a caller may mutate its
+      // param list IN PLACE and re-run, which the linear scan honoured because it
+      // re-read the array every row. Identity still catches that only because
+      // `reviveParamValue` rebuilds every list param (`v.map(reviveParamValue)`) on
+      // every execution, so the array this sees is a FRESH instance per run and the
+      // memo misses exactly when it must.
+      //
+      // That makes the copy in `reviveParams` load-bearing for this memo, which is
+      // not a thing anyone editing it would guess — so it is pinned by a test ("the
+      // SAME array mutated in place between runs is re-hashed") rather than left to
+      // a comment. A per-execution epoch counter was built here first and REMOVED:
+      // a mutant that dropped it survived, because the copy already does the work.
+      let seenArr: unknown;
+      let seenHay: Haystack | null = null;
+
       return (env) => {
-        const result = inList(e(env), list(env));
+        const hay = list(env);
+        let result: Truth;
+
+        if (Array.isArray(hay)) {
+          if (hay !== seenArr) {
+            seenArr = hay;
+            seenHay = hashValues(hay);
+          }
+
+          result = seenHay === null ? inList(e(env), hay) : hashedIn(e(env), seenHay);
+        } else {
+          result = inList(e(env), hay);
+        }
 
         return negated ? not3(result) : result;
       };
