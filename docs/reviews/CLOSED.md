@@ -177,6 +177,20 @@ absence** — `{k: null}` is the one place in a pattern where that distinction i
   raise simply go first. The entry was also right that nothing guarded it — being an error against
   a NON-EMPTY result, the registry could never have declared it, so closing it was the only
   available route. Items 115, 174, 258, 259.
+- **An INLINE `IN` list costs 2.7x the PARAM spelling** (item 266, 2026-10-09) — measured on an
+  UNINDEXED key so item 261's seeding cannot apply: 100 items is 15.13ms inline against 5.74ms
+  param, and the param spelling is FLAT across 33→100 while the inline one grows. The 32-item
+  control agrees (0.99x), so this is about `in_set` and not about `IN`. **The obvious fix is a
+  no-op**: folding the inline `Expr::List` into `Lit(List)` in `normalize_pred` applies (unit
+  tested) and changes nothing (A/B 2.66x → 2.70x), so it was reverted under item 231's rule.
+  Decomposing by graph size gives a fixed 0.058ms plus **~48 ns/row**, which matches
+  `expression_cost_by_kind`'s `In (literal list)` at 49.21 — so the linear test is being paid on a
+  path that never consults `in_set`. **Start at `try_filter_keep`**, which rebuilds `Expr::In`
+  itself (`fastpath.rs:625`, `:3548`); the fix belongs there, not in the planner.
+- ~~**TS `SET`'s O(width)**~~ — **CLOSED BY DESIGN.** Item 147 removed one of the three O(K)
+  passes; the other two are inherent to the frozen immutable bag (a single-key write must build a
+  new object and freeze it, and the freeze is what makes a stray mutation throw). Do not "fix" it
+  without replacing that design. Items 147, 148, confirmed 266.
 - **`addVertex`** — the single target behind the three `bench:usage` rows TS loses, all a 3.7x
   constant factor (§1). Reopening means arguing with item 203's conclusion, with numbers.
 - Nothing else in the TS **query** surface is above 5x once the adjacency floor is accounted for
