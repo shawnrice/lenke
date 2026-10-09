@@ -10568,6 +10568,30 @@ fn gather_cost_by_width() {
 /// Read it as a ratio to the `Prop (Num)` row, which is the cheapest useful read: anything an
 /// order of magnitude above it over the same rows is doing something per row that a column could
 /// do once.
+///
+/// # THIS IS A PROJECTION-COST TABLE. IT IS NOT A PREDICATE-COST TABLE.
+///
+/// Every row here is `eval(expr)` — the arm a PROJECTION takes (`RETURN f(x)`). A predicate in a
+/// `WHERE` does not come through here: it goes to `try_filter_keep` (row indices, nothing boxed)
+/// or to `eval_mask`, and both have TYPED arms this harness never exercises. So a large row is
+/// evidence about projections and says nothing about the same expression used as a filter.
+///
+/// Measured, because this has already sent two passes down a blind alley (item 272):
+///
+/// ```text
+/// Call contains, PROJECTION (this table)              31.83 ns/row
+/// contains(n.name, '7') as a FILTER, 200,000 rows      ~5.0 ns/row   (1.003 ms)
+/// ```
+///
+/// The filter is ~6x cheaper because `try_keep_strsearch` and `eval_mask`'s
+/// `typed_strsearch_mask` both scan `&str` straight off a `Column::Str`/`Column::Dict`. Item 266
+/// cited this table's `In` row as evidence that "the linear test is being paid on a path that
+/// never consults `in_set`" and item 272 set out to vectorize `contains` — both readings came from
+/// treating these numbers as predicate costs.
+///
+/// Two rows are additionally labelled below as planner-UNREACHABLE in the shape the harness
+/// builds. That is the same hazard item 265 recorded for `VarLength {1,1}`, whose
+/// `(walker, unreachable)` label was in the harness all along and was not read.
 #[test]
 #[ignore = "measurement harness: cargo test --release -- --ignored --nocapture expression_cost_by_kind"]
 fn expression_cost_by_kind() {
@@ -10672,7 +10696,13 @@ fn expression_cost_by_kind() {
             },
         ),
         (
-            "In (literal list)",
+            // UNREACHABLE AS WRITTEN. Three elements is below `in_set`'s 8-item minimum, so this
+            // measures the linear scan PLUS a per-row clone of the haystack `Lit(List)` — and no
+            // query produces it, because `opt::normalize_pred` rewrites an `IN` of <= 32 literals
+            // into an OR-chain and a longer all-literal list folds to `Lit(List)` and is served by
+            // `in_set` (items 185, 267). Read this row as "what the un-normalized `In` arm costs",
+            // not as what an `IN` predicate costs.
+            "In (literal list, unreachable: <8 so no in_set, <=32 so normalize_pred rewrites)",
             Expr::In {
                 needle: Box::new(num()),
                 haystack: Box::new(Expr::Lit(Value::List(vec![
@@ -10690,14 +10720,19 @@ fn expression_cost_by_kind() {
             },
         ),
         (
-            "Call upper",
+            // `name` is unique per row ON PURPOSE, so `try_eval_dict_scalar` declines and this
+            // prices the per-row path. Over a LOW-cardinality column (`upper(city)`) the same
+            // call is computed once per distinct value instead, so this row is the ceiling.
+            "Call upper (high-cardinality; a dict column is per-distinct-value)",
             Expr::Call {
                 name: "upper".to_string(),
                 args: vec![name()],
             },
         ),
         (
-            "Call contains",
+            // PROJECTION ONLY. As a FILTER this costs ~5 ns/row, not 32: `try_keep_strsearch` and
+            // `eval_mask`'s `typed_strsearch_mask` both scan `&str` off the raw column.
+            "Call contains (projection; a FILTER uses typed_strsearch_mask)",
             Expr::Call {
                 name: "contains".to_string(),
                 args: vec![name(), Expr::Lit(Value::Str("7".into()))],
