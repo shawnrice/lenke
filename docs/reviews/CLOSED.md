@@ -360,7 +360,22 @@ absence** — `{k: null}` is the one place in a pattern where that distinction i
     and **marshals a 64-bit handle plus params as a JSON payload** (165ns to `parse_json` in Rust,
     ~47ns to stringify in JS) because it rides the generic `lnk_command(name, input)` dispatcher
     rather than a dedicated entry point like `lnk_query`, which already takes params as a byte
-    buffer. Together ~460ns of the 2648. **~1456ns stays diffuse** — `catch_unwind` entered twice,
+    buffer.
+    **CORRECTION (item 293, one commit later): only the JSON marshalling is avoidable that way.**
+    Item 292 said the re-optimize could be removed by keying a plan cache on a STORE VERSION. It
+    cannot: `bind_params` runs BEFORE `optimize_indexed` by design — `ir.rs` says `Param` is
+    "replace[d] with the supplied value before `opt`/`exec` run, so a `Param` reaching evaluation
+    is an unbound-parameter error" — so the optimized plan has THAT CALL'S param values baked in
+    and is not reusable across calls with different values. A (text, store-version) key would
+    serve stale values: a wrong answer, not a slow one. **The design that would remove it is to
+    optimize the PARAMETERIZED plan and bind into the optimized one**, and the optimizer has
+    partial support for that already (`opt.rs`'s seeding-key match admits `Expr::Param` beside
+    `Expr::Lit`, and a comment notes "a parameterized or unmeasurable bound is still seedable").
+    But that INVERTS the documented IR contract and hands the optimizer less information — a
+    literal bound can be measured against the index, a param cannot — so plan CHOICE can get worse
+    where answers are preserved. Its own item, not a cache key.
+    So ~212ns of the 2648 is avoidable cheaply (the JSON round trip), not ~460ns.
+    **~1456ns stays diffuse** — `catch_unwind` entered twice,
     `out_bytes` + `lnk_free`, `ffi_error::begin()`, bun:ffi's per-ARGUMENT marshalling
     (`vertexCount` takes one argument and costs 8ns; `lnk_command` takes five), and the `String`
     allocations in `prepared_payload`. **That needs a profiler, not another probe.**
