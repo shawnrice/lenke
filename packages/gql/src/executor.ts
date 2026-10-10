@@ -299,6 +299,7 @@ import {
   COMPARE,
   concatStep,
   dataException,
+  everyAggregateIsCountStar,
   hasAggregate,
   inList,
   isNullish,
@@ -2312,6 +2313,9 @@ export type CProjection = {
   items: readonly CReturnItem[];
   /** True when any non-`*` item aggregates → implicit grouping kicks in. */
   aggregating: boolean;
+  /** Every aggregate is `count(*)`, so a group needs a COUNT and a representative — not its
+   *  bindings. See `compileProjection`; the saving is O(rows) → O(groups). */
+  countedGroups: boolean;
   /** The non-aggregate item closures, used to build each group's key. */
   groupKeys: readonly CompiledExpr[];
   /**
@@ -2490,6 +2494,20 @@ const compileProjection = (projection: Projection): CProjection => {
   const aggregating =
     !projection.star &&
     (items.some((i) => i.isAgg) || groupByExprs.length > 0 || having !== undefined);
+  // MAY THE GROUPS BE COUNTED RATHER THAN KEPT? `applyProjection`'s aggregating branch retains
+  // every binding so the aggregate closures can map over them — which made `RETURN count(*)`
+  // O(ROWS) and OOM-killed a 5-hop count under a 4 GB cap (item 296 measured it: ~640 bytes a
+  // path over 6.25M paths). `count(*)` is the one aggregate that reads nothing but the group's
+  // SIZE, so when every aggregate in the projection is `count(*)` the bindings are dead weight
+  // and a counter plus one representative suffices — O(GROUPS).
+  //
+  // `having` is excluded rather than analysed: it receives the group too and may do anything
+  // with it, and keeping the guarantee local is worth more than covering `HAVING count(*) > n`.
+  const countedGroups =
+    aggregating &&
+    having === undefined &&
+    projection.items.every((i) => everyAggregateIsCountStar(i.expr)) &&
+    (projection.orderBy ?? []).every((o) => everyAggregateIsCountStar(o.expr));
   const groupKeys =
     groupByExprs.length > 0
       ? groupByExprs.map((e) => compileExpr(e))
@@ -2534,6 +2552,7 @@ const compileProjection = (projection: Projection): CProjection => {
     distinct: projection.distinct,
     items,
     aggregating,
+    countedGroups,
     groupKeys,
     groupKeyNames,
     ...(having ? { having } : {}),
@@ -2727,6 +2746,47 @@ const boundedTopK = <T>(rows: Iterable<T>, cap: number, cmp: (a: T, b: T) => num
  * grouping/aggregation, then DISTINCT, ORDER BY, SKIP, LIMIT. Returns the
  * projected bindings — `RETURN` turns these into rows, `WITH` feeds them on.
  */
+/** A counted group mid-accumulation: its size, and the first binding seen (the representative
+ *  the rest of the projection reads as `group[0]`). */
+type CountedGroup = { rep: Binding; n: number };
+
+/**
+ * A `Binding[]` stand-in that knows its LENGTH and holds ONE binding.
+ *
+ * `count(*)` compiles to `group.length` and nothing else, so when every aggregate in a
+ * projection is `count(*)` the other `n - 1` bindings are never read and retaining them is what
+ * made an aggregating projection O(rows) (item 296: a 5-hop `count(*)` OOM-killed under a 4 GB
+ * cap, ~640 bytes a path). This gives the group its size without them.
+ *
+ * IT IS A LIE, SO IT IS A LOUD ONE. The array is length-1 with the real `length` reported on
+ * top, which means an index past 0 would silently read `undefined` — a wrong answer of exactly
+ * the kind this engine is least able to detect. The Proxy turns any numeric read past the
+ * representative into a thrown error instead, so if a future aggregate reaches for the bindings
+ * the failure names the cause rather than returning a plausible number. It is built once per
+ * GROUP, never per row, so the Proxy costs nothing that matters.
+ *
+ * `compileProjection`'s `countedGroups` is what guarantees only `.length` and `[0]` are read;
+ * this is the backstop for that guarantee, not a substitute for it.
+ */
+const countedGroupView = (rep: Binding, n: number): Binding[] =>
+  new Proxy<Binding[]>([rep], {
+    get(target, prop, recv) {
+      if (prop === 'length') {
+        return n;
+      }
+
+      if (typeof prop === 'string' && /^\d+$/.test(prop) && Number(prop) > 0) {
+        throw new LenkeError(
+          `lenke: a counted group of ${n} was indexed at ${prop}; only count(*) may stream a ` +
+            'group, so this aggregate needs the bindings retained (see `countedGroups`)',
+          { code: ErrorCode.Unsupported },
+        );
+      }
+
+      return Reflect.get(target, prop, recv) as unknown;
+    },
+  });
+
 export const applyProjection = (
   proj: CProjection,
   bindings: Iterable<Binding>,
@@ -2825,18 +2885,46 @@ export const applyProjection = (
     // string cell may contain whatever separator the join picks.
     const soleKey = proj.groupKeys.length === 1 ? proj.groupKeys[0] : undefined;
 
+    // COUNTED groups keep a size and a representative; kept groups keep every binding. One
+    // loop either way, so the grouping key is derived once and the only difference is what the
+    // bucket holds.
+    const counts = proj.countedGroups ? new Map<string, CountedGroup>() : undefined;
+
     for (const b of bindings) {
       assertGroupKeysBound(proj.groupKeyNames, b);
 
       const key = soleKey
         ? valueKey(soleKey({ binding: b, params, graph }))
         : JSON.stringify(proj.groupKeys.map((fn) => valueKey(fn({ binding: b, params, graph }))));
+
+      if (counts) {
+        const seen = counts.get(key);
+
+        if (seen) {
+          seen.n += 1;
+        } else {
+          // The FIRST binding is the representative — the same one `group[0]` would have been,
+          // which is what group keys and non-aggregate items read.
+          counts.set(key, { rep: b, n: 1 });
+        }
+
+        continue;
+      }
+
       const existing = groups.get(key);
 
       if (existing) {
         existing.push(b);
       } else {
         groups.set(key, [b]);
+      }
+    }
+
+    // Replay the counted buckets as groups the rest of this function already understands: a
+    // representative plus a LENGTH-ONLY view standing in for the bindings.
+    if (counts) {
+      for (const [key, { rep, n }] of counts) {
+        groups.set(key, countedGroupView(rep, n));
       }
     }
 

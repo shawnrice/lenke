@@ -399,17 +399,29 @@ absence** — `{k: null}` is the one place in a pattern where that distinction i
   both passed every row, because native's `exec` answers an aggregate-over-chain with a TALLY and
   never runs the expansion. Only a bare PROJECTION materializes the frontier. The probe now prints
   whether the optimized plan contains an `Expand`.
-- **The TS aggregating projection RETAINS every binding** — **OPEN, and it is what actually
-  OOM'd** (item 296 established the attribution; native tallies these shapes and never built the
-  intermediate). `applyProjection`'s aggregating branch does `groups.set(key, [b])` / `push(b)`,
-  so `RETURN count(*)` with no `GROUP BY` holds ONE group of every binding — 6.25M six-entry
-  `Map`s, ~640 bytes a path, **OOM-killed under a 4 GB cap at 5 hops** where 3 and 4 hops run in
-  8 and 13 ms at ~80 MB (the count family covers ≤4 segments since item 290, so the cliff is
-  exactly its coverage edge). The fix is per-group ACCUMULATOR state instead of the bindings —
-  O(groups), not O(rows). **The hazard is drift:** `compileAggregate` folds over the array
-  (`env.group`, with `count(*)` reading `group.length`), so an accumulator must not become a
-  second definition of the aggregate semantics. `collect`/`collect_list`/percentiles genuinely
-  need the values; `count`/`sum`/`min`/`max` do not.
+- ~~**The TS aggregating projection RETAINS every binding**~~ — **CLOSED by item 297 for
+  `count(*)`: a 5-hop count goes from OOM-KILLED under a 4 GB cap to 2,793 ms at 123 MB RSS, and
+  the 6-hop query that took the box down to 14,090 ms at 127 MB.** `count(*)` compiles to
+  `group.length` and nothing else, so when EVERY aggregate in a projection is `count(*)` a counter
+  plus one representative replaces the bindings — O(groups), not O(rows). `having` is excluded
+  rather than analysed (it receives the group and may do anything). The twenty-case
+  `hasAggregate` walk became `collectAggregates` with both questions expressed over it, so the new
+  admission check is not a second copy. The counted bucket is replayed as a **Proxy** reporting the
+  real `length` over a length-1 array, which throws on any index past the representative — the lie
+  is loud rather than silent.
+  **IT IS A MEMORY FIX, NOT A TIME ONE:** 1.00x at 8 groups, 1.03x at 1000, and the 1.16x at N
+  groups is NOT claimed (rounds overlap 19.1/13.1/19.0 against 20.6/11.3/11.3). Controls that keep
+  their bindings either way read 0.98x (`sum`) and 0.96x (`collect_list`).
+  **T10 is an EQUIVALENT mutant, provably:** dropping `!a.distinct` while keeping `a.star` can only
+  matter if `count(DISTINCT *)` is expressible, and it is `E_SYNTAX`.
+  Still O(rows): `sum`/`min`/`max`/`avg`/`stddev` (foldable, but `avg` needs `(sum, count)` and
+  `stddev` the moments, so they need partial state plumbed through `compileAggregate` — and the
+  accumulator must fold the array path too, or it becomes a second definition of the semantics)
+  and `collect`/`collect_list`/percentiles (genuinely need every value).
+  How it was found, since the attribution was the hard part: item 296 showed native TALLIES an
+  aggregate-over-chain and never builds the frontier, so the engine that OOM'd had to be the TS
+  one — and 3 and 4 hops run in 8 and 13 ms at ~80 MB where 5 is fatal, which is exactly the count
+  family's ≤4-segment coverage edge (item 290).
 - **`gql::parse` at 1296ns for a 57-byte query (43% of a serving call)** — **OPEN, and item 294
   established it is STRUCTURAL rather than allocational.** The two costs visible in the source
   were priced: the lexer's `Vec<char>` pre-pass is **60ns** (26ns with `with_capacity` — a 34ns

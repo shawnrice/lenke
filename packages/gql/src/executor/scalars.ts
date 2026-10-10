@@ -512,51 +512,111 @@ export const percentileOf = (
   return nums[Math.min(n - 1, Math.max(0, Math.ceil(frac * n) - 1))];
 };
 
-/** Does an expression contain an aggregate anywhere (→ implicit grouping)? */
-export const hasAggregate = (expr: Expr): boolean => {
-  switch (expr.kind) {
-    case 'func':
-      return AGGREGATES.has(expr.name) || expr.args.some(hasAggregate);
-    case 'graphPred':
-      return expr.args.some(hasAggregate);
-    case 'neg':
-    case 'not':
-    case 'isNull':
-    case 'isTruth':
-    case 'isLabeled':
-    case 'isTyped':
-      return hasAggregate(expr.expr);
-    case 'arith':
-      return hasAggregate(expr.head) || expr.tail.some(([, e]) => hasAggregate(e));
-    case 'concat':
-    case 'and':
-    case 'or':
-    case 'xor':
-      return expr.items.some(hasAggregate);
-    case 'compare':
-      return hasAggregate(expr.left) || hasAggregate(expr.right);
-    case 'letIn':
-      return expr.bindings.some((b) => hasAggregate(b.expr)) || hasAggregate(expr.body);
-    case 'in':
-      return hasAggregate(expr.expr) || hasAggregate(expr.list);
-    case 'index':
-      return hasAggregate(expr.base) || hasAggregate(expr.index);
-    case 'field':
-      return hasAggregate(expr.base);
-    case 'list':
-      return expr.items.some(hasAggregate);
-    case 'record':
-      return expr.fields.some((f) => hasAggregate(f.value));
-    case 'case':
-      return (
-        (expr.subject ? hasAggregate(expr.subject) : false) ||
-        expr.whens.some((w) => hasAggregate(w.when) || hasAggregate(w.then)) ||
-        (expr.elseExpr ? hasAggregate(expr.elseExpr) : false)
-      );
-    default:
-      return false;
-  }
+/**
+ * Every aggregate call occurring anywhere in an expression, outermost first.
+ *
+ * ONE walk, because there are two questions to ask of it and a second copy of a twenty-case
+ * structural descent is exactly the drift this file keeps paying for: {@link hasAggregate}
+ * ("is there one?") and {@link everyAggregateIsCountStar} ("are they all `count(*)`?", which
+ * decides whether the aggregating projection may stream — see `applyProjection`). An aggregate's
+ * ARGUMENTS are still descended into, so a malformed nested aggregate is reported by both.
+ */
+export const collectAggregates = (expr: Expr): Extract<Expr, { kind: 'func' }>[] => {
+  const out: Extract<Expr, { kind: 'func' }>[] = [];
+  const walk = (e: Expr): void => {
+    switch (e.kind) {
+      case 'func':
+        if (AGGREGATES.has(e.name)) {
+          out.push(e);
+        }
+
+        e.args.forEach(walk);
+        break;
+      case 'graphPred':
+        e.args.forEach(walk);
+        break;
+      case 'neg':
+      case 'not':
+      case 'isNull':
+      case 'isTruth':
+      case 'isLabeled':
+      case 'isTyped':
+        walk(e.expr);
+        break;
+      case 'arith':
+        walk(e.head);
+        e.tail.forEach(([, t]) => walk(t));
+        break;
+      case 'concat':
+      case 'and':
+      case 'or':
+      case 'xor':
+        e.items.forEach(walk);
+        break;
+      case 'compare':
+        walk(e.left);
+        walk(e.right);
+        break;
+      case 'letIn':
+        e.bindings.forEach((b) => walk(b.expr));
+        walk(e.body);
+        break;
+      case 'in':
+        walk(e.expr);
+        walk(e.list);
+        break;
+      case 'index':
+        walk(e.base);
+        walk(e.index);
+        break;
+      case 'field':
+        walk(e.base);
+        break;
+      case 'list':
+        e.items.forEach(walk);
+        break;
+      case 'record':
+        e.fields.forEach((f) => walk(f.value));
+        break;
+      case 'case':
+        if (e.subject) {
+          walk(e.subject);
+        }
+
+        e.whens.forEach((w) => {
+          walk(w.when);
+          walk(w.then);
+        });
+
+        if (e.elseExpr) {
+          walk(e.elseExpr);
+        }
+
+        break;
+      default:
+        break;
+    }
+  };
+
+  walk(expr);
+
+  return out;
 };
+
+/** Does an expression contain an aggregate anywhere (→ implicit grouping)? */
+export const hasAggregate = (expr: Expr): boolean => collectAggregates(expr).length > 0;
+
+/**
+ * Are ALL of an expression's aggregates `count(*)` — no argument, not `DISTINCT`?
+ *
+ * The question `applyProjection` asks before it streams. `count(*)` is the one aggregate that
+ * reads nothing but the group's SIZE (`group.length`); every other one maps over the group's
+ * bindings, so the bindings have to be there. TRUE of an expression with no aggregate at all,
+ * which is the vacuous case the caller wants (a non-aggregate item reads the representative
+ * binding and nothing else).
+ */
+export const everyAggregateIsCountStar = (expr: Expr): boolean =>
+  collectAggregates(expr).every((a) => a.name === 'count' && a.star && !a.distinct);
 
 // ISO `<numeric value function>` unary forms, keyed by function name. Each takes
 // a single number; null in → null out is handled by the caller.
