@@ -416,7 +416,7 @@ const inlineHolds = (
  */
 const degreeOfTypes = (
   byType: Map<string, Set<Edge>> | undefined,
-  types: readonly string[] | undefined,
+  types: string[] | undefined,
 ): number => {
   if (byType === undefined) {
     return 0;
@@ -580,12 +580,27 @@ const startOnlyHopCount = (scan: HopScan, startVar: string | undefined): number 
  * which are inline precisely because they run per EDGE.
  */
 const startWalkFits = (scan: HopScan): boolean => {
-  const { graph, pred, pb, types, inNear, inFar } = scan;
+  const { graph, pred, pa, pb, types, inNear, inFar } = scan;
 
   return (
-    // A clause predicate on the start, an INLINE constraint on it, or both — any of them
-    // is decided per VERTEX.
-    (pred.startVar !== undefined || inNear !== undefined) &&
+    // A clause predicate on the start, an INLINE constraint on it, a non-vacuous start
+    // LABEL, or any combination — every one of them is decided per VERTEX.
+    //
+    // `pa !== undefined` is item 286, and it is what lets the UNFILTERED branch ask this
+    // rule at all. Without it that branch had only two rungs: the O(1) bucket size when
+    // BOTH ends are unconstrained, and a per-edge label walk otherwise. So a start label
+    // `vacuousLabel` could not elide fell off a cliff — at 200,000 vertices and 600,000
+    // `E` edges:
+    //
+    //   MATCH (a)-[:E]->(b)   RETURN count(*)    0.001 ms   <- bucket size
+    //   MATCH (a:P)-[:E]->(b) RETURN count(*)   43.800 ms   <- every edge, both endpoints
+    //   MATCH (a:S)-[:E]->(b) RETURN count(*)   28.341 ms   <- FOUR vertices, ZERO edges
+    //
+    // The `:S` row is the one that settles it: four vertices with no edges at all, and the
+    // query scanned 600,000 edges to find none, because the walk that answers it in four
+    // degree reads was reachable only with a predicate attached. The label IS a per-vertex
+    // constraint; nothing about this walk needed a predicate to exist.
+    (pred.startVar !== undefined || inNear !== undefined || pa !== undefined) &&
     pred.farVar === undefined &&
     pred.relVar === undefined &&
     // The walk never visits the far endpoint, so it cannot apply the far label or a far
@@ -597,12 +612,12 @@ const startWalkFits = (scan: HopScan): boolean => {
   );
 };
 
-/** The FAR mirror of {@link startWalkFits}, on mirrored conditions. */
+/** The FAR mirror of {@link startWalkFits}, on mirrored conditions — the far LABEL included. */
 const farWalkFits = (scan: HopScan): boolean => {
-  const { graph, pred, pa, types, inNear, inFar } = scan;
+  const { graph, pred, pa, pb, types, inNear, inFar } = scan;
 
   return (
-    (pred.farVar !== undefined || inFar !== undefined) &&
+    (pred.farVar !== undefined || inFar !== undefined || pb !== undefined) &&
     pred.startVar === undefined &&
     pred.relVar === undefined &&
     // An IN-degree counts edges from ANY source, so the start side must be unconstrained
@@ -711,7 +726,7 @@ const farOnlyHopCount = (scan: HopScan, farVar: string | undefined): number => {
 const edgesOfVertices = function* (
   vertices: Iterable<Vertex>,
   index: Map<string, Map<string, Set<Edge>>>,
-  types: readonly string[] | undefined,
+  types: string[] | undefined,
 ): Iterable<Edge> {
   for (const v of vertices) {
     const byType = index.get(v.id);
@@ -860,6 +875,77 @@ const tallyHopCount = (scan: HopScan): number => {
   return n;
 };
 
+/**
+ * A one-hop count whose ONLY constraint is a label on one end: the DEGREE SUM over that end's
+ * label bucket, or `null` when neither walk fits and the caller must keep its per-edge walk.
+ *
+ * The unfiltered branch of {@link buildOneHopCount} had two rungs — the O(1) bucket size when
+ * BOTH ends are unconstrained, and a per-edge walk testing both endpoints' labels otherwise —
+ * so a start label `vacuousLabel` could not elide fell off a cliff. At 200,000 vertices and
+ * 600,000 `E` edges, min of 9 over three alternated rounds:
+ *
+ *   MATCH (a)-[:E]->(b)   RETURN count(*)     0.001 ms   <- bucket size, unchanged
+ *   MATCH (a:P)-[:E]->(b) RETURN count(*)    44.734 ms -> 18.048 ms   2.48x
+ *   MATCH (a)-[:E]->(b:P) RETURN count(*)   156.784 ms -> 35.777 ms   4.38x
+ *   MATCH (a:P)<-[:E]-(b) RETURN count(*)   160.251 ms -> 35.880 ms   4.47x
+ *   MATCH (a:Q)-[:E]->(b) RETURN count(*)    36.981 ms ->  7.530 ms   4.91x
+ *   MATCH (a:S)-[:E]->(b) RETURN count(*)    30.736 ms ->  0.004 ms   7684x
+ *
+ * The `:S` row is the one that settles that this was a missing rung and not a tuning question:
+ * FOUR vertices with ZERO edges, and the query scanned 600,000 edges to find none. A label is
+ * a per-vertex constraint; nothing about the degree-sum walk ever needed a predicate.
+ *
+ * Both walks are REUSED rather than reimplemented, with the inline branch's bare-predicate
+ * device: they take their constraint from `pa`/`pb` and apply `pred.fn` on top, so an
+ * always-TRUE predicate reduces each to "iterate the label bucket, sum the degree". The
+ * alternative — a third loop — is what this file has already paid for once: the far endpoint
+ * sat on the per-edge tally for eight items because its fit rule was a separate copy.
+ *
+ * MODULE SCOPE, AND THAT IS MEASURED, NOT STYLISTIC. Written inline in the closure
+ * `buildOneHopCount` returns, this cost the two spellings that ALREADY took the walk a
+ * consistent 0.95-0.96x — `clause WHERE start` and `inline start`, slower in all three rounds,
+ * on a path whose only textual change was one extra disjunct evaluated once per query. Hoisted,
+ * they return to 1.00-1.01x. That is `ts-closure-size-is-load-bearing` for the FOURTH time in
+ * this file (items 119, 141, 159), and the first time it was predicted by the note at the call
+ * site rather than discovered.
+ */
+const labelOnlyHopCount = (
+  graph: Graph,
+  params: Params,
+  out: boolean,
+  types: string[] | undefined,
+  /** The endpoint labels and their compiled nodes, bundled: eight parameters exceeded the
+   *  arity limit, the same reason `buildOneHopCount` bundles its `ends`. */
+  ends: { a?: LabelExpr; b?: LabelExpr; cstart?: CNode; cfar?: CNode },
+): number | null => {
+  const scan: HopScan = {
+    graph,
+    params,
+    pred: { fn: alwaysTrue },
+    pa: ends.a,
+    pb: ends.b,
+    out,
+    types,
+    inNear: undefined,
+    inFar: undefined,
+    cstart: ends.cstart,
+    cfar: ends.cfar,
+  };
+
+  if (startWalkFits(scan)) {
+    return startOnlyHopCount(scan, undefined);
+  }
+
+  if (farWalkFits(scan)) {
+    return farOnlyHopCount(scan, undefined);
+  }
+
+  return null;
+};
+
+/** The bare predicate, allocated ONCE rather than per query. */
+const alwaysTrue = (): true => true;
+
 const buildOneHopCount = <T>(
   seg: Segment,
   start: NodePattern,
@@ -955,7 +1041,13 @@ const buildOneHopCount = <T>(
     if (inNear !== undefined || inFar !== undefined) {
       const pa = vacuousLabel(graph, aLabel) ? undefined : aLabel;
       const pb = vacuousLabel(graph, bLabel) ? undefined : bLabel;
-      const bare: HopPred = { fn: () => true };
+      // `alwaysTrue`, not a fresh `() => true`: this branch and the unfiltered one below both
+      // hand a bare predicate to the SAME two walks, and `pred.fn(env)` inside them is a hot
+      // call. Two source locations mean two callee shapes at that call site, and item 286
+      // measured what the third one cost — a uniform 1.10x on the two spellings that already
+      // took the walk, which hoisting the new code to module scope did NOT fix and sharing the
+      // identity did. One object, allocated once, also drops an allocation per query here.
+      const bare: HopPred = { fn: alwaysTrue };
       // `cstart` here too, or the INLINE spelling of an anchored count scans the label while
       // the clause-`WHERE` spelling seeks — one question costing two different amounts, which
       // is the gap items 124-125 were about and the one this file keeps re-learning. Caught by
@@ -1013,6 +1105,14 @@ const buildOneHopCount = <T>(
       (types.length === 1 || graph.multiTypeEdgeCount === 0)
     ) {
       return rowOf(types.reduce((n, t) => n + (graph.edgesByLabel.get(t)?.size ?? 0), 0));
+    }
+
+    // THE SAME TWO RUNGS the other two branches have, which this one never had (item 286).
+    // Delegated to a MODULE-SCOPE function, not written inline — see `labelOnlyHopCount`.
+    const byDegree = labelOnlyHopCount(graph, params, out, types, { a, b, cstart, cfar });
+
+    if (byDegree !== null) {
+      return rowOf(byDegree);
     }
 
     // TWO callbacks, chosen once per execution rather than a branch inside one — the shape this

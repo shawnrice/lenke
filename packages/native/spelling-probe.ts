@@ -207,22 +207,55 @@ const GROUPS: [string, readonly string[]][] = [
       'MATCH (n:P) RETURN n.k AS c ORDER BY n.k LIMIT 10',
     ],
   ],
-  // THIS GROUP FLAGS, AND THE FLAG IS A REAL FINDING — do not "fix" it by reverting the
-  // fixture. It used to read 0.00ms on both members and be skipped under `FLOOR_MS`, because
-  // every node in the fixture was a `P`: `vacuousLabel` then elided `:P` and the one-hop count
-  // shortcut answered both spellings with an O(1) edge count. Item 285 added four `S` nodes for
-  // the multi-pattern group below, which makes `:P` genuinely selective — and the labelled
-  // spelling fell to a FULL TRAVERSAL: 0.00ms against 54.06ms, ~5400x, same answer.
+  // THIS GROUP FOUND A 5400x CLIFF AND IS WHY ITEM 286 EXISTS — keep both members.
   //
-  // So the shortcut is not "a one-hop count is O(1)", it is "a one-hop count is O(1) when the
-  // start label constrains NOTHING" (`shortcuts.ts`: "The start label has to be vacuous for the
-  // caller to route here"). Four nodes out of 200,000 are enough to lose it. That is a 5400x
-  // cliff on the most ordinary shape there is, found by this probe on the run that added an
-  // unrelated group — which is the whole argument for the probe existing. Recorded as the open
-  // target in CLOSED.md; the flag stays until it is closed.
+  // It used to read 0.00ms on both and be skipped under `FLOOR_MS`, because every node in the
+  // fixture was a `P`: `vacuousLabel` elided `:P` and the O(1) edge-bucket count answered both
+  // spellings. Item 285 added four `S` nodes for the multi-pattern group below, which makes
+  // `:P` genuinely SELECTIVE — and the labelled spelling fell to a full per-edge traversal,
+  // 0.00ms against 54.06ms for the same answer. Four nodes out of 200,000 were enough.
+  //
+  // The cause was a missing rung, not a tuning question: the unfiltered branch of
+  // `buildOneHopCount` went from the O(1) bucket size straight to a per-edge walk, while the
+  // degree-sum walk that answers "one end labelled, the other free" in O(|label|) existed and
+  // was reachable only WITH a predicate. Item 286 gave that branch the rung: 54.06 -> 21.38ms.
+  //
+  // IT STILL FLAGS, AT ~2100x, AND THAT IS CORRECT RATHER THAN OUTSTANDING. These two members
+  // are NOT equivalent work: the untyped spelling needs no vertex visits at all (one bucket
+  // size), while the labelled one must visit every `P` to sum its degree. O(|label|) against
+  // O(1) cannot converge, so no amount of further work closes this pair — it is here as a
+  // REGRESSION guard on the 54ms, not as a target. Read the four-spelling group below for the
+  // comparison that IS between equivalent plans.
   [
     'label on start: redundant vs absent',
     ['MATCH (a:P)-[:E]->(b) RETURN count(*) AS c', 'MATCH (a)-[:E]->(b) RETURN count(*) AS c'],
+  ],
+  // FOUR spellings of one question that ARE equivalent work — one end labelled, the other
+  // free, every arrow direction and every side. All four now take a degree sum over the same
+  // 200,000-vertex bucket, so unlike the pair above they SHOULD converge.
+  //
+  // They do not, and the residual is a finding rather than a tuning gap. This group flagged at
+  // 3.4x on HEAD and still flags at 3.3x, but for a DIFFERENT reason: item 286 dropped every
+  // member 2.5-4.5x, and what is left splits exactly by WHICH ADJACENCY INDEX the walk reads.
+  // From the item's own A/B, min of 9 over three alternated rounds:
+  //
+  //   (a:P)-[:E]->(b)   start walk, edgesFromByLabel   17.800 ms
+  //   (a)-[:E]->(b:P)   far walk,   edgesToByLabel     33.414 ms
+  //   (a:P)<-[:E]-(b)   start walk, edgesToByLabel     33.984 ms
+  //
+  // The walk is not the variable — one start and one far walk sit on each side of the split.
+  // Reading bucket SIZES out of `edgesToByLabel` costs ~1.9x the same read out of
+  // `edgesFromByLabel`, and that is the open target this group now tracks (CLOSED.md §5). A fix
+  // applied to one side only would also have left these behind, which is exactly how the far
+  // endpoint sat on the per-edge tally for eight items.
+  [
+    'one end labelled, the other free: four spellings (item 286)',
+    [
+      'MATCH (a:P)-[:E]->(b) RETURN count(*) AS c',
+      'MATCH (b)<-[:E]-(a:P) RETURN count(*) AS c',
+      'MATCH (a)-[:E]->(b:P) RETURN count(*) AS c',
+      'MATCH (b:P)<-[:E]-(a) RETURN count(*) AS c',
+    ],
   ],
   [
     'AND order',

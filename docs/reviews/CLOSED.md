@@ -249,14 +249,29 @@ absence** — `{k: null}` is the one place in a pattern where that distinction i
   reading two of them would compare against an unbound variable whenever its pattern went first
   and the row would silently vanish. Outer variables are safe for item 128's reason. Permanent
   group in `spelling-probe.ts`: **9.5x spread on HEAD, 1.10x after.**
-- **A one-hop count is O(1) only when the start label constrains NOTHING** — **OPEN, priced at
-  ~5400x**, found by item 285's probe group on the way in. `MATCH (a:P)-[:E]->(b) RETURN count(*)`
-  reads **54.06 ms** against the untyped spelling's **0.00 ms**, same answer, once `:P` is
-  genuinely selective. `vacuousLabel` elides a label every vertex carries and the one-hop count
-  shortcut requires that elision to have happened ("the start label has to be vacuous for the
-  caller to route here"); **four nodes out of 200,000 are enough to lose it** and fall to a full
-  traversal. The probe's `label on start: redundant vs absent` group flags until this closes —
-  its comment says so; do NOT quiet it by reverting the fixture.
+- ~~**A one-hop count is O(1) only when the start label constrains NOTHING**~~ — **CLOSED by item
+  286** (2026-10-09), at **2.6-4.9x and 9058x** where the label's vertices have no edges. Found by
+  item 285's probe group on the way in: `MATCH (a:P)-[:E]->(b) RETURN count(*)` read **54.06 ms**
+  against the untyped spelling's **0.00 ms**, same answer, once `:P` was genuinely selective —
+  four nodes out of 200,000 were enough. The cause was a MISSING RUNG, not an algorithm: the
+  unfiltered branch of `buildOneHopCount` went from the O(1) bucket size straight to a per-edge
+  walk, while `startOnlyHopCount` (item 129) and its far mirror (137) answer "one end labelled,
+  the other free" as a DEGREE SUM over the label bucket — and were reachable only with a
+  predicate or an inline constraint, because `startWalkFits` did not count a LABEL as a
+  per-vertex constraint. One disjunct in each shared fit rule. `MATCH (a:S)-[:E]->(b)` — four
+  vertices, zero edges — went 27.176 ms to 0.003 ms, having scanned 600,000 edges to find none.
+  **The `label on start` probe group still flags at ~2100x and that is CORRECT, not outstanding:
+  the two members are not equivalent work** (one bucket size against a visit to every `P`), so
+  O(|label|) against O(1) cannot converge. It stays as a regression guard on the 54 ms; do not
+  quiet it by reverting the fixture.
+- **`edgesToByLabel` costs ~1.9x `edgesFromByLabel` to read bucket sizes** — **OPEN, priced**,
+  exposed by item 286 and invisible before it. The four spellings of "one end labelled, the other
+  free" split by WHICH ADJACENCY INDEX the walk reads and not by which walk runs: `(a:P)-[:E]->(b)`
+  **17.800 ms** on `edgesFromByLabel` against `(a)-[:E]->(b:P)` **33.414 ms** and
+  `(a:P)<-[:E]-(b)` **33.984 ms** on `edgesToByLabel`, with one start walk and one far walk on
+  each side of the split. The probe's `one end labelled, the other free: four spellings` group
+  tracks it (3.4x on HEAD before the fix, 3.3x after — the same spread for a different reason,
+  every member 2.5-4.5x faster).
 - **The CORRELATED comma product keeps ~3.4x** against its two-clause twin — **recorded, not a
   bug, and not refuted either.** `MATCH (a:A), (b:B) WHERE b.k = a.k` cannot push onto either
   pattern for the runtime-visit-order reason above. Closing it means PINNING `visitRemaining`'s
