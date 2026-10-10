@@ -353,6 +353,21 @@ absence** — `{k: null}` is the one place in a pattern where that distinction i
     Reproduce with `percall_probe` (indexed in `examples/README.md`); do not re-derive from the FFI
     side alone — **decomposing on ONE side of a boundary cannot tell you which side the cost is on**,
     and doing so here made 338ns of engine work read as 1865ns.
+    **Item 292 split that residual.** JS-side plumbing is ~411ns (`toArrayBuffer` **123.9ns** is
+    the only real item; the slice copy 56.4, `JSON.stringify` of params 46.5, `encode` 26, `ptr`
+    9, decode+parse 149). Rust-side a prepared call is ~781ns, and **two of those are avoidable**:
+    the "prepared" path **RE-OPTIMIZES every call** (295ns — it skips the parse but not the plan)
+    and **marshals a 64-bit handle plus params as a JSON payload** (165ns to `parse_json` in Rust,
+    ~47ns to stringify in JS) because it rides the generic `lnk_command(name, input)` dispatcher
+    rather than a dedicated entry point like `lnk_query`, which already takes params as a byte
+    buffer. Together ~460ns of the 2648. **~1456ns stays diffuse** — `catch_unwind` entered twice,
+    `out_bytes` + `lnk_free`, `ffi_error::begin()`, bun:ffi's per-ARGUMENT marshalling
+    (`vertexCount` takes one argument and costs 8ns; `lnk_command` takes five), and the `String`
+    allocations in `prepared_payload`. **That needs a profiler, not another probe.**
+- ~~**Hoisting `takeResult`'s per-call `new BigUint64Array(1)`**~~ — **REFUTED at item 292 before
+  being built: the allocation costs 0.4ns**, below the 4.9ns floor of calling an empty closure,
+  because the JIT elides it. It looked free and obvious, which is exactly the case `CLAUDE.md`
+  names: _"obviously correct so it must be faster" is not evidence._
 - **A cap over a SHARED-VARIABLE join** (`Join { on: [(1, 1)] }`) — **PRICED AT ~1.7x AND NOT
   WORTH BUILDING**, measured at item 289 right after item 288 closed the empty-`on` case. The
   shape is real and the cap does nothing: `MATCH (p:P)-[:KNOWS]->(q) MATCH (r:P)-[:KNOWS]->(q)

@@ -129,4 +129,50 @@ fn main() {
     });
 
     println!("  {:<46} {render:>10.0}", "6. rows_to_json of that result");
+
+    // 7-10: the PREPARED path's own per-call work, which item 291 left unattributed. It does not
+    // go through `lnk_query` at all — it is routed through the generic `lnk_command` dispatcher as
+    // `prepared_run` with a JSON payload `{"handle":"<ptr>","params":{…}}`, so every call parses
+    // that JSON, clones the plan, binds, and RE-OPTIMIZES before running.
+    let payload = r#"{"handle":"140737488355328","params":{"n":"name7"}}"#;
+    let params_json = r#"{"n":"name7"}"#;
+
+    let parse_payload = ns_per_op(reps, iters, || {
+        let _ = lenke_engine::ndjson::parse_json(payload);
+    });
+    let parse_params = ns_per_op(reps, iters, || {
+        let _ = lenke_engine::ndjson::parse_json(params_json);
+    });
+
+    println!(
+        "  {:<46} {parse_payload:>10.0}",
+        "7. parse_json of the prepared_run payload"
+    );
+    println!(
+        "  {:<46} {parse_params:>10.0}",
+        "8. parse_json of the params object alone"
+    );
+
+    // The bind + re-optimize the prepared path pays per call, on a plan parsed in PREPARED mode
+    // (so `$n` survives as a parameter rather than being substituted at parse time).
+    let prepared_plan =
+        lenke_engine::gql::parse_prepared("MATCH (u:User) WHERE u.name = $n RETURN u.score AS s")
+            .expect("parses in prepared mode");
+    let bound = vec![("n".to_string(), Value::Str("name7".into()))];
+
+    let bind_only = ns_per_op(reps, iters, || {
+        let mut p = prepared_plan.clone();
+        let _ = lenke_engine::bind::bind_params(&mut p, &bound);
+    });
+    let bind_and_opt = ns_per_op(reps, iters, || {
+        let mut p = prepared_plan.clone();
+        let _ = lenke_engine::bind::bind_params(&mut p, &bound);
+        let _ = lenke_engine::opt::optimize_indexed(p, &store);
+    });
+
+    println!("  {:<46} {bind_only:>10.0}", "9. clone + bind_params");
+    println!(
+        "  {:<46} {bind_and_opt:>10.0}",
+        "10. clone + bind + optimize_indexed"
+    );
 }
