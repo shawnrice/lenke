@@ -1159,7 +1159,7 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
                 edge_label,
                 *bind_edge,
                 *double_loops,
-            ),
+            )?,
             store,
         )?,
         Plan::OptionalExpand {
@@ -3156,6 +3156,15 @@ mod reverse;
 use self::reverse::*;
 
 /// `keep`, so no per-row struct is built.
+/// A fixed-length hop, with the PREDICTIVE half of the frontier guard built in.
+///
+/// Returns `E_RESOURCE_EXHAUSTED` when the frontier it is growing crosses
+/// `limits.intermediate_cells`, tested once per SOURCE ROW so the refusal lands while
+/// `keep`/`nbrs` are still growing — before the per-slot gathers and the `nbrs`/`eids` clones,
+/// which are the bulk of the allocation. `guard_intermediate` cannot do this: its argument is an
+/// already-materialized batch, so by the time it reads a row count the memory is spent. That is
+/// how a 6-hop `MATCH` took a 61 GB box into its swapfile (2026-10-10) while staying under the
+/// 50M-ROW ceiling — 62.5M rows at width 7 is 437M cells.
 fn expand(
     batch: &Batch,
     store: &Store,
@@ -3164,7 +3173,7 @@ fn expand(
     edge_label: &[String],
     bind_edge: bool,
     double_loops: bool,
-) -> Batch {
+) -> Result<Batch, String> {
     // An empty expand still appends the landed slot(s), so the output has the same
     // shape a successful expand would (K+1 slots, or K+2 with the edge bound) — a
     // projection referencing a new slot must not go out of bounds.
@@ -3184,7 +3193,7 @@ fn expand(
     // nothing (not everything).
     let want = match want_etypes(store, edge_label) {
         Ok(w) => w,
-        Err(()) => return empty(),
+        Err(()) => return Ok(empty()),
     };
     // A node frontier expands directly (the hot path, borrowed). A heterogeneous `Col::Gen`
     // (a mixed branch / inject) expands only its UNBOXED `Value::Node` cells — a scalar or an
@@ -3203,7 +3212,7 @@ fn expand(
                 .collect();
             &src_owned
         }
-        _ => return empty(),
+        _ => return Ok(empty()),
     };
 
     // Collect edge ids only when something needs them — a bound edge slot or
@@ -3213,9 +3222,27 @@ fn expand(
     let mut keep = Vec::new();
     let mut nbrs = Vec::new();
     let mut eids = Vec::new();
+    // The OUTPUT width is what makes the ceiling width-aware: every input slot is gathered,
+    // plus the landed node and (optionally) the crossed edge.
+    let out_width = batch.slots.len() + 1 + usize::from(bind_edge);
+    let cell_cap = store.limits().intermediate_cells;
     for (row, &v) in src.iter().enumerate() {
         if v == u32::MAX {
             continue; // an optional-null or a non-node Gen cell — no neighbours
+        }
+        // ONCE PER SOURCE ROW, not per neighbour: the outer loop already runs |src| times and a
+        // single vertex can add at most its own degree, so the overshoot is bounded by one
+        // degree while the check stays off the per-neighbour hot path entirely.
+        let cells = (keep.len() as u64).saturating_mul(out_width as u64);
+        if cells > cell_cap {
+            return Err(format!(
+                "E_RESOURCE_EXHAUSTED: an intermediate frontier reached {} rows x {out_width} \
+                 slots ({cells} cells) while expanding, exceeding the limit of {cell_cap}. A \
+                 multi-segment pattern is fanning out faster than it is filtered — add a more \
+                 selective anchor, reorder the pattern so the selective hop comes first, or \
+                 raise the intermediate-cells limit.",
+                keep.len()
+            ));
         }
         for_each_nbr(store, v, dir, &want, double_loops, |nbr, eid| {
             keep.push(row);
@@ -3238,7 +3265,7 @@ fn expand(
     if let Some(lin) = &batch.lineage {
         out.lineage = Some(lin.extend(&keep, &nbrs, &eids));
     }
-    out
+    Ok(out)
 }
 
 /// LEFT-OUTER single hop (`Plan::OptionalExpand`, GQL `OPTIONAL MATCH`): like
@@ -5163,7 +5190,7 @@ fn pull_body(plan: &Plan, store: &Store, seed: &Batch) -> Result<Batch, String> 
                 edge_label,
                 *bind_edge,
                 *double_loops,
-            ),
+            )?,
             store,
         )?,
         // Edge frontier → endpoint vertex (`inV`/`outV`/`otherV` off a bound edge) —

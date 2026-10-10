@@ -16660,3 +16660,195 @@ fn a_path_above_a_capped_correlated_product_carries_its_own_rows() {
         "the kept row (a.n={t}) must start its path at {want_first}: {ns}"
     );
 }
+
+/// A fan-out fixture for the frontier guard: `n` `P` nodes, each with `deg` out-edges, so a
+/// `h`-hop pattern materializes `n * deg^h` rows at width `h + 1`.
+fn fanout_store(nodes: u32, deg: u32) -> Store {
+    let mut b = Builder::default();
+    for i in 0..nodes {
+        b.node(&["P"], &[("k", n(f64::from(i % 50)))]);
+    }
+    for i in 0..nodes {
+        for d in 0..deg {
+            b.edge(i, (i * 7919 + d) % nodes, "E");
+        }
+    }
+    b.build()
+}
+
+/// A `hops`-segment chain PROJECTING the far node — deliberately not `count(*)`, which `exec`
+/// answers with a degree-product tally that never runs the expansion at all. (The first version
+/// of this item's probe used `count(*)` and measured nothing; so did `count(far.k)`.)
+fn hop_project(hops: usize) -> String {
+    let mut q = String::from("MATCH (a:P)");
+    for h in 0..hops {
+        q.push_str(&format!("-[:E]->(x{h})"));
+    }
+    format!("{q} RETURN x{}.k AS k", hops - 1)
+}
+
+/// THE reason the frontier ceiling needs a WIDTH dimension, and the direct analogue of
+/// `the_ceiling_counts_path_elements_not_just_rows` one step over: two expansions over the same
+/// fixture reach the SAME row count at DIFFERENT widths, and it is the width that decides what
+/// the gathers allocate.
+///
+/// A 3-hop chain over 400 nodes at degree 5 is 50,000 rows at width 4; a 1-hop chain over the
+/// same fixture reaches 2,000 rows at width 2. A cells ceiling placed between them stops the
+/// wide one and passes the narrow one, with the ROW ceiling left wide open in both — which is
+/// what a row-counting guard cannot express.
+#[test]
+fn the_frontier_ceiling_counts_cells_not_just_rows() {
+    let mut store = fanout_store(400, 5);
+    store.set_limit(crate::store::ConfigId::LimitsIntermediate, 50_000_000);
+    // 2,000 rows x 2 slots = 4,000 cells for one hop; 50,000 x 4 = 200,000 for three.
+    store.set_limit(crate::store::ConfigId::LimitsIntermediateCells, 100_000);
+
+    assert_eq!(
+        try_gql(&hop_project(1), &store),
+        Ok(2_000),
+        "one hop is 4,000 cells and must pass"
+    );
+
+    let err = try_gql(&hop_project(3), &store).expect_err("three hops is 200,000 cells");
+    assert!(err.starts_with("E_RESOURCE_EXHAUSTED"), "{err}");
+    assert!(
+        err.contains("cells"),
+        "the message must name the unit: {err}"
+    );
+}
+
+/// PREDICTIVE, not reactive: the guard must stop the expansion PART-WAY, so the row count it
+/// reports is smaller than the frontier the query would have produced.
+///
+/// This is the whole point of moving the check inside `expand`. `guard_intermediate` inspects an
+/// already-built batch — Rust evaluates `guard_intermediate(expand(...))`'s argument first — so
+/// it can only report the FULL size, after paying for it. A reported count below the full
+/// product is the observable proof that the allocation was abandoned early.
+#[test]
+fn the_frontier_ceiling_stops_the_expansion_part_way() {
+    let mut store = fanout_store(400, 5);
+    store.set_limit(crate::store::ConfigId::LimitsIntermediateCells, 100_000);
+
+    let err = try_gql(&hop_project(3), &store).expect_err("must trip");
+    // The full 3-hop frontier is 50,000 rows; the ceiling is 100,000 cells at width 4, so it
+    // must give up around 25,000 rows — comfortably under the full product.
+    let reported: u64 = err
+        .split(" reached ")
+        .nth(1)
+        .and_then(|s| s.split(' ').next())
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| panic!("the message must report a row count: {err}"));
+
+    assert!(
+        reported < 50_000,
+        "the guard must abandon BEFORE the full 50,000-row frontier, got {reported}"
+    );
+    assert!(reported > 0, "it must report what it had built: {reported}");
+}
+
+/// The guard costs a query under the ceiling nothing: every row comes back.
+#[test]
+fn a_frontier_under_the_cells_ceiling_returns_every_row() {
+    let store = fanout_store(400, 5);
+
+    // Defaults: 200M cells. Three hops is 200,000 cells — four orders of magnitude under.
+    assert_eq!(try_gql(&hop_project(3), &store), Ok(50_000));
+}
+
+/// A ceiling that cannot be moved is not a limit. Raising it must admit a query it refused;
+/// lowering it must refuse one it admitted.
+#[test]
+fn the_cells_ceiling_is_a_knob_in_both_directions() {
+    let mut raised = fanout_store(400, 5);
+    raised.set_limit(crate::store::ConfigId::LimitsIntermediateCells, u64::MAX);
+    assert_eq!(
+        try_gql(&hop_project(3), &raised),
+        Ok(50_000),
+        "raised: the refused query must now pass"
+    );
+
+    let mut lowered = fanout_store(400, 5);
+    lowered.set_limit(crate::store::ConfigId::LimitsIntermediateCells, 1_000);
+    let err = try_gql(&hop_project(1), &lowered)
+        .expect_err("lowered: 2,000 rows x 2 slots must exceed 1,000 cells");
+    assert!(err.starts_with("E_RESOURCE_EXHAUSTED"), "{err}");
+}
+
+/// The ROW ceiling still fires on its own, so the new dimension is additive rather than a
+/// replacement — an existing deployment's `limits.intermediate` keeps its meaning.
+#[test]
+fn the_row_ceiling_still_fires_independently_of_cells() {
+    let mut store = fanout_store(400, 5);
+    // Cells wide open, rows tight: the 50,000-row 3-hop frontier must still be refused.
+    store.set_limit(crate::store::ConfigId::LimitsIntermediateCells, u64::MAX);
+    store.set_limit(crate::store::ConfigId::LimitsIntermediate, 5_000);
+
+    let err = try_gql(&hop_project(3), &store).expect_err("the row ceiling must still bite");
+    assert!(err.starts_with("E_RESOURCE_EXHAUSTED"), "{err}");
+    assert!(
+        err.contains("rows exceeded") || err.contains("cells"),
+        "either guard may claim it, but it must be a resource error: {err}"
+    );
+}
+
+/// An EMPTY expansion is not a frontier: an unknown edge type, and a source column holding no
+/// nodes, must both answer empty rather than tripping a ceiling of zero.
+#[test]
+fn an_empty_expansion_does_not_trip_a_zero_ceiling() {
+    let mut store = fanout_store(400, 5);
+    store.set_limit(crate::store::ConfigId::LimitsIntermediateCells, 0);
+
+    // An unknown edge type matches nothing, so no row is ever pushed and the check — which
+    // runs on `keep.len()` BEFORE the first push — sees zero cells.
+    assert_eq!(
+        try_gql("MATCH (a:P)-[:NOPE]->(x) RETURN x.k AS k", &store),
+        Ok(0),
+        "an unknown edge type expands to nothing and must not trip"
+    );
+}
+
+/// The width must be counted EXACTLY, and these two tests exist because mutation proved it was
+/// not: dropping the landed-node slot (`+ 1`) and dropping the bound-edge slot both SURVIVED the
+/// tests above, whose ceilings sat far enough from the boundary that an off-by-one in width
+/// flipped no outcome. Width is the entire claim of this ceiling, so it needs a ceiling placed
+/// where one slot decides.
+///
+/// One hop over 400 nodes at degree 5 is 2,000 rows at width 2 = 4,000 cells. A ceiling of
+/// 3,000 trips on the true width and PASSES on width 1.
+#[test]
+fn the_landed_node_slot_counts_toward_the_width() {
+    let mut store = fanout_store(400, 5);
+    store.set_limit(crate::store::ConfigId::LimitsIntermediateCells, 3_000);
+
+    let err = try_gql(&hop_project(1), &store)
+        .expect_err("2,000 rows x 2 slots = 4,000 cells must exceed 3,000");
+    assert!(err.starts_with("E_RESOURCE_EXHAUSTED"), "{err}");
+    assert!(
+        err.contains("x 2 slots"),
+        "the width must be reported as 2 (start + landed), got: {err}"
+    );
+}
+
+/// And the bound EDGE slot: `-[r:E]->` gathers a third column, so the same 2,000 rows are 6,000
+/// cells rather than 4,000. A ceiling of 5,000 trips only if the edge slot is counted.
+#[test]
+fn a_bound_edge_slot_counts_toward_the_width() {
+    let mut store = fanout_store(400, 5);
+    store.set_limit(crate::store::ConfigId::LimitsIntermediateCells, 5_000);
+
+    // Without the edge bound: 2,000 x 2 = 4,000 cells, under the ceiling.
+    assert_eq!(
+        try_gql(&hop_project(1), &store),
+        Ok(2_000),
+        "the unbound-edge spelling is 4,000 cells and must pass"
+    );
+
+    // With it bound: 2,000 x 3 = 6,000 cells, over.
+    let err = try_gql("MATCH (a:P)-[r:E]->(x) RETURN x.k AS k", &store)
+        .expect_err("binding the edge adds a slot and must trip");
+    assert!(err.starts_with("E_RESOURCE_EXHAUSTED"), "{err}");
+    assert!(
+        err.contains("x 3 slots"),
+        "the width must be reported as 3 (start + edge + landed), got: {err}"
+    );
+}

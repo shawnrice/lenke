@@ -379,6 +379,37 @@ absence** — `{k: null}` is the one place in a pattern where that distinction i
     `out_bytes` + `lnk_free`, `ffi_error::begin()`, bun:ffi's per-ARGUMENT marshalling
     (`vertexCount` takes one argument and costs 8ns; `lnk_command` takes five), and the `String`
     allocations in `prepared_payload`. **That needs a profiler, not another probe.**
+- ~~**The frontier guard was REACTIVE and blind to WIDTH**~~ — **CLOSED by item 296** after an OOM
+  took a 61 GB box into its 192 GB swapfile (2026-10-10). `limits.intermediate` (50M ROWS) is
+  checked by `guard_intermediate(expand(...))` — and Rust evaluates the argument first, so the
+  batch is already materialized (`keep`/`nbrs` grown, every input slot gathered, `nbrs`/`eids`
+  cloned) before the row count is read. It also counts rows, so it never saw that a 6-hop `MATCH`
+  materializes a SEVEN-slot frontier: 62.5M rows x 7 = 437M cells and ~2 GB, while 12.5M rows x 6
+  (~1 GB) sails under a 50M-row ceiling entirely.
+  **New `limits.intermediate_cells` (200M default, `ConfigId = 6`, native-only like
+  `LimitsDictMaxDistinct`)**, checked INSIDE `expand` once per SOURCE ROW so the refusal lands
+  while the vectors are still growing; overshoot is bounded by one vertex's degree. CELLS and not
+  bytes because `keep` is a `Vec<usize>` (4 bytes on wasm32, 8 on x86-64) — the same portability
+  argument `intermediate` makes for rows, and the same one
+  `the_ceiling_counts_path_elements_not_just_rows` already made for the shortest-path guard. NOT
+  RAM-derived: a query that fails on a small box and passes on a large one is a divergence.
+  Screen: 72 cells, **median 0.999**, 96% within ±5% — a per-source-row check in the hottest loop
+  in the engine costs nothing measurable.
+  **The probe measured NOTHING TWICE before this was right:** `count(*)` and then `count(far.k)`
+  both passed every row, because native's `exec` answers an aggregate-over-chain with a TALLY and
+  never runs the expansion. Only a bare PROJECTION materializes the frontier. The probe now prints
+  whether the optimized plan contains an `Expand`.
+- **The TS aggregating projection RETAINS every binding** — **OPEN, and it is what actually
+  OOM'd** (item 296 established the attribution; native tallies these shapes and never built the
+  intermediate). `applyProjection`'s aggregating branch does `groups.set(key, [b])` / `push(b)`,
+  so `RETURN count(*)` with no `GROUP BY` holds ONE group of every binding — 6.25M six-entry
+  `Map`s, ~640 bytes a path, **OOM-killed under a 4 GB cap at 5 hops** where 3 and 4 hops run in
+  8 and 13 ms at ~80 MB (the count family covers ≤4 segments since item 290, so the cliff is
+  exactly its coverage edge). The fix is per-group ACCUMULATOR state instead of the bindings —
+  O(groups), not O(rows). **The hazard is drift:** `compileAggregate` folds over the array
+  (`env.group`, with `count(*)` reading `group.length`), so an accumulator must not become a
+  second definition of the aggregate semantics. `collect`/`collect_list`/percentiles genuinely
+  need the values; `count`/`sum`/`min`/`max` do not.
 - **`gql::parse` at 1296ns for a 57-byte query (43% of a serving call)** — **OPEN, and item 294
   established it is STRUCTURAL rather than allocational.** The two costs visible in the source
   were priced: the lexer's `Vec<char>` pre-pass is **60ns** (26ns with `with_capacity` — a 34ns

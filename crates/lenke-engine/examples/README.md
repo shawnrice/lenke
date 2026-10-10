@@ -75,6 +75,13 @@ question in its module header — read the header before touching it.
   adjacency and filter by edge type (scales with degree × type spread).
 - `interval_bench` — what an "as of T" bitemporal query pays to post-filter all
   of a node's edges by validity interval, vs an interval-index seek.
+- `frontier_guard_probe` — does the intermediate-frontier guard REFUSE a runaway before it
+  allocates, and does it leave everything else alone? Written after an OOM took a 61 GB box into
+  its swapfile (item 296). **Run it under the cap** — the header gives the line. Its most useful
+  property is the one that cost two wrong readings to find: it prints whether the optimized plan
+  actually contains an `Expand`, because `count(*)` and `count(far.k)` over a multi-hop chain are
+  both answered by an exec-level TALLY and never expand at all. A bare projection is the shape
+  that materializes.
 - `percall_probe` — where a SERVING-SIZED call's time goes, measured in-process so the FFI is
   not in the way. `bun run bench:usage` shows the native engine losing 3-5x to pure TS on every
   indexed small-op row, and the natural suspect (the FFI boundary) is innocent: a `vertexCount`

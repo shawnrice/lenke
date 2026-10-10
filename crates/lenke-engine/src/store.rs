@@ -1132,8 +1132,38 @@ pub struct GraphLimits {
     /// emit — the guard against exponential blowup on a dense graph (the TS engine's `trail`).
     pub trail: u64,
     /// Ceiling on the intermediate frontier a fixed-length multi-segment scan may
-    /// materialize before the trailing hop/LIMIT prunes it.
+    /// materialize before the trailing hop/LIMIT prunes it, in ROWS.
+    ///
+    /// Checked AFTER the frontier exists (see `guard_intermediate`), so it bounds what a
+    /// LATER operator may gather — not what producing the frontier itself costs. Its
+    /// companion [`Self::intermediate_cells`] is the predictive half.
     pub intermediate: u64,
+    /// Ceiling on the intermediate frontier in CELLS — rows times output WIDTH — checked
+    /// INCREMENTALLY while `expand` grows it, so the runaway stops before the allocation
+    /// rather than after.
+    ///
+    /// Two things [`Self::intermediate`] cannot do on its own, both learned from an OOM that
+    /// took a 61 GB box into its swapfile (2026-10-10):
+    ///
+    /// **WIDTH.** A row cap is blind to how wide the row is. A 6-hop `MATCH` materializes a
+    /// 7-slot frontier, so 12.5M rows is 87.5M cells and some 2 GB once `expand`'s gathers and
+    /// clones are counted — while sailing under a 50M-ROW ceiling. Cells is the portable unit
+    /// for that (the columns are fixed-width `u32`/`f64`/`i64` on 32- and 64-bit alike, which is
+    /// the same argument `intermediate` makes for rows, carried one dimension further). Bytes
+    /// would NOT be portable: `keep` is a `Vec<usize>`, 4 bytes on wasm32 and 8 on x86-64.
+    ///
+    /// **WHEN.** `guard_intermediate` inspects a batch that already exists — Rust evaluates
+    /// `guard_intermediate(expand(...))`'s argument first — so the allocation that exhausts the
+    /// machine has already happened by the time the row count is read. This one is tested once
+    /// per SOURCE ROW inside the expansion loop, so it trips while `keep`/`nbrs` are still
+    /// growing and before the per-slot gathers and the `nbrs`/`eids` clones, which are the bulk.
+    /// Overshoot is bounded by one vertex's degree.
+    ///
+    /// The default, 200M cells, is ~800 MB of column data and ~1.2 GB peak through the
+    /// expansion. It is deliberately NOT derived from available RAM: a query that fails on a
+    /// small box and succeeds on a large one is a divergence, and this repo's guards are
+    /// declared so every target trips at the same place.
+    pub intermediate_cells: u64,
     /// Ceiling on operator-chain length (parser-applied; `E_SYNTAX` when tripped).
     pub operator_chain: u64,
     /// Max DISTINCT values a string property column may hold and still be
@@ -1151,6 +1181,7 @@ impl Default for GraphLimits {
             range: 1_000_000,
             trail: 1_000_000,
             intermediate: 50_000_000,
+            intermediate_cells: 200_000_000,
             operator_chain: 1_024,
             dict_max_distinct: 4096,
         }
@@ -1168,6 +1199,10 @@ pub enum ConfigId {
     LimitsIntermediate = 2,
     LimitsOperatorChain = 3,
     LimitsDictMaxDistinct = 4,
+    /// The predictive width-aware companion to [`ConfigId::LimitsIntermediate`]. Native-only,
+    /// like `LimitsDictMaxDistinct` — the pure-TS engine has no vectorized frontier — so it
+    /// takes the next wire id without being surfaced in the TS `GraphLimits`.
+    LimitsIntermediateCells = 6,
     /// Max worker threads the graph algorithms may use (opt-in multicore; 1 = serial,
     /// the default). NOT a resource ceiling — a compute knob — but rides the same
     /// id-keyed setter so it needs no new FFI export. See [`Store::effective_parallelism`].
@@ -1184,6 +1219,7 @@ impl ConfigId {
             3 => Some(Self::LimitsOperatorChain),
             4 => Some(Self::LimitsDictMaxDistinct),
             5 => Some(Self::Parallelism),
+            6 => Some(Self::LimitsIntermediateCells),
             _ => None,
         }
     }
@@ -1635,6 +1671,7 @@ impl Store {
             ConfigId::LimitsRange => self.limits.range = value,
             ConfigId::LimitsTrail => self.limits.trail = value,
             ConfigId::LimitsIntermediate => self.limits.intermediate = value,
+            ConfigId::LimitsIntermediateCells => self.limits.intermediate_cells = value,
             ConfigId::LimitsOperatorChain => self.limits.operator_chain = value,
             ConfigId::LimitsDictMaxDistinct => self.limits.dict_max_distinct = value,
             // Not a limit — a compute knob — but rides the same keyed setter. Saturate
