@@ -1014,13 +1014,11 @@ const existsReachable = (
     q.max !== null ||
     rel.variable !== undefined ||
     rel.direction === 'both' ||
-    rel.pred.props.length > 0 ||
-    rel.pred.where !== undefined ||
+    hasPredicate(rel.pred) ||
     types === null ||
     startVar === undefined ||
     !binding.has(startVar) ||
-    path.start.pred.props.length > 0 ||
-    path.start.pred.where !== undefined
+    hasPredicate(path.start.pred)
   ) {
     return undefined;
   }
@@ -1114,15 +1112,13 @@ const existsOneHop = (
     rel.quantifier !== undefined ||
     rel.variable !== undefined ||
     rel.direction === 'both' ||
-    rel.pred.props.length > 0 ||
-    rel.pred.where !== undefined ||
+    hasPredicate(rel.pred) ||
     types === null ||
     startVar === undefined ||
     !binding.has(startVar) ||
     path.pathVar !== undefined ||
     path.selector !== 'walk' ||
-    path.start.pred.props.length > 0 ||
-    path.start.pred.where !== undefined
+    hasPredicate(path.start.pred)
   ) {
     return undefined;
   }
@@ -1138,11 +1134,7 @@ const existsOneHop = (
   // An UNCONSTRAINED endpoint — no label, no props, no predicate, and no subquery `WHERE` —
   // makes every neighbour an answer, so the question collapses to "is there an edge of these
   // types". `EXISTS { (u)-[:E]->() }` is that shape, and it is the one this came for.
-  const free =
-    node.label === undefined &&
-    node.pred.props.length === 0 &&
-    node.pred.where === undefined &&
-    sub.where === undefined;
+  const free = node.label === undefined && !hasPredicate(node.pred) && sub.where === undefined;
 
   for (const e of edgesOfTypes(byType, types ?? undefined)) {
     if (free) {
@@ -3141,6 +3133,32 @@ const directEqProps = (
   // is now sound where it previously was not, and that is the next step rather than this one.
   return { eq, residual: undefined };
 };
+
+/**
+ * Does this compiled predicate constrain anything at all?
+ *
+ * THE ONE DEFINITION, because spreading it by hand produced a WRONG ANSWER. `CPredicate`
+ * carries a constraint in three places — inline properties (`props`), a general compiled
+ * expression (`where`), and equalities lifted to be read straight off the element
+ * (`eqProps`) — and six of the seven checks that asked "is this predicate empty?" listed
+ * only the first two. An inline `WHERE a.k = 1` passes an `ownVar`, so it lifts ENTIRELY
+ * into `eqProps` and such a check saw nothing:
+ *
+ * ```text
+ * MATCH (a:P) WHERE EXISTS { MATCH (a WHERE a.k = 1)-[:E]->(x) } RETURN a.n
+ *   want [a]   got [a, b, c]
+ * ```
+ *
+ * while `(a {k: 1})` — the SAME question, landing in `props` — answered `[a]` correctly, and
+ * so did `(a WHERE a.k > 2)`, which stays in `where`. One question, three spellings, one of
+ * them silently unfiltered: the defect class this engine is named for (item 277).
+ *
+ * Every gate that decides "can I skip applying this predicate" or "is this node
+ * constrained" must go through here, so a FOURTH place to carry a constraint cannot
+ * reintroduce the bug by being forgotten at six call sites.
+ */
+export const hasPredicate = (pred: CPredicate): boolean =>
+  pred.props.length > 0 || pred.where !== undefined || (pred.eqProps?.length ?? 0) > 0;
 
 export const compilePredicate = (
   properties: readonly PropertyConstraint[] | undefined,

@@ -21,7 +21,14 @@ import type {
   EvalEnv,
   Params,
 } from '../executor.js';
-import { consistent, satisfies, unitExposes, unitIsFlat, withBinding } from '../executor.js';
+import {
+  consistent,
+  hasPredicate,
+  satisfies,
+  unitExposes,
+  unitIsFlat,
+  withBinding,
+} from '../executor.js';
 import { candidateCount, candidateVertices, expand, matchesLabel } from '../graph-queries.js';
 import { asTruth } from './scalars.js';
 
@@ -244,7 +251,7 @@ export const estimateSeed = (graph: Graph, node: CNode, binding: Binding, params
  * can estimate: an unindexed predicate is invisible to {@link estimateSeedFrom}.
  */
 const isConstrained = (node: CNode, prefilter: unknown): boolean =>
-  prefilter !== undefined || node.pred.props.length > 0 || node.pred.where !== undefined;
+  prefilter !== undefined || hasPredicate(node.pred);
 
 /**
  * Could this node possibly be reached by an INDEX SEEK?
@@ -359,7 +366,7 @@ export const edgePasses = (
   params: Params,
   graph: Graph,
 ): boolean => {
-  if (rel.pred.props.length === 0 && rel.pred.where === undefined) {
+  if (!hasPredicate(rel.pred)) {
     return true;
   }
 
@@ -601,12 +608,7 @@ export const bfsReducible = (pattern: CPath): boolean => {
   const seg = pattern.segments.length === 1 ? pattern.segments[0] : undefined;
   const q = seg?.rel.quantifier;
 
-  return (
-    q !== undefined &&
-    q.min <= 1 &&
-    seg!.rel.pred.props.length === 0 &&
-    seg!.rel.pred.where === undefined
-  );
+  return q !== undefined && q.min <= 1 && !hasPredicate(seg!.rel.pred);
 };
 
 /** Pick the start-seeded driver for a selector, or null for the walk / path-var
@@ -1390,10 +1392,7 @@ export const resolve = (
  * fuzzer's edge predicates are all `>` / `>=` — never the `=` against a literal that `eqProps`
  * is for. Defensive, and the test that pins it builds the `CRel` by hand for that reason.
  */
-export const relHasInlinePred = (rel: CRel): boolean =>
-  rel.pred.props.length > 0 ||
-  rel.pred.where !== undefined ||
-  (rel.pred.eqProps !== undefined && rel.pred.eqProps.length > 0);
+export const relHasInlinePred = (rel: CRel): boolean => hasPredicate(rel.pred);
 
 /** A hop's out-edges materialized and filtered by its inline predicate. Mirrors native
  *  `expand_filtered`. */
