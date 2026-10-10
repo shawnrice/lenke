@@ -393,6 +393,22 @@ const GROUPS: [string, readonly string[]][] = [
       'MATCH (a)-[:E]->(b)-[:E]->(c)-[:E]->(d) RETURN count(*) AS c',
     ],
   ],
+  // FOUR hops, forward against the REVERSED arrows — one question, and the shape item 290 added
+  // the count family's fourth arm for. Before that arm the forward spelling fell to the general
+  // matcher at 1154ns a path against the three-hop shortcut's 13.7ns: 36,082ms at 50,000 nodes of
+  // degree 5, a x420 step where the degree predicts x6, and 3457x off native.
+  //
+  // The REVERSED member is the one that earns its place. Item 220's finding was a 20x gap between
+  // a question and the same question written backwards, and the walk hoists the `a` side from
+  // `b`'s reverse index while taking `x` from `d`'s forward one — four independent direction
+  // flags, so a walk that handles one end only would pass the forward spelling and fail this.
+  [
+    'four hops: forward vs the reversed arrows (item 290)',
+    [
+      'MATCH (a:P)-[:E]->(b)-[:E]->(c)-[:E]->(d)-[:E]->(x) RETURN count(*) AS c',
+      'MATCH (x)<-[:E]-(d)<-[:E]-(c)<-[:E]-(b)<-[:E]-(a:P) RETURN count(*) AS c',
+    ],
+  ],
 ];
 
 const timed = (q: string): { ms: number; answer: string } => {

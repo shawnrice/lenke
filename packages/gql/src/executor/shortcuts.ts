@@ -1993,7 +1993,144 @@ const patternCountOf = <T>(
     return threeSegmentCount(start, segments[0], segments[1], segments[2], rowOf, interiorPred);
   }
 
+  // FOUR segments, and only the fully unfiltered shape — the missing variant, and a CLIFF rather
+  // than a gap. The family is smooth to three hops and falls off at four: at 50,000 nodes of
+  // degree 5, min of 5,
+  //
+  //   1 hop   count(*)      0.00 ms      <- O(1), a bucket size
+  //   2 hop   count(*)     14.39 ms
+  //   3 hop   count(*)     85.83 ms      <- x5.97 from 2 hops, i.e. the DEGREE
+  //   4 hop   count(*)  36082.73 ms      <- x420.41, and 84x off the 3-hop rate PER PATH
+  //
+  // 13.7 ns a path at three hops against 1154 ns at four, because the fourth declines every
+  // shortcut and the general matcher builds a binding per path. Native answers the same query in
+  // 10.44 ms, so the ratio there is 3457x — the largest in any harness in this repo.
+  //
+  // The fix is one more nested loop on the SAME degree-product walk, not a new idea: three hops
+  // pays per MIDDLE EDGE (`Σ_b waysToA(b) · Σ_{b→c} deg(c)`), and four pays per INTERIOR PATH
+  // (`Σ_b waysToA(b) · Σ_{b→c} Σ_{c→d} deg(d)`) — 1.25M terms here instead of 31.25M paths.
+  //
+  // UNFILTERED ONLY, and the gate above already guarantees half of it: a clause `WHERE` over four
+  // segments returns `null` there, so this arm is reachable only with `where === undefined`, and
+  // what is left to refuse is an INLINE constraint at any of the five node positions. The three
+  // interior positions could carry one on the same argument item 219 made (a position the walk
+  // visits can be gated there), but that is a separate item with its own measurement; refusing
+  // them keeps this arm's claim to exactly the shape measured above (item 290).
+  if (segments.length === 4) {
+    return fourSegmentCount(start, segments, rowOf);
+  }
+
   return null;
+};
+
+/**
+ * An unfiltered FOUR-segment count as a degree product over interior PATHS.
+ *
+ * `Σ over (b→c, c→d) interior pairs of waysToA(b) × deg(d)`, which counts exactly the paths
+ * `a→b→c→d→x` without enumerating any of them. The two ends are reached only as DEGREES — `a`
+ * from `b`'s reverse side, `x` from `d`'s forward side — which is why neither may carry a
+ * constraint, the same boundary {@link buildThreeHopCount} draws one segment earlier.
+ *
+ * Deliberately NOT a generalization of the two- and three-segment walks into one n-segment loop.
+ * Those are tuned and heavily guarded (items 140, 206, 218, 219, 220, 221, 222), and this file
+ * has measured four separate times what growing or restructuring a hot walk costs shapes that do
+ * not even reach it (`ts-closure-size-is-load-bearing`). A fourth arm leaves all of that
+ * untouched; an n-segment rewrite is its own item, with its own screen.
+ */
+const fourSegmentCount = <T>(
+  start: NodePattern,
+  segments: readonly Segment[],
+  rowOf: (n: number) => T,
+): CountOf<T> | null => {
+  const [s1, s2, s3, s4] = segments;
+  const rels = [s1.rel, s2.rel, s3.rel, s4.rel];
+
+  if (
+    rels.some((r) => !plainRel(r) || r.variable !== undefined || r.direction === 'both') ||
+    // EVERY node position must be unconstrained: the two ends because the product reaches them
+    // only as degrees, the three interiors because this arm does not carry gates (see above).
+    [start, s1.node, s2.node, s3.node, s4.node].some((nd) => !plainNode(nd))
+  ) {
+    return null;
+  }
+
+  const vars = [
+    start.variable,
+    s1.node.variable,
+    s2.node.variable,
+    s3.node.variable,
+    s4.node.variable,
+  ].filter((v): v is string => v !== undefined);
+
+  if (new Set(vars).size !== vars.length) {
+    return null; // a shared node variable is a self-join the product cannot express
+  }
+
+  const types = rels.map((r) => relTypeNames(r.label));
+
+  if (types.some((t) => t === null)) {
+    return null;
+  }
+
+  const [t1, t2, t3, t4] = types as (string[] | undefined)[];
+  const aLabel = start.label;
+  const bLabel = s1.node.label;
+  const cLabel = s2.node.label;
+  const dLabel = s3.node.label;
+  const xLabel = s4.node.label;
+  // `a` is reached from b's reverse side; `x` from d's forward side; the two interior legs run
+  // b -> c -> d.
+  const toAOut = s1.rel.direction === 'in';
+  const mid1Out = s2.rel.direction === 'out';
+  const mid2Out = s3.rel.direction === 'out';
+  const fromXOut = s4.rel.direction === 'out';
+
+  return (graph, params) => {
+    const _ = params;
+    const aEff = effectiveLabel(graph, aLabel);
+    const cEff = effectiveLabel(graph, cLabel);
+    const dEff = effectiveLabel(graph, dLabel);
+    const xEff = effectiveLabel(graph, xLabel);
+    const mid1Index = mid1Out ? graph.edgesFromByLabel : graph.edgesToByLabel;
+    const mid2Index = mid2Out ? graph.edgesFromByLabel : graph.edgesToByLabel;
+    let count = 0;
+
+    for (const b of candidateVertexSource(graph, bLabel)) {
+      if (!matchesLabel(b, bLabel)) {
+        continue;
+      }
+
+      // Hoisted per VERTEX, exactly as the three-hop walk hoists it: the `a` side depends only on
+      // `b`, and a zero here prunes both inner loops.
+      const waysToA = side(graph, b.id, toAOut, t1, aEff);
+
+      if (waysToA === 0) {
+        continue;
+      }
+
+      for (const e1 of edgesOfTypes(mid1Index.get(b.id), t2)) {
+        // The stored ID is all the next leg needs when nothing reads the `c` VERTEX — items 140
+        // and 218's point, which is why this is an id and not an endpoint resolve.
+        const cId = mid1Out ? e1.toId : e1.fromId;
+
+        if (cEff !== undefined && !matchesLabel(mid1Out ? e1.to : e1.from, cEff)) {
+          continue;
+        }
+
+        for (const e2 of edgesOfTypes(mid2Index.get(cId), t3)) {
+          const dId = mid2Out ? e2.toId : e2.fromId;
+
+          if (dEff !== undefined && !matchesLabel(mid2Out ? e2.to : e2.from, dEff)) {
+            continue;
+          }
+
+          count += waysToA * side(graph, dId, fromXOut, t4, xEff);
+        }
+      }
+    }
+
+    return rowOf(count);
+  };
 };
 
 /**

@@ -300,6 +300,25 @@ absence** — `{k: null}` is the one place in a pattern where that distinction i
   pattern for the runtime-visit-order reason above. Closing it means PINNING `visitRemaining`'s
   order, which is a different change with its own cost. Deliberately not a member of the item-285
   probe group: a known-divergent pair in a probe that flags divergence makes the probe lie.
+- ~~**The count family stopped at THREE segments**~~ — **CLOSED by item 290 at 127.7x** (36082.73
+  → 282.60ms at 50,000 nodes of degree 5; 152.45x on the 10,000-node A/B, disjoint ranges).
+  `patternCountOf` routed 1, 2 and 3 segments and `return null`ed for four, so a 4-hop `count(*)`
+  fell to the general matcher: **a x420 step where the degree predicts x6**, 1154ns a path against
+  the 3-hop shortcut's 13.7ns, and **3456.9x off native** — the largest ratio in any harness here.
+  The fix is one more nested loop on the same degree product (three hops pays per MIDDLE EDGE,
+  four per INTERIOR PATH: 1.25M terms instead of 31.25M paths), as a fourth ARM and deliberately
+  NOT an n-segment generalization. Unfiltered only. 12 of 12 correctness mutants caught against a
+  **lopsided** fixture — a uniform-degree graph would have let R1, R4 and R5 survive, because a
+  degree product that multiplies the wrong factors returns a plausible number.
+  **`3 hop, count(d.k)` moved 0.87x on DISJOINT ranges and was NOT a regression:** it cannot reach
+  the arm, and in isolation (4 rounds, 9 reps, two shapes per process) it is 1.03x FASTER. The
+  multi-case probe ran `4 hop` immediately before it, and on the head side that spent **5.6
+  seconds** in the general matcher — warming the exact path the next case used. **A large speedup
+  can make its NEIGHBOUR look slower, and disjoint ranges do not save you**, because the
+  contamination is systematic rather than noisy. The tell: the "regressed" shape cannot reach the
+  change.
+  Still open and priced here: anything that DECLINES a count shortcut pays **50-85x** (the general
+  matcher is 727-1154ns a path against 13.7ns), which is one target and not a family of them.
 - ~~**`decodeRows`' per-row closure**~~ — **CLOSED by item 289 at 1.10-1.21x** on single-column
   row results, disjoint ranges, for every native query that returns rows (FFI and wasm share
   `graph.ts`). The shaping loop allocated a closure PER ROW (`columns.forEach` inside `rows.map`)
