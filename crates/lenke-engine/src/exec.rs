@@ -2637,6 +2637,99 @@ fn pull_capped(
                 _ => None,
             }
         }
+        // A CORRELATING predicate over a cross product, under a keyless cap — the shape items
+        // 282 and 283 were about, and the one the arm above cannot reach. Item 273's pushdown
+        // moves a ONE-SIDED predicate into its side, where the cap applies; a predicate reading
+        // BOTH sides stays here, above the join, so `pull_capped` declined (a `Filter` changes
+        // the row count) and `pull_capped_stream` declined too (`streaming_chain` has no `Join`
+        // arm) — and the whole product was built and then paged. Measured at 4 x 100,000:
+        //
+        //   WHERE u.k = s.k LIMIT 1   1420.2 us      <- builds 400,000 rows to return ONE
+        //   WHERE u.k = s.k           1468.5 us      <- the UNCAPPED cost, i.e. the cap buys 3%
+        //
+        // THE DESIGN IS ITEM 283'S, MINUS ITS BET. That item streamed the right side FROM THE
+        // PLAN inside the left loop, so a cap that did not fill early re-scanned the whole right
+        // side once per left row: 1,640x where the bet won and 1.9x WORSE on `LIMIT 4`, where
+        // the answer is exactly one row per left row and the cap never fills early. It was
+        // retracted for that.
+        //
+        // Pulling the right side ONCE, before the loop, removes the bet entirely. The uncapped
+        // path materializes both sides anyway — `hash_join` takes two `Batch`es — so this pays
+        // nothing the baseline does not already pay, and what it SAVES is the product: the
+        // uncapped path gathers |L| x |R| rows across every slot and then filters them, where
+        // this gathers a block at a time and stops at `cap`. There is no shape where it does
+        // more pulling than the baseline, which is why there is no gate and no lost bet.
+        //
+        // The ceiling that buys is therefore the right side's own pull, 265.4 us of the 1420.2,
+        // and not the ~6 us floor item 283 reached by streaming. A lazily-CACHED block stream
+        // would get both (no bet, and no full pull when the cap fills in block one); it is a
+        // separate change with its own verification, recorded rather than smuggled in here.
+        //
+        // LEFT-MAJOR, ascending within each left row — the same order `hash_join`'s empty-`on`
+        // path emits (item 284 pins it with `a_cross_product_emits_rows_left_major`) and
+        // `filter_keep` preserves. So the result is a PREFIX of the uncapped plan's rows, which
+        // is the property the arm above rests on and `truncate_batch` would otherwise supply.
+        Plan::Filter { input, pred } if matches!(input.as_ref(), Plan::Join { on, .. } if on.is_empty()) =>
+        {
+            let Plan::Join { left, right, .. } = input.as_ref() else {
+                unreachable!("guarded by the `matches!` above")
+            };
+            let lb = pull(left, store, track)?;
+            let rb = pull(right, store, track)?;
+            let (mut keep_l, mut keep_r) = (Vec::new(), Vec::new());
+
+            // ADAPTIVE, and that is what keeps the never-fills case honest. A small first block
+            // makes a cap that fills immediately cheap; doubling to a large one makes a cap that
+            // never fills approach the baseline's single gather instead of paying per-block
+            // overhead 400,000/BLOCK times. Both ends of the same loop, no decision to get wrong.
+            const FIRST_BLOCK: usize = 256;
+            const MAX_BLOCK: usize = 65_536;
+
+            'outer: for i in 0..lb.rows() {
+                let mut start = 0;
+                let mut block = FIRST_BLOCK;
+
+                while start < rb.rows() {
+                    let end = (start + block).min(rb.rows());
+                    // ONE left row against this block of right rows — the join the baseline
+                    // would have built for the whole product at once.
+                    let li = vec![i; end - start];
+                    let rj: Vec<usize> = (start..end).collect();
+                    let mut slots: Vec<Col> = lb.slots.iter().map(|c| c.gather(&li)).collect();
+                    slots.extend(rb.slots.iter().map(|c| c.gather(&rj)));
+
+                    for k in filter_keep(pred, store, &Batch::of(slots))? {
+                        // Checked BEFORE pushing, so `cap == 0` keeps nothing rather than one.
+                        if keep_l.len() >= cap {
+                            break 'outer;
+                        }
+
+                        keep_l.push(i);
+                        keep_r.push(start + k);
+                    }
+
+                    if keep_l.len() >= cap {
+                        break 'outer;
+                    }
+
+                    start = end;
+                    block = (block * 2).min(MAX_BLOCK);
+                }
+            }
+
+            let mut slots: Vec<Col> = lb.slots.iter().map(|c| c.gather(&keep_l)).collect();
+            slots.extend(rb.slots.iter().map(|c| c.gather(&keep_r)));
+            let mut out = Batch::of(slots);
+            // The same rule as `hash_join`'s, copied rather than reasoned about afresh: a
+            // `Batch` holds ONE lineage and the left's wins, because a named path written before
+            // the comma lands there.
+            out.lineage = match (lb.lineage.as_ref(), rb.lineage.as_ref()) {
+                (Some(l), _) => Some(l.gather(&keep_l)),
+                (None, Some(r)) => Some(r.gather(&keep_r)),
+                (None, None) => None,
+            };
+            Some(out)
+        }
         // `FOR x IN <list>` over a single seed row, for the shape `FOR x IN [...] MATCH (u:L)`:
         // that plans as a CROSS JOIN of the unwind against the scan, and the join's cap needs
         // BOTH sides cappable, so without this arm the whole product was built — 2.6ms to

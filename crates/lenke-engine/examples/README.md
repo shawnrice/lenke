@@ -75,6 +75,13 @@ question in its module header — read the header before touching it.
   adjacency and filter by edge type (scales with degree × type spread).
 - `interval_bench` — what an "as of T" bitemporal query pays to post-filter all
   of a node's edges by validity interval, vs an interval-index seek.
+- `limit_product_probe` — what a CORRELATED cross product under a keyless `LIMIT`
+  pays, and whether the cap reaches it at all. Its fixture is why it is its own
+  binary: a tiny left side against a large right one, which the shared social
+  fixture has no equivalent of (a correlated product over 200,000 x 200,000 is not
+  a measurement). Items 282, 283 and 288 each re-derived these numbers; the
+  CONTROLS are the valuable half — the one-sided spelling, the uncapped product and
+  each side's own pull bound what any design here can win.
 - `scan_layout_probe` — whether a different COLUMN LAYOUT would make predicate
   scans faster, and whether it survives mutation (it prices each layout twice: the
   scan, and what one point write costs to maintain it). The answer to "is SIMD

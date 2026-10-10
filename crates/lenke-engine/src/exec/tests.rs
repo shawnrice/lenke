@@ -16289,3 +16289,374 @@ fn a_cross_product_emits_rows_left_major() {
         "a cross product must be left-major, with each side ascending"
     );
 }
+
+/// A fixture for the CORRELATED capped product (item 288) — a 3-row left against a 12-row
+/// right, where `u.k = s.k` matches exactly one right row per left row and `u.k > s.k` matches
+/// many. Two predicates over one fixture separate "the cap fills inside one left row" from "the
+/// cap needs every left row", which is the boundary item 283's retracted design got wrong.
+fn correlated_product_store() -> Store {
+    let mut b = Builder::default();
+    for i in 0..3 {
+        b.node(&["Tiny"], &[("k", n(f64::from(i)))]);
+    }
+    for i in 0..12 {
+        b.node(&["User"], &[("k", n(f64::from(i)))]);
+    }
+    b.build()
+}
+
+/// `MATCH (s:Tiny) MATCH (u:User) WHERE u.k <op> s.k RETURN s.k, u.k LIMIT n`.
+///
+/// The `Filter` sits ABOVE the join and that is the whole point: a predicate reading BOTH
+/// sides cannot be pushed into either (item 273's `right_pushable` needs every slot on one
+/// side), so this is the shape `pull_capped` declined before item 288.
+fn correlated_limited_product(op: CompareOp, limit: Option<usize>) -> Plan {
+    let body = Plan::Project {
+        input: Box::new(Plan::Filter {
+            input: Box::new(Plan::Join {
+                left: Box::new(scan("Tiny")),
+                right: Box::new(scan("User")),
+                on: vec![],
+            }),
+            pred: cmp(op, prop(1, "k"), prop(0, "k")),
+        }),
+        items: vec![
+            ("s".to_string(), prop(0, "k")),
+            ("u".to_string(), prop(1, "k")),
+        ],
+    };
+
+    match limit {
+        None => body,
+        Some(l) => Plan::OrderPage {
+            input: Box::new(body),
+            keys: vec![],
+            skip: None,
+            limit: Some(l),
+            fault_on_element: false,
+        },
+    }
+}
+
+/// Every row of the capped answer, as `s/u` pairs in the order the plan emitted them.
+fn correlated_pairs(op: CompareOp, limit: Option<usize>, store: &Store) -> Vec<String> {
+    run(&correlated_limited_product(op, limit), store)
+        .rows
+        .iter()
+        .map(|row| format!("{:?}/{:?}", row[0], row[1]))
+        .collect()
+}
+
+/// THE PREFIX PROPERTY, which is what the arm rests on: a capped correlated product must be the
+/// uncapped answer's first `cap` rows, IN ORDER.
+///
+/// Asserted for every cap rather than one, because a bound off by one hides at exactly one
+/// value — item 275's mutation found its cap bound that way, and a nested loop has TWO bounds.
+/// Order matters here in a way it does not for the uncapped plan: a prefix is only well defined
+/// against a fixed order, so this is also what pins the loop as LEFT-major (a right-major loop
+/// keeps every row and changes which `cap` of them survive).
+#[test]
+fn a_capped_correlated_product_is_a_prefix_of_the_uncapped_one() {
+    let store = correlated_product_store();
+
+    for op in [CompareOp::Eq, CompareOp::Gt] {
+        let all = correlated_pairs(op, None, &store);
+
+        assert!(
+            all.len() >= 3,
+            "the uncapped answer is the oracle and must be non-trivial, got {}",
+            all.len()
+        );
+
+        for cap in 0..=all.len() + 2 {
+            let got = correlated_pairs(op, Some(cap), &store);
+            let want = &all[..cap.min(all.len())];
+
+            assert_eq!(
+                got, want,
+                "cap {cap} for {op:?} must be the uncapped prefix"
+            );
+        }
+    }
+}
+
+/// The EQUALITY shape is the one item 283's design lost on: the answer is exactly one row per
+/// left row, so a cap equal to the left count can only be filled by visiting every left row.
+/// A loop that stopped after the first left row would return one row here.
+#[test]
+fn a_capped_correlated_equality_visits_every_left_row() {
+    let store = correlated_product_store();
+    let got = correlated_pairs(CompareOp::Eq, Some(3), &store);
+
+    assert_eq!(
+        got,
+        vec![
+            "Num(0.0)/Num(0.0)",
+            "Num(1.0)/Num(1.0)",
+            "Num(2.0)/Num(2.0)",
+        ],
+        "one row per left row, left-major"
+    );
+}
+
+/// A cap the FIRST left row fills on its own must not visit a second — and the only
+/// observable of that is which rows come back, so this asserts them rather than the work.
+#[test]
+fn a_capped_correlated_product_fills_from_the_first_left_row() {
+    let store = correlated_product_store();
+    // `u.k > 0` holds for 11 of the 12 users, so a cap of 4 is filled by left row 0 alone.
+    let got = correlated_pairs(CompareOp::Gt, Some(4), &store);
+
+    assert_eq!(
+        got,
+        vec![
+            "Num(0.0)/Num(1.0)",
+            "Num(0.0)/Num(2.0)",
+            "Num(0.0)/Num(3.0)",
+            "Num(0.0)/Num(4.0)",
+        ],
+        "every row must come from the first left row, in ascending right order"
+    );
+}
+
+/// An IMPOSSIBLE correlation: no pair survives, so the cap never fills and the loop runs to
+/// completion. It must answer EMPTY rather than loop, over-read, or return a stale row — and
+/// the width must survive, because a following operator reads a slot.
+#[test]
+fn an_impossible_correlated_correlation_under_a_cap_is_empty() {
+    let mut b = Builder::default();
+    b.node(&["Tiny"], &[("k", n(1.0))]);
+    b.node(&["User"], &[("k", n(500.0))]);
+    let store = b.build();
+
+    let plan = Plan::OrderPage {
+        input: Box::new(Plan::Project {
+            input: Box::new(Plan::Filter {
+                input: Box::new(Plan::Join {
+                    left: Box::new(scan("Tiny")),
+                    right: Box::new(scan("User")),
+                    on: vec![],
+                }),
+                // `u.k = s.k` with 500 against 1 — never true.
+                pred: cmp(CompareOp::Eq, prop(1, "k"), prop(0, "k")),
+            }),
+            items: vec![("s".to_string(), prop(0, "k"))],
+        }),
+        keys: vec![],
+        skip: None,
+        limit: Some(5),
+        fault_on_element: false,
+    };
+
+    let out = run(&plan, &store);
+
+    assert_eq!(
+        out.rows.len(),
+        0,
+        "no pair survives, so no row may be emitted"
+    );
+}
+
+/// An EMPTY side under a cap. Neither loop body runs, and the arm must still produce a batch of
+/// the right WIDTH — `Batch::of` over empty gathers, not a bare empty batch, because a
+/// following operator reads slot 1.
+#[test]
+fn a_capped_correlated_product_over_an_empty_side_is_empty() {
+    for (tiny, user) in [(0, 3), (3, 0), (0, 0)] {
+        let mut b = Builder::default();
+        for i in 0..tiny {
+            b.node(&["Tiny"], &[("k", n(f64::from(i)))]);
+        }
+        for i in 0..user {
+            b.node(&["User"], &[("k", n(f64::from(i)))]);
+        }
+        let store = b.build();
+
+        let got = correlated_pairs(CompareOp::Gt, Some(4), &store);
+
+        assert!(
+            got.is_empty(),
+            "an empty side must yield no rows (tiny={tiny}, user={user}), got {got:?}"
+        );
+    }
+}
+
+/// A cap LARGER than the answer returns the whole answer — the bound must not truncate below
+/// what exists, which is the off-by-one in the other direction from the prefix test's.
+#[test]
+fn a_capped_correlated_product_under_a_slack_cap_is_complete() {
+    let store = correlated_product_store();
+    let all = correlated_pairs(CompareOp::Eq, None, &store);
+    let got = correlated_pairs(CompareOp::Eq, Some(1000), &store);
+
+    assert_eq!(got, all, "a slack cap must not lose a row");
+}
+
+/// THE BLOCK BOUNDARY. The arm walks the right side in blocks that START at 256 and DOUBLE, so
+/// every bound in it is exercised only by a right side bigger than 256 — a 12-row fixture runs
+/// one block and proves nothing about the stride, the doubling, or the `(start + block).min()`
+/// clamp. This fixture spans several blocks and puts the ONLY surviving pair in the last one.
+#[test]
+fn a_capped_correlated_product_finds_a_match_past_the_first_block() {
+    let mut b = Builder::default();
+    b.node(&["Tiny"], &[("k", n(900.0))]);
+    for i in 0..1000 {
+        b.node(&["User"], &[("k", n(f64::from(i)))]);
+    }
+    let store = b.build();
+
+    // Exactly one pair matches, at right row 900 — past the first block (256) and past the
+    // second (512), so it is found only if the stride advances correctly.
+    let got = correlated_pairs(CompareOp::Eq, Some(1), &store);
+
+    assert_eq!(
+        got,
+        vec!["Num(900.0)/Num(900.0)"],
+        "the match lies past the first blocks and must still be found"
+    );
+}
+
+/// And the same fixture with a cap of 2, where the second survivor is in a LATER block than the
+/// first — so the loop must resume from where it stopped rather than restarting or skipping.
+#[test]
+fn a_capped_correlated_product_resumes_across_blocks() {
+    let mut b = Builder::default();
+    b.node(&["Tiny"], &[("k", n(300.0))]);
+    for i in 0..1000 {
+        b.node(&["User"], &[("k", n(f64::from(i)))]);
+    }
+    let store = b.build();
+
+    // `u.k >= 300` survives for right rows 300..999: the first survivor is in the block
+    // covering 256..768 and the 600th is far later.
+    let got = correlated_pairs(CompareOp::Ge, Some(3), &store);
+
+    assert_eq!(
+        got,
+        vec![
+            "Num(300.0)/Num(300.0)",
+            "Num(300.0)/Num(301.0)",
+            "Num(300.0)/Num(302.0)",
+        ],
+        "survivors must be ascending and contiguous across the block stride"
+    );
+}
+
+/// `pull_capped`'s CONTRACT, asserted directly rather than through its caller: at most `cap`
+/// rows, for every cap.
+///
+/// This exists because mutation P2 — move the cap check from BEFORE the push to after it, so
+/// the loop keeps one row too many — SURVIVED the whole suite. The reason is a masking layer:
+/// `pull_capped`'s only caller is the keyless `OrderPage` arm, which passes `skip + limit` and
+/// then calls `order_page` to slice to `limit` anyway. So over-producing by one row is invisible
+/// through every query-level test, and `cap == 0` (unreachable in practice, since `LIMIT 0` is
+/// short-circuited earlier) is invisible twice over.
+///
+/// The documented contract is still "at most `cap`", and the other row-multiplying arms uphold
+/// it with `truncate_batch`. A guard that only the contract observes needs a test that observes
+/// the contract — calling `pull_capped` itself, with the slicing caller removed from the
+/// picture. That is the "remove the masking layer in the same mutant" rule applied as a test
+/// rather than as a mutant.
+#[test]
+fn pull_capped_never_exceeds_its_cap_on_a_correlated_product() {
+    let store = correlated_product_store();
+    // The `Filter { Join }` body WITHOUT the `OrderPage` wrapper, so nothing slices afterwards.
+    let body = correlated_limited_product(CompareOp::Gt, None);
+
+    for cap in 0..=40 {
+        let got = super::pull_capped(&body, &store, false, cap)
+            .expect("the arm must not fault")
+            .expect("the arm must accept a Filter over an empty-on Join");
+
+        assert!(
+            got.rows() <= cap,
+            "pull_capped returned {} rows for cap {cap}",
+            got.rows()
+        );
+    }
+}
+
+/// LEFT-MAJOR, across a BLOCK BOUNDARY, with a left row whose matches lie in a LATER block than
+/// a different left row's.
+///
+/// This test exists because a compiling RIGHT-MAJOR loop (mutant P1b) passed every other test
+/// in this file, including the prefix test. The reason is a fixture artefact worth writing down:
+/// while the whole right side fits inside ONE block, right-major DEGENERATES to left-major —
+/// the block loop runs once and the inner left loop then yields left row 0's survivors first,
+/// which is the same order. And while left row 0 has at least `cap` survivors inside the first
+/// block, the two orders also agree, because the cap fills before the second left row is
+/// reached. Every other fixture here hits one of those two cases.
+///
+/// So the distinguishing shape needs: a right side spanning several blocks, AND a left row
+/// whose only match is in a LATE block while a LATER left row matches in the FIRST one. Here
+/// `s300` matches only right row 300 (third block) and `s0` matches right row 0 (first block):
+/// left-major must answer `s300` first, right-major answers `s0` first.
+#[test]
+fn a_capped_correlated_product_is_left_major_across_blocks() {
+    let mut b = Builder::default();
+    b.node(&["Tiny"], &[("k", n(300.0))]);
+    b.node(&["Tiny"], &[("k", n(0.0))]);
+    for i in 0..600 {
+        b.node(&["User"], &[("k", n(f64::from(i)))]);
+    }
+    let store = b.build();
+
+    let all = correlated_pairs(CompareOp::Eq, None, &store);
+
+    assert_eq!(
+        all,
+        vec!["Num(300.0)/Num(300.0)", "Num(0.0)/Num(0.0)"],
+        "the UNCAPPED answer is left-major, which is what the cap must prefix"
+    );
+
+    let got = correlated_pairs(CompareOp::Eq, Some(1), &store);
+
+    assert_eq!(
+        got,
+        vec!["Num(300.0)/Num(300.0)"],
+        "cap 1 must take the FIRST left row's match, which lives in a later block than the \
+         second left row's — a right-major loop answers Num(0.0)/Num(0.0) here"
+    );
+}
+
+/// A named PATH across the join, under a cap, carries each row's OWN path.
+///
+/// `hash_join` has this guarded (`a_path_above_a_join_carries_the_right_rows`), and the new
+/// capped arm COPIES its rule — left lineage wins, because a path written before the comma lands
+/// there. Mutation showed the copy was not covered by that test: reversing the preference in
+/// `hash_join` fails it, and reversing it in the capped arm passed the whole suite. A rule
+/// copied from a guarded place is not itself guarded.
+#[test]
+fn a_path_above_a_capped_correlated_product_carries_its_own_rows() {
+    let nd = [
+        r#"{"id":"1","labels":["T"],"props":{"n":1}}"#,
+        r#"{"id":"2","labels":["T"],"props":{"n":2}}"#,
+        r#"{"id":"3","labels":["T"],"props":{"n":3}}"#,
+        r#"{"from":"1","to":"2","labels":["E"],"props":{}}"#,
+        r#"{"from":"3","to":"2","labels":["E"],"props":{}}"#,
+    ]
+    .join("\n");
+    let store = crate::ndjson::from_ndjson(&nd).unwrap();
+    // A correlating predicate (`c.n > a.n`) over a comma product, so the `Filter` stays ABOVE
+    // the join and the capped arm takes it; `p` is named on the LEFT pattern.
+    let q = "MATCH p = (a:T)-[:E]->(b), (c:T) WHERE c.n > a.n \
+             RETURN nodes(p) AS ns, a.n AS t LIMIT 1";
+    let rows = crate::exec::try_run(&opt_plan(q, &store), &store).unwrap();
+
+    assert_eq!(rows.rows.len(), 1, "the cap must be filled exactly");
+
+    let ns = format!("{:?}", rows.rows[0][0]);
+    let t = format!("{:?}", rows.rows[0][1]);
+    // Whichever row the cap kept, its path must START at that row's own `a` — the lineage
+    // taken from the RIGHT side would carry `c`'s (absent) path or another row's.
+    let want_first = match t.as_str() {
+        "Num(1.0)" => "\"1\"",
+        "Num(3.0)" => "\"3\"",
+        other => panic!("unexpected a.n {other}"),
+    };
+
+    assert!(
+        ns.contains(want_first),
+        "the kept row (a.n={t}) must start its path at {want_first}: {ns}"
+    );
+}
