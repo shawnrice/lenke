@@ -264,14 +264,25 @@ absence** — `{k: null}` is the one place in a pattern where that distinction i
   the two members are not equivalent work** (one bucket size against a visit to every `P`), so
   O(|label|) against O(1) cannot converge. It stays as a regression guard on the 54 ms; do not
   quiet it by reverting the fixture.
-- **`edgesToByLabel` costs ~1.9x `edgesFromByLabel` to read bucket sizes** — **OPEN, priced**,
-  exposed by item 286 and invisible before it. The four spellings of "one end labelled, the other
-  free" split by WHICH ADJACENCY INDEX the walk reads and not by which walk runs: `(a:P)-[:E]->(b)`
-  **17.800 ms** on `edgesFromByLabel` against `(a)-[:E]->(b:P)` **33.414 ms** and
-  `(a:P)<-[:E]-(b)` **33.984 ms** on `edgesToByLabel`, with one start walk and one far walk on
-  each side of the split. The probe's `one end labelled, the other free: four spellings` group
-  tracks it (3.4x on HEAD before the fix, 3.3x after — the same spread for a different reason,
-  every member 2.5-4.5x faster).
+- ~~**`edgesToByLabel` costs ~1.9x `edgesFromByLabel` to read bucket sizes**~~ — **REFUTED by
+  item 287** (2026-10-10), one iteration after item 286 recorded it. It was never an index
+  property: **the two are the same structure** (`Map<string, Map<string, Set<Edge>>>`), so a
+  1.9x cannot be structural, and the fixture was the variable. `spelling-probe.ts` built every
+  edge as `from: v${e % N}`, `to: v${(e * 7919) % N}` — the from-keys inserted in VERTEX CREATION
+  ORDER, which is the order the degree-sum walks iterate, and the to-keys in a pseudorandom
+  permutation. So one index was walked sequentially and the other jumped around: **item 164's
+  mechanism** (29ns a vertex against 135ns), not a cost of either index. Swapping the
+  construction FLIPPED which spelling was slow (FROM 15.3/19.1 and TO 31.6/34.2 one way; FROM
+  31.7/31.7 and TO 15.6/14.3 the other), and scattering BOTH keys landed all four spellings
+  within **1.10x**. The probe's fixture is now symmetric, because the bias advantaged
+  from-driven spellings over equivalent to-driven ones in the one harness whose job is comparing
+  them — item 220's reversed-arrow member had been judged under it too.
+  **Probe numbers recorded before item 287 are not comparable to ones after it:** the symmetric
+  fixture is uniformly harder (many queries 0.45-0.66x of their old reading) because the old one
+  handed every from-driven walk sequential locality. A residual 1.40x remains between the two
+  START-walk directions on the probe's richer P/Q + E/F fixture, below its 2x tolerance and NOT
+  attributable to the index — the two far walks agree across both indexes (39.90 TO against
+  40.56 FROM).
 - **The CORRELATED comma product keeps ~3.4x** against its two-clause twin — **recorded, not a
   bug, and not refuted either.** `MATCH (a:A), (b:B) WHERE b.k = a.k` cannot push onto either
   pattern for the runtime-visit-order reason above. Closing it means PINNING `visitRemaining`'s

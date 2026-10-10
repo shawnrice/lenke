@@ -45,9 +45,23 @@ const lines = Array.from(
     `{"type":"node","id":"v${i}","labels":${i % 3 === 0 ? '["P","Q"]' : '["P"]'},"properties":{"k":${i % 50},"s":"s${i % 7}"}}`,
 );
 
+// BOTH ENDPOINT KEYS ARE SCATTERED, by different multipliers, and that is load-bearing.
+//
+// `from` used to be `v${e % N}` — inserted in VERTEX CREATION ORDER, while `to` was a
+// pseudorandom permutation. The degree-sum walks iterate vertices in creation order and probe
+// `index.get(v.id)`, so `edgesFromByLabel` was walked sequentially and `edgesToByLabel` was
+// jumped around: item 164's mechanism (29ns a vertex against 135ns). That made every
+// from-driven spelling look ~2x faster than its to-driven twin, in a probe whose entire job is
+// to compare spellings of one question.
+//
+// Item 286 recorded the resulting 1.9x as an open target — "`edgesToByLabel` costs ~1.9x
+// `edgesFromByLabel`" — and item 287 REFUTED it by swapping the construction, which flipped
+// which spelling was slow (FROM 15.3/19.1 and TO 31.6/34.2 one way; FROM 31.7/31.7 and TO
+// 15.6/14.3 the other). With both scattered, all four spellings land within 1.10x. The index
+// was never the variable; the fixture was.
 for (let e = 0; e < N * 3; e++) {
   lines.push(
-    `{"type":"edge","id":"e${e}","labels":${e % 11 === 0 ? '["E","F"]' : '["E"]'},"from":"v${e % N}","to":"v${(e * 7919) % N}","properties":{"w":${e % 5}}}`,
+    `{"type":"edge","id":"e${e}","labels":${e % 11 === 0 ? '["E","F"]' : '["E"]'},"from":"v${(e * 104729) % N}","to":"v${(e * 7919) % N}","properties":{"w":${e % 5}}}`,
   );
 }
 
@@ -234,20 +248,20 @@ const GROUPS: [string, readonly string[]][] = [
   // free, every arrow direction and every side. All four now take a degree sum over the same
   // 200,000-vertex bucket, so unlike the pair above they SHOULD converge.
   //
-  // They do not, and the residual is a finding rather than a tuning gap. This group flagged at
-  // 3.4x on HEAD and still flags at 3.3x, but for a DIFFERENT reason: item 286 dropped every
-  // member 2.5-4.5x, and what is left splits exactly by WHICH ADJACENCY INDEX the walk reads.
-  // From the item's own A/B, min of 9 over three alternated rounds:
+  // They now do, and the story of why is worth more than the group. Under the OLD fixture this
+  // flagged at 3.3x and item 286 recorded the cause as an index asymmetry — "`edgesToByLabel`
+  // costs ~1.9x `edgesFromByLabel`" — on the strength of the split lining up exactly with which
+  // index each walk reads (17.800 ms on FROM against 33.414 and 33.984 on TO).
   //
-  //   (a:P)-[:E]->(b)   start walk, edgesFromByLabel   17.800 ms
-  //   (a)-[:E]->(b:P)   far walk,   edgesToByLabel     33.414 ms
-  //   (a:P)<-[:E]-(b)   start walk, edgesToByLabel     33.984 ms
+  // ITEM 287 REFUTED THAT. Both indexes are the same structure, so a 1.9x cannot be structural;
+  // the fixture was the variable. `from` was `v${e % N}` — inserted in VERTEX CREATION ORDER,
+  // which is the order these walks iterate — while `to` was a pseudorandom permutation, so one
+  // index was walked sequentially and the other jumped around. Swapping the construction FLIPPED
+  // which spelling was slow, and scattering both made all four converge. The fixture above is
+  // now symmetric for that reason.
   //
-  // The walk is not the variable — one start and one far walk sit on each side of the split.
-  // Reading bucket SIZES out of `edgesToByLabel` costs ~1.9x the same read out of
-  // `edgesFromByLabel`, and that is the open target this group now tracks (CLOSED.md §5). A fix
-  // applied to one side only would also have left these behind, which is exactly how the far
-  // endpoint sat on the per-edge tally for eight items.
+  // A fix applied to one side only would also have left these behind, which is exactly how the
+  // far endpoint sat on the per-edge tally for eight items — so the group stays.
   [
     'one end labelled, the other free: four spellings (item 286)',
     [
