@@ -2574,14 +2574,42 @@ fn pull_capped(
         // to `cap * cap` rows, so it is truncated to keep this function's "at most `cap`"
         // promise — both callers slice anyway, but the next one might not.
         Plan::Join { left, right, on } if on.is_empty() => {
-            match (
-                pull_capped(left, store, track, cap)?,
-                pull_capped(right, store, track, cap)?,
-            ) {
-                // Both sides must cap. Pulling an uncappable side WHOLE would reintroduce the
-                // cost this avoids on the very shapes that need it most (a filtered side over
-                // a big bucket), and `pull_capped_stream` is not usable here: it caps by ROWS
-                // OUT of a chain, which for one side of a product is not the same bound.
+            // Both sides must cap. Pulling an uncappable side WHOLE would reintroduce the
+            // cost this avoids on the very shapes that need it most (a filtered side over
+            // a big bucket).
+            //
+            // A SIDE THAT `pull_capped` DECLINES FALLS BACK TO `pull_capped_stream`, which is
+            // the first `cap` rows OUT of that side's chain — and that IS the right bound here,
+            // correcting what this comment used to claim. For a left-major cross product with
+            // cap `c`: if the right side has MORE than `c` rows, the first `c` output rows all
+            // pair with the first left row, so `c` right rows are exactly enough; if it has
+            // `|R| <= c`, then `ceil(c / |R|) <= c` left rows suffice. Either way a `c`-row
+            // PREFIX of each side contains the `c`-row prefix of the product, which is the same
+            // argument the arm already rested on for two `pull_capped` sides.
+            //
+            // Both helpers return a PREFIX — `pull_capped` by `take(cap)`/`truncate_batch`, and
+            // `pull_capped_stream` by running source-id-ordered blocks and concatenating — so
+            // the truncated join is the same rows the uncapped one would have produced first.
+            //
+            // This is what makes a FILTERED side cappable. `pull_capped` declines a `Filter`
+            // (you need more source rows than `cap` to get `cap` survivors) so before this the
+            // whole filtered product was materialized: measured at 4 x 100,000,
+            // `MATCH (s:Tiny) MATCH (u:User) WHERE u.k > 5 RETURN s.k LIMIT 1` cost 11.189ms and
+            // was FLAT in the limit, against 0.001ms for the same product without the `WHERE`.
+            // Item 273's right-side pushdown is what moves that `Filter` INTO the side, where
+            // the stream can cap it.
+            //
+            // Only when NOT tracking lineage: the streamed path has no lineage plumbing, the
+            // same restriction the `OrderPage` call site applies before reaching it.
+            let side = |p: &Plan| -> Result<Option<Batch>, String> {
+                match pull_capped(p, store, track, cap)? {
+                    Some(b) => Ok(Some(b)),
+                    None if track => Ok(None),
+                    None => pull_capped_stream(p, store, cap),
+                }
+            };
+
+            match (side(left)?, side(right)?) {
                 (Some(lb), Some(rb)) => Some(truncate_batch(hash_join(&lb, &rb, &[]), cap)),
                 _ => None,
             }

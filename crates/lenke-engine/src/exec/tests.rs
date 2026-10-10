@@ -16120,3 +16120,118 @@ fn in_set_probes_each_row_independently() {
         3.0
     );
 }
+
+/// A lopsided fixture for the capped cross-join arm — a 2-row left against a 6-row right, so
+/// the two halves of the cap bound are separable: a cap BELOW the right's surviving count
+/// needs one left row, and a cap ABOVE it needs `ceil(cap / survivors)` of them.
+fn lopsided_product() -> Store {
+    let mut b = Builder::default();
+    b.node(&["Tiny"], &[("k", n(1.0))]);
+    b.node(&["Tiny"], &[("k", n(2.0))]);
+    for i in 0..6 {
+        b.node(&["User"], &[("k", n(f64::from(i)))]);
+    }
+    b.build()
+}
+
+/// `MATCH (s:Tiny) MATCH (u:User) WHERE u.k > gt RETURN s.k LIMIT n`, as the planner builds
+/// it after item 273's right-side pushdown: the `Filter` sits INSIDE the right input, which
+/// is what `pull_capped` used to decline.
+fn limited_filtered_product(gt: f64, limit: Option<usize>) -> Plan {
+    let body = Plan::Project {
+        input: Box::new(Plan::Join {
+            left: Box::new(scan("Tiny")),
+            right: Box::new(Plan::Filter {
+                input: Box::new(scan("User")),
+                pred: cmp(CompareOp::Gt, prop(0, "k"), Expr::Lit(n(gt))),
+            }),
+            on: vec![],
+        }),
+        items: vec![("k".to_string(), prop(0, "k"))],
+    };
+
+    match limit {
+        None => body,
+        Some(l) => Plan::OrderPage {
+            input: Box::new(body),
+            keys: vec![],
+            skip: None,
+            limit: Some(l),
+            fault_on_element: false,
+        },
+    }
+}
+
+/// A cap BELOW the surviving count: 4 users pass `k > 1`, so a cap of 3 is filled from the
+/// FIRST left row alone and three right rows suffice.
+#[test]
+fn a_capped_filtered_product_below_the_surviving_count() {
+    let store = lopsided_product();
+    let out = run(&limited_filtered_product(1.0, Some(3)), &store);
+
+    assert_eq!(out.rows.len(), 3, "the cap must be filled exactly");
+}
+
+/// A cap ABOVE it: the whole filtered product is 2 x 4 = 8, so a cap of 8 needs BOTH left
+/// rows. A bound that only ever took one left row would return 4 here.
+#[test]
+fn a_capped_filtered_product_above_the_surviving_count() {
+    let store = lopsided_product();
+    let out = run(&limited_filtered_product(1.0, Some(8)), &store);
+
+    assert_eq!(out.rows.len(), 8, "the whole filtered product is 8 rows");
+}
+
+/// A cap larger than the product cannot be filled, and the answer is the product itself —
+/// capping must not silently drop rows.
+#[test]
+fn a_cap_larger_than_the_filtered_product() {
+    let store = lopsided_product();
+    let out = run(&limited_filtered_product(1.0, Some(100)), &store);
+
+    assert_eq!(out.rows.len(), 8);
+}
+
+/// A SELECTIVE predicate, survivors far fewer than the cap: one user passes `k > 4`, so the
+/// product is 2 x 1 = 2 whatever the cap says.
+#[test]
+fn a_capped_filtered_product_with_a_selective_predicate() {
+    let store = lopsided_product();
+    let out = run(&limited_filtered_product(4.0, Some(64)), &store);
+
+    assert_eq!(out.rows.len(), 2);
+}
+
+/// An EMPTY filtered side: the cap can never be filled, so the stream walks the whole bucket
+/// and still answers nothing. A bound that assumed the cap was reachable would loop or invent
+/// rows.
+#[test]
+fn a_capped_filtered_product_whose_side_is_empty() {
+    let store = lopsided_product();
+    let out = run(&limited_filtered_product(1000.0, Some(64)), &store);
+
+    assert_eq!(out.rows.len(), 0);
+}
+
+/// THE PROPERTY THE ARM RESTS ON: every capped answer is a SUBSET of the uncapped one, at
+/// every cap. A wrong bound can keep the row COUNT right while inventing a row, which only
+/// this comparison catches.
+#[test]
+fn a_capped_filtered_product_never_invents_a_row() {
+    let store = lopsided_product();
+    let mut all = names_of(&run(&limited_filtered_product(1.0, None), &store), 0);
+    all.sort();
+
+    assert_eq!(all.len(), 8, "the uncapped product is the oracle");
+
+    for cap in 1..=8 {
+        let mut got = names_of(&run(&limited_filtered_product(1.0, Some(cap)), &store), 0);
+        got.sort();
+
+        assert_eq!(got.len(), cap, "cap {cap} must yield {cap} rows");
+
+        for row in &got {
+            assert!(all.contains(row), "cap {cap} invented a row: {row}");
+        }
+    }
+}
