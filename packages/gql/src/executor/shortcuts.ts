@@ -2146,9 +2146,15 @@ const patternVarsOf = (pattern: PathPattern): string[] => {
  *   product. Disjointness is checked over `patternVarsOf`, which over-collects.
  * - **A clause `WHERE` can CORRELATE the patterns.**
  *   `MATCH (a:P {k: 1}), (b:P) WHERE b.k = a.k` is not a product (measured: 39,640ms
- *   TS / 681ms native, and its answer is not |A| x |B|). A `WHERE` reading only one
- *   pattern would still be a product, but that needs the predicate attributed to a
- *   pattern, so every `WHERE` declines for now.
+ *   TS / 681ms native, and its answer is not |A| x |B|). A correlating conjunct still
+ *   declines the whole product — but a conjunct reading only ONE pattern no longer
+ *   does: `attributeConjuncts` hands it to that pattern's own count, so
+ *   `MATCH (s:Tiny) MATCH (u:User) WHERE u.k > 5 RETURN count(*)` is again
+ *   |Tiny| x |User where k > 5| rather than an enumerated product. That shape
+ *   measured **174.9ms against 0.002ms** for the unfiltered spelling of the same
+ *   question (item 274), and the left-side spelling 91.3ms — this engine pushed
+ *   NEITHER side, where the Rust optimizer pushes both (items 273, and its left-side
+ *   arm before that).
  * - **Every pattern must have its own shortcut.** `patternCountOf` returning `null`
  *   for any one of them declines the whole product rather than enumerating part of
  *   it.
@@ -2157,16 +2163,28 @@ const productCountOf = <T>(
   matches: readonly Extract<Clause, { kind: 'match' }>[],
   rowOf: (n: number) => T,
 ): CountOf<T> | null => {
-  const counts: CountOf<number>[] = [];
+  // Collected across EVERY match clause before anything is attributed, because a clause
+  // `WHERE` can read a pattern bound by an EARLIER clause: in
+  // `MATCH (s:Tiny) MATCH (u:User) WHERE s.k > 1` the predicate hangs off the SECOND
+  // match and reads the FIRST one's variable. Attributing within one clause finds no
+  // owner there and declines — which is why the left-side spelling stayed slow on the
+  // first attempt, measured at 91.3ms against the right-side spelling's new 4.4ms.
+  //
+  // Pushing such a conjunct onto the pattern it reads is exact for the same reason it is
+  // in the Rust optimizer: the patterns are independent (disjointness is proved below),
+  // so the product's rows are |A| x |B| and filtering A first admits exactly the rows
+  // filtering the product would.
+  const patterns: PathPattern[] = [];
+  const vars: string[][] = [];
   const bound = new Set<string>();
 
   for (const match of matches) {
-    if (match.where !== undefined) {
-      return null;
-    }
-
     for (const pattern of match.patterns) {
-      for (const name of patternVarsOf(pattern)) {
+      const names = patternVarsOf(pattern);
+
+      // A shared name is a JOIN, not a product — and it must be caught before any
+      // attribution, since a name bound twice has no single owning pattern.
+      for (const name of names) {
         if (bound.has(name)) {
           return null;
         }
@@ -2174,14 +2192,41 @@ const productCountOf = <T>(
         bound.add(name);
       }
 
-      const one = patternCountOf(pattern, undefined, identityCount);
+      patterns.push(pattern);
+      vars.push(names);
+    }
+  }
 
-      if (one === null) {
-        return null;
+  const preds: (Expr | undefined)[] = patterns.map(() => undefined);
+
+  for (const match of matches) {
+    const attributed = attributeConjuncts(match.where, vars);
+
+    if (attributed === null) {
+      return null;
+    }
+
+    for (const [i, pred] of attributed.entries()) {
+      if (pred === undefined) {
+        continue;
       }
 
-      counts.push(one);
+      const prev = preds[i];
+
+      preds[i] = prev === undefined ? pred : { kind: 'and', items: [prev, pred] };
     }
+  }
+
+  const counts: CountOf<number>[] = [];
+
+  for (const [i, pattern] of patterns.entries()) {
+    const one = patternCountOf(pattern, preds[i], identityCount);
+
+    if (one === null) {
+      return null;
+    }
+
+    counts.push(one);
   }
 
   if (counts.length < 2) {
@@ -2203,6 +2248,95 @@ const productCountOf = <T>(
 
     return rowOf(n);
   };
+};
+
+/**
+ * Split a clause `WHERE` so each top-level conjunct lands on the ONE pattern it reads,
+ * returning a predicate per pattern (`undefined` where none applies), or `null` to refuse
+ * the whole product.
+ *
+ * AND is symmetric for a keep-TRUE filter, so re-grouping conjuncts across patterns is
+ * exact — the same argument the Rust optimizer's `split_pushable` rests on. What is NOT
+ * exact is attributing a conjunct that reads two patterns, which is a correlation and the
+ * reason a `WHERE` used to decline outright.
+ *
+ * ### A SUBQUERY NEEDS NO SPECIAL CASE, which was MEASURED rather than assumed
+ *
+ * This was first written with a `hasSubqueryExpr` refusal, on the belief that
+ * `freePredicateVars` reports nothing for `EXISTS { … }` so a conjunct reading another
+ * pattern from inside one would look variable-free and be attributed to the wrong pattern.
+ * **That belief was wrong, and so is the claim near the `nodeVar` check further down that
+ * it reports the variables bound INSIDE a subquery.** Asked directly:
+ *
+ * ```text
+ * u.k > 5                                        -> {u}
+ * u.k = s.k                                      -> {s, u}
+ * EXISTS { MATCH (v:User) WHERE v.k = s.k }      -> {s}      (not {}, and not {v})
+ * COUNT { MATCH (v:User) WHERE v.k = s.k } > 0   -> {s}
+ * NOT EXISTS { MATCH (v:User) WHERE v.k = s.k }  -> {s}
+ * u.k > 5 OR EXISTS { … v.k = s.k }              -> {s, u}
+ * EXISTS { MATCH (v:User) }                      -> {}
+ * ```
+ *
+ * It reports exactly the OUTER variables a subquery reads and leaks no inner binding. So
+ * attribution handles subqueries correctly with no help: a subquery reading one pattern is
+ * attributed to it, and one reading two (the last-but-one row) declines like any other
+ * correlation. The refusal was removed — it was not merely redundant, it declined shapes
+ * that are sound to push.
+ *
+ * A conjunct with no free variables at all is left to the `owners.length !== 1` check,
+ * which an empty free set fails by construction.
+ */
+const attributeConjuncts = (
+  where: Expr | undefined,
+  patternVars: readonly (readonly string[])[],
+): (Expr | undefined)[] | null => {
+  const out: (Expr | undefined)[] = patternVars.map(() => undefined);
+
+  if (where === undefined) {
+    return out;
+  }
+
+  const conjuncts: Expr[] = [];
+  const flatten = (e: Expr): void => {
+    if (e.kind === 'and') {
+      for (const item of e.items) {
+        flatten(item);
+      }
+
+      return;
+    }
+
+    conjuncts.push(e);
+  };
+
+  flatten(where);
+
+  for (const conjunct of conjuncts) {
+    const free = freePredicateVars(conjunct);
+
+    // Exactly one pattern may be touched, and it must account for EVERY free variable —
+    // so a conjunct also reading a name bound earlier (a `WITH` binding, say) refuses
+    // rather than being attributed on the strength of a partial overlap.
+    const owners = patternVars.flatMap((names, i) => (names.some((n) => free.has(n)) ? [i] : []));
+
+    if (owners.length !== 1) {
+      return null;
+    }
+
+    const [owner] = owners;
+    const owned = patternVars[owner];
+
+    if (![...free].every((n) => owned.includes(n))) {
+      return null;
+    }
+
+    const prev = out[owner];
+
+    out[owner] = prev === undefined ? conjunct : { kind: 'and', items: [prev, conjunct] };
+  }
+
+  return out;
 };
 
 /** `rowOf` for the product path, which wants the number itself. */
