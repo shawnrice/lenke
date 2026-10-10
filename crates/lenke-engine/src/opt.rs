@@ -1799,8 +1799,7 @@ fn apply_local(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
             }
             // predicate pushdown into a Join's LEFT side: legal when the predicate
             // reads only left slots (indices < left width; the join keeps the left
-            // slots' indices, so no remap is needed). Right-side pushdown would
-            // need a slot remap and is deferred.
+            // slots' indices, so no remap is needed).
             // `pushable`, not `refs_below`: a raising predicate above the join sees only JOINED
             // rows, and on the left side it sees every left row, including those the join drops.
             Plan::Join { left, right, on } if pushable(&pred, width(&left)) => (
@@ -1811,6 +1810,35 @@ fn apply_local(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
                 },
                 true,
             ),
+            // …and into the RIGHT side, which needs the slot remap `right_pushable` does.
+            // Exact for this operator because `Plan::Join` is INNER (the optional form is
+            // `Plan::OptionalExpand`): filtering right rows before the product admits
+            // exactly the rows filtering the product would have.
+            //
+            // THE LIMIT CASE IS WHY THIS WAS WORTH FINISHING. A `Filter` sitting above a
+            // `Join` is what stops a capped page streaming: `streaming_chain` has no `Join`
+            // arm, so `pull_capped_stream` declines and the general path materializes the
+            // WHOLE filtered product. Measured at 100,000 users x 4, `MATCH (s:Tiny)
+            // MATCH (u:User) WHERE u.k > 5 RETURN s.k LIMIT 1` cost 11.189ms and was FLAT in
+            // the limit (10.201ms at LIMIT 64) — the `eager-tail-cache` signature — against
+            // 0.001ms for the same product without the `WHERE`. Pushing the predicate into
+            // the right input removes the `Filter` from above the join, so the existing
+            // row-preserving cap applies again.
+            Plan::Join { left, right, on } if right_pushable(&pred, width(&left)).is_some() => {
+                let inner = right_pushable(&pred, width(&left))
+                    .expect("the match guard just returned Some");
+                (
+                    Plan::Join {
+                        left,
+                        right: Box::new(Plan::Filter {
+                            input: right,
+                            pred: inner,
+                        }),
+                        on,
+                    },
+                    true,
+                )
+            }
             // index seed: `Filter(prop <op> literal) over Scan(label)` -> a seek.
             // `=` seeds an IndexSeek, a range op a RangeSeek; both are semantic
             // no-ops (the seek yields exactly Scan+Filter rows) and both spellings
@@ -2081,6 +2109,36 @@ fn can_raise(e: &Expr) -> bool {
 /// precheck and the split itself let a mutation of either survive, since the other still declined.
 fn pushable(e: &Expr, bound: usize) -> bool {
     refs_below(e, bound) && !can_raise(e)
+}
+
+/// The mirror of [`pushable`] for a Join's RIGHT side: does `pred` read ONLY slots at or
+/// above `left_width`, without raising — and if so, what is it in the right input's own
+/// slot space?
+///
+/// The right input numbers its slots from 0 while the join places them at
+/// `left_width + j`, so unlike the left side this needs a remap, which is why it was
+/// deferred when left-side pushdown landed. `map_slots` does the remap AND supplies the
+/// safety: it refuses the subquery family and every path expression outright, so neither
+/// can be moved below the join by this rule.
+///
+/// ONE PASS DOES BOTH CHECKS. A slot BELOW the boundary maps to `usize::MAX`, which
+/// `max_slot` then reports — so "reads a left slot" is detected by the same traversal that
+/// builds the remap, rather than by a second `min_slot` walker that would have to be kept
+/// in step with `max_slot` as `Expr` grows.
+///
+/// `!can_raise` is load-bearing and asymmetric with the left side. A raising predicate
+/// ABOVE the join is evaluated only on JOINED rows, so if the left input is empty it never
+/// runs at all; pushed into the right it would run on every right row and could raise where
+/// the query did not. `pushable` excludes raising predicates for the same reason.
+///
+/// Requires at least one slot reference, so a constant predicate is left to the left-side
+/// arm (which takes it, `refs_below` being vacuously true) instead of being pushed twice.
+fn right_pushable(pred: &Expr, left_width: usize) -> Option<Expr> {
+    if can_raise(pred) || max_slot(pred).is_none() {
+        return None;
+    }
+    let shifted = map_slots(pred, &|s| s.checked_sub(left_width).unwrap_or(usize::MAX))?;
+    (max_slot(&shifted) != Some(usize::MAX)).then_some(shifted)
 }
 
 /// Does ANY top-level conjunct of `pred` read only slots `< bound` and not raise? The cheap

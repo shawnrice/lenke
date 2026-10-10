@@ -2444,3 +2444,237 @@ fn an_indexed_single_equality_still_outranks_a_multi_value_conjunct() {
     );
     assert_eq!(bag(&run(&opt, &store)), vec!["Str(\"alice\");"]);
 }
+
+/// A two-label store for join pushdown: a TINY left side and a bigger right side, plus a
+/// label that exists nowhere so a test can make the LEFT input empty on purpose.
+fn two_sided() -> Store {
+    let mut b = Builder::default();
+    b.node(&["Tiny"], &[("k", n(1.0))]);
+    b.node(&["Tiny"], &[("k", n(2.0))]);
+    b.node(&["User"], &[("k", n(10.0)), ("name", s("u10"))]);
+    b.node(&["User"], &[("k", n(20.0)), ("name", s("u20"))]);
+    b.node(&["User"], &[("k", n(30.0)), ("name", s("u30"))]);
+    b.build()
+}
+
+fn cross(left: &str, right: &str) -> Plan {
+    Plan::Join {
+        left: Box::new(Plan::Scan {
+            label: Some(left.to_string()),
+        }),
+        right: Box::new(Plan::Scan {
+            label: Some(right.to_string()),
+        }),
+        on: vec![],
+    }
+}
+
+/// Is `plan` a Join whose RIGHT input is a Filter? (i.e. the predicate was pushed right.)
+fn right_is_filtered(plan: &Plan) -> bool {
+    fn walk(p: &Plan) -> bool {
+        match p {
+            Plan::Join { right, .. } => matches!(right.as_ref(), Plan::Filter { .. }),
+            Plan::Filter { input, .. } | Plan::Project { input, .. } => walk(input),
+            Plan::OrderPage { input, .. } => walk(input),
+            _ => false,
+        }
+    }
+    walk(plan)
+}
+
+/// Does a Filter still sit ABOVE the join anywhere?
+fn filter_above_join(plan: &Plan) -> bool {
+    match plan {
+        Plan::Filter { input, .. } => {
+            matches!(input.as_ref(), Plan::Join { .. }) || filter_above_join(input)
+        }
+        Plan::Project { input, .. } | Plan::OrderPage { input, .. } => filter_above_join(input),
+        _ => false,
+    }
+}
+
+/// A predicate reading only the join's RIGHT slots is pushed into the right input, with its
+/// slot index REMAPPED into that input's own space (slot 2 here → slot 0, the left being
+/// two slots wide is what makes the remap observable rather than an identity).
+#[test]
+fn a_right_only_predicate_pushes_into_the_right_input() {
+    let store = two_sided();
+    // left = Tiny × Tiny (width 2), right = User (slot 2).
+    let plan = Plan::Join {
+        left: Box::new(cross("Tiny", "Tiny")),
+        right: Box::new(Plan::Scan {
+            label: Some("User".to_string()),
+        }),
+        on: vec![],
+    };
+    let plan = Plan::Filter {
+        input: Box::new(plan),
+        pred: cmp(CompareOp::Gt, prop(2, "k"), Expr::Lit(n(15.0))),
+    };
+
+    let opt = assert_rows_preserved_indexed(&plan, &store);
+
+    assert!(
+        right_is_filtered(&opt),
+        "the right-only predicate should have pushed into the right input, got {opt:?}"
+    );
+    assert!(
+        !filter_above_join(&opt),
+        "nothing should be left filtering above the join, got {opt:?}"
+    );
+    // The remap: slot 2 in the joined space is slot 0 in the right input's own space.
+    fn pushed_pred(p: &Plan) -> Option<&Expr> {
+        match p {
+            Plan::Join { right, .. } => match right.as_ref() {
+                Plan::Filter { pred, .. } => Some(pred),
+                _ => None,
+            },
+            Plan::Project { input, .. } | Plan::OrderPage { input, .. } => pushed_pred(input),
+            _ => None,
+        }
+    }
+    let pred = pushed_pred(&opt).expect("a pushed predicate");
+    assert_eq!(
+        max_slot(pred),
+        Some(0),
+        "the pushed predicate must read the right input's OWN slot 0, got {pred:?}"
+    );
+}
+
+/// A LEFT-only predicate keeps going left, which is what already worked — so the new arm
+/// must not steal it (the left arm is tried first and `right_pushable` requires every slot
+/// to be at or above the boundary).
+#[test]
+fn a_left_only_predicate_still_pushes_left() {
+    let store = two_sided();
+    let plan = Plan::Filter {
+        input: Box::new(cross("Tiny", "User")),
+        pred: cmp(CompareOp::Gt, prop(0, "k"), Expr::Lit(n(1.0))),
+    };
+
+    let opt = assert_rows_preserved_indexed(&plan, &store);
+
+    assert!(
+        !right_is_filtered(&opt),
+        "a left-only predicate must not land on the RIGHT input, got {opt:?}"
+    );
+}
+
+/// A predicate reading BOTH sides cannot be pushed either way — it must stay above the join.
+#[test]
+fn a_predicate_reading_both_sides_is_not_pushed() {
+    let store = two_sided();
+    let plan = Plan::Filter {
+        input: Box::new(cross("Tiny", "User")),
+        pred: cmp(CompareOp::Lt, prop(0, "k"), prop(1, "k")),
+    };
+
+    let opt = assert_rows_preserved_indexed(&plan, &store);
+
+    assert!(
+        !right_is_filtered(&opt),
+        "a two-sided predicate must not push right, got {opt:?}"
+    );
+    assert!(
+        filter_above_join(&opt),
+        "a two-sided predicate must stay above the join, got {opt:?}"
+    );
+}
+
+/// THE SOUNDNESS CASE, and the only one that distinguishes a correct guard from an unsound
+/// one. A RAISING predicate above a join is evaluated on JOINED rows only — so with an
+/// EMPTY left input it never runs, and the query is an empty result rather than a fault.
+/// Pushed into the right input it would run on every right row and raise. `right_pushable`
+/// refuses a raising predicate for exactly this reason; without that check this test faults.
+#[test]
+fn a_raising_right_predicate_is_not_pushed_past_an_empty_left() {
+    let store = two_sided();
+    // `Ghost` matches nothing, so the join yields no rows at all.
+    let plan = Plan::Filter {
+        input: Box::new(cross("Ghost", "User")),
+        pred: cmp(
+            CompareOp::Gt,
+            Expr::Arith {
+                op: crate::ir::ArithOp::Div,
+                left: Box::new(prop(1, "k")),
+                right: Box::new(Expr::Lit(n(0.0))),
+            },
+            Expr::Lit(n(1.0)),
+        ),
+    };
+
+    let opt = optimize_indexed(plan.clone(), &store);
+
+    assert!(
+        !right_is_filtered(&opt),
+        "a RAISING predicate must not be pushed into the right input, got {opt:?}"
+    );
+    // And the answer is the empty result, not a division fault — in both forms.
+    assert_eq!(bag(&run(&plan, &store)), Vec::<String>::new());
+    assert_eq!(bag(&run(&opt, &store)), Vec::<String>::new());
+}
+
+/// A real join condition (`on` non-empty) is still an INNER join, so a right-only predicate
+/// pushes there too — filtering right rows before the match admits exactly the rows
+/// filtering after it would.
+///
+/// Both sides scan `User` so the identity join is actually SATISFIABLE (two disjoint labels
+/// would join to nothing and the test would pass on an empty result either way). `on` pairs
+/// are `(left slot, right slot IN THE RIGHT'S OWN SPACE)`, which is also the convention the
+/// remap relies on: "right slot `j` becomes output slot `left.len() + j`".
+#[test]
+fn the_push_applies_to_a_join_with_an_on_condition() {
+    let store = two_sided();
+    let plan = Plan::Filter {
+        input: Box::new(Plan::Join {
+            left: Box::new(Plan::Scan {
+                label: Some("User".to_string()),
+            }),
+            right: Box::new(Plan::Scan {
+                label: Some("User".to_string()),
+            }),
+            on: vec![(0, 0)],
+        }),
+        pred: cmp(CompareOp::Gt, prop(1, "k"), Expr::Lit(n(15.0))),
+    };
+
+    // Each user joins to itself, then k > 15 keeps u20 and u30 — a non-empty answer, so
+    // `assert_rows_preserved_indexed` is comparing something.
+    assert_eq!(bag(&run(&plan, &store)).len(), 2);
+
+    let opt = assert_rows_preserved_indexed(&plan, &store);
+
+    assert!(
+        right_is_filtered(&opt),
+        "an ON condition does not stop the push, got {opt:?}"
+    );
+}
+
+/// Pushing the predicate off the join makes the two patterns INDEPENDENT again, which is
+/// what lets the product-of-counts shortcut fire — the 67x this rewrite actually bought
+/// (the LIMIT case it was written for was NOT fixed by it). A plan-shape assertion, since
+/// the shortcut itself is priced elsewhere.
+#[test]
+fn the_pushed_plan_leaves_the_join_unfiltered_so_counts_stay_independent() {
+    let store = two_sided();
+    let plan = Plan::Filter {
+        input: Box::new(cross("Tiny", "User")),
+        pred: cmp(CompareOp::Gt, prop(1, "k"), Expr::Lit(n(15.0))),
+    };
+
+    let opt = assert_rows_preserved_indexed(&plan, &store);
+
+    match &opt {
+        Plan::Join { left, right, .. } => {
+            assert!(
+                matches!(left.as_ref(), Plan::Scan { .. }),
+                "the left input must stay a bare scan, got {left:?}"
+            );
+            assert!(
+                matches!(right.as_ref(), Plan::Filter { .. }),
+                "the right input must carry the filter, got {right:?}"
+            );
+        }
+        other => panic!("expected a bare Join at the top, got {other:?}"),
+    }
+}
