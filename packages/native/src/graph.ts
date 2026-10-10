@@ -207,14 +207,38 @@ const decodeRows = (bytes: Uint8Array): Row[] => {
     });
   }
 
-  return doc.rows.map((row) => {
-    const out: Row = {};
-    doc.columns.forEach((col, i) => {
-      out[col] = row[i];
-    });
+  // PLAIN LOOPS, not `map` + `forEach`, and that is measured rather than stylistic: the inner
+  // `forEach` allocated a closure PER ROW and re-read `doc.columns` through the outer closure
+  // every time. At 200,000 rows x 3 columns this stage went 4.45ms -> 2.23ms (2.0x), and at one
+  // column 4.90 -> 2.16 (2.3x) — it is now ~2.1ms regardless of column count, i.e. dominated by
+  // the per-row object allocation (~10ns a row) rather than by per-cell work, which is the floor.
+  //
+  // WHAT THAT IS AND IS NOT WORTH. It is ~6% of a row-returning native query, not a headline:
+  // the same measurement decomposed this path as 48% `JSON.parse` (17.63ms for a 4.47MB
+  // carrier), 33% the crate's render plus the FFI call, 12% this stage. `bun run bench`'s
+  // `query: project 3 columns` row reads ts 7.8ms against ffi 57.0ms, and that 7.3x is the JSON
+  // CARRIER, not execution — the same fixture with the same work and ONE row out is 30.8x the
+  // other way (2.40ms against 73.95ms). Anyone chasing that bench row should read
+  // `queryArrowIpc`, not the engine (item 289).
+  //
+  // Key insertion order is `doc.columns` order, exactly as before — `column-order-is-observable`
+  // makes that a byte-level contract, not a convenience.
+  const { columns, rows } = doc;
+  const width = columns.length;
+  const out: Row[] = new Array(rows.length);
 
-    return out;
-  });
+  for (let r = 0; r < rows.length; r++) {
+    const row = rows[r];
+    const shaped: Row = {};
+
+    for (let c = 0; c < width; c++) {
+      shaped[columns[c]] = row[c];
+    }
+
+    out[r] = shaped;
+  }
+
+  return out;
 };
 
 const isTemplate = (x: unknown): x is TemplateStringsArray =>
