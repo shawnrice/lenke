@@ -175,4 +175,39 @@ fn main() {
         "  {:<46} {bind_and_opt:>10.0}",
         "10. clone + bind + optimize_indexed"
     );
+
+    // 11-13: inside `gql::parse`, which item 291 found dominant (1296ns for 57 bytes, 23ns a
+    // byte). Two costs are visible in the source: the lexer decodes the WHOLE query into a heap
+    // `Vec<char>` before it starts, and `Tok::Ident`/`Str`/`Param` each own a `String`, so a
+    // 57-byte query allocates one char vector, one token vector and ~12 identifier strings.
+    // `lex` is private, so these price the parts reachable from outside.
+    let char_vec = ns_per_op(reps, iters, || {
+        let _: Vec<char> = hit.chars().collect();
+    });
+    let char_vec_cap = ns_per_op(reps, iters, || {
+        let mut v: Vec<char> = Vec::with_capacity(hit.len());
+        v.extend(hit.chars());
+    });
+    let idents = ns_per_op(reps, iters, || {
+        let mut v: Vec<String> = Vec::new();
+        for w in hit.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '$') {
+            if !w.is_empty() {
+                v.push(w.to_string());
+            }
+        }
+        let _ = v;
+    });
+
+    println!(
+        "  {:<46} {char_vec:>10.0}",
+        "11. s.chars().collect::<Vec<char>>()"
+    );
+    println!(
+        "  {:<46} {char_vec_cap:>10.0}",
+        "12. the same, with_capacity(s.len())"
+    );
+    println!(
+        "  {:<46} {idents:>10.0}",
+        "13. ~12 identifier Strings (lexer's shape)"
+    );
 }

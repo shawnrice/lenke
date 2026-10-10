@@ -379,6 +379,16 @@ absence** — `{k: null}` is the one place in a pattern where that distinction i
     `out_bytes` + `lnk_free`, `ffi_error::begin()`, bun:ffi's per-ARGUMENT marshalling
     (`vertexCount` takes one argument and costs 8ns; `lnk_command` takes five), and the `String`
     allocations in `prepared_payload`. **That needs a profiler, not another probe.**
+- **`gql::parse` at 1296ns for a 57-byte query (43% of a serving call)** — **OPEN, and item 294
+  established it is STRUCTURAL rather than allocational.** The two costs visible in the source
+  were priced: the lexer's `Vec<char>` pre-pass is **60ns** (26ns with `with_capacity` — a 34ns
+  one-line saving, **2.6% of parse and below end-to-end resolution, so NOT made**), and the ~12
+  owned identifier `String`s are **177ns (14%)**. **The other ~1060ns (82%) is the scanning loop,
+  the recursive descent and the plan build.** Removing the strings needs `Tok<'a>` with
+  `Ident(&'a str)` — a lifetime through `Parser` and every token consumer — and it only pays if
+  the `Vec<char>` indexing goes too, since a borrowed token cannot point into a transient char
+  vector; they are one change. **Start from a profiler on `lex`/`parse_internal`, not from the
+  allocations.** Numbers reproducible in `percall_probe`.
 - ~~**Hoisting `takeResult`'s per-call `new BigUint64Array(1)`**~~ — **REFUTED at item 292 before
   being built: the allocation costs 0.4ns**, below the 4.9ns floor of calling an empty closure,
   because the JIT elides it. It looked free and obvious, which is exactly the case `CLAUDE.md`
