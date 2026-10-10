@@ -237,6 +237,31 @@ absence** — `{k: null}` is the one place in a pattern where that distinction i
   passes; the other two are inherent to the frozen immutable bag (a single-key write must build a
   new object and freeze it, and the freeze is what makes a stray mutation throw). Do not "fix" it
   without replacing that design. Items 147, 148, confirmed 266.
+- ~~**The COMMA spelling of a multi-pattern clause did not push its `WHERE` into a node**~~ —
+  **CLOSED by item 285** (2026-10-09), at **15.6x** in the TS engine. `pushWhereIntoNode` declined
+  on `clause.patterns.length !== 1`, so `MATCH (a:A), (b:B) WHERE b.k = 7` kept the predicate as a
+  clause filter (once per SURVIVING BINDING, and a binding over a product is a `Map` materialized
+  per product row) while `MATCH (a:A) MATCH (b:B) WHERE b.k = 7` pushed it into the node (once per
+  SCANNED vertex): 145.039 ms against 9.193 ms for the same four rows. Item 121's shape at 160x,
+  recurring in the other direction. Only a conjunct reading **exactly one of the clause's own
+  pattern variables** moves, which is the correctness condition and not conservatism —
+  `visitRemaining` chooses the intra-clause visit order AT RUNTIME (item 122), so a conjunct
+  reading two of them would compare against an unbound variable whenever its pattern went first
+  and the row would silently vanish. Outer variables are safe for item 128's reason. Permanent
+  group in `spelling-probe.ts`: **9.5x spread on HEAD, 1.10x after.**
+- **A one-hop count is O(1) only when the start label constrains NOTHING** — **OPEN, priced at
+  ~5400x**, found by item 285's probe group on the way in. `MATCH (a:P)-[:E]->(b) RETURN count(*)`
+  reads **54.06 ms** against the untyped spelling's **0.00 ms**, same answer, once `:P` is
+  genuinely selective. `vacuousLabel` elides a label every vertex carries and the one-hop count
+  shortcut requires that elision to have happened ("the start label has to be vacuous for the
+  caller to route here"); **four nodes out of 200,000 are enough to lose it** and fall to a full
+  traversal. The probe's `label on start: redundant vs absent` group flags until this closes —
+  its comment says so; do NOT quiet it by reverting the fixture.
+- **The CORRELATED comma product keeps ~3.4x** against its two-clause twin — **recorded, not a
+  bug, and not refuted either.** `MATCH (a:A), (b:B) WHERE b.k = a.k` cannot push onto either
+  pattern for the runtime-visit-order reason above. Closing it means PINNING `visitRemaining`'s
+  order, which is a different change with its own cost. Deliberately not a member of the item-285
+  probe group: a known-divergent pair in a probe that flags divergence makes the probe lie.
 - **`addVertex`** — the single target behind the three `bench:usage` rows TS loses, all a 3.7x
   constant factor (§1). Reopening means arguing with item 203's conclusion, with numbers.
 - **The TS query surface above 5x:** item 197's closing line said there was nothing. One case

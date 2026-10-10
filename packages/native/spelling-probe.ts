@@ -51,6 +51,15 @@ for (let e = 0; e < N * 3; e++) {
   );
 }
 
+// FOUR nodes under a label nothing else here uses, so the multi-pattern group below has a
+// TINY left side: a comma product needs one, because the two spellings it compares differ by
+// |left| x |right| binding `Map`s and N x N is not a measurement, it is a hang. They carry no
+// edges, so the two groups that start an UNTYPED hop scan (`MATCH (a)-[:E]->(b)` and the
+// three-hop one) see no extra rows, and every other group is label-anchored on `P` (item 285).
+for (let i = 0; i < 4; i++) {
+  lines.push(`{"type":"node","id":"s${i}","labels":["S"],"properties":{"k":${i},"s":"t${i}"}}`);
+}
+
 const g = tsDeserialize(lines.join('\n'), 'ndjson', new TsGraph());
 
 /** Groups of spellings of ONE question. Every member must answer identically. */
@@ -198,6 +207,19 @@ const GROUPS: [string, readonly string[]][] = [
       'MATCH (n:P) RETURN n.k AS c ORDER BY n.k LIMIT 10',
     ],
   ],
+  // THIS GROUP FLAGS, AND THE FLAG IS A REAL FINDING — do not "fix" it by reverting the
+  // fixture. It used to read 0.00ms on both members and be skipped under `FLOOR_MS`, because
+  // every node in the fixture was a `P`: `vacuousLabel` then elided `:P` and the one-hop count
+  // shortcut answered both spellings with an O(1) edge count. Item 285 added four `S` nodes for
+  // the multi-pattern group below, which makes `:P` genuinely selective — and the labelled
+  // spelling fell to a FULL TRAVERSAL: 0.00ms against 54.06ms, ~5400x, same answer.
+  //
+  // So the shortcut is not "a one-hop count is O(1)", it is "a one-hop count is O(1) when the
+  // start label constrains NOTHING" (`shortcuts.ts`: "The start label has to be vacuous for the
+  // caller to route here"). Four nodes out of 200,000 are enough to lose it. That is a 5400x
+  // cliff on the most ordinary shape there is, found by this probe on the run that added an
+  // unrelated group — which is the whole argument for the probe existing. Recorded as the open
+  // target in CLOSED.md; the flag stays until it is closed.
   [
     'label on start: redundant vs absent',
     ['MATCH (a:P)-[:E]->(b) RETURN count(*) AS c', 'MATCH (a)-[:E]->(b) RETURN count(*) AS c'],
@@ -207,6 +229,32 @@ const GROUPS: [string, readonly string[]][] = [
     [
       "MATCH (n:P) WHERE n.k = 2 AND n.s = 's1' RETURN count(*) AS c",
       "MATCH (n:P) WHERE n.s = 's1' AND n.k = 2 RETURN count(*) AS c",
+    ],
+  ],
+  // A product's ONE-SIDED predicate, spelled as one clause of two patterns and as two clauses
+  // of one. `pushWhereIntoNode` declined on `patterns.length !== 1`, so the comma spelling kept
+  // the predicate as a CLAUSE FILTER — evaluated once per surviving binding, and a binding over
+  // a product is a `Map` materialized per product row before anything filters it — while the
+  // two-clause spelling pushed it into the node, evaluated once per SCANNED vertex. 15.6x at
+  // 4 x 100,000, both answering the same rows. This is item 121's shape (a multi-pattern
+  // spelling at 160x) recurring in the other direction, which is why it gets a permanent group.
+  //
+  // `RETURN b.k` and not `count(*)`: the product-of-counts shortcut answers the count form
+  // without building the product at all, so a count group would be O(1) on both members and
+  // measure nothing. The projection is what forces the bindings the two spellings disagree on.
+  //
+  // The CORRELATED pair (`WHERE b.k = a.k`) is deliberately NOT a member. It cannot be pushed
+  // onto either pattern — `visitRemaining` chooses the intra-clause visit order at runtime, so
+  // the other pattern's variable may be unbound — and it keeps a real ~3.4x against its
+  // two-clause twin. Putting a known-divergent pair in a probe that flags divergence makes the
+  // probe lie; it is recorded in CLOSED.md instead.
+  [
+    "a product's one-sided predicate: comma vs MATCH MATCH (item 285)",
+    [
+      'MATCH (a:S), (b:P) WHERE b.k = 7 RETURN b.k AS x',
+      'MATCH (a:S) MATCH (b:P) WHERE b.k = 7 RETURN b.k AS x',
+      'MATCH (a:S), (b:P WHERE b.k = 7) RETURN b.k AS x',
+      'MATCH (a:S), (b:P {k: 7}) RETURN b.k AS x',
     ],
   ],
   // An AND of two equalities against the SAME question written inline, and the two half-and-half

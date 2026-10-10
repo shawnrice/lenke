@@ -4492,11 +4492,110 @@ const conjoin = (items: readonly Expr[]): Expr | undefined => {
   return { kind: 'and', items };
 };
 
+/**
+ * Attribute a MULTI-PATTERN clause's `WHERE` conjuncts to the patterns they constrain, so the
+ * comma spelling of a question plans like its `MATCH … MATCH …` twin.
+ *
+ * ### Only a conjunct reading ONE of the clause's own pattern variables moves
+ *
+ * That restriction is what makes this independent of MATCH ORDER, and the order is genuinely
+ * not knowable here: `matchClauseBindings` hands a multi-pattern clause to `visitRemaining`,
+ * which picks which pattern to visit next (item 122's uncorrelated-rescan fix). So a conjunct
+ * reading TWO of the clause's patterns — `WHERE b.k = a.k` — cannot be pushed onto either: if
+ * the other pattern is visited second its variable is unbound, the comparison is UNKNOWN, and
+ * the row silently disappears. A conjunct reading ONE pattern plus OUTER variables is safe for
+ * the reason the single-pattern case already relies on: outer variables are in the incoming
+ * binding before the clause starts, whatever order the patterns are then visited in.
+ *
+ * So `WHERE b.k = a.k` over two patterns of one clause stays a clause filter and keeps its
+ * 3.4x against the two-clause spelling — recorded rather than fixed, because fixing it means
+ * pinning the visit order (item 285).
+ *
+ * A pattern only receives a conjunct if it is a bare single node with a variable, the same
+ * precondition the single-pattern path checks: a predicate on a HOP is NOT equivalent in the
+ * node position (see `liftHopWhereToSeedFilter`, which exists because moving it changes which
+ * queries raise).
+ */
+const pushWhereAcrossPatterns = (
+  clause: Extract<Clause, { kind: 'match' }>,
+  where: Expr,
+): typeof clause => {
+  const conjuncts: readonly Expr[] = where.kind === 'and' ? where.items : [where];
+  const own = new Set(patternVars(clause.patterns));
+  // Which pattern each conjunct lands on, by index; `undefined` keeps it as the clause filter.
+  const landed: (number | undefined)[] = conjuncts.map((c) => {
+    if (hasSubquery(c)) {
+      return undefined;
+    }
+
+    const touched = [...freePredicateVars(c)].filter((n) => own.has(n));
+
+    if (touched.length !== 1) {
+      return undefined; // zero (a constant, or only outer reads) or a correlation
+    }
+
+    const [name] = touched;
+    const i = clause.patterns.findIndex((p) => p.start.variable === name);
+    const p = i < 0 ? undefined : clause.patterns[i];
+
+    // Both guards MIRROR the single-pattern path's below (`segments.length > 0 || pathVar !==
+    // undefined` declines there). The `segments` one is load-bearing and tested — a predicate
+    // on a hop's start is not equivalent to one in the clause, because it changes which
+    // queries raise. The `pathVar` one is INHERITED: mutation removed it here (M3) and removed
+    // the single-pattern path's copy (M9), and both SURVIVED the whole suite, so no test
+    // anywhere observes it. Kept anyway — a guard whose necessity is unproven is not a guard
+    // shown to be unnecessary, and the path-value semantics it would open were never the
+    // target (item 285).
+    return p?.segments.length === 0 && p.pathVar === undefined ? i : undefined;
+  });
+
+  if (landed.every((i) => i === undefined)) {
+    return clause;
+  }
+
+  const patterns = clause.patterns.map((p, i) => {
+    const mine = conjuncts.filter((_, ci) => landed[ci] === i);
+
+    if (mine.length === 0) {
+      return p;
+    }
+
+    const all = p.start.where === undefined ? mine : [p.start.where, ...mine];
+    const merged: Expr = all.length === 1 ? all[0] : { kind: 'and', items: all };
+
+    return { ...p, start: { ...p.start, where: merged } };
+  });
+
+  const residual = conjoin(conjuncts.filter((_, ci) => landed[ci] === undefined));
+  const { where: _dropped, ...rest } = clause;
+
+  return {
+    ...rest,
+    ...(residual === undefined ? {} : { where: residual }),
+    patterns,
+  };
+};
+
 const pushWhereIntoNode = (clause: Extract<Clause, { kind: 'match' }>): typeof clause => {
   const { where } = clause;
 
-  if (where === undefined || clause.optional || clause.patterns.length !== 1) {
+  if (where === undefined || clause.optional) {
     return clause;
+  }
+
+  // A MULTI-PATTERN clause attributes its conjuncts instead, which is where the 15.8x was.
+  // This used to decline on `patterns.length !== 1`, so the comma spelling of a question kept
+  // its predicate as a clause filter while the `MATCH … MATCH …` spelling pushed it into the
+  // node. Measured at 4 x 100,000 on the SAME question and the same 4 rows:
+  //
+  //   MATCH (a:A) MATCH (b:B) WHERE b.k = 7 RETURN a.k     9.193 ms
+  //   MATCH (a:A), (b:B)      WHERE b.k = 7 RETURN a.k   145.039 ms
+  //
+  // The comment below already explains why: a node predicate is evaluated once per SCANNED
+  // vertex, a clause filter once per SURVIVING BINDING — and for a product that is a binding
+  // `Map` materialized per product row before anything filters it (item 285).
+  if (clause.patterns.length > 1) {
+    return pushWhereAcrossPatterns(clause, where);
   }
 
   const [path] = clause.patterns;
