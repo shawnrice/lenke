@@ -233,8 +233,16 @@ absence** — `{k: null}` is the one place in a pattern where that distinction i
   without replacing that design. Items 147, 148, confirmed 266.
 - **`addVertex`** — the single target behind the three `bench:usage` rows TS loses, all a 3.7x
   constant factor (§1). Reopening means arguing with item 203's conclusion, with numbers.
-- Nothing else in the TS **query** surface is above 5x once the adjacency floor is accounted for
-  (item 197's closing line, still accurate).
+- **The TS query surface above 5x:** item 197's closing line said there was nothing. One case
+  is now measured — an UNINDEXED filtered count is ~27ns a vertex against native's ~1.6ns
+  (16.7x), and within TS an ORDERING comparison costs **1.64x an equality on the same count**
+  (49.9 against 30.5 ns/vertex, the selective spelling so the answer size matches). Cause:
+  `directEqProps` lifts only `=` element-locally and everything else reads through the binding
+  `Map`. **PRICED AND DEFERRED at item 276, not refuted** — the lift was built and retracted
+  because "this predicate is empty" is spread across NINE hand-written presence checks
+  (`executor.ts` 1033/1038/1133/1140/1159, `matching.ts` 247/362/608/1395), four of them node
+  fast-path gates where missing the new field expands UNFILTERED — a silent superset, the
+  mistake `rel-inline-pred.test.ts` exists for. Prerequisite is one `hasPredicate` helper.
 
 ---
 
