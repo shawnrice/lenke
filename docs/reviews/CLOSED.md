@@ -243,9 +243,12 @@ absence** — `{k: null}` is the one place in a pattern where that distinction i
   because "this predicate is empty" is spread across NINE hand-written presence checks
   (`executor.ts` 1033/1038/1133/1140/1159, `matching.ts` 247/362/608/1395), four of them node
   fast-path gates where missing the new field expands UNFILTERED — a silent superset, the
-  mistake `rel-inline-pred.test.ts` exists for. **The `hasPredicate` helper now EXISTS (item 277,
-  which found a live wrong answer in the same invariant), so the prerequisite is met and the lift
-  is a few lines.**
+  mistake `rel-inline-pred.test.ts` exists for. **DONE at item 278**, once item 277's
+  `hasPredicate` existed: wiring the field broke THREE tests before the helper and ONE after,
+  because extending the helper covers all seven gates at once. Delivered **1.44x** broad /
+  1.32x selective / 1.19x on `>=`, i.e. about HALF the predicted 1.64x — a ~1.26x residual
+  remains from `compareTruth`'s dispatch and type checks against `structuralEq`'s direct
+  path, and `<>` gains nothing (1.01x) because it routes through `structuralEq` like `=`.
 
 ---
 

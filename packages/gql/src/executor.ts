@@ -333,6 +333,62 @@ import type { FuncExpr, Truth } from './executor/scalars.js';
  */
 let execEpoch = 0;
 
+/**
+ * `lv <op> rv` as a three-valued answer — the ONE definition of comparison semantics.
+ *
+ * Extracted from the `compare` arm so the element-local `cmpProps` loop can apply the SAME
+ * rules to a property it read directly. Reimplementing them there would be the mistake
+ * `patternCountOf`'s doc warns about ("a shortcut that half-applies a predicate is a wrong
+ * answer"): the type handling below IS the semantics, not a detail around it.
+ */
+const compareTruth = (
+  op: CompareOp,
+  fn: (a: never, b: never) => boolean,
+  lv: unknown,
+  rv: unknown,
+): Truth => {
+  if (isNullish(lv) || isNullish(rv)) {
+    return null; // UNKNOWN
+  }
+
+  // Equality is structural and holds across any types (mismatched types are
+  // simply unequal). Ordering is only defined *within* one orderable
+  // primitive type (number, string, or boolean) — comparing a number to a
+  // string, or two graph elements, is UNKNOWN per ISO, not a JS coercion.
+  if (op === '=' || op === '<>') {
+    const eq = structuralEq(lv, rv);
+
+    return op === '=' ? eq : !eq;
+  }
+
+  // Temporals: date/datetime (same kind) order chronologically; durations
+  // and cross-kind pairs are UNKNOWN. `fn(c, 0)` applies the operator to the
+  // -1/0/1 comparison result (e.g. `<` becomes `c < 0`).
+  if (isTemporal(lv) && isTemporal(rv)) {
+    const c = temporalRelCmp(lv, rv);
+
+    return c === null ? null : (fn as (a: number, b: number) => boolean)(c, 0);
+  }
+
+  // Any remaining cross-type ordering is UNKNOWN → null, NOT a fault: a temporal vs
+  // a non-temporal (a temporal is an object, so `orderable` is false below), or a
+  // number vs a string, are incomparable and evaluate to null. In a schemaless graph
+  // a property can hold heterogeneous types across nodes, so an incomparable row must
+  // filter out of a WHERE rather than abort the whole query. Matches the engine,
+  // cross-type equality's no-match, and the null/NaN-carrying model.
+  const t = typeof lv;
+  const orderable = t === typeof rv && (t === 'number' || t === 'string' || t === 'boolean');
+
+  if (!orderable) {
+    return null; // UNKNOWN
+  }
+
+  return (fn as (a: number | string, b: number | string) => boolean)(
+    lv as number | string,
+    rv as number | string,
+  );
+};
+
 /** A haystack hashed for membership: the set, plus whether a NULL element was dropped. */
 type Haystack = { set: ReadonlySet<unknown>; hasNull: boolean };
 
@@ -911,48 +967,7 @@ export const compileExpr = (expr: Expr): CompiledExpr => {
       const { op } = expr;
       const fn = COMPARE[op];
 
-      return (env) => {
-        const lv = l(env);
-        const rv = r(env);
-
-        if (isNullish(lv) || isNullish(rv)) {
-          return null; // UNKNOWN
-        }
-
-        // Equality is structural and holds across any types (mismatched types are
-        // simply unequal). Ordering is only defined *within* one orderable
-        // primitive type (number, string, or boolean) — comparing a number to a
-        // string, or two graph elements, is UNKNOWN per ISO, not a JS coercion.
-        if (op === '=' || op === '<>') {
-          const eq = structuralEq(lv, rv);
-
-          return op === '=' ? eq : !eq;
-        }
-
-        // Temporals: date/datetime (same kind) order chronologically; durations
-        // and cross-kind pairs are UNKNOWN. `fn(c, 0)` applies the operator to the
-        // -1/0/1 comparison result (e.g. `<` becomes `c < 0`).
-        if (isTemporal(lv) && isTemporal(rv)) {
-          const c = temporalRelCmp(lv, rv);
-
-          return c === null ? null : fn(c, 0);
-        }
-
-        // Any remaining cross-type ordering is UNKNOWN → null, NOT a fault: a temporal vs
-        // a non-temporal (a temporal is an object, so `orderable` is false below), or a
-        // number vs a string, are incomparable and evaluate to null. In a schemaless graph
-        // a property can hold heterogeneous types across nodes, so an incomparable row must
-        // filter out of a WHERE rather than abort the whole query. Matches the engine,
-        // cross-type equality's no-match, and the null/NaN-carrying model.
-        const t = typeof lv;
-        const orderable = t === typeof rv && (t === 'number' || t === 'string' || t === 'boolean');
-
-        if (!orderable) {
-          return null; // UNKNOWN
-        }
-
-        return fn(lv as number | string, rv as number | string);
-      };
+      return (env) => compareTruth(op, fn, l(env), r(env));
     }
     case 'case':
       return compileCase(expr);
@@ -2922,7 +2937,19 @@ export type CPredicate = {
    * against native cannot be verified here (audit item 224).
    */
   eqProps?: readonly CProp[];
+  /**
+   * The same lift for an ORDERING comparison (`<`, `<=`, `>`, `>=`, `<>`), which `eqProps`
+   * cannot carry because it hard-codes `=`.
+   *
+   * A separate list rather than an `op` field on `CProp`: `eqProps` is the already-tuned
+   * equality path (items 210, 230, 260) and a per-entry operator dispatch would make it pay
+   * for a generality only this list needs.
+   */
+  cmpProps?: readonly CCmpProp[];
 };
+
+/** A lifted ordering comparison: the property, the operator, and its closed right-hand side. */
+export type CCmpProp = { key: string; op: CompareOp; value: CompiledExpr };
 
 /** Range bounds whose endpoints are compiled value closures (resolved per seed). */
 export type CRangeBound = {
@@ -3080,7 +3107,7 @@ const compileProps = (props: readonly PropertyConstraint[] | undefined): CProp[]
 const directEqProps = (
   where: Expr,
   ownVar: string | undefined,
-): { eq: CProp[]; residual: Expr | undefined } | null => {
+): { eq: CProp[]; cmp: CCmpProp[]; residual: Expr | undefined } | null => {
   if (ownVar === undefined) {
     return null;
   }
@@ -3091,6 +3118,7 @@ const directEqProps = (
   // answer.
   const conjuncts = where.kind === 'and' ? where.items : [where];
   const eq: CProp[] = [];
+  const cmp: CCmpProp[] = [];
 
   for (const conjunct of conjuncts) {
     if (conjunct.kind !== 'compare') {
@@ -3102,8 +3130,25 @@ const directEqProps = (
     // two costing differently) and already requires a CLOSED value side.
     const pc = asPropCompare(conjunct);
 
-    if (pc?.op !== '=' || pc.variable !== ownVar) {
+    if (pc === null || pc.variable !== ownVar) {
       return null;
+    }
+
+    // AN ORDERING COMPARISON LIFTS TOO, which this used to decline — "merely unimplemented",
+    // in the words above. The scan is the same either way; what changes is where the left
+    // operand comes from, and reading it off the element skips the binding `Map` the generic
+    // evaluator goes through. Measured at 200,000 vertices with no index, on a count whose
+    // predicate admits ONE row either way so the answer size cannot explain it:
+    //
+    //   WHERE k = <lit>     30.5 ns a vertex
+    //   WHERE k > <lit>     49.9 ns a vertex   (selective spelling)
+    //
+    // 1.64x (item 276, deferred there because the gates that ask "is this predicate empty?"
+    // were spread across nine hand-written checks — item 277 replaced them with
+    // `hasPredicate`, so this field is picked up by all of them at once).
+    if (pc.op !== '=') {
+      cmp.push({ key: pc.key, op: pc.op, value: compileExpr(pc.value) });
+      continue;
     }
 
     // EVERY closed value lifts, params and `null` literals included — which this refused until
@@ -3120,7 +3165,7 @@ const directEqProps = (
     eq.push({ key: pc.key, value: compileExpr(pc.value) });
   }
 
-  if (eq.length === 0) {
+  if (eq.length === 0 && cmp.length === 0) {
     return null;
   }
 
@@ -3131,7 +3176,7 @@ const directEqProps = (
   // `direct.residual` because the shape is what a future MIXED chain would need: item 259 made
   // reordering a FILTER's conjuncts unobservable, so lifting the equalities and leaving the rest
   // is now sound where it previously was not, and that is the next step rather than this one.
-  return { eq, residual: undefined };
+  return { eq, cmp, residual: undefined };
 };
 
 /**
@@ -3158,7 +3203,10 @@ const directEqProps = (
  * reintroduce the bug by being forgotten at six call sites.
  */
 export const hasPredicate = (pred: CPredicate): boolean =>
-  pred.props.length > 0 || pred.where !== undefined || (pred.eqProps?.length ?? 0) > 0;
+  pred.props.length > 0 ||
+  pred.where !== undefined ||
+  (pred.eqProps?.length ?? 0) > 0 ||
+  (pred.cmpProps?.length ?? 0) > 0;
 
 export const compilePredicate = (
   properties: readonly PropertyConstraint[] | undefined,
@@ -3182,7 +3230,8 @@ export const compilePredicate = (
     // This is the site a clause `WHERE` on a single-node pattern actually lands on, because
     // `pushWhereIntoNode` moves it here before `compileClause` compiles anything.
     where: generic === undefined ? undefined : filterPredicate(generic),
-    ...(direct === null ? {} : { eqProps: direct.eq }),
+    ...(direct === null || direct.eq.length === 0 ? {} : { eqProps: direct.eq }),
+    ...(direct === null || direct.cmp.length === 0 ? {} : { cmpProps: direct.cmp }),
   };
 };
 
@@ -3780,6 +3829,18 @@ export const satisfies = (
       }
 
       if (!structuralEq(propOf(element, key), rhs)) {
+        return false;
+      }
+    }
+  }
+
+  // The ORDERING comparisons `eqProps` cannot carry, applied the same way: read the property
+  // off the element and settle the row on anything that is not a clean TRUE. `compareTruth` is
+  // the `compare` arm's own function, so UNKNOWN (a null operand, a cross-type ordering) drops
+  // the row here exactly as it does there — a FILTER keeps only TRUE (item 259).
+  if (pred.cmpProps !== undefined) {
+    for (const { key, op, value } of pred.cmpProps) {
+      if (compareTruth(op, COMPARE[op], propOf(element, key), value(env)) !== true) {
         return false;
       }
     }

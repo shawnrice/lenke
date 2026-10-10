@@ -58,12 +58,34 @@ describe('the lift fires, and only where it is element-local', () => {
     expect(lifted('n.k = 1 AND m.s = 2')).toEqual([]);
   });
 
-  test('a non-equality conjunct declines the whole chain', () => {
-    expect(lifted('n.k = 1 AND n.j > 2')).toEqual([]);
+  // UPDATED at item 278, which taught the lift to carry an ORDERING comparison as well. These
+  // two used to assert that ANY non-equality conjunct declined the whole chain; it no longer
+  // does, so they now pin WHERE each conjunct lands — the equality in `eqProps`, the ordering
+  // one in `cmpProps`. The behaviour they were protecting (nothing silently unapplied) is
+  // asserted by the answer tests below and by `eqprops-gate.test.ts`.
+  test('a mixed chain splits: the equality lifts, the ordering one lands in cmpProps', () => {
+    const pred = compilePredicate(undefined, parsePredicate('n.k = 1 AND n.j > 2'), 'n');
+
+    expect((pred.eqProps ?? []).map((e) => e.key)).toEqual(['k']);
+    expect((pred.cmpProps ?? []).map((c) => `${c.key}${c.op}`)).toEqual(['j>']);
+    // Nothing is left for the generic evaluator, so nothing can be dropped by a gate that
+    // reads only `where` — which is the failure item 277 fixed.
+    expect(pred.where).toBeUndefined();
   });
 
-  test('an inequality alone declines', () => {
-    expect(lifted('n.k > 1')).toEqual([]);
+  test('an inequality alone lifts into cmpProps', () => {
+    const pred = compilePredicate(undefined, parsePredicate('n.k > 1'), 'n');
+
+    expect(pred.eqProps).toBeUndefined();
+    expect((pred.cmpProps ?? []).map((c) => `${c.key}${c.op}`)).toEqual(['k>']);
+  });
+
+  test('a conjunct that is not a comparison at all still declines the WHOLE chain', () => {
+    const pred = compilePredicate(undefined, parsePredicate("n.k = 1 AND upper(n.s) = 'X'"), 'n');
+
+    expect(pred.eqProps).toBeUndefined();
+    expect(pred.cmpProps).toBeUndefined();
+    expect(pred.where).not.toBeUndefined();
   });
 });
 
