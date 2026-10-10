@@ -1922,7 +1922,10 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       // margin this block uses throughout — and `abbrevGenerated`/`abbrevNonEmpty` did not move
       // (185-209 / 144-172). Recorded because item 244's rule is to re-measure and SAY SO
       // rather than let a margin narrow in silence.
-      abbrevPath: cov.abbrevPath > 35,
+      // Re-set at item 280 for the same reason: measured 44-77 over nine seeds (mean ~61,
+      // sigma ~10), so the old `> 35` sat 2.6 sigma below the mean — the next most exposed
+      // floor after the `subOr` pair that actually fired.
+      abbrevPath: cov.abbrevPath > 20,
       // A GROUP pattern under an explicit SIMPLE (audit item 244) — the shape that hid a wrong
       // answer in BOTH engines. MEASURED over nine seeds of 20,000: 75-126 generated, 57-103 of
       // those non-empty. Floors ~25% under the observed minimum, the margin the rest of this
@@ -1948,14 +1951,26 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       innerWhereGenerated: cov.innerWhereGenerated > 105,
       innerWhereNonEmpty: cov.innerWhereNonEmpty > 90,
       // The subquery-predicate placements `NOT` and `OR` (item 255), which were generated ZERO
-      // times. MEASURED over ELEVEN seeds: subNot 19-42 generated / 16-39 non-empty, subOr
-      // 14-21 / 11-20. Floors ~25% under the minima. These are small populations because the
-      // band is a tail carve-out, so their job is strictly the one this block's note states —
-      // catch a shape falling silently to ZERO — not to resolve a drift of a few percent.
-      subNotGenerated: cov.subNotGenerated > 14,
-      subNotNonEmpty: cov.subNotNonEmpty > 12,
-      subOrGenerated: cov.subOrGenerated > 10,
-      subOrNonEmpty: cov.subOrNonEmpty > 8,
+      // times. Their job is strictly the one this block's note states — catch a shape falling
+      // silently to ZERO — not to resolve a drift of a few percent.
+      //
+      // FLOORS RE-SET AT ITEM 280, BECAUSE "~25% UNDER THE OBSERVED MINIMUM" IS NOT A SAFE
+      // RULE FOR A SMALL COUNT. It was applied here from eleven seeds and CI failed on a
+      // docs-only commit: `subOrNonEmpty` came back at or below its floor of 8. Re-measured
+      // over twenty more seeds:
+      //
+      //   subNot generated 23-42 (mean ~31, sigma ~5.6)   non-empty 17-38 (mean ~27, sigma ~5.2)
+      //   subOr  generated 14-25 (mean ~18, sigma ~4.2)   non-empty  8-21 (mean ~14, sigma ~3.7)
+      //
+      // `subOrNonEmpty` hit 8 and 9 in eleven samples against a `> 8` floor — a coin flip over
+      // enough CI runs. The safety of a floor is its distance from the mean in SIGMA, not a
+      // percentage: `groupHopPredNonEmpty`'s 1.42x margin is ~6 sigma at mean 450 and never
+      // fires, while the same ratio at mean 14 is 1.6 sigma. These four are now ~4 sigma below
+      // their means, which still fails loudly on a collapse to zero and cannot flake.
+      subNotGenerated: cov.subNotGenerated > 8,
+      subNotNonEmpty: cov.subNotNonEmpty > 6,
+      subOrGenerated: cov.subOrGenerated > 4,
+      subOrNonEmpty: cov.subOrNonEmpty > 3,
       predGenerated: cov.predGenerated > 2_000,
       predRows: cov.predRows > 1_000,
       sinkGenerated: cov.sinkGenerated > 200,
