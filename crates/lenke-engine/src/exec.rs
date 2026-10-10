@@ -2443,6 +2443,29 @@ fn hash_join(lb: &Batch, rb: &Batch, on: &[(usize, usize)]) -> Batch {
                 keep_r.push(j as usize);
             }
         }
+    } else if on.is_empty() {
+        // A CROSS PRODUCT NEEDS NO INDEX. With no join key every left row matches every right
+        // row, which the generic branch below arrives at the long way round: it computes a key
+        // per row on BOTH sides, funnels all of them into ONE bucket, and probes it — building
+        // an `FnvMap` and a `Vec<usize>` of |R| entries to rediscover that everything matches.
+        //
+        // Emitted directly instead, in the same order the probe produced: left rows ascending,
+        // and each one's right rows ascending, so the output is left-major and byte-identical
+        // to what the index path returned (it indexed `j` ascending and probed `i` ascending,
+        // which is that order).
+        //
+        // This is the engine's multi-pattern `MATCH (a) MATCH (b)` shape, so it is not a corner:
+        // every uncorrelated comma pattern and every `Join { on: [] }` the planner emits lands
+        // here.
+        keep_l.reserve(lb.rows() * rb.rows());
+        keep_r.reserve(lb.rows() * rb.rows());
+
+        for i in 0..lb.rows() {
+            for j in 0..rb.rows() {
+                keep_l.push(i);
+                keep_r.push(j);
+            }
+        }
     } else {
         // Index the right side by its join key.
         let mut index: FnvMap<Vec<u8>, Vec<usize>> = FnvMap::default();

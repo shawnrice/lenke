@@ -16235,3 +16235,57 @@ fn a_capped_filtered_product_never_invents_a_row() {
         }
     }
 }
+
+/// A cross product emits rows LEFT-MAJOR: every right row for the first left row, then every
+/// right row for the second, and each side in ascending input order.
+///
+/// Pinned because NOTHING else does. `hash_join`'s `on: []` fast path (item 284) replaced an
+/// index probe with a direct double loop, and both produce this order — the probe indexed `j`
+/// ascending and probed `i` ascending — but mutation found the claim unguarded: swapping the
+/// loops to RIGHT-major keeps every row and every count, and the whole suite still passed.
+/// The byte-identity fuzzers cannot see it either, because they canonicalise unordered row
+/// order. So the argument from reading both paths is true and was load-bearing on nobody.
+#[test]
+fn a_cross_product_emits_rows_left_major() {
+    let mut b = Builder::default();
+    b.node(&["L"], &[("k", n(10.0))]);
+    b.node(&["L"], &[("k", n(20.0))]);
+    b.node(&["R"], &[("k", n(1.0))]);
+    b.node(&["R"], &[("k", n(2.0))]);
+    b.node(&["R"], &[("k", n(3.0))]);
+    let store = b.build();
+
+    let plan = Plan::Project {
+        input: Box::new(Plan::Join {
+            left: Box::new(scan("L")),
+            right: Box::new(scan("R")),
+            on: vec![],
+        }),
+        items: vec![
+            ("l".to_string(), prop(0, "k")),
+            ("r".to_string(), prop(1, "k")),
+        ],
+    };
+
+    let out = run(&plan, &store);
+    let pairs: Vec<String> = out
+        .rows
+        .iter()
+        .map(|row| format!("{:?}/{:?}", row[0], row[1]))
+        .collect();
+
+    // LEFT-major: l=10 against r=1,2,3 and only then l=20. Right-major would interleave the
+    // left values (10/1, 20/1, 10/2, …) with the same six rows and the same counts.
+    assert_eq!(
+        pairs,
+        vec![
+            "Num(10.0)/Num(1.0)",
+            "Num(10.0)/Num(2.0)",
+            "Num(10.0)/Num(3.0)",
+            "Num(20.0)/Num(1.0)",
+            "Num(20.0)/Num(2.0)",
+            "Num(20.0)/Num(3.0)",
+        ],
+        "a cross product must be left-major, with each side ascending"
+    );
+}
