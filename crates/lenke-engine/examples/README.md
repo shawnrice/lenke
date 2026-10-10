@@ -75,6 +75,13 @@ question in its module header — read the header before touching it.
   adjacency and filter by edge type (scales with degree × type spread).
 - `interval_bench` — what an "as of T" bitemporal query pays to post-filter all
   of a node's edges by validity interval, vs an interval-index seek.
+- `percall_probe` — where a SERVING-SIZED call's time goes, measured in-process so the FFI is
+  not in the way. `bun run bench:usage` shows the native engine losing 3-5x to pure TS on every
+  indexed small-op row, and the natural suspect (the FFI boundary) is innocent: a `vertexCount`
+  round trip is **8ns**. This prices the layers that are not — parse, optimize, exec, plan clone,
+  JSON render — and exists because item 291's conclusion turns on their RATIO, which no bench
+  reports. Read it with the audit entry; the numbers are what any attempt at the parse cost has
+  to beat.
 - `limit_product_probe` — what a CORRELATED cross product under a keyless `LIMIT`
   pays, and whether the cap reaches it at all. Its fixture is why it is its own
   binary: a tiny left side against a large right one, which the shared social

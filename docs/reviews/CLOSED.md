@@ -329,6 +329,30 @@ absence** — `{k: null}` is the one place in a pattern where that distinction i
   is under the noise floor at 40ms. All five mutants caught (column order by 196 tests including
   the differential fuzzer), so NO new tests — the surface was already saturated, the opposite
   finding from items 286 and 288.
+- **`bench:usage`'s indexed read rows, where native LOSES 3-5x to pure TS** — **PRICED AND
+  ACCOUNTED AT ITEM 291, two routes open and one closed.** Point lookup ts(+) 1.19M ops/s against
+  engine(+) 240.8k; 2-hop recommendation 536.8k against 154.9k. **The FFI boundary is INNOCENT** —
+  a `vertexCount` round trip is **8ns**, 0.3% of the call — so item 289's bulk-egress finding does
+  NOT transfer to small size. The accounting instead: **`gql::parse` of a 57-byte query is 1296ns,
+  4.4x the 298ns exec it enables**, `optimize_indexed` adds 330, render 49, JS decode 149, plan
+  clone 57. Parse is 43% of the 3005ns call.
+  **Why TS wins, exactly:** its `parseCache` keys on the query TEXT because a `Statement` is inert
+  and params bind at EXECUTION; `gql::parse_with_params` SUBSTITUTES params during parse (so the
+  planner sees literals and still seeds an index), which makes the parsed plan depend on the param
+  VALUES. The serving shape is `WHERE u.name = $n` with a different value every call.
+  - ~~a text-keyed parse cache~~ — **CLOSED, unsound** while parse substitutes params, and useless
+    where the value differs every call.
+  - **route the unprepared path through a cached PREPARED statement** — priced at **1.43x**
+    (3779 → 2648ns, measured with `$n` varying), reusing `lnk_prepare` + bind-at-execution. The key
+    needs a STORE VERSION beside the text: `optimize_indexed` reads the store, and a plan that
+    seeks a dropped index is a wrong answer, not a slow one.
+  - **the residual is BIGGER than that fix:** prepared is still 2648ns against TS's 840ns, and
+    after exec/render/decode/boundary that leaves **~1500ns of FFI plumbing** — the error slot, two
+    `catch_unwind` guards, the params JSON round trip, and `takeResult`'s buffer copy per call. Its
+    own target, and the larger one.
+    Reproduce with `percall_probe` (indexed in `examples/README.md`); do not re-derive from the FFI
+    side alone — **decomposing on ONE side of a boundary cannot tell you which side the cost is on**,
+    and doing so here made 338ns of engine work read as 1865ns.
 - **A cap over a SHARED-VARIABLE join** (`Join { on: [(1, 1)] }`) — **PRICED AT ~1.7x AND NOT
   WORTH BUILDING**, measured at item 289 right after item 288 closed the empty-`on` case. The
   shape is real and the cap does nothing: `MATCH (p:P)-[:KNOWS]->(q) MATCH (r:P)-[:KNOWS]->(q)
