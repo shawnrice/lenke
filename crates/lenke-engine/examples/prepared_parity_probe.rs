@@ -120,6 +120,56 @@ fn cases() -> Vec<Case> {
             "MATCH (u:User) WHERE u.name = $n OR u.city = $n RETURN u.score AS s",
             vec![p("n", Value::Str("x".into()))],
         ),
+        // VALUE dependence. Item 318 verified the two parses agree for one param set per shape,
+        // which is not a proof for every set: direct mode substitutes the VALUE, so a rule that
+        // keys off the value's TYPE or SIZE could plan one way for a short list and another for a
+        // long one (item 267 capped an inline `IN` list's OR-chain desugaring at 32 for exactly
+        // that kind of reason). A text-keyed cache holds ONE plan for all future values, so if any
+        // verdict here flips with the value, the cache is unsound for that shape.
+        (
+            "IN with a SHORT list (2)",
+            "MATCH (u:User) WHERE u.name IN $names RETURN u.score AS s",
+            vec![p(
+                "names",
+                Value::List(
+                    (0..2)
+                        .map(|i| Value::Str(format!("name{i}").into()))
+                        .collect(),
+                ),
+            )],
+        ),
+        (
+            "IN with a LONG list (40, past item 267's chain cap of 32)",
+            "MATCH (u:User) WHERE u.name IN $names RETURN u.score AS s",
+            vec![p(
+                "names",
+                Value::List(
+                    (0..40)
+                        .map(|i| Value::Str(format!("name{i}").into()))
+                        .collect(),
+                ),
+            )],
+        ),
+        (
+            "an equality against NULL",
+            "MATCH (u:User) WHERE u.name = $n RETURN u.score AS s",
+            vec![p("n", Value::Null)],
+        ),
+        (
+            "an equality against a NUMBER where the column is a string",
+            "MATCH (u:User) WHERE u.name = $n RETURN u.score AS s",
+            vec![p("n", Value::Num(7.0))],
+        ),
+        (
+            "an equality against a LIST (a cross-type compare)",
+            "MATCH (u:User) WHERE u.name = $n RETURN u.score AS s",
+            vec![p("n", Value::List(vec![Value::Num(1.0)]))],
+        ),
+        (
+            "a range against NULL",
+            "MATCH (u:User) WHERE u.score >= $lo RETURN u.name AS n",
+            vec![p("lo", Value::Null)],
+        ),
         (
             "a missing param (the error path, which binds at a different time)",
             "MATCH (u:User) WHERE u.name = $nope RETURN u.score AS s",

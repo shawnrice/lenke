@@ -55,6 +55,7 @@ pub mod opt;
 // (feature `parallel`, native-only). `pub(crate)` items, reachable crate-wide.
 #[cfg(feature = "parallel")]
 mod parallel;
+pub mod parse_cache;
 pub mod prepared;
 pub mod schema_op;
 pub mod store;

@@ -7062,6 +7062,33 @@ fn current_temporal_kind(name: &str) -> Option<&'static str> {
     })
 }
 
+/// Does `text` possibly invoke a niladic current-datetime function?
+///
+/// A now-function folds the host's `$__now` clock into the plan **at parse time** —
+/// `Expr::Lit(temporal_ctor(now, kind))`, just above — so the plan of such a query is NOT a
+/// function of the query text alone: two parses of identical text differ when the clock differs,
+/// and a prepared parse (which runs with no params) folds it to `Lit(Null)` leaving no
+/// `Expr::Param` for `bind_params` to fill. **Nothing may cache such a plan** — see
+/// [`crate::parse_cache`], which refuses these texts outright.
+///
+/// Deliberately a case-insensitive SUBSTRING scan, so it can over-report and cannot
+/// under-report: a property named `current_date` costs its query a cache slot and nothing else,
+/// where a missed now-function would serve a stale clock. Kept in step with
+/// [`current_temporal_kind`], which is the authority on the names.
+pub(crate) fn text_may_read_clock(text: &str) -> bool {
+    const NOW_FNS: [&str; 5] = [
+        "current_timestamp",
+        "local_timestamp",
+        "current_date",
+        "current_time",
+        "local_time",
+    ];
+
+    let lower = text.to_ascii_lowercase();
+
+    NOW_FNS.iter().any(|f| lower.contains(f))
+}
+
 /// Map a path-accessor function name to its `PathPart`, or `None` if it is not one.
 /// The ISO GQL name for the edge list is `edges`; the Cypher-ism `relationships` is NOT
 /// accepted (it is a non-ISO alias — use `edges`), so it falls through to an unknown

@@ -625,7 +625,7 @@ pub unsafe extern "C" fn lnk_query(
         let max_depth = store.limits().operator_chain as usize;
         let plan = match guarded(|| {
             Ok(crate::opt::optimize_indexed(
-                crate::gql::parse_with_params_limited(q, &params, max_depth)?,
+                crate::parse_cache::parse_for_run(q, &params, max_depth)?,
                 store,
             ))
         }) {
@@ -664,34 +664,39 @@ pub unsafe extern "C" fn lnk_query(
             // trap that kills the REPL on wasm). A real parse error still flows through
             // the prefix-code routing below unchanged.
             let max_depth = store.limits().operator_chain as usize;
-            let plan =
-                match guarded(|| crate::gql::parse_with_params_limited(q, &params, max_depth)) {
-                    Ok(plan) => plan,
-                    Err(e) => {
-                        // A genuine parse error is E_SYNTAX; a more specific code carried as a
-                        // prefix (unknown function, a supplied-but-missing `$param`, or a
-                        // static boolean-context type error from the plan-time check) is routed
-                        // to its own wire code.
-                        if let Some(rest) = e.strip_prefix("E_UNKNOWN_FUNCTION: ") {
-                            crate::ffi_error::set("E_UNKNOWN_FUNCTION", rest);
-                        } else if let Some(rest) = e.strip_prefix("E_MISSING_PARAMETER: ") {
-                            crate::ffi_error::set("E_MISSING_PARAMETER", rest);
-                        } else if let Some(rest) = e.strip_prefix("E_INVALID_VALUE: ") {
-                            crate::ffi_error::set("E_INVALID_VALUE", rest);
-                        } else if let Some(rest) = e.strip_prefix("E_RESOURCE_EXHAUSTED: ") {
-                            crate::ffi_error::set("E_RESOURCE_EXHAUSTED", rest);
-                        } else if let Some(rest) = e.strip_prefix("E_NOT_IMPLEMENTED: ") {
-                            // RECOGNIZED but unbuilt — valid syntax the parser sees and
-                            // declines. Coding it `E_SYNTAX` would tell the user they
-                            // made a typo when they did not, and `E_UNSUPPORTED` would
-                            // say it is never coming.
-                            crate::ffi_error::set("E_NOT_IMPLEMENTED", rest);
-                        } else {
-                            crate::ffi_error::set("E_SYNTAX", &e);
-                        }
-                        return std::ptr::null_mut();
+            // Through the parse cache: equivalent to `gql::parse_with_params_limited` on every
+            // call by construction (a text is admitted only after its prepared plan is verified
+            // against the direct one), so the error routing below is unchanged — including the
+            // `E_MISSING_PARAMETER` prefix, which the cache re-adds on a bound-parameter failure
+            // because `bind_params` does not carry it and this `strip_prefix` is how the code is
+            // recovered.
+            let plan = match guarded(|| crate::parse_cache::parse_for_run(q, &params, max_depth)) {
+                Ok(plan) => plan,
+                Err(e) => {
+                    // A genuine parse error is E_SYNTAX; a more specific code carried as a
+                    // prefix (unknown function, a supplied-but-missing `$param`, or a
+                    // static boolean-context type error from the plan-time check) is routed
+                    // to its own wire code.
+                    if let Some(rest) = e.strip_prefix("E_UNKNOWN_FUNCTION: ") {
+                        crate::ffi_error::set("E_UNKNOWN_FUNCTION", rest);
+                    } else if let Some(rest) = e.strip_prefix("E_MISSING_PARAMETER: ") {
+                        crate::ffi_error::set("E_MISSING_PARAMETER", rest);
+                    } else if let Some(rest) = e.strip_prefix("E_INVALID_VALUE: ") {
+                        crate::ffi_error::set("E_INVALID_VALUE", rest);
+                    } else if let Some(rest) = e.strip_prefix("E_RESOURCE_EXHAUSTED: ") {
+                        crate::ffi_error::set("E_RESOURCE_EXHAUSTED", rest);
+                    } else if let Some(rest) = e.strip_prefix("E_NOT_IMPLEMENTED: ") {
+                        // RECOGNIZED but unbuilt — valid syntax the parser sees and
+                        // declines. Coding it `E_SYNTAX` would tell the user they
+                        // made a typo when they did not, and `E_UNSUPPORTED` would
+                        // say it is never coming.
+                        crate::ffi_error::set("E_NOT_IMPLEMENTED", rest);
+                    } else {
+                        crate::ffi_error::set("E_SYNTAX", &e);
                     }
-                };
+                    return std::ptr::null_mut();
+                }
+            };
             // The shared dispatcher handles transaction control, READ ONLY enforcement
             // and the write/read split (see `exec::run_query`); a returned read takes
             // the GQL streaming JSON path, everything else renders its materialized rows.

@@ -874,8 +874,43 @@ bench`** so one-case-per-process is a flag instead of the bespoke script items 2
   aggregate-over-chain and never builds the frontier, so the engine that OOM'd had to be the TS
   one — and 3 and 4 hops run in 8 and 13 ms at ~80 MB where 5 is fatal, which is exactly the count
   family's ≤4-segment coverage edge (item 290).
-- **The native engine has NO parse or plan cache and the TypeScript one has had both since item
-  228 — priced at 2.38x, route-verified, NOT BUILT (318).** `lnk_query` (`ffi.rs:628`) calls
+- **The native engine's parse cache — BUILT at 319, `engine(+)` median 1.327x on `bench:usage`.**
+  `crate::parse_cache`: a bounded cache of PREPARED plans keyed on query text, item 228's policy
+  down to the cap of 64, wired into both GQL arms of `lnk_query`. Point lookup **259.8k -> 363.6k
+  (1.400x)**, fan-out 1-3 hops **1.547x**, cycle detection 1.463x, interleaved write+point read
+  1.370x — against the `ts` columns in the same process (a control the Rust FFI cannot reach) at
+  **1.003x / 1.000x median**. The all-miss rows read 0.959x/0.966x on an instrument whose control
+  column spans 0.964-1.181x.
+  **The admission filter had to be REBUILT and the bench said so.** Item 228's `HashSet<String>`
+  transliterated made the all-miss row **0.883x** and turned three rows into regressions
+  (interleaved write+read 0.969x, write+traversal 0.944x) — because in TypeScript the string
+  already exists and the cost avoided is GC retention, while **in Rust the allocation IS the cost**
+  (an all-miss call paid two `String`s and four hashes to learn nothing). Rebuilt as a fixed ring
+  of text HASHES: all-miss **0.986x**, and those three rows became **1.319x / 1.312x** wins.
+  **Porting a policy is not porting its reasons.**
+  **Admission VERIFIES rather than carving out**: a text is admitted only if its prepared plan,
+  bound to the parameters in hand, renders identically to the direct path's, so 318's INSERT
+  divergence excludes itself and so does any future one.
+  **THE BUG THAT CHECK CANNOT CATCH, found by the GQL conformance differential**: a now-function
+  folds `$__now` into the plan **at PARSE time**, so `RETURN current_date AS d` is not a function
+  of its text — and the suite's own sighting order defeats the check, calling it FIRST with no
+  clock (both parses agree on `Lit(Null)`, so it is admitted with null baked in) and THEN with a
+  wired clock. Fixed as a refusal by shape (`gql::text_may_read_clock`, beside
+  `current_temporal_kind`, over-reporting by design). **An admission gate that compares one
+  parameter set proves nothing about a parameter whose PRESENCE changes the plan** — 318's
+  value-dependence sweep was true and did not cover a compile-time input.
+  11 tests, 11 mutants, 9 caught and 2 equivalent. **Two tests were fixed because a mutant survived
+  them**: a `max_depth` test whose fixture was shallow enough for both ceilings to accept (it now
+  asserts the ceilings DISAGREE first), and a filter-occupancy assertion that hard-coded 40 where
+  the ring holds `CAP`, so it failed on a tuning value (item 317's V3/V4 principle).
+  **An injection-fuzzer failure along the way was MINE, not the design's**: mutant W7 was living in
+  the working tree because the mutation harness had been piped into `head -6`, and SIGPIPE killed it
+  between applying the mutant and the next restore — so the harness's own final verification never
+  ran either. `CLAUDE.md`'s "restore before the next mutant, never only after the loop" was already
+  followed; the kill landed inside the window the rule is about. **Never close a mutation harness's
+  stdout early** (`tail` is safe, `head` is not), and **`git diff` before trusting the tree**.
+- ~~**The native engine has NO parse or plan cache and the TypeScript one has had both since item
+  228 — priced at 2.38x, route-verified, NOT BUILT (318).**~~ **CLOSED by 319 (above.)** `lnk_query` (`ffi.rs:628`) calls
   `parse_with_params_limited` + `optimize_indexed` **on every call**; a grep for
   `parse_cache`/`plan_cache` across the crate finds nothing. **This is the cause of a number
   carried since item 291 without one**: `bench:usage` indexed point lookup is **ts 1.20M ops/s
