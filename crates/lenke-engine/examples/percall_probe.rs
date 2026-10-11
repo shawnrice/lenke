@@ -108,6 +108,21 @@ fn main() {
         );
     });
 
+    // Item 319 put a parse cache in front of `lnk_query`, so `gql::parse` is no longer what a
+    // serving call pays for parsing — a warm call pays a clone plus `bind_params`. Measured
+    // through the shipped entry point, warmed first so this is the HIT path and not an admission.
+    let params: Vec<(String, lenke_engine::value::Value)> = Vec::new();
+    for _ in 0..3 {
+        let _ = lenke_engine::parse_cache::parse_for_run(hit, &params, 64);
+    }
+    let cached_parse = ns_per_op(reps, iters, || {
+        let _ = lenke_engine::parse_cache::parse_for_run(hit, &params, 64).expect("parses");
+    });
+
+    println!(
+        "  {:<46} {cached_parse:>10.0}",
+        "3b. parse_cache::parse_for_run, WARM (the real path)"
+    );
     println!("  {:<46} {parse_only:>10.0}", "3. gql::parse alone");
     println!("  {:<46} {parse_plan:>10.0}", "4. parse + optimize_indexed");
 

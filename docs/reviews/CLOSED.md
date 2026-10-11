@@ -874,6 +874,25 @@ bench`** so one-case-per-process is a flag instead of the bespoke script items 2
   aggregate-over-chain and never builds the frontier, so the engine that OOM'd had to be the TS
   one — and 3 and 4 hops run in 8 and 13 ms at ~80 MB where 5 is fatal, which is exactly the count
   family's ≤4-segment coverage edge (item 290).
+- **What the parse cache left behind, and two follow-ups REFUTED (320).** New ledger from
+  `percall_probe` (which gained the shipped entry point as a case, warmed so it measures the HIT
+  path): the parse layer **1149ns -> 144ns (7.98x)**, so a serving call is **~1790 -> ~785ns
+  (2.28x)** against 318's predicted 2.38x ceiling. `optimize_indexed` is now **43% of a serving
+  call** (334ns), up from 19%.
+  **REFUTED: caching the OPTIMIZED plan** — item 229's TypeScript twin, whose soundness argument is
+  a type (`compile(query): Plan` takes NO GRAPH). The Rust analogue fails twice: `optimize_indexed`
+  takes the store all the way down, and — the real obstacle — a cached optimized plan must be
+  optimized BEFORE binding, while **every seeding site in `opt.rs` matches `Expr::Lit(v)` and
+  extracts a concrete `Value`** (`IndexSeek` holds a `Value`, not an `Expr`; `Expr::Param` is a
+  non-seedable operand at all four of its sites). Demonstrated in `prepared_parity_probe`:
+  bind-then-optimize gives `IndexSeek { key: "name", value: Str("name7") }`, optimize-then-bind
+  gives `Filter { Scan { label: "User" } }`. **A full label scan where the live path seeks — the
+  100-300x class CLAUDE.md names, with a correct answer, so nothing in the repo would have caught
+  it.** Index selection consumes the bound value; this is structural, not a missing feature.
+  **REFUTED: the optimizer's fixpoint is spinning.** Instrumented: **exactly one non-changing pass
+  per fixpoint, the minimum one can have** (the final pass IS the termination proof). The serving
+  query costs 2 whole-tree passes / 1 changing; a plain scan 1/0; a two-hop count 4/3. The 334ns is
+  walking a ~60-variant tree once or twice, not looping.
 - **The native engine's parse cache — BUILT at 319, `engine(+)` median 1.327x on `bench:usage`.**
   `crate::parse_cache`: a bounded cache of PREPARED plans keyed on query text, item 228's policy
   down to the cap of 64, wired into both GQL arms of `lnk_query`. Point lookup **259.8k -> 363.6k

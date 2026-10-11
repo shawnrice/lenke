@@ -249,4 +249,41 @@ fn main() {
 
         println!();
     }
+
+    // ── Could the OPTIMIZED plan be cached too? ──────────────────────────────────────────────
+    //
+    // With parse cached (item 319), `optimize_indexed` is the largest remaining layer of a
+    // serving call: ~334ns against clone+bind ~176 and exec ~300. Caching it would be ~1.70x.
+    //
+    // It cannot be cached across parameter VALUES, and this is the demonstration. Every seeding
+    // site in `opt.rs` matches `Expr::Lit(v)` and extracts a concrete `Value` — `IndexSeek` holds
+    // a `Value`, not an `Expr` — so the optimizer can only seed an index from a value it can
+    // already see. A cached optimized plan would have to be optimized BEFORE binding, where the
+    // predicate is still an `Expr::Param`:
+    println!("  --- would caching the OPTIMIZED plan work? (optimize-then-bind) ---");
+
+    let q = "MATCH (u:User) WHERE u.name = $n RETURN u.score AS s";
+    let params = vec![("n".to_string(), Value::Str("name7".into()))];
+
+    let bind_then_optimize = {
+        let mut p = lenke_engine::gql::parse_prepared(q).expect("parses");
+        lenke_engine::bind::bind_params(&mut p, &params).expect("binds");
+        format!("{:?}", lenke_engine::opt::optimize_indexed(p, &indexed))
+    };
+
+    let optimize_then_bind = {
+        let p = lenke_engine::gql::parse_prepared(q).expect("parses");
+        let mut o = lenke_engine::opt::optimize_indexed(p, &indexed);
+        lenke_engine::bind::bind_params(&mut o, &params).expect("binds");
+        format!("{o:?}")
+    };
+
+    println!("  bind THEN optimize (what 319 does):\n    {bind_then_optimize}");
+    println!("  optimize THEN bind (what a plan cache needs):\n    {optimize_then_bind}");
+    println!(
+        "  same plan: {}   seeks an index: bind-first={} optimize-first={}",
+        bind_then_optimize == optimize_then_bind,
+        bind_then_optimize.contains("IndexSeek"),
+        optimize_then_bind.contains("IndexSeek"),
+    );
 }
