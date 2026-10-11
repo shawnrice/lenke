@@ -19,6 +19,7 @@
  *   BENCH_ENGINES=ts,wasm bun run bench
  *   BENCH_N=1000000 bun run bench       # bigger workload (default 200k)
  *   BENCH_REPS=7 bun run bench          # more samples
+ *   BENCH_ONLY='3-hop + end' bun run bench   # ONE case, isolated in its own process
  *
  * Reports the MINIMUM of N runs, not the mean: it is the sample least polluted
  * by whatever else the machine was doing. A cache-resident workload answers a
@@ -486,6 +487,23 @@ const CASES: Case[] = [
     ),
   },
   {
+    // The START of the same three-hop chain. Item 306 routed the END and left this ENUMERATING —
+    // 141.3ms against 16.3 for the same chain unfiltered at 20,000 vertices, where native
+    // answered it in 0.34, a 415x cross-engine gap on one position of one depth that no bench row
+    // was looking at. Item 307 routes it (7.4x). An INTERIOR gate at this depth is deliberately
+    // not routed: it makes the degree product faster than its own unfiltered self, which
+    // `count 3-hop + interior filter` above is the row for.
+    name: 'count 3-hop + start filter',
+    ...onGraph(
+      () => graphDoc,
+      (e, g) =>
+        void e.query(
+          g,
+          'MATCH (a:Person)-[:KNOWS]->(b)-[:KNOWS]->(c)-[:KNOWS]->(d) WHERE a.age > 60 RETURN count(*) AS c',
+        ),
+    ),
+  },
+  {
     // The END of the same three-hop chain, which NO degree product can carry: a product answers
     // its last hop as a weighted sum of DEGREES, and a degree cannot say which of a vertex's
     // edges land somewhere that passes. So this shape declined every count arm and ENUMERATED in
@@ -602,7 +620,19 @@ const header = `${['workload'.padEnd(30), ...engines.map((e) => e.name.padStart(
 console.log(header);
 console.log('-'.repeat(header.length));
 
-for (const c of CASES) {
+// ONE CASE PER PROCESS, which is what the repo's own rule asks for: "anything under ~10% needs
+// its own isolated harness". Three separate items met that by hand before this existed, and item
+// 307 needed it to attribute a 22% move on ONE row — a neighbour that runs first can warm the
+// exact path the next case uses, so a multi-case probe cannot separate a regression from its
+// neighbour's speedup (the `3 hop, count(d.k)` reading item 290 recorded).
+const ONLY = process.env.BENCH_ONLY;
+const SELECTED = ONLY === undefined ? CASES : CASES.filter((c) => c.name.includes(ONLY));
+
+if (SELECTED.length === 0) {
+  console.log(`BENCH_ONLY=${ONLY} matched no case`);
+}
+
+for (const c of SELECTED) {
   // REPORT the reason, do not just blank the cell. `n/a` on its own cannot tell an engine
   // that does not support a workload from a workload that is simply BROKEN — the group +
   // aggregate row sat at `n/a` on every engine because its query was invalid, which looked

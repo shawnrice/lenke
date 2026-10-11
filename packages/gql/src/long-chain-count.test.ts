@@ -643,3 +643,43 @@ describe('a THREE-segment chain whose END is constrained takes the sweep', () =>
     );
   });
 });
+
+describe('a THREE-segment chain whose START is constrained takes the sweep too', () => {
+  // Item 307. Item 306 routed the END at this depth and left the START enumerating: 141.3ms
+  // against 16.3 for the same chain unfiltered, where native answered it in 0.34 — a 415x
+  // cross-engine gap on one position of one depth. Now 19.2ms (7.4x), 16.9 for the clause
+  // spelling (8.1x).
+  //
+  // The END or the START, never an interior ALONE: an interior gate makes the degree product
+  // faster than its own unfiltered self (8.1ms against 16.3, because the product iterates the
+  // middle and the gate shrinks what it iterates), so there is nothing to win there and item 219
+  // already owns it.
+  const exact = (q: string, want: number): void => {
+    expect(countOf(q)).toBe(want);
+    expect(enumeratedOf(q.replace('count(*) AS c', 'a.i AS z'))).toBe(want);
+  };
+
+  test('both spellings of a gate on the START', () => {
+    exact('MATCH (a:N)-[:E]->(b)-[:E]->(c)-[:E]->(d) RETURN count(*) AS c', 84);
+    exact('MATCH (a:N {i: 7})-[:E]->(b)-[:E]->(c)-[:E]->(d) RETURN count(*) AS c', 4);
+    exact('MATCH (a:N)-[:E]->(b)-[:E]->(c)-[:E]->(d) WHERE a.i > 5 RETURN count(*) AS c', 65);
+  });
+
+  test('a START gate alongside an interior one', () => {
+    exact(
+      'MATCH (a:N)-[:E]->(b)-[:E]->(c)-[:E]->(d) WHERE a.i > 5 AND c.i > 5 RETURN count(*) AS c',
+      48,
+    );
+  });
+
+  test('a START gate on a MIXED-direction chain', () => {
+    exact('MATCH (a:N)-[:E]->(b)-[:E]->(c)<-[:E]-(d) WHERE a.i > 5 RETURN count(*) AS c', 70);
+  });
+
+  test('a LABEL on the start is not a gate, and keeps the product', () => {
+    // `(a:A)` seeds a label bucket, which is what the products already do, so it must NOT be
+    // mistaken for a constraint that needs this route — the answer is the discriminator either
+    // way, but the comment is the point: `plainNode` treats a bare label as plain.
+    exact('MATCH (a:A)-[:E]->(b)-[:E]->(c)-[:E]->(d) RETURN count(*) AS c', 28);
+  });
+});

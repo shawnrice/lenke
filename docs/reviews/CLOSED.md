@@ -480,6 +480,32 @@ filter` / `+ start filter` — gated chains the rule deliberately does NOT route
   columns, which is the control that proves the per-position rule rather than merely an unrelated
   row being unmoved. `count 3-hop + end filter` was MISSING from the bench, which is how three
   consecutive items moved a cliff without seeing it; it is a row now.
+- ~~**A START-gated THREE-segment chain in TS**~~ — **CLOSED by item 307 at 17.40x** (3214.1 ->
+  184.7ms on the new `count 3-hop + start filter` row, one case per process, min of 6 over three
+  alternated rounds). Item 306 routed the END at that depth and left the START **enumerating**:
+  141.3ms against 16.3 for the same chain unfiltered at 20,000 vertices, where native answered it
+  in 0.34 — a **415x cross-engine gap on one position of one depth**, and no bench row was looking
+  at it. `inStart` is computed for two segments or fewer and `threeSegmentCount` carries an
+  interior predicate only, so the shape fell through every arm.
+  **The END or the START, never an interior ALONE**, and that is a measurement not a guess: an
+  interior gate at three segments reads 8.1ms against the ungated 16.3, i.e. the gate makes the
+  degree product FASTER than its own unfiltered self, because the product iterates the MIDDLE and
+  a gate there shrinks what it iterates (item 219). One depth, three positions, three different
+  right answers.
+  **`count 3-hop + end filter` read 0.82 with DISJOINT ranges and was NOT a regression** — in
+  isolation it is 728.1 against 723.7, fully overlapping. Its neighbour `count 3-hop + start
+filter` runs immediately before it and spends 3.3 SECONDS in the general matcher on the control
+  side against 230ms on the new one, warming the exact path. Same contamination item 290 recorded
+  for `3 hop, count(d.k)`: a large speedup can make its NEIGHBOUR look slower, and the tell is
+  that the "regressed" row's own ROUTE did not change. **`BENCH_ONLY` is now part of `bun run
+bench`** so one-case-per-process is a flag instead of the bespoke script items 290/300/303 each
+  wrote by hand.
+  Still open and priced at 19.2ms: a REVERSED three-segment route. Reversing the chain would make
+  a gated end into a gated start, and item 301 measured the three-segment product at 1.50x the
+  sweep unfiltered — so a reversed product might beat what the sweep now does. The two-segment
+  case already works that way (`reversedTwoHop`), which is also the DIAGNOSIS item 306 lacked for
+  why its two-hop attempt lost: the existing route gates the end once per vertex over a SELECTIVE
+  set, where the sweep seeds everything and interns every vertex it reaches.
 - ~~**Per-position NODE labels in the NATIVE sweep**~~ — **CLOSED by item 304 at 32.4x**, as a
   side effect: `IsLabeled` is one of the gate's leaf forms, so `(n2:H)` at an interior position
   went 35.60 -> 1.10 ms. Worth recording how nearly this was mis-retired — a post-change reading

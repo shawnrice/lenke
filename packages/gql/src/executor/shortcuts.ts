@@ -2200,11 +2200,17 @@ const endGatedChainCount = <T>(
     return null;
   }
 
-  const endVar = endNode.variable;
-  const endGated =
-    inlineOf(endNode) !== undefined || (endVar !== undefined && clauses?.has(endVar) === true);
+  const gated = (n: NodePattern): boolean => {
+    const v = n.variable;
 
-  if (!endGated) {
+    return inlineOf(n) !== undefined || (v !== undefined && clauses?.has(v) === true);
+  };
+
+  // The END or the START, never an interior only. An interior gate makes the degree product
+  // FASTER than its own unfiltered self (8.1ms against 16.3 at three segments, because the
+  // product iterates the middle and the gate shrinks what it iterates), so there is nothing to
+  // win there and item 219 already owns it.
+  if (!gated(endNode) && !gated(start)) {
     return null;
   }
 
