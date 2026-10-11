@@ -7031,3 +7031,56 @@ fn a_null_literal_is_not_a_gate() {
         assert_eq!((count, enumerated), (0, 0), "{q}");
     }
 }
+
+/// Item 306 lowered the sweep's floor for a GATED chain — three hops at any position, two hops
+/// when the END is constrained, which is the one position a degree product cannot carry. These
+/// are the shallow depths the arm now answers, each against its own enumeration.
+///
+/// The ungated shallow chains are NOT asserted here to take any particular route: the products
+/// answer them and the answer is the same number either way, so the routing is a perf claim that
+/// `bun run bench` settles and a test cannot. What a test can do is pin that the sweep is EXACT
+/// at a depth it never ran at before, where the extra pass for a gated last position and the
+/// `hops - 1` degree tail are one hop apart.
+#[test]
+fn a_gated_shallow_chain_matches_enumeration() {
+    let st = sweep_fixture();
+    // (hops, the count per gate position 0..=hops, the ungated control, a clause gate on the end)
+    for (hops, want, ungated, clause_end) in [
+        (1usize, &[4usize, 5][..], 20usize, 9usize),
+        (2, &[5, 8, 7][..], 33, 14),
+        (3, &[9, 11, 12, 13][..], 55, 24),
+    ] {
+        let mut plain = String::from("(a:N)");
+
+        for h in 1..=hops {
+            plain.push_str(&format!("-[:R]->(n{h})"));
+        }
+
+        let last = format!("n{hops}");
+        let (c, e) = count_and_enumerated(&st, &plain, &last);
+        assert_eq!((c, e), (ungated, ungated), "{hops} hops ungated");
+
+        for (at, &w) in want.iter().enumerate() {
+            let mut p = format!("(a:N{})", if at == 0 { " {k: 0}" } else { "" });
+
+            for h in 1..=hops {
+                p.push_str(&format!(
+                    "-[:R]->(n{h}{})",
+                    if h == at { " {k: 0}" } else { "" }
+                ));
+            }
+
+            let (count, enumerated) = count_and_enumerated(&st, &p, &last);
+            assert_eq!(count, enumerated, "{hops} hops, gate at {at}");
+            assert_eq!(count, w, "{hops} hops, gate at {at}");
+            assert!(count < ungated, "the gate at {at} admitted everything");
+        }
+
+        // And the CLAUSE spelling of a gate on the end, which is the shape the products refuse
+        // and the reason this depth was a cliff at all.
+        let (count, enumerated) =
+            count_and_enumerated(&st, &format!("{plain} WHERE {last}.m > 5"), &last);
+        assert_eq!(count, enumerated, "{hops} hops, clause gate on the end");
+        assert_eq!(count, clause_end, "{hops} hops, clause gate on the end");
+    }
+}

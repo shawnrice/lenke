@@ -1934,6 +1934,16 @@ const patternCountOf = <T>(
     return buildNodeCount(start, rowOf, preds, cstart);
   }
 
+  // AN END CONSTRAINT ON A SHORT CHAIN GOES TO THE SWEEP (item 306), before the degree products
+  // get a say, because it is the one position they cannot carry.
+  if (segments.length === 3) {
+    const swept = endGatedChainCount(start, segments, where, rowOf);
+
+    if (swept !== null) {
+      return swept;
+    }
+  }
+
   // A clause `WHERE` is answerable ONLY by the 1-hop tally below, and only when it reads
   // nothing but the pattern's own variables — an outer variable cannot exist here (this shape
   // is exactly two clauses) but an aggregate or a subquery could, and `freePredicateVars`
@@ -2145,6 +2155,62 @@ const patternCountOf = <T>(
   }
 
   return null;
+};
+
+/**
+ * A THREE-segment chain whose END is constrained, answered by the way-count sweep instead of a
+ * degree product (item 306). `null` leaves the shape to the arms below.
+ *
+ * It is the one position a product cannot carry: a product answers its last hop as a weighted sum
+ * of DEGREES, and a degree cannot say which of a vertex's edges land somewhere that passes (items
+ * 219, 290). So before this the shape declined every count arm and ENUMERATED, which is the cliff
+ * items 303 and 305 MOVED rather than closed. Measured at 20,000 vertices of degree 3:
+ *
+ * | segments | ungated | gate on the END | interior |
+ * | -------- | ------: | --------------: | -------: |
+ * |        2 |  2.9 ms |          7.5 ms |   1.2 ms |
+ * |        3 | 19.5 ms |    **668.3 ms** |  14.6 ms |
+ * |        4 | 46.9 ms |   72.1 (sweep)  |  82.3 ms |
+ *
+ * On `bun run bench`'s 200,000 vertices at five edges each the three-hop end-filtered count went
+ * **8391.7 -> 753.7ms** here and 274.9 -> 14.3 in native, with the ungated `count 3-hop` control
+ * flat on both.
+ *
+ * THREE SEGMENTS ONLY, and the two-segment case is a RETRACTION with its numbers: routing it here
+ * as well read **28.5ms against the 7.5 the existing arm already managed, 0.26x**, so the tuned
+ * two-hop route beats this sweep at its own filtered shape and keeps it. Native went the OTHER way
+ * at two hops (1.12 -> 0.70ms, 1.55x faster) — the same structural change, opposite verdicts,
+ * because the two engines' two-hop arms are not the same arm. Measuring each depth in each engine
+ * is the only reason this is known; a floor would have shipped the TS regression.
+ *
+ * An interior gate at two or three segments already has a route (items 219, 206) and keeps it, and
+ * the products are better at everything unfiltered, which item 301 measured (the sweep loses 1.50x
+ * to the three-segment product).
+ */
+const endGatedChainCount = <T>(
+  start: NodePattern,
+  segments: readonly Segment[],
+  where: Expr | undefined,
+  rowOf: (n: number) => T,
+): CountOf<T> | null => {
+  const endNode = segments[segments.length - 1].node;
+  const clauses = where === undefined ? undefined : chainGatesOf(where, start, segments);
+
+  if (clauses === null) {
+    return null;
+  }
+
+  const endVar = endNode.variable;
+  const endGated =
+    inlineOf(endNode) !== undefined || (endVar !== undefined && clauses?.has(endVar) === true);
+
+  if (!endGated) {
+    return null;
+  }
+
+  // `null` from the sweep is it declining on its own terms (a shared node variable, a bound edge,
+  // an undirected hop, an OPEN constraint), and the products below still get their chance.
+  return longChainCount(start, segments, rowOf, clauses ?? undefined);
 };
 
 /**

@@ -592,3 +592,54 @@ describe('a clause WHERE is split across the positions it names', () => {
     expect(clauseAndWalked(`MATCH ${inlineWhere} WHERE b.i < 10 RETURN count(*) AS c`)).toBe(34);
   });
 });
+
+describe('a THREE-segment chain whose END is constrained takes the sweep', () => {
+  // Item 306. Items 303 and 305 MOVED this family's cliff rather than closing it: a degree
+  // product answers its last hop as a weighted sum of DEGREES, and a degree cannot say which of a
+  // vertex's edges land somewhere that passes, so an END constraint declined every arm and
+  // enumerated — 668.3ms against 19.5 for the same chain unfiltered, at 20,000 vertices.
+  //
+  // Only three segments, and the TWO-segment case is a retraction with its numbers (28.5ms
+  // against the 7.5 the tuned two-hop arm already managed). Native went the other way at two
+  // hops. The routing is a perf claim the bench settles; what these tests pin is that the answer
+  // is EXACT at a depth this arm never ran at before.
+  const three = '(a:N)-[:E]->(b)-[:E]->(c)-[:E]->(d)';
+  const exact = (q: string, want: number): void => {
+    expect(countOf(q)).toBe(want);
+    expect(enumeratedOf(q.replace('count(*) AS c', 'a.i AS z'))).toBe(want);
+  };
+
+  test('the ungated control, and both spellings of a gate on the END', () => {
+    exact(`MATCH ${three} RETURN count(*) AS c`, 84);
+    exact('MATCH (a:N)-[:E]->(b)-[:E]->(c)-[:E]->(d {i: 7}) RETURN count(*) AS c', 3);
+    exact(`MATCH ${three} WHERE d.i > 5 RETURN count(*) AS c`, 64);
+    exact(`MATCH ${three} WHERE d.s IS NOT NULL RETURN count(*) AS c`, 42);
+    exact('MATCH (a:N)-[:E]->(b)-[:E]->(c)-[:E]->(d:A) RETURN count(*) AS c', 28);
+  });
+
+  test('a gate on the END and one on the START at once', () => {
+    exact(`MATCH ${three} WHERE a.i > 5 AND d.i > 5 RETURN count(*) AS c`, 49);
+  });
+
+  test('a MIXED-direction three-segment chain with a gated end', () => {
+    exact('MATCH (a:N)-[:E]->(b)<-[:E]-(c)-[:E]->(d {i: 7}) RETURN count(*) AS c', 3);
+  });
+
+  test('a CORRELATION on the end still declines, and still answers', () => {
+    // `d.i >= a.i` names two positions, so it is not a per-vertex gate: the sweep declines and
+    // the general matcher answers. The number is what says the predicate ran — the ungated chain
+    // is 84.
+    exact(`MATCH ${three} WHERE d.i >= a.i RETURN count(*) AS c`, 41);
+  });
+
+  test('an INLINE gate on the end PLUS a clause the split declines', () => {
+    // The shape a mutant lived in: with the end inline-gated the route is taken, and if a
+    // DECLINED split were carried as "no gates" the correlation would be silently dropped and
+    // this would answer 3 — the inline `{i: 7}` alone — instead of 2.
+    exact('MATCH (a:N)-[:E]->(b)-[:E]->(c)-[:E]->(d {i: 7}) RETURN count(*) AS c', 3);
+    exact(
+      'MATCH (a:N)-[:E]->(b)-[:E]->(c)-[:E]->(d {i: 7}) WHERE d.i >= a.i RETURN count(*) AS c',
+      2,
+    );
+  });
+});

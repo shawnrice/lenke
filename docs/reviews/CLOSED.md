@@ -392,7 +392,7 @@ an independent derivation). Measure with`cd packages/native && bun run bench:gat
   is no position to put it at). A presence test IS a gate here, unlike native — a TS gate runs the
   general path's own `satisfies`, so any single-node predicate is expressible.
   9 of 11 mutants caught; **M2 and M6 survive alone and their PAIR is caught**, which is the
-  result worth keeping. M2 buckets every conjunct under the first name seen; `gateWith`'s
+  result worth keeping. (See the row below: this item MOVED the cliff to three hops.) M2 buckets every conjunct under the first name seen; `gateWith`'s
   free-variable check then refuses the mis-bucketed gate and the whole pattern DECLINES, so M2
   alone is a slow right answer that no correctness test can catch. M6 removes that check, which
   with correct bucketing can never fire. Together they are a wrong answer. **A guard whose mutant
@@ -456,6 +456,30 @@ an independent derivation). Measure with`cd packages/native && bun run bench:gat
   direction logic at all — still read 0.95x/0.95x. **So it is the TOLL for editing this module,
   not the feature** ([[pull-alignment-is-load-bearing]] one module along). Accepted: a 5% constant
   against removing an O(degree^hops) cliff. Do not re-attempt the specialization.
+- ~~**The gated chain BELOW four hops**~~ — **CLOSED by item 306 at 11.13x (ts) and 19.22x
+  (native)** on the new `count 3-hop + end filter` bench row, 200,000 vertices at five edges each,
+  three alternated rounds: ts **8391.7 -> 753.7ms**, ffi **274.9 -> 14.3ms**. Items 303/304/305
+  MOVED this family's cliff to THREE hops rather than closing it, and only at the END position —
+  a degree product answers its last hop as a weighted sum of DEGREES and a degree cannot say which
+  of a vertex's edges land somewhere that passes, so an end constraint declines every product arm
+  and below four hops nothing else picked it up. The fix is ROUTING (the sweep has carried an end
+  constraint since item 303): the floor comes down for a GATED chain only. `count 3-hop +
+interior filter` came with it in native (72.7 -> 11.6, **6.27x**) and `count 2-hop + end filter`
+  too (57.5 -> 12.1, **4.75x**).
+  **THE TWO ENGINES DISAGREE AT TWO HOPS, which is the finding.** The same structural change reads
+  1.12 -> 0.71ms in native (1.55x FASTER, taken) and 7.5 -> 28.5ms in TS (**0.26x, 3.8x SLOWER,
+  retracted** with its numbers in the code). The tuned two-hop arms are not the same arm in the two
+  engines, so one measurement never had a reason to predict the other — and a FLOOR would have
+  shipped the TS regression while the native half looked like proof it was fine. Per-depth,
+  per-engine rules instead: native takes 4+ always, 3 when any position is gated, 2 only when the
+  END is; TS takes 3 only, when the END is gated. **Third time in this family (with item 301), so
+  it is the rule and not the finding: the crossover between a sweep and a degree product has to be
+  measured per depth, per engine, and per which position carries the constraint.**
+  The ungated `count 3-hop` control reads **4.9 against 4.9** on FFI, and `count 2-hop + mid
+filter` / `+ start filter` — gated chains the rule deliberately does NOT route — are flat on both
+  columns, which is the control that proves the per-position rule rather than merely an unrelated
+  row being unmoved. `count 3-hop + end filter` was MISSING from the bench, which is how three
+  consecutive items moved a cliff without seeing it; it is a row now.
 - ~~**Per-position NODE labels in the NATIVE sweep**~~ — **CLOSED by item 304 at 32.4x**, as a
   side effect: `IsLabeled` is one of the gate's leaf forms, so `(n2:H)` at an interior position
   went 35.60 -> 1.10 ms. Worth recording how nearly this was mis-retired — a post-change reading

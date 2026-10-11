@@ -3474,10 +3474,37 @@ pub(super) fn try_nhop_sweep_count(
     }
     let chain = peel_gated_chain(input)?;
     let hops = chain.hops.len();
-    // One, two and three hops have their own tuned arms and this must not steal them: it sits
-    // AFTER `try_3hop_product_count` in the dispatch, but `or_else` laziness is not a reason to
-    // leave the bound implicit.
-    if hops < 4 {
+    // FOUR or more hops always, and TWO or THREE only when some position is GATED (item 306).
+    //
+    // The tuned degree-product arms own the ungated shallow chains and this must not steal them —
+    // item 301 measured the sweep LOSING 1.50x to the three-segment product when there is nothing
+    // to filter. But a product cannot carry a constraint on the position it ENDS at: it answers
+    // that end as a weighted sum of DEGREES, and a degree cannot say which of a vertex's edges
+    // land somewhere that passes (items 219, 290). So those shapes declined every arm and
+    // enumerated, which is the cliff items 304/305 MOVED rather than closed:
+    //
+    // | hops | ungated |  gate at the LAST position |
+    // | ---- | ------: | -------------------------: |
+    // |    2 | 0.21 ms |      1.12 ms       (5.3x)  |
+    // |    3 | 0.32 ms |      4.21 ms      (13.2x)  |
+    // |    4 | 0.41 ms |      0.95 ms  (the sweep)  |
+    //
+    // Reached only because `or_else` has already offered the shape to every product arm, so a
+    // gated chain here is one they all refused. The `gates` test is what keeps the ungated case
+    // theirs even if a future arm order changes.
+    //
+    // A SPLIT VERDICT at two hops, which is why the rule is per-depth rather than a floor: a gate
+    // on the last position wins 1.5x there, but a gate on the INTERIOR reads 0.51 -> 0.69ms,
+    // **0.74x SLOWER** than the arm that already answers it, so two hops is taken only for the
+    // END constraint that nothing else can carry. Three hops gains at both (4.21 -> 0.77 at the
+    // end, 1.21 -> 0.73 at an interior). Same shape of answer as item 301's.
+    let take = match hops {
+        0 | 1 => false,
+        2 => chain.gates[hops].is_some(),
+        3 => chain.gates.iter().any(Option::is_some),
+        _ => true,
+    };
+    if !take {
         return None;
     }
     // Resolved wanted edge-type ids per hop, first to last — parallel to `chain.hops`.

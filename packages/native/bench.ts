@@ -486,6 +486,24 @@ const CASES: Case[] = [
     ),
   },
   {
+    // The END of the same three-hop chain, which NO degree product can carry: a product answers
+    // its last hop as a weighted sum of DEGREES, and a degree cannot say which of a vertex's
+    // edges land somewhere that passes. So this shape declined every count arm and ENUMERATED in
+    // both engines — the cliff items 303 and 305 moved rather than closed, and the row that was
+    // missing while they moved it. At 20,000 vertices of degree 3 it was ts 668.3ms against 19.5
+    // for the same chain unfiltered, and native 4.21 against 0.32; item 306 routes it to the
+    // way-count sweep instead (ts 14.6x, native 5.2x).
+    name: 'count 3-hop + end filter',
+    ...onGraph(
+      () => graphDoc,
+      (e, g) =>
+        void e.query(
+          g,
+          'MATCH (a:Person)-[:KNOWS]->(b)-[:KNOWS]->(c)-[:KNOWS]->(d) WHERE d.age > 60 RETURN count(*) AS c',
+        ),
+    ),
+  },
+  {
     name: 'count 3-hop',
     ...onGraph(
       () => graphDoc,
