@@ -480,6 +480,37 @@ filter` / `+ start filter` — gated chains the rule deliberately does NOT route
   columns, which is the control that proves the per-position rule rather than merely an unrelated
   row being unmoved. `count 3-hop + end filter` was MISSING from the bench, which is how three
   consecutive items moved a cliff without seeing it; it is a row now.
+- **`decode ndjson (5 edges/node)` is the largest ABSOLUTE row in the bench (ts 2784ms against
+  native's 766)** — and **item 312 found the recorded target was the wrong operation.** The
+  diagnosis carried here and in memory was _"JSON.parse + alloc + freeze, ONE target =
+  `addVertex`"_. Decomposed over 200k nodes / 1M edges: `split` 19.5ms (0.7%), `split` +
+  `JSON.parse` **546.6ms (19%)**, `addVertex` alone **216.7ms (7.4%)** — and **`addEdge` at ~2.9µs
+  an edge, about 85% of the row.** Not wrong that `addVertex` is slow (1.08µs a vertex); wrong
+  about which operation the ingest is made of, because a 5:1 fixture is five edge writes per vertex
+  write. Linear at 2864/3305/3009/2888 ns per edge over 50k->1M edges, so a constant factor and not
+  an algorithmic bug.
+  Inside `addEdge`, ablated **alternated three rounds, min of each** (the first pass was
+  single-shot against a baseline spanning 2780-3153 and decided nothing): the label index **810ns
+  (28%)**, the `@graph/EdgeAdded` emission **573ns (20%)**, `edgesById.set` 282ns (10%), the
+  cardinality gate and the property index **0**, the undo closure **~20ns**. The validation prefix
+  is 43ns and the pair of `getVertexById` calls that re-resolve endpoints the caller already holds
+  is 43ns, so 97% is `new Edge(...)` + `insertEdge`.
+  **`recordUndo`'s closure is allocated per edge for nothing outside a transaction** — item 140's
+  own lesson at a call site that still has it — and it is worth **20ns, 0.7%**. Not worth the
+  guard, which is the kind of certainty worth measuring before acting on.
+  **The emission's 500ns has NO mechanism that survives ablation.** Allocate-but-don't-dispatch
+  saves 519ns; dispatch-a-reused-event saves ~0; and an early return in `Emitter.emit` for the
+  no-listener case — which also removes the `new Set(undefined)` snapshot it allocates per emit to
+  iterate nothing — is **REFUTED**, interleaved over three alternated rounds ({2791, 2965, 2774}
+  against {2830, 2804, 2876}). The two readings cannot both be explained by the allocation or by
+  the dispatch; settling it needs a profile, and it is recorded WITH the refutations so the next
+  attempt starts after them.
+  `indexEdgeLabel` is **seven hash operations per edge, five string-keyed** (a label bucket, then
+  `fromId` -> label -> Set, then `toId` -> label -> Set), which is ~115ns each at a million
+  entries. **That makes three independent rows pointing at ONE structural answer** — 310's degree
+  product, 311's per-vertex degree reads, and this — all bounded by string-keyed Map operations,
+  i.e. item 300's CSR at a priced 7.30x. The INSERT side is the one place not blocked by `edge.to`
+  costing a lookup, since `addEdge` already holds both endpoint Vertex objects.
 - **`traverse 1-hop + filter` is 32x native (48.0ms against 1.5)** — and **item 311 decomposed it:
   the predicate machinery is 9% of the row.** It returns ONE row, so none of it is item 289's
   carrier, and the planner already reaches the right arm (`(a:Person)` is vacuous here, so
