@@ -625,8 +625,23 @@ console.log('-'.repeat(header.length));
 // 307 needed it to attribute a 22% move on ONE row — a neighbour that runs first can warm the
 // exact path the next case uses, so a multi-case probe cannot separate a regression from its
 // neighbour's speedup (the `3 hop, count(d.k)` reading item 290 recorded).
+// A trailing `$` makes it an EXACT match, which some rows need: `count 3-hop` is a substring of
+// `count 3-hop + end filter` and two others, so there is no substring that selects it alone.
 const ONLY = process.env.BENCH_ONLY;
-const SELECTED = ONLY === undefined ? CASES : CASES.filter((c) => c.name.includes(ONLY));
+const selectCases = (): typeof CASES => {
+  if (ONLY === undefined) {
+    return CASES;
+  }
+
+  if (ONLY.endsWith('$')) {
+    const exact = ONLY.slice(0, -1);
+
+    return CASES.filter((c) => c.name === exact);
+  }
+
+  return CASES.filter((c) => c.name.includes(ONLY));
+};
+const SELECTED = selectCases();
 
 if (SELECTED.length === 0) {
   console.log(`BENCH_ONLY=${ONLY} matched no case`);

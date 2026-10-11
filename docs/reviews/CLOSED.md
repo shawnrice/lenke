@@ -480,6 +480,31 @@ filter` / `+ start filter` — gated chains the rule deliberately does NOT route
   columns, which is the control that proves the per-position rule rather than merely an unrelated
   row being unmoved. `count 3-hop + end filter` was MISSING from the bench, which is how three
   consecutive items moved a cliff without seeing it; it is a row now.
+- **`count 3-hop` in TS is 84x native (401.6ms against 4.8)** — the widest cross-engine ratio left
+  in `bun run bench`, and **item 310 refuted the two cheap answers to it.**
+  1. ~~Route three-segment chains to the SWEEP instead of the degree product~~ — **REFUTED at 10x
+     item 301's size.** That verdict was taken at 20,000 vertices and the repo's rule says
+     cache-resident and not are different questions, so it was re-measured at 200,000 / 1,000,000
+     edges, one case per process, min of 9: ungated **401.6 -> 534.7ms (1.33x WORSE)**, interior
+     gated **130.7 -> 433.1 (3.31x WORSE)**. The product makes ONE pass over the edges and
+     multiplies two degrees where the sweep makes three — comparing per-edge costs without
+     comparing pass counts is comparing the wrong thing. An interior gate WIDENS the gap, because
+     the gate shrinks exactly what the product iterates.
+  2. ~~Memoize the d-side degree per `c`~~ — **REFUTED by its own control.** Target 394.7 ->
+     371.4 (1.063x, DISJOINT over three alternated rounds); `count 3-hop + interior filter`, which
+     takes the `needsC` branch and **cannot reach the memo**, 131.9 -> 125.4 (**1.052x, also
+     disjoint**). The unreachable control moved as far as the target, so the memo is worth 1.01x at
+     most. Item 300's lesson with a sharper instrument: _disjoint ranges are not proof when the
+     whole side moves_ becomes **not proof when the change's own unreachable control moves with
+     it.**
+     **The diagnosis both experiments bought:** the 84x is not one hash per edge, which is why neither
+     route touches it. It is spread across the `edgesOfTypes` generator frame (priced at 1.19x on the
+     sweep at item 300), the `Edge` property reads, and two hash lookups — and no micro moves a spread
+     cost. It is the CSR item 300 priced at **7.30x** and declined for needing a dense adjacency the
+     TS graph does not expose. So this is a DATA-LAYOUT target with a known ceiling, not an
+     unexplained outlier.
+     `BENCH_ONLY` now takes a trailing `$` for an exact match, because `count 3-hop` is a substring of
+     three other rows and the isolation flag could not isolate the row that needed it.
 - ~~**The same reversal in NATIVE**~~ — **CLOSED by item 309 at 3.60x** (`count 3-hop + end
 filter` 14.4 -> 4.0ms isolated, min of 9 over three alternated rounds) **and 3.76x** on
   `count 2-hop + end filter` (12.4 -> 3.3), which item 306's rule routes to the sweep precisely

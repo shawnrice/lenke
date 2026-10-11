@@ -1723,6 +1723,23 @@ const buildThreeHopCount = <T>(
         continue;
       }
 
+      // REJECTED, with its numbers (item 310): memoizing the d-side degree per `c` in a
+      // `Map<string, number>`, so that the ~5 middle edges reaching one `c` pay one hash instead
+      // of `side`'s two plus a size read. First isolated reading was 1.07x, which looked like a
+      // small real win on the widest cross-engine row in the bench.
+      //
+      // Three alternated rounds, one case per process, min of 9, settled it: the target read
+      // **1.063x with DISJOINT ranges** (394.7-416.3 against 371.4-378.7) and
+      // `count 3-hop + interior filter` — which takes the `needsC` branch below and so CANNOT
+      // reach the memo — read **1.052x, also disjoint** (131.9-132.3 against 125.4-126.3). The
+      // control moved as far as the target, so the memo is worth 1.01x at most. Disjoint ranges
+      // are not proof when the change's own unreachable control moves with it.
+      //
+      // The diagnosis the experiment bought: this row is ts 401.6ms against native's 4.8, an 84x
+      // gap and the widest in `bun run bench`, and it is NOT one hash per edge. The cost is spread
+      // across the `edgesOfTypes` generator frame (item 300 priced that at 1.19x on the sweep),
+      // the `Edge` property reads, and two hash lookups — so no single micro moves it. It is the
+      // CSR item 300 recorded as needing a dense adjacency the TS graph does not expose.
       for (const e of edgesOfTypes(midIndex.get(b.id), t2)) {
         if (!needsC) {
           count += waysToA * side(graph, midOut ? e.toId : e.fromId, fromDOut, t3, dEff);
@@ -2186,6 +2203,21 @@ const patternCountOf = <T>(
  * An interior gate at two or three segments already has a route (items 219, 206) and keeps it, and
  * the products are better at everything unfiltered, which item 301 measured (the sweep loses 1.50x
  * to the three-segment product).
+ *
+ * RE-MEASURED AT TEN TIMES THE SIZE (item 310) and the verdict HOLDS, which is why it is not worth
+ * re-attempting: item 301's reading was taken at 20,000 vertices, and the repo's own rule says
+ * cache-resident and not are different questions with the transition between 200k and 1M. So
+ * routing EVERY three-segment chain here was tried at 200,000 vertices / 1,000,000 edges, one case
+ * per process, min of 9:
+ *
+ * | row                           | product | the sweep |             |
+ * | ----------------------------- | ------: | --------: | ----------- |
+ * | count 3-hop (ungated)         | 401.6ms |   534.7ms | 1.33x WORSE |
+ * | count 3-hop + interior filter | 130.7ms |   433.1ms | 3.31x WORSE |
+ *
+ * The product pays per MIDDLE EDGE and multiplies two degrees — ONE pass over the edges — where
+ * the sweep makes three. An interior gate widens the gap rather than closing it, because the gate
+ * shrinks exactly what the product iterates.
  */
 const endGatedChainCount = <T>(
   start: NodePattern,
