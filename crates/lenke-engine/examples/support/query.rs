@@ -71,6 +71,21 @@ pub fn run(cfg: &Cfg) {
                     "2-hop",
                     "MATCH (p:Person)-[:KNOWS]->()-[:KNOWS]->(r) RETURN count(*) AS c",
                 ),
+                // FOUR and SIX hops, which is `try_nhop_sweep_count` (item 298). The arms
+                // stopped at three and four-and-up fell through to enumerate-and-tally, so these
+                // two rows are what DEFENDS the sweep: the 6-hop shape is 3.1 BILLION walks over
+                // this fixture and cost ~780ms enumerated, against a sweep that takes six passes
+                // over a million edges. A regression here does not look like a few percent.
+                (
+                    "4-hop",
+                    "MATCH (p:Person)-[:KNOWS]->()-[:KNOWS]->()-[:KNOWS]->()-[:KNOWS]->(r) \
+                     RETURN count(*) AS c",
+                ),
+                (
+                    "6-hop",
+                    "MATCH (p:Person)-[:KNOWS]->()-[:KNOWS]->()-[:KNOWS]->()-[:KNOWS]->()\
+                     -[:KNOWS]->()-[:KNOWS]->(r) RETURN count(*) AS c",
+                ),
                 (
                     "group by dept",
                     "MATCH (p:Person) RETURN p.dept, count(*) AS c",

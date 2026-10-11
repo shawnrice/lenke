@@ -3230,6 +3230,132 @@ pub(super) fn try_3hop_product_count(
     Some(scalar_num(total as f64))
 }
 
+/// How many `Out` hops sit between `plan` and the `Scan` at its base. `None` if the chain is not
+/// a plain unfiltered OUT chain over a scan — the same shape [`peel_out_hops`] accepts, counted
+/// rather than collected, because the sweep below has to know its own depth before it can peel.
+fn out_chain_depth(plan: &Plan) -> Option<usize> {
+    match plan {
+        Plan::Scan { .. } => Some(0),
+        Plan::Expand {
+            input,
+            from,
+            dir: Dir::Out,
+            bind_edge: false,
+            double_loops: false,
+            ..
+        } => {
+            if *from + 1 != chain_width(input)? {
+                return None; // must expand the current frontier
+            }
+            Some(out_chain_depth(input)? + 1)
+        }
+        _ => None,
+    }
+}
+
+/// `count(*)` over an OUT chain of FOUR OR MORE hops, as a forward SWEEP of per-node way counts.
+///
+/// `ways[v]` is how many ways the current position can be node `v`; one pass per hop advances it,
+/// and the last hop is a weighted sum of out-DEGREES rather than a final pass, so it never writes
+/// a way count. O(hops x E) in time and O(V) in memory, where enumerating the chain is
+/// O(degree^hops) in both.
+///
+/// This is the generalization [`try_3hop_product_count`] stops one hop short of, and it is the
+/// same identity: that arm's `level1[b]` IS a way-count vector, and its degree product is the
+/// last two hops of this sweep written out by hand. Four hops and up was the gap — the chain fell
+/// through every arm here to the enumerate-and-tally path, whose cost is the PATH COUNT.
+/// Measured at 200 nodes of degree 5 (item 298), native against the pure-TS sweep:
+///
+/// | hops |         paths | native before | ts sweep |
+/// | ---- | ------------: | ------------: | -------: |
+/// |    7 |    15,625,000 |       3.35 ms |  0.68 ms |
+/// |    9 |   390,625,000 |     103.11 ms |  0.38 ms |
+/// |   11 | 9,765,625,000 |    2223.64 ms |  0.42 ms |
+///
+/// A fixed-length chain is a WALK — edges may repeat and so may nodes — so there is NO trail
+/// correction, exactly as [`try_3hop_product_count`] notes, and the sweep is byte-identical to the
+/// enumeration. Per-hop edge types are independent, and an unknown type on any hop means no paths.
+///
+/// OUT-only and unfiltered, which [`out_chain_depth`] enforces rather than assumes: a `Filter`,
+/// a bound edge, a reversed hop or an `Any` direction all fail the peel. The pure-TS sweep carries
+/// mixed directions and per-position labels; matching that here is a separate item, because every
+/// extra position this reaches is a position the fuzzers do not currently generate.
+pub(super) fn try_nhop_sweep_count(
+    input: &Plan,
+    keys: &[(String, Expr)],
+    aggs: &[Agg],
+    store: &Store,
+) -> Option<Batch> {
+    if !keys.is_empty() || aggs.len() != 1 {
+        return None;
+    }
+    let agg = &aggs[0];
+    if agg.func != AggFn::Count || agg.arg.is_some() || agg.distinct {
+        return None;
+    }
+    let hops = out_chain_depth(input)?;
+    // One, two and three hops have their own tuned arms and this must not steal them: it sits
+    // AFTER `try_3hop_product_count` in the dispatch, but `or_else` laziness is not a reason to
+    // leave the bound implicit.
+    if hops < 4 {
+        return None;
+    }
+    let (labels, base) = peel_out_hops(input, hops)?;
+    let mut wants: Vec<Vec<u32>> = Vec::with_capacity(hops);
+    for l in &labels {
+        match want_etypes(store, l) {
+            Ok(w) => wants.push(w),
+            Err(()) => return Some(scalar_num(0.0)), // unknown edge type → no paths
+        }
+    }
+    let nc = store.node_count();
+    let hit = |a: &crate::store::Adj, w: &[u32]| edge_carries_wanted(store, a, w);
+
+    let mut ways = vec![0u64; nc];
+    match &base {
+        Some(l) => {
+            for &s in store.nodes_with_label(l) {
+                ways[s as usize] = 1;
+            }
+        }
+        None => {
+            for (s, w) in ways.iter_mut().enumerate() {
+                if store.is_alive(s as u32) {
+                    *w = 1;
+                }
+            }
+        }
+    }
+
+    // One pass per hop but the LAST, over TWO reused buffers — a fresh `vec![0; nc]` per hop is
+    // the one cost here that would grow with the depth.
+    let mut next = vec![0u64; nc];
+    for want in &wants[..hops - 1] {
+        next.fill(0);
+        for (v, &w) in ways.iter().enumerate() {
+            if w == 0 {
+                continue;
+            }
+            for a in store.out(v as u32) {
+                if hit(a, want) {
+                    next[a.nbr as usize] += w;
+                }
+            }
+        }
+        std::mem::swap(&mut ways, &mut next);
+    }
+
+    let last = &wants[hops - 1];
+    let mut total = 0u64;
+    for (v, &w) in ways.iter().enumerate() {
+        if w == 0 {
+            continue;
+        }
+        total += w * store.out(v as u32).iter().filter(|a| hit(a, last)).count() as u64;
+    }
+    Some(scalar_num(total as f64))
+}
+
 // REJECTED (2026-09-17, E68/E69): folding a filter on the hop's ENDPOINT into the
 // degree sum, so `count(*)` keeps its shortcut instead of enumerating paths.
 //

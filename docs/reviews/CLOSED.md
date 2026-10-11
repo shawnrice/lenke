@@ -333,16 +333,34 @@ absence** — `{k: null}` is the one place in a pattern where that distinction i
   replaced with exact counts**, because `>= baseline` and `> 0` are intervals the mutant lives in.
   The 2/3/4-segment walks are untouched and the regression control is exactly that: 32 bench rows
   at ≥1.0ms, median 1.019, both >10% rows favouring the new side on workloads it cannot reach.
-- **The same cliff in NATIVE, and it is the LARGER one** — **OPEN and PRICED by item 298**, which
-  is where the attribution came out opposite to item 290's. Native's `exec` tallies an
-  aggregate-over-chain and never materializes a frontier (item 296), so it does not OOM — but
-  tallying is still once per PATH and its rate is flat at ~0.2-0.3 ns from four hops on. Both
-  engines AGREE on every answer at every depth, and the times diverge without bound: at 11 hops
-  (9,765,625,000 paths) TS is **0.42ms against native's 2223.64ms, a 5294x inversion** of the
-  standing "Rust core is 1.5-4x pure-TS" summary, multiplying by the degree per hop. The fix is
-  the same sweep in native's count path; what item 298 buys it is an ORACLE that did not exist
-  before, since native's current answer at 9.77e9 paths is independently derived from the sweep's.
+- ~~**The same cliff in NATIVE, and it was the LARGER one**~~ — **CLOSED by item 299 at 10.4x
+  (4 hops) and 139.8x (6)** on the repo's own 200,000-node degree-5 fixture, matched reps and
+  three alternated rounds, DISJOINT ranges on both wins and overlapping on both controls
+  (67,249.5 → 6,465us and 1,392,055.6 → 9,955us; 1-hop 1.00x and 2-hop 0.98x cannot reach the
+  arm). At depth it is **74,121x**: 2223.64 → 0.03ms at 11 hops. Native's `exec` tallies an
+  aggregate-over-chain and never materializes a frontier (item 296), so it did not OOM where TS
+  did — but tallying is once per PATH, and `try_3hop_product_count` stopped at three hops.
+  `try_nhop_sweep_count` is the generalization it stops one hop short of, and **the same
+  identity**: that arm's `level1[b]` already IS a way-count vector. Node ids are dense `u32` here,
+  so the way counts are a flat ARRAY with no hash — which is exactly the TS sweep's open weak
+  point. OUT-only and unfiltered, enforced by `out_chain_depth` rather than assumed. 13 of 15
+  mutants caught; both survivors provable (N15 perf-only, N12 equivalent because `delete_node`
+  empties `out_adj[i]` and detaches every mirror, so a dead node has no edges in either
+  direction). **`query/gql` gained `4-hop` and `6-hop` cases** so a regression cannot hide: the
+  6-hop shape is 3.1 billion walks and cost 1.39 SECONDS enumerated.
+  **One methodology note worth keeping:** the first reading of those two rows compared the control
+  at `BENCH_REPS=3` against the new side at the default 7. A min over fewer samples is ≥ a min
+  over more, so an unmatched A/B can only OVERSTATE the win (10.3x/144.0x became 10.4x/139.8x).
+  It was small here by luck, not by method.
+  **The cross-engine agreement in `probe:depth` is now sweep-against-sweep and so much weaker
+  than it was.** The strong independent check is item 298's — the TS sweep against native's
+  ENUMERATION at 9.77e9 paths, measured before this arm existed — and it cannot be re-run.
   Measure with `cd packages/native && bun run probe:depth`.
+- **Mixed directions and per-position labels in the NATIVE sweep** — **OPEN, scoped by item 299.**
+  `out_chain_depth` admits an OUT-only chain, where the TS sweep carries a reversed or mixed
+  chain and a label at every position. Not taken with the rest because the differential fuzzer
+  generates none of those shapes at this depth, so the coverage would be hand-written tests
+  alone — see the `engine-corpus-nested-fuzzer-gap` note.
 - **`longChainCount`'s `Map<string, number>`** — **OPEN, named by item 298's own spelling-probe
   row.** The sweep costs 1040ms at 200,000 vertices / 600,000 edges for five hops, which is far
   more than 5 passes over 600k edges should be: the way counts are keyed by STRING vertex ids, and

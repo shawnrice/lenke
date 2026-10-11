@@ -1570,6 +1570,9 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
                         .or_else(|| try_scan_distinct_count(input, keys, aggs, store))
                         .or_else(|| try_frontier_distinct_count(input, keys, aggs, store))
                         .or_else(|| try_3hop_product_count(input, keys, aggs, store))
+                        // FOUR hops and up, where the 3-hop product stops: the same
+                        // identity swept to any depth (item 298).
+                        .or_else(|| try_nhop_sweep_count(input, keys, aggs, store))
                         .or_else(|| try_fused_count(input, keys, aggs, store))
                         .or_else(|| try_node_grouped_count(input, keys, aggs, store))
                         .or_else(|| try_scan_dict_count(input, keys, aggs, store))

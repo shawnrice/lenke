@@ -2747,6 +2747,203 @@ fn three_hop_product_count_matches_enumeration() {
     assert_eq!(count, enumerated, "product count != enumerated walks");
 }
 
+/// Item 298's native half. `try_3hop_product_count` stopped at three hops and FOUR and up fell
+/// through to enumerate-and-tally, whose cost is the PATH COUNT: 2223.64ms for an eleven-hop
+/// count that `try_nhop_sweep_count` answers in 0.03ms.
+///
+/// EVERY TEST HERE COMPARES THE SWEEP AGAINST THE ENUMERATION, exactly as
+/// `three_hop_product_count_matches_enumeration` does one hop earlier, and for the same reason: a
+/// sweep that mis-attributes a way count returns a plausible number, so the only assertion worth
+/// making is against the other route. Adding a clause `WHERE` breaks the peel (the base is no
+/// longer a bare `Scan`), and projecting a column instead of counting enumerates — so both routes
+/// are reachable from one query shape.
+///
+/// The fixture is IRREGULAR on purpose. A uniform-degree graph hides a mis-weighted sweep, because
+/// every wrong attribution lands on a bucket of the same size — the lesson item 290's mutation
+/// run recorded when R1, R4 and R5 would have survived a regular fixture.
+#[cfg(test)]
+fn sweep_fixture() -> crate::store::Store {
+    use crate::store::Builder;
+    let mut b = Builder::default();
+    // 12 nodes, two labels unevenly spread.
+    for i in 0..12 {
+        if i % 3 == 0 {
+            b.node(&["N", "A"], &[]);
+        } else {
+            b.node(&["N"], &[]);
+        }
+    }
+    // Degrees 1..4 varying with i, over two edge types, plus a self-loop and a back edge so the
+    // chain is a WALK with repeated nodes and edges.
+    for i in 0u32..12 {
+        for d in 0u32..=(i % 4) {
+            b.edge(
+                i,
+                (i * 5 + d * 7 + 1) % 12,
+                if d % 2 == 0 { "R" } else { "S" },
+            );
+        }
+    }
+    b.edge(0, 0, "R");
+    b.edge(11, 0, "R");
+    b.build()
+}
+
+#[cfg(test)]
+fn count_and_enumerated(st: &crate::store::Store, pattern: &str, last: &str) -> (usize, usize) {
+    let count = match &run(
+        &super::parse(&format!("MATCH {pattern} RETURN count(*) AS c")).unwrap(),
+        st,
+    )
+    .rows[0][0]
+    {
+        Value::Num(x) => *x as usize,
+        other => panic!("not a count: {other:?}"),
+    };
+    let enumerated = run(
+        &super::parse(&format!("MATCH {pattern} RETURN {last}.z AS d")).unwrap(),
+        st,
+    )
+    .rows
+    .len();
+    (count, enumerated)
+}
+
+/// The depth sweep: four through eight hops, each against its own enumeration. Eight hops over
+/// this fixture is well under a million walks, so the enumeration is still a usable oracle.
+#[test]
+fn n_hop_sweep_count_matches_enumeration_at_every_depth() {
+    let st = sweep_fixture();
+    for hops in 4..=8 {
+        let mut pattern = String::from("(a:N)");
+        for _ in 0..hops - 1 {
+            pattern.push_str("-[:R]->()");
+        }
+        pattern.push_str("-[:R]->(d)");
+        let (count, enumerated) = count_and_enumerated(&st, &pattern, "d");
+        assert_eq!(count, enumerated, "sweep != enumeration at {hops} hops");
+        assert!(count > 0, "fixture produced no {hops}-hop walks");
+    }
+}
+
+/// Per-hop edge types are INDEPENDENT, so a sweep that reused one hop's wanted set for the next
+/// would still return a plausible number. Four spellings, each against its enumeration.
+#[test]
+fn n_hop_sweep_count_honours_a_per_hop_edge_type() {
+    let st = sweep_fixture();
+    for types in [
+        ["R", "R", "R", "S"],
+        ["S", "R", "R", "R"],
+        ["R", "S", "R", "S"],
+        ["S", "S", "S", "S"],
+    ] {
+        let pattern = format!(
+            "(a:N)-[:{}]->()-[:{}]->()-[:{}]->()-[:{}]->(d)",
+            types[0], types[1], types[2], types[3]
+        );
+        let (count, enumerated) = count_and_enumerated(&st, &pattern, "d");
+        assert_eq!(count, enumerated, "sweep != enumeration for {types:?}");
+    }
+}
+
+/// An UNTYPED hop spans every type, which is the `want_etypes` empty-wants route.
+#[test]
+fn n_hop_sweep_count_handles_an_untyped_hop() {
+    let st = sweep_fixture();
+    let (count, enumerated) = count_and_enumerated(&st, "(a:N)->()->()->()->(d)", "d");
+    assert_eq!(count, enumerated);
+    assert!(count > 0);
+}
+
+/// An unknown edge type on ANY hop means no walks at all — including the LAST hop, which the
+/// sweep answers as a degree sum rather than a pass, so it is a separate code path.
+#[test]
+fn an_unknown_edge_type_on_any_hop_counts_zero() {
+    let st = sweep_fixture();
+    for at in 0..5 {
+        let pattern = (0..5)
+            .map(|i| if i == at { "-[:NOPE]->()" } else { "-[:R]->()" })
+            .fold(String::from("(a:N)"), |mut acc, seg| {
+                acc.push_str(seg);
+                acc
+            });
+        let count = match &run(
+            &super::parse(&format!("MATCH {pattern} RETURN count(*) AS c")).unwrap(),
+            &st,
+        )
+        .rows[0][0]
+        {
+            Value::Num(x) => *x as usize,
+            other => panic!("not a count: {other:?}"),
+        };
+        assert_eq!(count, 0, "unknown type at hop {at} did not count zero");
+    }
+}
+
+/// The BASE label narrows which nodes seed the sweep. `:A` is 4 of the 12 nodes, so a sweep that
+/// seeded every node would return a strictly larger number.
+#[test]
+fn the_base_label_narrows_the_seed() {
+    let st = sweep_fixture();
+    let (narrow, narrow_enum) =
+        count_and_enumerated(&st, "(a:A)-[:R]->()-[:R]->()-[:R]->()-[:R]->(d)", "d");
+    let (wide, _) = count_and_enumerated(&st, "(a:N)-[:R]->()-[:R]->()-[:R]->()-[:R]->(d)", "d");
+    assert_eq!(narrow, narrow_enum, "labelled sweep != enumeration");
+    assert!(narrow < wide, "the label did not narrow the seed");
+    assert!(narrow > 0);
+}
+
+/// An UNLABELLED base seeds every LIVE node, which is the `is_alive` branch — and a deleted node
+/// must neither seed the sweep nor be reached by it.
+#[test]
+fn a_deleted_node_neither_seeds_nor_is_reached() {
+    let mut st = sweep_fixture();
+    st.delete_node(4);
+    let (count, enumerated) =
+        count_and_enumerated(&st, "(a)-[:R]->()-[:R]->()-[:R]->()-[:R]->(d)", "d");
+    assert_eq!(count, enumerated, "sweep != enumeration after a delete");
+    assert!(count > 0);
+}
+
+/// What the sweep must DECLINE, each still answering correctly through the general path. The gate
+/// is `out_chain_depth`, and every one of these fails the peel for its own reason.
+#[test]
+fn the_sweep_declines_what_it_cannot_express() {
+    let st = sweep_fixture();
+    let count = |q: &str| match &run(&super::parse(q).unwrap(), &st).rows[0][0] {
+        Value::Num(x) => *x as usize,
+        other => panic!("not a count: {other:?}"),
+    };
+    let chain4 = "(a:N)-[:R]->()-[:R]->()-[:R]->()-[:R]->(d)";
+    let plain = count(&format!("MATCH {chain4} RETURN count(*) AS c"));
+
+    // `count(x.k)` skips nulls and `count(DISTINCT …)` needs the values; neither is a tally.
+    let nulls = count(&format!("MATCH {chain4} RETURN count(d.z) AS c"));
+    assert_eq!(nulls, 0, "every `z` is absent, so count(d.z) is 0");
+    assert!(plain > 0, "but count(*) counts the walks");
+
+    // A REVERSED hop is not an OUT chain. It must still answer, via enumeration.
+    let reversed = count("MATCH (a:N)-[:R]->()-[:R]->()<-[:R]-()-[:R]->(d) RETURN count(*) AS c");
+    let reversed_enum = run(
+        &super::parse("MATCH (a:N)-[:R]->()-[:R]->()<-[:R]-()-[:R]->(d) RETURN d.z AS d").unwrap(),
+        &st,
+    )
+    .rows
+    .len();
+    assert_eq!(reversed, reversed_enum, "reversed chain != enumeration");
+
+    // A BOUND EDGE makes the hop append two slots, so the peel refuses it (`bind_edge: false`).
+    let bound = count("MATCH (a:N)-[r:R]->()-[:R]->()-[:R]->()-[:R]->(d) RETURN count(*) AS c");
+    assert_eq!(bound, plain, "binding an edge changed the walk count");
+
+    // A clause WHERE breaks the peel because the base is no longer a bare `Scan`. This is the
+    // route the oracle above relies on, so it is asserted rather than assumed.
+    let filtered = count(&format!(
+        "MATCH {chain4} WHERE a.z IS NULL RETURN count(*) AS c"
+    ));
+    assert_eq!(filtered, plain, "an always-true filter changed the count");
+}
+
 #[test]
 fn edge_filtered_count_matches_enumeration() {
     use crate::store::Builder;

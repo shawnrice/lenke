@@ -36,6 +36,14 @@ Environment: `BENCH_REPS=<n>` (samples per case, min is reported; default 7),
 `std::time::Instant` and cannot run under wasm. For the pure-TS / wasm / FFI
 comparison, use `cd packages/native && bun run bench` instead.
 
+**The chain-DEPTH question lives in the TS harness, not here:** `cd packages/native && bun run
+probe:depth` prints ns PER PATH for a fixed-length `count(*)` chain at 2-11 hops on BOTH engines
+side by side, and whether they agree on the answer. It is over there because the question is
+inherently cross-engine — item 298 used it to find that native's count arms stopped at three hops
+while the TS ones stopped at four, so each engine's cliff was invisible from inside its own
+harness. The RATE is the signal: a degree product's ns/path falls as the path count grows, an
+enumeration's is flat.
+
 ## By question
 
 | If you are asking…                                                    | Run                                  |
