@@ -206,10 +206,79 @@ suite('AND short-circuit: the TS and native engines agree', () => {
     expect(
       agree('MATCH (n:P) WHERE (n.s AND n.n > 99) AND (n.n < 0 AND n.s) RETURN n.n AS x'),
     ).toBe('ok []');
-    // CONTROL for all three: a safe conjunct that MATCHES leaves the raising one essential,
+    // 4. `IS TRUE` / `IS FALSE` / `IS UNKNOWN` — item 322. The key left `isTruth` out with a
+    //    comment claiming "a conservative omission costs only a missed reorder"; the engine's
+    //    `can_raise` admits the node, so it cost a divergence instead, on roughly one random
+    //    differential seed in three. The tell was that `IS NULL`, which the key DOES admit,
+    //    already agreed on the identical shape.
+    //    THE SETTLING ONE IS THE TEST: `n.n IS UNKNOWN` is FALSE for a present property, so it
+    //    settles the row and the raising sibling is skipped. Its siblings below are TRUE, which
+    //    settles nothing in a filter, so the sibling stays essential and BOTH raise — those are
+    //    controls for this arm, not failures of it. Every expectation here was MEASURED; a first
+    //    version reasoned them out and got two of six wrong.
+    expect(agree('MATCH (n:P) WHERE n.s AND n.n IS UNKNOWN RETURN n.n AS x')).toBe('ok []');
+    expect(agree('MATCH (n:P) WHERE n.s AND n.zz IS UNKNOWN RETURN n.n AS x')).toBe(
+      'ERR E_INVALID_VALUE',
+    );
+    expect(agree('MATCH (n:P) WHERE n.s AND n.n IS NOT UNKNOWN RETURN n.n AS x')).toBe(
+      'ERR E_INVALID_VALUE',
+    );
+    // ONLY the UNKNOWN form is admitted, because only it is admitted by the engine. Widening
+    // this arm to all three truth values introduced two NEW divergences the other way round —
+    // these answered `ok []` here while the engine raised. Being WIDER in one engine is the same
+    // mistake as being narrower.
+    expect(agree('MATCH (n:P) WHERE n.s AND n.n IS TRUE RETURN n.n AS x')).toBe(
+      'ERR E_INVALID_VALUE',
+    );
+    expect(agree('MATCH (n:P) WHERE n.s AND n.n IS FALSE RETURN n.n AS x')).toBe(
+      'ERR E_INVALID_VALUE',
+    );
+    expect(agree('MATCH (n:P) WHERE n.s AND n.n IS NOT TRUE RETURN n.n AS x')).toBe(
+      'ERR E_INVALID_VALUE',
+    );
+    // Why the arm recurses with `valueCannotRaise` and not `truthCannotRaise`: a non-boolean
+    // operand of a boolean test is NOT a fault in either engine — it is simply not that truth
+    // value — while the OPERAND itself still raises, which is what that recursion tests.
+    expect(agree('MATCH (n:P) RETURN (n.s IS UNKNOWN) AS x')).toStartWith('ok');
+    expect(agree("RETURN (split('a,b', -1) IS UNKNOWN) AS x")).toBe('ERR E_INVALID_VALUE');
+    // THE OPERAND MATTERS, and this is the only shape that proves it. A mutant claiming
+    // `IS UNKNOWN` is safe REGARDLESS of its operand survived every line above: with the test
+    // written FIRST and a settling sibling second, calling it safe makes every conjunct safe, so
+    // the reorder never fires at all and written order reaches the raising operand. Calling it
+    // correctly leaves the pair MIXED, the sibling goes first, and the row is dropped.
+    expect(
+      agree("MATCH (n:P) WHERE (split('a,b', -1) IS UNKNOWN) AND n.n = 99 RETURN n.n AS x"),
+    ).toBe('ok []');
+    // CONTROLS for that line: a sibling that MATCHES leaves the raising operand essential, and a
+    // sibling that is itself a non-settling `IS UNKNOWN` does too.
+    expect(
+      agree("MATCH (n:P) WHERE (split('a,b', -1) IS UNKNOWN) AND n.n = 1 RETURN n.n AS x"),
+    ).toBe('ERR E_INVALID_VALUE');
+    expect(
+      agree("MATCH (n:P) WHERE (split('a,b', -1) IS UNKNOWN) AND n.zz IS UNKNOWN RETURN n.n AS x"),
+    ).toBe('ERR E_INVALID_VALUE');
+    // 5. STAYS OUT, measured rather than assumed: `IS TYPED` lowers to a cast, which the
+    //    engine's `can_raise` calls raising, so neither engine hoists it; and `IS LABELED` is
+    //    TRUE here, so it settles nothing and the raising sibling is essential either way.
+    //    Admitting either would be the mirror-image mistake.
+    expect(agree('MATCH (n:P) WHERE n.s AND n.n IS TYPED INTEGER RETURN n.n AS x')).toBe(
+      'ERR E_INVALID_VALUE',
+    );
+    expect(agree('MATCH (n:P) WHERE n.s AND n IS LABELED P RETURN n.n AS x')).toBe(
+      'ERR E_INVALID_VALUE',
+    );
+    // CONTROL for all of them: a safe conjunct that MATCHES leaves the raising one essential,
     // whichever side it is written.
     expect(agree('MATCH (n:P) WHERE n.s AND n.n < 99 RETURN n.n AS x')).toBe('ERR E_INVALID_VALUE');
     expect(agree('MATCH (n:P) WHERE n.n > -1 AND n.s RETURN n.n AS x')).toBe('ERR E_INVALID_VALUE');
+    expect(agree('MATCH (n:P) WHERE n.s AND n.n IS NOT NULL RETURN n.n AS x')).toBe(
+      'ERR E_INVALID_VALUE',
+    );
+    // And the arm that was already there, on the shape that exposed the missing one: `IS NULL`
+    // agreeing here while `IS UNKNOWN` diverged is what identified the gap.
+    expect(agree('MATCH (n:P) WHERE n.s AND n.zz IS NULL RETURN n.n AS x')).toBe(
+      'ERR E_INVALID_VALUE',
+    );
   });
 
   test('a VALUE position keeps written order in both, which is what bounds the above', () => {

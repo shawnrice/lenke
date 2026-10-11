@@ -899,8 +899,27 @@ bench`** so one-case-per-process is a flag instead of the bespoke script items 2
   `label-box.test.ts:155` and `prop-box.test.ts:97` both do `v.graph = g2` for the other two boxes.
   Also: `expect(v.adjFrom).toBeUndefined()` passes when the property does not exist at all, so the
   positive case is asserted too.
-- **OPEN, pre-existing, reproducible: a TS-vs-native evaluation-order divergence on a raising
-  operand under OPTIONAL MATCH (found at 321, NOT caused by it).** `FUZZ_SEED=1630169971` —
+- ~~**A TS-vs-native evaluation-order divergence on a raising operand under OPTIONAL MATCH**~~ —
+  **CLOSED by item 322**, and it was the ORDERING KEY's fourth mismatch, not a new semantic
+  question. `IS UNKNOWN` lowers to `{ kind: 'isTruth', truth: null }`, which `truthCannotRaise`
+  had no arm for (`default: false`) while the engine's `can_raise` admits it — so TS kept written
+  order and raised where the engine reordered and dropped the row. **The tell was next to it:
+  `IS NULL`, which the key DOES admit, agrees on the identical shape.** The comment that left
+  `isTruth` out claimed "a conservative omission costs only a missed reorder"; that clause is
+  false and this was the bill.
+  **The fix was wrong in the OTHER direction first**: admitting all three truth values created two
+  NEW divergences (`WHERE <raising> AND (n.n IS TRUE)` answered no rows in TS while the engine
+  raised), because the engine admits only the UNKNOWN form. **Being wider in one engine is the
+  same mistake as being narrower.** Caught by MEASURING the test's expectations — a first version
+  reasoned out six outcomes and got two wrong, because whether the safe conjunct SETTLES the row
+  (not cleanly TRUE) decides whether the raising sibling stays essential.
+  `isTyped` and `isLabeled` stay out and that is now measured: `IS TYPED` lowers to a cast which
+  `can_raise` calls raising, and `IS LABELED` is TRUE here so it settles nothing.
+  Fuzz was red ~1 run in 3 and is now **10 consecutive clean runs**. 5 mutants, 3 caught + 1
+  equivalent + **Y5 ("ignore the operand") which needed a shape none of the other eleven
+  assertions had** — the test written FIRST with a settling sibling second, so that calling it safe
+  makes every conjunct safe and the reorder never fires at all.
+- ~~**OPEN, pre-existing, reproducible: the same divergence as recorded at 321**~~ `FUZZ_SEED=1630169971` —
   `MATCH (t:T) OPTIONAL MATCH (t)-[:E]->(n WHERE ((CASE … END = split(duration('PT-2.5S'), -1)) AND
 (n.s IS UNKNOWN))) RETURN t.n AS x, n.n AS y ORDER BY x, y` gives **ts `err E_INVALID_VALUE`
   against native `ok` with six rows**. Fails identically on the control, twice. The fuzzer's own

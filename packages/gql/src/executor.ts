@@ -4933,11 +4933,21 @@ const valueCannotRaise = (e: Expr): boolean =>
  * poses, which is stricter than {@link valueCannotRaise} because the coercion itself can fault:
  * a bare `n.s` holding a string is the whole shape this exists to recognize as UNSAFE.
  *
- * `=` and `<>` are included and the ORDERED comparisons are not, which is not an oversight:
- * cross-type `=` is a no-match while cross-type `<=` throws (`cross-type-comparison-no-error`).
- * `isTruth` / `isTyped` / `isLabeled` are left out for now — they always yield a boolean, but
- * their operands reach code this has not been checked against, and a conservative omission
- * costs only a missed reorder.
+ * EVERY comparison operator is included — see the `compare` arm for why the cautious reading was
+ * wrong and cost 41 divergences.
+ *
+ * `isTruth` was ALSO left out, on the same cautious ground, with the comment claiming "a
+ * conservative omission costs only a missed reorder". **That claim is false and item 322 is the
+ * bill**: the engine's `can_raise` admits the node, so a narrower key here is not caution, it is
+ * disagreement — `WHERE <raising> AND (t.s IS UNKNOWN)` raised in this engine and answered no
+ * rows in the engine, which the differential fuzzer hit on roughly one random seed in three. The
+ * tell was that `IS NULL`, the arm below, already AGREED on the identical shape.
+ *
+ * `isTyped` and `isLabeled` stay out, and that is now MEASURED rather than assumed: with a
+ * raising sibling written first, `IS TYPED INTEGER` raises in BOTH engines (it lowers to a cast,
+ * which the engine's `can_raise` calls raising) and `IS LABELED` raises in both for a different
+ * reason — it is TRUE here, so it settles nothing and the sibling is essential either way.
+ * Admitting them would be the mirror-image mistake.
  */
 const truthCannotRaise = (e: Expr): boolean => {
   switch (e.kind) {
@@ -4952,6 +4962,23 @@ const truthCannotRaise = (e: Expr): boolean => {
       return true;
     case 'isNull':
       return valueCannotRaise(e.expr);
+    case 'isTruth':
+      // ONLY the `IS [NOT] UNKNOWN` form (`truth === null`), because that is the only one the
+      // engine's key admits — and the ordering key has to be the SAME key, in BOTH directions.
+      // A first version of this arm returned `valueCannotRaise(e.expr)` for all three truth
+      // values and introduced TWO NEW divergences the other way round: `WHERE <raising> AND
+      // (n.n IS TRUE)` then answered no rows HERE while the engine still raised. Being wider in
+      // one engine is the same mistake as being narrower, which is why the expectations in
+      // `and-short-circuit-conformance.test.ts` were measured rather than reasoned out.
+      //
+      // `IS UNKNOWN` INSPECTS its operand instead of coercing it, so the question is
+      // VALUE-safety, not truth-safety — the same recursion `isNull` uses, which is exactly why
+      // `IS NULL` agreed on the shape `IS UNKNOWN` diverged on. Measured on both engines:
+      // `t.s IS UNKNOWN` with a STRING `t.s` is `false` rather than a fault, while the OPERAND
+      // can still raise (`split('a,b', -1) IS UNKNOWN` raises in both), which is what
+      // `valueCannotRaise` tests. `negated` is irrelevant: `NOT` of a non-raising test is
+      // non-raising.
+      return e.truth === null && valueCannotRaise(e.expr);
     case 'compare':
       // EVERY operator, not just `=` and `<>`. A first version restricted it to the two that
       // cannot fault on a cross-type pair (`cross-type-comparison-no-error`: `=` is a no-match
