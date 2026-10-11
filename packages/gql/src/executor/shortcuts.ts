@@ -304,6 +304,109 @@ const inlineOf = (n: NodePattern): InlinePred | null | undefined => {
   };
 };
 
+/**
+ * Split a clause `WHERE` into its conjuncts and bucket each by the ONE node variable it reads.
+ * `null` if a conjunct reads none or several — a correlation across two positions is not a
+ * per-vertex gate, and the whole pattern must then decline rather than drop a predicate.
+ *
+ * This is the pushdown the planner does not do for this shape, and the reason it is needed is
+ * measured rather than assumed: an inline `{k: 1}` reaches [`inlineOf`] through the PATTERN NODE,
+ * so item 303's gates served that spelling only, and the identical clause `WHERE` cost 4708.2ms
+ * against the inline 33.9 — 139x, item 125's bug class at the far end of the family. Native had
+ * the same gap for the same reason and item 304 closed it the same way.
+ */
+const chainGatesOf = (
+  where: Expr,
+  start: NodePattern,
+  segments: readonly Segment[],
+): Map<string, Expr[]> | null => {
+  const names = new Set<string>();
+
+  for (const v of [start.variable, ...segments.map((seg) => seg.node.variable)]) {
+    if (v !== undefined) {
+      names.add(v);
+    }
+  }
+
+  const out = new Map<string, Expr[]>();
+  const pending: Expr[] = [where];
+
+  while (pending.length > 0) {
+    const e = pending.pop() as Expr;
+
+    if (e.kind === 'and') {
+      pending.push(...e.items);
+      continue;
+    }
+
+    const free = freePredicateVars(e);
+
+    if (free.size !== 1) {
+      return null;
+    }
+
+    const [name] = free;
+
+    if (!names.has(name)) {
+      return null;
+    }
+
+    const bucket = out.get(name);
+
+    if (bucket === undefined) {
+      out.set(name, [e]);
+    } else {
+      bucket.push(e);
+    }
+  }
+
+  return out;
+};
+
+/**
+ * One position's gate from BOTH spellings at once: its inline constraint and whichever clause
+ * conjuncts name it. `undefined` ungated, `null` to decline.
+ *
+ * The conjuncts are ANDed as AST before compiling, so the position still carries exactly ONE
+ * compiled predicate and the sweep's hot loop is unchanged — an array of predicates per position
+ * would put a loop inside the per-vertex branch, which is the cost this file has measured five
+ * times ([[ts-closure-size-is-load-bearing]]).
+ */
+const gateWith = (
+  n: NodePattern,
+  extra: readonly Expr[] | undefined,
+): InlinePred | null | undefined => {
+  if (extra === undefined || extra.length === 0) {
+    return inlineOf(n);
+  }
+
+  // A clause conjunct is evaluated with the node bound to its own variable, exactly as an inline
+  // `WHERE` is, so it needs one — and the caller has already proved each conjunct reads only it.
+  if (n.variable === undefined) {
+    return null;
+  }
+
+  for (const c of n.properties ?? []) {
+    if (freePredicateVars(c.value).size > 0) {
+      return null;
+    }
+  }
+
+  const parts: Expr[] = n.where !== undefined ? [n.where, ...extra] : [...extra];
+
+  for (const part of parts) {
+    for (const name of freePredicateVars(part)) {
+      if (name !== n.variable) {
+        return null;
+      }
+    }
+  }
+
+  const where: Expr = parts.length === 1 ? parts[0] : { kind: 'and', items: parts };
+
+  return { pred: compilePredicate(n.properties, where, n.variable), bindVar: n.variable };
+};
+
 /** A clause `WHERE` the 1-hop count can evaluate per edge, with the vars it reads. */
 type HopPred = {
   fn: CompiledExpr;
@@ -1857,11 +1960,13 @@ const patternCountOf = <T>(
       if (interiorPred === null) {
         return null;
       }
-    } else if (segments.length !== 1 && segments.length !== 2) {
-      // The node shape returned above, having folded its clause `WHERE` into the
-      // tally; of what is left only the 1-hop and 2-hop tallies can answer one.
-      return null;
     }
+
+    // FOUR OR MORE segments used to decline here, which is what made the clause spelling of a
+    // long-chain gate cost 139x its inline twin (item 305). They now fall through to the sweep
+    // below, which SPLITS the predicate across the positions it names. The node shape returned
+    // above, having folded its clause `WHERE` into the tally; nothing else between here and
+    // there reads `where`.
 
     // On a TWO-segment pattern a predicate reading exactly ONE of the start or the middle is
     // admissible, and they route to different shapes.
@@ -2027,7 +2132,16 @@ const patternCountOf = <T>(
   // 27 tests in `four-hop-count.test.ts` now exercise the sweep. That makes them an INDEPENDENT
   // oracle for it, written against a different implementation before this one existed.
   if (segments.length >= 4) {
-    return longChainCount(start, segments, rowOf);
+    // A clause `WHERE` is split across positions (item 305). `null` means one of its conjuncts is
+    // not a per-vertex test on a position — a correlation, a constant, or a name this pattern does
+    // not bind — and the whole family declines, as it did for every clause `WHERE` before.
+    const clauseGates = where === undefined ? undefined : chainGatesOf(where, start, segments);
+
+    if (clauseGates === null) {
+      return null;
+    }
+
+    return longChainCount(start, segments, rowOf, clauseGates);
   }
 
   return null;
@@ -2053,15 +2167,18 @@ const patternCountOf = <T>(
  * 374.9ms, 1.50x the wrong way. Those were one question with two different answers, which is the
  * argument for measuring each depth rather than taking the asymptotics on trust (item 301).
  *
- * UNFILTERED ONLY, and the gate above already guarantees it: a clause `WHERE` over four or more
- * segments returns `null` there, and every node position is required `plainNode` here. Labels
- * ARE carried at every position — the sweep VISITS each one, so there is a once-per-element place
- * to test it, which is what the end positions of the degree products lack.
+ * A clause `WHERE` is SPLIT across the positions it names (item 305) and an inline constraint is
+ * carried at every position (item 303), so the two spellings of one gate take one route — they
+ * were 4708.2ms and 33.9ms for the identical question before. Labels are carried at every
+ * position too: the sweep VISITS each one, so there is a once-per-element place to test it, which
+ * is what the end positions of the degree products lack.
  */
 const longChainCount = <T>(
   start: NodePattern,
   segments: readonly Segment[],
   rowOf: (n: number) => T,
+  /** Clause-`WHERE` conjuncts bucketed by the node variable each one reads (item 305). */
+  clauseGates?: ReadonlyMap<string, Expr[]>,
 ): CountOf<T> | null => {
   if (
     segments.some(
@@ -2089,7 +2206,9 @@ const longChainCount = <T>(
   // (item 303). The argument is item 219's, one family along: a position the sweep VISITS has a
   // once-per-element place to put a gate, and the sweep visits every position. `null` from
   // `inlineOf` is an OPEN constraint — one whose value reads a variable — which still declines.
-  const startGate = inlineOf(start);
+  const gateFor = (n: NodePattern): InlinePred | null | undefined =>
+    gateWith(n, n.variable === undefined ? undefined : clauseGates?.get(n.variable));
+  const startGate = gateFor(start);
 
   if (startGate === null) {
     return null;
@@ -2098,7 +2217,7 @@ const longChainCount = <T>(
   const gates: (InlinePred | undefined)[] = [];
 
   for (const seg of segments) {
-    const g = inlineOf(seg.node);
+    const g = gateFor(seg.node);
 
     if (g === null) {
       return null;

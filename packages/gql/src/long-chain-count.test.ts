@@ -31,7 +31,9 @@ const g = (): Graph => {
       graph.addVertex({
         // Three labels, unevenly spread, so a label test at any position changes the answer.
         labels: [i % 3 === 0 ? 'A' : 'B', 'N'],
-        properties: { i },
+        // `s` is on EVEN vertices only, so a PRESENCE test is a real gate rather than an
+        // always-true one — every vertex carries `i`, so `i IS NOT NULL` would decide nothing.
+        properties: i % 2 === 0 ? { i, s: 1 } : { i },
       }),
     );
   }
@@ -58,13 +60,23 @@ const countOf = (q: string): number => {
 };
 
 /**
- * The same question down both routes. `tail` is appended verbatim; it must be a predicate that
- * READS a bound name (a constant `WHERE 1 = 1` is a different gate) and that is true of every
- * vertex in the fixture, so the only thing it changes is the ROUTE.
+ * The same question down both routes: the sweep's `count(*)`, and the ENUMERATION of the same
+ * pattern, whose row count is the same number because a fixed-length chain is a walk and nothing
+ * here is `DISTINCT`.
+ *
+ * This oracle used to be an always-true clause `WHERE a.i >= 0`, on the grounds that a clause
+ * predicate over four or more segments declined the whole family. **Item 305 taught the sweep
+ * exactly that shape**, so the predicate spelling would have made this the sweep compared against
+ * itself — every test below passing by agreeing with the thing it tests. Projecting a COLUMN
+ * cannot be answered by any count shortcut, because `detectCountShortcut` requires `count(*)` and
+ * a projection is not one; it is also the oracle the Rust twin uses, which is the reason to prefer
+ * it over hunting for the next predicate the sweep still declines.
  */
+const enumeratedOf = (q: string): number => [...query(g(), q)].length;
+
 const sweptAndWalked = (pattern: string): number => {
   const swept = countOf(`MATCH ${pattern} RETURN count(*) AS c`);
-  const walked = countOf(`MATCH ${pattern} WHERE a.i >= 0 RETURN count(*) AS c`);
+  const walked = enumeratedOf(`MATCH ${pattern} RETURN a.i AS z`);
 
   expect(swept).toBe(walked);
 
@@ -431,7 +443,7 @@ describe('the way-count arrays GROW, and the growth is mid-pass', () => {
     const pattern = `(a:S)${'-[:E]->()'.repeat(5)}-[:E]->(z)`;
     const on = (q: string): number => ([...query(graph, q)] as { c: number }[])[0]?.c ?? -1;
     const swept = on(`MATCH ${pattern} RETURN count(*) AS c`);
-    const walked = on(`MATCH ${pattern} WHERE a.i >= 0 RETURN count(*) AS c`);
+    const walked = [...query(graph, `MATCH ${pattern} RETURN a.i AS z`)].length;
 
     // 10 seeds x 4^6.
     expect(swept).toBe(10 * 4 ** 6);
@@ -444,7 +456,7 @@ describe('the way-count arrays GROW, and the growth is mid-pass', () => {
     const on = (q: string): number => ([...query(graph, q)] as { c: number }[])[0]?.c ?? -1;
 
     expect(on(`MATCH ${pattern} RETURN count(*) AS c`)).toBe(
-      on(`MATCH ${pattern} WHERE a.i >= 0 RETURN count(*) AS c`),
+      [...query(graph, `MATCH ${pattern} RETURN a.i AS z`)].length,
     );
   });
 });
@@ -486,5 +498,97 @@ describe('the sweep is BOUNDED in the path count, which is the point', () => {
     const [row] = [...query(regular(), q)] as { c: number }[];
 
     expect(row?.c).toBe(120 * 5 ** 10);
+  });
+});
+
+describe('a clause WHERE is split across the positions it names', () => {
+  // Item 305. These are EXACT counts and each is also compared against the enumeration by
+  // `clauseAndWalked`; the plain 204 is the discriminator that says the predicate ran at all.
+  //
+  // The oracle for this whole file had to be replaced before any of this could be written: it was
+  // an always-true clause `WHERE a.i >= 0`, which this item makes the sweep ANSWER, so it would
+  // have become the sweep compared against itself.
+  const clauseAndWalked = (q: string): number => {
+    const swept = countOf(q);
+
+    expect(swept).toBe(enumeratedOf(q.replace('count(*) AS c', 'a.i AS z')));
+
+    return swept;
+  };
+  const five = (where: string): string =>
+    `MATCH ${PLAIN_OUT_PATTERN} ${where} RETURN count(*) AS c`;
+
+  test('one position at a time, all six', () => {
+    expect(clauseAndWalked(five(''))).toBe(204);
+
+    for (const [name, want] of [
+      ['a', 158],
+      ['b', 157],
+      ['c', 159],
+      ['d', 160],
+      ['e', 160],
+      ['f', 155],
+    ] as const) {
+      expect(clauseAndWalked(five(`WHERE ${name}.i > 5`))).toBe(want);
+    }
+  });
+
+  test('the flipped spelling of the same compare answers the same', () => {
+    expect(clauseAndWalked(five('WHERE 5 < f.i'))).toBe(155);
+    expect(clauseAndWalked(five('WHERE f.i > 5'))).toBe(155);
+  });
+
+  test('a conjunction over two positions, and over three', () => {
+    expect(clauseAndWalked(five('WHERE b.i > 5 AND e.i < 20'))).toBe(132);
+    expect(clauseAndWalked(five('WHERE a.i > 2 AND c.i > 5 AND f.i < 20'))).toBe(113);
+  });
+
+  test('a clause WHERE and an inline constraint on the SAME node conjoin', () => {
+    const inlineB = '(a:N)-[:E]->(b {i: 7})-[:E]->(c)-[:E]->(d)-[:E]->(e)-[:E]->(f)';
+
+    // `b.i > 5` is implied by `{i: 7}`, so the two together are the inline count — a gate that
+    // OVERWROTE instead of conjoining would also return this, which is why the second case
+    // (where the clause names a DIFFERENT node) is here too.
+    expect(clauseAndWalked(`MATCH ${inlineB} WHERE b.i > 5 RETURN count(*) AS c`)).toBe(7);
+    expect(clauseAndWalked(`MATCH ${inlineB} WHERE f.i > 5 RETURN count(*) AS c`)).toBe(6);
+    // And a clause conjunct that CONTRADICTS the inline one must count nothing.
+    expect(clauseAndWalked(`MATCH ${inlineB} WHERE b.i < 5 RETURN count(*) AS c`)).toBe(0);
+  });
+
+  test('a presence test is a gate here, and matches its inline twin', () => {
+    const inlineS = '(a:N)-[:E]->(b {s: 1})-[:E]->(c)-[:E]->(d)-[:E]->(e)-[:E]->(f)';
+
+    // Unlike the native sweep, which needs a leaf form per test, a TS gate runs the general
+    // path's own `satisfies`, so ANY single-node predicate is expressible — `IS NOT NULL`
+    // included. `s` is on even vertices only, so this decides something.
+    expect(clauseAndWalked(five('WHERE b.s IS NOT NULL'))).toBe(102);
+    expect(clauseAndWalked(five('WHERE f.s IS NOT NULL'))).toBe(102);
+    expect(clauseAndWalked(`MATCH ${inlineS} RETURN count(*) AS c`)).toBe(102);
+  });
+
+  test('what it still DECLINES, each still answered correctly', () => {
+    // A CORRELATION is not a per-vertex test: `a.i <= f.i` needs both ends at once. The `=`
+    // spelling answers 0 over this fixture, so the `<=` one carries the discriminator.
+    expect(clauseAndWalked(five('WHERE a.i <= f.i'))).toBe(100);
+    expect(clauseAndWalked(five('WHERE a.i = f.i'))).toBe(0);
+    // A DISJUNCTION across two positions is not a conjunction of per-position gates.
+    expect(clauseAndWalked(five('WHERE b.i > 5 OR e.i < 20'))).toBe(195);
+    // A CONSTANT reads no name at all, so there is no position to put it at.
+    expect(clauseAndWalked(five('WHERE 1 = 1'))).toBe(204);
+  });
+
+  test('SEVERAL conjuncts on ONE position conjoin, from either spelling', () => {
+    // Two clause conjuncts on one node, which a gate that kept only the first would answer as
+    // 157 (the `> 5` half alone).
+    expect(clauseAndWalked(five('WHERE b.i > 5 AND b.i < 10'))).toBe(34);
+    expect(clauseAndWalked(five('WHERE b.i > 5 AND b.i < 10 AND e.i > 3'))).toBe(24);
+
+    // The same question with one half spelled as an INLINE `WHERE` on the node. A gate that
+    // dropped the node's own inline predicate once a clause conjunct joined it would answer the
+    // clause half alone.
+    const inlineWhere = '(a:N)-[:E]->(b WHERE b.i > 5)-[:E]->(c)-[:E]->(d)-[:E]->(e)-[:E]->(f)';
+
+    expect(clauseAndWalked(`MATCH ${inlineWhere} RETURN count(*) AS c`)).toBe(157);
+    expect(clauseAndWalked(`MATCH ${inlineWhere} WHERE b.i < 10 RETURN count(*) AS c`)).toBe(34);
   });
 });

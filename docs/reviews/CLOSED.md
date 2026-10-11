@@ -372,11 +372,32 @@ an independent derivation). Measure with`cd packages/native && bun run bench:gat
   N15, the deliberate EQUIVALENT one (remove the `next[j] == 0` transition test and a gate is
   merely re-evaluated per edge), kept in the set so a run proves it can tell "not covered" from
   "cannot differ".
-- **The same spelling gap in the TS engine** — **OPEN and priced by item 304 at 139x.** Same
-  fixture, same question at position 2: inline `{k: 1}` 33.9ms, clause `WHERE n2.k = 1`
-  **4708.2ms**, flipped `1 = n2.k` 4890.2ms, label `(n2:H)` 45.4ms — against 0.90-1.10ms for all
-  four in native. Item 303 reaches `inlineOf` from the PATTERN NODE, so a clause `WHERE` naming
-  the same node never gets there. `bun run bench:gate`'s three-spellings table keeps both columns.
+- ~~**The same spelling gap in the TS engine**~~ — **CLOSED by item 305 at 112x.** Same fixture,
+  same question at position 2: the clause `WHERE n2.k = 1` went **4708.2 -> 42.0ms** against the
+  inline `{k: 1}` spelling's 37.9, and the flipped `1 = n2.k` to 35.4. A clause `WHERE` is now
+  SPLIT into conjuncts and each is bucketed by the ONE node variable it reads, then applied at
+  that position — the same pushdown item 304 did in native, found there first.
+  **The oracle for the whole `long-chain-count.test.ts` file had to be replaced FIRST**, and that
+  is the transferable part: its 33 tests compared `count(*)` against the same query plus an
+  always-true clause `WHERE a.i >= 0`, chosen in item 298 precisely because a clause predicate
+  over four or more segments declined. This item makes the sweep ANSWER that, so the oracle would
+  have become the sweep compared against itself — 33 tests passing by agreeing with the thing they
+  test. It is now an ENUMERATION (project a column, count the rows), which no count shortcut can
+  answer because `detectCountShortcut` requires `count(*)`, and which is what the Rust twin always
+  used. **A route-forcing oracle has a lifetime: it ends when you teach the route it relied on
+  declining.** The swap was made and all 33 tests re-run GREEN before the feature was written, so
+  the two oracles are known to agree.
+  Still declined, each asserted by answer: a CORRELATION (`a.i <= f.i`, which needs both ends at
+  once), a DISJUNCTION across two positions, and a CONSTANT (`WHERE 1 = 1` reads no name, so there
+  is no position to put it at). A presence test IS a gate here, unlike native — a TS gate runs the
+  general path's own `satisfies`, so any single-node predicate is expressible.
+  9 of 11 mutants caught; **M2 and M6 survive alone and their PAIR is caught**, which is the
+  result worth keeping. M2 buckets every conjunct under the first name seen; `gateWith`'s
+  free-variable check then refuses the mis-bucketed gate and the whole pattern DECLINES, so M2
+  alone is a slow right answer that no correctness test can catch. M6 removes that check, which
+  with correct bucketing can never fire. Together they are a wrong answer. **A guard whose mutant
+  survives is not necessarily dead — it may be what turns someone else's bug into a decline**, and
+  the way to tell is to mutate both.
   **Its own open question — "did the fourth arm FIX the cliff or MOVE it?" — is answered by item
   298: it moved it to FIVE**, and the row below closes it for every depth.
 - ~~**The count family's cliff at FIVE segments**~~ — **CLOSED by item 298 at 719x (5 hops) and
