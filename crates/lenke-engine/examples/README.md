@@ -57,6 +57,7 @@ enumeration's is flat.
 | What does a row cost, by what is returned?                            | `query_bench -- perrow`              |
 | What does turning query text into a plan cost?                        | `query_bench -- plan`                |
 | How many allocations does a parse make, and of what sizes?            | `alloc_count_probe`                  |
+| Would a parse CACHE change any plan? (prepared vs direct)             | `prepared_parity_probe`              |
 | Does an indexed key seek beat a scan?                                 | `query_bench -- seeded`              |
 | What does a bulk write (SET) pay?                                     | `storage_bench -- write`             |
 | What does a second label on every edge cost?                          | `storage_bench -- multilabel`        |
@@ -98,6 +99,16 @@ question in its module header — read the header before touching it.
   JSON render — and exists because item 291's conclusion turns on their RATIO, which no bench
   reports. Read it with the audit entry; the numbers are what any attempt at the parse cost has
   to beat.
+- `prepared_parity_probe` — would a PARSE CACHE in the native engine change any answer or any
+  route? `lnk_query` parses and optimizes on every call with no cache, while the TS engine has had
+  both since items 228/229, and a cache must hold a PREPARED plan (`$n` stays an `Expr::Param`)
+  rather than a direct one (`$n` is substituted to a literal during the parse) — two different
+  parses. This compares their optimized plans shape by shape, against a store with and without an
+  index on the gated key, because a substituted literal could seed an index a bound param would
+  not. Ten of fourteen are identical; the carve-out worth the binary is the one with no wrong
+  answer to give it away — **a parameterized INSERT plans as `InsertFrom`/`InsertNodeExpr` instead
+  of the literal `Insert` path**, so a cache would silently cost it performance. Re-run it before
+  widening what the cache admits.
 - `alloc_count_probe` — how many heap allocations `gql::parse` makes, and of what SIZES. A
   counting global allocator, which is why it is its own binary: it would perturb every other case
   in a shared process. Written at item 317 to settle a target that had been recorded as

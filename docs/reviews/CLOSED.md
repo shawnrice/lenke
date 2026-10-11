@@ -874,6 +874,37 @@ bench`** so one-case-per-process is a flag instead of the bespoke script items 2
   aggregate-over-chain and never builds the frontier, so the engine that OOM'd had to be the TS
   one — and 3 and 4 hops run in 8 and 13 ms at ~80 MB where 5 is fatal, which is exactly the count
   family's ≤4-segment coverage edge (item 290).
+- **The native engine has NO parse or plan cache and the TypeScript one has had both since item
+  228 — priced at 2.38x, route-verified, NOT BUILT (318).** `lnk_query` (`ffi.rs:628`) calls
+  `parse_with_params_limited` + `optimize_indexed` **on every call**; a grep for
+  `parse_cache`/`plan_cache` across the crate finds nothing. **This is the cause of a number
+  carried since item 291 without one**: `bench:usage` indexed point lookup is **ts 1.20M ops/s
+  against the native engine's 239.9k**, and from `percall_probe` a native serving call is parse
+  1163ns + optimize 334 + exec ~300 = ~1797, against the prepared path's clone+bind+optimize at
+  **456**. **83% of a serving call re-derives a plan from text it has already seen**, and the
+  pieces to stop it already exist (`parse_prepared`, `bind::bind_params`, `prepared.rs`).
+  **Verified before designed** (`examples/prepared_parity_probe.rs`): a cache must hold a PREPARED
+  plan (`$n` stays `Expr::Param`) rather than a direct one (`$n` substituted to a literal during
+  the parse), so the question is whether the two optimize to the same thing. **Ten of fourteen
+  shapes are the IDENTICAL optimized plan, in a store with AND without an index on the gated
+  key** — every seeding shape included (`= $n`, the reversed `$n =`, inline `{k: $n}`, a range, an
+  `IN` list, a two-param AND, a param used twice, a two-hop gate, an aggregate gate).
+  Three carve-outs, which are the design:
+  1. a param in `LIMIT`/`SKIP` — prepared mode REFUSES, so the fallback is automatic;
+  2. **a param in an INSERT value — prepared mode ACCEPTS and plans it DIFFERENTLY**:
+     `InsertFrom { input: Row, .. InsertNodeExpr }` instead of the literal `Insert { .. InsertNode }`
+     path. Same answer, different operator, **so a cache would route every parameterized INSERT off
+     the fast path with no wrong answer to give it away.** Needs an explicit carve-out, not an
+     error-triggered fallback;
+  3. an unbound param's message differs (`E_MISSING_PARAMETER: …` vs a bare `unbound parameter $x`)
+     but **the two shipped paths AGREE at the boundary** — `ffi.rs:1116` sets the code itself
+     rather than reading it off the message, so this is NOT an existing divergence. A cache inside
+     `lnk_query` must set it explicitly, since the direct arm recovers it by `strip_prefix`.
+     **Items 228/229 are the trap list, not just precedent**: an admission filter is load-bearing (a
+     write-heavy workload sends unique text per call — `bench:usage`'s append row is
+     `INSERT (:Event {name: 'ev${i}'})`), and **saturation hides an admission bug** ("single-use texts
+     do not grow the cache" is true either way once the cache is at its cap — assert on the filter's
+     own `seen` counter).
 - **`gql::parse` at ~1300ns for a 57-byte query (43% of a serving call)** — **1.115x taken at 317,
   still open, and 294's "STRUCTURAL rather than allocational" is WITHDRAWN.** It is allocational:
   **50 allocations and 4187 bytes to parse 57 bytes** (a two-hop count: 80 and 7986), counted with
