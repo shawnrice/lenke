@@ -498,9 +498,14 @@ filter` / `+ start filter` — gated chains the rule deliberately does NOT route
   **`recordUndo`'s closure is allocated per edge for nothing outside a transaction** — item 140's
   own lesson at a call site that still has it — and it is worth **20ns, 0.7%**. Not worth the
   guard, which is the kind of certainty worth measuring before acting on. Batching the closures
-  into a compact op-record array (asked at 313) buys that 20ns and costs a dispatch switch; what is
-  **unmeasured** is the transaction case, where the closures are RETAINED until commit, so the
-  open question there is resident memory and not time.
+  into a compact op-record array (asked at 313) buys that 20ns and costs a dispatch switch. The
+  transaction case was recorded unmeasured and is now MEASURED (315): a transaction retains **270
+  bytes a write** — 54.1 MB per 200k, 270 MB for the million the bench decodes — of which the undo
+  closures are **87.5 B/write (32%)**, the buffered events and their token arrays **133.5 (49%)**
+  and the touched-vertex set **50.0 (19%)**. Additive to 54.2 of 54.1, byte-identical over three
+  rounds. **Open and PRICED, not attempted**: a tagged compact log would capture maybe 55-60 of
+  those 87.5 (the operands still have to live somewhere) against a refactor of eight `recordUndo`
+  call sites that are each a rollback correctness path.
   **The emission's 500ns — SETTLED at 313, and it is NOT IN THIS ROW.** 312 left it as a measured
   fact with no mechanism (allocate-but-don't-dispatch saves 519ns; dispatch-a-reused-event saves
   ~0; a no-listener early return in `Emitter.emit` **REFUTED** over three alternated rounds,
@@ -564,6 +569,24 @@ filter` / `+ start filter` — gated chains the rule deliberately does NOT route
   `write: append node` **flipped direction between two isolated runs** (117.9k -> 111.7k, then
   113.7k -> 117.6k, native control flat both times): **no regression established, none ruled out
   below ~10%**, and no mechanism for one.
+- **A transaction retains 270 bytes a write; one flat token buffer took 16.5% of it (315, 316).**
+  Each buffered event carried its reactive tokens in an array hung off the event under a symbol key
+  — one array allocation AND one hidden-class transition per buffered write — when **nothing needs
+  them grouped by event** (the drain bumps each occurrence once, in any order). Now one flat
+  `txTokens` per transaction, the event carries a bare marker, and commit hands the buffer over
+  once after the flush: **54.1 -> 45.2 MB per 200,000 writes, 44.5 bytes a write**, byte-identical
+  over three alternated rounds, with the non-transaction emit path unchanged in time (63.2 against
+  64.9 ns, inside the control's own 74.5/63.2/64.2 spread).
+  Four places must agree, which is the whole risk: buffer time pushes, `markMutated` contributes
+  nothing for a marked event but still COUNTS the write, commit hands over after the flush, and
+  BOTH rollback paths discard — an inner frame to its savepoint mark, a full rollback outright.
+  **U7 survived the first mutation run**: dropping the clear on full rollback is invisible until the
+  NEXT transaction commits, because nothing is handed to the drain on a rollback at all, so "a
+  rolled-back transaction advances nothing" passes with the bug in place. The assertion was in the
+  right place and one transaction too early. **U8 looks equivalent and is not** — clearing
+  `txTokens` in place when the local commit just took is the same array — and is caught.
+  **When the quantity you care about is bytes, measure bytes**: `Bun.gc(true)` + `heapUsed` read
+  byte-identical on every round, after a session of 30%-spread timing rows.
 - **`traverse 1-hop + filter` is 32x native (48.0ms against 1.5)** — and **item 311 decomposed it:
   the predicate machinery is 9% of the row.** It returns ONE row, so none of it is item 289's
   carrier, and the planner already reaches the right arm (`(a:Person)` is vacuous here, so

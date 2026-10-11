@@ -139,6 +139,52 @@ describe('reactive counters', () => {
     expect(g.epoch('N')).toBe(0);
   });
 
+  test('a removal INSIDE a transaction bumps the tokens of the element it removed', async () => {
+    const g = new Graph();
+
+    g.addVertex({ id: 'a', labels: ['Person'], properties: { name: 'x' } });
+
+    await tick();
+
+    g.transaction(() => {
+      g.removeVertex('a');
+    });
+
+    await tick();
+
+    // The hard case for a deferred counter: the event is buffered, and by the time it dispatches
+    // at commit the element has been evicted and its `labels` getter would throw. So the tokens
+    // have to be read at BUFFER time, while it is still live, and carried to the drain. If they
+    // were read late this would be 1 (or an exception); if they were dropped, also 1.
+    expect(g.epoch('Person')).toBe(2);
+    expect(g.epoch('name')).toBe(2);
+    expect(g.version).toBe(2);
+  });
+
+  test('an inner frame rollback drops its tokens and keeps the outer frame tokens', async () => {
+    const g = new Graph();
+
+    g.beginTransaction();
+    g.addVertex({ id: 'keep', labels: ['Kept'], properties: {} });
+
+    g.beginTransaction();
+    g.addVertex({ id: 'drop', labels: ['Dropped'], properties: {} });
+    g.rollbackTransaction(); // inner frame only — the outer transaction is still open
+
+    g.addVertex({ id: 'keep2', labels: ['Kept'], properties: {} });
+    g.commitTransaction();
+
+    await tick();
+
+    // The inner frame's buffered event is discarded to its savepoint mark, and the tokens it
+    // contributed have to be discarded with it — they are accumulated FLAT for the whole
+    // transaction, so a truncation that forgets them would leave `Dropped` bumped by a write that
+    // never happened.
+    expect(g.epoch('Dropped')).toBe(0);
+    expect(g.epoch('Kept')).toBe(2);
+    expect(g.version).toBe(2);
+  });
+
   // `@graph/mutate` is a re-emission of each of the sixteen mutation events, so a caller can
   // subscribe once instead of sixteen times. Item 313 skips BUILDING it when nobody is subscribed,
   // which is unobservable by construction — except inside a transaction, where the event would be
@@ -160,6 +206,36 @@ describe('reactive counters', () => {
     // Two, not one: the first write's event was buffered before the listener existed, and a
     // buffered event is dispatched to whoever is subscribed AT COMMIT.
     expect(mutations).toBe(2);
+  });
+
+  test('a rolled-back transaction leaves nothing behind for the next one', async () => {
+    const g = new Graph();
+
+    expect(() => {
+      g.transaction(() => {
+        g.addVertex({ id: 'gone', labels: ['Discarded'], properties: { ghost: 1 } });
+
+        throw new Error('nope');
+      });
+    }).toThrow('nope');
+
+    await tick();
+
+    g.transaction(() => {
+      g.addVertex({ id: 'real', labels: ['Kept'], properties: {} });
+    });
+
+    await tick();
+
+    // The transaction's token buffer is accumulated FLAT and handed over at commit, so a rollback
+    // that tore down the transaction without clearing it would hand the DISCARDED write's tokens
+    // to the next commit. Checking the counters straight after the rollback does not see that —
+    // nothing is handed over on a rollback at all — so it takes a second, committing transaction
+    // to make the leak observable.
+    expect(g.epoch('Discarded')).toBe(0);
+    expect(g.epoch('ghost')).toBe(0);
+    expect(g.epoch('Kept')).toBe(1);
+    expect(g.version).toBe(1);
   });
 
   test('a removal bumps the tokens of the element it removed', async () => {

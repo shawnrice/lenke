@@ -773,9 +773,17 @@ export class Graph {
   // error) rolled back the caller's earlier writes, left the depth at 0 so every
   // later write escaped the transaction, and made the caller's own commit throw
   // "commit called with no open transaction". The native engine keeps the frame.
-  private txMarks: Array<{ undo: number; events: number }> = [];
+  private txMarks: Array<{ undo: number; events: number; tokens: number }> = [];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private txEvents: Array<EmitterEvent<any, any>> = [];
+  // The reactive tokens of every buffered event, FLAT. They used to be an array hung off each
+  // event under a symbol key, which cost one array allocation and one hidden-class transition per
+  // buffered write — 133.5 bytes a write, the largest part of what a transaction retains (audit
+  // item 316). Nothing needs them grouped by event: the drain bumps each occurrence once, in any
+  // order. A nested frame's rollback truncates this to its savepoint mark alongside `txEvents`.
+  private txTokens: string[] = [];
+  /** Hands a committed transaction's flat token buffer to the deferred reactive drain. */
+  private readonly absorbTokens: (tokens: readonly string[]) => void;
   private txTouched = new Set<string>();
   // Edge analogue of `txTouched`: edge ids whose built-in edge constraints must be
   // re-checked at commit (deferred for edge writes).
@@ -992,17 +1000,28 @@ export class Graph {
       // element is evicted by the time it dispatches at commit), so prefer those.
       pendingWrites += 1;
 
+      // A buffered transaction event carries only a MARKER, because its tokens went into the
+      // transaction's flat `txTokens` at buffer time — read then, while the element was still
+      // live, since a removal nulls the element's graph ref before commit dispatches the event
+      // and its `labels` getter would throw here. `commitTransaction` hands that buffer over
+      // once, after the flush.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const buffered: string[] | undefined = (event as any)[TX_TOKENS];
-
-      if (buffered === undefined) {
+      if ((event as any)[TX_TOKENS] === undefined) {
         // Straight into the pending array: this path runs once per write and only ever iterated
         // what `tokensOf` handed back, so the intermediate arrays were pure garbage.
         this.pushTokens(event, pendingTokens);
-      } else {
-        for (const token of buffered) {
-          pendingTokens.push(token);
-        }
+      }
+
+      if (!drainQueued) {
+        drainQueued = true;
+        queueMicrotask(drainMutations);
+      }
+    };
+
+    // `pendingTokens` is local to this constructor, so commit reaches it through here.
+    this.absorbTokens = (tokens: readonly string[]) => {
+      for (const token of tokens) {
+        pendingTokens.push(token);
       }
 
       if (!drainQueued) {
@@ -3780,7 +3799,8 @@ export class Graph {
       // removal evicts the element (nulls its graph ref) before this event is
       // dispatched at commit, after which its `labels` getter would throw.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (event as any)[TX_TOKENS] = this.tokensOf(event);
+      (event as any)[TX_TOKENS] = true;
+      this.pushTokens(event, this.txTokens);
       this.txEvents.push(event);
 
       return event;
@@ -3854,7 +3874,11 @@ export class Graph {
 
   /** Open a transaction frame. Nesting increments depth; the outermost frame owns commit/rollback. */
   public beginTransaction = (): void => {
-    this.txMarks.push({ undo: this.txUndo.length, events: this.txEvents.length });
+    this.txMarks.push({
+      undo: this.txUndo.length,
+      events: this.txEvents.length,
+      tokens: this.txTokens.length,
+    });
     this.txDepth += 1;
   };
 
@@ -3886,14 +3910,22 @@ export class Graph {
     }
 
     const events = this.txEvents;
+    const tokens = this.txTokens;
     this.txUndo = [];
     this.txEvents = [];
+    this.txTokens = [];
     this.#txSchema = null; // committed — the schema declarations stand
     this.txTouched.clear();
     this.txTouchedEdges.clear();
 
     for (const event of events) {
       this.emitter.emit(event as never);
+    }
+
+    // After the flush: every one of those events bumped `version` through `markMutated` and
+    // contributed no tokens of its own, so the epochs they touched arrive here, once.
+    if (tokens.length > 0) {
+      this.absorbTokens(tokens);
     }
   };
 
@@ -3910,10 +3942,11 @@ export class Graph {
     // so this is what gives a faulting statement per-statement atomicity without
     // destroying a transaction the caller opened.)
     if (this.txDepth > 1) {
-      const mark = this.txMarks.pop() ?? { undo: 0, events: 0 };
+      const mark = this.txMarks.pop() ?? { undo: 0, events: 0, tokens: 0 };
 
       this.undoTo(mark.undo);
       this.txEvents.length = mark.events; // discard the frame's buffered events
+      this.txTokens.length = mark.tokens; // ...and the tokens they contributed
       this.txDepth -= 1;
 
       return;
@@ -3951,6 +3984,7 @@ export class Graph {
     this.txMarks = [];
     this.txUndo = [];
     this.txEvents = []; // discard everything buffered (forward writes and undo replay alike)
+    this.txTokens = [];
     this.txTouched.clear();
     this.txTouchedEdges.clear();
   };
