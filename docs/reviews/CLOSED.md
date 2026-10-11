@@ -390,13 +390,28 @@ absence** — `{k: null}` is the one place in a pattern where that distinction i
   i.e. two definitions of one thing. The CSR floor below it (6.56x) needs a dense adjacency the TS
   graph does not expose; NATIVE already has one, which is why its sweep needs no hash at all
   (item 299). Re-open only with a routing rule that does not duplicate the sweep.
-- **Routing 3 and 4 segments to the SWEEP instead of their degree products** — **OPEN, with a
-  strong hint and no measurement.** The sweep does one pass per segment where `fourSegmentCount`
-  iterates interior PAIRS, and at five hops it answers in 0.37ms where the four-hop product takes
-  0.96ms for a FIFTH of the paths. Not taken in item 298 on purpose: those walks carry items 140,
-  206 and 218-222 between them, and what this file has measured over and over is what
-  restructuring a hot walk costs shapes that never reach it
-  (`ts-closure-size-is-load-bearing`).
+- ~~**Routing 3 and 4 segments to the SWEEP instead of their degree products**~~ — **CLOSED by
+  item 301, and the hint was HALF WRONG.** A SPLIT verdict, 200,000 vertices at degree 3, three
+  alternated rounds, disjoint ranges on both: at FOUR hops the sweep wins **1.91x** (980.2 →
+  512.4ms) and at THREE it LOSES **1.50x** (250.1 → 374.9ms). So four and up now sweep, three
+  stays on its product, and `fourSegmentCount` was DELETED (110 lines) rather than left
+  unreachable — its gates were identical to the sweep's, so the sweep subsumes it exactly. Final
+  A/B after the deletion: **1.71x at four hops** (the conservative min-of-min; round 3 was noisy
+  on the swept side), 3-hop unmoved with OVERLAPPING ranges, and the 5/6/7-hop rows flat as
+  internal controls. The four-hop spelling pair moved 754.8 → 595.2ms.
+  **Why it splits, which the asymptotic hint missed:** `threeSegmentCount` pays per MIDDLE EDGE
+  and multiplies two degree SIDES — O(E), no frontier, no hashing — which beats three sweep passes
+  with a hash an edge. The four-segment one paid per INTERIOR PAIR, O(E x degree), which loses to
+  four O(E) passes. **The crossover is exactly where a product stops being linear in the edges.**
+  Taking the hint on trust would have made the 3-hop count 1.5x slower.
+  **The deletion made the suite STRONGER and that is measured:** item 290's 27
+  `four-hop-count.test.ts` tests, written against the degree product before the sweep existed, now
+  exercise the sweep — an independent oracle in the strongest sense available. Re-running item
+  300's 13 mutants with that coverage, every catch count ROSE (M6 18 → 34, M10 19 → 32, M4 17 → 28) and all 13 are still caught. Deleting a tuned arm normally loses its guards; here it
+  transferred them, because both arms answered one question under identical gates — which is what
+  was checked BEFORE deleting.
+  ONE and TWO segments are not touched and will not be: they carry predicates and inline gates the
+  sweep has no route for (items 219-222).
 - ~~**`decodeRows`' per-row closure**~~ — **CLOSED by item 289 at 1.10-1.21x** on single-column
   row results, disjoint ranges, for every native query that returns rows (FFI and wasm share
   `graph.ts`). The shaping loop allocated a closure PER ROW (`columns.forEach` inside `rows.map`)
