@@ -480,6 +480,30 @@ filter` / `+ start filter` — gated chains the rule deliberately does NOT route
   columns, which is the control that proves the per-position rule rather than merely an unrelated
   row being unmoved. `count 3-hop + end filter` was MISSING from the bench, which is how three
   consecutive items moved a cliff without seeing it; it is a row now.
+- **`traverse 1-hop + filter` is 32x native (48.0ms against 1.5)** — and **item 311 decomposed it:
+  the predicate machinery is 9% of the row.** It returns ONE row, so none of it is item 289's
+  carrier, and the planner already reaches the right arm (`(a:Person)` is vacuous here, so
+  `farWalkFits` routes to the far-side drive that gates each far vertex once and adds its
+  in-degree, cheapest-first). 200,000 vertices, 1,000,000 edges, min of 7:
+  - `> 1000`, **nothing passes** so no degree lookup runs: **4.39ms** — the whole per-vertex
+    machinery, 22ns a vertex.
+  - `> -1`, everything passes: 93.11ms. By hand, the in-degree lookups ALONE over 200k vertices:
+    35.78ms. So the cost is `index.get(v.id)` then `.get(type).size` — two Map lookups, one
+    string-keyed, at **445ns per vertex when all pass and ~1100ns when the passing set is
+    strided**, which is cache behaviour, not arithmetic.
+  - the whole algorithm BY HAND, no engine: **20.10ms**. So the 32x is ~2.5x of engine overhead
+    above a 13x data-layout floor.
+    Priced OUT of contention: the BINDING 5.5ms (11%), the `try/catch` in the loop body **0.56ms**
+    (folklore), the candidate source 3.8ms and in the unhelpful direction.
+    ~~`degreeOfTypes` missing the single-type fast path `bucketSize` has~~ — **REFUTED**, three
+    alternated rounds one case per process: control {49.1, 47.4, 45.9} against {49.3, 48.6, 43.3},
+    completely interleaved. V8 does not charge for an iterator over a one-element array.
+    **The remaining ~2.5x needs a profile, not another hypothesis**, and the 13x floor is the SAME
+    CSR target the row below reaches from the other direction — two independent rows pointing at one
+    structural change is a better argument for it than either alone.
+    In passing: inline `{age: 45}` 6.37ms against the clause `x.age = 45` at 7.30, a 1.15x
+    spelling gap on the lifted-equality path — far below this family's historical 4x and 13.3x, but
+    the same shape, now measured.
 - **`count 3-hop` in TS is 84x native (401.6ms against 4.8)** — the widest cross-engine ratio left
   in `bun run bench`, and **item 310 refuted the two cheap answers to it.**
   1. ~~Route three-segment chains to the SWEEP instead of the degree product~~ — **REFUTED at 10x
