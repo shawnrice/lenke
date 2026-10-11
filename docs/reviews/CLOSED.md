@@ -480,6 +480,33 @@ filter` / `+ start filter` — gated chains the rule deliberately does NOT route
   columns, which is the control that proves the per-position rule rather than merely an unrelated
   row being unmoved. `count 3-hop + end filter` was MISSING from the bench, which is how three
   consecutive items moved a cliff without seeing it; it is a row now.
+- ~~**The same reversal in NATIVE**~~ — **CLOSED by item 309 at 3.60x** (`count 3-hop + end
+filter` 14.4 -> 4.0ms isolated, min of 9 over three alternated rounds) **and 3.76x** on
+  `count 2-hop + end filter` (12.4 -> 3.3), which item 306's rule routes to the sweep precisely
+  when the END is gated. 4.0 lands on the start-gated row's own 4.0: after this the two are the
+  same shape. Controls flat (ungated 1.02, interior 1.01, start-gated 1.00) and the ts column —
+  a free calibrator for a `fastpath.rs` edit — unmoved.
+  **The GUARD is the item and it is measured, not chosen.** Native's forward seed is
+  `nodes_with_label`, an index bucket, where a reversed seed is a full live-node scan — so an
+  unguarded flip LOSES a selective seek: at 200,000 vertices with a 3-hop end gate it is **6.2x
+  WORSE at 1% label density and 2.2x worse at 10%**, and only 1.23x better at 100%. So the flip is
+  taken only when there is nothing to lose — no base label, or one every LIVE node carries, which
+  is then DROPPED rather than demoted (worth more: 12.59 -> 5.23ms, **2.41x**, against the
+  unguarded flip's 10.28). With the guard, 1% and 10% are untouched (1.01x, 1.00x) and every
+  answer is identical at every density.
+  `len() == live_node_count()` rests on an invariant now pinned by its own test: **`delete_node`
+  retains the id out of its label buckets**, so a bucket holds only live nodes and
+  `|bucket| == |live|` forces `bucket == live`. A first draft used `node_count()` and justified it
+  with a coincidence that cannot happen; the live count is sound AND tighter, since the slot count
+  stops firing the moment anything is deleted.
+  **Four mutants survived the first run and not one was a missing test**, which is the part worth
+  re-reading: Q4 edited a branch the guard makes UNREACHABLE (deleted the code — that is the right
+  answer to a survivor on dead code); Q9 showed the justifying comment was wrong; Q6's test never
+  reached the arm it was named after, because a chain whose ONLY filter is a label is answered
+  earlier (`chain_width` sees through an `IsLabeled` filter) — found by instrumenting the arm, and
+  fixed by adding an interior property gate so the earlier arms decline. Q7 (invert the flip
+  condition) cannot be caught and stays in the set to keep "no test covers this" distinguishable
+  from "no test can".
 - ~~**An END-gated chain pays for an extra pass AND an unnarrowed seed**~~ — **CLOSED by item 308
   at 3.69x** (`count 3-hop + end filter` 705.0 -> 190.9ms, one case per process, min of 6 over
   three alternated rounds). A gate on the LAST position costs twice: it needs a pass of its own

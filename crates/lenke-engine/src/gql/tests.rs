@@ -7084,3 +7084,250 @@ fn a_gated_shallow_chain_matches_enumeration() {
         assert_eq!(count, clause_end, "{hops} hops, clause gate on the end");
     }
 }
+
+/// Item 309: an END-gated chain is READ BACKWARDS, so its gate seeds instead of costing an extra
+/// pass over an unnarrowed frontier. These are the shapes a REVERSAL breaks and the forward tests
+/// cannot see — per-hop EDGE TYPES must reverse with the hops, per-hop DIRECTIONS must each flip,
+/// each LABEL must stay with its own node, and the base label must be DROPPED only when every
+/// slot carries it. Each has an ungated twin, so the gate is known to have done something.
+#[test]
+fn an_end_gated_chain_read_backwards_matches_enumeration() {
+    let st = sweep_fixture();
+    let end = " {k: 0}";
+
+    for (name, pattern, want) in [
+        // `:N` is on every node, so it is DROPPED rather than demoted and the flip fires.
+        (
+            "the universal base label",
+            format!("(a:N)-[:R]->(n1)-[:R]->(n2)-[:R]->(n3{end})"),
+            13,
+        ),
+        // `:A` is 4 of 12, so there is a seek to lose and the chain stays FORWARD. The answer is
+        // the same either way, which is the point: the guard is a perf decision and this pins
+        // that taking it or not cannot change the count.
+        (
+            "a selective base label",
+            format!("(a:A)-[:R]->(n1)-[:R]->(n2)-[:R]->(n3{end})"),
+            4,
+        ),
+        (
+            "per-hop edge types",
+            format!("(a:N)-[:R]->(n1)-[:S]->(n2)-[:R]->(n3{end})"),
+            4,
+        ),
+        (
+            "per-hop directions",
+            format!("(a:N)-[:R]->(n1)<-[:R]-(n2)-[:R]->(n3{end})"),
+            25,
+        ),
+        // An interior label must stay on its own position when the chain turns round.
+        (
+            "an interior label",
+            format!("(a:N)-[:R]->(n1)-[:R]->(n2:A)-[:R]->(n3{end})"),
+            7,
+        ),
+        (
+            "five hops",
+            format!("(a:N)-[:R]->(n1)-[:R]->(n2)-[:R]->(n3)-[:R]->(n4)-[:R]->(n5{end})"),
+            37,
+        ),
+    ] {
+        let last = if pattern.contains("n5") { "n5" } else { "n3" };
+        let (count, enumerated) = count_and_enumerated(&st, &pattern, last);
+        assert_eq!(count, enumerated, "reversed sweep != enumeration: {name}");
+        assert_eq!(count, want, "{name}");
+    }
+
+    // The ungated twins, so every number above is known to be narrower than its own control.
+    for (pattern, want) in [
+        ("(a:A)-[:R]->(n1)-[:R]->(n2)-[:R]->(n3)", 18),
+        ("(a:N)-[:R]->(n1)-[:S]->(n2)-[:R]->(n3)", 28),
+        ("(a:N)-[:R]->(n1)<-[:R]-(n2)-[:R]->(n3)", 72),
+    ] {
+        let (count, enumerated) = count_and_enumerated(&st, pattern, "n3");
+        assert_eq!(
+            (count, enumerated),
+            (want, want),
+            "the control moved: {pattern}"
+        );
+    }
+
+    // The CLAUSE spelling of an end gate takes the same flip.
+    let (count, enumerated) = count_and_enumerated(
+        &st,
+        "(a:N)-[:R]->(n1)-[:R]->(n2)-[:R]->(n3) WHERE n3.m > 5",
+        "n3",
+    );
+    assert_eq!((count, enumerated), (24, 24));
+
+    // A DELETED node with the universal label still in its bucket: the universality test counts
+    // SLOTS, so the label is still dropped — which is sound only because a deleted node has no
+    // edges either way, and this is what pins that.
+    let mut dead = sweep_fixture();
+    dead.delete_node(4);
+    let (count, enumerated) = count_and_enumerated(
+        &dead,
+        &format!("(a:N)-[:R]->(n1)-[:R]->(n2)-[:R]->(n3{end})"),
+        "n3",
+    );
+    assert_eq!(
+        count, enumerated,
+        "reversed sweep != enumeration after a delete"
+    );
+    assert_eq!(count, 11);
+}
+
+/// A fixture for ONE claim: the reversal may DROP a base label only when every LIVE node carries
+/// it, and `nodes_with_label(l).len() == live_node_count()` is how that is decided.
+///
+/// 13 nodes, twelve carrying `N` and one (slot 12) carrying only `Z`, with walks of its own — so
+/// dropping the label changes the ANSWER and not merely the route. Delete the `Z` node and the
+/// label becomes universal, which is the other side of the same test.
+#[cfg(test)]
+fn coincidence_fixture() -> crate::store::Store {
+    use crate::store::Builder;
+    let mut b = Builder::default();
+
+    for i in 0..12 {
+        b.node(
+            &["N"],
+            &[
+                ("k", Value::Num(f64::from(i % 4))),
+                ("m", Value::Num(f64::from(i))),
+            ],
+        );
+    }
+
+    // The one node OUTSIDE the label, with walks of its own so dropping the label changes the
+    // answer rather than merely the route.
+    b.node(&["Z"], &[("k", Value::Num(0.0)), ("m", Value::Num(99.0))]);
+
+    for i in 0u32..12 {
+        for d in 0u32..=(i % 4) {
+            b.edge(i, (i * 5 + d * 7 + 1) % 12, "R");
+        }
+    }
+
+    for d in 0u32..4 {
+        b.edge(12, d % 12, "R");
+    }
+
+    b.build()
+}
+
+/// The base label may be DROPPED by the reversal only when every LIVE node carries it. Here one
+/// live node does not, so the label stays — and the discriminator is the UNLABELLED start, which
+/// answers 17 where the labelled one answers 15. A mutant that drops the label regardless returns
+/// the 17.
+#[test]
+fn a_live_node_outside_the_base_label_keeps_the_label() {
+    let st = coincidence_fixture();
+    assert_eq!(st.nodes_with_label("N").len(), 12);
+    assert_eq!(st.live_node_count(), 13, "nothing is deleted yet");
+
+    let gated = "(a:N)-[:R]->(n1)-[:R]->(n2)-[:R]->(n3 {k: 0})";
+    let (count, enumerated) = count_and_enumerated(&st, gated, "n3");
+    assert_eq!(count, enumerated);
+    assert_eq!(count, 15, "the `:N` seed");
+
+    let (wide, wide_enum) =
+        count_and_enumerated(&st, "(a)-[:R]->(n1)-[:R]->(n2)-[:R]->(n3 {k: 0})", "n3");
+    assert_eq!(wide, wide_enum);
+    assert_eq!(
+        wide, 17,
+        "the unlabelled seed reaches the `:Z` node's walks too"
+    );
+
+    // DELETE the one node outside the label and it becomes universal, so the flip may now drop
+    // it. Same answer, which is the whole claim: the test decides a ROUTE, never a count.
+    let mut dead = coincidence_fixture();
+    dead.delete_node(12);
+    assert_eq!(dead.nodes_with_label("N").len(), dead.live_node_count());
+
+    let (after, after_enum) = count_and_enumerated(&dead, gated, "n3");
+    assert_eq!(after, after_enum);
+    assert_eq!(after, 15, "dropping a universal label changed the answer");
+}
+
+/// The invariant the universality test rests on, pinned directly: a DELETED node leaves its label
+/// buckets, so a bucket holds only live nodes and `|bucket| == |live|` forces `bucket == live`.
+/// If this ever stopped holding, the reversal would drop a label test that is not vacuous and the
+/// answer would be a silent superset — which is why it is asserted here and not inferred from
+/// `is_labeled`'s doc comment.
+#[test]
+fn a_deleted_node_leaves_its_label_bucket() {
+    let mut st = sweep_fixture();
+    assert_eq!(st.nodes_with_label("N").len(), 12);
+    assert!(st.is_labeled(4, "N"));
+
+    st.delete_node(4);
+
+    assert_eq!(
+        st.nodes_with_label("N").len(),
+        11,
+        "the bucket still lists a deleted node"
+    );
+    assert!(!st.is_labeled(4, "N"));
+    assert_eq!(st.nodes_with_label("N").len(), st.live_node_count());
+}
+
+/// A MULTI-LABEL gate on the end position must NOT be promoted to a base-label seek: the reversal
+/// promotes a SINGLE-label test on the new seed position into a bucket seek, and taking the first
+/// of several alternatives instead would seed the `A` bucket and miss every node that is `N` but
+/// not `A`.
+///
+/// Getting a multi-label gate to this arm at all took two steps, and both are the point:
+///
+///  - GQL cannot express one. `(n:A|N)` lowers to an `Or` of two `IsLabeled`s, which the gate
+///    refuses. Gremlin's `hasLabel('A','N')` IS one `IsLabeled` naming both, so the test is a
+///    Gremlin one even though it lives here — the arm under test is `exec`'s, shared by both
+///    surface languages, and this file owns the fixture.
+///  - a chain whose ONLY filter is a label never reaches this arm: `chain_width` sees through an
+///    `IsLabeled` filter, so an earlier arm answers it, at three hops and at five. **Verified by
+///    instrumenting the arm rather than assumed** — an earlier revision of this test asserted
+///    the right answers for queries that never reached the code it was named after, which is a
+///    test that checks nothing while being believed. The `has('k',0)` on an interior position is
+///    what makes the earlier arms decline and this one reply.
+#[test]
+fn a_multi_label_end_gate_is_not_promoted_to_a_seek() {
+    let st = sweep_fixture();
+    let count = |g: &str| -> f64 {
+        match &run(&crate::gremlin::parse(g).unwrap(), &st).rows[0][0] {
+            Value::Num(x) => *x,
+            other => panic!("not a count: {other:?}"),
+        }
+    };
+    let chain = "g.V().hasLabel('N').out('R').has('k',0).out('R').out('R').out('R')";
+
+    // `A|N` covers every node here, so the multi-label gate decides nothing and the answer is the
+    // ungated one — which is exactly what makes promoting only `A` catchable: that would seed 4
+    // nodes of 12 and answer the single-label number instead.
+    assert_eq!(count(&format!("{chain}.hasLabel('A','N').count()")), 19.0);
+    assert_eq!(
+        count(&format!("{chain}.count()")),
+        19.0,
+        "the ungated control"
+    );
+    // A single-label gate IS promoted, and must narrow.
+    assert_eq!(count(&format!("{chain}.hasLabel('A').count()")), 10.0);
+
+    // Independent derivations, by ENUMERATION of the GQL spellings of the same three questions.
+    for (pattern, want) in [
+        (
+            "(a:N)-[:R]->(n1 {k: 0})-[:R]->(n2)-[:R]->(n3)-[:R]->(n4:A|N)",
+            19,
+        ),
+        (
+            "(a:N)-[:R]->(n1 {k: 0})-[:R]->(n2)-[:R]->(n3)-[:R]->(n4)",
+            19,
+        ),
+        (
+            "(a:N)-[:R]->(n1 {k: 0})-[:R]->(n2)-[:R]->(n3)-[:R]->(n4:A)",
+            10,
+        ),
+    ] {
+        let (c, e) = count_and_enumerated(&st, pattern, "n4");
+        assert_eq!(c, e, "sweep != enumeration: {pattern}");
+        assert_eq!(c, want, "{pattern}");
+    }
+}

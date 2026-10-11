@@ -3472,7 +3472,7 @@ pub(super) fn try_nhop_sweep_count(
     if agg.func != AggFn::Count || agg.arg.is_some() || agg.distinct {
         return None;
     }
-    let chain = peel_gated_chain(input)?;
+    let mut chain = peel_gated_chain(input)?;
     let hops = chain.hops.len();
     // FOUR or more hops always, and TWO or THREE only when some position is GATED (item 306).
     //
@@ -3507,6 +3507,82 @@ pub(super) fn try_nhop_sweep_count(
     if !take {
         return None;
     }
+    // READ THE CHAIN BACKWARDS when its LAST position is gated and its first is not (item 309,
+    // the native half of 308's). A gate on the last position costs twice — it needs a pass of its
+    // own, and every pass before it runs over a frontier nothing has narrowed — where a gate on
+    // the FIRST narrows the seed and the degree tail answers the end. Measured at 20,000 vertices
+    // of degree 3, same chain, same gate: 0.80ms at the end against 0.29 at the start.
+    //
+    // A fixed-length chain read backwards is the SAME multiset of walks, so the count is
+    // identical. Two things have to travel with it, and they are why this is not just a `reverse`:
+    //
+    //   - the old BASE LABEL was applied by seeding from its bucket, and after the flip its
+    //     position is the one the walk ENDS at, where the degree tail never looks at a far
+    //     endpoint. Carrying it there would cost a gate's extra pass, so the flip is only taken
+    //     when there is nothing to carry (see the guard below) and the label is dropped;
+    //   - a single-label test on the new seed position is PROMOTED to the base label, which turns
+    //     the live-node scan back into a bucket seek. That keeps the two directions symmetric
+    //     rather than trading one engine's seek for the other's.
+    // GUARDED BY A MEASUREMENT, not by taste. An unguarded flip is a big REGRESSION when the base
+    // label is selective, because the forward seed is then a small bucket and the reversed one a
+    // full live-node scan. 200,000 vertices at five edges, a three-hop chain with an end gate,
+    // min of 7, forward against flipped:
+    //
+    // | seed bucket        | forward  | flipped  |            |
+    // | ------------------ | -------: | -------: | ---------- |
+    // | 1% (2,000)         |  3.21 ms | 20.05 ms | 6.2x WORSE |
+    // | 10% (20,000)       | 10.66 ms | 23.02 ms | 2.2x WORSE |
+    // | 100% (200,000)     | 12.62 ms | 10.28 ms | 1.23x better |
+    //
+    // So the flip is taken only when there is no seek to lose: no base label at all, or a base
+    // label every LIVE node carries, in which case the test cannot fail and is dropped — which
+    // gives the flip the pass count back as well as the narrower seed.
+    //
+    // `len() == live_node_count()` is sound and TIGHT, and it rests on an invariant worth naming
+    // rather than assuming: `delete_node` RETAINS the id out of its label buckets (see
+    // `is_labeled`, which binary-searches the bucket and documents the order `retain` preserves).
+    // So a bucket holds only live nodes, and `|bucket| == |live|` forces `bucket == live`.
+    // `node_count()` would also be sound — bucket <= live <= slots — but strictly weaker: it
+    // stops firing the moment anything is deleted. The invariant it depends on is pinned directly
+    // by `a_deleted_node_leaves_its_label_bucket`, because if that ever stopped holding this would
+    // drop a test that is not vacuous and the answer would be a silent SUPERSET.
+    let universal = chain
+        .base_label
+        .as_deref()
+        .is_some_and(|l| store.nodes_with_label(l).len() == store.live_node_count());
+    let flip = chain.gates[hops].is_some()
+        && chain.gates[0].is_none()
+        && (chain.base_label.is_none() || universal);
+    if flip {
+        chain.hops.reverse();
+        for h in &mut chain.hops {
+            h.out = !h.out;
+        }
+        chain.gates.reverse();
+
+        // The old base label is simply DROPPED. There is deliberately no "demote it to a gate at
+        // the far end" branch: the guard above only flips when there is nothing to carry — either
+        // there was no label, or every slot has it and the test cannot fail. Mutation is how that
+        // is known rather than argued: two mutants editing the demotion branch SURVIVED, because
+        // the branch could not run, and dead code behind a condition is worse than no code.
+        chain.base_label = None;
+
+        if let Some(g) = chain.gates[0].as_mut() {
+            if let Some(at) = g
+                .iter()
+                .position(|p| matches!(p, NbrPred::Labeled(ls) if ls.len() == 1))
+            {
+                if let NbrPred::Labeled(ls) = g.remove(at) {
+                    chain.base_label = Some(ls[0].clone());
+                }
+
+                if g.is_empty() {
+                    chain.gates[0] = None;
+                }
+            }
+        }
+    }
+
     // Resolved wanted edge-type ids per hop, first to last — parallel to `chain.hops`.
     let mut wants: Vec<Vec<u32>> = Vec::with_capacity(hops);
     for h in &chain.hops {
