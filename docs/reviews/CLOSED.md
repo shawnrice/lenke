@@ -319,6 +319,43 @@ absence** — `{k: null}` is the one place in a pattern where that distinction i
   change.
   Still open and priced here: anything that DECLINES a count shortcut pays **50-85x** (the general
   matcher is 727-1154ns a path against 13.7ns), which is one target and not a family of them.
+  **Its own open question — "did the fourth arm FIX the cliff or MOVE it?" — is answered by item
+  298: it moved it to FIVE**, and the row below closes it for every depth.
+- ~~**The count family's cliff at FIVE segments**~~ — **CLOSED by item 298 at 719x (5 hops) and
+  2603x (6)**, 200 nodes of degree 5, min of 3: 266.03 → 0.37ms and 1353.82 → 0.52ms. Diagnosed
+  by the RATE and not the time — a degree product's ns/path FALLS as the path count grows while
+  the general matcher's is FLAT, so the cliff is a rate that stops falling (8.7 / 9.9 ns at three
+  and four hops, 425.6 at five, 433.2 at six). `longChainCount` is a forward sweep of per-position
+  WAY COUNTS, **O(hops x edges) in time and O(vertices) in memory** against O(degree^hops) in
+  both, and deliberately the GENERAL case rather than a fifth arm, which would only have moved
+  the cliff to six. Labels are carried at every position including the two ends, which the degree
+  products cannot do. 14 of 14 mutants caught — **three only after two inequality assertions were
+  replaced with exact counts**, because `>= baseline` and `> 0` are intervals the mutant lives in.
+  The 2/3/4-segment walks are untouched and the regression control is exactly that: 32 bench rows
+  at ≥1.0ms, median 1.019, both >10% rows favouring the new side on workloads it cannot reach.
+- **The same cliff in NATIVE, and it is the LARGER one** — **OPEN and PRICED by item 298**, which
+  is where the attribution came out opposite to item 290's. Native's `exec` tallies an
+  aggregate-over-chain and never materializes a frontier (item 296), so it does not OOM — but
+  tallying is still once per PATH and its rate is flat at ~0.2-0.3 ns from four hops on. Both
+  engines AGREE on every answer at every depth, and the times diverge without bound: at 11 hops
+  (9,765,625,000 paths) TS is **0.42ms against native's 2223.64ms, a 5294x inversion** of the
+  standing "Rust core is 1.5-4x pure-TS" summary, multiplying by the degree per hop. The fix is
+  the same sweep in native's count path; what item 298 buys it is an ORACLE that did not exist
+  before, since native's current answer at 9.77e9 paths is independently derived from the sweep's.
+  Measure with `cd packages/native && bun run probe:depth`.
+- **`longChainCount`'s `Map<string, number>`** — **OPEN, named by item 298's own spelling-probe
+  row.** The sweep costs 1040ms at 200,000 vertices / 600,000 edges for five hops, which is far
+  more than 5 passes over 600k edges should be: the way counts are keyed by STRING vertex ids, and
+  that hash is most of the per-edge cost. An index-keyed array is the obvious move. Recorded
+  rather than attempted, because it needs a dense vertex index the TS graph does not currently
+  expose.
+- **Routing 3 and 4 segments to the SWEEP instead of their degree products** — **OPEN, with a
+  strong hint and no measurement.** The sweep does one pass per segment where `fourSegmentCount`
+  iterates interior PAIRS, and at five hops it answers in 0.37ms where the four-hop product takes
+  0.96ms for a FIFTH of the paths. Not taken in item 298 on purpose: those walks carry items 140,
+  206 and 218-222 between them, and what this file has measured over and over is what
+  restructuring a hot walk costs shapes that never reach it
+  (`ts-closure-size-is-load-bearing`).
 - ~~**`decodeRows`' per-row closure**~~ — **CLOSED by item 289 at 1.10-1.21x** on single-column
   row results, disjoint ranges, for every native query that returns rows (FFI and wasm share
   `graph.ts`). The shaping loop allocated a closure PER ROW (`columns.forEach` inside `rows.map`)

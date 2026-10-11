@@ -2020,7 +2020,136 @@ const patternCountOf = <T>(
     return fourSegmentCount(start, segments, rowOf);
   }
 
+  // FIVE OR MORE segments. Item 290 added the four-segment arm and left open whether it had
+  // FIXED the cliff or MOVED it; measured at item 298, it moved it. 200 nodes of degree 5, min
+  // of 3, ns PER PATH — the rate, because a degree product's rate falls as the path count grows
+  // while the general matcher's is flat:
+  //
+  //   2 hops      5,000 paths     0.08 ms     16.3 ns/path
+  //   3 hops     25,000 paths     0.22 ms      8.7 ns/path
+  //   4 hops    125,000 paths     1.24 ms      9.9 ns/path   <- the arms, rate flat
+  //   5 hops    625,000 paths   266.03 ms    425.6 ns/path   <- x43, and FLAT after
+  //   6 hops  3,125,000 paths  1353.82 ms    433.2 ns/path
+  //
+  // A fifth hand-written arm would move the cliff to six, so this one is the general case
+  // instead — and it is NOT another nested-loop product. See `longChainCount`.
+  if (segments.length >= 5) {
+    return longChainCount(start, segments, rowOf);
+  }
+
   return null;
+};
+
+/**
+ * An unfiltered count over FIVE OR MORE segments, as a forward sweep of per-position WAY COUNTS.
+ *
+ * `ways[v]` is how many ways position `k` can be `v`; one pass per segment advances it. Total
+ * cost is O(hops x edges) and total memory is bounded by the VERTEX count, where enumerating the
+ * paths is O(degree^hops) in both. That is the whole point: the nested-loop products
+ * ({@link threeSegmentCount}, {@link fourSegmentCount}) buy one hop each because each new hop is
+ * one more loop, so they cannot reach an arbitrary depth. A sweep has no such bound.
+ *
+ * The LAST segment is a weighted sum of DEGREES rather than a sixth pass, so it owes none of the
+ * three per-edge costs item 218 removed from {@link side} — with no far label there is no
+ * endpoint to resolve and the answer is a bucket SIZE.
+ *
+ * Deliberately NOT a replacement for the two-, three- and four-segment walks, which stay exactly
+ * as they are. Those are tuned and heavily guarded (items 140, 206, 218-222, 290), and this file
+ * has measured four times what restructuring a hot walk costs shapes that never reach it
+ * (`ts-closure-size-is-load-bearing`). Whether the sweep also beats them at three and four hops
+ * is a real question with a real answer, and it is a SEPARATE item with its own screen.
+ *
+ * UNFILTERED ONLY, and the gate above already guarantees it: a clause `WHERE` over four or more
+ * segments returns `null` there, and every node position is required `plainNode` here. Labels
+ * ARE carried at every position — the sweep VISITS each one, so there is a once-per-element place
+ * to test it, which is what the end positions of the degree products lack.
+ */
+const longChainCount = <T>(
+  start: NodePattern,
+  segments: readonly Segment[],
+  rowOf: (n: number) => T,
+): CountOf<T> | null => {
+  if (
+    !plainNode(start) ||
+    segments.some(
+      (s) =>
+        !plainRel(s.rel) ||
+        s.rel.variable !== undefined ||
+        s.rel.direction === 'both' ||
+        !plainNode(s.node),
+    )
+  ) {
+    return null;
+  }
+
+  const vars = [start.variable, ...segments.map((s) => s.node.variable)].filter(
+    (v): v is string => v !== undefined,
+  );
+
+  if (new Set(vars).size !== vars.length) {
+    return null; // a shared node variable is a self-join the sweep cannot express
+  }
+
+  const types = segments.map((s) => relTypeNames(s.rel.label));
+
+  if (types.some((t) => t === null)) {
+    return null;
+  }
+
+  const resolved = types as (string[] | undefined)[];
+  const legs = segments.map((s, i) => ({
+    out: s.rel.direction === 'out',
+    types: resolved[i],
+    label: s.node.label,
+  }));
+  const startLabel = start.label;
+
+  return (graph, params) => {
+    const _ = params;
+    let ways = new Map<string, number>();
+
+    for (const v of candidateVertexSource(graph, startLabel)) {
+      if (matchesLabel(v, startLabel)) {
+        ways.set(v.id, 1);
+      }
+    }
+
+    for (let i = 0; i < legs.length - 1; i++) {
+      const leg = legs[i];
+      const far = effectiveLabel(graph, leg.label);
+      const index = leg.out ? graph.edgesFromByLabel : graph.edgesToByLabel;
+      const next = new Map<string, number>();
+
+      for (const [id, w] of ways) {
+        for (const e of edgesOfTypes(index.get(id), leg.types)) {
+          if (far !== undefined && !matchesLabel(leg.out ? e.to : e.from, far)) {
+            continue;
+          }
+
+          const farId = leg.out ? e.toId : e.fromId;
+
+          next.set(farId, (next.get(farId) ?? 0) + w);
+        }
+      }
+
+      // Nothing reaches this position, so nothing reaches any later one either.
+      if (next.size === 0) {
+        return rowOf(0);
+      }
+
+      ways = next;
+    }
+
+    const last = legs[legs.length - 1];
+    const lastFar = effectiveLabel(graph, last.label);
+    let count = 0;
+
+    for (const [id, w] of ways) {
+      count += w * side(graph, id, last.out, last.types, lastFar);
+    }
+
+    return rowOf(count);
+  };
 };
 
 /**

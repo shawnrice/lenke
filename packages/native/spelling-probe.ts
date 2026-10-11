@@ -409,6 +409,18 @@ const GROUPS: [string, readonly string[]][] = [
       'MATCH (x)<-[:E]-(d)<-[:E]-(c)<-[:E]-(b)<-[:E]-(a:P) RETURN count(*) AS c',
     ],
   ],
+  // FIVE hops, which is `longChainCount` rather than a degree product (item 298). The sweep
+  // takes one pass per segment and reads a per-leg direction flag, so a reversal is five
+  // independent flips — and the START label moves to the other end of the written pattern,
+  // which is the position the sweep SEEDS. Getting that wrong does not change the answer when
+  // the graph makes both ends symmetric, so the TIME is the signal here, as it is above.
+  [
+    'five hops: forward vs the reversed arrows (item 298)',
+    [
+      'MATCH (a:P)-[:E]->(b)-[:E]->(c)-[:E]->(d)-[:E]->(e)-[:E]->(x) RETURN count(*) AS c',
+      'MATCH (x)<-[:E]-(e)<-[:E]-(d)<-[:E]-(c)<-[:E]-(b)<-[:E]-(a:P) RETURN count(*) AS c',
+    ],
+  ],
 ];
 
 const timed = (q: string): { ms: number; answer: string } => {
