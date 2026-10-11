@@ -38,6 +38,14 @@ export class Emitter<
 > {
   private readonly listeners: Map<Key, Set<StoredListener>>;
 
+  // The dispatch snapshot per event type, rebuilt only when that type's listener set changes.
+  // `emit` has to iterate a copy (see there), and allocating one per emit charges every write in
+  // the host graph for a set that changes approximately never: audit item 313 found two listeners
+  // subscribed to each of sixteen event types for the lifetime of a `Graph`, so the per-emit `new
+  // Set(...)` was copying the same two functions a million times during an ingest. Invalidating on
+  // subscribe/unsubscribe is the same snapshot semantics without the allocation.
+  private readonly snapshots: Map<Key, readonly StoredListener[]>;
+
   private enabled: boolean;
 
   private readonly onError: (error: unknown, event: any) => void;
@@ -49,6 +57,7 @@ export class Emitter<
   constructor(params: EmitterOptions = {}) {
     const { enabled = false, onError } = params;
     this.listeners = new Map();
+    this.snapshots = new Map();
     this.enabled = enabled;
     // Default: surface a listener error on a microtask — visible to the host's
     // unhandled-error handling, but it never breaks dispatch or the caller.
@@ -89,24 +98,25 @@ export class Emitter<
     type: TType,
     listener: Listener<TEvent>,
   ): () => void {
-    const listeners = this.listenersFor(type);
-    listeners.add(listener);
+    this.listenersFor(type).add(listener);
+    this.snapshots.delete(type);
 
-    return () => listeners.delete(listener);
+    return () => this.detach(type, listener);
   }
 
   once<TType extends Key, TEvent extends TypeMap[TType]>(
     type: TType,
     listener: Listener<TEvent>,
   ): () => void {
-    const listeners = this.listenersFor(type);
     const wrapped: StoredListener = (event) => {
-      listeners.delete(wrapped);
+      this.detach(type, wrapped);
       listener(event);
     };
-    listeners.add(wrapped);
 
-    return () => listeners.delete(wrapped);
+    this.listenersFor(type).add(wrapped);
+    this.snapshots.delete(type);
+
+    return () => this.detach(type, wrapped);
   }
 
   emit<TType extends Key, TEvent extends TypeMap[TType]>(event: TEvent): TEvent {
@@ -114,12 +124,17 @@ export class Emitter<
       return event;
     }
 
-    // Snapshot before iterating: listeners that subscribe/unsubscribe inside a
-    // handler don't affect the current emission. Without this, a handler that
-    // re-subscribes for the same event would loop indefinitely on a single
-    // emit. `new Set(undefined)` yields an empty Set, so the missing-key case
-    // needs no fallback.
-    for (const listener of new Set(this.listeners.get(event.type))) {
+    // Iterate a snapshot, not the live set: listeners that subscribe or unsubscribe inside a
+    // handler don't affect the current emission. Without that, a handler re-subscribing for the
+    // same event would loop indefinitely on a single emit.
+    //
+    // The snapshot is CACHED and invalidated by `on` / `once` / `detach`, because it used to be a
+    // `new Set(...)` built per emit over a listener set that changes approximately never — see
+    // the field. Every path that can mutate the set clears the cache, which includes the one that
+    // is easy to miss: a `once` wrapper detaching ITSELF mid-dispatch. The array it is detaching
+    // from is this stable copy, so the remaining listeners of this emission still run, exactly as
+    // they did when the copy was a Set.
+    for (const listener of this.snapshotFor(event.type)) {
       try {
         listener(event);
       } catch (error) {
@@ -152,5 +167,36 @@ export class Emitter<
     }
 
     return set;
+  }
+
+  /**
+   * The single place a listener is removed, so the dispatch snapshot cannot outlive it. Every
+   * unsubscribe comes through here — the closure `on` returns, the one `once` returns, and the
+   * `once` wrapper detaching itself from inside a dispatch.
+   */
+  private detach(type: Key, listener: StoredListener): void {
+    const set = this.listeners.get(type);
+
+    if (set?.delete(listener) === true) {
+      this.snapshots.delete(type);
+    }
+  }
+
+  /** The cached dispatch list for `type`, built on the first emit after a subscription change. */
+  private snapshotFor(type: Key): readonly StoredListener[] {
+    const cached = this.snapshots.get(type);
+
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    const set = this.listeners.get(type);
+    // An unsubscribed type caches the empty array too: a write-heavy host emits events nothing is
+    // listening for, and that should cost one Map hit rather than a fresh allocation each time.
+    const snapshot: readonly StoredListener[] = set === undefined ? [] : [...set];
+
+    this.snapshots.set(type, snapshot);
+
+    return snapshot;
   }
 }

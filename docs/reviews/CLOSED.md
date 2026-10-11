@@ -541,6 +541,29 @@ filter` / `+ start filter` — gated chains the rule deliberately does NOT route
   a median **1.097x**, and the row reads 130.0k isolated against 94.7k in the table.
   `version`/`epoch` — what `@lenke/react` polls — had **no direct test** before this; ten added,
   all passing against the pristine engine too.
+- **The rest of that cascade — 2.32x more (314), and the emission is now ~11% of what it cost.**
+  The floor came first: the ndjson decode disables events for its whole load, so the same ingest
+  loop under `disableEvents()` is the engine with the cascade off — **2345ns an edge against 2783
+  before 313 and 2643 after**, so the emission was **~438ns** and ~300ns of it was still there.
+  Two parts, priced separately: **`tokensOf` allocated THREE arrays per write** for a topology
+  event (`[...labels]`, `Object.keys`, then a spread to join them) where its one hot caller only
+  iterated the result — **37.1ns** — and **`Emitter.emit` built a `new Set(...)` snapshot per
+  emit** over a listener set that holds the same two functions for a `Graph`'s lifetime, now cached
+  per type and invalidated on `on`/`once`/detach — **77.8ns**. Together **164.2 -> 63.7 ns an emit**;
+  on the shipped form **145.2 -> 62.6 (2.32x)**, cumulatively **223.2 -> 62.6 (3.57x)** since 312,
+  and the 1M-edge loop **2783.9 -> 2393.5 (1.16x)** — leaving **~48ns of the original ~438ns**, near
+  enough the events-off floor that the next write-path item should look elsewhere.
+  **DECLINED at its ceiling, without being written: an `eventsEnabled()` guard at the sixteen emit
+  call sites.** With events off a write still allocates an event and crosses two frames to an early
+  return, 1.2M times in the decode row — but deleting those calls OUTRIGHT (an upper bound, not a
+  candidate) reads **2345.6 -> 2343.7 (1.001x)**. V8 sinks the allocation and inlines the frames.
+  Pricing the ceiling settles a whole family for the cost of one harness.
+  **T3 survived mutation and was a real gap**: `once` invalidating on subscribe is only needed for
+  `once` on a type already emitted, because its self-detach covers the rest — and the four new
+  cache tests had covered that case for `on` and not for `once`.
+  `write: append node` **flipped direction between two isolated runs** (117.9k -> 111.7k, then
+  113.7k -> 117.6k, native control flat both times): **no regression established, none ruled out
+  below ~10%**, and no mechanism for one.
 - **`traverse 1-hop + filter` is 32x native (48.0ms against 1.5)** — and **item 311 decomposed it:
   the predicate machinery is 9% of the row.** It returns ONE row, so none of it is item 289's
   carrier, and the planner already reaches the right arm (`(a:Person)` is vacuous here, so

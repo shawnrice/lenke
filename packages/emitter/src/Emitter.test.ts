@@ -137,4 +137,63 @@ describe('Emitter', () => {
     emitter.emit(ev());
     expect(b).toHaveBeenCalledTimes(1); // ...but it's gone next time
   });
+
+  // The dispatch list is cached between emits (audit item 313/314: it used to be a fresh `Set`
+  // built per emit, which charged every write in the host graph for copying the same two
+  // functions). Everything above already covers the hazards that cache has when listeners change
+  // DURING a dispatch; these two cover the ones it adds when they change between dispatches.
+  test('a type emitted before anyone subscribed still dispatches afterwards', () => {
+    const emitter = new Emitter({ enabled: true });
+    const listener = mock();
+
+    emitter.emit(ev()); // nothing subscribed — an empty dispatch list for 'foo' is now cached
+    emitter.on('foo', listener);
+    emitter.emit(ev());
+
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  // The same hazard for `once`, which needs its own test and not a reading-off of the one above:
+  // `once`'s unsubscribe path invalidates the cache on its own (the wrapper detaches itself), so
+  // deleting the invalidation on its SUBSCRIBE path still fires-exactly-once correctly and still
+  // survives every other test here. What it breaks is only this: subscribing after that type has
+  // already been emitted, where the cached empty list means the listener never fires at all.
+  test('once() subscribed after that type was already emitted still fires', () => {
+    const emitter = new Emitter({ enabled: true });
+    const listener = mock();
+
+    emitter.emit(ev()); // nothing subscribed — an empty dispatch list for 'foo' is now cached
+    emitter.once('foo', listener);
+    emitter.emit(ev());
+
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  test('subscribing to one type does not disturb another type dispatch list', () => {
+    const emitter = new Emitter({ enabled: true });
+    const foo = mock();
+    const bar = mock();
+
+    emitter.on('foo', foo);
+    emitter.emit(ev()); // caches foo's list
+    emitter.on('bar', bar);
+    emitter.emit(new EmitterEvent('bar', {}));
+    emitter.emit(ev());
+
+    expect(foo).toHaveBeenCalledTimes(2);
+    expect(bar).toHaveBeenCalledTimes(1);
+  });
+
+  test('the last unsubscribe stops dispatch', () => {
+    const emitter = new Emitter({ enabled: true });
+    const listener = mock();
+    const off = emitter.on('foo', listener);
+
+    emitter.emit(ev()); // caches a one-listener list
+    off();
+    emitter.emit(ev());
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(emitter.hasListeners('foo')).toBe(false);
+  });
 });

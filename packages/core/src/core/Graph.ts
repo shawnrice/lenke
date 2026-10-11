@@ -990,13 +990,19 @@ export class Graph {
       // deferred step below runs, so reading labels/keys there would throw. A
       // buffered transaction event already captured them at buffer time (the
       // element is evicted by the time it dispatches at commit), so prefer those.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const tokens: string[] = (event as any)[TX_TOKENS] ?? this.tokensOf(event);
-
       pendingWrites += 1;
 
-      for (const token of tokens) {
-        pendingTokens.push(token);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const buffered: string[] | undefined = (event as any)[TX_TOKENS];
+
+      if (buffered === undefined) {
+        // Straight into the pending array: this path runs once per write and only ever iterated
+        // what `tokensOf` handed back, so the intermediate arrays were pure garbage.
+        this.pushTokens(event, pendingTokens);
+      } else {
+        for (const token of buffered) {
+          pendingTokens.push(token);
+        }
       }
 
       if (!drainQueued) {
@@ -1131,6 +1137,21 @@ export class Graph {
    * membership changed and `epoch('age')` iff some age value changed.
    */
   private tokensOf(event: GraphEvent): string[] {
+    const out: string[] = [];
+
+    this.pushTokens(event, out);
+
+    return out;
+  }
+
+  /**
+   * `tokensOf` into a caller's array. The topology case used to cost THREE allocations for one
+   * write — `[...labels]`, `Object.keys(properties)`, then `[...labels, ...keys]` to join them —
+   * and the caller that matters runs once per write and only iterates the result, so it never
+   * needed an array of its own. `tokensOf` keeps its signature for the one caller that does
+   * (`Graph.emit` stores the array on a buffered transaction event).
+   */
+  private pushTokens(event: GraphEvent, out: string[]): void {
     const value = event.value as Record<string, any>;
 
     switch (event.type) {
@@ -1138,29 +1159,60 @@ export class Graph {
       case '@graph/VertexRemoved':
       case '@graph/EdgeAdded':
       case '@graph/EdgeRemoved': {
-        const labels: string[] = value?.labels ? [...value.labels] : [];
-        const keys: string[] = value?.properties ? Object.keys(value.properties) : [];
+        if (value?.labels) {
+          for (const label of value.labels as Iterable<string>) {
+            out.push(label);
+          }
+        }
 
-        return [...labels, ...keys];
+        if (value?.properties) {
+          for (const key of Object.keys(value.properties)) {
+            out.push(key);
+          }
+        }
+
+        return;
       }
       case '@graph/LabelAddedToVertex':
       case '@graph/LabelRemovedFromVertex':
       case '@graph/LabelAddedToEdge':
-      case '@graph/LabelRemovedFromEdge':
-        return value?.label ? [value.label as string] : [];
+      case '@graph/LabelRemovedFromEdge': {
+        if (value?.label) {
+          out.push(value.label as string);
+        }
+
+        return;
+      }
       case '@graph/VertexPropertyChanged':
       case '@graph/EdgePropertyChanged':
       case '@graph/VertexPropertyRemoved':
-      case '@graph/EdgePropertyRemoved':
-        return value?.key ? [value.key as string] : [];
+      case '@graph/EdgePropertyRemoved': {
+        if (value?.key) {
+          out.push(value.key as string);
+        }
+
+        return;
+      }
       case '@graph/VertexPropertiesChanged':
-      case '@graph/EdgePropertiesChanged':
-        return value?.next ? Object.keys(value.next) : [];
+      case '@graph/EdgePropertiesChanged': {
+        if (value?.next) {
+          for (const key of Object.keys(value.next)) {
+            out.push(key);
+          }
+        }
+
+        return;
+      }
       case '@graph/VertexPropertiesRemoved':
-      case '@graph/EdgePropertiesRemoved':
-        return (value?.keys as string[]) ?? [];
+      case '@graph/EdgePropertiesRemoved': {
+        for (const key of (value?.keys as string[] | undefined) ?? []) {
+          out.push(key);
+        }
+
+        return;
+      }
       default:
-        return [];
+        return;
     }
   }
 
