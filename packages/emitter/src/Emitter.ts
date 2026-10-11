@@ -73,6 +73,18 @@ export class Emitter<
     return this.enabled;
   }
 
+  /**
+   * Whether anyone is currently subscribed to `type`. For a caller that has to BUILD the event
+   * before it can emit it: with no listeners the event is unobservable, so the construction can
+   * be skipped. (`on` allocates the bucket, and `off` leaves it behind empty, so the size has to
+   * be checked and not just the key.)
+   */
+  hasListeners(type: Key): boolean {
+    const set = this.listeners.get(type);
+
+    return set !== undefined && set.size > 0;
+  }
+
   on<TType extends Key, TEvent extends TypeMap[TType]>(
     type: TType,
     listener: Listener<TEvent>,

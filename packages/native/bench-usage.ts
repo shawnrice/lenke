@@ -349,6 +349,37 @@ const WORKLOADS: Workload[] = [
   },
 ];
 
+// One workload per process. Every row here shares a warm graph and an allocator with the rows
+// before it, so an A/B over the whole table measures each row against a different heap on each
+// side — and the native columns, which no TypeScript change can reach, moved a median 1.097x
+// across a two-round A/B in audit item 313, which puts this instrument's floor above the effect
+// it was being asked to resolve. Selecting one row rebuilds the process around it.
+//
+// `BENCH_ONLY=append` matches by substring; a trailing `$` makes it exact
+// (`BENCH_ONLY='write: append node$'`), for a name that is a prefix of another.
+const ONLY = process.env.BENCH_ONLY;
+
+const selectWorkloads = (): Workload[] => {
+  if (ONLY === undefined) {
+    return WORKLOADS;
+  }
+
+  if (ONLY.endsWith('$')) {
+    const exact = ONLY.slice(0, -1);
+
+    return WORKLOADS.filter((w) => w.name === exact);
+  }
+
+  return WORKLOADS.filter((w) => w.name.includes(ONLY));
+};
+
+const SELECTED = selectWorkloads();
+
+if (SELECTED.length === 0) {
+  console.error(`BENCH_ONLY=${ONLY} matched no workload of ${WORKLOADS.length}`);
+  process.exit(1);
+}
+
 const engines: Engine[] = [];
 
 if (WANTED.has('ts')) {
@@ -479,7 +510,7 @@ const header = ['workload'.padEnd(34), ...cols.map((c) => c.padStart(10))].join(
 console.log(header);
 console.log('-'.repeat(header.length));
 
-for (const w of WORKLOADS) {
+for (const w of SELECTED) {
   const cells = engines.flatMap((e) =>
     [false, true].map((indexed) => {
       try {

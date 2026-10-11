@@ -951,6 +951,39 @@ export class Graph {
       }
     };
 
+    // One microtask per BURST of writes, not one per write. `markMutated` only has to run
+    // synchronously far enough to read the tokens off a still-live element; the counter work
+    // itself is already deferred, so a thousand writes in a tick can share one drain. The
+    // pending tokens accumulate in insertion order with duplicates kept, so every write bumps
+    // every one of its tokens exactly as a per-write microtask did — `tokenEpochs` and
+    // `mutationVersion` land on the same numbers, one microtask boundary later at the latest.
+    //
+    // This is audit item 171's short-circuit one level up: that one stopped a write with no
+    // subscribers from scheduling a timer, this one stops a write from allocating a closure and
+    // enqueueing a microtask of its own.
+    let pendingTokens: string[] = [];
+    let pendingWrites = 0;
+    let drainQueued = false;
+
+    const drainMutations = () => {
+      drainQueued = false;
+      // Advance the reactive counters (deferred so a burst of mutations
+      // coalesces into one React notify). A mutation event always means a
+      // committed write — events are observation-only, nothing vetoes.
+      this.mutationVersion += pendingWrites;
+      pendingWrites = 0;
+
+      for (const token of pendingTokens) {
+        this.tokenEpochs.set(token, (this.tokenEpochs.get(token) ?? 0) + 1);
+      }
+
+      // Hand back the array rather than clearing it: a burst that grew it to a million entries
+      // should not keep that capacity alive until the next one.
+      pendingTokens = [];
+
+      scheduleNotify();
+    };
+
     const markMutated = (event: GraphEvent) => {
       // Capture the touched tokens NOW, synchronously, while the element is
       // still attached — a removal nulls the element's graph ref before the
@@ -958,21 +991,18 @@ export class Graph {
       // buffered transaction event already captured them at buffer time (the
       // element is evicted by the time it dispatches at commit), so prefer those.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const tokens = (event as any)[TX_TOKENS] ?? this.tokensOf(event);
-      const doTheWork = () => {
-        // Advance the reactive counters (deferred so a burst of mutations
-        // coalesces into one React notify). A mutation event always means a
-        // committed write — events are observation-only, nothing vetoes.
-        this.mutationVersion += 1;
+      const tokens: string[] = (event as any)[TX_TOKENS] ?? this.tokensOf(event);
 
-        for (const token of tokens) {
-          this.tokenEpochs.set(token, (this.tokenEpochs.get(token) ?? 0) + 1);
-        }
+      pendingWrites += 1;
 
-        scheduleNotify();
-      };
+      for (const token of tokens) {
+        pendingTokens.push(token);
+      }
 
-      queueMicrotask(doTheWork);
+      if (!drainQueued) {
+        drainQueued = true;
+        queueMicrotask(drainMutations);
+      }
     };
 
     const graphMutationEvents: GraphEventType[] = [
@@ -995,6 +1025,24 @@ export class Graph {
     ];
 
     const onMutate = (event: GraphEventType) => {
+      // `@graph/mutate` is a re-emission of an event that has ALREADY been dispatched: it exists
+      // so a caller can subscribe once instead of sixteen times. With nobody subscribed to it,
+      // the wrapper event and its `{ original }` payload are two allocations, a `Graph.emit`
+      // call and a second `Emitter.emit` over an empty listener set, all per write, to reach
+      // nothing observable.
+      //
+      // Deciding that from the CURRENT subscriber list is sound because `onMutate` only ever runs
+      // while dispatching, never while buffering: inside a transaction the mutation event is held
+      // in `txEvents` and no listener is called at all, and `commitTransaction` zeroes `txDepth`
+      // BEFORE it flushes them. So a listener attached mid-transaction is already subscribed by
+      // the time this runs, and there is no window in which the event is built for a subscriber
+      // list that is not the one receiving it. (A `txDepth === 0` condition here was written
+      // first, for a window that does not exist — its mutant survived, which is what showed the
+      // condition to be unreachable and its justification false.)
+      if (!this.emitter.hasListeners('@graph/mutate')) {
+        return;
+      }
+
       this.emit(new EmitterEvent('@graph/mutate', { original: event }));
     };
 
