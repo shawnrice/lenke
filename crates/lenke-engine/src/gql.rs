@@ -629,9 +629,17 @@ enum Tok {
 }
 
 fn lex(s: &str) -> Result<Vec<Tok>, String> {
-    let b: Vec<char> = s.chars().collect();
+    // Both vectors are sized up front because both were measured GROWING: audit item 317 counted
+    // the allocations of one `parse` and found the char pre-pass reallocating 3 times and the
+    // token vector 4 times, 7 of the 19 allocations the lexer makes. `s.len()` is bytes and so an
+    // exact fit for ASCII and a safe over-reserve otherwise; one token per 4 bytes is a close
+    // middle for GQL (the 57-byte serving query lexes to 18), and the `+ 8` keeps a short query
+    // from reserving nothing. Both are transient, so an over-reserve costs a wider memset and
+    // never a second allocation.
+    let mut b: Vec<char> = Vec::with_capacity(s.len());
+    b.extend(s.chars());
     let mut i = 0;
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(s.len() / 4 + 8);
     while i < b.len() {
         let c = b[i];
         if c.is_whitespace() {

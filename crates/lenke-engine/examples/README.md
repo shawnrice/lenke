@@ -56,6 +56,7 @@ enumeration's is flat.
 | Which counts still enumerate vs shortcut?                             | `query_bench -- counts`              |
 | What does a row cost, by what is returned?                            | `query_bench -- perrow`              |
 | What does turning query text into a plan cost?                        | `query_bench -- plan`                |
+| How many allocations does a parse make, and of what sizes?            | `alloc_count_probe`                  |
 | Does an indexed key seek beat a scan?                                 | `query_bench -- seeded`              |
 | What does a bulk write (SET) pay?                                     | `storage_bench -- write`             |
 | What does a second label on every edge cost?                          | `storage_bench -- multilabel`        |
@@ -97,6 +98,14 @@ question in its module header — read the header before touching it.
   JSON render — and exists because item 291's conclusion turns on their RATIO, which no bench
   reports. Read it with the audit entry; the numbers are what any attempt at the parse cost has
   to beat.
+- `alloc_count_probe` — how many heap allocations `gql::parse` makes, and of what SIZES. A
+  counting global allocator, which is why it is its own binary: it would perturb every other case
+  in a shared process. Written at item 317 to settle a target that had been recorded as
+  "structural rather than allocational" — it is 50 allocations and 4187 bytes for a 57-byte query,
+  and the size histogram resolves the small end exactly because that is what names them (an
+  8-byte one is an identifier the lexer built, a 1-byte one is a variable name the descent
+  CLONED). Read it with the audit entry: three plausible suspects were eliminated by counting
+  them, each more cheaply than assuming would have cost.
 - `limit_product_probe` — what a CORRELATED cross product under a keyless `LIMIT`
   pays, and whether the cap reaches it at all. Its fixture is why it is its own
   binary: a tiny left side against a large right one, which the shared social

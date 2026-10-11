@@ -874,16 +874,40 @@ bench`** so one-case-per-process is a flag instead of the bespoke script items 2
   aggregate-over-chain and never builds the frontier, so the engine that OOM'd had to be the TS
   one — and 3 and 4 hops run in 8 and 13 ms at ~80 MB where 5 is fatal, which is exactly the count
   family's ≤4-segment coverage edge (item 290).
-- **`gql::parse` at 1296ns for a 57-byte query (43% of a serving call)** — **OPEN, and item 294
-  established it is STRUCTURAL rather than allocational.** The two costs visible in the source
-  were priced: the lexer's `Vec<char>` pre-pass is **60ns** (26ns with `with_capacity` — a 34ns
-  one-line saving, **2.6% of parse and below end-to-end resolution, so NOT made**), and the ~12
-  owned identifier `String`s are **177ns (14%)**. **The other ~1060ns (82%) is the scanning loop,
-  the recursive descent and the plan build.** Removing the strings needs `Tok<'a>` with
-  `Ident(&'a str)` — a lifetime through `Parser` and every token consumer — and it only pays if
-  the `Vec<char>` indexing goes too, since a borrowed token cannot point into a transient char
-  vector; they are one change. **Start from a profiler on `lex`/`parse_internal`, not from the
-  allocations.** Numbers reproducible in `percall_probe`.
+- **`gql::parse` at ~1300ns for a 57-byte query (43% of a serving call)** — **1.115x taken at 317,
+  still open, and 294's "STRUCTURAL rather than allocational" is WITHDRAWN.** It is allocational:
+  **50 allocations and 4187 bytes to parse 57 bytes** (a two-hop count: 80 and 7986), counted with
+  a counting global allocator in `examples/alloc_count_probe.rs`. 294 priced the two allocation
+  sources visible in the source — the `Vec<char>` pre-pass 60ns, the ~12 identifier `String`s
+  177ns — and attributed the remaining 82% to a category. **A remainder is not evidence for
+  whatever you were going to say about it.**
+  Split (a temporary `usize`-returning hook, since `lex` and `Tok` are private): **`lex` 334ns
+  (26%), the descent + plan build 1000ns (74%)** — the entry had them as one lump.
+  Resolving the allocation histogram to EXACT sizes names them: **12 of exactly 8 bytes inside
+  `lex`** (one per identifier — `b[start..i].iter().collect()` reserves the char COUNT as bytes
+  and Rust's first grow for a 1-byte element is capacity 8, so already one allocation each);
+  **20 in the descent at exact string lengths (1Bx10, 4Bx4, 5-7Bx5)** — identifier clones, of
+  which **ten are the one-byte variable name `u`, cloned ten times for a query that mentions it
+  three**; and **7 Vec growth reallocations**.
+  **SHIPPED: size the two vectors** (both measured growing — 3 for the char pre-pass, 4 for the
+  token vector). `gql::parse` **1297 -> 1163 ns (1.115x)**, parse+optimize 1.099x, allocations
+  **50 -> 45**, bytes **4187 -> 2779**; on the corpus `query_bench -- plan` reads **1.169x / 1.146x
+  / 1.113x** with its `gremlin 2-hop` row — a control the change cannot reach, since the production
+  Gremlin path never calls `gql::lex` — moving the OTHER way. All ranges disjoint.
+  **294 declined the char-vector line ALONE at 34ns / 2.6%, and that was correct for what it
+  measured**: nothing had counted the token vector's four reallocations. **A line priced in
+  isolation and declined is not the same fact as the change it belongs to.**
+  **DECLINED at its ceiling, 6.3%**: a keyword-classifying lexer. The descent performs **74
+  keyword comparisons** for an 18-token query (62 for a 10-token one — mostly fixed), which looks
+  like the answer and prices at **84ns** for all 74.
+  **Two more suspects eliminated by counting rather than assuming**: `bump()` clones every token it
+  consumes, but only **5** carry a String; and `plan.clone()`, the whole output tree re-allocated,
+  is 9 allocations and 60ns.
+  **STILL OPEN, now with a count**: the descent's **20 identifier clones** and `lex`'s **12**.
+  294's `Tok<'a>`/`Ident(&'a str)` route is confirmed from the other side — the 12 are already one
+  allocation each, so only borrowing touches them, and it forces the `Vec<char>` indexing out at
+  the same time — but it addresses the lexer's 12 only. **The descent's 20 are a separate change,
+  into the IR's owned `String` fields, and they are the larger half.**
 - ~~**Hoisting `takeResult`'s per-call `new BigUint64Array(1)`**~~ — **REFUTED at item 292 before
   being built: the allocation costs 0.4ns**, below the 4.9ns floor of calling an empty closure,
   because the JIT elides it. It looked free and obvious, which is exactly the case `CLAUDE.md`
