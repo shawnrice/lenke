@@ -54,6 +54,41 @@ const chain = (hops: number): string => {
   return `${q} RETURN count(*) AS c`;
 };
 
+/**
+ * ALTERNATING arrows — the shape the optimizer's `orient` rewrite CANNOT normalize, because there
+ * is no single orientation to flip to. This is a different question from the forward chain (it
+ * matches different walks), so it is here for its COST CURVE, not for an equality: native's sweep
+ * was OUT-only until item 302 and this column grew ~5x a hop (0.06 / 0.20 / 0.71 / 4.13ms at 4-7
+ * hops) while the pure-TS one stayed flat. Both are flat now; if either column starts climbing
+ * with the degree again, its peel has stopped accepting the shape.
+ */
+const mixed = (hops: number): string => {
+  let q = 'MATCH (a:N)';
+
+  for (let h = 0; h < hops; h++) {
+    q += h % 2 === 0 ? `-[:E]->(m${h})` : `<-[:E]-(m${h})`;
+  }
+
+  return `${q} RETURN count(*) AS c`;
+};
+
+/**
+ * THE SAME QUESTION WRITTEN BACKWARDS. `MATCH (a)-[:E]->(b)-[:E]->(c)` and
+ * `MATCH (c)<-[:E]-(b)<-[:E]-(a)` match the same walks, so the counts must be equal AND the costs
+ * must be comparable — that is the invariant this whole engine is named for. Printed beside the
+ * forward column because a sweep that only peels one direction makes the reversed spelling fall
+ * all the way back to enumeration, and nothing but a side-by-side cost shows that.
+ */
+const reversed = (hops: number): string => {
+  let q = 'MATCH (z)';
+
+  for (let h = 0; h < hops - 1; h++) {
+    q += `<-[:E]-(n${h})`;
+  }
+
+  return `${q}<-[:E]-(a:N) RETURN count(*) AS c`;
+};
+
 const SEED = ndjson();
 const tsGraph = new Graph();
 
@@ -98,21 +133,44 @@ const timed = (run: () => number): { ms: number; answer: number } => {
 const rate = (ms: number, n: number): string => (n > 0 ? ((ms * 1e6) / n).toFixed(1) : '-');
 
 console.log(`nodes=${NODES} degree=${DEG} min of ${REPS}`);
-console.log('hops  paths         ts ms      ts ns/path    native ms   nat ns/path   agree');
+console.log(
+  'hops  paths         ts ms      ts ns/path    native ms   nat ns/path   agree' +
+    '   ts rev ms   nat rev ms   rev agree   ts mix ms   nat mix ms   mix agree',
+);
 
 for (let hops = 2; hops <= MAX_HOPS; hops++) {
   const q = chain(hops);
+  const qr = reversed(hops);
+  const qm = mixed(hops);
   const ts = timed(() => ([...tsQuery(tsGraph, q)] as { c: number }[])[0]?.c ?? -1);
   const nt = timed(() => {
     const rows = nat.query(q) as { c: number }[];
 
     return rows[0]?.c ?? -1;
   });
+  const tsr = timed(() => ([...tsQuery(tsGraph, qr)] as { c: number }[])[0]?.c ?? -1);
+  const ntr = timed(() => {
+    const rows = nat.query(qr) as { c: number }[];
+
+    return rows[0]?.c ?? -1;
+  });
+
+  const tsm = timed(() => ([...tsQuery(tsGraph, qm)] as { c: number }[])[0]?.c ?? -1);
+  const ntm = timed(() => {
+    const rows = nat.query(qm) as { c: number }[];
+
+    return rows[0]?.c ?? -1;
+  });
+
   console.log(
     `${String(hops).padEnd(6)}${String(ts.answer).padEnd(14)}` +
       `${ts.ms.toFixed(2).padStart(9)}${rate(ts.ms, ts.answer).padStart(14)}` +
       `${nt.ms.toFixed(2).padStart(13)}${rate(nt.ms, nt.answer).padStart(14)}` +
-      `   ${ts.answer === nt.answer ? 'yes' : `NO (native ${nt.answer})`}`,
+      `   ${ts.answer === nt.answer ? 'yes' : `NO (native ${nt.answer})`}` +
+      `${tsr.ms.toFixed(2).padStart(12)}${ntr.ms.toFixed(2).padStart(13)}` +
+      `   ${tsr.answer === ts.answer && ntr.answer === ts.answer ? 'yes' : 'NO'}` +
+      `${tsm.ms.toFixed(2).padStart(12)}${ntm.ms.toFixed(2).padStart(13)}` +
+      `   ${tsm.answer === ntm.answer ? 'yes' : 'NO'}`,
   );
 }
 

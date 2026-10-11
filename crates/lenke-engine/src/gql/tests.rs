@@ -2905,8 +2905,115 @@ fn a_deleted_node_neither_seeds_nor_is_reached() {
     assert!(count > 0);
 }
 
+/// Item 302. EACH HOP CARRIES ITS OWN DIRECTION. The first sweep was OUT-only and recorded mixed
+/// directions as open; measuring first showed the obvious case needed nothing — a fully REVERSED
+/// chain is normalized to a forward one by the optimizer's `orient` rewrite. What needed the work
+/// is ALTERNATING arrows, where there is no single orientation to flip to: native grew ~5x a hop
+/// there (0.06 / 0.20 / 0.71 / 4.13ms at 4-7 hops, i.e. an enumeration) while the pure-TS sweep
+/// stayed flat and was 10x faster. Now 0.02-0.03ms at every depth, 137.7x at seven hops.
+///
+/// Against the enumeration as always, and across every direction PATTERN rather than just one —
+/// a sweep that read the wrong index on, say, only even hops would pass a single alternating
+/// shape and fail a different one.
+#[test]
+fn a_mixed_direction_sweep_matches_enumeration_at_every_depth() {
+    let st = sweep_fixture();
+    for hops in 4..=7 {
+        for (name, flip) in [
+            ("alternating from out", 0usize),
+            ("alternating from in", 1usize),
+        ] {
+            let mut pattern = String::from("(a:N)");
+            for h in 0..hops {
+                if (h + flip) % 2 == 0 {
+                    pattern.push_str("-[:R]->");
+                } else {
+                    pattern.push_str("<-[:R]-");
+                }
+                if h + 1 == hops {
+                    pattern.push_str("(d)");
+                } else {
+                    pattern.push_str("()");
+                }
+            }
+            let (count, enumerated) = count_and_enumerated(&st, &pattern, "d");
+            assert_eq!(
+                count, enumerated,
+                "sweep != enumeration, {name} at {hops} hops"
+            );
+        }
+    }
+}
+
+/// Every hop REVERSED. The optimizer normalizes this to a forward chain, so the peel sees `Out`
+/// hops — but that is the optimizer's doing and not this function's, and if that rewrite ever
+/// stops firing the peel now handles the shape directly. Both routes must agree with the
+/// enumeration either way.
+#[test]
+fn a_fully_reversed_sweep_matches_enumeration() {
+    let st = sweep_fixture();
+    for hops in 4..=7 {
+        let mut pattern = String::from("(d)");
+        for h in 0..hops {
+            pattern.push_str("<-[:R]-");
+            pattern.push_str(if h + 1 == hops { "(a:N)" } else { "()" });
+        }
+        let (count, enumerated) = count_and_enumerated(&st, &pattern, "d");
+        assert_eq!(
+            count, enumerated,
+            "reversed sweep != enumeration at {hops} hops"
+        );
+        assert!(count > 0, "fixture produced no reversed {hops}-hop walks");
+    }
+}
+
+/// Per-hop edge TYPES and per-hop DIRECTIONS are independent, so they are varied together. A
+/// sweep that paired hop i's type with hop j's index would pass each one separately.
+#[test]
+fn a_mixed_direction_sweep_honours_per_hop_edge_types() {
+    let st = sweep_fixture();
+    for types in [
+        ["R", "S", "R", "S"],
+        ["S", "R", "S", "R"],
+        ["R", "R", "S", "S"],
+    ] {
+        for flip in [0usize, 1] {
+            let mut pattern = String::from("(a:N)");
+            for (h, t) in types.iter().enumerate() {
+                if (h + flip) % 2 == 0 {
+                    pattern.push_str(&format!("-[:{t}]->"));
+                } else {
+                    pattern.push_str(&format!("<-[:{t}]-"));
+                }
+                pattern.push_str(if h + 1 == types.len() { "(d)" } else { "()" });
+            }
+            let (count, enumerated) = count_and_enumerated(&st, &pattern, "d");
+            assert_eq!(
+                count, enumerated,
+                "sweep != enumeration for {types:?} flip={flip}"
+            );
+        }
+    }
+}
+
+/// An UNDIRECTED hop is neither index on its own, so `chain_depth` refuses the whole chain — and
+/// the general path must still answer it.
+#[test]
+fn an_undirected_hop_declines_the_whole_sweep() {
+    let st = sweep_fixture();
+    for at in 0..5 {
+        let mut pattern = String::from("(a:N)");
+        for h in 0..5 {
+            pattern.push_str(if h == at { "-[:R]-" } else { "-[:R]->" });
+            pattern.push_str(if h == 4 { "(d)" } else { "()" });
+        }
+        let (count, enumerated) = count_and_enumerated(&st, &pattern, "d");
+        assert_eq!(count, enumerated, "undirected hop {at} != enumeration");
+    }
+}
+
 /// What the sweep must DECLINE, each still answering correctly through the general path. The gate
-/// is `out_chain_depth`, and every one of these fails the peel for its own reason.
+/// is `chain_depth`, and every one of these fails the peel for its own reason.
 #[test]
 fn the_sweep_declines_what_it_cannot_express() {
     let st = sweep_fixture();

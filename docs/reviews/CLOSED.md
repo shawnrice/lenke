@@ -356,11 +356,31 @@ absence** — `{k: null}` is the one place in a pattern where that distinction i
   than it was.** The strong independent check is item 298's — the TS sweep against native's
   ENUMERATION at 9.77e9 paths, measured before this arm existed — and it cannot be re-run.
   Measure with `cd packages/native && bun run probe:depth`.
-- **Mixed directions and per-position labels in the NATIVE sweep** — **OPEN, scoped by item 299.**
-  `out_chain_depth` admits an OUT-only chain, where the TS sweep carries a reversed or mixed
-  chain and a label at every position. Not taken with the rest because the differential fuzzer
-  generates none of those shapes at this depth, so the coverage would be hand-written tests
-  alone — see the `engine-corpus-nested-fuzzer-gap` note.
+- ~~**Mixed directions in the NATIVE sweep**~~ — **CLOSED by item 302 at 137.7x** on an
+  ALTERNATING 7-hop chain (4.13 → 0.03ms), and the cliff is gone rather than moved: forward,
+  reversed and alternating are all flat in both engines to eleven hops (9.77e9 paths).
+  **The obvious case needed NOTHING, and finding that out first is the lesson.** Item 299
+  predicted the REVERSED spelling would fall back to enumeration — an equivalent-spelling bug.
+  Measured: a reversed 8-hop chain answers in **0.05ms** against the forward 0.02, because the
+  optimizer's `orient` rewrite normalizes it before the peel sees it. The invariant was already
+  holding. What `orient` cannot normalize is ALTERNATING arrows, and THAT had the cliff — native
+  grew ~5x a hop (0.06 / 0.20 / 0.71 / 4.13ms at 4-7) and was **10x SLOWER than pure TS**, whose
+  sweep has carried per-hop directions since item 298. `peel_dir_hops` is a SIBLING of
+  `peel_out_hops`, not a generalization: the 3-hop edge product genuinely wants one orientation
+  (`level1`/`outdeg3` are both `store.out`). 8 of 9 mutants caught; D7 provably equivalent
+  (`chain_depth`'s `Dir::Any` guard is redundant — `peel_dir_hops` refuses the hop itself).
+- **The 5% toll this cost the FORWARD chain** — **DIAGNOSED at item 302 and ACCEPTED, with both
+  obvious explanations refuted.** The 4-hop and 6-hop `query/gql` rows read 0.95x/0.95x over three
+  alternated rounds, disjoint ranges, controls flat. (1) Specializing each pass by direction into
+  two monomorphic loops made it WORSE (0.93x/0.92x) — reverted, left in the code with its numbers.
+  (2) A variant keeping every structural change but reading `store.out` unconditionally — NO
+  direction logic at all — still read 0.95x/0.95x. **So it is the TOLL for editing this module,
+  not the feature** ([[pull-alignment-is-load-bearing]] one module along). Accepted: a 5% constant
+  against removing an O(degree^hops) cliff. Do not re-attempt the specialization.
+- **Per-position NODE labels in the NATIVE sweep** — **still OPEN.** The TS sweep carries a label
+  at every position; native carries the base label only. Not taken at items 299 or 302 for the
+  same reason: the differential fuzzer generates no chain of this depth, so the coverage would be
+  hand-written tests alone — see `engine-corpus-nested-fuzzer-gap`.
 - ~~**`longChainCount`'s `Map<string, number>`**~~ — **CLOSED by item 300 at 1.29x (5 hops),
   1.65x (6) and 1.28x (7 reversed)**, all with DISJOINT ranges over three alternated rounds and
   both controls (3- and 4-hop, which route to the degree products) flat at 0.98x/1.04x. A lazy

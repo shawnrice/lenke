@@ -3154,6 +3154,52 @@ pub(super) fn peel_out_hops(plan: &Plan, n: usize) -> Option<(Vec<Vec<String>>, 
     Some((labels, base))
 }
 
+/// One peeled hop: the edge labels it accepts, and whether it reads the OUT index.
+type DirHop = (Vec<String>, bool);
+
+/// Peel exactly `n` frontier hops of EITHER direction (no bound edge) ending at a bare Scan,
+/// returning per-hop `(edge labels, is_out)` FIRST-to-LAST and the Scan's label.
+///
+/// Separate from [`peel_out_hops`] rather than a generalization of it, because that one is the
+/// 3-hop edge product's gate and the product's identity genuinely wants one orientation — its
+/// `level1`/`outdeg3` arrays are built from `store.out` on both ends. The SWEEP has no such
+/// requirement: each pass reads whichever index its own hop names.
+///
+/// A fully REVERSED chain does not need this — the optimizer's `orient` rewrite normalizes it to
+/// a forward one, measured at 0.05ms for 8 hops against 0.02 forward. What needs it is the shape
+/// `orient` cannot normalize: ALTERNATING arrows, where there is no single orientation to flip to.
+fn peel_dir_hops(plan: &Plan, n: usize) -> Option<(Vec<DirHop>, Option<String>)> {
+    if n == 0 {
+        return match plan {
+            Plan::Scan { label } => Some((Vec::new(), label.clone())),
+            _ => None,
+        };
+    }
+    let Plan::Expand {
+        input,
+        from,
+        dir,
+        edge_label,
+        bind_edge: false,
+        double_loops: false,
+    } = plan
+    else {
+        return None;
+    };
+    // `Dir::Any` is an undirected hop, which is neither index on its own and is refused.
+    let out = match dir {
+        Dir::Out => true,
+        Dir::In => false,
+        _ => return None,
+    };
+    if *from + 1 != chain_width(input)? {
+        return None; // must expand the current frontier
+    }
+    let (mut hops, base): (Vec<DirHop>, Option<String>) = peel_dir_hops(input, n - 1)?;
+    hops.push((edge_label.clone(), out));
+    Some((hops, base))
+}
+
 /// count(*) over a 3-hop OUT chain via the identity `1ᵀA₁A₂A₃1 = Σ` over the MIDDLE
 /// edges (b→c, hop 2) of `(source→b walks over hop 1) × (out-degree of c over hop
 /// 3)` — O(V+E), replacing the 2-hop count-propagation SCATTER (the 3-hop
@@ -3230,30 +3276,35 @@ pub(super) fn try_3hop_product_count(
     Some(scalar_num(total as f64))
 }
 
-/// How many `Out` hops sit between `plan` and the `Scan` at its base. `None` if the chain is not
-/// a plain unfiltered OUT chain over a scan — the same shape [`peel_out_hops`] accepts, counted
-/// rather than collected, because the sweep below has to know its own depth before it can peel.
-fn out_chain_depth(plan: &Plan) -> Option<usize> {
+/// How many directed hops sit between `plan` and the `Scan` at its base. `None` if the chain is
+/// not a plain unfiltered directed chain over a scan — the same shape [`peel_dir_hops`] accepts,
+/// counted rather than collected, because the sweep below has to know its own depth before it can
+/// peel.
+fn chain_depth(plan: &Plan) -> Option<usize> {
     match plan {
         Plan::Scan { .. } => Some(0),
         Plan::Expand {
             input,
             from,
-            dir: Dir::Out,
+            dir,
             bind_edge: false,
             double_loops: false,
             ..
         } => {
+            if !matches!(dir, Dir::Out | Dir::In) {
+                return None;
+            }
             if *from + 1 != chain_width(input)? {
                 return None; // must expand the current frontier
             }
-            Some(out_chain_depth(input)? + 1)
+            Some(chain_depth(input)? + 1)
         }
         _ => None,
     }
 }
 
-/// `count(*)` over an OUT chain of FOUR OR MORE hops, as a forward SWEEP of per-node way counts.
+/// `count(*)` over a DIRECTED chain of FOUR OR MORE hops, as a forward SWEEP of per-node way
+/// counts.
 ///
 /// `ways[v]` is how many ways the current position can be node `v`; one pass per hop advances it,
 /// and the last hop is a weighted sum of out-DEGREES rather than a final pass, so it never writes
@@ -3276,10 +3327,30 @@ fn out_chain_depth(plan: &Plan) -> Option<usize> {
 /// correction, exactly as [`try_3hop_product_count`] notes, and the sweep is byte-identical to the
 /// enumeration. Per-hop edge types are independent, and an unknown type on any hop means no paths.
 ///
-/// OUT-only and unfiltered, which [`out_chain_depth`] enforces rather than assumes: a `Filter`,
-/// a bound edge, a reversed hop or an `Any` direction all fail the peel. The pure-TS sweep carries
-/// mixed directions and per-position labels; matching that here is a separate item, because every
-/// extra position this reaches is a position the fuzzers do not currently generate.
+/// Unfiltered, which [`chain_depth`] enforces rather than assumes: a `Filter`, a bound edge or an
+/// `Any` (undirected) hop all fail the peel.
+///
+/// EACH HOP CARRIES ITS OWN DIRECTION (item 302), because the pass that advances the way counts
+/// simply reads whichever index its hop names. The first version was OUT-only and recorded mixed
+/// directions as open; measuring it first showed the obvious case did not need the work at all —
+/// a fully REVERSED chain is normalized to a forward one by the optimizer's `orient` rewrite
+/// (0.05ms at 8 hops against 0.02 forward). What did need it is the shape `orient` cannot
+/// normalize, ALTERNATING arrows, where there is no single orientation to flip to:
+///
+/// | hops | out-only native | ts sweep |
+/// | ---- | --------------: | -------: |
+/// |    5 |         0.20 ms |  0.36 ms |
+/// |    6 |         0.71 ms |  0.53 ms |
+/// |    7 |         4.13 ms |  0.43 ms |
+///
+/// Native grew ~5x a hop there — the degree, i.e. an enumeration — while the pure-TS sweep, which
+/// has carried per-hop directions since item 298, stayed flat and ended up 10x FASTER. A per-hop
+/// direction is also why this peel is its own function rather than a generalization of
+/// [`peel_out_hops`]: the 3-hop product's identity really does want one orientation, since its
+/// `level1`/`outdeg3` arrays are both built from `store.out`.
+///
+/// Per-position NODE labels are still not carried, as in the TS arm's interior positions, and that
+/// stays open.
 pub(super) fn try_nhop_sweep_count(
     input: &Plan,
     keys: &[(String, Expr)],
@@ -3293,18 +3364,19 @@ pub(super) fn try_nhop_sweep_count(
     if agg.func != AggFn::Count || agg.arg.is_some() || agg.distinct {
         return None;
     }
-    let hops = out_chain_depth(input)?;
+    let hops = chain_depth(input)?;
     // One, two and three hops have their own tuned arms and this must not steal them: it sits
     // AFTER `try_3hop_product_count` in the dispatch, but `or_else` laziness is not a reason to
     // leave the bound implicit.
     if hops < 4 {
         return None;
     }
-    let (labels, base) = peel_out_hops(input, hops)?;
-    let mut wants: Vec<Vec<u32>> = Vec::with_capacity(hops);
-    for l in &labels {
+    let (peeled, base) = peel_dir_hops(input, hops)?;
+    // `(wanted edge types, reads the OUT index)` per hop, first to last.
+    let mut wants: Vec<(Vec<u32>, bool)> = Vec::with_capacity(hops);
+    for (l, out) in &peeled {
         match want_etypes(store, l) {
-            Ok(w) => wants.push(w),
+            Ok(w) => wants.push((w, *out)),
             Err(()) => return Some(scalar_num(0.0)), // unknown edge type → no paths
         }
     }
@@ -3329,14 +3401,31 @@ pub(super) fn try_nhop_sweep_count(
 
     // One pass per hop but the LAST, over TWO reused buffers — a fresh `vec![0; nc]` per hop is
     // the one cost here that would grow with the depth.
+    // REJECTED, with its numbers: specializing each pass by direction into two monomorphic loops
+    // (a `macro_rules!` expanded once per arm, so the adjacency call is resolved at compile time)
+    // was tried to recover the ~5% this item costs the forward chain, and it made things slightly
+    // WORSE — 0.93x/0.92x against the simple branch below, on the 4-hop and 6-hop bench rows.
+    //
+    // It was tried because the branch looked like the obvious suspect. It is NOT: a variant
+    // keeping every structural change here but reading `store.out` unconditionally — no direction
+    // logic at all — still read 0.95x/0.95x. So the ~5% is the TOLL for editing this module, not
+    // the feature, which is `pull-alignment-is-load-bearing` one module along. Accepted: a 5%
+    // constant on forward chains against removing an O(degree^hops) cliff on mixed ones.
     let mut next = vec![0u64; nc];
-    for want in &wants[..hops - 1] {
+    for (want, out) in &wants[..hops - 1] {
         next.fill(0);
         for (v, &w) in ways.iter().enumerate() {
             if w == 0 {
                 continue;
             }
-            for a in store.out(v as u32) {
+            // `Adj::nbr` is the FAR end of the edge in whichever list it was read from, so one
+            // loop serves both directions once the index is chosen.
+            let adj = if *out {
+                store.out(v as u32)
+            } else {
+                store.inc(v as u32)
+            };
+            for a in adj {
                 if hit(a, want) {
                     next[a.nbr as usize] += w;
                 }
@@ -3345,13 +3434,18 @@ pub(super) fn try_nhop_sweep_count(
         std::mem::swap(&mut ways, &mut next);
     }
 
-    let last = &wants[hops - 1];
+    let (last, last_out) = &wants[hops - 1];
     let mut total = 0u64;
     for (v, &w) in ways.iter().enumerate() {
         if w == 0 {
             continue;
         }
-        total += w * store.out(v as u32).iter().filter(|a| hit(a, last)).count() as u64;
+        let adj = if *last_out {
+            store.out(v as u32)
+        } else {
+            store.inc(v as u32)
+        };
+        total += w * adj.iter().filter(|a| hit(a, last)).count() as u64;
     }
     Some(scalar_num(total as f64))
 }
