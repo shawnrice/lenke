@@ -2064,13 +2064,8 @@ const longChainCount = <T>(
   rowOf: (n: number) => T,
 ): CountOf<T> | null => {
   if (
-    !plainNode(start) ||
     segments.some(
-      (s) =>
-        !plainRel(s.rel) ||
-        s.rel.variable !== undefined ||
-        s.rel.direction === 'both' ||
-        !plainNode(s.node),
+      (s) => !plainRel(s.rel) || s.rel.variable !== undefined || s.rel.direction === 'both',
     )
   ) {
     return null;
@@ -2090,25 +2085,60 @@ const longChainCount = <T>(
     return null;
   }
 
+  // An INLINE constraint at ANY position, which the arm used to refuse outright via `plainNode`
+  // (item 303). The argument is item 219's, one family along: a position the sweep VISITS has a
+  // once-per-element place to put a gate, and the sweep visits every position. `null` from
+  // `inlineOf` is an OPEN constraint — one whose value reads a variable — which still declines.
+  const startGate = inlineOf(start);
+
+  if (startGate === null) {
+    return null;
+  }
+
+  const gates: (InlinePred | undefined)[] = [];
+
+  for (const seg of segments) {
+    const g = inlineOf(seg.node);
+
+    if (g === null) {
+      return null;
+    }
+
+    gates.push(g);
+  }
+
   const resolved = types as (string[] | undefined)[];
   const legs = segments.map((s, i) => ({
     out: s.rel.direction === 'out',
     types: resolved[i],
     label: s.node.label,
+    gate: gates[i],
   }));
   const startLabel = start.label;
 
   // Delegated to a MODULE-SCOPE function, not written inline: this body is the hot loop, and
   // `ts-closure-size-is-load-bearing` is the one cost this file has measured four separate times.
-  return (graph, params) => {
-    const _ = params;
-
-    return rowOf(sweepChain(graph, legs, startLabel));
-  };
+  return (graph, params) => rowOf(sweepChain({ graph, params, legs, startLabel, startGate }));
 };
 
 /** One position of a chain: which way its incoming hop runs, its edge types, its node label. */
-type Leg = { out: boolean; types: string[] | undefined; label: LabelExpr | undefined };
+type Leg = {
+  out: boolean;
+  types: string[] | undefined;
+  label: LabelExpr | undefined;
+  /** The landed node's INLINE constraint, applied once per distinct vertex reached here. */
+  gate: InlinePred | undefined;
+};
+
+/** Everything one sweep needs, resolved once per query. An object so the call stays under the
+ * parameter limit and so adding a position-level feature does not change every call site. */
+type Sweep = {
+  graph: Graph;
+  params: Params;
+  legs: readonly Leg[];
+  startLabel: LabelExpr | undefined;
+  startGate: InlinePred | undefined;
+};
 
 /**
  * The way-count sweep itself, over a LAZY DENSE INDEX: each vertex is interned to a slot the
@@ -2140,12 +2170,12 @@ type Leg = { out: boolean; types: string[] | undefined; label: LabelExpr | undef
  * the premise of this arm (items 296-298), and taking both would mean two sweeps, i.e. two
  * definitions of one thing. The CSR floor needs a dense adjacency the TS graph does not expose.
  */
-const sweepChain = (
-  graph: Graph,
-  legs: readonly Leg[],
-  startLabel: LabelExpr | undefined,
-): number => {
+const sweepChain = ({ graph, params, legs, startLabel, startGate }: Sweep): number => {
   const slotOf = new Map<string, number>();
+  // Reused across every gate evaluation: `inlineHolds` binds the node's own variable into it, and
+  // an inline constraint is proved element-local by `inlineOf` before it is carried, so nothing
+  // else can observe what a previous position left behind.
+  const binding = new Map<string, unknown>();
   const idOf: string[] = [];
   // The adjacency lookup CACHED PER SLOT, available only when every leg runs the same way — then
   // there is one index for the whole chain, so a slot's `byType` is the same on every pass.
@@ -2166,7 +2196,7 @@ const sweepChain = (
   let frontier: number[] = [];
 
   for (const v of candidateVertexSource(graph, startLabel)) {
-    if (!matchesLabel(v, startLabel)) {
+    if (!matchesLabel(v, startLabel) || !inlineHolds(startGate, v, binding, params, graph)) {
       continue;
     }
 
@@ -2189,7 +2219,35 @@ const sweepChain = (
     frontier.push(slot);
   }
 
-  for (let i = 0; i < legs.length - 1; i++) {
+  // REJECTED, with its numbers: MEMOIZING a failed gate for the rest of the pass, by stamping a
+  // negative sentinel into `next[to]` and skipping any later edge that finds one. It was written
+  // first and then taken out, for three reasons in order of weight:
+  //
+  //  1. It is NOT a correctness mechanism, and mutation proved that rather than argued it — the
+  //     mutants that removed the stamp and the one that removed the test BOTH survived the whole
+  //     suite. Without the memo a rejected vertex is re-tested per incoming edge and still never
+  //     enters the frontier, so the answer is identical.
+  //  2. Its sign is NOT CONSISTENT. On a 4,000-vertex degree-24 fixture built to favour it (high
+  //     in-degree, a selective gate where the pressure is highest) it was **0.87x — SLOWER** at
+  //     the gated last position (16.19 against 18.66ms, disjoint ranges) while 1.27x FASTER at an
+  //     interior (13.32 against 10.47ms, also disjoint). A cheap inline property compare is not
+  //     obviously dearer than the extra branch the memo costs every edge.
+  //  3. It put a NEGATIVE number inside a weight array and relied on "nothing reads it, because
+  //     the slot is not in the frontier" — a live invariant to maintain for no proven gain.
+  //
+  // The asymptotic argument for it (per-vertex instead of per-edge gate evaluation) is real and
+  // still did not show up as a win. Re-open only with a shape where it does, and a gate expensive
+  // enough for the memo to pay for its own branch.
+
+  // The LAST position normally needs no pass — a weighted sum of DEGREES answers it. With a GATE
+  // it does need one, because a degree cannot say which of a vertex's edges land somewhere that
+  // passes. So a gated last position simply gets the extra pass and the answer is the sum of the
+  // way counts, which keeps the gate at once-per-vertex instead of once-per-edge. That is the
+  // whole reason this arm can carry an END constraint where the degree products cannot.
+  const lastGated = legs[legs.length - 1].gate !== undefined;
+  const passes = lastGated ? legs.length : legs.length - 1;
+
+  for (let i = 0; i < passes; i++) {
     const leg = legs[i];
     const far = effectiveLabel(graph, leg.label);
     const index = leg.out ? graph.edgesFromByLabel : graph.edgesToByLabel;
@@ -2240,6 +2298,17 @@ const sweepChain = (
         }
 
         if (next[to] === 0) {
+          // The gate is applied on the 0 -> w TRANSITION, so the vertex is resolved only here and
+          // an ungated pass never pays item 194's ~190ns endpoint lookup. A vertex that fails is
+          // simply never pushed, and because `next[to]` stays 0 it is re-tested if another edge
+          // reaches it — which is the behaviour, not an oversight. See below.
+          if (
+            leg.gate !== undefined &&
+            !inlineHolds(leg.gate, leg.out ? e.to : e.from, binding, params, graph)
+          ) {
+            continue;
+          }
+
           nextFrontier.push(to);
         }
 
@@ -2256,9 +2325,20 @@ const sweepChain = (
     frontier = nextFrontier;
   }
 
+  let count = 0;
+
+  if (lastGated) {
+    // The extra pass already landed on the last position and applied its gate, so every surviving
+    // way count IS a path.
+    for (const slot of frontier) {
+      count += ways[slot];
+    }
+
+    return count;
+  }
+
   const last = legs[legs.length - 1];
   const lastFar = effectiveLabel(graph, last.label);
-  let count = 0;
 
   for (const slot of frontier) {
     count += ways[slot] * side(graph, idOf[slot], last.out, last.types, lastFar);

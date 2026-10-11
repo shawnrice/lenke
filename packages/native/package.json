@@ -37,7 +37,8 @@
     "spelling": "bun spelling-probe.ts",
     "bench:gremlin": "bun bench-gremlin.ts",
     "probe:depth": "bun chain-depth-probe.ts",
-    "bench:chain": "bun chain-sweep-bench.ts"
+    "bench:chain": "bun chain-sweep-bench.ts",
+    "bench:gate": "bun chain-gate-bench.ts"
   },
   "dependencies": {
     "@lenke/core": "workspace:*",

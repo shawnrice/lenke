@@ -161,7 +161,154 @@ describe('the sweep agrees with the general matcher', () => {
   });
 });
 
+describe('an INLINE constraint at any position', () => {
+  // Item 303. The arm used to refuse any constrained node outright (`plainNode`), so a chain with
+  // one gated interior position declined every shortcut and fell to the general matcher: 25-82x
+  // the unconstrained chain in TS and 28-121x in native. The sweep VISITS every position, so a
+  // gate has a once-per-element place to go — item 219's argument, one family along. Now 1.2-1.7x,
+  // i.e. 33.6-79.8x faster.
+  //
+  // Each case is against the ORACLE, as everything else here is: a clause `WHERE` over four or
+  // more segments declines the whole family, so appending an always-true one that reads a bound
+  // name forces the identical question onto the general matcher.
+  const SIX = ['a', 'b', 'c', 'd', 'e', 'f'];
+
+  /** The 5-segment chain with `{k: …}` at position `at` (0 = the start, 5 = the last node). */
+  const gatedAt = (at: number, prop = 'i: 1'): string => {
+    let q = `(${SIX[0]}:N${at === 0 ? ` {${prop}}` : ''})`;
+
+    for (let h = 1; h <= 5; h++) {
+      q += `-[:E]->(${h < 6 ? `n${h}` : ''}${at === h ? ` {${prop}}` : ''})`;
+    }
+
+    return q;
+  };
+
+  test('a gate at EVERY position agrees with the general matcher', () => {
+    // Six positions, including the START (applied at seed time) and the LAST (which takes an
+    // extra pass rather than the degree-sum shortcut — a different code path from the interiors).
+    //
+    // EXACT counts, not `> 0`: when these were first written as `>= 0` the two multi-gate cases
+    // below were silently comparing 0 against 0, which asserts nothing. A measured number is the
+    // only version of this test that cannot go vacuous without failing.
+    expect([0, 1, 2, 3, 4, 5].map((at) => sweptAndWalked(gatedAt(at)))).toEqual([
+      7, 10, 9, 8, 7, 10,
+    ]);
+  });
+
+  test('a gate that matches NOTHING counts 0 at every position, and still yields a row', () => {
+    for (let at = 0; at <= 5; at++) {
+      expect(countOf(`MATCH ${gatedAt(at, 'i: 9999')} RETURN count(*) AS c`)).toBe(0);
+    }
+  });
+
+  test('SEVERAL gates at once, including both ends', () => {
+    // Ranges rather than single values, because three single-value gates over this fixture
+    // co-occur on NO walk — the first spelling of this test counted 0 both ways.
+    expect(
+      sweptAndWalked(
+        '(a:N WHERE a.i < 12)-[:E]->(b)-[:E]->(c)-[:E]->(d)-[:E]->(e)-[:E]->(f WHERE f.i > 5)',
+      ),
+    ).toBe(78);
+    expect(
+      sweptAndWalked(
+        '(a:N)-[:E]->(b WHERE b.i < 20)-[:E]->(c WHERE c.i < 20)-[:E]->(d WHERE d.i < 20)' +
+          '-[:E]->(e)-[:E]->(f)',
+      ),
+    ).toBe(106);
+    // And an inline-PROPERTY gate at both ends, which is nonzero but only just — a reminder that
+    // the start gate and the last-position gate are different code paths.
+    expect(
+      sweptAndWalked('(a:N {i: 1})-[:E]->(b)-[:E]->(c)-[:E]->(d)-[:E]->(e)-[:E]->(f {i: 6})'),
+    ).toBe(2);
+  });
+
+  test('an inline WHERE, not just properties', () => {
+    // `inlineOf` accepts an inline `WHERE` when it reads only the node's OWN variable, which is
+    // the other half of what `plainNode` used to refuse.
+    expect(
+      sweptAndWalked('(a:N)-[:E]->(b)-[:E]->(c WHERE c.i > 10)-[:E]->(d)-[:E]->(e)-[:E]->(f)'),
+    ).toBe(110);
+    expect(
+      sweptAndWalked('(a:N WHERE a.i < 12)-[:E]->(b)-[:E]->(c)-[:E]->(d)-[:E]->(e)-[:E]->(f)'),
+    ).toBe(102);
+  });
+
+  test('a gate COMBINED with a label at the same position', () => {
+    expect(
+      sweptAndWalked('(a:N)-[:E]->(b:A {i: 0})-[:E]->(c)-[:E]->(d)-[:E]->(e)-[:E]->(f:B)'),
+    ).toBe(2);
+  });
+
+  test('a gate on a REVERSED chain, where the landed end is the FROM side', () => {
+    expect(sweptAndWalked('(a:N)<-[:E]-(b)<-[:E]-(c {i: 1})<-[:E]-(d)<-[:E]-(e)<-[:E]-(f)')).toBe(
+      8,
+    );
+  });
+
+  test('a gate on a MIXED chain, so the gate and the direction vary together', () => {
+    expect(sweptAndWalked('(a:N)-[:E]->(b)<-[:E]-(c {i: 1})-[:E]->(d)<-[:E]-(e)-[:E]->(f)')).toBe(
+      6,
+    );
+  });
+
+  test('a gate rejecting a vertex at ONE position does not reject it at another', () => {
+    // The verdict is stamped as a NEGATIVE sentinel in the per-pass buffer, not on the slot,
+    // because a slot is global to the sweep and the same vertex is reached at several positions.
+    // Here `{i: 1}` sits at position 2 only: vertex 1 must be excluded THERE and still counted
+    // wherever else the walk lands on it, which it does — the answer has to match the oracle.
+    expect(sweptAndWalked('(a:N)-[:E]->(b)-[:E]->(c {i: 1})-[:E]->(d)-[:E]->(e)-[:E]->(f)')).toBe(
+      9,
+    );
+  });
+});
+
 describe('what the sweep must DECLINE, and still answer correctly', () => {
+  test('an OPEN inline constraint — one that reads ANOTHER variable — declines', () => {
+    // `inlineOf` returns `null` for these, because the constraint is not element-local: it needs
+    // the start binding, which the sweep has forgotten by the time it lands on `c`. The answer
+    // must still be right, via the general matcher.
+    //
+    // An inline WHERE rather than `{i: a.i}` — that spelling counts 0 over this fixture, so it
+    // would "prove" the decline with an empty answer. The reading that matters is a NONZERO
+    // count that the sweep could not have produced.
+    expect(
+      countOf(
+        'MATCH (a:N)-[:E]->(b)-[:E]->(c WHERE c.i >= a.i)-[:E]->(d)-[:E]->(e)-[:E]->(f) ' +
+          'RETURN count(*) AS c',
+      ),
+    ).toBe(121);
+    expect(
+      countOf(
+        'MATCH (a:N)-[:E]->(b)-[:E]->(c {i: a.i})-[:E]->(d)-[:E]->(e)-[:E]->(f) ' +
+          'RETURN count(*) AS c',
+      ),
+    ).toBe(0);
+  });
+
+  test('an OPEN constraint on the START position declines', () => {
+    // The start is a separate code path from the interiors — its gate is applied at SEED time —
+    // and a mutant that carried an open constraint there SURVIVED until this existed, because
+    // nothing else reached it.
+    //
+    // What this discriminates is NOT the number: a FORWARD reference in an inline predicate is
+    // UNKNOWN (`f` is unbound when `a`'s constraint is evaluated), so the right answer is 0 and
+    // the general matcher gives it. What a wrongly-carried `null` gate does is THROW, reading
+    // `.bindVar` off it — so the assertion that matters here is that this returns at all.
+    expect(
+      countOf(
+        'MATCH (a:N WHERE a.i >= f.i)-[:E]->(b)-[:E]->(c)-[:E]->(d)-[:E]->(e)-[:E]->(f) ' +
+          'RETURN count(*) AS c',
+      ),
+    ).toBe(0);
+    expect(
+      countOf(
+        'MATCH (a:N {i: f.i})-[:E]->(b)-[:E]->(c)-[:E]->(d)-[:E]->(e)-[:E]->(f) ' +
+          'RETURN count(*) AS c',
+      ),
+    ).toBe(0);
+  });
+
   // Each of these falls through to the general matcher. The test is that the answer is right —
   // a sweep that wrongly accepted one would return a number that cannot be expressed as a
   // product of way counts.
@@ -195,13 +342,6 @@ describe('what the sweep must DECLINE, and still answer correctly', () => {
 
     expect(open).toBe(320);
     expect(closed).toBe(10);
-  });
-
-  test('an INLINE property constraint declines', () => {
-    const constrained = countOf(
-      'MATCH (a:N)-[:E]->(b)-[:E]->(c {i: 1})-[:E]->(d)-[:E]->(e)-[:E]->(f) RETURN count(*) AS c',
-    );
-    expect(constrained).toBeLessThan(countOf(PLAIN_OUT));
   });
 
   test('a BOUND relationship variable declines', () => {

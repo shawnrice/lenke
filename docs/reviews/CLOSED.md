@@ -317,8 +317,36 @@ absence** — `{k: null}` is the one place in a pattern where that distinction i
   can make its NEIGHBOUR look slower, and disjoint ranges do not save you**, because the
   contamination is systematic rather than noisy. The tell: the "regressed" shape cannot reach the
   change.
-  Still open and priced here: anything that DECLINES a count shortcut pays **50-85x** (the general
-  matcher is 727-1154ns a path against 13.7ns), which is one target and not a family of them.
+  ~~Still open and priced here: anything that DECLINES a count shortcut pays **50-85x**~~ —
+  **CLOSED for the INLINE-CONSTRAINT case by item 303 at 33.6-79.8x.** The sweep refused any
+  constrained node (`plainNode`), so a five-segment chain with ONE gated position declined the
+  whole family: 25.1x / 26.2x / 29.4x / 43.5x / **82.1x** the unconstrained chain at positions 0-4
+  (20,000 vertices, degree 3). Now 1.2-1.7x. Each leg carries its landed node's `InlinePred` and
+  applies it on the `0 -> w` TRANSITION — once per DISTINCT vertex reached there, not once per
+  edge into it — and resolves the endpoint only on that branch, so an ungated pass never pays
+  item 194's ~190ns lookup. Item 219's argument, one family along: a position the sweep VISITS has
+  a once-per-element place for a gate.
+  **The gated LAST position needed no new mechanism and won the most (79.8x):** an ungated end is
+  a weighted sum of DEGREES and a degree cannot say which edges land somewhere that passes, which
+  is why the degree products refuse an end constraint — but the sweep can just give the last
+  position a PASS and sum the surviving way counts. `passes = lastGated ? legs.length : legs.length
+  - 1`is the whole change.
+Answers agree with native exactly at every position (native still takes the old route, so it is
+an independent derivation). Measure with`cd packages/native && bun run bench:gate`.
+- **A per-pass MEMO of a failed gate** — **REJECTED at item 303 on its own numbers.** Stamping a
+  negative sentinel into the way-count buffer and skipping later edges that find one. (1) Mutation
+  proved it is NOT a correctness mechanism — the mutants removing the stamp and removing the test
+  BOTH survived, because a rejected vertex is re-tested per edge and still never enters the
+  frontier. (2) Its SIGN IS NOT CONSISTENT: on a fixture built to favour it (4,000 vertices,
+  degree 24, selective gate) it was **0.87x SLOWER** at the gated last position and 1.27x faster
+  at an interior, both disjoint. (3) It put a negative number in a weight array behind a "nothing
+  reads it" invariant. An earlier probe had it at 1.12-1.13x, but that probe's own ungated control
+  spanned 1.5x across rounds — **a probe that cannot hold its control still is not entitled to a
+  13% conclusion.**
+- **The same inline gates in NATIVE** — **OPEN and priced by item 303.** `try_nhop_sweep_count`
+  carries the base label only, so native still pays **28-126x** for one constrained position where
+  the TS sweep now pays 1.2-1.7x. Same cross-engine asymmetry items 299 and 302 closed for depth
+  and direction; `bun run bench:gate` keeps the native column so it stays priced.
   **Its own open question — "did the fourth arm FIX the cliff or MOVE it?" — is answered by item
   298: it moved it to FIVE**, and the row below closes it for every depth.
 - ~~**The count family's cliff at FIVE segments**~~ — **CLOSED by item 298 at 719x (5 hops) and
