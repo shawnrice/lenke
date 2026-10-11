@@ -2104,52 +2104,173 @@ const longChainCount = <T>(
   }));
   const startLabel = start.label;
 
+  // Delegated to a MODULE-SCOPE function, not written inline: this body is the hot loop, and
+  // `ts-closure-size-is-load-bearing` is the one cost this file has measured four separate times.
   return (graph, params) => {
     const _ = params;
-    let ways = new Map<string, number>();
 
-    for (const v of candidateVertexSource(graph, startLabel)) {
-      if (matchesLabel(v, startLabel)) {
-        ways.set(v.id, 1);
-      }
-    }
-
-    for (let i = 0; i < legs.length - 1; i++) {
-      const leg = legs[i];
-      const far = effectiveLabel(graph, leg.label);
-      const index = leg.out ? graph.edgesFromByLabel : graph.edgesToByLabel;
-      const next = new Map<string, number>();
-
-      for (const [id, w] of ways) {
-        for (const e of edgesOfTypes(index.get(id), leg.types)) {
-          if (far !== undefined && !matchesLabel(leg.out ? e.to : e.from, far)) {
-            continue;
-          }
-
-          const farId = leg.out ? e.toId : e.fromId;
-
-          next.set(farId, (next.get(farId) ?? 0) + w);
-        }
-      }
-
-      // Nothing reaches this position, so nothing reaches any later one either.
-      if (next.size === 0) {
-        return rowOf(0);
-      }
-
-      ways = next;
-    }
-
-    const last = legs[legs.length - 1];
-    const lastFar = effectiveLabel(graph, last.label);
-    let count = 0;
-
-    for (const [id, w] of ways) {
-      count += w * side(graph, id, last.out, last.types, lastFar);
-    }
-
-    return rowOf(count);
+    return rowOf(sweepChain(graph, legs, startLabel));
   };
+};
+
+/** One position of a chain: which way its incoming hop runs, its edge types, its node label. */
+type Leg = { out: boolean; types: string[] | undefined; label: LabelExpr | undefined };
+
+/**
+ * The way-count sweep itself, over a LAZY DENSE INDEX: each vertex is interned to a slot the
+ * first time it is REACHED, and the counts live in `Float64Array`s indexed by slot.
+ *
+ * The first version held the counts in a `Map<string, number>` and cost **2.30x this one** —
+ * 850.2 against 370.2ms for five hops at 200,000 vertices / 600,000 edges, min of 5. Item 300
+ * priced the mechanisms separately, and two of the three obvious explanations were WRONG:
+ *
+ * | variant                                      |    ms | vs the Map |
+ * | -------------------------------------------- | ----: | ---------: |
+ * | `Map<string, number>`, `edgesOfTypes`        | 850.2 |      1.00x |
+ * | the generator removed, Map kept              | 712.7 |      1.19x |
+ * | BOXED counters — one hash an edge, not two   | 627.7 |      1.35x |
+ * | a lazy dense index with helper CALLS          | 663.3 |      1.28x |
+ * | **a lazy dense index, every helper INLINED** | 370.2 |  **2.30x** |
+ * | an EAGER index over all V, scanning 0..n     | 209.9 |      4.05x |
+ * | a CSR of dense slots, no hash an edge        | 116.5 |      7.30x |
+ *
+ * So it is neither the generator frame (1.19x) nor `get`-plus-`set` (1.35x). The 2.30x is the
+ * TIGHT TYPED-ARRAY LOOP, and routing the same algorithm through `intern`/`bump`/`widen` helpers
+ * threw almost all of it away (1.28x) — which is why the interning below is written out longhand
+ * rather than factored.
+ *
+ * The EAGER variant's extra 1.76x is declined on purpose, not missed. It scans `0..V` and skips
+ * zeros instead of tracking a frontier, which is faster while the frontier is SATURATED and
+ * costs O(V) memory and O(V) hashes whatever the frontier's real size — so a selective start over
+ * a large graph would pay for the whole graph. Keeping memory proportional to the REACHED set is
+ * the premise of this arm (items 296-298), and taking both would mean two sweeps, i.e. two
+ * definitions of one thing. The CSR floor needs a dense adjacency the TS graph does not expose.
+ */
+const sweepChain = (
+  graph: Graph,
+  legs: readonly Leg[],
+  startLabel: LabelExpr | undefined,
+): number => {
+  const slotOf = new Map<string, number>();
+  const idOf: string[] = [];
+  // The adjacency lookup CACHED PER SLOT, available only when every leg runs the same way — then
+  // there is one index for the whole chain, so a slot's `byType` is the same on every pass.
+  //
+  // This is worth 1.73x and the measurement that found it is worth keeping. Item 300's micro
+  // predicted 2.30x for the dense rewrite and the in-situ A/B delivered 1.27x; the micro had
+  // cached this lookup, which it could only do because every one of ITS legs was `-[:E]->`.
+  // Re-running the micro WITHOUT the cache gave 1.22x — agreeing with the in-situ number and
+  // proving the 2.30x had never been available. So the cache is the gap, and a uniform direction
+  // is the condition under which it is sound. `types` need not match: `edgesOfTypes` still
+  // applies each leg's own types to the cached bucket map, and each leg keeps its own label.
+  const uniform = legs.every((l) => l.out === legs[0].out);
+  const cache: (Map<string, Set<Edge>> | undefined)[] | undefined = uniform ? [] : undefined;
+  const oneIndex = legs[0].out ? graph.edgesFromByLabel : graph.edgesToByLabel;
+  const cached = uniform ? oneIndex : undefined;
+  let cap = 256;
+  let ways = new Float64Array(cap);
+  let frontier: number[] = [];
+
+  for (const v of candidateVertexSource(graph, startLabel)) {
+    if (!matchesLabel(v, startLabel)) {
+      continue;
+    }
+
+    const slot = idOf.length;
+
+    slotOf.set(v.id, slot);
+    idOf.push(v.id);
+    cache?.push(cached?.get(v.id));
+
+    if (slot >= cap) {
+      cap *= 2;
+
+      const grown = new Float64Array(cap);
+
+      grown.set(ways);
+      ways = grown;
+    }
+
+    ways[slot] = 1;
+    frontier.push(slot);
+  }
+
+  for (let i = 0; i < legs.length - 1; i++) {
+    const leg = legs[i];
+    const far = effectiveLabel(graph, leg.label);
+    const index = leg.out ? graph.edgesFromByLabel : graph.edgesToByLabel;
+    const nextFrontier: number[] = [];
+    // A SECOND array rather than updating in place: a slot can be both read and written in one
+    // pass, through a self-loop or any cycle shorter than the chain.
+    let next = new Float64Array(cap);
+
+    // REJECTED, with its numbers, so it is not re-attempted: an INDEXED loop here instead of
+    // `for...of` looked worth ~5% (715.5 against 752.7ms at five hops, three alternated rounds,
+    // ranges disjoint) and did NOT reproduce — putting the indexed spelling back read 760.1, no
+    // better than the `for...of` it was supposed to beat. The third round had moved every row on
+    // that side (255 -> 290, 961 -> 1197), which is the tell. DISJOINT RANGES OVER THREE ROUNDS
+    // ARE NOT PROOF WHEN THE WHOLE SIDE MOVES; the control has to hold still too, and here it did
+    // on the first reading and not on the second.
+    for (const slot of frontier) {
+      // Nonzero by construction — a slot joins a frontier only on its 0 -> w transition.
+      const w = ways[slot];
+
+      for (const e of edgesOfTypes(
+        cache === undefined ? index.get(idOf[slot]) : cache[slot],
+        leg.types,
+      )) {
+        if (far !== undefined && !matchesLabel(leg.out ? e.to : e.from, far)) {
+          continue;
+        }
+
+        const farId = leg.out ? e.toId : e.fromId;
+        let to = slotOf.get(farId) ?? -1;
+
+        if (to < 0) {
+          to = idOf.length;
+          slotOf.set(farId, to);
+          idOf.push(farId);
+          cache?.push(cached?.get(farId));
+
+          if (to >= cap) {
+            cap *= 2;
+
+            const grownWays = new Float64Array(cap);
+            const grownNext = new Float64Array(cap);
+
+            grownWays.set(ways);
+            grownNext.set(next);
+            ways = grownWays;
+            next = grownNext;
+          }
+        }
+
+        if (next[to] === 0) {
+          nextFrontier.push(to);
+        }
+
+        next[to] += w;
+      }
+    }
+
+    // Nothing reaches this position, so nothing reaches any later one either.
+    if (nextFrontier.length === 0) {
+      return 0;
+    }
+
+    ways = next;
+    frontier = nextFrontier;
+  }
+
+  const last = legs[legs.length - 1];
+  const lastFar = effectiveLabel(graph, last.label);
+  let count = 0;
+
+  for (const slot of frontier) {
+    count += ways[slot] * side(graph, idOf[slot], last.out, last.types, lastFar);
+  }
+
+  return count;
 };
 
 /**

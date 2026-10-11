@@ -250,6 +250,65 @@ describe('what the sweep must DECLINE, and still answer correctly', () => {
   });
 });
 
+describe('the way-count arrays GROW, and the growth is mid-pass', () => {
+  // Item 300 rewrote the sweep onto `Float64Array`s that DOUBLE from a 256-slot start, and a
+  // mutant that dropped the copy of the already-written counts into the grown buffer SURVIVED
+  // every test above — because the largest fixture here reaches 120 vertices, so `cap` never grew
+  // at all and the whole path was dead code to the suite. The repo's own rule, learned on
+  // `pull_capped`'s block bound: WHEN A LOOP HAS A BLOCK SIZE, THE FIXTURE MUST EXCEED IT, TWICE.
+  //
+  // So: a SMALL seed over a LARGE graph at degree 4, which reaches 10 -> 40 -> 160 -> 640 ->
+  // 2560 vertices. The grow therefore fires in the MIDDLE of a pass, with counts already written
+  // into the buffer being replaced — which is the only state that distinguishes the copy from its
+  // absence.
+  const wide = (): Graph => {
+    const graph = new Graph();
+    const ids = Array.from({ length: 3000 }, (_, i) =>
+      graph.addVertex({
+        // Ten seeds, so `cap` starts at its 256 floor and has to grow during the sweep rather
+        // than during the seed.
+        labels: i < 10 ? ['N', 'S'] : ['N'],
+        properties: { i },
+      }),
+    );
+
+    for (let i = 0; i < ids.length; i++) {
+      for (let d = 0; d < 4; d++) {
+        graph.addEdge({
+          from: ids[i],
+          to: ids[(i * 13 + d * 523 + 1) % ids.length],
+          labels: ['E'],
+          properties: {},
+        });
+      }
+    }
+
+    return graph;
+  };
+
+  test('a six-hop sweep whose frontier crosses 256 and 512 agrees with the enumeration', () => {
+    const graph = wide();
+    const pattern = `(a:S)${'-[:E]->()'.repeat(5)}-[:E]->(z)`;
+    const on = (q: string): number => ([...query(graph, q)] as { c: number }[])[0]?.c ?? -1;
+    const swept = on(`MATCH ${pattern} RETURN count(*) AS c`);
+    const walked = on(`MATCH ${pattern} WHERE a.i >= 0 RETURN count(*) AS c`);
+
+    // 10 seeds x 4^6.
+    expect(swept).toBe(10 * 4 ** 6);
+    expect(walked).toBe(swept);
+  });
+
+  test('the same shape REVERSED, so the grow happens on the cached-adjacency route too', () => {
+    const graph = wide();
+    const pattern = `(z)${'<-[:E]-()'.repeat(5)}<-[:E]-(a:S)`;
+    const on = (q: string): number => ([...query(graph, q)] as { c: number }[])[0]?.c ?? -1;
+
+    expect(on(`MATCH ${pattern} RETURN count(*) AS c`)).toBe(
+      on(`MATCH ${pattern} WHERE a.i >= 0 RETURN count(*) AS c`),
+    );
+  });
+});
+
 describe('the sweep is BOUNDED in the path count, which is the point', () => {
   // The incident shape. 120 nodes at degree 5 is 120 x 5^7 = 9.375M seven-hop paths; the sweep
   // does 7 passes over 600 edges. A unit test cannot assert an RSS or a time, so what it pins is

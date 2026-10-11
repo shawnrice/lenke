@@ -361,12 +361,35 @@ absence** — `{k: null}` is the one place in a pattern where that distinction i
   chain and a label at every position. Not taken with the rest because the differential fuzzer
   generates none of those shapes at this depth, so the coverage would be hand-written tests
   alone — see the `engine-corpus-nested-fuzzer-gap` note.
-- **`longChainCount`'s `Map<string, number>`** — **OPEN, named by item 298's own spelling-probe
-  row.** The sweep costs 1040ms at 200,000 vertices / 600,000 edges for five hops, which is far
-  more than 5 passes over 600k edges should be: the way counts are keyed by STRING vertex ids, and
-  that hash is most of the per-edge cost. An index-keyed array is the obvious move. Recorded
-  rather than attempted, because it needs a dense vertex index the TS graph does not currently
-  expose.
+- ~~**`longChainCount`'s `Map<string, number>`**~~ — **CLOSED by item 300 at 1.29x (5 hops),
+  1.65x (6) and 1.28x (7 reversed)**, all with DISJOINT ranges over three alternated rounds and
+  both controls (3- and 4-hop, which route to the degree products) flat at 0.98x/1.04x. A lazy
+  dense index — slots interned on first REACH, counts in `Float64Array`s — plus a PER-SLOT
+  adjacency cache taken when every leg runs the same way.
+  **Three of the four obvious explanations for the cost were WRONG,** which is the part worth
+  keeping. The `edgesOfTypes` generator frame is worth 1.11x; `get`-plus-`set` versus `get` is
+  worth 1.26x (so "two string hashes an edge", item 298's own guess, was not it); and routing the
+  identical dense algorithm through `intern`/`bump`/`widen` HELPERS threw away almost all of its
+  win — 1.20x against the inlined 2.11x, i.e.
+  [[ts-closure-size-is-load-bearing]] for the fifth time in this file.
+  **The micro promised 2.30x and the engine delivered 1.27x, and chasing that gap was the find.**
+  Re-running the micro with its per-slot bucket cache removed gave 1.22x, agreeing with the
+  engine — the micro had been caching an adjacency lookup it could only cache because all ITS legs
+  were `-[:E]->`. So 2.30x was never available; but the cache IS sound when every leg shares a
+  direction, and taking it turned 1.27x into 1.29-1.65x. The 6-hop MIXED-direction row declines
+  the cache and moves only 1.06x, so the dense rewrite alone is near-neutral in situ and the
+  cache is the win it enables.
+  Measure with `cd packages/native && bun run bench:chain` — a DIFFERENT instrument from
+  `probe:depth`, because depth needs a tiny graph to show the rate and a constant factor needs a
+  big one to show itself.
+- **The EAGER index over all V, worth a further 1.76x** — **PRICED AND DECLINED at item 300, not
+  missed.** Scanning `0..V` and skipping zeros beats tracking a frontier while the frontier is
+  SATURATED (201.6ms against the lazy 370.2), and costs O(V) memory and O(V) hashes whatever the
+  frontier's real size — so a selective start over a large graph pays for the whole graph.
+  Bounded memory is this arm's premise (items 296-298) and taking both regimes means two sweeps,
+  i.e. two definitions of one thing. The CSR floor below it (6.56x) needs a dense adjacency the TS
+  graph does not expose; NATIVE already has one, which is why its sweep needs no hash at all
+  (item 299). Re-open only with a routing rule that does not duplicate the sweep.
 - **Routing 3 and 4 segments to the SWEEP instead of their degree products** — **OPEN, with a
   strong hint and no measurement.** The sweep does one pass per segment where `fourSegmentCount`
   iterates interior PAIRS, and at five hops it answers in 0.37ms where the four-hop product takes
