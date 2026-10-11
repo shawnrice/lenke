@@ -683,3 +683,53 @@ describe('a THREE-segment chain whose START is constrained takes the sweep too',
     exact('MATCH (a:A)-[:E]->(b)-[:E]->(c)-[:E]->(d) RETURN count(*) AS c', 28);
   });
 });
+
+describe('an END-gated chain is read BACKWARDS, and the reversal is exact', () => {
+  // Item 308. A gate on the last position costs twice — it needs a pass of its own (item 303) and
+  // every pass before it runs over an unnarrowed frontier — where a gate on the FIRST narrows the
+  // seed and the degree tail answers the end. So an end-gated chain is walked backwards, which is
+  // `reversedTwoHop`'s argument at any depth: a fixed-length chain read backwards is the same
+  // multiset of walks.
+  //
+  // These are the shapes a REVERSAL specifically breaks, which the plain-forward tests above
+  // cannot see: per-hop EDGE TYPES must reverse with the hops, per-hop DIRECTIONS must each flip,
+  // and the two ends' LABELS must swap. Each is checked against the enumeration, and each has an
+  // ungated twin so the gate is known to have done something.
+  const exact = (q: string, want: number): void => {
+    expect(countOf(q)).toBe(want);
+    expect(enumeratedOf(q.replace('count(*) AS c', 'a.i AS z'))).toBe(want);
+  };
+
+  test('per-hop EDGE TYPES reverse with the hops', () => {
+    exact('MATCH (a:N)-[:E]->(b)-[:F]->(c)-[:E]->(d)-[:F]->(e) RETURN count(*) AS c', 60);
+    exact('MATCH (a:N)-[:E]->(b)-[:F]->(c)-[:E]->(d)-[:F]->(e {i: 7}) RETURN count(*) AS c', 2);
+  });
+
+  test('per-hop DIRECTIONS each flip', () => {
+    exact('MATCH (a:N)-[:E]->(b)<-[:F]-(c)-[:E]->(d)<-[:F]-(e) RETURN count(*) AS c', 66);
+    exact('MATCH (a:N)-[:E]->(b)<-[:F]-(c)-[:E]->(d)<-[:F]-(e {i: 7}) RETURN count(*) AS c', 4);
+  });
+
+  test('the ENDS swap, so each label follows its own node', () => {
+    // An interior label, which must stay on its own position when the chain turns round.
+    exact(
+      'MATCH (a:N)-[:E]->(b:A)-[:E]->(c)-[:E]->(d)-[:E]->(e) WHERE e.i > 5 RETURN count(*) AS c',
+      30,
+    );
+    // The START's label, which becomes the LAST position's when the chain is reversed — and so
+    // stops being the seed's label and starts being a per-vertex test.
+    exact(
+      'MATCH (a:A)-[:E]->(b)-[:E]->(c)-[:E]->(d)-[:E]->(e) WHERE e.i > 5 RETURN count(*) AS c',
+      33,
+    );
+  });
+
+  test('BOTH ends gated is NOT reversed, and still exact', () => {
+    // Reversing buys nothing here (the extra pass is unavoidable either way), so the chain stays
+    // forward — asserted by answer, since the routing itself is a perf claim.
+    exact(
+      'MATCH (a:N)-[:E]->(b)-[:E]->(c)-[:E]->(d)-[:E]->(e) WHERE a.i > 5 AND e.i > 5 RETURN count(*) AS c',
+      80,
+    );
+  });
+});

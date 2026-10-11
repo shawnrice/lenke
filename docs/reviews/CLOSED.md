@@ -480,6 +480,30 @@ filter` / `+ start filter` — gated chains the rule deliberately does NOT route
   columns, which is the control that proves the per-position rule rather than merely an unrelated
   row being unmoved. `count 3-hop + end filter` was MISSING from the bench, which is how three
   consecutive items moved a cliff without seeing it; it is a row now.
+- ~~**An END-gated chain pays for an extra pass AND an unnarrowed seed**~~ — **CLOSED by item 308
+  at 3.69x** (`count 3-hop + end filter` 705.0 -> 190.9ms, one case per process, min of 6 over
+  three alternated rounds). A gate on the LAST position costs twice: it needs a pass of its own
+  (item 303), and every pass before it runs over a frontier nothing has narrowed. A gate on the
+  FIRST costs neither. Same chain, same gate, different position, 20,000 vertices of degree 3: ts
+  19.2ms at position 0 against 41.7 at the end, native 0.29 against 0.80. So an end-gated chain
+  whose start is ungated is **READ BACKWARDS** — a fixed-length chain reversed is the same multiset
+  of walks, which is `reversedTwoHop`'s argument with the depth generalized, and the label seek
+  survives because `candidateVertexSource` takes whichever end becomes the start.
+  **190.9 lands next to the START-gated row's 183.1, which is the check that matters**: after this
+  the two are the same shape. Controls chosen to be reachable-but-not-reversed (start-gated 1.01,
+  interior 1.00, ungated 1.01), all flat on both columns.
+  6 of 6 correctness mutants caught — the reversal is index arithmetic over three parallel
+  sequences, so the failure modes are subscripts and each returns a plausible number. R4 (read the
+  LABEL from the forward position) is caught by exactly ONE test, the `(a:A)` end-gated case
+  written for this item. **R8 inverts the flip CONDITION and CANNOT be caught**: whether to reverse
+  is a perf decision, since backwards is the same count, so it stays in the set to keep "no test
+  covers this" distinguishable from "no test can".
+  **Still open: the same reversal in NATIVE**, priced at 2.5x by the position table and ~3.4x by
+  the bench row's own FFI column (14.3 against the start-gated 4.0). It needs one thing TS did
+  not: native's forward seed is `nodes_with_label`, an index bucket, where a reversed seed is a
+  full live-node scan plus a gate — so reversing can LOSE a selective seek. The symmetric fix is to
+  promote an `IsLabeled` leaf on the reversed-start position into the new base label and demote the
+  old one to a leaf, with both sides of any guard measured.
 - ~~**A START-gated THREE-segment chain in TS**~~ — **CLOSED by item 307 at 17.40x** (3214.1 ->
   184.7ms on the new `count 3-hop + start filter` row, one case per process, min of 6 over three
   alternated rounds). Item 306 routed the END at that depth and left the START **enumerating**:

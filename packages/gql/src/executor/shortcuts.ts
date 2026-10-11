@@ -2299,17 +2299,53 @@ const longChainCount = <T>(
   }
 
   const resolved = types as (string[] | undefined)[];
-  const legs = segments.map((s, i) => ({
-    out: s.rel.direction === 'out',
-    types: resolved[i],
-    label: s.node.label,
-    gate: gates[i],
-  }));
-  const startLabel = start.label;
+  const nodes = [start, ...segments.map((s) => s.node)];
+  const allGates = [startGate, ...gates];
+  const outs = segments.map((s) => s.rel.direction === 'out');
+  const hops = segments.length;
+
+  // READ THE CHAIN BACKWARDS when its LAST position is gated and its first is not (item 308).
+  //
+  // A gate on the last position costs twice: it needs a PASS of its own (item 303), and every
+  // pass before it runs over the full frontier because nothing has narrowed the seed. A gate on
+  // the FIRST position costs neither — it narrows the seed, and the degree tail answers the end.
+  // Same chain, same gate, different position, at 20,000 vertices of degree 3:
+  //
+  // | gate at | ts      | native  |
+  // | ------- | ------: | ------: |
+  // | 0       | 19.2 ms | 0.29 ms |
+  // | the end | 41.7 ms | 0.80 ms |
+  //
+  // A fixed-length chain read backwards is the SAME multiset of walks, so the count is identical;
+  // this is `reversedTwoHop`'s argument at any depth, and the label seek survives it because
+  // `candidateVertexSource` takes whichever end becomes the start.
+  //
+  // Not reversed when BOTH ends are gated (the extra pass is unavoidable either way) and not when
+  // only the start is (it is already the cheap shape).
+  const flip = allGates[hops] !== undefined && allGates[0] === undefined;
+  const legs: Leg[] = [];
+
+  for (let j = 0; j < hops; j++) {
+    // Reversed, leg `j` walks original hop `hops - 1 - j` the other way and lands on the position
+    // that hop STARTED at.
+    const i = flip ? hops - 1 - j : j;
+
+    legs.push({
+      out: flip ? !outs[i] : outs[i],
+      types: resolved[i],
+      label: nodes[flip ? i : i + 1].label,
+      gate: allGates[flip ? i : i + 1],
+    });
+  }
+
+  const seedAt = flip ? hops : 0;
+  const startLabel = nodes[seedAt].label;
+  const seedGate = allGates[seedAt];
 
   // Delegated to a MODULE-SCOPE function, not written inline: this body is the hot loop, and
   // `ts-closure-size-is-load-bearing` is the one cost this file has measured four separate times.
-  return (graph, params) => rowOf(sweepChain({ graph, params, legs, startLabel, startGate }));
+  return (graph, params) =>
+    rowOf(sweepChain({ graph, params, legs, startLabel, startGate: seedGate }));
 };
 
 /** One position of a chain: which way its incoming hop runs, its edge types, its node label. */
