@@ -33,6 +33,23 @@ export class Vertex {
   // throw on a detached vertex — see `get labels`.
   #lbox: LabelBox | undefined;
 
+  // This vertex's out- and in-adjacency boxes, cached after the first read for the same reason as
+  // `#box` and `#lbox`: the graph keys them by the vertex's ID STRING, and every consumer here
+  // already holds the vertex OBJECT. Audit item 321 priced the three ways to reach an adjacency
+  // over 200,000 vertices — a string key costs **59.7ns**, a Map keyed on the vertex object 30.5,
+  // a `WeakMap` 43.8, and a cached reference **16.1** — so the box is 3.7x, and only a tenth of
+  // that is the hash. The rest is locality: a field read reaches the adjacency from a cache line
+  // the caller has already touched, where a string key hashes the characters and then probes a
+  // 200,000-entry table.
+  //
+  // Safe to hold indefinitely because the graph's outer entries are only ever `set`, never
+  // deleted: `insertEdge` creates a vertex's inner Map once and mutates it in place thereafter.
+  // Both are dropped by `evict` and by `set graph`, exactly as `#lbox` is and for the same
+  // reason — a box belongs to the graph whose map it came from.
+  #adjFrom: Map<string, Set<Edge>> | undefined;
+
+  #adjTo: Map<string, Set<Edge>> | undefined;
+
   static from(params: VertexParams): Vertex {
     return new Vertex(params);
   }
@@ -64,6 +81,8 @@ export class Vertex {
     // the element would read the old graph's properties and labels.
     this.#box = undefined;
     this.#lbox = undefined;
+    this.#adjFrom = undefined;
+    this.#adjTo = undefined;
   }
 
   get id(): string {
@@ -359,14 +378,36 @@ export class Vertex {
     // Dropping the label box is what keeps `get labels` throwing on an evicted vertex: with no
     // cache it dereferences the now-null graph, exactly as it did before the box existed.
     this.#lbox = undefined;
+    // The adjacency boxes go for the plainer reason: they point into the graph this vertex is
+    // leaving, and a re-added vertex must read the live maps rather than the ones it remembered.
+    this.#adjFrom = undefined;
+    this.#adjTo = undefined;
+  }
+
+  /**
+   * This vertex's out-adjacency by edge type, or `undefined` when it has no out-edges (or no
+   * graph). `??=` caches only a box that EXISTS, so a zero-degree vertex re-reads the map and
+   * picks up its first edge's box rather than remembering that it had none.
+   */
+  get adjFrom(): Map<string, Set<Edge>> | undefined {
+    this.#adjFrom ??= this.#graph?.edgesFromByLabel.get(this.id);
+
+    return this.#adjFrom;
+  }
+
+  /** In-adjacency twin of {@link Vertex.adjFrom}. */
+  get adjTo(): Map<string, Set<Edge>> | undefined {
+    this.#adjTo ??= this.#graph?.edgesToByLabel.get(this.id);
+
+    return this.#adjTo;
   }
 
   edgesFromByLabel(label: string): Set<Edge> {
-    return this.#graph?.edgesFromByLabel.get(this.id)?.get(label) ?? new Set();
+    return this.adjFrom?.get(label) ?? new Set();
   }
 
   edgesToByLabel(label: string): Set<Edge> {
-    return this.#graph?.edgesToByLabel.get(this.id)?.get(label) ?? new Set();
+    return this.adjTo?.get(label) ?? new Set();
   }
 
   toString(): string {

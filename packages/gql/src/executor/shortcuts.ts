@@ -581,7 +581,10 @@ const startOnlyHopCount = (scan: HopScan, startVar: string | undefined): number 
   const { graph, params, pred, pa, out, types, inNear, cstart } = scan;
   const binding = new Map<string, unknown>();
   const env: EvalEnv = { binding, params, graph };
-  const index = out ? graph.edgesFromByLabel : graph.edgesToByLabel;
+  // The vertex's own adjacency box, not a hash of its id into the graph's map — `Vertex.adjFrom`
+  // caches it on first read (audit items 162, 321). This drive is the NEAR side, so `out` selects
+  // the out-adjacency; the far-side twin below selects the opposite one.
+  const boxOf = (v: Vertex): Map<string, Set<Edge>> | undefined => (out ? v.adjFrom : v.adjTo);
   let n = 0;
 
   // Driven from the VERTEX side, not the edge index. Both changes this buys are measured in
@@ -638,14 +641,14 @@ const startOnlyHopCount = (scan: HopScan, startVar: string | undefined): number 
       // of items 139, 142, 144 and 145. So on a fault, look the degree up and re-throw ONLY
       // if the general path would have evaluated this vertex. The happy path pays nothing:
       // the guarded loop measured 52.26ms against 51.81ms unguarded.
-      if (degreeOfTypes(index.get(v.id), types) > 0) {
+      if (degreeOfTypes(boxOf(v), types) > 0) {
         throw e;
       }
 
       continue;
     }
 
-    n += degreeOfTypes(index.get(v.id), types);
+    n += degreeOfTypes(boxOf(v), types);
   }
 
   return n;
@@ -768,7 +771,9 @@ const farOnlyHopCount = (scan: HopScan, farVar: string | undefined): number => {
   const env: EvalEnv = { binding, params, graph };
   // The far endpoint of an `out` hop is the edge's TARGET, so its edges are the ones the
   // reverse index holds — the mirror of the twin's choice.
-  const index = out ? graph.edgesToByLabel : graph.edgesFromByLabel;
+  // The FAR-side drive, so the box is the opposite of the near one above — reading it off the
+  // wrong side is a wrong answer, not a slow one.
+  const boxOf = (v: Vertex): Map<string, Set<Edge>> | undefined => (out ? v.adjTo : v.adjFrom);
   let n = 0;
 
   // The vertex-side drive, for the reasons spelled out on the twin above: creation order for
@@ -806,14 +811,14 @@ const farOnlyHopCount = (scan: HopScan, farVar: string | undefined): number => {
       }
     } catch (e) {
       // See the twin: re-throw only where the old walk would have evaluated this vertex.
-      if (degreeOfTypes(index.get(v.id), types) > 0) {
+      if (degreeOfTypes(boxOf(v), types) > 0) {
         throw e;
       }
 
       continue;
     }
 
-    n += degreeOfTypes(index.get(v.id), types);
+    n += degreeOfTypes(boxOf(v), types);
   }
 
   return n;

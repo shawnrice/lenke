@@ -2141,7 +2141,7 @@ export class Graph {
    * First-by-insertion-order, matching the Rust core.
    */
   public findEdge = (from: Vertex, to: Vertex, label: string): Edge | undefined => {
-    for (const edge of this.edgesFromByLabel.get(from.id)?.get(label) ?? []) {
+    for (const edge of from.adjFrom?.get(label) ?? []) {
       if (edge.to === to) {
         return edge;
       }
@@ -3445,13 +3445,19 @@ export class Graph {
   private cardKey = (label: string, edgeType: string, direction: 'out' | 'in'): string =>
     `${label} ${edgeType} ${direction}`;
 
+  // Both read the vertex's cached adjacency box rather than hashing its id into the graph's map
+  // — see `Vertex.adjFrom`. Audit item 311 measured these two lines at **35.78ms of the 48.0ms
+  // `traverse 1-hop + filter` row**, 445ns a vertex when every vertex passes the gate and ~1100
+  // when the passing set is strided, which is cache behaviour and not arithmetic. Item 321 priced
+  // the box at 3.7x on the access pattern.
+
   /** Number of `edgeType` edges for which `vertex` is the SOURCE (out-degree). */
   public outDegree = (vertex: Vertex, edgeType: string): number =>
-    this.edgesFromByLabel.get(vertex.id)?.get(edgeType)?.size ?? 0;
+    vertex.adjFrom?.get(edgeType)?.size ?? 0;
 
   /** Number of `edgeType` edges for which `vertex` is the TARGET (in-degree). */
   public inDegree = (vertex: Vertex, edgeType: string): number =>
-    this.edgesToByLabel.get(vertex.id)?.get(edgeType)?.size ?? 0;
+    vertex.adjTo?.get(edgeType)?.size ?? 0;
 
   /**
    * Declare a CARDINALITY constraint bounding the degree of every vertex carrying

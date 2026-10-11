@@ -874,6 +874,42 @@ bench`** so one-case-per-process is a flag instead of the bespoke script items 2
   aggregate-over-chain and never builds the frontier, so the engine that OOM'd had to be the TS
   one — and 3 and 4 hops run in 8 and 13 ms at ~80 MB where 5 is fatal, which is exactly the count
   family's ≤4-segment coverage edge (item 290).
+- **The adjacency box — 1.207x on `traverse 1-hop + filter` (321), and a cheaper intermediate than
+  item 300's CSR.** The adjacency is keyed by a vertex's ID **string** at sites that already hold
+  the vertex **object**. Priced over 200,000 vertices before building: a string key **59.7ns**, an
+  object-keyed `Map` 30.5, a `WeakMap` 43.8, **a cached reference 16.1 (3.7x)** — and **only a
+  tenth of the difference is the hash**, the rest is locality. So `Vertex.adjFrom`/`adjTo`, lazily
+  cached, **which is item 162's own pattern** (the label box, for the same reason) and inherits its
+  invalidation: dropped by `evict` and `set graph`. Sound because the graph's outer entries are only
+  ever `set`, never deleted, and `??=` caches only a box that EXISTS so a zero-degree vertex still
+  picks up its first edge.
+  **The FIRST version measured nothing, because it changed a function the row never calls.** Item
+  311 described the line correctly (`index.get(v.id)` then `.get(type).size`) and
+  `Graph.outDegree`/`inDegree` have exactly that shape — but `shortcuts.ts` has its own local
+  `degreeOfTypes(index.get(v.id), types)` at four sites, and that is what the row runs. Pointing
+  those at the box: `traverse 1-hop + filter` **47.9 -> 39.7ms (1.207x)**, ranges disjoint, the ffi
+  column flat at 1.5 both sides, **the gap to native 32x -> 26x**. `count 3-hop` is unmoved and
+  that is correct — item 310 put its cost in the degree PRODUCT's two hashes per middle edge, a
+  different path, still open.
+  The two drives select OPPOSITE maps (near `out ? From : To`, far `out ? To : From`), so each
+  site's `boxOf` mirrors its own declaration; the edit was made BY LINE with content asserted
+  first, because the near declaration's text appears twice and a textual replace hit the wrong one.
+  8 tests, 5 mutants, 4 caught + 1 equivalent. **X2 (`set graph` keeps the boxes) survived first —
+  the THIRD symmetric-case gap this session**: `set graph` has no internal caller, but
+  `label-box.test.ts:155` and `prop-box.test.ts:97` both do `v.graph = g2` for the other two boxes.
+  Also: `expect(v.adjFrom).toBeUndefined()` passes when the property does not exist at all, so the
+  positive case is asserted too.
+- **OPEN, pre-existing, reproducible: a TS-vs-native evaluation-order divergence on a raising
+  operand under OPTIONAL MATCH (found at 321, NOT caused by it).** `FUZZ_SEED=1630169971` —
+  `MATCH (t:T) OPTIONAL MATCH (t)-[:E]->(n WHERE ((CASE … END = split(duration('PT-2.5S'), -1)) AND
+(n.s IS UNKNOWN))) RETURN t.n AS x, n.n AS y ORDER BY x, y` gives **ts `err E_INVALID_VALUE`
+  against native `ok` with six rows**. Fails identically on the control, twice. The fuzzer's own
+  classifier: _"an evaluation-order difference, but no registry entry covers this shape"_ — the
+  raise-parity class of items 139/142/144/145, with `split(duration(…), -1)` as the raising
+  operand. Makes `bun run fuzz` red roughly **1 run in 3**. Which engine is right is an ISO
+  three-valued-logic question and needs the grammar, not a perf change. **Replaying the seed on
+  both sides is what told the difference** between a change breaking the differential and main
+  already diverging.
 - **What the parse cache left behind, and two follow-ups REFUTED (320).** New ledger from
   `percall_probe` (which gained the shipped entry point as a case, warmed so it measures the HIT
   path): the parse layer **1149ns -> 144ns (7.98x)**, so a serving call is **~1790 -> ~785ns
