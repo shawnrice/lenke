@@ -2765,12 +2765,23 @@ fn three_hop_product_count_matches_enumeration() {
 fn sweep_fixture() -> crate::store::Store {
     use crate::store::Builder;
     let mut b = Builder::default();
-    // 12 nodes, two labels unevenly spread.
+    // 12 nodes, two labels unevenly spread. Each carries `k` (0..3, a gate's selector) and `m`
+    // (its own index, for a range gate). `k` is mod FOUR while the `:A` label is mod three, so a
+    // label gate and a `{k: 0}` gate select DIFFERENT nodes and cannot be confused for each other.
     for i in 0..12 {
+        let mut props = vec![
+            ("k", Value::Num(f64::from(i % 4))),
+            ("m", Value::Num(f64::from(i))),
+        ];
+        // `s` is on EVEN nodes only, so a PRESENCE gate is not vacuous: every node carries `k`
+        // and `m`, and `n.m IS NOT NULL` would admit all twelve and test nothing.
+        if i % 2 == 0 {
+            props.push(("s", Value::Num(1.0)));
+        }
         if i % 3 == 0 {
-            b.node(&["N", "A"], &[]);
+            b.node(&["N", "A"], &props);
         } else {
-            b.node(&["N"], &[]);
+            b.node(&["N"], &props);
         }
     }
     // Degrees 1..4 varying with i, over two edge types, plus a self-loop and a back edge so the
@@ -2996,8 +3007,8 @@ fn a_mixed_direction_sweep_honours_per_hop_edge_types() {
     }
 }
 
-/// An UNDIRECTED hop is neither index on its own, so `chain_depth` refuses the whole chain — and
-/// the general path must still answer it.
+/// An UNDIRECTED hop is neither index on its own, so the peel refuses the whole chain — and the
+/// general path must still answer it.
 #[test]
 fn an_undirected_hop_declines_the_whole_sweep() {
     let st = sweep_fixture();
@@ -3013,7 +3024,7 @@ fn an_undirected_hop_declines_the_whole_sweep() {
 }
 
 /// What the sweep must DECLINE, each still answering correctly through the general path. The gate
-/// is `chain_depth`, and every one of these fails the peel for its own reason.
+/// is `peel_gated_chain`, and every one of these fails it for its own reason.
 #[test]
 fn the_sweep_declines_what_it_cannot_express() {
     let st = sweep_fixture();
@@ -3043,8 +3054,10 @@ fn the_sweep_declines_what_it_cannot_express() {
     let bound = count("MATCH (a:N)-[r:R]->()-[:R]->()-[:R]->()-[:R]->(d) RETURN count(*) AS c");
     assert_eq!(bound, plain, "binding an edge changed the walk count");
 
-    // A clause WHERE breaks the peel because the base is no longer a bare `Scan`. This is the
-    // route the oracle above relies on, so it is asserted rather than assumed.
+    // `IS NULL` is not a gate the sweep can express (null is a stored present value here, so it
+    // is not `has_prop`), so this clause WHERE declines where a `{k: v}` or a range would now be
+    // carried (item 304). Asserted rather than assumed, because it is a route the rest of this
+    // file's oracle relies on.
     let filtered = count(&format!(
         "MATCH {chain4} WHERE a.z IS NULL RETURN count(*) AS c"
     ));
@@ -6757,5 +6770,264 @@ fn the_answer_is_unchanged_across_the_desugaring_boundary() {
             )),
             "{n_items} items negated must answer as 31 does"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Item 304: an INLINE constraint at any position of a long chain, in NATIVE.
+//
+// Every assertion here is an EXACT count checked against the enumeration of the same pattern, for
+// the reason item 298's mutation run recorded: a gate that admits too much returns a plausible
+// number and a gate that admits too little returns a smaller plausible one, so `>= 0` or
+// `> baseline` is an interval the mutant lives in. The exact numbers were read off the fixture
+// once and printed before being baked in — item 303's TS twin had two assertions comparing 0
+// against 0 for want of that step.
+// ---------------------------------------------------------------------------------------------
+
+/// A 5-hop `R` chain whose position `at` carries `gate`; `at == 0` is the base node, `at == -1`
+/// means no gate at all.
+#[cfg(test)]
+fn gated_five(at: i32, gate: &str) -> String {
+    let mut p = format!("(a:N{})", if at == 0 { gate } else { "" });
+    for h in 1..=5 {
+        p.push_str(&format!("-[:R]->(n{h}"));
+        if h == at {
+            p.push_str(gate);
+        }
+        p.push(')');
+    }
+    p
+}
+
+/// The whole family at once: a `{k: 0}` gate at each of the six positions of a five-hop chain,
+/// each against its own enumeration. Position 0 is the seed-time gate, 1..4 are the per-pass
+/// `0 -> w` gates, and 5 is the extra pass the gated LAST position gets.
+#[test]
+fn an_inline_gate_at_every_position_matches_enumeration() {
+    let st = sweep_fixture();
+    let (ungated, ungated_enum) = count_and_enumerated(&st, &gated_five(-1, ""), "n5");
+    assert_eq!((ungated, ungated_enum), (155, 155));
+    for (at, want) in [26usize, 31, 29, 31, 36, 37].into_iter().enumerate() {
+        let (count, enumerated) =
+            count_and_enumerated(&st, &gated_five(at as i32, " {k: 0}"), "n5");
+        assert_eq!(
+            count, enumerated,
+            "sweep != enumeration with a gate at {at}"
+        );
+        assert_eq!(count, want, "gate at {at}");
+        assert!(count < ungated, "the gate at {at} admitted everything");
+    }
+}
+
+/// The gated LAST position is its own code path — an ungated end is a weighted sum of DEGREES and
+/// a degree cannot say which of a vertex's edges land somewhere that passes, so the sweep gives it
+/// a PASS of its own and sums the surviving way counts. A mutant that skips the extra pass
+/// answers the UNGATED number, which is what the second assertion is for.
+#[test]
+fn a_gate_on_the_last_position_gets_its_own_pass() {
+    let st = sweep_fixture();
+    let (gated, gated_enum) = count_and_enumerated(&st, &gated_five(5, " {k: 0}"), "n5");
+    let (ungated, _) = count_and_enumerated(&st, &gated_five(-1, ""), "n5");
+    assert_eq!((gated, gated_enum), (37, 37));
+    assert_eq!(ungated, 155, "the control moved");
+    assert_ne!(gated, ungated, "the last position's gate was ignored");
+}
+
+/// A gate that admits NOTHING must count zero — at an interior position and at the last one,
+/// which are different code paths. The discriminator is the 155 above: the gate is applied at all.
+#[test]
+fn a_gate_that_admits_nothing_counts_zero() {
+    let st = sweep_fixture();
+    for at in [3, 5] {
+        let (count, enumerated) = count_and_enumerated(&st, &gated_five(at, " {k: 99}"), "n5");
+        assert_eq!((count, enumerated), (0, 0), "an empty gate at {at}");
+    }
+}
+
+/// Two gates at different positions, over per-hop edge types — a gate carried to the wrong
+/// position, or one position's gate reused for the next, returns a plausible number here.
+#[test]
+fn two_gates_at_different_positions_and_per_hop_types() {
+    let st = sweep_fixture();
+    let (count, enumerated) = count_and_enumerated(
+        &st,
+        "(a:N)-[:R]->(n1 {k: 0})-[:R]->(n2)-[:S]->(n3 {k: 1})-[:R]->(n4)-[:R]->(n5)",
+        "n5",
+    );
+    assert_eq!((count, enumerated), (10, 10));
+}
+
+/// Gates on a MIXED-direction chain (item 302's arrows), including one on the last position: the
+/// gate is applied to the FAR end of the edge in whichever adjacency list it was read from, so a
+/// mutant that gates the NEAR end is wrong only where the directions differ.
+#[test]
+fn gates_on_a_mixed_direction_chain_match_enumeration() {
+    let st = sweep_fixture();
+    let (count, enumerated) = count_and_enumerated(
+        &st,
+        "(a:N)-[:R]->(n1)<-[:R]-(n2 {k: 2})-[:R]->(n3)<-[:R]-(n4)-[:R]->(n5 {k: 0})",
+        "n5",
+    );
+    assert_eq!((count, enumerated), (3, 3));
+}
+
+/// A gate at an UNTYPED hop's landing node — the `want_etypes` empty-wants route, which is a
+/// different inner loop from a typed hop's.
+#[test]
+fn a_gate_on_an_untyped_chain_matches_enumeration() {
+    let st = sweep_fixture();
+    let (count, enumerated) = count_and_enumerated(
+        &st,
+        "(a:N)->(n1 {k: 0})->(n2)->(n3)->(n4 {k: 2})->(n5)",
+        "n5",
+    );
+    assert_eq!((count, enumerated), (39, 39));
+}
+
+/// A gate on the base of an UNLABELLED chain, which seeds through the `is_alive` branch — and a
+/// DELETED node must neither seed the sweep nor be reached by it even when the gate would admit
+/// it.
+#[test]
+fn a_base_gate_seeds_an_unlabelled_chain() {
+    let st = sweep_fixture();
+    let (count, enumerated) = count_and_enumerated(
+        &st,
+        "(a {k: 0})-[:R]->(n1)-[:R]->(n2)-[:R]->(n3)-[:R]->(n4)-[:R]->(n5)",
+        "n5",
+    );
+    assert_eq!((count, enumerated), (26, 26));
+
+    let mut dead = sweep_fixture();
+    // Node 3 is a `{k: 3}` node, node 0 and node 4 are `{k: 0}` seeds.
+    dead.delete_node(0);
+    let (after, after_enum) = count_and_enumerated(
+        &dead,
+        "(a {k: 0})-[:R]->(n1)-[:R]->(n2)-[:R]->(n3)-[:R]->(n4)-[:R]->(n5)",
+        "n5",
+    );
+    assert_eq!(after, after_enum, "deleted-node sweep != enumeration");
+    assert!(
+        after < count,
+        "deleting a seed did not narrow the gated count"
+    );
+}
+
+/// The SPELLING claim for this family, which is the reason the gate's position is derived from
+/// its predicate's slot rather than from where the optimizer put the `Filter`: an inline
+/// `{k: 1}`, a clause `WHERE n3.k = 1`, and the two of them conjoined must all answer the same —
+/// and the sweep must answer all of them, not just the spelling it happens to be handed.
+#[test]
+fn a_clause_where_gate_answers_as_the_inline_spelling_does() {
+    let st = sweep_fixture();
+    let base = "(a:N)-[:R]->(n1)-[:R]->(n2)-[:R]->(n3)-[:R]->(n4)-[:R]->(n5)";
+    // `n3.m > 5` and its flipped spelling, which the gate normalizes rather than declines.
+    for q in [
+        format!("{base} WHERE n3.m > 5"),
+        format!("{base} WHERE 5 < n3.m"),
+    ] {
+        let (count, enumerated) = count_and_enumerated(&st, &q, "n5");
+        assert_eq!((count, enumerated), (73, 73), "{q}");
+    }
+    // The same conjunction as one `AND`, as two stacked filters (inline plus clause), and on the
+    // LAST position.
+    let (and_count, and_enum) =
+        count_and_enumerated(&st, &format!("{base} WHERE n3.m > 5 AND n3.k = 1"), "n5");
+    let (stacked, stacked_enum) = count_and_enumerated(
+        &st,
+        "(a:N)-[:R]->(n1)-[:R]->(n2)-[:R]->(n3 {k: 1})-[:R]->(n4)-[:R]->(n5) WHERE n3.m > 5",
+        "n5",
+    );
+    assert_eq!((and_count, and_enum), (8, 8));
+    assert_eq!(
+        (stacked, stacked_enum),
+        (8, 8),
+        "stacked filters != one AND"
+    );
+    let (last, last_enum) = count_and_enumerated(&st, &format!("{base} WHERE n5.m > 5"), "n5");
+    assert_eq!((last, last_enum), (70, 70));
+}
+
+/// What the gate DECLINES, each for its own reason, and each still answered correctly by the
+/// general matcher. A disjunction is not a conjunction of per-node tests; a correlation names two
+/// slots at once; `IS NULL` is not `has_prop` in an engine where null is a stored value, so
+/// `IS NOT NULL` is declined rather than approximated.
+#[test]
+fn a_gate_the_sweep_cannot_express_declines_and_still_answers() {
+    let st = sweep_fixture();
+    let base = "(a:N)-[:R]->(n1)-[:R]->(n2)-[:R]->(n3)-[:R]->(n4)-[:R]->(n5)";
+    for (q, want) in [
+        (format!("{base} WHERE n3.k = 0 OR n3.k = 1"), 63usize),
+        // The same question as an `IN` list, which lowers to the same `Or` — so the two
+        // spellings decline TOGETHER, which is the property that matters.
+        (format!("{base} WHERE n3.k IN [0, 1]"), 63),
+        (format!("{base} WHERE n3.m = n1.m"), 9),
+        (format!("{base} WHERE n3.s IS NOT NULL"), 87),
+        (format!("{base} WHERE n5.s IS NOT NULL"), 84),
+    ] {
+        let (count, enumerated) = count_and_enumerated(&st, &q, "n5");
+        assert_eq!(count, enumerated, "declined sweep != enumeration for {q}");
+        assert_eq!(count, want, "{q}");
+    }
+}
+
+/// Depth and gates together: a seven-hop chain gated at the last position and at an interior one.
+/// A gate placed by its slot cannot drift with the depth, which is what this checks.
+#[test]
+fn a_gate_at_seven_hops_matches_enumeration() {
+    let st = sweep_fixture();
+    let (last, last_enum) = count_and_enumerated(
+        &st,
+        "(a:N)-[:R]->()-[:R]->()-[:R]->()-[:R]->()-[:R]->()-[:R]->()-[:R]->(n5 {k: 0})",
+        "n5",
+    );
+    assert_eq!((last, last_enum), (106, 106));
+    let (mid, mid_enum) = count_and_enumerated(
+        &st,
+        "(a:N)-[:R]->()-[:R]->()-[:R]->(m3 {k: 0})-[:R]->()-[:R]->()-[:R]->()-[:R]->(n5)",
+        "n5",
+    );
+    assert_eq!((mid, mid_enum), (86, 86));
+}
+
+/// A conjunction naming TWO positions splits into two gates, one per position. Nothing reached
+/// this shape at first and a mutant that conflated the two slots — gating `n3` on `n1`'s
+/// predicate — survived the whole suite; the fix was not to decline the shape but to split it,
+/// which is the same pushdown a single gate already gets.
+#[test]
+fn a_conjunction_over_two_positions_splits_into_two_gates() {
+    let st = sweep_fixture();
+    let base = "(a:N)-[:R]->(n1)-[:R]->(n2)-[:R]->(n3)-[:R]->(n4)-[:R]->(n5)";
+    for (q, want) in [
+        (format!("{base} WHERE n1.k = 0 AND n3.k = 1"), 6usize),
+        // One of the two on the LAST position, which takes the extra pass.
+        (format!("{base} WHERE n1.k = 0 AND n5.k = 1"), 6),
+        // Three positions, one of them a range.
+        (
+            format!("{base} WHERE n1.k = 0 AND n3.m > 5 AND n5.k = 2"),
+            8,
+        ),
+    ] {
+        let (count, enumerated) = count_and_enumerated(&st, &q, "n5");
+        assert_eq!(count, enumerated, "split sweep != enumeration for {q}");
+        assert_eq!(count, want, "{q}");
+    }
+}
+
+/// A NULL literal is declined, and that guard is load-bearing rather than belt-and-braces. `k =
+/// null` is UNKNOWN for every node, so carrying it would still answer 0 — but `k <> null` would
+/// admit EVERYTHING, which is the 155 this asserts against. A mutant that drops the guard
+/// survived until this test existed.
+#[test]
+fn a_null_literal_is_not_a_gate() {
+    let st = sweep_fixture();
+    let base = "(a:N)-[:R]->(n1)-[:R]->(n2)-[:R]->(n3)-[:R]->(n4)-[:R]->(n5)";
+    let (ungated, _) = count_and_enumerated(&st, base, "n5");
+    assert_eq!(ungated, 155, "the control moved");
+    for q in [
+        format!("{base} WHERE n3.k <> null"),
+        format!("{base} WHERE n3.k = null"),
+    ] {
+        let (count, enumerated) = count_and_enumerated(&st, &q, "n5");
+        assert_eq!((count, enumerated), (0, 0), "{q}");
     }
 }

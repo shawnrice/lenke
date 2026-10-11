@@ -343,10 +343,40 @@ an independent derivation). Measure with`cd packages/native && bun run bench:gat
   reads it" invariant. An earlier probe had it at 1.12-1.13x, but that probe's own ungated control
   spanned 1.5x across rounds — **a probe that cannot hold its control still is not entitled to a
   13% conclusion.**
-- **The same inline gates in NATIVE** — **OPEN and priced by item 303.** `try_nhop_sweep_count`
-  carries the base label only, so native still pays **28-126x** for one constrained position where
-  the TS sweep now pays 1.2-1.7x. Same cross-engine asymmetry items 299 and 302 closed for depth
-  and direction; `bun run bench:gate` keeps the native column so it stays priced.
+- ~~**The same inline gates in NATIVE**~~ — **CLOSED by item 304 at 16.3-63.1x.** 20,000 vertices
+  of degree 3, a five-hop chain, three alternated rounds against the unconstrained chain as the
+  control: 14.7 / 16.6 / 18.5 / 32.0 / **63.1 ms** at positions 0-4 become 0.90 / 0.90 / 0.90 /
+  0.90 / 1.00 ms, i.e. 1.8-2.0x the free chain where it was 29-126x. `(none)` reads 0.50 against
+  0.50, so the ungated sweep did not pay for it — the ungated inner loop is kept byte-identical
+  rather than folded into the gated one behind a per-edge `Option` test.
+  **What it actually found was an equivalent-SPELLING bug of item 125's class, in the planner's
+  shadow.** An inline `{k: 1}` is pushed down to the hop that binds the node; a clause
+  `WHERE n3.k = 1` is left at the TOP of the chain. The first draft compared a filter's slot
+  against the position of the level it sat at, so it served one spelling and declined the other.
+  The gate's position is now DERIVED from its predicate's slot: inline 18.8x, clause `WHERE`
+  20.4x, flipped `1 = n2.k` 20.6x, all three at 0.90 ms. **Found by INSTRUMENTING which shapes the
+  arm reaches** (a temporary `eprintln!` at the point of acceptance over thirty shapes), not by
+  reading the plan — the plan dump showed the pushdown for the inline spelling and said nothing
+  about the one that was missing.
+  A conjunction naming TWO positions SPLITS into two gates rather than declining (mutant N10
+  survived until it did), and leaves landing on one position conjoin — one `AND`, two stacked
+  `Filter`s, or an inline constraint plus a clause `WHERE` on the same node all mean the same
+  thing. `chain_depth` is gone: two peelers that each had to agree about what a `Filter` means was
+  the duplication to remove, and the width check is structural rather than a `chain_width` call,
+  which sees through an `IsLabeled` filter only.
+  Still DECLINED, each asserted by answer rather than by declining: a DISJUNCTION (and the `IN`
+  spelling that lowers to the same `Or`, so they decline together), a CORRELATION naming two
+  slots, `IS NULL`/`IS NOT NULL` (NOT `has_prop` where null is a stored present value), and a null
+  literal in a compare — **`k = null` would answer 0 anyway, but `k <> null` would admit
+  EVERYTHING**, which is why that guard is load-bearing. 14 of 15 mutants caught; the survivor is
+  N15, the deliberate EQUIVALENT one (remove the `next[j] == 0` transition test and a gate is
+  merely re-evaluated per edge), kept in the set so a run proves it can tell "not covered" from
+  "cannot differ".
+- **The same spelling gap in the TS engine** — **OPEN and priced by item 304 at 139x.** Same
+  fixture, same question at position 2: inline `{k: 1}` 33.9ms, clause `WHERE n2.k = 1`
+  **4708.2ms**, flipped `1 = n2.k` 4890.2ms, label `(n2:H)` 45.4ms — against 0.90-1.10ms for all
+  four in native. Item 303 reaches `inlineOf` from the PATTERN NODE, so a clause `WHERE` naming
+  the same node never gets there. `bun run bench:gate`'s three-spellings table keeps both columns.
   **Its own open question — "did the fourth arm FIX the cliff or MOVE it?" — is answered by item
   298: it moved it to FIVE**, and the row below closes it for every depth.
 - ~~**The count family's cliff at FIVE segments**~~ — **CLOSED by item 298 at 719x (5 hops) and
@@ -405,10 +435,13 @@ an independent derivation). Measure with`cd packages/native && bun run bench:gat
   direction logic at all — still read 0.95x/0.95x. **So it is the TOLL for editing this module,
   not the feature** ([[pull-alignment-is-load-bearing]] one module along). Accepted: a 5% constant
   against removing an O(degree^hops) cliff. Do not re-attempt the specialization.
-- **Per-position NODE labels in the NATIVE sweep** — **still OPEN.** The TS sweep carries a label
-  at every position; native carries the base label only. Not taken at items 299 or 302 for the
-  same reason: the differential fuzzer generates no chain of this depth, so the coverage would be
-  hand-written tests alone — see `engine-corpus-nested-fuzzer-gap`.
+- ~~**Per-position NODE labels in the NATIVE sweep**~~ — **CLOSED by item 304 at 32.4x**, as a
+  side effect: `IsLabeled` is one of the gate's leaf forms, so `(n2:H)` at an interior position
+  went 35.60 -> 1.10 ms. Worth recording how nearly this was mis-retired — a post-change reading
+  of 1.1 ms with NO control looked like "it was always fast via another arm", and only the
+  alternated A/B showed the control at 35.6 ms. The coverage is still hand-written tests plus
+  `rewrite_fuzz`; the differential fuzzer generates no chain of this depth
+  ([[engine-corpus-nested-fuzzer-gap]]).
 - ~~**`longChainCount`'s `Map<string, number>`**~~ — **CLOSED by item 300 at 1.29x (5 hops),
   1.65x (6) and 1.28x (7 reversed)**, all with DISJOINT ranges over three alternated rounds and
   both controls (3- and 4-hop, which route to the degree products) flat at 0.98x/1.04x. A lazy

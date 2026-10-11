@@ -3154,50 +3154,156 @@ pub(super) fn peel_out_hops(plan: &Plan, n: usize) -> Option<(Vec<Vec<String>>, 
     Some((labels, base))
 }
 
-/// One peeled hop: the edge labels it accepts, and whether it reads the OUT index.
-type DirHop = (Vec<String>, bool);
+/// One peeled hop: the edge labels it accepts and whether it reads the OUT index.
+struct GateHop {
+    types: Vec<String>,
+    out: bool,
+}
 
-/// Peel exactly `n` frontier hops of EITHER direction (no bound edge) ending at a bare Scan,
-/// returning per-hop `(edge labels, is_out)` FIRST-to-LAST and the Scan's label.
+/// A directed chain of frontier hops over one scan, FIRST hop first, with a per-POSITION gate.
+struct GatedChain {
+    hops: Vec<GateHop>,
+    base_label: Option<String>,
+    /// Indexed by SLOT: 0 is the base, `i` is the node hop `i` lands on. `None` = ungated.
+    gates: Vec<Option<Vec<NbrPred>>>,
+}
+
+/// Flatten a filter into `(slot, per-node test)` leaves. Every leaf carries the SLOT it names,
+/// because a filter's place in the plan is not where its position is: an inline `{k: 1}` is pushed
+/// down to the level that binds the node, a clause `WHERE n3.k = 1` is left at the top of the
+/// chain, and both mean the same thing. The sweep applies each leaf at the pass that LANDS on its
+/// slot, which is the pushdown the two spellings need in order to cost the same (item 125's class
+/// of bug, one family along).
+///
+/// Per-NODE, unlike [`simple_nbr_pred`]'s "any slot but the expand's source": each test is
+/// evaluated against ONE vertex with nothing else bound. So `n3.m = n1.m` has no leaf form and
+/// declines, while `n3.k = 1 AND n1.k = 0` splits into two gates. Returns false for anything that
+/// has no leaf form, which declines the whole sweep rather than dropping a predicate.
+fn gate_leaves(pred: &Expr, out: &mut Vec<(usize, NbrPred)>) -> bool {
+    match pred {
+        // A conjunction SPLITS: `WHERE n1.k = 0 AND n3.k = 1` is two gates at two positions, not
+        // one correlation to decline. Each leaf carries the slot it names, so the split is free —
+        // and it is the same pushdown that puts a single gate at its own position.
+        Expr::And(a, b) => gate_leaves(a, out) && gate_leaves(b, out),
+        Expr::Compare { op, left, right } => {
+            let (s, key, v, flip) = match (left.as_ref(), right.as_ref()) {
+                (Expr::Prop { slot, key }, Expr::Lit(v)) => (*slot, key, v, false),
+                (Expr::Lit(v), Expr::Prop { slot, key }) => (*slot, key, v, true),
+                _ => return false,
+            };
+            // A null literal is UNKNOWN against every value, never a definite TRUE. `Eq` against
+            // it already admits nothing, but `Ne` would admit EVERYTHING, so this is load-bearing
+            // and not belt-and-braces — it is declined for the same reason `simple_nbr_pred`
+            // declines it.
+            if v.is_null() {
+                return false;
+            }
+            let op = if flip {
+                match op {
+                    CompareOp::Lt => CompareOp::Gt,
+                    CompareOp::Le => CompareOp::Ge,
+                    CompareOp::Gt => CompareOp::Lt,
+                    CompareOp::Ge => CompareOp::Le,
+                    other => *other,
+                }
+            } else {
+                *op
+            };
+            out.push((s, NbrPred::Cmp(key.clone(), op, v.clone())));
+            true
+        }
+        Expr::PropertyExists { slot, key } => {
+            out.push((*slot, NbrPred::Exists(key.clone())));
+            true
+        }
+        Expr::IsLabeled { slot, labels } => {
+            out.push((*slot, NbrPred::Labeled(labels.clone())));
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Peel a chain of frontier hops of EITHER direction (no bound edge) down to a bare Scan,
+/// collecting per-hop direction and edge labels plus each position's inline GATE.
 ///
 /// Separate from [`peel_out_hops`] rather than a generalization of it, because that one is the
 /// 3-hop edge product's gate and the product's identity genuinely wants one orientation — its
 /// `level1`/`outdeg3` arrays are built from `store.out` on both ends. The SWEEP has no such
 /// requirement: each pass reads whichever index its own hop names.
 ///
-/// A fully REVERSED chain does not need this — the optimizer's `orient` rewrite normalizes it to
-/// a forward one, measured at 0.05ms for 8 hops against 0.02 forward. What needs it is the shape
-/// `orient` cannot normalize: ALTERNATING arrows, where there is no single orientation to flip to.
-fn peel_dir_hops(plan: &Plan, n: usize) -> Option<(Vec<DirHop>, Option<String>)> {
-    if n == 0 {
-        return match plan {
-            Plan::Scan { label } => Some((Vec::new(), label.clone())),
-            _ => None,
-        };
+/// A fully REVERSED chain does not need the direction half — the optimizer's `orient` rewrite
+/// normalizes it to a forward one, measured at 0.05ms for 8 hops against 0.02 forward. What needs
+/// it is the shape `orient` cannot normalize: ALTERNATING arrows, where there is no single
+/// orientation to flip to.
+///
+/// The width check is STRUCTURAL here (`from` must equal the number of hops already peeled)
+/// rather than a [`chain_width`] call, because `chain_width` sees through an `IsLabeled` filter
+/// only — and a gated position is exactly a filter it does not see through. This also replaces
+/// the old `chain_depth` pre-pass: the depth is `hops.len()` once the peel is done, and two
+/// peelers that each had to agree about what a `Filter` means was the duplication to avoid.
+fn peel_gated_chain(plan: &Plan) -> Option<GatedChain> {
+    let mut hops = Vec::new();
+    let mut found = Vec::new();
+    let base_label = peel_chain_hops(plan, &mut hops, &mut found)?;
+    // Place each leaf at the position its own slot names. `get_mut` is the bound check, and a
+    // chain of `n` hops binds slots `0..=n`. Leaves landing on one position CONJOIN, whether they
+    // came from one `AND`, from two stacked filters, or from an inline constraint plus a clause
+    // `WHERE` on the same node — which is what all of those spellings mean.
+    let mut gates: Vec<Option<Vec<NbrPred>>> = Vec::new();
+    gates.resize_with(hops.len() + 1, || None);
+    for (slot, leaf) in found {
+        gates.get_mut(slot)?.get_or_insert_with(Vec::new).push(leaf);
     }
-    let Plan::Expand {
-        input,
-        from,
-        dir,
-        edge_label,
-        bind_edge: false,
-        double_loops: false,
-    } = plan
-    else {
-        return None;
-    };
-    // `Dir::Any` is an undirected hop, which is neither index on its own and is refused.
-    let out = match dir {
-        Dir::Out => true,
-        Dir::In => false,
-        _ => return None,
-    };
-    if *from + 1 != chain_width(input)? {
-        return None; // must expand the current frontier
+    Some(GatedChain {
+        hops,
+        base_label,
+        gates,
+    })
+}
+
+/// The structural half of the peel: appends hops FIRST-to-LAST to `hops`, every filter's
+/// `(slot, leaf)` gates to `found`, and returns the base `Scan`'s label.
+fn peel_chain_hops(
+    plan: &Plan,
+    hops: &mut Vec<GateHop>,
+    found: &mut Vec<(usize, NbrPred)>,
+) -> Option<Option<String>> {
+    // Filters STACK, and sit at whichever level the optimizer pushed them to — which for a clause
+    // `WHERE` is the top of the chain, not the hop that binds the node it names.
+    let mut node = plan;
+    while let Plan::Filter { input, pred } = node {
+        gate_leaves(pred, found).then_some(())?;
+        node = input;
     }
-    let (mut hops, base): (Vec<DirHop>, Option<String>) = peel_dir_hops(input, n - 1)?;
-    hops.push((edge_label.clone(), out));
-    Some((hops, base))
+    match node {
+        Plan::Scan { label } => Some(label.clone()),
+        Plan::Expand {
+            input,
+            from,
+            dir,
+            edge_label,
+            bind_edge: false,
+            double_loops: false,
+        } => {
+            // `Dir::Any` is an undirected hop, which is neither index on its own and is refused.
+            let out = match dir {
+                Dir::Out => true,
+                Dir::In => false,
+                _ => return None,
+            };
+            let base = peel_chain_hops(input, hops, found)?;
+            if *from != hops.len() {
+                return None; // must expand the current frontier
+            }
+            hops.push(GateHop {
+                types: edge_label.clone(),
+                out,
+            });
+            Some(base)
+        }
+        _ => None,
+    }
 }
 
 /// count(*) over a 3-hop OUT chain via the identity `1ᵀA₁A₂A₃1 = Σ` over the MIDDLE
@@ -3276,33 +3382,6 @@ pub(super) fn try_3hop_product_count(
     Some(scalar_num(total as f64))
 }
 
-/// How many directed hops sit between `plan` and the `Scan` at its base. `None` if the chain is
-/// not a plain unfiltered directed chain over a scan — the same shape [`peel_dir_hops`] accepts,
-/// counted rather than collected, because the sweep below has to know its own depth before it can
-/// peel.
-fn chain_depth(plan: &Plan) -> Option<usize> {
-    match plan {
-        Plan::Scan { .. } => Some(0),
-        Plan::Expand {
-            input,
-            from,
-            dir,
-            bind_edge: false,
-            double_loops: false,
-            ..
-        } => {
-            if !matches!(dir, Dir::Out | Dir::In) {
-                return None;
-            }
-            if *from + 1 != chain_width(input)? {
-                return None; // must expand the current frontier
-            }
-            Some(chain_depth(input)? + 1)
-        }
-        _ => None,
-    }
-}
-
 /// `count(*)` over a DIRECTED chain of FOUR OR MORE hops, as a forward SWEEP of per-node way
 /// counts.
 ///
@@ -3327,8 +3406,8 @@ fn chain_depth(plan: &Plan) -> Option<usize> {
 /// correction, exactly as [`try_3hop_product_count`] notes, and the sweep is byte-identical to the
 /// enumeration. Per-hop edge types are independent, and an unknown type on any hop means no paths.
 ///
-/// Unfiltered, which [`chain_depth`] enforces rather than assumes: a `Filter`, a bound edge or an
-/// `Any` (undirected) hop all fail the peel.
+/// A bound edge or an `Any` (undirected) hop fails the peel, which [`peel_gated_chain`] enforces
+/// rather than assumes.
 ///
 /// EACH HOP CARRIES ITS OWN DIRECTION (item 302), because the pass that advances the way counts
 /// simply reads whichever index its hop names. The first version was OUT-only and recorded mixed
@@ -3349,8 +3428,37 @@ fn chain_depth(plan: &Plan) -> Option<usize> {
 /// [`peel_out_hops`]: the 3-hop product's identity really does want one orientation, since its
 /// `level1`/`outdeg3` arrays are both built from `store.out`.
 ///
-/// Per-position NODE labels are still not carried, as in the TS arm's interior positions, and that
-/// stays open.
+/// EVERY POSITION CAN CARRY AN INLINE CONSTRAINT (item 304), applied on the `0 -> w` TRANSITION so
+/// a predicate costs once per DISTINCT vertex reached there rather than once per edge into it —
+/// item 219's argument, two families along. Before it, one constrained node declined the whole
+/// family: measured at 20,000 vertices of degree 3, a five-hop chain against the unconstrained one
+/// as the control, native and the TS twin (item 303) side by side.
+///
+/// | gate at     | native before | vs free | native after | vs free |   won |
+/// | ----------- | ------------: | ------: | -----------: | ------: | ----: |
+/// | (none)      |       0.50 ms |       — |      0.50 ms |       — |     — |
+/// | 0 (seed)    |      15.60 ms |   28.6x |      0.90 ms |    1.7x | 17.3x |
+/// | 1           |      16.50 ms |   30.2x |      0.90 ms |    1.7x | 18.3x |
+/// | 2           |      17.90 ms |   32.8x |      0.90 ms |    1.7x | 19.9x |
+/// | 3           |      32.00 ms |   58.6x |      1.00 ms |    1.8x | 32.0x |
+/// | 4 (last)    |      66.20 ms |  121.3x |      1.10 ms |    2.0x | 60.2x |
+///
+/// A gated LAST position gets a PASS OF ITS OWN: an ungated end is a weighted sum of DEGREES, and
+/// a degree cannot say which of a vertex's edges land somewhere that passes — which is why the
+/// degree products refuse an end constraint at all (items 219, 290). It won the most here, as it
+/// did in TS.
+///
+/// The gate's POSITION comes from its predicate's SLOT, not from where the optimizer put the
+/// `Filter` — which is what makes the spellings cost the same. An inline `{k: 1}` is pushed down
+/// to the level that binds the node; a clause `WHERE n3.k = 1` is left at the top of the chain,
+/// and before item 304 the second spelling declined while the first was accepted. Same class of
+/// bug as item 125's 4x, found by instrumenting which shapes the arm actually reaches rather than
+/// by reading the plan and assuming.
+///
+/// What still declines, each for its own reason: a DISJUNCTION (`k = 0 OR k = 1`, and the `IN`
+/// list that lowers to it), a CORRELATION naming two slots, and `IS NULL`/`IS NOT NULL` — which
+/// is NOT `has_prop` in an engine where null is a stored present value, so it is declined rather
+/// than approximated.
 pub(super) fn try_nhop_sweep_count(
     input: &Plan,
     keys: &[(String, Expr)],
@@ -3364,46 +3472,59 @@ pub(super) fn try_nhop_sweep_count(
     if agg.func != AggFn::Count || agg.arg.is_some() || agg.distinct {
         return None;
     }
-    let hops = chain_depth(input)?;
+    let chain = peel_gated_chain(input)?;
+    let hops = chain.hops.len();
     // One, two and three hops have their own tuned arms and this must not steal them: it sits
     // AFTER `try_3hop_product_count` in the dispatch, but `or_else` laziness is not a reason to
     // leave the bound implicit.
     if hops < 4 {
         return None;
     }
-    let (peeled, base) = peel_dir_hops(input, hops)?;
-    // `(wanted edge types, reads the OUT index)` per hop, first to last.
-    let mut wants: Vec<(Vec<u32>, bool)> = Vec::with_capacity(hops);
-    for (l, out) in &peeled {
-        match want_etypes(store, l) {
-            Ok(w) => wants.push((w, *out)),
+    // Resolved wanted edge-type ids per hop, first to last — parallel to `chain.hops`.
+    let mut wants: Vec<Vec<u32>> = Vec::with_capacity(hops);
+    for h in &chain.hops {
+        match want_etypes(store, &h.types) {
+            Ok(w) => wants.push(w),
             Err(()) => return Some(scalar_num(0.0)), // unknown edge type → no paths
         }
     }
     let nc = store.node_count();
     let hit = |a: &crate::store::Adj, w: &[u32]| edge_carries_wanted(store, a, w);
+    let gate_ok = |v: u32, g: &[NbrPred]| g.iter().all(|p| nbr_pred_ok(store, v, p));
 
     let mut ways = vec![0u64; nc];
-    match &base {
+    let seed = chain.gates[0].as_deref();
+    match &chain.base_label {
         Some(l) => {
             for &s in store.nodes_with_label(l) {
-                ways[s as usize] = 1;
+                if seed.is_none_or(|g| gate_ok(s, g)) {
+                    ways[s as usize] = 1;
+                }
             }
         }
         None => {
             for (s, w) in ways.iter_mut().enumerate() {
-                if store.is_alive(s as u32) {
+                if store.is_alive(s as u32) && seed.is_none_or(|g| gate_ok(s as u32, g)) {
                     *w = 1;
                 }
             }
         }
     }
 
-    // One pass per hop but the LAST, over TWO reused buffers — a fresh `vec![0; nc]` per hop is
-    // the one cost here that would grow with the depth.
+    // A gated LAST position gets a PASS OF ITS OWN. An ungated end is a weighted sum of DEGREES,
+    // and a degree cannot say which of a vertex's edges land somewhere that passes — which is why
+    // the degree products refuse an end constraint at all (items 219, 290). One more pass makes
+    // the gate once-per-vertex like every other position and the answer is then the sum of the
+    // surviving way counts. Same shape the TS sweep reached (item 303), and the biggest win here
+    // too.
+    let last_gated = chain.gates[hops].is_some();
+    let passes = if last_gated { hops } else { hops - 1 };
+
+    // One pass per hop (but the last, unless it is gated) over TWO reused buffers — a fresh
+    // `vec![0; nc]` per hop is the one cost here that would grow with the depth.
     // REJECTED, with its numbers: specializing each pass by direction into two monomorphic loops
     // (a `macro_rules!` expanded once per arm, so the adjacency call is resolved at compile time)
-    // was tried to recover the ~5% this item costs the forward chain, and it made things slightly
+    // was tried to recover the ~5% item 302 costs the forward chain, and it made things slightly
     // WORSE — 0.93x/0.92x against the simple branch below, on the 4-hop and 6-hop bench rows.
     //
     // It was tried because the branch looked like the obvious suspect. It is NOT: a variant
@@ -3412,7 +3533,9 @@ pub(super) fn try_nhop_sweep_count(
     // the feature, which is `pull-alignment-is-load-bearing` one module along. Accepted: a 5%
     // constant on forward chains against removing an O(degree^hops) cliff on mixed ones.
     let mut next = vec![0u64; nc];
-    for (want, out) in &wants[..hops - 1] {
+    for (i, (want, hop)) in wants.iter().zip(&chain.hops).enumerate().take(passes) {
+        // Hop `i` lands on slot `i + 1`.
+        let gate = chain.gates[i + 1].as_deref();
         next.fill(0);
         for (v, &w) in ways.iter().enumerate() {
             if w == 0 {
@@ -3420,27 +3543,58 @@ pub(super) fn try_nhop_sweep_count(
             }
             // `Adj::nbr` is the FAR end of the edge in whichever list it was read from, so one
             // loop serves both directions once the index is chosen.
-            let adj = if *out {
+            let adj = if hop.out {
                 store.out(v as u32)
             } else {
                 store.inc(v as u32)
             };
-            for a in adj {
-                if hit(a, want) {
-                    next[a.nbr as usize] += w;
+            match gate {
+                // The ungated loop is kept EXACTLY as it was, not folded into the gated one
+                // behind an `Option` test per edge: this module charges ~5% for a structural
+                // edit (item 302) and the ungated forward chain is the commonest shape.
+                None => {
+                    for a in adj {
+                        if hit(a, want) {
+                            next[a.nbr as usize] += w;
+                        }
+                    }
+                }
+                // The gate runs on the `0 -> w` TRANSITION, so a predicate costs once per
+                // DISTINCT vertex reached at this position rather than once per edge into it. A
+                // rejected vertex keeps a 0 weight and is simply re-tested by the next edge that
+                // finds it — the MEMO for that was written and REJECTED on its own numbers in the
+                // TS twin (item 303: two mutants on it survived, and its sign flipped between
+                // fixtures), so it is not re-attempted here.
+                Some(g) => {
+                    for a in adj {
+                        if !hit(a, want) {
+                            continue;
+                        }
+                        let j = a.nbr as usize;
+                        if next[j] == 0 && !gate_ok(a.nbr, g) {
+                            continue;
+                        }
+                        next[j] += w;
+                    }
                 }
             }
         }
         std::mem::swap(&mut ways, &mut next);
     }
 
-    let (last, last_out) = &wants[hops - 1];
+    if last_gated {
+        // The extra pass already landed on the last position and applied its gate, so every
+        // surviving way count IS a path.
+        return Some(scalar_num(ways.iter().sum::<u64>() as f64));
+    }
+
+    let (last, last_out) = (&wants[hops - 1], chain.hops[hops - 1].out);
     let mut total = 0u64;
     for (v, &w) in ways.iter().enumerate() {
         if w == 0 {
             continue;
         }
-        let adj = if *last_out {
+        let adj = if last_out {
             store.out(v as u32)
         } else {
             store.inc(v as u32)

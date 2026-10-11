@@ -6,8 +6,10 @@
 // sweep VISITS every position, so a gate has a once-per-element place to go (item 219's argument,
 // one family along), and the TS column now reads 1.2-1.7x.
 //
-// THE NATIVE COLUMN IS STILL THE OLD STORY, at 28-121x: `try_nhop_sweep_count` carries the base
-// label only. That is the open follow-up, and this probe is how it gets priced.
+// Item 304 closed the native half the same way (28-121x -> 1.7-2.0x), so both columns now price
+// the FOLLOW-UPS instead: the three-spellings table below is what keeps an inline constraint, a
+// clause `WHERE` and a per-position LABEL honest against each other, in both engines. A spelling
+// that costs more than its twins is the bug class this repo has found four times (item 125).
 //
 // Each case is paired with the UNCONSTRAINED chain it routes beside, because the question is not
 // "how long does the filtered count take" but "what does DECLINING cost" — and the honest control
@@ -32,7 +34,7 @@ for (let i = 0; i < NODES; i++) {
     JSON.stringify({
       type: 'vertex',
       id: `v${i}`,
-      labels: ['N'],
+      labels: i % 2 === 0 ? ['N', 'H'] : ['N'],
       properties: { k: i % 4, i },
     }),
   );
@@ -57,7 +59,9 @@ const tsGraph = new Graph();
 const ids: Vertex[] = [];
 
 for (let i = 0; i < NODES; i++) {
-  ids.push(tsGraph.addVertex({ labels: ['N'], properties: { k: i % 4, i } }));
+  ids.push(
+    tsGraph.addVertex({ labels: i % 2 === 0 ? ['N', 'H'] : ['N'], properties: { k: i % 4, i } }),
+  );
 }
 
 for (let i = 0; i < NODES; i++) {
@@ -134,6 +138,46 @@ for (let at = 0; at < 5; at++) {
   console.log(
     `${label.padEnd(20)}${ts.ms.toFixed(1).padStart(7)}${ratio(ts.ms, freeTs.ms)}` +
       `${nt.ms.toFixed(1).padStart(14)}${ratio(nt.ms, freeNat.ms)}` +
+      `${String(ts.answer).padStart(12)}   ${ts.answer === nt.answer ? 'yes' : `NO (${nt.answer})`}`,
+  );
+}
+
+// The SAME question in three spellings, at an interior position. They must agree on the answer
+// and cost the same: the gate's position comes from its predicate's SLOT, not from where the
+// optimizer put the `Filter`, and an inline `{k: 1}` is pushed down to the hop that binds the node
+// while a clause `WHERE` is not.
+console.log('');
+console.log('one position, three spellings      ts ms      native ms      answer   agree');
+
+const spellings: [string, string][] = [
+  [
+    'inline {k: 1} at 2',
+    'MATCH (a:N)-[:E]->(n0)-[:E]->(n1)-[:E]->(n2 {k: 1})-[:E]->(n3)-[:E]->(n4) RETURN count(*) AS c',
+  ],
+  [
+    'clause WHERE n2.k = 1',
+    'MATCH (a:N)-[:E]->(n0)-[:E]->(n1)-[:E]->(n2)-[:E]->(n3)-[:E]->(n4) WHERE n2.k = 1 RETURN count(*) AS c',
+  ],
+  [
+    'flipped 1 = n2.k',
+    'MATCH (a:N)-[:E]->(n0)-[:E]->(n1)-[:E]->(n2)-[:E]->(n3)-[:E]->(n4) WHERE 1 = n2.k RETURN count(*) AS c',
+  ],
+  [
+    'label (n2:H) at 2',
+    'MATCH (a:N)-[:E]->(n0)-[:E]->(n1)-[:E]->(n2:H)-[:E]->(n3)-[:E]->(n4) RETURN count(*) AS c',
+  ],
+];
+
+for (const [label, q] of spellings) {
+  const ts = timed(() => ([...tsQuery(tsGraph, q)] as { c: number }[])[0]?.c ?? -1);
+  const nt = timed(() => {
+    const rows = nat.query(q) as { c: number }[];
+
+    return rows[0]?.c ?? -1;
+  });
+
+  console.log(
+    `${label.padEnd(30)}${ts.ms.toFixed(1).padStart(7)}${nt.ms.toFixed(1).padStart(15)}` +
       `${String(ts.answer).padStart(12)}   ${ts.answer === nt.answer ? 'yes' : `NO (${nt.answer})`}`,
   );
 }
