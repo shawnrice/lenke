@@ -33,7 +33,22 @@ type AddEdgeArgs = {
  * element can hold a direct reference to its own property state; see
  * {@link Graph.elementProperties}.
  */
-export type PropBox = { bag: Record<string, unknown> };
+export type PropBox = {
+  bag: Record<string, unknown>;
+  /**
+   * `Object.keys(bag)`, memoized (audit item 336). The reactive token bump needs this element's
+   * property KEY NAMES on every add and every remove, and enumerating them is **93% of a
+   * width-256 delete** — 6,212 ns/node against 421 with the loop short-circuited — because a
+   * wide bag is in the engine's dictionary mode, where `Object.keys` and `for...in` are equally
+   * slow (both were measured; neither helps).
+   *
+   * Safe to memoize because the bag is `Object.freeze`d and every write REPLACES `box.bag`
+   * rather than mutating it, so a key list is valid for exactly as long as the bag it came
+   * from. Cleared wherever `bag` is assigned — that is the whole invariant, and it is two
+   * sites (`Vertex.#commitProperties` and `Edge.#commitProperties`).
+   */
+  keys?: readonly string[];
+};
 
 /**
  * A mutable holder for one element's label set — the {@link PropBox} treatment for labels.
@@ -1184,8 +1199,13 @@ export class Graph {
           }
         }
 
-        if (value?.properties) {
-          for (const key of Object.keys(value.properties)) {
+        // Through the element's memoized key list, not `Object.keys` (item 336): an add and the
+        // matching remove each need the same list, and on a wide bag enumerating it twice is
+        // the dominant cost of both.
+        const keys = (value as Vertex | Edge | undefined)?.propertyKeys;
+
+        if (keys) {
+          for (const key of keys) {
             out.push(key);
           }
         }

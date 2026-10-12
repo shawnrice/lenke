@@ -17,6 +17,70 @@ import { Graph } from './Graph.js';
 const tick = (): Promise<void> => Promise.resolve();
 
 describe('reactive counters', () => {
+  // Item 336 memoizes an element's property KEY NAMES on the shared `PropBox`, because
+  // enumerating them is 93% of a wide delete. The memo is valid only for the bag it came from,
+  // so the invalidation on every write is the whole invariant — and the mutants that removed it
+  // (one for `Vertex`, one for `Edge`) both SURVIVED the suite. Nothing tested it.
+  //
+  // Both tests must use a bag WIDER than the memo's threshold, which is the reason the gap
+  // existed: below it nothing is cached, so a stale memo is unobservable and every narrow
+  // fixture in the suite is blind to this by construction.
+  const wide = (n: number): Record<string, unknown> => {
+    const o: Record<string, unknown> = {};
+
+    for (let i = 0; i < n; i++) {
+      o[`k${i}`] = i;
+    }
+
+    return o;
+  };
+
+  test('a key added AFTER a wide vertex was created still bumps its epoch on removal', async () => {
+    const g = new Graph();
+    const v = g.addVertex({ id: 'a', labels: ['N'], properties: wide(80) });
+
+    await tick();
+    // Reading the keys here is what populates the memo, exactly as the add's token push does.
+    expect(v.propertyKeys?.length).toBe(80);
+
+    v.setProperty('late', 1);
+
+    await tick();
+
+    const before = g.epoch('late');
+
+    g.removeVertex('a');
+
+    await tick();
+
+    // The removal touches every one of the vertex's property keys. With a stale memo `late` is
+    // not among them, so a subscriber watching it never learns the vertex went away.
+    expect(g.epoch('late')).toBe(before + 1);
+    expect(v.propertyKeys).toBeUndefined(); // detached: mirrors `properties` reading empty
+  });
+
+  test('a key added AFTER a wide edge was created still bumps its epoch on removal', async () => {
+    const g = new Graph();
+    const a = g.addVertex({ id: 'a', labels: ['N'], properties: {} });
+    const b = g.addVertex({ id: 'b', labels: ['N'], properties: {} });
+    const e = g.addEdge({ id: 'e', from: a, to: b, labels: ['L'], properties: wide(80) });
+
+    await tick();
+    expect(e.propertyKeys?.length).toBe(80);
+
+    e.setProperty('late', 1);
+
+    await tick();
+
+    const before = g.epoch('late');
+
+    g.removeEdge(e);
+
+    await tick();
+
+    expect(g.epoch('late')).toBe(before + 1);
+  });
+
   test('version counts every write, not every burst', async () => {
     const g = new Graph();
 

@@ -878,6 +878,52 @@ bench`** so one-case-per-process is a flag instead of the bespoke script items 2
   aggregate-over-chain and never builds the frontier, so the engine that OOM'd had to be the TS
   one — and 3 and 4 hops run in 8 and 13 ms at ~80 MB where 5 is fatal, which is exactly the count
   family's ≤4-segment coverage edge (item 290).
+- **93% of a wide TS delete was enumerating the element's property keys for the reactive token bump
+  — 3.00x, after two candidate fixes that did nothing (336).** Item 335 named the per-width cost in
+  both delete columns and GUESSED the property de-index. Wrong, killed by one grep:
+  `PropertyIndex.remove` iterates the DECLARED indexes, not the element's properties, so with none
+  declared it is O(0). The real term is `pushTokens`, which pushes **one token per property key** on
+  add/remove because a topology change really does alter the value set of every key the element
+  carried. Short-circuiting that loop (diagnostic only): width 256 **6,212 -> 421 ns/node**, so it
+  is 93% of the delete and essentially all of the width-dependence.
+  **TWO CANDIDATES THAT MEASURED NOTHING**, recorded because each is the obvious next move.
+  **`for...in` instead of `Object.keys`**: 6,617 vs 6,212 baseline — slightly worse, so the
+  intermediate ARRAY is not the cost. **`pendingTokens` as a `Map<token, times>`** (counts kept
+  exact — epoch numbers are observable, `epoch` is public API mirrored from the Rust core — so only
+  the container changed, capping it at distinct tokens instead of one entry per write x token, 5.12
+  MILLION strings in one microtask window): width 4 **1.13x better**, 16 **1.10x**, 64 **1.21x**,
+  256 **1.34x WORSE**. A width-dependent trade with no winner, and it **refutes the assumed
+  mechanism** — the cost is NOT the pending array growing unboundedly, because a structure that
+  never exceeds 256 entries is slower at width 256.
+  **And the lever that needed a semantic decision turned out not to need one.** A `Set` (dedup)
+  collapses 5.12M epoch bumps to 256 but changes the counts, so it would be a cross-engine
+  semantics call. Measured anyway to put a number on the decision: **6,489 ns/node, no faster than
+  the list.** Nothing to decide — the per-token hash in costs what the `Map.set` it saves costs.
+  **WHAT IT ACTUALLY IS**: key ENUMERATION over a wide bag, which the engine holds in dictionary
+  mode (the 128->256 cliff already recorded for TS `SET`). `Object.keys` and `for...in` are equally
+  slow there and neither can be avoided — but it can be done **once per bag instead of once per
+  event**. `PropBox` gained `keys?: readonly string[]`, memoized via a `propertyKeys` accessor on
+  `Vertex`/`Edge`, cleared at the two sites that assign `bag` (sound by item 335's facts: frozen
+  bag, replaced never mutated). **Memoized only above `WIDE_BAG = 64`**, because the memo RETAINS
+  the array where the old code threw it away (~8 bytes per property per element) and the payoff is
+  entirely at the wide end.
+  **MEASURED**, 3 alternated rounds, min: width-256 delete **6,211 -> 2,070 (3.00x)**, in a
+  transaction **8,248 -> 4,231 (1.95x)**, widths 4/16/64 flat. **The ADD column is the control that
+  proves the mechanism**: the add COMPUTES the memo so it cannot benefit, and it does not — it pays
+  ~2.6% to retain the array (~1% with the threshold). Only the second enumeration is saved, which
+  is what a memo does. TS `decode ndjson (nodes)` **236.0 -> 229.5ms** and `(5 edges/node)`
+  **2,578.5 -> 2,595.3**, both overlapping — no regression below the threshold.
+  **⚠️ M1 AND M2 — the memo's invalidation, the entire invariant — SURVIVED**, and **the threshold
+  is why**: below `WIDE_BAG` nothing is cached, so a stale memo is unobservable and every narrow
+  fixture in the suite is blind to it BY CONSTRUCTION. The two new tests use an 80-property bag,
+  add a key AFTER creation, and assert the removal still bumps that key's epoch. M5 (memo never
+  written, behaviour-preserving) correctly survives and is the harness's own control.
+  Third item running where writing the mutants was the only thing that found the gap, and the
+  second where the gap was a FIXTURE rather than a missing test (cf. 333, 335).
+  **Still open**: ~2,000 of the 2,444 ns/node at width 256 is the pushes plus the epoch `Map.set`s,
+  which the three container experiments say is not reducible by changing the container. The next
+  lever would be enumerating neither bag, which needs the epoch contract to stop being per-key — a
+  cross-engine semantics question, not a perf one.
 - **The transactional delete's property copy was never needed — 1.70x at width 256, and two mutants
   proved the change rested on untested facts (335).** Item 334 removed the capture OUTSIDE a
   transaction, where it was dead; its probe then showed that INSIDE one it is still taken and still
