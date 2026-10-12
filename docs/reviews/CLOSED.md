@@ -878,6 +878,47 @@ bench`** so one-case-per-process is a flag instead of the bespoke script items 2
   aggregate-over-chain and never builds the frontier, so the engine that OOM'd had to be the TS
   one — and 3 and 4 hops run in 8 and 13 ms at ~80 MB where 5 is fatal, which is exactly the count
   family's ≤4-segment coverage edge (item 290).
+- **Item 333's arena concat grew six vectors from empty — 1.03-1.07x back on the threaded decode,
+  and the Amdahl pairs DISAGREEING is what found it (337).** Items 330-333 took the decode
+  706.72 -> 401.70 ms, so item 329's decomposition is stale; re-deriving it rather than reusing it
+  is what surfaced a cost item 333 introduced and nobody measured.
+  **THE TELL.** Item 328's `T(n) = P/n + S` fit agreed at all six pairs (P = 347-390). Re-run
+  today: **P ranges 76 to 270 ms**, and every pair involving `n=1` reports a much smaller P — the
+  signature of a term present ONLY when `threads > 1`, which scales with neither `n` nor `1/n`, so
+  a two-parameter model smears it into P. The 8-thread speedup had also fallen from **1.77x to
+  1.50x** while the absolute time improved 411.51 -> 268.25. Both true, and reading only the
+  absolute number is how it hid: item 333's A/B reported `threads @8` as one row and never looked at
+  the ratio between its own columns.
+  **THE COST.** `stage_ndjson_threads` concatenates the per-chunk `StagedNdjson`s, and item 333 gave
+  each two arenas. All SIX vectors grew from empty unreserved; growing one to N by doubling
+  re-copies everything already in it, ~N extra element moves. On the corpus fixture that is 200k
+  node records, 1M edge records, a 1.2M label arena and a 2.4M property arena — copied roughly
+  twice. **The serial path never does any of it**, which is exactly why it hid inside P. Fixed by
+  summing the parts' lengths and `reserve_exact`ing all six, then `append` instead of `extend`.
+  **MEASURED**, 3 alternated rounds, min, all three target rows disjoint: `threads @2`
+  **359.84 -> 349.39 (1.030x)**, `@4` **306.44 -> 285.29 (1.074x)**, `@8` **261.72 -> 246.20
+  (1.063x)**; speedup **1.546x -> 1.630x**. **`threads = 1` is the control the change cannot reach**
+  (that path never enters the concat) and is flat, as is the serial `ingest/phases` decode. The
+  `recmat_ms` null control drifts +4% again, as at item 331 — this harness's cross-build layout
+  noise is ~4%, which is why disjointness across rounds carries the claim.
+  **THE RESIDUAL, honestly.** Re-fitting, the pairs STILL disagree (P = 104-313), so the
+  parallel-only term is reduced, not removed: what is left is the arena copy itself, which `append`
+  does however well reserved. That is the price of item 333's design — one contiguous arena per kind
+  is what made the SERIAL decode 1.07-1.26x faster, and is also work only the threaded path does.
+  **PRICED, NOT BUILT**: keep per-chunk arenas and put a chunk index in the `Span` so nothing merges
+  — a third `u32` per record (`Span` 12 bytes, still smaller than the two `Vec`s it replaced) plus
+  an indirection on every arena read in `build_store`. Worth it only if the threaded decode becomes
+  the dominant workload; recorded at the concat.
+  4 mutants: offsets-read-after-append, chunks-merged-in-reverse and labels-span-not-rebased all
+  caught, each by exactly ONE test — `decode_is_byte_identical_across_thread_counts`, the one item
+  333 had to fix because its uniform fixture made it blind. **That test has now earned itself
+  twice.** M3 (a reservation sized from the wrong field) is behaviour-preserving and its survival is
+  the harness's control.
+  **METHOD, the generalisable part**: item 328 recorded that an Amdahl fit over an existing sweep
+  recovers the serial fraction with no instrumentation. The addition is its failure mode — **when
+  the pairs stop agreeing the fit is not noisy, it is telling you the model is missing a term**, and
+  WHICH pairs disagree localises it. Here the disagreement concentrated in the `n=1` pairs, which
+  pinned the term to the threaded path before any code was read. Free on any sweep that exists.
 - **93% of a wide TS delete was enumerating the element's property keys for the reactive token bump
   — 3.00x, after two candidate fixes that did nothing (336).** Item 335 named the per-width cost in
   both delete columns and GUESSED the property de-index. Wrong, killed by one grep:

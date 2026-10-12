@@ -552,29 +552,57 @@ fn stage_ndjson_threads(text: &str, threads: u32) -> Result<StagedNdjson<'_>, St
                         .map(|&(chunk, line0)| stage_lines(chunk, line0))
                         .collect()
                 });
+            let mut parts: Vec<StagedNdjson<'_>> = parts.into_iter().collect::<Result<_, _>>()?;
             let mut merged = StagedNdjson::empty();
-            for part in parts {
-                let part = part?;
+
+            // RESERVE FIRST (audit item 337). All six vectors used to grow from empty, and
+            // growing one to N elements by doubling re-copies everything already in it at each
+            // step — about N extra element moves on top of the N that belong there. On the
+            // corpus fixture that is 1M edge records and a 2.4M-entry property arena, so the
+            // concat was copying them roughly twice. This is work the SERIAL path never does,
+            // which is why item 333's 1.07-1.26x came with the 8-thread speedup falling from
+            // 1.77x to 1.50x: the win was real and the scaling regression was real too.
+            merged
+                .constraints
+                .reserve_exact(parts.iter().map(|p| p.constraints.len()).sum());
+            merged
+                .required
+                .reserve_exact(parts.iter().map(|p| p.required.len()).sum());
+            merged
+                .nodes
+                .reserve_exact(parts.iter().map(|p| p.nodes.len()).sum());
+            merged
+                .edges
+                .reserve_exact(parts.iter().map(|p| p.edges.len()).sum());
+            merged
+                .labels
+                .reserve_exact(parts.iter().map(|p| p.labels.len()).sum());
+            merged
+                .props
+                .reserve_exact(parts.iter().map(|p| p.props.len()).sum());
+
+            for part in &mut parts {
                 // Each chunk staged into its OWN arenas, so its spans are chunk-relative.
                 // Rebase them by the lengths already merged before appending the arenas —
                 // the one thing in this file that is wrong if the order is wrong, which is
-                // why the offsets are read BEFORE the `extend`.
+                // why the offsets are read BEFORE the `append`.
                 let (lo, po) = (merged.labels.len() as u32, merged.props.len() as u32);
-                merged.constraints.extend(part.constraints);
-                merged.required.extend(part.required);
+                merged.constraints.append(&mut part.constraints);
+                merged.required.append(&mut part.required);
                 merged.nodes.extend(
-                    part.nodes
+                    core::mem::take(&mut part.nodes)
                         .into_iter()
                         .map(|(id, l, p)| (id, (l.0 + lo, l.1), (p.0 + po, p.1))),
                 );
                 merged.edges.extend(
-                    part.edges
+                    core::mem::take(&mut part.edges)
                         .into_iter()
                         .map(|(f, t, id, l, p)| (f, t, id, (l.0 + lo, l.1), (p.0 + po, p.1))),
                 );
-                merged.labels.extend(part.labels);
-                merged.props.extend(part.props);
+                merged.labels.append(&mut part.labels);
+                merged.props.append(&mut part.props);
             }
+
             return Ok(merged);
         }
     }
