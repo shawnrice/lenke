@@ -1005,6 +1005,42 @@ cast record to number` vs TS `cannot cast **a map** to number` (a different TYPE
   caught only because the numbers were visibly the old ones. Exactly the documented failure (_"the
   next command runs anyway and consumes the stale file, so the failure surfaces as a wrong result
   rather than an error"_). Written with the editor tool and a fresh name the second time.
+- **⚠️ REFUTED BEFORE BUILT — `side()`'s six callers that already hold a Vertex must NOT read the
+  adjacency box, because a memo taxes a visited-once element (355).** `side(graph, id, …)` hashes a
+  vertex id into a 200,000-entry Map, and **six of its ten call sites already hold the `Vertex`** and
+  pass its id, while `Vertex.adjFrom` (item 321's box) is that same bucket already memoized on the
+  element. Item 323 refuted reaching the box FROM AN ID (resolve + box, 1.26x worse) but its own
+  micro put the vertex-in-hand read at 1.97x, so this looked like free money.
+  **MEASURED — 200k vertices / 1M edges, each variant in its OWN PROCESS on a FRESH graph, min of 3
+  alternated rounds, ns/iteration, null control flat at 3-11:** vertex in hand today **203.4 first /
+  171.3 warm**; vertex in hand via the box **247.0 first / 127.1 warm**. The box is **1.21x WORSE on
+  FIRST TOUCH** — it pays the same hash AND the memo write — and 1.35x better warm. **Five of the
+  six sites visit each vertex exactly ONCE per query** (the hoisted per-`b` degree reads), so they
+  take the cold cost and never reach the warm win: on a freshly loaded graph that is a REGRESSION.
+  Only the `c` position under `needsC` is revisited (~in-degree times), where the blend is ~1.21x
+  better. **One site, not six.**
+  **The generalisable form: a memo helps a REVISITED element and taxes a VISITED-ONCE one, so "the
+  caller already holds the object" is not by itself a reason to read a memo on it.** Fifth time in
+  one session that checking a scope claim reversed the recommendation resting on it (342→343,
+  343→348, 350→351, 353→354, 355).
+  **AND THE PROBE'S OWN DEFECT IS THE METHOD NOTE**: the first version ran all five variants in ONE
+  process, and every "cold" reading was warm for whichever variant ran later — because `adjFrom`
+  memoizes and the per-EDGE cases warm the box for all 200,000 vertices before the per-vertex cases
+  are timed. It read as "the box is faster even cold", the opposite of the truth. **A memo makes
+  ORDER OF MEASUREMENT part of the two sides of the ratio**; the tell was the cold and warm box
+  readings sitting implausibly close.
+  **PRICED NOT BUILT — an `Edge` holding a REFERENCE to its endpoint vertices**, the one variant that
+  REMOVES the lookup rather than relocating it: **1.32x warm / 1.11x cold** (187.9 against 248.9
+  ns/edge) on the hottest read in `count 3-hop` (ts 330.3ms against ffi 4.9, **67.6x**), ~**1.18x**
+  on the row. Declined because it needs a NEW INVARIANT — an endpoint ref must never outlive the
+  endpoint INSTANCE, where items 140/218 deliberately store the id and both `evict()` and rollback
+  replay swap instances for the same id — and 1.18x on one row does not buy that. The same run
+  independently **re-refutes item 323** at a new size (`e.to` → box: 301.5 warm against today's
+  248.9). The residual gap is still the CSR's (300, 348, 350, 352).
+  **UNTRIED, with a trigger — the only shape with no cold penalty and no new invariant**: PEEK the
+  box and hash on a miss, never writing it. Warm callers get 127.1, cold callers pay today plus a
+  field read. **It cannot be measured on this row** (nothing warms the box on a fresh graph) — it
+  needs a MIXED workload (`bench:usage`), where item 321's boxes are already populated.
 - **⚠️ REFUTED BEFORE BUILT — `edge.to` is called ZERO times on the 26x row (351).** Item 350 named
   the next candidates as the three-component diagnosis's remaining two, and the obvious one is
   `Edge`'s endpoint resolution: `get to() { return this.#graph!.getVertexById(this.#to)!; }`, a

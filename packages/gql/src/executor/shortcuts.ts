@@ -1298,6 +1298,50 @@ export const selectiveFirst = (
 /** Edges out of / into `bId` (of `types`) whose far endpoint matches `far`. The
  * two-hop degree product's per-`b` side count; hoisted to module scope since it
  * closes over nothing but the shared bucket primitives. */
+/*
+ * REJECTED, with its numbers (item 355): taking a `Vertex` here instead of its id, so the first
+ * lookup reads `v.adjFrom` — item 321's adjacency box — instead of hashing the id into a
+ * 200,000-entry Map. **Six of this function's ten call sites already hold the Vertex and pass its
+ * id**, which reads like free money. It is not, and the reason is that the box is a MEMO.
+ *
+ * 200,000 vertices / 1,000,000 edges, each variant in its OWN PROCESS on a FRESH graph (the box
+ * memoizes, so any variant that touches it warms the box for every variant measured after it —
+ * the first version of this probe had exactly that defect), min of 3 alternated rounds, ns per
+ * iteration, with a null control that stayed flat at 3-11ns:
+ *
+ *     vertex in hand, today   (v.id -> 200k map)     first 203.4   warm 171.3
+ *     vertex in hand, box     (v.adjFrom)            first 247.0   warm 127.1
+ *
+ * The box is **1.21x WORSE on first touch** — it pays the same hash AND the memo write — and
+ * 1.35x better warm. **Five of those six sites visit each vertex exactly ONCE per query** (the
+ * hoisted per-`b` degree reads), so they would take the cold cost and never reach the warm win:
+ * on a freshly loaded graph that is a REGRESSION, not a win. Only the `c` position in the
+ * three-segment product (`side(graph, c.id, …)` under `needsC`) is revisited — once per middle
+ * edge, ~in-degree times per vertex — and there the blended cost is ~1.21x better. One site, not
+ * six. **A memo helps a revisited element and taxes a visited-once one, so "the caller already
+ * holds the object" is not by itself a reason to use it.**
+ *
+ * Also priced here, and NOT built: giving `Edge` a direct REFERENCE to its endpoint vertices, so
+ * the two call sites that hold only an edge's stored id could read `e.toRef.adjFrom` with no hash
+ * at all. That is the hottest read in the `count 3-hop` row (ts 330.3ms against ffi 4.9) and it is
+ * the one variant that REMOVES the lookup rather than relocating it:
+ *
+ *     edge, today    (e.toId -> 200k map)            first 259.0   warm 248.9
+ *     edge, ref      (stored ref -> box)             first 234.2   warm 187.9      1.32x warm
+ *     edge, resolve  (e.to -> box)                   first 339.5   warm 301.5      WORSE
+ *
+ * ~1.18x on that row, and the `resolve` row independently re-refutes item 323 at a new size. It is
+ * declined here rather than built because it needs a NEW INVARIANT — an endpoint reference must
+ * never outlive the endpoint INSTANCE, where items 140/218 deliberately store the id and
+ * `evict()`/rollback replay both swap instances for the same id — and ~1.18x on one row does not
+ * buy that. The gap it leaves is still the CSR's (items 300, 348, 350, 352).
+ *
+ * UNTRIED, and the one shape with no cold penalty and no new invariant: PEEK the box and hash only
+ * on a miss (`adjFromIfBoxed ?? …`), never writing it. Warm callers get 127.1, cold callers pay
+ * today's cost plus a field read. It cannot be measured on this row — nothing warms the box on a
+ * fresh graph — so it needs a MIXED read/write workload (`bench:usage`), which is where item 321's
+ * boxes are already populated.
+ */
 export const side = (
   graph: Graph,
   bId: string,
