@@ -13320,6 +13320,67 @@ fn element_render_cost() {
         );
     }
 
+    // --- the half of item 342's recommendation that item 342 did not measure (item 343) ---
+    //
+    // Item 342 priced packing `Column`'s presence into a bitset at 1.67x on a K=200 element
+    // render, and recommended it over the larger per-node-key-list win on the grounds that it
+    // "reaches every other `present_at` caller — filters, `count`, `IS NULL`, the seek paths —
+    // which this sweep does not measure and therefore understates."
+    //
+    // That clause is load-bearing and was an assertion, not a measurement. Those callers touch
+    // ONE column per row, where the render path touches K; if a single-column scan does not
+    // care, packing's whole benefit is the render path and the recommendation is wrong.
+    //
+    // Same method as the render pricing: the bitset is built outside the timed closure, so this
+    // is the read-side question only.
+    println!("\n=== single-column presence scan: bytes vs PACKED (the filter/count shape) ===");
+    {
+        let col = store.column("age").expect("age column");
+        let lanes = (ROWS as usize + 64) / 64;
+        let mut bits: Vec<u64> = vec![0; lanes];
+        for i in 0..ROWS as usize {
+            if col.present_at(i) {
+                bits[i >> 6] |= 1u64 << (i & 63);
+            }
+        }
+        // Cross-check before timing, as at item 342.
+        for i in 0..ROWS as usize {
+            assert_eq!(
+                col.present_at(i),
+                bits[i >> 6] & (1u64 << (i & 63)) != 0,
+                "packed single-column presence disagrees at {i}"
+            );
+        }
+        time("one column, present_at (bytes)", &|| {
+            ids.iter().filter(|&&i| col.present_at(i as usize)).count()
+        });
+        time("one column, packed bit", &|| {
+            ids.iter()
+                .filter(|&&i| {
+                    let i = i as usize;
+                    bits[i >> 6] & (1u64 << (i & 63)) != 0
+                })
+                .count()
+        });
+        // And the shape that actually matters: presence test THEN read the value, which is what
+        // a filter or a scalar projection does.
+        time("one column, present_at + read (bytes)", &|| {
+            ids.iter()
+                .filter(|&&i| col.present_at(i as usize))
+                .map(|&i| usize::from(!col.read(i as usize).is_null()))
+                .sum()
+        });
+        time("one column, packed bit + read", &|| {
+            ids.iter()
+                .filter(|&&i| {
+                    let i = i as usize;
+                    bits[i >> 6] & (1u64 << (i & 63)) != 0
+                })
+                .map(|&i| usize::from(!col.read(i as usize).is_null()))
+                .sum()
+        });
+    }
+
     // The EDGE twin of the sweep above (item 340). `Col::Edges` egress called
     // `edge_result_value` per edge, which hashes every edge-property key for every row, where
     // the node path had had a batch renderer resolving them once since the node renderer was

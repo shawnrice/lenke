@@ -878,6 +878,32 @@ bench`** so one-case-per-process is a flag instead of the bespoke script items 2
   aggregate-over-chain and never builds the frontier, so the engine that OOM'd had to be the TS
   one — and 3 and 4 hops run in 8 and 13 ms at ~80 MB where 5 is fatal, which is exactly the count
   family's ≤4-segment coverage edge (item 290).
+- **⚠️ CORRECTION TO 342 — packing presence helps NOTHING but the render path, so the recommendation
+  inverts (343).** Item 342 preferred rung 2 (pack `Column`'s presence) over the larger rung 3
+  (per-node key list) on BREADTH, not magnitude: _"it reaches every other `present_at` caller —
+  filters, `count`, `IS NULL`, the seek paths — which this sweep does not measure and therefore
+  understates."_ That clause was the entire reason for preferring the smaller win, and it was an
+  assertion. Measured now, same method (bitset built outside the timed closure, cross-checked
+  against the byte-wise answer for every row first), 200,000 rows, ONE column:
+  presence test only **0.5 -> 0.4 ns/row** (noise); **presence test + READ the value 3.3 -> 3.3
+  ns/row — identical.** The second is the shape that matters (a filter, a `count`, a scalar
+  projection all test then read) and **the value read dominates completely**. Packing's 8x memory
+  saving only pays when a row touches K columns, which is the element renderer and nothing else.
+  **SO THE RECOMMENDATION INVERTS.** Rung 2: **1.67x** on element render, blast radius `store.rs`
+  (~90 `present[i]`/`push` sites) PLUS `exec.rs` and `exec/distinct.rs`, which borrow
+  `present: &[bool]` into hot gather/filter paths — the very paths this item shows it does not help.
+  Rung 3: **~2.7x**, blast radius `set_prop`/`remove_prop`, the two functions items 331 and 335
+  already worked. **Rung 3 is better on every axis** and 342's preference is RETRACTED. Next step is
+  pricing rung 3's write-path cost, which is the same question 331/335 answered: a set on an
+  EXISTING key must not pay for the index — a `contains`-then-insert on a small per-node structure,
+  the shape `bump_epoch` already uses in that file.
+  **GENERALISABLE: "it also helps X" is a claim, not a bonus.** A recommendation that prefers a
+  smaller MEASURED win on the strength of unmeasured breadth is resting on the unmeasured half. The
+  tell was in 342's own sentence — _"which this sweep does not measure"_ — written as a caveat and
+  then used as the reason. One sweep, fifteen minutes, conclusion reversed.
+  Also the second time in three items that the thing to check was the SAMENESS or the SCOPE of a
+  comparison rather than its arithmetic (339's two sides, 341's carrier, this). **The arithmetic has
+  not been wrong once; the framing has been wrong three times.**
 - **PRICED NOT BUILT — the presence representation: hoisting was 4.9x of the scaling term, packing
   the bits is 2.1x more, and a per-node key list is the only thing left (342).** Item 341 showed
   native's element renderer has headroom (TS does the same materialization in 213 ns/row against
@@ -902,7 +928,9 @@ bench`** so one-case-per-process is a flag instead of the bespoke script items 2
   this sweep does not measure and so understates; (3) skip absent keys entirely via a per-node key
   list/mask — 0.77 to ~0, taking K=200 toward the 90 ns/row floor, **another ~2.7x and the largest
   single number here**.
-  **RECOMMENDATION IS RUNG 2 DESPITE RUNG 3 BEING BIGGER**, for maintenance not magnitude: packing
+  **RECOMMENDATION IS RUNG 2 DESPITE RUNG 3 BEING BIGGER** — _RETRACTED at item 343, which measured
+  the breadth claim below and found it false; rung 3 is the better change._ The original argument,
+  for maintenance not magnitude: packing
   is one change to a structure that already exists, with NO new invariant to keep in step, and every
   presence reader benefits. A per-node key list is a new index every `set_prop`/`remove_prop` must
   maintain — the write path items 331 and 335 kept deliberately cheap — and it pays off only on
