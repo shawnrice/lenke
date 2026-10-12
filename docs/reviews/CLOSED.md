@@ -878,6 +878,31 @@ bench`** so one-case-per-process is a flag instead of the bespoke script items 2
   aggregate-over-chain and never builds the frontier, so the engine that OOM'd had to be the TS
   one — and 3 and 4 hops run in 8 and 13 ms at ~80 MB where 5 is fatal, which is exactly the count
   family's ≤4-segment coverage edge (item 290).
+- **⚠️ REFUTED BEFORE BUILT — `edge.to` is called ZERO times on the 26x row (351).** Item 350 named
+  the next candidates as the three-component diagnosis's remaining two, and the obvious one is
+  `Edge`'s endpoint resolution: `get to() { return this.#graph!.getVertexById(this.#to)!; }`, a
+  string-keyed `Map.get` per access that `shortcuts.ts` itself prices at _"~190ns — item 194"_, and
+  exactly item 321's shape (which took 1.207x by caching a reference instead of a string key).
+  Everything pointed one way.
+  **The arithmetic did not fit.** The row runs 38-40 ms over 1,000,000 edges — **~38 ns an edge in
+  total** — and a single 190 ns resolve cannot be inside that. Counted rather than guessed, with a
+  temporary counter on both getters and the row's own query over 100,000 edges:
+  **`edge.to=0  edge.from=0`.** Neither getter is called once: the hop path already works from
+  `toId`/`fromId` and never materializes the far vertex, which `shortcuts.ts:1474` says in a comment
+  added for exactly this reason.
+  **So the COMPONENT LIST is stale, like the figure was.** Item 350 corrected 84x → 26x and left the
+  component diagnosis inherited; it should not have. The endpoint-resolution component is **already
+  gone**, and the three-component diagnosis has been carrying a fourth-hand description of a cost
+  that no longer exists on this row. What the remaining 38 ns/edge IS is **not known**, and this item
+  invents no candidate — a fresh decomposition is the next step, the same move item 329 made for
+  native's decode: **a stage list that does not add up is a stage list to redo, and this one had a
+  removed stage still in it.**
+  **The cheap thing that saved a wasted round**: one temporary counter on two getters, run once. It
+  refutes a target that had the code's own 190 ns comment, a measured precedent for exactly the fix,
+  a named place in a three-component diagnosis, and a `CLOSED.md` entry pointing at it — four
+  reasons to build it, and it is never called. **RULE (item 321 sharpened): check the hot row CALLS
+  the function — and when a named cost and the row's total time disagree by 5x, that disagreement IS
+  the measurement.** 190 ns an edge inside 38 ns an edge was visible before any code was read.
 - **⚠️ STALE FIGURE CORRECTED — the "84x row" is the 26x row, and item 300's CSR re-prices against
   that (350).** `CLOSED.md` names `traverse 1-hop + filter` "the 84x row" in several places and
   records item 300's CSR (a dense adjacency for the TS engine) as "priced at **7.30x** and
