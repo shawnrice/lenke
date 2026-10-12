@@ -342,16 +342,7 @@ fn col_into_values(col: Col, store: &Store) -> Vec<Value> {
         Col::Bool(data) => data.into_iter().map(Value::Bool).collect(),
         Col::Gen(data) => data.into_iter().map(|v| resolve_elem(v, store)).collect(),
         Col::Nodes(ids) => render_nodes(store, &ids),
-        Col::Edges(eids) => eids
-            .into_iter()
-            .map(|e| {
-                if e == u32::MAX {
-                    Value::Null
-                } else {
-                    edge_result_value(store, e)
-                }
-            })
-            .collect(),
+        Col::Edges(eids) => render_edges(store, &eids),
     }
 }
 
@@ -385,12 +376,8 @@ fn render_col_into(col: Col, store: &Store, out: &mut [Value], c: usize, ncols: 
             }
         }
         Col::Edges(eids) => {
-            for (i, e) in eids.into_iter().enumerate() {
-                out[i * ncols + c] = if e == u32::MAX {
-                    Value::Null
-                } else {
-                    edge_result_value(store, e)
-                };
+            for (i, v) in render_edges(store, &eids).into_iter().enumerate() {
+                out[i * ncols + c] = v;
             }
         }
     }

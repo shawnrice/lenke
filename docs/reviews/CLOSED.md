@@ -878,6 +878,48 @@ bench`** so one-case-per-process is a flag instead of the bespoke script items 2
   aggregate-over-chain and never builds the frontier, so the engine that OOM'd had to be the TS
   one — and 3 and 4 hops run in 8 and 13 ms at ~80 MB where 5 is fatal, which is exactly the count
   family's ≤4-segment coverage edge (item 290).
+- **The edge renderer never got the batch twin the node renderer has — 1.045x on the corpus's
+  biggest row, 1.78x on a heterogeneous store, and the surviving mutant was a silently-wrong row
+  (340).** Item 339 named element materialization as next. First move was making the existing
+  harness's pieces ADD UP (item 329's rule): `node_result_value` whole **224.9 ns/row** against
+  named stages summing to **136.1** — an **88.8 ns (39%) remainder**, which reading the function
+  places exactly on the `Vec<Value>` for labels plus two `Arc::new` + two `Vec` for the nested and
+  outer maps. The bench's "three `Arc`s by construction" note, confirmed rather than assumed.
+  **⚠️ THE SCALING NO FIXTURE IN THE REPO CAN SEE.** The props loop walks `prop_keys_arc()` —
+  **every distinct key in the STORE** — and filters by presence, so render cost is **O(store keys),
+  not O(element properties)**, and every fixture here has four. New sweep with the node's own
+  property count FIXED at 4: **210.0 / 275.0 / 631.9 / 1,807.6 ns/row** at 0 / 12 / 60 / 200 extra
+  store keys — **8.6x**, at **7.99 ns per store key per row**, falling to **1.54** with the column
+  resolution hoisted. So `store.column(k)` is 81% of the scaling term. A heterogeneous people-graph
+  (Person name/email/dob beside Company domain/size/founded) is 50-200 keys with a handful per node
+  — the realistic case.
+  **And the NODE path already had the fix**: `render_nodes` hoists for a whole batch and both node
+  egress sites use it. **The edge path had no batch renderer at all** — both `Col::Edges` arms
+  looped `edge_result_value`, which hashes `edge_prop_map(k)` per key per row. Invisible in the
+  corpus because `element r`, its 1M-row case, has ONE edge key. Added `render_edges`.
+  **MEASURED BOTH WAYS, because one number would have misled.** Query level, 3 alternated rounds,
+  min, disjoint: `element r` **357,765 -> 342,484 (1.045x)**; `element p` **flat** — the control
+  that makes it legible, since nodes were already batched. Scaling, both variants in ONE binary (no
+  cross-build noise, no rounds needed): **1.01x worse at 0 extra keys**, **1.15x at 12**, **1.66x at
+  60**, **1.78x at 200**; per-key cost **10.65 -> 5.41 ns**. The 0-key row is in the table rather
+  than rounded away. Residual 5.41 ns is `m.get(&eid)` — edge properties are per-key `HashMap`s
+  where node properties are columns with a presence bitmap. Next lever here, and a representation
+  change rather than a loop.
+  **I MADE ITEM 339'S MISTAKE ONE ITEM LATER**: the first draft had the per-edge variant DROP each
+  map while the batched one returned a 200,000-element `Vec`, so the batched row read SLOWER at low
+  key counts purely because it retained the output. Exactly _a ratio is only as honest as the
+  sameness of its two sides_, by the person who had just written it down. Both sides now collect and
+  the note is in the harness, not quietly fixed.
+  **⚠️ M1 SURVIVED AND IT IS A SILENTLY-WRONG ROW.** Deleting the `u32::MAX` OPTIONAL-MATCH sentinel
+  guard broke no test: `optional_match_binds_edge` returns `f.w`, a PROPERTY, so it never reaches
+  the edge renderer. Without the guard the renderer builds a map for edge `u32::MAX` — `edge_ext_id`
+  has no entry so it mints `"e4294967295"` and `edge_endpoints` falls back to `(0, 0)`, **a
+  plausible-looking edge between two real nodes that does not exist.** Added
+  `a_missed_optional_edge_renders_null_not_a_map`, which returns `f` itself. M2 (from/to swapped)
+  and M3 (labels unsorted) were caught; M4 (un-hoisted lookup) is behaviour-preserving and its
+  survival is the control, as at 336/337/339.
+  **Still open**: the 88.8 ns/row of `Arc`+`Vec` construction per element (structural), and the
+  edge-property representation.
 - **The corpus read 69x "CALL overhead" and 92% of it was returning the rows — 4.17x dispatch,
   33.32x projection (339).** Item 338 named this as the largest unexplained RATIO (deliberately a
   ratio: internal to one run, so tenancy cancels). `algo/call` priced `degree` through GQL `CALL` at

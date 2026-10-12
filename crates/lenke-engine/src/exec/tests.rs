@@ -2221,6 +2221,45 @@ fn optional_match_binds_edge() {
     assert!(matches!(&got[2], (id, v) if id == "c" && v.is_null())); // no edge → f null
 }
 
+/// A missed OPTIONAL MATCH returning the EDGE VARIABLE ITSELF renders NULL, not an element
+/// map (audit item 340).
+///
+/// `optional_match_binds_edge` above returns `f.w` — a PROPERTY of the edge — so it never
+/// reaches the edge renderer at all, and the `u32::MAX` sentinel check inside it was
+/// consequently untested: a mutant that deleted the guard broke no test. Without it the
+/// renderer happily builds a map for id `u32::MAX`, which `edge_ext_id` has no entry for, so
+/// it mints `"e4294967295"` and `edge_endpoints` falls back to `(0, 0)` — a plausible-looking
+/// edge between two real nodes that does not exist. A silently wrong row, which is the one
+/// class of bug no amount of "the query returned something" catches.
+#[test]
+fn a_missed_optional_edge_renders_null_not_a_map() {
+    let nd = concat!(
+        "{\"id\":\"a\",\"labels\":[\"N\"],\"props\":{\"id\":\"a\"}}\n",
+        "{\"id\":\"b\",\"labels\":[\"N\"],\"props\":{\"id\":\"b\"}}\n",
+        "{\"from\":\"a\",\"to\":\"b\",\"labels\":[\"R\"],\"props\":{\"w\":7.0}}"
+    );
+    let store = crate::ndjson::from_ndjson(nd).unwrap();
+    // `a` has an outgoing R, `b` does not. Returning `f` itself drives the edge renderer for
+    // both rows, so the second one is the sentinel.
+    let q = "MATCH (n:N) OPTIONAL MATCH (n)-[f:R]->(u) RETURN n.id AS id, f AS e ORDER BY n.id";
+    let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &store);
+    let out = run(&plan, &store);
+
+    assert_eq!(out.rows.len(), 2);
+    // `a`'s edge renders as a map...
+    assert!(
+        matches!(&out.rows[0][1], Value::Map(_)),
+        "a's edge should render as an element map, got {:?}",
+        out.rows[0][1]
+    );
+    // ...and `b`'s miss is NULL, not a map for edge u32::MAX.
+    assert!(
+        out.rows[1][1].is_null(),
+        "a missed optional edge must be NULL, got {:?}",
+        out.rows[1][1]
+    );
+}
+
 /// A per-repetition WHERE on a MULTI-HOP unit references every edge of the rep
 /// (e1 AND e2), checked at the rep boundary. Chain a-b-c-d-e, all amt 10.
 #[test]
@@ -13150,6 +13189,130 @@ fn element_render_cost() {
             })
             .sum()
     });
+
+    // --- the scaling the fixture above CANNOT see (item 340) ---
+    //
+    // `node_result_value` renders a node's properties by walking `prop_keys_arc()` — every
+    // DISTINCT key in the whole store — and filtering by presence. So the cost is O(keys in the
+    // STORE), not O(properties on the ELEMENT), and the fixture above has four keys, which is
+    // exactly the width at which the two are indistinguishable.
+    //
+    // A heterogeneous graph is the realistic case: `Person` with name/email/dob next to
+    // `Company` with domain/size/founded and a dozen other labels puts 50-200 distinct keys in
+    // one store while any single node carries a handful. This sweep holds the node's own
+    // property count FIXED at 4 and varies only how many other keys exist elsewhere, so a
+    // straight line is the O(store-keys) term and a flat line would mean there is none.
+    println!("\n=== render cost vs DISTINCT KEYS IN THE STORE (4 props per node) ===");
+    for extra in [0usize, 12, 60, 200] {
+        let mut b2 = Builder::default();
+        // One node carrying the extra keys, so they exist in the store and nothing else has
+        // them. Every measured node still has exactly four.
+        let mut wide: Vec<(&str, Value)> = Vec::new();
+        let names: Vec<String> = (0..extra).map(|j| format!("x{j}")).collect();
+        for nm in &names {
+            wide.push((nm.as_str(), n(1.0)));
+        }
+        b2.node(&["Filler"], &wide);
+        for i in 0..ROWS {
+            b2.node(
+                &["Person"],
+                &[
+                    ("name", s(&format!("v{i}"))),
+                    ("age", n(f64::from(i % 100))),
+                    ("city", s(&format!("c{}", i % 50))),
+                    ("dept", s(&format!("d{}", i % 5))),
+                ],
+            );
+        }
+        let st = b2.build();
+        let measured: Vec<u32> = (1..=ROWS).collect();
+        time(
+            &format!("node render, {:>3} extra store keys", extra),
+            &|| {
+                measured
+                    .iter()
+                    .map(|&i| {
+                        matches!(
+                            crate::exec::render::node_result_value(&st, i),
+                            Value::Map(_)
+                        ) as usize
+                    })
+                    .sum()
+            },
+        );
+        // Same scan with the COLUMN RESOLUTION hoisted out of the row loop, which is the cheap
+        // half of the fix and the one a batch renderer could do today. If this slope matches the
+        // row above, the per-key cost is the PRESENCE TEST and only a per-node key list removes
+        // it; if it flattens, the cost was the `store.column(k)` lookup.
+        let keys2 = st.prop_keys_arc();
+        let cols2: Vec<(&Arc<str>, &crate::store::Column)> = keys2
+            .iter()
+            .filter_map(|k| st.column(k).map(|c| (k, c)))
+            .collect();
+        time(
+            &format!("  ... same, columns hoisted ({:>3})", extra),
+            &|| {
+                measured
+                    .iter()
+                    .map(|&i| {
+                        let m: Vec<(Value, Value)> = cols2
+                            .iter()
+                            .filter(|(_, c)| c.present_at(i as usize))
+                            .map(|(k, c)| (Value::Str(Arc::clone(k).into()), c.read(i as usize)))
+                            .collect();
+                        m.len()
+                    })
+                    .sum()
+            },
+        );
+    }
+
+    // The EDGE twin of the sweep above (item 340). `Col::Edges` egress called
+    // `edge_result_value` per edge, which hashes every edge-property key for every row, where
+    // the node path had had a batch renderer resolving them once since the node renderer was
+    // fixed. Both variants run in ONE binary here, so the comparison carries no cross-build
+    // layout noise and needs no alternated rounds — the internal control is the point.
+    println!("\n=== edge render: per-edge vs BATCHED, by distinct edge keys in the store ===");
+    for extra in [0usize, 12, 60, 200] {
+        let mut b3 = Builder::default();
+        b3.node(&["A"], &[]);
+        b3.node(&["B"], &[]);
+        for _ in 0..ROWS {
+            b3.edge(0, 1, "KNOWS");
+        }
+        // One extra edge carries the filler keys, so they exist in the store and nothing
+        // MEASURED has them. Every measured edge still has exactly two properties.
+        b3.edge(0, 1, "FILLER");
+        let mut st = b3.build();
+        for e in 0..ROWS {
+            st.set_edge_prop(e, "w", n(f64::from(e % 7)));
+            st.set_edge_prop(e, "tag", s("t"));
+        }
+        for j in 0..extra {
+            st.set_edge_prop(ROWS, &format!("y{j}"), n(1.0));
+        }
+        let st = st;
+        let eids: Vec<u32> = (0..ROWS).collect();
+        // BOTH sides COLLECT. The first draft had the per-edge variant drop each map and the
+        // batched one return a 200,000-element `Vec`, so the batched row was also paying to
+        // retain the whole output — and it read SLOWER at low key counts for that reason alone.
+        // That is item 339's own lesson (a ratio is only as honest as the sameness of its two
+        // sides) walked into one item later, so it is recorded here rather than quietly fixed.
+        time(
+            &format!("per-edge  edge_result_value ({:>3})", extra),
+            &|| {
+                let out: Vec<Value> = eids
+                    .iter()
+                    .map(|&e| crate::exec::render::edge_result_value(&st, e))
+                    .collect();
+                out.len()
+            },
+        );
+        time(
+            &format!("batched   render_edges      ({:>3})", extra),
+            &|| crate::exec::render::render_edges(&st, &eids).len(),
+        );
+    }
 }
 
 // --- Asking the representation whether a cell is NULL (item 77) ---

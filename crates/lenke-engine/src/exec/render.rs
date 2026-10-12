@@ -193,6 +193,61 @@ pub(super) fn edge_result_value(store: &Store, eid: u32) -> Value {
     ]))
 }
 
+/// Render MANY edges to their result maps, resolving the per-key edge-property maps ONCE for
+/// the whole batch instead of hashing every key for every edge — the batch twin
+/// [`render_nodes`] has had since the node renderer was fixed, and which the edge path never
+/// got (audit item 340). Both `Col::Edges` egress sites called [`edge_result_value`] in a loop.
+///
+/// Byte-identical to per-edge rendering by construction: the same five fields in the same
+/// order, properties in `edge_prop_keys_arc()` (sorted) order filtered to present, labels
+/// sorted, and `u32::MAX` — the OPTIONAL-MATCH null sentinel — still rendering as NULL.
+///
+/// The cost it removes is O(edge keys in the STORE) per row, which the corpus fixture cannot
+/// show because it has one: measured against the key count it is 1.54 ns per key per row with
+/// the maps hoisted against 7.99 without, so a heterogeneous store is where this lands.
+pub(super) fn render_edges(store: &Store, eids: &[u32]) -> Vec<Value> {
+    use std::sync::Arc;
+    let keys = store.edge_prop_keys_arc();
+    // `edge_prop_map` is a hash lookup per key; resolved once, it is a slice walk per row.
+    let maps: Vec<(&Arc<str>, &crate::store::EdgeMap)> = keys
+        .iter()
+        .filter_map(|k| store.edge_prop_map(k).map(|m| (k, m)))
+        .collect();
+    eids.iter()
+        .map(|&eid| {
+            if eid == u32::MAX {
+                return Value::Null;
+            }
+            let id = store
+                .edge_ext_id(eid)
+                .unwrap_or_else(|| GStr::from(format!("e{eid}")));
+            let (src, dst) = store.edge_endpoints(eid).unwrap_or((0, 0));
+            let ext = |n: u32| {
+                store
+                    .node_ext_id(n)
+                    .unwrap_or_else(|| GStr::from(n.to_string()))
+            };
+            let mut labels = store.edge_labels_of(eid);
+            labels.sort_unstable();
+            let labels = Value::List(labels.into_iter().map(|t| Value::Str(t.into())).collect());
+            let props: Vec<(Value, Value)> = maps
+                .iter()
+                .filter_map(|(k, m)| {
+                    m.get(&eid)
+                        .map(|v| (Value::Str(Arc::clone(k).into()), v.clone()))
+                })
+                .collect();
+            Value::Map(Arc::new(vec![
+                (field_key(Field::Id), Value::Str(id)),
+                (field_key(Field::From), Value::Str(ext(src))),
+                (field_key(Field::To), Value::Str(ext(dst))),
+                (field_key(Field::Labels), labels),
+                (field_key(Field::Properties), Value::Map(Arc::new(props))),
+            ]))
+        })
+        .collect()
+}
+
 /// Render one element of an interleaved Gremlin `path()` per its (cycled) `by`
 /// modulator. A vertex or an edge (`is_edge`); `Element` → the element map,
 /// `Prop` → a property value, `Id`/`Label` → the ext-id / label string.
