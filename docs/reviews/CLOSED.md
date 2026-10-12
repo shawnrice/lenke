@@ -878,6 +878,33 @@ bench`** so one-case-per-process is a flag instead of the bespoke script items 2
   aggregate-over-chain and never builds the frontier, so the engine that OOM'd had to be the TS
   one — and 3 and 4 hops run in 8 and 13 ms at ~80 MB where 5 is fatal, which is exactly the count
   family's ≤4-segment coverage edge (item 290).
+- **The cross-engine bench had no row for the shape that dominates the native corpus — and the TS
+  engine turns out not to materialize an element at all (341).** `query/perrow` prices `RETURN p`
+  as the most expensive row in `bench_all`, and the only place the two engines are compared had NO
+  element-projection row. Four added (lazy + forced-materialization, nodes + edges).
+  **THE TS ENGINE DOES NOT BUILD THE MAP.** Checked before reporting, because the first number
+  (ts 7.2ms against ffi 209.4 — a 29x inversion) was too good to publish without knowing what each
+  side returned. Output is byte-identical (verified directly), but TS returns a **live `Vertex`**:
+  `own keys: []`, `has toJSON: function`. It materializes NOTHING — the map is built by whoever
+  serializes it, or never. Native builds it eagerly and ships it over the boundary. Same output,
+  different time.
+  200k nodes: lazy **ts 7.1 / ffi 204.7 / wasm 138.8 ms**; forced **ts 49.6 / 213.7 / 146.1**.
+  1M edges: lazy **584.5 / 1346.3 / 932.9**; forced **1086.6 / 1389.1 / 1039.4**.
+  **⚠️ I NEARLY REPORTED THE ts-vs-ffi RATIO AS A FINDING. IT IS CLOSED AT ITEM 289** — that gap on
+  any row-returning query is the **JSON CARRIER**, not execution, and the same work with ONE row out
+  runs 30.8x the other way. My own new `project 3 columns` row reproduces it (ts 12.9 vs ffi 52.1).
+  I searched `CLOSED.md` for "element render" and not for the carrier — exactly the guide's _"each
+  pass searched something first and searched the wrong store."_ The four rows now point at 289.
+  **THE ONLY CARRIER-FREE NUMBER IS THE DIFFERENCE WITHIN EACH PAIR**, since the carrier is
+  identical on both sides of it: **TS materialization is 213 ns/row** (49.6 − 7.1 over 200k) and
+  **native's in-process render is 492 ns/row** (item 340's isolated harness). So **the native
+  renderer is ~2.3x the TypeScript one at the same job**, both measured in-process. That is new and
+  it reframes 340: its 1.045x was not nibbling at a floor — a row-store doing the same work in less
+  than half the time is evidence of real headroom, and it points at the REPRESENTATION (native walks
+  every store key and filters by presence; TS reads a bag it already holds) rather than at the loop.
+  **And the laziness is a product difference, not a benchmark artifact**: a consumer reading two
+  fields off fifty of a million returned elements pays TS nothing for the other 999,950 and pays
+  native for all of them twice — once to render, once to carry. The `[ts lazy]` rows stay for that.
 - **The edge renderer never got the batch twin the node renderer has — 1.045x on the corpus's
   biggest row, 1.78x on a heterogeneous store, and the surviving mutant was a silently-wrong row
   (340).** Item 339 named element materialization as next. First move was making the existing

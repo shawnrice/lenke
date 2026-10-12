@@ -104,6 +104,28 @@ const tsEngine: Engine = {
   free: () => {},
 };
 
+/**
+ * Force every element in a result to its MAP form, so the two engines are doing the same work.
+ *
+ * The pure-TS engine returns live `Vertex` / `Edge` instances and defers building the
+ * `{id, labels, properties}` map to whoever serializes them; the native engine has already
+ * built it. `toJSON()` is that map on a live element and absent on the native engine's plain
+ * object, so applying it to both sides levels them without special-casing either (item 341).
+ */
+const materializeRows = (rows: unknown): number => {
+  let n = 0;
+
+  for (const row of rows as Array<Record<string, unknown>>) {
+    for (const v of Object.values(row)) {
+      const j = (v as { toJSON?: () => unknown })?.toJSON;
+
+      n += j === undefined ? 1 : Object.keys(j.call(v) as object).length;
+    }
+  }
+
+  return n;
+};
+
 /** The workload documents, built once and shared by every engine. */
 const nodesDoc = Array.from(
   { length: N },
@@ -201,6 +223,58 @@ const CASES: Case[] = [
     ...onGraph(
       () => nodesDoc,
       (e, g) => void e.query(g, 'MATCH (n:Person) RETURN n.name AS n, n.city AS c, n.age AS a'),
+    ),
+  },
+  {
+    // THE SHAPE THAT DOMINATES THE NATIVE CORPUS, and this harness had no row for it at all
+    // (audit item 341). `query/perrow` prices `RETURN p` as the most expensive row in
+    // `bench_all` — ~250-520 ns/row against 1.7 for a scalar — and the only place the two
+    // engines are compared had never asked what it costs in TypeScript.
+    //
+    // READ THIS ROW WITH THE NEXT ONE OR NOT AT ALL. The two engines do not do the same work
+    // here: the TS engine returns a LIVE `Vertex` instance (zero own keys, a `toJSON`), so it
+    // materializes nothing and the cost lands on whoever serializes it later; the native engine
+    // builds the whole `{id, labels, properties}` map eagerly and, across FFI/wasm, ships it
+    // over the boundary. Both ultimately produce byte-identical output — checked — but at
+    // different times. So this row answers "how long until the host HAS the rows", where the
+    // laziness is a genuine advantage, and the `+ materialize` row below answers "what does
+    // producing the maps cost", which is the comparable one.
+    //
+    // AND NEITHER RATIO IS ABOUT THE ENGINES' RENDERERS. Item 289 settled that the ts-vs-ffi
+    // gap on any row-returning query is the JSON CARRIER: the same fixture with the same work
+    // and ONE row out runs 30.8x the OTHER way. Anyone reading these four rows as a renderer
+    // comparison should read `queryArrowIpc` and item 289 first. What they are good for is the
+    // LAZINESS asymmetry — the difference between each pair — which is per-engine and so
+    // carrier-free.
+    name: 'query: project the element [ts lazy]',
+    ...onGraph(
+      () => nodesDoc,
+      (e, g) => void e.query(g, 'MATCH (n:Person) RETURN n'),
+    ),
+  },
+  {
+    // The same query with BOTH sides forced to materialize, which is the apples-to-apples
+    // version: `toJSON()` on a live `Vertex` builds the same map the native engine already
+    // built, and is a no-op on the plain object the native engine returns.
+    name: 'query: project the element + materialize',
+    ...onGraph(
+      () => nodesDoc,
+      (e, g) => void materializeRows(e.query(g, 'MATCH (n:Person) RETURN n')),
+    ),
+  },
+  {
+    // The edge twin, lazy and forced. Native got a batch renderer for this at item 340.
+    name: 'query: project the edge [ts lazy]',
+    ...onGraph(
+      () => graphDoc,
+      (e, g) => void e.query(g, 'MATCH (:Person)-[r:KNOWS]->() RETURN r'),
+    ),
+  },
+  {
+    name: 'query: project the edge + materialize',
+    ...onGraph(
+      () => graphDoc,
+      (e, g) => void materializeRows(e.query(g, 'MATCH (:Person)-[r:KNOWS]->() RETURN r')),
     ),
   },
   {
