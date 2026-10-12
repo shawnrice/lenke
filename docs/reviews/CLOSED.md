@@ -878,6 +878,29 @@ bench`** so one-case-per-process is a flag instead of the bespoke script items 2
   aggregate-over-chain and never builds the frontier, so the engine that OOM'd had to be the TS
   one — and 3 and 4 hops run in 8 and 13 ms at ~80 MB where 5 is fatal, which is exactly the count
   family's ≤4-segment coverage edge (item 290).
+- **Native's NDJSON decode is HALF SERIAL, and its recorded Amdahl bound was 25% optimistic (328).**
+  `bench_all` says the decode is the native corpus's largest absolute cost by two orders of
+  magnitude — `ingest/ceiling (5 edges/node)`: **raw scan 9.10ms against decode 717.56ms, 78.9x**,
+  where the next biggest row is `query/gql project 3` at 5.4ms.
+  Split from data ALREADY in the corpus, no new measurement: fitting `T(n) = P/n + S` to
+  `ingest/threads` (**729.08 / 555.59 / 460.24 / 411.51 ms** at 1/2/4/8) at **all six pairs** of
+  points (item 327's lesson, same day) — **P = 347-390ms parallel parse, S = 363-382ms serial
+  build, serial share 50-52%, ceiling 1.91-2.01x.**
+  `from_ndjson_threads`' doc comment claimed _"~2.5x @ 8 threads (measured)"_. **Not reachable** at
+  today's serial fraction, and the measured 1.77x is **88% of the real bound** rather than 71% of an
+  achievable one — which reframes the parallel side as nearly done and the serial build as the
+  target. Corrected in place.
+  **REFUTED by reading a type, not a benchmark**: removing the ~2.4M per-property `v.clone()` calls
+  in the two serial loops (both loops CAN consume — `staged` is destructured by value). `GStr::clone`
+  is a **16-byte struct copy** for an inline string (≤12 bytes, which these are) and a relaxed
+  atomic increment for a long one — no allocation either way. **Read the clone impl before pricing
+  a clone.**
+  **Still open, sized**: the ~370ms serial build against a 9.10ms raw-scan floor. Already carries
+  bulk mode, `add_node_bulk`, pre-reserved adjacency, parallel endpoint resolution, and a recorded
+  refutation of a parallel counting-sort rebuild. The ordering constraint is real (eids in input
+  order keep the decode byte-identical at any thread count), so the next move is a decomposition of
+  those 370ms into store operations — the probe this corpus lacks — not another attempt to
+  parallelize the insert.
 - **The adjacency's innermost `Set<Edge>` priced on three axes — PRICED, SIZED, NOT BUILT (326).**
   An edge enters a `(vertex, label)` bucket exactly once, so the Set's dedup is never needed. 1M
   edges across 200,000 buckets of 5:

@@ -639,8 +639,19 @@ pub fn from_ndjson(text: &str) -> Result<Store, String> {
 /// assigned in input order — the result is byte-identical at any thread count. Within
 /// the serial build, endpoint resolution (`node_by_ext` per edge end) also parallelizes,
 /// and nodes take the single-pass `add_node_bulk` fast path under bulk-load mode.
-/// `threads <= 1` runs fully serial. Amdahl-bounded by the remaining serial insert at
-/// ~2.5x @ 8 threads (measured).
+/// `threads <= 1` runs fully serial.
+///
+/// AMDAHL-BOUNDED BY THE SERIAL INSERT, and the bound is ~2.0x rather than the ~2.5x recorded
+/// here before. Fitting `T(n) = P/n + S` to the corpus's own `ingest/threads` sweep
+/// (729.08 / 555.59 / 460.24 / 411.51 ms at 1/2/4/8 threads) gives the same answer from all six
+/// pairs of points — **P = 347-390ms parallel parse, S = 363-382ms serial build, so the serial
+/// half is 50-52% of a one-thread decode and the ceiling is 1.91-2.01x**. The measured 1.77x at 8
+/// threads is 88% of that bound, so the parallel side is close to done and **the serial build is
+/// the target**: ~370ms against this fixture's 9.10ms raw-scan floor (audit item 328).
+///
+/// NOT the per-property clones in either serial loop, which is the obvious first guess:
+/// `GStr::clone` is a 16-byte struct copy for an inline string (<=12 bytes) and a relaxed atomic
+/// increment for a long one, so the ~2.4M `Value` clones those loops make are close to free.
 pub fn from_ndjson_threads(text: &str, threads: u32) -> Result<Store, String> {
     build_store(stage_ndjson_threads(text, threads)?, threads)
 }
