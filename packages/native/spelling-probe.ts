@@ -42,7 +42,7 @@ const FLOOR_MS = Number(process.env.SPELL_FLOOR ?? 1);
 const lines = Array.from(
   { length: N },
   (_, i) =>
-    `{"type":"node","id":"v${i}","labels":${i % 3 === 0 ? '["P","Q"]' : '["P"]'},"properties":{"k":${i % 50},"s":"s${i % 7}"}}`,
+    `{"type":"node","id":"v${i}","labels":${i % 3 === 0 ? '["P","Q","Univ"]' : '["P","Univ"]'},"properties":{"k":${i % 50},"s":"s${i % 7}"}}`,
 );
 
 // BOTH ENDPOINT KEYS ARE SCATTERED, by different multipliers, and that is load-bearing.
@@ -71,7 +71,9 @@ for (let e = 0; e < N * 3; e++) {
 // edges, so the two groups that start an UNTYPED hop scan (`MATCH (a)-[:E]->(b)` and the
 // three-hop one) see no extra rows, and every other group is label-anchored on `P` (item 285).
 for (let i = 0; i < 4; i++) {
-  lines.push(`{"type":"node","id":"s${i}","labels":["S"],"properties":{"k":${i},"s":"t${i}"}}`);
+  lines.push(
+    `{"type":"node","id":"s${i}","labels":["S","Univ"],"properties":{"k":${i},"s":"t${i}"}}`,
+  );
 }
 
 const g = tsDeserialize(lines.join('\n'), 'ndjson', new TsGraph());
@@ -389,7 +391,22 @@ const GROUPS: [string, readonly string[]][] = [
     // edge and this group spreads.
     'three hops: a vacuous start label vs none (item 221)',
     [
-      'MATCH (a:P)-[:E]->(b)-[:E]->(c)-[:E]->(d) RETURN count(*) AS c',
+      // `:Univ` and NOT `:P`, which is the whole point of this group and what it was failing to
+      // test. `vacuousLabel` is an EXACT equality — the label's bucket against `vertexCount` — so
+      // the four `:S` nodes below made `:P` non-vacuous, `effectiveLabel` could not elide it, and
+      // this group compared a real label constraint against none. It read 1.87x and item 324
+      // widened it to 2.6x by speeding up the unlabelled member alone.
+      //
+      // With a label every vertex carries, the labelled member goes **537.92ms -> 190.91** and the
+      // two land within **1.03x** (item 325). FOUR vertices out of 200,004 were costing it 2.8x,
+      // which is the cliff worth knowing about: vacuity is all-or-nothing, so one unlabelled node
+      // in a real graph defeats the elision for every query anchored on that label.
+      //
+      // `:P` stays non-vacuous on purpose. The `label on start` group below is a deliberate
+      // guard on exactly that asymmetry (CLOSED.md: "do not quiet it by reverting the fixture"),
+      // and giving the `:S` nodes a `:P` instead of an `:Univ` would have silenced it — it went
+      // sub-millisecond when that was tried.
+      'MATCH (a:Univ)-[:E]->(b)-[:E]->(c)-[:E]->(d) RETURN count(*) AS c',
       'MATCH (a)-[:E]->(b)-[:E]->(c)-[:E]->(d) RETURN count(*) AS c',
     ],
   ],

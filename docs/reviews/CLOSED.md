@@ -878,6 +878,32 @@ bench`** so one-case-per-process is a flag instead of the bespoke script items 2
   aggregate-over-chain and never builds the frontier, so the engine that OOM'd had to be the TS
   one — and 3 and 4 hops run in 8 and 13 ms at ~80 MB where 5 is fatal, which is exactly the count
   family's ≤4-segment coverage edge (item 290).
+- **Four vertices out of 200,004 cost a spelling 2.8x, and the probe group that should have caught
+  it was testing something else (325).** `vacuousLabel` is an EXACT equality (the label's bucket
+  against `vertexCount`), and `spelling-probe`'s fixture adds **four `:S` nodes** for an unrelated
+  group — so `|P| = N` against `vertexCount = N + 4`, **`:P` is not vacuous**, `effectiveLabel`
+  cannot elide it, and the `three hops: a vacuous start label vs none` group has been comparing a
+  real label constraint against none. Its 1.87x was correct behaviour; item 324's 2.6x was correct
+  behaviour plus a genuine improvement to one member.
+  Pointed at a label every vertex carries, the labelled member goes **537.92 -> 190.91ms** and the
+  two land within **1.03x**. **NOT A BUG** — eliding a label four vertices lack would change the
+  answer — but a CLIFF worth knowing: vacuity is all-or-nothing, so one unlabelled node in a real
+  graph defeats the elision for every query anchored on that label, falling from a bucket-size read
+  to a per-edge label check. **The elision now has an end-to-end guard it did not have**: pointed at
+  `:P` it never fired, so nothing would have noticed it breaking.
+  **The obvious fix silenced a deliberate guard.** Giving the `:S` nodes a `:P` restores vacuity
+  AND takes `label on start: redundant vs absent` from 3225x to under the 1ms floor — the group
+  this file records as "CORRECT, not outstanding… do not quiet it by reverting the fixture", whose
+  2100-4160x has the same cause. So the fixture gained a SEPARATE vacuous label (`:Univ`) that only
+  the vacuity group uses; `:P` stays non-vacuous on purpose. Both groups now test their own
+  premise: **0 answer disagreements, 0 under the floor, one group over 2x (the guard, 3225.6x)**.
+  (`:All` was refused first — "`All` is a reserved word and can't be used bare as a label name".
+  Correct ISO behaviour, free confirmation that the check works.)
+  **REFUTED, via 324's "grep for `yield*`" lesson**: `edgesMatching`'s identical single-label
+  `yield* set`, on the general traversal path. **0 calls** across `traverse 1-hop project`,
+  `query: distinct over a hop`, `query: 2-hop subquery item` and `count 3-hop` — `expand`'s own
+  fast path (item 119) already bypasses it for every caller that matters. Counted before a line was
+  written. `candidateVertices`' two sites were already done by item 164 (`candidateVertexSource`).
 - **`edgesOfTypes` was a generator delegating to an iterator it could have RETURNED — 1.253x on the
   84x row (324).** Its hot single-type path was `yield* byType.get(types[0]) ?? []`, and a
   `Set<Edge>` is already an `Iterable<Edge>`. Split into a returning fast path for the two
