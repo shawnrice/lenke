@@ -13265,6 +13265,59 @@ fn element_render_cost() {
                     .sum()
             },
         );
+        // PRICING the storage question, not proposing this code (item 342). `Column`'s presence
+        // is `present: Vec<bool>` plus `nulls: Vec<bool>` — a BYTE per cell per vector, so a
+        // 200,000-row store with K columns keeps 400 KB x K of presence and the render scan
+        // touches two bytes in each of K separate arrays per row.
+        //
+        // This variant answers what a PACKED presence representation would buy on the READ
+        // side, and only that: the bitset is built OUTSIDE the timed closure, because a
+        // per-batch build is O(K x N) and would show no win — the question is what a
+        // permanently-packed `Column` would be worth. One `u64` lane per 64 rows per column,
+        // `present || nulls` folded in at build time.
+        let lanes = (ROWS as usize + 64) / 64;
+        let mut bits: Vec<u64> = vec![0; cols2.len() * lanes];
+        for (ci, (_, c)) in cols2.iter().enumerate() {
+            for i in 0..ROWS as usize {
+                if c.present_at(i) {
+                    bits[ci * lanes + (i >> 6)] |= 1u64 << (i & 63);
+                }
+            }
+        }
+        // The packed variant must select EXACTLY the keys the byte-wise one does, or it would
+        // simply be measuring a scan that skips work. Checked before it is timed, because a
+        // wrong fast path is indistinguishable from a fast one in a table of microseconds.
+        for &i in measured.iter().take(1000) {
+            let i = i as usize;
+            let (lane, bit) = (i >> 6, 1u64 << (i & 63));
+            let by_byte = cols2.iter().filter(|(_, c)| c.present_at(i)).count();
+            let by_bit = cols2
+                .iter()
+                .enumerate()
+                .filter(|(ci, _)| bits[ci * lanes + lane] & bit != 0)
+                .count();
+
+            assert_eq!(by_byte, by_bit, "packed presence disagrees at row {i}");
+        }
+        time(
+            &format!("  ... same, PACKED presence ({:>3})", extra),
+            &|| {
+                measured
+                    .iter()
+                    .map(|&i| {
+                        let i = i as usize;
+                        let (lane, bit) = (i >> 6, 1u64 << (i & 63));
+                        let m: Vec<(Value, Value)> = cols2
+                            .iter()
+                            .enumerate()
+                            .filter(|(ci, _)| bits[ci * lanes + lane] & bit != 0)
+                            .map(|(_, (k, c))| (Value::Str(Arc::clone(k).into()), c.read(i)))
+                            .collect();
+                        m.len()
+                    })
+                    .sum()
+            },
+        );
     }
 
     // The EDGE twin of the sweep above (item 340). `Col::Edges` egress called

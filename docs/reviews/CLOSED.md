@@ -878,6 +878,39 @@ bench`** so one-case-per-process is a flag instead of the bespoke script items 2
   aggregate-over-chain and never builds the frontier, so the engine that OOM'd had to be the TS
   one — and 3 and 4 hops run in 8 and 13 ms at ~80 MB where 5 is fatal, which is exactly the count
   family's ≤4-segment coverage edge (item 290).
+- **PRICED NOT BUILT — the presence representation: hoisting was 4.9x of the scaling term, packing
+  the bits is 2.1x more, and a per-node key list is the only thing left (342).** Item 341 showed
+  native's element renderer has headroom (TS does the same materialization in 213 ns/row against
+  native's 492, in-process both sides) and item 340 had located the term: the props loop walks every
+  key in the STORE and filters by presence.
+  **What the representation IS**: `present: Vec<bool>` + `nulls: Vec<bool>` — a **BYTE per cell per
+  vector**, so a 200k-row store with K columns keeps 400 KB x K of presence and rendering one
+  element touches two bytes in each of K separate arrays. Obvious enough to be worth measuring
+  rather than assuming.
+  **THREE VARIANTS, ONE BINARY** (200k nodes, 4 properties each, only the number of OTHER store keys
+  varied; the packed variant's bitset is built OUTSIDE the timed closure on purpose, since a
+  per-batch build is O(KxN) and the question is what a permanently-packed `Column` is worth on the
+  read side). ns/row at 0 / 12 / 60 / 200 extra keys: full **220.6 / 289.5 / 643.5 / 1,791.8**;
+  columns hoisted **89.8 / 116.9 / 167.4 / 408.0**; PACKED **90.5 / 102.9 / 145.4 / 244.7**.
+  Per store key: full **7.86 ns**, hoisted **1.59** (**4.9x**, already done — `render_nodes` and
+  `render_edges` at 340), packed **0.77** (**2.1x more**). At K=0 packed equals hoisted, so packing
+  costs nothing when there is nothing to skip. The packed variant is **cross-checked against the
+  byte-wise one for 1,000 rows before it is timed** — a fast path that skips work is
+  indistinguishable from a fast one in a table of microseconds.
+  **THE LADDER, all priced**: (1) hoist the lookup — done; (2) pack presence — 1.67x on a K=200
+  render AND it reaches every other `present_at` caller (filters, `count`, `IS NULL`, seeks), which
+  this sweep does not measure and so understates; (3) skip absent keys entirely via a per-node key
+  list/mask — 0.77 to ~0, taking K=200 toward the 90 ns/row floor, **another ~2.7x and the largest
+  single number here**.
+  **RECOMMENDATION IS RUNG 2 DESPITE RUNG 3 BEING BIGGER**, for maintenance not magnitude: packing
+  is one change to a structure that already exists, with NO new invariant to keep in step, and every
+  presence reader benefits. A per-node key list is a new index every `set_prop`/`remove_prop` must
+  maintain — the write path items 331 and 335 kept deliberately cheap — and it pays off only on
+  element projection. Land rung 2 first and rung 3's 2.7x can be judged against a much smaller base.
+  **What this does NOT claim**: the pricing is READ-side only. Packing changes the codecs' view of a
+  column and every `Vec<bool>` site in `store.rs`, none of which is measured — 1.67x is what the
+  render scan would GAIN, not what the change would COST. A target with a number on it, explicitly
+  not a plan.
 - **The cross-engine bench had no row for the shape that dominates the native corpus — and the TS
   engine turns out not to materialize an element at all (341).** `query/perrow` prices `RETURN p`
   as the most expensive row in `bench_all`, and the only place the two engines are compared had NO
