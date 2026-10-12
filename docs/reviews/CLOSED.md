@@ -878,6 +878,29 @@ bench`** so one-case-per-process is a flag instead of the bespoke script items 2
   aggregate-over-chain and never builds the frontier, so the engine that OOM'd had to be the TS
   one — and 3 and 4 hops run in 8 and 13 ms at ~80 MB where 5 is fatal, which is exactly the count
   family's ≤4-segment coverage edge (item 290).
+- **Where native's 752ms decode goes — and 68ms is freeing records the parse never needed to own
+  (329).** The probe item 328 named. Instrumented at the parse/build boundary and every serial
+  stage (200k nodes / 1M edges / 115.8 MiB):
+  **parse 370.5ms (49%)** and **serial build 381.8ms (51%)** — which puts item 328's Amdahl fit
+  (347-390 / 363-382) **within 5% of a direct measurement**, so a `T(n) = P/n + S` fit over an
+  existing threads sweep recovers a serial fraction without instrumenting anything.
+  Inside the build: **edge loop 179.9ms (24% of the decode)**, `resolve_endpoints` 98.1 (13%, but
+  **already parallel above one thread, so NOT a target**), **dropping the staged edges 58.3
+  (7.7%)**, node loop 14.7, **dropping the staged nodes 9.5**, `rebuild_csr` 8.8, degrees+reserve
+  4.4, `materialize_ext` 4.0, `rebuild_edge_num` 3.8, `end_bulk` 0. The stages first summed 73ms
+  short of the measured build and **the gap was the teardown** — timed explicitly at **67.8ms, 9%
+  of the decode, spent freeing memory and producing nothing.**
+  **PRICED TARGET: borrow the staged records.** `EdgeRec` is
+  `(String, String, Option<String>, Vec<String>, Vec<(String, Value)>)`, so a 1M-edge decode makes
+  ~5M allocations in the parse and frees them in the build. Teardown **67.8ms measured in situ**;
+  the matching build-up **161.3ms in a micro of the same shapes** (213.03 owned against 51.75
+  borrowed, 4.12x) — together roughly **1.2-1.4x on the whole decode**, the largest native ingest
+  target identified. The in-situ half is firm, the micro half indicative (this repo has seen a
+  micro understate 5x at item 119 and overstate to zero at 321/323).
+  **Borrowing IS available here, unlike the GQL lexer (294/317)**: the input `&str` outlives the
+  whole decode, so `NodeRec<'a>`/`EdgeRec<'a>` with `&'a str` ids/labels/prop-keys is sound, the
+  `Value`s stay owned, and the records are only shared immutably across staging workers. Recorded
+  at the type definition.
 - **Native's NDJSON decode is HALF SERIAL, and its recorded Amdahl bound was 25% optimistic (328).**
   `bench_all` says the decode is the native corpus's largest absolute cost by two orders of
   magnitude — `ingest/ceiling (5 edges/node)`: **raw scan 9.10ms against decode 717.56ms, 78.9x**,

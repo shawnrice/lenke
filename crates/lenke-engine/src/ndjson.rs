@@ -362,6 +362,21 @@ pub fn encode_string(out: &mut String, s: &str) {
 }
 
 /// A staged node record: `(external id, labels, props)`.
+/// OWNED, and that is a PRICED target rather than a settled choice (audit item 329). Every id,
+/// label and property key here is a fresh `String`, so a 1M-edge decode makes ~5M allocations in
+/// the parse and frees them again in the build: the teardown alone is **68ms measured in situ**
+/// (58.3 for the edges, 9.5 for the nodes) of a 752ms decode, and a micro of the same record
+/// shapes puts the matching BUILD-UP at **161ms (213.03 against 51.75 borrowed)** — so roughly
+/// **1.2-1.4x on the whole decode**, the largest native ingest target identified.
+///
+/// Borrowing is available here in a way it was not for the GQL lexer (items 294/317): the input
+/// `&str` outlives the whole decode, so `NodeRec<'a>`/`EdgeRec<'a>` can hold `&'a str` for the
+/// ids, labels and property KEYS. The `Value`s stay owned — they are parsed and typed, not
+/// substrings. The records are only shared immutably across staging workers, so the lifetime is
+/// `Send + Sync` without further work.
+///
+/// The in-situ half of that number is firm; the 161ms is a micro, which this repo has seen both
+/// overstate and understate a loop in a deeper pipeline (items 119, 321, 324).
 pub(crate) type NodeRec = (String, Vec<String>, Vec<(String, Value)>);
 /// A staged edge record: `(from-id, to-id, edge id?, labels, props)` — an edge's
 /// first label is its type, the rest are secondary (multi-label edges).
@@ -644,10 +659,15 @@ pub fn from_ndjson(text: &str) -> Result<Store, String> {
 /// AMDAHL-BOUNDED BY THE SERIAL INSERT, and the bound is ~2.0x rather than the ~2.5x recorded
 /// here before. Fitting `T(n) = P/n + S` to the corpus's own `ingest/threads` sweep
 /// (729.08 / 555.59 / 460.24 / 411.51 ms at 1/2/4/8 threads) gives the same answer from all six
-/// pairs of points — **P = 347-390ms parallel parse, S = 363-382ms serial build, so the serial
-/// half is 50-52% of a one-thread decode and the ceiling is 1.91-2.01x**. The measured 1.77x at 8
-/// threads is 88% of that bound, so the parallel side is close to done and **the serial build is
-/// the target**: ~370ms against this fixture's 9.10ms raw-scan floor (audit item 328).
+/// pairs of points — **P = 347-390ms parallel parse, S = 363-382ms serial build**, which audit
+/// item 329 then confirmed by direct measurement at **parse 370ms / build 382ms**, within 5% of
+/// the fit. The measured 1.77x at 8 threads is 88% of the 1.91-2.01x bound, so the parallel side
+/// is close to done and **the serial build is the target**.
+///
+/// WHERE THE SERIAL BUILD GOES (item 329, 200k nodes / 1M edges / 115.8 MiB): edge loop 180ms,
+/// `resolve_endpoints` 98ms (already parallel above one thread), **dropping the staged records
+/// 68ms**, node loop 15ms, `rebuild_csr` 9ms, degrees+reserve 4ms, `materialize_ext` 4ms,
+/// `rebuild_edge_num` 4ms, `end_bulk` 0.
 ///
 /// NOT the per-property clones in either serial loop, which is the obvious first guess:
 /// `GStr::clone` is a 16-byte struct copy for an inline string (<=12 bytes) and a relaxed atomic
