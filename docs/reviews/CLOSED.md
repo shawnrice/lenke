@@ -878,6 +878,37 @@ bench`** so one-case-per-process is a flag instead of the bespoke script items 2
   aggregate-over-chain and never builds the frontier, so the engine that OOM'd had to be the TS
   one — and 3 and 4 hops run in 8 and 13 ms at ~80 MB where 5 is fatal, which is exactly the count
   family's ≤4-segment coverage edge (item 290).
+- **`CAST(<element> AS STRING)` is NOT an implementation choice — the free ISO artifacts close the
+  easy escape without settling which engine is right (347).** Item 346's divergence: `CAST([n, '']
+AS STRING)` gives `"6,"` in TS (the element's **id**) and the element's whole **map** in native.
+  The tempting resolution is "casting a node to a string is outside the standard, so pick one and
+  document it as implementation-defined." **That escape is closed.**
+  **Syntax is legal**: `<cast operand> ::= <value expression> | <null literal>`, so an element
+  variable is accepted; whether the TYPE PAIR is castable is prose.
+  **It is not delegated.** `-implementation-defined.xml` lists exactly ONE cast entry — _"The manner
+  in which **lax casts** (and supporting type tests) are generated and included in the syntax
+  transforms for the dynamic generation of **strict casts**"_ — which delegates the generation
+  MECHANISM, not which pairs are castable. `-implementation-dependent.xml` does not mention casts at
+  all. **Those two files are the complete enumeration of permitted freedom, and an element-to-string
+  cast is in neither** — so two conforming implementations may not disagree and one of ours is
+  wrong. `-conditions.xml`: the only cast-specific status is `22018 invalid character value for
+cast` (a character value that will not PARSE into the target, not a bad type pair), with
+  `22G03`/`22G12 invalid value type` available for a wrongly-typed value — consistent with a bad
+  pair being a STATIC rule rather than a data exception.
+  **What they do not settle**: which answer is right. Neither engine's behaviour is attested
+  anywhere free — TS exposes the external id, native the whole map, and **both are internal
+  representations promoted to a contract by accident.**
+  **THE DECISION, stated once and deliberately not taken unilaterally**: (1) refuse with `22G03` —
+  conservative, relaxable later, and breaks nobody who relied on a behaviour the engines never
+  agreed on; (2) the id (TS today, cheaper); (3) the element map (native today, consistent with how
+  elements render everywhere else). All three change user-visible behaviour in a shipped engine, and
+  the repo already has firm user-set policy on refuse-vs-coerce for cross-type operations.
+  **REUSABLE PATTERN, now written into `references.md` beside the artifact table**: when the
+  question is _"are we allowed to choose here?"_, the answer is in
+  `-implementation-defined.xml`/`-implementation-dependent.xml` and **is usually no**.
+  Reliability note: a web search for the type rules returned nothing usable AND asserted it _"found
+  no source that uses 'lax' or 'strict' for GQL casts, so I can't confirm those modes exist"_ — they
+  do, the quoted sentence is ISO's own. The primary source beat the summary again.
 - **Closing the HOLE, not the bug — the differential fuzzer can now generate a container carrying an
   element, and the first thing it found was a SECOND divergence (346).** Item 345 fixed the record
   arm; 344 had named why it survived — the one harness that compares the engines row-for-row could

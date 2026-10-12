@@ -62,6 +62,33 @@ lenke's actual surface.
   The [TuGraph ANTLR grammar](#3-independent-vendor-implementations-cross-check-divergence)
   remains a convenient navigable rendering of the same grammar.
 
+  > **Worked example — "may we just choose here?" (audit item 347).** The two engines disagreed
+  > about `CAST(<element> AS STRING)`: ours rendered the element's **id** in TS and its whole
+  > **map** in native. The tempting resolution is "the standard does not cover casting a node to
+  > a string, so pick one and document it as implementation-defined." **These two artifacts
+  > close that escape**, and they are the reason to read them before arguing:
+  >
+  > - `-implementation-defined.xml` lists exactly one cast entry — _"The manner in which **lax
+  >   casts** (and supporting type tests) are generated and included in the syntax transforms for
+  >   the dynamic generation of **strict casts**."_ That delegates the generation MECHANISM, not
+  >   which type pairs are castable.
+  > - `-implementation-dependent.xml` does not mention casts at all.
+  >
+  > Those two files are the **complete enumeration of permitted freedom**. An element-to-string
+  > cast is in neither, so two conforming implementations may not disagree about it and one of
+  > ours is wrong. The BNF confirms only that the syntax is legal (`<cast operand> ::= <value
+expression>`); `-conditions.xml` shows the only cast-specific status is `22018 invalid
+character value for cast` (a character value that will not parse into the target, NOT a bad
+  > type pair), with `22G03`/`22G12 invalid value type` available for a wrongly-typed value.
+  >
+  > The cast TABLE is in the paywalled prose, so the artifacts narrow the question without
+  > answering it — which is exactly what they are good for. **Pattern to reuse: when the question
+  > is "are we allowed to choose", the answer is in these two files and is usually no.**
+  >
+  > (A web search for the type rules returned nothing usable and asserted it _"found no source
+  > that uses 'lax' or 'strict' for GQL casts, so I can't confirm those modes exist"_ — they do;
+  > the sentence quoted above is ISO's own. The reliability lesson at the top of this file, again.)
+
 ## 2. Best FREE reproductions of the feature taxonomy
 
 - **Neo4j Cypher Manual — GQL conformance appendix.** _The single most useful
