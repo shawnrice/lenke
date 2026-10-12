@@ -20,6 +20,7 @@
 //! NaN/Inf→null policy.
 
 use crate::gstr::GStr;
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use crate::store::Store;
@@ -931,7 +932,7 @@ struct JsonParser<'a> {
     depth: usize,
 }
 
-impl JsonParser<'_> {
+impl<'a> JsonParser<'a> {
     fn ws(&mut self) {
         while self.b.get(self.i).is_some_and(u8::is_ascii_whitespace) {
             self.i += 1;
@@ -1025,15 +1026,33 @@ impl JsonParser<'_> {
         }
     }
 
+    /// An owned JSON string. Most callers store the result, so this stays the default.
     fn string(&mut self) -> Result<String, String> {
-        if self.b.get(self.i) != Some(&b'"') {
+        Ok(self.string_cow()?.into_owned())
+    }
+
+    /// The same scan, but BORROWED from the input on the escape-free path — which is the
+    /// common one, and the one where the allocation was pure waste.
+    ///
+    /// Audit item 330: the old `string()` already computed this slice and then called
+    /// `.to_string()` on it. Two callers never needed the `String` at all — `record()`
+    /// allocates one per JSON object KEY purely to `match` it against literals and drop it
+    /// (4 per node line, 6 per edge line), and a string property value is allocated only to be
+    /// copied into a `GStr` and dropped. On the corpus's 200k-node / 1M-edge fixture that is
+    /// ~6.8M allocate-and-free pairs storing nothing.
+    ///
+    /// `self.b` is copied to a local first so the returned reference carries the parser's `'a`
+    /// rather than the `&mut self` borrow.
+    fn string_cow(&mut self) -> Result<Cow<'a, str>, String> {
+        let b: &'a [u8] = self.b;
+        if b.get(self.i) != Some(&b'"') {
             return Err(format!("expected a string at char {}", self.i));
         }
         self.i += 1;
         let start = self.i;
         // Escape-free fast path: scan to the closing quote and hand back the borrowed
-        // byte slice as ONE `String` (the common case — ids, names). Only on a backslash
-        // do we fall to a byte buffer that copies runs and expands escapes.
+        // byte slice (the common case — ids, names). Only on a backslash do we fall to a byte
+        // buffer that copies runs and expands escapes.
         let mut buf: Vec<u8> = Vec::new();
         let mut run = start; // start of the current unescaped run
         loop {
@@ -1041,15 +1060,15 @@ impl JsonParser<'_> {
                 None => return Err("unterminated string".into()),
                 Some(b'"') => {
                     if buf.is_empty() {
-                        let s = core::str::from_utf8(&self.b[start..self.i])
-                            .map_err(|_| "invalid utf-8 in string".to_string())?
-                            .to_string();
+                        let s = core::str::from_utf8(&b[start..self.i])
+                            .map_err(|_| "invalid utf-8 in string".to_string())?;
                         self.i += 1;
-                        return Ok(s);
+                        return Ok(Cow::Borrowed(s));
                     }
-                    buf.extend_from_slice(&self.b[run..self.i]);
+                    buf.extend_from_slice(&b[run..self.i]);
                     self.i += 1;
                     return String::from_utf8(buf)
+                        .map(Cow::Owned)
                         .map_err(|_| "invalid utf-8 in string".to_string());
                 }
                 Some(b'\\') => {
@@ -1146,7 +1165,9 @@ impl JsonParser<'_> {
             // (a crafted `mergeNdjson` / snapshot line) can't overflow the stack.
             Some(b'{') => self.nested(Self::object_as_value),
             Some(b'[') => self.nested(Self::array_as_value),
-            Some(b'"') => Ok(Value::Str(GStr::from(self.string()?.as_str()))),
+            // Borrowed: a `GStr` copies its bytes anyway, so the intermediate `String` this
+            // used to build was allocated only to be read once and dropped (item 330).
+            Some(b'"') => Ok(Value::Str(GStr::from(&*self.string_cow()?))),
             Some(b't') | Some(b'f') => Ok(Value::Bool(self.bool_raw()?)),
             Some(b'n') => {
                 self.keyword("null", Json::Null)?;
@@ -1312,13 +1333,15 @@ impl JsonParser<'_> {
         } else {
             loop {
                 self.ws();
-                let key = self.string()?;
+                // Borrowed: this key is matched against literals and dropped, never stored
+                // (item 330). The `pairs()` key below IS stored, so that one stays owned.
+                let key = self.string_cow()?;
                 self.ws();
                 if self.b.get(self.i) != Some(&b':') {
                     return Err(format!("expected ':' at char {}", self.i));
                 }
                 self.i += 1;
-                match key.as_str() {
+                match &*key {
                     "id" => id = Some(self.id_as_string()?),
                     "labels" => labels = Some(self.string_array()?),
                     // `properties` OR the engine's earlier `props`; last-wins if both.
@@ -1408,6 +1431,42 @@ mod tests {
     /// is rejected with a coded error rather than overflowing the stack (SIGSEGV / wasm
     /// trap). Covers BOTH recursive descents: the `Json` path (`parse_json`, for params)
     /// and the `Value` path (`from_ndjson`/`merge_ndjson` property values).
+    /// Item 330 made two reads in the staging parser BORROW from the input instead of allocating,
+    /// which splits `string_cow` into a slice path (no escapes) and an owned-buffer path (escapes).
+    ///
+    /// The string-VALUE side of that is already covered — `binary_round_trips_escaped_strings`
+    /// below asserts `"a\"b\nc\ttab\\end"` survives — so what is new here is the KEY side, which
+    /// nothing exercised: `record()` now matches `&*key` against its literals, and an escaped key
+    /// reaches that match as a `Cow::Owned`.
+    #[test]
+    fn an_escaped_object_key_still_matches_its_literal() {
+        // `"\u0069d"` IS `"id"` once unescaped, so this must decode as a node carrying that id —
+        // not skip the field as unrecognised and fail for a missing `id`.
+        let st = from_ndjson(
+            "{\"type\":\"node\",\"\\u0069d\":\"a\",\"labels\":[\"N\"],\"properties\":{}}",
+        )
+        .expect("an escaped `id` key decodes");
+
+        assert_eq!(st.node_count(), 1, "an escaped `id` key was not recognised");
+        assert!(
+            st.node_by_ext("a").is_some(),
+            "the node did not land under the id the escaped key named"
+        );
+    }
+
+    #[test]
+    fn an_escaped_property_key_is_unescaped_and_still_stored() {
+        // The `pairs()` key stays OWNED (it is stored), so this guards that borrowing the
+        // object-level key beside it did not disturb the one that still allocates.
+        let st = from_ndjson(
+            "{\"type\":\"node\",\"id\":\"a\",\"labels\":[\"N\"],\"properties\":{\"k\\tx\":1}}",
+        )
+        .expect("decodes");
+        let n = st.node_by_ext("a").expect("the node exists");
+
+        assert!(matches!(st.prop(n, "k\tx"), Value::Num(x) if x == 1.0));
+    }
+
     #[test]
     fn deeply_nested_json_rejects_instead_of_overflowing_the_stack() {
         let n = super::MAX_JSON_DEPTH + 50;

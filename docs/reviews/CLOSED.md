@@ -878,6 +878,34 @@ bench`** so one-case-per-process is a flag instead of the bespoke script items 2
   aggregate-over-chain and never builds the frontier, so the engine that OOM'd had to be the TS
   one — and 3 and 4 hops run in 8 and 13 ms at ~80 MB where 5 is fatal, which is exactly the count
   family's ≤4-segment coverage edge (item 290).
+- **The staging parser allocated a `String` per JSON object KEY to compare it against a literal —
+  1.05-1.11x on the decode (330).** `JsonParser::string()` already computed the escape-free slice
+  and then called `.to_string()` on it. Two callers never needed the `String`: **`record()`
+  allocates one per object KEY purely to `match` it against literals and drop it** (4 per node
+  line, 6 per edge) and **a string property value** was allocated only to be copied into a `GStr`.
+  ~**8M allocate-and-free pairs storing nothing** on the corpus fixture. `string()` keeps its
+  signature (`string_cow()?.into_owned()`), so only the two wasteful callers changed; the stored
+  `pairs()` key stays owned.
+  Three alternated rounds, all ranges disjoint: `nodes+5edges x2 props` **706.72 -> 671.35ms
+  (1.053x)**, `nodes x1 prop` **71.53 -> 64.42 (1.110x)**, `ingest/ceiling` **718.07 -> 658.96
+  (1.090x)**.
+  **ITEM 329's 1.2-1.4x ESTIMATE WAS OVERSTATED, and this says why**: the per-allocation cost is
+  **5-7ns, not 25-40** (35ms for ~8M pairs). Same lesson as item 324's hash pricing at 27ns instead
+  of 115 — an allocator with a hot free list and short-lived objects is far cheaper than an
+  isolated micro suggests.
+  **THREE THINGS 329's PLAN GOT WRONG, found by reading before writing**: `record()` does not go
+  through `Json` at all (the staging reader is its own, and already moves rather than clones, so
+  `json_string`'s clone is on the ffi/schema path); a `Json<'a>` lifetime is a multi-tick refactor
+  across **27 sites in three modules**, not a slice; and a JSON string cannot be a plain `&str`
+  because escapes must be unescaped into a buffer — hence `Cow`.
+  5 mutants: always-borrow and raw-key-compare caught; three equivalent. **M2 was designed as a
+  wrong-span mutant and is provably NOT one** — that return is inside `if buf.is_empty()` and `run`
+  only advances in the escape arm, so `run == start` there. Two tests added, and only the KEY one
+  was a gap: the string-VALUE escape path was already covered by
+  `binary_round_trips_escaped_strings`.
+  **Still open**: the records themselves are owned, worth re-pricing against this item's
+  per-allocation number — and reachable with a `Cow` in `NodeRec`/`EdgeRec` WITHOUT the `Json<'a>`
+  refactor, since the staging reader never touches `Json`.
 - **Where native's 752ms decode goes — and 68ms is freeing records the parse never needed to own
   (329).** The probe item 328 named. Instrumented at the parse/build boundary and every serial
   stage (200k nodes / 1M edges / 115.8 MiB):
