@@ -366,9 +366,15 @@ pub fn encode_string(out: &mut String, s: &str) {
 /// OWNED, and that is a PRICED target rather than a settled choice (audit item 329). Every id,
 /// label and property key here is a fresh `String`, so a 1M-edge decode makes ~5M allocations in
 /// the parse and frees them again in the build: the teardown alone is **68ms measured in situ**
-/// (58.3 for the edges, 9.5 for the nodes) of a 752ms decode, and a micro of the same record
-/// shapes puts the matching BUILD-UP at **161ms (213.03 against 51.75 borrowed)** — so roughly
-/// **1.2-1.4x on the whole decode**, the largest native ingest target identified.
+/// (58.3 for the edges, 9.5 for the nodes) of a 752ms decode.
+///
+/// RE-PRICED at item 331, by COUNT rather than by micro — the 1.2-1.4x this comment used to
+/// quote came from a 161ms micro, and item 330 then measured the real per-allocation cost in situ
+/// at 5-7ns rather than the 25-40 that micro implied. `alloc_count_probe` says **73.8% of the
+/// decode's allocations are ≤8 bytes** (2.25M of 3.05M at 50k nodes / 250k edges), which is ~9.0M
+/// scaled to the corpus fixture, so the string share of the 67.8ms teardown is **~53ms** and the
+/// borrow is worth **~1.13-1.18x on the whole decode**. Still the largest native ingest target.
+/// Price any further move here with the probe, not a micro.
 ///
 /// Borrowing is available here in a way it was not for the GQL lexer (items 294/317): the input
 /// `&str` outlives the whole decode, so `NodeRec<'a>`/`EdgeRec<'a>` can hold `&'a str` for the

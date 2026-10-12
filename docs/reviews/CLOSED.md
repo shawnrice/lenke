@@ -878,6 +878,51 @@ bench`** so one-case-per-process is a flag instead of the bespoke script items 2
   aggregate-over-chain and never builds the frontier, so the engine that OOM'd had to be the TS
   one — and 3 and 4 hops run in 8 and 13 ms at ~80 MB where 5 is fatal, which is exactly the count
   family's ≤4-segment coverage edge (item 290).
+- **A property write allocated its key THREE times and stored one — 1.05x on the decode, 1.09x on
+  bulk SET (331).** Item 330 left an instruction to re-price the staged-record borrow against its
+  own 5-7ns-per-allocation number before building it. That re-pricing wanted a COUNT (the failure
+  mode of the old 1.2-1.4x figure was that it was a micro), so `alloc_count_probe` gained the
+  decode — and the count found a better target than the one it was asked to price.
+  **The three keys.** `social_ndjson`'s edge has exactly one 1-byte thing in it, the property key
+  `w`, and the bulk row showed **three 1-byte allocations per edge**. Widening that key to 2 and
+  then 4 bytes moved **all three** into the matching bucket together, so all three are the key. A
+  NODE property key allocates once — the decode never reaches the node path's spares, because
+  `add_node_bulk` bypasses `set_prop`. Reading them: the `Undo::RestoreEdgeCell` key is already
+  behind `undo.is_some()` and free; `edge_props.entry(key.to_string())` allocated on EVERY set
+  including the common already-exists one; and `record_change(Change::EdgeProp { key: … })` took the
+  `Change` **by value**, so the key was built at the call site and discarded by an `if let
+Some(ch) = &mut self.changes` that was `None`.
+  **The fix was already in the file, with a comment saying why.** `bump_epoch` does `get_mut`
+  first — _"Avoid a String alloc when the token is already tracked (the common case)"_ — and three
+  sites had not applied it. Added `record_change_with(impl FnOnce() -> Change)` for the three
+  `Change` variants that carry an owned key (4 call sites), and made `apply_set_prop` /
+  `set_edge_prop` look up before owning.
+  **Counted, not estimated**: `nodes+5edges x2 props` goes **3,050,033 -> 2,550,034 allocations**,
+  exactly 2 fewer per edge property write, and the nodes-only row is **unchanged at 450,238** — a
+  free control the change cannot reach. Eleven alternated rounds (7 ctl-first, 4 new-first), min of
+  each, both target rows **fully disjoint**: decode **661.07 -> 629.03ms (1.051x)**, `SET p.age`
+  **35.19 -> 32.39ms (1.086x)**; engine controls `nodes x4 props` flat and `nodes x1 prop` +2%.
+  **THE HARNESS'S OWN NULL CONTROL DRIFTS 2-5%, so a 1.05x row is below it.** `recmat_ms` is a
+  `format!` loop inside the example binary that never calls the engine, and it reads 2-5% slower in
+  the NEW binary **in both orders** — not run-order drift but code layout, since the engine is
+  statically linked into the examples (same sensitivity already recorded for `exec::pull`). Hence
+  the claim rests on the COUNT; the timing corroborates it by being disjoint across eleven rounds in
+  both orders while the null control moves the other way. **Generalisable: when a win is smaller
+  than the harness's noise floor, make the instrument a count and let the clock be the backstop.**
+  4 mutants, all caught (170 / 74 / 4 / 2 failures). M1 leaves the closure CALLED and discards only
+  its result, so it proves the pushed value is load-bearing rather than that something runs. M4's
+  **2** failures are the thin spot, named rather than smoothed: the created column's SHAPE is
+  guarded by exactly two assertions.
+  **Re-pricing result, which was the original question**: 73.8% of the decode's 3.05M allocations
+  are ≤8 bytes, ~9.0M scaled to the corpus fixture, so the string share of item 329's 67.8ms
+  teardown is ~53ms and the staged-record borrow is **~1.13-1.18x, not 1.2-1.4x**. Still the
+  largest native ingest target. **Also still open and now cheap**: `"type":"node"` / `"type":"edge"`
+  is the 4-byte bucket — one allocation per LINE for a field a node never reads — and it is
+  `string_cow`'s exact shape, no lifetime work.
+  **Method, recorded because it cost a wrong turn**: differencing SMALL documents does NOT attribute
+  a per-line allocation cost; at a few lines the store's own HashMap growth swamps it and
+  differences come out negative. Varying ONE field of the fixture at 50k lines does, because the
+  bucket that moves by ~50k names itself.
 - **The staging parser allocated a `String` per JSON object KEY to compare it against a literal —
   1.05-1.11x on the decode (330).** `JsonParser::string()` already computed the escape-free slice
   and then called `.to_string()` on it. Two callers never needed the `String`: **`record()`
@@ -903,7 +948,8 @@ bench`** so one-case-per-process is a flag instead of the bespoke script items 2
   only advances in the escape arm, so `run == start` there. Two tests added, and only the KEY one
   was a gap: the string-VALUE escape path was already covered by
   `binary_round_trips_escaped_strings`.
-  **Still open**: the records themselves are owned, worth re-pricing against this item's
+  **Still open, and RE-PRICED at item 331**: the records themselves are owned — a COUNT puts the
+  borrow at ~1.13-1.18x rather than this item's projected range, worth re-pricing against this item's
   per-allocation number — and reachable with a `Cow` in `NodeRec`/`EdgeRec` WITHOUT the `Json<'a>`
   refactor, since the staging reader never touches `Json`.
 - **Where native's 752ms decode goes — and 68ms is freeing records the parse never needed to own

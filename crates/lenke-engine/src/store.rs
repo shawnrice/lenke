@@ -3377,7 +3377,7 @@ impl Store {
         if let (Some(rec), Some(log)) = (rec, self.undo.as_mut()) {
             log.push(rec);
         }
-        self.record_change(Change::NodeProp {
+        self.record_change_with(|| Change::NodeProp {
             node,
             key: key.to_string(),
         });
@@ -3404,10 +3404,16 @@ impl Store {
         let new_for_index = (care && !value.is_null()).then(|| value.clone());
 
         let n = self.node_count;
-        let col = self
-            .props
-            .entry(key.to_string())
-            .or_insert_with(|| Column::new_absent(&value, n));
+        // `entry(key.to_string())` allocated on EVERY set, including the overwhelmingly
+        // common one where the column already exists and the owned key is dropped
+        // immediately. Look up first and only pay for the key when creating the column —
+        // the idiom `bump_epoch` already uses, applied here (audit item 331). The create
+        // path costs a second lookup, which happens once per key for the store's life.
+        if !self.props.contains_key(key) {
+            self.props
+                .insert(key.to_string(), Column::new_absent(&value, n));
+        }
+        let col = self.props.get_mut(key).expect("present or just inserted");
         if !col.accepts(&value) {
             *col = col.to_gen();
         }
@@ -3451,7 +3457,7 @@ impl Store {
         if let (Some(rec), Some(log)) = (rec, self.undo.as_mut()) {
             log.push(rec);
         }
-        self.record_change(Change::NodeProp {
+        self.record_change_with(|| Change::NodeProp {
             node,
             key: key.to_string(),
         });
@@ -3682,10 +3688,15 @@ impl Store {
             key: key.to_string(),
             prev: self.edge_props.get(key).and_then(|m| m.get(&eid)).cloned(),
         });
-        self.edge_props
-            .entry(key.to_string())
-            .or_default()
-            .insert(eid, value);
+        // Same as `apply_set_prop`: look the key up before paying to own it (item 331).
+        if let Some(m) = self.edge_props.get_mut(key) {
+            m.insert(eid, value);
+        } else {
+            self.edge_props
+                .entry(key.to_string())
+                .or_default()
+                .insert(eid, value);
+        }
         self.edge_num_on_set(eid, key); // keep the typed read overlay in step
         if let (Some(rec), Some(log)) = (rec, self.undo.as_mut()) {
             log.push(rec);
@@ -3703,7 +3714,7 @@ impl Store {
                 self.reindex_node_interval(from);
             }
         }
-        self.record_change(Change::EdgeProp {
+        self.record_change_with(|| Change::EdgeProp {
             eid,
             key: key.to_string(),
         });
@@ -4124,7 +4135,7 @@ impl Store {
         if self.interval_uses_key(key) {
             self.rebuild_interval();
         }
-        self.record_change(Change::EdgeProp {
+        self.record_change_with(|| Change::EdgeProp {
             eid,
             key: key.to_string(),
         });
@@ -4498,6 +4509,18 @@ impl Store {
     fn record_change(&mut self, c: Change) {
         if let Some(ch) = &mut self.changes {
             ch.push(c);
+        }
+    }
+
+    /// `record_change` for a variant whose construction COSTS something — the three
+    /// property variants each carry an owned key `String`. Taking the `Change` by value
+    /// evaluated that `key.to_string()` on every write whether a CDC stream was attached
+    /// or not; a closure defers it behind the same `is_some` check (audit item 331). The
+    /// counted saving is one allocation per property write, and the decode's edge loop
+    /// made three per edge property where one was stored.
+    fn record_change_with(&mut self, f: impl FnOnce() -> Change) {
+        if let Some(ch) = &mut self.changes {
+            ch.push(f());
         }
     }
 

@@ -42,6 +42,11 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::sync::atomic::{AtomicU64, Ordering};
 use std::alloc::System;
 
+// The NDJSON fixture builder, for the decode cases below.
+#[path = "support/harness.rs"]
+#[allow(dead_code)]
+mod harness;
+
 static ALLOCS: AtomicU64 = AtomicU64::new(0);
 static BYTES: AtomicU64 = AtomicU64::new(0);
 static COUNTING: AtomicU64 = AtomicU64::new(0);
@@ -195,4 +200,67 @@ fn main() {
     count("plan.clone() -- the whole tree re-allocated", || {
         plan.clone()
     });
+
+    // --- the NDJSON decode (items 329/330) ---
+    //
+    // Item 329 priced borrowing the staged records (`NodeRec`/`EdgeRec` hold a fresh `String`
+    // per id, label and property key) at 1.2-1.4x of the decode, from a MICRO that put the
+    // build-up at 161ms. Item 330 then removed ~8M allocate-and-free pairs from the same parse
+    // in situ and measured 35ms -- 5-7ns a pair, not the 25-40 the micro implied -- so that
+    // estimate needs re-deriving from a COUNT rather than a micro. This is the count.
+    //
+    // Read it by SIZE bucket: a record `String` is a few bytes (an id `v12345`, a label
+    // `Person`, a key `k0`), the records' `Vec`s are tens, and the store's columns are the >1k
+    // rows. So the small buckets ARE the borrow target, and their total times the measured
+    // per-pair cost is the win -- no micro in the loop.
+    let n = 50_000;
+    println!("\n=== allocations per NDJSON decode (items 329/330) ===");
+    println!("  {n} nodes x2 props, with and without 5 edges/node\n");
+
+    let nodes_only = harness::social_ndjson(n, 2, 0);
+    count("from_ndjson: nodes x2 props", || {
+        lenke_engine::ndjson::from_ndjson(&nodes_only).expect("decodes")
+    });
+    drop(nodes_only);
+
+    let with_edges = harness::social_ndjson(n, 2, 5);
+    count("from_ndjson: nodes+5edges x2 props", || {
+        lenke_engine::ndjson::from_ndjson(&with_edges).expect("decodes")
+    });
+
+    // A bulk count says HOW MANY; it does not say WHICH. Differencing SMALL documents does not
+    // answer that -- tried, and at a few lines the store's own HashMap growth swamps the line
+    // cost, so a per-line difference comes out negative in places. What does work is varying
+    // ONE field of the fixture at the same 50k scale, where growth amortizes to nothing: each
+    // row below changes exactly one thing, so the bucket that moves by ~50k names itself.
+    println!("\n  attribution: vary one field of the fixture, at the same {n} lines\n");
+    for props in [0usize, 1, 2, 4] {
+        let text = harness::social_ndjson(n, props, 0);
+        count(&format!("nodes, {props} props (2-byte keys k0..)"), || {
+            lenke_engine::ndjson::from_ndjson(&text).expect("decodes")
+        });
+    }
+    // The edge side: `social_ndjson` always writes one 1-byte prop key (`w`), and the bulk row
+    // above shows THREE 1-byte allocations per edge. Widening just that key says how many of
+    // the three are the key.
+    for key in ["w", "ww", "wwww"] {
+        let text: String = (0..n)
+            .map(|i| {
+                format!(
+                    r#"{{"type":"node","id":"v{i}","labels":["Person"],"properties":{{}}}}"#
+                )
+            })
+            .chain((0..n).map(|i| {
+                format!(
+                    r#"{{"type":"edge","id":"e{i}","labels":["KNOWS"],"from":"v{i}","to":"v{}","properties":{{"{key}":1}}}}"#,
+                    (i + 1) % n
+                )
+            }))
+            .collect::<Vec<_>>()
+            .join("\n");
+        count(
+            &format!("nodes+1edge, edge prop key {:?} ({}B)", key, key.len()),
+            || lenke_engine::ndjson::from_ndjson(&text).expect("decodes"),
+        );
+    }
 }

@@ -46,26 +46,26 @@ enumeration's is flat.
 
 ## By question
 
-| If you are asking…                                                    | Run                                  |
-| --------------------------------------------------------------------- | ------------------------------------ |
-| Where does NDJSON decode time go?                                     | `ingest_bench -- phases`             |
-| How close is decode to the raw-scan ceiling?                          | `ingest_bench -- ceiling`            |
-| What does parallel decode / encode buy?                               | `ingest_bench -- threads` / `encode` |
-| How many resident bytes does an element cost?                         | `ingest_bench -- mem`                |
-| What does a GQL / Gremlin query shape cost?                           | `query_bench -- gql` / `gremlin`     |
-| Which counts still enumerate vs shortcut?                             | `query_bench -- counts`              |
-| What does a row cost, by what is returned?                            | `query_bench -- perrow`              |
-| What does turning query text into a plan cost?                        | `query_bench -- plan`                |
-| How many allocations does a parse make, and of what sizes?            | `alloc_count_probe`                  |
-| Would a parse CACHE change any plan? (prepared vs direct)             | `prepared_parity_probe`              |
-| Does an indexed key seek beat a scan?                                 | `query_bench -- seeded`              |
-| What does a bulk write (SET) pay?                                     | `storage_bench -- write`             |
-| What does a second label on every edge cost?                          | `storage_bench -- multilabel`        |
-| What do the graph algorithms cost, and how do they parallelize?       | `algo_bench -- run` / `parallel`     |
-| What does neighborAggregate / a CALL cost?                            | `algo_bench -- neighboragg` / `call` |
-| What does a map/record property cost vs flat scalars (stored, codec)? | `value_bench -- maps` / `codec`      |
-| How do shapes scale across the cache transition?                      | `scale_bench -- sweep`               |
-| What does content-derived CDC scope extraction cost per write?        | `scale_bench -- cdc`                 |
+| If you are asking…                                                     | Run                                  |
+| ---------------------------------------------------------------------- | ------------------------------------ |
+| Where does NDJSON decode time go?                                      | `ingest_bench -- phases`             |
+| How close is decode to the raw-scan ceiling?                           | `ingest_bench -- ceiling`            |
+| What does parallel decode / encode buy?                                | `ingest_bench -- threads` / `encode` |
+| How many resident bytes does an element cost?                          | `ingest_bench -- mem`                |
+| What does a GQL / Gremlin query shape cost?                            | `query_bench -- gql` / `gremlin`     |
+| Which counts still enumerate vs shortcut?                              | `query_bench -- counts`              |
+| What does a row cost, by what is returned?                             | `query_bench -- perrow`              |
+| What does turning query text into a plan cost?                         | `query_bench -- plan`                |
+| How many allocations does a parse or a DECODE make, and of what sizes? | `alloc_count_probe`                  |
+| Would a parse CACHE change any plan? (prepared vs direct)              | `prepared_parity_probe`              |
+| Does an indexed key seek beat a scan?                                  | `query_bench -- seeded`              |
+| What does a bulk write (SET) pay?                                      | `storage_bench -- write`             |
+| What does a second label on every edge cost?                           | `storage_bench -- multilabel`        |
+| What do the graph algorithms cost, and how do they parallelize?        | `algo_bench -- run` / `parallel`     |
+| What does neighborAggregate / a CALL cost?                             | `algo_bench -- neighboragg` / `call` |
+| What does a map/record property cost vs flat scalars (stored, codec)?  | `value_bench -- maps` / `codec`      |
+| How do shapes scale across the cache transition?                       | `scale_bench -- sweep`               |
+| What does content-derived CDC scope extraction cost per write?         | `scale_bench -- cdc`                 |
 
 **Deferred** (need crate-private access or a large bespoke fixture, so not in a
 group binary yet): the eval-vs-columnar floor (`eval_vec` is crate-private — it
@@ -117,6 +117,16 @@ question in its module header — read the header before touching it.
   8-byte one is an identifier the lexer built, a 1-byte one is a variable name the descent
   CLONED). Read it with the audit entry: three plausible suspects were eliminated by counting
   them, each more cheaply than assuming would have cost.
+
+  It also counts the **NDJSON decode** (added at item 331), because the staged-record borrow
+  target had been priced from a micro that turned out 5x high and a count is the instrument that
+  does not have that failure mode. Two things there are worth copying rather than re-deriving:
+  differencing SMALL documents does NOT attribute a per-line cost — at a few lines the store's own
+  HashMap growth swamps it and a difference comes out negative — while varying ONE field of the
+  fixture at 50k lines does, because the bucket that moves by ~50k names itself. That is how the
+  three 1-byte allocations per edge property were pinned to the property KEY (widen the key, and
+  all three move buckets together), which found two of them wasted.
+
 - `limit_product_probe` — what a CORRELATED cross product under a keyless `LIMIT`
   pays, and whether the cap reaches it at all. Its fixture is why it is its own
   binary: a tiny left side against a large right one, which the shared social
