@@ -333,6 +333,46 @@ describe('schema ops roll back with the transaction', () => {
     expect(g.vertexIndexes()).toEqual(['k']);
   });
 
+  // Both of these guard item 335, which captures a removed element's property bag BY REFERENCE
+  // instead of copying it. Each was found by a mutant that SURVIVED the suite: breaking the
+  // thing the capture relies on changed no test.
+  test('a rolled-back edge removal restores its PROPERTIES, not just its endpoints', () => {
+    const g = new Graph();
+    const a = g.addVertex({ id: 'a', labels: ['N'], properties: {} });
+    const b = g.addVertex({ id: 'b', labels: ['N'], properties: {} });
+    g.addEdge({ id: 'e', from: a, to: b, labels: ['LINKS'], properties: { w: 7, tag: 'x' } });
+
+    expect(() =>
+      g.transaction((tx) => {
+        tx.removeEdge(tx.getEdgeById('e')!);
+
+        throw new Error('boom');
+      }),
+    ).toThrow('boom');
+
+    const back = g.getEdgeById('e');
+
+    expect(back).not.toBeNull();
+    expect(back!.getProperty<number>('w')).toBe(7);
+    expect(back!.getProperty<string>('tag')).toBe('x');
+  });
+
+  test('addVertex COPIES the properties it is given, so a caller cannot mutate graph state', () => {
+    // The removal capture hands the graph's own frozen bag back to `addVertex` on replay, which
+    // is only sound because this copy exists. Nothing asserted it before.
+    const g = new Graph();
+    const mine: Record<string, unknown> = { k: 1 };
+    const v = g.addVertex({ id: 'a', labels: ['N'], properties: mine });
+
+    mine.k = 999;
+    mine.added = 'late';
+
+    expect(v.getProperty<number>('k')).toBe(1);
+    expect(v.getProperty<string | undefined>('added')).toBeUndefined();
+    // And the graph's bag is a different object from the caller's.
+    expect(v.properties).not.toBe(mine);
+  });
+
   test('an index dropped in a transaction is restored on rollback', () => {
     const g = seed();
     g.createIndex({ on: 'vertex', kind: 'hash', keys: ['k'] });

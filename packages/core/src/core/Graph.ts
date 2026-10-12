@@ -1644,8 +1644,19 @@ export class Graph {
     // the spread of the labels and of the properties were two allocations per removal whose
     // only reader was a closure that was itself discarded. One object when wanted, none when
     // not — and it must still be taken HERE, while the vertex is live.
+    //
+    // The PROPERTIES are captured by REFERENCE, which is what takes the remaining O(width) cost
+    // off a transactional removal (item 335). Three facts make it safe, and all three have to
+    // hold: the bag is `Object.freeze`d, every write path REPLACES `box.bag` rather than
+    // mutating the bag, and `addVertex`'s constructor assigns through the public setter, which
+    // copies defensively — so the replay gets its own object and this reference is a stable
+    // snapshot. `evict` does not touch `#box` either, so the bag outlives the vertex.
+    //
+    // The LABELS stay a copy: `commitElementLabels` replaces the box's `Set` but the
+    // add/remove-label funnel is a separate path, and a label set is one or two entries, so
+    // the copy is O(1) in practice and not worth the same proof.
     const undo = this.undoWanted
-      ? { id: vertex.id, labels: [...vertex.labels], properties: { ...vertex.properties } }
+      ? { id: vertex.id, labels: [...vertex.labels], properties: vertex.properties }
       : undefined;
 
     this.emit(new EmitterEvent('@graph/VertexRemoved', vertex));
@@ -1972,7 +1983,7 @@ export class Graph {
       ? {
           id: edge.id,
           labels: [...edge.labels],
-          properties: { ...edge.properties },
+          properties: edge.properties,
           from: edge.from.id,
           to: edge.to.id,
         }

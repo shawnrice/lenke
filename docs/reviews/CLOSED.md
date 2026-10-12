@@ -878,6 +878,38 @@ bench`** so one-case-per-process is a flag instead of the bespoke script items 2
   aggregate-over-chain and never builds the frontier, so the engine that OOM'd had to be the TS
   one — and 3 and 4 hops run in 8 and 13 ms at ~80 MB where 5 is fatal, which is exactly the count
   family's ≤4-segment coverage edge (item 290).
+- **The transactional delete's property copy was never needed — 1.70x at width 256, and two mutants
+  proved the change rested on untested facts (335).** Item 334 removed the capture OUTSIDE a
+  transaction, where it was dead; its probe then showed that INSIDE one it is still taken and still
+  O(property width) — 15,010 ns/node at width 256 against 6,251 outside — which looked like the
+  floor, since a rollback there genuinely might replay. It was not the floor: **the copy was never
+  needed.** Three facts, each already documented in a comment: the bag is `Object.freeze`d; every
+  write REPLACES `box.bag` rather than mutating the bag; and `addVertex`'s constructor assigns
+  through the public setter, which copies defensively. So a reference to the current bag already IS
+  a stable snapshot and the replay makes its own copy when it runs. `evict` does not clear `#box`,
+  so the bag outlives the vertex. The LABELS stay a copy — `commitElementLabels` replaces the box's
+  `Set` but the add/remove-label funnel is a separate path, and a label set is 1-2 entries.
+  **MEASURED** (`bun run delete:width`, 3 alternated rounds, min, `del_ns/node`): in-txn width 64
+  **1,792 -> 1,292 (1.39x)**, width 256 **13,834 -> 8,117 (1.70x)**; widths 4 and 16 overlapping,
+  which is the expected shape (a 4-key spread is nearly free, and within-side noise is ±30% there).
+  **The non-transaction column at width 256 is 6,198 vs 6,212 — flat to 0.2%**, the control this
+  change cannot reach because item 334 already skipped that capture.
+  **⚠️ TWO OF FIVE MUTANTS SURVIVED, both breaking facts this change DEPENDS on, both in files it
+  does not touch.** M2 made the constructor alias the bag instead of copying — **the defensive copy
+  in `set properties` is the entire reason this change is sound, and removing it broke no test.** It
+  had a comment explaining itself and nothing asserting it, which is exactly the state in which a
+  later "the setter copies twice, drop one" looks like free money. M5: `rollback reverses edges,
+labels, and property removals too` exists, yet a rolled-back edge REMOVAL never had its properties
+  checked. Both tests added; all five caught after.
+  **RULE: when a change's safety rests on behaviour ELSEWHERE in the codebase, mutate that
+  behaviour, not only the lines you edited.** Neither survivor would have been found by mutating
+  `removeVertex`. A comment asserting an invariant is not a test of it — three facts documented,
+  one guarded.
+  **Still open on this path**: a transactional delete is now 8,117 ns/node against 6,212 outside, so
+  ~1,900 ns of genuinely transactional work remains (undo-log push, `txTouched`, deferred-check
+  bookkeeping) and is no longer dominated by a copy. The per-width cost in BOTH columns — 6,212
+  ns/node at width 256 against 273 at width 4 — is the **property de-index**, sub-linear (23x the
+  cost for 64x the properties) but far from flat, and a separate real target.
 - **The TS engine built an undo closure on every write and threw it away — REFUTED on the write
   path, 1.3-1.9x on DELETE (334).** `Graph.recordUndo(inverse)` is a no-op unless
   `txDepth > 0 && !applyingUndo`, but all **eight** call sites built the closure eagerly, because
