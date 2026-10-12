@@ -878,6 +878,40 @@ bench`** so one-case-per-process is a flag instead of the bespoke script items 2
   aggregate-over-chain and never builds the frontier, so the engine that OOM'd had to be the TS
   one — and 3 and 4 hops run in 8 and 13 ms at ~80 MB where 5 is fatal, which is exactly the count
   family's ≤4-segment coverage edge (item 290).
+- **The 26x row's remaining cost is LOCALITY — 2.9x per-edge degradation from size alone, which
+  partly rehabilitates item 300's CSR (352).** Item 351 left the state honest: _"what is left in the
+  38 ns an edge is not known… a fresh decomposition is the next step."_ This is it, and it lands
+  somewhere neither 350 nor 351 expected.
+  **TWO PROFILING TRAPS, both recorded because both cost a round.** `bun --cpu-prof` profiles the
+  WHOLE PROCESS: (1) a 200k/1M fixture with 12 queries profiled as 19.5% `indexEdgeLabel`, 15.6%
+  `JSON.parse`, 9.2% `getVertexById` — **every top frame is INGEST**, the fixture build swamping the
+  region of interest (same family as 339/341: what was measured was not what was claimed); (2)
+  shrinking the fixture and running 600 queries gave **5.6 ns/edge against the bench's 38** — a tight
+  repeat loop is a **different operating point** (warm steady state) from a min-of-5 harness.
+  **THE SWEEP IS THE FINDING** — CLAUDE.md's first rule for a number like this. Same query, same
+  code, every size warm so the comparison is across SIZE not JIT state. ns/edge: 100k edges **5.6**,
+  250k **8.0**, 500k **14.2**, 1M **16.0** — **2.9x per-edge degradation from size alone.** Nothing
+  algorithmic changes; it is the same work per edge costing three times as much because the data no
+  longer fits. Native over the same 1M edges is ~1.5 ns/edge and does not show it. (Absolutes are a
+  warmer operating point than the bench's 38 ns/edge; the SHAPE is the result and is internal to one
+  run.)
+  **THIRD CORRECTION IN THIS THREAD, and this one favours the CSR.** 350 declined it (7.30x priced
+  against a stale 84x); 351 observed that _"the three-component diagnosis keeps yielding to
+  component-sized fixes, which is the opposite of what 'it needs a CSR' predicted."_ That reads
+  differently now: the components that yielded — a generator frame (324), a string-keyed adjacency
+  lookup (321) — were **interpretation and hashing**, and they are gone. **What is left is
+  LOCALITY**, which no component-sized fix can touch and a dense adjacency precisely addresses. So
+  item 300's MECHANISM was right even though its NUMBER was priced against a figure that no longer
+  holds. **The CSR is no longer declined for the right reason** — it is still the representation
+  class item 348 parks, still blocked on a dense integer-indexed adjacency the TS graph does not
+  expose, and 2.9x of locality degradation is no promise that a CSR recovers 2.9x; but the next
+  person should know the remaining cost is DATA LAYOUT, measured, rather than "three components, two
+  left".
+  **And the trap that nearly ate the result**: writing the sweep with `cat > file` failed on
+  `noclobber` and **the stale probe ran instead**, printing the previous experiment's output —
+  caught only because the numbers were visibly the old ones. Exactly the documented failure (_"the
+  next command runs anyway and consumes the stale file, so the failure surfaces as a wrong result
+  rather than an error"_). Written with the editor tool and a fresh name the second time.
 - **⚠️ REFUTED BEFORE BUILT — `edge.to` is called ZERO times on the 26x row (351).** Item 350 named
   the next candidates as the three-component diagnosis's remaining two, and the obvious one is
   `Edge`'s endpoint resolution: `get to() { return this.#graph!.getVertexById(this.#to)!; }`, a
