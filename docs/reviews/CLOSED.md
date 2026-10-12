@@ -878,6 +878,37 @@ bench`** so one-case-per-process is a flag instead of the bespoke script items 2
   aggregate-over-chain and never builds the frontier, so the engine that OOM'd had to be the TS
   one — and 3 and 4 hops run in 8 and 13 ms at ~80 MB where 5 is fatal, which is exactly the count
   family's ≤4-segment coverage edge (item 290).
+- **⚠️ OPEN BUG — an element inside a MAP LITERAL renders as its internal dense id; a silent
+  cross-engine divergence found by a 6.7x speedup in the wrong direction (344).** Looking for a
+  shippable win among `evaluator.rs`'s per-row `render_cell` loops, step one was item 321's (check a
+  measured row reaches the code). One number made no sense: at 200k nodes via ffi, `RETURN p` is
+  **232.9 ms** and `RETURN {n: p} AS m` is **34.6 ms** — strictly more work, 6.7x FASTER, and
+  indistinguishable from a map literal holding a scalar (32.8). **A speedup in the wrong direction
+  is work not being done.**
+  `MATCH (p:P) RETURN {n: p} AS m` → native `[{"m":{"n":0}}]`, TS
+  `[{"m":{"n":{"id":"a","labels":["P"],"properties":{"k":1}}}}]`. **`0` is the internal DENSE id**,
+  where the engine's own `id` field is the EXTERNAL one — a wrong value AND an internal identifier
+  leaking into user-visible output, **silently**: a plausible number, no refusal.
+  **SCOPE, measured**: `RETURN p`, `RETURN [p]`, `RETURN collect(p)` all CORRECT and agreeing. It is
+  the **map literal specifically**, nodes AND edges, at ANY depth (`{n: {inner: p}}` → `{"inner":0}`).
+  Lists/collect resolving correctly rules out the generic resolver — `resolve_elem` IS recursive
+  over List/Map/Record and works.
+  **THREE PATHS RULED OUT BY READING**: `Expr::Slot` evaluates to the slot's own `Col` (a node slot
+  stays `Col::Nodes`); `render_cell` turns `Col::Nodes` into the element map; and
+  `try_fused_maplit_json`'s non-scalar arm calls `render_cell` too. None explains a bare `0`, so the
+  loss is BEFORE egress — **next place to look is the PLAN**, i.e. whether the optimizer rewrites a
+  MapLit entry that is a bare element variable into a numeric read. Recorded rather than guessed:
+  a blind fix in an unpinned path is how one silent wrong answer becomes two.
+  **WHY IT SURVIVED**: the differential fuzzer has **no coverage of a map literal carrying an
+  element** — the same nested-shape gap already recorded for quantified groups. The bug and the gap
+  are one hole, so the fix should add the generator case.
+  **SHIPPED**: `an_element_in_a_map_literal_renders_as_its_element_map`, `#[ignore]`d with the
+  reason and asserting the CORRECT behaviour so the fix has its assertion ready (fails for the right
+  reason today under `--ignored`; default suite green at 1098/11 ignored). Its check is
+  shape-agnostic — no value anywhere under a projected map literal may be a bare number where an
+  element was projected — so a partial fix cannot pass it.
+  **FOR THE OPEN-DIVERGENCE LIST**: the three native divergences on record are all LOUD REFUSALS.
+  This is a fourth and it is SILENT, which is strictly worse.
 - **⚠️ CORRECTION TO 342 — packing presence helps NOTHING but the render path, so the recommendation
   inverts (343).** Item 342 preferred rung 2 (pack `Column`'s presence) over the larger rung 3
   (per-node key list) on BREADTH, not magnitude: _"it reaches every other `present_at` caller —

@@ -2221,6 +2221,79 @@ fn optional_match_binds_edge() {
     assert!(matches!(&got[2], (id, v) if id == "c" && v.is_null())); // no edge → f null
 }
 
+/// KNOWN BUG, cross-engine divergence (audit item 344). An element nested in a MAP LITERAL
+/// renders as its internal DENSE ID instead of its element map.
+///
+///   MATCH (p:P) RETURN {n: p} AS m
+///     native  ->  [{"m":{"n":0}}]
+///     TS      ->  [{"m":{"n":{"id":"a","labels":["P"],"properties":{"k":1}}}}]
+///
+/// Silent, not a refusal: `0` is a plausible-looking value, and it is an internal dense id
+/// leaking into user-visible output. Scope, measured: `RETURN p`, `RETURN [p]` and
+/// `RETURN collect(p)` are all CORRECT and agree across engines — it is the map literal
+/// specifically, for nodes AND edges, at any nesting depth (`{n: {inner: p}}` gives
+/// `{"inner":0}`).
+///
+/// Ignored rather than deleted so the fix has its assertion ready; run with
+/// `cargo test -- --ignored`. Three paths were ruled out BY READING and none explains it:
+/// `Expr::Slot` evaluates to the slot's own `Col` (so a node slot stays `Col::Nodes`),
+/// `render_cell` turns `Col::Nodes` into the element map, and `try_fused_maplit_json`'s
+/// non-scalar arm calls `render_cell` too. So the next place to look is the PLAN — whether the
+/// optimizer rewrites a MapLit entry that is a bare element variable into a numeric read.
+///
+/// Why it survived: the differential fuzzer has no coverage of a map literal carrying an
+/// element (the nested-shape gap already recorded for quantified groups), so the one harness
+/// that compares the engines row-for-row never generates this shape.
+#[test]
+#[ignore = "known cross-engine divergence: an element in a map literal renders as its dense id"]
+fn an_element_in_a_map_literal_renders_as_its_element_map() {
+    let nd = concat!(
+        "{\"id\":\"a\",\"labels\":[\"P\"],\"props\":{\"k\":1}}\n",
+        "{\"id\":\"b\",\"labels\":[\"P\"],\"props\":{\"k\":2}}\n",
+        "{\"from\":\"a\",\"to\":\"b\",\"labels\":[\"R\"],\"props\":{}}"
+    );
+    let store = crate::ndjson::from_ndjson(nd).unwrap();
+
+    for q in [
+        "MATCH (p:P) WHERE p.k = 1 RETURN {n: p} AS m",
+        "MATCH (p:P) WHERE p.k = 1 RETURN {n: {inner: p}} AS m",
+        "MATCH (p:P)-[r:R]->() RETURN {e: r} AS m",
+    ] {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &store);
+        let out = run(&plan, &store);
+
+        assert_eq!(out.rows.len(), 1, "{q}");
+
+        // Whatever the nesting, no rendered value may be a bare number where an ELEMENT was
+        // projected: that is the dense id, and the engine's own `id` field is the EXTERNAL one.
+        fn no_bare_ids(v: &Value, q: &str) {
+            match v {
+                Value::Num(n) => panic!("{q}: an element rendered as the bare id {n}"),
+                Value::Map(pairs) => {
+                    for (_, val) in pairs.iter() {
+                        no_bare_ids(val, q);
+                    }
+                }
+                Value::List(xs) => {
+                    for x in xs {
+                        no_bare_ids(x, q);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // The projected map's single entry holds the element (possibly nested one deeper).
+        let Value::Map(outer) = &out.rows[0][0] else {
+            panic!("{q}: expected a map literal, got {:?}", out.rows[0][0]);
+        };
+
+        for (_, val) in outer.iter() {
+            no_bare_ids(val, q);
+        }
+    }
+}
+
 /// A missed OPTIONAL MATCH returning the EDGE VARIABLE ITSELF renders NULL, not an element
 /// map (audit item 340).
 ///
