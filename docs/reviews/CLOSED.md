@@ -635,7 +635,7 @@ filter` / `+ start filter` — gated chains the rule deliberately does NOT route
      components on its own — `edgesOfTypes`' generator frame — moved this row **1.253x** with disjoint
      ranges. A cost spread across three components is still three components, and removing one of them
      removes one of them. "No micro moves it" was a prediction and it was testable for the price of one
-     function split. It is the CSR item 300 priced at **7.30x** and declined for needing a dense adjacency the
+     function split. It is the CSR item 300 priced at **7.30x** _(re-priced at item 350: this row is **26x**, not 84x, so the 7.30x no longer holds)_ and declined for needing a dense adjacency the
      TS graph does not expose. So this is a DATA-LAYOUT target with a known ceiling, not an
      unexplained outlier.
      `BENCH_ONLY` now takes a trailing `$` for an exact match, because `count 3-hop` is a substring of
@@ -878,6 +878,34 @@ bench`** so one-case-per-process is a flag instead of the bespoke script items 2
   aggregate-over-chain and never builds the frontier, so the engine that OOM'd had to be the TS
   one — and 3 and 4 hops run in 8 and 13 ms at ~80 MB where 5 is fatal, which is exactly the count
   family's ≤4-segment coverage edge (item 290).
+- **⚠️ STALE FIGURE CORRECTED — the "84x row" is the 26x row, and item 300's CSR re-prices against
+  that (350).** `CLOSED.md` names `traverse 1-hop + filter` "the 84x row" in several places and
+  records item 300's CSR (a dense adjacency for the TS engine) as "priced at **7.30x** and
+  declined". Both are the basis for the largest open TS data-layout change, so they got checked.
+  **MEASURED, three runs** (`MATCH (a:Person)-[:KNOWS]->(x) WHERE x.age > 45 RETURN count(*)`, 200k
+  nodes at 5 edges/node): ts **40.2 / 38.4 / 40.9 ms** against ffi 1.5 → **26.86x / 25.51x /
+  26.94x**. **The gap is ~26x, not 84x** — stable, same fixture, same query, and a ratio inside one
+  run is the comparison that survives (item 338).
+  **WHAT ACCOUNTS FOR IT, AND WHAT DOES NOT**: item 321's adjacency box (1.207x) and item 324's
+  `edgesOfTypes` split (1.253x) are 1.51x together; the gap moved 3.23x. **So 2.14x is unattributed
+  and this item does not claim it** — it could be earlier items, or the ffi column moving rather
+  than the ts one (1.5 ms is near enough the floor that a native-side change shrinks the ratio
+  without TS improving at all). Attributing it needs old absolute numbers, which item 338 just
+  established are not comparable across sessions. **What is defensible is the current number, and
+  that the old one should stop being quoted.**
+  **CONSEQUENCE**: 7.30x was priced against 84x. Against 26x the case is materially weaker, and the
+  change is the class item 348 parked twice — a REPRESENTATION change (a dense, integer-indexed
+  adjacency the TS graph does not expose, its vertices being string-keyed). Item 321 already called
+  itself _"a cheaper intermediate than item 300's CSR"_, and the three-component diagnosis
+  (generator frame, `Edge` property reads, two hash lookups) keeps yielding to component-sized
+  fixes — the opposite of what "it needs a CSR" predicted, and item 324 already recorded that
+  reversal once. **CSR stays declined, now for a measured reason rather than an inherited one**; the
+  two remaining components are the next candidates, at component size.
+  **AND THE SAME RUN SAYS**: `count 1-hop [shortcut]` is **ts 0.0 ms against ffi 0.5** — pure-TS
+  answers from an index while native pays the FFI carrier (289). Same graph, same hop, opposite
+  directions: **the TS engine is behind on ENUMERATING and ahead on ANSWERING FROM AN INDEX.**
+  No code change. **The point of this file is that a list which lags is the failure it exists to
+  prevent — and this time the lag was inside it.**
 - **A single-property SET normalized every property it was not changing — 1.39x to 2.66x by width,
   and the EDGE twin's normalization had no tests at all (349).** TS `SET` is recorded as O(property
   width) with three O(K) passes. One is provably unnecessary: `setProperty` commits
