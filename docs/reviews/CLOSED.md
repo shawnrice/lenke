@@ -878,6 +878,33 @@ bench`** so one-case-per-process is a flag instead of the bespoke script items 2
   aggregate-over-chain and never builds the frontier, so the engine that OOM'd had to be the TS
   one — and 3 and 4 hops run in 8 and 13 ms at ~80 MB where 5 is fatal, which is exactly the count
   family's ≤4-segment coverage edge (item 290).
+- **The corpus read 69x "CALL overhead" and 92% of it was returning the rows — 4.17x dispatch,
+  33.32x projection (339).** Item 338 named this as the largest unexplained RATIO (deliberately a
+  ratio: internal to one run, so tenancy cancels). `algo/call` priced `degree` through GQL `CALL` at
+  13,870 us against 201 us direct and its own comment claimed _"same units so the ratio is
+  honest."_ It was not. `direct` computes degrees into a `Vec` and builds **no row at all**; the
+  `CALL` emits **50,000 rows each carrying a NODE ELEMENT**. The ratio priced dispatch PLUS a
+  per-row materialization the direct call never performs, and reported the sum as procedure-call
+  overhead.
+  **SPLIT**, by adding the same procedure through the same engine AGGREGATING instead of projecting:
+  `direct` **186.38 us**; `counted` (`… RETURN count(*)`) **777.62 us** = **dispatch 4.17x**;
+  `projected` (`… RETURN node, degree`) **25,907.47 us** = **projection 33.32x on top**. So the real
+  dispatch-and-plumbing cost of a named CALL is **4.17x, not 69x**.
+  **AND THE OTHER FACTOR IS ALREADY IN THE CORPUS TWICE**: 25,907 us / 50,000 rows = **518 ns/row**,
+  against item 338's measurement of `query/perrow element p` at **516.5 ns/row** on the same machine
+  the same afternoon. Same number — so `algo/call`'s dominant term was re-measuring element
+  materialization under a label that pointed the reader at the procedure machinery.
+  **THE GENERALISABLE PART, complementing item 338**: 338 argued that absolute numbers do not
+  survive a session boundary and ratios are the durable part. This is the complementary failure —
+  **a ratio is only as honest as the sameness of its two sides.** `counted/direct` and
+  `projected/counted` are sound because each pair differs in exactly ONE thing; `projected/direct`
+  differed in two and attributed both to the first. Cheap test: say out loud what each side does,
+  and if the sentences differ in more than one clause the ratio needs a third measurement, not an
+  explanation.
+  **NOW THE LARGEST PER-ROW COST IN THE ENGINE**: element materialization at **~518 ns/row** against
+  `scalar p.age` at **1.7 ns/row** in the same group. Dominant in `query/perrow element p` and
+  `element r`, in `algo/call`'s projection, and in anything returning a node or an edge rather than
+  a value from one. Next target, and unlike the 69x it is a real one.
 - **NOT A REGRESSION — the two element-materializing rows read 2x the earlier sweep because of
   machine tenancy, bisected across three commits (338).** A fresh `bench_all` after items 330-337
   showed `query/perrow` `element p` at **249.8 -> 516.5 ns/row** and `element r` at

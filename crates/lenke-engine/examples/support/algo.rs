@@ -140,20 +140,36 @@ pub fn run(cfg: &Cfg) {
         let direct_us = best_us(cfg.heavy_reps(), || algo::degree(&store, Dir::Out, None, 1));
         // The named-procedure CALL path (goes through the whole query engine), if it
         // parses; otherwise report why. Same units as `direct` so the ratio is honest.
-        let q = "CALL degree() YIELD node, degree RETURN node, degree";
-        match time_query(q, false, &store, cfg.heavy_reps()) {
-            Ok((call_us, _)) => {
+        // THREE numbers, because two were misleading (audit item 339). `direct` returns a
+        // `Vec` of degrees and constructs no row at all, while the projecting CALL emits 50,000
+        // rows each carrying a NODE ELEMENT — so their ratio priced dispatch plus a per-row
+        // materialization the direct call never performs, and the corpus read 69x "CALL
+        // overhead". `counted` runs the same procedure through the same query engine and
+        // aggregates instead of projecting, so `counted / direct` is the dispatch-and-plumbing
+        // cost and `projected / counted` is what returning the elements costs.
+        let projected = "CALL degree() YIELD node, degree RETURN node, degree";
+        let counted = "CALL degree() YIELD node, degree RETURN count(*) AS c";
+        match (
+            time_query(projected, false, &store, cfg.heavy_reps()),
+            time_query(counted, false, &store, cfg.heavy_reps()),
+        ) {
+            (Ok((proj_us, _)), Ok((cnt_us, _))) => {
                 println!(
-                    "{:22} {:>10} {:>10} {:>9}",
-                    "degree", "direct_us", "call_us", "overhead"
+                    "{:14} {:>10} {:>10} {:>10} {:>9} {:>9}",
+                    "degree", "direct_us", "counted_us", "projct_us", "dispatch", "project"
                 );
                 println!(
-                    "{:22} {direct_us:>10.2} {call_us:>10.2} {:>9.2}",
+                    "{:14} {direct_us:>10.2} {cnt_us:>10.2} {proj_us:>10.2} {:>9.2} {:>9.2}",
                     "",
-                    call_us / direct_us
+                    cnt_us / direct_us,
+                    proj_us / cnt_us
                 );
             }
-            Err(e) => println!("(CALL path n/a: {})  direct={direct_us:.2} us", e.trim()),
+            (r1, r2) => println!(
+                "(CALL path n/a: {:?} / {:?})  direct={direct_us:.2} us",
+                r1.err(),
+                r2.err()
+            ),
         }
     }
 }

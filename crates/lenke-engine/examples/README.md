@@ -62,7 +62,7 @@ enumeration's is flat.
 | What does a bulk write (SET) pay?                                      | `storage_bench -- write`             |
 | What does a second label on every edge cost?                           | `storage_bench -- multilabel`        |
 | What do the graph algorithms cost, and how do they parallelize?        | `algo_bench -- run` / `parallel`     |
-| What does neighborAggregate / a CALL cost?                             | `algo_bench -- neighboragg` / `call` |
+| What does neighborAggregate cost? a CALL's dispatch vs its projection? | `algo_bench -- neighboragg` / `call` |
 | What does a map/record property cost vs flat scalars (stored, codec)?  | `value_bench -- maps` / `codec`      |
 | How do shapes scale across the cache transition?                       | `scale_bench -- sweep`               |
 | What does content-derived CDC scope extraction cost per write?         | `scale_bench -- cdc`                 |
