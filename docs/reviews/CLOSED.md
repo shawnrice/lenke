@@ -878,6 +878,27 @@ bench`** so one-case-per-process is a flag instead of the bespoke script items 2
   aggregate-over-chain and never builds the frontier, so the engine that OOM'd had to be the TS
   one — and 3 and 4 hops run in 8 and 13 ms at ~80 MB where 5 is fatal, which is exactly the count
   family's ≤4-segment coverage edge (item 290).
+- **The adjacency's innermost `Set<Edge>` priced on three axes — PRICED, SIZED, NOT BUILT (326).**
+  An edge enters a `(vertex, label)` bucket exactly once, so the Set's dedup is never needed. 1M
+  edges across 200,000 buckets of 5:
+  **INSERT 45.8 -> 6.4ms (7.13x)**, **ITERATE 3M visits 29.2 -> 4.6ms `for…of` (6.37x) / 3.3ms
+  indexed (8.80x)**, **REMOVE at degree 5: 5.4 -> 0.6ms, the ARRAY 9x FASTER** (an `indexOf` over
+  five elements beats a Set hash), **REMOVE at degree 1000: 0.5 -> 11.0ms, the array 24x WORSE.**
+  So the array wins all three axes at the fixtures' degree and loses badly at the scale this engine
+  is for — a threshold, not a verdict.
+  Worth ~**1.05x** on `decode ndjson` (three Set adds per edge = ~137ns of item 312's 810ns
+  `indexEdgeLabel`) and ~**1.17x** on the gated three-hop rows (~8.2ns an edge-visit over 3M),
+  compounding with 324. Real, and not enough to justify a swap that regresses high-degree removal
+  24x.
+  **The shape that would work is a hybrid** — array up to a threshold, Set above, which is item
+  267's own `IN_CHAIN_MAX = 32` pattern with thresholds that are measured here rather than guessed.
+  What makes it work rather than a swap is the API, counted not estimated: **21 sites type the
+  container as `Set<Edge>`** across `Graph.ts`/`executor.ts`/`shortcuts.ts`/`graph-queries.ts` and
+  **12 read `.size`**, so a hybrid must provide `size`/`has`/`delete`/iteration without a wrapper
+  whose method calls give back what the container saved (`ts-closure-size-is-load-bearing`).
+  **Neither win has a narrow slice**: iterating a Set as an array is not a thing and the insert
+  saving IS the `add`. The remaining question is the container's public shape — an API decision, not
+  a measurement.
 - **Four vertices out of 200,004 cost a spelling 2.8x, and the probe group that should have caught
   it was testing something else (325).** `vacuousLabel` is an EXACT equality (the label's bucket
   against `vertexCount`), and `spelling-probe`'s fixture adds **four `:S` nodes** for an unrelated
