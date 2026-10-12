@@ -2221,8 +2221,9 @@ fn optional_match_binds_edge() {
     assert!(matches!(&got[2], (id, v) if id == "c" && v.is_null())); // no edge → f null
 }
 
-/// KNOWN BUG, cross-engine divergence (audit item 344). An element nested in a MAP LITERAL
-/// renders as its internal DENSE ID instead of its element map.
+/// REGRESSION TEST for the cross-engine divergence fixed at audit item 345 (found at 344): an
+/// element nested in a record literal rendered as its internal DENSE ID instead of its element
+/// map, because the `Expr::Record` arm read `value_at` where `Expr::List` reads `render_cell`.
 ///
 ///   MATCH (p:P) RETURN {n: p} AS m
 ///     native  ->  [{"m":{"n":0}}]
@@ -2245,7 +2246,6 @@ fn optional_match_binds_edge() {
 /// element (the nested-shape gap already recorded for quantified groups), so the one harness
 /// that compares the engines row-for-row never generates this shape.
 #[test]
-#[ignore = "known cross-engine divergence: an element in a map literal renders as its dense id"]
 fn an_element_in_a_map_literal_renders_as_its_element_map() {
     let nd = concat!(
         "{\"id\":\"a\",\"labels\":[\"P\"],\"props\":{\"k\":1}}\n",
@@ -2266,31 +2266,52 @@ fn an_element_in_a_map_literal_renders_as_its_element_map() {
 
         // Whatever the nesting, no rendered value may be a bare number where an ELEMENT was
         // projected: that is the dense id, and the engine's own `id` field is the EXTERNAL one.
-        fn no_bare_ids(v: &Value, q: &str) {
-            match v {
-                Value::Num(n) => panic!("{q}: an element rendered as the bare id {n}"),
+        // PRECISE, because the first draft was not: it forbade any number anywhere under the
+        // projection, which also forbids a legitimate numeric PROPERTY value — it failed on the
+        // fixture's own `k: 1` inside the element map it was supposed to be checking for.
+        //
+        // What the bug looked like was a field whose value is a bare `Num` where an ELEMENT was
+        // projected. So: follow the single-field record/map nesting down to the leaf, and
+        // require that leaf to be an element map — a `Map` carrying an `id` key. A leaked dense
+        // id is a `Num`, which is not one, and nothing inside an element map is descended into.
+        fn element_leaf(v: &Value) -> Option<&Value> {
+            let fields: Vec<&Value> = match v {
                 Value::Map(pairs) => {
-                    for (_, val) in pairs.iter() {
-                        no_bare_ids(val, q);
+                    if pairs
+                        .iter()
+                        .any(|(k, _)| matches!(k, Value::Str(s) if &**s == "id"))
+                    {
+                        return Some(v); // an element map: stop here
                     }
+
+                    pairs.iter().map(|(_, val)| val).collect()
                 }
-                Value::List(xs) => {
-                    for x in xs {
-                        no_bare_ids(x, q);
-                    }
-                }
-                _ => {}
+                Value::Record(fs) => fs.iter().map(|(_, val)| val).collect(),
+                _ => return None,
+            };
+
+            match fields.as_slice() {
+                [one] => element_leaf(one),
+                _ => None,
             }
         }
 
-        // The projected map's single entry holds the element (possibly nested one deeper).
-        let Value::Map(outer) = &out.rows[0][0] else {
-            panic!("{q}: expected a map literal, got {:?}", out.rows[0][0]);
+        let fields: Vec<&Value> = match &out.rows[0][0] {
+            Value::Record(fs) => fs.iter().map(|(_, v)| v).collect(),
+            Value::Map(pairs) => pairs.iter().map(|(_, v)| v).collect(),
+            other => panic!("{q}: expected a record or map, got {other:?}"),
+        };
+        let [field] = fields.as_slice() else {
+            panic!(
+                "{q}: expected exactly one projected field, got {}",
+                fields.len()
+            );
         };
 
-        for (_, val) in outer.iter() {
-            no_bare_ids(val, q);
-        }
+        assert!(
+            element_leaf(field).is_some(),
+            "{q}: the projected element did not render as an element map — got {field:?}"
+        );
     }
 }
 

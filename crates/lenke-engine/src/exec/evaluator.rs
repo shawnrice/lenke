@@ -1448,6 +1448,13 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
         Expr::Record { fields } => {
             // Per row, evaluate each field then canonicalize into a Value::Record
             // (keys sorted, last-wins) via the value contract.
+            //
+            // `render_cell`, NOT `value_at` (audit item 344). `value_at` on an element column
+            // yields the INTERNAL DENSE ID as a number, so `RETURN {n: p}` rendered
+            // `{"n":0}` — a wrong value, an internal identifier leaking to the caller, and a
+            // silent divergence from the TS engine, which returns the element map. The `List`
+            // arm directly above has always used `render_cell` and says why ("consistent with
+            // a top-level one"); this arm simply never got it. The two are now the same.
             let cols = eval_all(fields.iter().map(|(_, e)| e), store, batch)?;
             let n = batch.rows();
             Col::Gen(
@@ -1456,7 +1463,7 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
                         let pairs = fields
                             .iter()
                             .zip(&cols)
-                            .map(|((k, _), c)| (GStr::from(k.as_str()), c.value_at(i)))
+                            .map(|((k, _), c)| (GStr::from(k.as_str()), render_cell(c, i, store)))
                             .collect();
                         value::make_record(pairs)
                     })

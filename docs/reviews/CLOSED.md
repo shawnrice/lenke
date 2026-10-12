@@ -878,7 +878,36 @@ bench`** so one-case-per-process is a flag instead of the bespoke script items 2
   aggregate-over-chain and never builds the frontier, so the engine that OOM'd had to be the TS
   one — and 3 and 4 hops run in 8 and 13 ms at ~80 MB where 5 is fatal, which is exactly the count
   family's ≤4-segment coverage edge (item 290).
-- **⚠️ OPEN BUG — an element inside a MAP LITERAL renders as its internal dense id; a silent
+- **FIXED (345) — the record arm read `value_at` where the list arm reads `render_cell`, one line
+  apart in the same `match`.** Item 344 scoped the divergence and stopped at "the next place to look
+  is the plan". It was the plan, in the sense that **the plan named the arm**:
+  `{n: p}` is `Expr::Record { fields: [("n", Slot(0))] }` — **not `Expr::MapLit`**, which is why
+  344's careful reading of `MapLit` and its fused JSON writer found nothing wrong with either. Both
+  were innocent. The optimizer changes nothing, so the two arms sit side by side:
+  `Expr::List` does `render_cell(c, i, store)` (element map) and `Expr::Record` did `c.value_at(i)`
+  (dense id). The `List` arm has always carried the comment saying why — _"A VERTEX/EDGE element
+  renders as its element map … consistent with a top-level one"_ — and the `Record` arm never got
+  it. **One line, eleven lines from the version that was right.** `resolve_elem` was already
+  recursive over `Record`, so nothing else needed touching.
+  **VERIFIED ACROSS ENGINES**: all seven shapes byte-identical FFI vs pure-TS, including the three
+  that diverged plus `RETURN {a: p.k, n: p}` (a scalar and an element in one record) which had never
+  been tested.
+  **TWO DRAFTS OF THE TEST WERE WRONG, both the same class of error as the bug**: (1) it
+  destructured the value as `Value::Map` and its walk had no `Record` arm — **blind to exactly the
+  nesting it existed to check**; (2) rewritten, it forbade any `Num` anywhere, which also forbids a
+  legitimate numeric PROPERTY — it failed on the fixture's own `k: 1` INSIDE the element map it was
+  looking for. Shipped form follows the single-field nesting to the leaf and requires an element map
+  (a `Map` with an `id` key), descending into nothing else.
+  **Teeth RUN, not reasoned**: reverting the one-line fix with the test in place turns it red
+  (`0 passed; 1 failed`). **A one-line fix does not imply a one-line test.**
+  **LESSON**: 344's reading was careful and still looked at the wrong `match` arm for an hour,
+  because the surface syntax `{…}` reads as "map literal" while the AST calls it `Record`. **The
+  plan dump settled in one line what reading could not, and it was available the whole time — for a
+  "which code runs" question, print the plan before reading the code** (item 321 in a different
+  costume).
+  **Still open**: the differential fuzzer has no generator case for a record carrying an element,
+  which is why this survived. The fix closes the bug, not the hole.
+- **~~OPEN BUG~~ FIXED AT 345 — an element inside a MAP LITERAL renders as its internal dense id; a silent
   cross-engine divergence found by a 6.7x speedup in the wrong direction (344).** Looking for a
   shippable win among `evaluator.rs`'s per-row `render_cell` loops, step one was item 321's (check a
   measured row reaches the code). One number made no sense: at 200k nodes via ffi, `RETURN p` is
