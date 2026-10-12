@@ -630,8 +630,12 @@ filter` / `+ start filter` — gated chains the rule deliberately does NOT route
      it.**
      **The diagnosis both experiments bought:** the 84x is not one hash per edge, which is why neither
      route touches it. It is spread across the `edgesOfTypes` generator frame (priced at 1.19x on the
-     sweep at item 300), the `Edge` property reads, and two hash lookups — and no micro moves a spread
-     cost. It is the CSR item 300 priced at **7.30x** and declined for needing a dense adjacency the
+     sweep at item 300), the `Edge` property reads, and two hash lookups — ~~and no micro moves a spread
+     cost.~~ **That last clause is FALSIFIED by item 324**: removing the FIRST of those three
+     components on its own — `edgesOfTypes`' generator frame — moved this row **1.253x** with disjoint
+     ranges. A cost spread across three components is still three components, and removing one of them
+     removes one of them. "No micro moves it" was a prediction and it was testable for the price of one
+     function split. It is the CSR item 300 priced at **7.30x** and declined for needing a dense adjacency the
      TS graph does not expose. So this is a DATA-LAYOUT target with a known ceiling, not an
      unexplained outlier.
      `BENCH_ONLY` now takes a trailing `$` for an exact match, because `count 3-hop` is a substring of
@@ -874,6 +878,33 @@ bench`** so one-case-per-process is a flag instead of the bespoke script items 2
   aggregate-over-chain and never builds the frontier, so the engine that OOM'd had to be the TS
   one — and 3 and 4 hops run in 8 and 13 ms at ~80 MB where 5 is fatal, which is exactly the count
   family's ≤4-segment coverage edge (item 290).
+- **`edgesOfTypes` was a generator delegating to an iterator it could have RETURNED — 1.253x on the
+  84x row (324).** Its hot single-type path was `yield* byType.get(types[0]) ?? []`, and a
+  `Set<Edge>` is already an `Iterable<Edge>`. Split into a returning fast path for the two
+  single-bucket cases plus a generator tail for the multi-bucket case, which dedupes and so
+  genuinely wants to be lazy.
+  Priced in the sweep's own shape first (200k slots x ~5 edges x 3 passes): **68.7 -> 43.4ms,
+  1.58x, 8.4ns an edge** — and the returning version came in at or BELOW the floor of iterating the
+  Set with no call at all, so the call is free. In situ, four alternated rounds, one case per
+  process, ffi column flat on every line: **`count 3-hop` 397.6 -> 317.4ms (1.253x)**,
+  `+ end filter` 198.4 -> 167.8 (**1.182x**), `+ start filter` 192.7 -> 169.8 (**1.135x**), all
+  three with DISJOINT ranges; `traverse 1-hop + filter` and `query: distinct over a hop` flat in
+  the same harness, which is the predicted control behaviour.
+  **The per-edge budget it was picked from**: the gated three-hop rows are ~86ns an edge-visit
+  against native's ~1.4 for the SAME algorithm, of which `slotOf.get(farId)` is **27.2ns** and the
+  generator frame **8.4ns**. The hash prices far below the ~115-157ns items 321/323 measured for a
+  string-keyed Map because `e.toId` returns the same string OBJECT each time and V8 caches a hash
+  on a string. **PRICED AND NOT BUILT**: a dense ordinal per vertex stored on the EDGE at insert
+  would remove the hash for a ceiling of ~1.44x on one row — a layout change, recorded for its own
+  item.
+  **It widened a known spelling group and that is stated, not buried**: `three hops: a vacuous
+start label vs none` (item 221) went 1.87x -> 2.6x because the UNLABELLED member got **1.36x
+  faster** (277.16 -> 203.25) and the labelled one did not. Both spellings should cost the same, so
+  this is 221's pre-existing gap becoming more visible — and a LEAD, since the labelled spelling
+  evidently does not reach the path that just got faster. 0 answer disagreements.
+  5 mutants, 3 caught + 2 equivalent. **Z1 (return the FIRST bucket instead of the requested type)
+  is invisible whenever a vertex has only one edge type, which the bench fixture does** — it takes
+  a multi-type fixture, and 51 tests have one.
 - **Where the adjacency box CANNOT go, and the rule that says which rows it can reach (323).**
   Priced on its own over 200k vertices / 1M edges: `id -> adjacency -> size` **157.3 ns/edge**,
   `id -> Vertex -> box -> size` **198.6 (1.26x WORSE)**, **box with the vertex already held 79.7

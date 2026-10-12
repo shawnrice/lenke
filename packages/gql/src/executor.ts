@@ -5280,28 +5280,53 @@ export const relTypeNames = (label: LabelExpr | undefined): string[] | null | un
  * Only one bucket can be in play → no dedupe, no allocation, which is the hot
  * single-type case.
  */
-export const edgesOfTypes = function* (
+/** Shared empty iterable, so the fast paths below allocate nothing to say "no edges". */
+const NO_EDGES: readonly Edge[] = [];
+
+/**
+ * Edges of `types` out of one vertex's by-type bucket map.
+ *
+ * NOT a generator for the two single-bucket cases, and that is the point. A `Set<Edge>` is already
+ * an `Iterable<Edge>`, so `yield* byType.get(t)` delegated to an iterator the function could
+ * simply have RETURNED — paying a generator frame per edge for nothing. Audit item 324 priced the
+ * frame at **8.4 ns an edge** in the way-count sweep's shape (200,000 frontier slots x ~5 edges x
+ * 3 passes: 68.7ms against 43.4, **1.58x** on that loop), and the returning version measured at or
+ * below the floor of iterating the Set with no call at all, so the call itself is free. Item 300
+ * had priced "the `edgesOfTypes` generator frame" at 1.19x on the sweep without isolating it.
+ *
+ * The multi-bucket case keeps the generator: it has to dedupe across buckets, so it has real work
+ * to interleave and nothing to return.
+ *
+ * Semantics are unchanged. `yield* set` delegates to the SAME live Set iterator this now returns,
+ * so a caller that mutates mid-iteration sees exactly what it saw before; and the only laziness
+ * lost is a `Map.get` that every caller was about to force anyway.
+ */
+export const edgesOfTypes = (
   byType: Map<string, Set<Edge>> | undefined,
   types: string[] | undefined,
-): Iterable<Edge> {
+): Iterable<Edge> => {
   if (!byType) {
-    return;
+    return NO_EDGES;
   }
 
   if (types !== undefined) {
     if (types.length === 1) {
-      yield* byType.get(types[0]) ?? [];
-
-      return;
+      return byType.get(types[0]) ?? NO_EDGES;
     }
   } else if (byType.size === 1) {
     for (const set of byType.values()) {
-      yield* set;
+      return set;
     }
-
-    return;
   }
 
+  return edgesOfManyTypes(byType, types);
+};
+
+/** The deduping multi-bucket tail of {@link edgesOfTypes}, which genuinely wants to be lazy. */
+const edgesOfManyTypes = function* (
+  byType: Map<string, Set<Edge>>,
+  types: string[] | undefined,
+): Iterable<Edge> {
   const seen = new Set<Edge>();
 
   for (const set of types ? types.map((t) => byType.get(t)) : byType.values()) {
