@@ -878,6 +878,42 @@ bench`** so one-case-per-process is a flag instead of the bespoke script items 2
   aggregate-over-chain and never builds the frontier, so the engine that OOM'd had to be the TS
   one — and 3 and 4 hops run in 8 and 13 ms at ~80 MB where 5 is fatal, which is exactly the count
   family's ≤4-segment coverage edge (item 290).
+- **Closing the HOLE, not the bug — the differential fuzzer can now generate a container carrying an
+  element, and the first thing it found was a SECOND divergence (346).** Item 345 fixed the record
+  arm; 344 had named why it survived — the one harness that compares the engines row-for-row could
+  not generate the shape. A fix that closes a bug and leaves the hole open is half the job.
+  **THE HOLE, EXACTLY**: the generator's expression grammar is entirely scalar (every `genLeaf` is a
+  literal, temporal, stored-record path or property read). Records AND lists **were** generated —
+  the hole was never "no containers", it was that **no container could ever hold an element**.
+  20,000 queries a run and `{v: <vertex>}` was unreachable.
+  **⚠️ THE FIRST ATTEMPT FOUND A DIFFERENT BUG.** An element-valued LEAF (so elements reach every
+  container) went red within two runs on something else:
+  `MATCH (n:T) RETURN CAST([n, ''] AS STRING)` → **ts `"6,"` (element casts to its ID), native
+  `"{\"id\":\"6\",\"labels\":[\"T\"],…},"` (its whole MAP)**. A real value divergence, and the
+  fuzzer's own message says such a thing is "a bug in one of them" which "no registry entry may
+  excuse" — it cannot be parked. **NEW OPEN DIVERGENCE, repro `FUZZ_SEED=4042405702`.** Which engine
+  is right is a `CAST` conformance question (ISO does not obviously define a node-to-string cast;
+  "both should refuse" is plausible and changes user-visible behaviour), so deciding it inside a
+  fuzzer-coverage change would be two decisions in one commit.
+  So the element case moved from the expression grammar to **QUERY level**: the existing
+  hop-projection family draws a container-with-element a quarter of the time, from eight shapes
+  (`{v: a}`, `{v: a, w: b}`, `{v: e}`, `{v: {inner: a}}`, `{v: a, n: a.n}`, `[a]`, `[a, b]`,
+  `{v: a}.v`). Elements reach containers without reaching `CAST`, arithmetic or the scalar
+  functions. Per the file's own convention this is a CONTENT change to an existing band, so no
+  seed's family assignment moves.
+  **TEETH, RUN TWICE**: reverting item 345's one-line fix makes the fuzzer red immediately, naming
+  the family it was blind to (`{v: e}`, `{v: a}`, `{v: a, n: a.n}`, `{v: {inner: a}}`). Checked
+  before the complexity refactor below and again after (10 divergent seeds the second time), because
+  **a refactor that quietly stops generating the shape leaves the hole open while looking closed.**
+  Green over 13 consecutive runs with the fix in place.
+  **A GATE THAT EARNED ITS KEEP**: the inline branch tipped `genQuery` from complexity 35 to 36 and
+  `bun run lint` refused it. Two attempts to satisfy it by extracting only the shape list still read
+  36 — **a ternary is a decision too** — so the 25% split moved into the helper as well. The gate
+  was right: `genQuery` is a 24-band `if` ladder and a sub-choice belongs in a named function.
+  **Still open**: the `CAST(<element> AS STRING)` divergence, now the only thing known to be
+  reachable by an element-valued leaf. When it is settled the leaf can move into `genLeaf` and
+  coverage widens from one family to the whole grammar — the better end state, and this item is the
+  half that needs no semantics call.
 - **FIXED (345) — the record arm read `value_at` where the list arm reads `render_cell`, one line
   apart in the same `match`.** Item 344 scoped the divergence and stopped at "the next place to look
   is the plan". It was the plan, in the sense that **the plan named the arm**:

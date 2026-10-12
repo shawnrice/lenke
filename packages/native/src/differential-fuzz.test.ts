@@ -1155,6 +1155,32 @@ const genAbbrevQuantified = (r: () => number): string => {
   ]);
 };
 
+/**
+ * The hop family's projection: usually a fuzzed scalar expression, sometimes a CONTAINER
+ * CARRYING AN ELEMENT (`a`, `b` and `e` are the variables that family binds).
+ *
+ * The split lives here rather than at the call site so `genQuery` keeps its decision count
+ * under the complexity gate — adding one branch there tipped it from 35 to 36. See the call
+ * site for why the element case exists and why it is at query level rather than a leaf in
+ * `genExpr`.
+ */
+const genHopProjection = (r: () => number): string => {
+  if (r() < 0.25) {
+    return pick(r, [
+      'RETURN {v: a} AS x',
+      'RETURN {v: a, w: b} AS x',
+      'RETURN {v: e} AS x',
+      'RETURN {v: {inner: a}} AS x',
+      'RETURN {v: a, n: a.n} AS x',
+      'RETURN [a] AS x',
+      'RETURN [a, b] AS x',
+      'RETURN {v: a}.v AS x',
+    ]);
+  }
+
+  return `RETURN ${genExpr(r, 2)} AS x`;
+};
+
 const genQuery = (r: () => number): string => {
   const p = r();
 
@@ -1225,7 +1251,22 @@ const genQuery = (r: () => number): string => {
   }
 
   if (p < 0.68) {
-    return `MATCH (a:T)-[e:E]->(b:T) RETURN ${genExpr(r, 2)} AS x`;
+    // Sometimes a CONTAINER CARRYING AN ELEMENT, which nothing here generated before (item
+    // 346). The expression grammar is entirely scalar — every `genLeaf` is a literal or a
+    // property read — so although records (`{a: …}`) and lists (`[…]`) were generated, one
+    // holding a vertex or an edge never was. That is the hole item 344 fell through:
+    // `RETURN {n: p}` rendered the internal dense id in native and the element map in TS, and
+    // the one harness that compares the engines row-for-row could not reach the shape.
+    //
+    // It goes HERE, at query level, rather than as a leaf in `genExpr`: an element leaf inside
+    // the arbitrary scalar grammar immediately produced `CAST([n, ''] AS STRING)`, where the
+    // two engines disagree about how an element stringifies (TS gives its id, native its whole
+    // map). That is a real divergence and it is recorded as its own open item — but it is a
+    // CONFORMANCE question about `CAST`, not the rendering hole this case exists to close, and
+    // letting it in here would make the fuzzer red for an unrelated reason.
+    //
+    // `a`, `b` and `e` are the variables this family binds, so the elements are in scope.
+    return `MATCH (a:T)-[e:E]->(b:T) ${genHopProjection(r)}`;
   }
 
   if (p < 0.685) {
