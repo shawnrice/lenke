@@ -878,6 +878,41 @@ bench`** so one-case-per-process is a flag instead of the bespoke script items 2
   aggregate-over-chain and never builds the frontier, so the engine that OOM'd had to be the TS
   one — and 3 and 4 hops run in 8 and 13 ms at ~80 MB where 5 is fatal, which is exactly the count
   family's ≤4-segment coverage edge (item 290).
+- **PARKED, with a trigger — rung 3's write cost is FREE and its blast radius is FIVE paths, not two
+  (348).** Item 343 preferred rung 3 on the grounds that its blast radius was _"`set_prop`/
+  `remove_prop`, the two functions items 331 and 335 already worked."_ Both halves checked before
+  building; one is better than claimed and one is worse.
+  **The write cost is free.** `apply_set_prop` ends in `col.set(node, value)` and `Column::set`
+  writes the slot's `present[i]`/`nulls[i]` directly — it already reads and writes exactly the bytes
+  that say whether the slot was occupied, so **returning "was previously absent" costs one byte
+  compare on a cache line it writes anyway.** Maintenance is one branch plus a push on first set.
+  **The blast radius is five paths, two of them the BULK fast paths.** Enumerated:
+  `apply_set_prop` (the funnel), `apply_remove_prop`, **`add_node_bulk` (bypasses the funnel by
+  design — "the single-pass fast path, no per-property hashmap lookup")**, **`materialize`
+  (`store.rs:393`, the `Builder` path — how every test fixture AND the NDJSON decode build a
+  store)**, `delete_node`, plus a **re-permute** because adding a new key changes sorted key order
+  and shifts every node's mask. The two non-funnel paths are exactly the ones items 330-333 spent
+  four items making fast; maintaining a mask there either slows them or needs a wholesale rebuild at
+  `end_bulk` — the O(KxN) scan the rung exists to avoid, paid once per load. Defensible, but not
+  "two functions". Memory: **8 B/node** for a `Vec<u64>` mask at K≤64 (1.6 MB at 200k) vs 24+8k for
+  a per-node `Vec<Arc<str>>` (11.2 MB, ~28% more per-node footprint) — the mask is the right shape
+  and brings the K>64 fallback and the re-permute with it.
+  **VERDICT: both rungs park.** rung 2 = 1.67x render-only for ~90 `store.rs` sites plus
+  `exec.rs`/`exec/distinct.rs` hot paths it does not help; rung 3 = ~2.7x render-only for 5 write
+  paths + re-permute + fallback + 8 B/node. Both buy ONE shape — rendering an element from a store
+  with many distinct keys. That shape is real (a heterogeneous people-graph is 50-200 keys with a
+  handful per element) but **no corpus row measures it and no user has reported it**; every fixture
+  here has four keys, which is why items 340-343 had to build the sweep to see it at all.
+  **TRIGGER, checkable rather than a feeling: build one of these when a measured workload renders
+  elements from a store with more than ~60 distinct property keys.** The sweep in
+  `element_render_cost` is there to price it the day it matters.
+  **THREE SCOPE CLAIMS, THREE CORRECTIONS — the pattern**: 342 preferred rung 2 for unmeasured
+  BREADTH (false, 343); 343 preferred rung 3 for an unenumerated BLAST RADIUS (understated, here);
+  and 343's own line already named it — _"the arithmetic has not been wrong once; the framing has
+  been wrong three times."_ This is the fourth. Every one was a claim about SCOPE, asserted in a
+  sentence and refuted by fifteen minutes of checking, while every MEASUREMENT in the thread held.
+  **A scope claim is a measurement. Before preferring A to B on anything but a measured number,
+  grep the thing you are calling narrow.**
 - **`CAST(<element> AS STRING)` is NOT an implementation choice — the free ISO artifacts close the
   easy escape without settling which engine is right (347).** Item 346's divergence: `CAST([n, '']
 AS STRING)` gives `"6,"` in TS (the element's **id**) and the element's whole **map** in native.
