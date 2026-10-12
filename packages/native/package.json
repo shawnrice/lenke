@@ -35,6 +35,7 @@
     "bench": "bun bench.ts",
     "bench:usage": "bun bench-usage.ts",
     "spelling": "bun spelling-probe.ts",
+    "delete:width": "bun delete-width-probe.ts",
     "bench:gremlin": "bun bench-gremlin.ts",
     "probe:depth": "bun chain-depth-probe.ts",
     "bench:chain": "bun chain-sweep-bench.ts",

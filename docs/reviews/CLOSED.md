@@ -878,6 +878,42 @@ bench`** so one-case-per-process is a flag instead of the bespoke script items 2
   aggregate-over-chain and never builds the frontier, so the engine that OOM'd had to be the TS
   one — and 3 and 4 hops run in 8 and 13 ms at ~80 MB where 5 is fatal, which is exactly the count
   family's ≤4-segment coverage edge (item 290).
+- **The TS engine built an undo closure on every write and threw it away — REFUTED on the write
+  path, 1.3-1.9x on DELETE (334).** `Graph.recordUndo(inverse)` is a no-op unless
+  `txDepth > 0 && !applyingUndo`, but all **eight** call sites built the closure eagerly, because
+  the inverse is taken BY VALUE. The same shape item 331 found in Rust, where `record_change` took
+  its `Change` by value. Two of the eight were worse than a closure: `removeVertex` and
+  `removeEdge` captured `[...vertex.labels]` and `{ ...vertex.properties }` for a rollback that
+  could not happen, which is **O(property width)**. Gated all eight on a private `undoWanted`
+  getter (the same condition `recordUndo` tests).
+  **Answering the question as asked — batching the undo closures is NOT the fix and would not have
+  helped.** Outside a transaction they are not a cost to amortize, they are work with no reader, and
+  removing them entirely does nothing measurable. What was worth removing is the per-property copy
+  standing next to them.
+  **REFUTED on the write path.** `decode ndjson (nodes)` is 200,000 `addVertex` calls (verified —
+  `packages/serialization/src/ndjson/index.ts:115` goes through it, so not item 321's mistake).
+  Three alternated rounds, each side rebuilt: **242.2 -> 236.6ms, overlapping**; the 5-edge row came
+  out NEW-slower; `query: count` control flat. At 1.2µs a vertex, two closure allocations are not
+  findable.
+  **⚠️ AND `bench:usage` COULD NOT HAVE SAID OTHERWISE.** Its `read: point lookup` row — which this
+  change cannot reach — read **685.4k / 911.4k / 1.16M ops/s across three rounds, a 1.7x spread on
+  an unreachable control.** So **`bench:usage` cannot settle any question below ~2x**, and rows read
+  there as "flat" are not evidence of flatness. The harness does not say this about itself.
+  **1.3-1.9x on DELETE, with an in-table control.** The removed copy is O(WIDTH) and every fixture
+  in the repo gives a node 3-4 properties, so the claim needed a fixture that varies width — new
+  permanent probe `packages/native/delete-width-probe.ts` (`bun run delete:width`), 20k nodes, min
+  of 7, `del_ns/node`: width 4 **362 -> 273 (1.33x)**, 16 **518 -> 391 (1.32x)**, 64
+  **1334 -> 1031 (1.29x)**, 256 **12,095 -> 6,251 (1.93x)**. **The in-transaction column is a
+  control inside the same binary and is flat at every width** (310/327, 670/640, 1798/1512,
+  14634/14339) — a rollback can replay there, so the capture is not dead. And the two columns'
+  RELATIONSHIP inverts: on CONTROL delete-in-txn and delete-outside cost nearly the same at width
+  256 (12,095 vs 14,634) because both copy; on NEW they differ **2.3x**. That is the mechanism's
+  signature, not a timing coincidence.
+  Also added `write: append then delete node` to `bench:usage`, which **had no delete workload at
+  all**. And `delete-width-probe.ts` reads core's SOURCE (lint-disabled with a reason the rule's own
+  message names): a build between every edit and every measurement is what made the A/B above cost
+  six builds and ten minutes where the width sweep cost seconds, and that cost is why the sweep did
+  not already exist.
 - **Two arenas and a span instead of two `Vec`s per record — a 50,000-node decode now makes 271
   allocations, and three mutants survived because the fixture was uniform (333).** Item 332 named
   this from the count: the records' own `Vec`s were **616,488 of the 700,036** remaining

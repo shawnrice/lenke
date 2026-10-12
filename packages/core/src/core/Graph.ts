@@ -1606,7 +1606,9 @@ export class Graph {
 
     this.vertexPropertyIndex.add(vertex, vertex.properties);
 
-    this.recordUndo(() => this.removeVertex(vertex.id));
+    if (this.undoWanted) {
+      this.recordUndo(() => this.removeVertex(vertex.id));
+    }
 
     return vertex;
   };
@@ -1638,9 +1640,13 @@ export class Graph {
     // reconstruct it. Its incident edges reconstruct via each `removeEdge`'s own
     // inverse below (recorded before this vertex's re-add, so on reverse replay
     // the vertex comes back first, then its edges).
-    const undoId = vertex.id;
-    const undoLabels = [...vertex.labels];
-    const undoProps = { ...vertex.properties };
+    // Captured only when a rollback can actually replay it (item 334): outside a transaction
+    // the spread of the labels and of the properties were two allocations per removal whose
+    // only reader was a closure that was itself discarded. One object when wanted, none when
+    // not — and it must still be taken HERE, while the vertex is live.
+    const undo = this.undoWanted
+      ? { id: vertex.id, labels: [...vertex.labels], properties: { ...vertex.properties } }
+      : undefined;
 
     this.emit(new EmitterEvent('@graph/VertexRemoved', vertex));
 
@@ -1660,9 +1666,9 @@ export class Graph {
 
     vertex.evict();
 
-    this.recordUndo(() =>
-      this.addVertex({ id: undoId, labels: undoLabels, properties: undoProps }),
-    );
+    if (undo) {
+      this.recordUndo(() => this.addVertex(undo));
+    }
 
     return vertex;
   };
@@ -1756,13 +1762,15 @@ export class Graph {
       // TypeError that aborts the replay mid-way. See the note on `addEdge`.
       const undoVertexId = vertex.id;
 
-      this.recordUndo(() => {
-        const live = this.getVertexById(undoVertexId);
+      if (this.undoWanted) {
+        this.recordUndo(() => {
+          const live = this.getVertexById(undoVertexId);
 
-        if (live) {
-          this.removeLabelFromVertex(label, live);
-        }
-      });
+          if (live) {
+            this.removeLabelFromVertex(label, live);
+          }
+        });
+      }
     }
 
     return vertex;
@@ -1785,13 +1793,15 @@ export class Graph {
       // TypeError that aborts the replay mid-way. See the note on `addEdge`.
       const undoVertexId = vertex.id;
 
-      this.recordUndo(() => {
-        const live = this.getVertexById(undoVertexId);
+      if (this.undoWanted) {
+        this.recordUndo(() => {
+          const live = this.getVertexById(undoVertexId);
 
-        if (live) {
-          this.addLabelToVertex(label, live);
-        }
-      });
+          if (live) {
+            this.addLabelToVertex(label, live);
+          }
+        });
+      }
     }
 
     return vertex;
@@ -1941,24 +1951,32 @@ export class Graph {
     // re-resolves by id, as do the property-level undos in Edge/Vertex.
     const undoEdgeId = edge.id;
 
-    this.recordUndo(() => {
-      const live = this.getEdgeById(undoEdgeId);
+    if (this.undoWanted) {
+      this.recordUndo(() => {
+        const live = this.getEdgeById(undoEdgeId);
 
-      if (live) {
-        this.removeEdge(live);
-      }
-    });
+        if (live) {
+          this.removeEdge(live);
+        }
+      });
+    }
 
     return edge;
   };
 
   public removeEdge = (edge: Edge): Edge => {
-    // Capture the edge's shape while live, so a rollback can reconstruct it.
-    const undoId = edge.id;
-    const undoLabels = [...edge.labels];
-    const undoProps = { ...edge.properties };
-    const undoFrom = edge.from.id;
-    const undoTo = edge.to.id;
+    // Capture the edge's shape while live, so a rollback can reconstruct it — but only when a
+    // rollback can happen (item 334). The two spreads were allocated on every removal and read
+    // only by a closure `recordUndo` was about to drop.
+    const undo = this.undoWanted
+      ? {
+          id: edge.id,
+          labels: [...edge.labels],
+          properties: { ...edge.properties },
+          from: edge.from.id,
+          to: edge.to.id,
+        }
+      : undefined;
 
     // Cardinality: removing an edge drops both endpoints' degree, which may fall
     // below `min` — record them for the commit-time recheck (min is never
@@ -1981,15 +1999,17 @@ export class Graph {
 
     edge.evict();
 
-    this.recordUndo(() =>
-      this.addEdge({
-        id: undoId,
-        from: this.getVertexById(undoFrom)!,
-        to: this.getVertexById(undoTo)!,
-        labels: undoLabels,
-        properties: undoProps,
-      }),
-    );
+    if (undo) {
+      this.recordUndo(() =>
+        this.addEdge({
+          id: undo.id,
+          from: this.getVertexById(undo.from)!,
+          to: this.getVertexById(undo.to)!,
+          labels: undo.labels,
+          properties: undo.properties,
+        }),
+      );
+    }
 
     return edge;
   };
@@ -2070,13 +2090,15 @@ export class Graph {
     // TypeError that aborts the replay mid-way. See the note on `addEdge`.
     const undoLabelEdgeId = edge.id;
 
-    this.recordUndo(() => {
-      const live = this.getEdgeById(undoLabelEdgeId);
+    if (this.undoWanted) {
+      this.recordUndo(() => {
+        const live = this.getEdgeById(undoLabelEdgeId);
 
-      if (live) {
-        this.removeLabelFromEdge(label, live);
-      }
-    });
+        if (live) {
+          this.removeLabelFromEdge(label, live);
+        }
+      });
+    }
 
     return edge;
   };
@@ -2106,13 +2128,15 @@ export class Graph {
     // TypeError that aborts the replay mid-way. See the note on `addEdge`.
     const undoLabelEdgeId = edge.id;
 
-    this.recordUndo(() => {
-      const live = this.getEdgeById(undoLabelEdgeId);
+    if (this.undoWanted) {
+      this.recordUndo(() => {
+        const live = this.getEdgeById(undoLabelEdgeId);
 
-      if (live) {
-        this.addLabelToEdge(label, live);
-      }
-    });
+        if (live) {
+          this.addLabelToEdge(label, live);
+        }
+      });
+    }
 
     return edge;
   };
@@ -3979,6 +4003,21 @@ export class Graph {
       this.txUndo.push(inverse);
     }
   };
+
+  /**
+   * Whether a `recordUndo` closure would actually be KEPT — the same condition `recordUndo`
+   * itself checks.
+   *
+   * Every call site tests this before building its closure, because `recordUndo` takes the
+   * inverse BY VALUE: outside a transaction (the bulk-ingest case and the common one) the
+   * closure plus its captured context were allocated on every write and dropped unread. Two
+   * sites also deep-copied the element's labels and properties to capture them, so a removal
+   * paid four allocations for a rollback that could not happen. Audit item 334; the native
+   * engine had the same shape at item 331, where `record_change` took its `Change` by value.
+   */
+  private get undoWanted(): boolean {
+    return this.txDepth > 0 && !this.applyingUndo;
+  }
 
   private applyUndoAndReset = (): void => {
     // Replay every inverse op newest-first; each reverses one forward write.

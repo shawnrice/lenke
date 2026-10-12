@@ -228,6 +228,19 @@ const WORKLOADS: Workload[] = [
       void e.query(g, `INSERT (:Event {name: 'ev${i}', score: ${i % 100}, seq: ${i}})`),
   },
   {
+    // DELETE, which this harness had no row for at all until item 334 needed one.
+    // Deliberately paired: each iteration appends a node and then deletes it, so the
+    // graph does not shrink toward empty over a time-boxed run and the row stays
+    // comparable across engines. It therefore prices an append AND a delete together —
+    // read it against `write: append node` to isolate the delete.
+    name: 'write: append then delete node',
+    units: 2,
+    op: (e, g, i) => {
+      e.query(g, `INSERT (:Tmp {name: 'tmp${i}', seq: ${i}})`);
+      void e.query(g, `MATCH (t:Tmp) WHERE t.name = $n DETACH DELETE t`, { n: `tmp${i}` });
+    },
+  },
+  {
     // THE interleaved shape: one write, then one read, repeatedly. A write
     // invalidates the read-side snapshot, so this is where a layout that is
     // only good for reads shows its true cost.
