@@ -142,6 +142,79 @@ describe('GQL: ISO graph / conversion / string-list scalar functions', () => {
     ).toBe(true);
   });
 
+  // Mirrors the Rust engine's `a_nested_graph_element_casts_to_nothing` (audit item 354).
+  test('a NESTED graph element casts to nothing, at any depth', () => {
+    // The half item 353 left open. Every shape here was a measured divergence before the fix:
+    // this engine joined the element's EXTERNAL id into the string while native stringified the
+    // whole element MAP (its containers render their items eagerly, so the top-level
+    // `isVertex || isEdge` check could not see the element at all).
+    //
+    // Three families, all three found by surveying rather than by taking the one reported
+    // shape: the container literals, the path ACCESSORS, and the path VALUE itself. Both twins
+    // at every level — a node/edge asymmetry where only the vertex form is exercised is the
+    // recurring hole here.
+    const msg = (q: string): string => {
+      try {
+        query(g, q);
+      } catch (e) {
+        return (e as Error).message;
+      }
+
+      throw new Error(`${q} should have refused`);
+    };
+
+    for (const q of [
+      `MATCH (p:Person) RETURN CAST([p, ''] AS STRING) AS x`,
+      `MATCH ()-[r:KNOWS]->() RETURN CAST([r] AS STRING) AS x`,
+      `MATCH (p:Person) RETURN CAST([[p]] AS STRING) AS x`,
+      `MATCH (p:Person) RETURN CAST({v: p} AS STRING) AS x`,
+      `MATCH (p:Person) RETURN CAST({k: 1, v: p} AS STRING) AS x`,
+      `MATCH (p:Person) RETURN CAST([{v: p}] AS STRING) AS x`,
+      `MATCH (p:Person) RETURN CAST({v: [p]} AS STRING) AS x`,
+      `MATCH q = (:Person)-[:KNOWS]->(:Person) RETURN CAST(nodes(q) AS STRING) AS x`,
+      `MATCH q = (:Person)-[:KNOWS]->(:Person) RETURN CAST(edges(q) AS STRING) AS x`,
+      `MATCH q = (:Person)-[:KNOWS]->(:Person) RETURN CAST(q AS STRING) AS x`,
+    ]) {
+      expect(msg(q)).toContain('cannot cast a graph element to string');
+    }
+
+    // Every target, so the refusal precedes the whole switch and not just the `string` arm.
+    // `[p] AS INTEGER` said "cannot cast a list to number" before — the list was refused and
+    // the element never seen, so the engines agreed only by accident of wording.
+    expect(msg(`MATCH (p:Person) RETURN CAST([p] AS INTEGER) AS x`)).toContain(
+      'cannot cast a graph element to number',
+    );
+    expect(msg(`MATCH (p:Person) RETURN CAST([p] AS BOOLEAN) AS x`)).toContain(
+      'cannot cast a graph element to boolean',
+    );
+    expect(msg(`MATCH (p:Person) RETURN CAST([p] AS LIST) AS x`)).toContain(
+      'cannot cast a graph element to list',
+    );
+
+    // CONTROLS: a container of plain values, and a container of an element's PROPERTIES. A
+    // `containsElement` that answered `true` unconditionally would pass every assertion above
+    // and fail these.
+    expect(one(`RETURN CAST([1, 2] AS STRING) AS x`)).toBe('1,2');
+    expect(one(`RETURN CAST({a: 1} AS STRING) AS x`)).toBe('{"a":1}');
+    expect(one(`MATCH (p:Person {name:'marko'}) RETURN CAST([p.name, p.age] AS STRING) AS x`)).toBe(
+      'marko,29',
+    );
+    // A hand-written map with an element map's exact FIELD SET still casts. Native's nested
+    // test is a rendered-SHAPE test keyed on `Value::Map`, and a GQL `{…}` literal lowers to a
+    // `Value::Record`, so its known false positive is not reachable from GQL — which is why
+    // this engine needs no shape test and the two still agree. Verified across both engines.
+    expect(one(`RETURN CAST({id: 'a', labels: ['P'], properties: {k: 1}} AS STRING) AS x`)).toBe(
+      '{"id":"a","labels":["P"],"properties":{"k":1}}',
+    );
+
+    // And a list containing an element still RENDERS as before: the refusal is confined to
+    // CAST, so nothing about normal egress changed.
+    const rendered = one(`MATCH (p:Person {name:'marko'}) RETURN [p] AS x`) as unknown[];
+
+    expect(rendered).toHaveLength(1);
+    expect((rendered[0] as { id: unknown }).id).toBeDefined();
+  });
+
   test('temporal CAST targets desugar to the temporal constructor functions', () => {
     // `one` returns the raw temporal instance; compare its tagged JSON form.
     const tag = (q: string): unknown => (one(q) as { toJSON(): unknown }).toJSON();

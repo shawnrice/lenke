@@ -895,18 +895,82 @@ STRING)` and `CAST(p.k AS STRING)` already agreed, so nothing legitimate was at 
   read `value_at` where its sibling read `render_cell`). TS: the same check in `castValue`, plus a
   named `castTargetName` so both engines spell the target identically (`integer`/`float` → **number**).
   Messages byte-identical by construction and asserted AS TEXT in both suites, not just "it throws".
-  **⚠️ THE NESTED CASE IS DELIBERATELY NOT DONE.** `CAST([p, ''] AS STRING)` still differs, because
-  the engines cannot share a mechanism: TS keeps element identity at every depth (a recursive value
-  check reaches it), native does not — since item 345 containers render elements eagerly, so by cast
-  time the list holds a `Map` indistinguishable from a user's. The alternatives are worse: a STATIC
-  operand check works in both but would refuse `CAST(CASE WHEN … THEN p ELSE 1 END AS STRING)`
-  whichever branch is taken, **trading the old divergence for a new one**; and making native's
-  containers keep refs unboxed (resolving at egress) is the architecturally right answer and a
-  bigger change, touching the fix 345 just landed. It is also a separate semantic question — a list
-  containing an element is a legal value, and stringifying that list is not casting the element.
+  **⚠️ THE NESTED CASE WAS LEFT OPEN HERE AND IS NOW CLOSED BY 354 — and the reason given for
+  leaving it was wrong on both counts.** This entry said _"the engines cannot share a mechanism: TS
+  keeps element identity at every depth, native does not"_. Neither half held. TS did **not** keep
+  identity at every depth in the way that mattered — its map/record nesting already AGREED with
+  native (both render the element map) and only the LIST path diverged, because `str()` renders an
+  array with `joinElement` and a record with `JSON.stringify`. And the shared mechanism **already
+  existed in the engine**: `sort_local_key_is_element` has refused `order(local)` over elements by
+  exactly the dual ref-or-rendered-map test since long before this item. See 354; the surviving
+  honest part of this paragraph is that unboxing native's containers is still the architectural
+  follow-up, and still parked.
   **Why refusing was right regardless of the prose**: nothing in the free artifacts says the cast
   exists, nobody can have relied on it (the engines never agreed), and a refusal relaxes cleanly to
   whatever the cast table specifies. Picking one engine's answer would have to be un-picked.
+- **DECIDED AND DONE — a graph element casts to nothing at ANY DEPTH; the premise used to leave this
+  open was itself wrong (354).** The decision on 353's open half came back **error**, and
+  implementing it refuted both halves of 353's stated reason. _"TS keeps element identity at every
+  depth"_: no — the map/record nesting **already agreed** (`CAST({v: p} AS STRING)` rendered the
+  element map in both engines); only the LIST path diverged, because TS's `str()` renders an array
+  with `joinElement` (element → external id) and a record with `JSON.stringify` (element → element
+  map), so **TS's two container paths disagreed with each other.** _"The engines cannot share a
+  mechanism"_: they already did — `exec::aggregation::sort_local_key_is_element` has refused
+  `order(local)` over elements by exactly the dual **unboxed-ref OR rendered-element-map** test for
+  a long time, and its own comment states the diagnosis (_"checking only the refs found nothing and
+  the fault never fired"_). **A scope claim is a measurement**, and this is the fourth time this
+  session that checking one inverted the recommendation resting on it (342→343, 343→348, 350→351).
+  **SURVEYING FIRST FOUND SEVEN DIVERGENT SHAPES IN THREE FAMILIES**, not the one reported: the list
+  literals (`[p]`, `[r]`, `[[p]]`, `[p, '']`), **the path ACCESSORS** (`nodes(p)`, `edges(p)`) and
+  **the path VALUE itself** — the last two families being lists of elements by construction rather
+  than by a literal, i.e. the shapes a real query actually hits.
+  **THE CHANGE**: `value::contains_element`, recursive through lists, records and maps (both KEYS
+  and values, since a Gremlin map keys by any value), testing BOTH forms an element arrives in;
+  `cast` uses it in place of a top-level 2-tag match, with the same message reused because it is the
+  same rule — _a graph element casts to nothing, wherever in the value it sits._ The field-set test
+  (`vertex_map_ext_id`/`edge_map_ext_id`) **moved crates** into the value contract, since `cast`
+  lives in `lenke-engine-core` and could not reach `exec::render`; the two near-identical copies
+  collapsed into one function parameterized by the field set.
+  **⚠️ THE OTHER COHERENT ROUTE, recorded because reversing this is cheap**: since the map nesting
+  already agreed, the alternative was to make TS's list path match its own map path — render the
+  element map in both and refuse NOTHING. Route 1 (refuse) was taken because it is the decision and
+  the only one statable in one sentence, but it does cost three previously-AGREEING shapes (`{v: p}`
+  and its two nested forms), turning them from "renders the element map" into an error. A refusal
+  relaxes cleanly if the paywalled cast table says otherwise; a guessed value would have to be
+  un-picked.
+  **The predicted false positive is NOT REACHABLE, measured rather than assumed**: native's
+  rendered-shape test would wrongly fire on a hand-written `{id, labels, properties}` map, which TS's
+  identity test would not share — except a GQL `{…}` literal lowers to a `Value::Record` and the
+  shape test keys on `Value::Map`, so within the only surface that HAS `CAST` an element-shaped map
+  can only BE a rendered element. Both lookalike rows still render in both engines and are pinned as
+  controls, so TS's check stays pure identity and no shape test was added there.
+  **TEETH**: 5 behavioural mutants all CAUGHT (list arm, record arm, rendered-vertex test,
+  rendered-EDGE test alone, field-set guard) by exactly the new test, plus a behaviour-preserving
+  CONTROL mutant that survived as it must; cap proved to kill first (137 and 124).
+  **⚠️ A MOVED LINE IS STILL AN UNTESTED LINE** — the `keys.len() != pairs.len()` guard (rejecting a
+  duplicate or non-string key whose key SET still matches) survived the whole 1,101-test engine
+  suite, because **it had no test in the place it moved FROM either**; the mutant is what said so,
+  and it now has a direct unit test.
+  **The fuzzer hole is closed, and its own exclusion note had an expiry date**: item 346 deliberately
+  kept the cast shapes out, saying they _"would make the fuzzer red for an unrelated reason"_ while
+  the divergence was open. Lifted — `genHopProjection` now generates five must-refuse cast shapes
+  and two that must keep WORKING, so the block is not purely a refusal check. Verified by disabling
+  native's list arm: red in one run, naming the shape.
+  **COST: none measurable.** Alternated A/B, min of 7, three rounds, 200k rows: every cast row
+  within 1% (`CAST(n.s AS STRING)` 21.9 vs 21.8 ns/row), while the null-control row the change
+  cannot reach drifts **6.6% by itself** — the noise floor is several times the effect being
+  claimed. Probe deleted.
+- **⚠️ OPEN, found incidentally by 354's control rows — the rest of the cast table's MESSAGES
+  diverge, and the fuzzer is blind to the class.** `CAST([1,2] AS INTEGER)` → native `cannot cast
+list to number` vs TS `cannot cast a list to number`; `CAST({a:1} AS INTEGER)` → native `cannot
+cast record to number` vs TS `cannot cast **a map** to number` (a different TYPE NAME, not just an
+  article). Both raise `E_INVALID_VALUE`, and the differential fuzzer compares CODES, so nothing
+  reaches this. Item 353 made the ELEMENT messages byte-identical by hand; the rest of the table was
+  never checked.
+- **⚠️ OPEN, same origin — `from` as a bare record-field name.** `RETURN {from: 1}` → native accepts
+  it, TS rejects it as a reserved word (_"quote it as a delimited identifier with backticks"_).
+  Found because an edge-element lookalike map needs a `from` key. Whether `from` is reserved in that
+  position is an ISO BNF question and needs the grammar, not a guess.
 - **The 26x row's remaining cost is LOCALITY — 2.9x per-edge degradation from size alone, which
   partly rehabilitates item 300's CSR (352).** Item 351 left the state honest: _"what is left in the
   38 ns an edge is not known… a fresh decomposition is the next step."_ This is it, and it lands

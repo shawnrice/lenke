@@ -2275,6 +2275,143 @@ fn a_graph_element_casts_to_nothing() {
     assert!(matches!(&out.rows[0][0], Value::Str(s) if &**s == "1"));
 }
 
+/// The NESTED half of the above, which audit item 354 closed: a graph element casts to nothing
+/// *wherever in the value it sits*, not only at the top level.
+///
+/// Item 353 refused the direct cases with a top-level `Value::Node | Value::Edge` match, and
+/// that match cannot see a nested element: `Expr::List`/`Record`/`MapLit` build their items with
+/// `render_cell`, so by the time the container reaches `cast` the element is an
+/// `{id, labels, properties}` MAP and the ref is gone. `CAST([p, ''] AS STRING)` therefore
+/// stringified the element map while TS joined the external id.
+///
+/// Every shape here was a measured divergence before the fix (a 23-case survey across both
+/// engines), in three families: the container literals, the path ACCESSORS (`nodes`/`edges`),
+/// and the path VALUE itself. Both twins are covered at every nesting level — a node/edge
+/// asymmetry where only the vertex form is exercised is the recurring hole in this repo (items
+/// 333, 335, 349).
+#[test]
+fn a_nested_graph_element_casts_to_nothing() {
+    let nd = concat!(
+        "{\"id\":\"a\",\"labels\":[\"P\"],\"props\":{\"k\":1}}\n",
+        "{\"id\":\"b\",\"labels\":[\"P\"],\"props\":{\"k\":2}}\n",
+        "{\"from\":\"a\",\"to\":\"b\",\"labels\":[\"R\"],\"props\":{}}"
+    );
+    let store = crate::ndjson::from_ndjson(nd).unwrap();
+
+    for (q, want) in [
+        // --- a list literal, node and edge
+        (
+            "MATCH (p:P) WHERE p.k = 1 RETURN CAST([p, ''] AS STRING) AS x",
+            "cannot cast a graph element to string",
+        ),
+        (
+            "MATCH (p:P)-[r:R]->() RETURN CAST([r] AS STRING) AS x",
+            "cannot cast a graph element to string",
+        ),
+        // --- every target, so the refusal precedes the whole table and not just the STRING arm.
+        // `[p] AS INTEGER` said "cannot cast list to number" before: the list arm fired first and
+        // the element was never seen, so the two engines agreed only by accident of wording.
+        (
+            "MATCH (p:P) WHERE p.k = 1 RETURN CAST([p] AS INTEGER) AS x",
+            "cannot cast a graph element to number",
+        ),
+        (
+            "MATCH (p:P) WHERE p.k = 1 RETURN CAST([p] AS BOOLEAN) AS x",
+            "cannot cast a graph element to boolean",
+        ),
+        (
+            "MATCH (p:P) WHERE p.k = 1 RETURN CAST([p] AS LIST) AS x",
+            "cannot cast a graph element to list",
+        ),
+        // --- a record literal: the element as a value, and not in first position
+        (
+            "MATCH (p:P) WHERE p.k = 1 RETURN CAST({v: p} AS STRING) AS x",
+            "cannot cast a graph element to string",
+        ),
+        (
+            "MATCH (p:P) WHERE p.k = 1 RETURN CAST({k: 1, v: p} AS STRING) AS x",
+            "cannot cast a graph element to string",
+        ),
+        // --- two levels deep, in both container orders. A one-level check passes the list and
+        // record arms above while still stringifying these.
+        (
+            "MATCH (p:P) WHERE p.k = 1 RETURN CAST([[p]] AS STRING) AS x",
+            "cannot cast a graph element to string",
+        ),
+        (
+            "MATCH (p:P) WHERE p.k = 1 RETURN CAST([{v: p}] AS STRING) AS x",
+            "cannot cast a graph element to string",
+        ),
+        (
+            "MATCH (p:P) WHERE p.k = 1 RETURN CAST({v: [p]} AS STRING) AS x",
+            "cannot cast a graph element to string",
+        ),
+        // --- a list of elements that is NOT a literal: the ISO path accessors, and the path
+        // value itself (a `{vertices, edges}` map, so the recursion has to reach through a map
+        // into a list to find the element maps).
+        (
+            "MATCH q = (:P)-[:R]->(:P) RETURN CAST(nodes(q) AS STRING) AS x",
+            "cannot cast a graph element to string",
+        ),
+        (
+            "MATCH q = (:P)-[:R]->(:P) RETURN CAST(edges(q) AS STRING) AS x",
+            "cannot cast a graph element to string",
+        ),
+        (
+            "MATCH q = (:P)-[:R]->(:P) RETURN CAST(q AS STRING) AS x",
+            "cannot cast a graph element to string",
+        ),
+    ] {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &store);
+        let err = crate::exec::try_run(&plan, &store).expect_err(&format!("{q} must refuse"));
+
+        assert!(err.contains(want), "{q}: got {err:?}, want {want:?}");
+    }
+
+    // CONTROLS the refusal must not reach: a container of plain values, and a container of an
+    // element's PROPERTIES. These are the rows that say the check discriminates rather than
+    // refusing every container — a `contains_element` that answered `true` unconditionally
+    // would pass every assertion above.
+    for (q, want) in [
+        ("RETURN CAST([1, 2] AS STRING) AS x", "1,2"),
+        ("RETURN CAST({a: 1} AS STRING) AS x", "{\"a\":1}"),
+        (
+            "MATCH (p:P) WHERE p.k = 1 RETURN CAST([p.k, p.k] AS STRING) AS x",
+            "1,1",
+        ),
+        // A hand-written map carrying an element map's exact FIELD SET still casts: a GQL `{…}`
+        // literal lowers to a `Value::Record`, and the rendered-element test keys on
+        // `Value::Map`, so the shape test's known false positive is not reachable from GQL.
+        // Verified against both engines, not assumed.
+        (
+            "RETURN CAST({id: 'a', labels: ['P'], properties: {k: 1}} AS STRING) AS x",
+            "{\"id\":\"a\",\"labels\":[\"P\"],\"properties\":{\"k\":1}}",
+        ),
+    ] {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &store);
+        let out = run(&plan, &store);
+
+        assert!(
+            matches!(&out.rows[0][0], Value::Str(s) if &**s == want),
+            "{q}: got {:?}, want {want:?}",
+            out.rows[0][0]
+        );
+    }
+
+    // And a list containing an element still RENDERS as before — the refusal is confined to
+    // `CAST`, so nothing about normal egress changed.
+    let q = "MATCH (p:P) WHERE p.k = 1 RETURN [p] AS x";
+    let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &store);
+    let out = run(&plan, &store);
+
+    assert!(
+        matches!(&out.rows[0][0], Value::List(items) if items.len() == 1
+            && matches!(&items[0], Value::Map(_))),
+        "a rendered list of an element must still be a list of its element map, got {:?}",
+        out.rows[0][0]
+    );
+}
+
 /// REGRESSION TEST for the cross-engine divergence fixed at audit item 345 (found at 344): an
 /// element nested in a record literal rendered as its internal DENSE ID instead of its element
 /// map, because the `Expr::Record` arm read `value_at` where `Expr::List` reads `render_cell`.

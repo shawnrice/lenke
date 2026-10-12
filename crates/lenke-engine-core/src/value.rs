@@ -241,6 +241,92 @@ pub enum CastTarget {
     List,
 }
 
+/// The `id` field of a bare-VERTEX element map (`{id, labels, properties}`), or `None`.
+///
+/// This is the engine's test for a RENDERED element — one that has already been through
+/// `render_cell` and so is a `Value::Map` rather than a `Value::Node` ref. It lives here, in
+/// the value contract, because three different places need it and it is a property of a
+/// `Value`: `exec::render::reunfold_elements` (resolving a `fold().unfold()` round-trip back to
+/// a live frontier), `exec::aggregation::sort_local_key_is_element` (refusing `order(local)`
+/// over elements), and [`cast`] (refusing a cast over one). Keyed on the EXACT field set, so a
+/// map that merely has an `id` is not an element.
+pub fn vertex_map_ext_id(v: &Value) -> Option<&str> {
+    map_ext_id(v, &["id", "labels", "properties"])
+}
+
+/// The `id` field of a bare-EDGE element map (`{id, from, to, labels, properties}`).
+///
+/// The edge twin of [`vertex_map_ext_id`]. Both twins exist and both are checked at every
+/// call site: the recurring failure in this repo is a node/edge asymmetry where only the
+/// vertex form is ever exercised (audit items 333, 335, 349 were all this shape).
+pub fn edge_map_ext_id(v: &Value) -> Option<&str> {
+    map_ext_id(v, &["from", "id", "labels", "properties", "to"])
+}
+
+/// `vertex_map_ext_id`/`edge_map_ext_id` differ only in their field set, so the field-set
+/// compare and the `id` extraction live once. `want` must be SORTED (it is compared against a
+/// `BTreeSet`).
+fn map_ext_id<'v>(v: &'v Value, want: &[&str]) -> Option<&'v str> {
+    let Value::Map(pairs) = v else { return None };
+    let keys: std::collections::BTreeSet<&str> = pairs
+        .iter()
+        .filter_map(|(k, _)| match k {
+            Value::Str(s) => Some(s.as_ref()),
+            _ => None,
+        })
+        .collect();
+    // `keys.len() != pairs.len()` rejects a map with a duplicate or non-string key, which
+    // would otherwise collapse into a matching set.
+    if keys.len() != pairs.len() || keys != want.iter().copied().collect() {
+        return None;
+    }
+    pairs.iter().find_map(|(k, val)| match (k, val) {
+        (Value::Str(k), Value::Str(id)) if k.as_ref() == "id" => Some(id.as_ref()),
+        _ => None,
+    })
+}
+
+/// Does `v` hold a graph element ANYWHERE, at any depth?
+///
+/// An element reaches a value position in EITHER of two forms, and both have to be checked —
+/// this is the same dual test `exec::aggregation::sort_local_key_is_element` makes, for the
+/// same reason:
+///
+/// - an UNBOXED `Value::Node`/`Value::Edge` ref, which is what a heterogeneous `Col::Gen`
+///   (a Gremlin `inject`, a mixed branch) carries at the TOP level; and
+/// - a RENDERED element map, which is what a container holds — `Expr::List`, `Expr::Record`
+///   and `Expr::MapLit` all build their items with `render_cell`, so by the time a list
+///   reaches [`cast`] its elements are `{id, labels, properties}` maps and the ref is gone.
+///
+/// Checking only the refs is the mistake that made `order(local)`'s fault never fire, and it
+/// is why `CAST([p, ''] AS STRING)` could not be refused by the item-353 check: the common
+/// shape is the rendered one.
+///
+/// The rendered test is keyed on the exact field set, so it has a KNOWN, ACCEPTED false
+/// positive: a hand-written map that happens to carry exactly `{id, labels, properties}` with
+/// a string `id` is indistinguishable from a rendered vertex and is treated as one. That is
+/// inherent to checking after rendering, it is the behaviour `reunfold_elements` and
+/// `order(local)` already have, and the TS engine applies the same test so the two engines
+/// agree on the false positive rather than diverging on it. Removing it needs containers to
+/// keep refs unboxed and resolve at egress — the architectural follow-up parked at item 353.
+pub fn contains_element(v: &Value) -> bool {
+    match v {
+        Value::Node(_) | Value::Edge(_) => true,
+        Value::List(items) => items.iter().any(contains_element),
+        Value::Record(fields) => fields.iter().any(|(_, val)| contains_element(val)),
+        Value::Map(pairs) => {
+            vertex_map_ext_id(v).is_some()
+                || edge_map_ext_id(v).is_some()
+                // A Gremlin map takes ANY value as a key, so an element can be a KEY as well
+                // as a value (`group().by(…)` keys by the element). Both sides recurse.
+                || pairs
+                    .iter()
+                    .any(|(k, val)| contains_element(k) || contains_element(val))
+        }
+        Value::Null | Value::Bool(_) | Value::Num(_) | Value::Str(_) | Value::Temporal(_) => false,
+    }
+}
+
 /// Coerce `v` to `target`, the ONE home for the conversion table. Policy (fixed
 /// by the design decision): a failed conversion is `Err(E_INVALID_VALUE)` — the
 /// caller turns that into a thrown error — while a NULL input is NULL for every
@@ -275,7 +361,14 @@ pub fn cast(v: &Value, target: CastTarget) -> Result<Value, String> {
     // had to change and a refusal is the conservative direction: it can be relaxed to whatever
     // the paywalled cast table says without breaking anyone who was relying on a behaviour the
     // two engines never agreed on.
-    if let Value::Node(_) | Value::Edge(_) = v {
+    //
+    // The test is `contains_element`, NOT a top-level `Value::Node | Value::Edge` match, and
+    // the difference is the whole of audit item 354. A container RENDERS its elements
+    // (`Expr::List` and friends build items with `render_cell`), so the top-level match saw a
+    // `Value::Map` and `CAST([p, ''] AS STRING)` went on to stringify the element map, where TS
+    // joined the external id — the nested half that item 353 left open. The rule is the same
+    // one, stated once: a graph element casts to nothing, wherever in the value it sits.
+    if contains_element(v) {
         return bad(
             "a graph element",
             match target {

@@ -348,3 +348,81 @@ fn num_of_collapses_negative_zero() {
     // A non-zero value is untouched.
     assert_eq!(num_of(&Value::Num(-3.5)).unwrap(), -3.5);
 }
+
+/// `contains_element` is the test behind `cast`'s refusal (audit item 354), and its RENDERED
+/// half is keyed on an element map's exact field set. That field-set guard arrived here with
+/// the function when it moved out of `exec::render` — where it had no test at all, which a
+/// mutant proved: dropping the `keys.len() != pairs.len()` check survived the whole engine
+/// suite. These are the rows that kill that mutant.
+#[test]
+fn contains_element_keys_on_the_exact_rendered_field_set() {
+    let vmap = |pairs: Vec<(Value, Value)>| Value::Map(std::sync::Arc::new(pairs));
+    let vertex = || {
+        vmap(vec![
+            (s("id"), s("a")),
+            (s("labels"), Value::List(vec![s("P")])),
+            (s("properties"), vmap(vec![(s("k"), n(1.0))])),
+        ])
+    };
+
+    // The two rendered forms, and the two unboxed refs.
+    assert!(contains_element(&vertex()));
+    assert!(contains_element(&vmap(vec![
+        (s("id"), s("e1")),
+        (s("from"), s("a")),
+        (s("to"), s("b")),
+        (s("labels"), Value::List(vec![s("R")])),
+        (s("properties"), vmap(vec![])),
+    ])));
+    assert!(contains_element(&Value::Node(0)));
+    assert!(contains_element(&Value::Edge(0)));
+
+    // Nested, at depth, through both container kinds — and as a map KEY, which a Gremlin map
+    // permits and a values-only recursion would miss.
+    assert!(contains_element(&Value::List(vec![vertex()])));
+    assert!(contains_element(&Value::List(vec![Value::List(vec![
+        vertex()
+    ])])));
+    assert!(contains_element(&vmap(vec![(s("v"), vertex())])));
+    assert!(contains_element(&vmap(vec![(vertex(), n(1.0))])));
+    assert!(contains_element(&Value::Record(
+        vec![("v".into(), vertex())].into()
+    )));
+
+    // THE FIELD-SET GUARD. Each of these has the element field set in its KEY SET and is still
+    // not an element, and each fails without the `keys.len() != pairs.len()` check:
+    //   - a DUPLICATE `id`: the key SET matches, the pair count does not;
+    //   - a NON-STRING key alongside the full set: the same, since non-string keys are filtered
+    //     out of the set before the compare.
+    let mut dup = vec![
+        (s("id"), s("a")),
+        (s("labels"), Value::List(vec![])),
+        (s("properties"), vmap(vec![])),
+    ];
+    dup.push((s("id"), s("b")));
+    assert!(
+        !contains_element(&vmap(dup)),
+        "a map with a duplicate `id` is not a rendered element"
+    );
+    let mut extra = vec![
+        (s("id"), s("a")),
+        (s("labels"), Value::List(vec![])),
+        (s("properties"), vmap(vec![])),
+    ];
+    extra.push((n(7.0), s("x")));
+    assert!(
+        !contains_element(&vmap(extra)),
+        "a map with a non-string extra key is not a rendered element"
+    );
+
+    // And the ordinary values the refusal must never reach.
+    assert!(!contains_element(&Value::List(vec![n(1.0), s("a")])));
+    assert!(!contains_element(&vmap(vec![(s("id"), s("a"))])));
+    assert!(!contains_element(&vmap(vec![
+        (s("id"), s("a")),
+        (s("labels"), Value::List(vec![])),
+    ])));
+    assert!(!contains_element(&Value::Null));
+    assert!(!contains_element(&s("a")));
+    assert!(!contains_element(&n(1.0)));
+}

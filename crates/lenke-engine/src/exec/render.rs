@@ -68,48 +68,12 @@ pub(super) fn render_cell(col: &Col, i: usize, store: &Store) -> Value {
     }
 }
 
-/// The `id` field of a bare-VERTEX element map (`{id, labels, properties}`), or `None`.
-pub(super) fn vertex_map_ext_id(v: &Value) -> Option<&str> {
-    let Value::Map(pairs) = v else { return None };
-    let keys: std::collections::BTreeSet<&str> = pairs
-        .iter()
-        .filter_map(|(k, _)| match k {
-            Value::Str(s) => Some(s.as_ref()),
-            _ => None,
-        })
-        .collect();
-    if keys.len() != pairs.len() || keys != ["id", "labels", "properties"].into_iter().collect() {
-        return None;
-    }
-    pairs.iter().find_map(|(k, val)| match (k, val) {
-        (Value::Str(k), Value::Str(id)) if k.as_ref() == "id" => Some(id.as_ref()),
-        _ => None,
-    })
-}
-
-/// The `id` field of a bare-EDGE element map (`{id, from, to, labels, properties}`).
-pub(super) fn edge_map_ext_id(v: &Value) -> Option<&str> {
-    let Value::Map(pairs) = v else { return None };
-    let keys: std::collections::BTreeSet<&str> = pairs
-        .iter()
-        .filter_map(|(k, _)| match k {
-            Value::Str(s) => Some(s.as_ref()),
-            _ => None,
-        })
-        .collect();
-    if keys.len() != pairs.len()
-        || keys
-            != ["from", "id", "labels", "properties", "to"]
-                .into_iter()
-                .collect()
-    {
-        return None;
-    }
-    pairs.iter().find_map(|(k, val)| match (k, val) {
-        (Value::Str(k), Value::Str(id)) if k.as_ref() == "id" => Some(id.as_ref()),
-        _ => None,
-    })
-}
+// The rendered-element-map test now lives in the value contract (`lenke_engine_core::value`),
+// because a THIRD caller needed it and it could not reach it here: `value::cast` is in that
+// crate and has to refuse a cast over an element nested in a container (audit item 354). It
+// was duplicated between this module and `aggregation`'s `order(local)` check; it is one copy
+// now, and the two field sets are one function parameterized by the field set.
+pub(super) use lenke_engine_core::value::{edge_map_ext_id, vertex_map_ext_id};
 
 /// Reconstitute an `unfold`ed element column: when every element is a resolvable
 /// bare VERTEX (or EDGE) element map (the fold().unfold() round-trip), resolve each

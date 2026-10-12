@@ -1366,6 +1366,53 @@ const castToBoolean = (v: unknown): boolean => {
 const castTargetName = (category: string): string =>
   category === 'integer' || category === 'float' ? 'number' : category;
 
+/**
+ * Does `v` hold a graph element ANYWHERE, at any depth? The twin of the native engine's
+ * `value::contains_element`, and the reason the two engines now agree on the NESTED cast
+ * (audit item 354).
+ *
+ * This engine keeps real element identity at every depth, so the test is pure identity — no
+ * rendered-element-map shape check, which is what native needs because its containers render
+ * their items eagerly. The two still agree, because within GQL the only way a native container
+ * holds an element-shaped map is that it IS a rendered element: a GQL `{…}` literal lowers to a
+ * `Value::Record`, not the `Value::Map` the shape test keys on. Verified case by case against
+ * both engines, lookalike maps included, rather than argued.
+ *
+ * `Path` and `LenkeRecord` are checked explicitly because neither is an `Array`: `Path` extends
+ * the lazy `List`, and `LenkeRecord` extends `Map`. `str()` has the same two special cases, for
+ * the same reason — and a record nested in a list slipping through `Array.prototype.join` is
+ * exactly the bug its own comment records.
+ */
+const containsElement = (v: unknown): boolean => {
+  if (isElement(v)) {
+    return true;
+  }
+
+  if (Array.isArray(v)) {
+    return v.some(containsElement);
+  }
+
+  // A path is a vertex/edge interleaving by construction, so `CAST(p AS STRING)` over a path
+  // refuses as well — it was a divergence of its own (native rendered the whole path object's
+  // text, this engine joined the ids).
+  if (v instanceof Path) {
+    return [...v].some(containsElement);
+  }
+
+  // A record's KEYS are strings; a Gremlin map's may be any value, so both sides recurse.
+  if (v instanceof Map) {
+    for (const [k, val] of v) {
+      if (containsElement(k) || containsElement(val)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  return false;
+};
+
 export const castValue = (v: unknown, category: string): unknown => {
   if (isNullish(v)) {
     return null;
@@ -1381,8 +1428,13 @@ export const castValue = (v: unknown, category: string): unknown => {
   // artifacts show this is not a place implementations may choose (item 347), so one engine had
   // to change, and a refusal can be relaxed later to whatever the paywalled cast table says
   // without breaking anyone who relied on a behaviour the engines never agreed on.
-  if (isVertex(v) || isEdge(v)) {
-    dataException(`cannot cast ${typeName(v)} to ${castTargetName(category)}`);
+  // `containsElement`, NOT a top-level `isVertex(v) || isEdge(v)` (item 354). The element also
+  // casts to nothing when it is NESTED — `CAST([p, ''] AS STRING)`, `CAST(nodes(path) AS
+  // STRING)` — which is the half item 353 left open. The message names the ELEMENT rather than
+  // `typeName(v)` (which would say "a list"), because the element is the reason for the refusal
+  // and both engines have to produce the same bytes.
+  if (containsElement(v)) {
+    dataException(`cannot cast a graph element to ${castTargetName(category)}`);
   }
 
   switch (category) {

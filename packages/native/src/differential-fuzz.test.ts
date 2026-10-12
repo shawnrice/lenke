@@ -1175,6 +1175,27 @@ const genHopProjection = (r: () => number): string => {
       'RETURN [a] AS x',
       'RETURN [a, b] AS x',
       'RETURN {v: a}.v AS x',
+      // CAST over a container carrying an element. This was DELIBERATELY EXCLUDED when item
+      // 346 added the family — the engines disagreed about it (TS joined the element's external
+      // id, native stringified its whole element map) and letting it in would have made the
+      // fuzzer red for a then-open conformance question. Item 354 closed that question: a graph
+      // element casts to nothing at any depth, in both engines, so the exclusion has expired
+      // and the shape belongs in the harness that compares them row for row.
+      //
+      // Both engines now REFUSE every row of these, which the harness counts as agreement
+      // (both-error). That is still coverage worth having: it is the assertion that the two
+      // keep refusing the SAME set, and a one-sided relaxation shows up as a divergence rather
+      // than as a silent re-divergence. The shapes that must keep SUCCEEDING are the plain
+      // containers above and the control rows in both engines' unit tests.
+      "RETURN CAST([a, ''] AS STRING) AS x",
+      'RETURN CAST([e] AS STRING) AS x',
+      'RETURN CAST({v: a} AS STRING) AS x',
+      'RETURN CAST([{v: a}] AS STRING) AS x',
+      'RETURN CAST([a] AS INTEGER) AS x',
+      // ...and the shapes that must keep WORKING, so this block is not purely a refusal check:
+      // a container of the element's PROPERTIES casts exactly as before.
+      'RETURN CAST([a.n, b.n] AS STRING) AS x',
+      'RETURN CAST({v: a.n} AS STRING) AS x',
     ]);
   }
 
@@ -1260,10 +1281,13 @@ const genQuery = (r: () => number): string => {
     //
     // It goes HERE, at query level, rather than as a leaf in `genExpr`: an element leaf inside
     // the arbitrary scalar grammar immediately produced `CAST([n, ''] AS STRING)`, where the
-    // two engines disagree about how an element stringifies (TS gives its id, native its whole
-    // map). That is a real divergence and it is recorded as its own open item — but it is a
-    // CONFORMANCE question about `CAST`, not the rendering hole this case exists to close, and
-    // letting it in here would make the fuzzer red for an unrelated reason.
+    // two engines disagreed about how an element stringifies (TS gave its id, native its whole
+    // map). That was a real divergence, recorded as its own open item, and keeping it out of
+    // the arbitrary grammar is still right — an element leaf in `genExpr` reaches every scalar
+    // function, which is a much wider conformance surface than this case is for.
+    //
+    // The `CAST` divergence itself is CLOSED (item 354: an element casts to nothing at any
+    // depth, both engines), so `genHopProjection` now generates the cast shapes explicitly.
     //
     // `a`, `b` and `e` are the variables this family binds, so the elements are in scope.
     return `MATCH (a:T)-[e:E]->(b:T) ${genHopProjection(r)}`;
