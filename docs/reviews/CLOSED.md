@@ -882,10 +882,19 @@ bench`** so one-case-per-process is a flag instead of the bespoke script items 2
   An edge enters a `(vertex, label)` bucket exactly once, so the Set's dedup is never needed. 1M
   edges across 200,000 buckets of 5:
   **INSERT 45.8 -> 6.4ms (7.13x)**, **ITERATE 3M visits 29.2 -> 4.6ms `for…of` (6.37x) / 3.3ms
-  indexed (8.80x)**, **REMOVE at degree 5: 5.4 -> 0.6ms, the ARRAY 9x FASTER** (an `indexOf` over
-  five elements beats a Set hash), **REMOVE at degree 1000: 0.5 -> 11.0ms, the array 24x WORSE.**
-  So the array wins all three axes at the fixtures' degree and loses badly at the scale this engine
-  is for — a threshold, not a verdict.
+  indexed (8.80x)** — both of which hold at EVERY degree, because a Set's hash is flat and it is
+  paying for a uniqueness that cannot be violated.
+  ~~**REMOVE at degree 5: the ARRAY 9x FASTER**; **at degree 1000: the array 24x WORSE.**~~
+  **BOTH REMOVAL FIGURES CORRECTED BY ITEM 327** — they measured LOCALITY, not degree (the degree-5
+  case probed 200,000 cold buckets, the degree-1000 case one hot bucket; the tell was `Set.has`
+  reading 27ns at degree 5 and 2.5ns at degree 1000, which no hash set does). Re-measured with
+  bucket count and probe count held constant: **the crossover is degree ~8**, the high-degree
+  penalty is **7.4x not 24x**, and the low-degree advantage is **~1.03x not 9x**.
+  **And the verdict improves**: removal happens at most ONCE PER EDGE where iteration happens once
+  per edge PER QUERY, so the threshold follows that ratio rather than the crossover — at degree 128
+  an array is 2.51x worse on a once-per-edge operation and 6-9x better on a per-query one. The
+  counter is degree SKEW (most edges live in high-degree buckets, so a threshold of 8 gives up most
+  of the win; 64-128 keeps it). That is a read/write-mix decision on real data, not a measurement.
   Worth ~**1.05x** on `decode ndjson` (three Set adds per edge = ~137ns of item 312's 810ns
   `indexEdgeLabel`) and ~**1.17x** on the gated three-hop rows (~8.2ns an edge-visit over 3M),
   compounding with 324. Real, and not enough to justify a swap that regresses high-degree removal
