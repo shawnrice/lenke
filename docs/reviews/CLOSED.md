@@ -878,6 +878,35 @@ bench`** so one-case-per-process is a flag instead of the bespoke script items 2
   aggregate-over-chain and never builds the frontier, so the engine that OOM'd had to be the TS
   one — and 3 and 4 hops run in 8 and 13 ms at ~80 MB where 5 is fatal, which is exactly the count
   family's ≤4-segment coverage edge (item 290).
+- **DECIDED AND DONE — a graph element casts to NOTHING; the survey found FOUR divergent shapes, not
+  one (353).** Item 346 reported `CAST([n, ''] AS STRING)`; item 347 established from ISO's free
+  artifacts that this is not a place implementations may choose; the decision came back **refuse**.
+  **SURVEYING FIRST FOUND THREE MORE**, and the direct cases are worse than the reported one:
+  `CAST(p AS STRING)` gave native **`"0"` — the INTERNAL DENSE ID** against TS's `"a"`;
+  `CAST(p AS INTEGER)` gave native **`0`** where TS already **threw**; `CAST(r AS STRING)` native
+  `"0"` vs TS `"e1"`; plus the reported nested form. `CAST([1,2] AS STRING)`, `CAST({a:1} AS
+STRING)` and `CAST(p.k AS STRING)` already agreed, so nothing legitimate was at risk — and **TS's
+  existing numeric refusal gave a phrasing to converge on rather than one to invent.**
+  **THE CHANGE**: an element casts to nothing for every target, in both engines, checked BEFORE the
+  target table for the same reason the NULL rule is — it is a property of the SOURCE, not the type
+  pair. native: `value::cast` gains an element arm, and `Expr::Cast` moves from `col.value_at(i)` to
+  `cell_value(&col, i, store)` because **`value_at` on an element column yields the dense id, so the
+  element never reached `cast` to be refused** — _item 345's bug in a second place_ (the `Record` arm
+  read `value_at` where its sibling read `render_cell`). TS: the same check in `castValue`, plus a
+  named `castTargetName` so both engines spell the target identically (`integer`/`float` → **number**).
+  Messages byte-identical by construction and asserted AS TEXT in both suites, not just "it throws".
+  **⚠️ THE NESTED CASE IS DELIBERATELY NOT DONE.** `CAST([p, ''] AS STRING)` still differs, because
+  the engines cannot share a mechanism: TS keeps element identity at every depth (a recursive value
+  check reaches it), native does not — since item 345 containers render elements eagerly, so by cast
+  time the list holds a `Map` indistinguishable from a user's. The alternatives are worse: a STATIC
+  operand check works in both but would refuse `CAST(CASE WHEN … THEN p ELSE 1 END AS STRING)`
+  whichever branch is taken, **trading the old divergence for a new one**; and making native's
+  containers keep refs unboxed (resolving at egress) is the architecturally right answer and a
+  bigger change, touching the fix 345 just landed. It is also a separate semantic question — a list
+  containing an element is a legal value, and stringifying that list is not casting the element.
+  **Why refusing was right regardless of the prose**: nothing in the free artifacts says the cast
+  exists, nobody can have relied on it (the engines never agreed), and a refusal relaxes cleanly to
+  whatever the cast table specifies. Picking one engine's answer would have to be un-picked.
 - **The 26x row's remaining cost is LOCALITY — 2.9x per-edge degradation from size alone, which
   partly rehabilitates item 300's CSR (352).** Item 351 left the state honest: _"what is left in the
   38 ns an edge is not known… a fresh decomposition is the next step."_ This is it, and it lands

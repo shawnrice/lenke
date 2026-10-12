@@ -259,6 +259,33 @@ pub fn cast(v: &Value, target: CastTarget) -> Result<Value, String> {
         return Ok(Value::Null);
     }
     let bad = |from: &str, to: &str| Err(format!("E_INVALID_VALUE: cannot cast {from} to {to}"));
+    // A graph element casts to NOTHING, and this arm precedes the table for the same reason the
+    // NULL rule does: it is a property of the SOURCE, not of the target pair.
+    //
+    // Before this, `CAST(p AS STRING)` answered `"0"` and `CAST(p AS INTEGER)` answered `0` — the
+    // node's INTERNAL DENSE ID, leaked to the caller, where the engine's own `id` field is the
+    // EXTERNAL one. The TS engine already refused the numeric form ("cannot cast a graph element
+    // to number") and stringified the STRING form to the external id, so the two engines
+    // disagreed four ways (audit item 353).
+    //
+    // Refusing is the decided answer. ISO's free artifacts show this is not a place
+    // implementations may choose — `-implementation-defined.xml` delegates only "the manner in
+    // which lax casts … are generated", not which type pairs are castable, and
+    // `-implementation-dependent.xml` does not mention casts at all (item 347) — so one engine
+    // had to change and a refusal is the conservative direction: it can be relaxed to whatever
+    // the paywalled cast table says without breaking anyone who was relying on a behaviour the
+    // two engines never agreed on.
+    if let Value::Node(_) | Value::Edge(_) = v {
+        return bad(
+            "a graph element",
+            match target {
+                CastTarget::Integer | CastTarget::Float => "number",
+                CastTarget::String => "string",
+                CastTarget::Boolean => "boolean",
+                CastTarget::List => "list",
+            },
+        );
+    }
     match target {
         CastTarget::Integer | CastTarget::Float => {
             let n = match v {

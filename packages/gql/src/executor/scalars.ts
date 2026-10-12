@@ -1357,9 +1357,32 @@ const castToBoolean = (v: unknown): boolean => {
 // to NULL; otherwise a failed conversion is a data exception (unlike the lenient
 // to_integer/to_float/to_boolean function forms, which return null). LIST never fails, so
 // it reuses `toListScalar`.
+/**
+ * The target name a cast error uses, which is NOT the category spelling: `integer` and `float`
+ * both report "number", matching `castToNumber`'s long-standing message and the native engine's
+ * `CastTarget::Integer | CastTarget::Float => "number"` arm. The two engines must produce the
+ * same bytes here, so the mapping lives in one named place rather than inline (item 353).
+ */
+const castTargetName = (category: string): string =>
+  category === 'integer' || category === 'float' ? 'number' : category;
+
 export const castValue = (v: unknown, category: string): unknown => {
   if (isNullish(v)) {
     return null;
+  }
+
+  // A graph element casts to NOTHING, and this check precedes the switch for the same reason the
+  // NULL rule does: it is a property of the SOURCE, not of the target pair.
+  //
+  // `castToNumber` already refused one of these ("cannot cast a graph element to number"), but
+  // `string` stringified the element to its EXTERNAL id while native answered its INTERNAL DENSE
+  // id — so the two engines disagreed four ways and neither answer was a documented contract
+  // (audit item 353). Refusing is the decided answer, and the conservative direction: ISO's free
+  // artifacts show this is not a place implementations may choose (item 347), so one engine had
+  // to change, and a refusal can be relaxed later to whatever the paywalled cast table says
+  // without breaking anyone who relied on a behaviour the engines never agreed on.
+  if (isVertex(v) || isEdge(v)) {
+    dataException(`cannot cast ${typeName(v)} to ${castTargetName(category)}`);
   }
 
   switch (category) {

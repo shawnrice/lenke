@@ -98,6 +98,50 @@ describe('GQL: ISO graph / conversion / string-list scalar functions', () => {
     expect(one(`RETURN to_boolean('nope') AS x`)).toBeNull();
   });
 
+  // Mirrors the Rust engine's `a_graph_element_casts_to_nothing` (audit item 353).
+  test('a graph element casts to NOTHING, for every target', () => {
+    // Before this, `string` stringified the element to its EXTERNAL id here while native
+    // answered its INTERNAL DENSE ID — four divergent shapes, and neither answer was a
+    // documented contract. ISO's free artifacts show this is not a place implementations may
+    // choose (item 347), so one engine had to change and a refusal is the conservative
+    // direction. The MESSAGE is asserted, not just the throw, because the two engines must
+    // produce the same bytes — and note `INTEGER`/`FLOAT` both report "number".
+    const msg = (q: string): string => {
+      try {
+        one(q);
+      } catch (e) {
+        return (e as Error).message;
+      }
+
+      throw new Error(`${q} should have refused`);
+    };
+
+    expect(msg(`MATCH (p:Person) RETURN CAST(p AS STRING) AS x`)).toContain(
+      'cannot cast a graph element to string',
+    );
+    expect(msg(`MATCH (p:Person) RETURN CAST(p AS INTEGER) AS x`)).toContain(
+      'cannot cast a graph element to number',
+    );
+    expect(msg(`MATCH (p:Person) RETURN CAST(p AS FLOAT) AS x`)).toContain(
+      'cannot cast a graph element to number',
+    );
+    expect(msg(`MATCH (p:Person) RETURN CAST(p AS BOOLEAN) AS x`)).toContain(
+      'cannot cast a graph element to boolean',
+    );
+    expect(
+      hasErrorCode(
+        (() => {
+          try {
+            one(`MATCH (p:Person) RETURN CAST(p AS STRING) AS x`);
+          } catch (e) {
+            return e;
+          }
+        })(),
+        ErrorCode.InvalidValue,
+      ),
+    ).toBe(true);
+  });
+
   test('temporal CAST targets desugar to the temporal constructor functions', () => {
     // `one` returns the raw temporal instance; compare its tagged JSON form.
     const tag = (q: string): unknown => (one(q) as { toJSON(): unknown }).toJSON();

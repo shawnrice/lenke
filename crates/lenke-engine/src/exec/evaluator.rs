@@ -1592,7 +1592,13 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
             let t = (*target).to_value();
             let mut out = Vec::with_capacity(col.len());
             for i in 0..col.len() {
-                out.push(value::cast(&col.value_at(i), t)?);
+                // `cell_value`, NOT `value_at` (audit item 353). `value_at` on an element column
+                // yields the INTERNAL DENSE ID as a number, so `CAST(p AS STRING)` answered `"0"`
+                // and `CAST(p AS INTEGER)` answered `0` — a leaked internal identifier, and a
+                // silent divergence from TS. `cell_value` keeps the element UNBOXED so
+                // `value::cast` can see what it is and refuse. Same shape as item 345's fix to
+                // the `Record` arm, which read `value_at` where its sibling read `render_cell`.
+                out.push(value::cast(&cell_value(&col, i, store), t)?);
             }
             Col::Gen(out)
         }

@@ -2221,6 +2221,60 @@ fn optional_match_binds_edge() {
     assert!(matches!(&got[2], (id, v) if id == "c" && v.is_null())); // no edge → f null
 }
 
+/// A graph element casts to NOTHING, for every target (audit item 353).
+///
+/// Before this, `CAST(p AS STRING)` answered `"0"` and `CAST(p AS INTEGER)` answered `0` — the
+/// node's INTERNAL DENSE ID leaked to the caller, where the engine's own `id` field is the
+/// EXTERNAL one. The TS engine refused the numeric form and stringified the string form to the
+/// external id, so the engines disagreed four ways and neither answer was a documented contract.
+/// The message text is asserted, not just the failure, because the two engines must produce the
+/// same bytes: `integer` and `float` both report "number".
+#[test]
+fn a_graph_element_casts_to_nothing() {
+    let nd = concat!(
+        "{\"id\":\"a\",\"labels\":[\"P\"],\"props\":{\"k\":1}}\n",
+        "{\"id\":\"b\",\"labels\":[\"P\"],\"props\":{\"k\":2}}\n",
+        "{\"from\":\"a\",\"to\":\"b\",\"labels\":[\"R\"],\"props\":{}}"
+    );
+    let store = crate::ndjson::from_ndjson(nd).unwrap();
+
+    for (q, want) in [
+        (
+            "MATCH (p:P) WHERE p.k = 1 RETURN CAST(p AS STRING) AS x",
+            "cannot cast a graph element to string",
+        ),
+        (
+            "MATCH (p:P) WHERE p.k = 1 RETURN CAST(p AS INTEGER) AS x",
+            "cannot cast a graph element to number",
+        ),
+        (
+            "MATCH (p:P) WHERE p.k = 1 RETURN CAST(p AS FLOAT) AS x",
+            "cannot cast a graph element to number",
+        ),
+        (
+            "MATCH (p:P) WHERE p.k = 1 RETURN CAST(p AS BOOLEAN) AS x",
+            "cannot cast a graph element to boolean",
+        ),
+        (
+            "MATCH (p:P)-[r:R]->() RETURN CAST(r AS STRING) AS x",
+            "cannot cast a graph element to string",
+        ),
+    ] {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &store);
+        let err = crate::exec::try_run(&plan, &store).expect_err(&format!("{q} must refuse"));
+
+        assert!(err.contains(want), "{q}: got {err:?}, want {want:?}");
+    }
+
+    // And a PROPERTY of an element still casts — the refusal is about the element itself, not
+    // about anything reachable from it.
+    let q = "MATCH (p:P) WHERE p.k = 1 RETURN CAST(p.k AS STRING) AS x";
+    let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &store);
+    let out = run(&plan, &store);
+
+    assert!(matches!(&out.rows[0][0], Value::Str(s) if &**s == "1"));
+}
+
 /// REGRESSION TEST for the cross-engine divergence fixed at audit item 345 (found at 344): an
 /// element nested in a record literal rendered as its internal DENSE ID instead of its element
 /// map, because the `Expr::Record` arm read `value_at` where `Expr::List` reads `render_cell`.
