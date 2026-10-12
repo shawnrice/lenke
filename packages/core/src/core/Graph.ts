@@ -4197,6 +4197,30 @@ export class Graph {
    * per edge, 4,000,000 to ingest a million. `fromId`/`toId` read the stored id directly.
    * See audit item 140 for the measurement.
    */
+  /*
+   * REJECTED, with its numbers (item 323): threading the endpoint VERTICES in here so the two
+   * outer lookups read `from.adjFrom` / `to.adjTo` — item 321's adjacency box — instead of hashing
+   * `fromId` / `toId` into a 200,000-entry map. `addEdge` already resolves both endpoints for
+   * `assertValidEdge` and discards them, so threading them costs nothing, and the arm was reached
+   * exactly as designed: **80,000 box hits against 20,000 misses of 100,000 edges**, one miss per
+   * vertex at the fixture's 5:1 ratio.
+   *
+   * It bought NOTHING. `decode ndjson (5 edges/node)`, isolated, four alternated rounds:
+   * CONTROL 2621.0-2756.6ms against 2670.2-2707.7 — overlapping, and the min slightly WORSE.
+   *
+   * The mechanism, which is the part worth keeping: the box's win is LOCALITY on an element the
+   * caller revisits, and item 323's micro measured it at 1.97x (157.3 -> 79.7 ns) for a read with
+   * the vertex already in hand. An insert is not that shape. A getter doing `??=` is not cheaper
+   * than a `Map.get` V8 has already optimized, and what dominates `indexEdgeLabel` is the INNER
+   * per-label `Map`/`Set` work that the box does not touch at all (item 312 priced the whole
+   * function at 810ns across seven hash operations).
+   *
+   * The same micro also closed the other direction: reaching the box from an edge's stored ID
+   * (`id -> Vertex -> box`) is **198.6 ns/edge against 157.3 today, 1.26x WORSE** — worse than the
+   * sum of its parts (a 22.3ns resolve plus a 79.7ns boxed read), because touching two large maps
+   * per edge thrashes more than either alone. So the ungated three-segment product cannot use the
+   * box either: it holds only the id, by items 140/218's deliberate choice.
+   */
   private readonly indexEdgeLabel = (label: string, edge: Edge) => {
     let byLabel = this.edgesByLabel.get(label);
 

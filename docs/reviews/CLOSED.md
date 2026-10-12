@@ -874,6 +874,28 @@ bench`** so one-case-per-process is a flag instead of the bespoke script items 2
   aggregate-over-chain and never builds the frontier, so the engine that OOM'd had to be the TS
   one — and 3 and 4 hops run in 8 and 13 ms at ~80 MB where 5 is fatal, which is exactly the count
   family's ≤4-segment coverage edge (item 290).
+- **Where the adjacency box CANNOT go, and the rule that says which rows it can reach (323).**
+  Priced on its own over 200k vertices / 1M edges: `id -> adjacency -> size` **157.3 ns/edge**,
+  `id -> Vertex -> box -> size` **198.6 (1.26x WORSE)**, **box with the vertex already held 79.7
+  (1.97x better)**, resolving the vertex alone 22.3. **B is worse than A plus D**, because touching
+  two large maps per edge thrashes more than either alone.
+  **REFUTED: the ungated `count 3-hop` (84x, the widest ratio in the bench).** It reads the d-side
+  degree from the edge's stored ID STRING by a measured choice — "the `c` VERTEX has to be resolved
+  when anything reads it… the edge's stored ID is all the `d` side needs (items 140, 218)" — and
+  `Edge.to` is an uncached `getVertexById`. So acquiring a vertex here IS route B, 1.26x worse.
+  Item 310's diagnosis stands with a mechanism: the CSR at 7.30x remains the only lever.
+  **REFUTED: the insert path**, where the vertex IS in hand. `addEdge` already resolves both
+  endpoints for `assertValidEdge` and discards them, so threading them into `indexEdgeLabel` was
+  free — and **the arm was reached exactly as designed, instrumented not assumed: 80,000 box hits
+  against 20,000 misses of 100,000 edges.** `decode ndjson (5 edges/node)` isolated, four
+  alternated rounds: **2621.0-2756.6ms against 2670.2-2707.7, overlapping and the min slightly
+  worse**, ffi column flat. Reverted with the numbers next to `indexEdgeLabel`. A getter doing
+  `??=` is not cheaper than a `Map.get` V8 has optimized, and what dominates that function is the
+  INNER per-label `Map`/`Set` work the box never touches (item 312: 810ns across seven hashes, of
+  which these are two).
+  **THE RULE BOTH SHARE: a cache on an element pays when the element is REVISITED and the caller
+  ALREADY HOLDS it.** 321's row has both; the 84x row has neither; the insert path has one, and the
+  wrong one. Sort the next candidate by those two questions before writing any code.
 - **The adjacency box — 1.207x on `traverse 1-hop + filter` (321), and a cheaper intermediate than
   item 300's CSR.** The adjacency is keyed by a vertex's ID **string** at sites that already hold
   the vertex **object**. Priced over 200,000 vertices before building: a string key **59.7ns**, an
