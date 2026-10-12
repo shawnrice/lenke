@@ -878,6 +878,36 @@ bench`** so one-case-per-process is a flag instead of the bespoke script items 2
   aggregate-over-chain and never builds the frontier, so the engine that OOM'd had to be the TS
   one — and 3 and 4 hops run in 8 and 13 ms at ~80 MB where 5 is fatal, which is exactly the count
   family's ≤4-segment coverage edge (item 290).
+- **NOT A REGRESSION — the two element-materializing rows read 2x the earlier sweep because of
+  machine tenancy, bisected across three commits (338).** A fresh `bench_all` after items 330-337
+  showed `query/perrow` `element p` at **249.8 -> 516.5 ns/row** and `element r` at
+  **179.9 -> 374.9** — 2.07x and 2.08x, on 100-375 ms rows far too large for noise, and on exactly
+  the only two rows in the corpus that allocate a `Value::Node`/`Value::Edge` per row. An obvious
+  suspect list, and all of it wrong.
+  **Bisected rather than reasoned about**: `query_bench` built at `c4aec4c9` (item 329, BEFORE any
+  optimization in this run), `8288aa11` (item 330) and `f793382c` (HEAD), each run twice.
+  `element p` **98,109 / 98,727 / 98,748 us** and `element r` **354,968 / 354,863 / 361,128** —
+  **all three agree, including the one that predates every change.** The earlier number is simply
+  not reproducible on this machine today.
+  **What changed is the machine**: `uvicorn` 4.8 GB resident, `clickhouse-server` 1.8 GB, 20 of 61
+  GB used, **3.7 GB paged into swap**, load 1.20. The affected rows are the allocation- and
+  bandwidth-heavy ones; the small rows (`scalar p.age` 1.7 ns/row, `count(*)` 0.3 us, all of
+  `query/plan`) are unchanged — the pattern a memory-bandwidth competitor makes, not a code change.
+  **DO NOT CHASE IT.** The bisect is recorded so the next sweep showing 516 ns/row does not restart
+  this.
+  **THE METHODOLOGICAL POINT**: the guide says to know the noise floor and that <10% needs an
+  isolated harness. This is the other end — **a 2x gap between two `bench_all` runs at different
+  times can be entirely tenancy.** `bench_all` is a regression sweep for SHAPE (which rows exist,
+  which are orders of magnitude apart, which direction a change moves them); its absolute
+  microseconds are comparable only **within one session against an alternated control**, which is
+  how every flag in 330-337 was measured and why none of them depended on this.
+  Corollary: the same sweep shows `value/codec` decode **98.31 -> 64.25 ms** and
+  **123.94 -> 84.66** across the same session boundary — the items 330-333 wins, and since the
+  machine is now SLOWER they are if anything understated. A cross-session comparison is unreliable
+  in magnitude but its SIGN still informs when the tenancy bias points the other way.
+  **Target the sweep did surface, as a ratio rather than a time**: `algo/call` prices `degree`
+  through GQL `CALL` at **13,870 us against 201 us direct — 69x dispatch overhead**. A ratio
+  internal to one run, so tenancy cancels, and the largest unexplained one in the corpus.
 - **Item 333's arena concat grew six vectors from empty — 1.03-1.07x back on the threaded decode,
   and the Amdahl pairs DISAGREEING is what found it (337).** Items 330-333 took the decode
   706.72 -> 401.70 ms, so item 329's decomposition is stale; re-deriving it rather than reusing it
