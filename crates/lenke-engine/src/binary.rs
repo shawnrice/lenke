@@ -179,11 +179,30 @@ impl<'a> Reader<'a> {
         let n = self.count()?;
         (0..n).map(|_| Ok(Cow::Borrowed(self.str()?))).collect()
     }
-    fn props(&mut self) -> Result<Vec<(Cow<'a, str>, Value)>, String> {
+    /// `str_list` appending into a caller-owned arena, returning the span it filled.
+    fn str_list_into(
+        &mut self,
+        out: &mut Vec<Cow<'a, str>>,
+    ) -> Result<crate::ndjson::Span, String> {
         let n = self.count()?;
-        (0..n)
-            .map(|_| Ok((Cow::Borrowed(self.str()?), self.value()?)))
-            .collect()
+        let start = out.len() as u32;
+        for _ in 0..n {
+            out.push(Cow::Borrowed(self.str()?));
+        }
+        Ok((start, n as u32))
+    }
+    /// `props` appending into a caller-owned arena, returning the span it filled.
+    fn props_into(
+        &mut self,
+        out: &mut Vec<(Cow<'a, str>, Value)>,
+    ) -> Result<crate::ndjson::Span, String> {
+        let n = self.count()?;
+        let start = out.len() as u32;
+        for _ in 0..n {
+            let k = Cow::Borrowed(self.str()?);
+            out.push((k, self.value()?));
+        }
+        Ok((start, n as u32))
     }
     fn value(&mut self) -> Result<Value, String> {
         Ok(match self.u8()? {
@@ -398,12 +417,17 @@ pub fn from_binary(bytes: &[u8]) -> Result<Store, String> {
     for _ in 0..rq {
         required.push((Cow::Borrowed(r.str()?), Cow::Borrowed(r.str()?)));
     }
+    // One arena per kind, exactly as the NDJSON staging path builds them (item 333): a
+    // record holds a `(start, len)` span rather than two `Vec`s of its own.
+    let mut labels_arena: Vec<Cow<'_, str>> = Vec::new();
+    let mut props_arena: Vec<(Cow<'_, str>, Value)> = Vec::new();
     let nn = r.count()?;
     let mut nodes = Vec::with_capacity(nn);
     for _ in 0..nn {
         let ext = Cow::Borrowed(r.str()?);
-        let labels = r.str_list()?;
-        nodes.push((ext, labels, r.props()?));
+        let lsp = r.str_list_into(&mut labels_arena)?;
+        let psp = r.props_into(&mut props_arena)?;
+        nodes.push((ext, lsp, psp));
     }
     let ne = r.count()?;
     let mut edges = Vec::with_capacity(ne);
@@ -411,8 +435,9 @@ pub fn from_binary(bytes: &[u8]) -> Result<Store, String> {
         let ext = r.opt_str()?;
         let from = Cow::Borrowed(r.str()?);
         let to = Cow::Borrowed(r.str()?);
-        let labels = r.str_list()?;
-        edges.push((from, to, ext, labels, r.props()?));
+        let lsp = r.str_list_into(&mut labels_arena)?;
+        let psp = r.props_into(&mut props_arena)?;
+        edges.push((from, to, ext, lsp, psp));
     }
 
     // v2 constraint sections (absent in a v1 file). Read before building so the
@@ -430,6 +455,8 @@ pub fn from_binary(bytes: &[u8]) -> Result<Store, String> {
             required,
             nodes,
             edges,
+            labels: labels_arena,
+            props: props_arena,
         },
         1,
     )?;

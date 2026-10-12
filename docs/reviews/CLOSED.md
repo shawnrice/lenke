@@ -878,6 +878,40 @@ bench`** so one-case-per-process is a flag instead of the bespoke script items 2
   aggregate-over-chain and never builds the frontier, so the engine that OOM'd had to be the TS
   one — and 3 and 4 hops run in 8 and 13 ms at ~80 MB where 5 is fatal, which is exactly the count
   family's ≤4-segment coverage edge (item 290).
+- **Two arenas and a span instead of two `Vec`s per record — a 50,000-node decode now makes 271
+  allocations, and three mutants survived because the fixture was uniform (333).** Item 332 named
+  this from the count: the records' own `Vec`s were **616,488 of the 700,036** remaining
+  allocations, because Rust's first growth for a 24-to-56-byte element is capacity 4 and a record
+  holds one or two. `StagedNdjson` gained `labels` and `props` arenas filled in line order;
+  `NodeRec` is `(Cow, Span, Span)` and `EdgeRec` `(Cow, Cow, Option<Cow>, Span, Span)` with
+  `Span = (u32, u32)` (64-bit spans would make the record bigger than the `Vec` they replace). The
+  parser grew `string_array_into` / `pairs_into`; `binary.rs` got `str_list_into` / `props_into`, so
+  both decoders still feed one `build_store`. Also hoisted `build_store`'s per-node `lrefs`/`prefs`
+  out of the loop — two allocations per node whose life was one `add_node_bulk` call, **-100,000**.
+  **COUNTED across the arc**: nodes+5edges **3,050,033 (330) -> 2,550,034 (331) -> 800,034 (332) ->
+  100,072**, i.e. **30.5x fewer**; nodes-only **450,238 -> 271**. What remains is store structure,
+  not per-record transit, so the per-record ingest target is CLOSED.
+  **MEASURED**, five alternated rounds in both orders, every target range disjoint, null control
+  flat: `nodes x1 prop` **1.239x**, `nodes x4 props` **1.071x**, `nodes+5edges` **1.251x**,
+  `ingest/ceiling` **1.257x**, `threads @8` **1.140x**, `value/codec flat` **1.091x**,
+  `value/codec meta record` **1.142x**. Cumulative 330-333 on `nodes+5edges`: **706.72 -> 401.70 ms,
+  1.76x**. `ingest/ceiling` is now 43x the raw-scan floor, down from 78.9x when item 328 opened the
+  thread. The SPREAD is the mechanism check: the removed cost is per RECORD, so four properties
+  dilute it (1.071x) where one does not (1.239x), and `threads @8` gains less than serial because
+  the parse is the half that parallelizes — Amdahl in the expected direction.
+  **⚠️ THREE OF FIVE MUTANTS SURVIVED FIRST RUN, and the cause was the FIXTURE.**
+  `decode_is_byte_identical_across_thread_counts` compares 2/4/8/16 threads against serial and is
+  exactly the test that should catch a dropped span rebasing. It did not: **every node in its
+  fixture carried the label `Person` and every edge an EMPTY `properties`.** An unrebased span still
+  lands on an identical string when every string is identical, and an empty span cannot be offset
+  wrongly at all. This is the fixture failure the repo guide warns about for `examples/` probes,
+  found in a UNIT test — where the guide says correctness is supposed to live. Fixed by deriving
+  each record's second label and each edge's properties from its index; M4 (the last-wins rewind)
+  had no test at all, so `a_repeated_labels_or_properties_key_is_last_wins` was added. All five
+  caught after. **RULE: a byte-identity test over a uniform fixture tests the plumbing, not the
+  addressing. Any change that makes a record's data reachable BY INDEX rather than by ownership
+  needs a fixture where the index is recoverable from the data.** The test had been green for its
+  whole life and would have stayed green through a real rebasing bug.
 - **The staged records now BORROW the input — 1.21-1.29x on native's decode, and both estimates of
   it were wrong (332).** `NodeRec`/`EdgeRec`/`StagedNdjson`/`Rec` gained a lifetime and hold
   `Cow<'a, str>` for every id, label and property KEY; the `Value`s stay owned. `Cow` and not
@@ -909,9 +943,9 @@ bench`** so one-case-per-process is a flag instead of the bespoke script items 2
   4 mutants, all caught (3 / 2 / 44 / 83 failures). The two the change puts real weight on are also
   the two with the fewest failures: **the binary codec's string-length handling is guarded by exactly
   two assertions**, named rather than smoothed over.
-  **Still open and now sized by the count**: the records' `Vec`s (two per node, two per edge, the
-  ≤96 and ≤256 buckets, ~2.4M at corpus scale) are the largest remaining group — a `SmallVec`-shaped
-  inline capacity of 1-2 reaches most of them. The edge loop's 180ms serial floor and the input-order
+  **Was still open and is now DONE at item 333**: the records' `Vec`s (two per node, two per edge,
+  the ≤96 and ≤256 buckets) were the largest remaining group — replaced by two arenas and a span,
+  worth another 1.07-1.26x. The edge loop's 180ms serial floor and the input-order
   constraint are unchanged (328).
 - **A property write allocated its key THREE times and stored one — 1.05x on the decode, 1.09x on
   bulk SET (331).** Item 330 left an instruction to re-price the staged-record borrow against its

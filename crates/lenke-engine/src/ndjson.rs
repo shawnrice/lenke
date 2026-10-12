@@ -389,16 +389,29 @@ pub fn encode_string(out: &mut String, s: &str) {
 /// whole parse and then freed in bulk, which works out at ~19ns each. Multiplying a correct count
 /// by the wrong one of those two numbers is how the re-pricing went wrong; a count is still the
 /// right instrument, but the rate has to come from an allocation with the same lifetime.
-pub(crate) type NodeRec<'a> = (Cow<'a, str>, Vec<Cow<'a, str>>, Vec<(Cow<'a, str>, Value)>);
+pub(crate) type NodeRec<'a> = (Cow<'a, str>, Span, Span);
+
+/// A `(start, len)` window into one of [`StagedNdjson`]'s two arenas.
+///
+/// A record used to own a `Vec` for its labels and another for its properties, which is **two
+/// heap allocations per record whose contents are read exactly once** — 616,488 of the 700,036
+/// allocations a 50k-node / 250k-edge decode made before item 333, since Rust's first growth for
+/// a 24-to-56-byte element is capacity 4 and these hold one or two. One arena per kind, filled in
+/// line order and sliced by span, replaces all of them with two amortized pushes.
+///
+/// `u32` because an NDJSON document with more than 4 billion labels is not a case; a 64-bit span
+/// would make the record larger than the `Vec` it replaced.
+pub(crate) type Span = (u32, u32);
+
+/// Slice an arena by a span. The bounds are the arena's own, so a bad span panics here rather
+/// than reading another record's labels — which is what makes the concat rebasing below safe to
+/// get wrong loudly instead of quietly.
+pub(crate) fn span_of<T>(arena: &[T], sp: Span) -> &[T] {
+    &arena[sp.0 as usize..(sp.0 + sp.1) as usize]
+}
 /// A staged edge record: `(from-id, to-id, edge id?, labels, props)` — an edge's
 /// first label is its type, the rest are secondary (multi-label edges).
-pub(crate) type EdgeRec<'a> = (
-    Cow<'a, str>,
-    Cow<'a, str>,
-    Option<Cow<'a, str>>,
-    Vec<Cow<'a, str>>,
-    Vec<(Cow<'a, str>, Value)>,
-);
+pub(crate) type EdgeRec<'a> = (Cow<'a, str>, Cow<'a, str>, Option<Cow<'a, str>>, Span, Span);
 
 /// The decoded-but-not-yet-applied contents of a full-graph document. Shared by
 /// [`from_ndjson`] / [`merge_ndjson`] and the binary codec ([`crate::binary`]) so
@@ -408,6 +421,23 @@ pub(crate) struct StagedNdjson<'a> {
     pub(crate) required: Vec<(Cow<'a, str>, Cow<'a, str>)>,
     pub(crate) nodes: Vec<NodeRec<'a>>,
     pub(crate) edges: Vec<EdgeRec<'a>>,
+    /// Every record's labels, contiguous, in line order. Records hold a [`Span`] into it.
+    pub(crate) labels: Vec<Cow<'a, str>>,
+    /// Every record's properties, contiguous, in line order.
+    pub(crate) props: Vec<(Cow<'a, str>, Value)>,
+}
+
+impl<'a> StagedNdjson<'a> {
+    fn empty() -> Self {
+        Self {
+            constraints: Vec::new(),
+            required: Vec::new(),
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            labels: Vec::new(),
+            props: Vec::new(),
+        }
+    }
 }
 
 /// Parse an NDJSON document into staged records. External ids are PRESERVED
@@ -426,6 +456,8 @@ fn stage_lines(text: &str, line_offset: usize) -> Result<StagedNdjson<'_>, Strin
     let mut required: Vec<(Cow<'_, str>, Cow<'_, str>)> = Vec::new();
     let mut nodes: Vec<NodeRec<'_>> = Vec::new();
     let mut edges: Vec<EdgeRec<'_>> = Vec::new();
+    let mut labels_arena: Vec<Cow<'_, str>> = Vec::new();
+    let mut props_arena: Vec<(Cow<'_, str>, Value)> = Vec::new();
 
     // Both shapes are accepted so the engine is a drop-in for the TS engine's NDJSON AND
     // keeps reading anything it wrote earlier: the shipped `{"type":…,"labels":[…],
@@ -443,7 +475,7 @@ fn stage_lines(text: &str, line_offset: usize) -> Result<StagedNdjson<'_>, Strin
             i: 0,
             depth: 0,
         };
-        let rec = p.record().map_err(err)?;
+        let rec = p.record(&mut labels_arena, &mut props_arena).map_err(err)?;
         p.ws();
         if p.i != p.b.len() {
             return Err(err(format!("trailing input at char {}", p.i)));
@@ -460,6 +492,8 @@ fn stage_lines(text: &str, line_offset: usize) -> Result<StagedNdjson<'_>, Strin
         required,
         nodes,
         edges,
+        labels: labels_arena,
+        props: props_arena,
     })
 }
 
@@ -518,18 +552,28 @@ fn stage_ndjson_threads(text: &str, threads: u32) -> Result<StagedNdjson<'_>, St
                         .map(|&(chunk, line0)| stage_lines(chunk, line0))
                         .collect()
                 });
-            let mut merged = StagedNdjson {
-                constraints: Vec::new(),
-                required: Vec::new(),
-                nodes: Vec::new(),
-                edges: Vec::new(),
-            };
+            let mut merged = StagedNdjson::empty();
             for part in parts {
                 let part = part?;
+                // Each chunk staged into its OWN arenas, so its spans are chunk-relative.
+                // Rebase them by the lengths already merged before appending the arenas —
+                // the one thing in this file that is wrong if the order is wrong, which is
+                // why the offsets are read BEFORE the `extend`.
+                let (lo, po) = (merged.labels.len() as u32, merged.props.len() as u32);
                 merged.constraints.extend(part.constraints);
                 merged.required.extend(part.required);
-                merged.nodes.extend(part.nodes);
-                merged.edges.extend(part.edges);
+                merged.nodes.extend(
+                    part.nodes
+                        .into_iter()
+                        .map(|(id, l, p)| (id, (l.0 + lo, l.1), (p.0 + po, p.1))),
+                );
+                merged.edges.extend(
+                    part.edges
+                        .into_iter()
+                        .map(|(f, t, id, l, p)| (f, t, id, (l.0 + lo, l.1), (p.0 + po, p.1))),
+                );
+                merged.labels.extend(part.labels);
+                merged.props.extend(part.props);
             }
             return Ok(merged);
         }
@@ -575,7 +619,8 @@ pub fn merge_ndjson(store: &mut Store, text: &str) -> Result<MergeReport, String
     }
 
     // Nodes first (first-wins), so a same-batch edge can reference one.
-    for (ext, labels, props) in &staged.nodes {
+    for (ext, lsp, psp) in &staged.nodes {
+        let (labels, props) = (span_of(&staged.labels, *lsp), span_of(&staged.props, *psp));
         if store.node_by_ext(ext).is_some() {
             report.nodes_skipped.push(ext.to_string()); // first-wins: existing kept
             continue;
@@ -600,7 +645,8 @@ pub fn merge_ndjson(store: &mut Store, text: &str) -> Result<MergeReport, String
         }
     }
 
-    for (from, to, edge_id, labels, props) in &staged.edges {
+    for (from, to, edge_id, lsp, psp) in &staged.edges {
+        let (labels, props) = (span_of(&staged.labels, *lsp), span_of(&staged.props, *psp));
         // An edge whose explicit id already exists is a duplicate — drop it.
         if let Some(id) = edge_id {
             if ext_to_eid.contains_key(&**id) {
@@ -697,6 +743,8 @@ pub(crate) fn build_store(staged: StagedNdjson<'_>, threads: u32) -> Result<Stor
         required,
         nodes,
         edges,
+        labels: labels_arena,
+        props: props_arena,
     } = staged;
 
     let mut store = Store::default();
@@ -713,17 +761,28 @@ pub(crate) fn build_store(staged: StagedNdjson<'_>, threads: u32) -> Result<Stor
     // lookup); `materialize_ext` then builds the reverse map in one reserved pass BEFORE
     // the edge loop resolves endpoints through it. Byte-identical to the serial adds.
     store.begin_bulk();
-    for (ext, labels, props) in &nodes {
-        let lrefs: Vec<&str> = labels.iter().map(|s| &**s).collect();
+    // The `&[&str]` / `&[(&str, Value)]` the store wants are built ONCE and refilled, not
+    // allocated per node: declared inside the loop they were two heap allocations per record
+    // whose whole life was one `add_node_bulk` call (audit item 333). `clear()` keeps the
+    // capacity, so after the first node this costs nothing.
+    let mut lrefs: Vec<&str> = Vec::new();
+    let mut prefs: Vec<(&str, Value)> = Vec::new();
+    for (ext, lsp, psp) in &nodes {
+        let (labels, props) = (span_of(&labels_arena, *lsp), span_of(&props_arena, *psp));
+        lrefs.clear();
+        lrefs.extend(labels.iter().map(|s| &**s));
         for label in &lrefs {
             crate::store::validate_label(label)?;
         }
         for (k, _) in props {
             crate::store::validate_prop_key(k)?;
         }
-        let prefs: Vec<(&str, Value)> = props.iter().map(|(k, v)| (&**k, v.clone())).collect();
+        prefs.clear();
+        prefs.extend(props.iter().map(|(k, v)| (&**k, v.clone())));
         store.add_node_bulk(ext, &lrefs, &prefs);
     }
+    drop(lrefs);
+    drop(prefs);
     store.materialize_ext();
     // Resolve every edge's endpoints through the reverse map — a read-only `node_by_ext`
     // per end, so it parallelizes (the store is only READ here). The serial insert below
@@ -743,7 +802,8 @@ pub(crate) fn build_store(staged: StagedNdjson<'_>, threads: u32) -> Result<Stor
     // — more passes over E, plus rayon overhead across 50k tiny per-node tasks. (Passing
     // the id by reference instead of a throwaway `Arc` per edge is measurement-neutral —
     // the transient small allocs are cheap — but it is cleaner, so it stays.)
-    for ((_, _, edge_id, labels, props), &(f, t)) in edges.iter().zip(&resolved) {
+    for ((_, _, edge_id, lsp, psp), &(f, t)) in edges.iter().zip(&resolved) {
+        let (labels, props) = (span_of(&labels_arena, *lsp), span_of(&props_arena, *psp));
         for label in labels {
             crate::store::validate_label(label)?;
         }
@@ -1234,13 +1294,13 @@ impl<'a> JsonParser<'a> {
 
     /// Parse a `{"k": value, …}` object into its `(key, Value)` pairs in source order
     /// (the input to `properties` and to a record). Assumes the cursor is at `{`.
-    fn pairs(&mut self) -> Result<Vec<(Cow<'a, str>, Value)>, String> {
+    /// `pairs` appending into a caller-owned arena (item 333).
+    fn pairs_into(&mut self, out: &mut Vec<(Cow<'a, str>, Value)>) -> Result<(), String> {
         self.i += 1; // '{'
-        let mut out = Vec::new();
         self.ws();
         if self.b.get(self.i) == Some(&b'}') {
             self.i += 1;
-            return Ok(out);
+            return Ok(());
         }
         loop {
             self.ws();
@@ -1257,11 +1317,19 @@ impl<'a> JsonParser<'a> {
                 Some(b',') => self.i += 1,
                 Some(b'}') => {
                     self.i += 1;
-                    return Ok(out);
+                    return Ok(());
                 }
                 _ => return Err(format!("expected ',' or '}}' at char {}", self.i)),
             }
         }
+    }
+
+    /// `pairs_into` collecting into a fresh `Vec` — for a nested record VALUE, which is one
+    /// object inside one property and so has no arena to append to.
+    fn pairs(&mut self) -> Result<Vec<(Cow<'a, str>, Value)>, String> {
+        let mut out = Vec::new();
+        self.pairs_into(&mut out)?;
+        Ok(out)
     }
 
     /// An element id, accepted as a JSON string OR an integer-valued number (rendered
@@ -1284,16 +1352,24 @@ impl<'a> JsonParser<'a> {
 
     /// A JSON array of strings — `json_str_array` without the `Json`.
     fn string_array(&mut self) -> Result<Vec<Cow<'a, str>>, String> {
+        let mut out = Vec::new();
+        self.string_array_into(&mut out)?;
+        Ok(out)
+    }
+
+    /// `string_array` appending into a caller-owned arena, so a record's labels cost an
+    /// amortized push rather than a `Vec` of their own (item 333). The `Vec`-returning form
+    /// above stays for the schema lines' `keys`, which must NOT touch the labels arena.
+    fn string_array_into(&mut self, out: &mut Vec<Cow<'a, str>>) -> Result<(), String> {
         self.ws();
         if self.b.get(self.i) != Some(&b'[') {
             return Err("expected an array of strings".into());
         }
         self.i += 1;
-        let mut out = Vec::new();
         self.ws();
         if self.b.get(self.i) == Some(&b']') {
             self.i += 1;
-            return Ok(out);
+            return Ok(());
         }
         loop {
             self.ws();
@@ -1303,7 +1379,7 @@ impl<'a> JsonParser<'a> {
                 Some(b',') => self.i += 1,
                 Some(b']') => {
                     self.i += 1;
-                    return Ok(out);
+                    return Ok(());
                 }
                 _ => return Err(format!("expected ',' or ']' at char {}", self.i)),
             }
@@ -1319,15 +1395,19 @@ impl<'a> JsonParser<'a> {
     /// Parse ONE ndjson line's top-level object directly into a [`Rec`], routing known
     /// keys straight into typed fields. Byte-identical to `parse_line` + the field
     /// extraction in `stage_lines` it replaces.
-    fn record(&mut self) -> Result<Rec<'a>, String> {
+    fn record(
+        &mut self,
+        labels_arena: &mut Vec<Cow<'a, str>>,
+        props_arena: &mut Vec<(Cow<'a, str>, Value)>,
+    ) -> Result<Rec<'a>, String> {
         self.ws();
         if self.b.get(self.i) != Some(&b'{') {
             return Err("expected a JSON object".into());
         }
         self.i += 1;
         let mut id: Option<Cow<'a, str>> = None;
-        let mut labels: Option<Vec<Cow<'a, str>>> = None;
-        let mut props: Option<Vec<(Cow<'a, str>, Value)>> = None;
+        let mut labels: Option<Span> = None;
+        let mut props: Option<Span> = None;
         let mut from: Option<Cow<'a, str>> = None;
         let mut to: Option<Cow<'a, str>> = None;
         let mut ty: Option<Cow<'a, str>> = None;
@@ -1352,9 +1432,25 @@ impl<'a> JsonParser<'a> {
                 self.i += 1;
                 match &*key {
                     "id" => id = Some(self.id_as_string()?),
-                    "labels" => labels = Some(self.string_array()?),
+                    "labels" => {
+                        // Last-wins on a repeated key: rewind the arena to this record's own
+                        // start so the earlier run is not left stranded between the spans.
+                        if let Some((s, _)) = labels {
+                            labels_arena.truncate(s as usize);
+                        }
+                        let s = labels_arena.len() as u32;
+                        self.string_array_into(labels_arena)?;
+                        labels = Some((s, labels_arena.len() as u32 - s));
+                    }
                     // `properties` OR the engine's earlier `props`; last-wins if both.
-                    "properties" | "props" => props = Some(self.pairs()?),
+                    "properties" | "props" => {
+                        if let Some((s, _)) = props {
+                            props_arena.truncate(s as usize);
+                        }
+                        let s = props_arena.len() as u32;
+                        self.pairs_into(props_arena)?;
+                        props = Some((s, props_arena.len() as u32 - s));
+                    }
                     "from" => from = Some(self.id_as_string()?),
                     "to" => to = Some(self.id_as_string()?),
                     "type" => ty = Some(self.string_cow()?),
@@ -1391,18 +1487,24 @@ impl<'a> JsonParser<'a> {
                 _ => Err("unknown schema kind".into()),
             };
         }
-        let props = props.unwrap_or_default();
+        // An absent `properties` is an EMPTY span, not a missing one — any start works at
+        // length zero, so the arena's current end is the cheapest.
+        let props = props.unwrap_or((props_arena.len() as u32, 0));
         if let Some(from) = from {
             let to = to.ok_or("missing field `to`")?;
             let labels = match labels {
                 Some(l) => l,
                 // Legacy single-type edge: `type` is the edge type (never "edge").
                 None => match ty.filter(|t| t != "edge") {
-                    Some(t) => vec![t],
+                    Some(t) => {
+                        let s = labels_arena.len() as u32;
+                        labels_arena.push(t);
+                        (s, 1)
+                    }
                     None => return Err("edge needs `labels` (or a legacy `type`)".into()),
                 },
             };
-            if labels.is_empty() {
+            if labels.1 == 0 {
                 return Err("edge `labels` must have at least one entry".into());
             }
             return Ok(Rec::Edge((from, to, id, labels, props)));
@@ -1948,26 +2050,70 @@ mod tests {
         assert_eq!(serial, to_ndjson(&from_ndjson(&serial).unwrap()));
     }
 
+    /// A repeated `labels` or `properties` key on one line is LAST-WINS, and with the
+    /// records sharing one arena (item 333) that means rewinding the arena to this record's
+    /// own start — not to the arena's front, which would steal every earlier record's
+    /// labels. The mutant that truncates to 0 survived until this test existed, because
+    /// nothing else in the suite feeds a duplicated key.
+    #[test]
+    fn a_repeated_labels_or_properties_key_is_last_wins() {
+        let doc = concat!(
+            r#"{"type":"node","id":"a","labels":["First"],"properties":{"k":1}}"#,
+            "\n",
+            r#"{"type":"node","id":"b","labels":["Ignored"],"labels":["Winner"],"#,
+            r#""properties":{"k":2},"properties":{"k":3}}"#,
+            "\n",
+            r#"{"type":"node","id":"c","labels":["Third"],"properties":{"k":4}}"#,
+        );
+        let st = from_ndjson(doc).unwrap();
+        // The LAST spelling of each repeated key is the one that lands.
+        let b = st.node_by_ext("b").expect("b decoded");
+        assert_eq!(st.labels_of(b), vec!["Winner".to_string()]);
+        assert!(matches!(st.prop(b, "k"), Value::Num(x) if x == 3.0));
+        // And the records on either side keep their own, which is what a rewind to the
+        // arena's front would break.
+        let a = st.node_by_ext("a").expect("a decoded");
+        let c = st.node_by_ext("c").expect("c decoded");
+        assert_eq!(st.labels_of(a), vec!["First".to_string()]);
+        assert_eq!(st.labels_of(c), vec!["Third".to_string()]);
+        assert!(matches!(st.prop(a, "k"), Value::Num(x) if x == 1.0));
+        assert!(matches!(st.prop(c, "k"), Value::Num(x) if x == 4.0));
+    }
+
     /// Parallel NDJSON decode is byte-for-byte identical to serial at any thread count:
     /// the parse fans out over contiguous line-chunks but the store build stays serial,
     /// so dense ids are assigned in input order. (Compared via the serial re-encode,
     /// which is identical iff the stores hold the same ids/order/data.)
+    ///
+    /// THE FIXTURE IS LOAD-BEARING AND WAS NOT (audit item 333). Every record used to carry
+    /// the SAME label and every edge an EMPTY `properties`, which made the test blind to the
+    /// one thing item 333 added — the span rebasing that merges a parallel chunk's records
+    /// into the shared arenas. Two mutants that drop the rebasing SURVIVED: an unrebased
+    /// span still lands on an identical string when every string is identical, and an empty
+    /// span cannot be offset wrongly. So each record now gets a label and properties DERIVED
+    /// FROM ITS INDEX, which is what makes a misread span produce a different answer. This is
+    /// the same fixture failure the `examples/` probes are warned about in the repo guide,
+    /// found here in a unit test.
     #[test]
     fn decode_is_byte_identical_across_thread_counts() {
         let n = 2000usize;
         let mut doc = String::new();
         for i in 0..n {
             doc.push_str(&format!(
-                "{{\"type\":\"node\",\"id\":\"{i}\",\"labels\":[\"Person\"],\"properties\":{{\"name\":\"p{i}\",\"age\":{}}}}}\n",
+                "{{\"type\":\"node\",\"id\":\"{i}\",\"labels\":[\"Person\",\"L{}\"],\"properties\":{{\"name\":\"p{i}\",\"age\":{}}}}}\n",
+                i % 17,
                 20 + i % 40
             ));
         }
         for i in 0..n {
             for d in [1usize, 7, 13] {
                 doc.push_str(&format!(
-                    "{{\"type\":\"edge\",\"id\":\"e{}\",\"labels\":[\"KNOWS\"],\"from\":\"{i}\",\"to\":\"{}\",\"properties\":{{}}}}\n",
+                    "{{\"type\":\"edge\",\"id\":\"e{}\",\"labels\":[\"KNOWS\",\"E{}\"],\"from\":\"{i}\",\"to\":\"{}\",\"properties\":{{\"w\":{},\"tag\":\"t{}\"}}}}\n",
                     i * 3 + d,
-                    (i * d + 3) % n
+                    (i + d) % 11,
+                    (i * d + 3) % n,
+                    i % 5,
+                    d
                 ));
             }
         }
