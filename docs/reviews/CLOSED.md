@@ -878,6 +878,39 @@ bench`** so one-case-per-process is a flag instead of the bespoke script items 2
   aggregate-over-chain and never builds the frontier, so the engine that OOM'd had to be the TS
   one — and 3 and 4 hops run in 8 and 13 ms at ~80 MB where 5 is fatal, which is exactly the count
   family's ≤4-segment coverage edge (item 290).
+- **A single-property SET normalized every property it was not changing — 1.39x to 2.66x by width,
+  and the EDGE twin's normalization had no tests at all (349).** TS `SET` is recorded as O(property
+  width) with three O(K) passes. One is provably unnecessary: `setProperty` commits
+  `{ ...previous, [key]: value }` through `normalizeProperties`, a walk of EVERY key calling
+  `normalizePropertyValue` to lift a tagged temporal — and it cannot find anything on K-1 of them,
+  because **a bag in the box was normalized when stored** and item 335 established (and this item's
+  mutants re-check) that a stored bag is frozen and REPLACED, never mutated.
+  Split the funnel: `#commitNormalized` takes an already-normalized bag; `#commitProperties` is now
+  `#commitNormalized(normalizeProperties(bag))` for bags from outside the graph. Four of five paths
+  move to the cheap form — the public setter still normalizes the caller's whole bag, `setProperty`
+  lifts its ONE value, `setProperties` does `normalizeProperties(props)` (O(|props|) not O(K)), and
+  **a removal introduces nothing so it normalizes nothing**. The invariant is inductive: every path
+  normalizes what it adds, so every stored bag is fully normalized.
+  **MEASURED** — `bun run delete:width` gained a `set_ns/write` column (a one-key `setProperty` at
+  the given width, the shape that matters since an immutable bag means a one-key write rebuilds the
+  whole bag). 3 alternated rounds, min: width 4 **145 -> 127** (overlapping), 16 **327 -> 235
+  (1.39x)**, 64 **820 -> 308 (2.66x)**, 256 **16,321 -> 7,914 (2.06x)**; 16/64/256 fully disjoint,
+  **delete column flat as the control**. 2.66x from one of three passes is more than its share
+  because the pass was not one walk but K calls to `normalizePropertyValue`; peaking at 64 rather
+  than 256 is consistent, since at 256 the spread and freeze dominate more (the dictionary-mode
+  cliff).
+  **⚠️ TEETH FOUND A GAP: both EDGE mutants SURVIVED.** Five `Vertex` mutants, one per link in the
+  induction — all four correctness ones caught, and the behaviour-preserving fifth (normalize twice)
+  correctly survived as the control. Then the same two on `Edge` broke NO test: **`Edge` carries its
+  own copy of the whole property funnel and every normalization test drove `Vertex` only.** Third
+  time this session the node/edge asymmetry bit (item 340: the edge renderer never got the node
+  renderer's batch twin; now: the edge funnel never got the node funnel's tests). **RULE: when a
+  change touches `Vertex` and `Edge` together, mutate BOTH — the twins drift because only one of
+  them is ever in the fixture.** Added three EDGE normalization tests; both mutants caught now.
+  **Still open**: two O(K) passes remain and both are the REPRESENTATION, not the code — the spread
+  (the bag is immutable and shared) and `Object.freeze` (K properties each marked). A one-key write
+  cannot be O(1) while a property bag is one frozen object; that needs the columnar layout native
+  has, which is the TS engine's largest open representation question.
 - **PARKED, with a trigger — rung 3's write cost is FREE and its blast radius is FIVE paths, not two
   (348).** Item 343 preferred rung 3 on the grounds that its blast radius was _"`set_prop`/
   `remove_prop`, the two functions items 331 and 335 already worked."_ Both halves checked before

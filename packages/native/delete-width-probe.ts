@@ -84,8 +84,31 @@ const measure = (w: number, inTransaction: boolean): { add: number; del: number 
   return { add, del };
 };
 
+/** Min-of-REPS for one SET-by-width cell: a single-property write on an element of width `w`. */
+const measureSet = (w: number): number => {
+  let lo = Infinity;
+
+  for (let r = 0; r < REPS; r++) {
+    const g = new Graph();
+    const vs = Array.from({ length: N }, (_, i) =>
+      g.addVertex({ id: `n${i}`, labels: ['P'], properties: props(w, i) }),
+    );
+    const t = performance.now();
+
+    // ONE property per write, which is the shape that matters: an immutable bag means a
+    // single-key SET rebuilds the whole bag, so its cost is O(width) however narrow the write.
+    for (const v of vs) {
+      v.setProperty('k0', 'changed');
+    }
+
+    lo = Math.min(lo, performance.now() - t);
+  }
+
+  return lo;
+};
+
 console.log(`\n${N} nodes, best of ${REPS}. Times in ms; del_ns/node is the per-element cost.\n`);
-console.log('width   add_ms   del_ms  del_ns/node    del_ms(txn)  txn_ns/node');
+console.log('width   add_ms   del_ms  del_ns/node    del_ms(txn)  txn_ns/node     set_ns/write');
 
 for (const w of WIDTHS) {
   const plain = measure(w, false);
@@ -98,6 +121,7 @@ for (const w of WIDTHS) {
       ((plain.del * 1e6) / N).toFixed(0).padStart(12),
       txn.del.toFixed(2).padStart(15),
       ((txn.del * 1e6) / N).toFixed(0).padStart(12),
+      ((measureSet(w) * 1e6) / N).toFixed(0).padStart(17),
     ].join(''),
   );
 }

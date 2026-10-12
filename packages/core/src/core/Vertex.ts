@@ -10,7 +10,12 @@ import type { Graph, LabelBox, PropBox } from './Graph.js';
  * it the memo measured flat and would only cost retained memory. See `propertyKeys`.
  */
 const WIDE_BAG = 64;
-import { normalizeProperties, validatePropertyKey, validatePropertyValue } from './validate.js';
+import {
+  normalizeProperties,
+  normalizePropertyValue,
+  validatePropertyKey,
+  validatePropertyValue,
+} from './validate.js';
 
 export type VertexParams = {
   id?: string;
@@ -212,7 +217,24 @@ export class Vertex {
     return keys;
   }
 
-  #commitProperties(bag: Record<string, unknown>): void {
+  /**
+   * `#commitProperties` for a bag whose values are ALREADY normalized — the write paths that
+   * introduce at most a handful of new values, which is all of them but the public setter
+   * (audit item 349).
+   *
+   * `normalizeProperties` walks every key on every call. On a single-property `SET` that is a
+   * third O(K) pass next to the spread and the freeze, and it is provably redundant: a bag in
+   * the box was normalized when it was stored, and item 335 established that a stored bag is
+   * frozen and REPLACED rather than mutated. So only the values this write introduces can need
+   * lifting, and the callers below normalize exactly those.
+   *
+   * The invariant is inductive and the whole correctness argument: every path into the box
+   * normalizes what it adds — the public setter normalizes the lot (its bag is the caller's),
+   * `setProperty` its one value, `setProperties` its `props`, and a removal adds nothing — so
+   * every stored bag is fully normalized. Breaking any one of those makes this unsound, which
+   * is why there is a mutant per path.
+   */
+  #commitNormalized(bag: Record<string, unknown>): void {
     // Single funnel for every property write — constructor, setProperty,
     // setProperties, removeProperty — so normalizing here lifts a tagged temporal
     // (`{"@date": …}`) to its instance no matter which path wrote it. Without it a
@@ -232,7 +254,7 @@ export class Vertex {
 
     // REPLACE the box's bag rather than the map entry, so every instance holding this box —
     // there can be more than one for an id — sees the write. The bag itself stays frozen.
-    const frozen = Object.freeze(normalizeProperties(bag));
+    const frozen = Object.freeze(bag);
     const box = this.#box ?? this.#graph.elementProperties.get(this.#id);
 
     if (box === undefined) {
@@ -246,6 +268,11 @@ export class Vertex {
     // The memoized key list described a bag that no longer exists.
     box.keys = undefined;
     this.#box = box;
+  }
+
+  /** The normalizing funnel: for a bag whose values came from OUTSIDE the graph. */
+  #commitProperties(bag: Record<string, unknown>): void {
+    this.#commitNormalized(normalizeProperties(bag));
   }
 
   /**
@@ -288,7 +315,8 @@ export class Vertex {
     );
 
     const previous = this.properties;
-    this.#commitProperties({ ...previous, [key]: value });
+    // Only `value` is new, so only `value` needs lifting (item 349).
+    this.#commitNormalized({ ...previous, [key]: normalizePropertyValue(value) });
     this.#graph?.reindexVertexProperty(this, key, previous[key], value);
   }
 
@@ -342,7 +370,8 @@ export class Vertex {
     }
 
     const previous = this.properties;
-    this.#commitProperties({ ...previous, ...props });
+    // `normalizeProperties` over `props` alone is O(|props|), not O(K) (item 349).
+    this.#commitNormalized({ ...previous, ...normalizeProperties(props) });
 
     for (const key of Object.keys(props)) {
       this.#graph.reindexVertexProperty(this, key, previous[key], props[key]);
@@ -368,7 +397,8 @@ export class Vertex {
     );
 
     const previous = this.properties;
-    this.#commitProperties(Object.fromEntries(Object.entries(previous).filter(([k]) => key !== k)));
+    // A removal introduces no value at all, so nothing needs lifting (item 349).
+    this.#commitNormalized(Object.fromEntries(Object.entries(previous).filter(([k]) => key !== k)));
     this.#graph?.reindexVertexProperty(this, key, previous[key], undefined);
   }
 
@@ -390,7 +420,7 @@ export class Vertex {
     );
 
     const previous = this.properties;
-    this.#commitProperties(
+    this.#commitNormalized(
       Object.fromEntries(Object.entries(previous).filter(([k]) => !keys.includes(k))),
     );
 

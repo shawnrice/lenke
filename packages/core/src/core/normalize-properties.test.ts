@@ -121,6 +121,55 @@ describe('the write path still lifts, whichever entry point writes', () => {
     expect(v.properties.when).not.toEqual(tagged);
   });
 
+  // THE EDGE TWIN OF THE THREE ABOVE, which did not exist (audit item 349). `Edge` carries its
+  // own copy of the whole property funnel, and the normalization tests only ever drove `Vertex`
+  // — so a mutant that stopped `Edge` normalizing, on either the public setter or
+  // `setProperty`, broke NO test. The same node/edge asymmetry item 340 found in the renderers:
+  // the vertex side gets the fix and the tests, the edge side gets neither.
+  const twoNodes = (): [Graph, ReturnType<Graph['addVertex']>, ReturnType<Graph['addVertex']>] => {
+    const g = new Graph();
+
+    return [
+      g,
+      g.addVertex({ id: 'a', labels: ['P'], properties: {} }),
+      g.addVertex({ id: 'b', labels: ['P'], properties: {} }),
+    ];
+  };
+
+  test('an EDGE constructor lifts', () => {
+    const [g, a, b] = twoNodes();
+    const e = g.addEdge({
+      id: 'e',
+      from: a,
+      to: b,
+      labels: ['R'],
+      properties: { when: tagged, n: 1 },
+    });
+
+    expect(e.properties.when).not.toEqual(tagged);
+    expect(e.properties.n).toBe(1);
+  });
+
+  test('an EDGE setProperty lifts', () => {
+    const [g, a, b] = twoNodes();
+    const e = g.addEdge({ id: 'e', from: a, to: b, labels: ['R'], properties: { n: 1 } });
+
+    e.setProperty('when', tagged);
+
+    expect(e.properties.when).not.toEqual(tagged);
+    expect(e.properties.n).toBe(1);
+  });
+
+  test('an EDGE setProperties lifts', () => {
+    const [g, a, b] = twoNodes();
+    const e = g.addEdge({ id: 'e', from: a, to: b, labels: ['R'], properties: { n: 1 } });
+
+    e.setProperties({ when: tagged });
+
+    expect(e.properties.when).not.toEqual(tagged);
+    expect(e.properties.n).toBe(1);
+  });
+
   test('an ordinary write preserves every other key', () => {
     // The identity fast path must not change what a write produces: a wide element keeps all
     // of its properties when one is set.
