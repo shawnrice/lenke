@@ -878,6 +878,41 @@ bench`** so one-case-per-process is a flag instead of the bespoke script items 2
   aggregate-over-chain and never builds the frontier, so the engine that OOM'd had to be the TS
   one — and 3 and 4 hops run in 8 and 13 ms at ~80 MB where 5 is fatal, which is exactly the count
   family's ≤4-segment coverage edge (item 290).
+- **The staged records now BORROW the input — 1.21-1.29x on native's decode, and both estimates of
+  it were wrong (332).** `NodeRec`/`EdgeRec`/`StagedNdjson`/`Rec` gained a lifetime and hold
+  `Cow<'a, str>` for every id, label and property KEY; the `Value`s stay owned. `Cow` and not
+  `&'a str` because two cases cannot borrow — a JSON string with an escape, and a numeric id — and
+  both already existed as item 330's `string_cow` owned arm, so most of the work was pointing
+  `pairs` / `string_array` / `id_as_string` at a function that was already there. **The binary codec
+  came too and wanted to**: `Reader<'a>::str` already had `take(n) -> &'a [u8]` and called
+  `str::to_string` on the validated slice, and `value()` allocated a `String` only to copy it into a
+  `GStr` — the same waste item 330 found on the JSON side. No escapes in that format, so it is a
+  plain `&'a str` there.
+  **COUNTED**: `alloc_count_probe` reads **2,550,034 -> 800,034 allocations (-68.6%)** at 50k
+  nodes / 250k edges; the ≤8-byte classes total **16** where they were 2,250,015. That includes the
+  `"type":"node"` allocation item 331 left open.
+  **MEASURED**, five alternated rounds in both orders, every target range disjoint, both controls
+  flat: `nodes x1 prop` **1.208x**, `nodes x4 props` **1.192x**, `nodes+5edges x2 props` **1.265x**,
+  `ingest/ceiling` **1.293x**, `value/codec flat scalars` decode **1.268x**. The controls are
+  ENCODE (does not touch the staged records) and `recmat_ms` (a `format!` loop in the example
+  binary) — the latter drifted 2-5% at item 331 and is within 0.8% here, so this effect needs no
+  noise-floor argument.
+  **WHY BOTH ESTIMATES MISSED, which is the transferable part.** 329 said 1.2-1.4x from a micro.
+  331 re-priced DOWN to 1.13-1.18x by counting the allocations and multiplying by item 330's
+  **in-situ** 5-7ns per allocate-and-free pair — every input measured, still low by 3x.
+  **A per-allocation cost is not a constant of the allocator; it is a property of the allocation's
+  LIFETIME.** Item 330's were short-lived and LIFO, served off a hot free list at 5-7ns. These ~7M
+  are held live across the whole parse and freed in one bulk teardown after 300MB of churn: page
+  faults up, cold pointer chase down, **~19ns each**. A count is still the right instrument — it has
+  no noise floor — but the rate must come from an allocation with the same lifetime as the ones
+  counted.
+  4 mutants, all caught (3 / 2 / 44 / 83 failures). The two the change puts real weight on are also
+  the two with the fewest failures: **the binary codec's string-length handling is guarded by exactly
+  two assertions**, named rather than smoothed over.
+  **Still open and now sized by the count**: the records' `Vec`s (two per node, two per edge, the
+  ≤96 and ≤256 buckets, ~2.4M at corpus scale) are the largest remaining group — a `SmallVec`-shaped
+  inline capacity of 1-2 reaches most of them. The edge loop's 180ms serial floor and the input-order
+  constraint are unchanged (328).
 - **A property write allocated its key THREE times and stored one — 1.05x on the decode, 1.09x on
   bulk SET (331).** Item 330 left an instruction to re-price the staged-record borrow against its
   own 5-7ns-per-allocation number before building it. That re-pricing wanted a COUNT (the failure
@@ -913,10 +948,12 @@ Some(ch) = &mut self.changes` that was `None`.
   its result, so it proves the pushed value is load-bearing rather than that something runs. M4's
   **2** failures are the thin spot, named rather than smoothed: the created column's SHAPE is
   guarded by exactly two assertions.
-  **Re-pricing result, which was the original question**: 73.8% of the decode's 3.05M allocations
-  are ≤8 bytes, ~9.0M scaled to the corpus fixture, so the string share of item 329's 67.8ms
-  teardown is ~53ms and the staged-record borrow is **~1.13-1.18x, not 1.2-1.4x**. Still the
-  largest native ingest target. **Also still open and now cheap**: `"type":"node"` / `"type":"edge"`
+  **Re-pricing result, which was the original question — AND IT WAS WRONG, see item 332**: 73.8% of
+  the decode's 3.05M allocations are ≤8 bytes, ~9.0M scaled to the corpus fixture, so the string
+  share of item 329's 67.8ms teardown is ~53ms and the staged-record borrow looked like
+  **~1.13-1.18x, not 1.2-1.4x**. Item 332 built it and measured **1.21-1.29x**: the count was right
+  and the RATE was not, because item 330's 5-7ns was a short-lived LIFO allocation and these are
+  long-lived (~19ns). A per-allocation cost depends on lifetime. **Also still open and now cheap**: `"type":"node"` / `"type":"edge"`
   is the 4-byte bucket — one allocation per LINE for a field a node never reads — and it is
   `string_cow`'s exact shape, no lifetime work.
   **Method, recorded because it cost a wrong turn**: differencing SMALL documents does NOT attribute

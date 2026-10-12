@@ -28,6 +28,7 @@ use crate::ndjson::{build_store, StagedNdjson};
 use crate::schema_op::SchemaError;
 use crate::store::Store;
 use crate::value::{make_record, Value};
+use std::borrow::Cow;
 use std::sync::Arc;
 
 /// Snapshot magic — the first four bytes of every binary snapshot.
@@ -155,34 +156,41 @@ impl<'a> Reader<'a> {
     fn count(&mut self) -> Result<usize, String> {
         Ok(u32::from_le_bytes(self.take(4)?.try_into().unwrap()) as usize)
     }
-    fn str(&mut self) -> Result<String, String> {
+    /// BORROWED from the input buffer. The binary format carries an explicit length and no
+    /// escapes, so unlike the NDJSON parser's `string_cow` there is no owned fallback at all —
+    /// every string in a snapshot is a plain slice of the bytes handed in. This used to compute
+    /// that slice and then call `str::to_string` on it, which is the same waste item 330 found
+    /// on the JSON side (audit item 332).
+    fn str(&mut self) -> Result<&'a str, String> {
         let n = self.count()?;
         let bytes = self.take(n)?;
-        std::str::from_utf8(bytes)
-            .map(str::to_string)
-            .map_err(|_| "binary: invalid UTF-8 string".to_string())
+        std::str::from_utf8(bytes).map_err(|_| "binary: invalid UTF-8 string".to_string())
     }
-    fn opt_str(&mut self) -> Result<Option<String>, String> {
+    fn opt_str(&mut self) -> Result<Option<Cow<'a, str>>, String> {
         if self.u8()? == 1 {
-            Ok(Some(self.str()?))
+            Ok(Some(Cow::Borrowed(self.str()?)))
         } else {
             Ok(None)
         }
     }
-    fn str_list(&mut self) -> Result<Vec<String>, String> {
+    /// `Cow` rather than `&'a str` so the result drops straight into a staged record, whose
+    /// NDJSON sibling does need the owned arm for escapes.
+    fn str_list(&mut self) -> Result<Vec<Cow<'a, str>>, String> {
         let n = self.count()?;
-        (0..n).map(|_| self.str()).collect()
+        (0..n).map(|_| Ok(Cow::Borrowed(self.str()?))).collect()
     }
-    fn props(&mut self) -> Result<Vec<(String, Value)>, String> {
+    fn props(&mut self) -> Result<Vec<(Cow<'a, str>, Value)>, String> {
         let n = self.count()?;
-        (0..n).map(|_| Ok((self.str()?, self.value()?))).collect()
+        (0..n)
+            .map(|_| Ok((Cow::Borrowed(self.str()?), self.value()?)))
+            .collect()
     }
     fn value(&mut self) -> Result<Value, String> {
         Ok(match self.u8()? {
             0 => Value::Null,
             1 => Value::Bool(self.u8()? != 0),
             2 => Value::Num(self.f64()?),
-            3 => Value::Str(GStr::from(self.str()?.as_str())),
+            3 => Value::Str(GStr::from(self.str()?)),
             4 => {
                 let n = self.count()?;
                 Value::List((0..n).map(|_| self.value()).collect::<Result<_, _>>()?)
@@ -190,14 +198,14 @@ impl<'a> Reader<'a> {
             5 => {
                 let n = self.count()?;
                 let pairs: Vec<(GStr, Value)> = (0..n)
-                    .map(|_| Ok((GStr::from(self.str()?.as_str()), self.value()?)))
+                    .map(|_| Ok((GStr::from(self.str()?), self.value()?)))
                     .collect::<Result<_, String>>()?;
                 make_record(pairs)
             }
             6 => {
                 let tag = self.str()?;
                 let iso = self.str()?;
-                crate::temporal::Temporal::parse(&tag, &iso)
+                crate::temporal::Temporal::parse(tag, iso)
                     .map(Value::Temporal)
                     .map_err(|e| format!("binary: bad temporal value: {e}"))?
             }
@@ -382,18 +390,18 @@ pub fn from_binary(bytes: &[u8]) -> Result<Store, String> {
     let nc = r.count()?;
     let mut constraints = Vec::with_capacity(nc);
     for _ in 0..nc {
-        let label = r.str()?;
+        let label = Cow::Borrowed(r.str()?);
         constraints.push((label, r.str_list()?));
     }
     let rq = r.count()?;
     let mut required = Vec::with_capacity(rq);
     for _ in 0..rq {
-        required.push((r.str()?, r.str()?));
+        required.push((Cow::Borrowed(r.str()?), Cow::Borrowed(r.str()?)));
     }
     let nn = r.count()?;
     let mut nodes = Vec::with_capacity(nn);
     for _ in 0..nn {
-        let ext = r.str()?;
+        let ext = Cow::Borrowed(r.str()?);
         let labels = r.str_list()?;
         nodes.push((ext, labels, r.props()?));
     }
@@ -401,8 +409,8 @@ pub fn from_binary(bytes: &[u8]) -> Result<Store, String> {
     let mut edges = Vec::with_capacity(ne);
     for _ in 0..ne {
         let ext = r.opt_str()?;
-        let from = r.str()?;
-        let to = r.str()?;
+        let from = Cow::Borrowed(r.str()?);
+        let to = Cow::Borrowed(r.str()?);
         let labels = r.str_list()?;
         edges.push((from, to, ext, labels, r.props()?));
     }
@@ -447,7 +455,12 @@ fn read_v2_constraints(r: &mut Reader) -> Result<V2Constraints, String> {
         let n = r.count()?;
         let mut out = Vec::with_capacity(n);
         for _ in 0..n {
-            out.push((r.str()?, r.str()?, r.str()?, r.u8()? != 0));
+            out.push((
+                r.str()?.to_string(),
+                r.str()?.to_string(),
+                r.str()?.to_string(),
+                r.u8()? != 0,
+            ));
         }
         Ok(out)
     };
@@ -457,12 +470,15 @@ fn read_v2_constraints(r: &mut Reader) -> Result<V2Constraints, String> {
     let n = r.count()?;
     let mut e_unique = Vec::with_capacity(n);
     for _ in 0..n {
-        e_unique.push((r.str()?, r.str_list()?));
+        e_unique.push((
+            r.str()?.to_string(),
+            r.str_list()?.into_iter().map(Cow::into_owned).collect(),
+        ));
     }
     let n = r.count()?;
     let mut e_required = Vec::with_capacity(n);
     for _ in 0..n {
-        e_required.push((r.str()?, r.str()?));
+        e_required.push((r.str()?.to_string(), r.str()?.to_string()));
     }
     let n = r.count()?;
     let mut cardinality = Vec::with_capacity(n);
@@ -476,17 +492,21 @@ fn read_v2_constraints(r: &mut Reader) -> Result<V2Constraints, String> {
         } else {
             None
         };
-        cardinality.push((label, etype, direction, min, max));
+        cardinality.push((label.to_string(), etype.to_string(), direction, min, max));
     }
     let n = r.count()?;
     let mut validators = Vec::with_capacity(n);
     for _ in 0..n {
-        validators.push((r.str()?, r.str()?, r.str()?));
+        validators.push((
+            r.str()?.to_string(),
+            r.str()?.to_string(),
+            r.str()?.to_string(),
+        ));
     }
     let n = r.count()?;
     let mut invariants = Vec::with_capacity(n);
     for _ in 0..n {
-        invariants.push((r.str()?, r.str()?));
+        invariants.push((r.str()?.to_string(), r.str()?.to_string()));
     }
     Ok(V2Constraints {
         v_type,
