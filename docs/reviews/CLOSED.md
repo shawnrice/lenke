@@ -1005,6 +1005,28 @@ cast record to number` vs TS `cannot cast **a map** to number` (a different TYPE
   caught only because the numbers were visibly the old ones. Exactly the documented failure (_"the
   next command runs anyway and consumes the stale file, so the failure surfaces as a wrong result
   rather than an error"_). Written with the editor tool and a fresh name the second time.
+- **🛑 THE DENSE INTEGER-INDEXED ADJACENCY IS REFUTED — ON DESIGN, NOT ON PERF. Stop pointing at it
+  (366, the user's call).** Six items had converged on it (300, 310, 350, 352, 357, 358, surveyed at 365) as the TS engine's one remaining lever, each arriving by a different route and each recording
+  it as "parked" rather than closed. **It does not deliver, and the reason is not a number:**
+  > _"this would really hurt our ability to get something by an id. That's what the string keyed
+  > maps buy us"_
+  > **The string-keyed adjacency buys O(1) access BY EXTERNAL ID, and a dense layout does not remove
+  > the hash — it RELOCATES it.** Edges store external ids, by items 140/218's deliberate choice, so a
+  > dense adjacency would need an ext→dense translation on every hop: exactly the string-keyed lookup
+  > the change exists to eliminate, moved one level down. Paying off would require dense ids
+  > THROUGHOUT, and then every id-based entry point pays the translation at the boundary — for an
+  > API that is id-centric and whose snapshots carry external ids (`encode` emits edge ids, so every
+  > reloaded snapshot has them).
+  > **SO THE CONVERGENCE OF SIX DECOMPOSITIONS WAS NOT EVIDENCE THE CHANGE WAS RIGHT.** Each item
+  > correctly eliminated the component-sized fixes in its own row and correctly named what was left —
+  > and then inferred that what was left must be worth doing. **A residue is a description of the
+  > cost, not a proposal**; six routes arriving at the same residue says the diagnosis is consistent,
+  > not that the implied change is sound. None of the six priced the id-lookup side, because none of
+  > them was looking at it: every one was measuring a traversal.
+  > **CONSEQUENCE**: the TS engine's per-row floor (26-31 ns/row, item 365) is **accepted**, not
+  > pending. Items 300 and 348's "parked, blocked on a dense adjacency the TS graph does not expose"
+  > should be read as closed. Future TS work has to beat that floor some other way or be about
+  > something else.
 - **⚠️ A FRESH HUNT FOR A TS TARGET: two candidates RETRACTED by normalizing, and every remaining
   one is in a parked class — SIX decompositions now converge there (365).** Items 360-364 were all
   native, so this was a deliberate search for a TS target that is NOT the parked dense adjacency.
