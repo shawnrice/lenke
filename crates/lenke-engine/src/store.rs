@@ -3879,6 +3879,26 @@ impl Store {
         )
     }
 
+    /// How many DISTINCT values of the (possibly dotted) property path `key` the hash index on
+    /// it holds, or `None` if there is no such index.
+    ///
+    /// Exact, which is the whole point and what item 367 had to fix: the map's key count is the
+    /// distinct-value count only if an emptied bucket drops its KEY, and before 367 it did not —
+    /// a value whose every holder had been deleted still occupied an entry. `index_drop_node` now
+    /// removes the entry, so this is `count(DISTINCT key)` over the live nodes carrying it, in
+    /// O(1) against a scan of every row.
+    ///
+    /// It counts the PRESENT-and-indexed values: a node without the property is in no bucket, and
+    /// a NULL is a stored value with its own group key (this engine's null policy), so it counts
+    /// as a distinct value exactly as `count(DISTINCT …)` over the column would.
+    #[must_use]
+    pub fn index_distinct_count(&self, key: &str) -> Option<usize> {
+        self.indexes
+            .iter()
+            .find(|i| i.path.iter().map(String::as_str).eq(key.split('.')))
+            .map(|i| i.map.len())
+    }
+
     /// The size of the hash-index bucket for `key = value` — an EXACT selectivity
     /// for an `=` seek, O(1) (the bucket `Vec`'s length; it may count a few
     /// tombstoned ids, which is fine for an estimate). `None` if no index on `key`.
@@ -3953,6 +3973,20 @@ impl Store {
         for (j, gk) in removals {
             if let Some(bucket) = self.indexes[j].map.get_mut(&gk) {
                 bucket.retain(|&x| x != id);
+                // DROP THE EMPTY ENTRY, not just the id (audit item 367). The `retain` above
+                // already pruned the id, so a bucket never holds a deleted node — but the KEY
+                // survived with an empty `Vec`, which made `map.len()` count values that no live
+                // node carries any more. That is why the distinct-value count this map obviously
+                // holds was not usable as an answer: it was an over-estimate, and an
+                // over-estimate is a WRONG count rather than a slow one.
+                //
+                // The cost is one `is_empty()` per (index, deleted node) pair and an occasional
+                // `remove` — measured on `delete:width` and `bench:usage`'s delete rows before
+                // this was taken, since making every DELETE pay to make a cardinality query cheap
+                // is the wrong trade if the delete cost is real.
+                if bucket.is_empty() {
+                    self.indexes[j].map.remove(&gk);
+                }
             }
         }
         // Range indexes hold non-null values only.

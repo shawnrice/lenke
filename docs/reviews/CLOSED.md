@@ -1005,6 +1005,41 @@ cast record to number` vs TS `cannot cast **a map** to number` (a different TYPE
   caught only because the numbers were visibly the old ones. Exactly the documented failure (_"the
   next command runs anyway and consumes the stale file, so the failure surfaces as a wrong result
   rather than an error"_). Written with the editor tool and a fresh name the second time.
+- **Index buckets now drop their emptied KEY, so the distinct-value count is EXACT — and the delete
+  cost it was feared to carry is ZERO (367, the user's call).** Item 365 named an O(1) answer for
+  `count(DISTINCT k)` over an indexed `k` (the hash index's key count) and declined it as unsound:
+  buckets were believed to retain deleted ids, so a value whose holders were all gone would still be
+  counted — **wrong, not slow.**
+  **DIAGNOSING IT FIRST CHANGED THE SIZE OF THE JOB: the ids were ALREADY pruned.**
+  `index_drop_node` has always done `bucket.retain(|&x| x != id)`, so no bucket holds a deleted
+  node. What survived was the **empty ENTRY** — the key stayed with a zero-length `Vec`, so
+  `map.len()` counted values no live node carries. Three lines, not a storage redesign; and
+  `index_bucket_len`'s "may count a few tombstoned ids, which is fine for an estimate" overstates
+  what is actually stale.
+  **NEW — `index_distinct_count(key)`**: `count(DISTINCT key)` in O(1) against a scan of every row,
+  exact over live nodes carrying the property. A node WITHOUT the property is in no bucket (so it
+  does not count, matching `count` ignoring absent values); **a stored NULL has its own group key and
+  counts as a distinct value**, which is the one thing a caller must handle since ISO/SQL
+  `count(DISTINCT x)` excludes nulls.
+  **TEETH**: two tests (plus the DOTTED twin — items 333/335/349 were all twin asymmetries), every
+  assertion on a value whose holders are ALL deleted, which is the only observable case. Verified by
+  MUTATION: removing the `if bucket.is_empty() { … remove }` fails both with exactly the predicted
+  values (`Some(3)` against `Some(2)`, `Some(2)` against `Some(1)`). They also pin that pruning did
+  not break the LOOKUP — a seek for a pruned value must answer `Some(empty)`, never `None`, since
+  `None` means "no index" and would silently route the query to a scan.
+  **THE COST, WHICH WAS THE ACTUAL QUESTION**: making every DELETE pay to make a cardinality query
+  cheap is the wrong trade if the delete cost is real, so it was measured before the change was
+  kept. `bench:usage` `write: append then delete node`, two `.so` builds differing only in the
+  pruning, three alternated rounds, ops/s — indexed **195.5/194.0/194.6k against 192.5/197.6/192.0k
+  (overlapping)**, and unindexed, where the pruning branch is UNREACHABLE, **204.2/199.8/205.4k
+  against 200.4/206.2/205.1k (flat)**. **No measurable cost**, and the unindexed column is a genuine
+  null control, so the indexed overlap is a measurement rather than drift.
+  **⚠️ NO PERF WIN YET — this is the prerequisite.** The shortcut that would use it is a separate
+  item deliberately, because a fast path that is WRONG is worse than one that is slow, and it has
+  three preconditions a planner must check: **(1) NULLs** — `count(DISTINCT x)` excludes them, the
+  index counts a stored NULL as a value; **(2) the LABEL** — `MATCH (n:Person)` counts over `Person`
+  while the index is ANY-LABEL (its own doc says so), so the shortcut needs no label constraint or a
+  vacuous one; **(3) no other predicate.**
 - **🛑 THE DENSE INTEGER-INDEXED ADJACENCY IS REFUTED — ON DESIGN, NOT ON PERF. Stop pointing at it
   (366, the user's call).** Six items had converged on it (300, 310, 350, 352, 357, 358, surveyed at 365) as the TS engine's one remaining lever, each arriving by a different route and each recording
   it as "parked" rather than closed. **It does not deliver, and the reason is not a number:**

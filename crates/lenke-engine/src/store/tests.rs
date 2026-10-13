@@ -1451,3 +1451,93 @@ fn the_cached_live_node_count_tracks_every_tombstone_write() {
     check(&s, 1, "after a committed delete");
     let _ = (d, e);
 }
+
+/// `index_distinct_count` is `count(DISTINCT key)` in O(1), and it is EXACT — which is what audit
+/// item 367 had to fix. `index_drop_node` already pruned the deleted id from its bucket, but the
+/// emptied bucket kept its KEY, so the map's key count over-reported: a value no live node carries
+/// any more still occupied an entry. An over-estimate is a WRONG count, not a slow one, and that is
+/// why the distinct count this map obviously holds could not be used as an answer.
+///
+/// Every assertion below is on a value whose holders are ALL deleted — the only case where the
+/// pruning is observable. Without it the counts read 3, 3, 3 instead of 2, 1, 1.
+#[test]
+fn an_index_distinct_count_is_exact_after_deletes() {
+    let mut st = Builder::default().build();
+    let a = st.add_node(&["P"], &[("city", s("NYC"))]);
+    let b = st.add_node(&["P"], &[("city", s("LA"))]);
+    let c = st.add_node(&["P"], &[("city", s("NYC"))]);
+    let d = st.add_node(&["P"], &[("city", s("SF"))]);
+
+    st.create_index("city");
+
+    assert_eq!(st.index_distinct_count("city"), Some(3), "NYC, LA, SF");
+    assert_eq!(st.index_distinct_count("nosuch"), None, "no index on it");
+
+    // One of TWO holders of NYC: the value survives, so the count must not move.
+    st.delete_node(a);
+    assert_eq!(
+        st.index_distinct_count("city"),
+        Some(3),
+        "NYC still has a holder"
+    );
+
+    // The LAST holder of NYC: now the value is gone and the count must drop.
+    st.delete_node(c);
+    assert_eq!(
+        st.index_distinct_count("city"),
+        Some(2),
+        "NYC has no live holder left"
+    );
+
+    st.delete_node(b);
+    assert_eq!(st.index_distinct_count("city"), Some(1), "only SF remains");
+
+    st.delete_node(d);
+    assert_eq!(
+        st.index_distinct_count("city"),
+        Some(0),
+        "an index over no live nodes holds no values"
+    );
+
+    // And the pruning must not break the LOOKUP: a seek for a value whose holders are gone
+    // answers empty, not stale ids, and a surviving value still resolves.
+    let mut st2 = Builder::default().build();
+    let x = st2.add_node(&["P"], &[("city", s("NYC"))]);
+    let y = st2.add_node(&["P"], &[("city", s("LA"))]);
+
+    st2.create_index("city");
+    st2.delete_node(x);
+
+    assert_eq!(
+        st2.index_lookup("city", &s("NYC")),
+        Some(vec![]),
+        "the index still EXISTS for a pruned value — Some(empty), never None"
+    );
+    assert_eq!(st2.index_lookup("city", &s("LA")), Some(vec![y]));
+    assert_eq!(st2.index_distinct_count("city"), Some(1));
+}
+
+/// The dotted-path twin, because a dotted index keys on a descended value and the pruning runs
+/// through the same `removals` loop — and because every node/edge-shaped asymmetry in this repo was
+/// found by testing the twin (items 333, 335, 349).
+#[test]
+fn a_dotted_index_distinct_count_is_exact_after_deletes() {
+    use crate::value::make_record;
+    let city = |c: &str| make_record(vec![(crate::gstr::GStr::from("city"), s(c))]);
+    let mut st = Builder::default().build();
+    let a = st.add_node(&["P"], &[("meta", city("NYC"))]);
+    let b = st.add_node(&["P"], &[("meta", city("LA"))]);
+
+    st.create_index("meta.city");
+
+    assert_eq!(st.index_distinct_count("meta.city"), Some(2));
+
+    st.delete_node(a);
+
+    assert_eq!(
+        st.index_distinct_count("meta.city"),
+        Some(1),
+        "the dotted path prunes its emptied bucket too"
+    );
+    assert_eq!(st.index_lookup("meta.city", &s("LA")), Some(vec![b]));
+}
