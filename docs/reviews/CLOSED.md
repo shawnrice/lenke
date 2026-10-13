@@ -1005,6 +1005,44 @@ cast record to number` vs TS `cannot cast **a map** to number` (a different TYPE
   caught only because the numbers were visibly the old ones. Exactly the documented failure (_"the
   next command runs anyway and consumes the stale file, so the failure surfaces as a wrong result
   rather than an error"_). Written with the editor tool and a fresh name the second time.
+- **`addEdge`'s 810ns label index, SPLIT at last — the 1M-element Set is FREE, the two adjacency maps
+  are all of it, and they are SUPERADDITIVE (357).** Item 356 left `addEdge` as the only lever on
+  pure-TS ingest (the TS decode is format-independent, so the cost is the graph BUILD). Item 312
+  priced `indexEdgeLabel` at 810ns of a ~2.9µs edge write and called it "seven hash operations, five
+  string-keyed", but never split it across the THREE indexes it maintains — so the figure could not
+  be acted on. Ablated one at a time, three alternated rounds, min of each, ns/edge:
+  **CONTROL 2760** (2760-2867) · minus `edgesByLabel` **2592, OVERLAPS the control — not measurable,
+  ≤4%** · minus `edgesFromByLabel` 2461 (−240, 8.9%, disjoint) · minus `edgesToByLabel` 2483 (−218,
+  8.1%, disjoint) · minus BOTH adjacency maps **2076 (−684, 24.8%)** · minus all three 1912 (−848,
+  **30.7%**) · minus all three AND the loop 1887 (indistinguishable from the previous row).
+  **⚠️ `edgesByLabel` IS NOT MEASURABLE — the index holding a 1,000,000-element `Set`, the biggest
+  container in the graph, cannot be distinguished from the control.** Its range overlaps, its
+  apparent 109ns is inside the control's own 3.9% repeatability. **A `Set.add` into a million-entry
+  Set is essentially free; the cost is in the two indexes with the SMALL inner containers, because
+  there are 400,000 of those.** Retracts the intuition that the big container is the expensive one.
+  **The per-label loop and the function call are FREE** (1887 against 1912, overlapping) — checked
+  because with all three blocks gone `indexEdgeLabel` is an empty function, so the 848 could have
+  been an artifact of ablating down to an empty callee. It is real work.
+  **THE SUPERADDITIVITY IS THE RESULT: 684ns for both adjacency maps against 240+218=458 apart, a
+  226ns SHARED term** that fixing either index alone cannot reach. Two mechanisms are consistent and
+  **this item does not separate them**: ~0.8 inner Map+Set allocations an edge (one of each per
+  distinct vertex id per side — 800,000 objects for 1,000,000 edges), and the cache cost of touching
+  two 200,000-entry string-keyed Maps per edge, which is **item 323's own recorded observation**
+  ("touching two large maps per edge thrashes more than either alone"). **The experiment that would
+  separate them**: merge the two maps into ONE (same inner containers, one outer working set)
+  against two maps with no inner containers.
+  **NOT LICENSED YET** — a tagged single-label inner representation (store the `Set` directly,
+  promote to a `Map` on a second label) would halve the allocations and remove a hash level from
+  every adjacency READ too, but `edgesFromByLabel`/`edgesToByLabel` are read by `Vertex.adjFrom`,
+  both engines' `graph-queries`, four algorithms and `shortcuts`' `side`/`bucketSize`/`edgesOfTypes`.
+  Wide blast radius for a change whose price is bounded by exactly the quantity this item could not
+  separate. **Price the mechanism before paying for the representation.**
+  **NEW PERMANENT INSTRUMENT — `bun run addedge:cost`** (`packages/native/addedge-cost-probe.ts`).
+  The bench's decode rows cannot answer this: they include `JSON.parse` (19%) and they reach
+  `@lenke/core` through `@lenke/serialization`, **which resolves to core's built DIST**, so an A/B of
+  core's SOURCE is not in effect at all and every edit costs a full build first. It reads source,
+  drives the two public writes, takes NODE ingest as the null control, and reproduces both known
+  baselines (2743-3052 ns/edge against item 312's ~2.9µs; 898-1015 ns/node against ~1.08µs).
 - **⚠️ FIXTURE HOLE + TWO RETRACTIONS — four codec decode rows had ZERO EDGES, and normalizing by
   bytes retracts both targets the un-normalized table suggested (356).** `decode pg-json` /
   `graphson` / `pg-text` / `csv` all took `setup: e.load(nodesDoc)` — **200,000 nodes, NO EDGES** —
