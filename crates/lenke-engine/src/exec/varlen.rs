@@ -792,6 +792,28 @@ pub(super) fn try_stream_varlen_json(
     else {
         return None;
     };
+    // PRICED AND DECLINED (audit item 364): this is item 363's pattern — a speculative probe that
+    // EXECUTES before a gate that can reject it. `pull` runs the var-length's INPUT, and the two
+    // checks immediately below may then throw the result away.
+    //
+    // Item 363 found the same shape in `try_stream_gremlin_json` and it was worth 2.00x, so this
+    // one was measured rather than assumed. The declining shape — a quantified path projecting a
+    // variable other than the ENDPOINT, `MATCH p = (a:Person)-[:KNOWS]->{1,2}(b) RETURN a.name` —
+    // over 50,000 nodes at degree 3, probe present against ablated, three alternated rounds,
+    // min of 5 each:
+    //
+    //     present  23.62 / 24.03 / 23.93 ms        ablated  22.68 / 22.04 / 22.90 ms
+    //
+    // **1.07x, disjoint ranges.** Real, and 30x smaller than 363's, for a reason worth keeping:
+    // **the cost of a wasted speculative seed is sized by the seed's SHARE of the query.** In 363
+    // the discarded seed was an unindexed scan that WAS the whole query; here it is the seed of a
+    // var-length expansion that dominates it.
+    //
+    // Not fixed, because the only cheap pre-check available is `chain_width(vl_in)`, and declining
+    // on it would rest on an unasserted invariant (that it equals the pulled slot count). Getting
+    // that wrong costs the STREAMING path, which the same run measured at ~1.20x on the accepted
+    // shape — a worse trade than the 1.07x it buys. If `chain_width` ever gains a test pinning it
+    // to the pulled width, this becomes a safe three-line change.
     let vl_batch = pull(vl_in, store, false).ok()?;
     let endpoint_slot = vl_batch.slots.len();
     if *slot != endpoint_slot {

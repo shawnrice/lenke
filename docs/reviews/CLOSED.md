@@ -1005,6 +1005,33 @@ cast record to number` vs TS `cannot cast **a map** to number` (a different TYPE
   caught only because the numbers were visibly the old ones. Exactly the documented failure (_"the
   next command runs anyway and consumes the stale file, so the failure surfaces as a wrong result
   rather than an error"_). Written with the editor tool and a fresh name the second time.
+- **⚠️ PRICED AND DECLINED — the same wasted-seed pattern grepped elsewhere, found once more, worth
+  1.07x not 2.00x. THE COST IS SIZED BY THE SEED'S SHARE OF THE QUERY (364).** Item 363 fixed a
+  speculative probe that executed its seed before the gates that reject it (2.00x); this is the grep.
+  **Where it is NOT**: the other four probes in `try_run_gremlin_json_inner` gate on plan SHAPE
+  (`let Plan::… else { return None }`), which is free — already ablated at 363 at 0-2µs of 115. The
+  pattern is not endemic; it is specific to a probe that needs a FRONTIER to decide.
+  **Where it is**: `try_stream_varlen_json`, called by BOTH egress paths, does
+  `let vl_batch = pull(vl_in, store, false).ok()?;` and only then checks `*slot != endpoint_slot`
+  and the `Col::Nodes` shape.
+  **PRICED** — a quantified path projecting a NON-endpoint variable
+  (`MATCH p = (a:Person)-[:KNOWS]->{1,2}(b) RETURN a.name`), 50k nodes at degree 3, GQL egress,
+  probe present against ablated, three alternated rounds of min-of-5: **present 23.62/24.03/23.93 ms
+  against ablated 22.68/22.04/22.90 — 1.07x, DISJOINT.** Real, reproducible, and **30x smaller than
+  363's for the identical bug.**
+  **THE GENERALIZATION IS THE ITEM: the cost of a wasted speculative seed is sized by the seed's
+  SHARE of the query.** At 363 the discarded seed was an unindexed scan that WAS the whole query, so
+  re-running it doubled the work (exactly 2.00x); here it is the input of a var-length expansion
+  that dominates it, so the same bug is 6.7%. **Finding a pattern is not finding its price, and the
+  second instance of a 2x bug can be a rounding error.** (Same reason 363's gain on
+  `V().out().values(age)` was ~zero: there the discarded seed was a 200k-id `Vec` copy, not an O(N)
+  property scan.)
+  **DECLINED, with the trigger**: the only cheap pre-check is the static `chain_width(vl_in)`, and
+  declining on it would rest on an **unasserted invariant** (that it equals the pulled slot count).
+  Getting that wrong yields no wrong answer — it silently loses the STREAMING path, measured at
+  ~1.20x on the accepted shape (single round, quoted loosely). 1.07x against a 1.20x downside on a
+  mis-set invariant is the wrong trade. **If `chain_width` ever gains a test pinning it to the
+  pulled width, this becomes a three-line change.** Recorded beside the `pull` with its numbers.
 - **The Gremlin JSON egress scanned TWICE — a speculative probe ran the seed BEFORE the gates that
   reject it. 1.81x, and item 362's own diagnosis was wrong (363).** 362 measured a 1.74x
   cross-language gap on an unindexed point lookup and recorded "it is in the plan or the execution".
