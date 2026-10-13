@@ -1541,3 +1541,88 @@ fn a_dotted_index_distinct_count_is_exact_after_deletes() {
     );
     assert_eq!(st.index_lookup("meta.city", &s("LA")), Some(vec![b]));
 }
+
+/// A NULL is NOT in a hash index, so `index_distinct_count` excludes it — which is exactly what
+/// `count(DISTINCT x)` wants, since ISO/SQL `count` ignores nulls.
+///
+/// Item 367's doc comment asserted the OPPOSITE ("a stored NULL has its own group key and so counts
+/// as a distinct value") and recorded it as a precondition the caller would have to handle. That was
+/// wrong: `apply_set_prop` says so in its own comment — *"A NULL is never seek-indexed
+/// (`WHERE k = null` matches nothing), so it is excluded from both indexes"*. This test is why the
+/// claim is now checked rather than reasoned, and it is what would catch a change to that policy.
+#[test]
+fn a_null_is_not_a_distinct_indexed_value() {
+    let mut st = Builder::default().build();
+    let a = st.add_node(&["P"], &[("city", s("NYC"))]);
+    let _b = st.add_node(&["P"], &[("city", Value::Null)]);
+    let _c = st.add_node(&["P"], &[]); // absent, not null
+
+    st.create_index("city");
+
+    assert_eq!(
+        st.index_distinct_count("city"),
+        Some(1),
+        "only NYC: a present-null and an absent property are both out of the index"
+    );
+    assert_eq!(
+        st.index_lookup("city", &Value::Null),
+        Some(vec![]),
+        "`WHERE city = null` matches nothing, so the null holder is in no bucket"
+    );
+
+    // And a SET to null REMOVES the old indexed value rather than re-keying it.
+    st.set_prop(a, "city", Value::Null);
+
+    assert_eq!(
+        st.index_distinct_count("city"),
+        Some(0),
+        "setting the last non-null value to null empties the index"
+    );
+}
+
+/// The SET twin of `an_index_distinct_count_is_exact_after_deletes`: a node whose indexed value
+/// CHANGES leaves its old value behind with an empty bucket, exactly as a deleted one did.
+///
+/// Item 367 pruned the DELETE path and missed this one. Written because the null test above only
+/// exercises set-to-NULL, which takes `reindex_node`'s `new: None` arm — a value-to-value update
+/// takes the other arm, and that is the common case.
+#[test]
+fn an_index_distinct_count_is_exact_after_updates() {
+    let mut st = Builder::default().build();
+    let a = st.add_node(&["P"], &[("city", s("NYC"))]);
+    let b = st.add_node(&["P"], &[("city", s("NYC"))]);
+    let _c = st.add_node(&["P"], &[("city", s("LA"))]);
+
+    st.create_index("city");
+
+    assert_eq!(st.index_distinct_count("city"), Some(2), "NYC, LA");
+
+    // One of two NYC holders moves to LA: NYC survives, so the count must not move.
+    st.set_prop(a, "city", s("LA"));
+    assert_eq!(
+        st.index_distinct_count("city"),
+        Some(2),
+        "NYC still has a holder"
+    );
+
+    // The LAST NYC holder moves: the value is gone and the count must drop.
+    st.set_prop(b, "city", s("LA"));
+    assert_eq!(
+        st.index_distinct_count("city"),
+        Some(1),
+        "only LA remains after the last NYC holder moved"
+    );
+
+    // ...and the seek must agree: NYC resolves to nothing, LA to all three.
+    assert_eq!(st.index_lookup("city", &s("NYC")), Some(vec![]));
+
+    let mut la = st.index_lookup("city", &s("LA")).expect("indexed");
+
+    la.sort_unstable();
+
+    assert_eq!(la.len(), 3, "every node moved to LA");
+
+    // A brand-new value re-creates its key.
+    st.set_prop(a, "city", s("SF"));
+    assert_eq!(st.index_distinct_count("city"), Some(2), "LA and SF");
+}

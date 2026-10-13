@@ -1005,6 +1005,36 @@ cast record to number` vs TS `cannot cast **a map** to number` (a different TYPE
   caught only because the numbers were visibly the old ones. Exactly the documented failure (_"the
   next command runs anyway and consumes the stale file, so the failure surfaces as a wrong result
   rather than an error"_). Written with the editor tool and a fresh name the second time.
+- **A NULL was indexed by ONE of the two builders, and item 367's pruning covered ONE of the two
+  write paths — both found by a test written to CONFIRM a claim (368).** Item 367's doc comment
+  asserted that a stored NULL "counts as a distinct value" and recorded it as a precondition a
+  caller must subtract. Checked against `apply_set_prop`, which says the opposite in its own
+  comment — _"A NULL is never seek-indexed (`WHERE k = null` matches nothing), so it is excluded
+  from both indexes"_ — so the comment was corrected, and **the test written to pin the correction
+  FAILED**, surfacing two bugs. **367's claim was wrong about the POLICY and accidentally right
+  about the BEHAVIOUR.**
+  **BUG 1 — only one of the two index builders knew the policy.** `create_index` indexed every
+  present value including NULL; `create_range_index`, the twin builder twenty lines below, already
+  does `if !v.is_null()`. **Skipping nulls is the established policy and the hash builder was the
+  one place that missed it.** Consequence: **an index's contents depended on WRITE ORDER relative to
+  its creation** — a null present at build time got a bucket, a null written afterwards did not. No
+  seek could observe it (`index_seek_ids` returns empty for a null value before consulting the index
+  at all), but any reader of the buckets could, and 367's distinct count is the first such reader.
+  **BUG 2 — item 367 pruned one of the two WRITE paths.** With the builder fixed the test still
+  failed: setting the last non-null value to NULL left the count at 1. 367 added the emptied-key
+  pruning to `index_drop_node` (delete) and missed `reindex_node` (set) — a node whose indexed value
+  CHANGES leaves its old value behind with an empty bucket exactly as a deleted one did.
+  **THE PATTERN IS NOT "NODE VERSUS EDGE"** (items 333, 335, 349, 360 were read that way) — it is
+  **"this repo has two of most things, and a fix lands on the one you were looking at."** Build and
+  update; delete and set; GQL and Gremlin; vertex and edge. One item old and mine, this time.
+  **TEETH — the three fixes are guarded INDEPENDENTLY**: build-indexes-nulls CAUGHT by the null
+  test; set-keeps-empty-key CAUGHT by the update test; delete-keeps-empty-key (367's fix) CAUGHT by
+  the delete tests and the dotted twin; a behaviour-preserving CONTROL SURVIVED. **No test covers
+  two of the three**, so each path is pinned by its own assertions rather than by luck.
+  **COST**: `bench:usage` `write: property update`, three alternated rounds — indexed
+  **300.9/300.2/304.4k against 299.8/301.2/299.6k (overlapping)**, unindexed, where the pruning is
+  unreachable, **49.0/49.6/49.0k against 47.7/50.3/50.1k (flat)**. No measurable cost, same as
+  367's delete path.
 - **Index buckets now drop their emptied KEY, so the distinct-value count is EXACT — and the delete
   cost it was feared to carry is ZERO (367, the user's call).** Item 365 named an O(1) answer for
   `count(DISTINCT k)` over an indexed `k` (the hash index's key count) and declined it as unsound:

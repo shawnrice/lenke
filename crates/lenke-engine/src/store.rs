@@ -3780,6 +3780,23 @@ impl Store {
             for id in 0..self.node_count {
                 if !self.deleted[id] && col.present_at(id) {
                     let v = resolve_path(&col.read(id), sub);
+                    // A NULL IS NOT SEEK-INDEXED, and this build path was the one place that did
+                    // not know it (audit item 368). `apply_set_prop` states the policy in its own
+                    // comment — "A NULL is never seek-indexed (`WHERE k = null` matches nothing),
+                    // so it is excluded from both indexes" — and `create_range_index`, the twin
+                    // builder twenty lines down, already skips nulls. Only the HASH builder
+                    // indexed them.
+                    //
+                    // The effect was that an index's contents depended on WRITE ORDER relative to
+                    // its creation: a null present at build time got a bucket, a null written
+                    // afterwards did not. No seek could observe it — `index_seek_ids` returns
+                    // empty for a null value before consulting the index at all — but any reader
+                    // of the buckets themselves could, and `index_distinct_count` (item 367) is
+                    // the first one. It over-reported by one per null-holding value.
+                    if v.is_null() {
+                        continue;
+                    }
+
                     map.entry(crate::value::group_key(&v))
                         .or_default()
                         .push(id as u32);
@@ -3888,9 +3905,15 @@ impl Store {
     /// removes the entry, so this is `count(DISTINCT key)` over the live nodes carrying it, in
     /// O(1) against a scan of every row.
     ///
-    /// It counts the PRESENT-and-indexed values: a node without the property is in no bucket, and
-    /// a NULL is a stored value with its own group key (this engine's null policy), so it counts
-    /// as a distinct value exactly as `count(DISTINCT …)` over the column would.
+    /// It counts the PRESENT, NON-NULL values: a node without the property is in no bucket, and a
+    /// NULL is not seek-indexed either (`WHERE k = null` matches nothing), so neither counts.
+    ///
+    /// **Item 367 asserted the opposite here** — that a stored NULL "counts as a distinct value" —
+    /// and recorded it as a precondition a caller would have to subtract. That was wrong about the
+    /// policy and, at the time, accidentally right about the behaviour: `apply_set_prop` excluded
+    /// nulls but `create_index` did not, so the count over-reported for a null that was present
+    /// when the index was built. Item 368 fixed the builder; the exclusion is now uniform, and
+    /// `a_null_is_not_a_distinct_indexed_value` is what holds it.
     #[must_use]
     pub fn index_distinct_count(&self, key: &str) -> Option<usize> {
         self.indexes
@@ -3947,6 +3970,16 @@ impl Store {
                 let og = crate::value::group_key(&resolve_path(old, &sub));
                 if let Some(bucket) = self.indexes[j].map.get_mut(&og) {
                     bucket.retain(|&x| x != node);
+                    // Drop the emptied KEY, the same as `index_drop_node` (item 368). Item 367
+                    // added that pruning to the DELETE path and missed this one — the SET path —
+                    // which is the twin asymmetry this repo keeps finding (items 333, 335, 349,
+                    // 360) and this time it was one item old. A node whose indexed value CHANGES
+                    // leaves its old value behind with an empty bucket exactly as a deleted one
+                    // did, so the distinct count over-reported after an update as well as after a
+                    // delete.
+                    if bucket.is_empty() {
+                        self.indexes[j].map.remove(&og);
+                    }
                 }
             }
             if let Some(new) = new {
