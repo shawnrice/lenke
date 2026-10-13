@@ -1641,15 +1641,33 @@ impl Index {
 
 /// Descend record fields `sub` from `v`; an empty `sub` returns `v` (a plain
 /// index). A non-record along the way, or a missing field, resolves to `Null`.
-fn resolve_path(v: &Value, sub: &[String]) -> Value {
-    let mut cur = v.clone();
-    for k in sub {
-        cur = match &cur {
-            Value::Record(fields) => crate::value::record_field(fields, k),
+///
+/// Generic over the segment type so the index-maintenance callers can keep passing their
+/// `Vec<String>` paths while the per-row scan path passes borrowed `&str` segments it never
+/// had to allocate (audit item 359).
+///
+/// The ONE-segment arm is not a micro-optimization for its own sake: `sub` is a single field
+/// for `meta.city`, by far the common shape, and the general loop has to `clone` `v` before it
+/// can rebind `cur` in the loop body. That clone is an `Arc` bump and a drop per row on the
+/// scan path, for a value the one-level case never needs to own.
+fn resolve_path<S: AsRef<str>>(v: &Value, sub: &[S]) -> Value {
+    match sub {
+        [] => v.clone(),
+        [k] => match v {
+            Value::Record(fields) => crate::value::record_field(fields, k.as_ref()),
             _ => Value::Null,
-        };
+        },
+        _ => {
+            let mut cur = v.clone();
+            for k in sub {
+                cur = match &cur {
+                    Value::Record(fields) => crate::value::record_field(fields, k.as_ref()),
+                    _ => Value::Null,
+                };
+            }
+            cur
+        }
     }
-    cur
 }
 
 impl Store {
@@ -1966,10 +1984,29 @@ impl Store {
     /// Read a node's value at a (possibly dotted) property PATH: the base property,
     /// then descend record sub-fields. A plain key reads exactly like [`prop`]. The
     /// scan-fallback twin of a dotted [`index_lookup`].
+    ///
+    /// Splits `dotted_key` on every call, so **a caller in a per-row loop wants
+    /// [`prop_path_parts`] instead** — the split depends on the KEY, not on the node. This used
+    /// to allocate a `Vec<String>` per node (one `Vec` plus one owned `String` per segment:
+    /// 600,000 allocations for a 200,000-node scan of `meta.city`), which was the whole of
+    /// audit item 359.
     #[must_use]
     pub fn prop_path(&self, node: u32, dotted_key: &str) -> Value {
-        let path: Vec<String> = dotted_key.split('.').map(String::from).collect();
-        resolve_path(&self.prop(node, &path[0]), &path[1..])
+        // `&str` segments, not owned `String`s: nothing here needs to own them.
+        let parts: Vec<&str> = dotted_key.split('.').collect();
+        self.prop_path_parts(node, &parts)
+    }
+
+    /// [`prop_path`] with the path already split — the form a per-row loop should call.
+    ///
+    /// `parts` must be non-empty; `parts[0]` is the base property and the rest are record
+    /// sub-fields. Splitting once per QUERY instead of once per ROW is item 359's change.
+    ///
+    /// # Panics
+    /// Panics if `parts` is empty.
+    #[must_use]
+    pub fn prop_path_parts(&self, node: u32, parts: &[&str]) -> Value {
+        resolve_path(&self.prop(node, parts[0]), &parts[1..])
     }
 
     /// The typed column for `key`, for a bulk gather. `None` = no such property.

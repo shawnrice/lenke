@@ -55,10 +55,19 @@ pub fn run(cfg: &Cfg) {
         let maps = from_ndjson(&map_ndjson(n)).expect("decodes");
         let scalar = "MATCH (p:P) WHERE p.age > 50 RETURN count(*) AS c";
         let field = "MATCH (p:P) WHERE p.meta.city = 'NYC' RETURN count(*) AS c";
+        // The MATCHED flat comparison, added at audit item 359. Without it the only available
+        // ratio was `map field meta.city` against `scalar age`, whose two sides differ in TWO
+        // things — a dotted path AND string-vs-numeric — so the section invited a conclusion it
+        // could not support. Measured, the string/numeric axis runs the OTHER way (a flat string
+        // equality is FASTER than the numeric range, because it seeds an IndexSeek shape), so the
+        // un-matched ratio understated the real nested-path penalty. One extra row makes the
+        // comparison sound; a ratio is only as honest as the sameness of its two sides.
+        let flat_str = "MATCH (p:P) WHERE p.city = 'NYC' RETURN count(*) AS c";
         println!("{:30} {:>10}", "query", "us");
         for (name, q, store) in [
             ("scalar age (flat)", scalar, &flat),
             ("scalar age (map graph)", scalar, &maps),
+            ("string city (flat)", flat_str, &flat),
             ("map field meta.city", field, &maps),
         ] {
             match time_query(q, false, store, cfg.reps) {

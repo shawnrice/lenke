@@ -1005,6 +1005,52 @@ cast record to number` vs TS `cannot cast **a map** to number` (a different TYPE
   caught only because the numbers were visibly the old ones. Exactly the documented failure (_"the
   next command runs anyway and consumes the stale file, so the failure surfaces as a wrong result
   rather than an error"_). Written with the editor tool and a fresh name the second time.
+- **An unindexed DOTTED-PATH scan re-split its key once per NODE — 2.42x on the native engine, and
+  the bench row that found it was comparing two things at once (359).** First native item since 333.
+  `bench_all`'s `value/maps` read `scalar age (flat) 368.7` against `map field meta.city 12145.3`,
+  inviting "a dotted map-field access costs 33x a scalar read" — but **those two sides differ in TWO
+  things**, a NUMERIC range on a flat column against a STRING equality through a nested path.
+  **THE MISSING THIRD MEASUREMENT REVERSES THE SMALL AXIS AND ENLARGES THE BIG ONE**: a flat STRING
+  equality is **271µs, FASTER than the numeric range's 367** (it lowers to an `IndexSeek` shape where
+  the range is a `Filter`), so the un-matched ratio **understated** the nested penalty — **48x
+  against the matched flat case, not 33x**. A numeric NESTED path (`p.meta.tier = 1`, 12812µs) costs
+  the same as the string one, so it is not the compare; and the scalar query on the MAP graph is
+  identical to the flat graph's (367.4 against 367.1), so it is not the map's presence either. The
+  plans settle which code runs: B, C and D all lower to `IndexSeek`, differing only in the key, so
+  **the 48x is the unindexed `IndexSeek` FALLBACK for a dotted key against the same fallback for a
+  flat one** — 1.36 ns/row columnar against 65.6 ns/row nested.
+  **THE CAUSE, ONE LINE**: `prop_path` did
+  `let path: Vec<String> = dotted_key.split('.').map(String::from).collect();` and was called from
+  the fallback's `filter` closure **once per node** — one `Vec` plus two owned `String`s per row,
+  **600,000 allocations to scan 200,000 nodes**, each recomputing the same constant. **The split is a
+  property of the KEY, not of the node.** Third time in this family: item 331's property write
+  allocated its key three times and stored one; 332's staging parser allocated a `String` per JSON
+  key to compare against a literal. **A key is constant across a scan; splitting, parsing or owning
+  it per row is the recurring bug.**
+  **THE FIX**: `prop_path_parts(node, &[&str])` for per-row callers (split once before the
+  iterator); `prop_path` delegates and collects `&str` rather than owned `String`s; `resolve_path`
+  generic over `S: AsRef<str>` so index-maintenance callers keep their `Vec<String>` paths; plus a
+  **one-segment arm** in `resolve_path`, because the general loop must `clone` its input before it
+  can rebind in the loop body — an `Arc` bump and drop per row for a value the one-level case never
+  owns, and one level is the common shape.
+  **MEASURED** (two binaries, alternated, min of 3, 200k nodes): string nested **12001.9 → 4967.5,
+  2.42x disjoint**; numeric nested 11732.0 → 4599.5, **2.55x**; `bench_all`'s own row **12145.3 →
+  4985.5, 2.44x** with the scalar rows flat. **⚠️ AN HONEST NOTE ON THE CONTROLS**: the flat-string
+  row is a clean 1.00x, but the two flat-NUMERIC rows — which the change cannot reach — both moved
+  ~1.11x in the new direction. **That is code layout** (precedent recorded: `pull`'s alignment is
+  load-bearing, any edit to `exec::pull` moves the filtered-count cluster 1.08-1.24x), so **the noise
+  floor here is ~1.11x, not 1.00x**. Reported, not banked. No regressions elsewhere in `bench_all`.
+  **TEETH**: four mutants under timeout + a 16G cgroup cap, all CAUGHT (descend the base property as
+  a sub-field; one-segment arm → Null; empty-path arm → Null; wrong split separator). **The control
+  mutant earns its place twice** — it deletes the new one-segment fast arm so a single field falls
+  through to the general loop, and its SURVIVAL is the assertion that the two agree. A control that
+  only shows "the suite runs" is worth less than one that proves an equivalence the change depends
+  on.
+  **AND THE HARNESS IS FIXED SO THE TRAP CANNOT RECUR**: `value/maps` gains the matched
+  `string city (flat)` row (item 356's lesson in a different corpus). **14.9x of correctly-matched
+  nested-path penalty REMAINS** (4990 against 247) — inherent to a boxed map value against a typed
+  column, and a dotted-path INDEX already exists for workloads that need it (`query/seeded` measures
+  658x for an indexed equality).
 - **⚠️ REFUTED BEFORE BUILT — the inner-container ALLOCATION is not the cost, which kills the
   single-label adjacency representation AND retracts item 357's superadditivity (358).** Item 357
   named a 226ns shared term between the two adjacency maps, two candidate mechanisms, and the

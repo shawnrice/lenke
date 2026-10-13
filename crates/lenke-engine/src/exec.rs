@@ -3667,9 +3667,18 @@ fn index_seek_ids(store: &Store, label: Option<&str>, key: &str, value: &Value) 
             }
             // `key` may be a dotted record path — resolve it (plain keys read as
             // `prop`), so the no-index fallback matches a dotted seek too.
+            //
+            // The path is split ONCE here, not once per row (audit item 359). `prop_path`
+            // splits on every call, so calling it inside this filter allocated a `Vec` and an
+            // owned `String` per segment PER NODE — 600,000 allocations to scan 200,000 nodes
+            // for `meta.city`, all of them recomputing the same constant. That made an
+            // unindexed dotted-path scan 48x an unindexed flat one (13126us against 271us at
+            // 200,000 nodes) where the work either side of the split is the same shape.
+            let parts: Vec<&str> = key.split('.').collect();
+
             ids.iter()
                 .copied()
-                .filter(|&id| value::equals(&store.prop_path(id, key), value))
+                .filter(|&id| value::equals(&store.prop_path_parts(id, &parts), value))
                 .collect()
         }
     }
