@@ -715,7 +715,10 @@ pub unsafe extern "C" fn lnk_query(
                 );
                 return std::ptr::null_mut();
             }
-            let plan = match guarded(|| crate::gremlin::parse(q)) {
+            // Through the cache (item 361), as the GQL arm above has been since 318. The Gremlin
+            // parse is a pure function of its text — no parameters are accepted on this path, so
+            // nothing ambient can be folded in — which is why this needs no admission check.
+            let plan = match guarded(|| crate::parse_cache::parse_gremlin_for_run(q)) {
                 Ok(plan) => plan,
                 Err(e) => {
                     // A genuine parse error is E_SYNTAX; a more specific code carried as a

@@ -9,7 +9,7 @@
 //!     filter deleted. The filter is tested on its OWN counter (`seen`) instead.
 //!   - **A text is admitted on its SECOND sighting**, so the occupancy assertions have to count
 //!     sightings, not calls.
-use super::{clear, parse_for_run, stats};
+use super::{clear, clear_gremlin, gremlin_stats, parse_for_run, parse_gremlin_for_run, stats};
 use crate::value::Value;
 
 const DEPTH: usize = 64;
@@ -356,4 +356,197 @@ fn every_shape_answers_identically_warm_and_cold() {
             assert_eq!(plan_of(q, &p), want, "call {call} of `{q}`");
         }
     }
+}
+
+// --- the GREMLIN twin (audit item 361) ---------------------------------------------------------
+
+/// THE CONTRACT, and the test that would fail first if the cache's soundness argument expires.
+///
+/// The Gremlin cache has no per-text admission check, unlike its GQL sibling, because
+/// `gremlin::parse` takes nothing but the text: no parameters reach that path (the ABI refuses
+/// them) so nothing ambient can be folded in, and its one limit is a compile-time constant. That
+/// is an argument from the signature, so **if Gremlin ever accepts parameters or grows a step that
+/// reads ambient state at parse time, this is what goes red** — which is the only reason it
+/// compares against the uncached parse on every call rather than just the first.
+#[test]
+fn a_gremlin_parse_is_a_function_of_its_text() {
+    let cases = [
+        "g.V().count()",
+        "g.V().hasLabel('User').has('name','name7').values('score')",
+        "g.V().hasLabel('User').out('KNOWS').out('KNOWS').count()",
+        "g.V().hasLabel('User').order().by('score').limit(3).values('name')",
+        "g.V().hasLabel('User').group().by('score').by(count())",
+        // A path/tree traversal, because `parse` PRE-SCANS the tokens for those and sets
+        // `building_full_path` — state derived inside the parse that a cached plan has to carry
+        // correctly.
+        "g.V().out('KNOWS').path()",
+        // A sub-traversal and a math() step, the two shapes with their own nested lexers.
+        "g.V().where(__.out('KNOWS')).count()",
+        "g.V().hasLabel('User').values('score').math('_ * 2')",
+    ];
+
+    for q in cases {
+        clear_gremlin();
+
+        let want = format!(
+            "{:?}",
+            crate::gremlin::parse(q).expect("the direct parse should succeed")
+        );
+
+        // Three calls: a miss, the sighting that admits, and a hit.
+        for call in 1..=3 {
+            let got = format!(
+                "{:?}",
+                parse_gremlin_for_run(q).expect("the cached parse should succeed")
+            );
+
+            assert_eq!(got, want, "call {call} of `{q}`");
+        }
+    }
+
+    // INTERLEAVED, and this is the half that catches a WRONG-KEY cache. Above, each case clears
+    // the cache and uses one text, so a lookup that ignored the key and returned any stored plan
+    // would still return the right one — a mutant that does exactly that was caught only by the
+    // BOUNDEDNESS test, which is luck, not coverage. A cache answering from the wrong key returns
+    // a wrong ANSWER, so the correctness test has to be the one that fails.
+    clear_gremlin();
+
+    let want: Vec<String> = cases
+        .iter()
+        .map(|q| format!("{:?}", crate::gremlin::parse(q).expect("parses")))
+        .collect();
+
+    // Three passes over all of them: the first two admit, the third is all hits, and every call
+    // is preceded by a call for a DIFFERENT text.
+    for pass in 1..=3 {
+        for (i, q) in cases.iter().enumerate() {
+            let got = format!("{:?}", parse_gremlin_for_run(q).expect("parses"));
+
+            assert_eq!(got, want[i], "pass {pass}, interleaved `{q}`");
+        }
+    }
+}
+
+/// A FAILING traversal stores nothing and stays an error on every call — the same policy as the
+/// GQL arm, and the reason is the same: remembering a failure would make the first one permanent
+/// for that text.
+#[test]
+fn a_gremlin_parse_error_is_not_cached() {
+    clear_gremlin();
+
+    for _ in 0..3 {
+        assert!(parse_gremlin_for_run("g.V().nosuchstep()").is_err());
+    }
+
+    assert_eq!(
+        gremlin_stats().size,
+        0,
+        "a failing traversal must not occupy a slot"
+    );
+}
+
+/// THE ADMISSION FILTER HAS TEETH, asserted on its OWN counter.
+///
+/// Item 228's recorded trap, which applies verbatim here: "single-use texts do not grow the cache"
+/// is true either way once the cache sits at its cap, so an occupancy assertion passes with the
+/// filter deleted. `seen` is what the filter alone moves.
+#[test]
+fn a_single_sighting_does_not_admit_a_gremlin_traversal() {
+    // ONE text for the exact `seen` assertions, deliberately. The Gremlin filter is
+    // DIRECT-INDEXED (`hash % CAP`) rather than the ring the GQL cache uses, so distinct texts may
+    // share a slot and a collision costs one delayed admission — by design. An earlier version of
+    // this test asserted `seen == 8` after eight sightings and failed with `left: 7`: two of the
+    // eight collided. That assertion was about the ring's internals, not about the contract.
+    //
+    // With a single text there is nothing to collide with, so `note` and `forget` are both pinned
+    // exactly; the multi-text assertion below is on `size`, which no collision can move.
+    clear_gremlin();
+
+    let q0 = "g.V().hasLabel('L0').count()";
+
+    parse_gremlin_for_run(q0).expect("parses");
+
+    let s = gremlin_stats();
+
+    assert_eq!(s.size, 0, "a text seen ONCE must not be admitted");
+    assert_eq!(s.seen, 1, "...but the sighting must be recorded");
+
+    // The second sighting admits, and admission FORGETS the sighting — otherwise the filter fills
+    // with texts that are already cached.
+    parse_gremlin_for_run(q0).expect("parses");
+
+    let s = gremlin_stats();
+
+    assert_eq!(s.size, 1, "the repeat earns a slot");
+    assert_eq!(s.seen, 0, "...and the sighting is forgotten on admission");
+
+    // Eight more texts, one sighting each: none is admitted. Asserted on `size`, which is
+    // collision-proof, and this is the assertion with teeth against "admit on first sighting" —
+    // item 228's saturation trap does not apply at 9 of a cap of 64.
+    for i in 1..=8 {
+        let q = format!("g.V().hasLabel('L{i}').count()");
+
+        parse_gremlin_for_run(&q).expect("parses");
+    }
+
+    assert_eq!(
+        gremlin_stats().size,
+        1,
+        "eight texts seen ONCE each must admit none"
+    );
+}
+
+/// BOUNDEDNESS: the cap holds under more distinct repeated texts than it can store.
+#[test]
+fn the_gremlin_cache_stays_bounded() {
+    clear_gremlin();
+
+    let cap = gremlin_stats().cap;
+
+    for i in 0..(cap * 3) {
+        let q = format!("g.V().hasLabel('L{i}').count()");
+
+        // Twice each, so every one of them earns a slot and the cache must evict.
+        parse_gremlin_for_run(&q).expect("parses");
+        parse_gremlin_for_run(&q).expect("parses");
+    }
+
+    assert_eq!(
+        gremlin_stats().size,
+        cap,
+        "the cache must sit AT the cap, never above it"
+    );
+}
+
+/// The two caches are SEPARATE: a Gremlin text must not be answerable from the GQL cache or vice
+/// versa. Written because the cheapest wrong implementation shares one map, and the two languages
+/// have texts that could in principle collide.
+#[test]
+fn the_two_language_caches_are_independent() {
+    clear();
+    clear_gremlin();
+
+    let g = "g.V().count()";
+
+    parse_gremlin_for_run(g).expect("parses");
+    parse_gremlin_for_run(g).expect("parses");
+
+    assert_eq!(gremlin_stats().size, 1);
+    assert_eq!(
+        stats().size,
+        0,
+        "a Gremlin text must not enter the GQL cache"
+    );
+
+    let q = "MATCH (u:User) RETURN count(*) AS c";
+
+    parse_for_run(q, &[], DEPTH).expect("parses");
+    parse_for_run(q, &[], DEPTH).expect("parses");
+
+    assert_eq!(stats().size, 1);
+    assert_eq!(
+        gremlin_stats().size,
+        1,
+        "...and a GQL text must not enter the Gremlin cache"
+    );
 }

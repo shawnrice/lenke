@@ -1005,6 +1005,50 @@ cast record to number` vs TS `cannot cast **a map** to number` (a different TYPE
   caught only because the numbers were visibly the old ones. Exactly the documented failure (_"the
   next command runs anyway and consumes the stale file, so the failure surfaces as a wrong result
   rather than an error"_). Written with the editor tool and a fresh name the second time.
+- **Gremlin had NO PARSE CACHE — 3.74x to 5.43x on a repeated traversal, and the all-miss path had
+  to be fixed before it was shippable (361).** Item 360 found the Gremlin lexer had missed item
+  317's fix; this is the same drift one layer up. `lnk_query`'s GQL arm has gone through a parse
+  cache since item 318 and **its Gremlin arm called `gremlin::parse` on every call**. Priced before
+  building: parse ~735ns + `optimize_indexed` ~390 against `exec::try_run`'s ~325, so **~78% of the
+  in-engine work was re-derived every call** — the proportion item 318 cited for GQL (83%) as its
+  reason for building the cache. (Checked first because it would have been bigger: the Gremlin arm
+  does not call `optimize_indexed` itself, but `exec::run_query` optimizes at its top for BOTH
+  languages, so there is no missing-optimization gap.)
+  **WHY IT NEEDS NO ADMISSION CHECK, AND WHEN THAT EXPIRES**: the GQL cache verifies every text
+  because a GQL plan is not a function of its text alone (a param can be substituted during the
+  parse; a now-function folds `$__now` in). `gremlin::parse(&str)` takes nothing but the text, its
+  one limit is a compile-time constant, and **the Gremlin ABI arm refuses parameters outright** —
+  which is also what makes a clock fold impossible, since `$__now` arrives as a PARAMETER. An
+  argument from a signature, so it is recorded with its expiry: **if Gremlin ever accepts parameters
+  or grows a parse-time ambient read, this needs the check its sibling has**, and
+  `a_gremlin_parse_is_a_function_of_its_text` is what goes red first.
+  **⚠️ THE ALL-MISS PATH IS THE ITEM, NOT A FOOTNOTE.** First measurement: hits 4.41x/5.28x/3.49x
+  but **a FRESH text every call went 379 → 438 ns, 1.16x WORSE**, near-disjoint. That shape is
+  forced here: **Gremlin accepts no parameters, so a client varying a value must emit different TEXT
+  every call** (`has('name','name7')` vs `...'name8'`) — a value-varying serving workload is
+  all-miss BY CONSTRUCTION, where GQL's equivalent is one cached text with bound params. Shipping a
+  cache 1.16x slower on the shape a parameterless language forces you into is a regression dressed
+  as a win. Cause: the shared sighting filter answers `hashes.contains(&hash)`, **a linear scan of
+  all 64 slots, on every miss**. The Gremlin cache now has its own **direct-indexed** filter
+  (`hash % CAP`, one load and one compare); a collision delays one admission, the same tolerance the
+  ring already accepts. GQL's filter is untouched — the ring is affordable there for a reason about
+  parameters, not about either cache. After: **4.71x / 5.43x / 3.74x** on hits and **1.02x
+  (overlapping)** on all-miss, with an unreachable `gql::parse` control flat at 1165-1190ns.
+  **TEETH — AND THE CONTROL MUTANT DOING ITS ACTUAL JOB.** The first run reported all five mutants
+  CAUGHT **including the control**, which is the only reason it was not read as a clean result:
+  every mutant failed the SAME test, one that does not exercise eviction. The suite was broken, by
+  me. Cause: the new filter is direct-indexed, so
+  `a_single_sighting_does_not_admit_a_gremlin_traversal`'s `seen == 8` got **7 — two of the eight
+  texts collide mod 64.** The filter was behaving as designed; the assertion was about the RING's
+  internals. Rewritten to pin `note`/`forget` exactly with a SINGLE text (nothing to collide with)
+  and to assert the multi-text case on `size`, which no collision can move. Re-run: four caught,
+  control survived.
+  **A SECOND GAP THE MUTANTS EXPOSED**: `wrong-key` (a lookup ignoring the key, returning any stored
+  plan) was initially caught ONLY by the boundedness test, because the correctness test cleared the
+  cache per case and used one text — so "any stored plan" was the right one. **A wrong-key cache
+  returns a wrong ANSWER; being caught by a bounds test is luck, not coverage.** The correctness
+  test now runs all eight shapes INTERLEAVED, three passes, so every call follows a call for a
+  different text.
 - **The GREMLIN lexer never got item 317's fix — 1.085x to 1.30x on parse, and the twin that
   drifted is a SURFACE LANGUAGE (360).** Item 359's cause was a constant key re-split per row, so
   the method's next step was to grep the pattern elsewhere. **Every other `split('.')` in the Rust

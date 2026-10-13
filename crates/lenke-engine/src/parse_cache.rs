@@ -353,5 +353,187 @@ pub fn parse_for_run(
     Ok(direct)
 }
 
+// ---------------------------------------------------------------------------------------------
+// The GREMLIN twin (audit item 361).
+//
+// `lnk_query`'s Gremlin arm called `gremlin::parse` on every call, where its GQL sibling has had
+// this cache since item 318. Measured on a serving-sized traversal: parse ~725ns and
+// `optimize_indexed` ~390 against `exec::try_run`'s ~325, so **~78% of the in-engine work was
+// re-derived every call** — the same proportion item 318 cited for GQL (83%) before building the
+// cache above. Item 360 found the Gremlin lexer had missed item 317's fix; this is the same drift,
+// one layer up, and the two surface languages are supposed to be parallel.
+//
+// # Why this one needs no admission CHECK
+//
+// The cache above verifies each text, because a GQL plan is not a function of the text alone: a
+// parameter can be substituted during the parse, and a now-function folds the host's `$__now`
+// clock in. Neither applies here. `gremlin::parse(query: &str) -> Result<Plan, String>` takes
+// nothing but the text, its one limit (`MAX_TRAVERSAL_DEPTH`) is a compile-time constant, and
+// **the Gremlin ABI arm refuses parameters outright** ("Gremlin query parameters are not
+// implemented yet"), which is also what makes a clock fold impossible — `$__now` arrives as a
+// PARAMETER. So the parse is a pure function of its text and the key is the text.
+//
+// That is an argument from the signature, so it has an expiry: **if Gremlin ever accepts
+// parameters or grows a step that reads ambient state at parse time, this cache needs the
+// admission check its GQL sibling has.** The test `a_gremlin_parse_is_a_function_of_its_text`
+// compares cached against uncached across shapes, which is what would fail first.
+//
+// The one-sighting admission filter IS kept: a workload of unique traversals must not pay an
+// insert and an eviction per call (item 228's `HashSet<String>` finding — the all-miss row went
+// 0.883x when admission allocated).
+/// The sighting filter, DIRECT-INDEXED rather than the ring [`Filter`] above uses.
+///
+/// Measured, and the reason it is not the shared one: the ring answers a sighting with
+/// `hashes.contains(&hash)`, a linear scan of all 64 slots, and that scan is the whole cost of a
+/// MISS. On a workload of entirely fresh traversal texts the cache read **379 -> 438 ns, 1.16x
+/// WORSE** than parsing directly, with near-disjoint ranges.
+///
+/// That shape is not hypothetical here, and this is the asymmetry that forced the change:
+/// **Gremlin accepts no parameters on this path, so a client varying a value has to emit different
+/// TEXT every call** — `has('name','name7')` against `has('name','name8')`. A value-varying
+/// serving workload is therefore all-miss by construction, where the GQL sibling's equivalent is
+/// one cached text with bound params. The ring's cost is affordable for GQL and not for Gremlin,
+/// for a reason that is about parameters and not about either cache.
+///
+/// Indexing by `hash % CAP` makes a sighting one load and one compare. A collision evicts another
+/// text's sighting, which delays an admission by one call and loses nothing — the same tolerance
+/// the ring already accepts, since it admits a colliding text one sighting early.
+struct SightingSlots {
+    hashes: [u64; CAP],
+}
+
+impl Default for SightingSlots {
+    fn default() -> Self {
+        Self { hashes: [0; CAP] }
+    }
+}
+
+impl SightingSlots {
+    /// Record a sighting. `true` means this was the FIRST, so the caller should not admit yet.
+    fn note(&mut self, hash: u64) -> bool {
+        let slot = &mut self.hashes[(hash % CAP as u64) as usize];
+
+        if *slot == hash {
+            return false;
+        }
+
+        *slot = hash;
+
+        true
+    }
+
+    fn forget(&mut self, hash: u64) {
+        let slot = &mut self.hashes[(hash % CAP as u64) as usize];
+
+        if *slot == hash {
+            *slot = 0;
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.hashes.iter().filter(|h| **h != 0).count()
+    }
+}
+
+#[derive(Default)]
+struct GremlinCache {
+    slots: HashMap<String, (u64, Plan)>,
+    seen_once: SightingSlots,
+    clock: u64,
+}
+
+impl GremlinCache {
+    fn tick(&mut self) -> u64 {
+        self.clock = self.clock.wrapping_add(1);
+        self.clock
+    }
+
+    fn look_up(&mut self, text: &str) -> Option<Plan> {
+        let stamp = self.tick();
+        let (slot_stamp, plan) = self.slots.get_mut(text)?;
+        *slot_stamp = stamp;
+
+        Some(plan.clone())
+    }
+
+    fn evict_if_full(&mut self, text: &str) {
+        if self.slots.len() < CAP || self.slots.contains_key(text) {
+            return;
+        }
+
+        let victim = self
+            .slots
+            .iter()
+            .min_by_key(|(_, (stamp, _))| *stamp)
+            .map(|(k, _)| k.clone());
+
+        if let Some(victim) = victim {
+            self.slots.remove(&victim);
+        }
+    }
+
+    fn admit(&mut self, text: &str, plan: Plan) {
+        self.seen_once.forget(hash_of(text));
+        self.evict_if_full(text);
+
+        let stamp = self.tick();
+
+        self.slots.insert(text.to_string(), (stamp, plan));
+    }
+}
+
+thread_local! {
+    static GREMLIN_CACHE: RefCell<GremlinCache> = RefCell::new(GremlinCache::default());
+}
+
+/// The Gremlin cache's occupancy and the admission filter's. Separate from [`stats`] because the
+/// two caches are separate, and because a test that asserts on the wrong one would pass for the
+/// wrong reason.
+#[must_use]
+pub fn gremlin_stats() -> Stats {
+    GREMLIN_CACHE.with(|c| {
+        let c = c.borrow();
+
+        Stats {
+            size: c.slots.len(),
+            seen: c.seen_once.len(),
+            refused: 0, // no refusal state: there is nothing to refuse (see the module note)
+            cap: CAP,
+        }
+    })
+}
+
+/// Drop everything. For tests, which must not inherit another test's occupancy.
+pub fn clear_gremlin() {
+    GREMLIN_CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        c.slots.clear();
+        c.seen_once = SightingSlots::default();
+    });
+}
+
+/// Parse a Gremlin traversal for a run, through the cache. Equivalent to
+/// [`crate::gremlin::parse`] in every case — see the note above for why that needs no per-text
+/// verification here, and what would invalidate the argument.
+pub fn parse_gremlin_for_run(text: &str) -> Result<Plan, String> {
+    if let Some(plan) = GREMLIN_CACHE.with(|c| c.borrow_mut().look_up(text)) {
+        return Ok(plan);
+    }
+
+    // The direct parse is what this call returns either way — on a miss the cache is a side
+    // effect, never a different answer. A FAILING parse stores nothing, for the GQL arm's reason:
+    // a failing traversal is not a hot path, and remembering it would make the first failure
+    // permanent for that text.
+    let plan = crate::gremlin::parse(text)?;
+
+    if GREMLIN_CACHE.with(|c| c.borrow_mut().seen_once.note(hash_of(text))) {
+        return Ok(plan);
+    }
+
+    GREMLIN_CACHE.with(|c| c.borrow_mut().admit(text, plan.clone()));
+
+    Ok(plan)
+}
+
 #[cfg(test)]
 mod tests;
