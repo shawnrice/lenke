@@ -1005,6 +1005,40 @@ cast record to number` vs TS `cannot cast **a map** to number` (a different TYPE
   caught only because the numbers were visibly the old ones. Exactly the documented failure (_"the
   next command runs anyway and consumes the stale file, so the failure surfaces as a wrong result
   rather than an error"_). Written with the editor tool and a fresh name the second time.
+- **⚠️ FIXTURE HOLE + TWO RETRACTIONS — four codec decode rows had ZERO EDGES, and normalizing by
+  bytes retracts both targets the un-normalized table suggested (356).** `decode pg-json` /
+  `graphson` / `pg-text` / `csv` all took `setup: e.load(nodesDoc)` — **200,000 nodes, NO EDGES** —
+  while `decode ndjson (5 edges/node)` three rows above decodes **1,200,000 elements**, and nothing
+  said so. **Each codec's entire edge path was unmeasured on all three engines** (endpoint
+  resolution, edge-label indexing, the edge property bag): not CLAUDE.md's "one edge per node is
+  sparse" but ZERO edges per node, on rows named for a whole-graph decode. Fixed by ADDING an
+  edge-bearing twin per format, not repointing the old rows, so recorded figures stay comparable
+  (item 341's precedent).
+  **RETRACTED — `decode graphson` is not slow.** 339.8ms against every other nodes-only row's ~80 is
+  **3.5x document verbosity** (410 B/element against ndjson's 117) **× 1.20x byte rate** (0.230
+  against 0.277 MB/ms). 3.5 × 1.2 = 4.2. Nothing to fix.
+  **RETRACTED — native's ndjson decode is not slower than its pg-text decode.** Per ELEMENT ndjson
+  (387ns) loses to pg-text (282) and csv (311), which looked like a target on the format that
+  matters most (ndjson is the snapshot channel and items 328-333 optimized it specifically). **Per
+  BYTE ndjson is the FASTEST of the five** at 0.240 MB/ms, 2.8x pg-text's 0.086; its per-element
+  disadvantage is entirely 3.8x more bytes per element.
+  **THE UNIT DECIDES THE ANSWER: per-byte and per-element rank these five codecs in OPPOSITE
+  orders.** Compact formats are slowest per byte and fastest per element — the signature of a
+  per-ELEMENT fixed cost (graph build + dispatch) dominating wherever there are few bytes to
+  amortize it over. A decode claim must say which unit it is in.
+  **AND THE USEFUL RESULT — the TS decode is FORMAT-INDEPENDENT:** 2229-2740 ns/element across five
+  formats (**1.23x spread**) where native spans 282-1000 (**3.55x**). Pure-TS ingest is bound by the
+  graph BUILD, not any codec, and the number agrees with the known cause — item 312 measured
+  `addEdge` at ~2.9µs/edge and at 5:1 five of every six elements is an edge. **So no codec work can
+  make pure-TS ingest faster; the only target is `addEdge`**, already the recorded one. A measured
+  "where not to look".
+  **The widest decode ratios in the bench are now pg-text 9.73x and csv 8.07x** (was 3.82x / 3.05x),
+  understated before because those rows carried no edges — which is where native's advantage is
+  largest.
+  **Probe-methodology note**: the probe that produced the byte counts was itself wrong first time —
+  it encoded the EDGE-BEARING graph for all five formats and so compared four of them against a
+  document the bench never decodes. **Check which fixture a row actually loads before normalizing
+  it.**
 - **⚠️ REFUTED BEFORE BUILT — `side()`'s six callers that already hold a Vertex must NOT read the
   adjacency box, because a memo taxes a visited-once element (355).** `side(graph, id, …)` hashes a
   vertex id into a 200,000-entry Map, and **six of its ten call sites already hold the `Vertex`** and

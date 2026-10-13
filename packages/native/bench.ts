@@ -201,8 +201,37 @@ const CASES: Case[] = [
     name: `decode ${fmt}`,
     // The source text is produced in SETUP — timing it would make this row an ndjson decode
     // plus an encode plus the decode it is named for, which is what it used to be.
+    //
+    // NOTE THE FIXTURE: `nodesDoc` is 200,000 NODES AND NO EDGES, where the
+    // `decode ndjson (5 edges/node)` row above decodes 1,200,000 elements. These rows are
+    // therefore NOT comparable with it, and they carry no edge-path cost at all — see the
+    // `(5 edges/node)` variants below, added at audit item 356, which are. Kept as-is rather
+    // than repointed at `graphDoc`, so every figure recorded against this row name stays
+    // comparable.
     setup: (e: Engine) => {
       const src = e.load(nodesDoc);
+      const text = e.serialize(src, fmt);
+
+      e.free(src);
+
+      return text;
+    },
+    run: (e: Engine, text: unknown) => e.free(e.loadFormat(text as string, fmt)),
+  })),
+  // THE EDGE-BEARING TWIN of each decode row (item 356). The four rows above decode a NODES-ONLY
+  // document, so each codec's edge path — endpoint resolution, edge-label indexing, the edge
+  // property bag — was completely unmeasured, for every one of the three engines. That is
+  // CLAUDE.md's "match the fixture to the claim" at its limit: not "one edge per node is sparse"
+  // but ZERO edges per node, on the rows named for a whole-graph decode.
+  //
+  // It also removes a reading trap. `decode graphson` (nodes only) sits next to
+  // `decode ndjson (5 edges/node)` in the output and invites the comparison, which is 200,000
+  // elements against 1,200,000. Normalized per byte the two formats are within 1.2x; the apparent
+  // 4.2x was 3.5x document verbosity (410 B/element against 117) and nothing else.
+  ...DECODABLE.map((fmt) => ({
+    name: `decode ${fmt} (5 edges/node)`,
+    setup: (e: Engine) => {
+      const src = e.load(graphDoc);
       const text = e.serialize(src, fmt);
 
       e.free(src);
