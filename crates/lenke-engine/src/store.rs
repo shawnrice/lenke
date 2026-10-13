@@ -4081,8 +4081,44 @@ impl Store {
         if let Some(ix) = self.ranges.iter_mut().find(|i| i.key == key) {
             if let Some(bucket) = ix.map.get_mut(&OrdVal(value.clone())) {
                 bucket.retain(|&x| x != node);
+                // Drop the emptied KEY — the RANGE twin of items 367 and 368, and the third
+                // instance of this bug in three items. Unlike the hash index, both write paths
+                // (delete via `index_drop_node`, set via `apply_set_prop`) route through here, so
+                // one guard covers both.
+                //
+                // It matters MORE here than it did for the hash index. A stale hash key only
+                // inflated a distinct COUNT; a stale range key is an ORDERED position, so the
+                // map's first and last keys stop being the live minimum and maximum. `range_lookup`
+                // is safe either way (an empty bucket contributes no ids and deleted ids are
+                // filtered), but any reader of the KEYS is not — and `min`/`max` answered from this
+                // index is exactly that reader.
+                if bucket.is_empty() {
+                    ix.map.remove(&OrdVal(value.clone()));
+                }
             }
         }
+    }
+
+    /// The live MINIMUM and MAXIMUM of range-indexed property `key`, or `None` if there is no
+    /// range index on it (or it holds no values).
+    ///
+    /// O(log n) from the `BTreeMap`'s first and last keys, against the O(live nodes) column scan
+    /// `try_scan_num_agg` does — the range twin of [`index_distinct_count`]'s relationship to
+    /// `try_scan_distinct_count`.
+    ///
+    /// Exact only because `range_remove` drops an emptied bucket's KEY (item 370): a stale key is
+    /// an ordered position, so without that the first and last keys stop being the live extremes
+    /// and this would be WRONG rather than slow. NULLs never enter a range index (`range_add`
+    /// returns early on one), which is what `min`/`max` want — ISO/SQL both ignore nulls.
+    ///
+    /// Returns the VALUES, not ids: a caller wanting the holders should seek.
+    #[must_use]
+    pub fn range_min_max(&self, key: &str) -> Option<(Value, Value)> {
+        let ix = self.ranges.iter().find(|i| i.key == key)?;
+        let (lo, _) = ix.map.first_key_value()?;
+        let (hi, _) = ix.map.last_key_value()?;
+
+        Some((lo.0.clone(), hi.0.clone()))
     }
 
     /// Candidate node ids (ANY label) whose `key` satisfies `prop <op> value`

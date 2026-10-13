@@ -1005,6 +1005,39 @@ cast record to number` vs TS `cannot cast **a map** to number` (a different TYPE
   caught only because the numbers were visibly the old ones. Exactly the documented failure (_"the
   next command runs anyway and consumes the stale file, so the failure surfaces as a wrong result
   rather than an error"_). Written with the editor tool and a fresh name the second time.
+- **The RANGE index is the THIRD twin with the same emptied-key bug — and here a stale key is a
+  WRONG MINIMUM, not an inflated count (370).** Items 367/368 fixed the hash index's delete then set
+  path; grepping for the next index-answerable aggregate found it again in `range_remove`, which
+  did `bucket.retain(|&x| x != node)` and left the KEY. **In this fix's favour**: both write paths
+  route through `range_remove`, so one guard covers both (where 367 and 368 needed two separate
+  fixes). **Against it**: a stale hash key only inflated a COUNT, but a stale range key is an
+  ORDERED POSITION, so the `BTreeMap`'s first/last keys stop being the live min/max. `range_lookup`
+  is safe either way (empty buckets contribute no ids, deleted ids are filtered) — **any reader of
+  the KEYS is not**, and `min`/`max` from this index is exactly that reader.
+  Shipped with `range_min_max(key)`: the live extremes in O(log n) against the O(live nodes) column
+  scan `try_scan_num_agg` does.
+  **TEETH**: the test removes the current extreme at each step (the only observable case) — delete
+  the min's holder, delete the max's, delete one of two holders of a surviving value (nothing may
+  move), then UPDATE the last holder away, which exercises the SET path through the same
+  `range_remove` rather than assuming it shares the fix. Mutation-verified with the WRONG-ANSWER
+  signature: without the guard the min stays at a **deleted node's value** (`Num(10.0)` instead of
+  `Num(50.0)`).
+  **⚠️ COST, AND THE COVERAGE GAP THAT HID IT: no write-throughput benchmark creates a RANGE
+  index.** `bench:usage` indexes `kind: 'hash'`; range indexes live only in `spelling_probe` and
+  `simd_index_probe`. So anything added to the range write path is invisible to the standard
+  harnesses (item 356's pattern a third time), which is why this was measured with a dedicated
+  probe instead of inherited from the hash result. Worst case — HIGH cardinality, where nearly every
+  write empties its bucket so the prune always fires — 200k nodes, three alternated rounds:
+  **CONTROL 242/243/241 against NEW 238/235/235 ns/op, DISJOINT, and the pruning is marginally
+  FASTER**: dropping the entry keeps the `BTreeMap` smaller so later `get_mut`s are cheaper. It pays
+  for itself in a workload that empties buckets.
+- **⚠️ OPEN, found incidentally at 370 — a DELETE is ~33µs at 200,000 nodes, and it is O(LABEL
+  SIZE).** The same probe's delete column reads **33.2-33.8µs per `delete_node`** on a 200k-node
+  label with NO EDGES — three orders of magnitude above the set column's 235ns. `delete_node`
+  removes the node from every label bucket and a bucket is a sorted `Vec`, so the removal is a
+  memmove over the whole label. **`bench:usage` cannot see it**: its fixture is 20,000 nodes, where
+  the same cost is ~5µs and reads as ordinary per-op overhead. Not diagnosed or fixed; recorded with
+  its numbers because a delete that scales with the label is a real limit for any churning workload.
 - **`count(DISTINCT k)` ANSWERED FROM THE INDEX'S KEY COUNT — 1602x to 17434x (369).** Items 367
   and 368 made the hash index's key count exact and free; this spends it.
   `try_indexed_distinct_count` answers in O(1) where `try_scan_distinct_count` scans every live

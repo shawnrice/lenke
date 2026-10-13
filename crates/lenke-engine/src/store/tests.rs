@@ -1626,3 +1626,63 @@ fn an_index_distinct_count_is_exact_after_updates() {
     st.set_prop(a, "city", s("SF"));
     assert_eq!(st.index_distinct_count("city"), Some(2), "LA and SF");
 }
+
+/// `range_min_max` is the live minimum and maximum in O(log n) — and it is EXACT only because
+/// `range_remove` drops an emptied bucket's KEY (audit item 370, the RANGE twin of 367/368).
+///
+/// This matters more than the hash case did. A stale hash key inflated a distinct COUNT; a stale
+/// range key is an ORDERED POSITION, so the map's first and last keys stop being the live extremes.
+/// Every assertion below removes the current extreme, which is the only observable case.
+#[test]
+fn a_range_min_max_is_exact_after_deletes_and_updates() {
+    let n = |x: f64| Value::Num(x);
+    let mut st = Builder::default().build();
+    let a = st.add_node(&["P"], &[("age", n(10.0))]);
+    let b = st.add_node(&["P"], &[("age", n(50.0))]);
+    let c = st.add_node(&["P"], &[("age", n(99.0))]);
+    let d = st.add_node(&["P"], &[("age", n(50.0))]);
+
+    st.create_range_index("age");
+
+    let got = |s: &crate::store::Store| format!("{:?}", s.range_min_max("age"));
+
+    assert_eq!(got(&st), "Some((Num(10.0), Num(99.0)))");
+    assert_eq!(
+        st.range_min_max("nosuch").map(|_| ()),
+        None,
+        "no range index on it"
+    );
+
+    // Delete the MINIMUM holder: the min must advance.
+    st.delete_node(a);
+    assert_eq!(
+        got(&st),
+        "Some((Num(50.0), Num(99.0)))",
+        "10 has no live holder"
+    );
+
+    // Delete the MAXIMUM holder: the max must retreat.
+    st.delete_node(c);
+    assert_eq!(
+        got(&st),
+        "Some((Num(50.0), Num(50.0)))",
+        "99 has no live holder"
+    );
+
+    // One of TWO holders of 50: the value survives, so nothing moves.
+    st.delete_node(b);
+    assert_eq!(got(&st), "Some((Num(50.0), Num(50.0)))", "d still holds 50");
+
+    // UPDATE the last holder away: the SET path routes through the same `range_remove`, so this
+    // is the twin assertion rather than a separate mechanism.
+    st.set_prop(d, "age", n(7.0));
+    assert_eq!(
+        got(&st),
+        "Some((Num(7.0), Num(7.0)))",
+        "the only live value is 7"
+    );
+
+    // ...and a SET to NULL leaves the index empty, since a null never enters a range index.
+    st.set_prop(d, "age", Value::Null);
+    assert_eq!(got(&st), "None", "no values left");
+}
