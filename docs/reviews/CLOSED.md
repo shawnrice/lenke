@@ -1005,6 +1005,38 @@ cast record to number` vs TS `cannot cast **a map** to number` (a different TYPE
   caught only because the numbers were visibly the old ones. Exactly the documented failure (_"the
   next command runs anyway and consumes the stale file, so the failure surfaces as a wrong result
   rather than an error"_). Written with the editor tool and a fresh name the second time.
+- **⚠️ THE SERVING BENCH HAD NO GREMLIN ROWS — which is WHY 361's gap survived 43 items — and item
+  361 is worth 1.37x END-TO-END, not the 4.7x it measured on the parse (362).** `bench:usage` is the
+  serving harness, small operations against a warm graph, exactly where per-call overhead shows.
+  **All seventeen of its workloads were GQL.** The Gremlin ABI arm could go without a parse cache
+  from item 318 to 361 because nothing looked at the path where that costs anything.
+  **`bench:gremlin` cannot substitute, and checking that first mattered**: its rows execute over a
+  200k-vertex / 1M-edge graph, so its smallest print as `0.00`-`0.01 ms` and a ~600ns per-call
+  saving is far below their resolution. **A benchmark at the wrong SIZE cannot see a per-call effect
+  however carefully it is run** — item 356's nodes-only decode rows in a new place. Fixed by ADDING
+  rows (356's precedent), so no recorded figure moves; an `Engine` gains an optional `gremlin`
+  capability and a workload a `needs` field, and **the pure-TS Gremlin engine prints `-` rather than
+  `n/a` because it legitimately has no text entry** — its surface is a fluent builder, which is a
+  different surface and not a gap.
+  **THE PAIR OF ROWS IS THE POINT, and it follows from 361's own finding**: Gremlin accepts no
+  parameters, so a serving workload varying a value must vary its TEXT, making it **all-miss by
+  construction**, where a GQL row varying `$n` is a cache hit every time (constant text, bound
+  value). So `gremlin read: point lookup` (fresh text per op — the realistic shape) sits beside
+  `gremlin read: fixed count` (one text — where a cache helps), and the cache's applicability is
+  visible in the standing harness instead of inferred.
+  **ITEM 361 MEASURED END-TO-END** (A/B against a `.so` with the cache bypassed at the one FFI call
+  site, two rounds, ops/s): `fixed count` **626.1k/618.2k → 842.8k/831.9k, ~1.37x** (and 1.37x
+  indexed); `point lookup` **neutral** both columns. **So 361 is worth 1.37x on a serving call, not
+  4.7x** — parse is only part of a call. Both halves follow from its parse-level pair (4.71x hit,
+  1.02x miss), which is the cross-check that the two measurements are of the same thing.
+  **Reporting the function's ratio as the change's value would have overstated it 3.4x.**
+  **AND WHAT THE NEW ROWS SHOW THAT NOTHING COULD BEFORE** — the same question in both surface
+  languages, indexed: **GQL 365.0k against Gremlin 317.2k, 0.87x**, unremarkable and now visible
+  (`CLAUDE.md`'s "equivalent spellings must cost the same" extends naturally to the two LANGUAGES
+  and had no instrument). **⚠️ OPEN: unindexed it is 53.0k against 30.4k — Gremlin 0.57x of GQL, a
+  1.74x gap on the same question.** Not diagnosed here, and the parse difference cannot explain it
+  (at 30.4k ops/s an operation is 32.9µs and the whole parse gap is ~575ns, 1.7%), so it is in the
+  plan or the execution and needs its own decomposition.
 - **Gremlin had NO PARSE CACHE — 3.74x to 5.43x on a repeated traversal, and the all-miss path had
   to be fixed before it was shippable (361).** Item 360 found the Gremlin lexer had missed item
   317's fix; this is the same drift one layer up. `lnk_query`'s GQL arm has gone through a parse

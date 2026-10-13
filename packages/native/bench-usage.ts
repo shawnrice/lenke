@@ -71,6 +71,14 @@ type Engine = {
   name: string;
   load: (doc: string) => unknown;
   query: (g: unknown, text: string, params?: Record<string, unknown>) => unknown;
+  /**
+   * Run a GREMLIN traversal from text, where the engine has such an entry (item 362).
+   *
+   * Optional because the pure-TS Gremlin engine has no text interface at all — its surface is a
+   * fluent BUILDER (`g.V().out()`), so there is nothing to hand a string to. That is not a gap to
+   * report per row; it is a different surface, so a Gremlin row prints `-` for that engine.
+   */
+  gremlin?: (g: unknown, text: string) => unknown;
   index: (g: unknown, on: 'vertex' | 'edge', key: string) => void;
   transaction: (g: unknown, body: () => void) => void;
   free: (g: unknown) => void;
@@ -89,6 +97,9 @@ const nativeEngine = (name: string, backend: Backend): Engine => ({
   name,
   load: (doc) => graphFromNdjson(backend, doc),
   query: (g, text, params) => (g as NativeGraph).query(text, params),
+  // `g.gremlin` is a tagged template whose plain-string overload composes to the text unchanged,
+  // so this is the Gremlin FFI arm — the one the parse cache of item 361 sits on.
+  gremlin: (g, text) => (g as NativeGraph & { gremlin: (t: string) => unknown }).gremlin(text),
   index: (g, on, key) => (g as NativeGraph).createIndex({ on, kind: 'hash', keys: [key] }),
   transaction: (g, body) => (g as NativeGraph).transaction(body),
   free: (g) => (g as NativeGraph).free(),
@@ -166,6 +177,8 @@ type Workload = {
    * slow one and then charge it for the larger graph.
    */
   grows?: true;
+  /** Needs an engine capability; engines without it print `-` rather than erroring per cell. */
+  needs?: 'gremlin';
 };
 
 const WORKLOADS: Workload[] = [
@@ -176,6 +189,39 @@ const WORKLOADS: Workload[] = [
       void e.query(g, 'MATCH (u:User) WHERE u.name = $n RETURN u.score AS s', {
         n: `user${i % GRAPH}`,
       }),
+  },
+  // --- GREMLIN serving rows (item 362) -------------------------------------------------------
+  //
+  // This harness had NO Gremlin rows at all: every workload above is GQL. That is the coverage
+  // hole that let the Gremlin ABI arm go without a parse cache until item 361, while its GQL
+  // sibling got one at 318 — the serving path is exactly where per-call overhead shows, and
+  // nothing here was looking at it. `bench:gremlin` cannot substitute: its rows execute over a
+  // 1,000,000-edge graph, so a ~600ns per-call saving is far below their resolution.
+  //
+  // THE PAIR IS THE POINT, and it is a consequence of item 361. **Gremlin accepts no parameters**,
+  // so a serving workload that varies a value must vary its TEXT — which makes it all-miss against
+  // a text-keyed cache by construction. The two rows below are the same traversal in the two
+  // regimes, so the cache's real applicability is visible in the standing harness rather than
+  // inferred:
+  //
+  //   `gremlin read: point lookup`  — value inlined per operation, so a FRESH text every call.
+  //                                   This is the realistic serving shape, and it is all-miss.
+  //   `gremlin read: fixed count`   — the same text every call, so warm hits. This is where a
+  //                                   parse cache helps, and it is the narrower case.
+  //
+  // A GQL row varying `$n` is a cache HIT every time, because the value is a parameter and the
+  // text is constant. That asymmetry is about parameters, not about either engine, and it is the
+  // most useful thing these rows say.
+  {
+    name: 'gremlin read: point lookup',
+    needs: 'gremlin',
+    op: (e, g, i) =>
+      void e.gremlin!(g, `g.V().hasLabel('User').has('name','user${i % GRAPH}').values('score')`),
+  },
+  {
+    name: 'gremlin read: fixed count',
+    needs: 'gremlin',
+    op: (e, g) => void e.gremlin!(g, "g.V().hasLabel('User').count()"),
   },
   {
     // Relationship-based authorization: does this user reach this resource
@@ -526,6 +572,10 @@ console.log('-'.repeat(header.length));
 for (const w of SELECTED) {
   const cells = engines.flatMap((e) =>
     [false, true].map((indexed) => {
+      if (w.needs === 'gremlin' && e.gremlin === undefined) {
+        return '-'.padStart(10);
+      }
+
       try {
         return fmt(rate(e, w, indexed)).padStart(10);
       } catch (err) {
