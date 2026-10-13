@@ -196,6 +196,35 @@ fn main() {
         hit.chars().collect::<Vec<char>>()
     });
 
+    // --- the GREMLIN lexer's twin (item 360) ---
+    //
+    // Item 317 sized BOTH of the GQL lexer's growing vectors (the char pre-pass and the token
+    // vector) and took 1297 -> 1163 ns of parse, 1.115x, removing 7 of the 19 allocations the
+    // lexer makes. **Its Gremlin twin never got the fix**: `gremlin::lex` and `gremlin::math_lex`
+    // still open with a bare `s.chars().collect()` and a bare `Vec::new()` for the tokens.
+    //
+    // This repo's recurring failure is exactly this shape — a fix landing on one of two parallel
+    // implementations (items 333, 335, 349 were all node/edge twins; these two are the two
+    // SURFACE LANGUAGES, which `CLAUDE.md` says are intentionally parallel). Counted rather than
+    // timed because a count has no noise floor and the predicted delta is a handful of
+    // allocations on a sub-microsecond path.
+    println!("\n=== allocations per gremlin::parse (item 360) ===");
+    println!("  the GQL lexer pre-sizes both vectors (317); the Gremlin one does not\n");
+
+    let g_hit = "g.V().hasLabel('User').has('name','name7').values('score')";
+    let g_hop = "g.V().hasLabel('User').out('KNOWS').out('KNOWS').count()";
+    let g_tiny = "g.V().count()";
+
+    count("gremlin parse: has + values (58 bytes)", || {
+        lenke_engine::gremlin::parse(g_hit).expect("parses")
+    });
+    count("gremlin parse: a two-hop count", || {
+        lenke_engine::gremlin::parse(g_hop).expect("parses")
+    });
+    count("gremlin parse: g.V().count() (tiny)", || {
+        lenke_engine::gremlin::parse(g_tiny).expect("parses")
+    });
+
     let plan = lenke_engine::gql::parse(hit).expect("parses");
     count("plan.clone() -- the whole tree re-allocated", || {
         plan.clone()

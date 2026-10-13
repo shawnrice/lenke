@@ -1005,6 +1005,45 @@ cast record to number` vs TS `cannot cast **a map** to number` (a different TYPE
   caught only because the numbers were visibly the old ones. Exactly the documented failure (_"the
   next command runs anyway and consumes the stale file, so the failure surfaces as a wrong result
   rather than an error"_). Written with the editor tool and a fresh name the second time.
+- **The GREMLIN lexer never got item 317's fix — 1.085x to 1.30x on parse, and the twin that
+  drifted is a SURFACE LANGUAGE (360).** Item 359's cause was a constant key re-split per row, so
+  the method's next step was to grep the pattern elsewhere. **Every other `split('.')` in the Rust
+  engine is per-CALL, not per-row** (`create_index`, `drop_vertex_index`, `has_hash_index`,
+  `index_lookup`, `index_bucket_len`), so 359 fixed the only per-row instance; the TS engine has no
+  `split('.')` at all. The grep found a different drift instead.
+  **`gql::lex` pre-sizes both of its growing vectors** with item 317's reasoning in a comment above
+  it (317 counted "the char pre-pass reallocating 3 times and the token vector 4 times, 7 of the 19
+  allocations the lexer makes" and measured **1297 → 1163 ns, 1.115x**). **`gremlin::lex` and
+  `gremlin::math_lex` still opened with a bare `s.chars().collect()` and a bare `Vec::new()`.**
+  Items 333, 335 and 349 were all node/edge twins; here the twins are the two SURFACE LANGUAGES,
+  which `CLAUDE.md` calls intentionally parallel. **Parallel by design is also parallel for drift.**
+  **SETTLED BY COUNT** (`alloc_count_probe` gains three `gremlin::parse` cases — permanent, so the
+  Gremlin lexer now has the standing instrument its GQL twin has): `has`+`values` 58B **44 allocs /
+  3487 B → 39 / 2535**; two-hop **49 / 3612 → 44 / 2648**; `g.V().count()` **19 / 1400 → 15 / 892**.
+  Five allocations and ~27% of the bytes, exactly.
+  **THE DIVISOR WAS CHOSEN BY THE COUNT, NOT BY ANALOGY**: GQL reserves `s.len()/4 + 8` tokens, but
+  Gremlin is punctuation-dense (`g.V().count()` is 13 bytes and ~9 tokens) so `/4` **under-reserves
+  and the vector grows anyway** — two-hop at `/4` is 45 allocs / 3608 B against `/2`'s 44 / 2648.
+  Both figures are in the code comment so the divisor is not taken on faith.
+  **CLOCK BACKSTOP** (two binaries, alternated, min of 3 rounds of min-of-9): has+values 812 →
+  **725 (1.12x)**, two-hop 843 → 777 (1.085x), `g.V().count()` 317 → **243 (1.30x)**, all disjoint,
+  with an unreachable `gql::parse` control at 1.03x. **1.12x lands on item 317's 1.115x for the same
+  fix on the other lexer** — the cross-check that the twin behaves like its sibling.
+  **ON TEETH: a capacity reserve cannot change behaviour, so mutation testing does not apply** — not
+  skipped, inapplicable. There is no semantic to break, only a count to verify, which the allocation
+  counter did; the guard is the full suite and every byte-identity fuzzer staying green over a file
+  on the plan path.
+  **⚠️ AND A CORRECTION WORTH KEEPING**: I first reported `index_lookup` as having NO production
+  caller, from a `grep` whose output `head` had truncated. It has four (`exec.rs:3553` and three in
+  `exec/reverse.rs`). **A `head` on a grep you are about to draw a NEGATIVE conclusion from is the
+  same error as a fixture that cannot reach the shape** — the absence was in the pager, not the
+  code. Priced anyway and declined: `index_lookup`/`index_bucket_len` build a `Vec<String>` to
+  compare a path where `has_hash_index` already does it allocation-free, worth ~2 allocations and
+  ~0.5% of a serving call.
+  **AND A STALE CARRIED NUMBER RETIRED**: item 291's "`gql::parse` is 1296ns, 43% of the call" no
+  longer describes the serving path — re-running `percall_probe` puts
+  **`parse_cache::parse_for_run` WARM at 160ns** (items 228/229's caches), against `exec::try_run`
+  at 325. Carried numbers go stale in both directions.
 - **An unindexed DOTTED-PATH scan re-split its key once per NODE — 2.42x on the native engine, and
   the bench row that found it was comparing two things at once (359).** First native item since 333.
   `bench_all`'s `value/maps` read `scalar age (flat) 368.7` against `map field meta.city 12145.3`,

@@ -196,9 +196,13 @@ enum MathTok {
 }
 
 fn math_lex(s: &str) -> Result<Vec<MathTok>, String> {
-    let b: Vec<char> = s.chars().collect();
+    // The same sizing as `lex` above, for the same reason (item 360). `math_lex` runs on a
+    // `math()` step's expression string, so it is a smaller input on a rarer path — included
+    // because leaving one of two identical twins unfixed is how this drift started.
+    let mut b: Vec<char> = Vec::with_capacity(s.len());
+    b.extend(s.chars());
     let mut i = 0;
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(s.len() / 2 + 8);
     while i < b.len() {
         let c = b[i];
         if c.is_whitespace() {
@@ -638,9 +642,23 @@ fn is_write(plan: &Plan) -> bool {
 }
 
 fn lex(s: &str) -> Result<Vec<Tok>, String> {
-    let b: Vec<char> = s.chars().collect();
+    // Both vectors are sized up front, which is item 317's fix to the GQL lexer applied to its
+    // Gremlin twin — the twin never got it (audit item 360). `s.len()` is bytes, so an exact fit
+    // for ASCII and a safe over-reserve otherwise; both vectors are transient, so an over-reserve
+    // costs a wider memset and never a second allocation.
+    //
+    // The token divisor is `/2`, not GQL's `/4`: Gremlin is punctuation-dense, so a quarter
+    // under-reserves and the vector grows anyway — which is the whole thing being fixed.
+    // VERIFIED BY COUNT rather than chosen. `alloc_count_probe`, two-hop traversal:
+    //     /4  ->  45 allocs, 3608 B   (the token vector still reallocates)
+    //     /2  ->  44 allocs, 2648 B
+    // The cost of the wider reserve is ~480 bytes of memset on a SHORT query (2535 against 2055
+    // B for a 58-byte one) and never a second allocation. A count has no noise floor, which is
+    // why the divisor was settled this way and not on a clock.
+    let mut b: Vec<char> = Vec::with_capacity(s.len());
+    b.extend(s.chars());
     let mut i = 0;
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(s.len() / 2 + 8);
     while i < b.len() {
         let c = b[i];
         if c.is_whitespace() {
