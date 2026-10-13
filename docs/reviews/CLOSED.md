@@ -1005,6 +1005,38 @@ cast record to number` vs TS `cannot cast **a map** to number` (a different TYPE
   caught only because the numbers were visibly the old ones. Exactly the documented failure (_"the
   next command runs anyway and consumes the stale file, so the failure surfaces as a wrong result
   rather than an error"_). Written with the editor tool and a fresh name the second time.
+- **`count(DISTINCT k)` ANSWERED FROM THE INDEX'S KEY COUNT — 1602x to 17434x (369).** Items 367
+  and 368 made the hash index's key count exact and free; this spends it.
+  `try_indexed_distinct_count` answers in O(1) where `try_scan_distinct_count` scans every live
+  node with a typed-column pass.
+  **THE PRECONDITIONS WERE VERIFIED, NOT REASONED.** (1) **NULLs — dissolved**: both
+  `count(DISTINCT x)` and the index exclude them (since 368), checked by running a fixture with a
+  present null, an absent property and two real values — **both answers are 2.** (2) **The label —
+  real, and O(1) to test**: a hash index is ANY-LABEL, so a labelled scan is answerable only when
+  the label is **vacuous**, and `nodes_with_label(l).len() == live_node_count()` is exact (label
+  buckets ARE pruned on delete) and O(1) (`live_node_count` is `node_count - deleted_count`; the
+  O(N) recount is `#[cfg(test)]`). (3) **No other predicate** — the `Plan::Scan` pattern covers it.
+  **MEASURED** (`bench_all` `query/seeded` gains a cardinality block, beside the seek row because
+  it is the same shape of claim): `count(DISTINCT p.name)` 200k distinct **4184.1 → 0.2 µs,
+  17434x**; `count(DISTINCT p.age)` 90 distinct **400.5 → 0.2 µs, 1602x**; **CONTROL `count(*)`
+  0.3 → 0.3, 1.0x** — already O(1) from the label bucket, so if it ever shows a speedup the section
+  is measuring the fixture.
+  **TEETH** — a DIFFERENTIAL test against the path it replaces (same store, same query, with and
+  without the index, across a present null, an absent property, a key nothing has, a non-vacuous
+  label, a non-distinct count and a grouped count). Mutants: any-label **CAUGHT**,
+  ignore-`distinct` **CAUGHT**, ignore-GROUP-BY-keys **SURVIVED (provably equivalent)**,
+  behaviour-preserving CONTROL **SURVIVED**.
+  **⚠️ TWO OF THE FOUR GATES CANNOT BE REACHED IN A STATE WHERE THEY MATTER, and that is recorded
+  rather than papered over**: a non-distinct `count(plain_prop)` is claimed by
+  `try_scan_count_prop` EARLIER IN THE CHAIN and a dotted argument lowers to `Expr::Field` (never
+  `Expr::Prop`), so the `distinct` mutant was initially NOT caught; and a grouped query's
+  `Aggregate` input is `Project { input: Scan }`, never a bare `Scan`, because **GROUP BY takes a
+  bound name** so the `LET` always interposes a projection — the `Plan::Scan` pattern declines
+  every grouped plan regardless of the `keys` gate (item 288's T10 category). **Both gates stay:
+  relying on the ORDER of a 32-entry fast-path chain for CORRECTNESS is what breaks when someone
+  reorders it**, and identical gates are what make "the two never disagree about a shape"
+  checkable by reading. Pinned by direct assertions on the function, the way
+  `try_scan_count_prop` tests its own dotted decline.
 - **A NULL was indexed by ONE of the two builders, and item 367's pruning covered ONE of the two
   write paths — both found by a test written to CONFIRM a claim (368).** Item 367's doc comment
   asserted that a stored NULL "counts as a distinct value" and recorded it as a precondition a

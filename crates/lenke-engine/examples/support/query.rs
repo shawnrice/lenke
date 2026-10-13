@@ -716,5 +716,39 @@ pub fn run(cfg: &Cfg) {
             "",
             scan_us / seek_us
         );
+
+        // The CARDINALITY twin of the row above (audit item 369): `count(DISTINCT k)` is the hash
+        // index's KEY COUNT, so an index turns a scan of every live node into one `len()`. Reported
+        // beside the seek row because it is the same shape of claim — same query, same answer, the
+        // only difference being whether the key is indexed — and because the win is invisible
+        // without an index, so a bench with no indexed row cannot see it at all (items 356, 362).
+        //
+        // The third row is the CONTROL: `count(*)` is already O(1) from the label bucket, so no
+        // index can improve it. If it ever shows a speedup, this section is measuring the fixture
+        // rather than the shortcut.
+        let cases: [(&str, &str); 3] = [
+            (
+                "count(DISTINCT p.name)",
+                "MATCH (p:Person) RETURN count(DISTINCT p.name) AS c",
+            ),
+            (
+                "count(DISTINCT p.age)",
+                "MATCH (p:Person) RETURN count(DISTINCT p.age) AS c",
+            ),
+            ("CONTROL count(*)", "MATCH (p:Person) RETURN count(*) AS c"),
+        ];
+        let mut indexed2 = social_store(cfg.nodes(200_000), 5);
+        indexed2.create_index("name");
+        indexed2.create_index("age");
+        println!();
+        println!(
+            "{:22} {:>11} {:>11} {:>8}",
+            "cardinality", "scan_us", "index_us", "speedup"
+        );
+        for (label, q) in &cases {
+            let a = time_query(q, false, &scan, cfg.reps).map_or(f64::NAN, |(u, _)| u);
+            let b = time_query(q, false, &indexed2, cfg.reps).map_or(f64::NAN, |(u, _)| u);
+            println!("{label:22} {a:>11.1} {b:>11.1} {:>8.1}", a / b);
+        }
     }
 }

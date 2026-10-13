@@ -1554,6 +1554,11 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
                         .or_else(|| try_scan_num_agg(input, keys, aggs, store))
                         .or_else(|| try_filtered_scan_num_agg(input, keys, aggs, store))
                         .or_else(|| try_scan_multi_agg(input, keys, aggs, store))
+                        // The INDEX answer first (item 369): O(1) from the hash index's key
+                        // count where the scan below is O(live nodes). Identical gates, so the
+                        // two never disagree about a shape; this one additionally requires an
+                        // index on the key and a vacuous label.
+                        .or_else(|| try_indexed_distinct_count(input, keys, aggs, store))
                         .or_else(|| try_scan_distinct_count(input, keys, aggs, store))
                         .or_else(|| try_frontier_distinct_count(input, keys, aggs, store))
                         .or_else(|| try_3hop_product_count(input, keys, aggs, store))

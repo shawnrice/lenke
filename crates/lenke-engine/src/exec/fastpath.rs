@@ -2812,6 +2812,56 @@ pub(super) fn low_card_int_bitset(
     Some((lo, bits, saw_absent))
 }
 
+/// `count(DISTINCT n.k)` answered from the hash index's KEY COUNT — O(1) against the vectorized
+/// column scan `try_scan_distinct_count` below does, which is O(live nodes).
+///
+/// Sound because of two things established separately and neither assumed here:
+///
+/// - **NULLs agree.** `count(DISTINCT x)` excludes nulls, and so does the index — but only since
+///   item 368, which found `create_index` indexing them while `apply_set_prop` did not, and a
+///   bucket keeping its emptied key after a set. Checked against the path this replaces rather
+///   than reasoned: over a fixture with a present null, an absent property and two real values,
+///   both the existing answer and `index_distinct_count` are 2.
+/// - **The label.** A hash index is ANY-LABEL (`index_lookup`'s own doc), so a LABELLED scan is
+///   answerable from it only when the label is **vacuous** — carried by every live node. That test
+///   is exact and O(1): label buckets are pruned on delete (`delete_node` "remove it from every
+///   label bucket") and `live_node_count` is `node_count - deleted_count`, a maintained counter.
+///   A non-vacuous label declines and falls through to the scan, which is correct and merely
+///   slower.
+///
+/// Placed BEFORE `try_scan_distinct_count` for speed only — the two agree on every shape this one
+/// accepts, which is what `an_indexed_distinct_count_agrees_with_the_scan` pins.
+pub(super) fn try_indexed_distinct_count(
+    input: &Plan,
+    keys: &[(String, Expr)],
+    aggs: &[Agg],
+    store: &Store,
+) -> Option<Batch> {
+    // The same gates as `try_scan_distinct_count`, deliberately identical so the two cannot
+    // disagree about which shapes they handle.
+    if !keys.is_empty() || aggs.len() != 1 {
+        return None;
+    }
+    let agg = &aggs[0];
+    if agg.func != AggFn::Count || !agg.distinct {
+        return None;
+    }
+    let Plan::Scan { label } = input else {
+        return None;
+    };
+    let Some(Expr::Prop { slot: 0, key }) = agg.arg.as_ref() else {
+        return None;
+    };
+    // ANY-LABEL index against a labelled scan: only a vacuous label is answerable.
+    if let Some(l) = label {
+        if store.nodes_with_label(l).len() != store.live_node_count() {
+            return None;
+        }
+    }
+
+    Some(scalar_num(store.index_distinct_count(key)? as f64))
+}
+
 pub(super) fn try_scan_distinct_count(
     input: &Plan,
     keys: &[(String, Expr)],

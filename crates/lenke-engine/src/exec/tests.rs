@@ -17414,3 +17414,138 @@ fn a_bound_edge_slot_counts_toward_the_width() {
         "the width must be reported as 3 (start + edge + landed), got: {err}"
     );
 }
+
+/// The index-backed `count(DISTINCT n.k)` must answer exactly what the column SCAN answers
+/// (audit item 369). This is a DIFFERENTIAL test against the path it replaces, which is the only
+/// form worth having for a fast path: the same store and the same query, run with and without the
+/// index, must agree on every shape — and where they could disagree (a present null, an absent
+/// property, a dotted path, a non-vacuous label) is exactly what the rows below are.
+///
+/// A fast path that is WRONG is worse than one that is slow, so the gates are identical to
+/// `try_scan_distinct_count`'s and the two extra preconditions (an index on the key, a vacuous
+/// label) only ever make this one DECLINE.
+#[test]
+fn an_indexed_distinct_count_agrees_with_the_scan() {
+    // `Value` has no `PartialEq` (the same reason `parse_cache` compares plans through `Debug`),
+    // and `Debug` is the right currency anyway: two answers that render identically are the same
+    // answer.
+    let answer = |store: &crate::store::Store, q: &str| -> String {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), store);
+
+        format!("{:?}", run(&plan, store).rows[0][0])
+    };
+
+    // `P` is on every node, so it is VACUOUS and the shortcut may fire; `Q` is on one, so it is
+    // not and the shortcut must decline.
+    let nd = concat!(
+        "{\"id\":\"a\",\"labels\":[\"P\"],\"props\":{\"k\":\"x\",\"n\":1}}\n",
+        "{\"id\":\"b\",\"labels\":[\"P\"],\"props\":{\"k\":\"y\",\"n\":1}}\n",
+        "{\"id\":\"c\",\"labels\":[\"P\"],\"props\":{\"k\":\"x\",\"n\":2}}\n",
+        "{\"id\":\"d\",\"labels\":[\"P\",\"Q\"],\"props\":{\"k\":\"z\",\"n\":3}}\n",
+        "{\"id\":\"e\",\"labels\":[\"P\"],\"props\":{\"n\":4}}"
+    );
+
+    for q in [
+        // unlabelled and vacuously labelled: the shortcut is eligible for both
+        "MATCH (n) RETURN count(DISTINCT n.k) AS c",
+        "MATCH (n:P) RETURN count(DISTINCT n.k) AS c",
+        // NON-vacuous label: the shortcut must decline, and the answer must still be right
+        "MATCH (n:Q) RETURN count(DISTINCT n.k) AS c",
+        // a key one node lacks entirely
+        "MATCH (n) RETURN count(DISTINCT n.n) AS c",
+        // a key NOTHING has — neither path may invent a value
+        "MATCH (n) RETURN count(DISTINCT n.absent) AS c",
+        // NOT DISTINCT: the shortcut must not answer a plain `count(k)` with the distinct count.
+        // `k` has four holders and three distinct values, so the two differ and a shortcut that
+        // ignored `agg.distinct` would be caught here rather than by inspection.
+        "MATCH (n) RETURN count(n.k) AS c",
+        "MATCH (n:P) RETURN count(n.k) AS c",
+        // GROUPED: a `GROUP BY` must not be answered by a scalar count either.
+        "MATCH (n) LET g = n.n RETURN g, count(DISTINCT n.k) AS c GROUP BY g ORDER BY g",
+    ] {
+        let bare = crate::ndjson::from_ndjson(nd).unwrap();
+        let mut indexed = crate::ndjson::from_ndjson(nd).unwrap();
+
+        indexed.create_index("k");
+        indexed.create_index("n");
+
+        let want = answer(&bare, q);
+        let got = answer(&indexed, q);
+
+        assert_eq!(got, want, "indexed answer must match the scan for `{q}`");
+    }
+
+    // A present NULL, which is the shape item 368 was about: `count(DISTINCT …)` excludes it and
+    // so does the index, but they have to agree rather than both be plausible.
+    let with_null = concat!(
+        "{\"id\":\"a\",\"labels\":[\"P\"],\"props\":{\"k\":\"x\"}}\n",
+        "{\"id\":\"b\",\"labels\":[\"P\"],\"props\":{\"k\":null}}\n",
+        "{\"id\":\"c\",\"labels\":[\"P\"],\"props\":{}}"
+    );
+    let q = "MATCH (n) RETURN count(DISTINCT n.k) AS c";
+    let bare = crate::ndjson::from_ndjson(with_null).unwrap();
+    let mut indexed = crate::ndjson::from_ndjson(with_null).unwrap();
+
+    indexed.create_index("k");
+
+    assert_eq!(answer(&bare, q), "Num(1.0)", "only `x` is a value");
+    assert_eq!(answer(&indexed, q), "Num(1.0)", "and the index agrees");
+
+    // THE SHORTCUT MUST ACTUALLY FIRE — a test that only compares answers passes with the
+    // shortcut deleted. `try_indexed_distinct_count` returns `Some` exactly when it is eligible,
+    // so it is asserted directly: eligible for an indexed key, declining for an unindexed one and
+    // for a non-vacuous label.
+    let mut st = crate::ndjson::from_ndjson(nd).unwrap();
+
+    st.create_index("k");
+
+    let eligible = |q: &str, store: &crate::store::Store| -> bool {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), store);
+        let crate::ir::Plan::Project { input, .. } = &plan else {
+            panic!("expected a Project");
+        };
+        let crate::ir::Plan::Aggregate { input, keys, aggs } = input.as_ref() else {
+            panic!("expected an Aggregate");
+        };
+
+        crate::exec::fastpath::try_indexed_distinct_count(input, keys, aggs, store).is_some()
+    };
+
+    assert!(
+        eligible("MATCH (n) RETURN count(DISTINCT n.k) AS c", &st),
+        "an indexed key over an unlabelled scan must take the shortcut"
+    );
+    assert!(
+        eligible("MATCH (n:P) RETURN count(DISTINCT n.k) AS c", &st),
+        "...and over a VACUOUS label"
+    );
+    assert!(
+        !eligible("MATCH (n:Q) RETURN count(DISTINCT n.k) AS c", &st),
+        "a NON-vacuous label must decline: the index is any-label"
+    );
+    assert!(
+        !eligible("MATCH (n) RETURN count(DISTINCT n.n) AS c", &st),
+        "an UNINDEXED key must decline"
+    );
+
+    // THE GATES THAT DISPATCH ORDER WOULD OTHERWISE HIDE, asserted directly on the function the
+    // way `try_scan_count_prop` tests its own dotted decline.
+    //
+    // A broken `distinct` or `keys` gate here cannot be observed through a QUERY: a non-distinct
+    // `count(plain_prop)` is claimed by `try_scan_count_prop` earlier in the chain, and a dotted
+    // argument lowers to `Expr::Field`, not `Expr::Prop`, so it never matches this pattern at all.
+    // Both gates are therefore defensive — and relying on the order of the fast-path chain for
+    // CORRECTNESS is exactly the kind of thing that breaks when someone reorders it, so they are
+    // pinned where the reliance is not needed.
+    assert!(
+        !eligible("MATCH (n) RETURN count(n.k) AS c", &st),
+        "a NON-DISTINCT count must decline: this answers the distinct count"
+    );
+    assert!(
+        !eligible(
+            "MATCH (n) LET g = n.n RETURN g, count(DISTINCT n.k) AS c GROUP BY g",
+            &st
+        ),
+        "a GROUPED count must decline: this answers one scalar"
+    );
+}
