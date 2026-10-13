@@ -726,7 +726,7 @@ pub fn run(cfg: &Cfg) {
         // The third row is the CONTROL: `count(*)` is already O(1) from the label bucket, so no
         // index can improve it. If it ever shows a speedup, this section is measuring the fixture
         // rather than the shortcut.
-        let cases: [(&str, &str); 3] = [
+        let cases: [(&str, &str); 6] = [
             (
                 "count(DISTINCT p.name)",
                 "MATCH (p:Person) RETURN count(DISTINCT p.name) AS c",
@@ -735,11 +735,23 @@ pub fn run(cfg: &Cfg) {
                 "count(DISTINCT p.age)",
                 "MATCH (p:Person) RETURN count(DISTINCT p.age) AS c",
             ),
+            ("min(p.age)", "MATCH (p:Person) RETURN min(p.age) AS v"),
+            ("max(p.age)", "MATCH (p:Person) RETURN max(p.age) AS v"),
+            // CONTROL for the range half: `avg` needs every value, so no ordered index can serve
+            // it. If it ever shows a speedup, this block is measuring the fixture.
+            (
+                "CONTROL avg(p.age)",
+                "MATCH (p:Person) RETURN avg(p.age) AS v",
+            ),
             ("CONTROL count(*)", "MATCH (p:Person) RETURN count(*) AS c"),
         ];
         let mut indexed2 = social_store(cfg.nodes(200_000), 5);
         indexed2.create_index("name");
         indexed2.create_index("age");
+        // `min`/`max` (item 371) are the same claim over the RANGE index: its first and last keys
+        // are the live extremes, so an ordered index answers in O(log n) what a column scan
+        // answers in O(live nodes).
+        indexed2.create_range_index("age");
         println!();
         println!(
             "{:22} {:>11} {:>11} {:>8}",

@@ -1549,6 +1549,19 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
                         .or_else(|| try_varlen_distinct_count(input, keys, aggs, store))
                         .or_else(|| try_varlen_distinctby_count(input, keys, aggs, store))
                         .or_else(|| try_varlen_agg(input, keys, aggs, store))
+                        // BEFORE the frontier/scan aggregate paths (item 371). THREE of them
+                        // can claim `min`/`max` over a bare `Scan`: `try_frontier_prop_agg` (whose
+                        // `chain_width` counts a `Scan` as a single-slot frontier),
+                        // `try_scan_multi_agg`, and the general aggregate. Sitting below any of
+                        // them made this path DEAD — the bench row read 1.0x while the unit test,
+                        // which calls the function directly, passed. A fast path can be correct,
+                        // willing, and still unreachable; an `eprintln` at function entry is what
+                        // shows it, not a test.
+                        //
+                        // Diverting only the bare-`Scan` shape is safe because the gates require
+                        // `Plan::Scan` exactly, and the differential test pins that the answers
+                        // agree.
+                        .or_else(|| try_indexed_min_max(input, keys, aggs, store))
                         .or_else(|| try_frontier_prop_agg(input, keys, aggs, store))
                         .or_else(|| try_scan_count_prop(input, keys, aggs, store))
                         .or_else(|| try_scan_num_agg(input, keys, aggs, store))

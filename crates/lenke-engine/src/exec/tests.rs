@@ -17549,3 +17549,176 @@ fn an_indexed_distinct_count_agrees_with_the_scan() {
         "a GROUPED count must decline: this answers one scalar"
     );
 }
+
+/// The range-index `min`/`max` must answer exactly what the column scan answers (audit item 371),
+/// including where the two could plausibly diverge: a NaN, a mixed-type column, a present null, an
+/// absent property and a non-vacuous label.
+///
+/// DIFFERENTIAL against the path it replaces — the same store and query with and without the range
+/// index. The order claim ("`OrdVal` compares by `cmp_total`, which is what min/max use") is a claim
+/// about two comparators agreeing, and reading them is not evidence; the mixed-type and NaN rows
+/// are.
+#[test]
+fn an_indexed_min_max_agrees_with_the_scan() {
+    let answer = |store: &crate::store::Store, q: &str| -> String {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), store);
+
+        format!("{:?}", run(&plan, store).rows[0][0])
+    };
+
+    // `P` is on every node (VACUOUS); `Q` on one, so it is not.
+    let numeric = concat!(
+        "{\"id\":\"a\",\"labels\":[\"P\"],\"props\":{\"n\":10}}\n",
+        "{\"id\":\"b\",\"labels\":[\"P\"],\"props\":{\"n\":-3.5}}\n",
+        "{\"id\":\"c\",\"labels\":[\"P\",\"Q\"],\"props\":{\"n\":99}}\n",
+        "{\"id\":\"d\",\"labels\":[\"P\"],\"props\":{}}"
+    );
+    // A column the engine cannot keep numeric: strings AND numbers, so `Column::Num`'s fast path
+    // cannot serve it and only the GENERAL aggregate can — the shape where an order disagreement
+    // would show.
+    let mixed = concat!(
+        "{\"id\":\"a\",\"labels\":[\"P\"],\"props\":{\"m\":10}}\n",
+        "{\"id\":\"b\",\"labels\":[\"P\"],\"props\":{\"m\":\"zebra\"}}\n",
+        "{\"id\":\"c\",\"labels\":[\"P\"],\"props\":{\"m\":\"apple\"}}\n",
+        "{\"id\":\"d\",\"labels\":[\"P\"],\"props\":{\"m\":-1}}"
+    );
+    // A present NULL beside real values: min/max ignore it, and so does the index.
+    let nulled = concat!(
+        "{\"id\":\"a\",\"labels\":[\"P\"],\"props\":{\"k\":5}}\n",
+        "{\"id\":\"b\",\"labels\":[\"P\"],\"props\":{\"k\":null}}\n",
+        "{\"id\":\"c\",\"labels\":[\"P\"],\"props\":{\"k\":2}}"
+    );
+    // Nothing carries the key at all: both paths must answer NULL, not invent a value.
+    let empty = "{\"id\":\"a\",\"labels\":[\"P\"],\"props\":{\"other\":1}}";
+
+    for (nd, key, queries) in [
+        (
+            numeric,
+            "n",
+            &[
+                "MATCH (n) RETURN min(n.n) AS v",
+                "MATCH (n) RETURN max(n.n) AS v",
+                "MATCH (n:P) RETURN min(n.n) AS v",
+                "MATCH (n:P) RETURN max(n.n) AS v",
+                // NON-vacuous label: the shortcut must decline and the answer must still be right
+                "MATCH (n:Q) RETURN min(n.n) AS v",
+                "MATCH (n:Q) RETURN max(n.n) AS v",
+                // DISTINCT is declined by every sibling, so it must stay on the general path
+                "MATCH (n) RETURN min(DISTINCT n.n) AS v",
+            ][..],
+        ),
+        (
+            mixed,
+            "m",
+            &[
+                "MATCH (n) RETURN min(n.m) AS v",
+                "MATCH (n) RETURN max(n.m) AS v",
+            ][..],
+        ),
+        (
+            nulled,
+            "k",
+            &[
+                "MATCH (n) RETURN min(n.k) AS v",
+                "MATCH (n) RETURN max(n.k) AS v",
+            ][..],
+        ),
+        (
+            empty,
+            "nothing",
+            &[
+                "MATCH (n) RETURN min(n.nothing) AS v",
+                "MATCH (n) RETURN max(n.nothing) AS v",
+            ][..],
+        ),
+    ] {
+        for q in queries {
+            let bare = crate::ndjson::from_ndjson(nd).unwrap();
+            let mut indexed = crate::ndjson::from_ndjson(nd).unwrap();
+
+            indexed.create_range_index(key);
+
+            assert_eq!(
+                answer(&indexed, q),
+                answer(&bare, q),
+                "indexed answer must match the scan for `{q}`"
+            );
+        }
+    }
+
+    // A NaN, which the fixture cannot express (ingest coerces it to null) — computed with SET, the
+    // way the differential fuzzer has to. The repo's policy puts NaN LAST in the total order, so it
+    // is the maximum, and the index must agree.
+    let mut bare = crate::ndjson::from_ndjson(numeric).unwrap();
+    let mut indexed = crate::ndjson::from_ndjson(numeric).unwrap();
+
+    for st in [&mut bare, &mut indexed] {
+        let plan = crate::opt::optimize_indexed(
+            crate::gql::parse("MATCH (n) WHERE n.n = 10 SET n.n = sin(1e400) RETURN count(*) AS c")
+                .unwrap(),
+            st,
+        );
+
+        crate::exec::run_query(plan, st).expect("the SET runs");
+    }
+
+    indexed.create_range_index("n");
+
+    for q in [
+        "MATCH (n) RETURN min(n.n) AS v",
+        "MATCH (n) RETURN max(n.n) AS v",
+    ] {
+        assert_eq!(
+            answer(&indexed, q),
+            answer(&bare, q),
+            "a NaN must sort the same for the index and the scan: `{q}`"
+        );
+    }
+
+    // THE SHORTCUT MUST ACTUALLY FIRE. A differential test passes with the shortcut DELETED, so
+    // eligibility is asserted on the function directly — the same reason item 369 does.
+    let mut st = crate::ndjson::from_ndjson(numeric).unwrap();
+
+    st.create_range_index("n");
+
+    let eligible = |q: &str, store: &crate::store::Store| -> bool {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), store);
+        let crate::ir::Plan::Project { input, .. } = &plan else {
+            panic!("expected a Project");
+        };
+        let crate::ir::Plan::Aggregate { input, keys, aggs } = input.as_ref() else {
+            panic!("expected an Aggregate");
+        };
+
+        crate::exec::fastpath::try_indexed_min_max(input, keys, aggs, store).is_some()
+    };
+
+    assert!(
+        eligible("MATCH (n) RETURN min(n.n) AS v", &st),
+        "unlabelled min"
+    );
+    assert!(
+        eligible("MATCH (n) RETURN max(n.n) AS v", &st),
+        "unlabelled max"
+    );
+    assert!(
+        eligible("MATCH (n:P) RETURN min(n.n) AS v", &st),
+        "a VACUOUS label is eligible"
+    );
+    assert!(
+        !eligible("MATCH (n:Q) RETURN min(n.n) AS v", &st),
+        "a NON-vacuous label must decline: the index is any-label"
+    );
+    assert!(
+        !eligible("MATCH (n) RETURN min(n.other) AS v", &st),
+        "a key with no RANGE index must decline"
+    );
+    assert!(
+        !eligible("MATCH (n) RETURN min(DISTINCT n.n) AS v", &st),
+        "DISTINCT declines, matching every sibling fast path"
+    );
+    assert!(
+        !eligible("MATCH (n) RETURN avg(n.n) AS v", &st),
+        "only min and max"
+    );
+}

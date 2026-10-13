@@ -1005,6 +1005,38 @@ cast record to number` vs TS `cannot cast **a map** to number` (a different TYPE
   caught only because the numbers were visibly the old ones. Exactly the documented failure (_"the
   next command runs anyway and consumes the stale file, so the failure surfaces as a wrong result
   rather than an error"_). Written with the editor tool and a fresh name the second time.
+- **`min`/`max` FROM THE RANGE INDEX — 2455x and 2567x — after the path sat DEAD because THREE other
+  fast paths claim a bare `Scan` (371).** Item 370 made the extremes exact; this spends them.
+  `try_indexed_min_max` reads the `BTreeMap`'s first/last key in O(log n) where a column scan is
+  O(live nodes). **The real work was proving the ORDERS agree**: `OrdVal` compares by
+  `value::cmp_total` and so does `min`/`max`, but reading two comparators is not evidence, so the
+  differential test carries a **mixed-type column** (strings AND numbers, which `Column::Num`'s
+  path cannot serve, so only the general aggregate can — where a disagreement would show) and a
+  **NaN** computed with `SET n.n = sin(1e400)` because the fixture cannot express one, plus a
+  present null, a key nothing carries, a non-vacuous label and `min(DISTINCT …)`.
+  **MEASURED**: `min(p.age)` **711.9 → 0.3 µs, 2455x**; `max(p.age)` **718.6 → 0.3, 2567x**;
+  **CONTROL `avg(p.age)` 1.0x** (it needs every value, so no ordered index can serve it) and
+  **CONTROL `count(*)` 1.0x**. Three rounds: min 2455/2639/2638x, max 2567/2557/2651x.
+  **⚠️ THE PATH SHIPPED DEAD, TWICE, AND NO TEST COULD CATCH IT.** The first bench run read **1.0x**
+  for both rows while every test passed. **THREE other fast paths can claim `min`/`max` over a bare
+  `Scan`** in a 32-entry chain: `try_scan_multi_agg`; the general aggregate; and — the non-obvious
+  one that actually caught it — **`try_frontier_prop_agg`, which gates on `chain_width(input)?`, and
+  `chain_width` returns `Some(1)` for a bare `Scan`** ("a seek, like a scan, seeds a single-slot
+  frontier"). **A plain scan is a trivial frontier**, so a path named for frontiers claims a scan.
+  Moving above `try_scan_multi_agg` was NOT enough; the second run still read 1.0x.
+  **No test could have caught it**: a differential test comparing answers with and without the index
+  passes trivially when BOTH sides take the scan, and the eligibility assertions call the function
+  DIRECTLY, proving it is willing rather than reached. The instrument was an `eprintln!` at function
+  entry (item 267's "one eprintln settled it", in a new place).
+  **So the method's "verify the planner reaches the shape" needs a second half: VERIFY THE DISPATCH
+  REACHES THE FUNCTION.** A plan-shape check is necessary and not sufficient when 32 ordered
+  candidates can claim the same plan.
+  **TEETH**: any-label **CAUGHT**; swap the extremes **CAUGHT**; accept `distinct` **CAUGHT** — and
+  note it is caught by the ELIGIBILITY assertion, not a wrong answer, since `min(DISTINCT k) ==
+min(k)`: the gate encodes a consistency decision (every sibling declines `distinct`) and the test
+  pins the decision rather than a correctness property. Control survived. Two mutants initially
+  failed to APPLY because the gate line is shared verbatim with `try_frontier_prop_agg` — which is
+  how that path was found.
 - **The RANGE index is the THIRD twin with the same emptied-key bug — and here a stale key is a
   WRONG MINIMUM, not an inflated count (370).** Items 367/368 fixed the hash index's delete then set
   path; grepping for the next index-answerable aggregate found it again in `range_remove`, which

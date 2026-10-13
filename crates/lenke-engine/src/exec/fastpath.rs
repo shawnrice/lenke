@@ -2812,6 +2812,61 @@ pub(super) fn low_card_int_bitset(
     Some((lo, bits, saw_absent))
 }
 
+/// `min(k)` / `max(k)` answered from the RANGE index's first and last key — O(log n) against a
+/// column scan of every live node.
+///
+/// The range twin of [`try_indexed_distinct_count`], and sound for the same three reasons, each
+/// checked rather than assumed:
+///
+/// - **The ORDER agrees.** `OrdVal`, the range index's key, compares by `value::cmp_total`, and
+///   that is the order `min`/`max` use (the repo's NaN policy: predicates keep NaN unordered, but
+///   sort/min/max use a total order so the two engines stay byte-identical). So the index's
+///   extremes ARE the aggregate's, including for NaN and across types — pinned by a differential
+///   test over a mixed-type column, not by reading the two comparators.
+/// - **NULLs agree.** `range_add` returns early on a null, so a range index holds only non-null
+///   values, and `min`/`max` ignore nulls. Exactness additionally needs item 370's emptied-key
+///   pruning: without it the first key can be a DELETED node's value.
+/// - **The label.** A range index is ANY-LABEL like the hash one, so a labelled scan is answerable
+///   only when the label is VACUOUS — the same O(1) exact test.
+///
+/// `distinct` is DECLINED even though `min(DISTINCT k) == min(k)` semantically. Every sibling fast
+/// path declines it, so accepting it here would silently move which path answers a shape for no
+/// gain — and "the gates match the path I sit above" is what lets a reader check that these two
+/// cannot disagree.
+pub(super) fn try_indexed_min_max(
+    input: &Plan,
+    keys: &[(String, Expr)],
+    aggs: &[Agg],
+    store: &Store,
+) -> Option<Batch> {
+    if !keys.is_empty() || aggs.len() != 1 {
+        return None;
+    }
+    let agg = &aggs[0];
+    if agg.distinct || !matches!(agg.func, AggFn::Min | AggFn::Max) {
+        return None;
+    }
+    let Plan::Scan { label } = input else {
+        return None;
+    };
+    let Some(Expr::Prop { slot: 0, key }) = agg.arg.as_ref() else {
+        return None;
+    };
+    if let Some(l) = label {
+        if store.nodes_with_label(l).len() != store.live_node_count() {
+            return None;
+        }
+    }
+
+    let (lo, hi) = store.range_min_max(key)?;
+
+    Some(Batch::single(Col::Gen(vec![if agg.func == AggFn::Min {
+        lo
+    } else {
+        hi
+    }])))
+}
+
 /// `count(DISTINCT n.k)` answered from the hash index's KEY COUNT — O(1) against the vectorized
 /// column scan `try_scan_distinct_count` below does, which is O(live nodes).
 ///
