@@ -1005,6 +1005,53 @@ cast record to number` vs TS `cannot cast **a map** to number` (a different TYPE
   caught only because the numbers were visibly the old ones. Exactly the documented failure (_"the
   next command runs anyway and consumes the stale file, so the failure surfaces as a wrong result
   rather than an error"_). Written with the editor tool and a fresh name the second time.
+- **The Gremlin JSON egress scanned TWICE — a speculative probe ran the seed BEFORE the gates that
+  reject it. 1.81x, and item 362's own diagnosis was wrong (363).** 362 measured a 1.74x
+  cross-language gap on an unindexed point lookup and recorded "it is in the plan or the execution".
+  **It was in neither**, and every candidate was eliminated by measurement:
+  `spelling_probe` same question both languages **1.02x**; `exec::try_run` on the two optimized
+  plans **identical** (15.4/61.7 against 15.6/61.8 µs at 20k/80k); `optimize_indexed` 0.29/0.50µs
+  **flat in N**; parse 160ns against ~735ns **flat in N** — so the engine accounts for ~0.8µs of
+  CONSTANT difference while a size sweep showed the difference GROWING (3.99 → 13.69 → 57.19µs at
+  5k/20k/80k, a steady ~0.7ns per scanned node). Two JS-side discriminators finished it: **`GQL
+inlined / GQL param` = 1.00x** (varying the TEXT costs GQL nothing) and **`GRM fixed / GQL param`
+  = 1.79x** (a FIXED Gremlin text, a pure cache hit with no parse, is STILL 1.79x) — **so the parse,
+  the cache and item 361 are all innocent.**
+  **THE MEASUREMENT AND ITS CONTROL**, 80k nodes: `try_run_gql_json` on the GQL plan **56.9µs**;
+  `try_run_gremlin_json` on the Gremlin plan **115.1µs (2.00x)**; **CONTROL — the GQL egress fed the
+  GREMLIN plan — 57.9µs.** Exactly 2.00x at both sizes is the signature of a scan happening twice,
+  and the control proves the PLAN is innocent (its extra `Filter { PropertyExists }`, which
+  `values('score')` correctly requires since TinkerPop drops elements lacking the key where GQL
+  yields NULL, costs ~1.5%). Ablating the five speculative probes named it in one run: **without
+  `try_stream_gremlin_json` → 57.0µs**, the GQL egress's own number; the other four are worth 0-2µs.
+  **THE CAUSE — a gate ordered after the work it exists to avoid.** `streaming_chain` does not
+  inspect a plan, **it EXECUTES its seed**: on an `IndexSeek` it calls `index_seek_ids`, which for an
+  unindexed key scans the label and reads the keyed property of every node. It ran BEFORE both
+  `single_hop_no_filter` and the `min_rows` floor, so every Gremlin read reaching this probe and
+  then declining paid a full scan for nothing — and the fallback scanned again. **Fix: hoist the
+  row-floor check above it.** `cost::estimate` reads only `input` and the store's O(1) counts, and
+  **reordering two independent pure early-returns cannot change the result for any input**, only the
+  time. GQL unaffected — `try_stream_gremlin_json` has one production caller.
+  **MEASURED**: egress 28.5/115.1 → **14.6/57.3µs**; end-to-end through the FFI **1.74x/1.95x of GQL
+  → 1.01x/1.00x**; `bench:usage` `gremlin read: point lookup` (-) **30.4k → 55.0k ops/s, 1.81x**;
+  the same row indexed **317.2k → 313.9k, FLAT as predicted** — which is the cross-check, since with
+  an index the seed is O(1) and there is no wasted scan to remove. **It also inverts the
+  comparison**: unindexed Gremlin is now 55.0k against GQL's 47.0k, a Gremlin cache hit being cheaper
+  than GQL's parameter binding.
+  **No regressions**: every `bench:gremlin` row within noise, answers all "same", GQL serving rows
+  unmoved. The near-zero gain on `V().out().values(age)` is consistent — there the discarded seed was
+  a 200k-id `Vec` copy where the point lookup's was an O(N) property scan. **The win is sized by how
+  expensive the DISCARDED seed was**, not by the query's total.
+  **TEETH**: a reorder of two pure guards has no new semantic to mutate, but reachability of the
+  streaming path is exactly what it could break silently — and that is already guarded. Forcing the
+  gate to always decline fails TWO existing tests
+  (`streaming_json_sink_matches_materialized_bytes`, which `expect()`s the `Option`, and
+  `streaming_gate_rejects_deep_and_value_filtered_chains`). Run as a mutant to confirm, not assumed.
+  **AND THE PROBE GAP THAT LET IT HIDE**: `spelling_probe` had cross-language groups for aggregates
+  and projections but **none for a selective property equality** — the commonest serving shape and
+  the only one where a seeding or egress difference shows. Added; its verdict for the new group
+  ("plans differ but cost matches, 1.02x") was the first clue that the plans were fine and something
+  outside them was not.
 - **⚠️ THE SERVING BENCH HAD NO GREMLIN ROWS — which is WHY 361's gap survived 43 items — and item
   361 is worth 1.37x END-TO-END, not the 4.7x it measured on the parse (362).** `bench:usage` is the
   serving harness, small operations against a warm graph, exactly where per-call overhead shows.
@@ -1033,10 +1080,14 @@ cast record to number` vs TS `cannot cast **a map** to number` (a different TYPE
   **AND WHAT THE NEW ROWS SHOW THAT NOTHING COULD BEFORE** — the same question in both surface
   languages, indexed: **GQL 365.0k against Gremlin 317.2k, 0.87x**, unremarkable and now visible
   (`CLAUDE.md`'s "equivalent spellings must cost the same" extends naturally to the two LANGUAGES
-  and had no instrument). **⚠️ OPEN: unindexed it is 53.0k against 30.4k — Gremlin 0.57x of GQL, a
-  1.74x gap on the same question.** Not diagnosed here, and the parse difference cannot explain it
-  (at 30.4k ops/s an operation is 32.9µs and the whole parse gap is ~575ns, 1.7%), so it is in the
-  plan or the execution and needs its own decomposition.
+  and had no instrument). **⚠️ ~~OPEN~~ CLOSED AT 363, AND THIS ENTRY GUESSED WRONG: unindexed it was 53.0k
+  against 30.4k — Gremlin 0.57x of GQL.** This row said _"it is in the plan or the execution"_; **it
+  was in neither.** Item 363 eliminated both by measurement — the plans cost 1.02x in-process and
+  `exec::try_run` on them is identical — and found the Gremlin JSON egress running a speculative
+  probe that EXECUTES the seed before the gates that reject it: a full scan discarded, then scanned
+  again. Fixed at **1.81x**; the row now reads 55.0k, slightly AHEAD of GQL. **Naming a layer before
+  decomposing it is the thing to avoid here** — the parse arithmetic in this entry was right and the
+  conclusion drawn past it was not.
 - **Gremlin had NO PARSE CACHE — 3.74x to 5.43x on a repeated traversal, and the all-miss path had
   to be fixed before it was shippable (361).** Item 360 found the Gremlin lexer had missed item
   317's fix; this is the same drift one layer up. `lnk_query`'s GQL arm has gone through a parse

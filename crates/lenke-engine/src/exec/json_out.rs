@@ -24,13 +24,31 @@ pub fn try_stream_gremlin_json(
     // (`has(eq(..))` estimates 144k but matches ~1, so a row gate would wave a 7.6x
     // regression through). Requiring one bare Expand sidesteps both — and there the
     // estimate is trustworthy, so the `min_rows` floor gates the rest.
-    let (inner_body, ids) = streaming_chain(input, store)?;
-    if !single_hop_no_filter(&inner_body) {
+    // THE ROW FLOOR GOES FIRST, and the order is the whole of audit item 363.
+    //
+    // `streaming_chain` does not inspect a plan — it EXECUTES its seed, so on an `IndexSeek` it
+    // calls `index_seek_ids`, which for an unindexed key is a full scan of the label. Running it
+    // before the two gates below meant that every Gremlin read reaching this probe and then
+    // DECLINING paid a complete scan for nothing, and the fallback at the end of
+    // `try_run_gremlin_json_inner` scanned again. Measured at exactly **2.00x** the GQL egress on
+    // the same plan (115.1 against 56.9 us over 80,000 nodes), and the GQL egress fed the GREMLIN
+    // plan was 57.9 — so the plan was innocent and the egress was scanning twice.
+    //
+    // `cost::estimate` reads only `input` and the store's O(1) counts, so hoisting it is free and
+    // cannot change the answer: both guards are pure predicates that return `None`, and reordering
+    // two independent early returns leaves the function's result identical for every input. Only
+    // the time changes.
+    //
+    // Deliberately HIGH floor: below it the block/serialize overhead loses to the vectorized
+    // materialized path — we do NOT opt in early.
+    if crate::cost::estimate(input, store).rows < min_rows {
         return None;
     }
-    // Deliberately HIGH floor: below it the block/serialize overhead loses to the
-    // vectorized materialized path — we do NOT opt in early.
-    if crate::cost::estimate(input, store).rows < min_rows {
+    // Only now is the seed worth materializing. A plan that estimates ABOVE the floor and then
+    // fails the structural gate below still pays one wasted scan; that is rare by construction
+    // (the floor is 1,000,000 rows) and is the residue this item leaves rather than hides.
+    let (inner_body, ids) = streaming_chain(input, store)?;
+    if !single_hop_no_filter(&inner_body) {
         return None;
     }
     // Run the chain BELOW the projection per block, then serialize the one output value

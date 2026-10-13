@@ -367,6 +367,22 @@ fn main() {
                 (Gremlin, "g.V().hasLabel('Person').has('age', gt(28)).count()"),
             ],
         ),
+        // The POINT LOOKUP by property equality, the single most common serving query there is —
+        // and the shape item 362 measured a 1.74x cross-LANGUAGE gap on (`bench:usage`, unindexed:
+        // GQL 53.0k ops/s against Gremlin 30.4k). Every cross-language group here was an aggregate
+        // or a projection over the whole label; none was a selective equality, which is where a
+        // seeding difference would show. Added at item 363 so the gap has a plan to look at rather
+        // than a rate to wonder about.
+        (
+            "point lookup by property equality: GQL vs Gremlin",
+            &[
+                (Gql, "MATCH (n:Person) WHERE n.name = 'name12345' RETURN n.age AS a"),
+                (
+                    Gremlin,
+                    "g.V().hasLabel('Person').has('name','name12345').values('age')",
+                ),
+            ],
+        ),
         (
             "DISTINCT vs dedup",
             &[
