@@ -1005,6 +1005,39 @@ cast record to number` vs TS `cannot cast **a map** to number` (a different TYPE
   caught only because the numbers were visibly the old ones. Exactly the documented failure (_"the
   next command runs anyway and consumes the stale file, so the failure surfaces as a wrong result
   rather than an error"_). Written with the editor tool and a fresh name the second time.
+- **⚠️ REFUTED BEFORE BUILT — the inner-container ALLOCATION is not the cost, which kills the
+  single-label adjacency representation AND retracts item 357's superadditivity (358).** Item 357
+  named a 226ns shared term between the two adjacency maps, two candidate mechanisms, and the
+  experiment to separate them. This is that experiment, with the two variants chosen to move the
+  candidates in OPPOSITE directions.
+  **`shared-outer`** (ONE outer map keyed by vertex id with `{f, t}` inners — one working set, and
+  allocation made WORSE at five objects per vertex instead of four): **2821 against the control's
+  2757 — WORSE.** The two-large-maps cache story is out; merging the working sets buys nothing.
+  **`no-inner-alloc`** (two outer maps kept, inner `Map`+`Set` replaced by shared singletons, so
+  **~800,000 allocations become 0** while all 5 keyed `get`s and 3 `Set.add`s remain — and the
+  1M-entry shared Sets are priced at ~0 because 357 measured exactly that as not measurable):
+  three rounds gave 2498 with a range OVERLAPPING the control, so it got an isolated five-round A/B
+  at min-of-five internal reps — control **2618** (2618-2698, 3.1%) against **2490** (2490-2637,
+  5.9%). **128ns, 4.9%, with one of five rounds showing NO effect and the null control the change
+  cannot reach ranging 5.9% by itself.** At the noise floor.
+  **WHAT THIS CLOSES — the tagged single-label inner representation is REFUTED, not just declined.**
+  Item 357 called it "the obvious candidate" (store the `Set` directly, promote to a `Map` on a
+  second label; halves the allocations and removes a hash level from every adjacency READ) and
+  declined it on blast radius — `Vertex.adjFrom`, both engines' `graph-queries`, four algorithms,
+  three `shortcuts` helpers. **Its entire motivation was those allocations, and removing ALL of them
+  measures at the noise floor.** Refuted before it was built, which is the cheapest form this could
+  have taken.
+  **AND IT RETRACTS 357's OWN HEADLINE.** 226ns is 8% of a row whose harness repeatability is 3-6%,
+  and neither mechanism reproduces. **A superadditivity is a difference of differences, so it
+  carries the noise of every term in it** — 357 treated it as a finding because each individual
+  ablation was disjoint from the control, but **disjointness of the PARTS says nothing about the
+  residue after subtracting them.** A sharper form of item 300's rule (_disjoint ranges are not
+  proof when the whole side moves_).
+  **WHAT THE 586-684ns ACTUALLY IS: the string-keyed hash work itself** — ~4 keyed `get`s, 2 `set`s
+  and 2 `Set.add`s an edge at ~75-100ns each on a 200,000-entry Map, which is item 312's own
+  ~115ns-per-operation estimate arriving from a different direction. The only lever is the KEY TYPE:
+  item 300's dense integer-indexed adjacency, parked at 348. **This is the FOURTH item to arrive
+  there (310, 350, 352, 358)** — at some point that is itself the finding.
 - **`addEdge`'s 810ns label index, SPLIT at last — the 1M-element Set is FREE, the two adjacency maps
   are all of it, and they are SUPERADDITIVE (357).** Item 356 left `addEdge` as the only lever on
   pure-TS ingest (the TS decode is format-independent, so the cost is the graph BUILD). Item 312
@@ -1023,20 +1056,20 @@ cast record to number` vs TS `cannot cast **a map** to number` (a different TYPE
   **The per-label loop and the function call are FREE** (1887 against 1912, overlapping) — checked
   because with all three blocks gone `indexEdgeLabel` is an empty function, so the 848 could have
   been an artifact of ablating down to an empty callee. It is real work.
-  **THE SUPERADDITIVITY IS THE RESULT: 684ns for both adjacency maps against 240+218=458 apart, a
-  226ns SHARED term** that fixing either index alone cannot reach. Two mechanisms are consistent and
-  **this item does not separate them**: ~0.8 inner Map+Set allocations an edge (one of each per
-  distinct vertex id per side — 800,000 objects for 1,000,000 edges), and the cache cost of touching
-  two 200,000-entry string-keyed Maps per edge, which is **item 323's own recorded observation**
-  ("touching two large maps per edge thrashes more than either alone"). **The experiment that would
-  separate them**: merge the two maps into ONE (same inner containers, one outer working set)
-  against two maps with no inner containers.
-  **NOT LICENSED YET** — a tagged single-label inner representation (store the `Set` directly,
-  promote to a `Map` on a second label) would halve the allocations and remove a hash level from
-  every adjacency READ too, but `edgesFromByLabel`/`edgesToByLabel` are read by `Vertex.adjFrom`,
-  both engines' `graph-queries`, four algorithms and `shortcuts`' `side`/`bucketSize`/`edgesOfTypes`.
-  Wide blast radius for a change whose price is bounded by exactly the quantity this item could not
-  separate. **Price the mechanism before paying for the representation.**
+  **⚠️ THE SUPERADDITIVITY IS RETRACTED AT 358.** This item reported 684ns for both adjacency maps
+  against 240+218=458 apart — a 226ns shared term — and named two candidate mechanisms. Item 358
+  tested both: merging the two maps into one outer map is **WORSE** than the control, and removing
+  **all ~800,000 inner allocations** is worth 128ns (4.9%) at the noise floor. Neither reproduces,
+  and 226ns is 8% of a row whose harness repeatability is 3-6%. **A superadditivity is a difference
+  of differences, so it carries the noise of every term in it**: each individual ablation here was
+  disjoint from the control, and disjointness of the PARTS says nothing about the residue after
+  subtracting them.
+  **AND NOW REFUTED OUTRIGHT (358)** — a tagged single-label inner representation (store the `Set`
+  directly, promote to a `Map` on a second label) was "the obvious candidate", declined here on blast
+  radius (`Vertex.adjFrom`, both engines' `graph-queries`, four algorithms,
+  `shortcuts`' `side`/`bucketSize`/`edgesOfTypes`). Its whole motivation was halving the inner
+  allocations, and **removing ALL of them measures at the noise floor**. Priced at ~free, refuted
+  before it was built. **Price the mechanism before paying for the representation.**
   **NEW PERMANENT INSTRUMENT — `bun run addedge:cost`** (`packages/native/addedge-cost-probe.ts`).
   The bench's decode rows cannot answer this: they include `JSON.parse` (19%) and they reach
   `@lenke/core` through `@lenke/serialization`, **which resolves to core's built DIST**, so an A/B of

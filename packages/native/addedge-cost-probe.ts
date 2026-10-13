@@ -44,13 +44,26 @@
  *     essentially free, which retracts the intuition that the big container is the expensive one.
  *   - the per-label LOOP and the function call are FREE (1912 against 1887, ranges overlapping),
  *     so the aggregate is not an artifact of ablating down to an empty callee.
- *   - the two adjacency maps are SUPERADDITIVE: 684 together against 240+218=458 apart, a 226ns
- *     SHARED term. Two mechanisms are consistent with it and this probe does not separate them —
- *     ~0.8 inner Map+Set allocations an edge (one of each per distinct vertex id per side), and
- *     the cache cost of touching two 200,000-entry string-keyed Maps per edge, which is item 323's
- *     own recorded observation ("touching two large maps per edge thrashes more than either
- *     alone"). The experiment that WOULD separate them: merge the two maps into one (same
- *     allocations, one working set) against keeping two maps with no inner containers.
+ *   - the two adjacency maps looked SUPERADDITIVE — 684 together against 240+218=458 apart, a
+ *     226ns apparent SHARED term. **RETRACTED at item 358**, which went looking for its mechanism
+ *     and found neither candidate survives. Both experiments are recorded there; the short form is
+ *     that 226ns is 8% of this row and the harness's own demonstrated repeatability is 3-6%, so
+ *     the term was not large enough to attribute. Treat a superadditivity under ~10% here as
+ *     unproven until a mechanism reproduces.
+ *
+ * AND WHAT ITEM 358 CLOSED, which is the part that saves work:
+ *   - removing ALL ~800,000 inner Map+Set allocations (shared singletons in their place, every
+ *     hash operation kept) is worth **128ns, 4.9%, at the noise floor**, with one of five
+ *     alternated rounds showing no effect at all. **So the inner-container allocation is not a
+ *     target** — and that was the whole motivation for a tagged single-label inner representation,
+ *     a change whose readers span `Vertex.adjFrom`, both engines' `graph-queries`, four algorithms
+ *     and three `shortcuts` helpers. Refuted before it was built.
+ *   - merging the two adjacency maps into ONE outer map (one working set) is **WORSE** than the
+ *     control (2821 against 2757), so the two-large-maps cache story is out too.
+ *   - what is left is the string-keyed hash work itself: ~4 keyed `get`s, 2 `set`s and 2
+ *     `Set.add`s an edge, at roughly 75-100ns each on a 200,000-entry Map. The only lever on that
+ *     is the KEY TYPE, i.e. the dense integer-indexed adjacency of item 300 — parked at item 348,
+ *     and every road in this area keeps arriving there.
  */
 // oxlint-disable-next-line boundaries/no-cross-package-relative-import -- probe reads source to skip the build step
 import { Graph } from '../core/src/index.ts';
