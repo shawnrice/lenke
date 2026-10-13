@@ -1005,6 +1005,42 @@ cast record to number` vs TS `cannot cast **a map** to number` (a different TYPE
   caught only because the numbers were visibly the old ones. Exactly the documented failure (_"the
   next command runs anyway and consumes the stale file, so the failure surfaces as a wrong result
   rather than an error"_). Written with the editor tool and a fresh name the second time.
+- **⚠️ A FRESH HUNT FOR A TS TARGET: two candidates RETRACTED by normalizing, and every remaining
+  one is in a parked class — SIX decompositions now converge there (365).** Items 360-364 were all
+  native, so this was a deliberate search for a TS target that is NOT the parked dense adjacency.
+  There isn't one, and establishing that took two retractions.
+  **RETRACTED — the DISTINCT family.** It looked like a clean intra-engine anomaly: on NATIVE
+  `count distinct` (0.4ms) is FASTER than `group + aggregate` (1.1ms), as it should be, while on TS
+  it is SLOWER (6.2 against 5.2) — an inversion on the same fixture. **Per row it dissolves**:
+  `count distinct` **31 ns/row**, `distinct + order by` 29, `group + aggregate` **26**, `top distinct
+values` 19. DISTINCT is not anomalous against GROUP; both sit at the TS per-row floor within 1.2x,
+  and the 14.98x ratio comes from native doing the same work at **2ns/row** with a vectorized
+  typed-column scan. **Item 356's lesson in a third place: the UNIT decides whether a row is an
+  outlier.**
+  **RETRACTED — `encode graphson`, the same way.** TS encodes GraphSON in 138.1ms against its own
+  NDJSON encode's 42.8 (**3.2x**) where native's ratio for the same pair is 1.76x — which reads like
+  a TS codec gap. But GraphSON's document is **3.5x the bytes** (410 B/element against 117, item
+  356), so 3.2x the time for 3.5x the bytes makes TS's GraphSON encode slightly FASTER per byte than
+  its NDJSON encode. (The audit also already flags this row as high-variance, "its own session
+  readings span 143-190" — a weak candidate twice over.)
+  **WHAT REMAINS is all parked with measurements**: the hop/count family (23-69x) is locality-bound
+  (352: 2.9x per-edge degradation from size alone); the decode rows (3.1-3.4 SECONDS) are build-bound
+  and **format-independent** (356: a 1.23x spread across five codecs against native's 3.55x), so no
+  codec work can touch them and `addEdge` is the only lever — whose label index 357 split and 358
+  refuted at the noise floor; the element-render rows (685-1230ms) were parked twice at 348 with
+  289's carrier finding.
+  **SIX INDEPENDENT DECOMPOSITIONS NOW TERMINATE AT THE SAME DENSE INTEGER-INDEXED ADJACENCY** (310,
+  350, 352, 357, 358, 365). **At some point that convergence is itself the finding**: the TS engine's
+  remaining per-row cost is its string-keyed, pointer-chasing data layout, and every component-sized
+  fix in reach has been taken or refuted.
+  **⚠️ THE ONE UNEXPLORED NON-CSR IDEA, NAMED WITH ITS BLOCKER**: `count(DISTINCT k)` over an INDEXED
+  `k` is answerable in **O(1) from the index's key count** instead of scanning every row — native's
+  hash index is a `HashMap<Vec<u8>, Vec<u32>>` whose `len()` IS the distinct-value count, and TS has
+  the same shape. **Neither engine does it.** NOT BUILT because it is unsound as written: index
+  buckets retain deleted ids (`index_bucket_len`'s own doc: "it may count a few tombstoned ids, which
+  is fine for an estimate"), so a value whose every holder was deleted would still be counted and the
+  answer would be **WRONG, not slow**. Exactness needs bucket pruning on delete or a verification
+  pass — a storage change with its own price.
 - **⚠️ PRICED AND DECLINED — the same wasted-seed pattern grepped elsewhere, found once more, worth
   1.07x not 2.00x. THE COST IS SIZED BY THE SEED'S SHARE OF THE QUERY (364).** Item 363 fixed a
   speculative probe that executed its seed before the gates that reject it (2.00x); this is the grep.
