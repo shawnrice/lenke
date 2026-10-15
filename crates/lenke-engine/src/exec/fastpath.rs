@@ -1759,6 +1759,14 @@ pub(super) fn try_varlen_agg(
     {
         return None;
     }
+    // The SAME peel `try_varlen_count` already does: an endpoint label or predicate lowers
+    // to a `Filter` ABOVE the hop — `(b:Person)` becomes `IsLabeled { slot: <endpoint> }` —
+    // and declining on it sent the fold to the MATERIALIZING aggregate. The peel was added
+    // to the count twin and not to this one (item 372). Measured 2.32x for `sum` and 1.95x
+    // for `max`; and at 200k x degree-5 the labelled spelling additionally FAULTED on the
+    // trail ROW CAP that a fold never reaches, so the two spellings of one query differed in
+    // whether the query could complete at all, not merely in cost.
+    let (input, endpoint) = peel_endpoint_filter(input);
     let Plan::VarLength {
         input: inner,
         from,
@@ -1798,19 +1806,78 @@ pub(super) fn try_varlen_agg(
     };
     let column = store.column(key)?; // property absent everywhere → fall back
     let node_unique = matches!(mode, PathMode::Simple | PathMode::Acyclic);
-    let dfs = |emit: &mut dyn FnMut(u32)| {
+    // What the endpoint test COSTS per reached node decides whether peeling the filter is a
+    // win at all, and the general evaluator already settled that question for `IsLabeled`
+    // (E78): a label that every LIVE node carries is a TAUTOLOGY and need not be tested,
+    // and otherwise a membership BITSET built once beats probing per row. Two shapes were
+    // tried here first and refuted by measurement — `until_ok` per endpoint (a label-string
+    // hash plus a bucket binary search every time) at 1.8x SLOWER than not peeling, and the
+    // same with the bucket hoisted out of the walk, still 1.22x slower. The fold's win only
+    // survives the filter it now has to apply if that filter is O(1).
+    enum EndGuard<'a> {
+        Off,                   // nothing to test
+        Bits(Vec<u64>),        // a selective label: O(1) membership
+        Pred(&'a Expr, usize), // anything else: tested per REACHED node
+    }
+    let guard = match endpoint {
+        None => EndGuard::Off,
+        Some((Expr::IsLabeled { labels, .. }, _)) => {
+            let buckets: Vec<&[u32]> = labels.iter().map(|l| store.nodes_with_label(l)).collect();
+            let live = store.live_node_count();
+            // A walk emits only live nodes, so unlike the evaluator there is no OPTIONAL
+            // `u32::MAX` sentinel left to exclude — the tautology tests nothing at all, and
+            // the labelled spelling becomes exactly the bare one.
+            if live > 0 && buckets.iter().any(|b| b.len() == live) {
+                EndGuard::Off
+            } else {
+                let mut bits = vec![0u64; store.node_count().div_ceil(64)];
+                for b in &buckets {
+                    for &id in *b {
+                        bits[id as usize / 64] |= 1u64 << (id % 64);
+                    }
+                }
+                EndGuard::Bits(bits)
+            }
+        }
+        Some((pred, slot)) => EndGuard::Pred(pred, slot),
+    };
+    let walk = |sink: &mut dyn FnMut(u32)| {
         let mut used: Vec<u32> = Vec::new();
         for &v in src {
             if node_unique {
                 used.push(v); // mark the start node
             }
             varlen_agg_dfs(
-                store, v, 0, *min, *max, *dir, &want, *mode, v, &mut used, emit,
+                store, v, 0, *min, *max, *dir, &want, *mode, v, &mut used, sink,
             );
             if node_unique {
                 used.pop();
             }
         }
+    };
+    let dfs = |emit: &mut dyn FnMut(u32)| {
+        // The UNGUARDED walk keeps the sink it always had. Wrapping `emit` unconditionally
+        // measured ~1.11x on the bare spelling — a tax on the path that has no endpoint
+        // filter to pay for, which is the one thing this change must not do.
+        if matches!(guard, EndGuard::Off) {
+            walk(emit);
+            return;
+        }
+        // The endpoint predicate is tested HERE, once per REACHED endpoint, not swept over
+        // every node ahead of the walk. That is not only cheaper, it is the only correct
+        // place: a predicate evaluated over nodes the walk never reaches can raise where the
+        // query would not — the trap `try_varlen_count` records against its own peel.
+        let mut guarded = |v: u32| {
+            let pass = match &guard {
+                EndGuard::Off => true,
+                EndGuard::Bits(bits) => (bits[v as usize / 64] >> (v % 64)) & 1 == 1,
+                EndGuard::Pred(pred, slot) => crate::exec::varlen::until_ok(pred, store, *slot, v),
+            };
+            if pass {
+                emit(v);
+            }
+        };
+        walk(&mut guarded);
     };
 
     let val = match (agg.func, column) {

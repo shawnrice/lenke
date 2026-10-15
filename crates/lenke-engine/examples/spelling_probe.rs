@@ -164,6 +164,27 @@ fn main() {
             ],
         ),
         (
+            // The same two label spellings over a VAR-LENGTH AGGREGATE, which is a different
+            // question from the group count above and was answered differently until item 372.
+            // `try_varlen_agg` folds `sum`/`max` during the DFS, but matched `Plan::VarLength`
+            // DIRECTLY — and an endpoint label lowers to a `Filter` ABOVE the hop, so the fold
+            // was taken for `(b)` and declined for `(b:Person)`, which fell through to the
+            // MATERIALIZING aggregate: 2.19x on a 50,000-node fixture, and at 200,000 x degree-5
+            // the labelled spelling did not merely cost more, it hit the trail ROW CAP that a
+            // fold never reaches and raised `E_RESOURCE_EXHAUSTED` where its twin returned an
+            // answer. Both spellings here lower to the same `IsLabeled`, so they must agree on
+            // plan AND time; the aggregate is what makes this group distinct from the count.
+            "endpoint label on a var-length AGGREGATE (inline vs IN labels())",
+            &[
+                (Gql, "MATCH (a)-[:KNOWS]->{1,2}(b:Person) RETURN sum(b.age) AS c"),
+                (
+                    Gql,
+                    "MATCH (a)-[:KNOWS]->{1,2}(b) WHERE 'Person' IN labels(b) \
+                     RETURN sum(b.age) AS c",
+                ),
+            ],
+        ),
+        (
             // CONJUNCT ORDER. `A AND B` and `B AND A` are the same question, and the engine does
             // not normalize them: the optimizer leaves the conjuncts in the written order and
             // `zip_bool` evaluates BOTH operands over every row, so neither order short-circuits.

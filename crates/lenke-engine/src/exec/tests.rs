@@ -17783,3 +17783,101 @@ fn a_shortest_k_over_an_unbounded_quantifier_faults_instead_of_exhausting_memory
         crate::exec::try_run(&plan, &store).unwrap_or_else(|e| panic!("{q} must run, got {e}"));
     }
 }
+
+/// Item 372: `try_varlen_agg` folds the aggregate during the walk, but it matched
+/// `Plan::VarLength` DIRECTLY — and an endpoint LABEL lowers to a `Filter` ABOVE the hop, so
+/// `(b:Person)` sent the fold to the materializing aggregate while `(b)` kept it. Peeling that
+/// filter is only correct if the label is actually APPLIED during the fold, and the fixture is
+/// what decides whether this test can tell: on a graph where every node carries the label,
+/// every assertion below passes with the guard deleted. Hence MIXED labels and hand-computed
+/// expectations.
+///
+/// 4 nodes, `KNOWS` edges 0->1, 0->2, 1->3, 2->3. A `{1,2}` trail reaches, as a multiset:
+/// from 0 — 1, 2, 3 (via 1), 3 (via 2); from 1 — 3; from 2 — 3. So endpoints are
+/// [1, 2, 3, 3, 3, 3] with ages [100, 20, 200, 200, 200, 200].
+#[test]
+fn an_endpoint_label_on_a_varlen_aggregate_is_applied_during_the_fold() {
+    use crate::value::Value;
+
+    let mut b = crate::store::Builder::default();
+    b.node(&["Person"], &[("age", Value::Num(10.0))]); // 0
+    b.node(&["Robot"], &[("age", Value::Num(100.0))]); // 1
+    b.node(&["Person"], &[("age", Value::Num(20.0))]); // 2
+    b.node(&["Robot"], &[("age", Value::Num(200.0))]); // 3
+    b.edge(0, 1, "KNOWS");
+    b.edge(0, 2, "KNOWS");
+    b.edge(1, 3, "KNOWS");
+    b.edge(2, 3, "KNOWS");
+    let store = b.build();
+
+    let scalar = |q: &str| -> f64 {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &store);
+        let out = crate::exec::try_run(&plan, &store).unwrap_or_else(|e| panic!("{q}: {e}"));
+        match &out.rows[0][0] {
+            Value::Num(n) => *n,
+            other => panic!("{q}: want a number, got {other:?}"),
+        }
+    };
+
+    // The three spellings disagree BY CONSTRUCTION, which is what gives the rest its teeth:
+    // a guard that did nothing would make all three equal 920.
+    assert_eq!(
+        scalar("MATCH (a)-[:KNOWS]->{1,2}(b) RETURN sum(b.age) AS n"),
+        920.0
+    );
+    assert_eq!(
+        scalar("MATCH (a)-[:KNOWS]->{1,2}(b:Person) RETURN sum(b.age) AS n"),
+        20.0
+    );
+    assert_eq!(
+        scalar("MATCH (a)-[:KNOWS]->{1,2}(b:Robot) RETURN sum(b.age) AS n"),
+        900.0
+    );
+
+    assert_eq!(
+        scalar("MATCH (a)-[:KNOWS]->{1,2}(b) RETURN max(b.age) AS n"),
+        200.0
+    );
+    assert_eq!(
+        scalar("MATCH (a)-[:KNOWS]->{1,2}(b:Person) RETURN max(b.age) AS n"),
+        20.0
+    );
+    assert_eq!(
+        scalar("MATCH (a)-[:KNOWS]->{1,2}(b:Person) RETURN min(b.age) AS n"),
+        20.0
+    );
+    assert_eq!(
+        scalar("MATCH (a)-[:KNOWS]->{1,2}(b:Robot) RETURN min(b.age) AS n"),
+        100.0
+    );
+
+    // An EQUIVALENT spelling of the same label test. GQL lowers `(b:Person)` and
+    // `WHERE 'Person' IN labels(b)` to the same `IsLabeled`, so the two must not diverge —
+    // the invariant that a predicate's spelling cannot change its answer or its cost.
+    assert_eq!(
+        scalar("MATCH (a)-[:KNOWS]->{1,2}(b) WHERE 'Person' IN labels(b) RETURN sum(b.age) AS n"),
+        20.0
+    );
+
+    // A VACUOUS label takes the tautology arm (every live node carries it), which skips the
+    // membership test entirely. It must still be the bare answer, not a silently empty one.
+    let mut u = crate::store::Builder::default();
+    for i in 0..4u32 {
+        u.node(&["Person"], &[("age", Value::Num(f64::from(i) * 10.0))]);
+    }
+    u.edge(0, 1, "KNOWS");
+    u.edge(1, 2, "KNOWS");
+    let ustore = u.build();
+    let uscalar = |q: &str| -> f64 {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &ustore);
+        let out = crate::exec::try_run(&plan, &ustore).unwrap_or_else(|e| panic!("{q}: {e}"));
+        match &out.rows[0][0] {
+            Value::Num(n) => *n,
+            other => panic!("{q}: want a number, got {other:?}"),
+        }
+    };
+    assert_eq!(
+        uscalar("MATCH (a)-[:KNOWS]->{1,2}(b:Person) RETURN sum(b.age) AS n"),
+        uscalar("MATCH (a)-[:KNOWS]->{1,2}(b) RETURN sum(b.age) AS n"),
+    );
+}

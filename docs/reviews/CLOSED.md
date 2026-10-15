@@ -2706,6 +2706,38 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
 
 ---
 
+- **An endpoint LABEL cost a var-length aggregate 2.19x — or the whole query — and the peel that
+  fixes it already existed on the count twin (374).** `try_varlen_agg` folds `sum`/`max` during the
+  DFS but matched `Plan::VarLength` DIRECTLY, and `(b:Person)` lowers to a `Filter` ABOVE the hop
+  (`IsLabeled` on the endpoint slot the fast path already requires), so the fold was taken for
+  `(b)` and declined for `(b:Person)`. `peel_endpoint_filter` was already in the same file and
+  already called by `try_varlen_count` — applied to the twin that was being looked at and to
+  neither other, which is 367/368/370 a fourth time. **The 200k row is the one to remember: the
+  labelled spelling did not merely cost more, it hit the trail ROW CAP a fold never reaches and
+  raised `E_RESOURCE_EXHAUSTED` where its twin returned an answer** — equivalent spellings
+  differing in whether the query can complete, not in cost. **Two implementations were REFUTED
+  first and must not be re-attempted**: `until_ok` per reached endpoint (its `IsLabeled` arm is a
+  label-string hash plus a binary search over the whole bucket, EVERY endpoint) at **1.83x worse
+  than not peeling**, and the same with the bucket hoisted out, still **1.22x worse**. Only the
+  tautology-plus-bitset shape the general evaluator already uses (E78) wins. **And the benchmark
+  was measuring the wrong thing**: `social_store` labels every node `Person`, so the label is
+  VACUOUS and the general path short-circuits it to free — a fold carrying a real test was being
+  compared against a filter that costs nothing. CLAUDE.md's same-label-fixture trap arriving as a
+  misleading PERF number rather than a hidden wrong answer; the fix needs a MIXED fixture to be
+  measured honestly and a mixed fixture to be TESTED at all (every assertion passes with the guard
+  deleted on a uniform graph). Still open in the same family: `try_varlen_distinct_count` and
+  `try_varlen_distinctby_count` decline their own shapes even unlabelled, and
+  `try_frontier_prop_agg` takes `max` but declines `sum`.
+- **The aggregate fast-path chain is fully reachable, and the corpus builds no indexes (374).** All
+  28 entries instrumented over the ~1,200-case `gql_corpus`: **every entry is CALLED**, so item
+  371's shadowing is not chain-wide, but **10 never hit**. Handing each one a query written to its
+  own gate separates the causes — four are alive and merely uncovered (`try_indexed_min_max`,
+  `try_indexed_distinct_count`, `try_3hop_product_count`, `try_join_product_count`), one is item
+  47's documented flattening, and the rest were the var-length family above. **The corpus creates
+  no indexes at all**, so the index fast paths from items 369 and 371 are guarded by their unit
+  tests alone. Use `tests/gql_corpus` for this question, not a scrape — item 372 took the machine
+  down twice running a scraped corpus uncapped, and the curated one runs in 7.15 s under the cap.
+
 ## 6. Consequences of the AND decision — RESOLVED by item 258, and not as predicted
 
 This section was written before the change and asked three questions. All three are now answered by
