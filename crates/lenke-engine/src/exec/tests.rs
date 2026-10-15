@@ -17722,3 +17722,64 @@ fn an_indexed_min_max_agrees_with_the_scan() {
         "only min and max"
     );
 }
+
+/// REGRESSION for audit item 373: `SHORTEST k` (k >= 2) over an UNBOUNDED quantifier must FAULT,
+/// not take the process down.
+///
+/// `collect_trails` enumerates every edge-disjoint trail and clones each into `per_end`. Its only
+/// bound was "a trail may not reuse an edge" — which bounds DEPTH and says nothing about the
+/// NUMBER of trails, and that number is superexponential. The BFS selectors (`Any`/`All`) were
+/// always under the trail limit; `SHORTEST k` routes to `shortest_k_path` and so around it.
+///
+/// **TWENTY nodes and sixty edges exhausted a 4 GB cgroup cap.** It is not a scale problem — the
+/// same query OOMs at n=20 and n=120 alike — so this test is cheap: a tiny graph and a tiny limit
+/// fault in microseconds. The TS engine already raised here (`E_RESOURCE_EXHAUSTED`), so native
+/// was the one out of step, and the fix brings the two onto the same ceiling.
+#[test]
+fn a_shortest_k_over_an_unbounded_quantifier_faults_instead_of_exhausting_memory() {
+    use crate::store::ConfigId;
+
+    let mut b = crate::store::Builder::default();
+    for _ in 0..20u32 {
+        b.node(&["N"], &[]);
+    }
+    // Dense enough that the trail count explodes; small enough that the fault is instant.
+    let mut seed = 99u64;
+    for i in 0..20u32 {
+        for _ in 0..3 {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            b.edge(i, ((seed >> 33) as u32) % 20, "R");
+        }
+    }
+
+    let mut store = b.build();
+
+    store.set_limit(ConfigId::LimitsTrail, 5_000);
+
+    for q in [
+        "MATCH p = SHORTEST 2 (x:N)-[:R]->*(y:N) RETURN cardinality(p) AS n",
+        "MATCH p = SHORTEST 2 (x:N)-[:R]->+(y:N) RETURN cardinality(p) AS n",
+        "MATCH p = SHORTEST 3 (x:N)-[:R]->*(y:N) RETURN cardinality(p) AS n",
+    ] {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &store);
+        let err = crate::exec::try_run(&plan, &store).expect_err(&format!("{q} must fault"));
+
+        assert!(
+            err.contains("E_RESOURCE_EXHAUSTED"),
+            "{q}: want a resource fault, got {err:?}"
+        );
+    }
+
+    // AND THE SHAPES THAT MUST STILL WORK — the guard may only stop the runaway. Each of these
+    // enumerates few enough trails to finish, and a budget that refused them would be a
+    // regression dressed as a fix.
+    for q in [
+        "MATCH p = ANY SHORTEST (x:N)-[:R]->*(y:N) RETURN count(*) AS c",
+        "MATCH p = SHORTEST 1 (x:N)-[:R]->*(y:N) RETURN count(*) AS c",
+        "MATCH p = SHORTEST 2 (x:N)-[:R]->{1,3}(y:N) RETURN count(*) AS c",
+    ] {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &store);
+
+        crate::exec::try_run(&plan, &store).unwrap_or_else(|e| panic!("{q} must run, got {e}"));
+    }
+}

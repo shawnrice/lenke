@@ -1757,6 +1757,12 @@ pub(super) fn shortest_k_path(
         let mut node_stack = vec![start];
         let mut edge_stack: Vec<u32> = Vec::new();
         let mut used: Vec<u32> = Vec::new();
+        // The SAME ceiling the BFS selectors already honour (`limits.trail`), applied per source
+        // row exactly as the var-length guard is (item 373). Before this, `SHORTEST k` was the one
+        // traversal shape with no bound on how many trails it could materialize.
+        let budget = store.limits().trail;
+        let mut left = budget;
+
         collect_trails(
             store,
             start,
@@ -1770,7 +1776,16 @@ pub(super) fn shortest_k_path(
             &mut node_stack,
             &mut edge_stack,
             &mut per_end,
+            &mut left,
         );
+
+        if left == 0 {
+            return Err(format!(
+                "E_RESOURCE_EXHAUSTED: shortest-path trail enumeration exceeded the trail limit \
+                 of {budget} trails from a single source; add a tighter bound/`LIMIT`, make the \
+                 pattern more selective, or raise the limit (ConfigId::LimitsTrail)"
+            ));
+        }
         let mut end_ids: Vec<u32> = per_end.keys().copied().collect();
         end_ids.sort_unstable();
         for end in end_ids {
@@ -1864,6 +1879,19 @@ fn push_counts(
 /// length in `min..=max` into `per_end` keyed by its current endpoint, with the full
 /// node/edge chain. `used` holds the on-path edge ids; `node_stack`/`edge_stack` the
 /// chain source..`v`. See [`shortest_k_path`].
+///
+/// `budget` is the remaining number of trails this enumeration may record, and it is **load
+/// bearing, not defensive** (audit item 373). The recursion's only other bound is "a trail may
+/// not reuse an edge", i.e. depth <= edge count — which bounds DEPTH and says nothing about the
+/// NUMBER of trails, and the number of edge-disjoint trails is superexponential. With an
+/// unbounded quantifier (`*` / `+`) `max` is effectively the edge count, so a **20-node, 60-edge
+/// graph exhausted a 4 GB cap** and took the process down, every trail being `clone`d into
+/// `per_end` on the way.
+///
+/// The BFS selectors (`Any` / `All`) were always guarded by the trail limit; `SHORTEST k` routes
+/// to [`shortest_k_path`] and so around that guard entirely. Decrementing here puts the two on
+/// the same ceiling. The caller raises `E_RESOURCE_EXHAUSTED` when it comes back at zero, so the
+/// query FAULTS where it used to take the process with it.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn collect_trails(
     store: &Store,
@@ -1878,12 +1906,17 @@ pub(super) fn collect_trails(
     node_stack: &mut Vec<u32>,
     edge_stack: &mut Vec<u32>,
     per_end: &mut TrailsByEnd,
+    budget: &mut u64,
 ) {
+    if *budget == 0 {
+        return;
+    }
     if len >= min {
         per_end
             .entry(v)
             .or_default()
             .push((len, node_stack.clone(), edge_stack.clone()));
+        *budget -= 1;
     }
     if len == max {
         return;
@@ -1931,10 +1964,18 @@ pub(super) fn collect_trails(
             node_stack,
             edge_stack,
             per_end,
+            budget,
         );
         used.pop();
         node_stack.pop();
         edge_stack.pop();
+
+        // Unwind the whole DFS once the budget is gone rather than finishing this node's
+        // remaining neighbours: the caller is going to fault, and every further trail is work
+        // thrown away.
+        if *budget == 0 {
+            return;
+        }
     }
 }
 
