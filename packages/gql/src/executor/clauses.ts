@@ -1440,6 +1440,12 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
     return linear.groupedNodeAggregate(graph, params);
   }
 
+  // The same over a HOP, below the hop tally for the same reason: that one is more specific
+  // and cheaper for its own `count(*)` shape. See `detectGroupedHopAggregate`.
+  if (linear.groupedHopAggregate) {
+    return linear.groupedHopAggregate(graph, params);
+  }
+
   return undefined;
 };
 

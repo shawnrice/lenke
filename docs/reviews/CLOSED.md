@@ -4658,3 +4658,29 @@ appears exactly ONCE, after item 474's mutant landed on the node tally's identic
 
 **OPEN: the grouped-hop ARITY gap.** `b.age AS k, max(b.age)` 759 ms against the tally's ~335;
 `b.age, count(*), max(b.age)` 895. Native: 5.2 / 9.3 / 9.4.
+
+## 476 — a GROUPED hop aggregate beyond the count tally: CLOSED at 2.1-2.2x (TS)
+
+The last cell of the arity matrix. `detectGroupedHopCount` bumps an integer, so one `max` sent a
+grouped hop to the general path — a `Binding` per EDGE. `detectGroupedHopAggregate` walks where
+the tally's PER-EDGE arm walks (`candidateVertexSource` + `expand`), so first-seen group order is
+the same traversal; it deliberately does NOT reuse `detectHopProjection`, whose far-driven route
+may reorder (item 419).
+
+At 200,000 nodes / 1,000,000 edges: `max(b.age)` 759 -> 349 ms, `count(*), max(b.age)` 895 -> 399. The hop tally (335) and the node grouped rung (8.0) are claimed by other rungs and did not
+move.
+
+**Three mutants each exposed a VACUOUS fixture** — the keyed/non-keyed swap needs an inline
+constraint on an end; the nullish skip needs a far end LACKING the aggregated property; `:F`
+excluded nothing because every far end was an `F`. That last is CLAUDE.md's label rule biting for
+the second tick running.
+
+**One "survivor" was the mutation script's fault again**: the far-label line is identical in the
+tally, the ambiguity check added in 475 said `AMBIGUOUS (2 sites) — not applied`, and I re-ran it
+by hand without the check and believed the result. The check works; using it only sometimes does
+not.
+
+**OPEN, priced: admitting `direction === 'both'`.** The refusal is inherited from the tally where
+a bucket sum would double-count; this rung walks `expand`, which handles both directions, so the
+mutant survives with correct answers even on a fixture built to distinguish them. A free win for
+the undirected grouped hop, pending a measurement and an order check.

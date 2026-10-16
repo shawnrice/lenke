@@ -5745,6 +5745,7 @@ type GroupAcc =
       readonly out: string;
       readonly fold: AggFold;
       readonly argFn: CompiledExpr;
+      readonly argExpr: Expr;
     };
 
 /**
@@ -5756,7 +5757,9 @@ type GroupAcc =
 const groupedAccs = (
   items: readonly { expr: Expr }[],
   compiledItems: readonly CReturnItem[],
-  nodeVar: string,
+  // `null` accepts a key on EITHER end — the hop path checks which end itself, because the two
+  // ends are resolved from the pattern rather than given.
+  nodeVar: string | null,
 ): { accs: GroupAcc[]; keyExpr: Extract<Expr, { kind: 'prop' }>; keyCol: string } | null => {
   let keyExpr: Extract<Expr, { kind: 'prop' }> | undefined;
   let keyCol = '';
@@ -5767,7 +5770,11 @@ const groupedAccs = (
     const out = compiledItems[i].name;
 
     if (e.kind !== 'func' || !AGGREGATES.has(e.name)) {
-      if (keyExpr !== undefined || e.kind !== 'prop' || e.variable !== nodeVar) {
+      if (keyExpr !== undefined || e.kind !== 'prop') {
+        return null;
+      }
+
+      if (nodeVar !== null && e.variable !== nodeVar) {
         return null;
       }
 
@@ -5797,7 +5804,7 @@ const groupedAccs = (
       return null;
     }
 
-    accs.push({ kind: 'fold', out, fold, argFn: compileExpr(argExpr) });
+    accs.push({ kind: 'fold', out, fold, argFn: compileExpr(argExpr), argExpr });
   }
 
   return keyExpr === undefined ? null : { accs, keyExpr, keyCol };
@@ -5969,6 +5976,250 @@ export const detectGroupedNodeAggregate = (
         // The same nullish rule as every other fold in this file and in `stepFolded`.
         if (!isNullish(value)) {
           slot.state[i] = a.fold.step(slot.state[i], value);
+        }
+      }
+    }
+
+    return slots.map((slot) => {
+      const row: Row = {};
+
+      for (let i = 0; i < accs.length; i += 1) {
+        const a = accs[i];
+
+        if (i === keyAt) {
+          row[keyCol] = slot.key;
+        } else if (a.kind === 'rows') {
+          row[a.out] = slot.n;
+        } else {
+          row[a.out] = a.fold.finish(slot.state[i]);
+        }
+      }
+
+      return row;
+    });
+  };
+};
+
+/**
+ * The `(start)-[:T]->(far)` of a single plain, directed, untyped-variable hop, or `null`.
+ * Extracted from `detectGroupedHopAggregate` because the complexity cap was right: the shape
+ * checks and the projection checks are two jobs.
+ *
+ * `direction === 'both'` is refused here, inherited from the tally where a bucket SUM would
+ * double-count. Item 476 recorded that this rung's walk uses `expand`, which handles both
+ * directions, so the mutant admitting `both` SURVIVES with correct answers — the guard is
+ * conservative rather than load-bearing, and admitting it is a priced, unmeasured opening.
+ */
+const plainOneHop = (
+  pattern: PathPattern,
+): { start: NodePattern; rel: RelPattern; far: NodePattern } | null => {
+  if (pattern.pathVar !== undefined || pattern.segments.length !== 1) {
+    return null;
+  }
+
+  const [seg] = pattern.segments;
+  const { rel, node: far } = seg;
+
+  if (!plainRel(rel) || rel.direction === 'both' || rel.variable !== undefined) {
+    return null;
+  }
+
+  return relTypeNames(rel.label) === null ? null : { start: pattern.start, rel, far };
+};
+
+/**
+ * `MATCH (a:L)-[:T]->(b) RETURN <keyed.k> AS key, <aggregates…>` — a GROUPED aggregate over a
+ * hop that the `count(*)` tally cannot take.
+ *
+ * WHY THIS EXISTS. `detectGroupedHopCount` bumps an integer, so one `max` in the projection
+ * sends the whole query to the general path — a `Binding` per EDGE. Measured at 200,000 nodes
+ * over 1,000,000 edges (item 476): `b.age AS k, count(*)` 335 ms (the tally),
+ * `b.age AS k, max(b.age)` **759**, `b.age AS k, count(*), max(b.age)` **895**.
+ *
+ * It walks exactly where the tally's PER-EDGE arm walks — `candidateVertexSource` then
+ * `expand`, the general path's own adjacency iterator — so first-seen group order is the same
+ * traversal, which is the property the tally's header insists on and the one a reordering walk
+ * would break. The tally's degree shortcut is NOT reused: a degree is a count, and these
+ * aggregates need the edge's own endpoint.
+ *
+ * `sum`/`avg` are refused, as on every other walk-based rung (items 419, 472): the admission
+ * set is `foldFor`'s.
+ *
+ * The shape resolution below repeats the tally's rather than sharing it. That is a deliberate
+ * trade — `groupedProjection` is shared with the NODE tally, and widening it would change two
+ * hot detectors at once — but it means a guard fixed here must be fixed there too.
+ */
+export const detectGroupedHopAggregate = (
+  clauses: readonly Clause[],
+  compiled: readonly CClause[],
+): ((graph: Graph, params: Params) => Row[]) | null => {
+  if (clauses.length !== 2) {
+    return null;
+  }
+
+  const [m, ret] = clauses;
+  const [, cret] = compiled;
+
+  if (m.kind !== 'match' || m.optional || m.patterns.length !== 1) {
+    return null;
+  }
+
+  if (ret.kind !== 'return' || cret.kind !== 'return') {
+    return null;
+  }
+
+  const proj = cret.projection;
+
+  if (
+    proj.star ||
+    proj.distinct ||
+    proj.items.length < 2 ||
+    proj.having !== undefined ||
+    proj.orderBy.length > 0 ||
+    proj.skip !== undefined ||
+    proj.limit !== undefined
+  ) {
+    return null;
+  }
+
+  const hop = plainOneHop(m.patterns[0]);
+
+  if (hop === null) {
+    return null;
+  }
+
+  const { start, rel, far } = hop;
+
+  // One non-aggregate item, a property of one END; the rest aggregates over the KEYED end.
+  const picked = groupedAccs(ret.projection.items, proj.items, null);
+
+  if (picked === null) {
+    return null;
+  }
+
+  const { accs, keyExpr, keyCol } = picked;
+  const onStart = keyExpr.variable === start.variable;
+
+  if (!onStart && keyExpr.variable !== far.variable) {
+    return null;
+  }
+
+  const keyed = onStart ? start : far;
+  const other = onStart ? far : start;
+
+  // The non-keyed end must be plain, exactly as in the tally: this walk applies nothing to it
+  // beyond a far label.
+  if (!plainNode(other)) {
+    return null;
+  }
+
+  // Every aggregate argument must read the KEYED end only — it is the one node this walk binds.
+  // `refsOnlyVar` is shallow by design, so a compound argument declines rather than being
+  // analysed: this rung admits `max(b.k)`, not `max(b.k + c.k)`.
+  for (const a of accs) {
+    if (a.kind === 'fold' && !refsOnlyVar(a.argExpr, keyExpr.variable)) {
+      return null;
+    }
+  }
+
+  const inKeyed = inlineOf(keyed);
+
+  if (inKeyed === null) {
+    return null;
+  }
+
+  const preds: InlinePred[] = [];
+
+  if (inKeyed !== undefined) {
+    preds.push(inKeyed);
+  }
+
+  const { where } = m;
+
+  if (where !== undefined) {
+    for (const nameRead of freePredicateVars(where)) {
+      if (nameRead !== keyed.variable) {
+        return null;
+      }
+    }
+
+    preds.push({
+      pred: compilePredicate(undefined, where, keyed.variable),
+      bindVar: keyed.variable,
+    });
+  }
+
+  const gate = preds.reduceRight<InlineGate | undefined>(
+    (rest, ip) => (v, binding, params, graph) =>
+      inlineHolds(ip, v, binding, params, graph) &&
+      (rest === undefined || rest(v, binding, params, graph)),
+    undefined,
+  );
+  const startLabel = start.label;
+
+  if (startLabel !== undefined && startLabel.kind !== 'label') {
+    return null;
+  }
+
+  const { key } = keyExpr;
+  const keyVar = keyExpr.variable;
+  const keyAt = ret.projection.items.findIndex((i) => i.expr === keyExpr);
+  const farLabel = far.label;
+  const adjacency: Adjacency = {
+    direction: rel.direction,
+    ...(rel.label ? { label: rel.label } : {}),
+  };
+
+  return (graph, params) => {
+    const slots: { readonly key: unknown; n: number; readonly state: unknown[] }[] = [];
+    const bySeen = new Map<unknown, (typeof slots)[number]>();
+    const binding = new Map<string, unknown>();
+    const env = { binding, params, graph };
+    const farPb = vacuousLabel(graph, farLabel) ? undefined : farLabel;
+
+    for (const v of candidateVertexSource(graph, startLabel)) {
+      for (const step of expand(graph, v, adjacency)) {
+        const { node } = step;
+
+        if (farPb !== undefined && !matchesLabel(node, farPb)) {
+          continue;
+        }
+
+        const keyedNode = onStart ? v : node;
+
+        if (gate !== undefined && !gate(keyedNode, binding, params, graph)) {
+          continue;
+        }
+
+        const raw = propOf(keyedNode, key);
+        const id = raw === null || typeof raw !== 'object' ? raw : valueKey(raw);
+        let slot = bySeen.get(id);
+
+        if (slot === undefined) {
+          slot = {
+            key: raw,
+            n: 0,
+            state: accs.map((a) => (a.kind === 'fold' ? a.fold.init() : 0)),
+          };
+          bySeen.set(id, slot);
+          slots.push(slot);
+        }
+
+        slot.n += 1;
+        binding.set(keyVar, keyedNode);
+
+        for (let i = 0; i < accs.length; i += 1) {
+          const a = accs[i];
+
+          if (a.kind !== 'fold') {
+            continue;
+          }
+
+          const value = a.argFn(env);
+
+          if (!isNullish(value)) {
+            slot.state[i] = a.fold.step(slot.state[i], value);
+          }
         }
       }
     }
