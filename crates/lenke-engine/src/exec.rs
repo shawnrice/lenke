@@ -1586,6 +1586,10 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
                         // order-dependent, so it can fold the per-node multiplicities
                         // that `sum`/`avg` deliberately cannot (item 376).
                         .or_else(|| try_frontier_count_prop(input, keys, aggs, store))
+                        // TWO OR MORE aggregates over one frontier, which every entry above
+                        // refuses by arity (item 473). Disjoint from all of them for that
+                        // reason, so it cannot shadow a single-aggregate shape.
+                        .or_else(|| try_frontier_multi_agg(input, keys, aggs, store))
                         .or_else(|| try_filtered_scan_num_agg(input, keys, aggs, store))
                         // Its STRING twin. Beside it rather than anywhere else, for the reason
                         // 421 and 375 both record: these entries own the `Filter(Scan)` shape

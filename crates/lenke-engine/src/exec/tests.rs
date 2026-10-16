@@ -20525,3 +20525,114 @@ fn scan_multi_agg_specializations_match_single_aggregates() {
         "[Null, Null]"
     );
 }
+
+/// Two or more aggregates over one frontier (item 473) answer exactly what the single-aggregate
+/// frontier paths answer, and `sum`/`avg` are REFUSED there for item 376's reason.
+///
+/// The oracle is each aggregate asked ALONE, which takes a different route
+/// (`try_frontier_count`, `try_frontier_count_prop`, `try_frontier_prop_agg`), so a mix-up
+/// between the multiplicity-weighted accumulators and the unweighted ones is a disagreement
+/// between two routes. The fixture gives one far end TWO in-edges, which is what makes
+/// weighted and unweighted differ at all — without a repeated far end the distinction is
+/// vacuous and every mutant about it survives.
+#[test]
+fn frontier_multi_agg_matches_single_frontier_aggregates() {
+    let mut b = Builder::default();
+    // The START nodes carry their own numeric property, so an aggregate over SLOT 0 can be
+    // asked. Nothing else in the fixture needs it, and the mutant that dropped the
+    // "arg must be a property of the chain frontier" check SURVIVED without it — the arm then
+    // reads `a.k2`'s column while indexing by the FRONTIER's vertex ids.
+    let a1 = b.node(&["A"], &[("name", s("a1")), ("k2", n(100.0))]);
+    let a2 = b.node(&["A"], &[("name", s("a2")), ("k2", n(200.0))]);
+    let hi = b.node(&["B"], &[("k", n(9.0))]);
+    let lo = b.node(&["B"], &[("k", n(2.0))]);
+    let no = b.node(&["B"], &[("name", s("no k"))]);
+    // `hi` is reached TWICE, so `count(*)` is 4 while the distinct frontier holds 3 nodes.
+    b.edge(a1, hi, "E");
+    b.edge(a2, hi, "E");
+    b.edge(a1, lo, "E");
+    b.edge(a2, no, "E");
+    let st = b.build();
+    let vals = |q: &str| -> String {
+        format!(
+            "{:?}",
+            run(&crate::gql::parse(q).unwrap(), &st)
+                .rows
+                .iter()
+                .next()
+                .expect("one row")
+                .to_vec()
+        )
+    };
+    let one = |q: &str| -> String {
+        let r = run(&crate::gql::parse(q).unwrap(), &st);
+        let row = r.rows.iter().next().expect("one row");
+        format!("{:?}", row[0])
+    };
+    let hop = "MATCH (:A)-[:E]->(x)";
+
+    assert_eq!(
+        vals(&format!("{hop} RETURN count(*) AS c, max(x.k) AS m")),
+        format!(
+            "[{}, {}]",
+            one(&format!("{hop} RETURN count(*) AS c")),
+            one(&format!("{hop} RETURN max(x.k) AS m"))
+        )
+    );
+    assert_eq!(
+        vals(&format!("{hop} RETURN min(x.k) AS lo, max(x.k) AS hi")),
+        format!(
+            "[{}, {}]",
+            one(&format!("{hop} RETURN min(x.k) AS lo")),
+            one(&format!("{hop} RETURN max(x.k) AS hi"))
+        )
+    );
+    // `count(x.k)` is MULTIPLICITY-weighted (hi counts twice) while `max` is not, which is the
+    // distinction the repeated far end exists to expose: 3 against 4 rows.
+    assert_eq!(
+        vals(&format!(
+            "{hop} RETURN count(x.k) AS n, count(*) AS c, max(x.k) AS m"
+        )),
+        "[Num(3.0), Num(4.0), Num(9.0)]"
+    );
+    // `sum`/`avg` are refused on a frontier (item 376) and answered by the general path — they
+    // must still be RIGHT, which is what a wrongly-admitted weighted sum would break.
+    assert_eq!(
+        vals(&format!("{hop} RETURN sum(x.k) AS s, count(*) AS c")),
+        "[Num(20.0), Num(4.0)]"
+    );
+    // An aggregate over the START (slot 0) is not this arm's shape — it must DECLINE, and the
+    // general path's answer is the oracle. `a2` reaches one far end and `a1` two, so a
+    // frontier-indexed read of `k2` would not even be a plausible number.
+    assert_eq!(
+        vals(&format!("{hop} RETURN count(*) AS c, max(a.k2) AS m").replace("(:A)", "(a:A)")),
+        format!(
+            "[{}, {}]",
+            one(&format!("{hop} RETURN count(*) AS c")),
+            one("MATCH (a:A)-[:E]->(x) RETURN max(a.k2) AS m")
+        )
+    );
+
+    // An empty frontier: the counts are zero and the extrema are NULL, not a zero.
+    let mut b2 = Builder::default();
+    b2.node(&["A"], &[("name", s("alone"))]);
+    b2.node(&["B"], &[("k", n(1.0))]);
+    let st2 = b2.build();
+
+    assert_eq!(
+        format!(
+            "{:?}",
+            run(
+                &crate::gql::parse("MATCH (:A)-[:E]->(x) RETURN count(*) AS c, max(x.k) AS m")
+                    .unwrap(),
+                &st2
+            )
+            .rows
+            .iter()
+            .next()
+            .expect("one row")
+            .to_vec()
+        ),
+        "[Num(0.0), Null]"
+    );
+}

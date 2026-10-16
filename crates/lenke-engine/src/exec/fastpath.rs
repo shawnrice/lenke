@@ -2588,6 +2588,108 @@ pub(super) fn try_frontier_count_prop(
     Some(Batch::single(Col::Gen(vec![Value::Num(total)])))
 }
 
+/// TWO OR MORE scalar aggregates over one frontier — `count(*), max(b.k)` — folded in a single
+/// pass over the frontier's (vertex, multiplicity) map.
+///
+/// WHY THIS EXISTS. Every frontier aggregate path above refuses `aggs.len() != 1`, so a pair
+/// fell to the general aggregate, which materializes the whole wide batch. Measured at 200,000
+/// nodes over 1,000,000 edges (item 473): `max(b.age)` alone 2.4 ms, `count(*), max(b.age)`
+/// 6.4 and `min(b.age), max(b.age)` 8.1.
+///
+/// The admission set is `count`/`min`/`max`, which is item 376's rule and NOT an arbitrary
+/// subset: `count` folds the per-node multiplicities because it does not care about order, and
+/// `min`/`max` ignore multiplicity entirely. `sum`/`avg` would have to add a value `c` times in
+/// an order the general path does not promise, which is exactly what item 376 declined and
+/// item 419 records the cost of.
+pub(super) fn try_frontier_multi_agg(
+    input: &Plan,
+    keys: &[(String, Expr)],
+    aggs: &[Agg],
+    store: &Store,
+) -> Option<Batch> {
+    if !keys.is_empty() || aggs.len() < 2 || matches!(input, Plan::Scan { .. }) {
+        return None;
+    }
+    let width = chain_width(input)?;
+    // Per agg: what to accumulate. `Rows` is `count(*)`, which reads no column.
+    enum FSpec<'a> {
+        Rows,
+        CountProp(&'a Column),
+        MinMax(&'a [f64], &'a [bool], bool),
+    }
+    let mut specs: Vec<FSpec> = Vec::with_capacity(aggs.len());
+    for agg in aggs {
+        if agg.distinct {
+            return None;
+        }
+        match (agg.func, agg.arg.as_ref()) {
+            (AggFn::Count, None) => specs.push(FSpec::Rows),
+            (AggFn::Count | AggFn::Min | AggFn::Max, Some(Expr::Prop { slot, key })) => {
+                if *slot != width - 1 {
+                    return None; // arg must be a property of the chain frontier
+                }
+                if agg.func == AggFn::Count {
+                    specs.push(FSpec::CountProp(store.column(key)?));
+                } else {
+                    let Some(Column::Num { data, present, .. }) = store.column(key) else {
+                        return None;
+                    };
+                    specs.push(FSpec::MinMax(
+                        data.as_slice(),
+                        present.as_slice(),
+                        agg.func == AggFn::Min,
+                    ));
+                }
+            }
+            _ => return None, // sum/avg (item 376) and everything else
+        }
+    }
+    let counts = frontier_counts(input, store)?;
+    // (weighted total, best) per agg — one or the other is used, never both.
+    let mut acc: Vec<(f64, Option<f64>)> = vec![(0.0, None); specs.len()];
+    counts.for_each(|v, c| {
+        let i = v as usize;
+        for (k, spec) in specs.iter().enumerate() {
+            match spec {
+                FSpec::Rows => acc[k].0 += c,
+                FSpec::CountProp(col) => {
+                    if col.has_value_at(i) {
+                        acc[k].0 += c;
+                    }
+                }
+                FSpec::MinMax(data, present, want_min) => {
+                    if present[i] {
+                        let x = data[i];
+                        acc[k].1 = Some(match acc[k].1 {
+                            None => x,
+                            Some(b) => {
+                                let ord = value::cmp_num_total(x, b);
+                                if (*want_min && ord.is_lt()) || (!*want_min && ord.is_gt()) {
+                                    x
+                                } else {
+                                    b
+                                }
+                            }
+                        });
+                    }
+                }
+            }
+        }
+    });
+    let cols: Vec<Col> = specs
+        .iter()
+        .zip(&acc)
+        .map(|(spec, &(total, best))| {
+            let v = match spec {
+                FSpec::Rows | FSpec::CountProp(_) => Value::Num(total),
+                FSpec::MinMax(..) => best.map_or(Value::Null, Value::Num),
+            };
+            Col::Gen(vec![v])
+        })
+        .collect();
+    Some(Batch::of(cols))
+}
+
 /// `count(<property>)` over a bare `Scan` — a presence scan, with no column materialized.
 ///
 /// `count(expr)` counts NON-NULL values, so for a plain `Prop` it never needs the values at

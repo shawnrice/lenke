@@ -4589,3 +4589,27 @@ index on the far key, a selective inline constraint. **A run-time decline is rea
 building the graph that causes it.**
 
 **OPEN: native shows the same cliff** — `max(b.age)` 2.4 ms against 6.4 and 8.1 for the pairs.
+
+## 473 — two aggregates over one frontier (native): CLOSED at 2.5-2.8x. Item 472's twin, both halves now done
+
+Every frontier aggregate path opens with `aggs.len() != 1`, so a pair fell past all of them to
+the general aggregate. `try_frontier_multi_agg` folds them in ONE pass over the frontier's
+(vertex, multiplicity) map, admitted by `aggs.len() >= 2` so it is disjoint from every entry
+above it by ARITY rather than by placement.
+
+At 200,000 nodes / 1,000,000 edges: `count(*), max(b.age)` 6.4 -> 2.5, `min, max` 8.1 -> 2.9;
+single-aggregate controls flat (2.4, 0.5). Three rounds identical.
+
+**`sum`/`avg` are refused, per item 376**: `count` folds multiplicities because order does not
+matter to it and `min`/`max` ignore them, but a weighted `sum` adds a value `c` times in an
+order the general path does not promise. Same conclusion as item 472's TS half, reached from the
+other side.
+
+Mutation: six of seven. Three of the caught ones depend on ONE far end having two in-edges —
+without a repeated far end, weighted and unweighted agree and every multiplicity mutant
+survives.
+
+**Three ticks running, the survivor has been a guard whose shape the fixture never built**: a
+column that exists but holds nothing (471), a run-time decline (472), an argument from the wrong
+slot (473). A guard refuses a shape, so a fixture of admitted shapes cannot see it — the refused
+shape has to be written down.
