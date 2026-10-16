@@ -65,6 +65,32 @@ fn main() {
                 "MATCH (a:Univ) WHERE (CASE WHEN a.k > 5 THEN true ELSE false END) RETURN count(*) AS c",
             ),
             ("C two props", "MATCH (a:Univ) WHERE a.k > 5 AND a.k < 100 RETURN count(*) AS c"),
+            // Item 450: the CASE family, to find out WHICH part of a CASE predicate is the
+            // 14.5x — the `Expr::Case` machinery itself, or the shape of its arms. Same
+            // selectivity throughout, so only the expression differs.
+            (
+                "E case bool no else",
+                "MATCH (a:Univ) WHERE (CASE WHEN a.k > 5 THEN true END) RETURN count(*) AS c",
+            ),
+            (
+                "E case num = lit",
+                "MATCH (a:Univ) WHERE (CASE WHEN a.k > 5 THEN 1 ELSE 0 END) = 1 RETURN count(*) AS c",
+            ),
+            (
+                "E case two whens",
+                "MATCH (a:Univ) WHERE (CASE WHEN a.k > 5 THEN true WHEN a.k < 0 THEN true ELSE false END) RETURN count(*) AS c",
+            ),
+            (
+                "E case prop arms",
+                "MATCH (a:Univ) WHERE (CASE WHEN a.k > 5 THEN a.k ELSE 0 END) > 5 RETURN count(*) AS c",
+            ),
+            // The equivalent written WITHOUT a CASE, which is the floor any CASE rewrite could
+            // reach. In a FILTER these mean the same thing: a CASE whose WHEN is UNKNOWN takes
+            // the ELSE and yields false, and false and UNKNOWN both drop the row.
+            (
+                "E bare cond",
+                "MATCH (a:Univ) WHERE a.k > 5 RETURN count(*) AS c",
+            ),
             // CONTROLS: no predicate at all, and a string comparison.
             ("D no predicate", "MATCH (a:Univ) RETURN count(*) AS c"),
             ("D string =", "MATCH (a:Univ) WHERE a.s = 'c42' RETURN count(*) AS c"),

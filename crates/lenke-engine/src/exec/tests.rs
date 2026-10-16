@@ -19157,3 +19157,187 @@ fn fused_scalar_call_filter_declines_an_absent_column() {
         1.0
     );
 }
+
+/// Item 450: `try_filter_keep_case` unwraps a boolean `CASE` used AS a filter predicate and
+/// delegates to its condition — `CASE WHEN a.k > 5 THEN true ELSE false END` went from 26.676 ms
+/// to 1.072 at 1,000,000 nodes (24.9x), landing below the plain comparison's own cost.
+///
+/// The ORACLE is the same `CASE` compared to `true`: `(<case>) = true`. That makes the predicate
+/// an `Expr::Compare` whose side is an `Expr::Case`, which no fused arm matches, so `eval`
+/// answers — and `x = true` keeps exactly the rows `x` keeps, since a filter keeps only TRUE and
+/// `true = true` is TRUE while `false = true` and `NULL = true` are FALSE and NULL.
+///
+/// The oracle is only valid while the `CASE` result is BOOLEAN-or-NULL, which is why the grid's
+/// arms are exactly those. Written first with numeric arms too, it reported a divergence on
+/// `CASE WHEN a.k > 5 THEN true ELSE 0 END` — the bare form RAISES (0 is a non-boolean in a
+/// boolean position) while `(…) = true` answers 3 — and both are right: they are different
+/// queries, because `0 = true` is FALSE rather than an error (checked in both engines). **An
+/// oracle spelling is part of the claim, not a neutral wrapper**, which is item 432's lesson
+/// about oracles being engine-specific arriving from the other direction. The non-boolean arms
+/// are pinned directly in `fused_case_filter_keeps_its_restrictions` instead.
+///
+/// The grid is still mostly DECLINES: of the three `THEN` arms only `true` is admissible and of
+/// the four `ELSE` arms only three are. That is the point — a fast path that answers where it
+/// should decline is the failure this grid looks for, and `ELSE true` (which keeps the rows the
+/// condition DROPS) is the form that would expose a collapse applied too eagerly.
+#[test]
+fn fused_case_filter_agrees_with_the_general_path() {
+    use crate::value::Value;
+
+    let store = {
+        let mut b = crate::store::Builder::default();
+
+        for v in [-7.5f64, -1.0, 0.0, 1.0, 2.5, 6.0, 7.0, 11.0] {
+            b.node(
+                &["N"],
+                &[("k", Value::Num(v)), ("s", Value::Str("yes".into()))],
+            );
+        }
+        // No `k` and no `s`, so every condition has an UNKNOWN row — which is the row the
+        // three-valued collapse turns on. Without it, `ELSE false` and `ELSE true` would agree
+        // on this fixture and the decline would be untested.
+        b.node(&["N"], &[]);
+        b.build()
+    };
+    let count = |q: &str| -> Result<f64, String> {
+        let raw = crate::gql::parse(q)?;
+        let plan = crate::opt::optimize_indexed(raw, &store);
+        let out = crate::exec::try_run(&plan, &store).map_err(|e| e.to_string())?;
+        match out.rows.iter().next().and_then(|r| r.first()) {
+            Some(Value::Num(n)) => Ok(*n),
+            other => Err(format!("want a number, got {other:?}")),
+        }
+    };
+    let mut checked = 0;
+    // Conditions spanning every fused arm this delegates into: the plain comparison, item 438's
+    // arithmetic, item 449's call arms, and a string compare — so the composition is covered,
+    // not just the unwrapping.
+    let conds = [
+        "a.k > 5",
+        "a.k < 5",
+        "a.k = 1",
+        "a.k <> 1",
+        "a.k + 1 > 6",
+        "abs(a.k) > 5",
+        "coalesce(a.k, 99) > 5",
+        "coalesce(a.k, 0) > 5",
+        "a.s = 'yes'",
+        "a.missing > 5",
+    ];
+
+    for cond in conds {
+        for then in ["true", "false", "null"] {
+            for els in ["", " ELSE false", " ELSE true", " ELSE null"] {
+                let case = format!("CASE WHEN {cond} THEN {then}{els} END");
+                let fast = format!("MATCH (a:N) WHERE ({case}) RETURN count(*) AS c");
+                let slow = format!("MATCH (a:N) WHERE ({case}) = true RETURN count(*) AS c");
+
+                match (count(&fast), count(&slow)) {
+                    (Ok(f), Ok(s)) => assert!(
+                        (f - s).abs() < 1e-9,
+                        "{fast}: fused gave {f}, general gave {s}"
+                    ),
+                    // Both throwing is agreement — a non-boolean `CASE` result in a boolean
+                    // position is a data exception on either path.
+                    (Err(_), Err(_)) => {}
+                    (f, s) => panic!("{fast}: fused {f:?}, general {s:?}"),
+                }
+
+                checked += 1;
+            }
+        }
+    }
+
+    assert_eq!(checked, 10 * 3 * 4, "form count drifted: {checked}");
+}
+
+/// Item 450's restriction, pinned against the ANSWER rather than an oracle spelling.
+///
+/// The collapse is sound only because a filter drops FALSE and UNKNOWN identically. Each case
+/// here is one where that stops being true, and an over-eager unwrap would get it wrong in a
+/// specific, checkable way.
+#[test]
+fn fused_case_filter_keeps_its_restrictions() {
+    use crate::value::Value;
+
+    let store = {
+        let mut b = crate::store::Builder::default();
+
+        for v in [1.0f64, 7.0] {
+            b.node(&["N"], &[("k", Value::Num(v))]);
+        }
+        // The UNKNOWN row.
+        b.node(&["N"], &[]);
+        b.build()
+    };
+    let count = |q: &str| -> f64 {
+        let raw = crate::gql::parse(q).expect("parse");
+        let plan = crate::opt::optimize_indexed(raw, &store);
+        let out = crate::exec::try_run(&plan, &store).expect("run");
+        match out.rows.iter().next().and_then(|r| r.first()) {
+            Some(Value::Num(n)) => *n,
+            other => panic!("want a number, got {other:?}"),
+        }
+    };
+
+    // The admitted form: only `k = 7` passes `> 5`.
+    assert_eq!(
+        count(
+            "MATCH (a:N) WHERE (CASE WHEN a.k > 5 THEN true ELSE false END) RETURN count(*) AS c"
+        ),
+        1.0
+    );
+    assert_eq!(
+        count("MATCH (a:N) WHERE (CASE WHEN a.k > 5 THEN true END) RETURN count(*) AS c"),
+        1.0
+    );
+    // `ELSE true` keeps the rows the condition DROPS — both the FALSE row and the UNKNOWN one —
+    // so it is the complement, not the condition. Unwrapping it would answer 1.
+    assert_eq!(
+        count("MATCH (a:N) WHERE (CASE WHEN a.k > 5 THEN true ELSE true END) RETURN count(*) AS c"),
+        3.0
+    );
+    // `THEN false ELSE true` is the complement too, and for the same reason: UNKNOWN takes the
+    // ELSE. Unwrapping would answer 1 instead of 2.
+    assert_eq!(
+        count(
+            "MATCH (a:N) WHERE (CASE WHEN a.k > 5 THEN false ELSE true END) RETURN count(*) AS c"
+        ),
+        2.0
+    );
+    // A non-boolean THEN in a boolean position is a data exception, not a truthy value.
+    assert!(
+        {
+            let raw = crate::gql::parse(
+                "MATCH (a:N) WHERE (CASE WHEN a.k > 5 THEN 1 ELSE 0 END) RETURN count(*) AS c",
+            )
+            .expect("parse");
+            let plan = crate::opt::optimize_indexed(raw, &store);
+            crate::exec::try_run(&plan, &store).is_err()
+        },
+        "a numeric CASE result in a boolean position must raise"
+    );
+    // TWO branches are not delegated (the keep-list would be a sorted merge of two), and the
+    // general path still answers correctly: `k = 7` takes the first, `k = 1` takes the second.
+    assert_eq!(count("MATCH (a:N) WHERE (CASE WHEN a.k > 5 THEN true WHEN a.k < 5 THEN true ELSE false END) RETURN count(*) AS c"), 2.0);
+    // A NON-BOOLEAN arm reached by some row raises, and the same `CASE` compared to `true` does
+    // NOT — these are different queries, which is why the differential grid above cannot use
+    // `= true` as an oracle for them. `0 = true` is FALSE, not an error, so the comparison form
+    // answers the 1 row whose condition held.
+    assert!(
+        {
+            let raw = crate::gql::parse(
+                "MATCH (a:N) WHERE (CASE WHEN a.k > 5 THEN true ELSE 0 END) RETURN count(*) AS c",
+            )
+            .expect("parse");
+            let plan = crate::opt::optimize_indexed(raw, &store);
+            crate::exec::try_run(&plan, &store).is_err()
+        },
+        "a numeric ELSE reached by a row must raise in a boolean position"
+    );
+    assert_eq!(count("MATCH (a:N) WHERE (CASE WHEN a.k > 5 THEN true ELSE 0 END) = true RETURN count(*) AS c"), 1.0);
+    // And a non-boolean arm NO row reaches does not raise, which is the lazy-evaluation
+    // behaviour the eager path falls back to — so the restriction is about reachability, not
+    // about the literal appearing.
+    assert_eq!(count("MATCH (a:N) WHERE (CASE WHEN a.k > 5 THEN true WHEN false THEN 0 ELSE false END) RETURN count(*) AS c"), 1.0);
+}

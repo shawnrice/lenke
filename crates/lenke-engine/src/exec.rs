@@ -6213,7 +6213,83 @@ fn try_filter_keep_call(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec
     Some(keep)
 }
 
+/// A boolean `CASE` used AS a filter predicate keeps exactly the rows its condition keeps, so
+/// this arm DELEGATES rather than evaluating anything itself (item 450).
+///
+/// `CASE WHEN c THEN true ELSE false END` in a FILTER is `c`:
+///
+/// ```text
+///   c TRUE     -> the THEN arm -> true   -> kept
+///   c FALSE    -> the ELSE arm -> false  -> dropped
+///   c UNKNOWN  -> the ELSE arm -> false  -> dropped
+/// ```
+///
+/// and a filter drops FALSE and UNKNOWN identically, which is what makes the three-valued
+/// collapse sound HERE and nowhere else — in a PROJECTION the same `CASE` is observably
+/// different from `c`, since it yields `false` where `c` yields NULL. A missing `ELSE` (NULL)
+/// and `ELSE false` behave the same way for the same reason.
+///
+/// Item 437 named CASE as one of three expression leads at 14.5x a plain comparison, and item
+/// 450 measured the whole family before touching it:
+///
+/// ```text
+///                                                200,000    1,000,000
+///   a.k > 5                                      0.398 ms    1.672 ms
+///   CASE WHEN a.k > 5 THEN true ELSE false END   5.196      26.676
+///   CASE WHEN a.k > 5 THEN true END              5.360      27.795
+///   CASE WHEN a.k > 5 THEN 1 ELSE 0 END = 1      6.023      34.135
+///   CASE WHEN a.k>5 THEN true WHEN a.k<0 …       5.432      29.617
+///   CASE WHEN a.k > 5 THEN a.k ELSE 0 END > 5    5.566      34.234
+/// ```
+///
+/// Every shape costs the same to within a third, and a table whose rows all agree is measuring
+/// something they share (item 442). What they share is `Expr::Case`'s output: its eager path
+/// collects `Col::Gen` — N boxed `Value`s — which the filter then re-interprets per row. The
+/// ARMS are irrelevant, so an arm-by-arm fusion would have been the wrong shape of fix.
+///
+/// Delegation is what makes this general: the condition goes back through `try_filter_keep`, so
+/// `CASE WHEN coalesce(a.k, 0) > 5 THEN true END` picks up item 449's arm and
+/// `CASE WHEN a.k * 2 > 10 THEN true END` picks up item 438's, with no new code per condition
+/// form. And it is exactly as conservative as those arms: when none of them can answer the
+/// condition, this declines and the general path evaluates the whole `CASE` as before — which is
+/// also what preserves every raise, since a condition that would fault is one no arm can prove.
+///
+/// Restricted to ONE branch. A multi-branch all-`true` `CASE` is the union of its conditions'
+/// keep-lists, which is a sorted merge rather than a delegation, and `CASE … THEN false ELSE
+/// true END` is the complement — both are correct and neither is written, so both stay at the
+/// general path's cost (recorded in `CLOSED.md`).
+fn try_filter_keep_case(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec<usize>> {
+    let Expr::Case {
+        branches,
+        otherwise,
+    } = pred
+    else {
+        return None;
+    };
+    let [(cond, then)] = branches.as_slice() else {
+        return None; // see the restriction note above
+    };
+    // The THEN must be literal TRUE: anything else makes the collapse to `c` unsound (a
+    // non-boolean THEN is a value the filter would have to test, and `THEN false` inverts).
+    if !matches!(then, Expr::Lit(Value::Bool(true))) {
+        return None;
+    }
+    // The ELSE must be absent (NULL), literal NULL, or literal FALSE — the three spellings a
+    // filter drops. `ELSE true` would keep the rows `c` drops, which is the complement.
+    match otherwise.as_deref() {
+        None | Some(Expr::Lit(Value::Null)) | Some(Expr::Lit(Value::Bool(false))) => {}
+        _ => return None,
+    }
+
+    try_filter_keep(cond, store, batch)
+}
+
 fn try_filter_keep(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec<usize>> {
+    // A boolean `CASE` wrapping a predicate this function can already answer (item 450). First,
+    // because it is a pure rewrite: it adds no evaluation of its own, it just unwraps.
+    if let Some(keep) = try_filter_keep_case(pred, store, batch) {
+        return Some(keep);
+    }
     // A predicate that is a pure function of ONE dict column: evaluate per distinct value
     // (≤ dict size) and keep by code, instead of a boxed eval per row.
     if let Some(keep) = try_filter_keep_dict(pred, store, batch) {

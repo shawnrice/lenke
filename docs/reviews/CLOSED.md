@@ -3968,3 +3968,35 @@ Three things to not re-derive:
 
 Also: `cargo clippy` from the repo root WITHOUT `--manifest-path` exits 101 with "could not find
 Cargo.toml" — there is no root workspace. That reads like a lint failure and is not one.
+
+## 450 — a boolean `CASE` in a filter: CLOSED at 24.9x. Item 437's three leads are all closed
+
+`try_filter_keep_case` UNWRAPS `CASE WHEN c THEN true [ELSE false|null] END` in a filter and
+delegates the condition back to `try_filter_keep`, evaluating nothing itself. 26.676 -> 1.072 ms at
+1,000,000 nodes (**24.9x**); the no-`ELSE` spelling 27.795 -> 1.077 (**25.8x**). Three uncovered
+CASE shapes were the controls and stayed flat.
+
+Four things to not re-derive:
+
+- **The ARMS are irrelevant; `Expr::Case`'s OUTPUT is the cost.** Five CASE shapes measured within
+  a third of each other (5.2-6.0 ms at 200k), which is item 442's tell for a shared cause: the
+  eager path collects `Col::Gen`, N boxed `Value`s. An arm-by-arm fusion like items 438/449 would
+  have been the wrong shape of fix, and measuring the family first is what said so.
+- **The collapse is sound in a FILTER and nowhere else**, because a filter drops FALSE and UNKNOWN
+  identically. In a PROJECTION the same `CASE` yields `false` where `c` yields NULL.
+- **`ELSE true` and `THEN false` are the COMPLEMENT, not the condition** — UNKNOWN takes the ELSE.
+  Both mutants admitting them are caught.
+- **An oracle spelling is part of the claim.** `(<case>) = true` is NOT a neutral wrapper: for a
+  non-boolean arm the bare form RAISES while the comparison answers, because `0 = true` is FALSE
+  rather than an error. Item 432's lesson from the other direction.
+
+STILL OPEN, both measured and both with instruments:
+
+- **The bare predicate is 1.4x SLOWER than the same predicate wrapped in a CASE** — 0.30 against
+  0.21 ms, isolated one case per process over three rounds (`cargo run --example caseinv_450 --
+<bare|case|casenoelse|control>`). An equivalent-spelling inversion: the bare form takes a route
+  costing more than the keep pass the CASE delegates into. The shared-process table said 1.6x and
+  isolation said 1.4x, which is why item 274's rule applies to inversions too.
+- **Multi-branch and complement CASE shapes stay at the general path's cost** (~29-34 ms at 1M). A
+  multi-branch all-`true` CASE is the sorted MERGE of its conditions' keep-lists and
+  `THEN false ELSE true` is the complement; both are correct and neither is written.
