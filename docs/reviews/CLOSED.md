@@ -4801,3 +4801,30 @@ from the single-field vacuity of 475-477.
 
 One survivor is recorded, not chased: dropping the fallback makes the rung DECLINE, which
 answers identically. A perf mutant, covered by the measurement.
+
+## 482 — the undirected `count(*)`: CLOSED at 1352 ms -> 0.0
+
+The largest `direction === 'both'` guard left. Over vacuous endpoints an undirected hop count is
+`2 * |E_t| - loops(t)`: every edge is met from both ends except a SELF-LOOP, which `expand`
+yields once. `loops(t)` is new — `selfLoopsByLabel` beside item 478's `selfLoopCount`.
+
+**The per-type split is the point**: 478 gated on `selfLoopCount === 0` and the probe's own
+fixture (50 loops) disarmed it. A graph-wide flag answers "is any loop anywhere", which is
+almost never the question.
+
+A `CountOf` closure cannot decline once built, so `both` gets a COMPLETE arm: O(1) over vacuous
+endpoints, one pass over the type's edges otherwise (each end tested against the two labels,
+multi-type edges deduped). Filtered and inline-constrained undirected counts are refused at
+BUILD time, where declining is still possible. Directed twin flat at 0.0; the other-rung
+undirected count flat at ~780.
+
+**Two mutants survived, both harness faults, both "an oracle that agrees with the mutant":**
+
+- **A mutant in `@lenke/core` is invisible to a `packages/gql` test** — those import the BUILT
+  dist and the loop never rebuilt it. Same trap as `fuzzers-read-built-dists`, one package over.
+  Counters now have assertions in a test that imports `./Graph.js` directly.
+- **`WHERE true` cannot tell an IGNORED predicate from an applied one**, so the mutant admitting
+  a filtered undirected count answered correctly everywhere. Selective filters kill it.
+
+**OPEN, priced:** the undirected TWO-HOP count, 7483 ms against the directed 78 — a different
+builder and a much larger row count.

@@ -716,6 +716,19 @@ export class Graph {
    */
   selfLoopCount = 0;
 
+  /**
+   * Self-loops per edge TYPE — the same tally as `selfLoopCount`, split by label.
+   *
+   * An UNDIRECTED hop count over vacuous endpoints is `2 * |edges of type T| - loops(T)`: every
+   * edge is met from both ends, except a loop, which `expand` yields once. Without the per-type
+   * split the O(1) count could only run on a graph with NO loops at all — and the ordinary
+   * fixture has 50 (audit item 482).
+   *
+   * Absent means zero; the entry is deleted when it returns to zero, so an ordinary graph keeps
+   * an empty map.
+   */
+  selfLoopsByLabel: Map<string, number> = new Map();
+
   edgesByLabel: Map<string, Set<Edge>>;
   edgesFromByLabel: Map<string, Map<string, Set<Edge>>>;
   edgesToByLabel: Map<string, Map<string, Set<Edge>>>;
@@ -1537,6 +1550,7 @@ export class Graph {
     this.elementProperties = new Map();
     this.multiTypeEdgeCount = 0;
     this.selfLoopCount = 0;
+    this.selfLoopsByLabel.clear();
 
     // Keep declared indexes but drop their contents — `truncate` empties the
     // graph, not its schema.
@@ -1989,6 +2003,10 @@ export class Graph {
 
     if (edge.from === edge.to) {
       this.selfLoopCount += 1;
+
+      for (const label of edgeLabels) {
+        this.selfLoopsByLabel.set(label, (this.selfLoopsByLabel.get(label) ?? 0) + 1);
+      }
     }
 
     this.edgePropertyIndex.add(edge, edge.properties);
@@ -2043,6 +2061,16 @@ export class Graph {
 
     if (edge.from === edge.to) {
       this.selfLoopCount -= 1;
+
+      for (const label of edge.labels) {
+        const n = (this.selfLoopsByLabel.get(label) ?? 0) - 1;
+
+        if (n > 0) {
+          this.selfLoopsByLabel.set(label, n);
+        } else {
+          this.selfLoopsByLabel.delete(label);
+        }
+      }
     }
 
     for (const label of edge.labels) {

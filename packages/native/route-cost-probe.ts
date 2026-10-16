@@ -202,6 +202,14 @@ const queries: Record<string, string> = {
   // START-driven — the fair control for an undirected walk, which cannot be far-driven.
   projdirhalf: 'MATCH (:Half)-[:KNOWS]->(b) RETURN b.age AS k',
   projbothhalf: 'MATCH (:Half)-[:KNOWS]-(b) RETURN b.age AS k',
+  // Item 482: what else does a `both` guard still refuse? The plain count, the DISTINCT
+  // projection, and the two-hop shapes.
+  cntstarboth: 'MATCH (:Person)-[:KNOWS]-(b) RETURN count(*) AS c',
+  cntstardir: 'MATCH (:Person)-[:KNOWS]->(b) RETURN count(*) AS c',
+  distboth: 'MATCH (:Person)-[:KNOWS]-(b) RETURN DISTINCT b.age AS k',
+  distdir: 'MATCH (:Person)-[:KNOWS]->(b) RETURN DISTINCT b.age AS k',
+  twohopboth: 'MATCH (:Person)-[:KNOWS]-(b)-[:KNOWS]-(c) RETURN count(*) AS c',
+  twohopdir: 'MATCH (:Person)-[:KNOWS]->(b)-[:KNOWS]->(c) RETURN count(*) AS c',
   hopdirmulti: 'MATCH (:Person)-[:KNOWS]->(b) RETURN count(*) AS c, max(b.age) AS m',
 };
 const key = process.env.PCASE ?? 'node';

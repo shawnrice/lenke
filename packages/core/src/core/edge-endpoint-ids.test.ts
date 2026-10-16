@@ -174,6 +174,31 @@ describe('selfLoopCount (audit item 478)', () => {
     expect(g.selfLoopCount).toBe(0);
   });
 
+  test('selfLoopsByLabel tallies per TYPE, and empties as loops go', () => {
+    const g = new Graph();
+    const a = g.addVertex({ labels: ['A'], properties: {} });
+    const b = g.addVertex({ labels: ['A'], properties: {} });
+
+    // A plain edge contributes nothing; the map stays empty on an ordinary graph.
+    g.addEdge({ from: a, to: b, labels: ['T'], properties: {} });
+    expect(g.selfLoopsByLabel.size).toBe(0);
+
+    const loop = g.addEdge({ from: a, to: a, labels: ['T'], properties: {} });
+
+    expect(g.selfLoopsByLabel.get('T')).toBe(1);
+    // A MULTI-TYPE loop counts under each of its types.
+    g.addEdge({ from: b, to: b, labels: ['T', 'S'], properties: {} });
+    expect(g.selfLoopsByLabel.get('T')).toBe(2);
+    expect(g.selfLoopsByLabel.get('S')).toBe(1);
+
+    // Removing one decrements its types, and an entry that reaches zero is DELETED rather than
+    // left behind — an undirected count reads this map, so a stale 1 is a wrong answer.
+    g.removeEdge(loop);
+    expect(g.selfLoopsByLabel.get('T')).toBe(1);
+    g.truncate();
+    expect(g.selfLoopsByLabel.size).toBe(0);
+  });
+
   test('removing the VERTEX cascades to its loop', () => {
     const g = new Graph();
     const a = g.addVertex({ labels: ['A'], properties: {} });

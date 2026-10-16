@@ -97,6 +97,80 @@ export const plainRel = (r: RelPattern): boolean =>
 type CountFn = (graph: Graph, params: Params) => Row;
 
 /**
+ * `MATCH (:A)-[:T]-(b:B) RETURN count(*)` — an UNDIRECTED hop count.
+ *
+ * Every edge is met from BOTH ends, so it contributes a row per endpoint that fits the pattern;
+ * a SELF-LOOP contributes one, because `expand` yields it once (it is indexed under both
+ * adjacency maps and the in-pass skips it).
+ *
+ * Two routes, chosen per call:
+ *
+ *   - VACUOUS endpoints: `2 * |E_t| - loops(t)` per type, straight from the bucket size and
+ *     `selfLoopsByLabel`. O(1), which is what the directed spelling has always had — the
+ *     undirected one cost 1352 ms against its 0.0 at 200,000 nodes / 1,000,000 edges.
+ *   - otherwise: one pass over the type's edges, testing each end against the two labels. O(E),
+ *     still far below the general path's binding-and-row per edge.
+ *
+ * The per-type loop tally is what lets the O(1) route run on an ordinary graph: item 478 gated
+ * an undirected fast path on `selfLoopCount === 0` and the probe's own fixture (50 loops)
+ * disarmed it.
+ */
+const undirectedHopCount = (
+  graph: Graph,
+  types: readonly string[] | undefined,
+  aLabel: LabelExpr | undefined,
+  bLabel: LabelExpr | undefined,
+): number => {
+  const a = vacuousLabel(graph, aLabel) ? undefined : aLabel;
+  const b = vacuousLabel(graph, bLabel) ? undefined : bLabel;
+  // Summing per-type buckets is sound only when no edge sits in two of them — the same
+  // condition the directed arm uses, and one type can never collide with itself.
+  const perType = types !== undefined && (types.length === 1 || graph.multiTypeEdgeCount === 0);
+
+  if (a === undefined && b === undefined && perType) {
+    return types.reduce(
+      (n, t) =>
+        n + 2 * (graph.edgesByLabel.get(t)?.size ?? 0) - (graph.selfLoopsByLabel.get(t) ?? 0),
+      0,
+    );
+  }
+
+  // One pass over the candidate edges. `edgesByLabel` is per type, so a multi-type edge is
+  // deduped through a `Set` exactly as the directed tally does it.
+  const seen = perType || types === undefined ? undefined : new Set<Edge>();
+  const buckets =
+    types === undefined
+      ? [...graph.edgesByLabel.values()]
+      : types.map((t) => graph.edgesByLabel.get(t)).filter((x): x is Set<Edge> => x !== undefined);
+  let n = 0;
+
+  for (const bucket of buckets) {
+    for (const edge of bucket) {
+      if (seen !== undefined) {
+        if (seen.has(edge)) {
+          continue;
+        }
+
+        seen.add(edge);
+      }
+
+      const { from, to } = edge;
+
+      if (matchesLabel(from, a) && matchesLabel(to, b)) {
+        n += 1;
+      }
+
+      // The reverse orientation, which a self-loop does NOT get: `expand` emits it once.
+      if (from !== to && matchesLabel(to, a) && matchesLabel(from, b)) {
+        n += 1;
+      }
+    }
+  }
+
+  return n;
+};
+
+/**
  * A count builder is generic in what it WRAPS its number into, so the same builder
  * serves two callers: the single-pattern shortcut wraps the number into the result
  * `Row`, and the product shortcut (`detectProductCount`) takes the number itself to
@@ -1076,7 +1150,17 @@ const buildOneHopCount = <T>(
   // is carried in `inFar` instead of declining the shortcut (item 124). The caller
   // only supplies it after checking the constraint is CLOSED, and the rel must
   // still be plain — a rel predicate would need its own treatment.
-  if (!plainRel(rel) || rel.direction === 'both') {
+  // `both` is admitted only UNFILTERED and with no inline endpoint constraint — those arms all
+  // walk with a captured `out: boolean`. The undirected arm below answers every label case
+  // itself, because a `CountOf` closure has no way to decline once it is built (item 482).
+  if (!plainRel(rel)) {
+    return null;
+  }
+
+  if (
+    rel.direction === 'both' &&
+    (pred !== undefined || inNear !== undefined || inFar !== undefined)
+  ) {
     return null;
   }
 
@@ -1096,6 +1180,10 @@ const buildOneHopCount = <T>(
   const aLabel = start.label;
   const bLabel = node.label;
   const out = rel.direction === 'out';
+
+  if (rel.direction === 'both') {
+    return (graph) => rowOf(undirectedHopCount(graph, types, aLabel, bLabel));
+  }
 
   return (graph, params) => {
     // A clause `WHERE` on the endpoints: walk the edge bucket and tally, rather than build a
