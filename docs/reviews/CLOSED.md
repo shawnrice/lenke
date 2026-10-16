@@ -2832,9 +2832,22 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   control now runs at 143, and its 24.5 ms hand-written floor measures 130 ms here. Also refuted in
   passing: the 2.2x "projecting the start costs more than the far end" asymmetry is item 167
   restated — the far-side control's `:P` is VACUOUS, which routes it to the far-driven walk, and
-  with a non-vacuous start label the asymmetry REVERSES (near is 1.3-1.4x better). `sum`/`avg` stay
-  open as their own item for the precedence reason below.
-- **The original entry, for the record: the TS hop aggregate is ~430 ms against a 14.6 ms projection
+  with a non-vacuous start label the asymmetry REVERSES (near is 1.3-1.4x better).
+- **The TS hop `sum`/`avg` is REFUTED, with a value difference, not deferred (419).** 377 deferred
+  them for the `temporalSum`-before-array PRECEDENCE; that is real and is not the blocker. The
+  fused walk's far-driven route visits rows in a DIFFERENT order than the general path — measured,
+  `[1,1,3,3,5,6,7]` against `[5,3,1,6,7,3,1]` — and a float sum folded in each order returns
+  `2.0000000000000000e16` against the engine's `2.0000000000000004e16`. This is item 376's native
+  refutation (`try_frontier_prop_agg`: "MIN/MAX only ... SUM/AVG would change the summation order")
+  holding on the other engine. The start-driven route's order IS identical, so `sum` would be
+  admissible there — declined anyway, because the route is picked at RUN time by `vacuousLabel` and
+  testing vacuity from outside to decline is item 411's trap (a run-time decision re-estimated
+  elsewhere), and because that order equality is observed, not promised. **The rule: an
+  order-dependent aggregate cannot take a fast path that may reorder rows, and every fast path in
+  this family may.** 418 is safe by construction rather than by careful guards — its admission set
+  is `foldFor`'s, which returns a fold only for `count`/`min`/`max`.
+- **The original entry, for the record. Its deferral of `sum`/`avg` to a precedence question is NOT
+  why they are out — see 419 above: the TS hop aggregate is ~430 ms against a 14.6 ms projection
   of the same 800,000 rows (377).** NOT the aggregate machinery — `sum` improved by the same proportion
   while never being folded, so the remainder is shared by both paths and upstream: the per-row
   `Binding` (`Map`) construction the projection path avoids by streaming values. Needs a
