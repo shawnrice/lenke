@@ -2847,6 +2847,20 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   `Str` arm (`genExpr` emits a bare `n.s`) but NOT the `Dict` arm** — its six-node fixture has six
   distinct `s` values and measures `dict=false`, so the dictionary path's cross-engine parity rests
   on the unit test alone.
+- **The TS string comparator is REFUTED as a target at 12%, and 421's dictionary trick has NO TS
+  twin (423).** `grep -rn dict packages/core/src/` returns nothing — the TS core stores properties
+  as frozen JS objects, not columns, so there is no small distinct-value set to fold over and the
+  14.5x half of 421 is native-only by construction. What remains is `compareValues`, which for a
+  string pair runs ten statically-false type checks before `compareCodePoints`; isolated per
+  process, string `max` minus `count(a.s)` over the same rows is **2.3 ms at 200,000 rows — 11
+  ns/row, 12% of the query**, and numeric `max` minus `count` is NEGATIVE. Under the repo's own
+  10% rule, refuted before any code.
+- **A ratio between two cases in ONE process is not a ratio (423).** Item 420 reported its string
+  aggregate at 25.8 ms against a numeric 11.1 and explained the gap as the comparator. The same
+  binary, isolated per process, gives string 19.2 against numeric 16.2 — and in a full bench reads
+  14.9 against 18.0, the opposite ORDERING. Third occurrence this session (420 inflated a control,
+  421 flattered a baseline, 423 reversed an ordering) and the first where the figure was then used
+  to explain a mechanism. Isolate both sides, or do not draw a mechanism from the gap.
 - **The FILTERED-scan string twin is DONE, 4.0-4.3x — and fixing one spelling and not its siblings
   IS the asymmetry (422).** `Some(Column::Num { .. })` appears on twelve lines of `fastpath.rs` /
   `aggregation.rs`, two of them the other spellings of the question 421 made 14.5x faster, so 421
