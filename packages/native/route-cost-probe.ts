@@ -105,6 +105,16 @@ const queries: Record<string, string> = {
   natrelread: 'MATCH (:Person)-[r:KNOWS]->(b) RETURN r.w',
   natrelwhere: 'MATCH (:Person)-[r:KNOWS]->(b) WHERE r.w < 100 RETURN b.age',
   natfarwhere: 'MATCH (:Person)-[r:KNOWS]->(b) WHERE b.age < 100 RETURN b.age',
+  // Items 451 and 453 found native's filtered-count arms — a single numeric bound at 3.7x and a
+  // two-bound RANGE at 3.9x. Item 448's rule says a gap found in one engine is a QUESTION about
+  // the other, never a finding, so these ask TS the same ladder. Same selectivity across the
+  // three (`age` is 0..89, so `< 1000` and `>= 0` are both vacuous), so only the predicate shape
+  // differs.
+  cnt0: 'MATCH (n:Person) RETURN count(*) AS c',
+  cnt1: 'MATCH (n:Person) WHERE n.age > 5 RETURN count(*) AS c',
+  cnt2: 'MATCH (n:Person) WHERE n.age > 5 AND n.age < 1000 RETURN count(*) AS c',
+  cnt2rev: 'MATCH (n:Person) WHERE n.age < 1000 AND n.age > 5 RETURN count(*) AS c',
+  cnt3: 'MATCH (n:Person) WHERE n.age > 5 AND n.age < 1000 AND n.age >= 0 RETURN count(*) AS c',
 };
 const key = process.env.PCASE ?? 'node';
 const q = queries[key];

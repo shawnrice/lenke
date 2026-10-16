@@ -4106,3 +4106,23 @@ Not extended to 36 operator pairs: a range is the shape that matters and the res
 general arm, which keeps the code-size cost off a build that targets wasm. Non-range pairs (two
 lower bounds, two equalities, a `<>`) and 3+ bounds stay on the general arm. Instrument:
 `cargo run --example caseinv_450 -- <two|tworev|three|bare|control> 1000000 9`.
+
+## 454 — TS's filtered node count: NO CLIFF to port, and the `EvalEnv` hoist is REFUTED
+
+Asking TS the ladder items 451/453 answered for native: 200,000 nodes, same selectivity, one case
+per process — no predicate 0.0 ms (O(1) off the bucket), one bound 4.4-6.4, two bounds 5.9-6.4,
+two bounds reversed 5.8 (no spelling gap), three bounds 7.1-8.9. **Roughly linear in the conjunct
+count**, nothing like native's pre-453 shape where the second bound cost 3.9x the first. Native's
+cliff was a lost auto-vectorization; TS pays a closure per conjunct per vertex. Nothing to port.
+
+**REFUTED: hoisting `satisfies`'s `EvalEnv` out of the per-element call.** It allocates
+`{ binding, params, graph }` on every call — 200,000 objects to count a filtered label bucket —
+and the object is stateless, so `satisfiesIn(element, pred, env)` is trivially sound. Measured
+three rounds each side: one bound 4.4/6.4/4.4 against 4.8/5.0/5.3, two bounds 5.9/6.4/6.2 against
+6.2/6.2/6.7, three bounds 8.9/7.3/7.1 against 7.2/7.5/7.5. The spread WITHIN each configuration
+exceeds any difference between them — V8 escape-analyses an object that never leaves the call.
+Reverted; the numbers live in a doc comment on `satisfies`.
+
+**"It allocates per element" is not by itself a cost.** Item 424 rejected the same belief about a
+per-row allocation in the top-k path at 2.4%. That is twice; the next instance should be measured
+before it is written.

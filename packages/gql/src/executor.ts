@@ -4398,6 +4398,25 @@ const compilePath = (pattern: PathPattern): CPath => {
  * against `binding`, which already includes this element's own variable, so
  * `(n WHERE n.age > 30)` can reference `n`.
  */
+/**
+ * REJECTED LEVER — hoisting this `EvalEnv` out of the per-element call (audit item 454).
+ *
+ * The `{ binding, params, graph }` below is allocated on EVERY call, which in a walk that
+ * filters per element is one object per element: `buildNodeCount`'s constrained tally allocates
+ * 200,000 of them to count a filtered label bucket. It carries no state — the three fields are
+ * the same references throughout a walk, nothing assigns to them, and nothing retains it past
+ * the call — so a `satisfiesIn(element, pred, env)` taking a caller-owned env is trivially
+ * sound, and was written and measured.
+ *
+ * It bought NOTHING. A filtered node count over 200,000 vertices, three rounds each side, one
+ * case per process: one bound 4.4 / 6.4 / 4.4 ms before against 4.8 / 5.0 / 5.3 after, two bounds
+ * 5.9 / 6.4 / 6.2 against 6.2 / 6.2 / 6.7, three bounds 8.9 / 7.3 / 7.1 against 7.2 / 7.5 / 7.5.
+ * The spread WITHIN each configuration is larger than any difference between them. V8 escape-
+ * analyses a short-lived object that never leaves the call, so there is no allocation to remove.
+ *
+ * Do not re-derive it: the reasoning is correct and the measurement is not. The per-element cost
+ * here is the predicate evaluation, not the wrapper around it.
+ */
 export const satisfies = (
   element: Bound,
   pred: CPredicate,
