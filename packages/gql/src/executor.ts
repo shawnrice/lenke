@@ -3203,11 +3203,133 @@ export const applyProjection = (
     !proj.distinct &&
     !proj.orderNeedsOutput
   ) {
+    const cap = (skipBound ?? 0) + limitBound;
+
+    // ONE sort key is the overwhelmingly common spelling, and it gets its own bounded heap
+    // rather than the generic `Keyed` one. What this removes is NOT the allocations (item 424
+    // measured those at 2.4% and rejected removing them): it is the `map` generator between
+    // `bindings` and the heap's `for…of`, the one-element `keys` array and its index reads, and
+    // the `orderBy[i].descending`/`nullsFirst` property loads that the generic `cmp` repeats on
+    // every comparison. Item 424 priced the per-row machinery at 182ns against the `max(a.u)`
+    // fold's 35ns over the same rows and the same comparator, which is the gap this closes.
+    if (orderBy.length === 1) {
+      const [{ fn, descending, nullsFirst }] = orderBy;
+      // Parallel arrays, at most `cap` long: bindings, their sort keys, and the arrival index
+      // the stable-order tiebreak needs.
+      const bs: Binding[] = [];
+      const ks: unknown[] = [];
+      const ix: number[] = [];
+      const lessAt = (x: number, y: number): boolean => {
+        const c = compareSort(ks[x], ks[y], descending, nullsFirst);
+
+        return c !== 0 ? c < 0 : ix[x] < ix[y];
+      };
+      const swapAt = (x: number, y: number) => {
+        const tb = bs[x];
+        bs[x] = bs[y];
+        bs[y] = tb;
+
+        const tk = ks[x];
+        ks[x] = ks[y];
+        ks[y] = tk;
+
+        const ti = ix[x];
+        ix[x] = ix[y];
+        ix[y] = ti;
+      };
+      const siftUp = (from: number) => {
+        let i = from;
+
+        while (i > 0) {
+          const parent = (i - 1) >> 1;
+
+          if (!lessAt(parent, i)) {
+            break;
+          }
+
+          swapAt(i, parent);
+          i = parent;
+        }
+      };
+      const siftDown = (from: number) => {
+        let i = from;
+
+        for (;;) {
+          const l = i * 2 + 1;
+          const r = l + 1;
+          let m = i;
+
+          if (l < bs.length && lessAt(m, l)) {
+            m = l;
+          }
+
+          if (r < bs.length && lessAt(m, r)) {
+            m = r;
+          }
+
+          if (m === i) {
+            break;
+          }
+
+          swapAt(i, m);
+          i = m;
+        }
+      };
+      let n = 0;
+
+      for (const b of bindings) {
+        const k = fn({ binding: b, params, graph });
+        const i = n;
+        n += 1;
+
+        if (bs.length < cap) {
+          bs.push(b);
+          ks.push(k);
+          ix.push(i);
+          siftUp(bs.length - 1);
+        } else {
+          // Beat the worst kept? The comparison is made against the ROOT without storing the
+          // candidate anywhere, which is the one place the generic heap had to build an entry.
+          //
+          // The index tiebreak HERE is provably redundant and kept for symmetry with `lessAt`:
+          // it is consulted only when the keys tie, and a candidate always arrives after
+          // everything already in the heap, so `i < ix[0]` is false exactly where `c < 0` is.
+          // Mutation says so rather than my reading it — dropping it leaves all 25 tests green,
+          // while dropping it from `lessAt` (where the heap array has been permuted by
+          // evictions and the final sort must still recover arrival order) fails four.
+          const c = compareSort(k, ks[0], descending, nullsFirst);
+
+          if (c !== 0 ? c < 0 : i < ix[0]) {
+            bs[0] = b;
+            ks[0] = k;
+            ix[0] = i;
+            siftDown(0);
+          }
+        }
+      }
+
+      // Sort a PERMUTATION of the survivors, so the (binding, key, index) triple survives the
+      // sort without a wrapper. Same total order as the heap used, index tiebreak included.
+      const order = bs.map((_, i) => i);
+
+      order.sort((a, b) => {
+        if (lessAt(a, b)) {
+          return -1;
+        }
+
+        return lessAt(b, a) ? 1 : 0;
+      });
+
+      const kept = order.slice(skipBound ?? 0, (skipBound ?? 0) + limitBound);
+
+      return kept.map((i) => projectBinding(proj, bs[i], params, graph));
+    }
+
     const inputKeyed = map(
       (b: Binding) => ({ b, keys: orderBy.map((s) => s.fn({ binding: b, params, graph })) }),
       bindings,
     );
-    const top = boundedTopK(inputKeyed, (skipBound ?? 0) + limitBound, cmp);
+    const top = boundedTopK(inputKeyed, cap, cmp);
     const afterSkip = skipBound ? skip(skipBound, top) : top;
 
     return map((r: Keyed) => projectBinding(proj, r.b, params, graph), take(limitBound, afterSkip));

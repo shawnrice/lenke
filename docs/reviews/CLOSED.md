@@ -2847,6 +2847,23 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   `Str` arm (`genExpr` emits a bare `n.s`) but NOT the `Dict` arm** — its six-node fixture has six
   distinct `s` values and measures `dict=false`, so the dictionary path's cross-engine parity rests
   on the unit test alone.
+- **DONE: the TS single-key top-k has its own heap, 1.34-1.50x across six shapes (425).** For
+  `orderBy.length === 1` — the common spelling — `applyProjection` now uses parallel
+  bindings/keys/index arrays with the sort flags destructured once, removing the `map` generator,
+  the one-element `keys` array and its per-comparison index reads, and the
+  `orderBy[i].descending`/`nullsFirst` loads the generic `cmp` repeated on EVERY comparison.
+  `ORDER BY u LIMIT 5` 49.6 -> 37.1 ms, `LIMIT 5000` 1.50x, `DESC` 1.50x, `SKIP 10 LIMIT 5` 1.41x,
+  numeric key 1.34x, input-property spelling 1.43x — five alternated rounds at NINE reps (424:
+  three is a coin flip here). Controls flat over three rounds including the two-key orders, which
+  still run the generic heap. **Still open: 37 ms against the `max` fold's 20.7** over the same
+  rows, so about half of 424's 182-ns/row gap remains unattributed.
+- **"I wrote the fixture for this guard" is not evidence it exercises the guard; removing the guard
+  is (425).** The mutant dropping the top-k's arrival-index tiebreak SURVIVED a fixture built with
+  heavy ties for exactly that purpose: with ties and no eviction `up` never swaps, the heap array
+  stays in arrival order, and an all-equal comparator leaves a stable sort alone. The tiebreak is
+  only observable once evictions have PERMUTED the array (`d = [9,9,9,2,2,2,5,5,2]`, `LIMIT 3`).
+  Second time this session (422 was the Dict `present` mask). The eviction-test copy of the same
+  tiebreak is provably equivalent and documented as such.
 - **REFUTED: removing the TS top-k's per-row allocation. 2.4%, and "it allocates per row" is not by
   itself a cost in this engine (424).** `boundedTopK` builds a `{ v, i }` wrapper for EVERY input
   row — before the test that throws it away — so 200,000 objects are allocated to answer a
