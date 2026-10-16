@@ -3176,6 +3176,20 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   A correct rewrite is `(k > v) OR isNaN(k)`, which is not a pure seek. Do not "fix" this in one
   line.
 
+- **NO TWIN — the TS engine does not have item 402's hole (403).** Its `PropertyIndex` is ONE
+  structure (equality buckets plus a lazily built ordered view), so `kind: 'range'` and
+  `kind: 'hash'` both serve a point seek; `IndexKind`'s doc says so and the measurement agrees.
+  Flat across a 10x size step — range 563 -> 546 ns (0.97x), hash 882 -> 887 (1.00x) — against an
+  unindexed control that scales 16.29x, as a scan must. After 402 the engines AGREE here.
+
+- **A `for`-loop probe charges its FIRST case for JIT warmup, and best-of-N does not save it
+  (403).** The same probe first read range at 1763 ns against hash at 882 — a 1.6x gap through
+  one structure. Reversing the case order INVERTED it: whichever runs first reads ~1800, whichever
+  runs second ~550. Every TS probe in this session has this shape. **Reverse the order and check
+  the result survives, or run a discard pass before the first measured case.** A ratio that
+  compares a case against ITSELF (here: cost at 20k vs 200k) is immune, which is why the real
+  question was answerable from the first run and the spurious one was not.
+
 ## 6. Consequences of the AND decision — RESOLVED by item 258, and not as predicted
 
 This section was written before the change and asked three questions. All three are now answered by
