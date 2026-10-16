@@ -18237,3 +18237,60 @@ fn a_one_to_one_endpoint_move_is_elided_under_a_bare_count() {
         "distinct sources must be fewer than edges on this fixture, or the test proves nothing"
     );
 }
+
+/// Item 380: a Gremlin `order().by('<key>')` **FILTERS** — it drops elements lacking the key.
+/// It is NOT a permutation, so it is NOT row-count-preserving, and it may NOT be elided under
+/// a bare `count(*)` the way item 379 elides a 1:1 endpoint move.
+///
+/// This test exists because that elision was about to be written. The reasoning was specific
+/// and wrong: a sort permutes rows, a permutation preserves cardinality — but `order().by(k)`
+/// is not a permutation. TinkerPop, run in a console over 4 vertices of which 2 carry `age`:
+///
+/// ```text
+/// V.count               = 4
+/// V.order.by(age).count = 2     <-- the two keyless vertices are GONE
+/// V.values(age).count   = 2
+/// ```
+///
+/// A 17,000x speedup (5097.8us -> 0.3us at 100k vertices) was available for answering 4 where
+/// the answer is 2. Fast and silently wrong is the worst failure this engine can ship, so the
+/// semantics get a test rather than a comment.
+#[test]
+fn a_gremlin_order_by_key_filters_and_so_cannot_be_elided_under_a_count() {
+    let mut b = crate::store::Builder::default();
+    b.node(&["P"], &[("age", crate::value::Value::Num(30.0))]);
+    b.node(&["P"], &[("age", crate::value::Value::Num(10.0))]);
+    b.node(&["P"], &[]); // no `age`
+    b.node(&["P"], &[]); // no `age`
+    let store = b.build();
+
+    let num = |q: &str| -> f64 {
+        let raw = crate::gremlin::parse(q).unwrap_or_else(|e| panic!("{q}: {e}"));
+        let plan = crate::opt::optimize_indexed(raw, &store);
+        let out = crate::exec::try_run(&plan, &store).unwrap_or_else(|e| panic!("{q}: {e}"));
+        match &out.rows.iter().next().expect("one row")[0] {
+            crate::value::Value::Num(n) => *n,
+            other => panic!("{q}: want a number, got {other:?}"),
+        }
+    };
+
+    // The three numbers TinkerPop gives, which lenke matches.
+    assert_eq!(num("g.V().hasLabel('P').count()"), 4.0);
+    assert_eq!(
+        num("g.V().hasLabel('P').order().by('age').count()"),
+        2.0,
+        "order().by(k) DROPS elements lacking k — eliding it would answer 4"
+    );
+    assert_eq!(num("g.V().hasLabel('P').values('age').count()"), 2.0);
+
+    // And the plan must still CARRY the sort: an optimizer that removes it is the bug this
+    // test is here to stop, and the count above would catch it only while this fixture has
+    // keyless vertices. Assert the structure too, so a future fixture change cannot quietly
+    // disarm the check.
+    let raw = crate::gremlin::parse("g.V().hasLabel('P').order().by('age').count()").unwrap();
+    let plan = format!("{:?}", crate::opt::optimize_indexed(raw, &store));
+    assert!(
+        plan.contains("OrderPage"),
+        "the sort must survive optimization under a bare count: {plan}"
+    );
+}

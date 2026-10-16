@@ -2878,6 +2878,23 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   `groupCount()`, `project()`, `fold().count(local)`, `values().sum()` all yield one or none) — the
   category of item 297's T10.
 
+- **REFUTED ON CORRECTNESS, with a 17,000x attached: a sort may NOT be elided under a bare
+  `count(*)`, because `order().by(k)` FILTERS (380).** Item 379's rule — a row-count-preserving step
+  is elidable under a bare count — generalises to any 1:1 step, and a sort looked like one.
+  `order().by('age').count()` is 5097.8us against `count()`'s 0.3us at 100k vertices, on the "total
+  rows" query every paginated UI issues beside its page query. **TinkerPop console, 4 vertices of
+  which 2 carry `age`: `V.count` = 4 but `V.order.by(age).count` = 2** — the keyless elements are
+  DROPPED, exactly as `values()` drops them. A sort is not a permutation, so the rewrite answers 4
+  where the answer is 2. **Do not re-attempt from the perf side**; the three gates it needs
+  (`skip`/`limit` absent, `fault_on_element`, key shape) are all beside the point. lenke conforms
+  (4/2/2, matching), and the semantics are now pinned by a test whose teeth were verified by
+  applying the wrong optimization (rc=101) rather than by assertion.
+- **Open and CLIFF-SHAPED: the sort elision is sound only when the key is on EVERY live node (380).**
+  Then nothing is dropped and the sort really is a permutation. Needs an O(1) store-side
+  present-count, and it is item 325's all-or-nothing vacuity cliff — "one unlabelled node in a real
+  graph defeats the elision for every query anchored on that label". A 17,000x that evaporates on a
+  single missing property is a different proposition from a 17,000x; price it as such.
+
 ## 6. Consequences of the AND decision — RESOLVED by item 258, and not as predicted
 
 This section was written before the change and asked three questions. All three are now answered by
