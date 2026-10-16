@@ -125,14 +125,14 @@ const GROUPS: [string, readonly string[]][] = [
     ],
   ],
   [
-    // Item 446. Reading the rel variable in the RETURN is now served by the hop fast path, which
-    // BINDS the edge; reading it in a clause `WHERE` still declines, because `filteredHopWalk`
-    // does not bind one. `w` is always >= 0 in this fixture, so the two spell the same question.
+    // Items 446 and 447. Reading the rel variable in the RETURN is served by the hop fast path,
+    // which BINDS the edge (446); reading it in a clause `WHERE` is served too, by the filtered
+    // rel-bound walk (447). `w` is always >= 0 in this fixture, so the two spell one question.
     //
-    // EXPECTED OVER THE THRESHOLD, and recorded here so the next person does not chase it as a
-    // regression: it is the unbuilt half of item 446, measured at 244 ns/row against 732. It
-    // closes when `filteredHopWalk` learns to bind the edge too.
-    'edge property: bare vs behind a vacuous rel filter (item 446, open)',
+    // This group was added by 446 LABELLED as expected-over-threshold at 2.7x, because the
+    // clause-`WHERE` half was not built yet. 447 built it and the group should now agree — which
+    // is the point of having added it before the fix rather than after.
+    'edge property: bare vs behind a vacuous rel filter (items 446, 447)',
     [
       'MATCH (a:P)-[r:E]->(b) RETURN r.w AS w',
       'MATCH (a:P)-[r:E]->(b) WHERE r.w >= 0 RETURN r.w AS w',

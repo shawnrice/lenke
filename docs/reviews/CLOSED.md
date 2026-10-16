@@ -3892,3 +3892,29 @@ a carried clause `WHERE`, or a start-reading item still declines when the rel is
 `WHERE r.w < 100 RETURN b` stays at ~772 ns/row. It is a `spelling-probe` group reporting **2.7x**,
 labelled expected-over-threshold with the item number so it is not chased as a regression.
 Instrument: `bun run probe:route`.
+
+## 447 — a rel-reading clause `WHERE` on the hop fast path: 2.6x, CLOSED. Item 446's open half is done
+
+`relBoundFilteredHopWalk` binds the start, the far end and then the EDGE, before the far predicate
+and the gate. `WHERE r.w < 100 RETURN b` goes 796 -> 310 ns/row; 446's two wins and four other
+controls flat. The `spelling-probe` group 446 added at 2.7x now reports 1.31x.
+
+Two things to not re-derive:
+
+- **The suite had no case where a clause `WHERE` reads the rel while the PROJECTION does not**,
+  and the half-applied change — `carriedWhere` carrying the predicate, no walk binding the edge —
+  returned the EMPTY SET for three mutually exclusive predicates while 2,128 tests passed. Every
+  test item 446 wrote projects `r`, which routes through `itemsReadRel` and never exercises the
+  `carriedWhere` half of the decision. A far-only projection with a mixed filter is the shape that
+  distinguishes them.
+- **The start-only decline is kept deliberately.** The start-only walk gates a vertex BEFORE
+  reading its adjacency (item 164), where no edge is bound, and it carries bespoke raise-parity
+  handling (items 139/142/144/145). Two mutants relaxing that survived, which means answer-
+  preserving in the tests — not that the walks are equivalent on faults.
+
+Still OPEN on this path: the far-driven walk cannot serve any rel-reading shape at all, because
+its 2.3x is a `projectRow` hoist to once per far VERTEX (item 167). So a rel-reading query over a
+graph where the far end enumerates fewer vertices takes the start-driven walk rather than the
+cheaper one. Not a gap to close by relaxing the hoist — that would be a wrong answer — but a
+reason the ceiling here is ~190 ns/row and not ~110. Instruments: `bun run probe:route`,
+`bun run spelling`.

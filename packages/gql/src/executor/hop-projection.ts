@@ -145,18 +145,25 @@ const carriedWhere = (
   where: Expr | undefined,
   farVar: string,
   startVar: string | undefined,
-): { needsStart: boolean; startOnly: boolean } | null => {
+  relVar: string | undefined,
+): { needsStart: boolean; startOnly: boolean; needsRel: boolean } | null => {
   if (where === undefined) {
-    return { needsStart: false, startOnly: false };
+    return { needsStart: false, startOnly: false, needsRel: false };
   }
 
   const vars = [...freePredicateVars(where)];
 
   for (const name of vars) {
-    if (name !== farVar && name !== startVar) {
+    if (name !== farVar && name !== startVar && name !== relVar) {
       return null;
     }
   }
+
+  // A clause `WHERE` reading the REL variable is carried (audit item 447), which needs the edge
+  // bound BEFORE the gate is evaluated — `relBoundFilteredHopWalk` is the only walk here that
+  // does that. Refusing it cost `WHERE r.w < 100 RETURN b` 772 ns/row against the ~250 the
+  // rel-bound walk reaches.
+  const needsRel = relVar !== undefined && vars.includes(relVar);
 
   const readsStart = startVar !== undefined && vars.includes(startVar);
 
@@ -170,7 +177,7 @@ const carriedWhere = (
   // it should seed from the index and keep walking. So a start-only predicate is accepted and
   // gets its own closure, which applies it PER START VERTEX instead of per row — the whole point
   // of carrying it, since the general path cannot reject a start before expanding it either.
-  if (!vars.includes(farVar) && !readsStart) {
+  if (!vars.includes(farVar) && !readsStart && !needsRel) {
     return null;
   }
 
@@ -179,13 +186,20 @@ const carriedWhere = (
   // CHEAP-CONJUNCT-FIRST order precisely so `WHERE u.k = 'nope' AND <faulting subquery>` never
   // reaches the subquery, and a walk that evaluates the whole predicate at once loses that. Five
   // of its tests caught this, as raises rather than wrong rows.
-  if (!vars.includes(farVar) && !rowLocal(where)) {
+  if (!vars.includes(farVar) && !needsRel && !rowLocal(where)) {
     return null;
   }
 
   // The start is bound only when the predicate actually reads it: the single mutated binding is
   // the allocation this path exists to avoid, so an extra `set` per vertex is not free.
-  return { needsStart: readsStart, startOnly: readsStart && !vars.includes(farVar) };
+  return {
+    needsStart: readsStart,
+    // A predicate reading the REL is not start-only however little else it reads: the start-only
+    // walk gates a vertex BEFORE touching its adjacency, and there is no edge bound at that
+    // point for it to read.
+    startOnly: readsStart && !vars.includes(farVar) && !needsRel,
+    needsRel,
+  };
 };
 
 /**
@@ -360,6 +374,105 @@ const relBoundHopWalk = (spec: {
 
         binding.set(farVar, far);
         binding.set(relVar, edge);
+        rows.push(projectRow(proj, binding, params, graph));
+      }
+    }
+
+    return rows;
+  };
+};
+
+/**
+ * The REL-BOUND FILTERED hop projection: the start-driven filtered walk, binding the edge.
+ *
+ * Item 446 bound the edge for the UNFILTERED shape only, so a far predicate, a carried clause
+ * `WHERE` or a start-reading item still declined when the rel was read. `WHERE r.w < 100 RETURN
+ * b` stayed at 772 ns/row and the `spelling-probe` group added there reported it at 2.7x. This
+ * closes that half.
+ *
+ * Three things it deliberately does NOT do, each for a reason already measured here:
+ *
+ *   - **No far-driven variant.** That walk hoists `projectRow` to once per far VERTEX (item
+ *     167), which an item reading the edge invalidates — a far vertex's incident edges differ.
+ *     Hoisting is a wrong answer here, not a faster one.
+ *   - **No start-only gating.** The start-only walk evaluates the gate BEFORE touching a
+ *     vertex's adjacency (item 164's order, worth 52ns against 34 a vertex), and at that point
+ *     there is no edge bound for the gate to read. A start-only predicate therefore keeps
+ *     `startOnly` false whenever it reads the rel, and the combination of a start-only `WHERE`
+ *     with a rel-reading ITEM declines outright rather than being gated per edge.
+ *   - **It keeps the far-seek decline.** `cfar` narrower than the start source by `SEEK_MARGIN`
+ *     means the general path can seek the far end, and item 177 measured 89x for declining in
+ *     that region. The check is per call, so the inner loop pays nothing for it.
+ */
+const relBoundFilteredHopWalk = (w: {
+  startLabel: LabelExpr | undefined;
+  typeName: string;
+  out: boolean;
+  farVar: string;
+  relVar: string | undefined;
+  farLabel: LabelExpr | undefined;
+  proj: CProjection;
+  farPred: CPredicate | undefined;
+  gate: CompiledExpr | undefined;
+  startVar: string | undefined;
+  startOnly: boolean;
+  cfar: CNode | undefined;
+}): RowsFn | null => {
+  const { startLabel, typeName, out, farVar, relVar, farLabel, proj } = w;
+  const { farPred, gate, startVar, startOnly, cfar } = w;
+
+  if (relVar === undefined || startOnly) {
+    return null;
+  }
+
+  return (graph, params) => {
+    if (cfar !== undefined) {
+      const env: EvalEnv = { binding: new Map<string, unknown>(), params, graph };
+      let narrowest = Infinity;
+
+      for (const candidate of indexCandidates(graph, cfar, env)) {
+        narrowest = Math.min(narrowest, candidate.count);
+      }
+
+      if (narrowest * SEEK_MARGIN < candidateCount(graph, startLabel)) {
+        return null;
+      }
+    }
+
+    const rows: Row[] = [];
+    const binding = new Map<string, unknown>();
+    const index = out ? graph.edgesFromByLabel : graph.edgesToByLabel;
+
+    for (const v of candidateVertexSource(graph, startLabel)) {
+      const bucket = index.get(v.id)?.get(typeName);
+
+      if (bucket === undefined) {
+        continue;
+      }
+
+      if (startVar !== undefined) {
+        binding.set(startVar, v);
+      }
+
+      for (const edge of bucket) {
+        const far: Vertex = out ? edge.to : edge.from;
+
+        if (farLabel !== undefined && !matchesLabel(far, farLabel)) {
+          continue;
+        }
+
+        binding.set(farVar, far);
+        // BEFORE the gate, which is the whole point: the gate may read the rel variable.
+        binding.set(relVar, edge);
+
+        if (farPred !== undefined && !satisfies(far, farPred, binding, params, graph)) {
+          continue;
+        }
+
+        if (gate !== undefined && asTruth(gate({ binding, params, graph })) !== true) {
+          continue;
+        }
+
         rows.push(projectRow(proj, binding, params, graph));
       }
     }
@@ -561,7 +674,7 @@ export const detectHopProjection = (
   // evaluation count and the elements evaluated are unchanged — which is what items 139/142
   // require of a fast path.
   const startVar = startVarName;
-  const carried = carriedWhere(m.where, farVar, startVar);
+  const carried = carriedWhere(m.where, farVar, startVar, rel.variable);
 
   if (carried === null) {
     return null;
@@ -625,17 +738,38 @@ export const detectHopProjection = (
   // So the rel-bound walk is start-driven, and it is its own closure rather than a branch in
   // the existing one, because item 159 measured that adding even a branch to that inner loop
   // costs the hot unfiltered shape 1.6x.
-  if (itemsReadRel) {
-    return relBoundHopWalk({
-      startLabel,
-      typeName,
-      out,
-      farVar,
-      relVar: rel.variable,
-      farLabel,
-      proj,
-      unfiltered: farPred === undefined && gate === undefined && !needsStart,
-    });
+  // A rel read from EITHER the projected items or the carried clause `WHERE` needs the edge
+  // bound. The unfiltered walk is preferred because it is the cheaper one; the filtered walk
+  // takes everything else and declines the shapes neither can serve.
+  if (itemsReadRel || carried.needsRel) {
+    const unfiltered = farPred === undefined && gate === undefined && !needsStart;
+
+    return (
+      relBoundHopWalk({
+        startLabel,
+        typeName,
+        out,
+        farVar,
+        relVar: rel.variable,
+        farLabel,
+        proj,
+        unfiltered,
+      }) ??
+      relBoundFilteredHopWalk({
+        startLabel,
+        typeName,
+        out,
+        farVar,
+        relVar: rel.variable,
+        farLabel,
+        proj,
+        farPred,
+        gate,
+        startVar: needsStart ? startVar : undefined,
+        startOnly: carried.startOnly,
+        cfar: compiledFarNode(cm),
+      })
+    );
   }
 
   if (farPred === undefined && gate === undefined && !needsStart) {

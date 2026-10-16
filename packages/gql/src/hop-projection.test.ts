@@ -483,3 +483,129 @@ describe('the hop fast path binds the edge (item 446)', () => {
     expect(query(g, 'MATCH (p:U)-[r:T]->(q) WHERE r.w = 2 RETURN r.w AS w')).toEqual([{ w: 2 }]);
   });
 });
+
+// Item 447: the FILTERED half — a clause `WHERE` or a far predicate alongside a bound edge.
+//
+// Item 446 bound the edge for the unfiltered shape only, so `WHERE r.w < 100 RETURN b` still
+// declined and stayed at 772 ns/row. Carrying a rel-reading `WHERE` needs the edge bound BEFORE
+// the gate is evaluated, which only `relBoundFilteredHopWalk` does.
+//
+// These tests exist because the suite had NO coverage of a rel-reading clause `WHERE` whose
+// PROJECTION does not read the rel. While this item was half-applied — `carriedWhere` carrying
+// the predicate but no walk binding the edge — all three of the first assertions below returned
+// the empty set, and 2,128 tests passed. A gap that lets a half-finished change look finished is
+// the most expensive kind.
+describe('a rel-reading clause WHERE on the hop fast path (item 447)', () => {
+  // Two edges with DIFFERENT `w` onto ONE far vertex, and `:U` on every vertex so the start
+  // label is vacuous — the configuration that would let a hoisting walk be chosen if one were.
+  const fan = (): Graph => {
+    const h = new Graph();
+    const a1 = h.addVertex({ id: 'a1', labels: ['U'], properties: { n: 1 } });
+    const a2 = h.addVertex({ id: 'a2', labels: ['U'], properties: { n: 2 } });
+    const x = h.addVertex({ id: 'x', labels: ['U', 'X'], properties: { n: 9 } });
+
+    h.addEdge({ id: 'e1', from: a1, to: x, labels: ['T'], properties: { w: 1 } });
+    h.addEdge({ id: 'e2', from: a2, to: x, labels: ['T'], properties: { w: 2 } });
+
+    return h;
+  };
+
+  test('the filter is APPLIED, at three different selectivities', () => {
+    const g = fan();
+
+    // Vacuous, selective and empty. One assertion cannot tell a carried filter from a dropped
+    // one: a dropped filter also answers `[{n:9},{n:9}]` for the vacuous case, which is why the
+    // `= 1` and `> 99` rows are here.
+    expect(query(g, 'MATCH (p:U)-[r:T]->(q) WHERE r.w < 100 RETURN q.n AS n')).toEqual([
+      { n: 9 },
+      { n: 9 },
+    ]);
+    expect(query(g, 'MATCH (p:U)-[r:T]->(q) WHERE r.w = 1 RETURN q.n AS n')).toEqual([{ n: 9 }]);
+    expect(query(g, 'MATCH (p:U)-[r:T]->(q) WHERE r.w > 99 RETURN q.n AS n')).toEqual([]);
+  });
+
+  test('the gate reads the edge of ITS OWN row', () => {
+    const g = fan();
+
+    // `r.w = 1` keeps exactly one of two rows that share a far vertex. A walk binding one edge
+    // for both would keep both or neither.
+    expect(query(g, 'MATCH (p:U)-[r:T]->(q) WHERE r.w = 1 RETURN r.w AS w, q.n AS n')).toEqual([
+      { w: 1, n: 9 },
+    ]);
+    expect(query(g, 'MATCH (p:U)-[r:T]->(q) WHERE r.w = 2 RETURN p.n AS pn')).toEqual([{ pn: 2 }]);
+  });
+
+  test('a filter mixing the edge with BOTH endpoints', () => {
+    const g = fan();
+
+    expect(
+      query(g, 'MATCH (p:U)-[r:T]->(q) WHERE r.w > 0 AND q.n = 9 RETURN p.n AS pn, r.w AS w'),
+    ).toEqual([
+      { pn: 1, w: 1 },
+      { pn: 2, w: 2 },
+    ]);
+    expect(query(g, 'MATCH (p:U)-[r:T]->(q) WHERE r.w > 0 AND p.n = 2 RETURN r.w AS w')).toEqual([
+      { w: 2 },
+    ]);
+  });
+
+  test('a mixed filter whose PROJECTION does not read the edge', () => {
+    const g = fan();
+
+    // The shape mutation found this suite was missing. Every other test here projects `r`, so
+    // `itemsReadRel` routed them to the rel-bound walk and the `carriedWhere` half of the
+    // decision was never the thing under test. Here the projection reads only the far end while
+    // the FILTER reads the edge — so if `carriedWhere` carries the predicate without reporting
+    // the rel read, the gate is evaluated by a walk that binds no edge, and the mutant doing
+    // exactly that survived until this test existed.
+    //
+    // Both operand orders, because a predicate that reads the far end as well takes a different
+    // branch of `carriedWhere` from one that reads only the edge.
+    expect(query(g, 'MATCH (p:U)-[r:T]->(q) WHERE r.w = 1 AND q.n = 9 RETURN q.n AS n')).toEqual([
+      { n: 9 },
+    ]);
+    expect(query(g, 'MATCH (p:U)-[r:T]->(q) WHERE q.n = 9 AND r.w = 2 RETURN q.n AS n')).toEqual([
+      { n: 9 },
+    ]);
+    expect(query(g, 'MATCH (p:U)-[r:T]->(q) WHERE r.w > 0 AND q.n = 9 RETURN q.n AS n')).toEqual([
+      { n: 9 },
+      { n: 9 },
+    ]);
+    // And the start-reading variant of the same hazard.
+    expect(query(g, 'MATCH (p:U)-[r:T]->(q) WHERE r.w = 2 AND p.n = 2 RETURN q.n AS n')).toEqual([
+      { n: 9 },
+    ]);
+  });
+
+  test('a far LABEL and a far inline predicate both still apply', () => {
+    const g = fan();
+
+    expect(query(g, 'MATCH (p:U)-[r:T]->(q:X) WHERE r.w = 2 RETURN r.w AS w')).toEqual([{ w: 2 }]);
+    expect(query(g, 'MATCH (p:U)-[r:T]->(q:Nope) WHERE r.w = 2 RETURN r.w AS w')).toEqual([]);
+    expect(query(g, 'MATCH (p:U)-[r:T]->(q {n: 9}) WHERE r.w = 2 RETURN r.w AS w')).toEqual([
+      { w: 2 },
+    ]);
+    expect(query(g, 'MATCH (p:U)-[r:T]->(q {n: 1}) WHERE r.w = 2 RETURN r.w AS w')).toEqual([]);
+  });
+
+  test('a REVERSED filtered hop', () => {
+    const g = fan();
+
+    expect(query(g, 'MATCH (q:U)<-[r:T]-(p) WHERE r.w = 2 RETURN p.n AS pn, r.w AS w')).toEqual([
+      { pn: 2, w: 2 },
+    ]);
+  });
+
+  test('a subquery in the clause WHERE still declines, and correlates per edge', () => {
+    const g = fan();
+
+    // Item 444's hazard in the clause-`WHERE` position. The inner hop names `r`, so it
+    // correlates on the outer edge: the predicate holds for the `w = 1` row alone.
+    expect(
+      query(
+        g,
+        'MATCH (p:U)-[r:T]->(q) WHERE EXISTS { MATCH (p)-[r:T WHERE r.w = 1]->(z) } RETURN q.n AS n',
+      ),
+    ).toEqual([{ n: 9 }]);
+  });
+});
