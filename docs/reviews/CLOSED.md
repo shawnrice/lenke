@@ -4870,3 +4870,21 @@ three times is not a control measured.**
 Mutation: five of six. **Three of my own expectations were wrong across 483/484** — a mixed
 pattern, a labelled loop, and three hops over a single edge (2, not 1) — each corrected by the
 general-path oracle before commit.
+
+## 485 — the DISTINCT walk's anonymous end: CLOSED at 17x. Item 475's bug class, second family
+
+TS read 964 ms against native's 7.2 for `MATCH (:Person)-[:KNOWS]->(b) RETURN DISTINCT b.age` —
+but the first question is the SPELLING, and the named `(a:Person)` twin took the walk at 56.
+`distinctShape` demanded a named start AND a named far node; nothing can reference an unnamed
+end, and the KEYED end is named by the projected expression itself.
+
+Anonymous `DISTINCT` 964 -> 52-58 ms, anonymous `count(DISTINCT)` 703 -> 53, the named spelling
+flat at 56-58 (the two now AGREE, which is the claim), the node shape flat, and the undirected
+`DISTINCT` 2065 -> 816 as a bonus. A 5.1 ms blip on the node control was noise — checked before
+recording, after item 484's retraction.
+
+Mutation: three guards the relaxed helper KEPT had NO fixture — a rel constraint, the non-keyed
+end's constraint (vacuous in the shared fixture, since every far end is reachable from both
+starts), and a rel VARIABLE. The first two are now caught. **The third is EQUIVALENT and so
+names a free widening**: `reads` must be exactly one end's variable, so `-[r:T]->` with nothing
+reading `r` would answer the same on the walk. Priced, not taken.

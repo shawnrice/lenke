@@ -1590,11 +1590,18 @@ const groupingIsDistinct = (proj: CProjection, projection: Projection): boolean 
 };
 
 /** The far end named, and the relationship plain and unnamed (nothing to bind per edge). */
-const endsNamedAndPlainRel = (
-  hop: { rel: { variable?: string }; node: { variable?: string } } | undefined,
-): boolean =>
-  hop === undefined ||
-  (plainRel(hop.rel as never) && hop.rel.variable === undefined && hop.node.variable !== undefined);
+/**
+ * The REL is plain and unnamed — the only thing a DISTINCT walk needs from the hop itself.
+ *
+ * It used to demand that the far NODE be named too, and `distinctShape` demanded a named start,
+ * which made two spellings of one question cost 17x apart: `MATCH (:Person)-[:KNOWS]->(b)
+ * RETURN DISTINCT b.age` fell to the general path at 964 ms where the `(a:Person)` spelling took
+ * the walk at 56 (item 485). Nothing can REFERENCE an unnamed end, so the name was never needed
+ * for the end the projection does not read — the keyed end is named by the expression itself,
+ * which `onStart`/`onFar` below already require.
+ */
+const plainUnnamedRel = (hop: { rel: { variable?: string } } | undefined): boolean =>
+  hop === undefined || (plainRel(hop.rel as never) && hop.rel.variable === undefined);
 
 /** Does `where` read nothing but `only`? A name it does not recognize counts against it. */
 const whereReadsOnly = (where: Expr | undefined, only: string): boolean => {
@@ -1815,10 +1822,12 @@ const distinctShape = (
   const hop = pattern.segments.length === 1 ? pattern.segments[0] : undefined;
   const far = hop?.node;
 
-  if (start.variable === undefined || !endsNamedAndPlainRel(hop)) {
+  if (!plainUnnamedRel(hop)) {
     return null;
   }
 
+  // May be `undefined` for an anonymous start: `onStart` below then cannot hold, so the shape
+  // has to be keyed on the far end or decline.
   const startVar = start.variable;
 
   // In `count` mode the projected item is the AGGREGATE; what the walk evaluates is its
@@ -1840,7 +1849,7 @@ const distinctShape = (
   // evaluates it against. A CONSTANT projection (no reads) dedupes to a single row and is
   // left to the general path rather than reasoned about with an empty binding.
   const reads = freePredicateVars(source);
-  const onStart = reads.size === 1 && reads.has(startVar);
+  const onStart = startVar !== undefined && reads.size === 1 && reads.has(startVar);
   const onFar =
     hop !== undefined && reads.size === 1 && far?.variable !== undefined && reads.has(far.variable);
 

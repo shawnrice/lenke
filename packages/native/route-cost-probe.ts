@@ -208,6 +208,11 @@ const queries: Record<string, string> = {
   cntstardir: 'MATCH (:Person)-[:KNOWS]->(b) RETURN count(*) AS c',
   distboth: 'MATCH (:Person)-[:KNOWS]-(b) RETURN DISTINCT b.age AS k',
   distdir: 'MATCH (:Person)-[:KNOWS]->(b) RETURN DISTINCT b.age AS k',
+  // Item 485: TS reads 964 ms where native reads 7.2 — the widest cross-engine gap yet. Is it
+  // the anonymous start (item 475's bug class) or the DISTINCT walk itself?
+  distdirnamed: 'MATCH (a:Person)-[:KNOWS]->(b) RETURN DISTINCT b.age AS k',
+  distnode: 'MATCH (n:Person) RETURN DISTINCT n.age AS k',
+  distcount: 'MATCH (:Person)-[:KNOWS]->(b) RETURN count(DISTINCT b.age) AS c',
   twohopboth: 'MATCH (:Person)-[:KNOWS]-(b)-[:KNOWS]-(c) RETURN count(*) AS c',
   twohopdir: 'MATCH (:Person)-[:KNOWS]->(b)-[:KNOWS]->(c) RETURN count(*) AS c',
   // Item 484: the THREE-hop twin of item 483. Run at a smaller PN — the undirected row count
