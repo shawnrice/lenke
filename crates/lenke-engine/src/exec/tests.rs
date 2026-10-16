@@ -20400,6 +20400,104 @@ fn scan_multi_agg_specializations_match_single_aggregates() {
         "[Num(1.0), Num(5.0)]"
     );
 
+    // TWO DISTINCT COLUMNS (item 471), which is one pass each rather than one interleaved
+    // pass. `score` is present on a DIFFERENT set of nodes from `age`, so a mix-up between the
+    // two groups — or a `count` reading the other column's tally — changes an answer.
+    let mut b2 = Builder::default();
+    for (age, score) in [
+        (Some(3.0f64), Some(10.0f64)),
+        (Some(1.0), None),
+        (Some(4.0), Some(20.0)),
+        (None, Some(30.0)),
+        (Some(5.0), None),
+    ] {
+        let mut props: Vec<(&str, Value)> = Vec::new();
+        if let Some(a) = age {
+            props.push(("age", n(a)));
+        }
+        if let Some(sc) = score {
+            props.push(("score", n(sc)));
+        }
+        b2.node(&["Q"], &props);
+    }
+    let st2 = b2.build();
+    let vals2 = |q: &str| -> String {
+        format!(
+            "{:?}",
+            run(&crate::gql::parse(q).unwrap(), &st2)
+                .rows
+                .iter()
+                .next()
+                .expect("one row")
+                .to_vec()
+        )
+    };
+    let one2 = |q: &str| -> String {
+        let r = run(&crate::gql::parse(q).unwrap(), &st2);
+        let row = r.rows.iter().next().expect("one row");
+        format!("{:?}", row[0])
+    };
+
+    // age: 3,1,4,5 (four of five). score: 10,20,30 (three of five). Six rows of output across
+    // the assertions below, every one of them against the single-aggregate route.
+    assert_eq!(
+        vals2("MATCH (n:Q) RETURN sum(n.age) AS a, max(n.score) AS b"),
+        format!(
+            "[{}, {}]",
+            one2("MATCH (n:Q) RETURN sum(n.age) AS a"),
+            one2("MATCH (n:Q) RETURN max(n.score) AS b")
+        )
+    );
+    assert_eq!(
+        vals2("MATCH (n:Q) RETURN count(n.age) AS a, count(n.score) AS b, count(*) AS c"),
+        "[Num(4.0), Num(3.0), Num(5.0)]"
+    );
+    // Both quantities from BOTH columns at once — four passes' worth of state, two passes of
+    // work, and every value distinct so a crossed wire shows.
+    assert_eq!(
+        vals2("MATCH (n:Q) RETURN sum(n.age) AS a, min(n.age) AS b, sum(n.score) AS c, max(n.score) AS d"),
+        "[Num(13.0), Num(1.0), Num(60.0), Num(30.0)]"
+    );
+    // A column nobody has: its aggregates are the empty answers while the other column's are
+    // real, which an interleaved pass and a per-column pass can disagree about.
+    assert_eq!(
+        vals2("MATCH (n:Q) RETURN sum(n.age) AS a, max(n.missing) AS b"),
+        format!(
+            "[{}, {}]",
+            one2("MATCH (n:Q) RETURN sum(n.age) AS a"),
+            one2("MATCH (n:Q) RETURN max(n.missing) AS b")
+        )
+    );
+
+    // A column that EXISTS but holds nothing for the scanned label. This is the only way to
+    // reach `cnt == 0` INSIDE this arm — an absent column makes the whole arm decline, so the
+    // empty-graph assertions below never exercise its null handling, and the mutant that
+    // dropped the `cnt == 0` guard on `min`/`max` SURVIVED until this case existed.
+    let mut b3 = Builder::default();
+    b3.node(&["Q"], &[("score", n(10.0))]);
+    b3.node(&["R"], &[("other", n(1.0))]);
+    let st3 = b3.build();
+    let vals3 = |q: &str| -> String {
+        format!(
+            "{:?}",
+            run(&crate::gql::parse(q).unwrap(), &st3)
+                .rows
+                .iter()
+                .next()
+                .expect("one row")
+                .to_vec()
+        )
+    };
+
+    assert_eq!(
+        vals3("MATCH (n:R) RETURN min(n.score) AS a, max(n.score) AS b, count(*) AS c"),
+        "[Null, Null, Num(1.0)]"
+    );
+    assert_eq!(
+        vals3("MATCH (n:R) RETURN sum(n.score) AS a, avg(n.score) AS b"),
+        "[Num(0.0), Null]"
+    );
+
     // An EMPTY scan: every variant must give the empty answer its aggregate owes ISO, and the
     // `cnt` each one carries is what tells it apart from a real zero.
     let empty = Builder::default().build();

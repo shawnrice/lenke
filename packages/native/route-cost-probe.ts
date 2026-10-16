@@ -37,7 +37,10 @@ const fresh = (): Graph => {
       // label in a fixture must exclude something (item 435).
       id: `v${i}`,
       labels: i % 2 === 0 ? ['Person', 'Half'] : ['Person'],
-      properties: { age: i % 90 },
+      // `PCOL2` adds a SECOND numeric column, for the two-column aggregate question (item 471).
+      // Off by default, because widening every node changes the scan for every other case here
+      // and the numbers in the audit are against the one-column fixture.
+      properties: process.env.PCOL2 === undefined ? { age: i % 90 } : { age: i % 90, w2: i % 7 },
     }),
   );
 
@@ -143,6 +146,13 @@ const queries: Record<string, string> = {
   aggminmax: 'MATCH (n:Person) RETURN min(n.age) AS a, max(n.age) AS b',
   aggdistinct: 'MATCH (n:Person) RETURN count(DISTINCT n.age) AS c',
   minfloor: 'MATCH (n:Person) RETURN min(n.age) AS c',
+  // Item 471, run with PCOL2=1: two aggregates over DIFFERENT columns, which native's
+  // `try_scan_multi_agg` one-pass arm cannot take (it requires every value-aggregate to read
+  // the same `Num` column). `twocol1` is the SAME-column control on the identical fixture.
+  twocol1: 'MATCH (n:Person) RETURN sum(n.age) AS s, max(n.age) AS m',
+  twocol2: 'MATCH (n:Person) RETURN sum(n.age) AS s, max(n.w2) AS m',
+  twocolcnt: 'MATCH (n:Person) RETURN count(n.age) AS a, count(n.w2) AS b',
+  twocolone: 'MATCH (n:Person) RETURN sum(n.w2) AS s',
 };
 const key = process.env.PCASE ?? 'node';
 const q = queries[key];
@@ -168,7 +178,10 @@ if (engine === 'native') {
         type: 'vertex',
         id: `v${i}`,
         labels: i % 2 === 0 ? ['Person', 'Half'] : ['Person'],
-        properties: { age: i % 90 },
+        // Mirrors the TS fixture's `PCOL2` arm — the NATIVE fixture is a separate builder a
+        // few lines down, and patching only the first one left `w2` absent entirely, which
+        // reads as a 13x "column gap" that is really a missing property (item 471).
+        properties: process.env.PCOL2 === undefined ? { age: i % 90 } : { age: i % 90, w2: i % 7 },
       }),
     );
   }

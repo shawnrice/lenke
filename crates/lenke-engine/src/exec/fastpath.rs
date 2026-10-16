@@ -3740,36 +3740,61 @@ pub(super) fn try_scan_multi_agg(
             _ => return None,
         }
     }
-    // Fast path: every value-aggregate reads ONE Num column (e.g. `sum(age),
-    // min(age), max(age)`) — a single BRANCH-FREE pass computing sum/cnt/min/max
-    // with straight f64 ops (stored Nums are finite, so `x < mn` == cmp_num_total),
-    // instead of the per-element per-spec match in the general loop below.
-    let used: Vec<*const f64> = specs
-        .iter()
-        .filter_map(|(c, _)| c.map(|(d, _)| d.as_ptr()))
-        .collect();
-    if !used.is_empty() && used.iter().all(|&p| p == used[0]) {
-        let (data, present) = specs.iter().find_map(|(c, _)| *c).expect("used non-empty");
-        // WHICH quantities this projection actually reads, decided once before the scan. The
-        // `cnt` is in every variant because `Avg`, `Min` and `Max` each need it to tell an
-        // empty group from a real answer, and an increment is not what costs here.
-        let need_sum = specs
+    // ONE PASS PER DISTINCT COLUMN, each a straight f64 loop specialized to the quantities
+    // that column's aggregates actually read (stored Nums are finite, so `x < mn` ==
+    // `cmp_num_total`). The alternative below — one interleaved pass with a per-element
+    // per-spec `match` — reads every column's value for every row and decides what to do with
+    // it there: measured 5.6 ms against 0.6 for `sum(age), max(w2)` at 1,000,000 nodes
+    // (item 471). N passes over one column each beat one pass over N, because each pass is a
+    // sequential walk of a single slice and the work inside it is known before it starts.
+    //
+    // This subsumes the same-column case (one distinct column, one pass), so there is ONE
+    // code path here rather than a special case beside a general one.
+    let mut groups: Vec<(*const f64, bool, bool)> = Vec::with_capacity(specs.len());
+    for (col, func) in &specs {
+        let Some((data, _)) = col else { continue };
+        let want_sum = matches!(func, AggFn::Sum | AggFn::Avg);
+        let want_minmax = matches!(func, AggFn::Min | AggFn::Max);
+        if let Some(g) = groups.iter_mut().find(|(p, _, _)| *p == data.as_ptr()) {
+            g.1 |= want_sum;
+            g.2 |= want_minmax;
+        } else {
+            groups.push((data.as_ptr(), want_sum, want_minmax));
+        }
+    }
+    if !groups.is_empty() {
+        // Per distinct column: (sum, cnt, mn, mx). `rows` is the same for every pass — it is
+        // the scan, not the column — so the last one answers `count(*)`.
+        let mut rows = 0u64;
+        let folded: Vec<(f64, u64, f64, f64)> = groups
             .iter()
-            .any(|(_, f)| matches!(f, AggFn::Sum | AggFn::Avg));
-        let need_minmax = specs
-            .iter()
-            .any(|(_, f)| matches!(f, AggFn::Min | AggFn::Max));
-        let (sum, cnt, mn, mx, rows) = match (need_sum, need_minmax) {
-            (false, false) => scan_fold_cnt(store, label, present),
-            (true, false) => scan_fold_sum(store, label, data, present),
-            (false, true) => scan_fold_minmax(store, label, data, present),
-            (true, true) => scan_fold_all(store, label, data, present),
-        };
+            .map(|&(ptr, want_sum, want_minmax)| {
+                let (data, present) = specs
+                    .iter()
+                    .find_map(|(c, _)| c.filter(|(d, _)| d.as_ptr() == ptr))
+                    .expect("group came from a spec");
+                let (sum, cnt, mn, mx, r) = match (want_sum, want_minmax) {
+                    (false, false) => scan_fold_cnt(store, label, present),
+                    (true, false) => scan_fold_sum(store, label, data, present),
+                    (false, true) => scan_fold_minmax(store, label, data, present),
+                    (true, true) => scan_fold_all(store, label, data, present),
+                };
+                rows = r;
+                (sum, cnt, mn, mx)
+            })
+            .collect();
         let cols: Vec<Col> = specs
             .iter()
             .map(|&(col, func)| {
+                let Some((data, _)) = col else {
+                    return Col::Gen(vec![Value::Num(rows as f64)]); // count(*)
+                };
+                let i = groups
+                    .iter()
+                    .position(|(p, _, _)| *p == data.as_ptr())
+                    .expect("spec has a group");
+                let (sum, cnt, mn, mx) = folded[i];
                 let v = match func {
-                    AggFn::Count if col.is_none() => Value::Num(rows as f64),
                     AggFn::Count => Value::Num(cnt as f64),
                     AggFn::Sum => Value::Num(sum),
                     AggFn::Avg if cnt == 0 => Value::Null,

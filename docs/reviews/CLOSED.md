@@ -4542,3 +4542,29 @@ visit, and a fixture covering two of four loops reads exactly like one covering 
 
 Also: **a cached check is not a check.** CI went red on 469 because `bun run check` passed off the
 nx cache while CI runs `bunx oxfmt --check .` uncached on a markdown table (fixed in b506de02).
+
+## 471 — two aggregates over DIFFERENT columns: CLOSED at 5.6x / 44x (native). TS never had it
+
+Item 470's arm requires one shared `Num` column; the other case fell to the interleaved loop that
+reads every column for every row and decides there. It now runs ONE PASS PER DISTINCT COLUMN,
+each the specialized fold from 470 with that column's needs unioned — which subsumes the
+same-column case, so there is one code path, not a special case beside a general one.
+
+At 1,000,000 nodes: `sum(age), max(w2)` 5.6 -> 1.0, `count(age), count(w2)` 4.4 -> 0.1; the
+same-column pair and the single aggregates flat (0.6, 0.6, 0.5, 0.0). Three rounds identical.
+**N passes over one column each beat one pass over N columns** — each is a sequential walk of one
+slice with the work known before it starts.
+
+TS does not have this gap (16.8 vs 18.0 at 200,000): item 469's rung already projects one
+synthetic column per aggregate argument.
+
+**A 13x "column gap" measured first was my own fixture**: `route-cost-probe` has TWO fixtures, a
+`Graph` builder for TS and an NDJSON builder for native, and patching one left the property
+absent. `store.column()` returned `None`; an `eprintln` said so in one run. Both fixtures now
+carry the arm and a comment.
+
+Mutation: six of seven caught. The `min`/`max` empty guard SURVIVED until a case that reaches
+`cnt == 0` INSIDE the arm — an absent column makes the arm DECLINE, so empty-graph assertions
+never enter it; it needs a column that exists while holding nothing for the scanned label.
+**A test can assert the right answer for the right reason and never visit the code it is aimed
+at.**
