@@ -3063,6 +3063,18 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   ns/row on a ONE-label fixture, which is the floor and the common case. Worth building only for a
   schema with scores of labels; recorded with its slope so that judgement can be made from numbers.
 
+- **REFUTED — `etype_name`'s O(T) linear scan is NOT observable; the edge-label cost is the
+  ALLOCATION path (395).** Item 394's ablation put 60.2 ns/row (18%) of the edge render in labels,
+  and the code looked alarming: `etype_name` does `etype_ids.iter().find(…)` — a LINEAR SCAN over
+  every edge type — then clones a `String`, and `edge_labels_of` returns `Vec<String>` which
+  `render_edges` copies AGAIN into a `GStr`. Measured on the T axis (100k nodes, degree 5, only the
+  number of other edge types varied, carried by edges that are not rendered):
+  **339.1 / 336.9 / 328.8 / 333.3 / 340.4 ns/row at 0 / 4 / 16 / 64 / 200 extra types — FLAT.**
+  A small cache-resident map walked per row costs less than it reads. **So do not build a reverse
+  id -> name index for this**; the 60.2 ns is the `String` clone, the `Vec`, the sort, the second
+  copy into `GStr` and the `Value::List`. The fix is item 340's borrow (`labels_of_refs`) applied to
+  the edge twin, which never got it — the same "two of most things" pattern as 367/368/370, 374 and 376. Worth ~20-30 ns/row of the 60, so modest; the scan is not worth touching.
+
 ## 6. Consequences of the AND decision — RESOLVED by item 258, and not as predicted
 
 This section was written before the change and asked three questions. All three are now answered by
