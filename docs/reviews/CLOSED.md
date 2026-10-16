@@ -2934,6 +2934,29 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   one-`eprintln` check (item 267's lesson, 371's and now 383's) rather than re-instrumenting a
   corpus.
 
+- **RUNG 3 IS PRICED ON THE WRITE SIDE — item 343's blocker dissolves, and a DIFFERENT one takes
+  its place (384/385).** 343 closed with "next step is pricing rung 3's write-path cost… a set on an
+  EXISTING key must not pay for the index", framing rung 3 as a per-node key LIST whose
+  `contains`-then-insert was the open question. **A per-node BITMASK over key ids answers it:** a
+  bit test plus a bit set, one flat allocation, no per-node `Vec`. Measured against the real
+  `SET p.age` baseline of **182 ns/node** (200k nodes, 36.33 ms, 5.5 Melem/s), at K = 4/12/60/200,
+  SEQUENTIAL and RANDOM — both patterns measured because the bit op was never the question, the
+  CACHE was: **0.41–0.73 ns/op, 0.2–0.4% of a SET**, with no penalty even at a 4.77 MiB mask, which
+  stays L3-resident.
+  **THE REAL CONSTRAINT IS THE LAYOUT'S GROWTH, which 343 was not worried about.** Row-major N×K is
+  what makes rendering one node cheap (its K bits are contiguous) — and it means a NEW STORE KEY
+  changes the stride, so the whole mask is re-laid out. Keys appear as first seen during decode, so
+  K climbs 0 → final. Measured over a 200k-node mask growing to K=200: **naive restride per new key
+  1932.9 ms = 477% of the 405 ms decode** (199 restrides) against **geometric doubling 29.5 ms =
+  7.3%** (8 restrides) — **65.5x**, with identical bits set both ways (9,950,000) as the
+  cross-check. **So geometric stride growth is REQUIRED, not an optimization**: without it the
+  ingest cost is prohibitive, and column-major would make growth trivial while restoring the
+  K-separate-arrays render cost rung 3 exists to remove.
+  **State: rung 3's write side is priced and viable.** Per-write ~0.3%, ingest ~7.3% of decode with
+  geometric striding, memory 4.77 MiB at K=200/N=200k plus up to 2x from doubling's slack and a
+  transient copy during a restride. The READ win remains 342's: packed is 145.4/244.7 ns/row at
+  K=60/200 and rung 3 takes K=200 toward the ~90 ns/row floor. Still NOT BUILT — this prices it.
+
 ## 6. Consequences of the AND decision — RESOLVED by item 258, and not as predicted
 
 This section was written before the change and asked three questions. All three are now answered by
