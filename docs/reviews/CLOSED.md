@@ -3207,6 +3207,19 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   items 290/298: four hops forward vs reversed 474.94 vs 721.55 ms (1.52x), five hops 930.05 vs
   851.61 (1.09x the other way).
 
+- **NOT A GAP — `V().out(T).count()` native 0.59 ms against TS ~0.00 is a STORAGE-POLICY
+  difference, not a missing fast path (413).** The last native-slower row in the Gremlin table
+  after 412. Native already takes the right algorithm: `try_fused_count` sums adjacency LENGTHS,
+  O(sources) and never touching an edge — 0.59 ms over 200,000 sources is ~3 ns each, which IS
+  that loop. TS answers in O(1) because `Graph.edgesByLabel` is a per-label `Set<Edge>` it
+  maintains **unconditionally**, so `.size` is the answer. Native's equivalent
+  (`create_edge_type_index`) is **OPT-IN and off by default**, so the bench fixture has no such
+  index and nothing O(1) is available to read.
+  **So closing this would mean always maintaining a per-type edge index in native** — a write
+  cost on every `addEdge`, which is a deliberate storage decision and not a planner oversight.
+  Do not re-open as a query-planning target; it is a config/storage question, and the write-side
+  price would have to be measured first.
+
 - **DONE — Gremlin's `E().count()` built and SORTED a million ids to read their length; 303x
   (412).** `Plan::EdgeScan` runs `all_edges()`, which flat-maps `out_adj` into a `Vec<u32>` and
   sorts it; `try_scan_count` had the NODE arms and no edge arm, so `count(*)` fell through to the
