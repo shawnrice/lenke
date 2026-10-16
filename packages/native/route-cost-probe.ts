@@ -213,6 +213,11 @@ const queries: Record<string, string> = {
   distdirnamed: 'MATCH (a:Person)-[:KNOWS]->(b) RETURN DISTINCT b.age AS k',
   distnode: 'MATCH (n:Person) RETURN DISTINCT n.age AS k',
   distcount: 'MATCH (:Person)-[:KNOWS]->(b) RETURN count(DISTINCT b.age) AS c',
+  // Item 486: a rel VARIABLE nothing reads. Item 485's mutation run showed the DISTINCT walk's
+  // refusal of it is EQUIVALENT — admitting it answers the same — so this prices the widening.
+  distrelvar: 'MATCH (:Person)-[r:KNOWS]->(b) RETURN DISTINCT b.age AS k',
+  distrelread: 'MATCH (:Person)-[r:KNOWS]->(b) RETURN DISTINCT r.w AS k',
+  projrelvar: 'MATCH (:Person)-[r:KNOWS]->(b) RETURN b.age AS k',
   twohopboth: 'MATCH (:Person)-[:KNOWS]-(b)-[:KNOWS]-(c) RETURN count(*) AS c',
   twohopdir: 'MATCH (:Person)-[:KNOWS]->(b)-[:KNOWS]->(c) RETURN count(*) AS c',
   // Item 484: the THREE-hop twin of item 483. Run at a smaller PN — the undirected row count

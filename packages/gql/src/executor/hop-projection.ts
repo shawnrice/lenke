@@ -1591,7 +1591,7 @@ const groupingIsDistinct = (proj: CProjection, projection: Projection): boolean 
 
 /** The far end named, and the relationship plain and unnamed (nothing to bind per edge). */
 /**
- * The REL is plain and unnamed — the only thing a DISTINCT walk needs from the hop itself.
+ * The REL is plain, and its variable — if it has one — is read NOWHERE this shape covers.
  *
  * It used to demand that the far NODE be named too, and `distinctShape` demanded a named start,
  * which made two spellings of one question cost 17x apart: `MATCH (:Person)-[:KNOWS]->(b)
@@ -1600,8 +1600,42 @@ const groupingIsDistinct = (proj: CProjection, projection: Projection): boolean 
  * for the end the projection does not read — the keyed end is named by the expression itself,
  * which `onStart`/`onFar` below already require.
  */
-const plainUnnamedRel = (hop: { rel: { variable?: string } } | undefined): boolean =>
-  hop === undefined || (plainRel(hop.rel as never) && hop.rel.variable === undefined);
+const plainUnnamedRel = (
+  hop: { rel: { variable?: string } } | undefined,
+  // Everything the walk would have to evaluate: the projection, the clause `WHERE`, and the
+  // `LET` of the three-clause form. A mention in ANY of them declines.
+  mentions: readonly (Projection | Expr | undefined)[],
+): boolean => {
+  if (hop === undefined) {
+    return true;
+  }
+
+  if (!plainRel(hop.rel as never)) {
+    return false;
+  }
+
+  const relVar = hop.rel.variable;
+
+  // A rel VARIABLE nothing reads is servable: this walk never binds the edge, so the variable's
+  // only effect would be through a read, and there is none. Refusing it outright made
+  // `MATCH (:Person)-[r:KNOWS]->(b) RETURN DISTINCT b.age` cost 1050 ms where the same query
+  // without the `r:` cost 55 — 19x for a name nobody uses (item 486). Item 485's mutation run
+  // is what identified the guard as conservative: its mutant answered correctly everywhere.
+  //
+  // BELT-AND-BRACES, and measured as such. The check FIRES on five shapes (a projection,
+  // `WHERE` or `LET` reading `r.w`, …) but every one of them is ALSO refused by the rules
+  // below — `reads` must be exactly one end's variable, `whereReadsOnly` refuses a `WHERE`
+  // naming anything else, and `sourceFor` refuses a `LET` the projection does not use. Dropping
+  // this line passed all 72 DISTINCT tests, so it earns no test of its own; it stays because
+  // this walk CANNOT bind an edge, and the cost of being wrong here is a silent wrong answer
+  // rather than a slow one.
+  //
+  // It does NOT close item 444's subquery hole, and an earlier version of this comment claimed
+  // it did: `mentionsName` does not look inside a subquery expression, which a probe showed
+  // directly — `RETURN DISTINCT COUNT { MATCH (a)-[r:T]->(z) }` does not fire this check at all
+  // and is refused somewhere else. Recording that rather than leaving a false reassurance.
+  return relVar === undefined || mentions.every((m) => m === undefined || !mentionsName(m, relVar));
+};
 
 /** Does `where` read nothing but `only`? A name it does not recognize counts against it. */
 const whereReadsOnly = (where: Expr | undefined, only: string): boolean => {
@@ -1822,7 +1856,7 @@ const distinctShape = (
   const hop = pattern.segments.length === 1 ? pattern.segments[0] : undefined;
   const far = hop?.node;
 
-  if (!plainUnnamedRel(hop)) {
+  if (!plainUnnamedRel(hop, [ret.projection, m.where, bound?.expr])) {
     return null;
   }
 

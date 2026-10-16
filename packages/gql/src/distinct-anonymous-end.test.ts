@@ -140,6 +140,52 @@ describe('an anonymous end in the DISTINCT walk (item 485)', () => {
     ]);
   });
 
+  // Item 486: a rel VARIABLE nothing reads. The walk never binds the edge, so a name no one
+  // uses cannot change an answer — and refusing it cost 19x for the `r:` alone (1050 ms against
+  // 55). Item 485's mutation run is what identified the guard as conservative.
+  describe('a rel variable nothing reads (item 486)', () => {
+    test('an UNREAD rel variable answers exactly as no variable does', () => {
+      const g = build();
+
+      expect(query(g, 'MATCH (:P)-[r:T]->(b) RETURN DISTINCT b.k AS k')).toEqual(
+        query(g, 'MATCH (:P)-[:T]->(b) RETURN DISTINCT b.k AS k'),
+      );
+      expect(query(g, 'MATCH (a:P)-[r:T]->(b) RETURN count(DISTINCT b.k) AS c')).toEqual([
+        { c: 2 },
+      ]);
+    });
+
+    test('a projection that READS the edge declines, and still answers', () => {
+      const g = build();
+
+      // The walk has no edge bound, so this shape must stay on the general path. It is also the
+      // control the widening cannot reach: 1087-1107 ms where the unread spelling is 53-56.
+      expect(query(g, 'MATCH (:P)-[r:T]->(b) RETURN DISTINCT r.id AS r')).toEqual([{ r: null }]);
+    });
+
+    test('a WHERE or a LET that reads the edge declines', () => {
+      const g = build();
+
+      expect(query(g, 'MATCH (:P)-[r:T]->(b) WHERE r.id IS NULL RETURN DISTINCT b.k AS k')).toEqual(
+        [{ k: 'x' }, { k: 'y' }],
+      );
+      expect(query(g, 'MATCH (a:P)-[r:T]->(b) LET e = r.id RETURN DISTINCT e AS e')).toEqual([
+        { e: null },
+      ]);
+    });
+
+    test('a SUBQUERY naming the edge declines — item 444s hazard', () => {
+      const g = build();
+
+      // `mentionsName` is over-broad on purpose: a subquery correlating on `r` has to NAME it,
+      // and a name anywhere in the projection is a decline. Without that, a correlated inner
+      // pattern would be served as if it bound `r` freshly, which is item 444's wrong answer.
+      expect(
+        query(g, 'MATCH (a:P)-[r:T]->(q) RETURN DISTINCT COUNT { MATCH (a)-[r:T]->(z) } AS n'),
+      ).toEqual([{ n: 1 }]);
+    });
+  });
+
   test('an UNDIRECTED DISTINCT, including a self-loop', () => {
     const g = new Graph();
     const p = g.addVertex({ id: 'p', labels: ['P'], properties: { k: 'p' } });

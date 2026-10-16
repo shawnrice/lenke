@@ -4888,3 +4888,23 @@ end's constraint (vacuous in the shared fixture, since every far end is reachabl
 starts), and a rel VARIABLE. The first two are now caught. **The third is EQUIVALENT and so
 names a free widening**: `reads` must be exactly one end's variable, so `-[r:T]->` with nothing
 reading `r` would answer the same on the walk. Priced, not taken.
+
+## 486 — a rel VARIABLE nothing reads: CLOSED at 18.6x in the DISTINCT walk
+
+Item 485's equivalent mutant said the refusal was conservative, so it got priced:
+`(:Person)-[r:KNOWS]->(b) RETURN DISTINCT b.age` cost 1050 ms against 55 for the same query
+without the `r:` — 19x for a name nobody uses. The walk never binds the edge, so an unREAD
+variable cannot change an answer; `plainUnnamedRel` admits it when neither the projection, the
+clause `WHERE` nor the `LET` names it. 1050 -> 53.5-56.6 ms.
+
+**The control that matters is `RETURN DISTINCT r.w`**, which must STAY on the general path
+(1087-1107, unmoved) because the walk has no edge to read.
+
+**The new mentions check is belt-and-braces and the probe proved it**: four mutants on it
+survived, so I instrumented — it FIRES on five shapes and every one is also refused by rules
+already present (`reads`, `whereReadsOnly`, `sourceFor`). It stays only because the walk cannot
+bind an edge and the failure mode would be silent.
+
+**Its doc comment was WRONG before the probe**: it claimed to close item 444's subquery hole, but
+`mentionsName` does not look inside a subquery expression — `COUNT { MATCH (a)-[r:T]->(z) }` does
+not fire the check at all. A guard's comment is a claim like any other.
