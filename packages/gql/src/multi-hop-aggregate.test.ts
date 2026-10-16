@@ -209,6 +209,30 @@ describe('two or more aggregates over one hop (item 472)', () => {
       ]);
     });
 
+    test('a COUNT over a looped graph takes the SINGLE undirected walk (item 481)', () => {
+      const graph = new Graph();
+      const a = graph.addVertex({ labels: ['A'], properties: { k: 1 } });
+      const b = graph.addVertex({ labels: ['A'], properties: { k: 2 } });
+      const far = graph.addVertex({ labels: ['B'], properties: { k: 9 } });
+
+      // A self-loop forces the fallback (two turned walks would meet it twice), and an edge
+      // BETWEEN two starts means the answer depends on in-edges being walked at all. Without
+      // both in one fixture the fallback has NO teeth — every mutant on it survived until this.
+      graph.addEdge({ from: a, to: a, labels: ['E'], properties: {} });
+      graph.addEdge({ from: a, to: b, labels: ['E'], properties: {} });
+      graph.addEdge({ from: a, to: far, labels: ['E'], properties: {} });
+
+      // From a: the loop (once), b, far. From b: a, via its IN edge. Four rows.
+      expect(query(graph, 'MATCH (:A)-[:E]-(x) RETURN count(*) AS c, max(x.k) AS m')).toEqual(
+        query(graph, 'MATCH (:A)-[:E]-(x) RETURN count(*) AS c, max(x.k) AS m ORDER BY c'),
+      );
+      expect(query(graph, 'MATCH (:A)-[:E]-(x) RETURN count(*) AS c, max(x.k) AS m')).toEqual([
+        { c: 4, m: 9 },
+      ]);
+      // The single-aggregate rung takes the same fallback.
+      expect(query(graph, 'MATCH (:A)-[:E]-(x) RETURN count(x.k) AS c')).toEqual([{ c: 4 }]);
+    });
+
     test('an EXTREMUM is served over a graph WITH self-loops (item 479)', () => {
       const graph = new Graph();
       const a = graph.addVertex({ labels: ['A'], properties: { k: 5 } });

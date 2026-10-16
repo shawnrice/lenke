@@ -2493,13 +2493,18 @@ const hopAggregateWalks = (
   // Is every admitted fold IDEMPOTENT (`min`/`max`)? Then a self-loop met twice changes
   // nothing and the two walks are safe on any graph.
   idempotent: boolean,
-): { walks: RowsFn[]; noSelfLoops: boolean } | null => {
+): { walks: RowsFn[]; noSelfLoops: boolean; looped: RowsFn | undefined } | null => {
   if (direction !== 'both') {
     const one = detectHopProjection([m, synthRet], [cm, synthCret]);
 
-    return one === null ? null : { walks: [one], noSelfLoops: false };
+    return one === null ? null : { walks: [one], noSelfLoops: false, looped: undefined };
   }
 
+  // The SINGLE undirected walk item 480 added, which handles a self-loop itself. It is the
+  // fallback rather than the default because the two turned walks can each be FAR-DRIVEN when
+  // the start label is vacuous, and two far-driven passes beat one start-driven pass: measured
+  // 118 ns a row against 375 at 200,000 nodes / 1,000,000 edges (item 481).
+  const looped = detectHopProjection([m, synthRet], [cm, synthCret]) ?? undefined;
   const walks: RowsFn[] = [];
 
   for (const dir of ['out', 'in'] as const) {
@@ -2507,13 +2512,13 @@ const hopAggregateWalks = (
     const walk = turned === null ? null : detectHopProjection([turned, synthRet], [cm, synthCret]);
 
     if (walk === null) {
-      return null;
+      return looped === undefined ? null : { walks: [looped], noSelfLoops: false, looped };
     }
 
     walks.push(walk);
   }
 
-  return { walks, noSelfLoops: !idempotent };
+  return { walks, noSelfLoops: !idempotent, looped };
 };
 
 /**
@@ -2676,19 +2681,22 @@ export const detectHopAggregate = (
     return null;
   }
 
-  const { walks, noSelfLoops } = turned;
+  const { walks, noSelfLoops, looped } = turned;
   const { fold } = agg;
 
   return (graph, params) => {
-    // A self-loop would be met by BOTH walks; `expand` yields it once. Declining hands the
-    // query to the general path, which is what it did before this rung existed.
-    if (noSelfLoops && graph.selfLoopCount !== 0) {
+    // A self-loop would be met by BOTH turned walks; `expand` yields it once. The single
+    // undirected walk handles that itself, so a looped graph switches to it instead of
+    // declining — chosen per CALL, which costs the row loop nothing (item 481).
+    const chosen = noSelfLoops && graph.selfLoopCount !== 0 ? looped : undefined;
+
+    if (chosen === undefined && noSelfLoops && graph.selfLoopCount !== 0) {
       return null;
     }
 
     let acc = fold.init();
 
-    for (const walk of walks) {
+    for (const walk of chosen === undefined ? walks : [chosen]) {
       const rows = walk(graph, params);
 
       // A DECLINE from the walk is a decline from here too: the general path has a better plan.
@@ -2872,18 +2880,21 @@ export const detectMultiHopAggregate = (
     return null;
   }
 
-  const { walks, noSelfLoops } = turned;
+  const { walks, noSelfLoops, looped } = turned;
 
   return (graph, params) => {
-    // See the single-aggregate twin: two walks meet a self-loop twice.
-    if (noSelfLoops && graph.selfLoopCount !== 0) {
+    // See the single-aggregate twin: two walks meet a self-loop twice, and the single
+    // undirected walk does not.
+    const chosen = noSelfLoops && graph.selfLoopCount !== 0 ? looped : undefined;
+
+    if (chosen === undefined && noSelfLoops && graph.selfLoopCount !== 0) {
       return null;
     }
 
     const state = accs.map((a) => (a.kind === 'fold' ? a.fold.init() : undefined));
     let n = 0;
 
-    for (const walk of walks) {
+    for (const walk of chosen === undefined ? walks : [chosen]) {
       const rows = walk(graph, params);
 
       // A DECLINE from the walk is a decline from here: the general path has a better plan.

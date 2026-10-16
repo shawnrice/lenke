@@ -4781,3 +4781,23 @@ into the directed walks).
 
 **OPEN, now available:** the aggregate rungs could use this single undirected walk instead of
 two turned ones, retiring item 478's `selfLoopCount` decline for counting folds as well.
+
+## 481 — the looped-graph undirected aggregate: CLOSED at 1.9x by falling back, not declining
+
+Item 479 left the COUNT-bearing undirected aggregate declining on a looped graph; item 480 built
+a single undirected walk that handles a loop itself. The two routes are now picked per CALL: two
+turned walks when the folds are idempotent or the graph is loop-free (they can each be
+FAR-DRIVEN — 118 ns a row against 375), and item 480's walk otherwise instead of declining.
+
+DEFAULT (looped) fixture, three rounds: `count(*), max(b.age)` 1498-1598 -> 766-833;
+`count(b.age)` 1505 -> 782. **The idempotent control must KEEP the faster two-walk route on the
+same graph — and does (235 -> 235-310)**; the directed control is flat.
+
+**The fallback had NO teeth until one fixture held two things at once**: a self-loop (to force
+the fallback) AND an in-edge to a start (so walking only out-edges differs). 479's loop fixture
+had no in-edge; 478's in-edge fixture had no loop, and all four mutants survived. _Two
+conditions each present somewhere is not the same as both present together_ — a distinct failure
+from the single-field vacuity of 475-477.
+
+One survivor is recorded, not chased: dropping the fallback makes the rung DECLINE, which
+answers identically. A perf mutant, covered by the measurement.
