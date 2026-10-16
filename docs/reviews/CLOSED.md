@@ -4432,3 +4432,34 @@ one folded in index order is `2.0000000000000000e16` vs `2.0000000000000004e16`.
 guards — but by `detectNodeAggregate` resolving its own fold for the one shape whose order both
 paths share. The guard must hold even if `detectNodeAggregate` later gains a `WHERE`, which is a
 test to write rather than a line to add.
+
+## 467 — item 466's licensed `sum` fold is NOT available: `sum` is inherently TWO-PASS
+
+`sum` cannot be a streaming fold in any position, for a reason independent of item 419's
+ordering hazard:
+
+```js
+if (values.some(isTemporal)) return temporalSum(values);
+if (values.some(Array.isArray)) throw nonNumericAgg();
+return values.reduce((s, v) => s + numArg(v), 0);
+```
+
+A single temporal ANYWHERE changes the operation for every value and a single array ANYWHERE
+throws, so the operation is not known until the last value is seen. **Items 465 and 466 both
+attributed `foldFor`'s omission entirely to ordering; there are two reasons and I reasoned with
+one.** Item 377 named this one ("the `temporalSum`-before-array PRECEDENCE") and item 419 said it
+"is not the blocker" — true of the hop's ordering divergence, not of this.
+
+**The available fix is a different shape, and a better one.** The 4.6x is not the fold: it is that
+`foldedAggs === undefined` disables streaming, so the general path materializes a GROUP OF
+BINDINGS and maps each through `argFn` — item 377's per-row `Binding` `Map`, ~125 ns a row. A sum
+needs every VALUE, not every BINDING. So: stream the argument values into an array (one number a
+row, no `Map`) and hand it to the SAME collection-wide `sum`. Semantics identical by construction
+rather than by replication — the property item 419 demanded and a hand-written fold could not give.
+
+Needs the `switch (name)` block extracted from `compileAggregate`'s closure into `(name, values)`
+so both callers run one implementation. Own tick: it touches the general aggregate path.
+
+**Lesson: an item that licenses a fix should read the fix's own implementation, not the one next
+to it.** Item 466 read the walk carefully, concluded correctly about order, then estimated the
+rest from `COUNT_FOLD`'s shape without reading `sum`.
