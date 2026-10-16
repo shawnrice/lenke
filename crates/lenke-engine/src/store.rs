@@ -1926,6 +1926,18 @@ impl Store {
         eids
     }
 
+    /// How many edges [`all_edges`](Self::all_edges) would return, WITHOUT building or sorting
+    /// the vector — the out-adjacency lengths summed, which is O(nodes) and allocates nothing.
+    ///
+    /// Exactly `all_edges().len()` by construction: that function flat-maps the same
+    /// `out_adj` and a sort does not change a length. So this is an equivalence, not an
+    /// estimate — which matters because `edge_count()` is the TOTAL EVER CREATED and would
+    /// over-count after a delete.
+    #[must_use]
+    pub fn live_edge_count(&self) -> usize {
+        self.out_adj.iter().map(Vec::len).sum()
+    }
+
     /// Whether node `id` is live (not tombstoned). Scans that iterate the id space
     /// directly consult this to skip deleted nodes.
     #[must_use]

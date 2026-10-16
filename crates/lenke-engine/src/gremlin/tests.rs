@@ -1919,6 +1919,44 @@ fn gremlin_e_all_edges_read_source() {
     assert!(super::parse("g.E('e0')").is_ok());
 }
 
+/// `g.E().count()` is answered from `live_edge_count` without building the id vector (item 412,
+/// 12.12 ms -> 0.04 on a million edges). The claim is an EQUIVALENCE — that sum IS
+/// `all_edges().len()` — so the thing to pin is that it survives DELETION, which is where a
+/// count derived from the wrong quantity goes wrong: `edge_count()` is the total EVER CREATED
+/// and would over-report here.
+///
+/// Asserted three ways against the same store, because each catches a different error: the
+/// enumerated frontier (`g.E().id().count()` walks the ids the fast path skips), the GQL
+/// spelling of the same question, and `outE()` (every edge is some node's out-edge).
+#[test]
+fn gremlin_e_count_is_the_live_edge_count_after_deletes() {
+    let mut store = social();
+    let before = value_bag(&gremlin_rows("g.E().count()", &store));
+    assert_eq!(before, vec!["Num(4.0);"]);
+
+    // Delete one EDGE, then a NODE that still carries edges — the two shapes that move the
+    // adjacency out from under a cached total.
+    let (u, v) = store.edge_endpoints(0).expect("edge 0 exists");
+    store.delete_edge(u, v, 0);
+    store.delete_node(v);
+
+    let after = value_bag(&gremlin_rows("g.E().count()", &store));
+    let enumerated = value_bag(&gremlin_rows("g.E().id().count()", &store));
+    let gql = value_bag(&gql_rows("MATCH ()-[r]->() RETURN count(r)", &store));
+    let out_e = value_bag(&gremlin_rows("g.V().outE().count()", &store));
+
+    assert_eq!(
+        after, enumerated,
+        "the fast path must equal the frontier it skips"
+    );
+    assert_eq!(after, gql, "and the GQL spelling of the same question");
+    assert_eq!(after, out_e, "and every edge is some node's out-edge");
+    assert_ne!(
+        after, before,
+        "the deletes must actually have removed edges"
+    );
+}
+
 /// `has(k)` filters elements that CARRY property `k`; `hasNot(k)` those that
 /// don't — matching the TS engine. Only the `Project` node (graphdb) lacks `age`.
 #[test]

@@ -2204,6 +2204,11 @@ pub(super) fn try_scan_count(
     let n = match input {
         Plan::Scan { label: Some(l) } => store.nodes_with_label(l).len(),
         Plan::Scan { label: None } => store.live_node_count(),
+        // The EDGE twin, which this had never had: `E().count()` built the whole 1,000,000-id
+        // vector in `all_edges` and SORTED it, 12.12 ms, to return its length — while the TS
+        // engine answered from a size. `live_edge_count` is that length by construction
+        // (audit item 412).
+        Plan::EdgeScan => store.live_edge_count(),
         _ => return None,
     };
     Some(scalar_num(n as f64))

@@ -3207,6 +3207,16 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   items 290/298: four hops forward vs reversed 474.94 vs 721.55 ms (1.52x), five hops 930.05 vs
   851.61 (1.09x the other way).
 
+- **DONE — Gremlin's `E().count()` built and SORTED a million ids to read their length; 303x
+  (412).** `Plan::EdgeScan` runs `all_edges()`, which flat-maps `out_adj` into a `Vec<u32>` and
+  sorts it; `try_scan_count` had the NODE arms and no edge arm, so `count(*)` fell through to the
+  general path. **12.12 -> 0.04 ms**, reproduced twice, with seven controls in the same bench
+  table flat. New `live_edge_count` sums out-adjacency lengths = **exactly `all_edges().len()` by
+  construction** — `edge_count()` would have been wrong, being the total EVER CREATED, and the
+  mutant that used it is caught. `Plan::EdgeScan` is produced only by `gremlin.rs`, so there is
+  NO GQL twin (its "every edge" is an `Expand`) — worth stating, because after five sibling-path
+  findings the reflex is to assume one.
+
 - **NO TWIN — native cannot have item 410's bug, because it decides seeding at PLAN time (411).**
   `seek_beats_scan` runs inside `optimize_indexed`, so a declined seek is not in the plan and
   `cost::estimate` sees the `Scan` that replaced it; TS decides per call at RUN time, so its
