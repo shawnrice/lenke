@@ -1642,6 +1642,102 @@ const runFold = (fold: AggFold, values: unknown[]): unknown => {
  * fold it over the `group` of bindings (or `[binding]` when called outside an
  * aggregating projection).
  */
+/**
+ * Apply an aggregate to an already-collected list of its argument's VALUES (audit item 468).
+ *
+ * Extracted verbatim from `compileAggregate`'s closure, which computed `values` by mapping a
+ * group of BINDINGS through the argument expression and then ran this switch. The switch needs
+ * only the name, the values and the percentile fraction — nothing from the binding — so the two
+ * halves separate cleanly, and that separation is what lets a caller who can produce the values
+ * more cheaply skip the group entirely.
+ *
+ * There is ONE implementation: `compileAggregate` calls this, and so does the scan shortcut. A
+ * hand-written streaming fold would have been a second one, and for `sum` it could not even be
+ * written — the operation is chosen by looking at the WHOLE collection (a temporal anywhere
+ * means `temporalSum`, an array anywhere throws), which item 467 is the entry about.
+ */
+export const aggregateOverValues = (name: string, values: unknown[], frac: number): unknown => {
+  switch (name) {
+    // These three go through `foldFor`'s accumulator rather than reimplementing it, so the
+    // streaming path and the array path cannot drift apart (item 297's condition).
+    case 'count':
+      return runFold(COUNT_FOLD, values);
+    // `sum` over DURATIONs folds via the same `dur + dur` (overflow throws);
+    // `avg` over any temporal, and `sum` over a non-DURATION, are loud data
+    // exceptions rather than a silent NaN → null. Mirrors the native engine.
+    // A temporal ANYWHERE in the group (not just the first row) makes the
+    // aggregate unrepresentable — a heterogeneous numeric+temporal column must
+    // throw, not silently coerce the temporal to `NaN`→`null`. Native faults
+    // per-value, so we scan for any temporal to stay byte-identical.
+    case 'sum':
+      if (values.some(isTemporal)) {
+        return temporalSum(values);
+      }
+
+      if (values.some(Array.isArray)) {
+        throw nonNumericAgg();
+      }
+
+      return values.reduce<number>((s, v) => s + numArg(v), 0);
+    case 'avg':
+      if (values.some(isTemporal)) {
+        throw unsupportedTemporalAgg();
+      }
+
+      if (values.some(Array.isArray)) {
+        throw nonNumericAgg();
+      }
+
+      return values.length === 0
+        ? null
+        : values.reduce<number>((s, v) => s + numArg(v), 0) / values.length;
+    case 'min':
+      return runFold(extremumFold(true), values);
+    case 'max':
+      return runFold(extremumFold(false), values);
+    case 'collect':
+    case 'collect_list':
+      return values;
+    case 'percentile_cont':
+      return percentileOf(values, frac, true);
+    case 'percentile_disc':
+      return percentileOf(values, frac, false);
+    // ISO population / sample standard deviation, one-pass over the group's
+    // numeric values — the SAME formula the native engine uses, so the f64
+    // result is byte-identical. `stddev_pop` null over 0 rows; `stddev_samp`
+    // null over fewer than 2; the summed squared deviation is clamped at 0 so
+    // float cancellation can't slip a tiny negative into sqrt.
+    case 'stddev_pop':
+    case 'stddev_samp': {
+      const sample = name === 'stddev_samp';
+      const n = values.length;
+
+      // Type-check the values (via `numArg`) BEFORE the count short-circuit: a non-numeric
+      // value is a data exception even when there are too few rows to compute a deviation,
+      // so `stddev_samp(true)` FAULTS rather than returning null. Matches the native engine
+      // and `sum`/`avg`/`percentile`. An empty group has nothing to check → null below.
+      let s = 0;
+      let sq = 0;
+
+      for (const v of values) {
+        const x = numArg(v);
+        s += x;
+        sq += x * x;
+      }
+
+      if (sample ? n < 2 : n === 0) {
+        return null;
+      }
+
+      const variance = (sq - (s * s) / n) / (sample ? n - 1 : n);
+
+      return Math.sqrt(Math.max(0, variance));
+    }
+    default:
+      return null;
+  }
+};
+
 const compileAggregate = (expr: FuncExpr): CompiledExpr => {
   const { name, star, distinct } = expr;
 
@@ -1710,85 +1806,7 @@ const compileAggregate = (expr: FuncExpr): CompiledExpr => {
     // DATE'2020-01-01') over two rows must be 1, and count(DISTINCT [x]) dedups too.
     const values = distinct ? distinctByValueKey(nonNull) : nonNull;
 
-    switch (name) {
-      // These three go through `foldFor`'s accumulator rather than reimplementing it, so the
-      // streaming path and the array path cannot drift apart (item 297's condition).
-      case 'count':
-        return runFold(COUNT_FOLD, values);
-      // `sum` over DURATIONs folds via the same `dur + dur` (overflow throws);
-      // `avg` over any temporal, and `sum` over a non-DURATION, are loud data
-      // exceptions rather than a silent NaN → null. Mirrors the native engine.
-      // A temporal ANYWHERE in the group (not just the first row) makes the
-      // aggregate unrepresentable — a heterogeneous numeric+temporal column must
-      // throw, not silently coerce the temporal to `NaN`→`null`. Native faults
-      // per-value, so we scan for any temporal to stay byte-identical.
-      case 'sum':
-        if (values.some(isTemporal)) {
-          return temporalSum(values);
-        }
-
-        if (values.some(Array.isArray)) {
-          throw nonNumericAgg();
-        }
-
-        return values.reduce<number>((s, v) => s + numArg(v), 0);
-      case 'avg':
-        if (values.some(isTemporal)) {
-          throw unsupportedTemporalAgg();
-        }
-
-        if (values.some(Array.isArray)) {
-          throw nonNumericAgg();
-        }
-
-        return values.length === 0
-          ? null
-          : values.reduce<number>((s, v) => s + numArg(v), 0) / values.length;
-      case 'min':
-        return runFold(extremumFold(true), values);
-      case 'max':
-        return runFold(extremumFold(false), values);
-      case 'collect':
-      case 'collect_list':
-        return values;
-      case 'percentile_cont':
-        return percentileOf(values, frac, true);
-      case 'percentile_disc':
-        return percentileOf(values, frac, false);
-      // ISO population / sample standard deviation, one-pass over the group's
-      // numeric values — the SAME formula the native engine uses, so the f64
-      // result is byte-identical. `stddev_pop` null over 0 rows; `stddev_samp`
-      // null over fewer than 2; the summed squared deviation is clamped at 0 so
-      // float cancellation can't slip a tiny negative into sqrt.
-      case 'stddev_pop':
-      case 'stddev_samp': {
-        const sample = name === 'stddev_samp';
-        const n = values.length;
-
-        // Type-check the values (via `numArg`) BEFORE the count short-circuit: a non-numeric
-        // value is a data exception even when there are too few rows to compute a deviation,
-        // so `stddev_samp(true)` FAULTS rather than returning null. Matches the native engine
-        // and `sum`/`avg`/`percentile`. An empty group has nothing to check → null below.
-        let s = 0;
-        let sq = 0;
-
-        for (const v of values) {
-          const x = numArg(v);
-          s += x;
-          sq += x * x;
-        }
-
-        if (sample ? n < 2 : n === 0) {
-          return null;
-        }
-
-        const variance = (sq - (s * s) / n) / (sample ? n - 1 : n);
-
-        return Math.sqrt(Math.max(0, variance));
-      }
-      default:
-        return null;
-    }
+    return aggregateOverValues(name, values, frac);
   };
 };
 

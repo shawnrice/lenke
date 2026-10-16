@@ -4463,3 +4463,31 @@ so both callers run one implementation. Own tick: it touches the general aggrega
 **Lesson: an item that licenses a fix should read the fix's own implementation, not the one next
 to it.** Item 466 read the walk carefully, concluded correctly about order, then estimated the
 rest from `COUNT_FOLD`'s shape without reading `sum`.
+
+## 468 — `sum`/`avg` on an unfiltered scan: CLOSED at 3.5x, by streaming VALUES not BINDINGS
+
+`aggregateOverValues` is `compileAggregate`'s `switch (name)` lifted out verbatim; the closure
+calls it, and so does a new COLLECTING route in `detectNodeAggregate` for a single `sum`/`avg`
+over an UNFILTERED scan. That route streams the argument values — one number a row, no `Binding`
+`Map` — instead of materializing a group of bindings. **One implementation, so the routes are
+identical by construction**, which is what item 467 said a hand-written fold could not achieve.
+
+`sum(n.age)` 43.7-48.0 -> 12.4-13.7 ms at 200,000 nodes (**3.5x**); `sum(CASE …)` 46.6-54.6 ->
+18.4-18.6 (**2.6x**); both `count` controls flat. The `sum` rows were bimodal before (min 43.7,
+median 90.8) and are not now.
+
+**Three of six mutants SURVIVE and I could not give them teeth — the unfiltered boundary itself**
+(clause `WHERE`, inline constraint, segments). An order divergence needs order-dependent floats
+AND a general path that really visits in a different order; the second could not be constructed.
+A hash seek over a value every row shares is wider than the bucket so `seekIsWorthIt` declines it
+and scans, and a selective filter still finds the index's per-value bucket in insertion order.
+The boundary therefore rests on item 466's reasoning, not a demonstration — it stays because
+conservative is the safe direction for a silent last-bits hazard, and item 419 is what the other
+judgement cost. **A guard whose test could not be written is worth saying so about.**
+
+Two caught: DISTINCT admitted, and the nullish filter dropped. The DISTINCT one SURVIVED until
+the fixture gained a duplicate value — without one `sum(DISTINCT a.k)` equals `sum(a.k)` and the
+guard is vacuous.
+
+Also: `sum`/`avg` moved out of `node-aggregate.test.ts`'s "REFUSED shapes" list, which named a
+routing that is no longer true. **A stale test name is a claim like any other.**

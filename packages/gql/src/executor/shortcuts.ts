@@ -39,6 +39,7 @@ import {
   compareSort,
   compileExpr,
   compilePredicate,
+  aggregateOverValues,
   satisfies,
   countEdges,
   outNeighbors,
@@ -5311,6 +5312,83 @@ export const detectReachableShortcut = (
  * A scan does not reorder — but the guard is inherited rather than re-argued, because the next
  * aggregate added to `foldFor` would otherwise arrive here unexamined.
  */
+/**
+ * A single COLLECTING aggregate (`sum`/`avg`) over an UNFILTERED scan (audit item 468).
+ *
+ * These have no entry in `foldFor` and cannot get one: `sum` chooses its operation by looking at
+ * the WHOLE collection — a temporal anywhere means `temporalSum`, an array anywhere throws — so
+ * it is inherently two-pass (item 467). What they do not need is the BINDINGS, which is where
+ * the cost is: without a fold the general path keeps a group of them and maps each through the
+ * argument, at ~125 ns a row (items 377, 465).
+ *
+ * **UNFILTERED ONLY, and that boundary is item 466's.** A float `sum` depends on summation
+ * ORDER, so the streamed values must arrive in the same order the general path would fold them.
+ * For an unfiltered scan that holds BY CONSTRUCTION: the shortcut walks
+ * `verticesByLabel.get(name)` (or `verticesById.values()`) and `candidateVertexSource` returns
+ * the very same container. Add a `WHERE` and the general path may seed from an index via
+ * `seedVertices`, visiting in index order instead — a RUN-time decision on which indexes exist,
+ * which is item 419's "observed, not promised" and item 411's trap. Hence: no clause `WHERE`, no
+ * inline constraint, no label expression beyond a plain label.
+ *
+ * DISTINCT is excluded because the general path dedups by `valueKey` before aggregating, and
+ * `star` because `sum(*)` is not a thing. Both are what `foldFor` refuses for the same reasons.
+ *
+ * **The unfiltered guard has NO TEST, and that is recorded rather than papered over.** Mutants
+ * dropping the clause-`WHERE` check, the inline-constraint check and the segments check all
+ * SURVIVE the suite. The DISTINCT and nullish guards do not — those were given teeth by a
+ * duplicate value and an absent property respectively. The difference is that an order
+ * divergence needs floats whose sum is order-dependent AND a general path that actually visits
+ * in a different order, and I could not construct the second: a hash seek over a value every
+ * row shares is wider than the bucket, so `seekIsWorthIt` declines it and scans; make it
+ * selective and the index's per-value bucket holds those rows in insertion order anyway.
+ *
+ * So the boundary is justified by item 466's reasoning — `seedVertices` CAN visit in index
+ * order, and whether it does is a run-time decision — and not by a demonstration. It stays
+ * because conservative is the safe direction when the hazard is a silent last-bits difference,
+ * and because item 419 is the entry about what happens when that judgement goes the other way.
+ */
+const unfilteredScanAgg = (
+  m: Clause,
+  ret: Clause,
+): { name: string; frac: number }[] | undefined => {
+  if (m.kind !== 'match' || ret.kind !== 'return') {
+    return undefined;
+  }
+
+  // No filter of any kind: a clause `WHERE`, an inline constraint, or an inline node `WHERE`
+  // each give the general path something to seed from.
+  if (m.where !== undefined || m.patterns.length !== 1) {
+    return undefined;
+  }
+
+  const [pattern] = m.patterns;
+
+  if (pattern.segments.length !== 0 || !plainNode(pattern.start)) {
+    return undefined;
+  }
+
+  const { items } = ret.projection;
+
+  if (items.length !== 1) {
+    return undefined;
+  }
+
+  const [only] = items;
+  const e = only.expr;
+
+  if (e.kind !== 'func' || e.star || e.distinct || e.args.length !== 1) {
+    return undefined;
+  }
+
+  if (e.name !== 'sum' && e.name !== 'avg') {
+    return undefined;
+  }
+
+  // `frac` is only read by the percentile aggregates, which this never admits; 0 is the same
+  // initial value `compileAggregate` gives it.
+  return [{ name: e.name, frac: 0 }];
+};
+
 export const detectNodeAggregate = (
   clauses: readonly Clause[],
   compiled: readonly CClause[],
@@ -5327,10 +5405,24 @@ export const detectNodeAggregate = (
   }
 
   const proj = cret.projection;
+  // `sum`/`avg` have no entry in `foldFor`, so `foldedAggs` is undefined for them and this
+  // used to bail here — which cost 4.6x, because the general path then materializes a GROUP OF
+  // BINDINGS and maps each through the argument (item 465: `sum(n.age)` 43.7-48.0 ms against
+  // `count(n.age)` 9.4-10.2 at 200,000 nodes).
+  //
+  // They cannot be folds — `sum` chooses its operation by looking at the WHOLE collection, so a
+  // temporal anywhere means `temporalSum` and an array anywhere throws (item 467). But they do
+  // not need the BINDINGS, only the VALUES, so this streams the values and hands them to
+  // `aggregateOverValues` — the same function `compileAggregate` calls, which is what makes the
+  // two identical by construction rather than by replication.
   const folded = proj.foldedAggs;
+  // A COLLECTING aggregate (`sum`/`avg`) on an UNFILTERED scan, which `foldedAggs` cannot carry
+  // because they are not folds. `undefined` when the shape does not qualify, in which case the
+  // fold path below is the only one.
+  const collect = folded === undefined ? unfilteredScanAgg(m, ret) : undefined;
 
   if (
-    folded?.length !== 1 ||
+    (folded?.length !== 1 && collect === undefined) ||
     proj.star ||
     proj.distinct ||
     proj.items.length !== 1 ||
@@ -5358,11 +5450,13 @@ export const detectNodeAggregate = (
   }
 
   const [item] = ret.projection.items;
-  const [agg] = folded;
+  const agg = folded?.[0];
 
   // By IDENTITY: `collectAggregates` finds the aggregate nested in `abs(min(n.k) - 10)` just the
-  // same, and that shape needs the folded value substituted back into a group view.
-  if (item.expr !== agg.expr) {
+  // same, and that shape needs the folded value substituted back into a group view. The
+  // collecting path checks the same thing inside `unfilteredScanAgg`, which matched the item
+  // itself rather than searching inside it.
+  if (agg !== undefined && item.expr !== agg.expr) {
     return null;
   }
 
@@ -5396,7 +5490,29 @@ export const detectNodeAggregate = (
     return null;
   }
 
-  const { fold } = agg;
+  // THE COLLECTING PATH (item 468): stream the argument VALUES — one per row, no `Binding`
+  // `Map` — and hand them to the same `aggregateOverValues` the general path runs. The nullish
+  // filter mirrors the general path's `nonNull`, which is the same rule the fold path applies
+  // per step.
+  if (collect !== undefined) {
+    const [{ name: aggName, frac }] = collect;
+
+    return (graph, params) => {
+      const values: unknown[] = [];
+
+      for (const row of rowsFn(graph, params)) {
+        const v = row[VALUE_COL];
+
+        if (!isNullish(v)) {
+          values.push(v);
+        }
+      }
+
+      return [{ [outName]: aggregateOverValues(aggName, values, frac) }];
+    };
+  }
+
+  const { fold } = agg!;
 
   return (graph, params) => {
     const rows = rowsFn(graph, params);

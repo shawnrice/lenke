@@ -98,12 +98,14 @@ describe('node aggregate', () => {
     ]);
   });
 
+  // `sum`/`avg` USED to be refused here, for the reason the comment gave: they are not in
+  // `foldFor` because they are order-DEPENDENT (item 419). Item 468 admits them on the
+  // UNFILTERED scan alone, where the order is the same container traversal both paths make —
+  // so they moved from this list to `collecting-aggregate.test.ts`, which pins the boundary.
+  //
   // The REFUSED shapes. Each must still answer correctly — a wrong answer means it was taken.
   test.each([
-    // `sum`/`avg` are not in `foldFor`, and item 419 is why that matters: they are
-    // order-DEPENDENT, so no fast path that may reorder rows can hold them.
-    ['sum', 'MATCH (a:P) RETURN sum(a.k) AS m', [{ m: 15 }]],
-    ['avg', 'MATCH (a:P) RETURN avg(a.k) AS m', [{ m: 2.5 }]],
+    // `count(*)` has its own O(groups) path.
     ['count star', 'MATCH (a:P) RETURN count(*) AS m', [{ m: 7 }]],
     ['distinct agg', 'MATCH (a:P) RETURN max(DISTINCT a.k) AS m', [{ m: 5 }]],
     // Nested in a FUNCTION call: `abs(...)` is `kind: 'func'` with one argument, so without the
