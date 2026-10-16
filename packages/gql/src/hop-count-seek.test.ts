@@ -274,6 +274,51 @@ describe('hopSeek chooses the seed set, not the answer (item 176)', () => {
     expect(hopSeek(g, bare, LABEL, env(g))).toBeUndefined();
   });
 
+  // Above the small-graph floor the seek must also be SELECTIVE, not merely narrower than the
+  // bucket. Item 409 measured the break-even at ~1/8: at 30% of the bucket the seek is 1.96x
+  // SLOWER than the scan it replaces and at 60% it is 4.92x, and nothing declined it before.
+  //
+  // The fixture has to clear `SEEK_FLOOR_VERTICES` (4,096), which is the whole point — below
+  // it the choice is unmeasurable and the engine keeps seeking. A smaller fixture would assert
+  // this rule against the floor's early return and pass without exercising it.
+  test('above the floor, a seek covering MOST of the bucket is declined', () => {
+    const g = new Graph();
+
+    for (let i = 0; i < 5_000; i++) {
+      // `half` is 0 for half the vertices: an index set of 2,500 against a 5,000 bucket, so
+      // narrower than the bucket (item 176's rule admits it) but far past 1/8.
+      g.addVertex({
+        id: `u${i}`,
+        labels: ['User'],
+        properties: { half: i % 2, uniq: i },
+      });
+    }
+
+    // TWO single-key indexes, not one composite over the pair: `keys: ['half','uniq']` would
+    // index neither key on its own, and the control below would then fail for the wrong
+    // reason — which is exactly what it did on the first run.
+    g.createIndex({ on: 'vertex', kind: 'hash', keys: ['half'] });
+    g.createIndex({ on: 'vertex', kind: 'hash', keys: ['uniq'] });
+
+    const wide = {
+      variable: 'u',
+      label: { kind: 'label' as const, name: 'User' },
+      pred: { props: [{ key: 'half', value: () => 0 }], where: undefined },
+    } satisfies CNode;
+
+    expect(hopSeek(g, wide, { kind: 'label' as const, name: 'User' }, env(g))).toBeUndefined();
+
+    // The CONTROL, on the same graph and the same code path: a selective key still seeks, so
+    // this pins the rule rather than "seeking is off".
+    const narrow = {
+      variable: 'u',
+      label: { kind: 'label' as const, name: 'User' },
+      pred: { props: [{ key: 'uniq', value: () => 42 }], where: undefined },
+    } satisfies CNode;
+
+    expect(hopSeek(g, narrow, { kind: 'label' as const, name: 'User' }, env(g))?.size).toBe(1);
+  });
+
   test('a seek WIDER than the label bucket is declined', () => {
     // `t = 0` holds for 4 vertices (u0, u2, u4, iso) plus `x0`, which is NOT a User — so the
     // index set is 5 against a User bucket of 7: still narrower, so it seeks. Narrow the

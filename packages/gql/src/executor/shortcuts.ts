@@ -50,7 +50,7 @@ import {
 } from '../executor.js';
 import { candidateCount, candidateVertexSource, expand, matchesLabel } from '../graph-queries.js';
 import type { Adjacency } from '../graph-queries.js';
-import { indexCandidates, matchNode, seedVertices } from './matching.js';
+import { indexCandidates, matchNode, seedVertices, seekIsWorthIt } from './matching.js';
 import type { SeedCandidate } from './matching.js';
 import { AGGREGATES, asTruth, isNullish } from './scalars.js';
 
@@ -156,8 +156,6 @@ const buildNodeCount = <T>(
     // One binding map, reused: `inlineHolds` overwrites the node's own variable per
     // vertex and nothing else reads it, which is what `preds` being CLOSED buys.
     const binding = new Map<string, unknown>();
-    const bucket =
-      name === undefined ? graph.verticesById.size : (graph.verticesByLabel.get(name)?.size ?? 0);
     // AN INDEX SEEK, when the graph offers one and it is SMALLER than the label bucket.
     //
     // Without this the tally always scanned the bucket, so a filtered count ignored a
@@ -195,10 +193,14 @@ const buildNodeCount = <T>(
         }
       }
 
-      // The general path always prefers a seek when one is offered; this additionally
-      // declines a seek WIDER than the bucket, which can happen when the indexed key is
-      // common outside this label. Both are correct — only the cost differs.
-      if (best !== undefined && best.count < bucket) {
+      // This declined only a seek WIDER than the whole bucket (fraction 1.0), which left the
+      // 12.5%-100% band seeking where the scan wins — up to 5.02x at 60% (item 409). The
+      // shared `seekIsWorthIt` is now the one rule, so this site and the general path cannot
+      // disagree about the same node.
+      // Through the shared helper, not the constant applied to `bucket`: the helper also
+      // carries the small-graph FLOOR, and a second copy of that would be a second thing to
+      // drift (item 407's lesson, which is why the helper exists).
+      if (best !== undefined && seekIsWorthIt(graph, cstart.label, best.count)) {
         seeded = best.build();
       }
     }
@@ -574,7 +576,9 @@ export const hopSeek = (
     }
   }
 
-  return best !== undefined && best.count < candidateCount(graph, pa) ? best.build() : undefined;
+  // Same rule as every other seed site (item 409): `< candidateCount` admitted anything
+  // narrower than the whole bucket, where the break-even is ~1/8 of it.
+  return best !== undefined && seekIsWorthIt(graph, pa, best.count) ? best.build() : undefined;
 };
 
 const startOnlyHopCount = (scan: HopScan, startVar: string | undefined): number => {

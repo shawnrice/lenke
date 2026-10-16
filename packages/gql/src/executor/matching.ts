@@ -6,7 +6,7 @@ import { DEFAULT_CONFIG, Path } from '@lenke/core';
 import type { Edge, Graph, IndexableValue, RangeBound, Vertex } from '@lenke/core';
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
-import type { PathMode, PathSelector, RelPattern } from '../ast.js';
+import type { LabelExpr, PathMode, PathSelector, RelPattern } from '../ast.js';
 // Compiled pattern types + binding helpers live in the executor trunk; the value
 // back-edges (consistent/withBinding/…) are used lazily inside match closures, so
 // this is a safe function-level cycle.
@@ -180,6 +180,69 @@ export const indexCandidates = function* (
  * the seed only has to be a superset. Falls back to the label-narrowed scan
  * when nothing is indexed.
  */
+/**
+ * The largest share of the scan a seek may cover and still be worth materializing.
+ *
+ * TWO INDEPENDENT MEASUREMENTS bracket the break-even and they agree. Item 409, 200,000 nodes
+ * over 100 distinct values, the same range query against graphs differing only in the index:
+ *
+ * ```text
+ *        1%    4%    8%   15%   30%   60%     (seek / scan)
+ *      0.06  0.14  0.23  0.84  1.96  5.02
+ * ```
+ *
+ * — break-even ~18%. And `hop-projection`'s `SEEK_MARGIN`, which has guarded the far-side
+ * choice since item 173, records its own crossover "near 3,250 of 20,000" = 16.25%, reached
+ * after a plain guard measured a **3.1x REGRESSION** on an indexed-but-unselective filter.
+ *
+ * The value is `SEEK_MARGIN`'s 1/8 rather than this item's 0.18, deliberately: it is the one
+ * threshold here that was already measured AND shipped, both numbers bracket it, and the two
+ * errors are not symmetric — a wrong DECLINE costs the scan it fell back to, a wrong SEEK is
+ * unbounded (5.02x at 60%, and nothing capped it before this). Re-tuning a path with a
+ * documented 3.1x regression is not something to do as a side effect.
+ */
+export const SEEK_MAX_FRACTION = 1 / 8;
+
+/**
+ * Below this many vertices the seek-vs-scan choice is unmeasurable, so existing behaviour
+ * stands. Native's `SEEK_FLOOR_NODES` is the same number for the same reason.
+ */
+const SEEK_FLOOR_VERTICES = 4_096;
+
+/**
+ * Is a seek of `count` vertices worth materializing against the scan it would replace — the
+ * LABEL bucket, which is what the fallback walks?
+ *
+ * Shared by every site that chooses a seed, because the native engine's twin of this rule drifted
+ * exactly that way: item 407 found `multi_seek_worth_it` keeping its own copy of the ceiling, so
+ * one rung declined while another admitted the same column.
+ */
+export const seekIsWorthIt = (
+  graph: Graph,
+  label: LabelExpr | undefined,
+  count: number,
+): boolean => {
+  const bucket = candidateCount(graph, label);
+
+  // A seek WIDER than the bucket it replaces is never worth it, at ANY size — item 176's rule,
+  // and the floor below must not swallow it. It did on the first attempt, and that test was the
+  // only one of the nine that stayed red, correctly.
+  if (count > bucket) {
+    return false;
+  }
+
+  // BELOW THE FLOOR the seek-vs-scan choice is unmeasurable, so keep the existing behaviour
+  // rather than churn the plan. Native's `seek_beats_scan` opens with exactly this check, and
+  // omitting it flipped NINE existing tests — fixtures of a handful of vertices, where two
+  // matches are 20% of the bucket and the ratio means nothing. The tests were right and the
+  // rule was half-ported.
+  if (graph.verticesById.size < SEEK_FLOOR_VERTICES) {
+    return true;
+  }
+
+  return count <= bucket * SEEK_MAX_FRACTION;
+};
+
 export const seedVertices = function* (
   graph: Graph,
   node: CNode,
@@ -195,7 +258,22 @@ export const seedVertices = function* (
     }
   }
 
-  if (best) {
+  // An index seek is only worth materializing when it is SELECTIVE against the scan it
+  // replaces, and the scan here is the LABEL bucket — which is why `candidateCount` is the
+  // denominator rather than the whole graph. Measured (audit item 409), 200,000 nodes over 100
+  // distinct values, the same range query against graphs differing only in the index:
+  //
+  //        1%    4%    8%   15%   30%   60%     (seek / scan)
+  //      0.06  0.14  0.23  0.84  1.96  5.02
+  //
+  // Break-even is ~18%, and with no gate at all the seek was still chosen at 60%, where it is
+  // 5.02x SLOWER. The native engine has had this rule as `SEEK_MAX_FRACTION` throughout; this
+  // is the missing twin, and the estimate it needs was already on every candidate.
+  //
+  // Sound by construction: the seed only has to be a SUPERSET (`matchNode` and the residual
+  // `WHERE` re-validate), and a label scan is a superset of any index seed for that node. So
+  // this can change the plan's cost and never its answer.
+  if (best && seekIsWorthIt(graph, node.label, best.count)) {
     yield* best.build();
 
     return;

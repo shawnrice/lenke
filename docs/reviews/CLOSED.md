@@ -3186,6 +3186,28 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   meaning "the whole index" — new IR, and item 264 records `rewrite_fuzz`'s generator missing a
   new rung twice.
 
+- **DONE — the TS engine had NO selectivity gate on an index seek; 5.9x at 60% (409).**
+  `collectHints` seeded whenever a hint existed, deliberately ("no selectivity to guess at"), so
+  an unselective seek was never declined: **1.96x worse than the scan at 30%, 5.02x at 60%**,
+  where native stops at 15.4%. THREE sites choose a seed (`matching.ts:seedVertices`,
+  `shortcuts.ts` x2, `hop-projection.ts`) and **the rule already lived in one of them** —
+  `hop-projection`'s `SEEK_MARGIN`, since item 173. Now one shared `seekIsWorthIt`.
+  **The VALUE came from that existing threshold, not from this item's curve**: its comment
+  records a crossover at 16.25% adopted after a measured 3.1x REGRESSION, this item measured
+  ~18%, and the two bracket the same point — so the constant is `SEEK_MARGIN`'s 1/8. A wrong
+  decline costs the scan; a wrong seek is unbounded.
+  After: 30% 1.96 -> 0.90/0.86/0.73, 60% 5.02 -> 0.84/0.91/0.86 (34.37 -> 5.85 ms), the
+  selective 1-8% band unchanged, `bench:usage` point lookup still 920.8k vs 2.0k ops/s.
+
+- **A rule ported WITHOUT its floor flips every small-fixture test, and they are right (409).**
+  Taking native's fraction and leaving `SEEK_FLOOR_NODES` behind flipped NINE tests — on a
+  fixture of a handful of vertices two matches are 20% of the bucket and the ratio is
+  meaningless. Adding the floor fixed eight; the ninth (item 176, "a seek WIDER than the label
+  bucket is declined") stayed red because that rule holds at ANY size and the floor was
+  swallowing it. Order the checks: reject wider-than-bucket, THEN the floor, THEN the fraction.
+  Also: a selectivity test needs a fixture ABOVE the floor or it asserts the rule against the
+  floor's early return and passes vacuously.
+
 - **DONE — the seek-vs-scan ceiling is ENCODING-blind; up to 4.00x on a dict column (407).**
   `SEEK_MAX_FRACTION = 0.154` is one number standing in for "how cheap is a scan of this
   column", and that varies: a dict-encoded column's scan is **flat at ~140us** (a `u32` code
