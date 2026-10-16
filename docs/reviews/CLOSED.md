@@ -3158,10 +3158,23 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   probes a sample: **128,154 -> 300 ns** labelled and **263,070 -> 274 ns** unlabelled, with a
   hash-indexed point eq, a range BOUND and `count(*)` all flat. **A missing path, not a speedup**
   — the number is the size of the hole.
-  **STILL OPEN, deliberately split out**: the PLANNER half. `eq_cand` and `multi_seek_worth_it`
-  gate on `has_hash_index` and `seed_fraction(Eq)` prices through `index_bucket_len`, so `IN` over
-  a range-indexed key still scans. Now worth doing (each arm would be a real seek), but it moves
-  which conjunct seeds, which is plan churn, and needs its own A/B.
+  ~~**STILL OPEN, deliberately split out**: the PLANNER half~~ — **CLOSED by item 404 at 906x.**
+  `multi_seek_worth_it` now admits `has_hash_index || has_range_index`, and `index_bucket_len`
+  falls back to the range bucket so the rung can PRICE what it can execute — without that second
+  half the gate opens onto nothing, because above `SEEK_FLOOR_NODES` a `None` price declines
+  every arm. `IN` over a selective range key **637,343 -> 703 ns**, the OR-chain spelling within
+  3 ns of it, a low-cardinality key 8.7x; four controls flat (`IN` over a HASH key, a single
+  `=`, a range bound, `count(*)`). `eq_cand`, the SINGLE-value rung, stays hash-only on purpose:
+  widening it moves which conjunct a multi-predicate filter seeds, and a lone `k = v` already
+  reaches the probe through the fallback rung.
+
+- **A plan-shape test can cover a GATE and miss the PRICING behind it (404).** The rung's choice
+  is a PERF decision — every mutant returns the right rows, just by scanning — so the test must
+  assert the plan. Reverting the gate was CAUGHT; removing the range fallback from
+  `index_bucket_len` **SURVIVED**, because the fixture sat below `SEEK_FLOOR_NODES` (4,096) and
+  the pricing loop never ran. A second test over 5,000 nodes catches it. **The fourth fixture
+  this session to hide the case that mattered** — uniform labels (374), one-character keys
+  (390/391), the wrong index kind (402), and now a node count below a threshold the code reads.
 
 - **A spelling that LOOKS seeded can be a typed column scan (402).** `k = v` on a range-indexed
   key read 0.125 ms against a 0.622 ms scan and the plan said `IndexSeek` — both true, and

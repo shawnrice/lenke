@@ -2289,6 +2289,74 @@ fn no_hash_index_declines_the_multi_seek() {
     );
 }
 
+/// A RANGE index admits the multi-value seed on the same terms as a hash one, because a point
+/// probe is a degenerate range and item 402 taught the executor to serve it. Without this the
+/// rung's `has_range_index` arm is a PERF decision no correctness test can see: every mutant of
+/// the gate returns the right rows, just by scanning (the same category as item 307's R8). This
+/// asserts the PLAN, which is the only thing that can tell the two apart.
+#[test]
+fn a_range_index_admits_the_multi_seek() {
+    let mut store = social();
+    store.create_range_index("name");
+    let plan = Plan::Scan {
+        label: Some("Person".into()),
+    }
+    .filter(in_list("name", &["alice", "bob"]))
+    .project(vec![("name".into(), prop(0, "name"))]);
+
+    let opt = assert_rows_preserved_indexed(&plan, &store);
+    let Plan::Project { input, .. } = &opt else {
+        panic!("expected Project, got {opt:?}")
+    };
+    let arms = union_arms(input);
+
+    assert_eq!(arms.len(), 2, "expected one seek per value, got {input:?}");
+    assert!(
+        arms.iter()
+            .all(|a| matches!(a, Plan::IndexSeek { key, .. } if key == "name")),
+        "every arm must be an IndexSeek on `name`, got {arms:?}"
+    );
+}
+
+/// The gate is only half the rung: above `SEEK_FLOOR_NODES` (4,096) it also PRICES each arm
+/// through `seed_fraction` -> `index_bucket_len`, which answered `None` for a range-only key and
+/// so declined everything the gate had just admitted. The test above cannot see that — its
+/// fixture is far below the floor, so the pricing loop never runs, and removing the range
+/// fallback SURVIVED it. This one is over the floor, where pricing decides.
+#[test]
+fn a_range_index_admits_the_multi_seek_above_the_pricing_floor() {
+    let mut store = Store::default();
+    // Over the 4,096-node floor, and selective: two arms of one node each is far inside
+    // `SEEK_MAX_FRACTION`, so a correctly priced rung must admit them.
+    for i in 0..5_000u32 {
+        store.add_node(
+            &["Person"],
+            &[("uid", crate::value::Value::Num(f64::from(i)))],
+        );
+    }
+    store.create_range_index("uid");
+
+    let plan = Plan::Scan {
+        label: Some("Person".into()),
+    }
+    .filter(Expr::Or(
+        Box::new(cmp(CompareOp::Eq, prop(0, "uid"), Expr::Lit(n(77.0)))),
+        Box::new(cmp(CompareOp::Eq, prop(0, "uid"), Expr::Lit(n(1234.0)))),
+    ))
+    .project(vec![("uid".into(), prop(0, "uid"))]);
+
+    let opt = assert_rows_preserved_indexed(&plan, &store);
+    let Plan::Project { input, .. } = &opt else {
+        panic!("expected Project, got {opt:?}")
+    };
+
+    assert_eq!(
+        union_arms(input).len(),
+        2,
+        "expected one seek per value above the pricing floor, got {input:?}"
+    );
+}
+
 /// An OR-chain whose disjuncts read DIFFERENT keys is not one multi-value seek, and declines. A
 /// single value still cannot reach this rule either — that is the existing single-`IndexSeek`
 /// path, which must keep its own shape.

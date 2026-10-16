@@ -3963,9 +3963,16 @@ impl Store {
     #[must_use]
     pub fn index_bucket_len(&self, key: &str, value: &Value) -> Option<usize> {
         let path: Vec<String> = key.split('.').map(String::from).collect();
-        let idx = self.indexes.iter().find(|i| i.path == path)?;
-        let gk = crate::value::group_key(value);
-        Some(idx.map.get(&gk).map_or(0, Vec::len))
+        if let Some(idx) = self.indexes.iter().find(|i| i.path == path) {
+            let gk = crate::value::group_key(value);
+            return Some(idx.map.get(&gk).map_or(0, Vec::len));
+        }
+        // No hash index, but a RANGE index prices a point probe just as well: its bucket for
+        // one key IS the equality bucket (item 402's `Eq` arm in `range_lookup`). Without this
+        // the planner could not PRICE a seek it is now able to EXECUTE, so a multi-value seed
+        // over a range-indexed key stayed a scan (item 404).
+        let ix = self.ranges.iter().find(|i| i.key == key)?;
+        Some(ix.map.get(&OrdVal(value.clone())).map_or(0, Vec::len))
     }
 
     /// Total edges ever created (O(1), monotonic). Used as

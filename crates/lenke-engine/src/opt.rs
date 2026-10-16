@@ -3135,7 +3135,16 @@ fn union_of_seeks(label: Option<String>, key: &str, values: Vec<Value>) -> Optio
 /// and a SUMMED selectivity inside [`SEEK_MAX_FRACTION`]? Shared by the whole-predicate rewrite
 /// and the conjunct rung so the two cannot drift on the cost question.
 fn multi_seek_worth_it(key: &str, values: &[Value], idx: &dyn IndexOracle) -> bool {
-    if values.len() < 2 || values.len() > MULTI_SEEK_MAX_ARMS || !idx.has_hash_index(key) {
+    // A RANGE index serves a point probe too (item 402), so it admits a multi-value seed on the
+    // same terms as a hash one: each arm is a real O(log n) lookup rather than another typed
+    // column scan. `eq_cand`, the SINGLE-value rung, is deliberately left on `has_hash_index` —
+    // widening it would change which conjunct a multi-predicate filter seeds, which is plan
+    // churn this item does not need: a lone `k = v` already reaches the probe through the
+    // fallback rung.
+    if values.len() < 2
+        || values.len() > MULTI_SEEK_MAX_ARMS
+        || !(idx.has_hash_index(key) || idx.has_range_index(key))
+    {
         return false;
     }
 
