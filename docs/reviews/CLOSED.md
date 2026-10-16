@@ -2995,6 +2995,27 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   transient copy during a restride. The READ win remains 342's: packed is 145.4/244.7 ns/row at
   K=60/200 and rung 3 takes K=200 toward the ~90 ns/row floor. Still NOT BUILT — this prices it.
 
+- **⚠️ RECALIBRATION OF 342 BEFORE BUILDING RUNG 3: the K-slope reproduces but is 2.16 ns/key, and
+  the BASELINE it does not touch is 466 ns/row (389).** Four ticks of pricing (384/385/386/387/388)
+  had rung 3 ready to build, so the target was re-measured first — 342's numbers predate several
+  renderer changes including 340's hoisting. `MATCH (n:P) RETURN n` over 200,000 nodes with 4
+  properties, varying only the number of OTHER store keys (carried by a handful of `:Carrier` nodes
+  so the columns exist without being present on the rendered rows):
+  **466.2 / 505.2 / 599.0 / 898.0 ns/row at 0 / 12 / 60 / 200 extra keys** — a slope of **2.16
+  ns/key** (342 recorded 7.86 full, 1.59 hoisted) and **1.93x / 1.28x / 1.08x** available to rung 3
+  at K = 200 / 60 / 12.
+  **The baseline is NOT presence scanning**, which is the part that redirects the work: the same
+  sweep with four cheap NUMBERS instead of a distinct-per-node `name` string (200k dictionary
+  entries, an `Arc` clone per read) measured 466.2 against 469.2 — **indistinguishable**, so the 466
+  is neither the property values nor the K-scan. It is `Value::Map` construction (two maps and four
+  `Arc<str>` key clones per node), `node_ext_id`, and `labels_of_refs` + sort. **342's "toward the
+  ~90 ns/row floor" is not reachable from a full element render**; 466 ns/row IS the floor here, and
+  342's 220.6 at K=0 suggests it timed the props loop rather than the user-visible shape.
+  **So rung 3 is worth building for WIDE schemas and is nearly free of value at K=12** — the common
+  case — while the larger prize sits in the baseline it cannot reach. Not a retraction: the slope is
+  real, the pricing (384/385/387) stands, and the ladder's rung 3 remains the right way to remove
+  the slope. But the headline is "render cost stops scaling with store width", not a 20x.
+
 ## 6. Consequences of the AND decision — RESOLVED by item 258, and not as predicted
 
 This section was written before the change and asked three questions. All three are now answered by
