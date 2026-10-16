@@ -18899,3 +18899,106 @@ fn an_aggregate_nested_in_a_scalar_function_parses() {
     };
     assert_eq!(rows, 3, "a plain projection was collapsed into one group");
 }
+
+/// Item 438: `try_filter_keep_arith` fuses `<prop> <arith> <lit> <cmp> <lit>` into the keep pass
+/// — `a.k * 2 > 10` went from 10.251 ms to 2.159 at 1,000,000 nodes (4.75x), landing on the plain
+/// comparison's cost.
+///
+/// The ORACLE is the same predicate with a redundant `+ 0` wrapped round the arithmetic:
+/// `(a.k * 2) + 0 > 10`. Its outer left operand is an `Arith`, not a `Prop`, so the arm declines
+/// it and `eval` answers — and the wrap cannot change a finite result. Both sides THROWING also
+/// counts as agreement, which is how the division-by-zero cases are compared.
+///
+/// 2,250 forms: five arithmetic operators x five literals x six comparisons x five thresholds,
+/// each in three spellings (property first, literal first, and the threshold on the left).
+#[test]
+fn fused_arithmetic_filter_agrees_with_the_general_path() {
+    use crate::value::Value;
+
+    let store = {
+        let mut b = crate::store::Builder::default();
+        // Negatives, zero, a half-integer, and 1e308 so that `* 2` OVERFLOWS to infinity — the
+        // general path's raw-f64 arm does NOT test the result for finiteness, so the fused arm
+        // must not either, and without a value this large that divergence is unreachable.
+        for v in [
+            -7.5f64, -3.0, -1.0, 0.0, 0.5, 1.0, 2.0, 3.0, 7.0, 11.0, 1e17, 1e308,
+        ] {
+            b.node(&["N"], &[("k", Value::Num(v))]);
+        }
+        // No `k` at all, so the `present` gate is observable.
+        b.node(&["N"], &[]);
+        b.build()
+    };
+    let count = |q: &str| -> Result<f64, String> {
+        let raw = crate::gql::parse(q)?;
+        let plan = crate::opt::optimize_indexed(raw, &store);
+        let out = crate::exec::try_run(&plan, &store).map_err(|e| e.to_string())?;
+        match out.rows.iter().next().and_then(|r| r.first()) {
+            Some(Value::Num(n)) => Ok(*n),
+            other => Err(format!("want a number, got {other:?}")),
+        }
+    };
+    let mut checked = 0;
+
+    for op in ["+", "-", "*", "/", "%"] {
+        for lit in ["0", "1", "2", "-2", "0.5"] {
+            for cmp in ["=", "<>", "<", "<=", ">", ">="] {
+                for t in ["0", "1", "5", "-1", "2.5"] {
+                    let forms = [format!("a.k {op} {lit}"), format!("{lit} {op} a.k")];
+
+                    for expr in &forms {
+                        let fast =
+                            format!("MATCH (a:N) WHERE {expr} {cmp} {t} RETURN count(*) AS c");
+                        let slow = format!(
+                            "MATCH (a:N) WHERE ({expr}) + 0 {cmp} {t} RETURN count(*) AS c"
+                        );
+
+                        match (count(&fast), count(&slow)) {
+                            (Ok(f), Ok(s)) => assert!(
+                                (f - s).abs() < 1e-9,
+                                "{fast}: fused gave {f}, general gave {s}"
+                            ),
+                            // Both throwing is agreement — the division-by-zero forms.
+                            (Err(_), Err(_)) => {}
+                            (f, s) => panic!("{fast}: fused {f:?}, general {s:?}"),
+                        }
+
+                        checked += 1;
+                    }
+
+                    // The threshold on the LEFT, which `flip_op` normalizes.
+                    let expr = &forms[0];
+                    let fast = format!("MATCH (a:N) WHERE {t} {cmp} {expr} RETURN count(*) AS c");
+                    let slow =
+                        format!("MATCH (a:N) WHERE {t} {cmp} ({expr}) + 0 RETURN count(*) AS c");
+
+                    match (count(&fast), count(&slow)) {
+                        (Ok(f), Ok(s)) => assert!(
+                            (f - s).abs() < 1e-9,
+                            "{fast}: fused gave {f}, general gave {s}"
+                        ),
+                        (Err(_), Err(_)) => {}
+                        (f, s) => panic!("{fast}: fused {f:?}, general {s:?}"),
+                    }
+
+                    checked += 1;
+                }
+            }
+        }
+    }
+
+    assert_eq!(checked, 2250, "the grid shrank");
+
+    // DIVISION BY ZERO still THROWS rather than being silently answered: the fused arm declines a
+    // zero literal divisor, and declines `lit / a.k` outright because the divisor is then a
+    // column and any row holding 0 would have to throw.
+    assert!(count("MATCH (a:N) WHERE a.k / 0 > 1 RETURN count(*) AS c").is_err());
+    assert!(count("MATCH (a:N) WHERE a.k % 0 > 1 RETURN count(*) AS c").is_err());
+    assert!(count("MATCH (a:N) WHERE 1 / a.k > 1 RETURN count(*) AS c").is_err());
+
+    // OVERFLOW is compared as infinity, not dropped. `1e308 * 2` is one row.
+    assert_eq!(
+        count("MATCH (a:N) WHERE a.k * 2 > 1e308 RETURN count(*) AS c").unwrap(),
+        1.0
+    );
+}

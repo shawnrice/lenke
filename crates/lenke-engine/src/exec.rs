@@ -5950,10 +5950,136 @@ fn try_keep_strsearch(
     }
 }
 
+/// `<prop> <arith> <lit>  <cmp>  <lit>` — a comparison whose left (or right) side is ARITHMETIC
+/// over one numeric property and a constant: `a.k * 2 > 10`, `5 - a.k >= 1`, `a.k + 1 <> 7`.
+///
+/// Item 437 measured what this costs without a fused arm, at identical selectivity (the row count
+/// is constant down the group, so the gap is the expression and nothing else):
+///
+/// ```text
+///                        200,000     1,000,000
+///   a.k > 5               0.365 ms    1.662 ms
+///   a.k + 0 > 5           2.087       9.902      5.7x / 6.0x
+///   a.k * 1 > 5           2.166      10.208
+/// ```
+///
+/// The general path is columnar, not a per-row tree walk, and it is not boxing either — `Col` has
+/// a typed `Num` variant, `read_property` returns one for a fully-present numeric column, and
+/// `arith_general` has a raw-f64 arm. The 5.7x is MATERIALIZATION: it builds `a.k`, then
+/// `a.k + 0`, then the comparison, then the keep-list — four passes and three allocations of
+/// 200,000 values against the one pass and zero allocations here.
+///
+/// SEMANTICS, each matched to the general path rather than to what looks right:
+///
+///   - NO finiteness check on the result. `arith_general`'s raw-f64 arm pushes `x + y` and does
+///     not test it, so an overflow to infinity is compared as infinity. Adding an `is_finite`
+///     guard here would be a DIVERGENCE, which is the opposite of the obvious reading of the
+///     `Expr::Arith` doc ("any … non-finite operand OR result yields NULL" describes the
+///     per-cell fallback, not the raw arm).
+///   - A ZERO literal divisor DECLINES rather than drops: `arith_general` returns
+///     `Err("division by zero")` for `Div`/`Rem` by zero, and a fast path must not silently
+///     answer where the engine throws. Declining hands it back to the general path, which throws.
+///   - `present[i]` gates NULL (UNKNOWN → dropped) and the `u32::MAX` sentinel an OPTIONAL hop
+///     lands on is skipped, both exactly as the plain comparison arm does.
+///   - The comparison itself reuses that arm's `match op` block verbatim, so ordering stays 3VL
+///     (a NaN cell is unordered and drops, because `<`/`>` are false on NaN) and equality stays
+///     `==`/`!=`.
+fn try_filter_keep_arith(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec<usize>> {
+    let Expr::Compare { op, left, right } = pred else {
+        return None;
+    };
+    // The ARITH side may be either side of the comparison; `flip_op` normalizes to
+    // `<arith> <op> <lit>`, the same normalization the plain arm does for `<prop> <op> <lit>`.
+    let (arith, cmp_lit, op) = match (left.as_ref(), right.as_ref()) {
+        (a @ Expr::Arith { .. }, Expr::Lit(v)) => (a, v, *op),
+        (Expr::Lit(v), a @ Expr::Arith { .. }) => (a, v, flip_op(*op)),
+        _ => return None,
+    };
+    let Value::Num(threshold) = cmp_lit else {
+        return None; // a non-numeric or NULL threshold is the general path's business
+    };
+    let Expr::Arith {
+        op: aop,
+        left: al,
+        right: ar,
+    } = arith
+    else {
+        return None;
+    };
+    // The property may be either operand, and which it is CHANGES the arithmetic for the
+    // non-commutative operators — `5 - a.k` is not `a.k - 5`. `prop_first` carries that.
+    let (slot, key, operand, prop_first) = match (al.as_ref(), ar.as_ref()) {
+        (Expr::Prop { slot, key }, Expr::Lit(Value::Num(v))) => (*slot, key, *v, true),
+        (Expr::Lit(Value::Num(v)), Expr::Prop { slot, key }) => (*slot, key, *v, false),
+        _ => return None,
+    };
+    // A zero divisor THROWS in the general path, so decline anything this arm cannot prove is
+    // non-zero: `a.k / 0` declines (the general path throws), and `5 / a.k` declines because the
+    // divisor is then a COLUMN and any row holding 0 would have to throw — which a keep-pass
+    // cannot express.
+    if matches!(aop, crate::ir::ArithOp::Div | crate::ir::ArithOp::Rem)
+        && (!prop_first || operand == 0.0)
+    {
+        return None;
+    }
+    let Col::Nodes(ids) = batch.slot(slot) else {
+        return None;
+    };
+    let Some(Column::Num { data, present, .. }) = store.column(key) else {
+        return None;
+    };
+    let t = *threshold;
+    let mut keep = Vec::new();
+
+    for (row, &id) in ids.iter().enumerate() {
+        if id == u32::MAX {
+            continue; // the OPTIONAL-miss sentinel has no property → UNKNOWN → dropped
+        }
+
+        let i = id as usize;
+
+        if !present[i] {
+            continue; // NULL → UNKNOWN → dropped
+        }
+
+        let x = data[i];
+        let (a, b) = if prop_first {
+            (x, operand)
+        } else {
+            (operand, x)
+        };
+        let y = match aop {
+            crate::ir::ArithOp::Add => a + b,
+            crate::ir::ArithOp::Sub => a - b,
+            crate::ir::ArithOp::Mul => a * b,
+            crate::ir::ArithOp::Div => a / b,
+            crate::ir::ArithOp::Rem => a % b,
+        };
+        let hit = match op {
+            CompareOp::Eq => y == t,
+            CompareOp::Ne => y != t,
+            CompareOp::Lt => y < t,
+            CompareOp::Le => y <= t,
+            CompareOp::Gt => y > t,
+            CompareOp::Ge => y >= t,
+        };
+
+        if hit {
+            keep.push(row);
+        }
+    }
+
+    Some(keep)
+}
+
 fn try_filter_keep(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec<usize>> {
     // A predicate that is a pure function of ONE dict column: evaluate per distinct value
     // (≤ dict size) and keep by code, instead of a boxed eval per row.
     if let Some(keep) = try_filter_keep_dict(pred, store, batch) {
+        return Some(keep);
+    }
+    // Arithmetic over one property and a constant, fused into the keep pass (item 438).
+    if let Some(keep) = try_filter_keep_arith(pred, store, batch) {
         return Some(keep);
     }
     // A numeric compare on an EDGE property (`e0.w <op> lit`): read the edge column by each

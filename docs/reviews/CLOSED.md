@@ -2918,6 +2918,16 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   item and yields an `AggExpr` only when something was hoisted; with no aggregate the item is a
   plain `Key`, unchanged. Two mutants caught, the important one being "always `AggExpr`", which
   would collapse every plain projection into one group.
+- **BUILT: the fused arithmetic filter arm, 5.0x (438).** `try_filter_keep_arith` admits
+  `<prop> <arith> <lit> <cmp> <lit>` in all three spellings and evaluates the arithmetic inline in
+  the keep pass: `a.k + 0 > 5` 1.932 -> 0.387 ms at 200k and 9.903 -> 1.978 at 1M, landing ON the
+  plain comparison (0.299). `abs`/`coalesce`/`CASE` are DECLINED and flat, so nothing was levied on
+  the general path. 2,250 forms compared against a `+ 0`-wrapped oracle; four mutants caught.
+  **The mutant that ADDS an `is_finite` guard is caught** — the general path's raw-f64 arm does not
+  test the result, so an overflow compares as infinity, and the `Expr::Arith` doc's "non-finite
+  result yields NULL" describes the per-cell fallback only. A zero literal divisor DECLINES (the
+  engine throws) and `lit / a.k` declines outright. **Still open and NOT more arm additions:**
+  `abs` 5.9x, `coalesce` 21x, `CASE` 15x — the answer there is fusion, per 437.
 - **PRICED, NOT BUILT: one arithmetic node in a filter costs 5.7x, a `coalesce` 21x, at IDENTICAL
   selectivity (437).** `exprpred_437` holds the row count fixed and varies only the predicate's
   shape: `a.k > 5` 0.365 ms, `a.k + 0 > 5` 2.087, `abs(a.k) > 5` 2.169, `coalesce(a.k, 0) > 5`
