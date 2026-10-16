@@ -102,13 +102,23 @@ const projectedEndsOnly = (
   items: readonly CReturnItem[] | readonly { expr: Expr }[],
   farVar: string,
   startVar: string | undefined,
-): { readsStart: boolean } | null => {
+  relVar: string | undefined,
+): { readsStart: boolean; readsRel: boolean } | null => {
   let readsStart = false;
+  let readsRel = false;
 
   for (const item of items) {
     for (const name of freePredicateVars((item as { expr: Expr }).expr)) {
       if (name === startVar) {
         readsStart = true;
+        continue;
+      }
+
+      // The REL variable is a third legal name (audit item 446). It is served by binding the
+      // edge the walk is already holding — `expand`'s bucket loop has it — which costs one
+      // `set` per edge. Reading it was previously a decline worth 646 against 192 ns/row.
+      if (relVar !== undefined && name === relVar) {
+        readsRel = true;
         continue;
       }
 
@@ -118,7 +128,7 @@ const projectedEndsOnly = (
     }
   }
 
-  return { readsStart };
+  return { readsStart, readsRel };
 };
 
 /**
@@ -247,19 +257,147 @@ const mentionsName = (node: unknown, name: string): boolean => {
   return Object.values(node as Record<string, unknown>).some((child) => mentionsName(child, name));
 };
 
+const SUBQUERY_KINDS: ReadonlySet<string> = new Set(['exists', 'countSubquery', 'valueSubquery']);
+
+/** Does a subquery appear anywhere in this AST fragment? A generic walk, like `mentionsName`. */
+const containsSubquery = (node: unknown): boolean => {
+  if (node === null || typeof node !== 'object') {
+    return false;
+  }
+
+  if (Array.isArray(node)) {
+    return node.some(containsSubquery);
+  }
+
+  const rec = node as Record<string, unknown>;
+
+  if (typeof rec.kind === 'string' && SUBQUERY_KINDS.has(rec.kind)) {
+    return true;
+  }
+
+  return Object.values(rec).some(containsSubquery);
+};
+
 /**
- * Could the hop's relationship variable be OBSERVED by this `RETURN` or clause `WHERE`?
+ * Can this projection be emitted row by row as the walk produces them?
+ *
+ * The five conditions `projectedRows` fast-paths, plus `star`: anything that sorts, dedups,
+ * pages or aggregates needs the whole set in hand. Extracted from `detectHopProjection` only to
+ * keep it under the complexity gate — seven clauses in one `if` is seven of the budget, and item
+ * 446's one extra branch put the function at 37 against a limit of 35.
+ */
+const projectionIsStreamable = (proj: CProjection): boolean =>
+  !proj.star &&
+  !proj.aggregating &&
+  !proj.distinct &&
+  proj.orderBy.length === 0 &&
+  proj.skip === undefined &&
+  proj.limit === undefined &&
+  proj.items.length > 0;
+
+/**
+ * The REL-BOUND hop projection: the start-driven walk, binding the edge as well as the far end.
+ *
+ * A BUILDER returning a per-compile closure, which is the shape `farDrivenHopWalk` and
+ * `filteredHopWalk` already have here — and the shape item 159 measured as the right one. A
+ * shared module-scope walk called with every compile's shapes goes polymorphic at its call
+ * sites and cost 1.29x; a closure built per compile keeps its own. It is also not a branch
+ * inside the existing start-driven walk, because item 159 measured that adding even a branch to
+ * that inner loop costs the hot unfiltered shape 1.6x.
+ *
+ * The only difference from that walk is one `set` per edge. The edge is already in hand: the
+ * bucket loop is iterating edges and resolving a far vertex from each, so binding it costs a
+ * `Map.set` on a binding that was going to be mutated anyway. That one line is worth 3.0x on
+ * `RETURN r` and 3.1x on `RETURN r.w`, because the alternative was the general path.
+ *
+ * It must NOT be given the far-driven treatment. That walk's 2.3x comes from hoisting
+ * `projectRow` to once per far VERTEX (item 167), valid only because every item it admits is a
+ * pure function of the far end; an item reading the edge is not, since a far vertex's incident
+ * edges differ. Hoisting here is a wrong answer, not a faster one, and the mutant that does it
+ * is caught.
+ */
+const relBoundHopWalk = (spec: {
+  startLabel: LabelExpr | undefined;
+  typeName: string;
+  out: boolean;
+  farVar: string;
+  relVar: string | undefined;
+  farLabel: LabelExpr | undefined;
+  proj: CProjection;
+  /** No far predicate, no carried clause `WHERE`, and no item reading the start. */
+  unfiltered: boolean;
+}): RowsFn | null => {
+  const { startLabel, typeName, out, farVar, relVar, farLabel, proj, unfiltered } = spec;
+
+  // The DECLINE lives here rather than at the call site, which keeps `detectHopProjection` under
+  // the complexity gate — the inline form put it at 39 against a limit of 35. `filteredHopWalk`
+  // binds no edge, so a far predicate, a carried clause `WHERE` or a start-reading item must
+  // decline rather than be served by a walk that applies none of them; the mutant dropping this
+  // is caught by one test. An anonymous rel cannot have been read in the first place.
+  if (relVar === undefined || !unfiltered) {
+    return null;
+  }
+
+  return (graph, params) => {
+    const rows: Row[] = [];
+    // ONE binding, mutated per edge, now holding TWO entries instead of one.
+    const binding = new Map<string, unknown>();
+    const index = out ? graph.edgesFromByLabel : graph.edgesToByLabel;
+
+    for (const v of candidateVertexSource(graph, startLabel)) {
+      const bucket = index.get(v.id)?.get(typeName);
+
+      if (bucket === undefined) {
+        continue;
+      }
+
+      for (const edge of bucket) {
+        const far: Vertex = out ? edge.to : edge.from;
+
+        if (farLabel !== undefined && !matchesLabel(far, farLabel)) {
+          continue;
+        }
+
+        binding.set(farVar, far);
+        binding.set(relVar, edge);
+        rows.push(projectRow(proj, binding, params, graph));
+      }
+    }
+
+    return rows;
+  };
+};
+
+/**
+ * Is the hop's relationship variable mentioned somewhere this path cannot SEE?
+ *
+ * Item 444 declined every mention of the rel variable. Item 446 serves a mention instead, by
+ * binding the edge — but only a mention `freePredicateVars` can report, because that is what
+ * `projectedEndsOnly` and `carriedWhere` decide with. The one construct it cannot report is a
+ * SUBQUERY: it adds an inner pattern's own binding names to its bound set, so an inner
+ * `-[r:T]->` CORRELATING on an already-bound `r` is indistinguishable from one binding `r`
+ * freshly, and neither is reported free. That is the wrong answer item 444 found —
+ * `MATCH (p:U)-[r:T]->(q) RETURN COUNT { MATCH (p)-[r:T]->(z) }` must be 1 per row, not `p`'s
+ * degree.
+ *
+ * So a mention is HIDDEN when a subquery is present, and the pair of checks is deliberately
+ * asymmetric: `mentionsName` is over-broad (it compares every string, so a literal `'r'`
+ * counts) and `containsSubquery` is over-broad too, and both err toward declining. With no
+ * subquery anywhere, `freePredicateVars` is complete over this fragment and every read of the
+ * rel variable is visible, which is the condition item 446's binding relies on.
  *
  * Split out of `detectHopProjection` to keep it under the complexity gate, which the inline
  * form pushed to 36 against a limit of 35 — the same split several other guards in this file
- * have, and for the same reason. An anonymous relationship is never observed.
+ * have, and for the same reason.
  */
-const relVariableObserved = (
+const relVariableHidden = (
   relVar: string | undefined,
   projection: Projection,
   where: Expr | undefined,
 ): boolean =>
-  relVar !== undefined && (mentionsName(projection, relVar) || mentionsName(where, relVar));
+  relVar !== undefined &&
+  (mentionsName(projection, relVar) || mentionsName(where, relVar)) &&
+  (containsSubquery(projection) || containsSubquery(where));
 
 export const detectHopProjection = (
   clauses: readonly Clause[],
@@ -354,7 +492,7 @@ export const detectHopProjection = (
     return null;
   }
 
-  if (relVariableObserved(rel.variable, ret.projection, m.where)) {
+  if (relVariableHidden(rel.variable, ret.projection, m.where)) {
     return null;
   }
 
@@ -389,17 +527,7 @@ export const detectHopProjection = (
 
   const proj: CProjection = cret.projection;
 
-  // The five conditions `projectedRows` fast-paths, plus `star`: anything that sorts,
-  // dedups, pages or aggregates needs the whole set in hand.
-  if (
-    proj.star ||
-    proj.aggregating ||
-    proj.distinct ||
-    proj.orderBy.length > 0 ||
-    proj.skip !== undefined ||
-    proj.limit !== undefined ||
-    proj.items.length === 0
-  ) {
+  if (!projectionIsStreamable(proj)) {
     return null;
   }
 
@@ -412,13 +540,14 @@ export const detectHopProjection = (
   // Refusing the start cost 3.5-4.7x on four shapes, including the very ordinary unfiltered
   // `MATCH (u:L)-[:E]->(v) RETURN u.name`: 20.0ms against 5.7ms for the same query projecting
   // `v.name` instead, with no semantic difference between them (audit item 160).
-  const projected = projectedEndsOnly(ret.projection.items, farVar, startVarName);
+  const projected = projectedEndsOnly(ret.projection.items, farVar, startVarName, rel.variable);
 
   if (projected === null) {
     return null;
   }
 
   const itemsReadStart = projected.readsStart;
+  const itemsReadRel = projected.readsRel;
 
   // A clause `WHERE` is CARRIED rather than refused, as long as it reads nothing but the
   // pattern's two endpoints — which are exactly what the walk binds. Refusing it sent the
@@ -480,6 +609,35 @@ export const detectHopProjection = (
   // 1.6x. A start-reading projection goes to the FILTERED walk instead, which already binds the
   // start per vertex — it pays two always-false predicate checks per edge, which is nothing
   // against the 3.5x it gains.
+  // A projected item reading the REL variable needs the edge BOUND, which only the walk below
+  // does (audit item 446). Two consequences, and the first is a correctness one:
+  //
+  //   - The FAR-DRIVEN walk is unusable. Its 2.3x comes from hoisting `projectRow` to once per
+  //     far VERTEX, valid only because every admitted item is a pure function of the far end
+  //     (item 167). An item reading the edge is not: a far vertex's incident edges differ, so
+  //     hoisting would emit one edge's values for all of them. It is not a slower option here,
+  //     it is a wrong one.
+  //   - `filteredHopWalk` does not bind the edge either, so a far predicate, a carried clause
+  //     `WHERE` or a start-reading item still DECLINES when the rel is read. That is the other
+  //     half of this target and it is not built: `WHERE r.w < 100 RETURN b` measured 814 ns/row
+  //     and stays there.
+  //
+  // So the rel-bound walk is start-driven, and it is its own closure rather than a branch in
+  // the existing one, because item 159 measured that adding even a branch to that inner loop
+  // costs the hot unfiltered shape 1.6x.
+  if (itemsReadRel) {
+    return relBoundHopWalk({
+      startLabel,
+      typeName,
+      out,
+      farVar,
+      relVar: rel.variable,
+      farLabel,
+      proj,
+      unfiltered: farPred === undefined && gate === undefined && !needsStart,
+    });
+  }
+
   if (farPred === undefined && gate === undefined && !needsStart) {
     // The START-driven walk, byte-for-byte what it was: item 159 measured that adding even a
     // branch to this inner loop costs the hot shape 1.6x.

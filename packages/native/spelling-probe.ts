@@ -125,6 +125,20 @@ const GROUPS: [string, readonly string[]][] = [
     ],
   ],
   [
+    // Item 446. Reading the rel variable in the RETURN is now served by the hop fast path, which
+    // BINDS the edge; reading it in a clause `WHERE` still declines, because `filteredHopWalk`
+    // does not bind one. `w` is always >= 0 in this fixture, so the two spell the same question.
+    //
+    // EXPECTED OVER THE THRESHOLD, and recorded here so the next person does not chase it as a
+    // regression: it is the unbuilt half of item 446, measured at 244 ns/row against 732. It
+    // closes when `filteredHopWalk` learns to bind the edge too.
+    'edge property: bare vs behind a vacuous rel filter (item 446, open)',
+    [
+      'MATCH (a:P)-[r:E]->(b) RETURN r.w AS w',
+      'MATCH (a:P)-[r:E]->(b) WHERE r.w >= 0 RETURN r.w AS w',
+    ],
+  ],
+  [
     'operand order: $x = n.k vs n.k = $x',
     [
       'MATCH (n:P) WHERE n.k = 2 RETURN count(*) AS c',

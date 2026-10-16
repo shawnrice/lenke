@@ -3865,3 +3865,30 @@ path's ~720-815, **6.9x**, and every one-hop query mentioning its rel variable p
 r`, `RETURN r.w`, `WHERE r.w < 100`). The fix is to BIND the edge in the walk — `expand` already
 yields `{ edge, node }` — and let `projectedEndsOnly`/`carriedWhere` admit the rel variable as a
 third legal name. Priced, not built. Instrument: `bun run probe:route`.
+
+## 446 — reading a relationship variable on a one-hop query: 3.1-3.4x, CLOSED for the unfiltered half
+
+The hop fast path now BINDS the edge, so `RETURN r` and `RETURN r.w` are served instead of
+declining to the general path. `expand`'s bucket loop already holds the edge, so it is one
+`Map.set` per edge. Measured same-fixture, one case per process, min of 9: 632 -> 186, 613 -> 200,
+757 -> 239 ns/row. Four controls flat.
+
+Three things to not re-derive:
+
+- **Item 445's 6.9x was not the achievable prize**; 3.4x was. 445 compared the general path to the
+  FAR-driven walk, which cannot serve this shape: its 2.3x comes from hoisting `projectRow` to
+  once per far VERTEX, valid only because every item it admits is a pure function of the far end.
+  An item reading the edge is not. **A fast path's cost is only a ceiling for the shapes it can
+  actually take**, and hoisting here is a wrong answer rather than a fast one.
+- **Item 444's gate is narrowed, not removed.** It declines a mention the path cannot SEE —
+  mentioned AND a subquery present — because `freePredicateVars` is complete over a fragment with
+  no subquery, and that completeness is what the binding relies on. Turning that off in the
+  unsafe direction is caught by two tests.
+- **A guard has two mutation directions and only one is unsafe.** Mutating the subquery guard to
+  `true` makes it more conservative and survives, which momentarily reads as a missing test.
+
+OPEN, and now measured rather than described: `filteredHopWalk` binds no edge, so a far predicate,
+a carried clause `WHERE`, or a start-reading item still declines when the rel is read —
+`WHERE r.w < 100 RETURN b` stays at ~772 ns/row. It is a `spelling-probe` group reporting **2.7x**,
+labelled expected-over-threshold with the item number so it is not chased as a regression.
+Instrument: `bun run probe:route`.

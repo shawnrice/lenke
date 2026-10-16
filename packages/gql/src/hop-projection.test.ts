@@ -314,12 +314,12 @@ describe('a named relationship on the hop fast path (item 444)', () => {
     }
   });
 
-  test('a projected item that READS the edge still declines, and is right', () => {
+  // Item 446 made this shape take the fast path instead of declining, by BINDING the edge. The
+  // assertions are unchanged and still the point: `w` is 7 and 8, which a fixture with one edge
+  // — or two edges carrying the same `w` — could not tell from a single-edge answer.
+  test('a projected item that READS the edge is right', () => {
     const g = twin();
 
-    // The walk binds no edge, so this must NOT take the fast path. `w` is 7 and 8, which a
-    // fixture with one edge — or two edges carrying the same `w` — could not tell from a
-    // single-edge answer.
     expect(query(g, 'MATCH (p:U)-[r:T]->(q) RETURN r.w AS w')).toEqual([{ w: 7 }, { w: 8 }]);
     expect(query(g, 'MATCH (p:U)-[r:T]->(q) RETURN sum(r.w) AS s')).toEqual([{ s: 15 }]);
   });
@@ -378,5 +378,108 @@ describe('a named relationship on the hop fast path (item 444)', () => {
     expect(query(g, "MATCH (a:P)-[e:T]->(x) RETURN 'e' AS lit, x.name AS n")).toEqual(
       query(g, "MATCH (a:P)-[:T]->(x) RETURN 'e' AS lit, x.name AS n"),
     );
+  });
+});
+
+// Item 446: the hop fast path BINDS the edge, so a projected item may read the rel variable.
+//
+// Item 444 admitted a named-but-unmentioned rel and still declined every mention. Reading one
+// cost 632 ns/row against 192 for the same walk without it, because mentioning the rel sent the
+// query to the general path. Binding the edge is one `set` per edge on a binding the walk already
+// carries — `expand`'s bucket loop is holding the edge — and measured 3.0x on `RETURN r`, 3.1x on
+// `RETURN r.w`, against four flat controls.
+describe('the hop fast path binds the edge (item 446)', () => {
+  // The start label is on EVERY vertex, which makes it vacuous — and a vacuous start label is
+  // what lets the far-driven walk be chosen. That matters here: the far-driven walk hoists
+  // `projectRow` to once per far VERTEX (item 167), which is invalid once an item reads the edge,
+  // and `x` below is the far end of TWO edges carrying DIFFERENT `w`. A fixture whose parallel
+  // edges shared a `w`, or whose far vertices had one edge each, could not tell a correct walk
+  // from a hoisting one.
+  const fan = (): Graph => {
+    const h = new Graph();
+    const a1 = h.addVertex({ id: 'a1', labels: ['U'], properties: { n: 1 } });
+    const a2 = h.addVertex({ id: 'a2', labels: ['U'], properties: { n: 2 } });
+    const x = h.addVertex({ id: 'x', labels: ['U', 'X'], properties: { n: 9 } });
+
+    h.addEdge({ id: 'e1', from: a1, to: x, labels: ['T'], properties: { w: 1 } });
+    h.addEdge({ id: 'e2', from: a2, to: x, labels: ['T'], properties: { w: 2 } });
+
+    return h;
+  };
+
+  test('each row gets ITS OWN edge, not one edge repeated per far vertex', () => {
+    const g = fan();
+
+    // Both edges land on `x`. A hoisting walk would emit one edge's `w` twice — [1,1] or [2,2] —
+    // and the sum would be 2 or 4 rather than 3.
+    expect(query(g, 'MATCH (p:U)-[r:T]->(q) RETURN r.w AS w')).toEqual([{ w: 1 }, { w: 2 }]);
+    expect(query(g, 'MATCH (p:U)-[r:T]->(q) RETURN sum(r.w) AS s')).toEqual([{ s: 3 }]);
+  });
+
+  test('the bound edge is the EDGE, not the far node', () => {
+    const g = fan();
+
+    // `w` lives only on the edges and `n` only on the vertices, so binding the far node to the
+    // rel variable — or the edge to the far variable — shows up as nulls rather than as a
+    // plausible wrong number.
+    expect(query(g, 'MATCH (p:U)-[r:T]->(q) RETURN r.w AS w, q.n AS n')).toEqual([
+      { w: 1, n: 9 },
+      { w: 2, n: 9 },
+    ]);
+    expect(query(g, 'MATCH (p:U)-[r:T]->(q) RETURN r.n AS rn, q.w AS qw')).toEqual([
+      { rn: null, qw: null },
+      { rn: null, qw: null },
+    ]);
+  });
+
+  test('the whole edge element projects, and matches the declining spelling', () => {
+    const g = fan();
+    const fast = query(g, 'MATCH (p:U)-[r:T]->(q) RETURN r');
+    // `WHERE r.w < 100` reads the rel in the clause WHERE, which `carriedWhere` refuses, so this
+    // spelling takes the GENERAL path while keeping every row. Comparing the two is comparing
+    // the fast path against the engine's own general answer rather than against my expectation.
+    const general = query(g, 'MATCH (p:U)-[r:T]->(q) WHERE r.w < 100 RETURN r');
+
+    expect(fast).toEqual(general);
+    expect(fast.length).toBe(2);
+  });
+
+  test('a REVERSED hop binds the edge and the far end independently', () => {
+    const g = fan();
+
+    // Walking in, the far end is `edge.from` while the edge is the same object — so a walk that
+    // conflated them would differ here and not in the forward case.
+    expect(query(g, 'MATCH (q:U)<-[r:T]-(p) RETURN r.w AS w, p.n AS pn')).toEqual([
+      { w: 1, pn: 1 },
+      { w: 2, pn: 2 },
+    ]);
+  });
+
+  test('a FAR label is still applied when the edge is bound', () => {
+    const g = fan();
+
+    // `:X` is only on `x`, and `:U` is on all three, so the far label has to exclude something
+    // for this to mean anything. Both edges end at `x`, so `:X` keeps both and `:Nope` keeps none.
+    expect(query(g, 'MATCH (p:U)-[r:T]->(q:X) RETURN r.w AS w')).toEqual([{ w: 1 }, { w: 2 }]);
+    expect(query(g, 'MATCH (p:U)-[r:T]->(q:Nope) RETURN r.w AS w')).toEqual([]);
+  });
+
+  test('the shapes that must still DECLINE answer correctly', () => {
+    const g = fan();
+
+    // `filteredHopWalk` does not bind the edge, so each of these must decline rather than be
+    // served by the rel-bound walk ignoring its filter. A far inline predicate, a far clause
+    // WHERE, a start-reading item, and a rel-reading clause WHERE.
+    expect(query(g, 'MATCH (p:U)-[r:T]->(q {n: 9}) RETURN r.w AS w')).toEqual([{ w: 1 }, { w: 2 }]);
+    expect(query(g, 'MATCH (p:U)-[r:T]->(q) WHERE q.n = 9 RETURN r.w AS w')).toEqual([
+      { w: 1 },
+      { w: 2 },
+    ]);
+    expect(query(g, 'MATCH (p:U)-[r:T]->(q {n: 1}) RETURN r.w AS w')).toEqual([]);
+    expect(query(g, 'MATCH (p:U)-[r:T]->(q) RETURN p.n AS pn, r.w AS w')).toEqual([
+      { pn: 1, w: 1 },
+      { pn: 2, w: 2 },
+    ]);
+    expect(query(g, 'MATCH (p:U)-[r:T]->(q) WHERE r.w = 2 RETURN r.w AS w')).toEqual([{ w: 2 }]);
   });
 });

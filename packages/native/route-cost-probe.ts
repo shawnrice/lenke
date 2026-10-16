@@ -28,7 +28,14 @@ const REPS = Number(process.env.PR ?? 9);
 const fresh = (): Graph => {
   const g = new Graph();
   const ids = Array.from({ length: N }, (_, i) =>
-    g.addVertex({ id: `v${i}`, labels: ['Person'], properties: { age: i % 90 } }),
+    g.addVertex({
+      // `Half` is on half the vertices, so it is NOT vacuous and the walk cannot use the
+      // far-driven variant — which is how the START-driven cost gets priced separately. Every
+      // label in a fixture must exclude something (item 435).
+      id: `v${i}`,
+      labels: i % 2 === 0 ? ['Person', 'Half'] : ['Person'],
+      properties: { age: i % 90 },
+    }),
   );
 
   for (let k = 0; k < N * DEG; k++) {
@@ -68,6 +75,13 @@ const queries: Record<string, string> = {
   // A node-only projection forced off the fast path by a second segment, which declines for a
   // reason that has nothing to do with edges at all.
   twohopnode: 'MATCH (:Person)-[r:KNOWS]->(b) WHERE r.w < 100 RETURN b',
+  // The START-DRIVEN fast path, isolated. A non-vacuous start label refuses the far-driven
+  // walk, whose 2.3x comes from hoisting `projectRow` to once per far VERTEX (item 167) — a
+  // hoist that is invalid the moment a projected item reads the EDGE, since each edge differs.
+  // So this, not the far-driven 105 ns/row, is the honest ceiling for any rel-binding walk.
+  startdriven: 'MATCH (a:Half)-[:KNOWS]->(b) RETURN b',
+  // Its general-path twin: same start label, same traversal, but mentioning the rel declines.
+  startdrivengen: 'MATCH (a:Half)-[r:KNOWS]->(b) RETURN r',
 };
 const key = process.env.PCASE ?? 'node';
 const q = queries[key];
