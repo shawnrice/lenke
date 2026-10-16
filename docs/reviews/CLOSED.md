@@ -2875,9 +2875,25 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   fixture this session that did not exercise its guard (422, 425, 427), and the first where the
   cause was the query being routed to a different path entirely. **Check which path answers your
   fixture, not just what it asserts.**
-- **Still open: the reversed 3-HOP chain is 3.3x the forward spelling (429).** 1113-1168 ms against
-  346-348 on the same fixture. `try_3hop_product_count` owns three segments and has a different
-  structure from the sweep, so whether it can seed from the cheaper end is its own question.
+- **DONE: the 3-hop chain's end LABEL now routes to the sweep — 11.8x reversed, 3.67x forward, both
+  spellings on ~95 ms (430).** `threeSegmentCount` is a degree product and `longChainCount`'s doc
+  already said why it cannot help: "the sweep VISITS each one, so there is a once-per-element place
+  to test it, which is what the end positions of the degree products lack." Item 306 acted on that
+  for a GATE and left the LABEL on the product, which enumerated to test it: 1128.6 -> 96.0 ms
+  reversed, 346.3 -> 95.5 forward. `threeSegmentRoute` builds both and chooses per call on whether
+  either end narrows the seed; a TIE keeps the product, which is item 301's measured winner for the
+  unfiltered shape (250.1 against 374.9). Controls flat: vacuous labels on both ends, item 306's
+  gated route, 4 and 5 hops, one hop. Extracted to a helper because the caller tripped complexity
+  41/35 AND max-statements 81/80.
+- **Still open: a 1.70x DIRECTION asymmetry on a 3-hop chain with NO label anywhere (430).**
+  Reversed 296 ms against forward 174, nothing to narrow either end, so neither item 429's flip nor
+  item 430's label rule applies. The product walking in-adjacency rather than out; whether that is
+  inherent to the storage or another missing symmetry needs its own measurement.
+- **Three of four routing mutants SURVIVE because both routes are correct (430).** always-sweep,
+  always-product and an inverted comparison all leave every test green; only dropping the
+  `interiorPred` guard — which LOSES a clause `WHERE` on the way to the sweep — is caught. **A
+  cost-based route choice is justified by its measurements and by nothing else**, which is now
+  written on the function (and is item 429's division of labour, with the mutants to prove it).
 - **The NATIVE paging twin is REFUTED — it already pages lazily (428).** At 1,000,000 nodes a
   shallow `SKIP 100 LIMIT 20` costs **0.001 ms** and a deep `SKIP n-5` costs 2.556, against a
   10.403 ms ceiling for projecting every row — so native pages the input stream, and the deep

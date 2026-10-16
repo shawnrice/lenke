@@ -2175,7 +2175,9 @@ const patternCountOf = <T>(
   // at any of the four positions — the product reaches two of them only as degrees, and the other
   // two have no gate yet.
   if (segments.length === 3) {
-    return threeSegmentCount(start, segments[0], segments[1], segments[2], rowOf, interiorPred);
+    // See `threeSegmentRoute` — extracted because this function tripped both the complexity and
+    // max-statements caps, as it did at item 427.
+    return threeSegmentRoute(start, segments, rowOf, interiorPred);
   }
 
   // FOUR OR MORE segments, as a SWEEP. Item 290 added a four-segment degree product and left
@@ -2302,6 +2304,76 @@ const endGatedChainCount = <T>(
   // `null` from the sweep is it declining on its own terms (a shared node variable, a bound edge,
   // an undirected hop, an OPEN constraint), and the products below still get their chance.
   return longChainCount(start, segments, rowOf, clauses ?? undefined);
+};
+
+/**
+ * Which route answers an unfiltered THREE-segment chain count: the degree PRODUCT
+ * ({@link threeSegmentCount}) or the way-count SWEEP ({@link longChainCount})?
+ *
+ * Item 306 already sends an end-GATED short chain to the sweep "because it is the one position
+ * they cannot carry", and `longChainCount`'s own doc says the same of LABELS: "the sweep VISITS
+ * each one, so there is a once-per-element place to test it, which is what the end positions of
+ * the degree products lack." A label was nonetheless left on the product, so at 200,000 vertices
+ * of degree 3 with `:P` on a tenth (audit item 430):
+ *
+ * ```text
+ *                                              product      routed
+ *   MATCH (d)<-[:E]-(c)<-[:E]-(b)<-[:E]-(a:P)   1112 ms      94.2 ms   11.8x
+ *   MATCH (a:P)-[:E]->(b)-[:E]->(c)-[:E]->(d)    349         95.3       3.67x
+ *   no label on either end                       176        176        kept
+ * ```
+ *
+ * Both spellings now land on ~95 ms, which is the point: one question, one cost.
+ *
+ * The sweep is NOT unconditionally better at this depth — item 301 measured the product winning
+ * the UNFILTERED shape, 250.1 against 374.9 ms — so the choice is made PER CALL and a tie keeps
+ * the product. `candidateCount` returns the whole graph for a label it cannot seed from, so
+ * "nothing narrows" and "a label we cannot use" collapse to the same answer, which is the one
+ * item 301 measured.
+ *
+ * EXTRACTED because the caller tripped both the complexity (41/35) and max-statements (81/80)
+ * caps, the same objection item 377 and item 427 both answered the same way.
+ */
+const threeSegmentRoute = <T>(
+  start: NodePattern,
+  segments: readonly Segment[],
+  rowOf: (n: number) => T,
+  interiorPred: { pred: InlinePred; onB: boolean } | null | undefined,
+): CountOf<T> | null => {
+  const product = threeSegmentCount(
+    start,
+    segments[0],
+    segments[1],
+    segments[2],
+    rowOf,
+    interiorPred,
+  );
+  const endLabel = segments[2].node.label;
+  const startLabel = start.label;
+  const labelled =
+    endLabel?.kind === 'label' || (endLabel === undefined && startLabel?.kind === 'label');
+
+  if (product === null || interiorPred !== undefined || !labelled) {
+    return product;
+  }
+
+  const swept = longChainCount(start, segments, rowOf);
+
+  if (swept === null) {
+    return product;
+  }
+
+  return (graph, params) => {
+    // NO TEST CAN POLICE THIS CHOICE, and mutation says so rather than my reading it:
+    // always-sweep, always-product and an INVERTED comparison all leave every test green,
+    // because both sides are correct implementations of the same count. What the tests DO catch
+    // is the predicate plumbing — dropping the `interiorPred` guard above loses a clause `WHERE`
+    // on the way to the sweep and fails. So the comparison is justified by the measurements in
+    // this function's doc and by nothing else; the same division of labour item 429 recorded.
+    const narrow = Math.min(candidateCount(graph, startLabel), candidateCount(graph, endLabel));
+
+    return narrow < graph.vertexCount ? swept(graph, params) : product(graph, params);
+  };
 };
 
 /**

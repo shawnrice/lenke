@@ -175,6 +175,47 @@ describe('chain label flip', () => {
     expect(count(g, rev)).toEqual(count(g, fwd));
   });
 
+  // Item 430: a 3-segment chain whose END carries a label went to the degree PRODUCT, which has
+  // no place to test a label at its end positions and so enumerated — 1112 ms against the
+  // forward spelling's 347. It now routes to the sweep when either end narrows the seed (11.8x
+  // reversed, 3.67x forward, both landing on ~95 ms), and keeps the product when neither does,
+  // which is the shape item 301 measured the product as winning.
+  //
+  // The ORACLE here is `count(*) + 0`: an aggregate nested in arithmetic, which every count
+  // shortcut refuses, so the general matcher answers it. Measured 620.5 ms against the
+  // shortcut's 138.6 on the 200,000-vertex fixture, which is how we know it is a different
+  // route and not the same one wearing a hat.
+  test.each([
+    // The label narrows the START — the product could already seed it, but the sweep is better
+    // at this depth once anything narrows.
+    'MATCH (a:A)-[:E]->(b)-[:E]->(c)-[:E]->(d) RETURN count(*) AS c',
+    // The label narrows the END, which is the shape that was 1112 ms.
+    'MATCH (d)<-[:E]-(c)<-[:E]-(b)<-[:E]-(a:A) RETURN count(*) AS c',
+    // BOTH ends labelled, and the narrower one is the end.
+    'MATCH (d:D)<-[:E]-(c)<-[:E]-(b)<-[:E]-(a:A) RETURN count(*) AS c',
+    'MATCH (a:A)-[:E]->(b)-[:E]->(c)-[:E]->(d:D) RETURN count(*) AS c',
+    // VACUOUS on both ends: nothing narrows, so the product is kept — and must still be right.
+    'MATCH (a:Univ)-[:E]->(b)-[:E]->(c)-[:E]->(d:Univ) RETURN count(*) AS c',
+    'MATCH (d:Univ)<-[:E]-(c)<-[:E]-(b)<-[:E]-(a:Univ) RETURN count(*) AS c',
+    // No label anywhere: the product, untouched.
+    'MATCH (a)-[:E]->(b)-[:E]->(c)-[:E]->(d) RETURN count(*) AS c',
+    // An INLINE gate at an interior position AND an end label: the sweep carries inline gates at
+    // every position (item 303), so this may route there and must agree either way.
+    'MATCH (d)<-[:E]-(c {k: 1})<-[:E]-(b)<-[:E]-(a:A) RETURN count(*) AS c',
+    'MATCH (d)<-[:E]-(c)<-[:E]-(b {k: 1})<-[:E]-(a:A) RETURN count(*) AS c',
+    // A clause `WHERE` over an INTERIOR node, which `interiorPred` carries on the product — the
+    // routing must decline and leave it there.
+    'MATCH (d)<-[:E]-(c)<-[:E]-(b)<-[:E]-(a:A) WHERE c.k = 1 RETURN count(*) AS c',
+    // An end GATE, which item 306 already routes to the sweep.
+    'MATCH (d)<-[:E]-(c)<-[:E]-(b)<-[:E]-(a {k: 2}) RETURN count(*) AS c',
+    // Mixed directions with an end label, so the sweep's own flip is involved too.
+    'MATCH (d)<-[:E]-(c)-[:E]->(b)<-[:E]-(a:A) RETURN count(*) AS c',
+  ])('%s matches the general matcher', (q) => {
+    const viaGeneral = q.replace('count(*)', 'count(*) + 0');
+
+    expect(query(g, q)).toEqual(query(g, viaGeneral));
+  });
+
   // And the counts themselves, pinned: two spellings that are wrong the same way would satisfy
   // every agreement above. Derived by hand from the edge list in `build`.
   test('the counts are the right ones', () => {
