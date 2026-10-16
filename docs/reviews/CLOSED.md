@@ -4491,3 +4491,29 @@ guard is vacuous.
 
 Also: `sum`/`avg` moved out of `node-aggregate.test.ts`'s "REFUSED shapes" list, which named a
 routing that is no longer true. **A stale test name is a claim like any other.**
+
+## 469 — TWO aggregates over one scan: CLOSED at 2.7-4.3x (TS). The same step is OPEN in native
+
+Every rung that could claim an aggregating scan refused `proj.items.length !== 1`, so a projection
+with two aggregates fell to the general path whole — a `Binding` per row for one row of output.
+`detectMultiNodeAggregate` is a new rung below `nodeAggregate`, disjoint by ARITY so the shipped
+single-item routes are untouched: one synthetic column per aggregate ARGUMENT through
+`detectNodeProjection`, then `foldFor` for `count`/`min`/`max`, collected values into the shared
+`aggregateOverValues` for `sum`/`avg` (UNFILTERED only, item 466), and a row counter for
+`count(*)`.
+
+At 200,000 nodes: `count(n.age), count(*)` 46.4 -> 10.3, `min, max` 41.2 -> 13.7, `sum, count(*)`
+47.6 -> 13.0, `sum, avg` 64.0 -> 15.4. All three single-aggregate controls flat.
+
+**`accs.entries()` was 40-55% of the cost that remained after the route existed** — a `[i, a]`
+tuple per accumulator per row. The tell: `min, max` sat at 32.7 ms where two separate `min`s cost
+9.8 each, which no accumulator loop can explain. Index loops only in a per-row body; this is the
+fourth entry (453, 459, 462, 469) where the hot loop's LAYOUT, not its logic, was the measurement.
+
+**OPEN: native shows the same step** — 0.1 ms for one aggregate against 0.4-0.5 for two, all four
+pairs, same fixture. Same question, not yet the same answer.
+
+Mutation: five of eight caught. The survivor is item 468's — `sum`/`avg` under a filter — for the
+unchanged reason, so that boundary is now load-bearing twice. Two were EQUIVALENT mutants (a
+`continue` whose fall-through reads `row[undefined]` and is skipped anyway; an arity check on a
+shape the parser cannot produce) and no test can catch those.

@@ -1579,7 +1579,7 @@ const isKnownScalarFn = (name: string): boolean => {
  * when it left this work: an accumulator that does not also drive the array path becomes a
  * second definition of the semantics, and then the two can drift. There is one definition.
  */
-type AggFold = {
+export type AggFold = {
   readonly init: () => unknown;
   readonly step: (acc: unknown, v: unknown) => unknown;
   readonly finish: (acc: unknown) => unknown;
@@ -1609,7 +1609,7 @@ const extremumFold = (wantMin: boolean): AggFold => ({
  * The fold for an aggregate, or `undefined` when it must see the whole group. `DISTINCT` is
  * refused here rather than at the call site so there is one place to read the answer from.
  */
-const foldFor = (name: string, star: boolean, distinct: boolean): AggFold | undefined => {
+export const foldFor = (name: string, star: boolean, distinct: boolean): AggFold | undefined => {
   if (distinct || star) {
     return undefined; // count(*) has its own O(groups) path; DISTINCT needs every value
   }
@@ -5958,6 +5958,8 @@ export type CLinear = {
   nodeProjection: ((graph: Graph, params: Params) => Row[]) | null;
   /** The same scan under ONE foldable aggregate — `RETURN max(n.k)`; else null. */
   nodeAggregate: ((graph: Graph, params: Params) => Row[]) | null;
+  /** The same scan under TWO OR MORE aggregates — `RETURN sum(n.k), count(*)`; else null. */
+  multiNodeAggregate: ((graph: Graph, params: Params) => Row[]) | null;
 };
 const compileLinear = (linear: LinearQuery): CLinear => {
   const clauses = linear.clauses.map(compileClause);
@@ -5974,6 +5976,7 @@ const compileLinear = (linear: LinearQuery): CLinear => {
     distinctCount: detectDistinctCount(linear.clauses, clauses),
     nodeProjection: detectNodeProjection(linear.clauses, clauses),
     nodeAggregate: detectNodeAggregate(linear.clauses, clauses),
+    multiNodeAggregate: detectMultiNodeAggregate(linear.clauses, clauses),
   };
 };
 
@@ -6013,6 +6016,7 @@ import type { AlwaysRowsFn, RowsFn } from './executor/hop-projection.js';
 import {
   detectCountShortcut,
   detectGroupedHopCount,
+  detectMultiNodeAggregate,
   detectNodeAggregate,
   detectNodeProjection,
   detectGroupedNodeCount,

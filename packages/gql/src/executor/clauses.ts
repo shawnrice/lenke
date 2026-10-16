@@ -1413,6 +1413,14 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
     return linear.nodeAggregate(graph, params);
   }
 
+  // The same scan under TWO OR MORE aggregates — `RETURN sum(n.k), count(*)`. Disjoint from the
+  // rung above by ARITY (that one takes exactly one item, this one at least two), and placed
+  // after it for the reason items 418 and 469 both measured: a branch ahead of a hot dispatch
+  // costs the shape it does not claim. See `detectMultiNodeAggregate`.
+  if (linear.multiNodeAggregate) {
+    return linear.multiNodeAggregate(graph, params);
+  }
+
   return undefined;
 };
 

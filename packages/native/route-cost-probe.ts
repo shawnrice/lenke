@@ -134,6 +134,15 @@ const queries: Record<string, string> = {
   oplit: 'MATCH (n:Person) WHERE 5 <= n.age RETURN count(*) AS c',
   opprop2: 'MATCH (n:Person) WHERE n.age = 5 RETURN count(*) AS c',
   oplit2: 'MATCH (n:Person) WHERE 5 = n.age RETURN count(*) AS c',
+  // Item 469: the collecting route item 468 added takes a SINGLE sum/avg. A projection with two
+  // aggregates has no fold for the pair, so it falls to the general path whole. The all-foldable
+  // pairs are the control: same arity, same egress, already fast.
+  aggsumcnt: 'MATCH (n:Person) RETURN sum(n.age) AS s, count(*) AS c',
+  aggsumavg: 'MATCH (n:Person) RETURN sum(n.age) AS s, avg(n.age) AS a',
+  aggcntcnt: 'MATCH (n:Person) RETURN count(n.age) AS a, count(*) AS c',
+  aggminmax: 'MATCH (n:Person) RETURN min(n.age) AS a, max(n.age) AS b',
+  aggdistinct: 'MATCH (n:Person) RETURN count(DISTINCT n.age) AS c',
+  minfloor: 'MATCH (n:Person) RETURN min(n.age) AS c',
 };
 const key = process.env.PCASE ?? 'node';
 const q = queries[key];

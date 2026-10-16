@@ -22,6 +22,7 @@ import type {
 // trunk, and the trunk imports the two detectors back — a safe function-level
 // cycle (resolved lazily at call time), matching the other executor submodules.
 import type {
+  AggFold,
   CClause,
   CNode,
   CompiledExpr,
@@ -33,6 +34,7 @@ import type {
 } from '../executor.js';
 import {
   edgesOfTypes,
+  foldFor,
   freePredicateVars,
   gatePredicate,
   columnName,
@@ -5347,23 +5349,27 @@ export const detectReachableShortcut = (
  * because conservative is the safe direction when the hazard is a silent last-bits difference,
  * and because item 419 is the entry about what happens when that judgement goes the other way.
  */
-const unfilteredScanAgg = (
-  m: Clause,
-  ret: Clause,
-): { name: string; frac: number }[] | undefined => {
-  if (m.kind !== 'match' || ret.kind !== 'return') {
-    return undefined;
+const unfilteredScan = (m: Clause): boolean => {
+  if (m.kind !== 'match') {
+    return false;
   }
 
   // No filter of any kind: a clause `WHERE`, an inline constraint, or an inline node `WHERE`
   // each give the general path something to seed from.
   if (m.where !== undefined || m.patterns.length !== 1) {
-    return undefined;
+    return false;
   }
 
   const [pattern] = m.patterns;
 
-  if (pattern.segments.length !== 0 || !plainNode(pattern.start)) {
+  return pattern.segments.length === 0 && plainNode(pattern.start);
+};
+
+const unfilteredScanAgg = (
+  m: Clause,
+  ret: Clause,
+): { name: string; frac: number }[] | undefined => {
+  if (!unfilteredScan(m) || ret.kind !== 'return') {
     return undefined;
   }
 
@@ -5532,5 +5538,192 @@ export const detectNodeAggregate = (
     // null, which is what an ungrouped aggregate owes ISO — and it is the same `finish` the
     // general path calls, so the two cannot drift.
     return [{ [outName]: fold.finish(acc) }];
+  };
+};
+
+/**
+ * One projected aggregate's accumulator in the MULTI-aggregate scan path (item 469).
+ *
+ * `rows` is `count(*)`, which needs no value at all — it counts rows, nullish included, which
+ * is why it is a separate arm rather than a fold over a projected column.
+ */
+type MultiAcc =
+  | { readonly kind: 'rows'; readonly out: string }
+  | { readonly kind: 'fold'; readonly out: string; readonly fold: AggFold; readonly col: string }
+  | { readonly kind: 'collect'; readonly out: string; readonly name: string; readonly col: string };
+
+/**
+ * `MATCH (n:L) [WHERE …] RETURN agg1(…) AS a, agg2(…) AS b, …` — TWO OR MORE aggregates over
+ * one scan, each accumulated as the rows are produced.
+ *
+ * WHY THIS EXISTS. `detectNodeAggregate` takes `proj.items.length !== 1` as a hard refusal, so a
+ * projection asking for two aggregates — the ordinary analytic shape — fell off the ladder
+ * whole and materialized a `Binding` per row. Measured at 200,000 nodes (item 469):
+ * `count(n.age)` alone is 9.4 ms and `sum(n.age)` 12.8, but `count(n.age), count(*)` is 46.4,
+ * `min(n.age), max(n.age)` 41.2 and `sum(n.age), avg(n.age)` 64.0 — roughly 4.9x the single-item
+ * path for each, and NOT a property of `sum`: the all-foldable pairs pay it too. The general
+ * path already streams multiple folds (`stepFolded`), so the cost is the matcher and the
+ * per-row binding, not the accumulation.
+ *
+ * The admission rules are the single-item path's, applied per item rather than once:
+ *
+ *   - every item must BE an aggregate — a non-aggregate item is a GROUP KEY, and the
+ *     `groupKeys` check above refuses those;
+ *   - `count`/`min`/`max` accumulate through `foldFor`, the same source the general path's
+ *     `stepFolded` reads, so the two cannot drift;
+ *   - `sum`/`avg` cannot be folds (item 467) and collect their values for the shared
+ *     `aggregateOverValues`, which — exactly as in item 468 — is admitted only on an
+ *     UNFILTERED scan, because a filtered one may seed from an index and fold floats in a
+ *     different order (items 419, 466);
+ *   - `count(*)` counts rows and needs no projected column;
+ *   - `DISTINCT` is refused per item, because the general path dedupes by value first.
+ */
+export const detectMultiNodeAggregate = (
+  clauses: readonly Clause[],
+  compiled: readonly CClause[],
+): ((graph: Graph, params: Params) => Row[]) | null => {
+  if (clauses.length !== 2) {
+    return null;
+  }
+
+  const [m, ret] = clauses;
+  const [, cret] = compiled;
+
+  if (ret.kind !== 'return' || cret.kind !== 'return') {
+    return null;
+  }
+
+  const proj = cret.projection;
+
+  // `items.length < 2` leaves the one-item shapes to `detectNodeAggregate`, which runs first and
+  // has its own tests: the two rungs are disjoint by arity, so this one cannot regress those.
+  if (
+    proj.star ||
+    proj.distinct ||
+    proj.items.length < 2 ||
+    proj.having !== undefined ||
+    proj.orderBy.length > 0 ||
+    proj.skip !== undefined ||
+    proj.limit !== undefined ||
+    ret.projection.groupBy !== undefined ||
+    proj.groupKeys.length !== 0
+  ) {
+    return null;
+  }
+
+  const unfiltered = unfilteredScan(m);
+  const accs: MultiAcc[] = [];
+  const synthItems: { expr: Expr; alias: string }[] = [];
+
+  for (const [i, item] of ret.projection.items.entries()) {
+    const e = item.expr;
+    const out = proj.items[i].name;
+
+    if (e.kind !== 'func' || e.distinct) {
+      return null;
+    }
+
+    if (e.star) {
+      if (e.name !== 'count' || e.args.length !== 0) {
+        return null;
+      }
+
+      accs.push({ kind: 'rows', out });
+      continue;
+    }
+
+    if (e.args.length !== 1) {
+      return null;
+    }
+
+    const [arg] = e.args;
+    // A name no GQL identifier can collide with, one per item.
+    const col = ` nodeagg${i}`;
+    const fold = foldFor(e.name, false, false);
+
+    if (fold !== undefined) {
+      accs.push({ kind: 'fold', out, fold, col });
+    } else if ((e.name === 'sum' || e.name === 'avg') && unfiltered) {
+      accs.push({ kind: 'collect', out, name: e.name, col });
+    } else {
+      return null;
+    }
+
+    synthItems.push({ expr: arg, alias: col });
+  }
+
+  // All-`count(*)` projects nothing, and `detectNodeProjection` needs an item.
+  if (synthItems.length === 0) {
+    return null;
+  }
+
+  const synthRet: Clause = {
+    ...ret,
+    projection: {
+      ...ret.projection,
+      items: synthItems,
+      distinct: false,
+      groupBy: undefined,
+      having: undefined,
+      orderBy: undefined,
+      skip: undefined,
+      limit: undefined,
+    },
+  };
+  const rowsFn = detectNodeProjection([m, synthRet], compiled);
+
+  if (rowsFn === null) {
+    return null;
+  }
+
+  return (graph, params) => {
+    const state = accs.map((a) => (a.kind === 'fold' ? a.fold.init() : ([] as unknown[])));
+    let n = 0;
+
+    for (const row of rowsFn(graph, params)) {
+      n += 1;
+
+      // An INDEX loop, not `accs.entries()`: the iterator allocates a `[i, a]` tuple per
+      // accumulator per row, and at 200,000 rows that alone cost `count(n.age), count(*)`
+      // 17.8 ms against 9.4 for the single-item path over the same column (item 469).
+      for (let i = 0; i < accs.length; i += 1) {
+        const a = accs[i];
+
+        if (a.kind === 'rows') {
+          continue;
+        }
+
+        const v = row[a.col];
+
+        // The nullish skip is the same rule the fold path and the general path's `stepFolded`
+        // apply — the fourth and fifth places it lives read alike on purpose.
+        if (isNullish(v)) {
+          continue;
+        }
+
+        if (a.kind === 'fold') {
+          state[i] = a.fold.step(state[i], v);
+        } else {
+          (state[i] as unknown[]).push(v);
+        }
+      }
+    }
+
+    const out: Row = {};
+
+    for (let i = 0; i < accs.length; i += 1) {
+      const a = accs[i];
+
+      if (a.kind === 'rows') {
+        out[a.out] = n;
+      } else if (a.kind === 'fold') {
+        out[a.out] = a.fold.finish(state[i]);
+      } else {
+        // `frac` is read only by the percentiles, which this never admits.
+        out[a.out] = aggregateOverValues(a.name, state[i] as unknown[], 0);
+      }
+    }
+
+    return [out];
   };
 };
