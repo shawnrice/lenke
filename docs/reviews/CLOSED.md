@@ -2918,6 +2918,20 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   item and yields an `AggExpr` only when something was hoisted; with no aggregate the item is a
   plain `Key`, unchanged. Two mutants caught, the important one being "always `AggExpr`", which
   would collapse every plain projection into one group.
+- **TS has the SAME arithmetic-predicate gap, at 1.91x — and the symmetric fix COMPILES AND IS
+  NEVER APPLIED (439).** Same question as item 437, one shape per process, nine reps, selectivity
+  fixed: `a.k > 5` 5.21 ms, `a.k + 0 > 5` 9.96 (1.91x), `abs` 2.74x, `coalesce` 2.18x, an AND of
+  two comparisons FREE (as in native). Milder than native's 5.7x/21x only because TS's per-row
+  floor is 16x higher (~26 ns against 1.65). A `CArithProp` lift on `directEqProps`/`satisfies`
+  agreed with a `+ 0` oracle over 2,250 forms and moved NOTHING over three alternated rounds; a
+  trace showed **"compiled" 8 times and "applied" ZERO** — these shapes do not consult the compiled
+  `CPredicate`. **REVERTED**: a path that is correct, willing and unreachable reads as a fix in the
+  diff while the query is answered elsewhere (item 418). **Open: which gate upstream declines**, and
+  the next pass starts from a trace rather than a measurement.
+- **Item 371's rule is VERIFY THE DISPATCH REACHES THE FUNCTION — and it comes BEFORE the A/B
+  (439).** I measured first, got a null result, then instrumented; the trace is three lines. Items
+  418 and 420 checked firing before measuring and this one did not, at a cost of three alternated
+  rounds on a change that could not move anything.
 - **BUILT: the fused arithmetic filter arm, 5.0x (438).** `try_filter_keep_arith` admits
   `<prop> <arith> <lit> <cmp> <lit>` in all three spellings and evaluates the arithmetic inline in
   the keep pass: `a.k + 0 > 5` 1.932 -> 0.387 ms at 200k and 9.903 -> 1.978 at 1M, landing ON the
