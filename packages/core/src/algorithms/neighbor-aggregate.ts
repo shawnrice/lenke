@@ -140,8 +140,8 @@ const buildAdjacency = (
 
   for (const edge of graph.edges) {
     if (typeOk(edge)) {
-      const from = edge.from.id;
-      const to = edge.to.id;
+      const from = edge.fromId;
+      const to = edge.toId;
       (outAdj.get(from) ?? outAdj.set(from, []).get(from)!).push({ eidx, nbr: to });
       (inAdj.get(to) ?? inAdj.set(to, []).get(to)!).push({ eidx, nbr: from });
     }

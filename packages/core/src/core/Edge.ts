@@ -422,8 +422,8 @@ export class Edge {
     // `Value::Map` layout in gql/eval.rs.
     return {
       id: this.id,
-      from: this.from.id,
-      to: this.to.id,
+      from: this.fromId,
+      to: this.toId,
       labels: Array.from(this.labels).sort(),
       properties: sortedByKey(this.properties),
     };

@@ -218,7 +218,7 @@ export const encode = (graph: Graph): string => {
   }
 
   for (const edge of graph.edges) {
-    lines.push(elementTokens([edge.from.id, edge.to.id], edge.labels, edge.properties));
+    lines.push(elementTokens([edge.fromId, edge.toId], edge.labels, edge.properties));
   }
 
   return lines.join('\n');
@@ -507,7 +507,7 @@ export async function* encodeStream(graph: Graph): AsyncGenerator<string> {
   }
 
   for (const edge of graph.edges) {
-    batch.push(elementTokens([edge.from.id, edge.to.id], edge.labels, edge.properties));
+    batch.push(elementTokens([edge.fromId, edge.toId], edge.labels, edge.properties));
 
     if (batch.length >= batchSize) {
       yield flush();

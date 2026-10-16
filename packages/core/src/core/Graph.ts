@@ -1291,8 +1291,8 @@ export class Graph {
       next.addEdge(
         new Edge({
           id: edge.id,
-          from: next.getVertexById(edge.from.id)!,
-          to: next.getVertexById(edge.to.id)!,
+          from: next.getVertexById(edge.fromId)!,
+          to: next.getVertexById(edge.toId)!,
           labels: [...edge.labels],
           properties: { ...edge.properties },
           graph: next,
@@ -1459,8 +1459,8 @@ export class Graph {
       next.addEdge(
         new Edge({
           id: edge.id,
-          from: next.getVertexById(edge.from.id)!,
-          to: next.getVertexById(edge.to.id)!,
+          from: next.getVertexById(edge.fromId)!,
+          to: next.getVertexById(edge.toId)!,
           labels: [...edge.labels],
           properties: { ...edge.properties },
           graph: next,
@@ -2004,8 +2004,8 @@ export class Graph {
           id: edge.id,
           labels: [...edge.labels],
           properties: edge.properties,
-          from: edge.from.id,
-          to: edge.to.id,
+          from: edge.fromId,
+          to: edge.toId,
         }
       : undefined;
 
@@ -3637,8 +3637,8 @@ export class Graph {
     }
 
     if (this.txDepth > 0) {
-      this.txTouched.add(edge.from.id);
-      this.txTouched.add(edge.to.id);
+      this.txTouched.add(edge.fromId);
+      this.txTouched.add(edge.toId);
 
       return;
     }
@@ -3664,8 +3664,8 @@ export class Graph {
       return;
     }
 
-    this.txTouched.add(edge.from.id);
-    this.txTouched.add(edge.to.id);
+    this.txTouched.add(edge.fromId);
+    this.txTouched.add(edge.toId);
   };
 
   // --- VALIDATORS (custom GQL-predicate constraints) ---------

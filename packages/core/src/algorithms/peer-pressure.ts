@@ -39,8 +39,8 @@ export const computeGen = function* (
 
   for (const edge of graph.edges) {
     if (typeOk(edge)) {
-      outDeg[index.get(edge.from.id)!]++;
-      inOff[index.get(edge.to.id)! + 1]++;
+      outDeg[index.get(edge.fromId)!]++;
+      inOff[index.get(edge.toId)! + 1]++;
     }
 
     if (++sinceYield >= YIELD_EVERY) {
@@ -67,7 +67,7 @@ export const computeGen = function* (
 
   for (const edge of graph.edges) {
     if (typeOk(edge)) {
-      inSrc[cursor[index.get(edge.to.id)!]++] = index.get(edge.from.id)!;
+      inSrc[cursor[index.get(edge.toId)!]++] = index.get(edge.fromId)!;
     }
 
     if (++sinceYield >= YIELD_EVERY) {

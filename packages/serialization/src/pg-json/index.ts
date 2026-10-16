@@ -119,8 +119,8 @@ export const encode = (graph: Graph, space?: string | number): string => {
   for (const edge of graph.edges) {
     edges.push({
       id: edge.id,
-      from: edge.from.id,
-      to: edge.to.id,
+      from: edge.fromId,
+      to: edge.toId,
       undirected: false,
       labels: [...edge.labels],
       properties: normalizeBag(edge.properties),

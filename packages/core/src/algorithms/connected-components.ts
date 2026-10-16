@@ -66,7 +66,7 @@ export const computeGen = function* (
 
   for (const edge of graph.edges) {
     if (edgeLabel === undefined || edge.labels.has(edgeLabel)) {
-      union(parent, index.get(edge.from.id)!, index.get(edge.to.id)!);
+      union(parent, index.get(edge.fromId)!, index.get(edge.toId)!);
     }
 
     if (++sinceYield >= YIELD_EVERY) {

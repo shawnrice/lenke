@@ -939,7 +939,7 @@ export const encodeEdges = (graph: Graph): string => {
     const typeStr = joinLabels(edge.labels);
     rows.push(
       buildRow(
-        [guardField(edge.id), guardField(edge.from.id), guardField(edge.to.id), typeStr],
+        [guardField(edge.id), guardField(edge.fromId), guardField(edge.toId), typeStr],
         keys,
         types,
         bags[i],
@@ -1077,8 +1077,8 @@ export async function* encodeEdgesStream(graph: Graph): AsyncGenerator<string> {
       buildRow(
         [
           guardField(edge.id),
-          guardField(edge.from.id),
-          guardField(edge.to.id),
+          guardField(edge.fromId),
+          guardField(edge.toId),
           joinLabels(edge.labels),
         ],
         keys,

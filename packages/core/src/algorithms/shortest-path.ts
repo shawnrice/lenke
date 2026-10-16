@@ -90,13 +90,13 @@ const neighbours = function* (
 ): Iterable<[Edge, string]> {
   if (dir === 'out' || dir === 'both') {
     for (const e of outEdges(graph.edgesFromByLabel.get(u.id), edgeLabel)) {
-      yield [e, e.to.id];
+      yield [e, e.toId];
     }
   }
 
   if (dir === 'in' || dir === 'both') {
     for (const e of outEdges(graph.edgesToByLabel.get(u.id), edgeLabel)) {
-      yield [e, e.from.id];
+      yield [e, e.fromId];
     }
   }
 };

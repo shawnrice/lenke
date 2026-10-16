@@ -59,7 +59,7 @@ export const graphContentEqual = (a: Graph, b: Graph): boolean => {
     new Map(
       [...g.edges].map((e) => [
         String(e.id),
-        `${e.from.id}->${e.to.id}|${canon(e.labels, e.properties)}`,
+        `${e.fromId}->${e.toId}|${canon(e.labels, e.properties)}`,
       ]),
     );
 

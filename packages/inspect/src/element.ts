@@ -46,8 +46,8 @@ export const formatElement = (element: Vertex | Edge, options: ColorOption = {})
   const id = style.dim(`#${element.id}`);
 
   if (isEdge(element)) {
-    const from = style.dim(`#${element.from.id}`);
-    const to = style.dim(`#${element.to.id}`);
+    const from = style.dim(`#${element.fromId}`);
+    const to = style.dim(`#${element.toId}`);
 
     return `[${id} ${labels}${props}] (${from} ${style.dim('→')} ${to})`;
   }

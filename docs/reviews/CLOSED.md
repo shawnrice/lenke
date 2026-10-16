@@ -3088,6 +3088,20 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   13-16 ns of the 60.2 that 394 put in labels; **the rest needs a cached label list** — item 393's
   unbuilt forward node->labels cache in its edge form — and is not available by borrowing.
 
+- **DONE — `edge.from.id` round-trips an id the edge already holds; 1.78x connected components,
+  1.67x PageRank, 1.28x NDJSON encode (397).** `from`/`to` resolve through `getVertexById` and
+  read back the same string the edge stores. **Item 140 fixed exactly this and applied it to ONE
+  call site** (`indexEdgeLabel`); 44 others kept the round trip — every algorithm's CSR loop,
+  every serialization encoder, `Edge.toJSON`, the clone paths, `txTouched`, Gremlin
+  movement/projection, `inspect`. The accessor itself is **89.7 -> 14.3 ns/edge (6.3x)**, ~37 ns
+  per round trip, which is the UPPER BOUND; end to end, alternated min of three at nine reps:
+  connected components 20.72 -> 11.64, PageRank 71.75 -> 43.03, NDJSON encode 79.61 -> 62.25, all
+  disjoint, `degree` flat as a control. **Betweenness is only 1.04x** — O(V*E) BFS dominates, so a
+  CSR-build saving barely shows; do not price an algorithm by its edge count alone.
+  Two traps worth carrying forward: the algorithms return a **Promise**, and a probe that forgets
+  to await reports three unrelated algorithms at 5.03/5.02/5.06 ms; and `encode ndjson` at three
+  reps had OVERLAPPING ranges with one NEW round worse than an OLD one, resolving only at nine.
+
 ## 6. Consequences of the AND decision — RESOLVED by item 258, and not as predicted
 
 This section was written before the change and asked three questions. All three are now answered by

@@ -160,8 +160,8 @@ const pagerankCore = function* (
     }
 
     if (typeOk(edge)) {
-      outStrength[index.get(edge.from.id)!] += w;
-      incOff[index.get(edge.to.id)! + 1]++;
+      outStrength[index.get(edge.fromId)!] += w;
+      incOff[index.get(edge.toId)! + 1]++;
     }
 
     if (++sinceYield >= YIELD_EVERY) {
@@ -197,8 +197,8 @@ const pagerankCore = function* (
       continue;
     }
 
-    const src = index.get(edge.from.id)!;
-    const pos = cursor[index.get(edge.to.id)!]++;
+    const src = index.get(edge.fromId)!;
+    const pos = cursor[index.get(edge.toId)!]++;
     incSrc[pos] = src;
     // A node whose total out-weight is 0 (only reachable when weighted and every
     // out-edge has weight 0) is a DANGLING node: its rank mass is redistributed

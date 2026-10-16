@@ -37,7 +37,10 @@ type EdgeRecord = {
 };
 
 type VertexLike = { id: string; labels: Iterable<string>; properties: Record<string, unknown> };
-type EdgeLike = VertexLike & { from: { id: string }; to: { id: string } };
+// The endpoints as the STORED ids. `from`/`to` resolve an id the edge already holds
+// through `getVertexById` and read the same string back off the vertex — 37 ns a side,
+// per edge, for nothing (audit items 140 and 397). Both callers pass a real `Edge`.
+type EdgeLike = VertexLike & { fromId: string; toId: string };
 
 const nodeLine = (vertex: VertexLike): string =>
   JSON.stringify({
@@ -51,8 +54,8 @@ const edgeLine = (edge: EdgeLike): string =>
   JSON.stringify({
     type: 'edge',
     id: edge.id,
-    from: edge.from.id,
-    to: edge.to.id,
+    from: edge.fromId,
+    to: edge.toId,
     labels: [...edge.labels],
     properties: normalizeBag(edge.properties),
   });

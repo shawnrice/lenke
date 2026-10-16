@@ -130,7 +130,7 @@ const buildForwardAdj = function* (
 
   for (const edge of graph.edges) {
     if (edgeLabel === undefined || edge.labels.has(edgeLabel)) {
-      adj[index.get(edge.from.id)!].push(index.get(edge.to.id)!);
+      adj[index.get(edge.fromId)!].push(index.get(edge.toId)!);
     }
 
     if (++sinceYield >= YIELD_EVERY) {

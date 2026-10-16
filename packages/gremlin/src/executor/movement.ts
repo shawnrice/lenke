@@ -31,7 +31,7 @@ export const otherEndpoint = (kind: 'out' | 'in' | 'both', edge: Edge, v: Vertex
     case 'in':
       return edge.from;
     case 'both':
-      return edge.from.id === v.id ? edge.to : edge.from;
+      return edge.fromId === v.id ? edge.to : edge.from;
   }
 };
 
@@ -95,7 +95,7 @@ export const edgeToVertex = function* (
     } else {
       // otherV — find the previous vertex in the path and emit the other endpoint.
       const prev = [...t.path].reverse().find((p): p is Vertex => isVertex(p));
-      const other = prev?.id === e.from.id ? e.to : e.from;
+      const other = prev?.id === e.fromId ? e.to : e.from;
 
       yield extend(t, other);
     }

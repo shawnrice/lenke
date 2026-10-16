@@ -239,8 +239,8 @@ export const encode = (graph: Graph): string => {
       '@value': {
         id: edge.id,
         label: joinLabels(edge.labels),
-        inV: edge.to.id,
-        outV: edge.from.id,
+        inV: edge.toId,
+        outV: edge.fromId,
         properties,
       },
     });

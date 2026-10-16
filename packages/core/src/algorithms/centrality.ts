@@ -60,7 +60,7 @@ const buildCsr = function* (
 
   for (const edge of graph.edges) {
     if (typeOk(edge)) {
-      off[index.get(edge.from.id)! + 1]++;
+      off[index.get(edge.fromId)! + 1]++;
     }
 
     if (++sinceYield >= YIELD_EVERY) {
@@ -83,9 +83,9 @@ const buildCsr = function* (
       continue;
     }
 
-    const src = index.get(edge.from.id)!;
+    const src = index.get(edge.fromId)!;
     const pos = cursor[src]++;
-    nbr[pos] = index.get(edge.to.id)!;
+    nbr[pos] = index.get(edge.toId)!;
     w[pos] = weightOf(edge);
 
     if (++sinceYield >= YIELD_EVERY) {
