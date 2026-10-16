@@ -1462,6 +1462,56 @@ export const side = (
 };
 
 /**
+ * `side` for an UNDIRECTED hop: how many rows a middle vertex contributes on one side of an
+ * undirected two-hop product.
+ *
+ * `out + in`, minus the self-loops at `bId`, because a loop sits in BOTH adjacency maps and
+ * `expand` yields it once (item 482's arithmetic, per vertex instead of per graph). The
+ * subtraction is skipped entirely unless the graph holds a loop of one of these types, so an
+ * ordinary graph pays one `Map.get` for the whole query and nothing per vertex.
+ *
+ * Both engines answer 6 for `MATCH (:P)-[:T]-(x)-[:T]-(y)` over the path `a-b-c`, which is
+ * `1 + 2^2 + 1` — WALK semantics, where a two-hop may return along the edge it arrived on. That
+ * is what makes this a degree PRODUCT at all, and it was checked against both engines before
+ * the formula was written (item 483).
+ */
+const undirectedSide = (
+  graph: Graph,
+  bId: string,
+  types: string[] | undefined,
+  far: LabelExpr | undefined,
+  loopsPossible: boolean,
+): number => {
+  const n = side(graph, bId, true, types, far) + side(graph, bId, false, types, far);
+
+  if (!loopsPossible) {
+    return n;
+  }
+
+  // Only reached on a graph that HAS a loop of a wanted type. A loop is in the out-bucket, so
+  // one pass over it finds every loop at this vertex.
+  const byType = graph.edgesFromByLabel.get(bId);
+  let loops = 0;
+
+  for (const edge of edgesOfTypes(byType, types)) {
+    if (edge.from === edge.to && matchesLabel(edge.to, far)) {
+      loops += 1;
+    }
+  }
+
+  return n - loops;
+};
+
+/** Does the graph hold a self-loop of any of `types` (any type when `undefined`)? */
+const loopsOfTypes = (graph: Graph, types: string[] | undefined): boolean => {
+  if (graph.selfLoopCount === 0) {
+    return false;
+  }
+
+  return types === undefined ? true : types.some((t) => (graph.selfLoopsByLabel.get(t) ?? 0) > 0);
+};
+
+/**
  * How many edges `edgesOfTypes` would yield, without yielding them.
  *
  * Mirrors that function's cases exactly, which is the whole requirement: a single named type, or
@@ -1928,8 +1978,12 @@ const buildTwoHopCount = <T>(
     !plainRel(s2.rel) ||
     s1.rel.variable !== undefined ||
     s2.rel.variable !== undefined ||
-    s1.rel.direction === 'both' ||
-    s2.rel.direction === 'both' ||
+    // `both` IS admitted here (item 483): the product's two factors become UNDIRECTED degrees,
+    // which is sound because a two-hop may return along the edge it arrived on — both engines
+    // answer 6 for `(:P)-[:T]-(x)-[:T]-(y)` over the path `a-b-c`, which is 1 + 2^2 + 1.
+    //
+    // The FILTERED builder above still refuses it: that one WALKS with a captured direction,
+    // and a guard edited by pattern alone landed there first (item 483's own near-miss).
     // `s1.node` — the MIDDLE — may now carry a constraint, because this walk visits middles and
     // `midPreds` gates each one exactly once. `s2.node`, the END, still may not: the product
     // reaches it only as a degree, so a constraint there has no once-per-element place to go.
@@ -1959,6 +2013,8 @@ const buildTwoHopCount = <T>(
   // seg1 reaches `a` from b's reverse side; seg2 reaches `c` from b's forward side.
   const toAOut = s1.rel.direction === 'in';
   const fromCOut = s2.rel.direction === 'out';
+  const aBoth = s1.rel.direction === 'both';
+  const cBoth = s2.rel.direction === 'both';
   // Composed once, the same `reduceRight` the node tally uses, so the clause and inline spellings
   // of a middle constraint go through `inlineHolds` -> `satisfies` — the general path's own
   // implementation — rather than re-deriving inline-pattern semantics here.
@@ -1979,6 +2035,9 @@ const buildTwoHopCount = <T>(
     // being a per-edge scan wearing one's clothes — see `effectiveLabel`.
     const aEff = effectiveLabel(graph, aLabel);
     const cEff = effectiveLabel(graph, cLabel);
+    // Once per execution, not per vertex: does this graph hold a loop of a wanted type at all?
+    const aLoops = aBoth && loopsOfTypes(graph, t1);
+    const cLoops = cBoth && loopsOfTypes(graph, t2);
     // One binding map reused across middles, the idiom `buildNodeCount` already uses:
     // `inlineHolds` overwrites the node's own variable per element.
     const binding = new Map<string, unknown>();
@@ -1995,13 +2054,19 @@ const buildTwoHopCount = <T>(
         continue;
       }
 
-      const ways = side(graph, b.id, toAOut, t1, aEff);
+      const ways = aBoth
+        ? undirectedSide(graph, b.id, t1, aEff, aLoops)
+        : side(graph, b.id, toAOut, t1, aEff);
 
       if (ways === 0) {
         continue;
       }
 
-      count += ways * side(graph, b.id, fromCOut, t2, cEff);
+      count +=
+        ways *
+        (cBoth
+          ? undirectedSide(graph, b.id, t2, cEff, cLoops)
+          : side(graph, b.id, fromCOut, t2, cEff));
     }
 
     return rowOf(count);

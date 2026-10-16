@@ -4828,3 +4828,27 @@ undirected count flat at ~780.
 
 **OPEN, priced:** the undirected TWO-HOP count, 7483 ms against the directed 78 — a different
 builder and a much larger row count.
+
+## 483 — an undirected leg in the two-hop count: CLOSED at 22x (7286 -> 333 ms)
+
+Native pays 2.6x for the undirected two-hop where TS paid 95x, so the gap was TS's. The two-hop
+count is a degree PRODUCT per middle vertex, and each factor becomes an UNDIRECTED degree:
+`out + in` minus self-loops (a loop is in both maps; `expand` yields it once). The subtraction
+is gated on `selfLoopsByLabel` holding a wanted type, so an ordinary graph pays one `Map.get`
+per query.
+
+**The semantics were checked against BOTH engines before the formula was written**: both answer
+6 for `(:P)-[:T]-(x)-[:T]-(y)` over `a-b-c` = `1 + 2^2 + 1`, i.e. WALK semantics, where a
+two-hop may return along the edge it arrived on. Without that the product is simply wrong.
+
+Directed twin and the one-hop undirected count both flat.
+
+**The guard I edited was in the WRONG FUNCTION**: `buildFilteredTwoHopCount` and
+`buildTwoHopCount` hold the same two `both` lines, and a `replace(…, 1)` asserting only
+`old in s` hit the filtered one — a wrong answer (0 where 3 is right), caught by that file's own
+decline test. Item 474's lesson, third occurrence. **Source edits now assert the pattern appears
+exactly ONCE, the way the mutation script already does.**
+
+Mutation: five of seven. The loop scan's far-LABEL test survived until a fixture held a loop at
+a vertex that FAILS the end label. One equivalent (scanning where there is nothing to find), one
+null control. Two of my own expectations were wrong and the general-path oracle corrected both.
