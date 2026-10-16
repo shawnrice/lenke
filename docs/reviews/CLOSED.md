@@ -2952,6 +2952,19 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   cross-check. **So geometric stride growth is REQUIRED, not an optimization**: without it the
   ingest cost is prohibitive, and column-major would make growth trivial while restoring the
   K-separate-arrays render cost rung 3 exists to remove.
+  **A THIRD CONSTRAINT, found by reading the render path rather than by measuring (386).** The mask's
+  bit index has to name a column, and the renderer's columns come from `prop_keys_arc()`, which ends
+  in `keys.sort()` — they are SORTED positions. So a mask indexed by render position would need
+  RE-PERMUTING on every new key that does not sort last, which is strictly worse than 385's
+  widening restride. **Rung 3 therefore needs a STABLE key id** (insertion order), separate from
+  the sorted order the renderer emits in — and because the property map must keep `prop_keys`
+  sorted order to stay byte-identical, each node's few present properties must be reordered from
+  stable-id order back to sorted order (a precomputed stable-id -> sorted-position table plus a
+  sort of p ~ 4-5 items, not a pass over K). Noted because it is invisible from the pricing and is
+  the kind of thing that derails a build half-way: the structure is not "a bitmask over the keys
+  the renderer already iterates", it is a bitmask over a key identity that does not yet exist.
+  (Related smell in the same area: `prop_keys_cache` is keyed on key COUNT, and its own comment
+  already flags a rename that removes one key and adds another.)
   **State: rung 3's write side is priced and viable.** Per-write ~0.3%, ingest ~7.3% of decode with
   geometric striding, memory 4.77 MiB at K=200/N=200k plus up to 2x from doubling's slack and a
   transient copy during a restride. The READ win remains 342's: packed is 145.4/244.7 ns/row at
