@@ -4047,3 +4047,34 @@ first: the `CASE` has TWO branches so item 450's arm declines it, and `num_conj_
 `None` for a `Case` so item 451's cannot see it. Then empirically: `git checkout 8ebc6256 --` the
 two engine files, rebuild, and the pre-450 engine gives the IDENTICAL answer. Rate: 1 of 4 full
 runs, three subsequent differential runs clean.
+
+## 452 — the AND-fault-order divergence, MINIMISED. Same class as items 321/322; the recorded shapes overstate what it needs
+
+Item 451's fuzz failure is this already-recorded class, and item 452 re-derived it before checking
+— the declaration lives in `executor.ts`'s `case 'and'` comment ("a filter … whose cheap conjunct
+Rust's seek hoisted past a raising sibling"), in `seed-gate-order.test.ts`, and in the entries
+above. **"Is this divergence known?" is a `CLOSED.md` question; ask it before diagnosing.**
+
+What is new is the size of the reproducer. Every recorded one is a fuzzer query with an `OPTIONAL
+MATCH`, an inline node `WHERE`, a multi-branch `CASE` and a temporal, which implies the class needs
+an exotic expression. It needs none of that:
+
+```
+MATCH (n:N) WHERE (n.n AND (0.1 IN [0.0, 2])) RETURN n.n AS y
+  native []   vs   TS raises "a boolean is required"
+```
+
+Two vertices, a plain scan, a clause `WHERE`. The trigger is **a non-boolean first conjunct plus a
+sibling whose FALSE is COMPUTED rather than literal**. The boundary, measured:
+
+- `(n.n AND false)` — agrees (both fold/short-circuit the literal).
+- `((0.1 IN [0.0, 2]) AND n.n)` — agrees (the FALSE is first in written order, so both stop).
+- `(n.n AND (0.1 IN [0.0, 2]))` — diverges, in a clause `WHERE`, an inline node `WHERE`, with and
+  without `OPTIONAL MATCH`, and over a plain scan as well as a hop.
+
+Still OPEN and still not a perf change. ISO permits both (`US008`, `UA004`) and the repo has a
+dated user decision preferring the cheaper FALSE, so aligning means either deferring faults in TS
+until no conjunct settles the row (a `try`/`catch` per conjunct in the hot boolean path) or making
+native evaluate in written order (giving up item 175's 267.61ms -> 5.26ms). Item 322's first fix
+was wrong in the OTHER direction and created two new divergences: **being wider in one engine is
+the same mistake as being narrower.**
