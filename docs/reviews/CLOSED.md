@@ -2928,6 +2928,19 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   `CPredicate`. **REVERTED**: a path that is correct, willing and unreachable reads as a fix in the
   diff while the query is answered elsewhere (item 418). **Open: which gate upstream declines**, and
   the next pass starts from a trace rather than a measurement.
+- **TRACE FROM THE CONSUMER BACKWARDS, NOT FROM THE CANDIDATE FORWARDS (440).** Item 439
+  instrumented the code it had just written (`asArithCompare`), which proved only that its own code
+  ran. One line in the CONSUMER is the whole diagnosis: `satisfies` prints `cmp=1 where=no` for
+  `a.k > 5` and `cmp=0 where=YES` for `a.k + 0 > 5`. That was available before a single line of the
+  lift was written. Two ticks, no win, both spent on an assumption about which call site compiles
+  the predicate.
+- **Where the TS arithmetic lift actually stands (440).** Rung: `countShortcut` answers all three
+  predicate forms, so it is NOT a rung difference. Consumer: `satisfies` IS reached and the plain
+  form IS lifted (`cmp=1`). With item 439's `CArithProp` change re-applied, the clause-`WHERE` form
+  still arrives `arith=0 where=YES` — so `directEqProps` is not populating it for THIS spelling,
+  though the extractor matched 8 times on the inline and projection ones. **`shortcuts.ts` has at
+  least eight `compilePredicate` call sites** (304, 409, 1999, 2087, 2805, 4328, 4602, …) and the
+  one serving this shape is not the one that matched. Next step is reading, not measuring.
 - **Item 371's rule is VERIFY THE DISPATCH REACHES THE FUNCTION — and it comes BEFORE the A/B
   (439).** I measured first, got a null result, then instrumented; the trace is three lines. Items
   418 and 420 checked firing before measuring and this one did not, at a cost of three alternated
