@@ -170,6 +170,13 @@ question in its module header — read the header before touching it.
   numbers, including a fold that was 3.1x WORSE. Do not re-open without a way to
   answer an endpoint predicate without visiting edges.
 
+- `skipcast_426` — NOT a benchmark: a CONFORMANCE probe. Does a SKIPPED row's projection
+  still get evaluated? The engine's stated rule is "project exactly the rows you emit",
+  and a `SKIP` does not obey it — `CAST` faults on a row `SKIP 1 LIMIT 1` cannot emit,
+  while the same query with an `ORDER BY` succeeds. Both engines agree on all four
+  spellings, so the differential fuzzer cannot find it. Run it before changing paging in
+  either engine.
+
 - `strag_421` — the column-TYPE question for a scalar aggregate. `try_scan_num_agg`
   folds a `Num` column and its gate declines every other ("non-numeric column: the
   general path handles poison"), so: what does `max(n.s)` over a string cost, and does

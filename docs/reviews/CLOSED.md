@@ -2847,6 +2847,24 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   `Str` arm (`genExpr` emits a bare `n.s`) but NOT the `Dict` arm** — its six-node fixture has six
   distinct `s` values and measures `dict=false`, so the dictionary path's cross-engine parity rests
   on the unit test alone.
+- **A `SKIP` projects the rows it SKIPS, in BOTH engines, against the engine's own stated rule
+  (426).** `applyProjection`'s generic tail pages the PROJECTED rows, so `RETURN a.u AS s SKIP
+199995 LIMIT 5` projects 200,000 to return five: **48.8-51.3 ms against the ORDER BY spelling's
+  35.5, so adding an `ORDER BY` makes it 1.45x FASTER.** The ordered path keeps top-k INPUT
+  bindings and projects only survivors (item 145). The obvious fix is a BEHAVIOUR change: a skipped
+  row's projection can fault, and `skipcast_426` shows `CAST(a.s AS INTEGER) AS x SKIP 1 LIMIT 1`
+  faulting on a row it cannot emit while the `ORDER BY` spelling returns 1. **Both engines agree on
+  all four spellings** (checked natively, not assumed), so it is a conformance question against the
+  rule "project exactly the rows you emit" — the project's call, like item 417, and invisible to a
+  differential fuzzer for the same reason. NOT changed. The route that IS available inside the
+  current semantics: a conservative cannot-fault check on the projection, which would licence
+  skipping bindings; own item.
+- **A floor measured on a different PLAN is not a floor (426).** Item 425 priced its remaining gap
+  against the `max(a.u)` fold, which since item 420 runs on `detectNodeProjection`'s fused scan —
+  a different row-production path from `applyProjection`'s general binding stream. Attribution with
+  a CONSTANT sort key (`ORDER BY 1 LIMIT 5`, all ties, heap never evicts) puts **25.6 of the 35.5 ms
+  in the general stream plus the loop**, leaving ~10 for key evaluation and 200,000 comparisons. So
+  425's "remaining half" is item 377's per-row `Binding`, not the top-k's.
 - **DONE: the TS single-key top-k has its own heap, 1.34-1.50x across six shapes (425).** For
   `orderBy.length === 1` — the common spelling — `applyProjection` now uses parallel
   bindings/keys/index arrays with the sort flags destructured once, removing the `map` generator,
