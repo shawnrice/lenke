@@ -3198,6 +3198,14 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   decline costs the scan; a wrong seek is unbounded.
   After: 30% 1.96 -> 0.90/0.86/0.73, 60% 5.02 -> 0.84/0.91/0.86 (34.37 -> 5.85 ms), the
   selective 1-8% band unchanged, `bench:usage` point lookup still 920.8k vs 2.0k ops/s.
+  **Spelling probe discharged** (`CLAUDE.md` requires it after touching the TS planner, and CI
+  structurally cannot do it — the gate is a PERF decision, so every spelling still returns
+  identical rows whether or not they cost the same). At `SPELL_N=200000 SPELL_REPS=9`:
+  **0 groups disagree on the ANSWER**, and the single over-2x group is the pre-existing
+  `label on start: redundant vs absent` guard the probe file itself says not to quiet. So the
+  gate opened no spelling gap. Two sub-2x asymmetries noted in passing, both already owned by
+  items 290/298: four hops forward vs reversed 474.94 vs 721.55 ms (1.52x), five hops 930.05 vs
+  851.61 (1.09x the other way).
 
 - **NO TWIN — native cannot have item 410's bug, because it decides seeding at PLAN time (411).**
   `seek_beats_scan` runs inside `optimize_indexed`, so a declined seek is not in the plan and
