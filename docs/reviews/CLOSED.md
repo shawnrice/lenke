@@ -3207,6 +3207,21 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   items 290/298: four hops forward vs reversed 474.94 vs 721.55 ms (1.52x), five hops 930.05 vs
   851.61 (1.09x the other way).
 
+- **DONE — the TS `neighborAggregate` twin, 1.12x on the DEFAULT direction, after two refuted
+  attempts (416).** Shipped: a REUSED BUFFER (415's actual shape) — `both/none` 2343 -> 2083
+  (1.12x) and `both/gcn` 2985 -> 2731 (1.09x), both disjoint; single-direction within noise and
+  NOT claimed.
+  **REFUTED, return the STORED adjacency list instead of copying**: `direction: in` regressed
+  **1.20x with disjoint ranges** ([1604-1853] vs [1925-2242]) while `out` — the same branch,
+  same contents — improved. Monomorphism at the consumer's iteration is the only candidate
+  mechanism and does not explain the asymmetry. **Do not re-try the shared-array route.**
+  **REFUTED, fixing only the `gcn` length call**: 1.04x/1.01x with OVERLAPPING ranges. The
+  degree pass is a small share of a loop dominated by the fold, so the 1.21x attempt 1 showed
+  there was the other change or noise — attributing it would have been wrong.
+  **A JIT'd language needs ALTERNATED processes.** The first comparison used two separate `bun`
+  invocations and read the single-direction cases as worse; alternating showed noise for `out`
+  and a REAL regression for `in`.
+
 - **DONE — `neighborAggregate` allocated a contributor `Vec` per vertex; 1.23x/1.14x/1.07x
   across the dim sweep (415).** **The "vectorize it" target my notes carried is REFUTED by its
   own curve**: 16x the dims costs 4x the time, so the per-dim slope is ~7.7 ns against a ~125 ns

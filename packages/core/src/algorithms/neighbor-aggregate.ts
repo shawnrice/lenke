@@ -160,8 +160,13 @@ const gatherContributors = (
   inAdj: Map<string, Contributor[]>,
   wantOut: boolean,
   wantIn: boolean,
+  // ONE reusable buffer instead of an array per vertex — native's item 415 shape, which paid
+  // 1.23x there. Returning the STORED adjacency list instead was tried first and regressed
+  // `direction: in` by 1.20x with disjoint ranges, so this keeps a single allocation site and
+  // therefore one array identity at the consumer's iteration (item 416).
+  contrib: Contributor[],
 ): Contributor[] => {
-  const contrib: Contributor[] = [];
+  contrib.length = 0;
 
   if (wantOut) {
     contrib.push(...(outAdj.get(v) ?? []));
@@ -176,6 +181,32 @@ const gatherContributors = (
   }
 
   return contrib.sort((x, y) => x.eidx - y.eidx);
+};
+
+/** How many contributors `v` has, WITHOUT building the list — the `gcn` degree pass wants only
+ *  this number, and `gatherContributors(...).length` allocated an array, copied the adjacency
+ *  into it and sorted it, once per vertex, to read a length off it (audit item 416). The
+ *  self-loop rule is `gatherContributors`' own, restated rather than shared, because the two
+ *  disagreeing silently is the failure mode: a `both`-direction self-loop counts once.
+ */
+const contributorCount = (
+  v: string,
+  outAdj: Map<string, Contributor[]>,
+  inAdj: Map<string, Contributor[]>,
+  wantOut: boolean,
+  wantIn: boolean,
+): number => {
+  let n = wantOut ? (outAdj.get(v)?.length ?? 0) : 0;
+
+  if (wantIn) {
+    for (const a of inAdj.get(v) ?? []) {
+      if (!(wantOut && a.nbr === v)) {
+        n++;
+      }
+    }
+  }
+
+  return n;
 };
 
 export const computeGen = function* (
@@ -215,12 +246,13 @@ export const computeGen = function* (
 
   if (gcn) {
     for (const vertex of graph.vertices) {
-      const c = gatherContributors(vertex.id, outAdj, inAdj, wantOut, wantIn).length;
+      const c = contributorCount(vertex.id, outAdj, inAdj, wantOut, wantIn);
       deg.set(vertex.id, Math.max(c + (includeSelf ? 1 : 0), 1));
     }
   }
 
   const rows: NeighborAggregateRow[] = [];
+  const scratch: Contributor[] = [];
   let sinceYield = 0;
 
   for (const vertex of graph.vertices) {
@@ -242,7 +274,7 @@ export const computeGen = function* (
     }
 
     // Then neighbours in edge-index order, each scaled by edge weight × GCN factor.
-    for (const { eidx, nbr } of gatherContributors(v, outAdj, inAdj, wantOut, wantIn)) {
+    for (const { eidx, nbr } of gatherContributors(v, outAdj, inAdj, wantOut, wantIn, scratch)) {
       const nv = feats.get(nbr) ?? null;
 
       if (nv !== null) {
