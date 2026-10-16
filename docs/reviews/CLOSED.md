@@ -2965,6 +2965,22 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   the renderer already iterates", it is a bitmask over a key identity that does not yet exist.
   (Related smell in the same area: `prop_keys_cache` is keyed on key COUNT, and its own comment
   already flags a rename that removes one key and adds another.)
+  **DESIGN RESOLVED at 387, and it DISSOLVES the constraint above.** The structure should be a
+  DERIVED, VERSIONED CACHE rather than a maintained index: build the row-major mask on demand from
+  the per-column presence, and invalidate it when the key SET changes. Sorted positions are then
+  always current, so **no stable key id is needed** and 386's reordering problem disappears — and
+  385's restride analysis becomes moot for this design, since there is no incremental growth, only
+  invalidate-and-rebuild. The one-off build, column-major `Vec<bool>` -> row-major bits, 200k nodes,
+  cross-checked that the mask carries exactly the columns' presence: **0.5 / 1.3 / 6.4 / 21.7 ms at
+  K = 4 / 12 / 60 / 200 — 0.1% / 0.3% / 1.6% / 5.4% of the 405 ms decode**, mask 0.10-4.77 MiB.
+  **Invalidate on an EPOCH, not a count.** `prop_keys_cache` keys on key COUNT and its own comment
+  already flags the hole (a rename that removes one key and adds another). `bump_epoch(&mut self,
+token)` is the primitive and it already behaves the way this needs during ingest: _"if self.loading
+  { return; } // deferred; end_bulk() stamps every loaded token"_ — so a bulk load stamps nothing,
+  no render happens mid-load, and the first render after `end_bulk()` builds the mask once.
+  **So the remaining work is: an epoch-keyed mask cache, the build, and the render reading set bits
+  instead of probing K columns.** The write-side cost from 384 (~0.3% per set, to keep an existing
+  mask current) applies only while a mask is live.
   **State: rung 3's write side is priced and viable.** Per-write ~0.3%, ingest ~7.3% of decode with
   geometric striding, memory 4.77 MiB at K=200/N=200k plus up to 2x from doubling's slack and a
   transient copy during a restride. The READ win remains 342's: packed is 145.4/244.7 ns/row at
