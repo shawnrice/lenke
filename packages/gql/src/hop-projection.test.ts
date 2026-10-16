@@ -266,3 +266,117 @@ describe('fused hop projection declines where it must', () => {
     expect(rows).toEqual([{ n: 'c' }, { n: 'f' }]);
   });
 });
+
+// Item 444: a NAMED but UNMENTIONED relationship takes the fast path.
+//
+// The gate used to refuse `-[e:E]->` outright, and its comment called that "defensive, not
+// load-bearing". It cost 3.7x — `MATCH (a:P)-[e:E]->(b) RETURN count(b.k)` measured 4.6ms
+// against 1.25ms for the identical query spelled `-[:E]->` — and it WAS load-bearing, through
+// a hole the comment did not name: `freePredicateVars` adds a subquery pattern's own binding
+// names to its bound set, so an inner `-[r:T]->` CORRELATING on an outer `r` is reported as
+// reading nothing at all. `mentionsName` closes that by asking a different question — does the
+// name appear anywhere — which no free-variable analysis can be fooled about.
+describe('a named relationship on the hop fast path (item 444)', () => {
+  // TWO parallel edges between the same pair, which is what makes a correlated `r` distinguish
+  // itself: the correlated count is 1 and the degree is 2. A single-edge fixture would agree by
+  // luck, the vacuity trap items 422, 425, 427, 429 and 435 each paid for.
+  const twin = (): Graph => {
+    const h = new Graph();
+    const a = h.addVertex({ id: 'a', labels: ['U'], properties: { n: 1 } });
+    const x = h.addVertex({ id: 'x', labels: ['X'], properties: { n: 2 } });
+
+    h.addEdge({ from: a, to: x, labels: ['T'], properties: { w: 7 } });
+    h.addEdge({ from: a, to: x, labels: ['T'], properties: { w: 8 } });
+
+    return h;
+  };
+
+  test('named and unmentioned answers exactly what the anonymous spelling answers', () => {
+    const g = build();
+
+    for (const [anon, named] of [
+      ['MATCH (a:P)-[:T]->(x) RETURN x.name AS n', 'MATCH (a:P)-[e:T]->(x) RETURN x.name AS n'],
+      [
+        'MATCH (a:P)-[:T]->(x) WHERE x.age > 25 RETURN x.name AS n',
+        'MATCH (a:P)-[e:T]->(x) WHERE x.age > 25 RETURN x.name AS n',
+      ],
+      [
+        'MATCH (a:P)-[:T]->(x {age: 30}) RETURN x.name AS n',
+        'MATCH (a:P)-[e:T]->(x {age: 30}) RETURN x.name AS n',
+      ],
+      [
+        'MATCH (a:P)-[:T]->(x) RETURN count(x.age) AS c',
+        'MATCH (a:P)-[e:T]->(x) RETURN count(x.age) AS c',
+      ],
+      ['MATCH (a:P)-[:T]->(x) RETURN a.name AS n', 'MATCH (a:P)-[e:T]->(x) RETURN a.name AS n'],
+    ]) {
+      expect(query(g, named)).toEqual(query(g, anon));
+    }
+  });
+
+  test('a projected item that READS the edge still declines, and is right', () => {
+    const g = twin();
+
+    // The walk binds no edge, so this must NOT take the fast path. `w` is 7 and 8, which a
+    // fixture with one edge — or two edges carrying the same `w` — could not tell from a
+    // single-edge answer.
+    expect(query(g, 'MATCH (p:U)-[r:T]->(q) RETURN r.w AS w')).toEqual([{ w: 7 }, { w: 8 }]);
+    expect(query(g, 'MATCH (p:U)-[r:T]->(q) RETURN sum(r.w) AS s')).toEqual([{ s: 15 }]);
+  });
+
+  test('a SUBQUERY in the projection correlating on the edge declines', () => {
+    const g = twin();
+
+    // `r` comes from the OUTER pattern, so the inner pattern is a correlation on that one edge
+    // and the count is 1 — not `p`'s degree of 2. This is the case that broke when the gate was
+    // removed outright, and `freePredicateVars` reports NO free variables for it.
+    expect(query(g, 'MATCH (p:U)-[r:T]->(q) RETURN COUNT { MATCH (p)-[r:T]->(z) } AS c')).toEqual([
+      { c: 1 },
+      { c: 1 },
+    ]);
+  });
+
+  // NO TEETH against the guard, and recorded as such rather than left to look like a test that
+  // has them. The `m.where` half of the gate can be removed — and `carriedWhere`'s
+  // neither-endpoint refusal removed with it — and this test still passes, because `rowLocal`
+  // refuses a subquery `WHERE` on this path before either is consulted. What it pins is the
+  // ANSWER, which is worth pinning on its own: it is the shape that would go wrong first if the
+  // subquery refusal were ever relaxed.
+  test('a SUBQUERY in the clause WHERE correlating on the edge answers per-edge', () => {
+    const g = twin();
+
+    // The inner hop names `r`, so
+    // it CORRELATES on the outer edge: the predicate holds for the `w = 7` row and not the
+    // `w = 8` one, giving ONE row. Read uncorrelated — `r` fresh, matching any `T` edge with
+    // `w = 7` — it would hold for BOTH, giving two. One row against two is the distinguishing
+    // outcome, and it needs the twin edges to carry DIFFERENT `w` to exist at all.
+    expect(
+      query(
+        g,
+        'MATCH (p:U)-[r:T]->(q) WHERE EXISTS { MATCH (p)-[r:T WHERE r.w = 7]->(z) } RETURN q.n AS n',
+      ),
+    ).toEqual([{ n: 2 }]);
+
+    // The spelling that reads the OUTER `r` from an anonymous inner hop means the same thing and
+    // is visible to `freePredicateVars`, so it was never at risk. Asserted because the two
+    // spellings agreeing is the actual claim — and because a change that broke only the
+    // invisible one would otherwise look like a change that broke nothing.
+    expect(
+      query(
+        g,
+        'MATCH (p:U)-[r:T]->(q) WHERE EXISTS { MATCH (p)-[:T WHERE r.w = 7]->(z) } RETURN q.n AS n',
+      ),
+    ).toEqual([{ n: 2 }]);
+  });
+
+  test('an unrelated string equal to the edge name declines, harmlessly', () => {
+    const g = build();
+
+    // `mentionsName` compares every string in the AST, so a literal `'e'` reports mentioned for
+    // the rel variable `e`. That is a declined fast path and the same answer — asserted so the
+    // over-broadness stays deliberate rather than becoming a surprise.
+    expect(query(g, "MATCH (a:P)-[e:T]->(x) RETURN 'e' AS lit, x.name AS n")).toEqual(
+      query(g, "MATCH (a:P)-[:T]->(x) RETURN 'e' AS lit, x.name AS n"),
+    );
+  });
+});

@@ -212,6 +212,55 @@ const closedFarPred = (
   return compilePredicate(node.properties as never, node.where);
 };
 
+/**
+ * Does `name` appear ANYWHERE in this AST fragment, in any position?
+ *
+ * A GENERIC structural walk rather than a per-variant match, for the reason `hasSubquery` in
+ * the executor is written the same way: `Expr` is a wide union, and a walk enumerating its arms
+ * would answer "not mentioned" for any arm added later — the unsafe direction here, since the
+ * caller admits a fast path on a negative answer.
+ *
+ * It compares every string in the fragment against `name`, which makes it DELIBERATELY
+ * over-broad: a projected string literal `'e'`, or an unrelated property key `e`, reports
+ * mentioned for the rel variable `e`. The cost of a false positive is a declined fast path and
+ * nothing else, while the cost of a false negative is a wrong answer — see item 444 on the
+ * correlated rel variable a free-variable check could not see.
+ */
+const mentionsName = (node: unknown, name: string): boolean => {
+  if (typeof node === 'string') {
+    return node === name;
+  }
+
+  if (node === null || typeof node !== 'object') {
+    return false;
+  }
+
+  // The array arm is REDUNDANT — `Object.values` on an array returns its elements, so the
+  // object arm below already covers one, and mutation confirms removing this arm changes no
+  // answer. It stays because it matches `hasSubquery`'s shape and avoids the `Object.values`
+  // allocation on the common case; its redundancy is a property of JavaScript rather than of
+  // another function here, so unlike the `m.where` clause above it cannot quietly rot.
+  if (Array.isArray(node)) {
+    return node.some((child) => mentionsName(child, name));
+  }
+
+  return Object.values(node as Record<string, unknown>).some((child) => mentionsName(child, name));
+};
+
+/**
+ * Could the hop's relationship variable be OBSERVED by this `RETURN` or clause `WHERE`?
+ *
+ * Split out of `detectHopProjection` to keep it under the complexity gate, which the inline
+ * form pushed to 36 against a limit of 35 — the same split several other guards in this file
+ * have, and for the same reason. An anonymous relationship is never observed.
+ */
+const relVariableObserved = (
+  relVar: string | undefined,
+  projection: Projection,
+  where: Expr | undefined,
+): boolean =>
+  relVar !== undefined && (mentionsName(projection, relVar) || mentionsName(where, relVar));
+
 export const detectHopProjection = (
   clauses: readonly Clause[],
   compiled: readonly CClause[],
@@ -253,18 +302,59 @@ export const detectHopProjection = (
   // `both` would visit a self-loop from both ends, and a quantifier needs the general
   // matcher.
   //
-  // The rel-variable and path-variable checks here (and `pathVar` above) are DEFENSIVE, not
-  // load-bearing: the projection guard below already rejects any item that reads a name
-  // other than the far variable, so an unread `r` or `p` cannot change a row, and mutation
-  // confirms removing either changes no answer. They stay because that redundancy depends
-  // on the projection guard keeping its exact shape.
+  // A NAMED but UNMENTIONED relationship is admitted (audit item 444). This check was here and
+  // documented as "defensive, not load-bearing" — and defensive cost 3.7x: `MATCH (a:P)-[e:E]->(b)
+  // RETURN count(b.k)` measured 4.6ms against 1.25ms for the identical query spelled `-[:E]->`,
+  // over 20,000 nodes and 40,000 edges, isolated one case per process. `-[e:E]->` and `-[:E]->`
+  // are the SAME question when `e` is unread, which makes that an equivalent-spelling gap of the
+  // exact kind this repo exists to close.
+  //
+  // But the guard WAS load-bearing, and not for the reason its own comment gave. Removing it
+  // outright broke `a REL VARIABLE bound OUTSIDE correlates on that edge, not the degree`:
+  // `MATCH (p:U)-[r:T]->(q) RETURN COUNT { MATCH (p)-[r:T]->(z) }` must answer 1 — that one
+  // edge — and answered 2, `p`'s degree. The claim that "the projection guard rejects any item
+  // that reads a name other than the far variable" is false for a SUBQUERY: `freePredicateVars`
+  // descends into one, but it adds the inner pattern's own binding names to its bound set first,
+  // so an inner `-[r:T]->` that CORRELATES on an already-bound `r` is indistinguishable from one
+  // that binds `r` freshly, and neither is reported free. So `projectedEndsOnly` saw an item
+  // reading neither endpoint and admitted it. That is the second comment in this file to be
+  // refuted by running the thing it described (item 420 was the first).
+  //
+  // So the rel variable's name must not be MENTIONED anywhere in the two places that could
+  // observe it — the RETURN projection and the clause `WHERE`. Of those two, mutation shows
+  // only the PROJECTION half has teeth: dropping it fails two tests, while dropping the
+  // `m.where` half changes no answer, and still changes none with `carriedWhere`'s
+  // neither-endpoint refusal ALSO removed. What actually refuses a subquery `WHERE` on this
+  // path is `rowLocal`, whose own comment says the arms it exists to refuse are the subquery
+  // ones. The clause stays anyway, and this paragraph is the reason: the projection half proves
+  // a free-variable analysis cannot see this correlation, so a later relaxation of `rowLocal`
+  // — wanting subquery `WHERE`s on the fast path is a reasonable thing to want — would reopen
+  // exactly the hole this item found. Defence in depth, named as such instead of described as
+  // the guard, which is the mistake the paragraph above is about.
+  //
+  // `mentionsName` is a generic
+  // structural walk for exactly the reason `hasSubquery` in the executor is one: `Expr` is a
+  // wide union and a walk enumerating its arms would answer "not mentioned" for any arm added
+  // later, which is the unsafe direction. It compares every string in the AST, so an unrelated
+  // string literal `'e'` also declines — a false decline costs a fast path and nothing else.
+  //
+  // What remains inert about an unmentioned `e` is that every OTHER way of reading it is refused
+  // by name already: `plainRel` rejects a rel with inline properties, an inline `WHERE` or a
+  // quantifier; `projectedEndsOnly` rejects a projected item naming anything but the two
+  // endpoints; `carriedWhere` rejects a clause `WHERE` that does. So `count(e.w)` still declines
+  // — correctly, since the walk never binds an edge. The path VARIABLE check above stays: a
+  // `pathVar` has to build a `Path` per row whether or not it is projected.
   //
   // A path MODE (`SIMPLE`/`ACYCLIC`/`WALK`/`TRAIL`) is deliberately NOT rejected: this
   // engine applies those restrictors per repetition, so on a single non-quantified hop they
   // are no-ops — measured against the general path including the `ACYCLIC`-with-a-self-loop
   // case, which is the one that could have differed. A path SELECTOR (`ANY SHORTEST`) raises
   // on a non-var-length pattern in both paths.
-  if (!plainRel(rel) || rel.direction === 'both' || rel.variable !== undefined) {
+  if (!plainRel(rel) || rel.direction === 'both') {
+    return null;
+  }
+
+  if (relVariableObserved(rel.variable, ret.projection, m.where)) {
     return null;
   }
 

@@ -105,6 +105,26 @@ const GROUPS: [string, readonly string[]][] = [
     ],
   ],
   [
+    // Item 444. `-[e:E]->` and `-[:E]->` ask the same question when `e` is never mentioned, and
+    // they cost 3.7x apart until the hop fast path stopped refusing a named rel outright. This
+    // group is why that hid: the probe had no anon-vs-named edge spelling at all.
+    'edge variable named but unread (item 444)',
+    [
+      'MATCH (a:P)-[:E]->(b) RETURN count(b.k) AS c',
+      'MATCH (a:P)-[e:E]->(b) RETURN count(b.k) AS c',
+    ],
+  ],
+  [
+    // The projection twin of the group above — `detectHopAggregate` delegates to
+    // `detectHopProjection`, so a gate change reaches both, and a probe that only covered the
+    // aggregate would miss half of it.
+    'edge named but unread, filtered projection (item 444)',
+    [
+      'MATCH (a:P)-[:E]->(b) WHERE b.k = 2 RETURN b.k AS k',
+      'MATCH (a:P)-[e:E]->(b) WHERE b.k = 2 RETURN b.k AS k',
+    ],
+  ],
+  [
     'operand order: $x = n.k vs n.k = $x',
     [
       'MATCH (n:P) WHERE n.k = 2 RETURN count(*) AS c',

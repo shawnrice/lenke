@@ -3810,3 +3810,40 @@ it is the route that survives short-circuiting.**
 The generalisable lesson, which is why this stays in `CLOSED.md` rather than only in the audit:
 **two engines returning the same error code are not necessarily implementing the same rule.** Any
 change that removes one engine's path to an error can reveal that the other's was the only real one.
+
+## 444 — a named-but-unread edge variable cost 3.7x on the TS hop fast path: CLOSED
+
+`MATCH (a:P)-[e:E]->(b) RETURN count(b.k)` measured 4.6ms against 1.25ms for the identical query
+spelled `-[:E]->`. `detectHopProjection` refused a named rel outright; it now refuses only one
+whose name is MENTIONED in the `RETURN` or the clause `WHERE`. **3.4-4.2x**, and the two spellings
+now cost the same, with two structurally-unreachable controls flat.
+
+Three things to not re-derive:
+
+- **The guard was load-bearing, and its own comment said it was not.** It claimed the projection
+  guard already rejects any item reading a name other than the far variable. False for a
+  SUBQUERY: `freePredicateVars` adds an inner pattern's binding names to its bound set, so an
+  inner `-[r:T]->` correlating on an already-bound `r` reports NO free variables.
+  `MATCH (p:U)-[r:T]->(q) RETURN COUNT { MATCH (p)-[r:T]->(z) }` must be 1 per row and was `p`'s
+  degree. The fix asks "does the name appear anywhere", which is not an analysis and so cannot be
+  fooled. Second comment in the audit refuted by running it (item 420 was the first).
+- **The clause-`WHERE` half of the guard is defence in depth, not the active guard**, and both the
+  code and its test now say so. Mutation survived with it removed, and survived again with
+  `carriedWhere`'s neither-endpoint refusal removed too: `rowLocal` is what refuses a subquery
+  clause `WHERE` here. It stays only because the projection half proves free-variable analysis
+  cannot see this correlation.
+- **The TS edge-write gap is mostly NOT the write.** Of a 7 ms `DELETE e`, 5.6 ms is the read that
+  binds `e`. Do not price a TS edge write without subtracting its read first.
+
+OPEN, found here and not fixed:
+
+- **A wrong answer**: a correlated rel variable in a COUNT subquery inside a clause `WHERE` makes
+  the predicate unsatisfiable at EVERY value — `WHERE COUNT { MATCH (p)-[r:T]->(z) } = n` returns
+  nothing for n = 0, 1 and 2, and `IS NULL` is empty too. The same subquery in `RETURN` is correct,
+  and the `EXISTS` spelling is correct. Unrelated to the gate above, which declines the shape.
+- **Projecting an edge costs 100x projecting a node** on the cross-engine bench: `project the edge`
+  607.1 ms lazy / 1018.7 materialized against `project the element` 5.7 / 27.2. Both edge rows read
+  the edge, so they decline this fast path.
+- **Native has no bound-endpoint `_MERGE`.** `MATCH (a:P) _MERGE (a)-[:E]->(a)` works in TS and is
+  a parse error in native, which accepts `_MERGE` only as a leading statement with unique-key-
+  resolved endpoints. A row-driven `MergeEdgeFrom` plan, not a parse fix.
