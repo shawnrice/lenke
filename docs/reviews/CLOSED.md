@@ -3102,6 +3102,29 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   to await reports three unrelated algorithms at 5.03/5.02/5.06 ms; and `encode ndjson` at three
   reps had OVERLAPPING ranges with one NEW round worse than an OLD one, resolving only at nine.
 
+- **DONE — `[...set]` is 1.79x `Array.from(set)`; 1.44x on an edge render, 1.22x on a vertex
+  (398).** Spread takes the engine's fast path for an unmodified `Set` iterator where
+  `Array.from` walks the generic iterator protocol (a manual `push` loop is slower than spread);
+  the one-element `sort()` is skipped below two labels. Measured three independent runs:
+  66.1/63.0/64.7 vs 35.8/35.2/36.2 ns, disjoint. **Report the MEDIAN here, not the min** — round
+  3's NEW was a globally fast round in which the CONTROL also dropped, and min-of-three then
+  credits the change with the machine's luck.
+  **RETRACTED in the same item: "the TS engine renders edges slowly" is false.** `edge.toJSON`
+  is 94.7 ns/element against `vertex.toJSON`'s 133.5 — an edge renders CHEAPER. The bench's
+  1102 ns/row is traversal and the JSON carrier.
+  **And the sorted-labels invariant both `toJSON`s document had NO test**: deleting the sort
+  outright SURVIVED the whole suite, as did an off-by-one guard that skips sorting a TWO-label
+  element. Now pinned by `tojson-label-order.test.ts`.
+
+- **A TS mutation loop poisons its own next run, and a false CAUGHT reads as teeth (398).**
+  `bun run test` restored a **cached build of the PREVIOUS mutant**: after 397's run, a later
+  full test run failed ten byte-identity tests with edge endpoints reversed — 397's M2 mutant,
+  long after its source was restored — and 398's own control reported CAUGHT in the loop and
+  SURVIVED alone. So: rebuild after restoring, and **re-run every verdict isolated before
+  believing it, the control first**. A harness that reports false CAUGHTs made two genuinely
+  SURVIVED mutants look caught, which nearly signed off an untested invariant as tested.
+  `bun run fuzz` passed during the poisoned run because the fuzz runner rebuilds its own inputs.
+
 ## 6. Consequences of the AND decision — RESOLVED by item 258, and not as predicted
 
 This section was written before the change and asked three questions. All three are now answered by
