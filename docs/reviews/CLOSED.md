@@ -2918,6 +2918,19 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   item and yields an `AggExpr` only when something was hoisted; with no aggregate the item is a
   plain `Key`, unchanged. Two mutants caught, the important one being "always `AggExpr`", which
   would collapse every plain projection into one group.
+- **PRICED, NOT BUILT: one arithmetic node in a filter costs 5.7x, a `coalesce` 21x, at IDENTICAL
+  selectivity (437).** `exprpred_437` holds the row count fixed and varies only the predicate's
+  shape: `a.k > 5` 0.365 ms, `a.k + 0 > 5` 2.087, `abs(a.k) > 5` 2.169, `coalesce(a.k, 0) > 5`
+  7.815, `CASE …` 5.409 — all selecting 90,908 of 200,000, ratios holding at 1M. `a.k > 5 AND
+a.k < 100` is FREE (1.05x) and `NOT (a.k <> 1)` is exactly its positive form, because both are in
+  `try_filter_keep`'s pattern list. **Two wrong guesses recorded: it is NOT a per-row tree walk
+  (`eval` is columnar) and NOT boxing (`Col` is typed, `read_property` returns `Col::Num`, arith has
+  a raw-f64 arm).** It is MATERIALIZATION — one column per expression node, four passes and three
+  allocations against the fast path's one pass and none. Fix is expression FUSION (or a compiled
+  closure, which is what TS does — item 433 again); the deferred "eval-vs-columnar floor" question.
+  **Bounded partial for next: add `Compare{Arith{Prop, Lit}, Lit}` to the pattern list**, covering
+  `a.k * 2 > 10`. **Constant folding is NOT the answer** — it would erase this probe's numbers and
+  buy nothing, since `a.k * 2 > 10` cannot fold soundly over floats.
 - **Item 434's perf screen has found TWO correctness divergences and no perf candidate (435, 436).**
   **Comparing answers while you time things costs nothing and has been worth more than the
   timings.** Still unexamined there: CASE, coalesce and arithmetic predicates at the bottom of the

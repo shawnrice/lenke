@@ -68,6 +68,7 @@ enumeration's is flat.
 | What does content-derived CDC scope extraction cost per write?         | `scale_bench -- cdc`                 |
 | What does a scalar min/max cost by COLUMN TYPE and ENCODING?           | `strag_421`                          |
 | What does a PAGED query pay, and does the page's depth matter?         | `skippage_428`                       |
+| What does a filter's EXPRESSION cost, at equal selectivity?            | `exprpred_437`                       |
 
 **Deferred** (need crate-private access or a large bespoke fixture, so not in a
 group binary yet): the eval-vs-columnar floor (`eval_vec` is crate-private — it
@@ -170,6 +171,14 @@ question in its module header — read the header before touching it.
   196->712us). Four attempts to "fix" the non-problem are recorded with their
   numbers, including a fold that was 3.1x WORSE. Do not re-open without a way to
   answer an endpoint predicate without visiting edges.
+
+- `exprpred_437` — what does an EXPRESSION cost inside a filter, as opposed to the rows
+  it selects? Every pair of cases selects exactly the same rows and differs only in the
+  predicate's shape, so a gap cannot be the selectivity: `a.k > 5` against
+  `a.k + 0 > 5` (one addition), against `a.k * 1 > 5`, against `abs(a.k) > 5`, and
+  `a.k = 1` against `NOT (a.k <> 1)`. Run it before adding a shape to
+  `try_filter_keep`'s pattern list, and before believing any claim that a predicate form
+  is "basically free".
 
 - `skippage_428` — what does a PAGED query pay, and does the depth of the page matter?
   Asked because the TS engine's generic tail projected every row before paging (item
