@@ -4411,6 +4411,43 @@ impl Store {
     /// it from every label bucket, and clear its properties. After this it is
     /// absent from all scans and traversals. A no-op if already deleted.
     pub fn delete_node(&mut self, id: u32) {
+        self.delete_nodes(&[id]);
+    }
+
+    /// Delete every node in `ids`, sweeping each label bucket ONCE for the whole batch instead
+    /// of once per node.
+    ///
+    /// The bucket maintenance is what made a batch quadratic. `delete_node_inner` does the work
+    /// that is genuinely per-node — detach the adjacency, drop from the property indexes, clear
+    /// the properties, tombstone — and the label buckets are `retain`ed afterwards, once.
+    ///
+    /// Measured at item 443, deleting a tenth of the nodes with `MATCH (a:P) DETACH DELETE a`:
+    /// the per-deleted-node cost used to be LINEAR IN THE TOTAL NODE COUNT (1.29, 2.34, 4.33,
+    /// 8.43 us a node at 5k/10k/20k/40k nodes — item 442's sweep D), because every delete
+    /// `retain`ed every bucket and a deleted node is a member of the biggest one. Restricting
+    /// each delete to its OWN labels' buckets would NOT have fixed that, which is worth saying
+    /// because item 442 proposed exactly that: the node is in `:Univ`, so its own bucket IS the
+    /// whole node set and the scan is the same size. Only batching removes the repetition.
+    pub fn delete_nodes(&mut self, ids: &[u32]) {
+        if ids.is_empty() {
+            return;
+        }
+        for &id in ids {
+            self.delete_node_inner(id);
+        }
+        // ONE pass per bucket for the whole batch. `deleted[x]` is already set for every node in
+        // `ids`, and any node deleted by an EARLIER call was removed from the buckets then, so
+        // testing the tombstone is exactly "is this one of the ids just deleted".
+        //
+        // Disjoint field borrows: `deleted` is read while `by_label` is mutated.
+        let deleted = &self.deleted;
+
+        for bucket in self.by_label.values_mut() {
+            bucket.retain(|&x| !deleted[x as usize]);
+        }
+    }
+
+    fn delete_node_inner(&mut self, id: u32) {
         self.touch();
         for l in self.labels_of(id) {
             self.bump_epoch(&l);
@@ -4453,10 +4490,12 @@ impl Store {
         // A self-loop appears in both `out` and `inc`; its mirror was in this
         // node's own lists, already emptied by the takes above — nothing dangling.
 
-        // Remove from every label bucket (no per-node label list yet, so sweep).
-        for bucket in self.by_label.values_mut() {
-            bucket.retain(|&x| x != id);
-        }
+        // The label buckets are NOT touched here — `delete_nodes` sweeps them once for the
+        // whole batch. Doing it per node made a batch delete O(deleted x total nodes), because a
+        // node is a member of the largest bucket and so every delete rewrote it (item 443).
+        //
+        // Between this line and that sweep the buckets hold tombstoned ids. Nothing reads them in
+        // between: `delete_nodes` is the only caller and it sweeps before returning.
         // Clear its properties.
         for col in self.props.values_mut() {
             col.set_absent(i);

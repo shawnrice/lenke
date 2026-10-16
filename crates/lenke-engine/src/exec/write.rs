@@ -119,11 +119,32 @@ pub(super) fn run_update(
     // relationships is an error (Cypher/TS-engine semantics); DETACH deletes the
     // incident edges too (delete_node cascades). A node matched by several
     // rows is deleted once (skip if already gone).
+    //
+    // A DETACH batch goes to `delete_nodes`, which sweeps each label bucket ONCE for the whole
+    // batch. Per node it was O(total nodes) — every delete `retain`ed every bucket and a node is
+    // a member of the biggest one — so `MATCH (a:P) DETACH DELETE a` was O(deleted x total)
+    // (item 442's measurement; item 443's fix).
+    //
+    // ONLY the DETACH batch. A non-DETACH delete's check reads the node's CURRENT relationships,
+    // and an earlier node's detach in the same statement can legitimately leave a later one
+    // relationship-free — so validating the whole set up front would reject a statement the
+    // interleaved order accepts. That is a behaviour change, not an optimization, and the
+    // comment above this pass already records that the edge deletes run first for the same
+    // reason. The interleaved loop stays for those.
+    let mut detach_batch: Vec<u32> = Vec::new();
+
     for (node, detach) in node_deletes {
         if !store.is_alive(node) {
             continue;
         }
-        if !detach && (!store.out(node).is_empty() || !store.inc(node).is_empty()) {
+        if detach {
+            // `is_alive` is still true here: nothing in this batch has been applied yet, and a
+            // node matched by several rows appears twice in `node_deletes` — which `delete_nodes`
+            // handles, since `delete_node_inner` returns early on an already-tombstoned id.
+            detach_batch.push(node);
+            continue;
+        }
+        if !store.out(node).is_empty() || !store.inc(node).is_empty() {
             stmt_rollback(store, scope);
             return Err(
                 "E_INVALID_GRAPH_OP: cannot DELETE a node that still has relationships; \
@@ -133,6 +154,8 @@ pub(super) fn run_update(
         }
         store.delete_node(node);
     }
+
+    store.delete_nodes(&detach_batch);
     // Declared-constraint checks: NOW if standalone, else deferred to the
     // enclosing transaction's COMMIT. Roll back on the first violation.
     if let Err(e) = check_deferred_if_standalone(store, scope) {

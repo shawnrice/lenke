@@ -2928,6 +2928,21 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   `CPredicate`. **REVERTED**: a path that is correct, willing and unreachable reads as a fix in the
   diff while the query is answered elsewhere (item 418). **Open: which gate upstream declines**, and
   the next pass starts from a trace rather than a measurement.
+- **BUILT: batch the label-bucket sweep — `DETACH DELETE` 5.5-10x (443).** `Store::delete_nodes`
+  does the per-node work per node and `retain`s each label bucket ONCE for the batch;
+  `delete_node` is now `delete_nodes(&[id])`, so there is one implementation. Per-node cost at
+  40,000 nodes 8.43 -> 0.84 us (10.0x); 2,000 deleted 8.669 -> 1.189 ms (7.3x); 10,000 deleted
+  43.776 -> 7.974 (5.5x); controls (DELETE edges, SET) flat. In the write screen `DELETE nodes`
+  goes native 8.77 -> 1.30 ms, from a 1.5x outlier against TS to 9.4x, in the band with every other
+  write. **Only DETACH is batched**: a plain DELETE's relationship check reads the CURRENT graph
+  and an earlier detach can legitimately clear a later node's edges, so batching those would reject
+  statements the interleaved order accepts — a mutant that does it is caught. Four mutants, all
+  caught.
+- **CORRECTION to item 442: restricting the sweep to the node's OWN labels would NOT have fixed it
+  (443).** A deleted node is a MEMBER of the biggest bucket (`:Univ` holds every node), so its own
+  buckets include the whole node set and the `retain` scans just as much. Restricting the SET of
+  buckets does nothing when the node belongs to the large one; only removing the REPETITION helps.
+  Checking before building is the only reason the named fix was not shipped.
 - **PRICED, NOT BUILT: `DETACH DELETE` is O(deleted x TOTAL NODES) natively (442).** Native answers
   every other write in 0.31-0.81 ms at 20,000 nodes and `DETACH DELETE` in **8.77**. Three sweeps,
   each varying ONE thing: edges 8x with the deleted count fixed is **FLAT** (not an edge scan),

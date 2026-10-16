@@ -1686,3 +1686,119 @@ fn a_range_min_max_is_exact_after_deletes_and_updates() {
     st.set_prop(d, "age", Value::Null);
     assert_eq!(got(&st), "None", "no values left");
 }
+
+/// Item 443: `delete_nodes` sweeps each label bucket ONCE for a batch, where `delete_node` used
+/// to sweep every bucket per node — which made `MATCH (a:P) DETACH DELETE a` O(deleted x total
+/// nodes) (item 442 measured the per-node cost rising 1.29 -> 8.43 us as the node count doubled).
+///
+/// Batching moves WHEN the buckets are swept, so the things that could break are membership
+/// (does every bucket end up exact?), ORDER (the buckets are kept sorted ascending and
+/// `has_label` binary-searches them), and ROLLBACK (the undo restores a deleted node, and it has
+/// to land back in its buckets in order).
+#[test]
+fn batch_delete_keeps_every_label_bucket_exact_sorted_and_restorable() {
+    use crate::value::Value;
+
+    let build = || {
+        let mut b = crate::store::Builder::default();
+        // THREE overlapping labels, so a deleted node is in several buckets and a survivor is in
+        // the same ones — a fixture where every node carried every label could not tell an exact
+        // sweep from one that emptied the bucket.
+        for i in 0..12u32 {
+            let mut labels: Vec<&str> = vec!["Univ"];
+
+            if i % 2 == 0 {
+                labels.push("Even");
+            }
+
+            if i % 3 == 0 {
+                labels.push("Third");
+            }
+
+            b.node(&labels, &[("k", Value::Num(f64::from(i)))]);
+        }
+        for i in 0..12u32 {
+            b.edge(i, (i + 1) % 12, "E");
+        }
+        b.build()
+    };
+    let ids = |st: &crate::store::Store, l: &str| st.nodes_with_label(l).to_vec();
+
+    // DELETE the `:Third` nodes (0, 3, 6, 9) and check all three buckets afterwards.
+    let mut st = build();
+
+    st.delete_nodes(&[0, 3, 6, 9]);
+
+    assert_eq!(ids(&st, "Third"), Vec::<u32>::new(), "its own bucket");
+    assert_eq!(ids(&st, "Even"), vec![2, 4, 8, 10], "an overlapping bucket");
+    assert_eq!(
+        ids(&st, "Univ"),
+        vec![1, 2, 4, 5, 7, 8, 10, 11],
+        "the bucket holding every node"
+    );
+    // SORTED ascending is load-bearing: `has_label` binary-searches the bucket.
+    for l in ["Univ", "Even", "Third"] {
+        let b = ids(&st, l);
+
+        assert!(
+            b.windows(2).all(|w| w[0] < w[1]),
+            "{l} bucket lost its order"
+        );
+    }
+    // And `has_label` agrees with the buckets, which is what the order is FOR.
+    assert!(st.is_labeled(2, "Even"));
+    assert!(
+        !st.is_labeled(0, "Even"),
+        "a deleted node still reads as labelled"
+    );
+    assert!(!st.is_labeled(9, "Univ"));
+
+    // A NODE LISTED TWICE is deleted once and leaves the buckets exact — the `Applied` list can
+    // name the same node from several matched rows.
+    let mut st = build();
+
+    st.delete_nodes(&[4, 4, 6, 4]);
+
+    assert_eq!(ids(&st, "Even"), vec![0, 2, 8, 10]);
+    assert_eq!(st.live_node_count(), 10);
+
+    // ROLLBACK restores membership AND order. The undo captures the labels before the delete;
+    // batching changed when the bucket removal happens, so this is the case that could regress.
+    let mut st = build();
+
+    st.begin();
+    st.delete_nodes(&[0, 3, 6, 9]);
+
+    assert_eq!(ids(&st, "Third"), Vec::<u32>::new());
+
+    st.rollback();
+
+    assert_eq!(
+        ids(&st, "Third"),
+        vec![0, 3, 6, 9],
+        "rollback lost membership"
+    );
+    assert_eq!(ids(&st, "Even"), vec![0, 2, 4, 6, 8, 10]);
+    assert_eq!(ids(&st, "Univ"), (0..12u32).collect::<Vec<_>>());
+
+    for l in ["Univ", "Even", "Third"] {
+        let b = ids(&st, l);
+
+        assert!(
+            b.windows(2).all(|w| w[0] < w[1]),
+            "{l} bucket came back out of order"
+        );
+    }
+
+    assert!(st.is_labeled(0, "Third"));
+    assert_eq!(st.live_node_count(), 12);
+
+    // The ONE-NODE path still works: `delete_node` is `delete_nodes(&[id])`, so there is one
+    // implementation rather than two that can drift.
+    let mut st = build();
+
+    st.delete_node(5);
+
+    assert_eq!(ids(&st, "Univ"), vec![0, 1, 2, 3, 4, 6, 7, 8, 9, 10, 11]);
+    assert_eq!(st.live_node_count(), 11);
+}
