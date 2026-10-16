@@ -3125,6 +3125,22 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   SURVIVED mutants look caught, which nearly signed off an untested invariant as tested.
   `bun run fuzz` passed during the poisoned run because the fuzz runner rebuilds its own inputs.
 
+- **NOT A REGRESSION — the encoders are 1.26-1.60x FASTER after 397+398; the full bench said
+  10-25% slower (399).** One `bun run bench` read `encode ndjson` 45.8 -> 57.1, `graphson`
+  126.0 -> 142.6, `pg-text` 72.2 -> 87.2. Two tells said not to believe it: the rows moved in
+  BOTH directions, and `decode` moved at all, which neither change touches. Settled by an
+  alternated A/B, HEAD vs HEAD~2, three rounds, one process per side: ndjson 269.23 -> 190.55
+  (1.41x), graphson 490.42 -> 390.17 (1.26x), pg-text 293.19 -> 182.73 (1.60x), disjoint, both
+  controls flat. **When the full bench disagrees with a focused A/B, the A/B wins**; the full
+  bench's job is catching what the A/B is not looking at, and nothing else moved beyond noise.
+
+- **`git checkout <ref> -- <files>` STAGES, so an A/B script leaves a revert in the index (399).**
+  After the OLD side was restored, `git status` read `MM` on ten files — working tree at HEAD,
+  index at HEAD~2. A commit then would have shipped a partial revert of 397 and 398 with every
+  file on disk looking correct. Every A/B script in this family builds its OLD side that way.
+  **Check `git status`, not just file contents, before committing after one has run**; clear it
+  with `git reset HEAD -- <dir>` and verify an empty `git diff`.
+
 ## 6. Consequences of the AND decision — RESOLVED by item 258, and not as predicted
 
 This section was written before the change and asked three questions. All three are now answered by
