@@ -1370,6 +1370,21 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
     }
   }
 
+  // The same walk under ONE foldable aggregate — `RETURN max(b.k)` — folded as the rows are
+  // produced. It delegates to `detectHopProjection`'s walk, so it sits AFTER that branch: the
+  // two shapes are disjoint (a projection declines an aggregating one), and placing it FIRST
+  // cost the plain hop projection 1.12x on three alternated rounds for nothing but the extra
+  // branch ahead of it. See `detectHopAggregate`.
+  if (linear.hopAggregate) {
+    // `null` is a DECLINE for the same reason it is above: the walk it delegates to can find at
+    // execution time that an index seek on the end it does not drive beats it.
+    const rows = linear.hopAggregate(graph, params);
+
+    if (rows !== null) {
+      return rows;
+    }
+  }
+
   // `RETURN DISTINCT <one expr>`: dedupe by the projected VALUE while walking, so a
   // duplicate costs neither a row object nor a row key. See `detectDistinctProjection`.
   if (linear.distinctProjection) {

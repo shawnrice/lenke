@@ -2822,8 +2822,20 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   (`sum` 1.21x), which proves the two costs were independent. Min of three, controls (the
   PROJECTION of the same rows, and `count(*)`) flat: scan `min` 1.72x, `max` 1.50x, `sum` 1.49x,
   `count(prop)` 1.46x; 1hop 1.21-1.27x; 5-hop `max` OOM → 3380 ms at 234 MB.
-- **Still open with its cause NAMED: the TS hop aggregate is ~430 ms against a 14.6 ms projection of
-  the same 800,000 rows (377).** NOT the aggregate machinery — `sum` improved by the same proportion
+- **DONE for `min`/`max`/`count(arg)`, 5.2-5.9x (418).** `detectHopAggregate` folds ONE foldable
+  aggregate over exactly the rows the fused hop projection already walks: 698.8 -> 134.5 ms for
+  `MATCH (a:P)-[:E]->(b) RETURN max(b.k)`, three alternated rounds, every control a refused shape
+  and flat. It REUSES `detectHopProjection`'s walk via a synthetic one-item projection rather than
+  growing a fourth inner loop, because item 159 priced that at 1.6x (a branch) and 1.29x (a shared
+  walk) — so it stops at the projection's cost, not at the hand-written floor. **377's 29x headline
+  did NOT reproduce: the real gap was 6.4x**, its control running at 18 ns/row where the same
+  control now runs at 143, and its 24.5 ms hand-written floor measures 130 ms here. Also refuted in
+  passing: the 2.2x "projecting the start costs more than the far end" asymmetry is item 167
+  restated — the far-side control's `:P` is VACUOUS, which routes it to the far-driven walk, and
+  with a non-vacuous start label the asymmetry REVERSES (near is 1.3-1.4x better). `sum`/`avg` stay
+  open as their own item for the precedence reason below.
+- **The original entry, for the record: the TS hop aggregate is ~430 ms against a 14.6 ms projection
+  of the same 800,000 rows (377).** NOT the aggregate machinery — `sum` improved by the same proportion
   while never being folded, so the remainder is shared by both paths and upstream: the per-row
   `Binding` (`Map`) construction the projection path avoids by streaming values. Needs a
   frontier-streaming aggregate shortcut (the TS twin of `try_frontier_prop_agg`). **The floor is

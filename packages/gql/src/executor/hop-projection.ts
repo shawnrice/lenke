@@ -1943,3 +1943,171 @@ export const detectDistinctProjection = (
     return pageGroups(rows, params, skip, limit);
   };
 };
+
+/**
+ * `MATCH (a:L)-[:T]->(b) RETURN max(b.k)` — a FOLDABLE aggregate over exactly the rows
+ * `detectHopProjection` already walks, folded as they are produced instead of grouped.
+ *
+ * Why this is a separate detector and not a condition inside that one: the fused hop path
+ * refuses `proj.aggregating` outright, and the general path then walks the hop with a `Binding`
+ * Map per row. Measured at 200,000 vertices / 800,000 edges, min of 3 (audit item 418):
+ *
+ *     MATCH (a:P)-[:E]->(b) RETURN max(b.k)    718ms    the general grouping path
+ *     MATCH (a:P)-[:E]->(b) RETURN min(b.k)    725ms    same, so it is per-ROW machinery
+ *     MATCH (a:P)-[:E]->(b) RETURN b.k         115ms    the SAME rows, fused walk
+ *
+ * 6.3x for the same traversal, with the aggregate adding one `compareValues` per row to a path
+ * that already streams (item 377's `foldedAggs` folds per row — the cost is upstream of it, in
+ * producing the rows at all).
+ *
+ * It REUSES `detectHopProjection` rather than growing a fourth walk: the aggregate's argument
+ * becomes a synthetic one-item projection, the proven walk produces those values as rows, and
+ * the fold runs over them here. Item 159 measured that a branch added to one of those inner
+ * loops costs the hot unfiltered shape 1.6x and that a shared module-scope walk costs 1.29x, so
+ * a new walk is the expensive way to buy this; the row objects it leaves on the table are the
+ * price of not paying that.
+ *
+ * The admission is narrow on purpose:
+ *
+ *   - ONE projection item, and it must BE the aggregate — not `max(b.k) + 1`, whose outer
+ *     expression needs the folded value substituted back into a group view.
+ *   - ONE foldable aggregate (`foldedAggs`, so `min`/`max`/`count(arg)`; `count(*)` has its own
+ *     O(groups) path and `sum`/`avg` are not folds here — `temporalSum` and the numeric faults
+ *     need the whole group).
+ *   - No GROUP BY, no HAVING, no DISTINCT, no ORDER BY, no paging: every one of those wants the
+ *     groups this path never builds.
+ *
+ * Two of those guards are REDUNDANT today and kept deliberately, which the mutation run made
+ * explicit: removing `groupKeys.length !== 0` leaves every test green, because `groupKeys` holds
+ * the NON-aggregate items and `items.length === 1` over an item that IS the aggregate already
+ * forces it empty — and the explicit `GROUP BY` it would otherwise guard is refused on the AST
+ * a few lines down. It stays because the implication runs through `compileProjection`, not
+ * through anything local. A mutant that survives because it is equivalent is not a missing
+ * test; a mutant that survives because nothing looks is, and the identity check below was one
+ * until `abs(min(b.k) - 10)` was added to the refusal table.
+ *
+ * `fold.finish` over an untouched accumulator is what gives an EMPTY match its one row holding
+ * null, which is what an ungrouped aggregate owes ISO — and it is the same `finish` the general
+ * path calls, so the two cannot drift.
+ */
+export const detectHopAggregate = (
+  clauses: readonly Clause[],
+  compiled: readonly CClause[],
+): RowsFn | null => {
+  if (clauses.length !== 2) {
+    return null;
+  }
+
+  const [m, ret] = clauses;
+  const [cm, cret] = compiled;
+
+  if (ret.kind !== 'return' || cret.kind !== 'return') {
+    return null;
+  }
+
+  const proj = cret.projection;
+  const folded = proj.foldedAggs;
+
+  if (
+    folded?.length !== 1 ||
+    proj.star ||
+    proj.distinct ||
+    proj.items.length !== 1 ||
+    proj.groupKeys.length !== 0 ||
+    proj.having !== undefined ||
+    proj.orderBy.length > 0 ||
+    proj.skip !== undefined ||
+    proj.limit !== undefined
+  ) {
+    return null;
+  }
+
+  // An explicit `GROUP BY` is checked on the AST as well as through `groupKeys`: the keys are
+  // empty for `GROUP BY` over a name the binding does not carry, which is the silent one-group
+  // bug, and this path must decline that rather than inherit it.
+  if (ret.projection.groupBy !== undefined) {
+    return null;
+  }
+
+  const [item] = ret.projection.items;
+  const [agg] = folded;
+
+  // The item must BE the aggregate node, by identity — `collectAggregates` finds one nested in
+  // `max(b.k) + 1` just the same, and that shape needs the group view.
+  if (item.expr !== agg.expr) {
+    return null;
+  }
+
+  const aggNode = item.expr;
+
+  if (aggNode.kind !== 'func' || aggNode.args.length !== 1) {
+    return null;
+  }
+
+  const [argExpr] = aggNode.args;
+  const outName = proj.items[0].name;
+  // A name no GQL identifier can collide with: the synthetic column is read back by key below.
+  const VALUE_COL = ' hopagg';
+
+  const synthRet: Clause = {
+    ...ret,
+    projection: {
+      ...ret.projection,
+      items: [{ expr: argExpr, alias: VALUE_COL }],
+      distinct: false,
+      groupBy: undefined,
+      having: undefined,
+      orderBy: undefined,
+      skip: undefined,
+      limit: undefined,
+    },
+  };
+  // The compiled twin, built rather than recompiled: `argFn` is the argument closure
+  // `compileProjection` already lowered for the fold, so the expression is compiled once for
+  // both paths and the fast path cannot evaluate a differently-compiled argument.
+  const synthCret: CClause = {
+    ...cret,
+    projection: {
+      star: false,
+      distinct: false,
+      aggregating: false,
+      countedGroups: false,
+      items: [{ name: VALUE_COL, fn: agg.argFn, isAgg: false }],
+      groupKeys: [],
+      groupKeyNames: [],
+      orderBy: [],
+      orderNeedsOutput: false,
+    },
+  };
+
+  const rowsFn = detectHopProjection([m, synthRet], [cm, synthCret]);
+
+  if (rowsFn === null) {
+    return null;
+  }
+
+  const { fold } = agg;
+
+  return (graph, params) => {
+    const rows = rowsFn(graph, params);
+
+    // A DECLINE from the walk is a decline from here too: the general path has a better plan.
+    if (rows === null) {
+      return null;
+    }
+
+    let acc = fold.init();
+
+    for (const row of rows) {
+      const v = row[VALUE_COL];
+
+      // The array path folds over the non-null values and the streaming step skips nullish the
+      // same way; this is the third place that rule lives, so it reads the same as both.
+      if (!isNullish(v)) {
+        acc = fold.step(acc, v);
+      }
+    }
+
+    return [{ [outName]: fold.finish(acc) }];
+  };
+};
