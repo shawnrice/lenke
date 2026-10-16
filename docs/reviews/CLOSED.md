@@ -2928,6 +2928,22 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   `CPredicate`. **REVERTED**: a path that is correct, willing and unreachable reads as a fix in the
   diff while the query is answered elsewhere (item 418). **Open: which gate upstream declines**, and
   the next pass starts from a trace rather than a measurement.
+- **PRICED, NOT BUILT: `DETACH DELETE` is O(deleted x TOTAL NODES) natively (442).** Native answers
+  every other write in 0.31-0.81 ms at 20,000 nodes and `DETACH DELETE` in **8.77**. Three sweeps,
+  each varying ONE thing: edges 8x with the deleted count fixed is **FLAT** (not an edge scan),
+  the deleted count 50x is linear at a constant 4.3 us a node, and **the NODE count 8x is LINEAR
+  per node (1.29 -> 8.43 us)** — which is the answer. `delete_node` says it in a comment:
+  "Remove from every label bucket (no per-node label list yet, so sweep)", a `retain` over EVERY
+  bucket per deleted node. **The fix is in the same function**: `labels_of(id)` is already called
+  at the top, so removing `id` from just those buckets makes it O(its labels). `detach_442`
+  committed — keep all three sweeps, any two are consistent with the wrong explanation.
+- **A table whose rows all agree to within a third is usually measuring something they have in
+  common (442).** The write probe's first version timed graph CONSTRUCTION with the write and
+  returned 3.1-4.0x for all ten shapes; with construction and the verification read both outside
+  the clock the band is 1.5-22.4x and the outlier is obvious.
+- **`_MERGE` after a `MATCH` is a parse error in native and an answer in TS (442).**
+  `MATCH (a:P) _MERGE (a)-[:E]->(a)` gives TS 42,000 and native "expected RETURN, SET, …". Same
+  class as item 436. Recorded, not yet investigated.
 - **STOPPED after three ticks: the TS arithmetic-predicate lift (441).** Prize was 1.91x on one
   shape; items 439/440/441 produced no measurable change and the loop's rule is to retract what does
   not survive. **Narrowed, for whoever picks it up:** the call sites are THREE not eight

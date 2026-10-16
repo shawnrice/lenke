@@ -69,6 +69,7 @@ enumeration's is flat.
 | What does a scalar min/max cost by COLUMN TYPE and ENCODING?           | `strag_421`                          |
 | What does a PAGED query pay, and does the page's depth matter?         | `skippage_428`                       |
 | What does a filter's EXPRESSION cost, at equal selectivity?            | `exprpred_437`                       |
+| Why is DETACH DELETE the slow write, and in WHAT does it scale?        | `detach_442`                         |
 
 **Deferred** (need crate-private access or a large bespoke fixture, so not in a
 group binary yet): the eval-vs-columnar floor (`eval_vec` is crate-private — it
@@ -171,6 +172,13 @@ question in its module header — read the header before touching it.
   196->712us). Four attempts to "fix" the non-problem are recorded with their
   numbers, including a fold that was 3.1x WORSE. Do not re-open without a way to
   answer an endpoint predicate without visiting edges.
+
+- `detach_442` — why is `DETACH DELETE` the one write native is not fast at? Three sweeps,
+  each varying ONE thing: edges 8x with the deleted count fixed (FLAT, so it is not a scan
+  over the edge set), the deleted count 50x with edges fixed (linear, constant per node),
+  and the NODE count 8x with the deleted count fixed (LINEAR per node — which is the
+  answer). Run it before touching `delete_node`, and keep the three sweeps: any two of them
+  alone are consistent with the wrong explanation.
 
 - `exprpred_437` — what does an EXPRESSION cost inside a filter, as opposed to the rows
   it selects? Every pair of cases selects exactly the same rows and differs only in the
