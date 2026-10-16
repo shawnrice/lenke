@@ -910,6 +910,24 @@ pub(super) fn try_edge_cross_count(
     Some(scalar_num(count as f64))
 }
 
+/// Count the scanned nodes whose column cell is present and satisfies `cmp`, with `cmp`
+/// MONOMORPHIC so it inlines into the sweep (item 451).
+fn sweep_num_count<F: Fn(f64) -> bool>(
+    store: &Store,
+    label: &Option<String>,
+    data: &[f64],
+    present: &[bool],
+    cmp: F,
+) -> u64 {
+    let mut count = 0u64;
+    scan_visit(store, label, |i| {
+        if present[i] && cmp(data[i]) {
+            count += 1;
+        }
+    });
+    count
+}
+
 pub(super) fn try_stream_num_count(
     store: &Store,
     label: &Option<String>,
@@ -924,6 +942,30 @@ pub(super) fn try_stream_num_count(
     else {
         return None;
     };
+    // SINGLE-BOUND specialization (item 451). `bounds` is a heap `Vec`, so the general arm
+    // below iterates it — pointer, length, loop, and a runtime `op` match — once per scanned
+    // node. Hoisting the one bound into a monomorphic closure leaves the sweep with a compare
+    // and a branch.
+    //
+    // This existed because a filtered `count(*)` measured SLOWER than the same predicate
+    // wrapped in a `CASE` (item 450): 0.30 ms against 0.21 at 200,000 nodes, isolated one case
+    // per process. The `CASE` form reaches `try_filter_keep`'s plain arm, which matches `op`
+    // directly rather than through a `Vec`, and a streaming count with no allocation losing to a
+    // path that materializes a 200,000-id batch AND a 91,000-entry keep-list is the tell that the
+    // per-element cost, not the allocation, was deciding it.
+    if let [(op, t)] = bounds.as_slice() {
+        let t = *t;
+        let count = match op {
+            CompareOp::Eq => sweep_num_count(store, label, data, present, |x| x == t),
+            CompareOp::Ne => sweep_num_count(store, label, data, present, |x| x != t),
+            CompareOp::Lt => sweep_num_count(store, label, data, present, |x| x < t),
+            CompareOp::Le => sweep_num_count(store, label, data, present, |x| x <= t),
+            CompareOp::Gt => sweep_num_count(store, label, data, present, |x| x > t),
+            CompareOp::Ge => sweep_num_count(store, label, data, present, |x| x >= t),
+        };
+
+        return Some(count);
+    }
     let mut count = 0u64;
     scan_visit(store, label, |i| {
         // A bare presence gate (`has(k)`, no bounds) counts PRESENCE — a stored

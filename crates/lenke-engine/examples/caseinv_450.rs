@@ -54,6 +54,15 @@ fn main() {
     let store = fixture(n);
     let raw = lenke_engine::gql::parse(q).expect("parse");
     let plan = lenke_engine::opt::optimize_indexed(raw, &store);
+
+    // PLAN=1 prints the optimized plan instead of timing. The inversion is a ROUTE question —
+    // two spellings of one predicate taking different paths — and a route question is answered by
+    // reading the plan, not by timing it faster (items 439/440/441: verify the shape reaches the
+    // path before measuring, and from the consumer backwards).
+    if std::env::var("PLAN").is_ok() {
+        println!("{which}: {plan:#?}");
+        return;
+    }
     let mut times: Vec<f64> = Vec::new();
     let mut rows = 0.0;
 

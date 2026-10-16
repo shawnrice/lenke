@@ -4000,3 +4000,50 @@ STILL OPEN, both measured and both with instruments:
 - **Multi-branch and complement CASE shapes stay at the general path's cost** (~29-34 ms at 1M). A
   multi-branch all-`true` CASE is the sorted MERGE of its conditions' keep-lists and
   `THEN false ELSE true` is the complement; both are correct and neither is written.
+
+## 451 — a filtered `count(*)` with one numeric bound: CLOSED at 3.7x. The inversion was a symptom, not the size of the cause
+
+`try_stream_num_count` ran `bounds.iter().all(…)` — a heap `Vec`, a loop and a runtime `op` match
+— ONCE PER SCANNED NODE. Hoisting a single bound into a monomorphic closure gives 1.681 -> 0.460 ms
+at 1,000,000 nodes (**3.7x**), 0.30 -> 0.095 at 200,000 (**3.2x**). Four controls flat, the
+load-bearing one being the SAME query with two bounds (still the general arm, 1.774 ms, unmoved).
+
+Three things to not re-derive:
+
+- **Item 450's 1.4x inversion was worth 3.7x.** A gap between two spellings bounds NEITHER one's
+  distance from the floor: the two differed by the cost of a keep-list as well as by the
+  per-element test. Chase the cause, not the gap's size.
+- **The plans are identical** — `Project(Aggregate(Filter(Scan)))` for both spellings, differing
+  only in the predicate node — so this was never an optimizer route. `PLAN=1 cargo run --example
+caseinv_450 -- <case>` prints them. The question was which RUNTIME fast path each predicate
+  reaches, which a plan cannot answer.
+- **A streaming count with no allocation losing to a path that materializes a 200,000-id batch AND
+  a 91,000-entry keep-list is the tell** that per-element cost, not allocation, is deciding.
+
+STILL OPEN: **two bounds cost 3.9x one bound** (1.774 against 0.459 ms at 1M), because the
+multi-bound arm still iterates the `Vec` per node. Specializing it means either 36 operator pairs
+or getting the bounds onto the stack; neither is written.
+
+## A pre-existing cross-engine divergence: a non-boolean `CASE` inside a boolean `AND`, in an INLINE node `WHERE`
+
+Found by one differential-fuzz run on a random seed during item 451, and verified NOT to be caused
+by items 449/450/451. Standalone reproducer (worth more than the seed, which was the QUERY's seed
+rather than the run's and replayed clean):
+
+```
+MATCH (t:T) OPTIONAL MATCH (t)-[:E]->(n WHERE (CASE WHEN (null <> n.s) THEN date('0001-01-01')
+  WHEN (3.14 <> 0) THEN n.nan ELSE zoned_datetime('2020-01-01T00:00:00Z') END
+  AND (0.1 IN [0.0, 'A')))) RETURN t.n AS x, n.n AS y ORDER BY x, y
+```
+
+Native answers `[{x:1,y:null},{x:2,y:null}]`; TS raises `a boolean is required`. The `CASE` yields
+a temporal or a number, which is then an operand of `AND`. **Native's inline-node-`WHERE` path
+treats a non-boolean as not-true and rejects the row; TS raises.** Both engines raise for the same
+shape in a CLAUSE `WHERE` — item 450's restriction test asserts native raising there — which makes
+native's INLINE path the suspect rather than the rule being unclear.
+
+How it was ruled out, in the order memory's `gremlin-fuzz-families` note prescribes — structurally
+first: the `CASE` has TWO branches so item 450's arm declines it, and `num_conj_on_slot` returns
+`None` for a `Case` so item 451's cannot see it. Then empirically: `git checkout 8ebc6256 --` the
+two engine files, rebuild, and the pre-450 engine gives the IDENTICAL answer. Rate: 1 of 4 full
+runs, three subsequent differential runs clean.

@@ -19341,3 +19341,130 @@ fn fused_case_filter_keeps_its_restrictions() {
     // about the literal appearing.
     assert_eq!(count("MATCH (a:N) WHERE (CASE WHEN a.k > 5 THEN true WHEN false THEN 0 ELSE false END) RETURN count(*) AS c"), 1.0);
 }
+
+/// Item 451: `try_stream_num_count`'s SINGLE-BOUND specialization — a filtered `count(*)` with
+/// one numeric bound went from 1.681 ms to 0.460 at 1,000,000 nodes (3.7x) by hoisting the bound
+/// out of the per-element `Vec` iteration into a monomorphic closure.
+///
+/// The ORACLE is item 450's wrapper: `(CASE WHEN <pred> THEN true ELSE false END)`. That is a
+/// different ROUTE — `Expr::Case` reaches `try_filter_keep`, never this streaming count — and
+/// item 450 established the two are equivalent in a filter. Using one fast path as the oracle for
+/// another is only sound because that equivalence is itself tested; the alternative wrapper
+/// (`<pred> AND true`) would have been a guess about which arms decline it.
+///
+/// The fixture's nulls and NaN are the point. A NULL cell satisfies no numeric predicate, and a
+/// NaN is unordered so every ordering comparison is FALSE on it while `<>` is TRUE — so an arm
+/// that tested `!present` as a pass, or that used a total order, would differ here and nowhere
+/// else.
+#[test]
+fn streamed_single_bound_count_agrees_with_the_general_path() {
+    use crate::value::Value;
+
+    let store = {
+        let mut b = crate::store::Builder::default();
+
+        for v in [-7.5f64, -1.0, 0.0, 1.0, 2.5, 5.0, 6.0, 7.0, 11.0, f64::NAN] {
+            b.node(&["N"], &[("k", Value::Num(v))]);
+        }
+        // No `k` at all: a NULL cell passes nothing, in either direction of every operator.
+        b.node(&["N"], &[]);
+        b.node(&["N"], &[]);
+        b.build()
+    };
+    let count = |q: &str| -> f64 {
+        let raw = crate::gql::parse(q).expect("parse");
+        let plan = crate::opt::optimize_indexed(raw, &store);
+        let out = crate::exec::try_run(&plan, &store).expect("run");
+        match out.rows.iter().next().and_then(|r| r.first()) {
+            Some(Value::Num(n)) => *n,
+            other => panic!("want a number, got {other:?}"),
+        }
+    };
+    let mut checked = 0;
+
+    for cmp in ["=", "<>", "<", "<=", ">", ">="] {
+        for t in ["0", "1", "5", "-1", "2.5", "11", "99"] {
+            let pred = format!("a.k {cmp} {t}");
+            let streamed = count(&format!("MATCH (a:N) WHERE {pred} RETURN count(*) AS c"));
+            let general = count(&format!(
+                "MATCH (a:N) WHERE (CASE WHEN {pred} THEN true ELSE false END) RETURN count(*) AS c"
+            ));
+
+            assert!(
+                (streamed - general).abs() < 1e-9,
+                "{pred}: streamed gave {streamed}, keep-pass gave {general}"
+            );
+
+            // And the REVERSED operand order, which `num_conj_on_slot` normalizes.
+            let flipped = format!("{t} {cmp} a.k");
+            let streamed = count(&format!("MATCH (a:N) WHERE {flipped} RETURN count(*) AS c"));
+            let general = count(&format!(
+                "MATCH (a:N) WHERE (CASE WHEN {flipped} THEN true ELSE false END) RETURN count(*) AS c"
+            ));
+
+            assert!(
+                (streamed - general).abs() < 1e-9,
+                "{flipped}: streamed gave {streamed}, keep-pass gave {general}"
+            );
+
+            checked += 2;
+        }
+    }
+
+    assert_eq!(checked, 6 * 7 * 2, "form count drifted: {checked}");
+}
+
+/// Item 451's two arms that are NOT the single-bound specialization, pinned so the split cannot
+/// silently send a shape down the wrong one.
+#[test]
+fn streamed_count_keeps_its_presence_and_multi_bound_arms() {
+    use crate::value::Value;
+
+    let store = {
+        let mut b = crate::store::Builder::default();
+
+        for v in [1.0f64, 6.0, 7.0] {
+            b.node(&["N"], &[("k", Value::Num(v))]);
+        }
+
+        b.node(&["N"], &[]);
+        b.build()
+    };
+    let count = |q: &str| -> f64 {
+        let raw = crate::gql::parse(q).expect("parse");
+        let plan = crate::opt::optimize_indexed(raw, &store);
+        let out = crate::exec::try_run(&plan, &store).expect("run");
+        match out.rows.iter().next().and_then(|r| r.first()) {
+            Some(Value::Num(n)) => *n,
+            other => panic!("want a number, got {other:?}"),
+        }
+    };
+
+    // ZERO bounds — a bare presence gate — counts PRESENCE, which is a different rule from any
+    // bounded compare: it includes a stored present-null. Three nodes have `k`, one does not.
+    assert_eq!(
+        count("MATCH (a:N) WHERE a.k IS NOT NULL RETURN count(*) AS c"),
+        3.0
+    );
+    assert_eq!(
+        count("MATCH (a:N) WHERE a.k IS NULL RETURN count(*) AS c"),
+        1.0
+    );
+    // TWO bounds take the general `Vec` arm, which the specialization must not swallow: only
+    // `k = 6` is strictly between.
+    assert_eq!(
+        count("MATCH (a:N) WHERE a.k > 5 AND a.k < 7 RETURN count(*) AS c"),
+        1.0
+    );
+    assert_eq!(
+        count("MATCH (a:N) WHERE a.k > 5 AND a.k < 100 RETURN count(*) AS c"),
+        2.0
+    );
+    // Three bounds, so the arm cannot be a two-element special case either.
+    assert_eq!(
+        count("MATCH (a:N) WHERE a.k > 0 AND a.k < 100 AND a.k <> 6 RETURN count(*) AS c"),
+        2.0
+    );
+    // And the single bound itself, so this test fails if the split stops routing at all.
+    assert_eq!(count("MATCH (a:N) WHERE a.k > 5 RETURN count(*) AS c"), 2.0);
+}
