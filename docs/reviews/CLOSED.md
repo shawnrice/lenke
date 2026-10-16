@@ -4951,3 +4951,30 @@ a `WHERE` may read only that end, and an `ORDER BY` on a non-projected column de
 They stay with the mutation run recorded in the comment, because each covering rule is one
 relaxation away from a silent wrong answer (items 469/486 same call; 475 removed a guard whose
 redundancy was provable by reading, unlike this one).
+
+## 489 — NATIVE: the last `spelling_probe` cliff, from TWO causes. The probe now reports none
+
+`bun run bench`'s widest row (`count 3-hop`) is closed ground (300/310/324/350: two levers
+refuted, 1.25x won, the rest a CSR target) and its egress rows are item 289's JSON carrier —
+`CLOSED.md` kept this tick off both. `spelling_probe` had the real finding: one multi-predicate
+filter, three spellings, **4.73x** apart (0.097 / 0.097 / 0.020 ms).
+
+1. **An equality on a RANGE-indexed key was not an indexed candidate.** `range_lookup` has
+   answered `Eq` since 402 and `index_bucket_len` priced it since 404, but `eq_cand` gated on
+   `has_hash_index` — item 404 deferred exactly this, predicting the mechanism ("would change
+   which conjunct a multi-predicate filter seeds"). That churn IS the fix: both `WHERE`
+   spellings now rank `age` by selectivity and seed it.
+2. **Inline properties lowered to a CHAIN of one-comparison filters**, invisible to
+   `seed_from_conjuncts`. `node_prop_filters` now emits ONE `Filter` holding an `And` — which is
+   what its own doc comment already claimed, true for one property and false for two.
+
+All three spellings: **0.019 ms, identical plan.** `spelling_probe` prints NO PERF CLIFFS.
+
+Mutation: five of six. **Two mutants needed a BIGGER fixture to have teeth**: below
+`SEEK_FLOOR_NODES` (4096) the cost gate is inactive, and with one indexed key "most selective"
+and "first" always agree — the second test uses 5000 nodes and three keys at 1% / 5% / 20%.
+
+**A harness failure wearing a result's clothes:** all six first reported `no result line`
+because two bare test names make CARGO fail ("unexpected argument") — one positional `TESTNAME`,
+the rest after `--`. The null control "failing" is the tell. Second time this session the
+harness was the finding.

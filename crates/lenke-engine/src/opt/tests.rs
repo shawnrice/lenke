@@ -2829,3 +2829,214 @@ fn the_pushed_plan_leaves_the_join_unfiltered_so_counts_stay_independent() {
         other => panic!("expected a bare Join at the top, got {other:?}"),
     }
 }
+
+/// Item 489: three spellings of ONE multi-predicate filter optimize to the SAME plan, and that
+/// plan seeds the SELECTIVE key.
+///
+/// `spelling_probe` measured them 4.73x apart — `(n:Person {dept: 'eng', age: 30})` and
+/// `WHERE n.dept = 'eng' AND n.age = 30` at 0.097 ms against `WHERE n.age = 30 AND n.dept =
+/// 'eng'` at 0.020 — for two independent reasons, and this test pins both:
+///
+///   - an equality on a RANGE-indexed key was not an indexed candidate, so only the unindexed
+///     fallback rung could seed, and that rung takes the conjunct written FIRST;
+///   - inline properties lowered to a CHAIN of one-comparison filters, which
+///     `seed_from_conjuncts` never sees as a conjunction at all.
+///
+/// The probe is a probe — it prints and flags, it does not fail CI — so the claim it checked
+/// lives here as well.
+#[test]
+fn three_spellings_of_a_multi_predicate_filter_share_one_plan() {
+    let mut b = Builder::default();
+
+    // 100 ages against 5 depts, so the selective conjunct is unambiguous: `age = 30` selects 1%
+    // and `dept = 'eng'` selects 20%. A fixture where both were equally selective could not
+    // tell a selectivity ranking from a positional one.
+    for i in 0..500 {
+        b.node(
+            &["Person"],
+            &[
+                ("age", Value::Num((i % 100) as f64)),
+                // `i / 100`, not `i % 5`: with `age = i % 100` and 5 depts, `i % 5` makes the
+                // two properties CORRELATED — every age-30 node lands in `eng` — so the
+                // conjunction would select 5 rows where it should select 1, and the fixture
+                // could not show the second predicate narrowing anything.
+                (
+                    "dept",
+                    s(["eng", "ops", "sales", "hr", "legal"][(i / 100) % 5]),
+                ),
+            ],
+        );
+    }
+
+    let mut store = b.build();
+
+    store.create_range_index("age");
+
+    let parsed = |q: &str| -> Plan { optimize_indexed(crate::gql::parse(q).unwrap(), &store) };
+    let inline = parsed("MATCH (n:Person {dept: 'eng', age: 30}) RETURN count(*) AS c");
+    let dept_first =
+        parsed("MATCH (n:Person) WHERE n.dept = 'eng' AND n.age = 30 RETURN count(*) AS c");
+    let age_first =
+        parsed("MATCH (n:Person) WHERE n.age = 30 AND n.dept = 'eng' RETURN count(*) AS c");
+
+    // Same PLAN, which is the property that makes the costs equal by construction rather than
+    // by measurement (the repo's own argument for why two spellings cannot differ).
+    assert_eq!(format!("{dept_first:?}"), format!("{age_first:?}"));
+    assert_eq!(format!("{inline:?}"), format!("{age_first:?}"));
+
+    // And the plan seeds `age`, the selective one — not `dept`, which is written first in two
+    // of the three spellings.
+    let rendered = format!("{age_first:?}");
+
+    // An `IndexSeek` — the seed is a point probe, which a RANGE index answers through
+    // `range_lookup`'s `Eq` arm (item 402). The residual `dept` comparison stays as a `Filter`
+    // above it, which is what makes this the selective order and not just a different one.
+    assert!(
+        rendered.contains("IndexSeek { label: Some(\"Person\"), key: \"age\", value: Num(30.0) }"),
+        "expected a point seek on age, got {rendered}"
+    );
+    assert!(
+        rendered.contains("key: \"dept\""),
+        "expected dept to remain a residual filter: {rendered}"
+    );
+
+    // All three answer the same thing, and it is the right thing: ages 0..99 over 500 nodes puts
+    // 5 people at age 30, of whom `i % 5` makes exactly one an `eng`.
+    let rows_of = |p: &Plan| bag(&run(p, &store));
+
+    assert_eq!(rows_of(&inline), rows_of(&age_first));
+    assert_eq!(rows_of(&dept_first), rows_of(&age_first));
+    assert_eq!(rows_of(&age_first), vec!["Num(1.0);".to_string()]);
+}
+
+/// With TWO indexed equality candidates, the rung ranks them by SELECTIVITY rather than by
+/// position — and refuses one whose seek loses to a scan.
+///
+/// The fixture is above `SEEK_FLOOR_NODES` (4096) on purpose: below it the cost gate is
+/// inactive, so a smaller graph cannot tell a priced seek from an unpriced one. The mutants for
+/// both properties survived against the 500-node fixture of the test above for exactly that
+/// reason (item 489).
+#[test]
+fn two_indexed_equalities_rank_by_selectivity_and_price_the_seek() {
+    let mut b = Builder::default();
+
+    // 5000 nodes: `age` takes 100 values (1% each) and `dept` 5 (20% each), decorrelated via
+    // `i / 100`. 20% is above `SEEK_MAX_FRACTION` (15.4%), so a `dept` seek is priced OUT while
+    // an `age` seek is priced in.
+    for i in 0..5000usize {
+        b.node(
+            &["Person"],
+            &[
+                ("age", Value::Num((i % 100) as f64)),
+                (
+                    "dept",
+                    s(["eng", "ops", "sales", "hr", "legal"][(i / 100) % 5]),
+                ),
+                // 20 teams = 5% each, which PASSES the 15.4% gate. `dept` at 20% does not, so
+                // without this key only one candidate ever survives the gate and a positional
+                // pick is indistinguishable from a ranked one — the mutant for that said so.
+                ("team", Value::Num((i % 20) as f64)),
+            ],
+        );
+    }
+
+    let mut store = b.build();
+
+    store.create_range_index("age");
+    store.create_index("dept");
+    store.create_index("team");
+
+    let plan_of = |q: &str| {
+        format!(
+            "{:?}",
+            optimize_indexed(crate::gql::parse(q).unwrap(), &store)
+        )
+    };
+
+    // `dept` is written FIRST and indexed, so a positional pick would seed it; the selective
+    // one is `age`.
+    let dept_first =
+        plan_of("MATCH (n:Person) WHERE n.dept = 'eng' AND n.age = 30 RETURN count(*) AS c");
+
+    assert!(
+        dept_first.contains("key: \"age\", value: Num(30.0)"),
+        "expected the selective key to seed, got {dept_first}"
+    );
+    assert_eq!(
+        dept_first,
+        plan_of("MATCH (n:Person) WHERE n.age = 30 AND n.dept = 'eng' RETURN count(*) AS c")
+    );
+
+    // TWO candidates that both pass the gate: `team` at 5% is written first, `age` at 1% is the
+    // selective one. This is the pair that distinguishes a RANKED pick from a positional one.
+    let team_first =
+        plan_of("MATCH (n:Person) WHERE n.team = 3 AND n.age = 30 RETURN count(*) AS c");
+
+    assert!(
+        team_first.contains("key: \"age\", value: Num(30.0)"),
+        "expected the more selective of two admitted seeks, got {team_first}"
+    );
+    assert!(
+        team_first.contains("key: \"team\""),
+        "expected team to remain a residual filter: {team_first}"
+    );
+
+    // And a conjunction where the only indexed key is the UNSELECTIVE one must not seek it: 20%
+    // of the graph through an index loses to the scan the filter would do anyway.
+    let unselective =
+        plan_of("MATCH (n:Person) WHERE n.dept = 'eng' AND n.age <> 30 RETURN count(*) AS c");
+
+    assert!(
+        !unselective.contains("IndexSeek"),
+        "a 20% seek should be priced out, got {unselective}"
+    );
+
+    // The rows are right either way: 50 nodes are `eng` with age 30... no — `dept` comes from
+    // `i / 100`, so `eng` holds i in 0..100 ∪ 500..600 ∪ …, and of those exactly one per block
+    // has age 30. Ten blocks of `eng` across 5000 nodes gives 10.
+    assert_eq!(
+        bag(&run(
+            &optimize_indexed(
+                crate::gql::parse(
+                    "MATCH (n:Person) WHERE n.dept = 'eng' AND n.age = 30 RETURN count(*) AS c"
+                )
+                .unwrap(),
+                &store
+            ),
+            &store
+        )),
+        vec!["Num(10.0);".to_string()]
+    );
+}
+
+/// An inline `{k: null}` is still an IS NULL test after item 489 folded the inline properties
+/// into one conjunction — it matches an absent or null `k`, where `k = null` is UNKNOWN and
+/// matches nothing.
+#[test]
+fn inline_null_property_is_still_is_null_in_a_conjunction() {
+    let mut b = Builder::default();
+
+    b.node(&["P"], &[("k", Value::Num(1.0)), ("tag", Value::Num(7.0))]);
+    b.node(&["P"], &[("tag", Value::Num(7.0))]); // no `k` at all
+    b.node(&["P"], &[("k", Value::Null), ("tag", Value::Num(7.0))]);
+    b.node(&["P"], &[("k", Value::Num(1.0))]); // no `tag`
+
+    let store = b.build();
+    let count = |q: &str| -> Vec<String> {
+        bag(&run(
+            &optimize_indexed(crate::gql::parse(q).unwrap(), &store),
+            &store,
+        ))
+    };
+
+    // The absent one AND the stored-null one, both carrying `tag = 7`: two rows.
+    assert_eq!(
+        count("MATCH (n:P {k: null, tag: 7}) RETURN count(*) AS c"),
+        vec!["Num(2.0);".to_string()]
+    );
+    // `= null` is UNKNOWN, so the three-valued filter keeps nothing.
+    assert_eq!(
+        count("MATCH (n:P) WHERE n.k = null AND n.tag = 7 RETURN count(*) AS c"),
+        vec!["Num(0.0);".to_string()]
+    );
+}

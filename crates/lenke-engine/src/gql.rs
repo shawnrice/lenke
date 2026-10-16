@@ -251,30 +251,43 @@ fn is_reserved_word(word: &str) -> bool {
         .contains(word.to_ascii_lowercase().as_str())
 }
 
-/// Turn a node's inline properties `{k: v, …}` into a chain of `Eq` filters on its
-/// slot — the exact lowering of `WHERE slot.k = v AND …`. Sharing this single form
-/// is what makes `(n:L {k: v})` and `MATCH (n:L) WHERE n.k = v` optimize to the same
-/// plan (and seed the same index), so the two spellings cannot cost differently.
-fn node_prop_filters(mut plan: Plan, slot: usize, props: Vec<(String, Value)>) -> Plan {
-    for (k, val) in props {
-        // An inline `{k: null}` constraint is an IS NULL test — it matches a node
-        // whose `k` is null/absent — NOT the three-valued `k = null` (which is UNKNOWN
-        // and matches nothing). Matches the TS engine's structural constraint semantics.
-        let f = if val.is_null() {
-            Expr::IsNull {
-                expr: Box::new(Expr::Prop { slot, key: k }),
-                negated: false,
+/// Turn a node's inline properties `{k: v, …}` into ONE conjunctive filter on its slot — the
+/// exact lowering of `WHERE slot.k = v AND …`. Sharing this single form is what makes
+/// `(n:L {k: v})` and `MATCH (n:L) WHERE n.k = v` optimize to the same plan (and seed the same
+/// index), so the two spellings cannot cost differently.
+///
+/// ONE `Filter` holding an `And`, not a CHAIN of filters, and that is the whole point for more
+/// than one property: `seed_from_conjuncts` flattens an `And` and ranks the conjuncts by
+/// SELECTIVITY, while a chain gives it one comparison at a time and the seed falls to whichever
+/// filter sits where the optimizer looks. Measured at item 489: `(n:Person {dept: 'eng', age:
+/// 30})` cost 0.089 ms against 0.019 for `WHERE n.dept = 'eng' AND n.age = 30` — the same
+/// question, 4.7x apart, with this function's own doc comment claiming they shared a plan.
+fn node_prop_filters(plan: Plan, slot: usize, props: Vec<(String, Value)>) -> Plan {
+    let conj = props
+        .into_iter()
+        .map(|(k, val)| {
+            // An inline `{k: null}` constraint is an IS NULL test — it matches a node
+            // whose `k` is null/absent — NOT the three-valued `k = null` (which is UNKNOWN
+            // and matches nothing). Matches the TS engine's structural constraint semantics.
+            if val.is_null() {
+                Expr::IsNull {
+                    expr: Box::new(Expr::Prop { slot, key: k }),
+                    negated: false,
+                }
+            } else {
+                Expr::Compare {
+                    op: CompareOp::Eq,
+                    left: Box::new(Expr::Prop { slot, key: k }),
+                    right: Box::new(Expr::Lit(val)),
+                }
             }
-        } else {
-            Expr::Compare {
-                op: CompareOp::Eq,
-                left: Box::new(Expr::Prop { slot, key: k }),
-                right: Box::new(Expr::Lit(val)),
-            }
-        };
-        plan = plan.filter(f);
+        })
+        .reduce(|a, b| Expr::And(Box::new(a), Box::new(b)));
+
+    match conj {
+        Some(f) => plan.filter(f),
+        None => plan,
     }
-    plan
 }
 
 /// The direction an ISO `<abbreviated edge pattern>` carries on its own (audit item 166).

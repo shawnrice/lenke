@@ -1473,9 +1473,20 @@ fn seed_from_conjuncts(pred: &Expr, idx: &dyn IndexOracle) -> Option<(Seed, Opti
     // An oracle that declines to measure sorts last (`f64::MAX`) rather than dropping
     // out, so a parameterized or unmeasurable bound is still seedable — and `min_by`
     // keeps the first of equal ranks, so a store-less plan keeps its old pick.
+    // A RANGE index serves a point probe (item 402) and prices one (item 404), so an equality
+    // on a range-indexed key is an indexed candidate here too. Item 404 left this rung on
+    // `has_hash_index` deliberately — "widening it would change which conjunct a
+    // multi-predicate filter seeds, which is plan churn this item does not need" — and that
+    // churn turns out to BE the fix: `spelling_probe` flagged `dept = 'eng' AND age = 30`
+    // against `age = 30 AND dept = 'eng'` at **4.73x** (0.097 against 0.020 ms), because only
+    // the unindexed fallback rung could seed either, and that rung takes the conjunct WRITTEN
+    // first. With `age` range-indexed, both spellings now rank it by selectivity and pick it
+    // (item 489).
     let eq_cand = |i: usize, c: &Expr| -> Option<(usize, f64)> {
         let (k, v) = seek_target(c)?;
-        (idx.has_hash_index(&k) && seek_beats_scan(idx, &k, CompareOp::Eq, &v)).then(|| {
+        ((idx.has_hash_index(&k) || idx.has_range_index(&k))
+            && seek_beats_scan(idx, &k, CompareOp::Eq, &v))
+        .then(|| {
             (
                 i,
                 idx.seed_fraction(&k, CompareOp::Eq, &v).unwrap_or(f64::MAX),
