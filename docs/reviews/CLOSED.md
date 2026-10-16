@@ -1881,7 +1881,14 @@ cast` (a character value that will not PARSE into the target, not a bad type pai
   comparison rather than its arithmetic (339's two sides, 341's carrier, this). **The arithmetic has
   not been wrong once; the framing has been wrong three times.**
 - **PRICED NOT BUILT — the presence representation: hoisting was 4.9x of the scaling term, packing
-  the bits is 2.1x more, and a per-node key list is the only thing left (342).** Item 341 showed
+  the bits is 2.1x more, and a per-node key list is the only thing left (342).**
+  **RE-CONFIRMED at 381, and the attribution is worth having in writing** because `bench_all`'s
+  `query/gql` `distinct node` row (125,517us / 198,672 rows = 632 ns/row) reads like a DEDUP
+  problem and is not one. Isolated over 200k nodes: `DISTINCT n` 498.7 ns/row against a bare
+  `RETURN n` at **481.2 ns/row** — so the dedup is **17.5 ns/row** and the rest is this item's
+  element render (item 341 recorded 492 ns/row; today 481). For contrast `DISTINCT n.name` is 32.2
+  against `n.name` at 7.0, and three scalars are 28.0. `distinct_by_keep` already has its
+  `seen_ids` fast path; there is nothing to fix on the DISTINCT side. Item 341 showed
   native's element renderer has headroom (TS does the same materialization in 213 ns/row against
   native's 492, in-process both sides) and item 340 had located the term: the props loop walks every
   key in the STORE and filters by presence.
