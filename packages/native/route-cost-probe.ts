@@ -115,6 +115,14 @@ const queries: Record<string, string> = {
   cnt2: 'MATCH (n:Person) WHERE n.age > 5 AND n.age < 1000 RETURN count(*) AS c',
   cnt2rev: 'MATCH (n:Person) WHERE n.age < 1000 AND n.age > 5 RETURN count(*) AS c',
   cnt3: 'MATCH (n:Person) WHERE n.age > 5 AND n.age < 1000 AND n.age >= 0 RETURN count(*) AS c',
+  // Item 455: the operand-order spelling the probe has reported at 2.4-2.5x every run and that
+  // nothing has an item number for. `n.age >= 5` and `5 <= n.age` are the same question, and
+  // CLAUDE.md names that exact pair among the 100-300x gaps this engine exists not to have.
+  // Isolated here because `spelling-probe` runs its whole group in ONE process (item 274).
+  opprop: 'MATCH (n:Person) WHERE n.age >= 5 RETURN count(*) AS c',
+  oplit: 'MATCH (n:Person) WHERE 5 <= n.age RETURN count(*) AS c',
+  opprop2: 'MATCH (n:Person) WHERE n.age = 5 RETURN count(*) AS c',
+  oplit2: 'MATCH (n:Person) WHERE 5 = n.age RETURN count(*) AS c',
 };
 const key = process.env.PCASE ?? 'node';
 const q = queries[key];

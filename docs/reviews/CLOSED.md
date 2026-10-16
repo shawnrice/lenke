@@ -4126,3 +4126,22 @@ Reverted; the numbers live in a doc comment on `satisfies`.
 **"It allocates per element" is not by itself a cost.** Item 424 rejected the same belief about a
 per-row allocation in the top-k path at 2.4%. That is twice; the next instance should be measured
 before it is written.
+
+## 455 — `5 <= n.k` vs `n.k >= 5`: NOT a gap. The probe's own flag, and the rule that let it stand
+
+`spelling-probe`'s `range operand order` group has flagged 2.4-2.5x every run and has no item
+anywhere. It is an artifact, confirmed three ways: isolated one case per process over three rounds
+the two read 4.4-4.6 ms either way (equality likewise, 3.8-4.1); the probe is BIMODAL on it across
+five runs — 5.40/13.19, 5.28/5.33, 5.38/13.11, 5.58/13.54, 5.40/5.35, two distinct modes 2.5x
+apart, not a spread; and `SPELL_ONLY='range operand order'` gives 4.47/4.44, 4.44/4.40, 4.38/4.42.
+
+**The correction to items 180/181.** Those found the position penalty and fixed it by timing every
+spelling in both positions and keeping its better reading, concluding "a spelling that is
+genuinely slower is slower from either position". **A per-process deopt is slower from either
+position too** — the 13.1 ms readings are already the min across both passes and nine reps. The
+rule is necessary and not sufficient; only a separate process is sufficient.
+
+So **any `bun run spelling` flag needs isolated confirmation before it is a claim.** That is now
+one command: `SPELL_ONLY=<substring> bun run spelling`, added here. The group keeps its flag and
+carries the refutation in a comment — a group deleted for being inconvenient is how a probe stops
+being trusted.

@@ -146,6 +146,12 @@ const GROUPS: [string, readonly string[]][] = [
     ],
   ],
   [
+    // FLAGS ~3 RUNS IN 5 AT 2.4x AND THE GAP IS NOT REAL (item 455). Isolated one case per
+    // process, three rounds of min-of-9, the two spellings measure 4.4-4.6 ms either way; the
+    // equality pair `n.k = 5` / `5 = n.k` likewise at 3.8-4.1. In-process this group reads
+    // 5.40/13.19, 5.28/5.33, 5.38/13.11, 5.58/13.54, 5.40/5.35 — two distinct modes 2.5x apart
+    // for the SAME query, not a spread. Confirm with `SPELL_ONLY='range operand order'` before
+    // believing it, or with `PCASE=opprop|oplit bun run probe:route`.
     'range operand order: 5 <= n.k vs n.k >= 5',
     [
       'MATCH (n:P) WHERE n.k >= 5 RETURN count(*) AS c',
@@ -495,7 +501,14 @@ const wrong: string[] = [];
 const slow: string[] = [];
 const fast: string[] = [];
 
-for (const [name, spellings] of GROUPS) {
+// `SPELL_ONLY=<substring>` runs just the matching groups, which is how a flag gets CONFIRMED
+// (item 455). The two-pass min below removes the POSITION bias and nothing else: a whole process
+// can enter a slow mode for one spelling and keep it across both passes, so "slower from either
+// position" is necessary and NOT sufficient. The only sufficient check is a separate process, and
+// before this flag there was no short way to run one.
+const ONLY = process.env.SPELL_ONLY;
+
+for (const [name, spellings] of GROUPS.filter(([n]) => ONLY === undefined || n.includes(ONLY))) {
   // TWO passes, the second in reverse order, keeping the min per spelling.
   //
   // Whichever member runs FIRST in a group pays a large position penalty, and it is the
