@@ -928,6 +928,63 @@ fn sweep_num_count<F: Fn(f64) -> bool>(
     count
 }
 
+/// The TWO-BOUND arm of [`try_stream_num_count`], in its own function so that one stays small
+/// (item 453).
+///
+/// Item 451 left this measured and open: a range filter cost 1.774 ms at 1,000,000 nodes against
+/// 0.459 for a single bound — 3.9x, for one extra f64 compare, which is ~1.1 ns a row and far
+/// more than a compare costs. The cause is not the `Vec`: removing it alone measured ~1.12x and
+/// left the gap at 3.5x. It is VECTORIZATION — the single-bound sweep's monomorphic closure
+/// auto-vectorizes and a pair of `num_pred` matches does not.
+///
+/// So a RANGE gets four monomorphic arms, which takes it to 0.431 ms: 4.1x, landing exactly on
+/// the single-bound cost. Classified rather than matched pairwise, so written order does not
+/// matter — `k < 100 AND k > 5` is the same range as `k > 5 AND k < 100` and must not cost more.
+///
+/// **Why this is a separate function and not an `if` inside the caller.** Written inline, the
+/// range arm gained its 4.1x and made the THREE-bound shape 1.4x SLOWER — 1.978 ms to 2.78,
+/// consistently over three rounds — because the enclosing function grew and LLVM inlined
+/// `scan_visit` differently for the general arm that follows. That is the Rust twin of
+/// `ts-closure-size-is-load-bearing` and of item 90's finding that `exec::pull`'s layout is
+/// load-bearing crate-wide: **a fast path can cost a shape it never runs, through code layout
+/// alone.** The split restores the 3-bound shape and keeps the range win, which is the only
+/// configuration where a control that the change cannot reach does not move.
+#[inline(never)]
+fn try_stream_range_count(
+    store: &Store,
+    label: &Option<String>,
+    bounds: &[(CompareOp, f64)],
+    data: &[f64],
+    present: &[bool],
+) -> Option<u64> {
+    let [(op1, t1), (op2, t2)] = bounds else {
+        return None;
+    };
+    let lower = |op: CompareOp, t: f64| match op {
+        CompareOp::Gt => Some((t, false)),
+        CompareOp::Ge => Some((t, true)),
+        _ => None,
+    };
+    let upper = |op: CompareOp, t: f64| match op {
+        CompareOp::Lt => Some((t, false)),
+        CompareOp::Le => Some((t, true)),
+        _ => None,
+    };
+    let ((lo, lo_incl), (hi, hi_incl)) = lower(*op1, *t1)
+        .zip(upper(*op2, *t2))
+        .or_else(|| lower(*op2, *t2).zip(upper(*op1, *t1)))?;
+    // Any other PAIR — two equalities, a `<>`, two lower bounds — declines to the caller's
+    // general arm rather than getting a half-measure here.
+    let count = match (lo_incl, hi_incl) {
+        (false, false) => sweep_num_count(store, label, data, present, |x| x > lo && x < hi),
+        (false, true) => sweep_num_count(store, label, data, present, |x| x > lo && x <= hi),
+        (true, false) => sweep_num_count(store, label, data, present, |x| x >= lo && x < hi),
+        (true, true) => sweep_num_count(store, label, data, present, |x| x >= lo && x <= hi),
+    };
+
+    Some(count)
+}
+
 pub(super) fn try_stream_num_count(
     store: &Store,
     label: &Option<String>,
@@ -964,6 +1021,9 @@ pub(super) fn try_stream_num_count(
             CompareOp::Ge => sweep_num_count(store, label, data, present, |x| x >= t),
         };
 
+        return Some(count);
+    }
+    if let Some(count) = try_stream_range_count(store, label, &bounds, data, present) {
         return Some(count);
     }
     let mut count = 0u64;

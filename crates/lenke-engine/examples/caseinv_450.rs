@@ -47,6 +47,15 @@ fn main() {
         "casenoelse" => {
             "MATCH (a:Univ) WHERE (CASE WHEN a.k > 5 THEN true END) RETURN count(*) AS c"
         }
+        // Item 453: the TWO-bound range, which item 451's single-bound specialization left on the
+        // general `Vec` arm at 3.9x the single-bound cost.
+        "two" => "MATCH (a:Univ) WHERE a.k > 5 AND a.k < 100 RETURN count(*) AS c",
+        // The REVERSED written order of the same range. The arm classifies its bounds rather
+        // than matching them pairwise, and a mutant that recognised only one order SURVIVED the
+        // test suite — correctly, since the general arm answers the same. Only a measurement can
+        // police an equivalent-spelling claim, so here it is.
+        "tworev" => "MATCH (a:Univ) WHERE a.k < 100 AND a.k > 5 RETURN count(*) AS c",
+        "three" => "MATCH (a:Univ) WHERE a.k > 5 AND a.k < 100 AND a.k <> 7 RETURN count(*) AS c",
         // A control neither spelling can reach: a string equality on the same fixture.
         "control" => "MATCH (a:Univ) WHERE a.s = 'c42' RETURN count(*) AS c",
         other => panic!("no such case: {other}"),

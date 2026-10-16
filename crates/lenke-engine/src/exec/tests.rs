@@ -19468,3 +19468,165 @@ fn streamed_count_keeps_its_presence_and_multi_bound_arms() {
     // And the single bound itself, so this test fails if the split stops routing at all.
     assert_eq!(count("MATCH (a:N) WHERE a.k > 5 RETURN count(*) AS c"), 2.0);
 }
+
+/// Item 453: `try_stream_range_count` — a TWO-bound range in a filtered `count(*)` went from
+/// 1.782 ms to 0.461 at 1,000,000 nodes (3.9x), landing on the single-bound cost item 451
+/// reached.
+///
+/// The ORACLE is item 450's wrapper: `(CASE WHEN <pred> THEN true ELSE false END)` routes through
+/// `try_filter_keep`, never this streaming count, and item 450 established the equivalence.
+///
+/// Both WRITTEN ORDERS of every range, because the arm classifies its bounds rather than matching
+/// them pairwise — `k < 100 AND k > 5` is the same range as `k > 5 AND k < 100` and an arm that
+/// only recognised one spelling would be the exact class of gap this engine exists not to have.
+/// And the NON-range pairs (two lower bounds, two equalities, a `<>`) which must fall through to
+/// the general arm and still answer.
+#[test]
+fn streamed_range_count_agrees_with_the_general_path() {
+    use crate::value::Value;
+
+    let store = {
+        let mut b = crate::store::Builder::default();
+
+        // The thresholds below are 0, 1, 5, 2.5 and 11, so stored values SIT ON them — which is
+        // the only way an inclusive bound can be told from an exclusive one. Plus a NaN, which
+        // every ordering comparison is FALSE on, and two absent cells.
+        for v in [-7.5f64, -1.0, 0.0, 1.0, 2.5, 5.0, 6.0, 11.0, 12.0, f64::NAN] {
+            b.node(&["N"], &[("k", Value::Num(v))]);
+        }
+
+        b.node(&["N"], &[]);
+        b.node(&["N"], &[]);
+        b.build()
+    };
+    let count = |q: &str| -> f64 {
+        let raw = crate::gql::parse(q).expect("parse");
+        let plan = crate::opt::optimize_indexed(raw, &store);
+        let out = crate::exec::try_run(&plan, &store).expect("run");
+        match out.rows.iter().next().and_then(|r| r.first()) {
+            Some(Value::Num(n)) => *n,
+            other => panic!("want a number, got {other:?}"),
+        }
+    };
+    let mut checked = 0;
+    let agree = |pred: &str| {
+        let streamed = count(&format!("MATCH (a:N) WHERE {pred} RETURN count(*) AS c"));
+        let general = count(&format!(
+            "MATCH (a:N) WHERE (CASE WHEN {pred} THEN true ELSE false END) RETURN count(*) AS c"
+        ));
+
+        assert!(
+            (streamed - general).abs() < 1e-9,
+            "{pred}: streamed gave {streamed}, keep-pass gave {general}"
+        );
+    };
+
+    for lo_op in [">", ">="] {
+        for hi_op in ["<", "<="] {
+            for lo in ["0", "1", "2.5", "5", "-1"] {
+                for hi in ["1", "5", "11", "2.5", "99"] {
+                    // Both written orders of the same range.
+                    agree(&format!("a.k {lo_op} {lo} AND a.k {hi_op} {hi}"));
+                    agree(&format!("a.k {hi_op} {hi} AND a.k {lo_op} {lo}"));
+                    checked += 2;
+                }
+            }
+        }
+    }
+
+    // NON-range pairs, which must decline to the general arm.
+    for pred in [
+        "a.k > 5 AND a.k > 1",
+        "a.k < 5 AND a.k < 11",
+        "a.k = 5 AND a.k = 5",
+        "a.k = 5 AND a.k > 1",
+        "a.k <> 5 AND a.k < 11",
+        "a.k > 1 AND a.k <> 5",
+        "a.k >= 1 AND a.k >= 2.5",
+    ] {
+        agree(pred);
+        checked += 1;
+    }
+
+    // THREE bounds, which is the shape the split exists to protect.
+    for pred in [
+        "a.k > 1 AND a.k < 11 AND a.k <> 5",
+        "a.k > 1 AND a.k < 11 AND a.k > 2.5",
+    ] {
+        agree(pred);
+        checked += 1;
+    }
+
+    assert_eq!(
+        checked,
+        2 * 2 * 5 * 5 * 2 + 7 + 2,
+        "form count drifted: {checked}"
+    );
+}
+
+/// Item 453's inclusivity, pinned against the ANSWER so an arm that confused `>` with `>=`
+/// cannot pass. Each threshold has a stored value sitting exactly on it.
+#[test]
+fn streamed_range_count_distinguishes_inclusive_bounds() {
+    use crate::value::Value;
+
+    let store = {
+        let mut b = crate::store::Builder::default();
+
+        for v in [1.0f64, 2.0, 3.0, 4.0, 5.0] {
+            b.node(&["N"], &[("k", Value::Num(v))]);
+        }
+
+        b.build()
+    };
+    let count = |q: &str| -> f64 {
+        let raw = crate::gql::parse(q).expect("parse");
+        let plan = crate::opt::optimize_indexed(raw, &store);
+        let out = crate::exec::try_run(&plan, &store).expect("run");
+        match out.rows.iter().next().and_then(|r| r.first()) {
+            Some(Value::Num(n)) => *n,
+            other => panic!("want a number, got {other:?}"),
+        }
+    };
+
+    // 1..5 stored. Each of the four arms keeps a DIFFERENT count over the same thresholds, which
+    // is what makes the four-way dispatch testable at all.
+    assert_eq!(
+        count("MATCH (a:N) WHERE a.k > 2 AND a.k < 4 RETURN count(*) AS c"),
+        1.0
+    );
+    assert_eq!(
+        count("MATCH (a:N) WHERE a.k > 2 AND a.k <= 4 RETURN count(*) AS c"),
+        2.0
+    );
+    assert_eq!(
+        count("MATCH (a:N) WHERE a.k >= 2 AND a.k < 4 RETURN count(*) AS c"),
+        2.0
+    );
+    assert_eq!(
+        count("MATCH (a:N) WHERE a.k >= 2 AND a.k <= 4 RETURN count(*) AS c"),
+        3.0
+    );
+    // And the reversed written order of each, which must agree exactly.
+    assert_eq!(
+        count("MATCH (a:N) WHERE a.k < 4 AND a.k > 2 RETURN count(*) AS c"),
+        1.0
+    );
+    assert_eq!(
+        count("MATCH (a:N) WHERE a.k <= 4 AND a.k > 2 RETURN count(*) AS c"),
+        2.0
+    );
+    assert_eq!(
+        count("MATCH (a:N) WHERE a.k < 4 AND a.k >= 2 RETURN count(*) AS c"),
+        2.0
+    );
+    assert_eq!(
+        count("MATCH (a:N) WHERE a.k <= 4 AND a.k >= 2 RETURN count(*) AS c"),
+        3.0
+    );
+    // An EMPTY range, so a swapped lo/hi would show as every row rather than none.
+    assert_eq!(
+        count("MATCH (a:N) WHERE a.k > 4 AND a.k < 2 RETURN count(*) AS c"),
+        0.0
+    );
+}

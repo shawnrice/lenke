@@ -4078,3 +4078,31 @@ until no conjunct settles the row (a `try`/`catch` per conjunct in the hot boole
 native evaluate in written order (giving up item 175's 267.61ms -> 5.26ms). Item 322's first fix
 was wrong in the OTHER direction and created two new divergences: **being wider in one engine is
 the same mistake as being narrower.**
+
+## 453 — the two-bound range count: CLOSED at 3.9x. Item 451's open follow-up is done
+
+Four monomorphic arms for `(lo_incl, hi_incl)` take `a.k > 5 AND a.k < 100` from 1.782 to 0.458 ms
+at 1,000,000 nodes, landing exactly on the single-bound cost. Both written orders measure the
+same. Three controls flat.
+
+Three things to not re-derive:
+
+- **The `Vec` was not the cause.** Pulling the bounds into loop-invariant locals — item 451's
+  stated diagnosis — measured ~1.12x and left two bounds at 3.5x one bound. **A fix that is
+  directionally right and 9% refutes the cause rather than partly confirming it.** The cause is
+  VECTORIZATION: a monomorphic `Fn(f64) -> bool` auto-vectorizes, a pair of `num_pred` matches
+  does not.
+- **A fast path can cost a shape it never runs.** Written inline, the range arm made the
+  THREE-bound shape 1.4x slower (1.978 -> 2.78 ms) although that predicate never enters the
+  two-element arm — the function grew and LLVM inlined `scan_visit` differently for the arm that
+  follows. Extracting it recovered part (2.20); extracting it AND marking it `#[inline(never)]`
+  restored it (1.948). **The `#[inline(never)]` is load-bearing with a measured reason.** Same
+  family as `exec::pull`'s layout (item 90/250) and `ts-closure-size-is-load-bearing`.
+- **The first run after `cargo build` is not a measurement.** It read 0.685 where three subsequent
+  rounds read 0.458 — a 1.5x phantom, nearly written down as 2.6x instead of 3.9x. Min-of-9 inside
+  one process does not fix a cold first process.
+
+Not extended to 36 operator pairs: a range is the shape that matters and the rest decline to the
+general arm, which keeps the code-size cost off a build that targets wasm. Non-range pairs (two
+lower bounds, two equalities, a `<>`) and 3+ bounds stay on the general arm. Instrument:
+`cargo run --example caseinv_450 -- <two|tworev|three|bare|control> 1000000 9`.
