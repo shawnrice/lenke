@@ -194,6 +194,14 @@ const queries: Record<string, string> = {
   hopbothmax: 'MATCH (:Person)-[:KNOWS]-(b) RETURN max(b.age) AS m',
   hopbothminmax: 'MATCH (:Person)-[:KNOWS]-(b) RETURN min(b.age) AS lo, max(b.age) AS hi',
   hopdirmax: 'MATCH (:Person)-[:KNOWS]->(b) RETURN max(b.age) AS m',
+  // Item 480: the PROJECTION twin of the undirected question. Row order is observable here, so
+  // two passes are not available — this prices what a per-vertex out-then-in walk would win.
+  projdir: 'MATCH (:Person)-[:KNOWS]->(b) RETURN b.age AS k',
+  projboth: 'MATCH (:Person)-[:KNOWS]-(b) RETURN b.age AS k',
+  // `Half` is on half the vertices, so it is NOT vacuous and the directed walk must be
+  // START-driven — the fair control for an undirected walk, which cannot be far-driven.
+  projdirhalf: 'MATCH (:Half)-[:KNOWS]->(b) RETURN b.age AS k',
+  projbothhalf: 'MATCH (:Half)-[:KNOWS]-(b) RETURN b.age AS k',
   hopdirmulti: 'MATCH (:Person)-[:KNOWS]->(b) RETURN count(*) AS c, max(b.age) AS m',
 };
 const key = process.env.PCASE ?? 'node';

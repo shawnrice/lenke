@@ -4755,3 +4755,29 @@ idempotence were the wrong reason, that is where it breaks.
 **OPEN:** the count-bearing undirected aggregate on a looped graph (1498 ms). Item 478's
 per-edge admission is still the only fix, still unpriced against item 159's 1.6x for touching
 the walk inner loops.
+
+## 480 — the undirected hop PROJECTION: CLOSED at 2.0x (754 -> 375 ns a row)
+
+The projection twin of items 478/479, and the bigger row count. `undirectedHopWalk` is its own
+module-scope builder reached only for `both`; every other hop walk captures `out: boolean` and
+indexes one adjacency map, and item 159 prices a branch in those inner loops at 1.6x.
+
+Row order is observable for a projection, so the walk emits what `expand` does — per START
+VERTEX, out-steps then in-steps, skipping the self-loop in the in-pass — which is also why item
+478's two-pass trick stays confined to aggregates.
+
+**The honest control is the START-driven directed walk (~330 ns/row), not the far-driven one
+(~141)**: an undirected walk cannot be far-driven, because a far end's rows come from two
+buckets. Native was already proportional here (60.5 -> 125.7 ms), so this was TS-only.
+
+**A wrong answer I introduced, caught by the decline test**: removing the `both` guard early and
+declining LATE let `MATCH (:P)-[r:T]-(z) RETURN r.id` fall into the rel-bound walk with
+`out = false` — one row where four are right. The case that caught it asserts that the shapes
+this rung does NOT take still answer. A widened guard is exactly how a neighbouring path gets
+silently re-routed.
+
+Mutation: five of six (self-loop skip, in-pass endpoint, far label, start label, `both` leaking
+into the directed walks).
+
+**OPEN, now available:** the aggregate rungs could use this single undirected walk instead of
+two turned ones, retiring item 478's `selfLoopCount` decline for counting folds as well.

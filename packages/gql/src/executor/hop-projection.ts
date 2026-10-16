@@ -332,6 +332,94 @@ const projectionIsStreamable = (proj: CProjection): boolean =>
  * edges differ. Hoisting here is a wrong answer, not a faster one, and the mutant that does it
  * is caught.
  */
+
+/**
+ * The walk for an UNDIRECTED hop projection, admitted only for the simplest shape:
+ * far-end-only projection, no carried `WHERE`, no far predicate, no edge variable.
+ *
+ * ITS OWN CLOSURE, not a branch in the walks below it: each of those captures `out: boolean`
+ * and indexes one of `edgesFromByLabel` / `edgesToByLabel`, and item 159 measured a branch in
+ * that inner loop at 1.6x on the hot directed shape. Nothing here is reachable from a directed
+ * hop — `detectHopProjection` returns `null` for `both` the moment this declines, which is what
+ * the old blanket `rel.direction === 'both'` guard did for every shape.
+ *
+ * ORDER is the difficulty. `expand` emits, PER START VERTEX, the out-steps then the in-steps,
+ * skipping a self-loop in the in-pass because a loop is indexed under BOTH maps. Row order is
+ * observable for a projection, so this walk does exactly that — and that is also why item 478's
+ * two-pass trick (all out-rows, then all in-rows) is confined to aggregates, where the fold
+ * cannot see order.
+ *
+ * Measured at 200,000 nodes / 1,000,000 edges: 754 -> 357-395 ns a row. The honest comparison
+ * is the START-DRIVEN directed walk at 321-330 ns a row, not the far-driven one at 116-145: an
+ * undirected walk cannot be far-driven, because a far end's rows come from two buckets.
+ */
+const undirectedHopWalk = (w: {
+  startLabel: LabelExpr | undefined;
+  typeName: string;
+  farVar: string;
+  farLabel: LabelExpr | undefined;
+  proj: CProjection;
+  farPred: CPredicate | undefined;
+  gate: CompiledExpr | undefined;
+  needsStart: boolean;
+}): RowsFn | null => {
+  const { startLabel, typeName, farVar, farLabel, proj } = w;
+
+  // The admission test lives HERE rather than at the call site, which keeps three conditions
+  // out of `detectHopProjection` — it sits one branch under the complexity cap, and the cap is
+  // right that the detector is already doing enough.
+  if (w.farPred !== undefined || w.gate !== undefined || w.needsStart) {
+    return null;
+  }
+
+  return (graph, params) => {
+    const rows: Row[] = [];
+    const binding = new Map<string, unknown>();
+
+    for (const v of candidateVertexSource(graph, startLabel)) {
+      const outBucket = graph.edgesFromByLabel.get(v.id)?.get(typeName);
+
+      if (outBucket !== undefined) {
+        for (const edge of outBucket) {
+          const far = edge.to;
+
+          if (farLabel !== undefined && !matchesLabel(far, farLabel)) {
+            continue;
+          }
+
+          binding.set(farVar, far);
+          rows.push(projectRow(proj, binding, params, graph));
+        }
+      }
+
+      const inBucket = graph.edgesToByLabel.get(v.id)?.get(typeName);
+
+      if (inBucket === undefined) {
+        continue;
+      }
+
+      for (const edge of inBucket) {
+        // The self-loop the out-pass already emitted — `expand` skips it here and so must this,
+        // or an undirected hop over a loop yields two rows where the general path yields one.
+        if (edge.from === edge.to) {
+          continue;
+        }
+
+        const far = edge.from;
+
+        if (farLabel !== undefined && !matchesLabel(far, farLabel)) {
+          continue;
+        }
+
+        binding.set(farVar, far);
+        rows.push(projectRow(proj, binding, params, graph));
+      }
+    }
+
+    return rows;
+  };
+};
+
 const relBoundHopWalk = (spec: {
   startLabel: LabelExpr | undefined;
   typeName: string;
@@ -603,7 +691,10 @@ export const detectHopProjection = (
   // are no-ops — measured against the general path including the `ACYCLIC`-with-a-self-loop
   // case, which is the one that could have differed. A path SELECTOR (`ANY SHORTEST`) raises
   // on a non-var-length pattern in both paths.
-  if (!plainRel(rel) || rel.direction === 'both') {
+  // `both` is admitted ONLY by `undirectedHopWalk` below, and only for the simplest shape. It
+  // is refused here for every other path because each of them indexes ONE of
+  // `edgesFromByLabel` / `edgesToByLabel` through a captured `out: boolean`.
+  if (!plainRel(rel)) {
     return null;
   }
 
@@ -743,6 +834,21 @@ export const detectHopProjection = (
   // A rel read from EITHER the projected items or the carried clause `WHERE` needs the edge
   // bound. The unfiltered walk is preferred because it is the cheaper one; the filtered walk
   // takes everything else and declines the shapes neither can serve.
+  // AN UNDIRECTED HOP (item 480): its own walk, and nothing below can see `both` — every
+  // walk there captures ONE direction through `out: boolean`. See `undirectedHopWalk`.
+  if (rel.direction === 'both') {
+    return undirectedHopWalk({
+      startLabel,
+      typeName,
+      farVar,
+      farLabel,
+      proj,
+      farPred,
+      gate,
+      needsStart,
+    });
+  }
+
   if (itemsReadRel || carried.needsRel) {
     const unfiltered = farPred === undefined && gate === undefined && !needsStart;
 
