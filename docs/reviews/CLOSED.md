@@ -4978,3 +4978,26 @@ and "first" always agree — the second test uses 5000 nodes and three keys at 1
 because two bare test names make CARGO fail ("unexpected argument") — one positional `TESTNAME`,
 the rest after `--`. The null control "failing" is the tell. Second time this session the
 harness was the finding.
+
+## 490 — verification: both probes clean, two sweeps unmoved. The 3321x TS group is item 325's GUARD
+
+No engine change. `bun run spelling` (SPELL_N=200000, SPELL_REPS=9): **0 answer disagreements**,
+one group over 2x — `label on start: redundant vs absent` at 3321.7x, which item 325 records as
+CORRECT (`:P` is deliberately non-vacuous; eliding it would change the answer) with the
+instruction _"do not quiet it by reverting the fixture"_. The vacuity premise has its own
+`:Univ` group and that one is within noise, so the elision still fires where it is sound.
+**Third save of the session from reading `CLOSED.md` first** (after `count 3-hop` and the egress
+rows).
+
+`spelling_probe` (native): NO PERF CLIFFS, after item 489. `bench:usage`: no anomaly — the
+`ts(-)` column is the scan constant factor (an unindexed point lookup IS a 20,000-node scan),
+and `ts(+)` beats native on indexed lookups because TS pays no FFI/JSON (item 289 from the other
+side).
+
+**A flag that was noise:** `range operand order` read 2.3x on one run and 1.00x on the next. The
+probe is bimodal in single runs; a 2.3x there is a reason to RE-RUN, not to open an item. Third
+sub-floor flag to dissolve on repetition this session (484, 487, 490).
+
+**PRICED, not taken:** `three hops, THIRD position filtered` is 1.4x apart and therefore NOT
+flagged by the 2x threshold — clause `WHERE c.k = 2` 541.30 ms against inline `(c {k: 2})`
+385.02. Under a threshold is not absent: item 489's cliff printed for several ticks unread.
