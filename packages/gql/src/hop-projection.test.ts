@@ -609,3 +609,139 @@ describe('a rel-reading clause WHERE on the hop fast path (item 447)', () => {
     ).toEqual([{ n: 9 }]);
   });
 });
+
+// Item 456: a three-hop count's INTERIOR gate, built from an inline constraint as well as a
+// clause `WHERE`.
+//
+// `interiorPredOf` read a clause `WHERE` only, so `(b {k: 2})` and `(b WHERE b.k = 2)` fell past
+// the gated degree product onto a slower route while `WHERE b.k = 2` took it: 240.80-246.19 ms
+// against 12.85-15.44 on the spelling probe's three-hop chain, isolated one group per process.
+// 18x between three ways of writing one question.
+//
+// POSITION B ONLY, which is measured and not tidy: routing an inline gate on `c` through the
+// product too made that shape 1.25x SLOWER (369 ms on the sweep it had been taking against 460
+// on the product), because the product's walk iterates `b` but meets `c` once per middle EDGE.
+describe('a three-hop count gated by an inline constraint (item 456)', () => {
+  // Every vertex is `:P` with a `k`, so the three positions are distinguishable: a gate on `b`
+  // keeps a different set from the same gate on `c`, and the counts below differ. A fixture
+  // where the gate selected the same paths from either position could not tell the routes apart.
+  const chain = (): Graph => {
+    const g = new Graph();
+    const v = (id: string, k: number) => g.addVertex({ id, labels: ['P'], properties: { k } });
+    const a = v('a', 0);
+    const b1 = v('b1', 2);
+    const b2 = v('b2', 9);
+    const c1 = v('c1', 2);
+    const c2 = v('c2', 7);
+    const d = v('d', 0);
+    let n = 0;
+    const e = (from: ReturnType<Graph['addVertex']>, to: ReturnType<Graph['addVertex']>) =>
+      g.addEdge({ id: `e${(n += 1)}`, from, to, labels: ['E'], properties: {} });
+
+    // a -> {b1, b2} -> {c1, c2} -> d, fully connected between layers.
+    e(a, b1);
+    e(a, b2);
+    e(b1, c1);
+    e(b1, c2);
+    e(b2, c1);
+    e(b2, c2);
+    e(c1, d);
+    e(c2, d);
+
+    return g;
+  };
+
+  test('the three spellings of a gate on b agree', () => {
+    const g = chain();
+
+    // `b1` alone has k = 2, and it reaches both c's, each reaching d: 2 paths.
+    for (const q of [
+      'MATCH (a:P)-[:E]->(b)-[:E]->(c)-[:E]->(d) WHERE b.k = 2 RETURN count(*) AS c',
+      'MATCH (a:P)-[:E]->(b WHERE b.k = 2)-[:E]->(c)-[:E]->(d) RETURN count(*) AS c',
+      'MATCH (a:P)-[:E]->(b {k: 2})-[:E]->(c)-[:E]->(d) RETURN count(*) AS c',
+    ]) {
+      expect(query(g, q)).toEqual([{ c: 2 }]);
+    }
+  });
+
+  test('the three spellings of a gate on c agree, and differ from b', () => {
+    const g = chain();
+
+    // `c1` alone has k = 2, reached from both b's: 2 paths — the same COUNT as the `b` gate here
+    // by coincidence of the fixture's shape, so the next assertion is what separates them.
+    for (const q of [
+      'MATCH (a:P)-[:E]->(b)-[:E]->(c)-[:E]->(d) WHERE c.k = 2 RETURN count(*) AS c',
+      'MATCH (a:P)-[:E]->(b)-[:E]->(c WHERE c.k = 2)-[:E]->(d) RETURN count(*) AS c',
+      'MATCH (a:P)-[:E]->(b)-[:E]->(c {k: 2})-[:E]->(d) RETURN count(*) AS c',
+    ]) {
+      expect(query(g, q)).toEqual([{ c: 2 }]);
+    }
+
+    // A gate the two positions answer DIFFERENTLY, so a route that confused `onB` is caught:
+    // `b2` has k = 9 and no `c` does, so gating `b` keeps 2 paths and gating `c` keeps none.
+    expect(
+      query(g, 'MATCH (a:P)-[:E]->(b {k: 9})-[:E]->(c)-[:E]->(d) RETURN count(*) AS c'),
+    ).toEqual([{ c: 2 }]);
+    expect(
+      query(g, 'MATCH (a:P)-[:E]->(b)-[:E]->(c {k: 9})-[:E]->(d) RETURN count(*) AS c'),
+    ).toEqual([{ c: 0 }]);
+  });
+
+  test('BOTH interior positions gated still answers', () => {
+    const g = chain();
+
+    // The route declines this (the product gates one interior node), so it must fall through and
+    // still be right: `b1` and `c1` are the only k = 2 pair, and `c1` reaches `d`.
+    expect(
+      query(g, 'MATCH (a:P)-[:E]->(b {k: 2})-[:E]->(c {k: 2})-[:E]->(d) RETURN count(*) AS c'),
+    ).toEqual([{ c: 1 }]);
+    expect(
+      query(g, 'MATCH (a:P)-[:E]->(b {k: 9})-[:E]->(c {k: 7})-[:E]->(d) RETURN count(*) AS c'),
+    ).toEqual([{ c: 1 }]);
+  });
+
+  test('an OPEN inline constraint declines and is right', () => {
+    const g = chain();
+
+    // `{k: a.k}` reads another variable, so `inlineOf` returns null and the whole shortcut
+    // declines to the general path. `a` has k = 0 and no `b` does, so nothing matches.
+    expect(
+      query(g, 'MATCH (a:P)-[:E]->(b {k: a.k})-[:E]->(c)-[:E]->(d) RETURN count(*) AS c'),
+    ).toEqual([{ c: 0 }]);
+  });
+
+  test('an inline gate ALONGSIDE a clause WHERE keeps both', () => {
+    const g = chain();
+
+    // The shape mutation found this suite was missing. The inline gate is built BEFORE the
+    // clause block runs, so a clause `WHERE` overwrites it — the two must not silently replace
+    // one another. `b.k = 2` keeps b1 (2 paths) and `c.k = 2` narrows to c1, leaving 1; the
+    // `d.k = 0` variant names an END position, which has no interior gate, and keeps both.
+    expect(
+      query(
+        g,
+        'MATCH (a:P)-[:E]->(b {k: 2})-[:E]->(c)-[:E]->(d) WHERE c.k = 2 RETURN count(*) AS c',
+      ),
+    ).toEqual([{ c: 1 }]);
+    expect(
+      query(
+        g,
+        'MATCH (a:P)-[:E]->(b {k: 2})-[:E]->(c)-[:E]->(d) WHERE d.k = 0 RETURN count(*) AS c',
+      ),
+    ).toEqual([{ c: 2 }]);
+  });
+
+  test('a gate on an END position is unaffected', () => {
+    const g = chain();
+
+    // `a` and `d` are reached only as degrees, so they have no interior gate and take whatever
+    // route they took before. Asserted so a change to the interior logic cannot quietly move
+    // them: only `a` has k = 0 among starts, and `d` is the only end.
+    expect(
+      query(g, 'MATCH (a:P {k: 0})-[:E]->(b)-[:E]->(c)-[:E]->(d) RETURN count(*) AS c'),
+    ).toEqual([{ c: 4 }]);
+    expect(
+      query(g, 'MATCH (a:P)-[:E]->(b)-[:E]->(c)-[:E]->(d {k: 0}) RETURN count(*) AS c'),
+    ).toEqual([{ c: 4 }]);
+  });
+});

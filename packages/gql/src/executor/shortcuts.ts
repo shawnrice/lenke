@@ -2030,6 +2030,15 @@ const patternCountOf = <T>(
   // `null` means the predicate names something this shape cannot gate, which declines.
   let interiorPred: { pred: InlinePred; onB: boolean } | null | undefined;
 
+  // The interior gate an INLINE constraint gives (item 456). Every condition lives in the helper
+  // so the call site is ONE branch: inline, this put `patternCountOf` at 38 against a limit of
+  // 35, and at 36 even with the body extracted.
+  interiorPred = inlineInteriorGate(segments, interiorPred);
+
+  if (interiorPred === null) {
+    return null;
+  }
+
   if (where !== undefined) {
     // THREE segments admit a clause predicate over exactly ONE INTERIOR node, which is the pair
     // of positions the degree product's walk visits. Anything else — the two ends, several
@@ -2778,6 +2787,60 @@ const sweepChain = ({ graph, params, legs, startLabel, startGate }: Sweep): numb
  * arbitrarily. The two-segment gate keeps one because a route already existed there to preserve;
  * a three-segment shape had none, so there is nothing to keep.
  */
+/**
+ * THE INTERIOR GATE AN INLINE CONSTRAINT GIVES (audit item 456).
+ *
+ * `interiorPredOf` reads a CLAUSE `WHERE` only, so `(b {k: 2})` and `(b WHERE b.k = 2)` left
+ * `interiorPred` undefined and fell past the gated degree product onto a slower route while
+ * `WHERE b.k = 2` took it. Measured on the spelling probe's three-hop chain, isolated one group
+ * per process: clause 12.85-15.44 ms against both inline spellings at 240.80-246.19. **18x
+ * between three ways of writing one question**, which is the class `CLAUDE.md` names and which
+ * that probe had been reporting unattributed all session.
+ *
+ * The gate is identical once built — `inlineOf` already produces the `InlinePred` the product
+ * applies — so this is the same route for the same question, not a second implementation.
+ *
+ * **POSITION B ONLY, and that is measured rather than tidy.** Item 222's reasoning is that the
+ * product's walk ITERATES `b`, so a gate there costs once per VERTEX, while it meets `c` as each
+ * middle edge's far end, once per MIDDLE EDGE. Routing an inline gate on `c` through the product
+ * too made that shape 1.25x SLOWER — 369 ms on the sweep it had been taking against 460 on the
+ * gated product — so the first version of this traded an 18x win for a regression on its
+ * neighbour, and only the THIRD-position group in the same probe showed it. `c` keeps the sweep,
+ * which carries an inline constraint at every position by construction.
+ *
+ * `null` declines the whole shortcut; `undefined` means no inline gate to take.
+ *
+ * The two refusals here are DEFENCE IN DEPTH, not teeth, and mutation says so: admitting an open
+ * constraint and admitting a second interior gate both leave every test green. Each is
+ * answer-preserving for its own reason — `{k: a.k}` answers the same either way, and the product
+ * declines a shape whose second interior gate it cannot express, so the route falls through.
+ * They stay because they make the intent explicit rather than relying on a downstream decline,
+ * and item 447's lesson is to NAME a guard as defence in depth rather than imply teeth it lacks.
+ * What IS load-bearing is `onB`: flipping it fails seven tests.
+ */
+const inlineInteriorGate = (
+  segments: readonly Segment[],
+  current: { pred: InlinePred; onB: boolean } | null | undefined,
+): { pred: InlinePred; onB: boolean } | null | undefined => {
+  // A clause `WHERE` has already supplied one, or this is not the three-segment shape: pass the
+  // caller's value straight back, so the call site needs no condition of its own.
+  if (current !== undefined || segments.length !== 3) {
+    return current;
+  }
+
+  const inB = inlineOf(segments[0].node);
+
+  if (inB === null) {
+    return null;
+  }
+
+  if (inB !== undefined && inlineOf(segments[1].node) === undefined) {
+    return { pred: inB, onB: true };
+  }
+
+  return undefined;
+};
+
 const interiorPredOf = (
   where: Expr,
   s1: Segment,

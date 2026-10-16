@@ -4145,3 +4145,30 @@ So **any `bun run spelling` flag needs isolated confirmation before it is a clai
 one command: `SPELL_ONLY=<substring> bun run spelling`, added here. The group keeps its flag and
 carries the refutation in a comment — a group deleted for being inconvenient is how a probe stops
 being trusted.
+
+## 456 — a three-hop count's interior gate from an INLINE constraint: CLOSED at 18x
+
+`interiorPredOf` read a clause `WHERE` only, so `(b {k: 2})` and `(b WHERE b.k = 2)` fell past the
+gated degree product that `WHERE b.k = 2` took: 240.80-246.19 ms against 12.85-15.44, isolated one
+group per process. Now 12.36-13.72 for all three spellings. `inlineInteriorGate` builds the same
+`{ pred, onB }` from `inlineOf`.
+
+Three things to not re-derive:
+
+- **POSITION B ONLY, and the restriction is measured.** The first version gated `c` through the
+  product too and made that shape 1.25x SLOWER — 369 ms on the sweep it had been taking against
+  460 on the product — because the walk ITERATES `b` (once per vertex) but meets `c` once per
+  middle EDGE (item 222's reasoning). Only the THIRD-position group in the same probe showed it:
+  **an argument for a probe keeping neighbours it is not currently investigating.**
+- **I guessed the cause twice and a four-line trace ended it in one run.** Both guesses were
+  about routes declining; the truth was `interior=false` reaching a different branch. Item 441's
+  rule (verify the shape reaches the path BEFORE measuring) is cheap, and skipping it cost a
+  written-and-reverted change that measured no difference because its branch is never taken.
+- **Four of five mutants survive and none is a gap**: the null control; a second interior gate
+  (the product declines what it cannot express, so the route falls through); an OPEN constraint
+  (`{k: a.k}` answers the same either way); and the inline gate overriding the clause (EQUIVALENT
+  — the clause block runs later, so order already gives it priority). `onB` is the load-bearing
+  one, failing seven tests.
+
+`bun run spelling` now has NO genuine gap outstanding: the two groups still over 2x are item 455's
+harness artifact and a 0.00 ms degenerate.
