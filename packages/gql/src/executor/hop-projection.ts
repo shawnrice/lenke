@@ -2,6 +2,7 @@ import type { Graph, Vertex } from '@lenke/core';
 
 import type { Clause, CountValue, Expr, LabelExpr, Projection } from '../ast.js';
 import type {
+  AggFold,
   CClause,
   CNode,
   CompiledExpr,
@@ -15,6 +16,7 @@ import type {
 import {
   compileExpr,
   compilePredicate,
+  foldFor,
   compareSort,
   freePredicateVars,
   projectRow,
@@ -2499,5 +2501,186 @@ export const detectHopAggregate = (
     }
 
     return [{ [outName]: fold.finish(acc) }];
+  };
+};
+
+/** One projected aggregate's accumulator in the MULTI-aggregate hop path (item 472). */
+type HopAcc =
+  | { readonly kind: 'rows'; readonly out: string }
+  | { readonly kind: 'fold'; readonly out: string; readonly fold: AggFold; readonly col: string };
+
+/**
+ * The same walk under TWO OR MORE foldable aggregates — `RETURN count(*), max(b.k)`.
+ *
+ * WHY THIS EXISTS. `detectHopAggregate` refuses `proj.items.length !== 1`, so a pair fell to the
+ * general path exactly as the scan pair did before item 469 — and on a hop that is the expensive
+ * one, because the general path materializes a `Binding` per EDGE. Measured at 200,000 nodes
+ * over 1,000,000 edges (item 472): `max(b.age)` alone 153 ms, `count(*), max(b.age)` **668**,
+ * `min(b.age), max(b.age)` 655.
+ *
+ * The admission set is `foldFor`'s, UNCHANGED and for item 419's reason: the far-driven walk may
+ * visit rows in a different order from the general path, so only an order-INDEPENDENT aggregate
+ * may ride it. `count`/`min`/`max` qualify; `sum`/`avg` do not and are refused here even though
+ * item 468 admits them on an unfiltered SCAN, where there is no far-driven alternative.
+ * `count(*)` is a row counter needing no projected column.
+ */
+export const detectMultiHopAggregate = (
+  clauses: readonly Clause[],
+  compiled: readonly CClause[],
+): RowsFn | null => {
+  if (clauses.length !== 2) {
+    return null;
+  }
+
+  const [m, ret] = clauses;
+  const [cm, cret] = compiled;
+
+  if (ret.kind !== 'return' || cret.kind !== 'return') {
+    return null;
+  }
+
+  const proj = cret.projection;
+
+  // `< 2` leaves the one-item shapes to `detectHopAggregate`, which runs first: the two rungs
+  // are disjoint by ARITY, so this cannot regress the shape that one claims.
+  if (
+    proj.star ||
+    proj.distinct ||
+    proj.items.length < 2 ||
+    proj.groupKeys.length !== 0 ||
+    proj.having !== undefined ||
+    proj.orderBy.length > 0 ||
+    proj.skip !== undefined ||
+    proj.limit !== undefined ||
+    ret.projection.groupBy !== undefined
+  ) {
+    return null;
+  }
+
+  // `foldedAggs` carries an argument closure `compileProjection` already lowered; reusing it
+  // keeps one compilation per expression. It is absent whenever any item is a `count(*)`
+  // (`foldFor` refuses a star), which is why the fallback compiles the argument here.
+  const lowered = new Map<object, CompiledExpr>();
+
+  for (const a of proj.foldedAggs ?? []) {
+    lowered.set(a.expr, a.argFn);
+  }
+
+  const accs: HopAcc[] = [];
+  const synthItems: { expr: Expr; alias: string }[] = [];
+  const synthCols: CReturnItem[] = [];
+
+  for (const [i, item] of ret.projection.items.entries()) {
+    const e = item.expr;
+    const out = proj.items[i].name;
+
+    if (e.kind !== 'func' || e.distinct) {
+      return null;
+    }
+
+    if (e.star) {
+      if (e.name !== 'count' || e.args.length !== 0) {
+        return null;
+      }
+
+      accs.push({ kind: 'rows', out });
+      continue;
+    }
+
+    const fold = e.args.length === 1 ? foldFor(e.name, false, false) : undefined;
+
+    if (fold === undefined) {
+      return null;
+    }
+
+    const [argExpr] = e.args;
+    const col = ` hopagg${i}`;
+
+    accs.push({ kind: 'fold', out, fold, col });
+    synthItems.push({ expr: argExpr, alias: col });
+    synthCols.push({ name: col, fn: lowered.get(e) ?? compileExpr(argExpr), isAgg: false });
+  }
+
+  // All-`count(*)` projects nothing, and the walk needs an item to produce.
+  if (synthItems.length === 0) {
+    return null;
+  }
+
+  const synthRet: Clause = {
+    ...ret,
+    projection: {
+      ...ret.projection,
+      items: synthItems,
+      distinct: false,
+      groupBy: undefined,
+      having: undefined,
+      orderBy: undefined,
+      skip: undefined,
+      limit: undefined,
+    },
+  };
+  const synthCret: CClause = {
+    ...cret,
+    projection: {
+      star: false,
+      distinct: false,
+      aggregating: false,
+      countedGroups: false,
+      items: synthCols,
+      // FALSE conservatively, for the reason the single-aggregate twin gives: nothing here
+      // pages, so the field is unobservable and the safe value costs nothing.
+      cannotFault: false,
+      groupKeys: [],
+      groupKeyNames: [],
+      orderBy: [],
+      orderNeedsOutput: false,
+    },
+  };
+  const rowsFn = detectHopProjection([m, synthRet], [cm, synthCret]);
+
+  if (rowsFn === null) {
+    return null;
+  }
+
+  return (graph, params) => {
+    const rows = rowsFn(graph, params);
+
+    // A DECLINE from the walk is a decline from here: the general path has a better plan.
+    if (rows === null) {
+      return null;
+    }
+
+    const state = accs.map((a) => (a.kind === 'fold' ? a.fold.init() : undefined));
+    let n = 0;
+
+    for (const row of rows) {
+      n += 1;
+
+      // An INDEX loop rather than `accs.entries()`, which allocates a tuple per accumulator per
+      // row — item 469 measured that at 40-55% of a multi-aggregate scan's cost.
+      for (let i = 0; i < accs.length; i += 1) {
+        const a = accs[i];
+
+        if (a.kind === 'rows') {
+          continue;
+        }
+
+        const v = row[a.col];
+
+        if (!isNullish(v)) {
+          state[i] = a.fold.step(state[i], v);
+        }
+      }
+    }
+
+    const out: Row = {};
+
+    for (let i = 0; i < accs.length; i += 1) {
+      const a = accs[i];
+
+      out[a.out] = a.kind === 'rows' ? n : a.fold.finish(state[i]);
+    }
+
+    return [out];
   };
 };

@@ -5950,6 +5950,8 @@ export type CLinear = {
   hopProjection: RowsFn | null;
   /** The same walk under ONE foldable aggregate — `RETURN max(x.k)`; else null. */
   hopAggregate: RowsFn | null;
+  /** The same walk under TWO OR MORE foldable aggregates — `RETURN count(*), max(x.k)`. */
+  multiHopAggregate: RowsFn | null;
   /** `RETURN DISTINCT <one expr>` deduped while walking; else null. */
   distinctProjection: AlwaysRowsFn | null;
   /** `RETURN count(DISTINCT <one expr>)` — the same walk, counted and never materialized. */
@@ -5972,6 +5974,7 @@ const compileLinear = (linear: LinearQuery): CLinear => {
     reachShortcut: detectReachableShortcut(linear.clauses, clauses),
     hopProjection: detectHopProjection(linear.clauses, clauses),
     hopAggregate: detectHopAggregate(linear.clauses, clauses),
+    multiHopAggregate: detectMultiHopAggregate(linear.clauses, clauses),
     distinctProjection: detectDistinctProjection(linear.clauses, clauses),
     distinctCount: detectDistinctCount(linear.clauses, clauses),
     nodeProjection: detectNodeProjection(linear.clauses, clauses),
@@ -6008,6 +6011,7 @@ import {
   detectDistinctProjection,
   detectHopAggregate,
   detectHopProjection,
+  detectMultiHopAggregate,
 } from './executor/hop-projection.js';
 import type { AlwaysRowsFn, RowsFn } from './executor/hop-projection.js';
 // Count / reachability fast-paths (see executor/shortcuts.ts) — this back-edge and

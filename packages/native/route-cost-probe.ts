@@ -153,6 +153,12 @@ const queries: Record<string, string> = {
   twocol2: 'MATCH (n:Person) RETURN sum(n.age) AS s, max(n.w2) AS m',
   twocolcnt: 'MATCH (n:Person) RETURN count(n.age) AS a, count(n.w2) AS b',
   twocolone: 'MATCH (n:Person) RETURN sum(n.w2) AS s',
+  // Item 472: the same ARITY question on a HOP. `detectHopAggregate` takes ONE aggregate, so
+  // the pair should fall off the ladder the way item 469's scan pair did — asked, not assumed.
+  hopagg1: 'MATCH (:Person)-[:KNOWS]->(b) RETURN count(*) AS c',
+  hopagg1b: 'MATCH (:Person)-[:KNOWS]->(b) RETURN max(b.age) AS m',
+  hopagg2: 'MATCH (:Person)-[:KNOWS]->(b) RETURN count(*) AS c, max(b.age) AS m',
+  hopagg2b: 'MATCH (:Person)-[:KNOWS]->(b) RETURN min(b.age) AS lo, max(b.age) AS hi',
 };
 const key = process.env.PCASE ?? 'node';
 const q = queries[key];

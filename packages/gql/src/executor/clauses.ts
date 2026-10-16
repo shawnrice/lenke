@@ -1385,6 +1385,18 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
     }
   }
 
+  // The same walk under TWO OR MORE foldable aggregates — `RETURN count(*), max(b.k)`.
+  // Disjoint from the rung above by ARITY, and placed after it for the reason item 418
+  // measured: a branch ahead of a hot dispatch costs the shape it does not claim. See
+  // `detectMultiHopAggregate`.
+  if (linear.multiHopAggregate) {
+    const rows = linear.multiHopAggregate(graph, params);
+
+    if (rows !== null) {
+      return rows;
+    }
+  }
+
   // `RETURN DISTINCT <one expr>`: dedupe by the projected VALUE while walking, so a
   // duplicate costs neither a row object nor a row key. See `detectDistinctProjection`.
   if (linear.distinctProjection) {

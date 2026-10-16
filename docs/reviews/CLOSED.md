@@ -4568,3 +4568,24 @@ Mutation: six of seven caught. The `min`/`max` empty guard SURVIVED until a case
 never enter it; it needs a column that exists while holding nothing for the scanned label.
 **A test can assert the right answer for the right reason and never visit the code it is aimed
 at.**
+
+## 472 — the arity cliff on a HOP: CLOSED at 4.0-4.2x (TS). The native twin is OPEN
+
+Item 469's scan cliff, asked of the hop, where it costs more because the general path
+materializes a `Binding` per EDGE. At 200,000 nodes / 1,000,000 edges: `count(*), max(b.age)` 668
+-> 155 ms, `min, max` 655 -> 163, `max(b.age)` alone flat at ~153 and `count(*)` flat at 0.0.
+
+`detectMultiHopAggregate` is a rung below `hopAggregate`, disjoint by arity, built like item
+469's: one synthetic column per aggregate argument, a fold per item, `count(*)` as a row counter,
+index loops only.
+
+**The admission set stays `foldFor`'s** — item 419's rule that only an order-INDEPENDENT
+aggregate may ride a walk that can reorder. So `sum`/`avg` are refused HERE while item 468 admits
+them on an unfiltered scan: the difference is the far-driven alternative, not the aggregate.
+
+Mutation: six of seven. The survivor was the run-time DECLINE branch (`[]` instead of `null`),
+which no fixture reached until one built the graph that provokes a decline — many starts, an
+index on the far key, a selective inline constraint. **A run-time decline is reachable only by
+building the graph that causes it.**
+
+**OPEN: native shows the same cliff** — `max(b.age)` 2.4 ms against 6.4 and 8.1 for the pairs.
