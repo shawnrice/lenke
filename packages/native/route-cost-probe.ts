@@ -218,6 +218,13 @@ const queries: Record<string, string> = {
   distrelvar: 'MATCH (:Person)-[r:KNOWS]->(b) RETURN DISTINCT b.age AS k',
   distrelread: 'MATCH (:Person)-[r:KNOWS]->(b) RETURN DISTINCT r.w AS k',
   projrelvar: 'MATCH (:Person)-[r:KNOWS]->(b) RETURN b.age AS k',
+  // Item 487: the same unread-rel-variable question asked of every OTHER rung.
+  cntrelvar: 'MATCH (:Person)-[r:KNOWS]->(b) RETURN count(*) AS c',
+  grphrelvar: 'MATCH (:Person)-[r:KNOWS]->(b) RETURN b.age AS k, count(*) AS c',
+  hopaggrelvar: 'MATCH (:Person)-[r:KNOWS]->(b) RETURN max(b.age) AS m',
+  twohoprelvar: 'MATCH (:Person)-[r:KNOWS]->(b)-[s:KNOWS]->(c) RETURN count(*) AS c',
+  threehoprelvar:
+    'MATCH (:Person)-[r:KNOWS]->(b)-[s:KNOWS]->(c)-[t:KNOWS]->(d) RETURN count(*) AS c',
   twohopboth: 'MATCH (:Person)-[:KNOWS]-(b)-[:KNOWS]-(c) RETURN count(*) AS c',
   twohopdir: 'MATCH (:Person)-[:KNOWS]->(b)-[:KNOWS]->(c) RETURN count(*) AS c',
   // Item 484: the THREE-hop twin of item 483. Run at a smaller PN — the undirected row count

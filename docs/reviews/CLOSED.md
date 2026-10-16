@@ -4908,3 +4908,27 @@ bind an edge and the failure mode would be silent.
 **Its doc comment was WRONG before the probe**: it claimed to close item 444's subquery hole, but
 `mentionsName` does not look inside a subquery expression — `COUNT { MATCH (a)-[r:T]->(z) }` does
 not fire the check at all. A guard's comment is a claim like any other.
+
+## 487 — an unread rel variable in the count PRODUCTS: CLOSED at 29x (two-hop) and 44x (three-hop)
+
+Item 486's question asked of every rung. The one-hop count already admitted a rel variable and
+the hop aggregate pays 1.25x (item 446 serves it), but the two-hop count cost 2165 ms against 75
+and the three-hop 1276 against 11-20. Both products bind NO edge and run only unfiltered, so a
+name nobody reads changes nothing: 2165 -> 73.4 and 1276 -> 19.5-28.8.
+
+**The widening introduced a WRONG ANSWER**: a repeated rel variable (`-[r:T]->(x)-[r:T]->(y)`)
+is the SAME edge at both positions, and the product treats its legs as independent — 1 where the
+general path says 0. The duplicate-name check listed only NODE variables; rel names are in it
+now. Found by a probe written the moment the guard came off. **Three widenings this session,
+three latent wrong answers (478's self-loop, 480's rel-bound re-route, this), each found by
+asking what else the guard protected.**
+
+Mutation: four of five. `plainRel` in the THREE-hop survived until a three-hop inline-rel case
+existed — the only such case covered the two-hop builder.
+
+**A control too small to be a control**: `threehopdir` at 20,000 nodes read 11.3 before and 26.2
+after, which looks like 2.3x; at 200,000 it is 321.8-327.0 against an established 311-368.
+That 20,000-node figure has ranged 11-26 over the session for unchanged code. Take the control
+from the LARGER fixture (item 484 retracted a flag for the same reason).
+
+**STILL OPEN:** the grouped hop count with a rel variable, 314 -> 757 (2.4x).

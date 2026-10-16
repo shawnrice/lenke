@@ -1843,7 +1843,13 @@ const buildThreeHopCount = <T>(
     // `both` IS admitted (item 484): the two outer legs become UNDIRECTED degrees and the
     // MIDDLE leg walks the out-bucket then the in-bucket, skipping the self-loop the out-pass
     // already took — `expand`'s own order and its dedupe.
-    rels.some((r) => !plainRel(r) || r.variable !== undefined) ||
+    // A rel VARIABLE is admitted (item 487): this is a degree PRODUCT with a middle-edge walk
+    // and it binds NO edge, so a name can only matter through a read — and the shapes that
+    // reach here cannot contain one. `patternCountOf` routes a clause `WHERE` or a start
+    // constraint to the FILTERED builder, which still refuses a rel variable, and the
+    // projection of a count shortcut is `count(*)`. Refusing it cost 1276 ms against 11 for the
+    // same query without the names, at 20,000 nodes.
+    rels.some((r) => !plainRel(r)) ||
     // `s1.node` (b) and `s2.node` (c) may now carry a constraint, because `interior` gates each
     // one exactly once per visit. `s3.node` — the END — still may not: the product reaches it only
     // as a degree, so a constraint there has no once-per-element place to go.
@@ -1852,12 +1858,22 @@ const buildThreeHopCount = <T>(
     return null;
   }
 
-  const vars = [start.variable, s1.node.variable, s2.node.variable, s3.node.variable].filter(
-    (v): v is string => v !== undefined,
-  );
+  // REL variables are in this list too, now that they are admitted. A REPEATED one — `-[r:T]->
+  // (b)-[r:T]->(c)` — means the SAME edge at both positions, which is a self-join no product
+  // can express: admitting it answered 1 where the general path answers 0 (item 487), found by
+  // a probe written because the hazard was suspected and not by any test.
+  const vars = [
+    start.variable,
+    s1.node.variable,
+    s2.node.variable,
+    s3.node.variable,
+    s1.rel.variable,
+    s2.rel.variable,
+    s3.rel.variable,
+  ].filter((v): v is string => v !== undefined);
 
   if (new Set(vars).size !== vars.length) {
-    return null; // a shared node variable is a self-join the product cannot express
+    return null; // a shared node or edge variable is a self-join the product cannot express
   }
 
   const types = [
@@ -2036,8 +2052,9 @@ const buildTwoHopCount = <T>(
   if (
     !plainRel(s1.rel) ||
     !plainRel(s2.rel) ||
-    s1.rel.variable !== undefined ||
-    s2.rel.variable !== undefined ||
+    // Rel VARIABLES are admitted here (item 487) and still refused by the FILTERED builder
+    // above: this one binds no edge and only runs for a shape with no `WHERE` and no start
+    // constraint, so a name nobody can read changes nothing. 2165 ms against 75 without them.
     // `both` IS admitted here (item 483): the product's two factors become UNDIRECTED degrees,
     // which is sound because a two-hop may return along the edge it arrived on — both engines
     // answer 6 for `(:P)-[:T]-(x)-[:T]-(y)` over the path `a-b-c`, which is 1 + 2^2 + 1.
@@ -2052,12 +2069,18 @@ const buildTwoHopCount = <T>(
     return null;
   }
 
-  const vars = [start.variable, s1.node.variable, s2.node.variable].filter(
-    (v): v is string => v !== undefined,
-  );
+  // REL variables included, for the reason the three-hop twin records: a repeated `r` is the
+  // SAME edge at both positions, and this product treats the two legs as independent.
+  const vars = [
+    start.variable,
+    s1.node.variable,
+    s2.node.variable,
+    s1.rel.variable,
+    s2.rel.variable,
+  ].filter((v): v is string => v !== undefined);
 
   if (new Set(vars).size !== vars.length) {
-    return null; // a shared node variable is a self-join the product can't express
+    return null; // a shared node or edge variable is a self-join the product can't express
   }
 
   const t1 = relTypeNames(s1.rel.label);
