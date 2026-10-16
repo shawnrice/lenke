@@ -18122,3 +18122,118 @@ fn the_frontier_count_prop_fast_path_declines_a_bare_scan() {
          the chain already keeps it from arriving here"
     );
 }
+
+/// Item 379: an endpoint move after an edge frontier is 1:1, so a bare `count(*)` over one
+/// can count the move's INPUT. `g.V().outE(L).outV().count()` was 1720.9us against
+/// `outE(L).count()`'s 118.4us — 14.6x for a number that must be equal.
+///
+/// The test pins the GATES, because each was established by evidence outside the code and a
+/// future reader cannot re-derive them from the rewrite alone:
+///
+/// - `bothV` is 1:TWO. TinkerPop ground truth, run in a console rather than recalled: over 4
+///   edges `outE.bothV` is 8 and `bothE.bothV` is 16, while `outE.outV`, `outE.inV`,
+///   `outE.otherV` and `bothE.otherV` are all 1:1. Rewriting it HALVES the answer, which is
+///   why the count itself is asserted and not just the plan shape.
+/// - `EdgeVertex` DROPS a row whose edge slot holds a non-edge ("vertex/scalar from another
+///   arm) has no endpoint, so skip it"), so the elision needs an input that PROVABLY binds an
+///   edge. The step being 1:1 in TinkerPop does not license eliding it over any input.
+///
+/// `inV`/`otherV` are elided at LOWERING already — their plans are byte-identical to the bare
+/// `Expand` — so `outV` is the only spelling this rewrite can reach.
+#[test]
+fn a_one_to_one_endpoint_move_is_elided_under_a_bare_count() {
+    // Deterministic, with a SELF-LOOP — the structure where endpoint steps diverge, and the
+    // one the TinkerPop console check also used.
+    let mut b = crate::store::Builder::default();
+    for _ in 0..40u32 {
+        b.node(&["Person"], &[("age", crate::value::Value::Num(30.0))]);
+    }
+    let mut seed = 7u64;
+    for i in 0..40u32 {
+        for _ in 0..3 {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            b.edge(i, ((seed >> 33) as u32) % 40, "KNOWS");
+        }
+    }
+    b.edge(0, 0, "KNOWS"); // self-loop
+    let store = b.build();
+
+    let plan_of = |q: &str| -> String {
+        let raw = crate::gremlin::parse(q).unwrap_or_else(|e| panic!("{q}: {e}"));
+        format!("{:?}", crate::opt::optimize_indexed(raw, &store))
+    };
+    let count_of = |q: &str| -> f64 {
+        let raw = crate::gremlin::parse(q).unwrap_or_else(|e| panic!("{q}: {e}"));
+        let plan = crate::opt::optimize_indexed(raw, &store);
+        let out = crate::exec::try_run(&plan, &store).unwrap_or_else(|e| panic!("{q}: {e}"));
+        match &out.rows[0][0] {
+            crate::value::Value::Num(n) => *n,
+            other => panic!("{q}: want a number, got {other:?}"),
+        }
+    };
+
+    let edges = count_of("g.V().hasLabel('Person').outE('KNOWS').count()");
+
+    // ELIDED, and still the edge count — a 1:1 move cannot change it.
+    for q in [
+        "g.V().hasLabel('Person').outE('KNOWS').outV().count()",
+        "g.V().hasLabel('Person').outE('KNOWS').inV().count()",
+    ] {
+        assert!(
+            !plan_of(q).contains("EdgeVertex"),
+            "{q}: a 1:1 endpoint move under a bare count must be elided"
+        );
+        assert_eq!(
+            count_of(q),
+            edges,
+            "{q}: a 1:1 move must not change the count"
+        );
+    }
+
+    // KEPT, and TWICE the edge count. If the gate ever admits `bothV` this halves.
+    for q in [
+        "g.V().hasLabel('Person').outE('KNOWS').bothV().count()",
+        "g.V().hasLabel('Person').bothE('KNOWS').bothV().count()",
+    ] {
+        assert!(
+            plan_of(q).contains("EdgeVertex"),
+            "{q}: bothV is 1:2 and must NOT be elided"
+        );
+    }
+    assert_eq!(
+        count_of("g.V().hasLabel('Person').outE('KNOWS').bothV().count()"),
+        edges * 2.0,
+        "bothV yields BOTH endpoints per edge (TinkerPop: outE.bothV = 8 over 4 edges)"
+    );
+
+    // NOT a bare `count(*)` over the move: something between the move and the count depends
+    // on the vertices it produced, so the move must stay. `dedup()` is the sharp case — it
+    // makes the move's OUTPUT determine the count, so eliding it would answer the edge count
+    // where the query asks for distinct sources.
+    for q in [
+        "g.V().hasLabel('Person').outE('KNOWS').outV().values('age').count()",
+        "g.V().hasLabel('Person').outE('KNOWS').outV().dedup().count()",
+    ] {
+        assert!(
+            plan_of(q).contains("EdgeVertex"),
+            "{q}: the vertices this move produces are READ, so it must not be elided"
+        );
+    }
+    // A GROUPED count reads the moved-to vertex for its key, so the move must stay. This
+    // pins the `keys.is_empty()` gate, which nothing else here exercises.
+    for q in [
+        "g.V().hasLabel('Person').outE('KNOWS').outV().groupCount().by('age')",
+        "g.V().hasLabel('Person').outE('KNOWS').outV().group().by('age').by(count())",
+    ] {
+        assert!(
+            plan_of(q).contains("EdgeVertex"),
+            "{q}: a grouping key reads the moved-to vertex, so the move must not be elided"
+        );
+    }
+    // And the dedup answer is genuinely smaller than the edge count, which is what makes the
+    // assertion above about behaviour rather than about plan text.
+    assert!(
+        count_of("g.V().hasLabel('Person').outE('KNOWS').outV().dedup().count()") < edges,
+        "distinct sources must be fewer than edges on this fixture, or the test proves nothing"
+    );
+}

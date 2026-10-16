@@ -1052,6 +1052,58 @@ fn map_children(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
                     }
                 }
             }
+            // A 1:1 ENDPOINT MOVE cannot change a row COUNT, so a bare `count(*)` over one
+            // may count the move's INPUT instead. `g.V().outE(L).outV().count()` measured
+            // 1667.6us against `outE(L).count()`'s 118.4us — 14x for a number that must be
+            // equal, since every edge has exactly one source (item 379). `inV`/`otherV`
+            // already elide at LOWERING (their plans are byte-identical to the bare
+            // `Expand`), so `outV` is the only spelling that reaches here as a plan node —
+            // which is why the general argument went unnoticed while its special case was
+            // already covered.
+            //
+            // It runs AFTER the `count(Slot)` canonicalization above on purpose: that one
+            // turns `count(v)` into `count(*)`, which is what admits this one.
+            //
+            // THREE gates, each load-bearing:
+            //   - `bothV` is 1:TWO. TinkerPop ground truth, run in a console rather than
+            //     recalled: over 4 edges `outE.bothV` is 8 and `bothE.bothV` is 16, while
+            //     `outE.outV`/`outE.inV`/`outE.otherV`/`bothE.otherV` are all 1:1.
+            //   - `EdgeVertex` DROPS a row whose edge slot holds a non-edge — exec says
+            //     "vertex/scalar from another arm) has no endpoint, so skip it" — so it is
+            //     only 1:1 when the input PROVABLY binds an edge there. An
+            //     `Expand { bind_edge: true }` whose own frontier IS that slot is the
+            //     conservative shape, and no union arm can reach it. The step's SEMANTICS
+            //     being 1:1 does not license eliding it over an arbitrary input.
+            //   - Nothing may READ the dropped slot: no grouping keys, and every aggregate
+            //     a bare non-DISTINCT `count(*)`.
+            let i = match i {
+                Plan::EdgeVertex {
+                    input: ev_in,
+                    edge_slot,
+                    which,
+                    other,
+                } if keys.is_empty()
+                    && aggs.iter().all(|a| {
+                        a.func == crate::ir::AggFn::Count && a.arg.is_none() && !a.distinct
+                    })
+                    && (other || which != crate::ir::Dir::Both)
+                    && matches!(
+                        ev_in.as_ref(),
+                        Plan::Expand {
+                            bind_edge: true,
+                            ..
+                        }
+                    )
+                    // An `Expand { bind_edge: true }` lays out [..input, EDGE, target], so
+                    // its bound edge sits at `width(input)` and its own width is
+                    // `edge_slot + 2`. Asking for `+ 1` is how the first attempt silently
+                    // declined every query and measured no change.
+                    && plan_out_width(&ev_in) == Some(edge_slot + 2) =>
+                {
+                    *ev_in
+                }
+                kept => kept,
+            };
             (
                 Plan::Aggregate {
                     input: Box::new(i),

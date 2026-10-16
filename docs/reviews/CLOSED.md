@@ -2848,6 +2848,36 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   contradiction. **A retraction that never happened misleads as much as a wrong cause** — 377's
   entry stands unamended.
 
+- **A 1:1 endpoint move cannot change a COUNT — 15.2x on a bench row, and `IncidentToAdjacentStrategy`
+  is REFUTED (379).** `bench_all`'s `outE.outV` at 9111.8us against `out` at 608.6us looked like
+  TinkerPop's missing strategy; it is not. **All three of that strategy's pairs are already equal**
+  (`out`/`outE().inV()` 100076 vs 100279us as traversals, 116.9 vs 117.0us as counts) because `inV`
+  and `otherV` are elided at LOWERING — their plans are byte-identical to the bare `Expand`. The real
+  gap is general: an endpoint move after an edge frontier is 1:1, so a bare `count(*)` over one can
+  count the move's INPUT. `outV` is the only spelling that reaches exec as a plan node, which is why
+  the special case was covered and the argument was not. 1720.9 → 117.9us probe, 9111.8 → 598.9us
+  bench row, controls (`out`, `out.out`, `values`) flat and `outE.outV.values` correctly unchanged.
+  **THREE gates, none derivable from the rewrite:** `bothV` is 1:TWO (TinkerPop console, self-loop
+  fixture: `outE.bothV` = 8 and `bothE.bothV` = 16 over 4 edges — admitting it HALVES the answer);
+  `EdgeVertex` DROPS rows whose edge slot holds a non-edge from another union arm, so the elision
+  needs an input that provably binds an edge (**a step being 1:1 in TinkerPop does not license
+  eliding it over an arbitrary input**); and nothing may read the dropped slot (no grouping keys, all
+  aggs bare `count(*)`).
+- **It SHIPPED DEAD first: the gate asked `edge_slot + 1` where an `Expand { bind_edge: true }` lays
+  out `[source, EDGE, target]` and the relation is `edge_slot + 2` (379).** Clean build, 1,118 tests
+  green, benchmark unchanged at 1720.9us. **A rewrite that declines every query is
+  indistinguishable from one that is not there** — item 371's dead fast path in a new place, caught
+  only by re-measuring. The regression test now asserts the plan IS elided, so that failure mode is
+  guarded rather than merely survived.
+- **Two measurement errors worth not repeating (379):** sorting the whole `bench_all` log and
+  comparing rows across it, then explaining the gap away as cross-fixture when the rows were in the
+  SAME section (the comparison was right, the explanation wrong); and probing the traversals WITHOUT
+  `.count()`, reading 1.00x, and nearly filing a refutation — the bench rows are counts (`rows=1`)
+  and the gap was never in the traversal. **The `all` → `any` mutant SURVIVES and is provably
+  equivalent** (no Gremlin shape puts 2+ aggregates over an `EdgeVertex`: `group().by().by(count())`,
+  `groupCount()`, `project()`, `fold().count(local)`, `values().sum()` all yield one or none) — the
+  category of item 297's T10.
+
 ## 6. Consequences of the AND decision — RESOLVED by item 258, and not as predicted
 
 This section was written before the change and asked three questions. All three are now answered by
