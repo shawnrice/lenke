@@ -1840,7 +1840,10 @@ const buildThreeHopCount = <T>(
   const rels = [s1.rel, s2.rel, s3.rel];
 
   if (
-    rels.some((r) => !plainRel(r) || r.variable !== undefined || r.direction === 'both') ||
+    // `both` IS admitted (item 484): the two outer legs become UNDIRECTED degrees and the
+    // MIDDLE leg walks the out-bucket then the in-bucket, skipping the self-loop the out-pass
+    // already took — `expand`'s own order and its dedupe.
+    rels.some((r) => !plainRel(r) || r.variable !== undefined) ||
     // `s1.node` (b) and `s2.node` (c) may now carry a constraint, because `interior` gates each
     // one exactly once per visit. `s3.node` — the END — still may not: the product reaches it only
     // as a degree, so a constraint there has no once-per-element place to go.
@@ -1876,6 +1879,9 @@ const buildThreeHopCount = <T>(
   const toAOut = s1.rel.direction === 'in';
   const fromDOut = s3.rel.direction === 'out';
   const midOut = s2.rel.direction === 'out';
+  const aBoth = s1.rel.direction === 'both';
+  const midBoth = s2.rel.direction === 'both';
+  const dBoth = s3.rel.direction === 'both';
 
   const gateOfPreds = (preds: readonly InlinePred[]): InlineGate | undefined =>
     preds.reduceRight<InlineGate | undefined>(
@@ -1892,6 +1898,26 @@ const buildThreeHopCount = <T>(
     const cEff = effectiveLabel(graph, cLabel);
     const dEff = effectiveLabel(graph, dLabel);
     const midIndex = midOut ? graph.edgesFromByLabel : graph.edgesToByLabel;
+    // The undirected middle leg's two passes, EMPTY for a directed one — which keeps the
+    // directed inner loop exactly as it was. Wrapping both cases in one `midLegs` array cost
+    // the directed three-hop 1.06x (311.0 min against 329.8, three alternated rounds), and
+    // that row is the widest cross-engine gap in the bench (item 310). Item 159's rule, paid
+    // again: a branch or a loop level added around a hot inner loop is not free.
+    const bothLegs: readonly (readonly [Map<string, Map<string, Set<Edge>>>, boolean])[] = midBoth
+      ? [
+          [graph.edgesFromByLabel, true],
+          [graph.edgesToByLabel, false],
+        ]
+      : [];
+    const aLoops = aBoth && loopsOfTypes(graph, t1);
+    const dLoops = dBoth && loopsOfTypes(graph, t3);
+    // The `d` side resolved ONCE per call rather than per edge: the directed and undirected
+    // forms differ only in which helper they call, and choosing between them inside the inner
+    // loop is both a branch item 159 warns about and two more points of complexity than this
+    // function has to spare.
+    const dSide = dBoth
+      ? (g: Graph, id: string): number => undirectedSide(g, id, t3, dEff, dLoops)
+      : (g: Graph, id: string): number => side(g, id, fromDOut, t3, dEff);
     // The `c` VERTEX has to be resolved when anything reads it — its label or its gate. With
     // neither, the edge's stored ID is all the `d` side needs (items 140, 218).
     const needsC = cEff !== undefined || cGate !== undefined;
@@ -1911,7 +1937,9 @@ const buildThreeHopCount = <T>(
 
       // Hoisted: the `a` side depends only on `b`, so it is one lookup per VERTEX rather than one
       // per middle edge. Zero here prunes the whole inner loop.
-      const waysToA = side(graph, b.id, toAOut, t1, aEff);
+      const waysToA = aBoth
+        ? undirectedSide(graph, b.id, t1, aEff, aLoops)
+        : side(graph, b.id, toAOut, t1, aEff);
 
       if (waysToA === 0) {
         continue;
@@ -1934,27 +1962,59 @@ const buildThreeHopCount = <T>(
       // across the `edgesOfTypes` generator frame (item 300 priced that at 1.19x on the sweep),
       // the `Edge` property reads, and two hash lookups — so no single micro moves it. It is the
       // CSR item 300 recorded as needing a dense adjacency the TS graph does not expose.
-      for (const e of edgesOfTypes(midIndex.get(b.id), t2)) {
-        if (!needsC) {
-          count += waysToA * side(graph, midOut ? e.toId : e.fromId, fromDOut, t3, dEff);
+      if (!midBoth) {
+        for (const e of edgesOfTypes(midIndex.get(b.id), t2)) {
+          if (!needsC) {
+            count += waysToA * dSide(graph, midOut ? e.toId : e.fromId);
 
-          continue;
+            continue;
+          }
+
+          const c = midOut ? e.to : e.from;
+
+          if (cEff !== undefined && !matchesLabel(c, cEff)) {
+            continue;
+          }
+
+          if (cGate !== undefined && !cGate(c, binding, params, graph)) {
+            continue;
+          }
+
+          count += waysToA * dSide(graph, c.id);
         }
 
-        const c = midOut ? e.to : e.from;
+        continue;
+      }
 
-        if (cEff !== undefined && !matchesLabel(c, cEff)) {
-          continue;
+      for (const [index, forward] of bothLegs) {
+        for (const e of edgesOfTypes(index.get(b.id), t2)) {
+          // The in-pass must skip the self-loop the out-pass already took: a loop sits in both
+          // maps and `expand` yields it once.
+          if (!forward && e.fromId === e.toId) {
+            continue;
+          }
+
+          if (!needsC) {
+            count += waysToA * dSide(graph, forward ? e.toId : e.fromId);
+
+            continue;
+          }
+
+          const c = forward ? e.to : e.from;
+
+          if (cEff !== undefined && !matchesLabel(c, cEff)) {
+            continue;
+          }
+
+          // Once per MIDDLE EDGE. A `c` reached by several middle edges is gated once per edge
+          // rather than once per vertex, which is the honest cost of this position: the walk
+          // meets `c` as an edge endpoint, not as something it enumerates.
+          if (cGate !== undefined && !cGate(c, binding, params, graph)) {
+            continue;
+          }
+
+          count += waysToA * dSide(graph, c.id);
         }
-
-        // Once per MIDDLE EDGE. A `c` reached by several middle edges is gated once per edge
-        // rather than once per vertex, which is the honest cost of this position: the walk meets
-        // `c` as an edge endpoint, not as something it enumerates.
-        if (cGate !== undefined && !cGate(c, binding, params, graph)) {
-          continue;
-        }
-
-        count += waysToA * side(graph, c.id, fromDOut, t3, dEff);
       }
     }
 

@@ -4852,3 +4852,21 @@ exactly ONCE, the way the mutation script already does.**
 Mutation: five of seven. The loop scan's far-LABEL test survived until a fixture held a loop at
 a vertex that FAILS the end label. One equivalent (scanning where there is nothing to find), one
 null control. Two of my own expectations were wrong and the general-path oracle corrected both.
+
+## 484 — undirected legs in the THREE-hop count: CLOSED at 54x (64.1 s -> 1.17 s)
+
+Item 483 one segment longer: the OUTER legs take `undirectedSide`, the MIDDLE leg walks the
+out-bucket then the in-bucket and skips the self-loop the out-pass took. 6076 -> 71 ms at 20,000
+nodes; 64,058 -> 1164 at 200,000. Native was 2.7 against 0.4, so the gap was TS's.
+
+**A regression I attributed to my own change was sampling noise, and is RETRACTED.** Wrapping
+both cases in one `midLegs` array read 1.06x slower on the directed 3-hop over three rounds a
+side (311.0-325.1 against 329.8-359.6, near-disjoint). Three MORE pristine rounds gave 321.7,
+368.4, 332.2 — the pristine range is 311-368 and the "regressed" numbers sit inside it.
+CLAUDE.md says anything under ~10% needs its own isolated harness; I flagged 6% off three rounds.
+The split loops stay (item 159's idiom, free), but the number does not. **A control measured
+three times is not a control measured.**
+
+Mutation: five of six. **Three of my own expectations were wrong across 483/484** — a mixed
+pattern, a labelled loop, and three hops over a single edge (2, not 1) — each corrected by the
+general-path oracle before commit.

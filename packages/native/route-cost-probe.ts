@@ -210,6 +210,10 @@ const queries: Record<string, string> = {
   distdir: 'MATCH (:Person)-[:KNOWS]->(b) RETURN DISTINCT b.age AS k',
   twohopboth: 'MATCH (:Person)-[:KNOWS]-(b)-[:KNOWS]-(c) RETURN count(*) AS c',
   twohopdir: 'MATCH (:Person)-[:KNOWS]->(b)-[:KNOWS]->(c) RETURN count(*) AS c',
+  // Item 484: the THREE-hop twin of item 483. Run at a smaller PN — the undirected row count
+  // is ~16x the directed one, and the general path enumerates all of it.
+  threehopdir: 'MATCH (:Person)-[:KNOWS]->(b)-[:KNOWS]->(c)-[:KNOWS]->(d) RETURN count(*) AS c',
+  threehopboth: 'MATCH (:Person)-[:KNOWS]-(b)-[:KNOWS]-(c)-[:KNOWS]-(d) RETURN count(*) AS c',
   hopdirmulti: 'MATCH (:Person)-[:KNOWS]->(b) RETURN count(*) AS c, max(b.age) AS m',
 };
 const key = process.env.PCASE ?? 'node';
