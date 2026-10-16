@@ -154,6 +154,96 @@ describe('two or more aggregates over one hop (item 472)', () => {
     expect(rows.length).toBe(4);
   });
 
+  // Item 478: an UNDIRECTED hop runs the directed walk TWICE (out, then in) and folds both.
+  // That emits all out-rows before all in-rows where the general path interleaves them per
+  // start vertex, so it is sound only because every admitted fold is order-independent. These
+  // cases are the ones where a reordering or a double-count would show.
+  describe('undirected (item 478)', () => {
+    const two = (): Graph => {
+      const graph = new Graph();
+      const a = graph.addVertex({ labels: ['A'], properties: { k: 1 } });
+      const b = graph.addVertex({ labels: ['A'], properties: { k: 2 } });
+      const far = graph.addVertex({ labels: ['B'], properties: { k: 9 } });
+
+      // One edge BETWEEN two matching starts: the general path yields it once per orientation.
+      graph.addEdge({ from: a, to: b, labels: ['E'], properties: {} });
+      graph.addEdge({ from: a, to: far, labels: ['E'], properties: {} });
+
+      return graph;
+    };
+
+    test('an edge between two matching ends is counted from both sides', () => {
+      const graph = two();
+
+      // `ORDER BY` declines the rung, so the general path answers the same question; for a
+      // one-row aggregate it is an exact oracle.
+      expect(query(graph, 'MATCH (:A)-[:E]-(x) RETURN count(*) AS c, max(x.k) AS m')).toEqual(
+        query(graph, 'MATCH (:A)-[:E]-(x) RETURN count(*) AS c, max(x.k) AS m ORDER BY c'),
+      );
+      // a-b (from a), a-far (from a), b-a (from b) = 3.
+      expect(query(graph, 'MATCH (:A)-[:E]-(x) RETURN count(*) AS c, max(x.k) AS m')).toEqual([
+        { c: 3, m: 9 },
+      ]);
+    });
+
+    test('a SELF-LOOP agrees with the general path, on BOTH aggregate rungs', () => {
+      const graph = new Graph();
+      const a = graph.addVertex({ labels: ['A'], properties: { k: 5 } });
+
+      graph.addEdge({ from: a, to: a, labels: ['E'], properties: {} });
+      // The multi-aggregate rung.
+      expect(query(graph, 'MATCH (:A)-[:E]-(x) RETURN count(*) AS c, min(x.k) AS lo')).toEqual(
+        query(graph, 'MATCH (:A)-[:E]-(x) RETURN count(*) AS c, min(x.k) AS lo ORDER BY c'),
+      );
+      // The SINGLE-aggregate rung, which has its own copy of the decline — and whose mutant
+      // SURVIVED until this line, because every self-loop case went through the multi one.
+      expect(query(graph, 'MATCH (:A)-[:E]-(x) RETURN count(x.k) AS c')).toEqual([{ c: 1 }]);
+      expect(query(graph, 'MATCH (:A)-[:E]-(x) RETURN max(x.k) AS m')).toEqual([{ m: 5 }]);
+      // A graph with a loop AND a plain edge: the decline is per GRAPH, so the plain edge's
+      // rows go through the general path too and must still be right.
+      const b = graph.addVertex({ labels: ['B'], properties: { k: 9 } });
+
+      graph.addEdge({ from: a, to: b, labels: ['E'], properties: {} });
+      expect(query(graph, 'MATCH (:A)-[:E]-(x) RETURN count(x.k) AS c, max(x.k) AS m')).toEqual([
+        { c: 2, m: 9 },
+      ]);
+    });
+
+    test('min and max over an undirected hop, and the single-aggregate twin', () => {
+      const graph = two();
+
+      expect(query(graph, 'MATCH (:A)-[:E]-(x) RETURN min(x.k) AS lo, max(x.k) AS hi')).toEqual([
+        { lo: 1, hi: 9 },
+      ]);
+      // The single-aggregate rung takes the same two-walk arrangement.
+      expect(query(graph, 'MATCH (:A)-[:E]-(x) RETURN count(x.k) AS c')).toEqual([{ c: 3 }]);
+      expect(query(graph, 'MATCH (:A)-[:E]-(x) RETURN max(x.k) AS m')).toEqual([{ m: 9 }]);
+    });
+
+    test('the EDGE TYPE still selects on an undirected hop', () => {
+      const graph = new Graph();
+      const a = graph.addVertex({ labels: ['A'], properties: {} });
+
+      graph.addEdge({
+        from: a,
+        to: graph.addVertex({ labels: ['B'], properties: { k: 1 } }),
+        labels: ['E'],
+        properties: {},
+      });
+      graph.addEdge({
+        from: graph.addVertex({ labels: ['B'], properties: { k: 9 } }),
+        to: a,
+        labels: ['OTHER'],
+        properties: {},
+      });
+
+      // The `OTHER` edge points AT `a`, so a direction bug and a type bug would each pull it in.
+      expect(query(graph, 'MATCH (:A)-[:E]-(x) RETURN count(*) AS c, max(x.k) AS m')).toEqual([
+        { c: 1, m: 1 },
+      ]);
+    });
+  });
+
   test('an aggregate NESTED in an item declines', () => {
     const graph = g();
 

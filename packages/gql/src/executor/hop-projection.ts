@@ -2329,6 +2329,81 @@ export const detectDistinctProjection = (
 };
 
 /**
+ * The same `MATCH` with its single hop's DIRECTION rewritten, or `null` when the pattern is not
+ * a single hop. Used to serve an UNDIRECTED hop aggregate as two directed walks (item 478).
+ *
+ * WHY TWO WALKS AND NOT A WIDER ONE. The hop walks are specialized on `out: boolean` and index
+ * `edgesFromByLabel` or `edgesToByLabel` directly; item 159 measured that adding even a branch
+ * to that inner loop costs the hot unfiltered shape 1.6x. Running the existing walk twice costs
+ * nothing it does not already cost per edge, and the second pass is exactly the work the hop
+ * has to do anyway.
+ *
+ * It is sound ONLY for an aggregate. Two passes emit all out-rows then all in-rows, where the
+ * general path interleaves them per start vertex — a different ROW order, which an
+ * order-independent fold cannot see and a PROJECTION would expose. `foldFor`'s admission set is
+ * exactly the folds that cannot see it (item 419), which is why this is wired into the
+ * aggregate rungs and not into `detectHopProjection`.
+ *
+ * AND ONLY ON A GRAPH WITH NO SELF-LOOPS, which is a RUN-time property, so the closures below
+ * decline when `graph.selfLoopCount` is non-zero. A self-loop sits in `edgesFromByLabel` AND
+ * `edgesToByLabel`, so two passes meet it twice where `expand` yields it once: both engines
+ * answer `count(*) = 1` for `MATCH (:A)-[:E]-(x)` over one, and the first version of this
+ * change answered 2. The fixture that caught it was written because the hazard was suspected,
+ * not because a test failed by luck.
+ */
+const withHopDirection = (m: Clause, direction: 'out' | 'in'): Clause | null => {
+  if (m.kind !== 'match' || m.patterns.length !== 1) {
+    return null;
+  }
+
+  const [pattern] = m.patterns;
+
+  if (pattern.segments.length !== 1) {
+    return null;
+  }
+
+  const [seg] = pattern.segments;
+
+  return {
+    ...m,
+    patterns: [{ ...pattern, segments: [{ ...seg, rel: { ...seg.rel, direction } }] }],
+  };
+};
+
+/**
+ * The row producers for one hop aggregate: one walk for a directed hop, TWO for an undirected
+ * one. `null` when any of them declines the shape.
+ */
+const hopAggregateWalks = (
+  m: Clause,
+  synthRet: Clause,
+  cm: CClause,
+  synthCret: CClause,
+  direction: string,
+): { walks: RowsFn[]; noSelfLoops: boolean } | null => {
+  if (direction !== 'both') {
+    const one = detectHopProjection([m, synthRet], [cm, synthCret]);
+
+    return one === null ? null : { walks: [one], noSelfLoops: false };
+  }
+
+  const walks: RowsFn[] = [];
+
+  for (const dir of ['out', 'in'] as const) {
+    const turned = withHopDirection(m, dir);
+    const walk = turned === null ? null : detectHopProjection([turned, synthRet], [cm, synthCret]);
+
+    if (walk === null) {
+      return null;
+    }
+
+    walks.push(walk);
+  }
+
+  return { walks, noSelfLoops: true };
+};
+
+/**
  * `MATCH (a:L)-[:T]->(b) RETURN max(b.k)` — a FOLDABLE aggregate over exactly the rows
  * `detectHopProjection` already walks, folded as they are produced instead of grouped.
  *
@@ -2472,31 +2547,50 @@ export const detectHopAggregate = (
     },
   };
 
-  const rowsFn = detectHopProjection([m, synthRet], [cm, synthCret]);
+  // ONE walk for a directed hop, TWO for an undirected one — see `withHopDirection` for why
+  // that is sound here and not in the projection twin. An undirected `count(b.age)` measured
+  // 1450 ms against the directed 150 at 200,000 nodes / 1,000,000 edges (item 478), because the
+  // whole hop family refuses `both` and the query fell to the general path.
+  // The hop's own direction, read from the AST: `detectHopProjection` validates the rest of the
+  // shape, and an `undefined` here simply means "not a single hop", which it will refuse.
+  const hopDir =
+    m.kind === 'match' && m.patterns.length === 1 && m.patterns[0].segments.length === 1
+      ? m.patterns[0].segments[0].rel.direction
+      : 'out';
+  const turned = hopAggregateWalks(m, synthRet, cm, synthCret, hopDir);
 
-  if (rowsFn === null) {
+  if (turned === null) {
     return null;
   }
 
+  const { walks, noSelfLoops } = turned;
   const { fold } = agg;
 
   return (graph, params) => {
-    const rows = rowsFn(graph, params);
-
-    // A DECLINE from the walk is a decline from here too: the general path has a better plan.
-    if (rows === null) {
+    // A self-loop would be met by BOTH walks; `expand` yields it once. Declining hands the
+    // query to the general path, which is what it did before this rung existed.
+    if (noSelfLoops && graph.selfLoopCount !== 0) {
       return null;
     }
 
     let acc = fold.init();
 
-    for (const row of rows) {
-      const v = row[VALUE_COL];
+    for (const walk of walks) {
+      const rows = walk(graph, params);
 
-      // The array path folds over the non-null values and the streaming step skips nullish the
-      // same way; this is the third place that rule lives, so it reads the same as both.
-      if (!isNullish(v)) {
-        acc = fold.step(acc, v);
+      // A DECLINE from the walk is a decline from here too: the general path has a better plan.
+      if (rows === null) {
+        return null;
+      }
+
+      for (const row of rows) {
+        const v = row[VALUE_COL];
+
+        // The array path folds over the non-null values and the streaming step skips nullish
+        // the same way; this is the third place that rule lives, so it reads the same as both.
+        if (!isNullish(v)) {
+          acc = fold.step(acc, v);
+        }
       }
     }
 
@@ -2636,39 +2730,56 @@ export const detectMultiHopAggregate = (
       orderNeedsOutput: false,
     },
   };
-  const rowsFn = detectHopProjection([m, synthRet], [cm, synthCret]);
+  // One walk for a directed hop, TWO for an undirected one — the same arrangement item 478
+  // gave the single-aggregate twin, sound for the same reason: every admitted fold is
+  // order-independent, so two passes emitting out-rows then in-rows cannot be told from the
+  // general path's interleaving.
+  const hopDir =
+    m.kind === 'match' && m.patterns.length === 1 && m.patterns[0].segments.length === 1
+      ? m.patterns[0].segments[0].rel.direction
+      : 'out';
+  const turned = hopAggregateWalks(m, synthRet, cm, synthCret, hopDir);
 
-  if (rowsFn === null) {
+  if (turned === null) {
     return null;
   }
 
-  return (graph, params) => {
-    const rows = rowsFn(graph, params);
+  const { walks, noSelfLoops } = turned;
 
-    // A DECLINE from the walk is a decline from here: the general path has a better plan.
-    if (rows === null) {
+  return (graph, params) => {
+    // See the single-aggregate twin: two walks meet a self-loop twice.
+    if (noSelfLoops && graph.selfLoopCount !== 0) {
       return null;
     }
 
     const state = accs.map((a) => (a.kind === 'fold' ? a.fold.init() : undefined));
     let n = 0;
 
-    for (const row of rows) {
-      n += 1;
+    for (const walk of walks) {
+      const rows = walk(graph, params);
 
-      // An INDEX loop rather than `accs.entries()`, which allocates a tuple per accumulator per
-      // row — item 469 measured that at 40-55% of a multi-aggregate scan's cost.
-      for (let i = 0; i < accs.length; i += 1) {
-        const a = accs[i];
+      // A DECLINE from the walk is a decline from here: the general path has a better plan.
+      if (rows === null) {
+        return null;
+      }
 
-        if (a.kind === 'rows') {
-          continue;
-        }
+      for (const row of rows) {
+        n += 1;
 
-        const v = row[a.col];
+        // An INDEX loop rather than `accs.entries()`, which allocates a tuple per accumulator
+        // per row — item 469 measured that at 40-55% of a multi-aggregate scan's cost.
+        for (let i = 0; i < accs.length; i += 1) {
+          const a = accs[i];
 
-        if (!isNullish(v)) {
-          state[i] = a.fold.step(state[i], v);
+          if (a.kind === 'rows') {
+            continue;
+          }
+
+          const v = row[a.col];
+
+          if (!isNullish(v)) {
+            state[i] = a.fold.step(state[i], v);
+          }
         }
       }
     }

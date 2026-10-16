@@ -700,6 +700,22 @@ export class Graph {
    */
   multiTypeEdgeCount = 0;
 
+  /**
+   * How many edges have the SAME vertex at both ends.
+   *
+   * Like `multiTypeEdgeCount` this exists for a planner decision, not for users: an UNDIRECTED
+   * hop aggregate can be served as two directed walks (out, then in), which is sound only when
+   * no edge appears in both — a self-loop sits in `edgesFromByLabel` AND `edgesToByLabel` and
+   * would be folded twice, where `expand` yields it once. Both engines answer 1 for
+   * `MATCH (:A)-[:E]-(x) RETURN count(*)` over a self-loop, so counting it twice is a WRONG
+   * ANSWER, not a style choice (audit item 478).
+   *
+   * Zero on an ordinary graph, so the common case pays one comparison per call and nothing per
+   * edge. Maintained at the two edge-level mutation points, since an edge's endpoints never
+   * change after construction.
+   */
+  selfLoopCount = 0;
+
   edgesByLabel: Map<string, Set<Edge>>;
   edgesFromByLabel: Map<string, Map<string, Set<Edge>>>;
   edgesToByLabel: Map<string, Map<string, Set<Edge>>>;
@@ -1520,6 +1536,7 @@ export class Graph {
     this.elementLabels = new Map();
     this.elementProperties = new Map();
     this.multiTypeEdgeCount = 0;
+    this.selfLoopCount = 0;
 
     // Keep declared indexes but drop their contents — `truncate` empties the
     // graph, not its schema.
@@ -1970,6 +1987,10 @@ export class Graph {
       this.multiTypeEdgeCount += 1;
     }
 
+    if (edge.from === edge.to) {
+      this.selfLoopCount += 1;
+    }
+
     this.edgePropertyIndex.add(edge, edge.properties);
 
     // Capture the ID and re-resolve at replay, never the instance: a later write
@@ -2018,6 +2039,10 @@ export class Graph {
 
     if (edge.labels.size > 1) {
       this.multiTypeEdgeCount -= 1;
+    }
+
+    if (edge.from === edge.to) {
+      this.selfLoopCount -= 1;
     }
 
     for (const label of edge.labels) {

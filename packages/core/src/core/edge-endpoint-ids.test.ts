@@ -142,3 +142,46 @@ describe('the adjacency index after the single-lookup rewrite', () => {
     expect([...(g.edgesFromByLabel.get('a')?.get('T') ?? [])]).toEqual([e2]);
   });
 });
+
+describe('selfLoopCount (audit item 478)', () => {
+  test('counts edges with the same vertex at both ends, and only those', () => {
+    const g = new Graph();
+    const a = g.addVertex({ labels: ['A'], properties: {} });
+    const b = g.addVertex({ labels: ['A'], properties: {} });
+
+    expect(g.selfLoopCount).toBe(0);
+
+    const loop = g.addEdge({ from: a, to: a, labels: ['E'], properties: {} });
+
+    expect(g.selfLoopCount).toBe(1);
+    // A plain edge does not move it — the planner reads this as "two directed walks are safe".
+    g.addEdge({ from: a, to: b, labels: ['E'], properties: {} });
+    expect(g.selfLoopCount).toBe(1);
+
+    g.removeEdge(loop);
+    expect(g.selfLoopCount).toBe(0);
+  });
+
+  test('a second loop on the SAME vertex counts twice, and truncate resets', () => {
+    const g = new Graph();
+    const a = g.addVertex({ labels: ['A'], properties: {} });
+
+    g.addEdge({ from: a, to: a, labels: ['E'], properties: {} });
+    g.addEdge({ from: a, to: a, labels: ['F'], properties: {} });
+    expect(g.selfLoopCount).toBe(2);
+
+    g.truncate();
+    expect(g.selfLoopCount).toBe(0);
+  });
+
+  test('removing the VERTEX cascades to its loop', () => {
+    const g = new Graph();
+    const a = g.addVertex({ labels: ['A'], properties: {} });
+
+    g.addEdge({ from: a, to: a, labels: ['E'], properties: {} });
+    expect(g.selfLoopCount).toBe(1);
+    // Removing the vertex cascades to its incident edges, and the tally has to follow.
+    g.removeVertex(a);
+    expect(g.selfLoopCount).toBe(0);
+  });
+});

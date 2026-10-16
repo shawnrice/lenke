@@ -4705,3 +4705,33 @@ the rule about labels; the general form is that anything a fixture holds constan
 tested, and a filter's own field is what a careless fixture holds constant.
 
 **OPEN: native's undirected grouped hop**, 19.3 ms against 9.4 directed.
+
+## 478 — the undirected hop aggregate: CLOSED at 5.9x on a loop-free graph. Native's twin RETRACTED
+
+**Retracted first**: native's undirected grouped hop is NOT a missing path — its ungrouped
+undirected count is 2.8 ms against 1.8 directed, sublinear in the 2x edge steps, so 19.3-vs-9.4
+is the work. No code written.
+
+TS was the real gap: `count(b.age)` undirected 1450 ms against 150 directed, because the whole
+hop family refuses `rel.direction === 'both'` — found with a `console.error` per ladder rung.
+An undirected AGGREGATE now runs the existing directed walk TWICE and folds both; the walks are
+specialized on `out: boolean` and item 159 priced a branch in their inner loop at 1.6x, so two
+passes beat one wider one. Sound only for aggregates: `foldFor`'s set is exactly the folds that
+cannot see row order (419).
+
+**A SELF-LOOP made the first version answer `count(*) = 2` where BOTH engines answer 1** —
+checked side by side. It sits in `edgesFromByLabel` AND `edgesToByLabel`, so two passes meet it
+twice where `expand` yields it once. Fixed by a run-time decline on a new `graph.selfLoopCount`
+in `@lenke/core`, maintained beside `multiTypeEdgeCount`.
+
+Loop-free, three rounds: `count(b.age)` 1433.8 -> 234.9, `count(*), max(b.age)` 1514.7 -> 247.8;
+directed controls flat. The after-ratio (~1.6x the directed shape) is where native's already is.
+
+**The win is CONDITIONAL: one self-loop anywhere disarms it** — and `route-cost-probe`'s default
+fixture has 50 (`k * 96810 ≡ 0 mod 200,000`), so on it the change measures its own decline. The
+`PNOLOOP` arm (off by default) is what measures the win. **OPEN, priced:** skip self-loops in
+the IN pass so the admission is per-edge, not per-graph.
+
+Also: **a full-repo `bun test packages` is not the gate.** It reported 61 failures, all runner
+artefacts — `packages/react` runs under VITEST (22/22 with its own script), the sync and
+reactive files are the known run-many flake (176/176, 361/361 isolated).

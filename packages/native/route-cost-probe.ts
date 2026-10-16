@@ -45,10 +45,17 @@ const fresh = (): Graph => {
   );
 
   for (let k = 0; k < N * DEG; k++) {
+    const from = (k * 7919) % N;
+    // `PNOLOOP` shifts a self-loop to the next vertex. The default fixture HAS 50 of them at
+    // N = 200,000 (`k * 96810 ≡ 0 mod N` every 20,000 edges), which is enough to disarm any
+    // optimization gated on `selfLoopCount === 0` — item 478 measured the DECLINE before
+    // noticing. Off by default: the other cases' numbers are against the original fixture.
+    const to = (k * 104_729) % N;
+
     g.addEdge({
       id: `e${k}`,
-      from: ids[(k * 7919) % N],
-      to: ids[(k * 104_729) % N],
+      from: ids[from],
+      to: ids[process.env.PNOLOOP !== undefined && to === from ? (to + 1) % N : to],
       labels: ['KNOWS'],
       properties: { w: k % 7 },
     });
@@ -177,6 +184,12 @@ const queries: Record<string, string> = {
   // inherited from the tally, where a bucket SUM would double-count) with its mutant surviving.
   grphboth: 'MATCH (:Person)-[:KNOWS]-(b) RETURN b.age AS k, count(*) AS c, max(b.age) AS m',
   grphbothc: 'MATCH (:Person)-[:KNOWS]-(b) RETURN b.age AS k, count(*) AS c',
+  // Item 478's control pair: is native's undirected cost a MISSING PATH or simply twice the
+  // edge steps? The ungrouped counts answer that without any grouping machinery in the way.
+  cntdir: 'MATCH (:Person)-[:KNOWS]->(b) RETURN count(b.age) AS c',
+  cntboth: 'MATCH (:Person)-[:KNOWS]-(b) RETURN count(b.age) AS c',
+  hopbothmulti: 'MATCH (:Person)-[:KNOWS]-(b) RETURN count(*) AS c, max(b.age) AS m',
+  hopdirmulti: 'MATCH (:Person)-[:KNOWS]->(b) RETURN count(*) AS c, max(b.age) AS m',
 };
 const key = process.env.PCASE ?? 'node';
 const q = queries[key];
@@ -216,7 +229,11 @@ if (engine === 'native') {
         type: 'edge',
         id: `e${k}`,
         from: `v${(k * 7919) % N}`,
-        to: `v${(k * 104_729) % N}`,
+        to: `v${
+          process.env.PNOLOOP !== undefined && (k * 104_729) % N === (k * 7919) % N
+            ? ((k * 104_729) % N) + 1
+            : (k * 104_729) % N
+        }`,
         labels: ['KNOWS'],
         properties: { w: k % 7 },
       }),
