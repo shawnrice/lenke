@@ -5962,6 +5962,8 @@ export type CLinear = {
   nodeAggregate: ((graph: Graph, params: Params) => Row[]) | null;
   /** The same scan under TWO OR MORE aggregates — `RETURN sum(n.k), count(*)`; else null. */
   multiNodeAggregate: ((graph: Graph, params: Params) => Row[]) | null;
+  /** A GROUPED scan aggregate that is not all `count(*)` — `RETURN n.k, max(n.j)`; else null. */
+  groupedNodeAggregate: ((graph: Graph, params: Params) => Row[]) | null;
 };
 const compileLinear = (linear: LinearQuery): CLinear => {
   const clauses = linear.clauses.map(compileClause);
@@ -5980,6 +5982,7 @@ const compileLinear = (linear: LinearQuery): CLinear => {
     nodeProjection: detectNodeProjection(linear.clauses, clauses),
     nodeAggregate: detectNodeAggregate(linear.clauses, clauses),
     multiNodeAggregate: detectMultiNodeAggregate(linear.clauses, clauses),
+    groupedNodeAggregate: detectGroupedNodeAggregate(linear.clauses, clauses),
   };
 };
 
@@ -6023,6 +6026,7 @@ import {
   detectMultiNodeAggregate,
   detectNodeAggregate,
   detectNodeProjection,
+  detectGroupedNodeAggregate,
   detectGroupedNodeCount,
   detectReachableShortcut,
   plainNode,

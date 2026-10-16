@@ -4613,3 +4613,23 @@ survives.
 column that exists but holds nothing (471), a run-time decline (472), an argument from the wrong
 slot (473). A guard refuses a shape, so a fixture of admitted shapes cannot see it — the refused
 shape has to be written down.
+
+## 474 — a GROUPED aggregate beyond the count tally: CLOSED at 6.3x / 11x (TS). Native was already flat
+
+`detectGroupedNodeCount` is a TALLY — two items, one of them `count(*)`, bumping an integer — so
+any other aggregate in the projection sent the whole query to the general path. At 200,000
+nodes: `n.age AS k, max(n.age)` 53.2 -> 8.0 ms, `n.age AS k, count(*), max(n.age)` 85.8 -> 7.7,
+with the tally's own shape flat at 2.6-2.8 (it is claimed by a rung above and cannot be reached
+by this change). Native reads 1.0-1.4 for all three, so this was TS-only — asked before the work.
+
+`detectGroupedNodeAggregate` is the tally's shape with an accumulator array per group: one
+reused `Binding`, the key as one `propOf`, `foldFor` + `count(*)`, and the filter composed into
+ONE gate (item 141's 34%). **`sum`/`avg` are not admitted** — a grouped float sum depends on the
+order values reach their group and a filtered scan may seed from an index (419, 466); item 468
+is the record of what an untestable guard costs.
+
+Mutation: seven of eight. **One "survivor" was a harness bug**: the gate mutant's pattern also
+appears in the tally forty lines up, `replace(…, 1)` hit that copy, and the tally's tests live
+in another file. Item 459's lesson, re-paid. **A mutation run's first job is to prove the mutant
+landed where it was aimed — `cmp -s` only proves something changed.** Two others needed fixtures
+the file lacked: a list-valued group key and a two-key `GROUP BY`.

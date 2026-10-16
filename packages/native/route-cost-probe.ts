@@ -159,6 +159,12 @@ const queries: Record<string, string> = {
   hopagg1b: 'MATCH (:Person)-[:KNOWS]->(b) RETURN max(b.age) AS m',
   hopagg2: 'MATCH (:Person)-[:KNOWS]->(b) RETURN count(*) AS c, max(b.age) AS m',
   hopagg2b: 'MATCH (:Person)-[:KNOWS]->(b) RETURN min(b.age) AS lo, max(b.age) AS hi',
+  // Item 474: the GROUPED twin of the arity question. `detectGroupedNodeCount` takes a key and
+  // ONE `count(*)`; a key with two aggregates, or with one that is not `count(*)`, may fall off.
+  // Implicit grouping: GROUP BY takes a BOUND name, and a RETURN alias is not one.
+  grp1: 'MATCH (n:Person) RETURN n.age AS k, count(*) AS c',
+  grp1b: 'MATCH (n:Person) RETURN n.age AS k, max(n.age) AS m',
+  grp2: 'MATCH (n:Person) RETURN n.age AS k, count(*) AS c, max(n.age) AS m',
 };
 const key = process.env.PCASE ?? 'node';
 const q = queries[key];

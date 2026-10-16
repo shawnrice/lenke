@@ -1433,6 +1433,13 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
     return linear.multiNodeAggregate(graph, params);
   }
 
+  // A GROUPED scan aggregate the `count(*)` tally cannot take — `RETURN n.k, max(n.j)`. Below
+  // the tally (`groupCountShortcut`), which is more specific and cheaper for its own shape.
+  // See `detectGroupedNodeAggregate`.
+  if (linear.groupedNodeAggregate) {
+    return linear.groupedNodeAggregate(graph, params);
+  }
+
   return undefined;
 };
 

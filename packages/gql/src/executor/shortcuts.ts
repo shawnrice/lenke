@@ -5727,3 +5727,259 @@ export const detectMultiNodeAggregate = (
     return [out];
   };
 };
+
+/** One projected aggregate's per-group accumulator in the grouped scan path (item 474). */
+type GroupAcc =
+  | { readonly kind: 'rows'; readonly out: string }
+  | {
+      readonly kind: 'fold';
+      readonly out: string;
+      readonly fold: AggFold;
+      readonly argFn: CompiledExpr;
+    };
+
+/**
+ * Split a grouped projection's items into the ONE key (a property of the matched node) and an
+ * accumulator per aggregate, or `null` when any item is neither. Extracted from
+ * `detectGroupedNodeAggregate` because the classification is a loop of its own and the
+ * complexity cap was right to say so.
+ */
+const groupedAccs = (
+  items: readonly { expr: Expr }[],
+  compiledItems: readonly CReturnItem[],
+  nodeVar: string,
+): { accs: GroupAcc[]; keyExpr: Extract<Expr, { kind: 'prop' }>; keyCol: string } | null => {
+  let keyExpr: Extract<Expr, { kind: 'prop' }> | undefined;
+  let keyCol = '';
+  const accs: GroupAcc[] = [];
+
+  for (const [i, item] of items.entries()) {
+    const e = item.expr;
+    const out = compiledItems[i].name;
+
+    if (e.kind !== 'func' || !AGGREGATES.has(e.name)) {
+      if (keyExpr !== undefined || e.kind !== 'prop' || e.variable !== nodeVar) {
+        return null;
+      }
+
+      keyExpr = e;
+      keyCol = out;
+      accs.push({ kind: 'rows', out: '' }); // placeholder: the key column is written by index
+      continue;
+    }
+
+    if (e.distinct) {
+      return null;
+    }
+
+    if (e.star) {
+      if (e.name !== 'count' || e.args.length !== 0) {
+        return null;
+      }
+
+      accs.push({ kind: 'rows', out });
+      continue;
+    }
+
+    const fold = e.args.length === 1 ? foldFor(e.name, false, false) : undefined;
+    const [argExpr] = e.args;
+
+    if (fold === undefined || !rowLocal(argExpr)) {
+      return null;
+    }
+
+    accs.push({ kind: 'fold', out, fold, argFn: compileExpr(argExpr) });
+  }
+
+  return keyExpr === undefined ? null : { accs, keyExpr, keyCol };
+};
+
+/**
+ * `MATCH (n:L) [WHERE <row-local>] RETURN n.k AS key, <aggregates…>` — a GROUPED aggregate over
+ * a scan, where the aggregates are not all `count(*)`.
+ *
+ * WHY THIS EXISTS. `detectGroupedNodeCount` is a TALLY: it takes exactly two items, one of them
+ * `count(*)`, and bumps an integer. Anything else — one `max`, or a `count(*)` with a second
+ * aggregate beside it — falls to the general path, a `Binding` per row. Measured at 200,000
+ * nodes (item 474): `n.age AS k, count(*)` 2.9 ms (the tally), `n.age AS k, max(n.age)` **53.2**,
+ * `n.age AS k, count(*), max(n.age)` **85.8**. 18x and 30x for the same grouping over the same
+ * scan. Native answers all three in 1.0-1.4 ms, so this is TS-only.
+ *
+ * The admission set is `foldFor`'s plus `count(*)`. `sum`/`avg` are NOT admitted: a grouped sum
+ * over floats depends on the order values reach their group, and a FILTERED scan may seed from
+ * an index (items 419, 466, 468). The unfiltered case would be safe by the item-466 argument,
+ * but a grouped path that takes `sum` only when unfiltered is a guard with no test — item 468
+ * recorded how that goes — so it waits for a shape that can be demonstrated.
+ */
+export const detectGroupedNodeAggregate = (
+  clauses: readonly Clause[],
+  compiled: readonly CClause[],
+): ((graph: Graph, params: Params) => Row[]) | null => {
+  if (clauses.length !== 2) {
+    return null;
+  }
+
+  const [m, ret] = clauses;
+  const [, cret] = compiled;
+
+  if (m.kind !== 'match' || m.optional || m.patterns.length !== 1) {
+    return null;
+  }
+
+  if (ret.kind !== 'return' || cret.kind !== 'return') {
+    return null;
+  }
+
+  const proj = cret.projection;
+
+  // Paging and ordering are the tally's business (items 190, 199); this rung answers the plain
+  // shape and leaves the rest to the general path rather than re-deriving a window.
+  if (
+    proj.star ||
+    proj.distinct ||
+    proj.items.length < 2 ||
+    proj.having !== undefined ||
+    proj.orderBy.length > 0 ||
+    proj.skip !== undefined ||
+    proj.limit !== undefined
+  ) {
+    return null;
+  }
+
+  const [pattern] = m.patterns;
+  const { start, segments } = pattern;
+  const nodeVar = start.variable;
+
+  if (segments.length !== 0 || nodeVar === undefined || pattern.pathVar !== undefined) {
+    return null;
+  }
+
+  const { label } = start;
+
+  if (label !== undefined && label.kind !== 'label') {
+    return null;
+  }
+
+  // Exactly ONE non-aggregate item, and it must be a property of the matched node — the same
+  // restriction the tally works under, and what makes the group key one `propOf` a vertex.
+  const picked = groupedAccs(ret.projection.items, proj.items, nodeVar);
+
+  if (picked === null) {
+    return null;
+  }
+
+  const { accs, keyExpr, keyCol } = picked;
+
+  // An explicit `GROUP BY` must name the key this path groups by; `groupKeys` is the compiled
+  // form and `sameGroupingExpr` is the rule item 199 applied to the tally.
+  const written = ret.projection.groupBy;
+
+  if (written?.length === 1 ? !sameGroupingExpr(written[0], keyExpr) : written !== undefined) {
+    return null;
+  }
+
+  const { key } = keyExpr;
+  const keyAt = ret.projection.items.findIndex((i) => i.expr === keyExpr);
+  // The start node's INLINE constraint and the clause `WHERE` are the two spellings of one
+  // filter, and both go through the general path's own `inlineHolds` / `compilePredicate`.
+  const preds: InlinePred[] = [];
+  const inStart = inlineOf(start);
+
+  if (inStart === null) {
+    return null;
+  }
+
+  if (inStart !== undefined) {
+    preds.push(inStart);
+  }
+
+  const { where } = m;
+
+  if (where !== undefined) {
+    for (const nameRead of freePredicateVars(where)) {
+      if (nameRead !== nodeVar) {
+        return null;
+      }
+    }
+
+    preds.push({ pred: compilePredicate(undefined, where, nodeVar), bindVar: nodeVar });
+  }
+
+  // Composed rather than looped, for the reason item 141 measured on the tally: a `for…of` over
+  // an EMPTY predicate array cost the unfiltered shape 34%.
+  const gate = preds.reduceRight<InlineGate | undefined>(
+    (rest, ip) => (v, binding, params, graph) =>
+      inlineHolds(ip, v, binding, params, graph) &&
+      (rest === undefined || rest(v, binding, params, graph)),
+    undefined,
+  );
+  const labelName = label?.name;
+
+  return (graph, params) => {
+    const vertices: Iterable<Vertex> =
+      labelName === undefined
+        ? graph.verticesById.values()
+        : (graph.verticesByLabel.get(labelName) ?? []);
+    // First-seen group order, which is the contract both engines keep.
+    const slots: { readonly key: unknown; n: number; readonly state: unknown[] }[] = [];
+    const bySeen = new Map<unknown, (typeof slots)[number]>();
+    // ONE binding map for the whole scan, overwritten per vertex — the general path's cost is
+    // a fresh `Map` per row, which is what this rung exists to avoid.
+    const binding = new Map<string, unknown>();
+    const env = { binding, params, graph };
+
+    for (const v of vertices) {
+      if (gate !== undefined && !gate(v, binding, params, graph)) {
+        continue;
+      }
+
+      const raw = propOf(v, key);
+      // `valueKey` for a structural value, the value itself for a primitive: the same split
+      // `groupIndex` makes, and it keeps a `Map` lookup off the string path for the common case.
+      const id = raw === null || typeof raw !== 'object' ? raw : valueKey(raw);
+      let slot = bySeen.get(id);
+
+      if (slot === undefined) {
+        slot = { key: raw, n: 0, state: accs.map((a) => (a.kind === 'fold' ? a.fold.init() : 0)) };
+        bySeen.set(id, slot);
+        slots.push(slot);
+      }
+
+      slot.n += 1;
+      binding.set(nodeVar, v);
+
+      for (let i = 0; i < accs.length; i += 1) {
+        const a = accs[i];
+
+        if (a.kind !== 'fold') {
+          continue;
+        }
+
+        const value = a.argFn(env);
+
+        // The same nullish rule as every other fold in this file and in `stepFolded`.
+        if (!isNullish(value)) {
+          slot.state[i] = a.fold.step(slot.state[i], value);
+        }
+      }
+    }
+
+    return slots.map((slot) => {
+      const row: Row = {};
+
+      for (let i = 0; i < accs.length; i += 1) {
+        const a = accs[i];
+
+        if (i === keyAt) {
+          row[keyCol] = slot.key;
+        } else if (a.kind === 'rows') {
+          row[a.out] = slot.n;
+        } else {
+          row[a.out] = a.fold.finish(slot.state[i]);
+        }
+      }
+
+      return row;
+    });
+  };
+};
