@@ -2833,6 +2833,23 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   passing: the 2.2x "projecting the start costs more than the far end" asymmetry is item 167
   restated — the far-side control's `:P` is VACUOUS, which routes it to the far-driven walk, and
   with a non-vacuous start label the asymmetry REVERSES (near is 1.3-1.4x better).
+- **The SCAN twin is DONE too, 3.1-3.4x (420).** `detectNodeAggregate` folds one foldable aggregate
+  over the rows `detectNodeProjection` already scans: `MATCH (a:P) RETURN max(a.k)` 35.2 -> 11.1 ms
+  at 200,000 vertices, `min` 3.4x, `count(arg)` 3.1x, filtered 2.4x, unlabelled 2.5x, strings only
+  1.6x (that cost is `compareValues`, which both paths pay). **Two refused controls appeared to
+  regress — `sum` 1.28x on disjoint ranges — and both were CONTAMINATION.** A DEAD arm (the code
+  present but never dispatched) matched OLD, ruling out file layout; running the control in its OWN
+  process showed it unchanged (43.0/42.8/44.9 against 42.6/43.8). **A control sharing a process with
+  a target that got 3x faster is no longer the same measurement** — the heap and GC state it meets
+  changed. New rule for the bench list: when a control moves and the dead arm matches, isolate the
+  control before writing down a regression.
+- **A surviving mutant can refute a COMMENT as well as a test (420).** Dropping the AST `GROUP BY`
+  guard survived, which disproved the comment justifying it: `compileProjection` sets `groupKeys` to
+  the compiled GROUP BY EXPRESSIONS whenever any are written (falling back to the non-aggregate
+  items only when there are none), so the compiled check already catches every written GROUP BY. The
+  same false claim was in 418's `detectHopAggregate`, committed two items earlier with its own
+  mutation run; both corrected. The guards stay, because the synthetic projection sets
+  `groupBy: undefined` and hides a GROUP BY from every check further down.
 - **The TS hop `sum`/`avg` is REFUTED, with a value difference, not deferred (419).** 377 deferred
   them for the `temporalSum`-before-array PRECEDENCE; that is real and is not the blocker. The
   fused walk's far-driven route visits rows in a DIFFERENT order than the general path — measured,

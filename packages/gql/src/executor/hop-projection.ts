@@ -2022,9 +2022,13 @@ export const detectHopAggregate = (
     return null;
   }
 
-  // An explicit `GROUP BY` is checked on the AST as well as through `groupKeys`: the keys are
-  // empty for `GROUP BY` over a name the binding does not carry, which is the silent one-group
-  // bug, and this path must decline that rather than inherit it.
+  // An explicit `GROUP BY` is checked on the AST as well as through `groupKeys`. An earlier
+  // version of this comment justified it by saying the keys are empty for a `GROUP BY` over a
+  // name the binding does not carry; that is wrong, and item 420's mutation run found it.
+  // `compileProjection` sets `groupKeys` to the compiled GROUP BY expressions whenever any are
+  // written, so the compiled check already catches them all. The AST check stays because the
+  // synthetic projection below sets `groupBy: undefined`, which hides a GROUP BY from every
+  // guard further down — this is the last place that can see one.
   if (ret.projection.groupBy !== undefined) {
     return null;
   }

@@ -1404,6 +1404,15 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
     return linear.nodeProjection(graph, params);
   }
 
+  // The same scan under ONE foldable aggregate — `RETURN max(n.k)` — folded as the rows are
+  // produced. It sits AFTER the projection it delegates to, for the reason item 418 measured on
+  // the hop twin: a branch placed ahead of a hot dispatch cost the plain projection 1.12x, and
+  // the two shapes are disjoint anyway (a projection declines an aggregating one). See
+  // `detectNodeAggregate`.
+  if (linear.nodeAggregate) {
+    return linear.nodeAggregate(graph, params);
+  }
+
   return undefined;
 };
 

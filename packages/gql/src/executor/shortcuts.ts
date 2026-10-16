@@ -5112,3 +5112,135 @@ export const detectReachableShortcut = (
 
   return (graph, params) => runReach(spec, graph, params);
 };
+
+/**
+ * `MATCH (n:L) RETURN max(n.k)` — the SCAN twin of `detectHopAggregate` (audit item 418), and
+ * the same construction: one foldable aggregate over exactly the rows `detectNodeProjection`
+ * already scans, folded as they are produced instead of grouped.
+ *
+ * The gap it closes, 200,000 vertices, min of 3 (audit item 420):
+ *
+ *     MATCH (a:P) RETURN max(a.k)    ~39ms   196ns/row, the general grouping path
+ *     MATCH (a:P) RETURN a.k         ~8.4ms   42ns/row, the SAME rows, scanned
+ *
+ * `detectNodeProjection` compiles its own items, so the synthetic projection handed to it is
+ * just the AST: the aggregate's argument as a single item. That means the argument expression is
+ * compiled TWICE for an admitted query — once by `compileProjection` for `foldedAggs`, which this
+ * path then ignores, and once by the scan. They compile the same AST node, so they cannot differ;
+ * it is one wasted `compileExpr` per compile, not per row. (`detectHopAggregate` reuses
+ * `foldedAggs[0].argFn` because the hop path takes a compiled twin; this one does not take one.)
+ *
+ * Admission is `detectHopAggregate`'s, for the reasons recorded there: ONE projection item which
+ * must BE the aggregate by node identity, ONE foldable aggregate, and no GROUP BY, HAVING,
+ * DISTINCT, ORDER BY or paging. `foldFor` is what keeps `sum`/`avg` out, and item 419 is why that
+ * matters: they are order-DEPENDENT, and a fast path that may reorder rows changes their value.
+ * A scan does not reorder — but the guard is inherited rather than re-argued, because the next
+ * aggregate added to `foldFor` would otherwise arrive here unexamined.
+ */
+export const detectNodeAggregate = (
+  clauses: readonly Clause[],
+  compiled: readonly CClause[],
+): ((graph: Graph, params: Params) => Row[]) | null => {
+  if (clauses.length !== 2) {
+    return null;
+  }
+
+  const [m, ret] = clauses;
+  const [, cret] = compiled;
+
+  if (ret.kind !== 'return' || cret.kind !== 'return') {
+    return null;
+  }
+
+  const proj = cret.projection;
+  const folded = proj.foldedAggs;
+
+  if (
+    folded?.length !== 1 ||
+    proj.star ||
+    proj.distinct ||
+    proj.items.length !== 1 ||
+    proj.having !== undefined ||
+    proj.orderBy.length > 0 ||
+    proj.skip !== undefined ||
+    proj.limit !== undefined
+  ) {
+    return null;
+  }
+
+  // An explicit `GROUP BY` is refused twice, and the mutation run is what established which of
+  // the two does the work. `compileProjection` sets `groupKeys` to the compiled GROUP BY
+  // EXPRESSIONS when there are any, falling back to the non-aggregate items only when there are
+  // not — so `groupKeys.length !== 0` already catches every written GROUP BY, and dropping the
+  // AST check leaves `RETURN max(a.k) AS m GROUP BY a.k` correctly declined. It stays because the
+  // synthetic projection below sets `groupBy: undefined`, which hides a GROUP BY from
+  // `detectNodeProjection`'s own check, so this function is the last place that can see one; if
+  // `groupKeys` ever stopped being populated from the GROUP BY, nothing downstream would notice.
+  // (A first version of this comment claimed the AST check was the ONLY one looking. The mutant
+  // that dropped it survived, which is how the claim was found to be wrong — a surviving mutant
+  // can refute a comment as well as a test.)
+  if (ret.projection.groupBy !== undefined || proj.groupKeys.length !== 0) {
+    return null;
+  }
+
+  const [item] = ret.projection.items;
+  const [agg] = folded;
+
+  // By IDENTITY: `collectAggregates` finds the aggregate nested in `abs(min(n.k) - 10)` just the
+  // same, and that shape needs the folded value substituted back into a group view.
+  if (item.expr !== agg.expr) {
+    return null;
+  }
+
+  const aggNode = item.expr;
+
+  if (aggNode.kind !== 'func' || aggNode.args.length !== 1) {
+    return null;
+  }
+
+  const [argExpr] = aggNode.args;
+  const outName = proj.items[0].name;
+  // A name no GQL identifier can collide with: the synthetic column is read back by key below.
+  const VALUE_COL = ' nodeagg';
+  const synthRet: Clause = {
+    ...ret,
+    projection: {
+      ...ret.projection,
+      items: [{ expr: argExpr, alias: VALUE_COL }],
+      distinct: false,
+      groupBy: undefined,
+      having: undefined,
+      orderBy: undefined,
+      skip: undefined,
+      limit: undefined,
+    },
+  };
+
+  const rowsFn = detectNodeProjection([m, synthRet], compiled);
+
+  if (rowsFn === null) {
+    return null;
+  }
+
+  const { fold } = agg;
+
+  return (graph, params) => {
+    const rows = rowsFn(graph, params);
+    let acc = fold.init();
+
+    for (const row of rows) {
+      const v = row[VALUE_COL];
+
+      // The array path folds over the non-null values and the streaming step skips nullish the
+      // same way; this is the fourth place that rule lives, so it reads the same as the others.
+      if (!isNullish(v)) {
+        acc = fold.step(acc, v);
+      }
+    }
+
+    // `fold.finish` over an untouched accumulator is what gives an EMPTY scan its one row holding
+    // null, which is what an ungrouped aggregate owes ISO — and it is the same `finish` the
+    // general path calls, so the two cannot drift.
+    return [{ [outName]: fold.finish(acc) }];
+  };
+};

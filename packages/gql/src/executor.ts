@@ -5678,6 +5678,8 @@ export type CLinear = {
   distinctCount: AlwaysRowsFn | null;
   /** `MATCH (n:L) WHERE <row-local> RETURN <row-local>` — a scan with one reused binding. */
   nodeProjection: ((graph: Graph, params: Params) => Row[]) | null;
+  /** The same scan under ONE foldable aggregate — `RETURN max(n.k)`; else null. */
+  nodeAggregate: ((graph: Graph, params: Params) => Row[]) | null;
 };
 const compileLinear = (linear: LinearQuery): CLinear => {
   const clauses = linear.clauses.map(compileClause);
@@ -5693,6 +5695,7 @@ const compileLinear = (linear: LinearQuery): CLinear => {
     distinctProjection: detectDistinctProjection(linear.clauses, clauses),
     distinctCount: detectDistinctCount(linear.clauses, clauses),
     nodeProjection: detectNodeProjection(linear.clauses, clauses),
+    nodeAggregate: detectNodeAggregate(linear.clauses, clauses),
   };
 };
 
@@ -5732,6 +5735,7 @@ import type { AlwaysRowsFn, RowsFn } from './executor/hop-projection.js';
 import {
   detectCountShortcut,
   detectGroupedHopCount,
+  detectNodeAggregate,
   detectNodeProjection,
   detectGroupedNodeCount,
   detectReachableShortcut,
