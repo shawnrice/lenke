@@ -2077,6 +2077,10 @@ export const detectHopAggregate = (
       aggregating: false,
       countedGroups: false,
       items: [{ name: VALUE_COL, fn: agg.argFn, isAgg: false }],
+      // FALSE conservatively. The field licenses skipping a projection without evaluating it
+      // (item 427), and nothing on this path pages — `detectHopProjection` refuses a `skip` or a
+      // `limit` outright — so the value is unobservable here and the safe one costs nothing.
+      cannotFault: false,
       groupKeys: [],
       groupKeyNames: [],
       orderBy: [],

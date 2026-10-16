@@ -2847,6 +2847,20 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   `Str` arm (`genExpr` emits a bare `n.s`) but NOT the `Dict` arm** — its six-node fixture has six
   distinct `s` values and measures `dict=false`, so the dictionary path's cross-engine parity rests
   on the unit test alone.
+- **DONE for the fault-free case, 1.96-2.09x (427).** `CProjection.cannotFault` (a structural
+  allowlist: bare variable, single-level property read, literal, plus `RETURN *`) licences
+  `pagedFaultFreeRows` to skip the BINDINGS and project only the page. 48.6-52.4 -> 25.1-27.2 ms,
+  and every variant lands on the **25.6 ms general-stream floor item 426 measured**, so it is the
+  whole projection overhead and not a part of it. The faulting shapes are untouched and still
+  fault exactly as native does, so byte-identity holds and item 426's conformance question stays
+  open and unprejudiced. Extracted to a module-scope helper because the complexity cap objected at
+  38/35 — same cap, same answer as item 377.
+- **A harness reporting a false SURVIVED reads as a missing test (427).** A `$F` inside a
+  double-quoted `perl` block was expanded by the shell, so three of six mutants were never written
+  to the file and were reported as survivors; one line of output said `Can't open $F`. The mirror
+  of item 398 (a false CAUGHT reads as teeth). **Every mutation script now compares the file
+  against the pristine copy before believing a verdict** — three lines, and without it a clean
+  mutation run means nothing.
 - **A `SKIP` projects the rows it SKIPS, in BOTH engines, against the engine's own stated rule
   (426).** `applyProjection`'s generic tail pages the PROJECTED rows, so `RETURN a.u AS s SKIP
 199995 LIMIT 5` projects 200,000 to return five: **48.8-51.3 ms against the ORDER BY spelling's

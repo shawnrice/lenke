@@ -2428,6 +2428,23 @@ export type CProjection = {
    * scope — is what we check, once, rather than per row.
    */
   groupKeyNames: readonly string[];
+  /**
+   * Can NO item in this projection RAISE? Only three expression shapes qualify — a bare variable
+   * reference, a single-level property read (`a.k`, which yields null for an absent key) and a
+   * literal — plus `RETURN *`, which copies binding entries. Everything else is assumed to
+   * fault: `CAST` does, arithmetic over a non-number does, a cross-type temporal comparison
+   * does, a function or subquery may.
+   *
+   * It exists for ONE caller: paging an unordered stream may skip BINDINGS instead of projecting
+   * every row and paging the results, but only where the projection it is skipping could not
+   * have raised. Item 426 measured that `RETURN a.u AS s SKIP 199995 LIMIT 5` projects all
+   * 200,000 rows to return five (48.8-51.3 ms, against 35.5 for the same query WITH an
+   * `ORDER BY`, whose top-k already projects only survivors) — and established that skipping
+   * unconditionally is a BEHAVIOUR change, because both engines currently fault on a skipped
+   * row's `CAST`. Gating on this keeps the faulting shapes byte-identical with native and takes
+   * the win only where there is nothing to observe.
+   */
+  cannotFault: boolean;
   /** ISO HAVING — a post-aggregation predicate on each group (SELECT only). */
   having?: CompiledExpr;
   orderBy: readonly CSortItem[];
@@ -2659,6 +2676,15 @@ const compileProjection = (projection: Projection): CProjection => {
     // No aggregates at all means plain grouping — nothing to fold, so keep the normal path.
     return all.length > 0 ? all : undefined;
   })();
+  // See `CProjection.cannotFault`. The allowlist is deliberately tiny and STRUCTURAL — a
+  // shape is fault-free because of what it is, not because of an analysis of what it contains,
+  // so a new `Expr` arm cannot be admitted by accident.
+  const cannotFault =
+    projection.star ||
+    (projection.items.length > 0 &&
+      projection.items.every(
+        (i) => i.expr.kind === 'var' || i.expr.kind === 'prop' || i.expr.kind === 'lit',
+      ));
   const groupKeys =
     groupByExprs.length > 0
       ? groupByExprs.map((e) => compileExpr(e))
@@ -2705,6 +2731,7 @@ const compileProjection = (projection: Projection): CProjection => {
     aggregating,
     countedGroups,
     ...(foldedAggs ? { foldedAggs } : {}),
+    cannotFault,
     groupKeys,
     groupKeyNames,
     ...(having ? { having } : {}),
@@ -2915,6 +2942,66 @@ const boundedTopK = <T>(rows: Iterable<T>, cap: number, cmp: (a: T, b: T) => num
   });
 
   return heap.map((e) => e.v);
+};
+
+/**
+ * Paging an UNORDERED stream whose projection cannot raise: skip the BINDINGS, then project only
+ * the page. `null` when the shape does not fit, so the caller falls through.
+ *
+ * `applyProjection`'s generic tail projects every row and pages the PROJECTED ones, which item
+ * 426 measured at 48.8-51.3 ms for `RETURN a.u AS s SKIP 199995 LIMIT 5` over 200,000 nodes —
+ * MORE than the 35.5 the same query costs WITH an `ORDER BY`, whose top-k already projects only
+ * survivors. Adding an `ORDER BY` making a query faster is the spelling asymmetry this repo is
+ * named after. This closes it at 1.96-2.09x, landing on the 25.6 ms general-stream floor item 426
+ * measured with a constant sort key.
+ *
+ * `proj.cannotFault` is what keeps this byte-identical rather than a behaviour change: both
+ * engines currently DO fault on a skipped row's `CAST` (`skipcast_426` is the evidence, checked
+ * natively), and that is a conformance question against the engine's own "project exactly the
+ * rows you emit" rule, not something an optimization pass settles. Where the projection could not
+ * have raised there is nothing to observe, so the rows and their order are unchanged and native
+ * agrees by construction.
+ *
+ * EXTRACTED from `applyProjection` rather than written inline, because the complexity cap
+ * objected at 38 against a limit of 35 — the same cap that was right to object at item 377, and
+ * the same answer: the branch's six conditions become one call. The HOT loop is still one loop
+ * over `bindings`, and this is called once per query, so neither of item 159's effects applies.
+ *
+ * Only a positive SKIP. `limitBound` alone already short-circuits through `take` without
+ * projecting the tail, and `skipBound === 0` is the pass-through in the caller.
+ *
+ * The `!proj.aggregating` guard is REDUNDANT and kept, which mutation established rather than my
+ * reading it: every aggregate is an `Expr` of kind `func`, which the `cannotFault` allowlist
+ * already refuses, so an aggregating projection can never reach here. Dropping the guard leaves
+ * all 12 tests green. It stays because the implication runs through `compileProjection`'s
+ * allowlist rather than anything local, and a future allowlist entry would otherwise silently
+ * admit a shape with no per-input row to page.
+ */
+const pagedFaultFreeRows = (
+  proj: CProjection,
+  bindings: Iterable<Binding>,
+  params: Params,
+  graph: Graph,
+  skipBound: number | undefined,
+  limitBound: number | undefined,
+): Iterable<Binding> | null => {
+  if (
+    proj.aggregating ||
+    proj.orderBy.length > 0 ||
+    proj.distinct ||
+    skipBound === undefined ||
+    skipBound <= 0 ||
+    !proj.cannotFault
+  ) {
+    return null;
+  }
+
+  const afterSkip = skip(skipBound, bindings);
+
+  return map(
+    (b: Binding) => projectBinding(proj, b, params, graph),
+    limitBound === undefined ? afterSkip : take(limitBound, afterSkip),
+  );
 };
 
 /**
@@ -3354,6 +3441,14 @@ export const applyProjection = (
     limitBound === undefined
   ) {
     return map((b: Binding) => projectBinding(proj, b, params, graph), bindings);
+  }
+
+  // See `pagedFaultFreeRows` — extracted because the complexity cap objected, exactly as it did
+  // at item 377.
+  const paged = pagedFaultFreeRows(proj, bindings, params, graph, skipBound, limitBound);
+
+  if (paged !== null) {
+    return paged;
   }
 
   let keyed: Iterable<Keyed>;
