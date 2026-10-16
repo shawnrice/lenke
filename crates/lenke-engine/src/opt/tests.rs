@@ -2357,6 +2357,89 @@ fn a_range_index_admits_the_multi_seek_above_the_pricing_floor() {
     );
 }
 
+/// The seek-vs-scan ceiling is ENCODING-AWARE: a dictionary-encoded column is scanned as a `u32`
+/// code compare, so its break-even selectivity is ~3% where a raw-f64 column's is ~15% (item
+/// 407's two curves). At 8% a dict column's seek LOSES 2.15x, so it must decline — and this is a
+/// PERF decision, so only the PLAN can tell a correct router from a wrong one.
+#[test]
+fn a_dict_column_declines_a_range_seek_the_scan_would_win() {
+    let mut store = Store::default();
+    // 100 distinct values over 5,000 nodes: over the pricing floor, and low-cardinality enough
+    // to dict-encode. `add_node` builds a plain `Str`, so the encode is explicit — the bulk
+    // loaders call it for themselves.
+    for i in 0..5_000u32 {
+        store.add_node(
+            &["Person"],
+            &[(
+                "city",
+                crate::value::Value::Str(format!("c{:03}", i % 100).as_str().into()),
+            )],
+        );
+    }
+    store.dict_encode_columns();
+    store.create_range_index("city");
+    assert!(store.scan_is_cheap("city"), "fixture must be dict-encoded");
+
+    // `>= c000 AND < c008` is 8% of the store — inside `SEEK_MAX_FRACTION` and outside the
+    // dict ceiling.
+    let plan = Plan::Scan {
+        label: Some("Person".into()),
+    }
+    .filter(Expr::And(
+        Box::new(cmp(CompareOp::Ge, prop(0, "city"), Expr::Lit(s("c000")))),
+        Box::new(cmp(CompareOp::Lt, prop(0, "city"), Expr::Lit(s("c008")))),
+    ))
+    .project(vec![("city".into(), prop(0, "city"))]);
+
+    let opt = assert_rows_preserved_indexed(&plan, &store);
+    let Plan::Project { input, .. } = &opt else {
+        panic!("expected Project, got {opt:?}")
+    };
+
+    assert!(
+        !format!("{input:?}").contains("Seek"),
+        "a dict column at 8% must stay a scan, got {input:?}"
+    );
+}
+
+/// The CONTROL for the rule above, and the half item 407 deliberately did not move: the SAME
+/// selectivity on a raw-f64 column must STILL seed, because its scan costs ~2.7x more per row
+/// and the seek wins there until ~15%. A global retune would have broken exactly this.
+#[test]
+fn a_numeric_column_still_seeds_at_the_same_selectivity() {
+    let mut store = Store::default();
+    for i in 0..5_000u32 {
+        store.add_node(
+            &["Person"],
+            &[("n", crate::value::Value::Num(f64::from(i % 100)))],
+        );
+    }
+    store.create_range_index("n");
+    assert!(
+        !store.scan_is_cheap("n"),
+        "a numeric column is not a cheap scan"
+    );
+
+    let plan = Plan::Scan {
+        label: Some("Person".into()),
+    }
+    .filter(Expr::And(
+        Box::new(cmp(CompareOp::Ge, prop(0, "n"), Expr::Lit(n(0.0)))),
+        Box::new(cmp(CompareOp::Lt, prop(0, "n"), Expr::Lit(n(8.0)))),
+    ))
+    .project(vec![("n".into(), prop(0, "n"))]);
+
+    let opt = assert_rows_preserved_indexed(&plan, &store);
+    let Plan::Project { input, .. } = &opt else {
+        panic!("expected Project, got {opt:?}")
+    };
+
+    assert!(
+        format!("{input:?}").contains("Seek"),
+        "a numeric column at 8% must still seed, got {input:?}"
+    );
+}
+
 /// An OR-chain whose disjuncts read DIFFERENT keys is not one multi-value seek, and declines. A
 /// single value still cannot reach this rule either — that is the existing single-`IndexSeek`
 /// path, which must keep its own shape.

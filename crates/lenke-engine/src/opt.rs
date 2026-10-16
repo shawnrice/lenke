@@ -48,11 +48,35 @@ fn pure_chain_width(plan: &Plan) -> Option<usize> {
 /// the hop, which defeats the `count(*)` degree-sum shortcut.
 const SEEK_MAX_FRACTION: f64 = 0.154;
 
+/// The same ceiling for a column whose SCAN is cheap (dictionary-encoded: a `u32` code
+/// compare). Item 407's curves, 200,000 nodes over 100 distinct values, the same query against
+/// stores differing only in whether the range index exists:
+///
+/// ```text
+///   selectivity   dict seek/scan      numeric seek/scan
+///          1%          0.35                 0.07
+///          2%          0.61                 0.15
+///          4%          1.12  <- loses       0.28
+///          8%          2.15  <- loses       0.55
+///         15%          4.00  <- loses       0.98  <- break-even, as tuned
+/// ```
+///
+/// So the dict break-even is ~3% where the numeric one is ~15%. Seeding the 3-15% band on a
+/// dict column cost up to 4.00x, which is what `STARTS WITH`'s neighbouring range spelling was
+/// paying when `seedspell_401` flagged it.
+const SEEK_MAX_FRACTION_CHEAP_SCAN: f64 = 0.031;
+
 pub trait IndexOracle {
     /// A hash index exists on the exact (possibly dotted) property path `key`.
     fn has_hash_index(&self, key: &str) -> bool;
     /// A range index exists on property `key`.
     fn has_range_index(&self, key: &str) -> bool;
+
+    /// Is a SCAN of `key` unusually cheap (a dictionary-encoded column, compared as `u32`
+    /// codes)? Oracles with no store behind them say no and keep the default threshold.
+    fn scan_is_cheap(&self, _key: &str) -> bool {
+        false
+    }
 
     /// How many live nodes the store holds, when the oracle knows. `None` from an
     /// oracle with no store behind it, which then takes the planner's existing
@@ -114,6 +138,9 @@ impl IndexOracle for crate::store::Store {
     }
     fn has_range_index(&self, key: &str) -> bool {
         Store::has_range_index(self, key)
+    }
+    fn scan_is_cheap(&self, key: &str) -> bool {
+        Store::scan_is_cheap(self, key)
     }
 }
 
@@ -2956,8 +2983,19 @@ fn seek_beats_scan(idx: &dyn IndexOracle, key: &str, op: CompareOp, value: &Valu
     if idx.live_nodes().is_some_and(|n| n < SEEK_FLOOR_NODES) {
         return true;
     }
+    // The threshold stands in for "how cheap is a scan of this column", and that depends on
+    // the ENCODING: a dictionary-encoded column compares `u32` codes, so its scan is ~2.7x
+    // cheaper per row and the break-even selectivity falls with it. Item 407 measured both
+    // curves at 200,000 nodes; the numeric one breaks even at ~15%, which is exactly where
+    // `SEEK_MAX_FRACTION` already sits, so that path is deliberately untouched.
+    let cap = if idx.scan_is_cheap(key) {
+        SEEK_MAX_FRACTION_CHEAP_SCAN
+    } else {
+        SEEK_MAX_FRACTION
+    };
+
     idx.seed_fraction(key, op, value)
-        .is_some_and(|frac| frac <= SEEK_MAX_FRACTION)
+        .is_some_and(|frac| frac <= cap)
 }
 
 /// Should `key = value` seed an `IndexSeek`, or is a scan cheaper?
@@ -3149,6 +3187,11 @@ fn multi_seek_worth_it(key: &str, values: &[Value], idx: &dyn IndexOracle) -> bo
     }
 
     if idx.live_nodes().is_none_or(|n| n >= SEEK_FLOOR_NODES) {
+        let cap = if idx.scan_is_cheap(key) {
+            SEEK_MAX_FRACTION_CHEAP_SCAN
+        } else {
+            SEEK_MAX_FRACTION
+        };
         let mut total = 0.0;
 
         for v in values {
@@ -3157,7 +3200,11 @@ fn multi_seek_worth_it(key: &str, values: &[Value], idx: &dyn IndexOracle) -> bo
                 None => return false,
             }
 
-            if total > SEEK_MAX_FRACTION {
+            // The SAME encoding-aware ceiling the single-value rung uses: a union of arms over
+            // a dict-encoded column is competing with a `u32` code compare, so it has to be
+            // proportionally more selective to win (item 407). Without this the two rungs
+            // disagree about one column's scan cost.
+            if total > cap {
                 return false;
             }
         }

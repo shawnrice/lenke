@@ -2015,6 +2015,19 @@ impl Store {
         self.props.get(key)
     }
 
+    /// Is a SCAN of `key` unusually cheap — i.e. is the column DICTIONARY-encoded, so a
+    /// predicate compares `u32` codes rather than values?
+    ///
+    /// This is a COST question, not a correctness one: the planner's seek-vs-scan threshold
+    /// stands in for "how cheap is a scan of this column", and that varies by encoding.
+    /// Measured at 200,000 nodes over 100 distinct values (audit item 407): a dict scan is flat
+    /// at ~140us where a raw-f64 scan is ~374us, so the break-even selectivity for a seek moves
+    /// from ~15% to ~3%.
+    #[must_use]
+    pub fn scan_is_cheap(&self, key: &str) -> bool {
+        matches!(self.props.get(key), Some(Column::Dict { .. }))
+    }
+
     // --- Enumeration (for egress / snapshot) -----------------------------
 
     /// All node-property keys, sorted — a deterministic field order for dumps.

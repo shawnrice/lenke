@@ -3186,6 +3186,22 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   meaning "the whole index" — new IR, and item 264 records `rewrite_fuzz`'s generator missing a
   new rung twice.
 
+- **DONE — the seek-vs-scan ceiling is ENCODING-blind; up to 4.00x on a dict column (407).**
+  `SEEK_MAX_FRACTION = 0.154` is one number standing in for "how cheap is a scan of this
+  column", and that varies: a dict-encoded column's scan is **flat at ~140us** (a `u32` code
+  compare) where a raw-f64 scan is **~374us**, so the break-even selectivity is **~3% against
+  ~15%**. The planner seeded the whole 3-15% band on dict columns and lost up to 4.00x.
+  Fixed with `Store::scan_is_cheap` + `SEEK_MAX_FRACTION_CHEAP_SCAN = 0.031`, applied in
+  `seek_beats_scan` AND `multi_seek_worth_it` (which keeps its own copy — the `IN` spelling still
+  seeded until both agreed). Also fixed, which the original flag did not point at: equality on a
+  dict column (0.398 -> 0.315 ms) and `IN` (0.429 -> 0.301).
+  **⚠️ A GLOBAL RETUNE WOULD HAVE BEEN WRONG, and I was one tick from it.** The numeric curve
+  breaks even at ~15%, which is exactly where the constant already sits — it is correctly tuned
+  for the column kind it was tuned on. Lowering it globally would have regressed numeric range
+  seeks across 3-15%, where they win by up to 3.6x. `a_numeric_column_still_seeds_at_the_same_selectivity`
+  is the test that now pins that half; `bench_all`'s `p.name = 'name12345'` (high-cardinality, so
+  not dict) is the row that would have shown it.
+
 - **NO TWIN — the TS engine does not have item 405's hole, and cannot (406).** 405 was a
   COLUMNAR problem: materializing a `Col` (boxed when partially present) to ask about presence.
   TS compiles `isNull` to a per-row closure over a property bag. Measured, since the tell would be
