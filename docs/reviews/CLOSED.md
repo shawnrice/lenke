@@ -3186,6 +3186,16 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   meaning "the whole index" — new IR, and item 264 records `rewrite_fuzz`'s generator missing a
   new rung twice.
 
+- **NO TWIN — the TS engine does not have item 405's hole, and cannot (406).** 405 was a
+  COLUMNAR problem: materializing a `Col` (boxed when partially present) to ask about presence.
+  TS compiles `isNull` to a per-row closure over a property bag. Measured, since the tell would be
+  shape dependence: **sparse and fully-present cost the SAME 33.6 ns/row**, with an absent key
+  slightly WORSE at 42.4 — the opposite of Rust's ordering, where absent was cheapest. A range
+  control is 27.7, so the whole null test adds ~6 ns over the per-row `Binding` floor item 377
+  named. **Nothing to build until that floor moves.** For calibration: native is now 0.258 ms
+  against TS's 6.72 on this shape (26x, was 5.5x) — a gap that widens by design when a columnar
+  engine gains a bitset path, not a TS regression.
+
 - **A guard can be load-bearing, untested, and a PANIC rather than a wrong answer (405).**
   Removing the `u32::MAX` OPTIONAL-miss guard from the presence fast path left all 1,122 tests
   green: nothing in the suite sent an optional MISS through `IS NULL`. Unguarded it indexes the
