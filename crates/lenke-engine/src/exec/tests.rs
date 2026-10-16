@@ -18735,3 +18735,91 @@ fn three_hop_product_agrees_with_the_general_path_in_every_direction() {
         );
     }
 }
+
+/// Item 435: `MATCH ANY SHORTEST (a:P)-[:E]->{1,3}(b:P)` DROPPED the endpoint's label and
+/// returned every reachable node. The lowering said so in as many words — "Endpoint node at
+/// slot 1: inline props filter it; its label is ignored (as for any landing node in this
+/// subset)" — and `landing_label_filter`, the helper for exactly this (a node with no `Scan` to
+/// carry a seed label, so the whole constraint is a filter), was never called.
+///
+/// Found by a two-engine perf SCREEN (`bun run probe:gap`), not by a correctness test: the TS
+/// engine answers it correctly, so the row was flagged as an ANSWER disagreement while being
+/// timed. The differential fuzzer could not have found it — it generates no quantified paths.
+///
+/// The fixture's point is that only SOME nodes carry the endpoint label. Four hand-built graphs
+/// (a diamond, a self-loop, a 2-cycle, a triangle) all agreed before the fix, because every node
+/// in them was `:P` and a vacuous label is one you can drop for free.
+#[test]
+fn any_shortest_applies_the_endpoint_label() {
+    use crate::value::Value;
+
+    // 0 -> 1 -> 2 -> 3 and 0 -> 4 -> 5. Only v0 and v3 are `:P`; the rest are `:Q`.
+    let store = {
+        let mut b = crate::store::Builder::default();
+        for i in 0..6u32 {
+            let label = if i == 0 || i == 3 { "P" } else { "Q" };
+            b.node(&[label], &[("i", Value::Num(f64::from(i)))]);
+        }
+        for (from, to) in [(0u32, 1u32), (1, 2), (2, 3), (0, 4), (4, 5)] {
+            b.edge(from, to, "E");
+        }
+        b.build()
+    };
+    let ids = |q: &str| -> Vec<i64> {
+        let raw = crate::gql::parse(q).unwrap_or_else(|e| panic!("{q}: {e}"));
+        let plan = crate::opt::optimize_indexed(raw, &store);
+        let out = crate::exec::try_run(&plan, &store).unwrap_or_else(|e| panic!("{q}: {e}"));
+        // Row order is unspecified for an unordered query, so compare as a MULTISET.
+        let mut v: Vec<i64> = out
+            .rows
+            .iter()
+            .map(|r| match r.first() {
+                Some(Value::Num(n)) => *n as i64,
+                other => panic!("{q}: want a number, got {other:?}"),
+            })
+            .collect();
+        v.sort_unstable();
+        v
+    };
+
+    // Only v3 is a `:P` reachable from a `:P` within three hops.
+    assert_eq!(
+        ids("MATCH ANY SHORTEST (a:P)-[:E]->{1,3}(b:P) RETURN b.i AS bi"),
+        vec![3],
+        "the endpoint label was dropped"
+    );
+    // `:Q` picks out the others, so the filter is not just rejecting everything.
+    assert_eq!(
+        ids("MATCH ANY SHORTEST (a:P)-[:E]->{1,3}(b:Q) RETURN b.i AS bi"),
+        vec![1, 2, 4, 5]
+    );
+    // UNLABELLED is the union, which is what the buggy version returned for every spelling.
+    assert_eq!(
+        ids("MATCH ANY SHORTEST (a:P)-[:E]->{1,3}(b) RETURN b.i AS bi"),
+        vec![1, 2, 3, 4, 5]
+    );
+    // A label on the START is unaffected and was always applied; `:Q` sources reach v3 too.
+    assert_eq!(
+        ids("MATCH ANY SHORTEST (a:Q)-[:E]->{1,3}(b:P) RETURN b.i AS bi"),
+        vec![3, 3]
+    );
+    // The SAME pattern without the selector filtered correctly all along — it is the oracle
+    // that says which of the two answers above is the right one.
+    assert_eq!(
+        ids("MATCH (a:P)-[:E]->{1,3}(b:P) RETURN b.i AS bi"),
+        vec![3]
+    );
+    // A compound label expression goes through `landing_label_filter`'s OTHER arm (`vb_le`),
+    // and it has to EXCLUDE something to test anything: `:P|Q` matches every node in this
+    // fixture, so the mutant that drops the compound arm passed it. `:P|R` has no `:R`, so it
+    // must give the same answer as `:P` alone.
+    assert_eq!(
+        ids("MATCH ANY SHORTEST (a:P)-[:E]->{1,3}(b:P|R) RETURN b.i AS bi"),
+        vec![3],
+        "the compound-label arm was dropped"
+    );
+    assert_eq!(
+        ids("MATCH ANY SHORTEST (a:P)-[:E]->{1,3}(b:P|Q) RETURN b.i AS bi"),
+        vec![1, 2, 3, 4, 5]
+    );
+}

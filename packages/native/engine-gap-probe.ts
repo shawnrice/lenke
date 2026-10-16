@@ -122,6 +122,31 @@ const shapes: Array<[string, string]> = [
   ['range', 'MATCH (a:Univ) WHERE a.k > 5 RETURN count(*) AS c'],
   ['2hop count', 'MATCH (a:P)-[:E]->(b)-[:E]->(c) RETURN count(*) AS c'],
   ['varlen reach', 'MATCH (a:P)-[:E]->{1,2}(b) RETURN count(DISTINCT b) AS c'],
+  // --- families the first 22 shapes did not reach (item 435). Every one returns ONE row, so
+  // the egress confound below does not apply and the ratio can be read.
+  ['undirected hop', 'MATCH (a:P)-[:E]-(b) RETURN count(*) AS c'],
+  ['self join', 'MATCH (a:P)-[:E]->(b)<-[:E]-(a) RETURN count(*) AS c'],
+  ['varlen 1..3 count', 'MATCH (a:P)-[:E]->{1,3}(b) RETURN count(*) AS c'],
+  ['varlen distinct', 'MATCH (a:P)-[:E]->{1,3}(b) RETURN count(DISTINCT b) AS c'],
+  ['shortest', 'MATCH ANY SHORTEST (a:P)-[:E]->{1,4}(b:P) RETURN count(*) AS c'],
+  [
+    'call subquery',
+    'MATCH (a:P) CALL (a) { MATCH (a)-[:E]->(b) RETURN count(*) AS n } RETURN sum(n) AS c',
+  ],
+  ['union', 'MATCH (a:P) RETURN count(*) AS c UNION ALL MATCH (a:Univ) RETURN count(*) AS c'],
+  ['case expr', 'MATCH (a:Univ) RETURN count(CASE WHEN a.k > 3 THEN 1 ELSE null END) AS c'],
+  ['coalesce', 'MATCH (a:Univ) RETURN count(coalesce(a.missing, a.k)) AS c'],
+  ['string fn', "MATCH (a:Univ) WHERE upper(a.s) = 'C42' RETURN count(*) AS c"],
+  ['arith pred', 'MATCH (a:Univ) WHERE a.k * 2 + 1 > 7 RETURN count(*) AS c'],
+  ['or pred', 'MATCH (a:Univ) WHERE a.k = 1 OR a.k = 5 RETURN count(*) AS c'],
+  ['in list', 'MATCH (a:Univ) WHERE a.k IN [1, 5] RETURN count(*) AS c'],
+  ['not pred', 'MATCH (a:Univ) WHERE NOT (a.k = 1) RETURN count(*) AS c'],
+  ['is null', 'MATCH (a:Univ) WHERE a.missing IS NULL RETURN count(*) AS c'],
+  ['two labels', 'MATCH (a:P) MATCH (b:P) WHERE a.k = b.k RETURN count(*) AS c'],
+  ['stddev', 'MATCH (a:Univ) RETURN stddev_pop(a.k) AS m'],
+  ['percentile', 'MATCH (a:Univ) RETURN percentile_cont(a.k, 0.5) AS m'],
+  ['collect size', 'MATCH (a:P) RETURN size(collect(a.k)) AS c'],
+  ['having', 'MATCH (a:Univ) LET g = a.k RETURN count(*) AS c GROUP BY g HAVING count(*) > 0'],
   // EGRESS CONTROL. These three do the same SCAN work and differ only in how many rows leave the
   // engine: one, 5,000 numbers, 5,000 strings. Native's row egress crosses the FFI boundary and
   // builds a JS object per row, which TS never pays — so any row-returning shape above is

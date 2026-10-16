@@ -2910,6 +2910,21 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   native was missing a path, TS never was. After 432 both are SYMMETRIC on the ring layout (native
   1.03x, TS 1.14x) and both keep an asymmetry on scatter (native 1.76x, TS ~1.32x), so the residual
   in both is the scattered-`inc`-bucket locality item 431 isolated. 431 is closed.
+- **WRONG ANSWER FIXED: native's `ANY SHORTEST` dropped the endpoint's LABEL (435).**
+  `MATCH ANY SHORTEST (a:P)-[:E]->{1,3}(b:P)` returned every reachable node — its answer for
+  `(b:P)` was its answer for `(b)` — while the TS engine and the same pattern WITHOUT the selector
+  both filtered correctly. The lowering said it: "its label is ignored (as for any landing node in
+  this subset)", and `landing_label_filter`, the helper for a node with no `Scan` to carry a seed
+  label, was never called. One call. Verified against TS as MULTISETS at 50/200/1000 nodes over
+  five shapes. **Found by item 434's perf SCREEN, which compares answers because it costs nothing
+  to** — the differential fuzzer generates no quantified paths, a gap already recorded.
+- **FIVE fixtures this session looked like they exercised a guard and did not, and the common
+  thread is VACUITY (435, and 422/425/427/429).** Four hand-built reproducers for this bug — a
+  diamond, a self-loop, a 2-cycle, a triangle — all agreed before the fix, because every node in
+  them was `:P`, and a vacuous label is one you can drop for free; three rounds went into hunting a
+  size threshold that did not exist. The compound-label mutant then survived `:P|Q`, which matches
+  every node in the fixture. **Every label and predicate in a fixture must EXCLUDE something, or it
+  tests nothing.**
 - **An instrument for that, and a NEGATIVE first answer (434).** `engine-gap-probe`
   (`bun run probe:gap`) times 25 shapes on both engines over one shared edge list and reads the
   ratio: the normal band is 1.5-4x, a native-only shortcut pushes it to 380x, so **native barely

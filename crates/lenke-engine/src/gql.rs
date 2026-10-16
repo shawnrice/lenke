@@ -2016,7 +2016,7 @@ impl Parser {
         } else {
             return Err("a shortest path requires a `*`, `+`, or `{n,m}` quantifier".into());
         };
-        let (vb, _lb, vb_props, vb_where, _vb_le) = self.node_plain()?;
+        let (vb, lb, vb_props, vb_where, vb_le) = self.node_plain()?;
         // A per-hop edge `WHERE` (`-[e:R WHERE e.w > 5]->*`) filters which edges the
         // path may traverse — parse it against a SCALAR mini-scope (the edge at slot
         // 0), independent of the outer bindings, since it is evaluated per edge.
@@ -2048,9 +2048,25 @@ impl Parser {
             plan = plan.filter(pred);
         }
         plan = plan.shortest_path(0, rel.dir, &rel.etypes, min, max, selector, edge_pred);
-        // Endpoint node at slot 1: inline props filter it; its label is ignored (as
-        // for any landing node in this subset).
+        // Endpoint node at slot 1: inline props AND its LABEL filter it. The label used to be
+        // dropped here — the comment said "its label is ignored (as for any landing node in
+        // this subset)" — which made `MATCH ANY SHORTEST (a:P)-[:E]->{1,3}(b:P)` return every
+        // reachable node rather than the `:P` ones, against both the TS engine and the same
+        // pattern WITHOUT the selector, which filters correctly in both engines (item 435).
+        //
+        // `landing_label_filter` is the helper this always needed: a shortest-path endpoint has
+        // no `Scan` to carry a seed label, so the whole constraint is a filter, which is exactly
+        // what it is for.
+        //
+        // A post-filter is the right PLACE as well as the right answer: `ShortestPath` emits one
+        // representative per reachable target at its shortest distance, and dropping the
+        // non-matching targets afterwards leaves each surviving target at that same distance —
+        // which is what `ANY SHORTEST … (b:L)` asks for. Restricting the BFS instead would
+        // compute the same set.
         plan = node_prop_filters(plan, 1, vb_props);
+        if let Some(pred) = landing_label_filter(lb, vb_le, 1) {
+            plan = plan.filter(pred);
+        }
         // A same-variable endpoint closes back on the seed: constrain slot 1 == slot 0.
         if let Some(v) = &vb {
             if scope.get(v) == Some(&0) {
