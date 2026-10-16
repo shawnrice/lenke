@@ -686,12 +686,17 @@ filter` 14.4 -> 4.0ms isolated, min of 9 over three alternated rounds) **and 3.7
   written for this item. **R8 inverts the flip CONDITION and CANNOT be caught**: whether to reverse
   is a perf decision, since backwards is the same count, so it stays in the set to keep "no test
   covers this" distinguishable from "no test can".
-  **Still open: the same reversal in NATIVE**, priced at 2.5x by the position table and ~3.4x by
-  the bench row's own FFI column (14.3 against the start-gated 4.0). It needs one thing TS did
-  not: native's forward seed is `nodes_with_label`, an index bucket, where a reversed seed is a
-  full live-node scan plus a gate — so reversing can LOSE a selective seek. The symmetric fix is to
-  promote an `IsLabeled` leaf on the reversed-start position into the new base label and demote the
-  old one to a leaf, with both sides of any guard measured.
+  ~~**Still open: the same reversal in NATIVE**, priced at 2.5x by the position table and ~3.4x by
+  the bench row's own FFI column (14.3 against the start-gated 4.0)~~ — **STALE, CORRECTED BY ITEM
+  400: it is BUILT.** `opt.rs`'s `split_chain` reverses at every gate position, and the probe
+  PRINTS THE PLAN rather than inferring it (100k nodes x 5, range index on `age`): START gate
+  `RangeSeek{label: Some("Person"), age > 88}` + Out/Out/Out at 0.83 ms; **END gate the same seek
+  - In/In/In at 0.87**; INTERIOR `In/In/Out` at 1.35 — the backwards-then-forwards split — against
+    an ungated control of 2.29 ms with a bare `Scan`. **Parity, not 2.5-3.4x.** The promotion the
+    note called missing is visible as `label: Some("Person")` ON THE SEEK, and the guard it asked
+    for exists: with an UNLABELLED far end and no index on the key the rewrite DECLINES and keeps
+    the labelled bucket (`Scan{label: Some("Person")}`, Out/Out/Out). Its TUNING is not established
+    — that case's predicate reads a property no node has, so only the choice is demonstrated.
 - ~~**A START-gated THREE-segment chain in TS**~~ — **CLOSED by item 307 at 17.40x** (3214.1 ->
   184.7ms on the new `count 3-hop + start filter` row, one case per process, min of 6 over three
   alternated rounds). Item 306 routed the END at that depth and left the START **enumerating**:
