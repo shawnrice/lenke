@@ -3146,6 +3146,36 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   **Check `git status`, not just file contents, before committing after one has run**; clear it
   with `git reset HEAD -- <dir>` and verify an empty `git diff`.
 
+- **DONE — a point equality on a RANGE-indexed key fell to a COLUMN SCAN; 427x labelled, 960x
+  unlabelled (402).** `index_seek_ids` consulted only the hash index and its own comment said the
+  rest: "Without an index the seek degrades to a scan". But the range index is a
+  `BTreeMap<OrdVal, Vec<u32>>` and **a point probe is a degenerate range**, so the structure that
+  answers `k = v` in O(log n) was built and never asked. `range_lookup` gains an `Eq` arm
+  (`Included(k), Included(k)`); `index_seek_ids` probes it before falling back, intersecting the
+  label by per-candidate binary search as the hash arm does. Sound because the two orders agree
+  exactly where the probe is used: `cmp_num_total` ties -0.0 with 0.0 as `equals` does, cross-type
+  values differ by `rank()`, null/NaN are refused first. 200k nodes, alternated, three rounds, 200
+  probes a sample: **128,154 -> 300 ns** labelled and **263,070 -> 274 ns** unlabelled, with a
+  hash-indexed point eq, a range BOUND and `count(*)` all flat. **A missing path, not a speedup**
+  — the number is the size of the hole.
+  **STILL OPEN, deliberately split out**: the PLANNER half. `eq_cand` and `multi_seek_worth_it`
+  gate on `has_hash_index` and `seed_fraction(Eq)` prices through `index_bucket_len`, so `IN` over
+  a range-indexed key still scans. Now worth doing (each arm would be a real seek), but it moves
+  which conjunct seeds, which is plan churn, and needs its own A/B.
+
+- **A spelling that LOOKS seeded can be a typed column scan (402).** `k = v` on a range-indexed
+  key read 0.125 ms against a 0.622 ms scan and the plan said `IndexSeek` — both true, and
+  together they say 5x "seek". It was the typed-scan constant factor; the real gap was 427x.
+  `IndexSeek` is a SEEK-OR-SCAN operator, so its presence in a plan is not evidence of an index.
+  Also recorded: the same probe first read `IN [a,b]` as a seeding gap, which was **the FIXTURE** —
+  `age` had a range index and the multi-value rung is an equality rung. Items 263/264/270 hold.
+
+- **OPEN, with the trap named — `NOT (k <= v)` scans where `k > v` seeks, 10.7x (402).** The
+  obvious rewrite is WRONG under this engine's NaN rule: with `k = NaN`, `NaN <= v` is false so
+  the `NOT` form is TRUE, while `k > v` is FALSE. A range seek would silently drop those rows.
+  A correct rewrite is `(k > v) OR isNaN(k)`, which is not a pure seek. Do not "fix" this in one
+  line.
+
 ## 6. Consequences of the AND decision — RESOLVED by item 258, and not as predicted
 
 This section was written before the change and asked three questions. All three are now answered by

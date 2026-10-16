@@ -4166,7 +4166,7 @@ impl Store {
         op: crate::ir::CompareOp,
         value: &Value,
     ) -> Option<Vec<u32>> {
-        use crate::ir::CompareOp::{Ge, Gt, Le, Lt};
+        use crate::ir::CompareOp::{Eq, Ge, Gt, Le, Lt};
         use std::ops::Bound::{Excluded, Included, Unbounded};
         let ix = self.ranges.iter().find(|i| i.key == key)?;
         if value.is_null() {
@@ -4178,7 +4178,13 @@ impl Store {
             Ge => (Included(k), Unbounded),
             Lt => (Unbounded, Excluded(k)),
             Le => (Unbounded, Included(k)),
-            _ => return Some(Vec::new()), // not a range op
+            // A POINT PROBE is a degenerate range, and the map's key order already agrees
+            // with equality on the domain that reaches here: `cmp_num_total` ties -0.0 with
+            // 0.0 exactly as `equals` does, cross-type values differ by rank so they never
+            // collide, and null/NaN are refused before the lookup. Without this arm a key
+            // holding ONLY a range index fell to a typed column scan for `k = v` (audit 402).
+            Eq => (Included(k.clone()), Included(k)),
+            _ => return Some(Vec::new()), // not a seekable op (`Ne`)
         };
         Some(
             ix.map

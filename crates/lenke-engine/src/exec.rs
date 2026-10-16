@@ -3600,6 +3600,27 @@ fn index_seek_ids(store: &Store, label: Option<&str>, key: &str, value: &Value) 
                 .filter(|id| bucket.binary_search(id).is_ok())
                 .collect()
         }
+        // No HASH index, but a RANGE index on the same key answers a point probe in
+        // O(log n) — it is a `BTreeMap` ordered by `cmp_total`, and the bucket for one key
+        // IS the equality bucket (see `range_lookup`'s `Eq` arm for why the two orders
+        // agree here). Before this the seek fell straight to the typed column scan below,
+        // so `k = v` on a range-indexed key was linear in the label (audit item 402).
+        None if store.has_range_index(key) => {
+            let cands = store
+                .range_lookup(key, crate::ir::CompareOp::Eq, value)
+                .unwrap_or_default();
+            // Label intersection exactly as the hash arm does it: binary-search each
+            // candidate against the sorted bucket rather than building a set of the whole
+            // label, which is the mistake that once made a seek slower than its scan.
+            let Some(label) = label else {
+                return cands;
+            };
+            let bucket = store.nodes_with_label(label);
+            cands
+                .into_iter()
+                .filter(|id| bucket.binary_search(id).is_ok())
+                .collect()
+        }
         None => {
             // Without an index the seek degrades to a scan — of the label when there
             // is one, of every live node when there is not.

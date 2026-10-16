@@ -172,6 +172,15 @@ question in its module header — read the header before touching it.
 - `spelling_probe` — that equivalent query spellings optimize to the SAME plan
   and so cost the same (a plan mismatch is the real signal; time is the backstop).
 
+- `seedspell_401` — WHICH predicate spellings reach an index seek at all. The prior
+  question to `spelling_probe`'s: that one checks two spellings agree, this one checks
+  each one seeds. It groups equivalent spellings, prints SEEK or scan per member from
+  the PLAN (a scan that is fast on this fixture is still the bug) and flags any group
+  whose members disagree — on seeding or on the row count, so a spelling that "seeds"
+  by changing the question is visible too. Two live flags it found: item 402's point
+  equality on a range-indexed key, and `NOT (k <= v)`, which scans where `k > v` seeks
+  and CANNOT be rewritten naively — see the audit for the NaN reason.
+
 ## Before trusting a number
 
 The hard-won rules live in the repo `CLAUDE.md` ("Benchmarks: look before you
