@@ -312,7 +312,12 @@ const estimateSeedFrom = (
     best = Math.min(best, candidate.count);
   }
 
-  return best === Infinity
+  // THE ESTIMATE MUST AGREE WITH WHAT `seedVertices` WILL ACTUALLY DO. Reporting
+  // `indexed: true` for a seek this node's own gate will decline would hand `orient` a count
+  // half the size of the scan that really runs, with the provenance that makes it trusted —
+  // and items 172/173 record `orient` reversing away from a selective start for exactly that
+  // confusion. So a declined seek is reported as what it becomes: the label bucket.
+  return best === Infinity || !seekIsWorthIt(graph, node.label, best)
     ? { count: candidateCount(graph, node.label), indexed: false }
     : { count: best, indexed: true };
 };

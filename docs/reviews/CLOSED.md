@@ -3199,6 +3199,15 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   After: 30% 1.96 -> 0.90/0.86/0.73, 60% 5.02 -> 0.84/0.91/0.86 (34.37 -> 5.85 ms), the
   selective 1-8% band unchanged, `bench:usage` point lookup still 920.8k vs 2.0k ops/s.
 
+- **A GATE added to a decision silently breaks whatever ESTIMATES that decision (410).** Item
+  409's selectivity gate meant an index candidate is no longer a seek that will happen, but
+  `estimateSeedFrom` still reported `indexed: true` with the index count — half the size of the
+  scan that really runs, with the provenance `orient` trusts to let a seek outvote a constrained
+  start (the confusion items 172/173 record). **Found by reading the consumers of a function
+  whose meaning had changed**, not by a test (reverting leaves the suite green) and not by a
+  measurement. `orient`'s own tests CANNOT cover it — orientation is answer-preserving, and that
+  file says so — so the estimate is asserted directly, above the floor, with a selective control.
+
 - **A rule ported WITHOUT its floor flips every small-fixture test, and they are right (409).**
   Taking native's fraction and leaving `SEEK_FLOOR_NODES` behind flipped NINE tests — on a
   fixture of a handful of vertices two matches are 20% of the bucket and the ratio is

@@ -4,7 +4,7 @@ import { Graph } from '@lenke/core';
 
 import type { CNode, CPath } from './executor.js';
 import { compileExpr, compilePredicate } from './executor.js';
-import { orient } from './executor/matching.js';
+import { estimateSeed, orient } from './executor/matching.js';
 import { query } from './index.js';
 
 // `orient` reverses a pattern when the far end looks like a smaller seed. It could not see that
@@ -444,5 +444,55 @@ describe('the inline spelling now agrees with the clause spelling', () => {
 
     expect(count(withIndex, q, { n: 'user0' })).toBe(count(bare, q, { n: 'user0' }));
     expect(count(bare, q, { n: 'user0' })).toBe(1);
+  });
+});
+
+// Item 409 gave the seed sites a selectivity gate, which means an index candidate is no longer
+// the same thing as a seek that will HAPPEN. `estimateSeedFrom` is the other reader of that
+// decision — `orient` trusts its `indexed` provenance to let a seek outvote a constrained start
+// ("a label bucket may not outvote a constrained start; an INDEX SEEK still may, because that
+// number is real"). A DECLINED seek's number is not real, so the estimate has to report what the
+// seed becomes: the label bucket.
+//
+// Orientation itself is answer-preserving, so this file's other tests cannot see this (their own
+// header says a mutant that never reverses is invisible here). The estimate is asserted directly
+// instead, which is the only place the disagreement is observable.
+describe('the seed estimate agrees with the seed that will actually run (item 410)', () => {
+  const wide = (): Graph => {
+    const g = new Graph();
+
+    // Above `SEEK_FLOOR_VERTICES` (4,096) — below it every seek is admitted and the estimate
+    // would agree for the wrong reason.
+    for (let i = 0; i < 5_000; i++) {
+      g.addVertex({ id: `u${i}`, labels: ['User'], properties: { half: i % 2, uniq: i } });
+    }
+
+    g.createIndex({ on: 'vertex', kind: 'hash', keys: ['half'] });
+    g.createIndex({ on: 'vertex', kind: 'hash', keys: ['uniq'] });
+
+    return g;
+  };
+
+  const node = (key: string, value: unknown): CNode =>
+    ({
+      variable: 'u',
+      label: { kind: 'label' as const, name: 'User' },
+      pred: { props: [{ key, value: () => value }], where: undefined },
+    }) satisfies CNode;
+
+  test('an UNSELECTIVE indexed anchor estimates the bucket, not the index set', () => {
+    const g = wide();
+
+    // 2,500 of 5,000 is narrower than the bucket but far past 1/8, so `seedVertices` scans —
+    // and the estimate must say 5,000, not 2,500.
+    expect(estimateSeed(g, node('half', 0), new Map(), {})).toBe(5_000);
+  });
+
+  test('a SELECTIVE indexed anchor still estimates the index set', () => {
+    const g = wide();
+
+    // The control, same graph and same code path: one match of 5,000 seeks, so the estimate
+    // keeps reporting the real, narrow number.
+    expect(estimateSeed(g, node('uniq', 42), new Map(), {})).toBe(1);
   });
 });
