@@ -173,6 +173,10 @@ const queries: Record<string, string> = {
   grph1nb: 'MATCH (a:Person)-[:KNOWS]->(b) RETURN b.age AS k, max(b.age) AS m',
   grph1b: 'MATCH (:Person)-[:KNOWS]->(b) RETURN b.age AS k, max(b.age) AS m',
   grph2: 'MATCH (:Person)-[:KNOWS]->(b) RETURN b.age AS k, count(*) AS c, max(b.age) AS m',
+  // Item 477: the UNDIRECTED twin. Item 476 left `direction === 'both'` refused (a guard
+  // inherited from the tally, where a bucket SUM would double-count) with its mutant surviving.
+  grphboth: 'MATCH (:Person)-[:KNOWS]-(b) RETURN b.age AS k, count(*) AS c, max(b.age) AS m',
+  grphbothc: 'MATCH (:Person)-[:KNOWS]-(b) RETURN b.age AS k, count(*) AS c',
 };
 const key = process.env.PCASE ?? 'node';
 const q = queries[key];

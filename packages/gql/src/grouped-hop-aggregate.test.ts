@@ -202,7 +202,7 @@ describe('a grouped hop aggregate beyond the count tally (item 476)', () => {
     ]);
   });
 
-  test('an undirected hop with an IN-edge to a start, which differs from the directed answer', () => {
+  test('UNDIRECTED with an IN-edge to a start, which differs from the directed answer', () => {
     // `build()` has nothing pointing AT a `P`, so there the undirected answer equals the
     // directed one and an undirected test proves nothing. This fixture distinguishes them.
     const g = new Graph();
@@ -216,19 +216,86 @@ describe('a grouped hop aggregate beyond the count tally (item 476)', () => {
     expect(query(g, 'MATCH (:P)-[:T]->(x) RETURN x.k AS k, count(*) AS c, max(x.n) AS m')).toEqual([
       { k: 'OUT', c: 1, m: 1 },
     ]);
-    // Undirected sees both. This rung refuses `both` (the tally's inherited guard); the general
-    // path answers, and the two must agree on what the answer IS.
+    // Undirected sees both. Item 477 admits this shape here; before that it went to the general
+    // path, and the assertion is the same either way because the answer must not depend on
+    // which route runs.
     expect(query(g, 'MATCH (:P)-[:T]-(x) RETURN x.k AS k, count(*) AS c, max(x.n) AS m')).toEqual([
       { k: 'OUT', c: 1, m: 1 },
       { k: 'IN', c: 1, m: 2 },
     ]);
   });
 
-  test('an undirected hop declines, and both directions still answer', () => {
+  test('UNDIRECTED: an edge whose BOTH ends match is met once from each end (item 477)', () => {
+    const g = new Graph();
+    const p1 = g.addVertex({ id: 'p1', labels: ['P'], properties: { k: 'k1', n: 1 } });
+    const p2 = g.addVertex({ id: 'p2', labels: ['P'], properties: { k: 'k2', n: 2 } });
+
+    g.addEdge({ from: p1, to: p2, labels: ['T'], properties: {} });
+
+    // The hazard admitting `both` has to clear: the general path yields this edge TWICE (once
+    // per orientation), and a walk that sums buckets would instead double-count it in one
+    // group. `SKIP 0` declines this rung and preserves first-seen order, so it is an
+    // order-faithful oracle where `ORDER BY` would only compare sorted rows.
+    expect(query(g, 'MATCH (:P)-[:T]-(x) RETURN x.k AS k, count(*) AS c, max(x.n) AS m')).toEqual(
+      query(g, 'MATCH (:P)-[:T]-(x) RETURN x.k AS k, count(*) AS c, max(x.n) AS m SKIP 0'),
+    );
+    expect(query(g, 'MATCH (:P)-[:T]-(x) RETURN x.k AS k, count(*) AS c, max(x.n) AS m')).toEqual([
+      { k: 'k2', c: 1, m: 2 },
+      { k: 'k1', c: 1, m: 1 },
+    ]);
+  });
+
+  test('the EDGE TYPE selects: an S edge is not a T edge', () => {
+    // Every edge in the other fixtures is a `T`, so dropping the edge label changed nothing and
+    // that mutant SURVIVED — the same vacuity that hit the node label twice (items 475, 476),
+    // one field over. A fixture's edge TYPE has to exclude something too.
+    const g = new Graph();
+    const p = g.addVertex({ id: 'p', labels: ['P'], properties: {} });
+    const viaT = g.addVertex({ id: 'viaT', labels: ['F'], properties: { k: 'T-END', n: 1 } });
+    const viaS = g.addVertex({ id: 'viaS', labels: ['F'], properties: { k: 'S-END', n: 9 } });
+
+    g.addEdge({ from: p, to: viaT, labels: ['T'], properties: {} });
+    g.addEdge({ from: p, to: viaS, labels: ['S'], properties: {} });
+
+    expect(query(g, 'MATCH (:P)-[:T]->(x) RETURN x.k AS k, count(*) AS c, max(x.n) AS m')).toEqual([
+      { k: 'T-END', c: 1, m: 1 },
+    ]);
+    expect(query(g, 'MATCH (:P)-[:S]->(x) RETURN x.k AS k, count(*) AS c, max(x.n) AS m')).toEqual([
+      { k: 'S-END', c: 1, m: 9 },
+    ]);
+    // And undirected, where the walk asks the adjacency for both directions of ONE type.
+    expect(query(g, 'MATCH (:P)-[:T]-(x) RETURN x.k AS k, count(*) AS c, max(x.n) AS m')).toEqual([
+      { k: 'T-END', c: 1, m: 1 },
+    ]);
+  });
+
+  test('UNDIRECTED: a SELF-LOOP, where out and in are the same edge (item 477)', () => {
+    const g = new Graph();
+    const p = g.addVertex({ id: 'p', labels: ['P'], properties: { k: 'kp', n: 7 } });
+
+    g.addEdge({ from: p, to: p, labels: ['T'], properties: {} });
+
+    // Whatever the right answer is, the two routes must give the same one — this is the shape
+    // where an adjacency iterator can plausibly yield the edge once or twice.
+    expect(query(g, 'MATCH (:P)-[:T]-(x) RETURN x.k AS k, count(*) AS c, max(x.n) AS m')).toEqual(
+      query(g, 'MATCH (:P)-[:T]-(x) RETURN x.k AS k, count(*) AS c, max(x.n) AS m SKIP 0'),
+    );
+  });
+
+  test('UNDIRECTED agrees with the general path on the mixed fixture', () => {
     const g = build();
 
-    // Two groups, not four: nothing points AT a or b, so the undirected walk finds the same
-    // far ends (KY, KZ) the directed one does.
+    expect(query(g, 'MATCH (:P)-[:T]-(x) RETURN x.k AS k, count(*) AS c, max(x.n) AS m')).toEqual(
+      query(g, 'MATCH (:P)-[:T]-(x) RETURN x.k AS k, count(*) AS c, max(x.n) AS m SKIP 0'),
+    );
+  });
+
+  test('UNDIRECTED over the mixed fixture: the same far ends as the directed walk', () => {
+    const g = build();
+
+    // The same far ends as the directed walk, because nothing points AT a or b — which is why
+    // this case alone could not tell an admitted `both` from a refused one (item 476), and the
+    // IN-edge fixture above exists.
     expect(query(g, 'MATCH (:P)-[:T]-(x) RETURN x.k AS k, count(*) AS c')).toEqual([
       { k: 'KY', c: 3 },
       { k: 'KZ', c: 1 },

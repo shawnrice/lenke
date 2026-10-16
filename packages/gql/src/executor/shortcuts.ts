@@ -6005,10 +6005,12 @@ export const detectGroupedNodeAggregate = (
  * Extracted from `detectGroupedHopAggregate` because the complexity cap was right: the shape
  * checks and the projection checks are two jobs.
  *
- * `direction === 'both'` is refused here, inherited from the tally where a bucket SUM would
- * double-count. Item 476 recorded that this rung's walk uses `expand`, which handles both
- * directions, so the mutant admitting `both` SURVIVES with correct answers — the guard is
- * conservative rather than load-bearing, and admitting it is a priced, unmeasured opening.
+ * `direction === 'both'` IS admitted (item 477). The tally refuses it because a bucket SUM
+ * double-counts an edge whose ends both match; this rung never sums buckets — it walks
+ * `expand` per start vertex, which is what the general path walks, so an edge between two
+ * matching ends is met once from each end exactly as the general path meets it. Item 476 found
+ * the guard's mutant surviving with correct answers and left it priced; measured, the
+ * undirected grouped hop was **1849 ms** against the directed shape's 399.
  */
 const plainOneHop = (
   pattern: PathPattern,
@@ -6020,7 +6022,7 @@ const plainOneHop = (
   const [seg] = pattern.segments;
   const { rel, node: far } = seg;
 
-  if (!plainRel(rel) || rel.direction === 'both' || rel.variable !== undefined) {
+  if (!plainRel(rel) || rel.variable !== undefined) {
     return null;
   }
 

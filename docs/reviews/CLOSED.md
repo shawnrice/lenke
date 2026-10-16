@@ -4684,3 +4684,24 @@ not.
 a bucket sum would double-count; this rung walks `expand`, which handles both directions, so the
 mutant survives with correct answers even on a fixture built to distinguish them. A free win for
 the undirected grouped hop, pending a measurement and an order check.
+
+## 477 — the undirected grouped hop: CLOSED at 1.8-1.9x (TS). Native's twin is OPEN
+
+Item 476 left `direction === 'both'` refused and priced. It cost 1849 ms against the directed
+shape's 399 (count-only: 1536 against 335) at 200,000 nodes / 1,000,000 edges.
+
+**Sound because the rung never sums buckets** — the tally's reason for refusing — it walks
+`expand` per start vertex, the general path's own iterator, so an edge between two matching ends
+is met once from each end just as the general path meets it. Backed by the two fixtures that
+could break it: an edge whose BOTH ends match, and a SELF-LOOP. The oracle is `SKIP 0`, which
+declines the rung while PRESERVING first-seen order — `ORDER BY` would compare sorted rows and
+hide a reordering.
+
+After: 871-1010 and 817-889; both directed controls flat (404, 335). Three rounds.
+
+**The vacuity has now moved one field per tick**: start LABEL (475), far LABEL (476), edge TYPE
+(477) — the edge-label mutant survived because every edge in the file is a `T`. CLAUDE.md states
+the rule about labels; the general form is that anything a fixture holds constant cannot be
+tested, and a filter's own field is what a careless fixture holds constant.
+
+**OPEN: native's undirected grouped hop**, 19.3 ms against 9.4 directed.
