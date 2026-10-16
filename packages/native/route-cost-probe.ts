@@ -221,6 +221,7 @@ const queries: Record<string, string> = {
   // Item 487: the same unread-rel-variable question asked of every OTHER rung.
   cntrelvar: 'MATCH (:Person)-[r:KNOWS]->(b) RETURN count(*) AS c',
   grphrelvar: 'MATCH (:Person)-[r:KNOWS]->(b) RETURN b.age AS k, count(*) AS c',
+  grphaggrelvar: 'MATCH (:Person)-[r:KNOWS]->(b) RETURN b.age AS k, max(b.age) AS m',
   hopaggrelvar: 'MATCH (:Person)-[r:KNOWS]->(b) RETURN max(b.age) AS m',
   twohoprelvar: 'MATCH (:Person)-[r:KNOWS]->(b)-[s:KNOWS]->(c) RETURN count(*) AS c',
   threehoprelvar:

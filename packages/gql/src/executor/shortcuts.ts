@@ -4993,6 +4993,65 @@ export const detectGroupedNodeCount = (clauses: readonly Clause[]): ReachFn | nu
 export type ReachFn = (graph: Graph, params: Params) => Row[];
 
 /**
+ * May a hop fast path that binds only NODES accept this relationship variable?
+ *
+ * Yes when nothing reads it and it collides with neither end's name. The walks behind the
+ * grouped tally and the grouped aggregate never bind an edge, so a name with no read cannot
+ * change an answer — refusing it cost 2.3x on both (328 against 761, 392 against 805 at 200,000
+ * nodes / 1,000,000 edges, item 488).
+ *
+ * The COLLISION case is the one that bites: `MATCH (x:P)-[x:T]->(b)` names the rel and the start
+ * the same, which matches nothing and answers `[]`. A fast path that simply ignored the rel
+ * name would return rows instead. Item 487 shipped exactly that shape of bug one tick earlier
+ * — there a repeated rel name across two segments — so here it is a precondition rather than a
+ * discovery.
+ *
+ * `freePredicateVars` rather than a string scan: every position checked below is an `Expr` the
+ * shape already restricts (a key, a `count(*)`, a row-local aggregate argument, a clause
+ * `WHERE`), and none of them can contain a subquery, which is the one construct
+ * `freePredicateVars` under-reports (item 444).
+ *
+ * WHICH OF THESE CHECKS EARNS ITS KEEP. Only the COLLISION one: mutation says the three READ
+ * checks are redundant, because every position is already refused elsewhere — the key must be
+ * a property of an END (`keySource`), an aggregate argument must read the KEYED end
+ * (`refsOnlyVar`), a clause `WHERE` may read only the keyed end, and an `ORDER BY` on anything
+ * but a projected column declines before it gets here. All three mutants survive, including
+ * against a test that sorts by `r.w`.
+ *
+ * They stay anyway, and the reason is specific rather than habitual: each of those covering
+ * rules is one relaxation away from letting an expression that reads the edge reach a walk
+ * with no edge bound, and the failure mode is a silent wrong answer rather than a slow query.
+ * Recorded here so the next reader does not have to re-derive the mutation run (items 469 and
+ * 486 made the same call; item 475 removed a guard whose redundancy was provable by reading,
+ * which this one's is not).
+ */
+const relVarInert = (
+  relVar: string | undefined,
+  ends: readonly (string | undefined)[],
+  projection: Projection,
+  where: Expr | undefined,
+): boolean => {
+  if (relVar === undefined) {
+    return true;
+  }
+
+  if (ends.includes(relVar)) {
+    return false;
+  }
+
+  const reads = (e: Expr | undefined): boolean =>
+    e !== undefined && freePredicateVars(e).has(relVar);
+
+  return (
+    !projection.items.some((i) => reads(i.expr)) &&
+    !(projection.orderBy ?? []).some((o) => reads(o.expr)) &&
+    !(projection.groupBy ?? []).some(reads) &&
+    !reads(projection.having) &&
+    !reads(where)
+  );
+};
+
+/**
  * `MATCH (a:L)-[:T]->(b) RETURN <b.k or a.k>, count(*)` — a GROUPED count over a hop, the
  * empty cell in the count matrix.
  *
@@ -5055,7 +5114,16 @@ export const detectGroupedHopCount = (clauses: readonly Clause[]): ReachFn | nul
   const [seg] = pattern.segments;
   const { rel, node: far } = seg;
 
-  if (!plainRel(rel) || rel.direction === 'both' || rel.variable !== undefined) {
+  if (
+    !plainRel(rel) ||
+    rel.direction === 'both' ||
+    !relVarInert(
+      rel.variable,
+      [start.variable, far.variable],
+      shape.ret.projection,
+      shape.match.where,
+    )
+  ) {
     return null;
   }
 
@@ -6258,7 +6326,7 @@ const plainOneHop = (
   const [seg] = pattern.segments;
   const { rel, node: far } = seg;
 
-  if (!plainRel(rel) || rel.variable !== undefined) {
+  if (!plainRel(rel)) {
     return null;
   }
 
@@ -6327,6 +6395,12 @@ export const detectGroupedHopAggregate = (
   }
 
   const { start, rel, far } = hop;
+
+  // A rel VARIABLE is inert here for the reason `relVarInert` records — this walk binds only
+  // nodes — but a name COLLIDING with an end, or read by any position, still declines.
+  if (!relVarInert(rel.variable, [start.variable, far.variable], ret.projection, m.where)) {
+    return null;
+  }
 
   // One non-aggregate item, a property of one END; the rest aggregates over the KEYED end.
   const picked = groupedAccs(ret.projection.items, proj.items, null);

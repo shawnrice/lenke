@@ -4932,3 +4932,22 @@ That 20,000-node figure has ranged 11-26 over the session for unchanged code. Ta
 from the LARGER fixture (item 484 retracted a flag for the same reason).
 
 **STILL OPEN:** the grouped hop count with a rel variable, 314 -> 757 (2.4x).
+
+## 488 — the grouped hop's rel variable: CLOSED at 2.0-2.4x. The unread-rel-variable family is done
+
+Item 487's last open row. The grouped tally and grouped aggregate bind only NODES, so an unread
+rel variable is inert: 761 -> 308-314 and 805 -> 393-487, with the no-variable spellings
+(322, 359) as controls the change cannot reach.
+
+**The collision hazard was written down BEFORE the widening this time.** `MATCH (x:P)-[x:T]->(b)`
+names the start and the rel alike, matches nothing, and answers `[]`; a path that ignored the
+name would return rows. Item 487 shipped exactly that class of bug one tick earlier (a repeated
+rel name), and 478 the tick before (self-loops) — **three forms of "what a guard refuses is
+rarely one thing"**.
+
+Mutation: the collision check and both call sites are caught; **the three READ checks all
+survive** — the key must be a property of an END, an aggregate argument must read the KEYED end,
+a `WHERE` may read only that end, and an `ORDER BY` on a non-projected column declines earlier.
+They stay with the mutation run recorded in the comment, because each covering rule is one
+relaxation away from a silent wrong answer (items 469/486 same call; 475 removed a guard whose
+redundancy was provable by reading, unlike this one).
