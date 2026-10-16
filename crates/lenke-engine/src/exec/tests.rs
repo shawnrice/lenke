@@ -19630,3 +19630,185 @@ fn streamed_range_count_distinguishes_inclusive_bounds() {
         0.0
     );
 }
+
+/// Item 458: `coalesce` over COLUMNS, resolved once — `count(coalesce(a.k, 0))` went from 31.2 ms
+/// to 3.44 at 1,000,000 rows (8.9x), landing on the vectorized floor, and the absent-first-arg
+/// spelling from 37.0 to 22.0 (1.67x).
+///
+/// The fixture's point is the THREE column representations plus an absent one, because the
+/// identity shortcut is keyed on exactly that: `Col::Num`, `Col::Bool` and `Col::Str` have no
+/// null representation, so a first argument of one of those makes every later argument
+/// unreachable. A fixture with only numbers would leave the string and boolean arms untested and
+/// the absent arm — the one that still merges — unexercised.
+#[test]
+fn coalesce_over_columns_matches_the_boxed_reading() {
+    use crate::value::Value;
+
+    let store = {
+        let mut b = crate::store::Builder::default();
+
+        b.node(
+            &["N"],
+            &[
+                ("k", Value::Num(7.0)),
+                ("s", Value::Str("a".into())),
+                ("f", Value::Bool(true)),
+            ],
+        );
+        b.node(&["N"], &[("s", Value::Str("b".into()))]);
+        b.node(
+            &["N"],
+            &[
+                ("k", Value::Num(0.0)),
+                ("s", Value::Str("c".into())),
+                ("f", Value::Bool(false)),
+            ],
+        );
+        b.build()
+    };
+    // Compared as DEBUG STRINGS because `Value` has no `PartialEq` across the crate boundary;
+    // that also makes a null distinguishable from a missing row in the failure output.
+    let one = |q: &str| -> String {
+        let raw = crate::gql::parse(q).expect("parse");
+        let plan = crate::opt::optimize_indexed(raw, &store);
+        let out = crate::exec::try_run(&plan, &store).expect("run");
+
+        out.rows
+            .iter()
+            .filter_map(|r| r.first())
+            .map(|v| format!("{v:?}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+
+    // A non-nullable first argument IS the answer: the later ones are unreachable, and a `-1`
+    // appearing anywhere would mean the shortcut had been taken for a column that can be null.
+    assert_eq!(
+        one("MATCH (a:N) RETURN coalesce(a.k, -1) AS v ORDER BY v"),
+        // `-1` for the row with no `k`: the column HAS a null, so it is a `Col::Gen` and the
+        // identity shortcut must not fire. Written first as `Null`, which was my reading of
+        // the single-argument spelling rather than this one — the test caught me.
+        "Num(-1.0),Num(0.0),Num(7.0)"
+    );
+    assert_eq!(
+        one("MATCH (a:N) RETURN coalesce(a.s, 'z') AS v ORDER BY v"),
+        "Str(\"a\"),Str(\"b\"),Str(\"c\")"
+    );
+    // An ABSENT first argument takes the merge path, and the second argument supplies every row.
+    assert_eq!(
+        one("MATCH (a:N) RETURN coalesce(a.missing, 'z') AS v"),
+        "Str(\"z\"),Str(\"z\"),Str(\"z\")"
+    );
+    // THREE arguments, where the second is also absent, so the third decides.
+    assert_eq!(
+        one("MATCH (a:N) RETURN coalesce(a.missing, a.other, 5) AS v"),
+        "Num(5.0),Num(5.0),Num(5.0)"
+    );
+    // Every argument null is null, not an error and not a skipped row.
+    assert_eq!(
+        one("MATCH (a:N) RETURN coalesce(a.missing, a.other) AS v"),
+        "Null,Null,Null"
+    );
+    // ONE argument is the argument.
+    assert_eq!(
+        one("MATCH (a:N) RETURN coalesce(a.k) AS v ORDER BY v"),
+        "Num(0.0),Num(7.0),Null"
+    );
+    // A column WITH nulls is a `Col::Gen`, so the identity must NOT fire and the default has to
+    // reach the row that lacks `k`. This is the assertion that fails if the shortcut is keyed on
+    // the wrong thing.
+    assert_eq!(
+        one("MATCH (a:N) RETURN coalesce(a.k, -1) AS v ORDER BY v"),
+        // `-1` for the row with no `k`: the column HAS a null, so it is a `Col::Gen` and the
+        // identity shortcut must not fire. Written first as `Null`, which was my reading of
+        // the single-argument spelling rather than this one — the test caught me.
+        "Num(-1.0),Num(0.0),Num(7.0)"
+    );
+}
+
+/// Item 458's RAISE PARITY, which is the semantic the arm could most easily have broken.
+///
+/// `coalesce` is lazy in the VALUE sense and this arm keeps that, but the path it replaces
+/// materializes every argument column BEFORE the row loop — so a later argument that faults
+/// raises even when the first argument is non-null everywhere. Evaluating the arguments lazily
+/// here would be a divergence dressed as an optimization, and both engines were checked to agree
+/// before it was written.
+#[test]
+fn coalesce_still_raises_for_a_faulting_later_argument() {
+    use crate::value::Value;
+
+    let store = {
+        let mut b = crate::store::Builder::default();
+
+        b.node(&["N"], &[("k", Value::Num(7.0))]);
+        b.node(&["N"], &[("k", Value::Num(1.0))]);
+        b.build()
+    };
+    let run = |q: &str| -> bool {
+        let raw = crate::gql::parse(q).expect("parse");
+        let plan = crate::opt::optimize_indexed(raw, &store);
+
+        crate::exec::try_run(&plan, &store).is_err()
+    };
+
+    // The first argument is non-null for EVERY row, so a lazy reading would never reach the
+    // divisor. Both engines raise.
+    assert!(run("MATCH (a:N) RETURN coalesce(a.k, 1/0) AS v"));
+    assert!(run("MATCH (a:N) RETURN coalesce(a.k, a.k/0) AS v"));
+    assert!(run("MATCH (a:N) RETURN coalesce(a.missing, 1/0) AS v"));
+    // And the control: the same shape without the faulting argument does NOT raise.
+    assert!(!run("MATCH (a:N) RETURN coalesce(a.k, 1/1) AS v"));
+}
+
+/// Item 458's `Nodes`/`Edges` exclusion from the identity shortcut.
+///
+/// `Col::Num`, `Col::Bool` and `Col::Str` have no null representation, which is what licenses
+/// returning the first argument unchanged. `Col::Nodes` DOES have one — the `u32::MAX`
+/// OPTIONAL-miss sentinel — so the identity would skip the fallback for exactly the rows that
+/// need it. Mutation found this uncovered: admitting `Nodes` left every other test green.
+///
+/// What this pins is the FALLBACK, not the rendering. Native renders a node in this position as
+/// its raw id where the TS engine renders the element; that divergence is pre-existing (verified
+/// against the commit before this arm) and recorded in `CLOSED.md` separately.
+#[test]
+fn coalesce_does_not_take_the_identity_on_a_node_column() {
+    use crate::value::Value;
+
+    let store = {
+        let mut b = crate::store::Builder::default();
+        // Only the FIRST `:P` has an outgoing edge, so one row matches the optional hop and one
+        // misses it. A fixture where every row matched could not tell the fallback from the
+        // identity at all.
+        let v1 = b.node(&["P"], &[("k", Value::Num(1.0))]);
+        b.node(&["P"], &[("k", Value::Num(2.0))]);
+        let z = b.node(&["Z"], &[("k", Value::Num(9.0))]);
+
+        b.edge(v1, z, "E");
+        b.build()
+    };
+    let one = |q: &str| -> String {
+        let raw = crate::gql::parse(q).expect("parse");
+        let plan = crate::opt::optimize_indexed(raw, &store);
+        let out = crate::exec::try_run(&plan, &store).expect("run");
+
+        out.rows
+            .iter()
+            .filter_map(|r| r.first())
+            .map(|v| format!("{v:?}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+
+    // The PROPERTY spelling: the matched row takes `z.k` (9) and the missed row falls back to
+    // `a.k` (2). This is the engine-agnostic half.
+    assert_eq!(
+        one("MATCH (a:P) OPTIONAL MATCH (a)-[:E]->(z) RETURN coalesce(z.k, a.k) AS v ORDER BY v"),
+        "Num(2.0),Num(9.0)"
+    );
+    // The ELEMENT spelling, which is the one the identity shortcut would break: the missed row
+    // must still fall back to `a` rather than yielding the sentinel.
+    assert_eq!(
+        one("MATCH (a:P) OPTIONAL MATCH (a)-[:E]->(z) RETURN coalesce(z, a) AS v"),
+        "Num(2.0),Num(1.0)"
+    );
+}

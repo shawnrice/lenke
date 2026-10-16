@@ -1359,6 +1359,62 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
                     // A non-`Num` arg (nulls / mixed) falls through to the boxed path.
                 }
             }
+            // `coalesce` over COLUMNS, resolved once (item 458).
+            //
+            // Two wins, and they are different things — the first is not available to any
+            // general fix, which is why this arm exists despite item 457's warning against
+            // special-casing one function:
+            //
+            //   - **A first argument that CANNOT be null makes `coalesce` the identity.**
+            //     `Col::Num`, `Col::Bool` and `Col::Str` have no null representation — a column
+            //     with nulls is a `Col::Gen` — so if the first argument evaluates to one of
+            //     those, no later argument is reachable and the result IS that column.
+            //     `count(coalesce(a.k, 0))` goes 31.2 ms to 4.81 at 1,000,000 rows, **6.5x**,
+            //     landing exactly on the vectorized floor (`count(abs(a.k))` is 4.73).
+            //     `Nodes`/`Edges` are excluded: the `u32::MAX` OPTIONAL-miss sentinel IS a null
+            //     in those, so the identity does not hold.
+            //   - **Otherwise, merge the columns without the per-row dispatch.** The generic
+            //     path below calls `call_scalar_checked(name, …)` per row, which matches the
+            //     function NAME as a STRING against dozens of arms; resolving it once leaves a
+            //     null check. `count(coalesce(a.missing, a.k))` goes 37.0 to 21.8, **1.67x** —
+            //     and that 1.67x is the part a general resolver would give EVERY non-vectorized
+            //     function, which item 457 priced at ~33-45 ns a row and is still open.
+            //
+            // EVERY argument is evaluated first, exactly as the generic path does. `coalesce`
+            // is lazy in the value sense and this arm keeps that, but it must NOT become lazy in
+            // the RAISE sense: the path below materializes all argument columns before the row
+            // loop, so a later argument that faults raises there, and skipping it here would be
+            // a divergence rather than an optimization.
+            if name == "coalesce" && !args.is_empty() {
+                let cols = args
+                    .iter()
+                    .map(|a| eval(a, store, batch))
+                    .collect::<Result<Vec<_>, String>>()?;
+
+                if matches!(cols[0], Col::Num(_) | Col::Bool(_) | Col::Str(_)) {
+                    return Ok(cols.into_iter().next().unwrap_or(Col::Gen(Vec::new())));
+                }
+
+                let n = batch.rows();
+                let mut out: Vec<Value> = Vec::with_capacity(n);
+
+                for i in 0..n {
+                    let mut v = Value::Null;
+
+                    for c in &cols {
+                        let cand = c.value_at(i);
+
+                        if !cand.is_null() {
+                            v = cand;
+                            break;
+                        }
+                    }
+
+                    out.push(v);
+                }
+
+                return Ok(Col::Gen(out));
+            }
             // `size`/`cardinality` over a BOXED column, read by REFERENCE. The generic
             // path below materializes each argument with `Col::value_at`, and
             // `Col::Gen(v) => v[i].clone()` on a `Value::List(Vec<Value>)` DEEP-COPIES the

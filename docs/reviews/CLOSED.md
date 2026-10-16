@@ -4198,3 +4198,35 @@ OPEN with numbers, both from `cargo run --example exprpred_437`:
 - **A nested arithmetic predicate is 5.4x a flat one** (11.091 vs 2.061 ms, same row count):
   `try_filter_keep_arith` (item 438) admits `Prop op Lit`, and `a.k * 2 + 1` is
   `Arith(Arith(Prop, 2), 1)`.
+
+## 458 — `coalesce` over columns: CLOSED at 8.9x. Half of item 457's target is done; the general half is not
+
+`count(coalesce(a.k, 0))` goes 31.2 -> 3.44 ms at 1,000,000 rows, landing on the vectorized floor
+(`count(abs(a.k))` is 4.78). The absent-first-argument spelling goes 37.0 -> 22.0, 1.67x. Four
+controls flat (`power`, `sqrt`, `abs`, `count(a.k)`).
+
+**Item 457's warning was right about one half and wrong about the other.** Two wins, and only one
+is general:
+
+- **A first argument that cannot be null makes `coalesce` the IDENTITY.** `Col::Num`/`Bool`/`Str`
+  have no null representation, so no later argument is reachable. That is the 8.9x, and **no
+  general dispatch fix could ever give it** — it is a semantic property, not an overhead.
+- **The dispatch resolved once** is the other 1.67x, and that one IS what a general resolver
+  would give every non-vectorized function. So item 457's target stands with its size now known:
+  the per-row `call_scalar_checked(name, …)` string match is ~15 ns of the ~27 ns fixed overhead,
+  with per-argument boxing at ~6 ns each (measured by adding arguments: 2/3/4 args = 31.9/37.7/45.0).
+
+Three things to not re-derive:
+
+- **`Nodes`/`Edges` must be excluded from the identity** — the `u32::MAX` OPTIONAL-miss sentinel
+  IS a null there. Untested until mutation said so; needs a fixture with one matching and one
+  missing optional hop.
+- **Raise parity is the semantic at risk.** `coalesce` stays lazy in the VALUE sense but must
+  evaluate every argument column, because the path it replaces does: `coalesce(a.k, 1/0)` raises
+  in BOTH engines even though the first argument is non-null everywhere.
+- **An empty env var still satisfies `is_ok()`**, so `EXP458= cargo run` left the experimental arm
+  ON and the first A/B compared it against itself. Use `env -u`.
+
+OPEN, pre-existing, found here: **`coalesce` over a NODE column renders raw ids natively** where
+TS renders the element (`coalesce(z, a)` -> `[2, 1]`). Verified against the previous commit. The
+fallback itself is correct in both engines.

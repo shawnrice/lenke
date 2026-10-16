@@ -125,6 +125,21 @@ fn main() {
             // vectorized arm. If both land together the dispatch is the cause and the fix is
             // shared; if `coalesce` is alone, it is not.
             ("F agg power", "MATCH (a:Univ) RETURN count(power(a.k, 2)) AS c"),
+            // Item 458: WHICH part of the generic path costs the ~33 ns? Same function and the
+            // same dispatch, one more argument to box — the delta is the per-argument boxing,
+            // and what it does not explain is the dispatch plus the boxed output.
+            (
+                "F agg coal 3arg",
+                "MATCH (a:Univ) RETURN count(coalesce(a.k, 0, 0)) AS c",
+            ),
+            (
+                "F agg coal 4arg",
+                "MATCH (a:Univ) RETURN count(coalesce(a.k, 0, 0, 0)) AS c",
+            ),
+            // A ONE-argument generic function: `sqrt` is excluded from `unary_finite_num_fn`
+            // because it can make a NaN from a finite input, so it takes the generic path with
+            // the fewest possible arguments.
+            ("F agg sqrt", "MATCH (a:Univ) RETURN count(sqrt(a.k)) AS c"),
             ("F agg round", "MATCH (a:Univ) RETURN count(round(a.k)) AS c"),
             ("F agg abs", "MATCH (a:Univ) RETURN count(abs(a.k)) AS c"),
             ("F agg arith", "MATCH (a:Univ) RETURN count(a.k + 1) AS c"),
