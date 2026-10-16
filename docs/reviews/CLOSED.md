@@ -3207,6 +3207,20 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   items 290/298: four hops forward vs reversed 474.94 vs 721.55 ms (1.52x), five hops 930.05 vs
   851.61 (1.09x the other way).
 
+- **VERIFIED — this session's native work carries into WASM; no row regressed (414).** Every
+  change in 396/402/404/405/407/412 compiles into the wasm target as well as the `.so`, and the
+  CLI is wasm-only, so a win that exists only natively would matter. `bun run build:wasm` first
+  (nothing else rebuilds that artifact), then `BENCH_ENGINES=ffi,wasm`, which compares two builds
+  of ONE engine so any divergence is attributable to the target rather than the algorithm.
+  **All query rows land in 0.60-1.02x (ffi/wasm), i.e. wasm between parity and 1.67x slower** —
+  the documented "about a third". The most-changed area is at PARITY or better:
+  `project the element + materialize` **1.02x** (wasm marginally faster),
+  `project the edge + materialize` 0.94, `traverse 1-hop + filter` 0.95,
+  `count 2-hop + start filter` 1.01. The worst ratios (`count 1-hop [shortcut]` 0.60,
+  `count 3-hop + start filter` 0.62) are on 0.4-1.0 ms absolutes where fixed overhead dominates,
+  not on anything touched. Codec rows vary by direction (`decode graphson` 1.12 wasm-faster,
+  `encode pg-text` 0.64 wasm-slower), so read this table PER ROW — a single headline hides both.
+
 - **NOT A GAP — `V().out(T).count()` native 0.59 ms against TS ~0.00 is a STORAGE-POLICY
   difference, not a missing fast path (413).** The last native-slower row in the Gremlin table
   after 412. Native already takes the right algorithm: `try_fused_count` sums adjacency LENGTHS,
