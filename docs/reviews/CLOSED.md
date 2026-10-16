@@ -2847,6 +2847,24 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   `Str` arm (`genExpr` emits a bare `n.s`) but NOT the `Dict` arm** — its six-node fixture has six
   distinct `s` values and measures `dict=false`, so the dictionary path's cross-engine parity rests
   on the unit test alone.
+- **REFUTED: removing the TS top-k's per-row allocation. 2.4%, and "it allocates per row" is not by
+  itself a cost in this engine (424).** `boundedTopK` builds a `{ v, i }` wrapper for EVERY input
+  row — before the test that throws it away — so 200,000 objects are allocated to answer a
+  `LIMIT 5`. Parallel arrays instead measured **50.1 -> 48.9 ms, five alternated rounds at nine
+  reps**: V8's young-gen bump allocation is near-free and the array indirection costs back most of
+  the saving. The same arithmetic prices the other two per-row allocations on that path (the
+  `{ b, keys }` wrapper and the `orderBy.map` key array) at ~5%, also under the floor. Rejected and
+  recorded ON the function. **The top-k itself is NOT missing** — 50.1 ms against 485.1 unlimited
+  is 9.7x, the cost climbs with k, and the alias and input-property spellings agree.
+- **A bimodal shape makes a min-of-three A/B a coin flip (424).** The first A/B of the above read
+  58.0 -> 86.1 (a 1.48x REGRESSION) and the next three rounds gave pristine 55.3/54.6/95.0 against
+  new 91.9/54.0/50.7 — both sides bimodal at ~50 and ~90-95 ms from the same two builds. Nine reps
+  collapsed it to 2.4%. The tell is **the two modes appearing on BOTH sides**; `ts-spelling-probe`
+  already runs at `SPELL_REPS=9` for this reason.
+- **Still open: the TS `ORDER BY … LIMIT n` shape costs 50.1 ms against the `max` fold's 20.7 over
+  the same rows (424)**, 145 ns/row, cause NOT identified and NOT allocation. Suspects left: the
+  generator layers into `boundedTopK`, the per-row-per-key `{ binding, params, graph }` env object,
+  and `compareSort`'s wrapping of `compareValues`. Measure at nine reps.
 - **The TS string comparator is REFUTED as a target at 12%, and 421's dictionary trick has NO TS
   twin (423).** `grep -rn dict packages/core/src/` returns nothing — the TS core stores properties
   as frozen JS objects, not columns, so there is no small distinct-value set to fold over and the

@@ -2811,6 +2811,30 @@ export const projectedRows = (
  * position, so the result is byte-identical to a *stable* full sort + `slice(0,
  * cap)`. Used for `ORDER BY … LIMIT k`.
  */
+/**
+ * REJECTED, with its numbers (audit item 424): replacing the `{ v, i }` wrapper below with two
+ * PARALLEL ARRAYS (`vals`/`idxs`, swapped together, plus a `lessThanRoot` that compares a
+ * candidate against the root without building an entry for it) measured **50.1 -> 48.9 ms, 2.4%**,
+ * five alternated rounds at nine reps each, 200,000 rows answering `ORDER BY u LIMIT 5`.
+ *
+ * The wrapper is allocated for EVERY input row, including the overwhelming majority immediately
+ * rejected — it is built before the `less(e, heap[0])` test that throws it away — so 200,000
+ * objects are allocated to keep five. That is the same per-row allocation item 113 removed from
+ * the pass-through projection path, and it bought 2%: V8's young-generation bump allocation is
+ * near-free, and the extra array indirection costs back most of what removing it saves. Under the
+ * repo's 10% floor, so not taken.
+ *
+ * The corollary is worth more than the change would have been: **"it allocates per row" is not by
+ * itself a cost in this engine.** Two further allocations per row sit on the top-k call site in
+ * `applyProjection` (the `{ b, keys }` wrapper and the `orderBy.map` key array), and the same
+ * arithmetic prices removing both at roughly 5% — also under the floor. The measured gap on that
+ * shape is 50.1 ms against the `max(a.u)` fold's 20.7 over the same rows, and it is NOT allocation.
+ *
+ * Also, do not measure this shape at three reps: both sides are bimodal at ~50 ms and ~90-95 ms,
+ * so min-of-3 picks a mode rather than a cost (the first A/B read 58.0 -> 86.1 and the second
+ * 95.0 -> 50.7, from the same two builds). Nine reps settles it, which is what
+ * `ts-spelling-probe` already says about this engine.
+ */
 const boundedTopK = <T>(rows: Iterable<T>, cap: number, cmp: (a: T, b: T) => number): T[] => {
   if (cap <= 0) {
     return [];
