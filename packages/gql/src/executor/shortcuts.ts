@@ -2407,30 +2407,69 @@ const longChainCount = <T>(
   //
   // Not reversed when BOTH ends are gated (the extra pass is unavoidable either way) and not when
   // only the start is (it is already the cheap shape).
-  const flip = allGates[hops] !== undefined && allGates[0] === undefined;
-  const legs: Leg[] = [];
+  const gateFlip = allGates[hops] !== undefined && allGates[0] === undefined;
+  // AND READ IT BACKWARDS FOR A LABEL TOO (item 429). The gate rule above is blind to a LABEL on
+  // the last position, so `MATCH (x)<-[:E]-(d)<-[:E]-(c)<-[:E]-(b)<-[:E]-(a:P)` seeded from `x` —
+  // every vertex — where the same question spelled forwards seeds the `:P` bucket. The TS
+  // spelling probe measured 478.8 ms forward against 710.9 reversed at four hops (1.49x) and
+  // 674.4 against 856.7 at five (1.27x), under its own 2x flag threshold, for one question
+  // written two ways.
+  //
+  // Which end is cheaper is a graph question, not a syntax one, so it is decided PER CALL — the
+  // same shape `hopDrivesFar` uses for the one-hop projection, and the same comparison:
+  // `candidateCount` returns the whole graph for a label it cannot seed from, so a STRICT
+  // comparison also establishes that the end label is seekable. A tie keeps the forward reading,
+  // because the two orders intern vertices differently and churning that for no gain is churn.
+  //
+  // Only consulted when NEITHER end is gated. The gated cases are item 308's and already decided:
+  // a gate at the end alone flips, both ends gated does not (the extra pass is unavoidable), and
+  // a gate at the start alone is already the cheap shape.
+  //
+  // NO TEST CAN POLICE THIS DECISION, and mutation says so: making the comparison non-strict
+  // (so a tie flips) leaves every test green, because reading the chain backwards is
+  // answer-preserving by construction. The tests police the CONSTRUCTION of the reversal — leg
+  // order, each leg's direction, which position each label and gate lands on — and the 4.26x is
+  // the only evidence the decision fires at all. Both halves are needed; neither substitutes.
+  const labelMayFlip =
+    allGates[0] === undefined && allGates[hops] === undefined && nodes[hops].label !== undefined;
+  const buildFor = (flip: boolean) => {
+    const legs: Leg[] = [];
 
-  for (let j = 0; j < hops; j++) {
-    // Reversed, leg `j` walks original hop `hops - 1 - j` the other way and lands on the position
-    // that hop STARTED at.
-    const i = flip ? hops - 1 - j : j;
+    for (let j = 0; j < hops; j++) {
+      // Reversed, leg `j` walks original hop `hops - 1 - j` the other way and lands on the
+      // position that hop STARTED at.
+      const i = flip ? hops - 1 - j : j;
 
-    legs.push({
-      out: flip ? !outs[i] : outs[i],
-      types: resolved[i],
-      label: nodes[flip ? i : i + 1].label,
-      gate: allGates[flip ? i : i + 1],
-    });
-  }
+      legs.push({
+        out: flip ? !outs[i] : outs[i],
+        types: resolved[i],
+        label: nodes[flip ? i : i + 1].label,
+        gate: allGates[flip ? i : i + 1],
+      });
+    }
 
-  const seedAt = flip ? hops : 0;
-  const startLabel = nodes[seedAt].label;
-  const seedGate = allGates[seedAt];
+    const seedAt = flip ? hops : 0;
+
+    return { legs, startLabel: nodes[seedAt].label, startGate: allGates[seedAt] } as const;
+  };
+  // BOTH readings are built once, at compile time, and the per-call choice picks between two
+  // ready objects. Building legs inside the closure would put allocation on every call, and the
+  // sweep body is the hot loop this file has measured four times.
+  const forward = buildFor(gateFlip);
+  const reversed = labelMayFlip ? buildFor(true) : undefined;
+  const startCount = nodes[0].label;
+  const endCount = nodes[hops].label;
 
   // Delegated to a MODULE-SCOPE function, not written inline: this body is the hot loop, and
   // `ts-closure-size-is-load-bearing` is the one cost this file has measured four separate times.
-  return (graph, params) =>
-    rowOf(sweepChain({ graph, params, legs, startLabel, startGate: seedGate }));
+  return (graph, params) => {
+    const pick =
+      reversed !== undefined && candidateCount(graph, endCount) < candidateCount(graph, startCount)
+        ? reversed
+        : forward;
+
+    return rowOf(sweepChain({ graph, params, ...pick }));
+  };
 };
 
 /** One position of a chain: which way its incoming hop runs, its edge types, its node label. */

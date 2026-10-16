@@ -2855,6 +2855,29 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   fault exactly as native does, so byte-identity holds and item 426's conformance question stays
   open and unprejudiced. Extracted to a module-scope helper because the complexity cap objected at
   38/35 — same cap, same answer as item 377.
+- **DONE: the n-hop chain sweep now flips for a LABEL, not only a GATE — 4.26x at four hops, 3.09x
+  at five (429).** `detectNhopSweepCount` read a chain backwards when its last position was GATED
+  (item 308) but was blind to a LABEL there, so `MATCH (x)<-[:E]-…<-(a:P)` seeded every vertex
+  where the forward spelling seeded the `:P` bucket. Decided per call by
+  `candidateCount(end) < candidateCount(start)` — `hopDrivesFar`'s question, strict so a tie keeps
+  the forward reading and so a non-seekable label scores the whole graph. 779.8 -> 183.2 ms and
+  911.1 -> 295.2; the reversed spelling now LANDS ON the forward one, which is the claim. Controls
+  flat: vacuous end label, no end label, and both of item 308's gated cases.
+- **A probe's threshold is a budget for what it interrupts you about, not a claim that everything
+  under it is fine (429).** `bun run spelling` reported 0 answer disagreements and one known-guard
+  over-2x group — and PRINTED the 1.49x four-hop and 1.27x five-hop asymmetries every run. Also:
+  five TS planner changes this session before anyone ran the probe the repo mandates for exactly
+  that. Run it after touching the planner, and read the rows, not only the flags.
+- **A fixture for a COST-BASED decision has to make the decision fire (429).** The leg-order mutant
+  survived three times: equal label counts meant the strict comparison declined, then the label and
+  direction sequences it saw were palindromic, and finally — the real reason — every case was a
+  3-hop chain, which `try_3hop_product_count` owns. **The sweep starts at FOUR hops.** Fourth
+  fixture this session that did not exercise its guard (422, 425, 427), and the first where the
+  cause was the query being routed to a different path entirely. **Check which path answers your
+  fixture, not just what it asserts.**
+- **Still open: the reversed 3-HOP chain is 3.3x the forward spelling (429).** 1113-1168 ms against
+  346-348 on the same fixture. `try_3hop_product_count` owns three segments and has a different
+  structure from the sweep, so whether it can seed from the cheaper end is its own question.
 - **The NATIVE paging twin is REFUTED — it already pages lazily (428).** At 1,000,000 nodes a
   shallow `SKIP 100 LIMIT 20` costs **0.001 ms** and a deep `SKIP n-5` costs 2.556, against a
   10.403 ms ceiling for projecting every row — so native pages the input stream, and the deep
