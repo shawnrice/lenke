@@ -1574,6 +1574,11 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
                         .or_else(|| try_scan_num_agg(input, keys, aggs, store))
                         .or_else(|| try_frontier_prop_agg(input, keys, aggs, store))
                         .or_else(|| try_scan_count_prop(input, keys, aggs, store))
+                        // AFTER the scan twin, which owns the bare-`Scan` shape. `count`
+                        // is the one aggregate in the frontier family that is NOT
+                        // order-dependent, so it can fold the per-node multiplicities
+                        // that `sum`/`avg` deliberately cannot (item 376).
+                        .or_else(|| try_frontier_count_prop(input, keys, aggs, store))
                         .or_else(|| try_filtered_scan_num_agg(input, keys, aggs, store))
                         .or_else(|| try_scan_multi_agg(input, keys, aggs, store))
                         // The INDEX answer first (item 369): O(1) from the hash index's key

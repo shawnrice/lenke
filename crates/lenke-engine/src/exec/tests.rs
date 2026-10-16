@@ -18012,3 +18012,113 @@ fn scan_min_max_agrees_with_the_frontier_path_it_was_moved_above() {
         Some(0.0)
     );
 }
+
+/// Item 376: `count(k)` over a hop frontier folds the per-node path MULTIPLICITIES instead
+/// of materializing the frontier ids. The multiplicity is the whole correctness question — a
+/// node reached three times contributes three rows — and a fixture without parallel edges
+/// cannot tell a multiplicity-aware fold from one that counts each node once.
+///
+/// The reference is a spelling that CANNOT take the new path: adding `WHERE … IS NOT NULL`
+/// puts a `Filter` in the chain, so the general aggregate answers it. Same question, different
+/// path, so the two must agree — rather than both agreeing with arithmetic I typed.
+#[test]
+fn frontier_count_of_a_property_counts_path_multiplicity() {
+    use crate::value::Value;
+
+    let mut b = crate::store::Builder::default();
+    b.node(&["N"], &[]); // 0 — v ABSENT
+    b.node(
+        &["N"],
+        &[("v", Value::Num(1.0)), ("s", Value::Str("x".into()))],
+    ); // 1
+    b.node(&["N"], &[]); // 2 — v ABSENT
+    b.node(
+        &["N"],
+        &[("v", Value::Num(3.0)), ("s", Value::Str("y".into()))],
+    ); // 3
+    b.edge(0, 1, "E");
+    b.edge(0, 1, "E"); // PARALLEL: node 1 is reached twice and must count twice
+    b.edge(0, 2, "E");
+    b.edge(1, 3, "E");
+    let store = b.build();
+
+    let num = |q: &str| -> f64 {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &store);
+        let out = crate::exec::try_run(&plan, &store).unwrap_or_else(|e| panic!("{q}: {e}"));
+        match &out.rows[0][0] {
+            Value::Num(n) => *n,
+            other => panic!("{q}: want a number, got {other:?}"),
+        }
+    };
+
+    // Rows are (0,1), (0,1), (0,2), (1,3). `v` is present on 1 and 3, so: 1 twice, 3 once = 3.
+    // A fold that counted each reached NODE once instead of once per path would answer 2.
+    assert_eq!(num("MATCH (a:N)-[:E]->(b) RETURN count(b.v) AS n"), 3.0);
+    assert_eq!(
+        num("MATCH (a:N)-[:E]->(b) WHERE b.v IS NOT NULL RETURN count(*) AS n"),
+        3.0,
+        "the filtered count(*) takes a DIFFERENT path and must agree"
+    );
+    // All four rows, for contrast: this is `count(*)`, which is a different fast path.
+    assert_eq!(num("MATCH (a:N)-[:E]->(b) RETURN count(*) AS n"), 4.0);
+
+    // A count never reads the VALUE, so the fold is not restricted to numeric columns the
+    // way min/max is. A string column must work identically.
+    assert_eq!(num("MATCH (a:N)-[:E]->(b) RETURN count(b.s) AS n"), 3.0);
+    assert_eq!(
+        num("MATCH (a:N)-[:E]->(b) WHERE b.s IS NOT NULL RETURN count(*) AS n"),
+        3.0
+    );
+
+    // A column absent EVERYWHERE falls back rather than answering from a missing column.
+    assert_eq!(num("MATCH (a:N)-[:E]->(b) RETURN count(b.nope) AS n"), 0.0);
+
+    // A bare SCAN is declined explicitly and belongs to `try_scan_count_prop`; the answer
+    // must be unchanged by that decline (2 of the 4 nodes carry `v`).
+    assert_eq!(num("MATCH (p:N) RETURN count(p.v) AS n"), 2.0);
+
+    // TWO hops, so the multiplicity compounds: (0,1)->3 twice via the parallel pair, plus
+    // (1,3) has no outgoing edge. Reference again by the filtered spelling.
+    assert_eq!(
+        num("MATCH (a:N)-[:E]->()-[:E]->(c) RETURN count(c.v) AS n"),
+        num("MATCH (a:N)-[:E]->()-[:E]->(c) WHERE c.v IS NOT NULL RETURN count(*) AS n"),
+    );
+}
+
+/// Item 376: `try_frontier_count_prop` declines a bare `Scan`, and that gate is UNREACHABLE
+/// through the chain — `try_scan_count_prop` is placed before it. So no end-to-end query can
+/// exercise the decline, and a mutant that deletes it survives every behavioural test (both
+/// paths return the same count; measured within noise of each other). Assert it directly, the
+/// way item 369 pinned its own unreachable gates, so the gate is not merely untested code.
+#[test]
+fn the_frontier_count_prop_fast_path_declines_a_bare_scan() {
+    use crate::ir::{Agg, AggFn, Expr, Plan};
+    use crate::value::Value;
+
+    let mut b = crate::store::Builder::default();
+    b.node(&["N"], &[("v", Value::Num(1.0))]);
+    b.node(&["N"], &[]);
+    let store = b.build();
+
+    let agg = Agg {
+        func: AggFn::Count,
+        arg: Some(Expr::Prop {
+            slot: 0,
+            key: "v".into(),
+        }),
+        distinct: false,
+        name: "n".into(),
+        frac: None,
+        null_on_empty: false,
+        numeric_only: false,
+    };
+    let scan = Plan::Scan {
+        label: Some("N".into()),
+    };
+
+    assert!(
+        crate::exec::fastpath::try_frontier_count_prop(&scan, &[], &[agg], &store).is_none(),
+        "a bare Scan belongs to try_scan_count_prop; this entry must decline it even though \
+         the chain already keeps it from arriving here"
+    );
+}

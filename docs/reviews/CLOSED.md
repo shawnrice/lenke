@@ -2769,6 +2769,32 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   belongs to the walk set and not the trail set. That is item 68, found by `fastpath_fuzz` at seed 3249. Item 374 listed these as open gaps; they are not, and "fixing" them re-introduces a
   fuzzer-caught wrong answer.
 
+- **A frontier `sum`/`avg` fast path is REFUTED — the 2.5x is the price of byte-identity, and the
+  refutation was already written on the function (376).** `try_frontier_prop_agg`'s own doc says it:
+  "MIN/MAX only: they are order-INDEPENDENT, so collapsing the frontier to per-node multiplicity
+  (which loses row order) is byte-identical; SUM/AVG would change the summation order, so they stay
+  on `try_frontier_aggregate`". Floating-point addition is not associative, so **do not re-price
+  frontier `sum` as a target.** What IS available is `count(k)`, because an integer count is
+  order-independent — shipped at **2.20x (50k) / 2.68x (200k)** as `try_frontier_count_prop`, any
+  column type, folding the `present`-masked multiplicities the same way `try_frontier_count`
+  already folds `count(*)`. It ends up faster than `min`/`max` on the same shape: a count touches
+  only the `present` mask, never the values.
+- **An instrument that covers PART of the dispatch reports absence where it only has no coverage
+  (376).** Item 375's dispatch probe called `1hop sum` and `1hop count(prop)` "no fast path; general
+  aggregate". Both were wrong: `try_frontier_aggregate` sits in a later `else if` branch OUTSIDE the
+  28-entry `or_else` chain that was instrumented, and its `frontier_ids` "is produced in the same row
+  order the full batch would have". Item 371's "verify the dispatch reaches the function" needs the
+  corollary: **verify the instrument reaches every branch that can answer.** The measured gap was
+  order-preserving materialization vs the counts collapse, not fast-path vs none.
+- **Chain position is part of the change — hit a THIRD time, in the region item 375 had just
+  reordered (376).** 375 moved `try_frontier_prop_agg` ahead of `try_scan_count_prop`, so adding
+  `Count` to the frontier path would have stolen bare-scan `count(prop)` from the path built for it.
+  The new arm went in as its own entry AFTER the scan twin. Its explicit bare-`Scan` decline is
+  **unreachable as the chain stands** and was priced at 25.6 vs 23.8us (50k) / 93.0 vs 93.9us (200k)
+  — noise both ways, so the gate is about ownership, not speed. Kept anyway (this region gets
+  reordered) and **pinned by a direct assertion**, which is what then caught the mutant that deletes
+  it; no behavioural test can, since both paths return the same count.
+
 ## 6. Consequences of the AND decision — RESOLVED by item 258, and not as predicted
 
 This section was written before the change and asked three questions. All three are now answered by

@@ -2298,6 +2298,60 @@ pub(super) fn try_filtered_scan_num_agg(
     Some(Batch::single(Col::Gen(vec![result])))
 }
 
+/// `count(k)` over a hop-chain FRONTIER, folded from the per-node path multiplicities
+/// instead of materializing the frontier ids. Order-INDEPENDENT — a count is integer
+/// addition — so collapsing the frontier is byte-identical, exactly as
+/// [`try_frontier_count`] already relies on for `count(*)`. The ORDER-DEPENDENT folds
+/// cannot do this: `try_frontier_prop_agg`'s own note records that `sum`/`avg` "would
+/// change the summation order, so they stay on `try_frontier_aggregate`", and that
+/// decision stands (item 376) — this entry exists because `count` is the one aggregate
+/// in that family which is NOT order-dependent.
+///
+/// Any column TYPE, not just `Num`: a count never reads the value, only `present`.
+///
+/// Declines a bare `Scan`, which belongs to [`try_scan_count_prop`]. **That gate is
+/// UNREACHABLE as the chain stands** — `try_scan_count_prop` is placed before this entry,
+/// so a bare `Scan` never arrives here — and it is deliberately kept anyway, because item
+/// 375 shipped a REORDER of this very region and a path that merely sits earlier silently
+/// claims another's shape. Pinned by a direct assertion rather than left unexercised (the
+/// practice item 369 established for its own unreachable gates), since a mutation that
+/// deletes it cannot fail any end-to-end test: both paths return the same count, and the
+/// two were measured at 25.6 vs 23.8us (50k) and 93.0 vs 93.9us (200k) — noise in both
+/// directions, so the gate is about OWNERSHIP, not speed.
+pub(super) fn try_frontier_count_prop(
+    input: &Plan,
+    keys: &[(String, Expr)],
+    aggs: &[Agg],
+    store: &Store,
+) -> Option<Batch> {
+    if !keys.is_empty() || aggs.len() != 1 {
+        return None;
+    }
+    let agg = &aggs[0];
+    if agg.distinct || agg.func != AggFn::Count {
+        return None;
+    }
+    let Some(Expr::Prop { slot, key }) = agg.arg.as_ref() else {
+        return None; // `count(*)` is `try_frontier_count`
+    };
+    if matches!(input, Plan::Scan { .. }) {
+        return None;
+    }
+    let width = chain_width(input)?;
+    if *slot != width - 1 {
+        return None; // arg must be a property of the chain frontier
+    }
+    let col = store.column(key)?; // absent everywhere → general path
+    let counts = frontier_counts(input, store)?;
+    let mut total = 0f64;
+    counts.for_each(|v, c| {
+        if col.has_value_at(v as usize) {
+            total += c;
+        }
+    });
+    Some(Batch::single(Col::Gen(vec![Value::Num(total)])))
+}
+
 /// `count(<property>)` over a bare `Scan` — a presence scan, with no column materialized.
 ///
 /// `count(expr)` counts NON-NULL values, so for a plain `Prop` it never needs the values at
