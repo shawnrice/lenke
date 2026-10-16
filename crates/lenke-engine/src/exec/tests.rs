@@ -19932,3 +19932,91 @@ fn resolved_unary_numeric_functions_keep_null_and_raise() {
     // And the raise survives the row that is NULL — the string row is reached either way.
     assert!(rows("cos(a.s)").is_err(), "cos of a string must raise");
 }
+
+/// Item 461: the NEGATIVE ZERO policy, pinned across every path a computed -0 can reach.
+///
+/// Item 460 fixed one of these and was found by a random fuzzer seed. The seed was luck: nothing
+/// deterministic covered the class, and the same mistake in a neighbouring arm would have shipped
+/// the same way. This is the "grep the pattern elsewhere" step of the method, written down as
+/// assertions instead of as a sweep I did once.
+///
+/// The policy: the numeric model has NO negative zero (`value::num_of` collapses -0.0 to +0.0, a
+/// deliberate deviation from IEEE). It only becomes observable through an operation whose result
+/// differs on the sign of zero — `1/x` and anything built on it, which in this engine means
+/// `cot` and division. Comparisons cannot see it (`-0.0 == 0.0`), which is why a stored -0 is
+/// harmless and only a COMPUTED one matters.
+///
+/// Every expression below produces a -0 under IEEE and must behave as +0. All were checked to
+/// agree with the TS engine before being written here.
+#[test]
+fn computed_negative_zero_is_collapsed_everywhere_it_can_be_seen() {
+    use crate::value::Value;
+
+    let store = {
+        let mut b = crate::store::Builder::default();
+        // A NEGATIVE k, so `0.0 * k` is -0.0 under IEEE. A positive one beside it, so an
+        // assertion that passed by collapsing everything to one answer would still be visible.
+        b.node(&["P"], &[("k", Value::Num(-2.0))]);
+        b.node(&["P"], &[("k", Value::Num(2.0))]);
+        b.build()
+    };
+    let one = |expr: &str| -> String {
+        let q = format!("MATCH (n:P) RETURN {expr} AS v ORDER BY v");
+        let raw = crate::gql::parse(&q).expect("parse");
+        let plan = crate::opt::optimize_indexed(raw, &store);
+        let out = crate::exec::try_run(&plan, &store).expect("run");
+
+        out.rows
+            .iter()
+            .filter_map(|r| r.first())
+            .map(|v| format!("{v:?}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let raises = |expr: &str| -> bool {
+        let q = format!("MATCH (n:P) RETURN {expr} AS v");
+        let raw = crate::gql::parse(&q).expect("parse");
+        let plan = crate::opt::optimize_indexed(raw, &store);
+
+        crate::exec::try_run(&plan, &store).is_err()
+    };
+    let count = |pred: &str| -> f64 {
+        let q = format!("MATCH (n:P) WHERE {pred} RETURN count(*) AS c");
+        let raw = crate::gql::parse(&q).expect("parse");
+        let plan = crate::opt::optimize_indexed(raw, &store);
+        let out = crate::exec::try_run(&plan, &store).expect("run");
+
+        match out.rows.iter().next().and_then(|r| r.first()) {
+            Some(Value::Num(n)) => *n,
+            other => panic!("want a number, got {other:?}"),
+        }
+    };
+
+    // `cot` of a multiplied zero — item 460's own case, in the PROJECTION.
+    assert_eq!(one("0.0 <= cot(0.0 * n.k)"), "Bool(true),Bool(true)");
+    // And in a FILTER, which is a different route entirely.
+    assert_eq!(count("0.0 <= cot(0.0 * n.k)"), 2.0);
+    // A SUBTRACTED zero reaches it the other way: `0.0 - 2.0` is negative, `0.0 - 0.0` is +0.
+    assert_eq!(one("0.0 <= cot(n.k - n.k)"), "Bool(true),Bool(true)");
+    // DIVISION cannot see the sign at all: dividing by a computed zero RAISES rather than
+    // yielding an infinity, so there is no ±0 question on that path. Written first as an
+    // infinity assertion, which failed with "division by zero" — the engine's answer is better
+    // than my expectation and this records which operations the policy actually has to cover.
+    assert!(
+        raises("0.0 <= (1.0 / (0.0 * n.k))"),
+        "dividing by a computed zero must raise"
+    );
+    assert!(
+        raises("0.0 <= (1.0 / round(0.0 * n.k))"),
+        "same through a rounding function"
+    );
+    // Through `floor`/`ceil`/`round`, which PRESERVE a -0 into the column the next operation
+    // reads — the leak that would make a neighbouring arm fail the same way.
+    assert_eq!(one("0.0 <= cot(floor(0.0 * n.k))"), "Bool(true),Bool(true)");
+    assert_eq!(one("0.0 <= cot(ceil(0.0 * n.k))"), "Bool(true),Bool(true)");
+    assert_eq!(one("0.0 <= cot(round(0.0 * n.k))"), "Bool(true),Bool(true)");
+    // `sign` of a computed -0 is 0, not -0 and not -1.
+    assert_eq!(one("sign(0.0 * n.k)"), "Num(0.0),Num(0.0)");
+    // And an AGGREGATE over computed -0s.
+    assert_eq!(one("abs(0.0 * n.k)"), "Num(0.0),Num(0.0)");
+}

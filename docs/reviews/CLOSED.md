@@ -4289,3 +4289,26 @@ Two further notes:
 - **`git checkout -- <path>` reverts to the INDEX**, which is HEAD — it wiped the fix mid-tick
   after a mutant run. Restore from a saved copy, not from git, when the working tree holds
   uncommitted work.
+
+## 461 — the ±0 class, swept and pinned: NO second instance, and it is no longer luck that finds it
+
+Item 460's fix closed one negative-zero bug. This closes the CLASS.
+
+**Swept** (the "grep the pattern elsewhere" step item 459 skipped): a STORED -0 is harmless,
+because the arith filter arm (438) and the count sweeps (451, 453) read raw `f64`s but only
+COMPARE, and a comparison cannot see the sign of zero. A COMPUTED -0 reaches exactly two
+operations: `cot` (which is `1/tan`) and division — and division RAISES on a computed zero rather
+than yielding an infinity, so the class is `cot` alone. `floor`/`ceil`/`round` PRESERVE a -0 into
+the next column, which is the route a neighbouring arm could have failed by; checked, and it
+agrees after 460. Eleven shapes, nine of them comparable cross-engine, all agreeing.
+
+**Pinned**: `computed_negative_zero_is_collapsed_everywhere_it_can_be_seen`.
+
+**The lesson worth keeping: a bug found by a fuzzer has been found by LUCK, and luck does not
+generalise to the arm next door.** The fix closes one instance, the sweep closes the class, the
+test keeps it closed. Item 459 did the first, skipped the second, and left the third to chance —
+which is how it reached CI.
+
+Also recorded: **dividing by a COMPUTED zero raises** ("division by zero") rather than producing
+an infinity. Written here first as an infinity assertion, which failed — the engine's answer is
+better than the expectation, and it is what shrinks this class to one function.
