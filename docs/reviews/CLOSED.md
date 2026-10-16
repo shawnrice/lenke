@@ -4410,3 +4410,25 @@ The SCAN path has no far-driven alternative and may be admissible. **The questio
 row order is identical to the general path's BY CONSTRUCTION — same source, no seeded alternative
 — rather than by observation**, which is the distinction item 419 drew when it declined the
 start-driven route. Worth 4.6x on `sum` if yes; item 419 again if the scan can seed.
+
+## 466 — item 465's question ANSWERED: unfiltered scan order is identical by construction; filtered is item 419's trap
+
+**The scan fast path never seeds.** Its walk is `graph.verticesById.values()` or
+`graph.verticesByLabel.get(labelName) ?? []`, iterated directly — no `indexCandidates`, no
+`seedVertices`, no `hopSeek`, and so no run-time route choice for item 419's objection to attach
+to. **The general path reads the same two containers**: `candidateVertexSource` is
+`verticesById.values()` or `verticesByLabel.get(seed)`. For an UNFILTERED scan the two orders are
+the same container traversal — "by construction", which is precisely what item 419 asked for and
+did not have for the hop.
+
+**The filtered scan is NOT safe.** `seedVertices` lets the general matcher visit in index order
+instead of bucket order, decided at RUN time by which indexes exist and how selective they are —
+item 419's "observed, not promised" and item 411's trap. A `sum` folded in bucket order against
+one folded in index order is `2.0000000000000000e16` vs `2.0000000000000004e16`.
+
+**LICENSED, not yet built: a scan-only, UNFILTERED-only admission of `sum`/`avg`**, worth 4.6x
+(`sum(n.age)` 43.7-48.0 ms against `count(n.age)` 9.4-10.2 at 200,000 nodes). NOT by adding to
+`foldFor` — that admission set is shared with the hop and is what keeps item 418 safe without
+guards — but by `detectNodeAggregate` resolving its own fold for the one shape whose order both
+paths share. The guard must hold even if `detectNodeAggregate` later gains a `WHERE`, which is a
+test to write rather than a line to add.
