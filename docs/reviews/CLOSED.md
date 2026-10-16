@@ -3199,6 +3199,16 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   After: 30% 1.96 -> 0.90/0.86/0.73, 60% 5.02 -> 0.84/0.91/0.86 (34.37 -> 5.85 ms), the
   selective 1-8% band unchanged, `bench:usage` point lookup still 920.8k vs 2.0k ops/s.
 
+- **NO TWIN — native cannot have item 410's bug, because it decides seeding at PLAN time (411).**
+  `seek_beats_scan` runs inside `optimize_indexed`, so a declined seek is not in the plan and
+  `cost::estimate` sees the `Scan` that replaced it; TS decides per call at RUN time, so its
+  estimator had to model the decision. **The rule: when a decision moves from plan time to run
+  time, every estimate of it becomes a second implementation of it.**
+  Incidental, from item 404: `cost.rs`'s `IndexSeek` estimate now goes through the range-index
+  fallback in `index_bucket_len`, so for a range-only key it is the EXACT bucket length instead
+  of a `live_nodes * EQ_SEL` guess. Its three consumers pick between byte-identical routes
+  (fused group, JSON streaming, `stream_output_threshold`), and `bench_all` showed no row moving.
+
 - **A GATE added to a decision silently breaks whatever ESTIMATES that decision (410).** Item
   409's selectivity gate meant an index candidate is no longer a seek that will happen, but
   `estimateSeedFrom` still reported `indexed: true` with the index count — half the size of the
