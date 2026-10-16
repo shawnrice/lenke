@@ -2902,8 +2902,19 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   test compared the product with itself. `count(d)` fires it too; `count(d.k)` does not. Item 371's
   rule is "verify the dispatch reaches the function" — this is its mirror, **verify the oracle does
   NOT**, and the trace that settles it is three lines.
-- **Still open: the TS side of item 431's asymmetry (1.70x at three hops).** Same diagnosis, same
-  fix shape, TS's `threeSegmentCount` instead. `chain-layout-probe` (`bun run probe:layout`) varies ONE thing — where
+- **The TS side of item 431 is REFUTED — its product already carried per-hop directions (433).**
+  `buildThreeHopCount` has `toAOut`/`midOut`/`fromDOut` and picks `edgesFromByLabel` or
+  `edgesToByLabel` per leg, which is exactly the generalization item 432 had to make in Rust;
+  `longChainCount`'s doc even dates it ("the pure-TS sweep, which has carried per-hop directions
+  since item 298"). So item 431's one asymmetry had **two different causes, one per engine** —
+  native was missing a path, TS never was. After 432 both are SYMMETRIC on the ring layout (native
+  1.03x, TS 1.14x) and both keep an asymmetry on scatter (native 1.76x, TS ~1.32x), so the residual
+  in both is the scattered-`inc`-bucket locality item 431 isolated. 431 is closed.
+- **When one engine DECLINES a shape the other accepts, the one that accepts it is the
+  specification (433).** Native's comment explained why the 3-hop product could not carry per-hop
+  directions while the TS product had carried them since item 298. The session's habit is to fix TS
+  and then ask native the same question; here the question should have gone the other way, and
+  twelve items passed before anyone looked. Not a second opinion to be confirmed — a reference. `chain-layout-probe` (`bun run probe:layout`) varies ONE thing — where
   each edge points — over two graphs of identical size and degree, and asks both engines through
   one shared edge list. **Not locality:** the layout halves the magnitude (TS 3-hop forward 170.3 ->
   49.3 ms for the identical query, a 3.5x belonging entirely to the data) but the asymmetry survives
