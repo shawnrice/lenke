@@ -42,6 +42,7 @@
     "probe:layout": "bun chain-layout-probe.ts",
     "probe:gap": "bun engine-gap-probe.ts",
     "probe:writes": "bun write-gap-probe.ts",
+    "probe:route": "bun route-cost-probe.ts",
     "bench:chain": "bun chain-sweep-bench.ts",
     "bench:gate": "bun chain-gate-bench.ts"
   },

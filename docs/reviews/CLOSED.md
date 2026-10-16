@@ -3847,3 +3847,21 @@ OPEN, found here and not fixed:
 - **Native has no bound-endpoint `_MERGE`.** `MATCH (a:P) _MERGE (a)-[:E]->(a)` works in TS and is
   a parse error in native, which accepts `_MERGE` only as a leading statement with unique-key-
   resolved endpoints. A row-driven `MergeEdgeFrom` plan, not a parse fix.
+
+## 445 — "projecting an edge costs 100x projecting a node": RETRACTED, and replaced by a real 6.9x
+
+The bench rows behind that claim use different fixtures (`nodesDoc` 200k nodes vs `graphDoc` 1M
+edges), so 607.1 ms against 5.7 is 607 ns/row against 28.5 — 21x, not 100x. And the 21x is not
+about edges at all. On one fixture with one traversal and 200,000 rows either way,
+`RETURN b, r.w` costs 727 ns/row and `RETURN r, r.w` costs 722: **rendering an edge is free**.
+
+What the comparison was really measuring is the ROUTE, and item 444 is what made it a confound —
+`RETURN b` with a named `r` reaches the hop fast path only because 444 admitted it, while
+`RETURN r` mentions the rel and declines. **A ratio between two queries is a ratio between two
+routes until you have shown they take the same one.**
+
+OPEN, and larger than the retracted lead: the hop fast path costs ~105 ns/row against the general
+path's ~720-815, **6.9x**, and every one-hop query mentioning its rel variable pays it (`RETURN
+r`, `RETURN r.w`, `WHERE r.w < 100`). The fix is to BIND the edge in the walk — `expand` already
+yields `{ edge, node }` — and let `projectedEndsOnly`/`carriedWhere` admit the rel variable as a
+third legal name. Priced, not built. Instrument: `bun run probe:route`.
