@@ -67,6 +67,7 @@ enumeration's is flat.
 | How do shapes scale across the cache transition?                       | `scale_bench -- sweep`               |
 | What does content-derived CDC scope extraction cost per write?         | `scale_bench -- cdc`                 |
 | What does a scalar min/max cost by COLUMN TYPE and ENCODING?           | `strag_421`                          |
+| What does a PAGED query pay, and does the page's depth matter?         | `skippage_428`                       |
 
 **Deferred** (need crate-private access or a large bespoke fixture, so not in a
 group binary yet): the eval-vs-columnar floor (`eval_vec` is crate-private — it
@@ -169,6 +170,14 @@ question in its module header — read the header before touching it.
   196->712us). Four attempts to "fix" the non-problem are recorded with their
   numbers, including a fold that was 3.1x WORSE. Do not re-open without a way to
   answer an endpoint predicate without visiting edges.
+
+- `skippage_428` — what does a PAGED query pay, and does the depth of the page matter?
+  Asked because the TS engine's generic tail projected every row before paging (item
+  427). Native does not: a shallow `SKIP 100 LIMIT 20` costs 0.001 ms at 1,000,000 nodes
+  because the input stream is paged lazily, and the 2.556 ms a `SKIP n-5` costs is the
+  unavoidable walk of a million inputs, not projection of skipped rows. It carries the
+  unpaged projection of the same rows as the ceiling and `count(*)` as the floor, so
+  "native already pages lazily" is read off two controls rather than asserted.
 
 - `skipcast_426` — NOT a benchmark: a CONFORMANCE probe. Does a SKIPPED row's projection
   still get evaluated? The engine's stated rule is "project exactly the rows you emit",

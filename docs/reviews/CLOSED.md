@@ -2855,6 +2855,22 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   fault exactly as native does, so byte-identity holds and item 426's conformance question stays
   open and unprejudiced. Extracted to a module-scope helper because the complexity cap objected at
   38/35 — same cap, same answer as item 377.
+- **The NATIVE paging twin is REFUTED — it already pages lazily (428).** At 1,000,000 nodes a
+  shallow `SKIP 100 LIMIT 20` costs **0.001 ms** and a deep `SKIP n-5` costs 2.556, against a
+  10.403 ms ceiling for projecting every row — so native pages the input stream, and the deep
+  figure is the unavoidable million-row walk. The width-dependence (2.556 one property, 4.884 two)
+  is the stream carrying two columns, not projection of skipped rows. `skippage_428` committed.
+- **SCOPE CORRECTION to item 427: its 1.96-2.09x is DEEP pages only (428).** All four of its
+  targets were `SKIP 199995` out of 200,000. The TS **shallow** page measures 0.2 ms before the
+  change and 0.1-0.2 after — `skip`/`take` are lazy generators, so it always stopped after ~120
+  bindings. The win is real for offset pagination deep into a large set and for export cursors,
+  and costs nothing elsewhere, but a reader of 427's line would wrongly expect `SKIP 100 LIMIT 20`
+  to be 2x faster. **A ratio is only as good as the shape it was measured on, and "four shapes"
+  sharing a parameter value is one shape.**
+- **Walking a row costs native 2.6 ns and TS ~125 ns — 48x, on a third independent shape (428).**
+  25.1 ms for 200,000 bindings against 2.556 ms for 1,000,000. Item 377's per-row `Binding`, now
+  priced on paging as well as on aggregates and top-k. Not a new target; 377 is bigger than
+  anything paging-shaped.
 - **A harness reporting a false SURVIVED reads as a missing test (427).** A `$F` inside a
   double-quoted `perl` block was expanded by the shell, so three of six mutants were never written
   to the file and were reported as survivors; one line of output said `Can't open $F`. The mirror
