@@ -165,6 +165,14 @@ const queries: Record<string, string> = {
   grp1: 'MATCH (n:Person) RETURN n.age AS k, count(*) AS c',
   grp1b: 'MATCH (n:Person) RETURN n.age AS k, max(n.age) AS m',
   grp2: 'MATCH (n:Person) RETURN n.age AS k, count(*) AS c, max(n.age) AS m',
+  // Item 475: the last cell of the arity matrix — a GROUPED aggregate over a HOP.
+  // `detectGroupedHopCount` is a `count(*)` tally like the node one; anything else may fall off.
+  grph1: 'MATCH (:Person)-[:KNOWS]->(b) RETURN b.age AS k, count(*) AS c',
+  // The NAMED spelling of grph1 — same question, and the tally requires `start.variable`.
+  grph1n: 'MATCH (a:Person)-[:KNOWS]->(b) RETURN b.age AS k, count(*) AS c',
+  grph1nb: 'MATCH (a:Person)-[:KNOWS]->(b) RETURN b.age AS k, max(b.age) AS m',
+  grph1b: 'MATCH (:Person)-[:KNOWS]->(b) RETURN b.age AS k, max(b.age) AS m',
+  grph2: 'MATCH (:Person)-[:KNOWS]->(b) RETURN b.age AS k, count(*) AS c, max(b.age) AS m',
 };
 const key = process.env.PCASE ?? 'node';
 const q = queries[key];

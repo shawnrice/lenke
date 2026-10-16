@@ -4823,10 +4823,17 @@ export const detectGroupedHopCount = (clauses: readonly Clause[]): ReachFn | nul
     return null;
   }
 
-  if (start.variable === undefined || far.variable === undefined) {
-    return null;
-  }
-
+  // An ANONYMOUS end is fine: nothing can reference it, so the name was only ever used to bind
+  // a predicate. Requiring BOTH ends to be named made two spellings of ONE question cost 2.2x
+  // apart — `MATCH (:Person)-[:KNOWS]->(b) RETURN b.age, count(*)` at 735 ms against the named
+  // `(a:Person)` at 335 over 1,000,000 edges (item 475) — which is the bug class this repo is
+  // named after.
+  //
+  // There is no replacement guard here, and that is deliberate: the KEYED end is named BY THE
+  // KEY EXPRESSION, so `keySource.variable !== far.variable` below already refuses a pattern
+  // whose keyed end has no name. A guard added here as well SURVIVED its mutant — redundant
+  // with the one twenty lines down — so it was removed rather than left as a line no test can
+  // fail on.
   const types = relTypeNames(rel.label);
 
   if (types === null) {
@@ -4846,6 +4853,8 @@ export const detectGroupedHopCount = (clauses: readonly Clause[]): ReachFn | nul
     return null;
   }
 
+  // `keySource.variable` is a real name (a `prop` always has one), so comparing it against an
+  // anonymous end's `undefined` is a mismatch rather than an accidental hit.
   const onStart = keySource.variable === start.variable;
 
   if (!onStart && keySource.variable !== far.variable) {

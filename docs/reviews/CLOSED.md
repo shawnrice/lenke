@@ -4633,3 +4633,28 @@ appears in the tally forty lines up, `replace(…, 1)` hit that copy, and the ta
 in another file. Item 459's lesson, re-paid. **A mutation run's first job is to prove the mutant
 landed where it was aimed — `cmp -s` only proves something changed.** Two others needed fixtures
 the file lacked: a list-valued group key and a two-key `GROUP BY`.
+
+## 475 — the anonymous hop end: CLOSED. Two spellings of one grouped count were 2.2x apart
+
+`detectGroupedHopCount` declined unless BOTH ends were named, so
+`MATCH (:Person)-[:KNOWS]->(b) RETURN b.age, count(*)` cost 735 ms where `(a:Person)` cost 335 —
+**the bug class CLAUDE.md names by example**, sitting in the tally since item 142. The name was
+only ever used to bind a predicate, and nothing can reference an unnamed end. Both spellings now
+take the tally: 314-347 against 330-341, agreeing; the node tally is the control at 2.7-3.1.
+
+Diagnosed by instrumenting the LADDER (a `console.error` per rung) rather than the detector —
+and run against `src`, since a probe through `packages/native` reads the BUILT dist.
+
+**The replacement guard I wrote was REDUNDANT and its mutant said so**: the key-end check twenty
+lines down already refuses an unnamed keyed end, so the line was deleted rather than kept
+untestable. A surviving mutant on a guard you just wrote can mean "redundant" as easily as
+"untested", and the two have opposite fixes. The key-end check's own mutant also survives,
+reachability-bound: a key naming neither end is rejected by the scoper before the planner sees
+it.
+
+Fixture faults the mutants found: `:P` was VACUOUS in the shared fixture (every source has it),
+so ignoring the start label changed nothing; and the mutation script now asserts its pattern
+appears exactly ONCE, after item 474's mutant landed on the node tally's identical body.
+
+**OPEN: the grouped-hop ARITY gap.** `b.age AS k, max(b.age)` 759 ms against the tally's ~335;
+`b.age, count(*), max(b.age)` 895. Native: 5.2 / 9.3 / 9.4.

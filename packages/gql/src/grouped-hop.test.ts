@@ -323,3 +323,93 @@ describe('grouped hop count', () => {
     }
   });
 });
+
+// Item 475: an ANONYMOUS end. The tally used to require BOTH ends to be named, which made two
+// spellings of one question cost 2.2x apart — 735 ms against 335 over 1,000,000 edges — because
+// the unnamed one fell to the general path. Nothing can reference an unnamed end, so the name
+// was only ever used to bind a predicate.
+//
+// Every case below compares the two spellings AS ARRAYS, in order: first-seen group order is
+// observable, and a tally that counts correctly in the wrong order is the bug this file's header
+// records.
+describe('an anonymous hop end is the same question as a named one (item 475)', () => {
+  test('key on the far end, start anonymous', () => {
+    const g = build();
+
+    expect(query(g, 'MATCH (:P)-[:T]->(x) RETURN x.k AS k, count(*) AS c')).toEqual(
+      query(g, 'MATCH (a:P)-[:T]->(x) RETURN x.k AS k, count(*) AS c'),
+    );
+  });
+
+  test('key on the start end, far anonymous', () => {
+    const g = build();
+
+    expect(query(g, 'MATCH (a:P)-[:T]->() RETURN a.k AS k, count(*) AS c')).toEqual(
+      query(g, 'MATCH (a:P)-[:T]->(x) RETURN a.k AS k, count(*) AS c'),
+    );
+  });
+
+  test('a WHERE on the keyed end still carries, with the other end anonymous', () => {
+    const g = build();
+
+    expect(query(g, 'MATCH (:P)-[:T]->(x) WHERE x.n > 10 RETURN x.k AS k, count(*) AS c')).toEqual(
+      query(g, 'MATCH (a:P)-[:T]->(x) WHERE x.n > 10 RETURN x.k AS k, count(*) AS c'),
+    );
+  });
+
+  test('an inline constraint on the ANONYMOUS end declines, and both spellings agree', () => {
+    const g = build();
+
+    // The non-keyed end must be plain, so this takes the general path either way — and the two
+    // spellings must still answer the same thing.
+    expect(query(g, "MATCH ({k: 'ka'})-[:T]->(x) RETURN x.k AS k, count(*) AS c")).toEqual(
+      query(g, "MATCH (a {k: 'ka'})-[:T]->(x) RETURN x.k AS k, count(*) AS c"),
+    );
+  });
+
+  test('BOTH ends anonymous declines — nothing names the key', () => {
+    const g = build();
+
+    // There is no key to group by that reads an end, so this is a different shape entirely:
+    // `count(*)` over the hop, which the count shortcut answers.
+    expect(query(g, 'MATCH (:P)-[:T]->() RETURN count(*) AS c')).toEqual([{ c: 5 }]);
+  });
+
+  test('the START LABEL still selects, with the start anonymous', () => {
+    // The shared fixture gives every source the `P` label, which makes it VACUOUS: dropping the
+    // label changes nothing there, and the mutant that ignored it SURVIVED. CLAUDE.md's rule is
+    // that every label in a fixture must EXCLUDE something, so this one has its own.
+    const g = new Graph();
+    const p = g.addVertex({ id: 'p', labels: ['P'], properties: { k: 'p' } });
+    const q = g.addVertex({ id: 'q', labels: ['Q'], properties: { k: 'q' } });
+    const far1 = g.addVertex({ id: 'f1', labels: ['F'], properties: { k: 'from-p' } });
+    const far2 = g.addVertex({ id: 'f2', labels: ['F'], properties: { k: 'from-q' } });
+
+    g.addEdge({ from: p, to: far1, labels: ['T'], properties: {} });
+    g.addEdge({ from: q, to: far2, labels: ['T'], properties: {} });
+
+    // Only `p` is a `P`, so the `Q`-sourced edge must not appear.
+    expect(query(g, 'MATCH (:P)-[:T]->(x) RETURN x.k AS k, count(*) AS c')).toEqual([
+      { k: 'from-p', c: 1 },
+    ]);
+    expect(query(g, 'MATCH (:P)-[:T]->(x) RETURN x.k AS k, count(*) AS c')).toEqual(
+      query(g, 'MATCH (a:P)-[:T]->(x) RETURN x.k AS k, count(*) AS c'),
+    );
+  });
+
+  test('the ORDERED rows agree, not just the multiset', () => {
+    const g = build();
+    const anon = query<{ k: string; c: number }>(
+      g,
+      'MATCH (:P)-[:T]->(x) RETURN x.k AS k, count(*) AS c',
+    );
+
+    // The fixture inserts b's edge first, so first-seen order is not insertion order of the
+    // vertices — which is what makes this comparison able to fail.
+    expect(anon.map((r) => r.k)).toEqual(
+      query<{ k: string }>(g, 'MATCH (a:P)-[:T]->(x) RETURN x.k AS k, count(*) AS c').map(
+        (r) => r.k,
+      ),
+    );
+  });
+});
