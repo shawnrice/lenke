@@ -3050,6 +3050,19 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   So the 174.2 ns/row floor is the two `Arc::new`s and the 3-element outer `vec!` — structural to
   the result shape, not slack in the collection.
 
+- **PRICED, MODEST, NOT BUILT — element render also scales with the store's LABEL count, at 0.80
+  ns/label (393).** `labels_of_refs` iterates EVERY label in the store, binary-searches each one's
+  id list, then allocates a `Vec` and sorts — per node, per render. The same shape as the property
+  key cost item 391 removed, so it was measured the same way: 200,000 nodes, one label each, only
+  the number of OTHER store labels varied (carried by nodes that are not rendered).
+  **390.6 / 391.3 / 397.6 / 434.6 / 551.0 ns/row at 0 / 4 / 16 / 64 / 200 extra labels** — a slope
+  of 0.80 ns/label and **1.41x at L=200, but 1.00-1.02x at the 4-16 a real schema carries**.
+  **No free hoist exists here, which is why it is not 391.** The binary searches depend on the node
+  id, so unlike the property keys nothing is loop-invariant; removing it needs a forward
+  node -> labels cache — new state, on the item-387 pattern. Item 390 measured labels at 57.2
+  ns/row on a ONE-label fixture, which is the floor and the common case. Worth building only for a
+  schema with scores of labels; recorded with its slope so that judgement can be made from numbers.
+
 ## 6. Consequences of the AND decision — RESOLVED by item 258, and not as predicted
 
 This section was written before the change and asked three questions. All three are now answered by
