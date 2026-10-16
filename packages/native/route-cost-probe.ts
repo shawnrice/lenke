@@ -236,6 +236,12 @@ const queries: Record<string, string> = {
     'MATCH (a:Person)-[:KNOWS]->(b)-[:KNOWS]->(c)-[:KNOWS]->(d) WHERE c.w2 = 2 RETURN count(*) AS n',
   h3inlineW:
     'MATCH (a:Person)-[:KNOWS]->(b)-[:KNOWS]->(c {w2: 2})-[:KNOWS]->(d) RETURN count(*) AS n',
+  // Item 492: the SUBQUERY family, priced in isolation. `bun run bench` reads 6.9x on both of
+  // its subquery rows, and the probe that reported it shares one process per group.
+  subcount: 'MATCH (n:Person) RETURN COUNT { MATCH (n)-[:KNOWS]->(x) } AS c',
+  subexists: 'MATCH (n:Person) WHERE EXISTS { MATCH (n)-[:KNOWS]->(x) } RETURN count(*) AS c',
+  sub2hop: 'MATCH (n:Person) RETURN COUNT { MATCH (n)-[:KNOWS]->(x)-[:KNOWS]->(y) } AS c',
+  subcontrol: 'MATCH (n:Person)-[:KNOWS]->(x) RETURN count(*) AS c',
   hopaggrelvar: 'MATCH (:Person)-[r:KNOWS]->(b) RETURN max(b.age) AS m',
   twohoprelvar: 'MATCH (:Person)-[r:KNOWS]->(b)-[s:KNOWS]->(c) RETURN count(*) AS c',
   threehoprelvar:

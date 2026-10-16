@@ -5022,3 +5022,29 @@ group is a finding; an unflagged group is a question for `route-cost-probe`._
 **Fourth sub-threshold flag this session to dissolve on isolation or repetition** (484, 487, 490,
 this) — and the first whose wrong reading had already been committed, hence a retraction item
 rather than an edit.
+
+## 492 — a correlated one-hop `EXISTS`: CLOSED at 1.28x, after two wrong diagnoses that measured flat
+
+Priced with the ISOLATING instrument (491's lesson): `WHERE EXISTS { MATCH (n)-[:KNOWS]->(x) }`
+cost 87.8 ms in TS against **1.2 in native** — 73x for "does this vertex have an out-edge".
+
+**Two diagnoses measured flat before the right one.** Hoisting the per-row guard analysis into a
+compile-time shape: 87.8 -> 85.6 (flat). Answering a free endpoint from a bucket SIZE instead of
+the `edgesOfTypes` generator: 85.6 -> 87.4 (flat). Then a counter and timer INSIDE the closure:
+200,000 calls, 108.7 of 128.5 ms, fast path always taken — ~540 ns for two `Map.get`s, which is
+item 194's ~190 ns twice.
+
+**The real component: the adjacency BOX.** `Vertex.adjFrom`/`adjTo` exist so a consumer holding
+the vertex stops hashing its id (162, 321), and this closure was hashing anyway. **87.8 ->
+66.9-68.8 ms (1.28x)**, three rounds; `COUNT {…}` and the plain hop count flat as controls.
+
+**Only one of three micros was real** — items 300/310's decomposition from the other side. The
+two flat ones are kept and labelled flat (they remove provable per-row work below the floor).
+
+Mutation: four of six. One is EQUIVALENT by a store invariant — `deIndexEdgeLabel` deletes an
+emptied per-type entry, so `size > 0` and `has` agree; **my comment had claimed the size read was
+required**, and it now says what is true. The rel-VARIABLE guard needed a sub-`WHERE` that READS
+the edge to have teeth.
+
+**OPEN:** `COUNT { … }` is 93 ms against native's 14.7 — same per-row pipeline, and the box
+applies there too.

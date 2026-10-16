@@ -1089,33 +1089,24 @@ const existsReachable = (
 };
 
 /**
- * Existence fast path for a FIXED single hop: `EXISTS { (a)-[:T]->(b …) }` from an
- * already-bound `a`.
+ * The SHAPE half of `existsOneHop`, decided ONCE at compile time: everything that depends on the
+ * sub-pattern's text rather than on the row's binding. `undefined` when the shape is not a
+ * single directed hop off a correlated start.
  *
- * `existsReachable` above covers the QUANTIFIED spelling (`->+`, `->*`) and declines a plain
- * hop — `if (!q) return undefined` — so the commonest shape of all went through
- * `matchClauseBindings`. That short-circuits correctly (it takes one `next()`), but it pays the
- * whole matcher to do it: seeds, `walkSegments`, the generator chain. Measured at roughly 1µs
- * per outer vertex, against a 0.3µs scan floor and native's 0.04µs — and FLAT whether the
- * subquery matches or not, which is the giveaway that the cost is the machinery rather than the
- * search (audit item 155).
+ * WHY THIS IS SPLIT. `existsOneHop` ran its whole analysis per OUTER ROW — ten conditions plus a
+ * `relTypeNames` that ALLOCATES an array — and a correlated `EXISTS` runs once a row. Measured
+ * at 200,000 nodes / 1,000,000 edges (item 492): `MATCH (n:Person) WHERE EXISTS { MATCH
+ * (n)-[:KNOWS]->(x) } RETURN count(*)` cost **87.8 ms in TS against 1.2 in native**, i.e. 439 ns
+ * a node for a question that is "does this vertex have an out-edge of this type". The degree
+ * probe was already there (item 211); what was not was deciding ONCE that it applies.
  *
- * Walking the adjacency directly and returning at the first accepted endpoint is the same
- * question asked without the machinery. `hit` is the endpoint test — the node's label, inline
- * props and predicate, plus the subquery's own `WHERE` — so it stays `matchNode`'s decision
- * rather than a re-derivation.
- *
- * Returns `undefined` for every shape it does not cover, which the caller treats as "use the
- * general path": an edge variable or edge predicate (the subquery `WHERE` could read them), a
- * `both` direction, a start that is not bound or carries its own predicates, a path variable,
- * or a non-default selector.
+ * `startVar` is returned rather than resolved: whether it is BOUND is a per-row question, and
+ * the two conditions that must stay per-row are exactly the two item 211 lists — the start must
+ * be bound, and (for the count form) the far variable must not be.
  */
-const existsOneHop = (
-  graph: Graph,
+const oneHopExistsShape = (
   sub: CMatch,
-  binding: Binding,
-  params: Params,
-): boolean | undefined => {
+): { startVar: string; out: boolean; types: string[] | undefined; free: boolean } | undefined => {
   if (sub.patterns.length !== 1 || sub.patterns[0].segments.length !== 1) {
     return undefined;
   }
@@ -1132,7 +1123,6 @@ const existsOneHop = (
     hasPredicate(rel.pred) ||
     types === null ||
     startVar === undefined ||
-    !binding.has(startVar) ||
     path.pathVar !== undefined ||
     path.selector !== 'walk' ||
     hasPredicate(path.start.pred)
@@ -1140,26 +1130,93 @@ const existsOneHop = (
     return undefined;
   }
 
-  const startV = binding.get(startVar) as Vertex;
-  const out = rel.direction === 'out';
-  const byType = (out ? graph.edgesFromByLabel : graph.edgesToByLabel).get(startV.id);
+  return {
+    startVar,
+    out: rel.direction === 'out',
+    types: types ?? undefined,
+    // An UNCONSTRAINED endpoint — no label, no props, no predicate, and no subquery `WHERE` —
+    // makes every neighbour an answer, so the question collapses to "is there an edge of these
+    // types". `EXISTS { (u)-[:E]->() }` is that shape, and it is the one this came for.
+    free: node.label === undefined && !hasPredicate(node.pred) && sub.where === undefined,
+  };
+};
+
+/** ISO EXISTS: TRUE iff the correlated sub-pattern has at least one match. */
+const compileExists = (expr: Extract<Expr, { kind: 'exists' }>): CompiledExpr => {
+  const sub = compileSubMatch(expr);
+  // Decided once. The per-row closure below then does only what depends on the ROW.
+  const shape = oneHopExistsShape(sub);
+  const [firstPattern] = sub.patterns;
+  const far: CNode | undefined = shape === undefined ? undefined : firstPattern.segments[0].node;
+
+  return (env) => {
+    const reach = existsReachable(env.graph, sub, env.binding, env.params);
+
+    if (reach !== undefined) {
+      return reach;
+    }
+
+    if (shape !== undefined) {
+      const startV = env.binding.get(shape.startVar) as Vertex | undefined;
+
+      if (startV !== undefined) {
+        return oneHopExists(env, shape, startV, sub, far as CNode);
+      }
+    }
+
+    const matches = matchClauseBindings(env.graph, sub, env.binding, env.params)[Symbol.iterator]();
+
+    return !matches.next().done;
+  };
+};
+
+/** The per-ROW half: one adjacency probe, and the endpoint test only when the shape needs it. */
+const oneHopExists = (
+  env: EvalEnv,
+  shape: NonNullable<ReturnType<typeof oneHopExistsShape>>,
+  startV: Vertex,
+  sub: CMatch,
+  far: CNode,
+): boolean => {
+  const { graph, params, binding } = env;
+  // The vertex's OWN adjacency box (`Vertex.adjFrom` / `adjTo`, items 162 and 321), not a hash of
+  // its id into the graph's map. This closure runs once per OUTER ROW, and a string-keyed
+  // `Map.get` on a 200,000-entry map is ~190 ns (item 194) — measured here as most of the
+  // 543 ns a call this shape was paying (item 492).
+  const byType = shape.out ? startV.adjFrom : startV.adjTo;
 
   if (byType === undefined) {
     return false; // no edges in this direction at all
   }
 
-  // An UNCONSTRAINED endpoint — no label, no props, no predicate, and no subquery `WHERE` —
-  // makes every neighbour an answer, so the question collapses to "is there an edge of these
-  // types". `EXISTS { (u)-[:E]->() }` is that shape, and it is the one this came for.
-  const free = node.label === undefined && !hasPredicate(node.pred) && sub.where === undefined;
+  // A FREE endpoint asks only whether a bucket is non-empty — no generator frame, no edge
+  // visited. `edgesOfTypes` yields `Edge` objects and dedupes multi-label edges through a `Set`;
+  // neither is needed to answer "is there one" (item 492).
+  //
+  // The size read rather than a `has`: `deIndexEdgeLabel` DELETES a per-type entry when it
+  // empties, so the two are equivalent today and a mutant swapping them survives. Kept as the
+  // size read because it does not depend on that invariant, and said plainly rather than
+  // claimed as a correctness requirement — an earlier version of this comment asserted an empty
+  // bucket could persist, which the store does not allow.
+  if (shape.free) {
+    const { types } = shape;
 
-  for (const e of edgesOfTypes(byType, types ?? undefined)) {
-    if (free) {
-      return true;
+    if (types === undefined) {
+      for (const set of byType.values()) {
+        if (set.size > 0) {
+          return true;
+        }
+      }
+
+      return false;
     }
 
-    const landed = out ? e.to : e.from;
-    const bound = matchNode(binding, node, landed, params, graph);
+    return types.some((t) => (byType.get(t)?.size ?? 0) > 0);
+  }
+
+  for (const e of edgesOfTypes(byType, shape.types)) {
+    const landed = shape.out ? e.to : e.from;
+    const bound = matchNode(binding, far, landed, params, graph);
 
     if (
       bound !== null &&
@@ -1170,29 +1227,6 @@ const existsOneHop = (
   }
 
   return false;
-};
-
-/** ISO EXISTS: TRUE iff the correlated sub-pattern has at least one match. */
-const compileExists = (expr: Extract<Expr, { kind: 'exists' }>): CompiledExpr => {
-  const sub = compileSubMatch(expr);
-
-  return (env) => {
-    const reach = existsReachable(env.graph, sub, env.binding, env.params);
-
-    if (reach !== undefined) {
-      return reach;
-    }
-
-    const one = existsOneHop(env.graph, sub, env.binding, env.params);
-
-    if (one !== undefined) {
-      return one;
-    }
-
-    const matches = matchClauseBindings(env.graph, sub, env.binding, env.params)[Symbol.iterator]();
-
-    return !matches.next().done;
-  };
 };
 
 /** ISO count subquery: the number of matches of the correlated sub-pattern. */
