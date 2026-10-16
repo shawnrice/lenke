@@ -2910,6 +2910,19 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   native was missing a path, TS never was. After 432 both are SYMMETRIC on the ring layout (native
   1.03x, TS 1.14x) and both keep an asymmetry on scatter (native 1.76x, TS ~1.32x), so the residual
   in both is the scattered-`inc`-bucket locality item 431 isolated. 431 is closed.
+- **An instrument for that, and a NEGATIVE first answer (434).** `engine-gap-probe`
+  (`bun run probe:gap`) times 25 shapes on both engines over one shared edge list and reads the
+  ratio: the normal band is 1.5-4x, a native-only shortcut pushes it to 380x, so **native barely
+  ahead or behind is the signal**. Three rows came in below the band and all three are the HARNESS.
+  Among readable rows the lowest is 13.6x, so this shape set holds no native-missing-path candidate
+  of item 432's kind.
+- **Native row EGRESS is 58 ns a numeric row and 94 ns a string row — the floor for any multi-row
+  native query (434).** Three controls doing the same scan and differing only in rows out:
+  `count(a.u)` 0.01 ms, 5,000 numbers 0.33, 5,000 strings 0.48. The scan is 0.01 and the rest is
+  crossing FFI and building a JS object per row, which TS never pays. **So compare the engines on
+  AGGREGATE shapes or through Arrow, never on row-returning shapes through the object API** — the
+  row count sets the result. The probe marks those rows `*`, and rows where both sides are under
+  the clock's resolution `~` (`node count` divides 0.0 by 0.00 to a meaningless 0.5x).
 - **When one engine DECLINES a shape the other accepts, the one that accepts it is the
   specification (433).** Native's comment explained why the 3-hop product could not carry per-hop
   directions while the TS product had carried them since item 298. The session's habit is to fix TS

@@ -40,6 +40,7 @@
     "bench:gremlin": "bun bench-gremlin.ts",
     "probe:depth": "bun chain-depth-probe.ts",
     "probe:layout": "bun chain-layout-probe.ts",
+    "probe:gap": "bun engine-gap-probe.ts",
     "bench:chain": "bun chain-sweep-bench.ts",
     "bench:gate": "bun chain-gate-bench.ts"
   },
