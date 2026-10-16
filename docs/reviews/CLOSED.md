@@ -4264,3 +4264,28 @@ OPEN, pre-existing, found here: **`cot` at zero diverges between the engines** �
 `0.0 <= cot(0.0 * n.x)` and siblings. `FUZZ_SEED=2724363121` replays deterministically and
 **fails at HEAD too** (both files reverted and rebuilt). A hand-built three-node fixture did not
 reproduce it, so the fuzzer's fixture is part of the shape; the seed is the reproducer.
+
+## 460 — item 459's wrong answer, and the check that would have caught it before the push
+
+Item 459's arm called `f(x)` on the raw `f64` from the column, skipping `num_of`'s -0.0 -> +0.0
+collapse. The numeric model has NO negative zero and `num_of`'s comment names the casualty:
+`cot(-0)` is -Inf under IEEE and +Inf under the policy. So `0.0 <= cot(0.0 * n.x)` answered FALSE
+for negative `x` where TS answers TRUE. **CI went red.** Fixed by routing through
+`value::num_of`; the 2.6x is unaffected (12.89-13.04 ms against 12.65-12.93).
+
+**A RUN FAILING IS NOT THE SAME QUERY FAILING.** I replayed the seed against HEAD, saw the run
+fail, and wrote "pre-existing, verified". It did fail — on a DIFFERENT query: that seed carries
+both the `cot` divergence I had just introduced AND item 452's known `AND`-fault-order residual.
+Checking the exit code of a 20,000-query run answers "does this seed fail", which is not the
+question. **Run the OFFENDING QUERY against the previous build** — thirty seconds, and it gives
+`true, true` at 458 against `false, true` at 459. Item 451 did exactly that and was right; the
+difference between the ticks is which thing got compared, not how careful they were.
+
+Two further notes:
+
+- **A regression test that has not failed against the bug it describes is a guess.** The -0
+  assertions here were verified by re-introducing the bug (`f(if x == 0.0 { -0.0 } else { x })`),
+  which they catch.
+- **`git checkout -- <path>` reverts to the INDEX**, which is HEAD — it wiped the fix mid-tick
+  after a mutant run. Restore from a saved copy, not from git, when the working tree holds
+  uncommitted work.

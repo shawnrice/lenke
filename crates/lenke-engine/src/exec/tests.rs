@@ -19914,6 +19914,17 @@ fn resolved_unary_numeric_functions_keep_null_and_raise() {
 
     // A NULL argument propagates to NULL, beside a row that computes.
     assert_eq!(rows("sqrt(a.k)").unwrap(), "Num(2.0),Null");
+    // NEGATIVE ZERO is collapsed, because the numeric model has none (item 460). `0.0 * -2.0`
+    // is -0.0 under IEEE, and `cot(-0.0)` is -Inf where `cot(+0.0)` is +Inf — so comparing the
+    // result against 0.0 answers FALSE or TRUE depending on whether the collapse happened.
+    // Item 459's first version read `Value::Num(x)` directly and skipped it, shipping a wrong
+    // answer that the differential fuzzer caught the same tick. Going through `num_of` is what
+    // keeps the policy in one place; this asserts it from the outside.
+    assert_eq!(
+        rows("0.0 <= cot(0.0 * (0 - a.k))").unwrap(),
+        "Bool(true),Null"
+    );
+    assert_eq!(rows("0.0 <= cot(0.0 * a.k)").unwrap(), "Bool(true),Null");
     // A non-null NON-NUMERIC argument is a DATA EXCEPTION, not a null. This is the assertion the
     // first version of the arm failed: it used `num_of` and answered NULL.
     assert!(rows("sqrt(a.s)").is_err(), "sqrt of a string must raise");

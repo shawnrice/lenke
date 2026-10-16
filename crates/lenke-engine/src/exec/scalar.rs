@@ -954,10 +954,23 @@ pub(super) fn eval_unary_num(f: fn(f64) -> f64, name: &str, c: Col) -> Result<Co
         //
         // The error is not re-spelled: the one row that needs it calls `call_scalar_checked`, so
         // the message and the condition stay defined in one place.
-        match c.value_at(i) {
-            Value::Num(x) => out.push(Value::Num(f(x))),
-            Value::Null => out.push(Value::Null),
-            other => out.push(call_scalar_checked(name, std::slice::from_ref(&other))?),
+        let v = c.value_at(i);
+
+        match value::num_of(&v) {
+            // THROUGH `num_of`, NOT the raw `f64` (item 460). It collapses -0.0 to +0.0,
+            // because the numeric model has no negative zero — and `cot` is the function whose
+            // own comment names that case: `cot(-0)` is +Inf under the policy and -Inf under
+            // IEEE. Reading `Value::Num(x)` directly, as item 459's first version did, skipped
+            // the collapse and made `0.0 <= cot(0.0 * n.x)` answer FALSE for every negative `x`
+            // where the TS engine answers TRUE. Shipped, then caught by the differential fuzzer
+            // the same tick.
+            Some(x) => out.push(Value::Num(f(x))),
+            // `num_of` returns `None` for a NULL *and* for a non-numeric, which these two arms
+            // must keep apart: a NULL propagates, anything else is a DATA EXCEPTION —
+            // `sqrt('1e300')` THROWS, a named function validating its non-null arguments where
+            // an arithmetic operator would propagate.
+            None if matches!(v, Value::Null) => out.push(Value::Null),
+            None => out.push(call_scalar_checked(name, std::slice::from_ref(&v))?),
         }
     }
 
