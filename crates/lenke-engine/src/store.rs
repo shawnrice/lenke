@@ -2212,6 +2212,41 @@ impl Store {
         self.edge_extra.get(&eid).is_some_and(|ex| ex.contains(&t))
     }
 
+    /// The interned edge-type id's name, BORROWED (`&str`) — the allocation-free twin
+    /// of [`etype_name`](Self::etype_name), which clones the `String` out of the map.
+    #[must_use]
+    pub fn etype_name_ref(&self, etype: u32) -> Option<&str> {
+        self.etype_ids
+            .iter()
+            .find(|(_, &id)| id == etype)
+            .map(|(name, _)| name.as_str())
+    }
+
+    /// All of edge `eid`'s labels BORROWED as `&str` — the allocation-light twin of
+    /// [`edge_labels_of`](Self::edge_labels_of), which clones a `String` per label only
+    /// for the caller to copy the bytes again into a `GStr`. Same order (type first,
+    /// then secondary labels); callers that want canonical order still sort.
+    ///
+    /// This is the edge twin of [`labels_of_refs`](Self::labels_of_refs) (item 340),
+    /// which the node side got and the edge side did not.
+    #[must_use]
+    pub fn edge_labels_of_refs(&self, eid: u32) -> Vec<&str> {
+        let mut out = Vec::new();
+        if let Some(&t) = self.edge_etype.get(eid as usize) {
+            if let Some(name) = self.etype_name_ref(t) {
+                out.push(name);
+            }
+        }
+        if let Some(extra) = self.edge_extra.get(&eid) {
+            for &tid in extra {
+                if let Some(name) = self.etype_name_ref(tid) {
+                    out.push(name);
+                }
+            }
+        }
+        out
+    }
+
     /// All of edge `eid`'s labels — its type (first) then any secondary labels
     /// (multi-label edges), in that order.
     #[must_use]

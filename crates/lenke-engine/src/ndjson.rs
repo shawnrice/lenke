@@ -91,7 +91,7 @@ pub fn to_ndjson_threads(store: &Store, threads: u32) -> String {
             out.push_str(",\"to\":");
             encode_string(out, store.node_ext_id_ref(a.nbr).unwrap_or(""));
             out.push_str(",\"labels\":");
-            encode_str_array(out, &store.edge_labels_of(eid));
+            encode_str_array(out, &store.edge_labels_of_refs(eid));
             out.push_str(",\"properties\":");
             encode_object(out, &edge_keys, |k| {
                 store.has_edge_prop(eid, k).then(|| store.edge_prop(eid, k))

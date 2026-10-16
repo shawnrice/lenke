@@ -351,7 +351,7 @@ fn serialize_pg_json(store: &Store) -> String {
         let from_ext = store.node_ext_id_ref(from).unwrap_or("");
         for a in store.out(from) {
             let eid = a.eid;
-            let labels = store.edge_labels_of(eid);
+            let labels = store.edge_labels_of_refs(eid);
             sink.edge(
                 store.edge_ext_id_ref(eid).unwrap_or(""),
                 from_ext,
@@ -415,7 +415,7 @@ fn serialize_graphson(store: &Store) -> String {
         let from_ext = store.node_ext_id_ref(from).unwrap_or("");
         for a in store.out(from) {
             let eid = a.eid;
-            let labels = store.edge_labels_of(eid);
+            let labels = store.edge_labels_of_refs(eid);
             sink.edge(
                 store.edge_ext_id_ref(eid).unwrap_or(""),
                 from_ext,
@@ -537,8 +537,7 @@ fn serialize_csv(store: &Store) -> Result<String, CodecError> {
 
     let mut w = cols.writer(lenke_codec::EDGE_FIXED, store.edge_count());
     for (slot, (from, to, eid)) in edge_ids.iter().enumerate() {
-        let labels = store.edge_labels_of(*eid);
-        let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+        let label_refs = store.edge_labels_of_refs(*eid);
         let props: Vec<(&str, &CValue)> = edge_vals[slot]
             .iter()
             .map(|(k, v)| (k.as_str(), v))
@@ -605,7 +604,7 @@ fn serialize_pg_text(store: &Store) -> Result<String, CodecError> {
         let from_ext = store.node_ext_id_ref(from).unwrap_or("");
         for a in store.out(from) {
             let eid = a.eid;
-            let labels = store.edge_labels_of(eid);
+            let labels = store.edge_labels_of_refs(eid);
             sink.begin(&[from_ext, store.node_ext_id_ref(a.nbr).unwrap_or("")]);
             for name in &labels {
                 sink.label(name);

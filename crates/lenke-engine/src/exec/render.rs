@@ -130,7 +130,7 @@ pub(super) fn edge_result_value(store: &Store, eid: u32) -> Value {
     // multi-label edge (`[KNOWS, CREATED]`) must render its whole label set
     // regardless of which type it was reached through; `edge_type_name` returns
     // only the primary type, which silently dropped the rest.
-    let mut labels = store.edge_labels_of(eid);
+    let mut labels = store.edge_labels_of_refs(eid);
     labels.sort_unstable();
     let labels = Value::List(labels.into_iter().map(|t| Value::Str(t.into())).collect());
     // The node renderer's three savings, applied here: the key list comes from the cached
@@ -200,7 +200,7 @@ pub(super) fn render_edges(store: &Store, eids: &[u32]) -> Vec<Value> {
                     .node_ext_id(n)
                     .unwrap_or_else(|| GStr::from(n.to_string()))
             };
-            let mut labels = store.edge_labels_of(eid);
+            let mut labels = store.edge_labels_of_refs(eid);
             labels.sort_unstable();
             let labels = Value::List(labels.into_iter().map(|t| Value::Str(t.into())).collect());
             let props: Vec<(Value, Value)> = maps

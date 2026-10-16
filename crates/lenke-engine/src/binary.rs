@@ -304,7 +304,7 @@ pub fn to_binary(store: &Store) -> Vec<u8> {
         w.opt_str(store.edge_ext_id(*eid).as_deref());
         w.str(&store.node_ext_id(*from).unwrap_or_default());
         w.str(&store.node_ext_id(*to).unwrap_or_default());
-        let labels = store.edge_labels_of(*eid);
+        let labels = store.edge_labels_of_refs(*eid);
         w.u32(labels.len());
         for l in &labels {
             w.str(l);

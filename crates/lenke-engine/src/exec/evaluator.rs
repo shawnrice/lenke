@@ -1324,7 +1324,7 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
                             let eid = id as u32;
                             let mut items: Vec<Value> = if name == "labels" {
                                 store
-                                    .edge_labels_of(eid)
+                                    .edge_labels_of_refs(eid)
                                     .into_iter()
                                     .map(|l| Value::Str(l.into()))
                                     .collect()

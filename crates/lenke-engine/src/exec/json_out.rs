@@ -595,7 +595,7 @@ fn write_edge_nested_map(
     out.push_str(",\"to\":");
     write_node_ext_or_dense(out, store, dst);
     out.push_str(",\"labels\":[");
-    let mut labels = store.edge_labels_of(eid);
+    let mut labels = store.edge_labels_of_refs(eid);
     labels.sort_unstable();
     for (i, t) in labels.iter().enumerate() {
         if i > 0 {

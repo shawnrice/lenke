@@ -3075,6 +3075,19 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   copy into `GStr` and the `Value::List`. The fix is item 340's borrow (`labels_of_refs`) applied to
   the edge twin, which never got it — the same "two of most things" pattern as 367/368/370, 374 and 376. Worth ~20-30 ns/row of the 60, so modest; the scan is not worth touching.
 
+- **DONE — the edge twin of item 340's borrowing label accessor, 1.05x on edge render (396).**
+  `labels_of_refs` gives the NODE side `Vec<&str>`; the edge side only had `edge_labels_of`, which
+  cloned a `String` per label for the caller to copy the bytes again into a `GStr`. Added
+  `etype_name_ref` + `edge_labels_of_refs` and moved eight call sites (both renderers, `json_out`,
+  the evaluator's `labels(e)`, three `codec.rs` sinks, `binary.rs`); the owned form stays for the
+  one caller that needs a `Vec<String>` in a struct field. **322.3 -> 306.6 ns/row (1.05x) and
+  346.2 -> 333.4 (1.04x)**, min of three alternated rounds, disjoint ranges, node render and a
+  count flat as controls; bench `element r` 328.0. **The length axis I predicted is flat**: the
+  saving is one malloc/free per label, not a copy of its bytes, so a 17-character type (above
+  `GStr`'s 12-byte inline cap, heap-allocating on both paths) saves LESS, not more. That takes
+  13-16 ns of the 60.2 that 394 put in labels; **the rest needs a cached label list** — item 393's
+  unbuilt forward node->labels cache in its edge form — and is not available by borrowing.
+
 ## 6. Consequences of the AND decision — RESOLVED by item 258, and not as predicted
 
 This section was written before the change and asked three questions. All three are now answered by
