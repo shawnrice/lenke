@@ -4517,3 +4517,28 @@ Mutation: five of eight caught. The survivor is item 468's — `sum`/`avg` under
 unchanged reason, so that boundary is now load-bearing twice. Two were EQUIVALENT mutants (a
 `continue` whose fall-through reads `row[undefined]` and is skipped anyway; an arity check on a
 shape the parser cannot produce) and no test can catch those.
+
+## 470 — native's two-aggregate step: CLOSED at 3.7-4.4x. Same shape as 469, different cause
+
+Item 469 left native's 4-5x open. It is NOT a missing route: an `eprintln` at the entry of
+`try_scan_multi_agg` (item 371's technique) shows all four pairs already take its branch-free
+one-pass loop. That loop computes `sum`, `cnt`, `min` and `max` UNCONDITIONALLY, so
+`count(n.age), count(*)` pays for three quantities it never reads. **The route existed and was
+doing work nobody asked for.**
+
+The quantities are now chosen once, before the scan, dispatching to one of four monomorphic
+`#[inline(never)]` folds. At 1,000,000 nodes: `count, count(*)` 2.2 -> 0.0 ms, `min, max` 2.2 ->
+0.5, `sum, count(*)` 2.2 -> 0.6, `sum, avg` 2.2 -> 0.6; the single-aggregate controls (0.5, 0.6)
+never enter this function and did not move. Identical on three rounds.
+
+**Item 448's rule produced its first yes-but-differently**: same shape, same size, different
+cause — TS was missing a route, native had one and computed a superset. Porting the TS diagnosis
+would have built a second path beside a working one and measured nothing.
+
+Mutation: four of seven caught first run; **two survivors were holes in the test, not equivalent
+mutants** (a lone `avg` with no `sum` beside it; `sum` beside `count(*)`, which is the summing
+loop's ROW counter). Both now have a case. A specialization multiplies the paths a test must
+visit, and a fixture covering two of four loops reads exactly like one covering all four.
+
+Also: **a cached check is not a check.** CI went red on 469 because `bun run check` passed off the
+nx cache while CI runs `bunx oxfmt --check .` uncached on a markdown table (fixed in b506de02).

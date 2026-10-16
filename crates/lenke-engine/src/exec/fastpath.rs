@@ -3609,6 +3609,103 @@ pub(super) fn try_frontier_distinct_count(
 /// `count(*), avg(age)`. `None` if any agg is grouped/DISTINCT or not a numeric
 /// reduction over a `Num` property (or `count(*)`). Complements the single-agg
 /// [`try_scan_num_agg`], which keeps the tighter auto-vectorized loop.
+/// The one-pass scan fold behind `try_scan_multi_agg`, specialized by WHICH quantities the
+/// projection actually asks for.
+///
+/// WHY FOUR LOOPS AND NOT ONE. The single branch-free loop computed `sum`, `cnt`, `min` and
+/// `max` unconditionally, on the theory that four straight f64 ops are cheaper than deciding
+/// which to do. They are — per row, once you are in the loop — but most projections want one
+/// or two of them, and the rest is work nobody reads. At 1,000,000 nodes a pair of aggregates
+/// cost 2.2 ms against 0.5 for a single `count` (item 470), and the dead quantities are what
+/// the difference bought. Specializing is only sound because the choice is made ONCE, before
+/// the scan: a per-row `if need_sum` would hand back more than it saved.
+///
+/// Each variant is `#[inline(never)]` for the reason items 453, 459 and 462 each measured:
+/// an arm inlined into this chain perturbs the layout of the shapes that never enter it.
+#[inline(never)]
+fn scan_fold_cnt(
+    store: &Store,
+    label: &Option<String>,
+    present: &[bool],
+) -> (f64, u64, f64, f64, u64) {
+    let (mut cnt, mut rows) = (0u64, 0u64);
+    scan_visit(store, label, |i| {
+        rows += 1;
+        if present[i] {
+            cnt += 1;
+        }
+    });
+    (0.0, cnt, f64::INFINITY, f64::NEG_INFINITY, rows)
+}
+
+#[inline(never)]
+fn scan_fold_sum(
+    store: &Store,
+    label: &Option<String>,
+    data: &[f64],
+    present: &[bool],
+) -> (f64, u64, f64, f64, u64) {
+    let (mut sum, mut cnt, mut rows) = (0.0f64, 0u64, 0u64);
+    scan_visit(store, label, |i| {
+        rows += 1;
+        if present[i] {
+            sum += data[i];
+            cnt += 1;
+        }
+    });
+    (sum, cnt, f64::INFINITY, f64::NEG_INFINITY, rows)
+}
+
+#[inline(never)]
+fn scan_fold_minmax(
+    store: &Store,
+    label: &Option<String>,
+    data: &[f64],
+    present: &[bool],
+) -> (f64, u64, f64, f64, u64) {
+    let (mut cnt, mut mn, mut mx, mut rows) = (0u64, f64::INFINITY, f64::NEG_INFINITY, 0u64);
+    scan_visit(store, label, |i| {
+        rows += 1;
+        if present[i] {
+            let x = data[i];
+            cnt += 1;
+            if x < mn {
+                mn = x;
+            }
+            if x > mx {
+                mx = x;
+            }
+        }
+    });
+    (0.0, cnt, mn, mx, rows)
+}
+
+#[inline(never)]
+fn scan_fold_all(
+    store: &Store,
+    label: &Option<String>,
+    data: &[f64],
+    present: &[bool],
+) -> (f64, u64, f64, f64, u64) {
+    let (mut sum, mut cnt, mut mn, mut mx, mut rows) =
+        (0.0f64, 0u64, f64::INFINITY, f64::NEG_INFINITY, 0u64);
+    scan_visit(store, label, |i| {
+        rows += 1;
+        if present[i] {
+            let x = data[i];
+            sum += x;
+            cnt += 1;
+            if x < mn {
+                mn = x;
+            }
+            if x > mx {
+                mx = x;
+            }
+        }
+    });
+    (sum, cnt, mn, mx, rows)
+}
+
 pub(super) fn try_scan_multi_agg(
     input: &Plan,
     keys: &[(String, Expr)],
@@ -3653,22 +3750,21 @@ pub(super) fn try_scan_multi_agg(
         .collect();
     if !used.is_empty() && used.iter().all(|&p| p == used[0]) {
         let (data, present) = specs.iter().find_map(|(c, _)| *c).expect("used non-empty");
-        let (mut sum, mut cnt, mut mn, mut mx, mut rows) =
-            (0.0f64, 0u64, f64::INFINITY, f64::NEG_INFINITY, 0u64);
-        scan_visit(store, label, |i| {
-            rows += 1;
-            if present[i] {
-                let x = data[i];
-                sum += x;
-                cnt += 1;
-                if x < mn {
-                    mn = x;
-                }
-                if x > mx {
-                    mx = x;
-                }
-            }
-        });
+        // WHICH quantities this projection actually reads, decided once before the scan. The
+        // `cnt` is in every variant because `Avg`, `Min` and `Max` each need it to tell an
+        // empty group from a real answer, and an increment is not what costs here.
+        let need_sum = specs
+            .iter()
+            .any(|(_, f)| matches!(f, AggFn::Sum | AggFn::Avg));
+        let need_minmax = specs
+            .iter()
+            .any(|(_, f)| matches!(f, AggFn::Min | AggFn::Max));
+        let (sum, cnt, mn, mx, rows) = match (need_sum, need_minmax) {
+            (false, false) => scan_fold_cnt(store, label, present),
+            (true, false) => scan_fold_sum(store, label, data, present),
+            (false, true) => scan_fold_minmax(store, label, data, present),
+            (true, true) => scan_fold_all(store, label, data, present),
+        };
         let cols: Vec<Col> = specs
             .iter()
             .map(|&(col, func)| {

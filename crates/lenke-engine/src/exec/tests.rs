@@ -20293,3 +20293,137 @@ fn literal_armed_case_keeps_case_semantics() {
         "Num(0.0),Num(0.0),Num(5.0)"
     );
 }
+
+/// The four specialized scan folds (item 470) answer exactly what the single-aggregate paths
+/// answer for the same question.
+///
+/// The oracle is the SAME aggregate asked alone, which takes a different route entirely
+/// (`try_scan_count_prop`, `try_scan_num_agg`, …) — so a specialization that dropped a
+/// quantity, counted the wrong rows or routed `avg` to a loop that never sums shows up as a
+/// disagreement between two routes rather than against a constant I worked out.
+#[test]
+fn scan_multi_agg_specializations_match_single_aggregates() {
+    let mut b = Builder::default();
+    for v in [3.0f64, 1.0, 4.0, 1.0, 5.0] {
+        b.node(&["P"], &[("age", n(v))]);
+    }
+    // No `age`: `count(*)` must see it and `count(n.age)` must not.
+    b.node(&["P"], &[("name", s("none"))]);
+    let st = b.build();
+    // `Value` has no `PartialEq` on purpose (NaN), so the comparison is on the DEBUG
+    // rendering — structural, and it distinguishes `Null` from `Num(0.0)`, which is the
+    // distinction every empty-group assertion below turns on.
+    let vals = |q: &str| -> String {
+        format!(
+            "{:?}",
+            run(&crate::gql::parse(q).unwrap(), &st)
+                .rows
+                .iter()
+                .next()
+                .expect("one row")
+                .to_vec()
+        )
+    };
+    let one = |q: &str| -> String {
+        let r = run(&crate::gql::parse(q).unwrap(), &st);
+        let row = r.rows.iter().next().expect("one row");
+        format!("{:?}", row[0])
+    };
+
+    // (false, false) — counts only.
+    assert_eq!(
+        vals("MATCH (n:P) RETURN count(n.age) AS a, count(*) AS b"),
+        format!(
+            "[{}, {}]",
+            one("MATCH (n:P) RETURN count(n.age) AS a"),
+            one("MATCH (n:P) RETURN count(*) AS b")
+        )
+    );
+    // (true, false) — sum and avg, which both need the total AND the count.
+    assert_eq!(
+        vals("MATCH (n:P) RETURN sum(n.age) AS a, avg(n.age) AS b"),
+        format!(
+            "[{}, {}]",
+            one("MATCH (n:P) RETURN sum(n.age) AS a"),
+            one("MATCH (n:P) RETURN avg(n.age) AS b")
+        )
+    );
+    // `avg` ALONE picks the summing loop — the mutant that read `need_sum` as `Sum` only and
+    // sent this to the counting loop SURVIVED until this line, because every other `avg` here
+    // sits beside a `sum` that sets the flag anyway.
+    assert_eq!(
+        vals("MATCH (n:P) RETURN avg(n.age) AS a, count(*) AS b"),
+        format!(
+            "[{}, {}]",
+            one("MATCH (n:P) RETURN avg(n.age) AS a"),
+            one("MATCH (n:P) RETURN count(*) AS b")
+        )
+    );
+    // `sum` beside `count(*)` is the summing loop's ROW counter, which is a different number
+    // from its value count — the mutant that stopped incrementing `rows` there survived until
+    // this line, because the only other `count(*)` pairing routed to the all-quantities loop.
+    assert_eq!(
+        vals("MATCH (n:P) RETURN sum(n.age) AS a, count(*) AS b"),
+        "[Num(14.0), Num(6.0)]"
+    );
+    // (false, true) — min and max, which need the count only to tell empty from real.
+    assert_eq!(
+        vals("MATCH (n:P) RETURN min(n.age) AS a, max(n.age) AS b"),
+        format!(
+            "[{}, {}]",
+            one("MATCH (n:P) RETURN min(n.age) AS a"),
+            one("MATCH (n:P) RETURN max(n.age) AS b")
+        )
+    );
+    // (true, true) — all four quantities at once, plus `count(*)` for the row counter.
+    assert_eq!(
+        vals("MATCH (n:P) RETURN sum(n.age) AS a, max(n.age) AS b, count(*) AS c"),
+        format!(
+            "[{}, {}, {}]",
+            one("MATCH (n:P) RETURN sum(n.age) AS a"),
+            one("MATCH (n:P) RETURN max(n.age) AS b"),
+            one("MATCH (n:P) RETURN count(*) AS c")
+        )
+    );
+    // And the values themselves, so a bug the single paths SHARE cannot hide: 3+1+4+1+5 = 14
+    // over five present values out of six rows.
+    assert_eq!(
+        vals("MATCH (n:P) RETURN count(n.age) AS a, count(*) AS b"),
+        "[Num(5.0), Num(6.0)]"
+    );
+    assert_eq!(
+        vals("MATCH (n:P) RETURN sum(n.age) AS a, avg(n.age) AS b"),
+        format!("[Num(14.0), Num({:?})]", 14.0 / 5.0)
+    );
+    assert_eq!(
+        vals("MATCH (n:P) RETURN min(n.age) AS a, max(n.age) AS b"),
+        "[Num(1.0), Num(5.0)]"
+    );
+
+    // An EMPTY scan: every variant must give the empty answer its aggregate owes ISO, and the
+    // `cnt` each one carries is what tells it apart from a real zero.
+    let empty = Builder::default().build();
+    let evals = |q: &str| -> String {
+        format!(
+            "{:?}",
+            run(&crate::gql::parse(q).unwrap(), &empty)
+                .rows
+                .iter()
+                .next()
+                .expect("one row")
+                .to_vec()
+        )
+    };
+    assert_eq!(
+        evals("MATCH (n:P) RETURN count(n.age) AS a, count(*) AS b"),
+        "[Num(0.0), Num(0.0)]"
+    );
+    assert_eq!(
+        evals("MATCH (n:P) RETURN sum(n.age) AS a, avg(n.age) AS b"),
+        "[Num(0.0), Null]"
+    );
+    assert_eq!(
+        evals("MATCH (n:P) RETURN min(n.age) AS a, max(n.age) AS b"),
+        "[Null, Null]"
+    );
+}
