@@ -4230,3 +4230,37 @@ Three things to not re-derive:
 OPEN, pre-existing, found here: **`coalesce` over a NODE column renders raw ids natively** where
 TS renders the element (`coalesce(z, a)` -> `[2, 1]`). Verified against the previous commit. The
 fallback itself is correct in both engines.
+
+## 459 — resolving a scalar function's NAME once: CLOSED at 2.6x. Item 457's general half is done
+
+The generic scalar path matched the function NAME as a STRING per row. Sized first by bypassing
+it for `sqrt` alone (32.4 -> 12.5 ms at 1,000,000 rows, boxing and boxed output still in place),
+so the dispatch is **~20 ns a row**, not item 457's guessed ~15. `unary_num_fn` resolves all
+twenty-one unary numeric functions once; the **fifteen without a vectorized arm** — `sqrt`,
+`exp`, `ln`, `log10`, the trig and hyperbolic families, `cot`, `degrees`, `radians` — go
+33.95/33.50/32.86 -> 12.93/12.65/12.73. Four controls flat.
+
+Four things to not re-derive:
+
+- **The output stays BOXED deliberately.** These functions can make a NaN or an infinity from a
+  finite input; `unary_finite_num_fn`'s arm builds a `Col::Num`, and a stored numeric column is
+  all-finite. This arm removes the dispatch and owes no such invariant.
+- **`#[inline(never)]` and its own function are load-bearing.** Inline, the arm cost shapes it
+  NEVER RUNS — `power` 45.9-47.1 -> 47.8-48.5 and `coalesce` 3.50-3.63 -> 3.78-3.88 — and split,
+  the controls return to flat and `sqrt` improves further (14.6 inline vs 12.7 split). Second
+  occasion of item 453's layout finding, different file.
+- **A non-numeric argument RAISES, it does not become NULL.** `call_scalar_checked` validates a
+  named function's non-null arguments (`sqrt('1e300')` throws) where an arithmetic operator would
+  propagate. The first version used `num_of` and answered NULL;
+  `a_raising_predicate_still_raises_when_it_is_reached` caught it immediately.
+- **TWO COPIES OF A BODY MAKE A MUTANT MEANINGLESS.** `unary_finite_num_fn` kept its own `sign`,
+  so flipping the NaN guard survived — `s///` hit one copy, the test routed through the other. It
+  is now the restriction LIST and delegates for bodies; the mutant is caught.
+
+`degrees` using `to_degrees` (one ULP off, the comment's warning) survives the unit suite and IS
+caught by the differential fuzzer — verified by applying it, not assumed.
+
+OPEN, pre-existing, found here: **`cot` at zero diverges between the engines** —
+`0.0 <= cot(0.0 * n.x)` and siblings. `FUZZ_SEED=2724363121` replays deterministically and
+**fails at HEAD too** (both files reverted and rebuilt). A hand-built three-node fixture did not
+reproduce it, so the fuzzer's fixture is part of the shape; the seed is the reproducer.

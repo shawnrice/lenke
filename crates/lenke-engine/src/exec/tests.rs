@@ -19812,3 +19812,112 @@ fn coalesce_does_not_take_the_identity_on_a_node_column() {
         "Num(2.0),Num(1.0)"
     );
 }
+
+/// Item 459: every unary numeric function with its NAME resolved once — `count(sqrt(a.k))` went
+/// from 32.9 ms to 12.7 at 1,000,000 rows (2.6x), and the other fourteen non-finite-safe
+/// functions take the same arm.
+///
+/// What this pins is the MAPPING and the null/raise plumbing, not the arithmetic: the bodies are
+/// `f64`'s own and `scalar_num_fn` now delegates to the same `unary_num_fn`, so there is one
+/// body per function. A mapping error — `ln` wired to `log10`, `asin` to `acos` — is invisible
+/// to a test that only checks "a number came back", so every expectation below is a value only
+/// that function produces.
+#[test]
+fn resolved_unary_numeric_functions_map_to_the_right_body() {
+    use crate::value::Value;
+
+    let store = {
+        let mut b = crate::store::Builder::default();
+
+        b.node(&["N"], &[("k", Value::Num(100.0))]);
+        b.build()
+    };
+    let one = |expr: &str| -> String {
+        let q = format!("MATCH (a:N) RETURN {expr} AS v");
+        let raw = crate::gql::parse(&q).expect("parse");
+        let plan = crate::opt::optimize_indexed(raw, &store);
+        let out = crate::exec::try_run(&plan, &store).expect("run");
+
+        out.rows
+            .iter()
+            .filter_map(|r| r.first())
+            .map(|v| format!("{v:?}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+
+    // Each constant is distinctive for its function over k = 100: `sqrt` 10, `log10` 2, `ln` of
+    // 1 is 0, `exp` of 0 is 1, and the trig pair at 0 are 0 and 1. Swapping any two of these
+    // bodies changes at least one answer.
+    assert_eq!(one("sqrt(a.k)"), "Num(10.0)");
+    assert_eq!(one("log10(a.k)"), "Num(2.0)");
+    assert_eq!(one("ln(a.k - 99)"), "Num(0.0)");
+    assert_eq!(one("exp(a.k - 100)"), "Num(1.0)");
+    assert_eq!(one("sin(a.k - 100)"), "Num(0.0)");
+    assert_eq!(one("cos(a.k - 100)"), "Num(1.0)");
+    assert_eq!(one("tan(a.k - 100)"), "Num(0.0)");
+    assert_eq!(one("asin(a.k - 100)"), "Num(0.0)");
+    assert_eq!(one("atan(a.k - 100)"), "Num(0.0)");
+    assert_eq!(one("sinh(a.k - 100)"), "Num(0.0)");
+    assert_eq!(one("cosh(a.k - 100)"), "Num(1.0)");
+    assert_eq!(one("tanh(a.k - 100)"), "Num(0.0)");
+    assert_eq!(one("degrees(a.k - 100)"), "Num(0.0)");
+    assert_eq!(one("radians(a.k - 100)"), "Num(0.0)");
+    // `acos(1)` is 0 and `acos(0)` is PI/2 — the one that distinguishes it from `asin`.
+    assert_eq!(one("acos(a.k - 99)"), "Num(0.0)");
+    // The finite-safe six still answer through their own vectorized arm.
+    assert_eq!(one("abs(0 - a.k)"), "Num(100.0)");
+    assert_eq!(one("floor(a.k + 0.5)"), "Num(100.0)");
+    assert_eq!(one("ceil(a.k + 0.5)"), "Num(101.0)");
+    assert_eq!(one("round(a.k + 0.5)"), "Num(101.0)");
+    assert_eq!(one("sign(0 - a.k)"), "Num(-1.0)");
+    // A computed NaN or infinity is KEPT, not coerced — `sqrt(-1)` and `ln(0)`.
+    assert_eq!(one("sqrt(0 - a.k)"), "Num(NaN)");
+    assert_eq!(one("ln(a.k - 100)"), "Num(-inf)");
+    // `sign(NaN)` is NaN, not 0. NaN is false for both `> 0` and `< 0`, so without its guard it
+    // falls through to the else-arm — the wrong answer that guard's own comment records, and
+    // which survived mutation until this line existed (every other `sign` case here is finite).
+    assert_eq!(one("sign(sqrt(0 - a.k))"), "Num(NaN)");
+    assert_eq!(one("sign(a.k - 100)"), "Num(0.0)");
+}
+
+/// Item 459's null and RAISE plumbing, which is where the arm could silently diverge.
+#[test]
+fn resolved_unary_numeric_functions_keep_null_and_raise() {
+    use crate::value::Value;
+
+    let store = {
+        let mut b = crate::store::Builder::default();
+
+        b.node(
+            &["N"],
+            &[("k", Value::Num(4.0)), ("s", Value::Str("x".into()))],
+        );
+        // No `k` and no `s`, so the column carries a null beside a value.
+        b.node(&["N"], &[]);
+        b.build()
+    };
+    let rows = |expr: &str| -> Result<String, String> {
+        let q = format!("MATCH (a:N) RETURN {expr} AS v");
+        let raw = crate::gql::parse(&q)?;
+        let plan = crate::opt::optimize_indexed(raw, &store);
+        let out = crate::exec::try_run(&plan, &store).map_err(|e| e.to_string())?;
+
+        Ok(out
+            .rows
+            .iter()
+            .filter_map(|r| r.first())
+            .map(|v| format!("{v:?}"))
+            .collect::<Vec<_>>()
+            .join(","))
+    };
+
+    // A NULL argument propagates to NULL, beside a row that computes.
+    assert_eq!(rows("sqrt(a.k)").unwrap(), "Num(2.0),Null");
+    // A non-null NON-NUMERIC argument is a DATA EXCEPTION, not a null. This is the assertion the
+    // first version of the arm failed: it used `num_of` and answered NULL.
+    assert!(rows("sqrt(a.s)").is_err(), "sqrt of a string must raise");
+    assert!(rows("ln(a.s)").is_err(), "ln of a string must raise");
+    // And the raise survives the row that is NULL — the string row is reached either way.
+    assert!(rows("cos(a.s)").is_err(), "cos of a string must raise");
+}

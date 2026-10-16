@@ -1415,6 +1415,30 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
 
                 return Ok(Col::Gen(out));
             }
+            // EVERY OTHER unary numeric function, with the NAME resolved once (item 459).
+            //
+            // The arm above keeps a `Col::Num` and so admits only the six functions that cannot
+            // make a NaN or an infinity from a finite input. The other fifteen — `sqrt`, `ln`,
+            // `exp`, the trig family, `degrees`/`radians` — fell through to the generic path
+            // below, which matches the function NAME as a STRING against dozens of arms ONCE PER
+            // ROW. That dispatch is ~20 ns a row: bypassing it for `sqrt` alone, with the per-row
+            // boxing and the boxed output both still in place, measured 32.4 -> 12.5 ms at
+            // 1,000,000 rows (**2.6x**), while `power` (still generic) and `abs` (already
+            // vectorized) stayed flat.
+            //
+            // The output stays BOXED on purpose. These functions can produce a NaN or an
+            // infinity from finite input, and a stored `Num` column is all-finite — which is the
+            // invariant the arm above exists to protect. This one removes the dispatch and
+            // nothing else, so it inherits no such obligation.
+            //
+            // `scalar_num_fn` delegates to the same `unary_num_fn`, so the two readings of every
+            // function are one body. A NULL or non-numeric argument yields NULL here exactly as
+            // it does there, through the same `num_of`.
+            if args.len() == 1 {
+                if let Some(f) = super::scalar::unary_num_fn(name) {
+                    return super::scalar::eval_unary_num(f, name, eval(&args[0], store, batch)?);
+                }
+            }
             // `size`/`cardinality` over a BOXED column, read by REFERENCE. The generic
             // path below materializes each argument with `Col::value_at`, and
             // `Col::Gen(v) => v[i].clone()` on a `Value::List(Vec<Value>)` DEEP-COPIES the

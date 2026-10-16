@@ -1,4 +1,5 @@
 use super::*;
+use crate::batch::Col;
 use crate::gstr::GStr;
 use crate::value::{self, Value};
 
@@ -899,11 +900,76 @@ fn substring(args: &[Value]) -> Value {
 /// the result column then keeps the all-finite invariant of a stored `Num` column,
 /// and the vectorized path is byte-identical to the boxed one. `None` = not eligible.
 pub(super) fn unary_finite_num_fn(name: &str) -> Option<fn(f64) -> f64> {
+    // The RESTRICTION is the list; the BODIES come from `unary_num_fn` (item 459). Written with
+    // its own copy of each body first, which left `sign`'s NaN guard duplicated — and mutation
+    // said so: flipping that guard was caught in neither copy, because the `s///` hit the first
+    // and the test routed through the second. **Two copies of a body make a mutant land on
+    // whichever the tool reaches first, and a surviving mutant then means nothing.** One body,
+    // one list.
+    if !matches!(
+        name,
+        "abs" | "floor" | "ceil" | "ceiling" | "round" | "sign"
+    ) {
+        return None;
+    }
+
+    unary_num_fn(name)
+}
+
+/// EVERY unary numeric function as a raw `f64 -> f64`, resolved ONCE (audit item 459).
+///
+/// [`unary_finite_num_fn`] covers only the six that cannot make a NaN or an infinity from a
+/// finite input, because its caller builds a `Col::Num` and a stored numeric column is
+/// all-finite. This one covers all twenty-one, for the caller that keeps a BOXED output and so
+/// has no such invariant to protect — it removes the dispatch, not the boxing.
+///
+/// Why that is worth a function: the generic scalar path matches the function NAME as a STRING
+/// against dozens of arms ONCE PER ROW. Bypassing that for `sqrt` alone measured 32.4 -> 12.5 ms
+/// at 1,000,000 rows, **2.6x**, with the per-row boxing and the boxed output both still in
+/// place — so the dispatch is ~20 ns a row, the dominant part of the ~27 ns fixed overhead item
+/// 457 priced.
+///
+/// [`scalar_num_fn`] DELEGATES to this, so the two callers cannot drift: there is one body per
+/// function and both read it from here. The comments on the subtle ones live with the bodies.
+/// Apply a resolved unary numeric function down a column, with a BOXED output (item 459).
+///
+/// Its own function, and `#[inline(never)]`, because inline in `eval`'s `Expr::Call` arm it cost
+/// the shapes it never runs: `power` 45.9-47.1 -> 47.8-48.5 ms and `coalesce` 3.50-3.63 -> 3.78
+/// -3.88, consistently in direction over three rounds each. Neither takes this arm — `power` and
+/// `coalesce` have two arguments — so that was code layout alone, the same effect item 453
+/// measured at 1.4x on a three-bound count and `ts-closure-size-is-load-bearing` records on the
+/// other engine.
+#[inline(never)]
+pub(super) fn eval_unary_num(f: fn(f64) -> f64, name: &str, c: Col) -> Result<Col, String> {
+    let n = c.len();
+    let mut out: Vec<Value> = Vec::with_capacity(n);
+
+    for i in 0..n {
+        // Only a `Num` takes the fast arm. A NULL propagates to NULL, and anything else is a
+        // DATA EXCEPTION rather than a null — `sqrt('1e300')` THROWS, a named function
+        // validating its non-null arguments where an arithmetic operator would propagate. The
+        // first version used `num_of` and returned NULL there, which is a silent behaviour
+        // change and exactly what `a_raising_predicate_still_raises_when_it_is_reached` exists
+        // to catch; it did, on the first run.
+        //
+        // The error is not re-spelled: the one row that needs it calls `call_scalar_checked`, so
+        // the message and the condition stay defined in one place.
+        match c.value_at(i) {
+            Value::Num(x) => out.push(Value::Num(f(x))),
+            Value::Null => out.push(Value::Null),
+            other => out.push(call_scalar_checked(name, std::slice::from_ref(&other))?),
+        }
+    }
+
+    Ok(Col::Gen(out))
+}
+
+pub(super) fn unary_num_fn(name: &str) -> Option<fn(f64) -> f64> {
     Some(match name {
         "abs" => f64::abs,
-        "floor" => f64::floor,
-        "ceil" | "ceiling" => f64::ceil,
-        "round" => f64::round,
+        // NaN is not a number, so it has no sign — `sign(NaN)` stays NaN (→ null at egress),
+        // matching JS `Math.sign(NaN)`. Without this guard NaN falls through both `> 0` and
+        // `< 0` (both false for NaN) to the `0.0` else-arm, a wrong answer.
         "sign" => |x: f64| {
             if x.is_nan() {
                 f64::NAN
@@ -915,6 +981,28 @@ pub(super) fn unary_finite_num_fn(name: &str) -> Option<fn(f64) -> f64> {
                 0.0
             }
         },
+        "floor" => f64::floor,
+        "ceil" | "ceiling" => f64::ceil,
+        "round" => f64::round,
+        "sqrt" => f64::sqrt,
+        "exp" => f64::exp,
+        "ln" => f64::ln,
+        "log10" => f64::log10,
+        "sin" => f64::sin,
+        "cos" => f64::cos,
+        "tan" => f64::tan,
+        "asin" => f64::asin,
+        "acos" => f64::acos,
+        "atan" => f64::atan,
+        "sinh" => f64::sinh,
+        "cosh" => f64::cosh,
+        "tanh" => f64::tanh,
+        "cot" => |x: f64| 1.0 / x.tan(),
+        // Multiply-then-divide, NOT `to_degrees`/`to_radians`: the latter pre-round the 180/PI
+        // (resp. PI/180) constant and land one ULP off the TS engine's byte-exact `(n*180)/PI`
+        // / `(n*PI)/180`.
+        "degrees" => |x: f64| (x * 180.0) / std::f64::consts::PI,
+        "radians" => |x: f64| (x * std::f64::consts::PI) / 180.0,
         _ => return None,
     })
 }
@@ -923,52 +1011,13 @@ fn scalar_num_fn(name: &str, v: &Value) -> Value {
     let Some(x) = value::num_of(v) else {
         return Value::Null;
     };
-    let r = match name {
-        "abs" => x.abs(),
-        // NaN is not a number, so it has no sign — `sign(NaN)` stays NaN (→ null at
-        // egress), matching JS `Math.sign(NaN)`. Without this guard NaN falls through both
-        // `> 0` and `< 0` (both false for NaN) to the `0.0` else-arm, a wrong answer.
-        "sign" => {
-            if x.is_nan() {
-                f64::NAN
-            } else if x > 0.0 {
-                1.0
-            } else if x < 0.0 {
-                -1.0
-            } else {
-                0.0
-            }
-        }
-        "floor" => x.floor(),
-        "ceil" | "ceiling" => x.ceil(),
-        "round" => x.round(),
-        "sqrt" => x.sqrt(),
-        // Transcendentals — native libm, matching the TS engine's native build. A
-        // domain-invalid result (e.g. `ln(-1)`, `cot(0)`) is NaN/Inf and, for now,
-        // falls to NULL through the finite gate below (K4 will KEEP it, like the TS engine).
-        "exp" => x.exp(),
-        "ln" => x.ln(),
-        "log10" => x.log10(),
-        "sin" => x.sin(),
-        "cos" => x.cos(),
-        "tan" => x.tan(),
-        "asin" => x.asin(),
-        "acos" => x.acos(),
-        "atan" => x.atan(),
-        "sinh" => x.sinh(),
-        "cosh" => x.cosh(),
-        "tanh" => x.tanh(),
-        "cot" => 1.0 / x.tan(),
-        // Multiply-then-divide, NOT `to_degrees`/`to_radians`: the latter pre-round
-        // the 180/PI (resp. PI/180) constant and land one ULP off the TS engine's byte-exact
-        // `(n*180)/PI` / `(n*PI)/180`.
-        "degrees" => (x * 180.0) / std::f64::consts::PI,
-        "radians" => (x * std::f64::consts::PI) / 180.0,
-        _ => return Value::Null, // parser rejects unknown names; defensive
+    let Some(f) = unary_num_fn(name) else {
+        return Value::Null; // parser rejects unknown names; defensive
     };
-    // NaN/Inf are KEPT (K4) — a computed NaN (`sqrt(-1)`, `ln(-1)`) is a real
-    // signal, coerced to null only at the JSON egress boundary, matching the TS engine.
-    Value::Num(r)
+
+    // NaN/Inf are KEPT (K4) — a computed NaN (`sqrt(-1)`, `ln(-1)`) is a real signal, coerced to
+    // null only at the JSON egress boundary, matching the TS engine.
+    Value::Num(f(x))
 }
 
 /// `to_integer`/`to_float` FUNCTION and the `CAST(x AS INTEGER|FLOAT)` it backs: a Num
