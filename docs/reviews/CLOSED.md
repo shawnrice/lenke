@@ -3918,3 +3918,26 @@ graph where the far end enumerates fewer vertices takes the start-driven walk ra
 cheaper one. Not a gap to close by relaxing the hoist — that would be a wrong answer — but a
 reason the ceiling here is ~190 ns/row and not ~110. Instruments: `bun run probe:route`,
 `bun run spelling`.
+
+## 448 — porting items 446/447 to native: NOTHING TO PORT, and the apparent native gap is item 289
+
+With egress held equal (every case projecting one scalar, so item 289's carrier cancels), native
+measures 59-75 ns/row for an anonymous rel, a named-but-unread rel, a rel READ, a rel-reading
+clause `WHERE` and a far-reading clause `WHERE` — flat, all five. **Native pays nothing to name,
+read or filter on a relationship variable**, so the 3.4x and 2.6x items 446 and 447 closed on the
+TS side have no native twin.
+
+What looks like a native gap is projecting a whole ELEMENT: 931 ns/row for `RETURN b` and 1065 for
+`RETURN r`, against ~60 for a property. That is **item 289, already closed** — the JSON carrier,
+~80% of it, `queryArrowIpc` being the answer. Confirmed here independently: `count(r.w)` over the
+same 200,000 edges is 1.1 ms (5.5 ns an edge) against `RETURN r.w` at 12.0 ms, so a scalar row
+costs ~55 ns to carry and an element row ~1010.
+
+Two method notes:
+
+- **`count(b)` and `RETURN b LIMIT 1` are NOT instruments for this.** They read 0.1 ms and 0.007
+  ms and look like proof that element rendering is free; both are shortcut-answered with no
+  traversal at all. An instrument answered by a fast path measures the fast path.
+- **A gap found in one engine is a QUESTION about the other, never a finding.** Items 432/433,
+  443 and now 446/447 all had this shape. `ENGINE=native PCASE=… bun run probe:route` makes the
+  question one command.

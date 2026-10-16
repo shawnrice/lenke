@@ -21,6 +21,9 @@
 import { Graph } from '@lenke/core';
 import { query as tsQuery } from '@lenke/gql';
 
+import { nativeBackend } from './src/conformance-harness.js';
+import { graphFromNdjson } from './src/graph.js';
+
 const N = Number(process.env.PN ?? 40_000);
 const DEG = 5;
 const REPS = Number(process.env.PR ?? 9);
@@ -82,6 +85,26 @@ const queries: Record<string, string> = {
   startdriven: 'MATCH (a:Half)-[:KNOWS]->(b) RETURN b',
   // Its general-path twin: same start label, same traversal, but mentioning the rel declines.
   startdrivengen: 'MATCH (a:Half)-[r:KNOWS]->(b) RETURN r',
+  // Element projection against property projection, and then the same pair CONSUMED by an
+  // aggregate so no element crosses the egress boundary at all. Item 289 settled that the
+  // ts-vs-ffi gap on a row-returning query is the JSON CARRIER, so an element row (a map of id,
+  // labels and properties) and a property row (one scalar) are not comparable on egress alone —
+  // these four separate rendering from carrying.
+  cntelem: 'MATCH (:Person)-[r:KNOWS]->(b) RETURN count(b) AS c',
+  cntprop: 'MATCH (:Person)-[r:KNOWS]->(b) RETURN count(b.age) AS c',
+  cntedge: 'MATCH (:Person)-[r:KNOWS]->(b) RETURN count(r) AS c',
+  cntedgeprop: 'MATCH (:Person)-[r:KNOWS]->(b) RETURN count(r.w) AS c',
+  // One row out, all the traversal in: whatever this costs is NOT per-row egress.
+  onerow: 'MATCH (:Person)-[r:KNOWS]->(b) RETURN b LIMIT 1',
+  oneprop: 'MATCH (:Person)-[r:KNOWS]->(b) RETURN b.age LIMIT 1',
+  // Items 446 and 447 asked of the NATIVE engine, with egress held equal: every case projects
+  // ONE scalar, so the row payload is identical and item 289's carrier cancels. If native shared
+  // the TS gap, naming or reading the rel would show here.
+  natanon: 'MATCH (:Person)-[:KNOWS]->(b) RETURN b.age',
+  natnamed: 'MATCH (:Person)-[r:KNOWS]->(b) RETURN b.age',
+  natrelread: 'MATCH (:Person)-[r:KNOWS]->(b) RETURN r.w',
+  natrelwhere: 'MATCH (:Person)-[r:KNOWS]->(b) WHERE r.w < 100 RETURN b.age',
+  natfarwhere: 'MATCH (:Person)-[r:KNOWS]->(b) WHERE b.age < 100 RETURN b.age',
 };
 const key = process.env.PCASE ?? 'node';
 const q = queries[key];
@@ -90,21 +113,65 @@ if (q === undefined) {
   throw new Error(`no such case: ${key}`);
 }
 
-const g = fresh();
+// ENGINE=native asks the same ladder of the Rust engine, which is a separate implementation with
+// its own hop fast paths — so whether a gap transfers is a question to measure, not to infer from
+// the TS planner. Native row egress is 58-94 ns a row (items 428, 434), which is why only
+// native-against-native ratios are read here, never native against ts.
+const engine = process.env.ENGINE ?? 'ts';
 const times: number[] = [];
 let rows = 0;
 
-for (let r = 0; r < REPS; r++) {
-  const t0 = performance.now();
-  // Materialized with a length read: these queries are LAZY in the TS engine, and timing a
-  // generator that is never drained measures building the generator.
-  const out = tsQuery(g, q);
+if (engine === 'native') {
+  const lines: string[] = [];
 
-  rows = Array.isArray(out) ? out.length : [...(out as Iterable<unknown>)].length;
-  times.push(performance.now() - t0);
+  for (let i = 0; i < N; i++) {
+    lines.push(
+      JSON.stringify({
+        type: 'vertex',
+        id: `v${i}`,
+        labels: i % 2 === 0 ? ['Person', 'Half'] : ['Person'],
+        properties: { age: i % 90 },
+      }),
+    );
+  }
+
+  for (let k = 0; k < N * DEG; k++) {
+    lines.push(
+      JSON.stringify({
+        type: 'edge',
+        id: `e${k}`,
+        from: `v${(k * 7919) % N}`,
+        to: `v${(k * 104_729) % N}`,
+        labels: ['KNOWS'],
+        properties: { w: k % 7 },
+      }),
+    );
+  }
+
+  const nat = graphFromNdjson(nativeBackend(), `${lines.join('\n')}\n`);
+
+  for (let r = 0; r < REPS; r++) {
+    const t0 = performance.now();
+    const out = nat.query(q);
+
+    rows = (out as unknown[]).length;
+    times.push(performance.now() - t0);
+  }
+} else {
+  const g = fresh();
+
+  for (let r = 0; r < REPS; r++) {
+    const t0 = performance.now();
+    // Materialized with a length read: these queries are LAZY in the TS engine, and timing a
+    // generator that is never drained measures building the generator.
+    const out = tsQuery(g, q);
+
+    rows = Array.isArray(out) ? out.length : [...(out as Iterable<unknown>)].length;
+    times.push(performance.now() - t0);
+  }
 }
 
 times.sort((p, n) => p - n);
 console.log(
-  `${key.padEnd(10)}min ${times[0].toFixed(1).padStart(8)}  p25 ${times[Math.floor(times.length / 4)].toFixed(1).padStart(8)}  med ${times[Math.floor(times.length / 2)].toFixed(1).padStart(8)}  rows ${rows}  ns/row ${((times[0] * 1e6) / Math.max(rows, 1)).toFixed(0)}`,
+  `${engine.padEnd(7)}${key.padEnd(10)}min ${times[0].toFixed(1).padStart(8)}  p25 ${times[Math.floor(times.length / 4)].toFixed(1).padStart(8)}  med ${times[Math.floor(times.length / 2)].toFixed(1).padStart(8)}  rows ${rows}  ns/row ${((times[0] * 1e6) / Math.max(rows, 1)).toFixed(0)}`,
 );
