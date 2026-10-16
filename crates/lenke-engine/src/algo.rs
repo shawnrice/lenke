@@ -1720,8 +1720,12 @@ fn neighbor_aggregate(
     // A vertex's contributor `(eid, nbr)` pairs, sorted by edge id — the canonical,
     // engine-independent accumulation order. A both-direction self-loop is counted
     // once (its in-side copy dropped, mirroring `expand`).
-    let contributors = |v: u32| -> Vec<(u32, u32)> {
-        let mut contrib: Vec<(u32, u32)> = Vec::new();
+    // Fills `contrib` rather than returning a fresh `Vec`: this runs once per vertex (twice
+    // under `gcn`, where the second call only wants the length), so a per-vertex allocation is
+    // 50,000 of them on the bench fixture. The curve says the fixed per-node cost is ~125 ns
+    // against a ~7.7 ns/dim slope, which is what pointed here (audit item 415).
+    let contributors = |v: u32, contrib: &mut Vec<(u32, u32)>| {
+        contrib.clear();
         if want_out {
             for a in store.out(v) {
                 if want.is_some_and(|w| adj_wanted(store, a, w)) {
@@ -1740,23 +1744,29 @@ fn neighbor_aggregate(
             }
         }
         contrib.sort_unstable_by_key(|&(eid, _)| eid);
-        contrib
     };
 
     // GCN degree per vertex: its contributor count under the same direction/type
     // filter, plus the self-loop when includeSelf (the Ã = A + I self-loop), floored
     // at 1 so a source/sink contributes a finite 1/sqrt(deg_i·deg_j) rather than
     // dividing by zero. Only needed for the GCN norm.
+    let mut scratch: Vec<(u32, u32)> = Vec::new();
     let deg: Vec<f64> = if gcn {
         (0..slots as u32)
-            .map(|v| (contributors(v).len() + usize::from(include_self)).max(1) as f64)
+            .map(|v| {
+                contributors(v, &mut scratch);
+                (scratch.len() + usize::from(include_self)).max(1) as f64
+            })
             .collect()
     } else {
         Vec::new()
     };
 
-    let mut out: Vec<(u32, Value)> = Vec::with_capacity(store.all_nodes().len());
-    for v in store.all_nodes() {
+    // `all_nodes()` BUILDS the live-id vector, so calling it for a length and again to iterate
+    // built it twice.
+    let nodes = store.all_nodes();
+    let mut out: Vec<(u32, Value)> = Vec::with_capacity(nodes.len());
+    for v in nodes {
         let mut acc = vec![0.0f64; d];
         let mut coef_sum = 0.0f64; // Σ contributor coefficients (the `mean` divisor)
         let mut started = false; // whether `acc` holds a real value (for max/min)
@@ -1796,7 +1806,8 @@ fn neighbor_aggregate(
                 fold(sv, coef);
             }
         }
-        for (eid, nbr) in contributors(v) {
+        contributors(v, &mut scratch);
+        for &(eid, nbr) in &scratch {
             if let Some(nv) = &feats[nbr as usize] {
                 // coef = edge weight (1.0 unweighted) × GCN factor (1/sqrt(deg_i·deg_j)).
                 let w = weight_property.map_or(1.0, |wk| edge_weight(store, eid, wk));

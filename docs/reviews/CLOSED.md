@@ -3207,6 +3207,24 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   items 290/298: four hops forward vs reversed 474.94 vs 721.55 ms (1.52x), five hops 930.05 vs
   851.61 (1.09x the other way).
 
+- **DONE — `neighborAggregate` allocated a contributor `Vec` per vertex; 1.23x/1.14x/1.07x
+  across the dim sweep (415).** **The "vectorize it" target my notes carried is REFUTED by its
+  own curve**: 16x the dims costs 4x the time, so the per-dim slope is ~7.7 ns against a ~125 ns
+  per-node FIXED cost, and the inner fold is already a tight `f64` slice loop with no boxing.
+  The fixed cost was `contributors(v)` allocating and sorting a `Vec` per vertex (twice under
+  `gcn`) plus `all_nodes()` being BUILT twice, once only for a length. Gain shrinks with
+  dimension, which is the prediction — a vectorization would have sloped the other way.
+  Controls (`degree`, `wcc`, `pagerank`, `closeness`) flat.
+  **Still open and now priced**: the per-dim cost is the OUTPUT, `Value::List` of one
+  `Value::Num` per dimension — 3.2M `Value`s at dim 64 over 50,000 nodes — which is inherent to
+  the `Vec<(u32, Value)>` return type. Changing it is a contract change, not a loop change.
+
+- **MATCH THE HARNESS, not just the sample counts (415).** The new numbers were first read
+  against `bench_all`'s `algo/neighboragg` section and looked like a **2.2x REGRESSION** at dim
+  64; the standalone `algo_bench neighboragg` uses a different fixture, so they are not the same
+  question. Re-measuring the baseline on the SAME harness turned the phantom regression into a
+  real 1.07x gain. `CLAUDE.md`'s "match sample counts on both sides" has a level above it.
+
 - **VERIFIED — this session's native work carries into WASM; no row regressed (414).** Every
   change in 396/402/404/405/407/412 compiles into the wasm target as well as the `.so`, and the
   CLI is wasm-only, so a win that exists only natively would matter. `bun run build:wasm` first
