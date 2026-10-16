@@ -3941,3 +3941,30 @@ Two method notes:
 - **A gap found in one engine is a QUESTION about the other, never a finding.** Items 432/433,
   443 and now 446/447 all had this shape. `ENGINE=native PCASE=… bun run probe:route` makes the
   question one command.
+
+## 449 — `coalesce` and `abs` in a native filter: CLOSED at 25.9x and 5.8x
+
+`try_filter_keep_call` fuses `<scalar fn of one prop> <cmp> <lit>` into the keep pass, the same way
+item 438 fused arithmetic. `coalesce(a.k, 0) > 5` goes 38.435 -> 1.466 ms at 1,000,000 nodes
+(**25.9x**) and `abs(a.k) > 5` 10.582 -> 1.787 (**5.8x**), both landing on the plain comparison's
+cost. Function set is `unary_finite_num_fn` (abs/floor/ceil/ceiling/round/sign) plus `coalesce`
+with a literal default.
+
+Item 437's three leads are now two closed and one open: **`CASE` remains at 14.5x / 16.6x**, is
+`Expr::Case` rather than `Expr::Call`, and was the control for this change (flat, as required).
+
+Three things to not re-derive:
+
+- **The two families disagree about the absent cell, and that IS the item.** A unary numeric
+  function DROPS it (NULL → UNKNOWN); `coalesce` KEEPS it with the default substituted. Verified
+  against the general path before writing the arm: `coalesce(a.k, 0) > 5` answers 1 and
+  `coalesce(a.k, 99) > 5` answers 2 over the same three nodes. An arm skipping absent rows answers
+  1 for both and passes the obvious test.
+- **A column absent everywhere must DECLINE, not answer empty.** `coalesce(a.missing, 99) > 5`
+  keeps every row (3 of 3). An empty keep-list reads like a correct "nothing matches".
+- **The OPTIONAL-miss sentinel is declined for `coalesce` deliberately**, because `WHERE` inside
+  `OPTIONAL MATCH` is a parse error, so the shape cannot be measured against the general path and
+  either skipping or substituting would be a guess.
+
+Also: `cargo clippy` from the repo root WITHOUT `--manifest-path` exits 101 with "could not find
+Cargo.toml" — there is no root workspace. That reads like a lint failure and is not one.

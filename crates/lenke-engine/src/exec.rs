@@ -6072,6 +6072,147 @@ fn try_filter_keep_arith(pred: &Expr, store: &Store, batch: &Batch) -> Option<Ve
     Some(keep)
 }
 
+/// `<call over one prop> <cmp> <lit>` — a comparison whose left (or right) side is a SCALAR
+/// FUNCTION of one numeric property: `abs(a.k) > 5`, `coalesce(a.k, 0) > 5`, `floor(a.n) <= 3`.
+///
+/// Item 437 measured these, at identical selectivity down the group (the row count is constant,
+/// so the gap is the expression and nothing else), and item 448 re-measured them after item 438
+/// fused the arithmetic arm:
+///
+/// ```text
+///                        200,000     1,000,000
+///   a.k > 5               0.341 ms    1.699 ms
+///   a.k + 0 > 5           0.394       2.005      1.16x  <- item 438 fused this
+///   abs(a.k) > 5          1.994      10.582      5.8x / 6.2x
+///   coalesce(a.k, 0) > 5  7.160      38.435     21.0x / 22.6x
+/// ```
+///
+/// The cause is item 438's: MATERIALIZATION, not a tree walk and not boxing. The general path
+/// builds `a.k`, then the call's result column, then the comparison, then the keep-list — four
+/// passes and three allocations of N values against the one pass and zero allocations here.
+///
+/// SEMANTICS, each matched to the general path rather than to what looks right. The two
+/// families differ on the one thing that matters most, which is why they are separate arms:
+///
+///   - A UNARY numeric function DROPS an absent cell. `scalar_num_fn` returns NULL for a NULL
+///     argument, so the comparison is UNKNOWN and the row goes — exactly as the plain and
+///     arithmetic arms do. Verified: `abs(a.missing) > 5` answers 0 rows over 3 nodes.
+///   - `coalesce` KEEPS it, with the DEFAULT substituted. That is the entire point of the
+///     function and the opposite of every other arm here. Verified against the general path
+///     before this was written: over three nodes where one has no `k`,
+///     `coalesce(a.k, 0) > 5` answers 1 and `coalesce(a.k, 99) > 5` answers 2 — the absent
+///     cell passing on the default. An arm that skipped absent rows would answer 1 for both
+///     and look right in the only test anyone writes first.
+///
+/// The function set is [`unary_finite_num_fn`], reused rather than re-listed: it already returns
+/// raw `f64 -> f64` closures documented to match `scalar_num_fn` EXACTLY, and it already excludes
+/// the functions that can make a NaN or an infinity out of a finite input. A new name added there
+/// arrives here with its semantics already settled.
+///
+/// Declines, each because the general path does something this pass cannot express:
+///
+///   - A column ABSENT everywhere. `coalesce(a.missing, 99) > 5` keeps EVERY row (verified: 3 of
+///     3), which is correct and is the general path's business — there is no column to stream.
+///   - The `u32::MAX` OPTIONAL-miss sentinel, for `coalesce` only. The arithmetic arm skips it as
+///     UNKNOWN, but `coalesce(NULL, d)` is `d`, so skipping would be wrong and substituting is a
+///     GUESS: `WHERE` inside `OPTIONAL MATCH` is rejected by the parser, so the shape could not
+///     be measured against the general path. Declining is the one option that needs no guess.
+///   - A non-numeric or NULL threshold, a non-`Num` column, more than one property operand, and
+///     `coalesce` with any arity but 2.
+fn try_filter_keep_call(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec<usize>> {
+    let Expr::Compare { op, left, right } = pred else {
+        return None;
+    };
+    // Either side may hold the call; `flip_op` normalizes to `<call> <op> <lit>`, the same
+    // normalization the plain and arithmetic arms do.
+    let (call, cmp_lit, op) = match (left.as_ref(), right.as_ref()) {
+        (c @ Expr::Call { .. }, Expr::Lit(v)) => (c, v, *op),
+        (Expr::Lit(v), c @ Expr::Call { .. }) => (c, v, flip_op(*op)),
+        _ => return None,
+    };
+    let Value::Num(threshold) = cmp_lit else {
+        return None;
+    };
+    let Expr::Call { name, args } = call else {
+        return None;
+    };
+
+    // `coalesce(<prop>, <num lit>)` substitutes the default for an absent cell; a unary numeric
+    // function drops it. Resolve which family this is before touching the column.
+    enum Kind {
+        Coalesce(f64),
+        Unary(fn(f64) -> f64),
+    }
+
+    let (kind, slot, key) = match (name.as_str(), args.as_slice()) {
+        ("coalesce", [Expr::Prop { slot, key }, Expr::Lit(Value::Num(d))]) => {
+            (Kind::Coalesce(*d), *slot, key)
+        }
+        (_, [Expr::Prop { slot, key }]) => (
+            Kind::Unary(self::scalar::unary_finite_num_fn(name)?),
+            *slot,
+            key,
+        ),
+        _ => return None,
+    };
+
+    let Col::Nodes(ids) = batch.slot(slot) else {
+        return None;
+    };
+    let Some(Column::Num { data, present, .. }) = store.column(key) else {
+        return None; // absent everywhere: `coalesce` keeps every row, `abs` keeps none
+    };
+    let t = *threshold;
+    let mut keep = Vec::new();
+
+    for (row, &id) in ids.iter().enumerate() {
+        let y = match kind {
+            Kind::Coalesce(d) => {
+                if id == u32::MAX {
+                    return None; // see the decline list above — substituting here is a guess
+                }
+
+                let i = id as usize;
+
+                if present[i] {
+                    data[i]
+                } else {
+                    d
+                }
+            }
+            Kind::Unary(f) => {
+                if id == u32::MAX {
+                    continue; // the OPTIONAL-miss sentinel has no property → UNKNOWN → dropped
+                }
+
+                let i = id as usize;
+
+                if !present[i] {
+                    continue; // NULL → NULL → UNKNOWN → dropped
+                }
+
+                f(data[i])
+            }
+        };
+        // The same `match op` block as the plain and arithmetic arms, so ordering stays 3VL (a
+        // NaN is unordered and drops, `<`/`>` being false on NaN) and equality stays `==`/`!=`.
+        let hit = match op {
+            CompareOp::Eq => y == t,
+            CompareOp::Ne => y != t,
+            CompareOp::Lt => y < t,
+            CompareOp::Le => y <= t,
+            CompareOp::Gt => y > t,
+            CompareOp::Ge => y >= t,
+        };
+
+        if hit {
+            keep.push(row);
+        }
+    }
+
+    Some(keep)
+}
+
 fn try_filter_keep(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec<usize>> {
     // A predicate that is a pure function of ONE dict column: evaluate per distinct value
     // (≤ dict size) and keep by code, instead of a boxed eval per row.
@@ -6080,6 +6221,11 @@ fn try_filter_keep(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec<usiz
     }
     // Arithmetic over one property and a constant, fused into the keep pass (item 438).
     if let Some(keep) = try_filter_keep_arith(pred, store, batch) {
+        return Some(keep);
+    }
+    // A scalar function of one property — `abs`/`floor`/`ceil`/`round`/`sign`, or `coalesce`
+    // with a literal default — fused the same way (item 449).
+    if let Some(keep) = try_filter_keep_call(pred, store, batch) {
         return Some(keep);
     }
     // A numeric compare on an EDGE property (`e0.w <op> lit`): read the edge column by each

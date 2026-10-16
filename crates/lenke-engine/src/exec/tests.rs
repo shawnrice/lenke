@@ -19002,3 +19002,158 @@ fn fused_arithmetic_filter_agrees_with_the_general_path() {
         1.0
     );
 }
+
+/// Item 449: `try_filter_keep_call` fuses `<scalar fn of one prop> <cmp> <lit>` into the keep
+/// pass — `coalesce(a.k, 0) > 5` went from 38.435 ms to 1.482 at 1,000,000 nodes (25.9x) and
+/// `abs(a.k) > 5` from 10.582 to 1.815 (5.8x), both landing on the plain comparison's cost.
+///
+/// The ORACLE is item 438's: the same predicate with a redundant `+ 0` wrapped round the call.
+/// Its outer node is an `Arith` whose operand is a `Call` rather than a `Prop`, so BOTH fused
+/// arms decline it and `eval` answers — and `+ 0` cannot change a finite result, which every
+/// value here is (`unary_finite_num_fn` admits only finite→finite functions and the `coalesce`
+/// default is a literal).
+///
+/// The fixture's load-bearing row is the node with NO `k`, because the two families disagree
+/// about exactly that cell: a unary function drops it (NULL → NULL → UNKNOWN) and `coalesce`
+/// KEEPS it with the default substituted. A fixture where every node had a `k` would pass
+/// against an arm that skipped absent rows, which is the one mistake this arm could plausibly
+/// make — and it would pass against an arm that substituted for `abs` too.
+#[test]
+fn fused_scalar_call_filter_agrees_with_the_general_path() {
+    use crate::value::Value;
+
+    let store = {
+        let mut b = crate::store::Builder::default();
+        // Negatives and zero so `abs`/`sign` are observable, half-integers so `floor`/`ceil`/
+        // `round` differ from each other and from the raw value, and 1e308 so a large magnitude
+        // is covered.
+        for v in [
+            -7.5f64, -3.0, -0.5, 0.0, 0.5, 1.0, 2.5, 3.0, 7.0, 11.0, 1e17, 1e308,
+        ] {
+            b.node(&["N"], &[("k", Value::Num(v))]);
+        }
+        // No `k` at all. This is the row the whole test turns on.
+        b.node(&["N"], &[]);
+        b.build()
+    };
+    let count = |q: &str| -> Result<f64, String> {
+        let raw = crate::gql::parse(q)?;
+        let plan = crate::opt::optimize_indexed(raw, &store);
+        let out = crate::exec::try_run(&plan, &store).map_err(|e| e.to_string())?;
+        match out.rows.iter().next().and_then(|r| r.first()) {
+            Some(Value::Num(n)) => Ok(*n),
+            other => Err(format!("want a number, got {other:?}")),
+        }
+    };
+    let mut checked = 0;
+    // Every name `unary_finite_num_fn` admits, plus `coalesce` at several defaults — including
+    // one that passes a high threshold and one that fails every threshold, so the substituted
+    // value is observable in both directions.
+    let exprs: Vec<String> = ["abs", "floor", "ceil", "ceiling", "round", "sign"]
+        .iter()
+        .map(|f| format!("{f}(a.k)"))
+        .chain(
+            ["0", "1", "-1", "99", "2.5"]
+                .iter()
+                .map(|d| format!("coalesce(a.k, {d})")),
+        )
+        .collect();
+
+    for expr in &exprs {
+        for cmp in ["=", "<>", "<", "<=", ">", ">="] {
+            for t in ["0", "1", "5", "-1", "2.5", "99"] {
+                let fast = format!("MATCH (a:N) WHERE {expr} {cmp} {t} RETURN count(*) AS c");
+                let slow = format!("MATCH (a:N) WHERE ({expr}) + 0 {cmp} {t} RETURN count(*) AS c");
+
+                match (count(&fast), count(&slow)) {
+                    (Ok(f), Ok(s)) => assert!(
+                        (f - s).abs() < 1e-9,
+                        "{fast}: fused gave {f}, general gave {s}"
+                    ),
+                    (Err(_), Err(_)) => {}
+                    (f, s) => panic!("{fast}: fused {f:?}, general {s:?}"),
+                }
+
+                checked += 1;
+
+                // The threshold on the LEFT, which `flip_op` normalizes.
+                let fast = format!("MATCH (a:N) WHERE {t} {cmp} {expr} RETURN count(*) AS c");
+                let slow = format!("MATCH (a:N) WHERE {t} {cmp} ({expr}) + 0 RETURN count(*) AS c");
+
+                match (count(&fast), count(&slow)) {
+                    (Ok(f), Ok(s)) => assert!(
+                        (f - s).abs() < 1e-9,
+                        "{fast}: fused gave {f}, general gave {s}"
+                    ),
+                    (Err(_), Err(_)) => {}
+                    (f, s) => panic!("{fast}: fused {f:?}, general {s:?}"),
+                }
+
+                checked += 1;
+            }
+        }
+    }
+
+    assert_eq!(checked, 11 * 6 * 6 * 2, "form count drifted: {checked}");
+}
+
+/// Item 449's two DECLINES, each because the general path does something the keep pass cannot.
+///
+/// A fast path that answers where it should decline is the failure mode no differential test
+/// over a present column can see, so both are pinned directly against the answer rather than
+/// against an oracle spelling.
+#[test]
+fn fused_scalar_call_filter_declines_an_absent_column() {
+    use crate::value::Value;
+
+    let store = {
+        let mut b = crate::store::Builder::default();
+
+        for v in [1.0f64, 2.0, 3.0] {
+            b.node(&["N"], &[("k", Value::Num(v))]);
+        }
+
+        b.build()
+    };
+    let count = |q: &str| -> f64 {
+        let raw = crate::gql::parse(q).expect("parse");
+        let plan = crate::opt::optimize_indexed(raw, &store);
+        let out = crate::exec::try_run(&plan, &store).expect("run");
+        match out.rows.iter().next().and_then(|r| r.first()) {
+            Some(Value::Num(n)) => *n,
+            other => panic!("want a number, got {other:?}"),
+        }
+    };
+
+    // `missing` has no column at all, so EVERY cell is null. `coalesce` therefore yields the
+    // default for every row and keeps all three; the arm declines rather than streaming a column
+    // that is not there. An arm returning an empty keep-list would answer 0 and look like a
+    // correct "nothing matches".
+    assert_eq!(
+        count("MATCH (a:N) WHERE coalesce(a.missing, 99) > 5 RETURN count(*) AS c"),
+        3.0
+    );
+    assert_eq!(
+        count("MATCH (a:N) WHERE coalesce(a.missing, 0) > 5 RETURN count(*) AS c"),
+        0.0
+    );
+    // A unary function over the same absent column keeps nothing, which is the other direction.
+    assert_eq!(
+        count("MATCH (a:N) WHERE abs(a.missing) > 5 RETURN count(*) AS c"),
+        0.0
+    );
+    // And a function the arm does NOT admit (`sqrt` can make a NaN from a finite input, so
+    // `unary_finite_num_fn` excludes it) still answers correctly through the general path:
+    // sqrt(1) is not > 1, sqrt(2) and sqrt(3) are. (Written as 1.0 first, which was my
+    // arithmetic rather than the engine's — the test caught me, not it.)
+    assert_eq!(
+        count("MATCH (a:N) WHERE sqrt(a.k) > 1 RETURN count(*) AS c"),
+        2.0
+    );
+    // `coalesce` with a non-numeric default declines; the general path compares a string to a
+    // number, which is a no-match rather than a throw for `=`.
+    assert_eq!(
+        count("MATCH (a:N) WHERE coalesce(a.k, 'x') = 2 RETURN count(*) AS c"),
+        1.0
+    );
+}
