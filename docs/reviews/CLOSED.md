@@ -3207,6 +3207,23 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   items 290/298: four hops forward vs reversed 474.94 vs 721.55 ms (1.52x), five hops 930.05 vs
   851.61 (1.09x the other way).
 
+- **NOT A DIVERGENCE — the engines AGREE on the parked "lazy vs eager" shapes; both differ from
+  TinkerPop 3.8.1 (417).** Console version PINNED, modern graph, both engines run on the same
+  four shapes: A/B/D all three agree at 6; on **C (`aggregate('x').inject(1).limit(0).cap('x')`)
+  TinkerPop gives `[[]]` EMPTY and BOTH engines give 6.**
+  Three records corrected: the memory note's "TS -> []" is **stale** (TS returns 6, measured);
+  `executor.test.ts:252`'s comment "TinkerPop: 4" is **false** for 3.8.1 (its assertion matches
+  the engine — only the claim about the reference is wrong); and my own claim one tick earlier
+  that "TinkerPop sides with the TS engine" was wrong, taken from the note instead of a run.
+  The note's claim that BRANCH steps share the divergence is also wrong — TinkerPop does not
+  empty the `union` form and neither engine does.
+  **No behaviour changed**: emptying C is an architectural change, and it is now a conformance
+  question against a reference rather than a choice between two internal designs — a decision for
+  the project, not a side effect of an optimization pass.
+  **`gremlin-fuzz` skips this shape** (`zeroSliceFedByEarlyYield`) as a cross-engine divergence;
+  the engines agree, so it is protecting nothing — and **a differential fuzzer is structurally
+  blind to a bug both sides share**, which is why the console was worth the ticks.
+
 - **DONE — the TS `neighborAggregate` twin, 1.12x on the DEFAULT direction, after two refuted
   attempts (416).** Shipped: a REUSED BUFFER (415's actual shape) — `both/none` 2343 -> 2083
   (1.12x) and `both/gcn` 2985 -> 2731 (1.09x), both disjoint; single-direction within noise and
