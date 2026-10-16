@@ -3037,6 +3037,19 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   in two `Value::Map` allocations, 12% in labels and **~0 in the external-id lookup**. Mutants: all
   four key-index errors CAUGHT by the existing suite, behaviour-preserving control SURVIVED.
 
+- **REFUTED — pre-sizing the property vector in `render_nodes` is 1.25x SLOWER (392).** Item 390's
+  ablation left two `Value::Map` allocations at 174.2 ns/row, and the obvious suspect was that
+  `props` collects from a FILTER, whose `size_hint` lower bound is 0, so `collect` starts empty and
+  grows geometrically — four present properties means reallocs at 1, 2 and 4. Measured:
+  `Vec::with_capacity(8)` plus a push loop reads **559.3 ns/row against `collect`'s 446.3 at K=0**
+  (and 707.5 against 580.6 at K=60) — **1.25x worse**. The reason is over-allocation:
+  `with_capacity(8)` claims eight `(Value, Value)` slots unconditionally for a node that typically
+  carries four, which is a larger allocation than the geometric growth ever performs. **Do not
+  reach for `with_capacity` here**; `collect` is already the better shape. Reverted, baseline
+  confirmed back at 444.1.
+  So the 174.2 ns/row floor is the two `Arc::new`s and the 3-element outer `vec!` — structural to
+  the result shape, not slack in the collection.
+
 ## 6. Consequences of the AND decision — RESOLVED by item 258, and not as predicted
 
 This section was written before the change and asked three questions. All three are now answered by
