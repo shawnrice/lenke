@@ -140,6 +140,29 @@ fn main() {
             // because it can make a NaN from a finite input, so it takes the generic path with
             // the fewest possible arguments.
             ("F agg sqrt", "MATCH (a:Univ) RETURN count(sqrt(a.k)) AS c"),
+            // Item 463: the CASE in an AGGREGATE ARGUMENT, which item 450's filter arm does not
+            // reach (that one unwraps a boolean CASE used AS a predicate) and item 459's does
+            // not either (a CASE is not a Call). Variants chosen to separate the `Expr::Case`
+            // machinery from what its ARMS produce: a null arm forces a boxed column, two
+            // literal numeric arms could in principle be a `Col::Num`.
+            (
+                "G case null arm",
+                "MATCH (a:Univ) RETURN count(CASE WHEN a.k > 3 THEN 1 ELSE null END) AS c",
+            ),
+            (
+                "G case num arms",
+                "MATCH (a:Univ) RETURN count(CASE WHEN a.k > 3 THEN 1 ELSE 0 END) AS c",
+            ),
+            (
+                "G case sum arms",
+                "MATCH (a:Univ) RETURN sum(CASE WHEN a.k > 3 THEN 1 ELSE 0 END) AS c",
+            ),
+            (
+                "G case prop arm",
+                "MATCH (a:Univ) RETURN count(CASE WHEN a.k > 3 THEN a.k ELSE 0 END) AS c",
+            ),
+            ("G agg plain", "MATCH (a:Univ) RETURN count(a.k) AS c"),
+            ("G sum plain", "MATCH (a:Univ) RETURN sum(a.k) AS c"),
             ("F agg round", "MATCH (a:Univ) RETURN count(round(a.k)) AS c"),
             ("F agg abs", "MATCH (a:Univ) RETURN count(abs(a.k)) AS c"),
             ("F agg arith", "MATCH (a:Univ) RETURN count(a.k + 1) AS c"),

@@ -4334,3 +4334,28 @@ Two things to not re-derive:
   predicate THREE levels, which this arm declines, so `eval` answers. 4,800 differential forms.
 
 Item 457's open list is now empty: the generic scalar-call path (item 459) and this.
+
+## 463 — gap screen after 458/459/462: `varlen distinct` regression REFUTED, CASE-in-aggregate priced at ~55x
+
+The three wins show on the screen: `arith pred` 5.3x -> **26.1x**, `coalesce` 2.6x -> **4.9x**,
+`case expr` 2.7x -> 2.3x (barely, which makes it the lead).
+
+**REFUTED: a `varlen distinct` regression.** The screen read native 22.93 ms against 9.54 earlier
+in the session, with three of my items having touched the evaluator. Re-measured: 9.62 / 11.53 /
+10.93. A single outlier in a probe whose header says it is a SCREEN, 25+ shapes sharing one
+process. **A screen's row is a reason to measure, never a measurement** — item 455 applied the
+same rule to a spelling-probe flag that DID survive isolation; this one did not.
+
+**OPEN, priced: a CASE in an AGGREGATE ARGUMENT is ~55x the floor.** At 1,000,000 rows
+`count(a.k)` is 0.448 and `sum(a.k)` 0.560, while `count(CASE WHEN a.k > 3 THEN 1 ELSE 0 END)` is
+26.0, `… THEN a.k ELSE 0 …` 27.0, `sum(CASE …)` 28.0 and `… THEN 1 ELSE null …` 30.2. **All four
+within 15% whatever their arms hold** — item 442's tell, and the second time in this family: it
+is `Expr::Case` itself, as item 450 found one position over, so an arm-by-arm fusion is again the
+wrong shape.
+
+Item 450's arm cannot reach this (it unwraps a boolean CASE used AS a predicate; here the CASE
+must produce a value) and item 459's cannot either (a CASE is not a `Call`). The fix shape: the
+eager path evaluates every branch's VALUE into a column and calls `value_at` per row per branch;
+when the branch values are LITERALS — all four rows above — the selection is between constants
+and needs no per-row `value_at`, and with no null among them need not box at all.
+`count(CASE WHEN … THEN 1 ELSE null END)` is the ordinary conditional-count idiom.
