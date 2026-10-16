@@ -299,6 +299,7 @@ import {
   COMPARE,
   concatStep,
   dataException,
+  collectAggregates,
   everyAggregateIsCountStar,
   hasAggregate,
   inList,
@@ -1563,6 +1564,80 @@ const isKnownScalarFn = (name: string): boolean => {
 };
 
 /**
+ * A streaming accumulator for the aggregates that are pure LEFT FOLDS over their group's
+ * non-null values. `count`, `min` and `max` are the whole set for now, and the reason the
+ * others are absent is specific rather than caution:
+ *
+ * - `sum`/`avg` inspect the WHOLE group before choosing a path (`values.some(isTemporal)`
+ *   takes precedence over `values.some(Array.isArray)`). That IS expressible as a fold —
+ *   `temporalSum` is itself a left fold — but it needs `{mode, sawArray}` state and its own
+ *   item, because getting the precedence subtly wrong is a cross-engine divergence.
+ * - `stddev_*` need the moments, `collect`/`collect_list`/percentiles genuinely need every
+ *   value, and a `DISTINCT` aggregate needs `distinctByValueKey` over the whole group.
+ *
+ * **The array path below is DEFINED in terms of these**, which is the condition item 297 set
+ * when it left this work: an accumulator that does not also drive the array path becomes a
+ * second definition of the semantics, and then the two can drift. There is one definition.
+ */
+type AggFold = {
+  readonly init: () => unknown;
+  readonly step: (acc: unknown, v: unknown) => unknown;
+  readonly finish: (acc: unknown) => unknown;
+};
+
+const COUNT_FOLD: AggFold = {
+  init: () => 0,
+  step: (acc) => (acc as number) + 1,
+  finish: (acc) => acc,
+};
+
+const extremumFold = (wantMin: boolean): AggFold => ({
+  init: () => undefined,
+  step: (acc, v) => {
+    if (acc === undefined) {
+      return v;
+    }
+
+    const ord = compareValues(v, acc);
+
+    return (wantMin ? ord < 0 : ord > 0) ? v : acc;
+  },
+  finish: (acc) => (acc === undefined ? null : acc),
+});
+
+/**
+ * The fold for an aggregate, or `undefined` when it must see the whole group. `DISTINCT` is
+ * refused here rather than at the call site so there is one place to read the answer from.
+ */
+const foldFor = (name: string, star: boolean, distinct: boolean): AggFold | undefined => {
+  if (distinct || star) {
+    return undefined; // count(*) has its own O(groups) path; DISTINCT needs every value
+  }
+
+  switch (name) {
+    case 'count':
+      return COUNT_FOLD;
+    case 'min':
+      return extremumFold(true);
+    case 'max':
+      return extremumFold(false);
+    default:
+      return undefined;
+  }
+};
+
+/** Run a fold over an already-materialized group's values — the array path. */
+const runFold = (fold: AggFold, values: unknown[]): unknown => {
+  let acc = fold.init();
+
+  for (const v of values) {
+    acc = fold.step(acc, v);
+  }
+
+  return fold.finish(acc);
+};
+
+/**
  * Compile an aggregate. The argument expression is lowered once; at run time we
  * fold it over the `group` of bindings (or `[binding]` when called outside an
  * aggregating projection).
@@ -1612,6 +1687,21 @@ const compileAggregate = (expr: FuncExpr): CompiledExpr => {
       return group.length;
     }
 
+    // Already folded during grouping: the bindings were never retained, so there is nothing
+    // to map over and the answer is waiting. Keyed by this aggregate's AST node, which is
+    // the same object the streaming path compiled its argument from.
+    const preFolded = (group as unknown as Record<symbol, unknown>)[FOLDED] as
+      | ReadonlyMap<object, { readonly v: unknown }>
+      | undefined;
+
+    if (preFolded !== undefined) {
+      const hit = preFolded.get(expr);
+
+      if (hit !== undefined) {
+        return hit.v;
+      }
+    }
+
     const raw = group.map((b) => argFn!({ ...env, binding: b, group }));
     const nonNull = raw.filter((v) => !isNullish(v));
     // DISTINCT dedups STRUCTURALLY by valueKey (mirroring Rust val_key / dense id),
@@ -1621,8 +1711,10 @@ const compileAggregate = (expr: FuncExpr): CompiledExpr => {
     const values = distinct ? distinctByValueKey(nonNull) : nonNull;
 
     switch (name) {
+      // These three go through `foldFor`'s accumulator rather than reimplementing it, so the
+      // streaming path and the array path cannot drift apart (item 297's condition).
       case 'count':
-        return values.length;
+        return runFold(COUNT_FOLD, values);
       // `sum` over DURATIONs folds via the same `dur + dur` (overflow throws);
       // `avg` over any temporal, and `sum` over a non-DURATION, are loud data
       // exceptions rather than a silent NaN → null. Mirrors the native engine.
@@ -1653,13 +1745,9 @@ const compileAggregate = (expr: FuncExpr): CompiledExpr => {
           ? null
           : values.reduce<number>((s, v) => s + numArg(v), 0) / values.length;
       case 'min':
-        return values.length === 0
-          ? null
-          : values.reduce((m, v) => (compareValues(v, m) < 0 ? v : m));
+        return runFold(extremumFold(true), values);
       case 'max':
-        return values.length === 0
-          ? null
-          : values.reduce((m, v) => (compareValues(v, m) > 0 ? v : m));
+        return runFold(extremumFold(false), values);
       case 'collect':
       case 'collect_list':
         return values;
@@ -2316,6 +2404,17 @@ export type CProjection = {
   /** Every aggregate is `count(*)`, so a group needs a COUNT and a representative — not its
    *  bindings. See `compileProjection`; the saving is O(rows) → O(groups). */
   countedGroups: boolean;
+  /**
+   * Every aggregate in the projection is a pure LEFT FOLD (`foldFor`), so a group needs an
+   * ACCUMULATOR per aggregate plus a representative — not its bindings. The saving is the
+   * same O(rows) -> O(groups) as `countedGroups`, extended past `count(*)` (item 377).
+   * `undefined` when any aggregate must see the whole group.
+   */
+  foldedAggs?: readonly {
+    readonly expr: object;
+    readonly fold: AggFold;
+    readonly argFn: CompiledExpr;
+  }[];
   /** The non-aggregate item closures, used to build each group's key. */
   groupKeys: readonly CompiledExpr[];
   /**
@@ -2508,6 +2607,58 @@ const compileProjection = (projection: Projection): CProjection => {
     having === undefined &&
     projection.items.every((i) => everyAggregateIsCountStar(i.expr)) &&
     (projection.orderBy ?? []).every((o) => everyAggregateIsCountStar(o.expr));
+  // MAY THE GROUPS BE FOLDED rather than kept? The same question `countedGroups` asks, for
+  // the aggregates that are left folds. Admission is deliberately narrow:
+  //   - every aggregate in every projection item AND every ORDER BY key must be foldable,
+  //     because one that is not would reach for bindings that were never kept;
+  //   - `having` is excluded exactly as it is for counted groups — it receives the group and
+  //     may do anything with it;
+  //   - `countedGroups` wins when it applies, since a counter is cheaper than an accumulator.
+  // The argument expression is compiled HERE, once, and the aggregate's AST node identifies
+  // the slot — the same node the closure in `compileAggregate` looks itself up by.
+  const foldableOf = (
+    expr: Expr,
+  ): { expr: object; fold: AggFold; argFn: CompiledExpr }[] | undefined => {
+    const out: { expr: object; fold: AggFold; argFn: CompiledExpr }[] = [];
+
+    for (const a of collectAggregates(expr)) {
+      const fold = foldFor(a.name, a.star, a.distinct);
+      const [arg] = a.args;
+
+      if (fold === undefined || arg === undefined) {
+        return undefined;
+      }
+
+      out.push({ expr: a, fold, argFn: compileExpr(arg) });
+    }
+
+    return out;
+  };
+  const foldedAggs = (():
+    | typeof undefined
+    | { expr: object; fold: AggFold; argFn: CompiledExpr }[] => {
+    if (!aggregating || countedGroups || having !== undefined) {
+      return undefined;
+    }
+
+    const all: { expr: object; fold: AggFold; argFn: CompiledExpr }[] = [];
+
+    for (const e of [
+      ...projection.items.map((i) => i.expr),
+      ...(projection.orderBy ?? []).map((o) => o.expr),
+    ]) {
+      const part = foldableOf(e);
+
+      if (part === undefined) {
+        return undefined;
+      }
+
+      all.push(...part);
+    }
+
+    // No aggregates at all means plain grouping — nothing to fold, so keep the normal path.
+    return all.length > 0 ? all : undefined;
+  })();
   const groupKeys =
     groupByExprs.length > 0
       ? groupByExprs.map((e) => compileExpr(e))
@@ -2553,6 +2704,7 @@ const compileProjection = (projection: Projection): CProjection => {
     items,
     aggregating,
     countedGroups,
+    ...(foldedAggs ? { foldedAggs } : {}),
     groupKeys,
     groupKeyNames,
     ...(having ? { having } : {}),
@@ -2768,6 +2920,42 @@ type CountedGroup = { rep: Binding; n: number };
  * `compileProjection`'s `countedGroups` is what guarantees only `.length` and `[0]` are read;
  * this is the backstop for that guarantee, not a substitute for it.
  */
+/**
+ * Folded aggregate values ride on the group VIEW under this symbol rather than through a new
+ * parameter on `projectBinding`/`Env`. `countedGroupView` already established that the group
+ * handed to the aggregates may be a stand-in; this carries the one extra thing a folded group
+ * needs, and keeps the change local to the two places that know about streaming.
+ */
+const FOLDED = Symbol('lenke.foldedAggregates');
+
+/** A group whose foldable aggregates are already computed: size, representative, values. */
+const foldedGroupView = (
+  rep: Binding,
+  n: number,
+  folded: ReadonlyMap<object, { readonly v: unknown }>,
+): Binding[] =>
+  new Proxy<Binding[]>([rep], {
+    get(target, prop, recv) {
+      if (prop === FOLDED) {
+        return folded;
+      }
+
+      if (prop === 'length') {
+        return n;
+      }
+
+      if (typeof prop === 'string' && /^\d+$/.test(prop) && Number(prop) > 0) {
+        throw new LenkeError(
+          `lenke: a folded group of ${n} was indexed at ${prop}; an aggregate that needs every ` +
+            'binding must not be admitted to the streaming path (see `foldFor`)',
+          { code: ErrorCode.Unsupported },
+        );
+      }
+
+      return Reflect.get(target, prop, recv) as unknown;
+    },
+  });
+
 const countedGroupView = (rep: Binding, n: number): Binding[] =>
   new Proxy<Binding[]>([rep], {
     get(target, prop, recv) {
@@ -2786,6 +2974,157 @@ const countedGroupView = (rep: Binding, n: number): Binding[] =>
       return Reflect.get(target, prop, recv) as unknown;
     },
   });
+
+/** One bucket of a folded grouping: a representative, a row count, one accumulator each. */
+type FoldedBucket = { rep: Binding; n: number; accs: unknown[] };
+
+type FoldedAgg = { readonly expr: object; readonly fold: AggFold; readonly argFn: CompiledExpr };
+
+/**
+ * Step one binding into its group's accumulators and DISCARD it. Lifted out of
+ * `applyProjection` because the complexity cap was right: the grouping loop already carries
+ * three bucket shapes, and this one has a loop of its own.
+ */
+const stepFolded = (
+  folds: Map<string, FoldedBucket>,
+  key: string,
+  b: Binding,
+  foldedAggs: readonly FoldedAgg[],
+  params: Params,
+  graph: Graph,
+): void => {
+  let seen = folds.get(key);
+
+  if (seen === undefined) {
+    seen = { rep: b, n: 0, accs: foldedAggs.map((a) => a.fold.init()) };
+    folds.set(key, seen);
+  }
+
+  seen.n += 1;
+
+  for (const [i, a] of foldedAggs.entries()) {
+    const v = a.argFn({ binding: b, params, graph });
+
+    // The array path folds over `nonNull` (and would then apply DISTINCT, which is why
+    // `foldFor` refuses it), so the streaming step must skip nullish the SAME way — this is
+    // the one place the two paths could disagree, and the DISTINCT differential pins it.
+    if (!isNullish(v)) {
+      seen.accs[i] = a.fold.step(seen.accs[i], v);
+    }
+  }
+};
+
+/** Finish a folded bucket into the group view the rest of `applyProjection` understands. */
+const finishFolded = (
+  { rep, n, accs }: FoldedBucket,
+  foldedAggs: readonly FoldedAgg[],
+): Binding[] => {
+  const done = new Map<object, { readonly v: unknown }>();
+
+  for (const [i, a] of foldedAggs.entries()) {
+    done.set(a.expr, { v: a.fold.finish(accs[i]) });
+  }
+
+  return foldedGroupView(rep, n, done);
+};
+
+/**
+ * Build the group buckets for an aggregating projection. Extracted from `applyProjection`
+ * because the complexity cap was right to object (item 377): this is now THREE bucket shapes
+ * — kept bindings, counted groups (item 297) and folded accumulators — and the choice between
+ * them, which is more than one function should hold alongside ordering, DISTINCT and paging.
+ */
+const buildGroups = (
+  proj: CProjection,
+  bindings: Iterable<Binding>,
+  params: Params,
+  graph: Graph,
+): Map<string, Binding[]> => {
+  const groups = new Map<string, Binding[]>();
+  // ONE grouping key is the overwhelmingly common shape, and for it the row key IS the
+  // value key: `valueKey` is already type-prefixed and injective, so `JSON.stringify([k])`
+  // is injective in exactly the same `k` that `k` itself is — the stringify, the
+  // intermediate array and the `.map` closure are pure cost, paid per ROW. Several keys
+  // keep the stringify, which stays injective across a boundary a plain join does not: a
+  // string cell may contain whatever separator the join picks.
+  const soleKey = proj.groupKeys.length === 1 ? proj.groupKeys[0] : undefined;
+  // NO grouping keys at all — a scalar aggregate — means every row belongs to one group, so
+  // the key is a CONSTANT. It was still being recomputed per row as
+  // `JSON.stringify([].map(...))`: an array allocation and a stringify to produce `'[]'`,
+  // which is the very literal the empty-group line below already uses. On 800,000 rows that
+  // was the whole cost of an ungrouped aggregate — removing the retained bindings (the fix
+  // this item started as) left the 1-hop timing untouched at ~534ms, because the memory and
+  // the time were two different problems (item 377).
+  const constKey = proj.groupKeys.length === 0 ? '[]' : undefined;
+
+  // COUNTED groups keep a size and a representative; kept groups keep every binding. One
+  // loop either way, so the grouping key is derived once and the only difference is what the
+  // bucket holds.
+  const counts = proj.countedGroups ? new Map<string, CountedGroup>() : undefined;
+  // FOLDED groups keep one accumulator per aggregate plus a representative. Same shape as
+  // `counts`, one slot wider: the bindings are stepped into the accumulators and dropped.
+  const { foldedAggs } = proj;
+  const folds = foldedAggs ? new Map<string, FoldedBucket>() : undefined;
+
+  for (const b of bindings) {
+    assertGroupKeysBound(proj.groupKeyNames, b);
+
+    const key =
+      constKey ??
+      (soleKey
+        ? valueKey(soleKey({ binding: b, params, graph }))
+        : JSON.stringify(proj.groupKeys.map((fn) => valueKey(fn({ binding: b, params, graph })))));
+
+    if (folds && foldedAggs) {
+      stepFolded(folds, key, b, foldedAggs, params, graph);
+      continue;
+    }
+
+    if (counts) {
+      const seen = counts.get(key);
+
+      if (seen) {
+        seen.n += 1;
+      } else {
+        // The FIRST binding is the representative — the same one `group[0]` would have been,
+        // which is what group keys and non-aggregate items read.
+        counts.set(key, { rep: b, n: 1 });
+      }
+
+      continue;
+    }
+
+    const existing = groups.get(key);
+
+    if (existing) {
+      existing.push(b);
+    } else {
+      groups.set(key, [b]);
+    }
+  }
+
+  // Replay the folded buckets the same way the counted ones are replayed: a representative
+  // and a view, with the finished values attached for the aggregate closures to read.
+  if (folds && foldedAggs) {
+    for (const [key, bucket] of folds) {
+      groups.set(key, finishFolded(bucket, foldedAggs));
+    }
+  }
+
+  // Replay the counted buckets as groups the rest of this function already understands: a
+  // representative plus a LENGTH-ONLY view standing in for the bindings.
+  if (counts) {
+    for (const [key, { rep, n }] of counts) {
+      groups.set(key, countedGroupView(rep, n));
+    }
+  }
+
+  if (groups.size === 0 && proj.groupKeys.length === 0) {
+    groups.set('[]', []);
+  }
+
+  return groups;
+};
 
 export const applyProjection = (
   proj: CProjection,
@@ -2876,62 +3215,7 @@ export const applyProjection = (
   if (proj.aggregating) {
     // Grouping is a barrier — it must see every binding before it can emit. We
     // still fold into per-group buckets with single `push`es (never a spread).
-    const groups = new Map<string, Binding[]>();
-    // ONE grouping key is the overwhelmingly common shape, and for it the row key IS the
-    // value key: `valueKey` is already type-prefixed and injective, so `JSON.stringify([k])`
-    // is injective in exactly the same `k` that `k` itself is — the stringify, the
-    // intermediate array and the `.map` closure are pure cost, paid per ROW. Several keys
-    // keep the stringify, which stays injective across a boundary a plain join does not: a
-    // string cell may contain whatever separator the join picks.
-    const soleKey = proj.groupKeys.length === 1 ? proj.groupKeys[0] : undefined;
-
-    // COUNTED groups keep a size and a representative; kept groups keep every binding. One
-    // loop either way, so the grouping key is derived once and the only difference is what the
-    // bucket holds.
-    const counts = proj.countedGroups ? new Map<string, CountedGroup>() : undefined;
-
-    for (const b of bindings) {
-      assertGroupKeysBound(proj.groupKeyNames, b);
-
-      const key = soleKey
-        ? valueKey(soleKey({ binding: b, params, graph }))
-        : JSON.stringify(proj.groupKeys.map((fn) => valueKey(fn({ binding: b, params, graph }))));
-
-      if (counts) {
-        const seen = counts.get(key);
-
-        if (seen) {
-          seen.n += 1;
-        } else {
-          // The FIRST binding is the representative — the same one `group[0]` would have been,
-          // which is what group keys and non-aggregate items read.
-          counts.set(key, { rep: b, n: 1 });
-        }
-
-        continue;
-      }
-
-      const existing = groups.get(key);
-
-      if (existing) {
-        existing.push(b);
-      } else {
-        groups.set(key, [b]);
-      }
-    }
-
-    // Replay the counted buckets as groups the rest of this function already understands: a
-    // representative plus a LENGTH-ONLY view standing in for the bindings.
-    if (counts) {
-      for (const [key, { rep, n }] of counts) {
-        groups.set(key, countedGroupView(rep, n));
-      }
-    }
-
-    if (groups.size === 0 && proj.groupKeys.length === 0) {
-      groups.set('[]', []);
-    }
-
+    const groups = buildGroups(proj, bindings, params, graph);
     // ISO HAVING: drop a group whose post-aggregation predicate is not exactly
     // TRUE (three-valued — NULL/false both drop). The aggregates fold over the
     // group array; group keys read the representative binding.

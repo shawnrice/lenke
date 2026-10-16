@@ -2795,6 +2795,38 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   reordered) and **pinned by a direct assertion**, which is what then caught the mutant that deletes
   it; no behavioural test can, since both paths return the same count.
 
+- **A 5-hop `max` OOM-KILLED the TS engine where native answered in 38 ms, and the TIME was a
+  different bug from the MEMORY (377).** Item 297 made `count(*)` O(groups) and recorded what it
+  left: the foldable aggregates "need partial state plumbed through `compileAggregate` — and the
+  accumulator must fold the array path too". Done here for the three that are PURE left folds —
+  `count(arg)`, `min`, `max` — with the array path **defined in terms of** the accumulator, so
+  byte-identity is structural. Under a 4 GB cap, 4.86M paths x ~640 bytes a path: TS `count(*)`
+  20 ms/156 MB, TS `sum` **killed (137)**, native **38.2 ms**. That is item 373's class with the
+  engines swapped, and no differential fuzzer can find either, because the run that would report it
+  never finishes. **The lesson worth more than the fix:** removing the retained bindings left the
+  1-hop TIME untouched at 534 ms against 538 — a scalar aggregate has ZERO grouping keys, so every
+  row was paying `JSON.stringify([].map(...))` to produce the constant `'[]'`. Hoisting that is
+  where the speed came from, and it helps even the aggregates that still keep their bindings
+  (`sum` 1.21x), which proves the two costs were independent. Min of three, controls (the
+  PROJECTION of the same rows, and `count(*)`) flat: scan `min` 1.72x, `max` 1.50x, `sum` 1.49x,
+  `count(prop)` 1.46x; 1hop 1.21-1.27x; 5-hop `max` OOM → 3380 ms at 234 MB.
+- **Still open with its cause NAMED: the TS hop aggregate is ~430 ms against a 14.6 ms projection of
+  the same 800,000 rows (377).** NOT the aggregate machinery — `sum` improved by the same proportion
+  while never being folded, so the remainder is shared by both paths and upstream: the per-row
+  `Binding` (`Map`) construction the projection path avoids by streaming values. Needs a
+  frontier-streaming aggregate shortcut (the TS twin of `try_frontier_prop_agg`). **The floor is
+  known to be reachable**: the same work by hand is 24.5 ms, and the projection's 18 ns/row BEATS a
+  hand-written public-API loop, so the engine's internal traversal is already good. `sum`/`avg` are
+  foldable too (`temporalSum` is itself a left fold; `{mode, sawArray}` reproduces the
+  `some(isTemporal)`-before-`some(isArray)` precedence, four awkward orderings checked) — own item,
+  because that precedence is where a cross-engine divergence would hide.
+- **Two TS targets REFUTED before any code, both by this file (377).** The spelling probe's one
+  over-2x group is a **deliberate guard** — `:P` is intentionally non-vacuous, and this file already
+  says "do not quiet it by reverting the fixture". And `bench:usage`'s `ts(-)` column is at the
+  accepted 26-31 ns/row floor (26.3 ns/node measured), not a gap; item 365 settled that, and
+  **indexed TS is 2-3.6x FASTER than indexed native** (1.31M vs 362.5k ops/s — a `Map` hit with no
+  FFI boundary), which is worth knowing before anyone reads the unindexed column as a defeat.
+
 ## 6. Consequences of the AND decision — RESOLVED by item 258, and not as predicted
 
 This section was written before the change and asked three questions. All three are now answered by
