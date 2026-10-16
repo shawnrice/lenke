@@ -18596,3 +18596,142 @@ fn filtered_scan_string_min_max_agrees_with_the_unfiltered_and_hop_spellings() {
         );
     }
 }
+
+/// Item 432: `try_3hop_product_count` peels a PER-HOP direction, so all EIGHT direction
+/// combinations of a 3-hop chain take the degree product where only the all-`out` one did.
+///
+/// The comment on `try_nhop_sweep_count`'s peel said this was unavailable — "the 3-hop product's
+/// identity really does want one orientation, since its `level1`/`outdeg3` arrays are both built
+/// from `store.out`" — which was a fact about the CODE mistaken for one about the identity:
+///
+/// ```text
+///   total = SUM over hop-2 edges (b - c) of  level1[b] x deg3(c)
+/// ```
+///
+/// Each term reads a DIFFERENT hop's adjacency, so each may independently be `out` or `inc`.
+/// That is a claim about arithmetic, and the only way to check it is against a path that does NOT
+/// use the product. Finding one took a trace: `count(*) + 0` is a different route in the TS
+/// engine (620.5 ms against 138.6 at 200,000 vertices) and **is not one here** — an `eprintln` at
+/// the product's entry showed it firing for the `+ 0` spelling too, so the first version of this
+/// test compared the product with ITSELF and all five direction mutants survived it. `count(d)`
+/// also fires it. `count(d.k)` does not, and every node in the fixture carries `k`, so it counts
+/// the same rows.
+///
+/// The fixture is deliberately IRREGULAR and contains cycles (14 -> 0, 15 -> 1), so a hop walked
+/// the wrong way still finds walks instead of returning zero — which is what makes a wrong
+/// direction a disagreement rather than a silent nothing.
+#[test]
+fn three_hop_product_agrees_with_the_general_path_in_every_direction() {
+    use crate::value::Value;
+
+    let store = {
+        let mut b = crate::store::Builder::default();
+        for i in 0..18u32 {
+            let label = match i {
+                0..=2 => "A",
+                3..=8 => "B",
+                9..=13 => "C",
+                _ => "D",
+            };
+            b.node(&[label, "Univ"], &[("k", Value::Num(f64::from(i % 3)))]);
+        }
+        for (from, to) in [
+            (0u32, 4u32),
+            (0, 5),
+            (1, 4),
+            (2, 6),
+            (3, 7),
+            (4, 9),
+            (4, 10),
+            (5, 9),
+            (6, 11),
+            (7, 12),
+            (9, 14),
+            (9, 15),
+            (10, 14),
+            (11, 16),
+            (12, 17),
+            (14, 0),
+            (15, 1),
+        ] {
+            b.edge(from, to, "E");
+        }
+        // A second edge type, so a hop that kept the wrong label counts the wrong walks.
+        b.edge(4, 11, "F");
+        b.edge(5, 12, "F");
+        b.build()
+    };
+    let num = |q: &str| -> f64 {
+        let raw = crate::gql::parse(q).unwrap_or_else(|e| panic!("{q}: {e}"));
+        let plan = crate::opt::optimize_indexed(raw, &store);
+        let out = crate::exec::try_run(&plan, &store).unwrap_or_else(|e| panic!("{q}: {e}"));
+        match out.rows.iter().next().and_then(|r| r.first()) {
+            Some(Value::Num(n)) => *n,
+            other => panic!("{q}: want a number, got {other:?}"),
+        }
+    };
+
+    let mut checked = 0;
+    for arrows in [
+        ["->", "->", "->"],
+        ["->", "->", "<-"],
+        ["->", "<-", "->"],
+        ["->", "<-", "<-"],
+        ["<-", "->", "->"],
+        ["<-", "->", "<-"],
+        ["<-", "<-", "->"],
+        ["<-", "<-", "<-"],
+    ] {
+        for (head, types) in [
+            ("(a)", ["E", "E", "E"]),
+            ("(a:A)", ["E", "E", "E"]),
+            // A VACUOUS start label, which seeds every vertex and so exercises the `None` arm of
+            // the seed loop rather than the label bucket.
+            ("(a:Univ)", ["E", "E", "E"]),
+            ("(a)", ["E", "F", "E"]),
+        ] {
+            let leg = |j: usize| {
+                if arrows[j] == "->" {
+                    format!("-[:{}]->", types[j])
+                } else {
+                    format!("<-[:{}]-", types[j])
+                }
+            };
+            let q = format!(
+                "MATCH {head}{}(b){}(c){}(d) RETURN count(*) AS c",
+                leg(0),
+                leg(1),
+                leg(2)
+            );
+            let general = q.replace("count(*)", "count(d.k)");
+            let (fast, slow) = (num(&q), num(&general));
+            assert!(
+                (fast - slow).abs() < 1e-9,
+                "{q}: product gave {fast}, general path gave {slow}"
+            );
+            checked += 1;
+        }
+    }
+    // The loop above is the test; this pins that it did not silently skip every case.
+    assert_eq!(checked, 32);
+
+    // AN UNDIRECTED HOP must still DECLINE. One edge can be walked two ways, so an undirected
+    // chain is not a chain of fixed steps and the product's identity does not hold for it — but
+    // `peel_dir_hops` returning `true` for `Dir::Both` would silently walk one index and
+    // undercount. The eight-way loop above cannot see that (every hop there is directed), and
+    // the mutant admitting `Dir::Both` survived it.
+    for q in [
+        "MATCH (a)-[:E]-(b)-[:E]->(c)-[:E]->(d) RETURN count(*) AS c",
+        "MATCH (a)-[:E]->(b)-[:E]-(c)-[:E]->(d) RETURN count(*) AS c",
+        "MATCH (a)-[:E]->(b)-[:E]->(c)-[:E]-(d) RETURN count(*) AS c",
+        "MATCH (a)-[:E]-(b)-[:E]-(c)-[:E]-(d) RETURN count(*) AS c",
+    ] {
+        let general = q.replace("count(*)", "count(d.k)");
+        let (fast, slow) = (num(q), num(&general));
+
+        assert!(
+            (fast - slow).abs() < 1e-9,
+            "{q}: product gave {fast}, general path gave {slow}"
+        );
+    }
+}

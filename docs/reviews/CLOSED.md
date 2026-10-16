@@ -2885,8 +2885,25 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   unfiltered shape (250.1 against 374.9). Controls flat: vacuous labels on both ends, item 306's
   gated route, 4 and 5 hops, one hop. Extracted to a helper because the caller tripped complexity
   41/35 AND max-statements 81/80.
-- **Still open, now LOCATED: the direction asymmetry is the degree PRODUCT's, in BOTH engines, and
-  native's is 4.67x (431).** `chain-layout-probe` (`bun run probe:layout`) varies ONE thing — where
+- **DONE on the NATIVE side: the 3-hop product now peels a PER-HOP direction — 2.68x all-`in`,
+  3.41x mixed (432).** `peel_out_hops` hard-required `Dir::Out`, so a reversed chain declined the
+  product and fell to enumerate-and-tally. The reason was a COMMENT — "the 3-hop product's identity
+  really does want one orientation, since its `level1`/`outdeg3` arrays are both built from
+  `store.out`" — which was an observation about the code mistaken for one about the identity: the
+  product's three terms each read a DIFFERENT hop's adjacency, so each may independently be `out`
+  or `inc`. 15.6 -> 5.8 ms all-`in`, 14.0 -> 4.1 mixed (a NEW capability — mixed declined the
+  product outright before). On the RING layout the reversed 3-hop is now 3.2 against the forward's
+  3.1, **symmetric**, so what remains on scatter is item 431's locality and nothing else. Controls
+  flat at 2 and 4 hops (the product is 3-hop only) and on all-`out`. `Dir::Both` still declines.
+- **AN ORACLE IS A PROPERTY OF THE ENGINE, NOT THE QUERY TEXT (432).** The first mutation run had
+  **five of five survive** a test asserting 32 direction combinations agree with `count(*) + 0` —
+  which is a different route in TS (620.5 ms against 138.6) and **the same route in native**. An
+  `eprintln` at the product's entry showed it firing 8 times per pattern where 4 was expected: the
+  test compared the product with itself. `count(d)` fires it too; `count(d.k)` does not. Item 371's
+  rule is "verify the dispatch reaches the function" — this is its mirror, **verify the oracle does
+  NOT**, and the trace that settles it is three lines.
+- **Still open: the TS side of item 431's asymmetry (1.70x at three hops).** Same diagnosis, same
+  fix shape, TS's `threeSegmentCount` instead. `chain-layout-probe` (`bun run probe:layout`) varies ONE thing — where
   each edge points — over two graphs of identical size and degree, and asks both engines through
   one shared edge list. **Not locality:** the layout halves the magnitude (TS 3-hop forward 170.3 ->
   49.3 ms for the identical query, a 3.5x belonging entirely to the data) but the asymmetry survives

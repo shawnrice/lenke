@@ -3656,17 +3656,31 @@ pub(super) fn try_scan_multi_agg(
     Some(Batch::of(cols))
 }
 
-/// Try to answer a scalar `count(*)` / `count(DISTINCT <last slot>)` sitting on
-/// an Expand of a Scan/Expand chain WITHOUT materializing the wide intermediate
-/// batch: the frontier feeding the final hop is produced by [`frontier_ids`],
-/// then `count(*)` sums the final hop's matching degree and `count(DISTINCT c)`
-/// marks endpoints in a bitset over node ids. Returns `None` (fall back to the
-/// general aggregate) for any shape it does not recognize — so it is an
-/// optimization, never a semantic fork.
-/// Peel exactly `n` OUTgoing frontier hops (no bound edge) ending at a bare Scan,
-/// returning the per-hop edge labels FIRST-to-LAST and the Scan's label. `None`
-/// unless the plan is precisely that chain (used by the 3-hop edge-product count).
-pub(super) fn peel_out_hops(plan: &Plan, n: usize) -> Option<(Vec<Vec<String>>, Option<String>)> {
+/// Peel `n` frontier hops off a chain plan, WITH A PER-HOP DIRECTION: each hop reports its edge
+/// labels and whether it reads the OUT index or the IN one.
+///
+/// It replaces an out-only `peel_out_hops`, which this generalizes and which had no other caller.
+///
+/// The comment on [`try_nhop_sweep_count`]'s own peel said this generalization was unavailable —
+/// "the 3-hop product's identity really does want one orientation, since its `level1`/`outdeg3`
+/// arrays are both built from `store.out`" — and that was an observation about the CODE mistaken
+/// for one about the identity. (That sentence is corrected there too.) The product is
+///
+/// ```text
+///   total = SUM over hop-2 edges (b - c) of   level1[b] x deg3(c)
+/// ```
+///
+/// and each of the three terms reads a DIFFERENT hop's adjacency: `level1` hop 1's, the middle
+/// loop hop 2's, `deg3` hop 3's. Nothing ties them to each other, so each may independently be
+/// `out` or `inc` — which is what this peel reports and what item 432 measured (the all-`in`
+/// spelling of one question cost 15.4 ms against the forward spelling's 3.3, because the reversed
+/// chain declined the product entirely and fell to the enumerate-and-tally path).
+/// One peeled hop with its direction: the edge labels it accepts, and `true` when it reads the
+/// OUT index. A named type because the tuple is otherwise complex enough for clippy to object,
+/// which it is right about — `(Vec<(Vec<String>, bool)>, Option<String>)` says nothing.
+type DirHop = (Vec<String>, bool);
+
+fn peel_dir_hops(plan: &Plan, n: usize) -> Option<(Vec<DirHop>, Option<String>)> {
     if n == 0 {
         return match plan {
             Plan::Scan { label } => Some((Vec::new(), label.clone())),
@@ -3676,7 +3690,7 @@ pub(super) fn peel_out_hops(plan: &Plan, n: usize) -> Option<(Vec<Vec<String>>, 
     let Plan::Expand {
         input,
         from,
-        dir: Dir::Out,
+        dir,
         edge_label,
         bind_edge: false,
         double_loops: false,
@@ -3684,12 +3698,19 @@ pub(super) fn peel_out_hops(plan: &Plan, n: usize) -> Option<(Vec<Vec<String>>, 
     else {
         return None;
     };
+    // `Dir::Both` is an undirected hop: one edge can be walked two ways, so it is not a chain of
+    // fixed steps and the product's identity does not apply to it.
+    let out = match dir {
+        Dir::Out => true,
+        Dir::In => false,
+        _ => return None,
+    };
     if *from + 1 != chain_width(input)? {
         return None; // must expand the current frontier
     }
-    let (mut labels, base) = peel_out_hops(input, n - 1)?;
-    labels.push(edge_label.clone());
-    Some((labels, base))
+    let (mut hops, base) = peel_dir_hops(input, n - 1)?;
+    hops.push((edge_label.clone(), out));
+    Some((hops, base))
 }
 
 /// One peeled hop: the edge labels it accepts and whether it reads the OUT index.
@@ -3863,15 +3884,25 @@ pub(super) fn try_3hop_product_count(
     if agg.func != AggFn::Count || agg.arg.is_some() || agg.distinct {
         return None;
     }
-    let (labels, base) = peel_out_hops(input, 3)?;
+    let (hops, base) = peel_dir_hops(input, 3)?;
     let mut wants: Vec<Vec<u32>> = Vec::with_capacity(3);
-    for l in &labels {
+    for (l, _) in &hops {
         match want_etypes(store, l) {
             Ok(w) => wants.push(w),
             Err(()) => return Some(scalar_num(0.0)), // unknown edge type → no paths
         }
     }
     let (w1, w2, w3) = (&wants[0], &wants[1], &wants[2]);
+    // Each hop reads its OWN adjacency index; see `peel_dir_hops` for why the three are
+    // independent and the old out-only peel was not a requirement of the identity.
+    let (d1, d2, d3) = (hops[0].1, hops[1].1, hops[2].1);
+    let adj = |node: u32, out: bool| {
+        if out {
+            store.out(node)
+        } else {
+            store.inc(node)
+        }
+    };
     let nc = store.node_count();
     // Empty want = any type; else the edge must carry one of the hop's labels
     // (primary or, on a multi-label graph, secondary).
@@ -3880,7 +3911,7 @@ pub(super) fn try_3hop_product_count(
     // level1[b] = number of hop-1 edges from a SOURCE into b (= counts after 1 hop).
     let mut level1 = vec![0u64; nc];
     let bump = |s: u32, level1: &mut [u64]| {
-        for a in store.out(s) {
+        for a in adj(s, d1) {
             if hit(a, w1) {
                 level1[a.nbr as usize] += 1;
             }
@@ -3900,10 +3931,10 @@ pub(super) fn try_3hop_product_count(
             }
         }
     }
-    // outdeg3[c] = number of hop-3 out-edges of c.
+    // outdeg3[c] = number of hop-3 edges of c, in hop 3's OWN direction.
     let mut outdeg3 = vec![0u64; nc];
     for (c, d) in outdeg3.iter_mut().enumerate() {
-        *d = store.out(c as u32).iter().filter(|a| hit(a, w3)).count() as u64;
+        *d = adj(c as u32, d3).iter().filter(|a| hit(a, w3)).count() as u64;
     }
     // Σ over hop-2 middle edges (b→c) of level1[b] × outdeg3[c].
     let mut total = 0u64;
@@ -3911,7 +3942,7 @@ pub(super) fn try_3hop_product_count(
         if lvl == 0 {
             continue;
         }
-        for a in store.out(b as u32) {
+        for a in adj(b as u32, d2) {
             if hit(a, w2) {
                 total += lvl * outdeg3[a.nbr as usize];
             }
@@ -3961,10 +3992,13 @@ pub(super) fn try_3hop_product_count(
 /// |    7 |         4.13 ms |  0.43 ms |
 ///
 /// Native grew ~5x a hop there — the degree, i.e. an enumeration — while the pure-TS sweep, which
-/// has carried per-hop directions since item 298, stayed flat and ended up 10x FASTER. A per-hop
-/// direction is also why this peel is its own function rather than a generalization of
-/// [`peel_out_hops`]: the 3-hop product's identity really does want one orientation, since its
-/// `level1`/`outdeg3` arrays are both built from `store.out`.
+/// has carried per-hop directions since item 298, stayed flat and ended up 10x FASTER. This peel
+/// is its own function because it also carries a per-POSITION gate — and NOT, as this comment
+/// used to say, because "the 3-hop product's identity really does want one orientation, since its
+/// `level1`/`outdeg3` arrays are both built from `store.out`". Item 432 corrected that: the two
+/// arrays being built from `store.out` was a fact about the CODE, not about the identity. The
+/// product's `level1`, its middle loop and its `deg3` each read a DIFFERENT hop's adjacency, so
+/// each may independently be `out` or `inc`, and since 432 each does (see `peel_dir_hops`).
 ///
 /// EVERY POSITION CAN CARRY AN INLINE CONSTRAINT (item 304), applied on the `0 -> w` TRANSITION so
 /// a predicate costs once per DISTINCT vertex reached there rather than once per edge into it —

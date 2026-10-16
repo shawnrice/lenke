@@ -115,6 +115,11 @@ const shapes: Array<[string, string]> = [
   ['2hop rev', 'MATCH (c)<-[:E]-(b)<-[:E]-(a) RETURN count(*) AS c'],
   ['3hop fwd', 'MATCH (a)-[:E]->(b)-[:E]->(c)-[:E]->(d) RETURN count(*) AS c'],
   ['3hop rev', 'MATCH (d)<-[:E]-(c)<-[:E]-(b)<-[:E]-(a) RETURN count(*) AS c'],
+  // MIXED directions at three hops. Before item 432 these declined the degree product outright
+  // (its peel required every hop to be `out`) and fell to the enumerate-and-tally path, so they
+  // are a NEW capability rather than a reordering of an existing one.
+  ['3hop mix1', 'MATCH (a)-[:E]->(b)<-[:E]-(c)-[:E]->(d) RETURN count(*) AS c'],
+  ['3hop mix2', 'MATCH (a)-[:E]->(b)-[:E]->(c)<-[:E]-(d) RETURN count(*) AS c'],
   ['4hop fwd', 'MATCH (a)-[:E]->(b)-[:E]->(c)-[:E]->(d)-[:E]->(e) RETURN count(*) AS c'],
   ['4hop rev', 'MATCH (e)<-[:E]-(d)<-[:E]-(c)<-[:E]-(b)<-[:E]-(a) RETURN count(*) AS c'],
 ];
