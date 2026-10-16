@@ -2917,6 +2917,23 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   tick-sized fix. Item 359's note that "a ratio is only as honest as the sameness of its two sides"
   held up: the comparison it built is sound, and the 20x it exposes is the true nested-path penalty.
 
+- **ITEM 372 IS CLOSED: the aggregate dispatch is FULLY reachable — no dead path (383).** 372 asked
+  which of the dispatch's entries are unreachable, after item 371 found one that had shipped dead.
+  Instrumenting the 28-entry `or_else` chain over the ~1,200-case `gql_corpus` showed every entry
+  CALLED (372). **The instrument had a blind spot I recorded at 376** — `try_frontier_aggregate`
+  sits in a later `else if`, OUTSIDE the chain, so the probe reported "no fast path" where it simply
+  had no coverage. The post-chain dispatch is exactly TWO more named paths plus the general
+  fallback, and both are live: `try_frontier_aggregate` (shown at 376) and
+  `try_frontier_group_fold`, confirmed here by an `eprintln` at function entry — reached for a
+  grouped `max`/`sum` over a 1- and 2-hop frontier and for Gremlin's
+  `group().by('city').by(values('age').max())`.
+  **Useful boundary while the probe was up:** a grouped `count(*)` does NOT reach `group_fold`,
+  because `try_frontier_dict_count` (chain entry 25) claims it first — so `group_fold`'s real
+  territory is grouped NON-count aggregates, and `groupCount().by(k)` is dict_count's. Nothing to
+  fix; the question is answered rather than parked, and a future "is X dead?" should use the same
+  one-`eprintln` check (item 267's lesson, 371's and now 383's) rather than re-instrumenting a
+  corpus.
+
 ## 6. Consequences of the AND decision — RESOLVED by item 258, and not as predicted
 
 This section was written before the change and asked three questions. All three are now answered by
