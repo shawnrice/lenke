@@ -2885,10 +2885,25 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   unfiltered shape (250.1 against 374.9). Controls flat: vacuous labels on both ends, item 306's
   gated route, 4 and 5 hops, one hop. Extracted to a helper because the caller tripped complexity
   41/35 AND max-statements 81/80.
-- **Still open: a 1.70x DIRECTION asymmetry on a 3-hop chain with NO label anywhere (430).**
-  Reversed 296 ms against forward 174, nothing to narrow either end, so neither item 429's flip nor
-  item 430's label rule applies. The product walking in-adjacency rather than out; whether that is
-  inherent to the storage or another missing symmetry needs its own measurement.
+- **Still open, now LOCATED: the direction asymmetry is the degree PRODUCT's, in BOTH engines, and
+  native's is 4.67x (431).** `chain-layout-probe` (`bun run probe:layout`) varies ONE thing — where
+  each edge points — over two graphs of identical size and degree, and asks both engines through
+  one shared edge list. **Not locality:** the layout halves the magnitude (TS 3-hop forward 170.3 ->
+  49.3 ms for the identical query, a 3.5x belonging entirely to the data) but the asymmetry survives
+  at 1.23x TS / 2.06x native. **Not a TS quirk:** native's ratio is BIGGER, 4.67x (3.3 -> 15.4 ms)
+  against TS's 1.70x. **It peaks at THREE hops in both** — 2 hops 1.03x/1.42x, 4 hops 1.28x/1.60x
+  (1.00x on the ring), 3 hops 1.70x/4.67x — and three segments is the ONLY depth the degree product
+  owns (two has its own walk, four+ is the sweep). Next: the NATIVE product, the bigger ratio.
+- **CORRECTION to item 430: there is NO 2-hop asymmetry (431).** 430 reported "1.68x already at two
+  hops" from four shapes in one process behind a 1-hop warmup that warms nothing (it has a count
+  shortcut). The pair SWAPPED which side was slower between two runs of the same binary
+  (40.9/68.6, then 68.8/42.8). Isolated per process it is 1.03x. Fourth occurrence of this
+  mechanism this session (420, 421, 423) and the first where it manufactured a DIRECTION rather
+  than a magnitude.
+- **A probe's SIZE is part of its question (431).** `chain-depth-probe` already swept depth in both
+  engines with a reversed spelling and was the obvious host for this — and is the wrong one: 200
+  nodes at degree 5 is entirely cache-resident, so it cannot show a locality effect at all. Keeping
+  it small is what lets it reach eleven hops; the layout question needed 200,000 and its own file.
 - **Three of four routing mutants SURVIVE because both routes are correct (430).** always-sweep,
   always-product and an inverted comparison all leave every test green; only dropping the
   `interiorPred` guard — which LOSES a clause `WHERE` on the way to the sweep — is caught. **A
