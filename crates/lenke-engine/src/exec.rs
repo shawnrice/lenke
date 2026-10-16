@@ -1587,6 +1587,11 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
                         // that `sum`/`avg` deliberately cannot (item 376).
                         .or_else(|| try_frontier_count_prop(input, keys, aggs, store))
                         .or_else(|| try_filtered_scan_num_agg(input, keys, aggs, store))
+                        // Its STRING twin. Beside it rather than anywhere else, for the reason
+                        // 421 and 375 both record: these entries own the `Filter(Scan)` shape
+                        // between them, and an arm placed below a path that claims the shape is
+                        // dead (422).
+                        .or_else(|| try_filtered_scan_str_agg(input, keys, aggs, store))
                         .or_else(|| try_scan_multi_agg(input, keys, aggs, store))
                         // The INDEX answer first (item 369): O(1) from the hash index's key
                         // count where the scan below is O(live nodes). Identical gates, so the

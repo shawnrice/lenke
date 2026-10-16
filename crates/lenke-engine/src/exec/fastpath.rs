@@ -2303,6 +2303,135 @@ pub(super) fn try_filtered_scan_num_agg(
     Some(Batch::single(Col::Gen(vec![result])))
 }
 
+/// The STRING twin of [`try_filtered_scan_num_agg`], and the second half of item 421's answer.
+///
+/// 421 gave the bare-`Scan` `min`/`max` a columnar fold for `Column::Str` and `Column::Dict`.
+/// The same `Column::Num` gate sits on this entry and on [`try_frontier_prop_agg`], so after
+/// 421 ONE question cost three different amounts depending on how it was spelled — which is the
+/// asymmetry this repo is named after, introduced by fixing one spelling and not its siblings.
+/// Measured at 1,000,000 nodes over 97 distinct values (audit item 422):
+///
+/// ```text
+///                              string      numeric    the string gate's share
+///   scan     max(a.s)         0.796ms      2.151ms    (421: already folded)
+///   FILTERED max(a.s)         7.412        2.326       3.2x   <- this entry
+///   hop      max(b.s)        14.172        9.372       1.5x   <- still open
+/// ```
+///
+/// The hop/frontier arm is deliberately left: it folds per-node path MULTIPLICITIES rather than
+/// rows, and item 376's rule about which aggregates may do that (`count` yes, `sum`/`avg` never)
+/// has to be re-read for a dictionary before extending it. A filtered scan has no multiplicity —
+/// each survivor is one row — so this one is the same fold 421 shipped over a different id list.
+///
+/// `Min`/`Max` only, for the reasons 421 records: `Count` over any column type belongs to the
+/// filtered count path, and `Sum`/`Avg` over a string is a data exception the general path raises.
+/// The survivor-id machinery is byte-for-byte the numeric arm's, so both evaluate the predicate
+/// over the same rows in the same order — what items 139/142 require of a fast path.
+pub(super) fn try_filtered_scan_str_agg(
+    input: &Plan,
+    keys: &[(String, Expr)],
+    aggs: &[Agg],
+    store: &Store,
+) -> Option<Batch> {
+    if !keys.is_empty() || aggs.len() != 1 {
+        return None;
+    }
+    let agg = &aggs[0];
+    if agg.distinct || !matches!(agg.func, AggFn::Min | AggFn::Max) {
+        return None;
+    }
+    let Plan::Filter { input: scan, pred } = input else {
+        return None;
+    };
+    let Plan::Scan { label } = scan.as_ref() else {
+        return None;
+    };
+    let Some(Expr::Prop { slot: 0, key }) = agg.arg.as_ref() else {
+        return None;
+    };
+    // Decline BEFORE evaluating the predicate: the general path must do that work itself, and
+    // doing it twice would make a declined shape slower than no fast path at all.
+    if !matches!(
+        store.column(key),
+        Some(Column::Str { .. } | Column::Dict { .. })
+    ) {
+        return None;
+    }
+    let ids: Vec<u32> = match label {
+        Some(l) => store.nodes_with_label(l).to_vec(),
+        None => store.all_nodes(),
+    };
+    let batch = Batch::of(vec![Col::Nodes(ids)]);
+    let keep = try_filter_keep(pred, store, &batch)?;
+    let Col::Nodes(sids) = batch.slot(0) else {
+        return None;
+    };
+    let want_min = agg.func == AggFn::Min;
+    let best: Option<GStr> = match store.column(key)? {
+        Column::Str { data, present, .. } => {
+            let mut best_i: Option<usize> = None;
+            for &row in &keep {
+                let i = sids[row] as usize;
+                // The agg's own prop may be NULL even where the filter passed.
+                if !present[i] {
+                    continue;
+                }
+                best_i = Some(match best_i {
+                    None => i,
+                    Some(b) => {
+                        let ord = data[i].cmp(&data[b]);
+                        if (want_min && ord.is_lt()) || (!want_min && ord.is_gt()) {
+                            i
+                        } else {
+                            b
+                        }
+                    }
+                });
+            }
+            best_i.map(|i| data[i].clone())
+        }
+        Column::Dict {
+            dict,
+            codes,
+            present,
+            ..
+        } => {
+            // Which codes SURVIVED. One bool store per survivor, no string comparison — and
+            // unlike the unfiltered case, the `present` gate here is load-bearing for the
+            // ANSWER in the ordinary way too: a code 0 from an absent slot names `dict[0]`,
+            // which the filter may well have excluded.
+            let mut seen = vec![false; dict.len()];
+            for &row in &keep {
+                let i = sids[row] as usize;
+                if present[i] {
+                    seen[codes[i] as usize] = true;
+                }
+            }
+            let mut best_c: Option<usize> = None;
+            for (c, &used) in seen.iter().enumerate() {
+                if used {
+                    best_c = Some(match best_c {
+                        None => c,
+                        Some(b) => {
+                            let ord = dict[c].cmp(&dict[b]);
+                            if (want_min && ord.is_lt()) || (!want_min && ord.is_gt()) {
+                                c
+                            } else {
+                                b
+                            }
+                        }
+                    });
+                }
+            }
+            best_c.map(|c| dict[c].clone())
+        }
+        _ => return None,
+    };
+    Some(Batch::single(Col::Gen(vec![
+        best.map_or(Value::Null, Value::Str)
+    ])))
+}
+
 /// `count(k)` over a hop-chain FRONTIER, folded from the per-node path multiplicities
 /// instead of materializing the frontier ids. Order-INDEPENDENT — a count is integer
 /// addition — so collapsing the frontier is byte-identical, exactly as

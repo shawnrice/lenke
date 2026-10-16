@@ -2847,6 +2847,25 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   `Str` arm (`genExpr` emits a bare `n.s`) but NOT the `Dict` arm** — its six-node fixture has six
   distinct `s` values and measures `dict=false`, so the dictionary path's cross-engine parity rests
   on the unit test alone.
+- **The FILTERED-scan string twin is DONE, 4.0-4.3x — and fixing one spelling and not its siblings
+  IS the asymmetry (422).** `Some(Column::Num { .. })` appears on twelve lines of `fastpath.rs` /
+  `aggregation.rs`, two of them the other spellings of the question 421 made 14.5x faster, so 421
+  left ONE question costing three different amounts: scan 0.796 ms, filtered 7.412, hop 14.172 (1M,
+  dict). `try_filtered_scan_str_agg` takes the filtered one to 1.865 ms — now FASTER than the
+  filtered NUMERIC fold (2.367), because the dictionary does 97 string comparisons where the numeric
+  arm does a million `f64` ones. Controls flat including the hop arm across six runs, which is the
+  evidence it is untouched.
+- **The HOP string min/max is PRICED AND LEFT, not forgotten (422).** `try_frontier_prop_agg` folds
+  per-node path MULTIPLICITIES, and item 376's rule for which aggregates may do that has to be
+  re-read for a dictionary first. The string gate's share there is only 1.5x (14.172 against the
+  numeric 9.372) — most of that cost is the hop — so it is a small prize for the care it needs. A
+  filtered scan has no multiplicity, which is why that one was the same fold over a different id
+  list and this is not.
+- **A fixture built to exercise a guard must be checked against the guard's REMOVAL (422).** The
+  mutant dropping the Dict arm's `present` check survived: every absent slot it wrongly read named
+  `dict[0]`, already among the survivors, so no answer changed. The leak needs a survivor that is
+  ABSENT _and_ a `dict[0]` the filter excludes. Second time in three items a surviving mutant found
+  something other than a missing test — 420 refuted a comment, this refuted a fixture.
 - **Contamination can flatter a baseline as well as inflate a control (421).** The 1M projection
   control read 1.52x WORSE on disjoint ranges; in its own process both sides measure ~17.8 ms. The
   OLD figure (10.7-12.5) was the wrong one — the three string aggregates ahead of it materialized 1M

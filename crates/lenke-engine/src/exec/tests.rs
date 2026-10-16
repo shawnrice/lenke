@@ -18439,3 +18439,160 @@ fn scan_string_min_max_agrees_with_the_frontier_path() {
         );
     }
 }
+
+/// Item 422: the FILTERED-scan twin of item 421's string fold. `try_filtered_scan_str_agg`
+/// answers `MATCH (p:N) WHERE <pred> RETURN max(p.v)` off the column instead of the general
+/// path, with the same `Str`/`Dict` split — so there are now THREE spellings of one question
+/// (bare scan, filtered scan, hop) and what is worth asserting is that they agree.
+///
+/// The hop spelling still goes to `try_frontier_prop_agg`, whose `Column::Num` gate sends a
+/// string to the general fold — which makes it the perfect oracle here: a path this change
+/// cannot reach, answering the same question over the same rows.
+#[test]
+fn filtered_scan_string_min_max_agrees_with_the_unfiltered_and_hop_spellings() {
+    use crate::value::Value;
+
+    let same = |a: &Value, b: &Value| crate::value::cmp_total(a, b).is_eq();
+    let cell = |store: &crate::store::Store, q: &str| -> Value {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), store);
+        let out = crate::exec::try_run(&plan, store).unwrap_or_else(|e| panic!("{q}: {e}"));
+        out.rows[0][0].clone()
+    };
+
+    // `w` is the numeric key the predicate filters on; `v` the string being folded. The values
+    // REPEAT so the column is dictionary-encoded (a 3-distinct-over-3-rows fixture is not —
+    // item 421 learned that the slow way), and the repeats are arranged so that the extremum
+    // among SURVIVORS differs from the extremum over the whole column for several thresholds.
+    let strs = ["m", "a", "z", "d", "q", "b"];
+    let mut b = crate::store::Builder::default();
+    for i in 0..60u32 {
+        let s = strs[(i % 6) as usize];
+        if i % 7 == 0 {
+            // No `v` at all: the agg's own property may be absent even where the filter passes.
+            b.node(&["N"], &[("w", Value::Num(f64::from(i)))]);
+        } else {
+            b.node(
+                &["N"],
+                &[("w", Value::Num(f64::from(i))), ("v", Value::Str(s.into()))],
+            );
+        }
+    }
+    for i in 0..60u32 {
+        b.edge(i, i, "E"); // self-edge: the hop reaches each node exactly once
+    }
+    let store = b.build();
+    assert!(
+        store.scan_is_cheap("v"),
+        "fixture no longer dictionary-encoded, so the Dict arm is untested"
+    );
+
+    for thresh in ["-1", "0", "5", "29", "58", "59", "1000"] {
+        for f in ["min", "max"] {
+            let filtered = cell(
+                &store,
+                &format!("MATCH (p:N) WHERE p.w > {thresh} RETURN {f}(p.v) AS n"),
+            );
+            // The hop spelling with the SAME predicate, which `try_frontier_prop_agg` declines
+            // for a string column — so this is the general fold.
+            let hopped = cell(
+                &store,
+                &format!("MATCH (a:N)-[:E]->(b) WHERE b.w > {thresh} RETURN {f}(b.v) AS n"),
+            );
+            assert!(
+                same(&filtered, &hopped),
+                "w>{thresh}/{f}: filtered scan gave {filtered:?}, general gave {hopped:?}"
+            );
+        }
+    }
+
+    // `thresh = 1000` keeps nothing, so both must be NULL rather than the empty string or a
+    // leaked `dict[0]`.
+    assert!(
+        matches!(
+            cell(&store, "MATCH (p:N) WHERE p.w > 1000 RETURN max(p.v) AS n"),
+            Value::Null
+        ),
+        "an empty survivor set must fold to NULL"
+    );
+
+    // THE DICT LEAK, filtered. `zz` is on a node the predicate EXCLUDES, and it is the greatest
+    // string, so a fold that marked codes without consulting `keep` answers `zz`. The node also
+    // carries the lowest `w`, which is what puts it outside every threshold used here.
+    let mut b = crate::store::Builder::default();
+    b.node(
+        &["N"],
+        &[("w", Value::Num(0.0)), ("v", Value::Str("zz".into()))],
+    );
+    for i in 1..40u32 {
+        if i % 9 == 5 {
+            // A SURVIVOR with no `v`. Its code is 0, which names `dict[0]` = "zz" — so this is
+            // the row that makes the `present` check observable. Without it the mutant that
+            // drops that check survives: every absent slot it would wrongly read names a string
+            // that is already among the survivors, which the first version of this fixture
+            // established by letting exactly that mutant through.
+            b.node(&["N"], &[("w", Value::Num(f64::from(i)))]);
+            continue;
+        }
+        b.node(
+            &["N"],
+            &[
+                ("w", Value::Num(f64::from(i))),
+                ("v", Value::Str(if i % 2 == 0 { "a" } else { "b" }.into())),
+            ],
+        );
+    }
+    for i in 0..40u32 {
+        b.edge(i, i, "E");
+    }
+    let store = b.build();
+    assert!(
+        store.scan_is_cheap("v"),
+        "the leak case needs a Dict column"
+    );
+    let got = cell(&store, "MATCH (p:N) WHERE p.w > 0 RETURN max(p.v) AS n");
+    assert!(
+        same(&got, &Value::Str("b".into())),
+        "an excluded row's code leaked into a filtered max: got {got:?}"
+    );
+
+    // And the plain `Str` arm: too many distinct values to dictionary-encode.
+    let wide: Vec<String> = (0..600).map(|i| format!("s{i:04}")).collect();
+    let mut b = crate::store::Builder::default();
+    for (i, s) in wide.iter().enumerate() {
+        b.node(
+            &["N"],
+            &[
+                ("w", Value::Num(i as f64)),
+                ("v", Value::Str(s.as_str().into())),
+            ],
+        );
+    }
+    for i in 0..wide.len() as u32 {
+        b.edge(i, i, "E");
+    }
+    let store = b.build();
+    assert!(
+        !store.scan_is_cheap("v"),
+        "fixture IS dictionary-encoded, so the plain `Str` arm is untested"
+    );
+    for (f, want) in [("min", "s0100"), ("max", "s0599")] {
+        let got = cell(
+            &store,
+            &format!("MATCH (p:N) WHERE p.w > 99 RETURN {f}(p.v) AS n"),
+        );
+        assert!(
+            same(&got, &Value::Str(want.into())),
+            "wide filtered {f}: want {want}, got {got:?}"
+        );
+    }
+
+    // `sum`/`avg` over a filtered string column must still FAULT, not be folded.
+    for f in ["sum", "avg"] {
+        let q = format!("MATCH (p:N) WHERE p.w > 0 RETURN {f}(p.v) AS n");
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(&q).unwrap(), &store);
+        assert!(
+            crate::exec::try_run(&plan, &store).is_err(),
+            "{f}() over a string column should be a data exception"
+        );
+    }
+}

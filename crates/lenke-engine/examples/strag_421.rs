@@ -23,6 +23,10 @@ use std::time::Instant;
 
 fn fixture(n: u32, distinct: u32) -> Store {
     let mut b = Builder::default();
+    // Edges are added after the nodes, below: the HOP spelling of the same question has its own
+    // fast path (`try_frontier_prop_agg`) with its own `Column::Num` gate, and item 421's whole
+    // premise is that two spellings of one question must not cost differently.
+
     for i in 0..n {
         // `s` is LOW-cardinality, so it is the dictionary case; `wide` has a distinct string per
         // node, which is the case a dictionary cannot help. Both are present on every node, so
@@ -37,6 +41,11 @@ fn fixture(n: u32, distinct: u32) -> Store {
                 ("wide", Value::Str(wide.into())),
             ],
         );
+    }
+    // One self-edge per node, so `(a:P)-[:E]->(b)` reaches each node exactly once and the hop
+    // spelling asks the SAME question over the SAME set as the scan spelling.
+    for i in 0..n {
+        b.edge(i, i, "E");
     }
     b.build()
 }
@@ -77,6 +86,26 @@ fn main() {
             ("C count(a.s)", "MATCH (a:P) RETURN count(a.s) AS m"),
             ("C count(*)", "MATCH (a:P) RETURN count(*) AS m"),
             ("C project a.s", "MATCH (a:P) RETURN a.s AS m"),
+            // The SAME question, two more spellings. Each has its own fast path with its own
+            // `Column::Num` gate, so each is a separate missing path for a string column —
+            // and after item 421 the scan spelling is 14.5x faster than both, which is the
+            // spelling asymmetry this repo is named after.
+            (
+                "S hop max dict",
+                "MATCH (a:P)-[:E]->(b) RETURN max(b.s) AS m",
+            ),
+            (
+                "S hop max numeric",
+                "MATCH (a:P)-[:E]->(b) RETURN max(b.k) AS m",
+            ),
+            (
+                "S filtered max dict",
+                "MATCH (a:P) WHERE a.k > 500 RETURN max(a.s) AS m",
+            ),
+            (
+                "S filtered max numeric",
+                "MATCH (a:P) WHERE a.k > 500 RETURN max(a.k) AS m",
+            ),
         ];
         // `PROBE_ONLY=<substring>` runs ONE case in this process. Item 420 found a control
         // moving 1.28x purely because the targets AHEAD of it in the same process got faster
