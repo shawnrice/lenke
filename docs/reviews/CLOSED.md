@@ -2902,6 +2902,21 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   graph defeats the elision for every query anchored on that label". A 17,000x that evaporates on a
   single missing property is a different proposition from a 17,000x; price it as such.
 
+- **The `map field meta.city` 20x is REAL map-access cost, correctly measured, and closing it is a
+  STORAGE feature rather than an optimization (382).** `value/maps` reads
+  `string city (flat)` 249.5us against `map field meta.city` 4953.6us over the same 200,000 nodes.
+  **Both stores are UNINDEXED** — I first guessed the flat side was seeding an `IndexSeek`, because
+  1.25 ns/node looked impossible for a scan, and that was wrong: `Column::Str` is
+  DICTIONARY-encoded (`codes[i]` indexes `dict`), so a flat string equality is a vectorizable
+  `u32` CODE compare. _A surprisingly fast number can mean a better representation, not a different
+  plan._ The map side is 24.8 ns/node and the read is already targeted — `resolve_path`'s
+  one-segment arm (item 359) does `record_field` without cloning the map — so the gap is not
+  redundancy but representation: a boxed `Record`, a string-keyed field lookup, and a scalar
+  `Value` compare against a SIMD code compare. **Closing it means SHREDDING nested fields into
+  columns** (Parquet-style), which is a storage change with a snapshot-format consequence, not a
+  tick-sized fix. Item 359's note that "a ratio is only as honest as the sameness of its two sides"
+  held up: the comparison it built is sound, and the 20x it exposes is the true nested-path penalty.
+
 ## 6. Consequences of the AND decision — RESOLVED by item 258, and not as predicted
 
 This section was written before the change and asked three questions. All three are now answered by
