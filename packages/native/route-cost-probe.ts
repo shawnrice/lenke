@@ -119,6 +119,17 @@ const queries: Record<string, string> = {
   // nothing has an item number for. `n.age >= 5` and `5 <= n.age` are the same question, and
   // CLAUDE.md names that exact pair among the 100-300x gaps this engine exists not to have.
   // Isolated here because `spelling-probe` runs its whole group in ONE process (item 274).
+  // Item 465: item 464's CASE question, asked of TS. Item 448's rule — a gap found in one
+  // engine is a QUESTION about the other, never a finding. The property-armed row is the
+  // control: same machinery, structurally unable to take a literal-arm fast path.
+  casefloor: 'MATCH (n:Person) RETURN count(n.age) AS c',
+  caselit: 'MATCH (n:Person) RETURN count(CASE WHEN n.age > 3 THEN 1 ELSE 0 END) AS c',
+  casenull: 'MATCH (n:Person) RETURN count(CASE WHEN n.age > 3 THEN 1 ELSE null END) AS c',
+  casesum: 'MATCH (n:Person) RETURN sum(CASE WHEN n.age > 3 THEN 1 ELSE 0 END) AS c',
+  caseprop: 'MATCH (n:Person) RETURN count(CASE WHEN n.age > 3 THEN n.age ELSE 0 END) AS c',
+  // Is `sum(CASE …)` the CASE or the SUM? These two separate them.
+  sumfloor: 'MATCH (n:Person) RETURN sum(n.age) AS c',
+  sumprop: 'MATCH (n:Person) RETURN sum(n.age + 0) AS c',
   opprop: 'MATCH (n:Person) WHERE n.age >= 5 RETURN count(*) AS c',
   oplit: 'MATCH (n:Person) WHERE 5 <= n.age RETURN count(*) AS c',
   opprop2: 'MATCH (n:Person) WHERE n.age = 5 RETURN count(*) AS c',

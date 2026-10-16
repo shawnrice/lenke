@@ -4382,3 +4382,31 @@ Three things to not re-derive:
 Semantics are the eager path's and an `Err` lands on the same masked fallback, so an error in an
 unreached branch behaves as before. Oracle for the differential half: a property arm computing
 the same value (`a.k - a.k + 1` is 1), which declines.
+
+## 465 — item 464 has NO TS twin, and `sum` is 4.6x its own `count` whatever the argument
+
+Asking TS item 464's question: a literal-armed CASE costs 1.5x the floor and a PROPERTY-armed one
+costs **the same** 1.5x (15.1-15.7 against 15.5, floor 9.4-10.2 at 200,000 nodes). The
+distinction item 464 is built on does not exist in TS. Third time this session the cross-engine
+answer is "nothing to port" (items 448, 454, 465).
+
+**What the question turned up: `sum(CASE …)` is not a CASE problem.** `count(n.age)` 9.4-10.2 ms
+against **`sum(n.age)` 43.7-48.0**, with `sum(n.age + 0)` 45.1-46.9 and `sum(CASE …)` 46.6-54.6 —
+everything built on `sum` lands on the same ~46 ms whatever its argument. Native's `sum` is ~1.25x
+its `count`, so this is TS-specific. **Second time this session a shape was blamed for the cost of
+the thing around it** (item 457 was the first).
+
+**Cause:** `foldFor` admits `count`/`min`/`max` only, so any projection containing a `sum` has
+`foldedAggs === undefined` and the streaming path is disabled entirely — the group materializes.
+
+**Why it is not a free fix, and the exact open question.** That omission is load-bearing: item 419
+records "418 is safe by CONSTRUCTION rather than by careful guards — its admission set is
+`foldFor`'s", under "an order-dependent aggregate cannot take a fast path that may reorder rows,
+and every fast path in this family may". The hop's far-driven route reorders and a float sum then
+returns `2.0000000000000000e16` against `2.0000000000000004e16`. The admission set is SHARED, so
+adding `sum` re-opens that on the hop.
+
+The SCAN path has no far-driven alternative and may be admissible. **The question is whether its
+row order is identical to the general path's BY CONSTRUCTION — same source, no seeded alternative
+— rather than by observation**, which is the distinction item 419 drew when it declined the
+start-driven route. Worth 4.6x on `sum` if yes; item 419 again if the scan can seed.
