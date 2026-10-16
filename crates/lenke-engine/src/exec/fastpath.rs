@@ -2550,6 +2550,125 @@ pub(super) fn try_scan_num_agg(
     Some(Batch::of(vec![Col::Gen(vec![result])]))
 }
 
+/// `MATCH (n:L) RETURN max(n.s)` over a STRING column — the arm [`try_scan_num_agg`]'s gate
+/// declines in as many words ("non-numeric column: the general path handles poison").
+///
+/// What that cost, 5 reps, min, nothing indexed (audit item 421):
+///
+/// ```text
+///                          50k        200k        1M
+///   max over a string    0.642ms    2.574ms   12.966ms
+///   max over `Num`       0.118      0.472      2.144      5.4-6.0x
+///   count(n.s)           0.031      0.123      0.555      21-23x, SAME column
+///   project n.s          0.295      1.183     10.547
+/// ```
+///
+/// The 21x against `count` on the same column is the shape of it: `count` reads only the
+/// `present` mask, where `max` was materializing rows and boxing each value to compare it.
+///
+/// The DICTIONARY arm is the reason this is worth its own function rather than one more branch
+/// in the numeric one. A `Column::Dict` holds few distinct strings behind a `u32` per row, and
+/// the extremum of the column is the extremum of the distinct values that APPEAR in it — so the
+/// per-row pass compares no strings at all, it only marks codes, and the string comparisons are
+/// one pass over the dictionary. The probe showed the two encodings costing the same before this
+/// (2.574ms against 2.564ms at 200k over 97 distinct values versus 200,000), which is what
+/// "no encoding awareness" looks like from outside.
+///
+/// `Min`/`Max` only. `Sum`/`Avg` over a string is a data exception, which the general path
+/// raises; `Count` belongs to [`try_scan_count_prop`], which answers it for a column of any
+/// type. The order is `GStr::cmp`, which is exactly what `value::cmp_total` dispatches to for
+/// `(Str, Str)` — the same single home for order the numeric arm uses `cmp_num_total` from, so
+/// two paths answering one query cannot disagree.
+pub(super) fn try_scan_str_agg(
+    input: &Plan,
+    keys: &[(String, Expr)],
+    aggs: &[Agg],
+    store: &Store,
+) -> Option<Batch> {
+    if !keys.is_empty() || aggs.len() != 1 {
+        return None;
+    }
+    let agg = &aggs[0];
+    if agg.distinct || !matches!(agg.func, AggFn::Min | AggFn::Max) {
+        return None;
+    }
+    let label = match input {
+        Plan::Scan { label } => label,
+        _ => return None,
+    };
+    let Some(Expr::Prop { slot: 0, key }) = agg.arg.as_ref() else {
+        return None;
+    };
+    let want_min = agg.func == AggFn::Min;
+    // The extremum is tracked as an INDEX rather than a borrow: `scan_visit` takes an `FnMut`,
+    // and holding a `&GStr` out of it across iterations is a borrow the closure cannot own.
+    let best: Option<GStr> = match store.column(key)? {
+        Column::Str { data, present, .. } => {
+            let mut best_i: Option<usize> = None;
+            scan_visit(store, label, |i| {
+                if present[i] {
+                    best_i = Some(match best_i {
+                        None => i,
+                        Some(b) => {
+                            let ord = data[i].cmp(&data[b]);
+                            if (want_min && ord.is_lt()) || (!want_min && ord.is_gt()) {
+                                i
+                            } else {
+                                b
+                            }
+                        }
+                    });
+                }
+            });
+            best_i.map(|i| data[i].clone())
+        }
+        Column::Dict {
+            dict,
+            codes,
+            present,
+            ..
+        } => {
+            // Pass one: WHICH codes appear among the scanned rows. No string comparison, one
+            // bool store per present row.
+            let mut seen = vec![false; dict.len()];
+            scan_visit(store, label, |i| {
+                if present[i] {
+                    seen[codes[i] as usize] = true;
+                }
+            });
+            // Pass two: the extremum among the strings those codes name. `dict.len()` rather
+            // than the row count, which is the whole point.
+            let mut best_c: Option<usize> = None;
+            for (c, &used) in seen.iter().enumerate() {
+                if used {
+                    best_c = Some(match best_c {
+                        None => c,
+                        Some(b) => {
+                            let ord = dict[c].cmp(&dict[b]);
+                            if (want_min && ord.is_lt()) || (!want_min && ord.is_gt()) {
+                                c
+                            } else {
+                                b
+                            }
+                        }
+                    });
+                }
+            }
+            best_c.map(|c| dict[c].clone())
+        }
+        // Every other encoding declines. `Gen` is a mixed column, where the extremum crosses
+        // type ranks and belongs to the general fold; `Bool` and `Temporal` have their own
+        // orders and are simply not measured here, so they are left where they were rather
+        // than extended on a guess.
+        _ => return None,
+    };
+    // An empty set has no extremum, so NULL — the same answer the numeric arm and
+    // `try_frontier_prop_agg` give.
+    Some(Batch::of(vec![Col::Gen(vec![
+        best.map_or(Value::Null, Value::Str)
+    ])]))
+}
+
 /// Visit each scanned node's dense id (as `usize`) for a bare `Scan`. Iterates the
 /// raw `0..node_count` range directly when the scan covers every live node (an
 /// unlabelled scan, or a label all nodes carry, nothing deleted) — sequential and

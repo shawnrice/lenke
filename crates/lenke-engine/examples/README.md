@@ -66,6 +66,7 @@ enumeration's is flat.
 | What does a map/record property cost vs flat scalars (stored, codec)?  | `value_bench -- maps` / `codec`      |
 | How do shapes scale across the cache transition?                       | `scale_bench -- sweep`               |
 | What does content-derived CDC scope extraction cost per write?         | `scale_bench -- cdc`                 |
+| What does a scalar min/max cost by COLUMN TYPE and ENCODING?           | `strag_421`                          |
 
 **Deferred** (need crate-private access or a large bespoke fixture, so not in a
 group binary yet): the eval-vs-columnar floor (`eval_vec` is crate-private — it
@@ -168,6 +169,17 @@ question in its module header — read the header before touching it.
   196->712us). Four attempts to "fix" the non-problem are recorded with their
   numbers, including a fold that was 3.1x WORSE. Do not re-open without a way to
   answer an endpoint predicate without visiting edges.
+
+- `strag_421` — the column-TYPE question for a scalar aggregate. `try_scan_num_agg`
+  folds a `Num` column and its gate declines every other ("non-numeric column: the
+  general path handles poison"), so: what does `max(n.s)` over a string cost, and does
+  the answer depend on the ENCODING? It prints `scan_is_cheap` per key, because "the
+  dict arm is 14x" is only a claim about the dict arm if the fixture produced one — and
+  a 3-distinct-over-3-rows fixture is NOT dictionary-encoded, which is how a first
+  version of item 421's unit test came to test the wrong arm. Sweeps 50k/200k/1M and
+  carries the numeric fold, the count over the same column and the projection of it as
+  controls. `PROBE_ONLY=<substring>` runs one case per process, which is what separates
+  a real control movement from allocator contamination by the targets ahead of it.
 
 - `spelling_probe` — that equivalent query spellings optimize to the SAME plan
   and so cost the same (a plan mismatch is the real signal; time is the backstop).

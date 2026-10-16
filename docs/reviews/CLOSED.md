@@ -2833,6 +2833,26 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   passing: the 2.2x "projecting the start costs more than the far end" asymmetry is item 167
   restated — the far-side control's `:P` is VACUOUS, which routes it to the far-driven walk, and
   with a non-vacuous start label the asymmetry REVERSES (near is 1.3-1.4x better).
+- **NATIVE: a scan `min`/`max` over a STRING column had no columnar fold — DONE, 14.5x dict / 1.8x
+  plain (421).** `try_scan_num_agg` gates on `Column::Num` and declines the rest, so `max(n.s)` was
+  5.4-6.0x the numeric fold and **21-23x the `count` over the same column**. `try_scan_str_agg` adds
+  a `Str` arm (fold `GStr::cmp`, no row materialization) and a `Dict` arm that compares NO strings
+  per row — pass one marks which codes appear, pass two takes the extremum over `dict`, so the cost
+  is `dict.len()` comparisons instead of one per row. 200k: 2.378 -> 0.168 ms dict, 2.388 -> 1.420
+  plain; 1M: 12.008 -> 0.815 and 12.183 -> 6.875. Placed beside the numeric arm ABOVE
+  `try_frontier_prop_agg` for item 375's reason (a bare `Scan` is a trivial frontier, so an arm
+  below it is dead). The diagnostic that decided the design: a 97-value dict column and a
+  200,000-value plain one cost the SAME before this, which is what no encoding awareness looks like
+  from outside. Six mutants, all caught. **Named coverage gap: the differential fuzzer reaches the
+  `Str` arm (`genExpr` emits a bare `n.s`) but NOT the `Dict` arm** — its six-node fixture has six
+  distinct `s` values and measures `dict=false`, so the dictionary path's cross-engine parity rests
+  on the unit test alone.
+- **Contamination can flatter a baseline as well as inflate a control (421).** The 1M projection
+  control read 1.52x WORSE on disjoint ranges; in its own process both sides measure ~17.8 ms. The
+  OLD figure (10.7-12.5) was the wrong one — the three string aggregates ahead of it materialized 1M
+  rows each and left a warm allocator arena the projection reused. Item 420 saw the same mechanism
+  inflating a control; both directions now say the same thing: **isolate the control before writing
+  down a movement.**
 - **The SCAN twin is DONE too, 3.1-3.4x (420).** `detectNodeAggregate` folds one foldable aggregate
   over the rows `detectNodeProjection` already scans: `MATCH (a:P) RETURN max(a.k)` 35.2 -> 11.1 ms
   at 200,000 vertices, `min` 3.4x, `count(arg)` 3.1x, filtered 2.4x, unlabelled 2.5x, strings only

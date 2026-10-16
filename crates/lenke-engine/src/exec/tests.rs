@@ -18294,3 +18294,148 @@ fn a_gremlin_order_by_key_filters_and_so_cannot_be_elided_under_a_count() {
         "the sort must survive optimization under a bare count: {plan}"
     );
 }
+
+/// Item 421: `try_scan_str_agg` gives a scan `min`/`max` over a STRING column the columnar
+/// fold `try_scan_num_agg` has for `Num`, with a DICTIONARY arm that compares no strings
+/// per row at all. Two paths now answer string min/max, so — exactly as for item 375's
+/// numeric twin — what is worth testing is not an expectation I typed but that THE TWO AGREE.
+///
+/// Every node carries a self-edge, so `(a)-[:E]->(b)` reaches each node exactly once and goes
+/// to `try_frontier_prop_agg`, while `(p:N)` goes to the new columnar arm over the same set.
+#[test]
+fn scan_string_min_max_agrees_with_the_frontier_path() {
+    use crate::value::Value;
+
+    // `extra` seeds the dictionary from a node OUTSIDE the `:N` label, which is what makes the
+    // `present` gate observable in the Dict arm — see the label-scoped case below.
+    let build = |vals: &[Option<&str>], extra: Option<&str>| {
+        let mut b = crate::store::Builder::default();
+        if let Some(s) = extra {
+            b.node(&["Q"], &[("v", Value::Str(s.into()))]);
+        }
+        for v in vals {
+            match v {
+                Some(s) => b.node(&["N"], &[("v", Value::Str((*s).into()))]),
+                None => b.node(&["N"], &[]),
+            };
+        }
+        let n = vals.len() as u32 + u32::from(extra.is_some());
+        for i in 0..n {
+            b.edge(i, i, "E"); // self-edge: the hop reaches each node exactly once
+        }
+        b.build()
+    };
+
+    // `Value` has no `PartialEq` on purpose — `exec.rs` says to compare through
+    // `value::equals`/`cmp_total` rather than `==` — so agreement is checked through the same
+    // total order the folds themselves use.
+    let same = |a: &Value, b: &Value| crate::value::cmp_total(a, b).is_eq();
+    let cell = |store: &crate::store::Store, q: &str| -> Value {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), store);
+        let out = crate::exec::try_run(&plan, store).unwrap_or_else(|e| panic!("{q}: {e}"));
+        out.rows[0][0].clone()
+    };
+
+    for (name, vals) in [
+        ("plain", vec![Some("pear"), Some("apple"), Some("fig")]),
+        // Byte order, not locale: uppercase sorts before lowercase, and a shorter string that
+        // is a prefix sorts first. A fold using anything but `GStr::cmp` diverges here.
+        (
+            "case and prefix",
+            vec![Some("Zebra"), Some("apple"), Some("app")],
+        ),
+        ("empty string", vec![Some(""), Some("a")]),
+        ("non-ascii", vec![Some("Ã¥"), Some("z"), Some("A")]),
+        ("one row", vec![Some("solo")]),
+        ("some absent", vec![Some("mid"), None, Some("end")]),
+        ("all absent", vec![None, None]),
+        (
+            "duplicates",
+            vec![Some("b"), Some("b"), Some("a"), Some("b")],
+        ),
+    ] {
+        for extra in [None, Some("zzz_outside_the_label")] {
+            let store = build(&vals, extra);
+            for f in ["min", "max"] {
+                let scanned = cell(&store, &format!("MATCH (p:N) RETURN {f}(p.v) AS n"));
+                let hopped = cell(
+                    &store,
+                    &format!("MATCH (a:N)-[:E]->(b) RETURN {f}(b.v) AS n"),
+                );
+                assert!(
+                    same(&scanned, &hopped),
+                    "{name}/{f}/extra={extra:?}: scan gave {scanned:?}, frontier gave {hopped:?}"
+                );
+            }
+        }
+    }
+
+    // THE CASE THE `present` GATE IS FOR, in the Dict arm specifically. An absent slot holds
+    // code 0, which names `dict[0]` — a real string. So ignoring the mask can only change the
+    // answer when `dict[0]` is NOT otherwise among the scanned rows, and that needs the first
+    // appearance to come from a node the scan does not visit. `zzz` is on a `:Q`, every `:N`
+    // value sorts below it, and one `:N` has no value at all: a fold that read `codes` without
+    // the mask answers `zzz`.
+    // The values REPEAT, because dictionary encoding is a saving and the store only takes it
+    // when there is one: three distinct values over three present rows measured `dict=false`,
+    // which made a first version of this assertion fail on a fixture that was testing the
+    // `Str` arm while claiming to test the Dict one.
+    let mut leak: Vec<Option<&str>> = Vec::new();
+    for _ in 0..10 {
+        leak.extend([Some("a"), None, Some("b")]);
+    }
+    let store = build(&leak, Some("zzz"));
+    assert!(
+        store.scan_is_cheap("v"),
+        "fixture no longer dictionary-encoded, so this case tests nothing"
+    );
+    let got = cell(&store, "MATCH (p:N) RETURN max(p.v) AS n");
+    assert!(
+        same(&got, &Value::Str("b".into())),
+        "an absent slot's code 0 leaked `dict[0]` into a label-scoped max: got {got:?}"
+    );
+
+    // And the same question over a column too wide to dictionary-encode, so the `Str` arm runs.
+    // Without this the Dict arm would be the only one measured OR tested, which is how item 407
+    // found an encoding-blind threshold.
+    let wide: Vec<String> = (0..600).map(|i| format!("s{i:04}")).collect();
+    let mut b = crate::store::Builder::default();
+    for s in &wide {
+        b.node(&["N"], &[("v", Value::Str(s.as_str().into()))]);
+    }
+    for i in 0..wide.len() as u32 {
+        b.edge(i, i, "E");
+    }
+    let store = b.build();
+    assert!(
+        !store.scan_is_cheap("v"),
+        "fixture IS dictionary-encoded, so the plain `Str` arm is untested"
+    );
+    for (f, want) in [("min", "s0000"), ("max", "s0599")] {
+        let scanned = cell(&store, &format!("MATCH (p:N) RETURN {f}(p.v) AS n"));
+        let hopped = cell(
+            &store,
+            &format!("MATCH (a:N)-[:E]->(b) RETURN {f}(b.v) AS n"),
+        );
+        assert!(
+            same(&scanned, &Value::Str(want.into())),
+            "wide {f}: want {want}, got {scanned:?}"
+        );
+        assert!(
+            same(&scanned, &hopped),
+            "wide {f}: scan gave {scanned:?}, frontier gave {hopped:?}"
+        );
+    }
+
+    // `sum`/`avg` over strings must still FAULT rather than be folded — this path takes only
+    // `Min`/`Max`, and a gate that let the others through would answer where the general path
+    // raises.
+    for f in ["sum", "avg"] {
+        let q = format!("MATCH (p:N) RETURN {f}(p.v) AS n");
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(&q).unwrap(), &store);
+        assert!(
+            crate::exec::try_run(&plan, &store).is_err(),
+            "{f}() over a string column should be a data exception"
+        );
+    }
+}

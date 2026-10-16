@@ -1572,6 +1572,13 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
                         // this entry `Min`/`Max` without moving it would have left the arm
                         // DEAD below the frontier path, item 371 over again (375).
                         .or_else(|| try_scan_num_agg(input, keys, aggs, store))
+                        // The STRING twin of the entry above, and placed beside it for the same
+                        // reason: a bare `Scan` is a trivial frontier, so `try_frontier_prop_agg`
+                        // would claim a scan `min`/`max` over a string column and answer it at
+                        // 21x what `count` on that same column charges. Its gates are the
+                        // numeric arm's with `Column::Str`/`Column::Dict` in place of
+                        // `Column::Num`, so the two never contend for one shape (421).
+                        .or_else(|| try_scan_str_agg(input, keys, aggs, store))
                         .or_else(|| try_frontier_prop_agg(input, keys, aggs, store))
                         .or_else(|| try_scan_count_prop(input, keys, aggs, store))
                         // AFTER the scan twin, which owns the bare-`Scan` shape. `count`
