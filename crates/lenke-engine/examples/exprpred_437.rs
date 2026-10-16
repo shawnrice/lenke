@@ -91,6 +91,43 @@ fn main() {
                 "E bare cond",
                 "MATCH (a:Univ) WHERE a.k > 5 RETURN count(*) AS c",
             ),
+            // Item 457: the three shapes item 434's gap screen still has at the BOTTOM of the
+            // native/TS band after items 438, 449 and 450 — which fixed the FILTER forms. These
+            // are the positions those arms do not reach: a NESTED arithmetic predicate (two
+            // Arith levels, where `try_filter_keep_arith` admits one) and two AGGREGATE
+            // ARGUMENTS. Same fixture, same selectivity within each pair.
+            (
+                "F arith nested",
+                "MATCH (a:Univ) WHERE a.k * 2 + 1 > 7 RETURN count(*) AS c",
+            ),
+            (
+                "F arith flat",
+                "MATCH (a:Univ) WHERE a.k * 2 > 6 RETURN count(*) AS c",
+            ),
+            ("F agg plain", "MATCH (a:Univ) RETURN count(a.k) AS c"),
+            (
+                "F agg coalesce",
+                "MATCH (a:Univ) RETURN count(coalesce(a.missing, a.k)) AS c",
+            ),
+            (
+                "F agg case",
+                "MATCH (a:Univ) RETURN count(CASE WHEN a.k > 3 THEN 1 ELSE null END) AS c",
+            ),
+            // Is the 77x `coalesce` or the ABSENT column it reads? Same function, present
+            // column, same row count.
+            (
+                "F agg coal present",
+                "MATCH (a:Univ) RETURN count(coalesce(a.k, 0)) AS c",
+            ),
+            ("F agg missing", "MATCH (a:Univ) RETURN count(a.missing) AS c"),
+            // Is the cost COALESCE, or the generic scalar-call path it shares with every other
+            // non-vectorized function? `power` is the same shape: two args, numeric, no
+            // vectorized arm. If both land together the dispatch is the cause and the fix is
+            // shared; if `coalesce` is alone, it is not.
+            ("F agg power", "MATCH (a:Univ) RETURN count(power(a.k, 2)) AS c"),
+            ("F agg round", "MATCH (a:Univ) RETURN count(round(a.k)) AS c"),
+            ("F agg abs", "MATCH (a:Univ) RETURN count(abs(a.k)) AS c"),
+            ("F agg arith", "MATCH (a:Univ) RETURN count(a.k + 1) AS c"),
             // CONTROLS: no predicate at all, and a string comparison.
             ("D no predicate", "MATCH (a:Univ) RETURN count(*) AS c"),
             ("D string =", "MATCH (a:Univ) WHERE a.s = 'c42' RETURN count(*) AS c"),

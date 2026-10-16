@@ -4172,3 +4172,29 @@ Three things to not re-derive:
 
 `bun run spelling` now has NO genuine gap outstanding: the two groups still over 2x are item 455's
 harness artifact and a 0.00 ms degenerate.
+
+## 457 — the gap screen's `coalesce`/`case` rows are the GENERIC SCALAR-CALL PATH, not those functions
+
+Priced natively at 1,000,000 nodes: `count(a.k)` 0.466 ms is the floor; the vectorized arm gives
+`round` 4.301 and `abs` 4.824; the generic path gives `coalesce(a.k, 0)` 37.518, `count(CASE …)`
+28.396 and **`power(a.k, 2)` 45.193**. The generic pair land together and ~9x above the vectorized
+pair, so the per-row overhead is ~33 ns and belongs to the PATH.
+
+**A `coalesce` special case would have been the wrong fix** — it would have moved the gap-screen
+row it was chosen from while leaving `power`, `concat`, `substring`, `replace` and every other
+non-vectorized scalar exactly where they are. Two diagnoses were needed to get here: first that
+the probe's `coalesce(a.missing, a.k)` is the FUNCTION and not the absent column (the present-column
+spelling is 37.5), then that `power` is slower still.
+
+What remains per row: boxing each argument through `Col::value_at`, `call_scalar_checked(name, …)`
+matching the function NAME as a STRING against dozens of arms, and pushing a boxed `Value` into a
+`Col::Gen`. The per-row `Vec` allocation is ALREADY GONE (one reused buffer), so that lever is
+spent. The fix shape is to resolve the name to a function pointer once before the row loop.
+
+OPEN with numbers, both from `cargo run --example exprpred_437`:
+
+- **The generic scalar-call path, ~33 ns/row / ~9x**, for every scalar function lacking a
+  vectorized arm.
+- **A nested arithmetic predicate is 5.4x a flat one** (11.091 vs 2.061 ms, same row count):
+  `try_filter_keep_arith` (item 438) admits `Prop op Lit`, and `a.k * 2 + 1` is
+  `Arith(Arith(Prop, 2), 1)`.
