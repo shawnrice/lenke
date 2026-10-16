@@ -2738,6 +2738,37 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   tests alone. Use `tests/gql_corpus` for this question, not a scrape — item 372 took the machine
   down twice running a scraped corpus uncapped, and the curated one runs in 7.15 s under the cap.
 
+- **A bare `Scan` is a trivial frontier, so `try_frontier_prop_agg` was answering scan `min`/`max`
+  at 6.4x the columnar fold — 1.66x recovered, and the obvious fix was a net LOSS (375).**
+  `try_scan_num_agg` gated on `Sum | Avg`, `try_frontier_prop_agg` on `Min | Max`: **the aggregate
+  set was split across two fast paths and each covered only half of it**, so for any one shape one
+  half was fast and the other fell through. Fixed by giving the columnar entry `Min | Max` AND
+  moving it above the frontier path — **both halves are load-bearing**, since a gate alone stays
+  dead below a path that claims the plan (item 371, pre-empted this time instead of discovered by
+  an `eprintln`). **DO NOT instead add `Sum` to `try_frontier_prop_agg` while it sits earlier in
+  the chain**: that diverts scan `sum` into it, buying 2.5x on hops with a 6.4x regression on
+  scans. Chain position is part of the change. Also refuted: sharing ONE loop body between the two
+  folds behind an `is_extremum` test taxed the `sum` control **1.09x** — splitting them restored
+  parity and made `max` faster still, because the branch cost both folds. **The 1.66x is the
+  ceiling, not the 6.4x**: `sum` auto-vectorizes, min/max calls `cmp_num_total` through an
+  `Option`; recovering the rest needs a hand-rolled NaN-sorts-last `min`/`max`, declined because
+  `-0.0` is where reimplementing the value contract diverges first.
+- **`-0.0` vs `0.0` in min/max is a real inter-path difference and an UNOBSERVABLE one — do not
+  "fix" it (375).** `cmp_num_total` rates them EQUAL, so every fold keeps whichever it visited
+  first, and different paths visit in different orders. A bit-comparing differential test sees the
+  disagreement; nothing else can, because the JSON egress renders both as `0` (pinned by
+  `json.rs`'s `(-0.0, "0")`, matching `JSON.stringify(-0)`). The value model's "there is no
+  negative zero" is kept at the boundary where it is observable, not in the fold. Checked because
+  the differential fuzzer DOES generate `-0.0` and that area caused a native-vs-TS divergence once
+  before. **Genuinely open, and narrow:** a stored `-0.0` survives the write path (nothing collapses
+  it on the way IN) and columnar reads never pass through `num_of`, so the sign would become
+  observable through any egress that preserves it.
+- **`try_varlen_distinct_count` / `try_varlen_distinctby_count` declining a `{1,2}` trail is
+  CORRECT — retracted as a target (375).** `set_reachability_is_exact` permits a `Trail` only at
+  `max <= 1`: the BFS computes WALK reachability, and a node reachable only by re-crossing an edge
+  belongs to the walk set and not the trail set. That is item 68, found by `fastpath_fuzz` at seed 3249. Item 374 listed these as open gaps; they are not, and "fixing" them re-introduces a
+  fuzzer-caught wrong answer.
+
 ## 6. Consequences of the AND decision — RESOLVED by item 258, and not as predicted
 
 This section was written before the change and asked three questions. All three are now answered by

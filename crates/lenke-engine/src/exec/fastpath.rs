@@ -2368,7 +2368,13 @@ pub(super) fn try_scan_num_agg(
     let agg = &aggs[0];
     // `Count` is NOT here: it does not read the values, so `try_scan_count_prop` answers it
     // for a column of ANY type rather than this arm answering it for `Num` alone.
-    if agg.distinct || !matches!(agg.func, AggFn::Sum | AggFn::Avg) {
+    //
+    // `Min`/`Max` ARE here (item 375), and this entry moved ABOVE `try_frontier_prop_agg` to
+    // make that reachable. A bare `Scan` is a trivial frontier, so the frontier path was
+    // claiming scan min/max and answering them at 6.4x what this columnar fold charges for
+    // `sum` over the SAME column — 180.5us vs 28.1us at 50k. Nothing was wrong with either
+    // path; the aggregate set was split across two of them and each covered only half of it.
+    if agg.distinct || !matches!(agg.func, AggFn::Sum | AggFn::Avg | AggFn::Min | AggFn::Max) {
         return None;
     }
     let label = match input {
@@ -2382,6 +2388,7 @@ pub(super) fn try_scan_num_agg(
         return None; // non-numeric column: the general path handles poison
     };
     let (mut total, mut cnt) = (0f64, 0u64);
+    let mut best: Option<f64> = None;
     // Whole-column fast path: when the scan covers EVERY live node (an unlabelled
     // scan, or a label all nodes carry) with nothing deleted, sum the raw
     // `data`/`present` slices directly — no per-row id indirection, so the loop
@@ -2392,7 +2399,56 @@ pub(super) fn try_scan_num_agg(
             None => true,
             Some(l) => store.nodes_with_label(l).len() == store.node_count(),
         };
-    if whole {
+    // The two folds get SEPARATE loops rather than one loop with a branch in it. The first
+    // draft shared the body behind an `is_extremum` test and the `sum` CONTROL moved 1.09x
+    // the wrong way at 50k — a tax on the aggregate that was already fast, levied to pay for
+    // the one being added, inside the loop whose whole point is that it auto-vectorizes.
+    // Splitting leaves the sum/avg body byte-for-byte what it was, so the question does not
+    // arise rather than being answered.
+    if matches!(agg.func, AggFn::Min | AggFn::Max) {
+        // min/max fold in the value contract's TOTAL order (`cmp_num_total`: NaN last,
+        // NaN == NaN), identical to `try_frontier_prop_agg`'s fold. A plain `f64::min`/`max`
+        // here would be byte-identity divergence between two paths answering one query —
+        // and it is `-0.0` vs `0.0`, not NaN, where that would bite first.
+        let want_min = agg.func == AggFn::Min;
+        let mut take = |x: f64| {
+            best = Some(match best {
+                None => x,
+                Some(b) => {
+                    let ord = value::cmp_num_total(x, b);
+                    if (want_min && ord.is_lt()) || (!want_min && ord.is_gt()) {
+                        x
+                    } else {
+                        b
+                    }
+                }
+            });
+        };
+        if whole {
+            for (i, &x) in data.iter().enumerate() {
+                if present[i] {
+                    take(x);
+                }
+            }
+        } else {
+            let mut visit = |i: usize| {
+                if present[i] {
+                    take(data[i]);
+                }
+            };
+            match label {
+                Some(l) => store
+                    .nodes_with_label(l)
+                    .iter()
+                    .for_each(|&id| visit(id as usize)),
+                None => (0..store.node_count()).for_each(|i| {
+                    if store.is_alive(i as u32) {
+                        visit(i);
+                    }
+                }),
+            }
+        }
+    } else if whole {
         for (i, &x) in data.iter().enumerate() {
             if present[i] {
                 total += x;
@@ -2419,6 +2475,9 @@ pub(super) fn try_scan_num_agg(
         }
     }
     let result = match agg.func {
+        // An empty set has no extremum, so NULL — the same answer `try_frontier_prop_agg`
+        // gives, and distinct from `sum`'s 0.0 (K0a).
+        AggFn::Min | AggFn::Max => best.map_or(Value::Null, Value::Num),
         AggFn::Sum if agg.null_on_empty && cnt == 0 => Value::Null, // Gremlin sum() of nothing
         AggFn::Sum => Value::Num(total), // 0.0 over an empty/all-null set (K0a)
         _ => {

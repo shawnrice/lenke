@@ -1562,9 +1562,18 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
                         // `Plan::Scan` exactly, and the differential test pins that the answers
                         // agree.
                         .or_else(|| try_indexed_min_max(input, keys, aggs, store))
+                        // ABOVE `try_frontier_prop_agg`, for exactly the reason stated just
+                        // above about the indexed min/max: a bare `Scan` is a trivial
+                        // frontier, so the frontier path CLAIMS a scan aggregate. It was
+                        // answering scan `min`/`max` at 6.4x what this columnar fold charges
+                        // for `sum` over the SAME column (180.5us vs 28.1us at 50k) — not
+                        // because either path was wrong, but because the aggregate set was
+                        // split across two of them and each covered only half of it. Giving
+                        // this entry `Min`/`Max` without moving it would have left the arm
+                        // DEAD below the frontier path, item 371 over again (375).
+                        .or_else(|| try_scan_num_agg(input, keys, aggs, store))
                         .or_else(|| try_frontier_prop_agg(input, keys, aggs, store))
                         .or_else(|| try_scan_count_prop(input, keys, aggs, store))
-                        .or_else(|| try_scan_num_agg(input, keys, aggs, store))
                         .or_else(|| try_filtered_scan_num_agg(input, keys, aggs, store))
                         .or_else(|| try_scan_multi_agg(input, keys, aggs, store))
                         // The INDEX answer first (item 369): O(1) from the hash index's key

@@ -17881,3 +17881,134 @@ fn an_endpoint_label_on_a_varlen_aggregate_is_applied_during_the_fold() {
         uscalar("MATCH (a)-[:KNOWS]->{1,2}(b) RETURN sum(b.age) AS n"),
     );
 }
+
+/// Item 375: `try_scan_num_agg` gained `Min`/`Max` and moved ABOVE `try_frontier_prop_agg`,
+/// because a bare `Scan` is a trivial frontier and the frontier path was claiming scan
+/// min/max — answering them at 6.4x what this columnar fold charges for `sum` over the same
+/// column. Two paths now answer min/max, so the thing worth testing is not an expectation I
+/// typed but that THE TWO AGREE.
+///
+/// Every node carries a self-edge, so `(a)-[:E]->(b)` reaches each node exactly once and goes
+/// to `try_frontier_prop_agg`, while `(p:N)` goes to the new columnar arm over the same set.
+/// The interesting inputs are the ones where a hand-rolled `f64::min`/`max` would diverge from
+/// `cmp_num_total`: NaN (greatest, all NaNs tie) and `-0.0` vs `0.0` (deliberately EQUAL —
+/// `total_cmp` would split them, which is why the value contract uses `partial_cmp`).
+#[test]
+fn scan_min_max_agrees_with_the_frontier_path_it_was_moved_above() {
+    use crate::value::Value;
+
+    let build = |vals: &[Option<f64>]| {
+        let mut b = crate::store::Builder::default();
+        for v in vals {
+            match v {
+                Some(x) => b.node(&["N"], &[("v", Value::Num(*x))]),
+                None => b.node(&["N"], &[]),
+            };
+        }
+        for i in 0..vals.len() as u32 {
+            b.edge(i, i, "E"); // self-edge: the hop reaches each node exactly once
+        }
+        b.build()
+    };
+
+    let cell = |store: &crate::store::Store, q: &str| -> Value {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), store);
+        let out = crate::exec::try_run(&plan, store).unwrap_or_else(|e| panic!("{q}: {e}"));
+        out.rows[0][0].clone()
+    };
+
+    for (name, vals) in [
+        ("plain", vec![Some(3.0), Some(-1.0), Some(7.0), Some(2.0)]),
+        ("with NaN", vec![Some(3.0), Some(f64::NAN), Some(-1.0)]),
+        ("all NaN", vec![Some(f64::NAN), Some(f64::NAN)]),
+        ("some absent", vec![Some(5.0), None, Some(-2.0), None]),
+        // An absent slot holds 0.0 in the column, so a fold that ignored the `present`
+        // mask would answer 0.0 here and be INVISIBLE on data that straddles zero. Found
+        // by mutation: the straddling case above survived ignoring the mask entirely.
+        ("absent, all positive", vec![Some(5.0), None, Some(3.0)]),
+        ("absent, all negative", vec![Some(-5.0), None, Some(-3.0)]),
+        ("all absent", vec![None, None]),
+        (
+            "infinities",
+            vec![Some(f64::INFINITY), Some(f64::NEG_INFINITY), Some(0.0)],
+        ),
+    ] {
+        let store = build(&vals);
+        for f in ["min", "max"] {
+            let scanned = cell(&store, &format!("MATCH (p:N) RETURN {f}(p.v) AS n"));
+            let hopped = cell(
+                &store,
+                &format!("MATCH (a:N)-[:E]->(b) RETURN {f}(b.v) AS n"),
+            );
+            // Compare by BITS, not by `==`: NaN != NaN and -0.0 == 0.0 under float equality,
+            // so a plain comparison would pass on exactly the inputs this test exists for.
+            let bits = |v: &Value| match v {
+                Value::Num(x) => Some(x.to_bits()),
+                Value::Null => None,
+                other => panic!("{name}/{f}: want a number or null, got {other:?}"),
+            };
+            assert_eq!(
+                bits(&scanned),
+                bits(&hopped),
+                "{name}/{f}: scan path gave {scanned:?}, frontier path gave {hopped:?}"
+            );
+        }
+    }
+
+    // SIGNED ZERO is deliberately NOT in the agreement loop above, and the reason is worth
+    // stating rather than quietly omitting. `cmp_num_total` rates `-0.0` and `0.0` EQUAL, so
+    // each fold keeps whichever it visited FIRST, and the two paths visit in different
+    // orders — so as raw `Value`s they genuinely disagree, and a bit-comparison sees it.
+    //
+    // It cannot escape, which is why this is an assertion about zero and not about the sign:
+    // the JSON egress renders both as `0` (pinned by `json.rs`'s own `(-0.0, "0")` case,
+    // matching `JSON.stringify(-0)` in JS), so the sign bit never reaches a result on either
+    // engine. The value model's "there is no negative zero" promise is kept at the boundary
+    // where it is observable, not in the fold.
+    for vals in [vec![Some(0.0), Some(-0.0)], vec![Some(-0.0), Some(0.0)]] {
+        let store = build(&vals);
+        for f in ["min", "max"] {
+            for q in [
+                format!("MATCH (p:N) RETURN {f}(p.v) AS n"),
+                format!("MATCH (a:N)-[:E]->(b) RETURN {f}(b.v) AS n"),
+            ] {
+                match cell(&store, &q) {
+                    Value::Num(x) => assert!(x == 0.0, "{q}: want a zero, got {x:?}"),
+                    other => panic!("{q}: want a number, got {other:?}"),
+                }
+            }
+        }
+    }
+
+    // A LABELLED SUBSET takes the non-`whole` branch (the id-list walk) rather than the
+    // whole-column one, so both loops are covered rather than only the vectorized one.
+    let mut b = crate::store::Builder::default();
+    b.node(&["N"], &[("v", Value::Num(10.0))]);
+    b.node(&["M"], &[("v", Value::Num(-99.0))]); // must NOT be seen by a :N aggregate
+    b.node(&["N"], &[("v", Value::Num(4.0))]);
+    let store = b.build();
+    // `Value` has no `PartialEq` on purpose — the total order is the one comparison — so
+    // assert on the extracted number.
+    let num = |v: Value| match v {
+        Value::Num(x) => Some(x),
+        Value::Null => None,
+        other => panic!("want a number or null, got {other:?}"),
+    };
+    assert_eq!(
+        num(cell(&store, "MATCH (p:N) RETURN min(p.v) AS n")),
+        Some(4.0)
+    );
+    assert_eq!(
+        num(cell(&store, "MATCH (p:N) RETURN max(p.v) AS n")),
+        Some(10.0)
+    );
+    // An empty label has no extremum: NULL, not 0.0 (which is what `sum` correctly gives).
+    assert_eq!(
+        num(cell(&store, "MATCH (p:Nope) RETURN max(p.v) AS n")),
+        None
+    );
+    assert_eq!(
+        num(cell(&store, "MATCH (p:Nope) RETURN sum(p.v) AS n")),
+        Some(0.0)
+    );
+}
