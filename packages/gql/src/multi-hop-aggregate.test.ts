@@ -209,6 +209,36 @@ describe('two or more aggregates over one hop (item 472)', () => {
       ]);
     });
 
+    test('an EXTREMUM is served over a graph WITH self-loops (item 479)', () => {
+      const graph = new Graph();
+      const a = graph.addVertex({ labels: ['A'], properties: { k: 5 } });
+      const far = graph.addVertex({ labels: ['B'], properties: { k: 9 } });
+
+      graph.addEdge({ from: a, to: a, labels: ['E'], properties: {} });
+      graph.addEdge({ from: a, to: far, labels: ['E'], properties: {} });
+
+      // `min`/`max` do not care how often a row appears, so the two-walk scheme runs here even
+      // though `selfLoopCount` is 1 — and must agree with the general path, which `ORDER BY`
+      // forces. A wrong answer here would mean the idempotence claim is false.
+      for (const q of [
+        'MATCH (:A)-[:E]-(x) RETURN max(x.k) AS m',
+        'MATCH (:A)-[:E]-(x) RETURN min(x.k) AS lo',
+        'MATCH (:A)-[:E]-(x) RETURN min(x.k) AS lo, max(x.k) AS hi',
+      ]) {
+        expect(query(graph, q)).toEqual(query(graph, `${q} ORDER BY 1`));
+      }
+
+      expect(query(graph, 'MATCH (:A)-[:E]-(x) RETURN min(x.k) AS lo, max(x.k) AS hi')).toEqual([
+        { lo: 5, hi: 9 },
+      ]);
+      // A COUNT beside them re-arms the decline, and that answer must stay right: the loop is
+      // one row (`expand` yields it once), the plain edge two (once from each end is not
+      // possible here — `far` is not an `A`), so 2.
+      expect(query(graph, 'MATCH (:A)-[:E]-(x) RETURN count(*) AS c, max(x.k) AS m')).toEqual([
+        { c: 2, m: 9 },
+      ]);
+    });
+
     test('min and max over an undirected hop, and the single-aggregate twin', () => {
       const graph = two();
 

@@ -2344,12 +2344,16 @@ export const detectDistinctProjection = (
  * exactly the folds that cannot see it (item 419), which is why this is wired into the
  * aggregate rungs and not into `detectHopProjection`.
  *
- * AND ONLY ON A GRAPH WITH NO SELF-LOOPS, which is a RUN-time property, so the closures below
- * decline when `graph.selfLoopCount` is non-zero. A self-loop sits in `edgesFromByLabel` AND
- * `edgesToByLabel`, so two passes meet it twice where `expand` yields it once: both engines
- * answer `count(*) = 1` for `MATCH (:A)-[:E]-(x)` over one, and the first version of this
- * change answered 2. The fixture that caught it was written because the hazard was suspected,
- * not because a test failed by luck.
+ * A SELF-LOOP sits in `edgesFromByLabel` AND `edgesToByLabel`, so two passes meet it twice
+ * where `expand` yields it once: both engines answer `count(*) = 1` for
+ * `MATCH (:A)-[:E]-(x)` over one, and the first version of this change answered 2.
+ *
+ * WHICH FOLDS CARE. Only the counting ones. `min`/`max` are IDEMPOTENT — a duplicated row
+ * cannot change them, because the extremum of a multiset does not depend on multiplicity — so
+ * an all-extremum aggregate is correct over a graph with loops and the restriction is lifted
+ * for it (item 479). `count(*)` and `count(arg)` are not, so those keep the run-time decline on
+ * `graph.selfLoopCount`. The distinction is worth having: item 478's version refused every
+ * undirected aggregate on a graph with ONE loop, and `route-cost-probe`'s own fixture has 50.
  */
 const withHopDirection = (m: Clause, direction: 'out' | 'in'): Clause | null => {
   if (m.kind !== 'match' || m.patterns.length !== 1) {
@@ -2380,6 +2384,9 @@ const hopAggregateWalks = (
   cm: CClause,
   synthCret: CClause,
   direction: string,
+  // Is every admitted fold IDEMPOTENT (`min`/`max`)? Then a self-loop met twice changes
+  // nothing and the two walks are safe on any graph.
+  idempotent: boolean,
 ): { walks: RowsFn[]; noSelfLoops: boolean } | null => {
   if (direction !== 'both') {
     const one = detectHopProjection([m, synthRet], [cm, synthCret]);
@@ -2400,7 +2407,7 @@ const hopAggregateWalks = (
     walks.push(walk);
   }
 
-  return { walks, noSelfLoops: true };
+  return { walks, noSelfLoops: !idempotent };
 };
 
 /**
@@ -2557,7 +2564,7 @@ export const detectHopAggregate = (
     m.kind === 'match' && m.patterns.length === 1 && m.patterns[0].segments.length === 1
       ? m.patterns[0].segments[0].rel.direction
       : 'out';
-  const turned = hopAggregateWalks(m, synthRet, cm, synthCret, hopDir);
+  const turned = hopAggregateWalks(m, synthRet, cm, synthCret, hopDir, EXTREMA.has(aggNode.name));
 
   if (turned === null) {
     return null;
@@ -2597,6 +2604,13 @@ export const detectHopAggregate = (
     return [{ [outName]: fold.finish(acc) }];
   };
 };
+
+/**
+ * The IDEMPOTENT aggregates: folding a value twice gives the same answer as folding it once,
+ * because the extremum of a multiset does not depend on multiplicity. That is what lets an
+ * undirected hop be served as two walks over a graph that HAS self-loops (item 479).
+ */
+const EXTREMA = new Set(['min', 'max']);
 
 /** One projected aggregate's accumulator in the MULTI-aggregate hop path (item 472). */
 type HopAcc =
@@ -2663,6 +2677,9 @@ export const detectMultiHopAggregate = (
   const accs: HopAcc[] = [];
   const synthItems: { expr: Expr; alias: string }[] = [];
   const synthCols: CReturnItem[] = [];
+  // Every item an extremum? Then a self-loop met twice changes nothing — see `EXTREMA`. A
+  // `count(*)` row counter is NOT one, so one of those re-arms the self-loop decline.
+  let allExtrema = true;
 
   for (const [i, item] of ret.projection.items.entries()) {
     const e = item.expr;
@@ -2678,6 +2695,7 @@ export const detectMultiHopAggregate = (
       }
 
       accs.push({ kind: 'rows', out });
+      allExtrema = false;
       continue;
     }
 
@@ -2685,6 +2703,10 @@ export const detectMultiHopAggregate = (
 
     if (fold === undefined) {
       return null;
+    }
+
+    if (!EXTREMA.has(e.name)) {
+      allExtrema = false;
     }
 
     const [argExpr] = e.args;
@@ -2738,7 +2760,7 @@ export const detectMultiHopAggregate = (
     m.kind === 'match' && m.patterns.length === 1 && m.patterns[0].segments.length === 1
       ? m.patterns[0].segments[0].rel.direction
       : 'out';
-  const turned = hopAggregateWalks(m, synthRet, cm, synthCret, hopDir);
+  const turned = hopAggregateWalks(m, synthRet, cm, synthCret, hopDir, allExtrema);
 
   if (turned === null) {
     return null;

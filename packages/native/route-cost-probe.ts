@@ -189,6 +189,11 @@ const queries: Record<string, string> = {
   cntdir: 'MATCH (:Person)-[:KNOWS]->(b) RETURN count(b.age) AS c',
   cntboth: 'MATCH (:Person)-[:KNOWS]-(b) RETURN count(b.age) AS c',
   hopbothmulti: 'MATCH (:Person)-[:KNOWS]-(b) RETURN count(*) AS c, max(b.age) AS m',
+  // Item 479: min/max are IDEMPOTENT, so a duplicated row cannot change them — these two
+  // should be servable by the two-walk scheme even on a graph WITH self-loops.
+  hopbothmax: 'MATCH (:Person)-[:KNOWS]-(b) RETURN max(b.age) AS m',
+  hopbothminmax: 'MATCH (:Person)-[:KNOWS]-(b) RETURN min(b.age) AS lo, max(b.age) AS hi',
+  hopdirmax: 'MATCH (:Person)-[:KNOWS]->(b) RETURN max(b.age) AS m',
   hopdirmulti: 'MATCH (:Person)-[:KNOWS]->(b) RETURN count(*) AS c, max(b.age) AS m',
 };
 const key = process.env.PCASE ?? 'node';

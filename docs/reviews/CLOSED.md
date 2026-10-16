@@ -4735,3 +4735,23 @@ the IN pass so the admission is per-edge, not per-graph.
 Also: **a full-repo `bun test packages` is not the gate.** It reported 61 failures, all runner
 artefacts — `packages/react` runs under VITEST (22/22 with its own script), the sync and
 reactive files are the known run-many flake (176/176, 361/361 isolated).
+
+## 479 — `min`/`max` need no self-loop guard: CLOSED at 5.3-6.2x on the ordinary fixture
+
+Item 478's undirected hop aggregate declined whenever `graph.selfLoopCount !== 0`, which the
+probe's own fixture trips (50 loops). **A self-loop only troubles a fold that COUNTS**: `min`
+and `max` are idempotent, since the extremum of a multiset ignores multiplicity, so an
+all-extremum undirected aggregate is correct over a looped graph. Counts keep the decline.
+
+On the DEFAULT (looped) fixture, three rounds: `max(b.age)` 1464 -> 235 ms, `min, max` 1497 ->
+261; directed `max` flat at ~152. **The second control is `count(*), max` on the same looped
+graph, which must NOT move — and does not (1498-1598).** A control the change is designed not to
+reach beats one it merely happens to miss.
+
+Mutation: four of five (the fifth is a null control). The backing test puts a self-loop AND a
+plain edge in one graph and compares every extremum shape against the general path — if
+idempotence were the wrong reason, that is where it breaks.
+
+**OPEN:** the count-bearing undirected aggregate on a looped graph (1498 ms). Item 478's
+per-edge admission is still the only fix, still unpriced against item 159's 1.6x for touching
+the walk inner loops.
