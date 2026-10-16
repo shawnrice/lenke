@@ -4359,3 +4359,26 @@ eager path evaluates every branch's VALUE into a column and calls `value_at` per
 when the branch values are LITERALS — all four rows above — the selection is between constants
 and needs no per-row `value_at`, and with no null among them need not box at all.
 `count(CASE WHEN … THEN 1 ELSE null END)` is the ordinary conditional-count idiom.
+
+## 464 — a CASE with LITERAL arms: CLOSED at 2.3-3.0x across five shapes
+
+`case_literal_arms` selects between constants instead of materializing a column per branch.
+`count(CASE WHEN a.k > 3 THEN 1 ELSE 0 END)` 26.0 -> 8.7 ms at 1,000,000 rows (**3.0x**), the
+`ELSE null` conditional-count idiom 30.2 -> 11.4 (**2.6x**), `sum(CASE …)` 28.0 -> 11.2, the
+filter-position `… = 1` spelling 33.4 -> 14.6, and a two-WHEN boolean CASE 28.9 -> 18.0.
+
+Three things to not re-derive:
+
+- **The eager path materializes a FULL COLUMN per branch for a constant** — a million `f64`s to
+  represent `1` — and then boxes one `Value` per branch per row to pick between them. With
+  literal arms both are avoidable; the only per-row work is deciding WHICH.
+- **A `Col::Num` only when every arm is a non-null number.** `Col::Num` has no null
+  representation (the rule item 458 relies on from the other side), so a NULL literal forces the
+  boxed column. The mutant admitting a null into the numeric path is caught.
+- **The PROPERTY-armed twins are the control and they are structurally unreachable** — same
+  fixture, same selectivity, same `Expr::Case` machinery, but their THEN is not a literal.
+  Neither moved (26.9 -> 27.0, 33.8 -> 33.2).
+
+Semantics are the eager path's and an `Err` lands on the same masked fallback, so an error in an
+unreached branch behaves as before. Oracle for the differential half: a property arm computing
+the same value (`a.k - a.k + 1` is 1), which declines.

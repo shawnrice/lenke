@@ -162,6 +162,108 @@ fn arith_general(op: crate::ir::ArithOp, l: &Col, r: &Col) -> Result<Col, String
 /// ill-typed — matching TS and SQL, where `CASE WHEN c THEN safe ELSE risky END` never
 /// evaluates `risky` for a row where `c` holds. Slower (per-branch gather), so it runs only
 /// on the error path; the eager path stays fully vectorized.
+/// A `CASE` whose branch values and `ELSE` are all LITERALS: select between constants
+/// (audit item 464).
+///
+/// Item 463 priced a CASE in an AGGREGATE ARGUMENT at ~55x the floor — `count(a.k)` 0.448 ms
+/// against `count(CASE WHEN a.k > 3 THEN 1 ELSE 0 END)` 26.0 at 1,000,000 rows — and found all
+/// four variants within 15% of each other whatever their arms held. That is item 442's tell: the
+/// cost is `Expr::Case` itself, not the arms, exactly as item 450 found one position over.
+///
+/// What the eager path does that this does not: `eval_all` over the branch VALUES materializes a
+/// column per branch (N `f64`s to represent the constant `1`), `else_col` materializes another,
+/// and the row loop then calls `value_at` once per branch per row to pick one, boxing as it
+/// goes. With literal arms every one of those is avoidable — the values are already `Value`s and
+/// the only per-row work is deciding WHICH.
+///
+/// It returns a `Col::Num` when every arm is a non-null number, so an aggregate folds raw `f64`s
+/// instead of unboxing; otherwise a `Col::Gen` of cloned literals (a `Value` clone is a copy for
+/// `Num`/`Bool` and a refcount bump for `Str`).
+///
+/// SEMANTICS are the eager path's, not a re-derivation: the first branch whose condition is
+/// literally TRUE wins, a FALSE or NULL condition falls through, and a non-null non-boolean
+/// condition is `TRUTH_TYPE_ERR`. Returning `Err` here lands on the same masked fallback the
+/// eager path uses, so an error in a branch nobody reaches still behaves as it did.
+///
+/// `#[inline(never)]` and its own function for the reason items 453, 459 and 462 each measured:
+/// a fast path written inline costs the shapes it never serves.
+#[inline(never)]
+fn case_literal_arms(
+    branches: &[(Expr, Expr)],
+    otherwise: Option<&Expr>,
+    store: &Store,
+    batch: &Batch,
+) -> Result<Option<Col>, String> {
+    if branches.is_empty() || !branches.iter().all(|(_, v)| matches!(v, Expr::Lit(_))) {
+        return Ok(None);
+    }
+
+    let els: &Value = match otherwise {
+        None => &Value::Null,
+        Some(Expr::Lit(v)) => v,
+        Some(_) => return Ok(None),
+    };
+    let lits: Vec<&Value> = branches
+        .iter()
+        .map(|(_, v)| match v {
+            Expr::Lit(x) => x,
+            _ => unreachable!("guarded above"),
+        })
+        .collect();
+    let conds = eval_all(branches.iter().map(|(c, _)| c), store, batch)?;
+    let n = batch.rows();
+    // Which arm each row takes: `None` is the `ELSE`. Decided once, so the two output loops
+    // below differ only in how they build their column.
+    let mut pick: Vec<Option<usize>> = Vec::with_capacity(n);
+
+    for i in 0..n {
+        let mut taken = None;
+
+        for (bi, c) in conds.iter().enumerate() {
+            match c.value_at(i) {
+                Value::Bool(true) => {
+                    taken = Some(bi);
+                    break;
+                }
+                Value::Bool(false) | Value::Null => {}
+                // The eager path's error, so the masked fallback runs exactly as before.
+                _ => return Err(TRUTH_TYPE_ERR.to_string()),
+            }
+        }
+
+        pick.push(taken);
+    }
+
+    // ALL-NUMERIC arms stay a `Col::Num`, which is what lets an aggregate fold raw `f64`s. A
+    // NULL anywhere forces the boxed column, because `Col::Num` has no null representation —
+    // the same rule item 458 relies on from the other direction.
+    let nums: Option<Vec<f64>> = lits
+        .iter()
+        .chain(std::iter::once(&els))
+        .map(|v| match v {
+            Value::Num(x) => Some(*x),
+            _ => None,
+        })
+        .collect();
+
+    if let Some(nums) = nums {
+        let (arms, fallback) = nums.split_at(lits.len());
+        let else_num = fallback[0];
+
+        return Ok(Some(Col::Num(
+            pick.iter()
+                .map(|p| p.map_or(else_num, |bi| arms[bi]))
+                .collect(),
+        )));
+    }
+
+    Ok(Some(Col::Gen(
+        pick.iter()
+            .map(|p| p.map_or_else(|| els.clone(), |bi| lits[bi].clone()))
+            .collect(),
+    )))
+}
+
 fn eval_case_masked(
     branches: &[(Expr, Expr)],
     otherwise: Option<&Expr>,
@@ -1656,6 +1758,16 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
                         return Ok(Col::Gen(out));
                     }
                 }
+                // LITERAL ARMS: select between constants (item 464). `eval_all(vals)` below
+                // materializes a FULL COLUMN per branch even when the branch value is a
+                // constant — N `f64`s to say "1" — and then `vals[bi].value_at(i)` boxes one
+                // `Value` per row per branch on top of it. When every arm is a literal there is
+                // nothing to materialize and nothing to read: the answer is one of a handful of
+                // values already in hand.
+                if let Some(col) = case_literal_arms(branches, otherwise, store, batch)? {
+                    return Ok(col);
+                }
+
                 let conds = eval_all(branches.iter().map(|(c, _)| c), store, batch)?;
                 let vals = eval_all(branches.iter().map(|(_, v)| v), store, batch)?;
                 let else_col = otherwise.map(|e| eval(e, store, batch)).transpose()?;

@@ -20159,3 +20159,137 @@ fn nested_arithmetic_filter_keeps_its_declines() {
         1.0
     );
 }
+
+/// Item 464: a `CASE` whose branch values and `ELSE` are all LITERALS selects between constants
+/// instead of materializing a column per arm — `count(CASE WHEN a.k > 3 THEN 1 ELSE 0 END)` went
+/// from 26.0 ms to 8.5 at 1,000,000 rows (3.0x), and the `ELSE null` idiom from 30.2 to 11.4.
+///
+/// The ORACLE is the same CASE with a PROPERTY arm that computes the same value: `a.k - a.k + 1`
+/// is 1 for every non-null `k`, and a non-literal arm makes this path decline, so `eval` answers.
+/// That keeps the comparison between two readings of one question rather than against my
+/// arithmetic.
+#[test]
+fn literal_armed_case_agrees_with_the_general_path() {
+    use crate::value::Value;
+
+    let store = {
+        let mut b = crate::store::Builder::default();
+
+        for v in [-3.0f64, 0.0, 1.0, 4.0, 7.0] {
+            b.node(
+                &["N"],
+                &[("k", Value::Num(v)), ("s", Value::Str("a".into()))],
+            );
+        }
+        // No `k`, so every condition has an UNKNOWN row — the one that falls through to ELSE
+        // without the branch being FALSE.
+        b.node(&["N"], &[("s", Value::Str("b".into()))]);
+        b.build()
+    };
+    let rows = |expr: &str| -> Result<String, String> {
+        let q = format!("MATCH (a:N) RETURN {expr} AS v ORDER BY v");
+        let raw = crate::gql::parse(&q)?;
+        let plan = crate::opt::optimize_indexed(raw, &store);
+        let out = crate::exec::try_run(&plan, &store).map_err(|e| e.to_string())?;
+
+        Ok(out
+            .rows
+            .iter()
+            .filter_map(|r| r.first())
+            .map(|v| format!("{v:?}"))
+            .collect::<Vec<_>>()
+            .join(","))
+    };
+    let mut checked = 0;
+
+    for cond in ["a.k > 3", "a.k < 0", "a.k = 1", "a.k <> 1", "a.s = 'a'"] {
+        // Literal THEN against a property arm computing the SAME value.
+        for (lit, same) in [("1", "a.k - a.k + 1"), ("0", "a.k - a.k")] {
+            for els in ["", " ELSE 0", " ELSE null", " ELSE 9"] {
+                let fast = format!("CASE WHEN {cond} THEN {lit}{els} END");
+                let slow = format!("CASE WHEN {cond} THEN {same}{els} END");
+
+                // The property arm is NULL where `k` is absent and the literal arm is not, so
+                // the rows are comparable only where the condition is not TRUE for that row —
+                // which is every row here, since `a.k > 3` and friends are UNKNOWN on it.
+                match (rows(&fast), rows(&slow)) {
+                    (Ok(f), Ok(s)) => assert_eq!(f, s, "{fast} against {slow}"),
+                    (Err(_), Err(_)) => {}
+                    (f, s) => panic!("{fast}: fast {f:?}, general {s:?}"),
+                }
+
+                checked += 1;
+            }
+        }
+    }
+
+    assert_eq!(checked, 5 * 2 * 4, "form count drifted: {checked}");
+}
+
+/// Item 464's semantics, pinned against the ANSWER: branch ORDER, three-valued fall-through,
+/// the absent `ELSE`, mixed literal types, and the non-boolean condition that must still raise.
+#[test]
+fn literal_armed_case_keeps_case_semantics() {
+    use crate::value::Value;
+
+    let store = {
+        let mut b = crate::store::Builder::default();
+
+        b.node(&["N"], &[("k", Value::Num(5.0))]);
+        b.node(&["N"], &[("k", Value::Num(1.0))]);
+        b.node(&["N"], &[]);
+        b.build()
+    };
+    let rows = |expr: &str| -> Result<String, String> {
+        let q = format!("MATCH (a:N) RETURN {expr} AS v ORDER BY v");
+        let raw = crate::gql::parse(&q)?;
+        let plan = crate::opt::optimize_indexed(raw, &store);
+        let out = crate::exec::try_run(&plan, &store).map_err(|e| e.to_string())?;
+
+        Ok(out
+            .rows
+            .iter()
+            .filter_map(|r| r.first())
+            .map(|v| format!("{v:?}"))
+            .collect::<Vec<_>>()
+            .join(","))
+    };
+
+    // BRANCH ORDER: k = 5 satisfies both, and the FIRST wins. A path that scanned backwards, or
+    // took the last match, answers 2 for that row.
+    assert_eq!(
+        rows("CASE WHEN a.k > 3 THEN 1 WHEN a.k > 0 THEN 2 ELSE 9 END").unwrap(),
+        "Num(1.0),Num(2.0),Num(9.0)"
+    );
+    // The UNKNOWN row takes the ELSE, not the first branch: `a.k > 3` on an absent `k` is
+    // UNKNOWN, which falls through exactly as FALSE does.
+    assert_eq!(
+        rows("CASE WHEN a.k > 3 THEN 1 ELSE 0 END").unwrap(),
+        "Num(0.0),Num(0.0),Num(1.0)"
+    );
+    // NO `ELSE` is NULL, and a NULL literal arm forces the boxed column rather than a `Col::Num`.
+    assert_eq!(
+        rows("CASE WHEN a.k > 3 THEN 1 END").unwrap(),
+        "Num(1.0),Null,Null"
+    );
+    assert_eq!(
+        rows("CASE WHEN a.k > 3 THEN null ELSE 7 END").unwrap(),
+        "Num(7.0),Num(7.0),Null"
+    );
+    // MIXED literal types cannot be a `Col::Num` and must still answer.
+    assert_eq!(
+        rows("CASE WHEN a.k > 3 THEN 'big' ELSE 0 END").unwrap(),
+        "Num(0.0),Num(0.0),Str(\"big\")"
+    );
+    assert_eq!(
+        rows("CASE WHEN a.k > 3 THEN true ELSE false END").unwrap(),
+        "Bool(false),Bool(false),Bool(true)"
+    );
+    // A NON-BOOLEAN condition is a data exception, on this path as on the general one.
+    assert!(rows("CASE WHEN a.k THEN 1 ELSE 0 END").is_err());
+    // A non-literal arm DECLINES to the general path and still answers.
+    assert_eq!(
+        rows("CASE WHEN a.k > 3 THEN a.k ELSE 0 END").unwrap(),
+        "Num(0.0),Num(0.0),Num(5.0)"
+    );
+}
