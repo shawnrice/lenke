@@ -2973,14 +2973,23 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   invalidate-and-rebuild. The one-off build, column-major `Vec<bool>` -> row-major bits, 200k nodes,
   cross-checked that the mask carries exactly the columns' presence: **0.5 / 1.3 / 6.4 / 21.7 ms at
   K = 4 / 12 / 60 / 200 — 0.1% / 0.3% / 1.6% / 5.4% of the 405 ms decode**, mask 0.10-4.77 MiB.
-  **Invalidate on an EPOCH, not a count.** `prop_keys_cache` keys on key COUNT and its own comment
-  already flags the hole (a rename that removes one key and adds another). `bump_epoch(&mut self,
-token)` is the primitive and it already behaves the way this needs during ingest: _"if self.loading
-  { return; } // deferred; end_bulk() stamps every loaded token"_ — so a bulk load stamps nothing,
-  no render happens mid-load, and the first render after `end_bulk()` builds the mask once.
-  **So the remaining work is: an epoch-keyed mask cache, the build, and the render reading set bits
-  instead of probing K columns.** The write-side cost from 384 (~0.3% per set, to keep an existing
-  mask current) applies only while a mask is live.
+  **Invalidate on a WRITE, not on the key count — and the reason is NOT the one 387 gave
+  (corrected at 388).** 387 justified this by `prop_keys_cache`'s comment flagging "a rename that
+  removed one key and added another"; **that hazard is unreachable** — there is no rename operation
+  on property keys and no `props.remove`/`edge_props.remove` anywhere, which is exactly why the node
+  cache's own comment can assert that keys "are only ever ADDED… the cache self-invalidates on a
+  length mismatch, needing no write-path hook." Count-keying is SOUND there, and the edge twin's
+  "bargain" overstates a risk no code can produce.
+  **The mask still cannot use a count, for a stronger reason:** `prop_keys_cache` caches key NAMES,
+  which change only with the key set; the mask caches PRESENCE, which changes on every `set_prop`
+  that gives a node a property it lacked. A count-keyed mask would go stale after an ORDINARY write,
+  not merely after a pathological rename. So the shape is: build once, MAINTAIN on write (384's
+  ~0.3% bit update), and rebuild only when the key set changes, since that is a stride change.
+  `bump_epoch` remains right for the key-set half and still behaves well during ingest: _"if
+  self.loading { return; } // deferred; end_bulk() stamps every loaded token"_ — a bulk load stamps
+  nothing, no render happens mid-load, and the first render after `end_bulk()` builds the mask once.
+  **So the remaining work is: the mask cache with write-maintenance, the build, and the render
+  reading set bits instead of probing K columns.**
   **State: rung 3's write side is priced and viable.** Per-write ~0.3%, ingest ~7.3% of decode with
   geometric striding, memory 4.77 MiB at K=200/N=200k plus up to 2x from doubling's slack and a
   transient copy during a restride. The READ win remains 342's: packed is 145.4/244.7 ns/row at
