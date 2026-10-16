@@ -4683,6 +4683,44 @@ fn substring_edges() {
     assert!(matches!(col(&neg, 0, "x"), Value::Str(s) if &*s == "alice"));
 }
 
+/// An OPTIONAL-MISS node reaching `IS [NOT] NULL` — the `u32::MAX` sentinel. Item 405's
+/// presence fast path reads the property column by the node id, so the sentinel must be tested
+/// BEFORE it indexes the column, which it would run far past. Nothing in the suite produced that
+/// shape: deleting the guard left all 1,122 tests green, and the mutant SURVIVED. It is a panic
+/// waiting for an OPTIONAL query, not a wrong answer, which is why no answer-comparing test
+/// found it.
+#[test]
+fn an_optional_miss_reaching_is_null_does_not_index_by_the_sentinel() {
+    let store = social(); // carol has no outgoing KNOWS, so her `b` is the miss
+                          // The predicate is PROJECTED rather than filtered: `WHERE` inside OPTIONAL MATCH is not
+                          // supported yet, and projecting it routes the sentinel through the same `IsNull` arm.
+    let q = "MATCH (a:Person) OPTIONAL MATCH (a)-[:KNOWS]->(b) \
+             RETURN a.name AS an, b.name IS NULL AS gone, b.name IS NOT NULL AS here";
+    let out = run(&super::parse(q).unwrap(), &store);
+    let mut seen: Vec<String> = out
+        .rows
+        .iter()
+        .map(|r| format!("{:?}|{:?}|{:?}", r[0], r[1], r[2]))
+        .collect();
+    seen.sort();
+
+    // Every row must be a definite TRUE/FALSE pair, never NULL, and the two must disagree —
+    // which a polarity flip cannot satisfy and an unguarded sentinel cannot reach at all.
+    assert_eq!(seen.len(), 4, "expected 4 rows, got {seen:?}");
+    assert!(
+        seen.iter()
+            .any(|r| r.starts_with("Str(\"carol\")|Bool(true)|Bool(false)")),
+        "carol's optional miss must read NULL: {seen:?}"
+    );
+    assert_eq!(
+        seen.iter()
+            .filter(|r| r.contains("Bool(false)|Bool(true)"))
+            .count(),
+        3,
+        "the three matched rows must read NOT NULL: {seen:?}"
+    );
+}
+
 /// OPTIONAL MATCH is a left-outer hop: a node with no matching neighbour survives
 /// with the optional variable NULL; `count(x)` skips those nulls.
 #[test]

@@ -16,17 +16,21 @@ use std::time::Instant;
 fn fixture(n: u32, deg: u32) -> Store {
     let mut b = Builder::default();
     for i in 0..n {
-        b.node(
-            &["Person"],
-            &[
-                ("age", Value::Num(f64::from(i % 90))),
-                ("uid", Value::Num(f64::from(i))),
-                (
-                    "city",
-                    Value::Str(if i % 7 == 0 { "oslo" } else { "bergen" }.into()),
-                ),
-            ],
-        );
+        // `city` carries a HASH index and `city_r` the same strings with a RANGE index, so a
+        // PREFIX question can be asked of a structure able to answer it. `sparse` is present on
+        // 1% of nodes: a presence test on a key every node has cannot show what seeding it from
+        // the index would save. Both omissions were the fixture error item 402 made.
+        let city = if i % 7 == 0 { "oslo" } else { "bergen" };
+        let mut props: Vec<(&str, Value)> = vec![
+            ("uid", Value::Num(f64::from(i))),
+            ("age", Value::Num(f64::from(i % 90))),
+            ("city", Value::Str(city.into())),
+            ("city_r", Value::Str(city.into())),
+        ];
+        if i % 100 == 0 {
+            props.push(("sparse", Value::Num(f64::from(i))));
+        }
+        b.node(&["Person"], &props);
     }
     let mut x = 12345u64;
     for i in 0..n {
@@ -41,6 +45,8 @@ fn fixture(n: u32, deg: u32) -> Store {
     s.create_range_index("age");
     s.create_range_index("uid");
     s.create_index("city");
+    s.create_range_index("city_r");
+    s.create_range_index("sparse");
     s
 }
 
@@ -131,6 +137,34 @@ fn main() {
                 "MATCH (n:Person) WHERE n.age > 88 AND n.city = 'oslo' RETURN count(*) AS c",
                 "MATCH (n:Person) WHERE n.city = 'oslo' AND n.age > 88 RETURN count(*) AS c",
             ],
+        ),
+        // Spellings a range index could in principle serve but may not: a PREFIX is a range
+        // ['os', 'ot'), and `IS NOT NULL` is the whole index, since the index holds only
+        // non-null present values.
+        (
+            "prefix match",
+            &[
+                "MATCH (n:Person) WHERE n.city_r STARTS WITH 'os' RETURN count(*) AS c",
+                "MATCH (n:Person) WHERE n.city_r >= 'os' AND n.city_r < 'ot' RETURN count(*) AS c",
+            ],
+        ),
+        (
+            "presence",
+            &[
+                "MATCH (n:Person) WHERE n.sparse IS NOT NULL RETURN count(*) AS c",
+                "MATCH (n:Person) WHERE n.sparse > -1 RETURN count(*) AS c",
+            ],
+        ),
+        // Is the `IS NOT NULL` cost per ROW or per RESULT? A dense key and a sparse one have
+        // the same row count and 100x different result sizes. Same answer both ways tells you
+        // the cost is the column materialization, not the predicate.
+        (
+            "presence, dense key (diagnostic)",
+            &["MATCH (n:Person) WHERE n.age IS NOT NULL RETURN count(*) AS c"],
+        ),
+        (
+            "presence, no index at all (diagnostic)",
+            &["MATCH (n:Person) WHERE n.nokey IS NOT NULL RETURN count(*) AS c"],
         ),
         (
             "CONTROL unseedable",

@@ -1620,6 +1620,36 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
             Col::Gen(out)
         }
         Expr::IsNull { expr, negated } => {
+            // FAST PATH: `<slot>.<key> IS [NOT] NULL` over a node frontier is a PRESENCE
+            // question, and `Column::has_value_at` answers it straight off the `present`
+            // bitset — the column's doc records why that bit IS the predicate: a stored
+            // present-null is `present = false, nulls = true`, so a value read sees NULL
+            // exactly as an absent slot does. The general path below instead materializes a
+            // whole `Col` through `eval`, which for a partially-present column is boxed:
+            // 200,000 `Value`s, 198,000 of them `Value::Null`, built only to ask
+            // `is_null_at`. `count(prop)`'s fast path has used this same bitset since item
+            // 267 — the mechanism was already here, on the sibling path (audit item 405).
+            if let Expr::Prop { slot, key } = expr.as_ref() {
+                if let Col::Nodes(ids) = batch.slot(*slot) {
+                    // No column for the key at all: every row reads NULL.
+                    let Some(column) = store.column(key) else {
+                        return Ok(Col::Bool(vec![!*negated; ids.len()]));
+                    };
+                    return Ok(Col::Bool(
+                        ids.iter()
+                            .map(|&id| {
+                                // The `u32::MAX` OPTIONAL-miss sentinel carries no property,
+                                // so it reads NULL — and must be tested BEFORE indexing the
+                                // column, which it would run past (the same guard
+                                // `read_property`'s `gather` needs).
+                                let non_null = id != u32::MAX && column.has_value_at(id as usize);
+
+                                non_null == *negated
+                            })
+                            .collect(),
+                    ));
+                }
+            }
             // A definite Bool per row (never NULL): `IS NULL` is TRUE exactly when
             // the value is Null; `IS NOT NULL` flips it.
             let col = eval(expr, store, batch)?;

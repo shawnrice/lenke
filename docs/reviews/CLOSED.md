@@ -3168,6 +3168,32 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   widening it moves which conjunct a multi-predicate filter seeds, and a lone `k = v` already
   reaches the probe through the fallback rung.
 
+- **DONE — `IS [NOT] NULL` boxed a whole column to ask a bitset question; 4.62x on a
+  partially-present key, 5.50x on an absent one, 2.21x for `IS NULL` (405).** `Expr::IsNull`
+  called `eval` and then `is_null_at`, so a partially-present column became `Col::Gen` — 200,000
+  boxed `Value`s, 198,000 of them `Value::Null`. `Column`'s `present` bit IS the predicate (a
+  stored present-null is `present = false, nulls = true`), `has_value_at` is that bit, and
+  **`count(prop)` has read it since item 267** — the mechanism was on the sibling path, the
+  fourth time this session (396, 397, 402). Node frontiers only: edge properties are a boxed map
+  with no presence bitset.
+  **The fully-present row is NOT claimed.** It read 1.17x while a CONTROL the change cannot reach
+  (a range predicate) moved **1.10x with disjoint ranges** — code layout, the mechanism
+  `pull`'s note records biting the other way. A fully-present column already reached a typed
+  `Col::Num` and never boxed, so there was little to win; without that control it would have been
+  booked as a small win with a wrong explanation.
+  **STILL OPEN, priced**: `k IS NOT NULL` on an indexed key IS the index's id set, so it could
+  seed (0.258 against the 0.031 ms an equivalent range spelling reaches). Needs a seed form
+  meaning "the whole index" — new IR, and item 264 records `rewrite_fuzz`'s generator missing a
+  new rung twice.
+
+- **A guard can be load-bearing, untested, and a PANIC rather than a wrong answer (405).**
+  Removing the `u32::MAX` OPTIONAL-miss guard from the presence fast path left all 1,122 tests
+  green: nothing in the suite sent an optional MISS through `IS NULL`. Unguarded it indexes the
+  property column by the sentinel — `index out of bounds: the len is 4 but the index is
+4294967295`. **An answer-comparing test cannot see a crash that no test provokes**; only the
+  mutant showed it. Now pinned by `an_optional_miss_reaching_is_null_does_not_index_by_the_sentinel`
+  (`WHERE` inside `OPTIONAL MATCH` is `E_NOT_IMPLEMENTED`, so the predicate is PROJECTED).
+
 - **A plan-shape test can cover a GATE and miss the PRICING behind it (404).** The rung's choice
   is a PERF decision — every mutant returns the right rows, just by scanning — so the test must
   assert the plan. Reverting the gate was CAUGHT; removing the range fallback from
