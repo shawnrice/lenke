@@ -2827,6 +2827,27 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   **indexed TS is 2-3.6x FASTER than indexed native** (1.31M vs 362.5k ops/s — a `Map` hit with no
   FFI boundary), which is worth knowing before anyone reads the unindexed column as a defeat.
 
+- **Deep offset pagination costs 499 ms to return TEN rows — and the obvious fix is a 500x
+  REGRESSION on the common case (378).** `detectNodeProjection` streams values and declines on
+  `distinct || orderBy || skip || limit`, so any paged query falls to the generic per-row `Binding`
+  path. Laziness already saves a SHALLOW page (`take` short-circuits: `LIMIT 10` is 0.03 ms,
+  `LIMIT 1000` is 0.84 ms, `SKIP 10 LIMIT 10` is 0.03 ms), so the 38x on `LIMIT 999999999` is real
+  but unrepresentative. **`SKIP 700000 LIMIT 10` is 499.52 ms** against a 14.72 ms full stream.
+  **DO NOT just widen the gate:** the shortcut returns `Row[]` and materializes everything, so
+  applying `limit` inside it takes `LIMIT 10` from 0.03 ms to ~15 ms — 500x worse on the shape
+  everyone writes, to win 33x on the rare one. A sound fix needs a COST decision (admit it only
+  when `skip + limit` is large; crossover ≈ `skip` 24,000 at ~620 ns a row against ~15 ms flat —
+  i.e. a cardinality estimate TS does not have) or a LAZY shortcut, which changes its `Row[]`
+  contract. Second data point on the same generic path: `RETURN a.k, b.k` is 131 ms against the
+  one-column 14.7 ms, because a second slot also leaves the shortcut.
+- **Item 377's stated cause is CONFIRMED, and my brief retraction of it was the error (378).** 377
+  attributed its remaining ~430 ms to generic per-row `Binding` construction. A probe showing
+  `RETURN b.k` at 14.7 ms vs `LIMIT 999999999` at 669 ms looked like a refutation and was recorded
+  as one; reading the code, the discriminator is `detectNodeProjection`'s gate, and falling off it
+  is precisely "the generic path builds a Binding per row". The probe found the MECHANISM, not a
+  contradiction. **A retraction that never happened misleads as much as a wrong cause** — 377's
+  entry stands unamended.
+
 ## 6. Consequences of the AND decision — RESOLVED by item 258, and not as predicted
 
 This section was written before the change and asked three questions. All three are now answered by
