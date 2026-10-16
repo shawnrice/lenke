@@ -4312,3 +4312,25 @@ which is how it reached CI.
 Also recorded: **dividing by a COMPUTED zero raises** ("division by zero") rather than producing
 an infinity. Written here first as an infinity assertion, which failed — the engine's answer is
 better than the expectation, and it is what shrinks this class to one function.
+
+## 462 — a nested arithmetic predicate: CLOSED at 5.2x. Item 457's second open target is done
+
+`try_filter_keep_arith` now takes ONE nested level, in all four operand spellings. `a.k * 2 + 1 >
+7` goes 12.735/13.505 -> 2.413/2.462/2.478 ms, landing near the one-level cost. Three levels still
+decline, deliberately: a `Vec` of steps per row is what item 453 measured as the thing that stops
+the loop vectorizing, so the inner step is a second pair of loop-invariant locals and nothing
+more.
+
+Two things to not re-derive:
+
+- **The loop had to be SPLIT, and this is the third occasion of that lesson.** One loop with a
+  `match inner` in it cost the one-level shape 1.10x (`a.k + 0 > 5`, 1.86-1.89 -> 2.05-2.07,
+  three rounds each) although that shape has no inner step. Two loops chosen per call, and the
+  one-level rows came back FASTER than baseline (1.86 -> 1.72, and `a.k * 2 > 6` 2.10 -> 1.80) —
+  incidental, from hoisting the two `match`es into `arith_step`/`num_pred`. **The same change can
+  cost or gain 10% on an untouched shape depending only on where the branch sits** (items 453,
+  459, now 462).
+- **Item 438's `+ 0` oracle still works, and for a better reason**: the wrap now makes the
+  predicate THREE levels, which this arm declines, so `eval` answers. 4,800 differential forms.
+
+Item 457's open list is now empty: the generic scalar-call path (item 459) and this.

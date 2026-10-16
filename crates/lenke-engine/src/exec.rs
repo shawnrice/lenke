@@ -6008,11 +6008,64 @@ fn try_filter_keep_arith(pred: &Expr, store: &Store, batch: &Batch) -> Option<Ve
     };
     // The property may be either operand, and which it is CHANGES the arithmetic for the
     // non-commutative operators — `5 - a.k` is not `a.k - 5`. `prop_first` carries that.
-    let (slot, key, operand, prop_first) = match (al.as_ref(), ar.as_ref()) {
-        (Expr::Prop { slot, key }, Expr::Lit(Value::Num(v))) => (*slot, key, *v, true),
-        (Expr::Lit(Value::Num(v)), Expr::Prop { slot, key }) => (*slot, key, *v, false),
+    //
+    // An operand may also be ANOTHER arithmetic step over the same property (item 462):
+    // `a.k * 2 + 1 > 7` is `Arith(Arith(Prop, 2), 1)`, which this declined, and declining cost
+    // 6.0x — 12.7-13.5 ms against 2.08-2.26 for the one-level `a.k * 2 > 6` at the same row
+    // count. One extra step is not 6x of arithmetic; it is the whole predicate falling off this
+    // arm onto the materializing path.
+    //
+    // ONE extra level, not a chain. A `Vec` of steps iterated per row is what item 453 measured
+    // as the thing that stops the loop vectorizing, so the inner step is a second pair of
+    // loop-invariant locals and nothing more. Three levels still decline.
+    let (inner, slot, key, operand, prop_first) = match (al.as_ref(), ar.as_ref()) {
+        (Expr::Prop { slot, key }, Expr::Lit(Value::Num(v))) => (None, *slot, key, *v, true),
+        (Expr::Lit(Value::Num(v)), Expr::Prop { slot, key }) => (None, *slot, key, *v, false),
+        // `(<prop> <op> <lit>) <op> <lit>` and the literal-first spellings of either level.
+        (
+            Expr::Arith {
+                op: iop,
+                left: il,
+                right: ir,
+            },
+            Expr::Lit(Value::Num(v)),
+        ) => match (il.as_ref(), ir.as_ref()) {
+            (Expr::Prop { slot, key }, Expr::Lit(Value::Num(iv))) => {
+                (Some((*iop, *iv, true)), *slot, key, *v, true)
+            }
+            (Expr::Lit(Value::Num(iv)), Expr::Prop { slot, key }) => {
+                (Some((*iop, *iv, false)), *slot, key, *v, true)
+            }
+            _ => return None,
+        },
+        (
+            Expr::Lit(Value::Num(v)),
+            Expr::Arith {
+                op: iop,
+                left: il,
+                right: ir,
+            },
+        ) => match (il.as_ref(), ir.as_ref()) {
+            (Expr::Prop { slot, key }, Expr::Lit(Value::Num(iv))) => {
+                (Some((*iop, *iv, true)), *slot, key, *v, false)
+            }
+            (Expr::Lit(Value::Num(iv)), Expr::Prop { slot, key }) => {
+                (Some((*iop, *iv, false)), *slot, key, *v, false)
+            }
+            _ => return None,
+        },
         _ => return None,
     };
+    // The INNER step owes the same zero-divisor rule as the outer one, for the same reason: the
+    // general path throws and a keep-pass cannot express a throw. Checked against the inner
+    // operand's own position, since `5 / a.k` is a column divisor either way.
+    if let Some((iop, ivalue, iprop_first)) = inner {
+        if matches!(iop, crate::ir::ArithOp::Div | crate::ir::ArithOp::Rem)
+            && (!iprop_first || ivalue == 0.0)
+        {
+            return None;
+        }
+    }
     // A zero divisor THROWS in the general path, so decline anything this arm cannot prove is
     // non-zero: `a.k / 0` declines (the general path throws), and `5 / a.k` declines because the
     // divisor is then a COLUMN and any row holding 0 would have to throw — which a keep-pass
@@ -6029,47 +6082,91 @@ fn try_filter_keep_arith(pred: &Expr, store: &Store, batch: &Batch) -> Option<Ve
         return None;
     };
     let t = *threshold;
+    // TWO LOOPS, chosen before either runs, rather than one loop with a `match inner` in it.
+    // Written as one loop first, and the ONE-LEVEL shape it must not touch paid for it:
+    // `a.k + 0 > 5` went 1.859/1.877/1.889 ms to 2.046/2.058/2.067, ~1.10x, consistently over
+    // three rounds each. That is item 453's finding for the third time — a fast path costing a
+    // shape it never serves — and the remedy is the same one the hop walks in the TS engine use:
+    // the branch is a per-CALL decision, so it belongs outside the row loop.
+    //
+    // The compare block is duplicated rather than factored into a closure. That is deliberate:
+    // the duplication is fifteen lines a reader can diff, and a closure here would be the thing
+    // being measured rather than the arithmetic.
     let mut keep = Vec::new();
 
-    for (row, &id) in ids.iter().enumerate() {
-        if id == u32::MAX {
-            continue; // the OPTIONAL-miss sentinel has no property → UNKNOWN → dropped
+    match inner {
+        None => {
+            for (row, &id) in ids.iter().enumerate() {
+                if id == u32::MAX {
+                    continue; // the OPTIONAL-miss sentinel has no property → UNKNOWN → dropped
+                }
+
+                let i = id as usize;
+
+                if !present[i] {
+                    continue; // NULL → UNKNOWN → dropped
+                }
+
+                let x = data[i];
+                let (a, b) = if prop_first {
+                    (x, operand)
+                } else {
+                    (operand, x)
+                };
+                let y = arith_step(*aop, a, b);
+
+                if num_pred(op, y, t) {
+                    keep.push(row);
+                }
+            }
         }
+        Some((iop, ivalue, iprop_first)) => {
+            for (row, &id) in ids.iter().enumerate() {
+                if id == u32::MAX {
+                    continue;
+                }
 
-        let i = id as usize;
+                let i = id as usize;
 
-        if !present[i] {
-            continue; // NULL → UNKNOWN → dropped
-        }
+                if !present[i] {
+                    continue;
+                }
 
-        let x = data[i];
-        let (a, b) = if prop_first {
-            (x, operand)
-        } else {
-            (operand, x)
-        };
-        let y = match aop {
-            crate::ir::ArithOp::Add => a + b,
-            crate::ir::ArithOp::Sub => a - b,
-            crate::ir::ArithOp::Mul => a * b,
-            crate::ir::ArithOp::Div => a / b,
-            crate::ir::ArithOp::Rem => a % b,
-        };
-        let hit = match op {
-            CompareOp::Eq => y == t,
-            CompareOp::Ne => y != t,
-            CompareOp::Lt => y < t,
-            CompareOp::Le => y <= t,
-            CompareOp::Gt => y > t,
-            CompareOp::Ge => y >= t,
-        };
+                let raw = data[i];
+                let (ia, ib) = if iprop_first {
+                    (raw, ivalue)
+                } else {
+                    (ivalue, raw)
+                };
+                let x = arith_step(iop, ia, ib);
+                let (a, b) = if prop_first {
+                    (x, operand)
+                } else {
+                    (operand, x)
+                };
+                let y = arith_step(*aop, a, b);
 
-        if hit {
-            keep.push(row);
+                if num_pred(op, y, t) {
+                    keep.push(row);
+                }
+            }
         }
     }
 
     Some(keep)
+}
+
+/// One arithmetic step on raw `f64`s, matching `arith_general`'s raw arm exactly — including
+/// that the result is NOT tested for finiteness (item 438's note: an overflow to infinity is
+/// compared as infinity, and adding an `is_finite` guard here would be the divergence).
+fn arith_step(op: crate::ir::ArithOp, a: f64, b: f64) -> f64 {
+    match op {
+        crate::ir::ArithOp::Add => a + b,
+        crate::ir::ArithOp::Sub => a - b,
+        crate::ir::ArithOp::Mul => a * b,
+        crate::ir::ArithOp::Div => a / b,
+        crate::ir::ArithOp::Rem => a % b,
+    }
 }
 
 /// `<call over one prop> <cmp> <lit>` — a comparison whose left (or right) side is a SCALAR

@@ -20020,3 +20020,142 @@ fn computed_negative_zero_is_collapsed_everywhere_it_can_be_seen() {
     // And an AGGREGATE over computed -0s.
     assert_eq!(one("abs(0.0 * n.k)"), "Num(0.0),Num(0.0)");
 }
+
+/// Item 462: `try_filter_keep_arith` takes ONE nested level — `a.k * 2 + 1 > 7` — which it used
+/// to decline, at 6.0x (12.7-13.5 ms against 2.08-2.26 for the one-level `a.k * 2 > 6` at the
+/// same row count).
+///
+/// The ORACLE is item 438's, which still works and for a better reason than before: wrapping the
+/// predicate in a redundant `+ 0` now makes it THREE levels, which this arm declines, so `eval`
+/// answers. `+ 0` cannot change a finite result.
+///
+/// Both operand orders at BOTH levels, because the arm matches four shapes —
+/// `(p op l) op l`, `(l op p) op l`, `l op (p op l)`, `l op (l op p)` — and a spelling it
+/// recognised in only one position would be the equivalent-spelling gap this engine exists not
+/// to have.
+#[test]
+fn nested_arithmetic_filter_agrees_with_the_general_path() {
+    use crate::value::Value;
+
+    let store = {
+        let mut b = crate::store::Builder::default();
+
+        // Negatives, zero, a half-integer, and 1e308 so an inner `* 2` OVERFLOWS to infinity —
+        // the general path does NOT test the result for finiteness and neither may this arm,
+        // which is item 438's rule inherited one level down.
+        for v in [
+            -7.5f64, -3.0, -1.0, 0.0, 0.5, 1.0, 2.0, 3.0, 7.0, 11.0, 1e308,
+        ] {
+            b.node(&["N"], &[("k", Value::Num(v))]);
+        }
+
+        b.node(&["N"], &[]);
+        b.build()
+    };
+    let count = |q: &str| -> Result<f64, String> {
+        let raw = crate::gql::parse(q)?;
+        let plan = crate::opt::optimize_indexed(raw, &store);
+        let out = crate::exec::try_run(&plan, &store).map_err(|e| e.to_string())?;
+
+        match out.rows.iter().next().and_then(|r| r.first()) {
+            Some(Value::Num(n)) => Ok(*n),
+            other => Err(format!("want a number, got {other:?}")),
+        }
+    };
+    let mut checked = 0;
+
+    for iop in ["+", "-", "*", "/", "%"] {
+        for oop in ["+", "-", "*"] {
+            for lit in ["0", "1", "2", "-2", "0.5"] {
+                for cmp in ["=", "<>", "<", ">="] {
+                    for t in ["0", "1", "5", "-1"] {
+                        // The four shapes, inner and outer operand orders independently.
+                        for expr in [
+                            format!("(a.k {iop} {lit}) {oop} {lit}"),
+                            format!("({lit} {iop} a.k) {oop} {lit}"),
+                            format!("{lit} {oop} (a.k {iop} {lit})"),
+                            format!("{lit} {oop} ({lit} {iop} a.k)"),
+                        ] {
+                            let fast =
+                                format!("MATCH (a:N) WHERE {expr} {cmp} {t} RETURN count(*) AS c");
+                            let slow = format!(
+                                "MATCH (a:N) WHERE ({expr}) + 0 {cmp} {t} RETURN count(*) AS c"
+                            );
+
+                            match (count(&fast), count(&slow)) {
+                                (Ok(f), Ok(s)) => assert!(
+                                    (f - s).abs() < 1e-9,
+                                    "{fast}: fused gave {f}, general gave {s}"
+                                ),
+                                // Both throwing is agreement — the division-by-zero forms.
+                                (Err(_), Err(_)) => {}
+                                (f, s) => panic!("{fast}: fused {f:?}, general {s:?}"),
+                            }
+
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    assert_eq!(
+        checked,
+        5 * 3 * 5 * 4 * 4 * 4,
+        "form count drifted: {checked}"
+    );
+}
+
+/// Item 462's declines, pinned against the ANSWER.
+#[test]
+fn nested_arithmetic_filter_keeps_its_declines() {
+    use crate::value::Value;
+
+    let store = {
+        let mut b = crate::store::Builder::default();
+
+        for v in [1.0f64, 2.0, 3.0, 4.0] {
+            b.node(&["N"], &[("k", Value::Num(v)), ("j", Value::Num(2.0))]);
+        }
+
+        b.build()
+    };
+    let count = |q: &str| -> Result<f64, String> {
+        let raw = crate::gql::parse(q)?;
+        let plan = crate::opt::optimize_indexed(raw, &store);
+        let out = crate::exec::try_run(&plan, &store).map_err(|e| e.to_string())?;
+
+        match out.rows.iter().next().and_then(|r| r.first()) {
+            Some(Value::Num(n)) => Ok(*n),
+            other => Err(format!("want a number, got {other:?}")),
+        }
+    };
+
+    // THREE levels decline and still answer: `k*2+1+0 > 7` keeps k = 4 alone.
+    assert_eq!(
+        count("MATCH (a:N) WHERE a.k * 2 + 1 + 0 > 7 RETURN count(*) AS c").unwrap(),
+        1.0
+    );
+    // TWO properties decline (the arm reads one column).
+    assert_eq!(
+        count("MATCH (a:N) WHERE a.k * a.j + 1 > 5 RETURN count(*) AS c").unwrap(),
+        2.0
+    );
+    // A zero divisor THROWS on both the inner and the outer step, as the general path does.
+    assert!(count("MATCH (a:N) WHERE a.k / 0 + 1 > 1 RETURN count(*) AS c").is_err());
+    assert!(count("MATCH (a:N) WHERE (a.k + 1) / 0 > 1 RETURN count(*) AS c").is_err());
+    // A COLUMN divisor declines rather than answering, because a row holding 0 would have to
+    // throw and a keep-pass cannot express that. Here no row is 0, so the general path answers:
+    // 8/1+1, 8/2+1 and 8/3+1 are 9, 5 and 3.67, all above 3; 8/4+1 is exactly 3 and is not.
+    // (Written as 2.0 first — my arithmetic, not the engine's.)
+    assert_eq!(
+        count("MATCH (a:N) WHERE 8 / a.k + 1 > 3 RETURN count(*) AS c").unwrap(),
+        3.0
+    );
+    // And the one-level shape still works, so a split that lost an arm is visible.
+    assert_eq!(
+        count("MATCH (a:N) WHERE a.k * 2 > 6 RETURN count(*) AS c").unwrap(),
+        1.0
+    );
+}
