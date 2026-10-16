@@ -18823,3 +18823,79 @@ fn any_shortest_applies_the_endpoint_label() {
         vec![1, 2, 3, 4, 5]
     );
 }
+
+/// Item 436: an aggregate NESTED INSIDE A SCALAR FUNCTION — `abs(min(a.k))`,
+/// `size(collect(a.k))`, `coalesce(max(a.k), 0)` — was a parse error, "unknown function `min`",
+/// while the TS engine answered all of them.
+///
+/// The cause was where hoisting was switched on: `peek_agg` looks at a return item's FIRST
+/// token, so `max(a.k) + 1` re-parsed with hoisting and `abs(min(a.k))` did not — it fell to the
+/// plain-expression branch, where `min` is a scalar function that does not exist. Hoisting is now
+/// on for every item and is inert when the item holds no aggregate.
+///
+/// Found by extending item 434's two-engine screen, which reported `collect` as an unknown
+/// function on the native side only.
+#[test]
+fn an_aggregate_nested_in_a_scalar_function_parses() {
+    use crate::value::Value;
+
+    let store = {
+        let mut b = crate::store::Builder::default();
+        for i in 0..3i64 {
+            b.node(&["P"], &[("k", Value::Num((i - 1) as f64))]);
+        }
+        b.build()
+    };
+    let one = |q: &str| -> Value {
+        let raw = crate::gql::parse(q).unwrap_or_else(|e| panic!("{q}: {e}"));
+        let plan = crate::opt::optimize_indexed(raw, &store);
+        let out = crate::exec::try_run(&plan, &store).unwrap_or_else(|e| panic!("{q}: {e}"));
+        out.rows
+            .iter()
+            .next()
+            .and_then(|r| r.first())
+            .cloned()
+            .unwrap_or(Value::Null)
+    };
+    let num = |q: &str| -> f64 {
+        match one(q) {
+            Value::Num(n) => n,
+            other => panic!("{q}: want a number, got {other:?}"),
+        }
+    };
+
+    // `k` is -1, 0, 1 — so `abs` and `coalesce` have something to do, and a fixture where the
+    // minimum were already positive would let `abs` be dropped for free.
+    assert_eq!(num("MATCH (a:P) RETURN abs(min(a.k)) AS c"), 1.0);
+    assert_eq!(num("MATCH (a:P) RETURN abs(min(a.k) - 10) AS c"), 11.0);
+    assert_eq!(num("MATCH (a:P) RETURN coalesce(max(a.k), 0) AS c"), 1.0);
+    assert_eq!(num("MATCH (a:P) RETURN size(collect(a.k)) AS c"), 3.0);
+    // `count(*)` inside a call failed with a DIFFERENT error ("expected an expression, got
+    // Some(Star)"), so it is pinned separately.
+    assert_eq!(num("MATCH (a:P) RETURN abs(count(*)) AS c"), 3.0);
+    // Nested two deep, which the single-level cases above would not catch.
+    assert_eq!(
+        num("MATCH (a:P) RETURN abs(coalesce(min(a.k), 0)) AS c"),
+        1.0
+    );
+
+    // CONTROLS: items with no aggregate must be unchanged, which is the whole claim about
+    // enabling hoisting everywhere being inert.
+    assert_eq!(num("MATCH (a:P) RETURN max(a.k) + 1 AS c"), 2.0);
+    assert_eq!(num("MATCH (a:P) RETURN count(*) AS c"), 3.0);
+    // `Value` has no `PartialEq` on purpose — compare through the value contract's order.
+    assert!(crate::value::cmp_total(
+        &one("MATCH (a:P) RETURN upper('x') AS c"),
+        &Value::Str("X".into())
+    )
+    .is_eq());
+    // A plain projection still returns a ROW PER NODE rather than collapsing to one group —
+    // which is what a wrongly-hoisted item would do.
+    let rows = {
+        let q = "MATCH (a:P) RETURN a.k AS k";
+        let raw = crate::gql::parse(q).unwrap();
+        let plan = crate::opt::optimize_indexed(raw, &store);
+        crate::exec::try_run(&plan, &store).unwrap().rows.len()
+    };
+    assert_eq!(rows, 3, "a plain projection was collapsed into one group");
+}

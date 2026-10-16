@@ -2910,6 +2910,18 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   native was missing a path, TS never was. After 432 both are SYMMETRIC on the ring layout (native
   1.03x, TS 1.14x) and both keep an asymmetry on scatter (native 1.76x, TS ~1.32x), so the residual
   in both is the scattered-`inc`-bucket locality item 431 isolated. 431 is closed.
+- **PARSE ERROR FIXED: an aggregate nested in a scalar function (436).** `abs(min(a.k))`,
+  `coalesce(max(a.k), 0)`, `size(collect(a.k))` and `abs(count(*))` were all `unknown function`
+  errors in native and answers in TS. Cause: the return-item parser asks `peek_agg()`, which looks
+  at the item's FIRST token — so `max(a.k) + 1` reached the hoisting path and `abs(min(a.k))` fell
+  to the plain-expression branch where `min` is not a scalar function. Hoisting is now on for every
+  item and yields an `AggExpr` only when something was hoisted; with no aggregate the item is a
+  plain `Key`, unchanged. Two mutants caught, the important one being "always `AggExpr`", which
+  would collapse every plain projection into one group.
+- **Item 434's perf screen has found TWO correctness divergences and no perf candidate (435, 436).**
+  **Comparing answers while you time things costs nothing and has been worth more than the
+  timings.** Still unexamined there: CASE, coalesce and arithmetic predicates at the bottom of the
+  ratio band (2.3-5.2x), which is a perf question.
 - **WRONG ANSWER FIXED: native's `ANY SHORTEST` dropped the endpoint's LABEL (435).**
   `MATCH ANY SHORTEST (a:P)-[:E]->{1,3}(b:P)` returned every reachable node — its answer for
   `(b:P)` was its answer for `(b)` — while the TS engine and the same pattern WITHOUT the selector

@@ -5401,13 +5401,38 @@ impl Parser {
                     })
                 }
             } else {
+                // HOISTING IS ON FOR EVERY ITEM, not only for the ones that START with an
+                // aggregate (item 436). The branch above catches `max(a.k)` and `max(a.k) + 1`
+                // because `peek_agg` looks at the item's FIRST token — so `abs(min(a.k))`,
+                // `size(collect(a.k))` and `coalesce(max(a.k), 0)` fell here, where `min` is
+                // parsed as a scalar function and fails with "unknown function `min`". The TS
+                // engine answers all three, which makes it a cross-engine divergence of the
+                // kind item 435 was.
+                //
+                // The hoisting machinery is unchanged: it is exactly what the `count(*) + 1`
+                // path above already uses. Enabling it here is inert when the item contains no
+                // aggregate — `having_aggs` comes back empty and the item is a plain `Key`,
+                // byte-for-byte what it was.
+                self.having_base = AGG_SLOT_BASE;
+                self.having_aggs = Some(Vec::new());
+
                 let e = self.expr()?;
+                let aggs = self.having_aggs.take().unwrap_or_default();
                 let name = if self.eat_kw("AS") {
                     self.ident()?
                 } else {
                     self.item_name(&e, idx)
                 };
-                RetItem::Key(name, e)
+
+                if aggs.is_empty() {
+                    RetItem::Key(name, e)
+                } else {
+                    RetItem::AggExpr {
+                        name,
+                        expr: e,
+                        aggs,
+                    }
+                }
             };
             items.push(item);
             if !self.eat(&Tok::Comma) {
