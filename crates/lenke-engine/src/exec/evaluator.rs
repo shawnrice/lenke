@@ -842,6 +842,14 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
                 // Resolve the node columns ONCE (sorted, present-filtered per node below)
                 // instead of re-cloning+sorting the key list and HashMap-probing per node.
                 let node_cols = resolve_node_cols(store, &filter);
+                // Key `Value`s hoisted out of the row loop (item 391): rebuilding one per cell
+                // ran `GStr::new`, a byte copy that HEAP-ALLOCATES above `INLINE_CAP` = 12,
+                // where a `GStr` clone is one relaxed `fetch_add`. The render twin measured
+                // 597.1 -> 453.4 ns/row at a 20-character key.
+                let key_vals: Vec<Value> = node_cols
+                    .iter()
+                    .map(|(k, _)| Value::Str(Arc::clone(k).into()))
+                    .collect();
                 let out: Vec<Value> = (0..n)
                     .map(|i| {
                         let mut entries: Vec<(Value, Value)> = Vec::new();
@@ -851,10 +859,9 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
                                 let ni = id as usize;
                                 entries.push((Value::Str("id".into()), node_id(id)));
                                 entries.push((Value::Str("label".into()), node_label(id)));
-                                for (k, col) in &node_cols {
+                                for (j, (_, col)) in node_cols.iter().enumerate() {
                                     if col.present_at(ni) {
-                                        entries
-                                            .push((Value::Str(Arc::clone(k).into()), col.read(ni)));
+                                        entries.push((key_vals[j].clone(), col.read(ni)));
                                     }
                                 }
                             }
@@ -934,6 +941,14 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
                 // Node columns resolved ONCE (sorted); the node arm reads straight from
                 // them, skipping the per-node key clone+sort and per-key HashMap probes.
                 let node_cols = resolve_node_cols(store, &filter);
+                // Key `Value`s hoisted out of the row loop (item 391): rebuilding one per cell
+                // ran `GStr::new`, a byte copy that HEAP-ALLOCATES above `INLINE_CAP` = 12,
+                // where a `GStr` clone is one relaxed `fetch_add`. The render twin measured
+                // 597.1 -> 453.4 ns/row at a 20-character key.
+                let key_vals: Vec<Value> = node_cols
+                    .iter()
+                    .map(|(k, _)| Value::Str(Arc::clone(k).into()))
+                    .collect();
                 let out: Vec<Value> = (0..n)
                     .map(|i| match arg.value_at(i) {
                         Value::Num(id) if matches!(arg, Col::Nodes(_)) => {
@@ -954,13 +969,15 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
                             }
                             // node_cols are already sorted; the token pairs stay ahead.
                             entries.extend(
-                                node_cols.iter().filter(|(_, col)| col.present_at(ni)).map(
-                                    |(k, col)| {
+                                node_cols
+                                    .iter()
+                                    .enumerate()
+                                    .filter(|(_, (_, col))| col.present_at(ni))
+                                    .map(|(j, (_, col))| {
                                         let v = col.read(ni);
                                         let v = if wrap { Value::List(vec![v]) } else { v };
-                                        (Value::Str(Arc::clone(k).into()), v)
-                                    },
-                                ),
+                                        (key_vals[j].clone(), v)
+                                    }),
                             );
                             Value::Map(Arc::new(entries))
                         }

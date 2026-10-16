@@ -177,6 +177,15 @@ pub(super) fn render_edges(store: &Store, eids: &[u32]) -> Vec<Value> {
         .iter()
         .filter_map(|k| store.edge_prop_map(k).map(|m| (k, m)))
         .collect();
+    // Hoisted for the same reason as `render_nodes` (item 391): a key `Value` rebuilt per
+    // element ran `GStr::new`, which copies the bytes and HEAP-ALLOCATES above
+    // `INLINE_CAP` = 12, where a `GStr` clone is one relaxed `fetch_add`. Measured on the node
+    // twin: 597.1 -> 453.4 ns/row at a 20-character key, and the length cliff (465.6 at 12
+    // against 562.1 at 13) disappears.
+    let key_vals: Vec<Value> = maps
+        .iter()
+        .map(|(k, _)| Value::Str(Arc::clone(k).into()))
+        .collect();
     eids.iter()
         .map(|&eid| {
             if eid == u32::MAX {
@@ -196,10 +205,8 @@ pub(super) fn render_edges(store: &Store, eids: &[u32]) -> Vec<Value> {
             let labels = Value::List(labels.into_iter().map(|t| Value::Str(t.into())).collect());
             let props: Vec<(Value, Value)> = maps
                 .iter()
-                .filter_map(|(k, m)| {
-                    m.get(&eid)
-                        .map(|v| (Value::Str(Arc::clone(k).into()), v.clone()))
-                })
+                .enumerate()
+                .filter_map(|(j, (_, m))| m.get(&eid).map(|v| (key_vals[j].clone(), v.clone())))
                 .collect();
             Value::Map(Arc::new(vec![
                 (field_key(Field::Id), Value::Str(id)),
@@ -284,6 +291,21 @@ pub(super) fn render_nodes(store: &Store, ids: &[u32]) -> Vec<Value> {
         .iter()
         .filter_map(|k| store.column(k).map(|c| (k, c)))
         .collect();
+    // The property KEY `Value` is the same for every node, so build the K of them ONCE.
+    // `Value::Str(Arc::clone(k).into())` per cell was an `Arc` clone immediately dropped plus
+    // `GStr::new(&s)`, which COPIES the bytes — inline up to `INLINE_CAP` = 12 and a HEAP
+    // ALLOCATION with a refcount header above it. A `GStr` clone is instead one relaxed
+    // `fetch_add` for a heap string and a 16-byte struct copy for an inline one, so hoisting
+    // is a clear win past 12 characters and neutral below it (item 391).
+    //
+    // The length axis is why this is worth doing: 465.6 ns/row at a 12-char key against 562.1
+    // at 13 and ~595 at 20-40 — +24 ns PER PROPERTY the moment a name stops being inline, and
+    // real schemas are full of `employeeNumber` and `departmentName`. Item 390 measured this
+    // loop at 55 ns/property using keys "a".."d" and so never touched the heap path at all.
+    let key_vals: Vec<Value> = cols
+        .iter()
+        .map(|(k, _)| Value::Str(Arc::clone(k).into()))
+        .collect();
     ids.iter()
         .map(|&id| {
             if id == u32::MAX {
@@ -305,8 +327,9 @@ pub(super) fn render_nodes(store: &Store, ids: &[u32]) -> Vec<Value> {
             );
             let props: Vec<(Value, Value)> = cols
                 .iter()
-                .filter(|(_, c)| c.present_at(i))
-                .map(|(k, c)| (Value::Str(Arc::clone(k).into()), c.read(i)))
+                .enumerate()
+                .filter(|(_, (_, c))| c.present_at(i))
+                .map(|(j, (_, c))| (key_vals[j].clone(), c.read(i)))
                 .collect();
             Value::Map(Arc::new(vec![
                 (field_key(Field::Id), Value::Str(ext)),

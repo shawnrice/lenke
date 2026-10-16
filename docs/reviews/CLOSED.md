@@ -3016,6 +3016,27 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   real, the pricing (384/385/387) stands, and the ladder's rung 3 remains the right way to remove
   the slope. But the headline is "render cost stops scaling with store width", not a 20x.
 
+- **A property KEY was rebuilt per CELL, copying its bytes and heap-allocating past 12 characters —
+  1.32x on element render (391).** `Value::Str(Arc::clone(k).into())` ran `GStr::new(&s)`, which
+  COPIES, inline to `INLINE_CAP = 12` and a heap allocation with a refcount header above it — per
+  node per property, for a key identical across the batch. Hoisted to K key `Value`s cloned per cell
+  (`GStr::clone` is one relaxed `fetch_add` for a heap string, a 16-byte copy for an inline one):
+  **key length stops mattering**, 445-453 ns/row at 13-40 chars against 436.8 at 12, where before it
+  was 465.6 at 12 and 597.1 at 20. FOUR sites take it (`render_nodes`, `render_edges`, two
+  `elementMap`/`valueMap` paths in `evaluator.rs`); the two single-element renders are deliberately
+  left, having no row loop to hoist out of. `bench_all`: `element p` 513.1 → 468.9 ns/row (1.09x),
+  `element r` 337.1 → 331.0, controls flat.
+  **THE BENCH CANNOT SHOW THE REAL WIN**: its fixture keys are `name`/`age`/`city`/`dept`, all
+  inline, so it reads 1.09x where a realistic schema gets 1.32x. **And my own probe had hidden it
+  too** — item 390 measured this loop at 55 ns/property using keys `"a".."d"`, never touching the
+  heap path. Item 374's uniform-label fixture mistake in a new place: _a fixture that makes the
+  measurement tidy by avoiding the case that matters._
+  **How it was found, since four ticks of pricing pointed elsewhere:** 342's ladder said pack
+  presence; re-measuring at 389 showed the K-slope is 2.16 ns/key (not 7.86) and the **baseline is
+  466 ns/row and not presence**; ablating that baseline at 390 put **47% in the property loop**, 37%
+  in two `Value::Map` allocations, 12% in labels and **~0 in the external-id lookup**. Mutants: all
+  four key-index errors CAUGHT by the existing suite, behaviour-preserving control SURVIVED.
+
 ## 6. Consequences of the AND decision — RESOLVED by item 258, and not as predicted
 
 This section was written before the change and asked three questions. All three are now answered by
