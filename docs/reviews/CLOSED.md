@@ -2928,6 +2928,21 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   `CPredicate`. **REVERTED**: a path that is correct, willing and unreachable reads as a fix in the
   diff while the query is answered elsewhere (item 418). **Open: which gate upstream declines**, and
   the next pass starts from a trace rather than a measurement.
+- **STOPPED after three ticks: the TS arithmetic-predicate lift (441).** Prize was 1.91x on one
+  shape; items 439/440/441 produced no measurable change and the loop's rule is to retract what does
+  not survive. **Narrowed, for whoever picks it up:** the call sites are THREE not eight
+  (`compileNode` executor.ts:4142, `patternCountOf` shortcuts.ts:1999, `nodeWhereOf`
+  shortcuts.ts:4328), all with `ownVar=a`; the count shortcut ANSWERS rather than declining; and
+  `asArithCompare` DOES match (`kind=arith tail=1 otherConst=true`, returning on the first side) —
+  yet `satisfies` still receives `cmp=0 arith=0 where=YES`. Those three facts are unreconciled. Next
+  trace: give each `compilePredicate` result an identity and print it at both ends.
+- **AN INSTRUMENT AT THE GATE REPORTS WILLINGNESS; ONLY ONE ON THE RESULT REPORTS THE ANSWER
+  (441).** Item 440's rung trace printed from inside `if (linear.countShortcut) {`, before calling
+  it — so "RUNG countShortcut" meant the closure EXISTED, not that it answered, and most of a tick
+  went on the belief that it might be declining. Calling it and printing ANSWERED/DECLINED refuted
+  that in one run. Third form of this error after item 376 (an instrument covering part of the
+  dispatch) and item 418 (correct, willing, unreachable): **a one-line trace is not automatically a
+  good trace.**
 - **TRACE FROM THE CONSUMER BACKWARDS, NOT FROM THE CANDIDATE FORWARDS (440).** Item 439
   instrumented the code it had just written (`asArithCompare`), which proved only that its own code
   ran. One line in the CONSUMER is the whole diagnosis: `satisfies` prints `cmp=1 where=no` for
