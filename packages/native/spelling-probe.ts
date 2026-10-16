@@ -20,6 +20,21 @@
  * A group is flagged when its slowest member is more than SPELL_TOL (default 2x)
  * the fastest. Answers are compared too: a group whose members disagree on the
  * ANSWER is a correctness bug and is reported first.
+ *
+ * DO NOT READ AN UNFLAGGED GROUP'S TIMES AS A FINDING. Every group here runs in ONE
+ * process, so a member is warmed by the members before it (item 274's contamination,
+ * the same reason `route-cost-probe` takes one case per process). The 2x threshold is
+ * set where the signal survives that; below it the printed numbers are not comparable.
+ *
+ * Measured, because this was learned the expensive way (item 491): the group
+ * `three hops, THIRD position filtered` printed 541.30 / 386.79 / 385.02 ms — a 1.4x
+ * spread that is NOT flagged — and the three spellings were priced as a target. One
+ * case per process, three rounds, two selectivities (1.1% and 14%): **307.8-341.4
+ * against 308.5-319.6 against 310.2-351.0**, i.e. identical within noise. The 1.4x was
+ * the instrument, not the engine.
+ *
+ * So: a flagged group is a finding; an unflagged group is a question for
+ * `route-cost-probe`, which isolates.
  */
 import { Graph as TsGraph } from '@lenke/core';
 import { query as tsQuery } from '@lenke/gql';

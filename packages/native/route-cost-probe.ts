@@ -222,6 +222,20 @@ const queries: Record<string, string> = {
   cntrelvar: 'MATCH (:Person)-[r:KNOWS]->(b) RETURN count(*) AS c',
   grphrelvar: 'MATCH (:Person)-[r:KNOWS]->(b) RETURN b.age AS k, count(*) AS c',
   grphaggrelvar: 'MATCH (:Person)-[r:KNOWS]->(b) RETURN b.age AS k, max(b.age) AS m',
+  // Item 491: the three spellings of a THIRD-position filter on a 3-hop count, which the TS
+  // spelling probe reported 1.4x apart — in ONE process, which item 274 warns contaminates.
+  h3clause:
+    'MATCH (a:Person)-[:KNOWS]->(b)-[:KNOWS]->(c)-[:KNOWS]->(d) WHERE c.age = 2 RETURN count(*) AS n',
+  h3nodewhere:
+    'MATCH (a:Person)-[:KNOWS]->(b)-[:KNOWS]->(c WHERE c.age = 2)-[:KNOWS]->(d) RETURN count(*) AS n',
+  h3inline:
+    'MATCH (a:Person)-[:KNOWS]->(b)-[:KNOWS]->(c {age: 2})-[:KNOWS]->(d) RETURN count(*) AS n',
+  // The same trio at the probe's own SELECTIVITY (~14% with PCOL2's `w2 = i % 7`, against 1.1%
+  // for `age = 2`), in case the asymmetry is selectivity-dependent rather than in-process noise.
+  h3clauseW:
+    'MATCH (a:Person)-[:KNOWS]->(b)-[:KNOWS]->(c)-[:KNOWS]->(d) WHERE c.w2 = 2 RETURN count(*) AS n',
+  h3inlineW:
+    'MATCH (a:Person)-[:KNOWS]->(b)-[:KNOWS]->(c {w2: 2})-[:KNOWS]->(d) RETURN count(*) AS n',
   hopaggrelvar: 'MATCH (:Person)-[r:KNOWS]->(b) RETURN max(b.age) AS m',
   twohoprelvar: 'MATCH (:Person)-[r:KNOWS]->(b)-[s:KNOWS]->(c) RETURN count(*) AS c',
   threehoprelvar:

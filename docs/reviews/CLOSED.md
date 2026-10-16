@@ -5001,3 +5001,24 @@ sub-floor flag to dissolve on repetition this session (484, 487, 490).
 **PRICED, not taken:** `three hops, THIRD position filtered` is 1.4x apart and therefore NOT
 flagged by the 2x threshold — clause `WHERE c.k = 2` 541.30 ms against inline `(c {k: 2})`
 385.02. Under a threshold is not absent: item 489's cliff printed for several ticks unread.
+
+## 491 — item 490's priced 1.4x was the INSTRUMENT. RETRACTED, and the probe now carries the caveat
+
+Item 490 priced `three hops, THIRD position filtered` at 541.30 ms (clause `WHERE c.k = 2`)
+against 385.02 (inline `(c {k: 2})`). Isolated, one case per process, three rounds, at two
+selectivities (1.1% and 14%): **307.8-341.4 / 308.5-319.6 / 310.2-351.0 and 333.2-348.2 against
+337.4-341.6** — identical within noise.
+
+Diagnosis before measurement said the same: all three take `countShortcut`, answer identically,
+and `compilePredicate` lifts `c.k = 2` into the same `eqProps` path the inline form uses
+(`directEqProps`), so no route difference remained to explain a 1.4x.
+
+**The cause is the probe: every group runs in ONE process**, so each member is warmed by the
+members before it (item 274), which is why `route-cost-probe` isolates and why this probe only
+FLAGS above 2x. It did not flag this group — **the printed times of an UNFLAGGED group were read
+as a finding.** `spelling-probe.ts`'s header now records the numbers and the rule: _a flagged
+group is a finding; an unflagged group is a question for `route-cost-probe`._
+
+**Fourth sub-threshold flag this session to dissolve on isolation or repetition** (484, 487, 490,
+this) — and the first whose wrong reading had already been committed, hence a retraction item
+rather than an edit.
