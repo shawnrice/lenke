@@ -6129,3 +6129,36 @@ bucket.
 
 `bench:gremlin` had no row for any of this; three added (537's two plus
 `V().hasLabel().has().values(age)`, the row-returning twin this fix reaches).
+
+## 539 — the START-filtered hop count: CLOSED at 6.2x (and 5.0x for a property filter)
+
+The worst spelling cliff this surface had. 100,000 vertices / 500,000 edges, isolated:
+`V().out('KNOWS').count()` **0.00 ms** (the edge bucket's size) against
+`V().hasLabel('Person').out('KNOWS').count()` **95.34** — every vertex carries `Person`, so the two
+ask the same question. `vertexStepCount` answers the bare hop and `filteredHopCount` a filter AFTER
+it; a filter BEFORE one had no arm. GQL has had this since item 206.
+
+`startFilteredHopCount` answers Σ the hop-degree of the surviving starts (`adjacentCount`'s
+argument restricted to a subset of starts; a COUNT is order-free). `both` refused (a self-loop is
+incident twice), multi-type `out(a,b)` guarded as `adjacentCount` guards it, and RAISE PARITY
+shapes the source: filters applied in written order with a short circuit, and the label bucket is
+the source only when its `hasLabel` is FIRST, where the bucket is exactly that step's survivors.
+
+Before 95.34 / 97.43 / 97.80 → after 15.81 / 14.61 / 15.80 (6.2x); the property-filter form 49.97
+/ 48.61 / 49.48 → 10.03 / 10.02 / 9.76 (5.0x). Three alternated rounds, disjoint; the O(1) control
+stays 0.00.
+
+**Read the adjacency BOX, not a hash of the id**: the first version used
+`graph.edgesFromByLabel.get(v.id)` and measured 22.13 / 16.25 / 12.51 against the box's 16.25 /
+1.99 / 10.68 on the three shapes (a string-keyed `Map.get` is ~190 ns, item 194; the GQL twin has
+read the box since items 162/321). _The number in that comment was wrong when first written_ — I
+put a figure in before measuring and corrected it.
+
+Mutation 5 of 6 (null control clean), two caught only after extending the tests — a decision-only
+guard and a wrong-answer case the fixture did not reach. The survivor is answer-preserving
+(re-testing the seeded label). The two mutants whose anchors a later narrowing refactor touched
+were **re-run against the final text**: _a mutation result recorded against code that no longer
+exists is not a result._
+
+Two bench rows added, the first an equivalent-spelling guard against `V().out().count()` directly
+above it.

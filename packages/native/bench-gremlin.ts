@@ -83,6 +83,11 @@ const SHAPES: [string, Plan][] = [
     'V().hasLabel().has().values(age)',
     traversal(V(), hasLabel('Person'), has('age', gt(44)), values('age')),
   ],
+  // A START-FILTERED hop count (item 539), the worst cliff this surface had: `V().out().count()`
+  // above is an O(1) bucket read and the same question with a VACUOUS label in front of it ran
+  // 500,000 traversers. The pair is the equivalent-spelling guard.
+  ['V().hasLabel().out().count()', traversal(V(), hasLabel('Person'), out('KNOWS'), count())],
+  ['V().has().out().count()', traversal(V(), has('age', gt(44)), out('KNOWS'), count())],
 ];
 
 /**

@@ -5,10 +5,12 @@ import { Graph } from '@lenke/core';
 import { countShortcut } from './executor/count-shortcut.js';
 import {
   V,
+  both,
   count,
   gt,
   has,
   hasLabel,
+  in_,
   not,
   out,
   startsWith,
@@ -192,5 +194,108 @@ describe('the tally answers what the pipeline answers', () => {
 
   test('a cross-type comparison matches nothing and does not throw', () => {
     expect(both(traversal(V(), has('name', gt(0)), count()))).toEqual([0, 0]);
+  });
+});
+
+// Item 539. `V().out(T).count()` is the edge bucket's size — O(1) — and a filter AFTER the hop has
+// `filteredHopCount`. A filter BEFORE one had no arm, so it ran the pipeline: at 100,000 vertices
+// / 500,000 edges, `V().hasLabel('Person').out('KNOWS').count()` cost 95.34 ms against 0.00 for
+// the same question without the label (every vertex carries it). An O(1) read against a 95 ms
+// walk is this repo's named bug class.
+//
+// `startFilteredHopCount` answers it as the degree sum over the surviving starts. These assert
+// the decision AND the answer against the pipeline's own, because a tally is answer-preserving by
+// design and a mutant that never claims the shape passes every row assertion in the package.
+describe('a START-filtered hop count (item 539)', () => {
+  const hopGraph = (): Graph => {
+    const h = new Graph();
+    const a = h.addVertex({ id: 'a', labels: ['P'], properties: { age: 10 } });
+    const b = h.addVertex({ id: 'b', labels: ['P'], properties: { age: 20 } });
+    const c = h.addVertex({ id: 'c', labels: ['Q'], properties: { age: 30 } });
+
+    // a: two KNOWS out, one LIKES out. b: one KNOWS out. c: none out, two in.
+    h.addEdge({ id: 'e1', from: a, to: b, labels: ['KNOWS'], properties: {} });
+    h.addEdge({ id: 'e2', from: a, to: c, labels: ['KNOWS'], properties: {} });
+    h.addEdge({ id: 'e3', from: a, to: c, labels: ['LIKES'], properties: {} });
+    h.addEdge({ id: 'e4', from: b, to: c, labels: ['KNOWS'], properties: {} });
+
+    return h;
+  };
+
+  const hg = hopGraph();
+  const claim = (plan: Parameters<typeof toArray>[0]): unknown => {
+    const n = countShortcut(plan, hg);
+
+    expect(typeof n).toBe('number');
+    expect(n).toBe(Number(toArray(plan, hg)[0]));
+
+    return n;
+  };
+
+  test('the degree sum over the starts a LABEL keeps', () => {
+    // `:P` is a and b, with 2 + 1 KNOWS out-edges.
+    expect(claim(traversal(V(), hasLabel('P'), out('KNOWS'), count()))).toBe(3);
+    // `:Q` is c, which has none.
+    expect(claim(traversal(V(), hasLabel('Q'), out('KNOWS'), count()))).toBe(0);
+    // UNTYPED `out()` is every out-edge of the kept starts: a has 3, b has 1.
+    expect(claim(traversal(V(), hasLabel('P'), out(), count()))).toBe(4);
+  });
+
+  test('the degree sum over the starts a PROPERTY predicate keeps', () => {
+    // age > 15 keeps b and c: b has one KNOWS out, c none.
+    expect(claim(traversal(V(), has('age', gt(15)), out('KNOWS'), count()))).toBe(1);
+    expect(claim(traversal(V(), has('age', gt(5)), out('KNOWS'), count()))).toBe(3);
+    expect(claim(traversal(V(), has('age', gt(99)), out('KNOWS'), count()))).toBe(0);
+  });
+
+  test('the IN direction reads the other side', () => {
+    // c has two KNOWS in-edges; it is `:Q`, so a `:P` start contributes b's one.
+    expect(claim(traversal(V(), hasLabel('Q'), in_('KNOWS'), count()))).toBe(2);
+    expect(claim(traversal(V(), hasLabel('P'), in_('KNOWS'), count()))).toBe(1);
+    // A mutant that ignores the direction answers 0 and 3 here.
+  });
+
+  test('a chain of filters before the hop', () => {
+    expect(claim(traversal(V(), hasLabel('P'), has('age', gt(15)), out('KNOWS'), count()))).toBe(1);
+    // The label SECOND, so the bucket cannot be the source and every vertex is tested.
+    expect(claim(traversal(V(), has('age', gt(15)), hasLabel('P'), out('KNOWS'), count()))).toBe(1);
+  });
+
+  test('`both` is refused — a self-loop is incident twice', () => {
+    expect(
+      countShortcut(traversal(V(), hasLabel('P'), both('KNOWS'), count()), hg),
+    ).toBeUndefined();
+  });
+
+  test('a MULTI-label start keeps every vertex carrying EITHER label', () => {
+    // The bucket of the FIRST label is not the step's survivors, so seeding from it would miss
+    // the vertices carrying only the second — c, which is `:Q`. 3 + 0 KNOWS out-edges.
+    expect(claim(traversal(V(), hasLabel('P', 'Q'), out('KNOWS'), count()))).toBe(3);
+    // …and the other way round, so the mutant cannot pass by luck of which label comes first.
+    expect(claim(traversal(V(), hasLabel('Q', 'P'), out('KNOWS'), count()))).toBe(3);
+    // A single-label control, where seeding IS exact.
+    expect(claim(traversal(V(), hasLabel('Q'), out('KNOWS'), count()))).toBe(0);
+  });
+
+  test('declines when the start predicate could seed an index', () => {
+    // `propertyCount`'s rule, inherited: `countShortcut` runs before `seedFromIndex`, so a tally
+    // that scanned anyway would answer in O(V) where a seek answers in O(matches) — item 149.
+    const indexed = hopGraph();
+    indexed.createIndex({ on: 'vertex', kind: 'hash', keys: ['age'] });
+
+    expect(
+      countShortcut(traversal(V(), has('age', within(10)), out('KNOWS'), count()), indexed),
+    ).toBeUndefined();
+    // Behind a label too, since the chain is scanned for a seedable `has` wherever it sits.
+    expect(
+      countShortcut(
+        traversal(V(), hasLabel('P'), has('age', within(10)), out('KNOWS'), count()),
+        indexed,
+      ),
+    ).toBeUndefined();
+    // …and the answer is still right through the path that does seed.
+    expect(toArray(traversal(V(), has('age', within(10)), out('KNOWS'), count()), indexed)).toEqual(
+      [2],
+    );
   });
 });

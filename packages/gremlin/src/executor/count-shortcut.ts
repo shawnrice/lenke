@@ -60,6 +60,14 @@ export const countShortcut = (plan: Plan, graph: Graph): number | undefined => {
     return chain;
   }
 
+  // A START-FILTERED hop: the filters come BEFORE the hop, so the answer is the degree sum over
+  // the starts that survive them.
+  const started = startFilteredHopCount(mid, graph);
+
+  if (started !== undefined) {
+    return started;
+  }
+
   if (mid.length !== 2) {
     return undefined;
   }
@@ -387,6 +395,133 @@ const filterChainCount = (mid: readonly Step[], graph: Graph): number | undefine
 };
 
 const EMPTY_VERTICES: readonly Vertex[] = [];
+
+/** The two vertex-filter steps these tallies admit: a label test and a property predicate. */
+type VertexFilter = Extract<Step, { kind: 'hasLabel' }> | Extract<Step, { kind: 'has' }>;
+
+/**
+ * `V().hasLabel(L).out(T).count()` — a hop whose START is filtered, counted as the degree sum
+ * over the surviving starts.
+ *
+ * THE WORST SPELLING CLIFF THIS SURFACE HAD. `vertexStepCount` answers `V().out(T).count()` from
+ * the edge bucket — O(1) — and `filteredHopCount` answers a filter AFTER the hop. A filter BEFORE
+ * one had no arm at all, so it ran the pipeline. Measured at 100,000 vertices / 500,000 edges,
+ * one case per process (item 539):
+ *
+ * ```text
+ *   V().out('KNOWS').count()                         0.00 ms   the edge bucket's size
+ *   V().hasLabel('Person').out('KNOWS').count()     96.36      500,000 traversers
+ * ```
+ *
+ * Every vertex carries `Person`, so the label excludes nothing and the two ask the same question.
+ * An O(1) read against a 96 ms walk is the bug class this repo is named after, and the GQL surface
+ * has had the start-filtered hop count since item 206.
+ *
+ * `out(T)` emits one traverser per traversed EDGE, so the total is Σ the T-degree of the surviving
+ * starts — the same argument `adjacentCount` makes, restricted to a subset of the starts. A COUNT
+ * is order-free, so nothing observable moves.
+ *
+ * MULTI-TYPE needs `adjacentCount`'s guard: summing `out(a, b)` across buckets would count an edge
+ * carrying both types twice, while the walk yields it once.
+ *
+ * RAISE PARITY is the condition that shapes the source. `matches` can throw (a cross-type
+ * comparison, mirroring TinkerPop's `ClassCastException`), and the pipeline evaluates each filter
+ * only on the elements the EARLIER filters passed. So the filters are applied here in written
+ * order with a short circuit, and the label bucket may only be the source when its `hasLabel` is
+ * FIRST — where the bucket is exactly that step's survivors. A `has` ahead of a `hasLabel` must
+ * therefore be evaluated over every vertex, which is what the pipeline does.
+ *
+ * It DECLINES on a seedable `has` for `propertyCount`'s reason: `countShortcut` runs before
+ * `seedFromIndex`, so a tally that scanned anyway would lose an index (item 149).
+ *
+ * ONE MUTANT SURVIVES and is answer-preserving: not slicing the seeded `hasLabel` out of `rest`
+ * re-tests the label the bucket already guarantees — redundant work for the same count. Recorded
+ * rather than left unexplained. The other five are caught: `both` admitted, the direction
+ * ignored, the filters disjoined, the index decline removed, and a MULTI-label allowed to seed a
+ * single bucket (which drops every vertex carrying only the second label).
+ */
+const startFilteredHopCount = (mid: readonly Step[], graph: Graph): number | undefined => {
+  if (mid.length < 2) {
+    return undefined;
+  }
+
+  const hop = mid[mid.length - 1];
+
+  // `both` walks out-edges then in-edges, so a self-loop is incident twice and the total is not a
+  // degree sum — the same exclusion `vertexStepCount` makes.
+  if (hop.kind !== 'out' && hop.kind !== 'in') {
+    return undefined;
+  }
+
+  if (hop.labels.length > 1 && graph.multiTypeEdgeCount !== 0) {
+    return undefined;
+  }
+
+  const filters: VertexFilter[] = [];
+
+  for (const step of mid.slice(0, -1)) {
+    if (step.kind !== 'hasLabel' && step.kind !== 'has') {
+      return undefined;
+    }
+
+    if (step.kind === 'has' && seedForStep(step, graph.vertexPropertyIndex) !== null) {
+      return undefined;
+    }
+
+    filters.push(step);
+  }
+
+  const [first] = filters;
+
+  // The source: the FIRST filter's bucket when that filter is a single-label `hasLabel`, because
+  // the bucket is exactly its survivors and nothing before it could have faulted.
+  const canSeed = first.kind === 'hasLabel' && first.labels.length === 1;
+  // The condition is repeated rather than reusing `canSeed`, which narrows `first` inside the
+  // branch and so needs no cast.
+  const source: Iterable<Vertex> =
+    first.kind === 'hasLabel' && first.labels.length === 1
+      ? (graph.verticesByLabel.get(first.labels[0]) ?? EMPTY_VERTICES)
+      : graph.verticesById.values();
+  const rest = canSeed ? filters.slice(1) : filters;
+  const forward = hop.kind === 'out';
+  let n = 0;
+
+  for (const v of source) {
+    let ok = true;
+
+    for (let i = 0; i < rest.length && ok; i += 1) {
+      const step = rest[i];
+
+      ok =
+        step.kind === 'hasLabel'
+          ? step.labels.some((l) => v.labels.has(l))
+          : matches(step.pred, v.properties[step.key]);
+    }
+
+    if (!ok) {
+      continue;
+    }
+
+    // The vertex's OWN adjacency box, not a hash of its id into the graph's map — the GQL twin
+    // has read the box since items 162 and 321. Measured on the first version of this function,
+    // 100,000 vertices / 500,000 edges, same answer either way:
+    //
+    //   graph.edgesFromByLabel.get(v.id)   22.13 ms   16.25 ms   12.51 ms
+    //   v.adjFrom                          16.25       1.99      10.68
+    //
+    // for `hasLabel('Person')` (every vertex), `hasLabel('Few')` (a quarter) and
+    // `has(age, gt(44))`. The box wins on all three, by 1.4x where it reads every vertex and 2.7x
+    // on the quarter — a string-keyed `Map.get` is ~190 ns (item 194) and the getter caches the
+    // lookup per vertex, so the saving grows with how often a vertex is revisited.
+    const byType = forward ? v.adjFrom : v.adjTo;
+
+    if (byType !== undefined) {
+      n += degreeOfTypes(byType, hop.labels);
+    }
+  }
+
+  return n;
+};
 
 /** The one intermediate step whose count is a bucket size. */
 const vertexStepCount = (step: Step, graph: Graph): number | undefined => {
