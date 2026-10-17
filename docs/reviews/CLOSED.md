@@ -7270,3 +7270,50 @@ four mutants of its gates survived the entire suite while plan assertions passed
 to cover it needs roughly 40 nodes at out-degree 4 (640 against 400). This is the counting twin of
 the standing "match the fixture to the claim" rule: here the fixture decides which ROUTE runs, not
 just how fast it runs.
+
+### Item 571 — the seventh divergence: CLOSED, and it was four wrong answers rather than one
+
+Item 569's "group bindings are NULL in TS clause expressions" is FIXED, and the cause was one
+line in `packages/gql/src/executor.ts`: the MATCH compiler's seed-hint loop — which runs ONLY
+when the clause has a WHERE — rebuilt each segment as `{rel, node}` and dropped
+`CSegment.unit`. A spread fixes it.
+
+It was worse than 569 recorded. `walkSegments` reads `unit` to choose its WALKER, so TS walked
+the ABBREVIATED one-hop pattern instead of the unit and lost the per-repetition filter too:
+
+```
+((x)-[:T]->(m)<-[:T]-(y)){1,2}      WHERE a.n > 0    ts 8  nv 2
+((x)-[e:T]->(y) WHERE y.n > 1){1,2} WHERE a.n > 0    ts 8  nv 5   per-rep filter LOST
+((x)-[:T]->(m)-[:T]->(y)){1,2}      WHERE a.n > 0    ts 8  nv 5
+((x)-[e:T]->(y)){1,2}               WHERE size(e)>1  ts 0  nv 4
+```
+
+`WHERE a.n > 0` rejects nothing and changed 2 into 8. A `k = 1` unit's COUNT was right by luck —
+the abbreviated walk agrees there — which is why 569 saw only the null bindings.
+
+**The fix makes two shapes slower and is still right.** A clause WHERE was an accidental 17x
+speedup that returned the wrong answer; the control (the same pattern with no clause WHERE)
+always cost ~4.3s, which is what the corrected version now costs. k=1 shapes are unchanged.
+
+### The fuzzer gap that let it through — CLOSED in the same commit
+
+All seven byte-identity fuzzers missed four wrong answers because the differential fuzzer's
+quantified-group arm **never emitted a clause `WHERE` after the pattern**, the one position that
+runs the broken loop. It had the per-HOP WHERE (in the brackets) and the per-REPETITION WHERE
+(after the unit); this third position did not exist. Now generated at 280-329 of 20,000 with
+floors at half of measured.
+
+Two traps, both of which the file's own comments had already named:
+
+- **Add it as a MODIFIER, not another `forms` entry.** As its own form it diluted `unanchored` —
+  the only spelling reaching native's counting sink — from 1-of-3 to 1-of-5, and `sinkGenerated`
+  failed its floor. Adding a form to a `pick` list reduces every other form's rate; when one of
+  them feeds a coverage floor, that is a regression in the net itself.
+- **Keep it out of `perRepGenerated`.** That detector is "group opener AND contains WHERE" and
+  three predicate positions had borrowed the counter already. This is the fourth, excluded via a
+  shared `CLAUSE_WHERE` regex subtracted before the per-rep test.
+
+### Still open from item 569
+
+The EIGHTH divergence is untouched: a subquery whose inner pattern rebinds a group-bound name is
+`E_SYNTAX` in native and answers `d=0` in TS. Error against rows, the narrower class.

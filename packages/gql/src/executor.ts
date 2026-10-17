@@ -6208,7 +6208,12 @@ const compileClause = (rawClause: Clause): CClause => {
           patterns[i] = {
             ...patterns[i],
             start: attach(patterns[i].start),
-            segments: patterns[i].segments.map((s) => ({ rel: s.rel, node: attach(s.node) })),
+            // SPREAD, not a rebuild. `CSegment` also carries `unit` — the compiled
+            // repetition unit a quantified subpath walks — and listing the fields here
+            // dropped it, so `walkSegments` never called `bindGroupVars` and every group
+            // binding read as NULL. Only when the clause had a WHERE, which is what made it
+            // look like a scoping rule rather than a lost field (item 571).
+            segments: patterns[i].segments.map((s) => ({ ...s, node: attach(s.node) })),
           };
         }
       }

@@ -36,6 +36,44 @@ import { graphFromNdjson } from './graph.js';
 /// SIMPLE. Lifted out of `tally` because that function sits on the complexity gate and item
 /// 244's two new blocks took it from 35 to 37 — the same reason `genQuantifiedGroup` is its own
 /// function. Nothing about what is counted changed in the move.
+/**
+ * The clause `WHERE` the group arm reads as the ANCHOR predicate.
+ *
+ * Module scope and shared with {@link tallyGroupShapes}, which must SUBTRACT it before testing
+ * for a per-repetition `WHERE` — that detector is "group opener AND contains WHERE", and three
+ * separate predicate positions have borrowed its counter already. Item 571 is the fourth and is
+ * excluded rather than left to inflate it.
+ */
+const CLAUSE_WHERE = / WHERE a\.n [^ ]+ -?\d+/;
+
+/**
+ * Count the CLAUSE `WHERE` position — after the whole pattern — which let item 571's four wrong
+ * answers past all seven fuzzers.
+ *
+ * A clause `WHERE` is the only thing that runs the MATCH compiler's seed-hint loop, which
+ * rebuilt each segment and dropped `CSegment.unit`; TS then walked the ABBREVIATED one-hop
+ * pattern instead of the unit, and lost the per-repetition filter with it. A vacuously-true
+ * predicate is enough to catch it: `WHERE a.n >= 0` rejected nothing and still changed the
+ * answer from 2 to 8.
+ *
+ * Its own function because `tallyGroupShapes` sits on the complexity gate exactly as `tally`
+ * does — inline, this block took it from 35 to 36. Third time this file has had to split for
+ * that reason, and the gate has been right each time.
+ */
+const tallyClauseWhere = (
+  cov: Record<string, number>,
+  unbracketed: string,
+  nonEmpty: boolean,
+): void => {
+  if (unbracketed.includes('((x)') && CLAUSE_WHERE.test(unbracketed)) {
+    cov.groupClauseWhereGenerated++;
+
+    if (nonEmpty) {
+      cov.groupClauseWhereNonEmpty++;
+    }
+  }
+};
+
 const tallyGroupShapes = (cov: Record<string, number>, q: string, nonEmpty: boolean): void => {
   // The optional path mode sits between `MATCH` and the pattern (item 244), so it is part of
   // the detector — `startsWith('MATCH (a:T)((x)')` counted only the no-mode third of the arm.
@@ -97,10 +135,18 @@ const tallyGroupShapes = (cov: Record<string, number>, q: string, nonEmpty: bool
   // brackets. Three times is the pattern, not bad luck: a detector written as "contains the
   // group opener AND contains WHERE" matches every `WHERE` anywhere in a group, and each new
   // predicate POSITION borrows this counter until told not to.
+  //
+  // Item 571 is the FOURTH position, and it is excluded HERE rather than left to inflate this
+  // counter — `clauseOnly` strips the clause `WHERE` before the per-rep test. The marker is
+  // `a.n`: the clause predicate reads the ANCHOR, and none of the per-rep or per-hop
+  // predicates this file generates read it. If one ever does, this detector needs a
+  // positional test instead of a marker, and so does the one below it.
+  const clauseOnly = unbracketed.replace(CLAUSE_WHERE, '');
+
   if (
-    unbracketed.includes('((x)') &&
-    !unbracketed.includes('(((x)') &&
-    unbracketed.includes(' WHERE ')
+    clauseOnly.includes('((x)') &&
+    !clauseOnly.includes('(((x)') &&
+    clauseOnly.includes(' WHERE ')
   ) {
     cov.perRepGenerated++;
 
@@ -108,6 +154,8 @@ const tallyGroupShapes = (cov: Record<string, number>, q: string, nonEmpty: bool
       cov.perRepNonEmpty++;
     }
   }
+
+  tallyClauseWhere(cov, unbracketed, nonEmpty);
 
   // The PER-HOP predicate on a group hop (item 248), which native refused outright until then.
   // Its own counter, because it is a different code path from the per-rep one on both sides —
@@ -1164,13 +1212,33 @@ const genQuantifiedGroup = (r: () => number): string => {
   // (item 61). The sink now applies an endpoint filter itself, so the ANCHORED forms reach it
   // too — by a different route, which is why both spellings stay.
   const unanchored = `MATCH ${mode}(${unit})${q} RETURN count(*) AS x`;
+  // A CLAUSE `WHERE`, after the whole pattern — the shape this arm generated NONE of, and the
+  // gap that let item 571's four wrong answers past all seven fuzzers. A clause WHERE is the
+  // only thing that runs the MATCH compiler's seed-hint loop, which rebuilt each segment and
+  // dropped `CSegment.unit`; TS then walked the ABBREVIATED one-hop pattern instead of the
+  // unit and lost the per-repetition filter with it. `WHERE a.n >= 0` rejects nothing on this
+  // fixture and still changed the answer, so a vacuously-true predicate is enough to generate
+  // and the arm does not need a selective one to have teeth.
+  //
+  // Distinct from the per-HOP WHERE (inside the brackets, one edge) and the per-REPETITION
+  // WHERE (after the unit, inside the group) that this arm already emits. Three WHERE
+  // positions, three different places in the compiler, and only this one was missing.
+  //
+  // A MODIFIER, not two more entries in `forms`, and the floors are why. Adding the clause
+  // spelling as its own form took `unanchored` from one of three to one of five, and
+  // `unanchored` is the ONLY spelling that reaches native's counting sink — `sinkGenerated`
+  // fell from ~300 to 162 and its own floor failed. That floor is doing exactly the job it
+  // was written for. Applied this way every form keeps its share and the clause WHERE is
+  // orthogonal to the choice. `unanchored` is deliberately never given one: it has no `a`.
+  const clauseWhere = pick(r, ['', '', ' WHERE a.n >= 0', ' WHERE a.n <> 999', ' WHERE a.n > 2']);
+  const anchored = `${body}${clauseWhere}`;
   // With no endpoint pattern there is no `b` to project.
   const forms =
     end === '(b)'
-      ? [`MATCH ${mode}${body} RETURN count(*) AS x`, unanchored]
+      ? [`MATCH ${mode}${anchored} RETURN count(*) AS x`, unanchored]
       : [
-          `MATCH ${mode}${body} RETURN count(*) AS x`,
-          `MATCH ${mode}${body} RETURN b.n AS x, a.n AS t ORDER BY t, x`,
+          `MATCH ${mode}${anchored} RETURN count(*) AS x`,
+          `MATCH ${mode}${anchored} RETURN b.n AS x, a.n AS t ORDER BY t, x`,
           unanchored,
         ];
 
@@ -1945,6 +2013,8 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
     // vertex 3, the forward-then-reverse unit was generated and returned 0 rows every time,
     // so a wrong answer over it agreed with a wrong answer trivially (item 51).
     const cov = {
+      groupClauseWhereGenerated: 0,
+      groupClauseWhereNonEmpty: 0,
       perRepGenerated: 0,
       perRepNonEmpty: 0,
       abbrevGenerated: 0,
@@ -2090,6 +2160,7 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
     console.log(
       `PRED generated=${cov.predGenerated} rows=${cov.predRows} ` +
         `perRep=${cov.perRepGenerated}/${cov.perRepNonEmpty} ` +
+        `groupClauseWhere=${cov.groupClauseWhereGenerated}/${cov.groupClauseWhereNonEmpty} ` +
         `abbrev=${cov.abbrevGenerated}/${cov.abbrevNonEmpty}/${cov.abbrevPath} ` +
         `simpleGroup=${cov.simpleGroupGenerated}/${cov.simpleGroupNonEmpty} ` +
         `groupHopPred=${cov.groupHopPredGenerated}/${cov.groupHopPredNonEmpty} ` +
@@ -2118,6 +2189,12 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       // rates (sink 283-333 against 288-320, peel 117-145 against 120-151), because the new
       // arm contributes to them rather than diluting them. Lowering a floor is the last
       // resort, after the detector has been checked.
+      // Item 571's position, floored at roughly half of measured (303-329 generated, 191-200
+      // of those non-empty, over three runs of 20,000). It exists because this shape had NO
+      // coverage at all and four wrong answers went past every fuzzer: a clause `WHERE` is
+      // the only thing that runs the MATCH compiler's seed-hint loop.
+      groupClauseWhereGenerated: cov.groupClauseWhereGenerated > 150,
+      groupClauseWhereNonEmpty: cov.groupClauseWhereNonEmpty > 90,
       perRepGenerated: cov.perRepGenerated > 260,
       perRepNonEmpty: cov.perRepNonEmpty > 150,
       // The abbreviated quantified form (audit item 238). MEASURED 190-209 generated, 159-183 of
@@ -2276,6 +2353,8 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       pageGenerated: cov.pageGenerated > 200,
       pageRows: cov.pageRows > 80,
     }).toEqual({
+      groupClauseWhereGenerated: true,
+      groupClauseWhereNonEmpty: true,
       perRepGenerated: true,
       perRepNonEmpty: true,
       abbrevGenerated: true,

@@ -110,28 +110,93 @@ suite('an unread group binding is a plain quantified hop (item 569)', () => {
     }
   });
 
-  // A SEVENTH cross-engine divergence, found by this item's own test and PRE-EXISTING — it
-  // reproduces on HEAD with the rewrite reverted. A group binding read from a CLAUSE
-  // expression is NULL in TS and the per-rep list in native:
+  // Item 571 FIXED what item 569 found and pinned here as a divergence. The cause was one
+  // line in the MATCH clause's seed-hint loop, which rebuilt each segment as `{rel, node}`
+  // and so dropped `CSegment.unit` — the compiled repetition unit. Without it `walkSegments`
+  // never called `bindGroupVars`, so every group binding read as NULL, and only when the
+  // clause carried a WHERE (the one branch that runs that loop). That is why it looked like a
+  // scoping rule and was in fact a lost field.
   //
-  //   WHERE size(e) > 1   ts [{c:0}]   nv [{c:3}]      and the same for x, y
-  //   WHERE e IS NULL     ts [{c:6}]   nv [{c:0}]      which is what says it is NULL
-  //   FILTER size(e) > 1  ts [{c:0}]   nv [{c:3}]      a separate clause, so not the seed gate
-  //   RETURN size(e)      ts and nv AGREE                the PROJECTION resolves it correctly
-  //
-  // `bindGroupVarsFlat` does put the lists in the binding Map, so the fault is in how a
-  // clause-level expression resolves the name, not in the matching. Silent wrong rows, so it
-  // belongs to the dangerous VALUE class. Recorded, not fixed here: a correctness fix is its
-  // own item, and folding it into a perf change would make neither reviewable.
-  //
-  // It is ALSO what gives this rewrite's `m.where` collection its teeth. Eliding the binding
-  // while the WHERE still names `e` does not return a different count — it makes `e` UNBOUND,
-  // which is a scope error, and that is the observable the mutant trips.
-  test('a group binding read from a CLAUSE is a known divergence (item 569)', () => {
-    const q = 'MATCH (a:P)((x)-[e:T]->(y)){1,2} WHERE size(e) > 1 RETURN count(*) AS c';
+  // These assertions ran RED against the divergence before the fix, which is the whole reason
+  // item 569 pinned both engines' answers rather than only TS's.
+  test('a group binding is readable from a CLAUSE expression (item 571)', () => {
+    // The shapes that returned zero rows / all-null before the fix.
+    agree('MATCH (a:P)((x)-[e:T]->(y)){1,2} WHERE size(e) > 1 RETURN count(*) AS c', '[{"c":3}]');
+    agree('MATCH (a:P)((x)-[e:T]->(y)){1,2} WHERE size(y) > 1 RETURN count(*) AS c', '[{"c":3}]');
+    agree('MATCH (a:P)((x)-[e:T]->(y)){1,2} WHERE size(x) > 1 RETURN count(*) AS c', '[{"c":3}]');
+    // `e IS NULL` is what identified the fault as a missing binding rather than a wrong one:
+    // it answered 6 (every row) before and answers 0 now.
+    agree('MATCH (a:P)((x)-[e:T]->(y)){1,2} WHERE e IS NULL RETURN count(*) AS c', '[{"c":0}]');
+    agree('MATCH (a:P)((x)-[e:T]->(y)){1,2} WHERE e IS NOT NULL RETURN count(*) AS c', '[{"c":6}]');
+    // A standalone FILTER reaches the same loop, because item 548's rewrite folds a trailing
+    // FILTER into the MATCH's WHERE — which is why a clause the MATCH never carried was
+    // affected too.
+    agree('MATCH (a:P)((x)-[e:T]->(y)){1,2} FILTER size(e) > 1 RETURN count(*) AS c', '[{"c":3}]');
+    // Reading the list itself, not just its size.
+    agree(
+      'MATCH (a:P)((x)-[e:T]->(y)){1,1} WHERE size(e) = 1 RETURN size(y) AS c ORDER BY c',
+      '[{"c":1},{"c":1},{"c":1}]',
+    );
+    // A WHERE that reads a group binding AND the outer anchor together.
+    agree(
+      'MATCH (a:P)((x)-[e:T]->(y)){1,2} WHERE size(e) > 1 AND a.n = 1 RETURN count(*) AS c',
+      '[{"c":1}]',
+    );
+  });
 
-    expect(JSON.stringify(tsQuery(tsGraph, q))).toBe('[{"c":0}]');
-    expect(JSON.stringify(nativeGraph.query(q))).toBe('[{"c":3}]');
+  // The dropped `unit` reached FURTHER than the bindings, and this is the part item 569 did
+  // not see. `walkSegments` reads `unit` to choose its walker: `trailEndsUnit` repeats the
+  // compiled unit, and the `undefined` branch is `trailEnds`, the ABBREVIATED single-edge
+  // walk. So a clause WHERE did not merely blank the group lists — it made TS walk a
+  // DIFFERENT PATTERN, losing the unit's shape AND its per-repetition filter.
+  //
+  // Its own fixture, because the shared one above has in-degree 1 everywhere and so answers
+  // ZERO for a reversed unit — a coinciding fixture, where right and wrong both round to
+  // nothing. Node 4 -> 2 gives node 2 an in-degree of 2, which is what makes
+  // `(x)-[:T]->(m)<-[:T]-(y)` have an answer at all.
+  //
+  // The sharpest statement of the bug: `WHERE a.n > 0` rejects nothing here, and adding it
+  // changed the reversed-unit answer from 2 to 8. Each pair below is the same question with
+  // and without that vacuous clause, so the members must agree with each other and with
+  // native. Measured before the fix: 8/2, 8/5 and 8/5.
+  test('a vacuous clause WHERE does not change a quantified walk (item 571)', () => {
+    const FOUR = [
+      '{"type":"node","id":"1","labels":["P"],"properties":{"n":1}}',
+      '{"type":"node","id":"2","labels":["P"],"properties":{"n":2}}',
+      '{"type":"node","id":"3","labels":["P"],"properties":{"n":3}}',
+      '{"type":"node","id":"4","labels":["P"],"properties":{"n":4}}',
+      '{"type":"edge","id":"e1","labels":["T"],"from":"1","to":"2","properties":{"w":5}}',
+      '{"type":"edge","id":"e2","labels":["T"],"from":"2","to":"3","properties":{"w":7}}',
+      '{"type":"edge","id":"e3","labels":["T"],"from":"3","to":"1","properties":{"w":9}}',
+      '{"type":"edge","id":"e4","labels":["T"],"from":"4","to":"2","properties":{"w":2}}',
+    ].join('\n');
+    const nv = graphFromNdjson(nativeBackend(), FOUR);
+    const ts = tsDeserialize(FOUR, 'ndjson', new Graph());
+    const bothWays = (bare: string, withWhere: string, want: string): void => {
+      for (const q of [bare, withWhere]) {
+        const got = JSON.stringify(tsQuery(ts, q));
+
+        expect(`${q} ${got}`).toBe(`${q} ${JSON.stringify(nv.query(q))}`);
+        expect(`${q} ${got}`).toBe(`${q} ${want}`);
+      }
+    };
+
+    bothWays(
+      'MATCH (a:P)((x)-[:T]->(m)<-[:T]-(y)){1,2} RETURN count(*) AS c',
+      'MATCH (a:P)((x)-[:T]->(m)<-[:T]-(y)){1,2} WHERE a.n > 0 RETURN count(*) AS c',
+      '[{"c":2}]',
+    );
+    bothWays(
+      'MATCH (a:P)((x)-[:T]->(m)-[:T]->(y)){1,2} RETURN count(*) AS c',
+      'MATCH (a:P)((x)-[:T]->(m)-[:T]->(y)){1,2} WHERE a.n > 0 RETURN count(*) AS c',
+      '[{"c":5}]',
+    );
+    // The per-repetition filter also lives on the unit, so it vanished with it.
+    bothWays(
+      'MATCH (a:P)((x)-[e:T]->(y) WHERE y.n > 1){1,2} RETURN count(*) AS c',
+      'MATCH (a:P)((x)-[e:T]->(y) WHERE y.n > 1){1,2} WHERE a.n > 0 RETURN count(*) AS c',
+      '[{"c":5}]',
+    );
   });
 
   test('a SUBQUERY anywhere refuses the rewrite (item 444s trap)', () => {
