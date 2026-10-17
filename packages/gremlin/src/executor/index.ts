@@ -503,6 +503,116 @@ const ELEMENT_STEP_ON_PATH = new Set([
   'hasValue',
 ]);
 
+/**
+ * Drop a single-label `hasLabel(L)` that keeps EVERY element — the plan-level form of the
+ * tautology short-circuit the native engine's `IsLabeled` evaluator has (item E78).
+ *
+ * WHY HERE, AND WHY IT MATTERS SO MUCH. Every shortcut in `run` matches a plan PREFIX that starts
+ * at the source: `countShortcut` wants `V()` plus one or two steps, `hopValuesShortcut` wants
+ * exactly `V().out(T).values(k)`, `groupCountShortcut` wants `V().groupCount()`. A leading
+ * `hasLabel` is one step too many for all of them, so it does not merely cost its own
+ * per-element test — it drops the whole query onto the traverser pipeline. Measured at 100,000
+ * vertices / 500,000 edges, one case per process (item 540):
+ *
+ * ```text
+ *   V().out('KNOWS').values('age')                         65.24 ms
+ *   V().hasLabel('Person').out('KNOWS').values('age')     134.40      2.1x
+ *   V().out('KNOWS').dedupe().count()                       3.39
+ *   V().hasLabel('Person').out('KNOWS').dedupe().count()  102.63     30.3x
+ * ```
+ *
+ * Every vertex carries `Person`, so each pair asks the SAME question. Item 538's index seed does
+ * remove the step, but only AFTER the shortcuts have already declined — which is why removing it
+ * from the plan FIRST is the fix rather than another arm per shortcut.
+ *
+ * SOUNDNESS. `hasLabel(L)` keeps an element iff it carries `L`, so when the label's bucket holds
+ * every live element the step keeps everything and removing it changes no answer. The bucket
+ * holds only live elements (`deIndexEdgeLabel` removes an emptied entry), and `vertexCount` /
+ * `edgeCount` are the live counts — the same pair `buildNodeCount` uses for its unconstrained
+ * answer. A MULTI-label `hasLabel` is not considered: it is already a union and a vacuous one
+ * would need every element to carry at least one of the names, which is a different test for a
+ * rarer shape.
+ *
+ * GATED ON `tracksPath`, like `hopValuesShortcut`: with `path()` in the plan a step's output is
+ * recorded, so removing one could change what a path contains. Nothing here is worth that.
+ *
+ * An EMPTY graph is left alone (`count === 0` would make every label vacuous, which is true but
+ * means the plan is empty anyway) so the rule reads as "the bucket IS the whole set" rather than
+ * as an accident of zero.
+ *
+ * WHAT MUTATION SAYS ABOUT THESE CONDITIONS, recorded because five of six mutants survived and a
+ * survivor nobody explains is indistinguishable from a missing test. Exactly ONE is load-bearing:
+ *
+ *   - `bucket.size === total` — CAUGHT, and loudly (15 failures): without it every label is
+ *     dropped and the filters stop filtering.
+ *   - the single-label restriction — survives, and is conservatism. If `labels[0]`'s bucket is
+ *     the whole set then so is the UNION, so dropping a multi-label whose first name is vacuous
+ *     is sound; if it is not, the size test declines anyway. Kept because "a vacuous union" is a
+ *     different test and this one would read as if it had performed it.
+ *   - the LEADING-run restriction (`cut`) — survives. A vacuous VERTEX label is in fact droppable
+ *     after a hop too, because the hop's endpoints are a subset of the vertices and a label every
+ *     vertex carries keeps all of them. Kept because the reasoning depends on the stream still
+ *     holding vertices, which this function does not check.
+ *   - the `tracksPath` gate — survives. A filter step appends nothing to a path in either engine,
+ *     so removing one is invisible there. Kept as the cheaper assumption.
+ *   - using the EDGE bucket for an `E()` source — survives, because the vertex map simply misses
+ *     on an edge-type name and the step is kept. Correct by accident rather than by the lookup,
+ *     so the branch stays.
+ *   - skipping the empty graph — survives, since every query over one answers empty anyway.
+ */
+const dropVacuousLabels = (plan: Plan, graph: Graph): Plan => {
+  const vertexSource = plan.steps[0]?.kind === 'V';
+  const edgeSource = plan.steps[0]?.kind === 'E';
+
+  if (!vertexSource && !edgeSource) {
+    return plan;
+  }
+
+  const total = vertexSource ? graph.vertexCount : graph.edgeCount;
+
+  if (total === 0) {
+    return plan;
+  }
+
+  const vacuous = (step: Step): boolean => {
+    if (step.kind !== 'hasLabel' || step.labels.length !== 1) {
+      return false;
+    }
+
+    const bucket = vertexSource
+      ? graph.verticesByLabel.get(step.labels[0])
+      : graph.edgesByLabel.get(step.labels[0]);
+
+    return bucket?.size === total;
+  };
+
+  // Only a LEADING run of them: a `hasLabel` after a hop tests the hop's endpoints, which are a
+  // different set from the source and not what `vertexCount` counts.
+  let cut = 1;
+
+  while (cut < plan.steps.length && COMMUTING_SOURCE_FILTERS.has(plan.steps[cut].kind)) {
+    cut += 1;
+  }
+
+  const kept = plan.steps.filter((step, i) => i === 0 || i >= cut || !vacuous(step));
+
+  return kept.length === plan.steps.length ? plan : { ...plan, steps: kept };
+};
+
+/**
+ * The leading filters a vacuous label may sit among — the same set `index-seed.ts` calls
+ * COMMUTING_FILTERS, because the question is the same one: which steps only narrow the SOURCE
+ * set, so that a label among them is still a label on the source.
+ */
+const COMMUTING_SOURCE_FILTERS = new Set<Step['kind']>([
+  'has',
+  'hasLabel',
+  'hasLabelAnd',
+  'hasId',
+  'hasKey',
+  'hasNot',
+]);
+
 const assertPlanIsSatisfiable = (plan: Plan): void => {
   for (let i = 0; i < plan.steps.length; i++) {
     if (plan.steps[i].kind !== 'path') {
@@ -551,7 +661,12 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
     head++;
   }
 
-  const effective = head === 0 ? plan : { ...plan, steps: plan.steps.slice(head) };
+  const sliced = head === 0 ? plan : { ...plan, steps: plan.steps.slice(head) };
+  // A VACUOUS `hasLabel` is dropped before anything else looks at the plan. Every shortcut below
+  // matches a plan PREFIX that begins at the source, so one extra step in front of the hop makes
+  // all of them decline — and a label every element carries is exactly such a step while
+  // excluding nothing. See `dropVacuousLabels` (item 540).
+  const effective = ctx.tracksPath ? sliced : dropVacuousLabels(sliced, graph);
 
   // A `count()` the graph already keeps a counter or bucket for is a READ, not a
   // walk — see `countShortcut`. Checked before seeding because it answers the

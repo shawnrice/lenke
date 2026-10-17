@@ -6162,3 +6162,33 @@ exists is not a result._
 
 Two bench rows added, the first an equivalent-spelling guard against `V().out().count()` directly
 above it.
+
+## 540 — a VACUOUS `hasLabel` is dropped from the plan: CLOSED at up to 48x
+
+**The rule items 537-539 were each a special case of.** Every shortcut in `run` matches a plan
+PREFIX that starts at the source (`countShortcut` wants `V()` plus one or two steps,
+`hopValuesShortcut` exactly `V().out(T).values(k)`, `groupCountShortcut` `V().groupCount()`), so a
+leading `hasLabel` is one step too many for ALL of them and drops the whole query onto the
+traverser pipeline. The 4x / 2x / 30x those items measured were never about labels — they were
+about which shortcut each shape lost.
+
+`V().out().values('age')` 65.24 ms against 134.40 with a vacuous label; `V().out().dedupe().count()`
+3.39 against **102.63**. Item 538's seed does remove the step (verified: `seedFromIndex` returns
+`steps=["out","values"]`) but runs BELOW the shortcuts, which is what located this.
+
+`dropVacuousLabels` drops a single-label `hasLabel(L)` whose bucket holds every live element — the
+plan-level form of native's `IsLabeled` tautology short-circuit (item E78). Before 207.31 / 203.63
+/ 218.04 → after 120.36 / 127.56 / 122.33 (1.7x) and 156.80 / 167.91 / 156.82 → 3.28 / 3.29 / 3.27
+(**48x**), three alternated rounds, disjoint, no-label control overlapping.
+
+It reaches the earlier rows too: on `bench:gremlin`, `V().hasLabel().has().count()` 5.8 → 2.4,
+`V().has().has().count()` 6.2 → 3.5, `V().hasLabel().has().values(age)` 17.4 → 12.1, and
+`V().hasLabel().out().count()` **37.4 → 0.0**, identical to the unlabelled row above it.
+
+Mutation: six behavioural mutants, **one caught and five survived**, and the analysis is recorded
+at the guard rather than papered over. Only `bucket.size === total` is load-bearing (15 failures
+without it). The single-label restriction, the leading-run restriction, the `tracksPath` gate, the
+edge-bucket branch and the empty-graph skip are all conservatism — each sound to relax for a stated
+reason. _I did not add tests to catch them: they change no answer, and a test written to fail a
+harmless mutant asserts an implementation choice as if it were a contract._ The load-bearing
+mutant was re-run against the final text after a lint fix moved its anchor.
