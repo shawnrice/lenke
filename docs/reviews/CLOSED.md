@@ -7158,3 +7158,41 @@ answer-preserving (declining to canonicalize is only slower), so the test assert
 
 _The TS engine has had vacuous-label elision since item 221; this is the same class on the other
 engine, found by pricing the native optional-hop enum rather than by porting anything._
+
+## 568 — the quantified-group count: TWO targets priced, NEITHER built (the fuzzer does not cover this shape)
+
+Item 567 fixed one predicate position the native optimizer never normalized. Grepping the other
+three found no second instance — `Hop.edge_pred` and `ShortestPath.edge_pred` are over an EDGE
+(where canonicalizing a label test would be WRONG, which `slot_is_node`'s own doc warns about), and
+a label inside a quantified group is REJECTED by this engine outright (`a label/property/WHERE …`),
+so `RepeatGroup.per_rep_pred` has no label test to normalize. **The pattern does not repeat.**
+
+Pricing the quantified group instead, 60,000 vertices / 180,000 edges, one case per process:
+
+| query                                                      | native    | TS         |
+| ---------------------------------------------------------- | --------- | ---------- |
+| `MATCH (a:P)-[:T]->{1,2}(y) RETURN count(*)` (abbreviated) | 1.07 ms   | 421.35 ms  |
+| `MATCH (a:P)((x)-[e:T]->(y)){1,2} RETURN count(*)` (group) | 1.06      | **786.15** |
+| `… ((x)-[e:T]->(y) WHERE y.age > 50){1,2} …`               | **34.21** | 672.79     |
+| `… ((x)-[e:T]->(y) WHERE e.w > 5){1,2} …`                  | **42.59** | 654.86     |
+
+All four answer identically where the shapes match (719,998 / 171,883 / 159,981).
+
+**TWO targets, both real:**
+
+1. **TS: the group spelling costs 1.87x the abbreviated one** (786.15 against 421.35) for the same
+   question. The native optimizer already has the fix — `drop_unread_group_binds` turns a group
+   whose per-rep bindings nothing reads into a plain var-length hop — and TS has no equivalent.
+2. **NATIVE: a per-rep predicate costs 32-40x the unfiltered count** (1.06 → 34.21 / 42.59),
+   because the way-count sweep declines and the general group executor runs. 1.5 ns a row against
+   ~200.
+
+**Neither built, and the reason is the same for both: the differential fuzzer generates no
+quantified or nested group** (recorded in the engine-corpus note), so the usual net would not catch
+a wrong answer here. Both need their own tests first.
+
+The TS one also carries item 444's named trap: "a NAMED but UNMENTIONED variable" cannot be
+cleared by free-variable analysis alone, because `freePredicateVars` adds a subquery's own pattern
+names to its bound set and so cannot distinguish an inner `-[r:T]->` that CORRELATES on an
+already-bound `r` from one that binds it freshly. A group-binding elision inherits that exactly,
+and must refuse any query containing a subquery rather than rely on the analysis.
