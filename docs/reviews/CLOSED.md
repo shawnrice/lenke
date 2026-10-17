@@ -6336,3 +6336,22 @@ documentation._
 One mutant MISAPPLIED, caught by the uniqueness assert: the comparison line is character-identical
 to item 544's copy in `detectCountShortcut`. Items 474, 483, 494, 518, 528, 545, 546 — and here the
 duplicate was a line _I had written two ticks earlier_.
+
+## 547 — items 542-546 sweep clean: VERIFIED on five harnesses
+
+Five items since item 541: two Gremlin, three GQL rungs relaxing guards on seven detectors.
+
+Two rows read up and NEITHER survived isolation: `query: subquery item` 43.2 in-sweep against
+**29.3 / 28.8 / 28.4** isolated (its band is 26-32), and the spelling probe's `one end labelled`
+group at 2.1x against **1.04x** isolated over two runs — item 524's known group, re-isolated rather
+than assumed. _Fifth instrument this session whose full run needs a repeat before a number means
+anything._
+
+Everything else flat or better: `count 3-hop` 321.6 (311-342 band), `traverse 1-hop + filter` 40.0
+(best recorded), `optional hop` 574.6 / `+ miss` 63.7 / `+ landing pred` 9989.7, `bench:usage`
+point lookup ts(+) 1.15M and 100-updates 1.11M (best recorded), `V().hasLabel().out().count()`
+still 0.0 and identical to the unlabelled row.
+
+Both spelling probes clean — the TS one matters most here, since items 544-546 made
+`RETURN count(*)`, `RETURN DISTINCT count(*)` and `ORDER BY c` ONE route where they were two. Zero
+answer disagreements.
