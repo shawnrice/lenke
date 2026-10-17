@@ -2204,10 +2204,31 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       // unreachable by the queries this counter is actually for. Floors ~25% under the observed
       // minimum. The LESSON is the counter's, not the floor's: a floor met by the wrong queries
       // reads exactly like a floor met.
-      hopFilterGenerated: cov.hopFilterGenerated > 90,
-      hopFilterNonZero: cov.hopFilterNonZero > 80,
-      hopUntypedGenerated: cov.hopUntypedGenerated > 28,
-      hopUntypedNonZero: cov.hopUntypedNonZero > 20,
+      // RE-MEASURED AND LOWERED at item 555, after BOTH of these floors turned CI red with no
+      // divergence behind them — `hopUntypedGenerated` at 21-28 on CI's seed, then
+      // `hopFilterNonZero` at 78 on seed 2718281828 while the first fix was being verified.
+      //
+      // Engine work cannot move either counter: `tally` runs on EVERY generated query and reads
+      // only its TEXT. So both were the seed, and both floors were chasing the distribution's
+      // tail rather than guarding against a collapse. Twelve seeds, small and large:
+      //
+      //   hopFilter   102/78  122/98  124/103  125/104  127/104  127/106
+      //               131/107 131/110 133/115  140/115  145/113  167/146
+      //   hopUntyped   34/27   37/33   37/33    38/31    39/38    40/35
+      //                40/37   42/38   45/42    46/40    46/43    50/46
+      //
+      // Minima 102/78 and 34/27, against old floors of 90/80 and 28/20 — the `hopFilterNonZero`
+      // floor was ABOVE its own observed minimum, and the other three sat 8-18% under theirs.
+      // Eight seeds more of `hopUntyped` (37, 40, 41, 44, 45, 48, 51, 55) only widened the top.
+      //
+      // The floors below are ~40% under the observed minimum, which is the right margin for what
+      // the comment above says these counters are FOR: catching a shape that falls silently to
+      // ZERO (items 115, 125). A floor tight enough to flag a 25% dip is a floor that flags the
+      // weather, and a red CI with no divergence behind it costs more than the dip it catches.
+      hopFilterGenerated: cov.hopFilterGenerated > 60,
+      hopFilterNonZero: cov.hopFilterNonZero > 45,
+      hopUntypedGenerated: cov.hopUntypedGenerated > 20,
+      hopUntypedNonZero: cov.hopUntypedNonZero > 12,
       // Measured 263-311 generated and 109-128 of those with rows, AFTER this band gave half
       // its width to the count-shortcut family. If a future change narrows it again, this is
       // what says so.
