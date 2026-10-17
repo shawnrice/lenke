@@ -6397,3 +6397,36 @@ identically, so no test distinguishes it; kept by analogy with `inlineTrailingLe
 
 Three groups added to the TS spelling probe (4.50/4.48, 281.75/285.92, 11.11/8.40 ms) and two to
 `spelling_probe.rs`.
+
+## 549 — a vacuous `ORDER BY` / `OFFSET 0` STATEMENT in front of the projection: 126.60 → 0.00 (TS half)
+
+ISO puts `<order by and page statement>` in the `primitiveQueryStatement` position (§14.10), so it
+can stand as a pipeline step in FRONT of the projection rather than as paging carried on the
+RETURN — and there it put one extra clause ahead of every detector. Item 540's structural rule
+again; item 548 was its `FILTER` instance.
+
+| query                                               | TS before | TS after  | native  |
+| --------------------------------------------------- | --------- | --------- | ------- |
+| `MATCH (n:Person) RETURN count(*)` (control)        | 0.00 ms   | 0.00      | 0.01 ms |
+| `MATCH (n:Person) OFFSET 0 RETURN count(*)`         | 83.00     | **0.00**  | 0.57    |
+| `MATCH (n:Person) ORDER BY n.age RETURN count(*)`   | 126.60    | **0.00**  | 10.07   |
+| `MATCH (n:Person) ORDER BY n.age RETURN max(n.age)` | 194.35    | **15.61** | 10.30   |
+
+`dropVacuousPage` in `executor.ts`, composed in `compileLinear` ahead of the other four rewrites.
+**BOTH engines have the cliff** (native 0.01 → 10.07), so the Rust twin is real work and not a
+check that finds nothing — tracked as the next item.
+
+Four refusals carry the correctness, each with its own test case and its own caught mutant: a
+`LIMIT` or a non-zero `OFFSET` changes WHICH rows reach the projection (`OFFSET 1 RETURN count(*)`
+reads 1 against 2); `collect` reads the row ORDER (`[1,2,3]` vs `[3,2,1]`), and `sum`/`avg`/`stddev`
+are refused with it because byte-identity pins the summation order; a projection that is not ONE
+order-free row makes the sort position observable; and `ORDER BY 1 / 0` RAISES in both engines, so
+only a fault-free key (a variable, or one property read — `n.missing` and even `z.n` on a value
+answer rather than raise in both engines) may be dropped.
+
+Teeth: six mutants under the cap, **five caught, control clean** — limit allowed, any skip allowed,
+the one-row check dropped, the fault check dropped, and `collect`/`sum` admitted as order-free. No
+survivors. 38 cross-engine assertions, all agreeing.
+
+Two groups added to the TS spelling probe; the three-member one now reads 0.00/0.00/0.00 and is
+"too fast to compare", which is the result.

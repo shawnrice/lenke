@@ -96,6 +96,22 @@ const g = tsDeserialize(lines.join('\n'), 'ndjson', new TsGraph());
 /** Groups of spellings of ONE question. Every member must answer identically. */
 const GROUPS: [string, readonly string[]][] = [
   [
+    // Item 549: ISO's `<order by and page statement>` standing in FRONT of the projection. An
+    // `OFFSET 0` keeps every row and an `ORDER BY` cannot move a one-row order-free aggregate, so
+    // all three below are one question — and the two with the clause cost 83.00 and 126.60ms
+    // against 0.00. `dropVacuousPage` drops them; this group is what would have caught it.
+    'a vacuous ORDER BY / OFFSET statement vs none',
+    [
+      'MATCH (n:P) RETURN count(*) AS c',
+      'MATCH (n:P) OFFSET 0 RETURN count(*) AS c',
+      'MATCH (n:P) ORDER BY n.k RETURN count(*) AS c',
+    ],
+  ],
+  [
+    'a vacuous ORDER BY statement in front of an aggregate',
+    ['MATCH (n:P) RETURN max(n.k) AS m', 'MATCH (n:P) ORDER BY n.k RETURN max(n.k) AS m'],
+  ],
+  [
     // Item 548: `FILTER <pred>` is ISO's own clause-level predicate statement (§14.6) and asks
     // exactly what a clause `WHERE` on the MATCH before it asks — but the FILTER spelling put one
     // extra clause in front of every detector, so the whole query fell to the general pipeline.

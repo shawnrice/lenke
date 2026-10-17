@@ -6859,6 +6859,123 @@ const repeatsNodeVariable = (clauses: readonly Clause[]): boolean => {
 };
 
 /**
+ * Aggregates whose value cannot depend on the ORDER of the rows they fold.
+ *
+ * Item 419's rule, reused: `count`, `min` and `max` are order-free, and the two percentiles sort
+ * internally. `sum` and `avg` are order-free in arithmetic but NOT in floating point, and
+ * byte-identity with the native engine pins the summation order (see the summation-order rule in
+ * the algorithms work), so they are refused here along with `collect`/`stddev`, whose dependence
+ * is plain: `ORDER BY n.n RETURN collect(n.n)` reads `[1, 2]` and `DESC` reads `[2, 1]`.
+ */
+const ORDER_FREE_AGGREGATES: ReadonlySet<string> = new Set([
+  'count',
+  'min',
+  'max',
+  'percentile_cont',
+  'percentile_disc',
+]);
+
+/**
+ * A sort key that cannot FAULT: a bare variable, or one property access on a variable.
+ *
+ * `n.missing` is null rather than an error, and a property read of a VALUE variable is null too
+ * (`LET z = 1 … ORDER BY z.n` answers in both engines rather than raising), so neither shape can
+ * carry a fault that dropping the sort would swallow. Anything computed — `ORDER BY 1 / 0`, which
+ * RAISES in both engines — is not one of these.
+ */
+const faultFreeSortKey = (expr: Expr): boolean => expr.kind === 'var' || expr.kind === 'prop';
+
+/**
+ * `RETURN` delivers exactly ONE row and that row cannot depend on the incoming order.
+ *
+ * Every item must CARRY an aggregate, because an item without one is an implicit GROUP BY key —
+ * which both makes the result many rows and makes a sort position observable. An explicit
+ * `GROUP BY` is refused for the same reason. This is the same one-row argument items 544-546
+ * made about `DISTINCT` and `ORDER BY` on the projection, asked here of the clause in FRONT of it.
+ */
+const oneOrderFreeRow = (ret: Extract<Clause, { kind: 'return' }>): boolean => {
+  const proj = ret.projection;
+
+  return (
+    !proj.star &&
+    proj.groupBy === undefined &&
+    proj.having === undefined &&
+    proj.items.length > 0 &&
+    proj.items.every(
+      (it) =>
+        hasAggregate(it.expr) &&
+        collectAggregates(it.expr).every((a) => ORDER_FREE_AGGREGATES.has(a.name)),
+    )
+  );
+};
+
+/**
+ * Drop an `ORDER BY` / `OFFSET` / `LIMIT` STATEMENT that cannot change the answer.
+ *
+ * ISO puts `<order by and page statement>` in the `primitiveQueryStatement` position (§14.10), so
+ * it is a pipeline step in its own right rather than paging carried on the RETURN — and as a step
+ * in front of the projection it put one extra clause ahead of every detector, which is item 540's
+ * structural rule again (item 548 was its `FILTER` instance). Two of its spellings are identities:
+ *
+ * ```text
+ *                                                        TS        native
+ *   MATCH (n:Person) RETURN count(*)                     0.00 ms   0.01 ms
+ *   MATCH (n:Person) OFFSET 0 RETURN count(*)           83.00      0.57
+ *   MATCH (n:Person) ORDER BY n.age RETURN count(*)    126.60     10.07
+ *   MATCH (n:Person) ORDER BY n.age RETURN max(n.age)  194.35     10.30
+ * ```
+ *
+ * `OFFSET 0` with no `LIMIT` keeps every row whatever follows, so it goes unconditionally. An
+ * `ORDER BY` goes only in front of a projection that is ONE order-free row ({@link oneOrderFreeRow}),
+ * and only when every key is fault-free ({@link faultFreeSortKey}) — `ORDER BY 1 / 0` RAISES in both
+ * engines, and a drop that skipped the sort would skip the fault with it.
+ *
+ * A `LIMIT`, or an `OFFSET` that is not literally 0, changes which rows reach the projection
+ * (`OFFSET 1 RETURN count(*)` reads 1 against 2) and is never dropped.
+ */
+const dropVacuousPage = (clauses: readonly Clause[]): readonly Clause[] => {
+  const out: Clause[] = [];
+
+  for (let i = 0; i < clauses.length; i++) {
+    const clause = clauses[i];
+
+    if (clause === undefined) {
+      continue;
+    }
+
+    if (clause.kind !== 'page') {
+      out.push(clause);
+      continue;
+    }
+
+    const skipsNothing = clause.skip === undefined || clause.skip === 0;
+
+    if (!skipsNothing || clause.limit !== undefined) {
+      out.push(clause);
+      continue;
+    }
+
+    const sorts = clause.orderBy ?? [];
+
+    if (sorts.length === 0) {
+      continue;
+    }
+
+    const next = clauses[i + 1];
+
+    if (
+      next?.kind !== 'return' ||
+      !oneOrderFreeRow(next) ||
+      !sorts.every((sort) => faultFreeSortKey(sort.expr))
+    ) {
+      out.push(clause);
+    }
+  }
+
+  return out.length === clauses.length ? clauses : out;
+};
+
+/**
  * Fold a `FILTER p` back into the `MATCH` before it, as that match's clause `WHERE`.
  *
  * `FILTER <pred>` and a clause `WHERE <pred>` on the preceding MATCH are the same question —
@@ -6918,7 +7035,7 @@ const inlineTrailingFilter = (clauses: readonly Clause[]): readonly Clause[] => 
 
 const compileLinear = (linear: LinearQuery): CLinear => {
   const source = fuseAnchorThenHop(
-    inlineCorrelatedCall(inlineTrailingLet(inlineTrailingFilter(linear.clauses))),
+    inlineCorrelatedCall(inlineTrailingLet(inlineTrailingFilter(dropVacuousPage(linear.clauses)))),
   );
   const clauses = source.map(compileClause);
   // A pattern repeating a node variable is a SELF-JOIN that the fast paths answer wrongly, so
