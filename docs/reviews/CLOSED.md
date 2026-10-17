@@ -7069,3 +7069,53 @@ TWO conditions, both with caught mutants:
 Teeth: six mutants, five caught (two only after the faulting zero-read test was added), control
 clean. The survivor — not counting ORDER BY reads — can only cause a DOUBLE EVALUATION with the
 same answer, so it is cost-only and recorded as such.
+
+## 566 — two enums priced, NO cliff in either: the predicate forms and the scalar functions
+
+Recorded so the next pass does not re-price them. Both are FLAT bands in TS — the gaps to native
+are a uniform constant factor, not a missing rung.
+
+### Predicate forms on a scan count (200,000 vertices, one case per process)
+
+```text
+n.age = 44            10.49 ms      n.age IS NOT NULL      10.24
+n.age >= 44           11.94         n.age IS NULL          11.45
+n.age > 44            12.26         n.age <> 44            13.42
+n.age IN [1, 2, 3]    15.69         NOT n.age > 44         15.96
+n.age > 44 OR …       18.46         n.age > 44 XOR …       18.71
+n.tag STARTS WITH 'x' 32.21         n.tag CONTAINS 'x'     32.51
+```
+
+A 3.1x spread from the cheapest to the dearest, and the two string predicates are the dear end —
+which is predicate dispatch over a string, not a route. Nothing falls off a rung.
+
+### Aggregate arguments on a scan (same fixture)
+
+```text
+count(n.age)   14.96 ms     count(abs(n.age))   26.39
+max(n.age)     15.88        max(abs(n.age))     32.02      max(n.age + 1)  18.94
+sum(n.age)     19.70        sum(abs(n.age))     32.87
+```
+
+A computed argument costs 1.7-2x a bare property — and `max(n.age + 1)` at 18.94 against
+`max(abs(n.age))` at 32.02 says that is FUNCTION DISPATCH rather than "the rung refuses a computed
+argument": arithmetic is nearly free on the same path. A twelve-name sweep of the scalar functions
+(`upper`, `trim`, `size`, `left`, `substring`, `floor`, `round`, `sqrt`, `coalesce`, `||`, …) lands
+in one 25-50 ms band with no outlier.
+
+### The ceiling, which is the useful part
+
+| query                                         | TS       | native   | ratio |
+| --------------------------------------------- | -------- | -------- | ----- |
+| `WHERE n.age > 44 RETURN count(*)`            | 12.26 ms | **0.15** | 82x   |
+| `WHERE n.tag STARTS WITH 'x' RETURN count(*)` | 32.21    | **0.13** | 248x  |
+| `RETURN max(n.age)`                           | 15.88    | **0.43** | 37x   |
+| `RETURN count(abs(n.age))`                    | 26.39    | **0.82** | 32x   |
+| `RETURN count(substring(n.tag, 0, 1))`        | 50.39    | **1.60** | 31x   |
+
+61 ns a row in TS against 0.75 in native on the filtered count. **That is a DATA-LAYOUT difference,
+not overhead** — the TS rung walks vertex objects and evaluates a closure per row, while native
+scans a typed column. Item 234 reached the same conclusion from the Gremlin side ("the big ratio
+was data layout, not overhead") and withdrew two targets on it.
+
+So: no rung is missing here, and a future pass that sees 248x should read this before pricing it.
