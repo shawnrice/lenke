@@ -8050,3 +8050,96 @@ fn a_correlated_body_label_test_is_canonicalized() {
         2.0
     );
 }
+
+/// The SAME canonicalization, for the OTHER correlated body: a `CALL (x) { … }` arm (item 522).
+///
+/// Item 521 patched `correlated_subquery_body`, which `EXISTS` / `COUNT` / `VALUE` share. A CALL
+/// arm is built by `call_arm` and never passed through it, so it kept the raw `'L' IN
+/// labels(slot)`: `CALL (x) { MATCH (x)-[:KNOWS]->(b:Half) WHERE b.age > 50 RETURN b }` cost
+/// 171.4 ms at 200,000 vertices against 8.1 for the same arm with the label dropped.
+///
+/// The arm's body is PROVENANCE-TAGGED — slot `outer_width` holds the per-outer-row id — so the
+/// `Plan::Row` leaf stands for `outer_width + 1` columns, one more than a bare outer row. Get
+/// that wrong and the endpoint match silently never fires, so every case reads the plan.
+#[test]
+fn a_call_arm_label_test_is_canonicalized() {
+    let nd = concat!(
+        "{\"id\":\"a\",\"labels\":[\"P\"],\"props\":{\"n\":1}}\n",
+        "{\"id\":\"b\",\"labels\":[\"P\",\"Q\"],\"props\":{\"n\":2}}\n",
+        "{\"id\":\"c\",\"labels\":[\"Q\"],\"props\":{\"n\":3}}\n",
+        "{\"id\":\"d\",\"labels\":[\"R\"],\"props\":{\"n\":4}}\n",
+        "{\"id\":\"e1\",\"from\":\"a\",\"to\":\"b\",\"type\":\"T\",\"props\":{}}\n",
+        "{\"id\":\"e2\",\"from\":\"a\",\"to\":\"c\",\"type\":\"T\",\"props\":{}}\n",
+        "{\"id\":\"e3\",\"from\":\"a\",\"to\":\"d\",\"type\":\"T\",\"props\":{}}\n",
+        "{\"id\":\"e4\",\"from\":\"b\",\"to\":\"c\",\"type\":\"T\",\"props\":{}}\n",
+    );
+    let store = crate::ndjson::from_ndjson(nd).unwrap();
+    let plan = |q: &str| format!("{:?}", super::parse(q).unwrap());
+    let n = |q: &str| -> f64 {
+        match run(&super::parse(q).unwrap(), &store).rows[0][0] {
+            Value::Num(x) => x,
+            ref o => panic!("want num, got {o:?} for {q}"),
+        }
+    };
+    // Reads the plan as well as the answer, because both spellings answer the same — only the
+    // plan can say the rewrite fired (item 521's finding, and the reason this test exists at
+    // all rather than relying on the CALL cases the suite already had).
+    let fired = |q: &str| {
+        assert!(
+            !plan(q).contains("\"labels\""),
+            "a raw labels() call survived: {}",
+            plan(q)
+        );
+    };
+
+    // THE YIELDING FORM. `a` reaches `b` (`:P,:Q`, n = 2) and `c` (`:Q`, n = 3); `b` reaches
+    // `c`. With `n > 1` that is 2 + 1 = 3 rows.
+    let y = "MATCH (x:P) CALL (x) { MATCH (x)-[:T]->(b:Q) WHERE b.n > 1 RETURN b } \
+             RETURN count(*) AS c";
+    assert_eq!(n(y), 3.0);
+    fired(y);
+
+    // THE SCALAR-AGGREGATE FORM, which leaves `CallInline` entirely and becomes a
+    // `CountSubquery` / `AggSubquery` in a projection — a different construction site reading
+    // the same arm.
+    let agg = "MATCH (x:P) WHERE x.n = 1 CALL (x) { MATCH (x)-[:T]->(b:Q) RETURN count(*) AS k } \
+               RETURN k AS c";
+    assert_eq!(n(agg), 2.0);
+    fired(agg);
+    let mx = "MATCH (x:P) WHERE x.n = 1 CALL (x) { MATCH (x)-[:T]->(b:Q) RETURN max(b.n) AS k } \
+              RETURN k AS c";
+    assert_eq!(n(mx), 3.0);
+    fired(mx);
+
+    // A UNION TAIL: every arm goes through `call_arm`, so the second one is canonicalized too.
+    // `:Q` neighbours of `a` are b and c; `:R` neighbours are d. UNION ALL keeps all three.
+    let u = "MATCH (x:P) WHERE x.n = 1 \
+             CALL (x) { MATCH (x)-[:T]->(b:Q) RETURN b UNION ALL MATCH (x)-[:T]->(b:R) RETURN b } \
+             RETURN count(*) AS c";
+    assert_eq!(n(u), 3.0);
+    fired(u);
+
+    // A label BETWEEN two hops inside the arm — the filter sits below an `Expand`, so this is
+    // what says the walk recurses here too.
+    let two = "MATCH (x:P) WHERE x.n = 1 CALL (x) { MATCH (x)-[:T]->(m:Q)-[:T]->(w) RETURN w } \
+               RETURN count(*) AS c";
+    assert_eq!(n(two), 1.0); // a -> b(:Q) -> c
+    fired(two);
+
+    // THE REFUSAL. A bound edge's label test means its TYPE; it sits one slot below the
+    // endpoint and must survive as a raw call.
+    let edge = "MATCH (x:P) WHERE x.n = 1 \
+                CALL (x) { MATCH (x)-[r:T]->(b) WHERE r IS LABELED T RETURN b } \
+                RETURN count(*) AS c";
+    assert_eq!(n(edge), 3.0);
+    assert!(
+        !plan(edge).contains("IsLabeled"),
+        "an EDGE label test was rewritten as a node test: {}",
+        plan(edge)
+    );
+    assert!(
+        plan(edge).contains("\"labels\""),
+        "the edge test is not a labels() call, so refusing it proves nothing: {}",
+        plan(edge)
+    );
+}

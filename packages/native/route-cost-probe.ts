@@ -345,6 +345,12 @@ const queries: Record<string, string> = {
   corrlblonly: 'MATCH (x:Person) RETURN COUNT { (x)-[:KNOWS]->(b:Half) } AS c',
   corr2filt:
     'MATCH (x:Person) RETURN COUNT { (x)-[:KNOWS]->(b) WHERE b.age > 50 AND b.age < 80 } AS c',
+  // Item 522: the same question asked of the OTHER correlated body — a `CALL (x) { … }` inline
+  // body, which item 521 did not reach (it patched `correlated_subquery_body` only).
+  callinlinelbl:
+    'MATCH (x:Person) CALL (x) { MATCH (x)-[:KNOWS]->(b:Half) WHERE b.age > 50 RETURN b } RETURN count(*) AS c',
+  callinlinefilt:
+    'MATCH (x:Person) CALL (x) { MATCH (x)-[:KNOWS]->(b) WHERE b.age > 50 RETURN b } RETURN count(*) AS c',
 };
 // One node's properties, shared by the TWO fixture builders below — a `Graph` for the TS engine
 // and NDJSON for the native one. Patching only one of them is item 471's trap: it reads as a

@@ -5072,6 +5072,14 @@ impl Parser {
         }
         let items = self.return_items()?;
         self.scope = outer_scope;
+        // The SAME canonicalization `correlated_subquery_body` gets (item 521), for the same
+        // reason: a `CALL (x) { … }` arm is a correlated body nested inside a `Plan::CallInline`
+        // (or, for a lone scalar aggregate, inside an `Expr`), and `opt` reaches neither. The
+        // body is provenance-tagged — slot `outer_width` holds the per-outer-row id — so the
+        // `Plan::Row` leaf stands for `outer_width + 1` columns. Measured at 200,000 vertices:
+        // `CALL (x) { MATCH (x)-[:KNOWS]->(b:Half) WHERE b.age > 50 RETURN b }` cost 171.4 ms
+        // against 8.1 for the same arm with the label dropped (item 522).
+        let body = canon_body_labels(body, outer_width + 1);
         Ok((body, items))
     }
 

@@ -5643,3 +5643,29 @@ as the defense against a future caller mis-counting `row_width`.
 STILL OPEN, and separately: the whole correlated-subquery route in the TS engine, ~3 µs an outer
 row (34x native on this shape). And a `spelling_probe` group for this pair, which needs a second
 label in that fixture.
+
+## 522 — the same label bug in a `CALL` arm: CLOSED at 25x
+
+Item 521 patched `correlated_subquery_body` (`EXISTS` / `COUNT` / `VALUE`). `call_arm` is a SECOND
+correlated-body builder and kept the raw `'L' IN labels(slot)`:
+`CALL (x) { MATCH (x)-[:KNOWS]->(b:Half) WHERE b.age > 50 RETURN b }` cost 171.4 ms against 8.1
+for the same arm unlabelled and 5.6 bare. A wider ratio than 521's because a CALL arm has no
+degree fast path to amortize the label test against.
+
+One line on what `call_arm` returns, covering the yielding form, every UNION / EXCEPT / INTERSECT
+arm and the scalar-aggregate form that becomes a `CountSubquery` / `AggSubquery` instead.
+
+Before 174.0 / 181.8 / 173.0 → after 6.9 / 7.0 / 6.7, disjoint, three alternated rounds with a
+rebuild between each. Controls flat: unlabelled arm 8.1 → 8.0, bare arm 5.6 → 5.5, item 521's
+shape unchanged at 17.5.
+
+**The `+ 1` is the subtlety**: a CALL arm's body is provenance-tagged, so its `Plan::Row` leaf
+stands for `outer_width + 1` columns. Off by one either way and the endpoint match silently never
+fires with every answer still correct — which is what two of the three mutants are.
+
+Mutation 3 of 4 (null control clean), all caught by the PLAN read rather than an answer.
+
+TS measured, not assumed: 21.3 ms labelled against 39.9 unlabelled, so no cliff there. Note what
+that means — TS was 8x FASTER than native on this shape before the fix and is 3x slower after.
+_A cliff in one engine can hide behind a cross-engine ratio that looks like the usual constant
+factor._
