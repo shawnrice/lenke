@@ -5823,3 +5823,30 @@ Mutation 7 of 7 (null control clean). One mutant MISAPPLIED first — the label-
 character-identical across three rungs in the file, so the pattern matched three times, and the
 uniqueness assert is the only reason it read as a misapplication rather than a survivor. Items
 474, 483, 494, 518, 528.
+
+## 529 — native's `FOR` projection: RETRACTED, item 528 read the carrier
+
+Item 528's closing sentence named native's `FOR` projection as open because the TS numbers (24 and
+21 ms) beat it (50.8 and 40.1). Both native numbers are FFI, with 600,000 rows crossing the
+boundary. In process the same query is **14.7 / 14.9 ns/row** (`query_bench` `for-in const
+project` 8800.4 / 8944.3 us), against 2.3-4.3 for a one-column plain projection. 67 − 14.8 = 52
+ns/row, inside the 58-94 ns/row native egress the probe's own header records (items 428, 434).
+
+So it is the JSON CARRIER, **closed at item 289** — and item 341's entry warns about this exact
+mistake in capitals, two lines from where I was reading. _A number that is valid for the
+comparison you ran is not valid for the one you mention in the last paragraph:_ item 528's
+TS-vs-TS A/B was three alternated rounds on one harness; the ts-against-native remark was not
+measured at all.
+
+LEVER NAMED, NOT PRICED: the non-invariant arm of `unwind_rows` calls `value_at(i)`, which hands
+back an owned `Value::List` — a `Vec` per input row. Estimated ~18 ns/row from the FFI pair
+(85 − 67), through a carrier that is itself ±36 ns/row, so the estimate is weak. It cannot be
+measured in process until something has a list property: `query_bench`'s shared `social_store` has
+none, and adding one moves every other row in the group off its recorded baseline (item 527's
+trap).
+
+Also re-refused by their own records this tick, so nobody prices them again: `nested count :label`
+/ `k2 count :label` (within 6% and 14% of the enumeration floor — "there is no prize there"),
+`distinct node` (dedup is 17.5 ns/row; the rest is the element-render ladder), and `traverse 1-hop
+project + start filter` / `distinct over a reversed hop` (items 207 and 215, both row-returning so
+the ts column carries the carrier).
