@@ -7462,3 +7462,42 @@ bands, consistent over three alternated rounds, and WRONG. Isolated (one shape p
 of 9, four rounds) it is 103.43 -> 100.46, flat. The four shapes ahead of it in the process got
 faster, which changed the JIT and GC state it ran in. Item 423's rule is exactly this; it is
 usually quoted for hiding a win, and here it invented a loss.
+
+### Item 575 — the PATH SOURCE per-rep predicate: DONE, ~42x. THE k=1 ENUM IS CLOSED
+
+The last position item 572 left enumerating. The mini-scope at `k = 1` puts the path source at
+slot `2k+1` = 3; it is not a traversal (the anchor varies per path) but it IS constant ALONG a
+path, so it admits every repetition from a source or none — a filter on the source ROW.
+`try_degree_algebra` gains a third mask, `seed`.
+
+```
+-[e:T WHERE a.age > 50]->{1,2}(y)  33.39/33.24/32.64 -> 0.82/0.80/0.78   41.8x
+-[e:T WHERE a.age > 50]->{0,2}(y)  32.73/32.54/32.60 -> 0.82/0.77/0.83   42.3x
+query_bench row                    304,725us -> 3,035                    100x
+```
+
+It is now the CHEAPEST of the three per-rep rows (3,035 against 8,112 and 20,542): a node mask
+over 200,000 nodes beats a traversal mask over 350,000 edges, and a seed filter prunes before any
+walk.
+
+**A ZERO-LENGTH PATH HAS NO REPETITIONS**, so a per-rep predicate never runs for it and the row is
+emitted whatever the predicate says:
+
+```
+-[e:T WHERE a.age > 25]->{0,2}(y)   8 = 4 filtered hop paths + 4 zero-length, one per SOURCE
+-[e:T WHERE a.age > 25]->{0,0}(y)   4,  the predicate irrelevant
+```
+
+The seed mask therefore gates the HOP terms and NOT the `min == 0` term; gating both answers 6 and 2. Found by a probe BEFORE the mask was designed, which is the only reason the first version was
+right.
+
+**THE `k = 1` PER-REP ENUM IS NOW CLOSED.** Target node and any traversal conjunction (570, 572),
+path source (575). What remains is `k > 1` — a predicate there reads several edges and is not a
+traversal question — and the Gremlin `emit` shapes (574).
+
+### A guard written for symmetry was dead, for the second time in this run
+
+`eligible` tested `*k == 1` and so did the branch that consumed it. The mutant survived the whole
+suite; the term is removed rather than pinned. Item 570's `body(s)` was the same story. **When a
+condition is unkillable, check whether an enclosing branch already guarantees it before building
+a fixture for it.**

@@ -20848,3 +20848,174 @@ fn a_faulting_traversal_predicate_falls_back_to_enumeration() {
         ref o => panic!("{o:?}"),
     }
 }
+
+/// Item 575: a per-repetition predicate reading nothing but the PATH SOURCE is a filter on the
+/// source ROW, because it is constant along a path — it admits every repetition from that source
+/// or none.
+///
+/// It was the one position in the per-rep enum still enumerating: `query_bench` priced it at
+/// 304,725us against the traversal case's 7,978. On a 60,000-vertex probe,
+/// `-[e:T WHERE a.age > 50]->{1,2}(y)` goes 32.27ms -> 0.81.
+///
+/// THE SUBTLETY, and the reason this is not just a filter on `src`: a ZERO-LENGTH path has NO
+/// REPETITIONS, so the predicate never runs for it and the row is emitted whatever the predicate
+/// says. On a 4-node ring where `a.age > 25` admits two of four sources, both engines agree:
+///
+///   `{0,2}`  8 = 4 filtered hop paths + 4 zero-length rows, one per source
+///   `{0,0}`  4, the predicate irrelevant
+///
+/// So the seed mask gates the HOP terms and NOT the `min == 0` term. Gating both answers 6 and 2.
+///
+/// The fixture is 400 nodes at out-degree 4 for the reason item 570 learned: the algebra is gated
+/// on `src.len() * avg_deg.powi(max) > 2 * (nodes + edges)`, so a small fixture never reaches it
+/// and the arithmetic goes untested.
+#[test]
+fn a_path_source_per_rep_predicate_is_a_seed_filter() {
+    let mut b = Builder::default();
+    let n: u32 = 400;
+
+    for i in 0..n {
+        b.node(&["P"], &[("k", Value::Num(f64::from(i % 90)))]);
+    }
+    for i in 0..n {
+        for d in [1u32, 7, 13, 29] {
+            b.edge(i, (i * 3 + d) % n, "T");
+        }
+    }
+    b.edge(0, 0, "T"); // the trail correction's witness
+
+    let store = b.build();
+    let val = |q: &str| -> f64 {
+        match crate::exec::try_run(&opt_plan(q, &store), &store)
+            .unwrap()
+            .rows
+            .iter()
+            .next()
+            .expect("one row")[0]
+        {
+            Value::Num(x) => x,
+            ref o => panic!("{o:?}"),
+        }
+    };
+    let rows = |q: &str| -> usize {
+        crate::exec::try_run(&opt_plan(q, &store), &store)
+            .unwrap()
+            .rows
+            .len()
+    };
+
+    for mode in ["", "TRAIL ", "WALK "] {
+        for quant in ["{1,2}", "{0,2}", "{1,1}", "{2,2}", "{0,1}"] {
+            for pred in [
+                "a.k > 20",
+                "a.k < 20",
+                "a.k >= 0",
+                "a.k > 999",
+                "a.k IS NULL",
+            ] {
+                let pat = format!("(a:P)-[e:T WHERE {pred}]->{quant}");
+
+                // The count against the materialized ROWS of the same pattern: the rows go
+                // through the walk, so this is the closed form against enumeration.
+                assert_eq!(
+                    val(&format!("MATCH {mode}{pat}(z) RETURN count(*) AS c")),
+                    rows(&format!("MATCH {mode}{pat}(z) RETURN z.k AS n")) as f64,
+                    "the seed filter disagreed with enumeration: {mode}{pat}"
+                );
+            }
+            // An ENDPOINT filter beside it, which applies at a different place.
+            let both = format!("(a:P)-[e:T WHERE a.k > 20]->{quant}(z WHERE z.k < 40)");
+
+            assert_eq!(
+                val(&format!("MATCH {mode}{both} RETURN count(*) AS c")),
+                rows(&format!("MATCH {mode}{both} RETURN z.k AS n")) as f64,
+                "endpoint beside the seed filter disagreed: {mode}{both}"
+            );
+        }
+    }
+
+    // A FAULTING source predicate. The mask asks about EVERY node, so it can fault where the
+    // walk never would — a `:Q` vertex no `(a:P)` walk reaches, carrying a STRING `k`. The mask
+    // returns `Err`, the algebra breaks out of its labelled block, and enumeration answers with
+    // the per-rep rule that a faulting predicate fails the rep. Swallowing that `Err` instead
+    // drops the mask entirely and counts the paths the predicate rejects — a mutant that
+    // survived until this case existed.
+    //
+    // `CAST`, not arithmetic: item 572 records that `k + 1` on a string is NULL rather than an
+    // error, which made an earlier fault test vacuous.
+    {
+        let mut c = Builder::default();
+
+        for i in 0..n {
+            c.node(&["P"], &[("k", Value::Num(f64::from(i % 90)))]);
+        }
+        for i in 0..n {
+            for d in [1u32, 7, 13, 29] {
+                c.edge(i, (i * 3 + d) % n, "T");
+            }
+        }
+
+        let poison = c.node(&["Q"], &[("k", s("not a number"))]);
+
+        c.edge(poison, 0, "T");
+
+        let st = c.build();
+        let q = "MATCH (a:P)-[e:T WHERE CAST(a.k AS INTEGER) > 20]->{1,2}(z) RETURN count(*) AS c";
+        let got = crate::exec::try_run(&opt_plan(q, &st), &st);
+
+        assert!(
+            got.is_ok(),
+            "an unreached vertex's value must not be evaluated: {:?}",
+            got.err()
+        );
+
+        let want = crate::exec::try_run(
+            &opt_plan(
+                "MATCH (a:P)-[e:T WHERE CAST(a.k AS INTEGER) > 20]->{1,2}(z) RETURN z.k AS n",
+                &st,
+            ),
+            &st,
+        )
+        .unwrap()
+        .rows
+        .len();
+
+        match got.unwrap().rows.iter().next().expect("one row")[0] {
+            Value::Num(x) => assert_eq!(x, want as f64, "the fallback answered a different count"),
+            ref o => panic!("{o:?}"),
+        }
+        // And the poison really is poison for `filter_keep`, which is what the mask uses.
+        assert!(
+            crate::exec::try_run(
+                &opt_plan(
+                    "MATCH (a:Q)-[:T]->(z) WHERE CAST(a.k AS INTEGER) > 20 RETURN count(*) AS c",
+                    &st,
+                ),
+                &st,
+            )
+            .is_err(),
+            "the fixture's poison value must fault `filter_keep`, or this proves nothing"
+        );
+    }
+
+    // THE ZERO-LENGTH TERM IS NOT GATED. `{0,1}` from 400 sources is 400 zero-length rows plus
+    // the filtered one-hop paths; gating it would lose the rows of every rejected source. This
+    // asserts the relationship directly rather than through a constant, so it survives a
+    // fixture change.
+    let zero_only = val("MATCH (a:P)-[e:T WHERE a.k > 999]->{0,1}(z) RETURN count(*) AS c");
+
+    assert_eq!(
+        zero_only, 400.0,
+        "a predicate NO source passes must still emit every zero-length path"
+    );
+    assert_eq!(
+        val("MATCH (a:P)-[e:T WHERE a.k > 999]->{0,2}(z) RETURN count(*) AS c"),
+        400.0,
+        "and at a deeper bound too"
+    );
+    assert_eq!(
+        val("MATCH (a:P)-[e:T WHERE a.k > 999]->{1,2}(z) RETURN count(*) AS c"),
+        0.0,
+        "while `min = 1` has no zero-length path to emit"
+    );
+}

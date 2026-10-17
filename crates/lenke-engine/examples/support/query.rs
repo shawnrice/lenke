@@ -282,14 +282,25 @@ pub fn run(cfg: &Cfg) {
                     "MATCH (p:Person)((x)-[e:KNOWS]->(y) WHERE e.w > 5){1,2} \
                      RETURN count(*) AS c",
                 ),
-                // The PATH SOURCE (mini-scope slot `2k+1`) is the one position still
-                // enumerating, and it is here so that stays visible. It is not a function of a
-                // traversal -- the anchor varies per path -- so the traversal mask declines it
-                // by `max_slot <= 2`. It is a per-SOURCE-ROW filter rather than a per-edge one,
-                // which is a different lever and is not taken.
+                // Item 575 closed the PATH SOURCE (mini-scope slot `2k+1`), the last position
+                // in this enum. It is not a function of a traversal -- the anchor varies per
+                // path -- so the traversal mask declines it; it is constant ALONG a path, which
+                // makes it a filter on the source ROW. 33.39/33.24/32.64 -> 0.82/0.80/0.78ms
+                // over three alternated rounds on a 60,000-vertex probe, ~42x.
+                //
+                // The second row is the `{0,n}` twin, and it is here because of the subtlety
+                // that nearly broke it: a ZERO-LENGTH path has no repetitions, so the predicate
+                // never runs for it and the row is emitted whatever the predicate says. The
+                // seed mask gates the hop terms only. A regression that gates the zero-length
+                // term too shows as this row's answer dropping while the first row's holds.
                 (
-                    "quantified hop + per-rep PATH-SOURCE WHERE (enumerates)",
+                    "quantified hop + per-rep PATH-SOURCE WHERE",
                     "MATCH (p:Person)-[e:KNOWS WHERE p.age > 50]->{1,2}(y) \
+                     RETURN count(*) AS c",
+                ),
+                (
+                    "quantified hop + per-rep PATH-SOURCE WHERE, {0,n}",
+                    "MATCH (p:Person)-[e:KNOWS WHERE p.age > 50]->{0,2}(y) \
                      RETURN count(*) AS c",
                 ),
                 // A hash JOIN, which a second MATCH clause sharing a variable builds (a comma

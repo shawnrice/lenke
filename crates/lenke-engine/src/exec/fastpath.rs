@@ -1072,6 +1072,9 @@ fn try_degree_algebra(
     end_pred: Option<(&Expr, usize)>,
     body: Option<(&Expr, usize)>,
     trav: Option<&Expr>,
+    // `seed`: a `k = 1` per-repetition predicate reading nothing but the PATH SOURCE
+    // (mini-scope slot `2k+1`), item 575. It gates the HOP terms only — see below.
+    seed: Option<&Expr>,
 ) -> Option<u64> {
     let is_trail = matches!(mode, PathMode::Trail);
     if matches!(dir, Dir::Out)
@@ -1125,6 +1128,19 @@ fn try_degree_algebra(
                     },
                 };
                 let trav_fn = |eid: u32| trav_ok.as_ref().is_none_or(|o| o[eid as usize]);
+                // The SEED mask (item 575). A per-rep predicate reading only the PATH SOURCE is
+                // constant along a path, so it either admits every repetition from that source
+                // or none — a filter on the source ROW, not on a traversal.
+                let seed_ok: Option<Vec<bool>> = match seed {
+                    None => None,
+                    // Slot 3 is the path source at `k = 1` (`2k+1`), and `node_pass_mask` puts
+                    // the node it asks about at the slot it is given.
+                    Some(p) => match crate::exec::varlen::node_pass_mask(p, 3, store) {
+                        Ok(o) => Some(o),
+                        Err(_) => break 'algebra,
+                    },
+                };
+                let seed_fn = |v: u32| seed_ok.as_ref().is_none_or(|o| o[v as usize]);
                 let passes = |v: u32| ok.as_ref().is_none_or(|o| o[v as usize]);
                 let body_fn = |v: u32| body_ok.as_ref().is_none_or(|o| o[v as usize]);
                 let mut outdeg = vec![0u64; nc];
@@ -1153,10 +1169,23 @@ fn try_degree_algebra(
                 // A ZERO-LENGTH path: `{0,n}` emits the source itself as an endpoint, one row per
                 // source row, and the degree algebra counted only paths that traverse an edge
                 // (item 64). Its endpoint is the SOURCE, so an endpoint predicate applies to that.
+                // NOT gated by `seed_fn`, and that is the whole subtlety. A zero-length path
+                // has NO REPETITIONS, so a per-repetition predicate never runs for it and the
+                // row is emitted whatever the predicate says. Measured on a 4-node ring where
+                // `a.age > 25` admits two of four sources:
+                //
+                //   -[e:T WHERE a.age > 25]->{0,2}(y)   8 = 4 filtered hop paths + 4 zero-length
+                //   -[e:T WHERE a.age > 25]->{0,0}(y)   4, the predicate irrelevant
+                //
+                // Gating this term too would answer 6 and 2. Both engines agree on 8 and 4.
                 if min == 0 {
                     total += src.iter().filter(|&&s| passes(s)).count() as u64;
                 }
                 for &s in src {
+                    if !seed_fn(s) {
+                        continue; // every repetition from this source fails the predicate
+                    }
+
                     for a in store.out(s) {
                         if !edge_carries_wanted(store, a, want) {
                             continue;
@@ -1262,11 +1291,26 @@ pub(super) fn try_group_count(
             //
             // `k > 1` is not a traversal question at all — a multi-hop unit's predicate reads
             // several edges — so it keeps the walk.
-            let trav = per_rep_pred.as_deref().filter(|p| {
-                *k == 1
-                    && crate::opt::max_slot(p).is_none_or(|m| m <= 2)
-                    && !crate::exec::contains_subquery(p)
-            });
+            // A `k = 1` per-repetition predicate splits by WHICH SLOT it reads, and the two
+            // cases fold into the algebra at different places:
+            //
+            //   slots 0..=2  the rep's source, edge and target — ONE TRAVERSAL, so an
+            //                edge-indexed mask (item 572).
+            //   slot 3       the PATH SOURCE (`2k+1`), constant along a path, so a filter on
+            //                the source ROW (item 575). `query_bench` priced this at
+            //                304,725us against the traversal case's 7,978 — 38x — because it
+            //                was the one position still enumerating.
+            //
+            // A predicate reading BOTH would need the conjunction split into the two positions;
+            // `refs_only_slot` admits neither then, and it stays on the walk.
+            // No `*k == 1` here: the branch below already requires it, so a second test is
+            // UNKILLABLE — its mutant survived the whole suite. Dead rather than untested, so
+            // it is gone, exactly as item 570's `body(s)` term was.
+            let eligible = per_rep_pred
+                .as_deref()
+                .filter(|p| !crate::exec::contains_subquery(p));
+            let trav = eligible.filter(|p| crate::opt::max_slot(p).is_none_or(|m| m <= 2));
+            let seed = eligible.filter(|p| crate::exec::fastpath::refs_only_slot(p, 3));
 
             // `k == 1` gates the WHOLE route, not just the mask. A multi-hop unit emits only
             // at rep BOUNDARIES, so its equivalent hop bounds are `min * k ..= max * k` and this
@@ -1274,7 +1318,7 @@ pub(super) fn try_group_count(
             // `k > 1` for exactly that reason. Gating only `trav` on it let a k=2 group with NO
             // predicate through, and `a_two_hop_group_count_agrees_with_its_rows_for_an_unknown_edge_type`
             // caught it immediately.
-            if *k == 1 && (per_rep_pred.is_none() || trav.is_some()) {
+            if *k == 1 && (per_rep_pred.is_none() || trav.is_some() || seed.is_some()) {
                 if let Col::Nodes(ids) = batch.slot(*from) {
                     let want = match want_etypes(store, edge_label) {
                         Ok(w) => w,
@@ -1282,7 +1326,7 @@ pub(super) fn try_group_count(
                     };
 
                     if let Some(n) = try_degree_algebra(
-                        store, ids, &want, *min, *max, *mode, *dir, endpoint, None, trav,
+                        store, ids, &want, *min, *max, *mode, *dir, endpoint, None, trav, seed,
                     ) {
                         return Some(scalar_num(n as f64));
                     }
@@ -1447,6 +1491,7 @@ pub(super) fn try_varlen_count(
         *dir,
         endpoint,
         body_filter.as_deref().map(|p| (p, batch.slots.len())),
+        None,
         None,
     ) {
         return Some(scalar_num(n as f64));
