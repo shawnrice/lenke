@@ -1358,6 +1358,109 @@ const hopOf = (
  * Either failing falls back to the general count, so the fast path never answers a question it was
  * not handed.
  */
+/**
+ * `COUNT { (x)-[:T]->(b[:L]) WHERE <pred on b> }` — a one-hop degree with a LANDING PREDICATE.
+ *
+ * `degreeCountSubquery` declines on its FIRST line when the body carries a `WHERE`, so this
+ * shape fell back to materializing the body's bindings once per outer row. Measured at 200,000
+ * vertices / 1,000,000 edges (item 524):
+ *
+ * ```text
+ *   COUNT { (x)-[:KNOWS]->(b) }                      100.6 ms   (takes the degree rung)
+ *   COUNT { (x)-[:KNOWS]->(b:Half) }                 362.3      (takes it, with a label)
+ *   COUNT { (x)-[:KNOWS]->(b) WHERE b.age > 50 }     745.6      (declined — this one)
+ * ```
+ *
+ * The two rows above it are the diagnosis AND the controls: the rung exists and carries a
+ * label, so the third is not slow everywhere — it is refused.
+ *
+ * The admission is narrow on purpose, and each clause buys something:
+ *
+ *   - ONE segment. A deeper chain's predicate would have to be applied at the right hop, and
+ *     `twoHopSide` / `threeHopSide` walk without ever naming an intermediate — a different
+ *     question, left to the general path.
+ *   - The `WHERE` reads the LANDING VARIABLE and nothing else (`freePredicateVars`). A free
+ *     outer name would make this a correlated filter rather than a per-neighbour one.
+ *   - NO subquery in the predicate. This one is CONSERVATISM, not necessity, and its mutant
+ *     says so by surviving: the scratch binding is allocated per `countOf` CALL, so a nested
+ *     subquery that re-enters this rung gets its own, and reading the outer `b` out of the
+ *     scratch map is exactly what it should do. Widening it is a measurable change of its own
+ *     — a per-neighbour subquery is not obviously cheaper here than the general path — so it
+ *     is left refused and recorded rather than quietly admitted.
+ *
+ * Three-valued logic is the general path's, not a simplification of it: a neighbour counts only
+ * on a clean TRUE, so UNKNOWN (a null operand) does not count, and a FAULT propagates rather
+ * than being swallowed — `WHERE` in a subquery body raises exactly as it does at the top level.
+ */
+const landingPredDegreeCount = (
+  expr: Extract<Expr, { kind: 'countSubquery' }>,
+): {
+  startVar: string;
+  inner: readonly string[];
+  countOf: (v: Vertex, env: EvalEnv) => number;
+} | null => {
+  const { where } = expr;
+
+  if (where === undefined || expr.patterns.length !== 1 || hasSubquery(where)) {
+    return null;
+  }
+
+  const [path] = expr.patterns;
+
+  if (path.pathVar !== undefined || path.segments.length !== 1) {
+    return null;
+  }
+
+  const { start } = path;
+  const startVar = start.variable;
+
+  if (startVar === undefined || !plainNode(start) || start.label !== undefined) {
+    return null;
+  }
+
+  const [seg] = path.segments;
+  const hop = hopOf(seg);
+
+  // A repeated variable is a self-join, not a degree — `(u)-[:T]->(u)` counts self-loops.
+  // REDUNDANT today, and its mutant survives: if the landing names the anchor, the call site's
+  // `binding.has(inner[0])` is already true (the anchor had to be bound to get here) and the
+  // rung stands down there instead. Kept as the local statement of the invariant; the call
+  // site's check is the one with teeth.
+  if (hop === null || hop.variable === undefined || hop.variable === startVar) {
+    return null;
+  }
+
+  const landing = hop.variable;
+
+  for (const free of freePredicateVars(where)) {
+    if (free !== landing) {
+      return null;
+    }
+  }
+
+  const pred = gatePredicate(where);
+  const { out, types, label } = hop;
+
+  return {
+    startVar,
+    inner: [landing],
+    countOf: (v, env) => {
+      // ONE scratch binding per OUTER ROW, rewritten per neighbour, rather than one binding
+      // per match. The predicate reads `landing` and nothing else, which is what makes a
+      // single-entry map a complete environment for it — and per CALL rather than per rung,
+      // so two nested invocations never share one.
+      const binding = new Map<string, unknown>();
+      const { params, graph } = env;
+
+      return sideOfVertexGated(v, out, types, label, (node) => {
+        binding.set(landing, node);
+
+        return asTruth(pred({ binding, params, graph })) === true;
+      });
+    },
+  };
+};
+
 const degreeCountSubquery = (
   expr: Extract<Expr, { kind: 'countSubquery' }>,
 ): {
@@ -1489,6 +1592,9 @@ const memoizeIfUncorrelated = (
 const compileCountSubquery = (expr: Extract<Expr, { kind: 'countSubquery' }>): CompiledExpr => {
   const sub = compileSubMatch(expr);
   const degree = degreeCountSubquery(expr);
+  // The `WHERE` twin of the rung above; `degreeCountSubquery` refuses a body that carries one.
+  // Mutually exclusive by construction, so the order is not load-bearing here.
+  const gated = degree === null ? landingPredDegreeCount(expr) : null;
 
   // COUNT the iterator; do not materialize it. `[...matches].length` built an ARRAY per outer row
   // purely to read its length, and a correlated subquery runs once per row — so
@@ -1508,6 +1614,14 @@ const compileCountSubquery = (expr: Extract<Expr, { kind: 'countSubquery' }>): C
         return degree.countOf === undefined
           ? degree.count(env.graph, anchor.id)
           : degree.countOf(anchor, env.graph);
+      }
+    }
+
+    if (gated !== null) {
+      const anchor = env.binding.get(gated.startVar);
+
+      if (isVertex(anchor) && !env.binding.has(gated.inner[0])) {
+        return gated.countOf(anchor, env);
       }
     }
 
@@ -6738,6 +6852,7 @@ import {
   plainRel,
   side,
   sideOfVertex,
+  sideOfVertexGated,
   threeHopSide,
   twoHopSide,
 } from './executor/shortcuts.js';

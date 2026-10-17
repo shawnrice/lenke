@@ -5693,3 +5693,30 @@ OPEN, newly priced: the TS correlated count with a landing WHERE — 745.6 ms ag
 18.2 (41x). `degreeCountSubquery` declines on its first line (`expr.where !== undefined`) and
 falls back to materializing bindings per outer row. Its controls are the two rows that DO take
 the rung: the bare count 100.6 (native 11.3) and the labelled one 362.3 (24.6).
+
+## 524 — the TS landing-predicate degree count: CLOSED at 1.9x (19x native, was 36x)
+
+`degreeCountSubquery` refused any body with a `WHERE`, so `COUNT { (x)-[:KNOWS]->(b) WHERE
+b.age > 50 }` materialized the body's bindings per outer row. `landingPredDegreeCount` walks the
+anchor's adjacency box and gates each neighbour; the loop is `sideOfVertexGated` at MODULE scope,
+because a walk inside a returned closure is item 268's 4x hazard.
+
+Before 661.6 / 649.2 / 637.3 → after 346.0 / 354.4 / 312.3, disjoint, three alternated rounds with
+a rebuild between each. Control (a body with no `WHERE`, which never reaches the new code)
+74.6 → 75.4. Still 19x native, so the per-neighbour predicate call is what is left.
+
+**The first after-reading was the UNCHANGED engine**: the probe reads the built dist, so it showed
+868.3 against 745.6 and read as a regression. `fuzzers-read-built-dists` applies to every TS
+harness, not only the fuzzers.
+
+Mutation 4 of 7 (null control clean). Both survivors explained, one of them changing the code: the
+self-join guard is redundant (the call site's `binding.has` already stands the rung down), and the
+no-subquery guard protects against a hazard that does not exist — the scratch binding is per
+`countOf` CALL, so a nested subquery gets its own. It stays as conservatism and the comment now
+says so; widening it is its own measurable change.
+
+NEW, and it generalizes item 514: **`bun run spelling`'s full run needs isolating too.** It flagged
+a group the change could not reach at 2.1x where the pristine build flagged none; isolated with
+`SPELL_ONLY` that group is 1.04x on BOTH builds. And a LONG `bun run bench` row is not immune to
+sweep variance either — `count 3-hop` read 358.6 in-sweep and 324-328 isolated, inside its usual
+321-330 band.

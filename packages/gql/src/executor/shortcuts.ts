@@ -1469,6 +1469,31 @@ export const sideOfVertex = (
   );
 };
 
+/**
+ * `sideOfVertex` with a per-NEIGHBOUR gate as well as a label: the one-hop degree restricted to
+ * the endpoints a predicate keeps.
+ *
+ * Module scope and not an inline closure, deliberately: a walk written inside a returned closure
+ * gives UNRELATED queries a new slow mode (item 268's finding, 4x). The caller's `keep` is built
+ * once per outer row; this loop is compiled once.
+ *
+ * The label is tested BEFORE the gate, so a labelled landing pays the predicate only on the
+ * neighbours that survive the label — the cheaper test first, and the order is unobservable
+ * because the gate keeps only a clean TRUE either way (item 259).
+ */
+export const sideOfVertexGated = (
+  v: Vertex,
+  out: boolean,
+  types: string[] | undefined,
+  far: LabelExpr | undefined,
+  keep: (node: Vertex) => boolean,
+): number =>
+  countEdges(edgesOfTypes(out ? v.adjFrom : v.adjTo, types), (edge) => {
+    const node = out ? edge.to : edge.from;
+
+    return (far === undefined || matchesLabel(node, far)) && keep(node);
+  });
+
 export const side = (
   graph: Graph,
   bId: string,
