@@ -3922,6 +3922,60 @@ const countStarColumn = (proj: Projection): string | null => {
   return sortsOnColumn ? column : null;
 };
 
+/**
+ * The per-ANCHOR gate for a lone-node `MATCH`, composing all three spellings of one filter, or
+ * `null` to decline. `undefined` means there is no filter at all.
+ *
+ * Extracted at item 560 because item 559 needed it twice within two ticks, and a second copy of
+ * this composition is exactly the duplicate that has fooled a bulk edit ten times in this session.
+ * The three spellings are the start node's INLINE property map, its inline `WHERE`, and the
+ * clause `WHERE` — one filter written three ways, and a rung that admits only one of them is the
+ * equivalent-spelling bug this engine exists to avoid. Composed with `reduceRight` so they are
+ * evaluated in WRITTEN order, inline before clause, which is what lets an inline filter that
+ * matches nothing short-circuit a faulting clause `WHERE` (both engines do).
+ *
+ * `inlineOf` returns `null` for an inline form that cannot be gated per anchor — a property value
+ * reading a variable, or an inline `WHERE` with no node variable — and that refusal is passed
+ * straight through.
+ */
+const anchorFilterGate = (
+  start: NodePattern,
+  where: Expr | undefined,
+  anchorVar: string,
+): InlineGate | undefined | null => {
+  const preds: InlinePred[] = [];
+  const inlineAnchor = inlineOf(start);
+
+  if (inlineAnchor === null) {
+    return null;
+  }
+
+  if (inlineAnchor !== undefined) {
+    preds.push(inlineAnchor);
+  }
+
+  if (where !== undefined) {
+    // Reading any name BUT the anchor would make this a correlated filter rather than a
+    // per-anchor one, and a lone-node MATCH has nothing else bound to correlate with. (Both
+    // engines reject an UNBOUND name before this runs, so the check is for a name bound by an
+    // earlier clause.)
+    for (const nameRead of freePredicateVars(where)) {
+      if (nameRead !== anchorVar) {
+        return null;
+      }
+    }
+
+    preds.push({ pred: compilePredicate(undefined, where, anchorVar), bindVar: anchorVar });
+  }
+
+  return preds.reduceRight<InlineGate | undefined>(
+    (rest, ip) => (vertex, binding, params, graph) =>
+      inlineHolds(ip, vertex, binding, params, graph) &&
+      (rest === undefined || rest(vertex, binding, params, graph)),
+    undefined,
+  );
+};
+
 export const detectOptionalHopCount = (
   clauses: readonly Clause[],
 ): ((graph: Graph, params: Params) => Row[]) | null => {
@@ -3953,47 +4007,15 @@ export const detectOptionalHopCount = (
 
   // A FILTERED anchor (item 559). The rung's arithmetic is Σ max(1, degree) over the anchors, so a
   // filter changes WHICH anchors are summed and nothing else — `sideOfVertex` below is untouched.
-  // Refusing one cost 191.69 ms against the unfiltered 8.12 at 200,000 vertices, a 23.6x cliff on
-  // adding a `WHERE` to a query already on the rung.
-  //
-  // BOTH SPELLINGS, which is the point: the start node's INLINE properties and the clause `WHERE`
-  // are one filter written two ways, and admitting only one would be the equivalent-spelling bug
-  // this engine is built to avoid. They compose, in written order, exactly as
-  // `detectGroupedNodeAggregate` composes them.
-  const anchorPreds: InlinePred[] = [];
-  // `inlineOf` is the admission for BOTH inline spellings — the property map `{k: v}` and the
-  // inline `(n WHERE p)` — and it refuses what it cannot gate per anchor (a property value or an
-  // inline `WHERE` reading another variable). `plainNode` is deliberately NOT asked of the anchor
-  // any more: it refuses exactly the inline forms this rung now takes, and leaving it in was what
-  // made the `{tag: 'x'}` spelling read 417.96 ms while the clause `WHERE` read 21.04.
-  const inlineAnchor = inlineOf(anchor.start);
+  // Refusing one cost 191.69 ms against the unfiltered 8.12 at 200,000 vertices, and the INLINE
+  // property spelling 391.04, which `plainNode` was refusing on top. All three spellings go
+  // through `anchorFilterGate`; `plainNode` is deliberately NOT asked of the anchor any more,
+  // since it refuses exactly the inline forms this rung now takes.
+  const anchorGate = anchorFilterGate(anchor.start, m.where, v);
 
-  if (inlineAnchor === null) {
+  if (anchorGate === null) {
     return null;
   }
-
-  if (inlineAnchor !== undefined) {
-    anchorPreds.push(inlineAnchor);
-  }
-
-  if (m.where !== undefined) {
-    // Reading any name BUT the anchor would make this a correlated filter rather than a
-    // per-anchor one, and there is nothing else bound here to correlate with.
-    for (const nameRead of freePredicateVars(m.where)) {
-      if (nameRead !== v) {
-        return null;
-      }
-    }
-
-    anchorPreds.push({ pred: compilePredicate(undefined, m.where, v), bindVar: v });
-  }
-
-  const anchorGate = anchorPreds.reduceRight<InlineGate | undefined>(
-    (rest, ip) => (vertex, binding, params, graph) =>
-      inlineHolds(ip, vertex, binding, params, graph) &&
-      (rest === undefined || rest(vertex, binding, params, graph)),
-    undefined,
-  );
 
   const { label } = anchor.start;
 
@@ -4114,7 +4136,7 @@ const perRowForCount = (
 
   const [m] = clauses;
 
-  if (m.kind !== 'match' || m.optional || m.where !== undefined || m.patterns.length !== 1) {
+  if (m.kind !== 'match' || m.optional || m.patterns.length !== 1) {
     return null;
   }
 
@@ -4129,10 +4151,25 @@ const perRowForCount = (
     // scope, so a property on anything else is an unbound reference the compiler rejects before
     // this runs — and a pattern WITH segments (where a second name exists) is refused one line
     // above.
-    start.variable !== list.variable ||
-    !plainNode(start) ||
-    (start.properties !== undefined && start.properties.length > 0)
+    start.variable !== list.variable
   ) {
+    return null;
+  }
+
+  // A FILTERED anchor, by item 559's argument on its sibling rung: Σ over the anchors of the
+  // list's length is unchanged by WHICH anchors are summed, so a per-anchor gate is all a filter
+  // needs. Refusing one cost, at 200,000 vertices with three tags each:
+  //
+  //   MATCH (n:Person) FOR t IN n.tags RETURN count(*)             3.70 ms
+  //   ...WHERE n.age > 60                                         52.75      14.3x
+  //   MATCH (n:Person {tag: 'x'}) ...                            125.56      33.9x
+  //   MATCH (n:Person WHERE n.age > 60) ...                        52.93      14.3x
+  //
+  // All three spellings together, for item 559's reason: admitting only the clause form would be
+  // the equivalent-spelling bug, and the inline property map was the worst of the three there too.
+  const anchorGate = anchorFilterGate(start, m.where, list.variable);
+
+  if (anchorGate === null) {
     return null;
   }
 
@@ -4151,12 +4188,19 @@ const perRowForCount = (
   const proj = ret.projection;
   const name = label?.name;
   const { key } = list;
-  const one = (graph: Graph): Row => {
+  const one = (graph: Graph, params: Params): Row => {
     const vertices: Iterable<Vertex> =
       name === undefined ? graph.verticesById.values() : (graph.verticesByLabel.get(name) ?? []);
+    // ONE binding map for the whole scan, rewritten per anchor — the general path's cost is a
+    // fresh `Map` per row, which is what this rung exists to avoid.
+    const binding = new Map<string, unknown>();
     let total = 0;
 
     for (const vertex of vertices) {
+      if (anchorGate !== undefined && !anchorGate(vertex, binding, params, graph)) {
+        continue;
+      }
+
       const value = vertex.properties[key];
 
       if (value === null || value === undefined) {
@@ -4170,10 +4214,11 @@ const perRowForCount = (
   };
 
   if (proj.skip === undefined && proj.limit === undefined) {
-    return (graph) => [one(graph)];
+    return (graph, params) => [one(graph, params)];
   }
 
-  return (graph, params) => pageOneRow(() => one(graph), graph, params, proj.skip, proj.limit);
+  return (graph, params) =>
+    pageOneRow(() => one(graph, params), graph, params, proj.skip, proj.limit);
 };
 
 /**

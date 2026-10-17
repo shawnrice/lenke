@@ -6819,3 +6819,33 @@ Teeth: six mutants, four caught, control clean. One survivor explained — a cla
 another variable cannot reach the rung because both engines reject the query first (`variable 'y' is
 not defined`). Two mutants needed a second attempt, and the reason is the same both times: the
 first discriminator produced the SAME number on both sides of the bug.
+
+## 560 — the same filtered anchor on the FOR count: up to 17x, and the gate is now ONE helper
+
+Item 559's refusal grepped to a sibling: `perRowForCount` (`MATCH (n:L) FOR t IN n.key RETURN
+count(*)`) cited the SAME item 510 comment as its reason for refusing a filtered anchor. Its
+arithmetic is Σ the list's length over the anchors, so the argument is identical.
+
+200,000 vertices with three tags each, one case per process:
+
+| query                                                        | before  | after            |
+| ------------------------------------------------------------ | ------- | ---------------- |
+| `MATCH (n:Person) FOR t IN n.tags RETURN count(*)` (control) | 3.70 ms | 4.04             |
+| `… WHERE n.age > 60`                                         | 52.75   | **10.46** (5.0x) |
+| `MATCH (n:Person {tag: 'x'}) …`                              | 125.56  | **7.36** (17.1x) |
+| `MATCH (n:Person WHERE n.age > 60) …`                        | 52.93   | **12.32** (4.3x) |
+
+The inline property map was again the worst of the three.
+
+**The gate is now ONE helper**, `anchorFilterGate`, shared by both rungs. Item 559's copy was two
+ticks old and would have been the eleventh duplicated body in this session — the thing that has
+fooled a bulk edit ten times. One mutant on the helper (the composition order reversed) is now
+caught by TWO tests, one per rung, which is the shared body paying for itself immediately.
+
+A THIRD sibling was priced and left alone: `detectOptionalHopProjection` reads 144.60 ms unfiltered
+against 178.58 filtered — 1.2x, because row materialization dominates a projection and there is no
+arithmetic to replace the walk with. Not a cliff, so not a target.
+
+Teeth: six mutants, four caught, control clean. The survivor is item 559's explained one, now
+stated once on the shared helper: a clause `WHERE` naming another variable cannot reach either rung
+because both engines reject the query first.
