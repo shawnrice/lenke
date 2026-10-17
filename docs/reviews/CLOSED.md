@@ -7550,6 +7550,12 @@ a plain key.
 (507.8k -> 163.8k against 499.6k -> 165.1k with two). The next target is the property path on
 insert, priced at ~2.9x.
 
+> **RETRACTED at item 577 — there is no property cost.** Passed as a PARAMETER, one property reads
+> 479.8k against a bare node's 482.7k. The 2.9x was the probe: the bare baseline reused ONE query
+> string while every property case interpolated into the TEXT, making them parse+plan cache
+> misses. The control is a BARE `INSERT (:Entry)` with a changing comment — 182.2k against 482.7k,
+> no properties, same 2.6x. Do not re-attempt "the property path on insert".
+
 ### `grep` silently skips a large UTF-8 source file
 
 Chasing this cost a chunk of a tick: `grep -rn 'createIndex' packages/core/src` found NOTHING,
@@ -7557,3 +7563,36 @@ Chasing this cost a chunk of a tick: `grep -rn 'createIndex' packages/core/src` 
 being skipped as binary. I concluded the dist was built from sources not in the checkout and went
 looking for a second worktree. **Use `grep -a` on this repo's larger prose-heavy sources.** The
 rename/refactor note already recorded this and I did not reach for it.
+
+### Item 577 — a changing query TEXT is a parse+plan cache miss worth 2.6-3.0x on a small write
+
+The real finding behind item 576's retracted target. `bench:usage` had four rows interpolating a
+changing value into the query text, so every operation missed the plan cache and the row priced
+the PARSER as well as the write. On the identical `append + link` statement: **51.1k interpolated
+against 151.4k parameterized.**
+
+Three alternated rounds on `write: append node`, one row per process:
+
+```
+                       ts(+)                      engine(+)                wasm(+)
+interpolated   130.9k / 97.6k / 129.8k    366.6k/359.6k/342.4k    340.1k/330.8k/331.9k
+parameterized  442.4k / 442.7k / 384.4k   260.6k/262.2k/255.4k    237.1k/234.0k/232.0k
+```
+
+**Parameterizing is NOT uniformly better.** TS gains 3.4-3.9x; **native LOSES 1.37x and wasm
+1.42x**, consistently — binding three parameters across the FFI costs native more than re-parsing
+a small `INSERT`. So `write: append node` keeps BOTH forms as a pair (one row alone hides
+whichever cost it does not pay), while the two rows whose purpose is the write are parameterized.
+
+**OPEN, and now the real TS deficit in that bench:** `read: keyed dedup lookup`, ts(+) 74.7k
+against native's 136.5k. It already uses a parameter, so it is not this artifact. Unpriced.
+
+**OPEN, native:** the param-binding cost above — 1.37x on a three-parameter INSERT, with the
+interpolated twin as its control.
+
+### A decomposition is only as good as its BASELINE
+
+Item 576's baseline differed from its cases in a second, uncontrolled way (one query string against
+many). I had already refuted one hypothesis in that item, which is precisely when the surviving one
+deserves the same scepticism — and did not get it. When a decomposition shows a fixed cost that
+appears the moment a feature is used, check whether the feature is the only thing that changed.

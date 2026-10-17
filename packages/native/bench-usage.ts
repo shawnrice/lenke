@@ -268,10 +268,32 @@ const WORKLOADS: Workload[] = [
     // Carries an INDEXED key deliberately. An append whose properties are all
     // unindexed pays no maintenance, so the indexed and unindexed columns would
     // come out the same and the row would look like indexes are free on writes.
+    // INTERPOLATED on purpose, and paired with the `[params]` twin below — together they price
+    // the PARSE/BIND axis, which item 577 found this row had been measuring without saying so.
+    // Three alternated rounds, one row per process:
+    //
+    //                      ts(+)                    engine(+)              wasm(+)
+    //   interpolated  130.9k / 97.6k / 129.8k   366.6k/359.6k/342.4k   340.1k/330.8k/331.9k
+    //   parameterized 442.4k / 442.7k / 384.4k  260.6k/262.2k/255.4k   237.1k/234.0k/232.0k
+    //
+    // TS is 3.4-3.9x FASTER parameterized (a changing query text is a parse+plan cache MISS
+    // every operation) and native 1.37x SLOWER (binding three parameters over the FFI costs it
+    // more than re-parsing a small INSERT). Neither form is the "pure" write, so both stay:
+    // one row alone would have hidden whichever cost it did not pay.
     name: 'write: append node',
     grows: true,
     op: (e, g, i) =>
       void e.query(g, `INSERT (:Event {name: 'ev${i}', score: ${i % 100}, seq: ${i}})`),
+  },
+  {
+    name: 'write: append node [params]',
+    grows: true,
+    op: (e, g, i) =>
+      void e.query(g, 'INSERT (:Event {name: $n, score: $s, seq: $q})', {
+        n: `evp${i}`,
+        s: i % 100,
+        q: i,
+      }),
   },
   {
     // DELETE, which this harness had no row for at all until item 334 needed one.
@@ -282,8 +304,12 @@ const WORKLOADS: Workload[] = [
     name: 'write: append then delete node',
     units: 2,
     op: (e, g, i) => {
-      e.query(g, `INSERT (:Tmp {name: 'tmp${i}', seq: ${i}})`);
-      void e.query(g, `MATCH (t:Tmp) WHERE t.name = $n DETACH DELETE t`, { n: `tmp${i}` });
+      // PARAMETERIZED (item 577). The DELETE half already was, so only the INSERT half paid a
+      // parse+plan cache miss and the two halves this row exists to compare were not
+      // comparable. ts(+) 148.7k -> 295.5k; native 139.3k -> 130.8k, inside this bench's own
+      // 1.097x floor. The parse/bind axis is priced by the `append node` pair above.
+      e.query(g, 'INSERT (:Tmp {name: $n, seq: $q})', { n: `tmp${i}`, q: i });
+      void e.query(g, 'MATCH (t:Tmp) WHERE t.name = $n DETACH DELETE t', { n: `tmp${i}` });
     },
   },
   {
@@ -399,11 +425,16 @@ const WORKLOADS: Workload[] = [
     // operation.
     name: 'interleaved: append + link',
     grows: true,
+    // PARAMETERIZED (item 577). Interpolated, this row read 61.5k against native's 184.5k and
+    // looked like the biggest TS deficit in the table — item 576 chased it and decomposed it to
+    // "properties on an inserted node cost 2.9x", which was WRONG: the cost was the changing
+    // query TEXT. Parameterized it is 179.3k against native's 226.7k, in line with the rest of
+    // the table, and native is 1.23x FASTER too, so nothing here argues for the old form.
     op: (e, g, i) =>
       void e.query(
         g,
-        `MATCH (u:User) WHERE u.name = $u INSERT (:Entry {id: 'en${i}', amount: ${i % 500}})-[:AUTHORED_BY]->(u)`,
-        { u: `user${i % GRAPH}` },
+        'MATCH (u:User) WHERE u.name = $u INSERT (:Entry {id: $id, amount: $amt})-[:AUTHORED_BY]->(u)',
+        { u: `user${i % GRAPH}`, id: `en${i}`, amt: i % 500 },
       ),
   },
 ];
