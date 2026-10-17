@@ -5258,3 +5258,25 @@ on the same fixture is 0.4 ms.
 `satisfies`). Threading a cache from a per-execution root is the right build; a `WeakMap` keyed
 on the graph is wrong without a mutation counter, and one missed mutation point is a silent wrong
 answer. `route-cost-probe` now warns in its case table: price the TS side at `PN<=4000`.
+
+## 503 — the TS uncorrelated subquery memo: CLOSED at ~2100x
+
+Item 502's specified fix, built. PN=4,000: 18,547.7-19,187.3 -> 8.3-10.7 ms; PN=200,000 went from
+NOT FINISHING in nine minutes to 585.8 ms. The correlated one-hop degree is the control and is
+flat. Memo keyed on `execEpoch` (the per-invocation counter the `in` haystack already uses),
+because `planCache` keeps compiled closures across runs — tested with one cached plan over a
+graph mutated between three runs.
+
+**Two designs were measured and discarded first.** `freePredicateVars(expr).size === 0` as the
+admission test broke **90 tests**: that helper counts a body's OWN pattern variables as bound, so
+the correlated `COUNT { (u)-[:T]->(x) }` reads as having no free variables. A run-time scope test
+is correct but **cost the correlated path 1.08x** (71.7-73.8 -> 78.8-79.6 ms at 200,000 rows,
+disjoint) — the wrapper is a call frame on a path the change should not touch; it was invisible at
+PN=4000 (0.6 vs 0.7 ms) and only legible at 200,000. The shipped design marks correlated
+subqueries at COMPILE time inside `checkLinearScope`, which already walks every expression with
+its enclosing scope, and leaves their closure untouched.
+
+Mutation 3 of 5. **The write guard survives and nothing can currently distinguish it**: clauses
+run one at a time, so `MATCH … INSERT … RETURN COUNT { … }` lands every write before the
+projection and reads the same count on every row — identical on the pristine build. Kept as
+defensive, recorded rather than implied.

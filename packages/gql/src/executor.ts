@@ -336,6 +336,39 @@ import type { FuncExpr, Truth } from './executor/scalars.js';
 let execEpoch = 0;
 
 /**
+ * Whether the query being compiled may MEMOIZE an uncorrelated subquery for the run.
+ *
+ * A subquery that references no outer variable has the same answer for every outer row, and the
+ * TS engine re-ran it for each one: `COUNT { MATCH (:Person)-[:KNOWS]->(b) }` cost 4,102.8ms at
+ * 2,000 vertices and 18,620.2 at 4,000 — quadratic, because the body walks a fixture that grows
+ * with the row count — and did not finish in nine minutes at 200,000, where the native engine
+ * answers in 21 (audit items 502, 503).
+ *
+ * The memo is keyed on `execEpoch`, which is bumped once per plan invocation, so a value never
+ * survives into another run. Within a run it must also be safe, and that is what this flag is
+ * for: a query that WRITES can change the answer between rows (`MATCH … SET … RETURN COUNT { … }`
+ * is a different count per row), so memoization is switched off for the whole query whenever it
+ * contains a write clause. Compile-time, because the decision is a property of the statement.
+ *
+ * It defaults to FALSE and is set only inside `compile`, so anything compiled through another
+ * entry point — `compileValidator`, which runs against a graph mid-write — never memoizes.
+ */
+let memoUncorrelated = false;
+
+/**
+ * The subquery nodes that READ a name from their enclosing scope, marked while the compiler
+ * validates scopes — the one pass that already walks every expression with the names bound
+ * around it in hand.
+ *
+ * Deciding this statically is what keeps the memo free: the first version tested
+ * `names.some(binding.has)` at RUN time, and even settled once per run it cost the correlated
+ * one-hop degree 72.3/72.6 -> 77.0/77.1 ms at 200,000 rows, because the wrapper itself is a
+ * call frame on a path that was not supposed to change. A correlated subquery is now left with
+ * the closure it had.
+ */
+const correlatedSubqueries = new WeakSet<object>();
+
+/**
  * `lv <op> rv` as a three-valued answer — the ONE definition of comparison semantics.
  *
  * Extracted from the `compare` arm so the element-local `cmpProps` loop can apply the SAME
@@ -973,12 +1006,14 @@ export const compileExpr = (expr: Expr): CompiledExpr => {
     }
     case 'case':
       return compileCase(expr);
+    // Each of the three correlated-subquery forms is memoized when it is NOT correlated: one
+    // evaluation per plan invocation instead of one per row (item 503).
     case 'exists':
-      return compileExists(expr);
+      return memoizeIfUncorrelated(expr, compileExists(expr));
     case 'countSubquery':
-      return compileCountSubquery(expr);
+      return memoizeIfUncorrelated(expr, compileCountSubquery(expr));
     case 'valueSubquery':
-      return compileValueSubquery(expr);
+      return memoizeIfUncorrelated(expr, compileValueSubquery(expr));
     case 'letIn':
       return compileLetIn(expr);
   }
@@ -1414,6 +1449,40 @@ const degreeCountSubquery = (
   }
 
   return { startVar, inner, count: (graph, id) => twoHopSide(graph, id, plan) };
+};
+
+/**
+ * Wrap a compiled subquery so an UNCORRELATED one is evaluated ONCE per plan invocation.
+ *
+ * `freePredicateVars` already answers the admission question exactly: it returns the OUTER names
+ * an expression reads, with the subquery's own pattern bindings excluded, so an empty set IS
+ * "this body does not depend on the row". A `$param` is not a variable and does not appear
+ * there, which is correct — params are fixed for the run too.
+ *
+ * `execEpoch` is the guard. Compiled plans are CACHED across executions (`planCache`), so a
+ * closure-local value with no epoch would be served to a later run against a mutated graph; with
+ * it, the memo is scoped to exactly one `plan(graph, params)` call. The same mechanism already
+ * backs the `in` arm's hashed haystack.
+ */
+const memoizeIfUncorrelated = (
+  expr: Extract<Expr, { kind: 'exists' | 'countSubquery' | 'valueSubquery' }>,
+  fn: CompiledExpr,
+): CompiledExpr => {
+  if (!memoUncorrelated || correlatedSubqueries.has(expr)) {
+    return fn;
+  }
+
+  let epoch = -1;
+  let value: unknown;
+
+  return (env) => {
+    if (epoch !== execEpoch) {
+      value = fn(env);
+      epoch = execEpoch;
+    }
+
+    return value;
+  };
 };
 
 const compileCountSubquery = (expr: Extract<Expr, { kind: 'countSubquery' }>): CompiledExpr => {
@@ -4729,6 +4798,33 @@ const childExprs = (expr: Expr): readonly Expr[] => {
 // Throw on any variable / property reference in `expr` whose base name is not in `scope`.
 // Sub-queries (`EXISTS`/`COUNT`/`VALUE {…}`) are correlated — the outer scope stays visible
 // and their own pattern variables are added; `letIn` binds its locals for the body.
+/**
+ * Mark a subquery that reads any name bound AROUND it.
+ *
+ * Every name the body mentions is needed, not just its free ones: `freePredicateVars` counts a
+ * body's own pattern variables as bound, so the correlated `COUNT { (u)-[:T]->(x) }` has no free
+ * variables by that reckoning — `u` is a pattern variable there exactly as `x` is. Using the
+ * free set alone treated correlated subqueries as constant and broke 90 tests at once.
+ */
+const markIfCorrelated = (
+  expr: Extract<Expr, { kind: 'exists' | 'countSubquery' | 'valueSubquery' }>,
+  scope: ReadonlySet<string>,
+): void => {
+  const mentioned = freePredicateVars(expr);
+
+  for (const p of expr.patterns) {
+    patternBoundVars(p, mentioned);
+  }
+
+  for (const name of mentioned) {
+    if (scope.has(name)) {
+      correlatedSubqueries.add(expr);
+
+      return;
+    }
+  }
+};
+
 const checkExprScope = (expr: Expr, scope: ReadonlySet<string>): void => {
   switch (expr.kind) {
     case 'var':
@@ -4746,6 +4842,8 @@ const checkExprScope = (expr: Expr, scope: ReadonlySet<string>): void => {
       return;
     case 'exists':
     case 'countSubquery': {
+      markIfCorrelated(expr, scope);
+
       const inner = extendedScope(scope, patternVars(expr.patterns));
 
       if (expr.where) {
@@ -4755,6 +4853,8 @@ const checkExprScope = (expr: Expr, scope: ReadonlySet<string>): void => {
       return;
     }
     case 'valueSubquery': {
+      markIfCorrelated(expr, scope);
+
       const inner = extendedScope(scope, patternVars(expr.patterns));
 
       if (expr.where) {
@@ -6270,9 +6370,13 @@ export const compile = <R extends Row = Row>(query: Query): Plan<R> => {
   const prevParam = paramCollector;
   const prevUnknown = unknownFnCollector;
   const prevCount = countParamCollector;
+  const prevMemo = memoUncorrelated;
   paramCollector = referenced;
   unknownFnCollector = unknownFns;
   countParamCollector = countParams;
+  // A WRITE anywhere in the query can change an uncorrelated subquery's answer between rows,
+  // so the whole query opts out rather than trying to reason about clause order.
+  memoUncorrelated = !queryHasWrite(query);
 
   let compiled: CQuery;
 
@@ -6282,6 +6386,7 @@ export const compile = <R extends Row = Row>(query: Query): Plan<R> => {
     paramCollector = prevParam;
     unknownFnCollector = prevUnknown;
     countParamCollector = prevCount;
+    memoUncorrelated = prevMemo;
   }
 
   // Eager unknown-function rejection: a name the query references that resolves
