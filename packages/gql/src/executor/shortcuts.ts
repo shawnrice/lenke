@@ -1816,14 +1816,30 @@ export const twoHopSide = (graph: Graph, id: string, w: TwoHopSide): number => {
   const byType = (w.firstOut ? graph.edgesFromByLabel : graph.edgesToByLabel).get(id);
   let n = 0;
 
+  // With no middle LABEL there is nothing to resolve the middle vertex FOR, and the loop was
+  // resolving it (`e.to`, a string-keyed `Map.get`) only to hand `mid.id` straight back to
+  // another `Map.get` — two lookups an edge where one does. This branch reads the endpoint id
+  // the EDGE already stores and never materializes the vertex (item 140's point, one segment on).
+  if (w.midLabel === undefined) {
+    for (const e of edgesOfTypes(byType, w.t1)) {
+      n += side(graph, w.firstOut ? e.toId : e.fromId, w.secondOut, w.t2, w.farLabel);
+    }
+
+    return n;
+  }
+
+  // A middle LABEL has to resolve the vertex anyway, so the lookup that branch could drop is the
+  // second one — `sideOfVertex(mid, …)`, the vertex's own box. Tried and MEASURED FLAT: 369.9 /
+  // 384.4 / 367.7 ms against 384.1 / 364.2 / 372.0, overlapping ranges on a labelled middle at
+  // 200,000 vertices. The middle position IS revisited (once per edge into it), so item 355's
+  // visited-once objection does not apply here — the box read simply is not cheaper than the map
+  // read at this size. Left on the id, which is the smaller diff.
   for (const e of edgesOfTypes(byType, w.t1)) {
     const mid = w.firstOut ? e.to : e.from;
 
-    if (!matchesLabel(mid, w.midLabel)) {
-      continue;
+    if (matchesLabel(mid, w.midLabel)) {
+      n += side(graph, mid.id, w.secondOut, w.t2, w.farLabel);
     }
-
-    n += side(graph, mid.id, w.secondOut, w.t2, w.farLabel);
   }
 
   return n;

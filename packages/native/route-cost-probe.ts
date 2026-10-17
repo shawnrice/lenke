@@ -241,6 +241,10 @@ const queries: Record<string, string> = {
   subcount: 'MATCH (n:Person) RETURN COUNT { MATCH (n)-[:KNOWS]->(x) } AS c',
   subexists: 'MATCH (n:Person) WHERE EXISTS { MATCH (n)-[:KNOWS]->(x) } RETURN count(*) AS c',
   sub2hop: 'MATCH (n:Person) RETURN COUNT { MATCH (n)-[:KNOWS]->(x)-[:KNOWS]->(y) } AS c',
+  // Item 495: the same two-hop degree with a MIDDLE LABEL, which is the other branch — a label
+  // has to resolve the middle vertex, so there the saving is the box rather than the skipped
+  // resolve. `Half` is on half the vertices, so it is not vacuous.
+  sub2hoplabel: 'MATCH (n:Person) RETURN COUNT { MATCH (n)-[:KNOWS]->(x:Half)-[:KNOWS]->(y) } AS c',
   subcontrol: 'MATCH (n:Person)-[:KNOWS]->(x) RETURN count(*) AS c',
   hopaggrelvar: 'MATCH (:Person)-[r:KNOWS]->(b) RETURN max(b.age) AS m',
   twohoprelvar: 'MATCH (:Person)-[r:KNOWS]->(b)-[s:KNOWS]->(c) RETURN count(*) AS c',

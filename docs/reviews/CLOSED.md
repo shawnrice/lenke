@@ -5092,3 +5092,22 @@ argument for not replacing them.
 line changed, so a pattern starting at `if (far === undefined)` matched both and the
 one-occurrence check passed only because trailing context differed. Items 474, 483, 494: **two
 copies of a body is the most reliable way to fool a mutation run here.**
+
+## 495 — the two-hop `COUNT { … }` degree stops re-hashing the middle id: CLOSED at 1.25x
+
+`twoHopSide` resolved the middle vertex (`e.to`, a `Map.get`) and then handed `mid.id` straight to
+another `Map.get` — two lookups an edge where one does. With no middle LABEL there is nothing to
+resolve the vertex for, so that branch reads the endpoint id the EDGE stores. 382.5-403.8 ->
+305.5-322.9 ms at 200,000 vertices / 1,000,000 edges, three alternated rounds, one-hop
+`COUNT { … }` flat as the control. Five of six mutants caught by item 211's existing tests.
+
+**REFUTED in the same item: the adjacency box is not a faster hash.** On the LABELLED branch, where
+the resolve is owed anyway, swapping `side(graph, mid.id, …)` for item 494's `sideOfVertex(mid, …)`
+measured FLAT (369.9/384.4/367.7 against 384.1/364.2/372.0). The middle vertex is the REVISITED
+position item 355 named as the one where the memo should pay, and it still bought nothing — so
+items 492 and 494 won by doing **one lookup instead of two**, not by the box being cheaper. Do not
+price a box swap that does not also remove a lookup.
+
+**Open and priced, for RUST:** native does the whole-graph two-hop count in 2.7 ms and the
+per-anchor `COUNT { … }` partition of the same traversal in 75.0 ms (14.6 of it row egress). Same
+edge work, 28x apart.
