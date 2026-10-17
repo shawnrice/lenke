@@ -6477,6 +6477,8 @@ export type CLinear = {
   optionalHopCount: ((graph: Graph, params: Params) => Row[]) | null;
   optionalHopProjection: RowsFn | null;
   countShortcut: ((graph: Graph, params: Params) => Row[]) | null;
+  /** The DEGREE-ALGEBRA count over a bounded var-length OUT hop (item 573); else null. */
+  varLengthCount: ((graph: Graph, params: Params) => Row[]) | null;
   /** Precomputed grouped-count closure for `MATCH (n) RETURN n.k, count(*)`; else null. */
   groupCountShortcut: ReachFn | null;
   /** The same over a HOP — `MATCH (a)-[:T]->(b) RETURN b.k, count(*)`; else null. */
@@ -7631,6 +7633,7 @@ const compileLinear = (linear: LinearQuery): CLinear => {
     optionalHopCount: detectOptionalHopCount(fast),
     optionalHopProjection: detectOptionalHopProjection(fast, clauses),
     countShortcut: detectCountShortcut(fast, clauses),
+    varLengthCount: detectVarLengthCount(fast),
     groupCountShortcut: detectGroupedNodeCount(fast),
     groupHopShortcut: detectGroupedHopCount(fast),
     reachShortcut: detectReachableShortcut(fast, clauses),
@@ -7684,6 +7687,7 @@ import type { AlwaysRowsFn, RowsFn } from './executor/hop-projection.js';
 // cycle, matching the other executor submodules.
 import {
   detectCountShortcut,
+  detectVarLengthCount,
   detectGroupedHopCount,
   detectMultiNodeAggregate,
   detectNodeAggregate,

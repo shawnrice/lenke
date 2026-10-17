@@ -1336,6 +1336,13 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
   // Direct `count(*)` shortcut (edge-bucket size / degree product) — skips
   // enumerating every match. Only fires for the exact `MATCH … RETURN count(*)`
   // shapes `detectCountShortcut` accepts.
+  // Item 573's degree algebra sits ABOVE `countShortcut`, which cannot answer a quantified hop
+  // at all (`plainRel` is false for one), so the order is not a priority contest — it is the
+  // only rung that matches this shape.
+  if (linear.varLengthCount) {
+    return linear.varLengthCount(graph, params);
+  }
+
   if (linear.countShortcut) {
     return linear.countShortcut(graph, params);
   }

@@ -1103,6 +1103,132 @@ const tallyHopCount = (scan: HopScan): number => {
  * this file (items 119, 141, 159), and the first time it was predicted by the note at the call
  * site rather than discovered.
  */
+/**
+ * `count(*)` over a bounded var-length OUT hop, by DEGREE ARITHMETIC in O(V + E) rather than by
+ * enumerating the O(paths) walks (item 573).
+ *
+ * The native engine has answered this shape algebraically since item 64 (`try_degree_algebra`);
+ * TS enumerated, and the gap is ALGORITHMIC rather than the data-layout ceiling item 566
+ * measured. Priced at 40,000 vertices / 120,000 edges, one case per process:
+ *
+ *   MATCH (a:P)-[:T]->{1,2}(y) RETURN count(*)              ts 300.22ms   nv 0.61   491x
+ *   MATCH (a:P)((x)-[e:T]->(y)){1,2} RETURN count(*)           252.74          0.65  391x
+ *
+ * 479,998 paths against a V+E of 160,000, so enumeration is doing ~3x the work a closed form
+ * needs — before the per-element constant.
+ *
+ * THE ARITHMETIC, for `max <= 2` and `Dir::Out`, mirroring the native function so the two cannot
+ * drift: a 1-hop path is one wanted out-edge of a source whose target passes; a 2-hop path
+ * `s -> y -> z` is one such edge times `y`'s own PASSING out-degree. A TRAIL then excludes the
+ * single path that reuses the same edge, `s -> s -> s` over a self-loop, which `deg(s)` counted;
+ * a WALK permits it and makes no correction. `{0,n}` adds the zero-length path per source, whose
+ * endpoint is the SOURCE itself and so is the one row an endpoint test applies to directly.
+ *
+ * WALK/TRAIL ONLY. The degree algebra counts node-repeating paths, which SIMPLE and ACYCLIC
+ * forbid — those have to enumerate, and `pattern.mode` is checked for exactly that.
+ *
+ * `set.size` is what makes the degree precompute cheap: a vertex's wanted out-degree is a sum of
+ * per-label set sizes, O(#types) rather than O(degree) — so the whole first pass is O(V) when no
+ * endpoint test needs a per-neighbour look. An endpoint test forces the per-neighbour walk and
+ * the pass becomes O(E), which is still the closed form's budget.
+ */
+type DegreeCountSpec = {
+  types: string[] | undefined;
+  min: number;
+  max: number;
+  isTrail: boolean;
+  startName: string | undefined;
+  passes: (v: Vertex) => boolean;
+  /** True when `passes` cannot reject, so the degree is a set SIZE rather than a walk. */
+  passesIsVacuous: boolean;
+};
+
+/** Bundled, not eight positional parameters: the arity limit, and the same reason
+ *  `buildOneHopCount` bundles its `ends`. */
+const varLengthDegreeCount = (graph: Graph, spec: DegreeCountSpec): number => {
+  const { types, min, max, isTrail, startName, passes, passesIsVacuous } = spec;
+  // `edgesOfTypes`, NOT a sum of per-label `set.size`. A MULTI-LABEL edge sits in several of
+  // this box's buckets, so summing their sizes counts it once per label it carries — which is
+  // what `multi-label-edges.test.ts` ("a reachability walk visits each edge once") caught,
+  // answering 8 where the walk answers 3. That helper already dedupes through a `Set` and keeps
+  // the O(1) routes for a single wanted type and a single-bucket graph, so the degree stays a
+  // set SIZE in the common case and becomes a deduped walk only when it has to.
+  //
+  // My own `[:T|U]` sweep cases did NOT catch this: their T and U edges were disjoint, so right
+  // and wrong agreed. Seventh coinciding fixture in this run of ticks, and the first the repo's
+  // existing suite caught rather than a probe.
+  const edgesOf = (v: Vertex): Iterable<Edge> => {
+    const box = v.adjFrom;
+
+    return box === undefined ? [] : edgesOfTypes(box, types);
+  };
+  // The PASSING out-degree, memoized per vertex. Keyed on the vertex OBJECT: audit item 321
+  // prices that at 30.5ns against 59.7 for the id string, and this is read once per edge.
+  const deg = new Map<Vertex, number>();
+  const degreeOf = (v: Vertex): number => {
+    const hit = deg.get(v);
+
+    if (hit !== undefined) {
+      return hit;
+    }
+
+    const it = edgesOf(v);
+    let n: number;
+
+    if (passesIsVacuous && it instanceof Set) {
+      n = it.size; // the O(1) route: one wanted type, or a graph of one edge label
+    } else {
+      n = 0;
+
+      for (const e of it) {
+        if (passes(e.to)) {
+          n += 1;
+        }
+      }
+    }
+
+    deg.set(v, n);
+
+    return n;
+  };
+  const sources =
+    startName === undefined
+      ? graph.verticesById.values()
+      : (graph.verticesByLabel.get(startName) ?? []);
+  let total = 0;
+
+  for (const s of sources) {
+    // The zero-length path: its endpoint is the SOURCE.
+    if (min === 0 && passes(s)) {
+      total += 1;
+    }
+
+    if (max === 0) {
+      continue;
+    }
+
+    for (const e of edgesOf(s)) {
+      const y = e.to;
+
+      if (min <= 1 && passes(y)) {
+        total += 1; // the 1-hop path s -> y
+      }
+
+      if (max >= 2) {
+        total += degreeOf(y);
+
+        // A trail excludes the one path that reuses THIS edge, `s -> s -> s`, which
+        // `degreeOf(s)` counted — and only when that endpoint passes.
+        if (isTrail && y === s && passes(s)) {
+          total -= 1;
+        }
+      }
+    }
+  }
+
+  return total;
+};
+
 const labelOnlyHopCount = (
   graph: Graph,
   params: Params,
@@ -4458,6 +4584,146 @@ export const detectForCount = (
 
   return (graph, params) =>
     base(graph, params).map((row) => ({ ...row, [column]: Number(row[column]) * times }));
+};
+
+/**
+ * `MATCH (a:A)-[:T]->{m,n}(b:B) RETURN count(*)` — answer it with {@link varLengthDegreeCount}.
+ *
+ * NARROW, and every condition earns its place:
+ *
+ * - **OUT only, `1 <= max <= 2`, WALK or TRAIL.** The arithmetic is the native engine's and
+ *   carries its limits: an unbounded or deeper quantifier has no two-term closed form here, and
+ *   SIMPLE / ACYCLIC forbid the node-repeating paths the degree product counts.
+ * - **No `unit`.** The parenthesized GROUP spelling reaches this through item 569's
+ *   `dropUnreadGroupBinds`, which turns a group whose bindings nothing reads into exactly this
+ *   abbreviated form — so one implementation serves both spellings and they cannot diverge in
+ *   cost. A group that still carries bindings keeps the walk, because a per-rep LIST is the
+ *   answer rather than a filter. In the AST that is `hopFrom`; `unit` is the COMPILED shape.
+ * - **No per-hop rel predicate** (`plainRel` minus its quantifier test) and **no clause WHERE**.
+ *   A per-rep predicate folds into the native twin as a traversal mask (item 572); this is the
+ *   TS side's first step and does not attempt it.
+ * - **Endpoint LABEL is admitted**, as the `passes` test. A vacuous label is detected and
+ *   `passesIsVacuous` keeps the degree a sum of set SIZES — item 566's note that a label which
+ *   excludes nothing must not be allowed to turn a degree product into a per-edge scan.
+ */
+/**
+ * The PATTERN half of {@link detectVarLengthCount}'s shape test — a lone bounded OUT var-length
+ * hop between two bare nodes.
+ *
+ * Its own function because the detector sits on the complexity gate: inline, the chain read 38
+ * against a maximum of 35. `tallyGroupShapes` and `genQuantifiedGroup` were split for the same
+ * reason, and the gate has been right each time.
+ *
+ * `selector` DEFAULTS to the string 'walk' (all walks) rather than to undefined, so the guard is
+ * `!== 'walk'`. Written as `!== undefined` it declines EVERY query — which is how this started,
+ * and the measurement showed no change at all until it was found.
+ */
+const degreeCountShape = (pattern: PathPattern): boolean => {
+  if (
+    pattern.pathVar !== undefined ||
+    pattern.segments.length !== 1 ||
+    (pattern.selector !== undefined && pattern.selector !== 'walk') ||
+    !plainNode(pattern.start) ||
+    (pattern.mode !== undefined && pattern.mode !== 'trail' && pattern.mode !== 'walk')
+  ) {
+    return false;
+  }
+
+  const [seg] = pattern.segments;
+  const { rel, node } = seg;
+
+  return !(
+    seg.hopFrom !== undefined ||
+    seg.nested !== undefined ||
+    rel.quantifier === undefined ||
+    rel.direction !== 'out' ||
+    (rel.properties?.length ?? 0) > 0 ||
+    rel.where !== undefined ||
+    rel.variable !== undefined ||
+    !plainNode(node)
+  );
+};
+
+export const detectVarLengthCount = (
+  clauses: readonly Clause[],
+): ((graph: Graph, params: Params) => Row[]) | null => {
+  if (clauses.length !== 2) {
+    return null;
+  }
+
+  const [m, ret] = clauses;
+
+  if (
+    m?.kind !== 'match' ||
+    m.optional ||
+    m.where !== undefined ||
+    m.patterns.length !== 1 ||
+    ret?.kind !== 'return'
+  ) {
+    return null;
+  }
+
+  const column = countStarColumn(ret.projection);
+
+  if (column === null || (ret.projection.orderBy ?? []).length > 0) {
+    return null;
+  }
+
+  const [pattern] = m.patterns;
+
+  if (!degreeCountShape(pattern)) {
+    return null;
+  }
+
+  const [seg] = pattern.segments;
+  const { rel, node } = seg;
+  const { min, max } = rel.quantifier!;
+
+  if (max === null || max > 2 || max < 1) {
+    return null;
+  }
+
+  const types = relTypeNames(rel.label);
+
+  if (types === null) {
+    return null;
+  }
+
+  // An endpoint label is the only predicate admitted, and only in its simple form.
+  const endLabel = node.label;
+
+  if (endLabel !== undefined && endLabel.kind !== 'label') {
+    return null;
+  }
+
+  const startLabel = pattern.start.label;
+
+  if (startLabel !== undefined && startLabel.kind !== 'label') {
+    return null;
+  }
+
+  const isTrail = pattern.mode !== 'walk';
+
+  return (graph) => {
+    // A VACUOUS endpoint label costs a per-edge test that cannot fail, which is the difference
+    // between a degree product and a per-edge scan wearing one (item 566 / `effectiveLabel`).
+    const eff = endLabel === undefined || vacuousLabel(graph, endLabel) ? undefined : endLabel.name;
+    const passes = eff === undefined ? alwaysTrue : (v: Vertex): boolean => v.labels.has(eff);
+
+    return [
+      {
+        [column]: varLengthDegreeCount(graph, {
+          types,
+          min,
+          max,
+          isTrail,
+          startName: startLabel?.name,
+          passes,
+          passesIsVacuous: eff === undefined,
+        }),
+      },
+    ];
+  };
 };
 
 export const detectCountShortcut = (

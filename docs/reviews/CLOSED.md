@@ -7367,3 +7367,40 @@ line locates it in the per-rep POSITION rather than in `CAST`. Pre-existing. Err
   `est_paths` is 13.5 against the threshold of 30 — the closed form never ran and 425 clean
   comparisons meant nothing. 60 nodes at out-degree 4 clears it. Same trap as item 570's four
   surviving mutants, two ticks apart.
+
+### Item 573 — the TS var-length count: DONE, ~15x, and the gap was ALGORITHMIC
+
+TS answered `count(*)` over a bounded var-length hop by ENUMERATING; native has used degree
+arithmetic since item 64. `varLengthDegreeCount` + `detectVarLengthCount` in
+`executor/shortcuts.ts` port it for `max <= 2`, `Dir out`, WALK/TRAIL, with an endpoint label as
+the passing-degree test.
+
+```
+-[:T]->{1,2}(y)        313.15/295.70/312.02 -> 36.46/31.92/41.78, then 19.73 after the rewrite
+((x)-[e:T]->(y)){1,2}  272.11/269.28/256.27 -> 32.66/32.20/31.21
+```
+
+**The framing matters.** 237-491x was NOT item 566's data-layout ceiling (82-248x on filtered
+scans). 479,998 paths against a V+E of 160,000 is an ALGORITHM difference. Closing it leaves ~30x,
+which IS that band — so the ceiling claim survives and this was a separate, missing rung.
+Before pricing a big TS/native ratio as "the layout", check whether the two engines are running
+the same algorithm.
+
+The GROUP spelling reaches it via item 569's elision, so `bun run spelling`'s item-569 group now
+reads 223.80 / 220.11 / 221.11, within 1.02x, against 1131 / 1278 / 1122 when it was added.
+
+**STILL OPEN in TS:** a per-rep predicate (466ms) and an endpoint predicate beyond a bare label
+(367ms). Native folds both in as masks (items 570, 572); the TS rung takes neither yet.
+
+### Two traps this item paid for
+
+- **Summing per-label `set.size` double-counts a MULTI-LABEL edge.** It sits in several of a
+  vertex's adjacency buckets. `multi-label-edges.test.ts` answered 8 where the walk answers 3 —
+  and a 448-query cross-engine sweep with `[:T|U]` cases MISSED it, because that fixture's T and
+  U edges were disjoint. Use `edgesOfTypes`, which dedupes through a `Set` and keeps the O(1)
+  route; it is also faster than the hand-rolled sum.
+- **A guard that declines everything measures exactly like an absent one.** `PathPattern.selector`
+  defaults to the string `'walk'`, not `undefined`, so a `!== undefined` guard refuses every
+  query. The only symptom was a measurement showing no change whatsoever. An optimization that
+  measures as a perfect no-op is more likely unreachable than ineffective — check the guard
+  before the arithmetic.
