@@ -7596,3 +7596,44 @@ Item 576's baseline differed from its cases in a second, uncontrolled way (one q
 many). I had already refuted one hypothesis in that item, which is precisely when the surviving one
 deserves the same scepticism — and did not get it. When a decomposition shows a fixed cost that
 appears the moment a feature is used, check whether the feature is the only thing that changed.
+
+### Item 578 — `read: keyed dedup lookup` is the CEILING, not a rung: RETRACTED as a target
+
+The index seek IS taken: 93.1k ops/s against a 3.4k scan reference, 27x. 200 matches at 93.1k is
+**54ns a row** against item 566's measured TS floor of ~61ns, and native's 136.5k is 37ns. The
+1.8x is the data-layout per-row constant that item 566 established, not a missing route. Swapping
+the conjuncts changes nothing (88.9k against 90.0k), so no written-order cliff either.
+
+### A TS spelling gap that no instrument was watching — OPEN
+
+```
+MATCH (u:User) WHERE u.score = $s AND u.active = true   clause
+MATCH (u:User {score: $s}) WHERE u.active = true        inline
+```
+
+Three interleaved rounds at 20,000 users: at **1000 matches a seek** clause 21.3/20.8/21.8k
+against inline 11.5/14.4/14.7k — **1.41x**, consistent in direction every round. At 20 matches it
+is unresolvable (310-608k against 323-480k), which is the evidence that the cost is PER ROW.
+**Native has no gap** (inline 145.3k against clause 137.2k).
+
+A first pass measured 1.36x at 200 matches and a second run REVERSED it, with the clause form
+moving 1.6x between runs — the bimodality [[ts-spelling-probe]] records. Only interleaved rounds
+at a selectivity above that noise resolve it.
+
+### WHY nothing watched it — read this before trusting `spelling-probe` on a seeding question
+
+`spelling-probe` already has the exact pair (item 230's group) and does not flag it, for two
+reasons:
+
+- **It creates NO INDEX.** `createIndex` appears ZERO times in the file. No index, no seek, so no
+  seek-versus-recheck asymmetry can exist to be found.
+- **It binds NO PARAMETERS**, and its own comment delegates the param case to "`bench:usage`'s
+  `read: keyed dedup lookup`, which is exactly that mixed shape" — but that was a SINGLE row, not
+  a pair, so the delegation pointed at something that was never a comparison.
+
+**Every historical index-seeding bug in this engine was one spelling seeding where another did
+not, and the probe built to catch that class cannot see any of it, because it never builds an
+index.** `bench:usage` now carries the pair (`read: keyed dedup lookup [inline]`), but at its 200
+matches the TS columns swing 3.3x run to run and cannot resolve the gap.
+
+**NEXT INSTRUMENT TARGET: give `spelling-probe` an index and parameter binding.**

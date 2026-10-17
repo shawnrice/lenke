@@ -246,6 +246,34 @@ const WORKLOADS: Workload[] = [
   },
   {
     // Entity resolution: find the candidate that matches on a keyed attribute.
+    //
+    // PAIRED with the inline twin below (item 578), and the pairing is the point. `spelling-probe`
+    // runs every query WITHOUT PARAMETERS and creates NO INDEX, so it cannot compare these two
+    // spellings at all — its own note delegates the mixed param case to "`bench:usage`'s
+    // `read: keyed dedup lookup`, which is exactly that mixed shape". But one row is not a
+    // comparison. This bench binds params and builds indexes, so the pair belongs here.
+    //
+    // Measured on a standalone probe at 20,000 users, three interleaved rounds:
+    //
+    //   1000 matches a seek (score = i % 20)   clause 21.3/20.8/21.8k   inline 11.5/14.4/14.7k
+    //     20 matches a seek (score = i % 1000) clause 310/385/608k      inline 323/479/480k
+    //
+    // So the clause form is 1.41x ahead where a seek returns MANY rows, consistently in every
+    // round, and the two are unresolvable where it returns few. That is the signature of a
+    // PER-ROW cost.
+    //
+    // AT THIS FIXTURE'S 200 MATCHES THE PAIR CANNOT RESOLVE IT, and that is measured, not
+    // assumed. Three runs of the pair in one process gave ts(+) clause 69.3k / 20.9k / 69.3k
+    // against inline 48.1k / 56.5k / 15.8k — swings of 3.3x and 3.6x with the direction
+    // disagreeing, which is the TS bimodality `ts-spelling-probe` records. The native columns
+    // over the same runs are steady (clause 136.5/134.5/138.0k, inline 142.1/140.1/143.1k).
+    //
+    // The pair is still worth more than the single row it replaces — a change that hits one
+    // spelling and not the other becomes visible at all — but read it over several runs, and use
+    // a standalone probe at ~1000 matches a seek to resolve the gap itself.
+    //
+    // Native shows no such gap (inline 145.3k against clause 137.2k, inline slightly ahead), so
+    // whatever this is, it is TS-side.
     name: 'read: keyed dedup lookup',
     op: (e, g, i) =>
       void e.query(
@@ -255,6 +283,13 @@ const WORKLOADS: Workload[] = [
           s: i % 100,
         },
       ),
+  },
+  {
+    name: 'read: keyed dedup lookup [inline]',
+    op: (e, g, i) =>
+      void e.query(g, 'MATCH (u:User {score: $s}) WHERE u.active = true RETURN count(*) AS c', {
+        s: i % 100,
+      }),
   },
   {
     name: 'write: property update',
