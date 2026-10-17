@@ -555,6 +555,22 @@ const GROUPS: [string, readonly string[]][] = [
       'MATCH (x)<-[:E]-(e)<-[:E]-(d)<-[:E]-(c)<-[:E]-(b)<-[:E]-(a:P) RETURN count(*) AS c',
     ],
   ],
+  // A quantified hop spelled as a parenthesized GROUP against the abbreviated form — one
+  // question, and the group spelling cost 1.87x until `dropUnreadGroupBinds` (item 569). The
+  // group compiles to a repetition UNIT that materializes a per-rep LIST for every inner
+  // variable; when nothing downstream reads them, that work is the whole difference.
+  //
+  // The third member names NO inner variables at all, which is the same plan arrived at by a
+  // different route — a regression that reaches only the elision shows as the first member
+  // drifting away from the other two rather than as all three moving.
+  [
+    'a quantified hop: group vs abbreviated spelling (item 569)',
+    [
+      'MATCH (a:P)((x)-[e:E]->(y)){1,2} RETURN count(*) AS c',
+      'MATCH (a:P)-[:E]->{1,2}(y) RETURN count(*) AS c',
+      'MATCH (a:P)(()-[:E]->()){1,2} RETURN count(*) AS c',
+    ],
+  ],
 ];
 
 const timed = (q: string): { ms: number; answer: string } => {

@@ -7191,8 +7191,46 @@ All four answer identically where the shapes match (719,998 / 171,883 / 159,981)
 quantified or nested group** (recorded in the engine-corpus note), so the usual net would not catch
 a wrong answer here. Both need their own tests first.
 
+> **CORRECTED at item 569 — the sentence above is FALSE.** The fuzzer generates quantified groups
+> in quantity, each with a coverage floor. Only NESTED groups are the gap. See item 569's entry
+> below; the blocker recorded here did not exist.
+
 The TS one also carries item 444's named trap: "a NAMED but UNMENTIONED variable" cannot be
 cleared by free-variable analysis alone, because `freePredicateVars` adds a subquery's own pattern
 names to its bound set and so cannot distinguish an inner `-[r:T]->` that CORRELATES on an
 already-bound `r` from one that binds it freshly. A group-binding elision inherits that exactly,
 and must refuse any query containing a subquery rather than rely on the analysis.
+
+### Item 569 — TS group-binding elision: DONE, 2.10x
+
+`dropUnreadGroupBinds` in `packages/gql/src/executor.ts` turns `((x)-[e:T]->(y)){n,m}` whose
+per-rep bindings nothing downstream reads into the plain quantified hop, which is what the native
+optimizer's `drop_unread_group_binds` already did. 806/855/816 -> 384/397/386 ms over three
+alternated rounds at 60,000 vertices / 180,000 edges, landing at or below the abbreviated
+spelling's own 429-475. Target 1 of item 568 is CLOSED; target 2 (native's 32-40x per-rep
+predicate) is still OPEN.
+
+**Correction to item 568's recorded blocker.** "The differential fuzzer generates no quantified
+or nested group" is FALSE — it generates them in quantity, with a coverage floor on each
+(`perRep`, `abbrev`, `simpleGroup`, `groupHopPred`, `innerWhere`). The claim came from a one-line
+memory summary whose own note body corrects it. The engine-corpus note's gap is about NESTED
+groups specifically.
+
+### A seventh cross-engine divergence — group bindings are NULL in TS clause expressions — OPEN
+
+A quantified group's per-rep binding resolves correctly in a RETURN item and to NULL everywhere
+else in TS — a clause `WHERE`, a standalone `FILTER`, an `ORDER BY` key — where native sees the
+list. `WHERE size(e) > 1` gives ts 0 rows against native 3; `WHERE e IS NULL` gives ts 6 against
+native 0, which is what identifies it as null rather than mismatched. `bindGroupVarsFlat` does
+write the lists into the binding Map, so the fault is in clause-level name resolution.
+
+Silent wrong rows — the dangerous VALUE class. Pre-existing (reproduces on HEAD). Pinned in
+`packages/native/src/group-bind-elision.test.ts` with BOTH answers so a fix fails the test rather
+than passing silently. It is also why item 569's M5 mutant survives: the guard it removes has no
+observable until this is fixed.
+
+### An eighth — a subquery rebinding a group-bound name — OPEN, narrower class
+
+`MATCH (a:P)((x)-[e:T]->(y)){1,1} RETURN count(*), COUNT { MATCH (p:P)-[e:T]->(q) }` is
+`E_SYNTAX` in native and answers `d=0` in TS (correlating the inner `e` against the outer per-rep
+list). Error against rows, not value against value.

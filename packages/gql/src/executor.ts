@@ -7476,6 +7476,124 @@ const inlineTrailingFilter = (clauses: readonly Clause[]): readonly Clause[] => 
   return out.length === clauses.length ? clauses : out;
 };
 
+/**
+ * `((x)-[e:T]->(y)){n,m}` → `-[:T]->{n,m}(y)` when nothing can observe the unit's variables.
+ *
+ * The two are one question, and the GROUP spelling costs nearly twice the abbreviated one because
+ * it compiles to a repetition UNIT (which carries a per-rep list for every inner variable) where
+ * the abbreviated form routes through the plain quantified hop. Measured at 60,000 vertices /
+ * 180,000 edges, one case per process:
+ *
+ * ```text
+ *   MATCH (a:P)-[:T]->{1,2}(y) RETURN count(*)          421.35 ms    native 1.07
+ *   MATCH (a:P)((x)-[e:T]->(y)){1,2} RETURN count(*)    786.15       native 1.06    1.87x
+ * ```
+ *
+ * The native optimizer already does this — `drop_unread_group_binds`, whose own note measures a
+ * group `count(*)` going 64,655µs → 606 — and the two engines agreeing that the spellings are one
+ * question (1.06 against 1.07) is what says the rewrite is sound rather than merely faster.
+ *
+ * NARROW ON PURPOSE. The clause list must be exactly MATCH + RETURN, and neither the projection
+ * nor the match's `WHERE` may MENTION an inner name or contain a SUBQUERY of any kind. That last
+ * condition is item 444's trap, and it is the reason this does not use a free-variable analysis:
+ * `freePredicateVars` adds a subquery's own pattern names to its bound set, so an inner
+ * `-[r:T]->` that CORRELATES on an already-bound `r` is indistinguishable from one binding it
+ * freshly — and a guard removed on that basis produced a wrong answer (2 where the answer is 1).
+ * With no subquery anywhere, "mentioned" is exactly what a free-variable walk reports.
+ *
+ * The unit must also be ONE plain hop: a multi-element unit, a nested subpath, an inner
+ * quantifier, a per-rep `WHERE`, or any label / property / inline `WHERE` on an inner node or the
+ * edge all change what is matched, not just what is bound.
+ */
+/**
+ * Whether a quantified-subpath inner node carries nothing that FILTERS. Module scope, not a
+ * closure in {@link dropUnreadGroupBinds}: it captures nothing, and a helper defined inside a
+ * hot builder is a shape this engine has been bitten by (`ts-closure-size-is-load-bearing`).
+ *
+ * All three conditions are depth rather than reachable protection — the parser rejects a label,
+ * an inline property and a `WHERE` on such a node outright ("a label or property on a
+ * quantified-subpath node isn't supported yet"). `group-bind-elision.test.ts` pins that
+ * rejection, so if the parser ever admits them this guard is re-examined BEFORE the rewrite can
+ * start dropping a binding that filters.
+ */
+const plainGroupNode = (n: NodePattern | undefined): boolean =>
+  n === undefined ||
+  (n.label === undefined && (n.properties?.length ?? 0) === 0 && n.where === undefined);
+
+const dropUnreadGroupBinds = (clauses: readonly Clause[]): readonly Clause[] => {
+  if (clauses.length !== 2) {
+    return clauses;
+  }
+
+  const [m, ret] = clauses;
+
+  if (m?.kind !== 'match' || m.patterns.length !== 1 || ret?.kind !== 'return') {
+    return clauses;
+  }
+
+  const [pattern] = m.patterns;
+
+  if (pattern.pathVar !== undefined) {
+    return clauses;
+  }
+
+  // Every expression anything downstream could read. A subquery ANYWHERE refuses the rewrite.
+  const exprs: Expr[] = [
+    ...ret.projection.items.map((it) => it.expr),
+    ...(ret.projection.orderBy ?? []).map((o) => o.expr),
+    ...(ret.projection.groupBy ?? []),
+    ...(ret.projection.having === undefined ? [] : [ret.projection.having]),
+    ...(m.where === undefined ? [] : [m.where]),
+  ];
+
+  if (exprs.some(hasSubquery)) {
+    return clauses;
+  }
+
+  const mentioned = new Set<string>();
+
+  for (const e of exprs) {
+    for (const name of freePredicateVars(e)) {
+      mentioned.add(name);
+    }
+  }
+
+  let changed = false;
+  const segments = pattern.segments.map((seg) => {
+    const { rel, hopFrom, hopTo, unitRest, innerQ, nested, subpathWhere } = seg;
+
+    if (
+      hopFrom === undefined ||
+      nested !== undefined ||
+      subpathWhere !== undefined ||
+      innerQ !== undefined ||
+      (unitRest?.length ?? 0) > 0 ||
+      !plainGroupNode(hopFrom) ||
+      !plainGroupNode(hopTo) ||
+      (rel.properties?.length ?? 0) > 0 ||
+      rel.where !== undefined
+    ) {
+      return seg;
+    }
+
+    const inner = [hopFrom.variable, hopTo?.variable, rel.variable].filter(
+      (n): n is string => n !== undefined,
+    );
+
+    if (inner.some((n) => mentioned.has(n))) {
+      return seg;
+    }
+
+    changed = true;
+
+    const { hopFrom: _f, hopTo: _t, ...rest } = seg;
+
+    return { ...rest, rel: { ...rel, variable: undefined } };
+  });
+
+  return changed ? [{ ...m, patterns: [{ ...pattern, segments }] }, ret] : clauses;
+};
+
 const compileLinear = (linear: LinearQuery): CLinear => {
   const source = fuseAnchorThenHop(
     inlineCorrelatedCall(
@@ -7484,7 +7602,9 @@ const compileLinear = (linear: LinearQuery): CLinear => {
       // an aggregate body is a projection subquery", which is where the rungs are.
       inlineTrailingLet(
         inlineAggregateCall(
-          inlineTrailingFilter(unoptionalizeForAggregate(dropVacuousPage(linear.clauses))),
+          inlineTrailingFilter(
+            unoptionalizeForAggregate(dropUnreadGroupBinds(dropVacuousPage(linear.clauses))),
+          ),
         ),
       ),
     ),
