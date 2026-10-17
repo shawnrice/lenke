@@ -3995,6 +3995,97 @@ export const detectOptionalHopCount = (
  * is left to the general path; a `$param` list is constant per run but not per compile, and
  * reaching it needs the list evaluated once per execution rather than once per compile.
  */
+/**
+ * `MATCH (n:L) FOR t IN n.<key> RETURN count(*)` — a PER-ROW list, counted as Σ its lengths.
+ *
+ * Item 515 took the constant list (one multiplication). A list read from the row needs the
+ * anchors walked, but not a row per element: 191.1 ms at 200,000 vertices with three tags each
+ * against the native engine's 15.8, because the general path materialized 600,000 rows to count
+ * them (audit item 518).
+ *
+ * ISO's unwind semantics are the whole arithmetic, and each case is a different number:
+ *
+ *   - a LIST contributes its length (an empty list contributes 0 — the anchor's row disappears);
+ *   - NULL or a missing property contributes 0;
+ *   - any other scalar contributes 1, because a non-list unwinds as a one-element list.
+ *
+ * The anchor must be a lone node whose variable the property reads, with no inline properties or
+ * `WHERE` — the same admission as item 510's optional count, and for the same reason: its bucket
+ * is what this walks.
+ */
+const perRowForCount = (
+  clauses: readonly Clause[],
+  list: Extract<Expr, { kind: 'prop' }>,
+  ret: Extract<Clause, { kind: 'return' }>,
+): ((graph: Graph, params: Params) => Row[]) | null => {
+  if (clauses.length !== 3) {
+    return null;
+  }
+
+  const [m] = clauses;
+
+  if (m.kind !== 'match' || m.optional || m.where !== undefined || m.patterns.length !== 1) {
+    return null;
+  }
+
+  const [pattern] = m.patterns;
+  const { start } = pattern;
+
+  if (
+    pattern.segments.length !== 0 ||
+    pattern.pathVar !== undefined ||
+    // The property must read the ANCHOR. Its mutant survives and is equivalent by
+    // construction: with ONE lone-node `MATCH` clause the anchor's variable is the only name in
+    // scope, so a property on anything else is an unbound reference the compiler rejects before
+    // this runs — and a pattern WITH segments (where a second name exists) is refused one line
+    // above.
+    start.variable !== list.variable ||
+    !plainNode(start) ||
+    (start.properties !== undefined && start.properties.length > 0)
+  ) {
+    return null;
+  }
+
+  const { label } = start;
+
+  if (label !== undefined && label.kind !== 'label') {
+    return null;
+  }
+
+  const column = countStarColumn(ret.projection);
+
+  if (column === null) {
+    return null;
+  }
+
+  const proj = ret.projection;
+  const name = label?.name;
+  const { key } = list;
+  const one = (graph: Graph): Row => {
+    const vertices: Iterable<Vertex> =
+      name === undefined ? graph.verticesById.values() : (graph.verticesByLabel.get(name) ?? []);
+    let total = 0;
+
+    for (const vertex of vertices) {
+      const value = vertex.properties[key];
+
+      if (value === null || value === undefined) {
+        continue;
+      }
+
+      total += Array.isArray(value) ? value.length : 1;
+    }
+
+    return { [column]: total };
+  };
+
+  if (proj.skip === undefined && proj.limit === undefined) {
+    return (graph) => [one(graph)];
+  }
+
+  return (graph, params) => pageOneRow(() => one(graph), graph, params, proj.skip, proj.limit);
+};
+
 export const detectForCount = (
   clauses: readonly Clause[],
   compiled: readonly CClause[],
@@ -4006,7 +4097,15 @@ export const detectForCount = (
   const ret = clauses[clauses.length - 1];
   const loop = clauses[clauses.length - 2];
 
-  if (ret.kind !== 'return' || loop.kind !== 'for' || loop.list.kind !== 'list') {
+  if (ret.kind !== 'return' || loop.kind !== 'for') {
+    return null;
+  }
+
+  if (loop.list.kind === 'prop') {
+    return perRowForCount(clauses, loop.list, ret);
+  }
+
+  if (loop.list.kind !== 'list') {
     return null;
   }
 

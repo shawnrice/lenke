@@ -5564,3 +5564,19 @@ across the file. Order affects REACH, not correctness.
 
 **Also checked:** `bench:gremlin`'s two widest ratios are both item 235's — the
 `values(age)` ordering guarantee and the shared adjacency floor. No new target on that surface.
+
+## 518 — a per-row `FOR` list: CLOSED at ≥5x (commonly ~32x)
+
+Item 515's companion. `MATCH (n:L) FOR t IN n.tags RETURN count(*)` materialized 600,000 rows to
+count them; the rung walks the anchor bucket and sums the lengths, with ISO's unwind semantics as
+the arithmetic — a list contributes its LENGTH (empty: 0), NULL or a missing key 0, and any other
+scalar 1. 82.9/72.6/83.2 -> 2.5/2.3/16.3 ms, three alternated rounds; the third after-round is an
+outlier, so the claim is at least 5x with the common mode ~32x. **It also beats native's 15.8 on
+this shape.** The constant `FOR` and the plain node count are the controls, both 0.0.
+
+Mutation 5 of 6; the anchor-variable check is equivalent by construction (with one lone-node
+`MATCH` the anchor is the only name in scope, and a pattern with segments is refused earlier).
+
+**One mutant was MISAPPLIED** — the bucket-iteration line is character-identical to item 510's
+rung — and the uniqueness assert caught it. Items 474, 483, 494, 518: _two copies of a body is
+the most reliable way to fool a mutation run here._
