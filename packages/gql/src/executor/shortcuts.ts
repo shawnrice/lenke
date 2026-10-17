@@ -7187,11 +7187,17 @@ export const detectGroupedHopAggregate = (
   }
 
   // One non-aggregate item, a property of one END; the rest aggregates over the KEYED end.
-  // FALSE for the HOP rung: its walk has a far-driven alternative that visits rows in a different
-  // order (item 419), so an order-sensitive fold there needs the forcing items 551/552 gave the
-  // un-grouped hop rungs, not this flag. Priced (`b.age AS k, sum(b.age)` 472.71 ms against the
-  // 167.82 the grouped count takes) and left open.
-  const picked = groupedAccs(ret.projection.items, proj.items, null, false);
+  //
+  // ITEM 553 SAID THIS RUNG NEEDED THE WALK FORCING AND THAT WAS WRONG — a guess from item 419's
+  // rule rather than a reading of the loop below, which iterates
+  // `candidateVertexSource(graph, startLabel)` and expands, with no far-driven alternative
+  // anywhere. Its visit order is the start side's, which is the general path's. So the only
+  // condition is the SEED hazard item 553 demonstrated, and it is the same flag (item 554).
+  //
+  // The `unfiltered` value itself is computed below, once the keyed end is known: the filter can
+  // be written on EITHER end's inline properties or in the clause `WHERE`, and which end is
+  // "keyed" decides which of those this rung may even accept.
+  const picked = groupedAccs(ret.projection.items, proj.items, null, true);
 
   if (picked === null) {
     return null;
@@ -7249,6 +7255,16 @@ export const detectGroupedHopAggregate = (
     });
   }
 
+  // THE SEED HAZARD, checked here rather than at the `groupedAccs` call because `preds` is what
+  // answers it and `preds` needs the keyed end, which `groupedAccs` is what decides. A FILTERED
+  // source may seed from an index in the general path, and then the values reach their group in
+  // index order rather than scan order — item 553 demonstrated that on the scan rung with a
+  // `collect` that read `[7,5,9]` without an index and `[5,7,9]` with one. This walk always
+  // iterates the start side, so it cannot reproduce a seeded order and must decline.
+  if (preds.length > 0 && accs.some((a) => a.kind === 'values')) {
+    return null;
+  }
+
   const gate = preds.reduceRight<InlineGate | undefined>(
     (rest, ip) => (v, binding, params, graph) =>
       inlineHolds(ip, v, binding, params, graph) &&
@@ -7299,7 +7315,13 @@ export const detectGroupedHopAggregate = (
           slot = {
             key: raw,
             n: 0,
-            state: accs.map((a) => (a.kind === 'fold' ? a.fold.init() : 0)),
+            state: accs.map((a) => {
+              if (a.kind === 'fold') {
+                return a.fold.init();
+              }
+
+              return a.kind === 'values' ? [] : 0;
+            }),
           };
           bySeen.set(id, slot);
           slots.push(slot);
@@ -7311,13 +7333,19 @@ export const detectGroupedHopAggregate = (
         for (let i = 0; i < accs.length; i += 1) {
           const a = accs[i];
 
-          if (a.kind !== 'fold') {
+          if (a.kind === 'rows') {
             continue;
           }
 
           const value = a.argFn(env);
 
-          if (!isNullish(value)) {
+          if (isNullish(value)) {
+            continue;
+          }
+
+          if (a.kind === 'values') {
+            (slot.state[i] as unknown[]).push(value);
+          } else {
             slot.state[i] = a.fold.step(slot.state[i], value);
           }
         }

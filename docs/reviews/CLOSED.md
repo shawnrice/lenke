@@ -6581,3 +6581,74 @@ ms (`collect` the top of that range, which is the cost of building a 200,000-ele
 OPEN, priced: the grouped HOP rung, where `b.age AS k, sum(b.age)` costs **472.71 ms** against the
 167.82 the grouped count takes. It needs items 551/552's walk FORCING rather than this flag, since
 its walk has a far-driven alternative.
+
+## 554 — the grouped-HOP rung too: 2.4-2.5x, a wrong claim corrected, and a DIVERGENCE found
+
+Item 553's call site said this rung needed items 551/552's walk FORCING because "its walk has a
+far-driven alternative". **That was wrong** — a guess from item 419's rule rather than a reading of
+the loop, which iterates `candidateVertexSource(graph, startLabel)` and expands, with no far-driven
+alternative anywhere. Its visit order is the start side's, which is the general path's, so the only
+condition is item 553's SEED hazard and the fix is the same flag.
+
+ts, 200,000 vertices / 200,000 edges, one case per process, pristine against the change:
+
+| projection                                | before    | after             |
+| ----------------------------------------- | --------- | ----------------- |
+| `b.age AS k, sum(b.age)`                  | 461.01 ms | **191.52** (2.4x) |
+| `b.age AS k, collect(b.age)`              | 467.25    | **192.49** (2.4x) |
+| `b.age AS k, percentile_cont(b.age, 0.5)` | 471.90    | **192.39** (2.5x) |
+| `b.age AS k, count(*)` (control)          | 161.12    | 162.10            |
+| `b.age AS k, max(b.age)` (control)        | 182.73    | 177.38            |
+| `WHERE b.age > 1 … sum(b.age)` (refused)  | 487.81    | 451.26            |
+
+### An OPEN DIVERGENCE, found by probing and pre-existing
+
+Ten `:P` nodes with one `:K` edge each and a range index on `age`:
+
+```text
+MATCH (a)-[:K]->(b) WHERE b.age >= 5 RETURN b.tag AS k, collect(b.age) AS m
+  no index    ts [7,9,5] / [8,6]    native [7,9,5] / [8,6]    agree
+  indexed     ts [5,7,9] / [6,8]    native [7,9,5] / [8,6]    DIVERGE
+```
+
+TS seeds the FAR end of a hop from the index and native does not, so the values reach their group
+in different orders. **Verified against the pristine build before item 554**, so it is pre-existing;
+the same filter on the START end agrees with and without the index, which locates it in the far-end
+seed specifically. Not fixed here — the fix is a decision about which engine's seeding is right, not
+a rung condition.
+
+Teeth: five mutants, three caught, control clean. M1 (the seed guard dropped) survived its first run
+because the only shape where the guard matters is the diverging one, so `agree()` cannot be the
+oracle; it is now tested against **the general path in the same engine**, which is the invariant
+that applies to a rung, and it is caught. M2 (the flag turned off) is a PERFORMANCE mutant — the
+rung simply declines and the general path answers identically, so no test can catch it and none
+should. M4 confirms item 553's survivor is now load-bearing, exactly as that entry predicted.
+
+## 555 — two fuzzer coverage floors were chasing the distribution's tail (CI red, no divergence)
+
+CI went red on item 553 and the failure was **not** a byte-identity divergence: the GQL differential
+fuzzer's coverage assertion failed with `hopUntypedGenerated` expected `> 28` and received 21-28,
+while its NonZero floor of 20 passed — the two counters within a few of each other, which is a thin
+seed rather than a lost shape.
+
+**Engine work cannot move either counter.** `tally()` runs on EVERY generated query and reads only
+its TEXT, so nothing in items 549-553 could have touched it. Twelve seeds:
+
+```text
+hopFilter   102/78  122/98  124/103  125/104  127/104  127/106
+            131/107 131/110 133/115  140/115  145/113  167/146
+hopUntyped   34/27   37/33   37/33    38/31    39/38    40/35
+             40/37   42/38   45/42    46/40    46/43    50/46
+```
+
+Minima 102/78 and 34/27 against old floors of 90/80 and 28/20 — `hopFilterNonZero`'s floor was
+**above its own observed minimum**, and it duly failed on seed 2718281828 while the first fix was
+being verified. Lowered to 60/45 and 20/12, ~40% under the observed minima.
+
+Teeth: two mutants driving each counter to zero by breaking its regex, **both caught**. The floors
+still do the job the file says they are for (catching a silent fall to ZERO, items 115, 125) at the
+only threshold that matters.
+
+_The lesson is about instruments, not about this fuzzer: a floor set just under a small sample's
+minimum will go red on the weather, and a red CI with nothing behind it costs more than the dip it
+would have caught._
