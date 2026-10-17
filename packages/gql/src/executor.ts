@@ -6167,15 +6167,43 @@ export type CLinear = {
  *     and that is worth its own measurement rather than a guess here.
  */
 /** The ANCHOR half of `fuseAnchorThenHop`: a lone `MATCH (v …)` binding exactly one node. */
+/**
+ * Is this pattern's path shape the plain default — every match, no repetition restrictor?
+ *
+ * A SELECTOR or a non-default MODE describes the WHOLE path, so concatenating two patterns
+ * under one of them is a different question: `ANY SHORTEST` over the join is not two
+ * independent matches, and `SIMPLE` would forbid repeating a node ACROSS the join where the
+ * two-clause form allows it.
+ *
+ * Compared against the DEFAULTS rather than `undefined`, which is the bug this comment exists
+ * for: `parsePathPattern` writes `selector: 'walk'` and `mode: 'trail'` onto every pattern it
+ * builds, so an `=== undefined` test refuses everything — fusion silently stopped firing
+ * altogether (11 fusions in its own test file to 0) while every test still passed, because a
+ * rewrite that declines is only slower. The instrumented count is what caught it.
+ *
+ * `trail` is the written default and is NOT enforced on a fixed-length pattern in either
+ * engine: `MATCH (a:P)-[:T]->(x)-[:T]->(y)` over a self-loop counts the path that reuses that
+ * one edge, and so does the two-clause spelling — checked in both engines before relying on it.
+ */
+const defaultPathShape = (p: PathPattern): boolean =>
+  (p.selector === undefined || p.selector === 'walk') &&
+  (p.mode === undefined || p.mode === 'trail');
+
 const anchorOf = (c: Clause): (Extract<Clause, { kind: 'match' }> & { v: string }) | undefined => {
   if (c.kind !== 'match' || c.optional || c.patterns.length !== 1) {
     return undefined;
   }
 
   const [p] = c.patterns;
-  const v = p.start.variable;
+  // The variable the NEXT clause can attach to is the one at the pattern's far END — its start
+  // when the pattern is a lone node, otherwise its last segment's node. Item 505 took only the
+  // lone-node case, so a THIRD clause never chained: `MATCH (a:P)-[:T]->(x) MATCH (x)-[:T]->(y)`
+  // cost 2286.3ms against 103.4 for the one-clause spelling, and native charges 2.7 for both
+  // (item 506).
+  const last = p.segments.at(-1);
+  const v = last === undefined ? p.start.variable : last.node.variable;
 
-  return p.segments.length === 0 && p.pathVar === undefined && v !== undefined
+  return p.pathVar === undefined && v !== undefined && defaultPathShape(p)
     ? { ...c, v }
     : undefined;
 };
@@ -6197,13 +6225,18 @@ const fuse = (a: Clause, b: Clause): Clause | undefined => {
   const [hop] = b.patterns;
   const { start } = hop;
 
+  const [anchorPattern] = anchor.patterns;
+
   if (
     hop.pathVar !== undefined ||
     hop.segments.length === 0 ||
     start.variable !== anchor.v ||
     start.label !== undefined ||
     start.where !== undefined ||
-    (start.properties !== undefined && start.properties.length > 0)
+    (start.properties !== undefined && start.properties.length > 0) ||
+    // The hop's own selector/mode would come to describe the CONCATENATED path once the
+    // anchor contributes segments of its own, so it is only safe to carry over a bare anchor.
+    (anchorPattern.segments.length > 0 && !defaultPathShape(hop))
   ) {
     return undefined;
   }
@@ -6211,7 +6244,13 @@ const fuse = (a: Clause, b: Clause): Clause | undefined => {
   return {
     kind: 'match',
     optional: false,
-    patterns: [{ ...hop, start: anchor.patterns[0].start }],
+    patterns: [
+      {
+        ...hop,
+        start: anchorPattern.start,
+        segments: [...anchorPattern.segments, ...hop.segments],
+      },
+    ],
     where: anchor.where ?? b.where,
   };
 };

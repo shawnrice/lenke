@@ -122,8 +122,9 @@ describe('anchor-then-traverse fuses into one pattern (item 505)', () => {
     );
   });
 
-  test('an anchor that is not a bare node does not fuse', () => {
-    // The first clause binds two variables, so there is no single end to attach to.
+  test('an anchor WHOSE LAST NODE carries the variable fuses too (item 507)', () => {
+    // Item 505 took only a bare-node anchor; the anchor is now any single pattern whose LAST
+    // node holds the shared variable, so this one chains. The answer must not move.
     same(
       'MATCH (a:P)-[:T]->(m) MATCH (m)-[:S]->(y) RETURN a.k AS a, y.k AS y',
       'MATCH (a:P)-[:T]->(m) MATCH (m)-[:S]->(y) RETURN a.k AS a, y.k AS y',
@@ -176,14 +177,57 @@ describe('anchor-then-traverse fuses into one pattern (item 505)', () => {
     ).toEqual([JSON.stringify({ x: 2 })]);
   });
 
-  test('a THIRD clause does not chain onto the fused one — measured, not assumed', () => {
-    // An instrumented run counts 11 fusions across this file, which is exactly the two-clause
-    // cases: the fused clause is no longer a BARE NODE, so the third clause here does not
-    // attach to it. The answer is right either way; the widening (an anchor whose LAST node is
-    // the shared variable) is open and would want its own measurement.
+  test('a THIRD clause CHAINS onto the fused one (item 507)', () => {
+    // An instrumented run counts 14 fusions across this file against 11 before the widening.
+    // The count is CHECKED rather than assumed: a rewrite that silently stops firing still
+    // passes every test, and this one did exactly that for a while — the first version of the
+    // path-shape guard compared `selector`/`mode` against `undefined`, but the parser writes
+    // `walk` and `trail` onto every pattern, so fusion dropped from 11 to 0 with the suite
+    // still green.
     same(
       'MATCH (a:P)-[:T]->(x)-[:S]->(y) RETURN a.k AS a, y.k AS y',
       'MATCH (a:P) MATCH (a)-[:T]->(x) MATCH (x)-[:S]->(y) RETURN a.k AS a, y.k AS y',
     );
+  });
+
+  test('a two-hop anchor chains, and a repeated-edge path is kept either way', () => {
+    // `trail` is the written default on every pattern and is NOT enforced on a fixed-length
+    // one — the self-loop path that reuses its single edge is counted by both spellings, which
+    // is what makes the concatenation faithful. Checked in both engines before relying on it.
+    same(
+      'MATCH (a:P)-[:T]->(x)-[:T]->(y) RETURN a.k AS a, y.k AS y',
+      'MATCH (a:P)-[:T]->(x) MATCH (x)-[:T]->(y) RETURN a.k AS a, y.k AS y',
+    );
+    same(
+      'MATCH (a:P)-[:T]->(x)-[:T]->(y) RETURN count(*) AS c',
+      'MATCH (a:P)-[:T]->(x) MATCH (x)-[:T]->(y) RETURN count(*) AS c',
+    );
+  });
+
+  test('a VAR-LENGTH hop chains too, and agrees with the one-clause spelling', () => {
+    // A quantified segment on either side is concatenated like any other. Checked against the
+    // native engine as well before relying on it: all four spellings of a 1-to-2 hop tail
+    // answer 6 on a three-cycle, in both engines.
+    same(
+      'MATCH (a:P)-[:T]->(x)-[:T]->{1,2}(y) RETURN count(*) AS c',
+      'MATCH (a:P)-[:T]->(x) MATCH (x)-[:T]->{1,2}(y) RETURN count(*) AS c',
+    );
+    same(
+      'MATCH (a:P)-[:T]->{1,2}(y) RETURN count(*) AS c',
+      'MATCH (a:P) MATCH (a)-[:T]->{1,2}(y) RETURN count(*) AS c',
+    );
+  });
+
+  test('an explicit path MODE is not concatenated', () => {
+    // `SIMPLE` forbids repeating a node, which across a join is a constraint the two-clause
+    // form does not have, so an anchor carrying segments refuses it.
+    expect(
+      query<{ c: number }>(
+        g,
+        'MATCH SIMPLE (a:P)-[:T]->(x) MATCH (x)-[:T]->(y) RETURN count(*) AS c',
+      )[0]?.c,
+      // a -> a -> {a, b, c}: three two-hop T paths, and `SIMPLE` across the join would cut
+      // the ones that revisit `a`, which is exactly why the two clauses stay apart.
+    ).toBe(3);
   });
 });

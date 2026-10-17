@@ -5353,3 +5353,25 @@ catch. Mutation 3 of 4, null control clean.
 **OPEN (written and measured, deliberately NOT in that commit):** chaining a third clause onto a
 fused pair. `MATCH (a:P)-[:T]->(x) MATCH (x)-[:T]->(y) RETURN count(*)` costs **2286.3 ms against
 103.4** for the one-clause spelling; native is 2.7 for both.
+
+## 507 — fusion chains: an anchor is any pattern whose LAST node carries the variable. CLOSED at 29.7x
+
+Item 505's open widening. `MATCH (a:P)-[:T]->(x) MATCH (x)-[:T]->(y) RETURN count(*)`
+2176.1-2238.2 -> 74.0-74.5 ms, the three-clause form 2152.5-2211.4 -> 73.7-75.9, and both land ON
+the one-clause control (74.2-74.4, flat). A one-hop projection is the second control, flat.
+
+**The first guard switched the whole rewrite OFF and every test still passed.** It refused a
+pattern whose `selector`/`mode` was not `undefined` — but `parsePathPattern` writes
+`selector: 'walk'` and `mode: 'trail'` onto every pattern, so nothing fused at all, including
+item 505's shipped case. _A rewrite that declines is only slower, so the suite cannot see it._
+The instrumented fusion count did: 11 -> 0 -> 14.
+
+Checked in both engines before relying on it: **the path MODE is not enforced on a FIXED-length
+pattern** (`WALK`/`TRAIL`/`SIMPLE` all count the self-loop path that reuses its edge), a SELECTOR
+cannot sit on one (parse error), and a var-length hop chains with all four spellings agreeing.
+
+Mutation 2 of 5; `defaultPathShape` survives and is equivalent TODAY for exactly those reasons —
+kept because enforcing mode later would make this rewrite a wrong answer without it.
+
+`bun run spelling`'s second flag (`one end labelled…`, 2.2x) was item 504's shared-process
+contamination: isolated it is a 1.09x spread.
