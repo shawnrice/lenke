@@ -258,7 +258,12 @@ const queries: Record<string, string> = {
   subwhere: 'MATCH (n:Person) RETURN COUNT { MATCH (n)-[:KNOWS]->(x) WHERE x.age > 50 } AS c',
   subvalue: 'MATCH (n:Person) RETURN VALUE { MATCH (n)-[:KNOWS]->(x) RETURN count(*) } AS c',
   submax: 'MATCH (n:Person) RETURN VALUE { MATCH (n)-[:KNOWS]->(x) RETURN max(x.age) } AS c',
-  // Item 501: UNCORRELATED subquery bodies, which run ONCE. `opt` never descends into a
+  // ⚠️ ENGINE=ts WILL NOT FINISH these at PN=200000 (item 502): the TS engine re-runs an
+  // uncorrelated subquery body ONCE PER OUTER ROW, so the cost is quadratic in the fixture —
+  // 4.1 SECONDS at PN=2000 and 18.6 at PN=4000, against native's 21ms at PN=200000. Price the
+  // TS side at PN<=4000 until that is fixed.
+  //
+  // Item 501: UNCORRELATED subquery bodies, which run ONCE in native. `opt` never descends into a
   // subquery body (item 500), so these are the shapes where that costs the most: a body that
   // would have been a degree product, an indexed seek or a merged filter at the top level.
   uncorr2hop:

@@ -5245,3 +5245,16 @@ Mutation 2 of 4; `distinct: true` on the wrapper is equivalent (DISTINCT applies
 **OPEN:** a CORRELATED body is still unoptimized and is a different contract (a `Row` leaf
 standing in for the outer row, outer-slot references). `rewrite_fuzz` generates top-level plans
 only and needs widening first.
+
+## 502 — OPEN, measured: TS re-runs an uncorrelated subquery body ONCE PER OUTER ROW
+
+`COUNT { MATCH (:Person)-[:KNOWS]->(b) }` with no correlation: **4,102.8 ms at PN=2,000 and
+18,620.2 at PN=4,000** (2x the rows, 4.5x the time — quadratic), and it DID NOT FINISH in nine
+minutes at PN=200,000, where native answers in 20.9 after item 501. The correlated one-hop degree
+on the same fixture is 0.4 ms.
+
+**No fix yet, deliberately.** The fix is a per-EXECUTION memo and TS has nowhere to put one:
+`EvalEnv` is allocated PER ROW at every site (`projectRow`; item 454 says the same of
+`satisfies`). Threading a cache from a per-execution root is the right build; a `WeakMap` keyed
+on the graph is wrong without a mutation counter, and one missed mutation point is a silent wrong
+answer. `route-cost-probe` now warns in its case table: price the TS side at `PN<=4000`.
