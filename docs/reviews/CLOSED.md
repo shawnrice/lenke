@@ -7637,3 +7637,37 @@ index.** `bench:usage` now carries the pair (`read: keyed dedup lookup [inline]`
 matches the TS columns swing 3.3x run to run and cannot resolve the gap.
 
 **NEXT INSTRUMENT TARGET: give `spelling-probe` an index and parameter binding.**
+
+### Item 579 — `spelling-probe` can now see SEEKING spellings, and the first thing it saw was a gap
+
+Item 578's instrument gap is closed. The probe takes PARAMETERS (`timed(q, params?)`), creates
+indexes on `k` and `s` in a **seek pass that runs after the existing groups** (so their recorded
+numbers stay comparable — no second fixture), PRINTS the indexed keys (a seek group that silently
+measures a scan looks fine; item 576 is the precedent), and carries five seek groups.
+
+**It flagged on the first run.** `SPELL_N=1000000`, 20,000 matches a seek, three separate
+processes via `SPELL_ONLY`:
+
+```
+MATCH (n:P) WHERE n.k = $k AND n.s >= ''      1.90 / 1.75 / 1.96 ms
+MATCH (n:P {k: $k}) WHERE n.s >= ''           2.91 / 2.33 / 3.13
+MATCH (n:P WHERE n.k = $k) WHERE n.s >= ''    5.18 / 2.35 / 5.20
+```
+
+**Clause against inline is a consistent 1.3-1.6x**, confirming item 578's 1.41x on a different
+fixture and harness. `inline WHERE` is additionally BIMODAL, so the group reads 2.7x in two runs
+of three.
+
+**LOCALIZED: the STRING-key twin converges at 1.07x** (8.54/8.77/9.11/8.54ms over four spellings).
+So the gap is specific to a numeric seeked key, and the two-pass min rules out the harness.
+
+Three converged negatives worth keeping: **param against literal on the seeked key is 1.07x** (a
+param costs essentially nothing, though a literal lifts at compile time and a param cannot), a
+projection off the seek 1.04x, an anchored hop 1.04x.
+
+**Limit:** the numeric group needs `SPELL_N=1000000` to clear `FLOOR_MS` (`k` is `i % 50`, so
+200,000 vertices give 4,000 matches and ~0.5ms). At the default N the probe lists it under "raise
+SPELL_N to measure them" rather than passing silently.
+
+**OPEN: the 1.3-1.6x itself.** An inline `{k: $p}` and an `inline WHERE` seed less well than the
+clause form on a numeric key. Now watched by the probe, which is what was missing.

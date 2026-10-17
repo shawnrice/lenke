@@ -573,13 +573,13 @@ const GROUPS: [string, readonly string[]][] = [
   ],
 ];
 
-const timed = (q: string): { ms: number; answer: string } => {
+const timed = (q: string, params?: Record<string, unknown>): { ms: number; answer: string } => {
   let best = Infinity;
   let answer = '';
 
   for (let i = 0; i < REPS; i++) {
     const t = performance.now();
-    const rows = tsQuery(g, q);
+    const rows = params === undefined ? tsQuery(g, q) : tsQuery(g, q, params);
 
     best = Math.min(best, performance.now() - t);
     answer = JSON.stringify(rows);
@@ -601,7 +601,11 @@ const fast: string[] = [];
 // before this flag there was no short way to run one.
 const ONLY = process.env.SPELL_ONLY;
 
-for (const [name, spellings] of GROUPS.filter(([n]) => ONLY === undefined || n.includes(ONLY))) {
+const runGroup = (
+  name: string,
+  spellings: readonly string[],
+  params?: Record<string, unknown>,
+): void => {
   // TWO passes, the second in reverse order, keeping the min per spelling.
   //
   // Whichever member runs FIRST in a group pays a large position penalty, and it is the
@@ -616,11 +620,11 @@ for (const [name, spellings] of GROUPS.filter(([n]) => ONLY === undefined || n.i
   // Timing every spelling in both positions and taking its better reading removes the bias: a
   // spelling that is genuinely slower is slower from either position. It doubles the probe's
   // runtime, which is the right trade for an instrument whose whole output is a ratio.
-  const firstPass = spellings.map((q) => timed(q));
+  const firstPass = spellings.map((q) => timed(q, params));
   const secondPass: { ms: number; answer: string }[] = [];
 
   for (let i = spellings.length - 1; i >= 0; i -= 1) {
-    secondPass[i] = timed(spellings[i]);
+    secondPass[i] = timed(spellings[i], params);
   }
 
   const runs = spellings.map((q, i) => ({
@@ -661,6 +665,131 @@ for (const [name, spellings] of GROUPS.filter(([n]) => ONLY === undefined || n.i
   } else if (tooFast) {
     fast.push(name);
   }
+};
+
+const wanted = (n: string): boolean => ONLY === undefined || n.includes(ONLY);
+
+for (const [name, spellings] of GROUPS.filter(([n]) => wanted(n))) {
+  runGroup(name, spellings);
+}
+
+// --- THE SEEK PASS (item 579) ------------------------------------------------------------
+//
+// Everything above runs UNINDEXED and WITHOUT PARAMETERS, and item 578 found what that costs:
+// this probe already held the pair
+//
+//   MATCH (n:P) WHERE n.k = 2 AND n.s = 's1'     against     MATCH (n:P {k: 2}) WHERE n.s = 's1'
+//
+// in item 230's group and could not flag a confirmed 1.41x gap between their PARAMETERIZED,
+// INDEXED forms — because with no index there is no seek, so no seek-versus-recheck asymmetry
+// exists to find. Its own comment delegated the param case to `bench:usage`'s
+// `read: keyed dedup lookup`, which was a single row and therefore never a comparison.
+//
+// That matters more than one gap: **every index-seeding bug this engine has had was one spelling
+// seeding where another did not** (the equivalent-spelling note lists four), and the instrument
+// built to catch that class was blind to all of it.
+//
+// The indexes are created HERE, after the unindexed groups, so their numbers are untouched and
+// stay comparable with every figure recorded against them. No second fixture, no extra memory.
+g.createIndex({ on: 'vertex', kind: 'hash', keys: ['k'] });
+g.createIndex({ on: 'vertex', kind: 'hash', keys: ['s'] });
+
+// PRINTED, because a seek group that silently measures a SCAN is worthless and looks fine. Item
+// 576 is the precedent: `createIndex` took the edge arm for any unrecognized target and built an
+// index on the wrong element, costing 500x with no error. One line here makes the premise of
+// every group below visible in the output.
+console.log(
+  `\nindexed vertex keys: ${g.vertexPropertyIndex.indexedKeys().join(', ') || 'NONE — the seek groups below measure SCANS'}\n`,
+);
+
+/**
+ * Spellings of one question, run WITH an index and WITH parameters.
+ *
+ * THE SEEKED KEY IS `s`, NOT `k`, and the choice is the floor. `k` is `i % 50`, so a seek on it
+ * returns 4,000 of 200,000 and a count over them takes 0.32ms — under `FLOOR_MS`, which means
+ * "too fast, not compared" and no ratio at all. `s` is `i % 7` (28,571 rows), which lands the
+ * same shapes above 1ms. Item 578's gap is a PER-ROW cost, so the row count is not incidental to
+ * seeing it: at 20 matches a seek it was unresolvable and at 1000 it was 1.41x.
+ */
+const SEEK_GROUPS: [string, readonly string[], Record<string, unknown>][] = [
+  [
+    // The pair item 578 measured at 1.41x on the COUNT form (clause 21.3/20.8/21.8k ops/s
+    // against inline 11.5/14.4/14.7k, three interleaved rounds at 1000 matches a seek). Native
+    // showed no gap. Every member must SEEK; one that scans instead is the bug this exists for.
+    // The second conjunct is `n.k >= 0`, which EVERY row satisfies, and that is deliberate: with
+    // `n.k = 2` the four members returned 571 rows instead of 28,571 and the whole group fell
+    // under `FLOOR_MS` at 0.29-0.52ms — "too fast, not compared". A selective second conjunct
+    // measures the filter; a vacuous one leaves the SEEK's row count intact, which is what a
+    // per-row gap needs to be visible. It also matches item 578's shape, whose `u.active = true`
+    // kept a third of the rows rather than a fiftieth.
+    'SEEK: a param equality AND a second conjunct — clause vs inline (item 578)',
+    [
+      'MATCH (n:P) WHERE n.s = $s AND n.k >= 0 RETURN count(*) AS c',
+      'MATCH (n:P {s: $s}) WHERE n.k >= 0 RETURN count(*) AS c',
+      'MATCH (n:P WHERE n.s = $s) WHERE n.k >= 0 RETURN count(*) AS c',
+      'MATCH (n:P) WHERE n.k >= 0 AND n.s = $s RETURN count(*) AS c',
+    ],
+    { s: 's1' },
+  ],
+  [
+    // THE NUMERIC twin of the group above. Item 578's 1.41x was measured seeking a NUMERIC key
+    // (`score`) at ~1000 matches; the group above seeks a STRING key (`s`) at 28,571 and
+    // CONVERGES within 1.07x. This is the group that separates the two variables, and it needs a
+    // raised `SPELL_N` to clear the floor: `k` is `i % 50`, so 200,000 vertices give only 4,000
+    // matches and ~0.5ms. At SPELL_N=1000000 it is 20,000 matches.
+    'SEEK: a param equality on a NUMERIC key AND a second conjunct (item 578)',
+    [
+      "MATCH (n:P) WHERE n.k = $k AND n.s >= '' RETURN count(*) AS c",
+      "MATCH (n:P {k: $k}) WHERE n.s >= '' RETURN count(*) AS c",
+      "MATCH (n:P WHERE n.k = $k) WHERE n.s >= '' RETURN count(*) AS c",
+    ],
+    { k: 2 },
+  ],
+  [
+    // The seekable conjunct ALONE, so the group above has a floor to read against: if both its
+    // members regress together, this says whether the seek itself moved.
+    'SEEK: a param equality alone — clause vs inline vs inline-WHERE',
+    [
+      'MATCH (n:P) WHERE n.s = $s RETURN count(*) AS c',
+      'MATCH (n:P {s: $s}) RETURN count(*) AS c',
+      'MATCH (n:P WHERE n.s = $s) RETURN count(*) AS c',
+    ],
+    { s: 's1' },
+  ],
+  [
+    // A PARAM against the same question written with a LITERAL. A literal lifts at compile time
+    // and a param cannot (item 230's group says so), so this is the one group EXPECTED to
+    // spread — it is here to measure how much, not to stay quiet.
+    'SEEK: param vs literal on the seeked key',
+    [
+      'MATCH (n:P) WHERE n.s = $s RETURN count(*) AS c',
+      "MATCH (n:P) WHERE n.s = 's1' RETURN count(*) AS c",
+    ],
+    { s: 's1' },
+  ],
+  [
+    // A PROJECTION rather than a count, so the seek is measured with rows flowing out of it.
+    'SEEK: a param equality, projected — clause vs inline',
+    [
+      'MATCH (n:P) WHERE n.s = $s RETURN n.k AS k ORDER BY k LIMIT 5',
+      'MATCH (n:P {s: $s}) RETURN n.k AS k ORDER BY k LIMIT 5',
+    ],
+    { s: 's1' },
+  ],
+  [
+    // The hop forms, where item 125's 4x lived. An anchored hop whose START is seekable.
+    'SEEK: an anchored hop — clause vs inline on the start',
+    [
+      'MATCH (a:P)-[:E]->(b) WHERE a.s = $s RETURN count(*) AS c',
+      'MATCH (a:P {s: $s})-[:E]->(b) RETURN count(*) AS c',
+      'MATCH (a:P WHERE a.s = $s)-[:E]->(b) RETURN count(*) AS c',
+    ],
+    { s: 's1' },
+  ],
+];
+
+for (const [name, spellings, params] of SEEK_GROUPS.filter(([n]) => wanted(n))) {
+  runGroup(name, spellings, params);
 }
 
 console.log(
