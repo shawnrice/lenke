@@ -7501,3 +7501,59 @@ traversal question — and the Gremlin `emit` shapes (574).
 suite; the term is removed rather than pinned. Item 570's `body(s)` was the same story. **When a
 condition is unkillable, check whether an enclosing branch already guarantees it before building
 a fixture for it.**
+
+### Item 576 — `createIndex` built an index on the WRONG ELEMENT: silent 500x, now an error
+
+`Graph.createIndex` validated the index KIND and nothing else. The branch using the target read
+`spec.on === 'vertex' ? vertex : edge`, so ANY other value — `'node'`, a typo, a missing field —
+took the EDGE arm and built an edge index on a vertex key. Not an ignored call: an index on the
+wrong element, which no seek consults.
+
+```
+{ on: 'node',   kind: 'hash', keys: ['name'] }    an EDGE index; 1.20M -> 2.3k ops/s, no error
+{ on: 'vertex', kind: 'hash', keys: [] }          an index keyed `undefined`
+{ on: 'vertex', kind: 'hash', keys: ['a','b'] }   a one-key index, the rest silently dropped
+```
+
+All three now throw `E_INVALID_GRAPH_OP`. The last two TYPE-CHECK — core's `IndexSpec` is a loose
+`{on; kind; keys: string[]}` where the native package's is a discriminated union — so a fully
+typed caller can hit them. **A twelfth cross-engine divergence closed**, and the costly side was
+the silent one: native rejects every spec above.
+
+`edge` + `hash` stays accepted: core keeps a property index per side and one structure serves both
+seeks, a real core capability native lacks.
+
+**`'node'` is the natural word for a GQL engine** and is what this project's own memory note had
+recorded for the API. The vocabulary is `'vertex' | 'edge'`.
+
+### `bench:usage` priced, and `interleaved: append + link` decomposed
+
+TS-indexed usually BEATS native on that bench (FFI dominates a small op: point lookup 1.20M
+against 353.4k). Two rows buck it: `append + link` 55.9k against 176.3k, and
+`read: keyed dedup lookup` 74.7k against 136.5k.
+
+`append + link` decomposes to ONE cause — properties on the inserted node:
+
+```
+lookup (MATCH only)                     1349.4k ops/s
+match+set                                407.1k
+insert-edge-only                         174.1k
+insert-bare+edge (new node, NO props)    156.6k
+insert-node+edge (new node WITH props)    49.6k
+```
+
+A bare `INSERT (:Entry)` is 471.5k and ONE property takes it to 161.3k (2.9x); a second only to
+~146k. A FIXED entry cost for having any properties, not per-property, and `id` is no dearer than
+a plain key.
+
+**REFUTED: it is not index maintenance.** With the indexes dropped the gap is identical
+(507.8k -> 163.8k against 499.6k -> 165.1k with two). The next target is the property path on
+insert, priced at ~2.9x.
+
+### `grep` silently skips a large UTF-8 source file
+
+Chasing this cost a chunk of a tick: `grep -rn 'createIndex' packages/core/src` found NOTHING,
+`grep -c` returned 0, and `Graph.ts` (163 KB, 4,413 lines, `file` says "Unicode text, UTF-8") was
+being skipped as binary. I concluded the dist was built from sources not in the checkout and went
+looking for a second worktree. **Use `grep -a` on this repo's larger prose-heavy sources.** The
+rename/refactor note already recorded this and I did not reach for it.

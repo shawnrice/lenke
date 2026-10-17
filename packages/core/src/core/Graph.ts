@@ -2280,9 +2280,39 @@ export class Graph {
   public createIndex = (spec: IndexSpec): void => {
     this.#snapshotSchemaForTx();
 
+    // VALIDATE `on` BEFORE USING IT. The branch below is `on === 'vertex' ? … : edge`, so any
+    // other value — `'node'`, a typo, a missing field — silently took the EDGE arm and built an
+    // edge index on a vertex key. Not an ignored call: an index on the WRONG ELEMENT, which no
+    // seek then consults. Measured at 20,000 users, `MATCH (u:User) WHERE u.name = $u`:
+    //
+    //   createIndex({ on: 'vertex', … })   1.20M ops/s
+    //   createIndex({ on: 'node',   … })      2.3k      the unindexed scan rate
+    //
+    // 500x, no error, and `'node'` is the natural word for a GQL engine. The native engine
+    // rejects the same spec, so this also closes a cross-engine divergence where the costly
+    // side was the silent one.
+    if (spec.on !== 'vertex' && spec.on !== 'edge') {
+      throw new LenkeError(
+        `lenke: unknown index target '${String(spec.on)}' — expected 'vertex' or 'edge'`,
+        { code: ErrorCode.InvalidGraphOp },
+      );
+    }
+
     if (spec.kind === 'interval' || spec.kind === 'type') {
       throw new LenkeError(
         `lenke: ${spec.kind} indexes are only available in the native engine (@lenke/native), not the pure-TS engine`,
+        { code: ErrorCode.InvalidGraphOp },
+      );
+    }
+
+    // A hash or range index is keyed by exactly ONE property, and `const [key] = spec.keys`
+    // quietly took the first and dropped the rest — so a two-key spec built a one-key index and
+    // a KEYLESS one built an index under the key `undefined`. `IndexSpec.keys` is a bare
+    // `string[]` here (the native package's is a discriminated union, so its arity is a compile
+    // error), which is what leaves this to a runtime check. Native rejects both.
+    if (spec.keys.length !== 1) {
+      throw new LenkeError(
+        `lenke: a ${spec.kind} index takes exactly one key, got ${spec.keys.length}`,
         { code: ErrorCode.InvalidGraphOp },
       );
     }
