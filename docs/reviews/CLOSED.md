@@ -5770,3 +5770,32 @@ floor is its distance in SIGMA, not a percentage.
 
 STILL OPEN: item 506's own shape is a TOP-LEVEL `MATCH (a:P)-[:T]->(a)`, and the OUTER-pattern
 generator still does not produce a repeated endpoint. Different function, next widening.
+
+## 527 — the TOP-LEVEL repeated endpoint is now generated, and the fixture has a self-loop
+
+Item 526 closed the subquery half and named this one: item 506's shape is a top-level
+`MATCH (a:T)-[:E]->(a)`. Seven shapes now generate it (one-hop both directions, with/without a
+label, with a bound edge variable, with a `WHERE`, and the two two-hop forms returning to the
+START and to the MIDDLE).
+
+**The fixture had no self-loop**, which made item 526's arm half a test: with none, `(a)-[:E]->(a)`
+is correctly EMPTY, so an OVER-counting fast path is caught but an under-counting one is not — and
+item 506's bug was an over-count whose size needs a real self-loop to show. Edge `e7`
+(`5 -[:F]-> 5`) is it: on `F` at a leaf of the F chain, so the E cycle the four PATH MODES depend
+on is untouched, and safe under every mode paired with an unbounded quantifier.
+
+Teeth, four parts:
+
+1. item 506's bug (the `repeatsNodeVariable` gate forced false) is caught **5 of 5 seeds**;
+2. the PRE-527 fuzzer, which already has item 526's subquery arm, **misses it 0 of 5** — so the
+   subquery widening was genuinely not enough;
+3. removing the WHOLE family fails the coverage floor;
+4. removing ONE shape of seven does NOT — recorded, not fixed. The floor is a FAMILY-level gate
+   with a ~4 sigma margin; per-shape floors would flake, and a collapse is the failure mode that
+   has actually happened (item 280).
+
+Floors RE-measured because a fixture change moves a count (`selfEnd` went 41-61 → 40-57), nine
+seeds each: `selfEnd > 22 / > 14`, `selfHop > 18 / > 15`.
+
+Both wrong answers that hid in this family are now reachable from both sides, each backed by a
+before/after mutation rather than by the widening's existence.

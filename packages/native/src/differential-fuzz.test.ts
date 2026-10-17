@@ -145,6 +145,18 @@ const tallyGroupShapes = (cov: Record<string, number>, q: string, nonEmpty: bool
     }
   }
 
+  // The TOP-LEVEL repeated endpoint (item 527): `(a)-[:E]->(a)`, or a two-hop returning to the
+  // start or the middle. Item 506's shape, which no generator produced. `nonEmpty` here really
+  // is "the self-loop matched", because these queries have nothing else to return — which is
+  // why the fixture needed edge `e7`.
+  if (/\((a|b)(:T)?\)(-\[e?:?[EF|]+\]->|<-\[:[EF|]+\]-)\(\1(:T)?\)/.test(q)) {
+    cov.selfHopGenerated++;
+
+    if (nonEmpty) {
+      cov.selfHopNonEmpty++;
+    }
+  }
+
   if (/ OR (EXISTS|COUNT|VALUE) \{/.test(q)) {
     cov.subOrGenerated++;
 
@@ -330,6 +342,21 @@ const NDJSON = [
   '{"type":"node","id":"6","labels":["T"],"properties":{"n":17,"s":"qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq","x":5,"m":{"k":6,"j":"v"}}}',
   '{"type":"edge","id":"e4","labels":["E"],"from":"3","to":"4","properties":{"w":1}}',
   '{"type":"edge","id":"e5","labels":["F"],"from":"4","to":"5","properties":{"w":3}}',
+  // A SELF-LOOP, without which the repeated-endpoint shapes below compare almost nothing.
+  // `MATCH (a)-[:F]->(a)` is correctly EMPTY on a fixture with no self-loop, so a fast path
+  // that over-counts there is caught (item 525's bug was, 6 of 6 seeds) but one that
+  // UNDER-counts is not — and item 506's bug was an OVER-count whose size needs a real
+  // self-loop to show: `count(*)` read 4 against native's 2 on a fixture with two of them.
+  // With this edge, "repeats its endpoint" has both a true and a false case.
+  //
+  // On `F` and at vertex 5 deliberately. 5 is a leaf of the F chain (4 -> 5) with no other
+  // out-edge, so the E cycle 1 -> 2 -> 3 -> 1 that the four PATH MODES depend on is untouched
+  // and the quantified-walk shapes keep the structure they were measured against. A self-loop
+  // is safe under every mode the generator pairs with an unbounded quantifier: trail forbids
+  // repeating the EDGE so it is taken at most once, simple and acyclic forbid repeating the
+  // vertex so it is refused outright, and walk is only ever generated with a BOUNDED
+  // quantifier (see the `e6` note).
+  '{"type":"edge","id":"e7","labels":["F"],"from":"5","to":"5","properties":{"w":4}}',
 ].join('\n');
 
 // --- seeded PRNG (mulberry32) -----------------------------------------------
@@ -1380,6 +1407,23 @@ const genQuery = (r: () => number): string => {
       `MATCH (a:T)-[:${t}]->(b:T) RETURN count(*) AS x`,
       `MATCH (a)-[:${t}]->(b)-[:${t}]->(c) RETURN count(*) AS x`,
       `MATCH (a)-[e:${t}]->(b) RETURN e.w AS x ORDER BY x`,
+      // A TOP-LEVEL repeated endpoint — `(a)-[:E]->(a)` is ONE node, so it matches the
+      // self-loops and nothing else. Item 506 found that every TS hop fast path bound the far
+      // node over the start without checking the name was the same one (`count(*)` 4 against
+      // native's 2, eight shapes diverging), and its own note says why no fuzzer could reach
+      // it: none generated a one-hop pattern that repeats its endpoint. Item 526 closed that
+      // for a SUBQUERY body; these close it here (item 527).
+      //
+      // The two-hop forms are the other half of the same question and ask different things:
+      // back to the START is a 2-cycle, back to the MIDDLE is a self-loop on the second hop.
+      // Both are shapes a fast path can answer by adding a degree it should not.
+      `MATCH (a:T)-[:${t}]->(a) RETURN count(*) AS x`,
+      `MATCH (a)-[:${t}]->(a) RETURN count(*) AS x`,
+      `MATCH (a)<-[:${t}]-(a) RETURN count(*) AS x`,
+      `MATCH (a:T)-[e:${t}]->(a) RETURN e.w AS x ORDER BY x`,
+      `MATCH (a:T)-[:${t}]->(a) WHERE ${pick(r, ['a.n >= 0', 'a.n > 3', 'a.zz > 1'])} RETURN count(*) AS x`,
+      `MATCH (a)-[:${t}]->(b)-[:${t}]->(a) RETURN count(*) AS x`,
+      `MATCH (a)-[:${t}]->(b)-[:${t}]->(b) RETURN count(*) AS x`,
       `MATCH ${hop} RETURN count(*) AS x`,
       `MATCH ${hop} WHERE ${pick(r, preds)} RETURN count(*) AS x`,
       // The same question with the paging the shortcut must NOT answer past, and
@@ -1850,6 +1894,8 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       subNotNonEmpty: 0,
       selfEndGenerated: 0,
       selfEndNonEmpty: 0,
+      selfHopGenerated: 0,
+      selfHopNonEmpty: 0,
       subOrGenerated: 0,
       subOrNonEmpty: 0,
       predGenerated: 0,
@@ -1981,6 +2027,7 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
         `groupHopPred=${cov.groupHopPredGenerated}/${cov.groupHopPredNonEmpty} ` +
         `innerWhere=${cov.innerWhereGenerated}/${cov.innerWhereNonEmpty} ` +
         `selfEnd=${cov.selfEndGenerated}/${cov.selfEndNonEmpty} ` +
+        `selfHop=${cov.selfHopGenerated}/${cov.selfHopNonEmpty} ` +
         `subNot=${cov.subNotGenerated}/${cov.subNotNonEmpty} ` +
         `subOr=${cov.subOrGenerated}/${cov.subOrNonEmpty} ` +
         `sink=${cov.sinkGenerated}/${cov.sinkNonZero} peel=${cov.peelGenerated}/${cov.peelNonZero} ` +
@@ -2065,10 +2112,16 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       // percentage: `groupHopPredNonEmpty`'s 1.42x margin is ~6 sigma at mean 450 and never
       // fires, while the same ratio at mean 14 is 1.6 sigma. These four are now ~4 sigma below
       // their means, which still fails loudly on a collapse to zero and cannot flake.
-      // Measured over NINE seeds of 20,000: generated 41-61 (mean ~49, sigma ~6.1), non-empty
-      // 29-43 (mean ~35, sigma ~4.9). Floors set ~4 sigma below the means, which is item 280's
-      // rule — the safety of a floor is its distance in SIGMA, not a percentage, and a
-      // percentage applied to a small count is what made `subOrNonEmpty` flake.
+      // Measured over NINE seeds of 20,000, and RE-measured after edge `e7` joined the fixture
+      // (item 527) because a fixture change moves a coverage count: generated 40-57 (mean ~51,
+      // sigma ~5.0), non-empty 33-44 (mean ~39, sigma ~3.6). Floors ~4 sigma below the means,
+      // which is item 280's rule — the safety of a floor is its distance in SIGMA, not a
+      // percentage, and a percentage applied to a small count is what made `subOrNonEmpty`
+      // flake.
+      // Measured over NINE seeds of 20,000 WITH edge `e7`: generated 36-54 (mean ~42, sigma
+      // ~5.7), non-empty 25-36 (mean ~29, sigma ~3.1). ~4 sigma below the means (item 280).
+      selfHopGenerated: cov.selfHopGenerated > 18,
+      selfHopNonEmpty: cov.selfHopNonEmpty > 15,
       selfEndGenerated: cov.selfEndGenerated > 22,
       selfEndNonEmpty: cov.selfEndNonEmpty > 14,
       subNotGenerated: cov.subNotGenerated > 8,
@@ -2142,6 +2195,8 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       innerWhereNonEmpty: true,
       selfEndGenerated: true,
       selfEndNonEmpty: true,
+      selfHopGenerated: true,
+      selfHopNonEmpty: true,
       subNotGenerated: true,
       subNotNonEmpty: true,
       subOrGenerated: true,
