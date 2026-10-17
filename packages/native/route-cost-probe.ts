@@ -383,6 +383,19 @@ const queries: Record<string, string> = {
   aggpctdisc: 'MATCH (n:Person) RETURN percentile_disc(n.age, 0.5) AS m',
   aggstdpop: 'MATCH (n:Person) RETURN stddev_pop(n.age) AS m',
   aggstdsamp: 'MATCH (n:Person) RETURN stddev_samp(n.age) AS m',
+  // Item 532: the HOP twin of item 530's enum — the same eleven names over a one-hop pattern,
+  // which `hopAggregate` serves instead of `nodeAggregate`.
+  hmax: 'MATCH (:Person)-[:KNOWS]->(b) RETURN max(b.age) AS m',
+  hmin: 'MATCH (:Person)-[:KNOWS]->(b) RETURN min(b.age) AS m',
+  hsum: 'MATCH (:Person)-[:KNOWS]->(b) RETURN sum(b.age) AS m',
+  havg: 'MATCH (:Person)-[:KNOWS]->(b) RETURN avg(b.age) AS m',
+  hcount: 'MATCH (:Person)-[:KNOWS]->(b) RETURN count(b.age) AS m',
+  hcollect: 'MATCH (:Person)-[:KNOWS]->(b) RETURN collect(b.age) AS m',
+  hstdpop: 'MATCH (:Person)-[:KNOWS]->(b) RETURN stddev_pop(b.age) AS m',
+  hstdsamp: 'MATCH (:Person)-[:KNOWS]->(b) RETURN stddev_samp(b.age) AS m',
+  hpctcont: 'MATCH (:Person)-[:KNOWS]->(b) RETURN percentile_cont(b.age, 0.5) AS m',
+  hpctdisc: 'MATCH (:Person)-[:KNOWS]->(b) RETURN percentile_disc(b.age, 0.5) AS m',
+  hcountdist: 'MATCH (:Person)-[:KNOWS]->(b) RETURN count(DISTINCT b.age) AS m',
 };
 // One node's properties, shared by the TWO fixture builders below — a `Graph` for the TS engine
 // and NDJSON for the native one. Patching only one of them is item 471's trap: it reads as a

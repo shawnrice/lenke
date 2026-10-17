@@ -5920,3 +5920,30 @@ PREFIX, which is message text the fuzzer compares by code.
 
 So the percentile was the one hole, not the first of many — which is the thing neither
 "it's isolated" nor "it's widespread" could have told us without the sweep.
+
+## 532 — the HOP aggregate enum: 7 of 11 off the rung, 5 of them CORRECTLY (item 419)
+
+Item 530's enum over a one-hop pattern instead of a scan. ts, 200,000 vertices / 1,000,000 edges:
+on the rung `max` 155.8, `min` 152.1, `count(b.age)` 157.1, `count(DISTINCT)` 57.5; off it `sum`
+674.2, `collect` 688.5, `stddev_pop` 690.4, `avg` 701.1, `stddev_samp` 715.3, `percentile_disc`
+730.0, `percentile_cont` 742.6. Native for scale: `max` 2.4, `sum` 5.5, `percentile_cont` 10.0,
+`collect` 41.3 — a ts:native ratio of 17x to 123x.
+
+**FIVE of the seven must stay refused, and that is item 419's recorded rule**: the far-driven walk
+may visit rows in a different order from the general path, so only an order-INDEPENDENT aggregate
+may ride it. `sum`/`avg` (float addition is not associative — a different order is a different last
+ulp, against a hard byte-identity invariant), `collect`/`collect_list` (the order IS the answer)
+and the two `stddev`s (one-pass moments, order-sensitive the same way). Widening this rung the way
+530 widened the scan would be WRONG, not slow.
+
+_This is why an enum is worth pricing even where it cannot be fixed_: without item 419 those five
+rows look exactly like five missing fast paths worth 4.5x each.
+
+OPEN, priced not built: **`percentile_cont` / `percentile_disc` CAN ride it** — they sort their
+values, so the answer is order-independent, which is the one property the rule asks for. 742.6 and
+730.0 against the rung's 155.8, about 4.7x. The NaN caveat is closed rather than waved past: a
+comparator that maps incomparable values to Equal would be order-dependent, but the numeric model
+converts a non-finite to `null` on ingest and item 531's probe confirms the expression surface
+agrees (`log10(0)`, `sqrt(-1)`, an overflowing `power` all yield null, which the non-null filter
+drops). The edit needs an `argFn` that `foldedAggs` does not carry for a non-foldable aggregate,
+so the argument must be compiled for the synthetic projection as the SCAN path already does.
