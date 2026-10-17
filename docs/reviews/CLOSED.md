@@ -5135,3 +5135,20 @@ anchor-slot check is subsumed by the slot read on the next line.
 **OPEN, measured, 151x:** the TS engine caps its degree path at TWO segments
 (`degreeCountSubquery` returns `null` above that), so a three-hop `COUNT { … }` costs **6097 ms
 against native's 40.4**. The recursion added here is the shape the TS twin needs.
+
+## 497 — the TS three-hop `COUNT { … }`: CLOSED at 10.3x
+
+`degreeCountSubquery` capped at TWO segments, so a three-hop degree fell to the general matcher
+and materialized ~25M bindings: 6097 ms against native's 40.4 (151x) after item 496. `threeHopSide`
+walks the first hop and hands each landing to `twoHopSide`, so the recursion is one level deep over
+already-measured code. 6317.7/6219.9/6150.2 -> 586.0-605.4 ms, three alternated rounds, the two-
+and one-hop rungs flat as controls. The cross-engine gap closes to 14.6x. Six of seven mutants
+caught, including the cap raised to four.
+
+**The oracle is three independent answers** — the chain, a sub-`WHERE` twin that declines, and the
+same pattern as a top-level `MATCH` counted by its ROWS — and the twin was instrumented to confirm
+it declines (18 chain hits, exactly the bare spellings). **Two of my hand values were wrong and all
+three answers agreed against them.**
+
+_A test named for a decline that no longer happens still passes._ `THREE segments decline` asserted
+0 on a fixture with nothing three hops out, so only its name went stale; renamed, not deleted.

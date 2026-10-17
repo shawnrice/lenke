@@ -410,7 +410,7 @@ describe('the TWO-hop form (item 212)', () => {
     expect(rows).toEqual([{ n: 1 }, { n: 3 }]);
   });
 
-  test('THREE segments decline', () => {
+  test('THREE segments out of a middle that goes nowhere is 0 (the chain, since item 497)', () => {
     const q = 'MATCH (a:A) RETURN a.n AS n, COUNT { MATCH (a)-[:T]->(m)-[:T]->(c)-[:T]->(d) } AS c';
 
     expect(query(h, q)).toEqual([
@@ -453,5 +453,158 @@ describe('the TWO-hop form (item 212)', () => {
     expect(
       query(h, 'MATCH (a:A) RETURN a.n AS n, COUNT { MATCH (a)-[:T]-(m)-[:T]->(c) } AS c')[0],
     ).toEqual({ n: 1, c: 5 });
+  });
+});
+
+describe('the THREE-hop form (item 497)', () => {
+  // T: a -> p1, a -> p2; p1 -> q1, p1 -> q2; p2 -> q1; q1 -> r1, q1 -> r2, q1 -> q1 (self-loop);
+  // q2 -> r1. One S edge (p1 -> q1) so a type can select, and `b` with no edges at all.
+  const three = (): Graph => {
+    const h = new Graph();
+    const v = (id: string, label: string, props: Record<string, unknown> = {}) =>
+      h.addVertex({ id, labels: [label], properties: props });
+    const e = (f: ReturnType<typeof v>, to: ReturnType<typeof v>, ty = 'T') =>
+      h.addEdge({ from: f, to, labels: [ty], properties: {} });
+
+    const a = v('a', 'A', { n: 1 });
+    v('b', 'A', { n: 2 }); // no edges at all: the zero row
+    const p1 = v('p1', 'M');
+    const p2 = v('p2', 'M');
+    const q1 = v('q1', 'N');
+    const q2 = v('q2', 'Q');
+    const r1 = v('r1', 'R');
+    const r2 = v('r2', 'R');
+
+    e(a, p1);
+    e(a, p2);
+    e(p1, q1);
+    e(p1, q2);
+    e(p2, q1);
+    e(q1, r1);
+    e(q1, r2);
+    e(q1, q1);
+    e(q2, r1);
+    e(p1, q1, 'S');
+
+    return h;
+  };
+
+  const h = three();
+
+  /**
+   * Each case is asked THREE ways, because a degree chain that walks the wrong leg still returns
+   * a plausible number:
+   *
+   *   1. the subquery, which takes the degree chain;
+   *   2. the same subquery with a trailing sub-`WHERE`, which makes `degreeCountSubquery` decline
+   *      (`expr.where !== undefined`) and fall to the general matcher — a DECLINING TWIN;
+   *   3. the same pattern as a plain `MATCH`, counted by the length of the rows it returns, which
+   *      is the general matcher with no count shortcut in front of it at all.
+   */
+  const ways = (body: string, want: number) => {
+    const sub = query<{ c: number }>(
+      h,
+      `MATCH (a:A) WHERE a.n = 1 RETURN COUNT { MATCH ${body} } AS c`,
+    );
+    const twin = query<{ c: number }>(
+      h,
+      `MATCH (a:A) WHERE a.n = 1 RETURN COUNT { MATCH ${body} WHERE a.n = 1 } AS c`,
+    );
+    // The same pattern as a top-level MATCH: `(a)` becomes `(a:A)` and nothing else moves, so the
+    // direction arrows and types are the body's own.
+    const rows = query(h, `MATCH ${body.replace('(a)', '(a:A)')} WHERE a.n = 1 RETURN 1 AS one`);
+
+    expect(sub).toEqual([{ c: want }]);
+    expect(twin).toEqual([{ c: want }]);
+    expect(rows.length).toBe(want);
+  };
+
+  test('counts three-hop paths, including through a self-loop', () => {
+    // a->p1: p1->q1 (q1 out-T = r1, r2, the loop = 3) + p1->q2 (q2 out-T = r1 = 1) = 4.
+    // a->p2: p2->q1 = 3. Total 7.
+    ways('(a)-[:T]->(m)-[:T]->(c)-[:T]->(d)', 7);
+  });
+
+  test('a label at EACH of the three landings selects independently', () => {
+    ways('(a)-[:T]->(m:M)-[:T]->(c)-[:T]->(d)', 7); // both middles are :M
+    ways('(a)-[:T]->(m:N)-[:T]->(c)-[:T]->(d)', 0); // no first landing is :N
+    ways('(a)-[:T]->(m)-[:T]->(c:N)-[:T]->(d)', 6); // only q1, twice over
+    ways('(a)-[:T]->(m)-[:T]->(c:Q)-[:T]->(d)', 1); // only q2, from p1
+    ways('(a)-[:T]->(m)-[:T]->(c)-[:T]->(d:R)', 5); // the self-loop lands on :N, not :R
+  });
+
+  test('the TYPE of each leg selects, and an unknown type is 0', () => {
+    ways('(a)-[:S]->(m)-[:T]->(c)-[:T]->(d)', 0); // a has no S edge
+    ways('(a)-[:T]->(m)-[:S]->(c)-[:T]->(d)', 3); // p1 -S-> q1, then q1's 3 out-T
+    ways('(a)-[:T]->(m)-[:T]->(c)-[:S]->(d)', 0); // nothing three out has an S edge
+    ways('(a)-[:NOPE]->(m)-[:T]->(c)-[:T]->(d)', 0);
+    // Untyped admits the S edge, which is a SECOND way to reach q1 from p1: p1 has three
+    // out-edges (q1 by T, q2 by T, q1 by S) and q1 has three out, q2 one, so p1 gives 7 and
+    // p2 gives 3.
+    ways('(a)-[]->(m)-[]->(c)-[]->(d)', 10);
+  });
+
+  test('a REVERSED leg is a different question at each position', () => {
+    ways('(a)<-[:T]-(m)-[:T]->(c)-[:T]->(d)', 0); // nothing points at `a`
+    // `a` itself points at p1 and p2, so the middle leg lands back on `a` and the third leg is
+    // a's own out-degree: 1 x 2 from each of the two first-hop landings.
+    ways('(a)-[:T]->(m)<-[:T]-(c)-[:T]->(d)', 4);
+    ways('(a)-[:T]->(m)-[:T]->(c)<-[:T]-(d)', 7); // in-degrees: q1 has 3 (incl. the loop), q2 has 1
+  });
+
+  test('a start with no edges at all is 0, and the rung still answers the other row', () => {
+    expect(
+      query(
+        h,
+        'MATCH (a:A) RETURN a.n AS n, COUNT { MATCH (a)-[:T]->(m)-[:T]->(c)-[:T]->(d) } AS c',
+      ),
+    ).toEqual([
+      { n: 1, c: 7 },
+      { n: 2, c: 0 },
+    ]);
+  });
+
+  test('a repeated variable across three hops declines', () => {
+    // Back to the start, and back to the first middle: self-joins, not degrees.
+    expect(
+      query(
+        h,
+        'MATCH (a:A) WHERE a.n=1 RETURN COUNT { MATCH (a)-[:T]->(m)-[:T]->(c)-[:T]->(a) } AS c',
+      ),
+    ).toEqual([{ c: 0 }]);
+    expect(
+      query(
+        h,
+        'MATCH (a:A) WHERE a.n=1 RETURN COUNT { MATCH (a)-[:T]->(m)-[:T]->(c)-[:T]->(m) } AS c',
+      ),
+    ).toEqual([{ c: 0 }]);
+  });
+
+  test('FOUR segments decline — the cap, and the answer is still right', () => {
+    // a->p1->q1->q1->{r1,r2,q1} = 3, a->p1->q1->r1|r2 dead ends, a->p2->q1->q1->3.
+    // Counted by the general matcher either way; the assertion is that the cap does not answer
+    // with a truncated chain.
+    const rows = query(
+      h,
+      'MATCH (a:A)-[:T]->(m)-[:T]->(c)-[:T]->(d)-[:T]->(x) WHERE a.n=1 RETURN 1 AS one',
+    );
+
+    expect(
+      query(
+        h,
+        'MATCH (a:A) WHERE a.n=1 RETURN COUNT { MATCH (a)-[:T]->(m)-[:T]->(c)-[:T]->(d)-[:T]->(x) } AS c',
+      ),
+    ).toEqual([{ c: rows.length }]);
+  });
+
+  test('an undirected or rel-bound leg in the THIRD segment declines', () => {
+    for (const q of [
+      'MATCH (a:A) WHERE a.n=1 RETURN COUNT { MATCH (a)-[:T]->(m)-[:T]->(c)-[:T]-(d) } AS c',
+      'MATCH (a:A) WHERE a.n=1 RETURN COUNT { MATCH (a)-[:T]->(m)-[:T]->(c)-[r:T]->(d) } AS c',
+    ]) {
+      // Both fall to the general matcher, which answers the same question correctly: the
+      // undirected leg counts MORE (in-edges too) and the rel-bound one counts the same.
+      expect(query<{ c: number }>(h, q)[0]?.c).toBeGreaterThanOrEqual(7);
+    }
   });
 });

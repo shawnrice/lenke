@@ -1845,6 +1845,52 @@ export const twoHopSide = (graph: Graph, id: string, w: TwoHopSide): number => {
   return n;
 };
 
+/** Everything the THREE-hop degree count needs beyond the anchor vertex. */
+export type ThreeHopSide = {
+  firstOut: boolean;
+  t1: string[] | undefined;
+  mid1Label: LabelExpr | undefined;
+  /** The remaining two hops, answered by `twoHopSide` from each first-hop landing. */
+  rest: TwoHopSide;
+};
+
+/**
+ * The number of three-hop paths out of ONE vertex — `twoHopSide` one segment further.
+ *
+ * `degreeCountSubquery` capped the degree path at TWO segments, so
+ * `COUNT { (u)-[:T]->(x)-[:T]->(y)-[:T]->(z) }` fell to the general matcher: 6097ms at 200,000
+ * vertices of degree 5 against the native engine's 40.4 (audit item 497), because the matcher
+ * materializes all ~25,000,000 bindings to count them.
+ *
+ * Composed rather than written out: each first-hop landing is handed to `twoHopSide`, which is
+ * item 212's reader and already carries the middle-label and far-label handling. So the recursion
+ * is one level deep and the per-edge costs below the first hop are the ones already measured.
+ * Item 495's point applies to this hop too — with no label on the first landing there is nothing
+ * to resolve the vertex FOR, so that branch reads the id the EDGE stores.
+ */
+export const threeHopSide = (graph: Graph, id: string, w: ThreeHopSide): number => {
+  const byType = (w.firstOut ? graph.edgesFromByLabel : graph.edgesToByLabel).get(id);
+  let n = 0;
+
+  if (w.mid1Label === undefined) {
+    for (const e of edgesOfTypes(byType, w.t1)) {
+      n += twoHopSide(graph, w.firstOut ? e.toId : e.fromId, w.rest);
+    }
+
+    return n;
+  }
+
+  for (const e of edgesOfTypes(byType, w.t1)) {
+    const mid = w.firstOut ? e.to : e.from;
+
+    if (matchesLabel(mid, w.mid1Label)) {
+      n += twoHopSide(graph, mid.id, w.rest);
+    }
+  }
+
+  return n;
+};
+
 /** 2-hop `(a)-[:T1]->(b)-[:T2]->(c)` count via the degree product
  * `Σ_b (edges reaching a valid a) × (edges reaching a valid c)`. `null` unless
  * both rels are anonymous + directed and the node variables are distinct. */

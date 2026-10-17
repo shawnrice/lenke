@@ -1338,7 +1338,11 @@ const degreeCountSubquery = (
 
   const [path] = expr.patterns;
 
-  if (path.pathVar !== undefined || path.segments.length < 1 || path.segments.length > 2) {
+  // THREE segments is the deepest this answers. Each extra hop makes the walk one degree wider
+  // (the last hop is a `side`, every earlier one iterates), so the saving against materializing
+  // the bindings is a factor of the degree and the recursion depth has to be bounded by
+  // something — the native twin stops at the same place for the same reason (item 496).
+  if (path.pathVar !== undefined || path.segments.length < 1 || path.segments.length > 3) {
     return null;
   }
 
@@ -1355,7 +1359,7 @@ const degreeCountSubquery = (
     return null;
   }
 
-  const [h1, h2] = hops as {
+  const [h1, h2, h3] = hops as {
     out: boolean;
     types: string[] | undefined;
     label: LabelExpr | undefined;
@@ -1388,6 +1392,26 @@ const degreeCountSubquery = (
     t2: h2.types,
     farLabel: h2.label,
   };
+
+  if (h3 !== undefined) {
+    // The first hop is walked here and the remaining TWO are `twoHopSide`'s, so `plan` above
+    // becomes the tail rather than the whole chain: its `firstOut`/`t1`/`midLabel` are hop TWO's.
+    const three: ThreeHopSide = {
+      firstOut: h1.out,
+      t1: h1.types,
+      mid1Label: h1.label,
+      rest: {
+        firstOut: h2.out,
+        t1: h2.types,
+        midLabel: h2.label,
+        secondOut: h3.out,
+        t2: h3.types,
+        farLabel: h3.label,
+      },
+    };
+
+    return { startVar, inner, count: (graph, id) => threeHopSide(graph, id, three) };
+  }
 
   return { startVar, inner, count: (graph, id) => twoHopSide(graph, id, plan) };
 };
@@ -6079,9 +6103,10 @@ import {
   plainRel,
   side,
   sideOfVertex,
+  threeHopSide,
   twoHopSide,
 } from './executor/shortcuts.js';
-import type { ReachFn, TwoHopSide } from './executor/shortcuts.js';
+import type { ReachFn, ThreeHopSide, TwoHopSide } from './executor/shortcuts.js';
 
 // --- compile & execute -------------------------------------------------------
 
