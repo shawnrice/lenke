@@ -5980,3 +5980,22 @@ is 15 against the non-DISTINCT 10, while `disc` is 10 either way — so a `disc`
 catch a rung that ignores DISTINCT.
 
 `percentileFraction` now lives in `executor.ts` and is shared by the scan rung (530) and this one.
+
+## 534 — items 521-533 sweep clean: VERIFIED, and two apparent regressions were single-run outliers
+
+Thirteen items since item 520's sweep. `query_bench` flat or better on every row (`optional hop`
+589.8 against 582.7, `+ miss` 63.7 against 64.9, `+ landing pred` 9957.2 against 10278.0, `EXISTS`
+1134.5 against 1147.9, `distinct node` 116176.4 against 117461.9). Both spelling probes clean — run
+specifically because 530 and 533 changed which aggregate SPELLINGS reach a rung.
+
+Two rows read up in `bun run bench` and neither survived isolation: `distinct over a reversed hop`
+92.2 in-sweep against 62.4 / 59.3 / 59.4 isolated (BELOW its recorded 72.9), and `count 3-hop`
+352.4 against 308.7 / 324.9 / 340.3 (inside its 311-342 band). Item 514's rule, fourth observation.
+
+**NEW, and the part worth keeping: `bench:usage` needs a repeat too.** `read: keyed dedup lookup`
+ts(+) read 48.6k against item 520's 77.8k — the shape of a real regression on a row the TS rung
+edits could plausibly reach — and two further runs gave 72.2k and 77.9k. `engine(+) read: point
+lookup` did the same (256.3k, then 360.0k and 359.4k). It is ops/sec from best-of-3 over 250 ms
+batches, so _a single reading is not a signal_. Third instrument in this session found to need a
+repeat before a number means anything: `bun run bench`'s short rows (514), the spelling probe's
+groups (524), and now this.
