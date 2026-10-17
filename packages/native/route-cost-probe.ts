@@ -245,6 +245,11 @@ const queries: Record<string, string> = {
   // has to resolve the middle vertex, so there the saving is the box rather than the skipped
   // resolve. `Half` is on half the vertices, so it is not vacuous.
   sub2hoplabel: 'MATCH (n:Person) RETURN COUNT { MATCH (n)-[:KNOWS]->(x:Half)-[:KNOWS]->(y) } AS c',
+  // Item 496: a THREE-hop degree subquery. Native materializes every sub-row and tallies by
+  // provenance, so its cost should be LINEAR in sub-rows (~25M here against the two-hop's 5M).
+  // A falsifiable prediction, measured before anything is built on the diagnosis.
+  sub3hop:
+    'MATCH (n:Person) RETURN COUNT { MATCH (n)-[:KNOWS]->(x)-[:KNOWS]->(y)-[:KNOWS]->(z) } AS c',
   subcontrol: 'MATCH (n:Person)-[:KNOWS]->(x) RETURN count(*) AS c',
   hopaggrelvar: 'MATCH (:Person)-[r:KNOWS]->(b) RETURN max(b.age) AS m',
   twohoprelvar: 'MATCH (:Person)-[r:KNOWS]->(b)-[s:KNOWS]->(c) RETURN count(*) AS c',

@@ -6,6 +6,156 @@ use crate::ir::Expr;
 use crate::store::{Column, Store};
 use crate::value::{self, Value};
 
+/// One recognized hop of a correlated `COUNT { … }` body, with its type set resolved once.
+struct DegreeHop {
+    dir: Dir,
+    want: Vec<u32>,
+    double_loops: bool,
+    /// Whether `want` matches EVERY edge, so a degree is a slice length (see `matching_degree`).
+    all_types: bool,
+}
+
+/// The number of hop-chain paths out of `v`, by DEGREE rather than by enumeration.
+///
+/// The last hop is a `matching_degree` — one number per node, read off a contiguous adjacency
+/// slice when it can be. Every earlier hop walks, because the next hop's degree depends on WHICH
+/// neighbour was landed on. So an `h`-hop chain costs `degree^(h-1)` adjacency steps and a degree
+/// read at each, where materializing the rows costs `degree^h`.
+fn degree_chain_count(store: &Store, v: u32, hops: &[DegreeHop]) -> f64 {
+    let h = &hops[0];
+    if hops.len() == 1 {
+        return matching_degree(store, v, h.dir, &h.want, h.double_loops, h.all_types);
+    }
+    let mut n = 0f64;
+    for_each_nbr(store, v, h.dir, &h.want, h.double_loops, |nbr, _| {
+        n += degree_chain_count(store, nbr, &hops[1..]);
+    });
+    n
+}
+
+/// The most hops this answers. Beyond it the walk is `degree^(h-1)` adjacency steps against
+/// `degree^h` materialized rows — still a win on paper, but the ratio tends to 1 and the
+/// recursion depth is unbounded by anything in the query, so it stops here and the general
+/// pull takes over.
+const DEGREE_CHAIN_MAX_HOPS: usize = 3;
+
+/// A correlated `COUNT { MATCH (u)-[:T]->(x)… }` whose body is a chain of UNFILTERED node-only
+/// hops is a DEGREE question, and the degrees are already in the adjacency.
+///
+/// The general path tags each outer row with a provenance id, runs the body, and tallies the
+/// sub-rows by that id — so it MATERIALIZES every path. Measured on the repo's own 200,000-vertex
+/// degree-5 fixture (`route-cost-probe`, one case per process, min of 9): the one-hop form 14.6ms,
+/// the two-hop 75.0ms, the three-hop 270.9ms — ~11-15ns per SUB-ROW at 1M, 5M and 25M of them,
+/// which is the enumeration and nothing else. The same engine answers the whole-graph two-hop
+/// count (`MATCH (:P)-[:T]->(b)-[:T]->(c) RETURN count(*)`, the same total edge work, just not
+/// partitioned by anchor) in 2.7ms, because THAT shape has had a degree product since item 221.
+///
+/// Admission is deliberately narrow, and every refusal is a position where a degree cannot
+/// answer: a `Filter` anywhere in the body (a node label, an inline property, a sub-`WHERE`) is
+/// not a chain of `Expand`s and declines, because a degree cannot say which of a vertex's edges
+/// land somewhere that passes — items 219 and 290's rule, one level in. A bound edge
+/// (`bind_edge`) declines for the same reason the TS twin does: the edge is a VALUE the body may
+/// read. And the slot chain is checked rather than assumed: hop 0 must read an OUTER slot and hop
+/// `k` must read the slot hop `k-1` landed in, so a body that re-expands an earlier position
+/// (a self-join, not a degree) is refused.
+fn degree_count_subquery(
+    body: &Plan,
+    outer_width: usize,
+    store: &Store,
+    batch: &Batch,
+) -> Option<Vec<f64>> {
+    // The provenance column the general path appends sits at `batch.slots.len()`, and the body
+    // was lowered against an outer width of `outer_width` — so the two must agree before any
+    // landing slot computed from `outer_width` means anything.
+    if batch.slots.len() != outer_width {
+        return None;
+    }
+
+    // Unwind outermost-first: the body is `Expand(Expand(… Row))`.
+    let mut chain: Vec<(Dir, &[String], bool)> = Vec::new();
+    let mut froms: Vec<usize> = Vec::new();
+    let mut cur = body;
+    loop {
+        match cur {
+            Plan::Expand {
+                input,
+                from,
+                dir,
+                edge_label,
+                bind_edge: false,
+                double_loops,
+            } => {
+                if chain.len() == DEGREE_CHAIN_MAX_HOPS {
+                    return None;
+                }
+                chain.push((*dir, edge_label, *double_loops));
+                froms.push(*from);
+                cur = input;
+            }
+            Plan::Row => break,
+            _ => return None,
+        }
+    }
+    if chain.is_empty() {
+        return None;
+    }
+    chain.reverse();
+    froms.reverse();
+
+    // Hop `k` (k ≥ 1) must expand what hop `k-1` landed in. The seed is the outer row plus the
+    // provenance column, so its width is `outer_width + 1` and hop `k-1` lands at
+    // `outer_width + k`.
+    for (k, &from) in froms.iter().enumerate().skip(1) {
+        if from != outer_width + k {
+            return None;
+        }
+    }
+    // Both of the remaining guards are DEFENSIVE, and their mutants survive the suite — recorded
+    // here rather than implied, because a survivor nobody explains is indistinguishable from a
+    // missing test. Removing the slot-chain check above changes no answer because `extend_chain`
+    // carries `from` forward hop by hop, so a GQL body is a single chain by construction and
+    // there is no comma/branching body to lower; and this one is subsumed by the slot read
+    // immediately below, which returns `None` for any index past the batch's width anyway.
+    let anchor_slot = froms[0];
+    if anchor_slot >= outer_width {
+        return None; // hop 0 must read an OUTER slot: the correlated variable
+    }
+    let Some(Col::Nodes(anchors)) = batch.slots.get(anchor_slot) else {
+        return None;
+    };
+
+    let mut hops: Vec<DegreeHop> = Vec::with_capacity(chain.len());
+    for (dir, edge_label, double_loops) in chain {
+        // An unknown edge type matches no edge, so every count is 0 — the same answer the
+        // general path gives by matching nothing, reached without walking.
+        let Ok(want) = want_etypes(store, edge_label) else {
+            return Some(vec![0f64; anchors.len()]);
+        };
+        let all_types = want_covers_all_etypes(store, &want);
+        hops.push(DegreeHop {
+            dir,
+            want,
+            double_loops,
+            all_types,
+        });
+    }
+
+    Some(
+        anchors
+            .iter()
+            .map(|&v| {
+                // The OPTIONAL sentinel is not a node, so nothing expands from it (the general
+                // path's `Expand` drops such a row and the tally stays 0).
+                if v == u32::MAX {
+                    0f64
+                } else {
+                    degree_chain_count(store, v, &hops)
+                }
+            })
+            .collect(),
+    )
+}
+
 /// Smallest haystack worth hashing. Below it the linear scan wins: building the set costs a
 /// `group_key` per element, and a two- or three-element scan is two or three `equals` calls.
 /// Measured in audit item 185.
@@ -2133,7 +2283,11 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
             }
             Col::Bool(hit)
         }
-        Expr::CountSubquery { body, .. } => {
+        Expr::CountSubquery { body, outer_width } => {
+            // An unfiltered hop chain is a DEGREE, not a set of rows to tally.
+            if let Some(counts) = degree_count_subquery(body, *outer_width, store, batch) {
+                return Ok(Col::Num(counts));
+            }
             // Correlated count: same provenance-tagged sub-run as EXISTS, but TALLY
             // the sub-rows per outer row instead of a boolean any().
             let n = batch.rows();

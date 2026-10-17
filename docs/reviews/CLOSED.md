@@ -5111,3 +5111,27 @@ price a box swap that does not also remove a lookup.
 **Open and priced, for RUST:** native does the whole-graph two-hop count in 2.7 ms and the
 per-anchor `COUNT { … }` partition of the same traversal in 75.0 ms (14.6 of it row egress). Same
 edge work, 28x apart.
+
+## 496 — the RUST `COUNT { … }` degree: CLOSED at 4.5x (two hops) and 6.0x (three)
+
+Native's evaluator materialized every sub-row of a correlated count and tallied by provenance —
+**11-15 ns a sub-row, flat at 1M / 5M / 25M of them**, which is the enumeration and nothing else.
+`degree_count_subquery` recognizes a body that is a chain of unfiltered node-only `Expand`s and
+answers from the adjacency: the last hop is a `matching_degree`, earlier hops walk. One hop
+14.5 -> 11.0 ms (1.31x), two 69.8 -> 15.3 (4.5x), three 272.7 -> 40.4 (6.0x), three alternated
+rounds, `EXISTS` and the global hop count flat as controls. A `Filter` in the body (label, inline
+property, sub-`WHERE`) declines — items 219/290's rule one level in. Depth cap 3.
+
+**The oracle was itself verified.** Each of 26 assertions runs bare and with a UNIVERSAL `:N`
+label that forces a `Filter`, hence the general path; an `eprintln` confirmed the fast path fired
+19 of 52 times, i.e. only the bare spellings minus the capped one. _A vacuous declining twin is
+worse than no oracle._
+
+Mutation: 4 of 7 caught (both hops' direction, the type set, the `Both` self-loop policy). **Two
+survivors are equivalent BY CONSTRUCTION and the argument is in the code**: `extend_chain` carries
+`from` forward, so a GQL body is a single chain and the slot-chain check cannot fire; the
+anchor-slot check is subsumed by the slot read on the next line.
+
+**OPEN, measured, 151x:** the TS engine caps its degree path at TWO segments
+(`degreeCountSubquery` returns `null` above that), so a three-hop `COUNT { … }` costs **6097 ms
+against native's 40.4**. The recursion added here is the shape the TS twin needs.

@@ -7369,3 +7369,86 @@ fn a_multi_label_end_gate_is_not_promoted_to_a_seek() {
         assert_eq!(c, want, "{pattern}");
     }
 }
+
+/// A correlated `COUNT { … }` over an UNFILTERED hop chain is answered by DEGREES rather than by
+/// materializing every path (item 496). Every assertion here is made TWICE: once in the spelling
+/// that reaches the degree chain, and once with a UNIVERSAL label on the landing node, which puts
+/// a `Filter` in the body so it declines to the general materializing path. Every node carries
+/// `N`, so the two spellings must agree — the declining twin is the oracle, because a degree
+/// product that multiplies the wrong factors still returns a plausible number.
+#[test]
+fn degree_count_subquery_agrees_with_the_general_path() {
+    // a =T=> b (twice), a -S-> c, b -T-> c, c -T-> c (self-loop), d -T-> a, z isolated.
+    let nd = concat!(
+        "{\"id\":\"a\",\"labels\":[\"N\"],\"props\":{\"name\":\"a\"}}\n",
+        "{\"id\":\"b\",\"labels\":[\"N\"],\"props\":{\"name\":\"b\"}}\n",
+        "{\"id\":\"c\",\"labels\":[\"N\"],\"props\":{\"name\":\"c\"}}\n",
+        "{\"id\":\"d\",\"labels\":[\"N\"],\"props\":{\"name\":\"d\"}}\n",
+        "{\"id\":\"z\",\"labels\":[\"N\"],\"props\":{\"name\":\"z\"}}\n",
+        "{\"id\":\"e1\",\"from\":\"a\",\"to\":\"b\",\"type\":\"T\",\"props\":{}}\n",
+        "{\"id\":\"e2\",\"from\":\"a\",\"to\":\"b\",\"type\":\"T\",\"props\":{}}\n",
+        "{\"id\":\"e3\",\"from\":\"a\",\"to\":\"c\",\"type\":\"S\",\"props\":{}}\n",
+        "{\"id\":\"e4\",\"from\":\"b\",\"to\":\"c\",\"type\":\"T\",\"props\":{}}\n",
+        "{\"id\":\"e5\",\"from\":\"c\",\"to\":\"c\",\"type\":\"T\",\"props\":{}}\n",
+        "{\"id\":\"e6\",\"from\":\"d\",\"to\":\"a\",\"type\":\"T\",\"props\":{}}\n",
+    );
+    let store = crate::ndjson::from_ndjson(nd).unwrap();
+    let n = |q: &str| -> f64 {
+        match run(&super::parse(q).unwrap(), &store).rows[0][0] {
+            Value::Num(x) => x,
+            ref o => panic!("want num, got {o:?}"),
+        }
+    };
+    // `body` carries `{}` where the landing node goes, so each case is written once and asked
+    // both ways: bare (the degree chain) and `:N` (a Filter, so the general path).
+    let both = |start: &str, body: &str, want: f64| {
+        let fast = format!(
+            "MATCH (u:N) WHERE u.name='{start}' RETURN COUNT {{ {} }} AS c",
+            body.replace("{}", "")
+        );
+        let slow = format!(
+            "MATCH (u:N) WHERE u.name='{start}' RETURN COUNT {{ {} }} AS c",
+            body.replace("{}", ":N")
+        );
+        assert_eq!(n(&fast), want, "degree chain: {fast}");
+        assert_eq!(n(&slow), want, "general path: {slow}");
+    };
+
+    // ONE hop: type, direction, untyped, a type UNION, an unknown type, and degree 0.
+    both("a", "(u)-[:T]->(x{})", 2.0); // the duplicate edge counts twice
+    both("a", "(u)-[]->(x{})", 3.0);
+    both("a", "(u)-[:T|S]->(x{})", 3.0);
+    both("a", "(u)-[:NOPE]->(x{})", 0.0);
+    both("a", "(u)<-[:T]-(x{})", 1.0); // e6, from d
+    both("c", "(u)<-[:T]-(x{})", 2.0); // e4 and the self-loop
+    both("c", "(u)<-[]-(x{})", 3.0);
+    both("z", "(u)-[:T]->(x{})", 0.0);
+    // UNDIRECTED at the self-loop: GQL traverses it ONCE, so out {e5} + in {e4} = 2.
+    both("c", "(u)-[:T]-(x{})", 2.0);
+    both("b", "(u)-[:T]-(x{})", 3.0); // in e1, e2; out e4
+
+    // TWO hops, including a reversed first leg and two DIFFERENT types.
+    both("a", "(u)-[:T]->(x)-[:T]->(y{})", 2.0); // 2 x outdeg_T(b)=1
+    both("d", "(u)-[:T]->(x)-[:T]->(y{})", 2.0); // 1 x outdeg_T(a)=2
+    both("b", "(u)-[:T]->(x)-[:T]->(y{})", 1.0); // 1 x the self-loop
+    both("a", "(u)-[:S]->(x)-[:T]->(y{})", 1.0);
+    both("a", "(u)-[:T]->(x)-[:S]->(y{})", 0.0); // b has no S edge
+    both("c", "(u)<-[:T]-(x)-[:T]->(y{})", 2.0); // from b: 1; from c (self-loop): 1
+    both("z", "(u)-[:T]->(x)-[:T]->(y{})", 0.0);
+
+    // THREE hops — the deepest the degree chain takes.
+    both("d", "(u)-[:T]->(x)-[:T]->(y)-[:T]->(w{})", 2.0);
+    both("b", "(u)-[:T]->(x)-[:T]->(y)-[:T]->(w{})", 1.0);
+    // A body that RE-EXPANDS a bound position is a self-join, not a degree: the second hop lands
+    // on `u` rather than on a fresh variable, so the slot chain does not hold and the degree
+    // chain must refuse it. `c` has the self-loop, so the right answer is not 0 and a chain that
+    // ignored the repeat would say 1 x outdeg_T(c) = 1 for the WRONG reason.
+    both("c", "(u)-[:T]->(x{})-[:T]->(u)", 1.0);
+    both("a", "(u)-[:T]->(x{})-[:T]->(u)", 0.0);
+    // One hop back onto the anchor is the SELF-LOOP count, not the out-degree.
+    both("c", "(u)-[:T]->(u{})", 1.0);
+    both("a", "(u)-[:T]->(u{})", 0.0);
+    // FOUR hops is past the cap, so this one is the general path either way — the assertion is
+    // that the cap DECLINES rather than answering with a truncated chain.
+    both("d", "(u)-[:T]->(x)-[:T]->(y)-[:T]->(w)-[:T]->(v{})", 2.0);
+}
