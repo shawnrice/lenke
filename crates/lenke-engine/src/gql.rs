@@ -178,6 +178,58 @@ impl LabelExpr {
     }
 }
 
+/// Wrap a plan in `count(*)`, so an UNCORRELATED `COUNT { … }` is a COUNT and not a row tally.
+///
+/// `Expr::UncorrelatedCount` was evaluated as `pull(body).rows()` — which materializes every row
+/// to learn how many there are. The identical query written at the top level
+/// (`MATCH … RETURN count(*)`) reaches the degree products instead and never walks a path: at
+/// 200,000 vertices / 1,000,000 edges, `COUNT { (:P)-[:K]->(b)-[:K]->(c) }` cost ~58ms of body
+/// time against 2.8ms for the same pattern counted at the top level, because 5,000,000 rows were
+/// built to be counted (item 501).
+///
+/// Counting inside the plan also has to come BEFORE `optimized_body`, since it is the
+/// `Aggregate` node that the `count(*)` fast paths match on.
+fn counted(body: Plan) -> Plan {
+    Plan::Aggregate {
+        input: Box::new(body),
+        keys: Vec::new(),
+        aggs: vec![crate::ir::Agg {
+            func: crate::ir::AggFn::Count,
+            arg: None,
+            distinct: false,
+            name: "c".into(),
+            frac: None,
+            null_on_empty: false,
+            numeric_only: false,
+        }],
+    }
+}
+
+/// Optimize a self-contained (UNCORRELATED) subquery body.
+///
+/// `opt` rewrites the plan it is handed and never descends into a `Plan` nested inside an `Expr`
+/// (item 500), so a subquery body reached exec exactly as the parser emitted it: stacked
+/// `Filter`s rather than one `And`, a pre-canonical label test, no seed, and — the expensive one
+/// — no shape the `count(*)` degree products can match. Measured at 200,000 vertices / 1,000,000
+/// edges, body cost with the 200,000-row egress of the enclosing projection subtracted:
+///
+/// ```text
+///   COUNT { (:P)-[:K]->(b)-[:K]->(c) }     ~58ms   the same query at top level: 2.8ms
+///   COUNT { (b:P) WHERE b.age = 42 }       ~12ms   the same query at top level: 0.2ms
+///   COUNT { (:P)-[:K]->(b) }               ~11ms   the same query at top level: 0.5ms
+/// ```
+///
+/// An UNCORRELATED body is a complete plan over the store — no `Row` leaf standing in for the
+/// outer row, no provenance column, no outer slots — so optimizing it is exactly optimizing a
+/// top-level query, which is why this is safe to do here and a CORRELATED body is not (that one
+/// is still open; its `Row` leaf and outer-slot references are a different contract).
+///
+/// Blind to indexes, because the parser has no store: a seedable predicate still becomes a
+/// scan-fallback seek, which is what `optimize` does without an oracle.
+fn optimized_body(body: Plan) -> Plan {
+    crate::opt::optimize(body)
+}
+
 /// The label predicate for a NON-seed node (a landing node — it has no `Scan` to
 /// carry a seed label, so the WHOLE label constraint is a filter). `None` when the
 /// node is unlabelled or `:%` (any). Combines the seed label and the compound
@@ -6346,7 +6398,7 @@ impl Parser {
             let (body, _, _) = self.parse_uncorrelated_subquery_body()?;
             self.expect(&Tok::RBrace)?;
             return Ok(Expr::UncorrelatedExists {
-                body: Box::new(body),
+                body: Box::new(optimized_body(body)),
             });
         }
         let (body, outer_width, _, _) = self.correlated_subquery_body("EXISTS")?;
@@ -6531,7 +6583,7 @@ impl Parser {
             let (body, _, _) = self.parse_uncorrelated_subquery_body()?;
             self.expect(&Tok::RBrace)?;
             return Ok(Expr::UncorrelatedCount {
-                body: Box::new(body),
+                body: Box::new(optimized_body(counted(body))),
             });
         }
         let (body, outer_width, _, _) = self.correlated_subquery_body("COUNT")?;
@@ -6562,7 +6614,7 @@ impl Parser {
             self.slots = saved_slots;
             self.expect(&Tok::RBrace)?;
             return Ok(Expr::UncorrelatedScalar {
-                body: Box::new(full),
+                body: Box::new(optimized_body(full)),
             });
         }
         let (body, outer_width, sub_scope, sub_slots) = self.correlated_subquery_body("VALUE")?;

@@ -7631,3 +7631,86 @@ fn degree_count_subquery_with_a_landing_label() {
     both("(u)-[:T]->(x:H)-[:T]->(y:H)", "y", 1.0);
     both("(u)-[:T]->(x:P)-[:T]->(y)", "y", 2.0);
 }
+
+/// An UNCORRELATED subquery body is a self-contained plan, so item 501 does two things to it:
+/// `COUNT { … }` is counted INSIDE the plan (not by materializing a row per match and tallying),
+/// and the body is optimized, which `opt` never does for it (item 500).
+///
+/// The oracle throughout is the SAME question asked at the top level, which is a different code
+/// path entirely — the body is uncorrelated, so it has a top-level twin by construction.
+#[test]
+fn uncorrelated_subquery_bodies_are_counted_and_optimized() {
+    let nd = concat!(
+        "{\"id\":\"a\",\"labels\":[\"P\",\"H\"],\"props\":{\"age\":1}}\n",
+        "{\"id\":\"b\",\"labels\":[\"P\"],\"props\":{\"age\":2}}\n",
+        "{\"id\":\"c\",\"labels\":[\"P\"],\"props\":{\"age\":2}}\n",
+        "{\"id\":\"d\",\"labels\":[\"Q\"],\"props\":{\"age\":3}}\n",
+        "{\"id\":\"e1\",\"from\":\"a\",\"to\":\"b\",\"type\":\"T\",\"props\":{}}\n",
+        "{\"id\":\"e2\",\"from\":\"b\",\"to\":\"c\",\"type\":\"T\",\"props\":{}}\n",
+        "{\"id\":\"e3\",\"from\":\"a\",\"to\":\"c\",\"type\":\"T\",\"props\":{}}\n",
+    );
+    let store = crate::ndjson::from_ndjson(nd).unwrap();
+    let one = |q: &str| -> Value {
+        let out = run(&super::parse(q).unwrap(), &store);
+        assert!(!out.rows.is_empty(), "no rows for {q}");
+        out.rows[0][0].clone()
+    };
+    let num = |q: &str| -> f64 {
+        match one(q) {
+            Value::Num(x) => x,
+            o => panic!("want num, got {o:?} for {q}"),
+        }
+    };
+    // The subquery is uncorrelated, so it has a TOP-LEVEL twin asking the same thing through a
+    // different path. Both are asserted, and against a hand value.
+    let both = |body: &str, want: f64| {
+        let sub = format!("MATCH (u:P) WHERE u.age = 1 RETURN COUNT {{ {body} }} AS c");
+        let top = format!("MATCH {body} RETURN count(*) AS c");
+        assert_eq!(num(&sub), want, "subquery: {sub}");
+        assert_eq!(num(&top), want, "top level: {top}");
+    };
+
+    both("(x:P)", 3.0);
+    both("(x:Q)", 1.0);
+    both("(x:ZZZ)", 0.0); // an unknown label matches nothing
+    both("(x:P)-[:T]->(y)", 3.0);
+    both("(x:P)-[:T]->(y)-[:T]->(z)", 1.0); // only a->b->c
+    both("(x:P {age: 2})", 2.0); // the seedable equality — the half `optimize` earns
+    both("(x:P)-[:T]->(y:P {age: 2})", 3.0);
+    both("(x:H)", 1.0);
+
+    // A body whose count is ZERO must still broadcast 0 to every outer row, not drop the row.
+    let out = run(
+        &super::parse("MATCH (u:P) RETURN u.age AS a, COUNT { MATCH (z:ZZZ) } AS c").unwrap(),
+        &store,
+    );
+    assert_eq!(out.rows.len(), 3);
+    for r in &out.rows {
+        match r[1] {
+            Value::Num(x) => assert_eq!(x, 0.0),
+            ref o => panic!("want 0, got {o:?}"),
+        }
+    }
+
+    // The sibling uncorrelated forms are NOT counted in the plan and must keep working: EXISTS
+    // is a row test and VALUE returns the body's own single value.
+    assert_eq!(
+        num("MATCH (u:P) WHERE u.age = 1 AND EXISTS { MATCH (z:Q) } RETURN u.age AS a"),
+        1.0
+    );
+    let out = run(
+        &super::parse("MATCH (u:P) WHERE EXISTS { MATCH (z:ZZZ) } RETURN u.age AS a").unwrap(),
+        &store,
+    );
+    assert_eq!(out.rows.len(), 0);
+    assert_eq!(
+        num("MATCH (u:P) WHERE u.age = 1 RETURN VALUE { MATCH (z:Q) RETURN z.age } AS v"),
+        3.0
+    );
+    // And the VALUE spelling of the count agrees with the COUNT spelling (item 499's pair, here
+    // in its uncorrelated form).
+    assert_eq!(
+        num("MATCH (u:P) WHERE u.age = 1 RETURN VALUE { MATCH (z:P) RETURN count(*) } AS v"),
+        3.0
+    );
+}

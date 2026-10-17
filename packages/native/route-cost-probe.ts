@@ -258,6 +258,17 @@ const queries: Record<string, string> = {
   subwhere: 'MATCH (n:Person) RETURN COUNT { MATCH (n)-[:KNOWS]->(x) WHERE x.age > 50 } AS c',
   subvalue: 'MATCH (n:Person) RETURN VALUE { MATCH (n)-[:KNOWS]->(x) RETURN count(*) } AS c',
   submax: 'MATCH (n:Person) RETURN VALUE { MATCH (n)-[:KNOWS]->(x) RETURN max(x.age) } AS c',
+  // Item 501: UNCORRELATED subquery bodies, which run ONCE. `opt` never descends into a
+  // subquery body (item 500), so these are the shapes where that costs the most: a body that
+  // would have been a degree product, an indexed seek or a merged filter at the top level.
+  uncorr2hop:
+    'MATCH (n:Person) RETURN n.age AS a, COUNT { MATCH (:Person)-[:KNOWS]->(b)-[:KNOWS]->(c) } AS c',
+  uncorr1hop: 'MATCH (n:Person) RETURN n.age AS a, COUNT { MATCH (:Person)-[:KNOWS]->(b) } AS c',
+  uncorrlabel: 'MATCH (n:Person) RETURN n.age AS a, COUNT { MATCH (b:Half) } AS c',
+  uncorreq: 'MATCH (n:Person) RETURN n.age AS a, COUNT { MATCH (b:Person) WHERE b.age = 42 } AS c',
+  // The same questions asked at the TOP level, which IS optimized — the control pair.
+  toplevel2hop: 'MATCH (:Person)-[:KNOWS]->(b)-[:KNOWS]->(c) RETURN count(*) AS c',
+  topleveleq: 'MATCH (b:Person) WHERE b.age = 42 RETURN count(*) AS c',
   subcontrol: 'MATCH (n:Person)-[:KNOWS]->(x) RETURN count(*) AS c',
   hopaggrelvar: 'MATCH (:Person)-[r:KNOWS]->(b) RETURN max(b.age) AS m',
   twohoprelvar: 'MATCH (:Person)-[r:KNOWS]->(b)-[s:KNOWS]->(c) RETURN count(*) AS c',

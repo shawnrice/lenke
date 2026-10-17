@@ -5218,3 +5218,30 @@ its teeth to a later widening of the thing it tests, and only re-running the ins
 
 Mutation 4 of 6; the landing-slot check survives because a MIDDLE label lowers to a `Filter`
 between the `Expand`s, which the unwind rejects one step earlier.
+
+## 501 — an UNCORRELATED `COUNT { … }` materialized every row to count it: CLOSED at 3.0x
+
+Item 500's "opt never descends into a subquery body" was priced here, and the first diagnosis was
+REFUTED: optimizing the body alone moved 68.8 -> 73.3 ms (noise). The real cost was
+`Expr::UncorrelatedCount` = `pull(body).rows()` — building 5,000,000 rows to learn how many there
+are, where the same query at top level reaches the degree products. Counting INSIDE the plan (an
+`Aggregate` holding `count(*)`, then optimized): 62.9-66.5 -> 20.9-21.1 ms, three alternated
+rounds, the correlated degree flat as control.
+
+**Both halves ship because either alone is worse**, A/B'd: `counted()` alone still wins the
+two-hop (exec's fast paths match the `Aggregate`) but costs the SEEDED equality 18.2 -> 39.9 ms,
+because wrapping loses the seek until the wrapped plan is re-optimized. `optimize` is a repair,
+not an independent win; that row is FLAT.
+
+**A wrong answer caught by the new test's top-level twin:** reading the count by matching
+`Col::Num` fell through to the row tally, so `COUNT { (x:P) }` answered 1 where 3 is right — an
+`Aggregate`'s output column is whatever the fold produced. _Read the VALUE, not the
+representation._ Running the pristine engine against the same test confirmed the regression was
+mine.
+
+Mutation 2 of 4; `distinct: true` on the wrapper is equivalent (DISTINCT applies to an argument,
+`count(*)` has none).
+
+**OPEN:** a CORRELATED body is still unoptimized and is a different contract (a `Row` leaf
+standing in for the outer row, outer-slot references). `rewrite_fuzz` generates top-level plans
+only and needs widening first.

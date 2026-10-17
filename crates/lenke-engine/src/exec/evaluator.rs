@@ -2490,8 +2490,28 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
             Col::Bool(vec![exists; batch.rows()])
         }
         Expr::UncorrelatedCount { body } => {
-            // Run the self-contained body once; broadcast its row count.
-            let n = pull(body, store, false)?.rows() as f64;
+            // Run the self-contained body once; broadcast its count.
+            //
+            // The body is an `Aggregate` holding `count(*)` (the GQL lowering wraps it), so the
+            // count comes out of the plan as ONE value rather than as a row per match — which
+            // is what lets the `count(*)` degree products answer it without walking a path at
+            // all (item 501). A body that is NOT a single-row count still answers correctly
+            // through the row tally, which is what every other producer of this node emits.
+            let out = pull(body, store, false)?;
+            // The count is READ as a value, not matched on `Col::Num`: an `Aggregate`'s output
+            // column is whatever the fold produced, and for `count(*)` that arrives as a
+            // general column, not a numeric one. Matching the representation instead of the
+            // VALUE made `COUNT { (x:P) }` answer 1 — the row count of the counted plan —
+            // where 3 is right, and the top-level twin in `uncorrelated_subquery_bodies_…`
+            // caught it.
+            let n = match (out.rows(), out.slots.first()) {
+                (1, Some(col)) => match col.value_at(0) {
+                    Value::Num(x) => x,
+                    // A one-row body that is not a count: the row tally, as before.
+                    _ => 1.0,
+                },
+                (rows, _) => rows as f64,
+            };
             Col::Num(vec![n; batch.rows()])
         }
         Expr::UncorrelatedScalar { body } => {
