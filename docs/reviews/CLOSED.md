@@ -6701,3 +6701,46 @@ extraction that existed only to feed it.
 _Shipping it would have been a test that proves nothing while looking exactly like one that does —
 the failure items 115 and 125 record._ The generator widening above is the half that survived
 measurement.
+
+## 557 — a one-hop VALUE-subquery aggregate: 2.0x, and FOUR new divergences found by pricing the enum
+
+`VALUE { MATCH (n)-[:T]->(x) RETURN <agg>(x.k) }` had a rung only for `count(*)` (item 499 lowered
+that spelling onto the degree path). Every other aggregate materialized the whole match set per
+OUTER ROW — a `Binding` Map per neighbour plus the array holding them. 200,000 vertices / 200,000
+edges, one case per process, alternated rounds:
+
+| body                        | pristine        | after                        |
+| --------------------------- | --------------- | ---------------------------- |
+| `RETURN avg(x.age)`         | 154.73 ms       | **78.82** (2.0x)             |
+| `RETURN sum(x.age)`         | 155.16 / 188.64 | **78.53 / 81.34** (2.0-2.3x) |
+| `RETURN max(x.age)`         | 161.03 / 165.30 | **81.19 / 80.12** (2.0x)     |
+| `RETURN min(x.age)`         | 170.50          | **86.30** (2.0x)             |
+| `RETURN count(*)` (control) | 27.07 / 25.57   | 25.90 / 24.46                |
+
+Native answers all of them in 4.7-5.8 ms, so the gap was TS-only.
+
+### FOUR new divergences, found by pricing the enum rather than by a failing test
+
+Native REFUSES four aggregate names inside a correlated subquery body while TS answers them:
+
+```text
+VALUE { MATCH (n)-[:T]->(x) RETURN collect(x.n) }        ts [[2,5],[],[5],[]]   native THROWS
+VALUE { … RETURN collect_list(x.n) }                     ts same                native THROWS
+VALUE { … RETURN stddev_pop(x.n) }                       ts answers             native THROWS
+VALUE { … RETURN count(x.n) }                            ts [2,0,1,0]           native THROWS
+```
+
+`RETURN Count(…) is not supported in …` — a LOUD refusal, so none can be a wrong answer, but four
+shapes where the engines disagree. **All four are excluded from the new rung on purpose**: making
+the divergent answer arrive faster is not an improvement, and the test pins both sides so a fix to
+either is visible.
+
+Teeth: seven mutants, four caught, control clean. Two survivors explained: the self-loop guard is
+redundant because the CALL SITE's bound-landing check catches it (which is what
+`degreeCountSubquery` records about its own twin), and admitting the four divergent names is
+answer-preserving — the exclusion is a POLICY, not a correctness guard.
+
+_Two mutants needed a better fixture before they had teeth, and the first one is the lesson: with
+the bound landing pinned to the `:Q` node, the pair answer (5) and the folded-over-all-neighbours
+answer (also 5, because that node holds the maximum) COINCIDE. Pinning it to the smaller neighbour
+separates them._

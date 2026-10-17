@@ -1685,12 +1685,169 @@ const compileCountSubquery = (expr: Extract<Expr, { kind: 'countSubquery' }>): C
  * error** for more than one (ISO: a scalar subquery must not deliver >1 row) —
  * loud, never a silent first-of-many. Mirrors the native `value_subquery`.
  */
+/**
+ * Aggregate names a one-hop `VALUE { … }` body may ride the adjacency walk with (item 557).
+ *
+ * FOUR names are left off DELIBERATELY, and not for an order reason: native REFUSES `collect`,
+ * `collect_list`, both stddevs AND `count(<arg>)` inside a subquery body (`RETURN CollectList(…)
+ * is not supported in …`) while TS answers all of them. Those are open divergences, found by
+ * probing this very enum and recorded at item 557 — optimizing a shape the two engines disagree
+ * about would only make the divergent answer arrive faster.
+ *
+ * `count(*)` is absent for a different reason: it has had its own rung since item 499 lowered it
+ * onto the degree path, and that path reads a bucket size without visiting an edge.
+ */
+const HOP_VALUE_AGGREGATES: ReadonlySet<string> = new Set(['min', 'max', 'sum', 'avg']);
+
+/**
+ * `VALUE { MATCH (u)-[:T]->(x) [WHERE p] RETURN <agg>(x.k) }` — ONE scalar aggregate over a
+ * one-hop pattern from an anchor the outer row already bound.
+ *
+ * The count spelling has had a rung since item 499 lowered it onto the degree path; every OTHER
+ * aggregate materialized the whole match set per outer row — a `Binding` Map per neighbour plus
+ * the array holding them — and the enum shows exactly that split. 200,000 vertices / 200,000
+ * edges, one case per process:
+ *
+ * ```text
+ *   VALUE { … RETURN count(*) }         27.07 ms     on the degree rung
+ *   VALUE { … RETURN avg(x.age) }      154.73        5.7x
+ *   VALUE { … RETURN sum(x.age) }      155.16
+ *   VALUE { … RETURN max(x.age) }      161.03        5.9x
+ *   VALUE { … RETURN min(x.age) }      170.50        6.3x
+ * ```
+ *
+ * The native engine answers all of them in 4.7-5.8 ms, so the gap is TS-only.
+ *
+ * This streams the anchor's adjacency instead, collecting the argument's VALUES into one array
+ * per outer row and handing them to the same {@link aggregateOverValues} the general path calls
+ * — so the two routes cannot drift on a nullish rule or an empty group. The admission mirrors
+ * {@link landingPredDegreeCount}'s: one segment, a plain unlabelled anchor, a landing variable
+ * that is not the anchor (a repeated variable is a self-join, not a degree), and a `WHERE` that
+ * reads the landing variable and nothing else.
+ */
+const hopValueAggregate = (
+  expr: Extract<Expr, { kind: 'valueSubquery' }>,
+): {
+  startVar: string;
+  landing: string;
+  name: string;
+  valueOf: (v: Vertex, env: EvalEnv) => unknown;
+} | null => {
+  const { ret, where } = expr;
+
+  if (expr.patterns.length !== 1 || ret.kind !== 'func' || ret.distinct) {
+    return null;
+  }
+
+  // `star` is `count(*)`, which this rung never takes — so a star is a refusal outright.
+  if (ret.star || !HOP_VALUE_AGGREGATES.has(ret.name)) {
+    return null;
+  }
+
+  if (where !== undefined && hasSubquery(where)) {
+    return null;
+  }
+
+  const [path] = expr.patterns;
+
+  if (path.pathVar !== undefined || path.segments.length !== 1) {
+    return null;
+  }
+
+  const { start } = path;
+  const startVar = start.variable;
+
+  if (startVar === undefined || !plainNode(start) || start.label !== undefined) {
+    return null;
+  }
+
+  const [seg] = path.segments;
+  const hop = hopOf(seg);
+
+  if (hop === null || hop.variable === undefined || hop.variable === startVar) {
+    return null;
+  }
+
+  const landing = hop.variable;
+
+  for (const free of freePredicateVars(where ?? { kind: 'lit', value: true })) {
+    if (free !== landing) {
+      return null;
+    }
+  }
+
+  // The argument must read the LANDING and nothing else, for the same reason the predicate must:
+  // the scratch binding below holds that one name, so an outer reference would resolve to
+  // `undefined` rather than to the outer row's value.
+  const [argExpr] = ret.args;
+
+  if (ret.args.length !== 1 || argExpr === undefined || hasSubquery(argExpr)) {
+    return null;
+  }
+
+  // `freePredicateVars` is general over `Expr` despite its name — it is the same walk the
+  // predicate check above uses, and the aggregate's argument is just another expression.
+  for (const free of freePredicateVars(argExpr)) {
+    if (free !== landing) {
+      return null;
+    }
+  }
+
+  const pred = where === undefined ? undefined : gatePredicate(where);
+  const argFn = compileExpr(argExpr);
+  const { out, types, label } = hop;
+
+  return {
+    startVar,
+    landing,
+    name: ret.name,
+    valueOf: (v, env) => {
+      // ONE scratch binding and ONE array per OUTER ROW, against the general path's `Binding`
+      // Map per neighbour plus an array of them.
+      const binding = new Map<string, unknown>();
+      const { params, graph } = env;
+      const values: unknown[] = [];
+
+      sideOfVertexGated(v, out, types, label, (node) => {
+        binding.set(landing, node);
+
+        if (pred !== undefined && asTruth(pred({ binding, params, graph })) !== true) {
+          return false;
+        }
+
+        // Nullish values are dropped exactly as the general path's `nonNull` filter drops them,
+        // which is what makes `aggregateOverValues` below the same fold on the same input.
+        const value = argFn({ binding, params, graph });
+
+        if (!isNullish(value)) {
+          values.push(value);
+        }
+
+        return false;
+      });
+
+      return aggregateOverValues(ret.name, values, 0);
+    },
+  };
+};
+
 const compileValueSubquery = (expr: Extract<Expr, { kind: 'valueSubquery' }>): CompiledExpr => {
   const sub = compileSubMatch(expr);
   const retFn = compileExpr(expr.ret);
   const isAgg = hasAggregate(expr.ret);
+  const hopAgg = hopValueAggregate(expr);
 
   return (env) => {
+    if (hopAgg !== null) {
+      const anchor = env.binding.get(hopAgg.startVar);
+
+      // The anchor BOUND and the landing UNBOUND is what makes this a degree-shaped fold rather
+      // than a test of a pair — the same run-time check `degreeCountSubquery`'s call site makes.
+      if (isVertex(anchor) && !env.binding.has(hopAgg.landing)) {
+        return hopAgg.valueOf(anchor, env);
+      }
+    }
+
     const matches = [...matchClauseBindings(env.graph, sub, env.binding, env.params)];
 
     if (isAgg) {
