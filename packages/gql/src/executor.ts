@@ -6544,6 +6544,13 @@ const cheapPureExpr = (e: Expr): boolean =>
   e.kind === 'prop' || e.kind === 'var' || e.kind === 'lit' || e.kind === 'param';
 
 /**
+ * The correlated-subquery expression kinds. `boundExprs` admits one as a `LET` binding, and
+ * {@link inlineTrailingLet} then requires the projection to read the name EXACTLY ONCE before
+ * substituting it (item 565).
+ */
+const SUBQUERY_EXPRS: ReadonlySet<string> = new Set(['exists', 'countSubquery', 'valueSubquery']);
+
+/**
  * The names a trailing binder introduces and the CHEAP, TOTAL expressions behind them, or `null`
  * when the clause is not one this can inline.
  *
@@ -6581,7 +6588,10 @@ const boundExprs = (c: Clause): Map<string, Expr> | null => {
 
     const [{ var: name, expr }] = c.items;
 
-    return cheapPureExpr(expr) ? new Map([[name, expr]]) : null;
+    // A SUBQUERY is neither cheap nor total, and is admitted anyway — but only because
+    // `inlineTrailingLet` then proves the projection reads the name EXACTLY ONCE, which is what
+    // keeps the evaluation count unchanged. See the once-read guard there.
+    return cheapPureExpr(expr) || SUBQUERY_EXPRS.has(expr.kind) ? new Map([[name, expr]]) : null;
   }
 
   if (c.kind !== 'with' || c.where !== undefined) {
@@ -6665,7 +6675,48 @@ const inlineTrailingLet = (clauses: readonly Clause[]): readonly Clause[] => {
     return clauses;
   }
 
-  // Exactly a bound name → its expression; mentions one at all → refuse; otherwise unchanged.
+  // A SUBQUERY binding may be inlined only where the projection reads its name EXACTLY ONCE.
+  // Inlining a cheap, total expression any number of times costs nothing and can raise nothing; a
+  // subquery is neither, so the evaluation COUNT has to come out the same:
+  //
+  //   - read TWICE and inlined twice, the work doubles;
+  //   - read ZERO times, the binding's evaluation disappears and with it any fault it raises.
+  //
+  // One reference is the only case where substituting changes nothing observable.
+  const subqueryBound = [...bound].filter(([, e]) => SUBQUERY_EXPRS.has(e.kind)).map(([n]) => n);
+
+  if (subqueryBound.length > 0) {
+    const reads = (e: Expr): number => {
+      const free = freePredicateVars(e);
+
+      return subqueryBound.filter((name) => free.has(name)).length;
+    };
+    const total =
+      proj.items.reduce((acc, it) => acc + reads(it.expr), 0) +
+      (proj.orderBy ?? []).reduce((acc, o) => acc + reads(o.expr), 0);
+
+    if (total !== 1) {
+      return clauses;
+    }
+  }
+
+  // Exactly a bound name → its expression; a FUNCTION ARGUMENT that is one → substitute it there;
+  // mentions one anywhere else → refuse; otherwise unchanged.
+  //
+  // The function-argument case is item 565, and it is where the common shape lives. `subst` used
+  // to be all-or-nothing, so `LET c = COUNT { … } RETURN sum(c)` — a name read inside an
+  // aggregate — never inlined and kept the per-row clause. Measured at 200,000 vertices /
+  // 300,000 edges, one case per process:
+  //
+  // ```text
+  //   LET c = COUNT { MATCH (n)-[:KNOWS]->(x) } RETURN sum(c)   114.06 / 170.48 / 173.33 ms
+  //   RETURN sum(COUNT { MATCH (n)-[:KNOWS]->(x) })              50.14 /  52.78 /  52.18
+  // ```
+  //
+  // ONE LEVEL ONLY, and deliberately: the arguments are replaced where they are BARE NAMES, and
+  // the result is then re-checked for any surviving mention. A deeper reference (`sum(c + 1)`)
+  // leaves one and refuses, rather than needing an exhaustive walk over a 40-arm `Expr` union
+  // where a missed arm would drop the binder with the name still unbound.
   const subst = (e: Expr): Expr | null => {
     if (e.kind === 'var') {
       const sub = bound.get(e.name);
@@ -6675,9 +6726,24 @@ const inlineTrailingLet = (clauses: readonly Clause[]): readonly Clause[] => {
       }
     }
 
-    const free = freePredicateVars(e);
+    const mentions = (x: Expr): boolean => {
+      const free = freePredicateVars(x);
 
-    return [...bound.keys()].some((n) => free.has(n)) ? null : e;
+      return [...bound.keys()].some((n) => free.has(n));
+    };
+
+    if (!mentions(e)) {
+      return e;
+    }
+
+    if (e.kind !== 'func') {
+      return null;
+    }
+
+    const args = e.args.map((a) => (a.kind === 'var' ? (bound.get(a.name) ?? a) : a));
+    const swapped: Expr = { ...e, args };
+
+    return args.some((a, i) => a !== e.args[i]) && !args.some(mentions) ? swapped : null;
   };
   const items: ReturnItem[] = [];
 

@@ -7035,3 +7035,37 @@ when an item IS the bound name and refuses any expression MENTIONING it — so `
 inlines. The apparent 151.90 → 112.21 did not survive an alternated round (110.21 pristine against
 161.67 after). Reverted; the blocker is now recorded, and closing it needs a structural
 substitution rather than a wider admission.
+
+## 565 — `inlineTrailingLet` substitutes into a FUNCTION ARGUMENT: the CALL route reaches parity
+
+`inlineTrailingLet`'s substitution was ALL-OR-NOTHING — it replaced an item that WAS the bound
+name and refused any expression that merely mentioned it. So `LET c = COUNT { … } RETURN sum(c)`,
+a name read inside an aggregate and the common shape, never inlined and kept its per-row clause.
+
+Two changes close it: `boundExprs` admits a subquery binding, and `subst` replaces a bound name
+appearing as a FUNCTION ARGUMENT. Item 564 tried the first alone and found it INERT — this is why.
+
+200,000 vertices / 300,000 edges, one case per process:
+
+| spelling                                            | before                      | after     |
+| --------------------------------------------------- | --------------------------- | --------- |
+| `LET c = COUNT { … } RETURN sum(c)`                 | 114.06 / 170.48 / 173.33 ms | **53.46** |
+| `CALL (n) { … RETURN count(*) AS c } RETURN sum(c)` | 156.85 / 159.49             | **52.93** |
+| `RETURN sum(COUNT { … })` (the target)              | 50.14 / 52.78 / 52.18       | 52.87     |
+
+All three land on ~53 — one question, one cost. **With items 563 and 564 the CALL route is
+779 → 53 end to end, 14.7x.**
+
+TWO conditions, both with caught mutants:
+
+- **exactly ONE read** across items and ORDER BY keys. Read twice, the subquery is evaluated twice;
+  read ZERO times, the binder's evaluation disappears along with any fault it raises — and a
+  faulting zero-read binder DOES throw in both engines today, which is what catches the `> 1`
+  mutant.
+- **ONE LEVEL**: arguments are replaced where they are BARE NAMES and the result re-checked for a
+  surviving mention, so `sum(c + 1)` refuses. Deliberately not an exhaustive walk over a 40-arm
+  `Expr` union, where a missed arm would drop the binder with the name still unbound.
+
+Teeth: six mutants, five caught (two only after the faulting zero-read test was added), control
+clean. The survivor — not counting ORDER BY reads — can only cause a DOUBLE EVALUATION with the
+same answer, so it is cost-only and recorded as such.
