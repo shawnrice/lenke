@@ -3158,3 +3158,112 @@ fn a_gremlin_page_under_a_count_is_not_elided() {
         "a Gremlin page must survive: {plan}"
     );
 }
+
+/// Item 567. `normalize_pred` — which turns GQL's `'L' IN labels(slot)` into the canonical
+/// `IsLabeled`, the node the tautology short-circuit and the membership bitset both read — ran on
+/// `Plan::Filter`'s predicate AND NOWHERE ELSE. So an `OPTIONAL MATCH`'s LANDING LABEL kept the raw
+/// spelling, which materializes a label list per candidate. Measured at 200,000 vertices / 350,000
+/// edges, alternated rounds:
+///
+/// ```text
+///   OPTIONAL MATCH (p)-[:KNOWS]->(q)                   0.62 / 0.64 -> 0.60 / 0.75 ms
+///   OPTIONAL MATCH (p)-[:KNOWS]->(q WHERE q.age > 50)  3.82 / 3.67 -> 3.67 / 4.34
+///   OPTIONAL MATCH (p)-[:KNOWS]->(q:Person)           46.25 / 58.05 -> 5.65 / 6.46   8-10x
+///   OPTIONAL MATCH (p)-[:KNOWS]->(q:Nope)             44.67 / 45.25 -> 2.67 / 2.71  16-17x
+///   MATCH (p:Person)-[:KNOWS]->(q:Person)              0.26 -> 0.26   (non-optional control)
+/// ```
+///
+/// Two spellings of one landing filter that differed by 12x — the label against the predicate —
+/// and the non-optional control shows the label is free when a plain `Filter` carries it.
+#[test]
+fn an_optional_landing_label_is_canonicalized() {
+    let mut b = Builder::default();
+
+    // `a` reaches a `Q` and a `P`; `b` reaches only a `P`; `c` reaches nothing. So the three
+    // landing-label answers differ from each other AND from the unfiltered one.
+    let a = b.node(&["P"], &[("n", Value::Num(1.0))]);
+    let q = b.node(&["Q"], &[("n", Value::Num(2.0))]);
+    let p = b.node(&["P"], &[("n", Value::Num(3.0))]);
+    let c = b.node(&["P"], &[("n", Value::Num(4.0))]);
+
+    b.edge(a, q, "T");
+    b.edge(a, p, "T");
+    b.edge(c, p, "T");
+
+    let store = b.build();
+    let plan_of = |s: &str| -> Plan { optimize_indexed(crate::gql::parse(s).unwrap(), &store) };
+    let answer = |s: &str| -> Vec<String> { bag(&run(&plan_of(s), &store)) };
+
+    // THE CANONICAL FORM REACHED THE LANDING PREDICATE: without the normalization the plan holds
+    // an `In`/`labels(...)` call there instead.
+    let dump = format!(
+        "{:?}",
+        plan_of("MATCH (n:P) OPTIONAL MATCH (n)-[:T]->(x:Q) RETURN count(*) AS c")
+    );
+
+    assert!(
+        dump.contains("IsLabeled"),
+        "the landing label should be canonicalized: {dump}"
+    );
+    // The RAW spelling is a `Call` to `labels`; `IsLabeled`'s own field is also called `labels`,
+    // so the assertion has to name the call rather than the word.
+    assert!(
+        !dump.contains("name: \"labels\""),
+        "the raw `IN labels(…)` spelling should be gone: {dump}"
+    );
+
+    // And the ANSWERS, which the normalization must not touch. Four `:P` anchors — a, p, c and
+    // the `:P` landing `p` itself is an anchor too.
+    //
+    //   unfiltered: a has 2, p has 0 (miss row), c has 1 → 2 + 1 + 1 = 4
+    //   :Q landing: only a->q survives; p and c null-fill, and a contributes ONE row → 3
+    //   :P landing: a->p and c->p survive, p null-fills → 3
+    assert_eq!(
+        answer("MATCH (n:P) OPTIONAL MATCH (n)-[:T]->(x) RETURN count(*) AS c"),
+        vec!["Num(4.0);".to_string()]
+    );
+    assert_eq!(
+        answer("MATCH (n:P) OPTIONAL MATCH (n)-[:T]->(x:Q) RETURN count(*) AS c"),
+        vec!["Num(3.0);".to_string()]
+    );
+    assert_eq!(
+        answer("MATCH (n:P) OPTIONAL MATCH (n)-[:T]->(x:P) RETURN count(*) AS c"),
+        vec!["Num(3.0);".to_string()]
+    );
+    // A label NOTHING carries: every anchor null-fills, so the count is the anchor count.
+    assert_eq!(
+        answer("MATCH (n:P) OPTIONAL MATCH (n)-[:T]->(x:Nope) RETURN count(*) AS c"),
+        vec!["Num(3.0);".to_string()]
+    );
+    // The LANDING VALUES, not just the count — a label test that answered wrongly would show
+    // here even where the count coincides.
+    assert_eq!(
+        answer("MATCH (n:P) OPTIONAL MATCH (n)-[:T]->(x:Q) RETURN x.n AS v"),
+        bag(&run(
+            &plan_of(
+                "MATCH (n:P) OPTIONAL MATCH (n)-[:T]->(x WHERE 'Q' IN labels(x)) RETURN x.n AS v"
+            ),
+            &store
+        ))
+    );
+
+    // An EDGE-bound optional hop keeps the landing slot one later, which is what the
+    // `slot_is_node` arm has to get right — a wrong slot would canonicalize nothing (slow) or,
+    // worse, read the EDGE's type as a node label.
+    assert_eq!(
+        answer("MATCH (n:P) OPTIONAL MATCH (n)-[e:T]->(x:Q) RETURN count(*) AS c"),
+        vec!["Num(3.0);".to_string()]
+    );
+    // …and the PLAN, because declining to canonicalize is answer-preserving: only the structure
+    // says whether the bound-edge case found the right slot. A mutant that ignores `bind_edge`
+    // here leaves the raw spelling and this is what catches it.
+    let bound = format!(
+        "{:?}",
+        plan_of("MATCH (n:P) OPTIONAL MATCH (n)-[e:T]->(x:Q) RETURN count(*) AS c")
+    );
+
+    assert!(
+        bound.contains("IsLabeled { slot: 2"),
+        "the landing slot is one later when the edge is bound: {bound}"
+    );
+}

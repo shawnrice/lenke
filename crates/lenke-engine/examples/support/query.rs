@@ -245,6 +245,17 @@ pub fn run(cfg: &Cfg) {
                     "MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(q WHERE q.age > 50) \
                      RETURN count(*) AS c",
                 ),
+                // The LABEL spelling of the same landing filter (item 567). It read 46-58ms at
+                // 200,000 vertices / 350,000 edges against the predicate's 3.7 — 12x for the same
+                // job — because `normalize_pred` ran on `Plan::Filter` and nowhere else, so this
+                // position kept the raw `'L' IN labels(slot)` form instead of `IsLabeled`.
+                // Canonicalized, 5.65/6.46. The pair is here so the two spellings are measured
+                // side by side and a regression in either shows as a gap between them.
+                (
+                    "optional hop + landing label",
+                    "MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(q:Person) \
+                     RETURN count(*) AS c",
+                ),
                 // A hash JOIN, which a second MATCH clause sharing a variable builds (a comma
                 // pattern does not -- that lowers to a chain). `plan_cost_by_operator` priced
                 // the operator at 207.05ns a row, 282x the scan floor and the most expensive

@@ -7119,3 +7119,42 @@ scans a typed column. Item 234 reached the same conclusion from the Gremlin side
 was data layout, not overhead") and withdrew two targets on it.
 
 So: no rung is missing here, and a future pass that sees 248x should read this before pricing it.
+
+## 567 — NATIVE: an OPTIONAL hop's landing LABEL kept the slow spelling — 19.5x
+
+`normalize_pred` turns GQL's `'L' IN labels(slot)` into the canonical `IsLabeled` — the node the
+tautology short-circuit and the membership bitset both read. **It ran on `Plan::Filter`'s predicate
+and nowhere else.** So an `OPTIONAL MATCH`'s LANDING LABEL kept the raw form, which materializes a
+label list per candidate, while the same test as a trailing filter was canonicalized.
+
+`query_bench`, 200,000 vertices / 1,000,000 edges:
+
+| row                                      | before       | after               |
+| ---------------------------------------- | ------------ | ------------------- |
+| `optional hop + landing label` (new row) | 173,141.9 µs | **8,877.7** (19.5x) |
+| `optional hop + landing pred` (control)  | 10,112.6     | 11,381.3            |
+
+and on a 350,000-edge probe, alternated rounds:
+
+| query                                                  | before           | after           |
+| ------------------------------------------------------ | ---------------- | --------------- |
+| `OPTIONAL MATCH (p)-[:KNOWS]->(q:Person)`              | 46.25 / 58.05 ms | **5.65 / 6.46** |
+| `OPTIONAL MATCH (p)-[:KNOWS]->(q:Nope)`                | 44.67 / 45.25    | **2.67 / 2.71** |
+| `OPTIONAL MATCH (p)-[:KNOWS]->(q WHERE q.age > 50)`    | 3.82 / 3.67      | 3.67 / 4.34     |
+| `OPTIONAL MATCH (p)-[:KNOWS]->(q)`                     | 0.62 / 0.64      | 0.60 / 0.75     |
+| `MATCH (p:Person)-[:KNOWS]->(q:Person)` (non-optional) | 0.26             | 0.26            |
+
+**Two spellings of one landing filter differing by 12x**, with the non-optional control showing the
+label is free when a plain `Filter` carries it — which is what said the problem was the position
+and not the test.
+
+`slot_is_node` needed an `OptionalExpand` arm for this: the landing slot is the one the node
+APPENDS, so the predicate is normalized against the rebuilt node rather than its input, and the
+bound-edge case puts the landing one slot later.
+
+Teeth: four mutants, two caught, one did not compile, control clean. The `bind_edge` mutant is
+answer-preserving (declining to canonicalize is only slower), so the test asserts the PLAN —
+`IsLabeled { slot: 2` for the bound-edge spelling — which is what catches it.
+
+_The TS engine has had vacuous-label elision since item 221; this is the same class on the other
+engine, found by pricing the native optional-hop enum rather than by porting anything._

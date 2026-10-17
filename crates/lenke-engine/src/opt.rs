@@ -464,6 +464,13 @@ fn slot_is_node(p: &Plan, slot: usize) -> bool {
         | Plan::NodeSeed { .. } => slot == 0,
         Plan::Expand {
             input, bind_edge, ..
+        }
+        // An OPTIONAL expand appends the same two columns in the same order, and a MISS lands
+        // the null sentinel in the node column — still a node column. Added at item 567 so the
+        // landing predicate can be canonicalized; without this arm `slot_is_node` fell through
+        // to `_ => false` and a landing LABEL kept its slow spelling.
+        | Plan::OptionalExpand {
+            input, bind_edge, ..
         } => match plan_out_width(input) {
             // The endpoint node is the LAST appended slot; a bound edge sits one before it.
             Some(w) if slot == w + usize::from(*bind_edge) => true,
@@ -863,15 +870,61 @@ fn map_children(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
             landing_pred,
         } => {
             let (i, c) = rewrite(*input, idx);
+            // CANONICALIZE THE LANDING PREDICATE (item 567). `normalize_pred` ran on
+            // `Plan::Filter`'s predicate and nowhere else, so `OPTIONAL MATCH (p)-[:R]->(q:L)`
+            // kept the raw `'L' IN labels(slot)` spelling the GQL parser emits — which
+            // materializes a label LIST per candidate — where the same test written as a
+            // trailing filter became `IsLabeled` and reached the tautology short-circuit and
+            // the membership bitset. Measured at 200,000 vertices / 350,000 edges:
+            //
+            //   OPTIONAL MATCH (p)-[:KNOWS]->(q)                   0.64 ms
+            //   OPTIONAL MATCH (p)-[:KNOWS]->(q WHERE q.age > 50)  3.67
+            //   OPTIONAL MATCH (p)-[:KNOWS]->(q:Person)           46.25     72x the first
+            //   MATCH (p:Person)-[:KNOWS]->(q:Person)              0.26     non-optional
+            //
+            // The landing slot is the one this node APPENDS, so the predicate is normalized
+            // against the rebuilt node rather than against its input — which is also why
+            // `slot_is_node` needed the arm above.
+            let rebuilt = Plan::OptionalExpand {
+                input: Box::new(i),
+                from,
+                dir,
+                edge_label,
+                keep_source,
+                bind_edge,
+                landing_pred,
+            };
+            let Plan::OptionalExpand {
+                input: i,
+                from,
+                dir,
+                edge_label,
+                keep_source,
+                bind_edge,
+                landing_pred,
+            } = rebuilt
+            else {
+                unreachable!("just constructed")
+            };
+            let probe = Plan::OptionalExpand {
+                input: i.clone(),
+                from,
+                dir,
+                edge_label: edge_label.clone(),
+                keep_source,
+                bind_edge,
+                landing_pred: None,
+            };
+
             (
                 Plan::OptionalExpand {
-                    input: Box::new(i),
+                    input: i,
                     from,
                     dir,
                     edge_label,
                     keep_source,
                     bind_edge,
-                    landing_pred,
+                    landing_pred: landing_pred.map(|p| Box::new(normalize_pred(*p, &probe))),
                 },
                 c,
             )
