@@ -27,6 +27,7 @@ import type {
   CNode,
   CompiledExpr,
   CPredicate,
+  CProjection,
   CReturnItem,
   EvalEnv,
   Params,
@@ -45,6 +46,7 @@ import {
   satisfies,
   countEdges,
   outNeighbors,
+  projectRow,
   propOf,
   relHasPredicate,
   relTypeNames,
@@ -53,6 +55,7 @@ import {
 } from '../executor.js';
 import { candidateCount, candidateVertexSource, expand, matchesLabel } from '../graph-queries.js';
 import type { Adjacency } from '../graph-queries.js';
+import { plainRowProjection } from './hop-projection.js';
 import { indexCandidates, matchNode, seedVertices, seekIsWorthIt } from './matching.js';
 import type { SeedCandidate } from './matching.js';
 import { AGGREGATES, asTruth, isNullish } from './scalars.js';
@@ -4109,6 +4112,191 @@ const perRowForCount = (
   }
 
   return (graph, params) => pageOneRow(() => one(graph), graph, params, proj.skip, proj.limit);
+};
+
+/**
+ * `MATCH (n[:L]) FOR t IN <list> RETURN <items>` — the `FOR` PROJECTION off the label bucket.
+ *
+ * Items 515 and 518 gave the `count(*)` form the arithmetic. The projection has to emit the rows,
+ * so there is no arithmetic to replace the walk with — the cost is the walk itself, and the
+ * general path pays three allocations an ELEMENT for it: `runFor` copies the whole binding into a
+ * `new Map` per element, `elems.map` materializes an array of those per input row, and
+ * `mapToRow` walks the surviving map again at the end.
+ *
+ * Measured at 200,000 vertices with three list elements each (item 528):
+ *
+ * ```text
+ *   MATCH (n:Person) FOR t IN n.tags RETURN t AS t      ts 92.7 ms   native 50.8
+ *   MATCH (n:Person) FOR x IN [1, 2, 3] RETURN x AS x   ts 97.4      native 40.1
+ *   MATCH (n:Person) RETURN n.age AS k   (no FOR)       ts  9.5      native 11.0
+ * ```
+ *
+ * The third row is the diagnosis: without a `FOR` the TS engine is FASTER than native, so the
+ * 2.0-2.4x is not a projection gap — it is the per-element binding machinery, which the plain
+ * projection's own rung never touches. 162 ns a row against 48.
+ *
+ * ONE scratch binding is reused across every element of every anchor, because nothing retains it:
+ * `projectRow` reads it and returns a fresh `Row`. The same trick as item 524's landing gate, and
+ * for the same reason it is sound there — the only consumer finishes with the binding before the
+ * next element overwrites it.
+ *
+ * The admission:
+ *
+ *   - exactly `MATCH` / `FOR` / `RETURN`, with a lone plain anchor node (no inline properties, no
+ *     clause or inline `WHERE`), since its bucket is what this walks;
+ *   - a plain row projection — no `*`, DISTINCT, grouping, ORDER BY or paging, and not
+ *     aggregating (items 515 and 518 own the aggregate form);
+ *   - the list is either a ROW-INVARIANT expression (`freePredicateVars` empty — evaluated ONCE
+ *     and shared, the same invariance check `unwind_rows` makes in the engine, item 519) or a
+ *     PROPERTY of the anchor, read straight off the vertex;
+ *   - every item's free names are the anchor, the `FOR` variable, or the ordinality variable.
+ *     Anything else is not in scope here anyway, but checking is what makes the scratch binding
+ *     complete rather than nearly complete.
+ *
+ * ISO's unwind rule is the same as the counting rungs': a LIST contributes one row per element,
+ * an empty list contributes none (the anchor's row disappears), NULL or a missing key contributes
+ * none, and any other scalar contributes ONE row — a non-list unwinds as a one-element list.
+ */
+export const detectForProjection = (
+  clauses: readonly Clause[],
+  compiled: readonly CClause[],
+): ((graph: Graph, params: Params) => Row[]) | null => {
+  if (clauses.length !== 3) {
+    return null;
+  }
+
+  const [m, loop, ret] = clauses;
+  const [, cloop, cret] = compiled;
+
+  if (m.kind !== 'match' || loop.kind !== 'for' || ret.kind !== 'return') {
+    return null;
+  }
+
+  if (cloop?.kind !== 'for' || cret?.kind !== 'return' || cret.projection.aggregating) {
+    return null;
+  }
+
+  if (!plainRowProjection(ret.projection) || m.optional || m.where !== undefined) {
+    return null;
+  }
+
+  if (m.patterns.length !== 1) {
+    return null;
+  }
+
+  const [pattern] = m.patterns;
+  const { start } = pattern;
+  const anchor = start.variable;
+
+  if (
+    pattern.segments.length !== 0 ||
+    pattern.pathVar !== undefined ||
+    anchor === undefined ||
+    !plainNode(start) ||
+    (start.properties !== undefined && start.properties.length > 0)
+  ) {
+    return null;
+  }
+
+  const { label } = start;
+
+  if (label !== undefined && label.kind !== 'label') {
+    return null;
+  }
+
+  const names = new Set<string>([anchor, loop.alias]);
+
+  if (loop.ordinality !== undefined) {
+    names.add(loop.ordinality.var);
+  }
+
+  for (const item of ret.projection.items) {
+    for (const free of freePredicateVars(item.expr)) {
+      if (!names.has(free)) {
+        return null;
+      }
+    }
+  }
+
+  // The LIST, in the two forms worth intercepting: row-invariant (one evaluation, shared) or a
+  // property of the anchor (read off the vertex, no expression evaluation at all).
+  const invariant = freePredicateVars(loop.list).size === 0;
+  const key = loop.list.kind === 'prop' && loop.list.variable === anchor ? loop.list.key : null;
+
+  if (!invariant && key === null) {
+    return null;
+  }
+
+  const name = label?.name;
+  const { alias, ordinality } = loop;
+  const { projection } = cret;
+  const listFn = cloop.list;
+
+  return (graph, params) =>
+    forProjectionRows(graph, params, {
+      anchor,
+      name,
+      alias,
+      ordinality,
+      projection,
+      listFn,
+      invariant,
+      key,
+    });
+};
+
+/**
+ * The per-ROW half of `detectForProjection`, at module scope rather than inside the returned
+ * closure: a walk written inline in a closure gives UNRELATED queries a new slow mode (item 268,
+ * 4x), and this is a walk over every vertex of a label.
+ */
+const forProjectionRows = (
+  graph: Graph,
+  params: Params,
+  plan: {
+    anchor: string;
+    name: string | undefined;
+    alias: string;
+    ordinality: { kind: 'ordinality' | 'offset'; var: string } | undefined;
+    projection: CProjection;
+    listFn: CompiledExpr;
+    invariant: boolean;
+    key: string | null;
+  },
+): Row[] => {
+  const { anchor, name, alias, ordinality, projection, listFn, invariant, key } = plan;
+  const vertices: Iterable<Vertex> =
+    name === undefined ? graph.verticesById.values() : (graph.verticesByLabel.get(name) ?? []);
+  const binding = new Map<string, unknown>();
+  const out: Row[] = [];
+  // A ROW-INVARIANT list is evaluated ONCE, which is the whole point of the check: the engine's
+  // `unwind_rows` does the same, and item 519 is the record of what happens when a fast path
+  // mirrors an operator's element rule without its invariance rule.
+  const shared = invariant ? listFn({ binding, params, graph }) : undefined;
+
+  for (const vertex of vertices) {
+    binding.set(anchor, vertex);
+
+    const value = key === null ? shared : vertex.properties[key];
+
+    if (value === null || value === undefined) {
+      continue;
+    }
+
+    const elems: readonly unknown[] = Array.isArray(value) ? value : [value];
+
+    for (let i = 0; i < elems.length; i++) {
+      binding.set(alias, elems[i]);
+
+      if (ordinality !== undefined) {
+        binding.set(ordinality.var, ordinality.kind === 'ordinality' ? i + 1 : i);
+      }
+
+      out.push(projectRow(projection, binding, params, graph));
+    }
+  }
+
+  return out;
 };
 
 export const detectForCount = (

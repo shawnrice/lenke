@@ -700,7 +700,12 @@ const optionalHopShape = (
 };
 
 /** A projection that emits one row per binding: no folding, deduping, grouping or paging. */
-const plainRowProjection = (proj: Projection): boolean =>
+/**
+ * A projection with nothing but items: no `*`, no DISTINCT, no grouping, no ORDER BY, no paging.
+ * Exported because item 528's `FOR` projection asks exactly the same question, and two copies of
+ * this list is how one of them falls behind the other.
+ */
+export const plainRowProjection = (proj: Projection): boolean =>
   !proj.star &&
   !proj.distinct &&
   proj.groupBy === undefined &&

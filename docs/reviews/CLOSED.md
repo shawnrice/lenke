@@ -5799,3 +5799,27 @@ seeds each: `selfEnd > 22 / > 14`, `selfHop > 18 / > 15`.
 
 Both wrong answers that hid in this family are now reachable from both sides, each backed by a
 before/after mutation rather than by the widening's existence.
+
+## 528 — the TS `FOR` projection: CLOSED at 4.0-4.4x, and it now beats native
+
+Items 515 and 518 did the `count(*)` form. A projection must emit the rows, so it LOOKED like the
+cost was the walk. The third measurement is what said otherwise: `MATCH (n:Person) RETURN n.age`
+with no `FOR` is ts 9.5 against native 11.0, so TS is FASTER without one — the 2.0-2.4x was the
+per-element BINDING machinery (`new Map` per element, an array of those per row, a final map walk:
+three allocations an element, 162 ns a row against 48), not projection and not element render.
+
+`detectForProjection` walks the label bucket and reuses ONE scratch binding per call, since
+`projectRow` returns a fresh `Row` and nothing retains the binding (item 524's trick). The walk is
+module-scope, not inline in the closure (item 268).
+
+Prop list 95.2 / 159.7 / 99.9 → 25.2 / 23.7 / 24.0 (~4.0x); constant list 93.2 / 91.5 / 92.2 →
+26.2 / 21.1 / 20.6 (~4.4x); the no-`FOR` control flat at 9.8-11.7 → 9.6-10.9. Three alternated
+rounds with a rebuild between each, disjoint.
+
+**OPEN on the other side now: native's `FOR` projection**, which these numbers beat (24 and 21
+against 50.8 and 40.1).
+
+Mutation 7 of 7 (null control clean). One mutant MISAPPLIED first — the label-bucket line is
+character-identical across three rungs in the file, so the pattern matched three times, and the
+uniqueness assert is the only reason it read as a misapplication rather than a survivor. Items
+474, 483, 494, 518, 528.

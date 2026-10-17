@@ -1351,6 +1351,13 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
     return linear.forCount(graph, params);
   }
 
+  // The `FOR` PROJECTION off the label bucket (item 528). Below `forCount`, which owns the
+  // aggregate form — the two are mutually exclusive (this one refuses an aggregating
+  // projection), so the order is for reading rather than for correctness.
+  if (linear.forProjection) {
+    return linear.forProjection(graph, params);
+  }
+
   // The OPTIONAL-hop PROJECTION (item 511) — one row per match, or one null-filled row.
   if (linear.optionalHopProjection) {
     return linear.optionalHopProjection(graph, params) ?? undefined;

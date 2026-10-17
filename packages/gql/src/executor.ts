@@ -6256,6 +6256,8 @@ export type CLinear = {
   clauses: readonly CClause[];
   /** Precomputed direct-count closure for `MATCH … RETURN count(*)`; else null. */
   forCount: ((graph: Graph, params: Params) => Row[]) | null;
+  /** The `FOR` PROJECTION off the label bucket (item 528); else null. */
+  forProjection: ((graph: Graph, params: Params) => Row[]) | null;
   optionalHopCount: ((graph: Graph, params: Params) => Row[]) | null;
   optionalHopProjection: RowsFn | null;
   countShortcut: ((graph: Graph, params: Params) => Row[]) | null;
@@ -6817,6 +6819,7 @@ const compileLinear = (linear: LinearQuery): CLinear => {
     // A constant `FOR` multiplies the count, so it sits beside the other count rungs and
     // delegates to `detectCountShortcut` for the base (item 515).
     forCount: detectForCount(fast, clauses),
+    forProjection: detectForProjection(fast, clauses),
     optionalHopCount: detectOptionalHopCount(fast),
     optionalHopProjection: detectOptionalHopProjection(fast, clauses),
     countShortcut: detectCountShortcut(fast, clauses),
@@ -6878,6 +6881,7 @@ import {
   detectNodeAggregate,
   detectNodeProjection,
   detectForCount,
+  detectForProjection,
   detectOptionalHopCount,
   detectGroupedHopAggregate,
   detectGroupedNodeAggregate,
