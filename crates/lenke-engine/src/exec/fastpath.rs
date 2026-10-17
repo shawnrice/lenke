@@ -1042,6 +1042,153 @@ pub(super) fn try_stream_num_count(
     Some(count)
 }
 
+/// Count the emitted paths of a bounded OUT walk by DEGREE ARITHMETIC — O(V+E) — instead of
+/// enumerating them, with up to three independent filters folded in.
+///
+/// Extracted from [`try_varlen_count`] at item 572 so the quantified-GROUP count can reach it
+/// too. `Some(n)` answered; `None` declined, and a decliner must be able to fall back.
+///
+/// The three filters apply at DIFFERENT places, which is the whole reason they are three:
+///
+/// - `end_pred` is the ENDPOINT filter: a path's last node only. A `{0,n}`'s zero-length path
+///   has the source as its endpoint, so this is the only filter that touches it.
+/// - `body` is a per-LANDING node filter (item 570): every node past the source, pruning.
+/// - `trav` is a `k = 1` per-REPETITION predicate (item 572), a function of one
+///   `(source, edge, target)` triple. Under `Dir::Out` an edge id fixes all three.
+///
+/// So a 2-hop path `s -> y -> z` over edges `a`, `b` is counted when
+/// `trav(a) && body(y) && trav(b) && body(z) && end(z)`, a 1-hop `s -> y` when
+/// `trav(a) && body(y) && end(y)`. Collapsing any two of the masks would apply one of them at
+/// the other's position.
+#[allow(clippy::too_many_arguments)]
+fn try_degree_algebra(
+    store: &Store,
+    src: &[u32],
+    want: &[u32],
+    min: u32,
+    max: u32,
+    mode: PathMode,
+    dir: Dir,
+    end_pred: Option<(&Expr, usize)>,
+    body: Option<(&Expr, usize)>,
+    trav: Option<&Expr>,
+) -> Option<u64> {
+    let is_trail = matches!(mode, PathMode::Trail);
+    if matches!(dir, Dir::Out)
+        && (1..=2).contains(&max)
+        && matches!(mode, PathMode::Trail | PathMode::Walk)
+    {
+        let (nc, ec) = (store.node_count(), store.edge_count());
+        let avg_deg = if nc == 0 { 0.0 } else { ec as f64 / nc as f64 };
+        let est_paths = src.len() as f64 * avg_deg.powi(max as i32);
+        if est_paths > 2.0 * (nc + ec) as f64 {
+            // An endpoint predicate folds INTO the algebra rather than defeating it: a node's
+            // contribution as a hop TARGET is either counted or not, so the per-node out-degree
+            // becomes a per-node PASSING out-degree.
+            //
+            // The labelled block is the fallback. Unlike the per-endpoint sink, this asks the
+            // predicate about EVERY node rather than only the reached ones, so it can fail where
+            // the walk would not — see `an_endpoint_predicate_is_evaluated_only_for_reached_nodes`.
+            // On that it breaks out and the enumeration below answers.
+            'algebra: {
+                let ok: Option<Vec<bool>> = match end_pred {
+                    None => None,
+                    Some((p, slot)) => match crate::exec::varlen::node_pass_mask(p, slot, store) {
+                        Ok(o) => Some(o),
+                        Err(_) => break 'algebra,
+                    },
+                };
+                // The BODY mask is a second, independent question from the endpoint one, and
+                // the two apply at different places: the endpoint predicate asks only about a
+                // path's LAST node, the body filter about EVERY node past the source. A 2-hop
+                // path `s -> y -> z` needs `body(y) && body(z) && end(z)`; a 1-hop `s -> y`
+                // needs `body(y) && end(y)`; the zero-length path has no landing at all, so
+                // only `end(s)` applies to it. Collapsing them into one mask would silently
+                // apply the endpoint predicate to the intermediate node.
+                let body_ok: Option<Vec<bool>> = match body {
+                    None => None,
+                    Some((p, slot)) => match crate::exec::varlen::node_pass_mask(p, slot, store) {
+                        Ok(o) => Some(o),
+                        Err(_) => break 'algebra,
+                    },
+                };
+                // The TRAVERSAL mask (item 572). A `k = 1` per-repetition predicate is a
+                // function of ONE `(source, edge, target)` triple, and under `Dir::Out` the edge
+                // id fixes all three — so a single edge-indexed mask carries a target test, an
+                // edge test, a source test and any conjunction of them. Separate node and edge
+                // masks could not: `WHERE y.age > 50 AND e.w > 5` does not factor into them.
+                let trav_ok: Option<Vec<bool>> = match trav {
+                    None => None,
+                    Some(p) => match crate::exec::varlen::traversal_pass_mask(p, store) {
+                        Ok(o) => Some(o),
+                        Err(_) => break 'algebra,
+                    },
+                };
+                let trav_fn = |eid: u32| trav_ok.as_ref().is_none_or(|o| o[eid as usize]);
+                let passes = |v: u32| ok.as_ref().is_none_or(|o| o[v as usize]);
+                let body_fn = |v: u32| body_ok.as_ref().is_none_or(|o| o[v as usize]);
+                let mut outdeg = vec![0u64; nc];
+                for (v, d) in outdeg.iter_mut().enumerate() {
+                    let adj = store.out(v as u32);
+                    // The O(1) read stays for the common case; a wanted-type or predicate filter
+                    // is what forces the walk over the adjacency.
+                    *d = if want.is_empty()
+                        && ok.is_none()
+                        && body_ok.is_none()
+                        && trav_ok.is_none()
+                    {
+                        adj.len() as u64
+                    } else {
+                        adj.iter()
+                            .filter(|a| {
+                                edge_carries_wanted(store, a, want)
+                                    && passes(a.nbr)
+                                    && body_fn(a.nbr)
+                                    && trav_fn(a.eid)
+                            })
+                            .count() as u64
+                    };
+                }
+                let mut total: u64 = 0;
+                // A ZERO-LENGTH path: `{0,n}` emits the source itself as an endpoint, one row per
+                // source row, and the degree algebra counted only paths that traverse an edge
+                // (item 64). Its endpoint is the SOURCE, so an endpoint predicate applies to that.
+                if min == 0 {
+                    total += src.iter().filter(|&&s| passes(s)).count() as u64;
+                }
+                for &s in src {
+                    for a in store.out(s) {
+                        if !edge_carries_wanted(store, a, want) {
+                            continue;
+                        }
+                        if min <= 1 && passes(a.nbr) && body_fn(a.nbr) && trav_fn(a.eid) {
+                            total += 1; // the 1-hop path s -> a.nbr
+                        }
+                        // The body filter PRUNES, so a failing `a.nbr` kills the 2-hop paths
+                        // through it as well as the 1-hop path to it.
+                        if max >= 2 && body_fn(a.nbr) && trav_fn(a.eid) {
+                            // 2-hop paths s -> a.nbr -> z
+                            total += outdeg[a.nbr as usize];
+                            // A trail excludes the one path that reuses this edge, `s -> s -> s`,
+                            // which `outdeg[s]` counted — and only if that endpoint passes.
+                            // No `body(s)` term: this arm is already inside `body(a.nbr)` and
+                            // `a.nbr == s`, so the body mask is known true here. It was written
+                            // with one, and mutation showed the condition UNKILLABLE — provably
+                            // dead rather than untested, so it is gone instead of pinned.
+                            if is_trail && a.nbr == s && passes(s) {
+                                total -= 1;
+                            }
+                        }
+                    }
+                }
+                return Some(total);
+            }
+        }
+    }
+
+    None
+}
+
 /// Answer a scalar `count(*)` over a `VarLength` hop by DFS-counting the emitted
 /// paths per source row, WITHOUT materializing the (up to millions of) keep/ends
 /// vectors or gathering the input slots — which the general VarLength → Aggregate
@@ -1095,6 +1242,53 @@ pub(super) fn try_group_count(
             ..
         } => {
             let batch = pull(inner, store, false).ok()?;
+            // ITEM 572: the per-repetition predicate folds into the DEGREE ALGEBRA as a
+            // TRAVERSAL mask, when it is a function of one traversal. At `k = 1` the mini-scope
+            // `rep_pred_ok` builds is node `2p` / edge `2p+1`, so slots 0, 1 and 2 are the rep's
+            // source, edge and target — all three fixed by an edge id under `Dir::Out`. `max_slot
+            // <= 2` is therefore the test, and it admits any conjunction of the three, which is
+            // what item 570's node-only `body_filter` route could NOT do:
+            //
+            //   WHERE y.age > 50            37.29ms -> 2.00  (570, via body_filter)
+            //   WHERE e.w > 5               37.29        the EDGE, no node mask expresses it
+            //   WHERE x.age > 50            32.61        the rep SOURCE
+            //   WHERE y.age > 50 AND e.w>5  43.81        does not factor into two masks at all
+            //
+            // Slot `2k+1` is the PATH SOURCE, which varies per path rather than per edge, so
+            // `max_slot <= 2` is what excludes it. A subquery is excluded outright: `max_slot`
+            // already reports `outer_width - 1` for one, but relying on that is fragile, and a
+            // correlated subquery run once per EDGE IN THE STORE would cost more than the
+            // enumeration this is replacing.
+            //
+            // `k > 1` is not a traversal question at all — a multi-hop unit's predicate reads
+            // several edges — so it keeps the walk.
+            let trav = per_rep_pred.as_deref().filter(|p| {
+                *k == 1
+                    && crate::opt::max_slot(p).is_none_or(|m| m <= 2)
+                    && !crate::exec::contains_subquery(p)
+            });
+
+            // `k == 1` gates the WHOLE route, not just the mask. A multi-hop unit emits only
+            // at rep BOUNDARIES, so its equivalent hop bounds are `min * k ..= max * k` and this
+            // algebra's `max <= 2` arithmetic counts the wrong thing — `opt`'s flatten refuses
+            // `k > 1` for exactly that reason. Gating only `trav` on it let a k=2 group with NO
+            // predicate through, and `a_two_hop_group_count_agrees_with_its_rows_for_an_unknown_edge_type`
+            // caught it immediately.
+            if *k == 1 && (per_rep_pred.is_none() || trav.is_some()) {
+                if let Col::Nodes(ids) = batch.slot(*from) {
+                    let want = match want_etypes(store, edge_label) {
+                        Ok(w) => w,
+                        Err(()) => vec![u32::MAX],
+                    };
+
+                    if let Some(n) = try_degree_algebra(
+                        store, ids, &want, *min, *max, *mode, *dir, endpoint, None, trav,
+                    ) {
+                        return Some(scalar_num(n as f64));
+                    }
+                }
+            }
+
             crate::exec::varlen::var_length_count(
                 &batch,
                 store,
@@ -1242,103 +1436,20 @@ pub(super) fn try_varlen_count(
     // the DFS below, where enumeration is already cheap. WALK/TRAIL only: the degree
     // algebra counts node-repeating paths, which SIMPLE / ACYCLIC forbid — those must
     // enumerate via the DFS below.
-    let is_trail = matches!(mode, PathMode::Trail);
-    if matches!(dir, Dir::Out)
-        && *max <= 2
-        && *max >= 1
-        && matches!(mode, PathMode::Trail | PathMode::Walk)
-    {
-        let (nc, ec) = (store.node_count(), store.edge_count());
-        let avg_deg = if nc == 0 { 0.0 } else { ec as f64 / nc as f64 };
-        let est_paths = src.len() as f64 * avg_deg.powi(*max as i32);
-        if est_paths > 2.0 * (nc + ec) as f64 {
-            // An endpoint predicate folds INTO the algebra rather than defeating it: a node's
-            // contribution as a hop TARGET is either counted or not, so the per-node out-degree
-            // becomes a per-node PASSING out-degree.
-            //
-            // The labelled block is the fallback. Unlike the per-endpoint sink, this asks the
-            // predicate about EVERY node rather than only the reached ones, so it can fail where
-            // the walk would not — see `an_endpoint_predicate_is_evaluated_only_for_reached_nodes`.
-            // On that it breaks out and the enumeration below answers.
-            'algebra: {
-                let ok: Option<Vec<bool>> = match pred {
-                    None => None,
-                    Some(p) => {
-                        let slot = endpoint.map_or(0, |(_, slot)| slot);
-                        match crate::exec::varlen::node_pass_mask(p, slot, store) {
-                            Ok(o) => Some(o),
-                            Err(_) => break 'algebra,
-                        }
-                    }
-                };
-                // The BODY mask is a second, independent question from the endpoint one, and
-                // the two apply at different places: the endpoint predicate asks only about a
-                // path's LAST node, the body filter about EVERY node past the source. A 2-hop
-                // path `s -> y -> z` needs `body(y) && body(z) && end(z)`; a 1-hop `s -> y`
-                // needs `body(y) && end(y)`; the zero-length path has no landing at all, so
-                // only `end(s)` applies to it. Collapsing them into one mask would silently
-                // apply the endpoint predicate to the intermediate node.
-                let body_ok: Option<Vec<bool>> = match body_filter {
-                    None => None,
-                    Some(p) => {
-                        match crate::exec::varlen::node_pass_mask(p, batch.slots.len(), store) {
-                            Ok(o) => Some(o),
-                            Err(_) => break 'algebra,
-                        }
-                    }
-                };
-                let passes = |v: u32| ok.as_ref().is_none_or(|o| o[v as usize]);
-                let body = |v: u32| body_ok.as_ref().is_none_or(|o| o[v as usize]);
-                let mut outdeg = vec![0u64; nc];
-                for (v, d) in outdeg.iter_mut().enumerate() {
-                    let adj = store.out(v as u32);
-                    // The O(1) read stays for the common case; a wanted-type or predicate filter
-                    // is what forces the walk over the adjacency.
-                    *d = if want.is_empty() && ok.is_none() && body_ok.is_none() {
-                        adj.len() as u64
-                    } else {
-                        adj.iter()
-                            .filter(|a| {
-                                edge_carries_wanted(store, a, &want) && passes(a.nbr) && body(a.nbr)
-                            })
-                            .count() as u64
-                    };
-                }
-                let mut total: u64 = 0;
-                // A ZERO-LENGTH path: `{0,n}` emits the source itself as an endpoint, one row per
-                // source row, and the degree algebra counted only paths that traverse an edge
-                // (item 64). Its endpoint is the SOURCE, so an endpoint predicate applies to that.
-                if *min == 0 {
-                    total += src.iter().filter(|&&s| passes(s)).count() as u64;
-                }
-                for &s in src {
-                    for a in store.out(s) {
-                        if !edge_carries_wanted(store, a, &want) {
-                            continue;
-                        }
-                        if *min <= 1 && passes(a.nbr) && body(a.nbr) {
-                            total += 1; // the 1-hop path s -> a.nbr
-                        }
-                        // The body filter PRUNES, so a failing `a.nbr` kills the 2-hop paths
-                        // through it as well as the 1-hop path to it.
-                        if *max >= 2 && body(a.nbr) {
-                            // 2-hop paths s -> a.nbr -> z
-                            total += outdeg[a.nbr as usize];
-                            // A trail excludes the one path that reuses this edge, `s -> s -> s`,
-                            // which `outdeg[s]` counted — and only if that endpoint passes.
-                            // No `body(s)` term: this arm is already inside `body(a.nbr)` and
-                            // `a.nbr == s`, so the body mask is known true here. It was written
-                            // with one, and mutation showed the condition UNKILLABLE — provably
-                            // dead rather than untested, so it is gone instead of pinned.
-                            if is_trail && a.nbr == s && passes(s) {
-                                total -= 1;
-                            }
-                        }
-                    }
-                }
-                return Some(scalar_num(total as f64));
-            }
-        }
+    // The ALGEBRAIC count, extracted at item 572 and shared with the quantified-GROUP count.
+    if let Some(n) = try_degree_algebra(
+        store,
+        src,
+        &want,
+        *min,
+        *max,
+        *mode,
+        *dir,
+        endpoint,
+        body_filter.as_deref().map(|p| (p, batch.slots.len())),
+        None,
+    ) {
+        return Some(scalar_num(n as f64));
     }
 
     if body_filter.is_some() {

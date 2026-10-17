@@ -7234,7 +7234,7 @@ fn operand_cannot_raise(e: &Expr) -> bool {
 
 /// Does this expression hold a correlated subquery — the one thing that makes an operand expensive
 /// enough to be worth narrowing for even a small saving? See `fold_operand`'s threshold.
-fn contains_subquery(e: &Expr) -> bool {
+pub(crate) fn contains_subquery(e: &Expr) -> bool {
     match e {
         Expr::Exists { .. } | Expr::CountSubquery { .. } => true,
         Expr::Not(a) | Expr::IsNull { expr: a, .. } => contains_subquery(a),

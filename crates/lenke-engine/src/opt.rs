@@ -2518,7 +2518,7 @@ fn interval_pattern(pred: &Expr, edge_slot: usize) -> Option<(String, String, Ex
 }
 
 /// The highest slot index an expression reads, or `None` if it reads no slots.
-fn max_slot(expr: &Expr) -> Option<usize> {
+pub(crate) fn max_slot(expr: &Expr) -> Option<usize> {
     match expr {
         Expr::Slot(n) => Some(*n),
         Expr::Prop { slot, .. } | Expr::IsLabeled { slot, .. } => Some(*slot),

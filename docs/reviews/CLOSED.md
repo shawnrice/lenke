@@ -7317,3 +7317,53 @@ Two traps, both of which the file's own comments had already named:
 
 The EIGHTH divergence is untouched: a subquery whose inner pattern rebinds a group-bound name is
 `E_SYNTAX` in native and answers `d=0` in TS. Error against rows, the narrower class.
+
+### Item 572 — the rest of the per-rep predicate enum: DONE, 16.9-20.6x
+
+Item 570's remaining positions are CLOSED. At `k = 1` a per-repetition `WHERE` is a function of
+exactly one `(source, edge, target)` triple — ONE EDGE TRAVERSAL — and since the degree algebra
+only runs for `Dir::Out`, an edge id fixes all three. So one mask indexed by edge id
+(`traversal_pass_mask`) carries a target test, an edge test, a source test, and any conjunction.
+
+```
+WHERE e.w > 5                 37.94/38.70/37.49 -> 1.80/1.88/1.82   20.6x
+WHERE x.age > 50              32.38/32.41/32.77 -> 1.71/1.72/1.73   18.9x
+WHERE y.age > 50 AND e.w > 5  44.12/44.30/46.20 -> 2.61/2.64/2.63   16.9x
+```
+
+**The `AND` row is why the abstraction is a traversal mask and not a node mask beside an edge
+mask**: that predicate does not factor into the two. Reach for the finest thing the predicate is
+a function of, not for one mask per operand type.
+
+The algebra was extracted from `try_varlen_count` into `try_degree_algebra`, taking three
+independent filters that apply at DIFFERENT positions — `end_pred` (a path's last node), `body`
+(every landing, 570), `trav` (one traversal, 572).
+
+**STILL OPEN, and now the biggest in this family: the PATH SOURCE** (mini-scope slot `2k+1`).
+`-[e:T WHERE a.age > 50]->{1,2}(y)` parses, lowers to a `k = 1` RepeatGroup and reads slot 3, so
+`max_slot <= 2` declines it — correctly, since the anchor varies per path and the mask's
+mini-batch has three columns. `query_bench` measures it at 304,725us against the target row's
+7,978, a 38x gap. It is a per-SOURCE-ROW filter (the anchor is constant along a path), which is a
+different lever.
+
+### A ninth cross-engine divergence — a faulting PER-REP predicate — OPEN, narrower class
+
+```
+MATCH (a:Q)((x)-[e:T]->(y) WHERE CAST(e.w AS INTEGER) <= 5){1,2} RETURN count(*)
+  ts  ERR E_INVALID_VALUE      native  [{c:1}]
+MATCH (a:Q)-[e:T]->(y) WHERE CAST(e.w AS INTEGER) <= 5 …          BOTH raise
+```
+
+Native's `rep_pred_ok` ends in `.unwrap_or(false)` — "a false / null / faulting predicate fails
+the rep" — so a per-repetition predicate NEVER raises there; TS propagates. The agreeing second
+line locates it in the per-rep POSITION rather than in `CAST`. Pre-existing. Error against rows.
+
+### Two testing facts worth keeping
+
+- **A per-rep predicate cannot be made to raise**, so a test that wants a fault must exhibit it
+  through a spelling that uses `filter_keep` (the clause `WHERE`), not through the per-rep
+  position. And `e.w + 1` on a string is NULL, not an error — a fault test built on it is vacuous.
+- **The algebra's gate again.** The cross-engine sweep's first fixture was 6 nodes / 9 edges, where
+  `est_paths` is 13.5 against the threshold of 30 — the closed form never ran and 425 clean
+  comparisons meant nothing. 60 nodes at out-degree 4 clears it. Same trap as item 570's four
+  surviving mutants, two ticks apart.

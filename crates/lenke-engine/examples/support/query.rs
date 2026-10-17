@@ -256,22 +256,40 @@ pub fn run(cfg: &Cfg) {
                     "MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(q:Person) \
                      RETURN count(*) AS c",
                 ),
-                // Item 570. A `k = 1` per-repetition `WHERE` reading only the hop TARGET is a
-                // `body_filter` spelled differently, so the group flattens and the ALGEBRAIC
-                // count answers it: 35.02ms -> 2.02 on a 60,000-vertex / 180,000-edge probe,
-                // 17.3x. The second row is the EDGE-reading twin, which is refused and must
-                // stay refused -- it reads mini-scope slot 1, not the landing node, so it is
-                // not a function of the target at all. The pair sits side by side so the
-                // refusal is measured too: a regression that silently admits it shows up as
-                // the second row dropping to the first's cost with a changed answer.
+                // Item 570 then 572. A `k = 1` per-repetition `WHERE` is a function of ONE
+                // `(source, edge, target)` triple, and both rows now ride a closed-form count
+                // instead of enumerating. They take DIFFERENT routes there, which is why both
+                // stay:
+                //
+                //   TARGET-only (570) flattens to `VarLength::body_filter` in `opt` and folds
+                //   in as a NODE mask: 35.02ms -> 2.02 on a 60,000-vertex probe.
+                //   The EDGE-reading twin (572) cannot -- no node mask expresses it -- so it
+                //   stays a `RepeatGroup` and folds in as a TRAVERSAL mask indexed by edge id:
+                //   37.94/38.70/37.49 -> 1.80/1.88/1.82, three alternated rounds.
+                //
+                // On THIS fixture (350,000 edges against 200,000 nodes) the second row is the
+                // dearer of the two -- 20,273us against 8,040 -- because its mask asks the
+                // predicate about every EDGE where the first asks about every NODE. Still 5.8x
+                // the 117,888us it cost while enumerating. A regression in either route shows
+                // as its row climbing back toward that.
                 (
                     "quantified hop + per-rep target WHERE",
                     "MATCH (p:Person)((x)-[e:KNOWS]->(y) WHERE y.age > 50){1,2} \
                      RETURN count(*) AS c",
                 ),
                 (
-                    "quantified hop + per-rep EDGE WHERE (refused)",
+                    "quantified hop + per-rep EDGE WHERE",
                     "MATCH (p:Person)((x)-[e:KNOWS]->(y) WHERE e.w > 5){1,2} \
+                     RETURN count(*) AS c",
+                ),
+                // The PATH SOURCE (mini-scope slot `2k+1`) is the one position still
+                // enumerating, and it is here so that stays visible. It is not a function of a
+                // traversal -- the anchor varies per path -- so the traversal mask declines it
+                // by `max_slot <= 2`. It is a per-SOURCE-ROW filter rather than a per-edge one,
+                // which is a different lever and is not taken.
+                (
+                    "quantified hop + per-rep PATH-SOURCE WHERE (enumerates)",
+                    "MATCH (p:Person)-[e:KNOWS WHERE p.age > 50]->{1,2}(y) \
                      RETURN count(*) AS c",
                 ),
                 // A hash JOIN, which a second MATCH clause sharing a variable builds (a comma

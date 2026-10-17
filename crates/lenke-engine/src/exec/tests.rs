@@ -20636,3 +20636,215 @@ fn frontier_multi_agg_matches_single_frontier_aggregates() {
         "[Num(0.0), Null]"
     );
 }
+
+/// Item 572: the TRAVERSAL mask must count what enumeration counts.
+///
+/// A `k = 1` per-repetition `WHERE` is a function of one `(source, edge, target)` triple, and
+/// under `Dir::Out` an edge id fixes all three — so one edge-indexed mask carries a target test,
+/// an edge test, a source test, and any conjunction. That is why it is a traversal mask and not a
+/// node mask beside an edge mask: `WHERE y.k > 20 AND e.w > 5` does not factor into those two.
+///
+/// Measured on a 60,000-vertex / 180,000-edge probe, one case per process:
+///
+///   WHERE e.w > 5                37.29ms -> 1.82   the EDGE
+///   WHERE x.k > 50               32.61   -> 1.68   the rep SOURCE
+///   WHERE y.k > 50 AND e.w > 5   43.81   -> 2.61   both at once
+///   WHERE y.k > 50               (item 570's body_filter route)    1.58
+///
+/// THE FIXTURE SIZE IS LOAD-BEARING, which item 570 learned by having four mutants survive. The
+/// algebra is gated on `src.len() * avg_deg.powi(max) > 2 * (nodes + edges)`; 400 nodes at
+/// out-degree 4 gives 6,400 against 4,000, where a 12-node fixture gives 48 against 120 and the
+/// closed form never executes.
+///
+/// The check is the COUNT against the materialized ROWS of the same pattern — the rows go through
+/// the walk, so this is algebra against enumeration.
+#[test]
+fn the_traversal_mask_counts_what_enumeration_counts() {
+    let mut b = Builder::default();
+    let n: u32 = 400;
+
+    for i in 0..n {
+        // every fifth vertex is MISSING `k`, so the null comparisons are reached
+        if i % 5 == 4 {
+            b.node(&["P"], &[]);
+        } else {
+            b.node(&["P"], &[("k", Value::Num(f64::from(i % 90)))]);
+        }
+    }
+
+    for i in 0..n {
+        for d in [1u32, 7, 13, 29] {
+            b.edge(i, (i * 3 + d) % n, "T");
+        }
+    }
+    // a SELF-LOOP (the trail correction's only witness) and a PARALLEL pair
+    b.edge(0, 0, "T");
+    b.edge(1, 4, "T");
+
+    let mut store = b.build();
+
+    // Edge props are set after `build`, by eid in insertion order. Every seventh edge is left
+    // MISSING `w`, which is what reaches the null comparisons: a mask over EVERY edge has to
+    // agree with the walk about those too.
+    for eid in 0..(n * 4 + 2) {
+        if !eid.is_multiple_of(7) {
+            store.set_edge_prop(eid, "w", Value::Num(f64::from(eid % 10)));
+        }
+    }
+
+    let store = store;
+    let val = |q: &str| -> f64 {
+        match crate::exec::try_run(&opt_plan(q, &store), &store)
+            .unwrap()
+            .rows
+            .iter()
+            .next()
+            .expect("one row")[0]
+        {
+            Value::Num(x) => x,
+            ref o => panic!("{o:?}"),
+        }
+    };
+    let rows = |q: &str| -> usize {
+        crate::exec::try_run(&opt_plan(q, &store), &store)
+            .unwrap()
+            .rows
+            .len()
+    };
+
+    for mode in ["", "TRAIL ", "WALK "] {
+        for quant in ["{1,2}", "{0,2}", "{1,1}", "{2,2}"] {
+            for pred in [
+                " WHERE e.w > 5",
+                " WHERE e.w <= 5",
+                " WHERE x.k > 20",
+                " WHERE y.k > 20",
+                " WHERE y.k > 20 AND e.w > 5",
+                " WHERE y.k > 20 OR e.w > 5",
+                " WHERE e.w IS NULL",
+                " WHERE y.k IS NULL",
+                " WHERE NOT (e.w > 5)",
+                " WHERE x.k < y.k",
+                " WHERE true",
+            ] {
+                let unit = format!("(a:P)((x)-[e:T]->(y){pred}){quant}");
+
+                assert_eq!(
+                    val(&format!("MATCH {mode}{unit} RETURN count(*) AS c")),
+                    rows(&format!("MATCH {mode}{unit}(z) RETURN z.k AS n")) as f64,
+                    "the algebra disagreed with enumeration: {mode}{unit}"
+                );
+            }
+            // the ENDPOINT filter beside the per-rep one: two masks, two positions
+            let both = format!("(a:P)((x)-[e:T]->(y) WHERE e.w > 5){quant}(z WHERE z.k < 40)");
+
+            assert_eq!(
+                val(&format!("MATCH {mode}{both} RETURN count(*) AS c")),
+                rows(&format!("MATCH {mode}{both} RETURN z.k AS n")) as f64,
+                "endpoint beside per-rep disagreed: {mode}{both}"
+            );
+
+            // THE PATH SOURCE, mini-scope slot `2k+1`, which is why the guard is `max_slot <= 2`
+            // and not `<= 3`. An inline bracket `WHERE` on an abbreviated var-length hop MAY
+            // read the outer anchor — `varlen.rs` documents the slot and the parser maps it —
+            // and that lowers to a `k = 1` RepeatGroup, so this shape reaches here. It is NOT a
+            // function of one traversal: the anchor varies per path, and the mini-batch the mask
+            // builds has only three columns, so admitting it reads a column that is not there.
+            //
+            // Measured: this shape stays at 33.92ms where the traversal-mask shapes are ~1.8,
+            // which is the guard declining exactly as intended. Mutating the bound to `<= 3`
+            // survived the whole suite until this case existed.
+            let anchored = format!("(a:P)-[e:T WHERE a.k > 20]->{quant}(z)");
+
+            assert_eq!(
+                val(&format!("MATCH {mode}{anchored} RETURN count(*) AS c")),
+                rows(&format!("MATCH {mode}{anchored} RETURN z.k AS n")) as f64,
+                "a per-rep predicate on the PATH SOURCE disagreed: {mode}{anchored}"
+            );
+        }
+    }
+}
+
+/// Item 572: the traversal mask asks the predicate about EVERY edge in the store, so it can FAULT
+/// where the walk never would — and a query that answers today has to keep answering.
+///
+/// The same hazard `an_endpoint_predicate_is_evaluated_only_for_reached_nodes` records for the
+/// node mask. `traversal_pass_mask` returns `Err`, the algebra breaks out of its labelled block,
+/// and enumeration answers. Without that path this query would start raising.
+#[test]
+fn a_faulting_traversal_predicate_falls_back_to_enumeration() {
+    let mut b = Builder::default();
+    let n: u32 = 400;
+
+    for i in 0..n {
+        b.node(&["P"], &[("k", Value::Num(f64::from(i % 90)))]);
+    }
+    for i in 0..n {
+        for d in [1u32, 7, 13, 29] {
+            b.edge(i, (i * 3 + d) % n, "T");
+        }
+    }
+    // Two vertices NOT labelled `P`, joined by an edge whose `w` is a STRING. No walk anchored on
+    // `(a:P)` reaches it, so enumeration never evaluates the predicate there — but the mask does.
+    let u = b.node(&["Q"], &[("k", Value::Num(1.0))]);
+    let v = b.node(&["Q"], &[("k", Value::Num(2.0))]);
+
+    b.edge(u, v, "T");
+
+    let mut store = b.build();
+    let poison = n * 4;
+
+    // `% 10`, NOT `% 4`: with every weight under the threshold the predicate rejects nothing,
+    // the filtered and unfiltered counts coincide, and the mutant that swallows the mask's
+    // `Err` (so the mask is dropped entirely) survives. It did, until this line spanned the
+    // threshold. Sixth coinciding fixture in this run of ticks.
+    for eid in 0..poison {
+        store.set_edge_prop(eid, "w", Value::Num(f64::from(eid % 10)));
+    }
+    store.set_edge_prop(poison, "w", s("not a number"));
+
+    let store = store;
+    let q = "MATCH (a:P)((x)-[e:T]->(y) WHERE CAST(e.w AS INTEGER) <= 5){1,2} RETURN count(*) AS c";
+    let got = crate::exec::try_run(&opt_plan(q, &store), &store);
+
+    // FIRST: prove the poison edge really does fault the EVALUATOR THE MASK USES, or this test
+    // passes for the wrong reason.
+    //
+    // It cannot be shown through the per-rep predicate itself, and that is the interesting part:
+    // `rep_pred_ok` ends in `.unwrap_or(false)` — "a false / null / faulting predicate fails the
+    // rep" — so a per-repetition `WHERE` NEVER raises. The mask is built with `filter_keep`,
+    // which does, so the same value is poison there and inert in the walk. The non-group
+    // spelling is what exhibits it.
+    assert!(
+        crate::exec::try_run(
+            &opt_plan(
+                "MATCH (a:Q)-[e:T]->(y) WHERE CAST(e.w AS INTEGER) <= 5 RETURN count(*) AS c",
+                &store,
+            ),
+            &store,
+        )
+        .is_err(),
+        "the fixture's poison edge must fault `filter_keep`, or this test proves nothing"
+    );
+    assert!(
+        got.is_ok(),
+        "an unreached edge's value must not be evaluated: {:?}",
+        got.err()
+    );
+    // And the answer is still the enumerated one.
+    let rows = crate::exec::try_run(
+        &opt_plan(
+            "MATCH (a:P)((x)-[e:T]->(y) WHERE CAST(e.w AS INTEGER) <= 5){1,2}(z) RETURN z.k AS n",
+            &store,
+        ),
+        &store,
+    )
+    .unwrap()
+    .rows
+    .len();
+
+    match got.unwrap().rows.iter().next().expect("one row")[0] {
+        Value::Num(x) => assert_eq!(x, rows as f64, "fallback answered a different count"),
+        ref o => panic!("{o:?}"),
+    }
+}

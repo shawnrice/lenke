@@ -388,6 +388,66 @@ fn endpoint_block_keep(
 /// the caller must be able to fall back to enumeration: a predicate may THROW on a value the walk
 /// would never have reached (`t.k + 1 <= 5` where one unreachable vertex holds a string), and a
 /// query that answers today has to keep answering.
+/// Which EDGE TRAVERSALS a `k = 1` per-repetition predicate keeps, for every edge in the store.
+///
+/// At `k = 1` a per-rep `WHERE` is a function of exactly one traversal: `rep_pred_ok` builds its
+/// mini-scope as node `2p` / edge `2p+1`, so slot 0 is the rep's SOURCE, slot 1 its EDGE and slot
+/// 2 its TARGET. Under `Dir::Out` an edge id determines all three, so one mask indexed by edge id
+/// expresses every predicate over those slots — a target test, an edge test, a source test, and
+/// any conjunction of them. That is why this is a traversal mask and not a node mask beside an
+/// edge mask: `WHERE y.age > 50 AND e.w > 5` is not separable into the two.
+///
+/// Slot `2k+1` (the PATH SOURCE) is deliberately out of range: it varies per path, not per edge,
+/// so a predicate reading it is not a function of the traversal at all and the caller must
+/// decline. `Err` when the predicate cannot be evaluated over some edge, for the reason
+/// [`node_pass_mask`] records: it asks about every edge rather than only the traversed ones, so a
+/// predicate may throw on a value no walk would have reached, and a query that answers today has
+/// to keep answering.
+pub(super) fn traversal_pass_mask(pred: &Expr, store: &Store) -> Result<Vec<bool>, String> {
+    const BLOCK: usize = 4096;
+    let ec = store.edge_count();
+    let mut ok = vec![false; ec];
+    let mut from: Vec<u32> = Vec::with_capacity(BLOCK);
+    let mut eids: Vec<u32> = Vec::with_capacity(BLOCK);
+    let mut to: Vec<u32> = Vec::with_capacity(BLOCK);
+    let mut base: usize = 0;
+
+    while base < ec {
+        let end = (base + BLOCK).min(ec);
+
+        from.clear();
+        eids.clear();
+        to.clear();
+
+        for eid in base..end {
+            // An edge with no endpoints cannot be traversed, so it is simply absent from the
+            // block rather than defaulted — a defaulted node id would ask the predicate about
+            // a traversal that does not exist.
+            if let Some((f, t)) = store.edge_endpoints(eid as u32) {
+                from.push(f);
+                eids.push(eid as u32);
+                to.push(t);
+            }
+        }
+
+        if !eids.is_empty() {
+            let mini = Batch::of(vec![
+                Col::Nodes(from.clone()),
+                Col::Edges(eids.clone()),
+                Col::Nodes(to.clone()),
+            ]);
+
+            for i in crate::exec::filter_keep(pred, store, &mini)? {
+                ok[eids[i] as usize] = true;
+            }
+        }
+
+        base = end;
+    }
+
+    Ok(ok)
+}
+
 pub(super) fn node_pass_mask(
     pred: &Expr,
     endpoint_slot: usize,
