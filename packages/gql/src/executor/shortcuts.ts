@@ -3934,7 +3934,6 @@ export const detectOptionalHopCount = (
   if (
     m.kind !== 'match' ||
     m.optional ||
-    m.where !== undefined ||
     m.patterns.length !== 1 ||
     om.kind !== 'match' ||
     !om.optional ||
@@ -3948,15 +3947,53 @@ export const detectOptionalHopCount = (
   const [anchor] = m.patterns;
   const v = anchor.start.variable;
 
-  if (
-    anchor.segments.length !== 0 ||
-    anchor.pathVar !== undefined ||
-    v === undefined ||
-    !plainNode(anchor.start) ||
-    (anchor.start.properties !== undefined && anchor.start.properties.length > 0)
-  ) {
+  if (anchor.segments.length !== 0 || anchor.pathVar !== undefined || v === undefined) {
     return null;
   }
+
+  // A FILTERED anchor (item 559). The rung's arithmetic is Σ max(1, degree) over the anchors, so a
+  // filter changes WHICH anchors are summed and nothing else — `sideOfVertex` below is untouched.
+  // Refusing one cost 191.69 ms against the unfiltered 8.12 at 200,000 vertices, a 23.6x cliff on
+  // adding a `WHERE` to a query already on the rung.
+  //
+  // BOTH SPELLINGS, which is the point: the start node's INLINE properties and the clause `WHERE`
+  // are one filter written two ways, and admitting only one would be the equivalent-spelling bug
+  // this engine is built to avoid. They compose, in written order, exactly as
+  // `detectGroupedNodeAggregate` composes them.
+  const anchorPreds: InlinePred[] = [];
+  // `inlineOf` is the admission for BOTH inline spellings — the property map `{k: v}` and the
+  // inline `(n WHERE p)` — and it refuses what it cannot gate per anchor (a property value or an
+  // inline `WHERE` reading another variable). `plainNode` is deliberately NOT asked of the anchor
+  // any more: it refuses exactly the inline forms this rung now takes, and leaving it in was what
+  // made the `{tag: 'x'}` spelling read 417.96 ms while the clause `WHERE` read 21.04.
+  const inlineAnchor = inlineOf(anchor.start);
+
+  if (inlineAnchor === null) {
+    return null;
+  }
+
+  if (inlineAnchor !== undefined) {
+    anchorPreds.push(inlineAnchor);
+  }
+
+  if (m.where !== undefined) {
+    // Reading any name BUT the anchor would make this a correlated filter rather than a
+    // per-anchor one, and there is nothing else bound here to correlate with.
+    for (const nameRead of freePredicateVars(m.where)) {
+      if (nameRead !== v) {
+        return null;
+      }
+    }
+
+    anchorPreds.push({ pred: compilePredicate(undefined, m.where, v), bindVar: v });
+  }
+
+  const anchorGate = anchorPreds.reduceRight<InlineGate | undefined>(
+    (rest, ip) => (vertex, binding, params, graph) =>
+      inlineHolds(ip, vertex, binding, params, graph) &&
+      (rest === undefined || rest(vertex, binding, params, graph)),
+    undefined,
+  );
 
   const { label } = anchor.start;
 
@@ -3999,12 +4036,19 @@ export const detectOptionalHopCount = (
   const out = rel.direction === 'out';
   const far = node.label;
   const name = label?.name;
-  const one = (graph: Graph): Row => {
+  const one = (graph: Graph, params: Params): Row => {
     const vertices: Iterable<Vertex> =
       name === undefined ? graph.verticesById.values() : (graph.verticesByLabel.get(name) ?? []);
+    // ONE binding map for the whole scan, rewritten per anchor — the general path's cost is a
+    // fresh `Map` per row, which is what this rung exists to avoid.
+    const binding = new Map<string, unknown>();
     let total = 0;
 
     for (const vertex of vertices) {
+      if (anchorGate !== undefined && !anchorGate(vertex, binding, params, graph)) {
+        continue;
+      }
+
       // The FLOOR is the whole difference from the plain hop count: an anchor with no
       // matching neighbour still contributes its one null-filled row.
       const d = sideOfVertex(vertex, out, types, far);
@@ -4016,10 +4060,11 @@ export const detectOptionalHopCount = (
   };
 
   if (proj.skip === undefined && proj.limit === undefined) {
-    return (graph) => [one(graph)];
+    return (graph, params) => [one(graph, params)];
   }
 
-  return (graph, params) => pageOneRow(() => one(graph), graph, params, proj.skip, proj.limit);
+  return (graph, params) =>
+    pageOneRow(() => one(graph, params), graph, params, proj.skip, proj.limit);
 };
 
 /**

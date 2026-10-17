@@ -6781,3 +6781,41 @@ clean. Two survivors are redundant guards, kept and recorded: `!proj.star` is im
 One mutant MISAPPLIED — the guard text is near-identical to item 549's `oneOrderFreeRow`, so the
 pattern matched twice. **Tenth time this session** (474, 483, 494, 518, 528, 545, 546, 552, 553,
 558).
+
+## 559 — a FILTERED anchor on the optional-hop count: up to 27x, three spellings, and a SECOND value divergence
+
+`detectOptionalHopCount`'s arithmetic is Σ max(1, degree) over the anchors, so a filter changes
+WHICH anchors are summed and nothing else — yet it refused `m.where` outright, and `plainNode`
+refused the inline spellings with it. 200,000 vertices / 200,000 edges, one case per process:
+
+| query                                                         | before  | after             |
+| ------------------------------------------------------------- | ------- | ----------------- |
+| `MATCH (n:Person) OPTIONAL MATCH … RETURN count(*)` (control) | 7.65 ms | 10.03             |
+| `… WHERE n.age > 60`                                          | 191.17  | **22.50** (8.5x)  |
+| `MATCH (n:Person {tag: 'x'}) …`                               | 391.04  | **14.49** (27.0x) |
+| `MATCH (n:Person WHERE n.age > 60) …`                         | 214.24  | **22.58** (9.5x)  |
+
+**THREE SPELLINGS OF ONE FILTER**, and the inline property map was the worst — found by pricing the
+clause form and then asking whether its siblings were admitted. They were not. All three now agree
+with each other and with native, and they compose in written order (the inline gate
+short-circuiting a faulting clause `WHERE` is a test, not a comment).
+
+### A SECOND value divergence, found while building a mutant
+
+```text
+MATCH (n:P {t: null})       RETURN count(*)   ts 1   native 1   agree
+MATCH (n:P) WHERE n.t = n.t RETURN count(*)   ts 1   native 1   agree
+MATCH (n:P {t: n.t})        RETURN count(*)   ts 2   native 1   DIVERGE
+MATCH (n:P {t: n.missing})  RETURN count(*)   ts 1   native 0   DIVERGE
+```
+
+The agreeing rows bracket it: both engines read a LITERAL inline null as IS NULL (item 260) and a
+clause-`WHERE` null comparison as UNKNOWN. The divergence is an inline property whose value
+EXPRESSION evaluates to null — TS takes the IS NULL route, native the `= null` route. Verified
+against the pristine build. **In the dangerous class: different rows, not a refusal**, and the
+second such divergence open.
+
+Teeth: six mutants, four caught, control clean. One survivor explained — a clause `WHERE` reading
+another variable cannot reach the rung because both engines reject the query first (`variable 'y' is
+not defined`). Two mutants needed a second attempt, and the reason is the same both times: the
+first discriminator produced the SAME number on both sides of the bug.
