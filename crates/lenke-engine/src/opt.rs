@@ -246,23 +246,67 @@ fn drop_unread_group_binds(plan: Plan) -> Plan {
                 // `k == 1` is required to flatten, and not incidentally: a multi-hop unit
                 // emits only at rep BOUNDARIES where a var-length hop emits at every hop, and
                 // the equivalent bounds would be `min * k ..= max * k` rather than
-                // `min ..= max` — two separate ways the row count would change. A
-                // `per_rep_pred` prunes hops the plain walk keeps, so it blocks too. Both
-                // shapes still get the LISTS dropped, which is the larger cost.
-                if k == 1 && per_rep_pred.is_none() && endpoint_slot == width(&input) {
-                    return Plan::VarLength {
-                        input,
-                        from,
-                        dir,
-                        edge_label,
-                        min,
-                        max,
-                        mode,
-                        until: None,
-                        body_filter: None,
-                        double_loops: false,
-                        path_need: crate::ir::PathNeed::Full,
-                    };
+                // `min ..= max` — two separate ways the row count would change. Both shapes
+                // still get the LISTS dropped, which is the larger cost.
+                //
+                // A `per_rep_pred` USED to block this too. It does not have to, and the reason
+                // is a coincidence of two definitions (item 570). `rep_pred_ok` builds the
+                // rep's mini-scope as node `2p` / edge `2p+1`, so at `k == 1` slot 2 is the
+                // hop TARGET — and `VarLength::body_filter` is documented as "a predicate on
+                // the HOP TARGET, applied at each landing past the source; a target that fails
+                // is PRUNED". At `k == 1` the per-rep check fires at `len > 0 &&
+                // len.is_multiple_of(1)`, which is every landing past the source. Same
+                // predicate, same points, same prune — so a per-rep predicate that reads
+                // NOTHING BUT slot 2 is a body filter spelled differently.
+                //
+                // `refs_only_slot` is what makes that safe: slot 0 is the rep's own source,
+                // slot 1 its edge and slot `2k+1` the path source, and a predicate touching
+                // any of them is NOT a function of the landing node alone. It is exhaustive
+                // over `Expr` with no catch-all, so a new variant cannot slip through as true.
+                // TRAIL/WALK ONLY, and this is the condition the rewrite fuzzer added. In
+                // SIMPLE mode a hop back to the start is a `Close` step, which emits WITHOUT
+                // going through `varlen_enter` — so the walker gates it with an explicit
+                // second `rep_pred_ok` call and has NO body-filter twin there, because a body
+                // filter was Gremlin-only and Gremlin never sets Simple. Flattening a Simple
+                // per-rep predicate onto `body_filter` therefore emits a closing path whose
+                // landing the predicate forbids: item 242's wrong answer through a new door,
+                // caught by `optimizing_preserves_rows_*` at seed 19386 before it could ship.
+                //
+                // ACYCLIC never reaches `Close` and would be safe, but the algebraic count
+                // declines for it anyway, so admitting it would buy only the cheaper
+                // evaluator on an unmeasured shape. Left out deliberately.
+                let flat_body = match &per_rep_pred {
+                    None => Some(None),
+                    Some(p)
+                        if matches!(
+                            mode,
+                            crate::ir::PathMode::Trail | crate::ir::PathMode::Walk
+                        ) && crate::exec::fastpath::refs_only_slot(p, 2) =>
+                    {
+                        Some(Some(Box::new(crate::exec::fastpath::remap_slot(
+                            p,
+                            2,
+                            endpoint_slot,
+                        ))))
+                    }
+                    Some(_) => None,
+                };
+                if k == 1 && endpoint_slot == width(&input) {
+                    if let Some(body_filter) = flat_body {
+                        return Plan::VarLength {
+                            input,
+                            from,
+                            dir,
+                            edge_label,
+                            min,
+                            max,
+                            mode,
+                            until: None,
+                            body_filter,
+                            double_loops: false,
+                            path_need: crate::ir::PathNeed::Full,
+                        };
+                    }
                 }
                 Plan::RepeatGroup {
                     input,

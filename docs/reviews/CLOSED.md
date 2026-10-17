@@ -7234,3 +7234,39 @@ observable until this is fixed.
 `MATCH (a:P)((x)-[e:T]->(y)){1,1} RETURN count(*), COUNT { MATCH (p:P)-[e:T]->(q) }` is
 `E_SYNTAX` in native and answers `d=0` in TS (correlating the inner `e` against the outer per-rep
 list). Error against rows, not value against value.
+
+### Item 570 — native per-rep-predicate quantified count: DONE, 17.6x
+
+Item 568's second target, CLOSED. A `k = 1` per-repetition `WHERE` reading nothing but the hop
+TARGET is a `VarLength::body_filter` spelled differently — `rep_pred_ok`'s mini-scope puts the
+target at slot 2, and a body filter is defined as a predicate on the hop target applied at each
+landing past the source, pruning. `opt` flattens it (`refs_only_slot(p, 2)` + `remap_slot`), and
+`try_varlen_count`'s algebraic branch folds it in as a second mask beside the endpoint one.
+
+34.79/35.09/36.27 -> 1.98/2.01/1.98 ms over three alternated rounds at 60,000 vertices / 180,000
+edges. Three controls flat (the edge-reading predicate, which stays refused; the unfiltered count;
+SIMPLE mode, which is excluded).
+
+**The diagnosis is the reusable part:** `WHERE true` cost 49.95ms for the SAME answer as the
+1.05ms unfiltered query. A predicate that rejects nothing and reads nothing paying the whole
+penalty is what proves the cost is the ROUTE. Reach for that control first on any "the filtered
+version is slower" question.
+
+**TRAIL/WALK ONLY, and not conservatism.** In SIMPLE mode a hop back to the start is a `Close`
+step that emits without passing through `varlen_enter`; the walker gates it with a second
+`rep_pred_ok` and has NO body-filter twin, because body filters were Gremlin-only and Gremlin
+never sets Simple. Flattening there re-introduced item 242's wrong answer and
+`optimizing_preserves_rows_*` caught it at seed 19386. ACYCLIC is safe but excluded deliberately
+(the algebra declines for it anyway).
+
+**STILL OPEN:** a per-rep predicate reading the EDGE (mini-scope slot 1) or the rep SOURCE (slot 0) stays on enumeration at ~38ms. An edge predicate is not a function of the landing node, so the
+node-mask algebra cannot express it; it would need a per-edge mask, which is a different shape.
+
+### A testing trap worth its own line: the algebraic count is GATED, so small fixtures never reach it
+
+`try_varlen_count`'s closed-form branch runs only when `src.len() * avg_deg.powi(max) >
+2 * (nodes + edges)`. A 3-node fixture gives 8.3 against 16 — the algebra does not execute, and
+four mutants of its gates survived the entire suite while plan assertions passed. Any test meant
+to cover it needs roughly 40 nodes at out-degree 4 (640 against 400). This is the counting twin of
+the standing "match the fixture to the claim" rule: here the fixture decides which ROUTE runs, not
+just how fast it runs.

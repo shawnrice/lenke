@@ -4859,7 +4859,7 @@ fn for_each_typed_out(
     Some(())
 }
 
-mod fastpath;
+pub(crate) mod fastpath;
 
 #[cfg(test)]
 mod fastpath_fuzz;

@@ -256,6 +256,24 @@ pub fn run(cfg: &Cfg) {
                     "MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(q:Person) \
                      RETURN count(*) AS c",
                 ),
+                // Item 570. A `k = 1` per-repetition `WHERE` reading only the hop TARGET is a
+                // `body_filter` spelled differently, so the group flattens and the ALGEBRAIC
+                // count answers it: 35.02ms -> 2.02 on a 60,000-vertex / 180,000-edge probe,
+                // 17.3x. The second row is the EDGE-reading twin, which is refused and must
+                // stay refused -- it reads mini-scope slot 1, not the landing node, so it is
+                // not a function of the target at all. The pair sits side by side so the
+                // refusal is measured too: a regression that silently admits it shows up as
+                // the second row dropping to the first's cost with a changed answer.
+                (
+                    "quantified hop + per-rep target WHERE",
+                    "MATCH (p:Person)((x)-[e:KNOWS]->(y) WHERE y.age > 50){1,2} \
+                     RETURN count(*) AS c",
+                ),
+                (
+                    "quantified hop + per-rep EDGE WHERE (refused)",
+                    "MATCH (p:Person)((x)-[e:KNOWS]->(y) WHERE e.w > 5){1,2} \
+                     RETURN count(*) AS c",
+                ),
                 // A hash JOIN, which a second MATCH clause sharing a variable builds (a comma
                 // pattern does not -- that lowers to a chain). `plan_cost_by_operator` priced
                 // the operator at 207.05ns a row, 282x the scan floor and the most expensive

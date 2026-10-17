@@ -3267,3 +3267,178 @@ fn an_optional_landing_label_is_canonicalized() {
         "the landing slot is one later when the edge is bound: {bound}"
     );
 }
+
+/// Item 570. A `k = 1` per-repetition `WHERE` that reads nothing but the hop TARGET is a
+/// `VarLength::body_filter` spelled differently — same predicate, same landing points, same
+/// prune — so the group flattens and the ALGEBRAIC count can answer it. 35.02ms -> 1.99ms on a
+/// 60,000-vertex probe.
+///
+/// The plan assertions are the load-bearing ones. Declining to flatten is ANSWER-PRESERVING and
+/// only slower, so no assertion about rows can tell a working rewrite from a disabled one — the
+/// same lesson as item 567's landing label and item 550's Gremlin page.
+///
+/// The SIMPLE case is not conservatism. A hop back to the start is a `Close` step, which emits
+/// WITHOUT passing through `varlen_enter`; the walker gates it with an explicit second
+/// `rep_pred_ok` and has no body-filter twin there, because a body filter used to be reachable
+/// only from Gremlin and Gremlin never sets Simple. `optimizing_preserves_rows_*` caught exactly
+/// that at seed 19386 while this was being written.
+#[test]
+fn a_target_only_per_rep_predicate_flattens_onto_the_body_filter() {
+    let mut b = Builder::default();
+
+    // A 3-cycle plus a self-loop on `1` and a parallel edge `2->3`: the self-loop is what the
+    // trail correction subtracts, and the parallel pair separates edge- from node-uniqueness.
+    let n1 = b.node(&["P"], &[("n", Value::Num(1.0))]);
+    let n2 = b.node(&["P"], &[("n", Value::Num(2.0))]);
+    let n3 = b.node(&["P"], &[("n", Value::Num(3.0))]);
+
+    b.edge(n1, n2, "T");
+    b.edge(n2, n3, "T");
+    b.edge(n3, n1, "T");
+    b.edge(n1, n1, "T");
+    b.edge(n2, n3, "T");
+
+    let store = b.build();
+    let plan_of = |s: &str| -> Plan { optimize_indexed(crate::gql::parse(s).unwrap(), &store) };
+    let dump = |s: &str| -> String { format!("{:?}", plan_of(s)) };
+    let answer = |s: &str| -> Vec<String> { bag(&run(&plan_of(s), &store)) };
+
+    // FLATTENED: a target-only per-rep predicate under the default (trail) mode.
+    let flat = dump("MATCH (a:P)((x)-[e:T]->(y) WHERE y.n > 1){1,2} RETURN count(*) AS c");
+
+    assert!(
+        flat.contains("body_filter: Some") && !flat.contains("RepeatGroup"),
+        "a target-only per-rep WHERE should flatten onto body_filter: {flat}"
+    );
+
+    // REFUSED, four ways, each for its own reason. Every one must KEEP the RepeatGroup.
+    for (why, q) in [
+        (
+            "reads the rep's EDGE (mini-scope slot 1)",
+            "MATCH (a:P)((x)-[e:T]->(y) WHERE e.w > 1){1,2} RETURN count(*) AS c",
+        ),
+        (
+            "reads the rep's SOURCE (mini-scope slot 0)",
+            "MATCH (a:P)((x)-[e:T]->(y) WHERE x.n > 1){1,2} RETURN count(*) AS c",
+        ),
+        (
+            "SIMPLE mode has a Close step with no body-filter twin",
+            "MATCH SIMPLE (a:P)((x)-[e:T]->(y) WHERE y.n > 1){1,2} RETURN count(*) AS c",
+        ),
+        (
+            "ACYCLIC is deliberately left out",
+            "MATCH ACYCLIC (a:P)((x)-[e:T]->(y) WHERE y.n > 1){1,2} RETURN count(*) AS c",
+        ),
+    ] {
+        let d = dump(q);
+
+        assert!(
+            d.contains("RepeatGroup") && !d.contains("body_filter: Some"),
+            "should NOT flatten ({why}): {d}"
+        );
+    }
+
+    // The ANSWERS, which the rewrite must not touch. Walks from each of the three starts:
+    //
+    //   trail {1,2}, y.n > 1: 1->2, 1->2->3 (x2 parallel), 2->3 (x2), 2->3->? (3->1 fails n>1),
+    //   3->? (3->1 fails). So 1 + 2 + 2 = 5.
+    assert_eq!(
+        answer("MATCH (a:P)((x)-[e:T]->(y) WHERE y.n > 1){1,2} RETURN count(*) AS c"),
+        vec!["Num(5.0);".to_string()]
+    );
+    // `{0,2}` adds the three zero-length paths, whose endpoint is the SOURCE and so is not a
+    // landing the body filter sees.
+    assert_eq!(
+        answer("MATCH (a:P)((x)-[e:T]->(y) WHERE y.n > 1){0,2} RETURN count(*) AS c"),
+        vec!["Num(8.0);".to_string()]
+    );
+    // An always-true predicate, which separates TRAIL from WALK and is the trail correction's
+    // only witness in this fixture. Counting by hand, with every landing passing:
+    //
+    //   from 1: 1->2, 1->1 | 1->2->3 twice (parallel) | 1->1->2 (the self-loop cannot repeat) = 5
+    //   from 2: 2->3 twice | 2->3->1 twice                                                    = 4
+    //   from 3: 3->1       | 3->1->2, 3->1->1                                                 = 3
+    //
+    // 12 for a TRAIL. WALK adds exactly the one path a trail forbids, `1->1->1` over the same
+    // edge twice — which is the `is_trail && a.nbr == s` subtraction in the algebra, so these
+    // two numbers differing by one is what says that correction survived the rewrite.
+    assert_eq!(
+        answer("MATCH TRAIL (a:P)((x)-[e:T]->(y) WHERE y.n >= 1){1,2} RETURN count(*) AS c"),
+        vec!["Num(12.0);".to_string()]
+    );
+    assert_eq!(
+        answer("MATCH WALK (a:P)((x)-[e:T]->(y) WHERE y.n >= 1){1,2} RETURN count(*) AS c"),
+        vec!["Num(13.0);".to_string()]
+    );
+    // An ENDPOINT filter beside the per-rep one: two independent masks, applied at different
+    // places. Collapsing them into one would apply `z.n < 3` to the intermediate node too.
+    assert_eq!(
+        answer(
+            "MATCH (a:P)((x)-[e:T]->(y) WHERE y.n > 1){1,2}(z WHERE z.n < 3) RETURN count(*) AS c"
+        ),
+        vec!["Num(1.0);".to_string()]
+    );
+}
+
+/// Item 570, the ALGEBRA's own teeth. The test above pins the PLAN; this one pins the
+/// arithmetic, and it needs its own fixture to do so.
+///
+/// `try_varlen_count` only takes the closed-form route when enumeration would be the more
+/// expensive one — `src.len() * avg_deg.powi(max) > 2 * (nodes + edges)`. The three-node fixture
+/// above gives `3 * (5/3)^2 = 8.3` against `2 * 8 = 16`, so the algebra NEVER RAN there: four
+/// mutants of its gates (the 1-hop body gate, the 2-hop body gate, the body-aware out-degree and
+/// the trail correction's body term) all SURVIVED the whole suite until this test existed. A
+/// plan assertion cannot substitute for reaching the code.
+///
+/// 40 nodes at out-degree 4 gives `40 * 16 = 640` against `2 * 200 = 400`. The check is
+/// RAW AGAINST OPTIMIZED — the raw plan walks the `RepeatGroup` and enumerates, the optimized
+/// one flattens and counts algebraically, so any disagreement is this rewrite's.
+#[test]
+fn the_algebraic_count_agrees_with_enumeration_under_a_body_filter() {
+    let mut b = Builder::default();
+    let n: usize = 40;
+    let ids: Vec<_> = (0..n)
+        .map(|i| b.node(&["P"], &[("k", Value::Num(i as f64))]))
+        .collect();
+
+    // Out-degree 4, deterministic and deliberately irregular, with a self-loop on node 0 (the
+    // trail correction's witness) and a parallel pair (node 1 -> node 2 twice).
+    for i in 0..n {
+        for step in [1usize, 7, 13, 29] {
+            b.edge(ids[i], ids[(i * 3 + step) % n], "T");
+        }
+    }
+    b.edge(ids[0], ids[0], "T");
+    b.edge(ids[1], ids[2], "T");
+
+    let store = b.build();
+
+    for q in [
+        "MATCH (a:P)((x)-[e:T]->(y) WHERE y.k > 17){1,2} RETURN count(*) AS c",
+        "MATCH (a:P)((x)-[e:T]->(y) WHERE y.k >= 0){1,2} RETURN count(*) AS c",
+        "MATCH (a:P)((x)-[e:T]->(y) WHERE y.k < 5){1,2} RETURN count(*) AS c",
+        "MATCH (a:P)((x)-[e:T]->(y) WHERE y.k > 17){0,2} RETURN count(*) AS c",
+        "MATCH (a:P)((x)-[e:T]->(y) WHERE y.k > 17){1,1} RETURN count(*) AS c",
+        "MATCH WALK (a:P)((x)-[e:T]->(y) WHERE y.k >= 0){1,2} RETURN count(*) AS c",
+        "MATCH WALK (a:P)((x)-[e:T]->(y) WHERE y.k > 17){1,2} RETURN count(*) AS c",
+        // the endpoint filter beside the per-rep one — two masks, two places
+        "MATCH (a:P)((x)-[e:T]->(y) WHERE y.k > 17){1,2}(z WHERE z.k < 30) RETURN count(*) AS c",
+        // a predicate NO node passes, and one EVERY node passes
+        "MATCH (a:P)((x)-[e:T]->(y) WHERE y.k > 999){1,2} RETURN count(*) AS c",
+        "MATCH (a:P)((x)-[e:T]->(y) WHERE true){1,2} RETURN count(*) AS c",
+    ] {
+        let raw = crate::gql::parse(q).unwrap();
+        let opt = optimize_indexed(raw.clone(), &store);
+
+        // The rewrite must have fired, or this proves nothing.
+        assert!(
+            format!("{opt:?}").contains("body_filter: Some"),
+            "expected the flatten for: {q}"
+        );
+        assert_eq!(
+            bag(&run(&raw, &store)),
+            bag(&run(&opt, &store)),
+            "enumeration and the algebra disagree: {q}"
+        );
+    }
+}

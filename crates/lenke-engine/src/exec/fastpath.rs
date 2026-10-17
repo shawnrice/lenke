@@ -1211,9 +1211,13 @@ pub(super) fn try_varlen_count(
     else {
         return None;
     };
-    if until.is_some() || body_filter.is_some() {
+    if until.is_some() {
         return None; // an until(pred) walk emits a filtered subset — no closed-form count
     }
+    // A `body_filter` is a per-LANDING node predicate (item 570 routes a `k = 1` per-rep
+    // `WHERE` here). The algebra below folds it in as a second mask; the DFS fallback at the
+    // bottom does NOT take one, so if the algebra declines this must decline too rather than
+    // enumerate without the filter. That is the `return None` guarding the fallback.
     let want = match want_etypes(store, edge_label) {
         Ok(w) => w,
         // Unknown edge type → no edge is traversable. A non-empty want of a non-existent id
@@ -1267,17 +1271,36 @@ pub(super) fn try_varlen_count(
                         }
                     }
                 };
+                // The BODY mask is a second, independent question from the endpoint one, and
+                // the two apply at different places: the endpoint predicate asks only about a
+                // path's LAST node, the body filter about EVERY node past the source. A 2-hop
+                // path `s -> y -> z` needs `body(y) && body(z) && end(z)`; a 1-hop `s -> y`
+                // needs `body(y) && end(y)`; the zero-length path has no landing at all, so
+                // only `end(s)` applies to it. Collapsing them into one mask would silently
+                // apply the endpoint predicate to the intermediate node.
+                let body_ok: Option<Vec<bool>> = match body_filter {
+                    None => None,
+                    Some(p) => {
+                        match crate::exec::varlen::node_pass_mask(p, batch.slots.len(), store) {
+                            Ok(o) => Some(o),
+                            Err(_) => break 'algebra,
+                        }
+                    }
+                };
                 let passes = |v: u32| ok.as_ref().is_none_or(|o| o[v as usize]);
+                let body = |v: u32| body_ok.as_ref().is_none_or(|o| o[v as usize]);
                 let mut outdeg = vec![0u64; nc];
                 for (v, d) in outdeg.iter_mut().enumerate() {
                     let adj = store.out(v as u32);
                     // The O(1) read stays for the common case; a wanted-type or predicate filter
                     // is what forces the walk over the adjacency.
-                    *d = if want.is_empty() && ok.is_none() {
+                    *d = if want.is_empty() && ok.is_none() && body_ok.is_none() {
                         adj.len() as u64
                     } else {
                         adj.iter()
-                            .filter(|a| edge_carries_wanted(store, a, &want) && passes(a.nbr))
+                            .filter(|a| {
+                                edge_carries_wanted(store, a, &want) && passes(a.nbr) && body(a.nbr)
+                            })
                             .count() as u64
                     };
                 }
@@ -1293,14 +1316,20 @@ pub(super) fn try_varlen_count(
                         if !edge_carries_wanted(store, a, &want) {
                             continue;
                         }
-                        if *min <= 1 && passes(a.nbr) {
+                        if *min <= 1 && passes(a.nbr) && body(a.nbr) {
                             total += 1; // the 1-hop path s -> a.nbr
                         }
-                        if *max >= 2 {
+                        // The body filter PRUNES, so a failing `a.nbr` kills the 2-hop paths
+                        // through it as well as the 1-hop path to it.
+                        if *max >= 2 && body(a.nbr) {
                             // 2-hop paths s -> a.nbr -> z
                             total += outdeg[a.nbr as usize];
                             // A trail excludes the one path that reuses this edge, `s -> s -> s`,
                             // which `outdeg[s]` counted — and only if that endpoint passes.
+                            // No `body(s)` term: this arm is already inside `body(a.nbr)` and
+                            // `a.nbr == s`, so the body mask is known true here. It was written
+                            // with one, and mutation showed the condition UNKILLABLE — provably
+                            // dead rather than untested, so it is gone instead of pinned.
                             if is_trail && a.nbr == s && passes(s) {
                                 total -= 1;
                             }
@@ -1312,6 +1341,9 @@ pub(super) fn try_varlen_count(
         }
     }
 
+    if body_filter.is_some() {
+        return None; // see the note above `want`: the DFS below ignores a body filter
+    }
     let mut sink = crate::exec::varlen::CountSink::new(store, pred.is_some());
     let mut used: Vec<u32> = Vec::new();
     let node_unique = matches!(mode, PathMode::Simple | PathMode::Acyclic);
@@ -4945,7 +4977,7 @@ pub(super) fn distinct_with_mult(nodes: &[u32], node_count_total: usize) -> (Vec
 /// Does `expr` reference no slot other than `s` (and never the path)? Literals
 /// and comparisons over slot `s` qualify; any other slot, or `Expr::Path`,
 /// disqualifies — the signal that the frontier alone is enough to evaluate it.
-pub(super) fn refs_only_slot(expr: &Expr, s: usize) -> bool {
+pub(crate) fn refs_only_slot(expr: &Expr, s: usize) -> bool {
     match expr {
         Expr::Lit(_) | Expr::Param(_) => true,
         Expr::Slot(n) => *n == s,
@@ -5003,7 +5035,7 @@ pub(super) fn refs_only_slot(expr: &Expr, s: usize) -> bool {
 /// Rewrite every reference to slot `from` in `expr` to slot `to`. Used to retarget
 /// frontier-only expressions onto a one-slot frontier batch. Callers guarantee
 /// (via [`refs_only_slot`]) that no other slot appears.
-pub(super) fn remap_slot(expr: &Expr, from: usize, to: usize) -> Expr {
+pub(crate) fn remap_slot(expr: &Expr, from: usize, to: usize) -> Expr {
     let go = |e| Box::new(remap_slot(e, from, to));
     match expr {
         Expr::Slot(n) if *n == from => Expr::Slot(to),
