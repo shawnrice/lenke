@@ -5048,3 +5048,24 @@ the edge to have teeth.
 
 **OPEN:** `COUNT { … }` is 93 ms against native's 14.7 — same per-row pipeline, and the box
 applies there too.
+
+## 493 — item 492's 1.28x is a WARM number. The `COUNT` twin stays refuted (item 355)
+
+Setting up "apply 492's box to `COUNT { … }`" found item **355, which REFUTED that lever**: the
+box is a MEMO — **1.21x worse on FIRST touch**, 1.35x better warm — and five of six `side` sites
+visit each vertex once per query, so they pay cold and never warm. _A memo helps a revisited
+element and taxes a visited-once one._
+
+A correlated `EXISTS` also visits each vertex once, and `route-cost-probe` reports min-of-9 in
+ONE process — a warm box by construction. Measured both ways: **box cold 105.3-126.1, warm
+66.9-68.8; hash cold 110.1-230.6, warm 87.9-99.2.** The warm 1.3x is real and reproducible; the
+cold comparison is NOT callable (overlapping, and a single rep carries fixture build + JIT — one
+hash run read 230.6).
+
+**Item 492 stands with its claim narrowed to WARM.** A one-shot query on a freshly loaded graph
+is a real workload and this probe does not measure it (`bench:usage` is where boxes are already
+populated).
+
+**`COUNT { … }` (93 ms against native 14.7) NOT taken**: it routes through the exact `side` call
+site 355 priced and declined. 355's UNTRIED variant — PEEK the box, hash on a miss, never write —
+needs a new `@lenke/core` accessor and a MIXED workload to measure.
