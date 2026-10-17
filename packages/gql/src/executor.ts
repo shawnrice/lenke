@@ -6858,8 +6858,68 @@ const repeatsNodeVariable = (clauses: readonly Clause[]): boolean => {
   return false;
 };
 
+/**
+ * Fold a `FILTER p` back into the `MATCH` before it, as that match's clause `WHERE`.
+ *
+ * `FILTER <pred>` and a clause `WHERE <pred>` on the preceding MATCH are the same question —
+ * both evaluate the predicate once per binding of that match — but only the `WHERE` spelling
+ * reaches the ladder, because every detector matches a clause LIST and a `FILTER` is one clause
+ * too many. Measured at 200,000 vertices / 200,000 edges, one case per process (item 548):
+ *
+ * ```text
+ *   MATCH (n:Person) WHERE n.age > 44 RETURN count(*)                  4.49 ms
+ *   MATCH (n:Person) FILTER n.age > 44 RETURN count(*)                34.59      7.7x
+ *   MATCH (:Person)-[:KNOWS]->(b) WHERE b.age > 44 RETURN count(*)    30.57
+ *   MATCH (:Person)-[:KNOWS]->(b) FILTER b.age > 44 RETURN count(*)  333.86     10.9x
+ *   MATCH (n:Person) WHERE n.age > 44 RETURN max(n.age)                8.43
+ *   MATCH (n:Person) FILTER n.age > 44 RETURN max(n.age)              37.61      4.5x
+ * ```
+ *
+ * Same answers throughout. This is the bug class the repo is named after, on a spelling ISO puts
+ * in the grammar as a first-class statement.
+ *
+ * NOT ACROSS AN `OPTIONAL MATCH`, and that is the one condition that is about semantics rather
+ * than reach: a clause `WHERE` on an OPTIONAL is evaluated INSIDE it, so a start with no match
+ * still yields its null-filled row, while a `FILTER` after it DROPS that row. The two spellings
+ * genuinely differ there and the fold would change the answer.
+ *
+ * The predicate's free variables are deliberately unrestricted, for item 128's reason: a node
+ * predicate is evaluated against the INCOMING binding, which already holds every earlier clause's
+ * variables, so an outer reference resolves in the pattern exactly as it did in the filter.
+ *
+ * Written ORDER is preserved — `WHERE w AND f` when the match already had a `WHERE w` — because
+ * `AND` short-circuits in written order in both engines (items 258, 259) and the conjunct that
+ * was written first must still be the one evaluated first.
+ */
+const inlineTrailingFilter = (clauses: readonly Clause[]): readonly Clause[] => {
+  const out: Clause[] = [];
+
+  for (const clause of clauses) {
+    const prev = out[out.length - 1];
+
+    if (
+      clause.kind !== 'filter' ||
+      prev?.kind !== 'match' ||
+      prev.optional ||
+      hasAggregate(clause.where)
+    ) {
+      out.push(clause);
+      continue;
+    }
+
+    out[out.length - 1] = {
+      ...prev,
+      where: prev.where === undefined ? clause.where : conjoin([prev.where, clause.where]),
+    };
+  }
+
+  return out.length === clauses.length ? clauses : out;
+};
+
 const compileLinear = (linear: LinearQuery): CLinear => {
-  const source = fuseAnchorThenHop(inlineCorrelatedCall(inlineTrailingLet(linear.clauses)));
+  const source = fuseAnchorThenHop(
+    inlineCorrelatedCall(inlineTrailingLet(inlineTrailingFilter(linear.clauses))),
+  );
   const clauses = source.map(compileClause);
   // A pattern repeating a node variable is a SELF-JOIN that the fast paths answer wrongly, so
   // they are not offered the clause list at all — every detector begins by checking its shape

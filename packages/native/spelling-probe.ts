@@ -96,6 +96,32 @@ const g = tsDeserialize(lines.join('\n'), 'ndjson', new TsGraph());
 /** Groups of spellings of ONE question. Every member must answer identically. */
 const GROUPS: [string, readonly string[]][] = [
   [
+    // Item 548: `FILTER <pred>` is ISO's own clause-level predicate statement (§14.6) and asks
+    // exactly what a clause `WHERE` on the MATCH before it asks — but the FILTER spelling put one
+    // extra clause in front of every detector, so the whole query fell to the general pipeline.
+    // It read 41.72ms against 10.73 for the node count and 278.94 against 33.63 for the hop.
+    // `inlineTrailingFilter` folds it; these groups are what would have caught it.
+    'a trailing FILTER vs a clause WHERE: node count',
+    [
+      'MATCH (n:P) WHERE n.k > 1 RETURN count(*) AS c',
+      'MATCH (n:P) FILTER n.k > 1 RETURN count(*) AS c',
+    ],
+  ],
+  [
+    'a trailing FILTER vs a clause WHERE: hop count',
+    [
+      'MATCH (a:P)-[:E]->(b) WHERE b.k > 1 RETURN count(*) AS c',
+      'MATCH (a:P)-[:E]->(b) FILTER b.k > 1 RETURN count(*) AS c',
+    ],
+  ],
+  [
+    'a trailing FILTER vs a clause WHERE: node aggregate',
+    [
+      'MATCH (n:P) WHERE n.k > 1 RETURN max(n.k) AS m',
+      'MATCH (n:P) FILTER n.k > 1 RETURN max(n.k) AS m',
+    ],
+  ],
+  [
     // Item 505: the anchor-then-traverse spelling. Two MATCH clauses sharing a variable join
     // on it, so this is one question written two ways — and the split form missed EVERY fast
     // path, at 747.9ms against 0.0 for the count.

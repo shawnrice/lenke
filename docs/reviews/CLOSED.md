@@ -6355,3 +6355,45 @@ still 0.0 and identical to the unlabelled row.
 Both spelling probes clean — the TS one matters most here, since items 544-546 made
 `RETURN count(*)`, `RETURN DISTINCT count(*)` and `ORDER BY c` ONE route where they were two. Zero
 answer disagreements.
+
+## 548 — a trailing `FILTER` folds into the MATCH before it: 3.5-8.6x, and a divergence closed
+
+`FILTER <pred>` is ISO's own clause-level predicate statement (§14.6) and asks exactly what a
+clause `WHERE` on the preceding MATCH asks. Only the `WHERE` spelling reached the ladder, because
+every detector matches a clause LIST and a `FILTER` is one clause too many — item 540's structural
+rule, on the GQL side. 200,000 vertices / 200,000 edges, one case per process:
+
+| query                                                             | before   | after            |
+| ----------------------------------------------------------------- | -------- | ---------------- |
+| `MATCH (n:Person) FILTER n.age > 44 RETURN count(*)`              | 41.72 ms | **11.33** (3.7x) |
+| `MATCH (:Person)-[:KNOWS]->(b) FILTER b.age > 44 RETURN count(*)` | 278.94   | **32.29** (8.6x) |
+| `MATCH (n:Person) FILTER n.age > 44 RETURN max(n.age)`            | 43.26    | **12.23** (3.5x) |
+
+against `WHERE` controls that did not move (10.73/11.12, 33.63/32.63, 12.20/12.42) and a
+no-predicate control at 0.00 both ways. `inlineTrailingFilter` in `executor.ts`, composed in
+`compileLinear` beside the three existing clause rewrites.
+
+**NATIVE NEVER HAD THE CLIFF**, checked before looking for a Rust twin: 0.18/0.20, 0.91/0.88,
+0.51/0.51 ms, and `spelling_probe` now reports _identical optimized plan_ for both spellings —
+a stronger statement than the timings. No Rust-side work to do.
+
+**NOT ACROSS AN `OPTIONAL MATCH`**, the one refusal that is semantics rather than reach: a clause
+`WHERE` there is evaluated INSIDE the optional, so a start with no match still yields its
+null-filled row, while a `FILTER` after it drops it. The pair reads 1 and 2 and the test pins both.
+(Native rejects `WHERE` inside an `OPTIONAL MATCH` outright, so the two spellings are not even
+both available there.)
+
+**A DIVERGENCE CLOSED, not caused.** `WHERE 1 / 0 > 0 FILTER n.n > 9` THREW in TS and answered
+`[{c:0}]` in native, because a partitioned clause `WHERE` short-circuits on the FALSE conjunct and
+the faulting one is never reached — which is already what BOTH engines do for the `AND` spelling.
+Folding makes the `FILTER` spelling the `AND` spelling, so TS now answers native's answer. Verified
+against the pristine build before saying so.
+
+Teeth: five mutants under the cap, two caught, control clean. Caught: folding across an `OPTIONAL`,
+and folding onto any previous clause. Two survivors, both explained and recorded — the conjoin
+ORDER (predicate position, where order is unobservable, item 259) and the `hasAggregate` guard,
+which is defensive: with it dropped, `FILTER count(*) > 1` and `FILTER sum(n.n) > 1` answer
+identically, so no test distinguishes it; kept by analogy with `inlineTrailingLet`'s same guard.
+
+Three groups added to the TS spelling probe (4.50/4.48, 281.75/285.92, 11.11/8.40 ms) and two to
+`spelling_probe.rs`.

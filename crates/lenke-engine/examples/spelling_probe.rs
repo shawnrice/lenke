@@ -93,6 +93,25 @@ fn main() {
     // Each group: queries that MUST be semantically equivalent. Mixed GQL & Gremlin.
     let groups: &[(&str, &[(Lang, &str)])] = &[
         (
+            // Item 548. A trailing `FILTER <pred>` (ISO §14.6) asks what a clause `WHERE` on the
+            // MATCH before it asks. The TS engine put the FILTER spelling one clause in front of
+            // every detector and paid 3.5-8.6x for it; THIS engine never had the cliff — the two
+            // spellings read 0.18/0.20, 0.91/0.88 and 0.51/0.51 ms before the fix, which is why
+            // there was no Rust twin to build. This group is the guard on that.
+            "a trailing FILTER vs a clause WHERE",
+            &[
+                (Gql, "MATCH (n:Person) WHERE n.age > 50 RETURN count(*) AS c"),
+                (Gql, "MATCH (n:Person) FILTER n.age > 50 RETURN count(*) AS c"),
+            ],
+        ),
+        (
+            "a trailing FILTER vs a clause WHERE (one hop)",
+            &[
+                (Gql, "MATCH (:Person)-[:KNOWS]->(b) WHERE b.age > 50 RETURN count(*) AS c"),
+                (Gql, "MATCH (:Person)-[:KNOWS]->(b) FILTER b.age > 50 RETURN count(*) AS c"),
+            ],
+        ),
+        (
             "count(*) — operand-free / count(n) / Gremlin",
             &[
                 (Gql, "MATCH (n:Person) RETURN count(*) AS c"),
