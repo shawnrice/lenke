@@ -6899,3 +6899,57 @@ The third and fourth together are the honest account: `deepSort` canonicalizes W
 as between rows (deliberately — see its own comment), so the 4-9 path-order queries per run lose
 their within-path element check. That contract is still covered on every path query WITHOUT an
 `order()`, which is the large majority, and the fourth mutant proves it at 5/5.
+
+## 562 — the CALL-with-aggregate-body route: a 24.9x target PRICED, a rewrite RETRACTED, a divergence found
+
+### The target, and it is real
+
+`CALL (n) { MATCH … RETURN <agg> AS c }` yields exactly ONE row per outer row (an un-grouped
+aggregate is null or 0 over an empty match, never nothing), so the lateral join neither drops nor
+multiplies rows and the call is a per-row SCALAR — precisely a `VALUE {}` subquery, which has rungs
+(items 499, 557) where the CALL route has none. 200,000 vertices / 200,000 edges:
+
+| spelling                                              | ms        |
+| ----------------------------------------------------- | --------- |
+| `CALL (n) { … RETURN count(*) AS c } RETURN sum(c)`   | 760.86    |
+| `RETURN sum(COUNT { MATCH (n)-[:KNOWS]->(x) })`       | **30.56** |
+| `CALL (n) { … RETURN count(*) AS c } RETURN count(*)` | 691.35    |
+
+**24.9x between two spellings of one question.** The equivalence was verified on six shapes against
+native first, including the rows an unmatched start contributes (`c: 0`, `m: null`) — both engines
+agree on all six.
+
+### RETRACTED: the rewrite answered 6 where the answer is 2
+
+`inlineAggregateCall` (CALL → `LET c = VALUE {…}`) delivered **760.86 → 68.43 ms, 11.1x**, with the
+pass-through control flat at 568.72. Then:
+
+```text
+CALL (n) { MATCH (n)-[:T]->(x) RETURN count(*) AS c } RETURN sum(c) AS t, count(*) AS r
+  rewritten   {t: 6, r: 3}      WRONG — one node's degree of 2, counted three times
+  native      {t: 2, r: 3}
+  the HAND-WRITTEN LET spelling  {t: 2, r: 3}   right
+```
+
+A one-item outer projection is correct (`RETURN sum(c)` gives 200,000, `RETURN max(m)` gives 2 on
+the unit fixture); a TWO-item outer projection is wrong. Reordering the rewrite outside
+`inlineTrailingLet` did not fix it, so it is not the inlining — and the hand-written `LET` being
+right means the generated clause differs from the parsed one in some way I did not locate.
+
+**Reverted.** A 24.9x win with an unexplained wrong answer is the worst thing this loop could ship,
+and the equivalence being sound is exactly what makes the bug worth finding rather than working
+around. The repro above is one query.
+
+_Had I only measured the one-item shape, this would have shipped._ Both earlier CALL probes in this
+session used a single outer item.
+
+### A FIFTH subquery-body divergence
+
+```text
+CALL (n) { MATCH (n)-[:T]->(x) RETURN count(*) AS c, max(x.n) AS m } RETURN n.n, c, m
+  ts      [{k:1,c:2,m:2}, {k:2,c:0,m:null}, {k:null,c:0,m:null}]
+  native  THROWS "an aggregating RETURN inside …"
+```
+
+Two aggregate items in a CALL body. Same family as item 557's four (collect, collect_list,
+stddev_pop, count(arg)), same class — a loud refusal on the native side.
