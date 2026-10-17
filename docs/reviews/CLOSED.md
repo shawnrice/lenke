@@ -6029,3 +6029,33 @@ size against O(|label|) degree summing) and is recorded as unclosable. **This is
 with the same name** — a node-scan count where the work IS the same — and no group covers it.
 Native pays nothing for the tautology: `IsLabeled` short-circuits when a label's bucket length
 equals the live node count (item E78).
+
+## 536 — CORRECTION: item 535's GQL claims were contamination; only the Gremlin half survives
+
+Item 535 said its own next job was to confirm the mechanism before changing anything. Confirming
+refuted most of it.
+
+Instrumenting `detectCountShortcut` and `buildNodeCount`: all four spellings FIRE the rung and all
+four reach the builder with **`preds=1, seeded=false`** — same builder, same tally loop, same
+predicate count. No route change, and a label adds no conjunct. A measurement that the code cannot
+explain is a measurement to re-take.
+
+One case per process:
+
+- `MATCH (n) WHERE n.age > 44` **4.41** against `MATCH (n:Person) WHERE n.age > 44` **4.40** — a
+  redundant label costs NOTHING in GQL. Item 535's 2.8x was the labelled query running third in a
+  shared process. `(n:Third)` is 1.25, exactly a third of the rows at the same per-row cost.
+- the conjunct ladder is 21.9 / 40.1 / 48.5 / 57.0 ns/row — marginal ~8.4 ns with a ~10 ns one-off
+  for the `and` wrapper. **Not** the "+37 then +4 route change at the second conjunct" 535
+  described; 1.83x for the second conjunct, uniform after.
+
+STILL OPEN and now the real target: **Gremlin charges 4.4x for a step that filters nothing.**
+`V().has(age,gt).count()` 3.37 ms against `V().hasLabel('Person').has(age,gt).count()` **14.77**,
+isolated, every vertex carrying `Person` (`V().hasLabel().count()` alone is 0.00 — a bucket size).
++57 ns a row for one extra per-element step, against ~8.4 ns for a marginal GQL conjunct. GQL-only
+redundancy is free; the Gremlin pipeline's is not.
+
+**The lesson is about the measurement, not the engine.** I used an ad-hoc in-process `bun -e` loop
+after this session had recorded the same trap three times (514, 524, 534). _A min-of-nine inside
+one process is not isolation_ — one case per process is the only form that works here, which is
+why the route-cost probe is built that way. Fourth instrument, and this time it was mine.
