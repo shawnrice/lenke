@@ -5428,3 +5428,21 @@ Oracle: `count(*) + 0` declines the rung, and an instrumented run confirms 9 fir
 spellings only. Mutation 6 of 7. **Admitting `both` survived until the fixture could tell**: the
 refusal case used the `S` type, where undirected and in-only coincide at 3; the `T` type gives 4
 against 3. _A refusal test proves nothing if the shape it refuses happens to agree._
+
+## 511 — the OPTIONAL-hop PROJECTION: CLOSED at 2.8x
+
+The projection twin of item 510's count rung. 851.6-838.6 -> 296.2-305.3 ns/row at 200,000
+vertices / 1,000,000 edges, three alternated rounds; the non-optional two-clause twin and item
+510's count are the controls, both flat. Native pays only 1.15x for the same pair, so the gap was
+the missing rung.
+
+**It lands at ~2x the non-optional rung, not on it**, and the reason is recorded rather than
+chased: this calls `projectRow` per ROW where the tuned hop emitters hoist it per far VERTEX, and
+that hoist is only valid when every projected item is a pure function of the far end (item 446) —
+a null-filled row is not.
+
+Mutation 5 of 6. **Setting `matched` before the label test survived**: it drops the null row only
+for an anchor whose neighbours ALL fail the landing label, and the main fixture has no such
+anchor. A two-node graph whose only edge lands on the wrong label kills it. Third survivor this
+session that was a FIXTURE COINCIDENCE rather than a missing assertion (505, 510, 511). Oracle:
+`SKIP 0` declines the rung; instrumented at 9 firings.

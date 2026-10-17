@@ -6106,6 +6106,7 @@ export type CLinear = {
   clauses: readonly CClause[];
   /** Precomputed direct-count closure for `MATCH … RETURN count(*)`; else null. */
   optionalHopCount: ((graph: Graph, params: Params) => Row[]) | null;
+  optionalHopProjection: RowsFn | null;
   countShortcut: ((graph: Graph, params: Params) => Row[]) | null;
   /** Precomputed grouped-count closure for `MATCH (n) RETURN n.k, count(*)`; else null. */
   groupCountShortcut: ReachFn | null;
@@ -6335,6 +6336,7 @@ const compileLinear = (linear: LinearQuery): CLinear => {
     // The OPTIONAL-hop count sits above the plain one: every other rung refuses `optional`,
     // so without it this shape has no rung at all (item 510).
     optionalHopCount: detectOptionalHopCount(fast),
+    optionalHopProjection: detectOptionalHopProjection(fast, clauses),
     countShortcut: detectCountShortcut(fast, clauses),
     groupCountShortcut: detectGroupedNodeCount(fast),
     groupHopShortcut: detectGroupedHopCount(fast),
@@ -6380,6 +6382,7 @@ import {
   detectDistinctProjection,
   detectHopAggregate,
   detectHopProjection,
+  detectOptionalHopProjection,
   detectMultiHopAggregate,
 } from './executor/hop-projection.js';
 import type { AlwaysRowsFn, RowsFn } from './executor/hop-projection.js';

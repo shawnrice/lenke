@@ -15,6 +15,7 @@ import type {
 } from '../executor.js';
 import {
   compileExpr,
+  edgesOfTypes,
   compilePredicate,
   foldFor,
   compareSort,
@@ -601,6 +602,168 @@ const relVariableHidden = (
   relVar !== undefined &&
   (mentionsName(projection, relVar) || mentionsName(where, relVar)) &&
   (containsSubquery(projection) || containsSubquery(where));
+
+/**
+ * `MATCH (a:L) OPTIONAL MATCH (a)-[:T]->(x) RETURN …` — the left-outer hop's PROJECTION.
+ *
+ * One row per match, or ONE null-filled row for an anchor with none. Item 510 gave the count
+ * its rung; the projection had none either, and every detector refuses `optional` on its first
+ * check, so it fell to the general row pipeline at 848ns a row against the non-optional
+ * two-clause spelling's 169 once item 507 fused that one (audit item 511). Native pays ~1.15x
+ * for the same shape, so the gap is entirely the missing rung.
+ *
+ * The walk is start-driven by construction — the null-fill is per ANCHOR, so the anchors have
+ * to be the outer loop — which also means the row ORDER is the anchor bucket's, exactly as the
+ * non-optional rung's is. Row order without `ORDER BY` is unspecified.
+ *
+ * Narrow on purpose, and each refusal is a position this walk cannot answer:
+ *
+ *   - an aggregate, `DISTINCT`, `GROUP BY`, `HAVING` or `ORDER BY` in the projection — this
+ *     emits rows, it does not fold or reorder them;
+ *   - `SKIP`/`LIMIT`, which the general path pages correctly and this would have to re-derive;
+ *   - a clause `WHERE` on either side, a rel VARIABLE, `both`, inline properties, or a
+ *     constrained anchor — the same list item 510's count rung refuses, for the same reasons.
+ */
+/** The anchor-and-optional-hop shape `detectOptionalHopProjection` walks, or `null`. */
+const optionalHopShape = (
+  m: Clause,
+  om: Clause,
+): {
+  startVar: string;
+  startLabel: LabelExpr | undefined;
+  farVar: string;
+  farLabel: LabelExpr | undefined;
+  types: string[] | undefined;
+  out: boolean;
+} | null => {
+  if (
+    m.kind !== 'match' ||
+    m.optional ||
+    m.where !== undefined ||
+    m.patterns.length !== 1 ||
+    om.kind !== 'match' ||
+    !om.optional ||
+    om.where !== undefined ||
+    om.patterns.length !== 1
+  ) {
+    return null;
+  }
+
+  const [anchor] = m.patterns;
+  const startVar = anchor.start.variable;
+
+  if (
+    anchor.segments.length !== 0 ||
+    anchor.pathVar !== undefined ||
+    startVar === undefined ||
+    (anchor.start.properties !== undefined && anchor.start.properties.length > 0) ||
+    anchor.start.where !== undefined
+  ) {
+    return null;
+  }
+
+  const [hop] = om.patterns;
+  const [far] = hop.segments;
+
+  if (hop.pathVar !== undefined || hop.segments.length !== 1 || far === undefined) {
+    return null;
+  }
+
+  const { rel, node } = far;
+  const farVar = node.variable;
+  const types = relTypeNames(rel.label);
+
+  if (
+    hop.start.variable !== startVar ||
+    rel.variable !== undefined ||
+    rel.direction === 'both' ||
+    rel.properties !== undefined ||
+    rel.where !== undefined ||
+    rel.quantifier !== undefined ||
+    farVar === undefined ||
+    farVar === startVar ||
+    (node.properties !== undefined && node.properties.length > 0) ||
+    node.where !== undefined ||
+    types === null
+  ) {
+    return null;
+  }
+
+  return {
+    startVar,
+    startLabel: anchor.start.label,
+    farVar,
+    farLabel: node.label,
+    types,
+    out: rel.direction === 'out',
+  };
+};
+
+/** A projection that emits one row per binding: no folding, deduping, grouping or paging. */
+const plainRowProjection = (proj: Projection): boolean =>
+  !proj.star &&
+  !proj.distinct &&
+  proj.groupBy === undefined &&
+  proj.having === undefined &&
+  (proj.orderBy?.length ?? 0) === 0 &&
+  proj.skip === undefined &&
+  proj.limit === undefined;
+
+export const detectOptionalHopProjection = (
+  clauses: readonly Clause[],
+  compiled: readonly CClause[],
+): RowsFn | null => {
+  if (clauses.length !== 3) {
+    return null;
+  }
+
+  const [m, om, ret] = clauses;
+  const [, , cret] = compiled;
+
+  if (cret?.kind !== 'return' || cret.projection.aggregating || ret.kind !== 'return') {
+    return null;
+  }
+
+  const shape = optionalHopShape(m, om);
+
+  if (shape === null || !plainRowProjection(ret.projection)) {
+    return null;
+  }
+
+  const { startVar, startLabel, farVar, farLabel, types, out } = shape;
+
+  return (graph, params) => {
+    const rows: Row[] = [];
+    const binding = new Map<string, unknown>();
+
+    for (const v of candidateVertexSource(graph, startLabel)) {
+      binding.set(startVar, v);
+
+      let matched = false;
+
+      for (const edge of edgesOfTypes(out ? v.adjFrom : v.adjTo, types)) {
+        const landed = out ? edge.to : edge.from;
+
+        if (farLabel !== undefined && !matchesLabel(landed, farLabel)) {
+          continue;
+        }
+
+        matched = true;
+        binding.set(farVar, landed);
+        rows.push(projectRow(cret.projection, binding, params, graph));
+      }
+
+      if (!matched) {
+        // The whole difference from the non-optional rung: the anchor survives with the
+        // landing variable NULL.
+        binding.set(farVar, null);
+        rows.push(projectRow(cret.projection, binding, params, graph));
+      }
+    }
+
+    return rows;
+  };
+};
 
 export const detectHopProjection = (
   clauses: readonly Clause[],

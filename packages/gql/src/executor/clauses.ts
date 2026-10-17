@@ -1346,6 +1346,11 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
     return linear.optionalHopCount(graph, params);
   }
 
+  // The OPTIONAL-hop PROJECTION (item 511) — one row per match, or one null-filled row.
+  if (linear.optionalHopProjection) {
+    return linear.optionalHopProjection(graph, params) ?? undefined;
+  }
+
   // Grouped `count(*)` off the label bucket — many rows, so its own hook. See
   // `detectGroupedNodeCount`.
   if (linear.groupCountShortcut) {
