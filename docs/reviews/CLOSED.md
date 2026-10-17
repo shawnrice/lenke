@@ -5328,3 +5328,28 @@ untested._
 pairs) — widening the anchor to "a pattern whose LAST node is the shared variable" is unpriced.
 **Priced and NOT a target:** the set operators, a 2.2-4.3x constant factor on two scans with no
 missing path.
+
+## 506 — a repeated node variable was answered WRONG by every hop fast path: FIXED
+
+`MATCH (a:P)-[:T]->(a)` means one node, so it matches the self-loops. TS read `count(*)` as 4
+where native reads 2, and **eight of ten probed shapes diverged** (projection, grouped count,
+`max`, reversed, undirected, unlabelled, named rel). The two that agreed were the two that
+already declined to the general matcher — which has always been right. Each hop fast path binds
+the far node OVER the start without checking the name.
+
+Fix: `repeatsNodeVariable` gates the whole clause list once per compile; a self-join pattern is
+handed an empty list, which every detector refuses. **Item 487 fixed this class one rung at a
+time for a repeated REL variable, and that is precisely what left this one.** Controls flat
+(plain `count(*)` 0.0 ms, plain projection 143-150 ns/row both sides, three alternated rounds).
+
+**Found by accident, which is the lesson.** Item 506's clause-fusion widening routed
+`MATCH (a:P) MATCH (a)-[:T]->(a)` into the one-clause spelling and the two stopped agreeing. The
+differential fuzzer does not generate a one-hop pattern repeating its endpoint and the corpus has
+no such case, so nothing was watching.
+`packages/native/src/repeated-node-variable-conformance.test.ts` pins fifteen shapes across both
+engines, ANSWERS as well as agreement, with the ordinary hop as the control the gate must not
+catch. Mutation 3 of 4, null control clean.
+
+**OPEN (written and measured, deliberately NOT in that commit):** chaining a third clause onto a
+fused pair. `MATCH (a:P)-[:T]->(x) MATCH (x)-[:T]->(y) RETURN count(*)` costs **2286.3 ms against
+103.4** for the one-clause spelling; native is 2.7 for both.

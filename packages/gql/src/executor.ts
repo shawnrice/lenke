@@ -6233,26 +6233,79 @@ const fuseAnchorThenHop = (clauses: readonly Clause[]): readonly Clause[] => {
   return out;
 };
 
+/**
+ * Does any pattern in these clauses bind the SAME node variable twice?
+ *
+ * `MATCH (a:P)-[:T]->(a)` means one node at both ends — the self-loops — and the general
+ * matcher answers it correctly. **Every hop fast path answered it WRONG**, because each binds
+ * the far node over the start without checking that the name is the same one: on a fixture with
+ * two self-loops among four edges, `count(*)` read 4 against native's 2, the projection four
+ * rows against two, a grouped count 3 for a vertex with one self-loop, `max(a.k)` 3 against 2,
+ * and the reversed and undirected spellings likewise. Eight of ten shapes probed diverged from
+ * native, and the two that agreed were the two that already declined (a `DISTINCT` projection
+ * and a filtered count).
+ *
+ * Found by accident: item 506's clause fusion routed `MATCH (a:P) MATCH (a)-[:T]->(a)` into the
+ * one-clause spelling and the two answers stopped agreeing, which is the only reason anyone
+ * looked. The differential fuzzer does not generate a one-hop pattern that repeats its
+ * endpoint, so nothing else was watching this.
+ *
+ * The gate is deliberately whole-query and conservative: a pattern that repeats a node variable
+ * takes the general matcher, and no rung has to be audited for a hazard it was never written
+ * for. Item 487 fixed the same class one rung at a time for a repeated REL variable; the
+ * one-at-a-time fix is what left this.
+ */
+const repeatsNodeVariable = (clauses: readonly Clause[]): boolean => {
+  for (const clause of clauses) {
+    if (clause.kind !== 'match') {
+      continue;
+    }
+
+    for (const p of clause.patterns) {
+      const seen = new Set<string>();
+      const names = [p.start.variable, ...p.segments.map((seg) => seg.node.variable)];
+
+      for (const name of names) {
+        if (name === undefined) {
+          continue;
+        }
+
+        if (seen.has(name)) {
+          return true;
+        }
+
+        seen.add(name);
+      }
+    }
+  }
+
+  return false;
+};
+
 const compileLinear = (linear: LinearQuery): CLinear => {
   const source = fuseAnchorThenHop(linear.clauses);
   const clauses = source.map(compileClause);
+  // A pattern repeating a node variable is a SELF-JOIN that the fast paths answer wrongly, so
+  // they are not offered the clause list at all — every detector begins by checking its shape
+  // and an empty list matches none of them.
+  const fast = repeatsNodeVariable(source) ? [] : source;
 
   return {
     clauses,
-    countShortcut: detectCountShortcut(source, clauses),
-    groupCountShortcut: detectGroupedNodeCount(source),
-    groupHopShortcut: detectGroupedHopCount(source),
-    reachShortcut: detectReachableShortcut(source, clauses),
-    hopProjection: detectHopProjection(source, clauses),
-    hopAggregate: detectHopAggregate(source, clauses),
-    multiHopAggregate: detectMultiHopAggregate(source, clauses),
-    distinctProjection: detectDistinctProjection(source, clauses),
-    distinctCount: detectDistinctCount(source, clauses),
-    nodeProjection: detectNodeProjection(source, clauses),
-    nodeAggregate: detectNodeAggregate(source, clauses),
-    multiNodeAggregate: detectMultiNodeAggregate(source, clauses),
-    groupedNodeAggregate: detectGroupedNodeAggregate(source, clauses),
-    groupedHopAggregate: detectGroupedHopAggregate(source, clauses),
+    countShortcut: detectCountShortcut(fast, clauses),
+    groupCountShortcut: detectGroupedNodeCount(fast),
+    groupHopShortcut: detectGroupedHopCount(fast),
+    reachShortcut: detectReachableShortcut(fast, clauses),
+    hopProjection: detectHopProjection(fast, clauses),
+    hopAggregate: detectHopAggregate(fast, clauses),
+    multiHopAggregate: detectMultiHopAggregate(fast, clauses),
+    distinctProjection: detectDistinctProjection(fast, clauses),
+    distinctCount: detectDistinctCount(fast, clauses),
+    nodeProjection: detectNodeProjection(fast, clauses),
+    nodeAggregate: detectNodeAggregate(fast, clauses),
+    multiNodeAggregate: detectMultiNodeAggregate(fast, clauses),
+    groupedNodeAggregate: detectGroupedNodeAggregate(fast, clauses),
+    groupedHopAggregate: detectGroupedHopAggregate(fast, clauses),
   };
 };
 

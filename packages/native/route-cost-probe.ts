@@ -288,6 +288,12 @@ const queries: Record<string, string> = {
   // queries is a ratio between two ROUTES until they are shown to take the same one (item 445).
   twoclauseproj: 'MATCH (n:Person) MATCH (n)-[:KNOWS]->(x) RETURN x.age AS a',
   twoclausecount: 'MATCH (n:Person) MATCH (n)-[:KNOWS]->(x) RETURN count(*) AS c',
+  // Item 506: the widening item 505 left open — a THIRD clause, which does not chain onto the
+  // fused pair because the fused clause is no longer a bare node.
+  threeclausecount:
+    'MATCH (n:Person) MATCH (n)-[:KNOWS]->(x) MATCH (x)-[:KNOWS]->(y) RETURN count(*) AS c',
+  twohopcount: 'MATCH (n:Person)-[:KNOWS]->(x)-[:KNOWS]->(y) RETURN count(*) AS c',
+  splittwohopcount: 'MATCH (n:Person)-[:KNOWS]->(x) MATCH (x)-[:KNOWS]->(y) RETURN count(*) AS c',
   plaincount: 'MATCH (n:Person)-[:KNOWS]->(x) RETURN count(*) AS c',
   hopaggrelvar: 'MATCH (:Person)-[r:KNOWS]->(b) RETURN max(b.age) AS m',
   twohoprelvar: 'MATCH (:Person)-[r:KNOWS]->(b)-[s:KNOWS]->(c) RETURN count(*) AS c',
