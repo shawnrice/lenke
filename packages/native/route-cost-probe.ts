@@ -295,6 +295,18 @@ const queries: Record<string, string> = {
   twohopcount: 'MATCH (n:Person)-[:KNOWS]->(x)-[:KNOWS]->(y) RETURN count(*) AS c',
   splittwohopcount: 'MATCH (n:Person)-[:KNOWS]->(x) MATCH (x)-[:KNOWS]->(y) RETURN count(*) AS c',
   plaincount: 'MATCH (n:Person)-[:KNOWS]->(x) RETURN count(*) AS c',
+  // Item 512: four plan-level enums nothing has priced — the list unwind, top-k, the WITH
+  // pipeline and the inline CALL. Both engines, against the plain scan/hop as controls.
+  topk: 'MATCH (n:Person) RETURN n.age AS a ORDER BY a DESC LIMIT 10',
+  topkhop: 'MATCH (:Person)-[:KNOWS]->(b) RETURN b.age AS a ORDER BY a DESC LIMIT 10',
+  orderall: 'MATCH (n:Person) RETURN n.age AS a ORDER BY a',
+  withpipe: 'MATCH (n:Person) LET a = n.age RETURN count(*) AS c',
+  letgroup: 'MATCH (n:Person) LET a = n.age RETURN a AS k, count(*) AS c GROUP BY a',
+  plaingroup: 'MATCH (n:Person) RETURN n.age AS k, count(*) AS c',
+  letproj: 'MATCH (n:Person) LET a = n.age RETURN a AS k',
+  plainnodeproj: 'MATCH (n:Person) RETURN n.age AS k',
+  forunwind: 'MATCH (n:Person) FOR x IN [1, 2, 3] RETURN count(*) AS c',
+  callinline: 'MATCH (n:Person) CALL (n) { MATCH (n)-[:KNOWS]->(x) RETURN x } RETURN count(*) AS c',
   hopaggrelvar: 'MATCH (:Person)-[r:KNOWS]->(b) RETURN max(b.age) AS m',
   twohoprelvar: 'MATCH (:Person)-[r:KNOWS]->(b)-[s:KNOWS]->(c) RETURN count(*) AS c',
   threehoprelvar:

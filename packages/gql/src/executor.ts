@@ -32,6 +32,7 @@ import type {
   PropertyConstraint,
   Quantifier,
   ReturnItem,
+  SortItem,
   Query,
   RelPattern,
   Segment,
@@ -6168,6 +6169,116 @@ export type CLinear = {
  *     need an `AND` whose operand order carries the short-circuit contract of items 258/259,
  *     and that is worth its own measurement rather than a guess here.
  */
+/**
+ * An expression cheap and total enough to be SUBSTITUTED for its name, or DROPPED when nothing
+ * reads it: a property read, a variable, a literal or a parameter.
+ *
+ * Cheap because substituting duplicates it once per use; TOTAL because dropping it must not
+ * lose a fault — a missing property reads as NULL and none of these four raises, where a
+ * function call or a cast can. Anything else keeps its `LET`.
+ */
+const cheapPureExpr = (e: Expr): boolean =>
+  e.kind === 'prop' || e.kind === 'var' || e.kind === 'lit' || e.kind === 'param';
+
+/**
+ * `MATCH … LET a = <expr> RETURN … a …` IS `MATCH … RETURN … <expr> …` — the `LET` inlined into
+ * the projection that follows it, so the clause list is two long again and the ladder applies.
+ *
+ * `LET` is how this engine names an expression, and a `LET` between the `MATCH` and the `RETURN`
+ * dropped the query off every node rung — each reads a two-clause shape. Measured at 200,000
+ * vertices (audit item 512):
+ *
+ * ```text
+ *   LET a = n.age RETURN a AS k        126.4ms   RETURN n.age AS k      13.7ms   9.2x
+ *   LET a = n.age RETURN count(*)      108.3ms   RETURN count(*)         0.0ms
+ * ```
+ *
+ * Native pays 16.2 against 13.1 for the same pair, so this is the TS ladder's shape check and
+ * nothing deeper. Two spellings of one question, which is the defect class this repo is named
+ * after.
+ *
+ * The substitution is deliberately SHALLOW — an item either IS the variable or does not mention
+ * it — so no expression tree is rewritten and no nested binder (a `CASE`, a `LET … IN`, a
+ * subquery) can be entered by mistake. An item that reads the name inside a larger expression
+ * declines the whole rewrite rather than being rebuilt.
+ *
+ * `GROUP BY` and `HAVING` decline outright: `GROUP BY` takes a BOUND NAME, so inlining its key
+ * would remove the thing it names (and that spelling is already fast — 4.0ms against the
+ * equivalent 5.0). `RETURN *` declines because the `LET` variable is one of the columns.
+ */
+const inlineTrailingLet = (clauses: readonly Clause[]): readonly Clause[] => {
+  if (clauses.length < 3) {
+    return clauses;
+  }
+
+  const ret = clauses[clauses.length - 1];
+  const binder = clauses[clauses.length - 2];
+
+  if (ret.kind !== 'return' || binder.kind !== 'let' || binder.items.length !== 1) {
+    return clauses;
+  }
+
+  const [{ var: name, expr }] = binder.items;
+  const proj = ret.projection;
+
+  if (
+    !cheapPureExpr(expr) ||
+    proj.star ||
+    proj.groupBy !== undefined ||
+    proj.having !== undefined
+  ) {
+    return clauses;
+  }
+
+  // Exactly the variable → the expression; mentions it at all → refuse; otherwise unchanged.
+  const subst = (e: Expr): Expr | null => {
+    if (e.kind === 'var' && e.name === name) {
+      return expr;
+    }
+
+    return freePredicateVars(e).has(name) ? null : e;
+  };
+  const items: ReturnItem[] = [];
+
+  for (const it of proj.items) {
+    const e = subst(it.expr);
+
+    if (e === null) {
+      return clauses;
+    }
+
+    // A `LET` names a BINDING, and an un-aliased `RETURN a` takes its COLUMN name from the
+    // expression — so substituting without pinning the alias renamed the column from `a` to
+    // `n.k`. Caught by `DISTINCT over a LET-bound name`, which exists for exactly that
+    // distinction; the rewrite now carries the name it removed.
+    items.push(e === it.expr ? it : { ...it, expr: e, alias: it.alias ?? name });
+  }
+
+  const sorts: SortItem[] = [];
+
+  for (const o of proj.orderBy ?? []) {
+    const e = subst(o.expr);
+
+    if (e === null) {
+      return clauses;
+    }
+
+    sorts.push({ ...o, expr: e });
+  }
+
+  return [
+    ...clauses.slice(0, -2),
+    {
+      ...ret,
+      projection: {
+        ...proj,
+        items,
+        orderBy: proj.orderBy === undefined ? undefined : sorts,
+      },
+    },
+  ];
+};
+
 /** The ANCHOR half of `fuseAnchorThenHop`: a lone `MATCH (v …)` binding exactly one node. */
 /**
  * Is this pattern's path shape the plain default — every match, no repetition restrictor?
@@ -6324,7 +6435,7 @@ const repeatsNodeVariable = (clauses: readonly Clause[]): boolean => {
 };
 
 const compileLinear = (linear: LinearQuery): CLinear => {
-  const source = fuseAnchorThenHop(linear.clauses);
+  const source = fuseAnchorThenHop(inlineTrailingLet(linear.clauses));
   const clauses = source.map(compileClause);
   // A pattern repeating a node variable is a SELF-JOIN that the fast paths answer wrongly, so
   // they are not offered the clause list at all — every detector begins by checking its shape

@@ -5446,3 +5446,29 @@ for an anchor whose neighbours ALL fail the landing label, and the main fixture 
 anchor. A two-node graph whose only edge lands on the wrong label kills it. Third survivor this
 session that was a FIXTURE COINCIDENCE rather than a missing assertion (505, 510, 511). Oracle:
 `SKIP 0` declines the rung; instrumented at 9 firings.
+
+## 512 — a `LET` before the RETURN dropped the query off every rung: CLOSED at 8-11x
+
+`LET` is how this engine names an expression (and the only way to key a `GROUP BY`), but every
+node rung reads a TWO-clause shape, so `MATCH … LET … RETURN` fell to the general pipeline:
+126.4 ms against 13.7 for the same projection written directly, and 108.3 against 0.0 for a
+`count(*)` that never reads the name. Native pays 1.24x for the pair. `inlineTrailingLet`
+substitutes the expression into the following projection and drops the clause.
+109.6/112.9 -> 13.5/10.0/9.6 ms; the count row to 0.0. Direct projection and the `GROUP BY`
+spelling flat as controls. **Both `LET` rows are BIMODAL before the change** (54.7 vs 109.6), so
+the claim is the conservative 8-11x.
+
+Shallow by design: an item either IS the variable or does not mention it, so no tree is rewritten
+and no nested binder can be entered. `GROUP BY`/`HAVING`/`RETURN *` decline.
+
+**The COLUMN NAME is not the expression's** — an un-aliased `RETURN a` names its column after the
+expression, so the first version renamed `a` to `n.k`; caught by `DISTINCT over a LET-bound name`.
+
+**"Cheap and pure" needs TOTAL, and only a faulting expression shows it.** Mutation 5 of 6;
+admitting any expression survived against an `abs(n.k)` case (total, so inlining is invisible).
+`CAST('abc' AS INTEGER)` and `1 / 0` throw where a dropped LET answers — fourth survivor this
+session that was a fixture coincidence (505, 510, 511, 512).
+
+**PRICED, not taken:** `ORDER BY … LIMIT 10` ts 80.0 against native 1.0 (TS has a top-k already;
+this is the row pipeline), its hop form 707.8 against 9.3, `FOR x IN [1,2,3]` 160.6 against 4.3,
+and the inline `CALL (n) { … }` **996.2 against 6.2** — the widest left.
