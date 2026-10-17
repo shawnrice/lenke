@@ -6762,6 +6762,17 @@ type GroupAcc =
       readonly fold: AggFold;
       readonly argFn: CompiledExpr;
       readonly argExpr: Expr;
+    }
+  // An aggregate with NO streaming fold, collected per group and finished through the same
+  // `aggregateOverValues` the general path runs (item 553). Admitted only on an UNFILTERED scan —
+  // see `groupedAccs`' `unfiltered` parameter for the measured reason.
+  | {
+      readonly kind: 'values';
+      readonly out: string;
+      readonly name: string;
+      readonly frac: number;
+      readonly argFn: CompiledExpr;
+      readonly argExpr: Expr;
     };
 
 /**
@@ -6776,6 +6787,27 @@ const groupedAccs = (
   // `null` accepts a key on EITHER end — the hop path checks which end itself, because the two
   // ends are resolved from the pattern rather than given.
   nodeVar: string | null,
+  /**
+   * Is the source UNFILTERED? Then the aggregates with no streaming fold may be collected per
+   * group (item 553), because this rung visits vertices in scan order and so does the general
+   * path. With a filter it may not, and the reason is demonstrable rather than theoretical: with
+   * a range index on `age`,
+   *
+   * ```text
+   *   WHERE n.age >= 5 RETURN n.tag, collect(n.age)   no index [7,5,9] / [8,6]
+   *                                                   indexed  [5,7,9] / [6,8]
+   * ```
+   *
+   * The seek visits in INDEX order, so the values reach their group in a different order — and
+   * the same predicate written `n.age + 0 >= 5`, which cannot seed, is unchanged either way,
+   * which is what isolates the cause to the seed. Both engines agree on both answers, so this is
+   * a REAL order the rung would have to reproduce and cannot.
+   *
+   * `sum`/`avg` and the stddevs differ in the last ulp under reordering, and `collect`'s order IS
+   * its answer. The percentiles sort their values and so would be safe either way; they ride the
+   * same flag because a second condition for one name is a guard with no test.
+   */
+  unfiltered: boolean,
 ): { accs: GroupAcc[]; keyExpr: Extract<Expr, { kind: 'prop' }>; keyCol: string } | null => {
   let keyExpr: Extract<Expr, { kind: 'prop' }> | undefined;
   let keyCol = '';
@@ -6816,8 +6848,26 @@ const groupedAccs = (
     const fold = e.args.length === 1 ? foldFor(e.name, false, false) : undefined;
     const [argExpr] = e.args;
 
-    if (fold === undefined || !rowLocal(argExpr)) {
+    if (!rowLocal(argExpr)) {
       return null;
+    }
+
+    if (fold === undefined) {
+      const frac = unfiltered ? percentileFraction(e) : null;
+
+      if (frac === null || !(VALUES_AGGREGATES.has(e.name) || e.args.length === 1)) {
+        return null;
+      }
+
+      accs.push({
+        kind: 'values',
+        out,
+        name: e.name,
+        frac,
+        argFn: compileExpr(argExpr),
+        argExpr,
+      });
+      continue;
     }
 
     accs.push({ kind: 'fold', out, fold, argFn: compileExpr(argExpr), argExpr });
@@ -6894,7 +6944,11 @@ export const detectGroupedNodeAggregate = (
 
   // Exactly ONE non-aggregate item, and it must be a property of the matched node — the same
   // restriction the tally works under, and what makes the group key one `propOf` a vertex.
-  const picked = groupedAccs(ret.projection.items, proj.items, nodeVar);
+  // UNFILTERED means both spellings of a filter are absent — the start node's INLINE constraint
+  // and the clause `WHERE`. `groupedAccs` needs it to admit an aggregate with no streaming fold;
+  // `inlineOf` is read again below for the gate itself.
+  const unfiltered = inlineOf(start) === undefined && m.where === undefined;
+  const picked = groupedAccs(ret.projection.items, proj.items, nodeVar, unfiltered);
 
   if (picked === null) {
     return null;
@@ -6972,7 +7026,17 @@ export const detectGroupedNodeAggregate = (
       let slot = bySeen.get(id);
 
       if (slot === undefined) {
-        slot = { key: raw, n: 0, state: accs.map((a) => (a.kind === 'fold' ? a.fold.init() : 0)) };
+        slot = {
+          key: raw,
+          n: 0,
+          state: accs.map((a) => {
+            if (a.kind === 'fold') {
+              return a.fold.init();
+            }
+
+            return a.kind === 'values' ? [] : 0;
+          }),
+        };
         bySeen.set(id, slot);
         slots.push(slot);
       }
@@ -6983,14 +7047,20 @@ export const detectGroupedNodeAggregate = (
       for (let i = 0; i < accs.length; i += 1) {
         const a = accs[i];
 
-        if (a.kind !== 'fold') {
+        if (a.kind === 'rows') {
           continue;
         }
 
         const value = a.argFn(env);
 
         // The same nullish rule as every other fold in this file and in `stepFolded`.
-        if (!isNullish(value)) {
+        if (isNullish(value)) {
+          continue;
+        }
+
+        if (a.kind === 'values') {
+          (slot.state[i] as unknown[]).push(value);
+        } else {
           slot.state[i] = a.fold.step(slot.state[i], value);
         }
       }
@@ -7006,6 +7076,8 @@ export const detectGroupedNodeAggregate = (
           row[keyCol] = slot.key;
         } else if (a.kind === 'rows') {
           row[a.out] = slot.n;
+        } else if (a.kind === 'values') {
+          row[a.out] = aggregateOverValues(a.name, slot.state[i] as unknown[], a.frac);
         } else {
           row[a.out] = a.fold.finish(slot.state[i]);
         }
@@ -7115,7 +7187,11 @@ export const detectGroupedHopAggregate = (
   }
 
   // One non-aggregate item, a property of one END; the rest aggregates over the KEYED end.
-  const picked = groupedAccs(ret.projection.items, proj.items, null);
+  // FALSE for the HOP rung: its walk has a far-driven alternative that visits rows in a different
+  // order (item 419), so an order-sensitive fold there needs the forcing items 551/552 gave the
+  // un-grouped hop rungs, not this flag. Priced (`b.age AS k, sum(b.age)` 472.71 ms against the
+  // 167.82 the grouped count takes) and left open.
+  const picked = groupedAccs(ret.projection.items, proj.items, null, false);
 
   if (picked === null) {
     return null;
@@ -7141,7 +7217,7 @@ export const detectGroupedHopAggregate = (
   // `refsOnlyVar` is shallow by design, so a compound argument declines rather than being
   // analysed: this rung admits `max(b.k)`, not `max(b.k + c.k)`.
   for (const a of accs) {
-    if (a.kind === 'fold' && !refsOnlyVar(a.argExpr, keyExpr.variable)) {
+    if (a.kind !== 'rows' && !refsOnlyVar(a.argExpr, keyExpr.variable)) {
       return null;
     }
   }
@@ -7258,6 +7334,8 @@ export const detectGroupedHopAggregate = (
           row[keyCol] = slot.key;
         } else if (a.kind === 'rows') {
           row[a.out] = slot.n;
+        } else if (a.kind === 'values') {
+          row[a.out] = aggregateOverValues(a.name, slot.state[i] as unknown[], a.frac);
         } else {
           row[a.out] = a.fold.finish(slot.state[i]);
         }

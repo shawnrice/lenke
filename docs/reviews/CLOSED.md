@@ -6536,3 +6536,48 @@ caught it: the undirected guard's text is now character-identical in both rungs.
 `detectMultiHopAggregate` crossed the complexity gate (40 against a limit of 35), so the per-item
 admission is extracted to `hopAccFor` — the decision reads nothing from the loop but the column
 index.
+
+## 553 — the grouped-scan rung collects the non-foldable aggregates: 8.1-11.5x, and the guard its own comment asked for
+
+`detectGroupedNodeAggregate`'s doc comment named this target and the condition for closing it: _"a
+grouped sum over floats depends on the order values reach their group, and a FILTERED scan may seed
+from an index … The unfiltered case would be safe by the item-466 argument, but a grouped path that
+takes `sum` only when unfiltered is a guard with no test — item 468 recorded how that goes — so it
+waits for a shape that can be demonstrated."_
+
+**Here is that shape.** With a range index on `age`:
+
+```text
+WHERE n.age >= 5 RETURN n.tag AS k, collect(n.age)    no index  [7,5,9] / [8,6]
+                                                      indexed   [5,7,9] / [6,8]
+```
+
+The seek visits in INDEX order, so values reach their group differently — and the same predicate
+written `n.age + 0 >= 5`, which cannot seed, is unchanged either way, which isolates the cause to
+the seed and not the filter. **Both engines give both answers**, so each is a real contract the rung
+would have to reproduce and cannot. The UNFILTERED grouped collect is index-independent, which is
+the whole argument for admitting it.
+
+ts, 200,000 vertices, one case per process, pristine against the change:
+
+| projection                                | before    | after            |
+| ----------------------------------------- | --------- | ---------------- |
+| `n.age AS k, sum(n.age)`                  | 105.77 ms | **9.22** (11.5x) |
+| `n.age AS k, collect(n.age)`              | 100.84    | **9.73** (10.4x) |
+| `n.age AS k, percentile_cont(n.age, 0.5)` | 111.27    | **13.69** (8.1x) |
+| `n.age AS k, count(*)` (control)          | 6.42      | 4.04             |
+| `n.age AS k, max(n.age)` (control)        | 9.84      | 9.28             |
+| `WHERE n.age > 1 … sum(n.age)` (refused)  | 174.67    | 163.75           |
+
+Teeth: six mutants, **four caught, control clean**. One survivor, explained and recorded at the
+guard: widening `refsOnlyVar` to cover the collected accumulators cannot be distinguished while the
+flag confines them to the SCAN rung, where the key and the aggregate necessarily read the one
+variable. It stays because it becomes load-bearing the moment the hop rung is widened.
+
+**NATIVE HAS NO CLIFF in the hop-aggregate enum**, checked for a twin and found none: at 200,000
+vertices / 200,000 edges every one of nine aggregates over a one-hop pattern answers in 0.56-8.46
+ms (`collect` the top of that range, which is the cost of building a 200,000-element list).
+
+OPEN, priced: the grouped HOP rung, where `b.age AS k, sum(b.age)` costs **472.71 ms** against the
+167.82 the grouped count takes. It needs items 551/552's walk FORCING rather than this flag, since
+its walk has a far-driven alternative.
