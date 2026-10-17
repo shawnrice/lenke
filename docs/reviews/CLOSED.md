@@ -5180,3 +5180,19 @@ added the mutant dies WITH THE ORIGINAL PANIC.
 
 **OPEN, 8.5x:** `VALUE { … RETURN count(*) }` and `COUNT { … }` converge in native (11.3-16.9 vs
 11.3 ms) and do NOT in TS (624.2 vs 73.0). An equivalent-spelling cliff.
+
+## 499 — `VALUE { … RETURN count(*) }` vs `COUNT { … }`: CLOSED, 8.3x
+
+Item 498's open row. The native parser has lowered both ISO spellings to one `CountSubquery` node
+since it was written; the TS parser always built a `valueSubquery`, which materializes the matches
+per outer row and misses the degree ladder entirely. 691.1/726.8/694.7 -> 78.5-88.7 ms at 200,000
+vertices, three alternated rounds, both the `COUNT` spelling and the two-hop form flat as controls.
+
+**The probe group was proven against the bug, not just added after the fix**: `spelling-probe`
+flags this pair at 7.3x with the pristine parser and is silent with the fixed one.
+
+Mutation: 1 of 5 caught — the `star` check, which is the load-bearing one (`count(x.n)` is not
+`count(*)` when an argument is null). **The other two guards are equivalent BY PARSER
+CONSTRUCTION**: `count(DISTINCT *)` is a parse error so `distinct` cannot accompany `star`, and
+`max(*)` / `collect(*)` are rejected as needing an argument so nothing else carries `star`. The
+pattern guard admits only `VALUE { RETURN count(*) }`, where both paths answer 1.

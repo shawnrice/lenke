@@ -96,6 +96,16 @@ const g = tsDeserialize(lines.join('\n'), 'ndjson', new TsGraph());
 /** Groups of spellings of ONE question. Every member must answer identically. */
 const GROUPS: [string, readonly string[]][] = [
   [
+    // Item 499: two ISO spellings of ONE degree. The native engine has lowered both to a single
+    // node since it was written; TypeScript did not, so the VALUE spelling missed the degree
+    // ladder entirely and cost 8.3x. This group is what would have caught it.
+    'degree subquery: COUNT { … } vs VALUE { … RETURN count(*) }',
+    [
+      'MATCH (n:P) RETURN COUNT { MATCH (n)-[:E]->(x) } AS c',
+      'MATCH (n:P) RETURN VALUE { MATCH (n)-[:E]->(x) RETURN count(*) } AS c',
+    ],
+  ],
+  [
     'node count: inline vs clause WHERE',
     [
       'MATCH (n:P {k: 2}) RETURN count(*) AS c',

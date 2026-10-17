@@ -2062,6 +2062,33 @@ export const parse = (
     const ret = parseExpr();
     expect('rbrace', "'}' to close VALUE");
 
+    // `VALUE { MATCH … RETURN count(*) }` IS `COUNT { MATCH … }` — the same question in the
+    // other ISO spelling, and the native engine has lowered the two to one node all along
+    // (`value_count_subquery_expr`). TypeScript did not, so the VALUE spelling missed the whole
+    // degree ladder and cost 624.2ms against the COUNT spelling's 73.0 at 200,000 vertices —
+    // an 8.5x gap between two ways of writing one thing (audit item 499).
+    //
+    // A pattern is REQUIRED: `VALUE { RETURN count(*) }` has nothing to count and stays on the
+    // scalar path, where it already answers.
+    //
+    // Three of the four clauses are DEFENSIVE and their mutants survive, which is recorded here
+    // rather than left to be re-derived: `star` is the load-bearing one (dropping it turns
+    // `count(x.n)` into a degree, and a null argument makes those different numbers — the test
+    // for it is in `value-count-spelling.test.ts`). `distinct` cannot be true beside `star`
+    // because `count(DISTINCT *)` is a PARSE error, and no other aggregate can carry `star`
+    // because `max(*)` / `collect(*)` are rejected as needing an argument — so the name check is
+    // subsumed too. The pattern check admits only `VALUE { RETURN count(*) }`, where both paths
+    // answer 1.
+    if (
+      patterns.length >= 1 &&
+      ret.kind === 'func' &&
+      ret.name === 'count' &&
+      ret.star &&
+      !ret.distinct
+    ) {
+      return { kind: 'countSubquery', patterns, where };
+    }
+
     return { kind: 'valueSubquery', patterns, where, ret };
   };
 
