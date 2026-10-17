@@ -217,10 +217,62 @@ export type SeededPlan = {
 };
 
 /** Seed the residual `rest` steps from `index`, or `null` to fall back. */
+/**
+ * A single-label `hasLabel(L)` as a seed: the label's BUCKET is exactly the elements carrying it,
+ * so the step is removable and the source becomes O(bucket) instead of O(V).
+ *
+ * WHY THIS IS HERE. `hasLabel` has always been a COMMUTING_FILTER — it could be reordered and
+ * re-applied — but nothing made it a SOURCE, so `V().hasLabel(L)` scanned every vertex and
+ * filtered. The traverser pipeline costs ~40-70 ns a vertex PER STEP (item 537's ladder), so a
+ * label that excludes nothing was a tax on every terminal. Measured at 200,000 vertices all
+ * carrying `Person`, one case per process (item 538):
+ *
+ * ```text
+ *   V().has(age, gt(44)).values('age')                      17.58 ms
+ *   V().hasLabel('Person').has(age, gt(44)).values('age')   29.69       +12.1
+ *   V().has().groupCount(by: age)                            6.45
+ *   V().hasLabel().has().groupCount(by: age)                13.94       + 7.5
+ *   V().has().dedupe().count()                              14.15
+ *   V().hasLabel().has().dedupe().count()                   28.01       +13.9
+ * ```
+ *
+ * Item 537 fixed the `count()` terminal with a tally; this is the general form, and it reaches
+ * every terminal because it removes the step rather than replacing the walk.
+ *
+ * MULTI-LABEL declines: `hasLabel(a, b)` keeps an element carrying EITHER, and an element may
+ * carry both, so the union is not a bucket and not a sum. `labelledCount` in the count shortcut
+ * declines it for exactly the same reason.
+ *
+ * ORDER. Seeding changes the order elements are emitted in — the bucket's rather than the id
+ * map's. That is not a contract: TinkerPop leaves `g.V()`'s order unspecified, this repo treats
+ * an unordered result's order as WON'T-FIX, and the cross-engine Gremlin fuzzer compares such
+ * results as MULTISETS (`deepSort`, skipped only when the plan has an explicit `order()`). The
+ * property seeds beside this one have always reordered the source the same way.
+ */
+const labelSeed = <E>(
+  step: Step,
+  bucketOf: ((label: string) => ReadonlySet<E> | undefined) | undefined,
+): Candidate<E> | null => {
+  if (bucketOf === undefined || step.kind !== 'hasLabel' || step.labels.length !== 1) {
+    return null;
+  }
+
+  const bucket = bucketOf(step.labels[0]);
+
+  // A label nothing carries seeds the EMPTY set, which is the right answer and cheaper than a
+  // scan that will reject every element.
+  if (bucket === undefined) {
+    return { count: 0, build: () => EMPTY, removable: true };
+  }
+
+  return { count: bucket.size, build: () => bucket, removable: true };
+};
+
 const seedRest = <E>(
   rest: readonly Step[],
   index: PropertyIndex<E>,
   tracksPath: boolean,
+  bucketOf?: (label: string) => ReadonlySet<E> | undefined,
 ): SeededPlan | null => {
   // Estimate each seedable leading filter's cardinality (no set built yet) and
   // pick the most selective. The other filters stay in the plan as residuals,
@@ -236,7 +288,7 @@ const seedRest = <E>(
       break;
     }
 
-    const candidate = seedForStep(step, index);
+    const candidate = seedForStep(step, index) ?? labelSeed(step, bucketOf);
 
     if (candidate && candidate.count < (best?.count ?? Infinity)) {
       best = candidate;
@@ -273,7 +325,9 @@ export const seedFromIndex = (plan: Plan, graph: Graph, tracksPath: boolean): Se
   }
 
   if (source.kind === 'V' && !source.ids) {
-    return seedRest<Vertex>(rest, graph.vertexPropertyIndex, tracksPath);
+    return seedRest<Vertex>(rest, graph.vertexPropertyIndex, tracksPath, (l) =>
+      graph.verticesByLabel.get(l),
+    );
   }
 
   if (source.kind === 'E' && !source.ids) {

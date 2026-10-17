@@ -213,3 +213,76 @@ describe('index-seeded E() source', () => {
     expect(seedFromIndex(traversal(E(), has('weight', eq(0.4))), g, false)).toBeNull();
   });
 });
+
+// Item 538. `hasLabel` has always been a COMMUTING_FILTER — reorderable, re-appliable — but
+// nothing made it a SOURCE, so `V().hasLabel(L)` scanned every vertex and filtered. The traverser
+// pipeline costs ~40-70 ns a vertex PER STEP (item 537), so a label excluding nothing taxed every
+// terminal: at 200,000 vertices all carrying `Person`,
+// `V().hasLabel('Person').has(age, gt(44)).values('age')` cost 30.25 ms against 12.74 once the
+// label seeds its bucket and the step is dropped.
+//
+// These assert the DECISION, not just the answer: a seed is answer-preserving by construction, so
+// a mutant that never seeds, or that keeps the step it consumed, passes every row assertion in
+// the package. That is the same reason the count-shortcut tests are written this way.
+describe('a single-label hasLabel seeds its bucket (item 538)', () => {
+  test('the label seeds and its step is DROPPED', () => {
+    const g = createTestTinkerGraph();
+    const seeded = seedFromIndex(traversal(V(), hasLabel('PERSON')), g, false);
+
+    expect(seeded).not.toBeNull();
+    // Nothing left: the bucket IS the answer, so the step must not run again.
+    expect(seeded!.steps.map((s) => s.kind)).toEqual([]);
+    expect(arr(seeded!.stream).length).toBe(4); // marko, vadas, josh, peter
+  });
+
+  test('a label and a non-seekable filter: the label seeds, the filter stays', () => {
+    const g = createTestTinkerGraph();
+    const seeded = seedFromIndex(traversal(V(), hasLabel('PERSON'), has('age', gt(30))), g, false);
+
+    expect(seeded).not.toBeNull();
+    expect(seeded!.steps.map((s) => s.kind)).toEqual(['has']);
+  });
+
+  test('a MULTI-label hasLabel does NOT seed', () => {
+    // `hasLabel(a, b)` keeps an element carrying EITHER and an element may carry both, so the
+    // union is neither a bucket nor a sum. `labelledCount` declines it for the same reason.
+    const g = createTestTinkerGraph();
+
+    expect(seedFromIndex(traversal(V(), hasLabel('PERSON', 'SOFTWARE')), g, false)).toBeNull();
+  });
+
+  test('a label nothing carries seeds the EMPTY set rather than declining', () => {
+    // Declining would leave a full scan that rejects every element. The seed is the right answer
+    // and strictly cheaper, so the decision has to be a seed.
+    const g = createTestTinkerGraph();
+    const seeded = seedFromIndex(traversal(V(), hasLabel('NOPE')), g, false);
+
+    expect(seeded).not.toBeNull();
+    expect(arr(seeded!.stream).length).toBe(0);
+    expect(arr(run(traversal(V(), hasLabel('NOPE'), values('name')), g))).toEqual([]);
+  });
+
+  test('a more selective PROPERTY seek still beats the label bucket', () => {
+    // The candidate with the smallest count wins, and that ordering is what keeps this from
+    // taking an index away: one `name` matches, four carry `PERSON`.
+    const g = createTestTinkerGraph();
+    g.createIndex({ on: 'vertex', kind: 'hash', keys: ['name'] });
+
+    const seeded = seedFromIndex(
+      traversal(V(), hasLabel('PERSON'), has('name', eq('marko'))),
+      g,
+      false,
+    );
+
+    expect(seeded).not.toBeNull();
+    // The `has` was consumed, so `hasLabel` is what remains — the property seed won.
+    expect(seeded!.steps.map((s) => s.kind)).toEqual(['hasLabel']);
+    expect(arr(seeded!.stream).length).toBe(1);
+  });
+
+  test('an EDGE source has no label bucket to seed from', () => {
+    const g = createTestTinkerGraph();
+
+    expect(seedFromIndex(traversal(E(), hasLabel('knows')), g, false)).toBeNull();
+  });
+});

@@ -76,6 +76,13 @@ const SHAPES: [string, Plan][] = [
   // two ask the same question and must stay close.
   ['V().hasLabel().has().count()', traversal(V(), hasLabel('Person'), has('age', gt(44)), count())],
   ['V().has().has().count()', traversal(V(), has('age', gt(44)), has('age', gt(-1)), count())],
+  // The ROW-RETURNING twin of the row above, which item 538 is about: a chain tally cannot help
+  // a terminal that emits rows, so the fix there was to make a single-label `hasLabel` SEED its
+  // bucket and drop the step. Without a row here that is unguarded.
+  [
+    'V().hasLabel().has().values(age)',
+    traversal(V(), hasLabel('Person'), has('age', gt(44)), values('age')),
+  ],
 ];
 
 /**

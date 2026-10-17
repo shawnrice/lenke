@@ -6092,3 +6092,40 @@ guard. And the suite had a test asserting this shape DECLINES — _a widening mu
 test rather than delete it_: it now asserts the claim and the answer against the pipeline's own,
 with a non-zero sibling, because `0` is correct for the first case and a tally that always
 answered 0 would pass it.
+
+## 538 — a single-label `hasLabel` SEEDS its bucket: CLOSED at 2.4-2.5x, on every terminal
+
+Item 537's pattern grepped elsewhere: the per-step tax hits every terminal, and a tally cannot help
+one that emits rows. Isolated, 200,000 vertices all carrying `Person`: `values('age')` 17.58 ms
+against 29.69 with a redundant `hasLabel`; `groupCount` 6.45 against 13.94; `dedupe().count()`
+14.15 against 28.01.
+
+**The gap**: `hasLabel` was a `COMMUTING_FILTER` in `index-seed.ts` but never a SOURCE — only
+`seedForStep` (the PROPERTY index) produced a candidate, so `V().hasLabel(L)` swept `verticesById`
+and filtered per element. GQL has had the bucket as a source all along (`candidateVertexSource`,
+three lines), which is why item 536 measured GQL charging nothing for the same redundancy.
+
+`labelSeed` makes a single-label `hasLabel` a candidate (count = bucket size, build = the bucket,
+removable = true) competing with the property seeds on selectivity, so a one-match `name` seek still
+beats a 200,000-element bucket — item 149's failure avoided. Multi-label declines (the union is
+neither a bucket nor a sum). An unknown label seeds EMPTY rather than declining.
+
+ORDER checked BEFORE building: seeding emits the bucket's order, which is not a contract —
+TinkerPop leaves `g.V()` unspecified, this repo treats unordered order as WON'T-FIX, and the
+cross-engine Gremlin fuzzer compares these as MULTISETS (`deepSort`, skipped only under an explicit
+`order()`). The property seeds already reorder the source the same way.
+
+`values` 30.25 / 30.04 / 30.80 → 12.74 / 12.96 / 12.91; `dedupe().count()` 27.00 / 28.29 / 27.75 →
+11.21 / 10.62 / 12.24. Three alternated rounds, disjoint. The no-label control is overlapping and
+NON-MONOTONIC both ways (9.97-17.63 either side) — item 533's bimodality, so it says nothing
+rather than saying it improved. Both targets now beat their unlabelled twins, since the seed
+replaces the id-map sweep too.
+
+Mutation **6 of 6 behavioural mutants caught** (null control clean), but three only after the tests
+were strengthened: keeping the consumed step, declining a missing label, and never seeding are all
+answer-PRESERVING. _A perf-only change needs tests that assert the DECISION_ — step dropped, empty
+bucket still seeded, multi-label refused, selective property seek still wins, edge source has no
+bucket.
+
+`bench:gremlin` had no row for any of this; three added (537's two plus
+`V().hasLabel().has().values(age)`, the row-returning twin this fix reaches).
