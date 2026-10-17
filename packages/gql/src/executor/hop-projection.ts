@@ -14,10 +14,12 @@ import type {
   Row,
 } from '../executor.js';
 import {
+  aggregateOverValues,
   compileExpr,
   edgesOfTypes,
   compilePredicate,
   foldFor,
+  percentileFraction,
   compareSort,
   freePredicateVars,
   projectRow,
@@ -2778,6 +2780,42 @@ const hopAggregateWalks = (
  * null, which is what an ungrouped aggregate owes ISO — and it is the same `finish` the general
  * path calls, so the two cannot drift.
  */
+/**
+ * The single projected item as a well-formed PERCENTILE, or `null`.
+ *
+ * Deliberately narrow: `percentile_cont`/`percentile_disc` are the only aggregates with no
+ * streaming fold that are ORDER-INDEPENDENT, which is what item 419's rule requires of anything
+ * riding the hop walk. See `detectHopAggregate` for why the other four non-foldable names stay
+ * refused, and item 532 for what they cost.
+ *
+ * THE NAME CHECK'S MUTANT SURVIVES, and the explanation is the point. Admitting `collect` here
+ * changes no answer on a four-node fixture with crossed edges (`s1 -> t2`, `s2 -> t1`), because
+ * the walk only goes FAR-DRIVEN under conditions a fixture that small does not meet — so the two
+ * routes agree and the order hazard never shows. That is exactly why item 419 is a RULE and not
+ * a test: the shape that would expose it depends on a planner choice, not on the query. The
+ * `DISTINCT` check beside it does have teeth (item 533).
+ */
+const hopPercentile = (ret: Clause): { name: string; frac: number } | null => {
+  if (ret.kind !== 'return' || ret.projection.items.length !== 1) {
+    return null;
+  }
+
+  const [only] = ret.projection.items;
+  const e = only.expr;
+
+  if (e.kind !== 'func' || e.star || e.distinct) {
+    return null;
+  }
+
+  if (e.name !== 'percentile_cont' && e.name !== 'percentile_disc') {
+    return null;
+  }
+
+  const frac = percentileFraction(e);
+
+  return frac === null ? null : { name: e.name, frac };
+};
+
 export const detectHopAggregate = (
   clauses: readonly Clause[],
   compiled: readonly CClause[],
@@ -2795,9 +2833,26 @@ export const detectHopAggregate = (
 
   const proj = cret.projection;
   const folded = proj.foldedAggs;
+  // A PERCENTILE over the walk (item 533). `foldedAggs` carries nothing for an aggregate with no
+  // streaming fold, so without this the shape fell to the general path, which materializes a
+  // `Binding` per EDGE: `percentile_cont(b.age, 0.5)` cost 742.6 ms at 200,000 vertices /
+  // 1,000,000 edges against the 155.8 this rung delivers for `max`.
+  //
+  // ONLY the percentiles, and the reason is item 419's rule rather than convenience: the walk
+  // may be FAR-DRIVEN, so it can visit rows in a different order from the general path, and only
+  // an ORDER-INDEPENDENT aggregate may ride it. `percentile_of` SORTS its values before using
+  // them, so the order they arrived in cannot be observed. `sum`/`avg` and the two `stddev`s are
+  // order-sensitive in the last ulp (float addition is not associative) and `collect`'s order IS
+  // its answer — all four stay refused, and item 532 is where that is priced rather than guessed.
+  //
+  // The NaN hazard that would break the sort's order-independence (a comparator mapping
+  // incomparable values to `Equal`) cannot arise: the numeric model turns a non-finite into
+  // `null` on ingest, every non-finite expression result is `null` too, and the non-null filter
+  // below drops those.
+  const pct = folded === undefined || folded.length === 0 ? hopPercentile(ret) : null;
 
   if (
-    folded?.length !== 1 ||
+    (folded?.length !== 1 && pct === null) ||
     proj.star ||
     proj.distinct ||
     proj.items.length !== 1 ||
@@ -2822,17 +2877,18 @@ export const detectHopAggregate = (
   }
 
   const [item] = ret.projection.items;
-  const [agg] = folded;
+  const agg = folded?.[0];
 
   // The item must BE the aggregate node, by identity — `collectAggregates` finds one nested in
-  // `max(b.k) + 1` just the same, and that shape needs the group view.
-  if (item.expr !== agg.expr) {
+  // `max(b.k) + 1` just the same, and that shape needs the group view. The percentile path
+  // checks the same thing inside `hopPercentile`, which matched the item itself.
+  if (agg !== undefined && item.expr !== agg.expr) {
     return null;
   }
 
   const aggNode = item.expr;
 
-  if (aggNode.kind !== 'func' || aggNode.args.length !== 1) {
+  if (aggNode.kind !== 'func' || percentileFraction(aggNode) === null) {
     return null;
   }
 
@@ -2864,7 +2920,17 @@ export const detectHopAggregate = (
       distinct: false,
       aggregating: false,
       countedGroups: false,
-      items: [{ name: VALUE_COL, fn: agg.argFn, isAgg: false }],
+      // `agg.argFn` is the closure `compileProjection` already lowered for the fold, so the
+      // expression is compiled once for both paths. A percentile has no fold and so no
+      // `argFn`; it gets `compileExpr` on the SAME AST node the general path compiles, which
+      // is identical by construction rather than by replication.
+      items: [
+        {
+          name: VALUE_COL,
+          fn: agg?.argFn ?? compileExpr(argExpr),
+          isAgg: false,
+        },
+      ],
       // FALSE conservatively. The field licenses skipping a projection without evaluating it
       // (item 427), and nothing on this path pages — `detectHopProjection` refuses a `skip` or a
       // `limit` outright — so the value is unobservable here and the safe one costs nothing.
@@ -2886,6 +2952,8 @@ export const detectHopAggregate = (
     m.kind === 'match' && m.patterns.length === 1 && m.patterns[0].segments.length === 1
       ? m.patterns[0].segments[0].rel.direction
       : 'out';
+  // A percentile is NOT idempotent — a value counted twice moves it — so the two turned walks
+  // are only safe on a graph with no self-loop, which is what `false` here asks for.
   const turned = hopAggregateWalks(m, synthRet, cm, synthCret, hopDir, EXTREMA.has(aggNode.name));
 
   if (turned === null) {
@@ -2893,7 +2961,7 @@ export const detectHopAggregate = (
   }
 
   const { walks, noSelfLoops, looped } = turned;
-  const { fold } = agg;
+  const fold = agg?.fold;
 
   return (graph, params) => {
     // A self-loop would be met by BOTH turned walks; `expand` yields it once. The single
@@ -2905,9 +2973,44 @@ export const detectHopAggregate = (
       return null;
     }
 
+    const chosenWalks = chosen === undefined ? walks : [chosen];
+
+    // TWO loops, branched ONCE on which path this is, rather than one loop with the branch
+    // inside it — so the fold path's inner loop is unchanged from before this item.
+    //
+    // NO perf claim attached, and the reason is worth keeping: the single-loop version READ as a
+    // 1.02-1.23x regression on the fold control (`max(b.age)` 125.7-127.5 ms before against
+    // 129.0-156.8 after, non-overlapping at the bottom over three alternated rounds), and a
+    // SECOND A/B after the split refuted it — before 141.4 / 160.1 / 146.9, after
+    // 179.2 / 161.3 / 125.8, overlapping and non-monotonic. This row is bimodal ACROSS BUILDS
+    // (125-180 for the same source), so three alternated rounds can read disjoint by luck.
+    // The split stays because one loop per path is clearer, not because it was measured faster
+    // (item 533).
+    if (fold === undefined) {
+      const values: unknown[] = [];
+
+      for (const walk of chosenWalks) {
+        const rows = walk(graph, params);
+
+        if (rows === null) {
+          return null;
+        }
+
+        for (const row of rows) {
+          const v = row[VALUE_COL];
+
+          if (!isNullish(v)) {
+            values.push(v);
+          }
+        }
+      }
+
+      return [{ [outName]: aggregateOverValues(pct!.name, values, pct!.frac) }];
+    }
+
     let acc = fold.init();
 
-    for (const walk of chosen === undefined ? walks : [chosen]) {
+    for (const walk of chosenWalks) {
       const rows = walk(graph, params);
 
       // A DECLINE from the walk is a decline from here too: the general path has a better plan.

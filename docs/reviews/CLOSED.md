@@ -5947,3 +5947,36 @@ converts a non-finite to `null` on ingest and item 531's probe confirms the expr
 agrees (`log10(0)`, `sqrt(-1)`, an overflowing `power` all yield null, which the non-null filter
 drops). The edit needs an `argFn` that `foldedAggs` does not carry for a non-foldable aggregate,
 so the argument must be compiled for the synthetic projection as the SCAN path already does.
+
+## 533 — the percentile HOP rung: CLOSED at 4.0x; and a control that read as a regression and was not
+
+Item 532's one sound half. `percentile_of` sorts its values, so a percentile is ORDER-INDEPENDENT
+and may ride the hop walk under item 419's rule; the other four non-foldable names stay refused.
+
+`percentile_cont(b.age, 0.5)` 753.2 / 748.8 / 740.2 → 176.1 / 182.9 / 190.4 ms, disjoint, three
+alternated rounds with a rebuild between each. `percentile_disc` 730.0 → 205.7. `sum` — the control
+that must STAY refused — 699.6 / 714.1 / 694.4 → 672.3 / 706.6 / 711.0, overlapping.
+
+**THE FOLD CONTROL READ AS A 1.02-1.23x REGRESSION AND IT WAS NOT ONE.** The first version put the
+collect branch inside the existing row loop; `max(b.age)` then read 125.7-127.5 before against
+129.0-156.8 after, three alternated rounds, non-overlapping at the bottom. Splitting the loop did
+not restore the number (158.5), which prompted a SECOND A/B rather than a third fix — and that came
+back 141.4 / 160.1 / 146.9 against 179.2 / 161.3 / 125.8, overlapping and non-monotonic. The row is
+bimodal **across builds**: 125-180 ms for the same source, and item 532 measured the same pristine
+code at 155.8.
+
+_Three alternated rounds can read disjoint by luck on a bimodal row._ Min-of-three is necessary and
+not sufficient; what settled this was a second independent A/B after a change that should have
+fixed the thing and did not.
+
+Mutation 4 of 5 (null control clean), two of the four only after strengthening the tests. The
+surviving NAME check is explained at the guard: admitting `collect` changes no answer on a
+four-node fixture, because the walk goes far-driven only under conditions that small a fixture
+cannot meet — which is why item 419 is a rule rather than a test.
+
+Harness notes worth reusing: `collect(x) + 0` cannot be a declining twin (arithmetic on a list
+raises — use a second projection item); and `percentile_cont(DISTINCT x, 0.5)` over `[10, 10, 20]`
+is 15 against the non-DISTINCT 10, while `disc` is 10 either way — so a `disc`-only test cannot
+catch a rung that ignores DISTINCT.
+
+`percentileFraction` now lives in `executor.ts` and is shared by the scan rung (530) and this one.

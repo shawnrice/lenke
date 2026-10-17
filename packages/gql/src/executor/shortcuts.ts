@@ -46,6 +46,7 @@ import {
   satisfies,
   countEdges,
   outNeighbors,
+  percentileFraction,
   projectRow,
   propOf,
   relHasPredicate,
@@ -6712,29 +6713,6 @@ const VALUES_AGGREGATES: ReadonlySet<string> = new Set([
   'percentile_cont',
   'percentile_disc',
 ]);
-
-/**
- * The aggregate's percentile fraction, or `0` for a name that has none — and `null` to REFUSE.
- *
- * `percentile_cont`/`percentile_disc` are the only two-argument aggregates, and the second
- * argument must be a numeric literal. Anything else (wrong arity, a non-literal fraction) is
- * refused rather than diagnosed, so the general path raises exactly the error it always raised.
- * The clamp mirrors `compileAggregate`'s, because the two must agree on the fraction before they
- * can agree on the answer.
- */
-const percentileFraction = (e: Extract<Expr, { kind: 'func' }>): number | null => {
-  if (e.name !== 'percentile_cont' && e.name !== 'percentile_disc') {
-    return e.args.length === 1 ? 0 : null;
-  }
-
-  const [, f] = e.args;
-
-  if (e.args.length !== 2 || f?.kind !== 'lit' || typeof f.value !== 'number') {
-    return null;
-  }
-
-  return Math.min(1, Math.max(0, f.value));
-};
 
 /** One projected aggregate's per-group accumulator in the grouped scan path (item 474). */
 type GroupAcc =

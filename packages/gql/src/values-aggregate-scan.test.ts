@@ -138,3 +138,143 @@ describe('the values-aggregate scan rung (item 530)', () => {
     expect(JSON.stringify(twin)).toBe(JSON.stringify(row));
   });
 });
+
+// The HOP twin (item 533): `percentile_cont`/`percentile_disc` over a one-hop pattern now ride
+// `detectHopAggregate`, where item 419's rule admits only ORDER-INDEPENDENT aggregates. The
+// percentiles sort their values, so the order the walk produced them in cannot be observed —
+// which is exactly what these cases have to pin, because the walk may be FAR-DRIVEN and so may
+// visit rows in a different order from the general path.
+describe('the percentile hop rung (item 533)', () => {
+  const hop = (): Graph => {
+    const h = new Graph();
+    const a = h.addVertex({ id: 'a', labels: ['S'], properties: { age: 1 } });
+    const b = h.addVertex({ id: 'b', labels: ['S'], properties: { age: 2 } });
+    const t1 = h.addVertex({ id: 't1', labels: ['T'], properties: { age: 10 } });
+    const t2 = h.addVertex({ id: 't2', labels: ['T'], properties: { age: 20 } });
+    const t3 = h.addVertex({ id: 't3', labels: ['T'], properties: { age: 30 } });
+    // No `age`, so the non-null filter has something to drop.
+    const t4 = h.addVertex({ id: 't4', labels: ['T'], properties: {} });
+
+    h.addEdge({ id: 'e1', from: a, to: t1, labels: ['E'], properties: {} });
+    h.addEdge({ id: 'e2', from: a, to: t2, labels: ['E'], properties: {} });
+    h.addEdge({ id: 'e3', from: b, to: t3, labels: ['E'], properties: {} });
+    h.addEdge({ id: 'e4', from: b, to: t4, labels: ['E'], properties: {} });
+
+    return h;
+  };
+
+  const hg = hop();
+
+  // The general path answers the same question whenever the projection is not a bare aggregate
+  // item — `+ 0` makes it an EXPRESSION over the aggregate, which `detectHopAggregate` refuses
+  // by identity, so the two routes are compared on every case.
+  const bothHop = (expr: string, want: unknown): void => {
+    const q = `MATCH (:S)-[:E]->(b) RETURN ${expr} AS m`;
+
+    expect((query(hg, q)[0] as Record<string, unknown>).m).toBe(want);
+    expect(
+      (query(hg, `MATCH (:S)-[:E]->(b) RETURN ${expr} + 0 AS m`)[0] as Record<string, unknown>).m,
+    ).toBe(want);
+  };
+
+  test('the fraction selects, over the values the hop produced', () => {
+    // 10 / 20 / 30 survive the non-null filter; `t4` has no `age`.
+    bothHop('percentile_cont(b.age, 0)', 10);
+    bothHop('percentile_cont(b.age, 0.5)', 20);
+    bothHop('percentile_cont(b.age, 1)', 30);
+    bothHop('percentile_cont(b.age, 0.25)', 15);
+    bothHop('percentile_disc(b.age, 0)', 10);
+    bothHop('percentile_disc(b.age, 0.25)', 10);
+    bothHop('percentile_disc(b.age, 0.5)', 20);
+    bothHop('percentile_disc(b.age, 1)', 30);
+    // Out of range clamps, the same as on the scan.
+    bothHop('percentile_cont(b.age, 2)', 30);
+  });
+
+  test('a REVERSED and an UNDIRECTED hop reach the same values', () => {
+    const r = (q: string): unknown => (query(hg, q)[0] as Record<string, unknown>).m;
+
+    expect(r('MATCH (b)<-[:E]-(:S) RETURN percentile_cont(b.age, 0.5) AS m')).toBe(20);
+    expect(r('MATCH (b)<-[:E]-(:S) RETURN percentile_cont(b.age, 0.5) + 0 AS m')).toBe(20);
+    // Undirected: the two turned walks, which is where a non-idempotent aggregate needs the
+    // self-loop guard. There is none here, so both routes see 1/2/10/20/30 — the `:S` ages too,
+    // since an undirected hop from `:S` also lands on `:S` nowhere, but every `T` end is reached
+    // once from its own side.
+    expect(r('MATCH (:S)-[:E]-(b) RETURN percentile_disc(b.age, 0.5) AS m')).toBe(
+      r('MATCH (:S)-[:E]-(b) RETURN percentile_disc(b.age, 0.5) + 0 AS m'),
+    );
+  });
+
+  test('an ORDER-DEPENDENT aggregate must not ride the walk', () => {
+    // The guard that protects item 419's rule, and it needs a fixture where the WALK order and
+    // the general path's differ. Edges cross: s1 -> t2 and s2 -> t1, so a start-driven pass
+    // produces t2 then t1 while a far-driven one (the `:T` bucket) produces t1 then t2.
+    // `collect`'s answer IS that order, so admitting it here would show up as a mismatch
+    // between the two routes — which is what makes this case the teeth for `hopPercentile`'s
+    // name check rather than a second answer assertion.
+    const x = new Graph();
+    const s1 = x.addVertex({ id: 's1', labels: ['S'], properties: {} });
+    const s2 = x.addVertex({ id: 's2', labels: ['S'], properties: {} });
+    const t1 = x.addVertex({ id: 't1', labels: ['T'], properties: { age: 10 } });
+    const t2 = x.addVertex({ id: 't2', labels: ['T'], properties: { age: 20 } });
+
+    x.addEdge({ id: 'x1', from: s1, to: t2, labels: ['E'], properties: {} });
+    x.addEdge({ id: 'x2', from: s2, to: t1, labels: ['E'], properties: {} });
+
+    const q = 'MATCH (:S)-[:E]->(b:T) RETURN collect(b.age) AS m';
+    const direct = (query(x, q)[0] as Record<string, unknown>).m;
+    // `+ 0` cannot be the declining twin for `collect` — arithmetic on a list raises. A SECOND
+    // projection item declines instead (`proj.items.length !== 1`), and
+    // `detectMultiHopAggregate` refuses a non-foldable aggregate too, so the general path
+    // answers.
+    const twin = (
+      query(x, 'MATCH (:S)-[:E]->(b:T) RETURN collect(b.age) AS m, count(*) AS c')[0] as Record<
+        string,
+        unknown
+      >
+    ).m;
+
+    // Whatever the order is, the two ROUTES must agree on it.
+    expect(JSON.stringify(direct)).toBe(JSON.stringify(twin));
+    // …and it must be a permutation of the two ages, not a dropped or doubled one.
+    expect((direct as unknown[]).slice().sort()).toEqual([10, 20]);
+  });
+
+  test('DISTINCT inside a hop percentile is refused, and still answered', () => {
+    // Duplicate ages, so dedup changes the answer: [10, 10, 20] has median 10 and
+    // [10, 20] has median 10 for `disc` but 15 for `cont` — the `cont` case is the one that
+    // separates a rung that honoured DISTINCT from one that ignored it.
+    const d = new Graph();
+    const s = d.addVertex({ id: 's', labels: ['S'], properties: {} });
+    const u1 = d.addVertex({ id: 'u1', labels: ['T'], properties: { age: 10 } });
+    const u2 = d.addVertex({ id: 'u2', labels: ['T'], properties: { age: 10 } });
+    const u3 = d.addVertex({ id: 'u3', labels: ['T'], properties: { age: 20 } });
+
+    d.addEdge({ id: 'd1', from: s, to: u1, labels: ['E'], properties: {} });
+    d.addEdge({ id: 'd2', from: s, to: u2, labels: ['E'], properties: {} });
+    d.addEdge({ id: 'd3', from: s, to: u3, labels: ['E'], properties: {} });
+
+    const r = (q: string): unknown => (query(d, q)[0] as Record<string, unknown>).m;
+
+    expect(r('MATCH (:S)-[:E]->(b) RETURN percentile_cont(DISTINCT b.age, 0.5) AS m')).toBe(15);
+    expect(r('MATCH (:S)-[:E]->(b) RETURN percentile_cont(b.age, 0.5) AS m')).toBe(10);
+    expect(r('MATCH (:S)-[:E]->(b) RETURN percentile_disc(DISTINCT b.age, 0.5) AS m')).toBe(10);
+  });
+
+  test('the four order-DEPENDENT names stay on the general path', () => {
+    // `sum`/`avg`/`collect`/`stddev` must not ride the walk (item 419). They still answer.
+    const r = (q: string): unknown => (query(hg, q)[0] as Record<string, unknown>).m;
+
+    expect(r('MATCH (:S)-[:E]->(b) RETURN sum(b.age) AS m')).toBe(60);
+    expect(r('MATCH (:S)-[:E]->(b) RETURN avg(b.age) AS m')).toBe(20);
+    expect(r('MATCH (:S)-[:E]->(b) RETURN collect(b.age) AS m')).toEqual([10, 20, 30]);
+    expect(r('MATCH (:S)-[:E]->(b) RETURN stddev_pop(b.age) AS m')).toBeCloseTo(
+      8.16496580927726,
+      12,
+    );
+    // And the foldable ones still take the rung.
+    expect(r('MATCH (:S)-[:E]->(b) RETURN max(b.age) AS m')).toBe(30);
+    expect(r('MATCH (:S)-[:E]->(b) RETURN min(b.age) AS m')).toBe(10);
+    expect(r('MATCH (:S)-[:E]->(b) RETURN count(b.age) AS m')).toBe(3);
+  });
+});
