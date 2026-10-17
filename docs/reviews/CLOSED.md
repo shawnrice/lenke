@@ -5490,3 +5490,20 @@ Mutation 3 of 5. **Inlining an UNCORRELATED call survives and is a genuine EQUIV
 with no correlation yields the same rows per outer row, so the join IS a cross product); the
 guard stays because the execution contract differs — run once and reuse — and changing that is
 its own measurement.
+
+## 514 — VERIFICATION: items 505-513 sweep clean, and the shared sweep contaminates BOTH ways
+
+Three harnesses re-run after nine items. Two rows looked adverse against item 504's sweep and
+neither is: `query: group + aggregate` 3.9 -> 8.2 in-sweep but **3.5-3.8 isolated**, and
+`query: project the element + materialize` 27.4 -> 45.5 in-sweep but **44.0-46.9 isolated BOTH
+before and after** (A/B against the pre-505 tree, three alternated rounds: 45.4/44.2/46.3 against
+43.5/46.1/47.7).
+
+**So 504's 27.4 was contaminated LOW.** The rule extends: a short row in the shared sweep is
+perturbed in both directions, so _comparing two sweeps' numbers for the same row is not a
+regression check at all_ — only an isolated A/B is.
+
+**Two independent confirmations**, on harnesses nothing was tuned against: `query_bench`'s
+`optional hop` 4534.4 -> 582.7us (7.8x) and `optional hop + miss` 643.5 -> 64.9 (9.9x) from item
+509, with `optional hop + landing pred` flat because it declines; `bench:usage` unmoved to better
+(point lookup ts(+) 956.0k -> 1.08M ops/s).
