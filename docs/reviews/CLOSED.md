@@ -5720,3 +5720,32 @@ a group the change could not reach at 2.1x where the pristine build flagged none
 `SPELL_ONLY` that group is 1.04x on BOTH builds. And a LONG `bun run bench` row is not immune to
 sweep variance either — `count 3-hop` read 358.6 in-sweep and 324-328 isolated, inside its usual
 321-330 band.
+
+## 525 — a WRONG ANSWER in the one-hop EXISTS arm (FIXED), plus 1.11x
+
+`oneHopExists`'s FREE-endpoint arm (item 492) answers from a bucket SIZE without visiting an edge.
+`shape.free` is a compile-time fact about the pattern text; boundness is a run-time one, and the
+arm never checked it, so an endpoint the outer row had bound was IGNORED:
+
+```text
+  MATCH (x), (y) WHERE y.n = 3 AND EXISTS { (x)-[:T]->(y) }   ts: x = a AND d   native: a
+  MATCH (x) WHERE EXISTS { (x)-[:T]->(x) }                    ts: every x       native: d
+```
+
+`degreeCountSubquery` has carried exactly this check since item 211 and its comment spells out
+why; the EXISTS twin never got it. Fixed by gating the free arm on `!binding.has(far.variable)`.
+Pinned cross-engine in `bound-exists-endpoint-conformance.test.ts`. **Fourth wrong answer this
+loop, fourth found by probing rather than by a failing test** — the differential fuzzer does not
+generate an EXISTS whose endpoint the outer row has bound (item 506's blind spot again).
+
+Perf half, CLOSED at 1.11x and the hypothesis REFUTED: a label-only endpoint now tests the label
+directly instead of calling `matchNode`, which allocated a binding per edge for a variable
+nothing reads. 280.2 / 279.3 / 280.5 → 257.9 / 248.6 / 250.7, disjoint, free arm flat. _The
+allocation is 11% of the 2.9x gap between the two arms, not the cause of it_ — the rest is the
+edge iteration (items 218, 194). Still 16x native.
+
+**A 5-rep reading nearly retracted it**: at PR=5 the after read 307.5 against 277.6 and looked
+like a regression; at PR=7 it is disjoint. The route-cost probe is bimodal the way the spelling
+probe is (item 259) — use PR=7 or more for anything under ~1.2x.
+
+Mutation 6 of 7 (null control clean).

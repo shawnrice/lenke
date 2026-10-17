@@ -360,6 +360,14 @@ const queries: Record<string, string> = {
   corrnoteq: 'MATCH (x:Person) RETURN COUNT { (x)-[:KNOWS]->(b) WHERE NOT b.age = 11 } AS c',
   corrne: 'MATCH (x:Person) RETURN COUNT { (x)-[:KNOWS]->(b) WHERE b.age <> 11 } AS c',
   corrrev: 'MATCH (x:Person) RETURN COUNT { (x)-[:KNOWS]->(b) WHERE 50 < b.age } AS c',
+  // Item 525: the EXISTS twin of item 524's question. `oneHopExists` has a FREE-endpoint arm
+  // (a bucket size read) and a general arm that calls `matchNode` per edge — so a LABEL alone
+  // is enough to leave the cheap arm, and a predicate that never matches walks the whole
+  // adjacency allocating a binding an edge.
+  existsfree: 'MATCH (x:Person) WHERE EXISTS { (x)-[:KNOWS]->(b) } RETURN count(*) AS c',
+  existslbl: 'MATCH (x:Person) WHERE EXISTS { (x)-[:KNOWS]->(b:Half) } RETURN count(*) AS c',
+  existsmiss:
+    'MATCH (x:Person) WHERE EXISTS { (x)-[:KNOWS]->(b) WHERE b.age > 1000 } RETURN count(*) AS c',
 };
 // One node's properties, shared by the TWO fixture builders below — a `Graph` for the TS engine
 // and NDJSON for the native one. Patching only one of them is item 471's trap: it reads as a

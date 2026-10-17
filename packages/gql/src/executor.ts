@@ -43,7 +43,7 @@ import type {
   TypeTest,
 } from './ast.js';
 import { isTxControl } from './ast.js';
-import { labelsMatch } from './graph-queries.js';
+import { labelsMatch, matchesLabel } from './graph-queries.js';
 
 /**
  * The executor turns a parsed `Query` into result rows by *pattern matching*:
@@ -1234,7 +1234,19 @@ const oneHopExists = (
   // size read because it does not depend on that invariant, and said plainly rather than
   // claimed as a correctness requirement — an earlier version of this comment asserted an empty
   // bucket could persist, which the store does not allow.
-  if (shape.free) {
+  // A FREE endpoint is free only if nothing has BOUND it. `shape.free` is a compile-time fact
+  // about the pattern text — no label, no inline predicate, no sub-`WHERE` — and boundness is a
+  // run-time one, exactly as `degreeCountSubquery`'s far-variable check is. Without this, an
+  // endpoint variable the OUTER row already bound was ignored and the arm answered "does `u`
+  // have an edge of these types" instead of "is `u` joined to THAT vertex":
+  //
+  //   MATCH (x), (y) WHERE y.n = 3 AND EXISTS { (x)-[:T]->(y) }   answered x = a AND x = d
+  //   MATCH (x) WHERE EXISTS { (x)-[:T]->(x) }                    answered every x with an edge
+  //
+  // Both are wrong, both returned the correct answer from the native engine, and no test
+  // covered either (item 525). The second is the self-loop question, which is why
+  // `degreeCountSubquery` has had the same check since item 211.
+  if (shape.free && (far.variable === undefined || !binding.has(far.variable))) {
     const { types } = shape;
 
     if (types === undefined) {
@@ -1248,6 +1260,29 @@ const oneHopExists = (
     }
 
     return types.some((t) => (byType.get(t)?.size ?? 0) > 0);
+  }
+
+  // A LABEL-ONLY endpoint with no sub-`WHERE`. `matchNode` would do the same label test and
+  // then ALLOCATE a binding (`withBinding`) for an endpoint variable nothing reads — once per
+  // edge, over the whole adjacency when the answer is no. The two remaining parts of
+  // `matchNode` are kept verbatim: the label, and `consistent`, which is what makes a
+  // REPEATED endpoint variable (`EXISTS { (u)-[:T]->(u) }`, or one bound outside) still mean
+  // identity rather than "any neighbour". Only the allocation goes.
+  //
+  // Measured at 200,000 vertices / 1,000,000 edges (item 525): `EXISTS { (x)-[:E]->(b:Half) }`
+  // cost 277.6 ms against 95.0 for the FREE-endpoint arm, which answers from a bucket size.
+  if (sub.where === undefined && !hasPredicate(far.pred)) {
+    const { label, variable } = far;
+
+    for (const e of edgesOfTypes(byType, shape.types)) {
+      const landed = shape.out ? e.to : e.from;
+
+      if (matchesLabel(landed, label) && consistent(binding, variable, landed)) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   for (const e of edgesOfTypes(byType, shape.types)) {
