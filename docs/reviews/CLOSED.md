@@ -6235,3 +6235,28 @@ Labels are case-sensitive, as TinkerPop's are.
 
 Mutation 2 of 2 (null control clean): the vertex bucket used for an edge source seeds EMPTY (a
 vertex-label map misses on an edge-type name) and the seed reverted.
+
+## 543 — the seeded `values` null result: hoisting REFUTED, one seventh of the gap explained
+
+Item 542 recorded that the edge label seed gave 3.7x on a count and nothing on `values`, and left
+it unexplained. Follow-up.
+
+The seed IS firing (`seedFromIndex` returns `steps=["values"]`). The penalty scales with bucket
+SPARSITY: `E().values('w')` 101 ns/row; the same with a VACUOUS label (item 540 drops it) 95; seeded
+at a 99% bucket **123**; seeded at a 50% bucket **206**. So halving the elements doubles the cost of
+each and the total is a wash (51.57 ms for 250,000 rows against 51.88 for 500,000).
+
+**REFUTED**: `seedRest` built its stream as an inline IIFE generator where `sourceFromIds` is a
+module-scope one, which is item 268's recorded hazard. Hoisting changed nothing — 206 → 217 ns/row —
+so it was REVERTED rather than shipped, because its only justification would have been a number it
+did not produce and the comment I had written quoted that number as if it had.
+
+Partially explained: raw iteration of the same elements gives 17 ns for the dense ARRAY (500,000),
+**31 for the Set** (250,000) and 20 for the same subset AS AN ARRAY. So `Set` iteration costs ~11 ns
+an element over an array and the scattered order ~3 more — **~14 of the ~105 ns/row gap, a seventh.
+The remaining ~90 ns is unlocated** and is recorded as such.
+
+RULE WORTH HAVING BEFORE THE NEXT SEED: _a bucket seed trades element COUNT for LOCALITY, and the
+benefit is not the ratio of the counts._ It wins when the steps after the source cost more per
+element than the access penalty — 542's count form (a `has` plus a tally) wins 3.7x, the `values`
+form breaks even.
