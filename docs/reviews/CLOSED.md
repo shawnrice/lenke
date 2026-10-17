@@ -6744,3 +6744,40 @@ _Two mutants needed a better fixture before they had teeth, and the first one is
 the bound landing pinned to the `:Q` node, the pair answer (5) and the folded-over-all-neighbours
 answer (also 5, because that node holds the maximum) COINCIDE. Pinning it to the smaller neighbour
 separates them._
+
+## 558 — an OPTIONAL hop under a null-blind aggregate is just a hop: 3.8-5.2x
+
+An `OPTIONAL MATCH` contributes ONE null-filled row per start with no match. Every aggregate in
+this engine drops nullish values before folding, so those rows change nothing — **except**
+`count(*)`, which counts rows and therefore counts them. So for an un-grouped projection whose
+aggregates all take an argument, `OPTIONAL MATCH … RETURN <agg>(x.k)` is the same question as
+`MATCH … RETURN <agg>(x.k)`, and the second has had a rung since item 418.
+
+200,000 vertices / 200,000 edges, one case per process:
+
+| query                                                    | TS before       | TS after             | native  |
+| -------------------------------------------------------- | --------------- | -------------------- | ------- |
+| `OPTIONAL MATCH (n)-[:T]->(x) RETURN count(*)` (control) | 7.79 ms         | 7.81                 | 0.66 ms |
+| `… RETURN count(x)`                                      | 410.12          | **78.84** (5.2x)     | 1.30    |
+| `… RETURN max(x.age)`                                    | 457.60 / 475.90 | **91.36** (5.0-5.2x) | 1.52    |
+| `… RETURN sum(x.age)`                                    | 494.60          | **131.65** (3.8x)    | —       |
+
+The two measured against native were **315x and 313x** off it; `count(*)` keeps its own rung
+(item 546) and does not move.
+
+**The fixture is the test.** Two of the four starts have no out-edge, so the null-filled row exists
+and is observable — on a fixture where every start matches, the two forms are indistinguishable and
+the rewrite would look correct for the wrong reason. All thirteen probed shapes answer identically
+to the PRISTINE build, and each admitted one is also asked without `OPTIONAL` and must match.
+
+Three refusals, each measured rather than argued: `count(*)` reads 5 against the non-optional 3; a
+grouped `RETURN n.k, max(x.v)` keeps four groups against two; a projection with no aggregate keeps
+five rows against three.
+
+Teeth: five mutants, two caught (a star count admitted, a non-aggregate item admitted), control
+clean. Two survivors are redundant guards, kept and recorded: `!proj.star` is implied by
+`items.length > 0`, and `groupBy`/`having` by `items.every(hasAggregate)`.
+
+One mutant MISAPPLIED — the guard text is near-identical to item 549's `oneOrderFreeRow`, so the
+pattern matched twice. **Tenth time this session** (474, 483, 494, 518, 528, 545, 546, 552, 553,
+558).

@@ -7016,6 +7016,76 @@ const repeatsNodeVariable = (clauses: readonly Clause[]): boolean => {
 };
 
 /**
+ * Make an `OPTIONAL MATCH` non-optional when the projection cannot see the difference.
+ *
+ * An optional match contributes ONE null-filled row per start with no match. Every aggregate in
+ * this engine drops nullish values before folding (the general path's `nonNull`, which
+ * `aggregateOverValues` is handed), so those rows change nothing — **except** for `count(*)`,
+ * which counts ROWS and therefore counts them. So for an un-grouped projection whose aggregates
+ * are all argument-taking, `OPTIONAL MATCH … RETURN <agg>(x.k)` is the same question as
+ * `MATCH … RETURN <agg>(x.k)` — and the second has had a rung since item 418.
+ *
+ * The enum that found this, 200,000 vertices / 200,000 edges, one case per process:
+ *
+ * ```text
+ *                                                              TS        native
+ *   MATCH (n:P) OPTIONAL MATCH (n)-[:T]->(x) RETURN count(*)     8.12 ms   0.66 ms
+ *   ...RETURN count(x)                                         410.12      1.30
+ *   ...RETURN max(x.age)                                       475.90      1.52
+ * ```
+ *
+ * `count(*)` has had the rung since item 546; the other two were 315x and 313x off native because
+ * an OPTIONAL match declines every aggregate rung there is.
+ *
+ * REFUSED, each because the null-filled row IS observable:
+ *
+ *   - `count(*)` or `RETURN *` — a row counter sees them.
+ *   - a GROUPED projection, explicit or implicit. `RETURN n.k, max(x.v)` keeps a group for an
+ *     unmatched start (with a null aggregate) where the non-optional form drops it — four groups
+ *     against two on the test fixture — and a `GROUP BY` over `x.k` would keep a null KEY.
+ *   - a projection with no aggregate at all, which is just the rows (five against three).
+ *
+ * TWO of those conditions are REDUNDANT today and kept deliberately, which the mutation run made
+ * explicit. `!proj.star` is implied by `items.length > 0`, since a bare `RETURN *` projects no
+ * items; `groupBy`/`having` are implied by `items.every(hasAggregate)`, since an explicit GROUP BY
+ * key has to appear as a non-aggregate item and `RETURN` never sets `having` (only `SELECT` does).
+ * Both stay because the implication runs through another part of the projection rather than
+ * through anything local — the same reason `detectHopAggregate` keeps its `groupKeys` check.
+ */
+const unoptionalizeForAggregate = (clauses: readonly Clause[]): readonly Clause[] => {
+  if (clauses.length < 2) {
+    return clauses;
+  }
+
+  const ret = clauses[clauses.length - 1];
+  const prev = clauses[clauses.length - 2];
+
+  if (ret?.kind !== 'return' || prev?.kind !== 'match' || !prev.optional) {
+    return clauses;
+  }
+
+  const proj = ret.projection;
+  const nullBlind =
+    !proj.star &&
+    proj.groupBy === undefined &&
+    proj.having === undefined &&
+    proj.items.length > 0 &&
+    proj.items.every(
+      (it) =>
+        hasAggregate(it.expr) &&
+        // A STAR count is the one aggregate that sees a null-filled row, so one anywhere in the
+        // projection — even beside an argument-taking one — refuses the whole rewrite.
+        collectAggregates(it.expr).every((a) => !a.star && a.args.length === 1),
+    );
+
+  if (!nullBlind) {
+    return clauses;
+  }
+
+  return [...clauses.slice(0, -2), { ...prev, optional: false }, ret];
+};
+
+/**
  * Aggregates whose value cannot depend on the ORDER of the rows they fold.
  *
  * Item 419's rule, reused: `count`, `min` and `max` are order-free, and the two percentiles sort
@@ -7192,7 +7262,11 @@ const inlineTrailingFilter = (clauses: readonly Clause[]): readonly Clause[] => 
 
 const compileLinear = (linear: LinearQuery): CLinear => {
   const source = fuseAnchorThenHop(
-    inlineCorrelatedCall(inlineTrailingLet(inlineTrailingFilter(dropVacuousPage(linear.clauses)))),
+    inlineCorrelatedCall(
+      inlineTrailingLet(
+        inlineTrailingFilter(unoptionalizeForAggregate(dropVacuousPage(linear.clauses))),
+      ),
+    ),
   );
   const clauses = source.map(compileClause);
   // A pattern repeating a node variable is a SELF-JOIN that the fast paths answer wrongly, so
