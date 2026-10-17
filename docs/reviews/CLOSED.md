@@ -5999,3 +5999,33 @@ lookup` did the same (256.3k, then 360.0k and 359.4k). It is ops/sec from best-o
 batches, so _a single reading is not a signal_. Third instrument in this session found to need a
 repeat before a number means anything: `bun run bench`'s short rows (514), the spelling probe's
 groups (524), and now this.
+
+## 535 — OPEN, PRICED: a redundant label costs 2.6-7.3x in TS, via a route change at the SECOND conjunct
+
+Started from the one `bench:gremlin` row item 517 left unaccounted (`V().has(age,gt).count()`,
+28.3x native) and landed somewhere else. 200,000 vertices all labelled `Person`, TS: gremlin
+`V().has().count()` 2.55 ms against `V().hasLabel().has().count()` **18.74** (7.3x); gql
+`MATCH (n) WHERE n.age > 44` 4.51 against `MATCH (n:Person) WHERE n.age > 44` **12.58** (2.8x).
+Same work both ways — every vertex carries the label.
+
+Two explanations measured and REFUTED: the label bucket is not slower to iterate (2.13 ms against
+2.31 for the id map, same age test), and the cost is not per-conjunct.
+
+**It is a ROUTE CHANGE at the second conjunct**: 1 predicate 22.6 ns/row, 2 predicates 59.3
+(+37), 3 predicates 63.3 (+4). A redundant label silently turns a one-conjunct query into a
+two-conjunct one. The selective-label row confirms rather than infers: `(n:Third)` is also a
+second conjunct and also on the slow route, but over a third of the rows — predicted 3.9,
+measured 4.72. _A label is not expensive; a second conjunct is, and a label that excludes nothing
+pays for one without buying anything._
+
+Located, NOT diagnosed: `buildNodeCount` handles a label plus predicates, so the count rung is not
+refusing; the suspect is the clause-`WHERE`-to-inline lifting (`pushWhereIntoNode`,
+`inlineOf`/`gateWith`), which may lift one conjunct and decline a conjunction. Confirm before
+changing anything.
+
+Note the near-miss: the TS spelling probe's only flagged group is `label on start: redundant vs
+absent`, but that is a HOP count where the spellings are genuinely different work (O(1) bucket
+size against O(|label|) degree summing) and is recorded as unclosable. **This is a different shape
+with the same name** — a node-scan count where the work IS the same — and no group covers it.
+Native pays nothing for the tautology: `IsLabeled` short-circuits when a label's bucket length
+equals the live node count (item E78).
