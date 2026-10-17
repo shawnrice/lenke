@@ -6460,3 +6460,49 @@ Teeth: seven mutants under the cap, **six caught, control clean, no survivors** 
 page-keeps-every-row check dropped) is caught by **`rewrite_fuzz` itself**, three of its tests, which
 is the first direct evidence this session that the optimizer fuzzer has teeth for a rule in this
 family. `LENKE_OPT_FUZZ_SEEDS=200000` clean.
+
+## 551 — the four order-sensitive hop aggregates ride the START-driven walk: 2.1-2.6x
+
+Item 532 priced seven of eleven hop aggregates off the rung and recorded that five must STAY off
+under item 419's rule — the walk may be FAR-DRIVEN, so it can visit rows in a different order than
+the general path, and widening the rung "would be WRONG, not slow". **That is right about the
+rule and wrong about the conclusion**: the rule is about ONE of the walks.
+
+The hazard is real and reproduces on nine rows, which is worth recording because the old comment
+said a small fixture could not show it:
+
+```text
+MATCH (a)-[:K]->(b) RETURN b.age AS k    ts [0,0,1,2,2,3,4,5]   native [5,2,3,4,0,0,2,1]
+```
+
+No start label, so the far-driven walk fits. Row order without an `ORDER BY` is unspecified (item
+198), so that is legal for a projection and fatal for a fold. But with a non-vacuous start label
+the same query reads `[5,2,3,4,0,0,2,1]` in BOTH engines — the start-driven walk's order IS the
+general path's. So an order-sensitive fold may ride that walk, and `detectHopProjection` now takes
+`forceStartDriven` for exactly that.
+
+ts, 200,000 vertices / 200,000 edges, alternated rounds:
+
+| aggregate           | pristine           | after                          |
+| ------------------- | ------------------ | ------------------------------ |
+| `sum(b.age)`        | 307.28 / 290.36 ms | **124.24 / 132.63** (2.3-2.5x) |
+| `avg(b.age)`        | 327.67             | **125.26** (2.6x)              |
+| `collect(b.age)`    | 291.70 / 308.78    | **123.93 / 128.89** (2.3-2.5x) |
+| `stddev_pop(b.age)` | 268.67             | **125.25** (2.1x)              |
+
+Controls: `max(b.age)` 91.00/101.30 against 87.71/79.01, `percentile_cont` 136.10/109.48 against
+108.97/107.75 (the 136.10 was the outlier), `count(*)` 0.01 both ways.
+
+**The UNDIRECTED hop is refused**: two walks emit all out-rows then all in-rows where the general
+path interleaves them per start vertex, which is a different order by construction.
+
+Teeth: five mutants under the cap, **four caught, control clean**. The filtered walk's guard
+SURVIVED its first run and the diagnosis is the finding — nothing in the first fixture reaches
+`hopDrivesFar`. With the guard removed, `collect(a.age)` over 40 `:P` sources and 3 `:R` far
+vertices answers the start values grouped by far vertex instead of in start order, a real
+divergence from native. A second fixture gives that guard teeth and the mutant is caught.
+
+`traverse 1-hop project + start filter` flagged 115.0-122.1 against a 110.9-114.0 pristine band on
+two configurations, then **overlapped on a third alternated round** (111.8 pristine min against
+112.3). Hoisting the flag out of the returned closure (the pattern item 119 established in this
+file) put `traverse 1-hop project` back on the pristine min.

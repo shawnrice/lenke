@@ -776,6 +776,24 @@ export const detectOptionalHopProjection = (
 export const detectHopProjection = (
   clauses: readonly Clause[],
   compiled: readonly CClause[],
+  /**
+   * Force the START-driven walk even where the far-driven one would be chosen (item 551).
+   *
+   * The two walks visit rows in DIFFERENT orders, which item 419 records as the reason only an
+   * order-independent aggregate may ride this walk. Measured on an 8-edge fixture with crossed
+   * edges and NO start label, so the far-driven walk fits:
+   *
+   * ```text
+   *   MATCH (a)-[:K]->(b) RETURN b.age AS k   ts [0,0,1,2,2,3,4,5]   native [5,2,3,4,0,0,2,1]
+   * ```
+   *
+   * Row order without an `ORDER BY` is unspecified (item 198), so that is legal for a PROJECTION
+   * — but a `collect` folds in that order and the order IS its answer. With a non-vacuous start
+   * label the same query reads `[5,2,3,4,0,0,2,1]` in both engines, which is what says the
+   * start-driven walk's order is the general path's. So an order-sensitive fold may ride THIS
+   * walk, and only this one.
+   */
+  forceStartDriven = false,
 ): RowsFn | null => {
   if (clauses.length !== 2) {
     return null;
@@ -1088,12 +1106,13 @@ export const detectHopProjection = (
     // inner loop nothing. The far-driven walk cannot apply a START label — it iterates the far
     // end — so it runs only where no vertex could fail that label.
     return (graph, params) =>
-      startLabel === undefined || vacuousLabel(graph, startLabel)
+      !forceStartDriven && (startLabel === undefined || vacuousLabel(graph, startLabel))
         ? farDriven(graph, params)
         : startDriven(graph, params);
   }
 
   return filteredHopWalk({
+    forceStartDriven,
     startLabel,
     typeName,
     out,
@@ -1381,6 +1400,8 @@ const farDrivenFilteredHopWalk = (w: {
 };
 
 const filteredHopWalk = (w: {
+  /** See {@link detectHopProjection}'s own parameter — the order-sensitive fold's requirement. */
+  forceStartDriven: boolean;
   startLabel: LabelExpr | undefined;
   typeName: string;
   out: boolean;
@@ -1395,7 +1416,7 @@ const filteredHopWalk = (w: {
   cfar: CNode | undefined;
 }): RowsFn => {
   const { startLabel, typeName, out, farVar, farLabel, proj, farPred, gate, startVar, cfar } = w;
-  const { startOnly, cstart } = w;
+  const { startOnly, cstart, forceStartDriven } = w;
   // Built per compile, like the two walks below it, and consulted only by the general closure —
   // the START-ONLY walk already gates a vertex before reading its adjacency and seeds the start
   // through `hopSeek`, which is the good case this is for.
@@ -1550,7 +1571,7 @@ const filteredHopWalk = (w: {
     // a runtime property of the graph, so the inner loop below pays nothing for the choice. One
     // early return rather than a restructuring, which keeps that loop byte-for-byte: item 159
     // measured 1.6x on the hot shape from adding even a branch inside it. See `hopDrivesFar`.
-    if (hopDrivesFar(graph, startLabel, farLabel)) {
+    if (!forceStartDriven && hopDrivesFar(graph, startLabel, farLabel)) {
       return farDriven(graph, params);
     }
 
@@ -2704,12 +2725,18 @@ const hopAggregateWalks = (
   cm: CClause,
   synthCret: CClause,
   direction: string,
-  // Is every admitted fold IDEMPOTENT (`min`/`max`)? Then a self-loop met twice changes
-  // nothing and the two walks are safe on any graph.
-  idempotent: boolean,
+  opts: {
+    // Is every admitted fold IDEMPOTENT (`min`/`max`)? Then a self-loop met twice changes
+    // nothing and the two walks are safe on any graph.
+    readonly idempotent: boolean;
+    /** Force the start-driven walk, for an order-sensitive fold (item 551). */
+    readonly forceStartDriven: boolean;
+  },
 ): { walks: RowsFn[]; noSelfLoops: boolean; looped: RowsFn | undefined } | null => {
+  const { idempotent, forceStartDriven } = opts;
+
   if (direction !== 'both') {
-    const one = detectHopProjection([m, synthRet], [cm, synthCret]);
+    const one = detectHopProjection([m, synthRet], [cm, synthCret], forceStartDriven);
 
     return one === null ? null : { walks: [one], noSelfLoops: false, looped: undefined };
   }
@@ -2796,7 +2823,26 @@ const hopAggregateWalks = (
  * a test: the shape that would expose it depends on a planner choice, not on the query. The
  * `DISTINCT` check beside it does have teeth (item 533).
  */
-const hopPercentile = (ret: Clause): { name: string; frac: number } | null => {
+/**
+ * The aggregates with no streaming fold whose answer DOES depend on the row order (item 551).
+ *
+ * `sum`/`avg` and the two stddevs because float addition is not associative — a different order
+ * is a different last ulp, against a hard byte-identity invariant. `collect`/`collect_list`
+ * because the order IS the answer. Each may still ride the walk, but only the START-DRIVEN one,
+ * whose order is the general path's — see {@link detectHopProjection}'s `forceStartDriven`.
+ */
+const ORDER_SENSITIVE_AGGREGATES: ReadonlySet<string> = new Set([
+  'sum',
+  'avg',
+  'collect',
+  'collect_list',
+  'stddev_pop',
+  'stddev_samp',
+]);
+
+const hopPercentile = (
+  ret: Clause,
+): { name: string; frac: number; orderSensitive: boolean } | null => {
   if (ret.kind !== 'return' || ret.projection.items.length !== 1) {
     return null;
   }
@@ -2808,13 +2854,17 @@ const hopPercentile = (ret: Clause): { name: string; frac: number } | null => {
     return null;
   }
 
+  if (ORDER_SENSITIVE_AGGREGATES.has(e.name)) {
+    return e.args.length === 1 ? { name: e.name, frac: 0, orderSensitive: true } : null;
+  }
+
   if (e.name !== 'percentile_cont' && e.name !== 'percentile_disc') {
     return null;
   }
 
   const frac = percentileFraction(e);
 
-  return frac === null ? null : { name: e.name, frac };
+  return frac === null ? null : { name: e.name, frac, orderSensitive: false };
 };
 
 export const detectHopAggregate = (
@@ -2888,7 +2938,10 @@ export const detectHopAggregate = (
 
   const aggNode = item.expr;
 
-  if (aggNode.kind !== 'func' || percentileFraction(aggNode) === null) {
+  // `percentileFraction` answers 0 for a one-argument aggregate and `null` for a malformed
+  // percentile; the order-sensitive names reach here through `pct` and are already validated by
+  // `hopPercentile`, so they are admitted alongside it rather than by a second parse.
+  if (aggNode.kind !== 'func' || (percentileFraction(aggNode) === null && pct === null)) {
     return null;
   }
 
@@ -2954,7 +3007,19 @@ export const detectHopAggregate = (
       : 'out';
   // A percentile is NOT idempotent — a value counted twice moves it — so the two turned walks
   // are only safe on a graph with no self-loop, which is what `false` here asks for.
-  const turned = hopAggregateWalks(m, synthRet, cm, synthCret, hopDir, EXTREMA.has(aggNode.name));
+  // An ORDER-SENSITIVE fold may ride only the START-driven walk, and only a DIRECTED hop: the
+  // undirected form runs two walks (all out-rows then all in-rows) where the general path
+  // interleaves them per start vertex, which is a different order by construction.
+  const orderSensitive = pct?.orderSensitive === true;
+
+  if (orderSensitive && hopDir === 'both') {
+    return null;
+  }
+
+  const turned = hopAggregateWalks(m, synthRet, cm, synthCret, hopDir, {
+    idempotent: EXTREMA.has(aggNode.name),
+    forceStartDriven: orderSensitive,
+  });
 
   if (turned === null) {
     return null;
@@ -3187,7 +3252,10 @@ export const detectMultiHopAggregate = (
     m.kind === 'match' && m.patterns.length === 1 && m.patterns[0].segments.length === 1
       ? m.patterns[0].segments[0].rel.direction
       : 'out';
-  const turned = hopAggregateWalks(m, synthRet, cm, synthCret, hopDir, allExtrema);
+  const turned = hopAggregateWalks(m, synthRet, cm, synthCret, hopDir, {
+    idempotent: allExtrema,
+    forceStartDriven: false,
+  });
 
   if (turned === null) {
     return null;
