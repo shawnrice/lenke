@@ -5612,3 +5612,34 @@ refuses a `DISTINCT` aggregate on its first guard, so the change cannot reach th
 Native: `optional hop` 577.9 (514: 582.7), `+ miss` 64.3 (64.9), `+ landing pred` 10040.0
 (10278.0), `EXISTS` 1131.2 (1147.9), `for-in const x3` 15.3 µs. Serving side untouched
 (`read: point lookup` ts(+) 1.02M). No engine change.
+
+## 521 — a correlated subquery body's label test: CLOSED at 10.5x
+
+`opt` never descends into a `Plan` nested inside an `Expr`, so a correlated body kept GQL's raw
+`'L' IN labels(slot)` — a `Value::List` built and a string hashed per row — where a top-level plan
+is canonicalized to `IsLabeled` (bucket membership, no allocation). `COUNT { (x)-[:KNOWS]->(b:Half)
+WHERE b.age > 50 }` cost 186.1 ms at 200,000 vertices; the same query written at the top level cost
+3.3. `canon_body_labels` runs the one rewrite on the body `correlated_subquery_body` returns, so
+`EXISTS` / `COUNT` / `VALUE` all get it from one place.
+
+Before 187.1 / 192.4 / 187.5 → after 18.0 / 18.0 / 17.5, disjoint, three alternated rounds with a
+rebuild between each. Net of the 11.3 ms egress floor the body is ~25x. Controls flat: `corrfilt`
+17.9 → 18.2, `corrlblonly` 26.0 → 24.6, `corrdeg` 11.3 → 11.4.
+
+Diagnosis before the fix, and it is what ruled out the obvious answers: two property filters cost
+22.2 ms and the label alone costs 26.0, so 186.1 is neither the filter count nor the label test as
+such — it is the label test on the GENERAL path, which the degree fast path reaches only when
+nothing else is in the body.
+
+**The TS engine does not have this bug** — measured, not assumed: `corrlblfilt` 614.4 against
+`corrfilt` 669.4, so the label is cheaper there. Nothing to port.
+
+Mutation 4 of 6 (null control clean). Two of the four were caught only after the test read the
+PLAN rather than the answer: _a rewrite that is a pure canonicalization cannot be tested by its
+answers_, since both spellings agree by construction. The surviving mutant is the `slot <
+row_width` guard, redundant today (the exact-endpoint match already refuses outer slots) and kept
+as the defense against a future caller mis-counting `row_width`.
+
+STILL OPEN, and separately: the whole correlated-subquery route in the TS engine, ~3 µs an outer
+row (34x native on this shape). And a `spelling_probe` group for this pair, which needs a second
+label in that fixture.

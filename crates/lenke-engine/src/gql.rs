@@ -230,6 +230,138 @@ fn optimized_body(body: Plan) -> Plan {
     crate::opt::optimize(body)
 }
 
+/// `Row`-relative output width of a CORRELATED subquery body, with `Plan::Row` standing for the
+/// outer row plus its provenance column (`row_width`). `None` for any shape whose width is not
+/// plainly readable — the callers below then claim nothing.
+fn body_width(p: &Plan, row_width: usize) -> Option<usize> {
+    Some(match p {
+        Plan::Row => row_width,
+        Plan::Expand {
+            input, bind_edge, ..
+        } => body_width(input, row_width)? + usize::from(*bind_edge) + 1,
+        Plan::VarLength { input, .. } | Plan::ShortestPath { input, .. } => {
+            body_width(input, row_width)? + 1
+        }
+        Plan::Filter { input, .. } | Plan::Distinct { input } => body_width(input, row_width)?,
+        _ => return None,
+    })
+}
+
+/// Is `slot` a NODE endpoint that the BODY ITSELF appended?
+///
+/// Deliberately narrower than `opt::slot_is_node`, which it mirrors, because the contract here is
+/// different: a correlated body's `Plan::Row` stands for the whole outer row, whose columns may
+/// be anything the outer query projected — a number, a list, a map. So an outer slot is never
+/// claimed (`slot < row_width` refuses), and a body slot is claimed only on an EXACT endpoint
+/// match. Both guards, not one: if `row_width` were ever under-counted, the exact-endpoint match
+/// still cannot land on an outer column.
+fn body_node_slot(p: &Plan, slot: usize, row_width: usize) -> bool {
+    if slot < row_width {
+        return false;
+    }
+    match p {
+        Plan::Expand {
+            input, bind_edge, ..
+        } => match body_width(input, row_width) {
+            // The endpoint node is the LAST appended slot; a bound edge sits one before it, and
+            // an edge is NOT a node — `IsLabeled` would answer its TYPE wrongly.
+            Some(w) if slot == w + usize::from(*bind_edge) => true,
+            _ => body_node_slot(input, slot, row_width),
+        },
+        Plan::VarLength { input, .. } | Plan::ShortestPath { input, .. } => {
+            match body_width(input, row_width) {
+                Some(w) if slot == w => true,
+                _ => body_node_slot(input, slot, row_width),
+            }
+        }
+        Plan::Filter { input, .. } | Plan::Distinct { input } => {
+            body_node_slot(input, slot, row_width)
+        }
+        _ => false,
+    }
+}
+
+/// `'L' IN labels(slot)` → `IsLabeled { slot, [L] }` inside a correlated body, recursing through
+/// the boolean combinators. The same rewrite `opt::normalize_pred` does for a top-level plan,
+/// and the same node gate — but reachable, because `opt` never descends into a `Plan` nested
+/// inside an `Expr` (item 500).
+fn canon_label_pred(e: Expr, input: &Plan, row_width: usize) -> Expr {
+    match e {
+        Expr::In { needle, haystack } => {
+            if let (Expr::Lit(Value::Str(l)), Expr::Call { name, args }) =
+                (needle.as_ref(), haystack.as_ref())
+            {
+                if name == "labels" && args.len() == 1 {
+                    if let Expr::Slot(s) = args[0] {
+                        if body_node_slot(input, s, row_width) {
+                            return Expr::IsLabeled {
+                                slot: s,
+                                labels: vec![l.to_string()],
+                            };
+                        }
+                    }
+                }
+            }
+            Expr::In { needle, haystack }
+        }
+        Expr::Not(a) => Expr::Not(Box::new(canon_label_pred(*a, input, row_width))),
+        Expr::And(a, b) => Expr::And(
+            Box::new(canon_label_pred(*a, input, row_width)),
+            Box::new(canon_label_pred(*b, input, row_width)),
+        ),
+        Expr::Or(a, b) => Expr::Or(
+            Box::new(canon_label_pred(*a, input, row_width)),
+            Box::new(canon_label_pred(*b, input, row_width)),
+        ),
+        other => other,
+    }
+}
+
+/// Canonicalize the LABEL tests in a correlated subquery body's filters.
+///
+/// `opt` rewrites only the plan it is handed and never descends into a `Plan` nested inside an
+/// `Expr` (item 500), so a correlated body kept GQL's raw spelling of `(b:L)` —
+/// `'L' IN labels(slot)`, which BUILDS a `Value::List` of the node's labels and hashes a string
+/// per row. `IsLabeled` is the same question answered against the label buckets: a tautology
+/// short-circuit, a membership bitset, or a binary search, and no per-row allocation.
+///
+/// Measured at 200,000 vertices / 1,000,000 edges, `COUNT { (x)-[:KNOWS]->(b:Half) WHERE
+/// b.age > 50 }` cost 186.1 ms against 17.9 for the same body with the label dropped and 22.2
+/// for one with TWO property filters — so the cost is the label test alone, not the filter
+/// count. The top-level twin of the same query is 3.3 ms (item 521).
+///
+/// Only `Filter` and `Expand` are walked. Anything else ends the walk, which is the conservative
+/// answer: this rewrite reshapes nothing and introduces no seed, so a body it declines is
+/// exactly the body that ran before.
+fn canon_body_labels(body: Plan, row_width: usize) -> Plan {
+    match body {
+        Plan::Filter { input, pred } => {
+            let input = canon_body_labels(*input, row_width);
+            let pred = canon_label_pred(pred, &input, row_width);
+            Plan::Filter {
+                input: Box::new(input),
+                pred,
+            }
+        }
+        Plan::Expand {
+            input,
+            from,
+            dir,
+            edge_label,
+            bind_edge,
+            double_loops,
+        } => Plan::Expand {
+            input: Box::new(canon_body_labels(*input, row_width)),
+            from,
+            dir,
+            edge_label,
+            bind_edge,
+            double_loops,
+        },
+        other => other,
+    }
+}
+
 /// The label predicate for a NON-seed node (a landing node — it has no `Scan` to
 /// carry a seed label, so the WHOLE label constraint is a filter). `None` when the
 /// node is unlabelled or `:%` (any). Combines the seed label and the compound
@@ -6818,6 +6950,10 @@ impl Parser {
         } else {
             body
         };
+        // The body is nested inside an `Expr`, where `opt` never reaches it (item 501), so the
+        // one canonicalization its filters cannot do without runs here. See
+        // `canon_body_labels`.
+        let body = canon_body_labels(body, outer_width + 1);
         // The caller consumes any trailing `RETURN …` (for VALUE) and the closing
         // `}`; it also owns the sub-scope so it can parse a scalar RETURN expression.
         Ok((body, outer_width, sub_scope, sub_slots))

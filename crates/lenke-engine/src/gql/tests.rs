@@ -7909,3 +7909,144 @@ fn unwind_count_is_the_sum_of_the_list_lengths() {
     // scalar and the three-element list contribute, the empty list and the missing key do not.
     assert_eq!(n("MATCH (n:P) FOR t IN n.tags RETURN count(t) AS c"), 5.0);
 }
+
+/// A correlated subquery body's LABEL test is canonicalized to `IsLabeled` (item 521).
+///
+/// `opt` never descends into a `Plan` nested inside an `Expr` (item 500), so a correlated body
+/// kept GQL's raw `'L' IN labels(slot)` — a `Value::List` built and a string hashed per row.
+/// `COUNT { (x)-[:T]->(b:Q) WHERE b.n > 1 }` cost 186.1 ms at 200,000 vertices against 17.9 for
+/// the same body with the label dropped.
+///
+/// The answer must not move, so every case is asked THREE ways: as the subquery, as the
+/// top-level pattern that means the same thing (which `opt` has always canonicalized), and —
+/// for the shapes the rewrite must REFUSE — with the plan asserted to still hold the raw call.
+/// A rewrite whose answers agree is not yet evidence that it fired, so the plan text is read
+/// directly in every case.
+#[test]
+fn a_correlated_body_label_test_is_canonicalized() {
+    let nd = concat!(
+        "{\"id\":\"a\",\"labels\":[\"P\"],\"props\":{\"n\":1}}\n",
+        "{\"id\":\"b\",\"labels\":[\"P\",\"Q\"],\"props\":{\"n\":2}}\n",
+        "{\"id\":\"c\",\"labels\":[\"Q\"],\"props\":{\"n\":3}}\n",
+        "{\"id\":\"d\",\"labels\":[\"R\"],\"props\":{\"n\":4}}\n",
+        "{\"id\":\"e1\",\"from\":\"a\",\"to\":\"b\",\"type\":\"T\",\"props\":{}}\n",
+        "{\"id\":\"e2\",\"from\":\"a\",\"to\":\"c\",\"type\":\"T\",\"props\":{}}\n",
+        "{\"id\":\"e3\",\"from\":\"a\",\"to\":\"d\",\"type\":\"T\",\"props\":{}}\n",
+        "{\"id\":\"e4\",\"from\":\"b\",\"to\":\"c\",\"type\":\"T\",\"props\":{}}\n",
+    );
+    let store = crate::ndjson::from_ndjson(nd).unwrap();
+    let plan = |q: &str| format!("{:?}", super::parse(q).unwrap());
+    let n = |q: &str| -> f64 {
+        match run(&super::parse(q).unwrap(), &store).rows[0][0] {
+            Value::Num(x) => x,
+            ref o => panic!("want num, got {o:?} for {q}"),
+        }
+    };
+
+    // THE SHAPE THAT MOTIVATED IT. `a` has three `:T` out-edges, landing on `:P,:Q`, `:Q`
+    // and `:R`; two of those are `:Q`, and one of the two has `n > 1`.
+    let q = "MATCH (x:P) WHERE x.n = 1 RETURN COUNT { (x)-[:T]->(b:Q) WHERE b.n > 1 } AS c";
+    assert_eq!(n(q), 2.0);
+    assert!(
+        plan(q).contains("IsLabeled"),
+        "the rewrite did not fire: {}",
+        plan(q)
+    );
+    assert!(
+        !plan(q).contains("\"labels\""),
+        "a raw labels() call survived: {}",
+        plan(q)
+    );
+    // The top-level spelling of the same question — the equivalent-spellings rule.
+    assert_eq!(
+        n("MATCH (x:P)-[:T]->(b:Q) WHERE x.n = 1 AND b.n > 1 RETURN count(*) AS c"),
+        2.0
+    );
+
+    // EXISTS and VALUE reach the same body builder, so both must be canonicalized too.
+    let e = "MATCH (x:P) WHERE EXISTS { (x)-[:T]->(b:Q) WHERE b.n > 2 } RETURN count(*) AS c";
+    assert_eq!(n(e), 2.0); // both `a` and `b` reach `c` (`:Q`, n = 3)
+    assert!(
+        plan(e).contains("IsLabeled"),
+        "EXISTS body not canonicalized"
+    );
+
+    let v = "MATCH (x:P) WHERE x.n = 1 RETURN VALUE { MATCH (x)-[:T]->(b:Q) RETURN max(b.n) } AS m";
+    assert_eq!(n(v), 3.0);
+    assert!(
+        plan(v).contains("IsLabeled"),
+        "VALUE body not canonicalized"
+    );
+
+    // A label on the LANDING of a two-hop body: the slot must be the one the SECOND hop
+    // appended, which is what makes the endpoint match (and not the middle) load-bearing.
+    let two = "MATCH (x:P) WHERE x.n = 1 RETURN COUNT { (x)-[:T]->(m)-[:T]->(w:Q) } AS c";
+    assert_eq!(n(two), 1.0); // a -> b -> c, and c is :Q
+    assert!(
+        plan(two).contains("IsLabeled"),
+        "two-hop body not canonicalized"
+    );
+    // Its MIDDLE twin asks a different question, and must still answer it. This one is also
+    // the only case that reaches a filter sitting BELOW an `Expand`, so it is what says the
+    // walk recurses through the hop rather than stopping at the outermost node.
+    let mid = "MATCH (x:P) WHERE x.n = 1 RETURN COUNT { (x)-[:T]->(m:Q)-[:T]->(w) } AS c";
+    assert_eq!(n(mid), 1.0); // a -> b(:Q) -> c
+    assert!(
+        !plan(mid).contains("\"labels\""),
+        "a filter under a hop was not reached: {}",
+        plan(mid)
+    );
+
+    // A NEGATED label, and a label under OR — the combinators the predicate walk recurses
+    // through. `a`'s three neighbours: `:P,:Q`, `:Q`, `:R`.
+    let neg =
+        "MATCH (x:P) WHERE x.n = 1 RETURN COUNT { (x)-[:T]->(b) WHERE NOT b IS LABELED Q } AS c";
+    assert_eq!(n(neg), 1.0);
+    let alt = "MATCH (x:P) WHERE x.n = 1 RETURN COUNT { (x)-[:T]->(b) WHERE b IS LABELED Q OR b.n = 4 } AS c";
+    assert_eq!(n(alt), 3.0);
+    // Both spellings answer the same either way, so the ANSWER cannot say whether the walk
+    // recursed — only the plan can. Without these two, dropping the `Not` arm is invisible.
+    for q in [neg, alt] {
+        assert!(
+            plan(q).contains("IsLabeled"),
+            "the combinator was not walked: {}",
+            plan(q)
+        );
+        assert!(
+            !plan(q).contains("\"labels\""),
+            "a raw labels() call survived: {}",
+            plan(q)
+        );
+    }
+
+    // THE REFUSALS. A BOUND EDGE's label test means its TYPE, which `IsLabeled` (node labels)
+    // would answer wrongly — the edge sits one slot BELOW the endpoint, so the exact-endpoint
+    // match declines it and the raw call survives in the plan.
+    let edge =
+        "MATCH (x:P) WHERE x.n = 1 RETURN COUNT { (x)-[r:T]->(b) WHERE r IS LABELED T } AS c";
+    assert_eq!(n(edge), 3.0);
+    assert!(
+        !plan(edge).contains("IsLabeled"),
+        "an EDGE label test was rewritten as a node test: {}",
+        plan(edge)
+    );
+    // …and it is the SAME spelling the node case rewrites, so the refusal is about the slot
+    // and not about the edge arriving as some other expression the walk never sees.
+    assert!(
+        plan(edge).contains("\"labels\""),
+        "the edge test is not a labels() call, so refusing it proves nothing: {}",
+        plan(edge)
+    );
+    // And the edge test still answers its own question: no `:T` edge is labelled `Q`.
+    assert_eq!(
+        n("MATCH (x:P) WHERE x.n = 1 RETURN COUNT { (x)-[r:T]->(b) WHERE r IS LABELED Q } AS c"),
+        0.0
+    );
+
+    // An OUTER slot is never claimed, whatever it holds. The body correlates on `x`, and the
+    // rewrite must not reach back past the body's own appended slots.
+    assert_eq!(
+        n("MATCH (x:P) WHERE x IS LABELED P AND x.n = 1 RETURN COUNT { (x)-[:T]->(b:Q) } AS c"),
+        2.0
+    );
+}

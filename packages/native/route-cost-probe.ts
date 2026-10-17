@@ -327,6 +327,24 @@ const queries: Record<string, string> = {
   threehopdir: 'MATCH (:Person)-[:KNOWS]->(b)-[:KNOWS]->(c)-[:KNOWS]->(d) RETURN count(*) AS c',
   threehopboth: 'MATCH (:Person)-[:KNOWS]-(b)-[:KNOWS]-(c)-[:KNOWS]-(d) RETURN count(*) AS c',
   hopdirmulti: 'MATCH (:Person)-[:KNOWS]->(b) RETURN count(*) AS c, max(b.age) AS m',
+  // Item 521: a CORRELATED subquery body is the one `opt` still never touches (item 501 took the
+  // uncorrelated case). `corrdeg` is the shape the degree fast path already intercepts — a
+  // control; the others leave it and run the raw Expand/Filter chain the parser emitted.
+  corrdeg: 'MATCH (x:Person) RETURN COUNT { (x)-[:KNOWS]->(b) } AS c',
+  corrfilt: 'MATCH (x:Person) RETURN COUNT { (x)-[:KNOWS]->(b) WHERE b.age > 50 } AS c',
+  corrlblfilt: 'MATCH (x:Person) RETURN COUNT { (x)-[:KNOWS]->(b:Half) WHERE b.age > 50 } AS c',
+  correxists:
+    'MATCH (x:Person) WHERE EXISTS { (x)-[:KNOWS]->(b) WHERE b.age > 50 } RETURN count(*) AS c',
+  corrvalue: 'MATCH (x:Person) RETURN VALUE { MATCH (x)-[:KNOWS]->(b) RETURN max(b.age) } AS m',
+  // The TOP-LEVEL twin of `corrfilt`, which `opt` does optimize: the gap between the two is the
+  // price of the body being nested inside an `Expr`.
+  tlfilt: 'MATCH (:Person)-[:KNOWS]->(b) WHERE b.age > 50 RETURN count(*) AS c',
+  tllblfilt: 'MATCH (:Person)-[:KNOWS]->(b:Half) WHERE b.age > 50 RETURN count(*) AS c',
+  // Isolating WHICH filter costs: the label alone (item 500's degree path reads both label
+  // spellings, so this one is intercepted), and two PROPERTY filters stacked the same way.
+  corrlblonly: 'MATCH (x:Person) RETURN COUNT { (x)-[:KNOWS]->(b:Half) } AS c',
+  corr2filt:
+    'MATCH (x:Person) RETURN COUNT { (x)-[:KNOWS]->(b) WHERE b.age > 50 AND b.age < 80 } AS c',
 };
 // One node's properties, shared by the TWO fixture builders below — a `Graph` for the TS engine
 // and NDJSON for the native one. Patching only one of them is item 471's trap: it reads as a
