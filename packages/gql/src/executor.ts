@@ -1917,6 +1917,37 @@ export const percentileFraction = (e: Extract<Expr, { kind: 'func' }>): number |
  * The fold for an aggregate, or `undefined` when it must see the whole group. `DISTINCT` is
  * refused here rather than at the call site so there is one place to read the answer from.
  */
+/**
+ * Are all of an UN-GROUPED aggregate projection's sort keys plain references to its own output
+ * columns?
+ *
+ * Such a projection delivers exactly ONE row, so `DISTINCT` and `ORDER BY` are both identities on
+ * it — the argument `detectCountShortcut` already makes for SKIP/LIMIT, extended to the other two
+ * clauses at item 544 and to the four aggregate rungs at item 545. A row cannot be deduplicated
+ * away from itself and cannot be reordered.
+ *
+ * The one thing a rung still cannot skip is a sort key that might FAULT: `ORDER BY 1 / 0` raises
+ * on the general path, and a shortcut that never evaluated the key would answer past it. A
+ * reference to a column the projection just produced cannot fault beyond producing it, so that is
+ * the whole admission — and it is read off the AST, because the compiled sort items are closures.
+ *
+ * Only the `kind === 'var'` half is load-bearing, and mutation says so: dropping the NAME check,
+ * or emptying the name set, leaves every answer unchanged. The first is equivalent by
+ * construction — an aggregating projection's ORDER BY resolves against the OUTPUT columns, so any
+ * valid `var` key already names one — and the second only makes the rungs decline, which is
+ * slower and not wrong. Both are kept as the local statement of the rule.
+ */
+export const sortsOnOutputOnly = (
+  ret: Extract<Clause, { kind: 'return' }>,
+  proj: CProjection,
+): boolean => {
+  const names = new Set(proj.items.map((it) => it.name));
+
+  return (ret.projection.orderBy ?? []).every(
+    (sort) => sort.expr.kind === 'var' && names.has(sort.expr.name),
+  );
+};
+
 export const foldFor = (name: string, star: boolean, distinct: boolean): AggFold | undefined => {
   if (distinct || star) {
     return undefined; // count(*) has its own O(groups) path; DISTINCT needs every value

@@ -44,6 +44,7 @@ import {
   compilePredicate,
   aggregateOverValues,
   satisfies,
+  sortsOnOutputOnly,
   countEdges,
   outNeighbors,
   percentileFraction,
@@ -6393,10 +6394,9 @@ export const detectNodeAggregate = (
   if (
     (folded?.length !== 1 && collect === undefined) ||
     proj.star ||
-    proj.distinct ||
     proj.items.length !== 1 ||
     proj.having !== undefined ||
-    proj.orderBy.length > 0 ||
+    !sortsOnOutputOnly(ret, proj) ||
     proj.skip !== undefined ||
     proj.limit !== undefined
   ) {
@@ -6573,10 +6573,9 @@ export const detectMultiNodeAggregate = (
   // has its own tests: the two rungs are disjoint by arity, so this one cannot regress those.
   if (
     proj.star ||
-    proj.distinct ||
     proj.items.length < 2 ||
     proj.having !== undefined ||
-    proj.orderBy.length > 0 ||
+    !sortsOnOutputOnly(ret, proj) ||
     proj.skip !== undefined ||
     proj.limit !== undefined ||
     ret.projection.groupBy !== undefined ||

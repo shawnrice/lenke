@@ -26,6 +26,7 @@ import {
   propOf,
   relTypeNames,
   satisfies,
+  sortsOnOutputOnly,
 } from '../executor.js';
 import { candidateCount, candidateVertexSource, expand, matchesLabel } from '../graph-queries.js';
 import type { Adjacency } from '../graph-queries.js';
@@ -2854,11 +2855,10 @@ export const detectHopAggregate = (
   if (
     (folded?.length !== 1 && pct === null) ||
     proj.star ||
-    proj.distinct ||
     proj.items.length !== 1 ||
     proj.groupKeys.length !== 0 ||
     proj.having !== undefined ||
-    proj.orderBy.length > 0 ||
+    !sortsOnOutputOnly(ret, proj) ||
     proj.skip !== undefined ||
     proj.limit !== undefined
   ) {
@@ -3081,11 +3081,10 @@ export const detectMultiHopAggregate = (
   // are disjoint by ARITY, so this cannot regress the shape that one claims.
   if (
     proj.star ||
-    proj.distinct ||
     proj.items.length < 2 ||
     proj.groupKeys.length !== 0 ||
     proj.having !== undefined ||
-    proj.orderBy.length > 0 ||
+    !sortsOnOutputOnly(ret, proj) ||
     proj.skip !== undefined ||
     proj.limit !== undefined ||
     ret.projection.groupBy !== undefined

@@ -6288,3 +6288,29 @@ native — the shortcut declines that key either way. Open.
 Mutation 2 of 3 (null control clean). The survivor drops the NAME comparison and is equivalent by
 construction: an aggregating projection's ORDER BY resolves against the output columns and there is
 exactly one here.
+
+## 545 — the one-row identity on FOUR aggregate rungs: CLOSED at up to 4.8x
+
+Item 544's argument, applied to `detectNodeAggregate`, `detectMultiNodeAggregate`,
+`detectHopAggregate` and `detectMultiHopAggregate` through one shared `sortsOnOutputOnly`. An
+un-grouped aggregate projection is exactly ONE row whatever the aggregate is.
+
+Node rung: `max(n.age)` 12.28 ms, `DISTINCT max(n.age)` **38.02**, `ORDER BY m` **37.06** → 12.14 /
+12.32 / 12.58. Hop rung: 90.71, **385.64**, **428.73** → 90.75 / 91.53 / 89.98. Up to 4.8x. Ten
+shapes checked against native, all agreeing, including both multi-item forms, a faulting sort key
+(both raise) and a GROUPED projection (three rows, right order — so the grouped rungs still
+decline).
+
+**THREE IDENTICAL GUARDS, two of which must NOT be patched.** The multi-item node guard's text
+appears three times in `shortcuts.ts`; the other two are `detectGroupedNodeAggregate` and
+`detectGroupedHopAggregate`, which produce MANY rows where neither clause is an identity. A
+by-text edit would have collapsed a grouped result. The uniqueness assert caught it (count 3, not
+
+1. and each replacement is now anchored on the COMMENT above its guard. Items 474, 483, 494, 518,
+   528, 545 — and _this is the first time the duplicate was a guard that had to KEEP its old
+   behaviour_ rather than one wanting the same change. The test file pins the grouped shapes at three
+   rows so a future bulk edit reaching them fails.
+
+Mutation 1 of 3 (null control clean). Both survivors are answer-preserving: dropping the NAME check
+is equivalent by construction, and emptying the name set only makes the rungs decline. Only
+`kind === 'var'` is load-bearing — the same conclusion item 544 reached about its own copy.

@@ -85,3 +85,60 @@ describe('DISTINCT and ORDER BY over a one-row count (item 544)', () => {
     ]);
   });
 });
+
+// Item 545 extends the same identity to the four AGGREGATE rungs, which refused both clauses for
+// the same wrong reason. Priced at 200,000 vertices / 400,000 edges, one case per process:
+//
+//   MATCH (n:Person) RETURN max(n.age)                        12.28 ms
+//   ...RETURN DISTINCT max(n.age)                             38.02
+//   ...RETURN max(n.age) ORDER BY m                           37.06
+//   MATCH (:Person)-[:KNOWS]->(b) RETURN max(b.age)           90.71
+//   ...RETURN DISTINCT max(b.age)                            385.64
+//   ...RETURN max(b.age) ORDER BY m                          428.73
+//
+// An un-grouped aggregate projection delivers exactly ONE row whatever the aggregate is, so the
+// argument is `detectCountShortcut`'s unchanged. All four rungs share `sortsOnOutputOnly`.
+describe('DISTINCT and ORDER BY over a one-row AGGREGATE (item 545)', () => {
+  const agg = (tail: string, want: unknown[]): void => {
+    expect(rows(`MATCH (n:P) RETURN ${tail}`)).toEqual(want);
+    expect(rows(`MATCH (n:P) FILTER true RETURN ${tail}`)).toEqual(want);
+  };
+
+  test('the single-item NODE rung', () => {
+    agg('max(n.n) AS m', [{ m: 2 }]);
+    agg('DISTINCT max(n.n) AS m', [{ m: 2 }]);
+    agg('max(n.n) AS m ORDER BY m', [{ m: 2 }]);
+    agg('max(n.n) AS m ORDER BY m DESC', [{ m: 2 }]);
+    agg('DISTINCT min(n.n) AS m ORDER BY m', [{ m: 1 }]);
+    // `sum` and `collect` reach the rung through the VALUES path (items 530, 544's sibling).
+    agg('DISTINCT sum(n.n) AS m', [{ m: 3 }]);
+    agg('DISTINCT collect(n.n) AS m', [{ m: [1, 2] }]);
+  });
+
+  test('the MULTI-item node rung', () => {
+    agg('DISTINCT count(*) AS c, max(n.n) AS m', [{ c: 2, m: 2 }]);
+    agg('count(*) AS c, max(n.n) AS m ORDER BY m', [{ c: 2, m: 2 }]);
+    // Ordering by the OTHER output column is equally an identity.
+    agg('count(*) AS c, max(n.n) AS m ORDER BY c', [{ c: 2, m: 2 }]);
+  });
+
+  test('a GROUPED projection is NOT one row and still declines', () => {
+    // The grouped rungs share their guard TEXT with the multi-item ones — three identical copies
+    // in one file — so the anchor for this change had to be the comment above each. If a grouped
+    // rung had been patched too, DISTINCT would collapse these three rows to fewer.
+    expect(rows('MATCH (n) RETURN n.n AS k, count(*) AS c ORDER BY k')).toEqual([
+      { k: 1, c: 1 },
+      { k: 2, c: 1 },
+      { k: 3, c: 1 },
+    ]);
+    expect((rows('MATCH (n) RETURN DISTINCT n.n AS k, count(*) AS c') as unknown[]).length).toBe(3);
+  });
+
+  test('a faulting sort key still raises on every rung', () => {
+    expect(() => rows('MATCH (n:P) RETURN max(n.n) AS m ORDER BY 1 / 0')).toThrow();
+    expect(() => rows('MATCH (n:P) RETURN count(*) AS c, max(n.n) AS m ORDER BY 1 / 0')).toThrow();
+    // The controls: the same queries without the ORDER BY are answered, so the throw is the KEY.
+    expect(rows('MATCH (n:P) RETURN max(n.n) AS m')).toEqual([{ m: 2 }]);
+    expect(rows('MATCH (n:P) RETURN count(*) AS c, max(n.n) AS m')).toEqual([{ c: 2, m: 2 }]);
+  });
+});
