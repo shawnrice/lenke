@@ -6260,3 +6260,31 @@ RULE WORTH HAVING BEFORE THE NEXT SEED: _a bucket seed trades element COUNT for 
 benefit is not the ratio of the counts._ It wins when the steps after the source cost more per
 element than the access penalty — 542's count form (a `has` plus a tally) wins 3.7x, the `values`
 form breaks even.
+
+## 544 — DISTINCT and ORDER BY over a ONE-ROW count: CLOSED (29.78 and 34.53 ms to 0.00)
+
+Item 540's rule has a GQL twin: the ladder matches clause lists and projections, so one extra
+PROJECTION CLAUSE drops the whole query. Priced at 200,000 vertices, one case per process:
+`RETURN count(*)` 0.00; `LIMIT 1` 0.00 and `SKIP 0` 0.00 (already handled); `LET z = 1` 0.00
+(inlined); `WHERE true` 1.79; **`RETURN DISTINCT count(*)` 29.78**; **`ORDER BY c` 34.53**;
+`FILTER true` 32.91.
+
+**The argument was already in the file.** `detectCountShortcut` explains why SKIP/LIMIT are not
+refused — an un-grouped `count(*)` with one item is exactly ONE row — and refused DISTINCT and
+ORDER BY two lines above that comment. One row cannot be deduplicated away from itself or
+reordered. Both now 0.00. Neither spelling is contrived (ordering by the count you asked for;
+DISTINCT out of habit); `FILTER true` is, and is left alone.
+
+ONE real condition: ORDER BY is admitted only for a sort key that is a plain reference to the
+OUTPUT column, because any other expression could FAULT during the sort and a shortcut that skipped
+the sort would skip the fault. `ORDER BY 1 / 0` still raises, pinned against the same query without
+the ORDER BY as the control.
+
+Checked against native: all four admitted shapes agree, including `ORDER BY c LIMIT 0` → `[]`.
+**An unrelated divergence found in passing and verified against the PRISTINE build before being
+called pre-existing**: `RETURN count(*) AS c ORDER BY c + 0` answers `[{"c":2}]` in TS and RAISES in
+native — the shortcut declines that key either way. Open.
+
+Mutation 2 of 3 (null control clean). The survivor drops the NAME comparison and is equivalent by
+construction: an aggregating projection's ORDER BY resolves against the output columns and there is
+exactly one here.

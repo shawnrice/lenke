@@ -4411,10 +4411,8 @@ export const detectCountShortcut = (
   // them hundreds of times slower: the bug class this repo is named after. See `pageOneRow`.
   if (
     proj.star ||
-    proj.distinct ||
     proj.groupBy !== undefined ||
     proj.having !== undefined ||
-    (proj.orderBy?.length ?? 0) > 0 ||
     proj.items.length !== 1
   ) {
     return null;
@@ -4428,6 +4426,33 @@ export const detectCountShortcut = (
   }
 
   const column = item.alias ?? columnName(e);
+
+  // DISTINCT and ORDER BY are NOT refused, and the reason is the one this function already gives
+  // for SKIP/LIMIT two comments up: an un-grouped `count(*)` with one item is exactly ONE ROW. A
+  // row cannot be deduplicated away from itself and cannot be reordered, so both clauses are
+  // identities here — and refusing them cost a 0.00 ms answer **29.78 ms** (`RETURN DISTINCT
+  // count(*)`) and **34.53** (`ORDER BY c`) at 200,000 vertices, measured one case per process.
+  // Neither spelling is contrived: ordering by the count you just asked for, or writing DISTINCT
+  // out of habit, is what a reader does (item 544).
+  //
+  // ORDER BY is admitted only for a sort key that is a plain reference to the OUTPUT column.
+  // Any other expression could FAULT while being evaluated for the sort — `ORDER BY 1/0` raises
+  // on the general path — and a shortcut that skipped the sort would skip the fault with it. A
+  // reference to the column just produced cannot fault beyond producing it.
+  //
+  // The `kind === 'var'` half is load-bearing and its mutant is caught. The NAME comparison is
+  // equivalent by construction and its mutant survives: an aggregating projection's ORDER BY
+  // resolves against the OUTPUT columns, and there is exactly one of them here, so any valid
+  // `var` key already IS this column. Kept as the local statement of the rule, and recorded
+  // rather than left as an unexplained survivor.
+  const orderOnOutput = (proj.orderBy ?? []).every(
+    (sort) => sort.expr.kind === 'var' && sort.expr.name === column,
+  );
+
+  if (!orderOnOutput) {
+    return null;
+  }
+
   const rowOf = (count: number): Row => ({ [column]: count });
 
   // ONE pattern in ONE `MATCH` keeps the original path, which is the only one that
