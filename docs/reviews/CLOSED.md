@@ -5069,3 +5069,26 @@ populated).
 **`COUNT { … }` (93 ms against native 14.7) NOT taken**: it routes through the exact `side` call
 site 355 priced and declined. 355's UNTRIED variant — PEEK the box, hash on a miss, never write —
 needs a new `@lenke/core` accessor and a MIXED workload to measure.
+
+## 494 — the `COUNT { … }` degree reads the anchor's box: CLOSED at 1.28x WARM
+
+Item 493's open row, taken without touching `side` (item 355 declined widening it):
+`sideOfVertex` is `side`'s body with the box read instead of the id hash, used only by the
+ONE-hop degree branch. WARM 93.5-94.0 -> 72.4-73.6 (1.28x); COLD 103.6-125.2 against 109.7-118.1,
+**not callable** — 493's cold/warm discipline applied up front. `EXISTS` is the flat control.
+
+**I overwrote an existing test file.** `count-subquery-degree.test.ts` already held **30 tests**
+from item 211 covering this exact path; `Write` replaced them with nine redundant ones, and the
+only tell was the suite dropping 2631 -> 2610 **with everything still green**. Recovered via `git
+checkout HEAD --`; my file dropped as redundant. _A clobbered test file is green by construction
+— the tests that would have failed are gone._ The detector was a test COUNT, not a failure.
+
+Mutation against the RESTORED suite: five of six caught (wrong direction, boxed reader dropping
+the far label, `countOf` dropping the far label, `countOf` dropping the type, the bound-far-var
+run-time check). **Item 211's tests had teeth for a change made twenty items later** — the
+argument for not replacing them.
+
+**One mutant was MISAPPLIED and read as a survivor**: `sideOfVertex` is `side`'s body with one
+line changed, so a pattern starting at `if (far === undefined)` matched both and the
+one-occurrence check passed only because trailing context differed. Items 474, 483, 494: **two
+copies of a body is the most reliable way to fool a mutation run here.**

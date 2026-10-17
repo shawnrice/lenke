@@ -1328,6 +1328,9 @@ const degreeCountSubquery = (
   startVar: string;
   inner: readonly string[];
   count: (graph: Graph, id: string) => number;
+  // Present only for the shapes that can read the anchor's box — the one-hop degree. The
+  // two-hop side still resolves mid-vertices by id, which is a different question.
+  countOf?: (v: Vertex, graph: Graph) => number;
 } | null => {
   if (expr.where !== undefined || expr.patterns.length !== 1) {
     return null;
@@ -1370,6 +1373,9 @@ const degreeCountSubquery = (
     return {
       startVar,
       inner,
+      // The ONE-hop degree reads the anchor's adjacency box; see `sideOfVertex` for why `side`
+      // itself is left on the id (item 355) and what claim this is taken under (item 493).
+      countOf: (v, _graph) => sideOfVertex(v, h1.out, h1.types, h1.label),
       count: (graph, id) => side(graph, id, h1.out, h1.types, h1.label),
     };
   }
@@ -1405,7 +1411,9 @@ const compileCountSubquery = (expr: Extract<Expr, { kind: 'countSubquery' }>): C
       // Every INNER variable being UNBOUND is what makes this a degree rather than a pair or
       // triple count, and `has` is the check — a variable bound to `null` is still bound.
       if (isVertex(anchor) && !degree.inner.some((v) => env.binding.has(v))) {
-        return degree.count(env.graph, anchor.id);
+        return degree.countOf === undefined
+          ? degree.count(env.graph, anchor.id)
+          : degree.countOf(anchor, env.graph);
       }
     }
 
@@ -6070,6 +6078,7 @@ import {
   plainNode,
   plainRel,
   side,
+  sideOfVertex,
   twoHopSide,
 } from './executor/shortcuts.js';
 import type { ReachFn, TwoHopSide } from './executor/shortcuts.js';

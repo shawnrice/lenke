@@ -1437,6 +1437,38 @@ export const selectiveFirst = (
  * fresh graph — so it needs a MIXED read/write workload (`bench:usage`), which is where item 321's
  * boxes are already populated.
  */
+/**
+ * `side` for a caller that holds the VERTEX, reading its adjacency box (`Vertex.adjFrom` /
+ * `adjTo`, items 162 and 321) instead of hashing the id into the graph's map.
+ *
+ * ITS OWN FUNCTION, deliberately — `side` itself stays on the id. Item 355 measured passing a
+ * Vertex into `side`: the box is a MEMO, so first touch is 1.21x WORSE (same hash plus the memo
+ * write) and warm is 1.35x better, and FIVE of that function's six vertex-holding call sites
+ * visit each vertex exactly once per query, where the cold cost is all they would ever get.
+ * Widening `side` would impose that on all six.
+ *
+ * This caller is the correlated `COUNT { (u)-[:T]->(x) }` subquery, which is the shape item 492
+ * measured on the `EXISTS` side: 93 ms against native's 14.7 at 200,000 nodes. Item 493 then
+ * measured cold and warm separately there — **warm 1.3x better, cold indistinguishable at query
+ * scale** — so this is taken with that claim and no other.
+ */
+export const sideOfVertex = (
+  v: Vertex,
+  out: boolean,
+  types: string[] | undefined,
+  far: LabelExpr | undefined,
+): number => {
+  const byType = out ? v.adjFrom : v.adjTo;
+
+  if (far === undefined) {
+    return bucketSize(byType, types);
+  }
+
+  return countEdges(edgesOfTypes(byType, types), (edge) =>
+    matchesLabel(out ? edge.to : edge.from, far),
+  );
+};
+
 export const side = (
   graph: Graph,
   bId: string,
