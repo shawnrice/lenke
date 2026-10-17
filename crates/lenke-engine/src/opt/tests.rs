@@ -3040,3 +3040,121 @@ fn inline_null_property_is_still_is_null_in_a_conjunction() {
         vec!["Num(0.0);".to_string()]
     );
 }
+
+/// Item 550 — the native twin of item 549. ISO's `<order by and page statement>` is a
+/// `primitiveQueryStatement` (§14.10), so a sort can stand UNDER the aggregate. A keyless
+/// `Aggregate` is one row and an order-free fold cannot read the order, so the sort is pure cost:
+/// at 200,000 vertices / 200,000 edges, `ORDER BY n.age RETURN count(*)` went **10.10ms -> 0.01**,
+/// `RETURN max(n.age)` **10.35 -> 0.44**, the one-hop count **11.68 -> 0.51**, and `OFFSET 0`
+/// **0.56 -> 0.01**.
+///
+/// Four refusals, each asserted below, and each one a wrong answer without it.
+#[test]
+fn a_vacuous_sort_under_a_scalar_aggregate_is_elided() {
+    let mut b = Builder::default();
+
+    b.node(&["P"], &[("k", Value::Num(1.0))]);
+    b.node(&["P"], &[("k", Value::Num(2.0))]);
+    b.node(&["P"], &[("k", Value::Num(3.0))]);
+
+    let store = b.build();
+    let plan_of = |q: &str| -> Plan { optimize_indexed(crate::gql::parse(q).unwrap(), &store) };
+    let answer = |q: &str| -> Vec<String> { bag(&run(&plan_of(q), &store)) };
+    let sorts = |q: &str| -> bool { format!("{:?}", plan_of(q)).contains("OrderPage") };
+
+    // ELIDED, and the answer is the one the same query without the clause gives.
+    for q in [
+        "MATCH (n:P) ORDER BY n.k RETURN count(*) AS c",
+        "MATCH (n:P) ORDER BY n.k DESC RETURN count(*) AS c",
+        "MATCH (n:P) ORDER BY n.k OFFSET 0 RETURN count(*) AS c",
+        "MATCH (n:P) OFFSET 0 RETURN count(*) AS c",
+        "MATCH (n:P) ORDER BY n.missing RETURN count(*) AS c",
+    ] {
+        assert!(!sorts(q), "the sort should be gone: {q}");
+        assert_eq!(answer(q), vec!["Num(3.0);".to_string()], "{q}");
+    }
+    assert_eq!(
+        answer("MATCH (n:P) ORDER BY n.k RETURN max(n.k) AS m"),
+        vec!["Num(3.0);".to_string()]
+    );
+    assert!(!sorts("MATCH (n:P) ORDER BY n.k RETURN max(n.k) AS m"));
+
+    // REFUSED 1: a LIMIT, or an OFFSET past the first row, chooses WHICH rows are folded.
+    assert!(sorts(
+        "MATCH (n:P) ORDER BY n.k LIMIT 2 RETURN count(*) AS c"
+    ));
+    assert_eq!(
+        answer("MATCH (n:P) ORDER BY n.k LIMIT 2 RETURN count(*) AS c"),
+        vec!["Num(2.0);".to_string()]
+    );
+    assert_eq!(
+        answer("MATCH (n:P) OFFSET 1 RETURN count(*) AS c"),
+        vec!["Num(2.0);".to_string()]
+    );
+    // The sort is load-bearing under a limit: the two directions fold different rows.
+    assert_eq!(
+        answer("MATCH (n:P) ORDER BY n.k LIMIT 1 RETURN max(n.k) AS m"),
+        vec!["Num(1.0);".to_string()]
+    );
+    assert_eq!(
+        answer("MATCH (n:P) ORDER BY n.k DESC LIMIT 1 RETURN max(n.k) AS m"),
+        vec!["Num(3.0);".to_string()]
+    );
+
+    // REFUSED 2: an order-DEPENDENT fold. `collect` reads the row order outright.
+    assert!(sorts("MATCH (n:P) ORDER BY n.k RETURN collect(n.k) AS m"));
+    assert_eq!(
+        answer("MATCH (n:P) ORDER BY n.k RETURN collect(n.k) AS m"),
+        vec!["List([Num(1.0), Num(2.0), Num(3.0)]);".to_string()]
+    );
+    assert_eq!(
+        answer("MATCH (n:P) ORDER BY n.k DESC RETURN collect(n.k) AS m"),
+        vec!["List([Num(3.0), Num(2.0), Num(1.0)]);".to_string()]
+    );
+    // `sum` is order-free in arithmetic but not in floating point, and byte-identity with the TS
+    // engine pins the summation order — so it is refused with `collect`.
+    assert!(sorts("MATCH (n:P) ORDER BY n.k RETURN sum(n.k) AS s"));
+
+    // REFUSED 3: a GROUPED aggregate. Group order is FIRST-SEEN, which the sort sets.
+    assert!(sorts(
+        "MATCH (n:P) ORDER BY n.k DESC RETURN n.k AS g, count(*) AS c"
+    ));
+
+    // REFUSED 4: a sort key that can RAISE. Eliding it would swallow the fault.
+    assert!(sorts("MATCH (n:P) ORDER BY 1 / 0 RETURN count(*) AS c"));
+    assert!(
+        crate::exec::try_run(
+            &plan_of("MATCH (n:P) ORDER BY 1 / 0 RETURN count(*) AS c"),
+            &store
+        )
+        .is_err(),
+        "the fault must survive"
+    );
+}
+
+/// A GREMLIN page is never elided, and the reason is NOT the row-dropping `order().by('k')` —
+/// that drop lives in a separate `Filter(PropertyExists)` the lowering emits, which survives any
+/// rewrite of the page. It is the RUNTIME element fault: `exec::order` raises for a sort key that
+/// turns out to be a graph element when `fault_on_element` is set, which is the backstop for a
+/// mixed frontier the parser could not classify. Eliding would swallow that.
+#[test]
+fn a_gremlin_page_under_a_count_is_not_elided() {
+    let mut b = Builder::default();
+
+    b.node(&["P"], &[("k", Value::Num(1.0))]);
+    b.node(&["P"], &[]);
+
+    let store = b.build();
+    let plan = format!(
+        "{:?}",
+        optimize_indexed(
+            crate::gremlin::parse("g.V().hasLabel('P').order().by('k').count()").unwrap(),
+            &store
+        )
+    );
+
+    assert!(
+        plan.contains("OrderPage"),
+        "a Gremlin page must survive: {plan}"
+    );
+}

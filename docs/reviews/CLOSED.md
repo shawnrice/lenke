@@ -6430,3 +6430,33 @@ survivors. 38 cross-engine assertions, all agreeing.
 
 Two groups added to the TS spelling probe; the three-member one now reads 0.00/0.00/0.00 and is
 "too fast to compare", which is the result.
+
+## 550 — the native twin of 549: a vacuous sort under a scalar aggregate, 10.10 ms → 0.01
+
+Item 549 shipped the TS half and recorded that native had the cliff too. It does, and the fix is
+two arms in `opt::apply_local`. 200,000 vertices / 200,000 edges, one case per process, pristine
+build against the change:
+
+| query                                                          | before   | after            |
+| -------------------------------------------------------------- | -------- | ---------------- |
+| `MATCH (n:Person) ORDER BY n.age RETURN count(*)`              | 10.10 ms | **0.01** (1010x) |
+| `MATCH (:Person)-[:KNOWS]->(b) ORDER BY b.age RETURN count(*)` | 11.68    | **0.50** (23x)   |
+| `MATCH (n:Person) ORDER BY n.age RETURN max(n.age)`            | 10.35    | **0.44** (23x)   |
+| `MATCH (n:Person) OFFSET 0 RETURN count(*)`                    | 0.56     | **0.01** (56x)   |
+
+Controls flat and still refused: `collect` 16.97 → 17.03, `ORDER BY … LIMIT 10` 2.11 → 2.08 still
+answering 10, the plain count 0.01 both ways.
+
+**A GREMLIN page is never elided**, and an existing test is why — but not for the reason it said.
+`a_gremlin_order_by_key_filters_and_so_cannot_be_elided_under_a_count` failed on its STRUCTURAL
+assert while its three numeric assertions passed: `order().by('k')` does drop elements lacking `k`,
+but that drop is a separate `Filter(PropertyExists)` the lowering emits, which survives any rewrite
+of the page. The real reason to decline is the RUNTIME element fault in `exec::order`
+(`fault_on_element`), the backstop for a mixed frontier the parser could not classify — eliding
+would swallow it. The guard is now `!fault_on_element`, the old test passes unchanged, and its
+proxy assert is left as the regression guard it is.
+
+Teeth: seven mutants under the cap, **six caught, control clean, no survivors** — and M2 (the
+page-keeps-every-row check dropped) is caught by **`rewrite_fuzz` itself**, three of its tests, which
+is the first direct evidence this session that the optimizer fuzzer has teeth for a rule in this
+family. `LENKE_OPT_FUZZ_SEEDS=200000` clean.

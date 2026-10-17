@@ -9,7 +9,7 @@
 //! ROWS are unchanged (run original vs optimized, compare as bags) and the plan
 //! SHAPE changed as intended.
 
-use crate::ir::{CompareOp, Expr, Plan};
+use crate::ir::{Agg, AggFn, CompareOp, Expr, Plan};
 use crate::store::Store;
 use crate::value::Value;
 
@@ -1615,8 +1615,119 @@ fn range_seek_target(pred: &Expr) -> Option<(String, CompareOp, Value)> {
 }
 
 /// The local rules, tried in order at a single node.
+/// Is this aggregate's value independent of the ORDER of the rows it folds?
+///
+/// `Count`, `Min` and `Max` are order-free, and the two percentiles sort internally. `Sum` and
+/// `Avg` are order-free in arithmetic but NOT in floating point, and byte-identity with the TS
+/// engine pins the summation order, so they are refused — as are `Collect`/`CollectList`, whose
+/// dependence the `Collect` doc comment states outright ("in the group's row order, so a
+/// preceding sort carries through"), and the stddevs, which are one-pass moment folds.
+fn agg_is_order_free(a: &Agg) -> bool {
+    matches!(
+        a.func,
+        AggFn::Count | AggFn::Min | AggFn::Max | AggFn::PercentileCont | AggFn::PercentileDisc
+    )
+}
+
+/// Does this `OrderPage` keep every row it is given, in whatever order?
+///
+/// A `limit`, or a `skip` past the first row, changes WHICH rows reach what is above it and is
+/// never droppable. `skip: Some(0)` is the `OFFSET 0` spelling and keeps everything.
+fn page_keeps_every_row(skip: Option<usize>, limit: Option<usize>) -> bool {
+    limit.is_none() && skip.is_none_or(|s| s == 0)
+}
+
 fn apply_local(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
     match plan {
+        // A SORT below a scalar aggregate that cannot read it — items 549 (TS) and 550 (here).
+        //
+        // ISO puts `<order by and page statement>` in the `primitiveQueryStatement` position
+        // (§14.10), so `MATCH … ORDER BY n.age RETURN count(*)` is a legal spelling with a sort
+        // standing under the aggregate. The aggregate folds every row it is given and a keyless
+        // `Aggregate` is ONE row, so for an order-free fold the sort is pure cost. Measured at
+        // 200,000 vertices / 200,000 edges:
+        //
+        // ```text
+        //   MATCH (n:Person) RETURN count(*)                   0.01 ms
+        //   MATCH (n:Person) ORDER BY n.age RETURN count(*)   10.07     -> 0.01
+        //   MATCH (n:Person) ORDER BY n.age RETURN max(n.age) 10.30     -> 0.47
+        // ```
+        //
+        // Three conditions, each of which is a wrong answer without it: the aggregate must be
+        // KEYLESS (with group keys the group ORDER is first-seen, which the sort sets), every
+        // aggregate must be order-free ([`agg_is_order_free`] — `collect` reads the order
+        // outright), and the page must keep every row ([`page_keeps_every_row`] — a `LIMIT`
+        // chooses which rows are folded at all).
+        //
+        // And the sort keys must not RAISE. Two ways they can, and both are refused:
+        //
+        //   - `ORDER BY 1 / 0` faults on its own arithmetic. [`can_raise`] is the same guard the
+        //     filter-merge rule above uses.
+        //   - a GREMLIN page (`fault_on_element`) over a key that turns out to be a graph element
+        //     faults at RUNTIME — the backstop in `exec::order` for a mixed/branch frontier the
+        //     parser could not classify. So this arm takes only GQL-built pages, where
+        //     `ORDER BY <element>` sorts by external id instead and cannot fault.
+        //
+        // Declining every Gremlin page also leaves `order().by('k')` alone, which is a FILTER as
+        // much as a sort — TinkerPop drops a traverser whose key is absent. The drop itself lives
+        // in a separate `Filter(PropertyExists)` the lowering emits, so it would survive this
+        // rewrite; the runtime element fault is the reason to decline, not the drop.
+        Plan::Aggregate { input, keys, aggs } => match *input {
+            Plan::OrderPage {
+                input: inner,
+                keys: sort_keys,
+                skip,
+                limit,
+                fault_on_element,
+            } if keys.is_empty()
+                && !fault_on_element
+                && page_keeps_every_row(skip, limit)
+                && aggs.iter().all(agg_is_order_free)
+                && !sort_keys.iter().any(|k| can_raise(&k.expr)) =>
+            {
+                (
+                    Plan::Aggregate {
+                        input: inner,
+                        keys,
+                        aggs,
+                    },
+                    true,
+                )
+            }
+            other => (
+                Plan::Aggregate {
+                    input: Box::new(other),
+                    keys,
+                    aggs,
+                },
+                false,
+            ),
+        },
+        // A page that sorts by nothing and keeps everything — the `OFFSET 0` spelling, 0.57ms
+        // against 0.01 for the same count without it. An identity whatever is above it, so unlike
+        // the arm before this one it needs no condition on its consumer.
+        Plan::OrderPage {
+            input,
+            keys,
+            skip,
+            limit,
+            fault_on_element,
+        } => {
+            if keys.is_empty() && page_keeps_every_row(skip, limit) {
+                (*input, true)
+            } else {
+                (
+                    Plan::OrderPage {
+                        input,
+                        keys,
+                        skip,
+                        limit,
+                        fault_on_element,
+                    },
+                    false,
+                )
+            }
+        }
         Plan::Filter { input, pred } => match *input {
             // filter-merge: `Filter(Filter(x, p2), p1)` -> `Filter(x, p1 AND p2)`.
             //

@@ -93,6 +93,25 @@ fn main() {
     // Each group: queries that MUST be semantically equivalent. Mixed GQL & Gremlin.
     let groups: &[(&str, &[(Lang, &str)])] = &[
         (
+            // Item 550. ISO's `<order by and page statement>` (§14.10) can stand UNDER the
+            // aggregate. A keyless `Aggregate` is one row and an order-free fold cannot read the
+            // order, so these three are one question — and the two with the clause cost 10.10 and
+            // 0.56ms against 0.01 before `apply_local` learned to elide them.
+            "a vacuous ORDER BY / OFFSET statement vs none",
+            &[
+                (Gql, "MATCH (n:Person) RETURN count(*) AS c"),
+                (Gql, "MATCH (n:Person) OFFSET 0 RETURN count(*) AS c"),
+                (Gql, "MATCH (n:Person) ORDER BY n.age RETURN count(*) AS c"),
+            ],
+        ),
+        (
+            "a vacuous ORDER BY statement under an aggregate",
+            &[
+                (Gql, "MATCH (n:Person) RETURN max(n.age) AS m"),
+                (Gql, "MATCH (n:Person) ORDER BY n.age RETURN max(n.age) AS m"),
+            ],
+        ),
+        (
             // Item 548. A trailing `FILTER <pred>` (ISO §14.6) asks what a clause `WHERE` on the
             // MATCH before it asks. The TS engine put the FILTER spelling one clause in front of
             // every detector and paid 3.5-8.6x for it; THIS engine never had the cliff — the two
