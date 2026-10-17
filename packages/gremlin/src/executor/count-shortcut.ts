@@ -1,4 +1,4 @@
-import type { Edge, Graph } from '@lenke/core';
+import type { Edge, Graph, Vertex } from '@lenke/core';
 
 import type { Plan, Step } from '../ast.js';
 import { matches } from '../predicates.js';
@@ -50,6 +50,14 @@ export const countShortcut = (plan: Plan, graph: Graph): number | undefined => {
 
   if (mid.length === 1) {
     return vertexStepCount(mid[0], graph);
+  }
+
+  // A CHAIN of vertex filters, which is the shape a redundant step produces. Tried before the
+  // hop counts below and after the single-step arm, so neither changes.
+  const chain = filterChainCount(mid, graph);
+
+  if (chain !== undefined) {
+    return chain;
   }
 
   if (mid.length !== 2) {
@@ -286,6 +294,99 @@ const bucketsFor = (
 
   return labels.map((l) => graph.edgesByLabel.get(l) ?? new Set<Edge>());
 };
+
+/**
+ * `V().hasLabel(L).has(k, pred).count()` and any other chain of VERTEX FILTERS — tallied over the
+ * best source instead of run through the traverser pipeline.
+ *
+ * WHY. `vertexStepCount` above answers `V()` plus ONE step; two steps fell to the pipeline, and a
+ * step that filters NOTHING is enough to get there. Measured at 200,000 vertices all carrying
+ * `Person`, one case per process (item 537):
+ *
+ * ```text
+ *   V().has(age, gt(44)).count()                      2.37 ms   11.9 ns a vertex   the tally
+ *   V().has().has().count()                           6.25      31.2               the pipeline
+ *   V().has().has().has().count()                     8.01      40.1
+ *   V().hasLabel('Person').has(age, gt(44)).count()  19.27      96.4
+ *   V().hasLabel().hasLabel().has().count()          25.83     129.1
+ * ```
+ *
+ * So the pipeline costs ~40-50 ns a vertex PER STEP — item 234 measured the same thing as "3.3x of
+ * that row is the pipeline, not the predicate: a traverser allocated per vertex to be filtered and
+ * discarded". A redundant `hasLabel` is a 4.4x tax for excluding nothing, and the GQL engine
+ * charges nothing for the same redundancy (item 536 measured `MATCH (n:Person) WHERE …` at 4.40 ms
+ * against 4.41 unlabelled), so this is the surface that was behind.
+ *
+ * THE SOURCE. A `hasLabel` naming exactly ONE label is read off that label's bucket, so the tally
+ * is O(bucket) rather than O(V). A multi-label `hasLabel` is an OR over buckets a vertex may sit
+ * in several of, so it stays a predicate — `labelledCount` declines it for the same reason.
+ *
+ * SOUNDNESS. Every admitted step is a TOTAL predicate: `matches` returns false for a missing or
+ * incomparable value rather than throwing, and a label test cannot fault. So evaluating all of
+ * them over every vertex of the source raises exactly what the pipeline raises (nothing), and the
+ * conjunction's order is unobservable — the same argument `propertyCount` makes, and the reason
+ * this can tally rather than having to mirror the pipeline's short-circuit.
+ *
+ * It DECLINES when any `has` could seed an index, which is `propertyCount`'s load-bearing
+ * condition: `countShortcut` runs before `seedFromIndex`, so a tally that scanned anyway would
+ * answer in O(V) where a seek answers in O(matches) — item 149's failure, a fast path losing an
+ * index.
+ *
+ * TWO MUTANTS SURVIVE and both are answer-preserving, recorded rather than left unexplained:
+ * re-testing the label that already seeded the bucket is redundant work for the same count, and
+ * admitting a ONE-step chain would duplicate `vertexStepCount` rather than contradict it (the
+ * tally and the bucket read agree for both single-step kinds). `mid.length < 2` stays so the
+ * single-step arm keeps its own, cheaper answer.
+ */
+const filterChainCount = (mid: readonly Step[], graph: Graph): number | undefined => {
+  if (mid.length < 2) {
+    return undefined;
+  }
+
+  const labelTests: (readonly string[])[] = [];
+  const propTests: Extract<Step, { kind: 'has' }>[] = [];
+
+  for (const step of mid) {
+    if (step.kind === 'hasLabel') {
+      labelTests.push(step.labels);
+      continue;
+    }
+
+    if (step.kind !== 'has' || seedForStep(step, graph.vertexPropertyIndex) !== null) {
+      return undefined;
+    }
+
+    propTests.push(step);
+  }
+
+  // The first SINGLE-label test becomes the source; the rest stay predicates.
+  const seedAt = labelTests.findIndex((ls) => ls.length === 1);
+  const source: Iterable<Vertex> =
+    seedAt === -1
+      ? graph.verticesById.values()
+      : (graph.verticesByLabel.get(labelTests[seedAt][0]) ?? EMPTY_VERTICES);
+  let n = 0;
+
+  for (const v of source) {
+    let ok = true;
+
+    for (let i = 0; i < labelTests.length && ok; i += 1) {
+      ok = i === seedAt || labelTests[i].some((l) => v.labels.has(l));
+    }
+
+    for (let i = 0; i < propTests.length && ok; i += 1) {
+      ok = matches(propTests[i].pred, v.properties[propTests[i].key]);
+    }
+
+    if (ok) {
+      n += 1;
+    }
+  }
+
+  return n;
+};
+
+const EMPTY_VERTICES: readonly Vertex[] = [];
 
 /** The one intermediate step whose count is a bucket size. */
 const vertexStepCount = (step: Step, graph: Graph): number | undefined => {

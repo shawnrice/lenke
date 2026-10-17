@@ -69,6 +69,13 @@ const SHAPES: [string, Plan][] = [
   ['V().out().has().count()', traversal(V(), out('KNOWS'), has('age', gt(44)), count())],
   ['V().groupCount(age)', traversal(V(), groupCount({ by: 'age' }))],
   ['V().out().dedupe().count()', traversal(V(), out('KNOWS'), dedupe(), count())],
+  // A FILTER CHAIN, which no row here had — and its absence is why item 537's 4-6x was
+  // invisible: `countShortcut` answered `V()` plus ONE step and a chain fell to the traverser
+  // pipeline at ~40-50 ns a vertex PER STEP. Every vertex carries `Person`, so the label
+  // excludes nothing and the pair is an EQUIVALENT-SPELLING guard as much as a perf row: these
+  // two ask the same question and must stay close.
+  ['V().hasLabel().has().count()', traversal(V(), hasLabel('Person'), has('age', gt(44)), count())],
+  ['V().has().has().count()', traversal(V(), has('age', gt(44)), has('age', gt(-1)), count())],
 ];
 
 /**

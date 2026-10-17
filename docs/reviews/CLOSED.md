@@ -6059,3 +6059,36 @@ redundancy is free; the Gremlin pipeline's is not.
 after this session had recorded the same trap three times (514, 524, 534). _A min-of-nine inside
 one process is not isolation_ — one case per process is the only form that works here, which is
 why the route-cost probe is built that way. Fourth instrument, and this time it was mine.
+
+## 537 — a Gremlin filter CHAIN now tallies: CLOSED at 4.0x (and 1.9x for two `has` steps)
+
+Item 536's one surviving finding, diagnosed: it is not about labels. `countShortcut`'s
+`vertexStepCount` answers `V()` plus ONE step; two steps reach the `mid.length === 2` arm (the HOP
+counts, which decline a filter pair) and the query ran the traverser pipeline at **~40-50 ns a
+vertex PER STEP** — item 234's "a traverser allocated per vertex to be filtered and discarded".
+A redundant `hasLabel` is expensive only because it is a second step.
+
+Isolated ladder: `V().has().count()` 11.9 ns/vertex, two `has` 31.2, three 40.1,
+`hasLabel()+has()` 96.4, `hasLabel()+hasLabel()+has()` 129.1.
+
+`filterChainCount` tallies any chain of `hasLabel`/`has` in any order and length. A single-label
+`hasLabel` becomes the SOURCE (its bucket, so O(bucket) not O(V)); a multi-label test stays a
+predicate, since a vertex may sit in several buckets. Sound because every admitted step is TOTAL —
+`matches` never throws, a label test cannot fault — so order is unobservable and no fault can
+appear or disappear (`propertyCount`'s own argument). Inherits its index rule: decline when any
+`has` could seed (item 149).
+
+Before 19.33 / 19.38 / 12.97 → after 3.27 / 3.38 / 3.33 (4.0x); two `has` 6.83 / 7.20 / 6.49 →
+3.43 / 3.62 / 3.52 (1.9x); the one-step control flat at 2.2-2.4. Three alternated rounds with a
+rebuild between each, disjoint.
+
+**`bench:gremlin` had no filter-chain row, which is why a 4-6x gap sat unseen.** Two added, and the
+`hasLabel().has()` one is an equivalent-spelling guard too: every vertex on that fixture is a
+`Person`, so it asks the same question as `V().has().count()`. They read 6.1 / 6.2 in that harness
+against 3.3 / 3.5 isolated — it runs every row in one process.
+
+Mutation 4 of 6 (null control clean). Both survivors are answer-preserving and recorded at the
+guard. And the suite had a test asserting this shape DECLINES — _a widening must replace such a
+test rather than delete it_: it now asserts the claim and the answer against the pipeline's own,
+with a non-zero sibling, because `0` is correct for the first case and a tally that always
+answered 0 would pass it.
