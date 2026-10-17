@@ -7402,14 +7402,32 @@ fn degree_count_subquery_agrees_with_the_general_path() {
     // `body` carries `{}` where the landing node goes, so each case is written once and asked
     // both ways: bare (the degree chain) and `:N` (a Filter, so the general path).
     let both = |start: &str, body: &str, want: f64| {
-        let fast = format!(
-            "MATCH (u:N) WHERE u.name='{start}' RETURN COUNT {{ {} }} AS c",
-            body.replace("{}", "")
-        );
-        let slow = format!(
+        let bare = body.replace("{}", "");
+        // The `{}` placeholder marks the node the label goes on (usually the last, but the
+        // self-join cases put it on the middle), so the variable to predicate on is whatever
+        // precedes it — the declining twin needs a predicate ON a node the body binds.
+        let at = body.find("{}").expect("the {} placeholder");
+        let open = body[..at]
+            .rfind('(')
+            .expect("a node opens before the placeholder");
+        let far_var = &body[open + 1..at];
+        let fast = format!("MATCH (u:N) WHERE u.name='{start}' RETURN COUNT {{ {bare} }} AS c");
+        let labelled = format!(
             "MATCH (u:N) WHERE u.name='{start}' RETURN COUNT {{ {} }} AS c",
             body.replace("{}", ":N")
         );
+        // ITEM 500 CHANGED WHAT THIS TEST PROVES. The `:N` spelling used to be the DECLINING
+        // twin; now a bare label on the LAST landing is itself answered by the degree chain
+        // (a different branch of it — a walk with a membership test rather than a degree
+        // read), so it is no longer an independent path. An instrumented run confirmed it:
+        // the chain fired 19 times across these cases before item 500 and 38 after.
+        //
+        // So the twin is now a sub-`WHERE`, which is not a label test and still declines. Every
+        // node carries `N` and no node is named `zz`, so all three spellings must agree.
+        let slow = format!(
+            "MATCH (u:N) WHERE u.name='{start}' RETURN COUNT {{ {bare} WHERE {far_var}.name <> 'zz' }} AS c"
+        );
+        assert_eq!(n(&labelled), want, "label branch: {labelled}");
         assert_eq!(n(&fast), want, "degree chain: {fast}");
         assert_eq!(n(&slow), want, "general path: {slow}");
     };
@@ -7551,4 +7569,65 @@ fn value_subquery_returning_an_aggregate() {
         let err = super::parse(q).map(|_| String::new()).unwrap_or_else(|e| e);
         assert!(err.contains(want), "want {want:?} in {err:?} for {q}");
     }
+}
+
+/// Item 500: a bare LABEL on the last landing is answered by the degree chain too — the last hop
+/// walks and tests membership instead of reading a degree. Which positions that covers, and
+/// which it must still refuse, with a declining twin for each.
+#[test]
+fn degree_count_subquery_with_a_landing_label() {
+    // a -> m1 (:P:H), a -> m2 (:P); m1 -> t1 (:H), m1 -> t2 (:P); m2 -> t1.
+    let nd = concat!(
+        "{\"id\":\"a\",\"labels\":[\"P\"],\"props\":{\"name\":\"a\"}}\n",
+        "{\"id\":\"m1\",\"labels\":[\"P\",\"H\"],\"props\":{\"name\":\"m1\"}}\n",
+        "{\"id\":\"m2\",\"labels\":[\"P\"],\"props\":{\"name\":\"m2\"}}\n",
+        "{\"id\":\"t1\",\"labels\":[\"H\"],\"props\":{\"name\":\"t1\"}}\n",
+        "{\"id\":\"t2\",\"labels\":[\"P\"],\"props\":{\"name\":\"t2\"}}\n",
+        "{\"id\":\"e1\",\"from\":\"a\",\"to\":\"m1\",\"type\":\"T\",\"props\":{}}\n",
+        "{\"id\":\"e2\",\"from\":\"a\",\"to\":\"m2\",\"type\":\"T\",\"props\":{}}\n",
+        "{\"id\":\"e3\",\"from\":\"m1\",\"to\":\"t1\",\"type\":\"T\",\"props\":{}}\n",
+        "{\"id\":\"e4\",\"from\":\"m1\",\"to\":\"t2\",\"type\":\"S\",\"props\":{}}\n",
+        "{\"id\":\"e5\",\"from\":\"m2\",\"to\":\"t1\",\"type\":\"T\",\"props\":{}}\n",
+    );
+    let store = crate::ndjson::from_ndjson(nd).unwrap();
+    let n = |q: &str| -> f64 {
+        match run(&super::parse(q).unwrap(), &store).rows[0][0] {
+            Value::Num(x) => x,
+            ref o => panic!("want num, got {o:?}"),
+        }
+    };
+    // Every case against a DECLINING twin: the same body with a sub-`WHERE` on the far node,
+    // which is not a label test and so falls to the general materializing path. No node is
+    // named `zz`, so the predicate keeps everything.
+    let both = |body: &str, far_var: &str, want: f64| {
+        let fast = format!("MATCH (u:P) WHERE u.name='a' RETURN COUNT {{ {body} }} AS c");
+        let slow = format!(
+            "MATCH (u:P) WHERE u.name='a' RETURN COUNT {{ {body} WHERE {far_var}.name <> 'zz' }} AS c"
+        );
+        assert_eq!(n(&fast), want, "label branch: {fast}");
+        assert_eq!(n(&slow), want, "general path: {slow}");
+    };
+
+    // ONE hop: the label selects, a multi-labelled node matches either of its labels, and an
+    // UNKNOWN label matches nothing (never everything).
+    both("(u)-[:T]->(x:H)", "x", 1.0);
+    both("(u)-[:T]->(x:P)", "x", 2.0);
+    both("(u)-[:T]->(x:ZZZ)", "x", 0.0);
+    both("(u)-[:T]->(x)", "x", 2.0);
+    // The TYPE still selects underneath the label.
+    both("(u)-[:S]->(x:P)", "x", 0.0);
+    // And the DIRECTION: nothing points at `a`.
+    both("(u)<-[:T]-(x:P)", "x", 0.0);
+
+    // TWO hops with the label on the END — the walk is the last hop only.
+    both("(u)-[:T]->(x)-[:T]->(y:H)", "y", 2.0); // m1->t1 and m2->t1
+    both("(u)-[:T]->(x)-[:T]->(y:P)", "y", 0.0); // t2 is reached by S, not T
+    both("(u)-[:T]->(x)-[:S]->(y:P)", "y", 1.0); // m1 -S-> t2
+
+    // A label on a MIDDLE position is a filter the chain must REFUSE: a degree cannot say which
+    // of a vertex's edges land somewhere that passes, and the slot check is what enforces it.
+    // The answers still have to be right, by the general path.
+    both("(u)-[:T]->(x:H)-[:T]->(y)", "y", 1.0); // only m1 is :H, and it has one T out-edge
+    both("(u)-[:T]->(x:H)-[:T]->(y:H)", "y", 1.0);
+    both("(u)-[:T]->(x:P)-[:T]->(y)", "y", 2.0);
 }

@@ -5196,3 +5196,25 @@ Mutation: 1 of 5 caught — the `star` check, which is the load-bearing one (`co
 CONSTRUCTION**: `count(DISTINCT *)` is a parse error so `distinct` cannot accompany `star`, and
 `max(*)` / `collect(*)` are rejected as needing an argument so nothing else carries `star`. The
 pattern guard admits only `VALUE { RETURN count(*) }`, where both paths answer 1.
+
+## 500 — a landing LABEL on the native degree chain: CLOSED at 7.6x / 9.6x
+
+Item 498's two worst cells. A label on the LAST landing is the one filter a degree chain can take
+— the hop walks anyway, so the neighbour's membership is a probe into a bucket resolved once per
+batch. One hop 185.5-198.9 -> 24.6-24.9 ms (7.6x); two hops with the label on the end 866.8-869.5
+-> 86.2-94.7 (9.6x). Controls: the unfiltered degree flat, and a sub-`WHERE` — the filter it must
+still refuse — flat at 18 ms.
+
+**`opt` NEVER DESCENDS INTO A CORRELATED SUBQUERY BODY.** The first recognizer matched
+`Expr::IsLabeled` and was INERT (202.2 -> 191.3, noise), because GQL's `(x:L)` lowers to
+`'L' IN labels(slot)` and `opt::normalize_pred` canonicalizes only top-level plans. So a subquery
+body also gets no filter pushdown and **no index seeding** — a larger open target than this item,
+needing `rewrite_fuzz` (top-level plans only) extended first.
+
+**This change ATE item 496's oracle.** 496's twin was a universal `:N` label, which a landing
+label now routes to the SAME path: the instrumented count went 19 -> 38. The twin is now a
+sub-`WHERE`; the `:N` spelling stays as a third way exercising the new branch. _A test can lose
+its teeth to a later widening of the thing it tests, and only re-running the instrument says so._
+
+Mutation 4 of 6; the landing-slot check survives because a MIDDLE label lowers to a `Filter`
+between the `Expand`s, which the unwind rejects one step earlier.

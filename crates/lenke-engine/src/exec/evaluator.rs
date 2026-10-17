@@ -6,6 +6,30 @@ use crate::ir::Expr;
 use crate::store::{Column, Store};
 use crate::value::{self, Value};
 
+/// A bare node-LABEL test over one slot, in either spelling the lowering produces.
+///
+/// `IsLabeled` is the canonical node, but GQL's `(x:L)` pattern lowers to `'L' IN labels(slot)`
+/// and the canonicalizer that rewrites one into the other (`opt::normalize_pred`) runs over
+/// TOP-LEVEL plans only. **A correlated subquery body is a `Plan` nested inside an `Expr`, and
+/// `opt` never descends into one** — so a body's label test arrives in the pre-canonical form
+/// and this has to read both (item 500). That is also why a subquery body gets no filter
+/// pushdown and no index seeding, which is a larger open question than this one call site.
+fn label_test_of(e: &Expr) -> Option<(usize, Vec<String>)> {
+    match e {
+        Expr::IsLabeled { slot, labels } => Some((*slot, labels.clone())),
+        Expr::In { needle, haystack } => match (needle.as_ref(), haystack.as_ref()) {
+            (Expr::Lit(Value::Str(l)), Expr::Call { name, args }) if name == "labels" => {
+                match args.as_slice() {
+                    [Expr::Slot(s)] => Some((*s, vec![l.to_string()])),
+                    _ => None,
+                }
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// One recognized hop of a correlated `COUNT { … }` body, with its type set resolved once.
 struct DegreeHop {
     dir: Dir,
@@ -21,14 +45,30 @@ struct DegreeHop {
 /// slice when it can be. Every earlier hop walks, because the next hop's degree depends on WHICH
 /// neighbour was landed on. So an `h`-hop chain costs `degree^(h-1)` adjacency steps and a degree
 /// read at each, where materializing the rows costs `degree^h`.
-fn degree_chain_count(store: &Store, v: u32, hops: &[DegreeHop]) -> f64 {
+fn degree_chain_count(store: &Store, v: u32, hops: &[DegreeHop], far: &[&[u32]]) -> f64 {
     let h = &hops[0];
     if hops.len() == 1 {
-        return matching_degree(store, v, h.dir, &h.want, h.double_loops, h.all_types);
+        // No landing filter: the degree IS the answer, read off a contiguous slice when the
+        // adjacency can give one.
+        if far.is_empty() {
+            return matching_degree(store, v, h.dir, &h.want, h.double_loops, h.all_types);
+        }
+        // With one, the last hop has to WALK — a degree cannot say which of a vertex's edges
+        // land somewhere that passes (items 219, 290). It is still the adjacency walk the
+        // general path would do, without materializing a row per path: each label's id bucket
+        // is resolved ONCE for the whole batch and binary-searched per neighbour, which is the
+        // `IsLabeled` evaluator's own probe arm.
+        let mut n = 0f64;
+        for_each_nbr(store, v, h.dir, &h.want, h.double_loops, |nbr, _| {
+            if far.iter().any(|b| b.binary_search(&nbr).is_ok()) {
+                n += 1.0;
+            }
+        });
+        return n;
     }
     let mut n = 0f64;
     for_each_nbr(store, v, h.dir, &h.want, h.double_loops, |nbr, _| {
-        n += degree_chain_count(store, nbr, &hops[1..]);
+        n += degree_chain_count(store, nbr, &hops[1..], far);
     });
     n
 }
@@ -70,6 +110,20 @@ fn degree_count_subquery(
     if batch.slots.len() != outer_width {
         return None;
     }
+
+    // One `Filter` may sit outermost, and only if it is a bare LABEL test on what the last hop
+    // landed in — `COUNT { (u)-[:T]->(x:L) }`, the single most common filtered degree. Anything
+    // else (a property, a sub-`WHERE`, a filter BETWEEN hops) is a different question and
+    // declines as before, because a degree cannot say which of a vertex's edges land somewhere
+    // that passes. The slot it tests is checked against the chain's own last landing below, so
+    // a filter on a MIDDLE position cannot be mistaken for one on the end.
+    let (body, far_labels) = match body {
+        Plan::Filter { input, pred } => match label_test_of(pred) {
+            Some(test) => (input.as_ref(), Some(test)),
+            None => (body, None),
+        },
+        other => (other, None),
+    };
 
     // Unwind outermost-first: the body is `Expand(Expand(… Row))`.
     let mut chain: Vec<(Dir, &[String], bool)> = Vec::new();
@@ -140,6 +194,21 @@ fn degree_count_subquery(
         });
     }
 
+    // The label test must be on the LAST landing: hop `k` lands at `outer_width + 1 + k`, so the
+    // final one is `outer_width + hops.len()`.
+    let far: Vec<&[u32]> = match &far_labels {
+        None => Vec::new(),
+        Some((slot, labels)) => {
+            if *slot != outer_width + hops.len() {
+                return None;
+            }
+            // An unknown label matches NOTHING (never everything) — `nodes_with_label` returns
+            // an empty slice for it, and an all-empty set makes every count 0, which is the
+            // answer the general path gives by matching nothing.
+            labels.iter().map(|l| store.nodes_with_label(l)).collect()
+        }
+    };
+
     Some(
         anchors
             .iter()
@@ -149,7 +218,7 @@ fn degree_count_subquery(
                 if v == u32::MAX {
                     0f64
                 } else {
-                    degree_chain_count(store, v, &hops)
+                    degree_chain_count(store, v, &hops, &far)
                 }
             })
             .collect(),
