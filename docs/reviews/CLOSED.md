@@ -7404,3 +7404,61 @@ reads 223.80 / 220.11 / 221.11, within 1.02x, against 1131 / 1278 / 1122 when it
   query. The only symptom was a measurement showing no change whatsoever. An optimization that
   measures as a perfect no-op is more likely unreachable than ineffective — check the guard
   before the arithmetic.
+
+### Item 574 — a Gremlin hop CHAIN count: DONE, 3.8-4.5x, and it closed a divergence
+
+A chain of two or more Gremlin hops before `count()` had no rung — TS ran one traverser per path
+where native answers from degrees. `hopChainCount` propagates FRONTIER MULTIPLICITIES (O(k · E),
+whatever the path count) and `expandRepeats` turns an eligible `repeat(<one hop>).times(k)` into
+its k chained hops as a PRE-PASS, so every existing rung sees a shape it understands.
+
+```
+out(T).out(T).count()     93.81/97.39/98.04   -> 24.99/31.65/29.85   3.8x
+repeat(out).times(2)     113.76/110.56/100.61 -> 22.48/28.10/25.05   4.5x
+repeat(out).times(1)      32.31/29.56/28.39   -> 0.01   (the bucket rung)
+repeat(out).times(3)      THREW               -> answers 1,080,000
+```
+
+**The `times(3)` row was a DIVERGENCE:** TS raised "repeat() exceeded the trail budget" where
+native answers. A budget meant to stop a fan-out materializing rows was bounding a bare COUNT. A
+closed form materializes nothing, so it is gone — the Gremlin-side version of native's
+`a_group_count_is_not_bounded_by_the_trail_budget`.
+
+**STILL OPEN: the same divergence for `emit()`.** It sums over depths rather than taking the
+k-fold product, so the expansion declines it, and at 1,000,000 edges it still raises on the TS
+side where native answers.
+
+### TinkerPop 3.7.3 ground truth for `repeat().times(k)`
+
+`repeat(h).times(k)` IS the k-fold chain — no edge or vertex uniqueness. Verified on a 6-vertex
+fixture WITH a self-loop and a parallel pair, where a restriction would have shown:
+`out1 = times1 = 14`, `out2 = times2 = 33`, `out3 = times3 = 78`, `times2emit = 47 = 14 + 33`,
+`both1 = 28`, `both2 = 134`, `mixed = 34`, `in2 = 33`. Both lenke engines match all of them.
+
+**A DEVIATION found doing it:** `repeat(out).times(0).count()` is **14 in TinkerPop** (it runs the
+body once) and **6 in both lenke engines** (pass-through). Not a cross-engine divergence; the same
+class as item 417's `inject`+`limit(0)`. Pinned at current behaviour.
+
+### An eleventh divergence — a multi-step `repeat()` body is a PARSE ERROR in native
+
+`planToGremlin` emits `repeat(out('T').out('T'))` and native's Gremlin parser answers
+"expected RParen"; TS answers 185. Pre-existing, a parser gap rather than a semantics one.
+
+### The per-label bucket sum, AGAIN — read this before writing a degree count
+
+A 146-case sweep found 13 divergences, **every one an `out()` at depth 2 or more**: zero labels
+means "every bucket", so a multi-type edge is visited once per label it carries. The guard must be
+`labels.length !== 1` — exactly one wanted label is unconditionally safe, zero or several need
+`multiTypeEdgeCount === 0`. `out(T,U)` was never among the 13, because the narrow `> 1` guard did
+catch that one.
+
+Item 573 shipped the identical bug on the GQL side one tick earlier. **A per-label bucket sum is
+only a degree when the wanted set is a single bucket.**
+
+### Measuring several shapes in ONE process can manufacture a regression
+
+Item 574's `emit()` control read 114.56/113.79/108.51 -> 132.63/141.70/127.31 — non-overlapping
+bands, consistent over three alternated rounds, and WRONG. Isolated (one shape per process, min
+of 9, four rounds) it is 103.43 -> 100.46, flat. The four shapes ahead of it in the process got
+faster, which changed the JIT and GC state it ran in. Item 423's rule is exactly this; it is
+usually quoted for hiding a win, and here it invented a loss.

@@ -28,6 +28,7 @@ import {
   hasLabel,
   out,
   planToGremlin,
+  repeat,
   toArray,
   traversal,
   values,
@@ -87,6 +88,28 @@ const SHAPES: [string, Plan][] = [
   // above is an O(1) bucket read and the same question with a VACUOUS label in front of it ran
   // 500,000 traversers. The pair is the equivalent-spelling guard.
   ['V().hasLabel().out().count()', traversal(V(), hasLabel('Person'), out('KNOWS'), count())],
+  // Item 574. A CHAIN of hops before `count()` had no rung: TS ran one traverser per path where
+  // native answers from degrees. 93.81/97.39/98.04 -> 24.99/31.65/29.85ms over three alternated
+  // rounds at 40,000 vertices / 120,000 edges. `repeat(out).times(k)` IS the k-fold chain —
+  // TinkerPop 3.7.3 confirms it on a fixture with a self-loop and a parallel pair — so an
+  // eligible repeat expands to the chain and takes the same rung: 113.76/110.56/100.61 ->
+  // 22.48/28.10/25.05. `times(3)` RAISED "repeat() exceeded the trail budget" before and now
+  // answers, because a closed form enumerates nothing.
+  //
+  // The `emit()` twin is REFUSED (it sums over depths rather than taking the k-fold product) and
+  // is deliberately NOT a row here: at this fixture's 1,000,000 edges it raises "repeat()
+  // exceeded the traversal budget" on the TS side, where native answers — the
+  // budget-bounds-a-count divergence that `times(k)` just escaped and `emit()` has not. A row
+  // that always errors measures nothing, so the refusal is pinned in
+  // `gremlin-hop-chain-count.test.ts` instead, where both engines answer.
+  [
+    'V().out().out().count()',
+    traversal(V(), hasLabel('Person'), out('KNOWS'), out('KNOWS'), count()),
+  ],
+  [
+    'V().repeat(out).times(2).count()',
+    traversal(V(), hasLabel('Person'), repeat(traversal(out('KNOWS'))).times(2), count()),
+  ],
   ['V().has().out().count()', traversal(V(), has('age', gt(44)), out('KNOWS'), count())],
 ];
 

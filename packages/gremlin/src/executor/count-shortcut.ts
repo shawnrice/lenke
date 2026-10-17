@@ -18,6 +18,73 @@ import { seedForStep } from './index-seed.js';
  * else returns `undefined` and runs normally. A shortcut that half-answers a shape
  * is a wrong answer, and these are the shapes whose answer is exactly a size.
  */
+/**
+ * Rewrite an eligible `repeat(<one hop>).times(k)` into its `k` chained hops, so every rung in
+ * this file sees the shape it already understands (item 574).
+ *
+ * `repeat(out('T')).times(2)` IS `out('T').out('T')` — TinkerPop's `repeat` applies no edge or
+ * vertex uniqueness, so the path count is the k-fold product. Both engines agree on that: at
+ * 40,000 vertices of out-degree 3, `times(1)` is 120,000, `times(2)` is 360,000 and `times(3)`
+ * is 1,080,000, which are exactly 3, 9 and 27 per start.
+ *
+ * Done as a PRE-PASS rather than a rung of its own, because then the one-hop rung answers
+ * `times(1)` and the chain rung answers `times(2)` and up, with no new arm to keep in step.
+ * Purely additive: every rung here declines a `repeat` step today, so nothing it already answers
+ * can change.
+ *
+ * REFUSED, each for its own reason:
+ *
+ * - **`emit` / `emitBefore`** — the traverser is emitted at intermediate depths too, so the count
+ *   is a SUM over depths rather than the k-fold product. A different arithmetic, not a chain.
+ * - **`until` / `untilBefore`** — a per-traverser stop condition, so the depth is not `k`.
+ * - **no `times`** — an uncapped repeat is bounded by an iteration cap, not by a hop count.
+ * - **a body that is not exactly ONE `out`/`in` step** — anything else (a filter inside the body,
+ *   `both`, a nested traversal) changes what each repetition does.
+ * - **`times` above 16.** The chain's cost is fine (`O(k · E)`), but the multiplicity is a
+ *   product: at out-degree 3, `3^16` is 43 million and exact in a float64, while `3^40` is past
+ *   2^53 and would stop being. The engine's numeric model is float64, so the cap keeps this rung
+ *   inside exact-integer range instead of silently rounding where the general path does not.
+ */
+const expandRepeats = (mid: readonly Step[]): readonly Step[] | undefined => {
+  let changed = false;
+  const out: Step[] = [];
+
+  for (const step of mid) {
+    if (step.kind !== 'repeat') {
+      out.push(step);
+      continue;
+    }
+
+    const { body, times, emit, emitBefore, until } = step;
+
+    if (
+      times === undefined ||
+      times < 1 ||
+      times > 16 ||
+      emit !== undefined ||
+      emitBefore === true ||
+      until !== undefined ||
+      body.steps.length !== 1
+    ) {
+      return undefined;
+    }
+
+    const [inner] = body.steps;
+
+    if (inner.kind !== 'out' && inner.kind !== 'in') {
+      return undefined;
+    }
+
+    for (let i = 0; i < times; i += 1) {
+      out.push(inner);
+    }
+
+    changed = true;
+  }
+
+  return changed ? out : undefined;
+};
+
 export const countShortcut = (plan: Plan, graph: Graph): number | undefined => {
   const { steps } = plan;
 
@@ -38,6 +105,15 @@ export const countShortcut = (plan: Plan, graph: Graph): number | undefined => {
   // `V(id, …)` / `E(id, …)` enumerate a given set, not the whole graph.
   if ((source.kind !== 'V' && source.kind !== 'E') || (source.ids?.length ?? 0) > 0) {
     return undefined;
+  }
+
+  // THE REPEAT PRE-PASS (item 574), before any rung looks at `mid`: an eligible
+  // `repeat(<one hop>).times(k)` becomes its k chained hops, and the recursion then takes
+  // whichever rung fits. One level only — the expansion contains no `repeat`.
+  const expanded = expandRepeats(mid);
+
+  if (expanded !== undefined) {
+    return countShortcut({ ...plan, steps: [source, ...expanded, last] }, graph);
   }
 
   if (mid.length === 0) {
@@ -66,6 +142,14 @@ export const countShortcut = (plan: Plan, graph: Graph): number | undefined => {
 
   if (started !== undefined) {
     return started;
+  }
+
+  // A CHAIN of two or more hops (item 574). After the one-hop rung, so that one keeps every
+  // shape it already answered.
+  const chained = hopChainCount(mid, graph);
+
+  if (chained !== undefined) {
+    return chained;
   }
 
   if (mid.length !== 2) {
@@ -440,6 +524,249 @@ type VertexFilter = Extract<Step, { kind: 'hasLabel' }> | Extract<Step, { kind: 
  * ignored, the filters disjoined, the index decline removed, and a MULTI-label allowed to seed a
  * single bucket (which drops every vertex carrying only the second label).
  */
+/** A hop step, narrowed: `both` is excluded for the self-loop reason the rungs above give. */
+type HopStep = Extract<Step, { kind: 'out' | 'in' }>;
+
+/**
+ * `V().<filters>.out(T).out(T)….count()` — a CHAIN of two or more hops, counted by propagating
+ * FRONTIER MULTIPLICITIES instead of running one traverser per path (item 574).
+ *
+ * `startFilteredHopCount` above answers the one-hop case as a degree sum. Two hops had no rung at
+ * all, and the shape is common: it is what `out().out().count()` and `repeat(out()).times(2)`
+ * both are. Priced at 40,000 vertices / 120,000 edges, one case per process:
+ *
+ *   V().hasLabel(P).out(T).count()               ts   0.01ms   nv 0.11   the existing rung
+ *   V().hasLabel(P).out(T).out(T).count()           139.85        0.41   341x, no rung
+ *
+ * THE ALGORITHM. A plain `out()` chain is a WALK — no edge or vertex uniqueness — so the number
+ * of paths reaching a vertex is all that matters, not which paths they were. Carry a multiplicity
+ * per frontier vertex and push it along each edge: O(k · E) edge visits for k hops, whatever the
+ * path count. Item 574's `times(3)` case is 1,080,000 paths over 120,000 edges, so the saving
+ * grows with depth.
+ *
+ * The LAST hop needs no map — a frontier vertex contributes `multiplicity × degree`, so it is a
+ * degree sum exactly as the one-hop rung is. That keeps k = 2 to one propagation pass plus an
+ * O(1) read per surviving vertex.
+ *
+ * SOUNDNESS, two conditions both borrowed from the rungs above:
+ *
+ * - **`out`/`in` only, never `both`.** `both` walks out-edges then in-edges, so a self-loop is
+ *   incident twice and neither a bucket size nor a single pass over one box is the degree —
+ *   the same exclusion `vertexStepCount` and `startFilteredHopCount` make.
+ * - **A multi-label hop declines when the graph holds a multi-type edge** (`multiTypeEdgeCount`).
+ *   Such an edge sits in two buckets, so iterating across types visits it twice where the walk
+ *   yields it once. Item 573 shipped exactly that bug on the GQL side and the suite caught it.
+ */
+/**
+ * The SHAPE half of {@link hopChainCount}: split `mid` into leading vertex filters and a
+ * trailing run of hops, and refuse anything the arithmetic cannot carry.
+ *
+ * Its own function because `hopChainCount` sits on the complexity gate — inline, the two halves
+ * read 43 against a maximum of 35. The same split `tallyGroupShapes` and `genQuantifiedGroup`
+ * make, and the same reason.
+ */
+const hopChainShape = (
+  mid: readonly Step[],
+  graph: Graph,
+): { hops: HopStep[]; source: Iterable<Vertex>; rest: VertexFilter[] } | undefined => {
+  // Split `mid` into a leading run of vertex filters and a trailing run of hops. The hops are
+  // COLLECTED rather than sliced, because a `kind` test in this loop does not narrow a later
+  // `mid.slice(...)` for the type checker.
+  const hops: HopStep[] = [];
+  let split = mid.length;
+
+  for (let i = mid.length - 1; i >= 0; i -= 1) {
+    const step = mid[i];
+
+    if (step.kind !== 'out' && step.kind !== 'in') {
+      break;
+    }
+
+    hops.unshift(step);
+    split = i;
+  }
+
+  const filters = mid.slice(0, split);
+
+  // One hop is `startFilteredHopCount`'s shape, and it is tried first — this rung must not
+  // change what that one answers.
+  if (hops.length < 2) {
+    return undefined;
+  }
+
+  // `!== 1`, NOT `> 1`. Exactly one wanted label is unconditionally safe: an edge sits in that
+  // bucket once. ZERO labels (`out()`) iterates EVERY bucket, so a multi-type edge is visited
+  // once per label it carries — the same hazard as several labels, and the guard above this one
+  // read `> 1` until the sweep found 13 divergences, every one of them an `out()` at depth 2 or
+  // more. `out(T,U)` was never among them, because that case the narrow guard did catch.
+  //
+  // Item 573 shipped this exact bug on the GQL side one tick ago. Twice in two ticks is not bad
+  // luck: a per-label bucket sum is only a degree when the wanted set is a single bucket.
+  for (const hop of hops) {
+    if (hop.labels.length !== 1 && graph.multiTypeEdgeCount !== 0) {
+      return undefined;
+    }
+  }
+
+  const vfilters: VertexFilter[] = [];
+
+  for (const step of filters) {
+    if (step.kind !== 'hasLabel' && step.kind !== 'has') {
+      return undefined;
+    }
+
+    // A seekable `has` is the index's job, not this rung's — the same refusal the one-hop
+    // rung makes, so the two cannot disagree about which shapes they take.
+    if (step.kind === 'has' && seedForStep(step, graph.vertexPropertyIndex) !== null) {
+      return undefined;
+    }
+
+    vfilters.push(step);
+  }
+
+  const [first] = vfilters;
+  const canSeed = first?.kind === 'hasLabel' && first.labels.length === 1;
+  const source: Iterable<Vertex> =
+    first?.kind === 'hasLabel' && first.labels.length === 1
+      ? (graph.verticesByLabel.get(first.labels[0]) ?? EMPTY_VERTICES)
+      : graph.verticesById.values();
+  const rest = canSeed ? vfilters.slice(1) : vfilters;
+
+  return { hops, source, rest };
+};
+
+const hopChainCount = (mid: readonly Step[], graph: Graph): number | undefined => {
+  const shape = hopChainShape(mid, graph);
+
+  if (shape === undefined) {
+    return undefined;
+  }
+
+  const { hops, source, rest } = shape;
+
+  // The surviving starts, as a lazy generator — each has multiplicity ONE, so the two-hop arm
+  // below needs no map at all. Building one there was measured and is also DEAD WEIGHT: a
+  // mutant dropping the `m *` factor from that arm SURVIVED, because `m` is provably 1 on the
+  // initial frontier (`verticesByLabel` is a Set and `verticesById.values()` is unique). The
+  // multiplicity map earns its place only from three hops on.
+  const survivors = function* (): Generator<Vertex> {
+    for (const v of source) {
+      let ok = true;
+
+      for (let i = 0; i < rest.length && ok; i += 1) {
+        const step = rest[i];
+
+        ok =
+          step.kind === 'hasLabel'
+            ? step.labels.some((l) => v.labels.has(l))
+            : matches(step.pred, v.properties[step.key]);
+      }
+
+      if (ok) {
+        yield v;
+      }
+    }
+  };
+
+  // TWO hops need no frontier map: each first-hop target contributes its own degree, so the
+  // answer is a double loop with an O(1) read at the bottom. Worth its own arm — the map
+  // version measured 33.56/33.00/31.70ms against 26.83/24.26/25.89 over three alternated
+  // rounds, because 120,000 `Map.set`/`get` pairs on vertex objects cost more than the edge
+  // walk itself.
+  if (hops.length === 2) {
+    const [h0, h1] = hops;
+    const fwd0 = h0.kind === 'out';
+    const fwd1 = h1.kind === 'out';
+    let two = 0;
+
+    for (const v of survivors()) {
+      const box0 = fwd0 ? v.adjFrom : v.adjTo;
+
+      if (box0 === undefined) {
+        continue;
+      }
+
+      for (const set of h0.labels.length === 0 ? box0.values() : bucketsOf(box0, h0.labels)) {
+        for (const e of set) {
+          const w = fwd0 ? e.to : e.from;
+          const box1 = fwd1 ? w.adjFrom : w.adjTo;
+
+          if (box1 !== undefined) {
+            two += degreeOfTypes(box1, h1.labels);
+          }
+        }
+      }
+    }
+
+    return two;
+  }
+
+  // THREE hops or more: carry a multiplicity per frontier vertex and push it along each edge.
+  let cur = new Map<Vertex, number>();
+
+  for (const v of survivors()) {
+    cur.set(v, 1);
+  }
+
+  for (let h = 0; h < hops.length - 1; h += 1) {
+    const hop = hops[h];
+    const forward = hop.kind === 'out';
+    const next = new Map<Vertex, number>();
+
+    for (const [v, m] of cur) {
+      const byType = forward ? v.adjFrom : v.adjTo;
+
+      if (byType === undefined) {
+        continue;
+      }
+
+      for (const set of hop.labels.length === 0 ? byType.values() : bucketsOf(byType, hop.labels)) {
+        for (const e of set) {
+          const w = forward ? e.to : e.from;
+
+          next.set(w, (next.get(w) ?? 0) + m);
+        }
+      }
+    }
+
+    cur = next;
+  }
+
+  // The last hop is a degree SUM, weighted by multiplicity.
+  const lastHop = hops[hops.length - 1];
+  const forward = lastHop.kind === 'out';
+  let total = 0;
+
+  for (const [v, m] of cur) {
+    const byType = forward ? v.adjFrom : v.adjTo;
+
+    if (byType !== undefined) {
+      total += m * degreeOfTypes(byType, lastHop.labels);
+    }
+  }
+
+  return total;
+};
+
+/** The wanted buckets of one adjacency box. Only reached when the multi-type guard above
+ *  has cleared, so iterating several of them visits each edge once. */
+const bucketsOf = (
+  byType: ReadonlyMap<string, ReadonlySet<Edge>>,
+  labels: readonly string[],
+): ReadonlySet<Edge>[] => {
+  const out: ReadonlySet<Edge>[] = [];
+
+  for (const t of labels) {
+    const set = byType.get(t);
+
+    if (set !== undefined) {
+      out.push(set);
+    }
+  }
+
+  return out;
+};
+
 const startFilteredHopCount = (mid: readonly Step[], graph: Graph): number | undefined => {
   if (mid.length < 2) {
     return undefined;
