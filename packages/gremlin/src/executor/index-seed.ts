@@ -331,7 +331,23 @@ export const seedFromIndex = (plan: Plan, graph: Graph, tracksPath: boolean): Se
   }
 
   if (source.kind === 'E' && !source.ids) {
-    return seedRest<Edge>(rest, graph.edgePropertyIndex, tracksPath);
+    // The EDGE twin of the vertex seed above, and sound for the same reason: a type's bucket is
+    // exactly the edges carrying it, so a single-label `hasLabel(T)` is removable. A two-type
+    // edge sits in BOTH buckets and `hasLabel(T)` keeps it, so the bucket is still exact — the
+    // multi-type hazard belongs to SUMMING buckets (`adjacentCount`), not to reading one.
+    //
+    // Item 538 shipped the vertex half and left this out; its own test asserted "an EDGE source
+    // has no label bucket to seed from" as a limitation. Measured at 500,000 edges, half of them
+    // `KNOWS`, one case per process (item 542):
+    //
+    //   E().has(w, gt(3)).count()                      35.66 ms
+    //   E().hasLabel('KNOWS').has(w, gt(3)).count()    62.65
+    //   E().values('w')                                47.43   (500,000 rows)
+    //   E().hasLabel('KNOWS').values('w')              64.58   (250,000 rows — HALF the rows
+    //                                                           and more time)
+    return seedRest<Edge>(rest, graph.edgePropertyIndex, tracksPath, (l) =>
+      graph.edgesByLabel.get(l),
+    );
   }
 
   return null;

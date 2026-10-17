@@ -6214,3 +6214,24 @@ reach, so noted not chased.
 
 All seven byte-identity fuzzers 13/13 — the gate that matters most here, since 538 reorders a
 traversal's SOURCE and 540 removes a step from its plan.
+
+## 542 — the EDGE source seeds its type bucket: CLOSED at 3.7x on a count, REFUTED on `values`
+
+Item 538's missing half; its own test asserted the limitation. A type's bucket is exactly the edges
+carrying it, so a single-label `hasLabel(T)` is removable — the multi-type hazard belongs to
+SUMMING buckets (`adjacentCount`), not to reading one.
+
+`E().hasLabel('KNOWS').has(w, gt(3)).count()` before 64.61 / 67.53 / 62.50 → after 17.21 / 16.88 /
+17.50 (**3.7x**). `E().hasLabel('KNOWS').values('w')` before 52.09 / 52.82 / 61.73 → after 54.83 /
+51.73 / 52.48 — **overlapping both ways, no change**, where a single earlier reading (64.58 →
+51.76) had suggested 1.25x. The control (`E().has().count()`) is flat. _Halving the source does not
+help that shape and I have no explanation; recorded as measured rather than narrated._
+
+**THE TEST IT REPLACED WAS TESTING NOTHING**: it asked for `hasLabel('knows')` while this fixture's
+edge types are `KNOWS`/`CREATED`, so it asserted "no seed" against a label no edge carries — which
+could not have seeded whatever the code did. Replacing it rather than deleting it (item 537's rule)
+is what surfaced that, because the replacement failed on an empty stream until the case was fixed.
+Labels are case-sensitive, as TinkerPop's are.
+
+Mutation 2 of 2 (null control clean): the vertex bucket used for an edge source seeds EMPTY (a
+vertex-label map misses on an edge-type name) and the seed reverted.

@@ -280,9 +280,29 @@ describe('a single-label hasLabel seeds its bucket (item 538)', () => {
     expect(arr(seeded!.stream).length).toBe(1);
   });
 
-  test('an EDGE source has no label bucket to seed from', () => {
+  // Item 542 made the EDGE source seed too. This test used to assert the LIMITATION — that an
+  // edge source had no bucket — and a widening has to REPLACE such a test rather than delete it
+  // (item 537's rule), so it now asserts the claim, the dropped step, and the answer.
+  test('an EDGE source seeds its TYPE bucket', () => {
     const g = createTestTinkerGraph();
+    // The fixture's labels are UPPERCASE, and this matters: the test this replaced asked for
+    // `hasLabel('knows')`, which no edge carries, so it asserted "no seed" against a label that
+    // could not have seeded anything either way. Labels are case-sensitive, as TinkerPop's are.
+    const seeded = seedFromIndex(traversal(E(), hasLabel('KNOWS')), g, false);
 
-    expect(seedFromIndex(traversal(E(), hasLabel('knows')), g, false)).toBeNull();
+    expect(seeded).not.toBeNull();
+    expect(seeded!.steps.map((s) => s.kind)).toEqual([]);
+    // marko KNOWS vadas and josh; the other four edges are CREATED.
+    expect(arr(seeded!.stream).length).toBe(2);
+    expect(arr(run(traversal(E(), hasLabel('KNOWS'), values('weight')), g)).length).toBe(2);
+    expect(arr(run(traversal(E(), hasLabel('CREATED'), values('weight')), g)).length).toBe(4);
+    // A type nothing carries is the empty seed, not a decline.
+    const none = seedFromIndex(traversal(E(), hasLabel('NOPE')), g, false);
+
+    expect(none).not.toBeNull();
+    expect(arr(none!.stream).length).toBe(0);
+    expect(arr(run(traversal(E(), hasLabel('NOPE'), values('weight')), g)).length).toBe(0);
+    // MULTI-type still declines, for the same reason as the vertex side.
+    expect(seedFromIndex(traversal(E(), hasLabel('KNOWS', 'CREATED')), g, false)).toBeNull();
   });
 });
