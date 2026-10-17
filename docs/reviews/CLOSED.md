@@ -6849,3 +6849,53 @@ arithmetic to replace the walk with. Not a cliff, so not a target.
 Teeth: six mutants, four caught, control clean. The survivor is item 559's explained one, now
 stated once on the shared helper: a clause `WHERE` naming another variable cannot reach either rung
 because both engines reject the query first.
+
+## 561 — items 548-560 sweep: VERIFIED, and it found a reproducible Gremlin-fuzzer FALSE RED
+
+Thirteen items since item 547's sweep. Seven harnesses plus both spelling probes, the Rust suite and
+a deep `rewrite_fuzz`. **Everything in band, nothing isolated needed** — the first sweep this
+session with no row to re-measure:
+
+```text
+bun run bench      count 3-hop 327.3, traverse 1-hop + start filter 33.2 (best recorded),
+                   count 2-hop + end filter 97.1 (best), subquery item 28.1, 2-hop subquery 111.4
+bench:usage        point lookup ts(+) 1.29M (best recorded), 100-updates 968.0k, keyed dedup 77.3k
+bench:gremlin      all 14 rows "same"; V().hasLabel().out().count() still 0.0
+query_bench        optional hop 580.6, + miss 63.6, + landing pred 9825.8, 1-hop 506.1/539.8,
+                   for-in const x3 15.5
+spelling_probe     Rust: NO PERF CLIFFS. TS: 0 answer disagreements
+rewrite_fuzz       LENKE_OPT_FUZZ_SEEDS=200000 clean
+cargo test         1167 pass / 0 fail; clippy and cargo fmt exit 0
+```
+
+### The finding: `orderOverPaths` compared the FIRST `order(`, not the last
+
+CI went red on item 560 with a Gremlin-fuzzer divergence that **replays** (seed 4026198038):
+
+```text
+g.V().label().order().by(desc).path().order().by(desc).fold()
+```
+
+Both engines return the same seven paths in different orders. The suite's own rule already says a
+path-stream `order()` is unspecified — but `orderOverPaths` took `text.indexOf('order(')`, and with
+TWO orders and a `path()` between them the FIRST one sits before the path, so the function answered
+false and the suite compared two unspecified orders as a SEQUENCE. `lastIndexOf` is the fix.
+
+**Verified PRE-EXISTING, not caused by items 548-560**: the seed fails identically with the
+pre-548 GQL sources restored (`git show 8864f198:` for all four files). It is also NOT the known
+1-in-30 residual, which replays clean.
+
+Teeth, because a relaxed comparison is worth nothing if it stops catching things — four mutants on
+the native side, over five seeds each:
+
+| mutant                                                | result         |
+| ----------------------------------------------------- | -------------- |
+| drop a row on a path-order query                      | **caught** 2/5 |
+| mangle a value on a path-order query                  | **caught** 1/3 |
+| reverse each path's elements, path-order queries only | NOT caught     |
+| reverse each path's elements, ANY query               | **caught** 5/5 |
+
+The third and fourth together are the honest account: `deepSort` canonicalizes WITHIN a row as well
+as between rows (deliberately — see its own comment), so the 4-9 path-order queries per run lose
+their within-path element check. That contract is still covered on every path query WITHOUT an
+`order()`, which is the large majority, and the fourth mutant proves it at 5/5.

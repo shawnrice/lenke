@@ -440,7 +440,16 @@ const orderOverPaths = (text: string): boolean => {
       return i < 0 ? Infinity : i;
     }),
   );
-  const o = text.indexOf('order(');
+  // The LAST `order(`, not the first (item 561). With TWO orders and a `path()` between them —
+  // `g.V().label().order().by(desc).path().order().by(desc).fold()` — the first `order(` sits
+  // BEFORE the path, so `indexOf` put `o` ahead of `p` and this answered false. The second order
+  // is over a PATH STREAM all the same, and the suite then compared two unspecified orders as a
+  // SEQUENCE and went red on a seed that replays: both engines returned the same seven paths in
+  // different orders.
+  //
+  // Asking for the last one is the whole fix: if ANY `order(` follows a `path()`/`tree()`, the
+  // stream being sorted is a path stream and its order is unspecified.
+  const o = text.lastIndexOf('order(');
 
   return o >= 0 && p < o;
 };
