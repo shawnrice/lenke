@@ -6784,6 +6784,138 @@ const patternNames = (p: PathPattern): Set<string> => {
  *     what enforces that, and it is the one condition whose violation is invisible in the
  *     common shapes.
  */
+/**
+ * `CALL (n) { MATCH … RETURN <agg> AS c }` → `LET c = VALUE { MATCH … RETURN <agg> }`.
+ *
+ * An UN-GROUPED aggregate body yields exactly ONE row per outer row — null or 0 over an empty
+ * match, never nothing — so the lateral join neither drops nor multiplies rows and the call is a
+ * per-row SCALAR. That is precisely a `VALUE {}` subquery, which has rungs (items 499, 557) where
+ * the CALL route has none. Measured at 200,000 vertices / 200,000 edges, one case per process:
+ *
+ * ```text
+ *   CALL (n) { MATCH (n)-[:KNOWS]->(x) RETURN count(*) AS c } RETURN sum(c)   760.86 ms
+ *   RETURN sum(COUNT { MATCH (n)-[:KNOWS]->(x) })                             30.56
+ * ```
+ *
+ * 24.9x between two spellings of one question.
+ *
+ * THE MANUFACTURED NODE MUST BE MARKED CORRELATED, and item 562 retracted this whole rewrite for
+ * one tick because it was not. `markIfCorrelated` populates a WeakSet during SCOPE CHECKING, which
+ * runs over the PARSED AST — so a subquery node a rewrite MANUFACTURES is never in it, and
+ * `memoizeIfUncorrelated` then computes the per-row scalar ONCE and reuses it:
+ *
+ * ```text
+ *   CALL (n) { … RETURN count(*) AS c } RETURN sum(c) AS t, count(*) AS r
+ *     unmarked  {t: 6, r: 3}      one node's degree of 2, counted three times
+ *     marked    {t: 2, r: 3}      native's answer
+ * ```
+ *
+ * The node IS correlated by construction — this rewrite fires only when `c.scope` is non-empty,
+ * i.e. the call imports outer names — so the marking is a statement of that fact rather than an
+ * analysis. Any future rewrite that manufactures an `exists`/`countSubquery`/`valueSubquery` node
+ * has the same obligation.
+ *
+ * `inlineCorrelatedCall` below handles the OTHER body shape, a pass-through that yields pattern
+ * variables, by turning the call into a plain MATCH. That rewrite is wrong here (an aggregate body
+ * yields a VALUE, not a binding) and this one is wrong there (a pass-through yields many rows), so
+ * they are separate and each refuses the other's shape.
+ *
+ * ONE aggregate item only. Two of them is a shape the engines DISAGREE about — native rejects
+ * `RETURN count(*) AS c, max(x.n) AS m` inside a CALL body ("an aggregating RETURN inside …")
+ * while TS answers it — so it stays on the general path rather than becoming a faster divergence
+ * (item 557's policy, and the fifth such subquery-body refusal found).
+ */
+const inlineAggregateCall = (clauses: readonly Clause[]): readonly Clause[] => {
+  const asLet = (c: Clause): Clause | null => {
+    if (c.kind !== 'callInline' || c.optional || c.scope.length === 0) {
+      return null;
+    }
+
+    const { parts, ops } = c.body;
+
+    if (parts.length !== 1 || ops.length > 0) {
+      return null;
+    }
+
+    const inner = parts[0].clauses;
+
+    if (inner.length !== 2) {
+      return null;
+    }
+
+    const [bm, bret] = inner;
+
+    if (bm.kind !== 'match' || bm.optional || bm.patterns.length !== 1 || bret.kind !== 'return') {
+      return null;
+    }
+
+    const proj = bret.projection;
+
+    // Paging, ordering, DISTINCT and grouping inside the body all change what the one row is — or
+    // whether it is one row at all — so they stay with the general path.
+    if (
+      proj.star ||
+      proj.distinct ||
+      proj.groupBy !== undefined ||
+      proj.having !== undefined ||
+      (proj.orderBy?.length ?? 0) > 0 ||
+      proj.skip !== undefined ||
+      proj.limit !== undefined ||
+      proj.items.length !== 1
+    ) {
+      return null;
+    }
+
+    const [item] = proj.items;
+    const { alias } = item;
+
+    // The alias is what the outer query reads the scalar as, so the body must name it — an
+    // un-aliased aggregate has no name to bind.
+    if (alias === undefined || !hasAggregate(item.expr)) {
+      return null;
+    }
+
+    // After the rewrite the body's pattern variables are GONE (a `VALUE {}` subquery scopes its
+    // own pattern), so none of them may be the name the outer query now reads. An IMPORTED name
+    // is fine: that one was the outer's already.
+    const imported = new Set(c.scope);
+
+    for (const name of patternNames(bm.patterns[0])) {
+      if (!imported.has(name) && name === alias) {
+        return null;
+      }
+    }
+
+    const sub: Extract<Expr, { kind: 'valueSubquery' }> = {
+      kind: 'valueSubquery',
+      patterns: bm.patterns,
+      ...(bm.where === undefined ? {} : { where: bm.where }),
+      ret: item.expr,
+    };
+
+    // See the header: scope checking has already run, so this node would otherwise be memoized
+    // as uncorrelated.
+    correlatedSubqueries.add(sub);
+
+    return { kind: 'let', items: [{ var: alias, expr: sub }] };
+  };
+
+  let changed = false;
+  const out = clauses.map((c) => {
+    const rewritten = asLet(c);
+
+    if (rewritten === null) {
+      return c;
+    }
+
+    changed = true;
+
+    return rewritten;
+  });
+
+  return changed ? out : clauses;
+};
+
 const inlineCorrelatedCall = (clauses: readonly Clause[]): readonly Clause[] => {
   const asMatch = (c: Clause): Clause | null => {
     if (c.kind !== 'callInline' || c.optional || c.scope.length === 0) {
@@ -7263,8 +7395,13 @@ const inlineTrailingFilter = (clauses: readonly Clause[]): readonly Clause[] => 
 const compileLinear = (linear: LinearQuery): CLinear => {
   const source = fuseAnchorThenHop(
     inlineCorrelatedCall(
+      // `inlineAggregateCall` runs INSIDE `inlineTrailingLet` so the `LET` it produces is itself
+      // inlined when it is the last binding before the RETURN — the two compose into "a CALL with
+      // an aggregate body is a projection subquery", which is where the rungs are.
       inlineTrailingLet(
-        inlineTrailingFilter(unoptionalizeForAggregate(dropVacuousPage(linear.clauses))),
+        inlineAggregateCall(
+          inlineTrailingFilter(unoptionalizeForAggregate(dropVacuousPage(linear.clauses))),
+        ),
       ),
     ),
   );

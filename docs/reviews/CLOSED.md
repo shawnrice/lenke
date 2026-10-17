@@ -6953,3 +6953,37 @@ CALL (n) { MATCH (n)-[:T]->(x) RETURN count(*) AS c, max(x.n) AS m } RETURN n.n,
 
 Two aggregate items in a CALL body. Same family as item 557's four (collect, collect_list,
 stddev_pop, count(arg)), same class — a loud refusal on the native side.
+
+## 563 — item 562's CALL rewrite, fixed: a MANUFACTURED subquery node must be marked correlated
+
+Item 562 retracted this rewrite for a wrong answer. The cause generalises beyond it:
+
+**`markIfCorrelated` populates a WeakSet during SCOPE CHECKING, which runs over the PARSED AST.** A
+subquery node a REWRITE manufactures is never in it, so `memoizeIfUncorrelated` computed the
+per-row scalar ONCE and reused it. The node is correlated by construction — the rewrite fires only
+when the call imports outer names — so the fix is one `correlatedSubqueries.add`. **Any future
+rewrite that manufactures an `exists`/`countSubquery`/`valueSubquery` node has the same
+obligation.**
+
+### The measurement was wrong too, and for the same reason the bug hid
+
+Item 562's figures used ONE edge per node, where Σ(degree) and (first degree × row count) are the
+SAME NUMBER — so the memoized answer looked right AND the memoization looked like an 11.1x win. On
+200,000 vertices with degree `i % 4` (300,000 edges), alternated rounds:
+
+| query                                                 | pristine           | after               | ratio    |
+| ----------------------------------------------------- | ------------------ | ------------------- | -------- |
+| `CALL (n) { … RETURN count(*) AS c } RETURN sum(c)`   | 779.58 / 769.30 ms | **491.96 / 510.91** | 1.5x     |
+| `CALL (n) { … RETURN max(x.age) AS m } RETURN max(m)` | 779.69 / 801.46    | **268.32 / 387.63** | 2.1-2.9x |
+| `RETURN sum(COUNT { … })` (control)                   | 52.45              | 53.75 / 52.06       | —        |
+
+**So the real win is 1.5-2.9x, not 11.1x** — the rest of item 562's headline was the bug. The
+control spelling is still ~9x faster, so this closes part of the 24.9x gap and the remainder is
+open.
+
+Teeth: six mutants, three caught (the marking dropped — 9 fails, two aggregate items admitted, a
+pass-through body admitted), control clean. Two survivors are redundant and recorded: an `OPTIONAL
+CALL` over an aggregate body is a no-op (the body always yields its row) and an alias colliding
+with a body pattern variable changes nothing (the call hides body variables either way). One
+mutant MISAPPLIED — the guard's first line is character-identical to `inlineCorrelatedCall`'s —
+the **eleventh** time this session.
