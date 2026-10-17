@@ -1340,6 +1340,12 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
     return linear.countShortcut(graph, params);
   }
 
+  // The OPTIONAL-hop count (item 510). Below the plain one because it is strictly narrower —
+  // three clauses with the middle one optional — and never competes with it for a shape.
+  if (linear.optionalHopCount) {
+    return linear.optionalHopCount(graph, params);
+  }
+
   // Grouped `count(*)` off the label bucket — many rows, so its own hook. See
   // `detectGroupedNodeCount`.
   if (linear.groupCountShortcut) {

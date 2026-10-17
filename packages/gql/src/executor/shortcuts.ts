@@ -3826,6 +3826,157 @@ const keyedCountOf = <T>(
  * needs anonymous rels and pairwise-distinct node variables (so the homomorphic
  * degree product is exact).
  */
+/**
+ * `MATCH (a:L) OPTIONAL MATCH (a)-[:T]->(x) RETURN count(*)` — a degree sum with a FLOOR.
+ *
+ * A left-outer hop yields one row per anchor either way: its matches, or one null-filled row.
+ * So the count is `Σ max(degree, 1)`, which is the anchor bucket walked once — no row per path.
+ * Every other rung refuses `optional` outright, so this shape fell to the general pipeline:
+ * 710-858ms at 200,000 vertices / 1,000,000 edges against the native engine's 0.6 after item
+ * 509 gave it the same arithmetic (audit item 510).
+ *
+ * The admission is narrow and each refusal is a position the floor cannot be computed through:
+ *
+ *   - the ANCHOR must be a lone node with no inline properties or `WHERE` (its bucket is what
+ *     this walks; a constrained anchor is `buildNodeCount`'s tally and a different shape);
+ *   - the optional pattern must start AT that variable, with one plain directed segment and no
+ *     rel variable — `both` would need the undirected walk's self-loop care (items 478, 482),
+ *     and is refused rather than guessed at;
+ *   - the landing node may carry a LABEL (`side` already filters by it) but not properties or
+ *     an inline `WHERE`, which decide BOTH which neighbours count and whether the anchor
+ *     null-fills;
+ *   - a clause `WHERE` on either side declines.
+ */
+/**
+ * The output column of a projection that is exactly one bare `count(*)`, or `null`.
+ *
+ * The same shape `detectCountShortcut` requires, extracted so a second rung can ask for it
+ * without a second copy of the `groupBy` / `having` / `ORDER BY` refusals — each of which is a
+ * silent wrong answer rather than a slow path when a shortcut skips it (see that function's
+ * note). `SKIP`/`LIMIT` are deliberately NOT refused; they page one row.
+ */
+const countStarColumn = (proj: Projection): string | null => {
+  if (
+    proj.star ||
+    proj.distinct ||
+    proj.groupBy !== undefined ||
+    proj.having !== undefined ||
+    (proj.orderBy?.length ?? 0) > 0 ||
+    proj.items.length !== 1
+  ) {
+    return null;
+  }
+
+  const [item] = proj.items;
+  const e = item.expr;
+
+  if (e.kind !== 'func' || e.name !== 'count' || !e.star || e.distinct) {
+    return null;
+  }
+
+  return item.alias ?? columnName(e);
+};
+
+export const detectOptionalHopCount = (
+  clauses: readonly Clause[],
+): ((graph: Graph, params: Params) => Row[]) | null => {
+  if (clauses.length !== 3) {
+    return null;
+  }
+
+  const [m, om, ret] = clauses;
+
+  if (
+    m.kind !== 'match' ||
+    m.optional ||
+    m.where !== undefined ||
+    m.patterns.length !== 1 ||
+    om.kind !== 'match' ||
+    !om.optional ||
+    om.where !== undefined ||
+    om.patterns.length !== 1 ||
+    ret.kind !== 'return'
+  ) {
+    return null;
+  }
+
+  const [anchor] = m.patterns;
+  const v = anchor.start.variable;
+
+  if (
+    anchor.segments.length !== 0 ||
+    anchor.pathVar !== undefined ||
+    v === undefined ||
+    !plainNode(anchor.start) ||
+    (anchor.start.properties !== undefined && anchor.start.properties.length > 0)
+  ) {
+    return null;
+  }
+
+  const { label } = anchor.start;
+
+  if (label !== undefined && label.kind !== 'label') {
+    return null; // a compound label expression is not a bucket
+  }
+
+  const [hop] = om.patterns;
+
+  if (hop.pathVar !== undefined || hop.segments.length !== 1 || hop.start.variable !== v) {
+    return null;
+  }
+
+  const [seg] = hop.segments;
+  const { rel, node } = seg;
+
+  if (
+    !plainRel(rel) ||
+    rel.variable !== undefined ||
+    rel.direction === 'both' ||
+    !plainNode(node) ||
+    (node.properties !== undefined && node.properties.length > 0)
+  ) {
+    return null;
+  }
+
+  const types = relTypeNames(rel.label);
+
+  if (types === null) {
+    return null;
+  }
+
+  const column = countStarColumn(ret.projection);
+
+  if (column === null) {
+    return null;
+  }
+
+  const proj = ret.projection;
+  const out = rel.direction === 'out';
+  const far = node.label;
+  const name = label?.name;
+  const one = (graph: Graph): Row => {
+    const vertices: Iterable<Vertex> =
+      name === undefined ? graph.verticesById.values() : (graph.verticesByLabel.get(name) ?? []);
+    let total = 0;
+
+    for (const vertex of vertices) {
+      // The FLOOR is the whole difference from the plain hop count: an anchor with no
+      // matching neighbour still contributes its one null-filled row.
+      const d = sideOfVertex(vertex, out, types, far);
+
+      total += d === 0 ? 1 : d;
+    }
+
+    return { [column]: total };
+  };
+
+  if (proj.skip === undefined && proj.limit === undefined) {
+    return (graph) => [one(graph)];
+  }
+
+  return (graph, params) => pageOneRow(() => one(graph), graph, params, proj.skip, proj.limit);
+};
+
 export const detectCountShortcut = (
   clauses: readonly Clause[],
   compiled?: readonly CClause[],

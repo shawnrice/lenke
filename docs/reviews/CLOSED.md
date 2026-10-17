@@ -5411,3 +5411,20 @@ is right — caught by this item's own test before it shipped.
 every case written fed the optional hop from ONE hop. _Two arms need two cases, and the mutant is
 what says which one the test reached._ Declining `count(DISTINCT …)` is conservative, not
 load-bearing (the distinct arm's answer coincides) — documented at the guard.
+
+## 510 — the TS OPTIONAL-hop count: CLOSED at 17x
+
+Item 509's twin on the other engine. TS had no rung for the shape (every detector refuses
+`optional` on its first check), so a left-outer `count(*)` cost 692-710 ms against native's 0.6.
+`detectOptionalHopCount` walks the anchor bucket once summing max(degree, 1): **36.6-42.7 ms**,
+three alternated rounds, plain count and a one-hop projection flat as controls. The residual
+against native is the object model — 200,000 JS objects at ~185 ns against a CSR read.
+
+**The adjacency box beat its own refutation again.** Each anchor is visited ONCE, which item 355
+measured as 1.21x WORSE for the box — A/B'd anyway: box 36.6-42.7 against the id hash 46.4-47.1.
+Third time at query scale (492, 494, now this); 355's number is a per-iteration micro.
+
+Oracle: `count(*) + 0` declines the rung, and an instrumented run confirms 9 firings — the bare
+spellings only. Mutation 6 of 7. **Admitting `both` survived until the fixture could tell**: the
+refusal case used the `S` type, where undirected and in-only coincide at 3; the `T` type gives 4
+against 3. _A refusal test proves nothing if the shape it refuses happens to agree._
