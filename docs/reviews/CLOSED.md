@@ -5375,3 +5375,22 @@ kept because enforcing mode later would make this rewrite a wrong answer without
 
 `bun run spelling`'s second flag (`one end labelled…`, 2.2x) was item 504's shared-process
 contamination: isolated it is a 1.09x spread.
+
+## 508 — the OPTIONAL landing LABEL was discarded in native: FIXED
+
+`OPTIONAL MATCH (u)-[:T]->(x:Q)` matched every neighbour and returned rows whose `x` is not a
+`:Q` (count 4 against TS's 3). The optional lowering bound `node_plain`'s label and label
+expression to `_lbl2` / `_v2_le` and used neither, while inline props and an inline `WHERE` did
+become the `landing_pred`. Fix: the label goes through `landing_label_filter` into the same
+predicate, written first. Pre-existing — confirmed against the pristine build before writing the
+fix. Seven shapes now read ALL SAME cross-engine.
+
+Mutation 4 of 5. **The label-EXPRESSION mutant survived the first run**: the suite had only a
+bare `:Q`, and `node_plain` returns the compound form separately, so dropping `v2_le` changed
+nothing tested. `x:!P` and `x:P|Q` kill it — the third survivor this session caused by a helper
+returning two things where the test exercised one.
+
+**OPEN (written and measured, deliberately NOT in that commit):** `try_fused_count` learning
+`Plan::OptionalExpand` — `count(*)` as Σ max(degree, 1) — takes `optcount` **4.5 -> 0.6 ms**,
+landing on the non-optional twin's 0.5. It needs a guard the plain arm does not: an unknown edge
+type is ZERO rows for a plain hop and the SOURCE COUNT for an optional one.

@@ -4358,7 +4358,7 @@ impl Parser {
                 "edge properties / an inline edge WHERE on OPTIONAL MATCH are not supported".into(),
             );
         }
-        let (v2, _lbl2, v2_props, v2_where, _v2_le) = self.node_plain()?;
+        let (v2, lbl2, v2_props, v2_where, v2_le) = self.node_plain()?;
         // A bound edge variable binds the edge at `slots` and the landing node at
         // `slots+1` (matching a plain bound-edge hop); otherwise just the node.
         let bind_edge = rel.var.is_some();
@@ -4387,6 +4387,14 @@ impl Parser {
                 Some(p) => Expr::And(Box::new(p), Box::new(e)),
             })
         };
+        // The LANDING LABEL is an element-pattern predicate like the others, and it was being
+        // DISCARDED — `node_plain`'s label and label-expression were bound to `_lbl2`/`_v2_le`
+        // and never used, so `OPTIONAL MATCH (u)-[:T]->(x:Q)` matched every neighbour and
+        // returned rows whose `x` is not a `:Q` at all. The TS engine filters them; this
+        // engine did not (item 508). Written first because that is where it appears.
+        if let Some(e) = landing_label_filter(lbl2, v2_le, node_slot) {
+            landing_pred = and(landing_pred, e);
+        }
         for (k, val) in v2_props {
             landing_pred = and(
                 landing_pred,

@@ -7714,3 +7714,125 @@ fn uncorrelated_subquery_bodies_are_counted_and_optimized() {
         3.0
     );
 }
+
+/// What an OPTIONAL hop COUNTS: Σ max(degree, 1), since a source with no matching neighbour
+/// still yields one row — and what it must FILTER, which is the bug this pins.
+///
+/// `OPTIONAL MATCH (u)-[:T]->(x:Q)` discarded the landing LABEL entirely: `node_plain`'s label
+/// was bound to `_lbl2` and never used, so every neighbour matched and rows came back whose
+/// `x` is not a `:Q`. The TS engine filters them, so the two engines disagreed (item 508).
+///
+/// Each count is also asked through a DECLINING TWIN — the same body with an inline landing
+/// predicate that passes everything (`x WHERE x.name <> 'zz'`), which is a different route
+/// through the same question. A trailing `WHERE` inside `OPTIONAL MATCH` is not supported at
+/// all here, so the inline form is the only twin available.
+#[test]
+fn optional_hop_count_and_its_landing_filter() {
+    // a -> b, a -> c (both T); b -> b (S); d and z have no out-edges at all.
+    let nd = concat!(
+        "{\"id\":\"a\",\"labels\":[\"P\"],\"props\":{\"name\":\"a\"}}\n",
+        "{\"id\":\"b\",\"labels\":[\"P\"],\"props\":{\"name\":\"b\"}}\n",
+        "{\"id\":\"c\",\"labels\":[\"Q\"],\"props\":{\"name\":\"c\"}}\n",
+        "{\"id\":\"d\",\"labels\":[\"P\"],\"props\":{\"name\":\"d\"}}\n",
+        "{\"id\":\"e1\",\"from\":\"a\",\"to\":\"b\",\"type\":\"T\",\"props\":{}}\n",
+        "{\"id\":\"e2\",\"from\":\"a\",\"to\":\"c\",\"type\":\"T\",\"props\":{}}\n",
+        "{\"id\":\"e3\",\"from\":\"b\",\"to\":\"b\",\"type\":\"S\",\"props\":{}}\n",
+    );
+    let store = crate::ndjson::from_ndjson(nd).unwrap();
+    let n = |q: &str| -> f64 {
+        match run(&super::parse(q).unwrap(), &store).rows[0][0] {
+            Value::Num(x) => x,
+            ref o => panic!("want num, got {o:?} for {q}"),
+        }
+    };
+    // `body` names the landing variable `x`, so the twin can predicate on it.
+    let both = |body: &str, want: f64| {
+        let fast = format!("MATCH (u:P) OPTIONAL MATCH {body} RETURN count(*) AS c");
+        // The INLINE landing predicate, not a trailing `WHERE` — native does not support a
+        // `WHERE` inside `OPTIONAL MATCH` at all ("E_NOT_IMPLEMENTED"), and the inline form is
+        // exactly what sets `landing_pred`, which is the thing the fast path refuses.
+        let slow = format!(
+            "MATCH (u:P) OPTIONAL MATCH {} RETURN count(*) AS c",
+            body.replace("(x)", "(x WHERE x.name <> 'zz')")
+        );
+
+        assert_eq!(n(&fast), want, "degree sum: {fast}");
+        assert_eq!(n(&slow), want, "general path: {slow}");
+    };
+
+    // Three `:P` sources (a, b, d). `a` has two T out-edges, `b` and `d` none — so 2 + 1 + 1.
+    both("(u)-[:T]->(x)", 4.0);
+    // Untyped: `b` now has one (its S self-loop), so 2 + 1 + 1 is unchanged by coincidence —
+    // use the S type alone to separate them: only `b` matches, so 1 + 1 + 1.
+    both("(u)-[:S]->(x)", 3.0);
+    both("(u)-[]->(x)", 4.0);
+    // An unknown type matches nothing, so EVERY source null-fills: one row each.
+    both("(u)-[:NOPE]->(x)", 3.0);
+    // Reversed: `b` and `c` are pointed at, but `c` is not `:P`; sources are a, b, d, so
+    // in-degrees 0, 1, 0 -> 1 + 1 + 1.
+    both("(u)<-[:T]-(x)", 3.0);
+    // Undirected at a self-loop: GQL traverses it once, so `b` has one S edge either way.
+    both("(u)-[:S]-(x)", 3.0);
+
+    // The LANDING LABEL: only `c` is `:Q`, reached once from `a`; `b` has a T edge but to a
+    // `:P`, so it null-fills like `d`. 1 + 1 + 1. This read 4 before the fix — `a` counted
+    // BOTH its T edges — and the TS engine has always said 3.
+    assert_eq!(
+        n("MATCH (u:P) OPTIONAL MATCH (u)-[:T]->(x:Q) RETURN count(*) AS c"),
+        3.0
+    );
+    // And the rows themselves, which is where a dropped label is visible rather than merely
+    // mis-counted.
+    let rows = run(
+        &super::parse("MATCH (u:P) OPTIONAL MATCH (u)-[:T]->(x:Q) RETURN u.name AS u, x.name AS x")
+            .unwrap(),
+        &store,
+    );
+    let mut got: Vec<String> = rows
+        .rows
+        .iter()
+        .map(|r| format!("{:?}/{:?}", r[0], r[1]))
+        .collect();
+
+    got.sort();
+    assert_eq!(
+        got,
+        vec![
+            "Str(\"a\")/Str(\"c\")",
+            "Str(\"b\")/Null",
+            "Str(\"d\")/Null"
+        ]
+    );
+    // A COMPOUND label expression is carried too, not just a bare name — `node_plain` returns
+    // the two separately and dropping either one answers wrongly.
+    assert_eq!(
+        n("MATCH (u:P) OPTIONAL MATCH (u)-[:T]->(x:!P) RETURN count(*) AS c"),
+        3.0
+    );
+    assert_eq!(
+        n("MATCH (u:P) OPTIONAL MATCH (u)-[:T]->(x:P|Q) RETURN count(*) AS c"),
+        4.0
+    );
+    // An inline PROPERTY and a label together, both carried.
+    assert_eq!(
+        n("MATCH (u:P) OPTIONAL MATCH (u)-[:T]->(x:Q {name: 'c'}) RETURN count(*) AS c"),
+        3.0
+    );
+    assert_eq!(
+        n("MATCH (u:P) OPTIONAL MATCH (u)-[:T]->(x:Q {name: 'zz'}) RETURN count(*) AS c"),
+        3.0
+    );
+
+    // `count(DISTINCT …)` over an optional hop counts ENDPOINTS, and a null-filled row has
+    // none — a different question from the floored sum, and the arm declines it.
+    assert_eq!(
+        n("MATCH (u:P) OPTIONAL MATCH (u)-[:T]->(x) RETURN count(DISTINCT x) AS c"),
+        2.0
+    );
+
+    // The non-optional twin is the control the floor must not reach: 2 + 0 + 0.
+    assert_eq!(
+        n("MATCH (u:P) MATCH (u)-[:T]->(x) RETURN count(*) AS c"),
+        2.0
+    );
+}
