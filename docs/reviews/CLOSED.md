@@ -5596,3 +5596,19 @@ only because the other shape's probe case was in the same measurement pass.
 Mutation 4 of 5. Oracle: `count(*) + 0` declines the arm, so the general `unwind_rows` answers the
 same question; every case asked both ways. ISO's rule pinned case by case (list → length, empty →
 0, NULL/missing → 0, scalar → 1), with `count(t)` checked separately as a different question.
+
+## 520 — items 515-519 sweep clean: VERIFIED on three harnesses
+
+`bun run bench`, `bun run bench:usage` and the Rust `query_bench`, against item 514's recorded
+values. Flat-to-better everywhere except two short rows that read UP in the shared sweep
+(`count distinct` 2.9 → 3.8, `distinct over a hop` 58.9 → 61.2) and came back at or below 514
+once isolated (3.0/3.0/3.2 and 53.6/56.6). Item 514's rule again: a short row in the
+shared-process sweep moves in BOTH directions, so a sweep-to-sweep comparison is not a regression
+check — only an isolated A/B is.
+
+Both of those rows are also a usable CONTROL for the batch: every rung items 515-519 added
+refuses a `DISTINCT` aggregate on its first guard, so the change cannot reach them.
+
+Native: `optional hop` 577.9 (514: 582.7), `+ miss` 64.3 (64.9), `+ landing pred` 10040.0
+(10278.0), `EXISTS` 1131.2 (1147.9), `for-in const x3` 15.3 µs. Serving side untouched
+(`read: point lookup` ts(+) 1.02M). No engine change.
