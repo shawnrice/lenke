@@ -5394,3 +5394,20 @@ returning two things where the test exercised one.
 `Plan::OptionalExpand` — `count(*)` as Σ max(degree, 1) — takes `optcount` **4.5 -> 0.6 ms**,
 landing on the non-optional twin's 0.5. It needs a guard the plain arm does not: an unknown edge
 type is ZERO rows for a plain hop and the SOURCE COUNT for an optional one.
+
+## 509 — `count(*)` over an OPTIONAL hop: CLOSED at 7.6x
+
+Item 508's held-back arm. A left-outer hop yields one row per source either way, so `count(*)` is
+Σ max(degree, 1); `try_fused_count` now takes `Plan::OptionalExpand`. 4.6 -> 0.6 ms at 200,000
+vertices / 1,000,000 edges, three alternated rounds, landing on the non-optional twin's 0.5. The
+optional PROJECTION is the control this arm cannot reach, and is flat.
+
+**A guard the plain arm does not need:** an unknown edge type is ZERO rows for a plain hop and the
+SOURCE COUNT for an optional one. The arm inherited the plain early return and answered 0 where 3
+is right — caught by this item's own test before it shipped.
+
+**The DEEP arm's floor mutant survived until a case reached it.** `try_fused_count` has two arms
+(a per-node count array when ≥2 hops feed the final one, a materialized frontier otherwise) and
+every case written fed the optional hop from ONE hop. _Two arms need two cases, and the mutant is
+what says which one the test reached._ Declining `count(DISTINCT …)` is conservative, not
+load-bearing (the distinct arm's answer coincides) — documented at the guard.

@@ -7830,6 +7830,29 @@ fn optional_hop_count_and_its_landing_filter() {
         2.0
     );
 
+    // A DEEP chain feeding the optional hop takes the other arm of the same fast path (a
+    // per-node count array rather than a materialized frontier), and the floor applies there
+    // too: `a` has two T out-edges, so two rows reach `m` in {b, c}, and neither has a T
+    // out-edge — so both null-fill, for 2.
+    assert_eq!(
+        n("MATCH (u:P)-[:T]->(m) OPTIONAL MATCH (m)-[:T]->(x) RETURN count(*) AS c"),
+        2.0
+    );
+    // The same chain where the middles DO have out-edges, via the S type: `b -S-> b`, so the
+    // `b` row contributes 1 and the `c` row null-fills.
+    assert_eq!(
+        n("MATCH (u:P)-[:T]->(m) OPTIONAL MATCH (m)-[:S]->(x) RETURN count(*) AS c"),
+        2.0
+    );
+    // TWO hops feeding the optional one, which is what actually reaches the deep arm — one hop
+    // takes the shallow one, and a test that only exercised the shallow arm left the deep
+    // arm's floor untested (its mutant survived until this case existed). `a -T-> b -S-> b`
+    // is the single row in, and `b` has no T out-edge, so it null-fills: 1, not 0.
+    assert_eq!(
+        n("MATCH (u:P)-[:T]->(m)-[:S]->(w) OPTIONAL MATCH (w)-[:T]->(x) RETURN count(*) AS c"),
+        1.0
+    );
+
     // The non-optional twin is the control the floor must not reach: 2 + 0 + 0.
     assert_eq!(
         n("MATCH (u:P) MATCH (u)-[:T]->(x) RETURN count(*) AS c"),

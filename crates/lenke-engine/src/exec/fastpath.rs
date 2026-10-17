@@ -4654,26 +4654,58 @@ pub(super) fn try_fused_count(
     if agg.func != AggFn::Count {
         return None;
     }
-    let Plan::Expand {
-        input: inner,
-        from,
-        dir,
-        edge_label,
-        double_loops,
-        ..
-    } = input
-    else {
-        return None;
+    // An OPTIONAL hop is the same degree sum with a FLOOR: a source with no matching
+    // neighbour still yields one row (null-filled for GQL `OPTIONAL MATCH`, the source itself
+    // for Gremlin `optional()` — one row either way), so `count(*)` is Σ max(degree, 1).
+    // Without this arm the optional spelling enumerated every row: 4.5ms against 0.5 for the
+    // identical non-optional count at 200,000 vertices / 1,000,000 edges (item 508).
+    //
+    // A LANDING PREDICATE declines. It decides both which neighbours count AND whether the
+    // source null-fills, and a degree cannot say which of a vertex's edges land somewhere that
+    // passes — items 219 and 290's rule, here with the null-fill riding on the same question.
+    let (inner, from, dir, edge_label, dl, optional) = match input {
+        Plan::Expand {
+            input,
+            from,
+            dir,
+            edge_label,
+            double_loops,
+            ..
+        // Gremlin `both()` walks a self-loop twice — the final-hop degree counts it twice.
+        } => (input, from, dir, edge_label, *double_loops, false),
+        Plan::OptionalExpand {
+            input,
+            from,
+            dir,
+            edge_label,
+            landing_pred: None,
+            ..
+        } => (input, from, dir, edge_label, false, true),
+        _ => return None,
     };
-    // Gremlin `both()` walks a self-loop twice — the final-hop degree counts it twice.
-    let dl = *double_loops;
     let w = chain_width(inner)?; // slot count feeding the final hop
     if *from + 1 != w {
         return None; // the final Expand must expand the current frontier
     }
     let want = match want_etypes(store, edge_label) {
         Ok(w) => w,
-        Err(()) => return Some(scalar_num(0.0)), // unknown label: zero rows
+        Err(()) => {
+            // An unknown edge type matches nothing. For a plain hop that is zero rows — but an
+            // OPTIONAL hop still yields one row per source, so the answer is the SOURCE COUNT,
+            // not zero. Caught by this item's own test before it shipped: the arm inherited the
+            // plain hop's early return and answered 0 where 3 is right.
+            if !optional {
+                return Some(scalar_num(0.0));
+            }
+
+            // Only `count(*)` has that answer; `count(x)` and `count(DISTINCT x)` count
+            // VALUES, and a null-filled row has none.
+            if agg.arg.is_some() || agg.distinct {
+                return None;
+            }
+
+            return Some(scalar_num(frontier_ids(inner, store)?.len() as f64));
+        }
     };
     let src = frontier_ids(inner, store)?; // ids feeding the final hop, w/ multiplicity
 
@@ -4692,7 +4724,9 @@ pub(super) fn try_fused_count(
                 let all_types = want_covers_all_etypes(store, &want);
                 let mut total = 0f64;
                 counts.for_each(|v, c| {
-                    total += c * matching_degree(store, v, *dir, &want, dl, all_types);
+                    let d = matching_degree(store, v, *dir, &want, dl, all_types);
+
+                    total += c * if optional { d.max(1.0) } else { d };
                 });
                 return Some(scalar_num(total));
             }
@@ -4710,17 +4744,39 @@ pub(super) fn try_fused_count(
         // per-edge walk it replaces was the one 1-hop-count regression vs the TS engine.
         let all_types = want_covers_all_etypes(store, &want);
         let mut total = 0f64;
+        let degree_of = |v: u32| {
+            let d = matching_degree(store, v, *dir, &want, dl, all_types);
+
+            if optional {
+                d.max(1.0)
+            } else {
+                d
+            }
+        };
+
         if matches!(inner.as_ref(), Plan::Expand { .. }) {
             let (distinct, mult) = distinct_with_mult(&src, store.node_count());
             for (i, &v) in distinct.iter().enumerate() {
-                total += mult[i] * matching_degree(store, v, *dir, &want, dl, all_types);
+                total += mult[i] * degree_of(v);
             }
         } else {
             for &v in &src {
-                total += matching_degree(store, v, *dir, &want, dl, all_types);
+                total += degree_of(v);
             }
         }
         return Some(scalar_num(total));
+    }
+    if optional {
+        // Only `count(*)` is answered for an optional hop. `count(DISTINCT c)` counts
+        // ENDPOINTS, and a null-filled row has none — a different question from Σ max(deg, 1).
+        //
+        // CONSERVATIVE, not load-bearing: its mutant survives, because the distinct arm's own
+        // answer happens to coincide (it counts distinct neighbours, and the null-filled rows
+        // it would skip contribute no endpoint either way — `count(DISTINCT x)` over this
+        // fixture is 2 both ways). The guard stays because that arm was not written for a
+        // left-outer hop and nothing measures it there; admitting it is a separate change with
+        // its own number.
+        return None;
     }
     if agg.distinct {
         // count(DISTINCT c) where c is the final (last) slot, index == w: distinct
