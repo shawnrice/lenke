@@ -6587,10 +6587,66 @@ impl Parser {
         // A scalar RETURN expression, parsed against the body's sub-scope.
         let saved_scope = std::mem::replace(&mut self.scope, sub_scope);
         let saved_slots = std::mem::replace(&mut self.slots, sub_slots);
-        let scalar = self.expr()?;
+        // The enclosing RETURN item parses with aggregate HOISTING on — item 436 turned it on
+        // for every item, not only the ones starting with an aggregate. A subquery's own
+        // aggregate belongs to the SUBQUERY, so the accumulator is set aside for the body and
+        // restored afterwards. Without this, `VALUE { … RETURN max(x.age) }` hoisted that `max`
+        // into the OUTER aggregate list: the outer projection became an aggregation over a slot
+        // the outer batch does not have, and the engine PANICKED with an index out of bounds
+        // rather than answering or erroring (item 498).
+        let saved_aggs = self.having_aggs.take();
+        let saved_base = self.having_base;
+        let result = self.value_subquery_tail(body, outer_width);
+        self.having_aggs = saved_aggs;
+        self.having_base = saved_base;
         self.scope = saved_scope;
         self.slots = saved_slots;
+        let expr = result?;
         self.expect(&Tok::RBrace)?;
+        Ok(expr)
+    }
+
+    /// The RETURN of a correlated `VALUE { … }`, parsed in the body's sub-scope: an AGGREGATE
+    /// reduces the body's matches to one value (`AggSubquery`, the IR variant the `CALL`
+    /// lowering already uses and whose empty-group answers match pure-TS — `sum` 0, `avg` /
+    /// `min` / `max` NULL); anything else is a per-row scalar (`ScalarSubquery`).
+    fn value_subquery_tail(&mut self, body: Plan, outer_width: usize) -> Result<Expr, String> {
+        if let Some(func) = self.peek_agg() {
+            use crate::ir::AggFn;
+            let (arg, distinct, frac) = self.aggregate_call()?;
+            // Only a BARE aggregate is the whole RETURN; `max(x.age) + 1` continues with an
+            // operator and is an ordinary scalar expression over the group, which this form
+            // cannot express — it falls through to the error below rather than silently
+            // dropping the tail.
+            if self.peek() == Some(&Tok::RBrace) {
+                if distinct || frac.is_some() {
+                    return Err(
+                        "DISTINCT / fractional aggregates are not supported in a VALUE subquery"
+                            .into(),
+                    );
+                }
+                return match (func, arg) {
+                    (AggFn::Sum | AggFn::Avg | AggFn::Min | AggFn::Max, Some(arg)) => {
+                        Ok(Expr::AggSubquery {
+                            body: Box::new(body),
+                            scalar: Box::new(arg),
+                            func,
+                            outer_width,
+                        })
+                    }
+                    _ => Err(format!(
+                        "RETURN {func:?}(…) is not supported in a VALUE subquery; \
+                         use SUM / AVG / MIN / MAX with an argument, or COUNT(*)"
+                    )),
+                };
+            }
+            return Err(
+                "a VALUE subquery's RETURN must be a bare aggregate or an aggregate-free \
+                 expression"
+                    .into(),
+            );
+        }
+        let scalar = self.expr()?;
         Ok(Expr::ScalarSubquery {
             body: Box::new(body),
             scalar: Box::new(scalar),

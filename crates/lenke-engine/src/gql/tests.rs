@@ -7452,3 +7452,103 @@ fn degree_count_subquery_agrees_with_the_general_path() {
     // that the cap DECLINES rather than answering with a truncated chain.
     both("d", "(u)-[:T]->(x)-[:T]->(y)-[:T]->(w)-[:T]->(v{})", 2.0);
 }
+
+/// `VALUE { MATCH (u)-[:T]->(x) RETURN max(x.age) }` — a correlated scalar subquery whose RETURN
+/// is an AGGREGATE other than `count(*)`. Item 498: this PANICKED (`index out of bounds` in
+/// `Batch::slot`) rather than answering or erroring.
+#[test]
+fn value_subquery_returning_an_aggregate() {
+    let nd = concat!(
+        "{\"id\":\"a\",\"labels\":[\"P\"],\"props\":{\"age\":1}}\n",
+        "{\"id\":\"b\",\"labels\":[\"P\"],\"props\":{\"age\":5}}\n",
+        "{\"id\":\"c\",\"labels\":[\"P\"],\"props\":{\"age\":9}}\n",
+        "{\"id\":\"e1\",\"from\":\"a\",\"to\":\"b\",\"type\":\"T\",\"props\":{}}\n",
+        "{\"id\":\"e2\",\"from\":\"a\",\"to\":\"c\",\"type\":\"T\",\"props\":{}}\n",
+    );
+    let store = crate::ndjson::from_ndjson(nd).unwrap();
+    let out = run(
+        &super::parse(
+            "MATCH (u:P) RETURN u.age AS a, \
+             VALUE { MATCH (u)-[:T]->(x) RETURN max(x.age) } AS m ORDER BY a",
+        )
+        .unwrap(),
+        &store,
+    );
+    let got: Vec<String> = out
+        .rows
+        .iter()
+        .map(|r| format!("{:?}/{:?}", r[0], r[1]))
+        .collect();
+    // `a` reaches b (5) and c (9), so its max is 9; b and c reach nothing, so theirs is NULL.
+    assert_eq!(
+        got,
+        vec!["Num(1.0)/Num(9.0)", "Num(5.0)/Null", "Num(9.0)/Null"]
+    );
+
+    // Every aggregate, against the PURE-TS engine's answers for the same fixture (run through
+    // `packages/native` and recorded here): the empty group is 0 for SUM and NULL for the rest,
+    // which is what the `AggSubquery` arm already did for the `CALL` lowering.
+    let agg = |f: &str| -> Vec<String> {
+        let q = format!(
+            "MATCH (u:P) RETURN u.age AS a, \
+             VALUE {{ MATCH (u)-[:T]->(x) RETURN {f}(x.age) }} AS m ORDER BY a"
+        );
+        run(&super::parse(&q).unwrap(), &store)
+            .rows
+            .iter()
+            .map(|r| format!("{:?}", r[1]))
+            .collect()
+    };
+    assert_eq!(agg("sum"), vec!["Num(14.0)", "Num(0.0)", "Num(0.0)"]);
+    assert_eq!(agg("avg"), vec!["Num(7.0)", "Null", "Null"]);
+    assert_eq!(agg("min"), vec!["Num(5.0)", "Null", "Null"]);
+    assert_eq!(agg("max"), vec!["Num(9.0)", "Null", "Null"]);
+
+    // `count(*)` keeps its own lowering (a degree), and agrees.
+    let cnt = run(
+        &super::parse(
+            "MATCH (u:P) RETURN u.age AS a, \
+             VALUE { MATCH (u)-[:T]->(x) RETURN count(*) } AS m ORDER BY a",
+        )
+        .unwrap(),
+        &store,
+    );
+    let cnt: Vec<String> = cnt.rows.iter().map(|r| format!("{:?}", r[1])).collect();
+    assert_eq!(cnt, vec!["Num(2.0)", "Num(0.0)", "Num(0.0)"]);
+
+    // An aggregate NESTED inside a larger expression does not start with an aggregate token, so
+    // it is parsed by the general `expr()` — which is where the enclosing item's hoisting is
+    // still switched on. This is the shape the save/restore around the body exists for, and
+    // without it the hoisted `max` indexes a slot the outer batch does not have.
+    let nested = super::parse(
+        "MATCH (u:P) RETURN u.age AS a, \
+         VALUE { MATCH (u)-[:T]->(x) RETURN abs(max(x.age)) } AS m ORDER BY a",
+    );
+    match nested {
+        // Whatever it does, it must not take the OUTER projection's aggregate path: running it
+        // is the assertion, since the failure mode was a panic rather than a wrong value.
+        Ok(plan) => {
+            let _ = run(&plan, &store);
+        }
+        Err(e) => assert!(!e.is_empty()),
+    }
+
+    // What it REFUSES, loudly, where it used to panic or silently drop a tail.
+    for (q, want) in [
+        (
+            "MATCH (u:P) RETURN VALUE { MATCH (u)-[:T]->(x) RETURN max(DISTINCT x.age) } AS m",
+            "DISTINCT",
+        ),
+        (
+            "MATCH (u:P) RETURN VALUE { MATCH (u)-[:T]->(x) RETURN max(x.age) + 1 } AS m",
+            "bare aggregate",
+        ),
+        (
+            "MATCH (u:P) RETURN VALUE { MATCH (u)-[:T]->(x) RETURN collect(x.age) } AS m",
+            "not supported",
+        ),
+    ] {
+        let err = super::parse(q).map(|_| String::new()).unwrap_or_else(|e| e);
+        assert!(err.contains(want), "want {want:?} in {err:?} for {q}");
+    }
+}

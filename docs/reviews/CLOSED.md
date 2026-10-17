@@ -5152,3 +5152,31 @@ three answers agreed against them.**
 
 _A test named for a decline that no longer happens still passes._ `THREE segments decline` asserted
 0 on a fixture with nothing three hops out, so only its name went stale; renamed, not deleted.
+
+## 498 — `VALUE { … RETURN max(x) }` panicked native: FIXED, and a cross-engine divergence closed
+
+Found by PRICING THE ENUM, not by a failing test. Item 436 turned aggregate hoisting on for every
+RETURN item; a `VALUE { … }` item parses through that same `expr()`, so the subquery's own `max`
+was hoisted into the OUTER aggregate list and indexed a slot the outer batch does not have —
+`index out of bounds` in `Batch::slot`, surfacing as `E_INVALID_VALUE: query evaluation panicked`
+while the TS engine answered normally. Fix: set the hoisting accumulator aside around the body,
+and lower `VALUE { … RETURN <agg>(arg) }` to `Expr::AggSubquery` (the variant `CALL` already uses,
+whose empty-group answers already matched TS: `sum` 0, the rest NULL). Native now agrees with TS
+on all five aggregates and answers in 22.1-22.3 ms at 200,000 anchors.
+
+**Why nothing caught it:** the GQL corpus has nine `VALUE { … }` cases — `count(*)` and plain
+scalars, nothing in between — and the differential fuzzer does not generate the form. The guard
+added is a DIFFERENTIAL test, because the corpus is a frozen single-engine snapshot and the
+missing statement was that the engines agree.
+
+**A survivor that widened the test:** the hoisting guard's mutant survived, since every shape
+written parses via `aggregate_call()`, which does not hoist. The guard is for an aggregate NESTED
+in a larger expression (`abs(max(x))`), which reaches `expr()` with hoisting live. With that case
+added the mutant dies WITH THE ORIGINAL PANIC.
+
+**Still divergent (recorded in the test):** TS answers `max(DISTINCT x)`, `max(x) + 1` and
+`collect(x)` in a `VALUE`; native refuses all three. `DISTINCT` needs a field on
+`Expr::AggSubquery`; `collect` is cheapest — `Expr::CollectSubquery` exists.
+
+**OPEN, 8.5x:** `VALUE { … RETURN count(*) }` and `COUNT { … }` converge in native (11.3-16.9 vs
+11.3 ms) and do NOT in TS (624.2 vs 73.0). An equivalent-spelling cliff.

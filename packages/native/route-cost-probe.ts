@@ -250,6 +250,14 @@ const queries: Record<string, string> = {
   // A falsifiable prediction, measured before anything is built on the diagnosis.
   sub3hop:
     'MATCH (n:Person) RETURN COUNT { MATCH (n)-[:KNOWS]->(x)-[:KNOWS]->(y)-[:KNOWS]->(z) } AS c',
+  // Item 498: the rest of the subquery enum, priced against the two forms items 496/497 now
+  // answer by degree. A far LABEL and a sub-WHERE are the two positions a degree chain refuses;
+  // the VALUE spelling is the EQUIVALENT-SPELLING question (both should lower to one count).
+  sublabel: 'MATCH (n:Person) RETURN COUNT { MATCH (n)-[:KNOWS]->(x:Half) } AS c',
+  sub2hoplab2: 'MATCH (n:Person) RETURN COUNT { MATCH (n)-[:KNOWS]->(x)-[:KNOWS]->(y:Half) } AS c',
+  subwhere: 'MATCH (n:Person) RETURN COUNT { MATCH (n)-[:KNOWS]->(x) WHERE x.age > 50 } AS c',
+  subvalue: 'MATCH (n:Person) RETURN VALUE { MATCH (n)-[:KNOWS]->(x) RETURN count(*) } AS c',
+  submax: 'MATCH (n:Person) RETURN VALUE { MATCH (n)-[:KNOWS]->(x) RETURN max(x.age) } AS c',
   subcontrol: 'MATCH (n:Person)-[:KNOWS]->(x) RETURN count(*) AS c',
   hopaggrelvar: 'MATCH (:Person)-[r:KNOWS]->(b) RETURN max(b.age) AS m',
   twohoprelvar: 'MATCH (:Person)-[r:KNOWS]->(b)-[s:KNOWS]->(c) RETURN count(*) AS c',
