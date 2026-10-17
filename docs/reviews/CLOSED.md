@@ -5280,3 +5280,26 @@ Mutation 3 of 5. **The write guard survives and nothing can currently distinguis
 run one at a time, so `MATCH … INSERT … RETURN COUNT { … }` lands every write before the
 projection and reads the same count on every row — identical on the pristine build. Kept as
 defensive, recorded rather than implied.
+
+## 504 — VERIFICATION: tonight's ten items sweep clean, and `bun run bench`'s column is contaminated
+
+A/B against the pre-session tree, three alternated rounds on the shared bench: `query: subquery
+item` 35.4-37.0 -> 31.3-31.5 (1.14x), `query: 2-hop subquery item` 123.3-126.3 -> 103.0-109.6
+(1.19x), and `count 3-hop` — the heaviest `shortcuts.ts` consumer, as the control — FLAT at
+316-320 both sides. No regression from items 494-503.
+
+**`bun run bench` runs every row in ONE process, so a short row is warmed and perturbed by the
+rows before it.** `traverse 1-hop + filter` read 57.6 ms in the sweep against item 321's 39.7,
+which looks like a 1.45x regression; isolated with `BENCH_ONLY='…$'` it is 38.7/39.6/40.7. The
+counter-example keeps the rule honest: `count 3-hop` reads 321.6 in-sweep against 316.5-325.7
+isolated, because a row long enough to dominate its process is unaffected. _A SHORT row in the
+shared sweep is a question for an isolating instrument; a long one is a number._
+
+**No new target came out of the cross-engine sweep** — every large ratio is already here (`count
+3-hop` 300/310/324/350, `traverse 1-hop + filter` 311/321, `project the edge` 445/446, ingest 312).
+
+**NEW, from `bench:usage`:** the TS engine's UNINDEXED column is 17-73x behind native while its
+indexed column WINS — `read: point lookup` 2.1k against 44.3k ops/s, `write: property update` 631
+against 46.2k, `interleaved: write + read` 351 against 23.2k. The write rows are widest because
+these workloads find their node by `name` first, so an unindexed write pays an unindexed scan.
+Per scanned node that is ~24 ns in TS against ~1.1 in native — the object-model constant factor.
