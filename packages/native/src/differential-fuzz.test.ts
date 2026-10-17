@@ -133,6 +133,18 @@ const tallyGroupShapes = (cov: Record<string, number>, q: string, nonEmpty: bool
     }
   }
 
+  // The SELF-ENDPOINT subquery body (item 526): `(n)-[:E]->(n)`, where the endpoint names the
+  // variable the outer row already bound. Items 506 and 525 both hid here. The non-empty floor
+  // carries the weight as always — the fixture has to HAVE self-loops for a row to come back,
+  // and a counter on generation alone would be satisfied by 20,000 empty answers.
+  if (/\(n\)(-\[:[EF|]+\]->|<-\[:[EF|]+\]-)\(n\)/.test(q)) {
+    cov.selfEndGenerated++;
+
+    if (nonEmpty) {
+      cov.selfEndNonEmpty++;
+    }
+  }
+
   if (/ OR (EXISTS|COUNT|VALUE) \{/.test(q)) {
     cov.subOrGenerated++;
 
@@ -809,8 +821,26 @@ const genCall = (r: () => number): string => {
 const subqueryBody = (r: () => number, inner = 'b'): string => {
   const et = pick(r, ['E', 'F', 'E|F']);
   const dir = r() < 0.5 ? `-[:${et}]->` : `<-[:${et}]-`;
-  const label = r() < 0.4 ? `${inner}:T` : inner;
-  const where = r() < 0.4 ? ` WHERE ${inner}.n ${pick(r, CMP)} ${pick(r, ['2', '5', '0'])}` : '';
+  // The endpoint may be the OUTER variable itself: `EXISTS { MATCH (n)-[:E]->(n) }` is the
+  // SELF-LOOP question, not "does `n` have an edge". TWO wrong answers have hidden in exactly
+  // this gap, both found by probing and neither by a test:
+  //
+  //   - item 506: every TS hop fast path bound the far node over the start without checking
+  //     the name was the same one, so `count(*)` read 4 where native read 2;
+  //   - item 525: `oneHopExists`'s free-endpoint arm answered from a bucket SIZE, so
+  //     `EXISTS { (x)-[:T]->(x) }` was true for every vertex with any edge.
+  //
+  // Item 506's note says why neither was reachable: "the differential fuzzer does not generate
+  // a one-hop pattern that repeats its endpoint." This closes that (item 526).
+  //
+  // A bound variable may not be RE-LABELLED inside a subquery body (native rejects it, and the
+  // rejection is correct), so the self arm skips the label. The `WHERE` still generates — it
+  // then reads the outer `n` rather than a separate endpoint, which is a shape worth having
+  // too.
+  const self = r() < 0.2;
+  const end = self ? 'n' : inner;
+  const label = !self && r() < 0.4 ? `${end}:T` : end;
+  const where = r() < 0.4 ? ` WHERE ${end}.n ${pick(r, CMP)} ${pick(r, ['2', '5', '0'])}` : '';
 
   return `MATCH (n)${dir}(${label})${where}`;
 };
@@ -1818,6 +1848,8 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       innerWhereNonEmpty: 0,
       subNotGenerated: 0,
       subNotNonEmpty: 0,
+      selfEndGenerated: 0,
+      selfEndNonEmpty: 0,
       subOrGenerated: 0,
       subOrNonEmpty: 0,
       predGenerated: 0,
@@ -1948,6 +1980,7 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
         `simpleGroup=${cov.simpleGroupGenerated}/${cov.simpleGroupNonEmpty} ` +
         `groupHopPred=${cov.groupHopPredGenerated}/${cov.groupHopPredNonEmpty} ` +
         `innerWhere=${cov.innerWhereGenerated}/${cov.innerWhereNonEmpty} ` +
+        `selfEnd=${cov.selfEndGenerated}/${cov.selfEndNonEmpty} ` +
         `subNot=${cov.subNotGenerated}/${cov.subNotNonEmpty} ` +
         `subOr=${cov.subOrGenerated}/${cov.subOrNonEmpty} ` +
         `sink=${cov.sinkGenerated}/${cov.sinkNonZero} peel=${cov.peelGenerated}/${cov.peelNonZero} ` +
@@ -2032,6 +2065,12 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       // percentage: `groupHopPredNonEmpty`'s 1.42x margin is ~6 sigma at mean 450 and never
       // fires, while the same ratio at mean 14 is 1.6 sigma. These four are now ~4 sigma below
       // their means, which still fails loudly on a collapse to zero and cannot flake.
+      // Measured over NINE seeds of 20,000: generated 41-61 (mean ~49, sigma ~6.1), non-empty
+      // 29-43 (mean ~35, sigma ~4.9). Floors set ~4 sigma below the means, which is item 280's
+      // rule — the safety of a floor is its distance in SIGMA, not a percentage, and a
+      // percentage applied to a small count is what made `subOrNonEmpty` flake.
+      selfEndGenerated: cov.selfEndGenerated > 22,
+      selfEndNonEmpty: cov.selfEndNonEmpty > 14,
       subNotGenerated: cov.subNotGenerated > 8,
       subNotNonEmpty: cov.subNotNonEmpty > 6,
       subOrGenerated: cov.subOrGenerated > 4,
@@ -2101,6 +2140,8 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       groupHopPredNonEmpty: true,
       innerWhereGenerated: true,
       innerWhereNonEmpty: true,
+      selfEndGenerated: true,
+      selfEndNonEmpty: true,
       subNotGenerated: true,
       subNotNonEmpty: true,
       subOrGenerated: true,

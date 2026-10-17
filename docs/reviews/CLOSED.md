@@ -5749,3 +5749,24 @@ like a regression; at PR=7 it is disjoint. The route-cost probe is bimodal the w
 probe is (item 259) — use PR=7 or more for anything under ~1.2x.
 
 Mutation 6 of 7 (null control clean).
+
+## 526 — the differential fuzzer now generates a SELF-ENDPOINT subquery body
+
+The gap items 506 and 525 both hid in: a subquery whose endpoint names the variable the outer row
+already bound. `subqueryBody` now draws a self arm (the endpoint is `n`, unlabelled — a bound
+variable may not be re-labelled inside a body, and native's rejection of that is correct).
+
+Teeth, in three parts, because a widening is a claim about what a generator can find:
+
+1. the widened fuzzer catches item 525's bug (the free arm ungated) **6 of 6 seeds**;
+2. the PRE-widening fuzzer **misses it 0 of 6** — which is what makes (1) a statement about the
+   widening rather than about the suite;
+3. switching the self arm off (`const self = false`) makes the run RED on the coverage floor, so
+   the counter gates rather than decorates.
+
+Floors from NINE seeds of 20,000: generated 41-61 (mean ~49, sigma ~6.1) → `> 22`; non-empty
+29-43 (mean ~35, sigma ~4.9) → `> 14`. ~4 sigma below the means, per item 280 — the safety of a
+floor is its distance in SIGMA, not a percentage.
+
+STILL OPEN: item 506's own shape is a TOP-LEVEL `MATCH (a:P)-[:T]->(a)`, and the OUTER-pattern
+generator still does not produce a repeated endpoint. Different function, next widening.
