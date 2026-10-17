@@ -3977,6 +3977,70 @@ export const detectOptionalHopCount = (
   return (graph, params) => pageOneRow(() => one(graph), graph, params, proj.skip, proj.limit);
 };
 
+/**
+ * `MATCH … FOR x IN [a, b, c] RETURN count(*)` — the row multiplier as ARITHMETIC.
+ *
+ * A `FOR` over a CONSTANT list multiplies every incoming row by the list's length, so the count
+ * is the count of the `MATCH` times that length. The general path builds all of them:
+ * `MATCH (n:Person) FOR x IN [1, 2, 3] RETURN count(*)` materialized 600,000 rows to count them
+ * at **175.1 ms** against the native engine's 3.4 (audit item 515).
+ *
+ * The base count is the EXISTING shortcut, asked of the clause list with the `FOR` removed —
+ * so every shape `detectCountShortcut` already answers (a bare node, a hop, a product, a
+ * degree chain) is multiplied, and nothing about counting is re-derived here. The whole rung is
+ * "ask the ladder, then multiply".
+ *
+ * Constant means a LITERAL list whose elements are literals. A per-row list (`FOR t IN n.tags`,
+ * 191.1 ms against native's 15.8) needs Σ length over the rows, which is a different walk and
+ * is left to the general path; a `$param` list is constant per run but not per compile, and
+ * reaching it needs the list evaluated once per execution rather than once per compile.
+ */
+export const detectForCount = (
+  clauses: readonly Clause[],
+  compiled: readonly CClause[],
+): ((graph: Graph, params: Params) => Row[]) | null => {
+  if (clauses.length < 3) {
+    return null;
+  }
+
+  const ret = clauses[clauses.length - 1];
+  const loop = clauses[clauses.length - 2];
+
+  if (ret.kind !== 'return' || loop.kind !== 'for' || loop.list.kind !== 'list') {
+    return null;
+  }
+
+  // Only a literal list is constant at compile time. One non-literal element and the length is
+  // still known — but an element that FAULTS must fault, and the general path is where that
+  // happens, so the whole list has to be inert.
+  if (loop.list.items.some((e) => e.kind !== 'lit')) {
+    return null;
+  }
+
+  const column = countStarColumn(ret.projection);
+
+  if (column === null) {
+    return null;
+  }
+
+  // The base count, asked of the ladder with the `FOR` taken out. `compiled` is sliced the same
+  // way so the two lists stay aligned — `detectCountShortcut` reads the compiled start node for
+  // its index seeds.
+  const base = detectCountShortcut(
+    [...clauses.slice(0, -2), ret],
+    [...compiled.slice(0, -2), compiled[compiled.length - 1]],
+  );
+
+  if (base === null) {
+    return null;
+  }
+
+  const times = loop.list.items.length;
+
+  return (graph, params) =>
+    base(graph, params).map((row) => ({ ...row, [column]: Number(row[column]) * times }));
+};
+
 export const detectCountShortcut = (
   clauses: readonly Clause[],
   compiled?: readonly CClause[],

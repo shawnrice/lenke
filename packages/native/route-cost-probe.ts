@@ -40,7 +40,7 @@ const fresh = (): Graph => {
       // `PCOL2` adds a SECOND numeric column, for the two-column aggregate question (item 471).
       // Off by default, because widening every node changes the scan for every other case here
       // and the numbers in the audit are against the one-column fixture.
-      properties: process.env.PCOL2 === undefined ? { age: i % 90 } : { age: i % 90, w2: i % 7 },
+      properties: nodeProps(i),
     }),
   );
 
@@ -306,6 +306,9 @@ const queries: Record<string, string> = {
   letproj: 'MATCH (n:Person) LET a = n.age RETURN a AS k',
   plainnodeproj: 'MATCH (n:Person) RETURN n.age AS k',
   forunwind: 'MATCH (n:Person) FOR x IN [1, 2, 3] RETURN count(*) AS c',
+  forprop: 'MATCH (n:Person) FOR t IN n.tags RETURN count(*) AS c',
+  forpropproj: 'MATCH (n:Person) FOR t IN n.tags RETURN t AS t',
+  forconstproj: 'MATCH (n:Person) FOR x IN [1, 2, 3] RETURN x AS x',
   callinline: 'MATCH (n:Person) CALL (n) { MATCH (n)-[:KNOWS]->(x) RETURN x } RETURN count(*) AS c',
   hopaggrelvar: 'MATCH (:Person)-[r:KNOWS]->(b) RETURN max(b.age) AS m',
   twohoprelvar: 'MATCH (:Person)-[r:KNOWS]->(b)-[s:KNOWS]->(c) RETURN count(*) AS c',
@@ -319,6 +322,23 @@ const queries: Record<string, string> = {
   threehopboth: 'MATCH (:Person)-[:KNOWS]-(b)-[:KNOWS]-(c)-[:KNOWS]-(d) RETURN count(*) AS c',
   hopdirmulti: 'MATCH (:Person)-[:KNOWS]->(b) RETURN count(*) AS c, max(b.age) AS m',
 };
+// One node's properties, shared by the TWO fixture builders below — a `Graph` for the TS engine
+// and NDJSON for the native one. Patching only one of them is item 471's trap: it reads as a
+// 13x "column gap" that is really a missing property.
+//
+//   `PCOL2` adds a SECOND numeric column (the two-column aggregate question, item 471).
+//   `PLIST` adds a three-element LIST column (the `FOR … IN` question, item 515).
+//
+// Both are off by default, because widening every node changes the scan for every other case
+// here and the numbers in the audit are against the one-column fixture.
+const nodeProps = (i: number): Record<string, unknown> => {
+  if (process.env.PLIST !== undefined) {
+    return { age: i % 90, tags: [i % 3, (i + 1) % 3, (i + 2) % 3] };
+  }
+
+  return process.env.PCOL2 === undefined ? { age: i % 90 } : { age: i % 90, w2: i % 7 };
+};
+
 const key = process.env.PCASE ?? 'node';
 const q = queries[key];
 
@@ -346,7 +366,7 @@ if (engine === 'native') {
         // Mirrors the TS fixture's `PCOL2` arm — the NATIVE fixture is a separate builder a
         // few lines down, and patching only the first one left `w2` absent entirely, which
         // reads as a 13x "column gap" that is really a missing property (item 471).
-        properties: process.env.PCOL2 === undefined ? { age: i % 90 } : { age: i % 90, w2: i % 7 },
+        properties: nodeProps(i),
       }),
     );
   }

@@ -6106,6 +6106,7 @@ export const countEdges = (edges: Iterable<Edge>, keep: (e: Edge) => boolean): n
 export type CLinear = {
   clauses: readonly CClause[];
   /** Precomputed direct-count closure for `MATCH … RETURN count(*)`; else null. */
+  forCount: ((graph: Graph, params: Params) => Row[]) | null;
   optionalHopCount: ((graph: Graph, params: Params) => Row[]) | null;
   optionalHopProjection: RowsFn | null;
   countShortcut: ((graph: Graph, params: Params) => Row[]) | null;
@@ -6578,6 +6579,9 @@ const compileLinear = (linear: LinearQuery): CLinear => {
     clauses,
     // The OPTIONAL-hop count sits above the plain one: every other rung refuses `optional`,
     // so without it this shape has no rung at all (item 510).
+    // A constant `FOR` multiplies the count, so it sits beside the other count rungs and
+    // delegates to `detectCountShortcut` for the base (item 515).
+    forCount: detectForCount(fast, clauses),
     optionalHopCount: detectOptionalHopCount(fast),
     optionalHopProjection: detectOptionalHopProjection(fast, clauses),
     countShortcut: detectCountShortcut(fast, clauses),
@@ -6638,6 +6642,7 @@ import {
   detectMultiNodeAggregate,
   detectNodeAggregate,
   detectNodeProjection,
+  detectForCount,
   detectOptionalHopCount,
   detectGroupedHopAggregate,
   detectGroupedNodeAggregate,

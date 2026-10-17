@@ -1346,6 +1346,11 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
     return linear.optionalHopCount(graph, params);
   }
 
+  // A constant `FOR` over a counted query: the base count times the list length (item 515).
+  if (linear.forCount) {
+    return linear.forCount(graph, params);
+  }
+
   // The OPTIONAL-hop PROJECTION (item 511) — one row per match, or one null-filled row.
   if (linear.optionalHopProjection) {
     return linear.optionalHopProjection(graph, params) ?? undefined;

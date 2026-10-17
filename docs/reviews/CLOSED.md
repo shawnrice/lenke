@@ -5507,3 +5507,23 @@ regression check at all_ — only an isolated A/B is.
 `optional hop` 4534.4 -> 582.7us (7.8x) and `optional hop + miss` 643.5 -> 64.9 (9.9x) from item
 509, with `optional hop + landing pred` flat because it declines; `bench:usage` unmoved to better
 (point lookup ts(+) 956.0k -> 1.08M ops/s).
+
+## 515 — `count(*)` over a constant `FOR`: CLOSED (76-83 ms to 0.0)
+
+Item 512's last priced row. A constant `FOR` multiplies every incoming row and the general path
+built all 600,000 of them. The rung asks `detectCountShortcut` for the base with the `FOR`
+removed and multiplies by the list length, so every shape the ladder counts is covered.
+78.8/82.7/76.4 -> 0.0 ms, three alternated rounds; a PER-ROW list (which declines) and the plain
+node count flat as controls. **The row is BIMODAL** — item 512's batch read 175.1 for it — so the
+before is the paired 76-83.
+
+Mutation 4 of 5. **Admitting non-literal ELEMENTS survived**, exactly as item 512's
+`cheapPureExpr` did: `[1, n.k]` has length 2 either way. `[1, 1 / 0]` and
+`[1, CAST('abc' AS INTEGER)]` kill it — _fifth survivor this session needing a FAULT rather than a
+value to distinguish a totality guard._
+
+`PLIST=1` adds the list column to BOTH probe fixtures (item 471's trap); the two copies are now
+one `nodeProps(i)` helper.
+
+**PRICED, left:** a per-row list needs Σ length (191.1 against native 15.8), a different walk; the
+`FOR` projections are 2.2-2.7x constant factors with no missing path.
