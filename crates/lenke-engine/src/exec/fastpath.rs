@@ -4654,6 +4654,53 @@ pub(super) fn try_fused_count(
     if agg.func != AggFn::Count {
         return None;
     }
+    // An UNWIND is a row MULTIPLIER, so `count(*)` over one is Σ the list lengths — the input
+    // rows evaluated once each, and not one row per element. ISO's rule is the arithmetic and
+    // `unwind_batch` is where it lives: a LIST contributes its length, NULL contributes 0, and
+    // any other scalar contributes 1 as a one-element singleton.
+    //
+    // Measured at 200,000 vertices with three list elements each:
+    // `MATCH (n:Person) FOR t IN n.tags RETURN count(*)` built 600,000 rows to count them at
+    // 15.8ms, where the TS engine answers the same question in 2.3 after item 518 (item 519).
+    //
+    // `count(*)` only, and any error DECLINES rather than being swallowed: the general path
+    // then re-runs the same evaluation and raises it, so a faulting list still faults.
+    if let Plan::Unwind { input, list, .. } = input {
+        if agg.arg.is_some() || agg.distinct {
+            return None;
+        }
+
+        let rows = pull(input, store, false).ok()?;
+        let n = rows.rows();
+        let len_of = |v: Value| match v {
+            Value::List(items) => items.len() as f64,
+            Value::Null => 0.0,
+            _ => 1.0,
+        };
+
+        // A ROW-INVARIANT list is evaluated ONCE and multiplied, exactly as `unwind_rows` does
+        // for the same reason. Evaluating it per row instead was MEASURED WORSE than the path
+        // this arm replaced — `FOR x IN [1, 2, 3]` went 3.4ms to 11.6, because building 200,000
+        // identical `Value::List`s costs more than the rows it saves. The fast path has to
+        // mirror the operator's own invariance check, not just its element rule.
+        let mut slots = Vec::new();
+
+        if n > 0 && slots_read(list, &mut slots) && slots.is_empty() {
+            let once = eval(list, store, &rows.gather(&[0])).ok()?;
+
+            return Some(scalar_num(len_of(once.value_at(0)) * n as f64));
+        }
+
+        let lists = eval(list, store, &rows).ok()?;
+        let mut total = 0f64;
+
+        for i in 0..n {
+            total += len_of(lists.value_at(i));
+        }
+
+        return Some(scalar_num(total));
+    }
+
     // An OPTIONAL hop is the same degree sum with a FLOOR: a source with no matching
     // neighbour still yields one row (null-filled for GQL `OPTIONAL MATCH`, the source itself
     // for Gremlin `optional()` — one row either way), so `count(*)` is Σ max(degree, 1).

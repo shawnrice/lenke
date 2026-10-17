@@ -7859,3 +7859,53 @@ fn optional_hop_count_and_its_landing_filter() {
         2.0
     );
 }
+
+/// `count(*)` over an UNWIND is Σ the list lengths — the input rows evaluated once each, not one
+/// row per element (item 519). ISO's rule is the arithmetic: a LIST contributes its length, NULL
+/// contributes 0, and any other scalar contributes 1 as a one-element singleton.
+///
+/// Each count is also asked as `count(*) + 0`, an aggregate EXPRESSION that declines the fast
+/// path, so the general `unwind_rows` answers the same question — the two routes must agree.
+#[test]
+fn unwind_count_is_the_sum_of_the_list_lengths() {
+    let nd = concat!(
+        "{\"id\":\"a\",\"labels\":[\"P\"],\"props\":{\"tags\":[1,2,3]}}\n",
+        "{\"id\":\"b\",\"labels\":[\"P\"],\"props\":{\"tags\":[9]}}\n",
+        "{\"id\":\"c\",\"labels\":[\"P\"],\"props\":{\"tags\":[]}}\n",
+        "{\"id\":\"d\",\"labels\":[\"P\"],\"props\":{\"tags\":\"solo\"}}\n",
+        "{\"id\":\"e\",\"labels\":[\"P\"],\"props\":{}}\n",
+        "{\"id\":\"q\",\"labels\":[\"Q\"],\"props\":{\"tags\":[1,2,3,4]}}\n",
+    );
+    let store = crate::ndjson::from_ndjson(nd).unwrap();
+    let n = |q: &str| -> f64 {
+        match run(&super::parse(q).unwrap(), &store).rows[0][0] {
+            Value::Num(x) => x,
+            ref o => panic!("want num, got {o:?} for {q}"),
+        }
+    };
+    let both = |q: &str, want: f64| {
+        assert_eq!(n(q), want, "fast path: {q}");
+
+        let twin = q.replace("count(*)", "count(*) + 0");
+
+        assert_eq!(n(&twin), want, "general path: {twin}");
+    };
+
+    // 3 + 1 + 0 (empty) + 1 (a scalar is a singleton) + 0 (the key is missing) = 5.
+    both("MATCH (n:P) FOR t IN n.tags RETURN count(*) AS c", 5.0);
+    both("MATCH (n:Q) FOR t IN n.tags RETURN count(*) AS c", 4.0);
+    // Unlabelled: every vertex.
+    both("MATCH (n) FOR t IN n.tags RETURN count(*) AS c", 9.0);
+    // A key nothing carries is zero, not one per row.
+    both("MATCH (n:P) FOR t IN n.nope RETURN count(*) AS c", 0.0);
+
+    // A ROW-INVARIANT list is evaluated once and multiplied — five `:P` rows times three.
+    both("MATCH (n:P) FOR x IN [1, 2, 3] RETURN count(*) AS c", 15.0);
+    both("MATCH (n:P) FOR x IN [] RETURN count(*) AS c", 0.0);
+    // A different length, so the multiplication is pinned rather than just the shape.
+    both("MATCH (n:P) FOR x IN [1, 2] RETURN count(*) AS c", 10.0);
+
+    // `count(t)` counts the ELEMENTS that are non-null, which is a different question: the
+    // scalar and the three-element list contribute, the empty list and the missing key do not.
+    assert_eq!(n("MATCH (n:P) FOR t IN n.tags RETURN count(t) AS c"), 5.0);
+}

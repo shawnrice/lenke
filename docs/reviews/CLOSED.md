@@ -5580,3 +5580,19 @@ Mutation 5 of 6; the anchor-variable check is equivalent by construction (with o
 **One mutant was MISAPPLIED** — the bucket-iteration line is character-identical to item 510's
 rung — and the uniqueness assert caught it. Items 474, 483, 494, 518: _two copies of a body is
 the most reliable way to fool a mutation run here._
+
+## 519 — the native unwind count: CLOSED at 1.9x (and the constant list to 0.0)
+
+Item 518's twin on the other engine — TS had become FASTER than native on this shape (2.3 against
+15.8). `try_fused_count` now takes `Plan::Unwind`: 16.5/16.9/16.5 -> 9.9/8.7/8.5 ms for a per-row
+list, and the ROW-INVARIANT `FOR x IN [1,2,3]` 3.3/3.2/3.2 -> 0.0. Plain node count flat.
+
+**My first version made the constant list 3.4x WORSE** — 3.4 ms to 11.6 — by evaluating the list
+per input row and building 200,000 identical `Value::List`s to learn one length. The fix mirrors
+`unwind_rows`' own `slots_read` check: an invariant list is evaluated ONCE and multiplied. _A fast
+path has to mirror the operator's INVARIANCE check, not just its element rule_ — and it was caught
+only because the other shape's probe case was in the same measurement pass.
+
+Mutation 4 of 5. Oracle: `count(*) + 0` declines the arm, so the general `unwind_rows` answers the
+same question; every case asked both ways. ISO's rule pinned case by case (list → length, empty →
+0, NULL/missing → 0, scalar → 1), with `count(t)` checked separately as a different question.
