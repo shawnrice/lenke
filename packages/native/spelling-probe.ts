@@ -96,6 +96,16 @@ const g = tsDeserialize(lines.join('\n'), 'ndjson', new TsGraph());
 /** Groups of spellings of ONE question. Every member must answer identically. */
 const GROUPS: [string, readonly string[]][] = [
   [
+    // Item 505: the anchor-then-traverse spelling. Two MATCH clauses sharing a variable join
+    // on it, so this is one question written two ways — and the split form missed EVERY fast
+    // path, at 747.9ms against 0.0 for the count.
+    'anchor then traverse: one clause vs two',
+    [
+      'MATCH (a:P)-[:E]->(b) RETURN count(*) AS c',
+      'MATCH (a:P) MATCH (a)-[:E]->(b) RETURN count(*) AS c',
+    ],
+  ],
+  [
     // Item 499: two ISO spellings of ONE degree. The native engine has lowered both to a single
     // node since it was written; TypeScript did not, so the VALUE spelling missed the degree
     // ladder entirely and cost 8.3x. This group is what would have caught it.

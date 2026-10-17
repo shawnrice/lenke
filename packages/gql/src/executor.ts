@@ -6133,25 +6133,126 @@ export type CLinear = {
   /** The same over a HOP — `MATCH (a)-[:T]->(b) RETURN b.k, max(b.j)`; else null. */
   groupedHopAggregate: ((graph: Graph, params: Params) => Row[]) | null;
 };
+/**
+ * `MATCH (a:L) MATCH (a)-[:T]->(x)` IS `MATCH (a:L)-[:T]->(x)` — the anchor-then-traverse
+ * spelling, fused into one clause before anything looks at the clause list.
+ *
+ * Two MATCH clauses sharing a variable join on it, so the two spellings are the same question
+ * and the native engine costs the same for both. TypeScript did not: EVERY fast-path detector
+ * reads one `match` clause, so the split spelling fell to the general row pipeline. Measured at
+ * 200,000 vertices / 1,000,000 edges, one case per process (audit item 505):
+ *
+ * ```text
+ *   RETURN count(*)    one clause 0.0ms    two clauses 747.9ms     native 0.5 / 0.5
+ *   RETURN x.age       one clause  157ns/row   two clauses 805ns/row   native 77 / 76
+ * ```
+ *
+ * Fusing is a REWRITE, not a new fast path: the fused clause is an ordinary pattern, so every
+ * rung of the ladder applies to it with no rung knowing this happened.
+ *
+ * Deliberately narrow, and each refusal is a case where the fused pattern would not mean the
+ * same thing:
+ *
+ *   - the ANCHOR must be a single bare node (`MATCH (a:L)`), because fusing onto the end of a
+ *     longer pattern would have to pick which end, and a pattern binding more than one variable
+ *     can be joined on any of them;
+ *   - the second clause's START must be the anchor's variable, written plain (`(a)`), with no
+ *     label, properties or inline `WHERE` of its own — a re-constrained start is an extra
+ *     filter, not the same node;
+ *   - neither clause may be OPTIONAL (a left-outer join is not a join), and neither may bind a
+ *     path variable;
+ *   - at most ONE of the two may carry a `WHERE`. An anchor filter would be evaluated after the
+ *     hop rather than before it, which is the same multiset either way; combining TWO would
+ *     need an `AND` whose operand order carries the short-circuit contract of items 258/259,
+ *     and that is worth its own measurement rather than a guess here.
+ */
+/** The ANCHOR half of `fuseAnchorThenHop`: a lone `MATCH (v …)` binding exactly one node. */
+const anchorOf = (c: Clause): (Extract<Clause, { kind: 'match' }> & { v: string }) | undefined => {
+  if (c.kind !== 'match' || c.optional || c.patterns.length !== 1) {
+    return undefined;
+  }
+
+  const [p] = c.patterns;
+  const v = p.start.variable;
+
+  return p.segments.length === 0 && p.pathVar === undefined && v !== undefined
+    ? { ...c, v }
+    : undefined;
+};
+
+/** The pair half of `fuseAnchorThenHop`: `a` then `b` as one clause, or `undefined`. */
+const fuse = (a: Clause, b: Clause): Clause | undefined => {
+  const anchor = anchorOf(a);
+
+  if (
+    anchor === undefined ||
+    b.kind !== 'match' ||
+    b.optional ||
+    b.patterns.length !== 1 ||
+    (anchor.where !== undefined && b.where !== undefined)
+  ) {
+    return undefined;
+  }
+
+  const [hop] = b.patterns;
+  const { start } = hop;
+
+  if (
+    hop.pathVar !== undefined ||
+    hop.segments.length === 0 ||
+    start.variable !== anchor.v ||
+    start.label !== undefined ||
+    start.where !== undefined ||
+    (start.properties !== undefined && start.properties.length > 0)
+  ) {
+    return undefined;
+  }
+
+  return {
+    kind: 'match',
+    optional: false,
+    patterns: [{ ...hop, start: anchor.patterns[0].start }],
+    where: anchor.where ?? b.where,
+  };
+};
+
+const fuseAnchorThenHop = (clauses: readonly Clause[]): readonly Clause[] => {
+  const out: Clause[] = [];
+
+  for (const clause of clauses) {
+    const prev = out.at(-1);
+    const fused = prev === undefined ? undefined : fuse(prev, clause);
+
+    if (fused === undefined) {
+      out.push(clause);
+    } else {
+      out[out.length - 1] = fused;
+    }
+  }
+
+  return out;
+};
+
 const compileLinear = (linear: LinearQuery): CLinear => {
-  const clauses = linear.clauses.map(compileClause);
+  const source = fuseAnchorThenHop(linear.clauses);
+  const clauses = source.map(compileClause);
 
   return {
     clauses,
-    countShortcut: detectCountShortcut(linear.clauses, clauses),
-    groupCountShortcut: detectGroupedNodeCount(linear.clauses),
-    groupHopShortcut: detectGroupedHopCount(linear.clauses),
-    reachShortcut: detectReachableShortcut(linear.clauses, clauses),
-    hopProjection: detectHopProjection(linear.clauses, clauses),
-    hopAggregate: detectHopAggregate(linear.clauses, clauses),
-    multiHopAggregate: detectMultiHopAggregate(linear.clauses, clauses),
-    distinctProjection: detectDistinctProjection(linear.clauses, clauses),
-    distinctCount: detectDistinctCount(linear.clauses, clauses),
-    nodeProjection: detectNodeProjection(linear.clauses, clauses),
-    nodeAggregate: detectNodeAggregate(linear.clauses, clauses),
-    multiNodeAggregate: detectMultiNodeAggregate(linear.clauses, clauses),
-    groupedNodeAggregate: detectGroupedNodeAggregate(linear.clauses, clauses),
-    groupedHopAggregate: detectGroupedHopAggregate(linear.clauses, clauses),
+    countShortcut: detectCountShortcut(source, clauses),
+    groupCountShortcut: detectGroupedNodeCount(source),
+    groupHopShortcut: detectGroupedHopCount(source),
+    reachShortcut: detectReachableShortcut(source, clauses),
+    hopProjection: detectHopProjection(source, clauses),
+    hopAggregate: detectHopAggregate(source, clauses),
+    multiHopAggregate: detectMultiHopAggregate(source, clauses),
+    distinctProjection: detectDistinctProjection(source, clauses),
+    distinctCount: detectDistinctCount(source, clauses),
+    nodeProjection: detectNodeProjection(source, clauses),
+    nodeAggregate: detectNodeAggregate(source, clauses),
+    multiNodeAggregate: detectMultiNodeAggregate(source, clauses),
+    groupedNodeAggregate: detectGroupedNodeAggregate(source, clauses),
+    groupedHopAggregate: detectGroupedHopAggregate(source, clauses),
   };
 };
 

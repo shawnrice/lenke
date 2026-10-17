@@ -275,6 +275,20 @@ const queries: Record<string, string> = {
   toplevel2hop: 'MATCH (:Person)-[:KNOWS]->(b)-[:KNOWS]->(c) RETURN count(*) AS c',
   topleveleq: 'MATCH (b:Person) WHERE b.age = 42 RETURN count(*) AS c',
   subcontrol: 'MATCH (n:Person)-[:KNOWS]->(x) RETURN count(*) AS c',
+  // Item 505: two plan-level enums nothing has priced — the SET operators and the left-outer
+  // hop. Both engines, against the ordinary hop as the control.
+  unionall: 'MATCH (n:Person) RETURN n.age AS a UNION ALL MATCH (n:Half) RETURN n.age AS a',
+  uniondist: 'MATCH (n:Person) RETURN n.age AS a UNION MATCH (n:Half) RETURN n.age AS a',
+  exceptop: 'MATCH (n:Person) RETURN n.age AS a EXCEPT MATCH (n:Half) RETURN n.age AS a',
+  intersectop: 'MATCH (n:Person) RETURN n.age AS a INTERSECT MATCH (n:Half) RETURN n.age AS a',
+  optcount: 'MATCH (n:Person) OPTIONAL MATCH (n)-[:KNOWS]->(x) RETURN count(*) AS c',
+  optproj: 'MATCH (n:Person) OPTIONAL MATCH (n)-[:KNOWS]->(x) RETURN x.age AS a',
+  plainproj: 'MATCH (n:Person)-[:KNOWS]->(x) RETURN x.age AS a',
+  // The FAIR control for `optproj`: the same TWO clauses without OPTIONAL. A ratio between two
+  // queries is a ratio between two ROUTES until they are shown to take the same one (item 445).
+  twoclauseproj: 'MATCH (n:Person) MATCH (n)-[:KNOWS]->(x) RETURN x.age AS a',
+  twoclausecount: 'MATCH (n:Person) MATCH (n)-[:KNOWS]->(x) RETURN count(*) AS c',
+  plaincount: 'MATCH (n:Person)-[:KNOWS]->(x) RETURN count(*) AS c',
   hopaggrelvar: 'MATCH (:Person)-[r:KNOWS]->(b) RETURN max(b.age) AS m',
   twohoprelvar: 'MATCH (:Person)-[r:KNOWS]->(b)-[s:KNOWS]->(c) RETURN count(*) AS c',
   threehoprelvar:

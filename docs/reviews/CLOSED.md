@@ -5303,3 +5303,28 @@ indexed column WINS — `read: point lookup` 2.1k against 44.3k ops/s, `write: p
 against 46.2k, `interleaved: write + read` 351 against 23.2k. The write rows are widest because
 these workloads find their node by `name` first, so an unindexed write pays an unindexed scan.
 Per scanned node that is ~24 ns in TS against ~1.1 in native — the object-model constant factor.
+
+## 505 — the anchor-then-traverse spelling: CLOSED (747.9 ms -> 0.0 for the count, 5.4x for a projection)
+
+`MATCH (a:L) MATCH (a)-[:T]->(x)` and `MATCH (a:L)-[:T]->(x)` are one question; native costs the
+same for both and TS did not, because every fast-path detector reads ONE `match` clause.
+`fuseAnchorThenHop` rewrites the pair into one pattern before anything reads the clause list, so
+all fifteen rungs apply unchanged. Two-clause `count(*)` 691-716 ms -> 0.0; two-clause projection
+798-816 -> 146-156 ns/row; one-clause projection and the OPTIONAL count (which must NOT fuse) flat
+as controls. `spelling-probe` gained the pair and flags 20.2x against the pristine engine.
+
+**OPTIONAL was the lead and was a CONFOUND.** `OPTIONAL MATCH … RETURN count(*)` at 858 ms against
+native's 4.6 looks like a left-outer cost; the same two clauses WITHOUT optional cost 747.9, so
+OPTIONAL is worth ~1.1x. Item 445's rule again: _a ratio between two queries is a ratio between
+two routes until you have shown they take the same one._
+
+**Two mutants survived because they were MASKED BY EACH OTHER'S GUARD** — the start-variable check
+hidden by the re-constrained-start check, and the anchor-has-no-segments check hidden by the
+start-variable check. Two new cases (a bare-variable cross product, and an anchor binding two
+variables) kill both. _A surviving mutant may be protected by a neighbouring guard rather than
+untested._
+
+**Open:** a THIRD clause does not chain onto a fused one (instrumented: 11 fusions, exactly the
+pairs) — widening the anchor to "a pattern whose LAST node is the shared variable" is unpriced.
+**Priced and NOT a target:** the set operators, a 2.2-4.3x constant factor on two scans with no
+missing path.
