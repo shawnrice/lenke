@@ -6192,3 +6192,25 @@ edge-bucket branch and the empty-graph skip are all conservatism — each sound 
 reason. _I did not add tests to catch them: they change no answer, and a test written to fail a
 harmless mutant asserts an implementation choice as if it were a contract._ The load-bearing
 mutant was re-run against the final text after a lint fix moved its anchor.
+
+## 541 — items 537-540 sweep clean: VERIFIED on four harnesses
+
+Four Gremlin items, three in `count-shortcut.ts` and one in `run`'s plan handling.
+
+`bench:gremlin` controls flat (`V().count()` 0.0, `V().out().count()` 0.0, `V().out().values(age)`
+282.0 against 279.9, `V().out().has().count()` 50.4 against 52.0, `dedupe().count()` 6.9 against
+7.3). `V().hasLabel().out().count()` reads **0.0 — identical to the unlabelled row above it**,
+where four items ago the pair was 0.00 against 95.34.
+
+`groupCount` reads 3.1 against item 517's 1.0, and that is NOT this work: it has read 2.8-3.4 on
+every sweep since, against native's 2.85-2.93 each time. The 1.0 was one low reading on a row this
+harness runs in-process with thirteen others.
+
+`bun run bench` in band (`count 3-hop` 331.5, `subquery item` 26.5). `bench:usage` best-recorded on
+two rows (point lookup ts(+) 1.15M, 100 updates 1.07M) and `keyed dedup` back at 79.6k.
+`query_bench` flat (`optional hop` 568.8, `+ miss` 63.8, `+ landing pred` 10072.0). `for-in const
+project` 9368.9 against a recorded 8585-8944 range — 5% over, on a GQL path no Gremlin change can
+reach, so noted not chased.
+
+All seven byte-identity fuzzers 13/13 — the gate that matters most here, since 538 reorders a
+traversal's SOURCE and 540 removes a step from its plan.
