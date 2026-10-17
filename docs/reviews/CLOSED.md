@@ -5893,3 +5893,30 @@ is 20 not 30; `stddev_pop(x, 1)` throws in neither engine). And the first twin, 
 was UNKNOWN for a vertex with no `age` and silently dropped a row: _a declining twin that asks a
 different question is worse than none, because it reads as a divergence in the code under test._
 `WHERE true` is the one that keeps every row while turning `unfilteredScan` off.
+
+## 531 — out-of-range percentile fractions are now generated; the boundary surface is otherwise CLEAN
+
+Item 530's native panic reached main with a percentile arm already in the fuzzer: it picked from
+`['0', '0.5', '1', '0.25']`, so the only value that could crash the `cont` branch was the one it
+never produced. Added `1.0001`, `1.5`, `2`, `100`.
+
+Teeth, three parts: the widened fuzzer catches the panic **4 of 4 seeds**; the PRE-531 fuzzer
+**misses it 0 of 4**; removing the out-of-range values fails the coverage floor. Floors from nine
+seeds: generated 156-200 (mean ~180, sigma ~12.6) → `> 128`; non-empty 76-96 (mean ~90, sigma
+~7.3) → `> 58`.
+
+No negative fraction, deliberately: `-1` is a unary-minus expression rather than a literal token,
+so TS raises and native clamps — the open divergence recorded at item 530. Generating it would
+make the gate red for a known question.
+
+**THE CLASS IS SWEPT AND CLEAN.** Every float-to-index conversion in the engine
+(`ceil/floor/round/trunc as usize`) is in four places: the two percentile branches (clamped), the
+`disc` branch's own `.min(n - 1)`, and `opt.rs`'s seek cap, which derives from the live node count
+and not from user input. And fourteen boundary arguments compared row for row across both engines
+— `substring` past the end / over-long / zero length, list index 0 / 99 / empty, `head`/`last` of
+an empty list, string indexing, `round(±400)`, division by zero, a huge `power`, `log10(0)`,
+`sqrt(-1)` — **all fourteen agree**; the only apparent difference is the division-by-zero error
+PREFIX, which is message text the fuzzer compares by code.
+
+So the percentile was the one hole, not the first of many — which is the thing neither
+"it's isolated" nor "it's widespread" could have told us without the sweep.

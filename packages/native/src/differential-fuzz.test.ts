@@ -145,6 +145,17 @@ const tallyGroupShapes = (cov: Record<string, number>, q: string, nonEmpty: bool
     }
   }
 
+  // An OUT-OF-RANGE percentile fraction (item 531): above 1, where the `cont` branch used to
+  // index past the end of the sorted values. The non-empty floor matters as always — the
+  // fixture has to produce numbers for the aggregate to have anything to sort.
+  if (/percentile_(cont|disc)\([^)]*, (1\.0001|1\.5|2|100)\)/.test(q)) {
+    cov.pctRangeGenerated++;
+
+    if (nonEmpty) {
+      cov.pctRangeNonEmpty++;
+    }
+  }
+
   // The TOP-LEVEL repeated endpoint (item 527): `(a)-[:E]->(a)`, or a two-hop returning to the
   // start or the middle. Item 506's shape, which no generator produced. `nonEmpty` here really
   // is "the self-loop matched", because these queries have nothing else to return — which is
@@ -1276,7 +1287,21 @@ const genQuery = (r: () => number): string => {
   if (p < 0.26) {
     const kind = r() < 0.5 ? 'cont' : 'disc';
 
-    return `MATCH (n:T) RETURN percentile_${kind}(${genExpr(r, 2)}, ${pick(r, ['0', '0.5', '1', '0.25'])}) AS x`;
+    // OUT-OF-RANGE fractions as well as in-range ones (item 531). The in-range four were all
+    // this generated, and `percentile_cont(x, 2)` PANICKED in native — `percentile_of` computed
+    // `rn = frac * (n - 1)` and indexed `nums[rn.ceil()]` with nothing clamping `frac`, so it
+    // read one past the end and surfaced as `query evaluation panicked` (item 530). Found by
+    // pricing the aggregate enum; this arm could not reach it.
+    //
+    // No NEGATIVE fraction, and that is deliberate rather than an oversight: `-1` is a
+    // unary-minus EXPRESSION rather than a literal token, so the TS engine raises
+    // `requires a numeric literal fraction` while native accepts it and clamps. That divergence
+    // is open and recorded (item 530); generating it would make the gate red for a known
+    // question rather than for a regression — the same reasoning this file applies to a named
+    // aggregate inside a `VALUE` body.
+    const frac = pick(r, ['0', '0.5', '1', '0.25', '1.0001', '1.5', '2', '100']);
+
+    return `MATCH (n:T) RETURN percentile_${kind}(${genExpr(r, 2)}, ${frac}) AS x`;
   }
 
   // Grouped aggregate — exercises GROUP BY keying over a fuzzed key.
@@ -1896,6 +1921,8 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       selfEndNonEmpty: 0,
       selfHopGenerated: 0,
       selfHopNonEmpty: 0,
+      pctRangeGenerated: 0,
+      pctRangeNonEmpty: 0,
       subOrGenerated: 0,
       subOrNonEmpty: 0,
       predGenerated: 0,
@@ -2028,6 +2055,7 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
         `innerWhere=${cov.innerWhereGenerated}/${cov.innerWhereNonEmpty} ` +
         `selfEnd=${cov.selfEndGenerated}/${cov.selfEndNonEmpty} ` +
         `selfHop=${cov.selfHopGenerated}/${cov.selfHopNonEmpty} ` +
+        `pctRange=${cov.pctRangeGenerated}/${cov.pctRangeNonEmpty} ` +
         `subNot=${cov.subNotGenerated}/${cov.subNotNonEmpty} ` +
         `subOr=${cov.subOrGenerated}/${cov.subOrNonEmpty} ` +
         `sink=${cov.sinkGenerated}/${cov.sinkNonZero} peel=${cov.peelGenerated}/${cov.peelNonZero} ` +
@@ -2120,6 +2148,10 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       // flake.
       // Measured over NINE seeds of 20,000 WITH edge `e7`: generated 36-54 (mean ~42, sigma
       // ~5.7), non-empty 25-36 (mean ~29, sigma ~3.1). ~4 sigma below the means (item 280).
+      // Measured over NINE seeds of 20,000: generated 156-200 (mean ~180, sigma ~12.6),
+      // non-empty 76-96 (mean ~90, sigma ~7.3). Floors ~4 sigma below the means (item 280).
+      pctRangeGenerated: cov.pctRangeGenerated > 128,
+      pctRangeNonEmpty: cov.pctRangeNonEmpty > 58,
       selfHopGenerated: cov.selfHopGenerated > 18,
       selfHopNonEmpty: cov.selfHopNonEmpty > 15,
       selfEndGenerated: cov.selfEndGenerated > 22,
@@ -2197,6 +2229,8 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       selfEndNonEmpty: true,
       selfHopGenerated: true,
       selfHopNonEmpty: true,
+      pctRangeGenerated: true,
+      pctRangeNonEmpty: true,
       subNotGenerated: true,
       subNotNonEmpty: true,
       subOrGenerated: true,
