@@ -5472,3 +5472,21 @@ session that was a fixture coincidence (505, 510, 511, 512).
 **PRICED, not taken:** `ORDER BY … LIMIT 10` ts 80.0 against native 1.0 (TS has a top-k already;
 this is the row pipeline), its hop form 707.8 against 9.3, `FOR x IN [1,2,3]` 160.6 against 4.3,
 and the inline `CALL (n) { … }` **996.2 against 6.2** — the widest left.
+
+## 513 — a correlated inline `CALL` is its own `MATCH`: CLOSED (900-1005 ms to 0.0)
+
+Item 512's widest leftover. The body ran once per incoming row through the general matcher:
+1005.2/909.1/902.4 ms against native's 6.2 and against 0.0 for the one-pattern spelling.
+`inlineCorrelatedCall` rewrites the clause to the equivalent `MATCH`; item 507's fusion then
+merges it into the preceding one and the ladder answers it. Plain count and item 512's `LET`
+projection flat as controls. **Three rewrites now compose (505/507, 512, 513) and none added an
+execution path.**
+
+**The condition whose violation is invisible:** a body may introduce only the names it RETURNS.
+`CALL (n) { MATCH (n)-[:T]->(x)-[:S]->(y) RETURN y }` hides `x`, and inlining would leave it
+bound — visible only through `RETURN *`, which is the single assertion that catches its mutant.
+
+Mutation 3 of 5. **Inlining an UNCORRELATED call survives and is a genuine EQUIVALENCE** (a body
+with no correlation yields the same rows per outer row, so the join IS a cross product); the
+guard stays because the execution contract differs — run once and reuse — and changing that is
+its own measurement.

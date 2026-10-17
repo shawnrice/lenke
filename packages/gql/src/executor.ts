@@ -6279,6 +6279,138 @@ const inlineTrailingLet = (clauses: readonly Clause[]): readonly Clause[] => {
   ];
 };
 
+/** Every variable a pattern BINDS: its nodes, its rels, and the path itself. */
+const patternNames = (p: PathPattern): Set<string> => {
+  const out = new Set<string>();
+  const add = (v: string | undefined): void => {
+    if (v !== undefined) {
+      out.add(v);
+    }
+  };
+
+  add(p.pathVar);
+  add(p.start.variable);
+
+  for (const seg of p.segments) {
+    add(seg.rel.variable);
+    add(seg.node.variable);
+    add(seg.hopFrom?.variable);
+    add(seg.hopTo?.variable);
+  }
+
+  return out;
+};
+
+/**
+ * `CALL (n) { MATCH (n)-[:T]->(x) RETURN x }` IS `MATCH (n)-[:T]->(x)` — a correlated inline
+ * call whose body is one pattern and a `RETURN` of the names that pattern introduces, rewritten
+ * to the plain `MATCH` it is equivalent to.
+ *
+ * The call runs its body once per incoming row through the general matcher, so
+ * `MATCH (n:Person) CALL (n) { MATCH (n)-[:KNOWS]->(x) RETURN x } RETURN count(*)` cost
+ * **996.2 ms** at 200,000 vertices / 1,000,000 edges against the native engine's 6.2, and
+ * against **0.0** for the same question written as one pattern (audit item 513).
+ *
+ * Rewriting rather than adding a rung is what makes it cheap: the result is an ordinary `MATCH`
+ * clause, which item 507's fusion then merges into the preceding one, after which every rung of
+ * the ladder applies. Three rewrites composing (512's `LET`, this, 507's fusion) and no new
+ * execution path.
+ *
+ * What it refuses, and why each would change the answer:
+ *
+ *   - `OPTIONAL CALL` — a left-outer join keeps the row when the body yields nothing, which a
+ *     plain `MATCH` does not;
+ *   - an UNCORRELATED call (an empty scope). Its mutant SURVIVES, and the reason is that the
+ *     join result coincides: a body with no correlation yields the same rows for every outer
+ *     row, so joining them is the cross product a second `MATCH` would produce. The guard stays
+ *     because the execution contract does not coincide — the call runs its body ONCE and reuses
+ *     it, which may well be the better plan, and turning that into a cross product is a change
+ *     with its own number rather than a free one;
+ *   - a body with set operators, more than one `MATCH`, or anything but `MATCH … RETURN`;
+ *   - a `RETURN` that is not exactly bare variables (an alias, an expression, `*`, `DISTINCT`,
+ *     a grouping, an `ORDER BY` or a page) — the call yields COLUMNS, and anything computed is
+ *     not the pattern's own binding;
+ *   - a body that binds a name it does NOT return. The call hides it; a plain `MATCH` would
+ *     leave it bound, which `RETURN *` and any later clause can see. The set equality below is
+ *     what enforces that, and it is the one condition whose violation is invisible in the
+ *     common shapes.
+ */
+const inlineCorrelatedCall = (clauses: readonly Clause[]): readonly Clause[] => {
+  const asMatch = (c: Clause): Clause | null => {
+    if (c.kind !== 'callInline' || c.optional || c.scope.length === 0) {
+      return null;
+    }
+
+    const { parts, ops } = c.body;
+
+    if (parts.length !== 1 || ops.length > 0) {
+      return null;
+    }
+
+    const inner = parts[0].clauses;
+
+    if (inner.length !== 2) {
+      return null;
+    }
+
+    const [bm, bret] = inner;
+
+    if (bm.kind !== 'match' || bm.optional || bm.patterns.length !== 1 || bret.kind !== 'return') {
+      return null;
+    }
+
+    const proj = bret.projection;
+
+    if (
+      proj.star ||
+      proj.distinct ||
+      proj.groupBy !== undefined ||
+      proj.having !== undefined ||
+      (proj.orderBy?.length ?? 0) > 0 ||
+      proj.skip !== undefined ||
+      proj.limit !== undefined
+    ) {
+      return null;
+    }
+
+    const yielded = new Set<string>();
+
+    for (const item of proj.items) {
+      if (item.expr.kind !== 'var' || (item.alias !== undefined && item.alias !== item.expr.name)) {
+        return null;
+      }
+
+      yielded.add(item.expr.name);
+    }
+
+    // The body may introduce ONLY the names it yields; anything else would stay bound after the
+    // rewrite where the call hides it.
+    const imported = new Set(c.scope);
+    const introduced = [...patternNames(bm.patterns[0])].filter((n) => !imported.has(n));
+
+    if (introduced.length !== yielded.size || introduced.some((n) => !yielded.has(n))) {
+      return null;
+    }
+
+    return { kind: 'match', optional: false, patterns: bm.patterns, where: bm.where };
+  };
+
+  let changed = false;
+  const out = clauses.map((c) => {
+    const m = asMatch(c);
+
+    if (m === null) {
+      return c;
+    }
+
+    changed = true;
+
+    return m;
+  });
+
+  return changed ? out : clauses;
+};
+
 /** The ANCHOR half of `fuseAnchorThenHop`: a lone `MATCH (v …)` binding exactly one node. */
 /**
  * Is this pattern's path shape the plain default — every match, no repetition restrictor?
@@ -6435,7 +6567,7 @@ const repeatsNodeVariable = (clauses: readonly Clause[]): boolean => {
 };
 
 const compileLinear = (linear: LinearQuery): CLinear => {
-  const source = fuseAnchorThenHop(inlineTrailingLet(linear.clauses));
+  const source = fuseAnchorThenHop(inlineCorrelatedCall(inlineTrailingLet(linear.clauses)));
   const clauses = source.map(compileClause);
   // A pattern repeating a node variable is a SELF-JOIN that the fast paths answer wrongly, so
   // they are not offered the clause list at all — every detector begins by checking its shape
