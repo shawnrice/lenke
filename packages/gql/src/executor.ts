@@ -6886,12 +6886,30 @@ const inlineAggregateCall = (clauses: readonly Clause[]): readonly Clause[] => {
       }
     }
 
-    const sub: Extract<Expr, { kind: 'valueSubquery' }> = {
-      kind: 'valueSubquery',
-      patterns: bm.patterns,
-      ...(bm.where === undefined ? {} : { where: bm.where }),
-      ret: item.expr,
-    };
+    const agg = item.expr;
+    // THE PARSER'S OWN NORMALIZATION, mirrored (item 564). `parseValueSubquery` turns
+    // `VALUE { … RETURN count(*) }` into a `countSubquery` node — item 499's lowering onto the
+    // degree path — and a rewrite that manufactures the `valueSubquery` form instead misses it
+    // entirely. Measured at 200,000 vertices / 300,000 edges:
+    //
+    //   CALL (n) { … RETURN count(*) AS c } RETURN sum(c)   504.16 ms as a valueSubquery
+    //   LET c = VALUE { … RETURN count(*) } RETURN sum(c)   151.30     the parsed spelling
+    //
+    // 3.3x for the same question, because one node kind reaches the degree rung and the other
+    // does not. The conditions below are `parseValueSubquery`'s, copied rather than approximated.
+    const sub: Extract<Expr, { kind: 'valueSubquery' | 'countSubquery' }> =
+      agg.kind === 'func' && agg.name === 'count' && agg.star && !agg.distinct
+        ? {
+            kind: 'countSubquery',
+            patterns: bm.patterns,
+            ...(bm.where === undefined ? {} : { where: bm.where }),
+          }
+        : {
+            kind: 'valueSubquery',
+            patterns: bm.patterns,
+            ...(bm.where === undefined ? {} : { where: bm.where }),
+            ret: agg,
+          };
 
     // See the header: scope checking has already run, so this node would otherwise be memoized
     // as uncorrelated.

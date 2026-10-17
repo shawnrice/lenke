@@ -6987,3 +6987,51 @@ CALL` over an aggregate body is a no-op (the body always yields its row) and an 
 with a body pattern variable changes nothing (the call hides body variables either way). One
 mutant MISAPPLIED — the guard's first line is character-identical to `inlineCorrelatedCall`'s —
 the **eleventh** time this session.
+
+## 564 — the rewrite must mirror the PARSER'S normalization too: a further 3.2x on the CALL count
+
+Item 563 landed the CALL→`LET` rewrite at 1.5-2.9x and left a gap to the hand-written spelling.
+The gap had one cause, and it is the same lesson as 563 from the other side:
+
+**`parseValueSubquery` turns `VALUE { … RETURN count(*) }` into a `countSubquery` node** — item
+499's lowering onto the degree path. A rewrite that manufactures the `valueSubquery` form instead
+misses it:
+
+| spelling                                                                 | ms                    |
+| ------------------------------------------------------------------------ | --------------------- |
+| `CALL (n) { … RETURN count(*) AS c } RETURN sum(c)` as a `valueSubquery` | 504.16 / 498.10       |
+| the same, normalized to `countSubquery`                                  | **159.49 / 156.85**   |
+| the hand-written `LET c = VALUE { … RETURN count(*) }`                   | 149.91                |
+| `RETURN sum(COUNT { … })` (control)                                      | 41.22 / 52.13 / 52.98 |
+
+**3.2x**, and it lands exactly on the hand-written spelling, which is the check that the mirroring
+is faithful. The conditions are copied from the parser rather than approximated.
+
+Teeth: four mutants, two caught. `star` needed a fixture with a REACHED property-less neighbour —
+without one, `count(x.n)` and the degree are the same number and the mutant survived, which is the
+fourth coinciding-fixture trap in this run of ticks. `distinct` is unreachable beside `star`
+(`count(DISTINCT *)` is a parse error) and the parser's own comment records the same redundancy for
+its copy.
+
+### A SIXTH divergence, and the third in the DANGEROUS class
+
+```text
+CALL (n) { MATCH (n)-[:T]->(x) RETURN count(x.n) AS c } RETURN n.n, c
+  ts      [{k:1,c:1}, …]   the NON-NULL values
+  native  [{k:1,c:2}, …]   the ROWS
+
+MATCH (n:P)-[:T]->(x) RETURN count(x.n)       ts 1   native 1   AGREE
+```
+
+The second line is what makes it precise: without the CALL the engines agree, so the divergence
+belongs to the CALL-BODY position, not to `count`. Pre-existing (identical on the pre-563 build),
+found while giving the `star` condition teeth.
+
+### Also tried and REVERTED in the same tick
+
+Inlining a once-read subquery `LET` into the projection, to close the remaining ~3x to
+`sum(COUNT{…})`. It is inert: `inlineTrailingLet`'s `subst` is all-or-nothing — it substitutes only
+when an item IS the bound name and refuses any expression MENTIONING it — so `RETURN sum(c)` never
+inlines. The apparent 151.90 → 112.21 did not survive an alternated round (110.21 pristine against
+161.67 after). Reverted; the blocker is now recorded, and closing it needs a structural
+substitution rather than a wider admission.
