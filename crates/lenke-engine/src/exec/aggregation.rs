@@ -1006,6 +1006,16 @@ fn percentile_of(mut nums: Vec<f64>, frac: f64, cont: bool) -> Value {
     if nums.is_empty() {
         return Value::Null;
     }
+    // CLAMP, which the TS engine does when it lowers the literal (`Math.min(1, Math.max(0, f))`)
+    // and this did not. The `disc` branch below survived on its own `.min(n - 1)`; the `cont`
+    // branch indexed `nums[rn.ceil()]` directly, so `percentile_cont(n.age, 2)` over two rows
+    // PANICKED — `index out of bounds: the len is 2 but the index is 2` at the interpolation,
+    // surfacing as `query evaluation panicked` rather than as an error (item 530).
+    //
+    // Clamped at the point of USE rather than at lowering, so no caller can bypass it, and the
+    // two engines agree for every fraction: `> 1` is the maximum, `< 0` the minimum. Found by
+    // pricing the aggregate enum, not by a test — nothing generated an out-of-range fraction.
+    let frac = frac.clamp(0.0, 1.0);
     nums.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let n = nums.len();
     let result = if cont {

@@ -8143,3 +8143,72 @@ fn a_call_arm_label_test_is_canonicalized() {
         plan(edge)
     );
 }
+
+/// `percentile_cont`/`percentile_disc` with an OUT-OF-RANGE fraction (item 530).
+///
+/// The `cont` branch indexed `nums[rn.ceil()]` with `rn = frac * (n - 1)` and nothing clamped
+/// `frac`, so `percentile_cont(n.age, 2)` over two rows PANICKED — `index out of bounds: the len
+/// is 2 but the index is 2` — and surfaced as `query evaluation panicked` rather than an error.
+/// The `disc` branch survived on its own `.min(n - 1)`.
+///
+/// The TS engine clamps the fraction when it lowers the literal, so the fix is the same clamp at
+/// the point of USE here: above 1 is the maximum, below 0 the minimum. Found by pricing the
+/// aggregate enum; nothing generated an out-of-range fraction.
+#[test]
+fn an_out_of_range_percentile_fraction_is_clamped() {
+    let nd = concat!(
+        "{\"id\":\"a\",\"labels\":[\"P\"],\"props\":{\"n\":40}}\n",
+        "{\"id\":\"b\",\"labels\":[\"P\"],\"props\":{\"n\":10}}\n",
+        "{\"id\":\"c\",\"labels\":[\"P\"],\"props\":{\"n\":20}}\n",
+    );
+    let store = crate::ndjson::from_ndjson(nd).unwrap();
+    let n = |q: &str| -> f64 {
+        match run(&super::parse(q).unwrap(), &store).rows[0][0] {
+            Value::Num(x) => x,
+            ref o => panic!("want num, got {o:?} for {q}"),
+        }
+    };
+    let p = |f: &str, cont: bool| -> f64 {
+        let name = if cont {
+            "percentile_cont"
+        } else {
+            "percentile_disc"
+        };
+
+        n(&format!("MATCH (x:P) RETURN {name}(x.n, {f}) AS m"))
+    };
+
+    // In range first, so the clamp is read against a working scale: 10 / 20 / 40 sorted.
+    assert_eq!(p("0", true), 10.0);
+    assert_eq!(p("0.5", true), 20.0);
+    assert_eq!(p("1", true), 40.0);
+    assert_eq!(p("0", false), 10.0);
+    assert_eq!(p("1", false), 40.0);
+
+    // ABOVE one: the maximum, both branches. These are the two that panicked.
+    for f in ["1.0001", "1.5", "2", "100"] {
+        assert_eq!(p(f, true), 40.0, "cont at {f}");
+        assert_eq!(p(f, false), 40.0, "disc at {f}");
+    }
+
+    // BELOW zero: the minimum, both branches.
+    for f in ["-0.0001", "-1", "-100"] {
+        assert_eq!(p(f, true), 10.0, "cont at {f}");
+        assert_eq!(p(f, false), 10.0, "disc at {f}");
+    }
+
+    // A SINGLE row is the edge the interpolation divides by (`n - 1` is 0), so it is checked
+    // rather than left to the three-row case.
+    let one = crate::ndjson::from_ndjson("{\"id\":\"z\",\"labels\":[\"Q\"],\"props\":{\"n\":7}}\n")
+        .unwrap();
+    for f in ["0", "0.5", "1", "2", "-1"] {
+        for name in ["percentile_cont", "percentile_disc"] {
+            let q = format!("MATCH (x:Q) RETURN {name}(x.n, {f}) AS m");
+
+            match run(&super::parse(&q).unwrap(), &one).rows[0][0] {
+                Value::Num(x) => assert_eq!(x, 7.0, "{q}"),
+                ref o => panic!("want num, got {o:?} for {q}"),
+            }
+        }
+    }
+}

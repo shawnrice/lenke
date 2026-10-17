@@ -6316,17 +6316,20 @@ const unfilteredScanAgg = (
   const [only] = items;
   const e = only.expr;
 
-  if (e.kind !== 'func' || e.star || e.distinct || e.args.length !== 1) {
+  if (e.kind !== 'func' || e.star || e.distinct) {
     return undefined;
   }
 
-  if (e.name !== 'sum' && e.name !== 'avg') {
+  // The SINGLE-item gate, and the one that was actually refusing the five slow aggregates: it
+  // ran ahead of the multi-item path, so widening only that one moved almost nothing (item 530).
+  // `grep the pattern elsewhere` applies inside one file as readily as across a repo.
+  const frac = percentileFraction(e);
+
+  if (frac === null || !VALUES_AGGREGATES.has(e.name)) {
     return undefined;
   }
 
-  // `frac` is only read by the percentile aggregates, which this never admits; 0 is the same
-  // initial value `compileAggregate` gives it.
-  return [{ name: e.name, frac: 0 }];
+  return [{ name: e.name, frac }];
 };
 
 export const detectNodeAggregate = (
@@ -6402,7 +6405,11 @@ export const detectNodeAggregate = (
 
   const aggNode = item.expr;
 
-  if (aggNode.kind !== 'func' || aggNode.args.length !== 1) {
+  // The THIRD arity gate in this one function, and the last one a percentile had to pass.
+  // `percentileFraction` is `0` for a well-formed one-argument aggregate and the clamped
+  // fraction for a well-formed percentile, so it says exactly what this gate wants to know for
+  // both the fold path and the collecting one (item 530).
+  if (aggNode.kind !== 'func' || percentileFraction(aggNode) === null) {
     return null;
   }
 
@@ -6484,7 +6491,14 @@ export const detectNodeAggregate = (
 type MultiAcc =
   | { readonly kind: 'rows'; readonly out: string }
   | { readonly kind: 'fold'; readonly out: string; readonly fold: AggFold; readonly col: string }
-  | { readonly kind: 'collect'; readonly out: string; readonly name: string; readonly col: string };
+  | {
+      readonly kind: 'collect';
+      readonly out: string;
+      readonly name: string;
+      readonly col: string;
+      /** The percentile fraction, already clamped. 0 for every other name, which ignores it. */
+      readonly frac: number;
+    };
 
 /**
  * `MATCH (n:L) [WHERE …] RETURN agg1(…) AS a, agg2(…) AS b, …` — TWO OR MORE aggregates over
@@ -6566,7 +6580,12 @@ export const detectMultiNodeAggregate = (
       continue;
     }
 
-    if (e.args.length !== 1) {
+    // The PERCENTILES take `(value, <numeric literal>)`; every other aggregate takes one
+    // argument. A malformed percentile call is REFUSED rather than diagnosed here, so the
+    // general path raises the same error it always did (item 530).
+    const frac = percentileFraction(e);
+
+    if (frac === null) {
       return null;
     }
 
@@ -6577,8 +6596,8 @@ export const detectMultiNodeAggregate = (
 
     if (fold !== undefined) {
       accs.push({ kind: 'fold', out, fold, col });
-    } else if ((e.name === 'sum' || e.name === 'avg') && unfiltered) {
-      accs.push({ kind: 'collect', out, name: e.name, col });
+    } else if (VALUES_AGGREGATES.has(e.name) && unfiltered) {
+      accs.push({ kind: 'collect', out, name: e.name, col, frac });
     } else {
       return null;
     }
@@ -6653,13 +6672,68 @@ export const detectMultiNodeAggregate = (
       } else if (a.kind === 'fold') {
         out[a.out] = a.fold.finish(state[i]);
       } else {
-        // `frac` is read only by the percentiles, which this never admits.
-        out[a.out] = aggregateOverValues(a.name, state[i] as unknown[], 0);
+        out[a.out] = aggregateOverValues(a.name, state[i] as unknown[], a.frac);
       }
     }
 
     return [out];
   };
+};
+
+/**
+ * The one-argument aggregates that have NO streaming fold and so run over the group's VALUES.
+ *
+ * `foldFor` answers `count`/`min`/`max`; everything else here reaches `aggregateOverValues`, the
+ * single shared implementation the general path also calls — so routing them through the scan
+ * rung changes WHERE the values come from and nothing about the arithmetic or the order. That is
+ * the whole reason this is a name set rather than five hand-written folds: a second
+ * implementation of `sum` could not even be written correctly (the operation is chosen by looking
+ * at the whole collection — item 467), and a second `stddev` would be a byte-identity hazard.
+ *
+ * PRICED AS AN ENUM (item 530). All eleven ISO aggregate names, same scan, same argument, ts at
+ * 200,000 vertices — six took the rung and five did not:
+ *
+ * ```text
+ *   count(n.age) 10.9   max 11.2   min 11.3   sum 13.6   avg 13.7   count(DISTINCT) 3.0
+ *   stddev_pop 50.9   percentile_cont 56.8   percentile_disc 64.3   stddev_samp 69.9
+ *   collect 72.4
+ * ```
+ *
+ * The native engine answers all eleven from 0.4 to 5.6 ms, so the gap was TS-only and as wide as
+ * 64x on `stddev_samp`.
+ */
+const VALUES_AGGREGATES: ReadonlySet<string> = new Set([
+  'sum',
+  'avg',
+  'collect',
+  'collect_list',
+  'stddev_pop',
+  'stddev_samp',
+  'percentile_cont',
+  'percentile_disc',
+]);
+
+/**
+ * The aggregate's percentile fraction, or `0` for a name that has none — and `null` to REFUSE.
+ *
+ * `percentile_cont`/`percentile_disc` are the only two-argument aggregates, and the second
+ * argument must be a numeric literal. Anything else (wrong arity, a non-literal fraction) is
+ * refused rather than diagnosed, so the general path raises exactly the error it always raised.
+ * The clamp mirrors `compileAggregate`'s, because the two must agree on the fraction before they
+ * can agree on the answer.
+ */
+const percentileFraction = (e: Extract<Expr, { kind: 'func' }>): number | null => {
+  if (e.name !== 'percentile_cont' && e.name !== 'percentile_disc') {
+    return e.args.length === 1 ? 0 : null;
+  }
+
+  const [, f] = e.args;
+
+  if (e.args.length !== 2 || f?.kind !== 'lit' || typeof f.value !== 'number') {
+    return null;
+  }
+
+  return Math.min(1, Math.max(0, f.value));
 };
 
 /** One projected aggregate's per-group accumulator in the grouped scan path (item 474). */

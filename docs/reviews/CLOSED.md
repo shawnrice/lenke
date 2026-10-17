@@ -5850,3 +5850,46 @@ Also re-refused by their own records this tick, so nobody prices them again: `ne
 `distinct node` (dedup is 17.5 ns/row; the rest is the element-render ladder), and `traverse 1-hop
 project + start filter` / `distinct over a reversed hop` (items 207 and 215, both row-returning so
 the ts column carries the carrier).
+
+## 530 — the aggregate enum: five of eleven had no scan rung (CLOSED, 2.7-4.3x) + a NATIVE PANIC fixed
+
+Priced all eleven ISO aggregate names against the same scan with the same argument, ts at 200,000
+vertices. Six took the rung (`count` 10.9, `max` 11.2, `min` 11.3, `sum` 13.6, `avg` 13.7,
+`count(DISTINCT)` 3.0); five did not (`stddev_pop` 50.9, `percentile_cont` 56.8,
+`percentile_disc` 64.3, `stddev_samp` 69.9, `collect` 72.4). Native answers all eleven in
+0.4-5.6 ms, so the gap was TS-only and up to 64x.
+
+**THREE arity gates in one function and only the third mattered.** Widening the multi-item gate
+moved almost nothing (percentile_cont 56.8 → 62.1); `unfilteredScanAgg`, the SINGLE-item gate,
+runs ahead of it and admitted only sum/avg; a third `args.length !== 1` further down refused the
+two-argument percentiles. _"Grep the pattern elsewhere" applies inside one function as readily as
+across a repo._
+
+The fix is a NAME SET, not five folds: every member reaches `aggregateOverValues`, the one shared
+implementation the general path calls, so arithmetic and order are identical by construction (a
+second `sum` cannot be written correctly — item 467 — and a second `stddev` is a byte-identity
+hazard). collect 45.4-60.5 → 11.0-12.5; stddev_samp 50.9-52.4 → 11.8-12.7; percentile_cont
+60.5-67.8 → 21.9-22.4. Three alternated rounds, disjoint; the fold path and `count(DISTINCT)`
+flat as controls.
+
+### The native panic
+
+`percentile_cont(n.age, 2)` **PANICKED**: `percentile_of` computes `rn = frac * (n - 1)` and
+indexes `nums[rn.ceil()]` with nothing clamping `frac`. The `disc` branch survived on its own
+`.min(n - 1)`. It surfaces as `query evaluation panicked` — a crash, not an error. Fixed with the
+same clamp TS applies when it lowers the literal, at the point of USE so no caller can bypass it.
+**Fifth defect this loop found, fifth found by probing rather than a test**: no fuzzer generates a
+fraction outside [0, 1] and both engines' percentile tests used in-range values.
+
+OPEN, recorded: a NEGATIVE literal fraction diverges — TS raises (`-1` is a unary-minus
+expression, not a literal token) while native clamps to the minimum. ISO does not define it.
+
+Mutation 4 of 5 (both null controls clean). The survivor — the TS non-literal refusal — is
+unreachable by construction, since `compileProjection` raises on a malformed percentile before
+any rung is consulted.
+
+**Two of my own test expectations were wrong and the twin caught both** (`percentile_disc(x, 0.5)`
+is 20 not 30; `stddev_pop(x, 1)` throws in neither engine). And the first twin, `WHERE n.age >= 0`,
+was UNKNOWN for a vertex with no `age` and silently dropped a row: _a declining twin that asks a
+different question is worse than none, because it reads as a divergence in the code under test._
+`WHERE true` is the one that keeps every row while turning `unfilteredScan` off.

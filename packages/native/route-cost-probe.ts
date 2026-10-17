@@ -368,6 +368,21 @@ const queries: Record<string, string> = {
   existslbl: 'MATCH (x:Person) WHERE EXISTS { (x)-[:KNOWS]->(b:Half) } RETURN count(*) AS c',
   existsmiss:
     'MATCH (x:Person) WHERE EXISTS { (x)-[:KNOWS]->(b) WHERE b.age > 1000 } RETURN count(*) AS c',
+  // Item 530: PRICE THE AGGREGATE ENUM. ISO-GQL has eleven aggregate names and the ladder's
+  // `nodeAggregate` / `hopAggregate` rungs admit some subset of them — which one is a question
+  // for the measurement, not for reading the guard. Every case is the SAME scan and the SAME
+  // argument, so the only variable is the function.
+  aggmax: 'MATCH (n:Person) RETURN max(n.age) AS m',
+  aggmin: 'MATCH (n:Person) RETURN min(n.age) AS m',
+  aggsum: 'MATCH (n:Person) RETURN sum(n.age) AS m',
+  aggavg: 'MATCH (n:Person) RETURN avg(n.age) AS m',
+  aggcount: 'MATCH (n:Person) RETURN count(n.age) AS m',
+  aggcountdist: 'MATCH (n:Person) RETURN count(DISTINCT n.age) AS m',
+  aggcollect: 'MATCH (n:Person) RETURN collect(n.age) AS m',
+  aggpctcont: 'MATCH (n:Person) RETURN percentile_cont(n.age, 0.5) AS m',
+  aggpctdisc: 'MATCH (n:Person) RETURN percentile_disc(n.age, 0.5) AS m',
+  aggstdpop: 'MATCH (n:Person) RETURN stddev_pop(n.age) AS m',
+  aggstdsamp: 'MATCH (n:Person) RETURN stddev_samp(n.age) AS m',
 };
 // One node's properties, shared by the TWO fixture builders below — a `Graph` for the TS engine
 // and NDJSON for the native one. Patching only one of them is item 471's trap: it reads as a

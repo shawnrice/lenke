@@ -90,3 +90,50 @@ suite('a BOUND EXISTS endpoint: the TS and native engines agree', () => {
     agree('MATCH (x) WHERE EXISTS { (x)-[:S]->(b) } RETURN x.n AS n', '["{\\"n\\":2}"]');
   });
 });
+
+// An OUT-OF-RANGE percentile fraction (item 530). `percentile_cont(x, 2)` PANICKED in native —
+// the `cont` branch indexed `nums[rn.ceil()]` with nothing clamping `frac`, so it read one past
+// the end and surfaced as `query evaluation panicked` rather than as an error. TS clamps the
+// literal when it lowers it and answered the maximum. Found by pricing the aggregate enum; no
+// fuzzer generates a fraction outside [0, 1].
+//
+// A NEGATIVE literal stays divergent and is recorded rather than asserted: `-1` is a unary-minus
+// expression rather than a literal token, so TS raises before reading a value while native
+// clamps to the minimum. ISO does not define the input; the panic did need fixing.
+suite('an out-of-range percentile fraction: the TS and native engines agree', () => {
+  const PCT = [
+    '{"type":"node","id":"a","labels":["P"],"properties":{"n":40}}',
+    '{"type":"node","id":"b","labels":["P"],"properties":{"n":10}}',
+    '{"type":"node","id":"c","labels":["P"],"properties":{"n":20}}',
+  ].join('\n');
+  const nativeGraph = graphFromNdjson(nativeBackend(), PCT);
+  const tsGraph = tsDeserialize(PCT, 'ndjson', new Graph());
+
+  const agree = (q: string, want: string): void => {
+    const rows = tsQuery(tsGraph, q) as unknown[];
+
+    expect(`${q}\n  ${JSON.stringify(rows)}`).toBe(
+      `${q}\n  ${JSON.stringify(nativeGraph.query(q) as unknown[])}`,
+    );
+    expect(JSON.stringify(rows)).toBe(want);
+  };
+
+  test('above one is the maximum, in both branches and both engines', () => {
+    for (const fn of ['percentile_cont', 'percentile_disc']) {
+      for (const f of ['1.0001', '1.5', '2', '100']) {
+        agree(`MATCH (x:P) RETURN ${fn}(x.n, ${f}) AS m`, '[{"m":40}]');
+      }
+
+      // In range, so the agreement above is read against a working scale rather than alone.
+      agree(`MATCH (x:P) RETURN ${fn}(x.n, 1) AS m`, '[{"m":40}]');
+      agree(`MATCH (x:P) RETURN ${fn}(x.n, 0) AS m`, '[{"m":10}]');
+    }
+
+    // The two branches DIFFER at 0.5 on three values, which is what says the names are not
+    // being collapsed into one implementation by this test.
+    agree('MATCH (x:P) RETURN percentile_cont(x.n, 0.5) AS m', '[{"m":20}]');
+    agree('MATCH (x:P) RETURN percentile_disc(x.n, 0.5) AS m', '[{"m":20}]');
+    agree('MATCH (x:P) RETURN percentile_cont(x.n, 0.25) AS m', '[{"m":15}]');
+    agree('MATCH (x:P) RETURN percentile_disc(x.n, 0.25) AS m', '[{"m":10}]');
+  });
+});
