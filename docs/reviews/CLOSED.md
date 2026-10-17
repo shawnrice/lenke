@@ -5527,3 +5527,24 @@ one `nodeProps(i)` helper.
 
 **PRICED, left:** a per-row list needs Σ length (191.1 against native 15.8), a different walk; the
 `FOR` projections are 2.2-2.7x constant factors with no missing path.
+
+## 516 — the `WITH` pipeline: CLOSED at 8-12x, `count(*)` to 0.0
+
+Item 512's `LET` cliff in its other spelling, never measured until now: `WITH n.age AS a RETURN a`
+124.0 ms against 13.7 written directly, and `RETURN count(*)` 112.0 against 0.0 (native 17.7 and
+0.6). `boundExprs` recognizes either binder and `inlineTrailingLet` substitutes both.
+112.6/109.5 -> 0.0 for the count, 115.9/112.7 -> 13.9/10.5/9.6 for the projection; item 512's
+`LET` projection and the direct one flat as controls. **Bimodal like 515** (46.0 against 112.6),
+so the claim is 8-12x against the common mode.
+
+**`WITH` REPLACES the row where `LET` ADDS a binding**, so a `WITH` may carry several items (a
+projection evaluates all of them against the INPUT row) while the `LET` arm takes one.
+Generalizing to multiple items BROKE the `LET` arm and an existing test caught it: `LET a = n.k,
+b = a` is sequential, so one substitution map rewrote `b` to `a` with `a` unbound and the column
+came back `undefined` — `a later LET item may read an earlier one` exists for that.
+
+A `WITH` that filters, dedupes, groups, orders, pages or aggregates is a row boundary and
+declines. Mutation 4 of 5 (the fifth is the null control).
+
+**PRICED AND ALREADY FAST:** `SELECT count(*) FROM MATCH …` is 0.0 ms in TS — the ISO `SELECT`
+spelling lowers to the same clause list. Measured rather than assumed.

@@ -301,6 +301,12 @@ const queries: Record<string, string> = {
   topkhop: 'MATCH (:Person)-[:KNOWS]->(b) RETURN b.age AS a ORDER BY a DESC LIMIT 10',
   orderall: 'MATCH (n:Person) RETURN n.age AS a ORDER BY a',
   withpipe: 'MATCH (n:Person) LET a = n.age RETURN count(*) AS c',
+  // Item 516: the WITH pipeline and the ISO SELECT spelling, neither priced.
+  withcount: 'MATCH (n:Person) WITH n.age AS a RETURN count(*) AS c',
+  withproj: 'MATCH (n:Person) WITH n.age AS a RETURN a AS k',
+  withnode: 'MATCH (n:Person) WITH n AS m RETURN count(*) AS c',
+  selcount: 'SELECT count(*) AS c FROM MATCH (n:Person)',
+  selhop: 'SELECT count(*) AS c FROM MATCH (n:Person)-[:KNOWS]->(x)',
   letgroup: 'MATCH (n:Person) LET a = n.age RETURN a AS k, count(*) AS c GROUP BY a',
   plaingroup: 'MATCH (n:Person) RETURN n.age AS k, count(*) AS c',
   letproj: 'MATCH (n:Person) LET a = n.age RETURN a AS k',

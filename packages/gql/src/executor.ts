@@ -6182,6 +6182,83 @@ const cheapPureExpr = (e: Expr): boolean =>
   e.kind === 'prop' || e.kind === 'var' || e.kind === 'lit' || e.kind === 'param';
 
 /**
+ * The names a trailing binder introduces and the CHEAP, TOTAL expressions behind them, or `null`
+ * when the clause is not one this can inline.
+ *
+ * Two clauses bind that way and both dropped the query off every rung, because each node rung
+ * reads a TWO-clause shape (audit items 512, 516). Measured at 200,000 vertices:
+ *
+ * ```text
+ *   LET a = n.age  RETURN a         126.4ms      RETURN n.age AS a     13.7ms
+ *   LET a = n.age  RETURN count(*)  108.3ms      RETURN count(*)        0.0
+ *   WITH n.age AS a RETURN a        124.0ms      (the same)            13.7
+ *   WITH n.age AS a RETURN count(*) 112.0ms      (the same)             0.0
+ *   WITH n AS m     RETURN count(*)  90.7ms      (the same)             0.0
+ * ```
+ *
+ * Native pays 0.6 for the `WITH` count and 17.7 for its projection, so both are the TS ladder's
+ * shape check. The ISO `SELECT count(*) FROM MATCH …` spelling was priced in the same pass and
+ * is ALREADY 0.0 — it lowers to the same clause list, so there was nothing to fix there.
+ *
+ * `LET` ADDS a binding and `WITH` REPLACES the row, which is why a `WITH` may carry several
+ * items while the `LET` arm takes one: after a `WITH`, the only names in scope are the ones it
+ * binds, so substituting all of them and dropping the clause leaves exactly the references the
+ * compiler already validated. A `WITH` that FILTERS (`WITH … WHERE`), aggregates, dedupes,
+ * groups, orders or pages is a row boundary rather than a renaming, and declines.
+ */
+const boundExprs = (c: Clause): Map<string, Expr> | null => {
+  if (c.kind === 'let') {
+    // ONE item only. A later `LET` item may READ an earlier one (`LET a = n.k, b = a`), so
+    // collecting them into one substitution map rewrites `b` to `a` with `a` no longer bound —
+    // the column came back `undefined`. Caught by `a later LET item may read an earlier one`,
+    // which exists for exactly that sequencing. A `WITH`'s items cannot do this: a projection
+    // evaluates every item against the INPUT row, so none of them can see another's alias.
+    if (c.items.length !== 1) {
+      return null;
+    }
+
+    const [{ var: name, expr }] = c.items;
+
+    return cheapPureExpr(expr) ? new Map([[name, expr]]) : null;
+  }
+
+  if (c.kind !== 'with' || c.where !== undefined) {
+    return null;
+  }
+
+  const proj = c.projection;
+
+  if (
+    proj.star ||
+    proj.distinct ||
+    proj.groupBy !== undefined ||
+    proj.having !== undefined ||
+    (proj.orderBy?.length ?? 0) > 0 ||
+    proj.skip !== undefined ||
+    proj.limit !== undefined
+  ) {
+    return null;
+  }
+
+  const out = new Map<string, Expr>();
+
+  for (const item of proj.items) {
+    // An un-aliased item takes its name from the expression, which is a name this rewrite would
+    // then have to reproduce exactly; a bare variable is its own name, and anything else
+    // declines.
+    const name = item.alias ?? (item.expr.kind === 'var' ? item.expr.name : undefined);
+
+    if (name === undefined || !cheapPureExpr(item.expr) || hasAggregate(item.expr)) {
+      return null;
+    }
+
+    out.set(name, item.expr);
+  }
+
+  return out.size > 0 ? out : null;
+};
+
+/**
  * `MATCH … LET a = <expr> RETURN … a …` IS `MATCH … RETURN … <expr> …` — the `LET` inlined into
  * the projection that follows it, so the clause list is two long again and the ladder applies.
  *
@@ -6214,30 +6291,31 @@ const inlineTrailingLet = (clauses: readonly Clause[]): readonly Clause[] => {
 
   const ret = clauses[clauses.length - 1];
   const binder = clauses[clauses.length - 2];
+  const bound = boundExprs(binder);
 
-  if (ret.kind !== 'return' || binder.kind !== 'let' || binder.items.length !== 1) {
+  if (ret.kind !== 'return' || bound === null) {
     return clauses;
   }
 
-  const [{ var: name, expr }] = binder.items;
   const proj = ret.projection;
 
-  if (
-    !cheapPureExpr(expr) ||
-    proj.star ||
-    proj.groupBy !== undefined ||
-    proj.having !== undefined
-  ) {
+  if (proj.star || proj.groupBy !== undefined || proj.having !== undefined) {
     return clauses;
   }
 
-  // Exactly the variable → the expression; mentions it at all → refuse; otherwise unchanged.
+  // Exactly a bound name → its expression; mentions one at all → refuse; otherwise unchanged.
   const subst = (e: Expr): Expr | null => {
-    if (e.kind === 'var' && e.name === name) {
-      return expr;
+    if (e.kind === 'var') {
+      const sub = bound.get(e.name);
+
+      if (sub !== undefined) {
+        return sub;
+      }
     }
 
-    return freePredicateVars(e).has(name) ? null : e;
+    const free = freePredicateVars(e);
+
+    return [...bound.keys()].some((n) => free.has(n)) ? null : e;
   };
   const items: ReturnItem[] = [];
 
@@ -6252,7 +6330,15 @@ const inlineTrailingLet = (clauses: readonly Clause[]): readonly Clause[] => {
     // expression — so substituting without pinning the alias renamed the column from `a` to
     // `n.k`. Caught by `DISTINCT over a LET-bound name`, which exists for exactly that
     // distinction; the rewrite now carries the name it removed.
-    items.push(e === it.expr ? it : { ...it, expr: e, alias: it.alias ?? name });
+    items.push(
+      e === it.expr
+        ? it
+        : {
+            ...it,
+            expr: e,
+            alias: it.alias ?? (it.expr.kind === 'var' ? it.expr.name : undefined),
+          },
+    );
   }
 
   const sorts: SortItem[] = [];
