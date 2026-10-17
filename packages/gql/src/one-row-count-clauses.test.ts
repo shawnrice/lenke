@@ -142,3 +142,69 @@ describe('DISTINCT and ORDER BY over a one-row AGGREGATE (item 545)', () => {
     expect(rows('MATCH (n:P) RETURN count(*) AS c, max(n.n) AS m')).toEqual([{ c: 2, m: 2 }]);
   });
 });
+
+// Item 546 finishes the sweep: `countStarColumn` is the shared admission for the `FOR`-count and
+// OPTIONAL-hop-count rungs, and it refused both clauses too. Priced at 200,000 vertices, one case
+// per process:
+//
+//   FOR x IN [1, 2, 3] RETURN count(*)    0.00 ms   with DISTINCT  98.72
+//   FOR t IN n.tags    RETURN count(*)    3.08                     73.61   24x
+//   OPTIONAL MATCH …   RETURN count(*)   29.77                    397.91   13x
+//
+// The eight shapes below were checked against the NATIVE engine and all eight agree, including
+// the faulting sort key (both raise) and DISTINCT composed with LIMIT.
+describe('DISTINCT and ORDER BY over the FOR and OPTIONAL counts (item 546)', () => {
+  const forGraph = (): Graph => {
+    const h = new Graph();
+    const a = h.addVertex({ id: 'a', labels: ['P'], properties: { tags: [1, 2] } });
+    const b = h.addVertex({ id: 'b', labels: ['P'], properties: { tags: [3] } });
+
+    h.addVertex({ id: 'c', labels: ['Q'], properties: {} });
+    h.addEdge({ id: 'e1', from: a, to: b, labels: ['T'], properties: {} });
+
+    return h;
+  };
+
+  const fg = forGraph();
+  const r = (q: string): readonly unknown[] => query(fg, q);
+
+  test('the CONSTANT FOR count', () => {
+    // Two `:P` rows times three elements.
+    expect(r('MATCH (n:P) FOR x IN [1, 2, 3] RETURN count(*) AS c')).toEqual([{ c: 6 }]);
+    expect(r('MATCH (n:P) FOR x IN [1, 2, 3] RETURN DISTINCT count(*) AS c')).toEqual([{ c: 6 }]);
+    expect(r('MATCH (n:P) FOR x IN [1, 2, 3] RETURN count(*) AS c ORDER BY c')).toEqual([{ c: 6 }]);
+    expect(r('MATCH (n:P) FOR x IN [1, 2] RETURN DISTINCT count(*) AS c LIMIT 1')).toEqual([
+      { c: 4 },
+    ]);
+  });
+
+  test('the PER-ROW FOR count', () => {
+    // `a` has two tags and `b` one.
+    expect(r('MATCH (n:P) FOR t IN n.tags RETURN count(*) AS c')).toEqual([{ c: 3 }]);
+    expect(r('MATCH (n:P) FOR t IN n.tags RETURN DISTINCT count(*) AS c')).toEqual([{ c: 3 }]);
+    expect(r('MATCH (n:P) FOR t IN n.tags RETURN count(*) AS c ORDER BY c DESC')).toEqual([
+      { c: 3 },
+    ]);
+  });
+
+  test('the OPTIONAL-hop count', () => {
+    // `a` has one `:T` out-edge, `b` none — and an OPTIONAL miss still contributes its row.
+    expect(r('MATCH (n:P) OPTIONAL MATCH (n)-[:T]->(x) RETURN count(*) AS c')).toEqual([{ c: 2 }]);
+    expect(r('MATCH (n:P) OPTIONAL MATCH (n)-[:T]->(x) RETURN DISTINCT count(*) AS c')).toEqual([
+      { c: 2 },
+    ]);
+    expect(r('MATCH (n:P) OPTIONAL MATCH (n)-[:T]->(x) RETURN count(*) AS c ORDER BY c')).toEqual([
+      { c: 2 },
+    ]);
+  });
+
+  test('a faulting sort key still raises on all three', () => {
+    expect(() => r('MATCH (n:P) FOR x IN [1, 2] RETURN count(*) AS c ORDER BY 1 / 0')).toThrow();
+    expect(() => r('MATCH (n:P) FOR t IN n.tags RETURN count(*) AS c ORDER BY 1 / 0')).toThrow();
+    expect(() =>
+      r('MATCH (n:P) OPTIONAL MATCH (n)-[:T]->(x) RETURN count(*) AS c ORDER BY 1 / 0'),
+    ).toThrow();
+    // The controls: without the ORDER BY each is answered, so the throw is the KEY.
+    expect(r('MATCH (n:P) FOR x IN [1, 2] RETURN count(*) AS c')).toEqual([{ c: 4 }]);
+  });
+});

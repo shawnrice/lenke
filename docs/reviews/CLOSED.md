@@ -6314,3 +6314,25 @@ by-text edit would have collapsed a grouped result. The uniqueness assert caught
 Mutation 1 of 3 (null control clean). Both survivors are answer-preserving: dropping the NAME check
 is equivalent by construction, and emptying the name set only makes the rungs decline. Only
 `kind === 'var'` is load-bearing — the same conclusion item 544 reached about its own copy.
+
+## 546 — the last one-row rungs: CLOSED (98.72 → 0.00); and native never had this cliff
+
+**Native checked first and found nothing**: `max(n.age)` 0.43 ms against `DISTINCT max(n.age)` 0.44
+and `ORDER BY m` 0.43; `count(*)` 0.00 against both 0.00. No native twin of items 544-546 to build,
+established in four minutes rather than by porting a fix to an engine that did not need it.
+
+`countStarColumn` is the shared admission for the `FOR`-count and OPTIONAL-hop-count rungs and
+refused both clauses too. At 200,000 vertices, plain against DISTINCT: constant `FOR` **0.00 →
+98.72**; per-row `FOR` 3.08 → **73.61** (24x); OPTIONAL-hop count 29.77 → **397.91** (13x). After:
+0.00 / 3.05 / 29.25 against baselines 0.00 / 3.07 / 28.32. The constant-`FOR` row is the sharpest
+instance yet — an answer that is pure arithmetic (items 515, 519) cost 98.72 ms because of a clause
+that cannot change it. Eight shapes agree with native, including the faulting key (both raise).
+
+Mutation 2 of 4 (null control clean). **The survivor is items 544's and 545's survivor for the
+third time** — dropping the COLUMN comparison is equivalent by construction. Three independent
+copies, three identical survivors: _the `kind === 'var'` half is the contract and the name half is
+documentation._
+
+One mutant MISAPPLIED, caught by the uniqueness assert: the comparison line is character-identical
+to item 544's copy in `detectCountShortcut`. Items 474, 483, 494, 518, 528, 545, 546 — and here the
+duplicate was a line _I had written two ticks earlier_.

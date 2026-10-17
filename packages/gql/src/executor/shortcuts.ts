@@ -3888,10 +3888,8 @@ const keyedCountOf = <T>(
 const countStarColumn = (proj: Projection): string | null => {
   if (
     proj.star ||
-    proj.distinct ||
     proj.groupBy !== undefined ||
     proj.having !== undefined ||
-    (proj.orderBy?.length ?? 0) > 0 ||
     proj.items.length !== 1
   ) {
     return null;
@@ -3904,7 +3902,24 @@ const countStarColumn = (proj: Projection): string | null => {
     return null;
   }
 
-  return item.alias ?? columnName(e);
+  const column = item.alias ?? columnName(e);
+
+  // DISTINCT and an ORDER BY on the OUTPUT COLUMN are identities on one row, which is the
+  // argument `detectCountShortcut` makes for SKIP/LIMIT and items 544 and 545 extended to the
+  // other rungs. Refusing them here cost, at 200,000 vertices and one case per process
+  // (item 546):
+  //
+  //   FOR x IN [1, 2, 3] RETURN count(*)            0.00 ms   DISTINCT  98.72
+  //   FOR t IN n.tags    RETURN count(*)            3.08                73.61   24x
+  //   OPTIONAL MATCH …   RETURN count(*)           29.77               397.91   13x
+  //
+  // A sort key that is NOT that column is refused, because any other expression could FAULT
+  // while being evaluated for the sort and a rung that skipped the sort would skip the fault.
+  const sortsOnColumn = (proj.orderBy ?? []).every(
+    (sort) => sort.expr.kind === 'var' && sort.expr.name === column,
+  );
+
+  return sortsOnColumn ? column : null;
 };
 
 export const detectOptionalHopCount = (
