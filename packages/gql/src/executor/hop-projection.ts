@@ -2831,6 +2831,9 @@ const hopAggregateWalks = (
  * because the order IS the answer. Each may still ride the walk, but only the START-DRIVEN one,
  * whose order is the general path's — see {@link detectHopProjection}'s `forceStartDriven`.
  */
+/** The two ordered-set aggregates, which sort their values and so read no row order. */
+const PERCENTILES: ReadonlySet<string> = new Set(['percentile_cont', 'percentile_disc']);
+
 const ORDER_SENSITIVE_AGGREGATES: ReadonlySet<string> = new Set([
   'sum',
   'avg',
@@ -3108,7 +3111,67 @@ const EXTREMA = new Set(['min', 'max']);
 /** One projected aggregate's accumulator in the MULTI-aggregate hop path (item 472). */
 type HopAcc =
   | { readonly kind: 'rows'; readonly out: string }
-  | { readonly kind: 'fold'; readonly out: string; readonly fold: AggFold; readonly col: string };
+  | { readonly kind: 'fold'; readonly out: string; readonly fold: AggFold; readonly col: string }
+  // An aggregate with NO streaming fold — the four order-sensitive ones and the two percentiles
+  // (item 552). It collects the column's non-null values and hands them to the same
+  // `aggregateOverValues` the general path runs, which is what the single-aggregate twin's
+  // non-foldable branch already does.
+  | {
+      readonly kind: 'values';
+      readonly out: string;
+      readonly col: string;
+      readonly name: string;
+      readonly frac: number;
+    };
+
+/**
+ * One projected aggregate's accumulator on the MULTI-aggregate hop rung, or `null` to decline.
+ *
+ * Extracted from `detectMultiHopAggregate`'s item loop, which item 552 pushed past the
+ * complexity gate: the decision is per ITEM and reads nothing from the loop but the column
+ * index, so it separates cleanly. `collects` is the non-foldable admission — the four
+ * order-sensitive names (which then force the start-driven walk, item 551) and the two
+ * percentiles, which read no order and so need no forcing. Anything else without a fold
+ * declines.
+ */
+const hopAccFor = (
+  e: Extract<Expr, { kind: 'func' }>,
+  out: string,
+  col: string,
+): { acc: HopAcc; extremum: boolean; orderSensitive: boolean } | null => {
+  if (e.distinct) {
+    return null;
+  }
+
+  if (e.star) {
+    return e.name === 'count' && e.args.length === 0
+      ? { acc: { kind: 'rows', out }, extremum: false, orderSensitive: false }
+      : null;
+  }
+
+  const fold = e.args.length === 1 ? foldFor(e.name, false, false) : undefined;
+
+  if (fold !== undefined) {
+    return {
+      acc: { kind: 'fold', out, fold, col },
+      extremum: EXTREMA.has(e.name),
+      orderSensitive: false,
+    };
+  }
+
+  const frac = percentileFraction(e);
+  const sensitive = ORDER_SENSITIVE_AGGREGATES.has(e.name);
+
+  if (frac === null || !(sensitive ? e.args.length === 1 : PERCENTILES.has(e.name))) {
+    return null;
+  }
+
+  return {
+    acc: { kind: 'values', out, col, name: e.name, frac },
+    extremum: false,
+    orderSensitive: sensitive,
+  };
+};
 
 /**
  * The same walk under TWO OR MORE foldable aggregates — `RETURN count(*), max(b.k)`.
@@ -3172,39 +3235,34 @@ export const detectMultiHopAggregate = (
   // Every item an extremum? Then a self-loop met twice changes nothing — see `EXTREMA`. A
   // `count(*)` row counter is NOT one, so one of those re-arms the self-loop decline.
   let allExtrema = true;
+  // Does any item read the row ORDER? Then the walk must be the start-driven one (item 551).
+  let orderSensitive = false;
 
   for (const [i, item] of ret.projection.items.entries()) {
     const e = item.expr;
     const out = proj.items[i].name;
 
-    if (e.kind !== 'func' || e.distinct) {
+    if (e.kind !== 'func') {
       return null;
     }
 
-    if (e.star) {
-      if (e.name !== 'count' || e.args.length !== 0) {
-        return null;
-      }
+    const col = ` hopagg${i}`;
+    const slot = hopAccFor(e, out, col);
 
-      accs.push({ kind: 'rows', out });
-      allExtrema = false;
+    if (slot === null) {
+      return null;
+    }
+
+    accs.push(slot.acc);
+    allExtrema = allExtrema && slot.extremum;
+    orderSensitive = orderSensitive || slot.orderSensitive;
+
+    if (slot.acc.kind === 'rows') {
       continue;
     }
 
-    const fold = e.args.length === 1 ? foldFor(e.name, false, false) : undefined;
-
-    if (fold === undefined) {
-      return null;
-    }
-
-    if (!EXTREMA.has(e.name)) {
-      allExtrema = false;
-    }
-
     const [argExpr] = e.args;
-    const col = ` hopagg${i}`;
 
-    accs.push({ kind: 'fold', out, fold, col });
     synthItems.push({ expr: argExpr, alias: col });
     synthCols.push({ name: col, fn: lowered.get(e) ?? compileExpr(argExpr), isAgg: false });
   }
@@ -3252,9 +3310,16 @@ export const detectMultiHopAggregate = (
     m.kind === 'match' && m.patterns.length === 1 && m.patterns[0].segments.length === 1
       ? m.patterns[0].segments[0].rel.direction
       : 'out';
+
+  // The undirected form runs two walks (all out-rows then all in-rows) where the general path
+  // interleaves them per start vertex, so no flag can make that order the general path's.
+  if (orderSensitive && hopDir === 'both') {
+    return null;
+  }
+
   const turned = hopAggregateWalks(m, synthRet, cm, synthCret, hopDir, {
     idempotent: allExtrema,
-    forceStartDriven: false,
+    forceStartDriven: orderSensitive,
   });
 
   if (turned === null) {
@@ -3272,7 +3337,13 @@ export const detectMultiHopAggregate = (
       return null;
     }
 
-    const state = accs.map((a) => (a.kind === 'fold' ? a.fold.init() : undefined));
+    const state = accs.map((a) => {
+      if (a.kind === 'fold') {
+        return a.fold.init();
+      }
+
+      return a.kind === 'values' ? [] : undefined;
+    });
     let n = 0;
 
     for (const walk of chosen === undefined ? walks : [chosen]) {
@@ -3297,7 +3368,13 @@ export const detectMultiHopAggregate = (
 
           const v = row[a.col];
 
-          if (!isNullish(v)) {
+          if (isNullish(v)) {
+            continue;
+          }
+
+          if (a.kind === 'values') {
+            (state[i] as unknown[]).push(v);
+          } else {
             state[i] = a.fold.step(state[i], v);
           }
         }
@@ -3309,7 +3386,13 @@ export const detectMultiHopAggregate = (
     for (let i = 0; i < accs.length; i += 1) {
       const a = accs[i];
 
-      out[a.out] = a.kind === 'rows' ? n : a.fold.finish(state[i]);
+      if (a.kind === 'rows') {
+        out[a.out] = n;
+      } else if (a.kind === 'values') {
+        out[a.out] = aggregateOverValues(a.name, state[i] as unknown[], a.frac);
+      } else {
+        out[a.out] = a.fold.finish(state[i]);
+      }
     }
 
     return [out];

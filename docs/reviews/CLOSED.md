@@ -6506,3 +6506,33 @@ divergence from native. A second fixture gives that guard teeth and the mutant i
 two configurations, then **overlapped on a third alternated round** (111.8 pristine min against
 112.3). Hoisting the flag out of the returned closure (the pattern item 119 established in this
 file) put `traverse 1-hop project` back on the pristine min.
+
+## 552 — the same admission on the MULTI-aggregate hop rung: 2.5-2.7x
+
+Item 551's widening, applied to `detectMultiHopAggregate`, which required every item to have a
+streaming fold and so declined any projection carrying one of the six order-sensitive names. ts,
+200,000 vertices / 200,000 edges, one case per process:
+
+| projection                 | before    | after                          |
+| -------------------------- | --------- | ------------------------------ |
+| `count(*), sum(b.age)`     | 313.32 ms | **126.92 / 130.72** (2.4-2.5x) |
+| `sum(b.age), avg(b.age)`   | 360.59    | **137.34 / 138.14** (2.6x)     |
+| `collect(b.age), count(*)` | 320.79    | **117.98 / 131.26** (2.4-2.7x) |
+
+Foldable controls flat: `count(*), max(b.age)` 92.75 → 92.4-92.6, `max(b.age), min(b.age)` 101.32 →
+99.5-102.6. _The first reading of that second control was 149.49 and did not reproduce over three
+repeats_ — a one-off, recorded because it looked exactly like a 1.5x regression on a control.
+
+A new `HopAcc` variant `values` collects the column and finishes through the same
+`aggregateOverValues` the general path runs; the two PERCENTILES come along for free on this rung,
+since they read no order and need no forcing. The undirected form is refused as in 551.
+
+Teeth: six mutants, **five caught, control clean** — the force turned off, the undirected guard
+disabled, the null skip removed, the percentile fraction zeroed, and the extrema flag forced true
+(which re-arms the self-loop decline wrongly). One mutant MISAPPLIED and the uniqueness assert
+caught it: the undirected guard's text is now character-identical in both rungs. Items 474, 483,
+494, 518, 528, 545, 546 and now 552.
+
+`detectMultiHopAggregate` crossed the complexity gate (40 against a limit of 35), so the per-item
+admission is extracted to `hopAccFor` — the decision reads nothing from the loop but the column
+index.

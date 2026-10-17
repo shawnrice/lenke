@@ -215,3 +215,56 @@ suite('the FILTERED walk is forced start-driven too (item 551)', () => {
     agree('MATCH (a:P)-[:K]->(b:R) RETURN count(*) AS m');
   });
 });
+
+// Item 552 extends the same admission to the MULTI-aggregate rung, which required every item to
+// have a streaming fold and so declined any projection carrying one of the six. ts, 200,000
+// vertices / 200,000 edges:
+//
+//   RETURN count(*), sum(b.age)        313.32 -> 126.92 ms   2.5x
+//   RETURN sum(b.age), avg(b.age)      360.59 -> 137.34      2.6x
+//   RETURN collect(b.age), count(*)    320.79 -> 117.98      2.7x
+//
+// with the foldable controls flat (`count(*), max` 92.75 -> 89.7, `max, min` 101.32 -> 99.5-102.6
+// over three repeats; the first reading of 149.49 was a one-off and did not reproduce). The
+// percentiles come along for free on this rung — they read no order, so they need no forcing.
+suite('the MULTI-aggregate hop rung takes them too (item 552)', () => {
+  const nativeGraph = graphFromNdjson(nativeBackend(), NDJSON);
+  const tsGraph = tsDeserialize(NDJSON, 'ndjson', new Graph());
+
+  const agree = (q: string): void => {
+    expect(`${q} ${JSON.stringify(tsQuery(tsGraph, q))}`).toBe(
+      `${q} ${JSON.stringify(nativeGraph.query(q))}`,
+    );
+  };
+
+  test('an order-sensitive item beside a foldable one', () => {
+    agree('MATCH (a)-[:K]->(b) RETURN count(*) AS c, sum(b.age) AS m');
+    agree('MATCH (a)-[:K]->(b) RETURN collect(b.age) AS l, count(*) AS c');
+    agree('MATCH (a)-[:K]->(b) RETURN sum(b.age) AS s, avg(b.age) AS v');
+    agree('MATCH (a)-[:K]->(b) RETURN max(b.age) AS m, collect(b.age) AS l');
+    agree('MATCH (a)-[:K]->(b) RETURN stddev_pop(b.age) AS s, stddev_samp(b.age) AS t');
+    // Three items, mixing all three accumulator kinds.
+    agree('MATCH (a)-[:K]->(b) RETURN count(*) AS c, max(b.age) AS m, collect(b.age) AS l');
+  });
+
+  test('the percentiles, which need no forcing', () => {
+    agree('MATCH (a)-[:K]->(b) RETURN count(*) AS c, percentile_cont(b.age, 0.5) AS p');
+    agree('MATCH (a)-[:K]->(b) RETURN percentile_disc(b.age, 0.25) AS p, max(b.age) AS m');
+  });
+
+  test('the START-reading shape, which routes through the filtered walk', () => {
+    agree('MATCH (a:P)-[:K]->(b) RETURN count(*) AS c, collect(a.age) AS l');
+    agree('MATCH (a:P)-[:K]->(b) RETURN sum(a.age) AS s, max(b.age) AS m');
+  });
+
+  test('the refusals', () => {
+    // UNDIRECTED with an order-sensitive item: two walks, so the rung declines.
+    agree('MATCH (a)-[:K]-(b) RETURN count(*) AS c, collect(b.age) AS l');
+    agree('MATCH (a)-[:K]-(b) RETURN sum(b.age) AS s, avg(b.age) AS v');
+    // A DISTINCT argument has no fold and is not one of the admitted names.
+    agree('MATCH (a)-[:K]->(b) RETURN count(*) AS c, count(DISTINCT b.age) AS d');
+    // The foldable controls the widening must not reach.
+    agree('MATCH (a)-[:K]->(b) RETURN count(*) AS c, max(b.age) AS m');
+    agree('MATCH (a)-[:K]->(b) RETURN max(b.age) AS m, min(b.age) AS n');
+  });
+});
