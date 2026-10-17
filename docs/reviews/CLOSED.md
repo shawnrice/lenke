@@ -5548,3 +5548,19 @@ declines. Mutation 4 of 5 (the fifth is the null control).
 
 **PRICED AND ALREADY FAST:** `SELECT count(*) FROM MATCH …` is 0.0 ms in TS — the ISO `SELECT`
 spelling lowers to the same clause list. Measured rather than assumed.
+
+## 517 — the four clause rewrites compose: VERIFIED
+
+`inlineTrailingLet` (512, 516), `inlineCorrelatedCall` (513) and `fuseAnchorThenHop` (505, 507)
+all run on every query, and each was only ever tested alone. Nine composed shapes, each asked
+composed and written directly, compared as multisets — including the two cases where a rewrite
+could hand the next stage a shape it answers wrongly: **fusion can PRODUCE a repeated node
+variable** (item 506's gate runs on the rewritten list and still catches it) and the OPTIONAL
+rungs' three-clause shape must survive a fusion before it.
+
+**All nine agreed on the first run, which is when a test is most likely vacuous** — the
+instrumented counts are what make it evidence: 12 binder inlines, 10 CALL inlines, 26 fusions
+across the file. Order affects REACH, not correctness.
+
+**Also checked:** `bench:gremlin`'s two widest ratios are both item 235's — the
+`values(age)` ordering guarantee and the shared adjacency floor. No new target on that surface.
