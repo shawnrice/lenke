@@ -7671,3 +7671,42 @@ SPELL_N to measure them" rather than passing silently.
 
 **OPEN: the 1.3-1.6x itself.** An inline `{k: $p}` and an `inline WHERE` seed less well than the
 clause form on a numeric key. Now watched by the probe, which is what was missing.
+
+### Item 580 — the seeding gap is NOT a lost seek; target DOWNGRADED to ~1.3x and parked
+
+**REFUTED, and this is the reusable part:** no spelling loses the seek. At 200,000 vertices with
+`k` indexed, the scan reference (`MATCH (n:P) WHERE n.s >= ''`, nothing seekable) is **7.09ms**
+while every spelling of the seeked question is **1.0-3.5ms**. "One spelling seeds and the other
+scans" is what every historical index bug in this engine was, so it is the hypothesis the next
+pass will reach for first — and it is wrong here.
+
+**Narrowed:** without a second conjunct the spellings converge (1.20-1.32ms over 20,000 rows). The
+gap needs the MIX of an inline seed and a clause conjunct.
+
+**What survives across both instruments** is item 579's numeric-key group with a VACUOUS second
+conjunct: clause 1.90/1.75/1.96ms against inline 2.91/2.33/3.13 — a consistent **1.3-1.6x**. The
+2.7x headline is the `inline WHERE` member alone, which is bimodal (5.18/2.35/5.20). The
+four-spelling group added at 580 converges within 1.65x and does not flag.
+
+**PARKED.** ~1.3x at the edge of the instrument's resolution, with three harnesses agreeing on
+nothing but the direction. Watched by `bun run spelling`; not worth chasing against a 2x threshold
+it does not reach.
+
+### A hand-rolled probe without a POSITION PASS will mislead you (item 580)
+
+Single runs of an ad-hoc harness (min of 9 reps, one process per case, no reversed pass) against
+the same questions in `spelling-probe`:
+
+```
+                        ad-hoc single run      probe two-pass min, twice
+clause + eq (param)           1.25 ms              1.89 / 1.77
+inline + eq (param)           2.32                 2.11 / 2.00
+clause + eq (LITERAL)         3.13                 1.77 / 1.73   <- FASTEST, not slowest
+both inline {k, s}            1.24                 2.42 / 2.85   <- SLOWEST, not fastest
+```
+
+Two of four corners REVERSED. From the first column I had built a 2x2 with opposite winners for
+param and literal plus a mechanism story, and none of it survived. `spelling-probe`'s own comment
+records a group reported at 1.5-2.1x across two audit items "with no engine cause at all" — which
+is why it times every spelling in both positions. **Use the probe (add a group) rather than a new
+ad-hoc harness when the effect is under ~2x.**

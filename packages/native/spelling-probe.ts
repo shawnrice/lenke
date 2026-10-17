@@ -746,6 +746,30 @@ const SEEK_GROUPS: [string, readonly string[], Record<string, unknown>][] = [
     { k: 2 },
   ],
   [
+    // FOUR spellings of a two-equality question where one key is SEEKED and the other filtered,
+    // all returning the same rows — which is what lets `{k, s}` sit in a group at all (a member
+    // with a different answer is reported as ANSWERS DIFFER, so the vacuous-conjunct group above
+    // cannot hold it).
+    //
+    // Item 580 narrowed the gap with this shape and REFUTED the obvious cause. Nothing here
+    // loses the seek: the scan reference (`MATCH (n:P) WHERE n.s >= ''`, no seekable conjunct) is
+    // 7.09ms at 200,000 vertices where every spelling below is 1.0-3.5ms. "One spelling lost the
+    // seek" is the hypothesis this engine's history makes most tempting — every historical index
+    // bug was exactly that — and it is not what this is.
+    //
+    // What DID narrow: both conjuncts written INLINE is as fast as the best clause form, and
+    // without a second conjunct the spellings converge. So the slow corner needs the MIX of an
+    // inline seed and a clause conjunct. The mechanism is still open.
+    'SEEK: two equalities, one seeked — all four spellings (item 580)',
+    [
+      'MATCH (n:P) WHERE n.k = $k AND n.s = $s RETURN count(*) AS c',
+      'MATCH (n:P {k: $k}) WHERE n.s = $s RETURN count(*) AS c',
+      'MATCH (n:P {s: $s}) WHERE n.k = $k RETURN count(*) AS c',
+      'MATCH (n:P {k: $k, s: $s}) RETURN count(*) AS c',
+    ],
+    { k: 2, s: 's1' },
+  ],
+  [
     // The seekable conjunct ALONE, so the group above has a floor to read against: if both its
     // members regress together, this says whether the seek itself moved.
     'SEEK: a param equality alone — clause vs inline vs inline-WHERE',
