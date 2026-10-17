@@ -1270,6 +1270,47 @@ const genHopProjection = (r: () => number): string => {
   return `RETURN ${genExpr(r, 2)} AS x`;
 };
 
+/**
+ * The GROUPED-aggregate arm's body (item 556), lifted out because adding the collecting spellings
+ * put `genQuery` over the complexity gate — and because the three conditions below are a unit
+ * worth reading together.
+ *
+ * Half of this band COLLECTS instead of counting. A grouped `collect_list` was never generated
+ * anywhere in this file, and its WITHIN-GROUP order is the one thing a count cannot see, so the
+ * generator was blind to the whole class of divergences where values reach a group in a different
+ * order — item 554's divergence is exactly that class and had to be found by hand.
+ *
+ * Each of the three choices below was forced by a MUTATION run against the engine, and each one
+ * is a condition the TS grouped-scan rung imposes:
+ *
+ *   - the collected property is SPARSE half the time. Collecting the dense `n` meant no null ever
+ *     reached the accumulator, so a mutant that KEPT nulls in a grouped collect survived.
+ *   - the key is a direct PROPERTY, not `LET k … GROUP BY k`. The rung requires a property of the
+ *     matched node, so every `LET`-keyed query DECLINED it and the rung was never reached at all.
+ *   - NO `ORDER BY`. The rung refuses a projection that sorts or pages (items 190, 199), so the
+ *     sorted spelling declined it too. Rows then compare as a MULTISET, which is right — the
+ *     group order is first-seen — while each row's collected LIST still compares element by
+ *     element, which is the order under test.
+ *
+ * With all three, the null mutant is CAUGHT on every seed tried. A mutant that REVERSES the
+ * within-group order still survives, and the reason is the fixture rather than the arm: `s`, `st`
+ * and `n` are distinct on all three vertices, so no group ever holds two rows and a reversed
+ * one-element list is the same list. Catching that needs a fixture with a repeated key.
+ */
+const genGrouped = (r: () => number): string => {
+  if (r() < 0.5) {
+    const prop = r() < 0.5 ? 'n.st' : 'n.n';
+
+    if (r() < 0.6) {
+      return `MATCH (n:T) RETURN n.s AS k, collect_list(${prop}) AS c`;
+    }
+
+    return `MATCH (n:T) LET k = ${genExpr(r, 1)} RETURN k, collect_list(${prop}) AS c GROUP BY k ORDER BY k`;
+  }
+
+  return `MATCH (n:T) LET k = ${genExpr(r, 1)} RETURN k, count(*) AS c GROUP BY k ORDER BY k, c`;
+};
+
 const genQuery = (r: () => number): string => {
   const p = r();
 
@@ -1312,7 +1353,7 @@ const genQuery = (r: () => number): string => {
   // AS k … GROUP BY k` the key read as null, so EVERY generated query collapsed
   // to one group whatever the expression evaluated to.
   if (p < 0.34) {
-    return `MATCH (n:T) LET k = ${genExpr(r, 1)} RETURN k, count(*) AS c GROUP BY k ORDER BY k, c`;
+    return genGrouped(r);
   }
 
   if (p < 0.42) {

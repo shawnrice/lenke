@@ -6652,3 +6652,52 @@ only threshold that matters.
 _The lesson is about instruments, not about this fuzzer: a floor set just under a small sample's
 minimum will go red on the weather, and a red CI with nothing behind it costs more than the dip it
 would have caught._
+
+## 556 — the GQL fuzzer's grouped arm never collected, so the grouped rung was invisible to it
+
+Item 554's divergence is a WITHIN-GROUP order difference, and it had to be found by hand. This asks
+why, and the answer is that the generator's grouped arm emitted only `count(*)` — a count cannot
+see the order values reach a group, so the whole class was unreachable.
+
+Half of that band now collects. Three choices in it, **each forced by a mutation run against the
+engine**, and each one a condition the TS grouped-scan rung imposes:
+
+- the collected property is SPARSE half the time. Collecting the dense `n` meant no null ever
+  reached the accumulator, so a mutant that KEPT nulls in a grouped collect survived.
+- the key is a direct PROPERTY, not `LET k … GROUP BY k`. The rung requires a property of the
+  matched node, so every `LET`-keyed query DECLINED it — the rung was never reached at all.
+- NO `ORDER BY`. The rung refuses a projection that sorts or pages (items 190, 199), so the sorted
+  spelling declined it too.
+
+With all three, the null-handling mutant is **caught on every seed tried**. _Three rounds of "the
+mutant survived, so the arm does not reach what I think it reaches" — a generated shape that
+declines the rung it was written for reads exactly like one that takes it._
+
+A mutant that REVERSES the within-group order still survives, and the reason is the fixture: `s`,
+`st` and `n` are distinct on all three vertices, so no group ever holds two rows and a reversed
+one-element list is the same list. Recorded, not papered over — catching it needs a fixture with a
+repeated key.
+
+### RETRACTED in the same tick: an INDEXED fuzzer pass
+
+The memory note after item 554 said the real gap was that the fuzzers never build an index, so no
+SEEDED plan is ever compared. I built that pass — a second graph pair with range indexes on `n`/`x`
+and a hash index on `s`, the same generator, the same `compareOne` — and then measured whether it
+reached anything:
+
+| fixture                                  | queries whose answer differs from the unindexed plan      |
+| ---------------------------------------- | --------------------------------------------------------- |
+| the 3-vertex `NDJSON`, NaN setup missing | 128/5000 — **all of them the missing NaN, not the index** |
+| the 3-vertex `NDJSON`, NaN setup applied | **0**/5000                                                |
+| a purpose-built 400-vertex fixture       | **0**/5000                                                |
+
+The first row is the finding: a mutant that removed index creation entirely still scored 128, which
+is what said the counter was measuring the wrong difference. With the fixtures actually identical
+the index changes NO answer the generator produces — a seek only perturbs the shapes the generator
+does not emit (a grouped collect over a FILTERED source). So the pass was 5,000 repetitions of the
+pass above it, and it was reverted along with its 400-vertex fixture and the `compareOne`
+extraction that existed only to feed it.
+
+_Shipping it would have been a test that proves nothing while looking exactly like one that does —
+the failure items 115 and 125 record._ The generator widening above is the half that survived
+measurement.
