@@ -351,6 +351,15 @@ const queries: Record<string, string> = {
     'MATCH (x:Person) CALL (x) { MATCH (x)-[:KNOWS]->(b:Half) WHERE b.age > 50 RETURN b } RETURN count(*) AS c',
   callinlinefilt:
     'MATCH (x:Person) CALL (x) { MATCH (x)-[:KNOWS]->(b) WHERE b.age > 50 RETURN b } RETURN count(*) AS c',
+  // Item 523: the OTHER rewrites `normalize_pred` does that a correlated body never reaches —
+  // `IN [literals]` to an OR chain, a negated equality, and the reversed operand order. Each is
+  // paired with the spelling `opt` would have produced, so the pair IS the question.
+  corrin: 'MATCH (x:Person) RETURN COUNT { (x)-[:KNOWS]->(b) WHERE b.age IN [11, 22, 33] } AS c',
+  corror:
+    'MATCH (x:Person) RETURN COUNT { (x)-[:KNOWS]->(b) WHERE b.age = 11 OR b.age = 22 OR b.age = 33 } AS c',
+  corrnoteq: 'MATCH (x:Person) RETURN COUNT { (x)-[:KNOWS]->(b) WHERE NOT b.age = 11 } AS c',
+  corrne: 'MATCH (x:Person) RETURN COUNT { (x)-[:KNOWS]->(b) WHERE b.age <> 11 } AS c',
+  corrrev: 'MATCH (x:Person) RETURN COUNT { (x)-[:KNOWS]->(b) WHERE 50 < b.age } AS c',
 };
 // One node's properties, shared by the TWO fixture builders below — a `Graph` for the TS engine
 // and NDJSON for the native one. Patching only one of them is item 471's trap: it reads as a

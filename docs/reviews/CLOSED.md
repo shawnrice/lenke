@@ -5669,3 +5669,27 @@ TS measured, not assumed: 21.3 ms labelled against 39.9 unlabelled, so no cliff 
 that means — TS was 8x FASTER than native on this shape before the fix and is 3x slower after.
 _A cliff in one engine can hide behind a cross-engine ratio that looks like the usual constant
 factor._
+
+## 523 — the other `normalize_pred` rewrites inside a correlated body: REFUTED, no cost
+
+Each paired with the spelling `opt` would have produced, native, 200,000 vertices:
+`IN [11, 22, 33]` 20.0 vs the OR chain 20.0; `NOT b.age = 11` 19.4 vs `b.age <> 11` 19.3;
+`50 < b.age` 17.6 vs `b.age > 50` 17.9. Every pair within the other's noise.
+
+The `IN` result contradicts that rewrite's own comment (~75x for a nested `IN` over a hop) and
+the reason matters: that was a TOP-LEVEL hop, where the filter runs over a wide batch and the
+boxed list is re-cloned per row. A correlated body runs per outer row over one vertex's degree.
+_A rewrite's value is a property of the batch width it runs at, not of the expression._
+
+So the label test (521, 522) was special because it is the only one of the four whose two
+spellings reach DIFFERENT evaluators — bucket membership vs a list build plus a string hash —
+rather than the same evaluator with a different tree.
+
+**Gremlin has none of this**, checked structurally: `IsLabeled` appears once in `gremlin.rs`
+(where `hasLabel` mints it) and `"labels"` appears nowhere, so no Gremlin correlated body can
+carry the raw spelling. Sweep closed: 521, 522, Gremlin, and these three.
+
+OPEN, newly priced: the TS correlated count with a landing WHERE — 745.6 ms against native's
+18.2 (41x). `degreeCountSubquery` declines on its first line (`expr.where !== undefined`) and
+falls back to materializing bindings per outer row. Its controls are the two rows that DO take
+the rung: the bare count 100.6 (native 11.3) and the labelled one 362.3 (24.6).
