@@ -687,6 +687,42 @@ const CASES: Case[] = [
     ),
   },
   {
+    // VAR-LENGTH, the pair. Item 573 gave TS a degree-arithmetic rung for a bounded `{m,n}`
+    // count and item 583 taught it to carry an endpoint PREDICATE; neither shipped a watcher, so
+    // a regression on either would have shown up nowhere. The two rows are a PAIR for the reason
+    // item 581's was: a filtered row alone cannot say whether a regression is the predicate or
+    // the walk underneath it, and the GAP between them is the number that matters. They should
+    // sit within ~2x of each other — the filtered one pays one predicate per reached endpoint
+    // over the same degree product, and measured 429.35 against 200.25 here. Before 583 it was
+    // 2446.99, because it declined the rung and enumerated all 6,000,000 paths: 5.7x, two
+    // alternated rounds, with the unfiltered row as the control that stayed flat.
+    //
+    // Both rows are FLAT IN PATH COUNT, which is how you can tell from the table alone that the
+    // rung is being taken: at 200,000 vertices they read 189 and 397 with 3 edges/node against
+    // 187 and 379 with 5, where the path count went 2.4M to 6.0M. Enumeration would have tracked
+    // the paths. The filtered row is ~2x the plain one rather than ~1x because the LAST hop can
+    // no longer be a degree — a degree cannot say which of a vertex's edges land somewhere that
+    // passes — so it enumerates that hop. Native pays 4.3 against 4.0 because it precomputes a
+    // per-node passing out-degree first (item 570's `node_pass_mask`); doing the same in TS is
+    // the open lever this pair exists to watch.
+    name: 'count var-length 1-2 hops',
+    ...onGraph(
+      () => graphDoc,
+      (e, g) => void e.query(g, 'MATCH (a:Person)-[:KNOWS]->{1,2}(y) RETURN count(*) AS c'),
+    ),
+  },
+  {
+    name: 'count var-length 1-2 hops + end filter',
+    ...onGraph(
+      () => graphDoc,
+      (e, g) =>
+        void e.query(
+          g,
+          'MATCH (a:Person)-[:KNOWS]->{1,2}(y WHERE y.age > 60) RETURN count(*) AS c',
+        ),
+    ),
+  },
+  {
     // The other half: the same walk, but PROJECTING an endpoint property, so 1,000,000 rows are
     // built. Traversal plus the row pipeline, which is the shape a user actually runs.
     name: 'traverse 1-hop project',

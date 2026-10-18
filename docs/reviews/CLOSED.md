@@ -6000,7 +6000,14 @@ batches, so _a single reading is not a signal_. Third instrument in this session
 repeat before a number means anything: `bun run bench`'s short rows (514), the spelling probe's
 groups (524), and now this.
 
-## 535 — OPEN, PRICED: a redundant label costs 2.6-7.3x in TS, via a route change at the SECOND conjunct
+## 535 — ~~OPEN, PRICED~~ SUPERSEDED by 536-538: a redundant label costs 2.6-7.3x in TS, via a route change at the SECOND conjunct
+
+> **NOTHING HERE IS OPEN (marked at item 583).** The heading said "OPEN, PRICED" and a reader
+> grepping for a target lands on it before reaching the three entries that resolve it:
+> **536** refuted the GQL half outright (a redundant label costs NOTHING in GQL — 4.41 against
+> 4.40 — and the "+37 then +4 route change" was the labelled query running third in a shared
+> process); **537** closed the surviving Gremlin half at 4.0x with `filterChainCount`; **538**
+> closed the seeding for every terminal at 2.4-2.5x. Read on rather than acting on this.
 
 Started from the one `bench:gremlin` row item 517 left unaccounted (`V().has(age,gt).count()`,
 28.3x native) and landed somewhere else. 200,000 vertices all labelled `Person`, TS: gremlin
@@ -7799,3 +7806,72 @@ BOTTOM — precisely what `head` discards.** Run `grep -c` first; if the count i
 handful, read the TAIL of the matches, not the head. Third time this session that recorded work was
 re-derived; the first two searched the wrong store, this one searched the right store and truncated
 it.
+
+## 583 — CLOSED: a bounded var-length `count(*)` with an ENDPOINT PREDICATE, TS, 6.2-8.7x
+
+Item 573's `varLengthDegreeCount` took an unfiltered endpoint and an endpoint LABEL and declined
+any endpoint PREDICATE. It now carries one, in **all three spellings**, as a compiled `InlinePred`
+applied per reached endpoint. 40,000 vertices / 120,000 edges, min of 3, three alternated rounds:
+
+| shape                                         | pristine  | after  | min/min  |
+| --------------------------------------------- | --------- | ------ | -------- |
+| `(y WHERE y.age > 50)`                        | 206.92 ms | 31.87  | **6.5x** |
+| `(y) WHERE y.age > 50`                        | 244.92    | 28.01  | **8.7x** |
+| `(y {age: 50})`                               | 176.28    | 28.26  | **6.2x** |
+| CONTROL unfiltered (on the rung both sides)   | 14.77     | 15.01  | flat     |
+| CONTROL per-rep `WHERE` (declines both sides) | 370.10    | 364.94 | flat     |
+
+The three spellings AGREE after (1.14x spread) where they spread 1.39x before — which was the point
+rather than a side effect, since items 303/304 record an inline-vs-clause gap of **139x** on the
+one-hop version of exactly this.
+
+**Still REFUSED, deliberately:** a gate on the START (a seed filter, which this rung does not
+carry — native needed a separate mask at item 575); an unrepresentable gate (`inlineOf`/`gateWith`
+returning `null`, e.g. `(y {n: a.n})` — `null` means "cannot carry", NOT "no predicate"); and 573's
+own `max > 2`, `SIMPLE`, multi-type-hop and non-plain-start refusals.
+
+**No fault fallback needed**, unlike native's `node_pass_mask` (items 570, 572): that builds a mask
+over every node in the store, so an unreached vertex can fault there and not under enumeration.
+This applies the predicate per REACHED endpoint, over exactly the set the walk sees.
+
+### At BENCH size: 5.7x, a new watcher pair, and the NEXT lever (item 583)
+
+200,000 vertices / 1,000,000 edges, two alternated rounds: the filtered row went **2446.99 ms to
+429.35 (5.7x)**, control flat. `bun run bench` gains the pair `count var-length 1-2 hops` and
+`count var-length 1-2 hops + end filter` — item 573 shipped the rung with NO watcher.
+
+**Reading the pair:** both rows are FLAT IN PATH COUNT (189/397 at 3 edges/node against 187/379 at
+5, where paths go 2.4M to 6.0M), which is how the table alone shows the rung is taken. I nearly
+misread 331.7ms as a decline.
+
+**OPEN LEVER, priced:** the filtered row costs ~2x the plain one because the LAST hop cannot be a
+degree — a degree cannot say which of a vertex's edges land somewhere that passes — so TS
+enumerates it. Native pays 1.08x (4.3 against 4.0) because `node_pass_mask` precomputes a per-node
+PASSING OUT-DEGREE first (item 570) and the last hop becomes a lookup. The same precompute in TS is
+an O(V+E) route for the filtered case. **Not attempted.**
+
+### A 1.10x that was noise, measured twice to find out (item 583)
+
+The unfiltered control read 181.78 against 200.25 and I took it for
+[[ts-closure-size-is-load-bearing]], so I split the detector's two arms to put the predicate-free
+case back on identical code. Isolated, three alternated rounds each way: one closure gave mins
+182.44 / 184.26 (1.01x), split gave 171.92 / 181.37 (1.055x) — **with the pristine side the looser
+one the second time.** Both under the ~10% floor, the wide side swapping between runs: noise. The
+split is KEPT for its prophylactic value but **it fixed nothing measurable**, and claiming
+otherwise would have put a fake mechanism in the record.
+
+### A surviving mutant is first a question about REACHABILITY (item 583)
+
+Six mutants, cap proved to kill first (137 for an allocator bomb, 124 for a bare `while true`).
+Two survived: one was a missing test, **one was dead code**.
+
+- **M2** — treating a `null` gate as `undefined` dropped the predicate and read 10 for 1, and
+  nothing asserted on it. A real gap; `(y {n: a.n})` and its two twins now pin it.
+- **M5** — I had written a `!plainNode(pattern.start)` decline into the detector, and
+  `degreeCountShape` already requires exactly that one `||` earlier. The guard could never fire, so
+  no test could kill it. **Deleted**, with a comment saying why there is none.
+
+So: when a mutant on a guard survives, ask whether the guard is REACHABLE before writing a test for
+it. Four historical wrong-answer bugs needed the generator widened; this one needed the code
+narrowed. Deleting it also left `degreeCountShape`'s `node` binding unused, which `bun run lint`
+caught at exit 1 — the argument for running the lint gate as its own command.

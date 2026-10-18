@@ -4617,6 +4617,9 @@ export const detectForCount = (
  * `selector` DEFAULTS to the string 'walk' (all walks) rather than to undefined, so the guard is
  * `!== 'walk'`. Written as `!== undefined` it declines EVERY query — which is how this started,
  * and the measurement showed no change at all until it was found.
+ *
+ * The ENDPOINT node is no longer required to be plain (item 583): its constraint is carried as an
+ * `InlinePred` and applied per reached endpoint. The detector decides whether it can be carried.
  */
 const degreeCountShape = (pattern: PathPattern): boolean => {
   if (
@@ -4630,7 +4633,9 @@ const degreeCountShape = (pattern: PathPattern): boolean => {
   }
 
   const [seg] = pattern.segments;
-  const { rel, node } = seg;
+  // The ENDPOINT `node` is deliberately NOT read here (item 583) — its constraint is carried, not
+  // refused, and `detectVarLengthCount` decides whether it can be.
+  const { rel } = seg;
 
   return !(
     seg.hopFrom !== undefined ||
@@ -4639,8 +4644,7 @@ const degreeCountShape = (pattern: PathPattern): boolean => {
     rel.direction !== 'out' ||
     (rel.properties?.length ?? 0) > 0 ||
     rel.where !== undefined ||
-    rel.variable !== undefined ||
-    !plainNode(node)
+    rel.variable !== undefined
   );
 };
 
@@ -4653,13 +4657,7 @@ export const detectVarLengthCount = (
 
   const [m, ret] = clauses;
 
-  if (
-    m?.kind !== 'match' ||
-    m.optional ||
-    m.where !== undefined ||
-    m.patterns.length !== 1 ||
-    ret?.kind !== 'return'
-  ) {
+  if (m?.kind !== 'match' || m.optional || m.patterns.length !== 1 || ret?.kind !== 'return') {
     return null;
   }
 
@@ -4689,10 +4687,50 @@ export const detectVarLengthCount = (
     return null;
   }
 
-  // An endpoint label is the only predicate admitted, and only in its simple form.
   const endLabel = node.label;
 
   if (endLabel !== undefined && endLabel.kind !== 'label') {
+    return null;
+  }
+
+  // THE ENDPOINT PREDICATE, from EITHER spelling, and the two must be one route (item 583).
+  //
+  // `(y WHERE y.age > 50)` and `(y) WHERE y.age > 50` are the same question. Carrying only the
+  // inline one would have CREATED a cliff — 270.82ms against 334.13 before this, and the inline
+  // side alone would have gone to ~45. Items 303/304 are the precedent and the warning: an
+  // inline `{k: 1}` reached `inlineOf` through the pattern node while the identical clause
+  // `WHERE` cost 4708.2ms against 33.9, "139x, item 125's bug class at the far end of the
+  // family". `chainGatesOf` + `gateWith` is the composition they built for exactly this, so both
+  // spellings reach the same `InlinePred` here.
+  //
+  // The predicate is applied per REACHED endpoint, not per node in the store — which is why this
+  // needs no fault fallback where native's `node_pass_mask` does (items 570, 572). The rung
+  // evaluates it on exactly the set the walk would.
+  const gates =
+    m.where === undefined ? undefined : chainGatesOf(m.where, pattern.start, pattern.segments);
+
+  if (gates === null) {
+    return null;
+  }
+
+  // A gate on the START is a filter on the SEED, which this rung does not carry — declining
+  // keeps both of ITS spellings on the walk together rather than making a new cliff. Its INLINE
+  // spelling needs no test here: `degreeCountShape` already requires `plainNode(pattern.start)`,
+  // so a start carrying properties or an inline `WHERE` never reaches this function. A duplicate
+  // guard here SURVIVED mutation for exactly that reason, which is what dead code looks like.
+  if (
+    pattern.start.variable !== undefined &&
+    (gates?.get(pattern.start.variable)?.length ?? 0) > 0
+  ) {
+    return null;
+  }
+
+  const endPred = gateWith(
+    node,
+    node.variable === undefined ? undefined : gates?.get(node.variable),
+  );
+
+  if (endPred === null) {
     return null;
   }
 
@@ -4704,11 +4742,53 @@ export const detectVarLengthCount = (
 
   const isTrail = pattern.mode !== 'walk';
 
-  return (graph) => {
-    // A VACUOUS endpoint label costs a per-edge test that cannot fail, which is the difference
-    // between a degree product and a per-edge scan wearing one (item 566 / `effectiveLabel`).
+  // TWO closures, not one with a branch inside it. The predicate-free case — which is everything
+  // item 573 already carried — keeps the closure it had, capturing exactly what it captured, and
+  // the new one is reached only by a query that has a predicate. The reason is prophylactic, and
+  // the honest version of the measurement is worth having here because the first reading looked
+  // like more than it was. Written as ONE closure, the unfiltered control read 183.87 / 190.39 /
+  // 182.44 against 210.01 / 184.26 / 219.62 over three alternated isolated rounds at 200,000
+  // vertices: mins 1.01x apart, but the spread went 1.04x to 1.19x, which looked like
+  // [[ts-closure-size-is-load-bearing]] — the slow mode this file has measured five times. Split,
+  // the same harness read 178.84 / 190.05 / 171.92 against 193.15 / 181.37 / 190.49: mins 1.055x
+  // apart with the PRISTINE side now the looser one. The two runs disagree about which side is
+  // tighter, both gaps are under the ~10% noise floor, so the first reading was noise and the
+  // split did not fix a measured regression. It is kept because an unfiltered query running
+  // literally the code it ran before cannot produce an ambiguous reading like that again —
+  // which is the cheap half of the lesson.
+  if (endPred === undefined) {
+    return (graph) => {
+      // A VACUOUS endpoint label costs a per-edge test that cannot fail, which is the difference
+      // between a degree product and a per-edge scan wearing one (item 566 / `effectiveLabel`).
+      const eff =
+        endLabel === undefined || vacuousLabel(graph, endLabel) ? undefined : endLabel.name;
+
+      return [
+        {
+          [column]: varLengthDegreeCount(graph, {
+            types,
+            min,
+            max,
+            isTrail,
+            startName: startLabel?.name,
+            passes: eff === undefined ? alwaysTrue : (v: Vertex): boolean => v.labels.has(eff),
+            passesIsVacuous: eff === undefined,
+          }),
+        },
+      ];
+    };
+  }
+
+  return (graph, params) => {
     const eff = endLabel === undefined || vacuousLabel(graph, endLabel) ? undefined : endLabel.name;
-    const passes = eff === undefined ? alwaysTrue : (v: Vertex): boolean => v.labels.has(eff);
+    // One binding map reused across endpoints — the idiom `buildNodeCount` already uses, since
+    // `inlineHolds` overwrites the node's own variable per element.
+    const binding = new Map<string, unknown>();
+    const passes =
+      eff === undefined
+        ? (v: Vertex): boolean => inlineHolds(endPred, v, binding, params, graph)
+        : (v: Vertex): boolean =>
+            v.labels.has(eff) && inlineHolds(endPred, v, binding, params, graph);
 
     return [
       {
@@ -4719,7 +4799,8 @@ export const detectVarLengthCount = (
           isTrail,
           startName: startLabel?.name,
           passes,
-          passesIsVacuous: eff === undefined,
+          // A carried predicate is never vacuous — it is the whole reason this arm exists.
+          passesIsVacuous: false,
         }),
       },
     ];

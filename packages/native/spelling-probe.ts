@@ -571,6 +571,33 @@ const GROUPS: [string, readonly string[]][] = [
       'MATCH (a:P)(()-[:E]->()){1,2} RETURN count(*) AS c',
     ],
   ],
+  // The ENDPOINT PREDICATE on that same quantified hop, in every spelling it has (item 583).
+  // Before 583 the inline and clause forms both DECLINED the degree rung and enumerated, so they
+  // agreed with each other at ~7x the cost — which is the failure mode this probe cannot see:
+  // equally slow is not a flag. They are here because carrying only ONE spelling is the thing
+  // that would create a flag, and that is exactly what items 303/304 measured at 139x on the
+  // one-hop version of this question.
+  //
+  // There is deliberately NO group-spelling member: outside a quantified group, `y` is the LIST
+  // of per-rep bindings rather than a node, so `WHERE y.k > 25` there is a different question (or
+  // not one at all), and the group's own `WHERE` is a PER-REP predicate testing every landing
+  // rather than the endpoint. The equivalence class is the two endpoint spellings, and the
+  // equality group below is the same class for `=`.
+  [
+    'a quantified hop with an ENDPOINT PREDICATE: inline vs clause (item 583)',
+    [
+      'MATCH (a:P)-[:E]->{1,2}(y WHERE y.k > 25) RETURN count(*) AS c',
+      'MATCH (a:P)-[:E]->{1,2}(y) WHERE y.k > 25 RETURN count(*) AS c',
+    ],
+  ],
+  [
+    'a quantified hop with an ENDPOINT EQUALITY: three spellings (item 583)',
+    [
+      'MATCH (a:P)-[:E]->{1,2}(y {k: 7}) RETURN count(*) AS c',
+      'MATCH (a:P)-[:E]->{1,2}(y WHERE y.k = 7) RETURN count(*) AS c',
+      'MATCH (a:P)-[:E]->{1,2}(y) WHERE y.k = 7 RETURN count(*) AS c',
+    ],
+  ],
 ];
 
 const timed = (q: string, params?: Record<string, unknown>): { ms: number; answer: string } => {

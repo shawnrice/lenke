@@ -133,3 +133,118 @@ suite('a bounded var-length count is degree arithmetic (item 573)', () => {
     agree('MATCH ACYCLIC (a:P)-[:T]->+(y) RETURN count(*) AS c', '[{"c":14}]');
   });
 });
+
+// Item 583. The rung took the unfiltered case and an endpoint LABEL; an endpoint PREDICATE
+// declined and ran the walk. Priced at 40,000 vertices / 120,000 edges, three alternated rounds:
+//
+//   (y WHERE y.n > 50)        267.40/270.54/313.32 -> 43.01/57.11/47.21   6.2x
+//   (y) WHERE y.n > 50        325.18/332.59/338.33 -> 42.66/70.41/43.85   7.6x
+//   (y {n: 50})               220.19/225.94/233.60 -> 42.26/57.90/43.09   5.2x
+//   (y:Q)      (control, already on the rung)   flat, 36.33 against 39.60 isolated at 9 reps
+//   unfiltered (control)                        flat
+//
+// BOTH SPELLINGS OR NEITHER. `(y WHERE p)` and `(y) WHERE p` are the same question, so carrying
+// only the inline one would have CREATED a cliff — 270.82 against 334.13, with the inline side
+// alone dropping to ~43. Items 303/304 are both the precedent and the warning: an inline
+// `{k: 1}` reached `inlineOf` through the pattern node while the identical clause `WHERE` cost
+// 4708.2ms against 33.9, "139x, item 125's bug class at the far end of the family".
+// `chainGatesOf` + `gateWith` is the composition they built for it, and it is what this uses.
+//
+// No fault fallback is needed where native's `node_pass_mask` has one (items 570, 572): this
+// applies the predicate per REACHED endpoint, so it evaluates exactly the set the walk would. The
+// faulting-CAST case below is what holds that claim.
+suite('the rung carries an endpoint PREDICATE, either spelling (item 583)', () => {
+  const nv2 = graphFromNdjson(nativeBackend(), NDJSON);
+  const ts2 = tsDeserialize(NDJSON, 'ndjson', new Graph());
+  const same = (want: string, ...spellings: string[]): void => {
+    for (const q of spellings) {
+      const got = JSON.stringify(tsQuery(ts2, q));
+
+      expect(`${q} ${got}`).toBe(`${q} ${JSON.stringify(nv2.query(q))}`);
+      expect(`${q} ${got}`).toBe(`${q} ${want}`);
+    }
+  };
+
+  test('the two spellings of one predicate agree with each other and with native', () => {
+    // 4 one-hop T edges land on n>1 (e1->2, e2->3, e5->3, e6->4) and 6 two-hop, so {1,2} is 10.
+    same(
+      '[{"c":10}]',
+      'MATCH (a:P)-[:T]->{1,2}(y WHERE y.n > 1) RETURN count(*) AS c',
+      'MATCH (a:P)-[:T]->{1,2}(y) WHERE y.n > 1 RETURN count(*) AS c',
+    );
+    // THREE spellings of an equality, the inline-property one included.
+    same(
+      '[{"c":4}]',
+      'MATCH (a:P)-[:T]->{1,2}(y {n: 3}) RETURN count(*) AS c',
+      'MATCH (a:P)-[:T]->{1,2}(y) WHERE y.n = 3 RETURN count(*) AS c',
+      'MATCH (a:P)-[:T]->{1,2}(y WHERE y.n = 3) RETURN count(*) AS c',
+    );
+    // A CONJUNCTION, in both spellings — `gateWith` merges clause conjuncts with an inline WHERE.
+    same(
+      '[{"c":7}]',
+      'MATCH (a:P)-[:T]->{1,2}(y WHERE y.n > 1 AND y.n < 4) RETURN count(*) AS c',
+      'MATCH (a:P)-[:T]->{1,2}(y) WHERE y.n > 1 AND y.n < 4 RETURN count(*) AS c',
+    );
+    // A label AND a predicate together: `:Q` is on 1 (n=1, fails) and 4 (n=4), so only paths
+    // ending at 4 count — e6 one-hop, and 2->3->4 twice.
+    same('[{"c":3}]', 'MATCH (a:P)-[:T]->{1,2}(y:Q WHERE y.n > 1) RETURN count(*) AS c');
+  });
+
+  test('the bounds, where the ZERO-LENGTH endpoint is the SOURCE', () => {
+    same('[{"c":4}]', 'MATCH (a:P)-[:T]->{1,1}(y WHERE y.n > 1) RETURN count(*) AS c');
+    same('[{"c":6}]', 'MATCH (a:P)-[:T]->{2,2}(y WHERE y.n > 1) RETURN count(*) AS c');
+    // 10 hop paths plus one row per SOURCE that passes — 2, 3, 4 and iso, not 1.
+    same('[{"c":14}]', 'MATCH (a:P)-[:T]->{0,2}(y WHERE y.n > 1) RETURN count(*) AS c');
+    same('[{"c":0}]', 'MATCH (a:P)-[:T]->{1,2}(y WHERE y.n IS NULL) RETURN count(*) AS c');
+  });
+
+  test('a predicate that FAULTS does so on the same set the walk would', () => {
+    // `n` is a number on every vertex here, so a CAST of it cannot fault — which is exactly why
+    // the assertion is that the two spellings AGREE WITH NATIVE rather than that they throw.
+    // The claim being held is that the rung evaluates the predicate per REACHED endpoint: were it
+    // asking about every vertex in the store (native's mask does, and declines on `Err`), a
+    // vertex no walk reaches could fault here and not there.
+    same(
+      '[{"c":10}]',
+      'MATCH (a:P)-[:T]->{1,2}(y WHERE CAST(y.n AS INTEGER) > 1) RETURN count(*) AS c',
+      'MATCH (a:P)-[:T]->{1,2}(y) WHERE CAST(y.n AS INTEGER) > 1 RETURN count(*) AS c',
+    );
+  });
+
+  test('a CORRELATED endpoint gate declines rather than dropping the predicate', () => {
+    // `inlineOf`/`gateWith` return `null` — not `undefined` — when the endpoint's constraint reads
+    // something other than the endpoint, and the two mean opposite things: `undefined` is "no
+    // predicate, count everything", `null` is "cannot carry this, run the walk". Treating the one
+    // as the other is a silent overcount (10 for 1 here) that no other case in this file catches.
+    // Only the SELF-LOOP has an endpoint whose `n` equals its source's.
+    same(
+      '[{"c":1}]',
+      'MATCH (a:P)-[:T]->{1,2}(y {n: a.n}) RETURN count(*) AS c',
+      'MATCH (a:P)-[:T]->{1,2}(y WHERE y.n = a.n) RETURN count(*) AS c',
+      'MATCH (a:P)-[:T]->{1,2}(y) WHERE y.n = a.n RETURN count(*) AS c',
+    );
+  });
+
+  test('a NON-PLAIN START keeps its own constraint', () => {
+    // `degreeCountShape` refuses a start that carries anything, so these run the walk — but the
+    // rung is one `||` away from seeing them, and dropping the start's `{n: 1}` would read 10.
+    same('[{"c":4}]', 'MATCH (a:P {n: 1})-[:T]->{1,2}(y WHERE y.n > 1) RETURN count(*) AS c');
+    same(
+      '[{"c":4}]',
+      'MATCH (a:P WHERE a.n = 1)-[:T]->{1,2}(y WHERE y.n > 1) RETURN count(*) AS c',
+    );
+    same('[{"c":5}]', 'MATCH (a:P {n: 1})-[:T]->{1,2}(y) RETURN count(*) AS c');
+    same('[{"c":1}]', 'MATCH (a:P {n: 1})-[:T]->{1,2}(y:Q) RETURN count(*) AS c');
+  });
+
+  test('the shapes it must still REFUSE answer correctly', () => {
+    // A gate on the START is a filter on the seed, which this rung does not carry.
+    same('[{"c":10}]', 'MATCH (a:P)-[:T]->{1,2}(y) WHERE a.n > 1 RETURN count(*) AS c');
+    // SIMPLE, max > 2, and a multi-type hop all decline for their own reasons.
+    same('[{"c":9}]', 'MATCH SIMPLE (a:P)-[:T]->{1,2}(y WHERE y.n > 1) RETURN count(*) AS c');
+    same('[{"c":19}]', 'MATCH (a:P)-[:T]->{1,3}(y WHERE y.n > 1) RETURN count(*) AS c');
+    same('[{"c":14}]', 'MATCH (a:P)-[:T|U]->{1,2}(y WHERE y.n > 1) RETURN count(*) AS c');
+    // WALK keeps the self-loop path a trail forbids.
+    same('[{"c":10}]', 'MATCH WALK (a:P)-[:T]->{1,2}(y WHERE y.n > 1) RETURN count(*) AS c');
+  });
+});
