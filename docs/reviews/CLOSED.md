@@ -7710,3 +7710,46 @@ param and literal plus a mechanism story, and none of it survived. `spelling-pro
 records a group reported at 1.5-2.1x across two audit items "with no engine cause at all" — which
 is why it times every spelling in both positions. **Use the probe (add a group) rather than a new
 ad-hoc harness when the effect is under ~2x.**
+
+### Item 581 — TS's top-k pays 4.5x its OWN floor — OPEN, specified, and watched
+
+A fresh enum (`ORDER BY`). The rung EXISTS and is bounded: the full sort is 294ms against 31 for
+`LIMIT 1/5/100`, and it is FLAT in k. `aliasDefinition` (145, 213) is what keeps it — it rewrites
+`ORDER BY k` to `ORDER BY n.k` so the key reads an input variable and `orderNeedsOutput` stays
+false.
+
+**THE FLOOR IS A SHIPPED PATH.** `min(n.k)` does exactly what `ORDER BY k LIMIT 1` must do — read
+one property per row, compare, emit one row:
+
+```
+RETURN count(n.k)                    ts  8.91 ms   nv 0.11
+RETURN min(n.k)                          9.32         0.41
+RETURN n.k AS k ORDER BY k LIMIT 1      30.84         0.71
+RETURN n.k AS k   (200,000-row proj)     9.33        14.56
+```
+
+**TS 3.4x its floor, native 1.7x.** On the cross-engine bench's fixture: 36.1 against 8.1
+(**4.5x**) for TS, 1.0 against 0.4 for native.
+
+**Diagnosed:** the top-k does NOT project every row (`orderNeedsOutput` keeps only the top-k input
+bindings — item 426 measured that). It runs the GENERAL pipeline, building a binding `Map` per row
+and reading the key from it, where `min()` takes the node-aggregate shortcut and builds no binding.
+
+**THE SPEC:** `MATCH (n:L) RETURN <plain cols of n> ORDER BY <plain col of n> [DESC] [SKIP s]
+LIMIT k` → scan the label bucket, extract the key per vertex, keep a bounded top-(s+k), project
+only the survivors.
+
+**Why not yet:** a new sort rung must reproduce the engine's TOTAL ORDER byte-identically (NaN
+last, NaN == NaN for sort/min/max — a deliberate departure from the predicate semantics), plus
+DESC, ties and SKIP. Fuzzer-and-mutation work, not tail-of-a-tick work.
+
+`bun run bench` now carries the PAIR (`query: top-k by property` beside `query: min property
+[top-k floor]`): a bare top-k row cannot say whether a regression is the rung or the scan beneath
+it.
+
+### Take the floor from a SHIPPED fast path, not from theory (item 581)
+
+`min(n.k)` is not an estimate of what reading-and-comparing one property per row ought to cost — it
+is that work, done today, by another rung in the same engine. A target anchored that way survives
+re-measurement in a way that "~61ns a row times 200,000" does not, and it tells you the win is
+reachable because something already reaches it.

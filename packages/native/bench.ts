@@ -395,6 +395,38 @@ const CASES: Case[] = [
     ),
   },
   {
+    // Item 581. A plain `ORDER BY <col> LIMIT k` over a node scan had no row here, and no
+    // shortcut either: it runs the general pipeline, which builds a binding per row and then
+    // takes the sort key from it. The top-k itself is sound — it keeps only the top-k INPUT
+    // bindings and projects just those (`orderNeedsOutput`), and the full sort is 294ms against
+    // its 31 — but the per-row cost is 3.4x its own floor.
+    //
+    // THE FLOOR IS THE ROW BELOW, and that is why the two are a pair. `min(n.age)` does exactly
+    // what `ORDER BY a LIMIT 1` must do — read one property per row, compare it, emit one row —
+    // through the node-aggregate SHORTCUT, which builds no binding at all. At 200,000 vertices,
+    // one case per process, three interleaved rounds:
+    //
+    //   ORDER BY a LIMIT 1   ts 30.84-31.92ms   nv 0.70-0.71     FLAT in k (1, 5 and 100 alike)
+    //   min(n.age)           ts  7.82-9.32      nv 0.41-0.44
+    //   RETURN n.age (proj)  ts  9.33           nv 14.56         the 200,000-row projection
+    //
+    // So TS pays 3.4x its measured floor and native 1.7x. Read the PAIR: a top-k that regresses
+    // toward the general path shows as the gap widening, and a floor that moves tells you the
+    // scan changed rather than the rung.
+    name: 'query: top-k by property',
+    ...onGraph(
+      () => nodesDoc,
+      (e, g) => void e.query(g, 'MATCH (n:Person) RETURN n.age AS a ORDER BY a LIMIT 5'),
+    ),
+  },
+  {
+    name: 'query: min property [top-k floor]',
+    ...onGraph(
+      () => nodesDoc,
+      (e, g) => void e.query(g, 'MATCH (n:Person) RETURN min(n.age) AS a'),
+    ),
+  },
+  {
     // `ORDER BY c DESC LIMIT n` over a grouped count is the top-categories-by-count shape, and
     // the tally declined every `ORDER BY` until item 190 — 65.0ms through the general path
     // against 8.6ms tallied, because the sort reorders the groups BEFORE the window and the
