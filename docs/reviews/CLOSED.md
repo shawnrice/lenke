@@ -7978,3 +7978,58 @@ where `passesIsVacuous` short-circuits the gate before it reads anything. Both o
 0.96x in the same run: a side-wide offset on arms the change provably cannot reach. Isolated, one
 case per process, three alternated rounds, the after side wins EVERY round (189.34 -> 176.15).
 Position in a shared process. The repo had this lesson filed and it still cost a round.
+
+## 586 — CLOSED: the degree algebra reads IN-adjacency, native, 9.4x (and OUT pays 4%)
+
+`try_degree_algebra` was gated on `Dir::Out` since item 64. Pricing the refused variants against
+the accepted one at 200,000 vertices / 1,000,000 edges made the pick unambiguous: `in {1,2}` cost
+**35.99ms against 3.99 for the IDENTICAL count** (both 5,999,996), while a single IN hop costs
+exactly what a single OUT hop does (0.51ms each) — the in-adjacency was never the reason.
+
+|                                                          | pristine    | after       |            |
+| -------------------------------------------------------- | ----------- | ----------- | ---------- |
+| `in {1,2}`                                               | 35.36 ms    | 3.76        | **9.40x**  |
+| `in {1,2}` + end pred                                    | 36.56       | 4.00        | **9.14x**  |
+| `out {1,2}` + 4 accepted siblings                        | 3.36-3.93   | 3.59-4.14   | 0.94-0.96x |
+| `both` / `{1,3}` / `{3,3}` / SIMPLE / ACYCLIC — CONTROLS |             |             | 1.02-1.07x |
+| `out {1,1}` / `in {1,1}` — CONTROLS                      | 0.51 / 0.50 | 0.51 / 0.50 | 1.00x      |
+
+**`Dir::Both` stays refused and is a DIFFERENT SHAPE, not a third branch:** from one node an
+undirected edge is traversable two ways, so one edge-indexed traversal mask cannot represent both,
+and a self-loop sits in both adjacency lists. `max >= 3` and SIMPLE/ACYCLIC also remain open.
+
+### A total count CANNOT witness a direction bug (586)
+
+Over ALL sources, reversing every path is a bijection between the forward and backward path sets,
+so `(a:P)-[:T]->{1,2}(y)` and its `<-[:T]-` twin return the SAME NUMBER whatever the engine does. A
+fixture I had built to be asymmetric read `out=232 in=232` and would have passed with the direction
+wired backwards. **The source set must be SELECTIVE** — `:Q` on a third gives `out=76 in=79`. Both
+the Rust test and the sweep now ASSERT the asymmetry, and that assertion caught two of five mutants.
+
+### The algebra's gate needs degree >= 7 once the source set is selective (586)
+
+The gate is `src.len() * avg_deg^max > 2 * (nodes + edges)`. With the source label on a third and
+`edges = d*n` that is `(n/3) * d^2 > 2n(1+d)`, i.e. `d^2 > 6 + 6d` — **`d >= 7` or the algebra
+never runs at any n.** Item 572's fixture (400 nodes, degree 4) used the WHOLE graph as sources, so
+copying it with a selective label produced a test that passed in 0.16s having never executed the
+closed form. Third instance of item 570's trap. The test now recomputes the gate and asserts it.
+
+### FIVE shapes of one branch, and two refuted mechanism stories (586)
+
+The OUT path was not meant to change and costs 4-6%. Isolated probes, four alternated rounds each:
+
+| shape                                          | ratio      |
+| ---------------------------------------------- | ---------- |
+| closure `\|v\| if inward { inc } else { out }` | 1.144x     |
+| the same code through a `macro_rules!`         | 1.105x     |
+| `const INWARD` + masks as generic params       | 1.113x     |
+| `const INWARD` + masks as `&dyn Fn`            | 1.051x     |
+| ... plus `#[inline(always)]` — KEPT            | **1.038x** |
+
+**REFUTED:** (1) "the closure is opaque to the inliner" — the macro expansion changed nothing;
+(2) "`&dyn Fn` is a virtual call per edge, so generics reach parity" — generics were WORSE, so the
+`&dyn` shape is kept against the obvious reading of the code. The residual ~4% has NO identified
+mechanism and sits in [[pull-alignment-is-load-bearing]]'s band. Net: 32ms saved on a 36ms query
+against 0.15ms added to a 4ms one. **NOT TRIED:** duplicating the body so OUT is untouched source
+— the only shape that could reach 1.000x, rejected because it means two copies of the trail
+correction and the zero-length term.

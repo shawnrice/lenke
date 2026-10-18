@@ -21019,3 +21019,187 @@ fn a_path_source_per_rep_predicate_is_a_seed_filter() {
         "while `min = 1` has no zero-length path to emit"
     );
 }
+
+/// Item 586: the degree algebra reads IN-adjacency as happily as OUT.
+///
+/// `try_degree_algebra` was gated on `Dir::Out` from item 64, and the refusal cost 9.0x for an
+/// IDENTICAL count — 35.99ms against 3.99 at 200,000 vertices / 1,000,000 edges, both answering
+/// 5,999,996 — while a single IN hop costs exactly what a single OUT hop does (0.51ms each). The
+/// in-adjacency was never the reason; nothing in degree arithmetic prefers a direction.
+///
+/// TWO fixture properties are load-bearing, and the first one nearly cost this test its teeth:
+///
+///   - THE START LABEL MUST BE SELECTIVE. Counting every path from EVERY source, reversal is a
+///     bijection between the forward and backward path sets, so `(a:P)-[:T]->{1,2}(y)` and its
+///     `<-[:T]-` twin return the SAME NUMBER whatever the engine does. A probe of mine read
+///     `out=232 in=232` and would have passed with the direction wired backwards. `:Q` sits on a
+///     third of the nodes, and the asymmetry is asserted below rather than assumed.
+///   - THE FIXTURE MUST TRIP THE GATE (`src.len() * avg_deg.powi(max) > 2 * (nodes + edges)`),
+///     item 570's lesson: at 400 nodes of degree 4 the algebra executes; at 12 nodes it never
+///     does and every mutant survives.
+///
+/// The check is the COUNT against the materialized ROWS of the same pattern. Rows go through the
+/// walk, so this is algebra against enumeration — including the group form, whose per-rep
+/// predicate is the only shape that can see `traversal_pass_mask`'s slot swap: under `Dir::In` the
+/// node the traversal STANDS ON is the edge's target and the node it REACHES is the edge's source,
+/// so `WHERE x.k < y.k` asks the opposite question if the mask is built from `(from, eid, to)`.
+#[test]
+fn the_degree_algebra_reads_in_adjacency_too() {
+    let mut b = Builder::default();
+    let n: u32 = 400;
+
+    for i in 0..n {
+        // `:Q` on a third, so the source set is SELECTIVE and the two directions differ.
+        let labels: &[&str] = if i % 3 == 0 { &["P", "Q"] } else { &["P"] };
+
+        // every fifth vertex MISSING `k`, so the null comparisons are reached
+        if i % 5 == 4 {
+            b.node(labels, &[]);
+        } else {
+            b.node(labels, &[("k", Value::Num(f64::from(i % 90)))]);
+        }
+    }
+
+    // THE DEGREE IS LOAD-BEARING, and a selective source set is what makes it so. The gate is
+    // `src.len() * avg_deg^max > 2 * (nodes + edges)`; with `:Q` on a third and `edges = d*n`
+    // that is `(n/3) * d^2 > 2n(1 + d)`, i.e. `d^2 > 6 + 6d` — **`d >= 7` or the algebra NEVER
+    // runs at any n.** Written first at degree 4 (item 572's figure, where the whole graph was
+    // the source set) this test passed in 0.16s having never once executed the code it exists for.
+    // Ten edges per vertex gives `33n > 22n`, comfortably over.
+    //
+    // A SKEWED shape rather than a regular one: a hub every 40th vertex collects extra in-edges,
+    // so in-degree and out-degree differ per vertex and not just in aggregate.
+    for i in 0..n {
+        for d in [1u32, 7, 13, 29, 31, 37, 41, 43, 47, 53] {
+            b.edge(i, (i * 3 + d) % n, "T");
+        }
+
+        if i % 40 == 0 {
+            for j in 0..12 {
+                b.edge((i + j * 7 + 1) % n, i, "T");
+            }
+        }
+    }
+
+    b.edge(0, 0, "T"); // SELF-LOOP: the trail correction's witness, and it sits in BOTH adjacencies
+    b.edge(1, 4, "T"); // PARALLEL with one of the generated edges
+
+    let mut store = b.build();
+    let ec = store.edge_count() as u32;
+
+    for eid in 0..ec {
+        if !eid.is_multiple_of(7) {
+            store.set_edge_prop(eid, "w", Value::Num(f64::from(eid % 10)));
+        }
+    }
+
+    let store = store;
+    let val = |q: &str| -> f64 {
+        match crate::exec::try_run(&opt_plan(q, &store), &store)
+            .unwrap()
+            .rows
+            .iter()
+            .next()
+            .expect("one row")[0]
+        {
+            Value::Num(x) => x,
+            ref o => panic!("{o:?}"),
+        }
+    };
+    let rows = |q: &str| -> usize {
+        crate::exec::try_run(&opt_plan(q, &store), &store)
+            .unwrap()
+            .rows
+            .len()
+    };
+
+    // THE GATE ITSELF, asserted. Item 570 had four mutants survive because the fixture never
+    // reached the closed form, and the only symptom was a fast green test. Recomputing the gate's
+    // own arithmetic here means a future edit that shrinks the fixture fails loudly instead.
+    {
+        let nc = store.node_count() as f64;
+        let ec = store.edge_count() as f64;
+        let avg_deg = ec / nc;
+        let srcs = store.nodes_with_label("Q").len() as f64;
+        let est = srcs * avg_deg * avg_deg;
+
+        assert!(
+            est > 2.0 * (nc + ec),
+            "the fixture does NOT trip the degree algebra's gate ({est} vs {}), so every mutant \
+             of it would survive this test",
+            2.0 * (nc + ec)
+        );
+    }
+
+    // THE FIXTURE'S OWN PRECONDITION. If these ever coincide the test below is measuring nothing,
+    // and it would still pass — so it is asserted, not commented.
+    for quant in ["{1,2}", "{2,2}", "{1,1}"] {
+        let out = val(&format!(
+            "MATCH (a:Q)-[:T]->{quant}(y) RETURN count(*) AS c"
+        ));
+        let inc = val(&format!(
+            "MATCH (a:Q)<-[:T]-{quant}(y) RETURN count(*) AS c"
+        ));
+
+        assert_ne!(
+            out, inc,
+            "{quant}: the fixture is direction-SYMMETRIC, so this test cannot witness a reversed \
+             direction at all"
+        );
+    }
+
+    // The ABBREVIATED form, both directions, against enumeration.
+    for mode in ["", "TRAIL ", "WALK "] {
+        for quant in ["{1,2}", "{0,2}", "{1,1}", "{2,2}"] {
+            for arrow in ["-[:T]->", "<-[:T]-"] {
+                for end in [
+                    "(y)",
+                    "(y:Q)",
+                    "(y WHERE y.k > 20)",
+                    "(y WHERE y.k IS NULL)",
+                ] {
+                    let pat = format!("{mode}(a:Q){arrow}{quant}{end}");
+                    let c = val(&format!("MATCH {pat} RETURN count(*) AS c"));
+                    let r = rows(&format!("MATCH {pat} RETURN y"));
+
+                    assert_eq!(c, r as f64, "count != rows for MATCH {pat}");
+                }
+            }
+        }
+    }
+
+    // The GROUP form, where a per-rep predicate names BOTH ends of one traversal. This is the
+    // shape that sees the mask's slot swap, and `x.k < y.k` is the member that distinguishes them.
+    for mode in ["", "WALK "] {
+        for quant in ["{1,2}", "{2,2}", "{0,2}"] {
+            for arrow in ["-[e:T]->", "<-[e:T]-"] {
+                for pred in [
+                    " WHERE e.w > 5",
+                    " WHERE x.k > 20",
+                    " WHERE y.k > 20",
+                    " WHERE x.k < y.k",
+                    " WHERE y.k < x.k",
+                    " WHERE y.k > 20 AND e.w > 5",
+                    " WHERE e.w IS NULL",
+                    " WHERE true",
+                ] {
+                    let unit = format!("{mode}(a:Q)((x){arrow}(y){pred}){quant}");
+                    let c = val(&format!("MATCH {unit} RETURN count(*) AS c"));
+                    let r = rows(&format!("MATCH {unit} RETURN y"));
+
+                    assert_eq!(c, r as f64, "count != rows for MATCH {unit}");
+                }
+            }
+        }
+    }
+
+    // `x.k < y.k` and `y.k < x.k` must DISAGREE in at least one direction, or the slot swap is
+    // untested even though every assertion above passed.
+    let lt = val("MATCH (a:Q)((x)<-[e:T]-(y) WHERE x.k < y.k){1,2} RETURN count(*) AS c");
+    let gt = val("MATCH (a:Q)((x)<-[e:T]-(y) WHERE y.k < x.k){1,2} RETURN count(*) AS c");
+
+    assert_ne!(
+        lt, gt,
+        "the two orderings coincide, so the slot swap is unwitnessed"
+    );
+}

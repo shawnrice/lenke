@@ -1077,7 +1077,19 @@ fn try_degree_algebra(
     seed: Option<&Expr>,
 ) -> Option<u64> {
     let is_trail = matches!(mode, PathMode::Trail);
-    if matches!(dir, Dir::Out)
+    // BOTH DIRECTIONS (item 586). The algebra is a statement about degrees and nothing in it
+    // prefers out-degree: `Dir::In` is the same arithmetic over `store.inc`. It was gated to
+    // `Dir::Out` since item 64 and the refusal cost 9.0x for an IDENTICAL count — 35.99ms
+    // against 3.99 at 200,000 vertices / 1,000,000 edges, both answering 5,999,996 — while a
+    // single IN hop costs exactly what a single OUT hop does (0.51ms each), so the in-adjacency
+    // was never the reason.
+    //
+    // `Dir::Both` stays refused and cannot be added this way: from one node an undirected edge
+    // is traversable in two directions, so a single edge-indexed traversal mask cannot represent
+    // both, and a self-loop sits in both adjacency lists at once. It is a different shape, not a
+    // third branch of this one.
+    let inward = matches!(dir, Dir::In);
+    if matches!(dir, Dir::Out | Dir::In)
         && (1..=2).contains(&max)
         && matches!(mode, PathMode::Trail | PathMode::Walk)
     {
@@ -1122,7 +1134,7 @@ fn try_degree_algebra(
                 // masks could not: `WHERE y.age > 50 AND e.w > 5` does not factor into them.
                 let trav_ok: Option<Vec<bool>> = match trav {
                     None => None,
-                    Some(p) => match crate::exec::varlen::traversal_pass_mask(p, store) {
+                    Some(p) => match crate::exec::varlen::traversal_pass_mask(p, store, dir) {
                         Ok(o) => Some(o),
                         Err(_) => break 'algebra,
                     },
@@ -1143,79 +1155,204 @@ fn try_degree_algebra(
                 let seed_fn = |v: u32| seed_ok.as_ref().is_none_or(|o| o[v as usize]);
                 let passes = |v: u32| ok.as_ref().is_none_or(|o| o[v as usize]);
                 let body_fn = |v: u32| body_ok.as_ref().is_none_or(|o| o[v as usize]);
-                let mut outdeg = vec![0u64; nc];
-                for (v, d) in outdeg.iter_mut().enumerate() {
-                    let adj = store.out(v as u32);
-                    // The O(1) read stays for the common case; a wanted-type or predicate filter
-                    // is what forces the walk over the adjacency.
-                    *d = if want.is_empty()
-                        && ok.is_none()
-                        && body_ok.is_none()
-                        && trav_ok.is_none()
-                    {
-                        adj.len() as u64
-                    } else {
-                        adj.iter()
-                            .filter(|a| {
-                                edge_carries_wanted(store, a, want)
-                                    && passes(a.nbr)
-                                    && body_fn(a.nbr)
-                                    && trav_fn(a.eid)
-                            })
-                            .count() as u64
-                    };
-                }
-                let mut total: u64 = 0;
-                // A ZERO-LENGTH path: `{0,n}` emits the source itself as an endpoint, one row per
-                // source row, and the degree algebra counted only paths that traverse an edge
-                // (item 64). Its endpoint is the SOURCE, so an endpoint predicate applies to that.
-                // NOT gated by `seed_fn`, and that is the whole subtlety. A zero-length path
-                // has NO REPETITIONS, so a per-repetition predicate never runs for it and the
-                // row is emitted whatever the predicate says. Measured on a 4-node ring where
-                // `a.age > 25` admits two of four sources:
-                //
-                //   -[e:T WHERE a.age > 25]->{0,2}(y)   8 = 4 filtered hop paths + 4 zero-length
-                //   -[e:T WHERE a.age > 25]->{0,0}(y)   4, the predicate irrelevant
-                //
-                // Gating this term too would answer 6 and 2. Both engines agree on 8 and 4.
-                if min == 0 {
-                    total += src.iter().filter(|&&s| passes(s)).count() as u64;
-                }
-                for &s in src {
-                    if !seed_fn(s) {
-                        continue; // every repetition from this source fails the predicate
-                    }
+                let plain =
+                    want.is_empty() && ok.is_none() && body_ok.is_none() && trav_ok.is_none();
 
-                    for a in store.out(s) {
-                        if !edge_carries_wanted(store, a, want) {
-                            continue;
-                        }
-                        if min <= 1 && passes(a.nbr) && body_fn(a.nbr) && trav_fn(a.eid) {
-                            total += 1; // the 1-hop path s -> a.nbr
-                        }
-                        // The body filter PRUNES, so a failing `a.nbr` kills the 2-hop paths
-                        // through it as well as the 1-hop path to it.
-                        if max >= 2 && body_fn(a.nbr) && trav_fn(a.eid) {
-                            // 2-hop paths s -> a.nbr -> z
-                            total += outdeg[a.nbr as usize];
-                            // A trail excludes the one path that reuses this edge, `s -> s -> s`,
-                            // which `outdeg[s]` counted — and only if that endpoint passes.
-                            // No `body(s)` term: this arm is already inside `body(a.nbr)` and
-                            // `a.nbr == s`, so the body mask is known true here. It was written
-                            // with one, and mutation showed the condition UNKILLABLE — provably
-                            // dead rather than untested, so it is gone instead of pinned.
-                            if is_trail && a.nbr == s && passes(s) {
-                                total -= 1;
-                            }
-                        }
-                    }
-                }
-                return Some(total);
+                // MONOMORPHIZED PER DIRECTION. The direction has to reach the two hot loops
+                // somehow, and the OUT path — which this item did not set out to touch — is
+                // sensitive to HOW. Five shapes, each measured in its own isolated probe over
+                // four alternated rounds, one case per process, min-of-min:
+                //
+                //   closure `|v| if inward { inc } else { out }`      3.89 -> 4.45   1.144x
+                //   the same as a `macro_rules!`, expanded inline     3.99 -> 4.41   1.105x
+                //   const INWARD + masks as generic params           3.91 -> 4.35   1.113x
+                //   const INWARD + masks as `&dyn Fn`                3.93 -> 4.13   1.051x
+                //   ... plus `#[inline(always)]`  <-- KEPT            3.96 -> 4.11   1.038x
+                //
+                // TWO MECHANISM STORIES WERE REFUTED ON THE WAY, which is why the numbers are
+                // here instead of a tidy explanation:
+                //
+                //   1. "the closure is opaque to the inliner, so `store.out` stopped being an
+                //      inlined slice access." Expanding the identical code through a macro
+                //      changed essentially nothing (1.105x), so no.
+                //   2. "`&dyn Fn` masks are a virtual call per edge, so generic parameters will
+                //      reach parity." They were WORSE than the `&dyn` version (1.113x against
+                //      1.051x), so no — and the `&dyn` shape is kept against the obvious reading
+                //      of the code because of it.
+                //
+                // The residual ~4% has NO identified mechanism. It sits inside the band
+                // [[pull-alignment-is-load-bearing]] records for `exec::pull` ("any edit costs
+                // the filtered-count cluster 1.08-1.24x, never gains; that's the toll"), so the
+                // honest description is that this engine's hot loops charge for being edited and
+                // 1.04x is the cheapest shape found, not that the cost was explained away.
+                //
+                // NOT TRIED: duplicating the whole body so the OUT arm is literally untouched
+                // source in untouched position. That is the only shape that could plausibly reach
+                // 1.000x, and it means two copies of the trail correction and the zero-length
+                // term — arithmetic subtle enough that items 64, 570, 572 and 575 each needed
+                // their own mutation run. A 4% toll on a 4ms query is the cheaper risk.
+                //
+                // A `const INWARD: bool` leaves no runtime test in the loop: each monomorphization
+                // const-folds `if INWARD` away, so the OUT instantiation compiles from the code it
+                // compiled from before 586 and the IN one is its mirror.
+                return Some(if inward {
+                    degree_algebra_total::<true>(
+                        DegreeArgs {
+                            store,
+                            src,
+                            want,
+                            min,
+                            max,
+                            is_trail,
+                            nc,
+                            plain,
+                        },
+                        &passes,
+                        &body_fn,
+                        &trav_fn,
+                        &seed_fn,
+                    )
+                } else {
+                    degree_algebra_total::<false>(
+                        DegreeArgs {
+                            store,
+                            src,
+                            want,
+                            min,
+                            max,
+                            is_trail,
+                            nc,
+                            plain,
+                        },
+                        &passes,
+                        &body_fn,
+                        &trav_fn,
+                        &seed_fn,
+                    )
+                });
             }
         }
     }
 
     None
+}
+
+/// Everything `degree_algebra_total` needs that is not a predicate — bundled because the
+/// alternative is twelve positional parameters, the same reason `DegreeCountSpec` exists on the
+/// TypeScript side.
+struct DegreeArgs<'a> {
+    store: &'a Store,
+    src: &'a [u32],
+    want: &'a [u32],
+    min: u32,
+    max: u32,
+    is_trail: bool,
+    nc: usize,
+    /// No wanted type and no mask, so a degree is a slice LENGTH rather than a filtered walk.
+    plain: bool,
+}
+
+/// The degree algebra's two hot loops, specialized on direction (item 586).
+///
+/// `INWARD` is a const parameter and not a value so that `if INWARD` const-folds: the OUT
+/// instantiation compiles from the same source the pre-586 code did, which is the only shape of
+/// this that did not cost the OUT path ~1.1x. See the call site for the two that did.
+///
+/// The four masks arrive as `&dyn Fn`, which looks like the wrong choice and MEASURED as the right
+/// one. Each is read once per edge, so dynamic dispatch there is a virtual call in the hot loop;
+/// making them generic parameters — which monomorphizes exactly twice, since the four closures are
+/// concrete types fixed at the one call site — was tried and is WORSE. See the call site for all
+/// five shapes and their numbers.
+#[inline(always)]
+fn degree_algebra_total<const INWARD: bool>(
+    args: DegreeArgs<'_>,
+    passes: &dyn Fn(u32) -> bool,
+    body_fn: &dyn Fn(u32) -> bool,
+    trav_fn: &dyn Fn(u32) -> bool,
+    seed_fn: &dyn Fn(u32) -> bool,
+) -> u64 {
+    let DegreeArgs {
+        store,
+        src,
+        want,
+        min,
+        max,
+        is_trail,
+        nc,
+        plain,
+    } = args;
+    let adj = |v: u32| if INWARD { store.inc(v) } else { store.out(v) };
+    let mut outdeg = vec![0u64; nc];
+
+    for (v, d) in outdeg.iter_mut().enumerate() {
+        let adj = adj(v as u32);
+        // The O(1) read stays for the common case; a wanted-type or predicate filter is what
+        // forces the walk over the adjacency.
+        *d = if plain {
+            adj.len() as u64
+        } else {
+            adj.iter()
+                .filter(|a| {
+                    edge_carries_wanted(store, a, want)
+                        && passes(a.nbr)
+                        && body_fn(a.nbr)
+                        && trav_fn(a.eid)
+                })
+                .count() as u64
+        };
+    }
+
+    let mut total: u64 = 0;
+
+    // A ZERO-LENGTH path: `{0,n}` emits the source itself as an endpoint, one row per source row,
+    // and the degree algebra counted only paths that traverse an edge (item 64). Its endpoint is
+    // the SOURCE, so an endpoint predicate applies to that. NOT gated by `seed_fn`, and that is
+    // the whole subtlety. A zero-length path has NO REPETITIONS, so a per-repetition predicate
+    // never runs for it and the row is emitted whatever the predicate says. Measured on a 4-node
+    // ring where `a.age > 25` admits two of four sources:
+    //
+    //   -[e:T WHERE a.age > 25]->{0,2}(y)   8 = 4 filtered hop paths + 4 zero-length
+    //   -[e:T WHERE a.age > 25]->{0,0}(y)   4, the predicate irrelevant
+    //
+    // Gating this term too would answer 6 and 2. Both engines agree on 8 and 4.
+    if min == 0 {
+        total += src.iter().filter(|&&s| passes(s)).count() as u64;
+    }
+
+    for &s in src {
+        if !seed_fn(s) {
+            continue; // every repetition from this source fails the predicate
+        }
+
+        for a in adj(s) {
+            if !edge_carries_wanted(store, a, want) {
+                continue;
+            }
+
+            if min <= 1 && passes(a.nbr) && body_fn(a.nbr) && trav_fn(a.eid) {
+                total += 1; // the 1-hop path s -> a.nbr
+            }
+
+            // The body filter PRUNES, so a failing `a.nbr` kills the 2-hop paths through it as
+            // well as the 1-hop path to it.
+            if max >= 2 && body_fn(a.nbr) && trav_fn(a.eid) {
+                // 2-hop paths s -> a.nbr -> z
+                total += outdeg[a.nbr as usize];
+
+                // A trail excludes the one path that reuses this edge, `s -> s -> s`, which
+                // `outdeg[s]` counted — and only if that endpoint passes. No `body(s)` term: this
+                // arm is already inside `body(a.nbr)` and `a.nbr == s`, so the body mask is known
+                // true here. It was written with one, and mutation showed the condition
+                // UNKILLABLE — provably dead rather than untested, so it is gone instead of
+                // pinned.
+                if is_trail && a.nbr == s && passes(s) {
+                    total -= 1;
+                }
+            }
+        }
+    }
+
+    total
 }
 
 /// Answer a scalar `count(*)` over a `VarLength` hop by DFS-counting the emitted

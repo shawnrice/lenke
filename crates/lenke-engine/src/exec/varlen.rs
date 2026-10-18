@@ -403,7 +403,11 @@ fn endpoint_block_keep(
 /// [`node_pass_mask`] records: it asks about every edge rather than only the traversed ones, so a
 /// predicate may throw on a value no walk would have reached, and a query that answers today has
 /// to keep answering.
-pub(super) fn traversal_pass_mask(pred: &Expr, store: &Store) -> Result<Vec<bool>, String> {
+pub(super) fn traversal_pass_mask(
+    pred: &Expr,
+    store: &Store,
+    dir: Dir,
+) -> Result<Vec<bool>, String> {
     const BLOCK: usize = 4096;
     let ec = store.edge_count();
     let mut ok = vec![false; ec];
@@ -424,9 +428,22 @@ pub(super) fn traversal_pass_mask(pred: &Expr, store: &Store) -> Result<Vec<bool
             // block rather than defaulted — a defaulted node id would ask the predicate about
             // a traversal that does not exist.
             if let Some((f, t)) = store.edge_endpoints(eid as u32) {
-                from.push(f);
+                // SLOT 0 IS WHERE THE TRAVERSAL STANDS, not the edge's `from` (item 586).
+                // `rep_pred_ok` fills the mini-scope from the walk's own stacks, and under
+                // `Dir::In` the walk steps through `store.inc(v)`, so the node it stands on is
+                // the edge's TARGET and the node it reaches is the edge's SOURCE. Building this
+                // mask from `(from, eid, to)` regardless of direction would ask every per-rep
+                // predicate about the traversal reversed — `(x)<-[e]-(y) WHERE x.age > y.age`
+                // would answer the opposite question and still return a plausible count.
+                let (stand, reach) = if matches!(dir, Dir::In) {
+                    (t, f)
+                } else {
+                    (f, t)
+                };
+
+                from.push(stand);
                 eids.push(eid as u32);
-                to.push(t);
+                to.push(reach);
             }
         }
 
