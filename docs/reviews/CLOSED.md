@@ -8033,3 +8033,54 @@ mechanism and sits in [[pull-alignment-is-load-bearing]]'s band. Net: 32ms saved
 against 0.15ms added to a 4ms one. **NOT TRIED:** duplicating the body so OUT is untouched source
 — the only shape that could reach 1.000x, rejected because it means two copies of the trail
 correction and the zero-length term.
+
+## 587 — CLOSED: a WALK counts by LEVELS at any depth, native, 9.7-23.6x
+
+The algebra was bounded at `max <= 2` by the TRAIL correction (one way to reuse an edge at two
+hops, several at three). A WALK forbids nothing, so `u_j(v) = sum over traversals v -> y of
+u_{j-1}(y)` with `u_0(v) = passes(v)` counts it in one pass per level, O(max * (V+E)). Specialized
+to max = 2 it IS the closed form term for term.
+
+**WALK is the GREMLIN mode** — `repeat()` lowers to `PathMode::Walk` — so this is the common Gremlin
+shape, not a niche ISO spelling. 200,000 vertices / 600,000 edges, three alternated rounds:
+
+|                                        | pristine                 | after              |                       |
+| -------------------------------------- | ------------------------ | ------------------ | --------------------- |
+| WALK `{1,3}` / `{3,3}` / `{0,3}`       | 38.87 / 38.47 / 39.66 ms | 3.97 / 3.47 / 4.10 | **9.7-11.1x**         |
+| WALK `{1,4}` / `{4,4}`                 | 104.44 / 105.83          | 5.01 / 4.75        | **20.9-22.3x**        |
+| `repeat(out()).times(3)` / `.times(4)` | 38.73 / 103.40           | 3.46 / 4.39        | **11.2x / 23.6x**     |
+| depth 8, 2,000 vertices at degree 4    | 627                      | 1                  | **627x**              |
+| TRAIL `{1,3}` — CONTROL, still refused | 49.15                    | 51.40              | 0.96x                 |
+| depth-2 routes (3 readings) — CONTROLS |                          |                    | 0.97x / 1.01x / 1.03x |
+
+`max <= 2` keeps the closed form BYTE FOR BYTE rather than being folded into the recurrence —
+item 586 measured this engine's hot loops charging ~4% for being edited, and the three depth-2
+control readings pointing opposite ways is what "no toll" looks like. **TRAIL past 2 stays refused**
+and needs its own inclusion-exclusion over edge-reuse shapes.
+
+### The optimizer fuzzer found an INDEX CRASH at 200k seeds, not at the default (587)
+
+`DIAG src id 4294967295 >= u.len() 24` — `u32::MAX` is the NULL sentinel a Nodes column uses, and a
+plan whose source slot holds a null node reaches the recurrence. The recurrence indexes `u[s]` per
+source per level where the closed form only ever indexed by a NEIGHBOUR id (always real), which is
+why the old route never tripped it. **Run the deep sweep, not just the default**, when a change adds
+a new indexing pattern over node ids.
+
+Guard mutants: dropping it is CAUGHT by `rewrite_fuzz` at 200k. Two others SURVIVE (ordering vs
+`seed_fn`; the zero-length term) because the fuzzer's case had no seed predicate and `min = 1`, and
+`OPTIONAL MATCH` feeding a var-length hop is `E_SYNTAX` so there is no surface repro. Kept as
+explicitly DEFENSIVE — unlike item 583's dead guard, nothing proves them unreachable.
+
+### A deep WALK count does not terminate, and did not before either (587, OPEN)
+
+`WALK {1,45}` on 2,000 vertices at degree 4 timed out past 60s on BOTH builds, while depth 8
+answered on both. A bare `count(*)` DFS-counts paths without materializing rows, so the trail ROW
+cap never bounds it. The recurrence uses `checked_add` and falls through to that on overflow, which
+is the pre-existing behaviour rather than a new one — the alternative, `wrapping_add`, is a wrong
+answer that looks right. **Open: a counting DFS needs its own budget.**
+
+### NEW TS TARGET, priced at 1495x (587)
+
+`bun run bench`'s new `count var-length 1-3 hops [WALK]` reads **ts 8362.9ms against ffi 5.6** — TS
+has no depth-3 rung and enumerates. Largest TS/native gap in the bench. The same level recurrence
+fits `varLengthDegreeCount`, whose `degreeOf` memo is already its `u_1`.

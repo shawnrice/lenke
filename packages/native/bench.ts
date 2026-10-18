@@ -723,6 +723,24 @@ const CASES: Case[] = [
     ),
   },
   {
+    // DEPTH, and the WALK mode that unlocks it (item 587). The degree algebra was bounded at
+    // `max <= 2` by the trail correction; a WALK forbids nothing, so its count obeys a level
+    // recurrence at any depth. This row is the watcher for that route — and WALK is the GREMLIN
+    // mode, since `repeat()` lowers to `PathMode::Walk`, so a regression here would show up as
+    // `g.V().repeat(out()).times(3)` getting slow rather than as an ISO-spelling curiosity.
+    //
+    // Measured at 200,000 vertices / 600,000 edges, three alternated rounds: WALK `{1,3}` 38.87ms
+    // -> 3.97 (9.8x), `{1,4}` 104.44 -> 5.01 (20.9x), `repeat(out()).times(4).count()` 103.40 ->
+    // 4.39 (23.6x). Its PAIR is the depth-2 row above: the two should stay within ~2x of each
+    // other, because the recurrence costs one pass per level, and a gap that grows means the
+    // route stopped being taken.
+    name: 'count var-length 1-3 hops [WALK]',
+    ...onGraph(
+      () => graphDoc,
+      (e, g) => void e.query(g, 'MATCH WALK (a:Person)-[:KNOWS]->{1,3}(y) RETURN count(*) AS c'),
+    ),
+  },
+  {
     // The other half: the same walk, but PROJECTING an endpoint property, so 1,000,000 rows are
     // built. Traversal plus the row pipeline, which is the shape a user actually runs.
     name: 'traverse 1-hop project',

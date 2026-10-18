@@ -1089,14 +1089,36 @@ fn try_degree_algebra(
     // both, and a self-loop sits in both adjacency lists at once. It is a different shape, not a
     // third branch of this one.
     let inward = matches!(dir, Dir::In);
+    // DEPTH (item 587). The bound was `max <= 2` because of the TRAIL correction: at two hops
+    // there is exactly ONE way to reuse an edge (a self-loop taken twice) and the arithmetic
+    // subtracts it, while at three there are several interacting ways and no single term.
+    //
+    // A WALK forbids nothing, so its count obeys a clean recurrence instead — see
+    // `walk_levels_total`. That is the GREMLIN-facing mode: `repeat()` lowers to `PathMode::Walk`
+    // ("Gremlin allows revisiting edges", gremlin.rs), so depth past 2 is not a niche ISO
+    // spelling. Priced at 200,000 vertices / 600,000 edges:
+    //
+    //   WALK {1,2}  (already accepted)               2.80 ms
+    //   WALK {1,3}                                  40.36
+    //   WALK {1,4}                                 107.45
+    //   g.V().repeat(out()).times(3).count()        38.18
+    //   g.V().repeat(out()).times(4).count()       104.96
+    //
+    // TRAIL past 2 stays refused and is NOT a missing branch of this one: it needs its own
+    // inclusion-exclusion over edge-reuse shapes, a separate piece of arithmetic.
+    let deep_walk = max >= 3 && matches!(mode, PathMode::Walk);
     if matches!(dir, Dir::Out | Dir::In)
-        && (1..=2).contains(&max)
+        && ((1..=2).contains(&max) || deep_walk)
         && matches!(mode, PathMode::Trail | PathMode::Walk)
     {
         let (nc, ec) = (store.node_count(), store.edge_count());
         let avg_deg = if nc == 0 { 0.0 } else { ec as f64 / nc as f64 };
         let est_paths = src.len() as f64 * avg_deg.powi(max as i32);
-        if est_paths > 2.0 * (nc + ec) as f64 {
+        // The threshold GENERALIZES the old constant rather than replacing it: the algebra costs
+        // one pass over the graph per level, so enumeration has to be worth more than that.
+        // `max.max(2)` keeps it at exactly `2 * (nodes + edges)` for every depth the gate already
+        // accepted, so no query that took this route before changes route now.
+        if est_paths > f64::from(max.max(2)) * (nc + ec) as f64 {
             // An endpoint predicate folds INTO the algebra rather than defeating it: a node's
             // contribution as a hop TARGET is either counted or not, so the per-node out-degree
             // becomes a per-node PASSING out-degree.
@@ -1195,46 +1217,148 @@ fn try_degree_algebra(
                 // A `const INWARD: bool` leaves no runtime test in the loop: each monomorphization
                 // const-folds `if INWARD` away, so the OUT instantiation compiles from the code it
                 // compiled from before 586 and the IN one is its mirror.
-                return Some(if inward {
-                    degree_algebra_total::<true>(
-                        DegreeArgs {
-                            store,
-                            src,
-                            want,
-                            min,
-                            max,
-                            is_trail,
-                            nc,
-                            plain,
-                        },
-                        &passes,
-                        &body_fn,
-                        &trav_fn,
-                        &seed_fn,
-                    )
+                let args = DegreeArgs {
+                    store,
+                    src,
+                    want,
+                    min,
+                    max,
+                    is_trail,
+                    nc,
+                    plain,
+                };
+                // `max <= 2` keeps the closed form it has always used, UNTOUCHED. Only depth 3+
+                // takes the level recurrence, so no query that worked before changes code path —
+                // item 586 measured this engine's hot loops charging ~4% for being edited at all,
+                // and these are two different algorithms rather than two spellings of one.
+                let counted = if max <= 2 {
+                    Some(if inward {
+                        degree_algebra_total::<true>(args, &passes, &body_fn, &trav_fn, &seed_fn)
+                    } else {
+                        degree_algebra_total::<false>(args, &passes, &body_fn, &trav_fn, &seed_fn)
+                    })
+                } else if inward {
+                    walk_levels_total::<true>(args, &passes, &body_fn, &trav_fn, &seed_fn)
                 } else {
-                    degree_algebra_total::<false>(
-                        DegreeArgs {
-                            store,
-                            src,
-                            want,
-                            min,
-                            max,
-                            is_trail,
-                            nc,
-                            plain,
-                        },
-                        &passes,
-                        &body_fn,
-                        &trav_fn,
-                        &seed_fn,
-                    )
-                });
+                    walk_levels_total::<false>(args, &passes, &body_fn, &trav_fn, &seed_fn)
+                };
+
+                match counted {
+                    Some(n) => return Some(n),
+                    // The level counts OVERFLOWED u64, so there is no answer to return. Falling
+                    // through to enumeration is the honest outcome: it refuses on the resource cap
+                    // rather than handing back a wrapped number.
+                    None => break 'algebra,
+                }
             }
         }
     }
 
     None
+}
+
+/// `count(*)` over a bounded WALK of ANY depth, counted by LEVELS (item 587).
+///
+/// `u[v]` is the number of admissible walks of the current length starting at `v`:
+///
+///   u_0(v) = 1 if the endpoint test passes v, else 0
+///   u_j(v) = sum over admissible traversals v -> y of u_{j-1}(y)
+///
+/// so the answer is `sum over sources s, over j in min..=max, of u_j(s)` — one pass over the graph
+/// per level, O(max * (V + E)) instead of O(paths).
+///
+/// The three masks sit exactly where they sit in the closed form, and that placement IS the
+/// correctness argument: the ENDPOINT test folds into `u_0` because a walk's endpoint is where it
+/// stops; the BODY filter and the TRAVERSAL mask gate each step, because they apply at every
+/// landing and every traversal; `seed_fn` gates the SOURCE where its contribution is collected.
+/// Specialize this to max = 2 by hand and it is `degree_algebra_total` term for term — `u_1(s)` is
+/// the filtered out-degree and `u_2(s)` the sum of neighbours' filtered out-degrees.
+///
+/// WALK ONLY. A trail forbids reusing an edge, which is not a function of the current level: `u_j`
+/// would have to know which edges the walk already used, making the vector one over walks rather
+/// than over vertices.
+#[inline(always)]
+fn walk_levels_total<const INWARD: bool>(
+    args: DegreeArgs<'_>,
+    passes: &dyn Fn(u32) -> bool,
+    body_fn: &dyn Fn(u32) -> bool,
+    trav_fn: &dyn Fn(u32) -> bool,
+    seed_fn: &dyn Fn(u32) -> bool,
+) -> Option<u64> {
+    // `plain` is deliberately unused: it says a degree is a slice LENGTH, which holds at level 1
+    // only — `u_1(v)` is `adj.len()` when nothing filters, but `u_2(v)` is a sum of neighbours'
+    // counts and no length can stand in for it.
+    let DegreeArgs {
+        store,
+        src,
+        want,
+        min,
+        max,
+        is_trail,
+        nc,
+        plain: _,
+    } = args;
+
+    debug_assert!(
+        !is_trail,
+        "the level recurrence counts WALKS; a trail forbids edge reuse"
+    );
+
+    let adj = |v: u32| if INWARD { store.inc(v) } else { store.out(v) };
+    let mut u: Vec<u64> = (0..nc as u32).map(|v| u64::from(passes(v))).collect();
+    let mut next = vec![0u64; nc];
+    let mut total: u64 = 0;
+
+    // The ZERO-LENGTH path, whose endpoint is the SOURCE — one row per source row, and NOT gated
+    // by `seed_fn`, which has no repetition to run for. The closed form's subtlety, unchanged.
+    if min == 0 {
+        // The same sentinel guard. A zero-length path's endpoint is the SOURCE, so a null source
+        // would have the endpoint mask asked about a node that does not exist; enumeration
+        // evaluates that predicate on NULL and keeps no row, which is what excluding it gives.
+        total = src
+            .iter()
+            .filter(|&&s| (s as usize) < nc && passes(s))
+            .count() as u64;
+    }
+
+    for len in 1..=max {
+        for (v, slot) in next.iter_mut().enumerate() {
+            let mut acc: u64 = 0;
+
+            for a in adj(v as u32) {
+                if edge_carries_wanted(store, a, want) && body_fn(a.nbr) && trav_fn(a.eid) {
+                    // CHECKED, because this is the one route whose counts can genuinely exceed
+                    // u64: an unbounded `repeat()` caps at 100 levels, and a degree-3 graph passes
+                    // 1.8e19 somewhere around level 40. `None` falls back to enumeration, which
+                    // refuses on the resource cap instead of returning a wrapped number.
+                    acc = acc.checked_add(u[a.nbr as usize])?;
+                }
+            }
+
+            *slot = acc;
+        }
+
+        std::mem::swap(&mut u, &mut next);
+
+        if len >= min {
+            for &s in src {
+                // A NULL SOURCE is the `u32::MAX` sentinel a Nodes column uses for a null node,
+                // and it reaches here: the optimizer fuzzer found it at 200,000 seeds — a plan
+                // whose source slot holds one — by panicking on this index. A null node has no
+                // adjacency, so it contributes no hop paths at any level. The bounds test comes
+                // BEFORE `seed_fn`, which would index its own mask with the same sentinel.
+                let Some(&walks) = u.get(s as usize) else {
+                    continue;
+                };
+
+                if seed_fn(s) {
+                    total = total.checked_add(walks)?;
+                }
+            }
+        }
+    }
+
+    Some(total)
 }
 
 /// Everything `degree_algebra_total` needs that is not a predicate — bundled because the

@@ -21203,3 +21203,199 @@ fn the_degree_algebra_reads_in_adjacency_too() {
         "the two orderings coincide, so the slot swap is unwitnessed"
     );
 }
+
+/// Item 587: a WALK counts by LEVELS at any depth, and must agree with enumeration at every one.
+///
+/// The algebra was bounded at `max <= 2` by the TRAIL correction — at two hops there is exactly
+/// one way to reuse an edge and the closed form subtracts it; at three there are several
+/// interacting ways and no single term. A WALK forbids nothing, so `u_j(v) = sum over traversals
+/// v -> y of u_{j-1}(y)` counts it in one pass per level. And WALK is the GREMLIN mode: `repeat()`
+/// lowers to `PathMode::Walk`, so depth past 2 is the common Gremlin shape, not a niche ISO one.
+/// Priced at 200,000 vertices / 600,000 edges: WALK `{1,3}` 40.36ms -> 3.96, `{1,4}` 107.45 ->
+/// 5.25, `g.V().repeat(out()).times(4).count()` 104.96 -> 4.94.
+///
+/// THE GATE AGAIN (items 570, 586). `src.len() * avg_deg^max > max.max(2) * (nodes + edges)`: with
+/// the whole graph as sources that is `d^3 > 3(1 + d)`, so **degree 3 is the minimum at depth 3**
+/// and degree 2 never reaches the recurrence at all. Asserted below, because the only symptom of
+/// getting it wrong is a fast green test.
+///
+/// The check is count against the materialized ROWS at every depth from 1 to 5, which also pins
+/// the two routes against each other: depths 1 and 2 run the closed form and depths 3+ the
+/// recurrence, so a disagreement between them shows up as one depth failing while its neighbour
+/// passes.
+#[test]
+fn a_deep_walk_counts_what_enumeration_counts() {
+    let mut b = Builder::default();
+    let n: u32 = 300;
+
+    for i in 0..n {
+        let labels: &[&str] = if i % 3 == 0 { &["P", "Q"] } else { &["P"] };
+
+        if i % 5 == 4 {
+            b.node(labels, &[]);
+        } else {
+            b.node(labels, &[("k", Value::Num(f64::from(i % 90)))]);
+        }
+    }
+
+    // Degree 4, over the WHOLE graph as sources: `4^3 = 64 > 3 * 5 = 15`, so depth 3 reaches the
+    // recurrence. A SKEWED hub so in- and out-degree differ, since both directions are checked.
+    for i in 0..n {
+        for d in [1u32, 7, 13, 29] {
+            b.edge(i, (i * 3 + d) % n, "T");
+        }
+
+        if i % 30 == 0 {
+            for j in 0..8 {
+                b.edge((i + j * 11 + 1) % n, i, "T");
+            }
+        }
+    }
+
+    b.edge(0, 0, "T"); // a SELF-LOOP, which a WALK may take repeatedly and a trail may not
+    b.edge(1, 4, "T"); // a PARALLEL pair
+
+    let mut store = b.build();
+    let ec = store.edge_count() as u32;
+
+    for eid in 0..ec {
+        if !eid.is_multiple_of(7) {
+            store.set_edge_prop(eid, "w", Value::Num(f64::from(eid % 10)));
+        }
+    }
+
+    let store = store;
+
+    {
+        let nc = store.node_count() as f64;
+        let ecf = store.edge_count() as f64;
+        let avg_deg = ecf / nc;
+        let est = nc * avg_deg.powi(3);
+
+        assert!(
+            est > 3.0 * (nc + ecf),
+            "the fixture does NOT reach the level recurrence at depth 3 ({est} vs {}), so every \
+             mutant of it would survive",
+            3.0 * (nc + ecf)
+        );
+    }
+
+    let val = |q: &str| -> f64 {
+        match crate::exec::try_run(&opt_plan(q, &store), &store)
+            .unwrap()
+            .rows
+            .iter()
+            .next()
+            .expect("one row")[0]
+        {
+            Value::Num(x) => x,
+            ref o => panic!("{o:?}"),
+        }
+    };
+    let rows = |q: &str| -> usize {
+        crate::exec::try_run(&opt_plan(q, &store), &store)
+            .unwrap()
+            .rows
+            .len()
+    };
+
+    // DEPTH 1 THROUGH 5. One and two run the closed form, three and up the recurrence.
+    for max in 1..=5u32 {
+        for min in [0u32, 1, max] {
+            for arrow in ["-[:T]->", "<-[:T]-"] {
+                for end in [
+                    "(y)",
+                    "(y:Q)",
+                    "(y WHERE y.k > 20)",
+                    "(y WHERE y.k IS NULL)",
+                ] {
+                    let pat = format!("WALK (a:P){arrow}{{{min},{max}}}{end}");
+                    let c = val(&format!("MATCH {pat} RETURN count(*) AS c"));
+                    let r = rows(&format!("MATCH {pat} RETURN y"));
+
+                    assert_eq!(c, r as f64, "count != rows for MATCH {pat}");
+                }
+            }
+        }
+    }
+
+    // The per-rep masks at depth 3+, where they gate every LEVEL rather than one hop.
+    for max in [3u32, 4] {
+        for arrow in ["-[e:T]->", "<-[e:T]-"] {
+            for pred in [
+                " WHERE e.w > 5",
+                " WHERE y.k > 20",
+                " WHERE x.k < y.k",
+                " WHERE y.k > 20 AND e.w > 5",
+                " WHERE e.w IS NULL",
+            ] {
+                let unit = format!("WALK (a:P)((x){arrow}(y){pred}){{1,{max}}}");
+                let c = val(&format!("MATCH {unit} RETURN count(*) AS c"));
+                let r = rows(&format!("MATCH {unit} RETURN y"));
+
+                assert_eq!(c, r as f64, "count != rows for MATCH {unit}");
+            }
+        }
+    }
+
+    // THE SEED PREDICATE at depth 3+, which is item 575's shape: a per-rep `WHERE` reading only
+    // the PATH SOURCE. It is constant along a path, so it admits every repetition from that
+    // source or none, and the recurrence gates the source where the level's contribution is
+    // collected rather than inside the step.
+    //
+    // These cases were MISSING at first and two mutants survived because of it — dropping the
+    // seed gate entirely, and gating the zero-length term by it. Every other per-rep predicate in
+    // this test reads `x`, `y` or `e`, so `seed` was `None` throughout and both mutants were
+    // no-ops. A predicate on the hop's outer anchor is a different slot (`2k+1`) and needs its
+    // own case.
+    for max in [3u32, 4] {
+        for arrow in ["-[e:T WHERE a.k > 20]->", "<-[e:T WHERE a.k > 20]-"] {
+            for min in [0u32, 1] {
+                let pat = format!("WALK (a:P){arrow}{{{min},{max}}}(y)");
+                let c = val(&format!("MATCH {pat} RETURN count(*) AS c"));
+                let r = rows(&format!("MATCH {pat} RETURN y"));
+
+                assert_eq!(c, r as f64, "count != rows for MATCH {pat}");
+            }
+        }
+    }
+
+    // The ZERO-LENGTH term is NOT seed-gated, and that has to be witnessed rather than asserted
+    // by construction: a `{0,n}` with a seed predicate emits one row per source whatever the
+    // predicate says, because a zero-length path has no repetition for it to run on. So the
+    // `{0,3}` count must exceed the `{1,3}` count by the FULL source row count, not by the
+    // number of sources the predicate admits.
+    {
+        let zero = val("MATCH WALK (a:P)-[e:T WHERE a.k > 20]->{0,3}(y) RETURN count(*) AS c");
+        let one = val("MATCH WALK (a:P)-[e:T WHERE a.k > 20]->{1,3}(y) RETURN count(*) AS c");
+        let sources = val("MATCH (a:P) RETURN count(*) AS c");
+        let admitted = val("MATCH (a:P) WHERE a.k > 20 RETURN count(*) AS c");
+
+        assert!(
+            admitted < sources,
+            "the seed predicate admits every source, so this is vacuous"
+        );
+        assert_eq!(
+            zero - one,
+            sources,
+            "the zero-length term was gated by the seed predicate"
+        );
+    }
+
+    // A TRAIL at depth 3 must still be REFUSED, not quietly counted as a walk. The two answers
+    // differ on this fixture (the self-loop and the parallel pair give a walk strictly more
+    // paths), so if the trail ever took the recurrence this assertion fails.
+    let walk3 = val("MATCH WALK (a:P)-[:T]->{1,3}(y) RETURN count(*) AS c");
+    let trail3 = val("MATCH (a:P)-[:T]->{1,3}(y) RETURN count(*) AS c");
+
+    assert!(
+        trail3 < walk3,
+        "a trail cannot have at least as many paths as a walk here ({trail3} vs {walk3}) — either \
+         the fixture lost its self-loop or the trail took the walk's route"
+    );
+    assert_eq!(
+        trail3,
+        rows("MATCH (a:P)-[:T]->{1,3}(y) RETURN y") as f64,
+        "the depth-3 TRAIL count disagrees with its own enumeration"
+    );
+}
