@@ -7844,11 +7844,12 @@ This applies the predicate per REACHED endpoint, over exactly the set the walk s
 5, where paths go 2.4M to 6.0M), which is how the table alone shows the rung is taken. I nearly
 misread 331.7ms as a decline.
 
-**OPEN LEVER, priced:** the filtered row costs ~2x the plain one because the LAST hop cannot be a
-degree — a degree cannot say which of a vertex's edges land somewhere that passes — so TS
-enumerates it. Native pays 1.08x (4.3 against 4.0) because `node_pass_mask` precomputes a per-node
-PASSING OUT-DEGREE first (item 570) and the last hop becomes a lookup. The same precompute in TS is
-an O(V+E) route for the filtered case. **Not attempted.**
+**~~OPEN LEVER, priced~~ WRONG, retracted at 584:** I wrote that TS "enumerates" the last hop and
+that precomputing a per-node passing out-degree was the open route. `degreeOf` ALREADY memoizes
+exactly that. The 2x is the inner O(E) edge walk which the unfiltered route skips via `set.size`,
+and it is irreducible in the forward direction — selectivity does not move it and the predicate is
+~15ns. See 584 below for the attribution and for the lever that does exist (inverting through
+`adjTo`).
 
 ### A 1.10x that was noise, measured twice to find out (item 583)
 
@@ -7875,3 +7876,105 @@ So: when a mutant on a guard survives, ask whether the guard is REACHABLE before
 it. Four historical wrong-answer bugs needed the generator widened; this one needed the code
 narrowed. Deleting it also left `degreeCountShape`'s `node` binding unused, which `bun run lint`
 caught at exit 1 — the argument for running the lint gate as its own command.
+
+### 584 — RETRACTING 583's "next lever": the precompute it asked for ALREADY EXISTS
+
+583 recorded, as an open priced lever, that TS "enumerates the last hop" and that native's 1.08x
+comes from precomputing a per-node passing out-degree, so "the same precompute in TS is an O(V+E)
+route". **`varLengthDegreeCount` already has it.** `degreeOf` memoizes the passing out-degree per
+vertex in a `Map<Vertex, number>` — audit item 321's object-keyed memo — so each distinct landing
+vertex's out-edges are walked ONCE, not once per path. I prescribed building something I had read
+two ticks earlier.
+
+**What the 2x actually is.** 200,000 vertices / 1,000,000 edges, min of 5, one process:
+
+| arm                                    | ms         | what it isolates                                     |
+| -------------------------------------- | ---------- | ---------------------------------------------------- |
+| unfiltered `{1,2}(y)`                  | **187.87** | `passesIsVacuous`, so the degree is `set.size`: O(V) |
+| `{1,2}(y:Q)` label                     | 418.14     | the walk, with a label test                          |
+| `(y WHERE y.age >= 0)` TRUE for all    | 446.49     | the walk, predicate never rejects                    |
+| `(y WHERE y.age > 60)` ~1/3 pass       | 432.03     | the walk, predicate rejects 2/3                      |
+| `(y WHERE y.age > 1000)` FALSE for all | 355.24     | the walk, predicate rejects everything               |
+| `(y WHERE y.nope > 0)` missing key     | 350.29     | the walk, null every time                            |
+| CONTROL `{1,1}` with the predicate     | 119.12     | the OUTER loop, no `degreeOf` at all                 |
+| CONTROL `{1,1}` unfiltered             | 103.95     | the outer loop alone                                 |
+
+Three things fall out, and each kills a candidate:
+
+- **Selectivity is not the cost.** True-for-all 446.49 against false-for-all 355.24 — the arm that
+  rejects every vertex is the FASTEST filtered arm and still 1.9x the unfiltered one.
+- **The compiled predicate is not the cost.** The `:Q` LABEL arm costs the same 418.14, and the
+  one-hop controls price 1,000,000 predicate calls at 119.12 − 103.95 = **15ms**, ~15ns each.
+- **So the 2x is the inner O(E) edge walk**, which the unfiltered route skips entirely by reading
+  `set.size`. A filtered endpoint must know, per vertex, how many of its out-edges land somewhere
+  that passes, and the forward walk pays one edge visit for every edge in the graph.
+
+**That part is irreducible in the forward direction** — which is why the lever as 583 stated it does
+not exist. The remaining 100x to native (430 against 4.3) is item 566's layout ceiling: a bitmask
+over a contiguous node array and a CSR against `Map<Vertex, number>`, closure dispatch and `Set`
+iterators.
+
+### The lever that IS there: accumulate through the IN-adjacency (584, open)
+
+The forward walk is O(E) whatever the predicate does. Accumulating the same quantity BACKWARDS is
+not: for each PASSING vertex z, walk z's in-edges and add one to each source's passing out-degree.
+That costs O(V) predicate calls plus **O(edges INTO passing vertices)** — so it scales with
+selectivity where the forward walk is flat in it. `adjTo` is there (`Map<string, Set<Edge>>`, items
+162/321), and the false-for-all arm above says the ceiling: 355.24 → the outer loop's ~190.
+
+**The trade is eager against lazy, and it is why this needs a gate rather than a swap.** `degreeOf`
+is DEMAND-DRIVEN: it computes a degree only for vertices actually reached at hop 1, so a narrow
+start label can make the forward route cost far less than O(E). Inversion is eager over every
+passing vertex's in-edges. The cost comparison is `reached × avg_deg` against `passing × avg_indeg`,
+both estimable, and the predicate sweep that gives `passing` is itself only O(V) — 200,000 calls at
+~15ns is ~3ms against the 240ms it would be deciding about.
+
+**BUILT at item 585 — see below.** 2.64-2.78x when the test rejects everything, 1.47x at a third,
+1.14x on a label, 0.99x where it declines.
+
+## 585 — CLOSED: the second hop accumulated BACKWARDS, TS, 1.14-2.78x by selectivity
+
+The forward walk pays one edge visit per edge IN THE GRAPH, flat in selectivity (584). Accumulating
+through the IN-adjacency of PASSING vertices pays one visit per edge into a passing vertex, so the
+cost finally tracks the predicate. 200,000 vertices / 1,000,000 edges, three alternated rounds,
+min-of-min:
+
+| arm                          | pristine  | after  | ratio                  |
+| ---------------------------- | --------- | ------ | ---------------------- |
+| missing key (rejects all)    | 333.10 ms | 119.71 | **2.78x**              |
+| `age > 1000` (rejects all)   | 376.74    | 142.83 | **2.64x**              |
+| `age > 60` (~1/3 pass)       | 409.35    | 278.56 | **1.47x**              |
+| `:Q` label (1/3 pass)        | 341.51    | 298.75 | **1.14x**              |
+| `age >= 0` (passes ALL)      | 382.94    | 388.23 | 0.99x, gate declines   |
+| CONTROL unfiltered, isolated | 189.34    | 176.15 | after wins every round |
+
+Independently on the spelling probe's fixture: the SELECTIVE equality group 404.86-409.52 ->
+236.86-250.03 (1.65x), spellings still inside 1.06x.
+
+### A perf gate needs its OWN test, because every mutant of it survives (585)
+
+`invertedHopBudget(vertexCount, edgeCount, srcCount)` is extracted as a pure exported function with
+`packages/gql/src/inverted-hop-budget.test.ts`. Both routes return the same count, so mutating the
+decision cannot fail a differential test: three mutants (always invert; drop `max >= 2`; invert for
+a vacuous test) all passed 11 cases pinned against native, as they were bound to. Against the unit
+test, four mutants of the arithmetic are CAUGHT. **Arithmetic no differential test can reach either
+gets its own test or has no teeth.** The empty-graph guard's mutant survives and the test says why
+(NaN comparisons are all false), rather than pretending it is covered.
+
+### A tie-inclusive comparison, and the margin I got backwards (585)
+
+The sampled pre-check (first 1024 vertices) caps the O(V) sweep's loss on a test that passes
+everything: that arm went 0.93x to 0.99x. The FIRST version demanded the projection exceed the
+budget by 2x, for prefix-sampling safety — but the budget is capped at the vertex count, so a test
+passing everything projects EXACTLY the budget and never twice it. **The check could not fire for
+the one case it existed for**: item 583's dead-guard shape again, one tick later, found by writing
+the test. Erring tie-inclusive is safe where erring the other way is not — an unrepresentative
+prefix skips a win and runs the FORWARD route, which is what the engine did before 585 at all.
+
+### The control the shared process lied about (585)
+
+The unfiltered arm read **0.88x** in the shared probe — a 1.14x regression, if believed — on a route
+where `passesIsVacuous` short-circuits the gate before it reads anything. Both one-hop controls read
+0.96x in the same run: a side-wide offset on arms the change provably cannot reach. Isolated, one
+case per process, three alternated rounds, the after side wins EVERY round (189.34 -> 176.15).
+Position in a shared process. The repo had this lesson filed and it still cost a round.

@@ -1132,6 +1132,77 @@ const tallyHopCount = (scan: HopScan): number => {
  * endpoint test needs a per-neighbour look. An endpoint test forces the per-neighbour walk and
  * the pass becomes O(E), which is still the closed form's budget.
  */
+/**
+ * The second hop's route decision, with no graph in it (item 585).
+ *
+ * Returns the number of vertices the FORWARD route would have to compute a degree for — which is
+ * also the budget the inverted route must come in under — or `null` when the forward route is
+ * cheap enough that the O(V) predicate sweep inversion needs is not worth paying.
+ *
+ * Extracted and exported for its own unit test for a specific reason: the decision is a PERF
+ * choice and both answers are correct, so every mutation of it SURVIVES the differential tests.
+ * Item 585 ran three such mutants (always invert; drop the `max >= 2` guard; invert for a vacuous
+ * test) and all three passed 11 pinned cases, as they had to. Arithmetic that no differential test
+ * can reach either gets its own test or gets no teeth at all.
+ */
+export const invertedHopBudget = (
+  vertexCount: number,
+  edgeCount: number,
+  srcCount: number,
+): number | null => {
+  if (vertexCount === 0) {
+    return null;
+  }
+
+  const avgDeg = edgeCount / vertexCount;
+  // Every source reaches about `avgDeg` vertices at hop 1, capped by the graph: that is how many
+  // distinct vertices `degreeOf` would be called for.
+  const reachedEst = Math.min(vertexCount, srcCount * avgDeg);
+
+  // Each of those costs about `avgDeg` edge visits. Below one visit per vertex the forward route
+  // is already cheaper than the sweep that would decide against it.
+  return reachedEst * avgDeg > vertexCount ? reachedEst : null;
+};
+
+/**
+ * Does a SAMPLE of the endpoint test rule inversion out (item 585)?
+ *
+ * The full sweep is O(V) predicate calls, and when the test passes nearly everything that sweep
+ * is pure loss: it runs, finds `passing` above the budget, and declines. Measured at 200,000
+ * vertices, a test passing every vertex cost 3-8% for exactly that. Sampling the first
+ * `sampleSize` vertices caps the loss at `sampleSize` calls.
+ *
+ * `true` means "do not even sweep". The projected passing count is `passed / sampleSize * V`, and
+ * inversion is ruled out when that projection REACHES the budget — the same comparison the exact
+ * check will make, just made early on an estimate.
+ *
+ * The comparison is deliberately tie-inclusive, and the first version of this got the margin
+ * BACKWARDS. I required the projection to exceed the budget by a factor of two, reasoning that a
+ * prefix of an insertion-ordered map is not a random sample so a close call should resolve to the
+ * sweep. But the budget is capped at the vertex count, so a test that passes everything projects
+ * EXACTLY the budget and never two times it: the check could not fire for the one case it was
+ * built for. Dead on arrival, caught by writing its test.
+ *
+ * Erring the other way is safe in a way erring toward the sweep is not. If the prefix is
+ * unrepresentative — passing everything in the first 1024 and little after — this skips a win and
+ * runs the FORWARD route, which is what the engine did before item 585 at all. The downside is a
+ * missed optimization; there is no wrong answer and no regression against the old route. And a
+ * sample that says "invert" still gets the exact `passing.length < budget` check afterwards, so
+ * this can only ever skip work, never choose the inverted route on its own.
+ */
+export const sampleRulesOutInversion = (
+  sampleSize: number,
+  passedInSample: number,
+  vertexCount: number,
+  budget: number,
+): boolean => {
+  if (sampleSize === 0 || sampleSize >= vertexCount) {
+    return false; // nothing sampled, or the sample WAS the sweep — let the exact check decide
+  }
+
+  return (passedInSample / sampleSize) * vertexCount >= budget;
+};
+
 type DegreeCountSpec = {
   types: string[] | undefined;
   min: number;
@@ -1162,10 +1233,103 @@ const varLengthDegreeCount = (graph: Graph, spec: DegreeCountSpec): number => {
 
     return box === undefined ? [] : edgesOfTypes(box, types);
   };
+  // THE SECOND HOP, FORWARDS OR BACKWARDS (item 585).
+  //
+  // The quantity wanted is, per vertex, how many of its out-edges land somewhere that PASSES.
+  // Walking out-edges pays one visit per edge IN THE GRAPH and is flat in how selective the
+  // endpoint test is — item 584 measured that directly: rejecting every vertex (355.24ms) costs
+  // nearly what accepting every vertex does (446.49), against 187.87 unfiltered.
+  //
+  // The same quantity accumulated BACKWARDS costs one visit per edge INTO A PASSING VERTEX. For
+  // each passing `z`, every in-edge of `z` adds one to its source's count. That scales with
+  // selectivity, which is the property the forward walk does not have.
+  //
+  // It is a CHOICE and not a replacement, because `degreeOf` is demand-driven: it computes a
+  // degree only for vertices actually reached at hop 1, so a narrow start label can make the
+  // forward route cost far less than O(E), while inversion is eager over every passing vertex.
+  // The comparison is `reached x avg_deg` against `passing x avg_indeg` — and since in and out
+  // degree average the same thing over a whole graph, that reduces to `passing` against
+  // `reached`. Both thresholds below are cost ESTIMATES, not tuned knobs.
+  const srcCount =
+    startName === undefined ? graph.vertexCount : (graph.verticesByLabel.get(startName)?.size ?? 0);
+  const reachedEst = invertedHopBudget(graph.vertexCount, graph.edgeCount, srcCount);
+  let passdeg: Map<Vertex, number> | undefined;
+
+  // The predicate sweep that gives `passing` is itself O(V) — 200,000 calls at the ~15ns item 584
+  // priced is ~3ms against the ~240ms being decided about — but it is still wasted work when the
+  // forward route was never going to touch many edges, hence the outer guard.
+  if (!passesIsVacuous && max >= 2 && reachedEst !== null) {
+    const passing: Vertex[] = [];
+    // SAMPLE FIRST. `verticesById` is insertion-ordered, so this is a prefix and not a random
+    // sample — which is why `sampleRulesOutInversion` wants a factor of two before it declines.
+    const sampleSize = Math.min(1024, graph.vertexCount);
+    let sampled = 0;
+    let passedInSample = 0;
+    let ruledOut = false;
+
+    for (const v of graph.verticesById.values()) {
+      if (sampled < sampleSize) {
+        sampled += 1;
+
+        if (passes(v)) {
+          passedInSample += 1;
+          passing.push(v);
+        }
+
+        if (
+          sampled === sampleSize &&
+          sampleRulesOutInversion(sampleSize, passedInSample, graph.vertexCount, reachedEst)
+        ) {
+          ruledOut = true;
+          break;
+        }
+
+        continue;
+      }
+
+      if (passes(v)) {
+        passing.push(v);
+
+        // Stop as soon as inversion is known to LOSE. A test that passes everything cannot be
+        // worth inverting, and without this bound the sweep is pure loss on exactly that shape:
+        // the `TRUE for all` arm measured 361.48 against 371.54, ~3% for a decision that then
+        // declined. The bound only bites when `reachedEst` is below the vertex count, i.e. when
+        // the start label is narrow — which is also the case where the forward route was already
+        // the right answer.
+        if (passing.length >= reachedEst) {
+          break;
+        }
+      }
+    }
+
+    if (!ruledOut && passing.length < reachedEst) {
+      passdeg = new Map();
+
+      for (const z of passing) {
+        const box = z.adjTo;
+
+        if (box === undefined) {
+          continue;
+        }
+
+        // `edgesOfTypes` on the IN side for the same reason it is used on the out side: a
+        // MULTI-LABEL edge sits in several buckets and must be counted once.
+        for (const e of edgesOfTypes(box, types)) {
+          passdeg.set(e.from, (passdeg.get(e.from) ?? 0) + 1);
+        }
+      }
+    }
+  }
+
   // The PASSING out-degree, memoized per vertex. Keyed on the vertex OBJECT: audit item 321
   // prices that at 30.5ns against 59.7 for the id string, and this is read once per edge.
   const deg = new Map<Vertex, number>();
   const degreeOf = (v: Vertex): number => {
+    if (passdeg !== undefined) {
+      // Already complete for every vertex with a passing out-neighbour; absent means zero.
+      return passdeg.get(v) ?? 0;
+    }
+
     const hit = deg.get(v);
 
     if (hit !== undefined) {
