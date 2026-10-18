@@ -7753,3 +7753,49 @@ it.
 is that work, done today, by another rung in the same engine. A target anchored that way survives
 re-measurement in a way that "~61ns a row times 200,000" does not, and it tells you the win is
 reachable because something already reaches it.
+
+> **CORRECTED at 582 — this is only half a rule, and item 426 states the other half: "a floor
+> measured on a different PLAN is not a floor."** `min(n.k)` runs on
+> `detectNodeProjection`'s FUSED SCAN (since item 420), a different row-production path from
+> `applyProjection`'s general binding stream, so the comparison prices the PLAN difference and not
+> the top-k. A shipped path is the right place to look for a floor, and it must be on the SAME
+> plan to be one.
+
+### Item 582 — item 581 RETRACTED: 424-426 had already done it, and `head -5` is why I missed it
+
+Item 581's whole framing is withdrawn. The prior work:
+
+- **424:** "The top-k itself is NOT missing" — 50.1ms against 485.1 unlimited is 9.7x, cost climbs
+  with k, spellings agree. Removing the per-row allocation REFUTED at 2.4%.
+- **425:** SHIPPED the single-key bounded heap, 1.34-1.50x over six shapes, five alternated rounds
+  at nine reps.
+- **426:** the floor error (above) and the ATTRIBUTION — with a constant sort key (all ties, heap
+  never evicts), **25.6 of 35.5ms is the general binding stream plus the loop**, so the remainder
+  is item 377's per-row `Binding`, not the top-k's.
+
+**Corrected target:** ~2.3x, not 4.5x, and the lever is the general binding stream. Two routes, in
+the order the prior work implies: (1) item 377's per-row `Binding`, which pays for far more than
+this shape; (2) a fused top-k on a node scan — giving this shape what `detectNodeProjection`
+already gives `max()`. Neither attempted.
+
+`bun run bench`'s pair stays, relabelled: it is a top-k against a FUSED-SCAN aggregate, a PLAN
+comparison, not a target against its floor.
+
+### NEVER `head` a search of CLOSED.md (item 582)
+
+The search that missed all of the above:
+
+```
+grep -rn 'top-k\|topK\|partial sort\|heap' docs/reviews/CLOSED.md | head -5
+```
+
+`top-k` has **14 matches** here (lines 47, 3090, 3101, 3115, 3116, 3127, 3133, 3140, 4127, 5472,
+7714, 7734, 7746, 7747). `head -5` showed five, and since the pattern also matched `heap`, four
+were unrelated table rows; the one top-k line surfaced (47) is about the NATIVE `OrderPage`.
+Everything that mattered was below the cut.
+
+**This file is 7,700+ lines and APPEND-ORDERED, so the newest and most relevant entries are at the
+BOTTOM — precisely what `head` discards.** Run `grep -c` first; if the count is more than a
+handful, read the TAIL of the matches, not the head. Third time this session that recorded work was
+re-derived; the first two searched the wrong store, this one searched the right store and truncated
+it.

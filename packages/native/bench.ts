@@ -401,18 +401,26 @@ const CASES: Case[] = [
     // bindings and projects just those (`orderNeedsOutput`), and the full sort is 294ms against
     // its 31 — but the per-row cost is 3.4x its own floor.
     //
-    // THE FLOOR IS THE ROW BELOW, and that is why the two are a pair. `min(n.age)` does exactly
-    // what `ORDER BY a LIMIT 1` must do — read one property per row, compare it, emit one row —
-    // through the node-aggregate SHORTCUT, which builds no binding at all. At 200,000 vertices,
-    // one case per process, three interleaved rounds:
+    // THE ROW BELOW IS NOT A FLOOR — it is a PLAN comparison, and item 426 states the rule:
+    // "a floor measured on a different PLAN is not a floor". `min(n.age)` runs on
+    // `detectNodeProjection`'s FUSED SCAN (since item 420), a different row-production path from
+    // `applyProjection`'s general binding stream, so the gap between these two rows prices that
+    // plan difference and NOT the top-k. Item 426 attributed it with a constant sort key (all
+    // ties, the heap never evicts): 25.6 of 35.5ms is the general stream plus the loop, which is
+    // item 377's per-row `Binding`.
+    //
+    // The pair is still worth having — it is the cheapest way to see either side move — but read
+    // it as "general stream against fused scan", not as "target against floor". At 200,000
+    // vertices, one case per process, three interleaved rounds:
     //
     //   ORDER BY a LIMIT 1   ts 30.84-31.92ms   nv 0.70-0.71     FLAT in k (1, 5 and 100 alike)
     //   min(n.age)           ts  7.82-9.32      nv 0.41-0.44
     //   RETURN n.age (proj)  ts  9.33           nv 14.56         the 200,000-row projection
     //
-    // So TS pays 3.4x its measured floor and native 1.7x. Read the PAIR: a top-k that regresses
-    // toward the general path shows as the gap widening, and a floor that moves tells you the
-    // scan changed rather than the rung.
+    // Read the PAIR: a top-k that regresses toward the unbounded sort shows as this gap widening,
+    // and the lower row moving tells you the fused scan changed rather than the top-k. The
+    // single-key bounded heap itself shipped at item 425 (1.34-1.50x over six shapes) and item
+    // 424 established the rung is NOT missing — 50.1ms against 485.1 unlimited.
     name: 'query: top-k by property',
     ...onGraph(
       () => nodesDoc,
@@ -420,7 +428,7 @@ const CASES: Case[] = [
     ),
   },
   {
-    name: 'query: min property [top-k floor]',
+    name: 'query: min property [fused-scan aggregate]',
     ...onGraph(
       () => nodesDoc,
       (e, g) => void e.query(g, 'MATCH (n:Person) RETURN min(n.age) AS a'),
