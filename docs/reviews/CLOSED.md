@@ -8084,3 +8084,43 @@ answer that looks right. **Open: a counting DFS needs its own budget.**
 `bun run bench`'s new `count var-length 1-3 hops [WALK]` reads **ts 8362.9ms against ffi 5.6** — TS
 has no depth-3 rung and enumerates. Largest TS/native gap in the bench. The same level recurrence
 fits `varLengthDegreeCount`, whose `degreeOf` memo is already its `u_1`.
+
+## 588 — CLOSED: the TS twin of the level recurrence, 13.5-58.7x
+
+Item 587's bench watcher priced the TS side of a depth-3 WALK count at **ts 8362.9ms against ffi
+5.6** — TS refused `max > 2` outright and enumerated. Same recurrence now, and specialized to
+max = 2 it IS `varLengthDegreeCount` term for term, so only `max >= 3` takes it.
+
+| case                                  | pristine                       | after                 |                   |
+| ------------------------------------- | ------------------------------ | --------------------- | ----------------- |
+| WALK `{1,3}` / `{3,3}` / `{0,3}`      | 1210.23 / 1048.75 / 1201.42 ms | 60.67 / 54.40 / 44.24 | **19.3-27.2x**    |
+| WALK `{1,4}`                          | 3715.81                        | 63.25                 | **58.7x**         |
+| WALK `{1,3}` + end label / pred       | 1441.15 / 1327.16              | 97.08 / 69.16         | **14.8x / 19.2x** |
+| bench watcher, 200k at degree 5       | 8362.9                         | 619.9                 | **13.5x**         |
+| CONTROL TRAIL `{1,3}` — still refused | 1304.90                        | 1300.72               | 1.0x              |
+| CONTROL depth-2 closed form, ISOLATED | 34.62                          | 34.60                 | 1.00x             |
+
+A TRAIL is bounded at two in BOTH engines for the same reason, which is what keeps them on one
+answer. 7560-query cross-engine sweep over depths 1-6 and five modes: 0 divergent.
+
+### A surviving guard mutant that is NOT dead code (588)
+
+`!spec.isTrail` in the dispatch survives mutation — the detector already refuses `max > 2` for
+anything but a walk, and its closures are the only callers. Item 583 deleted a guard in that exact
+position. **This one stays:** trail depth is a RECORDED OPEN TARGET, so the detector's bound will be
+relaxed, and this is then the only line between a trail and the walk's arithmetic (32 against 28 on
+the test fixture). Reachable-after-a-planned-change is a third category beside item 583's
+provably-dead and item 587's reachability-unknown.
+
+### Pin the VALUE, not just the engine agreement (588)
+
+I pinned `{1,3}(y {n: 3})` as 10 by copying a neighbouring figure. The TS-vs-native assertion PASSED
+— both engines answered 8 — and only the value assertion caught it. Comparing two engines proves
+they agree, not that they are right.
+
+### NEXT LEVER on this shape, priced (588, open)
+
+TS is still 115x native here and it is the LAYOUT, not the algorithm: `Map<Vertex, number>` read
+once per edge per level (~3.6M lookups at depth 3 on the bench fixture) against native's dense
+`Vec<u64>`. Precomputing neighbour INDICES once — one pass of E map lookups into a CSR-like array,
+then pure array math per level — prices at roughly a further 3x at depth 3, more as depth grows.

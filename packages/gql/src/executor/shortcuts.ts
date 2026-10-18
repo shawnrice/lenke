@@ -1216,7 +1216,114 @@ type DegreeCountSpec = {
 
 /** Bundled, not eight positional parameters: the arity limit, and the same reason
  *  `buildOneHopCount` bundles its `ends`. */
+/**
+ * `count(*)` over a bounded WALK of ANY depth, counted by LEVELS (item 588) — the TypeScript twin
+ * of native's `walk_levels_total`.
+ *
+ *   u_0(v) = 1 if the endpoint test passes v, else 0
+ *   u_j(v) = sum over wanted out-edges v -> y of u_{j-1}(y)
+ *
+ * so the answer is `sum over sources s, over j in min..=max, of u_j(s)`, one pass over the graph
+ * per level instead of one per PATH. Specialize it to max = 2 by hand and it is
+ * `varLengthDegreeCount`'s arithmetic term for term: `u_1(s)` is the passing out-degree its
+ * `degreeOf` memoizes and `u_2(s)` the sum of neighbours' passing out-degrees.
+ *
+ * Item 587 shipped this in native, where the bench then priced the TS side of the SAME shape at
+ * `ts 8362.9ms against ffi 5.6` — the largest TS/native gap in `bun run bench`, because TS had no
+ * depth-3 rung at all and enumerated every path.
+ *
+ * ABSENT MEANS ZERO in the level map, which is what keeps it cheap when the endpoint test is
+ * selective: a vertex no admissible walk can reach is simply not a key. `Map<Vertex, number>` is
+ * keyed on the vertex OBJECT for the reason item 321 measured — 30.5ns against 59.7 for the id
+ * string — and this is read once per edge per level, so that is the hot cost of the whole route.
+ *
+ * WALK ONLY, exactly as in native. A trail forbids reusing an edge, which is not a function of the
+ * current level: `u_j` would have to know which edges the walk already used, making it a map over
+ * walks rather than over vertices.
+ */
+const walkLevelCount = (graph: Graph, spec: DegreeCountSpec): number => {
+  const { types, min, max, startName, passes, passesIsVacuous } = spec;
+  const edgesOf = (v: Vertex): Iterable<Edge> => {
+    const box = v.adjFrom;
+
+    return box === undefined ? [] : edgesOfTypes(box, types);
+  };
+  const src =
+    startName === undefined
+      ? [...graph.verticesById.values()]
+      : [...(graph.verticesByLabel.get(startName) ?? [])];
+  let u = new Map<Vertex, number>();
+
+  for (const v of graph.verticesById.values()) {
+    if (passes(v)) {
+      u.set(v, 1);
+    }
+  }
+
+  let total = 0;
+
+  // The ZERO-LENGTH path, whose endpoint is the SOURCE — one row per source row. The same term
+  // the closed form carries, and the reason it cannot just be `u_0` summed over sources is that
+  // `src` may hold a vertex more than once.
+  if (min === 0) {
+    for (const s of src) {
+      if (passes(s)) {
+        total += 1;
+      }
+    }
+  }
+
+  for (let len = 1; len <= max; len += 1) {
+    const next = new Map<Vertex, number>();
+
+    for (const v of graph.verticesById.values()) {
+      const it = edgesOf(v);
+      let acc = 0;
+
+      if (len === 1 && passesIsVacuous && it instanceof Set) {
+        // Level 1 with nothing to reject is a set SIZE, the same O(1) route `degreeOf` keeps for
+        // the common case — every `u_0` is 1, so the sum over out-edges is just how many there are.
+        acc = it.size;
+      } else {
+        for (const e of it) {
+          acc += u.get(e.to) ?? 0;
+        }
+      }
+
+      if (acc !== 0) {
+        next.set(v, acc);
+      }
+    }
+
+    u = next;
+
+    if (len >= min) {
+      for (const s of src) {
+        total += u.get(s) ?? 0;
+      }
+    }
+  }
+
+  return total;
+};
+
 const varLengthDegreeCount = (graph: Graph, spec: DegreeCountSpec): number => {
+  // DEPTH 3+ IS A DIFFERENT ALGORITHM, and it is dispatched here rather than in the detector so
+  // that both of the detector's closures keep exactly the captures they had (item 583's split, and
+  // [[ts-closure-size-is-load-bearing]] behind it). `max <= 2` runs the code it has always run.
+  //
+  // `!spec.isTrail` is UNREACHABLE TODAY and kept deliberately — a mutant removing it SURVIVES,
+  // because `detectVarLengthCount` already refuses `max > 2` for anything but a walk, and the two
+  // closures there are this function's only callers. Item 583 deleted a guard in exactly that
+  // position as dead code; this one stays because the condition it duplicates is a RECORDED OPEN
+  // TARGET. A trail past two hops needs its own inclusion-exclusion over edge-reuse shapes, and
+  // whoever lands that will relax the detector's bound — at which point this is the one line
+  // standing between a trail and the walk's arithmetic, which would answer 32 where the trail
+  // answers 28. A guard against a future relaxation is not the same as a guard against nothing.
+  if (spec.max >= 3 && !spec.isTrail) {
+    return walkLevelCount(graph, spec);
+  }
+
   const { types, min, max, isTrail, startName, passes, passesIsVacuous } = spec;
   // `edgesOfTypes`, NOT a sum of per-label `set.size`. A MULTI-LABEL edge sits in several of
   // this box's buckets, so summing their sizes counts it once per label it carries — which is
@@ -4841,7 +4948,12 @@ export const detectVarLengthCount = (
   const { rel, node } = seg;
   const { min, max } = rel.quantifier!;
 
-  if (max === null || max > 2 || max < 1) {
+  // DEPTH (item 588). `max > 2` was refused outright; a WALK now takes the level recurrence, so
+  // only a TRAIL is still bounded at two. The bound is the trail CORRECTION: at two hops there is
+  // exactly one way to reuse an edge and the closed form subtracts it, while at three there are
+  // several interacting ways and no single term. Native drew the line in the same place at item
+  // 587, which is what keeps the two engines on one answer.
+  if (max === null || max < 1 || (max > 2 && pattern.mode !== 'walk')) {
     return null;
   }
 

@@ -248,3 +248,94 @@ suite('the rung carries an endpoint PREDICATE, either spelling (item 583)', () =
     same('[{"c":10}]', 'MATCH WALK (a:P)-[:T]->{1,2}(y WHERE y.n > 1) RETURN count(*) AS c');
   });
 });
+
+// Item 588. Item 587 gave NATIVE a level recurrence for a WALK of any depth; `bun run bench` then
+// priced the TS side of the same shape at `ts 8362.9ms against ffi 5.6` — the largest TS/native gap
+// in the bench, because TS refused `max > 2` outright and enumerated every path. This is the twin:
+//
+//   u_0(v) = 1 if the endpoint test passes v, else 0
+//   u_j(v) = sum over wanted out-edges v -> y of u_{j-1}(y)
+//
+// 60,000 vertices / 180,000 edges, three alternated rounds, min of three:
+//
+//   WALK {1,3}             1210.23 ms ->  60.67   19.9x
+//   WALK {3,3}             1048.75    ->  54.40   19.3x
+//   WALK {0,3}             1201.42    ->  44.24   27.2x
+//   WALK {1,4}             3715.81    ->  63.25   58.7x
+//   WALK {1,3} + end label 1441.15    ->  97.08   14.8x
+//   WALK {1,3} + end pred  1327.16    ->  69.16   19.2x
+//   TRAIL {1,2}  CONTROL, closed form      34.62  ->  34.60  isolated, 1.00x
+//   TRAIL {1,3}  CONTROL, still refused  1304.90  -> 1300.72  1.0x
+//
+// A TRAIL is still bounded at two, in BOTH engines, and for the same reason: at two hops there is
+// exactly one way to reuse an edge and the closed form subtracts it, while at three there are
+// several interacting ways and no single term. Native drew the line here at item 587 and TS draws
+// it here, which is what keeps the two on one answer.
+//
+// THE DIRECTION CASES BELOW ARE NOT REDUNDANT, and item 586 is why. For an UNFILTERED endpoint the
+// IN and OUT totals are EQUAL by construction — over all sources, reversing every path is a
+// bijection — so `(y)` reads 37 both ways and cannot witness a reversed direction. The `:Q` and
+// `n > 1` cases read 19 against 16 and 24 against 22, and those are the ones with teeth.
+suite('a WALK counts by LEVELS at any depth (item 588)', () => {
+  const nv3 = graphFromNdjson(nativeBackend(), NDJSON);
+  const ts3 = tsDeserialize(NDJSON, 'ndjson', new Graph());
+  const same = (want: string, ...spellings: string[]): void => {
+    for (const q of spellings) {
+      const got = JSON.stringify(tsQuery(ts3, q));
+
+      expect(`${q} ${got}`).toBe(`${q} ${JSON.stringify(nv3.query(q))}`);
+      expect(`${q} ${got}`).toBe(`${q} ${want}`);
+    }
+  };
+
+  test('depth 3, every bound, both directions', () => {
+    // Hand-checked: the T out-degrees are 2, 2, 2, 0, 0, so w1 = 6, w2 = 10, w3 = 16 and
+    // {1,3} = 32. {0,3} adds one row per source, so 37.
+    same('[{"c":32}]', 'MATCH WALK (a:P)-[:T]->{1,3}(y) RETURN count(*) AS c');
+    same('[{"c":37}]', 'MATCH WALK (a:P)-[:T]->{0,3}(y) RETURN count(*) AS c');
+    same('[{"c":26}]', 'MATCH WALK (a:P)-[:T]->{2,3}(y) RETURN count(*) AS c');
+    same('[{"c":16}]', 'MATCH WALK (a:P)-[:T]->{3,3}(y) RETURN count(*) AS c');
+    same('[{"c":32}]', 'MATCH WALK (a:P)<-[:T]-{1,3}(y) RETURN count(*) AS c');
+    same('[{"c":16}]', 'MATCH WALK (a:P)<-[:T]-{3,3}(y) RETURN count(*) AS c');
+  });
+
+  test('an endpoint test, where the two directions DIVERGE', () => {
+    same('[{"c":17}]', 'MATCH WALK (a:P)-[:T]->{1,3}(y:Q) RETURN count(*) AS c');
+    same('[{"c":14}]', 'MATCH WALK (a:P)<-[:T]-{1,3}(y:Q) RETURN count(*) AS c');
+    same('[{"c":19}]', 'MATCH WALK (a:P)-[:T]->{0,3}(y:Q) RETURN count(*) AS c');
+    same('[{"c":16}]', 'MATCH WALK (a:P)<-[:T]-{0,3}(y:Q) RETURN count(*) AS c');
+    same('[{"c":20}]', 'MATCH WALK (a:P)-[:T]->{1,3}(y WHERE y.n > 1) RETURN count(*) AS c');
+    same('[{"c":18}]', 'MATCH WALK (a:P)<-[:T]-{1,3}(y WHERE y.n > 1) RETURN count(*) AS c');
+    same('[{"c":24}]', 'MATCH WALK (a:P)-[:T]->{0,3}(y WHERE y.n > 1) RETURN count(*) AS c');
+    same('[{"c":22}]', 'MATCH WALK (a:P)<-[:T]-{0,3}(y WHERE y.n > 1) RETURN count(*) AS c');
+    // The inline-property and clause spellings of the same test, which must not form a cliff.
+    // 8, hand-checked: node 3 is the only `n = 3`, and the walks ending there are 2 of length one
+    // (e2 and e5, both 2 -> 3), 2 of length two (1 -> 2 -> 3 twice), and 4 of length three
+    // (the two edges into 1, then 1 -> 2, then either of e2/e5). I had pinned 10 by copying the
+    // `n > 1` figure; the TS-vs-native assertion passed and the VALUE assertion is what caught it,
+    // which is the argument for pinning a number as well as comparing the engines.
+    same(
+      '[{"c":8}]',
+      'MATCH WALK (a:P)-[:T]->{1,3}(y {n: 3}) RETURN count(*) AS c',
+      'MATCH WALK (a:P)-[:T]->{1,3}(y WHERE y.n = 3) RETURN count(*) AS c',
+      'MATCH WALK (a:P)-[:T]->{1,3}(y) WHERE y.n = 3 RETURN count(*) AS c',
+    );
+  });
+
+  test('deeper still, and a multi-type hop', () => {
+    same('[{"c":60}]', 'MATCH WALK (a:P)-[:T]->{1,4}(y) RETURN count(*) AS c');
+    same('[{"c":48}]', 'MATCH WALK (a:P)-[:T]->{5,5}(y) RETURN count(*) AS c');
+    same('[{"c":188}]', 'MATCH WALK (a:P)-[:T]->{1,6}(y) RETURN count(*) AS c');
+    // `edgesOfTypes` dedupes: e6 carries BOTH T and U, and summing per-label sizes counts it twice
+    same('[{"c":44}]', 'MATCH WALK (a:P)-[:T|U]->{1,3}(y) RETURN count(*) AS c');
+  });
+
+  test('the modes that must still REFUSE the recurrence', () => {
+    // A TRAIL forbids edge reuse, so it is strictly below the walk — 28 against 32 here. If TRAIL
+    // ever took this route it would answer 32, which is what makes this pin load-bearing rather
+    // than decorative.
+    same('[{"c":28}]', 'MATCH (a:P)-[:T]->{1,3}(y) RETURN count(*) AS c');
+    same('[{"c":28}]', 'MATCH TRAIL (a:P)-[:T]->{1,3}(y) RETURN count(*) AS c');
+    same('[{"c":21}]', 'MATCH SIMPLE (a:P)-[:T]->{1,3}(y) RETURN count(*) AS c');
+  });
+});

@@ -590,6 +590,21 @@ const GROUPS: [string, readonly string[]][] = [
       'MATCH (a:P)-[:E]->{1,2}(y) WHERE y.k > 25 RETURN count(*) AS c',
     ],
   ],
+  // DEPTH 3 (item 588), where a WALK now takes the level recurrence in BOTH engines. The three
+  // members are one question: the abbreviated hop, the parenthesized GROUP, and the group with no
+  // inner variables at all. They reach the same rung — the group spellings through item 569's
+  // `dropUnreadGroupBinds` — so a regression that reaches only one of them shows as a spread here
+  // rather than as a slow query nobody is watching. Before 588 all three ENUMERATED and agreed
+  // with each other at ~20x the cost, which is the failure this probe structurally cannot see:
+  // equally slow is not a flag. That is what the bench pair is for.
+  [
+    'a DEEP walk: abbreviated vs group spelling (item 588)',
+    [
+      'MATCH WALK (a:P)-[:E]->{1,3}(y) RETURN count(*) AS c',
+      'MATCH WALK (a:P)((x)-[e:E]->(y)){1,3} RETURN count(*) AS c',
+      'MATCH WALK (a:P)(()-[:E]->()){1,3} RETURN count(*) AS c',
+    ],
+  ],
   [
     'a quantified hop with an ENDPOINT EQUALITY: three spellings (item 583)',
     [
