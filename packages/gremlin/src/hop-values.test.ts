@@ -248,3 +248,45 @@ describe('the fused walk stays LAZY', () => {
     expect([...stream]).toEqual([20, 30]);
   });
 });
+
+// Item 591 read the adjacency from the VERTEX's own box instead of `edgesFromByLabel.get(v.id)`,
+// and a mutant that always reads `adjFrom` — correct for `out`, wrong for `in` — SURVIVED the
+// test above. The fixture coincides: correct `in_('E')` yields `a`'s age once for `b` and once
+// for `c`, and the mutant yields `a`'s own age once per out-edge of `a`. Both are `[10, 10]`.
+//
+// This fixture breaks that. `d` has an out-edge INTO `a`, so `a` has an in-neighbour whose age
+// differs from its own, and the correct answer and the mutant's differ in order AND in content.
+describe('the IN direction, on a fixture where it cannot coincide with OUT (item 591)', () => {
+  const asymmetric = (): Graph => {
+    const g = new Graph();
+    const a = g.addVertex({ id: 'a', labels: ['P'], properties: { age: 10 } });
+    const b = g.addVertex({ id: 'b', labels: ['P'], properties: { age: 20 } });
+    const c = g.addVertex({ id: 'c', labels: ['P'], properties: { age: 30 } });
+    const d = g.addVertex({ id: 'd', labels: ['P'], properties: { age: 40 } });
+
+    g.addEdge({ id: 'e1', from: a, to: b, labels: ['E'], properties: {} });
+    g.addEdge({ id: 'e2', from: a, to: c, labels: ['E'], properties: {} });
+    g.addEdge({ id: 'e3', from: d, to: a, labels: ['E'], properties: {} });
+
+    return g;
+  };
+
+  test('in(E).values(age) reads the SOURCE of each in-edge', () => {
+    const g = asymmetric();
+
+    // `a` is reached from `d` (40); `b` and `c` are each reached from `a` (10). Vertex order is
+    // insertion order, so a, then b, then c, then d — and `d` has no in-edge of type E.
+    expect(fused(g, V(), in_('E'), values('age'))).toEqual([40, 10, 10]);
+    expect(fused(g, V(), in_('E'), values('age'))).toEqual(piped(g, V(), in_('E'), values('age')));
+  });
+
+  test('and OUT on the same fixture is a DIFFERENT answer', () => {
+    const g = asymmetric();
+
+    // The precondition: if these two coincided, the test above could not witness a wrong side.
+    expect(fused(g, V(), out('E'), values('age'))).toEqual([20, 30, 10]);
+    expect(fused(g, V(), out('E'), values('age'))).not.toEqual(
+      fused(g, V(), in_('E'), values('age')),
+    );
+  });
+});

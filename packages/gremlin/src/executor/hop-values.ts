@@ -72,13 +72,16 @@ export const hopValuesShortcut = (plan: Plan, graph: Graph): Iterable<unknown> |
   const oneType = labels.length === 1 && kind !== 'both' ? labels[0] : undefined;
 
   if (oneType !== undefined) {
-    const index = kind === 'out' ? graph.edgesFromByLabel : graph.edgesToByLabel;
     const forward = kind === 'out';
 
     return {
       *[Symbol.iterator]() {
         for (const v of graph.vertices) {
-          const bucket = index.get(v.id)?.get(oneType);
+          // The vertex's OWN box rather than `edgesFromByLabel.get(v.id)` (item 591), the same
+          // change `filteredHopCount` takes. The saving here is ONE string-keyed `Map.get` per
+          // VERTEX, and this row's cost is dominated by the per-EDGE work below it, so expect
+          // percent rather than multiples — the measurement is in the audit entry either way.
+          const bucket = (forward ? v.adjFrom : v.adjTo)?.get(oneType);
 
           if (bucket === undefined) {
             continue;

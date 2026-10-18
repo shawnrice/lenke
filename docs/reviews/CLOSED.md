@@ -8221,3 +8221,52 @@ label on both hops (`out(T).out(U)`=0 vs `out(U).out(T)`=2 separates them), and 
 TS is 20.3x native on this shape (two bucket reads per vertex against native's dense arrays), and
 THREE hops is untouched at 689.75ms — the identity does not generalize, because the middle frontier
 is not a degree.
+
+## 591 — CLOSED: read the vertex's own adjacency box, not a hash of its id, 1.26-1.31x
+
+`V().out(T).has(k,pred).count()` was 34.6x native, the largest remaining ratio in
+`bench:gremlin`. The vertex-driven inversion was already there (item 168) — what it did was reach
+the adjacency through `edgesToByLabel.get(v.id)`, a map keyed on the id STRING, while
+`startFilteredHopCount` three functions below has read `v.adjFrom` since it was written. **One rung
+in the file had the lesson and its neighbour did not.**
+
+| case                                             | id map          | box             |                       |
+| ------------------------------------------------ | --------------- | --------------- | --------------------- |
+| `out(T).has(age>44).count()`                     | 52.98 ms        | 41.92           | **1.26x**             |
+| `in(T).has(...)` / `has(age>500)`                | 51.96 / 54.24   | 39.59 / 41.89   | **1.31x / 1.29x**     |
+| `out(T).values(age)` / `in(T)`                   | 296.30 / 287.14 | 278.06 / 265.12 | **1.07x / 1.08x**     |
+| three CONTROLS (incl. the untouched dedupe rung) |                 |                 | 1.00x / 1.00x / 1.01x |
+
+`bench:gremlin`: `out().has().count()` 53.0 -> 42.2 (34.6x -> 27.6x), `out().values(age)` 307.6 ->
+273.3 (9.8x -> 8.5x). `distinctHopCount` is left alone deliberately — it iterates the index's
+VALUES with no vertex object in hand, so there is no box to read.
+
+### A micro-benchmark over-promised by 1.4x, on the function whose comment warns about it (591)
+
+The probe measured `get(v.id)` + predicate at 32.86ms against `v.adjTo` + predicate at 18.29
+(**1.80x**); the real change is **1.26x**. The probe inlined `byType.get(label)?.size` and the
+comparison where the shipped code calls `degreeOfTypes` and `matches` — helpers that dominate.
+`hop-values.ts` carries this warning verbatim ("over-promised by 1.5x —
+harness-must-resemble-caller, again") and I read it while making the change and repeated it anyway.
+**The attribution is still what ruled out the algorithm; the RATIO from a probe that skips the
+callees is not the ratio you ship.**
+
+### A dedupe control's 0.93x was noise, but it was worth isolating (591)
+
+7% on a rung I did not touch — in a file I DID edit, so layout could plausibly shift it. Five
+isolated alternated rounds: 7.01 against 6.97, after winning four of five.
+
+### The coinciding fixture, tenth instance (591)
+
+`hop-values` always reading `adjFrom` is correct for `out`, wrong for `in` — and
+`in_('E').values('age')` expects `[10, 10]`, which the mutant ALSO produces: correct, `b` and `c`
+are each reached from `a` (age 10); mutated, `a`'s two out-edges each yield `a`'s own age. A fixture
+where `a` has an in-neighbour of a different age gives `[40, 10, 10]` against `[10, 10, 40]`, and
+the test now asserts out and in DIFFER.
+
+### Still open (591)
+
+The same id-keyed pattern survives at **12 sites in `packages/gql/src/executor/hop-projection.ts`
+and one in `executor.ts`** — each needs its own check that a vertex object is in hand, and its own
+measurement. `out().has().count()` is still 27.6x native: `degreeOfTypes` plus `matches` per vertex,
+~18ms of the remaining 42.

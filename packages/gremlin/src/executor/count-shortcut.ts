@@ -289,11 +289,20 @@ const filteredHopCount = (hop: Step, filter: Step, graph: Graph): number | undef
   // is exactly the set of far endpoints the edge walk visits. No vertex gains or loses an
   // evaluation, so no fault appears or disappears.
   if (hop.labels.length === 1 || graph.multiTypeEdgeCount === 0) {
-    const index = forward ? graph.edgesToByLabel : graph.edgesFromByLabel;
     let n = 0;
 
     for (const v of graph.vertices) {
-      const byType = index.get(v.id);
+      // THE VERTEX'S OWN BOX, not a hash of its id into the graph's map (item 591). This rung read
+      // `edgesToByLabel.get(v.id)` while `startFilteredHopCount` three functions below has read
+      // the box since it was written — one rung in this file learned the lesson and its neighbour
+      // did not. Measured at 200,000 vertices / 1,000,000 edges, with the predicate in place:
+      //
+      //   edgesToByLabel.get(v.id) + predicate   32.86 ms
+      //   v.adjTo + predicate                    18.29       1.80x
+      //
+      // and without the predicate 41.54 against 30.50. A string-keyed `Map.get` is ~190ns (item
+      // 194) against ~30ns for the object (item 321), and the getter caches per vertex.
+      const byType = forward ? v.adjTo : v.adjFrom;
 
       if (byType === undefined) {
         continue;
