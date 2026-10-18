@@ -8171,3 +8171,53 @@ out-edges and whose start label is not an insertion-order prefix catches both.
 penalty scales with depth, so it is the iterator protocol per source per level. Kept as an index
 loop behind `oxlint-disable-next-line`. I had written "within noise" into that comment BEFORE
 measuring, in the direction that favoured my own change.
+
+## 590 — CLOSED: a two-hop Gremlin count from every vertex is a degree inner product, 6.4-7.1x
+
+`V().out().out().count()` read **ts 351.9ms against native 2.80 (125.8x)**, the largest gap in
+`bun run bench:gremlin`. Item 574's `hopChainCount` already CLAIMED the shape — asking
+`countShortcut` directly showed `exec ~ shortcut-only`, so the rung was running and **its arithmetic
+was the cost**. There was no missing route to build.
+
+Summing over all sources, `count = sum over w of arrivals(w) * departures(w)`, each factor the
+degree on whichever side its hop traverses. One pass over vertices, no edge walk.
+
+| case                                             | before             | after         |                       |
+| ------------------------------------------------ | ------------------ | ------------- | --------------------- |
+| `out/out`, `in/in`                               | 370.76 / 368.79 ms | 57.81 / 57.60 | **6.4x**              |
+| `out/in`                                         | 325.38             | 45.64         | **7.13x**             |
+| `repeat(out).times(2)`                           | 410.39             | 57.51         | **7.14x**             |
+| one hop / three hops / `has`-filtered — CONTROLS |                    |               | 1.00x / 1.03x / 0.97x |
+
+`bench:gremlin` ts/native 125.8x -> **20.3x**; `repeat().times(2)` 85.7x -> 15.3x.
+
+### The attribution said the OBVIOUS fixes were worth nothing (590)
+
+40,000 vertices / 200,000 edges: adjacency walk alone 9.14ms; per-edge target bucket lookup 61.80
+(what it did); **per-edge `Map.get` on a memoized degree map 42.07 — only 1.5x**; building item
+589's flattened CSR **37.65 to build, so no help at all**; the inner product with both degree passes
+**7.73 (8.0x)**. I came in expecting to reapply 589's layout trick. Measuring the candidates first
+is what found an algebraic answer instead of a 1.5x one.
+
+**Self-loops and parallel edges need no special case**, which is what makes the identity exact: a
+self-loop is one in-edge and one out-edge of the same vertex and contributes to both factors, just
+as the walk visits it once in each role.
+
+### Three of four direction pairs can coincide by accident (590)
+
+The first cross-engine fixture read `out/out=130 in/in=130 out/in=192 in/out=130`. `out/out` and
+`in/in` must ALWAYS agree (both are `sum(indeg*outdeg)`), but `in/out` matching them was fixture
+luck, and a swapped degree side would have passed. Two hubs give 35 / 35 / 73 / 59, and the test
+ASSERTS three distinct values. **Third application of item 586's rule: assert that the fixture can
+witness the thing being tested.**
+
+Mutants that needed new cases: both label-swap mutants survived because every case used the SAME
+label on both hops (`out(T).out(U)`=0 vs `out(U).out(T)`=2 separates them), and defining
+`unfiltered` as `!canSeed` survived because a `has` filter is not seedable and the test only had a
+`hasLabel` one.
+
+### Still open (590)
+
+TS is 20.3x native on this shape (two bucket reads per vertex against native's dense arrays), and
+THREE hops is untouched at 689.75ms — the identity does not generalize, because the middle frontier
+is not a degree.

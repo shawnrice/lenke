@@ -568,7 +568,9 @@ type HopStep = Extract<Step, { kind: 'out' | 'in' }>;
 const hopChainShape = (
   mid: readonly Step[],
   graph: Graph,
-): { hops: HopStep[]; source: Iterable<Vertex>; rest: VertexFilter[] } | undefined => {
+):
+  | { hops: HopStep[]; source: Iterable<Vertex>; rest: VertexFilter[]; unfiltered: boolean }
+  | undefined => {
   // Split `mid` into a leading run of vertex filters and a trailing run of hops. The hops are
   // COLLECTED rather than sliced, because a `kind` test in this loop does not narrow a later
   // `mid.slice(...)` for the type checker.
@@ -632,7 +634,10 @@ const hopChainShape = (
       : graph.verticesById.values();
   const rest = canSeed ? vfilters.slice(1) : vfilters;
 
-  return { hops, source, rest };
+  // `unfiltered` means the source set is EVERY vertex, which is what lets the two-hop arm skip
+  // the edges entirely (item 590). A vacuous `hasLabel` has already been dropped upstream by
+  // `dropVacuousLabels`, so "no filter steps" really does mean every vertex.
+  return { hops, source, rest, unfiltered: filters.length === 0 };
 };
 
 const hopChainCount = (mid: readonly Step[], graph: Graph): number | undefined => {
@@ -642,7 +647,55 @@ const hopChainCount = (mid: readonly Step[], graph: Graph): number | undefined =
     return undefined;
   }
 
-  const { hops, source, rest } = shape;
+  const { hops, source, rest, unfiltered } = shape;
+
+  // TWO HOPS FROM EVERY VERTEX IS A DEGREE INNER PRODUCT, and needs no edge walk at all
+  // (item 590). Summing over sources, every traversal of the first hop arrives at some `w`, and
+  // the number of ways to arrive is a DEGREE of `w` — so
+  //
+  //   count = sum over w of arrivals(w) * departures(w)
+  //
+  // where each factor is the degree on whichever side its hop traverses: an `out` hop arrives
+  // along `w`'s IN-edges and departs along its OUT-edges, and an `in` hop is the mirror. One pass
+  // over vertices, two bucket reads each.
+  //
+  // Measured at 40,000 vertices / 200,000 edges, and the attribution is why this is an ALGEBRAIC
+  // change rather than the layout one I expected to make:
+  //
+  //   walk both levels of adjacency, nothing else         9.14 ms
+  //   + per-edge target bucket .get(label).size  [WAS]   61.80
+  //   + per-edge Map.get on a memoized degree map        42.07   only 1.5x, so not the fix
+  //   build a flattened CSR of neighbour indices         37.65   item 589's trick: no help here
+  //   ... then the dense read through it                  0.11
+  //   THE INNER PRODUCT, degree passes included           7.73   8.0x
+  //
+  // SELF-LOOPS and PARALLEL edges need no special case, which is what makes the identity exact: a
+  // self-loop at `w` is one of `w`'s in-edges and one of its out-edges, and it contributes to
+  // `arrivals` and `departures` exactly as enumeration walks it once in each role. Parallel edges
+  // are separate members of both degrees.
+  //
+  // ONLY when the source set is every vertex. With a filtered source, `arrivals(w)` would have to
+  // count in-edges FROM THE SURVIVORS, which is a per-edge question again — so the walk below
+  // stays for that case, and `gremlin-hop-chain-count.test.ts` pins both routes against native.
+  if (unfiltered && hops.length === 2) {
+    const [h0, h1] = hops;
+    let total = 0;
+
+    for (const w of graph.verticesById.values()) {
+      const inBox = h0.kind === 'out' ? w.adjTo : w.adjFrom;
+      const arrive = inBox === undefined ? 0 : degreeOfTypes(inBox, h0.labels);
+
+      if (arrive === 0) {
+        continue; // nothing arrives here, so it contributes nothing however many edges leave
+      }
+
+      const outBox = h1.kind === 'out' ? w.adjFrom : w.adjTo;
+
+      total += outBox === undefined ? 0 : arrive * degreeOfTypes(outBox, h1.labels);
+    }
+
+    return total;
+  }
 
   // The surviving starts, as a lazy generator — each has multiplicity ONE, so the two-hop arm
   // below needs no map at all. Building one there was measured and is also DEAD WEIGHT: a

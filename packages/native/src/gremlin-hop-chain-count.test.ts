@@ -24,6 +24,8 @@ import {
   V,
   both,
   count,
+  gt,
+  has,
   hasLabel,
   in_,
   out,
@@ -252,5 +254,136 @@ suite('a multi-label edge is counted once per path (item 574)', () => {
       ),
       0,
     );
+  });
+});
+
+// Item 590. The two-hop arm walked every edge and asked each TARGET for its degree, so a vertex's
+// degree was recomputed once per in-edge. Summing over ALL sources, that is a degree inner
+// product and needs no edge walk at all:
+//
+//   count = sum over w of arrivals(w) * departures(w)
+//
+// where each factor is the degree on whichever side its hop traverses. Measured at 40,000
+// vertices / 200,000 edges, and the attribution is why this is ALGEBRAIC rather than the layout
+// change item 589 made on the GQL side:
+//
+//   walk both levels of adjacency, nothing else         9.14 ms
+//   + per-edge target bucket .get(label).size  [WAS]   61.80
+//   + per-edge Map.get on a memoized degree map        42.07   only 1.5x, so not the fix
+//   build a flattened CSR of neighbour indices         37.65   item 589's trick: no help here
+//   THE INNER PRODUCT, degree passes included           7.73   8.0x
+//
+// End to end at 200,000 vertices / 1,000,000 edges, one case per process, three alternated rounds:
+//
+//   out(T).out(T).count()          370.76 ms -> 57.81   6.41x
+//   in(T).in(T).count()            368.79    -> 57.60   6.40x
+//   out(T).in(T).count()           325.38    -> 45.64   7.13x
+//   repeat(out(T)).times(2)        410.39    -> 57.51   7.14x
+//   out(T).count()        CONTROL    0.01    ->  0.01   1.00x
+//   out x3                CONTROL  689.75    -> 669.88  1.03x   (the multiplicity-map arm)
+//   has(age>44) + out x2  CONTROL  176.93    -> 182.54  0.97x   (keeps the walk)
+//
+// THE FIXTURE HAS TWO HUBS ON PURPOSE. `out/out` and `in/in` must ALWAYS agree — both are
+// `sum(indeg*outdeg)` and multiplication commutes — but `out/in` is `sum(indeg^2)` and `in/out` is
+// `sum(outdeg^2)`, and on a fixture without skew those coincided with it too: a first version read
+// 130 / 130 / 192 / 130 and could not have caught a swapped degree side. With the hubs they read
+// 35 / 35 / 73 / 59, which is asserted below rather than assumed (item 586's lesson).
+//
+// No TinkerPop run is attached because no SEMANTIC question is open here: item 574 established
+// from a real console that `repeat(h).times(k)` IS the k-fold chain, and `out().out()` was never
+// ambiguous. What changed is which arithmetic computes an already-settled answer, so the pins are
+// native's and hand-checked — the T out-degrees sum to 23, and `sum(indeg*outdeg)` is
+// 2+9+8+2+4+4+1+3+2 = 35.
+describe('a two-hop count from every vertex is a degree inner product (item 590)', () => {
+  const L: string[] = [];
+  const N = 12;
+
+  for (let i = 0; i < N; i++) {
+    L.push(
+      `{"type":"node","id":"v${i}","labels":${i % 3 === 0 ? '["P","Q"]' : '["P"]'},"properties":{"age":${(i * 11) % 40}}}`,
+    );
+  }
+
+  let ec = 0;
+  const edge = (f: number, t: number, labels: string): void => {
+    L.push(`{"type":"edge","id":"x${ec++}","labels":${labels},"from":"v${f}","to":"v${t}"}`);
+  };
+
+  for (let i = 0; i < N; i++) {
+    edge(i, (i * 3 + 1) % N, '["T"]');
+  }
+
+  // an OUT hub at v3 and an IN hub at v8
+  for (let i = 0; i < 4; i++) {
+    edge(3, (i * 2 + 5) % N, '["T"]');
+    edge((i * 5 + 1) % N, 8, '["T"]');
+  }
+
+  edge(0, 0, '["T"]'); // SELF-LOOP: one in-edge AND one out-edge of the same vertex
+  edge(1, 4, '["T"]'); // PARALLEL with a generated edge
+  edge(2, 5, '["T","U"]'); // MULTI-LABEL, which a per-label bucket sum would double count
+  edge(6, 7, '["U"]'); // a second type only
+  L.push('{"type":"node","id":"iso","labels":["P"],"properties":{"age":3}}');
+
+  const doc = L.join('\n');
+  const nv = graphFromNdjson(nativeBackend(), doc);
+  const ts = deserialize(doc, 'ndjson', new Graph());
+  const agree = (want: number, plan: Plan): void => {
+    const text = planToGremlin(plan);
+    const got = JSON.stringify(toArray(plan, ts));
+
+    expect(`${text} ${got}`).toBe(`${text} ${JSON.stringify(nv.gremlin(text))}`);
+    expect(`${text} ${got}`).toBe(`${text} [${want}]`);
+  };
+
+  test('all four direction pairs, and they are SEPARABLE on this fixture', () => {
+    agree(35, traversal(V(), out('T'), out('T'), count()));
+    agree(35, traversal(V(), in_('T'), in_('T'), count()));
+    agree(73, traversal(V(), out('T'), in_('T'), count()));
+    agree(59, traversal(V(), in_('T'), out('T'), count()));
+
+    // The precondition. `out/out` and `in/in` coincide by algebra; the other two must not, or a
+    // swapped degree side is invisible and every assertion above still passes.
+    const n = (p: Plan): number => Number(String(toArray(p, ts)));
+    const oo = n(traversal(V(), out('T'), out('T'), count()));
+    const oi = n(traversal(V(), out('T'), in_('T'), count()));
+    const io = n(traversal(V(), in_('T'), out('T'), count()));
+
+    expect(new Set([oo, oi, io]).size).toBe(3);
+  });
+
+  test('edge labels, including the multi-label and absent cases', () => {
+    // `out()` with NO label iterates every bucket, so the multi-label edge is visited once per
+    // label it carries unless the degree helper dedupes — the hazard items 573 and 574 both hit.
+    agree(36, traversal(V(), out(), out(), count()));
+    agree(36, traversal(V(), out('T', 'U'), out('T', 'U'), count()));
+    // `U` alone has no two-hop path at all, which is the zero-arrivals early exit.
+    agree(0, traversal(V(), out('U'), out('U'), count()));
+    agree(23, traversal(V(), out('T'), count()));
+  });
+
+  test('MIXED labels, so each factor must read its OWN hop', () => {
+    // Every case above puts the same label on both hops, which makes "arrivals uses h1's labels"
+    // and "departures uses h0's labels" indistinguishable — two mutants survived on exactly that.
+    // `out(T).out(U)` and `out(U).out(T)` are 0 and 2, so a swap is visible.
+    agree(0, traversal(V(), out('T'), out('U'), count()));
+    agree(2, traversal(V(), out('U'), out('T'), count()));
+    agree(4, traversal(V(), in_('T'), out('U'), count()));
+  });
+
+  test('repeat(out).times(2) reaches the same arithmetic', () => {
+    agree(35, traversal(V(), repeat(traversal(out('T'))).times(2), count()));
+  });
+
+  test('the shapes that must keep the WALK', () => {
+    // A FILTERED source cannot use the identity: `arrivals(w)` would have to count in-edges from
+    // the survivors only, which is a per-edge question again.
+    agree(15, traversal(V(), hasLabel('Q'), out('T'), out('T'), count()));
+    // A `has` filter is NOT seedable, so `canSeed` is false for it — and defining "unfiltered" as
+    // `!canSeed` rather than "no filter steps" would wrongly take the identity here. That mutant
+    // survived until this case existed.
+    agree(12, traversal(V(), has('age', gt(20)), out('T'), out('T'), count()));
+    // THREE hops keeps the multiplicity-map arm.
+    agree(63, traversal(V(), out('T'), out('T'), out('T'), count()));
   });
 });
