@@ -1232,39 +1232,88 @@ type DegreeCountSpec = {
  * `ts 8362.9ms against ffi 5.6` — the largest TS/native gap in `bun run bench`, because TS had no
  * depth-3 rung at all and enumerated every path.
  *
- * ABSENT MEANS ZERO in the level map, which is what keeps it cheap when the endpoint test is
- * selective: a vertex no admissible walk can reach is simply not a key. `Map<Vertex, number>` is
- * keyed on the vertex OBJECT for the reason item 321 measured — 30.5ns against 59.7 for the id
- * string — and this is read once per edge per level, so that is the hot cost of the whole route.
+ * THE LEVELS ARE DENSE ARRAYS OVER A FLATTENED ADJACENCY (item 589), not maps over vertices. Item
+ * 588 shipped this as `Map<Vertex, number>` and left TS at 115x native, ASSERTING the map was the
+ * cause. Measured rather than assumed, at 60,000 vertices / 180,000 edges:
+ *
+ *   cost is linear in depth          23.83 ms per level, intercept 3.12 ms
+ *   walk the adjacency only           3.34 ms
+ *   ... + one Map.get per edge       19.05        so the map is 15.71 of the 23.83
+ *   ... + Map.get INDEX, dense read  19.52        going THROUGH a map to get an index is as slow
+ *   one Map.set per vertex            2.30
+ *   ------------------------------------------
+ *   BUILD a CSR once (E map lookups) 18.28        one level's worth, paid once
+ *   dense read from the built CSR     0.10 ms per level
+ *   dense write per vertex            0.18
+ *
+ * So depth k goes from ~23.8k to ~18.3 + 0.3k. The map had to be removed from the per-level loop
+ * ENTIRELY for that — resolving an index through a map per edge costs the same 19.5ms, which is why
+ * the neighbour indices are precomputed instead of looked up.
+ *
+ * `Float64Array` holds exactly what the map held: a JS number IS an f64, and the sums run in the
+ * same adjacency order, so this is a layout change and not a semantic one.
  *
  * WALK ONLY, exactly as in native. A trail forbids reusing an edge, which is not a function of the
  * current level: `u_j` would have to know which edges the walk already used, making it a map over
  * walks rather than over vertices.
  */
 const walkLevelCount = (graph: Graph, spec: DegreeCountSpec): number => {
-  const { types, min, max, startName, passes, passesIsVacuous } = spec;
+  const { types, min, max, startName, passes } = spec;
   const edgesOf = (v: Vertex): Iterable<Edge> => {
     const box = v.adjFrom;
 
     return box === undefined ? [] : edgesOfTypes(box, types);
   };
-  const src =
-    startName === undefined
-      ? [...graph.verticesById.values()]
-      : [...(graph.verticesByLabel.get(startName) ?? [])];
-  let u = new Map<Vertex, number>();
+  // ONE PASS to number the vertices, then the adjacency FLATTENED into neighbour indices. After
+  // this no level consults a Map at all, which is the whole point — see the attribution above.
+  const order = [...graph.verticesById.values()];
+  const idx = new Map<Vertex, number>();
 
-  for (const v of graph.verticesById.values()) {
-    if (passes(v)) {
-      u.set(v, 1);
+  for (let i = 0; i < order.length; i += 1) {
+    idx.set(order[i], i);
+  }
+
+  const off = new Int32Array(order.length + 1);
+  // PREALLOCATED to the graph's edge count and filled in ONE pass. Built as a `number[]` with
+  // `push` and then `Int32Array.from`, the same CSR cost ~55ms instead of ~20 — boxing, array
+  // growth, and then a full copy — which showed up as the whole route reading 58ms flat in depth
+  // where the per-level work is 0.3ms. The wanted-type filter can only keep FEWER edges than the
+  // graph has, so `edgeCount` is a safe bound and the slack is never touched.
+  const nbr = new Int32Array(graph.edgeCount);
+  let at = 0;
+
+  for (let i = 0; i < order.length; i += 1) {
+    off[i] = at;
+
+    for (const e of edgesOf(order[i])) {
+      nbr[at] = idx.get(e.to) ?? 0;
+      at += 1;
     }
+  }
+
+  off[order.length] = at;
+  // f64 accumulators, which is what the Map held: a JS number IS an f64, so this stores the same
+  // bits and sums in the same adjacency order. Not a semantic change, a layout one.
+  let u = new Float64Array(order.length);
+  let next = new Float64Array(order.length);
+
+  for (let i = 0; i < order.length; i += 1) {
+    u[i] = passes(order[i]) ? 1 : 0;
+  }
+
+  const src = startName === undefined ? order : [...(graph.verticesByLabel.get(startName) ?? [])];
+  // The sources' indices, resolved ONCE. They are read at every level, and when the start label is
+  // absent that is one map lookup per vertex per level — the same cost this route exists to remove.
+  const srcIdx = new Int32Array(src.length);
+
+  for (let i = 0; i < src.length; i += 1) {
+    srcIdx[i] = idx.get(src[i]) ?? 0;
   }
 
   let total = 0;
 
-  // The ZERO-LENGTH path, whose endpoint is the SOURCE — one row per source row. The same term
-  // the closed form carries, and the reason it cannot just be `u_0` summed over sources is that
-  // `src` may hold a vertex more than once.
+  // The ZERO-LENGTH path, whose endpoint is the SOURCE — one row per source row. `src` may hold a
+  // vertex more than once, so this counts rows rather than summing `u_0` over distinct vertices.
   if (min === 0) {
     for (const s of src) {
       if (passes(s)) {
@@ -1274,32 +1323,31 @@ const walkLevelCount = (graph: Graph, spec: DegreeCountSpec): number => {
   }
 
   for (let len = 1; len <= max; len += 1) {
-    const next = new Map<Vertex, number>();
-
-    for (const v of graph.verticesById.values()) {
-      const it = edgesOf(v);
+    for (let v = 0; v < order.length; v += 1) {
+      const end = off[v + 1];
       let acc = 0;
 
-      if (len === 1 && passesIsVacuous && it instanceof Set) {
-        // Level 1 with nothing to reject is a set SIZE, the same O(1) route `degreeOf` keeps for
-        // the common case — every `u_0` is 1, so the sum over out-edges is just how many there are.
-        acc = it.size;
-      } else {
-        for (const e of it) {
-          acc += u.get(e.to) ?? 0;
-        }
+      for (let k = off[v]; k < end; k += 1) {
+        acc += u[nbr[k]];
       }
 
-      if (acc !== 0) {
-        next.set(v, acc);
-      }
+      next[v] = acc;
     }
 
+    const swap = u;
+
     u = next;
+    next = swap;
 
     if (len >= min) {
-      for (const s of src) {
-        total += u.get(s) ?? 0;
+      // AN INDEX LOOP, against `prefer-for-of`, and the exemption is measured rather than
+      // asserted. `for (const i of srcIdx)` goes through the iterator protocol once per source
+      // per LEVEL, and cost 0.97x at `{1,3}` and 0.92x at `{1,6}` over three alternated rounds,
+      // one case per process — the penalty scaling with depth is the tell. I had written "within
+      // noise of the indexed form" in this comment BEFORE measuring it, which was wrong.
+      // oxlint-disable-next-line typescript/prefer-for-of -- 8% at depth 6; see the numbers above
+      for (let i = 0; i < srcIdx.length; i += 1) {
+        total += u[srcIdx[i]];
       }
     }
   }

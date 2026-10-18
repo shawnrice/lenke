@@ -8124,3 +8124,50 @@ TS is still 115x native here and it is the LAYOUT, not the algorithm: `Map<Verte
 once per edge per level (~3.6M lookups at depth 3 on the bench fixture) against native's dense
 `Vec<u64>`. Precomputing neighbour INDICES once — one pass of E map lookups into a CSR-like array,
 then pure array math per level — prices at roughly a further 3x at depth 3, more as depth grows.
+
+## 589 — CLOSED: the level route reads a flattened CSR, TS, 1.6-3.7x
+
+Item 588 asserted `Map<Vertex, number>` was the remaining cost. **Measured first**, at 60,000
+vertices / 180,000 edges: cost linear in depth at 23.83ms/level, of which `Map.get` per edge is
+15.71; a CSR built once costs 18.28 and then **0.10ms per level**. The decisive row is that
+resolving an index THROUGH a map costs the same 19.5ms — so the indices must be PRECOMPUTED, not
+looked up.
+
+| quantifier        | map (588)        | CSR (589)     |                         |
+| ----------------- | ---------------- | ------------- | ----------------------- |
+| `{1,3}` / `{3,3}` | 63.46 / 61.86 ms | 32.97 / 38.18 | **1.92x / 1.62x**       |
+| `{1,4}` / `{1,6}` | 89.16 / 134.25   | 36.03 / 36.14 | **2.47x / 3.71x**       |
+| `{1,2}` — CONTROL | 37.37            | 34.48         | 1.08x (noise floor ~8%) |
+
+Now FLAT in depth. Bench watcher 619.9 -> 348.3 (1.78x); TS/native 115x -> 62.8x; **8362.9 -> 348.3
+across 587-589, 24x**. `Float64Array` holds what the map held (a JS number IS an f64, same summation
+order), so this is layout, not semantics.
+
+### `Int32Array.from(push-built array)` cost 35ms of a 55ms build (589)
+
+The first CSR read 58ms FLAT in depth where the per-level work is 0.3ms — the build was ~55ms, not
+the ~20 the micro-benchmark implied, because a `number[]` with `push` then `Int32Array.from` pays
+boxing, growth and a full copy. Preallocating to `graph.edgeCount` and filling in ONE pass is the
+difference between 1.36x and 1.92x. A wanted-type filter can only keep FEWER edges than the graph
+has, so that bound is safe.
+
+### `{3,3}` measured cheaper than `{1,4}`, which is impossible (589)
+
+All cases in one process: `{3,3}` 1.02x against `{1,4}` 2.90x. Depth 4 cannot cost less than depth
+3 doing strictly more work — it was JIT warmup landing on whichever case ran first. One case per
+process gave a coherent table. **Fourth tick running where a shared process lied**; when a ratio is
+incoherent, suspect the harness before the engine.
+
+### The coinciding fixture, eighth and ninth (589)
+
+Two mutants survived, both because the fixture made a wrong formula right: the last-inserted vertex
+(`iso`) has no out-edges, so a short final CSR offset drops nothing; and `:P` covers every vertex in
+insertion order, so `srcIdx[i] = i` is accidentally correct. A second fixture whose last vertex has
+out-edges and whose start label is not an insertion-order prefix catches both.
+
+### A lint exemption with numbers attached (589)
+
+`prefer-for-of` over the source-index array costs 0.97x at `{1,3}` and 0.92x at `{1,6}` — the
+penalty scales with depth, so it is the iterator protocol per source per level. Kept as an index
+loop behind `oxlint-disable-next-line`. I had written "within noise" into that comment BEFORE
+measuring, in the direction that favoured my own change.

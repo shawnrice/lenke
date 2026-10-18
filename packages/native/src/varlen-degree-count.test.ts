@@ -339,3 +339,73 @@ suite('a WALK counts by LEVELS at any depth (item 588)', () => {
     same('[{"c":21}]', 'MATCH SIMPLE (a:P)-[:T]->{1,3}(y) RETURN count(*) AS c');
   });
 });
+
+// Item 589. The level route's data layout: a flattened CSR of neighbour INDICES built once, so no
+// level consults a `Map`. Measured at 60,000 vertices / 180,000 edges, one case per process, three
+// alternated rounds — `{1,3}` 63.46ms -> 32.97 (1.92x), `{1,4}` 89.16 -> 36.03 (2.47x), `{1,6}`
+// 134.25 -> 36.14 (3.71x), and the route is now FLAT in depth where the map version scaled with it.
+//
+// THIS FIXTURE EXISTS TO BREAK TWO COINCIDENCES, both found by mutation surviving against the
+// fixture above:
+//
+//   - its LAST-INSERTED vertex has OUT-EDGES. In the main fixture the last one is `iso`, which has
+//     none, so a CSR whose final offset is short by one drops nothing and the mutant survives.
+//   - its start label is SELECTIVE and its members are NOT an insertion-order prefix. In the main
+//     fixture `:P` covers every vertex in order, so resolving a source's index as its POSITION IN
+//     THE SOURCE LIST is accidentally correct — `srcIdx[i] = i` passed every assertion.
+//
+// Eighth and ninth coinciding fixtures in this run of ticks. Both mutants are caught here.
+suite('the level route reads a flattened CSR (item 589)', () => {
+  const DOC = [
+    // Q on the 2nd, 5th and 6th vertices: not a prefix.
+    '{"type":"node","id":"a","labels":["P"],"properties":{"n":1}}',
+    '{"type":"node","id":"b","labels":["P","Q"],"properties":{"n":2}}',
+    '{"type":"node","id":"c","labels":["P"],"properties":{"n":3}}',
+    '{"type":"node","id":"d","labels":["P"],"properties":{"n":4}}',
+    '{"type":"node","id":"e","labels":["P","Q"],"properties":{"n":5}}',
+    // the LAST-inserted vertex, and it carries two out-edges
+    '{"type":"node","id":"z","labels":["P","Q"],"properties":{"n":6}}',
+    '{"type":"edge","id":"t1","labels":["T"],"from":"a","to":"b"}',
+    '{"type":"edge","id":"t2","labels":["T"],"from":"b","to":"c"}',
+    '{"type":"edge","id":"t3","labels":["T"],"from":"c","to":"d"}',
+    '{"type":"edge","id":"t4","labels":["T"],"from":"d","to":"e"}',
+    '{"type":"edge","id":"t5","labels":["T"],"from":"e","to":"z"}',
+    '{"type":"edge","id":"t6","labels":["T"],"from":"z","to":"a"}',
+    '{"type":"edge","id":"t7","labels":["T"],"from":"z","to":"c"}',
+    '{"type":"edge","id":"t8","labels":["T"],"from":"b","to":"z"}',
+  ].join('\n');
+  const nv4 = graphFromNdjson(nativeBackend(), DOC);
+  const ts4 = tsDeserialize(DOC, 'ndjson', new Graph());
+  const same = (want: string, q: string): void => {
+    const got = JSON.stringify(tsQuery(ts4, q));
+
+    expect(`${q} ${got}`).toBe(`${q} ${JSON.stringify(nv4.query(q))}`);
+    expect(`${q} ${got}`).toBe(`${q} ${want}`);
+  };
+
+  test('a SELECTIVE start label whose members are not a prefix', () => {
+    // Hand-checked. T out-degrees are a:1, b:2, c:1, d:1, e:1, z:2, and Q is {b, e, z}.
+    // {1,2} from b is 2 + (1 + 2) = 5, from e is 1 + 2 = 3, from z is 2 + (1 + 1) = 4, so 12.
+    same('[{"c":12}]', 'MATCH WALK (a:Q)-[:T]->{1,2}(y) RETURN count(*) AS c');
+    // {3,3}: b -> c -> d -> e, b -> z -> a -> b, b -> z -> c -> d (3); e -> z -> {a,c} -> _ (2);
+    // z -> a -> b -> {c,z}, z -> c -> d -> e (3). 8 in all.
+    same('[{"c":8}]', 'MATCH WALK (a:Q)-[:T]->{3,3}(y) RETURN count(*) AS c');
+    same('[{"c":20}]', 'MATCH WALK (a:Q)-[:T]->{1,3}(y) RETURN count(*) AS c');
+    same('[{"c":23}]', 'MATCH WALK (a:Q)-[:T]->{0,3}(y) RETURN count(*) AS c');
+    same('[{"c":31}]', 'MATCH WALK (a:Q)-[:T]->{1,4}(y) RETURN count(*) AS c');
+    same('[{"c":8}]', 'MATCH WALK (a:Q)-[:T]->{1,3}(y:Q) RETURN count(*) AS c');
+    same('[{"c":9}]', 'MATCH WALK (a:Q)-[:T]->{1,3}(y WHERE y.n > 3) RETURN count(*) AS c');
+  });
+
+  test('the LAST-inserted vertex contributes its out-edges', () => {
+    // `z` is last in insertion order and has two out-edges, so a CSR whose closing offset is short
+    // loses one of them. Every count here moves if it does.
+    same('[{"c":33}]', 'MATCH WALK (a:P)-[:T]->{1,3}(y) RETURN count(*) AS c');
+    same('[{"c":14}]', 'MATCH WALK (a:P)-[:T]->{3,3}(y) RETURN count(*) AS c');
+    same('[{"c":39}]', 'MATCH WALK (a:P)-[:T]->{0,3}(y) RETURN count(*) AS c');
+    same('[{"c":51}]', 'MATCH WALK (a:P)-[:T]->{1,4}(y) RETURN count(*) AS c');
+    same('[{"c":16}]', 'MATCH WALK (a:P)-[:T]->{1,3}(y WHERE y.n > 3) RETURN count(*) AS c');
+    // and the depth-2 closed form on the same fixture, which must not move either
+    same('[{"c":19}]', 'MATCH WALK (a:P)-[:T]->{1,2}(y) RETURN count(*) AS c');
+  });
+});
