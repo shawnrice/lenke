@@ -215,6 +215,18 @@ export type Backend = {
   queryArrowIpc: (handle: GraphHandle, query: string, file: boolean, params?: string) => Uint8Array;
   /** Run a textual Gremlin query; returns the JSON-array result bytes. */
   gremlinJson: (handle: GraphHandle, query: string) => Uint8Array;
+  /**
+   * {@link queryRows} and {@link gremlinJson}, read back as a **string**.
+   *
+   * Every serving call `JSON.parse`s the carrier, so handing it bytes means the caller pays a
+   * `TextDecoder.decode` on top of whatever the backend already did to get the bytes out of the
+   * crate's buffer. A backend that can decode UTF-8 straight from the result pointer skips both:
+   * over bun:ffi that is 382ns -> 133ns on a one-row carrier (item 597). The byte forms stay for
+   * the consumers that genuinely want bytes.
+   */
+  queryJson: (handle: GraphHandle, query: string, params?: string) => string;
+  /** The Gremlin twin of {@link queryJson}. */
+  gremlinText: (handle: GraphHandle, query: string) => string;
 
   /**
    * Run a native graph algorithm (`degree`, `pagerank`, `connectedComponents`,

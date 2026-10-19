@@ -8455,3 +8455,38 @@ correctness backstop is the admission check**, and a test can only observe it th
 **Rule: a surviving guard mutant is a question about what is OBSERVABLE, not only about
 reachability.** Reachability was checked twice here (fixture shape, then a plan dump) and was fine
 both times; the assertion was comparing two values the mutant moves together.
+
+### "FFI dominates a small op" was the WRONG attribution — the native wrapper was, 1.1-1.32x (597)
+
+Item 319 priced native's loss to pure TS on `bench:usage` serving rows as the FFI boundary. The raw
+boundary is **11ns**; the call is 2328ns. Decomposed by stage instead (`compileGql` ->
+`backend.queryRows` -> `decodeRows`), ~300ns was JS wrapper work on EVERY call and the 847ns
+backend floor was mostly not the boundary either. Two levers:
+
+- **Read the JSON carrier with a bun:ffi `CString`** instead of `toArrayBuffer` + `.slice()` +
+  `TextDecoder.decode`: **381.6ns -> 132.8** on a one-row carrier (`toArrayBuffer` alone is
+  109.5ns), and it helps a 3.4KB carrier too. `EngineAbi.queryText` is optional; wasm takes the
+  byte fallback. **The explicit length is load-bearing** — the crate's buffer is NOT
+  NUL-terminated.
+- **`stringifyParams`' `JSON.stringify` replacer was UNREACHABLE** and cost 181.2ns against 58.7,
+  because a replacer puts the whole serialization on its slow path. `assertParamModel` already
+  rejects every bigint that can reach it (and `temporal.ts` contains the token `bigint` zero
+  times).
+
+`bench:usage`: 1.1x-1.32x on fifteen rows, with `100 updates in one statement` at 1.04x inside the
+floor and not claimed — it is the only row making one FFI call per ~100 counted ops, so a per-call
+constant is amortized there. **Cheapest calls gain most**, which is what a per-call constant
+predicts.
+
+**When EVERY row moves, the control is the whole measurement — and the first run threw it away.**
+The change is native-wrapper-only, so the `ts` column is a control it cannot reach, in the same
+processes and rounds. The driver first recorded `ts` as one max across BOTH sides, which cannot
+answer whether TS moved too; a uniform gain is then indistinguishable from machine drift. Per side:
+ts 0.95x-1.08x centred on 1.01x against the engine's 1.04x-1.32x. That spread also prices this
+bench's floor at ~±6%.
+
+**A capability check is a route choice, so it needs the route-choice treatment.** A mutant making
+`queryJson` always take the byte fallback is answer-equivalent and SURVIVED all 925 tests. There is
+no arithmetic to extract as a pure fn ([[perf-gate-needs-its-own-test]]'s usual remedy), so the
+test observes WHICH ROUTE RAN — `buildEngineBackend` over a fake `EngineAbi` that counts calls.
+Then CAUGHT.

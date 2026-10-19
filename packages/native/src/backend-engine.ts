@@ -52,6 +52,18 @@ export type EngineAbi = {
     params: string | null,
     format: number,
   ) => Uint8Array;
+  /**
+   * `lnk_query` with format 0 (JSON), read back as a **string** rather than bytes.
+   *
+   * OPTIONAL, and a pure performance route: a backend that can decode UTF-8 straight from the
+   * result pointer implements it, and {@link buildEngineBackend} falls back to decoding
+   * {@link EngineAbi.query}'s bytes where it is absent. Over bun:ffi the byte route costs
+   * `toArrayBuffer` + a `Uint8Array` view + `.slice()` + `TextDecoder.decode` where a `CString`
+   * does the whole thing in one step — 382ns against 133ns on a one-row carrier (item 597), which
+   * is ~11% of a point-lookup serving call. JSON is the only format this applies to; Arrow stays
+   * on the byte route because its consumer wants bytes.
+   */
+  queryText?: (handle: GraphHandle, lang: number, query: string, params: string | null) => string;
   /** `lnk_tx` — action 0 = begin, 1 = commit, 2 = rollback. Throws on a rejected commit. */
   tx: (handle: GraphHandle, action: number) => void;
   /** `lnk_schema_apply` — throws on `-1` (bad/unsupported op) and `-2` (data violates). */
@@ -353,6 +365,17 @@ export const buildEngineBackend = (abi: EngineAbi): Backend => {
 
     queryRows: (handle, query, params) =>
       abi.query(handle, LANG_GQL, query, params ?? null, FMT_JSON),
+    // The TEXT twins of `queryRows`/`gremlinJson`, for the consumer that immediately `JSON.parse`s
+    // the carrier (every serving call does). `abi.queryText` is the fast route where the backend
+    // has one; without it this is exactly the old path, decoded here instead of by the caller.
+    queryJson: (handle, query, params) =>
+      abi.queryText
+        ? abi.queryText(handle, LANG_GQL, query, params ?? null)
+        : decoder.decode(abi.query(handle, LANG_GQL, query, params ?? null, FMT_JSON)),
+    gremlinText: (handle, query) =>
+      abi.queryText
+        ? abi.queryText(handle, LANG_GREMLIN, query, null)
+        : decoder.decode(abi.query(handle, LANG_GREMLIN, query, null, FMT_JSON)),
     queryArrow: (handle, query, params) =>
       abi.query(handle, LANG_GQL, query, params ?? null, FMT_ARROW),
     // Arrow IPC: format 2 = FILE (Feather), 3 = STREAM. Honor the caller's `file`

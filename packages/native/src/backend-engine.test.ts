@@ -6,9 +6,10 @@ import { existsSync, readFileSync } from 'node:fs';
 
 import { hasErrorCode, ErrorCode } from '@lenke/errors';
 
+import { buildEngineBackend, type EngineAbi } from './backend-engine.js';
 import { createFfiEngineBackend } from './backend-ffi-engine.js';
 import { createWasmEngineBackend } from './backend-wasm-engine.js';
-import type { Backend } from './backend.js';
+import type { Backend, GraphHandle } from './backend.js';
 
 const SO = new URL(
   '../../../crates/lenke-engine/target/release/liblenke_engine.so',
@@ -52,6 +53,76 @@ const suite = (name: string, make: () => Promise<Backend> | Backend) => {
       // Gremlin path routes through the same lnk_query(lang=1).
       const gr = JSON.parse(dec.decode(be.gremlinJson(g, 'g.V().count()')));
       expect(gr).toEqual([2]);
+      be.graphFree(g);
+    });
+
+    // `queryJson`/`gremlinText` are the TEXT twins of the byte forms (item 597). Over bun:ffi they
+    // read the crate's buffer with a `CString` and an EXPLICIT LENGTH instead of
+    // `toArrayBuffer` + `.slice()` + `TextDecoder.decode`; over wasm they fall back to decoding the
+    // bytes. Two things need pinning, and neither is visible on an ASCII payload:
+    //
+    //   - the length. The crate's buffer is NOT NUL-terminated, so a zero-terminated read would
+    //     scan past the payload into whatever the allocator left there.
+    //   - the DECODING. A read that treated the bytes as latin1 would pass every ASCII test in
+    //     this file and corrupt any string property that is not ASCII.
+    //
+    // The assertion is equality with the byte form, so the two transports are held to each other
+    // as well as to the expected value.
+    test('the text carrier matches the byte carrier, including multi-byte UTF-8', async () => {
+      const be = await make();
+      const g = be.graphFromNdjson(
+        enc.encode(
+          '{"id":"1","labels":["P"],"props":{"name":"café ☕","note":"日本語"}}\n' +
+            '{"id":"2","labels":["P"],"props":{"name":"a\u{1d11e}b","note":"plain"}}\n',
+        ),
+      );
+
+      const q = 'MATCH (n:P) RETURN n.name AS name, n.note AS note';
+      const text = be.queryJson(g, q);
+
+      expect(text).toBe(dec.decode(be.queryRows(g, q)));
+
+      const doc = JSON.parse(text) as { columns: string[]; rows: unknown[][] };
+
+      expect(doc.columns).toEqual(['name', 'note']);
+      expect(doc.rows.map((r) => r[0]).sort()).toEqual(['a\u{1d11e}b', 'café ☕'].sort());
+      expect(doc.rows.map((r) => r[1]).sort()).toEqual(['plain', '日本語'].sort());
+
+      // A parameter whose VALUE is multi-byte, so the encode side is covered too.
+      const withParam = be.queryJson(
+        g,
+        'MATCH (n:P) WHERE n.note = $t RETURN n.name AS name',
+        JSON.stringify({ t: '日本語' }),
+      );
+
+      expect(withParam).toBe(
+        dec.decode(
+          be.queryRows(
+            g,
+            'MATCH (n:P) WHERE n.note = $t RETURN n.name AS name',
+            JSON.stringify({ t: '日本語' }),
+          ),
+        ),
+      );
+      expect((JSON.parse(withParam) as { rows: unknown[][] }).rows).toEqual([['café ☕']]);
+
+      // The Gremlin twin, over the same lnk_query(lang=1).
+      const gText = be.gremlinText(g, "g.V().values('note')");
+
+      expect(gText).toBe(dec.decode(be.gremlinJson(g, "g.V().values('note')")));
+      expect((JSON.parse(gText) as string[]).sort()).toEqual(['plain', '日本語'].sort());
+
+      // An EMPTY result: length 0, where a zero-terminated read has nothing to stop it.
+      expect(be.queryJson(g, "MATCH (n:P) WHERE n.name = 'nobody' RETURN n.name AS name")).toBe(
+        dec.decode(be.queryRows(g, "MATCH (n:P) WHERE n.name = 'nobody' RETURN n.name AS name")),
+      );
+
+      // A LONG carrier, past any small-string optimization in either route.
+      const long = be.queryJson(g, 'MATCH (n:P), (m:P) RETURN n.name AS a, m.note AS b');
+
+      expect(long).toBe(
+        dec.decode(be.queryRows(g, 'MATCH (n:P), (m:P) RETURN n.name AS a, m.note AS b')),
+      );
       be.graphFree(g);
     });
 
@@ -296,3 +367,71 @@ if (existsSync(WASM)) {
 } else {
   test.skip(`engine wasm backend (missing ${WASM} — run \`bun run engine:build:wasm\`)`, () => {});
 }
+
+// `buildEngineBackend`'s ROUTE CHOICE for a text carrier, tested over a fake ABI rather than a
+// real transport (item 597).
+//
+// WHY THIS TEST EXISTS. `queryJson` prefers `abi.queryText` and falls back to decoding
+// `abi.query`'s bytes. Both routes return the same string, so a mutant that makes it always take
+// the fallback is ANSWER-EQUIVALENT and survived the entire 925-test suite — the same shape as the
+// route-choice mutants that have survived here before. Nothing about the result can catch it, so
+// the test has to observe WHICH route ran.
+describe('buildEngineBackend route choice for a text carrier', () => {
+  const fakeAbi = (withText: boolean) => {
+    const calls = { query: 0, queryText: 0 };
+    const abi = {
+      abiVersion: 19,
+      open: () => 1 as unknown as GraphHandle,
+      close: () => {},
+      clone: () => 1 as unknown as GraphHandle,
+      config: () => 1,
+      stat: () => 0,
+      query: () => {
+        calls.query += 1;
+
+        return enc.encode('{"columns":[],"rows":[]}');
+      },
+      ...(withText
+        ? {
+            queryText: () => {
+              calls.queryText += 1;
+
+              return '{"columns":[],"rows":[]}';
+            },
+          }
+        : {}),
+      tx: () => {},
+      schemaApply: () => {},
+      schemaDump: () => new Uint8Array(),
+      encode: () => new Uint8Array(),
+      command: () => enc.encode('{}'),
+    } as unknown as EngineAbi;
+
+    return { be: buildEngineBackend(abi), calls };
+  };
+
+  test('queryJson takes the queryText route when the ABI has one', () => {
+    const { be, calls } = fakeAbi(true);
+    const h = 1 as unknown as GraphHandle;
+
+    expect(be.queryJson(h, 'RETURN 1 AS n')).toBe('{"columns":[],"rows":[]}');
+    expect(calls).toEqual({ query: 0, queryText: 1 });
+
+    expect(be.gremlinText(h, 'g.V().count()')).toBe('{"columns":[],"rows":[]}');
+    expect(calls).toEqual({ query: 0, queryText: 2 });
+
+    // The BYTE forms must stay on `abi.query` — they are what the consumers wanting bytes use.
+    be.queryRows(h, 'RETURN 1 AS n');
+    expect(calls).toEqual({ query: 1, queryText: 2 });
+  });
+
+  test('queryJson falls back to decoding bytes when the ABI has no queryText', () => {
+    const { be, calls } = fakeAbi(false);
+    const h = 1 as unknown as GraphHandle;
+
+    // Same answer by the other route — which is exactly why the result cannot catch a mutant here.
+    expect(be.queryJson(h, 'RETURN 1 AS n')).toBe('{"columns":[],"rows":[]}');
+    expect(be.gremlinText(h, 'g.V().count()')).toBe('{"columns":[],"rows":[]}');
+    expect(calls).toEqual({ query: 2, queryText: 0 });
+  });
+});

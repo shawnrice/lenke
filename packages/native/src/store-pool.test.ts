@@ -54,18 +54,23 @@ const fakeStore = () => {
     preparedFree: () => {},
     preparedQueryArrow: () => new Uint8Array(),
     preparedQueryRows: () => rows(['n'], [[counts.query]]),
-    queryRows: () => {
+    // The COUNTERS live on the text forms, because that is what `graph.ts` calls (item 597); the
+    // byte forms delegate so either entry point counts exactly once and these assertions keep
+    // meaning "computed once, not per handle".
+    queryJson: () => {
       counts.query += 1;
 
-      return rows(['n'], [[counts.query]]);
+      return JSON.stringify({ columns: ['n'], rows: [[counts.query]] });
     },
+    queryRows: (h, q, p) => new TextEncoder().encode(backend.queryJson(h, q, p)),
     queryArrow: () => new Uint8Array(),
     queryArrowIpc: () => new Uint8Array(),
-    gremlinJson: () => {
+    gremlinText: () => {
       counts.gremlin += 1;
 
-      return new TextEncoder().encode(`[${counts.gremlin}]`);
+      return `[${counts.gremlin}]`;
     },
+    gremlinJson: (h, q) => new TextEncoder().encode(backend.gremlinText(h, q)),
     algo: () => rows(['node', 'degree'], []),
     encodeNdjson: () => new Uint8Array(),
     serialize: () => new Uint8Array(),

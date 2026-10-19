@@ -4,7 +4,7 @@
  * `backend-ffi.ts`'s marshalling, but loads the lean `lnk_*` surface and hands it
  * to {@link buildEngineBackend}, which maps the {@link Backend} contract onto it.
  */
-import { dlopen, FFIType, type Pointer, ptr, toArrayBuffer } from 'bun:ffi';
+import { CString, dlopen, FFIType, type Pointer, ptr, toArrayBuffer } from 'bun:ffi';
 
 import { ErrorCode } from '@lenke/errors';
 
@@ -104,6 +104,35 @@ export const createFfiEngineBackend = (libPath: string): Backend => {
     }
   };
 
+  /**
+   * {@link takeResult} for a result that IS text. `CString(ptr, 0, len)` decodes UTF-8 straight
+   * from the crate's buffer, where the byte route pays `toArrayBuffer` (110ns) + a `Uint8Array`
+   * view + `.slice()` (48ns) and then a `TextDecoder.decode` (54ns) at the caller: 382ns against
+   * 133ns including the `JSON.parse` both share (item 597).
+   *
+   * The EXPLICIT LENGTH is load-bearing. The crate's buffer is not NUL-terminated, so the
+   * zero-terminated form would scan past the payload into whatever the allocator left there.
+   * Verified against a buffer deliberately filled with non-NUL garbage immediately after the
+   * payload, for ASCII, 2/3/4-byte UTF-8, an empty result, and a LITERAL NUL mid-payload (which
+   * the length form does not truncate).
+   */
+  const takeText = (call: (outLen: Pointer) => FfiPtr | null, op: string): string => {
+    const outLen = new BigUint64Array(1);
+    const resPtr = call(ptr(outLen));
+
+    if (!resPtr) {
+      return fail(op, ErrorCode.Ffi);
+    }
+
+    const len = asByteLength(outLen[0], op);
+
+    try {
+      return String(new CString(resPtr, 0, len));
+    } finally {
+      symbols.lnk_free(resPtr, len);
+    }
+  };
+
   const abi: EngineAbi = {
     abiVersion,
     open: (bytes, format, threads = 1) => {
@@ -146,6 +175,26 @@ export const createFfiEngineBackend = (libPath: string): Backend => {
             p ? bytesPtr(p) : null,
             p ? p.byteLength : 0,
             format,
+            outLen,
+          ),
+        'query',
+      );
+    },
+    // Format is pinned to 0 (JSON) — the only format whose result is text.
+    queryText: (handle, lang, query, params) => {
+      const q = encoder.encode(query);
+      const p = params === null ? null : encoder.encode(params);
+
+      return takeText(
+        (outLen) =>
+          symbols.lnk_query(
+            asPtr(handle),
+            lang,
+            bytesPtr(q),
+            q.byteLength,
+            p ? bytesPtr(p) : null,
+            p ? p.byteLength : 0,
+            0,
             outLen,
           ),
         'query',

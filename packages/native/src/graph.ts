@@ -181,9 +181,12 @@ const decoder = new TextDecoder();
 // Decode a JSON carrier the crate handed back. The bytes are ours, but a decode
 // failure here means the FFI result contract drifted — surface it as a coded
 // `Ffi` fault rather than a bare `SyntaxError` with no provenance.
-const parseJson = (bytes: Uint8Array, op: string): unknown => {
+// Accepts a STRING as well as bytes because a backend that can decode UTF-8 straight from the
+// crate's result pointer hands one over already decoded (`Backend.queryJson`, item 597) — the
+// `TextDecoder.decode` here is then work the backend has already done.
+const parseJson = (payload: Uint8Array | string, op: string): unknown => {
   try {
-    return JSON.parse(decoder.decode(bytes));
+    return JSON.parse(typeof payload === 'string' ? payload : decoder.decode(payload));
   } catch (cause) {
     throw new LenkeError(`lenke: ${op} returned a non-JSON carrier`, {
       code: ErrorCode.Ffi,
@@ -198,8 +201,8 @@ const isRowSet = (doc: unknown): doc is RowSetJson =>
   Array.isArray((doc as RowSetJson).columns) &&
   Array.isArray((doc as RowSetJson).rows);
 
-const decodeRows = (bytes: Uint8Array): Row[] => {
-  const doc = parseJson(bytes, 'query');
+const decodeRows = (payload: Uint8Array | string): Row[] => {
+  const doc = parseJson(payload, 'query');
 
   if (!isRowSet(doc)) {
     throw new LenkeError('lenke: query result was not a {columns, rows} document', {
@@ -393,20 +396,27 @@ const assertParamModel = (name: string, value: unknown, inList = false): void =>
 };
 
 const stringifyParams = (params: object): string => {
-  for (const [name, value] of Object.entries(params)) {
-    assertParamModel(name, value);
+  // `for..in` rather than `Object.entries`, which allocates an array of [k, v] pairs per call:
+  // 50.8ns against 15.0 for a one-key object (item 597). This runs on every parameterized call.
+  for (const name in params) {
+    assertParamModel(name, (params as Record<string, unknown>)[name]);
   }
 
-  return JSON.stringify(params, (_key, value: unknown) => {
-    if (typeof value === 'bigint') {
-      throw new LenkeError(
-        'lenke: a bigint parameter cannot cross the native boundary without precision loss — pass it as a string or a safe-range number',
-        { code: ErrorCode.InvalidValue },
-      );
-    }
-
-    return value;
-  });
+  // NO REPLACER. One used to be passed here purely to reject a `bigint`, and a replacer puts
+  // `JSON.stringify` on its slow path for every key — 181ns against 59 on a one-key object, which
+  // was ~7% of a parameterized point-lookup call.
+  //
+  // It was also UNREACHABLE, by exhaustion over what `assertParamModel` admits above: a
+  // `null`/string/boolean/number holds no bigint; a top-level bigint is thrown there with a better
+  // message than the replacer's; a flat list is recursed into, so a bigint element is thrown too;
+  // a tagged-temporal object must have exactly one key whose value is a STRING, so a bigint field
+  // makes it fall through to that function's final throw; a `Temporal` is a class instance and
+  // `temporal.ts` declares no bigint field anywhere; and `undefined`/function/symbol encode to
+  // nothing. So every value that reaches this line is bigint-free by construction.
+  //
+  // And if a future `Temporal` field ever did hold one, the failure is loud rather than silent:
+  // `JSON.stringify` throws a `TypeError` on a bigint of its own accord.
+  return JSON.stringify(params);
 };
 
 /** Serialize a prepared statement's `$name` bindings (empty/absent → no params). */
@@ -1342,7 +1352,7 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
     query: <R extends Row = Row>(q: string | TemplateStringsArray, ...subs: unknown[]): R[] => {
       const { text, params } = compileGql(q, subs, clock ?? undefined);
 
-      return decodeRows(backend.queryRows(live(), text, params)) as R[];
+      return decodeRows(backend.queryJson(live(), text, params)) as R[];
     },
     queryArrow: (q: string | TemplateStringsArray, ...subs: unknown[]) => {
       const { text, params } = compileGql(q, subs, clock ?? undefined);
@@ -1369,7 +1379,7 @@ export const attachGraph = (backend: Backend, handle: GraphHandle): RustGraph =>
     // `gremlin(...)` here is the module-level composer (safe escaping), not this
     // property — object keys don't bind in scope.
     gremlin: (q, ...subs) =>
-      parseJson(backend.gremlinJson(live(), composeGremlin(q, ...subs)), 'gremlin') as unknown[],
+      parseJson(backend.gremlinText(live(), composeGremlin(q, ...subs)), 'gremlin') as unknown[],
     degree: (config) => runAlgoAsync('degree', config) as Promise<DegreeRow[]>,
     connectedComponents: (config) =>
       runAlgoAsync('connectedComponents', config) as Promise<ComponentRow[]>,
