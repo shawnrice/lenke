@@ -1,3 +1,11 @@
+//! The WRITE statements: `INSERT`, `_MERGE`, `SET`/`REMOVE` (`run_update`) and
+//! `INSERT … FROM`.
+//!
+//! `_MERGE` is match-or-create, so each arm resolves its endpoints against the store before
+//! deciding; `*_is_identity` answers whether a supplied id is the element's own identity, which
+//! is what lets an insert skip the external-id map. `is_write` is the predicate the rest of
+//! `exec` uses to decide that a plan mutates — keep it in step with the arms above it.
+
 use super::evaluator::*;
 use super::*;
 use crate::batch::{Batch, Col};

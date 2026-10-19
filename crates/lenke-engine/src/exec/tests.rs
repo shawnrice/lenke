@@ -18123,6 +18123,125 @@ fn the_frontier_count_prop_fast_path_declines_a_bare_scan() {
     );
 }
 
+/// Item 473's placement claim, made checkable: `try_frontier_multi_agg` sits below a dozen
+/// single-aggregate entries and the call site justifies that with _"disjoint from all of them
+/// by arity, so it cannot shadow a single-aggregate shape"_. That is a statement about the
+/// OTHER entries' gates, and nothing enforced it.
+///
+/// It matters because of how this class of bug presents. An entry placed below one that claims
+/// its shape is dead code that still passes every test it has — both paths return the same
+/// answer, so no differential test can see it and the bench row just reads 1.0x. Items 371, 375
+/// and 422 are three instances, each found by an `eprintln` at function entry.
+///
+/// The route itself cannot be asserted behaviourally (it is answer-equivalent by construction),
+/// but the PREMISE can: on a two-aggregate frontier shape, every single-aggregate entry above
+/// this one must decline. If someone later relaxes an arity gate upstream, this fails here
+/// instead of silently making the multi-agg fold unreachable.
+///
+/// BOTH AGGREGATE ORDERS, and mutation is what said so. Every upstream entry reads `aggs[0]`
+/// and then applies its own CONTENT gate — `try_frontier_count` wants `count(*)`,
+/// `try_frontier_prop_agg` wants a property argument. So for any one ordering, all but one of
+/// them decline on content before arity is ever consulted, and an arity mutant in the others
+/// survives. Relaxing `try_frontier_count`'s arity is caught only by `count(*)` FIRST, and
+/// `try_frontier_prop_agg`'s only by `max(b.v)` first. "Disjoint by arity" is therefore a
+/// weaker claim than it reads: for most entries on a given shape the content gate is what is
+/// load-bearing, and the arity gate is reachable in exactly one ordering.
+#[test]
+fn the_single_aggregate_frontier_entries_all_decline_a_two_aggregate_shape() {
+    let mut b = crate::store::Builder::default();
+    let n0 = b.node(&["N"], &[("v", Value::Num(1.0))]);
+    let n1 = b.node(&["N"], &[("v", Value::Num(7.0))]);
+    b.edge(n0, n1, "E");
+    b.edge(n1, n0, "E");
+    let store = b.build();
+
+    // Each of these is a single-aggregate fold placed ABOVE `try_frontier_multi_agg` in the
+    // ladder. `aggs.len() == 1` is what keeps them off a two-aggregate shape.
+    /// One ladder entry, as the ladder calls it.
+    type LadderEntry = fn(&Plan, &[(String, Expr)], &[Agg], &Store) -> Option<Batch>;
+
+    let single_agg_entries: [(&str, LadderEntry); 5] = [
+        (
+            "try_frontier_count",
+            crate::exec::fastpath::try_frontier_count,
+        ),
+        (
+            "try_frontier_prop_agg",
+            crate::exec::fastpath::try_frontier_prop_agg,
+        ),
+        (
+            "try_frontier_count_prop",
+            crate::exec::fastpath::try_frontier_count_prop,
+        ),
+        ("try_scan_num_agg", crate::exec::fastpath::try_scan_num_agg),
+        ("try_scan_str_agg", crate::exec::fastpath::try_scan_str_agg),
+    ];
+
+    for q in [
+        "MATCH (a:N)-[:E]->(b:N) RETURN count(*) AS c, max(b.v) AS m",
+        "MATCH (a:N)-[:E]->(b:N) RETURN max(b.v) AS m, count(*) AS c",
+    ] {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &store);
+        let Plan::Project { input, .. } = &plan else {
+            panic!("expected a Project over the Aggregate");
+        };
+        let Plan::Aggregate { input, keys, aggs } = input.as_ref() else {
+            panic!("expected an Aggregate");
+        };
+        assert_eq!(
+            aggs.len(),
+            2,
+            "the fixture must present TWO aggregates: {q}"
+        );
+
+        // The entry this is all about does claim the shape — otherwise the decline assertions
+        // below would hold vacuously for any plan at all.
+        assert!(
+            crate::exec::fastpath::try_frontier_multi_agg(input, keys, aggs, &store).is_some(),
+            "the multi-agg frontier fold must claim a two-aggregate frontier shape: {q}"
+        );
+
+        for (name, entry) in single_agg_entries {
+            assert!(
+                entry(input, keys, aggs, &store).is_none(),
+                "{name} must decline a TWO-aggregate shape ({q}); it sits above \
+                 try_frontier_multi_agg, so claiming this shape would make that fold \
+                 unreachable without failing any answer-based test"
+            );
+        }
+    }
+
+    // AND THE OTHER DIRECTION, which a surviving mutant is what showed was missing. Relaxing
+    // `aggs.len() < 2` to `aggs.is_empty()` leaves every assertion above it true — a two-agg
+    // shape is still claimed, and the declines are statements about other functions. Disjointness
+    // is symmetric and so is the pin: this entry must also refuse the ONE-aggregate shapes owned
+    // by the entries BELOW it (`try_filtered_scan_num_agg`, `try_scan_multi_agg`, the distinct
+    // counts), or its arity floor is doing nothing.
+    let q1 = "MATCH (a:N)-[:E]->(b:N) RETURN max(b.v) AS m";
+    let plan1 = crate::opt::optimize_indexed(crate::gql::parse(q1).unwrap(), &store);
+    let Plan::Project { input: input1, .. } = &plan1 else {
+        panic!("expected a Project over the Aggregate");
+    };
+    let Plan::Aggregate {
+        input: input1,
+        keys: keys1,
+        aggs: aggs1,
+    } = input1.as_ref()
+    else {
+        panic!("expected an Aggregate");
+    };
+    assert_eq!(
+        aggs1.len(),
+        1,
+        "the control fixture must present ONE aggregate"
+    );
+    assert!(
+        crate::exec::fastpath::try_frontier_multi_agg(input1, keys1, aggs1, &store).is_none(),
+        "the multi-agg fold must decline a ONE-aggregate shape: entries below it own that shape, \
+         and claiming it would shadow them silently"
+    );
+}
+
 /// Item 379: an endpoint move after an edge frontier is 1:1, so a bare `count(*)` over one
 /// can count the move's INPUT. `g.V().outE(L).outV().count()` was 1720.9us against
 /// `outE(L).count()`'s 118.4us — 14.6x for a number that must be equal.

@@ -1,3 +1,14 @@
+//! Turning a `Batch` into `Rows` — the one place a stored value becomes an OUTPUT value.
+//!
+//! `render_cell`/`cell_value` are the per-cell entry; `render_nodes`/`render_edges` are the bulk
+//! element paths; `path_*` and `render_gpath_elem` cover path values. `output_names` fixes the
+//! COLUMN ORDER, which is observable in the bytes (unlike row order) and is pinned by
+//! `column-order.test.ts` on the TypeScript side — a change here needs the byte-identity fuzzers,
+//! not just the unit tests.
+//!
+//! `needs_lineage`/`needs_path_elements` are the gates that decide whether execution has to carry
+//! path provenance at all; they are read upstream, so widening one costs every query.
+
 use super::*;
 use crate::batch::Col;
 use crate::gstr::GStr;

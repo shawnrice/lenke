@@ -1,3 +1,16 @@
+//! Reverse seeding: when the FAR end of a pattern is more selective than the near end, walk the
+//! pattern backwards from there instead of scanning the source.
+//!
+//! `reverse_seed_decide` is the decision and `reverse_seed_worth` the price — it compares the
+//! reverse walk against the SOURCE scan (node count), which over-fires for a sparse type, so
+//! callers in `fastpath` read a `Some` here as "the endpoint is genuinely more selective". The
+//! `try_reverse_*` entries are the routes themselves; `try_shortest_early_stop` is the shortest-
+//! path analogue.
+//!
+//! A reversed walk returns the forward walk's exact MULTISET, duplicate-path multiplicity
+//! included — that is the invariant the `reverse` tests pin, and it is what makes the choice
+//! answer-equivalent and therefore a pure performance decision.
+
 use super::*;
 use crate::batch::{Batch, Col};
 use crate::ir::{Expr, Plan};

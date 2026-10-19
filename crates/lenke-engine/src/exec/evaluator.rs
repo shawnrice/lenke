@@ -1,3 +1,19 @@
+//! `eval` — the expression evaluator, plus the whole-batch shortcuts that avoid it.
+//!
+//! `eval` is the per-row fallback. Everything above it exists to not call it: `in_set` keeps a
+//! prepared membership set, `eval_case_masked` evaluates a `CASE` over a column rather than a
+//! row, `arith_general` is the slow arithmetic arm, and `degree_chain_count`/
+//! `degree_count_subquery` answer a `COUNT{}` subquery from degrees instead of a traversal.
+//!
+//! The evaluator reads a property through the BINDING, not by re-resolving the element — that is
+//! what makes a projection cheap, and it is why a slot remap has to go through
+//! [`super::fastpath::remap_slot`] rather than being spelled by hand.
+//!
+//! `LabelMode` is a per-call policy (`with_label_mode`), and the two `label_mode_*` predicates
+//! are `#[cfg(test)]`/`#[cfg(not(test))]` PAIRS — the shortcut and bitset choices are forced in
+//! test builds, so a test exercises the route it means to. The corollary: a route decision read
+//! off a test build is not the production one.
+
 use super::scalar::*;
 use super::*;
 use crate::batch::{Batch, Col};

@@ -1,3 +1,18 @@
+//! The scalar function library — every `Expr::Call`, dispatched by `call_scalar`.
+//!
+//! `call_scalar_checked` is the entry that validates arity and argument types; `call_scalar` is
+//! the raw dispatch. The families are temporal (`date_part`, `temporal_ctor`, `duration_between`,
+//! `temporal_arith`), string (`str_map`, `substring`, `regex_match`, the `utf16_*` helpers),
+//! numeric (`scalar_num_fn`, `unary_num_fn`, `to_number`) and list/set (`list_set_op`).
+//!
+//! Two standing rules. STRING INDEXING IS UTF-16, because that is what the TypeScript engine
+//! does and the two must agree to the byte. And the numeric model is ONE type, f64: a bigint is
+//! `E_INVALID_VALUE`, and NaN/Inf/undefined render as null. Any new function needs an entry in
+//! the TS/native differential harness, not just a unit test — a last-ulp `power()` difference is
+//! the one deviation currently open, and libm constants are not foldable, so never assert engine
+//! math against a plain Rust literal computation (the compiler folds it at build time and glibc
+//! has moved a result by 1 ulp).
+
 use super::*;
 use crate::batch::Col;
 use crate::gstr::GStr;

@@ -1,3 +1,14 @@
+//! Direct-to-JSON egress: serialize results straight from a `Batch` without building `Rows`.
+//!
+//! `try_run_gql_json` / `try_run_gremlin_json` are the entries; each returns `None` for a shape it
+//! does not recognize and the caller falls back to render-then-serialize. The `try_fused_*_json`
+//! family collapses a projection into the writer so no intermediate value is materialized.
+//!
+//! Byte-identity applies in full here: these writers must emit exactly what rendering plus the
+//! TypeScript serializer emits. `try_stream_gremlin_json`'s gate order is load-bearing — it
+//! EXECUTES its seed rather than inspecting the plan, so a row-floor check has to sit above it
+//! (the fix measured 1.81x on an unindexed point lookup).
+
 use super::*;
 use crate::batch::{Batch, Col};
 use crate::store::Store;

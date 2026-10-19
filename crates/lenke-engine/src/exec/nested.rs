@@ -1,3 +1,15 @@
+//! Nested plans: subqueries, `CALL`, and the grouped forms that bind an inner result per outer
+//! row.
+//!
+//! `bind_nested`/`drive_nested` run the inner plan once per outer binding; `unit_slot_kinds` maps
+//! the inner plan's slots onto the outer row. `nested_group`/`nested_group_count` are the grouped
+//! variants.
+//!
+//! GQL's `CALL` correlation and laterality are ISO's, NOT Cypher's — answer a question about what
+//! should correlate from the ISO grammar. `GROUP BY` takes a BOUND NAME only, so a grouped inner
+//! plan always has a projection interposed (`LET k = …`); several fast paths depend on that and
+//! decline a bare `Scan` for it.
+
 use super::*;
 use crate::batch::{Batch, Col};
 use crate::ir::GElem;

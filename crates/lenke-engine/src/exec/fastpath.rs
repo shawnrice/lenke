@@ -1,3 +1,48 @@
+//! THE AGGREGATE AND PROJECTION FAST PATHS — ~50 `try_*` entries, each answering one plan shape
+//! without materializing the batch the general path would build.
+//!
+//! Every entry is a pure function of `(&Plan, &Store)` plus the aggregate spec, returns
+//! `Option<Batch>` (or `Option<u64>`), and must be ANSWER-EQUIVALENT to the general path — a fast
+//! path is a performance decision, never a semantic one. They are dispatched from the
+//! `Plan::Aggregate` arm of [`super::try_run_inner`] as one lazy `or_else` ladder.
+//!
+//! # The families
+//!
+//! | family | entries | the shape |
+//! |---|---|---|
+//! | fused hop | `try_fused_hop_*`, `try_edge_filtered_count`, `try_edge_cross_count` | one hop, predicate tested inline against the neighbour's column |
+//! | dict / streaming | `try_stream_*`, `try_*_dict_*`, `case_dict_lookup`, `try_filter_keep_dict` | a dictionary-encoded column, answered from the dictionary |
+//! | degree algebra | `try_degree_algebra`, `walk_levels_total`, `degree_algebra_total`, `reused_trails_at_3` | a deep COUNT as a level recurrence over degrees |
+//! | var-length | `try_varlen_*`, `varlen_*` | quantified paths, counted without enumerating |
+//! | frontier | `try_frontier_*` | an expand chain, folded without the wide intermediate |
+//! | scan | `try_scan_*`, `try_filtered_scan_*`, `try_indexed_*` | a bare or filtered `Scan`, folded columnar |
+//! | chain / n-hop | `try_3hop_product_count`, `try_nhop_sweep_count`, `try_fused_count`, `peel_*` | a hop chain as a degree inner product |
+//! | Gremlin helpers | `GremlinTree`, `root_ext_id`, `distinct_with_mult` | shapes only the Gremlin lowering produces |
+//!
+//! # THE LADDER'S ORDER IS NOT FREE
+//!
+//! Entries are tried in source order and `or_else` is lazy, so an entry placed below one that
+//! CLAIMS its shape is dead code that still passes every test it has — both paths return the same
+//! answer, so no differential test can see the difference, and the bench row simply reads 1.0x.
+//! That has happened three times (items 371, 375, 422), each found by an `eprintln` at function
+//! entry rather than by a test.
+//!
+//! The rule that follows, and the reason the call site carries a comment per contended entry:
+//!
+//! 1. **Prefer DISJOINT gates.** Two entries that cannot both claim a shape can be read in any
+//!    order, and "these never contend" is then checkable by reading rather than by measuring.
+//! 2. **Where gates DO contend, pin it with a direct assertion on the function**, not with a
+//!    comment. Items 369 and 376 do this — see `the_frontier_count_prop_fast_path_declines_a_bare_scan`
+//!    in [`super::tests`]. A gate that the ladder keeps unreachable is still asserted directly,
+//!    so it is tested code rather than merely dead code.
+//! 3. **A bare `Scan` is a trivial frontier**, which is the specific trap: every `try_frontier_*`
+//!    entry will claim a scan aggregate unless its scan twin sits above it.
+//!
+//! Correctness lives in [`super::tests`] and in `fastpath_fuzz` (generated plans, fast path vs
+//! general path, compared as multisets). A passing integration probe is NOT evidence here: the
+//! probe fixtures give every node the same label and ask for `count(*)`, which is invisible to a
+//! rewrite that permutes which slot holds which node.
+
 use super::aggregation::*;
 use super::evaluator::*;
 use super::*;
@@ -6,6 +51,24 @@ use crate::gstr::GStr;
 use crate::ir::{Expr, Plan};
 use crate::store::{Column, Store};
 use crate::value::{self, Value};
+
+/// A SCALAR aggregate — no group keys and exactly one aggregate — or `None`.
+///
+/// Twenty-five entries in this module open with exactly this test, which is what makes it worth
+/// a name: the slice pattern `[agg]` says "exactly one" in the type system rather than as a
+/// length check beside an index, and the concept the ladder keeps re-spelling ("this entry only
+/// answers a scalar aggregate") gets somewhere to be documented.
+///
+/// The arity half of this is load-bearing for ladder ORDER as well as for correctness — see the
+/// module header, and `try_frontier_multi_agg`, which is the one entry that wants `len() >= 2`
+/// and therefore sits below every caller of this.
+#[inline(always)]
+fn sole_agg<'a>(keys: &[(String, Expr)], aggs: &'a [Agg]) -> Option<&'a Agg> {
+    match (keys.is_empty(), aggs) {
+        (true, [agg]) => Some(agg),
+        _ => None,
+    }
+}
 
 /// Fused `count(*)` over `Filter(<numeric conj on the frontier>, Expand(Scan))` — the
 /// single-hop analogue of [`try_filtered_count`]'s streaming. Sweep the type's edges (per-type
@@ -99,10 +162,7 @@ pub(super) fn try_fused_hop_mask_agg(
     aggs: &[Agg],
     store: &Store,
 ) -> Option<Batch> {
-    if !keys.is_empty() || aggs.len() != 1 {
-        return None;
-    }
-    let agg = &aggs[0];
+    let agg = sole_agg(keys, aggs)?;
     if agg.distinct {
         return None;
     }
@@ -254,10 +314,7 @@ pub(super) fn try_edge_filtered_count(
     aggs: &[Agg],
     store: &Store,
 ) -> Option<Batch> {
-    if !keys.is_empty() || aggs.len() != 1 {
-        return None;
-    }
-    let agg = &aggs[0];
+    let agg = sole_agg(keys, aggs)?;
     if agg.func != AggFn::Count || agg.arg.is_some() || agg.distinct {
         return None; // count(*) only
     }
@@ -810,10 +867,7 @@ pub(super) fn try_edge_cross_count(
     aggs: &[Agg],
     store: &Store,
 ) -> Option<Batch> {
-    if !keys.is_empty() || aggs.len() != 1 {
-        return None;
-    }
-    let agg = &aggs[0];
+    let agg = sole_agg(keys, aggs)?;
     if agg.func != AggFn::Count || agg.arg.is_some() || agg.distinct {
         return None;
     }
@@ -1658,10 +1712,7 @@ pub(super) fn try_group_count(
     aggs: &[Agg],
     store: &Store,
 ) -> Option<Batch> {
-    if !keys.is_empty() || aggs.len() != 1 {
-        return None;
-    }
-    let agg = &aggs[0];
+    let agg = sole_agg(keys, aggs)?;
     if agg.func != AggFn::Count || agg.arg.is_some() || agg.distinct {
         return None; // count(*) only — anything else reads a column
     }
@@ -1838,10 +1889,7 @@ pub(super) fn try_varlen_count(
     aggs: &[Agg],
     store: &Store,
 ) -> Option<Batch> {
-    if !keys.is_empty() || aggs.len() != 1 {
-        return None;
-    }
-    let agg = &aggs[0];
+    let agg = sole_agg(keys, aggs)?;
     if agg.func != AggFn::Count || agg.arg.is_some() || agg.distinct {
         return None; // count(*) only
     }
@@ -2144,10 +2192,7 @@ pub(super) fn try_varlen_distinct_count(
     aggs: &[Agg],
     store: &Store,
 ) -> Option<Batch> {
-    if !keys.is_empty() || aggs.len() != 1 {
-        return None;
-    }
-    let agg = &aggs[0];
+    let agg = sole_agg(keys, aggs)?;
     // count(DISTINCT <endpoint slot>) only.
     if agg.func != AggFn::Count || !agg.distinct {
         return None;
@@ -2229,10 +2274,7 @@ pub(super) fn try_varlen_distinctby_count(
     aggs: &[Agg],
     store: &Store,
 ) -> Option<Batch> {
-    if !keys.is_empty() || aggs.len() != 1 {
-        return None;
-    }
-    let agg = &aggs[0];
+    let agg = sole_agg(keys, aggs)?;
     if agg.func != AggFn::Count || agg.arg.is_some() || agg.distinct {
         return None; // plain count(*)
     }
@@ -2453,10 +2495,7 @@ pub(super) fn try_varlen_agg(
     aggs: &[Agg],
     store: &Store,
 ) -> Option<Batch> {
-    if !keys.is_empty() || aggs.len() != 1 {
-        return None;
-    }
-    let agg = &aggs[0];
+    let agg = sole_agg(keys, aggs)?;
     if agg.distinct
         || !matches!(
             agg.func,
@@ -2724,10 +2763,7 @@ pub(super) fn try_frontier_count(
     aggs: &[Agg],
     store: &Store,
 ) -> Option<Batch> {
-    if !keys.is_empty() || aggs.len() != 1 {
-        return None;
-    }
-    let agg = &aggs[0];
+    let agg = sole_agg(keys, aggs)?;
     if agg.func != AggFn::Count || agg.arg.is_some() || agg.distinct {
         return None; // count(*) only
     }
@@ -2848,10 +2884,7 @@ pub(super) fn try_frontier_prop_agg(
     aggs: &[Agg],
     store: &Store,
 ) -> Option<Batch> {
-    if !keys.is_empty() || aggs.len() != 1 {
-        return None;
-    }
-    let agg = &aggs[0];
+    let agg = sole_agg(keys, aggs)?;
     if agg.distinct || !matches!(agg.func, AggFn::Min | AggFn::Max) {
         return None;
     }
@@ -2900,10 +2933,7 @@ pub(super) fn try_scan_count(
     aggs: &[Agg],
     store: &Store,
 ) -> Option<Batch> {
-    if !keys.is_empty() || aggs.len() != 1 {
-        return None;
-    }
-    let agg = &aggs[0];
+    let agg = sole_agg(keys, aggs)?;
     if agg.func != AggFn::Count || agg.arg.is_some() {
         return None; // count(*) only; count(arg)/DISTINCT need the values
     }
@@ -2937,10 +2967,7 @@ pub(super) fn try_filtered_scan_num_agg(
     aggs: &[Agg],
     store: &Store,
 ) -> Option<Batch> {
-    if !keys.is_empty() || aggs.len() != 1 {
-        return None;
-    }
-    let agg = &aggs[0];
+    let agg = sole_agg(keys, aggs)?;
     if agg.distinct
         || !matches!(
             agg.func,
@@ -3039,10 +3066,7 @@ pub(super) fn try_filtered_scan_str_agg(
     aggs: &[Agg],
     store: &Store,
 ) -> Option<Batch> {
-    if !keys.is_empty() || aggs.len() != 1 {
-        return None;
-    }
-    let agg = &aggs[0];
+    let agg = sole_agg(keys, aggs)?;
     if agg.distinct || !matches!(agg.func, AggFn::Min | AggFn::Max) {
         return None;
     }
@@ -3164,10 +3188,7 @@ pub(super) fn try_frontier_count_prop(
     aggs: &[Agg],
     store: &Store,
 ) -> Option<Batch> {
-    if !keys.is_empty() || aggs.len() != 1 {
-        return None;
-    }
-    let agg = &aggs[0];
+    let agg = sole_agg(keys, aggs)?;
     if agg.distinct || agg.func != AggFn::Count {
         return None;
     }
@@ -3312,10 +3333,7 @@ pub(super) fn try_scan_count_prop(
     aggs: &[Agg],
     store: &Store,
 ) -> Option<Batch> {
-    if !keys.is_empty() || aggs.len() != 1 {
-        return None;
-    }
-    let agg = &aggs[0];
+    let agg = sole_agg(keys, aggs)?;
     // `count(*)` has its own shortcut; DISTINCT needs the values, so it stays on the general
     // path. Only the plain `count(<prop>)`.
     if agg.func != AggFn::Count || agg.distinct {
@@ -3358,10 +3376,7 @@ pub(super) fn try_scan_num_agg(
     aggs: &[Agg],
     store: &Store,
 ) -> Option<Batch> {
-    if !keys.is_empty() || aggs.len() != 1 {
-        return None;
-    }
-    let agg = &aggs[0];
+    let agg = sole_agg(keys, aggs)?;
     // `Count` is NOT here: it does not read the values, so `try_scan_count_prop` answers it
     // for a column of ANY type rather than this arm answering it for `Num` alone.
     //
@@ -3522,10 +3537,7 @@ pub(super) fn try_scan_str_agg(
     aggs: &[Agg],
     store: &Store,
 ) -> Option<Batch> {
-    if !keys.is_empty() || aggs.len() != 1 {
-        return None;
-    }
-    let agg = &aggs[0];
+    let agg = sole_agg(keys, aggs)?;
     if agg.distinct || !matches!(agg.func, AggFn::Min | AggFn::Max) {
         return None;
     }
@@ -4080,10 +4092,7 @@ pub(super) fn try_indexed_min_max(
     aggs: &[Agg],
     store: &Store,
 ) -> Option<Batch> {
-    if !keys.is_empty() || aggs.len() != 1 {
-        return None;
-    }
-    let agg = &aggs[0];
+    let agg = sole_agg(keys, aggs)?;
     if agg.distinct || !matches!(agg.func, AggFn::Min | AggFn::Max) {
         return None;
     }
@@ -4135,10 +4144,7 @@ pub(super) fn try_indexed_distinct_count(
 ) -> Option<Batch> {
     // The same gates as `try_scan_distinct_count`, deliberately identical so the two cannot
     // disagree about which shapes they handle.
-    if !keys.is_empty() || aggs.len() != 1 {
-        return None;
-    }
-    let agg = &aggs[0];
+    let agg = sole_agg(keys, aggs)?;
     if agg.func != AggFn::Count || !agg.distinct {
         return None;
     }
@@ -4164,10 +4170,7 @@ pub(super) fn try_scan_distinct_count(
     aggs: &[Agg],
     store: &Store,
 ) -> Option<Batch> {
-    if !keys.is_empty() || aggs.len() != 1 {
-        return None;
-    }
-    let agg = &aggs[0];
+    let agg = sole_agg(keys, aggs)?;
     if agg.func != AggFn::Count || !agg.distinct {
         return None;
     }
@@ -4244,10 +4247,7 @@ pub(super) fn try_frontier_distinct_count(
     aggs: &[Agg],
     store: &Store,
 ) -> Option<Batch> {
-    if !keys.is_empty() || aggs.len() != 1 {
-        return None;
-    }
-    let agg = &aggs[0];
+    let agg = sole_agg(keys, aggs)?;
     if agg.func != AggFn::Count || !agg.distinct {
         return None;
     }
@@ -4806,10 +4806,7 @@ pub(super) fn try_3hop_product_count(
     aggs: &[Agg],
     store: &Store,
 ) -> Option<Batch> {
-    if !keys.is_empty() || aggs.len() != 1 {
-        return None;
-    }
-    let agg = &aggs[0];
+    let agg = sole_agg(keys, aggs)?;
     if agg.func != AggFn::Count || agg.arg.is_some() || agg.distinct {
         return None;
     }
@@ -4966,10 +4963,7 @@ pub(super) fn try_nhop_sweep_count(
     aggs: &[Agg],
     store: &Store,
 ) -> Option<Batch> {
-    if !keys.is_empty() || aggs.len() != 1 {
-        return None;
-    }
-    let agg = &aggs[0];
+    let agg = sole_agg(keys, aggs)?;
     if agg.func != AggFn::Count || agg.arg.is_some() || agg.distinct {
         return None;
     }
@@ -5251,10 +5245,7 @@ pub(super) fn try_fused_count(
     aggs: &[Agg],
     store: &Store,
 ) -> Option<Batch> {
-    if !keys.is_empty() || aggs.len() != 1 {
-        return None;
-    }
-    let agg = &aggs[0];
+    let agg = sole_agg(keys, aggs)?;
     if agg.func != AggFn::Count {
         return None;
     }
@@ -5928,10 +5919,7 @@ pub(super) fn try_join_product_count(
     aggs: &[Agg],
     store: &Store,
 ) -> Option<Batch> {
-    if !keys.is_empty() || aggs.len() != 1 {
-        return None;
-    }
-    let agg = &aggs[0];
+    let agg = sole_agg(keys, aggs)?;
     if agg.func != AggFn::Count || agg.arg.is_some() || agg.distinct {
         return None;
     }

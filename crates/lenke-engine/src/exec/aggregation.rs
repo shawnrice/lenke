@@ -1,3 +1,14 @@
+//! The general aggregate — the path every `Plan::Aggregate` takes when no fast path in
+//! [`super::fastpath`] claims its shape.
+//!
+//! `aggregate` is the entry; `group_by`/`assign_groups` bucket rows and `fold_grouped` reduces
+//! each bucket. `try_frontier_group_fold` and `try_dict_grouping` are the two shortcuts that live
+//! here rather than in `fastpath` because they reuse this module's grouping machinery.
+//!
+//! The `sort_local_*` family is Gremlin's `order(local)`, which sorts WITHIN a value rather than
+//! across rows. Summation order is fixed for byte-identity: `sum`/`avg` must fold in the same
+//! order as the TypeScript engine, so these folds are not free to be reassociated.
+
 use super::evaluator::*;
 use super::order::FRONTIER_FOLD_MIN;
 use super::*;

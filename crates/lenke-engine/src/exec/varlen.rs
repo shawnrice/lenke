@@ -1,3 +1,17 @@
+//! Variable-length patterns — `-[:K]->{m,n}`, `ANY SHORTEST`, and the quantified-path family.
+//!
+//! `var_length` is the general entry; `var_length_count` is the counting one. Both drive a DFS
+//! (`varlen_dfs`/`varlen_walk`) through a `VarlenEmit` sink, so counting, collecting, distinct-
+//! endpoint and streaming-JSON consumers share one traversal.
+//!
+//! PATH MODE is the thing to keep straight: `parsePathMode` returns `trail` with no mode keyword,
+//! so `-[:K]->{3}` is a TRAIL and that is the DEFAULT spelling. A trail forbids edge reuse, which
+//! is not a function of the current level — so the level recurrence in [`super::fastpath`] counts
+//! WALKS and only corrects to a trail at depth 3. Anything deeper comes through here.
+//!
+//! `StepBudget`/`guard_path_growth` are the resource bounds; `limits.trail` is ONE knob meaning
+//! both a per-source hop budget and a global row cap.
+
 use super::nested::*;
 use super::render::*;
 use super::*;

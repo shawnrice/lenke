@@ -1,3 +1,14 @@
+//! `DISTINCT` — the dedup fast paths and the general `distinct_batch`.
+//!
+//! Each `try_distinct_*` entry owns one shape (a scanned property, a frontier property, several
+//! columns, identical columns, a var-length expression) and returns `None` otherwise;
+//! `distinct_batch` is the fallback. `ColKeyer`/`KeyPart` build the per-row key once so the hash
+//! sees a typed key rather than a rendered string.
+//!
+//! `try_distinct_identical_cols` exists because `DISTINCT x, x` is a single-column dedup wearing
+//! two columns — the duplicate projection items are not a degenerate case to reject but a shape
+//! with its own route.
+
 use super::varlen::{run_varlen, DistinctEndpointEmit};
 use super::*;
 use crate::batch::{Batch, Col};

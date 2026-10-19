@@ -1,3 +1,10 @@
+//! Schema DDL: `apply_schema_op` and the validator/invariant declarations behind
+//! `createIndex`-style operations.
+//!
+//! `enforce_expr_constraints` is the commit-time check; it is deliberately skipped when a store
+//! carries no constraints (the write path pays O(1) rather than O(row width) for the common
+//! unconstrained case).
+
 use super::*;
 use crate::store::Store;
 

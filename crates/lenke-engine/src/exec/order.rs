@@ -1,3 +1,13 @@
+//! `ORDER BY`, paging and `DISTINCT BY` — everything that needs a comparison between rows.
+//!
+//! `row_cmp`/`sort_idx` are the comparison core and use a TOTAL order (NaN last, NaN == NaN) so
+//! sorted output is byte-identical across engines, which is deliberately NOT the predicate
+//! semantics (where NaN stays JS-unordered). `try_scan_top_k` and `try_late_materialize` are the
+//! fast paths that avoid sorting whole rows; `order_page` applies SKIP/LIMIT.
+//!
+//! Tie order under `ORDER BY` is PINNED between the engines (measured), so a change to how ties
+//! fall is a cross-engine divergence even though the ordering key is unchanged.
+
 use super::*;
 use crate::batch::{Batch, Col};
 use crate::ir::Expr;

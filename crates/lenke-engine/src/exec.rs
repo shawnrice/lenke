@@ -15,6 +15,78 @@ use crate::ir::{Agg, AggFn, CombineOp, CompareOp, Dir, Expr, PathMode, Plan, TxK
 use crate::store::{Column, Store};
 use crate::value::{self, Value};
 
+// THE SUBMODULE MAP. `exec` is one pipeline split across thirteen files; this is the whole
+// list, in the order the pipeline reads rather than alphabetically. Each file carries a `//!`
+// header saying what it owns and the one non-obvious thing about it.
+//
+//   fastpath    ~50 `try_*` aggregate/projection fast paths. ORDER-SENSITIVE — read its header
+//               before adding or moving an entry.
+//   evaluator   `eval` plus the whole-batch shortcuts that exist to avoid calling it.
+//   scalar      the scalar function library (every `Expr::Call`).
+//   reverse     reverse seeding: walk the pattern from the selective far end.
+//   varlen      variable-length and quantified paths; `ANY SHORTEST`.
+//   nested      subqueries and `CALL` — an inner plan bound per outer row.
+//   distinct    `DISTINCT` fast paths and the general dedup.
+//   order       `ORDER BY`, paging, `DISTINCT BY` — anything comparing two rows.
+//   aggregation the general aggregate, the one every shape `fastpath` declines falls back to.
+//   write       `INSERT`, `_MERGE`, `SET`/`REMOVE`.
+//   ddl         schema operations and the commit-time constraint check.
+//   render      `Batch` -> `Rows`; owns the observable COLUMN order.
+//   json_out    direct-to-JSON egress, bypassing `Rows` entirely.
+//
+// These were all extracted from one 25,000-line `exec.rs` and the declarations stayed wherever
+// the extracted code had been, scattered over six places between lines 850 and 5700. Keep them
+// here: a reader should be able to learn the engine's shape from the top of this file.
+
+pub(crate) mod fastpath;
+use self::fastpath::*;
+
+#[cfg(test)]
+mod fastpath_fuzz;
+
+pub(crate) mod evaluator;
+use self::evaluator::*;
+
+mod scalar;
+pub(crate) use self::scalar::temporal_ctor;
+use self::scalar::*;
+
+mod reverse;
+use self::reverse::*;
+
+mod varlen;
+use self::varlen::*;
+
+mod nested;
+use self::nested::*;
+
+mod distinct;
+use self::distinct::*;
+
+mod order;
+use self::order::*;
+
+mod aggregation;
+use self::aggregation::*;
+
+mod write;
+use self::write::*;
+
+mod ddl;
+use self::ddl::*;
+// Re-exported at exec scope so existing `crate::exec::…` call sites resolve: ffi/lib
+// reach apply_schema_op; binary.rs declares validators/invariants on binary load.
+pub use self::ddl::apply_schema_op;
+pub(crate) use self::ddl::{declare_invariant, declare_validator};
+
+pub(crate) mod render;
+use self::render::*;
+
+mod json_out;
+pub use self::json_out::{
+    run_gremlin_json, try_run_gql_json, try_run_gremlin_json, try_stream_gremlin_json,
+};
+
 /// Mulberry32 PRNG — the fully-specified generator `sample()` uses with a FIXED seed,
 /// byte-identical to the TS engine: same seed + same draw order ⇒ the
 /// same seeded shuffle on every engine.
@@ -854,19 +926,6 @@ enum Applied {
     RemoveEdge(u32, String),
 }
 
-mod write;
-use self::write::*;
-
-mod ddl;
-use self::ddl::*;
-// Re-exported at exec scope so existing `crate::exec::…` call sites resolve: ffi/lib
-// reach apply_schema_op; binary.rs declares validators/invariants on binary load.
-pub use self::ddl::apply_schema_op;
-pub(crate) use self::ddl::{declare_invariant, declare_validator};
-
-pub(crate) mod render;
-use self::render::*;
-
 /// Pull a batch up through a (non-terminal) plan node. `track` is the plan-global
 /// lineage decision: when true, row-producing operators build the path sidecar.
 ///
@@ -1589,6 +1648,15 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
                         // TWO OR MORE aggregates over one frontier, which every entry above
                         // refuses by arity (item 473). Disjoint from all of them for that
                         // reason, so it cannot shadow a single-aggregate shape.
+                        //
+                        // NARROWED by the test that pins this, which needed BOTH aggregate
+                        // orders before it had teeth. Each entry above reads `aggs[0]` and
+                        // then applies its own CONTENT gate, so on any one shape all but one
+                        // of them decline on content before arity is consulted — an arity
+                        // mutant in the others survives. The disjointness holds; "by arity"
+                        // is what is too strong, since for most entries the content gate is
+                        // the load-bearing one. See
+                        // `the_single_aggregate_frontier_entries_all_decline_a_two_aggregate_shape`.
                         .or_else(|| try_frontier_multi_agg(input, keys, aggs, store))
                         .or_else(|| try_filtered_scan_num_agg(input, keys, aggs, store))
                         // Its STRING twin. Beside it rather than anywhere else, for the reason
@@ -3178,20 +3246,6 @@ fn single_hop_no_filter(body: &Plan) -> bool {
         _ => false,
     }
 }
-
-mod json_out;
-pub use self::json_out::{
-    run_gremlin_json, try_run_gql_json, try_run_gremlin_json, try_stream_gremlin_json,
-};
-
-mod order;
-use self::order::*;
-
-mod aggregation;
-use self::aggregation::*;
-
-mod reverse;
-use self::reverse::*;
 
 /// `keep`, so no per-row struct is built.
 /// A fixed-length hop, with the PREDICTIVE half of the frontier guard built in.
@@ -4859,21 +4913,6 @@ fn for_each_typed_out(
     Some(())
 }
 
-pub(crate) mod fastpath;
-
-#[cfg(test)]
-mod fastpath_fuzz;
-use self::fastpath::*;
-
-mod varlen;
-use self::varlen::*;
-
-mod nested;
-use self::nested::*;
-
-pub(crate) mod evaluator;
-use self::evaluator::*;
-
 /// Evaluate an `EXISTS` body against a correlated `seed` batch (the outer rows
 /// plus a provenance column). The body is a chain of the operators an EXISTS
 /// pattern can contain — `Expand`/`VarLength`/`Filter` — rooted at `Plan::Row`,
@@ -5610,10 +5649,6 @@ fn prop_present_mask(e: &Expr, store: &Store, batch: &Batch) -> Option<Vec<bool>
     }
 }
 
-mod scalar;
-pub(crate) use self::scalar::temporal_ctor;
-use self::scalar::*;
-
 /// `op` with its operands swapped — used to normalize `literal <cmp> prop` to
 /// `prop <cmp> literal`. Equality is symmetric; the orderings mirror.
 fn flip_op(op: CompareOp) -> CompareOp {
@@ -5677,9 +5712,6 @@ fn invert_pred(e: &Expr) -> Option<Expr> {
         _ => return None,
     })
 }
-
-mod distinct;
-use self::distinct::*;
 
 /// Flatten a conjunction into its atoms (`a AND b AND c` → `[a, b, c]`); a
 /// non-`And` expression is a single atom.
