@@ -8555,3 +8555,38 @@ thread came from that, and each time the direct measurement was 3-5x smaller. Co
 593's "a micro-probe can LOCATE a cost and must not SIZE one" — a subtraction cannot size one
 either. When the quantity you want is a small difference between two large numbers, the difference
 is mostly their noise.
+
+### A TRAIL past two hops has a closed form — OPEN TARGET, verified, worth ~30x native / ~70x TS (600)
+
+`count 3-hop` is recorded as a CSR ceiling (489). That is true of the row it names — a FIXED
+three-segment chain — and the QUANTIFIED spelling beside it is a different operator with a cliff in
+**both** engines:
+
+| spelling               | TS          | native    |
+| ---------------------- | ----------- | --------- |
+| chain 3-hop (a WALK)   | 10.91 ms    | 0.42      |
+| `-[:K]->{3}` (a TRAIL) | **1071.55** | **15.81** |
+| `-[:K]->{4}`           | 5765.28     | 80.96     |
+
+The spellings are NOT equivalent — a quantified path is a TRAIL (2,499,936) and a chain is a WALK
+(2,500,000) — and **both engines agree on every spelling**, so this is perf, not a divergence.
+
+**The inclusion-exclusion `shortcuts.ts` asks for exists at depth 3 and is O(V+E):**
+
+```
+trail3 = walk3 - Σ_{self-loop at a} outdeg(a) - Σ_{self-loop at a} indeg(a)
+               - Σ_{e: a->b} |edges b->a| + 2*|self-loops|
+```
+
+`walk3` is the level recurrence both engines already have (589 / 587). **Validated two ways:** exact
+on the 20,000-vertex fixture (2,500,000 - 20 - 20 - 32 + 8 = 2,499,936, which both engines answer),
+and brute-forced against triple enumeration over **400 random graphs admitting self-loops and
+parallel edges — 400/400 agree.** Parallel edges are what break a naive version and it survives
+them.
+
+**Do not "fix the dispatch".** I came expecting TS's `walkLevelCount` to be missing from the fixed
+chain; the chain is the FAST spelling in both engines. Pointing a WALK recurrence at a TRAIL answers
+2,500,000 for 2,499,936 — a wrong answer no timing would reveal. **Print the answers beside the
+times.**
+
+Depth 4 is measurement only; its terms are not derived.
