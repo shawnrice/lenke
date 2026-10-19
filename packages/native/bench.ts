@@ -437,6 +437,17 @@ const CASES: Case[] = [
     //
     // It is also the control FOR the row above: a change admitting the sort must move this one
     // and leave the top-k row alone.
+    // THE WINDOWED TWIN (item 610). `top-k by property` above is the same sort with a `LIMIT` and
+    // used to be the DECLINED case; a conservative cannot-fault check now lets it ride the
+    // shortcut, so this row and that one move together while a FAULTING projection still
+    // declines. Kept beside the unwindowed row so the two can be read against each other.
+    name: 'query: ordered projection + limit',
+    ...onGraph(
+      () => nodesDoc,
+      (e, g) => void e.query(g, 'MATCH (n:Person) RETURN n.age AS a ORDER BY a LIMIT 5'),
+    ),
+  },
+  {
     name: 'query: ordered projection [no window]',
     ...onGraph(
       () => nodesDoc,

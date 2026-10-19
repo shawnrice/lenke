@@ -25,12 +25,44 @@
  */
 import type { Graph } from '@lenke/core';
 
-import type { Clause } from '../ast.js';
+import type { Clause, Expr } from '../ast.js';
 import type { Params, Row } from '../executor.js';
 import { compareSort, sortsOnOutputNames } from '../executor.js';
 
+/**
+ * Can evaluating this expression FAULT, beyond producing its own value?
+ *
+ * Conservative by construction: four kinds are total and everything else declines, including
+ * shapes that probably cannot fault. A false "cannot fault" is a wrong answer; a false "might
+ * fault" is only the general path.
+ *
+ *   - `var` / `prop` are total. A missing property reads NULL (`propOf` returns null for an
+ *     absent key and for a null element), which is a value, not a fault.
+ *   - `lit` is a constant.
+ *   - `param` is substituted before evaluation, so it is a literal by the time a row is
+ *     projected. An UNBOUND one raises — but it raises on the first row either path projects, and
+ *     a window greater than zero always projects at least one, so the outcome is a raise either
+ *     way.
+ *
+ * Everything else can genuinely throw and is refused: `arith` divides, `compare` throws on a
+ * cross-type `<=` ([[cross-type-comparison-no-error]]), `index`/`field` can miss, a scalar call
+ * can reject its argument, and a subquery is a whole evaluation. `list`/`record` could recurse
+ * into their elements and deliberately do not — the win is not in them and an extra branch here
+ * is an extra thing to be wrong about.
+ *
+ * WHY THIS EXISTS (item 610). It is the "conservative cannot-fault check on the projection" item
+ * 426 deferred, and it is what licenses a WINDOW to ride a sorted shortcut: the general path keeps
+ * top-k INPUT bindings and projects only survivors, so an item that faults on a DISCARDED row
+ * never raises there. If no item can fault, projecting every row cannot differ.
+ */
+const cannotFault = (e: Expr): boolean =>
+  e.kind === 'var' || e.kind === 'prop' || e.kind === 'lit' || e.kind === 'param';
+
 /** One `ORDER BY` key, resolved to the output column it names. */
 export type ColSort = { col: string; descending: boolean; nullsFirst: boolean | undefined };
+
+/** A resolved sort, plus the window to apply AFTER it (item 610). */
+export type SortPlan = { sorts: readonly ColSort[]; skip: number; limit: number | undefined };
 
 /**
  * The projection's `ORDER BY` as column sorts, or `null` to decline.
@@ -42,14 +74,39 @@ export type ColSort = { col: string; descending: boolean; nullsFirst: boolean | 
 export const outputColumnSorts = (
   ret: Extract<Clause, { kind: 'return' }>,
   cols: readonly string[],
-): ColSort[] | null | undefined => {
+): SortPlan | null | undefined => {
   const keys = ret.projection.orderBy;
 
   if (keys === undefined || keys.length === 0) {
     return undefined;
   }
 
-  if (ret.projection.skip !== undefined || ret.projection.limit !== undefined) {
+  const { skip, limit } = ret.projection;
+  const windowed = skip !== undefined || limit !== undefined;
+  // A `CountValue` may be a PARAMETER (`LIMIT $n`), not a number — the AST type says so and the
+  // slice below cannot take one. A parameterized window declines rather than being resolved here:
+  // the value lives in `params` at run time while this decision is made once at compile time, and
+  // resolving it would make the route depend on a binding the plan is cached across.
+  const numericWindow =
+    (skip === undefined || typeof skip === 'number') &&
+    (limit === undefined || typeof limit === 'number');
+
+  // A WINDOW RIDES A SORT only when no projected item can fault (item 610). With a window the
+  // general path projects only the survivors, so an item that faults on a discarded row never
+  // raises there — item 604 measured both engines returning a row for
+  // `RETURN CAST(a.s AS INTEGER) AS x, a.n AS k ORDER BY k LIMIT 1` while the same query without
+  // the window raises on both. If nothing can fault, projecting every row cannot differ.
+  //
+  // `LIMIT 0` is refused for SPEED, not correctness, and mutation says so: a mutant admitting it
+  // SURVIVES. The correctness worry does not apply here — `applyProjection` returns `[]` before
+  // projecting, but so does the slice below, and no admitted item can fault anyway, so both paths
+  // answer `[]`. What the clause avoids is doing the work: sorting every row to return none.
+  // Keeping a guard whose removal is answer-equivalent is the same call item 601 made, and it is
+  // labelled as the perf guard it is rather than borrowing the raise-parity argument above.
+  if (
+    windowed &&
+    (!numericWindow || limit === 0 || !ret.projection.items.every((it) => cannotFault(it.expr)))
+  ) {
     return null;
   }
 
@@ -69,7 +126,12 @@ export const outputColumnSorts = (
     }
   }
 
-  return out;
+  return {
+    sorts: out,
+    // Narrowed by `numericWindow` above; a non-numeric window has already declined.
+    skip: typeof skip === 'number' ? skip : 0,
+    limit: typeof limit === 'number' ? limit : undefined,
+  };
 };
 
 /**
@@ -85,12 +147,14 @@ export const outputColumnSorts = (
  * only use this if it produces rows in the same order the general path would. A walk that reorders
  * rows deliberately (`farDrivenHopWalk`) must therefore decline the sort rather than sort here.
  */
-export const sortRowsByColumns = (rows: Row[], sorts: readonly ColSort[]): Row[] => {
+export const sortRowsByColumns = (rows: Row[], plan: SortPlan): Row[] => {
+  const { sorts, skip, limit } = plan;
+
   if (sorts.length === 0) {
     return rows;
   }
 
-  return rows.sort((a, b) => {
+  const sorted = rows.sort((a, b) => {
     for (const s of sorts) {
       const c = compareSort(a[s.col], b[s.col], s.descending, s.nullsFirst);
 
@@ -101,6 +165,13 @@ export const sortRowsByColumns = (rows: Row[], sorts: readonly ColSort[]): Row[]
 
     return 0;
   });
+
+  // THE WINDOW IS APPLIED AFTER THE SORT, which is the order the query means and the order the
+  // general path uses. Only reached when `outputColumnSorts` admitted it — no item can fault, so
+  // projecting every row and slicing is the same answer the top-k path gives.
+  return skip === 0 && limit === undefined
+    ? sorted
+    : sorted.slice(skip, limit === undefined ? undefined : skip + limit);
 };
 
 /** A fast path that produces rows, or hands the query back at run time. */
@@ -119,15 +190,15 @@ export type RowsProducer = (graph: Graph, params: Params) => Row[] | null;
  */
 export const sortedRows = (
   inner: RowsProducer | null,
-  sorts: readonly ColSort[] | undefined,
+  plan: SortPlan | undefined,
 ): RowsProducer | null => {
-  if (inner === null || sorts === undefined) {
+  if (inner === null || plan === undefined) {
     return inner;
   }
 
   return (graph, params) => {
     const rows = inner(graph, params);
 
-    return rows === null ? null : sortRowsByColumns(rows, sorts);
+    return rows === null ? null : sortRowsByColumns(rows, plan);
   };
 };

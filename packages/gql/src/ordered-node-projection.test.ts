@@ -279,6 +279,49 @@ describe('the ordered node projection', () => {
     );
   });
 
+  test('a window DOES ride the sort when no item can fault (item 610)', () => {
+    // The other side of the rule above. `CAST(…)` can fault so it declines; a plain property read
+    // cannot, so the window is admitted — and the answer must be identical to the declined
+    // spelling, page for page.
+    const g = build(600, 7);
+
+    for (const win of ['LIMIT 5', 'SKIP 10 LIMIT 5', 'SKIP 595', 'LIMIT 600']) {
+      agree(
+        g,
+        `MATCH (a:P) RETURN a.k AS x ORDER BY x ${win}`,
+        `MATCH (a:P) RETURN a.k AS x ORDER BY a.k ${win}`,
+      );
+    }
+
+    // A SKIP PAST THE END is empty on both sides — asserted directly rather than through `agree`,
+    // whose non-emptiness guard exists to stop a comparison passing because both sides returned
+    // nothing. The case is worth keeping and the guard is worth not weakening.
+    expect(query(g, 'MATCH (a:P) RETURN a.k AS x ORDER BY x SKIP 700')).toEqual([]);
+    expect(query(g, 'MATCH (a:P) RETURN a.k AS x ORDER BY a.k SKIP 700')).toEqual([]);
+
+    // Over a HOP too, and with two items so the window pages rows rather than scalars.
+    const h = hopGraph(400, 7);
+
+    for (const win of ['LIMIT 5', 'SKIP 10 LIMIT 5', 'SKIP 395']) {
+      agree(
+        h,
+        `MATCH (a:P)-[:K]->(b) RETURN b.t AS t, b.n AS n ORDER BY t ${win}`,
+        `MATCH (a:P)-[:K]->(b) RETURN b.t AS t, b.n AS n ORDER BY b.t ${win}`,
+      );
+    }
+  });
+
+  test('a PARAMETERIZED window declines — the plan is cached across bindings', () => {
+    // `skip`/`limit` are a `CountValue`, which may be `{ param }`. The route is decided once at
+    // compile time while the value lives in `params` per call, so resolving it here would make a
+    // cached plan depend on a binding. It declines, and the answer must still be right.
+    const g = build(600, 7);
+    const got = query(g, 'MATCH (a:P) RETURN a.k AS x ORDER BY x LIMIT $n', { n: 5 });
+
+    expect(got).toHaveLength(5);
+    expect(got).toEqual(query(g, 'MATCH (a:P) RETURN a.k AS x ORDER BY a.k LIMIT $n', { n: 5 }));
+  });
+
   test('`LIMIT 0` returns [] WITHOUT projecting', () => {
     const g = new Graph();
 

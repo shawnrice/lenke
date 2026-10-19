@@ -5696,7 +5696,8 @@ const groupIndex = (): {
  * rather than being re-derived.
  */
 const sortGroupRows = (rows: Row[], sort: readonly ColSort[]): Row[] =>
-  sortRowsByColumns(rows, sort);
+  // The tally's own sort has no window — it pages through its `pageGroups` instead.
+  sortRowsByColumns(rows, { sorts: sort, skip: 0, limit: undefined });
 
 /**
  * Every `ORDER BY` key resolved to one of the tally's two output columns, or `null` to decline.
@@ -6432,7 +6433,9 @@ export const detectNodeProjection = (
     // 60-row fixture with 20 ties per group, where TS and native agree exactly on every ordered
     // spelling — and this path scans the same candidate vertices in the same order the general
     // path does, so a stable sort preserves that agreement.
-    return sorts === undefined ? out : sortGroupRows(out, sorts);
+    // `sortRowsByColumns`, not `sortGroupRows`: the plan may carry a WINDOW (item 610), which
+    // the tally's wrapper does not take — it pages through `pageGroups` instead.
+    return sorts === undefined ? out : sortRowsByColumns(out, sorts);
   };
 };
 

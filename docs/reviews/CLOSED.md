@@ -9291,3 +9291,95 @@ packages/serialization` 3774 pass / 0 fail (5 new cases), `bun test packages/nat
 --check .` uncached clean, `bun run fuzz` 13 pass / 0 fail across all seven byte-identity fuzzers —
 `gremlin-fuzz` compares TS against native over 400 generated plans, which is the cross-engine check
 on this reroute. CI green on 608.
+
+## 610 — the cannot-fault check items 426/603/605 all deferred: 1.77x and 1.89x
+
+Three items stopped at the same place. A window with a sort stayed on the general path because
+that path keeps top-k INPUT bindings and projects only SURVIVORS, so an item that faults on a
+discarded row never raises there (item 604 measured both engines agreeing). Item 426 named the fix
+— "a conservative cannot-fault check on the projection … own item". This is it.
+
+### Measured
+
+Three alternated rounds, order reversed per round, `BENCH_ONLY=query:`, a rebuild per side:
+
+| row                                       | ts before | ts after | ratio     | ffi   |
+| ----------------------------------------- | --------- | -------- | --------- | ----- |
+| **`query: ordered projection + limit`**   | 33.7      | **17.8** | **1.89x** | 1.00x |
+| **`query: top-k by property`** (STANDING) | 32.1      | **18.1** | **1.77x** | 1.00x |
+| `query: ordered projection [no window]`   | 17.5      | 18.1     | 0.97x     | 1.00x |
+| `query: 2-hop subquery item`              | 98.8      | 97.7     | 1.01x     | 1.00x |
+| `query: distinct over a hop`              | 44.1      | 45.0     | 0.98x     | 1.01x |
+| `query: count distinct`                   | 3.1       | 3.1      | 1.00x     | 1.00x |
+
+`top-k by property` is a row that has been in the suite for a long time, not one added for this
+item — it was the DECLINED case at item 605 and is now served. The unwindowed row is unchanged
+(605 already admitted it), and `ffi` is flat on both targets.
+
+**TWO FIGURES I AM NOT CLAIMING.** `query: project 3 columns` reads 1.32x — and its FFI column moved
+1.17x in the same rounds, which a TS change cannot cause, so that row drifted. And three
+`groupBy`/`having` rows printed `inf` because the driver's regex missed them on the before side; a
+harness fault, and they are unreachable by this change anyway (`detectNodeProjection` still
+declines `groupBy`/`having` on untouched lines).
+
+### Why a full sort is enough — the design question re-derived rather than assumed
+
+My first instinct was that a top-k was needed, since the general path uses one and a full sort
+would give the win back. Item 605's own A/B had already answered it: the ordered node projection
+lands at **17.9 ms for 200,000 rows**, so the sort is ~10 ms and the general path's cost is the
+per-row `Binding`, not the sort. So sort-then-slice suffices — and it avoids re-implementing a
+top-k whose tie-breaking would have to match the existing heap's arrival-index order, which item
+605 showed is OBSERVABLE between the engines.
+
+### The predicate
+
+`var | prop | lit | param` are total; everything else declines. Deliberately asymmetric: a false
+"cannot fault" is a wrong answer, a false "might fault" is only the general path. `prop` is total
+because a missing key reads NULL; `arith` divides, `compare` throws on a cross-type `<=`
+([[cross-type-comparison-no-error]]), `index`/`field` can miss, a scalar call can reject its
+argument. `list`/`record` could recurse into their elements and deliberately do not.
+
+**A PARAMETERIZED WINDOW DECLINES, and the type system is what said so.** `skip`/`limit` are a
+`CountValue`, which may be `{ param }` — so `LIMIT $n` would have reached `slice` as an object. It
+declines rather than being resolved: the route is decided once at compile time while the value
+lives in `params` per call, so resolving it would make a cached plan depend on a binding.
+
+### Teeth: seven mutants, and the two survivors are different kinds
+
+| mutant                                       | result       |
+| -------------------------------------------- | ------------ |
+| W1 admit a FAULTING item with a window       | CAUGHT (3)   |
+| W2 `cannotFault` returns true for everything | CAUGHT (3)   |
+| W3 admit `LIMIT 0`                           | **SURVIVED** |
+| W4 admit a parameterized window              | CAUGHT (1)   |
+| W5 page before the sort (statement order)    | **SURVIVED** |
+| W5b page a COPY before sorting               | CAUGHT (8)   |
+| W6 ignore `SKIP` (page from 0)               | CAUGHT (4)   |
+
+**W3 SURVIVES AND SHOULD, and my comment was wrong about why.** I had given `LIMIT 0` the
+raise-parity argument. It does not need one: with no faulting item admitted, the slice returns `[]`
+and so does `applyProjection`, so both paths agree. The clause is a SPEED guard — it avoids sorting
+every row to return none. Relabelled as such, because a mislabelled guard is how the next reader
+draws the wrong conclusion from a surviving mutant.
+
+**W5 SURVIVED BECAUSE THE MUTANT WAS A NO-OP**, not because the order is unprotected.
+`Array.prototype.sort` mutates IN PLACE, so `const sorted = rows.sort(…)` leaves `rows` BEING
+`sorted` — slicing "before" slices an already-sorted array. The real form slices a COPY first
+(W5b) and is caught by 8 tests. A survivor is a question about the mutant as much as about the
+code.
+
+### Two tests, and one of them caught me
+
+`a window DOES ride the sort when no item can fault` is the other side of item 605's declining
+test, across five node windows and three hop windows against the declined spelling. A `SKIP 700`
+case on a 600-row fixture is asserted DIRECTLY rather than through `agree`, because `agree`'s
+non-emptiness guard exists to stop a comparison passing when both sides return nothing — the guard
+rejected my case and I kept the guard.
+
+### Gates
+
+Each as its own command: `bun test packages/gql packages/core packages/gremlin
+packages/serialization` 3776 pass / 0 fail, `bun test packages/native/src` 929 pass / 0 fail,
+`bun run typecheck` exit 0, `bunx oxlint --type-aware .` exit 0 uncached, `bunx oxfmt --check .`
+uncached clean, `bun run fuzz` 13 pass / 0 fail across all seven byte-identity fuzzers. CI green
+on 609.
