@@ -44,6 +44,7 @@ import {
   compilePredicate,
   aggregateOverValues,
   satisfies,
+  sortsOnOutputNames,
   sortsOnOutputOnly,
   countEdges,
   outNeighbors,
@@ -6252,31 +6253,47 @@ const nodeWhereOf = (where: Expr, nodeVar: string): InlinePred | 'decline' => {
  * excludes it too.
  */
 const outputColumnSorts = (
-  keys: readonly SortItem[] | undefined,
-  proj: Projection,
+  ret: Extract<Clause, { kind: 'return' }>,
   cols: readonly string[],
 ): ColSort[] | null | undefined => {
+  const keys = ret.projection.orderBy;
+
   if (keys === undefined || keys.length === 0) {
     return undefined; // no sort — the streaming path, unchanged
   }
 
   // A window with a sort is what the raise-parity argument above refuses.
-  if (proj.skip !== undefined || proj.limit !== undefined) {
+  if (ret.projection.skip !== undefined || ret.projection.limit !== undefined) {
+    return null;
+  }
+
+  // THE ADMISSION TEST IS `sortsOnOutputOnly`, not a second copy of it. It already asks exactly
+  // this question for the rungs at items 544/545, and `plainRowProjection`'s own comment states
+  // the reason to share it: "two copies of this list is how one of them falls behind the other."
+  // An earlier version of this function inlined the test and was a partial duplicate.
+  //
+  // ONE NOTE ON THAT HELPER'S DOC, because it does not hold for this caller. It records that
+  // "dropping the NAME check ... leaves every answer unchanged", on the grounds that "an
+  // aggregating projection's ORDER BY resolves against the OUTPUT columns, so any valid `var` key
+  // already names one". That is true of the AGGREGATING rungs it was written for. This projection
+  // is not aggregating, so `ORDER BY a` can name the PATTERN VARIABLE — a valid sort, since a node
+  // has an order — and the name check is load-bearing here. A mutant dropping it SURVIVED until
+  // `ordered-node-projection.test.ts` grew a DESC case, because ascending scan order coincides
+  // with the right answer.
+  if (!sortsOnOutputNames(ret, new Set(cols))) {
     return null;
   }
 
   const out: ColSort[] = [];
 
   for (const k of keys) {
-    // By NAME only. The `ORDER BY n.k` spelling beside `RETURN n.k AS x` is structurally the same
-    // column and `sameGroupingExpr` would accept it, but an expression key is also where a
-    // not-an-output-column key would slip through, so this stays on the narrow test. The missed
-    // spelling costs the general path, not a wrong answer.
-    if (k.expr.kind !== 'var' || !cols.includes(k.expr.name)) {
-      return null;
+    // `sortsOnOutputNames` has already established that every key is a `var` naming one of
+    // `cols`; this re-test is the TYPE NARROWING and not a second check of the rule. An `Expr`
+    // union has no `name` until it is narrowed, and asserting past that would be the thing a
+    // reader could not distinguish from a missing test.
+    if (k.expr.kind === 'var') {
+      out.push({ col: k.expr.name, descending: k.descending, nullsFirst: k.nullsFirst });
     }
-
-    out.push({ col: k.expr.name, descending: k.descending, nullsFirst: k.nullsFirst });
   }
 
   return out;
@@ -6428,7 +6445,7 @@ export const detectNodeProjection = (
 
   // The sort is resolved AFTER `cols`, because the rule is about output columns and those are
   // what `cols` holds. `undefined` means no sort (the streaming path, unchanged); `null` declines.
-  const sorts = outputColumnSorts(ret.projection.orderBy, ret.projection, cols);
+  const sorts = outputColumnSorts(ret, cols);
 
   if (sorts === null) {
     return null;

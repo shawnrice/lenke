@@ -2120,13 +2120,24 @@ export const percentileFraction = (e: Extract<Expr, { kind: 'func' }>): number |
 export const sortsOnOutputOnly = (
   ret: Extract<Clause, { kind: 'return' }>,
   proj: CProjection,
-): boolean => {
-  const names = new Set(proj.items.map((it) => it.name));
+): boolean => sortsOnOutputNames(ret, new Set(proj.items.map((it) => it.name)));
 
-  return (ret.projection.orderBy ?? []).every(
+/**
+ * The same rule as {@link sortsOnOutputOnly}, over an explicit set of output NAMES.
+ *
+ * Split out because a caller that has not compiled a projection still computes its own output
+ * names — `detectNodeProjection` builds them as it compiles each item's expression (item 606) —
+ * and the alternative was a second copy of the `every(kind === 'var' && names.has(…))` test.
+ * `plainRowProjection`'s comment states why that matters: "two copies of this list is how one of
+ * them falls behind the other."
+ */
+export const sortsOnOutputNames = (
+  ret: Extract<Clause, { kind: 'return' }>,
+  names: ReadonlySet<string>,
+): boolean =>
+  (ret.projection.orderBy ?? []).every(
     (sort) => sort.expr.kind === 'var' && names.has(sort.expr.name),
   );
-};
 
 export const foldFor = (name: string, star: boolean, distinct: boolean): AggFold | undefined => {
   if (distinct || star) {
