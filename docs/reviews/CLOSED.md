@@ -9140,3 +9140,66 @@ this item turns on. CI green on 606.
 A window WITH a sort, in both the node and hop paths, until item 426's conservative cannot-fault
 check exists. Item 603 measured that shape (`ORDER BY x LIMIT 5` over a hop) at 164.3 ms against
 native's 2.9.
+
+## 608 — "grep the pattern elsewhere" pays: the SAME over-broad gate in the Gremlin engine
+
+Items 605/607 found that a materializing GQL shortcut declined an `ORDER BY` it could have served.
+The method's own next step is to look for the pattern elsewhere, and it is there.
+
+### Measured
+
+200,000 vertices / 200,000 edges, min of five, under the cgroup cap:
+
+| traversal                                     | ts ms     |
+| --------------------------------------------- | --------- |
+| `V().out().values('age')` — 3 steps, SHORTCUT | **28.9**  |
+| `V().out().values('age').order()` — 4 steps   | **172.5** |
+| `V().values('age')`                           | 29.4      |
+| `V().values('age').order()`                   | 58.2      |
+
+**The non-hop pair prices the sort itself**: 58.2 - 29.4 = ~29 ms for 200,000 values. So the hop
+case SHOULD be ~58 ms (28.9 + the sort) and is 172.5. The extra ~114 ms is the shortcut being
+declined — **~3.0x available**, and the reference is the shortcut plus a sort rather than native,
+so it is a route gap and not a layout ceiling.
+
+### Why it declines, and the precedent for fixing it
+
+`hopValuesShortcut` opens with `if (steps.length !== 3) return undefined;` — it wants exactly
+`V().out(T).values(k)`, so a trailing `order()` makes the plan four steps and declines the whole
+query. The file states the consequence in general terms already, for a LEADING step:
+
+> Every shortcut in `run` matches a plan PREFIX that starts at the source … A leading `hasLabel` is
+> one step too many for all of them, so it does not merely cost its own per-element test — it drops
+> the whole query onto the traverser pipeline.
+
+Item E78's answer there was a plan-level rewrite that DROPS a tautological `hasLabel` so the
+shortcut still matches. An `order()` cannot be dropped, so the mechanism to follow is the other one
+in the same file: `seedFromIndex` returns a STREAM and the pipeline "appl[ies] only the residual
+steps". `hopValuesShortcut` instead returns the final answer, which is why a residual step cannot
+compose with it.
+
+### Easier here than in GQL, for two reasons
+
+- **No raise-parity question.** `values(k)` emits SCALARS and drops an element lacking the key, so
+  there is no projection that could fault on a row the query never emits — the whole constraint
+  that shaped items 604/605.
+- **No tie-order question.** The output is scalars, so equal values are INDISTINGUISHABLE and a
+  reordering of ties is unobservable by construction. Item 607 had to force the start-driven walk
+  precisely because GQL rows carry other columns; that does not arise.
+
+What does need care is `order`'s own semantics — `desc`, `by(...)` modulators, `Scope.local`, and
+the runtime fault on ordering raw elements. Those live in `orderStep`/`sortByBys`, so the residual
+route gets them for free where a sort inlined into the shortcut would re-derive them. That is the
+argument for the stream-plus-residual shape over the quick one.
+
+### Not built this tick
+
+Deliberately, and for the reason items 600 -> 601 and 604 -> 605 both came out better for it: the
+implementation is a refactor of how one shortcut returns its result, and the cheap version (sort
+inside the shortcut) would duplicate a comparator — the one thing byte-identity cannot survive, and
+the mistake item 606 had just finished removing.
+
+### Gates
+
+Measurement-only; probe run under `timeout … systemd-run -p MemoryMax=16G -p MemorySwapMax=0`.
+`bunx oxfmt --check .` uncached clean. CI green on 607.
