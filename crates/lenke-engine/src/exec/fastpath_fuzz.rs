@@ -215,10 +215,19 @@ fn gen_shape(r: &mut Lcg, nodes: u32, degree: u32) -> Shape {
     let mode = *r.pick(&["", "WALK ", "TRAIL ", "SIMPLE ", "ACYCLIC "]);
     let dir = *r.pick(&["-[:R]->", "<-[:R]-", "-[:R]-", "-[:R|S]->", "-[:Nope]->"]);
     // Bound the row count: degree ^ max per source, times the sources.
+    //
+    // DEPTH 4 IS GENERATED on the fixtures that can afford it (item 602). It was capped at 3
+    // everywhere, which left the whole corpus blind to the boundary of the depth-3 TRAIL
+    // correction: a mutant relaxing that gate to `max >= 3 && is_trail` — so a depth-4 trail takes
+    // the UNCORRECTED recurrence and receives the WALK count — SURVIVED this fuzzer entirely,
+    // because no generated shape had `max == 4` to notice with.
+    //
+    // The materialized side stays affordable: 40 nodes at degree 4 is 40 * 4^4 = 10,240 rows, and
+    // 300 at degree 2 is 4,800. Only the combinations that would blow up keep a lower cap.
     let max_cap = match (nodes, degree) {
         (1500, 4) => 2,
         (1500, _) | (300, 4) => 3,
-        _ => 3,
+        _ => 4,
     };
     let max = 1 + (r.next() as u32 % max_cap);
     let min = *r.pick(&[0u32, 1, 1, max.min(2)]);

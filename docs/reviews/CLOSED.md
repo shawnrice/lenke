@@ -8675,3 +8675,33 @@ answer.
 
 **Native remains OPEN at ~4-8x** (159.9ms on this row against 4.8 for the chain) — its per-path and
 per-probe constants are close where TS's differ ~68x, so it is its own item on its own evidence.
+
+### The depth-3 TRAIL correction, RUST — DONE, 11.45x. Both engines now. (602)
+
+`count 3-hop quantified [TRAIL, the default]` **ffi 159.2ms -> 13.9**. With item 601's TS side
+(7342.9 -> 185.4), the default spelling of a bounded three-hop count is finally on a rung in both
+engines. **The TS column is the control at 0.96x-1.07x** (the trail row itself 0.99x) — between
+601 and 602 each engine served as the other's control on the same row.
+
+**Item 600b's estimate was CONSERVATIVE: ~4-8x predicted, 11.45x measured.** It multiplied an
+assumed ns-per-probe by the 2-walk count; the probe is cheaper than assumed and only runs for
+landings that PASS the endpoint test. An estimate from an assumed constant is worse than a
+measurement — same lesson as 599/600b, in the direction that does not look like a mistake.
+
+**THE ORACLE CHANGED — this item costs independence.** While native enumerated, the seven
+byte-identity fuzzers checked TS's formula against a DIFFERENT implementation for free. Both
+engines now run the same formula, so they prove only that the two AGREE and would pass on a shared
+wrong answer. What replaces it: `fastpath_fuzz` (expected aggregate from MATERIALIZED rows, oracle
+shares no code), 601's TS brute-force test, and mutants on both sides.
+
+**`fastpath_fuzz` WAS BLIND TO DEPTH 4.** A mutant relaxing the gate to `max >= 3 && is_trail` — so
+a depth-4 trail takes the uncorrected recurrence and gets the WALK count — survived, because
+`gen_shape` capped `max` at 3 and **never generated depth 4 at all**. Reachability was checked
+first (601 paid to learn that order); the gate IS the active guard. `max_cap` is now 4 wherever the
+materialized side can afford it (40 nodes x degree 4 = 10,240 rows). Then CAUGHT. **The corpus was
+blind to the boundary of the correction it exists to police** — the same failure its own header
+documents for another branch.
+
+The chain spelling (a WALK) is still faster in native, 4.8ms against 13.9, which the cost model
+predicts: the `e0 == e2` term costs the TWO-WALK count, so a trail is ~avg-degree dearer than a
+walk at the same depth. **Depth 4 remains unbuilt in both engines, and the fuzzer can now see it.**

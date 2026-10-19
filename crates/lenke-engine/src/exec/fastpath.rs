@@ -1104,11 +1104,19 @@ fn try_degree_algebra(
     //   g.V().repeat(out()).times(3).count()        38.18
     //   g.V().repeat(out()).times(4).count()       104.96
     //
-    // TRAIL past 2 stays refused and is NOT a missing branch of this one: it needs its own
-    // inclusion-exclusion over edge-reuse shapes, a separate piece of arithmetic.
+    // TRAIL AT EXACTLY 3 is now accepted too (item 602). It needed "its own inclusion-exclusion
+    // over edge-reuse shapes", which is what this comment said for two items and what
+    // `reused_trails_at_3` now is: at depth 3 the walks to exclude are exactly those where two of
+    // `e0, e1, e2` coincide, and each case collapses to a countable term. Item 600 derived it and
+    // validated it 400/400 against brute-force triple enumeration over random graphs admitting
+    // self-loops and parallel edges; item 601 shipped it in the TS engine at 40.79x.
+    //
+    // A TRAIL AT 4 OR MORE is still refused: the coinciding pairs start interacting and item 600
+    // explicitly did not derive that case.
     let deep_walk = max >= 3 && matches!(mode, PathMode::Walk);
+    let deep_trail = max == 3 && is_trail;
     if matches!(dir, Dir::Out | Dir::In)
-        && ((1..=2).contains(&max) || deep_walk)
+        && ((1..=2).contains(&max) || deep_walk || deep_trail)
         && matches!(mode, PathMode::Trail | PathMode::Walk)
     {
         let (nc, ec) = (store.node_count(), store.edge_count());
@@ -1299,15 +1307,52 @@ fn walk_levels_total<const INWARD: bool>(
         plain: _,
     } = args;
 
+    // A TRAIL is admitted only at EXACTLY depth 3, where `reused_trails_at_3` corrects the
+    // recurrence. Every other depth must be a walk — the recurrence alone counts walks.
     debug_assert!(
-        !is_trail,
-        "the level recurrence counts WALKS; a trail forbids edge reuse"
+        !is_trail || max == 3,
+        "the level recurrence counts WALKS; a trail is corrected only at depth 3"
     );
+    let trail3 = is_trail && max == 3;
 
     let adj = |v: u32| if INWARD { store.inc(v) } else { store.out(v) };
     let mut u: Vec<u64> = (0..nc as u32).map(|v| u64::from(passes(v))).collect();
     let mut next = vec![0u64; nc];
     let mut total: u64 = 0;
+    // THE TRAIL CORRECTION'S PRECOMPUTED FACTORS (item 602). `pass` is `u_0` — the endpoint mask
+    // as 0/1 — captured before the level loop overwrites `u`. `self_loops[v]` counts the WANTED,
+    // traversable `v -> v` edges and `pass_deg[v]` is the PASSING out-degree, both built with the
+    // same three mask tests the level loop uses so a correction can never count an edge the walk
+    // would not have traversed.
+    let tables = if trail3 {
+        let pass: Vec<u64> = u.clone();
+        let mut self_loops = vec![0u64; nc];
+        let mut pass_deg = vec![0u64; nc];
+
+        for v in 0..nc {
+            for a in adj(v as u32) {
+                if edge_carries_wanted(store, a, want) && body_fn(a.nbr) && trav_fn(a.eid) {
+                    if a.nbr as usize == v {
+                        self_loops[v] += 1;
+                    }
+
+                    pass_deg[v] += pass[a.nbr as usize];
+                }
+            }
+        }
+
+        Trail3Tables {
+            pass,
+            self_loops,
+            pass_deg,
+        }
+    } else {
+        Trail3Tables {
+            pass: Vec::new(),
+            self_loops: Vec::new(),
+            pass_deg: Vec::new(),
+        }
+    };
 
     // The ZERO-LENGTH path, whose endpoint is the SOURCE — one row per source row, and NOT gated
     // by `seed_fn`, which has no repetition to run for. The closed form's subtlety, unchanged.
@@ -1355,10 +1400,120 @@ fn walk_levels_total<const INWARD: bool>(
                     total = total.checked_add(walks)?;
                 }
             }
+
+            if trail3 {
+                // LEVEL 2's correction is the one the `max <= 2` closed form already applies: the
+                // single path that reuses a self-loop, `s -> s -> s`, and only when the endpoint
+                // passes. Level 1 needs none — one edge cannot repeat. Level 3 is the four-term
+                // form. A correction applied once for the whole RANGE rather than per level
+                // answers `{3,3}` correctly and `{1,3}` wrongly.
+                for &s in src {
+                    if (s as usize) >= nc || !seed_fn(s) {
+                        continue;
+                    }
+
+                    let v = s as usize;
+                    let bad = match len {
+                        2 => tables.self_loops[v] * tables.pass[v],
+                        3 => {
+                            reused_trails_at_3::<INWARD>(s, store, want, &tables, body_fn, trav_fn)
+                        }
+                        _ => 0,
+                    };
+
+                    total = total.checked_sub(bad)?;
+                }
+            }
         }
     }
 
     Some(total)
+}
+
+/// The depth-3 trail correction's precomputed tables — bundled for the same reason
+/// [`DegreeArgs`] is: clippy caps a function at seven arguments and the alternative is positional
+/// soup. All three are indexed by node id and built with the SAME mask tests the level loop uses,
+/// so a correction can never count an edge the walk would not have traversed.
+struct Trail3Tables {
+    /// `u_0` — the endpoint mask as 0/1, captured before the level loop overwrites `u`.
+    pass: Vec<u64>,
+    /// Wanted, traversable `v -> v` edges at each node.
+    self_loops: Vec<u64>,
+    /// The PASSING out-degree: wanted, traversable edges whose target passes the endpoint test.
+    pass_deg: Vec<u64>,
+}
+
+/// The walks of length 3 from `v` that REUSE an edge — subtracted from `u_3(v)` to turn a walk
+/// count into a trail count (item 602, the native twin of `shortcuts.ts`'s `reusedTrailsAt3`).
+///
+/// At depth 3 the walks a trail forbids are exactly those where two of `e0, e1, e2` coincide:
+///
+///   `e0 == e1` forces `a == b == c`, a SELF-LOOP at the source, then any passing edge out of it
+///   `e1 == e2` is its mirror: an edge out, then a self-loop at the landing taken twice
+///   `e0 == e2` forces `a == c` and `b == d` — the 2-cycle `a -> b -> a` reusing the first edge
+///   all three equal is a self-loop used three times, removed by each term above, so it returns
+///   with coefficient 2
+///
+/// Each endpoint test applies at the walk's LAST node, which is why the terms carry different
+/// `pass` factors: `e0 == e1` ends at the third edge's target (hence the PASSING out-degree),
+/// `e1 == e2` and `e0 == e2` end at the landing `b`, and the triple case ends back at the source.
+///
+/// COST. The first two terms are O(1) per source off the precomputed tables. The `e0 == e2` term
+/// is not: it needs the multiplicity of an ORDERED PAIR and this adjacency is in edge-insertion
+/// order (`rebuild_csr` does `extend_from_slice`, no sort), so it probes the landing's segment and
+/// costs the TWO-WALK count. That is a factor of the average degree below enumerating three-walks,
+/// which is the win — item 600b corrects an earlier claim that it was O(V + E).
+#[inline(always)]
+fn reused_trails_at_3<const INWARD: bool>(
+    v: u32,
+    store: &Store,
+    want: &[u32],
+    t: &Trail3Tables,
+    body_fn: &dyn Fn(u32) -> bool,
+    trav_fn: &dyn Fn(u32) -> bool,
+) -> u64 {
+    let Trail3Tables {
+        pass,
+        self_loops,
+        pass_deg,
+    } = t;
+    let adj = |n: u32| if INWARD { store.inc(n) } else { store.out(n) };
+    let vi = v as usize;
+    // e0 == e1: a self-loop at `v`, then any passing edge out of `v`.
+    let mut bad = self_loops[vi] * pass_deg[vi];
+
+    for a in adj(v) {
+        if !(edge_carries_wanted(store, a, want) && body_fn(a.nbr) && trav_fn(a.eid)) {
+            continue;
+        }
+
+        let b = a.nbr as usize;
+
+        if pass[b] == 0 {
+            continue; // both remaining cases end at `b`
+        }
+
+        // e1 == e2: a self-loop at the landing, taken twice.
+        bad += self_loops[b];
+
+        // e0 == e2: an edge back from `b` to `v`, then THIS edge again. COUNTED, not a boolean —
+        // two parallel `v -> b` edges make `e0, b -> v, e2` a valid trail when `e0 != e2`, so
+        // there is one bad walk per reverse edge and "does a reverse edge exist" is the wrong
+        // question.
+        for back in adj(a.nbr) {
+            if back.nbr == v
+                && edge_carries_wanted(store, back, want)
+                && body_fn(back.nbr)
+                && trav_fn(back.eid)
+            {
+                bad += 1;
+            }
+        }
+    }
+
+    // All three equal: a self-loop at `v` used three times, ending back at `v`. Each of the three
+    // terms above removed it once, so it comes back twice.
+    bad - 2 * self_loops[vi] * pass[vi]
 }
 
 /// Everything `degree_algebra_total` needs that is not a predicate — bundled because the
