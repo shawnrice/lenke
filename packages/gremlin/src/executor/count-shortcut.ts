@@ -319,6 +319,33 @@ const filteredHopCount = (hop: Step, filter: Step, graph: Graph): number | undef
       if (matches(filter.pred, v.properties[filter.key])) {
         n += deg;
       }
+
+      // REJECTED, with numbers (item 593). This row is 27.6x native after item 591, and the
+      // obvious remaining lever is that the loop calls `degreeOfTypes` (which branches on
+      // `labels.length` and then walks the array) plus two property reads off `filter`, once per
+      // vertex, none of which varies per vertex. Hoisting `labels[0]` into a `only` constant,
+      // inlining the single-type degree as `byType.get(only)?.size ?? 0`, and destructuring
+      // `{ key, pred }` above the loop measured, over four alternated rounds with the order
+      // reversed on alternate rounds, one case per process at 200,000 vertices / 1,000,000 edges:
+      //
+      //   out(K).has(age,gt(44)).count()     41.59 ms -> 41.17   1.01x
+      //   in(K).has(age,gt(44)).count()      39.09    -> 37.76   1.04x
+      //   out(K).has(age,gt(500)).count()    41.43    -> 40.89   1.01x
+      //   out(K).has(city,'c7').count()      43.67    -> 41.48   1.05x
+      //   five CONTROLS (hop count, dedupe, start-filtered, two-hop, values)  1.00-1.01x
+      //
+      // All inside this box's noise floor, so the call and the array walk are ~1-5% of the row,
+      // not the headline. The estimate that sent me here was WRONG and worth recording: item
+      // 591's probe measured an INLINED equivalent of this loop at 18.29ms against the row's
+      // 42.2, and I read the 24ms difference as the cost of these calls. It is not in the loop
+      // body at all — the probe simply is not this code. Second tick running that a micro-probe
+      // mispriced a ratio; take ratios from an A/B of the real thing.
+      //
+      // What is left here is constant-factor: a JS property read and a predicate dispatch per
+      // vertex against native's columnar read, which is item 566's layout ceiling rather than a
+      // missing route. The ORDER is already optimal — without an index on the key every vertex
+      // with a matching edge must be tested, and `seedForStep` already hands the indexed case to
+      // the index path.
     }
 
     return n;

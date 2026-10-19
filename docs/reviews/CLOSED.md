@@ -8314,3 +8314,40 @@ divergences.
 4. **Save the AFTER copy in the same breath as the edit.** A `cp` of the pristine copy over the
    working tree, before the after copy existed, lost the whole rewrite — `git diff --stat` empty.
    The mutation rule ("restore before the next mutant") has an A/B twin.
+
+## 593 — REFUTED x3: the native projection row, the Gremlin/GQL projection gap, and the per-vertex hoist
+
+Nothing ships but a recorded refutation. Three candidates, three refusals.
+
+**1. `query: project 3 columns` (native 7x slower than TS) was CLOSED at item 289.** `perrow` gives
+the engine side as ~3ms (string 1.42 + scalar 0.485 over 200,000 rows) against 60.5 through FFI, and
+`graph.ts` already decomposes it: **48% `JSON.parse`, 33% the crate's render plus the FFI call, 12%
+row shaping** — "that 7.3x is the JSON CARRIER, not execution... read `queryArrowIpc`, not the
+engine". **What misled me: `percall_probe` says the boundary is "innocent: a `vertexCount` round
+trip is 8ns". That is a SCALAR round trip and says nothing about 200,000 rows.**
+
+**2. Native Gremlin `values()` is NOT slower than native GQL projection.** `query_bench -- gremlin`
+`values` 1350us against `perrow` `scalar p.age` 485us looked like 2.8x in one engine. But the
+Gremlin case is `g.V().values('name').count()` — ONE row out — against a 200,000-row projection,
+and a STRING column against a NUMBER (7.1 vs 2.4 ns/row). Normalized it is 6.75 ns/row against 7.1
+**while building no rows**. Two fixture mismatches at once; either alone invents the gap.
+
+**3. Hoisting `degreeOfTypes`/`matches`/`filter.*` out of `filteredHopCount`'s per-vertex loop:
+1.01 / 1.04 / 1.01 / 1.05x** over four alternated rounds with five controls at 1.00-1.01x. Inside
+the noise floor. Reverted with the numbers beside the loop.
+
+### A micro-probe can LOCATE a cost and must not be used to SIZE one (593)
+
+The estimate that sent me at #3: item 591's probe measured an inlined equivalent of the loop at
+18.29ms, the row is 42.2ms, so the skipped calls "cost ~24ms". The A/B says ~1-5%. The 24ms is not
+in the loop body — the probe is not that code. **Second tick running** that a probe mispriced a
+ratio (591's own over-promised 1.80x against a real 1.26x; `hop-values.ts` has carried the warning
+since item 170). Item 589's attribution was still decisive for RULING OUT candidates — every ratio
+that shipped came from an A/B of the real code.
+
+### The 27.6x row is a layout ceiling, not an open lever (593)
+
+Without an index on the key, every vertex with a matching edge must be tested, and `seedForStep`
+already hands the indexed case to the index path — the ORDER is optimal. What remains is a JS
+property read plus a predicate dispatch per vertex against native's columnar read: item 566's
+ceiling. Recorded so it stops reading as open.
