@@ -1503,7 +1503,30 @@ const degreeCountSubquery = (
   inner: readonly string[];
   count: (graph: Graph, id: string) => number;
   // Present only for the shapes that can read the anchor's box — the one-hop degree. The
-  // two-hop side still resolves mid-vertices by id, which is a different question.
+  // two-hop side still resolves mid-vertices by id, and item 594 ANSWERED why that is a different
+  // question rather than an oversight: **an `Edge` stores endpoint IDS, and `e.to` is a getter
+  // that calls `getVertexById`.** There is no vertex object in hand at a first-hop landing, so
+  // "read the box instead" would pay the very string-keyed lookup it is trying to avoid — which
+  // is what the comment in `twoHopSide`'s unlabelled branch already says, and why its labelled
+  // branch measured FLAT when tried. The items 591/592 lever does not reach here.
+  //
+  // The cost is therefore one global string-keyed adjacency lookup PER FIRST-HOP EDGE, and that
+  // is measured rather than argued. 200,000 vertices at degree 5, varying only the anchor set so
+  // first-hop edges vary with it:
+  //
+  //   2-hop, all anchors        206.97 ms   1,000,000 first-hop edges   207 ns/edge
+  //   2-hop, ~2/3               149.20        655,555                   228
+  //   2-hop, ~1/3 (bench row)    81.66        322,220                   253
+  //   2-hop, ~1/10               35.80        100,000                   358
+  //   1-hop, all anchors         32.64      1,000,000 counted edges       33 ns/edge
+  //   2-hop, LABELLED middle    138.11        322,220                   429
+  //
+  // Linear in first-hop edges (the ns/edge climb at small anchor sets is the 200,000-vertex scan
+  // amortized over fewer edges), and the ~174 ns/edge the two-hop pays over the one-hop is item
+  // 194's ~190 ns for a string-keyed `Map.get`. A per-query memo on the mid id does not help: its
+  // own `Map.get` is the same ~190 ns, so it would save only the inner per-type read (~24 ms of
+  // 207). Making this cheaper means giving the core graph dense vertex indices instead of string
+  // ids — an architectural change, not a rung.
   countOf?: (v: Vertex, graph: Graph) => number;
 } | null => {
   if (expr.where !== undefined || expr.patterns.length !== 1) {

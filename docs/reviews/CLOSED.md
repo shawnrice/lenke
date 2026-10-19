@@ -8351,3 +8351,37 @@ Without an index on the key, every vertex with a matching edge must be tested, a
 already hands the indexed case to the index path — the ORDER is optimal. What remains is a JS
 property read plus a predicate dispatch per vertex against native's columnar read: item 566's
 ceiling. Recorded so it stops reading as open.
+
+## 594 — ANSWERED: the two-hop `COUNT { }` subquery is a string-keyed lookup per first-hop edge
+
+`query: 2-hop subquery item` is ts 113.5ms against native 6.5 (17.5x) where the one-hop sibling is
+6.4x. `degreeCountSubquery`'s own type flagged the gap — "the two-hop side still resolves
+mid-vertices by id, which is a different question" — and after items 591/592 it looked like the next
+instance of the id-keyed lever.
+
+**It is unreachable, and `Edge` is why: it stores endpoint IDS, and `e.to` is a GETTER calling
+`getVertexById`.** No vertex object is in hand at a first-hop landing, so reading "the box" pays the
+lookup it would avoid. `twoHopSide`'s unlabelled branch already said so; its labelled branch records
+the box read tried and MEASURED FLAT.
+
+**So the 591/592 lever's boundary is sharp: it applies only where a VERTEX OBJECT is already in
+hand.** `distinctHopCount` is out because it iterates the index's values; this is out because edges
+hold ids.
+
+Measured at 200,000 vertices, degree 5, varying only the anchor set:
+
+| shape                                    | ms                              | first-hop edges     | ns/edge               |
+| ---------------------------------------- | ------------------------------- | ------------------- | --------------------- |
+| 2-hop, all anchors / ~2/3 / ~1/3 / ~1/10 | 206.97 / 149.20 / 81.66 / 35.80 | 1,000,000 → 100,000 | 207 / 228 / 253 / 358 |
+| 1-hop, all anchors                       | 32.64                           | 1,000,000 counted   | **33**                |
+| 2-hop, LABELLED middle                   | 138.11                          | 322,220             | 429                   |
+
+Linear in first-hop edges; the **~174 ns/edge** the two-hop pays over the one-hop is item 194's
+**~190 ns** string-keyed `Map.get`, reached from a second direction.
+
+**The memo is NOT the fix** (recorded so the 5x revisit count does not tempt anyone): each mid is
+visited ~5 times, but a `Map<string, number>` get costs the same ~190 ns as the adjacency get it
+replaces, so it saves only the inner per-type read — ~24 ms of 207, under the noise floor.
+
+**The fix is dense vertex indices in the core graph instead of string ids** — the same conclusion
+item 289 reached about the JSON carrier from the other end. Architectural, not a rung.
