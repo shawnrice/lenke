@@ -6229,6 +6229,59 @@ const nodeWhereOf = (where: Expr, nodeVar: string): InlinePred | 'decline' => {
  * `for (const ip of preds)` allocated an iterator per vertex over an empty array and cost an
  * unfiltered scan 34%.
  */
+/**
+ * Every `ORDER BY` key of a plain row projection resolved to one of its OUTPUT COLUMNS, or `null`
+ * to decline (item 605).
+ *
+ * WHY AN OUTPUT COLUMN IS THE WHOLE RULE. This path projects every row and then sorts, where the
+ * general path keeps bindings and sorts those — so the question is whether sorting here evaluates
+ * anything the query would not. An output column's value is already computed by the projection,
+ * so nothing extra is evaluated and no raise can be swallowed. `colSortsOf` makes the same
+ * argument for the tally (item 190), and item 189 had to refuse several keys for the lack of it.
+ *
+ * WHY A WINDOW DECLINES, which is the other half and is MEASURED. With `SKIP`/`LIMIT` the general
+ * path keeps top-k INPUT bindings and projects only survivors (item 145), so an item that faults
+ * on a discarded row never raises there — `RETURN CAST(a.s AS INTEGER) AS x, a.n AS k ORDER BY k
+ * LIMIT 1` returns a row on BOTH engines while the same query without the window raises on both
+ * (item 604). Projecting everything and slicing after would raise where the query does not. With
+ * no window every row is emitted, so every item is projected either way and the question does not
+ * arise — for any number of items or keys.
+ *
+ * `LIMIT 0` is a third case the same way: `applyProjection` returns `[]` BEFORE projecting, so a
+ * path that projected first could raise where the query returns nothing. The no-window rule
+ * excludes it too.
+ */
+const outputColumnSorts = (
+  keys: readonly SortItem[] | undefined,
+  proj: Projection,
+  cols: readonly string[],
+): ColSort[] | null | undefined => {
+  if (keys === undefined || keys.length === 0) {
+    return undefined; // no sort — the streaming path, unchanged
+  }
+
+  // A window with a sort is what the raise-parity argument above refuses.
+  if (proj.skip !== undefined || proj.limit !== undefined) {
+    return null;
+  }
+
+  const out: ColSort[] = [];
+
+  for (const k of keys) {
+    // By NAME only. The `ORDER BY n.k` spelling beside `RETURN n.k AS x` is structurally the same
+    // column and `sameGroupingExpr` would accept it, but an expression key is also where a
+    // not-an-output-column key would slip through, so this stays on the narrow test. The missed
+    // spelling costs the general path, not a wrong answer.
+    if (k.expr.kind !== 'var' || !cols.includes(k.expr.name)) {
+      return null;
+    }
+
+    out.push({ col: k.expr.name, descending: k.descending, nullsFirst: k.nullsFirst });
+  }
+
+  return out;
+};
+
 export const detectNodeProjection = (
   clauses: readonly Clause[],
   compiled: readonly CClause[],
@@ -6265,11 +6318,18 @@ export const detectNodeProjection = (
     proj.distinct ||
     proj.groupBy !== undefined ||
     proj.having !== undefined ||
-    (proj.orderBy?.length ?? 0) > 0 ||
-    proj.skip !== undefined ||
-    proj.limit !== undefined ||
     proj.items.length === 0
   ) {
+    return null;
+  }
+
+  // `orderBy` is NO LONGER an outright decline (item 605) — see `outputColumnSorts`, which admits
+  // it when every key is an output column AND there is no window. `skip`/`limit` are refused
+  // THERE rather than here, because the two decisions are one rule: a window without a sort must
+  // also decline, since the general path is LAZY for it and a `LIMIT 5` short-circuits after a
+  // few rows where this path materializes everything — `sortOf` records that as a ~280x
+  // regression for the DISTINCT walk, which is the same trade in the same place.
+  if ((proj.orderBy?.length ?? 0) === 0 && (proj.skip !== undefined || proj.limit !== undefined)) {
     return null;
   }
 
@@ -6366,6 +6426,14 @@ export const detectNodeProjection = (
     fns.push(compileExpr(item.expr));
   }
 
+  // The sort is resolved AFTER `cols`, because the rule is about output columns and those are
+  // what `cols` holds. `undefined` means no sort (the streaming path, unchanged); `null` declines.
+  const sorts = outputColumnSorts(ret.projection.orderBy, ret.projection, cols);
+
+  if (sorts === null) {
+    return null;
+  }
+
   const labelName = label?.name;
   const width = cols.length;
 
@@ -6422,7 +6490,17 @@ export const detectNodeProjection = (
       out.push(row);
     }
 
-    return out;
+    // `sortGroupRows` is the tally's sorter and is reused deliberately: it goes through
+    // `compareSort`, the engine's own comparator, whose doc states "the Rust `compare_sort`
+    // matches" — so DESC and the NULLS placement cannot drift from native, and a second
+    // comparator is exactly the thing byte-identity cannot survive.
+    //
+    // `Array.prototype.sort` is STABLE, so ties keep the scan's arrival order. That matters:
+    // tie order under `ORDER BY` is OBSERVABLE between the engines — measured at item 605 over a
+    // 60-row fixture with 20 ties per group, where TS and native agree exactly on every ordered
+    // spelling — and this path scans the same candidate vertices in the same order the general
+    // path does, so a stable sort preserves that agreement.
+    return sorts === undefined ? out : sortGroupRows(out, sorts);
   };
 };
 

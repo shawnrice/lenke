@@ -428,6 +428,22 @@ const CASES: Case[] = [
     ),
   },
   {
+    // THE SAME SORT WITHOUT THE WINDOW, which nothing watched until item 605. The row above has
+    // a `LIMIT`, so it runs the top-k heap (item 425) and `detectNodeProjection` must decline it:
+    // with a window the general path keeps bindings and projects only survivors, so projecting
+    // everything first would raise on rows the query never emits (item 604 measured that on both
+    // engines). Without the window every row is emitted, the projection shortcut can take the
+    // sort, and this row is the watcher for that route.
+    //
+    // It is also the control FOR the row above: a change admitting the sort must move this one
+    // and leave the top-k row alone.
+    name: 'query: ordered projection [no window]',
+    ...onGraph(
+      () => nodesDoc,
+      (e, g) => void e.query(g, 'MATCH (n:Person) RETURN n.age AS a ORDER BY a'),
+    ),
+  },
+  {
     name: 'query: min property [fused-scan aggregate]',
     ...onGraph(
       () => nodesDoc,
