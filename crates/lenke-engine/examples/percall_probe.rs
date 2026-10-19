@@ -225,4 +225,104 @@ fn main() {
         "  {:<46} {idents:>10.0}",
         "13. ~12 identifier Strings (lexer's shape)"
     );
+
+    // 14-16: THE WHOLE `lnk_query` BODY, in-process (item 599). Rows 1-13 price the layers; this
+    // prices their SUM through the same entry points `ffi.rs` calls, which is the only thing that
+    // can say whether the residual is on the Rust side or the bun side.
+    //
+    // It matters because the residual has now outlived two attributions. Item 291 blamed the FFI
+    // boundary; the boundary is 1.2ns at arity 0. Item 292 blamed bun:ffi's per-ARGUMENT
+    // marshalling; measured by arity, that is ~0-2ns an argument and the 3-argument symbol is
+    // FASTER than the 2-argument one, so there is no slope to extrapolate. `backend.queryRows`
+    // for `RETURN 1 AS s` costs 815ns from JS. If these rows sum to ~800 the cost is all Rust and
+    // rows 1-13 simply have to be added up; if they sum to ~250 then ~550ns is bun-side plumbing
+    // that no Rust probe will ever see.
+    let mut mstore = indexed_users(n);
+    let trivial = "RETURN 1 AS s";
+
+    for _ in 0..3 {
+        let _ = lenke_engine::parse_cache::parse_for_run(trivial, &params, 64);
+    }
+
+    let body_trivial = ns_per_op(reps, iters, || {
+        let plan = lenke_engine::parse_cache::parse_for_run(trivial, &params, 64).expect("parses");
+        match lenke_engine::exec::run_query(plan, &mut mstore).expect("runs") {
+            lenke_engine::exec::Executed::Rows(rows) => {
+                let _ = lenke_engine::json::gql_rows_json(&rows);
+            }
+            lenke_engine::exec::Executed::Read(p) => {
+                let _ = lenke_engine::exec::try_run_gql_json(&p, &mstore);
+            }
+        }
+    });
+
+    for _ in 0..3 {
+        let _ = lenke_engine::parse_cache::parse_for_run(hit, &params, 64);
+    }
+
+    let body_hit = ns_per_op(reps, iters, || {
+        let plan = lenke_engine::parse_cache::parse_for_run(hit, &params, 64).expect("parses");
+        match lenke_engine::exec::run_query(plan, &mut mstore).expect("runs") {
+            lenke_engine::exec::Executed::Rows(rows) => {
+                let _ = lenke_engine::json::gql_rows_json(&rows);
+            }
+            lenke_engine::exec::Executed::Read(p) => {
+                let _ = lenke_engine::exec::try_run_gql_json(&p, &mstore);
+            }
+        }
+    });
+
+    println!(
+        "\n  {:<46} {body_trivial:>10.0}",
+        "14. WHOLE BODY, 'RETURN 1 AS s' (JS says 815)"
+    );
+    println!(
+        "  {:<46} {body_hit:>10.0}",
+        "15. WHOLE BODY, the point lookup (JS says 1281)"
+    );
+    println!(
+        "  {:<46} {:>10.0}",
+        "16. => bun-side, trivial (614 queryJson - row 14)",
+        614.0 - body_trivial
+    );
+
+    // 17-20: WHAT IS IN THE 388ns BODY of a one-operator query (item 599). `backend.queryJson` for
+    // `RETURN 1 AS s` is 614ns, of which 388 is Rust and only ~67 is the JS wrapper's own
+    // layering — so after item 597 the Rust side is the dominant term even for a query that
+    // touches no data. `optimize_indexed` runs on EVERY call (`exec::run_query` calls it), and
+    // item 293 refuted CACHING the optimized plan; it said nothing about what optimizing a
+    // trivial plan should cost.
+    let trivial_plan = lenke_engine::gql::parse(trivial).expect("parses");
+    let opt_trivial = ns_per_op(reps, iters, || {
+        let _ = lenke_engine::opt::optimize_indexed(trivial_plan.clone(), &mstore);
+    });
+    let clone_trivial = ns_per_op(reps, iters, || {
+        let _ = trivial_plan.clone();
+    });
+    let opt_hit = ns_per_op(reps, iters, || {
+        let _ = lenke_engine::opt::optimize_indexed(plan_hit.clone(), &mstore);
+    });
+    let rows_trivial = lenke_engine::exec::try_run(&trivial_plan, &mstore).expect("runs");
+    let render_trivial = ns_per_op(reps, iters, || {
+        let _ = lenke_engine::json::gql_rows_json(&rows_trivial);
+    });
+
+    println!(
+        "  {:<46} {:>10.0}",
+        "17. optimize_indexed, trivial plan (minus clone)",
+        opt_trivial - clone_trivial
+    );
+    println!(
+        "  {:<46} {clone_trivial:>10.0}",
+        "18. .clone() of that trivial plan"
+    );
+    println!(
+        "  {:<46} {:>10.0}",
+        "19. optimize_indexed, the point lookup (minus clone)",
+        opt_hit - clone_plan
+    );
+    println!(
+        "  {:<46} {render_trivial:>10.0}",
+        "20. gql_rows_json of one trivial row"
+    );
 }

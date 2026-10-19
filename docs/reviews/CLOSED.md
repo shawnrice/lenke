@@ -8526,3 +8526,32 @@ though not through `g.query(text, obj)`. Matches item 333's convention for any r
 name entirely — SURVIVED all 1,177 tests, because every bind test supplied one parameter or two
 interchangeable ones. Closed by two params whose values are deliberately not interchangeable. Same
 shape as item 586's total count that could not witness a direction bug.
+
+### The native serving residual — CLOSED as DIFFUSE, after three refuted attributions (599)
+
+Open since item 291 ("native loses 3-5x to pure TS on every serving row"), with a different
+explanation each time it was touched. All three were drawn by SUBTRACTING TWO LARGER MEASUREMENTS:
+
+- **291, the FFI boundary.** Measured across arities through one dlopen: `lnk_abi_version` (0 args)
+  **3.7ns**, `lnk_stat` (2 args) 6.5, `lnk_free(null,0)` 12.0.
+- **292, per-ARGUMENT marshalling** ("needs a profiler, not another probe"). The slope is ~0-2ns an
+  argument and **the 3-arg symbol is FASTER than the 2-arg one** — noise, not a slope.
+  `lnk_query`'s 8 args are ~1ns, not ~600.
+- **599's own first pass, ~290ns of "wrapper layering".** Subtracted a BYTE-route figure from a
+  TEXT-route one. On the matching pair (`backend.queryJson` 614.5 vs the same work inlined 547.6)
+  the wrapper is **67ns**.
+- **And `optimize_indexed` is ~90-95ns, not ~350** — that came from `parse+optimize` minus `parse`,
+  which was capturing the parse's allocation pressure. (The lever was already refuted at 293 on
+  correctness grounds; it was never worth 350 either.)
+
+**What is left is diffuse: a trivial call is 614ns, a point lookup ~1280, across a dozen items of
+30-150ns with no dominant term** — warm cache hit 145, optimizer ~90, render ~50, JS wrapper 67,
+raw call + decode ~160, exec 313 for one row. Going further needs the architectural change items
+289 and 594 both independently arrived at (dense vertex indices instead of string ids), not another
+rung.
+
+**RULE: do not size a cost by subtracting two larger measurements.** Every wrong number in this
+thread came from that, and each time the direct measurement was 3-5x smaller. Companion to item
+593's "a micro-probe can LOCATE a cost and must not SIZE one" — a subtraction cannot size one
+either. When the quantity you want is a small difference between two large numbers, the difference
+is mostly their noise.
