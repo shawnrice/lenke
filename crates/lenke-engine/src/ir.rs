@@ -1332,6 +1332,54 @@ pub struct InsertEdge {
     pub props: Vec<(String, Value)>,
 }
 
+/// Lower expression-form INSERT templates back to the constant-literal plan when every property
+/// is an `Expr::Lit` and no node is a bound reference. `None` if any value is a non-literal
+/// expression, which is what keeps `duration()` and a host-wired clock on the `InsertFrom` path.
+///
+/// IT LIVES HERE, not in the parser, because the OPTIMIZER needs it too (item 596). The parser
+/// calls it with `$n` still an `Expr::Param`, so a parameterized INSERT fails the literal test and
+/// stays `InsertFrom`; after `bind::bind_params` the same templates ARE literals, and re-applying
+/// this is what lets a parameterized INSERT reach the constant path.
+///
+/// (original note) Lower expression-form INSERT templates back to the constant-literal plan when
+/// every property is an `Expr::Lit` and no node is a bound reference — the fast
+/// path that keeps a plain `INSERT` on `Plan::Insert`. `None` if any value is a
+/// non-literal expression (the caller then evaluates via `InsertFrom`).
+pub(crate) fn lower_insert_literal(
+    enodes: &[InsertNodeExpr],
+    eedges: &[InsertEdgeExpr],
+) -> Option<(Vec<InsertNode>, Vec<InsertEdge>)> {
+    let lit_props = |props: &[(String, Expr)]| -> Option<Vec<(String, crate::value::Value)>> {
+        props
+            .iter()
+            .map(|(k, e)| match e {
+                Expr::Lit(v) => Some((k.clone(), v.clone())),
+                _ => None,
+            })
+            .collect()
+    };
+    let mut nodes = Vec::with_capacity(enodes.len());
+    for n in enodes {
+        if n.bound.is_some() {
+            return None;
+        }
+        nodes.push(InsertNode {
+            labels: n.labels.clone(),
+            props: lit_props(&n.props)?,
+        });
+    }
+    let mut edges = Vec::with_capacity(eedges.len());
+    for e in eedges {
+        edges.push(InsertEdge {
+            from: e.from,
+            to: e.to,
+            etype: e.etype.clone(),
+            props: lit_props(&e.props)?,
+        });
+    }
+    Some((nodes, edges))
+}
+
 /// A node to create in an `InsertFrom` (a `FOR … INSERT` / `MATCH … INSERT`): its
 /// labels and property EXPRESSIONS, evaluated against each input row (so a property
 /// may reference a bound variable, e.g. `FOR x IN […] INSERT (:N {v: x})`).

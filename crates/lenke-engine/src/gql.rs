@@ -2781,7 +2781,7 @@ impl Parser {
             || self.peek_kw("OFFSET")
             || self.peek_kw("LIMIT")
         {
-            let Some((nodes, edges)) = Self::lower_insert_literal(&nodes, &edges) else {
+            let Some((nodes, edges)) = crate::ir::lower_insert_literal(&nodes, &edges) else {
                 return Err(
                     "an INSERT … RETURN property value must be a literal (evaluate a constant \
                      expression in a plain INSERT, or via FOR/MATCH … INSERT)"
@@ -2801,7 +2801,7 @@ impl Parser {
         // literal; otherwise evaluate the constant expressions ONCE over a single
         // empty row (`InsertFrom` has a store at exec time, so `duration()` and a
         // host-wired clock resolve correctly).
-        if let Some((nodes, edges)) = Self::lower_insert_literal(&nodes, &edges) {
+        if let Some((nodes, edges)) = crate::ir::lower_insert_literal(&nodes, &edges) {
             return Ok(Plan::Insert { nodes, edges });
         }
         Ok(Plan::InsertFrom {
@@ -2809,45 +2809,6 @@ impl Parser {
             nodes,
             edges,
         })
-    }
-
-    /// Lower expression-form INSERT templates back to the constant-literal plan when
-    /// every property is an `Expr::Lit` and no node is a bound reference — the fast
-    /// path that keeps a plain `INSERT` on `Plan::Insert`. `None` if any value is a
-    /// non-literal expression (the caller then evaluates via `InsertFrom`).
-    fn lower_insert_literal(
-        enodes: &[crate::ir::InsertNodeExpr],
-        eedges: &[crate::ir::InsertEdgeExpr],
-    ) -> Option<(Vec<crate::ir::InsertNode>, Vec<crate::ir::InsertEdge>)> {
-        let lit_props = |props: &[(String, Expr)]| -> Option<Vec<(String, crate::value::Value)>> {
-            props
-                .iter()
-                .map(|(k, e)| match e {
-                    Expr::Lit(v) => Some((k.clone(), v.clone())),
-                    _ => None,
-                })
-                .collect()
-        };
-        let mut nodes = Vec::with_capacity(enodes.len());
-        for n in enodes {
-            if n.bound.is_some() {
-                return None;
-            }
-            nodes.push(crate::ir::InsertNode {
-                labels: n.labels.clone(),
-                props: lit_props(&n.props)?,
-            });
-        }
-        let mut edges = Vec::with_capacity(eedges.len());
-        for e in eedges {
-            edges.push(crate::ir::InsertEdge {
-                from: e.from,
-                to: e.to,
-                etype: e.etype.clone(),
-                props: lit_props(&e.props)?,
-            });
-        }
-        Some((nodes, edges))
     }
 
     /// A row-driven INSERT (`FOR … INSERT (…)` / `MATCH … INSERT (…)`): parse the

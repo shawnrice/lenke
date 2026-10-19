@@ -17,10 +17,14 @@
 //! substituted to an `Expr::Lit` DURING the parse). Those are two different parses of the same
 //! text, and item 318 verified they converge: twenty shapes, against a store with and without an
 //! index on the gated key, and the optimized plans are identical for every one except a parameter
-//! in `LIMIT`/`SKIP` (prepared mode refuses it) and **a parameter in an INSERT value, where
-//! prepared mode ACCEPTS it and plans `InsertFrom`/`InsertNodeExpr` instead of the literal
-//! `Insert`/`InsertNode` path** — the same rows by a slower operator, with no wrong answer to give
-//! it away. Varying the parameter VALUE (a 2-element list, a 40-element one past item 267's chain
+//! in `LIMIT`/`SKIP` (prepared mode refuses it) and ~~a parameter in an INSERT value~~ — **the
+//! INSERT divergence is GONE as of item 596**: `bind::bind_plan` re-applies
+//! `ir::lower_insert_literal` once the params are bound, so the bound prepared plan IS the literal
+//! `Insert` the direct path produces, and a parameterized INSERT is admitted like anything else.
+//! It had been recorded here as self-excluding, which was true and cost the whole cache benefit
+//! on that shape: self-exclusion means re-parsing on every call, plus parameter marshalling,
+//! which `bench:usage` showed as the parameterized write being SLOWER than the interpolated one.
+//! Varying the parameter VALUE (a 2-element list, a 40-element one past item 267's chain
 //! cap, NULL, a cross-type number, a cross-type list) changes no plan in either mode, because both
 //! hand the optimizer an `Expr::Lit` before it runs.
 //!
@@ -30,9 +34,12 @@
 //! covers the divergence that was found and nothing else. Instead a text is admitted only if its
 //! prepared plan, bound to the parameters in hand, is **structurally identical to what the direct
 //! path produces** — and a text that fails that check is remembered as refused and always takes
-//! the direct path. The INSERT case excludes itself, and so does any divergence a later change
-//! introduces: the cache cannot start returning a different plan than the uncached path without
-//! this comparison failing first.
+//! the direct path. The INSERT case excluded itself until item 596 removed the divergence, and so
+//! does any divergence a later change introduces: the cache cannot start returning a different
+//! plan than the uncached path without this comparison failing first. That is load-bearing in a
+//! way item 596's mutation testing made concrete — dropping the `Plan::Row` guard on the
+//! re-lowering produces a plan that would insert ONCE instead of once per input row, and this
+//! check refuses it rather than caching it, so the only observable damage is a lost cache slot.
 //!
 //! The comparison costs one extra parse and two `Debug` renders, ONCE, on the call that admits a
 //! text. Nothing on a hit.

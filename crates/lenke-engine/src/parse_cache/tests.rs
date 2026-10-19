@@ -133,28 +133,118 @@ fn a_hit_returns_what_the_direct_path_returns_for_a_different_value() {
 }
 
 #[test]
-fn a_parameterized_insert_is_refused_rather_than_cached() {
+fn a_parameterized_insert_is_cached_now_that_bind_re_lowers_it() {
     clear();
 
-    // Prepared mode ACCEPTS this and plans it as `InsertFrom`/`InsertNodeExpr`, where the direct
-    // path uses the literal `Insert`/`InsertNode`. Same rows, slower operator — the divergence
-    // with no wrong answer to give it away (item 318). Admission compares the two plans, so it
-    // excludes itself.
+    // THIS TEST USED TO ASSERT THE OPPOSITE, and the reversal is item 596.
+    //
+    // Prepared mode accepts `INSERT (:User {name: $n})` and planned it as
+    // `InsertFrom`/`InsertNodeExpr` where the direct path uses the literal `Insert`/`InsertNode`:
+    // same rows, different operator. Item 318 found that divergence and item 319 recorded it as
+    // self-excluding — admission compares the two plans, so the text was simply refused.
+    //
+    // Benign for correctness, and NOT benign for cost: self-exclusion means every parameterized
+    // INSERT re-parses on every call and pays parameter marshalling on top, which showed up in
+    // `bench:usage` as the parameterized write being SLOWER than the interpolated one
+    // (`write: append node` 395.8k ops/s against `write: append node [params]` 277.7k) — backwards
+    // for the form the docs recommend.
+    //
+    // `bind::bind_plan` now re-applies `ir::lower_insert_literal` after binding, so the bound
+    // prepared plan IS the literal `Insert` the direct path produces, the divergence is gone at
+    // its source, and the text is admitted on its second sighting like any other.
     let q = "INSERT (:User {name: $n})";
     let p = param("n", Value::Str("new".into()));
 
     let _ = parse_for_run(q, &p, DEPTH).expect("parses");
     let _ = parse_for_run(q, &p, DEPTH).expect("parses");
 
-    assert_eq!(stats().size, 0, "a parameterized INSERT was cached");
-    assert_eq!(stats().refused, 1, "it was not remembered as refused");
+    assert_eq!(
+        stats().size,
+        1,
+        "a parameterized INSERT should now be cached"
+    );
+    assert_eq!(stats().refused, 0, "nothing should be refused any more");
 
-    // And it keeps answering as the direct path does, on the literal operator.
+    // The operator is the literal one on BOTH paths, which is the whole point: a cached hit must
+    // not route a write differently from an uncached call.
     let rendered = plan_of(q, &p);
+
     assert_eq!(rendered, direct_of(q, &p));
     assert!(
         rendered.starts_with("Insert {"),
         "expected the literal Insert operator, got: {rendered}"
+    );
+
+    // And the cached PREPARED plan must still serve a different value — the property the cache
+    // exists for, and the one a plan with the first value baked in would break.
+    for v in ["second", "third", ""] {
+        let other = param("n", Value::Str(v.into()));
+
+        assert_eq!(plan_of(q, &other), direct_of(q, &other), "value {v:?}");
+    }
+}
+
+#[test]
+fn a_row_driven_insert_keeps_the_per_row_operator() {
+    clear();
+
+    // The re-lowering is gated on `Plan::Row` for a reason: a `FOR … INSERT` has real input rows
+    // and every one of them needs its own evaluation, so collapsing it to the constant operator
+    // would insert once instead of once per row. This is the guard's witness.
+    let q = "FOR x IN [1, 2, 3] INSERT (:N {v: x})";
+    let p: Vec<(String, Value)> = Vec::new();
+    let rendered = plan_of(q, &p);
+
+    assert_eq!(rendered, direct_of(q, &p));
+    assert!(
+        rendered.starts_with("InsertFrom {"),
+        "a row-driven INSERT must stay on the per-row operator, got: {rendered}"
+    );
+
+    // A non-literal property on a bare INSERT is the other half of the guard: it has no input
+    // rows, but its value is not constant, so `lower_insert_literal` must still refuse it.
+    let q2 = "INSERT (:N {v: duration('PT1S')})";
+    let r2 = plan_of(q2, &p);
+
+    assert_eq!(r2, direct_of(q2, &p));
+
+    // THE CASE THAT ACTUALLY EXERCISES THE GUARD, and the one this test was missing: input rows
+    // AND every property a LITERAL. A mutant deleting `matches!(**input, Plan::Row)` SURVIVED
+    // against the two cases above, because `FOR x IN … INSERT (:N {v: x})` has a property that is
+    // a slot reference and `duration(…)` has one that is a call — `lower_insert_literal` refuses
+    // both on its own, so the guard was never what stopped them.
+    //
+    // WHAT THE MUTANT TAUGHT, and why the assertion below is on the CACHE and not on the plan:
+    // `direct_of` is the UNBOUND direct parse, which no re-lowering touches. So dropping the
+    // guard does not return a collapsed plan to the caller — it makes the bound prepared plan
+    // disagree with the direct one, `prepared_equivalent` REFUSES the text, and every call falls
+    // through to the direct parse. The answer is identical; what is lost is the caching. The
+    // guard is therefore a PERF guard whose correctness backstop is the admission check, and the
+    // only thing a test can observe is admission.
+    let q3 = "MATCH (u:User) INSERT (:Audit {kind: 'seen'})";
+    let before = stats().refused;
+    let r3 = plan_of(q3, &p);
+
+    assert_eq!(r3, direct_of(q3, &p));
+    assert!(
+        r3.starts_with("InsertFrom {"),
+        "a MATCH-driven INSERT with literal props must stay per-row, got: {r3}"
+    );
+
+    // Second sighting: it has earned a slot, and the prepared plan must still agree with the
+    // direct one for it to get it. Without the guard this is a refusal instead.
+    let r3_again = plan_of(q3, &p);
+
+    assert_eq!(r3_again, r3);
+    assert_eq!(
+        stats().refused - before,
+        0,
+        "a MATCH-driven INSERT was refused — the bound prepared plan diverged from the direct one"
+    );
+    assert_eq!(
+        stats().size,
+        1,
+        "a MATCH-driven INSERT with literal props was not admitted"
     );
 }
 

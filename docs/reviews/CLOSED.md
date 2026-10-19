@@ -8430,3 +8430,28 @@ moved an edge between graphs and then read its endpoints.
 move the edge to a second graph holding DIFFERENT vertex objects under the SAME ids, assert the new
 graph's objects come back. **An id-level assertion would pass against the stale objects** — the test
 must read a property.
+
+### The parse cache refused every parameterized INSERT — FIXED (596)
+
+`bench:usage`'s `write: append node [params]` was losing 23% to its interpolated twin (280.4k vs
+363.4k op/s) because `parse_cache` refused the text: prepared mode planned `InsertFrom` where the
+direct path planned the literal `Insert`, so the admission check never matched and every call
+re-parsed and then paid parameter marshalling. Item 318 recorded that divergence as benign and it
+was — for correctness. `bind::bind_plan` now re-applies `ir::lower_insert_literal` once the params
+are bound. **280.4k -> 326.5k, 1.16x** over three alternated rounds, with all thirteen read and
+non-parameterized rows (controls the change cannot reach) at 0.96x-1.02x.
+
+**The fix belongs in `bind`, not `opt`.** The admission check compares UNOPTIMIZED plans, so an
+equivalent rewrite in the optimizer runs too late to be seen. `prepared_parity_probe` (which
+compares OPTIMIZED plans) reported "SAME plan" while `stats().refused` was still 1 — read the
+cache's own counter, not the probe.
+
+**A `Plan::Row` guard mutant survived twice and the reason reclassifies the guard.** Dropping it
+would collapse a `MATCH … INSERT` to one insert instead of one per row — but the admission check
+compares against the UNBOUND direct parse, so the divergence makes the text REFUSED rather than
+mis-planned. The rows stay right; the cache slot is what is lost. **The guard is a perf guard whose
+correctness backstop is the admission check**, and a test can only observe it through `stats()`.
+
+**Rule: a surviving guard mutant is a question about what is OBSERVABLE, not only about
+reachability.** Reachability was checked twice here (fixture shape, then a plan dump) and was fine
+both times; the assertion was comparing two values the mutant moves together.

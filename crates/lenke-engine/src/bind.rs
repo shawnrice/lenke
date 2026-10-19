@@ -276,6 +276,57 @@ fn bind_plan(plan: &mut Plan, params: &HashMap<&str, &Value>) -> Result<(), Stri
         }
         Plan::Reconverge { input, .. } => bind_plan(input, params)?,
     }
+
+    // RE-LOWER A BOUND PARAMETERIZED INSERT TO THE CONSTANT PATH (item 596).
+    //
+    // The parser already lowers `InsertFrom { input: Row }` to `Plan::Insert` when every property
+    // is a literal, but it runs while `$n` is still an `Expr::Param`, so a parameterized INSERT
+    // fails that test. The `InsertFrom` arm above has just made those same templates literal, so
+    // the lowering applies now.
+    //
+    // IT HAS TO BE IN BIND, which cost a wrong placement to learn. `parse_cache`'s
+    // `prepared_equivalent` admits a text only if the bound PREPARED plan renders identically to
+    // what the DIRECT path produces — and it compares them UNOPTIMIZED, so an equivalent rewrite
+    // in `opt.rs` runs too late to be seen. Placed there first, it made `prepared_parity_probe`
+    // (which compares OPTIMIZED plans) report "SAME plan" while the cache went on refusing the
+    // text. The cache's own `stats().refused` is what showed it; the probe could not.
+    //
+    // WHAT IT IS WORTH: the direct path substitutes params during the parse and so gets
+    // `Plan::Insert`, while prepared mode got `InsertFrom`. Item 319 recorded that divergence as
+    // benign — "the INSERT case excludes itself" — and for correctness it is. But self-exclusion
+    // means every parameterized INSERT is REFUSED by the cache and re-parses on every call, then
+    // pays parameter marshalling on top, which is why `bench:usage` shows params SLOWER than
+    // interpolation on the same write.
+    //
+    // AFTER the match rather than inside the arm, because the arm holds `&mut` borrows of the
+    // plan's own fields and cannot assign through `plan` while they live. The replacement is
+    // computed first so the immutable borrow ends before the assignment.
+    //
+    // `Plan::Row` ONLY. A `FOR … INSERT` or `MATCH … INSERT` has real input rows and must evaluate
+    // per row; collapsing one to `Plan::Insert` would insert ONCE instead of once per row.
+    //
+    // Mutation testing made that guard's status precise, and it is not what it looks like. A
+    // mutant deleting it SURVIVED twice, including against `MATCH (u:User) INSERT (:Audit {kind:
+    // 'seen'})` — input rows and every property a literal, so nothing else refuses it. The reason
+    // is that `parse_cache::prepared_equivalent` compares the bound prepared plan against the
+    // UNBOUND direct parse, which no re-lowering touches: without the guard the two disagree, the
+    // text is REFUSED, and every call falls through to the direct path. The answer is identical
+    // and what is lost is the caching. So this is a PERF guard whose correctness backstop is the
+    // admission check, and the test that catches its removal has to assert on `stats()`, not on
+    // the returned plan (`a_row_driven_insert_keeps_the_per_row_operator`).
+    let relowered = match &*plan {
+        Plan::InsertFrom {
+            input,
+            nodes,
+            edges,
+        } if matches!(**input, Plan::Row) => crate::ir::lower_insert_literal(nodes, edges),
+        _ => None,
+    };
+
+    if let Some((nodes, edges)) = relowered {
+        *plan = Plan::Insert { nodes, edges };
+    }
+
     Ok(())
 }
 
