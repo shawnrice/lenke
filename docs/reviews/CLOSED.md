@@ -8590,3 +8590,58 @@ chain; the chain is the FAST spelling in both engines. Pointing a WALK recurrenc
 times.**
 
 Depth 4 is measurement only; its terms are not derived.
+
+## 600b — CORRECTION to 600's cost model: the win is ~AVERAGE DEGREE, not unbounded
+
+Item 600 landed the trail-3 closed form with the claim that "every term is O(V+E)" and estimated
+"~30x native / ~70x TS". The formula is right — 400/400 against brute force stands — and **the cost
+model was wrong**. Correcting it before anything is built on it.
+
+### Which term breaks it
+
+Per source `s`, the four corrections are:
+
+| term   | per-source form            | cost                                |
+| ------ | -------------------------- | ----------------------------------- |
+| `c01`  | `selfloops(s) * outdeg(s)` | O(V), given an O(E) self-loop tally |
+| `c12`  | `Σ_{e: s->b} selfloops(b)` | O(E)                                |
+| `c012` | `selfloops(s)`             | O(V)                                |
+| `c02`  | `Σ_{e: s->b} m(b, s)`      | **NOT O(V+E) as written**           |
+
+`c02` needs the multiplicity of an ORDERED PAIR, `m(b, s)`, for each edge. `Store`'s adjacency is
+in EDGE-INSERTION ORDER — `rebuild_csr` does `csr_out.extend_from_slice(adj)` with no sort — so
+there is no binary search to reach for. Probing `b`'s adjacency per edge costs
+`Σ_{e: s->b} deg(b)`, which is the **2-WALK COUNT**, not O(V+E).
+
+### So the win is the average degree
+
+With enumeration at `V * deg^3` and the shortcut at `V * deg^2`, the ratio is **`deg`** — not
+unbounded. Grounded in item 600's own measurements on the 20,000-vertex degree-5 fixture
+(2,500,000 three-walks, 500,000 two-walks):
+
+| engine | enumerates | per path | shortcut's ~500k probes | estimated   |
+| ------ | ---------- | -------- | ----------------------- | ----------- |
+| native | 15.81 ms   | ~6.3 ns  | ~2-4 ms                 | **~4-6x**   |
+| TS     | 1071.55 ms | ~428 ns  | ~25-40 ms               | **~27-43x** |
+
+**TS wins an order of magnitude more than native, and for a reason worth keeping:** its per-path
+constant is ~68x its per-probe constant, where native's two constants are close. A shortcut that
+trades paths for probes pays off in proportion to how bad the interpreter's per-path cost is. So
+this is primarily a TS lever that native also benefits from — the opposite of the usual direction
+here, where native gets the algebra first.
+
+It IS recoverable to O(V+E) by radix-sorting each adjacency segment by neighbour (two counting
+passes over E, then a binary search per edge), but that is an auxiliary O(E) structure and its own
+decision — not something to assume while estimating.
+
+### Why this correction exists at all
+
+Item 599 closed with the rule "do not size a cost by subtracting two larger measurements". This is
+the same failure in the other currency: **I asserted a COMPLEXITY instead of measuring a cost.**
+"Each case collapses to something countable in O(V+E)" was true of three terms and I generalized it
+to the fourth without checking what the fourth needs from the data structure. The estimate that
+followed was off by ~6x on native.
+
+**Rule: a complexity claim about a graph algorithm is a claim about the ADJACENCY REPRESENTATION.**
+Check what the representation actually offers — sorted? indexed? multiplicity-addressable? — before
+costing a term that needs a lookup.
