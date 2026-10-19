@@ -6445,7 +6445,7 @@ export const outNeighbors = (
   out: boolean,
   types: string[] | undefined,
 ): Vertex[] => {
-  const byType = (out ? graph.edgesFromByLabel : graph.edgesToByLabel).get(v.id);
+  const byType = out ? v.adjFrom : v.adjTo;
   const acc: Vertex[] = [];
 
   for (const e of edgesOfTypes(byType, types)) {

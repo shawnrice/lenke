@@ -381,7 +381,7 @@ const undirectedHopWalk = (w: {
     const binding = new Map<string, unknown>();
 
     for (const v of candidateVertexSource(graph, startLabel)) {
-      const outBucket = graph.edgesFromByLabel.get(v.id)?.get(typeName);
+      const outBucket = v.adjFrom?.get(typeName);
 
       if (outBucket !== undefined) {
         for (const edge of outBucket) {
@@ -396,7 +396,7 @@ const undirectedHopWalk = (w: {
         }
       }
 
-      const inBucket = graph.edgesToByLabel.get(v.id)?.get(typeName);
+      const inBucket = v.adjTo?.get(typeName);
 
       if (inBucket === undefined) {
         continue;
@@ -450,10 +450,9 @@ const relBoundHopWalk = (spec: {
     const rows: Row[] = [];
     // ONE binding, mutated per edge, now holding TWO entries instead of one.
     const binding = new Map<string, unknown>();
-    const index = out ? graph.edgesFromByLabel : graph.edgesToByLabel;
 
     for (const v of candidateVertexSource(graph, startLabel)) {
-      const bucket = index.get(v.id)?.get(typeName);
+      const bucket = (out ? v.adjFrom : v.adjTo)?.get(typeName);
 
       if (bucket === undefined) {
         continue;
@@ -535,10 +534,9 @@ const relBoundFilteredHopWalk = (w: {
 
     const rows: Row[] = [];
     const binding = new Map<string, unknown>();
-    const index = out ? graph.edgesFromByLabel : graph.edgesToByLabel;
 
     for (const v of candidateVertexSource(graph, startLabel)) {
-      const bucket = index.get(v.id)?.get(typeName);
+      const bucket = (out ? v.adjFrom : v.adjTo)?.get(typeName);
 
       if (bucket === undefined) {
         continue;
@@ -1076,10 +1074,9 @@ export const detectHopProjection = (
       const rows: Row[] = [];
       // ONE binding, mutated per edge. This is the allocation the profile found.
       const binding = new Map<string, unknown>();
-      const index = out ? graph.edgesFromByLabel : graph.edgesToByLabel;
 
       for (const v of candidateVertexSource(graph, startLabel)) {
-        const bucket = index.get(v.id)?.get(typeName);
+        const bucket = (out ? v.adjFrom : v.adjTo)?.get(typeName);
 
         if (bucket === undefined) {
           continue;
@@ -1171,11 +1168,10 @@ const farDrivenHopWalk = (w: {
     const binding = new Map<string, unknown>();
     // The OPPOSITE index from the start-driven walk: for an `out` hop the far end is the edge's
     // TARGET, so the far endpoints are the keys of the reverse index.
-    const index = out ? graph.edgesToByLabel : graph.edgesFromByLabel;
     let keys: string[] | undefined;
 
     for (const far of candidateVertexSource(graph, farLabel)) {
-      const bucket = index.get(far.id)?.get(typeName);
+      const bucket = (out ? far.adjTo : far.adjFrom)?.get(typeName);
 
       if (bucket === undefined) {
         continue;
@@ -1352,10 +1348,9 @@ const farDrivenFilteredHopWalk = (w: {
     const binding = new Map<string, unknown>();
     // The OPPOSITE index from the start-driven walk: for an `out` hop the far end is the edge's
     // TARGET, so the far endpoints are the keys of the reverse index.
-    const index = out ? graph.edgesToByLabel : graph.edgesFromByLabel;
 
     for (const far of candidateVertexSource(graph, farLabel)) {
-      const bucket = index.get(far.id)?.get(typeName);
+      const bucket = (out ? far.adjTo : far.adjFrom)?.get(typeName);
 
       if (bucket === undefined) {
         continue;
@@ -1442,7 +1437,6 @@ const filteredHopWalk = (w: {
       const rows: Row[] = [];
       const binding = new Map<string, unknown>();
       const env: EvalEnv = { binding, params, graph };
-      const index = out ? graph.edgesFromByLabel : graph.edgesToByLabel;
       // SEED, do not decline. This is what lets the start-only filter be carried at all: without
       // it the walk scans a whole label while the general path seeks (item 177's 3966us against
       // 49.6). `hopSeek` hands back a candidate set only when it is strictly narrower than the
@@ -1475,7 +1469,7 @@ const filteredHopWalk = (w: {
           // all. On a fault, decide whether the general path would have reached this vertex —
           // a non-empty bucket is necessary but not sufficient, since every far end may still
           // fail the far label or the far predicate. The happy path never enters this branch.
-          const bucket = index.get(v.id)?.get(typeName);
+          const bucket = (out ? v.adjFrom : v.adjTo)?.get(typeName);
 
           if (
             bucket !== undefined &&
@@ -1487,7 +1481,7 @@ const filteredHopWalk = (w: {
           continue;
         }
 
-        const bucket = index.get(v.id)?.get(typeName);
+        const bucket = (out ? v.adjFrom : v.adjTo)?.get(typeName);
 
         if (bucket === undefined) {
           continue;
@@ -1577,10 +1571,9 @@ const filteredHopWalk = (w: {
 
     const rows: Row[] = [];
     const binding = new Map<string, unknown>();
-    const index = out ? graph.edgesFromByLabel : graph.edgesToByLabel;
 
     for (const v of candidateVertexSource(graph, startLabel)) {
-      const bucket = index.get(v.id)?.get(typeName);
+      const bucket = (out ? v.adjFrom : v.adjTo)?.get(typeName);
 
       if (bucket === undefined) {
         continue;
@@ -2228,10 +2221,9 @@ const walkFarSide = (graph: Graph, plan: WalkPlan, take: (el: Vertex) => void): 
   const direct = plan.direct as DirectHop;
   // The MIRROR index of the start-driven walk's: an out-hop's edges arrive at the far vertex,
   // so they are in its IN-adjacency.
-  const index = direct.forward ? graph.edgesToByLabel : graph.edgesFromByLabel;
 
   for (const far of candidateVertexSource(graph, farLabel)) {
-    const bucket = index.get(far.id)?.get(direct.type);
+    const bucket = (direct.forward ? far.adjTo : far.adjFrom)?.get(direct.type);
 
     // A present bucket should never be empty — `deIndexEdgeLabel` drops the entry when its set
     // empties — but the size test keeps this path from depending on that invariant holding
@@ -2326,11 +2318,10 @@ export const dedupDrivesFar = (graph: Graph, plan: WalkPlan): boolean => {
     return false;
   }
 
-  const index = direct.forward ? graph.edgesToByLabel : graph.edgesFromByLabel;
   let cost = 0;
 
   for (const far of candidateVertexSource(graph, farLabel)) {
-    cost += 1 + (index.get(far.id)?.get(direct.type)?.size ?? 0);
+    cost += 1 + ((direct.forward ? far.adjTo : far.adjFrom)?.get(direct.type)?.size ?? 0);
 
     if (cost >= starts) {
       return false;
@@ -2362,10 +2353,9 @@ const walkFarSideResolvingStart = (
 ): void => {
   const { startLabel, farLabel } = plan;
   const direct = plan.direct as DirectHop;
-  const index = direct.forward ? graph.edgesToByLabel : graph.edgesFromByLabel;
 
   for (const far of candidateVertexSource(graph, farLabel)) {
-    const bucket = index.get(far.id)?.get(direct.type);
+    const bucket = (direct.forward ? far.adjTo : far.adjFrom)?.get(direct.type);
 
     if (bucket === undefined) {
       continue;

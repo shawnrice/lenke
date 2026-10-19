@@ -8270,3 +8270,47 @@ The same id-keyed pattern survives at **12 sites in `packages/gql/src/executor/h
 and one in `executor.ts`** — each needs its own check that a vertex object is in hand, and its own
 measurement. `out().has().count()` is still 27.6x native: `degreeOfTypes` plus `matches` per vertex,
 ~18ms of the remaining 42.
+
+## 592 — CLOSED: the adjacency box at 14 GQL sites, 1.2-1.4x
+
+Item 591 surveyed and left these; all 14 have a vertex object in hand and went through
+`index.get(v.id)` (a STRING-keyed map) instead of the vertex's own `adjFrom`/`adjTo`.
+
+**Item 159's warning does NOT forbid this, and reading it correctly is the justification.** It
+measured a branch in the INNER (per-EDGE) loop at 1.6x; these lookups are in the OUTER (per-VERTEX)
+loop, which is item 591's shape exactly. `distinctHopCount` stays excluded for the real reason: no
+vertex object at all.
+
+| case                         | id map       | box         | ratio by run               |
+| ---------------------------- | ------------ | ----------- | -------------------------- |
+| far-label projection         | 27.6-33.1 ms | 16.6-21.2   | 1.42 / 1.53 / 1.69 / 1.78x |
+| reversed projection          | 68.1-74.7    | 47.6-51.1   | 1.40 / 1.43 / 1.46 / 1.46x |
+| edge-variable projection     | 172.6-203.4  | 143.4-152.9 | 1.20 / 1.26 / 1.33 / 1.39x |
+| plain one-hop projection     | 98.4-113.7   | 76.2-93.2   | 1.21 / 1.22 / 1.25 / 1.34x |
+| one-hop `count(*)` — CONTROL | 0.01         | 0.01        | 1.00x every run            |
+
+`bun run bench`: `traverse 1-hop project` 128.7 -> 105.9, `distinct over a hop` 62.0 -> 46.3,
+`1-hop project + start filter` 111.8 -> 102.4; the COUNT-shortcut hop rows flat. **14 per-site
+mutants, 0 survivors** — the suite already reached every walk.
+
+**Correctness for a layout change: 321 queries byte-identical ORDERED against the previous build**,
+so the box yields the same `Set` with the same iteration order. Against native they match as
+MULTISETS; they do not match ordered, and that is correct — GQL row order without `ORDER BY` is
+unspecified ([[order-is-unspecified]]). My first sweep compared ordered and reported 19 FALSE
+divergences.
+
+### Four harness faults, and the rules they earn (592)
+
+1. **The side ORDER was a hidden variable:** `pristine, after` every round meant `after` always ran
+   second. Alternate the order per round.
+2. **A control that materializes 200,000 rows is not a control.** A no-hop projection read 1.10x,
+   1.51x, then **0.58x** on code the change cannot reach — GC-dominated, swinging 5.91-13.62ms.
+   This machine's drift on medium-weight TS queries is up to **±50%**, so report RANGES across runs
+   and lean on reproducibility, not one min-of-min. The only steady control was a sub-ms count
+   shortcut at 1.00x every run.
+3. **zsh does NOT word-split an unquoted variable.** `for side in $order` with `order="a b"` ran
+   once with a two-word value, the `cp` failed silently, and the run printed plausible numbers that
+   measured nothing. A/B drivers are Python now.
+4. **Save the AFTER copy in the same breath as the edit.** A `cp` of the pristine copy over the
+   working tree, before the after copy existed, lost the whole rewrite — `git diff --stat` empty.
+   The mutation rule ("restore before the next mutant") has an A/B twin.
