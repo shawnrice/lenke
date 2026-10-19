@@ -16,16 +16,34 @@
 
 use crate::ir::{Expr, Plan};
 use crate::value::Value;
-use std::collections::HashMap;
 
 /// Replace every `Expr::Param($name)` in `plan` with its bound value. Errors on
 /// the first parameter with no supplied value.
 pub fn bind_params(plan: &mut Plan, params: &[(String, Value)]) -> Result<(), String> {
-    let map: HashMap<&str, &Value> = params.iter().map(|(k, v)| (k.as_str(), v)).collect();
-    bind_plan(plan, &map)
+    // THE SLICE IS THE LOOKUP TABLE. This used to `collect` a `HashMap<&str, &Value>` first,
+    // which is a heap allocation plus a SipHash-1-3 insert per parameter and a SipHash per
+    // `$name` occurrence — for what a serving query typically has ONE of. There is exactly one
+    // lookup site (`bind_expr`'s `Expr::Param` arm), so the table bought nothing but its own
+    // construction.
+    //
+    // MEASURED ACROSS THE WHOLE RANGE, because a scan is O(P) per lookup against the map's O(1)
+    // and the interesting question is where it stops winning. It does not, up to 32 parameters
+    // with 16 occurrences (`examples/bind_probe.rs`): the map's BUILD cost dominates throughout.
+    //
+    //   params x lookups    hashmap     scan
+    //   1 x 1                 32.9       2.0 ns
+    //   4 x 4                 94.1      18.8
+    //   8 x 16               238.9     137.5
+    //   32 x 1               386.7       2.0
+    //   32 x 16              526.8     153.1
+    //
+    // HONEST SIZE: ~30ns on the one-param serving call, which is ~1.5% of it and BELOW
+    // `bench:usage`'s ~±6% floor (item 597 priced that floor). Taken for the isolated measurement
+    // and the removed allocation, not on the strength of a bench row — no bench row moved.
+    bind_plan(plan, params)
 }
 
-fn bind_plan(plan: &mut Plan, params: &HashMap<&str, &Value>) -> Result<(), String> {
+fn bind_plan(plan: &mut Plan, params: &[(String, Value)]) -> Result<(), String> {
     match plan {
         // Leaves — no child plan, no bindable expression. (Insert / AddEdge /
         // CallProcedure carry only literal values; a prepared statement cannot put a
@@ -330,13 +348,26 @@ fn bind_plan(plan: &mut Plan, params: &HashMap<&str, &Value>) -> Result<(), Stri
     Ok(())
 }
 
-fn bind_expr(e: &mut Expr, params: &HashMap<&str, &Value>) -> Result<(), String> {
+fn bind_expr(e: &mut Expr, params: &[(String, Value)]) -> Result<(), String> {
     match e {
         Expr::Param(name) => {
+            // `.rev()` is NOT a style choice. A repeated parameter name is LAST-WINS — the
+            // convention `ndjson` uses for any repeated JSON key (item 333) and what both engines
+            // must agree on, since a JS object literal and `JSON.parse` both keep the last
+            // spelling. `HashMap::collect` gave that for free; a FORWARD scan would silently make
+            // it first-wins, which is the same rows by a different value.
+            //
+            // Reachable: `Json::Obj` is a `Vec<(String, Json)>` whose parser pushes, so
+            // `params_from_obj` can hand two entries under one name. `g.query(text, obj)` cannot
+            // produce one, but `lnk_query` takes the params as a raw JSON string, so an ABI caller
+            // can. Pinned by `a_repeated_parameter_name_is_last_wins`.
             let v = params
-                .get(name.as_str())
+                .iter()
+                .rev()
+                .find(|(k, _)| k == name)
+                .map(|(_, v)| v)
                 .ok_or_else(|| format!("unbound parameter `${name}`"))?;
-            *e = Expr::Lit((*v).clone());
+            *e = Expr::Lit(v.clone());
         }
         // Leaves — nothing to bind. `GremlinPath` is Gremlin-only and its `bys` are
         // render modulators, not expressions, so no GQL `$param` can appear there.

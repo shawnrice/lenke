@@ -8490,3 +8490,39 @@ bench's floor at ~±6%.
 no arithmetic to extract as a pure fn ([[perf-gate-needs-its-own-test]]'s usual remedy), so the
 test observes WHICH ROUTE RAN — `buildEngineBackend` over a fake `EngineAbi` that counts calls.
 Then CAUGHT.
+
+### The 479ns parameter cost on a serving call — RETRACTED as a target (598)
+
+Item 597 left `backend.queryRows` with one parameter at 1760ns against 1281 without. It decomposes
+into five pieces, none above `bench:usage`'s floor: ~130ns JS object + `JSON.stringify`, 67ns
+`ndjson::parse_json`, ~60ns `params_from_obj`, ~20ns `encoder.encode`, ~30ns `bind_params`' lookup
+table. The remainder is bun:ffi's per-ARGUMENT marshalling (`lnk_query` takes eight arguments;
+`vertexCount` takes one), which item 292 already recorded as needing a profiler, not another probe.
+
+**The obvious adjacent lever is ALSO already closed.** `optimize_indexed` runs on every serving call
+(~350ns) and TS has had a plan cache since 229 — but item 293 refuted a native one: `bind_params`
+runs BEFORE `optimize_indexed`, so an optimized plan has that call's parameter values baked in, and
+a `(text, store-version)` key would serve STALE VALUES. A wrong answer, not a slow one.
+
+### `bind_params` built a per-call HashMap — TAKEN, ~30ns, and the bench cannot see it
+
+A heap allocation plus SipHash-1-3 per parameter, for one lookup site. Swept both axes in
+`examples/bind_probe.rs`: **no crossover up to 32 params x 16 occurrences** (526.8 -> 153.1ns),
+because the map's BUILD cost dominates (386.7ns at 32 params before any lookup). The realistic
+shape, one param used once, is **32.2 -> 2.0ns**; `percall_probe`'s `clone + bind_params` row
+confirms **147 -> 119** on the real function.
+
+**When the control's spread EXCEEDS the effect, the bench is not an instrument for it.** ~30ns is
+~1.5% of a serving call against a ~±6% floor. The three-round run was a REGRESSION check (engine
+0.96x-1.08x, worst 0.96x) and in that same run the ts control — untouchable by a Rust change —
+spanned 0.82x-1.16x, wider than the engine column. No bench row claimed.
+
+**`.rev()` is load-bearing: a repeated parameter name is LAST-WINS.** `HashMap::collect` gave that
+for free; a forward scan is FIRST-wins — same rows, different value. Reachable through the ABI
+(`lnk_query` takes params as a raw JSON string and `Json::Obj` is a `Vec` whose parser pushes),
+though not through `g.query(text, obj)`. Matches item 333's convention for any repeated JSON key.
+
+**A one-parameter fixture cannot witness a name-blind lookup.** `find(|_| true)` — ignoring the
+name entirely — SURVIVED all 1,177 tests, because every bind test supplied one parameter or two
+interchangeable ones. Closed by two params whose values are deliberately not interchangeable. Same
+shape as item 586's total count that could not witness a direction bug.

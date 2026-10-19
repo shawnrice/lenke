@@ -58,6 +58,7 @@ enumeration's is flat.
 | What does turning query text into a plan cost?                         | `query_bench -- plan`                |
 | How many allocations does a parse or a DECODE make, and of what sizes? | `alloc_count_probe`                  |
 | Would a parse CACHE change any plan? (prepared vs direct)              | `prepared_parity_probe`              |
+| Where does a lookup table stop being cheaper than a slice scan?        | `bind_probe`                         |
 | Does an indexed key seek beat a scan?                                  | `query_bench -- seeded`              |
 | What does a bulk write (SET) pay?                                      | `storage_bench -- write`             |
 | What does a second label on every edge cost?                           | `storage_bench -- multilabel`        |
@@ -103,6 +104,13 @@ question in its module header — read the header before touching it.
   JSON render — and exists because item 291's conclusion turns on their RATIO, which no bench
   reports. Read it with the audit entry; the numbers are what any attempt at the parse cost has
   to beat.
+- `bind_probe` — `bind_params`' lookup table: a `HashMap` build against a slice SCAN, swept over
+  parameter count x `$name` occurrences. The useful question is not "is a scan faster at one
+  parameter" (it is, 32.9ns against 2.0) but WHERE IT STOPS BEING FASTER, since a scan is O(P) per
+  lookup against the map's O(1) — and the answer is that it does not, up to 32 parameters with 16
+  occurrences, because the map's BUILD cost dominates throughout. Exists because the win is ~30ns
+  on a serving call, which is ~1.5% of it and below `bench:usage`'s ~+/-6% floor: the bench can
+  only certify no regression, so the claim needs its own harness (item 598).
 - `prepared_parity_probe` — would a PARSE CACHE in the native engine change any answer or any
   route? `lnk_query` parses and optimizes on every call with no cache, while the TS engine has had
   both since items 228/229, and a cache must hold a PREPARED plan (`$n` stays an `Expr::Param`)
