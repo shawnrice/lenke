@@ -8385,3 +8385,48 @@ replaces, so it saves only the inner per-type read — ~24 ms of 207, under the 
 
 **The fix is dense vertex indices in the core graph instead of string ids** — the same conclusion
 item 289 reached about the JSON carrier from the other end. Architectural, not a rung.
+
+## 595 — CLOSED: cache the edge's resolved ENDPOINTS, 2.4-2.6x
+
+Item 594 found the boundary of items 591/592: an `Edge` stores endpoint IDS, so `e.to` is a getter
+calling `getVertexById` (~190ns), and the hot executors resolve an endpoint from an edge at **56
+sites**. Caching the resolution on the edge:
+
+| case                                                | before         | after          |               |
+| --------------------------------------------------- | -------------- | -------------- | ------------- |
+| two-column hop projection                           | 193.70 ms      | 73.24          | **2.64x**     |
+| Gremlin `out(K).values(age)`                        | 121.76         | 48.08          | **2.53x**     |
+| hop projection + far filter                         | 144.24         | 60.52          | **2.38x**     |
+| labelled-middle `COUNT { }` / one-column projection | 127.88 / 71.59 | 104.89 / 62.06 | 1.22x / 1.15x |
+| two CONTROLS (no endpoint read)                     |                |                | 0.98x / 1.10x |
+
+Benches agree: `traverse 1-hop project + start filter` 102.4 -> **68.4**, `V().out().values(age)`
+273.3 -> **167.7** (ts/native 8.5x -> 5.6x), `2-hop subquery item` 113.5 -> 95.7, ingest flat (it
+uses `fromId`/`toId`, item 140). Cost: two references per edge, ~16MB per 1,000,000 edges, and only
+for edges whose endpoints are read.
+
+**A cached REFERENCE is a stronger claim than `#box`'s** (a box is a container mutated in place and
+cannot go stale). Four paths make it safe: `addVertex` on an existing id RETURNS the existing vertex;
+`removeVertex` cascades to incident edges; a rollback re-adds vertex-then-edges as fresh objects;
+`set graph` drops the cache.
+
+### THREE REPS INVENTED TWO REGRESSIONS; a NULL CONTROL proved it was the harness (595)
+
+At min-of-3 the one-column projection read **0.82x** and a no-edge control **0.77x**. Both dissolved
+at nine reps (1.15x, 0.98x). The deciding instrument was two fields added to `Edge` and **never read
+or written** — pure object growth, zero caching: it read **1.40x FASTER** on a node-only projection
+and 1.17x faster on another, speedups a dead field cannot cause. That established the swing as the
+harness rather than object size or the cache.
+
+**Rule: nine reps on any allocation-heavy row.** Item 592 hit the same failure (a control reading
+1.10x, 1.51x, then 0.58x) and replaced the control; raising reps is the better fix, and a null
+control is what tells you which it is.
+
+### A mutant found the hazard the soundness argument turns on (595)
+
+Deleting the invalidation from `set graph` **SURVIVED all 4,671 tests across 347 files** — nothing
+moved an edge between graphs and then read its endpoints.
+`packages/core/src/core/edge-endpoint-cache.test.ts` pins it: populate the cache against one graph,
+move the edge to a second graph holding DIFFERENT vertex objects under the SAME ids, assert the new
+graph's objects come back. **An id-level assertion would pass against the stale objects** — the test
+must read a property.

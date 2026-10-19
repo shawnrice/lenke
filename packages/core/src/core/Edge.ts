@@ -39,6 +39,10 @@ export class Edge {
 
   // This element's label box, cached after the first read, for the same reason as `#box`.
   #lbox: LabelBox | undefined;
+  // The resolved endpoint vertices, cached after the first read (item 595). See `from`/`to` for
+  // the four paths that make a cached REFERENCE safe where `#box` needed a stable container.
+  #fromV: Vertex | undefined;
+  #toV: Vertex | undefined;
 
   /**
    * TypeCheck if something is an `Edge`
@@ -73,14 +77,45 @@ export class Edge {
     // the element would read the old graph's properties and labels.
     this.#box = undefined;
     this.#lbox = undefined;
+    // The endpoint references belong to the PREVIOUS graph's vertices, so a move must drop them
+    // for exactly the reason the boxes are dropped.
+    this.#fromV = undefined;
+    this.#toV = undefined;
   }
 
+  /**
+   * The endpoint VERTICES, resolved once and cached (item 595).
+   *
+   * These were a `getVertexById` per read — a string-keyed `Map.get`, ~190ns at bench size (item
+   * 194) — and the hot executors resolve an endpoint from an edge at 56 sites, many of them once
+   * per edge in a loop. Item 594 measured the shape of that: a two-hop `COUNT { }` with a
+   * LABELLED middle costs 429 ns per first-hop edge against 253 for the unlabelled one, and the
+   * labelled branch's only extra work is reading `e.to` for the label test.
+   *
+   * WHY A REFERENCE IS SAFE TO CACHE HERE, where `#box` needed a stable container. The object
+   * identity for a live id cannot change under a live edge, and all four paths have to hold:
+   *
+   *   - `addVertex` with an existing id RETURNS the existing vertex; it never replaces the object.
+   *   - `removeVertex` cascades to the incident edges, so an edge cannot outlive its endpoint.
+   *   - a rollback re-adds the vertex FIRST and then its edges, both as fresh objects, so no edge
+   *     object ever observes a replaced endpoint.
+   *   - `set graph` drops these alongside `#box` and `#lbox`, which is what a graph move needs.
+   *
+   * The cost is two references per edge — 16 bytes an edge on a 64-bit runtime, so ~16MB on a
+   * 1,000,000-edge graph — paid only for edges whose endpoints are actually read, since the
+   * fields stay `undefined` until then. `fromId`/`toId` remain the right call where only the id
+   * is wanted (item 140), and they allocate nothing.
+   */
   get from(): Vertex {
-    return this.#graph!.getVertexById(this.#from)!;
+    this.#fromV ??= this.#graph!.getVertexById(this.#from)!;
+
+    return this.#fromV;
   }
 
   get to(): Vertex {
-    return this.#graph!.getVertexById(this.#to)!;
+    this.#toV ??= this.#graph!.getVertexById(this.#to)!;
+
+    return this.#toV;
   }
 
   /**
