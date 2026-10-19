@@ -7656,18 +7656,28 @@ const compileLinear = (linear: LinearQuery): CLinear => {
   // and an empty list matches none of them.
   const fast = repeatsNodeVariable(source) ? [] : source;
 
+  // EVERY detector RUNS — this is nineteen independent compile-time probes, not a ladder, and
+  // the field order below carries no precedence whatsoever. PRECEDENCE LIVES IN ONE PLACE:
+  // `runLinear`'s `if (linear.…)` chain in `executor/clauses.ts`, which is lazy and therefore
+  // the only thing that decides which rung answers a shape. Read that chain's comments before
+  // moving a rung; each one says whether its position is for correctness, for cost (item 418
+  // measured a branch ahead of a hot dispatch costing the shape it does not claim 1.12x), or
+  // only for reading.
+  //
+  // The order here is kept IDENTICAL to that chain's anyway, deliberately. It used to differ in
+  // its first five entries while matching in the last fourteen, and it carried a comment saying
+  // the OPTIONAL-hop count "sits above the plain one" — which described this literal's order and
+  // contradicted the chain, where item 510 correctly places it BELOW `countShortcut` as the
+  // strictly narrower shape. A list that resembles the precedence for three quarters of its
+  // length is worse than one that plainly does not, so this one now matches it exactly.
   return {
     clauses,
-    // The OPTIONAL-hop count sits above the plain one: every other rung refuses `optional`,
-    // so without it this shape has no rung at all (item 510).
-    // A constant `FOR` multiplies the count, so it sits beside the other count rungs and
-    // delegates to `detectCountShortcut` for the base (item 515).
+    varLengthCount: detectVarLengthCount(fast),
+    countShortcut: detectCountShortcut(fast, clauses),
+    optionalHopCount: detectOptionalHopCount(fast),
     forCount: detectForCount(fast, clauses),
     forProjection: detectForProjection(fast, clauses),
-    optionalHopCount: detectOptionalHopCount(fast),
     optionalHopProjection: detectOptionalHopProjection(fast, clauses),
-    countShortcut: detectCountShortcut(fast, clauses),
-    varLengthCount: detectVarLengthCount(fast),
     groupCountShortcut: detectGroupedNodeCount(fast),
     groupHopShortcut: detectGroupedHopCount(fast),
     reachShortcut: detectReachableShortcut(fast, clauses),

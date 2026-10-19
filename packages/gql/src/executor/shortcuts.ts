@@ -1,9 +1,40 @@
-// Count / reachability fast-paths for GQL. Detected on the raw AST at compile
-// time, these compute a `count(*)` directly from the type-bucket sizes / a degree
-// product, or answer an unbounded var-length + DISTINCT query with a plain BFS,
-// instead of enumerating every match. They mirror the native engine
-// (`try_count_edges` / `try_count_two_hop` / `try_reachable_distinct`) and are
-// provably identical for the homomorphic shapes they accept.
+// THE GQL FAST PATHS — the TypeScript twin of the engine's `exec/fastpath.rs`. Every `detect*`
+// here inspects the raw AST at COMPILE time and returns either a closure that answers the shape
+// without enumerating matches, or `null` to decline. Each must be ANSWER-EQUIVALENT to the
+// general matcher: a fast path is a performance decision, never a semantic one.
+//
+// The families, as the file is laid out:
+//
+//   counts          detectCountShortcut, detectForCount, detectOptionalHopCount,
+//                   detectVarLengthCount — a `count(*)` from bucket sizes, a degree product, or
+//                   the LEVEL RECURRENCE (walkLevelCount) for a deep hop
+//   trail-3         reusedTrailsAt3 — the depth-3 TRAIL correction. The recurrence counts WALKS;
+//                   a trail forbids edge reuse, which is not a function of the current level, so
+//                   exactly depth 3 gets a closed-form correction and nothing deeper does
+//   reachability    detectReachableShortcut, runReach — unbounded var-length + DISTINCT as a BFS
+//                   over the reachable SET rather than an enumeration of trails
+//   projections     detectNodeProjection, detectForProjection — a scan with ONE reused binding
+//                   and a row object only for survivors; admits ORDER BY via ./ordered-rows.ts
+//   aggregates      detectNodeAggregate (one), detectMultiNodeAggregate (two or more),
+//                   detectGroupedNodeAggregate / detectGroupedHopAggregate (grouped)
+//   grouped counts  detectGroupedNodeCount, detectGroupedHopCount — the `count(*)` tally
+//   chain helpers   twoHopSide, threeHopSide, sweepChain, threeSegmentCount, productCountOf
+//
+// PRECEDENCE IS NOT HERE. These detectors are independent and all of them run; which one answers
+// a shape is decided by `runLinear`'s lazy `if (linear.…)` chain in ./clauses.ts. That chain's
+// comments say, per rung, whether its position is for correctness, for cost, or only for reading.
+//
+// NATIVE COUNTERPARTS. The live names are `try_fused_count` / `try_edge_filtered_count` (counts),
+// `try_3hop_product_count` / `try_nhop_sweep_count` (chains), `try_degree_algebra` with
+// `walk_levels_total` and `reused_trails_at_3` (the recurrence and its trail correction), and
+// `varlen_distinct_endpoint_count` (reachability). This header used to name `try_count_edges`, xref:gone
+// `try_count_two_hop` and `try_reachable_distinct`; all three are GONE from the crate, so the xref:gone
+// three starting points a reader was given for finding the native twin were dead.
+//
+// A new predicate form needs its spellings added to `bun run spelling` (SPELL_N=200000
+// SPELL_REPS=9 — single runs are bimodal). Two spellings that mean the same thing and cost
+// differently is the bug class this whole file is most exposed to, and it returns correct
+// answers, so no correctness test catches it.
 import type { Edge, Graph, Vertex } from '@lenke/core';
 
 import type {
@@ -6942,7 +6973,7 @@ const refsOnlyVar = (e: Expr, v: string): boolean => {
  * Trail enumeration is exponential on a connected graph and hits `TRAIL_BUDGET`
  * (a fault), but a DISTINCT result only wants the reachable *set* — multiplicity
  * collapses — which a plain O(V+E) BFS answers. `->+` = reachable via ≥1 hop; `->*`
- * also includes the seed(s). Mirrors the native engine's `try_reachable_distinct`
+ * also includes the seed(s). Mirrors the native engine's `varlen_distinct_endpoint_count`
  * so both engines behave identically. Seeds via the compiled start node.
  */
 type ReachSpec = {
@@ -7020,7 +7051,7 @@ const runReach = (spec: ReachSpec, graph: Graph, params: Params): Row[] => {
     }
 
     // `count(DISTINCT <expr>)` (e.g. `b.k`): evaluate per reached vertex, skip
-    // nulls, dedup values — mirrors the native `try_reachable_distinct` count mode.
+    // nulls, dedup values — mirrors the native `varlen_distinct_endpoint_count`.
     const seenVals = new Set<string>();
     let n = 0;
 

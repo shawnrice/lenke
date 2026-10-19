@@ -9568,3 +9568,53 @@ ordering rule. The scalar-aggregate prologue
 now `sole_agg(keys, aggs)?`; measured flat across ~60 `query_bench` rows (0.92-1.09x, both
 directions, centred on 1.00x), with `filtered` reported as the known layout toll — it read 1.04x,
 0.99x and 0.95x across three invocations of the SAME two binaries.
+
+## 613 — cross-engine citations ROT, and there is now a probe for it
+
+**`bun run xref` (in `packages/native`). Baseline at item 613: 61 unresolved citations across 51
+distinct names. Drive it down; do not let it grow.**
+
+A comment saying _"Mirrors the native `varlen_distinct_endpoint_count`"_ is the ONLY index from
+one engine to the other. Nothing compiles it, nothing tests it, and after a Rust rename a dead
+name reads exactly like a live one — so a reader is not told they were misdirected, they simply
+fail to find anything. `shortcuts.ts`'s header pointed at `try_count_edges`, `try_count_two_hop`
+and `try_reachable_distinct`, **all three gone from the crate**; grepping the pattern elsewhere
+found 61 more, `val_eq` alone cited 6 times from 5 files. Two cited Rust TEST names and the module
+path `crates/lenke-engine/src/value.rs` are stale too. Most of it is the `lenke-core` →
+`lenke-engine` migration's wake.
+
+A PROBE, not a test, for `spelling-probe.ts`'s reason: a snake_case word in a comment is usually a
+Rust item but is sometimes a TS-local identifier, a config key or a file stem, so a CI threshold
+would be noise and a human has to read the list. A comment naming a dead symbol on purpose ends
+with `xref:gone` and is skipped.
+
+## 613 — where a GQL fast path's PRECEDENCE lives, and the lookalike that is not it
+
+**`runLinear`'s `if (linear.…)` chain in `packages/gql/src/executor/clauses.ts` is the sole
+authority.** `compileLinear` in `executor.ts` runs all nineteen detectors EAGERLY into a named
+object; its field order carries no precedence at all.
+
+It used to read as though it did — 14 of its 19 fields were in ladder order while the first 5 were
+not, and it carried a comment claiming `optionalHopCount` "sits above the plain one" when the real
+chain correctly places it BELOW `countShortcut` as the strictly narrower shape (item 510). **A list
+that resembles the precedence for three quarters of its length is worse than one that plainly does
+not.** The literal is now in exact ladder order, with the authority named; keep it that way.
+
+Verified inert before reordering: nothing iterates `CLinear`'s keys, and every detector is a pure
+function of `(fast, clauses)`.
+
+The chain's own comments are the model to follow when adding a rung — each says whether its
+position is for correctness, for cost (item 418: a branch ahead of a hot dispatch cost the plain
+hop projection 1.12x for nothing), or only for reading. Item 612 had to retrofit that standard
+onto the Rust ladder.
+
+**REFUTED as a target, do not re-derive:** extracting the
+`if (clauses.length !== 2) { return null; } const [m, ret] = clauses;` prologue from
+`shortcuts.ts`. It occurs 7 times, plus a start-label guard 6 times — real, but against item 612's
+25 BYTE-IDENTICAL occurrences it is a worse ratio, the code diverges immediately after each one,
+and [[ts-closure-size-is-load-bearing]] records that layout here is not free.
+
+**And a sampling note for `query: ordered projection`:** both rows carry a ~1.21x intrinsic spread
+(20.5/24.0/19.8 and 16.6/16.6/20.1 on one build), so single runs there are bimodal like the
+spelling probe's and want nine reps. A single run reading 1.27x against item 610's figure was
+measurement, not regression.
