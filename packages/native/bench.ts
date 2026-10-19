@@ -781,6 +781,18 @@ const CASES: Case[] = [
       (e, g) => void e.query(g, 'MATCH (a:Person)-[:KNOWS]->(x) RETURN x.name AS n'),
     ),
   },
+  {
+    // THE SAME HOP PROJECTION, SORTED (item 607). The row above is its unordered reference and
+    // the control for it: a change admitting the sort must move this row and leave that one
+    // alone. Sorting also forces the START-DRIVEN walk, because the far-driven one reorders rows
+    // deliberately and tie order under `ORDER BY` is observable between the engines — so this row
+    // additionally watches that the locality win is given up only where order matters.
+    name: 'traverse 1-hop project + order by',
+    ...onGraph(
+      () => graphDoc,
+      (e, g) => void e.query(g, 'MATCH (a:Person)-[:KNOWS]->(x) RETURN x.name AS n ORDER BY n'),
+    ),
+  },
 ];
 
 const engines: Engine[] = [];

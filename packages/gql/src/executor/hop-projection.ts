@@ -1,6 +1,6 @@
 import type { Graph, Vertex } from '@lenke/core';
 
-import type { Clause, CountValue, Expr, LabelExpr, Projection } from '../ast.js';
+import type { Clause, CountValue, Expr, LabelExpr, Projection, RelPattern } from '../ast.js';
 import type {
   AggFold,
   CClause,
@@ -31,6 +31,7 @@ import {
 import { candidateCount, candidateVertexSource, expand, matchesLabel } from '../graph-queries.js';
 import type { Adjacency } from '../graph-queries.js';
 import { indexCandidates } from './matching.js';
+import { outputColumnSorts, sortedRows } from './ordered-rows.js';
 import { asTruth, isNullish } from './scalars.js';
 import {
   hopSeek,
@@ -306,14 +307,93 @@ const containsSubquery = (node: unknown): boolean => {
  * keep it under the complexity gate — seven clauses in one `if` is seven of the budget, and item
  * 446's one extra branch put the function at 37 against a limit of 35.
  */
+/**
+ * The hop's endpoints and edge type, or `null` to decline — the three validations
+ * `detectHopProjection` opened with, extracted to keep it under the complexity cap for the same
+ * reason `projectionIsStreamable` was.
+ */
+const hopEnds = (
+  rel: RelPattern,
+  node: { variable?: string },
+  start: { label?: LabelExpr; variable?: string },
+): {
+  typeName: string;
+  farVar: string;
+  startLabel: LabelExpr | undefined;
+  startVarName: string | undefined;
+} | null => {
+  // ONE concrete edge type, so the per-vertex bucket is exact. `relTypeNames` returns `undefined`
+  // for an untyped hop and `null` for a shape with no single bucket.
+  const types = relTypeNames(rel.label);
+  const farVar = node.variable;
+  const startLabel = start.label;
+
+  // `candidateVertices` seeds from the label bucket ONLY for a simple label; for anything else it
+  // yields every vertex and leaves the filtering to its caller. Requiring a simple (or absent)
+  // label keeps the seed exact without re-deriving that filtering here.
+  if (
+    types?.length !== 1 ||
+    farVar === undefined ||
+    (startLabel !== undefined && startLabel.kind !== 'label')
+  ) {
+    return null;
+  }
+
+  return { typeName: types[0], farVar, startLabel, startVarName: start.variable };
+};
+
+/**
+ * How a hop projection handles an `ORDER BY`: the wrapper that sorts its rows, and whether the
+ * sort forces the START-DRIVEN walk. `null` declines the query.
+ *
+ * A SORT IS AN ORDER-SENSITIVE CONSUMER, so it rides the start-driven walk — through the flag the
+ * detector already takes for exactly that reason. `forceStartDriven`'s own doc establishes the
+ * premise: with a non-vacuous start label both engines read the same row sequence, "which is what
+ * says the start-driven walk's order is the general path's. So an order-sensitive fold may ride
+ * THIS walk, and only this one."
+ *
+ * The far-driven walk reorders rows deliberately (its header says so, and that it is sound only
+ * because an unordered result's order is unspecified). A sort pins the SORTED order but leaves
+ * TIES on arrival order, and tie order IS observable between the engines — item 605 measured TS
+ * and native agreeing exactly over a fixture with 20 ties per group, on every hop spelling. So
+ * sorting rows produced in the far-driven order would reorder ties away from native: a divergence
+ * no timing shows, and one a differential fuzzer comparing multisets cannot see.
+ */
+const hopOrderPlan = (
+  ret: Extract<Clause, { kind: 'return' }>,
+  proj: CProjection,
+  forceStartDriven: boolean,
+): { sorted: (inner: RowsFn | null) => RowsFn | null; startDriven: boolean } | null => {
+  // The COMPILED projection's item names, not a re-derivation from the AST: `proj.items[i].name`
+  // is what `sortsOnOutputOnly` reads for the aggregate rungs, so both callers resolve a key
+  // against the same names.
+  const sorts = outputColumnSorts(
+    ret,
+    proj.items.map((it) => it.name),
+  );
+
+  if (sorts === null) {
+    return null;
+  }
+
+  return {
+    sorted: (inner) => sortedRows(inner, sorts ?? undefined),
+    startDriven: forceStartDriven || sorts !== undefined,
+  };
+};
+
 const projectionIsStreamable = (proj: CProjection): boolean =>
   !proj.star &&
   !proj.aggregating &&
   !proj.distinct &&
-  proj.orderBy.length === 0 &&
-  proj.skip === undefined &&
-  proj.limit === undefined &&
-  proj.items.length > 0;
+  proj.items.length > 0 &&
+  // An `ORDER BY` is no longer refused here (item 607): `outputColumnSorts` admits it when every
+  // key names an output column and there is NO WINDOW, and the rows are sorted on the way out.
+  // A window still goes to the general path, and with no sort it must — that path is LAZY, so a
+  // `LIMIT 5` short-circuits where a materializing rung scans everything (`sortOf` records that
+  // as ~280x for the DISTINCT walk). The two clauses are one rule, which is why they are one
+  // condition rather than two.
+  (proj.orderBy.length > 0 || (proj.skip === undefined && proj.limit === undefined));
 
 /**
  * The REL-BOUND hop projection: the start-driven walk, binding the edge as well as the far end.
@@ -893,31 +973,13 @@ export const detectHopProjection = (
     return null;
   }
 
-  // ONE concrete edge type, so the per-vertex bucket is exact. `relTypeNames` returns
-  // `undefined` for an untyped hop and `null` for a shape with no single bucket.
-  const types = relTypeNames(rel.label);
+  const ends = hopEnds(rel, node, start);
 
-  if (types?.length !== 1) {
+  if (ends === null) {
     return null;
   }
 
-  const [typeName] = types;
-  const farVar = node.variable;
-
-  if (farVar === undefined) {
-    return null;
-  }
-
-  const startLabel = start.label;
-  const startVarName = start.variable;
-
-  // `candidateVertices` seeds from the label bucket ONLY for a simple label; for anything
-  // else it yields every vertex and leaves the filtering to its caller. Requiring a simple
-  // (or absent) label keeps the seed exact without re-deriving that filtering here.
-  if (startLabel !== undefined && startLabel.kind !== 'label') {
-    return null;
-  }
-
+  const { typeName, farVar, startLabel, startVarName } = ends;
   const proj: CProjection = cret.projection;
 
   if (!projectionIsStreamable(proj)) {
@@ -935,9 +997,17 @@ export const detectHopProjection = (
   // `v.name` instead, with no semantic difference between them (audit item 160).
   const projected = projectedEndsOnly(ret.projection.items, farVar, startVarName, rel.variable);
 
-  if (projected === null) {
+  // THE ORDER DECISION is extracted into `hopOrderPlan` — `detectHopProjection` sits at the
+  // complexity cap and this file's own precedent is to extract rather than grow it
+  // (`projectionIsStreamable` says the same). Its decline shares this return with `projected`'s
+  // for the same reason: one statement instead of two.
+  const order = hopOrderPlan(ret, proj, forceStartDriven);
+
+  if (projected === null || order === null) {
     return null;
   }
+
+  const { sorted, startDriven: startDrivenForOrder } = order;
 
   const itemsReadStart = projected.readsStart;
   const itemsReadRel = projected.readsRel;
@@ -1024,16 +1094,18 @@ export const detectHopProjection = (
   // AN UNDIRECTED HOP (item 480): its own walk, and nothing below can see `both` — every
   // walk there captures ONE direction through `out: boolean`. See `undirectedHopWalk`.
   if (rel.direction === 'both') {
-    return undirectedHopWalk({
-      startLabel,
-      typeName,
-      farVar,
-      farLabel,
-      proj,
-      farPred,
-      gate,
-      needsStart,
-    });
+    return sorted(
+      undirectedHopWalk({
+        startLabel,
+        typeName,
+        farVar,
+        farLabel,
+        proj,
+        farPred,
+        gate,
+        needsStart,
+      }),
+    );
   }
 
   if (itemsReadRel || carried.needsRel) {
@@ -1102,30 +1174,33 @@ export const detectHopProjection = (
     // Which walk is chosen is a PER-CALL decision, not a per-row one, so the branch costs the
     // inner loop nothing. The far-driven walk cannot apply a START label — it iterates the far
     // end — so it runs only where no vertex could fail that label.
-    return (graph, params) =>
-      !forceStartDriven && (startLabel === undefined || vacuousLabel(graph, startLabel))
+    return sorted((graph, params) =>
+      !startDrivenForOrder && (startLabel === undefined || vacuousLabel(graph, startLabel))
         ? farDriven(graph, params)
-        : startDriven(graph, params);
+        : startDriven(graph, params),
+    );
   }
 
-  return filteredHopWalk({
-    forceStartDriven,
-    startLabel,
-    typeName,
-    out,
-    farVar,
-    farLabel,
-    proj,
-    farPred,
-    gate,
-    startOnly: carried.startOnly,
-    cstart: cm.patterns[0].start,
-    startVar: needsStart ? startVar : undefined,
-    // The COMPILED far node carries both the inline equalities and the seed hints lifted from
-    // the clause `WHERE`, which are the two things `indexCandidates` reads — so one value
-    // answers "could the far end seek?" for both spellings.
-    cfar: compiledFarNode(cm),
-  });
+  return sorted(
+    filteredHopWalk({
+      forceStartDriven: startDrivenForOrder,
+      startLabel,
+      typeName,
+      out,
+      farVar,
+      farLabel,
+      proj,
+      farPred,
+      gate,
+      startOnly: carried.startOnly,
+      cstart: cm.patterns[0].start,
+      startVar: needsStart ? startVar : undefined,
+      // The COMPILED far node carries both the inline equalities and the seed hints lifted from
+      // the clause `WHERE`, which are the two things `indexCandidates` reads — so one value
+      // answers "could the far end seek?" for both spellings.
+      cfar: compiledFarNode(cm),
+    }),
+  );
 };
 
 /**

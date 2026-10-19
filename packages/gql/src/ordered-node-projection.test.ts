@@ -48,6 +48,36 @@ const rowsOf = (g: Graph, q: string): string =>
     .map((r) => JSON.stringify(r))
     .join('|');
 
+/** A hop fixture: `n` vertices each with one out-edge, and only `distinct` key values. */
+const hopGraph = (n: number, distinct: number): Graph => {
+  const g = new Graph();
+  const vs = [];
+
+  for (let i = 0; i < n; i += 1) {
+    vs.push(
+      g.addVertex({
+        id: `v${i}`,
+        labels: ['P'],
+        properties: { k: `k${i % distinct}`, t: i % 3, j: i % 2, n: i },
+      }),
+    );
+  }
+
+  for (let i = 0; i < n; i += 1) {
+    g.addEdge({
+      id: `e${i}`,
+      from: vs[i],
+      // A scatter, so the far end's creation order is NOT the start's edge order — which is what
+      // makes the far-driven walk's arrival order differ and the tie assertions meaningful.
+      to: vs[(i * 7 + 13) % n],
+      labels: ['K'],
+      properties: {},
+    });
+  }
+
+  return g;
+};
+
 /** The admitted spelling and a DECLINED spelling of the same sort must agree row for row. */
 const agree = (g: Graph, shortcut: string, general: string): void => {
   const a = rowsOf(g, shortcut);
@@ -122,6 +152,82 @@ describe('the ordered node projection', () => {
       g,
       'MATCH (a:P {j: 1}) RETURN a.k AS x ORDER BY x',
       'MATCH (a:P {j: 1}) RETURN a.k AS x ORDER BY a.k',
+    );
+  });
+
+  // --- the HOP projection (item 607) ------------------------------------------------------------
+
+  test('a HOP sorted by an output column matches the declined spelling row for row', () => {
+    // Same oracle as the node cases: `ORDER BY x` takes the shortcut, `ORDER BY b.k` is
+    // structurally the same sort but an expression key, so it declines to the general path.
+    const g = hopGraph(400, 7);
+
+    agree(
+      g,
+      'MATCH (a:P)-[:K]->(b) RETURN b.k AS x ORDER BY x',
+      'MATCH (a:P)-[:K]->(b) RETURN b.k AS x ORDER BY b.k',
+    );
+    agree(
+      g,
+      'MATCH (a:P)-[:K]->(b) RETURN a.k AS x ORDER BY x DESC',
+      'MATCH (a:P)-[:K]->(b) RETURN a.k AS x ORDER BY a.k DESC',
+    );
+  });
+
+  test('a SORTED hop must leave the FAR-DRIVEN walk, which reorders rows', () => {
+    // `MATCH (a:P)-[:K]->(b) RETURN b.k` reads only the far end, so unsorted it rides
+    // `farDrivenHopWalk` — whose header says it changes row order deliberately and is sound only
+    // because an unordered result's order is unspecified. A sort pins the SORTED order and leaves
+    // TIES on arrival order, so sorting rows produced in THAT order reorders ties away from the
+    // general path. `hopOrderPlan` therefore forces the start-driven walk.
+    //
+    // The fixture is almost all ties — 400 rows over 7 distinct keys — so the tie order IS the
+    // assertion. Against the declined spelling, which never leaves the general path.
+    const g = hopGraph(400, 7);
+
+    // A SECOND, DISTINCT COLUMN IS WHAT MAKES THE TIES VISIBLE. Projecting only the sort key
+    // leaves every tied row as the same object (`{t: 0}`), so a reordering of ties is
+    // indistinguishable and the assertion cannot fail — a mutant letting the far-driven walk keep
+    // a sorted query SURVIVED exactly that fixture. `n` is unique per vertex, so each tied row is
+    // identifiable and its position is part of the comparison. Item 425 recorded the same trap:
+    // "I wrote the fixture for this guard is not evidence it exercises the guard."
+    agree(
+      g,
+      'MATCH (a:P)-[:K]->(b) RETURN b.t AS t, b.n AS n ORDER BY t',
+      'MATCH (a:P)-[:K]->(b) RETURN b.t AS t, b.n AS n ORDER BY b.t',
+    );
+    // DESC too: the sorted order reverses but the ties within each group must still arrive in the
+    // general path's order, not the reverse of it.
+    agree(
+      g,
+      'MATCH (a:P)-[:K]->(b) RETURN b.t AS t, b.n AS n ORDER BY t DESC',
+      'MATCH (a:P)-[:K]->(b) RETURN b.t AS t, b.n AS n ORDER BY b.t DESC',
+    );
+  });
+
+  test('a HOP window with no sort stays with the general path', () => {
+    // The hop gate's own laziness rule, which the node test above does not reach — that one is a
+    // node query and this is the hop gate. A mutant admitting a bare window into the streaming
+    // gate SURVIVED until this existed: the wrapper only SORTS, it does not page, so a shortcut
+    // that claimed `LIMIT 5` would return every row.
+    const g = hopGraph(400, 7);
+
+    expect(query(g, 'MATCH (a:P)-[:K]->(b) RETURN b.k AS x LIMIT 5')).toHaveLength(5);
+    expect(query(g, 'MATCH (a:P)-[:K]->(b) RETURN b.k AS x SKIP 395')).toHaveLength(5);
+  });
+
+  test('a hop with a carried WHERE and an inline predicate still matches', () => {
+    const g = hopGraph(400, 7);
+
+    agree(
+      g,
+      'MATCH (a:P)-[:K]->(b) WHERE b.j > 0 RETURN b.k AS x ORDER BY x',
+      'MATCH (a:P)-[:K]->(b) WHERE b.j > 0 RETURN b.k AS x ORDER BY b.k',
+    );
+    agree(
+      g,
+      'MATCH (a:P {j: 1})-[:K]->(b) RETURN b.k AS x ORDER BY x',
+      'MATCH (a:P {j: 1})-[:K]->(b) RETURN b.k AS x ORDER BY b.k',
     );
   });
 

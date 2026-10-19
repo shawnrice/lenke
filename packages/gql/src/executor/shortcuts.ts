@@ -39,12 +39,10 @@ import {
   freePredicateVars,
   gatePredicate,
   columnName,
-  compareSort,
   compileExpr,
   compilePredicate,
   aggregateOverValues,
   satisfies,
-  sortsOnOutputNames,
   sortsOnOutputOnly,
   countEdges,
   outNeighbors,
@@ -61,6 +59,8 @@ import type { Adjacency } from '../graph-queries.js';
 import { plainRowProjection } from './hop-projection.js';
 import { indexCandidates, matchNode, seedVertices, seekIsWorthIt } from './matching.js';
 import type { SeedCandidate } from './matching.js';
+import type { ColSort } from './ordered-rows.js';
+import { outputColumnSorts, sortRowsByColumns } from './ordered-rows.js';
 import { AGGREGATES, asTruth, isNullish } from './scalars.js';
 
 /**
@@ -5569,7 +5569,6 @@ const keepGroups = (
 };
 
 /** One `ORDER BY` key resolved to an output COLUMN of the tally's two-column row. */
-type ColSort = { col: string; descending: boolean; nullsFirst: boolean | undefined };
 
 /**
  * One group's key value, running count, and the vertex that OPENED it.
@@ -5696,23 +5695,8 @@ const groupIndex = (): {
  * Uses `compareSort`, the engine's own comparator, so DESC and the NULLS placement match it
  * rather than being re-derived.
  */
-const sortGroupRows = (rows: Row[], sort: readonly ColSort[]): Row[] => {
-  if (sort.length === 0) {
-    return rows;
-  }
-
-  return rows.sort((a, b) => {
-    for (const s of sort) {
-      const c = compareSort(a[s.col], b[s.col], s.descending, s.nullsFirst);
-
-      if (c !== 0) {
-        return c;
-      }
-    }
-
-    return 0;
-  });
-};
+const sortGroupRows = (rows: Row[], sort: readonly ColSort[]): Row[] =>
+  sortRowsByColumns(rows, sort);
 
 /**
  * Every `ORDER BY` key resolved to one of the tally's two output columns, or `null` to decline.
@@ -6230,75 +6214,6 @@ const nodeWhereOf = (where: Expr, nodeVar: string): InlinePred | 'decline' => {
  * `for (const ip of preds)` allocated an iterator per vertex over an empty array and cost an
  * unfiltered scan 34%.
  */
-/**
- * Every `ORDER BY` key of a plain row projection resolved to one of its OUTPUT COLUMNS, or `null`
- * to decline (item 605).
- *
- * WHY AN OUTPUT COLUMN IS THE WHOLE RULE. This path projects every row and then sorts, where the
- * general path keeps bindings and sorts those — so the question is whether sorting here evaluates
- * anything the query would not. An output column's value is already computed by the projection,
- * so nothing extra is evaluated and no raise can be swallowed. `colSortsOf` makes the same
- * argument for the tally (item 190), and item 189 had to refuse several keys for the lack of it.
- *
- * WHY A WINDOW DECLINES, which is the other half and is MEASURED. With `SKIP`/`LIMIT` the general
- * path keeps top-k INPUT bindings and projects only survivors (item 145), so an item that faults
- * on a discarded row never raises there — `RETURN CAST(a.s AS INTEGER) AS x, a.n AS k ORDER BY k
- * LIMIT 1` returns a row on BOTH engines while the same query without the window raises on both
- * (item 604). Projecting everything and slicing after would raise where the query does not. With
- * no window every row is emitted, so every item is projected either way and the question does not
- * arise — for any number of items or keys.
- *
- * `LIMIT 0` is a third case the same way: `applyProjection` returns `[]` BEFORE projecting, so a
- * path that projected first could raise where the query returns nothing. The no-window rule
- * excludes it too.
- */
-const outputColumnSorts = (
-  ret: Extract<Clause, { kind: 'return' }>,
-  cols: readonly string[],
-): ColSort[] | null | undefined => {
-  const keys = ret.projection.orderBy;
-
-  if (keys === undefined || keys.length === 0) {
-    return undefined; // no sort — the streaming path, unchanged
-  }
-
-  // A window with a sort is what the raise-parity argument above refuses.
-  if (ret.projection.skip !== undefined || ret.projection.limit !== undefined) {
-    return null;
-  }
-
-  // THE ADMISSION TEST IS `sortsOnOutputOnly`, not a second copy of it. It already asks exactly
-  // this question for the rungs at items 544/545, and `plainRowProjection`'s own comment states
-  // the reason to share it: "two copies of this list is how one of them falls behind the other."
-  // An earlier version of this function inlined the test and was a partial duplicate.
-  //
-  // ONE NOTE ON THAT HELPER'S DOC, because it does not hold for this caller. It records that
-  // "dropping the NAME check ... leaves every answer unchanged", on the grounds that "an
-  // aggregating projection's ORDER BY resolves against the OUTPUT columns, so any valid `var` key
-  // already names one". That is true of the AGGREGATING rungs it was written for. This projection
-  // is not aggregating, so `ORDER BY a` can name the PATTERN VARIABLE — a valid sort, since a node
-  // has an order — and the name check is load-bearing here. A mutant dropping it SURVIVED until
-  // `ordered-node-projection.test.ts` grew a DESC case, because ascending scan order coincides
-  // with the right answer.
-  if (!sortsOnOutputNames(ret, new Set(cols))) {
-    return null;
-  }
-
-  const out: ColSort[] = [];
-
-  for (const k of keys) {
-    // `sortsOnOutputNames` has already established that every key is a `var` naming one of
-    // `cols`; this re-test is the TYPE NARROWING and not a second check of the rule. An `Expr`
-    // union has no `name` until it is narrowed, and asserting past that would be the thing a
-    // reader could not distinguish from a missing test.
-    if (k.expr.kind === 'var') {
-      out.push({ col: k.expr.name, descending: k.descending, nullsFirst: k.nullsFirst });
-    }
-  }
-
-  return out;
-};
-
 export const detectNodeProjection = (
   clauses: readonly Clause[],
   compiled: readonly CClause[],

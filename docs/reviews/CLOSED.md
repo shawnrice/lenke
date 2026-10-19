@@ -9052,3 +9052,91 @@ serves and could take the sort: `needsStart, ORDER BY x` is **459.3 ms against a
 reference**, and the far-predicate variant 423.4 against 50.9. Tie order is SAME between the
 engines for all three hop spellings today, so the general path's order is reproducible and the
 far-driven walk is the only half that must stay out. Its own header already says so.
+
+## 607 — the HOP half: 5.14x, through a lever the file already had
+
+Item 605 left the hop projection behind its tie-order constraint. This builds it.
+
+### Measured
+
+Three alternated rounds, order reversed per round, `BENCH_ONLY=traverse`, a rebuild per side:
+
+| row                                      | ts before  | ts after  | ratio     | ffi   |
+| ---------------------------------------- | ---------- | --------- | --------- | ----- |
+| **`traverse 1-hop project + order by`**  | **1136.5** | **221.2** | **5.14x** | 1.03x |
+| `traverse 1-hop project` (the REFERENCE) | 99.1       | 98.2      | 1.01x     | 0.86x |
+| `traverse 1-hop project + start filter`  | 66.1       | 65.5      | 1.01x     | 1.02x |
+| `traverse 1-hop + filter`                | 37.5       | 37.5      | 1.00x     | 1.00x |
+| `traverse 1-hop + start filter`          | 35.5       | 35.9      | 0.99x     | 1.00x |
+
+**`traverse 1-hop project` at 1.01x is the control that matters most**, because it is the SAME
+query without the sort — and a sort now forces the start-driven walk, so if the flag leaked the
+unordered row would lose the far-driven walk's locality (item 167's 2.3x). It did not.
+
+The `ffi` column's 0.86x on that row (61.0 -> 70.7) is a NATIVE figure on a row a TS change cannot
+reach — the second control, and incidentally this bench's floor for a 60-70 ms native row, ~±15%.
+
+### No new flag: `forceStartDriven` already existed, for this reason
+
+`detectHopProjection` takes `forceStartDriven`, and its own doc had settled the premise:
+
+> With a non-vacuous start label the same query reads `[5,2,3,4,0,0,2,1]` in both engines, which is
+> what says the start-driven walk's order is the general path's. **So an order-sensitive fold may
+> ride THIS walk, and only this one.**
+
+A sort is exactly such a consumer, so admitting one sets that flag. `farDrivenHopWalk` keeps its
+locality win for every unsorted query and gives it up only where order matters.
+
+The shared pieces moved to `executor/ordered-rows.ts`, because `shortcuts.ts` imports FROM
+`hop-projection.ts` — anything both need cannot live in either without a cycle. `sortGroupRows`
+delegates to it, so there is still one comparator and one sorter.
+
+### Teeth: three mutants, TWO survived, and both were my fixtures
+
+| mutant                                                   | result                    |
+| -------------------------------------------------------- | ------------------------- |
+| H1 far-driven walk keeps a sorted query (the constraint) | **SURVIVED**, then CAUGHT |
+| H2 do not sort the hop rows at all                       | CAUGHT (9 tests)          |
+| H3 admit a bare window into the streaming gate           | **SURVIVED**, then CAUGHT |
+
+**H1 survived because the fixture projected ONLY the sort key.** Every tied row was the same object
+(`{t: 0}`), so reordering ties was literally invisible and the assertion could not fail. A second,
+unique column (`b.n`) makes each tied row identifiable and its position part of the comparison.
+Same coincidence as item 605's S6, and exactly what item 425 recorded: "I wrote the fixture for this
+guard is not evidence it exercises the guard." The DESC direction is now asserted too — the sorted
+order reverses while ties must still arrive in the general path's order rather than the reverse.
+
+**H3 was not exercised at all**: the laziness test was a NODE query and H3 is the HOP gate. Worth
+naming what the mutant does, since "breaks laziness" undersells it — the wrapper SORTS and does not
+page, so a shortcut claiming `LIMIT 5` returns every row. Covered now with `LIMIT` and `SKIP`.
+
+Both re-run: CAUGHT, each by exactly the test written for it.
+
+### Two process notes
+
+**I patched the wrong function first.** I read `farDrivenHopWalk`'s header, then matched an
+admission test at a line number grepped earlier which belonged to `undirectedHopWalk`. The
+uniqueness assertion passed because the pattern WAS unique — just not in the function I believed.
+A line number is not a function identity; re-grep inside the function before editing it.
+
+**Lint pushed back twice and was right both times.** Unused imports after the move, and the
+detector at complexity 37 against a cap of 35. Not worked around: `hopOrderPlan` and `hopEnds` are
+extracted, which is what this file's own comments say was done for `projectionIsStreamable`. A
+run-time subtlety came out of it too — `RowsFn` returns `Row[] | null` because a walk can decline
+PER CALL, and sorting that would answer a declined walk with an empty result instead of letting the
+general path run.
+
+### Gates
+
+Each as its own command: `bun test packages/core packages/gql packages/gremlin
+packages/serialization` 3769 pass / 0 fail (14 cases in the new file), `bun test
+packages/native/src` 929 pass / 0 fail, `bun run typecheck` exit 0, `bunx oxlint --type-aware .`
+exit 0 uncached, `bunx oxfmt --check .` uncached clean, `bun run fuzz` 13 pass / 0 fail across all
+seven byte-identity fuzzers — comparing ORDERED results, so a cross-engine check on the tie order
+this item turns on. CI green on 606.
+
+### Still open
+
+A window WITH a sort, in both the node and hop paths, until item 426's conservative cannot-fault
+check exists. Item 603 measured that shape (`ORDER BY x LIMIT 5` over a hop) at 164.3 ms against
+native's 2.9.
