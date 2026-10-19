@@ -9409,3 +9409,54 @@ item was meant to show a faulting projection declining — but `b.k` is `k0`…`
 cast in ANY row, so the general path raises too and the control cannot distinguish the two routes.
 The shape that can is item 610's test fixture: a faulting value in a row the ORDERING EXCLUDES.
 A control has to be able to come out either way.
+
+## 611 — depth 4's structure, priced before derived: it needs an A^2 entry, so it is ONE LEVEL dearer
+
+Item 600 derived the depth-3 trail correction and said depth 4 "has more terms and is not
+claimed". That reads as a quantity problem. It is a KIND problem, and the difference is worth
+recording before anyone spends a tick on the algebra.
+
+### Why depth 3 was special
+
+Of its three pair-equality events — `(e0,e1)`, `(e1,e2)`, `(e0,e2)` — only `(e0,e2)` is
+NON-ADJACENT, and it spans exactly ONE intermediate edge. That pins a 2-cycle `a -> b -> a`, so the
+term is a REVERSE-EDGE MULTIPLICITY: `Σ_{e: a->b} m(b, a)`. Every other term is a self-loop tally
+or a degree. That is the whole reason the formula is cheap.
+
+### Depth 4 has a pair that spans TWO
+
+Its non-adjacent pairs are `(e0,e2)`, `(e1,e3)` and `(e0,e3)`. The last spans two intermediate
+edges: `e3 == e0` forces the walk to be `a -> b -> ? -> a -> b`, so `e1, e2` are a 2-WALK from `b`
+back to `a`. The term is therefore
+
+```text
+Σ_{e: a->b}  A²[b][a]
+```
+
+— an entry of the squared adjacency matrix, per edge. Verified non-zero in 8 of 8 random graphs
+(3-5 vertices, 4-10 edges), computed densely and compared against the walk and trail counts.
+
+### So it is not blocked, it is one level dearer — and that IS the price
+
+`A²[b][a]` is reachable without a matrix product: for each edge `a -> b`, walk `b`'s adjacency and
+count edges `k -> a` for each neighbour `k`. Summed, that is the **3-WALK COUNT** — against
+enumeration's 4-walk count. So depth 4 buys a factor of the average degree, exactly as depth 3
+does against 3-walk enumeration (item 600b). The relationship repeats one level up:
+
+| depth | correction costs | enumeration costs | win         |
+| ----- | ---------------- | ----------------- | ----------- |
+| 3     | 2-walks          | 3-walks           | ~avg degree |
+| 4     | 3-walks          | 4-walks           | ~avg degree |
+
+### Why that is not a reason to build it next
+
+The prize is the same FACTOR as depth 3 but the derivation is much larger: six pair events with
+their intersections, against depth 3's three events and four terms. And a wrong term returns a
+plausible count — the class of bug this repo records as invisible to timing and caught only by unit
+tests and fuzzers. Item 602 did leave `exec::fastpath_fuzz` able to generate depth 4, so the oracle
+exists, which is the one prerequisite that was missing.
+
+**Recorded so the next pass starts from the structure rather than re-deriving it**, and so "more
+terms" is not mistaken for "a bigger version of the same thing". The measured prize remains large
+in absolute terms — TS `-[:K]->{4}` is 5765 ms against native's 80.96 — and the standing bench has
+no row for it.
