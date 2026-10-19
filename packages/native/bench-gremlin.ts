@@ -27,6 +27,7 @@ import {
   has,
   hasLabel,
   out,
+  order,
   planToGremlin,
   repeat,
   toArray,
@@ -67,6 +68,11 @@ const SHAPES: [string, Plan][] = [
   ['E().count()', traversal(E(), count())],
   ['V().out().count()', traversal(V(), out('KNOWS'), count())],
   ['V().out().values(age)', traversal(V(), out('KNOWS'), values('age'))],
+  // THE SAME TRAVERSAL WITH A TRAILING STEP (item 608). `hopValuesShortcut` matched a plan of
+  // EXACTLY three steps, so this was four and dropped the whole query onto the traverser
+  // pipeline. The row above is its reference and its control: a change letting a residual ride
+  // the shortcut must move this row and leave that one alone.
+  ['V().out().values(age).order()', traversal(V(), out('KNOWS'), values('age'), order())],
   ['V().out().has().count()', traversal(V(), out('KNOWS'), has('age', gt(44)), count())],
   ['V().groupCount(age)', traversal(V(), groupCount({ by: 'age' }))],
   ['V().out().dedupe().count()', traversal(V(), out('KNOWS'), dedupe(), count())],

@@ -17,7 +17,7 @@ import { applyStep } from './dispatch.js';
 import { hopValuesShortcut } from './hop-values.js';
 import { seedFromIndex } from './index-seed.js';
 import { groupCountShortcut } from './projection.js';
-import { newContext, planReadsPath, type Traverser, unwrap } from './runtime.js';
+import { newContext, planReadsPath, startTraverser, type Traverser, unwrap } from './runtime.js';
 import { applySource } from './sources.js';
 
 /**
@@ -693,19 +693,34 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
   // `V().out(T).values(k)` likewise answers the whole plan — one walk instead of the traverser
   // pipeline, 539ns/row down to 251 (see `hopValuesShortcut`). Only when nothing tracks path:
   // the walk emits bare values and builds no traverser, so it has no path to carry.
-  if (!ctx.tracksPath) {
-    const projected = hopValuesShortcut(effective, graph);
+  const projected = ctx.tracksPath ? undefined : hopValuesShortcut(effective, graph);
 
-    if (projected !== undefined) {
-      return projected;
-    }
+  // NOTHING LEFT OVER is the shape this shortcut has always served: the values ARE the answer, so
+  // they are returned without ever building a traverser. Unchanged, and it stays the fast path.
+  if (projected?.rest.length === 0) {
+    return projected.values;
   }
 
   // If the plan opens `V()`/`E()` + a seedable `has` on an indexed key, seed
   // from the index and apply only the residual steps; otherwise scan as usual.
-  const seeded = seedFromIndex(effective, graph, ctx.tracksPath);
-  let stream: Iterable<Traverser<unknown>> | null = seeded?.stream ?? null;
-  const steps = seeded?.steps ?? effective.steps;
+  const seeded = projected === undefined ? seedFromIndex(effective, graph, ctx.tracksPath) : null;
+  // A RESIDUAL RIDES THE SHORTCUT (item 608) rather than defeating it. The walk's values are
+  // wrapped as traversers and the leftover steps run over them, exactly as a seeded plan's stream
+  // feeds its own residual below. The wrapping is real work — but `V().values(k)` runs the WHOLE
+  // pipeline for 200,000 values in 29.4 ms, so it is a few ms against the 114 ms that declining
+  // the shortcut cost.
+  //
+  // `tracksPath` is still the gate: the walk emits bare values and builds no path, so a plan that
+  // reads one cannot ride it, residual or not.
+  let stream: Iterable<Traverser<unknown>> | null =
+    projected !== undefined
+      ? (function* () {
+          for (const value of projected.values) {
+            yield startTraverser(value, false);
+          }
+        })()
+      : (seeded?.stream ?? null);
+  const steps = projected !== undefined ? projected.rest : (seeded?.steps ?? effective.steps);
 
   for (const step of steps) {
     if (stream === null) {

@@ -1,6 +1,6 @@
 import type { Graph } from '@lenke/core';
 
-import type { Plan } from '../ast.js';
+import type { Plan, Step } from '../ast.js';
 import { adjacentEdges, otherEndpoint } from './movement.js';
 
 /**
@@ -32,14 +32,36 @@ import { adjacentEdges, otherEndpoint } from './movement.js';
  * included, and it is the lesson item 169 paid for: a second derivation of something the engine
  * already decides is exactly the drift that makes two spellings disagree.
  */
-export const hopValuesShortcut = (plan: Plan, graph: Graph): Iterable<unknown> | undefined => {
+/**
+ * What the shortcut claims: the values its three-step prefix produces, plus the steps LEFT OVER.
+ *
+ * Returning a residual (item 608) is the mechanism `seedFromIndex` already uses in this executor,
+ * and it is what lets a trailing step ride the shortcut instead of defeating it. The gate used to
+ * be `steps.length !== 3`, so `V().out(T).values(k).order()` was four steps and dropped the WHOLE
+ * query onto the traverser pipeline: 28.9 ms became 172.5. The file's own note said this in
+ * general terms for a LEADING step — "a leading `hasLabel` is one step too many for all of them,
+ * so it does not merely cost its own per-element test — it drops the whole query onto the
+ * traverser pipeline."
+ *
+ * WHY A RESIDUAL IS SOUND HERE, not just faster. This prefix yields exactly the values the general
+ * pipeline would, in the same order — that is the argument the shortcut already rests on. So
+ * feeding them to the remaining steps is the same computation the pipeline would have done, and
+ * every step's semantics come from its own implementation. In particular `order` keeps `desc`,
+ * `by(...)`, `Scope.local` and its runtime fault on ordering raw elements, which a sort inlined
+ * here would have had to re-derive — and re-deriving a comparator is the one thing byte-identity
+ * cannot survive (item 606 had just finished removing one such duplicate).
+ */
+export type HopValues = { values: Iterable<unknown>; rest: readonly Step[] };
+
+export const hopValuesShortcut = (plan: Plan, graph: Graph): HopValues | undefined => {
   const { steps } = plan;
 
-  if (steps.length !== 3) {
+  if (steps.length < 3) {
     return undefined;
   }
 
   const [source, hop, proj] = steps;
+  const rest = steps.slice(3);
 
   // `V(id, …)` enumerates a given set, not the whole graph.
   if (source.kind !== 'V' || (source.ids?.length ?? 0) > 0) {
@@ -75,46 +97,52 @@ export const hopValuesShortcut = (plan: Plan, graph: Graph): Iterable<unknown> |
     const forward = kind === 'out';
 
     return {
+      rest,
+      values: {
+        *[Symbol.iterator]() {
+          for (const v of graph.vertices) {
+            // The vertex's OWN box rather than `edgesFromByLabel.get(v.id)` (item 591), the same
+            // change `filteredHopCount` takes. The saving here is ONE string-keyed `Map.get` per
+            // VERTEX, and this row's cost is dominated by the per-EDGE work below it, so expect
+            // percent rather than multiples — the measurement is in the audit entry either way.
+            const bucket = (forward ? v.adjFrom : v.adjTo)?.get(oneType);
+
+            if (bucket === undefined) {
+              continue;
+            }
+
+            for (const edge of bucket) {
+              const far = forward ? edge.to : edge.from;
+              const value = far.properties[key];
+
+              if (value !== undefined) {
+                yield value;
+              }
+            }
+          }
+        },
+      },
+    };
+  }
+
+  return {
+    rest,
+    values: {
       *[Symbol.iterator]() {
         for (const v of graph.vertices) {
-          // The vertex's OWN box rather than `edgesFromByLabel.get(v.id)` (item 591), the same
-          // change `filteredHopCount` takes. The saving here is ONE string-keyed `Map.get` per
-          // VERTEX, and this row's cost is dominated by the per-EDGE work below it, so expect
-          // percent rather than multiples — the measurement is in the audit entry either way.
-          const bucket = (forward ? v.adjFrom : v.adjTo)?.get(oneType);
+          for (const edge of adjacentEdges(kind, graph, v, labels)) {
+            const value = otherEndpoint(kind, edge, v).properties[key];
 
-          if (bucket === undefined) {
-            continue;
-          }
-
-          for (const edge of bucket) {
-            const far = forward ? edge.to : edge.from;
-            const value = far.properties[key];
-
+            // `values(k)` DROPS an element lacking `k` rather than emitting null — verified
+            // against a real TinkerPop console (`V().count()` 6 against
+            // `V().values('age').count()` 4). A STORED null is a present value and IS emitted,
+            // which is why this tests `undefined` and not nullishness.
             if (value !== undefined) {
               yield value;
             }
           }
         }
       },
-    };
-  }
-
-  return {
-    *[Symbol.iterator]() {
-      for (const v of graph.vertices) {
-        for (const edge of adjacentEdges(kind, graph, v, labels)) {
-          const value = otherEndpoint(kind, edge, v).properties[key];
-
-          // `values(k)` DROPS an element lacking `k` rather than emitting null — verified
-          // against a real TinkerPop console (`V().count()` 6 against
-          // `V().values('age').count()` 4). A STORED null is a present value and IS emitted,
-          // which is why this tests `undefined` and not nullishness.
-          if (value !== undefined) {
-            yield value;
-          }
-        }
-      }
     },
   };
 };
