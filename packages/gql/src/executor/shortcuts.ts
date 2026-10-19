@@ -1257,8 +1257,61 @@ type DegreeCountSpec = {
  * current level: `u_j` would have to know which edges the walk already used, making it a map over
  * walks rather than over vertices.
  */
+/**
+ * The walks of length 3 from `v` that REUSE an edge — subtracted from `u_3(v)` to turn a walk count
+ * into a trail count (item 601).
+ *
+ * MODULE SCOPE, not a closure inside `walkLevelCount`. Two reasons and they agree: the lint
+ * complexity cap refused the enclosing function at 36, and [[ts-closure-size-is-load-bearing]]
+ * records that a walk written INLINE in a returned closure gave UNRELATED queries a new slow mode
+ * (4x). The arrays come in as parameters so nothing is captured.
+ *
+ * `off`/`nbr` are the flattened wanted-type adjacency, `pass` is `u_0` (the endpoint mask as 0/1),
+ * `selfLoops[v]` the number of `v -> v` edges and `passDeg[v]` the PASSING out-degree.
+ */
+const reusedTrailsAt3 = (
+  v: number,
+  off: Int32Array,
+  nbr: Int32Array,
+  pass: Float64Array,
+  selfLoops: Float64Array,
+  passDeg: Float64Array,
+): number => {
+  const end = off[v + 1];
+  // e0 == e1: a self-loop at `v`, then any passing edge out of `v`. The walk ends at that third
+  // edge's target, which is why the factor is the passing out-degree and not the raw one.
+  let bad = selfLoops[v] * passDeg[v];
+
+  for (let k = off[v]; k < end; k += 1) {
+    const b = nbr[k];
+
+    if (pass[b] === 0) {
+      continue; // both remaining cases end at `b`
+    }
+
+    // e1 == e2: a self-loop at the landing, taken twice.
+    bad += selfLoops[b];
+
+    // e0 == e2: an edge back from `b` to `v`, then THIS edge again. COUNTED, not a boolean — two
+    // parallel `v -> b` edges make `e0, b -> v, e2` a valid trail when `e0 !== e2`, so there is
+    // one bad walk per reverse edge and "does a reverse edge exist" is the wrong question. A
+    // mutant written that way is caught only by a fixture with parallel edges.
+    const bEnd = off[b + 1];
+
+    for (let j = off[b]; j < bEnd; j += 1) {
+      if (nbr[j] === v) {
+        bad += 1;
+      }
+    }
+  }
+
+  // All three equal: a self-loop at `v` used three times, ending back at `v`. Each of the three
+  // terms above removed it once, so it comes back twice.
+  return bad - 2 * selfLoops[v] * pass[v];
+};
+
 const walkLevelCount = (graph: Graph, spec: DegreeCountSpec): number => {
-  const { types, min, max, startName, passes } = spec;
+  const { types, min, max, isTrail, startName, passes } = spec;
   const edgesOf = (v: Vertex): Iterable<Edge> => {
     const box = v.adjFrom;
 
@@ -1312,6 +1365,57 @@ const walkLevelCount = (graph: Graph, spec: DegreeCountSpec): number => {
 
   let total = 0;
 
+  // THE TRAIL CORRECTION (item 601), for `max === 3` only. A trail forbids reusing an EDGE, which
+  // the level recurrence cannot express — `u_j` would have to know which edges the walk already
+  // used. But at depth 3 the walks to exclude are exactly those where two of `e0, e1, e2`
+  // coincide, and each case collapses to a countable term:
+  //
+  //   e0 == e1  forces a == b == c, i.e. a SELF-LOOP at the source, then any third edge out of it
+  //   e1 == e2  is its mirror: an edge out, then a self-loop at the landing taken twice
+  //   e0 == e2  forces a == c and b == d — the 2-cycle `a -> b -> a` reusing the first edge
+  //   all three equal is a self-loop used three times, subtracted by all three terms above, so it
+  //   returns with coefficient 2
+  //
+  // Each endpoint test applies at the walk's LAST node, which is why the terms carry different
+  // `pass` factors: `e0 == e1` ends at the third edge's target, `e1 == e2` and `e0 == e2` end at
+  // the landing `b`, and the triple case ends back at the source.
+  //
+  // Verified against brute-force triple enumeration over 400 random graphs admitting SELF-LOOPS
+  // and PARALLEL EDGES (item 600) — parallel edges are what break a naive version, because two
+  // parallel `a -> b` edges make `e0, b -> a, e2` a VALID trail when `e0 !== e2`, and the
+  // `e0 == e2` term must subtract only the one walk whose third edge is literally the first.
+  //
+  // `selfLoops` and the PASSING out-degree are O(V + E) off the CSR. The `e0 == e2` term is not:
+  // it needs the multiplicity of an ordered pair and this adjacency is in edge-insertion order,
+  // so it probes the landing's segment and costs the TWO-WALK count. That is still a factor of
+  // the average degree below enumerating three-walks, which is the whole win (item 600b corrects
+  // an earlier claim that it was O(V + E)).
+  const trail3 = isTrail && max === 3;
+  const pass = trail3 ? Float64Array.from(u) : undefined;
+  const selfLoops = trail3 ? new Float64Array(order.length) : undefined;
+  const passDeg = trail3 ? new Float64Array(order.length) : undefined;
+
+  if (trail3 && pass !== undefined && selfLoops !== undefined && passDeg !== undefined) {
+    for (let v = 0; v < order.length; v += 1) {
+      const end = off[v + 1];
+      let sl = 0;
+      let pd = 0;
+
+      for (let k = off[v]; k < end; k += 1) {
+        const y = nbr[k];
+
+        if (y === v) {
+          sl += 1;
+        }
+
+        pd += pass[y];
+      }
+
+      selfLoops[v] = sl;
+      passDeg[v] = pd;
+    }
+  }
+
   // The ZERO-LENGTH path, whose endpoint is the SOURCE — one row per source row. `src` may hold a
   // vertex more than once, so this counts rows rather than summing `u_0` over distinct vertices.
   if (min === 0) {
@@ -1349,11 +1453,55 @@ const walkLevelCount = (graph: Graph, spec: DegreeCountSpec): number => {
       for (let i = 0; i < srcIdx.length; i += 1) {
         total += u[srcIdx[i]];
       }
+
+      if (trail3) {
+        // LEVEL 2's correction is the one this route already had at `max <= 2`: the single path
+        // that reuses a self-loop, `s -> s -> s`, and only when the endpoint passes. Level 1
+        // needs none — one edge cannot repeat. Level 3 is the four-term form above.
+        if (len === 2) {
+          for (const si of srcIdx) {
+            total -= selfLoops![si] * pass![si];
+          }
+        } else if (len === 3) {
+          for (const si of srcIdx) {
+            total -= reusedTrailsAt3(si, off, nbr, pass!, selfLoops!, passDeg!);
+          }
+        }
+      }
     }
   }
 
   return total;
 };
+
+/**
+ * Does this spec take the LEVEL RECURRENCE rather than the `max <= 2` closed form?
+ *
+ * A named predicate rather than an inline condition because it is the ROUTE CHOICE, and because
+ * `varLengthDegreeCount` is at the lint complexity cap — an extra `||` in there is refused.
+ *
+ *   - a WALK at ANY depth: the recurrence is exact, nothing is forbidden (item 587/589).
+ *   - a TRAIL at EXACTLY 3: the recurrence plus `reusedTrailsAt3`'s four-term correction
+ *     (item 601). This is the DEFAULT spelling — `parsePathMode` returns `trail` with no keyword
+ *     — so `-[:K]->{3}` lands here, and it is the shape that had no rung at all before.
+ *   - a TRAIL at 4 or more: still refused. The correction grows a term per coinciding PAIR and
+ *     the pairs start interacting; item 600 derived depth 3 and explicitly did not derive 4.
+ *   - `max <= 2`: unchanged, runs the code it has always run.
+ *
+ * THE `spec.max === 3` CLAUSE IS A SECOND LINE OF DEFENCE, not the active guard, and a mutant
+ * relaxing it to `spec.max >= 3` SURVIVES — including against the depth-4 test added for exactly
+ * that. The reason is reachability: `detectVarLengthCount` already refuses `max > 3` for anything
+ * but a walk, so a depth-4 trail never arrives here. The ACTIVE guard is that detector bound, and
+ * mutating IT (to `max > 4`, or dropping the mode check) is CAUGHT.
+ *
+ * Kept anyway, for the same reason the `!spec.isTrail` clause was kept before this item: whoever
+ * derives the depth-4 correction will relax the detector first, and this is then the one line
+ * standing between a depth-4 trail and a depth-3 correction that does not apply to it. A guard
+ * against a future relaxation is not the same as a guard against nothing — but it should not be
+ * mistaken for the one under test, which is what cost this item a mutation round.
+ */
+const takesTheLevelRecurrence = (spec: DegreeCountSpec): boolean =>
+  spec.max >= 3 && (!spec.isTrail || spec.max === 3);
 
 const varLengthDegreeCount = (graph: Graph, spec: DegreeCountSpec): number => {
   // DEPTH 3+ IS A DIFFERENT ALGORITHM, and it is dispatched here rather than in the detector so
@@ -1368,7 +1516,7 @@ const varLengthDegreeCount = (graph: Graph, spec: DegreeCountSpec): number => {
   // whoever lands that will relax the detector's bound — at which point this is the one line
   // standing between a trail and the walk's arithmetic, which would answer 32 where the trail
   // answers 28. A guard against a future relaxation is not the same as a guard against nothing.
-  if (spec.max >= 3 && !spec.isTrail) {
+  if (takesTheLevelRecurrence(spec)) {
     return walkLevelCount(graph, spec);
   }
 
@@ -5001,7 +5149,7 @@ export const detectVarLengthCount = (
   // exactly one way to reuse an edge and the closed form subtracts it, while at three there are
   // several interacting ways and no single term. Native drew the line in the same place at item
   // 587, which is what keeps the two engines on one answer.
-  if (max === null || max < 1 || (max > 2 && pattern.mode !== 'walk')) {
+  if (max === null || max < 1 || (max > 3 && pattern.mode !== 'walk')) {
     return null;
   }
 

@@ -8645,3 +8645,33 @@ followed was off by ~6x on native.
 **Rule: a complexity claim about a graph algorithm is a claim about the ADJACENCY REPRESENTATION.**
 Check what the representation actually offers — sorted? indexed? multiplicity-addressable? — before
 costing a term that needs a lookup.
+
+### The depth-3 TRAIL correction, TS — DONE, 40.79x on the DEFAULT spelling (601)
+
+Item 600's formula, built in TS. **`count 3-hop quantified [TRAIL, the default]` 7342.9ms ->
+180.0, 40.79x**, and TS goes from 45.9x slower than native on that row to **1.13x**.
+
+**Nothing was watching it.** `parsePathMode` returns `trail` with no mode keyword, so
+`-[:KNOWS]->{3}` is a TRAIL; the bench carried only `MATCH WALK … {1,3}`, whose own comment calls
+it "the watcher for that route". It watched the route it names. A fixed-depth row for the default
+spelling is now in `bench.ts`.
+
+**The control is the `ffi` column at 1.00x on EVERY row** (0.97-1.02x), including the new one
+(159.9 -> 159.7): native still enumerates the trail so it cannot move, measured in the same
+process, fixture and rounds. Other TS rows 0.96x-1.08x.
+
+**A survivor that was a REACHABILITY question, twice.** T10 (dispatch guard `spec.max === 3` ->
+`>= 3`) survived, I added a depth-4 test for it, and it survived THAT too —
+`detectVarLengthCount` already refuses `max > 3` for a non-walk, so the dispatch guard is a second
+line of defence. The ACTIVE guard is the detector bound: mutating it (T11/T12) is CAUGHT. **The
+codebase documents this exact precedent one clause over** (`!spec.isTrail`, "UNREACHABLE TODAY and
+kept deliberately"). Check reachability BEFORE writing a test for a survivor.
+
+Eleven of twelve mutants caught. T4 — `e0 == e2` as a boolean instead of a count — is what parallel
+edges exist for. The test brute-forces over randomized graphs AND asserts its generator produced
+self-loops, parallel edges and reverse edges (>20 trials each); the depth-4 test asserts the trail
+and walk answers actually differ (>20 of 120), or its assertion could not distinguish a wrong
+answer.
+
+**Native remains OPEN at ~4-8x** (159.9ms on this row against 4.8 for the chain) — its per-path and
+per-probe constants are close where TS's differ ~68x, so it is its own item on its own evidence.

@@ -741,6 +741,22 @@ const CASES: Case[] = [
     ),
   },
   {
+    // THE DEFAULT SPELLING, which nothing watched until item 601. `parsePathMode` returns `trail`
+    // when no mode keyword is given, so `-[:KNOWS]->{3}` — the natural way to write this — is a
+    // TRAIL, and the row above is the only one the harness carried. The two are not the same
+    // query: the trail forbids reusing an edge, so it answers FEWER paths, and at this depth it
+    // had no rung at all in either engine (ts 1071.55ms against native 15.81 on a 20,000-vertex
+    // degree-5 fixture, item 600).
+    //
+    // Kept at a FIXED depth rather than `{1,3}` so the row prices the depth-3 correction itself
+    // rather than averaging it with two levels that were already fast.
+    name: 'count 3-hop quantified [TRAIL, the default]',
+    ...onGraph(
+      () => graphDoc,
+      (e, g) => void e.query(g, 'MATCH (a:Person)-[:KNOWS]->{3}(y) RETURN count(*) AS c'),
+    ),
+  },
+  {
     // The other half: the same walk, but PROJECTING an endpoint property, so 1,000,000 rows are
     // built. Traversal plus the row pipeline, which is the shape a user actually runs.
     name: 'traverse 1-hop project',
