@@ -123,6 +123,30 @@ export const indexCandidates = function* (
   }
 
   for (const hint of node.seedHints ?? []) {
+    // An ID hint needs NO property index: `graph.getVertexById` is an O(1) `Map.get` on
+    // `verticesById`, which every graph has. So this is checked before the `isIndexed`
+    // gate below, which would otherwise reject it for having no `key` at all.
+    //
+    // At most one vertex, so the candidate's count is 0 or 1 and `seekIsWorthIt` cannot
+    // decline it on any graph big enough to measure. A missing or deleted id yields the
+    // EMPTY seed, which is the right answer and not a fallback to the label scan.
+    //
+    // Restricted to a STRING to stay aligned with the native engine's `id_seek_target`.
+    // Correctness does not require it here — a hint only narrows the seed and `matchNode`
+    // re-validates, so even a wrong-typed probe would be a sound superset — but having the
+    // two engines seed on the same shapes is worth more than the extra case.
+    if (hint.kind === 'id') {
+      const v = hint.value(env);
+
+      if (typeof v === 'string') {
+        const hit = graph.getVertexById(v);
+
+        yield { count: hit ? 1 : 0, build: () => (hit ? new Set([hit]) : EMPTY) };
+      }
+
+      continue;
+    }
+
     if (!idx.isIndexed(hint.key)) {
       continue;
     }

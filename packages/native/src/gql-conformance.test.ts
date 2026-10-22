@@ -69,6 +69,63 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
     JSON.stringify(nativeGraph.query(q, params)),
   ];
 
+  test('a point lookup BY ELEMENT ID is byte-identical, including every decline', () => {
+    // Both engines fast-path this shape as of items 617 (native) and 618 (TS), by DIFFERENT
+    // mechanisms: native rewrites `Filter(element_id = x)(Scan(label))` into a labelled
+    // `Plan::NodeSeed` and drops the predicate, while TS seeds a SUPERSET from
+    // `verticesById` and lets `matchNode` re-validate. Same rows by two routes is precisely
+    // what byte-identity is for, and nothing else was comparing them — the GQL differential
+    // fuzzer's generator emits no `element_id` predicate at all.
+    for (const [q, want] of [
+      // A hit, both operand orders, labelled and unlabelled.
+      [`MATCH (n:Person) WHERE element_id(n) = '1' RETURN n.name AS v`, '[{"v":"marko"}]'],
+      [`MATCH (n:Person) WHERE '1' = element_id(n) RETURN n.name AS v`, '[{"v":"marko"}]'],
+      [`MATCH (n) WHERE element_id(n) = '3' RETURN n.name AS v`, '[{"v":"lop"}]'],
+      // The LABEL still excludes: node 3 is Software, so a Person lookup by its id is empty.
+      [`MATCH (n:Person) WHERE element_id(n) = '3' RETURN n.name AS v`, '[]'],
+      // A conjunct, in both written orders — the seed must not swallow the other predicate.
+      [`MATCH (n:Person) WHERE element_id(n) = '1' AND n.age > 100 RETURN n.name AS v`, '[]'],
+      [`MATCH (n:Person) WHERE n.age > 100 AND element_id(n) = '1' RETURN n.name AS v`, '[]'],
+      [
+        `MATCH (n:Person) WHERE element_id(n) = '1' AND n.age > 0 RETURN n.name AS v`,
+        '[{"v":"marko"}]',
+      ],
+      // An id that exists nowhere.
+      [`MATCH (n:Person) WHERE element_id(n) = 'nope' RETURN n.name AS v`, '[]'],
+      // The DECLINES. A non-string comparand: an external id is a string, so this matches
+      // nothing — and both engines must agree that it matches nothing rather than one of
+      // them coercing. A range over an id has no seed to lower to in either engine.
+      [`MATCH (n:Person) WHERE element_id(n) = 1 RETURN n.name AS v`, '[]'],
+      [`MATCH (n:Person) WHERE element_id(n) >= '1' RETURN count(*) AS c`, '[{"c":3}]'],
+      // An id read on the FAR side of a hop: neither engine may seed from it (the predicate
+      // reads a slot the scan does not produce), and both must still answer.
+      [
+        `MATCH (a:Person)-[:KNOWS]->(b) WHERE element_id(b) = '2' RETURN b.name AS v`,
+        '[{"v":"vadas"}]',
+      ],
+    ] as const) {
+      const [ts, native] = both(q);
+      expect(ts).toBe(native);
+      expect(ts).toBe(want);
+    }
+  });
+
+  test('a point lookup by element id agrees under a $param too', () => {
+    // The shape every caller writes, and the one that needs `bind_params` to run before the
+    // native optimizer — verified separately in item 617, pinned across engines here.
+    for (const [id, want] of [
+      ['1', '[{"v":"marko"}]'],
+      ['4', '[{"v":"josh"}]'],
+      ['nope', '[]'],
+    ] as const) {
+      const [ts, native] = both(`MATCH (n:Person) WHERE element_id(n) = $id RETURN n.name AS v`, {
+        id,
+      });
+      expect(ts).toBe(native);
+      expect(ts).toBe(want);
+    }
+  });
+
   test('extreme-magnitude numbers render in exponential form (JS toString), byte-identical', () => {
     // Rust gql once used Display (never exponential): 1e21 → "1000000000000000000000",
     // TS → "1e+21". Both the numeric cell and toString(n) now match JS Number::toString.

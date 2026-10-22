@@ -9927,3 +9927,72 @@ deletes it believing it tested or trusts it believing it exercised.
 TS, N=100,000, min-of-9 over 200 ops: GQL `element_id(n) = $x` **4413.55 µs** against its own
 Gremlin `g.V(id)` at **2.79 µs** and an indexed property lookup at **1.75 µs** — **2,522x its
 own point-lookup control.** The TS planner has no id-seek shortcut either. Next item.
+
+## 618 — TS GQL point lookup by id: 5,240x, and 7,913x for the conjunct form
+
+**FIXED (TS), closing the gap item 617 left open with a number.** The TS seed layer is a
+candidate auction (`indexCandidates` yields `SeedCandidate { count, build() }`,
+`seedVertices` takes the cheapest), but a clause `WHERE` reaches it only through
+`collectHints`, whose `asPropCompare` matches `prop <op> const` — so `element_id(n) = $x`,
+whose operand is a `func`, produced no hint at all. New `{ kind: 'id' }` hint, an `asIdCompare`
+matcher (either operand order, `=` only), and an `indexCandidates` arm that runs BEFORE the
+`isIndexed(hint.key)` gate, because an id hint has no key: **`verticesById` IS its index, so it
+needs no `createIndex`.**
+
+Two dists in ONE process (`@lenke/*` resolve to dist, so a src edit is invisible until a
+build), verified to differ before either was timed, alternated per round, min-of-3×9:
+
+|                              | before         | after       |           |
+| ---------------------------- | -------------- | ----------- | --------- |
+| **GQL `element_id(n) = $x`** | **4401.10 µs** | **0.84 µs** | **5240x** |
+| **the same as a CONJUNCT**   | **7146.23 µs** | **0.90 µs** | **7913x** |
+
+The conjunct form was WORSE than the plain one before (the extra predicate ran over every
+scanned vertex) and is the better of the two after — so this closes a cliff **between two
+spellings of one query** as well as the one against Gremlin.
+
+**Controls resolved rather than asserted.** In the full A/B they read 0.78x and 1.13x, which is
+noise at 130-860 ns. Re-run with the controls ALONE at 20,000 ops a rep (the subject rows
+cannot: at 4.4 ms a call that is an hour), min-of-5 alternated: indexed property 0.951x,
+label-scan `count(*)` **1.025x**, and a query with no `WHERE` at all (so `collectHints` never
+runs) 1.013x. **Worst control ratio 1.025x.**
+
+### SETTLED: the TS fast path is structurally safer than the native one, and that is why they differ
+
+A TS hint only narrows the SEED — `matchNode` and the residual `WHERE` re-validate every seeded
+row — so it may yield a SUPERSET of the true matches but never a subset. Consequences:
+
+- **`Plan::NodeSeed`'s hand-carried `label` (item 617) has no TS analogue**: the label is
+  re-checked anyway.
+- A non-string comparand would be SOUND to seed on here (re-validation would drop it). It is
+  still restricted to a string at the point of use, **deliberately**, so the two engines seed on
+  the same shapes — parity of behaviour being worth more than the extra case.
+
+### SETTLED: the two engines' id fast paths are byte-identical BY DIFFERENT MECHANISMS
+
+Native REWRITES the plan into a labelled `Plan::NodeSeed` and DROPS the predicate; TS seeds a
+superset and re-validates. They were written independently, and **nothing was comparing them** —
+the GQL differential fuzzer's generator emits no `element_id` predicate. Two new cases in
+`gql-conformance.test.ts`, 15 queries, pin it: hits in both operand orders, labelled and
+unlabelled; the label exclusion; both conjunct orders (including one whose second predicate must
+still eliminate the row); a missing id; the non-string and range declines; an id read on the FAR
+SIDE of a hop, which neither engine may seed from; and the `$param` form. All byte-identical.
+
+### Teeth: four mutants, all caught — and the signal is a SPY, not a stopwatch
+
+A seed is a route CHOICE, and route choices are answer-equivalent: a version that silently
+declined and scanned returns exactly the same rows, so a rows-only test cannot tell them apart
+and every mutant survives it. The tests therefore count calls to `Graph.getVertexById` (an own
+arrow property, so replaceable) — the seed path calls it, the label scan never does, which makes
+"did it seed" a deterministic binary observation rather than a timing comparison.
+
+Caught: `asIdCompare` never matching (3 fail); the string guard dropped (1); `build()` yielding
+the empty set (5); the seed resolving the wrong id (5). **The TS tests import `./index.js` —
+source, not dist — so no rebuild is needed per mutant, which is what makes mutating the TS side
+cheap enough to be routine.**
+
+**FIXTURE TRAP, eleventh instance.** The range-decline test asserted `[]`, which is the correct
+answer (`'v10'`..`'v38'` all sort BELOW `'v8'` in string order, and the only id above it carries
+the other label) — but an empty expectation passes just as well if the declined path returns
+nothing at all. A range that DOES match now follows over the same declined path and must produce
+every `P` vertex.

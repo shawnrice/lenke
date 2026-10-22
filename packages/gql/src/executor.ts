@@ -4148,7 +4148,17 @@ export type CRangeBound = {
 type CSeedHint =
   | { kind: 'eq'; key: string; value: CompiledExpr }
   | { kind: 'within'; key: string; values: CompiledExpr }
-  | { kind: 'range'; key: string; bound: CRangeBound };
+  | { kind: 'range'; key: string; bound: CRangeBound }
+  /**
+   * `element_id(n) = '<id>'` — a point lookup by element id. It carries no `key`,
+   * because the thing it seeks on is not a property: the graph's own `verticesById` is
+   * the index, so this hint needs no `createIndex` to be useful. At most ONE vertex.
+   *
+   * Item 618. Before it, GQL's commonest serving query was a label scan with an
+   * `element_id` call and a string compare per vertex — measured at 4413 µs against
+   * 1.75 µs for the same lookup on an indexed property.
+   */
+  | { kind: 'id'; value: CompiledExpr };
 
 export type CNode = {
   variable?: string;
@@ -4487,6 +4497,53 @@ const asPropCompare = (
   return null;
 };
 
+/**
+ * `element_id(<var>) = <const>` in EITHER operand order, or null.
+ *
+ * Both orders, because accepting one would leave the other spelling scanning — the
+ * equivalent-spelling cliff `CLAUDE.md` opens with, and the native twin
+ * (`opt::id_seek_target`) takes both for the same reason.
+ *
+ * `=` only: a seed is a set of ids, and a range over an id has nothing to seek.
+ *
+ * Unlike the native rewrite, this one does NOT have to reject a non-string literal.
+ * A hint here only narrows the SEED, and `matchNode` plus the residual `WHERE` re-validate
+ * every seeded row, so a hint may yield a SUPERSET of the true matches but never a subset.
+ * It is still restricted to a string at the point of use, to stay aligned with the native
+ * engine rather than because correctness needs it — see `indexCandidates`.
+ */
+/**
+ * The variable `element_id(<var>)` reads, or null. Hoisted to module scope rather than
+ * closed over `asIdCompare` — it captures nothing, and oxlint's
+ * `consistent-function-scoping` is right that rebuilding it per call is waste.
+ */
+const idArgVariable = (e: Expr): string | null =>
+  e.kind === 'func' && e.name === 'element_id' && e.args.length === 1 && e.args[0]?.kind === 'var'
+    ? e.args[0].name
+    : null;
+
+const asIdCompare = (
+  expr: Extract<Expr, { kind: 'compare' }>,
+): { variable: string; value: Expr } | null => {
+  if (expr.op !== '=') {
+    return null;
+  }
+
+  const left = idArgVariable(expr.left);
+
+  if (left !== null && isConstExpr(expr.right)) {
+    return { variable: left, value: expr.right };
+  }
+
+  const right = idArgVariable(expr.right);
+
+  if (right !== null && isConstExpr(expr.left)) {
+    return { variable: right, value: expr.left };
+  }
+
+  return null;
+};
+
 const BOUND_OF: Partial<Record<CompareOp, keyof CRangeBound>> = {
   '>': 'gt',
   '>=': 'gte',
@@ -4571,6 +4628,16 @@ const collectHints = (where: Expr, into: HintMap): void => {
 
       return;
     case 'compare': {
+      // An id equality first. A `func` operand is not a `prop`, so this and `asPropCompare`
+      // are mutually exclusive — the order is for reading, not precedence.
+      const ic = asIdCompare(where);
+
+      if (ic) {
+        pushHint(into, ic.variable, { kind: 'id', value: compileExpr(ic.value) });
+
+        return;
+      }
+
       const pc = asPropCompare(where);
 
       if (!pc) {
