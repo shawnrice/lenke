@@ -6423,6 +6423,96 @@ fn try_filter_keep_case(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec
     try_filter_keep(cond, store, batch)
 }
 
+/// `element_id(<slot>) <Eq|Ne> <string literal>` as a keep-pass over a BORROWED `&str`.
+///
+/// The general path materializes the id PER ROW: `eval` builds a `Vec<Value>` of
+/// `Value::Str`, cloning a `GStr` for every row, and the comparison then walks that boxed
+/// column. Item 619 measured what that costs on a 100,000-edge walk — **2,274 µs for
+/// `WHERE element_id(r) = $x` against 196 µs for `WHERE r.w = $w` over the same edges**, so
+/// the id materialization was ~12x the comparison it fed. This arm does one pass, borrows
+/// each id as `&str` and compares, and allocates only the keep-list.
+///
+/// It does NOT remove the walk — seeding an edge pattern needs slot surgery, which is the
+/// other half of 619 and still unbuilt (see `opt::id_seek_target`'s header). It is what makes
+/// the shapes that CANNOT seed cheap: an edge pattern, and the FAR-SIDE node case
+/// (`WHERE element_id(b) = $x` after a hop reads a slot the `Scan` does not produce, so
+/// `opt`'s seed rewrite correctly declines and the filter runs).
+///
+/// SEMANTICS, matched to the general path rather than to what looks right:
+///
+/// - Only `Eq`/`Ne`. An ORDERING comparison on an id is a string ordering under the value
+///   contract's total order, which this pass does not reproduce, so it declines.
+/// - The `u32::MAX` OPTIONAL-miss sentinel has no element, so `element_id` is NULL there, the
+///   comparison is UNKNOWN and the row DROPS — for `Ne` as well as `Eq`. Getting that
+///   backwards would make `element_id(x) <> 'a'` keep optional misses that the general path
+///   drops.
+/// - A `Col::Gen` (mixed/branch) frontier declines: the general path reads each cell's own
+///   kind, and this pass would have to re-derive it per row for no saving.
+/// - A non-string literal declines. An external id IS a string, so the comparison is a
+///   cross-type one and the general path's answer (no match for `Eq`) is what must stand —
+///   this pass is not the place to decide it.
+///
+/// **Duplicate external ids are handled by construction**, which is why this compares the
+/// row's id to the literal rather than resolving the literal to a dense id once. Two live
+/// elements CAN share an external id (item 615 measured it for edges: NDJSON decode accepts
+/// the pair and keeps both), and a resolve-once-then-compare-dense pass would match only the
+/// one the reverse map holds.
+fn try_filter_keep_element_id(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec<usize>> {
+    let Expr::Compare { op, left, right } = pred else {
+        return None;
+    };
+    // Either side may hold the call, as in the plain, arithmetic and call arms.
+    let (call, cmp_lit) = match (left.as_ref(), right.as_ref()) {
+        (c @ Expr::Call { .. }, Expr::Lit(v)) | (Expr::Lit(v), c @ Expr::Call { .. }) => (c, v),
+        _ => return None,
+    };
+    // `Eq`/`Ne` are symmetric, so no `flip_op` is needed once the operands are sorted.
+    if !matches!(op, CompareOp::Eq | CompareOp::Ne) {
+        return None;
+    }
+    let Value::Str(want) = cmp_lit else {
+        return None;
+    };
+    let Expr::Call { name, args } = call else {
+        return None;
+    };
+    if name != "element_id" {
+        return None;
+    }
+    let [Expr::Slot(slot)] = args.as_slice() else {
+        return None;
+    };
+
+    let want: &str = want;
+    let eq = matches!(op, CompareOp::Eq);
+    let ids: &[u32] = match batch.slot(*slot) {
+        Col::Nodes(ids) | Col::Edges(ids) => ids,
+        _ => return None, // a mixed frontier is the general path's business
+    };
+    let is_node = matches!(batch.slot(*slot), Col::Nodes(_));
+
+    let mut keep = Vec::new();
+
+    for (row, &id) in ids.iter().enumerate() {
+        if id == u32::MAX {
+            continue; // the OPTIONAL-miss sentinel: NULL id -> UNKNOWN -> dropped, both ops
+        }
+        let Some(ext) = (if is_node {
+            store.node_ext_id_ref(id)
+        } else {
+            store.edge_ext_id_ref(id)
+        }) else {
+            continue; // no id recorded -> NULL -> UNKNOWN -> dropped
+        };
+
+        if (ext == want) == eq {
+            keep.push(row);
+        }
+    }
+
+    Some(keep)
+}
+
 fn try_filter_keep(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec<usize>> {
     // A boolean `CASE` wrapping a predicate this function can already answer (item 450). First,
     // because it is a pure rewrite: it adds no evaluation of its own, it just unwraps.
@@ -6441,6 +6531,12 @@ fn try_filter_keep(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec<usiz
     // A scalar function of one property — `abs`/`floor`/`ceil`/`round`/`sign`, or `coalesce`
     // with a literal default — fused the same way (item 449).
     if let Some(keep) = try_filter_keep_call(pred, store, batch) {
+        return Some(keep);
+    }
+    // `element_id(x) = '<id>'` compared over BORROWED ids, instead of materializing a
+    // `Value::Str` per row (item 619). The shapes that reach here are the ones `opt` cannot
+    // seed: an EDGE pattern, and a node id read on the FAR SIDE of a hop.
+    if let Some(keep) = try_filter_keep_element_id(pred, store, batch) {
         return Some(keep);
     }
     // A numeric compare on an EDGE property (`e0.w <op> lit`): read the edge column by each

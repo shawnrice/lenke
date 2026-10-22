@@ -19687,6 +19687,200 @@ fn fused_arithmetic_filter_agrees_with_the_general_path() {
     );
 }
 
+/// Item 619: `try_filter_keep_element_id` compares `element_id(x)` over BORROWED ids instead
+/// of materializing a `Value::Str` per row — the EDGE pattern 2106 µs → 399 (5.28x) and the
+/// FAR-SIDE node id 2042 → 322 (6.33x), both shapes `opt` cannot seed.
+///
+/// **THESE QUERIES PROJECT, THEY DO NOT COUNT, and that is load-bearing.** The first version
+/// of this test used `RETURN count(*)`, and instrumenting the arm showed it NEVER FIRED for
+/// those queries — an aggregate over a filtered hop takes a different route — so the test was
+/// comparing the general path against itself for exactly the cases it was meant to cover, and
+/// a mutant that coerced a numeric literal survived it. A projection reaches the arm, and it
+/// is also the shape the A/B measured. **Verified by instrumentation, not assumed.**
+///
+/// The ORACLE is item 438/449's trick in a new key: `element_id(x) >= 'v' AND element_id(x)
+/// <= 'v'` is `element_id(x) = 'v'` under the value contract's TOTAL ORDER, and both of its
+/// conjuncts carry an ORDERING operator, which the fused arm declines outright — so the oracle
+/// is answered by `eval` while the subject takes the fast path. Three-valued logic matches
+/// too: where the id is NULL, the equality and both ordering conjuncts are all UNKNOWN.
+///
+/// **Agreement alone would pass if both sides were wrong**, so every case also pins the
+/// ABSOLUTE row count. A hit is exactly 1 of 10; `<>` is the complement of 9, which is the
+/// half an arm computing `ext == want` and forgetting to invert gets wrong — and that mistake
+/// returns 1 instead of 9, so a one-element fixture could not see it.
+#[test]
+fn the_fused_element_id_filter_agrees_with_the_general_path() {
+    const N: u32 = 10;
+    let store = {
+        let mut b = crate::store::Builder::default();
+        for i in 0..N {
+            b.node(&["N"], &[("k", n(f64::from(i)))]);
+        }
+        for i in 0..N {
+            b.edge(i, (i + 1) % N, "R");
+        }
+        b.build()
+    };
+
+    let rows = |q: &str| -> usize {
+        let raw = crate::gql::parse(q).unwrap_or_else(|e| panic!("parse `{q}`: {e}"));
+        let plan = crate::opt::optimize_indexed(raw, &store);
+        crate::exec::try_run(&plan, &store)
+            .unwrap_or_else(|e| panic!("run `{q}`: {e}"))
+            .rows
+            .len()
+    };
+
+    let mut checked = 0;
+    // Edge ids are `e0..e9` and node ids `0..9` (the Builder's minting scheme). A hit, a miss,
+    // and both boundaries. The hop is 1:1, so a far-side hit is one row, not a fan-out.
+    for (shape, ids) in [
+        (
+            "MATCH ()-[r:R]->() WHERE {} RETURN r.w AS v",
+            ["e0", "e5", "e9", "nope"],
+        ),
+        (
+            "MATCH (a:N)-[:R]->(b) WHERE {} RETURN b.k AS v",
+            ["0", "5", "9", "nope"],
+        ),
+    ] {
+        let var = if shape.contains("[r:R]") { "r" } else { "b" };
+
+        for id in ids {
+            let hit = id != "nope";
+            let total = N as usize;
+
+            for (op, want) in [
+                ("=", if hit { 1 } else { 0 }),
+                ("<>", if hit { total - 1 } else { total }),
+            ] {
+                let subject = shape.replace("{}", &format!("element_id({var}) {op} '{id}'"));
+                let pair = format!("element_id({var}) >= '{id}' AND element_id({var}) <= '{id}'");
+                let oracle = shape.replace(
+                    "{}",
+                    &if op == "=" {
+                        pair.clone()
+                    } else {
+                        format!("NOT ({pair})")
+                    },
+                );
+
+                let got = rows(&subject);
+                let via_eval = rows(&oracle);
+
+                assert_eq!(
+                    got, via_eval,
+                    "`{subject}` = {got} but the general path says {via_eval}"
+                );
+                assert_eq!(
+                    got, want,
+                    "`{subject}` = {got}, want {want} — agreement alone would hide this"
+                );
+                checked += 1;
+            }
+        }
+    }
+
+    assert_eq!(checked, 16, "every shape x id x operator must be compared");
+}
+
+/// The shapes `try_filter_keep_element_id` must DECLINE, each asserted on the ANSWER — a
+/// decline that returned the wrong rows would be worse than no fast path at all.
+///
+/// Projections, for the reason the test above gives: a `count(*)` spelling does not reach the
+/// arm, so it would assert nothing about it.
+#[test]
+fn the_fused_element_id_filter_declines_what_it_cannot_express() {
+    let store = {
+        let mut b = crate::store::Builder::default();
+        for i in 0..5u32 {
+            b.node(&["N"], &[("k", n(f64::from(i)))]);
+        }
+        // EDGES ARE LOAD-BEARING: without them the far-side shape matches nothing whatever the
+        // arm does, and every assertion below passes vacuously.
+        for i in 0..5u32 {
+            b.edge(i, (i + 1) % 5, "R");
+        }
+        b.build()
+    };
+    let rows = |q: &str| -> usize {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &store);
+        crate::exec::try_run(&plan, &store).unwrap().rows.len()
+    };
+
+    // A NUMERIC literal. An external id IS a string, so under the value contract's cross-type
+    // `=` this matches nothing — and the arm must not coerce `3` into `"3"`, which WOULD match
+    // node 3. The correct answer is 0 of 5 and the coercing one is 1 of 5.
+    assert_eq!(
+        rows("MATCH (a:N)-[:R]->(b) WHERE element_id(b) = 3 RETURN b.k AS v"),
+        0,
+        "a numeric id literal must match nothing, not be coerced"
+    );
+    // The control for that row: the STRING spelling does find node 3, so the zero above is a
+    // real decline and not a fixture that matches nothing.
+    assert_eq!(
+        rows("MATCH (a:N)-[:R]->(b) WHERE element_id(b) = '3' RETURN b.k AS v"),
+        1,
+        "the string spelling must find node 3 — else the assertion above proves nothing"
+    );
+    // An ORDERING comparison: a string ordering the arm does not reproduce, so it declines and
+    // `eval` answers. Ids are '0'..'4', so `> '2'` is two of five.
+    assert_eq!(
+        rows("MATCH (a:N)-[:R]->(b) WHERE element_id(b) > '2' RETURN b.k AS v"),
+        2,
+        "an ordering comparison on an id still answers, via the general path"
+    );
+}
+
+/// The OPTIONAL-MISS SENTINEL: `element_id` of a slot nothing landed in is NULL, so the
+/// comparison is UNKNOWN and the row DROPS — for `<>` exactly as for `=`.
+///
+/// **This shape is reachable, which `try_filter_keep_call`'s neighbouring comment says it is
+/// not.** A clause `WHERE` after `OPTIONAL MATCH` IS rejected by the parser — but the trailing
+/// `FILTER` spelling of the same predicate is not, and it lands a `Filter` directly over the
+/// optional hop. (That pair is what `spelling_probe` tracks under "a trailing FILTER vs a
+/// clause WHERE".) Worth knowing on its own: the sibling arm's `coalesce` decline, declared
+/// unmeasurable for want of exactly this shape, can in fact be measured.
+///
+/// The arm's EXPLICIT `u32::MAX` check is REDUNDANT, and mutation established that rather
+/// than assumption: deleting it changes no answer, because `node_ext_id_ref(u32::MAX)` is out
+/// of bounds and returns `None`, so the next guard drops the row anyway. It is kept as
+/// documentation of intent — a reader should not have to derive the sentinel's fate from a
+/// `Vec::get` bound — but do NOT read its surviving mutant as a hole here. The BEHAVIOUR is
+/// what is pinned, and it holds either way.
+///
+/// The `<>` row is the point: three of the four nodes have no out-edge, so an arm that
+/// compared the sentinel would call all three "not equal to '1'" and keep them.
+#[test]
+fn the_fused_element_id_filter_drops_an_optional_miss() {
+    let store = {
+        let mut b = crate::store::Builder::default();
+        for i in 0..4u32 {
+            b.node(&["N"], &[("k", n(f64::from(i)))]);
+        }
+        // ONLY node 0 has an out-edge, so an optional hop leaves THREE misses.
+        b.edge(0, 1, "R");
+        b.build()
+    };
+    let rows = |q: &str| -> usize {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &store);
+        crate::exec::try_run(&plan, &store).unwrap().rows.len()
+    };
+
+    assert_eq!(
+        rows("MATCH (a:N) OPTIONAL MATCH (a)-[:R]->(b) FILTER element_id(b) = '1' RETURN b.k AS v"),
+        1,
+        "only the one real landing matches"
+    );
+    assert_eq!(
+        rows(
+            "MATCH (a:N) OPTIONAL MATCH (a)-[:R]->(b) FILTER element_id(b) <> '1' RETURN b.k AS v"
+        ),
+        0,
+        "the three optional MISSES are UNKNOWN and must drop, not count as `<> '1'`"
+    );
+}
+
 /// Item 449: `try_filter_keep_call` fuses `<scalar fn of one prop> <cmp> <lit>` into the keep
 /// pass — `coalesce(a.k, 0) > 5` went from 38.435 ms to 1.482 at 1,000,000 nodes (25.9x) and
 /// `abs(a.k) > 5` from 10.582 to 1.815 (5.8x), both landing on the plain comparison's cost.

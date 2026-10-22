@@ -10036,3 +10036,77 @@ settled by reading `parse_cache`, not inferred from item 229's title.
 
 Numbers are recorded beside both candidate sites (`opt::id_seek_target`'s header and the
 `element_id` arm of `exec::evaluator::eval`) so neither is re-derived.
+
+## 619b — half of 619 BUILT: `element_id` filters over borrowed ids, 5.28x / 6.33x
+
+**FIXED (native), the half of 619 that needs no plan surgery.** `try_filter_keep_element_id`
+compares `element_id(x) <Eq|Ne> '<lit>'` over a BORROWED `&str` per row instead of letting
+`eval` build a `Vec<Value>` of `Value::Str` — a `GStr` clone and a box per row. Two libraries,
+alternated, min-of-3×7, 20,000 nodes / 100,000 edges:
+
+|                                            | before     | after     |           |
+| ------------------------------------------ | ---------- | --------- | --------- |
+| **EDGE id filter**                         | 2106.45 µs | 398.73 µs | **5.28x** |
+| **FAR-SIDE node id filter**                | 2041.56 µs | 322.28 µs | **6.33x** |
+| edge property `r.w = $w` — control         | 194.27     | 195.38    | 0.99x     |
+| NEAR-side node id (617 seeds it) — control | 1.78       | 1.56      | 1.14x     |
+| label-scan count — control                 | 1.54       | 1.46      | 1.06x     |
+
+**STILL OPEN: half (1) of 619, the actual seed**, which needs slot surgery because an edge
+pattern binds its endpoints. The remaining gap is **2.1x to the edge-property floor** (399
+against 195) — a string compare against a raw f64 one over the same walk, which is this half's
+honest ceiling.
+
+The far-side node case was not in 619's pricing and is the second shape fixed: `WHERE
+element_id(b) = $x` after a hop reads a slot the `Scan` does not produce, so item 617's seed
+rewrite correctly declines.
+
+### 🛑 THE FIRST VERSION OF THE TEST NEVER REACHED THE CODE IT TESTED
+
+Two mutants survived, and not because the assertions were weak. **Instrumenting the arm with an
+`eprintln!` showed it NEVER FIRES for a `RETURN count(*)` query** — an aggregate over a filtered
+hop takes a different route — while the same predicates as a PROJECTION fired 12 times. The test
+was therefore comparing the general path against itself for exactly the cases it existed to
+cover, and a mutant COERCING a numeric literal to `"3"` passed it.
+
+**"Verify the planner reaches the shape" has a twin at the EXEC layer: verify the FAST PATH
+reaches the shape, and INSTRUMENT it rather than infer it — the plan was identical in both
+spellings, so a plan dump could not have told the difference.** Rewritten as projections (also
+the shape the A/B measures), the coercion mutant is caught.
+
+Second test bug, the fixture trap in my own work: the decline test's fixture had **no edges**, so
+its far-side assertion passed whatever the arm did. It now builds edges and asserts the control —
+the STRING spelling must find the node, else the zero proves nothing.
+
+### The ORACLE needs its own mutant
+
+`element_id(x) >= 'v' AND element_id(x) <= 'v'` is `= 'v'` under the value contract's total
+order, and both conjuncts carry an ORDERING operator the arm declines — so the oracle runs on
+`eval` while the subject takes the fast path. One mutant exists purely to guard that: _accept
+ordering operators_, under which the oracle joins the subject on the fast path and the
+differential compares the fast path with itself. It is caught. **A differential whose oracle
+silently joins the subject is the quietest way for this kind of test to stop testing.**
+
+### SETTLED: the `u32::MAX` sentinel check is REDUNDANT (mutation, not assumption)
+
+Deleting it changes no answer: `node_ext_id_ref(u32::MAX)` is out of bounds and returns `None`,
+so the next guard drops the row. Kept as documentation of intent, with a doc note saying so, so
+the surviving mutant is not later read as a hole. The BEHAVIOUR is pinned either way.
+
+### SETTLED, for the SIBLING arm: the OPTIONAL-miss shape IS reachable
+
+`try_filter_keep_call`'s comment declares its `coalesce`-on-sentinel decline unmeasurable
+because _"`WHERE` inside `OPTIONAL MATCH` is rejected by the parser"_. The clause `WHERE` is —
+**but the trailing `FILTER` spelling is not**, and it lands a `Filter` directly over the
+optional hop: `MATCH (a:N) OPTIONAL MATCH (a)-[:R]->(b) FILTER element_id(b) <> '1'` returns 0
+where comparing the sentinel would return 3. That pair of spellings is what `spelling_probe`
+tracks under "a trailing FILTER vs a clause WHERE", so **that decline can now be measured.**
+
+### The `bench_all` screen flagged seven and FOUR were the screen's own fault
+
+Four were `query/seeded` **col2, which is `speedup` — a DERIVED RATIO** over an `index_us` of
+0.3 µs, at the timer floor. The screen script compares every numeric column as if it were a
+time. **A screen should compare TIME columns; a derived ratio is not a measurement.** Of the
+rest, two were "faster" and the one real candidate (`query/shortest repeat-group control`,
+1.123x) **refuted at 1.018x** on the isolated row. Zero over 1.10x. This screen's false
+positives in this loop now number **twenty**.
