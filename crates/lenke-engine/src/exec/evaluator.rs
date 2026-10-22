@@ -1026,6 +1026,15 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
                 return Ok(col);
             }
             // `element_id(node|edge)` → the element's PRESERVED external id string.
+            //
+            // ⚠️ PRICED (item 619), NOT FIXED: this materializes the id PER ROW — a `GStr`
+            // clone and a boxed `Value::Str` each — where reading a typed property column
+            // does neither. Over the same 100,000-edge walk, `WHERE element_id(r) = $x`
+            // costs **2,274 µs against 196 µs** for `WHERE r.w = $w` (TS: 28,888 against
+            // 2,449), so the id materialization is ~12x the comparison it feeds, in BOTH
+            // engines. A comparison against a literal does not need the string at all: see
+            // `opt::id_seek_target`'s header for the shape that avoids it without making the
+            // optimized plan store-dependent.
             if name == "element_id" {
                 let arg = eval(&args[0], store, batch)?;
                 let n = batch.rows();

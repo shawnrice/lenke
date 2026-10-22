@@ -9996,3 +9996,43 @@ answer (`'v10'`..`'v38'` all sort BELOW `'v8'` in string order, and the only id 
 the other label) — but an empty expectation passes just as well if the declined path returns
 nothing at all. A range that DOES match now follows over the same declined path and must produce
 every `P` vertex.
+
+## 619 — ⚠️ PRICED AND NOT BUILT: a GQL point lookup by EDGE id, 1,143x (native) / 9,027x (TS)
+
+The unfinished symmetry of 617/618, which seeded NODES. `MATCH ()-[r:R]->() WHERE
+element_id(r) = $x` has **no seed in either engine**. Measured, 20,000 nodes / 100,000 edges,
+min-of-7 over 50 ops, both engines in one process:
+
+|                                                 | TS            | native       |
+| ----------------------------------------------- | ------------- | ------------ |
+| **GQL `element_id(r) = $x`**                    | **28,888 µs** | **2,274 µs** |
+| GQL `r.w = $w` — the same walk by edge PROPERTY | 2,449         | 196          |
+| Gremlin `g.E(id)` — already O(1) since item 615 | 3.20          | 1.99         |
+
+**TWO separate costs, and they want different fixes:**
+
+1. **No seed** — the O(E) walk. Removing it needs real SLOT SURGERY, not the node-for-node
+   swap `id_seek_target` does: an edge pattern binds its ENDPOINTS, so
+   `Filter(element_id(edge_slot))(Expand{bind_edge}(Scan))` has to become `EdgeSeed` plus
+   `EdgeVertex` work that reproduces the exact slot layout every downstream expression reads.
+   `Plan::EdgeSeed` is ready for it — item 615 made it O(1) per id. This is the 1,000x half and
+   the risky one.
+2. **`element_id` is ~12x an edge-property read over the SAME walk** (2274 against 196 native,
+   28888 against 2449 TS — the ratio holds in both engines). The `Expr::Call` arm of
+   `exec::evaluator::eval` materializes the id PER ROW: a `GStr` clone and a boxed `Value::Str`
+   each, where `r.w` reads a typed column. **This half needs no plan surgery**, and it also
+   fixes the FAR-SIDE node case 617 cannot seed (`WHERE element_id(b) = $x` after a hop reads a
+   slot the `Scan` does not produce, so it stays a filter — covered by the conformance test
+   added at 618, and currently scanning).
+
+**The sound shape for (2) is a symbolic `Expr`, NOT a baked dense id.** Resolving the literal to
+a dense id at optimize time and comparing `Slot(n)` numerically works TODAY — both caches in
+`parse_cache` hold PARSED plans and `optimize_indexed` runs per call, so an optimized plan is
+never reused across stores — **but it makes the optimized plan STORE-DEPENDENT, which would
+break silently the day anyone caches one.** An `Expr` carrying the external id and resolving it
+ONCE PER BATCH (O(1) through `ext_to_node` / `ext_to_edge`) is store-independent, cacheable, and
+gets the same per-row dense compare. Checked rather than assumed: the cache-shape question was
+settled by reading `parse_cache`, not inferred from item 229's title.
+
+Numbers are recorded beside both candidate sites (`opt::id_seek_target`'s header and the
+`element_id` arm of `exec::evaluator::eval`) so neither is re-derived.

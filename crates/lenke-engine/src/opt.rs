@@ -1683,6 +1683,41 @@ fn seed_from_conjuncts(pred: &Expr, idx: &dyn IndexOracle) -> Option<(Seed, Opti
 ///   matches NOTHING. Declining answers that correctly; seeding `"5"` would INVENT a match
 ///   that the scan would never have found.
 /// - **NULL declines** for the same reason: the predicate is UNKNOWN, which keeps no rows.
+///
+/// # The edge twin
+///
+/// ⚠️ **PRICED AND NOT BUILT (item 619).** `MATCH ()-[r:R]->() WHERE
+/// element_id(r) = $x` has no seed in either engine. Measured, 20,000 nodes / 100,000 edges,
+/// min-of-7 over 50 ops:
+///
+/// | | TS | native |
+/// | --- | --- | --- |
+/// | GQL `element_id(r) = $x` | 28,888 µs | 2,274 µs |
+/// | GQL `r.w = $w`, the same walk by edge PROPERTY | 2,449 | 196 |
+/// | Gremlin `g.E(id)` | 3.20 | 1.99 |
+///
+/// So **1,143x the Gremlin spelling on native and 9,027x on TS**, and TWO separate costs:
+///
+/// 1. **No seed.** Removing the O(E) walk needs real slot surgery, not a node-for-node
+///    swap like this function's: the pattern binds its ENDPOINTS, so
+///    `Filter(element_id(edge_slot))(Expand{bind_edge}(Scan))` becomes `EdgeSeed` plus
+///    `EdgeVertex` work that must reproduce the exact slot layout downstream expects.
+///    `Plan::EdgeSeed` is ready for it — item 615 made it O(1) per id.
+/// 2. **`element_id` is ~12x an edge-property read over the SAME walk** (2274 against 196,
+///    and 28888 against 2449 — the ratio holds in both engines). The `Expr::Call` arm of
+///    `exec::evaluator::eval` materializes the external id per row, cloning a `GStr` and
+///    boxing a `Value::Str`, where `r.w` reads a typed column. That half needs no plan
+///    surgery at all and also fixes the FAR-SIDE node case this function cannot seed
+///    (`WHERE element_id(b) = $x` after a hop — the predicate reads a slot the `Scan` does
+///    not produce, so it stays a filter).
+///
+/// **The sound shape for (2) is a symbolic `Expr`, not a baked dense id.** Resolving the
+/// literal to a dense id at optimize time and comparing `Slot(n)` numerically works TODAY —
+/// both caches in `parse_cache` hold PARSED plans and `optimize_indexed` runs per call, so
+/// an optimized plan is never reused across stores — but it makes the optimized plan
+/// STORE-DEPENDENT, which would break silently the day anyone caches one. An `Expr` that
+/// carries the external id and resolves it ONCE PER BATCH (O(1) through `ext_to_node` /
+/// `ext_to_edge`) is store-independent, cacheable, and gets the same per-row dense compare.
 fn id_seek_target(pred: &Expr) -> Option<String> {
     let Expr::Compare {
         op: CompareOp::Eq,
