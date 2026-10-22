@@ -1293,6 +1293,21 @@ pub struct Store {
     /// external node id → dense id, for resolving edge endpoints on ingest and
     /// looking a node up by its stable id. A tombstoned node keeps its entry.
     ext_to_node: FnvMap<GStr, u32>,
+    /// external EDGE id → eid — the twin of `ext_to_node`, which edges did not have.
+    /// `None` until something asks for an edge BY ID, so a graph that never does pays
+    /// one `is_some` branch per `add_edge` and nothing else.
+    ///
+    /// **Append-only, which is what makes it sound on a MUTABLE graph.** `edge_ext` is
+    /// immutable after creation (pushed once at `add_edge_with_id`, never rewritten), so
+    /// an entry can never go stale, and no write INVALIDATES this map — a write only
+    /// EXTENDS it. Deleting an edge does not remove its entry either; liveness is
+    /// filtered at lookup, exactly as [`node_by_ext`](Self::node_by_ext) filters
+    /// tombstones. So there is no rebuild-on-write cost to trade away.
+    ///
+    /// Holds the LOWEST eid per external id, which is what makes it agree with the
+    /// ascending scan it replaced. `RwLock` because the read path has only `&self` —
+    /// the same pattern as `prop_keys_cache`.
+    ext_to_edge: std::sync::RwLock<Option<FnvMap<GStr, u32>>>,
     /// tombstones, indexed by node id. A deleted node keeps its id slot (ids are
     /// dense and never reused) but is skipped by every scan and carries no edges
     /// or properties. `deleted.len() == node_count`.
@@ -1489,6 +1504,12 @@ impl Clone for Store {
             node_ext: self.node_ext.clone(),
             edge_ext: self.edge_ext.clone(),
             ext_to_node: self.ext_to_node.clone(),
+            ext_to_edge: std::sync::RwLock::new(
+                self.ext_to_edge
+                    .read()
+                    .expect("ext_to_edge poisoned")
+                    .clone(),
+            ),
             deleted: self.deleted.clone(),
             deleted_count: self.deleted_count,
             undo: self.undo.clone(),
@@ -2345,15 +2366,89 @@ impl Store {
             .filter(|&id| !self.deleted[id as usize])
     }
 
-    /// The eid of a LIVE edge whose external id is `ext`, or None. Scans the current
-    /// adjacency — edges rarely carry an explicit string `id` (auto-ids and NDJSON
-    /// load are the norm), so no reverse index is maintained; used only by the INSERT
-    /// identity path to reject a duplicate edge id.
+    /// Is `eid` still in its source's out-adjacency? Edge liveness is NOT a tombstone
+    /// bit: a deleted edge is retained out of both endpoints' adjacency lists, and the
+    /// adjacency IS the live set — which is why [`all_edges`](Self::all_edges) is built
+    /// from it rather than from an eid-indexed vector. O(out-degree of the source).
+    fn edge_is_live(&self, eid: u32) -> bool {
+        let Some(&(from, _)) = self.edge_ends.get(eid as usize) else {
+            return false;
+        };
+        self.out_adj
+            .get(from as usize)
+            .is_some_and(|adj| adj.iter().any(|a| a.eid == eid))
+    }
+
+    /// **The one place the reverse map's insert policy lives**: for a given external id
+    /// the LOWEST eid wins, which is what reproduces the ascending scan `edge_by_ext`
+    /// replaced (and what both engines answer for a duplicate id -- see
+    /// `a_duplicate_external_edge_id_resolves_to_the_lowest_eid`).
+    ///
+    /// Both the lazy build and the per-insert maintenance go through here, deliberately.
+    /// They used to hold an `or_insert` each, and item 615's mutation run showed why that
+    /// is not good enough: flipping ONE of them to last-wins survived the whole suite,
+    /// because the only fixture with a duplicate id builds the map lazily and so never
+    /// reaches the incremental copy. One policy, one site, one mutant to catch.
+    fn note_edge_ext(map: &mut FnvMap<GStr, u32>, ext: &GStr, eid: u32) {
+        map.entry(ext.clone()).or_insert(eid);
+    }
+
+    /// Build `ext_to_edge` if this is the first edge-id lookup. Ascending eid through
+    /// [`note_edge_ext`](Self::note_edge_ext) gives lowest-eid-wins.
+    fn ensure_ext_to_edge(&self) {
+        if self
+            .ext_to_edge
+            .read()
+            .expect("ext_to_edge poisoned")
+            .is_some()
+        {
+            return;
+        }
+        let mut w = self.ext_to_edge.write().expect("ext_to_edge poisoned");
+        if w.is_some() {
+            return; // another caller built it between dropping the read lock and here
+        }
+        let mut m: FnvMap<GStr, u32> = FnvMap::default();
+        m.reserve(self.edge_ext.len());
+        for (eid, ext) in self.edge_ext.iter().enumerate() {
+            Self::note_edge_ext(&mut m, ext, eid as u32);
+        }
+        *w = Some(m);
+    }
+
+    /// The eid of a LIVE edge whose external id is `ext`, or None.
+    ///
+    /// An O(1) probe of the lazily-built `ext_to_edge` reverse map (see its doc for why
+    /// an append-only map is sound on a mutable graph), plus an O(out-degree) liveness
+    /// check. **It used to SCAN**: `all_edges()` allocated and sorted a vector of every
+    /// live edge, then compared external ids one at a time, cloning a `GStr` per edge.
+    /// The INSERT identity path calls this once per edge carrying an explicit string
+    /// `id`, so inserting N such edges into a graph of E was O(N·E log E) — item 615
+    /// measured 16.0x for a 16x graph, i.e. exactly linear in E.
+    ///
+    /// The fallback scan preserves the old ANSWER in the one case the map cannot settle
+    /// alone: the map holds the lowest eid per id, and if that edge is dead a LIVE
+    /// duplicate may still exist (delete `x`, then insert `x` again). Then it scans,
+    /// exactly as before. So this is never slower than the code it replaced, and returns
+    /// the same eid in every case.
     #[must_use]
     pub fn edge_by_ext(&self, ext: &str) -> Option<u32> {
+        self.ensure_ext_to_edge();
+        let hit = self
+            .ext_to_edge
+            .read()
+            .expect("ext_to_edge poisoned")
+            .as_ref()
+            .and_then(|m| m.get(ext).copied());
+        // Absent from the map means no edge was EVER created with this id, which is
+        // authoritative: the map is append-only.
+        let eid = hit?;
+        if self.edge_is_live(eid) {
+            return Some(eid);
+        }
         self.all_edges()
             .into_iter()
-            .find(|&eid| self.edge_ext_id(eid).is_some_and(|e| e.as_ref() == ext))
+            .find(|&e| self.edge_ext_id_ref(e).is_some_and(|x| x == ext))
     }
 
     // --- Unique constraints ----------------------------------------------
@@ -3159,6 +3254,19 @@ impl Store {
         self.edge_ends.push((from, to));
         debug_assert_eq!(self.edge_ext.len() as u32, eid, "edge_ext indexed by eid");
         self.edge_ext.push(GStr::from(ext));
+        // Keep the reverse map current, but only if something has already built it:
+        // unbuilt (the overwhelmingly common case — nothing has asked for an edge by
+        // id) this is one branch and no work, which is what keeps bulk ingest flat.
+        // `or_insert` preserves lowest-eid-wins. `get_mut` needs no locking: we hold
+        // `&mut self`.
+        if let Some(m) = self
+            .ext_to_edge
+            .get_mut()
+            .expect("ext_to_edge poisoned")
+            .as_mut()
+        {
+            Self::note_edge_ext(m, &GStr::from(ext), eid);
+        }
         self.out_adj[from as usize].push(Adj {
             nbr: to,
             etype,
@@ -5083,6 +5191,8 @@ impl Builder {
             node_ext,
             edge_ext,
             ext_to_node,
+            // Lazy: a built graph that never looks an edge up by id never builds it.
+            ext_to_edge: std::sync::RwLock::new(None),
             deleted: vec![false; n],
             deleted_count: 0,
             undo: None,

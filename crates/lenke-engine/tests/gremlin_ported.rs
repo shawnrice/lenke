@@ -569,6 +569,45 @@ fn repeat_default_cap_matches_ts_100() {
     assert_eq!(r, vec![GVal::Num(100.0)]);
 }
 
+/// Two LIVE edges can share an external id -- NDJSON decode accepts it (measured at item
+/// 615: both edges exist, `g.E().count()` is 2) -- and `g.E(id)` must then resolve to the
+/// FIRST of them, the lowest eid.
+///
+/// This exists because item 615 replaced an ascending scan over every live edge with a
+/// reverse `ext_to_edge` map, and the map's insert policy decides this. `or_insert`
+/// (first/lowest wins) reproduces the scan; a plain `insert` would silently return the
+/// LAST duplicate instead. That mutant SURVIVED every other test in the suite, so it is
+/// pinned here rather than left to a comment.
+///
+/// It is also the cross-engine answer: the TS engine returns `w = 1` for this input too.
+/// (It disagrees on the edge COUNT -- TS collapses the pair to one edge where the native
+/// engine keeps both. That divergence is recorded in `docs/reviews/CLOSED.md` and is NOT
+/// what this test is about.)
+#[test]
+fn a_duplicate_external_edge_id_resolves_to_the_lowest_eid() {
+    let lines = [
+        r#"{"type":"node","id":"1","labels":["V"],"properties":{}}"#,
+        r#"{"type":"node","id":"2","labels":["V"],"properties":{}}"#,
+        r#"{"type":"edge","id":"dup","from":"1","to":"2","labels":["E"],"properties":{"w":1}}"#,
+        r#"{"type":"edge","id":"dup","from":"2","to":"1","labels":["E"],"properties":{"w":2}}"#,
+    ];
+    let mut g = decode(&lines.join("\n")).unwrap();
+    // Both edges are live -- the fixture only means something if the pair really is a pair.
+    let n = parse("g.E().count()").unwrap().run(&mut g);
+    assert_eq!(
+        format!("{n:?}"),
+        "[Num(2.0)]",
+        "both duplicate-id edges are live"
+    );
+
+    let r = parse("g.E('dup').values('w')").unwrap().run(&mut g);
+    assert_eq!(
+        format!("{r:?}"),
+        "[Num(1.0)]",
+        "the FIRST edge with that id wins, not the last"
+    );
+}
+
 #[test]
 fn e_by_id_resolves_directly_in_id_order() {
     // E(ids) resolves each id directly (like V(ids)) and yields per requested id in

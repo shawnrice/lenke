@@ -5026,6 +5026,130 @@ fn edge_string_id_is_the_unique_external_identity() {
     assert_eq!(num(&n.rows[0][0]), 1.0, "only the first R edge exists");
 }
 
+/// The `ext_to_edge` reverse map of item 615 is APPEND-ONLY: deleting an edge leaves its
+/// entry behind, and liveness is filtered at lookup. So a deleted edge must still be
+/// invisible to `g.E(id)`.
+///
+/// A mutant that drops the liveness filter (`edge_is_live` → `true`) passes every other
+/// test in this file and fails this one: before 615 the map did not exist and the scan read
+/// the adjacency, which cannot see a deleted edge, so nothing had to check this.
+#[test]
+fn a_deleted_edge_is_not_found_by_its_external_id() {
+    let mut store = Builder::default().build();
+    stmt(
+        &mut store,
+        "INSERT (:A {id: 'a'})-[:R {id: 'gone'}]->(:B {id: 'b'})",
+    )
+    .unwrap();
+    assert_eq!(store.edge_by_ext("gone"), Some(0), "live before the delete");
+
+    stmt(&mut store, "MATCH (a:A)-[r:R]->(b:B) DELETE r").unwrap();
+
+    assert_eq!(
+        store.edge_by_ext("gone"),
+        None,
+        "the map still holds 'gone' -> 0; liveness must reject it"
+    );
+    let seeded = crate::exec::pull(
+        &Plan::EdgeSeed {
+            ext_ids: vec!["gone".to_string()],
+        },
+        &store,
+        false,
+    )
+    .unwrap();
+    assert_eq!(seeded.rows(), 0, "g.E('gone') must yield nothing");
+}
+
+/// Deleting an edge id and INSERTING it again is legal, and the id must then resolve to the
+/// LIVE edge — not to the dead one the append-only map still points at.
+///
+/// This is the one case the map cannot settle by itself, and so the one that justifies
+/// `edge_by_ext`'s fallback scan. The third insert is the test with teeth: a mutant that
+/// deletes the fallback (returning `None` once the mapped eid is dead) still passes the
+/// first two assertions, then ALLOWS a duplicate live edge id — a wrong answer, not a slow
+/// one. The pre-615 scan had no such case to get wrong because it never consulted a map.
+#[test]
+fn an_edge_id_reinserted_after_a_delete_resolves_to_the_live_edge() {
+    let mut store = Builder::default().build();
+    stmt(
+        &mut store,
+        "INSERT (:A {id: 'a'})-[:R {id: 'reused'}]->(:B {id: 'b'})",
+    )
+    .unwrap();
+    stmt(&mut store, "MATCH (a:A)-[r:R]->(b:B) DELETE r").unwrap();
+
+    // Legal: no LIVE edge carries 'reused' any more.
+    stmt(
+        &mut store,
+        "MATCH (a:A), (b:B) INSERT (a)-[:R {id: 'reused'}]->(b)",
+    )
+    .unwrap();
+
+    let live = store.edge_by_ext("reused");
+    assert_eq!(
+        live,
+        Some(1),
+        "must resolve to the NEW edge, not the dead eid 0"
+    );
+
+    // And the uniqueness it guards still holds against the LIVE edge.
+    let err = stmt(
+        &mut store,
+        "MATCH (a:A), (b:B) INSERT (a)-[:R {id: 'reused'}]->(b)",
+    )
+    .unwrap_err();
+    assert!(
+        err.starts_with("E_UNIQUE:"),
+        "a third 'reused' must still be rejected: {err}"
+    );
+}
+
+/// An edge added AFTER the reverse map was built has to be in it. The map is built on the
+/// first edge-id lookup and then maintained by `add_edge_with_id`; a mutant that drops that
+/// maintenance leaves the map frozen at its build, and the duplicate check then reads a
+/// MISS as "no such id" -- which is authoritative for an append-only map, so it silently
+/// admits a duplicate.
+///
+/// The `Builder` fixture is what makes this bite: it lays down an edge BEFORE any lookup,
+/// so the map is built non-empty and a later insert is the only thing the hook can supply.
+#[test]
+fn an_edge_inserted_after_the_reverse_map_was_built_is_still_found() {
+    let mut b = Builder::default();
+    let x = b.node(&["A"], &[]);
+    let y = b.node(&["B"], &[]);
+    b.edge(x, y, "R");
+    let mut store = b.build();
+
+    // Build the map, and prove it saw the builder's edge (minted id `e0`).
+    assert_eq!(
+        store.edge_by_ext("e0"),
+        Some(0),
+        "builder edge is in the map"
+    );
+
+    stmt(
+        &mut store,
+        "MATCH (a:A), (b:B) INSERT (a)-[:R {id: 'later'}]->(b)",
+    )
+    .unwrap();
+
+    assert_eq!(
+        store.edge_by_ext("later"),
+        Some(1),
+        "an edge added after the build must be in the map"
+    );
+    let err = stmt(
+        &mut store,
+        "MATCH (a:A), (b:B) INSERT (a)-[:R {id: 'later'}]->(b)",
+    )
+    .unwrap_err();
+    assert!(
+        err.starts_with("E_UNIQUE:"),
+        "and its id must still be unique: {err}"
+    );
+}
+
 #[test]
 fn set_on_a_string_identity_id_is_rejected_but_other_and_numeric_ids_are_settable() {
     let mut store = Builder::default().build();
@@ -14628,6 +14752,296 @@ fn plan_cost_by_operator() {
             if base > 0.0 { per_row / base } else { 0.0 }
         );
     }
+}
+
+/// What does an ENTRY POINT cost? The seed-family twin of [`plan_cost_by_operator`], which
+/// cannot price these: every row there wraps the SAME 200,000-row scan, and a seed produces
+/// one row. Wrapping a scan around a seed measures the scan. **The unit for a seed is the
+/// SEEK**, so each case here runs many separate `pull`s, each with a different key.
+///
+/// ```text
+/// cargo test --release --manifest-path crates/lenke-engine/Cargo.toml \
+///   -- --ignored --nocapture seed_cost_by_entry_point
+/// ```
+///
+/// Read it against TWO floors, not one. `NodeSeed (empty)` is pull overhead with no store
+/// access at all; `NodeSeed (miss)` adds exactly one failed external-id hash probe. The gap
+/// between those two is the id lookup itself, and the gap to `NodeSeed (1 id)` is what a HIT
+/// adds on top of the probe. A single floor cannot separate those, which is why there are two.
+///
+/// The `NO index -> scan` rows are the deliberate controls: the same operator on the same
+/// shape with the index absent. They are the only rows here that say what an index BUYS, and
+/// they run far fewer seeks because each one is a whole 200,000-row scan.
+#[test]
+#[ignore = "measurement harness: cargo test --release -- --ignored --nocapture seed_cost_by_entry_point"]
+fn seed_cost_by_entry_point() {
+    use std::time::Instant;
+    const REPS: u32 = 7;
+    const ROWS: u32 = 200_000;
+    // Overridable because a seed that is O(E) per seek cannot run 20,000 of them in any
+    // reasonable time -- which is how item 615 found the one that was. Lower it to price
+    // a known-expensive entry point (`LENKE_SEEKS=20`).
+    let seek_budget: u32 = std::env::var("LENKE_SEEKS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(20_000);
+    /// A scan-fallback case is 200,000 rows a seek, so it gets a budget in seeks rather
+    /// than the same count -- otherwise one row of this table runs 4 billion rows.
+    const SCAN_SEEKS: u32 = 20;
+
+    let mut b = Builder::default();
+    for i in 0..ROWS {
+        b.node(
+            &[if i % 3 == 0 { "N" } else { "M" }],
+            &[
+                ("num", n(f64::from(i % 1000))),
+                ("name", s(&format!("v{i}"))),
+                // Same values as `num`, deliberately NOT indexed: the control key.
+                ("bare", n(f64::from(i % 1000))),
+            ],
+        );
+    }
+    for i in 0..ROWS {
+        b.edge(i, (i * 7 + 1) % ROWS, "R");
+    }
+    let mut store = b.build();
+    store.create_index("name");
+    store.create_index("num");
+    store.create_range_index("num");
+
+    // Each case maps a seek ORDINAL to a plan, so consecutive seeks touch different keys.
+    // A case built once and pulled N times would measure a warm single entry.
+    type Case = (&'static str, Box<dyn Fn(u32) -> Plan>);
+    let cases: Vec<Case> = vec![
+        (
+            "NodeSeed (empty, pull floor)",
+            Box::new(|_| Plan::NodeSeed { ext_ids: vec![] }),
+        ),
+        (
+            "NodeSeed (miss)",
+            Box::new(|i| Plan::NodeSeed {
+                ext_ids: vec![format!("absent{i}")],
+            }),
+        ),
+        (
+            "NodeSeed (1 id)",
+            Box::new(|i| Plan::NodeSeed {
+                ext_ids: vec![(i % ROWS).to_string()],
+            }),
+        ),
+        (
+            "NodeSeed (64 ids)",
+            Box::new(|i| Plan::NodeSeed {
+                ext_ids: (0..64).map(|k| ((i * 64 + k) % ROWS).to_string()).collect(),
+            }),
+        ),
+        (
+            "EdgeSeed (1 id)",
+            Box::new(|i| Plan::EdgeSeed {
+                ext_ids: vec![format!("e{}", i % ROWS)],
+            }),
+        ),
+        (
+            "IndexSeek (name, unique, HASH)",
+            Box::new(|i| Plan::IndexSeek {
+                label: None,
+                key: "name".to_string(),
+                value: s(&format!("v{}", i % ROWS)),
+            }),
+        ),
+        (
+            "IndexSeek (num, 200/bucket, HASH)",
+            Box::new(|i| Plan::IndexSeek {
+                label: None,
+                key: "num".to_string(),
+                value: n(f64::from(i % 1000)),
+            }),
+        ),
+        (
+            "IndexSeek (bare, NO index -> scan)",
+            Box::new(|i| Plan::IndexSeek {
+                label: None,
+                key: "bare".to_string(),
+                value: n(f64::from(i % 1000)),
+            }),
+        ),
+        (
+            "RangeSeek (num < 5, RANGE index)",
+            Box::new(|_| Plan::RangeSeek {
+                label: None,
+                key: "num".to_string(),
+                op: CompareOp::Lt,
+                value: n(5.0),
+            }),
+        ),
+        (
+            "RangeSeek (bare < 5, NO index -> scan)",
+            Box::new(|_| Plan::RangeSeek {
+                label: None,
+                key: "bare".to_string(),
+                op: CompareOp::Lt,
+                value: n(5.0),
+            }),
+        ),
+    ];
+
+    println!("\n=== seed / entry-point cost, {ROWS} nodes ===");
+    println!(
+        "{:<40} {:>10} {:>10} {:>10} {:>6}",
+        "entry point", "ns/seek", "ns/row", "rows/seek", "seeks"
+    );
+    for (label, make) in &cases {
+        let seeks = if label.contains("NO index") {
+            SCAN_SEEKS.min(seek_budget)
+        } else {
+            seek_budget
+        };
+        let plans: Vec<Plan> = (0..seeks).map(make).collect();
+        let mut lo = f64::MAX;
+        let mut rows = 0usize;
+        for _ in 0..REPS {
+            let t = Instant::now();
+            let mut got = 0usize;
+            for p in &plans {
+                let r = crate::exec::pull(p, &store, false);
+                assert!(r.is_ok(), "{label} must pull: {r:?}");
+                got += r.as_ref().map(crate::batch::Batch::rows).unwrap_or(0);
+            }
+            lo = lo.min(t.elapsed().as_secs_f64() * 1e9);
+            got_check(label, got);
+            rows = got;
+        }
+        let per_seek = lo / f64::from(seeks);
+        let per_row = if rows == 0 { 0.0 } else { lo / rows as f64 };
+        println!(
+            "{label:<40} {per_seek:>10.1} {per_row:>10.2} {:>10.1} {seeks:>6}",
+            rows as f64 / f64::from(seeks)
+        );
+    }
+}
+
+/// A seed that silently returns NO rows prices as the fastest thing in the table, so every
+/// case that is supposed to find something asserts that it did. This is the guard that would
+/// have caught a typo in an external id, which otherwise reads as a spectacular win.
+#[cfg(test)]
+fn got_check(label: &str, got: usize) {
+    let wants_rows = !label.contains("empty") && !label.contains("miss");
+    assert!(
+        !wants_rows || got > 0,
+        "{label} found NOTHING -- it would price as free"
+    );
+}
+
+/// One row of [`edge_id_insert_cost_by_graph_size`]: a label and a GQL statement template
+/// taking the insert ordinal (so each insert carries a distinct id).
+#[cfg(test)]
+type InsertCase = (&'static str, fn(u32) -> String);
+
+/// Does the cost of inserting an edge depend on how many edges the graph ALREADY has? It
+/// should not. This harness answers it by measuring the same 200 inserts against graphs of
+/// three sizes and reading the SCALING, not the absolute number.
+///
+/// ```text
+/// cargo test --release --manifest-path crates/lenke-engine/Cargo.toml \
+///   -- --ignored --nocapture edge_id_insert_cost_by_graph_size
+/// ```
+///
+/// Three rows, and the two controls are the point:
+///
+/// - **edge, explicit id** pays the duplicate-identity check in `insert_edge_with_identity`.
+/// - **edge, NO id** is the same statement minting a synthetic id, so it skips that check.
+///   The fix for the first row cannot reach this one; if it moves, something else did.
+/// - **node, explicit id** is the SAME duplicate check on the node side, which resolves
+///   through the `ext_to_node` hash. It is the shape the edge row is supposed to look like.
+///
+/// A row that is flat in the graph size is O(1) in it. A row that triples when the graph
+/// quadruples is not.
+#[test]
+#[ignore = "measurement harness: cargo test --release -- --ignored --nocapture edge_id_insert_cost_by_graph_size"]
+fn edge_id_insert_cost_by_graph_size() {
+    use std::time::Instant;
+    const REPS: u32 = 5;
+    const SIZES: [u32; 3] = [2_000, 8_000, 32_000];
+    // Overridable because the reverse map behind the explicit-id row is built ONCE, on
+    // the first lookup, and that build is amortized over however many inserts run here.
+    // At 200 it is still a visible share of the row; raising it shows the asymptote.
+    // (`LENKE_INSERTS=2000` was the second reading item 615 records.)
+    let inserts: u32 = std::env::var("LENKE_INSERTS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(200);
+
+    // Each case is a GQL statement template taking the insert ordinal. Parsed OUTSIDE the
+    // timing loop: this harness is about the write, and a parse per row would dilute it.
+    let cases: [InsertCase; 5] = [
+        ("edge, explicit id", |i| {
+            format!("INSERT (:A)-[:R {{id: 'fresh{i}'}}]->(:B)")
+        }),
+        ("edge, NO id (control)", |_| {
+            "INSERT (:A)-[:R {w: 1}]->(:B)".to_string()
+        }),
+        ("node, explicit id (control)", |i| {
+            format!("INSERT (:A {{id: 'fresh{i}'}})")
+        }),
+        // The two prop-free rows separate the id CHECK from the property WRITE. The first
+        // three rows all set at least one property, and a property column is sized to the
+        // node count -- so if these two scale as well, the residual growth in the controls
+        // is the column, not the identity lookup, and only the first row's 16x is the check.
+        ("node, no props (control)", |_| "INSERT (:A)".to_string()),
+        ("edge, no props (control)", |_| {
+            "INSERT (:A)-[:R]->(:B)".to_string()
+        }),
+    ];
+
+    println!("\n=== insert cost vs. EXISTING edge count, {inserts} inserts ===");
+    print!("{:<30}", "case");
+    for e in SIZES {
+        print!(" {:>12}", format!("E={e}"));
+    }
+    println!(" {:>8}", "growth");
+
+    for (label, make) in &cases {
+        let plans: Vec<Plan> = (0..inserts)
+            .map(|i| crate::gql::parse(&make(i)).expect("harness statement must parse"))
+            .collect();
+        let mut per_insert: Vec<f64> = Vec::new();
+        for size in SIZES {
+            let mut lo = f64::MAX;
+            for _ in 0..REPS {
+                // A FRESH store per rep, because these inserts MUTATE: a second rep would
+                // meet its own 'fresh<i>' ids and fault on the duplicate it is measuring.
+                let mut store = sized_store(size);
+                let t = Instant::now();
+                for p in &plans {
+                    let r = crate::exec::execute(p, &mut store);
+                    assert!(r.is_ok(), "{label} must insert: {r:?}");
+                }
+                lo = lo.min(t.elapsed().as_secs_f64() * 1e9);
+            }
+            per_insert.push(lo / f64::from(inserts));
+        }
+        print!("{label:<30}");
+        for p in &per_insert {
+            print!(" {:>10.0}ns", p);
+        }
+        // First to last, over a 16x graph: ~1.0 is O(1) in the graph size.
+        let growth = per_insert.last().copied().unwrap_or(0.0) / per_insert[0].max(1.0);
+        println!(" {growth:>7.1}x");
+    }
+}
+
+/// `size` nodes and `size` edges, every element carrying a builder-minted external id --
+/// which is what makes the duplicate-id scan do its full work rather than skip absent ids.
+#[cfg(test)]
+fn sized_store(size: u32) -> Store {
+    let mut b = Builder::default();
+    for i in 0..size {
+        b.node(&["A"], &[("num", n(f64::from(i)))]);
+    }
+    for i in 0..size {
+        b.edge(i, (i * 7 + 1) % size, "R");
+    }
+    b.build()
 }
 
 // --- The dense join path must equal the boxed one, row for row (item 82) ---

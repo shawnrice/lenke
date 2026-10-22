@@ -9691,3 +9691,92 @@ Mechanical resolution by token overlap. Tried first and it is not good enough to
 plausible-but-wrong candidates elsewhere. **A wrong new citation is worse than a dead one** — it
 reads as live and sends the reader somewhere real but unrelated. Each of the 61 was resolved by
 reading the crate.
+
+## 615 — edge id lookup: O(E) → O(1) in the native engine, 116x on the write path
+
+**FIXED. `Store::edge_by_ext` was O(E log E) with an allocation per call, and `Plan::EdgeSeed`
+built its own ext→edge `HashMap` over every live edge on EVERY pull.** Nodes have always had
+`ext_to_node`; edges had no reverse map. The INSERT identity path calls `edge_by_ext` once per
+edge carrying an explicit string `id`, so **inserting N such edges into a graph of E was
+quadratic** — and `encode` emits edge ids, so every reloaded snapshot takes that path.
+
+|                                      | before           | after               |
+| ------------------------------------ | ---------------- | ------------------- |
+| INSERT edge w/ explicit id, E=2,000  | 11,870 ns        | 671 ns — **17.7x**  |
+| INSERT edge w/ explicit id, E=8,000  | 31,265 ns        | 692 ns — **45.2x**  |
+| INSERT edge w/ explicit id, E=32,000 | 101,374 ns       | 871 ns — **116.4x** |
+| `g.E(id)`, 200,000 edges             | **7,681,609 ns** | **31 ns**           |
+
+Min-of-3 alternated against a detached pre-fix worktree. **The ratio grows with E** because
+before was O(E) and after is O(1), so no single number characterises it. Four control rows
+(edge-no-id, node-explicit-id, node-no-props, edge-no-props) sit at **0.96-1.01x**.
+
+**Why `ext_to_edge` is not the invalidated-on-write cache the user ruled out:** `edge_ext` is
+immutable after creation (verified: one push site, never rewritten), so **no write invalidates
+the map — a write only EXTENDS it.** Delete leaves the entry and liveness is filtered at lookup,
+as `node_by_ext` already does for tombstones. The map is `None` until something asks for an edge
+by id, so a graph that never does pays one `is_some` branch per `add_edge`. **Ingest is flat:
+`nodes+5edges x2 props` decode 0.993x**, min-of-3 alternated. The O(E) build is once per store
+on first lookup (≈0.77 ms at E=32,000).
+
+### SETTLED: the TS engine already did this right — a citation can be true of the ANSWER and hide a 116x cost gap
+
+`insertEdgeWithId` checks `graph.getEdgeById(id)`, an O(1) `edgesById` Map maintained on
+`addEdge`/`removeEdge`. So this was a **Rust-only** defect in the engine that is otherwise
+1.5-4x faster, and TS was the proof the design is cheap on write. Its comment says _"Mirrors
+native `insert_edge_with_id`"_ and that was TRUE — of the result. **Item 614 catalogued
+citations claiming a parity that did not exist; this is the inverse class it did not name: a
+behaviourally accurate citation concealing an asymptotic gap.** A cross-engine comment asserts
+the same answer, never the same cost, and nothing measures the difference.
+
+### SETTLED: the seed family had never been priced, and `plan_cost_by_operator` structurally cannot
+
+That harness wraps every case around the same 200,000-row scan; a seed produces ONE row, so
+wrapping a scan around it measures the scan. **The unit for a seed is the SEEK.** New
+`#[ignore]`d harness `seed_cost_by_entry_point` (two floors — pull overhead, and overhead + one
+failed hash probe — because one floor cannot separate the probe from the batch build):
+
+| entry point                           | ns/seek      | note                                                            |
+| ------------------------------------- | ------------ | --------------------------------------------------------------- |
+| `NodeSeed` empty (pull floor)         | 32.5         |                                                                 |
+| `NodeSeed` miss                       | 47.5         | the failed ext hash probe is ~15 ns                             |
+| `NodeSeed` 1 id                       | 65.1         |                                                                 |
+| `NodeSeed` 64 ids                     | 1003         | **15.7 ns/id** — per-pull overhead dominates a single-id seed   |
+| `EdgeSeed` 1 id                       | 53.7         | was 7.68 **ms**                                                 |
+| `IndexSeek` unique key, hash          | 104          |                                                                 |
+| `IndexSeek` same key, NO index → scan | 252,257      | the hash index is worth **~2,400x** on a point lookup           |
+| `RangeSeek` with range index          | 9.94 ns/row  |                                                                 |
+| `RangeSeek` NO index → scan           | 276.9 ns/row | **27.8x**, matching the interval-index family's recorded 27-28x |
+
+### FIXTURE TRAP, tenth instance — now about a POLICY in two places
+
+The "lowest eid wins for a duplicate external id" policy lived in both the lazy build and the
+incremental insert hook, each with its own `or_insert`. Flipping ONE to last-wins **survived the
+entire suite**, because the only fixture with a duplicate edge id comes from NDJSON decode,
+which builds the map lazily and so never reaches the incremental copy. Fixed by collapsing it to
+one site (`Store::note_edge_ext`). **Two copies of a policy need two mutants, or one site; a
+single mutant against one of two copies proves nothing.** The other three mutants (liveness
+filter, fallback scan, insert-time maintenance) were caught first time.
+
+That lowest-wins is correct had to be MEASURED, since the write path rejects duplicates and
+cannot create the case: NDJSON decode accepts it, and both engines answer `w = 1` (the first).
+
+### OPEN: duplicate external edge ids — the engines disagree on the edge COUNT
+
+Two NDJSON edges sharing `id: "dup"`: native keeps **2** edges, TS keeps **1** (its `edgesById`
+`Map.set` collapses the pair). Both agree `g.E('dup')` resolves to the `w=1` edge, so only the
+COUNT diverges. Pre-existing, found while fixing the above, and NOT touched — decode semantics
+is not a perf decision. See [[cross-engine-divergences-open]].
+
+### Instrument note: a mutation harness must TOUCH what it restores
+
+`shutil.copy2` preserves mtime, so a restored pristine source looks **older than the compiled
+test binary**: cargo skips the rebuild and the next run executes **the mutant** while the
+harness reports a clean tree. It surfaced as a new test failing in the full suite and passing in
+isolation. `shutil.copy` + `os.utime`.
+
+### The `bench_all` screen produced its SIXTH false positive
+
+`query/gql pred AND exists` flagged at 1.161x; **refuted at 0.998x** on the isolated
+`query_bench gql` row, min-of-5 alternated, with 34 sibling rows as controls and nothing over
+1.081x. Joins 83, 84, 85, 89, 91. It is a screen, not a verdict.

@@ -1038,17 +1038,16 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
         }
         Plan::EdgeSeed { ext_ids } => {
             // Resolve each external id to a LIVE edge, preserving request order; an
-            // unknown/deleted id is dropped. No reverse ext→edge map exists, so build
-            // one lazily from the live-edge set (edge id lookups are rare/small).
-            let mut by_ext: std::collections::HashMap<GStr, u32> = std::collections::HashMap::new();
-            for e in store.all_edges() {
-                if let Some(x) = store.edge_ext_id(e) {
-                    by_ext.entry(x).or_insert(e);
-                }
-            }
+            // unknown/deleted id is dropped. `store.edge_by_ext` is an O(1) probe of the
+            // store's reverse map (built on this first call, then maintained).
+            //
+            // This arm used to build its OWN ext→edge `HashMap` over every live edge on
+            // EVERY pull, to resolve what is usually one id — O(E) with an allocation per
+            // edge, per `g.E(id)`. Its comment said no reverse map existed, which was
+            // true and is the reason; item 615 added one rather than rebuilding here.
             let ids: Vec<u32> = ext_ids
                 .iter()
-                .filter_map(|e| by_ext.get(e.as_str()).copied())
+                .filter_map(|e| store.edge_by_ext(e))
                 .collect();
             Batch::single(Col::Edges(ids))
         }
