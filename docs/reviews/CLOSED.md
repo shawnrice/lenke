@@ -9631,7 +9631,7 @@ the name** — nine places now rely on that.
 its CLAIM test was per-LINE, so a doc comment that opens "Mirrors the native …" and names the
 symbol three lines down was not checked at all. That hid **fifteen** real dead citations — a
 quarter of the total — visible only under the too-noisy `--all`. It now tests the whole contiguous
-comment BLOCK. Also: module-qualified names (``value::equals``) were invisible to the name regex
+comment BLOCK. Also: module-qualified names (`value::equals`) were invisible to the name regex
 and are now resolved on their last segment, and the haystack includes each Rust file's PATH so a
 citation naming an example by stem (`skipcast_426`) resolves.
 
@@ -9654,9 +9654,9 @@ settled by measurement rather than by reading:
   match by a different mechanism (native parses a validator predicate in a scope holding only the
   bound variable, so a free name is an ``unknown variable `q` `` parse error). Both accept
   `p.age > 0`, both reject `q.age > 0` and `p.age > 0 AND q.age > 0`. Claim narrowed, not withdrawn.
-- **`pattern_rank`** was the strongest and is fully refuted: *"Mirrors native `pattern_rank` in
+- **`pattern_rank`** was the strongest and is fully refuted: _"Mirrors native `pattern_rank` in
   `gql/eval/pathfind.rs` exactly — the two must agree or the engines emit rows in different
-  orders."* That file and function do not exist, nothing in the crate ranks patterns, **and row
+  orders."_ That file and function do not exist, nothing in the crate ranks patterns, **and row
   order between the engines is unspecified by policy** — which is why `conformance-harness.ts`
   compares structurally. The comment asserted an invariant the project had already abandoned.
 - **`unknown_fns` / `run_cquery_body`** (4 sites): native rejects an unknown function EARLIER than
