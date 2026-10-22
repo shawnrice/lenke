@@ -9780,3 +9780,59 @@ isolation. `shutil.copy` + `os.utime`.
 `query/gql pred AND exists` flagged at 1.161x; **refuted at 0.998x** on the isolated
 `query_bench gql` row, min-of-5 alternated, with 34 sibling rows as controls and nothing over
 1.081x. Joins 83, 84, 85, 89, 91. It is a screen, not a verdict.
+
+## 616 — `coalesce(values('k')).path()` dropped the value in native; and the fuzzer that found it cannot find the class
+
+**FIXED, a cross-engine WRONG ANSWER.** The all-`values` `coalesce` fast path in `gremlin.rs`
+lowers to `Filter + Project(Case)` and `return`ed its plan directly, outrunning
+`Parser::maybe_path_record` — so the projected value never entered the Gremlin step-history and
+`g.V().coalesce(values('name')).path()` gave `path[v[1]]`.
+
+**TinkerPop 3.7.3 in a real console gives `path[v[1], marko]`** and the TS engine agreed with
+TinkerPop, so native was the wrong side. Fix is one line: route the fast path's plan through
+`maybe_path_record(p, "values")`, so it records with the same `STEP_SCALAR` tag and the same
+slot as the plain `values` step — agreeing with the slow path by construction, not coincidence.
+
+Every sibling was already correct — `union(values)`, `optional(values)`, plain `values`, and
+`coalesce` of HOPS all agreed — which is what narrowed it to the fast path. The neighbouring
+early `return`s in the branch lowerings are REDUCERS (`count`/`sum`/`fold`), which set
+`frontier_from_reducer` because TinkerPop resets the path at a reducing barrier; those are
+correctly unrecorded. **An early `return` in a lowering is where a cross-cutting wrapper gets
+lost, and this fast path existed for speed — an optimization created the bug.**
+
+**NOT caused by item 615, established by replay not by argument:** `git checkout HEAD~1 --
+store.rs exec.rs`, rebuild, same seed → identical divergence. Pre-existing.
+
+### 🛑 SETTLED: `gremlin-fuzz` found this by LUCK — do not read a clean sweep as coverage
+
+`FUZZ_SEED=3183304986` reproduces 100% of the time, so it is not the known residual (whose
+defining property is that it [[gremlin-fuzz-families]] _replays clean_). But the generator
+produces the shape vanishingly rarely, and that was MEASURED rather than assumed — by running
+the sweep against the code with **the fix reverted**, which is the only thing that makes a clean
+sweep mean anything:
+
+| sweep            | seeds | traversals | hits  |
+| ---------------- | ----- | ---------- | ----- |
+| **fix reverted** | 12    | 4,800      | **0** |
+| **fix reverted** | 60    | 24,000     | **0** |
+| fixed            | 60    | 24,000     | 0     |
+
+**The sweep cannot find the bug it was hunting.** So "60 clean seeds" is NOT evidence that
+sibling instances of this class do not exist, and item 616 does not claim it is. Rarer than 1 in
+24,000 traversals; CI hit it on a random seed. The rule from `rewrite_fuzz` generalizes beyond
+mutants: **a generative sweep whose teeth were never verified is worse than no sweep, because it
+is believed.**
+
+The durable guard is a TABLE: `a_branch_step_over_a_value_body_extends_the_path` pins eleven
+spellings (one-arm / two-arm / first-arm-absent `coalesce`, `union`, `optional`, plain `values`,
+each again behind a hop, plus `coalesce(id())` and `coalesce(label())`), asserting the path
+length and that the last element is not a node. Teeth verified: with the fix reverted it fails
+on its first case.
+
+### Method note: the narrowing, which is reusable
+
+One fixture decoded from the SAME ndjson into both engines — the fuzz suite's own comment warns
+that a fixture built two ways makes drift read as a divergence. Then remove one element of the
+traversal at a time. Four controls agreeing (`values` alone, `union`, `optional`, `coalesce` of
+hops) is what turned "coalesce + path + fold + a hop diverges" into "the all-values fast path
+does not record", which is a one-line fix rather than a hunt.

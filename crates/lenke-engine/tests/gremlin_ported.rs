@@ -1209,6 +1209,78 @@ fn path_of_path_nests_the_prior_path() {
     }
 }
 
+/// A branch step whose body PROJECTS A VALUE must extend the traverser path with that
+/// value, for every branch step and every value body.
+///
+/// TinkerPop 3.7.3, verified in a real console rather than inferred:
+/// `g.V().coalesce(__.values('name')).path()` → `path[v[1], marko]`, and `union` and a
+/// plain `values` give the same shape.
+///
+/// This is a CROSS-PRODUCT test on purpose. The bug it guards (item 616) was in the
+/// all-`values` `coalesce` FAST PATH, which `return`ed before `maybe_path_record` could wrap
+/// it, so the value never entered the step-history — native gave `path[v[1]]` where
+/// TinkerPop and the TS engine both give `path[v[1], marko]`. Every sibling was correct, so
+/// nothing but the fast path was wrong, and only one of these spellings would have failed.
+///
+/// **The gremlin differential fuzzer found it, and must not be trusted to find the next
+/// one.** It generated the shape once in a CI run; 120 random seeds afterwards (48,000
+/// traversals, measured both with and without the fix) produced it ZERO times. A table is
+/// the instrument for this class; the fuzzer was luck.
+#[test]
+fn a_branch_step_over_a_value_body_extends_the_path() {
+    // (query, how many path elements the LAST one should have, what to call it)
+    let cases: &[(&str, usize)] = &[
+        // One arm, two arms, and the general (non-fast-path) shapes.
+        ("g.V('1').coalesce(values('name')).path()", 2),
+        (
+            "g.V('1').coalesce(values('name'), values('name')).path()",
+            2,
+        ),
+        (
+            "g.V('1').coalesce(values('nope'), values('name')).path()",
+            2,
+        ),
+        ("g.V('1').union(values('name')).path()", 2),
+        ("g.V('1').optional(values('name')).path()", 2),
+        // The plain step the branch ones must agree with.
+        ("g.V('1').values('name').path()", 2),
+        // With a hop in front, the fuzzer's actual shape: [source, neighbour, value].
+        ("g.V('1').out('KNOWS').coalesce(values('name')).path()", 3),
+        (
+            "g.V('1').out('KNOWS').coalesce(values('name'), values('name')).path()",
+            3,
+        ),
+        ("g.V('1').out('KNOWS').values('name').path()", 3),
+        // A non-`values` value body, so the fix is not special to one key reader.
+        ("g.V('1').coalesce(id()).path()", 2),
+        ("g.V('1').coalesce(label()).path()", 2),
+    ];
+
+    for (q, want_len) in cases {
+        let rows = qs(q);
+        assert!(
+            !rows.is_empty(),
+            "`{q}` produced no rows — nothing is pinned"
+        );
+        for row in &rows {
+            let GVal::List(p) = row else {
+                panic!("`{q}`: expected a path list, got {row:?}");
+            };
+            assert_eq!(
+                p.len(),
+                *want_len,
+                "`{q}`: path is {p:?} — the branch body's VALUE must be recorded as a step"
+            );
+            // The LAST element is the projected value, not the element it came from.
+            assert!(
+                !matches!(p.last(), Some(GVal::Node(_))),
+                "`{q}`: the last path element should be the projected value, got {:?}",
+                p.last()
+            );
+        }
+    }
+}
+
 #[test]
 fn path_inside_a_union_arm_records_the_arm_hop() {
     // `union(out().path())`: the arm is a pure vertex hop, so its `path()` must read the

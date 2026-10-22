@@ -2467,7 +2467,27 @@ impl Parser {
                     self.current_is_scalar = false;
                     self.current_is_path = false;
                     self.on_edge = false;
-                    return Ok(p);
+                    // Record the projected scalar as this step's path element, exactly as a
+                    // plain `values('k')` step does (same `STEP_SCALAR` tag, same
+                    // `Slot(self.current)` value).
+                    //
+                    // This fast path RETURNS here, so it used to skip `maybe_path_record`
+                    // altogether and the value never entered the step-history:
+                    // `g.V().coalesce(values('name')).path()` gave `[v[1]]` where TinkerPop
+                    // 3.7.3 gives `path[v[1], marko]` -- confirmed in a real console, not
+                    // inferred -- and the TS engine agreed with TinkerPop. So this was a
+                    // native-side WRONG ANSWER, not a tie to be broken.
+                    //
+                    // Its siblings all got it right, which is what made the bug this narrow:
+                    // `values('name').path()`, `union(values('name')).path()` and
+                    // `optional(values('name')).path()` all agreed, and so did
+                    // `coalesce(out('knows')).path()` -- only the all-`values` fast path, and
+                    // only because it is a fast path. An early `return` in a lowering is where
+                    // a cross-cutting wrapper gets lost.
+                    //
+                    // Found by the gremlin differential fuzzer at FUZZ_SEED=3183304986 (item
+                    // 616); pre-existing, and it reproduces against pre-615 engine code.
+                    return Ok(self.maybe_path_record(p, "values"));
                 }
                 // General: run each arm PER ELEMENT (TinkerPop per-traverser coalesce) — the
                 // FIRST arm producing ≥1 output for that element wins. Each arm is a plain
