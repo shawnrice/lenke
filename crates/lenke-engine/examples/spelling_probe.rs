@@ -131,6 +131,27 @@ fn main() {
             ],
         ),
         (
+            // Item 616. The single most common serving query there is: give me the element
+            // with this id. Gremlin has a SEED for it -- `g.V(id)` lowers to
+            // `Plan::NodeSeed`, an O(1) external-id hash probe measured at 31-65 ns a seek
+            // (item 615's `seed_cost_by_entry_point`). GQL has `element_id(n)` as a scalar
+            // function and, as far as the crate goes, NOTHING that turns a predicate over it
+            // into a seed: `Plan::NodeSeed` is constructed in exactly ONE place, the Gremlin
+            // parser. So the question this group asks is whether the two surface languages
+            // can express one point lookup at one cost, which is the probe's whole charter.
+            //
+            // The id is a Builder-minted dense-id string, so '12345' exists in a 100,000-node
+            // fixture. Both spellings must return the same single row.
+            "point lookup BY ID — Gremlin seed vs GQL element_id predicate",
+            &[
+                (Gremlin, "g.V('12345').values('age')"),
+                (
+                    Gql,
+                    "MATCH (n:Person) WHERE element_id(n) = '12345' RETURN n.age AS a",
+                ),
+            ],
+        ),
+        (
             "count(*) — operand-free / count(n) / Gremlin",
             &[
                 (Gql, "MATCH (n:Person) RETURN count(*) AS c"),

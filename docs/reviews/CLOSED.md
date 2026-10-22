@@ -9836,3 +9836,94 @@ that a fixture built two ways makes drift read as a divergence. Then remove one 
 traversal at a time. Four controls agreeing (`values` alone, `union`, `optional`, `coalesce` of
 hops) is what turned "coalesce + path + fold + a hop diverges" into "the all-values fast path
 does not record", which is a one-line fix rather than a hunt.
+
+## 617 — GQL point lookup BY ID: a 7,513x cliff against Gremlin, now 1,258x faster (native)
+
+**FIXED (native). `Plan::NodeSeed` was constructed in exactly ONE place in the crate — the
+Gremlin parser.** GQL has `element_id(n)` as a scalar function and nothing that turned a
+predicate over it into a seed, so _"give me the element with this id"_ — the most common
+serving query there is — was a full label scan with an `element_id` call and a string compare
+per node.
+
+Found by adding the pair to `spelling_probe` as a group, which is its charter: `g.V('12345')`
+below the timer's resolution against `MATCH (n:Person) WHERE element_id(n) = '12345'` at
+**1.803 ms**, same single row, 100,000 nodes — **a 7,513x spread.** Now converged.
+
+End-to-end through the FFI, two `.so` files (the "before" built from a detached worktree at
+HEAD), min-of-3×9 alternated:
+
+|                                | before         | after       |           |
+| ------------------------------ | -------------- | ----------- | --------- |
+| **GQL `element_id(n) = $x`**   | **1775.79 µs** | **1.41 µs** | **1258x** |
+| Gremlin `g.V(id)` — control    | 1.76           | 1.70        | 1.03x     |
+| GQL indexed property — control | 1.79           | 1.84        | 0.97x     |
+| GQL label-scan count — control | 1.11           | 1.12        | 0.99x     |
+
+The seeded lookup is now cheaper than the indexed-property lookup, as a direct `ext_to_node`
+probe should be. A bound `$param` reaches it: `bind_params` runs BEFORE `opt`, verified by
+dumping `Param("x")` → `Lit(Str("4"))` → `NodeSeed`.
+
+**`Plan::NodeSeed` gained `label: Option<String>`** (as `IndexSeek`/`RangeSeek` always had).
+Without it the rewrite drops the `MATCH (n:Person)` constraint and returns a node of the WRONG
+label. `exec` applies it via `store.is_labeled` (binary search of the sorted bucket, O(log
+|label|)). Gremlin's `g.V(ids)` passes `None`. Also seeded as a CONJUNCT (`Seed::Id`), ranked
+above every rung and gated on nothing — at most one row, so nothing can beat it — because
+otherwise `… = $x AND n.age > 0` would stay a scan while `… = $x` alone seeded: a new cliff
+created by fixing the first.
+
+**Declines, each safe because declining leaves `Filter(Scan)`:** non-`Eq`; a non-`Slot(0)`
+argument; a NON-STRING literal (an id IS a string, so `element_id(n) = 5` matches nothing and
+seeding `"5"` would **invent a row** — mutation confirms this guard load-bearing); NULL.
+
+### 🛑 `rewrite_fuzz` was STRUCTURALLY BLIND to the new rewrite — widen before trusting green
+
+The generator's only `Expr::Call` is `ln`; it could not emit an `element_id` predicate at all,
+so a green `rewrite_fuzz` said **nothing** about this rewrite. Widened with a new predicate
+kind (both operand orders; hits, misses, and a numeric literal so the declines generate too),
+added to `SEEKABLE_KINDS`. Coverage then: **1 plan in 2,000.**
+
+Diagnosing that found a gap wider than this item:
+
+> **The generator never emitted a filter DIRECTLY over the `Scan`.** `gen_seed` returns a bare
+> `Scan` and every filter attaches at the LANDING slot or above, so a slot-0 predicate only
+> ever reached the scan by PUSHDOWN — and the `Plan::Scan` arm of `apply` hosts EVERY seed
+> rewrite (`IndexSeek`, `RangeSeek`, the multi-seek union, `seed_from_conjuncts`, `NodeSeed`).
+> `MATCH (n:L) WHERE <pred on n>` is the commonest real shape and was the one shape absent.
+
+A start-node predicate (`chance(1,3)`, seekable kinds) takes coverage **1 → 17** per 2,000.
+Floor set at half the measurement (`n/250`), the convention the neighbouring rows use, and the
+comment says plainly that **17 is thin and a count is not teeth.**
+
+### Teeth: 3 of 4 mutants caught; the 4th is unobservable FOR A STRUCTURAL REASON
+
+Caught: accepting a numeric literal; dropping the label in `opt`; dropping it in `exec` — each
+by a direct test AND independently by `rewrite_fuzz`'s row oracles, so the 17/2000 reach is
+enough teeth for those.
+
+**SURVIVED: removing the `Slot(0)` check.** Not a coverage gap — both call sites are in the
+`Plan::Scan` arm where the input width is 1, so `Slot(0)` is the only slot that exists and no
+predicate reading another can arrive. **Kept as defensive**, because it is what makes
+`id_seek_target` safe to call from a wider position later; its doc now says this, so nobody
+deletes it believing it tested or trusts it believing it exercised.
+
+### Instrument notes
+
+- **A stale artifact made the first A/B read 1.09x.** `cargo build --release --tests` does not
+  produce the FFI `.so`, and the last `--features capi` build predated the change, so BOTH
+  libraries were pre-617. CLAUDE.md warns about the inverse (a bare release build clobbers the
+  capi `.so`); the same trap arrives as a MISSING rebuild. The probe now also asserts every
+  timed case returned something — a case that silently returns nothing prices as the fastest
+  row in the table.
+- **The `bench_all` screen flagged SEVEN rows; all seven were noise** (min-of-5 alternated on
+  the isolated `query_bench` rows: 1.127x→1.055x, 1.139x→1.000x, 1.500x→0.998x, 0.855x→1.004x;
+  **0 over 1.10x**). That takes this screen's false positives in this loop from six to
+  thirteen.
+- **A `bench_all` absolute number is not comparable to an isolated one**: `max(p.age)` reads
+  1347 µs inside `bench_all` and 430 µs isolated — 3.1x, same binary, same case. Item 116's
+  caution applies to the SUBJECT, not only the control.
+
+### OPEN: the TS engine has the same cliff and it is WORSE
+
+TS, N=100,000, min-of-9 over 200 ops: GQL `element_id(n) = $x` **4413.55 µs** against its own
+Gremlin `g.V(id)` at **2.79 µs** and an indexed property lookup at **1.75 µs** — **2,522x its
+own point-lookup control.** The TS planner has no id-seek shortcut either. Next item.

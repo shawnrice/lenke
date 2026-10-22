@@ -14815,24 +14815,30 @@ fn seed_cost_by_entry_point() {
     let cases: Vec<Case> = vec![
         (
             "NodeSeed (empty, pull floor)",
-            Box::new(|_| Plan::NodeSeed { ext_ids: vec![] }),
+            Box::new(|_| Plan::NodeSeed {
+                ext_ids: vec![],
+                label: None,
+            }),
         ),
         (
             "NodeSeed (miss)",
             Box::new(|i| Plan::NodeSeed {
                 ext_ids: vec![format!("absent{i}")],
+                label: None,
             }),
         ),
         (
             "NodeSeed (1 id)",
             Box::new(|i| Plan::NodeSeed {
                 ext_ids: vec![(i % ROWS).to_string()],
+                label: None,
             }),
         ),
         (
             "NodeSeed (64 ids)",
             Box::new(|i| Plan::NodeSeed {
                 ext_ids: (0..64).map(|k| ((i * 64 + k) % ROWS).to_string()).collect(),
+                label: None,
             }),
         ),
         (
@@ -14918,6 +14924,151 @@ fn seed_cost_by_entry_point() {
             rows as f64 / f64::from(seeks)
         );
     }
+}
+
+/// `WHERE element_id(n) = '<id>'` must SEED, not scan — and must still answer exactly what
+/// the scan answered. Item 617.
+///
+/// The plan assertion is the point: a fast path that silently declines is indistinguishable
+/// from one that works, by rows alone. `plan_cost_by_operator`'s sibling lesson -- a route
+/// CHOICE is answer-equivalent, so every mutant survives a rows-only test (see
+/// [[perf-gate-needs-its-own-test]]). So this checks the OPERATOR, then the rows.
+#[test]
+fn a_gql_element_id_equality_seeds_instead_of_scanning() {
+    let mut b = Builder::default();
+    for i in 0..50u32 {
+        b.node(
+            &[if i % 2 == 0 { "P" } else { "Q" }],
+            &[("n", n(f64::from(i)))],
+        );
+    }
+    let store = b.build();
+
+    // Both operand orders, with and without a label, and as a conjunct. Every one must
+    // reach a NodeSeed: if only some do, the spellings cost differently, which is the
+    // cliff `spelling_probe` exists to catch.
+    let seeding = [
+        "MATCH (x:P) WHERE element_id(x) = '4' RETURN x.n AS v",
+        "MATCH (x:P) WHERE '4' = element_id(x) RETURN x.n AS v",
+        "MATCH (x) WHERE element_id(x) = '4' RETURN x.n AS v",
+        "MATCH (x:P) WHERE element_id(x) = '4' AND x.n > 0 RETURN x.n AS v",
+        "MATCH (x:P) WHERE x.n > 0 AND element_id(x) = '4' RETURN x.n AS v",
+    ];
+    for q in seeding {
+        let plan = crate::gql::parse(q).unwrap();
+        let opt = crate::opt::optimize(plan);
+        assert!(
+            format!("{opt:?}").contains("NodeSeed"),
+            "`{q}` did not seed — it is still scanning:\n{opt:?}"
+        );
+        let rows = run(&opt, &store);
+        assert_eq!(rows.rows.len(), 1, "`{q}` must find node 4");
+        assert_eq!(num(&rows.rows[0][0]), 4.0, "`{q}` found the wrong node");
+    }
+}
+
+/// The LABEL survives the rewrite. `NodeSeed` has no label of its own in Gremlin, so the
+/// rewrite has to carry the one the `Scan` had — otherwise a point lookup by id returns a
+/// node of the WRONG label, which is a wrong answer and not a slow one.
+///
+/// Node 4 is a `P` and node 5 is a `Q`, so asking for `(x:P)` by node 5's id must find
+/// NOTHING. Mutation: setting `label: None` in the rewrite is caught here (and by
+/// `rewrite_fuzz`'s row oracles).
+#[test]
+fn a_gql_id_seek_still_honours_the_label() {
+    let mut b = Builder::default();
+    for i in 0..50u32 {
+        b.node(
+            &[if i % 2 == 0 { "P" } else { "Q" }],
+            &[("n", n(f64::from(i)))],
+        );
+    }
+    let store = b.build();
+
+    let q = "MATCH (x:P) WHERE element_id(x) = '5' RETURN x.n AS v";
+    let opt = crate::opt::optimize(crate::gql::parse(q).unwrap());
+    assert!(format!("{opt:?}").contains("NodeSeed"), "must still seed");
+    assert_eq!(
+        run(&opt, &store).rows.len(),
+        0,
+        "node 5 is a Q — a P lookup by its id must find nothing"
+    );
+
+    // And the same id under its real label does find it, so the test above is not passing
+    // because the seed is simply broken.
+    let q = "MATCH (x:Q) WHERE element_id(x) = '5' RETURN x.n AS v";
+    let opt = crate::opt::optimize(crate::gql::parse(q).unwrap());
+    let rows = run(&opt, &store);
+    assert_eq!(rows.rows.len(), 1, "node 5 IS a Q");
+    assert_eq!(num(&rows.rows[0][0]), 5.0);
+}
+
+/// The shapes the rewrite must DECLINE, each because seeding would change the answer.
+/// Declining leaves `Filter(Scan)`, which is right by construction — so every one of these
+/// asserts the ROWS as well, not just that it declined.
+#[test]
+fn a_gql_id_seek_declines_what_it_cannot_answer() {
+    let mut b = Builder::default();
+    for i in 0..20u32 {
+        b.node(&["P"], &[("n", n(f64::from(i)))]);
+    }
+    let store = b.build();
+
+    // A NUMERIC literal. External ids are strings, so under the value contract's cross-type
+    // `=` this matches nothing; seeding `"4"` from `= 4` would INVENT a row. Mutation
+    // confirms this one is load-bearing: accepting `Value::Num` is caught by `rewrite_fuzz`.
+    let q = "MATCH (x:P) WHERE element_id(x) = 4 RETURN x.n AS v";
+    let opt = crate::opt::optimize(crate::gql::parse(q).unwrap());
+    assert!(
+        !format!("{opt:?}").contains("NodeSeed"),
+        "a numeric id literal must not seed:\n{opt:?}"
+    );
+    assert_eq!(run(&opt, &store).rows.len(), 0, "and it matches nothing");
+
+    // A RANGE over an id: a seed takes a set of ids, not an interval.
+    let q = "MATCH (x:P) WHERE element_id(x) > '4' RETURN x.n AS v";
+    let opt = crate::opt::optimize(crate::gql::parse(q).unwrap());
+    assert!(
+        !format!("{opt:?}").contains("NodeSeed"),
+        "a range over an id must not seed:\n{opt:?}"
+    );
+
+    // An id that exists nowhere: seeds, and finds nothing.
+    let q = "MATCH (x:P) WHERE element_id(x) = 'nope' RETURN x.n AS v";
+    let opt = crate::opt::optimize(crate::gql::parse(q).unwrap());
+    assert!(
+        format!("{opt:?}").contains("NodeSeed"),
+        "a miss still seeds"
+    );
+    assert_eq!(run(&opt, &store).rows.len(), 0);
+}
+
+/// A seed must not resurrect a DELETED node. `NodeSeed` filters on `is_alive`, but the
+/// rewrite is what newly routes a GQL query through it, so the property is pinned here too.
+#[test]
+fn a_gql_id_seek_does_not_find_a_deleted_node() {
+    let mut store = Builder::default().build();
+    stmt(&mut store, "INSERT (:P {id: 'keep', n: 1})").unwrap();
+    stmt(&mut store, "INSERT (:P {id: 'drop', n: 2})").unwrap();
+
+    let q = "MATCH (x:P) WHERE element_id(x) = 'drop' RETURN x.n AS v";
+    let opt = crate::opt::optimize(crate::gql::parse(q).unwrap());
+    assert_eq!(run(&opt, &store).rows.len(), 1, "live before the delete");
+
+    stmt(
+        &mut store,
+        "MATCH (x:P) WHERE element_id(x) = 'drop' DELETE x",
+    )
+    .unwrap();
+    assert_eq!(
+        run(&opt, &store).rows.len(),
+        0,
+        "the seed must not resurrect a deleted node"
+    );
+    // The other node is untouched, so the delete was not a whole-label sweep.
+    let q = "MATCH (x:P) WHERE element_id(x) = 'keep' RETURN x.n AS v";
+    let opt = crate::opt::optimize(crate::gql::parse(q).unwrap());
+    assert_eq!(run(&opt, &store).rows.len(), 1);
 }
 
 /// A seed that silently returns NO rows prices as the fastest thing in the table, so every

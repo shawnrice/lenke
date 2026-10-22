@@ -588,10 +588,19 @@ pub enum Plan {
     /// Seed the frontier into slot 0: a label bucket, or the universe when
     /// `label` is None.
     Scan { label: Option<String> },
-    /// Seed slot 0 with specific nodes by their EXTERNAL ids — Gremlin `g.V(id, …)`.
-    /// Resolved at exec time (the parser has no store); an id that resolves to no
-    /// live node contributes nothing (matching Gremlin's `g.V(<missing>)`).
-    NodeSeed { ext_ids: Vec<String> },
+    /// Seed slot 0 with specific nodes by their EXTERNAL ids — Gremlin `g.V(id, …)`,
+    /// or GQL `WHERE element_id(n) = '<id>'`. Resolved at exec time (the parser has no
+    /// store); an id that resolves to no live node contributes nothing (matching
+    /// Gremlin's `g.V(<missing>)`). Preserves the requested id order.
+    ///
+    /// `label` keeps only seeded nodes carrying it, exactly as [`Plan::IndexSeek`]'s does
+    /// — so this is `Scan(label) + Filter(element_id = id)` with the scan removed, not a
+    /// label-blind seed. Gremlin's `g.V(ids)` has no label to apply and passes `None`;
+    /// the GQL rewrite carries the one its `MATCH (n:L)` scanned (item 617).
+    NodeSeed {
+        ext_ids: Vec<String>,
+        label: Option<String>,
+    },
     /// Seed slot 0 with EVERY live edge — Gremlin `g.E()`. The slot holds edge ids
     /// (a `Col::Edges` frontier), not nodes; downstream steps that read the current
     /// element (`values`/`id`/`label`/`count`) resolve it as an edge.

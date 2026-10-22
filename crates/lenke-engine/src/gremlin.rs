@@ -1441,7 +1441,11 @@ impl Parser {
                         ext_ids.push(self.str_arg()?);
                     }
                     self.expect(&Tok::RParen)?;
-                    Plan::NodeSeed { ext_ids }
+                    // `g.V(ids)` carries no label — a `hasLabel` after it is its own step.
+                    Plan::NodeSeed {
+                        ext_ids,
+                        label: None,
+                    }
                 } else {
                     self.expect(&Tok::RParen)?;
                     Plan::Scan { label: None }

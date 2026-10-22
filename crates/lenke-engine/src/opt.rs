@@ -1518,6 +1518,9 @@ fn map_children(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
 enum Seed {
     Index(String, Value),
     Range(String, CompareOp, Value),
+    /// `element_id(n) = '<id>'` as a CONJUNCT — the most selective seed there is (at most
+    /// ONE row), so it outranks every other rung. Lowers to a `Plan::NodeSeed`.
+    Id(String),
     /// One key, several DISTINCT values — an `IN` list or a same-key `=`-OR-chain appearing as a
     /// CONJUNCT. Lowers to the same `UNION ALL` of `IndexSeek`s that `multi_seek` builds for a
     /// whole predicate; see `union_of_seeks`.
@@ -1598,34 +1601,44 @@ fn seed_from_conjuncts(pred: &Expr, idx: &dyn IndexOracle) -> Option<(Seed, Opti
     let most_selective = |ranked: &mut dyn Iterator<Item = (usize, f64)>| {
         ranked.min_by(|a, b| a.1.total_cmp(&b.1)).map(|(i, _)| i)
     };
-    let pick = most_selective(
-        &mut conjuncts
-            .iter()
-            .enumerate()
-            .filter_map(|(i, c)| eq_cand(i, c)),
-    )
-    .or_else(|| {
-        most_selective(
-            &mut conjuncts
-                .iter()
-                .enumerate()
-                .filter_map(|(i, c)| range_cand(i, c)),
-        )
-    })
-    // A MULTI-VALUE conjunct sits BELOW an indexed eq/range and ABOVE the unindexed-eq fallback.
-    // Below, because a single indexed seek on a selective key beats a union of them and because
-    // keeping that rung first leaves every existing plan untouched. Above, because the fallback's
-    // "seek" is a typed COLUMN SCAN, and a real indexed union beats a scan — which is the whole
-    // gap: `WHERE k IN [33 items] AND other > 5` with only `k` indexed measured 5.64ms against
-    // 0.08ms for the same `IN` alone, a 69x cost for the extra conjunct, because no rung could
-    // seed from the `IN`.
-    .or_else(|| {
-        conjuncts.iter().position(|c| {
-            multi_eq_target(c).is_some_and(|(k, vs)| multi_seek_worth_it(&k, &vs, idx))
+    // An id equality first, and unconditionally: `element_id(n) = '<id>'` keeps AT MOST
+    // one row, so no index statistic can beat it and there is nothing to rank. It sits
+    // above the indexed-equality rung for that reason, not by convention.
+    let pick = conjuncts
+        .iter()
+        .position(|c| id_seek_target(c).is_some())
+        .or_else(|| {
+            most_selective(
+                &mut conjuncts
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, c)| eq_cand(i, c)),
+            )
         })
-    })
-    .or_else(|| conjuncts.iter().position(|c| eq_worth_it(c)))?;
-    let seed = if let Some((k, v)) = seek_target(conjuncts[pick]) {
+        .or_else(|| {
+            most_selective(
+                &mut conjuncts
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, c)| range_cand(i, c)),
+            )
+        })
+        // A MULTI-VALUE conjunct sits BELOW an indexed eq/range and ABOVE the unindexed-eq fallback.
+        // Below, because a single indexed seek on a selective key beats a union of them and because
+        // keeping that rung first leaves every existing plan untouched. Above, because the fallback's
+        // "seek" is a typed COLUMN SCAN, and a real indexed union beats a scan — which is the whole
+        // gap: `WHERE k IN [33 items] AND other > 5` with only `k` indexed measured 5.64ms against
+        // 0.08ms for the same `IN` alone, a 69x cost for the extra conjunct, because no rung could
+        // seed from the `IN`.
+        .or_else(|| {
+            conjuncts.iter().position(|c| {
+                multi_eq_target(c).is_some_and(|(k, vs)| multi_seek_worth_it(&k, &vs, idx))
+            })
+        })
+        .or_else(|| conjuncts.iter().position(|c| eq_worth_it(c)))?;
+    let seed = if let Some(ext) = id_seek_target(conjuncts[pick]) {
+        Seed::Id(ext)
+    } else if let Some((k, v)) = seek_target(conjuncts[pick]) {
         Seed::Index(k, v)
     } else if let Some((k, vs)) =
         multi_eq_target(conjuncts[pick]).filter(|(k, vs)| multi_seek_worth_it(k, vs, idx))
@@ -1644,6 +1657,56 @@ fn seed_from_conjuncts(pred: &Expr, idx: &dyn IndexOracle) -> Option<(Seed, Opti
         .map(|(_, c)| (*c).clone())
         .reduce(|a, b| Expr::And(Box::new(a), Box::new(b)));
     Some((seed, residual))
+}
+
+/// The external id a predicate pins slot 0 to — `element_id(n) = '<id>'` in either
+/// operand order — or `None` if it is not that shape. The GQL spelling of a point lookup
+/// by id, and the only thing in the crate besides the Gremlin parser that can produce a
+/// [`Plan::NodeSeed`].
+///
+/// Four preconditions, each of which keeps the rewrite a no-op ON THE ROWS rather than a
+/// guess. Declining always leaves `Filter(Scan)`, which is correct by construction, so
+/// every one of these is safe to decline on:
+///
+/// - **`Eq` only.** A `NodeSeed` takes a SET of ids, not an interval, so a range over an
+///   id has no seed to lower to.
+/// - **the argument must be `Slot(0)`** — the slot this `Scan` produces. `element_id(m)`
+///   for any other slot is a different element and must keep scanning. **This guard is
+///   DEFENSIVE and currently unobservable: mutation (item 617) removed it and every test
+///   passed.** The reason is structural, not a coverage gap — both call sites sit in the
+///   `Plan::Scan` arm, where the input width is 1, so `Slot(0)` is the only slot that
+///   exists and no predicate reading another can arrive. Kept, because it is what makes
+///   this function safe to call from a WIDER position later (over a `Join`, say); do not
+///   read its surviving mutant as proof it is dead.
+/// - **the literal must be a STRING.** An external id IS a string, so under the value
+///   contract's cross-type `=` (see [[cross-type-comparison-no-error]]) `element_id(n) = 5`
+///   matches NOTHING. Declining answers that correctly; seeding `"5"` would INVENT a match
+///   that the scan would never have found.
+/// - **NULL declines** for the same reason: the predicate is UNKNOWN, which keeps no rows.
+fn id_seek_target(pred: &Expr) -> Option<String> {
+    let Expr::Compare {
+        op: CompareOp::Eq,
+        left,
+        right,
+    } = pred
+    else {
+        return None;
+    };
+    let (call, v) = match (left.as_ref(), right.as_ref()) {
+        (e, Expr::Lit(v)) => (e, v),
+        (Expr::Lit(v), e) => (e, v),
+        _ => return None,
+    };
+    let Expr::Call { name, args } = call else {
+        return None;
+    };
+    if name != "element_id" || args.len() != 1 || !matches!(args[0], Expr::Slot(0)) {
+        return None;
+    }
+    match v {
+        Value::Str(s) => Some(s.to_string()),
+        _ => None,
+    }
 }
 
 fn seek_target(pred: &Expr) -> Option<(String, Value)> {
@@ -2148,7 +2211,23 @@ fn apply_local(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
             // rows. Both property indexes are global, so the label was only ever a
             // post-filter on the seek's output (see `Plan::IndexSeek`).
             Plan::Scan { label: l } => {
-                if let Some((key, value)) =
+                // An id equality is tried FIRST and gated on nothing. Every other seed here
+                // asks an index oracle whether seeking beats scanning; this one cannot lose,
+                // because `element_id(n) = '<id>'` keeps at most ONE row and resolves through
+                // the store's `ext_to_node` hash — no index need exist. Before item 617 there
+                // was no rewrite at all, and `Plan::NodeSeed` was constructed in exactly one
+                // place in the crate (the Gremlin parser), so GQL had no id seed: measured at
+                // 1.803ms against a Gremlin `g.V('12345')` below the timer's resolution on a
+                // 100,000-node fixture, a 7,513x spread that `spelling_probe` flags as a cliff.
+                if let Some(ext) = id_seek_target(&pred) {
+                    (
+                        Plan::NodeSeed {
+                            ext_ids: vec![ext],
+                            label: l,
+                        },
+                        true,
+                    )
+                } else if let Some((key, value)) =
                     seek_target(&pred).filter(|(k, v)| eq_seek_worth_it(idx, k, v))
                 {
                     (
@@ -2192,6 +2271,10 @@ fn apply_local(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
                     // its inline twin. The seek is semantically Scan+Filter(conjunct),
                     // so peeling one conjunct out is a no-op on the rows.
                     let seek = match seed {
+                        Seed::Id(ext) => Plan::NodeSeed {
+                            ext_ids: vec![ext],
+                            label: l,
+                        },
                         Seed::Index(key, value) => Plan::IndexSeek {
                             label: l,
                             key,

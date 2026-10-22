@@ -1014,12 +1014,19 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
             batch.lineage = lineage;
             batch
         }
-        Plan::NodeSeed { ext_ids } => {
+        Plan::NodeSeed { ext_ids, label } => {
             // Resolve each external id to a LIVE node; an unknown/deleted id is
             // silently dropped (Gremlin `g.V(<missing>)` yields nothing for it).
+            //
+            // `label`, when present, keeps only the nodes carrying it — `is_labeled` is a
+            // binary search of the (sorted) label bucket, so this is O(log |label|) per id
+            // and not a bucket scan. It makes the seed equivalent to the
+            // `Scan(label) + Filter(element_id = id)` that `opt` rewrote away; without it a
+            // labelled GQL point lookup would return a node of the WRONG label.
             let ids: Vec<u32> = ext_ids
                 .iter()
                 .filter_map(|e| store.node_by_ext(e).filter(|&id| store.is_alive(id)))
+                .filter(|&id| label.as_ref().is_none_or(|l| store.is_labeled(id, l)))
                 .collect();
             let lineage = track.then(|| Lineage::seed(&ids));
             let mut batch = Batch::single(Col::Nodes(ids));

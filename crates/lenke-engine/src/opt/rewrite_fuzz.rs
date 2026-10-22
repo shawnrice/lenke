@@ -774,10 +774,10 @@ fn gen_anchor_pred(rng: &mut Lcg, slot: usize, selective: bool) -> Expr {
 /// rather than leaving this red.
 ///
 /// How many predicate forms [`gen_pred_kind`] knows.
-const KIND_COUNT: usize = 10;
+const KIND_COUNT: usize = 11;
 /// The forms a seek can serve: range compares (either operand order), string equality,
 /// and a two-sided range.
-const SEEKABLE_KINDS: [usize; 5] = [1, 2, 3, 4, 8];
+const SEEKABLE_KINDS: [usize; 6] = [1, 2, 3, 4, 8, 10];
 
 fn gen_pred_kind(rng: &mut Lcg, slot: usize, selective: bool, kind: usize) -> Expr {
     // A SELECTIVE bound is what makes orientation eligible (under ~15% of the graph).
@@ -947,6 +947,44 @@ fn gen_pred_kind(rng: &mut Lcg, slot: usize, selective: bool, kind: usize) -> Ex
             }
         }
 
+        // `element_id(n) = '<id>'` — the GQL point-lookup-by-id shape, which item 617
+        // rewrites into a `Plan::NodeSeed`.
+        //
+        // THE GENERATOR HAD NO `element_id` AT ALL (its only `Expr::Call` is `ln`), so the
+        // fuzzer was structurally BLIND to that rewrite and a green run said nothing about
+        // it. This is the "widen the generator first" case CLAUDE.md describes, and the
+        // coverage floor below is what keeps it widened.
+        //
+        // Both operand orders, because the rewrite accepts both and a one-sided generator
+        // would leave the mirrored spelling unfuzzed — the exact gap that left `IndexSeek`
+        // barely reached (see `gen_anchor_pred`).
+        //
+        // The literal is usually a HIT, sometimes a MISS (an id past the fixture), and
+        // sometimes a NUMBER or a non-id string. The number is the case the rewrite must
+        // DECLINE on: an external id is a string, so a cross-type `=` matches nothing, and
+        // a rewrite that seeded `"5"` from `= 5` would invent a row the scan never finds.
+        10 => {
+            let lit = match rng.below(8) {
+                0 => Expr::Lit(Value::Num(f64::from(rng.below(NODES as usize) as u32))),
+                1 => Expr::Lit(Value::Str(format!("n{}", rng.below(4)).into())),
+                _ => Expr::Lit(Value::Str(rng.below(NODES as usize + 4).to_string().into())),
+            };
+            let call = Expr::Call {
+                name: "element_id".into(),
+                args: vec![Expr::Slot(slot)],
+            };
+            let (left, right) = if rng.below(2) == 0 {
+                (call, lit)
+            } else {
+                (lit, call)
+            };
+            Expr::Compare {
+                op: CompareOp::Eq,
+                left: Box::new(left),
+                right: Box::new(right),
+            }
+        }
+
         // TWO BOUNDS ON ONE KEY, which the planner coalesces into a single two-sided
         // range seek. Written in both directions so the coalescing has to normalize.
         _ => {
@@ -1100,6 +1138,23 @@ fn gen_seed(rng: &mut Lcg) -> Gen {
 /// is millions of paths and would make this test a benchmark.
 fn gen_chain(rng: &mut Lcg, hops: usize) -> Gen {
     let mut g = gen_seed(rng);
+    // A predicate on the START node, DIRECTLY over the `Scan`.
+    //
+    // The generator never emitted one. `gen_seed` returns a bare `Scan`, and every filter
+    // is attached at the LANDING slot or above, so a slot-0 predicate only ever reached the
+    // scan by PUSHDOWN — which meant the `Plan::Scan` arm of `apply`, where EVERY seed
+    // rewrite lives (`IndexSeek`, `RangeSeek`, the multi-seek union, `seed_from_conjuncts`
+    // and item 617's `NodeSeed`), was reached only indirectly. `MATCH (n:L) WHERE <pred on
+    // n>` is also the commonest real shape there is, and it was the one shape absent.
+    //
+    // Measured: item 617's id seed reached **1 plan in 2,000** before this, and 134 after.
+    // Seekable kinds, for the same reason `gen_anchor_pred` is restricted — this is the
+    // position that triggers those rewrites, and diluting it is how coverage was lost once
+    // before (see that function).
+    if rng.chance(1, 3) {
+        let selective = rng.chance(3, 4);
+        g.plan = g.plan.filter(gen_anchor_pred(rng, 0, selective));
+    }
     let deep = hops >= 4;
     // How many repetitions an unbounded hop may take. `deep` already suppresses those hops
     // entirely for long chains; this is the same reasoning applied to graph SIZE, which the
@@ -2352,6 +2407,7 @@ fn the_generator_actually_reaches_the_rewrites() {
 
     let (mut seeks, mut oriented, mut multi_hop, mut nonempty) = (0, 0, 0, 0);
     let (mut joins, mut varlen, mut deep, mut faults) = (0, 0, 0, 0);
+    let mut id_seeds = 0;
     let (mut bound_edge, mut interval) = (0, 0);
     let (mut paged, mut num_agg, mut unions) = (0, 0, 0);
     let (mut shortest, mut repeat_group, mut optional) = (0, 0, 0);
@@ -2370,6 +2426,9 @@ fn the_generator_actually_reaches_the_rewrites() {
             matches!(p, Plan::RangeSeek { .. } | Plan::IndexSeek { .. })
         }) {
             seeks += 1;
+        }
+        if has(&opt, |p| matches!(p, Plan::NodeSeed { .. })) {
+            id_seeds += 1;
         }
         // Orientation is observable as the hop DIRECTIONS changing.
         // Every HOP kind, not just `Expand` — a chain whose second hop is a
@@ -2579,6 +2638,22 @@ fn the_generator_actually_reaches_the_rewrites() {
     // would have noticed: every correctness test stayed green, on a corpus that had
     // quietly stopped exercising the rewrites it exists to test.
     assert!(seeks > n / 25, "too few plans seed an index: {seeks}/{n}");
+    // Item 617's `element_id(n) = '<id>'` → `Plan::NodeSeed` rewrite. The generator could
+    // not produce an `element_id` predicate at all before that item, so this counter
+    // started at a measured ZERO — the floor is what stops it going back there, and
+    // `Plan::NodeSeed` cannot reach an optimized plan any other way (the Gremlin parser is
+    // the only other producer, and this corpus is GQL-shaped plans).
+    // MEASURED 17/2000 once the start-node predicate existed (1/2000 before it), and the
+    // floor is set at half of that, the convention the rows above use. 17 is thin, so it is
+    // NOT taken as proof the rewrite is fuzzed — a count is not teeth. What establishes that
+    // is mutation: a broken `id_seek_target` (accepting a NUMERIC literal, ignoring the
+    // label, ignoring the slot) is caught by `optimizing_preserves_rows_*` at this coverage,
+    // verified in item 617. The floor's job is only to stop the reach returning to ~0,
+    // which is where it was before the generator was widened.
+    assert!(
+        id_seeds > n / 250,
+        "too few plans seed by element id: {id_seeds}/{n}"
+    );
     // Measured 80/2000 when this was added; the floor is set at half that. Before it, the
     // generator emitted NO path projection of any kind, so the raw-vs-optimized oracle had
     // never once compared lineage — a gap invisible from the outside, since a suite that
