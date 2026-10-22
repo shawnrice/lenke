@@ -5,7 +5,8 @@ import { connectedComponents } from './connected-components.js';
 
 // Two disjoint components {1,2,3} and {4,5} plus an isolated vertex 6. Nodes added
 // in id order, so roots are the min-index member: {1,2,3}→"1", {4,5}→"4", {6}→"6".
-// Edge 5→4 also proves union is undirected. Mirrors the Rust `two_components` test.
+// Edge 5→4 also proves union is undirected. Mirrors the Rust
+// `wcc_labels_by_smallest_member` test.
 const twoComponents = (): Graph => {
   const g = new Graph();
 

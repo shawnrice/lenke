@@ -5,7 +5,8 @@ import { labelPropagation } from './label-propagation.js';
 
 // Two disjoint triangles {1,2,3} and {4,5,6}. Each triangle is a clique, so
 // synchronous LPA converges it to its smallest-id label and stays there —
-// {1,2,3}→"1", {4,5,6}→"4". Mirrors the Rust `two_triangles` test.
+// {1,2,3}→"1", {4,5,6}→"4". Mirrors the Rust `label_propagation_converges_a_triangle`
+// test.
 const twoTriangles = (): Graph => {
   const g = new Graph();
 

@@ -28,7 +28,8 @@ const IDENT = /[A-Za-z_][A-Za-z0-9_]*/g;
 // to map `by()` modulators to operands (TinkerPop cycles them in this order).
 // An identifier immediately followed by `(` (whitespace allowed) is a function
 // call, not an operand, and is excluded — so it neither consumes a by()
-// modulator nor is looked up as an unbound tag. Mirrors the native `math_vars`.
+// modulator nor is looked up as an unbound tag. Mirrors the variable handling in
+// `gremlin::Parser::parse_math_inner`.
 const mathVars = (expr: string): string[] => {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -103,7 +104,8 @@ const mathCall = (name: string, a: number, b: number | undefined): number | unde
 };
 
 // Every malformed-`math()` fault carries ONE code — `InvalidValue` — matching
-// the native engine's `set_type_fault` (E_INVALID_VALUE). Byte-identical error
+// `gremlin::Parser::parse_math`, which maps EVERY math() failure — unknown function,
+// unknown variable, malformed expression — to E_INVALID_VALUE. Byte-identical error
 // codes are part of cross-engine parity, so this must NOT diverge (an earlier
 // `Unsupported` here broke it on the bare `sin _` form).
 const mathFault = (msg: string): LenkeError =>

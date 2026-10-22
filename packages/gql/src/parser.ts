@@ -272,7 +272,8 @@ const validateBoolContexts = (stmt: Statement): void => {
 // ISO GQL `CAST` target type name → the conversion function it desugars to.
 // Integer/float/string/bool/list families are representable; anything else
 // (temporal, bytes, record, …) has no home in this value model and returns
-// null (a loud CAST error). Mirrors the Rust `cast_target_fn`.
+// null (a loud CAST error). Mirrors `gql::Parser::cast_expr`, which reads the same
+// target names (including the two-word `LOCAL`/`ZONED` temporal forms).
 const CAST_INT = new Set([
   'int',
   'integer',
@@ -337,7 +338,7 @@ const NOW_FUNCTIONS = new Map<string, string>([
 
 // Map a type name to the normalized `IS TYPED` category. Reuses the CAST
 // vocabulary + temporal kinds + `null`/`nothing`/`any`. Mirrors Rust
-// `type_test_category`. The `integer` vs `float` split is resolved at eval by
+// `exec::scalar::scalar_is_typed`. The `integer` vs `float` split is resolved at eval by
 // boundary inference (one f64 numeric type).
 const typeTestCategory = (typeName: string): string | null => {
   const t = typeName.toLowerCase();
@@ -881,7 +882,7 @@ export const parse = (
   // Positioned at a `(` whose next token is `(` (a `((` candidate): is it a QUANTIFIED
   // subpath `((…)){n,m}` rather than a bare `( <path> [WHERE] )` grouping? Scan to the
   // OUTER paren's match (parens balance, so nested `(`/`)` in an inner WHERE cancel out)
-  // and look for a following quantifier. Mirrors native `starts_quantified_subpath`.
+  // and look for a following quantifier. Mirrors `gql::Parser::subpath_group_is_quantified`.
   const startsQuantifiedSubpath = (): boolean => {
     let parenDepth = 0;
 

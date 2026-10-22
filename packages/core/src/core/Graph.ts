@@ -691,8 +691,11 @@ export class Graph {
    * The label indexes bucket an edge under EVERY type it carries, so summing
    * bucket sizes over several types counts a multi-type edge once per bucket.
    * When this is `0` that can't happen, and a count shortcut may take the O(1)
-   * sum instead of walking and deduping. It mirrors native's `extra_etypes`
-   * emptiness check, which arms the same fast path there.
+   * sum instead of walking and deduping.
+   *
+   * NO NATIVE COUNTERPART was found for this at item 614 — nothing in the crate
+   * makes a multi-type-edge emptiness check to arm a count fast path, so this is a
+   * TS-side guard, not a mirrored one. (`extra_etypes` xref:gone.)
    *
    * Maintained at the four edge-level mutation points (add/remove an edge,
    * add/remove one of its types) rather than inside the per-type index helper,
@@ -3901,7 +3904,10 @@ export class Graph {
   /**
    * `false`-only-fails: a result set VIOLATES an invariant iff any cell is boolean
    * `false`. A `true`, a `null`, a non-boolean value, or an empty result all HOLD.
-   * Byte-identical to the Rust `invariant_violated` (`Value::Bool(false)`).
+   * Byte-identical to the native rule, which has no named function: an invariant's
+   * query runs through `exec` and the same `false`-only test is applied to its
+   * result (see `schema_op`'s `validator_and_invariant_route_through_exec`).
+   * (`invariant_violated` xref:gone.)
    */
   private invariantViolated = (rows: ReadonlyArray<Record<string, unknown>>): boolean =>
     rows.some((row) => Object.values(row).some((cell) => cell === false));

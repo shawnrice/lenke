@@ -4,7 +4,8 @@ import { Graph } from '../core/Graph.js';
 import { peerPressure } from './peer-pressure.js';
 
 // Two directed cliques {1,2,3} and {4,5,6} (all six intra-triangle edges each). Peer
-// pressure converges each to its smallest-id cluster. Mirrors the Rust `two_cliques`.
+// pressure converges each to its smallest-id cluster. Mirrors the Rust
+// `peer_pressure_adopts_max_energy_cluster`.
 const twoCliques = (): Graph => {
   const g = new Graph();
 

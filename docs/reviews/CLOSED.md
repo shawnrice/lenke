@@ -9572,7 +9572,8 @@ directions, centred on 1.00x), with `filtered` reported as the known layout toll
 ## 613 — cross-engine citations ROT, and there is now a probe for it
 
 **`bun run xref` (in `packages/native`). Baseline at item 613: 61 unresolved citations across 51
-distinct names. Drive it down; do not let it grow.**
+distinct names. SUPERSEDED — item 614 drove it to ZERO and fixed three probe defects that the 61
+was hiding; read that section, not this number.**
 
 A comment saying _"Mirrors the native `varlen_distinct_endpoint_count`"_ is the ONLY index from
 one engine to the other. Nothing compiles it, nothing tests it, and after a Rust rename a dead
@@ -9618,3 +9619,75 @@ and [[ts-closure-size-is-load-bearing]] records that layout here is not free.
 (20.5/24.0/19.8 and 16.6/16.6/20.1 on one build), so single runs there are bimodal like the
 spelling probe's and want nine reps. A single run reading 1.27x against item 610's figure was
 measurement, not regression.
+
+## 614 — the xref baseline is ZERO, and the probe now earns that number
+
+**`bun run xref` reports 0 unresolved citations (was 61 / 51 names at item 613). Keep it at 0.**
+`--all` reports 2, both correct non-Rust names (`algorithm_run`, an MCP tool; `command_async`, a TS
+method). A comment that names a dead symbol on purpose carries **`xref:gone` on the same line as
+the name** — nine places now rely on that.
+
+**The probe needed three fixes before 0 meant anything, and the third is the one to remember:**
+its CLAIM test was per-LINE, so a doc comment that opens "Mirrors the native …" and names the
+symbol three lines down was not checked at all. That hid **fifteen** real dead citations — a
+quarter of the total — visible only under the too-noisy `--all`. It now tests the whole contiguous
+comment BLOCK. Also: module-qualified names (``value::equals``) were invisible to the name regex
+and are now resolved on their last segment, and the haystack includes each Rust file's PATH so a
+citation naming an example by stem (`skipcast_426`) resolves.
+
+### SETTLED: seven citations were FALSE PARITY CLAIMS, not just dead names
+
+A dead name costs navigation. A comment asserting the engines do the same thing, where one does not
+do it at all, is an unbacked correctness claim. All seven are now corrected in place; three were
+settled by measurement rather than by reading:
+
+- **No native counterpart exists** for `bfs_reducible` (Rust enforces the same condition at PARSE,
+  in `gql::Parser::shortest_pattern`), `extra_etypes`, or **`any_match_reachable` — which means the
+  TS `EXISTS`-over-var-length BFS reachability shortcut is a TS-SIDE WIN THE NATIVE ENGINE LACKS.**
+  The `Expr::Exists` arm of `exec::evaluator::eval` fast-paths a bare vertex hop only and nothing in
+  `opt` rewrites the var-length case. Unpriced; do not assume parity here.
+- **`suggest_procedure`** claimed both engines' "did you mean" faults "read identically". MEASURED:
+  TS says `unknown procedure: pageRank (did you mean 'pagerank'?)`, native says
+  ``lenke: query: unknown procedure `pageRank` ``. Both REJECT, so it is a DX gap and a
+  message-text difference — the same class as the open cast-message divergence, not a wrong answer.
+- **`free_predicate_vars`** claimed a mirrored free-variable walk. MEASURED: the behaviour DOES
+  match by a different mechanism (native parses a validator predicate in a scope holding only the
+  bound variable, so a free name is an ``unknown variable `q` `` parse error). Both accept
+  `p.age > 0`, both reject `q.age > 0` and `p.age > 0 AND q.age > 0`. Claim narrowed, not withdrawn.
+- **`pattern_rank`** was the strongest and is fully refuted: *"Mirrors native `pattern_rank` in
+  `gql/eval/pathfind.rs` exactly — the two must agree or the engines emit rows in different
+  orders."* That file and function do not exist, nothing in the crate ranks patterns, **and row
+  order between the engines is unspecified by policy** — which is why `conformance-harness.ts`
+  compares structurally. The comment asserted an invariant the project had already abandoned.
+- **`unknown_fns` / `run_cquery_body`** (4 sites): native rejects an unknown function EARLIER than
+  claimed — at parse, in `gql::Parser::call`. The property being defended holds more strongly.
+
+### SETTLED: bare `ANY` / bare `ALL` — the engines AGREE, and the RUST doc was wrong
+
+`gql::Parser::parse_shortest_selector`'s doc said bare `ANY`/`ALL` without `SHORTEST` "are errors
+here". They are not: it returns `None` and `gql::Parser::parse_bare_selector` owns them. Measured on
+a two-route fixture (`a→b→c`, `a→d→c`): bare `ANY` 9/9, `ANY SHORTEST` 9/9, bare `ALL` 10/10,
+`ALL SHORTEST` 10/10, no selector 10/10. Rust doc corrected.
+
+**FIXTURE TRAP, ninth instance.** The first probe used a 3-node PATH graph and returned **6 for
+every variant** — on a path graph "every walk" and "one walk per endpoint" are the same six rows, so
+the probe could not have distinguished them whatever the truth was. Before writing a selector
+fixture, give some endpoint TWO routes.
+
+(Both engines treating bare `ANY` as ANY SHORTEST is a SHARED behaviour → a conformance question
+about the pair against ISO, not a byte-identity one. Not opened.)
+
+### OPEN: citation rot runs BOTH directions and only one has an instrument
+
+`exec/nested.rs` cited `pathfind::StepRec` and `pathfind::bind_unit`, and `gql.rs` cites
+`read_type_name` — the TS engine has no `pathfind` module (retired `lenke-core` vocabulary). The
+first two are fixed. **`bun run xref` walks TS→Rust only**, so Rust→TS citations have no probe;
+these were found by hand while doing something else, which does not repeat.
+
+### REFUTED as a shortcut, do not re-derive
+
+Mechanical resolution by token overlap. Tried first and it is not good enough to trust: it scored
+`val_eq` → `eq`/`val` (the real answer is `value::equals`, which shares no token) and offered
+plausible-but-wrong candidates elsewhere. **A wrong new citation is worse than a dead one** — it
+reads as live and sends the reader somewhere real but unrelated. Each of the 61 was resolved by
+reading the crate.

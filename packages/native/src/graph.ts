@@ -557,7 +557,9 @@ const ARW_FIXED_LIST = 4; // FixedSizeList<Float64>[dim]; dim rides buf2_len
 
 /**
  * Decode an ARW1 columnar blob (from {@link RustGraph.queryArrow} /
- * `lnk_query_arrow`) back into {@link Row}s. The blob is a 24-byte header
+ * `lnk_query` with `format` 1, which calls `arrow::to_arrow` — there is no
+ * `lnk_query_arrow` symbol — xref:gone; the format is an argument) back into {@link Row}s.
+ * The blob is a 24-byte header
  * (`"ARW1"` magic [4 bytes] | `version` u32 LE [4 bytes] | `nrows` **u64 LE**
  * [8 bytes] | `ncols` **u64 LE** [8 bytes]) + `ncols` × 40-byte descriptors + the
  * referenced Apache-Arrow little-endian buffers; this reads them in place (no

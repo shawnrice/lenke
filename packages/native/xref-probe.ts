@@ -30,9 +30,23 @@ import { join, relative } from 'node:path';
 const ROOT = join(import.meta.dir, '..', '..');
 const ALL = process.argv.includes('--all');
 
-/** Backticked snake_case: the shape of a Rust fn, type or module name. */
-const NAME = /`([a-z][a-z0-9]*(?:_[a-z0-9]+)+)`/g;
-/** The comment has to claim it is talking about the other engine, unless `--all`. */
+/**
+ * Backticked snake_case, optionally module-qualified: the shape of a Rust fn, type or module
+ * name. A BARE name must carry an underscore, because a single lowercase word in a comment is
+ * usually English, not an item. A QUALIFIED one (`value::equals`) need not — the `::` is already
+ * unambiguous, and refusing those would let a citation go INVISIBLE rather than get checked,
+ * which is the failure this probe exists to prevent.
+ */
+const NAME = /`((?:[a-z][a-z0-9_]*::)+[a-z][a-z0-9_]*|[a-z][a-z0-9]*(?:_[a-z0-9]+)+)`/g;
+/**
+ * The comment has to claim it is talking about the other engine, unless `--all`.
+ *
+ * Tested against the whole comment BLOCK, not the one line. It used to be per-line, and that
+ * hid fifteen real dead citations at item 614: a doc comment opens with "Mirrors the native
+ * …" and names the symbol three lines down, so the line carrying the name has no keyword on
+ * it. Per-line, those only showed under `--all`, mixed in with the config keys and file stems
+ * that make `--all` too noisy to read.
+ */
 const CLAIM = /native|rust|engine\b|crate|\.rs\b/i;
 /** snake_case words that are not Rust items. */
 const IGNORE = new Set([
@@ -41,7 +55,14 @@ const IGNORE = new Set([
   'no_std',
   'type_complexity',
   'prefer_for_of',
+  // The built cdylib's filename, not a Rust item — it lives under `target/`, which is
+  // excluded from the haystack, so it can never resolve.
+  'liblenke_engine',
 ]);
+
+/** Is this trimmed line inside a comment? */
+const isComment = (t: string): boolean =>
+  t.startsWith('//') || t.startsWith('*') || t.startsWith('/*');
 
 const walk = (dir: string, out: string[], ext: string): string[] => {
   for (const name of readdirSync(dir)) {
@@ -61,9 +82,11 @@ const walk = (dir: string, out: string[], ext: string): string[] => {
   return out;
 };
 
-const rust = walk(join(ROOT, 'crates'), [], '.rs')
-  .map((p) => readFileSync(p, 'utf8'))
-  .join('\n');
+// The haystack is every Rust file's CONTENTS **and its path**. The path matters: a comment
+// legitimately cites an example or module by its file stem (`skipcast_426`), which appears
+// nowhere inside the file itself, and without the paths the probe reports it as rot.
+const rustFiles = walk(join(ROOT, 'crates'), [], '.rs');
+const rust = rustFiles.map((p) => `${relative(ROOT, p)}\n${readFileSync(p, 'utf8')}`).join('\n');
 
 type Hit = { file: string; line: number; name: string; text: string };
 const hits: Hit[] = [];
@@ -77,11 +100,36 @@ for (const file of walk(join(ROOT, 'packages'), [], '.ts')) {
 
   const lines = readFileSync(file, 'utf8').split('\n');
 
+  // Each run of contiguous comment lines is ONE block, and the claim is tested over the
+  // whole block (see CLAIM). Blocks are precomputed so the scan below stays a single pass.
+  const blockClaims: boolean[] = new Array(lines.length).fill(false);
+
+  for (let i = 0; i < lines.length;) {
+    if (!isComment((lines[i] ?? '').trimStart())) {
+      i++;
+      continue;
+    }
+
+    let j = i;
+
+    while (j < lines.length && isComment((lines[j] ?? '').trimStart())) {
+      j++;
+    }
+
+    const claims = CLAIM.test(lines.slice(i, j).join('\n'));
+
+    for (let k = i; k < j; k++) {
+      blockClaims[k] = claims;
+    }
+
+    i = j;
+  }
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i] ?? '';
     const s = line.trimStart();
 
-    if (!s.startsWith('//') && !s.startsWith('*') && !s.startsWith('/*')) {
+    if (!isComment(s)) {
       continue;
     }
 
@@ -89,14 +137,18 @@ for (const file of walk(join(ROOT, 'packages'), [], '.ts')) {
       continue;
     }
 
-    if (!ALL && !CLAIM.test(line)) {
+    if (!ALL && !blockClaims[i]) {
       continue;
     }
 
     for (const m of line.matchAll(NAME)) {
       const name = m[1] ?? '';
+      // A qualified citation resolves on its LAST segment: `value::equals` is satisfied by
+      // `fn equals` in the crate. The module half is prose — `value.rs` may be re-homed to
+      // another crate without the function moving, and the segment is what a reader greps.
+      const needle = name.includes('::') ? (name.split('::').pop() ?? name) : name;
 
-      if (IGNORE.has(name) || rust.includes(name)) {
+      if (IGNORE.has(name) || rust.includes(needle)) {
         continue;
       }
 

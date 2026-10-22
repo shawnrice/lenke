@@ -528,8 +528,15 @@ export const runDelete = (
 
 /**
  * How much it costs to START this pattern, given what is already bound. Lower is
- * better. Mirrors native `pattern_rank` in `gql/eval/pathfind.rs` exactly — the
- * two must agree or the engines emit rows in different orders.
+ * better.
+ *
+ * THIS IS TS-ONLY. It used to claim it mirrored a native `pattern_rank` (xref:gone) in
+ * `gql/eval/pathfind.rs` "exactly — the two must agree or the engines emit rows in
+ * different orders". Neither half survives: that file and that function do not exist in
+ * the crate (nothing there ranks patterns; `cost::estimate` is consulted only for
+ * fast-path routing), and row order between the engines is UNSPECIFIED by policy, which
+ * is why the conformance harness compares structurally. Found by `bun run xref` at item
+ * 614.
  */
 const patternRank = (p: CPath, b: Binding): number => {
   const bound = (v?: string) => v !== undefined && b.has(v);
@@ -938,7 +945,8 @@ export const runMatch = (
 /**
  * The built-in procedure catalog: procedure name → its algorithm and non-`node`
  * result column. Output columns are always `[node, <result>]`. Mirrors native
- * `procedure_spec` in plan.rs.
+ * `algo::procedure_result_col`, which answers the same question for the same names
+ * (there is no `plan.rs` in the crate — that path is from the retired `lenke-core`).
  */
 export const PROCEDURES: Record<string, { algo: AlgorithmName; resultColumn: string }> = {
   pagerank: { algo: 'pagerank', resultColumn: 'score' },
@@ -965,8 +973,17 @@ export const procedureSpec = (name: string): { algo: AlgorithmName; resultColumn
  * For an unknown procedure name, the canonical snake_case name it most likely
  * meant — matched by ignoring case and `_` separators, so a camelCase spelling
  * (`pageRank`, `connectedComponents`) resolves to its surface name. `null` when
- * nothing plausibly matches. Mirrors the native `suggest_procedure` so both
- * engines' "did you mean" faults read identically.
+ * nothing plausibly matches.
+ *
+ * THERE IS NO NATIVE TWIN, and the engines' messages DIFFER — measured at item 614:
+ *
+ *   CALL pageRank()  ts     -> unknown procedure: pageRank (did you mean 'pagerank'?)
+ *                    native -> lenke: query: unknown procedure `pageRank`
+ *
+ * Both REJECT the same queries, so this is a DX gap and a message-text difference, not a
+ * wrong answer — the same class as the open cast-message divergence. The crate's only
+ * suggestion machinery is `algo::edit_distance`, used for CALL CONFIG KEYS
+ * (`algo::validate_config`), not for procedure names. (`suggest_procedure` xref:gone.)
  */
 export const normProcName = (s: string): string => s.replaceAll('_', '').toLowerCase();
 
@@ -1042,7 +1059,9 @@ export const suggestConfigKey = (name: string): string | null => {
 
 /** Set one algorithm-config field from a CALL config-map entry. An unknown key
  * (with a "did you mean" hint) or a wrong-typed value is an error — a silently
- * dropped key once hid the `pivots` bug. Mirrors native `apply_algo_config`. */
+ * dropped key once hid the `pivots` bug. Mirrors native `algo::validate_config`, which
+ *  checks the same key set (`algo::CONFIG_KEYS`) and types, and shares the "did you mean"
+ *  via `algo::edit_distance`. */
 export const applyAlgoConfig = (cfg: AlgorithmConfig, key: string, v: unknown): void => {
   const spec = ALGO_CONFIG_TYPES.find(([k]) => k === key);
 

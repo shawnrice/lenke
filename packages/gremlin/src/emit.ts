@@ -419,7 +419,8 @@ const emitStep = (step: Step): string => {
       return `withSack(${emitLiteral(step.init)})`;
     case 'sack': {
       // The operator emits static-import style (`sack(sum)`), which the native
-      // `bare_token` parser accepts; the `.by(...)` projection follows.
+      // `"sack"` step arm of `gremlin::Parser` accepts — it reads the op with
+      // `ident()` and then requires `.by('k')`. (`bare_token` xref:gone.)
       const bys = (step.bys ?? []).map(emitBy).join('');
 
       return `sack(${step.op ?? ''})${bys}`;

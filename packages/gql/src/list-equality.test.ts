@@ -4,7 +4,7 @@ import { createTestSocialGraph } from './fixtures/createTestSocialGraph.js';
 import { query } from './index.js';
 
 // Regression: list `=` / `<>` / `IN` must be STRUCTURAL, matching the Rust
-// engine's `val_eq`. The TS engine previously used reference identity, so
+// engine's `value::equals`. The TS engine previously used reference identity, so
 // `[1,2] = [1,2]` returned false here but true on native — a byte-identical
 // violation the (gremlin-only) differential runner never covered.
 const g = createTestSocialGraph();

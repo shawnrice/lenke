@@ -1046,7 +1046,8 @@ suite('gremlin conformance: property(key, traversal) — traversal-induced value
 });
 
 // A stored map/record property flows through the Gremlin value path in BOTH
-// engines (native `value_to_gval` → GVal::Map; TS core → LenkeRecord) and
+// engines (native: a stored map is a `Value::Map` throughout — the engine has no
+// separate `GVal` type, that is test-support vocabulary; TS core → LenkeRecord) and
 // serializes to the same canonical string-keyed object.
 suite('gremlin conformance: stored map property', () => {
   const MAP_NDJSON = [

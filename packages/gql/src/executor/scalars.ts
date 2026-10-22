@@ -141,7 +141,7 @@ export const numOf = (v: unknown): number | null => {
 // nothing to be uncertain about — while `null IN [1]` and `3 IN [1, null]` are
 // UNKNOWN. A TRUE equality short-circuits past any UNKNOWN.
 // Structural value equality — lists compare by length then element-wise, matching
-// the Rust engine's `val_eq`. (TS previously used reference identity, so
+// the Rust engine's `value::equals`. (TS previously used reference identity, so
 // `[1,2] = [1,2]` disagreed between the two engines.) A null list element compares
 // equal here, same as Rust; strict ISO three-valued list equality would be
 // UNKNOWN when an element is null — a documented, engine-symmetric deviation.
@@ -723,8 +723,8 @@ export const UNARY_STR: Record<string, (s: string) => unknown> = {
 };
 
 // `trim`/`btrim` (both ends), `ltrim` (leading), `rtrim` (trailing). With a 2nd
-// arg — a SET of characters to strip — they trim those code points (mirrors the
-// Rust `multi_trim`); without one they strip whitespace (the existing JS
+// arg — a SET of characters to strip — they trim those code points (mirrors
+// `exec::scalar::trim_fn`); without one they strip whitespace (the existing JS
 // behavior, kept as-is for byte-identity on the whitespace path).
 export const multiTrim = (
   s: string,
@@ -1027,7 +1027,7 @@ export const callScalar = (
       // ISO `<case abbreviation>`: NULLIF(a, b) = NULL when a = b, else a. The
       // equality is the engine's VALUE equality (`structuralEq`, what `=` uses),
       // not JS `===` — two temporals/lists/records holding the same value are
-      // distinct objects, so `===` said "not equal" where the native `val_eq`
+      // distinct objects, so `===` said "not equal" where the native `value::equals`
       // said equal.
       return !isNullish(a) && !isNullish(b) && structuralEq(a, b) ? null : (a ?? null);
     case 'element_id':

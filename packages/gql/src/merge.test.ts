@@ -183,7 +183,8 @@ describe('GQL: _MERGE (keyed upsert, node form)', () => {
   // ignored the binding and re-inferred a unique key from the (empty) node
   // pattern, so the bound-variable edge-merge form was unusable (it threw
   // "_MERGE needs a unique constraint on the pattern's label(s) []"). Mirrors the
-  // native `merge_edge_between_bound_endpoints_upserts` test for byte-identity.
+  // native `merge_edge_creates_between_key_matched_endpoints` and
+  // `merge_edge_is_idempotent_and_clobbers_props` tests for byte-identity.
   test('edge form: upserts between bound endpoints (create then update)', () => {
     const g = new Graph();
     g.addVertex({ id: 'a', labels: ['A'], properties: { id: 'a' } });

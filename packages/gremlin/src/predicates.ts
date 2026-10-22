@@ -93,7 +93,9 @@ export const compareTotal = (a: unknown, b: unknown): number => {
   //     if (f == null || s == null)
   //         return f == s ? 0 : f == null ? -1 : 1;
   //
-  // and it is what `gval_type_rank` already does by ranking `Null` at 0. GQL
+  // and it is what the native Gremlin comparison already does by ranking `Null`
+  // lowest. (There is no `gval_type_rank` in the crate — xref:gone; `GVal` is
+  // test-support vocabulary, not an engine type.) GQL
   // sorts nulls LAST, which is the ISO contract for a different language; the
   // two do not have to agree and here they must not.
   //

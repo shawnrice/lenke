@@ -145,7 +145,7 @@ export const consistent = (binding: Binding, name: string | undefined, value: Bo
 export const propOf = (bound: unknown, key: string): unknown =>
   (bound as { properties?: Record<string, unknown> } | undefined)?.properties?.[key] ?? null;
 
-// Element identity, mirroring the Rust `val_eq`: nodes/edges are equal iff same
+// Element identity, mirroring the Rust `value::equals`: nodes/edges are equal iff same
 // kind + same id; a non-element falls back to structural (value) equality.
 const sameElement = (a: unknown, b: unknown): boolean => {
   if (isVertex(a) && isVertex(b)) {
@@ -165,7 +165,7 @@ const sameElement = (a: unknown, b: unknown): boolean => {
 
 // The graph-element predicates (`IS DIRECTED` / `IS SOURCE|DESTINATION OF` /
 // `ALL_DIFFERENT` / `SAME`). Three-valued: `null` on a null operand or a type
-// mismatch. Mirrors the Rust `eval_graph_pred`.
+// mismatch. Mirrors the `Expr::GraphPred` arm of `exec::evaluator::eval`.
 const graphPredResult = (predKind: string, vals: readonly unknown[]): boolean | null => {
   switch (predKind) {
     case 'directed':
@@ -581,13 +581,18 @@ let paramCollector: Set<string> | null = null;
 // `UnknownFunction` eagerly (before running, and independent of row count /
 // branch reachability). Set only for the duration of one query `compile`; left
 // null while a validator predicate compiles, so a validator's unknown fn keeps
-// its per-row fault (parity with the Rust `eval_predicate` path). Mirrors the
-// Rust plan's `unknown_fns`, checked in `run_cquery_body`.
+// its per-row fault (parity with `exec::evaluator::eval`, the per-row path).
+//
+// The native engine has NO equivalent of this collector: `gql::Parser::call` rejects an
+// unknown name at PARSE time (`E_UNKNOWN_FUNCTION: unknown function \`{name}\``), which is
+// earlier still, so both engines fault before any row either way. The old citation named a
+// plan-level `unknown_fns` set checked in a `run_cquery_body`; neither exists (xref:gone).
 let unknownFnCollector: Set<string> | null = null;
 
 // Compile-time side channel: the names of `$param`s used as a `LIMIT` / `OFFSET`
 // bound. Their bound value must be a non-negative integer, so it is validated
-// up-front in the plan closure (mirrors the Rust engine's `check_count_params`),
+// up-front in the plan closure (mirrors `gql::Parser::usize_lit`, which rejects a
+// `$param` bound that is not a non-negative integer as it reads it),
 // making a bad bound fault before any row is produced — identically over zero
 // rows or many. The name is also added to `paramCollector` so a missing bound
 // param surfaces the usual `MissingParameter` error.
@@ -1039,8 +1044,13 @@ const compileSubMatch = (sub: { patterns: readonly PathPattern[]; where?: Expr }
  * var-length segment from an already-bound `a` is *reachability* — BFS the reached
  * set and stop at the first vertex satisfying the endpoint, instead of enumerating
  * trails (exponential; testing an *unreachable* target hits the trail budget and
- * faults). Mirrors the native `any_match_reachable`. Returns `undefined` when the
- * shape doesn't apply.
+ * faults). Returns `undefined` when the shape doesn't apply.
+ *
+ * NO NATIVE COUNTERPART, as of item 614: the `Expr::Exists` arm of `exec::evaluator::eval`
+ * fast-paths a bare vertex-hop semi-join only, and nothing in `opt` rewrites an EXISTS over
+ * a var-length segment into a reachability test. So this is a TS-side win the native engine
+ * does not have, not a mirrored path — priced nowhere, and worth measuring before anyone
+ * assumes parity. (`any_match_reachable` xref:gone.)
  */
 const existsReachable = (
   graph: Graph,
@@ -1974,10 +1984,10 @@ const compileFunc = (expr: FuncExpr): CompiledExpr => {
   // fault fired only from the per-row `callScalar`, so an empty result set (or a
   // dead branch) silently returned `[]`. The name is recorded into the
   // query-scoped `unknownFnCollector`; `compile` throws once it finishes walking
-  // the tree (mirrors the Rust plan's `unknown_fns`, checked in `run_cquery_body`
+  // the tree (the native engine instead rejects at parse, in `gql::Parser::call`
   // before the first row). A validator predicate compiles with the collector
   // unset, so its unknown-fn timing stays per-row — matching the Rust
-  // `eval_predicate` path (both engines surface a validator's unknown fn at write
+  // `exec::evaluator::eval` path (both engines surface a validator's unknown fn at write
   // time, not declare time).
   if (unknownFnCollector && !isKnownScalarFn(name)) {
     unknownFnCollector.add(name);
@@ -2413,7 +2423,14 @@ const patternBoundVars = (p: PathPattern, into: Set<string>): void => {
  * silently evaluates to UNKNOWN and the SQL-`CHECK` never fires. `createValidator`
  * walks this set and rejects such a predicate at declare time. Sub-query pattern
  * variables are bound *within* the sub-query, so they are correctly NOT free and
- * must not be flagged. Mirrors the Rust `free_predicate_vars` (`plan.rs`).
+ * must not be flagged.
+ *
+ * The native engine rejects the same predicates by a DIFFERENT mechanism — it parses a
+ * validator predicate in a scope holding only the bound variable, so a free name is an
+ * `unknown variable \`q\`` parse error rather than a walk over a free-variable set. Measured
+ * at item 614: both engines accept `p.age > 0` and reject `q.age > 0` and
+ * `p.age > 0 AND q.age > 0`, with different message text. (xref:gone: `free_predicate_vars`,
+ * `plan.rs` xref:gone.)
  */
 export const freePredicateVars = (expr: Expr): Set<string> => {
   const free = new Set<string>();
@@ -2858,7 +2875,7 @@ export const valueKey = (v: unknown): string => {
       // normalized everywhere else (ORDER BY, sign(), the result JSON, the
       // property index), so keeping them apart here alone produced two groups
       // that both rendered as `0`. `String(-0)` is already "0", so the plain
-      // template does it — mirrors the Rust `group_num_bits`.
+      // template does it — mirrors the Rust `value::num_group_bits`.
       return `n${v}`;
     case 'string':
       return `s${v}`;
@@ -2890,7 +2907,7 @@ export const valueKey = (v: unknown): string => {
 
       // A record recurses through this keyer (like a list above), NOT through
       // JSON.stringify: stringify renders -0 as `0`, so `{b: -0}` and `{b: 0}`
-      // collapsed into one DISTINCT group here while the native `value_key` —
+      // collapsed into one DISTINCT group here while the native `value::group_key_into` —
       // which recurses and keys numbers by bit pattern — kept them apart. Mirrors
       // the Rust `Value::Map` arm's `{k=<key>,…}` shape.
       if (v instanceof LenkeRecord) {
@@ -3034,7 +3051,8 @@ const noteCountParam = (v: CountValue | undefined): void => {
  * Only the DIRECT column shapes are substituted, and never across a shadowed
  * name — if the item's variable is itself an output name, the sort scope
  * resolves that name to the output column and there is nothing to rewrite to.
- * Mirrors the Rust `alias_definition`.
+ * The native side makes the same bare-alias-vs-expression decision in
+ * `gql::Parser::order_keys`.
  */
 const aliasDefinition = (
   sortExpr: Expr,
@@ -3126,8 +3144,9 @@ const aliasDefinition = (
  * applied after the projection, which is why an alias resolves there. The two
  * clauses differ by design.
  *
- * Mirrors the Rust `check_unbound_group_keys`, which asks the same question
- * against the lowering scope.
+ * The native side asks the same question while lowering, in
+ * `gql::Parser::project_and_page`, which folds a `GROUP BY` key that is not a visible
+ * non-aggregate output item into a hidden grouping key.
  */
 const assertGroupKeysBound = (names: readonly string[], binding: Binding): void => {
   for (const name of names) {
@@ -5575,7 +5594,9 @@ export type CClause =
 // Labels to CREATE for an INSERT element. A non-conjunction label expression
 // (`A|B`, `!A`, `%`) is ambiguous — reject it rather than silently create an
 // unlabelled node (an unlabelled node — no expression — stays legitimate).
-// Mirrors the Rust `creatable_labels`. (A typeless edge's empty `[]` is caught
+// The native engine reaches the same outcome through the GRAMMAR instead of a named
+// check: `gql::Parser::insert_node_expr` accepts only `:A` and `:A&B` after an INSERT
+// template, so `A|B` / `!A` / `%` never parse there. (A typeless edge's empty `[]` is caught
 // downstream by `Graph.addEdge`, which requires ≥1 label.)
 const creatableLabels = (expr: LabelExpr | undefined): string[] => {
   if (!expr) {
@@ -7938,8 +7959,9 @@ export const compile = <R extends Row = Row>(query: Query): Plan<R> => {
   // to no scalar (or aggregate) function is never valid — throw NOW, at compile
   // time, before the plan runs, so `compile(parse(q))` / `query(...)` faults
   // identically over zero rows, one row, or a never-taken branch. Matches the
-  // Rust engine, which raises the same coded error from `run_cquery_body` off the
-  // plan's `unknown_fns`. The message names the offending function(s) verbatim.
+  // Rust engine, which raises the same coded error — `E_UNKNOWN_FUNCTION` — from
+  // `gql::Parser::call`, at parse rather than at compile. The message names the offending
+  // function(s) verbatim.
   if (unknownFns.size > 0) {
     const named = [...unknownFns].map((n) => `${n}()`).join(', ');
 
@@ -7957,7 +7979,9 @@ export const compile = <R extends Row = Row>(query: Query): Plan<R> => {
     // `@datetime`, `@localtime`, `@zoned_time`, `@zoned_datetime`, `@duration`)
     // into its temporal value, so the engine's OWN tagged output round-trips as
     // an input param. The Rust engine already does this while parsing its param
-    // string (`temporal_object`); this closes the byte-identity gap.
+    // string (`ndjson::json_value`, reached from `ndjson::params_from_obj` — a
+    // single-key `{"@<tag>":"<iso>"}` object is a tagged temporal); this closes the
+    // byte-identity gap.
     const params = reviveParams(rawParams);
 
     // A new run: invalidate anything this plan's closures cached for the LAST run
@@ -7998,8 +8022,8 @@ export const compile = <R extends Row = Row>(query: Query): Plan<R> => {
 
     // Eager LIMIT/OFFSET bound-value validation: a `$param` used as a bound must
     // resolve to a non-negative integer. Checked here, before any row is produced,
-    // so a bad bound faults identically over zero rows or many — mirroring the Rust
-    // engine's `check_count_params`. (Missing/bigint binds are already caught above.)
+    // so a bad bound faults identically over zero rows or many — mirroring
+    // `gql::Parser::usize_lit`. (Missing/bigint binds are already caught above.)
     for (const name of countNames) {
       const v = params[name];
 

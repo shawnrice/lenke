@@ -222,7 +222,7 @@ suite('GQL function differential (TS vs native)', () => {
     `right(n.s, 3)`,
     `right(n.s, 0)`,
     // nullif() compares by VALUE — equal temporals/lists/records are distinct JS
-    // objects, so a `===` test disagreed with the native `val_eq`.
+    // objects, so a `===` test disagreed with the native `value::equals`.
     `nullif(date('2020-01-01'), date('2020-01-01'))`,
     `nullif(duration('P1Y2M'), duration('P1Y2M'))`,
     `nullif([1, 2], [1, 2])`,
@@ -294,8 +294,9 @@ suite('GQL function differential (TS vs native)', () => {
     });
   }
 
-  // Both engines resolve function names EAGERLY (TS at compile, native off the
-  // plan's `unknown_fns` before the first row), so an unknown function faults
+  // Both engines resolve function names EAGERLY (TS at compile, native earlier
+  // still — `gql::Parser::call` rejects an unknown name at PARSE), so an unknown
+  // function faults
   // identically whether the result set is non-empty, EMPTY, or the call sits in a
   // dead branch. A lazy per-row fault would silently return `[]` over zero rows.
   const outcome = (run: () => unknown): { ok: true } | { code: unknown } => {

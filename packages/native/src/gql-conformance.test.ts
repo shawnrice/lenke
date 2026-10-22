@@ -168,7 +168,8 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
     // distinction everywhere else — ORDER BY and the total order sort them equal,
     // `sign()` returns 0 for both, the result JSON and `to_string` both render
     // `0`, an indexed equality seek finds both, `1 / ±0` faults rather than
-    // yielding ±∞, and the Gremlin engine's `dedup_key` already collapsed them.
+    // yielding ±∞, and `value::group_key_into` (the shared grouping key) already
+    // collapsed them.
     // Grouping was the ONE place they differed, which produced two groups whose
     // rendered values were both `0` — a distinction no result could show.
     const [ts, native] = both(`MATCH (n:Person) RETURN count(DISTINCT (n.age - 30) * 0) AS c`);
@@ -1617,8 +1618,9 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
 
   // A dense multi-element unit fans out d^k from ONE vertex — both engines must FAULT
   // with the same code (E_RESOURCE_EXHAUSTED) rather than one OOMing. `{1}` (a single
-  // repetition) proves the guard fires inside a single `expand_unit`, not just across
-  // repetitions.
+  // repetition) proves the guard fires inside a single unit expansion — natively
+  // `exec::nested::Matcher::sub_walk` under `exec::varlen::guard_path_growth` — not just
+  // across repetitions.
   test('dense multi-element unit expansion faults (not OOM), byte-identical (TS vs native)', () => {
     const lines: string[] = [];
     const n = 64;
@@ -2161,7 +2163,8 @@ suite('GQL differential: rich RETURN results (TS vs native)', () => {
 });
 
 // Columnar grouped aggregation (`MATCH … WITH <key>, <agg> … RETURN`) runs the
-// native side through the vectorized `with_frame` path (group by raw ids + folded
+// native side through the vectorized `exec::aggregation::try_dict_grouping` path
+// (group by raw ids + folded
 // columns), the TS side through its scalar accumulator. This block pins that the
 // vectorized path stays byte-identical to the scalar one across key kinds (node
 // identity, edge identity, property, multi-key), every aggregate, group-then-WHERE,
@@ -2317,7 +2320,9 @@ suite('GQL differential: columnar grouped aggregation (TS vs native)', () => {
 });
 
 // Grouped bounded var-length count — native takes the guarded-frequency-propagation
-// shortcut (`try_grouped_varlen_1_2`, O(V+E), no trail enumeration); TS enumerates
+// shortcut (one of the `exec::fastpath::try_varlen_*` family — `try_varlen_count` /
+// `try_varlen_distinct_count` / `try_varlen_distinctby_count`; O(V+E), no trail
+// enumeration; there is no `try_grouped_varlen_1_2` any more — xref:gone); TS enumerates
 // trails and groups. Byte-identity here proves the shortcut's per-endpoint trail
 // multiplicity, its self-loop correction, and its replayed first-seen group order
 // all match the enumerating engine. The graph deliberately includes a self-loop and
@@ -2406,7 +2411,8 @@ suite('GQL differential: grouped var-length count shortcut (TS vs native)', () =
   }
 });
 
-// Comma-join count shortcut: native takes `try_count_comma_join` (Σ_a filtered-
+// Comma-join count shortcut: native takes `exec::fastpath::try_join_product_count`
+// (Σ_a filtered-
 // out-degree(b) × filtered-out-degree(c), O(deg)); TS enumerates the cross product.
 // Byte-identity proves the product equals the enumerated count — including the
 // homomorphism cases where `b` and `c` can bind the SAME neighbour (overlapping
@@ -2808,7 +2814,7 @@ suite('gql conformance: path modes — byte-identical restrictors', () => {
 
 // Bare path-variable binding over a single quantified segment (`p = (a)-[]->{m,n}(b)`,
 // no selector) enumerates EVERY walk under the pattern's mode and binds each as a
-// full Path value — the `all_walk` driver, byte-identical across engines. Same
+// full Path value — natively `exec::varlen::var_length`, byte-identical across engines. Same
 // triangle-with-tail as the path-modes suite (shared ids → Path values compare
 // byte-for-byte).
 suite('gql conformance: bare path binding — every walk as a Path, byte-identical', () => {

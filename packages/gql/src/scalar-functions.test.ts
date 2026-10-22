@@ -7,8 +7,9 @@ import type { Query } from './ast.js';
 import { createTestSocialGraph } from './fixtures/createTestSocialGraph.js';
 import { compile, parse, query } from './index.js';
 
-// Mirrors the Rust engine's `scalar_functions_graph_string_list_conversion` and
-// `unknown_function_errors_instead_of_silent_null` (gql/tests.rs) so the two
+// Mirrors the Rust engine's `scalar_fn_*` family in `gql/tests.rs`
+// (`scalar_fn_null_and_domain`, `scalar_fn_parse_matches_hand`, `scalar_fn_errors` —
+// the last pins that an unknown function is an error, not a silent null) so the two
 // engines stay byte-identical on the common ISO scalar/value functions.
 const g = createTestSocialGraph();
 const one = (q: string): unknown => {
@@ -281,8 +282,8 @@ describe('GQL: ISO graph / conversion / string-list scalar functions', () => {
     // The name is resolved at COMPILE time (before any row runs), so an unknown
     // function faults identically whether the result set is empty or not, and even
     // when the call sits in a never-taken branch. A lazy per-row fault would
-    // silently return `[]` over zero rows. Matches the Rust engine's plan-time
-    // `unknown_fns` check.
+    // silently return `[]` over zero rows. Matches the Rust engine, which rejects an
+    // unknown name at PARSE in `gql::Parser::call` — earlier still.
     const codeOf = (fn: () => unknown): unknown => {
       try {
         fn();
@@ -372,7 +373,7 @@ describe('GQL: byte-identity regressions from the differential fuzzer', () => {
 
   test('nullif compares by value, not by reference', () => {
     // `a === b` is false for two equal temporals/lists/records (distinct objects),
-    // so nullif returned the value where the native `val_eq` returned null.
+    // so nullif returned the value where the native `value::equals` returned null.
     expect(val(`RETURN nullif(date('2020-01-01'), date('2020-01-01')) AS x`)).toBe(null);
     expect(val(`RETURN nullif(duration('P1Y2M'), duration('P1Y2M')) AS x`)).toBe(null);
     expect(val(`RETURN nullif([1, 2], [1, 2]) AS x`)).toBe(null);

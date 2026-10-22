@@ -2163,7 +2163,12 @@ impl Parser {
     /// Parse a shortest-path SELECTOR if one is present: `ANY SHORTEST` → Any,
     /// `ALL SHORTEST` → All, `SHORTEST 1` → Any, `SHORTEST 1 GROUP[S]` → All. Returns
     /// `None` (consuming nothing) when the next tokens are not a selector. `SHORTEST k`
-    /// for k ≠ 1, and bare `ANY`/`ALL` (walk) without `SHORTEST`, are errors here.
+    /// for k ≠ 1 is an error here.
+    ///
+    /// A bare `ANY`/`ALL` without `SHORTEST` is NOT — this returns `None` for it and
+    /// [`Self::parse_bare_selector`] owns it. This line used to claim both were errors;
+    /// item 614 ran the query on both engines and they accept it and agree (9 rows where
+    /// enumerate-all gives 10).
     fn parse_shortest_selector(&mut self) -> Result<Option<crate::ir::ShortestSelector>, String> {
         use crate::ir::ShortestSelector;
         let next_is = |p: &Self, kw: &str| matches!(p.toks.get(p.pos + 1), Some(Tok::Ident(s)) if s.eq_ignore_ascii_case(kw));

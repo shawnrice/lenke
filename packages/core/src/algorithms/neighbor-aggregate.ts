@@ -13,7 +13,8 @@ export type NeighborAggregateRow = AlgorithmRow<'vector', number[]>;
 type Op = 'mean' | 'sum' | 'max' | 'min';
 
 /** Read a vertex's feature as a numeric vector, or `null` if absent / not a list of
- * numbers (such a vertex contributes nothing). Mirrors native `read_vec`. */
+ * numbers (such a vertex contributes nothing). Mirrors the feature read inside
+ * `algo::neighbor_aggregate`, which is inline there rather than a named helper. */
 const readVec = (vertex: Vertex, key: string): number[] | null => {
   const raw = vertex.getProperty(key);
 

@@ -441,7 +441,8 @@ export const orient = (graph: Graph, pattern: CPath, binding: Binding, params: P
  *  edge variable is bound so the predicate can name it. `true` when the segment has no
  *  predicate. Lets the shortest BFS expand only over passing edges — a per-hop
  *  predicate is element-local, so the filtered graph is well-defined and BFS's
- *  discover-once shortest invariant still holds. Mirrors native `edge_passes`. */
+ *  discover-once shortest invariant still holds. Mirrors native
+ *  `exec::varlen::edge_pred_ok`. */
 export const edgePasses = (
   rel: CRel,
   edge: Edge,
@@ -564,7 +565,9 @@ export const shortestWalk = function* (
 // enumerates the resulting shortest-path DAG (one row per path — ISO per-path
 // multiplicity, even without a path variable). Determinism identical to
 // `shortestWalk` plus per-endpoint paths in predecessor-recording order, so it
-// stays byte-identical with the native `all_shortest_walk`.
+// stays byte-identical with the native `exec::varlen::enumerate_shortest_paths`, which
+// walks the same predecessor DAG (reached from `exec::varlen::shortest_path`'s
+// `ShortestSelector::All` arm).
 export const allShortestWalk = function* (
   graph: Graph,
   pattern: CPath,
@@ -686,7 +689,13 @@ export type SeedDriver = (
 
 /** Can a selector pattern reduce to a BFS driver? True when the single var-length
  * segment is a `*`/`+` (min ≤ 1) with no per-hop predicate — the shape the BFS
- * drivers are correct for. Mirrors native `bfs_reducible`. */
+ * drivers are correct for.
+ *
+ * There is NO native counterpart to look for: the Rust engine enforces the same
+ * condition at PARSE time instead — `gql::Parser::shortest_pattern` accepts only a
+ * single var-length segment with `*`/`+` and rejects an inline `WHERE` or a bound
+ * edge — so the shape can never reach its BFS driver unreduced and no runtime gate
+ * is needed. (`bfs_reducible` xref:gone.) */
 export const bfsReducible = (pattern: CPath): boolean => {
   const seg = pattern.segments.length === 1 ? pattern.segments[0] : undefined;
   const q = seg?.rel.quantifier;
@@ -889,7 +898,7 @@ export const bindEndAndPath = (
 
 // Bare path binding over a single quantified segment (`p = (a)-[:R]->{m,n}(b)`):
 // enumerate every walk under the pattern's mode and bind each as a Path value.
-// Mirrors native `all_walk`.
+// Mirrors native `exec::varlen::var_length`, the quantified-hop enumerator.
 export const allWalk = function* (
   graph: Graph,
   pattern: CPath,
@@ -915,7 +924,10 @@ export const allWalk = function* (
 
 // Bare `ANY`: one arbitrary path per endpoint — the first walk that reaches each
 // distinct endpoint in trail-discovery order. Byte-identical because that order
-// is. Mirrors native `any_walk`.
+// is. The native entry point is `gql::Parser::parse_bare_selector`, which returns
+// `Some(true)` for a bare `ANY`; both engines answer 9 where enumerate-all answers 10
+// on a two-route fixture (item 614 measured it, after a path-graph fixture where the
+// two counts coincided at 6 and could not tell them apart).
 export const anyWalk = function* (
   graph: Graph,
   pattern: CPath,
@@ -1028,7 +1040,8 @@ export const shortestKWalk = function* (
  *  the unit source then each hop's target) and each edge position (each hop's edge)
  *  is exposed as the LIST of that position's value across every repetition
  *  (`verts[rep*k + p]` / `edges[rep*k + p]`). A one-hop unit (`k = 1`) collapses to
- *  `x = verts[..last]`, `y = verts[1..]`, `e = edges`. Mirrors native `bind_group_vars`. */
+ *  `x = verts[..last]`, `y = verts[1..]`, `e = edges`. Mirrors native
+ *  `exec::nested::bind_nested`. */
 
 /** One graph-consuming hop of a matched trail, tagged with its position in the (possibly
  *  nested) repetition pattern. `levels` is the cursor stack outer→inner: one `[rep,
@@ -1083,7 +1096,7 @@ export const nestInsert = (root: unknown, idx: readonly number[], val: unknown):
  *  is its nesting depth (0 = top). A variable is indexed by the rep counters of levels
  *  `0..=depth` — enclosing quantifiers are the outer list dimensions, this unit's own rep
  *  the innermost. Reproduces the old k-stride binding for a flat unit; recurses into each
- *  `Sub`. Mirrors native `bind_unit`. */
+ *  `Sub`. Mirrors native `exec::nested::bind_nested`. */
 export const bindUnit = (
   next: Map<string, unknown>,
   unit: CUnit,
@@ -1176,7 +1189,8 @@ export const bindUnit = (
  *  unit, so the node var at position `p` is `verts[rep·k + p]` and the edge var is
  *  `edges[rep·k + p]`. A direct stride over two flat arrays — no per-hop `StepRec`
  *  allocation (that generality is only needed for nesting). Byte-identical to the
- *  structured binder on a flat unit. Mirrors native `bind_group_vars_flat`. */
+ *  structured binder on a flat unit. Mirrors native `exec::nested::push_group_cols`, which
+ *  takes the same flat `node_stack`/`edge_stack`/`k` stride. */
 export const bindGroupVarsFlat = (
   binding: Binding,
   unit: CUnit,
@@ -1227,7 +1241,7 @@ export const bindGroupVarsFlat = (
 /** Expose a quantified subpath's inner variables as GROUP variables from the structured
  *  walk (the GENERAL path, for NESTED units) — each a (possibly nested) list, one level
  *  per enclosing quantifier. A flat unit takes {@link bindGroupVarsFlat} instead. Mirrors
- *  native `bind_group_vars`. */
+ *  native `exec::nested::bind_nested`. */
 export const bindGroupVars = (
   binding: Binding,
   unit: CUnit,
@@ -1243,7 +1257,7 @@ export const bindGroupVars = (
  *  to that rep). `keyStart = 1` drops the outer-rep index, so an outer-unit variable
  *  collapses to a SCALAR and a variable inside a `Sub` becomes a LIST over the inner reps —
  *  the per-rep view the predicate sees (`size(e)`, `x[0]`, …). Mirrors native
- *  `bind_group_vars_perrep`. */
+ *  `exec::nested::bind_nested`, called per completing repetition. */
 export const bindGroupVarsPerRep = (
   binding: Binding,
   unit: CUnit,
@@ -1258,7 +1272,8 @@ export const bindGroupVarsPerRep = (
 /** Evaluate a unit's per-repetition `WHERE` at an OUTER-rep completion. `repSteps` are the
  *  completing rep's hops; bind the unit's variables to their per-rep values — a direct
  *  variable is a SCALAR, a variable inside a nested `Sub` is a LIST over the inner reps
- *  (`bindGroupVarsPerRep`) — then test the predicate. Mirrors native `where_ok`. */
+ *  (`bindGroupVarsPerRep`) — then test the predicate. Mirrors native
+ *  `exec::nested::rep_ok`; the FLAT twin is `exec::varlen::rep_pred_ok`. */
 export const unitWherePasses = (unit: CUnit, repSteps: readonly StepRec[], env: EvalEnv): boolean =>
   unitWherePassesAt(unit, repSteps, env, [], 1);
 
@@ -1478,7 +1493,7 @@ export const resolve = (
 export const relHasInlinePred = (rel: CRel): boolean => hasPredicate(rel.pred);
 
 /** A hop's out-edges materialized and filtered by its inline predicate. Mirrors native
- *  `expand_filtered`. */
+ *  `exec::expand`, which applies the hop's edge predicate as it materializes. */
 export const expandFilteredArr = (
   graph: Graph,
   v: Vertex,
@@ -1513,7 +1528,10 @@ export const expandFilteredArr = (
  * the reachable hops. TRAIL/SIMPLE/ACYCLIC/WALK restrictors are applied PER HOP. The
  * consumer owns group-variable exposure — this only reconstructs under `wantPath`. A
  * generator suspends on consumer-stop, so the mark set needs no explicit stop cleanup.
- * Mirrors native `reachable_each_unit`.
+ * The native side FACTORS THIS DIFFERENTLY and that is worth knowing before you go
+ * looking for one function: flat units are driven by `exec::varlen::varlen_walk` (the
+ * iterative explicit-frame-stack DFS) and nested ones by `exec::nested::drive_nested`.
+ * This one matcher covers both shapes.
  */
 export const trailEndsUnit = function* (
   graph: Graph,
@@ -1570,7 +1588,8 @@ export const trailEndsUnit = function* (
   // The structured walk up to (and including) the current hop `(edgeV, nbrV)`. Each frame's
   // taken move stays frozen at the hop that spawned its child while that child is live, so
   // `stack[i].moves[moveIdx].after` is hop `i`'s landing position; the final hop is this
-  // one. Mirrors native `rebuild_steps`.
+  // one. The native counterpart is `exec::nested::StepRec`, built in
+  // `exec::nested::Matcher::sub_walk` / `outer_walk`.
   const buildSteps = (nbrV: Vertex, edgeV: Edge): StepRec[] =>
     stack.map((f, i) => {
       const at = f.moves[f.moveIdx].after;

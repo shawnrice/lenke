@@ -360,7 +360,8 @@ const slicedBeforeOrdering = (text: string): boolean => {
  * means making native lazy or TS eager, which is architectural; until that is
  * decided the shape is skipped BY NAME (and counted) rather than either engine
  * changing quietly, and the Rust side pins its half in
- * `a_zero_limit_does_not_cancel_an_upstream_side_effect`.
+ * the `p1_side_effect_*` tests in `tests/gremlin_ported.rs`. (The old name
+ * `a_zero_limit_does_not_cancel_an_upstream_side_effect` is xref:gone.)
  *
  * Found by the fuzzer at seeds 4 and 24, both only reachable once distinct seeds
  * began exploring disjoint cases.

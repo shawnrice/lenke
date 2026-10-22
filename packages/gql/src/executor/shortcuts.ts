@@ -7002,7 +7002,10 @@ const runReach = (spec: ReachSpec, graph: Graph, params: Params): Row[] => {
   // Seeds matching the start's label + inline props/WHERE. `seedVertices` only
   // narrows by label/index, so a no-index inline predicate (`{k:0}`) still needs a
   // per-seed check — otherwise we'd seed from the whole label and overcount the
-  // reachable set. Mirrors the native `reach_seed_vertices`.
+  // reachable set. The native side has no named counterpart to grep for: it seeds
+  // from a `Plan::Scan` with the label and leaves the inline predicate as a `Filter`
+  // above it, so the narrowing is a plan shape rather than a function.
+  // (`reach_seed_vertices` xref:gone.)
   const seeds = [...seedVertices(graph, cstart, new Map(), params)].filter(
     (v) => matchNode(new Map(), cstart, v, params, graph) !== null,
   );
@@ -7102,7 +7105,7 @@ const runReach = (spec: ReachSpec, graph: Graph, params: Params): Row[] => {
  * arg AST — `'bare'` when it is exactly `b` (so distinct endpoints = the reached
  * set), else the sub-expression (e.g. `b.k`) to evaluate + dedup per reached
  * vertex. `null` when it is not a count-distinct over the endpoint. Uses the same
- * `refsOnlyVar` gate as the native `refs_only_endpoint`, so both engines take the
+ * `refsOnlyVar` gate as `exec::fastpath::refs_only_slot`, so both engines take the
  * shortcut on the same query (previously TS only accepted a bare `b`, so
  * `count(DISTINCT b.k)` fell through to trail enumeration and faulted where native
  * answered via BFS).

@@ -24,7 +24,9 @@ export const withSackStep = function* (
 const num = (v: unknown): number | null => (typeof v === 'number' ? v : null);
 
 // Merge a projected value into the sack: `newSack = op(currentSack, projected)`.
-// Byte-identical to native `apply_sack_op`: a non-numeric fold yields null, and
+// Byte-identical to the native fold, which is INLINE in the `"sack"` step arm of
+// `gremlin::Parser` (lowered to an `Expr::Arith`, not a named function): a
+// non-numeric fold yields null, and
 // min/max use `<=`/`>=` so NaN resolves the same way in both engines.
 const applySackOp = (op: SackOp, current: unknown, projected: unknown): unknown => {
   if (op === 'assign') {

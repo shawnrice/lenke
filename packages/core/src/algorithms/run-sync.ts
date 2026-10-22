@@ -19,7 +19,7 @@ import type { AlgorithmConfig, AlgorithmRow } from './types.js';
 
 /**
  * Every graph algorithm a query engine can run synchronously (Gremlin OLAP steps,
- * GQL `CALL`). Names match the native `algo::run_with` dispatcher so a config
+ * GQL `CALL`). Names match the native `algo::run_procedure` dispatcher so a config
  * object is portable across engines.
  */
 export type AlgorithmName =
@@ -39,7 +39,7 @@ export type AlgorithmName =
 /**
  * Synchronously run a whole-graph algorithm and (when `config.writeProperty` is
  * set) write each vertex's result to that property — the mirror of native
- * `algo::run_with`, used by the GQL / Gremlin engines to embed an algorithm in a
+ * `algo::run_procedure`, used by the GQL / Gremlin engines to embed an algorithm in a
  * synchronous query. Blocks for the whole computation (see {@link drainSync}); the
  * async `@lenke/core` free functions are the non-blocking path. The generator
  * bodies are the *same* ones the async functions drive, so results stay
