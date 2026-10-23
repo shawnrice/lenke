@@ -641,9 +641,23 @@ const relBoundFilteredHopWalk = (w: {
   const { startLabel, typeName, out, farVar, relVar, farLabel, proj } = w;
   const { farPred, relPred, gate, startVar, startOnly, cfar } = w;
 
-  if (relVar === undefined || startOnly) {
+  if (startOnly) {
     return null;
   }
+
+  // AN ANONYMOUS REL IS ADMITTED since item 639 — `-[:E {w: $w}]->` carries a constraint with
+  // no variable to bind it to, and refusing it left that spelling at 3.77x the clause form
+  // (item 638 measured it and recorded it open).
+  //
+  // Nothing that needs the edge BOUND can reach here without a name: `itemsReadRel` and
+  // `carried.needsRel` are both decided from `rel.variable`, so when it is absent neither the
+  // projection nor the gate can read the edge, and only `relPred` — which `satisfies` applies
+  // to the edge OBJECT — remains.
+  //
+  // The key is hoisted rather than branched on per edge. A `!== undefined` test inside this
+  // loop is exactly what item 159 measured at 1.6x on the hot shape, and the empty string
+  // cannot collide with a real binding because a GQL identifier is never empty.
+  const relKey = relVar ?? '';
 
   return (graph, params) => {
     if (cfar !== undefined) {
@@ -682,7 +696,7 @@ const relBoundFilteredHopWalk = (w: {
 
         binding.set(farVar, far);
         // BEFORE the gate, which is the whole point: the gate may read the rel variable.
-        binding.set(relVar, edge);
+        binding.set(relKey, edge);
 
         // The REL gate first: it needs neither endpoint, and in the shape this was built for
         // it is the selective one. Same ordering choice as the tally's (item 637).

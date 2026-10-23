@@ -56,6 +56,24 @@ describe('the projected spellings of one question agree', () => {
     expect(xs('MATCH (a:P)-[r:E {w: 2}]->(b) RETURN b.k AS x')).toEqual([2, 3]);
   });
 
+  // Item 639: an ANONYMOUS rel carries its constraint too. `relBoundFilteredHopWalk` used to
+  // decline for want of a variable to bind the edge to, leaving this spelling at 3.77x.
+  test('an ANONYMOUS rel carries its inline properties', () => {
+    expect(xs('MATCH (a:P)-[:E {w: 2}]->(b) RETURN a.k AS x')).toEqual([1, 2]);
+  });
+
+  test('an anonymous rel, projecting the far end', () => {
+    expect(xs('MATCH (a:P)-[:E {w: 2}]->(b) RETURN b.k AS x')).toEqual([2, 3]);
+  });
+
+  test('an anonymous rel with IS-NULL semantics', () => {
+    expect(xs('MATCH (a:P)-[:E {w: null}]->(b) RETURN a.k AS x')).toEqual([0, 3]);
+  });
+
+  test('an anonymous rel beside a far-node constraint', () => {
+    expect(xs('MATCH (a:P)-[:E {w: 2}]->(b:P {k: 2}) RETURN a.k AS x')).toEqual([1]);
+  });
+
   test('a $param value', () => {
     expect(xs('MATCH (a:P)-[r:E {w: $w}]->(b) RETURN a.k AS x', { w: 2 })).toEqual([1, 2]);
   });
