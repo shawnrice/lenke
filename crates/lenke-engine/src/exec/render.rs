@@ -607,6 +607,7 @@ fn scan_path(plan: &Plan, leaf: &dyn Fn(&Expr) -> bool) -> bool {
         | Plan::NodeSeed { .. }
         | Plan::EdgeScan
         | Plan::EdgeSeed { .. }
+        | Plan::EdgeEndpointSeed { .. }
         | Plan::Row
         | Plan::IndexSeek { .. }
         | Plan::RangeSeek { .. }

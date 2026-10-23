@@ -713,6 +713,7 @@ fn map_children(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
         | Plan::NodeSeed { .. }
         | Plan::EdgeScan
         | Plan::EdgeSeed { .. }
+        | Plan::EdgeEndpointSeed { .. }
         | Plan::Row
         | Plan::IndexSeek { .. }
         | Plan::RangeSeek { .. }
@@ -1659,6 +1660,178 @@ fn seed_from_conjuncts(pred: &Expr, idx: &dyn IndexOracle) -> Option<(Seed, Opti
     Some((seed, residual))
 }
 
+/// The external EDGE id a predicate pins the element at `slot` to — `element_id(r) = '<id>'`
+/// in either operand order — or `None`. The edge twin of [`id_seek_target`], which looks only
+/// at slot 0; this takes the slot, because a bound edge lives one slot above its hop's input.
+///
+/// A STRING only, for `id_seek_target`'s reason: an external id IS a string, so a numeric
+/// comparand matches nothing and seeding from it would invent a row.
+fn edge_id_pin(pred: &Expr, slot: usize) -> Option<String> {
+    let Expr::Compare {
+        op: CompareOp::Eq,
+        left,
+        right,
+    } = pred
+    else {
+        return None;
+    };
+    let (call, v) = match (left.as_ref(), right.as_ref()) {
+        (e, Expr::Lit(v)) => (e, v),
+        (Expr::Lit(v), e) => (e, v),
+        _ => return None,
+    };
+    let Expr::Call { name, args } = call else {
+        return None;
+    };
+    if name != "element_id" || args.len() != 1 || !matches!(args[0], Expr::Slot(s) if s == slot) {
+        return None;
+    }
+    match v {
+        Value::Str(s) => Some(s.to_string()),
+        _ => None,
+    }
+}
+
+/// Does any CONJUNCT of `pred` pin the edge at `slot`?
+///
+/// Conjuncts only, and that is a soundness bound rather than a simplification. A DISJUNCTION
+/// keeps rows the pinned edge could never produce — `element_id(r) = 'a' OR r.w = 1` — so
+/// narrowing the seed from one arm of an `Or` would LOSE rows, the one direction a seed must
+/// never go.
+fn edge_id_pin_in_conjunction(pred: &Expr, slot: usize) -> Option<String> {
+    match pred {
+        Expr::And(a, b) => {
+            edge_id_pin_in_conjunction(a, slot).or_else(|| edge_id_pin_in_conjunction(b, slot))
+        }
+        other => edge_id_pin(other, slot),
+    }
+}
+
+/// The `Scan` driving a hop, seen through a predicate the pushdown arm may already have put
+/// between them: `(the scan's label, that intervening filter)`.
+///
+/// The intervening `Filter` matters for termination as much as for coverage. On a conjunction
+/// like `element_id(r) = 'e2' AND a.k > 0` the pushdown arm fires FIRST and lands the slot-0
+/// half below the hop, so by the time item 620 sees the shape the hop's input is
+/// `Filter(Scan)` rather than `Scan`. Accepting that form is what lets the fixpoint reach the
+/// seed on the next pass instead of giving up.
+fn scan_under(p: &Plan) -> Option<(Option<String>, Option<Expr>)> {
+    match p {
+        Plan::Scan { label } => Some((label.clone(), None)),
+        Plan::Filter { input, pred } => match input.as_ref() {
+            Plan::Scan { label } => Some((label.clone(), Some(pred.clone()))),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Seed the ONE node a pinned-edge-id hop can start from (item 620).
+///
+/// `Filter(… element_id(r) = '<id>' …)(Expand{from: 0, bind_edge}(Scan{label}))` drives from
+/// EVERY node to find one edge. The edge's id names its endpoints, so exactly ONE node can
+/// produce it — [`Plan::EdgeEndpointSeed`] is that node, and the hop then expands a single
+/// node's degree instead of the whole graph.
+///
+/// **Every filter is left exactly where it was, and that is the whole safety argument.** This
+/// narrows a SEED; the filters still decide which rows survive. So the hop's output is a
+/// SUPERSET of the query's rows before them and identical after, and the SLOT LAYOUT is
+/// untouched — `Expand` still appends the edge and the landing node at the same indices, so
+/// every downstream slot reference means what it meant before. (The TS seed layer has this
+/// property by construction; item 618 records why that makes it the safer of the two designs.)
+///
+/// Called BEFORE `apply_local`'s match rather than as an arm of it, deliberately. The shape
+/// spans three plan levels while the arms dispatch on one, and the arm position this needed
+/// sits directly above an unguarded catch-all `bind_edge: true` arm — so as an arm its
+/// correctness depended on ORDER. This way it does not.
+///
+/// ONE intervening filter is accepted, and it is not a nicety: a landing node's LABEL lowers
+/// to exactly one `Filter(IsLabeled{slot})` between the hop and this predicate, and the
+/// filter-merge rule declines to fuse the two because an `element_id` call can raise. Without
+/// it `MATCH (a:P)-[r:R]->(b:P) WHERE element_id(r) = $x` would keep scanning while the
+/// unlabelled spelling seeded — a ~200x cliff between two spellings of one query, which is the
+/// class `spelling_probe` exists to catch.
+///
+/// TERMINATION: after the rewrite the hop's input is an `EdgeEndpointSeed`, which `scan_under`
+/// does not accept, so this returns `None` on the next fixpoint pass.
+///
+/// Declines, each because the seed would otherwise be a SUBSET and LOSE rows — the one
+/// direction a seed must never go:
+///
+/// - **`Dir::Both`**: a `Both` expand over a full scan yields the edge from BOTH endpoints,
+///   i.e. TWICE. Measured on the probe fixture: 2 rows, where one seeded endpoint gives 1.
+/// - **`double_loops`**: the same duplication for a self-loop.
+/// - **an `Or`**: see [`edge_id_pin_in_conjunction`].
+/// - **a `from` other than 0, a non-`Scan` driver, or `bind_edge: false`** (with no edge slot
+///   there is no `element_id(r)` to pin).
+fn seed_from_pinned_edge_id(plan: &Plan) -> Option<Plan> {
+    let Plan::Filter { input, pred } = plan else {
+        return None;
+    };
+    // Zero or ONE intervening filter between this predicate and the hop.
+    let (mid, hop) = match input.as_ref() {
+        Plan::Filter {
+            input: deeper,
+            pred: mid,
+        } => (Some(mid.clone()), deeper.as_ref()),
+        other => (None, other),
+    };
+    let Plan::Expand {
+        input: ein,
+        from: 0,
+        dir,
+        edge_label,
+        bind_edge: true,
+        double_loops: false,
+    } = hop
+    else {
+        return None;
+    };
+    let source_end = match dir {
+        crate::ir::Dir::Out => true,
+        crate::ir::Dir::In => false,
+        crate::ir::Dir::Both => return None,
+    };
+    let (label, below) = scan_under(ein)?;
+    // With `bind_edge`, `Expand` appends the edge at its input's width. Asking `width` rather
+    // than assuming 1 keeps this right if the driver ever widens.
+    let ext = edge_id_pin_in_conjunction(pred, width(ein))?;
+
+    let seed = Plan::EdgeEndpointSeed {
+        ext,
+        source_end,
+        label,
+    };
+    // A predicate the pushdown arm had already landed on the scan keeps its place over the
+    // seed, so it still runs on the one node this produces.
+    let seeded = match below {
+        Some(p) => Plan::Filter {
+            input: Box::new(seed),
+            pred: p,
+        },
+        None => seed,
+    };
+    let hop = Plan::Expand {
+        input: Box::new(seeded),
+        from: 0,
+        dir: *dir,
+        edge_label: edge_label.clone(),
+        bind_edge: true,
+        double_loops: false,
+    };
+    let inner = match mid {
+        Some(p) => Plan::Filter {
+            input: Box::new(hop),
+            pred: p,
+        },
+        None => hop,
+    };
+    Some(Plan::Filter {
+        input: Box::new(inner),
+        pred: pred.clone(),
+    })
+}
+
 /// The external id a predicate pins slot 0 to — `element_id(n) = '<id>'` in either
 /// operand order — or `None` if it is not that shape. The GQL spelling of a point lookup
 /// by id, and the only thing in the crate besides the Gremlin parser that can produce a
@@ -1833,6 +2006,12 @@ fn page_keeps_every_row(skip: Option<usize>, limit: Option<usize>) -> bool {
 }
 
 fn apply_local(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
+    // An edge id pins a hop to ONE source node (item 620). Checked here rather than as an arm
+    // below: the shape spans three plan levels while the arms dispatch on one, and the arm
+    // position it needs sits above an unguarded catch-all that would swallow it.
+    if let Some(seeded) = seed_from_pinned_edge_id(&plan) {
+        return (seeded, true);
+    }
     match plan {
         // A SORT below a scalar aggregate that cannot read it — items 549 (TS) and 550 (here).
         //
@@ -2717,6 +2896,8 @@ pub(crate) fn width(plan: &Plan) -> usize {
         | Plan::NodeSeed { .. }
         | Plan::EdgeScan
         | Plan::EdgeSeed { .. }
+        // One external id -> at most one endpoint node, so width 1, like every other seed.
+        | Plan::EdgeEndpointSeed { .. }
         | Plan::IndexSeek { .. }
         | Plan::RangeSeek { .. } => 1,
         // A named procedure yields exactly two columns: node id + its result.

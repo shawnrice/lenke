@@ -262,6 +262,7 @@ fn plan_has_varlen(plan: &Plan) -> bool {
         | Plan::NodeSeed { .. }
         | Plan::EdgeScan
         | Plan::EdgeSeed { .. }
+        | Plan::EdgeEndpointSeed { .. }
         | Plan::Row
         | Plan::IndexSeek { .. }
         | Plan::RangeSeek { .. }
@@ -1027,6 +1028,29 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
                 .iter()
                 .filter_map(|e| store.node_by_ext(e).filter(|&id| store.is_alive(id)))
                 .filter(|&id| label.as_ref().is_none_or(|l| store.is_labeled(id, l)))
+                .collect();
+            let lineage = track.then(|| Lineage::seed(&ids));
+            let mut batch = Batch::single(Col::Nodes(ids));
+            batch.lineage = lineage;
+            batch
+        }
+        Plan::EdgeEndpointSeed {
+            ext,
+            source_end,
+            label,
+        } => {
+            // One id -> at most one node, so this is two O(1) probes and a label test:
+            // `edge_by_ext` (the reverse map item 615 added) then `edge_endpoints`.
+            //
+            // Seeds exactly as `NodeSeed` does, including the lineage, so an `Expand` above
+            // extends a path from here the same way it would from a `Scan`.
+            let ids: Vec<u32> = store
+                .edge_by_ext(ext)
+                .and_then(|eid| store.edge_endpoints(eid))
+                .map(|(from, to)| if *source_end { from } else { to })
+                .filter(|&id| store.is_alive(id))
+                .filter(|&id| label.as_ref().is_none_or(|l| store.is_labeled(id, l)))
+                .into_iter()
                 .collect();
             let lineage = track.then(|| Lineage::seed(&ids));
             let mut batch = Batch::single(Col::Nodes(ids));

@@ -52,6 +52,7 @@ fn bind_plan(plan: &mut Plan, params: &[(String, Value)]) -> Result<(), String> 
         | Plan::NodeSeed { .. }
         | Plan::EdgeScan
         | Plan::EdgeSeed { .. }
+        | Plan::EdgeEndpointSeed { .. }
         | Plan::Row
         | Plan::IndexSeek { .. }
         | Plan::RangeSeek { .. }

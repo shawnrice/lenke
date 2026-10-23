@@ -19687,6 +19687,144 @@ fn fused_arithmetic_filter_agrees_with_the_general_path() {
     );
 }
 
+/// Item 620: an edge id PINS a hop to one source node, so `Plan::EdgeEndpointSeed` replaces
+/// the `Scan` under it — 398.73 µs → 1.90 (210x) on a 100,000-edge graph.
+///
+/// Each row asserts the OPERATOR and then the rows, because a seed is a route CHOICE and
+/// route choices are answer-equivalent: a version that silently declined would return exactly
+/// these rows ([[perf-gate-needs-its-own-test]]). The DECLINES are asserted the same way, and
+/// they carry the two row counts that make them necessary rather than cautious.
+#[test]
+fn an_edge_id_pin_seeds_the_one_source_node() {
+    let store = {
+        let mut b = crate::store::Builder::default();
+        for i in 0..5u32 {
+            b.node(&["P"], &[("k", n(f64::from(i)))]);
+        }
+        // e0..e4, a 1:1 ring, so a hit is exactly one row and `Both` is exactly two.
+        for i in 0..5u32 {
+            b.edge(i, (i + 1) % 5, "R");
+        }
+        b.build()
+    };
+    // (query, must it seed?, how many rows)
+    let cases: &[(&str, bool, usize)] = &[
+        // The plain out-hop, and the IN spelling, which seeds the OTHER endpoint.
+        ("MATCH ()-[r:R]->() WHERE element_id(r) = 'e2' RETURN element_id(r) AS v", true, 1),
+        ("MATCH ()<-[r:R]-() WHERE element_id(r) = 'e2' RETURN element_id(r) AS v", true, 1),
+        // Either operand order.
+        ("MATCH ()-[r:R]->() WHERE 'e2' = element_id(r) RETURN element_id(r) AS v", true, 1),
+        // BOTH ends labelled. The landing label lowers to a `Filter(IsLabeled)` BETWEEN the hop
+        // and the pin, and the filter-merge rule declines to fuse them (an `element_id` call
+        // can raise) — so without `seed_from_pinned_edge_id` looking through ONE intervening
+        // filter, this spelling would scan while the unlabelled one seeded: a ~200x cliff
+        // between two spellings of one query.
+        (
+            "MATCH (a:P)-[r:R]->(b:P) WHERE element_id(r) = 'e2' RETURN a.k AS x, b.k AS y",
+            true,
+            1,
+        ),
+        // A CONJUNCTION. The pushdown arm fires first and lands the slot-0 half below the hop,
+        // so the fixpoint must still reach the seed on a later pass — and the pushed predicate
+        // has to keep its place over the seed.
+        (
+            "MATCH (a:P)-[r:R]->(b) WHERE element_id(r) = 'e2' AND a.k >= 0 RETURN a.k AS x",
+            true,
+            1,
+        ),
+        // A conjunct that EXCLUDES the pinned edge's source: the seed is still taken, and the
+        // filter still removes the row. This is the superset-not-subset property, asserted.
+        (
+            "MATCH (a:P)-[r:R]->(b) WHERE element_id(r) = 'e2' AND a.k > 99 RETURN a.k AS x",
+            true,
+            0,
+        ),
+        // A miss, and a source whose label does not match: both seed, both find nothing.
+        ("MATCH ()-[r:R]->() WHERE element_id(r) = 'nope' RETURN element_id(r) AS v", true, 0),
+        ("MATCH (a:Q)-[r:R]->() WHERE element_id(r) = 'e2' RETURN element_id(r) AS v", true, 0),
+        // DECLINE: `Both`. A `Both` hop over a full scan yields the edge from EACH endpoint —
+        // TWO rows — so seeding one endpoint would LOSE one. The row count is what makes that
+        // concrete rather than a claim.
+        ("MATCH ()-[r:R]-() WHERE element_id(r) = 'e2' RETURN element_id(r) AS v", false, 2),
+        // DECLINE: an `Or` keeps rows the pinned edge cannot produce, so narrowing the seed
+        // from one arm would lose the other's.
+        (
+            "MATCH ()-[r:R]->() WHERE element_id(r) = 'e2' OR element_id(r) = 'e3' RETURN element_id(r) AS v",
+            false,
+            2,
+        ),
+        // DECLINE: a NUMERIC comparand. An external id is a string, so this matches nothing —
+        // seeding from `2` would have to invent an id.
+        ("MATCH ()-[r:R]->() WHERE element_id(r) = 2 RETURN element_id(r) AS v", false, 0),
+        // DECLINE: the pin is on the LANDING node, not the edge, so there is no edge id to
+        // seed from and the `element_id` filter of item 619 answers it.
+        ("MATCH ()-[r:R]->(b) WHERE element_id(b) = '3' RETURN element_id(b) AS v", false, 1),
+    ];
+
+    for (q, want_seed, want_rows) in cases {
+        let plan = crate::opt::optimize_indexed(
+            crate::gql::parse(q).unwrap_or_else(|e| panic!("parse `{q}`: {e}")),
+            &store,
+        );
+        let seeded = format!("{plan:?}").contains("EdgeEndpointSeed");
+        assert_eq!(
+            seeded, *want_seed,
+            "`{q}` seeded={seeded}, want {want_seed}\n{plan:?}"
+        );
+        let rows = crate::exec::try_run(&plan, &store)
+            .unwrap_or_else(|e| panic!("run `{q}`: {e}"))
+            .rows
+            .len();
+        assert_eq!(
+            rows, *want_rows,
+            "`{q}` returned {rows} rows, want {want_rows}"
+        );
+    }
+}
+
+/// A seeded edge-id hop must not resurrect a DELETED edge, and must survive the edge being
+/// deleted after the plan was built — the plan carries the EXTERNAL id and resolves it at
+/// exec, so this is the property that choice buys.
+#[test]
+fn a_seeded_edge_id_pin_follows_the_live_graph() {
+    let mut store = Builder::default().build();
+    stmt(
+        &mut store,
+        "INSERT (:P {id: 'a'})-[:R {id: 'keep'}]->(:P {id: 'b'})",
+    )
+    .unwrap();
+    stmt(
+        &mut store,
+        "INSERT (:P {id: 'c'})-[:R {id: 'drop'}]->(:P {id: 'd'})",
+    )
+    .unwrap();
+
+    let q = "MATCH ()-[r:R]->() WHERE element_id(r) = 'drop' RETURN element_id(r) AS v";
+    let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &store);
+    assert!(
+        format!("{plan:?}").contains("EdgeEndpointSeed"),
+        "must seed"
+    );
+    assert_eq!(crate::exec::try_run(&plan, &store).unwrap().rows.len(), 1);
+
+    stmt(
+        &mut store,
+        "MATCH ()-[r:R]->() WHERE element_id(r) = 'drop' DELETE r",
+    )
+    .unwrap();
+
+    // The SAME optimized plan, re-run against the mutated store.
+    assert_eq!(
+        crate::exec::try_run(&plan, &store).unwrap().rows.len(),
+        0,
+        "a deleted edge must not be resurrected by a plan built before the delete"
+    );
+    // And the other edge is untouched, so the delete was not a sweep.
+    let q = "MATCH ()-[r:R]->() WHERE element_id(r) = 'keep' RETURN element_id(r) AS v";
+    let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &store);
+    assert_eq!(crate::exec::try_run(&plan, &store).unwrap().rows.len(), 1);
+}
+
 /// Item 619: `try_filter_keep_element_id` compares `element_id(x)` over BORROWED ids instead
 /// of materializing a `Value::Str` per row — the EDGE pattern 2106 µs → 399 (5.28x) and the
 /// FAR-SIDE node id 2042 → 322 (6.33x), both shapes `opt` cannot seed.

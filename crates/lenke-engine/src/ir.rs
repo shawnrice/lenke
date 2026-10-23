@@ -601,6 +601,33 @@ pub enum Plan {
         ext_ids: Vec<String>,
         label: Option<String>,
     },
+    /// Seed slot 0 with the ONE node at an end of the live edge whose external id is
+    /// `ext` — the single node an `Expand` can start from if the hop is only ever going to
+    /// keep that edge. Zero rows if the id resolves to no live edge, if that end's node is
+    /// deleted, or if it does not carry `label`.
+    ///
+    /// **This narrows a SEED; it does not decide an answer.** Item 620 emits it only under
+    /// the `Expand` of a pattern whose edge id is pinned by a `Filter` ABOVE, and that filter
+    /// stays exactly where it was — so the seed may be a SUPERSET of what the query keeps
+    /// (the node's whole degree is expanded, the filter then picks the one edge) and never a
+    /// subset. The slot layout is untouched: `Expand` still appends the edge and the landing
+    /// node, so every downstream slot reference means what it meant before.
+    ///
+    /// `source_end` picks WHICH end, and the right answer depends on the hop's direction:
+    /// an `Out` expand drives from the edge's SOURCE (`source_end: true`), an `In` expand
+    /// from its TARGET (`false`). `Dir::Both` is not expressible here — a `Both` expand over
+    /// a full scan yields the edge from BOTH endpoints, i.e. twice — so item 620 declines it
+    /// rather than emit this node.
+    ///
+    /// The plan carries the EXTERNAL id and resolves it at exec, deliberately: resolving to a
+    /// dense id (or to the endpoint's own external id) at optimize time would make the
+    /// optimized plan STORE-DEPENDENT, which is sound today only because no optimized plan is
+    /// ever cached. See `opt::id_seek_target`'s header.
+    EdgeEndpointSeed {
+        ext: String,
+        source_end: bool,
+        label: Option<String>,
+    },
     /// Seed slot 0 with EVERY live edge — Gremlin `g.E()`. The slot holds edge ids
     /// (a `Col::Edges` frontier), not nodes; downstream steps that read the current
     /// element (`values`/`id`/`label`/`count`) resolve it as an edge.

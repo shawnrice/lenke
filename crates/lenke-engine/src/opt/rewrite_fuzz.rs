@@ -1037,7 +1037,7 @@ const EDGE_KEYS: [&str; 3] = ["w", "lo", "hi"];
 /// slots, so any arithmetic that assumes one slot per hop is wrong by one and keeps
 /// being wrong further up the chain.
 fn gen_edge_pred(rng: &mut Lcg, slot: usize) -> Expr {
-    match rng.below(4) {
+    match rng.below(5) {
         // The INTERVAL-OVERLAP shape: `r.lo <= qhi AND r.hi >= qlo`, which the planner
         // fuses into an `IntervalExpand`. The operators are not interchangeable — `lo`
         // takes the `<=` side and `hi` the `>=` side — so this is also a check that the
@@ -1074,10 +1074,45 @@ fn gen_edge_pred(rng: &mut Lcg, slot: usize) -> Expr {
             right: Box::new(Expr::Lit(Value::Num(f64::from(rng.below(6) as u32)))),
         },
         // `IsLabeled` on an EDGE tests its type, not a node label.
-        _ => Expr::IsLabeled {
+        3 => Expr::IsLabeled {
             slot,
             labels: vec![(*rng.pick(&ETYPES)).to_string()],
         },
+        // `element_id(r) = '<edge id>'` — the pin item 620 seeds a single source node from.
+        //
+        // The generator emitted NO `element_id` on an edge slot, so that rewrite was reached
+        // by **0 of 2,000** plans and a green `rewrite_fuzz` said nothing whatever about it —
+        // the same blindness item 617 found one slot over, which is why its lesson is a rule
+        // and not an anecdote.
+        //
+        // Both operand orders, because the rewrite accepts both. The literal is usually a
+        // real `e<k>` (the Builder's edge-id scheme, so the seed HITS and the rewritten plan
+        // has rows to compare), sometimes an id past the fixture (a MISS, which still
+        // exercises the seed and must answer zero rows), and sometimes a NODE-shaped id, so
+        // the "resolves to no edge" path is generated too.
+        _ => {
+            let lit = match rng.below(6) {
+                0 => Expr::Lit(Value::Str(format!("e{}", rng.below(4000) + 4000).into())),
+                1 => Expr::Lit(Value::Str(rng.below(NODES as usize).to_string().into())),
+                _ => Expr::Lit(Value::Str(
+                    format!("e{}", rng.below(NODES as usize * 3)).into(),
+                )),
+            };
+            let call = Expr::Call {
+                name: "element_id".into(),
+                args: vec![Expr::Slot(slot)],
+            };
+            let (left, right) = if rng.below(2) == 0 {
+                (call, lit)
+            } else {
+                (lit, call)
+            };
+            Expr::Compare {
+                op: CompareOp::Eq,
+                left: Box::new(left),
+                right: Box::new(right),
+            }
+        }
     }
 }
 
@@ -2408,6 +2443,7 @@ fn the_generator_actually_reaches_the_rewrites() {
     let (mut seeks, mut oriented, mut multi_hop, mut nonempty) = (0, 0, 0, 0);
     let (mut joins, mut varlen, mut deep, mut faults) = (0, 0, 0, 0);
     let mut id_seeds = 0;
+    let mut edge_endpoint_seeds = 0;
     let (mut bound_edge, mut interval) = (0, 0);
     let (mut paged, mut num_agg, mut unions) = (0, 0, 0);
     let (mut shortest, mut repeat_group, mut optional) = (0, 0, 0);
@@ -2429,6 +2465,9 @@ fn the_generator_actually_reaches_the_rewrites() {
         }
         if has(&opt, |p| matches!(p, Plan::NodeSeed { .. })) {
             id_seeds += 1;
+        }
+        if has(&opt, |p| matches!(p, Plan::EdgeEndpointSeed { .. })) {
+            edge_endpoint_seeds += 1;
         }
         // Orientation is observable as the hop DIRECTIONS changing.
         // Every HOP kind, not just `Expand` — a chain whose second hop is a
@@ -2653,6 +2692,19 @@ fn the_generator_actually_reaches_the_rewrites() {
     assert!(
         id_seeds > n / 250,
         "too few plans seed by element id: {id_seeds}/{n}"
+    );
+    // Item 620's `EdgeEndpointSeed`. MEASURED at **0/2000** before `gen_edge_pred` learned an
+    // `element_id` pin, and **6/2000** after — so this floor is the only thing standing
+    // between that rewrite and being unfuzzed again. Set at half the measurement, the
+    // convention the rows above use.
+    //
+    // SIX IS THIN, and deliberately not treated as coverage: the rewrite only fires when the
+    // bound-edge hop is the FIRST one (its `from` must be 0 over the `Scan` this replaces),
+    // which most generated chains are not. **A count is not teeth** — what establishes these
+    // are mutants, and item 620 records four of them caught by the row oracles here.
+    assert!(
+        edge_endpoint_seeds >= 3,
+        "too few plans seed from a pinned edge id: {edge_endpoint_seeds}/{n}"
     );
     // Measured 80/2000 when this was added; the floor is set at half that. Before it, the
     // generator emitted NO path projection of any kind, so the raw-vs-optimized oracle had

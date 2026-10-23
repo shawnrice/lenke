@@ -87,6 +87,9 @@ pub fn estimate(plan: &Plan, store: &Store) -> Card {
         // stays the upper bound a labelled seed is estimated by.
         Plan::NodeSeed { ext_ids, .. } => Card::exact(ext_ids.len()),
         Plan::EdgeSeed { ext_ids } => Card::exact(ext_ids.len()),
+        // One external id resolves to at most ONE endpoint node, and the label can only
+        // remove it.
+        Plan::EdgeEndpointSeed { .. } => Card::exact(1),
         Plan::IndexSeek { key, value, .. } => store.index_bucket_len(key, value).map_or_else(
             || Card::approx(store.live_node_count() as f64 * EQ_SEL),
             Card::exact,

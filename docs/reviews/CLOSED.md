@@ -10110,3 +10110,86 @@ time. **A screen should compare TIME columns; a derived ratio is not a measureme
 rest, two were "faster" and the one real candidate (`query/shortest repeat-group control`,
 1.123x) **refuted at 1.018x** on the isolated row. Zero over 1.10x. This screen's false
 positives in this loop now number **twenty**.
+
+## 620 — an edge id pins a hop to ONE source node: 160x (178x for the labelled spelling)
+
+**FIXED (native). The half of 619 that "needs slot surgery" needed none.** 619 priced it as
+replacing `Filter(element_id)(Expand{bind_edge}(Scan))` with an `EdgeSeed` + `EdgeVertex` chain
+that reproduces the `[src, edge, dst]` layout and replicates `expand`'s lineage. **Replace only
+the `Scan` instead:** `Plan::EdgeEndpointSeed { ext, source_end, label }` yields the ONE node at
+an end of that edge, and the `Expand` and every `Filter` stay where they were.
+
+|                                              | before    | after   |                       |
+| -------------------------------------------- | --------- | ------- | --------------------- |
+| **EDGE id filter**                           | 411.28 µs | 2.57 µs | **160.15x**           |
+| **EDGE id, BOTH ends labelled**              | 603.24 µs | 3.38 µs | **178.21x**           |
+| `Dir::Both` — declines                       | 820.68    | 813.57  | 1.01x                 |
+| far-side node id (619b)                      | 328.83    | 334.65  | 0.98x                 |
+| edge property, near-side node id, label scan | —         | —       | 1.00x / 1.09x / 1.02x |
+
+**Cumulatively 619b + 620: 2274 µs → 2.57, i.e. 885x, now at parity with Gremlin's `g.E(id)`
+(1.99 µs)** — the convergence `spelling_probe` wants.
+
+### SETTLED: the safety argument is "narrow a SEED, never a filter"
+
+Because every filter keeps its place, the hop's output is a SUPERSET of the query's rows before
+the filters and identical after. Consequences: the slot layout is untouched (so no downstream
+slot reference changes meaning), lineage needs no replication (`Expand` still builds it), and a
+conjunct that EXCLUDES the pinned edge's source still removes the row — asserted, not claimed.
+**This is the TS seed layer's property, which item 618 recorded as the safer of the two designs;
+620 is the native engine borrowing it.**
+
+The plan carries the EXTERNAL id and resolves it at exec, so the optimized plan stays
+STORE-INDEPENDENT — item 619's recorded hazard is named and not spent. A test re-runs the SAME
+optimized plan after deleting the edge and gets zero rows.
+
+### SETTLED: put it BEFORE `apply_local`'s match, not in it
+
+As an arm, the rewrite's correctness depended on ARM ORDER — the position it needs sits directly
+above an **unguarded catch-all `bind_edge: true` arm** that matches every bound-edge expand —
+and the shape spans THREE plan levels while the arms dispatch on one. Checking before the match
+removes both problems. Termination is structural: after the rewrite the hop's input is an
+`EdgeEndpointSeed`, which `scan_under` rejects.
+
+### SETTLED: ONE intervening filter is load-bearing, and the cliff proves it
+
+A landing node's LABEL lowers to exactly one `Filter(IsLabeled{slot})` between the hop and the
+pin, and filter-merge declines to fuse them (an `element_id` call can raise). Without looking
+through it, `MATCH (a:P)-[r:R]->(b:P)` would scan while the unlabelled spelling seeded. Measured:
+the labelled form was **603 µs — the SLOWER of the two spellings — and is now 3.38**, within
+1.3x of the unlabelled. The same mechanism covers a conjunction, where the pushdown arm fires
+first and leaves `Filter(Scan)` as the driver.
+
+**Declines** (each would make the seed a SUBSET and lose rows): `Dir::Both` — a `Both` hop over
+a full scan yields the edge from BOTH endpoints, measured as TWO rows; `double_loops`; an `Or`;
+`from != 0`; `bind_edge: false`; a non-string comparand.
+
+### 🛑 `rewrite_fuzz` WAS BLIND AGAIN — 0/2000 — one slot over from item 617's
+
+`gen_edge_pred` emitted only edge-PROPERTY comparisons and an `IsLabeled`, so no generated plan
+pinned an edge id and **a green `rewrite_fuzz` said nothing about this rewrite.** That item 617's
+blindness recurred immediately, in the sibling generator, is why it is a RULE: **widen the
+generator and measure the reach before reading green as coverage.**
+
+Widened (both operand orders; usually a real `e<k>` so the seed hits, sometimes a miss, sometimes
+a node-shaped id). Reach **0 → 6 per 2,000**, floor at half. **Six is thin and is not treated as
+coverage** — the rewrite fires only when the bound-edge hop is the FIRST one. The teeth are
+mutation, and at 6/2000 the row oracles caught **all five**: `Both` seeded, `source_end`
+inverted, the pin taken from an `Or`, the label dropped, and a pushed-down filter discarded.
+
+Twelve deterministic cases pin the rest, each asserting the OPERATOR then the rows — a route
+choice is answer-equivalent, so rows alone cannot distinguish a silent decline from a working
+seed.
+
+### The `bench_all` screen flagged three; all three refuted
+
+`query/gremlin dedup out.out` 1.183x → **1.010x** at min-of-5 on the isolated row; one "faster";
+one a 0.2 → 0.3 µs timer-floor cell. Zero over 1.10x. **Twenty-three** false positives from this
+screen in this loop.
+
+### OPEN: the TS twin is NOT the same shape of problem
+
+TS's GQL edge-id lookup remains **28,888 µs**. Its seed layer takes hints per NODE
+(`indexCandidates` is called from `seedVertices`), so pinning a hop by its EDGE id has no hook
+there — unlike item 618, where the hint mechanism already existed and only lacked a kind. The
+next item, and its design is genuinely open.

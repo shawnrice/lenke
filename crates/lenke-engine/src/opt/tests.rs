@@ -517,6 +517,7 @@ fn plan_contains_filter(p: &Plan) -> bool {
         | Plan::NodeSeed { .. }
         | Plan::EdgeScan
         | Plan::EdgeSeed { .. }
+        | Plan::EdgeEndpointSeed { .. }
         | Plan::Row
         | Plan::IndexSeek { .. }
         | Plan::RangeSeek { .. }
