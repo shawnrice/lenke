@@ -14378,6 +14378,229 @@ fn the_count_shortcut_declines_a_dotted_key() {
 ///
 /// Writes, DDL and transaction control are deliberately absent: they are not per-row read
 /// costs, and a bench that mixes them in measures the fixture rather than the operator.
+/// `UNWIND` over a ROW-VARYING list had NO correctness test in this engine — item 640 found
+/// that by planting a deliberately wrong row index (`keep.push(0)` instead of `keep.push(i)`)
+/// and watching the whole suite pass.
+///
+/// Every `Plan::Unwind` in this file was inside an `#[ignore]`d measurement harness, and the
+/// three `unwind` matches in `tests/gql_corpus.rs` are `catch_unwind`. So the operator that
+/// multiplies rows — the one place a wrong row index silently re-attributes every output row
+/// to the wrong input — was asserted nowhere.
+///
+/// These cover the VARYING path specifically. A constant list takes `unwind_rows`'s
+/// evaluate-once branch and returns before any of this, so a literal-list test would have left
+/// the same hole.
+#[test]
+fn unwind_over_a_varying_list_keeps_each_row_with_its_own_input() {
+    let mut b = Builder::default();
+    // Ragged on purpose: equal lengths cannot tell a correct row index from an off-by-one
+    // that happens to land inside the same block.
+    b.node(&["N"], &[("tags", Value::List(vec![n(10.0), n(11.0)]))]);
+    b.node(&["N"], &[("tags", Value::List(vec![n(20.0)]))]);
+    b.node(
+        &["N"],
+        &[("tags", Value::List(vec![n(30.0), n(31.0), n(32.0)]))],
+    );
+    let store = b.build();
+
+    let plan = Plan::Unwind {
+        input: Box::new(Plan::Scan { label: None }),
+        list: Box::new(prop(0, "tags")),
+        var_slot: 1,
+        ordinal: None,
+    };
+    let got = crate::exec::pull(&plan, &store, false).expect("unwind pulls");
+
+    assert_eq!(got.rows(), 6, "2 + 1 + 3 elements");
+
+    // The unwound element, in order.
+    // `Value` has no `PartialEq`, so compare Debug renderings.
+    let elems: Vec<String> = (0..got.rows())
+        .map(|i| format!("{:?}", got.slots[1].value_at(i)))
+        .collect();
+    let want: Vec<String> = [10.0, 11.0, 20.0, 30.0, 31.0, 32.0]
+        .iter()
+        .map(|x| format!("{:?}", n(*x)))
+        .collect();
+    assert_eq!(elems, want);
+
+    // AND each output row still carries ITS OWN input row's node. This is the assertion the
+    // engine had none of: `keep.push(0)` passes everything above and fails here.
+    let nodes: Vec<String> = (0..got.rows())
+        .map(|i| format!("{:?}", got.slots[0].value_at(i)))
+        .collect();
+    let distinct: std::collections::BTreeSet<String> = nodes.iter().cloned().collect();
+    assert_eq!(distinct.len(), 3, "three different source nodes: {nodes:?}");
+    assert_eq!(nodes[0], nodes[1], "the first node's two elements");
+    assert_ne!(nodes[1], nodes[2], "then the second node");
+    assert_eq!(nodes[3], nodes[5], "the third node's three elements");
+}
+
+#[test]
+fn unwind_over_a_varying_list_numbers_the_ordinal_per_row() {
+    let mut b = Builder::default();
+    b.node(&["N"], &[("tags", Value::List(vec![n(10.0), n(11.0)]))]);
+    b.node(&["N"], &[("tags", Value::List(vec![n(20.0)]))]);
+    let store = b.build();
+
+    for one_based in [false, true] {
+        let plan = Plan::Unwind {
+            input: Box::new(Plan::Scan { label: None }),
+            list: Box::new(prop(0, "tags")),
+            var_slot: 1,
+            ordinal: Some((2, one_based)),
+        };
+        let got = crate::exec::pull(&plan, &store, false).expect("unwind pulls");
+        let ords: Vec<String> = (0..got.rows())
+            .map(|i| format!("{:?}", got.slots[2].value_at(i)))
+            .collect();
+        let base = f64::from(u8::from(one_based));
+        let want: Vec<String> = [base, base + 1.0, base]
+            .iter()
+            .map(|x| format!("{:?}", n(*x)))
+            .collect();
+
+        // RESTARTS at each input row — it is the position within that row's list, not a
+        // running counter over the output.
+        assert_eq!(ords, want, "one_based = {one_based}");
+    }
+}
+
+#[test]
+fn unwind_over_a_varying_list_handles_null_and_non_list_values() {
+    let mut b = Builder::default();
+    b.node(&["N"], &[("tags", Value::List(vec![n(1.0)]))]);
+    b.node(&["N"], &[("tags", Value::Null)]); // a NULL list contributes NO rows
+    b.node(&["N"], &[("tags", n(7.0))]); // a non-list value is a SINGLETON list
+    b.node(&["N"], &[("tags", Value::List(Vec::new()))]); // an EMPTY list, also no rows
+    let store = b.build();
+
+    let plan = Plan::Unwind {
+        input: Box::new(Plan::Scan { label: None }),
+        list: Box::new(prop(0, "tags")),
+        var_slot: 1,
+        ordinal: None,
+    };
+    let got = crate::exec::pull(&plan, &store, false).expect("unwind pulls");
+
+    assert_eq!(got.rows(), 2, "one element, then the singleton");
+
+    let elems: Vec<String> = (0..got.rows())
+        .map(|i| format!("{:?}", got.slots[1].value_at(i)))
+        .collect();
+    let want: Vec<String> = [1.0, 7.0].iter().map(|x| format!("{:?}", n(*x))).collect();
+    assert_eq!(elems, want);
+}
+
+#[test]
+fn unwind_over_an_empty_input_is_empty() {
+    let b = Builder::default();
+    let store = b.build();
+
+    let plan = Plan::Unwind {
+        input: Box::new(Plan::Scan { label: None }),
+        list: Box::new(prop(0, "tags")),
+        var_slot: 1,
+        ordinal: None,
+    };
+    let got = crate::exec::pull(&plan, &store, false).expect("unwind pulls");
+
+    assert_eq!(got.rows(), 0);
+}
+
+/// What does `UNWIND <a list PROPERTY>` cost, and how much of it is the per-row CLONE?
+///
+/// `plan_cost_by_operator` prices `Unwind` over a literal list, where item 640's slope showed
+/// two separable costs: ~21 ns per property read inside the list, and a FIXED ~27 ns/row for
+/// any non-constant list, independent of item count. The fixed part is the interesting one —
+/// `unwind_rows` evaluates the list into a `Value::List` per row and then `value_at(i)` hands
+/// it back OWNED, so the `Vec<Value>` is built once and cloned once per row.
+///
+/// Over a 2-element literal that is two numbers copied. Over a STORED LIST PROPERTY it is the
+/// whole list, so the cost should scale with its LENGTH — which the literal fixture cannot
+/// show, because its length and its item count are the same knob.
+///
+/// So this sweeps the length with the ROW COUNT and the OUTPUT row count both held fixed:
+/// 200,000 output rows in every row of the table, from `ROWS / len` input rows each carrying
+/// a list of `len`. A per-row clone shows as a cost that RISES with length even though the
+/// work per output row is identical; a cost that is flat refutes the clone as the mechanism.
+///
+/// The CONSTANT-list column is the control the clone cannot reach: `unwind_rows` evaluates an
+/// invariant list once, so that column should stay flat whatever the length does.
+#[test]
+#[ignore = "measurement harness: cargo test --release -- --ignored --nocapture unwind_cost_by_list_length"]
+fn unwind_cost_by_list_length() {
+    use std::time::Instant;
+    const REPS: u32 = 7;
+    const OUT: usize = 200_000;
+
+    println!(
+        "{:<34}{:>10}{:>10}{:>10}",
+        "case", "total us", "ns/out", "rows"
+    );
+
+    for len in [1usize, 4, 16, 64] {
+        let rows = OUT / len;
+        let mut b = Builder::default();
+        let items: Vec<Value> = (0..len).map(|j| n(j as f64)).collect();
+
+        for _ in 0..rows {
+            b.node(&["N"], &[("tags", Value::List(items.clone()))]);
+        }
+
+        let store = b.build();
+        let scan = || Plan::Scan { label: None };
+
+        let cases: Vec<(&str, Plan)> = vec![
+            (
+                "property list",
+                Plan::Unwind {
+                    input: Box::new(scan()),
+                    list: Box::new(Expr::Prop {
+                        slot: 0,
+                        key: "tags".to_string(),
+                    }),
+                    var_slot: 1,
+                    ordinal: None,
+                },
+            ),
+            (
+                // The control: an invariant list takes `unwind_rows`'s evaluate-once path, so
+                // nothing here is cloned per row and the length must not matter.
+                "CONSTANT list (control)",
+                Plan::Unwind {
+                    input: Box::new(scan()),
+                    list: Box::new(Expr::List {
+                        items: items.iter().cloned().map(Expr::Lit).collect(),
+                    }),
+                    var_slot: 1,
+                    ordinal: None,
+                },
+            ),
+        ];
+
+        for (name, plan) in cases {
+            let mut best = u128::MAX;
+            let mut out_rows = 0;
+
+            for _ in 0..REPS {
+                let t0 = Instant::now();
+                let got = crate::exec::pull(&plan, &store, false).expect("plan runs");
+                best = best.min(t0.elapsed().as_nanos());
+                out_rows = got.rows();
+            }
+
+            println!(
+                "{:<34}{:>10.1}{:>10.2}{:>10}",
+                format!("len {len:>3}  {name}"),
+                best as f64 / 1000.0,
+                best as f64 / out_rows as f64,
+                out_rows
+            );
+        }
+    }
+}
+
 #[test]
 #[ignore = "measurement harness: cargo test --release -- --ignored --nocapture plan_cost_by_operator"]
 fn plan_cost_by_operator() {
@@ -14734,6 +14957,35 @@ fn plan_cost_by_operator() {
                 list: Box::new(Expr::List {
                     items: vec![num(), num()],
                 }),
+                var_slot: 1,
+                ordinal: None,
+            },
+        ),
+        // THE SLOPE PAIR. The two rows above differ by 13.7x, but they differ in TWO ways at
+        // once — the constant one reads no property and emits the same list every row — so the
+        // ratio prices nothing on its own. These give the per-ITEM cost as a difference at a
+        // fixed row count: 2-element minus 1-element, on each side, is one list item.
+        //
+        // Added because `Aggregate GROUP BY num` reads a property at 6.08 ns/row INCLUDING the
+        // grouping, while the 2-element varying list appeared to pay ~34 ns per read. Either
+        // the list path is genuinely slower per read or those two numbers are not comparable,
+        // and a slope says which without guessing.
+        (
+            "Unwind (1-element CONSTANT list)",
+            Plan::Unwind {
+                input: Box::new(scan()),
+                list: Box::new(Expr::List {
+                    items: vec![Expr::Lit(Value::Num(1.0))],
+                }),
+                var_slot: 1,
+                ordinal: None,
+            },
+        ),
+        (
+            "Unwind (1-element list)",
+            Plan::Unwind {
+                input: Box::new(scan()),
+                list: Box::new(Expr::List { items: vec![num()] }),
                 var_slot: 1,
                 ordinal: None,
             },

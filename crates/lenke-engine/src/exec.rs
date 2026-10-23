@@ -7557,6 +7557,55 @@ fn unwind_rows(
         return Ok((keep, elems, ords));
     }
     let lists = eval(list, store, batch)?;
+
+    // MOVE each row's list out of the evaluated column rather than CLONING it back out.
+    // `value_at` returns an OWNED `Value`, so the `Vec<Value>` that `eval` just built was
+    // copied a second time for every row — measured at ~9 ns PER ELEMENT against the
+    // constant-list control (item 640): 11.3 ns/element for a stored list property where the
+    // invariant path, which copies each element once, pays 2.4.
+    //
+    // Only `Col::Gen` can hold a list; a typed column (`Num`/`Str`/…) is one scalar per row
+    // and takes the singleton-list branch below, where there is nothing to move. The length
+    // check is not ceremony: a folded constant could evaluate to a shorter column, and
+    // zipping that against `n` rows would silently drop rows.
+    if let Col::Gen(vals) = lists {
+        if vals.len() == n {
+            for (i, v) in vals.into_iter().enumerate() {
+                let items: Vec<Value> = match v {
+                    Value::List(v) => v,
+                    Value::Null => Vec::new(),
+                    scalar => vec![scalar], // a non-list value is a singleton list
+                };
+
+                for (j, e) in items.into_iter().enumerate() {
+                    keep.push(i);
+                    elems.push(e);
+                    if let Some((_, one_based)) = ordinal {
+                        ords.push(Value::Num((j + usize::from(*one_based)) as f64));
+                    }
+                }
+            }
+
+            return Ok((keep, elems, ords));
+        }
+
+        return unwind_rows_from_col(&Col::Gen(vals), n, ordinal, keep, elems, ords);
+    }
+
+    unwind_rows_from_col(&lists, n, ordinal, keep, elems, ords)
+}
+
+/// The per-row read for a column `unwind_rows` could not consume: a typed column (one scalar
+/// per row) or the length-mismatch guard. Split out so the moving path above stays a straight
+/// loop rather than a branch inside one.
+fn unwind_rows_from_col(
+    lists: &Col,
+    n: usize,
+    ordinal: &Option<(usize, bool)>,
+    mut keep: Vec<usize>,
+    mut elems: Vec<Value>,
+    mut ords: Vec<Value>,
+) -> Result<UnwoundRows, String> {
     for i in 0..n {
         let items: Vec<Value> = match lists.value_at(i) {
             Value::List(v) => v,

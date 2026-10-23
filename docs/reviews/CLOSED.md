@@ -11580,3 +11580,127 @@ faster route for an identical answer" — is one where a green suite can never b
 Four added for the anonymous shape, including its IS-NULL case (`-[:E {w: null}]->` matching a
 stored null AND an absent key) and the composition with a far-node constraint, bringing this
 file to 21.
+
+## 640 — UNWIND stops cloning every row's list (1.34x), and the operator turns out to have had NO native correctness test at all
+
+**FIXED (native).** The brief asks for both engines and items 635-639 were all TypeScript, so this
+priced the 24 streaming operator variants instead. No `MISSING` rows — but one pair stood out,
+and reading it correctly took a second harness.
+
+### The 13.7x headline priced nothing; the SLOPE did
+
+`plan_cost_by_operator` showed `Unwind (2-element CONSTANT list)` at 1067.8 ns against
+`Unwind (2-element list)` at 14617.8 — **13.7x at the same output row count**. That ratio is
+not evidence: the constant case reads no property AND takes an evaluate-once path, so the two
+rows differ in two ways at once.
+
+Adding 1-element cases gives the per-item cost as a difference instead:
+
+|          | 1-element | 2-element | per item           |
+| -------- | --------- | --------- | ------------------ |
+| CONSTANT | 597.7     | 1108.8    | 511 (2.56 ns/row)  |
+| varying  | 10173.1   | 14898.0   | 4725 (23.6 ns/row) |
+
+Two separable costs, where the ratio showed one: ~21 ns per property read inside a list, and a
+**fixed ~27 ns/row for any non-constant list** (intercepts 5448 against 87), independent of
+item count.
+
+### The shape that matters is a stored list, and the corpus had no bench for it
+
+A literal list cannot vary its LENGTH independently of its item count, so a second harness
+(`unwind_cost_by_list_length`) sweeps a list PROPERTY with the output row count pinned at
+200,000. `examples/README.md` and the whole corpus have no UNWIND or list coverage, so this
+question was genuinely unasked rather than re-derived.
+
+Per INPUT row, with the constant list as the control the change cannot reach (it returns early
+on the invariant path):
+
+| len | property list | control |
+| --- | ------------- | ------- |
+| 1   | 48.5 ns       | 3.4     |
+| 4   | 80.1          | 10.4    |
+| 16  | 211.4         | 39.0    |
+| 64  | 754.6         | 153.6   |
+
+**~11.3 ns per element against the control's ~2.4** — about 9 ns per element of pure copying,
+roughly three quarters of the cost at length 64.
+
+### The fix, and why it is a MOVE rather than a cheaper copy
+
+`unwind_rows` evaluated the list into a `Col::Gen` of `Value::List` and then called
+`value_at(i)`, which returns an OWNED `Value` — so the `Vec<Value>` that `eval` had just built
+was copied a second time for every row. The column is owned here, so each row's list can simply
+be MOVED out of it. Nothing is cloned at all.
+
+A typed column (`Num`/`Str`/…) is one scalar per row and keeps the per-row read, split into
+`unwind_rows_from_col` so the moving path stays a straight loop.
+
+### 🛑 The first "after" number was 1.62x and that was wrong
+
+The control moved too — 2.40 → 2.00 ns/element — and the control is a path this change cannot
+reach. Run-to-run variance proved to be ~10%, so the baseline was re-measured three times. With
+the control reading **2.20 on both sides**: 10.68 → 7.96 ns, **1.34x**. The original single-run
+baseline of 11.79 was 10% high.
+
+### 🛑🛑 The mutation oracle was BLIND, and what it hid was worse
+
+The first mutation run reported a confident **0/6**. The harness piped `cargo test` into
+`tail -30`, so `returncode` was TAIL's — always 0. **That is precisely the trap CLAUDE.md
+records for gates** ("piping clippy into grep takes the exit status from grep… that has let
+broken lint through twice"), reproduced inside the one script whose entire job is detecting
+failure.
+
+Fixing it and then PROVING IT KILLS — the step skipped the first time — exposed the real
+problem. A deliberately broken `keep.push(0)` still exited 0:
+
+**`UNWIND` had no correctness coverage in the native engine whatsoever.** Every `Plan::Unwind`
+in `exec/tests.rs` sat inside an `#[ignore]`d measurement harness, and the three `unwind`
+matches in `tests/gql_corpus.rs` are `catch_unwind`. The operator that MULTIPLIES rows — where
+a wrong row index silently re-attributes every output row to the wrong input — was asserted
+nowhere. A perf change had landed in a path that could have been broken outright and stayed
+green.
+
+Four tests now cover the VARYING path specifically (a constant list returns early, so a
+literal-list test would have left the same hole): ragged lengths 2/1/3 with each output row
+checked against ITS OWN input node, ordinality restarting per row in both `one_based` settings,
+a null list and an empty list contributing no rows while a non-list scalar is a singleton, and
+an empty input.
+
+### Teeth: 4 of 6, with BOTH survivors predicted in advance
+
+Under `timeout` + the 16G cgroup cap, pristine copy under `target/`, restored before each
+mutant, every pattern asserted to appear exactly once — the ordinal-offset pattern matched 3x
+on the first attempt and was correctly reported SKIPPED rather than mutating the wrong site.
+
+| mutant                                             |                           |
+| -------------------------------------------------- | ------------------------- |
+| the row index stops tracking the input row         | CAUGHT                    |
+| the ORDINAL stops being emitted                    | CAUGHT                    |
+| the ordinal loses its one-based offset             | CAUGHT                    |
+| a NULL list becomes a singleton instead of no rows | CAUGHT                    |
+| the `vals.len() == n` guard                        | SURVIVED — **INERT**      |
+| the moving path itself                             | SURVIVED — **equivalent** |
+
+Both survivors were labelled equivalence probes BEFORE the run, and the length guard's
+inertness was established from `eval`'s own contract rather than inferred from its survival:
+`eval` returns a column of exactly `batch.rows()`, and the empty-batch case returns an empty
+`Col::Gen` where `0 == n` holds too. So there is no reachable input where the guard changes
+behaviour. **It stays** — it is what preserves the old `value_at` behaviour if that contract
+ever changes — but it is defence in depth, not a tested line.
+
+The moving path itself is answer-equivalent by construction: falling through to `value_at`
+gives identical rows, only slower. Guarded by the MEASUREMENT, not by a test.
+
+### The pattern is at FOUR call sites, not one
+
+`value_at` deep-copying a list is a known cost class: a prior item measured it at **~73 ns a
+call** over 599,998 rows and fixed it for `size()`/`cardinality()` with a by-reference arm.
+Grepping found two more still paying it:
+
+- **`Expr::Index`** (`evaluator.rs:683`) — clones the WHOLE list to read ONE element, turning an
+  O(1) read into O(len) copying. The worst of the four.
+- **`Expr::In`** (`:929`) — clones the haystack to scan it.
+
+Both are recorded OPEN rather than folded in here: the measured scope of this item is UNWIND,
+and `Expr::Index` deserves its own pricing. With four sites of one pattern, the eventual fix is
+probably a by-reference accessor on `Col` rather than a fifth individual patch.
