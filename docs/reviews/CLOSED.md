@@ -11150,3 +11150,121 @@ engine had a real 2.1x spelling gap and native had none, because native's archit
 the whole class out. **An engine that lowers two spellings to one plan cannot have an
 equivalent-spelling bug, so the probe that hunts them is TS-only by construction** — worth
 knowing before writing native groups for it.
+
+## 635 — the numeric seek group's 1.3x is the INSTRUMENT, not a spelling gap: REFUTED, and the probe gains a null control so the next reader cannot repeat it
+
+**REFUTED, and a defect fixed in the thing that reported it.** Item 578 left a clause-vs-inline
+gap open on a seeked NUMERIC key, and the previous tick had measured it at 1.30/1.33/1.30x
+across three separate processes — stable enough to look like a finding. It is not one. At a
+size where the harness is actually quiet the three spellings converge, and the 1.3x was a ratio
+between ~2ms timings.
+
+### What the chase cost, in the order it went wrong
+
+Every step below was measured, and each one refuted the step before it.
+
+1. **`satisfies` call counts** (200,000 vertices, index on `k`) showed the clause form makes
+   **one** call per row carrying both conjuncts and both inline forms make **two**:
+
+   | spelling         | calls / 4000 rows | lists                                 |
+   | ---------------- | ----------------- | ------------------------------------- |
+   | clause           | 4000              | `eq` + `cmp`, one merged predicate    |
+   | inline `{k: $k}` | 8000              | `props` on one call, `cmp` on another |
+   | inline-`WHERE`   | 8000              | `eq` on one call, `cmp` on another    |
+
+   That corrected the tick-before hypothesis (a redundant re-check of the seeded equality) and
+   replaced it with a better one: a seek-validation call the clause form does not pay.
+
+2. **Dropping the second conjunct** showed the bare inline form is NOT slower (2.08ms against
+   the clause's 2.46) — so there is no standing seek-validation tax, and the gap needs the
+   second conjunct to appear at all.
+
+3. **Removing the index** made all three converge (0.95-1.01x at ~53ms). Consistent with the
+   seek being involved — and the first reading in the whole chase taken at a duration where the
+   harness is quiet.
+
+4. **The second index was the trigger.** My repro indexed only `k`; the probe indexes `k` AND
+   `s`. Adding it reproduced the gap at **1.40x / 1.39x**, tight across three alternated rounds,
+   with the clause spelling flat (2.03 -> 1.94) as the control the change could not reach.
+
+5. **🛑 And then the range-hint mechanism was REFUTED.** The hypothesis was that `n.s >= ''`
+   over an indexed `s` builds a seed candidate covering all 1,000,000 rows that the seek can
+   only ever discard. Against a third property `t` holding byte-identical data and NOT indexed:
+
+   | second conjunct        | clause | inline | in-WHERE |
+   | ---------------------- | ------ | ------ | -------- |
+   | `n.s >= ''` (indexed)  | 1.00x  | 1.05x  | 1.11x    |
+   | `n.t >= ''` (NO index) | 1.00x  | 1.08x  | 1.13x    |
+
+   Indistinguishable. The indexedness of the second conjunct is not what is being paid for.
+
+6. **🛑 And the 1.40x did not reproduce against its own script** — a second run of the identical
+   file gave **1.19x / 1.22x**.
+
+### The instrument was the problem, and raising the reps was never going to fix it
+
+Eight readings, same question:
+
+| fixture                                    | inline    | in-WHERE |
+| ------------------------------------------ | --------- | -------- |
+| index on `k` only                          | 0.97x     | 0.94x    |
+| `k`+`s` indexed, run 1                     | **1.40x** | 1.39x    |
+| `k`+`s` indexed, run 2                     | 1.19x     | 1.22x    |
+| third property present, indexed conjunct   | 1.05x     | 1.11x    |
+| third property present, unindexed conjunct | 1.08x     | 1.13x    |
+
+**And the null control was sitting in the raw output the whole time, unread.** In the run that
+produced the 1.40x, the CLAUSE spelling's own three rounds were **1.86 / 4.35 / 1.76 ms** — a
+**2.47x self-ratio, larger than the 1.40x gap it was serving as the control for.** The same
+case, the same process, nothing varying but the round. Reading only the per-case `min` hid it:
+a min-of-N is exactly the statistic that makes a noisy series look settled. Every table in this
+item was printed with its rounds visible and I still read the summary column.
+
+The direction is consistent and the magnitude is not, on a query taking ~2ms. That is
+CLAUDE.md's _"anything under ~10% needs its own isolated harness"_, and I spent two ticks
+re-rolling it hoping it would settle. **The probe's own comment says the gap is a PER-ROW cost,
+so the fix is more ROWS, not more REPETITIONS** — and raising the rows has to keep the seek
+selective, or all that is measured is a scan.
+
+At 100,000 matches on 5,000,000 vertices — 2% selectivity, so the seek is genuinely taken:
+
+```text
+clause      32.72    33.64    32.58   min  32.58  1.00x
+inline      34.85    31.54    31.32   min  31.32  0.96x
+in-WHERE    36.42    31.62    35.43   min  31.62  0.97x
+scan ref   295.31   295.14   296.11  min 295.14  9.06x
+```
+
+Rounds agree to 0.3% where they ranged 1.91-4.43 before, the scan reference is **9.06x** slower
+so no spelling quietly lost its seek, and **the two inline spellings are marginally FASTER than
+the clause one.** There is no gap. An intermediate run at 200,000 matches of 1,000,000 (20%,
+past `SEEK_MARGIN`) agreed at 1.00x/1.05x but is the weaker evidence, because at that
+selectivity the seek may be declined and a hidden seek-path gap would not show.
+
+### The fix: a null control, because a comment cannot be read at the moment of the mistake
+
+`FLOOR_MS` defaults to 1ms and its doc already makes exactly the right argument — _"a ratio
+between two sub-millisecond timings is the clock's resolution, not a measurement"_. The numeric
+group runs 1.7-2.4ms, clears that floor, and still means nothing. Raising the constant would be
+a guess, and would silently drop groups.
+
+So the probe now carries **one query listed twice**, sharing the numeric group's shape and
+params so it sits at the same duration. Its spread is instrument noise by construction, it is
+printed on every run next to the groups it prices, and if it reads 1.3x then a group flagged at
+1.3x has measured nothing. A null control at a different cost would measure a different noise
+floor, which is why it is not a cheap O(1) query.
+
+Verified wired: at the default `SPELL_N` it prints immediately below the numeric group and both
+read `too fast` (0.06ms against 0.06/0.07ms), which is the correct behaviour and the point —
+**the control is under the floor exactly when the group it prices is**, so it becomes
+informative at the same raised size rather than offering a reassuring number at a size where
+neither means anything.
+
+### What this says about the method
+
+The brief says "always with a control the change cannot reach", and every tick of this chase
+had one — the clause spelling, which stayed flat throughout. **It was not enough, because a
+control proves an effect is not global; it says nothing about whether the effect is larger than
+the instrument's own variance.** That needs a null control: the same thing measured against
+itself. The three ticks here are the price of not having had one, and the probe now has one
+permanently.

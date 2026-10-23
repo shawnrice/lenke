@@ -826,6 +826,29 @@ const SEEK_GROUPS: [string, readonly string[], Record<string, unknown>][] = [
     { k: 2 },
   ],
   [
+    // THE NULL CONTROL: one query, listed twice. Its spread is instrument noise BY
+    // CONSTRUCTION — there is no spelling difference for it to measure — so it prices every
+    // other flag on this page. Read it first. If it reads 1.3x, a group flagged at 1.3x has
+    // measured nothing.
+    //
+    // It exists because the group ABOVE sent item 635 chasing a 1.30-1.33x that reproduced
+    // across three separate processes and still was not real. At SPELL_N=1000000 those members
+    // run 1.7-2.4ms, which clears `FLOOR_MS` and is still deep in the noise: the same script
+    // re-run gave 1.40x then 1.19x, and the same question at 100,000 matches on 5,000,000
+    // vertices — where the harness is quiet to 0.3% and the seek is 9x better than the scan —
+    // converged at 0.96x. `FLOOR_MS` at 1ms is NOT high enough to make a ratio mean something,
+    // and this control is the cheapest way to say so on every run rather than in a comment.
+    //
+    // It deliberately shares the numeric group's shape and params so it sits at the same
+    // duration: a null control at a different cost measures a different noise floor.
+    'NULL CONTROL: one query twice — this is the instrument, not a result',
+    [
+      "MATCH (n:P) WHERE n.k = $k AND n.s >= '' RETURN count(*) AS c",
+      "MATCH (n:P) WHERE n.k = $k AND n.s >= '' RETURN count(*) AS c",
+    ],
+    { k: 2 },
+  ],
+  [
     // FOUR spellings of a two-equality question where one key is SEEKED and the other filtered,
     // all returning the same rows — which is what lets `{k, s}` sit in a group at all (a member
     // with a different answer is reported as ANSWERS DIFFER, so the vacuous-conjunct group above
