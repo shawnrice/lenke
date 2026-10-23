@@ -12043,3 +12043,59 @@ correct and has now been attempted twice.
 
 `in_cost_by_list_length`, the harness, with the needle-at-index-0 control built in. The corpus
 had no `IN` bench.
+
+## 646 — "indexed writes are FASTER" is a screen false positive, and the 1000x instrument disagreement that chased it was MY UNIT ERROR
+
+**REFUTED, twice over. No engine change.** `bench:usage` read `write: append node` at 86.1k
+ops/s unindexed against 134.6k indexed — **1.56x FASTER with indexes**, which is backwards: an
+index is work a write has to do. Isolated, that inverts.
+
+### The screen row is refuted
+
+Same two graphs in one process, alternated, min of three rounds, 5,000 inserts a round:
+
+|                   | µs/op | ops/s      |
+| ----------------- | ----- | ---------- |
+| literal, NO index | 6.21  | 161.1k     |
+| literal, indexed  | 8.15  | **122.7k** |
+| params, NO index  | 1.27  | 785.4k     |
+| params, indexed   | 1.69  | **591.3k** |
+
+**Indexed is ~1.3x SLOWER for both spellings** — the expected direction, and consistent across
+the literal and parameterized forms. The screen's inversion does not reproduce. That is a false
+positive from a 250 ms best-of-3 screen, in the family this loop has now counted 23 of.
+
+### 🛑 And the "1000x disagreement" was arithmetic, not an engine mystery
+
+The first harness reported **6 ns an insert (168M ops/s)** against `bench:usage`'s 86-554k —
+three orders of magnitude — and two ticks went into hypotheses for it:
+
+1. **the write is lazy, applied after the timer closes.** Refuted: spread, bare `void` and
+   spread-plus-a-forcing-read all measured the same and all inserted correctly.
+2. **the forcing read forces nothing.** True but irrelevant —
+   `MATCH (u:User) RETURN count(*)` is an O(1) label-bucket read, the same path that makes the
+   probe's `label on start` group read 5082x.
+
+Neither was the cause. **`run()` returned MILLISECONDS per op and the column was labelled
+"us per op", then `1000 / m` was printed as "k ops/s" — two unit errors compounding to exactly
+1000x.** With the unit corrected the same harness reads 6.21 µs / 161k ops/s, which sits inside
+`bench:usage`'s range. **There was never a disagreement; `bench:usage` was right throughout.**
+
+### What this cost and what prevents it
+
+Two ticks, on a contradiction that did not exist, while twice stating the magnitude was
+implausible — 6 ns for an object allocation plus a map insert, and 11 ns for a parse the
+cache must miss (the query text carries `i`). **The implausibility was noticed and used to
+doubt the ENGINE rather than the harness.**
+
+Two cheap habits would have caught it at the first reading, and both are now in the file:
+
+- **Print the unit the number actually has.** The conversion is where it went wrong, so the
+  label has to be derived from the arithmetic, not written from intent.
+- **Scale the op count.** Total time tracking `OPS` is what finally produced trustworthy
+  numbers (24.79 ms at 1k, 122.44 at 10k, 824.41 at 100k) and would have shown the per-op figure
+  was off by 1000x at a glance.
+
+A third, already in this repo's guidance and skipped: `query()` throws at CALL time for an
+invalid statement, so it is EAGER — one line that rules out the whole lazy-write hypothesis
+before any of it was built.
