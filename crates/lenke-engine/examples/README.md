@@ -242,3 +242,12 @@ build") and are enforced by the shared harness: min-of-N (never a mean),
 across the 200k–1M cache transition rather than trusting one point. Record a
 rejected optimization with its numbers next to the code it would have changed —
 several have been re-attempted for want of that note.
+
+**Scraping these tables is where the output bites back.** A row label is not unique and a
+column is not always a time, so a script that greps by label prefix and keeps the minimum can
+silently measure something else. Item 629 hit both in one run: `2-hop` prefix-matches
+`2-hop + filter` in `query/plan`, whose column is a **ratio** (1.68) rather than microseconds,
+and the min picked the ratio; `1-hop` and `2-hop` each also appear in **two** timing sections
+(`query/gql` and `query/counts`), so a min across them silently mixes two different shapes.
+Qualify by the `=== section ===` header, match the label EXACTLY, and take the first
+occurrence per run.
