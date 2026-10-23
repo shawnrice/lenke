@@ -14508,6 +14508,206 @@ fn unwind_over_an_empty_input_is_empty() {
     assert_eq!(got.rows(), 0);
 }
 
+/// The FUSED `<node>.<key>[<i>]` path (item 648) reads one element straight off the stored list
+/// and skips materializing a column of cloned lists. It is guarded by a PRE-SCAN that must send
+/// every other shape to the general path, so these pin the shapes where falling through wrongly
+/// would be a SILENT wrong answer rather than a slow one.
+///
+/// One fixture, every shape in it, so the pre-scan sees a MIXED column and must decline for all
+/// of them — a per-shape fixture would let the fast path answer each one in isolation and prove
+/// nothing about the guard.
+#[test]
+fn indexing_a_property_agrees_whatever_the_stored_value_is() {
+    let mut b = Builder::default();
+
+    // A plain list — the shape the fast path exists for.
+    b.node(
+        &["N"],
+        &[("v", Value::List(vec![n(10.0), n(11.0), n(12.0)]))],
+    );
+    // A RECORD and a MAP: `[...]` on these reads a FIELD by string key, not a position.
+    b.node(
+        &["N"],
+        &[(
+            "v",
+            Value::Record([("k".into(), n(99.0))].into_iter().collect()),
+        )],
+    );
+    b.node(
+        &["N"],
+        &[(
+            "v",
+            Value::Map(std::sync::Arc::new(vec![(s("k"), n(88.0))])),
+        )],
+    );
+    // A SCALAR, an empty list, and the key ABSENT — all NULL under a numeric index.
+    b.node(&["N"], &[("v", n(7.0))]);
+    b.node(&["N"], &[("v", Value::List(Vec::new()))]);
+    b.node(&["N"], &[("other", n(1.0))]);
+    let store = b.build();
+
+    let at = |idx: Expr| -> Vec<String> {
+        // `Plan::Project`, NOT `PathRecord`. The first version of these tests used PathRecord
+        // and read back 0.0 / 1.0 / 2.0 — the ROW INDEX — because PathRecord does not append the
+        // evaluated value as a column. That is the same wrong assumption that made item 641's
+        // first harness measure PathRecord's own floor instead of the expression.
+        let plan = Plan::Project {
+            input: Box::new(Plan::Scan { label: None }),
+            items: vec![(
+                "x".to_string(),
+                Expr::Index {
+                    base: Box::new(prop(0, "v")),
+                    index: Box::new(idx),
+                    elem: crate::ir::ElemKind::Plain,
+                },
+            )],
+        };
+        let got = crate::exec::pull(&plan, &store, false).expect("plan runs");
+        let col = got.slot(0);
+
+        (0..got.rows())
+            .map(|i| format!("{:?}", col.value_at(i)))
+            .collect()
+    };
+
+    // Index 0: the list yields its first element; everything else is NULL.
+    let zero = at(lit(n(0.0)));
+    assert_eq!(zero[0], format!("{:?}", n(10.0)), "the list");
+    for (i, got) in zero.iter().enumerate().skip(1) {
+        assert_eq!(
+            got,
+            &format!("{:?}", Value::Null),
+            "row {i} must be NULL: {zero:?}"
+        );
+    }
+
+    // Index 2 reaches the list's third element and nothing else.
+    let two = at(lit(n(2.0)));
+    assert_eq!(two[0], format!("{:?}", n(12.0)));
+
+    // OUT OF RANGE, NEGATIVE and NON-INTEGER are NULL even for the list.
+    for bad in [3.0, -1.0, 0.5] {
+        let got = at(lit(n(bad)));
+        assert_eq!(
+            got[0],
+            format!("{:?}", Value::Null),
+            "index {bad} must be NULL, got {got:?}"
+        );
+    }
+
+    // A STRING index reads the record's and the map's field, which is the behaviour the fast
+    // path must not swallow.
+    let by_key = at(lit(s("k")));
+    assert_eq!(by_key[1], format!("{:?}", n(99.0)), "the record field");
+    assert_eq!(by_key[2], format!("{:?}", n(88.0)), "the map entry");
+    assert_eq!(by_key[0], format!("{:?}", Value::Null), "a list has no 'k'");
+}
+
+/// An UNMATCHED `OPTIONAL MATCH` leaves the node slot holding the `u32::MAX` null sentinel, and
+/// `store.prop_ref(u32::MAX, …)` would index the column at 4,294,967,295 — an out-of-bounds
+/// PANIC, not a wrong answer. The fused path's `id != u32::MAX` test is what keeps that row off
+/// it, and mutation found the guard UNTESTED: removing it SURVIVED the whole suite because
+/// nothing put a sentinel in the slot and then indexed a list property.
+#[test]
+fn indexing_a_list_property_of_an_unmatched_optional_node_is_null() {
+    let mut b = Builder::default();
+    b.node(&["N"], &[("v", Value::List(vec![n(1.0), n(2.0)]))]);
+    let store = b.build();
+
+    // `:Nope` matches nothing, so `x` is the sentinel on every row.
+    let plan = opt_plan(
+        "MATCH (a:N) OPTIONAL MATCH (x:Nope) RETURN x.v[0] AS got, a.v[0] AS anchor",
+        &store,
+    );
+    let got = crate::exec::pull(&plan, &store, false).expect("the optional miss must not panic");
+
+    assert_eq!(got.rows(), 1);
+
+    let cells: Vec<String> = (0..got.slots.len())
+        .map(|c| format!("{:?}", got.slot(c).value_at(0)))
+        .collect();
+
+    // The unmatched side is NULL; the matched side still reads its element, which is what says
+    // the sentinel row was routed away WITHOUT disabling the path for everyone.
+    assert!(
+        cells.contains(&format!("{:?}", Value::Null)),
+        "the optional miss must be NULL: {cells:?}"
+    );
+    assert!(
+        cells.contains(&format!("{:?}", n(1.0))),
+        "the matched node must still index: {cells:?}"
+    );
+}
+
+#[test]
+fn indexing_an_all_list_column_takes_the_fused_path_and_still_agrees() {
+    // The pre-scan ADMITS this column, so this is the fast path proper. Ragged lengths, so an
+    // off-by-one in the bounds test shows up as a wrong value rather than the same value.
+    let mut b = Builder::default();
+    b.node(&["N"], &[("v", Value::List(vec![n(1.0), n(2.0), n(3.0)]))]);
+    b.node(&["N"], &[("v", Value::List(vec![n(4.0)]))]);
+    b.node(&["N"], &[("v", Value::List(vec![n(5.0), n(6.0)]))]);
+    let store = b.build();
+
+    let at = |i: f64| -> Vec<String> {
+        let plan = Plan::Project {
+            input: Box::new(Plan::Scan { label: None }),
+            items: vec![(
+                "x".to_string(),
+                Expr::Index {
+                    base: Box::new(prop(0, "v")),
+                    index: Box::new(lit(n(i))),
+                    elem: crate::ir::ElemKind::Plain,
+                },
+            )],
+        };
+        let got = crate::exec::pull(&plan, &store, false).expect("plan runs");
+        let col = got.slot(0);
+
+        (0..got.rows())
+            .map(|k| format!("{:?}", col.value_at(k)))
+            .collect()
+    };
+
+    let null = format!("{:?}", Value::Null);
+
+    assert_eq!(
+        at(0.0),
+        vec![
+            format!("{:?}", n(1.0)),
+            format!("{:?}", n(4.0)),
+            format!("{:?}", n(5.0))
+        ]
+    );
+    // Row 1 has ONE element, so index 1 is out of range for it alone.
+    assert_eq!(
+        at(1.0),
+        vec![
+            format!("{:?}", n(2.0)),
+            null.clone(),
+            format!("{:?}", n(6.0))
+        ]
+    );
+    // Only row 0 reaches index 2.
+    assert_eq!(
+        at(2.0),
+        vec![format!("{:?}", n(3.0)), null.clone(), null.clone()]
+    );
+
+    // THE BAD INDICES BELONG HERE, not only on the mixed fixture. Mutation found that gap: the
+    // mixed column makes the pre-scan DECLINE, so its out-of-range / negative / non-integer
+    // assertions exercise the GENERAL arm and said nothing about the fused one. Dropping the
+    // integer check SURVIVED until these were added — `0.5 as usize` is 0, so it would have
+    // returned element 0 for a fractional index.
+    for bad in [3.0, -1.0, 0.5, f64::NAN] {
+        assert_eq!(
+            at(bad),
+            vec![null.clone(), null.clone(), null.clone()],
+            "index {bad} must be NULL on every row"
+        );
+    }
+}
+
 /// What does `<needle> IN <a list PROPERTY>` cost, and how much of it is the per-row CLONE?
 ///
 /// `Expr::In` is the fourth site of the `value_at`-deep-copies-a-list pattern item 640 found:

@@ -2014,6 +2014,27 @@ impl Store {
             .map_or(Value::Null, |c| c.read(node as usize))
     }
 
+    /// A node's property BY REFERENCE, for the boxed (`Gen`) columns only — the ones whose
+    /// stored `Value` can be a list, record or map.
+    ///
+    /// [`prop`] returns an OWNED `Value`, so reading a list property CLONES the whole list. That
+    /// is fine when the caller wants the list, and item 645 showed the clone can even pay for
+    /// itself by compacting it before a scan. It is NOT fine when the caller wants ONE ELEMENT:
+    /// `n.tags[0]` then copies the list to read a single value, which item 641 measured at 191x
+    /// a plain property read (1360 ns/row against 7.1 at length 64) and named this accessor as
+    /// the way out.
+    ///
+    /// `None` for a typed column (`Num`/`Str`/`Dict`/`Bool`/`Temporal`), which holds no `Value`
+    /// to reference, and for an absent or null-at-this-node property. A caller that needs those
+    /// cases falls back to [`prop`] — this is a fast path, not a replacement.
+    #[must_use]
+    pub fn prop_ref(&self, node: u32, key: &str) -> Option<&Value> {
+        match self.props.get(key)? {
+            Column::Gen { data, present } if present[node as usize] => Some(&data[node as usize]),
+            _ => None,
+        }
+    }
+
     /// Read a node's value at a (possibly dotted) property PATH: the base property,
     /// then descend record sub-fields. A plain key reads exactly like [`prop`]. The
     /// scan-fallback twin of a dotted [`index_lookup`].

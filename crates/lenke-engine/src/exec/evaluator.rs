@@ -677,6 +677,55 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
             }
         }
         Expr::Index { base, index, elem } => {
+            // FUSED `<node>.<key>[<i>]`: read ONE element off the STORED list, instead of
+            // evaluating the base into a `Col::Gen` of CLONED lists and indexing that.
+            //
+            // The change item 641 named as the real target after refuting the borrow at the
+            // indexing site: that borrow removed the SECOND copy and left the dominant one —
+            // `eval(base)` materializes a cloned `Value::List` PER ROW, O(rows x len), before
+            // any index happens. 641 measured the shape at 1360 ns/row against 7.1 for a plain
+            // property read at length 64, which is 191x.
+            //
+            // NOT the shape item 645 refuted. That BORROWED a list in order to SCAN it and lost,
+            // because the clone was also compacting scattered storage into a contiguous buffer.
+            // Here exactly ONE element is read, so there is no scan for locality to help.
+            //
+            // The PRE-SCAN is the same device `size()`/`cardinality()` use a few arms up: a
+            // discriminant check per row with no allocation, so a column holding records, maps
+            // or scalars costs one pass and then takes the general path below — which stays the
+            // single implementation of every case this does not answer.
+            if let (crate::ir::ElemKind::Plain, Expr::Prop { slot, key }) = (elem, base.as_ref()) {
+                if let Col::Nodes(ids) = batch.slot(*slot) {
+                    let all_lists = ids.iter().all(|&id| {
+                        id != u32::MAX && matches!(store.prop_ref(id, key), Some(Value::List(_)))
+                    });
+
+                    if all_lists {
+                        let icol = eval(index, store, batch)?;
+                        let out: Vec<Value> = (0..batch.rows())
+                            .map(|i| {
+                                let Some(Value::List(items)) = store.prop_ref(ids[i], key) else {
+                                    return Value::Null; // the pre-scan proved this cannot happen
+                                };
+
+                                match icol.value_at(i) {
+                                    Value::Num(x)
+                                        if x >= 0.0
+                                            && x.fract() == 0.0
+                                            && (x as usize) < items.len() =>
+                                    {
+                                        items[x as usize].clone()
+                                    }
+                                    _ => Value::Null,
+                                }
+                            })
+                            .collect();
+
+                        return Ok(Col::Gen(out));
+                    }
+                }
+            }
+
             let bcol = eval(base, store, batch)?;
             let icol = eval(index, store, batch)?;
             // Index into the per-row list/record/map → the element value (or NULL).
