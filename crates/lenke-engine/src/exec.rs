@@ -5260,14 +5260,17 @@ fn force_per_row() -> bool {
 ///   that must not turn a working query into `E_RESOURCE_EXHAUSTED`. On any error the fast
 ///   path returns `None` and the per-row path runs, which re-raises anything genuinely wrong.
 ///
-/// `Optional` and a `Choose` with no `else` are not handled: their fallback is `source_of`, a
-/// WIDTH-1 batch mixed in among arm outputs of another width, and the per-row concat's
-/// handling of that is load-bearing. They take the per-row path until that is measured too.
+/// `Optional` and an else-less `Choose` fall back to the SOURCE element rather than to an arm
+/// (item 626). That is a width-1 batch, which is why they were deferred at 624 -- but every
+/// Gremlin branch arm is wrapped in a `Reconverge` to a uniform width-1 frontier, so the two
+/// agree by construction on the shapes this router actually serves, and the width check below
+/// keeps anything else on the per-row path instead of guessing.
 fn per_element_branch_whole_stream(
     inb: &Batch,
     kind: &crate::ir::PerElemKind,
     cond: Option<&Plan>,
     arms: &[Plan],
+    source_slot: usize,
     store: &Store,
 ) -> Option<Result<Batch, String>> {
     if force_per_row() {
@@ -5293,6 +5296,20 @@ fn per_element_branch_whole_stream(
         let out = pull_body(arm, store, &sub).ok()?;
         let p = out.prov.as_ref()?;
         (p.len() == out.rows()).then_some(out)
+    };
+    // The pass-through fallback as a part: the SOURCE element of the given rows, width-1,
+    // carrying their provenance so the final counting sort places them by input row. The
+    // whole-stream twin of the per-row `source_of`.
+    let source_part = |rows: &[usize]| -> Batch {
+        let sub = seeded.gather(rows);
+        let col = sub
+            .slots
+            .get(source_slot)
+            .cloned()
+            .unwrap_or_else(|| Col::Gen(vec![Value::Null; sub.rows()]));
+        let mut b = Batch::of(vec![col]);
+        b.prov = sub.prov;
+        b
     };
     let served = |out: &Batch| -> Option<Vec<bool>> {
         let mut hit = vec![false; n];
@@ -5340,7 +5357,38 @@ fn per_element_branch_whole_stream(
                 }
             }
         }
-        _ => return None,
+        crate::ir::PerElemKind::Optional => {
+            // One arm over everything; the rows it did not serve pass their source through.
+            let out = run(&(0..n).collect::<Vec<_>>(), &arms[0])?;
+            let hit = served(&out)?;
+            if out.rows() > 0 {
+                parts.push(out);
+            }
+            let miss: Vec<usize> = (0..n).filter(|&i| !hit[i]).collect();
+            if !miss.is_empty() {
+                parts.push(source_part(&miss));
+            }
+        }
+        crate::ir::PerElemKind::Choose { has_else: false } => {
+            let cond = cond?;
+            if !arm_is_row_local(cond) {
+                return None;
+            }
+            let taken = served(&run(&(0..n).collect::<Vec<_>>(), cond)?)?;
+            let trues: Vec<usize> = (0..n).filter(|&i| taken[i]).collect();
+            if !trues.is_empty() {
+                // A row whose cond held but whose arm produced nothing contributes nothing,
+                // which is what the per-row path does with the arm's empty output.
+                let out = run(&trues, &arms[0])?;
+                if out.rows() > 0 {
+                    parts.push(out);
+                }
+            }
+            let falses: Vec<usize> = (0..n).filter(|&i| !taken[i]).collect();
+            if !falses.is_empty() {
+                parts.push(source_part(&falses));
+            }
+        }
     }
 
     // Every part has to agree on width, because the per-row concat's handling of a ragged set
@@ -5413,7 +5461,7 @@ fn per_element_branch_exec(
     // loop to run exactly as it did.
     if !track {
         if let Some(fast) =
-            per_element_branch_whole_stream(&inb, kind, cond.as_deref(), arms, store)
+            per_element_branch_whole_stream(&inb, kind, cond.as_deref(), arms, source_slot, store)
         {
             return fast;
         }

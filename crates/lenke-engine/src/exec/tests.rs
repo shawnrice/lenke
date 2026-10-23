@@ -14819,8 +14819,27 @@ fn the_whole_stream_branch_router_agrees_with_the_per_row_loop() {
         "g.V().choose(has('num', 2), out('R').limit(1), out('S'))",
         "g.V().coalesce(out('R').count(), out('S'))",
         "g.V().coalesce(out('R').fold(), out('S'))",
+        // optional() and an else-less choose: the SOURCE-fallback kinds. Deferred at 624 and
+        // routed at 626, so these moved from "must refuse" to "must agree" without the
+        // assertions changing -- which is the comparison doing its job. The interesting rows
+        // are the MISSES, where the arm produces nothing and the source passes through:
+        // vertex 3 has no edges at all and vertex 4 has only in-edges.
         "g.V().optional(out('R'))",
+        "g.V().optional(out('S'))",
+        "g.V().optional(out('R').has('num', 2))",
+        "g.V().optional(out('R')).values('name')",
         "g.V().choose(has('num', 2), out('R'))",
+        "g.V().choose(has('num', 99), out('R'))",
+        "g.V().choose(out('S'), out('R'))",
+        // A WIDER frontier, so the pass-through source is not slot 0. Every shape above
+        // enters the branch on a width-1 frontier, where reading slot 0 and reading
+        // `source_slot` are the same thing — mutation proved that leaves the source_slot
+        // read untested.
+        "g.V().outE('R').optional(inV())",
+        "g.V().outE('R').optional(outV())",
+        "g.V().outE('S').optional(inV())",
+        "g.V().outE('R').choose(has('num', 2), inV())",
+        "g.V().out('R').optional(out('S'))",
         // path() forces lineage, which is the hard `track` gate.
         "g.V().coalesce(out('R'), out('S')).path()",
     ];
@@ -15055,6 +15074,21 @@ fn plan_cost_by_control_flow_operator() {
             "PerElementBranch (choose)",
             "PerElementBranch",
             "g.V().choose(has('num', 1), out('R'), in('R'))",
+            true,
+        ),
+        // The two kinds item 624 deliberately LEFT on the per-row path: their fallback is
+        // `source_of`, a width-1 batch mixed in among arm outputs of another width. Priced
+        // here so the decision to defer them is a number rather than a shrug.
+        (
+            "PerElementBranch (optional)",
+            "PerElementBranch",
+            "g.V().optional(out('R'))",
+            true,
+        ),
+        (
+            "PerElementBranch (choose, no else)",
+            "PerElementBranch",
+            "g.V().choose(has('num', 1), out('R'))",
             true,
         ),
         ("Subgraph", "Subgraph", "g.V().outE('R').subgraph('sg').cap('sg')", true),
