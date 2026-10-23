@@ -4807,6 +4807,13 @@ export const compileRel = (rel: RelPattern): CRel => ({
   variable: rel.variable,
   label: rel.label,
   direction: rel.direction,
+  // `rel.variable` is deliberately NOT passed, and that is now a MEASURED decision rather than
+  // an omission (item 632). Passing it makes an inline rel `WHERE` lift to the element-direct
+  // `cmpProps`/`eqProps` exactly as a node's does — verified, `{props:0,where:false,cmp:1}`
+  // with it against `{props:0,where:true,cmp:0}` without — and it is worth 1%: the inline
+  // spelling measured 454.39ms before and 448.22 after, against the clause spelling's 212.42
+  // on the spelling probe's 600,000-edge fixture. The ~2x between those two spellings is a
+  // ROUTE difference, not a predicate-evaluator one, so lifting the predicate cannot close it.
   pred: compilePredicate(rel.properties, rel.where),
   quantifier: rel.quantifier,
 });

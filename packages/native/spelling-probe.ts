@@ -755,6 +755,44 @@ console.log(
  */
 const SEEK_GROUPS: [string, readonly string[], Record<string, unknown>][] = [
   [
+    // THE EDGE TWIN OF THE CLAUSE-VS-INLINE QUESTION, which this probe had no group for at all.
+    // Item 125 found a 4x gap between a clause `WHERE` and an inline `{k: v}` on a NODE
+    // predicate and every group here inherited that framing, so the same question about a
+    // RELATIONSHIP went unasked. Measured ad hoc first at 5.2x — `WHERE r.w = $v` 22.43 ns an
+    // edge against inline `{w: $v}` 118.71, both returning the identical 100 rows — which is
+    // this engine's named bug class and was invisible to its own instrument.
+    //
+    // `w` is `e % 5`, so an equality keeps a fifth of the edges: selective enough to measure a
+    // per-edge filter, far enough above `FLOOR_MS` to be compared at all.
+    'EDGE predicate: a param equality — clause vs inline vs inline-WHERE',
+    [
+      'MATCH (a:P)-[r:E]->(b) WHERE r.w = $w RETURN count(*) AS c',
+      'MATCH (a:P)-[r:E {w: $w}]->(b) RETURN count(*) AS c',
+      'MATCH (a:P)-[r:E WHERE r.w = $w]->(b) RETURN count(*) AS c',
+    ],
+    { w: 2 },
+  ],
+  [
+    // The ORDERING twin: `cmpProps` carries these where `eqProps` cannot, so they can diverge
+    // from the equality group above independently.
+    'EDGE predicate: an ordering comparison — clause vs inline-WHERE',
+    [
+      'MATCH (a:P)-[r:E]->(b) WHERE r.w >= $w RETURN count(*) AS c',
+      'MATCH (a:P)-[r:E WHERE r.w >= $w]->(b) RETURN count(*) AS c',
+    ],
+    { w: 2 },
+  ],
+  [
+    // And the PROJECTED form, because item 125's gap was on a count and a count can take a
+    // shortcut no projection can.
+    'EDGE predicate: a param equality, projected — clause vs inline',
+    [
+      'MATCH (a:P)-[r:E]->(b) WHERE r.w = $w RETURN r.w AS w',
+      'MATCH (a:P)-[r:E {w: $w}]->(b) RETURN r.w AS w',
+    ],
+    { w: 2 },
+  ],
+  [
     // The pair item 578 measured at 1.41x on the COUNT form (clause 21.3/20.8/21.8k ops/s
     // against inline 11.5/14.4/14.7k, three interleaved rounds at 1000 matches a seek). Native
     // showed no gap. Every member must SEEK; one that scans instead is the bug this exists for.
