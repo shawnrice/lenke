@@ -4158,7 +4158,17 @@ type CSeedHint =
    * `element_id` call and a string compare per vertex — measured at 4413 µs against
    * 1.75 µs for the same lookup on an indexed property.
    */
-  | { kind: 'id'; value: CompiledExpr };
+  | { kind: 'id'; value: CompiledExpr }
+  /**
+   * The node at one END of the edge whose external id is `value` — the single node a hop
+   * can start from when its REL variable's id is pinned (`MATCH (a)-[r:R]->(b) WHERE
+   * element_id(r) = $x`). `sourceEnd` picks which end: an `out` hop starts at the edge's
+   * `from`, an `in` hop at its `to`.
+   *
+   * Item 621, the TS twin of 620. Like every hint here it only narrows a SEED — `matchNode`
+   * and the residual `WHERE` re-validate — so it may be a superset and never a subset.
+   */
+  | { kind: 'edgeEnd'; value: CompiledExpr; sourceEnd: boolean };
 
 export type CNode = {
   variable?: string;
@@ -4700,6 +4710,23 @@ const collectHints = (where: Expr, into: HintMap): void => {
     default:
   }
 };
+
+/** Append seed hints to a node, or hand it back unchanged. */
+const withPin = (node: CNode, extra: readonly CSeedHint[]): CNode =>
+  extra.length > 0 ? { ...node, seedHints: [...(node.seedHints ?? []), ...extra] } : node;
+
+/**
+ * Can a segment's rel carry an edge-id pin (item 621)?
+ *
+ * The `quantifier` half is REDUNDANT today and kept deliberately: a quantified rel that binds
+ * a variable is compiled to a `unit` by `compilePath`, so `unit === undefined` already
+ * excludes it, and one that binds NO variable has no rel variable to look up. Mutation
+ * confirms it — deleting the check changes no answer. Kept because it states the REASON (`r`
+ * binds a LIST of edges, so `element_id(r)` is not one edge's id) where the `unit` check
+ * states only a mechanism.
+ */
+const pinnableSegment = (seg: CSegment): boolean =>
+  seg.unit === undefined && seg.rel.quantifier === undefined;
 
 /** Hints a predicate contributes to one variable (used for inline node WHERE). */
 const hintsForVariable = (where: Expr | undefined, variable: string | undefined): CSeedHint[] => {
@@ -6326,16 +6353,72 @@ const compileClause = (rawClause: Clause): CClause => {
             : node;
         };
 
+        // A REL variable's id hint names ONE node the hop can start from, so it attaches
+        // to the node BEFORE the segment rather than to a node of its own. `collectHints`
+        // has always keyed hints by variable, rel variables included — `attach` above only
+        // ever looks up NODE variables, so until item 621 a pinned edge id was collected and
+        // then dropped.
+        //
+        // Declines, each because the seed would be a SUBSET and LOSE rows rather than a
+        // superset — the one direction a seed must never go:
+        //   - `both`: either endpoint can start the walk, so pinning one drops the other's
+        //     row (the native twin declines `Dir::Both` for the same reason, item 620);
+        //   - a QUANTIFIED rel: the variable binds the LIST of a walk's edges, so
+        //     `element_id(r)` is not one edge's id at all.
+        //
+        // BOTH ends of the segment are pinned, not just the one the hop drives from. A
+        // pinned edge names each of its endpoints, so whichever side `orient` decides to
+        // start the walk from is seeded to one node. Pinning only the near side left
+        // `MATCH (a:P)-[r:R]->(b:P)` at 7710 us against the unlabelled spelling's 3.00 —
+        // measured — because with both ends labelled `orient` starts from the FAR node,
+        // which carried no pin. A cliff between two spellings of one query, and the same
+        // one item 620 had to close in the native engine for a different reason.
+        const pinFor = (
+          relVar: string | undefined,
+          direction: string,
+          wantSource: boolean,
+        ): CSeedHint[] => {
+          if (relVar === undefined || (direction !== 'out' && direction !== 'in')) {
+            return [];
+          }
+
+          // An `out` hop runs source -> target, an `in` hop target -> source.
+          const sourceEnd = direction === 'out' ? wantSource : !wantSource;
+
+          return (hints.get(relVar) ?? [])
+            .filter((h) => h.kind === 'id')
+            .map((h) => ({
+              kind: 'edgeEnd' as const,
+              value: (h as { value: CompiledExpr }).value,
+              sourceEnd,
+            }));
+        };
+
         for (let i = 0; i < patterns.length; i++) {
+          const segs = patterns[i].segments;
+          // Segment k starts at the previous node (or the pattern's start for k = 0).
+          // `near[k]` pins the node segment k starts FROM, `far[k]` the node it lands ON.
+          const near = segs.map((s) =>
+            pinnableSegment(s) ? pinFor(s.rel.variable, s.rel.direction, true) : [],
+          );
+          const far = segs.map((s) =>
+            pinnableSegment(s) ? pinFor(s.rel.variable, s.rel.direction, false) : [],
+          );
+
           patterns[i] = {
             ...patterns[i],
-            start: attach(patterns[i].start),
+            start: withPin(attach(patterns[i].start), near[0] ?? []),
             // SPREAD, not a rebuild. `CSegment` also carries `unit` — the compiled
             // repetition unit a quantified subpath walks — and listing the fields here
             // dropped it, so `walkSegments` never called `bindGroupVars` and every group
             // binding read as NULL. Only when the clause had a WHERE, which is what made it
             // look like a scoping rule rather than a lost field (item 571).
-            segments: patterns[i].segments.map((s) => ({ ...s, node: attach(s.node) })),
+            segments: segs.map((s, k) => ({
+              ...s,
+              // The node after segment k is BOTH that segment's landing node and the node
+              // segment k+1 starts from, so it can carry a pin from either.
+              node: withPin(attach(s.node), [...(far[k] ?? []), ...(near[k + 1] ?? [])]),
+            })),
           };
         }
       }

@@ -10193,3 +10193,78 @@ TS's GQL edge-id lookup remains **28,888 µs**. Its seed layer takes hints per N
 (`indexCandidates` is called from `seedVertices`), so pinning a hop by its EDGE id has no hook
 there — unlike item 618, where the hint mechanism already existed and only lacked a kind. The
 next item, and its design is genuinely open.
+
+## 621 — the TS twin of 620: an edge id pins a hop, 8,054x (and 12,068x for the `in` spelling)
+
+**FIXED (TS).** `collectHints` has always keyed hints by VARIABLE, rel variables included — so
+618's `asIdCompare` was already producing an `{kind:'id'}` hint for `element_id(r)`, and
+`attach` was already **dropping it**, because it only ever looks up NODE variables. A rel's
+pinned id names ONE node the hop can start from; `{kind:'edgeEnd', value, sourceEnd}` carries
+it to that node and `indexCandidates` resolves it with two O(1) `Map.get`s.
+
+Two dists in one process, alternated, min-of-3×7, 20,000 nodes / 100,000 edges:
+
+|                                 | before      | after    |                             |
+| ------------------------------- | ----------- | -------- | --------------------------- |
+| **EDGE id, out hop**            | 29449.63 µs | 3.66 µs  | **8054x**                   |
+| **EDGE id, in hop**             | 44427.08 µs | 3.68 µs  | **12068x**                  |
+| **EDGE id, both ends labelled** | 7889.67 µs  | 4.93 µs  | **1601x**                   |
+| undirected — declines           | 87900.70    | 88553.43 | 0.99x                       |
+| edge property, node id (618)    | —           | —        | 0.99x / 1.25x (a ~1 µs row) |
+
+**BOTH ends of a pinned segment are pinned, not just the one the hop drives from.** A pinned
+edge names each of its endpoints, so whichever side `orient` starts from is seeded to one node.
+Pinning only the near side left `MATCH (a:P)-[r:R]->(b:P)` at **7818 µs against the unlabelled
+spelling's 3.00** — measured — because with both ends labelled `orient` starts from the FAR
+node. Same class of cliff item 620 closed in the native engine, reached by a different route.
+
+**Declines** (each would make the seed a SUBSET and lose rows): an UNDIRECTED hop — either
+endpoint can start the walk, so the edge appears TWICE and pinning one drops a row (the native
+twin declines `Dir::Both` for the same reason); and a QUANTIFIED rel, whose variable binds a
+LIST of edges so `element_id(r)` is not one edge's id.
+
+### 🛑 THE TESTS WERE VACUOUS AND ONLY INSTRUMENTATION SHOWED IT — the third time in three items
+
+The first version asserted `getEdgeById` was called and the rows were right. All eight passed —
+**and a mutant that pinned the WRONG END passed them too.** Instrumenting `build()` showed why:
+
+> **`indexCandidates` is called by `estimateSeedFrom` as well as by `seedVertices`, so a hint
+> can be COSTED without ever being used.** The spy proved the hint was considered, not that it
+> seeded. On the shapes those tests used, `build()` was NEVER CALLED.
+
+Worse, it is shape-dependent, and the map had to be measured rather than reasoned about:
+
+| shape                                  | builds the seed?                        |
+| -------------------------------------- | --------------------------------------- |
+| `MATCH ()-[r:R]->() … RETURN r.w`      | YES                                     |
+| `MATCH ()<-[r:R]-() … RETURN r.w`      | YES (and picks the other end)           |
+| `MATCH (a)-[r:R]->() … RETURN a.k`     | YES                                     |
+| `MATCH (a:P)-[r:R]->() … RETURN a.k`   | YES                                     |
+| **`MATCH ()-[r:R]->(b) … RETURN b.k`** | **NO — a far-side shortcut answers it** |
+| `MATCH (a)-[r:R]->(b) … RETURN a.k`    | **NO**                                  |
+
+Rewritten on BUILDING shapes only, the inverted-end mutant is caught (4 failures). **Item 619b
+learned this at the exec layer one item earlier; 621 is the same lesson at the seed layer, and
+the common rule is: a spy on an input proves the input was read, not that the path ran —
+instrument the OUTPUT (`build()`), and verify per shape.**
+
+### Teeth: 3 of 5, and the two survivors are equivalent mutants
+
+Caught: the pin never fires (by the spy — the rows CANNOT see a missing optimization, so the
+two assertion kinds catch different mutants and both are needed); an undirected hop pinned; the
+end inverted.
+
+Survived, both recorded in the code rather than left as mysteries:
+
+- **a quantified rel pinned** — the `quantifier` check is REDUNDANT, because `compilePath`
+  compiles a variable-binding quantified rel to a `unit` and `unit === undefined` already
+  excludes it. Kept because it states the REASON where the `unit` check states a mechanism.
+- **`count: 1` unconditionally** — `count` is an ESTIMATE, not a guard: with no edge, `build`
+  yields EMPTY either way, so only the candidate choice and `orient`'s estimate differ.
+
+### OPEN
+
+`MATCH ()-[r:R]->(b) … RETURN b.k` and friends are answered by a far-side SHORTCUT that seeds
+its own way and never consults the pin — so those spellings still scan. That is a cliff between
+spellings of one query and the obvious follow-up; it is named here rather than left for the
+next person to rediscover.

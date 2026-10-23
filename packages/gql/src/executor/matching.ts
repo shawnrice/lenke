@@ -135,6 +135,28 @@ export const indexCandidates = function* (
     // Correctness does not require it here — a hint only narrows the seed and `matchNode`
     // re-validates, so even a wrong-typed probe would be a sound superset — but having the
     // two engines seed on the same shapes is worth more than the extra case.
+    // An edge-id pin: the hop can only start at one end of that edge (item 621). Two
+    // O(1) `Map.get`s — `getEdgeById` then the endpoint accessor — and at most one vertex.
+    // Checked before the `isIndexed` gate for the same reason the `id` hint is: there is no
+    // property key here, `edgesById`/`verticesById` are the index.
+    if (hint.kind === 'edgeEnd') {
+      const v = hint.value(env);
+
+      if (typeof v === 'string') {
+        const edge = graph.getEdgeById(v);
+        const sameEnd = hint.sourceEnd ? edge?.from : edge?.to;
+        const end = sameEnd ?? null;
+
+        // `count` is an ESTIMATE, not a guard: when the id resolves to no edge `build`
+        // yields EMPTY either way, so the answer is the same and only the candidate choice
+        // and `orient`'s estimate see the difference. Mutation confirms it (`count: 1`
+        // unconditionally survives) — recorded so the zero is not later read as load-bearing.
+        yield { count: end ? 1 : 0, build: () => (end ? new Set([end]) : EMPTY) };
+      }
+
+      continue;
+    }
+
     if (hint.kind === 'id') {
       const v = hint.value(env);
 
