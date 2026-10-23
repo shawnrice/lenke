@@ -12099,3 +12099,65 @@ Two cheap habits would have caught it at the first reading, and both are now in 
 A third, already in this repo's guidance and skipped: `query()` throws at CALL time for an
 invalid statement, so it is EAGER — one line that rules out the whole lazy-write hypothesis
 before any of it was built.
+
+## 647 — the search is exhausted in these families: all three pricing harnesses have NO `MISSING` row, the probe's page is clean, and `Subgraph`'s 78 ms is item 630's rendering cost
+
+**STATE OF THE SEARCH, recorded so the next pass does not re-derive it.** This repo's guidance
+warns that "three passes in one session re-derived a closed target", and five candidates this
+session were resolved by reading a store rather than by measuring. This is the sixth, plus the
+inventory.
+
+### All three pricing harnesses are fully priced
+
+| harness                              | variants                                           | `MISSING`                                                                                                                                     |
+| ------------------------------------ | -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `plan_cost_by_operator`              | 24 streaming + the 2 slope cases added at item 640 | none                                                                                                                                          |
+| `plan_cost_by_control_flow_operator` | 16                                                 | one, and it is DELIBERATE — `RepeatGroup {1,2} -> VarLength` prices the `opt` flattening and is kept as the control for the two rows below it |
+| `seed_cost_by_entry_point`           | 10                                                 | none                                                                                                                                          |
+
+So **"pick the biggest MISSING path" returns nothing** in any of them. Incidental result worth
+keeping: an id lookup is 64.06 ns against a unique-index seek's 107.77 — **1.68x cheaper**,
+which is the right direction for the standing requirement that id lookups work well.
+
+### The spelling probe's page is clean
+
+After items 638 and 642, and with item 643's per-cost gating, the only groups over 2x are
+`label on start` (which `CLOSED.md` records as CORRECT, not outstanding) and the product group,
+whose inline-props member item 644 measured at 1.89x and found BLOCKED by raise parity.
+
+### `Subgraph`, the biggest absolute operator cost, is NOT a target
+
+78.18 ms for 200,000 edges — the largest row in the control-flow table by an order of magnitude
+— is **~390 ns an edge**, and it is element RENDERING:
+
+- `subgraph_edge_value` per edge plus `node_result_value` per deduped endpoint;
+- item 630 priced that class at **~575 ns per node element** and showed it is _"already
+  optimized and already measured, in its own code comments"_ (items 390 and 391 hoisted the
+  per-node key `Value` construction and recorded the key-LENGTH axis);
+- item 341 names the only real lever — deferring rendering so `Rows` carry unrendered element
+  refs across the FFI boundary — as _"a real option, and a large API change, not a loop
+  tweak."_
+
+At ~390 ns for an edge record plus a deduped vertex record, `Subgraph` sits INSIDE that
+established rate, not above it. **The number is large because the work is large.**
+
+### One suspicion checked and refuted on the way
+
+The loop matches `Value::Num(x)` on the edge slot while the frontier is a `Col::Edges`, which
+looked like it would `continue` on every row and silently return an EMPTY subgraph — a wrong
+answer, not a slow one. `Col::value_at` yields `Value::Num(f64::from(id))` for both `Nodes` and
+`Edges`, so the match is correct. Refuted by one read.
+
+### What remains open, with its blocker
+
+- **`Expr::Index`'s O(rows × len) materialization** (item 641): `eval(base)` builds a `Col::Gen`
+  of cloned lists before indexing. 191x against a plain property read. Needs a by-reference
+  store accessor — `store.prop()` returns an owned `Value` — and item 645 established that
+  BORROWS lose at these sites while MOVES win.
+- **The inline-props element-direct pre-filter** (item 644): 50x the predicate evaluations,
+  1.89x, blocked because the pre-filter runs before binding and skipping it skips a raise.
+- **Deferred element rendering** (item 341): the lever behind `Subgraph`, `distinct node` and
+  every element-returning shape. A large API change.
+
+All three are real and none is a loop tweak. **The cheap, well-instrumented targets in these
+families are done**, and saying so is more useful than manufacturing one.
