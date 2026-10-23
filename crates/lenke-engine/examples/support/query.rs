@@ -192,6 +192,15 @@ pub fn run(cfg: &Cfg) {
                     "distinct node",
                     "MATCH (p:Person)-[:KNOWS]->(q) RETURN DISTINCT q",
                 ),
+                // THE CONTROL `distinct node` NEVER HAD: the same hop and the same element
+                // rows WITHOUT the dedup. At 117ms the distinct row is the most expensive in
+                // this group by an order of magnitude, and until this row existed there was
+                // no way to tell whether that is the dedup or simply the cost of producing
+                // ~1M rows and materializing 198,672 node elements.
+                (
+                    "hop node, NO distinct",
+                    "MATCH (p:Person)-[:KNOWS]->(q) RETURN q",
+                ),
                 (
                     "distinct prop",
                     "MATCH (p:Person)-[:KNOWS]->(q) RETURN DISTINCT q.city",
