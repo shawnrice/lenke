@@ -11000,9 +11000,91 @@ nothing; the inline spelling is 4.5x above it.** So there is no per-edge filter 
 back — the entire gap is the route the inline spelling takes, which is what makes the OPEN
 below a routing question and not a predicate one.
 
-### OPEN
+### OPEN — CLOSED at 633
 
 The ~2x is in which hop path each spelling takes. `relHasPredicate` is true for an inline rel
 predicate and the fused rungs consult it, which is the shape to check first — but which rung
 each spelling claims has NOT been instrumented, and item 622 is the standing reminder of what
 a plausible route story is worth before it is. Named, not claimed.
+
+## 633 — an inline rel `WHERE` reaches the one-hop tally: the two spellings now cost the SAME
+
+**FIXED (TS).** Item 632 measured the gap and named the route; this closes it. The guard was
+explicit and said it was unfinished:
+
+```ts
+// …the rel must still be plain — a rel predicate would need its own treatment.
+if (!plainRel(rel)) {
+  return null;
+}
+```
+
+The treatment is to stop needing one. An inline rel `WHERE` reading nothing but its own
+variable **IS** a `HopPred` with `relVar` set — exactly what the clause spelling becomes — so
+routing it there reuses every arm and every decline already in place (the degree-sum arms
+guard on `pred.relVar === undefined` and keep declining untouched).
+
+The result is an **in-run** comparison, which is what makes it immune to the cross-run drift
+that has bitten three items this session. Both spellings, one process, min of 9, 200,000
+vertices / 600,000 edges:
+
+|             | clause    | inline `WHERE` |           |
+| ----------- | --------- | -------------- | --------- |
+| `r.w = $w`  | 211.45 ms | 211.75         | **1.00x** |
+| `r.w >= $w` | 211.71    | 211.90         | **1.00x** |
+
+Against **448.22 ms before** for the ordering spelling, and the probe now reports **0 groups
+over 2x** where it reported 1. The clause spelling is the control the change cannot reach and
+it did not move (212.26 → 211.71); inline PROPERTIES are the second control, deliberately
+untouched (353.68 → 351.84).
+
+**Inline properties stay out, and the reason is a wrong answer rather than effort.** `{k: v}`
+is IS-NULL semantics, not `=`: `{w: null}` matches a stored null **and an absent key** — two
+edges in the test fixture — where `WHERE r.w = null` matches none. A `$param`'s value is
+unknown at compile time, so a synthesized `compare` would reintroduce item 210's "route two"
+divergence as a miscount.
+
+### 🛑 The first version DROPPED a predicate — 3 where the answer is 2
+
+Admission was INFERRED: `relInlineWhereOnly(rel) && pred?.relVar !== undefined`. But a CLAUSE
+`WHERE` reading the rel also sets `relVar`, so a query with BOTH predicates was admitted with
+only the clause one compiled, and the tally ignored the other. **That is the "silently
+IGNORED, which is a wrong answer rather than a slow one" trap this file warns about twice, and
+it was reintroduced while reading the warning.**
+
+Fixed with an explicit `relCarried` flag only the caller that compiled the predicate can set,
+plus a decline when both predicates are present — which is also precisely the prior behaviour.
+
+### Teeth: 5 of 6, over THREE rounds, and every survivor was a coincidence or inert
+
+- Round 1: **2/6**. Round 2: 3/6. Round 3: **5/6**.
+- **The free-variable check** survived round 1 because the correlated case returned 0 either
+  way. Its own fixture now has `w` equal to the source's `k` on exactly two edges — an answer
+  only reachable by reading `a.k` per edge.
+- **The QUANTIFIED guard** survived twice. The `w = 10` pair gave 3 for both `{1,1}` and
+  `{1,2}`, because no `w = 10` edge chains and a one-hop tally agrees with a var-length walk
+  by accident. With `w >= 5` they diverge — 5 against 9 — and the mutant dies.
+- **The PROPERTIES guard** survived twice because the mutant was INERT, not untested:
+  `relInlineWhereOnly` requires `r.where !== undefined` regardless, so dropping its properties
+  check only bites a rel carrying BOTH (`-[r:E {w: $w} WHERE r.w >= $lo]->`), where the
+  `WHERE` is carried and the properties are dropped. That shape is now a case.
+- **Survived, equivalent:** reverting admission to the inference. The caller declines when both
+  predicates are present, so the guard's strictness is unobservable — defence in depth, with
+  the caller's decline as the tested line and `relCarried` as the second.
+
+**A survivor is one of three things — equivalent, inert, or a test gap — and the results table
+cannot tell them apart.** The properties mutant read as a gap and was inert; the admission one
+reads as a gap and is equivalent. Both needed the mechanism traced, not the count re-read.
+
+### Two of my own expectations were wrong, and the tests failed rather than passing quietly
+
+- `{w: null}` → **2, not 1**: IS-NULL matches the stored null AND the absent key, and the
+  first draft forgot the second half — pointed, since that divergence is the whole reason
+  properties stay out of the tally.
+- quantified `{1,2}` with `w >= 10` → **3, not 4**: the three qualifying edges do not chain.
+- And `r.w = a.k` → **0, not 1**: no edge has `w` equal to its source's `k`. The engine was
+  right all three times.
+
+Also: the new branch put `patternCountOf` at a complexity of **38 against the limit of 35** —
+the same ceiling `inlineInteriorGate` was extracted for — so the synthesis lives in
+`relHopPred` for the same reason, recorded there.

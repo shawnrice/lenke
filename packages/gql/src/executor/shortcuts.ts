@@ -421,6 +421,63 @@ const inlineOf = (n: NodePattern): InlinePred | null | undefined => {
 };
 
 /**
+ * Whether `r` carries an inline `WHERE` and NOTHING else a tally cannot absorb — no inline
+ * properties, no quantifier — and that `WHERE` reads only the rel's own variable.
+ *
+ * The two guards mirror {@link inlineOf}'s for a node: an inline `WHERE` is evaluated with the
+ * element bound to its own variable, so it needs one, and it may read nothing else. A rel
+ * `WHERE` that reads another variable (`-[r:E WHERE r.w > a.k]->`) is a correlation, not a
+ * per-edge gate, and declines.
+ */
+const relInlineWhereOnly = (r: RelPattern): boolean => {
+  if ((r.properties?.length ?? 0) > 0 || r.quantifier !== undefined || r.where === undefined) {
+    return false;
+  }
+
+  if (r.variable === undefined) {
+    return false;
+  }
+
+  for (const name of freePredicateVars(r.where)) {
+    if (name !== r.variable) {
+      return false;
+    }
+  }
+
+  return true;
+};
+
+/**
+ * The `HopPred` a one-hop tally should run, folding in the rel's inline `WHERE` when there is
+ * one — or `null` to decline the shortcut entirely (item 633).
+ *
+ * Extracted rather than inlined at the call site because inlining it put `patternCountOf` at a
+ * complexity of 38 against the limit of 35, which is the same ceiling `inlineInteriorGate` was
+ * extracted for.
+ *
+ * BOTH predicates present DECLINES. They would have to be conjoined, and a tally that applied
+ * one and dropped the other is a wrong answer — measured 3 against the correct 2 when a first
+ * draft let that through. Declining is also exactly the behaviour before this item: `plainRel`
+ * was false, so `buildOneHopCount` returned null and the query took the general loop.
+ */
+const relHopPred = (
+  rel: RelPattern,
+  pred: HopPred | undefined,
+): { pred: HopPred | undefined; carried: boolean } | null => {
+  const relWhere = relInlineWhereOnly(rel) ? rel.where : undefined;
+
+  if (relWhere === undefined) {
+    return { pred, carried: false };
+  }
+
+  if (pred !== undefined) {
+    return null;
+  }
+
+  return { pred: { fn: compileExpr(relWhere), relVar: rel.variable }, carried: true };
+};
+
+/**
  * Split a clause `WHERE` into its conjuncts and bucket each by the ONE node variable it reads.
  * `null` if a conjunct reads none or several — a correlation across two positions is not a
  * per-vertex gate, and the whole pattern must then decline rather than drop a predicate.
@@ -1771,9 +1828,21 @@ const buildOneHopCount = <T>(
   rowOf: (n: number) => T,
   pred?: HopPred,
   /** The endpoint extras, bundled: three separate parameters exceeded the arity limit. */
-  ends?: { inNear?: InlinePred; inFar?: InlinePred; cstart?: CNode; cfar?: CNode },
+  ends?: {
+    inNear?: InlinePred;
+    inFar?: InlinePred;
+    cstart?: CNode;
+    cfar?: CNode;
+    /** The caller has compiled the rel's inline `WHERE` INTO `pred` (item 633). An explicit
+     *  flag rather than something inferred from `pred`: inferring it from `pred.relVar` let a
+     *  CLAUSE predicate that happens to read the rel admit a rel whose inline `WHERE` was
+     *  never carried, and the tally then counted 3 where the answer is 2 — the "silently
+     *  IGNORED, a wrong answer rather than a slow one" trap this file warns about twice,
+     *  caught by `inline-rel-count.test.ts`. */
+    relCarried?: boolean;
+  },
 ): CountOf<T> | null => {
-  const { inNear, inFar, cstart, cfar } = ends ?? {};
+  const { inNear, inFar, cstart, cfar, relCarried } = ends ?? {};
   const { rel, node } = seg;
 
   // `plainNode(node)` is deliberately NOT required: an inline endpoint constraint
@@ -1783,7 +1852,17 @@ const buildOneHopCount = <T>(
   // `both` is admitted only UNFILTERED and with no inline endpoint constraint — those arms all
   // walk with a captured `out: boolean`. The undirected arm below answers every label case
   // itself, because a `CountOf` closure has no way to decline once it is built (item 482).
-  if (!plainRel(rel)) {
+  // A rel carrying ONLY an inline `WHERE` is admitted when the caller has compiled it into
+  // `pred` with `relVar` set — the same shape the clause spelling arrives as, so every arm and
+  // every decline below works unchanged (the degree-sum arms guard on
+  // `pred.relVar === undefined`). Item 633; item 632 measured the gap this closes.
+  //
+  // INLINE PROPERTIES still decline, and not for want of effort: `{k: v}` is IS-NULL
+  // semantics rather than `=` — with a null value it matches a stored null where
+  // `r.k = null` matches nothing — and a `$param`'s value is unknown at compile time. A
+  // synthesized `compare` would reintroduce item 210's "route two" divergence as a WRONG
+  // ANSWER, so `relInlineWhereOnly` admits the `WHERE` form only.
+  if (!plainRel(rel) && relCarried !== true) {
     return null;
   }
 
@@ -3153,7 +3232,23 @@ const patternCountOf = <T>(
       return null;
     }
 
-    return buildOneHopCount(seg, start, rowOf, pred, { inNear: inStart, inFar, cstart, cfar });
+    // AN INLINE REL `WHERE` BECOMES THE SAME `HopPred` ITS CLAUSE TWIN DOES (item 633). Only
+    // when there is no clause `WHERE` already occupying `pred`: two predicates would have to
+    // be conjoined, and a tally that applied one and dropped the other is a wrong answer. The
+    // clause form keeps the route it has; this gives the inline form the same one.
+    const carried = relHopPred(seg.rel, pred);
+
+    if (carried === null) {
+      return null;
+    }
+
+    return buildOneHopCount(seg, start, rowOf, carried.pred, {
+      inNear: inStart,
+      inFar,
+      cstart,
+      cfar,
+      relCarried: carried.carried,
+    });
   }
 
   if (segments.length === 2) {
