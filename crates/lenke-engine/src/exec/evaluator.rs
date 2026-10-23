@@ -945,6 +945,37 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
                 return Ok(Col::Gen(out));
             }
             let hs = eval(haystack, store, batch)?;
+            // 🛑 BORROWING THE HAYSTACK INSTEAD OF `value_at` WAS TRIED AND REFUTED (item 645),
+            // and it is the SECOND site to refute it the same way (item 641 was `Expr::Index`).
+            //
+            // `value_at` returns an OWNED `Value`, so every row copies the WHOLE list before
+            // scanning it — and the scan needs a reference, not a copy. The cost is real: with a
+            // needle at index 0, where the scan exits immediately, a length-64 haystack still
+            // cost 1362 ns/row against the full scan's 1495, so ~91% is paid regardless of how
+            // far the scan runs. A plain property read is ~7 ns.
+            //
+            // Borrowing it measured, 100,000 rows, min of three on the baseline:
+            //
+            //        len 1    len 8     len 64
+            //   now   47.8     89.4     1494.6   ns/row
+            //   borrow 36.6    229.4    1390.2
+            //         1.33x   2.5x SLOWER 1.08x
+            //
+            // Hoisting the `Col::Gen` match out of the loop (so no per-row `Option`) changed
+            // nothing — 229.4 either way — so the per-row branch is not the cause.
+            //
+            // WHY, and it is the useful part: the BORROWED version is LINEAR in length
+            // (36.6 / 229.4 / 1390.2 is ~6x per 8x) which is what the scan should be, while the
+            // BASELINE is sublinear then explosive (47.8 / 89.4 / 1494.6). The clone is not pure
+            // waste — it COMPACTS the list into fresh contiguous memory, and each stored
+            // `Value::List`'s `Vec` was allocated at insert time among other allocations. At mid
+            // lengths that locality is worth more than the copy; only at 64 does the copy win,
+            // and then by 1.08x.
+            //
+            // So this is not a tuning miss at one call site: the `value_at`-clones-a-list pattern
+            // item 640 named at four sites is NOT uniformly a defect. `unwind_rows` (640) gained
+            // 1.34x from a MOVE — which keeps the contiguous buffer — where both BORROWS lost.
+            // Any future attempt here should move or compact, not borrow.
             let out: Vec<Value> = (0..n)
                 .map(|i| {
                     let needle = nd.value_at(i);

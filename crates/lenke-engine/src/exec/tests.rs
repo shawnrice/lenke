@@ -14508,6 +14508,78 @@ fn unwind_over_an_empty_input_is_empty() {
     assert_eq!(got.rows(), 0);
 }
 
+/// What does `<needle> IN <a list PROPERTY>` cost, and how much of it is the per-row CLONE?
+///
+/// `Expr::In` is the fourth site of the `value_at`-deep-copies-a-list pattern item 640 found:
+/// `hs.value_at(i)` clones the WHOLE haystack to scan it. Unlike `Expr::Index` (item 641,
+/// where borrowing REGRESSED 2.25x in the middle of a length sweep) this site needs every
+/// element anyway, so a borrow would remove a copy without changing the work — which is the
+/// shape that DID hold for `unwind_rows`.
+///
+/// Prediction, to be refuted or not: cost rises with haystack LENGTH faster than the scan
+/// itself requires, and the excess is the copy.
+///
+/// Two controls:
+///   missing   — a needle that is in NO list, so the scan always runs to the end. The length
+///               term is then the same for both and only the copy differs.
+///   first     — a needle at index 0, where the scan exits immediately but the COPY is still
+///               the whole list. If the copy is the cost, `first` tracks `missing`; if the scan
+///               is, `first` stays flat as length grows.
+#[test]
+#[ignore = "measurement harness: cargo test --release -- --ignored --nocapture in_cost_by_list_length"]
+fn in_cost_by_list_length() {
+    use std::time::Instant;
+    const REPS: u32 = 7;
+    const ROWS: usize = 100_000;
+
+    println!("{:<44}{:>10}{:>10}", "case", "total us", "ns/row");
+
+    for len in [1usize, 8, 64] {
+        let mut b = Builder::default();
+        let items: Vec<Value> = (0..len).map(|j| n(j as f64)).collect();
+
+        for _ in 0..ROWS {
+            b.node(&["N"], &[("tags", Value::List(items.clone()))]);
+        }
+
+        let store = b.build();
+        let scan = || Plan::Scan { label: None };
+        let in_tags = |needle: f64| Expr::In {
+            needle: Box::new(lit(n(needle))),
+            haystack: Box::new(prop(0, "tags")),
+        };
+
+        // `missing` is -1 (in no list); `first` is 0 (index 0 of every list).
+        let cases: Vec<(&str, Expr)> = vec![
+            ("IN, needle MISSING (full scan)", in_tags(-1.0)),
+            ("IN, needle FIRST (scan exits at 0)", in_tags(0.0)),
+        ];
+
+        for (name, pred) in cases {
+            let plan = Plan::Filter {
+                input: Box::new(scan()),
+                pred,
+            };
+            let mut best = u128::MAX;
+
+            for _ in 0..REPS {
+                let t0 = Instant::now();
+                let got = crate::exec::pull(&plan, &store, false).expect("plan runs");
+                best = best.min(t0.elapsed().as_nanos());
+                // A missing needle keeps nothing; a present one keeps every row.
+                assert!(got.rows() == 0 || got.rows() == ROWS, "rows {}", got.rows());
+            }
+
+            println!(
+                "{:<44}{:>10.1}{:>10.2}",
+                format!("len {len:>3}  {name}"),
+                best as f64 / 1000.0,
+                best as f64 / ROWS as f64
+            );
+        }
+    }
+}
+
 /// What does reading ONE element of a list property cost, and does it scale with the list's
 /// LENGTH? `Expr::Index` is the worst of the four `value_at`-deep-copies-a-list sites item 640
 /// found: `bcol.value_at(i)` clones the WHOLE list to return a single element, so an O(1) read
