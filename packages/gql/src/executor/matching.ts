@@ -24,6 +24,7 @@ import type {
 import {
   consistent,
   hasPredicate,
+  rejectedByElementDirect,
   satisfies,
   unitExposes,
   unitIsFlat,
@@ -49,6 +50,16 @@ export const matchNode = (
     return null;
   }
 
+  // THE ELEMENT-DIRECT CONJUNCTS FIRST, BEFORE ANY ALLOCATION. `withBinding` copies the
+  // incoming binding into a fresh `Map`, and on a scan that is once per CANDIDATE for a
+  // predicate that rejects nearly all of them: instrumented over
+  // `MATCH (u:User) WHERE u.name = $n` at 20,000 nodes, this allocated 20,000 bindings and
+  // rejected 19,999 of them (item 631). A read of that shape claims a fast-path rung and never
+  // arrives here at all, which is why an unindexed WRITE cost ~3.0x the identical read.
+  //
+  // Sound because `eqProps`/`cmpProps` read the property off the ELEMENT and their value side
+  // is CLOSED (`asPropCompare`'s own requirement), so neither can read the variable this is
+  // about to bind. Everything else still waits for `bound`.
   const bound = withBinding(binding, node.variable, vertex);
 
   if (!satisfies(vertex, node.pred, bound, params, graph)) {
@@ -866,7 +877,22 @@ export const matchPattern = function* (
 
     const gate = seedGate(pattern, pattern, params, graph);
 
+    // REJECT BEFORE `matchNode` ALLOCATES (item 631). `matchNode` builds the new binding with
+    // `withBinding` — a fresh `Map` — BEFORE testing the predicate, so a selective predicate
+    // over a scan allocated one per CANDIDATE and threw nearly all of them away: instrumented
+    // over `MATCH (u:User) WHERE u.name = $n` at 20,000 nodes, 20,000 bindings for 1 row.
+    //
+    // The check sits HERE rather than inside `matchNode` because `matchNode` has ten call
+    // sites and is itself hot: putting it there cost a predicate that cannot use it 0.86x,
+    // reproducibly, by growing the function. Here it is paid only by the loop that scans.
+    const pre = pattern.start.pred;
+    const preFilter = pre.eqProps !== undefined || pre.cmpProps !== undefined;
+
     for (const seed of seeds) {
+      if (preFilter && rejectedByElementDirect(seed, pre, binding, params, graph)) {
+        continue;
+      }
+
       const seeded = matchNode(binding, pattern.start, seed, params, graph);
 
       if (seeded && (gate === undefined || gate(seeded))) {
@@ -892,7 +918,15 @@ export const matchPattern = function* (
 
   const gate = seedGate(pattern, path, params, graph);
 
+  // The same pre-filter as the seed-driver loop above; see the comment there.
+  const pre = path.start.pred;
+  const preFilter = pre.eqProps !== undefined || pre.cmpProps !== undefined;
+
   for (const seed of seeds) {
+    if (preFilter && rejectedByElementDirect(seed, pre, binding, params, graph)) {
+      continue;
+    }
+
     const seeded = matchNode(binding, path.start, seed, params, graph);
 
     if (seeded && (gate === undefined || gate(seeded))) {

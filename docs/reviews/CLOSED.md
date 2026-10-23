@@ -10829,3 +10829,98 @@ API change, not a loop tweak. Named, not started.
 **The lever to take from this is the control, not a rewrite.** A row with no sibling cannot
 say which of two costs it is measuring, and this one had been the group's largest number for
 long enough to look like a target.
+
+## 631 — a TS write statement stops allocating a binding per rejected candidate: 2.18-2.54x
+
+**FIXED (TS).** Found by pricing the one priority in the brief that was still unpriced — the
+graph being MUTABLE, and the standing claim that interleaving a write with a traversal costs
+~2.5x. `bun run bench:usage` had two rows whose `MATCH` is character-for-character identical,
+on the pure-TS engine with no index:
+
+|                                                     | ops/s | per op   |
+| --------------------------------------------------- | ----- | -------- |
+| `MATCH (u:User) WHERE u.name = $n RETURN u.score`   | 2.0k  | ~500 µs  |
+| `MATCH (u:User) WHERE u.name = $n SET u.score = $v` | 552   | ~1810 µs |
+
+### The diagnosis, which ruled out the obvious answer first
+
+A new probe separated the candidates, and **it is not invalidation**:
+
+|                           | µs/op      |
+| ------------------------- | ---------- |
+| read only                 | 505.0      |
+| write only                | 1591.6     |
+| **write matching 0 rows** | **1519.4** |
+| write then read           | 2060.5     |
+| read then read — control  | 987.2      |
+
+A write that matches ZERO rows costs 1000 µs more than the read, and `write then read` minus
+`write only` is 469 µs — an ordinary read — so **a write poisons nothing.** Swept 5k/20k/80k:
+the overhead is proportional to N at a constant ~3.0x, so the write path did about three
+scans' worth of work where the read did one.
+
+Instrumented, the cause was exact:
+
+|       | `matchNode` calls | bindings allocated | predicate failures |
+| ----- | ----------------- | ------------------ | ------------------ |
+| read  | **0**             | 0                  | 0                  |
+| write | **20000**         | **20000**          | 19999              |
+
+**The read never enters the general matcher at all** — it claims a fast-path rung. The write
+does, and `matchNode` called `withBinding` (a fresh `Map`) for every candidate BEFORE testing
+the predicate, then threw it away. 20,000 allocations to find one row.
+
+`eqProps` and `cmpProps` read the property off the ELEMENT, and both reach `CPredicate` only
+through `directEqProps` → `asPropCompare`, which requires a CLOSED value side — so neither can
+read the variable about to be bound. Testing them first rejects a candidate with no allocation.
+
+Two dists in ONE process, alternated, min of 5, 20,000 users:
+
+| case                          | pre       | post   |           |
+| ----------------------------- | --------- | ------ | --------- |
+| **write, eq predicate**       | 1663.5 µs | 726.7  | **2.29x** |
+| **write, cmp predicate**      | 1722.3    | 679.0  | **2.54x** |
+| **write, 0 rows matched**     | 1597.6    | 731.8  | **2.18x** |
+| read — control                | 579.9     | 586.4  | 0.99x     |
+| write, OR — control           | 2368.0    | 2569.0 | 0.92x     |
+| write, prop=prop — control    | 1767.3    | 1708.6 | 1.03x     |
+| write, fn predicate — control | 3207.0    | 3259.8 | 0.98x     |
+
+### 🛑 Two false regressions, each of which would have shipped as a fact
+
+- **Extracting a shared helper cost the READ path 0.88x.** The first version split
+  `satisfies` so both it and the pre-filter could call the element-direct loops. But
+  `satisfies` is called per candidate from the hop-projection FAST PATHS too, and splitting it
+  put those loops behind a call there. The **null control — the same dist on both sides, 1.02x**
+  — is what proved the instrument sound and the regression real. `satisfies` is now byte-
+  identical and the pre-filter is a second copy, with its one-directional safety argument
+  written beside it.
+- **`matchNode` has TEN call sites and is itself hot.** With the guard inside it, a predicate
+  that cannot use the pre-filter measured 0.86x reproducibly — the function grew. Moving the
+  check into the two seed loops that actually scan left `matchNode` byte-identical AND took
+  the win from 1.61x to 2.29x.
+- **And a control that was an artifact of the case set.** The fn-predicate row read 0.86 /
+  0.87 / 0.85 — tight enough to look real, and it moved twice while I chased it. Adding two
+  unrelated cases to the probe made the same row read 0.98x. **A control's reading can depend
+  on what else the harness runs**, so a tight-looking ratio across runs of ONE configuration
+  is not yet a result.
+
+### 🛑 Teeth: 4 of 5, after the first run found the narrowing test VACUOUS
+
+First run was **2/5, and the survivor was the STUB** — a pre-filter that never rejects, which
+is correct and merely slow, so no correctness case can see it. The narrowing test was supposed
+to, and it compared the TIME of a liftable predicate against a non-liftable one: those differ
+in cost for reasons unrelated to the filter, so the assertion held with the filter off. **A
+timing comparison between two DIFFERENT predicates is not evidence about a filter only one of
+them uses** — the fourth vacuous test this session, and the comment above it claimed the
+coverage it did not have.
+
+Replaced with direct unit tests over hand-built predicates (`CPredicate`'s value side is a
+thunk, so one is cheap to write by hand, and a unit test of the gate is immune to what the
+surrounding engine costs). Now caught: the stub, the equality test inverted, the null-RHS
+guard flipped, the ordering test inverted. The `op` token caught me too — `'gt'` where
+`CompareOp` is `'>'` — and the test FAILED rather than passing vacuously.
+
+**Survived, equivalent:** forcing the call-site guard to `true`. The function returns `false`
+when neither list is present, so running it unconditionally changes no answer — only the cost
+on predicates that cannot use it, which is the thing the guard exists for.

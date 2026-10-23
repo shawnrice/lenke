@@ -5142,6 +5142,64 @@ export const satisfies = (
   return pred.where === undefined || asTruth(pred.where(env)) === true;
 };
 
+/**
+ * Whether `pred`'s ELEMENT-DIRECT conjuncts already reject `element`, judged WITHOUT a binding
+ * for the variable about to be bound (item 631). `false` means "not decided — carry on".
+ *
+ * Sound because `eqProps` and `cmpProps` read the property off the ELEMENT, and both reach
+ * `CPredicate` only through `directEqProps`, which routes through `asPropCompare` and therefore
+ * requires a CLOSED value side: neither can read the variable the caller is about to bind.
+ *
+ * DELIBERATELY A SECOND COPY OF THOSE TWO LOOPS RATHER THAN A HELPER `satisfies` ALSO CALLS.
+ * Extracting them was tried first and cost the READ path 0.88x — `satisfies` is called per
+ * candidate from the hop-projection fast paths too, and splitting it moved the loops behind a
+ * call there. Measured against the pre-change dist alternated in one process, with a null
+ * control (the same dist both sides) at 1.02x to prove the instrument. The repo's own note
+ * says it: in this engine the SHAPE of a hot function is load-bearing.
+ *
+ * The copy is safe in one direction only, and that is the direction that matters: this is a
+ * PRE-FILTER, with the full `satisfies` still run afterwards, so being too LENIENT merely
+ * forgoes a saving while being too STRICT would lose rows. `the_element_direct_pre_filter_
+ * never_rejects_a_row_satisfies_keeps` pins the strict direction.
+ */
+export const rejectedByElementDirect = (
+  element: Bound,
+  pred: CPredicate,
+  binding: Binding,
+  params: Params,
+  graph: Graph,
+): boolean => {
+  if (pred.eqProps === undefined && pred.cmpProps === undefined) {
+    return false;
+  }
+
+  const env: EvalEnv = { binding, params, graph };
+
+  if (pred.eqProps !== undefined) {
+    for (const { key, value } of pred.eqProps) {
+      const rhs = value(env);
+
+      if (rhs === null || rhs === undefined) {
+        return true;
+      }
+
+      if (!structuralEq(propOf(element, key), rhs)) {
+        return true;
+      }
+    }
+  }
+
+  if (pred.cmpProps !== undefined) {
+    for (const { key, op, value } of pred.cmpProps) {
+      if (compareTruth(op, COMPARE[op], propOf(element, key), value(env)) !== true) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+};
+
 // Pattern matching (see executor/matching.ts).
 import { matchNode } from './executor/matching.js';
 
