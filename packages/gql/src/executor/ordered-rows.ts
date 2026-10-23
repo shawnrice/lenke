@@ -154,17 +154,33 @@ export const sortRowsByColumns = (rows: Row[], plan: SortPlan): Row[] => {
     return rows;
   }
 
-  const sorted = rows.sort((a, b) => {
-    for (const s of sorts) {
-      const c = compareSort(a[s.col], b[s.col], s.descending, s.nullsFirst);
+  // ONE sort key, which is the common case, gets a comparator with NO LOOP and no per-call
+  // property reads. That is the whole of this optimization: hoisting the spec out of the
+  // MULTI-key loop as well was built, measured at 1.00-1.02x against the pre-change dist
+  // alternated in one process, and reverted -- it also cost three array allocations per sort
+  // call, which a small result set pays and never earns back.
+  //
+  // `compareSort` is deliberately untouched: it is the one comparator, byte-identical to the
+  // Rust `compare_sort`, and a second derivation of "which row sorts first" is the one thing
+  // byte-identity cannot survive.
+  const sorted =
+    sorts.length === 1
+      ? ((): Row[] => {
+          const [{ col, descending, nullsFirst }] = sorts;
 
-      if (c !== 0) {
-        return c;
-      }
-    }
+          return rows.sort((a, b) => compareSort(a[col], b[col], descending, nullsFirst));
+        })()
+      : rows.sort((a, b) => {
+          for (const s of sorts) {
+            const c = compareSort(a[s.col], b[s.col], s.descending, s.nullsFirst);
 
-    return 0;
-  });
+            if (c !== 0) {
+              return c;
+            }
+          }
+
+          return 0;
+        });
 
   // THE WINDOW IS APPLIED AFTER THE SORT, which is the order the query means and the order the
   // general path uses. Only reached when `outputColumnSorts` admitted it — no item can fault, so
