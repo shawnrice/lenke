@@ -10321,3 +10321,82 @@ instrumenting a path guarded by a size/selectivity gate, the fixture has to clea
   same hop with no pin.
 - The change is reverted rather than kept at 1.03x: it adds a second path that can narrow the
   seed, and two mechanisms for one decision is the thing items 615 and 620 each paid for.
+
+## 623 — price the CONTROL-FLOW half of the operator table: 11 variants nothing had ever measured
+
+**MEASURED, no code change.** `plan_cost_by_operator` prices 24 of `Plan`'s 55 variants,
+`seed_cost_by_entry_point` prices the entry points, writes and DDL are deliberately out of
+both — and what was left over had never been priced at all: the branch, quantified-path,
+subquery and whole-graph-algorithm operators. `plan_cost_by_control_flow_operator` prices 11
+of them.
+
+**Every case is a COMPILED QUERY, not a hand-built plan, and that is forced rather than
+chosen: none of these 11 is constructible by hand in a test today.** Every construction site
+in the tree is a compiler or the optimizer, so a hand-built one would be a shape the engine
+never runs. The price of compiling is that the optimizer can rewrite the operator away and the
+row would then measure something else, so each case names the variant it means to price and a
+`shape` column says whether the optimized plan still contains it. **A `MISSING` row is not a
+measurement** — and four rows came back MISSING on the first run.
+
+200,000 rows, min-of-5, one edge per node:
+
+| operator                          | ns/row     | xScan     | out rows |
+| --------------------------------- | ---------- | --------- | -------- |
+| `Scan` (the floor)                | 0.62       | 1.0       | 200000   |
+| …+Project                         | 1.69       | 2.7       | 200000   |
+| `OptionalScan` (1 hit/row)        | 7.98       | 12.8      | 200000   |
+| `OptionalScan` (0 hits/row)       | 9.51       | 15.3      | 200000   |
+| `CallInline` (correlated)         | 8.33       | 13.4      | 1        |
+| `Branch` (union, 2 arms)          | 8.39       | 13.5      | 400000   |
+| `Reconverge` (union + step)       | 14.42      | 23.2      | 400000   |
+| `RepeatGroup` {1,1}, list read    | 70.79      | 113.9     | 200000   |
+| `RepeatGroup` {1,2}, list read    | 206.23     | 331.9     | 400000   |
+| `NestedGroup` {1,2}, 2-elem unit  | 93.72      | 150.8     | 1        |
+| **`PerElementBranch` (coalesce)** | **368.41** | **593.0** | 200000   |
+| **`PerElementBranch` (choose)**   | **477.67** | **768.8** | 200000   |
+| `Subgraph`                        | 855.28     | 1376.6    | 1        |
+
+Small fixture, 2,000 rows, its own floor: `ShortestPath` (ANY, to one node) 3154 ns/row,
+`ShortestPathEnum` 5378, `AlgoAnnotate` 82.1 (pageRank) / 41.7 (connectedComponent).
+
+### The finding: two operators that route the same two arms differ by 44x
+
+`union(out('R'), out('R'))` is `Branch` at **8.39 ns/row for 400,000 output rows**.
+`coalesce(out('R'), out('R'))` is `PerElementBranch` at **368.41 ns/row for 200,000** — half
+the output for 44x the cost per input row, **57x per output row**. `choose` is 477.67.
+
+`Branch` runs its arms WHOLE-STREAM. `per_element_branch_exec` runs TinkerPop's per-traverser
+semantics literally: per input row a `gather(&[i])` (a 1-row `Batch`, one `Vec` per column), a
+`pull_body` per arm until one produces, a push into a 200,000-element `Vec<Batch>`, and a
+final `concat_batches` over all of them. ~350 ns is roughly a thousand cycles to run a hop
+that costs 9 ns whole-stream.
+
+**Swept 25k → 200k: 374, 351, 366, 350 ns/row — flat.** So it is a per-row CONSTANT, not a
+quadratic in the concat, and the headroom is the whole 350 ns, not a tail. Named as the
+target; building it is a separate item, and the arms that may run whole-stream have to be
+characterized first (a reducer arm, a lineage-carrying arm and an order-sensitive arm are not
+obviously safe).
+
+### Why four rows came back MISSING, which is the harness earning itself
+
+- A `RepeatGroup` whose group LIST is never read **flattens to `VarLength`** (the item-570
+  rewrite), so `MATCH (a)-[:R]->{1,2}(t) RETURN t.num` cannot price `RepeatGroup` at all. It is
+  kept as a control: 91.25 ns/row flattened against 206.23 with the list read, so the rewrite
+  is worth **2.26x** on this fixture.
+- A SINGLE-element unit `((x)-[e:R]->(y)){1,1}` lowers to `RepeatGroup`, not `NestedGroup`, and
+  then takes the same flattening. A nested group needs a genuinely multi-element unit.
+
+Both are the general trap: **a query-driven pricing harness measures what the optimizer left,
+not what you typed**, and without the shape column all four rows would have been published
+under the wrong operator's name.
+
+### Two operators deliberately absent
+
+- `IntervalExpand` — the test `Builder` cannot give an edge properties, and the as-of question
+  is already `examples/interval_bench.rs`, with a fixture built for it.
+- `CallProcedure` — a SOURCE, not a per-row operator; its unit is the call, which is the
+  `seed_cost_by_entry_point` shape.
+
+`Subgraph`'s number is held loosely: it produces ONE row by folding every edge, so "per input
+row" is the wrong unit for it, and two runs gave 390 and 855 ns/row. It needs its own harness
+before anyone acts on it.

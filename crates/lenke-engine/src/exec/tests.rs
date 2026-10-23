@@ -14754,6 +14754,257 @@ fn plan_cost_by_operator() {
     }
 }
 
+/// What does each CONTROL-FLOW / SUBQUERY operator cost per row?
+///
+/// ```text
+/// cargo test --release --manifest-path crates/lenke-engine/Cargo.toml \
+///   -- --ignored --nocapture plan_cost_by_control_flow_operator
+/// ```
+///
+/// The third harness of the family. [`plan_cost_by_operator`] prices the 24 streaming
+/// operators, [`seed_cost_by_entry_point`] prices the entry points, writes and DDL are
+/// deliberately out of both — and what was left over is this: the branch, quantified-path,
+/// subquery and whole-graph-algorithm operators, 11 variants that nothing had ever priced.
+///
+/// **Every case here is a COMPILED QUERY, not a hand-built plan, because none of these is
+/// constructible by hand today** — every construction site in the tree is a compiler or the
+/// optimizer, so a hand-built one would be a shape the engine never runs. The cost of that is
+/// that the planner may rewrite the operator away, which would silently price something else;
+/// so each case names the variant it means to measure and the `shape` column says whether the
+/// optimized plan still contains it. **A `MISSING` row is not a measurement.**
+///
+/// Two fixtures, each with its own `Scan` floor, because some of these are super-linear in the
+/// row count and pricing them at 200,000 rows would run for hours rather than measure
+/// anything. Compare a row only to the floor printed above it.
+///
+/// Two operators are absent on purpose:
+/// - `IntervalExpand` — the test `Builder` cannot give an edge properties, and the as-of
+///   question it answers is already `examples/interval_bench.rs`, with a fixture built for it.
+/// - `CallProcedure` — a SOURCE, not a per-row operator; the unit for it is the call, which is
+///   the `seed_cost_by_entry_point` shape, not this one.
+#[test]
+#[ignore = "measurement harness: cargo test --release -- --ignored --nocapture plan_cost_by_control_flow_operator"]
+fn plan_cost_by_control_flow_operator() {
+    use std::time::Instant;
+    const REPS: u32 = 5;
+
+    // Overridable: a super-linear operator found to be worse than expected wants a sweep, and
+    // the point of the small fixture is that its right size is not known until it is measured.
+    let env_rows = |k: &str, d: u32| -> u32 {
+        std::env::var(k)
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(d)
+    };
+    let big_rows = env_rows("LENKE_CF_ROWS", 200_000);
+    let small_rows = env_rows("LENKE_CF_SMALL", 2_000);
+
+    let fixture = |rows: u32| {
+        let mut b = Builder::default();
+        for i in 0..rows {
+            // Node 0 also carries `Z`, so an `OPTIONAL MATCH (x:Z)` has exactly one row to
+            // find: the HIT path at one row per input, rather than a cross product.
+            let labels: &[&str] = if i == 0 {
+                &["N", "Z"]
+            } else if i % 3 == 0 {
+                &["N"]
+            } else {
+                &["M"]
+            };
+            b.node(
+                labels,
+                &[
+                    ("num", n(f64::from(i % 1000))),
+                    ("name", s(&format!("v{i}"))),
+                ],
+            );
+        }
+        for i in 0..rows {
+            b.edge(i, (i * 7 + 1) % rows, "R");
+        }
+        b.build()
+    };
+
+    // (label, the variant this row means to price, query, is_gremlin)
+    type Case = (&'static str, &'static str, &'static str, bool);
+
+    let big: Vec<Case> =
+        vec![
+        ("Scan (the floor)", "Scan", "", false),
+        (
+            "  …+Project (floor)",
+            "Scan",
+            "MATCH (a) RETURN a.num AS v",
+            false,
+        ),
+        (
+            "  …+count(*) (floor)",
+            "Scan",
+            "MATCH (a) RETURN count(*) AS c",
+            false,
+        ),
+        (
+            "OptionalScan (1 hit/row)",
+            "OptionalScan",
+            "MATCH (a) OPTIONAL MATCH (x:Z) RETURN x.num AS v",
+            false,
+        ),
+        (
+            "OptionalScan (0 hits/row)",
+            "OptionalScan",
+            "MATCH (a) OPTIONAL MATCH (x:Nope) RETURN x.num AS v",
+            false,
+        ),
+        (
+            // The list UNREAD: `opt` flattens this to `VarLength`, so the row prices the
+            // flattening, not the operator. Kept as the control for the two below it — the
+            // gap between this and `{1,2} (list read)` is what the rewrite is worth.
+            "RepeatGroup {1,2} -> VarLength",
+            "RepeatGroup",
+            "MATCH (a)-[:R]->{1,2}(t) RETURN t.num AS v",
+            false,
+        ),
+        (
+            "RepeatGroup {1,1} (list read)",
+            "RepeatGroup",
+            "MATCH (a)-[e:R]->{1,1}(t) RETURN e AS g",
+            false,
+        ),
+        (
+            "RepeatGroup {1,2} (list read)",
+            "RepeatGroup",
+            "MATCH (a)-[e:R]->{1,2}(t) RETURN e AS g",
+            false,
+        ),
+        (
+            // A SINGLE-element unit lowers to `RepeatGroup`, so a nested group needs a
+            // genuinely multi-element unit to be one at all.
+            "NestedGroup {1,1} (2-elem unit)",
+            "NestedGroup",
+            "MATCH (a)((x)-[:R]->(m)<-[:R]-(y)){1,1} RETURN count(*) AS c",
+            false,
+        ),
+        (
+            "NestedGroup {1,2} (2-elem unit)",
+            "NestedGroup",
+            "MATCH (a)((x)-[:R]->(m)<-[:R]-(y)){1,2} RETURN count(*) AS c",
+            false,
+        ),
+        (
+            "CallInline (correlated)",
+            "CallInline",
+            "MATCH (a) CALL (a) { MATCH (a)-[:R]->(m) RETURN m.num AS mn } RETURN count(*) AS c",
+            false,
+        ),
+        ("Branch (union, 2 arms)", "Branch", "g.V().union(out('R'), out('R'))", true),
+        (
+            "Reconverge (union + step)",
+            "Reconverge",
+            "g.V().union(out('R'), in('R')).values('name')",
+            true,
+        ),
+        (
+            "PerElementBranch (coalesce)",
+            "PerElementBranch",
+            "g.V().coalesce(out('R'), out('R'))",
+            true,
+        ),
+        (
+            "PerElementBranch (choose)",
+            "PerElementBranch",
+            "g.V().choose(has('num', 1), out('R'), in('R'))",
+            true,
+        ),
+        ("Subgraph", "Subgraph", "g.V().outE('R').subgraph('sg').cap('sg')", true),
+    ];
+
+    let small: Vec<Case> = vec![
+        ("Scan (the floor)", "Scan", "", false),
+        (
+            "ShortestPath (ANY, to 1 node)",
+            "ShortestPath",
+            "MATCH p = ANY SHORTEST (a)-[:R]->*(b:Z) RETURN path_length(p) AS len",
+            false,
+        ),
+        (
+            "ShortestPathEnum",
+            "ShortestPathEnum",
+            "g.V().shortestPath()",
+            true,
+        ),
+        (
+            "AlgoAnnotate (pageRank)",
+            "AlgoAnnotate",
+            "g.V().pageRank().values('name')",
+            true,
+        ),
+        (
+            "AlgoAnnotate (connectedComp)",
+            "AlgoAnnotate",
+            "g.V().connectedComponent().values('name')",
+            true,
+        ),
+    ];
+
+    for (title, rows, cases) in [
+        ("200k rows", big_rows, &big),
+        ("small fixture", small_rows, &small),
+    ] {
+        let store = fixture(rows);
+        println!("\n=== control-flow operator cost, {title}: {rows} rows ===");
+        println!(
+            "{:<30} {:>10} {:>10} {:>8} {:>10} {:>8}",
+            "operator", "total_us", "ns/row", "xScan", "out_rows", "shape"
+        );
+        let mut base = 0.0f64;
+        for (label, want, q, gremlin) in cases.iter() {
+            let plan = if q.is_empty() {
+                Ok(Plan::Scan { label: None })
+            } else if *gremlin {
+                crate::gremlin::parse(q)
+            } else {
+                crate::gql::parse(q)
+            };
+            let Ok(plan) = plan else {
+                println!("{label:<30} {:>10} PARSE ERR: {}", "-", plan.unwrap_err());
+                continue;
+            };
+            // A string probe over the Debug rendering rather than a visitor: the question is
+            // only "did the operator survive the optimizer", and a visitor over 55 variants
+            // would be more code than the harness it guards.
+            let shape = if format!("{plan:?}").contains(&format!("{want} {{")) || q.is_empty() {
+                "ok"
+            } else {
+                "MISSING"
+            };
+            let mut lo = f64::MAX;
+            let mut out = 0usize;
+            let mut err = String::new();
+            for _ in 0..REPS {
+                let t = Instant::now();
+                let got = crate::exec::pull(&plan, &store, false);
+                lo = lo.min(t.elapsed().as_secs_f64() * 1e6);
+                match &got {
+                    Ok(b) => out = b.rows(),
+                    Err(e) => err = format!("{e:?}"),
+                }
+            }
+            if !err.is_empty() {
+                println!("{label:<30} {:>10} RUN ERR: {err}", "-");
+                continue;
+            }
+            let per_row = lo * 1000.0 / f64::from(rows);
+            if base == 0.0 {
+                base = per_row;
+            }
+            println!(
+                "{label:<30} {lo:>10.1} {per_row:>10.2} {:>8.1} {out:>10} {shape:>8}",
+                per_row / base
+            );
+        }
+    }
+}
+
 /// What does an ENTRY POINT cost? The seed-family twin of [`plan_cost_by_operator`], which
 /// cannot price these: every row there wraps the SAME 200,000-row scan, and a seed produces
 /// one row. Wrapping a scan around a seed measures the scan. **The unit for a seed is the
