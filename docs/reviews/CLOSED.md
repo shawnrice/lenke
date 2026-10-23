@@ -11772,3 +11772,80 @@ otherwise, and this one looks obviously correct.
 
 `index_cost_by_list_length`, the harness. The corpus had no list-indexing bench and the
 question was unasked; it now has one that is demonstrably alive, with the control built in.
+
+## 642 — `ORDER BY <a projected item's own expression>` reaches the ordered-column path: 1.94x → 1.00x, and mutation found a wrong-answer gap 12 tests had missed
+
+**FIXED (TS).** The gated probe's remaining flag after item 638, and the audit is what made it
+worth doing rather than `CLOSED.md`.
+
+### The store that mattered was the AUDIT, not CLOSED.md
+
+`CLOSED.md` had nothing on this group. The audit had **item 144**, which measured this exact
+pair as **FLAT (8.18 against 8.14 ms)** and added it deliberately as the spelling _"that
+already works"_, so its COMPUTED sibling's 1.72x could be localised to the substitution.
+
+Since then the two have **swapped**: the computed pair has converged (1.01x) and the plain one
+has opened up. The direction says which is which — the ALIAS spelling is the FAST one — so this
+is an optimization that reached `ORDER BY <alias>` and never reached the equivalent
+`ORDER BY <that expression>`. This repo's named bug class, found by its own instrument.
+
+### The number, with the null control and the computed pair as controls
+
+1,000,000 rows, min of 9, four alternated rounds, all spellings in one process:
+
+|                             | before     | after     |                   |
+| --------------------------- | ---------- | --------- | ----------------- |
+| plain `ORDER BY c`          | 84.85 ms   | 82.66     | 1.00x             |
+| plain `ORDER BY n.k`        | **164.71** | **83.00** | 1.94x → **1.00x** |
+| NULL CONTROL                | 84.40      | 82.75     | 1.00x             |
+| computed `ORDER BY c`       | 180.50     | 166.25    | 2.01x             |
+| computed `ORDER BY n.k + 1` | 178.94     | 166.44    | 2.01x             |
+
+The computed pair still matches ITSELF, which is the check that the change did not reach it.
+
+### Restricted to `prop`, for two reasons that are not caution
+
+- Its shape is flat (`{kind, variable, key}`), so "the same expression" is an **exact**
+  comparison rather than a general AST deep-equal that would silently go stale as `Expr` grows.
+- A property read **cannot fault** — it yields null for an absent key — so the substitution
+  cannot disturb the windowed-sort fault rule of item 610. A computed key could, which is why
+  the computed pair is deliberately left on the general path. Its ~2x is item 610's rule
+  working, not a second bug.
+
+### 🛑 Mutation found a WRONG ANSWER that twelve tests missed
+
+Dropping the **variable** match from the substitution SURVIVED all twelve original tests,
+because **not one of them bound two variables that both carry a `k`**. Without it,
+`ORDER BY m.k` resolves to the alias built from `n.k`.
+
+The added case makes the two orders DISAGREE, which is what makes it discriminating rather
+than coincidentally passing: `n.k` ascends along the edges while `m.k` descends, so
+`MATCH (n:Q)-[:R]->(m:Q) RETURN n.k AS c ORDER BY m.k` is `3, 2, 1` where ordering by `n.k` is
+`1, 2, 3`. Caught after.
+
+### Teeth: 3 of 6 — and every survivor has a MECHANISM, not a shrug
+
+| mutant                                        |                                                                                                       |
+| --------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| the property KEY match                        | CAUGHT                                                                                                |
+| the VARIABLE match                            | CAUGHT (after the case above was added)                                                               |
+| the spread — losing `descending`/`nullsFirst` | CAUGHT                                                                                                |
+| the `it.alias !== undefined` check            | SURVIVED — **INERT**: `find(...)?.alias` already yields `undefined` for an alias-less item            |
+| the `e.kind !== 'prop'` guard                 | SURVIVED — **inert for matching**, because the inner `find` tests `kind === 'prop'` too               |
+| the substitution itself                       | SURVIVED — **equivalent**, predicted in advance (both spellings then take the general path and agree) |
+
+### 🛑 And the `prop` guard IS load-bearing — the ORACLE could not see it
+
+Removing it was VERIFIED to fail `tsc`: `TS2339: Property 'variable' does not exist on type
+'Expr'` and the same for `key`. So the guard is enforced by the TYPECHECKER, not by a test —
+and the mutation oracle was `bun test` over a build that transpiles without typechecking, so it
+reported a load-bearing guard as a survivor.
+
+**The reflex on a survivor is "test gap", and here that would have been wrong twice: once
+toward inert, once toward a guard a different gate enforces.** A mutation oracle should run the
+typecheck as well as the tests; this run's did not.
+
+### Also
+
+`oxlint` caught `sortsOnOutputNames` becoming unused in this module — the inline check replaced
+it. It stays exported for `executor.ts`'s other caller.

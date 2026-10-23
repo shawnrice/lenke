@@ -25,9 +25,9 @@
  */
 import type { Graph } from '@lenke/core';
 
-import type { Clause, Expr } from '../ast.js';
+import type { Clause, Expr, SortItem } from '../ast.js';
 import type { Params, Row } from '../executor.js';
-import { compareSort, sortsOnOutputNames } from '../executor.js';
+import { compareSort } from '../executor.js';
 
 /**
  * Can evaluating this expression FAULT, beyond producing its own value?
@@ -110,14 +110,55 @@ export const outputColumnSorts = (
     return null;
   }
 
-  if (!sortsOnOutputNames(ret, new Set(cols))) {
+  // `ORDER BY <the expression a projected item already computes>` IS `ORDER BY <its alias>`,
+  // and the two spellings were costing different amounts (item 642). `sortsOnOutputNames`
+  // admits only a `var` naming a projected column, so `RETURN n.k AS c ORDER BY n.k` fell to
+  // the general path while `… ORDER BY c` took this one — measured at 1,000,000 rows, min of 9,
+  // four alternated rounds, against a null control reading 0.99x:
+  //
+  //   ORDER BY c      84.85 ms
+  //   ORDER BY n.k   164.71      1.94x
+  //
+  // Item 144 recorded this pair as FLAT and added it as the spelling "that already works", to
+  // localise its COMPUTED sibling's 1.72x to the substitution. That sibling has since converged
+  // (1.01x) and this one opened up, so the fast path reached the alias and never reached the
+  // expression — this repo's named bug class.
+  //
+  // RESTRICTED TO `prop`, for two reasons rather than caution. Its shape is flat
+  // (`{kind, variable, key}`), so "the same expression" is an exact comparison and not a
+  // general AST deep-equal that would silently go stale as `Expr` grows. And a property read
+  // CANNOT FAULT — it yields null for an absent key — so substituting it cannot disturb the
+  // windowed-sort fault rule above (item 610), which a computed key could.
+  const aliasOf = (e: Expr): string | undefined => {
+    if (e.kind !== 'prop') {
+      return undefined;
+    }
+
+    const { variable, key } = e;
+
+    return ret.projection.items.find(
+      (it) =>
+        it.alias !== undefined &&
+        it.expr.kind === 'prop' &&
+        it.expr.variable === variable &&
+        it.expr.key === key,
+    )?.alias;
+  };
+
+  const resolved: SortItem[] = keys.map((k) => {
+    const alias = aliasOf(k.expr);
+
+    return alias === undefined ? k : { ...k, expr: { kind: 'var', name: alias } };
+  });
+
+  if (!resolved.every((k) => k.expr.kind === 'var' && cols.includes(k.expr.name))) {
     return null;
   }
 
   const out: ColSort[] = [];
 
-  for (const k of keys) {
-    // `sortsOnOutputNames` has already established that every key is a `var` naming one of `cols`;
+  for (const k of resolved) {
+    // The check above has already established that every key is a `var` naming one of `cols`;
     // this re-test is the TYPE NARROWING, not a second check of the rule. An `Expr` union has no
     // `name` until narrowed, and asserting past that would be indistinguishable to a reader from
     // a missing test.
