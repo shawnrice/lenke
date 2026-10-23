@@ -5176,6 +5176,38 @@ export const rejectedByElementDirect = (
   params: Params,
   graph: Graph,
 ): boolean => {
+  // 🛑 EXTENDING THIS TO INLINE `props` WAS TRIED AND REVERTED (item 644). It is NOT a tuning
+  // question: it changes WHICH QUERIES RAISE.
+  //
+  // The gap is real and large. `MATCH (a:S), (b:P {k: 7})` evaluates its node predicate once
+  // per VERTEX while the clause and inline-`WHERE` spellings of the same question evaluate it
+  // once per SURVIVOR, because only `eqProps`/`cmpProps` reach this pre-filter. Counted at
+  // 20,000 vertices:
+  //
+  //   prod clause    satisfies=404    sat.eqProps=400
+  //   prod props     satisfies=20004  sat.props=20000    <- 50x the evaluations
+  //   prod inWHERE   satisfies=404    sat.eqProps=400
+  //
+  // Worth 1.89x at 1,000,000 vertices (222.99ms against 422.19), with the clause spelling and a
+  // null control both flat at 1.00x. A single-pattern clause is UNAFFECTED (0.97x) because
+  // neither spelling gets the pre-filter there.
+  //
+  // The candidate added a `closedProps` list — the props whose value expression has no free
+  // variables, since a property value may be CORRELATED (`(b {w: a.k})`) where
+  // `eqProps`/`cmpProps` are closed by construction via `directEqProps` — and tested it here
+  // with `structuralEq` ONLY, no `rhs === null` rejection, so `{k: null}` kept its IS-NULL
+  // reading and item 210's "route two" divergence could not recur.
+  //
+  // WHAT KILLED IT: this pre-filter runs BEFORE the binding is built, so rejecting a candidate
+  // here skips a binding that would otherwise RAISE. `MATCH p = (a:P {k: 1}), (p:P {k: 2})
+  // RETURN count(*)` — `p` as a path variable and a node variable — raises on the general path
+  // and ANSWERED 0 with the change. `product-count.test.ts` pins that, and its comment states
+  // the rule: "WHICH queries raise is part of the cross-engine invariant."
+  //
+  // So the lift is only sound where no binding on the rejected path can raise, which is not a
+  // property this function can see. Narrowing it to dodge that one query would be guessing at
+  // whether binding has other raise sources — the same guess that produced the IS-NULL
+  // divergence historically. The gap stays OPEN with this as its reason.
   if (pred.eqProps === undefined && pred.cmpProps === undefined) {
     return false;
   }

@@ -11905,3 +11905,75 @@ A control answers "is this effect global?". It does **not** answer "is this effe
 the instrument" unless it is measured at the same cost — and item 636 was written as though it
 did. **A control at the wrong magnitude is not a weaker gate, it is a wrong one:** it passed a
 flat group through at 2.14x.
+
+## 644 — inline `props` miss the element-direct pre-filter: 50x the predicate evaluations, 1.89x, and the fix is BLOCKED by raise parity
+
+**MEASURED + REFUTED. No engine change ships.** The probe's last gated flag, and the only target
+this session that survived every re-measurement — but the fix changes which queries raise, so it
+does not ship.
+
+### What it is not
+
+The flag is named _"a product's one-sided predicate: comma vs `MATCH MATCH` (item 285)"_ and
+**neither half of that name is the finding.** Item 285's own pair has HELD: comma 222.99 ms
+against `MATCH MATCH` 207.54 (0.93x). The drift is in a fourth member added later — inline
+properties, at **422.19 ms, 1.89x** — with a null control at 1.00x.
+
+Nor is it about products:
+
+- the ratio barely moves as the left side grows (**1.90x at left=1**, 2.23x at 4, 2.28x at 16),
+  and at left=1 there is no product at all;
+- on a SINGLE node pattern the same spellings are **0.97x — flat**.
+
+### 🛑 Three mechanisms eliminated by reading, and the fourth found by counting
+
+Reading the code ruled out, in order: the props loop being inherently slow (**the comment
+asserts the opposite** — an inline property is "a direct read" while an inline `WHERE` pays a
+`Map.set` plus a `Map.get` per read); `patternRank` choosing a worse visit order (both patterns
+carry labels, so both rank 1); and `eqProps` being a cheaper loop (it is the same
+`value(env)` + `structuralEq(propOf(…))`, plus a null check).
+
+Then counters settled it in ONE run, over 20,000 vertices:
+
+| spelling          | `satisfies` calls | which list    |
+| ----------------- | ----------------- | ------------- |
+| clause            | **404**           | `eqProps` 400 |
+| inline properties | **20004**         | `props` 20000 |
+| inline `WHERE`    | **404**           | `eqProps` 400 |
+
+**50x the predicate evaluations.** `rejectedByElementDirect` — item 631's pre-filter, worth
+2.18-2.54x there — rejects candidates before a binding is built, and it reads
+`eqProps`/`cmpProps` ONLY. Inline `props` are a separate list by design (IS-NULL semantics, and
+`props` is what `indexCandidates` seeds from), so they never reach it. That also explains the
+flat single-pattern case: there neither spelling gets the pre-filter.
+
+**Two ticks were spent reading before counting, having already said counting was the next step.**
+Item 638 was the same mistake; this is its second occurrence.
+
+### 🛑 Why the fix does not ship
+
+The candidate added a `closedProps` list — props whose value expression has no free variables,
+because a property value may be CORRELATED (`(b {w: a.k})`) where `eqProps`/`cmpProps` are
+closed by construction via `directEqProps` — and tested it with `structuralEq` ONLY, no
+`rhs === null` rejection, so `{k: null}` kept its IS-NULL reading and item 210's "route two"
+divergence could not recur.
+
+**One test killed it, and it is the right test.**
+`MATCH p = (a:P {k: 1}), (p:P {k: 2}) RETURN count(*)` — `p` as a path variable in one pattern
+and a NODE variable in the other — RAISES on the general path and **answered 0** with the
+change. The pre-filter runs BEFORE the binding is built, so rejecting every candidate skips the
+binding that would raise. `product-count.test.ts` states the rule: _"WHICH queries raise is part
+of the cross-engine invariant."_
+
+So the lift is sound only where no binding on the rejected path can raise, and that is not a
+property this function can see. **Narrowing it to dodge that one query would be guessing at
+whether binding has other raise sources — the same guess that produced the IS-NULL divergence
+historically.** Reverted; the numbers and the blocker are recorded in `executor.ts` beside the
+pre-filter, per this repo's rule, because the change looks obviously correct.
+
+### What would unblock it
+
+A pre-filter that is only consulted where the engine has already established that binding cannot
+raise — or detecting the path/node variable collision at compile time, so both spellings raise
+before matching. Either is a bigger change than this item, and neither is speculation-free, so
+the gap is **OPEN** with a stated reason rather than a vague one.
