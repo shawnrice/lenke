@@ -1010,7 +1010,7 @@ const noise = judged.filter((s) => !clears(s));
 // null control" over an entry that appears equal to it. Reachable with the documented
 // `SPELL_TOL=1.5` hunt, not just in theory. The net is what the reader actually wants: the
 // spread with the instrument's own variance divided out.
-const show = (s: { name: string; spread: number }): string =>
+const show = (s: { name: string; spread: number; ms: number }): string =>
   ((): string => {
     const n = nullNear(s.ms);
 
