@@ -14508,6 +14508,98 @@ fn unwind_over_an_empty_input_is_empty() {
     assert_eq!(got.rows(), 0);
 }
 
+/// What does reading ONE element of a list property cost, and does it scale with the list's
+/// LENGTH? `Expr::Index` is the worst of the four `value_at`-deep-copies-a-list sites item 640
+/// found: `bcol.value_at(i)` clones the WHOLE list to return a single element, so an O(1) read
+/// should be doing O(len) work.
+///
+/// That is a prediction, and this is the harness that can refute it. `PathRecord` evaluates
+/// its `value` once per row and is otherwise nearly free (0.63 ns/row in
+/// `plan_cost_by_operator`), so the difference between indexing and a plain property read is
+/// the index itself.
+///
+/// The CONTROL is a plain `Prop` read on the same node at the same length — it reads one
+/// property and cannot touch the list, so a cost that rises with length on the index row while
+/// the control stays flat is the clone. If BOTH rise, the fixture is the thing scaling and the
+/// prediction is wrong.
+#[test]
+#[ignore = "measurement harness: cargo test --release -- --ignored --nocapture index_cost_by_list_length"]
+fn index_cost_by_list_length() {
+    use std::time::Instant;
+    const REPS: u32 = 7;
+    const ROWS: usize = 100_000;
+
+    println!("{:<40}{:>10}{:>10}", "case", "total us", "ns/row");
+
+    for len in [1usize, 8, 64] {
+        let mut b = Builder::default();
+        let items: Vec<Value> = (0..len).map(|j| n(j as f64)).collect();
+
+        for _ in 0..ROWS {
+            b.node(
+                &["N"],
+                &[("tags", Value::List(items.clone())), ("k", n(1.0))],
+            );
+        }
+
+        let store = b.build();
+        let scan = || Plan::Scan { label: None };
+
+        let cases: Vec<(&str, Expr)> = vec![
+            (
+                "index [0] of the list",
+                Expr::Index {
+                    base: Box::new(prop(0, "tags")),
+                    index: Box::new(lit(n(0.0))),
+                    elem: crate::ir::ElemKind::Plain,
+                },
+            ),
+            // The control: one property read on the same node, untouched by the list.
+            ("plain prop read (control)", prop(0, "k")),
+        ];
+
+        for (name, value) in cases {
+            // GROUP BY the expression, NOT `PathRecord`. The first version of this harness used
+            // `PathRecord` and read 0.63 ns/row for BOTH the index and the control — exactly
+            // `PathRecord`'s own floor in `plan_cost_by_operator`, because it does not evaluate
+            // its `value` eagerly. A plain property read cannot cost 0.63 ns when
+            // `Aggregate GROUP BY num` costs 6 ns/row INCLUDING the grouping, and the control
+            // matching the subject to two decimal places is what gave it away.
+            //
+            // Aggregate's key IS evaluated per row, and the operator table already prices it,
+            // so the grouping overhead is known and common to both rows here.
+            let plan = Plan::Aggregate {
+                input: Box::new(scan()),
+                keys: vec![("g".to_string(), value)],
+                aggs: vec![crate::ir::Agg {
+                    func: AggFn::Count,
+                    arg: None,
+                    distinct: false,
+                    name: "c".into(),
+                    frac: None,
+                    null_on_empty: false,
+                    numeric_only: false,
+                }],
+            };
+            let mut best = u128::MAX;
+
+            for _ in 0..REPS {
+                let t0 = Instant::now();
+                let got = crate::exec::pull(&plan, &store, false).expect("plan runs");
+                best = best.min(t0.elapsed().as_nanos());
+                assert_eq!(got.rows(), 1, "every row shares one key");
+            }
+
+            println!(
+                "{:<40}{:>10.1}{:>10.2}",
+                format!("len {len:>3}  {name}"),
+                best as f64 / 1000.0,
+                best as f64 / ROWS as f64
+            );
+        }
+    }
+}
+
 /// What does `UNWIND <a list PROPERTY>` cost, and how much of it is the per-row CLONE?
 ///
 /// `plan_cost_by_operator` prices `Unwind` over a literal list, where item 640's slope showed

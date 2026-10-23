@@ -680,6 +680,28 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
             let bcol = eval(base, store, batch)?;
             let icol = eval(index, store, batch)?;
             // Index into the per-row list/record/map → the element value (or NULL).
+            //
+            // 🛑 BORROWING THE ROW INSTEAD OF `value_at` WAS TRIED AND REFUTED (item 641).
+            // `value_at` returns an OWNED `Value`, so reading ONE element copies the WHOLE
+            // container first — an O(1) read doing O(len) work, and the same pattern
+            // `size()`/`cardinality()` borrows around just below. Replacing this with a
+            // `match &bcol { Col::Gen(v) => Some(v), _ => None }` borrow measured, min of
+            // three each side, 100,000 rows grouped on the expression:
+            //
+            //        len 1    len 8     len 64
+            //   now   56.2     88.2     1345.4   ns/row
+            //   borrow 45.3    200.0    1249.6
+            //         1.24x   2.25x SLOWER  1.08x
+            //
+            // NON-MONOTONIC, with a 2.25x REGRESSION in the middle. Measuring only len 64
+            // would have shipped it as a 1.08x win.
+            //
+            // And the clone removed is not the dominant one: `eval(base)` already
+            // materialized a `Col::Gen` holding a CLONED `Value::List` per row before any
+            // indexing happens, which is O(rows × len). That is the real target — a fused
+            // read that pulls one element out of the stored list without building the column
+            // — and it is open. The cost it would recover is large: at len 64 an index is
+            // 1360 ns/row against 7.1 for a plain property read on the same node, 191x.
             let at = |i: usize| match bcol.value_at(i) {
                 Value::List(items) => match icol.value_at(i) {
                     Value::Num(n) if n >= 0.0 && n.fract() == 0.0 && (n as usize) < items.len() => {

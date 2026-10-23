@@ -11704,3 +11704,71 @@ Grepping found two more still paying it:
 Both are recorded OPEN rather than folded in here: the measured scope of this item is UNWIND,
 and `Expr::Index` deserves its own pricing. With four sites of one pattern, the eventual fix is
 probably a by-reference accessor on `Col` rather than a fifth individual patch.
+
+## 641 — indexing one element of a list costs 191x a property read, the obvious fix is REFUTED, and the harness that said otherwise was measuring its own wrapper
+
+**MEASURED + REFUTED. No engine change ships from this item** — only the harness and the
+records. Item 640 found `value_at` deep-copying a list at four call sites and recorded
+`Expr::Index` as the worst: reading ONE element clones the WHOLE container, so an O(1) read
+does O(len) work. This prices it, tries the obvious fix, and rejects it.
+
+### 🛑 The first harness measured nothing, and said "flat"
+
+Built on `PathRecord`, the sweep read **0.62–0.64 ns/row for BOTH the index and the control**
+at every length — which looks like a clean refutation of the O(len) prediction. It is not:
+0.63 ns/row is exactly `PathRecord`'s own floor in `plan_cost_by_operator`, because it does not
+evaluate its `value` eagerly. A plain property read cannot cost 0.63 ns when
+`Aggregate GROUP BY num` costs 6 ns/row INCLUDING the grouping.
+
+**The control matching the subject to two decimal places is what gave it away.** Without it the
+item would have recorded "`Expr::Index` is fine" and moved on. Rebuilt on `Aggregate`, whose key
+IS evaluated per row and whose cost the operator table already prices.
+
+### The cost, with a control that cannot reach the list
+
+100,000 rows, min of 7, grouping on the expression. The control reads a different, scalar
+property on the same node:
+
+| len | index `[0]` | plain prop read |
+| --- | ----------- | --------------- |
+| 1   | 56.5 ns     | 7.3             |
+| 8   | 88.2        | 7.5             |
+| 64  | **1360.0**  | 7.1             |
+
+**191x at length 64**, and worse than linear. The control is flat at ~7 ns throughout, matching
+`GROUP BY num`'s known ~6 — which is how this run is known to be alive where the first was not.
+
+### 🛑 The borrow fix is REFUTED: 2.25x SLOWER in the middle
+
+Replacing `bcol.value_at(i)` with a borrow of `Col::Gen` — the same shape
+`size()`/`cardinality()` already uses, and the one that worked for `unwind_rows` in item 640 —
+measured, min of three each side:
+
+|        | len 1 | len 8            | len 64 |
+| ------ | ----- | ---------------- | ------ |
+| before | 56.2  | 88.2             | 1345.4 |
+| borrow | 45.3  | **200.0**        | 1249.6 |
+|        | 1.24x | **2.25x SLOWER** | 1.08x  |
+
+Non-monotonic, with a large regression in the middle, and the distributions do not overlap on
+either side (88–90 against 198–203 at len 8, three runs each). Reverted.
+
+**Measuring only len 64 would have shipped a 2.25x regression as a 1.08x win.** The first check
+of this change was exactly that one row.
+
+### The prediction was wrong about WHICH copy dominates
+
+Removing the `value_at` clone bought ~7% at length 64. The bulk is upstream: `eval(base)`
+materializes a `Col::Gen` holding a CLONED `Value::List` **per row** before indexing happens at
+all — O(rows × len) — and no change at the indexing site can reach it. **That is the real
+target and it is open:** a fused read that extracts one element from the stored list without
+building the intermediate column.
+
+The numbers and the rejection are recorded in `evaluator.rs` next to the code they would have
+changed, per this repo's rule — several rejected optimizations here have been re-attempted
+otherwise, and this one looks obviously correct.
+
+### What ships
+
+`index_cost_by_list_length`, the harness. The corpus had no list-indexing bench and the
+question was unasked; it now has one that is demonstrably alive, with the control built in.
