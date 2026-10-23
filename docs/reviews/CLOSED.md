@@ -11337,3 +11337,105 @@ bug. An unexercised print path in an instrument is the same hazard as an unteste
 anywhere else: it is believed.
 
 Gates: oxlint --type-aware 0; tsc --noEmit 0; oxfmt --check 0.
+
+## 637 — an inline rel's PROPERTIES reach the one-hop tally: 8.76x → 0.99x, and the route item 633 refused is not the only one
+
+**FIXED (TS).** The gated probe named this as the biggest genuine gap on its page, and item 633
+had already looked at it and declined. The decline was right about its own route and wrong as a
+verdict on the target.
+
+### What 633 ruled out, and why it does not rule this out
+
+633 admitted an inline rel `WHERE` by compiling it INTO the single `HopPred`. Properties could
+not follow that route: `{w: v}` is IS-NULL semantics rather than `=` — with a null value it
+matches a stored null **and an absent key**, where `r.w = null` matches none — and a `$param`'s
+value is unknown at compile time, so a synthesized `compare` would reintroduce item 210's
+"route two" divergence as a MISCOUNT.
+
+**Nothing is synthesized here.** `relInlineOf` hands the properties to `compilePredicate` and a
+new `inRel` applies them per edge through `satisfies` — the general path's own matcher, the
+same call `matchRel` makes — so the semantics are not re-derived and cannot drift from it. It
+is also an INDEPENDENT gate rather than something folded into `pred`, so a clause `WHERE`
+reading the rel and inline properties on that rel are both honoured.
+
+A recorded decline is a decline of a ROUTE. Re-reading what it actually refused is cheaper than
+re-deriving the target, and in this case the refusal named its own escape.
+
+### The number, with the clause spelling as the control throughout
+
+200,000 vertices / 600,000 edges, min of 9, six alternated rounds, all spellings in one process:
+
+|                               | before     | after     |                        |
+| ----------------------------- | ---------- | --------- | ---------------------- |
+| clause `WHERE r.w = $w`       | 23.56 ms   | 22.09     | **the control — flat** |
+| inline `{w: $w}`              | **206.45** | **22.81** | 8.76x → **1.03x**      |
+| inline `[r:E WHERE r.w = $w]` | 24.47      | 22.31     | 1.01x                  |
+| NULL CONTROL                  | —          | 22.10     | 1.00x                  |
+
+Identical answers (120,000 each, asserted in the harness). (The "after" column is a re-measurement of the FINAL code. An earlier run of the same change
+read 0.99x before `relHopPred` absorbed the `inRel` computation to clear the complexity cap —
+same conclusion, but the figure quoted has to be the one the committed code produces.)
+
+The probe now reports the group
+closed and **0 groups disagree on the ANSWER**.
+
+**Six rounds, not three, and that matters:** a newly-routed path's rounds DECREASE for several
+iterations as it JITs (28.6 → 20.5 here). At three rounds the series had not settled and the
+min was still falling.
+
+### 🛑 The first working version applied the predicate TWICE, and only a control caught it
+
+`relHopPred` folds an inline `WHERE` into `pred`; `relInlineOf` then compiled that same `WHERE`
+again into `inRel`. Both were applied, per edge.
+
+**The answer is identical either way, so all 2505 gql tests passed.** The only symptom was the
+inline-`WHERE` spelling reading a stable 1.12x — a spelling this change was supposed to leave
+alone. Fixed by making the channels mutually exclusive (`carried.carried ? undefined : …`);
+nothing is lost, because `relInlineWhereOnly` admits the `WHERE` form only when the rel has no
+properties, so a carried rel has nothing for `inRel` to apply. After: 1.01x.
+
+This is the second time in three items that a green suite was no evidence. The control is what
+measured it, and the control only worked because it was a spelling the change should not have
+been able to reach.
+
+### Teeth: 6 of 7, and the survivor was PREDICTED
+
+Under `timeout` + the 16G cgroup cap, pristine copy under `target/`, restored BEFORE each
+mutant, every pattern asserted to appear exactly once:
+
+| mutant                                                                                          |                           |
+| ----------------------------------------------------------------------------------------------- | ------------------------- |
+| the tally branch stops admitting a rel-only constraint (falls through to the O(1) bucket count) | CAUGHT                    |
+| `startWalkFits` stops refusing `inRel`                                                          | CAUGHT                    |
+| `farWalkFits` stops refusing `inRel`                                                            | CAUGHT                    |
+| the per-edge gate stops being applied                                                           | CAUGHT                    |
+| `relInlineOf` stops declining a QUANTIFIED rel                                                  | CAUGHT                    |
+| the `both`-direction guard stops refusing `inRel`                                               | CAUGHT                    |
+| **the carried/`inRel` exclusivity**                                                             | **SURVIVED — equivalent** |
+
+The survivor was labelled an equivalence probe _before_ the run and behaved as labelled:
+applying one predicate twice is answer-equivalent, so **no correctness test can catch it and
+7/7 was never available here.** It is guarded by the MEASUREMENT (1.12x → 1.01x), not by a
+test, which is the honest description and the reason it is written down — a later reader
+finding a 6/7 should not go hunting for the missing case.
+
+The bucket-fallthrough mutant is the one worth noting: that branch's entry condition was the
+least obvious edit in the change, and ignoring `inRel` there counts EVERY edge. It was the
+mutant most likely to have no coverage, and the tests caught it.
+
+### The tests go where a wrong answer would be SILENT
+
+15 tests. The two that carry the item:
+
+- **`{w: null}` is 2** — the stored null AND the absent key — while `WHERE r.w = null` is **0**.
+  That is precisely the divergence 633 refused to risk, pinned now rather than argued.
+- **a clause `WHERE` that DISAGREES with the inline properties answers 0.** `{w: 2}` keeps two
+  edges and `r.w = 1` keeps a different one; a tally that dropped either predicate would answer
+  1 or 2. A conjunction that happens to agree cannot tell those apart, which is why the
+  disagreeing pair is the discriminating case.
+
+### Still open
+
+The **projected** edge group remains at 2.98x (net 2.91x). It is a different route — a
+projection, not a count — and this item did not touch it. It is now the largest gated flag on
+the probe's page.

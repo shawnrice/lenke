@@ -386,11 +386,18 @@ type InlineGate = (
  * problem of items 121-123, not this one. `undefined` means the node is plain and
  * there is nothing to carry.
  */
-const inlineOf = (n: NodePattern): InlinePred | null | undefined => {
-  if (plainNode(n)) {
-    return undefined;
-  }
+/**
+ * The part of an inline constraint that is the same for a NODE and a RELATIONSHIP: the
+ * properties must be CLOSED, and an inline `WHERE` must read nothing but the element's own
+ * variable. Extracted so `relInlineOf` is the same rule rather than a second copy of it —
+ * item 633's first version drew its edge-side rule by hand and dropped a predicate.
+ *
+ * The two callers differ only in what counts as "plain", which is why that check stays with
+ * them.
+ */
+type InlineShape = Pick<NodePattern, 'properties' | 'where' | 'variable'>;
 
+const inlinePredOf = (n: InlineShape): InlinePred | null => {
   for (const c of n.properties ?? []) {
     if (freePredicateVars(c.value).size > 0) {
       return null;
@@ -418,6 +425,39 @@ const inlineOf = (n: NodePattern): InlinePred | null | undefined => {
     pred: compilePredicate(n.properties, n.where, n.variable),
     ...(n.variable !== undefined ? { bindVar: n.variable } : {}),
   };
+};
+
+const inlineOf = (n: NodePattern): InlinePred | null | undefined =>
+  plainNode(n) ? undefined : inlinePredOf(n);
+
+/**
+ * The REL mirror of {@link inlineOf}: the inline constraint a one-hop tally can apply per edge
+ * through `satisfies`, or `null` to decline.
+ *
+ * **This is the route item 633 could not take, and the reason its objection does not apply.**
+ * That item admitted an inline rel `WHERE` by compiling it into the single `HopPred`, and had
+ * to leave inline PROPERTIES out: `{w: v}` is IS-NULL semantics rather than `=` — with a null
+ * value it matches a stored null AND AN ABSENT KEY where `r.w = null` matches none — and a
+ * `$param`'s value is unknown at compile time, so a synthesized `compare` would reintroduce
+ * item 210's "route two" divergence as a MISCOUNT.
+ *
+ * Nothing is synthesized here. The properties are handed to `compilePredicate` and evaluated by
+ * `satisfies`, which is the general path's own matcher — the same call `matchRel` makes — so
+ * the semantics are not re-derived and cannot drift from it. The gap this closes is 8.76x
+ * (item 637).
+ *
+ * A quantifier declines: a tally counts single edges, and `{1,2}` is a walk.
+ */
+const relInlineOf = (r: RelPattern): InlinePred | null | undefined => {
+  if (plainRel(r)) {
+    return undefined;
+  }
+
+  if (r.quantifier !== undefined) {
+    return null;
+  }
+
+  return inlinePredOf(r);
 };
 
 /**
@@ -463,17 +503,27 @@ const relInlineWhereOnly = (r: RelPattern): boolean => {
 const relHopPred = (
   rel: RelPattern,
   pred: HopPred | undefined,
-): { pred: HopPred | undefined; carried: boolean } | null => {
+): { pred: HopPred | undefined; carried: boolean; inRel?: InlinePred } | null => {
   const relWhere = relInlineWhereOnly(rel) ? rel.where : undefined;
 
   if (relWhere === undefined) {
-    return { pred, carried: false };
+    // No inline `WHERE` to fold, so the rel's inline PROPERTIES (if any) become the per-edge
+    // `inRel` gate instead (item 637). `relInlineOf` yields `undefined` for a plain rel.
+    const inRel = relInlineOf(rel);
+
+    return inRel === null ? null : { pred, carried: false, inRel };
   }
 
   if (pred !== undefined) {
     return null;
   }
 
+  // CARRIED, and therefore NO `inRel` — the two channels are mutually exclusive, which is
+  // structural here rather than a condition at the call site. `relInlineWhereOnly` admits the
+  // `WHERE` form only when the rel has no properties, so a carried rel has nothing left to
+  // apply. Returning both would evaluate the SAME predicate twice per edge: answer-identical,
+  // so all 2505 tests passed when a first version did exactly that, and a stable 1.12x on the
+  // inline-`WHERE` spelling was the only symptom.
   return { pred: { fn: compileExpr(relWhere), relVar: rel.variable }, carried: true };
 };
 
@@ -603,6 +653,10 @@ type HopScan = {
   /** Inline endpoint constraints, applied via `satisfies`. See `InlinePred`. */
   inNear?: InlinePred;
   inFar?: InlinePred;
+  /** The REL's inline constraint, applied per EDGE through the same `satisfies` (item 637).
+   *  Only the per-edge tally can honour it — the degree-sum walks never see an edge, so
+   *  `startWalkFits`/`farWalkFits` refuse it rather than ignore it. */
+  inRel?: InlinePred;
   /** The COMPILED start node, carrying the seed hints that let the start walk seek. */
   cstart?: CNode;
   /** Its FAR mirror, for the far-side walk. */
@@ -612,7 +666,10 @@ type HopScan = {
 /** Apply an endpoint's inline constraint, binding the node's own variable first. */
 const inlineHolds = (
   ip: InlinePred | undefined,
-  element: Vertex,
+  // `Edge` as well as `Vertex` since item 637: the same call applies a rel's inline
+  // constraint per edge. `satisfies` is element-generic already — `matchRel` passes it an
+  // edge — so only this signature was narrower than the thing it calls.
+  element: Vertex | Edge,
   binding: Map<string, unknown>,
   params: Params,
   graph: Graph,
@@ -861,7 +918,7 @@ const startOnlyHopCount = (scan: HopScan, startVar: string | undefined): number 
  * which are inline precisely because they run per EDGE.
  */
 const startWalkFits = (scan: HopScan): boolean => {
-  const { graph, pred, pa, pb, types, inNear, inFar } = scan;
+  const { graph, pred, pa, pb, types, inNear, inFar, inRel } = scan;
 
   return (
     // A clause predicate on the start, an INLINE constraint on it, a non-vacuous start
@@ -884,6 +941,9 @@ const startWalkFits = (scan: HopScan): boolean => {
     (pred.startVar !== undefined || inNear !== undefined || pa !== undefined) &&
     pred.farVar === undefined &&
     pred.relVar === undefined &&
+    // A walk that sums bucket SIZES never visits an edge, so it cannot apply the rel's
+    // inline constraint — ignoring it would be a wrong answer, not a slow one (item 637).
+    inRel === undefined &&
     // The walk never visits the far endpoint, so it cannot apply the far label or a far
     // constraint; and summing out-degree counts edges to ANY target.
     pb === undefined &&
@@ -895,12 +955,14 @@ const startWalkFits = (scan: HopScan): boolean => {
 
 /** The FAR mirror of {@link startWalkFits}, on mirrored conditions — the far LABEL included. */
 const farWalkFits = (scan: HopScan): boolean => {
-  const { graph, pred, pa, pb, types, inNear, inFar } = scan;
+  const { graph, pred, pa, pb, types, inNear, inFar, inRel } = scan;
 
   return (
     (pred.farVar !== undefined || inFar !== undefined || pb !== undefined) &&
     pred.startVar === undefined &&
     pred.relVar === undefined &&
+    // The mirror of `startWalkFits`'s rule, and for the same reason (item 637).
+    inRel === undefined &&
     // An IN-degree counts edges from ANY source, so the start side must be unconstrained
     // where the twin requires the far side to be.
     pa === undefined &&
@@ -1114,7 +1176,7 @@ const tallyEdges = (scan: HopScan, env: EvalEnv): Iterable<Edge> => {
 };
 
 const tallyHopCount = (scan: HopScan): number => {
-  const { graph, params, pred, pa, pb, out, inNear, inFar } = scan;
+  const { graph, params, pred, pa, pb, out, inNear, inFar, inRel } = scan;
   const binding = new Map<string, unknown>();
   const env: EvalEnv = { binding, params, graph };
   let n = 0;
@@ -1130,6 +1192,15 @@ const tallyHopCount = (scan: HopScan): number => {
     // The `!== undefined` tests are inline on purpose: a call per edge to a helper
     // that immediately returns true cost the un-constrained tally ~10% (120,000
     // calls over this fixture) and is what the control rows caught.
+    //
+    // The REL's constraint is tested FIRST of the three, because it is the one that can be
+    // decided without touching either endpoint — and in the shape this was built for
+    // (`-[r:E {w: $w}]->`) it is the selective one. Ordering among equally-correct gates is a
+    // performance choice, so it is recorded rather than left to look incidental.
+    if (inRel !== undefined && !inlineHolds(inRel, edge, binding, params, graph)) {
+      continue;
+    }
+
     if (inNear !== undefined && !inlineHolds(inNear, near, binding, params, graph)) {
       continue;
     }
@@ -1840,9 +1911,13 @@ const buildOneHopCount = <T>(
      *  IGNORED, a wrong answer rather than a slow one" trap this file warns about twice,
      *  caught by `inline-rel-count.test.ts`. */
     relCarried?: boolean;
+    /** The rel's inline constraint, applied per EDGE via `satisfies` (item 637). Unlike
+     *  `relCarried` this is NOT folded into `pred`: it is an independent gate, so a clause
+     *  `WHERE` reading the rel and inline rel properties can both be present. */
+    inRel?: InlinePred;
   },
 ): CountOf<T> | null => {
-  const { inNear, inFar, cstart, cfar, relCarried } = ends ?? {};
+  const { inNear, inFar, cstart, cfar, relCarried, inRel } = ends ?? {};
   const { rel, node } = seg;
 
   // `plainNode(node)` is deliberately NOT required: an inline endpoint constraint
@@ -1862,13 +1937,17 @@ const buildOneHopCount = <T>(
   // `r.k = null` matches nothing — and a `$param`'s value is unknown at compile time. A
   // synthesized `compare` would reintroduce item 210's "route two" divergence as a WRONG
   // ANSWER, so `relInlineWhereOnly` admits the `WHERE` form only.
-  if (!plainRel(rel) && relCarried !== true) {
+  // INLINE PROPERTIES now have a route too (item 637), and it is NOT the one refused above:
+  // nothing is synthesized into a `compare`. `relInlineOf` hands them to `compilePredicate`
+  // and `inRel` applies them through `satisfies` — the general path's own matcher — so the
+  // IS-NULL semantics are the matcher's, not a re-derivation that could drift from it.
+  if (!plainRel(rel) && relCarried !== true && inRel === undefined) {
     return null;
   }
 
   if (
     rel.direction === 'both' &&
-    (pred !== undefined || inNear !== undefined || inFar !== undefined)
+    (pred !== undefined || inNear !== undefined || inFar !== undefined || inRel !== undefined)
   ) {
     return null;
   }
@@ -1928,6 +2007,7 @@ const buildOneHopCount = <T>(
         types,
         inNear,
         inFar,
+        inRel,
         cstart,
         cfar,
       };
@@ -1950,7 +2030,7 @@ const buildOneHopCount = <T>(
     // and neither the O(1) bucket-size path nor the label-only walk below can see
     // it — so route those to the tally, which does. Letting the bucket path answer
     // `(b {k: 2})` would return every edge's count.
-    if (inNear !== undefined || inFar !== undefined) {
+    if (inNear !== undefined || inFar !== undefined || inRel !== undefined) {
       const pa = vacuousLabel(graph, aLabel) ? undefined : aLabel;
       const pb = vacuousLabel(graph, bLabel) ? undefined : bLabel;
       // `alwaysTrue`, not a fresh `() => true`: this branch and the unfiltered one below both
@@ -1974,6 +2054,7 @@ const buildOneHopCount = <T>(
         types,
         inNear,
         inFar,
+        inRel,
         cstart,
         cfar,
       };
@@ -3248,6 +3329,7 @@ const patternCountOf = <T>(
       cstart,
       cfar,
       relCarried: carried.carried,
+      inRel: carried.inRel,
     });
   }
 
