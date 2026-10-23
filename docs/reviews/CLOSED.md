@@ -10613,3 +10613,68 @@ row, the else-less cond inverted, plus the seven 624 regressions.
 — first the arms that `gather` (624), now the frontier wider than one slot. The rule: a mutant
 survives when the fixture makes two different things COINCIDE, and the fix is a fixture that
 separates them, never a weaker assertion.
+
+## 627 — a COMPOSITE sort key compares in place: 2.70x, and up to 3.73x when the later keys decide
+
+**FIXED (native).** Found by grepping the pattern the whole-stream work had just taught:
+`sort_idx` fast-paths a SINGLE `Col::Num` and a SINGLE `Col::Str` and drops everything else
+into `row_cmp`, which calls `value_at` **twice per column per comparison** — two `Arc` clones
+for a string key, a whole `Value` clone for a `Gen` one — to answer a question about the bytes
+they point at. `cmp_cell` answers it from the column.
+
+Measured in ONE binary through `FORCE_BOXED_CMP`, alternated, min of 3, 200,000 rows:
+
+| keys                                   | boxed         | in place |           |
+| -------------------------------------- | ------------- | -------- | --------- |
+| `num, name`                            | 169.74 ns/row | 62.87    | **2.70x** |
+| `grp, num` (low-cardinality first key) | 334.97        | 90.37    | **3.71x** |
+| `grp, name, num`                       | 445.49        | 119.29   | **3.73x** |
+| `num` — control                        | 47.73         | 47.78    | 1.00x     |
+| `name` — control                       | 58.49         | 58.46    | 1.00x     |
+
+The gap widens with how often a LATER key decides, which is the mechanism showing itself. The
+controls are 1.00x and structurally must be: `cmp_cell` is reached only from `row_cmp`, which
+is reached only from `sort_idx`'s multi-key branch, so a single typed key never goes near it.
+
+**A worktree A/B would have been WRONG here, and briefly was.** The pre-627 build does not
+have these cases in its harness, so the two processes ran different case lists and carried
+each other's cache and thermal state — it reported `Scan` at 0.85x and `SortLocal` at 0.84x,
+for rows the change cannot reach at all. The in-process switch removes the confound entirely:
+same binary, same case list, one variable.
+
+### The element arm was DEAD, and the instrumentation is what proved it
+
+The first version had a `Col::Nodes | Col::Edges` arm with a careful `u32::MAX`-sentinel guard.
+Instrumenting every `cmp_cell` call over the whole differential fixture: **6961 `Num`, 8767
+`Gen`, 2042 `Bool`, 1295 `Str`, and ZERO element columns.** A sort key that resolves to an
+element is replaced by its EXTERNAL ID (`element_col_to_ext_id`) before the comparator runs,
+or faults under Gremlin's `order()`. The arm could never be entered and its guard could never
+be tested, so it is gone; the mutant that ADDS an element fast path survives, which is the
+positive evidence for the claim rather than a gap.
+
+### 🛑 A flaky test, and it was mine
+
+One full-suite run failed and three passed. Rather than shrug at a one-off: **`FORCE_PER_ROW`
+(624) and `FORCE_BOXED_CMP` (627) were process-global `AtomicBool`s, and `cargo test` runs
+tests in PARALLEL THREADS.** The timing test that asserts the whole-stream router fires could
+measure its fast side while the differential test had the per-row path forced. Correctness
+tests were immune — both paths return the same rows, which is the point — so only the timing
+assertion was exposed. Both switches are now `thread_local!`; four consecutive clean full-suite
+runs since. **A mechanism added to make two paths comparable became a way for two tests to
+interfere; a test-only global in a parallel suite is a shared mutable variable like any other.**
+
+### Teeth: 6 of 7, the survivor equivalent by construction
+
+Caught: `Str` reversed, `Bool` reversed, `partial_cmp` for the total order, `descending` not
+applied, an equal key RETURNING instead of falling through to the next, `Gen` wrongly
+fast-pathed. Survived: adding an element arm (dead by construction, above).
+
+**The NaN mutant needed two fixture fixes and the second is the sharpest version of this
+loop's recurring lesson.** `cmp_num_total` and `partial_cmp` differ only on NaN, and a stored
+property can never be one (ingest maps NaN to null) — but a COMPUTED key can, so the fixture
+sorts by `power(-1, half)`. That still was not enough: `half` was `i % 5` only after a first
+attempt at `i % 3`, the same modulus as the `grp` first key, so inside every `grp` group either
+all rows were NaN or none were and **a NaN never met a non-NaN**. Two properties keyed off the
+same modulus is the fixture-coincidence trap in its purest form. (The single-key NaN shape
+cannot catch it either: one `Col::Num` key takes `sort_idx`'s own pairs path and never calls
+the comparator.)

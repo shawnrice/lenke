@@ -152,6 +152,64 @@ pub(super) fn try_distinct_by_streamed(
     Ok(Some(concat_batches(&acc, store)))
 }
 
+// See the doc on the static inside.
+#[cfg(test)]
+thread_local! {
+    /// Forces every key comparison through the boxed `value_at` path. Flipped by the tests so
+    /// ONE process can sort the same data both ways, which is the only way to check that the
+    /// in-place comparison agrees with the one it replaced (item 627).
+    ///
+    /// **THREAD-LOCAL, not a global**, for the reason spelled out on `exec::FORCE_PER_ROW`:
+    /// `cargo test` runs tests in parallel threads, and a global switch is read by whatever else
+    /// is running at the time.
+    pub(crate) static FORCE_BOXED_CMP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the boxed path has been forced on THIS thread -- a `const false` outside tests.
+fn force_boxed_cmp() -> bool {
+    #[cfg(test)]
+    {
+        FORCE_BOXED_CMP.with(std::cell::Cell::get)
+    }
+    #[cfg(not(test))]
+    {
+        false
+    }
+}
+
+/// Compare row `a` to row `b` within ONE key column WITHOUT boxing either cell, or `None`
+/// when that cannot be done faithfully and the caller must fall back to `value_at`.
+///
+/// Each arm is the same ordering `cmp_total` would reach for the `Value` that `value_at`
+/// would have built, which is what makes the fast path byte-identical rather than merely
+/// similar: `Col::Num` -> `Value::Num` -> `cmp_num_total`; `Col::Str` -> `Value::Str` ->
+/// `Arc<str>::cmp`, which delegates to `str`; `Col::Bool` -> `Value::Bool` -> `bool::cmp`.
+///
+/// Two cases decline, and both are about NULL rather than about types:
+/// - `Col::Gen` is the only column that can hold an arbitrary value, NULL among them, and
+///   null PLACEMENT depends on `nulls_first` — which belongs to the key, not the column.
+/// - `Col::Nodes`/`Col::Edges` carry the OPTIONAL `u32::MAX` sentinel, which `value_at` reads
+///   back as NULL. A pair clear of the sentinel is an ordinary id comparison (`value_at`
+///   would make two `Value::Num`s of the ids and `cmp_num_total` would order them exactly as
+///   `u32::cmp` does); a pair touching it needs the null rule, so it declines.
+fn cmp_cell(col: &Col, a: usize, b: usize) -> Option<std::cmp::Ordering> {
+    if force_boxed_cmp() {
+        return None;
+    }
+    Some(match col {
+        Col::Num(v) => value::cmp_num_total(v[a], v[b]),
+        Col::Str(v) => v[a].cmp(&v[b]),
+        Col::Bool(v) => v[a].cmp(&v[b]),
+        // No `Col::Nodes`/`Col::Edges` arm, and that is not an omission: a sort key that
+        // resolves to a graph element is replaced by its EXTERNAL ID
+        // (`element_col_to_ext_id`) before the comparator is reached, or faults under
+        // Gremlin's `order()`. An arm here was written, measured as never once entered over
+        // the whole differential fixture, and removed -- it would be dead code carrying an
+        // untestable null-sentinel guard.
+        _ => return None,
+    })
+}
+
 /// Compare two rows by the sort keys only (`Equal` on a full tie). NULL placement
 /// is the front-end's language contract (GQL last, Gremlin first), decided here
 /// BEFORE the total order (not by reversing `cmp_total` under DESC).
@@ -164,6 +222,18 @@ fn row_cmp(
 ) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     for (kc, k) in key_cols.iter().zip(keys) {
+        // IN PLACE first (item 627). `value_at` boxes a `Value` per cell -- two per column
+        // per comparison, and for a `Col::Str` that is two `Arc` clones (an atomic
+        // increment each) to answer a question about the bytes they point at. A typed
+        // column can be compared without materializing anything, and `cmp_cell` returns
+        // `None` for exactly the cases where that is not true.
+        if let Some(o) = cmp_cell(kc, a, b) {
+            let ord = if k.descending { o.reverse() } else { o };
+            if ord != Ordering::Equal {
+                return ord;
+            }
+            continue;
+        }
         let (va, vb) = (kc.value_at(a), kc.value_at(b));
         let ord = match (va.is_null(), vb.is_null()) {
             (true, true) => Ordering::Equal,

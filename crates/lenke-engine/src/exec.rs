@@ -5217,19 +5217,27 @@ fn arm_is_row_local(p: &Plan) -> bool {
     }
 }
 
-/// Forces the per-row branch path. Flipped by the tests so ONE process can run both paths on
-/// one query, which is the only way to compare them: the whole-stream router's entire claim is
-/// that it returns what the per-row loop returns (item 624).
+// See the doc on the static inside.
 #[cfg(test)]
-pub(super) static FORCE_PER_ROW: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+thread_local! {
+    /// Forces the per-row branch path. Flipped by the tests so ONE process can run both paths on
+    /// one query, which is the only way to compare them: the whole-stream router's entire claim is
+    /// that it returns what the per-row loop returns (item 624).
+    ///
+    /// **THREAD-LOCAL, not a global.** `cargo test` runs tests in PARALLEL THREADS, so a global
+    /// switch is read by whatever else happens to be running: the timing test that asserts the
+    /// router FIRES measured its fast side while the differential test had the per-row path
+    /// forced, and failed once in a full-suite run before this was thread-local. A flaky
+    /// assertion in CI is worse than no assertion, and the flake was mine.
+    pub(super) static FORCE_PER_ROW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 
-/// Whether the per-row path has been forced -- a `const false` outside tests, so the gate
-/// folds away in release.
+/// Whether the per-row path has been forced on THIS thread -- a `const false` outside tests,
+/// so the gate folds away in release.
 fn force_per_row() -> bool {
     #[cfg(test)]
     {
-        FORCE_PER_ROW.load(std::sync::atomic::Ordering::Relaxed)
+        FORCE_PER_ROW.with(std::cell::Cell::get)
     }
     #[cfg(not(test))]
     {

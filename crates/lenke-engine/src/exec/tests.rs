@@ -14516,6 +14516,45 @@ fn plan_cost_by_operator() {
             },
         ),
         (
+            // The COMPOSITE key, which has no typed path: `sort_idx` fast-paths a single
+            // `Col::Num` and a single `Col::Str` and falls to `row_cmp` for everything else,
+            // which boxes a `Value` per column PER COMPARISON. Priced against the single-key
+            // row above it, which is the same sort over the same rows.
+            "OrderPage (by num, name)",
+            Plan::OrderPage {
+                input: Box::new(scan()),
+                keys: vec![
+                    SortKey {
+                        expr: num(),
+                        descending: false,
+                        nulls_first: false,
+                    },
+                    SortKey {
+                        expr: name(),
+                        descending: false,
+                        nulls_first: false,
+                    },
+                ],
+                skip: None,
+                limit: None,
+                fault_on_element: false,
+            },
+        ),
+        (
+            "OrderPage (by name, STR)",
+            Plan::OrderPage {
+                input: Box::new(scan()),
+                keys: vec![SortKey {
+                    expr: name(),
+                    descending: false,
+                    nulls_first: false,
+                }],
+                skip: None,
+                limit: None,
+                fault_on_element: false,
+            },
+        ),
+        (
             "OrderPage (by num, LIMIT 10)",
             Plan::OrderPage {
                 input: Box::new(scan()),
@@ -14754,6 +14793,292 @@ fn plan_cost_by_operator() {
     }
 }
 
+/// What the in-place key comparison is WORTH, measured against the boxed path it replaced in
+/// the SAME process (item 627).
+///
+/// ```text
+/// cargo test --release --manifest-path crates/lenke-engine/Cargo.toml \
+///   -- --ignored --nocapture sort_key_cost_in_place_vs_boxed
+/// ```
+///
+/// A worktree A/B cannot do this honestly here: the pre-change build does not have these
+/// cases in its harness, so the two processes would run different case lists and the rows
+/// would carry each other's cache and thermal state. `FORCE_BOXED_CMP` makes both paths
+/// reachable in one binary, so the only difference between the two columns is the comparator.
+/// Rounds ALTERNATE and each column keeps its minimum.
+#[test]
+#[ignore = "measurement harness: cargo test --release -- --ignored --nocapture sort_key_cost_in_place_vs_boxed"]
+fn sort_key_cost_in_place_vs_boxed() {
+    use crate::exec::order::FORCE_BOXED_CMP;
+    use crate::ir::SortKey;
+    use std::time::Instant;
+    const ROWS: u32 = 200_000;
+    const ROUNDS: u32 = 3;
+
+    let mut b = Builder::default();
+    for i in 0..ROWS {
+        b.node(
+            &["N"],
+            &[
+                ("num", n(f64::from(i % 1000))),
+                ("name", s(&format!("v{i}"))),
+                ("grp", n(f64::from(i % 7))),
+            ],
+        );
+    }
+    let store = b.build();
+
+    let key = |k: &str| SortKey {
+        expr: Expr::Prop {
+            slot: 0,
+            key: k.to_string(),
+        },
+        descending: false,
+        nulls_first: false,
+    };
+    let page = |keys: Vec<SortKey>| Plan::OrderPage {
+        input: Box::new(Plan::Scan { label: None }),
+        keys,
+        skip: None,
+        limit: None,
+        fault_on_element: false,
+    };
+    let cases: Vec<(&str, Plan)> = vec![
+        ("num, name", page(vec![key("num"), key("name")])),
+        ("grp, num", page(vec![key("grp"), key("num")])),
+        (
+            "grp, name, num",
+            page(vec![key("grp"), key("name"), key("num")]),
+        ),
+        // The CONTROLS the change cannot reach: a single `Col::Num` and a single `Col::Str`
+        // key each take `sort_idx`'s own typed path and never call the comparator at all.
+        ("num  (control)", page(vec![key("num")])),
+        ("name (control)", page(vec![key("name")])),
+    ];
+
+    let mut best = vec![[f64::MAX; 2]; cases.len()];
+    for _ in 0..ROUNDS {
+        for (side, boxed) in [(0usize, true), (1usize, false)] {
+            FORCE_BOXED_CMP.with(|c| c.set(boxed));
+            for (c, (label, plan)) in cases.iter().enumerate() {
+                let t = Instant::now();
+                let got = crate::exec::pull(plan, &store, false);
+                let us = t.elapsed().as_secs_f64() * 1e6;
+                assert_eq!(got.expect(label).rows(), ROWS as usize, "{label}");
+                best[c][side] = best[c][side].min(us);
+            }
+        }
+    }
+    FORCE_BOXED_CMP.with(|c| c.set(false));
+
+    println!("\n=== sort key: boxed vs in place, {ROWS} rows, min of {ROUNDS} alternated ===");
+    println!(
+        "{:<20} {:>12} {:>12} {:>8}",
+        "keys", "boxed ns/r", "in-place", "ratio"
+    );
+    for (c, (label, _)) in cases.iter().enumerate() {
+        let [bx, ip] = best[c];
+        println!(
+            "{label:<20} {:>12.2} {:>12.2} {:>7.2}x",
+            bx * 1000.0 / f64::from(ROWS),
+            ip * 1000.0 / f64::from(ROWS),
+            bx / ip
+        );
+    }
+}
+
+/// The in-place key comparison orders rows exactly as the boxed one did (item 627).
+///
+/// Compared in one process by flipping `exec::order::FORCE_BOXED_CMP`, row for row, because
+/// the claim is byte-identity of the ORDER and nothing weaker. Hand-written expected rows
+/// would only test what the author imagined about `cmp_total`'s own rules.
+///
+/// The fixture exists to reach the cases `cmp_cell` declines as much as the ones it answers:
+/// a `Col::Gen` key with real NULLs (placement depends on `nulls_first`, which belongs to the
+/// key and not the column), and an OPTIONAL node column carrying the `u32::MAX` sentinel that
+/// `value_at` reads back as NULL. Both spellings of `nulls_first` are run for every shape,
+/// because a decline that lost the null rule would be invisible under one of them.
+#[test]
+fn the_in_place_key_comparison_orders_like_the_boxed_one() {
+    use crate::exec::order::FORCE_BOXED_CMP;
+    use crate::ir::SortKey;
+
+    let mut b = Builder::default();
+    for i in 0..60u32 {
+        // `grp` collides heavily so the SECOND key decides most comparisons -- a composite
+        // sort whose first key is unique never reaches the second column at all.
+        let mut props: Vec<(&str, Value)> = vec![
+            ("grp", n(f64::from(i % 3))),
+            ("num", n(f64::from(i % 7))),
+            ("name", s(&format!("v{}", i % 11))),
+            ("flag", crate::value::Value::Bool(i % 2 == 0)),
+            // power(-1, 0.5) is NaN and power(-1, 2) is 1, so a key over this property is a
+            // Num column with SOME NaN cells -- the only thing that separates the engine's
+            // total order (NaN last, NaN == NaN) from `partial_cmp`.
+            // `% 5`, deliberately NOT `% 3` like `grp`: with the two correlated, every row
+            // inside a `grp` group had the same NaN-ness and a NaN never met a non-NaN, so
+            // the total order and `partial_cmp` agreed and the mutant lived.
+            ("half", n(if i % 5 == 0 { 0.5 } else { 2.0 })),
+        ];
+        // Present on only some rows, so the column is `Gen` WITH nulls.
+        if i % 4 != 0 {
+            props.push(("sparse", n(f64::from(i % 5))));
+        }
+        b.node(&["N"], &props);
+    }
+    for i in 0..60u32 {
+        b.edge(i, (i * 7 + 1) % 60, "R");
+        // Only some nodes get an `S` edge, so an OPTIONAL hop over it MIXES real ids with the
+        // `u32::MAX` sentinel. An all-sentinel column ties on both paths and proves nothing --
+        // which is how the first run let the sentinel-guard mutant live.
+        if i % 3 == 0 {
+            b.edge(i, (i * 11 + 2) % 60, "S");
+        }
+    }
+    let store = b.build();
+
+    let prop = |k: &str| Expr::Prop {
+        slot: 0,
+        key: k.to_string(),
+    };
+    let nan_key = Expr::Call {
+        name: "power".to_string(),
+        args: vec![Expr::Lit(n(-1.0)), prop("half")],
+    };
+    let key = |k: &str, descending: bool, nulls_first: bool| SortKey {
+        expr: prop(k),
+        descending,
+        nulls_first,
+    };
+
+    for nulls_first in [false, true] {
+        let shapes: Vec<(&str, Vec<SortKey>)> = vec![
+            ("num", vec![key("num", false, nulls_first)]),
+            ("name", vec![key("name", false, nulls_first)]),
+            ("flag", vec![key("flag", false, nulls_first)]),
+            (
+                "sparse (Gen, nulls)",
+                vec![key("sparse", false, nulls_first)],
+            ),
+            (
+                "power(-1, half) -- SOME NaN",
+                vec![SortKey {
+                    expr: nan_key.clone(),
+                    descending: false,
+                    nulls_first,
+                }],
+            ),
+            (
+                "grp, power(-1, half)",
+                vec![
+                    key("grp", false, nulls_first),
+                    SortKey {
+                        expr: nan_key.clone(),
+                        descending: false,
+                        nulls_first,
+                    },
+                ],
+            ),
+            (
+                "grp, name",
+                vec![
+                    key("grp", false, nulls_first),
+                    key("name", false, nulls_first),
+                ],
+            ),
+            (
+                "grp DESC, num",
+                vec![
+                    key("grp", true, nulls_first),
+                    key("num", false, nulls_first),
+                ],
+            ),
+            (
+                "grp, sparse, name",
+                vec![
+                    key("grp", false, nulls_first),
+                    key("sparse", false, nulls_first),
+                    key("name", false, nulls_first),
+                ],
+            ),
+            (
+                "flag DESC, num DESC",
+                vec![
+                    key("flag", true, nulls_first),
+                    key("num", true, nulls_first),
+                ],
+            ),
+        ];
+
+        for (label, keys) in shapes {
+            for plan in [
+                // Over a bare scan, and over an OPTIONAL hop so a `Col::Nodes` key can carry
+                // the `u32::MAX` sentinel that `cmp_cell` must decline.
+                Plan::OrderPage {
+                    input: Box::new(Plan::Scan { label: None }),
+                    keys: keys.clone(),
+                    skip: None,
+                    limit: None,
+                    fault_on_element: false,
+                },
+                Plan::OrderPage {
+                    input: Box::new(Plan::OptionalExpand {
+                        input: Box::new(Plan::Scan {
+                            label: Some("N".to_string()),
+                        }),
+                        from: 0,
+                        dir: Dir::Out,
+                        edge_label: vec!["S".to_string()],
+                        bind_edge: false,
+                        keep_source: false,
+                        landing_pred: None,
+                    }),
+                    keys: {
+                        // Sort by the optional node column FIRST -- a MIX of real ids and
+                        // `u32::MAX` sentinels. It reaches the comparator as the elements'
+                        // EXTERNAL IDS (`element_col_to_ext_id`), never as a `Col::Nodes`,
+                        // which is why `cmp_cell` has no element arm. The shape stays because
+                        // it is how that conversion's NULL handling is covered at all.
+                        let mut ks = vec![SortKey {
+                            expr: Expr::Slot(1),
+                            descending: false,
+                            nulls_first,
+                        }];
+                        ks.extend(keys.iter().cloned());
+                        ks
+                    },
+                    skip: None,
+                    limit: None,
+                    fault_on_element: false,
+                },
+            ] {
+                FORCE_BOXED_CMP.with(|c| c.set(true));
+                let boxed = crate::exec::pull(&plan, &store, false);
+                FORCE_BOXED_CMP.with(|c| c.set(false));
+                let fast = crate::exec::pull(&plan, &store, false);
+
+                let (Ok(x), Ok(y)) = (&boxed, &fast) else {
+                    panic!("{label} (nulls_first={nulls_first}): {boxed:?} vs {fast:?}");
+                };
+                assert_eq!(x.rows(), y.rows(), "{label}: row count");
+                for sl in 0..x.slots.len() {
+                    let cells = |bt: &crate::batch::Batch| -> Vec<String> {
+                        (0..bt.rows())
+                            .map(|i| format!("{:?}", bt.slot(sl).value_at(i)))
+                            .collect()
+                    };
+                    assert_eq!(
+                        cells(x),
+                        cells(y),
+                        "{label} (nulls_first={nulls_first}): slot {sl} ORDER differs"
+                    );
+                }
+            }
+        }
+    }
+    FORCE_BOXED_CMP.with(|c| c.set(false));
+}
+
 /// The whole-stream branch router returns what the per-row loop returns — on every shape, and
 /// ROW FOR ROW IN ORDER, not just as a set (item 624).
 ///
@@ -14768,8 +15093,6 @@ fn plan_cost_by_operator() {
 /// comparison as multisets would pass with the regrouping deleted.
 #[test]
 fn the_whole_stream_branch_router_agrees_with_the_per_row_loop() {
-    use std::sync::atomic::Ordering;
-
     let mut b = Builder::default();
     // 0: two out edges and one in    3: no edges at all
     // 1: one out edge                4: in edges only
@@ -14847,9 +15170,9 @@ fn the_whole_stream_branch_router_agrees_with_the_per_row_loop() {
     for q in queries {
         let plan = crate::gremlin::parse(q).unwrap_or_else(|e| panic!("{q}: {e}"));
 
-        FORCE_PER_ROW.store(true, Ordering::Relaxed);
+        FORCE_PER_ROW.with(|c| c.set(true));
         let slow = crate::exec::pull(&plan, &store, false);
-        FORCE_PER_ROW.store(false, Ordering::Relaxed);
+        FORCE_PER_ROW.with(|c| c.set(false));
         let fast = crate::exec::pull(&plan, &store, false);
 
         match (&slow, &fast) {
@@ -14871,7 +15194,7 @@ fn the_whole_stream_branch_router_agrees_with_the_per_row_loop() {
             _ => panic!("{q}: one path errored and the other did not: {slow:?} vs {fast:?}"),
         }
     }
-    FORCE_PER_ROW.store(false, Ordering::Relaxed);
+    FORCE_PER_ROW.with(|c| c.set(false));
 }
 
 /// The router must FIRE on the shapes it claims — the lesson of items 619b and 621, where a
@@ -14880,7 +15203,6 @@ fn the_whole_stream_branch_router_agrees_with_the_per_row_loop() {
 /// A ratio, not a time, and a loose one (4x against a measured 36x), because this is a test.
 #[test]
 fn the_whole_stream_branch_router_actually_fires() {
-    use std::sync::atomic::Ordering;
     use std::time::Instant;
 
     const ROWS: u32 = 4_000;
@@ -14895,7 +15217,7 @@ fn the_whole_stream_branch_router_actually_fires() {
     let plan = crate::gremlin::parse("g.V().coalesce(out('R'), out('R'))").unwrap();
 
     let time_it = |forced: bool| {
-        FORCE_PER_ROW.store(forced, Ordering::Relaxed);
+        FORCE_PER_ROW.with(|c| c.set(forced));
         let mut lo = f64::MAX;
         for _ in 0..5 {
             let t = Instant::now();
@@ -14907,7 +15229,7 @@ fn the_whole_stream_branch_router_actually_fires() {
     };
     let slow = time_it(true);
     let fast = time_it(false);
-    FORCE_PER_ROW.store(false, Ordering::Relaxed);
+    FORCE_PER_ROW.with(|c| c.set(false));
 
     assert!(
         slow > fast * 4.0,
