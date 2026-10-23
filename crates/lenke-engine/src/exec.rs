@@ -1884,6 +1884,11 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
                 .unwrap_or_else(|| Col::Gen(vec![Value::Null; b.rows()]));
             let mut out = Batch::of(vec![col]);
             out.lineage = b.lineage;
+            // 1:1 on rows and reordering nothing, so the provenance sidecar still describes
+            // the output — but this builds a FRESH batch rather than gathering, so it has to
+            // hand it over explicitly. Without this the whole-stream branch router (item 624)
+            // never fires at all: every Gremlin branch arm is wrapped in a `Reconverge`.
+            out.prov = b.prov;
             out
         }
         Plan::Project { input, items } => {
@@ -3309,6 +3314,11 @@ fn expand(
         if batch.lineage.is_some() {
             b.lineage = Some(Lineage::empty());
         }
+        // No rows, but the SIDECAR still has to be present-or-absent in step with the
+        // input: its reader treats absence as "this operator dropped it" (item 624).
+        if batch.prov.is_some() {
+            b.prov = Some(Vec::new());
+        }
         b
     };
     // Resolve the edge label to an interned id up front; an unknown label matches
@@ -3387,6 +3397,13 @@ fn expand(
     if let Some(lin) = &batch.lineage {
         out.lineage = Some(lin.extend(&keep, &nbrs, &eids));
     }
+    // `keep` IS the provenance mapping -- the source row behind each output row -- and this
+    // function already had it and threw it away. The columns are gathered one by one here
+    // rather than through `Batch::gather`, so the sidecar needs the hand-off spelled out.
+    out.prov = batch
+        .prov
+        .as_ref()
+        .map(|p| keep.iter().map(|&i| p[i]).collect());
     Ok(out)
 }
 
@@ -5172,6 +5189,197 @@ fn combine_call_groups(
     }
 }
 
+/// Whether a branch ARM may run WHOLE-STREAM over the frontier instead of row by row.
+///
+/// ROW-LOCAL is the property being asserted: an output row group depends only on its own input
+/// row, the groups come out in input order, and the operator carries the provenance sidecar
+/// through its `gather`. All three together are what make running the arm once over N rows
+/// equal to running it N times over one row.
+///
+/// A WHITELIST with a `false` catch-all, and that direction is the point: a new `Plan` variant
+/// is excluded until someone shows it qualifies, where a `true` catch-all would silently admit
+/// it. Excluded today and why: a reducer (`count()`/`fold()`) collapses the whole stream, so
+/// one row of output stands for N inputs; `OrderPage`, `Distinct`, `DistinctBy`, `SortLocal`,
+/// `Tail` and `Sample` all decide a row's fate by looking at OTHER rows — and all of them
+/// `gather`, so the sidecar SURVIVES them and its presence alone would wave them through;
+/// `Project` and `Aggregate` build a fresh `Batch` and drop the sidecar, so they are caught
+/// twice over.
+fn arm_is_row_local(p: &Plan) -> bool {
+    match p {
+        Plan::Row => true,
+        // `Reconverge` is here because the instrumentation put it here: every Gremlin branch
+        // arm is wrapped in one, so without it the router refuses every arm it exists for.
+        Plan::Expand { input, .. }
+        | Plan::EdgeVertex { input, .. }
+        | Plan::Filter { input, .. }
+        | Plan::Reconverge { input, .. } => arm_is_row_local(input),
+        _ => false,
+    }
+}
+
+/// Forces the per-row branch path. Flipped by the tests so ONE process can run both paths on
+/// one query, which is the only way to compare them: the whole-stream router's entire claim is
+/// that it returns what the per-row loop returns (item 624).
+#[cfg(test)]
+pub(super) static FORCE_PER_ROW: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the per-row path has been forced -- a `const false` outside tests, so the gate
+/// folds away in release.
+fn force_per_row() -> bool {
+    #[cfg(test)]
+    {
+        FORCE_PER_ROW.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    #[cfg(not(test))]
+    {
+        false
+    }
+}
+
+/// `PerElementBranch` with every arm run ONCE over the whole frontier instead of once per row
+/// — `None` when the shape does not qualify, and the caller then takes the per-row path.
+///
+/// Item 623 priced the two routers against each other on the same two arms: `union` (`Branch`,
+/// whole-stream) at 8.39 ns/row for 400,000 output rows, `coalesce` (`PerElementBranch`,
+/// per-row) at 368.41 for 200,000 — 44x per input row, 57x per output row, and flat from 25k
+/// to 200k, so it is a per-row constant rather than a tail. The constant is a `gather(&[i])`
+/// per row (a 1-row `Batch`, one `Vec` per column), a `pull_body` per arm on it, a push into
+/// an N-element `Vec<Batch>` and a final concat over all of them.
+///
+/// Three things make the regrouping exact rather than approximate:
+///
+/// - **Provenance comes from the sidecar, not a column.** See `Batch::prov`. An arm that drops
+///   it (anything building a fresh `Batch`) is refused here, not guessed at.
+/// - **Output order is by INPUT ROW, not by arm.** The per-row path emits row 0's chosen arm,
+///   then row 1's. Whole-stream produces all of arm A's rows then all of arm B's, so the parts
+///   are concatenated and then gathered through a counting sort on prov — stable, so the order
+///   WITHIN one input row's group is the arm's own.
+/// - **An error falls BACK rather than propagating.** Running an arm over N rows at once can
+///   trip `guard_intermediate`'s frontier cap where N separate one-row runs never would, and
+///   that must not turn a working query into `E_RESOURCE_EXHAUSTED`. On any error the fast
+///   path returns `None` and the per-row path runs, which re-raises anything genuinely wrong.
+///
+/// `Optional` and a `Choose` with no `else` are not handled: their fallback is `source_of`, a
+/// WIDTH-1 batch mixed in among arm outputs of another width, and the per-row concat's
+/// handling of that is load-bearing. They take the per-row path until that is measured too.
+fn per_element_branch_whole_stream(
+    inb: &Batch,
+    kind: &crate::ir::PerElemKind,
+    cond: Option<&Plan>,
+    arms: &[Plan],
+    store: &Store,
+) -> Option<Result<Batch, String>> {
+    if force_per_row() {
+        return None;
+    }
+    let n = inb.rows();
+    // A lineage-carrying frontier takes the per-row path: `source_of` and the reducer-arm
+    // step-history seeding below both read it, and neither has a whole-stream twin yet.
+    if n == 0 || inb.lineage.is_some() || arms.is_empty() {
+        return None;
+    }
+    if !arms.iter().all(arm_is_row_local) {
+        return None;
+    }
+
+    let mut seeded = inb.clone();
+    seeded.prov = Some((0..n as u32).collect());
+
+    // Run one arm over a SUBSET of the frontier, keeping provenance. `None` on anything that
+    // disqualifies the shape — including an error, deliberately (see the doc comment).
+    let run = |rows: &[usize], arm: &Plan| -> Option<Batch> {
+        let sub = seeded.gather(rows);
+        let out = pull_body(arm, store, &sub).ok()?;
+        let p = out.prov.as_ref()?;
+        (p.len() == out.rows()).then_some(out)
+    };
+    let served = |out: &Batch| -> Option<Vec<bool>> {
+        let mut hit = vec![false; n];
+        for &p in out.prov.as_ref()? {
+            *hit.get_mut(p as usize)? = true;
+        }
+        Some(hit)
+    };
+
+    let mut parts: Vec<Batch> = Vec::new();
+    match kind {
+        crate::ir::PerElemKind::Coalesce => {
+            // The arms in order, each over only the rows no earlier arm claimed — the
+            // whole-stream reading of "the first arm that produces anything wins".
+            let mut pending: Vec<usize> = (0..n).collect();
+            for arm in arms {
+                if pending.is_empty() {
+                    break;
+                }
+                let out = run(&pending, arm)?;
+                let hit = served(&out)?;
+                pending.retain(|&i| !hit[i]);
+                if out.rows() > 0 {
+                    parts.push(out);
+                }
+            }
+        }
+        crate::ir::PerElemKind::Choose { has_else: true } => {
+            let cond = cond?;
+            if !arm_is_row_local(cond) || arms.len() < 2 {
+                return None;
+            }
+            let all: Vec<usize> = (0..n).collect();
+            // The per-row test is "the cond body produced at least one row", so whole-stream
+            // the TRUE set is exactly the set of input rows the cond's output mentions.
+            let taken = served(&run(&all, cond)?)?;
+            for (arm, want) in [(&arms[0], true), (&arms[1], false)] {
+                let rows: Vec<usize> = (0..n).filter(|&i| taken[i] == want).collect();
+                if rows.is_empty() {
+                    continue;
+                }
+                let out = run(&rows, arm)?;
+                if out.rows() > 0 {
+                    parts.push(out);
+                }
+            }
+        }
+        _ => return None,
+    }
+
+    // Every part has to agree on width, because the per-row concat's handling of a ragged set
+    // is a behaviour this path must not change by regrouping. All-empty falls back too: the
+    // per-row path derives the output SHAPE from an empty run of arm 0, which this does not.
+    let width = parts.first()?.slots.len();
+    if parts.iter().any(|b| b.slots.len() != width) {
+        return None;
+    }
+
+    let prov: Vec<u32> = parts
+        .iter()
+        .filter_map(|b| b.prov.clone())
+        .flatten()
+        .collect();
+    let combined = concat_batches(&parts, store);
+    if prov.len() != combined.rows() {
+        return None;
+    }
+    // Counting sort on the input row — O(rows), and stable, so an input row served by one arm
+    // keeps that arm's ordering inside its group.
+    let mut at = vec![0usize; n + 1];
+    for &p in &prov {
+        at[p as usize + 1] += 1;
+    }
+    for i in 0..n {
+        at[i + 1] += at[i];
+    }
+    let mut order = vec![0usize; prov.len()];
+    for (i, &p) in prov.iter().enumerate() {
+        order[at[p as usize]] = i;
+        at[p as usize] += 1;
+    }
+    let mut out = combined.gather(&order);
+    // The sidecar is this router's private state; nothing above it may read it as its own.
+    out.prov = None;
+    Some(Ok(out))
+}
+
 /// The per-element routing of a `PerElementBranch` (coalesce / optional / choose), over an
 /// ALREADY-PULLED input frontier `inb`. Shared by the main `pull` (input via `pull`) and
 /// `pull_body` (input via `pull_body`) so a NESTED branch inside a branch arm evaluates
@@ -5198,6 +5406,17 @@ fn per_element_branch_exec(
             .map(|b| pull_body(b, store, &inb))
             .collect::<Result<_, _>>()?;
         return Ok(concat_batches(&subs, store).gather(&[]));
+    }
+    // WHOLE-STREAM first (item 624). `track` is the hard gate: the per-row loop below seeds a
+    // step-history from a reducer arm's output, and that has no whole-stream twin. Everything
+    // else that disqualifies a shape is decided inside, which returns `None` and leaves this
+    // loop to run exactly as it did.
+    if !track {
+        if let Some(fast) =
+            per_element_branch_whole_stream(&inb, kind, cond.as_deref(), arms, store)
+        {
+            return fast;
+        }
     }
     // The source element as a width-1 batch (the pass-through fallback), preserving the
     // row's lineage so a following path() still answers.
@@ -5601,6 +5820,11 @@ fn pull_body(plan: &Plan, store: &Store, seed: &Batch) -> Result<Batch, String> 
                 .unwrap_or_else(|| Col::Gen(vec![Value::Null; b.rows()]));
             let mut out = Batch::of(vec![col]);
             out.lineage = b.lineage;
+            // 1:1 on rows and reordering nothing, so the provenance sidecar still describes
+            // the output — but this builds a FRESH batch rather than gathering, so it has to
+            // hand it over explicitly. Without this the whole-stream branch router (item 624)
+            // never fires at all: every Gremlin branch arm is wrapped in a `Reconverge`.
+            out.prov = b.prov;
             out
         }
         // A NESTED branch inside a branch arm (`optional(out().optional(out()))`,

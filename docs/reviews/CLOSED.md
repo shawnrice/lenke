@@ -10400,3 +10400,100 @@ under the wrong operator's name.
 `Subgraph`'s number is held loosely: it produces ONE row by folding every edge, so "per input
 row" is the wrong unit for it, and two runs gave 390 and 855 ns/row. It needs its own harness
 before anyone acts on it.
+
+## 624 — a branch runs its arms WHOLE-STREAM: coalesce 36.5x, choose 34.6x
+
+**FIXED (native).** Item 623 priced two routers that do the same job against each other:
+`union` (`Branch`) runs its arms over the whole frontier at **8.39 ns/row for 400,000 output
+rows**; `coalesce` (`PerElementBranch`) runs TinkerPop's per-traverser semantics literally, at
+**368.41 ns/row for 200,000** — 44x per input row, 57x per output row, and flat from 25k to
+200k, so a per-row constant rather than a tail.
+
+|                                               | before        | after     |           |
+| --------------------------------------------- | ------------- | --------- | --------- |
+| **`coalesce(out, out)`**                      | 368.41 ns/row | **10.10** | **36.5x** |
+| **`choose(has, out, in)`**                    | 477.67        | **13.81** | **34.6x** |
+| `union` — the control the change cannot reach | 8.39          | 8.42      | 1.00x     |
+| `Scan` — control                              | 0.62          | 0.62      | 1.00x     |
+
+Both now sit beside `Branch` (8.42) and `Reconverge` (13.98), which is where the diagnosis
+said they should land.
+
+### The mechanism was already in the tree, one operator over
+
+`CallInline` answers the identical question — run a correlated body over a whole frontier and
+still know which outer row each output row belongs to — by appending a provenance COLUMN at
+the outer width and reading `sub.slot(ow)` back. That is why it prices at 8.33 ns/row.
+
+A column cannot be reused here: a branch arm is compiled over an input of width `w` and
+appends its own slots AT `w`, so a prov column at `w` shifts everything the arm appends and
+`out().out()` reads prov as its first hop. **So the sidecar**: `Batch::prov`, beside
+`lineage`. It is not a slot, so no index moves; `Batch::gather` is the single funnel every
+row-local operator already passes through, so it propagates for free; and an operator that
+builds a fresh `Batch` drops it, which is the fall-back signal at no cost.
+
+Three properties make the regrouping exact:
+
+- **Output order is by INPUT ROW, not by arm.** Whole-stream produces all of arm A's rows then
+  all of arm B's; the parts are concatenated and gathered through a **stable counting sort on
+  prov**, O(rows), so an input row's group keeps its arm's internal order.
+- **Widths must agree** across parts, because the per-row concat's handling of a ragged set is
+  load-bearing and regrouping must not change it.
+- **An error falls BACK rather than propagating.** Running an arm over N rows at once can trip
+  `guard_intermediate`'s frontier cap where N one-row runs never would, and that must not turn
+  a working query into `E_RESOURCE_EXHAUSTED`.
+
+`Optional` and an `else`-less `choose` still take the per-row path: their fallback is
+`source_of`, a WIDTH-1 batch mixed in among arm outputs of another width.
+
+### 🛑 Green tests on a path that never ran — caught by instrumentation, twice in one item
+
+The first build passed all 1191 tests and the number did not move **at all**. The router was
+bailing on every call, and the two reasons were each invisible to every test:
+
+1. **Every Gremlin branch arm is wrapped in `Reconverge`** (gremlin.rs collapses each arm to a
+   uniform width-1 frontier), which `arm_is_row_local` refused. It is genuinely row-local, but
+   it builds a fresh `Batch`, so it needed the sidecar hand-off spelled out.
+2. Still nothing. **`expand` gathers its input COLUMN BY COLUMN** and rebuilds with
+   `Batch::of`, so it never passes through `Batch::gather` — and its `keep` vector IS the
+   provenance mapping, already computed and then dropped on the floor.
+
+Had the green suite and the correct row counts been trusted, this would have shipped as a
+no-op with a 36x claim attached.
+
+### Teeth: 7 of 7 — after the first run found a hole in the tests
+
+The two paths are compared in ONE process by flipping a `#[cfg(test)]` `FORCE_PER_ROW` atomic
+(a `const false` outside tests), row for row IN ORDER rather than as multisets — a multiset
+comparison passes with the regrouping deleted.
+
+First run: **6/7, and the survivor was `_ => true` in the whitelist** — delete the whitelist
+entirely and nothing fails. The reason is worth more than the mutant: every "must refuse" case
+in the test was a REDUCER (`count()`, `fold()`), and an `Aggregate` builds a fresh `Batch`, so
+it drops the sidecar and falls back **anyway**. The reducer rows could not tell a whitelist
+from no whitelist. What can is an arm that **gathers**: `dedup`, `limit`, `tail` and `order`
+all preserve the sidecar intact while choosing or reordering rows by looking at OTHER rows.
+With those four added the mutant dies. **The same shape as 619b, 621 and 622 in a new place: an
+assertion satisfied by a SECOND mechanism proves nothing about the one it names.**
+
+Caught: emitting arm-by-arm instead of by input row; every arm over every row; `choose` arms
+inverted; the last arm winning instead of the first; and each sidecar hand-off removed (caught
+by the fires-test, not by the rows — the rows cannot see a missing optimization).
+
+### Controls
+
+`expand` is the hottest operator in the engine and this adds a field read and an
+`Option::map` to it. Pre-624 worktree against the working tree, ALTERNATED, min of 3:
+
+| row                                               | pre  | post |       |
+| ------------------------------------------------- | ---- | ---- | ----- |
+| `Expand (1:1 hop)`                                | 4.38 | 4.31 | 1.02x |
+| `Expand then EdgeVertex`                          | 7.71 | 7.76 | 0.99x |
+| `Scan` / `Project (3)` / `Distinct` / `OrderPage` | —    | —    | 1.00x |
+
+All seven byte-identity fuzzers pass, `packages/native` 931 and the TS suites 3793 pass.
+
+### OPEN
+
+The TS engine has its own branch executor and has not been priced for this. Named here, not
+claimed: whether it has the same per-row shape is a measurement nobody has taken.

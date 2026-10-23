@@ -511,6 +511,22 @@ impl Lineage {
 pub struct Batch {
     pub slots: Vec<Col>,
     pub lineage: Option<Lineage>,
+    /// The PROVENANCE sidecar: `prov[i]` is the row of some earlier frontier that output row
+    /// `i` descends from. Present ONLY while a caller is tracking it — today the whole-stream
+    /// branch router in `exec`, which seeds it with `0..rows` and reads it back to regroup an
+    /// arm's output by the input row that produced it.
+    ///
+    /// It rides in the sidecar rather than in a slot on purpose. A branch arm is compiled over
+    /// an input of a known width and appends its own slots at that width, so a prov COLUMN
+    /// would shift every slot the arm appends; a sidecar moves nothing. `gather` carries it,
+    /// which is the single funnel every row-local operator already passes through, and an
+    /// operator that builds a fresh `Batch` drops it — the fall-back signal, for free.
+    ///
+    /// **Carrying it is not a licence to use it.** `OrderPage`, `Distinct` and `Tail` all
+    /// gather, so prov survives them while the rows it describes have been reordered or
+    /// dropped by looking at OTHER rows. A reader must check the plan shape as well
+    /// (`arm_is_row_local`), never the sidecar's presence alone.
+    pub prov: Option<Vec<u32>>,
 }
 
 impl Batch {
@@ -520,6 +536,7 @@ impl Batch {
         Self {
             slots: vec![col],
             lineage: None,
+            prov: None,
         }
     }
 
@@ -529,6 +546,7 @@ impl Batch {
         Self {
             slots,
             lineage: None,
+            prov: None,
         }
     }
 
@@ -557,6 +575,10 @@ impl Batch {
         Self {
             slots: self.slots.iter().map(|c| c.gather(idx)).collect(),
             lineage: self.lineage.as_ref().map(|l| l.gather(idx)),
+            prov: self
+                .prov
+                .as_ref()
+                .map(|p| idx.iter().map(|&i| p[i]).collect()),
         }
     }
 }

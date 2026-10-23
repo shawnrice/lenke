@@ -14754,6 +14754,148 @@ fn plan_cost_by_operator() {
     }
 }
 
+/// The whole-stream branch router returns what the per-row loop returns — on every shape, and
+/// ROW FOR ROW IN ORDER, not just as a set (item 624).
+///
+/// The two paths are compared in one process by flipping `exec::FORCE_PER_ROW`, because a
+/// comparison against hand-written expected rows would only test what the author imagined.
+/// The fixture is built so the interesting cases are reachable: a vertex with NO out edge
+/// (arm 0 produces nothing, so the row falls to arm 1), one with SEVERAL (the group has more
+/// than one row, so the within-group order is observable), and one with exactly one.
+///
+/// **Order is the assertion that has teeth here.** The whole-stream path produces all of arm
+/// A's rows and then all of arm B's; the per-row path interleaves them by input row. A
+/// comparison as multisets would pass with the regrouping deleted.
+#[test]
+fn the_whole_stream_branch_router_agrees_with_the_per_row_loop() {
+    use std::sync::atomic::Ordering;
+
+    let mut b = Builder::default();
+    // 0: two out edges and one in    3: no edges at all
+    // 1: one out edge                4: in edges only
+    // 2: three out edges
+    for i in 0..5u32 {
+        b.node(
+            &["N"],
+            &[("num", n(f64::from(i))), ("name", s(&format!("v{i}")))],
+        );
+    }
+    for (from, to) in [(0, 1), (0, 2), (1, 2), (2, 0), (2, 1), (2, 4), (1, 4)] {
+        b.edge(from, to, "R");
+    }
+    for (from, to) in [(0, 3), (4, 0)] {
+        b.edge(from, to, "S");
+    }
+    let store = b.build();
+
+    // Every shape the router claims, plus the ones it must REFUSE.
+    let queries = [
+        // Coalesce: arm 0 empty for some rows, several rows for others.
+        "g.V().coalesce(out('R'), out('S'))",
+        "g.V().coalesce(out('S'), out('R'))",
+        "g.V().coalesce(out('R'), in('R'))",
+        "g.V().coalesce(out('S'), in('S'), out('R'))",
+        "g.V().coalesce(out('R'), out('S')).values('name')",
+        "g.V().coalesce(out('R').has('num', 2), out('S'))",
+        "g.V().coalesce(outE('R').inV(), out('S'))",
+        "g.V().coalesce(out('R').out('R'), out('S'))",
+        "g.V().hasLabel('N').coalesce(out('R'), out('S')).values('num')",
+        // choose with an else — both arms, and a cond true for only some rows.
+        "g.V().choose(has('num', 2), out('R'), out('S'))",
+        "g.V().choose(has('num', 0), out('R'), in('R'))",
+        "g.V().choose(out('S'), out('R'), out('S'))",
+        // Shapes the router must REFUSE. The CROSS-ROW ones are the load-bearing half, and
+        // the first mutation run proved it: with a `_ => true` catch-all in the whitelist
+        // every reducer arm still fell back, because an `Aggregate` builds a fresh `Batch`
+        // and drops the sidecar -- so the reducer rows alone could not tell a whitelist from
+        // no whitelist. These four can: `dedup`, `limit`, `tail` and `order` all GATHER, so
+        // the sidecar survives them intact while the rows it describes have been chosen or
+        // reordered by looking at other rows. Per-row they apply within one input row's
+        // group; whole-stream they would apply across the entire frontier.
+        "g.V().coalesce(out('R').dedup(), out('S'))",
+        "g.V().coalesce(out('R').limit(1), out('S'))",
+        "g.V().coalesce(out('R').tail(1), out('S'))",
+        "g.V().coalesce(out('R').order().by('num'), out('S'))",
+        "g.V().choose(has('num', 2), out('R').limit(1), out('S'))",
+        "g.V().coalesce(out('R').count(), out('S'))",
+        "g.V().coalesce(out('R').fold(), out('S'))",
+        "g.V().optional(out('R'))",
+        "g.V().choose(has('num', 2), out('R'))",
+        // path() forces lineage, which is the hard `track` gate.
+        "g.V().coalesce(out('R'), out('S')).path()",
+    ];
+
+    for q in queries {
+        let plan = crate::gremlin::parse(q).unwrap_or_else(|e| panic!("{q}: {e}"));
+
+        FORCE_PER_ROW.store(true, Ordering::Relaxed);
+        let slow = crate::exec::pull(&plan, &store, false);
+        FORCE_PER_ROW.store(false, Ordering::Relaxed);
+        let fast = crate::exec::pull(&plan, &store, false);
+
+        match (&slow, &fast) {
+            (Ok(a), Ok(c)) => {
+                assert_eq!(a.slots.len(), c.slots.len(), "{q}: slot COUNT differs");
+                assert_eq!(a.rows(), c.rows(), "{q}: row COUNT differs");
+                // `Value` has no `PartialEq` on purpose (NaN), so the cells are compared
+                // through their Debug rendering -- which distinguishes every variant.
+                for sl in 0..a.slots.len() {
+                    let cells = |b: &crate::batch::Batch| -> Vec<String> {
+                        (0..b.rows())
+                            .map(|i| format!("{:?}", b.slot(sl).value_at(i)))
+                            .collect()
+                    };
+                    assert_eq!(cells(a), cells(c), "{q}: slot {sl} differs IN ORDER");
+                }
+            }
+            (Err(a), Err(c)) => assert_eq!(a, c, "{q}: errors differ"),
+            _ => panic!("{q}: one path errored and the other did not: {slow:?} vs {fast:?}"),
+        }
+    }
+    FORCE_PER_ROW.store(false, Ordering::Relaxed);
+}
+
+/// The router must FIRE on the shapes it claims — the lesson of items 619b and 621, where a
+/// green test suite sat on top of a path that never ran. It is asserted here by the only
+/// signal available from outside: with the per-row path forced, the same query is far slower.
+/// A ratio, not a time, and a loose one (4x against a measured 36x), because this is a test.
+#[test]
+fn the_whole_stream_branch_router_actually_fires() {
+    use std::sync::atomic::Ordering;
+    use std::time::Instant;
+
+    const ROWS: u32 = 4_000;
+    let mut b = Builder::default();
+    for i in 0..ROWS {
+        b.node(&["N"], &[("num", n(f64::from(i % 100)))]);
+    }
+    for i in 0..ROWS {
+        b.edge(i, (i * 7 + 1) % ROWS, "R");
+    }
+    let store = b.build();
+    let plan = crate::gremlin::parse("g.V().coalesce(out('R'), out('R'))").unwrap();
+
+    let time_it = |forced: bool| {
+        FORCE_PER_ROW.store(forced, Ordering::Relaxed);
+        let mut lo = f64::MAX;
+        for _ in 0..5 {
+            let t = Instant::now();
+            let got = crate::exec::pull(&plan, &store, false);
+            lo = lo.min(t.elapsed().as_secs_f64());
+            assert_eq!(got.unwrap().rows(), ROWS as usize);
+        }
+        lo
+    };
+    let slow = time_it(true);
+    let fast = time_it(false);
+    FORCE_PER_ROW.store(false, Ordering::Relaxed);
+
+    assert!(
+        slow > fast * 4.0,
+        "the whole-stream router did not fire: per-row {slow:.6}s vs {fast:.6}s"
+    );
+}
+
 /// What does each CONTROL-FLOW / SUBQUERY operator cost per row?
 ///
 /// ```text
