@@ -633,8 +633,24 @@ const timed = (q: string, params?: Record<string, unknown>): { ms: number; answe
 console.log(`${N} vertices / ${N * 3} edges, min of ${REPS}, flagging spread > ${TOL}x\n`);
 
 const wrong: string[] = [];
-const slow: string[] = [];
+const slow: { name: string; spread: number }[] = [];
 const fast: string[] = [];
+
+/**
+ * The spread the NULL CONTROL group measured — one query against itself, so whatever it reads
+ * is this run's own variance and nothing else.
+ *
+ * It gates the summary rather than only printing in place, because item 635 proves printing is
+ * not enough: that item chased a 1.40x for three ticks with the refuting number already in its
+ * own output (the control spelling's rounds were 1.86 / 4.35 / 1.76ms, a 2.47x SELF-ratio,
+ * larger than the gap it was the control for). A reader reaches the summary with the per-group
+ * tables already scrolled away, so the summary is where the comparison has to happen.
+ *
+ * `undefined` when the control did not run — `SPELL_ONLY` filtered it out, or it fell under
+ * `FLOOR_MS` — and the summary then says so rather than silently dropping the gate.
+ */
+let nullSpread: number | undefined;
+const NULL_CONTROL = 'NULL CONTROL';
 
 // `SPELL_ONLY=<substring>` runs just the matching groups, which is how a flag gets CONFIRMED
 // (item 455). The two-pass min below removes the POSITION bias and nothing else: a whole process
@@ -680,6 +696,13 @@ const runGroup = (
   const slowest = Math.max(...runs.map((r) => r.ms));
   const spread = slowest / Math.max(fastest, 0.01);
   const tooFast = slowest < FLOOR_MS;
+
+  // Recorded even when it is `too fast` to flag, because a control under the floor still says
+  // something — it says this run is too small for ANY ratio on it to be read.
+  if (name.startsWith(NULL_CONTROL) && !tooFast) {
+    nullSpread = spread;
+  }
+
   let flag = '';
 
   if (answers.size > 1) {
@@ -703,7 +726,7 @@ const runGroup = (
       console.log(`                   -> ${r.answer.slice(0, 80)}`);
     }
   } else if (spread > TOL && !tooFast) {
-    slow.push(`${name} (${spread.toFixed(1)}x)`);
+    slow.push({ name, spread });
   } else if (tooFast) {
     fast.push(name);
   }
@@ -922,9 +945,53 @@ for (const [name, spellings, params] of SEEK_GROUPS.filter(([n]) => wanted(n))) 
 console.log(
   `\n${wrong.length} group(s) disagree on the ANSWER${wrong.length > 0 ? `: ${wrong.join('; ')}` : ''}`,
 );
-console.log(
-  `${slow.length} group(s) over ${TOL}x${slow.length > 0 ? `:\n  - ${slow.join('\n  - ')}` : ''}`,
-);
+// A flagged group is only a result if it beat the instrument. `nullSpread` is one query against
+// itself, so a group at or under it has measured the harness, not the engine.
+const clears = (s: { spread: number }): boolean =>
+  nullSpread === undefined || s.spread > nullSpread;
+// The control is the ruler, not a thing being measured, so it is never listed as a finding —
+// it reported itself as a group "NOT clear of the null control" at `SPELL_REPS=1`, which is
+// true, circular, and exactly the sort of line that gets quoted back as a result.
+const judged = slow.filter((s) => !s.name.startsWith(NULL_CONTROL));
+const real = judged.filter(clears);
+const noise = judged.filter((s) => !clears(s));
+// TWO decimals, and the NET ratio beside the raw one. At one decimal a group at 1.04x and a
+// control at 1.02x both render `1.0x`, so the list reads as self-contradicting — "clear of the
+// null control" over an entry that appears equal to it. Reachable with the documented
+// `SPELL_TOL=1.5` hunt, not just in theory. The net is what the reader actually wants: the
+// spread with the instrument's own variance divided out.
+const show = (s: { name: string; spread: number }): string =>
+  nullSpread === undefined
+    ? `${s.name} (${s.spread.toFixed(2)}x)`
+    : `${s.name} (${s.spread.toFixed(2)}x, net ${(s.spread / nullSpread).toFixed(2)}x)`;
+
+if (nullSpread === undefined) {
+  console.log(
+    '\nNULL CONTROL: did not run (filtered out, or under the floor) — NOTHING BELOW IS GATED.',
+  );
+  console.log('  Every ratio here may be instrument noise. Raise SPELL_N and run it again.');
+} else {
+  console.log(`\nNULL CONTROL: ${nullSpread.toFixed(2)}x — one query against itself, so this is`);
+  console.log("  this run's own variance. A group at or under it has measured nothing.");
+}
+
+// The heading must not claim a gate that did not run: an UNGATED list quoted later as "clear
+// of the null control" would be this probe asserting the opposite of what it measured.
+const heading =
+  nullSpread === undefined
+    ? `${real.length} group(s) over ${TOL}x (UNGATED — no null control in this run)`
+    : `${real.length} group(s) over ${TOL}x AND clear of the null control`;
+
+console.log(`${heading}${real.length > 0 ? `:\n  - ${real.map(show).join('\n  - ')}` : ''}`);
+
+if (noise.length > 0) {
+  console.log(
+    `${noise.length} group(s) over ${TOL}x but NOT clear of the null control — not results:\n  - ${noise
+      .map(show)
+      .join('\n  - ')}`,
+  );
+}
+
 const fastTail = fast.length > 0 ? ` (raise SPELL_N to measure them): ${fast.join('; ')}` : '';
 
 console.log(`${fast.length} group(s) under ${FLOOR_MS}ms, not compared${fastTail}`);
