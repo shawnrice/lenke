@@ -218,6 +218,51 @@ const carriedWhere = (
  * `(v {k: u.k})` is correlated and would need the start bound per edge — the correlation problem
  * of items 121-123, not this one.
  */
+/**
+ * The REL mirror of {@link closedFarPred}: the inline constraint a hop PROJECTION can apply
+ * per edge, `undefined` for a plain rel, or `null` to decline (item 638).
+ *
+ * `closedFarPred`'s own comment is this function's argument. Carrying the FAR NODE's inline
+ * constraint rather than refusing it was worth 5x there — *"the two spellings of ONE question
+ * differ by 5x once the clause form became fast"* — and the RELATIONSHIP was left in exactly
+ * the state the far node had been in: `plainRel` refused the whole route, so
+ * `-[r:E {w: $w}]->` fell to the general path at **4.34x** the clause spelling that means the
+ * same thing.
+ *
+ * Same rule as its twin, plus a QUANTIFIER decline: a quantified rel is a walk, and this path
+ * serves one hop. An inline `WHERE` needs the rel's own variable to be bound, so it requires
+ * one; closed PROPERTIES do not, since `satisfies` reads them off the edge.
+ */
+const closedRelPred = (rel: RelPattern): CPredicate | undefined | null => {
+  if (plainRel(rel)) {
+    return undefined;
+  }
+
+  if (rel.quantifier !== undefined) {
+    return null;
+  }
+
+  for (const c of rel.properties ?? []) {
+    if (freePredicateVars(c.value).size > 0) {
+      return null;
+    }
+  }
+
+  if (rel.where !== undefined) {
+    if (rel.variable === undefined) {
+      return null;
+    }
+
+    for (const name of freePredicateVars(rel.where)) {
+      if (name !== rel.variable) {
+        return null;
+      }
+    }
+  }
+
+  return compilePredicate(rel.properties, rel.where);
+};
+
 const closedFarPred = (
   node: { properties?: readonly { value: Expr }[]; where?: Expr; variable?: string },
   farVar: string,
@@ -586,13 +631,15 @@ const relBoundFilteredHopWalk = (w: {
   farLabel: LabelExpr | undefined;
   proj: CProjection;
   farPred: CPredicate | undefined;
+  /** The rel's own inline constraint, applied per EDGE through `satisfies` (item 638). */
+  relPred: CPredicate | undefined;
   gate: CompiledExpr | undefined;
   startVar: string | undefined;
   startOnly: boolean;
   cfar: CNode | undefined;
 }): RowsFn | null => {
   const { startLabel, typeName, out, farVar, relVar, farLabel, proj } = w;
-  const { farPred, gate, startVar, startOnly, cfar } = w;
+  const { farPred, relPred, gate, startVar, startOnly, cfar } = w;
 
   if (relVar === undefined || startOnly) {
     return null;
@@ -636,6 +683,12 @@ const relBoundFilteredHopWalk = (w: {
         binding.set(farVar, far);
         // BEFORE the gate, which is the whole point: the gate may read the rel variable.
         binding.set(relVar, edge);
+
+        // The REL gate first: it needs neither endpoint, and in the shape this was built for
+        // it is the selective one. Same ordering choice as the tally's (item 637).
+        if (relPred !== undefined && !satisfies(edge, relPred, binding, params, graph)) {
+          continue;
+        }
 
         if (farPred !== undefined && !satisfies(far, farPred, binding, params, graph)) {
           continue;
@@ -961,7 +1014,11 @@ export const detectHopProjection = (
   // `both` is admitted ONLY by `undirectedHopWalk` below, and only for the simplest shape. It
   // is refused here for every other path because each of them indexes ONE of
   // `edgesFromByLabel` / `edgesToByLabel` through a captured `out: boolean`.
-  if (!plainRel(rel)) {
+  // A rel's inline constraint is CARRIED (item 638), not refused — see `closedRelPred`. Only
+  // the edge-bound walk can apply it, which is forced below; every other walk here refuses it.
+  const relPred = closedRelPred(rel);
+
+  if (relPred === null) {
     return null;
   }
 
@@ -1094,6 +1151,12 @@ export const detectHopProjection = (
   // AN UNDIRECTED HOP (item 480): its own walk, and nothing below can see `both` — every
   // walk there captures ONE direction through `out: boolean`. See `undirectedHopWalk`.
   if (rel.direction === 'both') {
+    // `undirectedHopWalk` has no rel-bound form, so a carried rel constraint must decline here
+    // rather than be dropped — a dropped predicate is a wrong answer, not a slow one.
+    if (relPred !== undefined) {
+      return null;
+    }
+
     return sorted(
       undirectedHopWalk({
         startLabel,
@@ -1108,8 +1171,9 @@ export const detectHopProjection = (
     );
   }
 
-  if (itemsReadRel || carried.needsRel) {
-    const unfiltered = farPred === undefined && gate === undefined && !needsStart;
+  if (itemsReadRel || carried.needsRel || relPred !== undefined) {
+    const unfiltered =
+      farPred === undefined && gate === undefined && !needsStart && relPred === undefined;
 
     return (
       relBoundHopWalk({
@@ -1131,6 +1195,7 @@ export const detectHopProjection = (
         farLabel,
         proj,
         farPred,
+        relPred,
         gate,
         startVar: needsStart ? startVar : undefined,
         startOnly: carried.startOnly,

@@ -11439,3 +11439,87 @@ mutant most likely to have no coverage, and the tests caught it.
 The **projected** edge group remains at 2.98x (net 2.91x). It is a different route — a
 projection, not a count — and this item did not touch it. It is now the largest gated flag on
 the probe's page.
+
+## 638 — a hop PROJECTION carries the rel's inline constraint: 4.34x → 0.96x, and three guards were invisible for ONE reason
+
+**FIXED (TS).** Item 637 closed the inline rel gap on the one-hop TALLY. The probe's remaining
+gated flag was the PROJECTED twin, and it turned out to be a **separate ladder** that refused
+both inline spellings independently — item 637's fix did not reach it, and neither did item
+633's.
+
+### The precedent was already in the file
+
+`closedFarPred` carries the FAR NODE's inline constraint into this same path, and its comment
+is this item's whole argument: leaving it out _"made the two spellings of ONE question differ
+by 5x once the clause form became fast"_. The RELATIONSHIP was still in the state the far node
+had been in — `plainRel` refused the entire route — so `closedRelPred` is that function's
+mirror, plus a quantifier decline.
+
+### The number, with the clause spelling as the control
+
+200,000 vertices / 600,000 edges, min of 9, six alternated rounds, one process:
+
+|                                | before     | after     |                        |
+| ------------------------------ | ---------- | --------- | ---------------------- |
+| clause `WHERE r.w = $w`        | 53.12 ms   | 50.84     | **the control — flat** |
+| inline `{w: $w}`               | **221.07** | **49.05** | 4.34x → **0.96x**      |
+| inline `[r:E WHERE r.w = $w]`  | **243.66** | **54.01** | 4.59x → **1.06x**      |
+| NULL CONTROL                   | 53.00      | 51.28     | 1.01x                  |
+| unfiltered (no edge predicate) | 54.68      | 51.20     | 1.01x                  |
+
+### 🛑 Two hypotheses died before any code was written
+
+- **`relVariableHidden`** looked like the guard, since the route refuses a rel variable the
+  projection reads. Refuted: the fast clause form projects `r.w` and IS admitted.
+- **Build-then-filter** — that the inline path builds a row per edge and filters after.
+  Refuted by a selectivity sweep: the clause path produces FIVE times the rows for +25%
+  (56.78 → 71.12 ms), so building every row would cost ~71 ms, not 236.
+
+Then instrumentation settled it rather than reading: tagging every `return null` in
+`detectHopProjection` with a counter showed all three inline spellings declining at **one
+guard** (`plainRel`) and both clause forms ADMITTED. **That also corrected a correction** — the
+tick before, reasoning about `relVariableHidden` had talked this item OUT of its original
+framing and into "the clause form is on the general path", which was wrong. The measurements
+had already implied the right answer and were overridden by reading guards.
+
+### Teeth: 4 of 7 → 7 of 7, and all three survivors had the SAME cause
+
+Under `timeout` + the 16G cgroup cap, pristine copy under `target/`, restored before each
+mutant, each pattern asserted to appear exactly once.
+
+The first run caught the per-edge gate, the unfiltered-walk exclusion, the forced edge-bound
+branch and the quantifier decline — and three survived. Tracing each instead of re-reading the
+table:
+
+| survivor                                             | verdict                                                                                                              |
+| ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| the UNDIRECTED decline                               | **INERT** — `undirectedHopWalk` declines on `needsStart` anyway, and the test projected `a.k`, so the walk never ran |
+| `closedRelPred`'s closed-PROPERTIES check            | **TEST GAP**                                                                                                         |
+| `closedRelPred`'s inline-`WHERE` free-variable check | **TEST GAP**                                                                                                         |
+
+**All three for one reason: every test projected the START, which binds it.** A wrongly-admitted
+correlation (`{w: a.k}`) then still evaluates correctly, and a walk that declines on
+`needsStart` never executes. Projecting only `b.k` removes both effects — nothing forces the
+start, so the mutant reads an unbound variable and the undirected walk is actually reached.
+Three added tests took the run to 7/7.
+
+**The rule worth carrying: a test that projects the start accidentally binds it, and that hides
+every guard whose failure mode is an unbound variable.** Three of seven guards here were
+invisible for exactly that, and the mutation table reported two gaps and one inert case
+identically.
+
+### What declines, and why it must
+
+- **UNDIRECTED** — `undirectedHopWalk` has no rel-bound form, so the constraint cannot be
+  applied there and the route declines rather than dropping it.
+- **The UNFILTERED walk** is excluded whenever a rel gate exists; it filters nothing.
+- **A QUANTIFIED rel** is a walk, not one hop.
+- **A CORRELATED value** needs the start bound per edge — items 121-123's problem, not this one.
+
+### Still open
+
+The **anonymous** inline spelling (`-[:E {w: $w}]->`) measured **3.77x** and is NOT fixed here:
+`relBoundFilteredHopWalk` declines when `relVar === undefined`, because it binds the edge to
+that name for the gate. Relaxing it is separable — the binding write is only needed when a gate
+reads the variable — and it is recorded rather than folded in, so the scope of what was
+measured and what was changed stay the same.
