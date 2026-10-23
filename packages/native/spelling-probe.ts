@@ -633,7 +633,7 @@ const timed = (q: string, params?: Record<string, unknown>): { ms: number; answe
 console.log(`${N} vertices / ${N * 3} edges, min of ${REPS}, flagging spread > ${TOL}x\n`);
 
 const wrong: string[] = [];
-const slow: { name: string; spread: number }[] = [];
+const slow: { name: string; spread: number; ms: number }[] = [];
 const fast: string[] = [];
 
 /**
@@ -649,8 +649,40 @@ const fast: string[] = [];
  * `undefined` when the control did not run — `SPELL_ONLY` filtered it out, or it fell under
  * `FLOOR_MS` — and the summary then says so rather than silently dropping the gate.
  */
-let nullSpread: number | undefined;
+const nullSpreads: { ms: number; spread: number }[] = [];
 const NULL_CONTROL = 'NULL CONTROL';
+
+/**
+ * The null control nearest `ms` in COST, or `undefined` when none ran.
+ *
+ * One control cannot price a whole page. Item 636 added a single one at the numeric group's
+ * ~2 ms and its own record said so — *"a null control at a different cost measures a different
+ * noise floor"* — and then item 643 found both ways that bites:
+ *
+ *   - At the DOCUMENTED `SPELL_N=200000` the control fell under `FLOOR_MS` entirely, so the page
+ *     printed UNGATED and nothing was gated at the size people actually run.
+ *   - At `SPELL_N=1000000` it ran at ~2 ms and was used to gate a 10 ms group, which read 2.14x
+ *     against it and was FLAT when measured directly. That cost two ticks of chasing.
+ *
+ * So there are now several, spanning the page's range, and a group is judged against the one
+ * closest to its own duration — compared in LOG space, because noise is multiplicative here and
+ * 1 ms is as far from 10 as 10 is from 100.
+ */
+const nullNear = (ms: number): { ms: number; spread: number } | undefined => {
+  let best: { ms: number; spread: number } | undefined;
+  let bestGap = Infinity;
+
+  for (const c of nullSpreads) {
+    const gap = Math.abs(Math.log(c.ms) - Math.log(ms));
+
+    if (gap < bestGap) {
+      bestGap = gap;
+      best = c;
+    }
+  }
+
+  return best;
+};
 
 // `SPELL_ONLY=<substring>` runs just the matching groups, which is how a flag gets CONFIRMED
 // (item 455). The two-pass min below removes the POSITION bias and nothing else: a whole process
@@ -700,7 +732,7 @@ const runGroup = (
   // Recorded even when it is `too fast` to flag, because a control under the floor still says
   // something — it says this run is too small for ANY ratio on it to be read.
   if (name.startsWith(NULL_CONTROL) && !tooFast) {
-    nullSpread = spread;
+    nullSpreads.push({ ms: slowest, spread });
   }
 
   let flag = '';
@@ -726,7 +758,7 @@ const runGroup = (
       console.log(`                   -> ${r.answer.slice(0, 80)}`);
     }
   } else if (spread > TOL && !tooFast) {
-    slow.push({ name, spread });
+    slow.push({ name, spread, ms: slowest });
   } else if (tooFast) {
     fast.push(name);
   }
@@ -864,12 +896,27 @@ const SEEK_GROUPS: [string, readonly string[], Record<string, unknown>][] = [
     //
     // It deliberately shares the numeric group's shape and params so it sits at the same
     // duration: a null control at a different cost measures a different noise floor.
-    'NULL CONTROL: one query twice — this is the instrument, not a result',
+    'NULL CONTROL (seek): one query twice — this is the instrument, not a result',
     [
       "MATCH (n:P) WHERE n.k = $k AND n.s >= '' RETURN count(*) AS c",
       "MATCH (n:P) WHERE n.k = $k AND n.s >= '' RETURN count(*) AS c",
     ],
     { k: 2 },
+  ],
+  [
+    // THE SECOND CONTROL, and it is a SCAN so it clears `FLOOR_MS` at the DOCUMENTED
+    // `SPELL_N=200000` — the one above only does at 1,000,000, so item 643 found the page
+    // printing UNGATED at the size the memory note actually tells you to run.
+    //
+    // Two controls at different costs also fix the deeper problem: `nullNear` judges each group
+    // against whichever is closest to ITS duration, instead of pricing a 10 ms group against a
+    // 2 ms control. That mistake read 2.14x on a group that measured FLAT directly.
+    'NULL CONTROL (scan): one query twice, at scan cost',
+    [
+      "MATCH (n:P) WHERE n.s >= '' RETURN count(*) AS c",
+      "MATCH (n:P) WHERE n.s >= '' RETURN count(*) AS c",
+    ],
+    {},
   ],
   [
     // FOUR spellings of a two-equality question where one key is SEEKED and the other filtered,
@@ -945,10 +992,13 @@ for (const [name, spellings, params] of SEEK_GROUPS.filter(([n]) => wanted(n))) 
 console.log(
   `\n${wrong.length} group(s) disagree on the ANSWER${wrong.length > 0 ? `: ${wrong.join('; ')}` : ''}`,
 );
-// A flagged group is only a result if it beat the instrument. `nullSpread` is one query against
+// A flagged group is only a result if it beat the instrument NEAR ITS OWN COST — one query against
 // itself, so a group at or under it has measured the harness, not the engine.
-const clears = (s: { spread: number }): boolean =>
-  nullSpread === undefined || s.spread > nullSpread;
+const clears = (s: { spread: number; ms: number }): boolean => {
+  const n = nullNear(s.ms);
+
+  return n === undefined || s.spread > n.spread;
+};
 // The control is the ruler, not a thing being measured, so it is never listed as a finding —
 // it reported itself as a group "NOT clear of the null control" at `SPELL_REPS=1`, which is
 // true, circular, and exactly the sort of line that gets quoted back as a result.
@@ -961,26 +1011,34 @@ const noise = judged.filter((s) => !clears(s));
 // `SPELL_TOL=1.5` hunt, not just in theory. The net is what the reader actually wants: the
 // spread with the instrument's own variance divided out.
 const show = (s: { name: string; spread: number }): string =>
-  nullSpread === undefined
-    ? `${s.name} (${s.spread.toFixed(2)}x)`
-    : `${s.name} (${s.spread.toFixed(2)}x, net ${(s.spread / nullSpread).toFixed(2)}x)`;
+  ((): string => {
+    const n = nullNear(s.ms);
 
-if (nullSpread === undefined) {
+    return n === undefined
+      ? `${s.name} (${s.spread.toFixed(2)}x)`
+      : `${s.name} (${s.spread.toFixed(2)}x, net ${(s.spread / n.spread).toFixed(2)}x vs the ${n.ms.toFixed(1)}ms control)`;
+  })();
+
+if (nullSpreads.length === 0) {
   console.log(
-    '\nNULL CONTROL: did not run (filtered out, or under the floor) — NOTHING BELOW IS GATED.',
+    '\nNULL CONTROLS: none ran (filtered out, or under the floor) — NOTHING BELOW IS GATED.',
   );
   console.log('  Every ratio here may be instrument noise. Raise SPELL_N and run it again.');
 } else {
-  console.log(`\nNULL CONTROL: ${nullSpread.toFixed(2)}x — one query against itself, so this is`);
-  console.log("  this run's own variance. A group at or under it has measured nothing.");
+  console.log("\nNULL CONTROLS — one query against itself, so each is this run's own variance");
+  console.log('  at that cost. A group is judged against the one NEAREST its own duration.');
+
+  for (const c of nullSpreads) {
+    console.log(`    ${c.spread.toFixed(2)}x at ${c.ms.toFixed(1)}ms`);
+  }
 }
 
 // The heading must not claim a gate that did not run: an UNGATED list quoted later as "clear
 // of the null control" would be this probe asserting the opposite of what it measured.
 const heading =
-  nullSpread === undefined
+  nullSpreads.length === 0
     ? `${real.length} group(s) over ${TOL}x (UNGATED — no null control in this run)`
-    : `${real.length} group(s) over ${TOL}x AND clear of the null control`;
+    : `${real.length} group(s) over ${TOL}x AND clear of the nearest null control`;
 
 console.log(`${heading}${real.length > 0 ? `:\n  - ${real.map(show).join('\n  - ')}` : ''}`);
 
