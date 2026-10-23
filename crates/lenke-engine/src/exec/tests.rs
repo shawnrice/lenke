@@ -14603,6 +14603,109 @@ fn indexing_a_property_agrees_whatever_the_stored_value_is() {
     assert_eq!(by_key[0], format!("{:?}", Value::Null), "a list has no 'k'");
 }
 
+/// The fused `<needle> IN <node>.<key>` path (item 649) scans the STORED list instead of
+/// materializing a column of cloned lists. `IN` is THREE-VALUED, and that is where a wrong
+/// answer would be silent: TRUE if any element equals the needle, else NULL if the needle or
+/// ANY element is null (the membership cannot be decided), else FALSE.
+///
+/// Note the asymmetry that makes these cases load-bearing: a MATCH short-circuits to TRUE even
+/// when a null element was already seen, so `[null, 1] IN`-containing 1 is TRUE, not NULL —
+/// and a non-match with a null element is NULL, not FALSE.
+#[test]
+fn fused_in_over_a_stored_list_is_three_valued() {
+    let mut b = Builder::default();
+    b.node(&["N"], &[("v", Value::List(vec![n(1.0), n(2.0)]))]); // plain hit/miss
+    b.node(&["N"], &[("v", Value::List(vec![Value::Null, n(1.0)]))]); // null BEFORE a match
+    b.node(&["N"], &[("v", Value::List(vec![Value::Null, n(9.0)]))]); // null, no match
+    b.node(&["N"], &[("v", Value::List(Vec::new()))]); // empty: decidable FALSE
+    let store = b.build();
+
+    let probe = |needle: Expr| -> Vec<String> {
+        let plan = Plan::Project {
+            input: Box::new(Plan::Scan { label: None }),
+            items: vec![(
+                "x".to_string(),
+                Expr::In {
+                    needle: Box::new(needle),
+                    haystack: Box::new(prop(0, "v")),
+                },
+            )],
+        };
+        let got = crate::exec::pull(&plan, &store, false).expect("plan runs");
+
+        (0..got.rows())
+            .map(|i| format!("{:?}", got.slot(0).value_at(i)))
+            .collect()
+    };
+
+    let t = format!("{:?}", Value::Bool(true));
+    let f = format!("{:?}", Value::Bool(false));
+    let null = format!("{:?}", Value::Null);
+
+    // Needle 1: hit; hit DESPITE a null element seen first; no hit WITH a null → NULL; empty.
+    assert_eq!(
+        probe(lit(n(1.0))),
+        vec![t.clone(), t.clone(), null.clone(), f.clone()]
+    );
+
+    // Needle 9: miss on a clean list → FALSE; miss with a null element → NULL; hit on row 2.
+    assert_eq!(
+        probe(lit(n(9.0))),
+        vec![f.clone(), null.clone(), t.clone(), f.clone()]
+    );
+
+    // A NULL needle cannot be decided against a non-empty list, but an EMPTY list has no
+    // element to be unknown about — and the engine still reports NULL there, because the needle
+    // itself is null. Pinning whatever it does so a route change cannot alter it silently.
+    let with_null = probe(lit(Value::Null));
+    assert_eq!(with_null[0], null, "a null needle over a plain list");
+    assert_eq!(with_null[1], null, "a null needle over a list with a null");
+
+    // THE EMPTY LIST IS THE DISCRIMINATING ROW for the null needle, and mutation found that the
+    // assertions above miss it. `saw_unknown = needle.is_null()` is redundant with the in-loop
+    // `needle.is_null()` check for every NON-empty list — the loop sets it anyway — so dropping
+    // the seed only shows up where the loop never runs. Without it this row reads FALSE.
+    assert_eq!(
+        with_null[3], null,
+        "a null needle over an EMPTY list is still UNKNOWN"
+    );
+}
+
+/// `IN` over a list property of an UNMATCHED `OPTIONAL MATCH` node. The slot holds the
+/// `u32::MAX` sentinel, and `store.prop_ref(u32::MAX, …)` would index the column at
+/// 4,294,967,295 — a PANIC. The fused path's pre-scan excludes it, and mutation showed that
+/// guard untested for `IN`: removing the whole pre-scan SURVIVED, because its list half is
+/// answer-equivalent (a non-list reads NULL either way) and nothing exercised the sentinel.
+#[test]
+fn fused_in_over_an_unmatched_optional_node_is_null() {
+    let mut b = Builder::default();
+    b.node(&["N"], &[("v", Value::List(vec![n(1.0), n(2.0)]))]);
+    let store = b.build();
+
+    let plan = opt_plan(
+        "MATCH (a:N) OPTIONAL MATCH (x:Nope) RETURN 1 IN x.v AS got, 1 IN a.v AS anchor",
+        &store,
+    );
+    let got = crate::exec::pull(&plan, &store, false).expect("the optional miss must not panic");
+
+    assert_eq!(got.rows(), 1);
+
+    let cells: Vec<String> = (0..got.slots.len())
+        .map(|c| format!("{:?}", got.slot(c).value_at(0)))
+        .collect();
+
+    // The unmatched side is NULL; the matched side still finds its element — which is what says
+    // the sentinel row was routed away WITHOUT disabling the path for everyone.
+    assert!(
+        cells.contains(&format!("{:?}", Value::Null)),
+        "the optional miss must be NULL: {cells:?}"
+    );
+    assert!(
+        cells.contains(&format!("{:?}", Value::Bool(true))),
+        "the matched node must still match: {cells:?}"
+    );
+}
+
 /// An UNMATCHED `OPTIONAL MATCH` leaves the node slot holding the `u32::MAX` null sentinel, and
 /// `store.prop_ref(u32::MAX, …)` would index the column at 4,294,967,295 — an out-of-bounds
 /// PANIC, not a wrong answer. The fused path's `id != u32::MAX` test is what keeps that row off

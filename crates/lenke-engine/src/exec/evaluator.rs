@@ -993,6 +993,54 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
                     .collect();
                 return Ok(Col::Gen(out));
             }
+            // FUSED `<needle> IN <node>.<key>`: scan the STORED list, so `eval(haystack)` never
+            // materializes a `Col::Gen` of cloned lists at all. Item 648's technique applied to
+            // the one other site whose base is a bare property.
+            //
+            // 🛑 WHETHER THIS WINS WAS NOT OBVIOUS, which is why it is measured rather than
+            // assumed. Item 645 (below) refuted BORROWING the evaluated column here — 2.5x
+            // SLOWER at length 8 — and attributed it to the clone COMPACTING: a freshly copied
+            // local `Vec` scans faster than one allocated during `eval` among 100,000 others.
+            // This path keeps that risk, since the stored list is scattered too, while removing
+            // the O(rows x len) materialization entirely. Item 648 won because its read was O(1)
+            // and had no scan for locality to help; here the read IS the scan, so the two
+            // effects pull in opposite directions.
+            if let Expr::Prop { slot, key } = haystack.as_ref() {
+                if let Col::Nodes(ids) = batch.slot(*slot) {
+                    let all_lists = ids.iter().all(|&id| {
+                        id != u32::MAX && matches!(store.prop_ref(id, key), Some(Value::List(_)))
+                    });
+
+                    if all_lists {
+                        let out: Vec<Value> = (0..n)
+                            .map(|i| {
+                                let needle = nd.value_at(i);
+                                let Some(Value::List(items)) = store.prop_ref(ids[i], key) else {
+                                    return Value::Null; // the pre-scan proved this cannot happen
+                                };
+                                let mut saw_unknown = needle.is_null();
+
+                                for el in items.iter() {
+                                    if el.is_null() || needle.is_null() {
+                                        saw_unknown = true;
+                                    } else if value::equals(&needle, el) {
+                                        return Value::Bool(true);
+                                    }
+                                }
+
+                                if saw_unknown {
+                                    Value::Null
+                                } else {
+                                    Value::Bool(false)
+                                }
+                            })
+                            .collect();
+
+                        return Ok(Col::Gen(out));
+                    }
+                }
+            }
+
             let hs = eval(haystack, store, batch)?;
             // 🛑 BORROWING THE HAYSTACK INSTEAD OF `value_at` WAS TRIED AND REFUTED (item 645),
             // and it is the SECOND site to refute it the same way (item 641 was `Expr::Index`).
