@@ -334,8 +334,26 @@ const WORKLOADS: Workload[] = [
     // DELETE, which this harness had no row for at all until item 334 needed one.
     // Deliberately paired: each iteration appends a node and then deletes it, so the
     // graph does not shrink toward empty over a time-boxed run and the row stays
-    // comparable across engines. It therefore prices an append AND a delete together —
-    // read it against `write: append node` to isolate the delete.
+    // comparable across engines. It therefore prices an append AND a delete together.
+    //
+    // ⚠️ READ IT AGAINST `write: append node [params]`, NOT `write: append node` (item 662).
+    // The unparameterized row builds a CHANGING query text, so it pays a parse+plan cache miss
+    // every operation — the note above records TS 3.4-3.9x faster once parameterized. The insert
+    // HERE is parameterized, so subtracting the unparameterized row makes the pair look cheaper
+    // than its own first half, which is how this comment was found to be pointing at the wrong
+    // baseline. Also remember `units: 2`: the reported figure is units/sec, so an iteration is
+    // two of them.
+    //
+    // Isolated that way, in ONE process, with the correct baseline:
+    //
+    //                  append[params]   pair/iter   DELETE
+    //   ts(+)              2.09 us        4.83       2.74
+    //   engine(+)          2.51           11.74      9.23     <- ~3.4x TS
+    //   ts(-)              2.34           5.52       3.18
+    //   engine(-)          2.37           11.24      8.87     <- ~2.8x TS
+    //
+    // The insert halves still differ by one property (3 vs 2), which inflates the baseline and
+    // therefore UNDERSTATES the delete — a conservative direction.
     name: 'write: append then delete node',
     units: 2,
     op: (e, g, i) => {
