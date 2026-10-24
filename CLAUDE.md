@@ -135,6 +135,14 @@ Each of these is here because a wrong conclusion was drawn and committed first.
 - **Match sample counts on both sides**, and prefer min or p25 over the mean.
   Several conclusions here were single-run against single-run and did not survive
   repetition.
+- **Check the fixture's own statistics, not just its output.** An answer that is INVARIANT
+  to the property you varied cannot validate the fixture. A 3-hop chain count is
+  `25 × |E|` whatever the in-degree distribution, so a generator that piled 93% of the
+  edges onto 7% of the vertices returned the right answer and measured 14x fast (item
+  702). The cause was an LCG written in f64 — `s * 1103515245` passes 2^53, the period
+  collapses from 2^31 to ~11k draws, and nothing about it looks wrong. One line counting
+  the distinct endpoints would have caught it. (The repo's own generators are fine, and
+  702 says why.)
 - **Know the noise floor.** Some rows range 2x for the same binary. Anything under
   ~10% needs its own isolated harness, and "obviously correct so it must be
   faster" is not evidence — several such changes measured neutral or worse.
