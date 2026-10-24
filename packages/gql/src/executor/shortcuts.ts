@@ -1769,12 +1769,22 @@ const walkLevelCount = (graph: Graph, spec: DegreeCountSpec): number => {
   // so it probes the landing's segment and costs the TWO-WALK count. That is still a factor of
   // the average degree below enumerating three-walks, which is the whole win (item 600b corrects
   // an earlier claim that it was O(V + E)).
+  // DEPTH 2 joins the level recurrence at item 699. It used to take the `max <= 2` closed form,
+  // which is the SAME arithmetic over the Map-based adjacency rather than the flat CSR — and
+  // measured SLOWER than depth 3 while counting a third as many paths (15.4 ms against 9.2 at
+  // 50,000 vertices / degree 3). Its correction is the one-self-loop term the old path already
+  // applied, and it is already in `trailCorrectionAt`'s `len === 2` branch.
+  //
+  // Relaxing the dispatch bound WITHOUT this line answers the WALK count — 450,000 against the
+  // trail's 449,998 — which is item 692's mistake exactly, caught here by printing the answers
+  // beside the times (item 600's rule) rather than by any timing.
+  const trail2 = isTrail && max === 2;
   const trail3 = isTrail && max === 3;
   // DEPTH 4 (item 692) reuses every depth-3 table and adds three things of its own. It is gated on
   // `passesIsVacuous` because the depth-4 terms were derived for a TRIVIAL endpoint mask (items
   // 687-689) and nothing validates them against a filtered one; the detector refuses otherwise.
   const trail4 = isTrail && max === 4;
-  const trailCorr = trail3 || trail4;
+  const trailCorr = trail2 || trail3 || trail4;
   const trailMasks = trailCorr ? buildTrailMasks(u, { off, nbr }) : undefined;
 
   // DEPTH 4's extra state, built only when `trail4` so no shallower depth pays for it. See
@@ -1869,7 +1879,7 @@ const walkLevelCount = (graph: Graph, spec: DegreeCountSpec): number => {
  * mistaken for the one under test, which is what cost this item a mutation round.
  */
 const takesTheLevelRecurrence = (spec: DegreeCountSpec): boolean =>
-  spec.max >= 3 && (!spec.isTrail || spec.max <= 4);
+  spec.max >= 2 && (!spec.isTrail || spec.max <= 4);
 
 const varLengthDegreeCount = (graph: Graph, spec: DegreeCountSpec): number => {
   // DEPTH 3+ IS A DIFFERENT ALGORITHM, and it is dispatched here rather than in the detector so
