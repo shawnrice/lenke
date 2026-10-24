@@ -11456,7 +11456,12 @@ mutant most likely to have no coverage, and the tests caught it.
   1 or 2. A conjunction that happens to agree cannot tell those apart, which is why the
   disagreeing pair is the discriminating case.
 
-### Still open
+### ~~Still open~~ CLOSED AT 638
+
+> **STALE MARKER CORRECTED (item 696).** Item **638** — the very next one — fixed exactly this
+> flag: _"The probe's remaining gated flag was the PROJECTED twin"_, 4.34x → **0.96x**. The
+> figures differ (2.98x here against 638's 4.34x) because they are two measurements of one flag,
+> and that is what defeated item 695's check: it grepped for `2.98x` instead of reading item 638.
 
 The **projected** edge group remains at 2.98x (net 2.91x). It is a different route — a
 projection, not a count — and this item did not touch it. It is now the largest gated flag on
@@ -13980,7 +13985,10 @@ the subject is the only candidate cannot test a guard that selects among candida
 corollary — **a fixture where two algorithms coincide cannot distinguish them**, and writing the
 warning down is not the same as acting on it.
 
-### Open after this
+### ~~Open after this~~ CLOSED AT 676
+
+> **STALE MARKER CORRECTED (item 696).** Item **676** took both rollback paths — O(1) → O(D),
+> 1136x at D=200,000 — exactly as predicted here.
 
 The symmetric undo path (`Undo::RestoreNode`) still rebuilds, and the same argument applies: a
 restore PUSHES the mirror to the end of the neighbour's adjacency, so a rebuild puts it at the end
@@ -14047,7 +14055,10 @@ asserts only on buckets that end up EMPTY, through a SORTING helper. So
 bucket and the victim at index 1 (where `retain` and `swap_remove` part company), and exercises the
 swapped-endpoint call the doc comment promises works.
 
-### Open after this
+### ~~Open after this~~ CLOSED AT 676
+
+> **STALE MARKER CORRECTED (item 696).** Item **676** took both of these paths (1136x), and item
+> **677** then found the interval index's twin problem (O(1) → O(V), 26,241x).
 
 Both rollback paths still rebuild: `Undo::RestoreEdge` (store.rs:5109) and `Undo::RestoreNode`
 (5149/5157). A restore PUSHES the mirror to the end of the neighbour's adjacency, so a rebuild puts
@@ -15434,9 +15445,11 @@ priced**, and that is the claim to check before promising anything.
 
 ### Checked and genuinely open (no later item closes them)
 
-- the **projected edge group at 2.98x** (net 2.91x) — a projection route, untouched by the count
-  work, and recorded as "the largest gated flag on the probe's page". **No later mention anywhere**,
-  so it is live.
+- ~~the **projected edge group at 2.98x**~~ — **WRONG, and corrected at item 696: item 638 closed
+  it** (4.34x → 0.96x, the same flag under a different measurement). I checked it by grepping for
+  `2.98x` and "projected edge group" rather than reading item 638, which is the check item 694 had
+  itself prescribed. **A number is the wrong thing to grep for** — the closing item quotes its own
+  figure.
 - the HOP projection behind `farDrivenHopWalk`'s sort constraint (173.0 ms against a 44.5 ms
   unordered reference).
 - a window WITH a sort, in both node and hop paths, blocked on item 426's cannot-fault check.
@@ -15444,3 +15457,66 @@ priced**, and that is the claim to check before promising anything.
   (the engines disagree on the edge COUNT); half of 619's seed.
 
 That list is now worth trusting, which is the point of two ticks spent on it.
+
+## 696 — the index check is now a SCRIPT, after three ticks of getting it wrong three different ways
+
+**TOOLING + INDEX MAINTENANCE. No engine change.** Item 694 swept for stale markers, 695 found what
+694 missed, and this tick found what 695 missed. Each failure was at a different level, which is the
+argument for stopping and mechanising the check rather than being more careful a fourth time.
+
+### The three failures
+
+| item | found | missed | because                                                                                       |
+| ---- | ----- | ------ | --------------------------------------------------------------------------------------------- |
+| 694  | 5     | 3      | grepped case-sensitive `OPEN`; they said "Still open", "remains open", "unbuilt"              |
+| 695  | 3     | 1      | "verified" one by grepping the NUMBER being closed (`2.98x`) instead of reading the next item |
+| 696  | 3     | —      | —                                                                                             |
+
+**695's failure is the instructive one.** Item 694's own note prescribed _"grep the open claim, then
+read the next two or three item headers"_. I substituted a number-grep for that, and item 638 had
+closed the flag while quoting **4.34x → 0.96x** — its own measurement, not 637's 2.98x. **A number
+is the wrong thing to grep for**, because the closing item has no reason to repeat the figure the
+open note used.
+
+### `docs/reviews/open-markers.ts`
+
+```text
+bun docs/reviews/open-markers.ts        # the current working range (item 600+)
+bun docs/reviews/open-markers.ts 300    # from item 300
+```
+
+It finds markers with a pattern covering every phrasing that has actually been used, and prints the
+**NEXT ITEM** beside each — the part that was wrong every time. 32 unresolved markers at item 600+
+right now.
+
+It deliberately does **not** decide staleness. Reading the next item is the judgement, and a script
+that guessed would become one more thing to distrust.
+
+### Three more stale markers, all closed by their immediate successor
+
+| marker                                                                                            | closed by                                    |
+| ------------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| 637: "the **projected** edge group remains at 2.98x … the largest gated flag on the probe's page" | **638** (4.34x → 0.96x)                      |
+| 674: "### Open after this — the symmetric undo path still rebuilds"                               | **676** (1136x)                              |
+| 675: "### Open after this — both rollback paths still rebuild"                                    | **676**, and **677** found the interval twin |
+
+**Item 695's own claim that the 2.98x was "live" is corrected in place.** Two of these three were
+mine, closed by later items of mine.
+
+### The count that makes this a habit problem, not an accident
+
+Across 694-696, **nine** stale markers. **Four of the nine were written by the author who then
+closed them a few items later** — 677→678, 674→676, 675→676, 685→692/693, all mine. The mechanism
+is not carelessness about someone else's note; it is finishing an item, naming what is left, and
+then closing that in the next item without going back.
+
+CLAUDE.md covers appending. The other half, now stated three times and tooled once: **when an item
+closes something a PREVIOUS item left open, amend that previous entry too.**
+
+### Still genuinely open, after a mechanical pass
+
+587's non-terminating deep WALK count; the citation-rot instrument (614); duplicate external edge
+ids where the engines disagree on the edge COUNT (615); half of 619's seed; the hop projection
+behind `farDrivenHopWalk`'s sort constraint (605/607, 173.0 ms against a 44.5 ms unordered
+reference); a window WITH a sort, blocked on item 426's cannot-fault check; depth 5 of the trail
+count (693), whose terms are unpriced per item 686's rule.
