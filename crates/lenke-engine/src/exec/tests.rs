@@ -11000,6 +11000,63 @@ fn gather_cost_by_width() {
     }
 }
 
+/// No node's adjacency holds the same `eid` twice, in either direction.
+///
+/// Item 715 replaced `retain(|m| m.eid != a.eid)` in the mirror detach with `position` +
+/// `remove`, which drops the FIRST match rather than every match. Those differ only if a
+/// duplicate mirror can exist, so the invariant that none can is what licenses the change — and
+/// an unexamined difference is how a silent wrong answer gets in.
+///
+/// The rollback path is the case worth covering rather than a plain build: `Undo::RestoreEdge`
+/// does `push(adj)`, re-appending a restored entry, and that is exactly the mechanism item 671
+/// found leaves the list UNSORTED. Unsorted is fine for a linear find; DUPLICATED would not be.
+#[test]
+fn mirror_entries_are_unique_per_direction() {
+    let mut b = Builder::default();
+    let a = b.node(&["N"], &[]);
+    let c = b.node(&["N"], &[]);
+    let d = b.node(&["N"], &[]);
+    // Parallel edges, both directions, and a self-loop — every shape that puts more than one
+    // entry in one adjacency list.
+    b.edge(a, c, "E");
+    b.edge(a, c, "E");
+    b.edge(c, a, "E");
+    b.edge(a, a, "E");
+    b.edge(a, d, "E");
+    let mut st = b.build();
+
+    let check = |st: &Store, where_: &str| {
+        for id in 0..st.node_count() as u32 {
+            for (dir, list) in [("out", st.out(id)), ("in", st.inc(id))] {
+                let mut eids: Vec<u32> = list.iter().map(|m| m.eid).collect();
+                let before = eids.len();
+                eids.sort_unstable();
+                eids.dedup();
+
+                assert_eq!(
+                    eids.len(),
+                    before,
+                    "{where_}: node {id} has a DUPLICATE eid in its {dir} adjacency"
+                );
+            }
+        }
+    };
+
+    check(&st, "after build");
+
+    // A delete, then a rolled-back transaction that deletes and re-adds, which is what drives
+    // `Undo::RestoreEdge`.
+    st.delete_nodes(&[d]);
+    check(&st, "after delete");
+
+    st.begin();
+    st.delete_nodes(&[c]);
+    let e = st.add_edge(a, a, "E");
+    st.rollback();
+    check(&st, "after rollback");
+    std::hint::black_box(e);
+}
+
 /// Does deleting a node cost O(ITS degree), or O(its NEIGHBOUR's degree)? (item 670)
 ///
 /// ```text

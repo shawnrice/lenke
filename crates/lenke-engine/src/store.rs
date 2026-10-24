@@ -4756,13 +4756,35 @@ impl Store {
         };
 
         // Detach each incident edge's mirror entry on the neighbour, by eid.
+        //
+        // `position` + `remove` rather than `retain` (item 715). Both are O(D) in the
+        // NEIGHBOUR's degree and both preserve order — which is the constraint items 670/671
+        // established, where `swap_remove` was refuted because `out_adj` order is load-bearing for
+        // byte-identity and `binary_search_by_key` because `Undo::RestoreEdge` appends out of
+        // eid order, leaving the list unsorted. A LINEAR find is what correctness requires, and
+        // this is one. The difference is the constant: `retain` compares all D entries and shifts
+        // survivors one at a time, while this stops comparing at the match and moves the tail with
+        // a single `ptr::copy`.
+        //
+        // An eid identifies ONE mirror entry per direction, so removing the first is removing the
+        // only one. `retain` would additionally clean up a DUPLICATE mirror if the invariant were
+        // ever violated; that is not a case any path produces, and `mirror_entries_are_unique_per
+        // _direction` pins it rather than leaving the difference unexamined.
         let out = std::mem::take(&mut self.out_adj[i]);
         for a in &out {
-            self.in_adj[a.nbr as usize].retain(|m| m.eid != a.eid);
+            let adj = &mut self.in_adj[a.nbr as usize];
+
+            if let Some(at) = adj.iter().position(|m| m.eid == a.eid) {
+                adj.remove(at);
+            }
         }
         let inc = std::mem::take(&mut self.in_adj[i]);
         for a in &inc {
-            self.out_adj[a.nbr as usize].retain(|m| m.eid != a.eid);
+            let adj = &mut self.out_adj[a.nbr as usize];
+
+            if let Some(at) = adj.iter().position(|m| m.eid == a.eid) {
+                adj.remove(at);
+            }
         }
         // A self-loop appears in both `out` and `inc`; its mirror was in this
         // node's own lists, already emptied by the takes above — nothing dangling.

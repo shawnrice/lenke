@@ -13785,7 +13785,10 @@ So **both** candidate fixes are refuted, for different reasons:
 | `swap_remove` after finding the entry — O(1)             | `out_adj` ORDER is load-bearing for byte-identity (CSR slices and per-type partitions are built in it) |
 | `binary_search_by_key` + `Vec::remove` — O(log D + tail) | the list is NOT reliably eid-sorted; `Undo::RestoreEdge` appends out of order                          |
 
-A linear find is what correctness requires, and `retain` already is one. **The O(neighbour-degree)
+A linear find is what correctness requires, and `retain` already is one. **AMENDED AT 715: a linear
+find that is NOT `retain` was the route neither row above covers — `position` + `remove` keeps order,
+assumes no sortedness, and measured 1.58x on the oldest edge / 1.27x in the middle. The complexity is
+unchanged; the constant is not.** **The O(neighbour-degree)
 cost is inherent to the current adjacency representation**, not an oversight — moving it needs a
 different structure (an eid-keyed index per node, or a tombstone-and-compact scheme), which is a
 design change with its own byte-identity surface.
@@ -16880,3 +16883,88 @@ says so in those words rather than letting silence read as "never tried".
 Gates, each its own command with its exit code read UNPIPED: `cargo fmt` 0;
 `cargo clippy --all-targets --features capi -- -D warnings` 0; `bun run lint` 0; `bun run fmt` 0;
 `bun run check` 0.
+
+## 715 — the mirror detach, with the one route 670/671 did not refute: 1.58x on the oldest edge
+
+**FIXED (native).** Item 670 priced a hub-leaf delete at O(the NEIGHBOUR's degree) and item 671
+refuted both candidate fixes with a table:
+
+| fix                               | why not                                                   |
+| --------------------------------- | --------------------------------------------------------- |
+| `swap_remove` — O(1)              | `out_adj` ORDER is load-bearing for byte-identity         |
+| `binary_search_by_key` + `remove` | the list is NOT reliably eid-sorted (`Undo::RestoreEdge`) |
+
+Both entries are about getting to the element FASTER. Neither is about the `retain` itself, and
+671's own sentence names what is left: _"A linear find is what correctness requires, and `retain`
+already is one."_ A linear find that is not `retain` was unrefuted — screened through both stores
+first, which is what item 714 built `closed-levers.ts` for.
+
+```rust
+// before
+self.in_adj[a.nbr as usize].retain(|m| m.eid != a.eid);
+
+// after
+if let Some(at) = adj.iter().position(|m| m.eid == a.eid) {
+    adj.remove(at);
+}
+```
+
+Same complexity, same order, no sortedness assumption. `retain` compares all D entries and shifts
+survivors one at a time; this stops comparing at the match and moves the tail with one `ptr::copy`.
+
+### The win is POSITION-dependent, and the baseline table already said so
+
+Before measuring I predicted a modest win, reasoning from the harness's own position table (`LAST`
+32.39 against `FIRST` 41.77 — with `retain` the scan is always full D, so that spread is the
+SHIFT). The prediction was right about the mechanism and wrong about the shape: the win is large at
+the front and nil at the back.
+
+Three alternated rounds, min per arm, the repo's own `delete_cost_by_neighbour_degree`:
+
+| row                        | BEFORE | AFTER | ratio     |
+| -------------------------- | -----: | ----: | --------- |
+| victim FIRST (oldest edge) |  38.31 | 24.22 | **1.58x** |
+| victim MIDDLE              |  34.11 | 26.89 | **1.27x** |
+| victim LAST (newest)       |  29.98 | 28.75 | 1.04x     |
+| D=100 CONTROL              |   0.17 |  0.16 | 1.06x     |
+| D=1,000 CONTROL            |   0.68 |  0.67 | 1.01x     |
+| index ON CONTROL           |  51.52 | 49.70 | 1.04x     |
+| D=50,000 aggregate         |  29.07 | 28.25 | 1.03x     |
+
+The model fits exactly. For a victim at index `i` of `D`: `retain` pays D compares plus a
+one-at-a-time shift of the D−i survivors; this pays i compares plus a vectorized move of the same
+D−i. At `i = 0` that removes every compare and vectorizes the whole move (1.58x); at `i = D−1`
+the two are the same work (1.04x, inside the controls' own 1.01-1.06x drift).
+
+**So the honest headline is the FIRST row, not the aggregate.** The bench's own `leaf (degree 1)`
+row moves 1.03x because its victim sits near the end of the hub's adjacency. The case that gains is
+deleting the OLDEST edge of a hub — which is FIFO expiry, the shape a people-graph actually runs
+(archive the oldest applications, drop the oldest events), and the reason this is worth shipping
+rather than a curiosity.
+
+### Mutation 3/3, and one of them re-examines 671's refusal
+
+Labelled before running. Caught: the match inverted (removes a wrong entry), and the out-side
+detach loop never running (a dangling mirror).
+
+The third was labelled **UNCERTAIN on purpose**: `swap_remove` is precisely the change 671 refused
+on byte-identity grounds, and if it SURVIVED the suite then that refusal had no test behind it. It
+is **CAUGHT (exit 101)**. So 671 was right and is now demonstrated rather than argued — which is
+worth more than my own two mutants, because it is the claim a future attempt would lean on.
+
+Two earlier anchors refused (one matched twice, one needed a helper to compile) and nothing wrong
+was written either time.
+
+### The invariant the change rests on is now a test
+
+`retain` removes EVERY entry with that eid; `position` + `remove` removes the first. They differ
+only if a duplicate mirror can exist. `mirror_entries_are_unique_per_direction` asserts no node's
+adjacency holds one eid twice, in either direction, over parallel edges both ways plus a self-loop,
+and — the case worth covering — **after a rolled-back transaction**, because `Undo::RestoreEdge`
+re-appends an entry and that is the mechanism 671 found leaves the list unsorted. Unsorted is fine
+for a linear find; duplicated would not be.
+
+Gates, each its own command with its exit code read UNPIPED: `cargo fmt` 0;
+`cargo clippy --all-targets --features capi -- -D warnings` 0; `cargo test --release` 1216 + 13 +
+725 pass, 0 fail (1216 is the new test); all seven byte-identity fuzzers pass — required rather than
+formal, since this touches adjacency order, which is exactly what that invariant covers.
