@@ -112,6 +112,39 @@ const GROUPS: [string, readonly string[]][] = [
     ['MATCH (n:P) RETURN max(n.k) AS m', 'MATCH (n:P) ORDER BY n.k RETURN max(n.k) AS m'],
   ],
   [
+    // Item 683: a VACUOUS QUANTIFIER. `->{1,1}` is one repetition, so with no edge variable and
+    // the default `trail` mode it asks exactly what a plain hop asks — and both answer the same
+    // number. But the quantifier puts the segment past every gate that bails on
+    // `segments.some((s) => s.rel.quantifier)`, so the plain spelling takes the O(1)
+    // `edgesByLabel` bucket size while `{1,1}` enumerates: 1.600us against 3580.920 at 50,000
+    // vertices / 50,000 E edges, a 2238x spread for an identical answer.
+    //
+    // The native engine normalizes this away in the OPTIMIZER (`opt.rs`, a one-hop `VarLength`
+    // with no `until`/`body_filter` under WALK/TRAIL becomes an `Expand`), which is why the same
+    // two spellings sit within 3.3% there. TS has no `ir::Plan` to canonicalize, so it needs the
+    // equivalent normalization in its planner — this group is what will show it landing.
+    //
+    // The gate set is NOT cosmetic, and each half is measured: with an edge variable the
+    // quantified form binds a LIST (`e: [{...}]`) where the plain form binds a scalar
+    // (`e: {...}`), so a normalization must require no edge variable; and `acyclic` forbids any
+    // repeated node, so at one hop it DROPS a self-loop the plain spelling keeps.
+    // BOTH ENDS UNLABELLED is load-bearing in this group. With `(a:P)` the plain spelling
+    // cannot use the bucket size either — it takes the degree-sum walk — so both members walk
+    // and the spread is only 2.18x (24.93ms vs 54.25 at 200k/600k). The O(1) rung needs both
+    // ends unconstrained, and that is where the real gap is.
+    'a vacuous {1,1} quantifier vs a plain hop',
+    ['MATCH (a)-[:E]->(b) RETURN count(*) AS c', 'MATCH (a)-[:E]->{1,1}(b) RETURN count(*) AS c'],
+  ],
+  [
+    // The LABELLED twin, kept because it isolates a different rung: both members walk, so this
+    // one measures the enumeration overhead alone (2.18x) rather than the lost O(1) bucket.
+    'a vacuous {1,1} quantifier vs a plain hop, labelled start',
+    [
+      'MATCH (a:P)-[:E]->(b) RETURN count(*) AS c',
+      'MATCH (a:P)-[:E]->{1,1}(b) RETURN count(*) AS c',
+    ],
+  ],
+  [
     // Item 548: `FILTER <pred>` is ISO's own clause-level predicate statement (§14.6) and asks
     // exactly what a clause `WHERE` on the MATCH before it asks — but the FILTER spelling put one
     // extra clause in front of every detector, so the whole query fell to the general pipeline.
