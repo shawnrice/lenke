@@ -14811,6 +14811,260 @@ fn indexing_an_all_list_column_takes_the_fused_path_and_still_agrees() {
     }
 }
 
+/// What does `element_id(x) = '<lit>'` cost per row, against reading a typed PROPERTY over the
+/// same frontier? Item 619 priced this end-to-end at 2,274 us native / 28,888 us TS for an edge
+/// walk, against 196 / 2,449 for `r.w = $w` — so `element_id` is ~12x the comparison it feeds,
+/// in BOTH engines. `opt::id_seek_target`'s header names that as half (2) of 619 and records it
+/// unbuilt.
+///
+/// This isolates the per-row half of it. `Expr::Call`'s `element_id` arm clones a `GStr` and
+/// boxes a `Value::Str` PER ROW; the property comparison reads a typed column and allocates
+/// nothing.
+///
+/// TWO CONTROLS, neither reachable by a change to the `element_id` arm:
+/// - `x.w = <miss>` — a typed-column compare over the identical frontier and plan shape.
+/// - `WHERE true` — the Filter floor itself (item 570: this is THE control for "why is the
+///   filtered version slower").
+///
+/// The ext ids are the ones `Builder::build` mints — `"0"`, `"1"`, ... for nodes and `"e0"`,
+/// `"e1"`, ... for edges. That matters: CLAUDE.md's "give edges ids" trap is that a fixture
+/// WITHOUT them skips the external-id path entirely and prices nothing.
+#[test]
+#[ignore = "timing harness"]
+fn element_id_cost_by_frontier() {
+    use std::time::Instant;
+    const REPS: u32 = 9;
+    const NODES: usize = 100_000;
+
+    let mut b = Builder::default();
+    for i in 0..NODES {
+        b.node(
+            &["N"],
+            &[
+                ("w", n(i as f64)),
+                // Unique per row ON PURPOSE: a dict column would be computed per distinct
+                // value and the positive control would stop being expensive.
+                ("s", Value::Str(format!("s{i}").as_str().into())),
+            ],
+        );
+    }
+    // One edge per node, so the edge frontier is the same width as the node frontier and the
+    // two blocks below are comparable.
+    for i in 0..NODES as u32 {
+        b.edge(i, (i + 1) % NODES as u32, "R");
+    }
+    let store = b.build();
+
+    let eid = |slot: u32| Expr::Call {
+        name: "element_id".to_string(),
+        args: vec![Expr::Slot(slot as usize)],
+    };
+    let eq = |l: Expr, r: Expr| Expr::Compare {
+        op: CompareOp::Eq,
+        left: Box::new(l),
+        right: Box::new(r),
+    };
+    let s = |t: &str| lit(Value::Str(t.into()));
+
+    println!(
+        "{:<52}{:>10}{:>10}{:>9}",
+        "case", "total us", "ns/row", "rows"
+    );
+
+    // NODE frontier: a bare scan binds the node in slot 0.
+    let node_cases: Vec<(&str, Expr)> = vec![
+        ("node  element_id(n) = MISS", eq(eid(0), s("nope"))),
+        ("node  element_id(n) = HIT (one row)", eq(eid(0), s("7"))),
+        (
+            "node  element_id(n) REVERSED operand order",
+            eq(s("nope"), eid(0)),
+        ),
+        (
+            "node  CONTROL n.w = miss (typed column)",
+            eq(prop(0, "w"), lit(n(-1.0))),
+        ),
+        (
+            "node  CONTROL true (the Filter floor)",
+            lit(Value::Bool(true)),
+        ),
+        // POSITIVE CONTROL: a predicate KNOWN to be expensive per row. If this reads the same
+        // as the floor, the harness is measuring itself and no row above means anything.
+        (
+            "node  POSITIVE CONTROL upper(n.s) = miss",
+            eq(
+                Expr::Call {
+                    name: "upper".to_string(),
+                    args: vec![prop(0, "s")],
+                },
+                s("nope"),
+            ),
+        ),
+    ];
+
+    for (name, pred) in node_cases {
+        let plan = Plan::Filter {
+            input: Box::new(Plan::Scan { label: None }),
+            pred,
+        };
+        let mut best = u128::MAX;
+        let mut rows = usize::MAX;
+        for _ in 0..REPS {
+            let t0 = Instant::now();
+            let got = crate::exec::pull(&plan, &store, false).expect("plan runs");
+            best = best.min(t0.elapsed().as_nanos());
+            rows = got.rows();
+        }
+        // PRINTED, not assumed: a row count of 0 everywhere would mean the predicate never ran.
+        println!(
+            "{:<52}{:>10.1}{:>10.2}{:>9}",
+            name,
+            best as f64 / 1000.0,
+            best as f64 / NODES as f64,
+            rows
+        );
+    }
+
+    // ITEM 619's ACTUAL FIXTURE: a GQL EDGE walk end to end, not a hand-built node filter. The
+    // block above shows no gap at all on a node frontier, but 619 measured
+    // `MATCH ()-[r:R]->() WHERE element_id(r) = $x`, so that is what has to be reproduced
+    // before its 12x is either confirmed or retracted.
+    //
+    // The FLOOR here is the walk with NO predicate: it isolates the expand, which both the
+    // subject and the control pay in full. `Builder::edge` takes no properties, so 619's exact
+    // `r.w = $w` control is not expressible on this fixture; the node-property predicate over
+    // the same walk stands in for it, and the floor carries the comparison.
+    println!();
+    let gql_cases: &[(&str, &str)] = &[
+        (
+            "edge  FLOOR: the walk alone, no predicate",
+            "MATCH ()-[r:R]->() RETURN count(*) AS c",
+        ),
+        (
+            "edge  element_id(r) = MISS",
+            "MATCH ()-[r:R]->() WHERE element_id(r) = 'nope' RETURN count(*) AS c",
+        ),
+        (
+            "edge  element_id(r) = HIT (one edge)",
+            "MATCH ()-[r:R]->() WHERE element_id(r) = 'e7' RETURN count(*) AS c",
+        ),
+        (
+            "edge  CONTROL a.w = miss (typed node column)",
+            "MATCH (a)-[r:R]->() WHERE a.w = -1.0 RETURN count(*) AS c",
+        ),
+        (
+            "node  element_id(a) = MISS via GQL",
+            "MATCH (a:N) WHERE element_id(a) = 'nope' RETURN count(*) AS c",
+        ),
+        // THE DECISIVE PAIR for half (2). Both of these are the FAR side of a hop, the one
+        // shape 619 says cannot be seeded ("the predicate reads a slot the `Scan` does not
+        // produce, so it stays a filter"). So both pay the full walk and differ only in the
+        // predicate — which is exactly the `element_id` vs property comparison 619 made, with
+        // the seed no longer able to mask it.
+        (
+            "far   element_id(b) = MISS after a hop (a FILTER)",
+            "MATCH (a)-[r:R]->(b) WHERE element_id(b) = 'nope' RETURN count(*) AS c",
+        ),
+        (
+            "far   CONTROL b.w = miss after a hop (a FILTER)",
+            "MATCH (a)-[r:R]->(b) WHERE b.w = -1.0 RETURN count(*) AS c",
+        ),
+        // THE "BEFORE" NUMBER, without un-building anything. `try_filter_keep_element_id`
+        // declines every operator but `Eq`/`Ne` (an ORDERING comparison on an id is a string
+        // ordering under the value contract's total order, which that pass does not
+        // reproduce). So a `>` on the same expression routes to the GENERAL path and prices
+        // the per-row `GStr` clone + `Value::Str` box that item 619 named.
+        (
+            "far   element_id(b) > lit — DECLINES the keep-pass",
+            "MATCH (a)-[r:R]->(b) WHERE element_id(b) > 'zzz' RETURN count(*) AS c",
+        ),
+        (
+            "far   CONTROL b.s > lit (a string column, general too)",
+            "MATCH (a)-[r:R]->(b) WHERE b.s > 'zzz' RETURN count(*) AS c",
+        ),
+    ];
+
+    for (name, q) in gql_cases {
+        let plan = opt_plan(q, &store);
+        // VERIFY THE PLANNER REACHES THE SHAPE, rather than inferring it from the time: a
+        // seeded plan and a walk that happens to be cheap are not distinguishable by duration.
+        let shape = format!("{plan:?}");
+        let seeded = shape.contains("EdgeSeed") || shape.contains("Seed");
+        let mut best = u128::MAX;
+        for _ in 0..REPS {
+            let t0 = Instant::now();
+            let got = crate::exec::pull(&plan, &store, false).expect("plan runs");
+            best = best.min(t0.elapsed().as_nanos());
+            std::hint::black_box(got.rows());
+        }
+        println!(
+            "{:<52}{:>10.1}{:>10.2}{:>9}",
+            name,
+            best as f64 / 1000.0,
+            best as f64 / NODES as f64,
+            if seeded { "SEEDED" } else { "walk" }
+        );
+    }
+
+    // LONG EXT IDS — the one remaining way half (2) could be real. `GStr` is a 16-byte German
+    // string with a 12-byte INLINE capacity, so `Builder`'s minted `"e0"` / `"7"` ids are
+    // copied by value and their `clone` allocates nothing. Past the cap the bytes live in a
+    // refcounted block and `clone` becomes an atomic increment plus a matching decrement on
+    // drop — which is the only version of "cloning a GStr" that could cost anything per row.
+    //
+    // 36 chars, UUID length. `from_ndjson` is the only way to set ext ids explicitly; the test
+    // `Builder` mints its own and cannot express this.
+    println!();
+    let mut nd = String::new();
+    const LONG: usize = 20_000;
+    for i in 0..LONG {
+        nd.push_str(&format!(
+            "{{\"id\":\"{:036}\",\"labels\":[\"N\"],\"props\":{{\"w\":{i}}}}}\n",
+            i
+        ));
+    }
+    for i in 0..LONG {
+        nd.push_str(&format!(
+            "{{\"id\":\"e{:035}\",\"from\":\"{:036}\",\"to\":\"{:036}\",\"type\":\"R\",\"props\":{{}}}}\n",
+            i,
+            i,
+            (i + 1) % LONG
+        ));
+    }
+    let long_store = crate::ndjson::from_ndjson(&nd).expect("ndjson loads");
+
+    let long_cases: &[(&str, &str)] = &[
+        (
+            "long  FLOOR: the walk alone",
+            "MATCH (a)-[r:R]->(b) RETURN count(*) AS c",
+        ),
+        (
+            "long  element_id(b) after a hop (heap-backed GStr)",
+            "MATCH (a)-[r:R]->(b) WHERE element_id(b) = 'nope' RETURN count(*) AS c",
+        ),
+        (
+            "long  CONTROL b.w = miss after a hop",
+            "MATCH (a)-[r:R]->(b) WHERE b.w = -1.0 RETURN count(*) AS c",
+        ),
+    ];
+
+    for (name, q) in long_cases {
+        let plan = opt_plan(q, &long_store);
+        let mut best = u128::MAX;
+        for _ in 0..REPS {
+            let t0 = Instant::now();
+            let got = crate::exec::pull(&plan, &long_store, false).expect("plan runs");
+            best = best.min(t0.elapsed().as_nanos());
+            std::hint::black_box(got.rows());
+        }
+        println!(
+            "{:<52}{:>10.1}{:>10.2}",
+            name,
+            best as f64 / 1000.0,
+            best as f64 / LONG as f64
+        );
+    }
+}
+
 /// What does `<needle> IN <a list PROPERTY>` cost, and how much of it is the per-row CLONE?
 ///
 /// `Expr::In` is the fourth site of the `value_at`-deep-copies-a-list pattern item 640 found:

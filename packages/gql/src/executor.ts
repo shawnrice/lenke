@@ -4526,6 +4526,34 @@ const asPropCompare = (
  * The variable `element_id(<var>)` reads, or null. Hoisted to module scope rather than
  * closed over `asIdCompare` — it captures nothing, and oxlint's
  * `consistent-function-scoping` is right that rebuilding it per call is waste.
+ *
+ * ## Item 619's TS half does NOT reproduce, and this seed is why (item 650)
+ *
+ * 619 recorded TS **28,888 us** for `WHERE element_id(r) = $x` against 2,449 us for
+ * `WHERE r.w = $w`, an 11.8x it attributed to materializing the id per row. Re-measured,
+ * 20,000 nodes / 20,000 edges, ONE CASE PER PROCESS (item 274's contamination), min of 9:
+ *
+ * Every `=` spelling measured **~0.00 ms** — an id equality against a missing id seeds to an
+ * EMPTY set and the query never walks. So the `=` numbers price the seed, not the per-row
+ * read, and this engine seeds BOTH endpoints where native seeds only slot 0 and the edge.
+ *
+ * `<>` cannot seed (a seed is a set of ids; the complement of one is not), so it walks in
+ * full and isolates the per-row cost. Three ALTERNATED rounds:
+ *
+ * | predicate, far side of a hop | ns/row |
+ * | --- | --- |
+ * | `element_id(b) <> 'nope'` | 100.92 / 87.38 / 93.31 |
+ * | `b.s <> 'nope'` (string column, same shape) | 66.76 / 59.74 / 59.41 |
+ * | `element_id(r) <> 'nope'` (the EDGE) | 59.64 / 52.91 / 54.55 |
+ *
+ * So a far-side NODE id read is a consistent **~1.5x** its string-property twin, and the EDGE
+ * id — 619's actual subject — is at parity or cheaper. Nothing like 11.8x, and the mechanism
+ * 619 named cannot exist here: `callScalar`'s `element_id` arm is `a.id`, a property read
+ * returning a string REFERENCE, so there is no clone to remove (the same reason item 648's
+ * native list-materialization had no TS twin).
+ *
+ * The ~1.5x on the node spelling is real, small, and on a shape — an id INEQUALITY — that is
+ * rare to write. Priced here so it is not re-derived from 619's headline number.
  */
 const idArgVariable = (e: Expr): string | null =>
   e.kind === 'func' && e.name === 'element_id' && e.args.length === 1 && e.args[0]?.kind === 'var'

@@ -6736,9 +6736,15 @@ fn try_filter_keep_case(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec
 /// the id materialization was ~12x the comparison it fed. This arm does one pass, borrows
 /// each id as `&str` and compares, and allocates only the keep-list.
 ///
-/// It does NOT remove the walk — seeding an edge pattern needs slot surgery, which is the
-/// other half of 619 and still unbuilt (see `opt::id_seek_target`'s header). It is what makes
-/// the shapes that CANNOT seed cheap: an edge pattern, and the FAR-SIDE node case
+/// ✅ **Re-measured (item 650), and this pass is 4.4x.** Far side of a hop, 100,000 rows, min
+/// of 9: `element_id(b) = '<miss>'` **5.71 ns/row** here, against **25.20** for
+/// `element_id(b) > '<lit>'`, which the `Eq`/`Ne` restriction below sends to the general
+/// materializing path. 5.71 is parity with a typed-column compare over the same walk (5.72),
+/// so on this shape the id materialization is gone, not merely reduced.
+///
+/// It does NOT remove the walk — that is the SEED, and `opt::edge_id_pin` is it (619's other
+/// half, built; this comment's "still unbuilt" was stale, item 650). This pass is what makes
+/// the shapes that CANNOT seed cheap: the FAR-SIDE node case
 /// (`WHERE element_id(b) = $x` after a hop reads a slot the `Scan` does not produce, so
 /// `opt`'s seed rewrite correctly declines and the filter runs).
 ///

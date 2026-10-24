@@ -1177,14 +1177,19 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
             }
             // `element_id(node|edge)` → the element's PRESERVED external id string.
             //
-            // ⚠️ PRICED (item 619), NOT FIXED: this materializes the id PER ROW — a `GStr`
-            // clone and a boxed `Value::Str` each — where reading a typed property column
-            // does neither. Over the same 100,000-edge walk, `WHERE element_id(r) = $x`
-            // costs **2,274 µs against 196 µs** for `WHERE r.w = $w` (TS: 28,888 against
-            // 2,449), so the id materialization is ~12x the comparison it feeds, in BOTH
-            // engines. A comparison against a literal does not need the string at all: see
-            // `opt::id_seek_target`'s header for the shape that avoids it without making the
-            // optimized plan store-dependent.
+            // This is the GENERAL path, and it does materialize the id per row — a `GStr`
+            // clone and a boxed `Value::Str` each. ⚠️ But it is NOT the shape item 619
+            // priced, and the "NOT FIXED" this comment used to carry was stale (item 650):
+            // `opt::edge_id_pin` seeds an id equality, and `exec::try_filter_keep_element_id`
+            // compares `Eq`/`Ne` over a BORROWED `&str` without coming here at all.
+            //
+            // What still reaches here is a `RETURN element_id(x)` projection — where the
+            // string is the ANSWER, so it has to be built — and an ORDERING comparison, which
+            // the keep-pass declines. Measured on the far side of a hop, 100,000 rows, min of
+            // 9: `element_id(b) > lit` 25.20 ns/row against 7.08 for `b.s > lit`, a string
+            // column through the same general path, and 5.71 for the `=` spelling that takes
+            // the keep-pass. See `opt::id_seek_target`'s header for the full table and for
+            // why a symbolic `Expr` would buy only that ordering case.
             if name == "element_id" {
                 let arg = eval(&args[0], store, batch)?;
                 let n = batch.rows();

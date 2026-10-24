@@ -1859,38 +1859,61 @@ fn seed_from_pinned_edge_id(plan: &Plan) -> Option<Plan> {
 ///
 /// # The edge twin
 ///
-/// ⚠️ **PRICED AND NOT BUILT (item 619).** `MATCH ()-[r:R]->() WHERE
-/// element_id(r) = $x` has no seed in either engine. Measured, 20,000 nodes / 100,000 edges,
-/// min-of-7 over 50 ops:
+/// ✅ **BOTH HALVES ARE BUILT, and item 619 is CLOSED (item 650).** This header, and matching
+/// comments in `exec.rs` and `exec::evaluator`, carried "PRICED AND NOT BUILT" / "NOT FIXED"
+/// long after the code existed. The warnings outlived what they described.
 ///
-/// | | TS | native |
+/// - **Half (1), the seed:** [`edge_id_pin`] seeds
+///   `MATCH ()-[r:R]->() WHERE element_id(r) = '<id>'`.
+/// - **Half (2), the per-row materialization:** `exec::try_filter_keep_element_id` compares
+///   over a BORROWED `&str`, so no `GStr` is cloned and no `Value::Str` is boxed per row.
+///
+/// Re-measured, `element_id_cost_by_frontier`, 100,000 nodes / 100,000 edges, min of 9. The
+/// plan shape is asserted rather than inferred from the duration — a seeded plan and a cheap
+/// walk are indistinguishable by time:
+///
+/// | case | total | plan |
 /// | --- | --- | --- |
-/// | GQL `element_id(r) = $x` | 28,888 µs | 2,274 µs |
-/// | GQL `r.w = $w`, the same walk by edge PROPERTY | 2,449 | 196 |
-/// | Gremlin `g.E(id)` | 3.20 | 1.99 |
+/// | the walk alone, no predicate (the FLOOR) | 340.6 µs | walk |
+/// | `element_id(r) = '<miss>'` | **0.6 µs** | SEEDED |
 ///
-/// So **1,143x the Gremlin spelling on native and 9,027x on TS**, and TWO separate costs:
+/// **568x the floor**, where 619's table recorded 2,274 µs.
 ///
-/// 1. **No seed.** Removing the O(E) walk needs real slot surgery, not a node-for-node
-///    swap like this function's: the pattern binds its ENDPOINTS, so
-///    `Filter(element_id(edge_slot))(Expand{bind_edge}(Scan))` becomes `EdgeSeed` plus
-///    `EdgeVertex` work that must reproduce the exact slot layout downstream expects.
-///    `Plan::EdgeSeed` is ready for it — item 615 made it O(1) per id.
-/// 2. **`element_id` is ~12x an edge-property read over the SAME walk** (2274 against 196,
-///    and 28888 against 2449 — the ratio holds in both engines). The `Expr::Call` arm of
-///    `exec::evaluator::eval` materializes the external id per row, cloning a `GStr` and
-///    boxing a `Value::Str`, where `r.w` reads a typed column. That half needs no plan
-///    surgery at all and also fixes the FAR-SIDE node case this function cannot seed
-///    (`WHERE element_id(b) = $x` after a hop — the predicate reads a slot the `Scan` does
-///    not produce, so it stays a filter).
+/// ## Half (2) was REAL, and the keep-pass is what removed it
 ///
-/// **The sound shape for (2) is a symbolic `Expr`, not a baked dense id.** Resolving the
-/// literal to a dense id at optimize time and comparing `Slot(n)` numerically works TODAY —
-/// both caches in `parse_cache` hold PARSED plans and `optimize_indexed` runs per call, so
-/// an optimized plan is never reused across stores — but it makes the optimized plan
-/// STORE-DEPENDENT, which would break silently the day anyone caches one. An `Expr` that
-/// carries the external id and resolves it ONCE PER BATCH (O(1) through `ext_to_node` /
-/// `ext_to_edge`) is store-independent, cacheable, and gets the same per-row dense compare.
+/// Priced without un-building anything: `try_filter_keep_element_id` declines every operator
+/// but `Eq`/`Ne`, so an ORDERING comparison on the same expression routes to the general path
+/// and prices exactly the per-row clone-and-box 619 named. Far side of a hop — the one shape
+/// that cannot be seeded, so both sides pay the identical walk:
+///
+/// | far-side filter after a hop | ns/row | path |
+/// | --- | --- | --- |
+/// | `element_id(b) = '<miss>'` | **5.71** | keep-pass |
+/// | `b.w = <miss>` (typed column) | 5.72 | keep-pass |
+/// | `element_id(b) > '<lit>'` | **25.20** | general |
+/// | `b.s > '<lit>'` (string column) | 7.08 | general |
+///
+/// So the keep-pass is **4.4x** on this shape and brings `element_id` to parity with a typed
+/// column read (5.71 against 5.72). On the general path the materialization is still visible
+/// at **3.6x** a comparable string-column read — about 6x once the ~3.1 ns/row walk floor is
+/// subtracted from both, which is the effect 619 measured end to end.
+///
+/// ## What is still open, and it is small
+///
+/// The keep-pass covers `Eq`/`Ne` only, for a stated reason: an ordering comparison on an id
+/// is a string ordering under the value contract's total order, which that pass does not
+/// reproduce. So `element_id(x) <ordering> '<lit>'` still pays 25.20 ns/row against 7.08 for
+/// the string-column equivalent. Real, newly measured, and much smaller than 619's headline —
+/// an ordering comparison on an opaque external id is also a rare thing to write.
+///
+/// **`GStr` is why the remaining cost is bounded.** It is a 16-byte German string with a
+/// 12-byte INLINE capacity: a short id is copied by value and `clone` allocates nothing, and
+/// past the cap `clone` is one relaxed atomic increment plus a matching decrement on drop
+/// (Arc's pattern), not a copy. Both were measured — a 36-char UUID-length fixture built
+/// through `from_ndjson`, since the test `Builder` mints its own ids and cannot express one —
+/// and the heap-backed case tracks the inline one (5.63 against a 5.76 control, 3.09 floor).
+/// So a symbolic-`Expr` rewrite resolving the id once per batch would buy, at most, the
+/// ordering case above. Price it against that number, not against 619's 2,274 µs.
 fn id_seek_target(pred: &Expr) -> Option<String> {
     let Expr::Compare {
         op: CompareOp::Eq,
