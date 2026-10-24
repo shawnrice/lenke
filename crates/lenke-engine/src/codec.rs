@@ -475,20 +475,22 @@ fn serialize_csv(store: &Store) -> Result<String, CodecError> {
     // reads are the ones the bridge already made; what is gone is the whole-document
     // `Vec<CNode>` and the second traversal over it.
     //
-    // STILL THE REMAINING COST, and the next lever here (item 703). This is a `Vec` PER ELEMENT —
-    // 1,200,000 small allocations held at once on the bench fixture — and it is the whole of the
-    // gap to `serialize_pg_text`, which emits a nearly identical 29 MB of flat text in 227 ms
-    // against this encoder's 455 (0.122 against 0.070 MB/ms). pg-text holds
-    // `Vec<(&str, &Column)>` once and reads `col.present_at` / `col.read` per element, allocating
-    // nothing per row.
+    // REJECTED, with its numbers (item 704). Item 703 predicted this `Vec` PER ELEMENT —
+    // 1,200,000 small allocations held at once on the bench fixture — was "the whole of the gap"
+    // to `serialize_pg_text`, which emits a nearly identical 29 MB of flat text in 225 ms against
+    // this encoder's 452. IT IS NOT. Removing it entirely was BUILT: the row pass re-read the
+    // store, two reused buffers replaced the cache, and `CsvWriter` grew `node_row_split` /
+    // `edge_row_split` taking parallel key/value slices (the obvious `Vec<(&str, &CValue)>` cannot
+    // be reused — those `&CValue` keep the value buffer borrowed for as long as the row vector
+    // lives). Byte-identical output, and three alternated rounds measured **1.02x — against four
+    // control encoders that also read 1.02x**, so the change was worth nothing and was reverted.
     //
-    // CSV cannot simply copy that, because it needs the COLUMN pass before it can write a header,
-    // so the values are read twice or cached once. Caching in two REUSED buffers (one `Vec<CValue>`
-    // plus one `Vec<(&str, &CValue)>`) does not borrow-check: the `&CValue` entries keep the value
-    // buffer borrowed for as long as the row vector exists, so it cannot be cleared for the next
-    // row. The ways out are to re-read the store on the row pass (two column reads per property,
-    // no allocation) or to give `CsvColumns::writer` an interface that takes keys and values as
-    // two slices. Neither is measured yet; the gap above is what it is worth.
+    // WHAT THAT RULES OUT is worth more than the lever: 703 removed ~2,200,000 allocations for
+    // 1.10x and 704 removed 1,200,000 more for nothing, so the remaining 2x against pg-text is
+    // NOT allocation. The unexamined candidates are per-CELL: `write_row` calls `bag.get(key)`,
+    // a linear scan over the row's properties for EVERY column, and `node_row` allocates a
+    // `String` per row twice over in `guard_field` plus `join_labels`. Item 310 said the same
+    // thing about the three-hop row — "no single micro moves it" — and was right there too.
     let node_vals: Vec<Vec<(&str, CValue)>> = (0..count)
         .filter(|id| store.is_alive(*id))
         .map(|id| {
