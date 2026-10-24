@@ -800,6 +800,19 @@ const CASES: Case[] = [
   {
     // The other half: the same walk, but PROJECTING an endpoint property, so 1,000,000 rows are
     // built. Traversal plus the row pipeline, which is the shape a user actually runs.
+    // ⚠️ `x.name` IS ABSENT ON EVERY NODE OF `graphDoc` — its nodes carry only `age` (item 726).
+    // So this row and the two below project a million NULLS, not a million strings: they price the
+    // hop, the row plumbing and an absent-property read, NOT a property read.
+    //
+    // It matters most for `+ order by`, which therefore sorts a million IDENTICAL keys. Native
+    // does that in ~1.4 ms (69.3 against 70.7 in an isolated probe) while TS pays ~155 — and the
+    // 155 is NOT the comparisons: an all-equal short-circuit was built and measured 1.05x against
+    // controls at 1.06-1.18x, because the real cost is being forced to MATERIALIZE a million rows
+    // that the unordered row streams lazily. Read `+ order by` as "materialize + sort", and know
+    // that its sort term is near zero on this fixture.
+    //
+    // Left pointing at `name` rather than repointed at `age`, so every figure recorded against
+    // these row names stays comparable — the same call item 356 made about `decode ndjson`.
     name: 'traverse 1-hop project',
     ...onGraph(
       () => graphDoc,
