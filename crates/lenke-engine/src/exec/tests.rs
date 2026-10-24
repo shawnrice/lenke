@@ -11000,6 +11000,104 @@ fn gather_cost_by_width() {
     }
 }
 
+/// Which READS scale with the GRAPH rather than with their RESULT? (item 668)
+///
+/// ```text
+/// cargo test --release --manifest-path crates/lenke-engine/Cargo.toml \
+///   -- --ignored --nocapture read_cost_by_graph_size
+/// ```
+///
+/// The write-path sweep (items 663, 664, 667) asked "does this scale with the node count?" and
+/// found two complexity bugs no bench row could see. The read path has never been asked, and the
+/// question is sharper there: **a read returning k rows from a graph of V nodes should cost O(k)
+/// if it seeks and O(V) if it scans.** A seeking shape whose cost RISES with V is a planner that
+/// is not reaching the shape it should — measured, rather than read off the optimizer.
+///
+/// The RESULT SIZE is held fixed at one row for the seeking shapes, so the only variable is how
+/// many nodes exist around the answer.
+///
+/// ⚠️ THE LAST ROW IS THE CONTROL AND IT MUST RISE. An unfiltered scan is O(V) by definition, so
+/// if `scan all` stayed flat the harness could not see scaling at all and no other row's flatness
+/// would mean anything. That is the positive control this session needed twice before
+/// (`expression_cost_by_kind` read five rows at its own floor until `upper` was added).
+#[test]
+#[ignore = "measurement harness: cargo test --release -- --ignored --nocapture read_cost_by_graph_size"]
+fn read_cost_by_graph_size() {
+    use std::time::Instant;
+    const REPS: u32 = 9;
+
+    println!(
+        "{:<34}{:>10}{:>14}{:>16}",
+        "read", "nodes", "us per op", "ns per node"
+    );
+
+    for &n_nodes in &[1_000usize, 10_000, 50_000, 200_000] {
+        let mut b = Builder::default();
+        for i in 0..n_nodes {
+            b.node(
+                &["User"],
+                &[
+                    ("k", n(i as f64)),
+                    ("tag", Value::Str(format!("t{i}").as_str().into())),
+                ],
+            );
+        }
+        let mut store = b.build();
+        // Index both keys, so a seeking plan HAS something to seek. Without this every row below
+        // would scan and the table would say nothing about the planner.
+        store.create_index("k");
+        store.create_index("tag");
+
+        let cases: Vec<(&str, String)> = vec![
+            (
+                "point lookup, indexed numeric",
+                format!("MATCH (u:User) WHERE u.k = {} RETURN u.k AS v", n_nodes / 2),
+            ),
+            (
+                "point lookup, indexed string",
+                format!(
+                    "MATCH (u:User) WHERE u.tag = 't{}' RETURN u.k AS v",
+                    n_nodes / 2
+                ),
+            ),
+            (
+                "point lookup, INLINE spelling",
+                format!("MATCH (u:User {{k: {}}}) RETURN u.k AS v", n_nodes / 2),
+            ),
+            (
+                "count(*) over the label",
+                "MATCH (u:User) RETURN count(*) AS c".to_string(),
+            ),
+            (
+                // THE CONTROL: O(V) by definition. If this does not rise, nothing else here
+                // being flat means anything.
+                "scan all, project one column (CONTROL)",
+                "MATCH (u:User) RETURN u.k AS v".to_string(),
+            ),
+        ];
+
+        for (label, q) in cases {
+            let plan = opt_plan(&q, &store);
+            let mut best = u128::MAX;
+
+            for _ in 0..REPS {
+                let t0 = Instant::now();
+                let got = crate::exec::pull(&plan, &store, false).expect("plan runs");
+                best = best.min(t0.elapsed().as_nanos());
+                std::hint::black_box(got.rows());
+            }
+
+            println!(
+                "{:<34}{:>10}{:>14.3}{:>16.4}",
+                label,
+                n_nodes,
+                best as f64 / 1000.0,
+                best as f64 / n_nodes as f64
+            );
+        }
+    }
+}
+
 /// Which write operations are O(1) in the NODE COUNT, and which are not? (item 667)
 ///
 /// ```text

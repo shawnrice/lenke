@@ -13556,3 +13556,58 @@ at the store level because that is where both bugs lived.
 
 **No known O(V)-per-operation cost remains on either engine's write path**, and the harness that
 would find a new one is now in the tree rather than reconstructed from scratch next time.
+
+## 668 — the read path has no complexity bug, and the point-lookup spellings agree at EVERY graph size
+
+**SCREENED (native), nothing to fix.** The write-path sweep (663, 664, 667) asked "does this scale
+with the node count?" and found two complexity bugs no bench row could see. The read path had
+never been asked, and the question is sharper there: **a read returning k rows from a graph of V
+nodes should cost O(k) if it seeks and O(V) if it scans**, so a seeking shape whose cost RISES
+with V is a planner failing to reach the shape it should.
+
+### Result size held at one row; only the graph grows
+
+| read                               | 1,000     | 10,000     | 50,000     | 200,000     |
+| ---------------------------------- | --------- | ---------- | ---------- | ----------- |
+| point lookup, indexed numeric      | 0.230 µs  | 0.210      | 0.220      | 0.230       |
+| point lookup, indexed string       | 0.200     | 0.220      | 0.210      | 0.210       |
+| point lookup, INLINE spelling      | 0.220     | 0.210      | 0.220      | 0.220       |
+| `count(*)` over the label          | 0.260     | 0.270      | 0.270      | 0.260       |
+| **scan all, one column (CONTROL)** | **1.150** | **10.390** | **52.260** | **210.030** |
+
+Every seeking shape is flat across a 200x range. `count(*)` is O(1) off the label bucket's size.
+
+### ⚠️ The control is what makes the flatness mean anything
+
+An unfiltered scan is O(V) by definition, and it rises **exactly linearly** — 182x for 200x the
+nodes, with ns-per-node pinned at ~1.05. Had it stayed flat, the harness could not see scaling at
+all and no other row's flatness would have been evidence of anything.
+
+This session needed that lesson twice: `expression_cost_by_kind` read five rows at its own floor
+with `WHERE true` as the SLOWEST of them until a positive control (`upper`, 56.85 ns/row against a
+1.74 floor) proved the instrument had resolution.
+
+### The second finding: equivalent spellings agree at every SIZE, not just one
+
+The three point-lookup spellings — clause-numeric, clause-string, and **inline** — agree within
+noise at every graph size (0.230 / 0.200 / 0.220 at 1,000; 0.230 / 0.210 / 0.220 at 200,000).
+
+That is this repo's central invariant — two spellings of one question must cost the same — checked
+on an axis it has never been checked on. `spelling_probe` and `bun run spelling` both compare
+spellings at ONE fixed size, so a divergence that only appeared as the graph grew (one spelling
+seeking, another scanning) would have been invisible to them. It does not exist here.
+
+### State of the complexity sweep
+
+| path                                                 | verdict                                   |
+| ---------------------------------------------------- | ----------------------------------------- |
+| native single-node delete                            | O(V) → O(1), 501x at 200k (663)           |
+| native insert rollback                               | O(N×V) → O(N), 892x at 200k (664)         |
+| all 13 store `retain` sites                          | two fixed, eleven correctly scoped (665)  |
+| TS delete                                            | already O(1) (666)                        |
+| `set_prop` / `add_edge` / `delete_edge` / `add_node` | all O(1) (667)                            |
+| point lookups (3 spellings), `count(*)`              | all O(1); scan control linear (this item) |
+
+**Both the read and write paths are now swept for complexity**, and both harnesses
+(`write_cost_by_graph_size`, `read_cost_by_graph_size`) are in the tree, so the next pass runs one
+command instead of rebuilding the instrument.
