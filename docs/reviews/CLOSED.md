@@ -13754,3 +13754,53 @@ delete shifts the position being asked for:
 A 6% spread, which is what `retain` should give: it scans all D wherever the entry sits. Any future
 attempt has a position-matched baseline to compare against, so the comparison cannot become an
 unmatched A/B.
+
+## 672 — TS's hub-leaf delete is O(1) where native's is O(hub degree): a crossover, and a fixture error that inverted the answer
+
+**SCREENED (both engines).** Item 670 found native deleting a degree-1 leaf of a hub in O(hub
+degree) — 28.74 µs at D=50,000 — because removing the mirror entry scans the neighbour's adjacency
+`Vec`, with both candidate fixes refuted (item 671). TS stores adjacency as
+`Map<id, Map<label, Set<Edge>>>`, and a `Set` delete is O(1), so the prediction was that TS stays
+flat where native rises.
+
+### 🛑 The first run said the opposite, and the fixture was why
+
+Without an index, `MATCH (l:Leaf) WHERE l.k = $k DETACH DELETE l` is a LABEL SCAN over all D
+leaves. So each iteration measured **find-then-delete**, while item 670's native harness called
+`store.delete_nodes(&[victim])` with no match at all. That run read **1394.71 µs at D=50,000
+against native's 28.74 and "showed" TS 48x slower** — almost all of it the scan.
+
+Scan-plus-delete against delete-only is the **unmatched A/B this session has twice written up as
+an error** (items 662 and 666) and then committed anyway, in its own probe. The index makes the
+match a seek and the comparison about the delete.
+
+### With the seek index: TS is flat, native is linear
+
+| hub degree | TS µs     | ns/D  | native µs (670) |                    |
+| ---------- | --------- | ----- | --------------- | ------------------ |
+| 100        | 9.720     | 97.2  | 0.160           | native 61x faster  |
+| 1,000      | 9.450     | 9.45  | 0.680           | native 14x         |
+| 10,000     | 9.940     | 0.994 | 5.890           | native 1.7x        |
+| 50,000     | **9.400** | 0.188 | **28.740**      | **TS 3.1x faster** |
+
+**TS flat across a 500x range in hub degree.** The prediction was right; only the first fixture
+was wrong.
+
+### The crossover is real in DIRECTION; its position is NOT established here
+
+Native wins at low degree on constant factors; TS wins at high degree on complexity. But TS's
+9.4 µs includes the whole query (parse/plan cache, the seek, then the delete) while native's 28.74
+is `delete_nodes` alone — **the slopes are comparable, the levels are not.** Native's full-query
+figure would be higher, moving the crossover left; nothing here pins where.
+
+Quoting "the crossover is at D≈15,000" from this table would repeat the error the first run already
+made once.
+
+### Why this strengthens item 670 rather than just annotating it
+
+670 concluded the O(neighbour-degree) cost is "inherent to the current adjacency representation"
+and that moving it needs a different structure. **This shows the alternative structure demonstrably
+avoids the cost** — TS's `Set` pays nothing per edge removed, for the same mirrored adjacency and
+the same logical operation. So the native cost is a consequence of choosing `Vec` (which the CSR
+build and per-type partitions need for ORDER), not of mirroring. That raises the value of an
+eid-keyed per-node index, and bounds what it would buy: everything above the crossover.
