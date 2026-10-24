@@ -804,6 +804,97 @@ fn edge_type_index_tracks_delete() {
     assert_eq!(out_ids(&st, 1, "KNOWS"), Vec::<u32>::new());
 }
 
+/// Deleting a node removes exactly ONE entry from each neighbour's type bucket,
+/// in the right DIRECTION, leaving the survivors in bucket order.
+///
+/// `edge_type_index_tracks_delete` cannot show this: every bucket it asserts on ends
+/// up EMPTY, so a mutant that clears the whole bucket passes it, and `out_ids` sorts,
+/// so one that scrambles the order passes too. Bucket order is observable — it is the
+/// slice `out_typed` hands the traversal — so this reads the buckets RAW.
+///
+/// The fixture gives the hub a same-etype survivor on BOTH sides, which is what makes
+/// "drop one" distinguishable from "drop all" and from "drop from the other direction"
+/// (item 674; the same fixture blind spot as items 663 and 664).
+#[test]
+fn deleting_a_node_drops_one_type_bucket_entry_per_edge_and_keeps_the_order() {
+    let mut b = Builder::default();
+    for _ in 0..8 {
+        b.node(&["V"], &[]);
+    }
+    // Hub 0's OUT/KNOWS bucket, in insertion order: [1, 2, 3, 4, 5].
+    //
+    // FIVE entries with the victim at index 1 is deliberate, and the first version of
+    // this test got it wrong: with the bucket [1, 2, 3] a `swap_remove` moves the LAST
+    // element into the gap and yields [1, 3] — exactly what `retain` gives, so the
+    // order assertion was decorative and that mutant SURVIVED. At this length the two
+    // part company: `retain` leaves [1, 3, 4, 5], `swap_remove` leaves [1, 5, 3, 4].
+    b.edge(0, 1, "KNOWS");
+    b.edge(0, 2, "KNOWS");
+    b.edge(0, 3, "KNOWS");
+    b.edge(0, 4, "KNOWS");
+    b.edge(0, 5, "KNOWS");
+    // Hub 0's IN/KNOWS bucket: [6, 7] — must be untouched by deleting 2.
+    b.edge(6, 0, "KNOWS");
+    b.edge(7, 0, "KNOWS");
+    // A second etype on the hub whose only member is the victim: its key must go.
+    b.edge(0, 2, "LIKES");
+    // Victim 2 also has an OUT edge, so the `&out` detach loop is exercised too.
+    b.edge(2, 3, "KNOWS");
+    let mut st = b.build();
+    st.create_edge_type_index();
+
+    let knows = st.etype_id("KNOWS").unwrap();
+    let likes = st.etype_id("LIKES").unwrap();
+    let out_raw = |st: &Store, n: u32, et: u32| -> Vec<u32> {
+        st.out_typed(n, et).iter().map(|a| a.nbr).collect()
+    };
+    let in_raw = |st: &Store, n: u32, et: u32| -> Vec<u32> {
+        st.in_typed(n, et).iter().map(|a| a.nbr).collect()
+    };
+
+    assert_eq!(out_raw(&st, 0, knows), vec![1, 2, 3, 4, 5], "precondition");
+    assert_eq!(in_raw(&st, 0, knows), vec![6, 7], "precondition");
+
+    st.delete_node(2);
+
+    // The entry at index 1 is gone and the survivors keep their relative order.
+    // `swap_remove` would leave [1, 5, 3, 4] here, which this distinguishes.
+    assert_eq!(
+        out_raw(&st, 0, knows),
+        vec![1, 3, 4, 5],
+        "one dropped, order kept"
+    );
+    // The OTHER direction on the same node and etype is untouched.
+    assert_eq!(in_raw(&st, 0, knows), vec![6, 7], "wrong-direction drop");
+    // The etype whose only member was the victim is now absent, not merely empty.
+    assert_eq!(out_raw(&st, 0, likes), Vec::<u32>::new());
+    // The victim's own OUT edge was detached from node 3's IN bucket.
+    assert_eq!(in_raw(&st, 3, knows), vec![0], "victim's out-edge mirror");
+    // The victim's own buckets are empty.
+    assert_eq!(out_raw(&st, 2, knows), Vec::<u32>::new());
+    assert_eq!(in_raw(&st, 2, knows), Vec::<u32>::new());
+
+    // And the index still agrees with a filter of the flat adjacency everywhere.
+    for n in 0..st.node_count() as u32 {
+        for et in [knows, likes] {
+            let flat: Vec<u32> = st
+                .out(n)
+                .iter()
+                .filter(|a| a.etype == et)
+                .map(|a| a.nbr)
+                .collect();
+            assert_eq!(out_raw(&st, n, et), flat, "node {n} etype {et} out");
+            let flat_in: Vec<u32> = st
+                .inc(n)
+                .iter()
+                .filter(|a| a.etype == et)
+                .map(|a| a.nbr)
+                .collect();
+            assert_eq!(in_raw(&st, n, et), flat_in, "node {n} etype {et} in");
+        }
+    }
+}
+
 /// Transaction rollback restores the index exactly (a per-node rebuild off the
 /// restored flat adjacency, so no delta bookkeeping can drift).
 #[test]

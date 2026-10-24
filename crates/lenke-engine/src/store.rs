@@ -3443,6 +3443,39 @@ impl Store {
     /// Rebuild one node's type buckets from its (authoritative) flat adjacency. A
     /// no-op when the index is off. Called after any adjacency change other than
     /// the `add_edge` hot path, so the index needs no per-edge delta bookkeeping.
+    /// Drop one entry, by `eid`, from `node`'s `etype` bucket in the OUT (`is_out`)
+    /// or IN type index. A no-op when the index is off.
+    ///
+    /// Equivalent to [`reindex_node_etypes`](Store::reindex_node_etypes) once the same
+    /// entry has been removed from the flat adjacency, and far cheaper. A bucket is the
+    /// subsequence of the adjacency carrying that etype, IN ADJACENCY ORDER, and `retain`
+    /// preserves relative order on both sides — so removing by eid leaves exactly what a
+    /// full rebuild would, without touching the other direction or reallocating a `Vec`
+    /// per etype. The only reads are [`out_typed`](Store::out_typed) /
+    /// [`in_typed`](Store::in_typed), which look up ONE key, so the hash order a rebuild
+    /// would otherwise reshuffle is unobservable. Emptied keys are removed to keep the map
+    /// identical to a rebuild's (`out_typed` cannot tell an absent key from an empty
+    /// bucket, so this is housekeeping, not correctness).
+    ///
+    /// This mirrors the incremental APPEND that `add_edge` already does on its hot path.
+    fn drop_etype_entry(&mut self, node: u32, is_out: bool, etype: u32, eid: u32) {
+        if !self.edge_type_index {
+            return;
+        }
+        let i = node as usize;
+        let m = if is_out {
+            &mut self.out_type_idx[i]
+        } else {
+            &mut self.in_type_idx[i]
+        };
+        if let Some(b) = m.get_mut(&etype) {
+            b.retain(|a| a.eid != eid);
+            if b.is_empty() {
+                m.remove(&etype);
+            }
+        }
+    }
+
     fn reindex_node_etypes(&mut self, node: u32) {
         if !self.edge_type_index {
             return;
@@ -4667,11 +4700,19 @@ impl Store {
         self.deleted[i] = true;
 
         if self.edge_type_index {
-            // Node i's buckets go empty; each neighbour lost this node's mirror.
-            self.reindex_node_etypes(id);
-            for a in out.iter().chain(inc.iter()) {
+            // Node i's buckets go empty, and each neighbour lost exactly ONE mirror per
+            // incident edge — so drop that one entry instead of rebuilding the neighbour's
+            // whole type map, which cost 8.3x on a hub-leaf delete (item 673, fixed at 674).
+            self.out_type_idx[i] = U32Map::default();
+            self.in_type_idx[i] = U32Map::default();
+            for a in &out {
                 if a.nbr != id {
-                    self.reindex_node_etypes(a.nbr);
+                    self.drop_etype_entry(a.nbr, false, a.etype, a.eid);
+                }
+            }
+            for a in &inc {
+                if a.nbr != id {
+                    self.drop_etype_entry(a.nbr, true, a.etype, a.eid);
                 }
             }
         }
