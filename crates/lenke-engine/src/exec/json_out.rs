@@ -573,6 +573,22 @@ fn write_node_ext_or_dense(out: &mut String, store: &Store, n: u32) {
 
 /// A `{id, label}` endpoint stub for the flat edge `elementMap` — `id`/`label` NULL when
 /// absent (matching the `node_id`/`node_label` closures).
+/// 🛑 PRICED AND OPEN (item 722): this and the two other `labels_of(id).first()` sites below use
+/// the WORST of the three label reads the store offers. `labels_of` builds a `Vec<String>`,
+/// cloning every label, sorts it, and takes the smallest; `min_label_name` does the same bucket
+/// probe with no allocation; and `min_label_map` inverts the buckets ONCE for the whole store,
+/// cached on `node_count` — O(total membership) build, then O(1) a row.
+///
+/// `evaluator.rs` already picks between the last two on frontier size
+/// (`if n >= store.node_count() / 4`), with the trade-off written out: inverting the store costs
+/// more than a handful of probes. These helpers are per-ELEMENT and see no row count, so using the
+/// map here means plumbing it through the render path — which is why item 722 priced it and left
+/// it rather than guessing a threshold it could not place.
+///
+/// Worth: item 721 measured this column at 92.13 µs for 500 rows at ONE distinct label against
+/// 208.45 at forty. The map makes that column flat in the label count. The hazard is a
+/// single-row query against a mutating store, where the cache misses every time and the build is
+/// charged to one row — `bench:usage`'s interleaved rows are where that would show.
 fn write_node_stub(out: &mut String, store: &Store, v: u32) {
     out.push_str("{\"id\":");
     match store.node_ext_id(v) {

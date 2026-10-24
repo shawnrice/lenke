@@ -17432,3 +17432,83 @@ own item).
 Gates, each its own command with its exit code read UNPIPED: `cargo fmt` 0; `cargo clippy
 --all-targets --features capi -- -D warnings` 0; `cargo test --release` 1219 + 13 + 725 pass, 0
 fail; the reverted arm is the committed tree, so item 720's fuzzer run still stands for it.
+
+## 722 — item 721's accessor already existed, and the fix it was reaching for is already built one file over
+
+**CORRECTION + LOCATED (native). No engine change; two call sites annotated.**
+
+This tick set out to build item 721's per-node label list. Reading every `by_label` mutation point
+first — because a missed one is a wrong answer, not a slow path — turned up two things that change
+what the work is.
+
+### 1. `min_label_ref` was a re-invention. `min_label_name` was already there
+
+Item 721 added a `min_label_ref` accessor for the three `labels_of(id).first()` sites. The store
+already has, body for body:
+
+```rust
+pub fn min_label_name(&self, id: u32) -> Option<&str> {
+    self.by_label.iter().filter(|(_, ids)| ids.binary_search(&id).is_ok())
+        .map(|(l, _)| l.as_str()).min()
+}
+```
+
+— with a doc that states its own purpose: _"without allocating/sorting the whole label list the way
+`labels_of(id).first()` did"_. So the API I wrote was a duplicate, and its own documentation
+already named the call sites it was for.
+
+721's revert was on perf grounds and happened to save a duplicate API from being committed. **The
+duplicate is the part worth recording**: I grepped `CLOSED.md`, the audit and `closed-levers.ts`
+before that tick, and none of them covers "does this accessor already exist" — that question is
+answered by reading the store's own API surface, which I did not do.
+
+### 2. The real fix is `min_label_map`, and `evaluator.rs` already chooses it correctly
+
+The store also has a whole-store inversion: `(names, code_of)` built in one pass, **cached on
+`node_count`**, O(total membership) to build and then O(1) a row. Its doc says plainly that
+"callers processing a large node frontier use this instead of the per-node probe".
+
+Exactly one caller does — `evaluator.rs`, for the Gremlin `label()` step — and it already carries
+the threshold this question needs, with the reasoning attached:
+
+```rust
+if n >= store.node_count() / 4 {
+    let map = store.min_label_map();   // O(total membership) + O(1)/row
+```
+
+> _"Small frontiers keep the per-node path — inverting the whole store would cost more than a
+> handful of probes."_
+
+**The JSON render path has the same cost and neither of the better routes.** It uses `labels_of(id)
+.first()` — the worst of the three — at three sites. That is why item 721's substitution measured
+NULL: it swapped one per-node probe for another per-node probe, when the lever is the map.
+
+### Why it is not wired in this tick
+
+`write_node_stub(out, store, v)` and its two siblings are per-ELEMENT helpers. They see one node,
+not a row count, so they cannot apply the evaluator's `n >= node_count() / 4` gate — using the map
+means plumbing it through the render path, and picking a threshold without a frontier size to
+measure against is exactly the guess item 721 said not to make in the same tick as the
+measurement.
+
+And the hazard is real and named: on a cache MISS the map costs O(total membership), charged to
+however many rows the query returns. A one-row query against a mutating store misses every time —
+`bench:usage`'s `interleaved: write + point read` is where that would surface, and any attempt owes
+that row an alternated check.
+
+**Priced from item 721's own harness**: the JSON column is 92.13 µs for 500 rows at one distinct
+label against **208.45 at forty**. The map makes that column flat in the label count. Annotated at
+`write_node_stub` so `closed-levers.ts` finds it.
+
+### What this does to item 721's record
+
+Its measurements stand — the 3.4x label-count sweep is real and reproduces. Two things in it are
+now narrower: the accessor it added already existed under another name, and the per-node label list
+it sketched is not the only route, because the cached inversion already exists for the min-label
+case that three of the hot sites want. A full per-node list is still the general answer (it also
+serves `labels_of_refs`, which wants ALL labels, not the minimum); it is just no longer the only
+thing standing between here and the 3.4x.
+
+Gates, each its own command with its exit code read UNPIPED: `cargo fmt` 0; `cargo clippy
+--all-targets --features capi -- -D warnings` 0. No behaviour changed — the only edits are a doc
+comment and this record — so item 721's suite and fuzzer runs stand for the committed tree.

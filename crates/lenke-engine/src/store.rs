@@ -2363,9 +2363,12 @@ impl Store {
     ///
     /// The fix is a per-node label list (what TS has), which needs a label dictionary and four
     /// write paths, and whose byte-identity surface is the canonical SORTED order these return.
-    /// A contained attempt — `min_label_ref` for the three `labels_of(..).first()` sites in
+    /// A contained attempt — a `min_label_ref` for the three `labels_of(..).first()` sites in
     /// `json_out.rs` — measured NULL against a control that tracked it, because the sweep
-    /// dominates the clones (item 721).
+    /// dominates the clones (item 721). **And it was a DUPLICATE: `min_label_name` below is the
+    /// same function, and its own doc already names those call sites (item 722).** The lever for
+    /// them is `min_label_map`, the cached whole-store inversion that `evaluator.rs` already picks
+    /// on frontier size — not another per-node probe.
     pub fn labels_of_refs(&self, id: u32) -> Vec<&str> {
         let mut ls: Vec<&str> = self
             .by_label
