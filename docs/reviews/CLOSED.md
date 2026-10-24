@@ -8570,8 +8570,9 @@ is mostly their noise.
 
 > **STALE MARKER CORRECTED (item 685).** This header still read "OPEN TARGET" after its own
 > follow-ups closed it: **601** built the depth-3 form in TS (40.79x) and **602** in Rust (11.45x),
-> and 600b had already corrected the cost model. What remains open is **DEPTH 4 ONLY** — see item
-> 685 for a current price on it. A reader pricing "the trail closed form" off this header would
+> and 600b had already corrected the cost model. ~~What remains open is **DEPTH 4 ONLY**~~ — and
+> depth 4 is now DONE as well, in TS at 692 and native at 693. **DEPTH 5 is the open one**
+> (item 695). A reader pricing "the trail closed form" off this header would
 > re-derive finished work, which is the failure this index exists to prevent.
 
 `count 3-hop` is recorded as a CSR ceiling (489). That is true of the row it names — a FIXED
@@ -8721,7 +8722,9 @@ documents for another branch.
 
 The chain spelling (a WALK) is still faster in native, 4.8ms against 13.9, which the cost model
 predicts: the `e0 == e2` term costs the TWO-WALK count, so a trail is ~avg-degree dearer than a
-walk at the same depth. **Depth 4 remains unbuilt in both engines, and the fuzzer can now see it.**
+walk at the same depth. ~~**Depth 4 remains unbuilt in both engines, and the fuzzer can now see
+it.**~~ **BUILT: items 687-689 derived it, 692 shipped TS (190x), 693 shipped native (7.8x) and
+wasm (8.6x). DEPTH 5 is the open one now (item 695).**
 
 ## 603 — item 378's "a second slot leaves the shortcut" is WRONG, and the real gate is 56.51x
 
@@ -11535,7 +11538,11 @@ identically.
 - **A QUANTIFIED rel** is a walk, not one hop.
 - **A CORRELATED value** needs the start bound per edge — items 121-123's problem, not this one.
 
-### Still open
+### ~~Still open~~ CLOSED AT 639
+
+> **STALE MARKER CORRECTED (item 695).** Item **639** — the very next one — took this to
+> **1.03x**. Item 694 swept for stale markers and MISSED this one, because it grepped for the
+> uppercase token `OPEN` and this section says "Still open".
 
 The **anonymous** inline spelling (`-[:E {w: $w}]->`) measured **3.77x** and is NOT fixed here:
 `relBoundFilteredHopWalk` declines when `relVar === undefined`, because it binds the edge to
@@ -15394,3 +15401,46 @@ there returns `None` and the caller enumerates.
 
 587's non-terminating deep WALK count, the citation-rot instrument, duplicate external edge ids, half
 of 619's seed, and the 3.77x spelling — each still open, with no later item closing them.
+
+## 695 — my own sweep at 694 missed three, because it grepped the wrong CASE
+
+**INDEX MAINTENANCE. No engine change.** Item 694 swept `CLOSED.md` for stale "OPEN" markers and
+fixed five. Looking for a target this tick, the very first thing I read was another one.
+
+### What 694 missed, and why
+
+| marker                                                            | closed by                                               | why 694 missed it                                                       |
+| ----------------------------------------------------------------- | ------------------------------------------------------- | ----------------------------------------------------------------------- |
+| 638: "### Still open … the anonymous spelling measured **3.77x**" | **639**, the next item, at 1.03x                        | the grep was for uppercase `OPEN`; this says "Still open"               |
+| 602: "**Depth 4 remains unbuilt in both engines**"                | **692** (TS, 190x) and **693** (native 7.8x, wasm 8.6x) | phrased "unbuilt", not "open"                                           |
+| 685: "What remains open is **DEPTH 4 ONLY**"                      | the same two items                                      | **my own note**, written three ticks before I closed what it pointed at |
+
+**A sweep is only as good as its pattern**, and mine was `grep -n 'OPEN'` — case-sensitive, one
+spelling of the idea. The corrected sweep is `grep -in 'still open\|remains open\|left open\|^###
+open\|not yet built\|unbuilt'`, and it found all three immediately.
+
+The third one is the sharpest: **item 685's note was mine, and items 692/693 — also mine — closed
+exactly what it named, three ticks later, without my going back to amend it.** Item 694 identified
+the mechanism ("the next item closes it and nothing amends the first") and I then reproduced it
+across my own four-item sequence while documenting it. Knowing the failure mode is not the same as
+having the habit.
+
+### Depth 5 is the open end of that thread
+
+Items 685-693 closed depth 4 in both engines. The identity is recursive — `T(k+1) = Σ[t_k − u_k]`
+with `u_k` splitting into `k` disjoint cases, so depth 5 needs `u4` = four cases rather than a 2^10
+expansion — but **item 686's rule stands: what those cases need from the ADJACENCY has not been
+priced**, and that is the claim to check before promising anything.
+
+### Checked and genuinely open (no later item closes them)
+
+- the **projected edge group at 2.98x** (net 2.91x) — a projection route, untouched by the count
+  work, and recorded as "the largest gated flag on the probe's page". **No later mention anywhere**,
+  so it is live.
+- the HOP projection behind `farDrivenHopWalk`'s sort constraint (173.0 ms against a 44.5 ms
+  unordered reference).
+- a window WITH a sort, in both node and hop paths, blocked on item 426's cannot-fault check.
+- 587's non-terminating deep WALK count; the citation-rot instrument; duplicate external edge ids
+  (the engines disagree on the edge COUNT); half of 619's seed.
+
+That list is now worth trusting, which is the point of two ticks spent on it.
