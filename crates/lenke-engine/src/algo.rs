@@ -809,7 +809,14 @@ fn lp_winner(
         let c = count[lbl as usize];
         let better = match best {
             None => true,
-            Some((bl, bc)) => c > bc || (c == bc && store.node_ext_id(lbl) < store.node_ext_id(bl)),
+            // `node_ext_id_ref`, NOT `node_ext_id`: the latter is `self.node_ext.get(..).cloned()`
+            // and this comparison runs on every TIE — which, at the small degrees a social graph
+            // has, is nearly every comparison, because most neighbours contribute a distinct
+            // label with count 1. `GStr::cmp` is `as_bytes().cmp(..)` and `str`'s is the same
+            // byte order, so the tiebreak is unchanged (item 719).
+            Some((bl, bc)) => {
+                c > bc || (c == bc && store.node_ext_id_ref(lbl) < store.node_ext_id_ref(bl))
+            }
         };
         if better {
             best = Some((lbl, c));
@@ -949,7 +956,10 @@ fn pp_winner(
     for (&c, &e) in energy.iter() {
         let better = match best {
             None => true,
-            Some((bc, be)) => e > be || (e == be && store.node_ext_id(c) < store.node_ext_id(bc)),
+            // The peer-pressure twin of `lp_winner`'s tiebreak; same reasoning (item 719).
+            Some((bc, be)) => {
+                e > be || (e == be && store.node_ext_id_ref(c) < store.node_ext_id_ref(bc))
+            }
         };
         if better {
             best = Some((c, e));

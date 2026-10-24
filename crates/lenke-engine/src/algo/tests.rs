@@ -551,6 +551,48 @@ fn bfs_distances_from_a_source() {
     assert!(bfs_distances(&st, 9, Dir::Out, None).is_empty());
 }
 
+/// The label tiebreak compares the EXTERNAL ID STRING, not the dense id — and the two disagree.
+///
+/// Found by mutation at item 719: replacing `node_ext_id_ref(lbl) < node_ext_id_ref(bl)` with
+/// `lbl < bl` left every test green, although `lp_winner`'s own comment says the external id is
+/// deliberate "so multi-digit ids agree too" and the TS engine compares `vid.text`. The two
+/// orders are identical for single-digit ids, which is every fixture the suite had — the fixture
+/// rule again.
+///
+/// The divergence starts at ELEVEN nodes, because a Builder mints the dense id AS A STRING: as
+/// strings `"10" < "2"`, as numbers `2 < 10`. Node 11's two neighbours carry labels 2 and 10,
+/// each with count 1, so the winner is decided purely by the tiebreak: `10` under the external-id
+/// rule and `2` under a dense-id one. WHICH label wins is a cross-engine invariant, not a
+/// preference.
+#[test]
+fn the_label_tiebreak_uses_the_external_id_string_not_the_dense_id() {
+    let mut b = Builder::default();
+    let ids: Vec<u32> = (0..12).map(|_| b.node(&["N"], &[])).collect();
+
+    // Node 11 touches only 2 and 10, so its vote is a clean two-way tie.
+    b.edge(ids[11], ids[2], "E");
+    b.edge(ids[11], ids[10], "E");
+
+    let st = b.build();
+
+    assert_eq!(st.node_ext_id_ref(2), Some("2"));
+    assert_eq!(st.node_ext_id_ref(10), Some("10"));
+    assert!("10" < "2", "the premise: as STRINGS, 10 sorts before 2");
+
+    // ONE iteration, so every vote is read from the initial labels (label == dense id).
+    let out = label_propagation(&st, Some("E"), 1, None, 1);
+    let got = out
+        .iter()
+        .find(|(v, _)| *v == 11)
+        .map(|(_, l)| *l)
+        .expect("node 11 is in the result");
+
+    assert_eq!(
+        got, 10,
+        "node 11 must adopt label 10 (ext id \"10\", the string-smallest), not 2"
+    );
+}
+
 #[test]
 fn label_propagation_converges_a_triangle() {
     let st = triangle_plus_isolated();
