@@ -15495,6 +15495,22 @@ closed the flag while quoting **4.34x → 0.96x** — its own measurement, not 6
 is the wrong thing to grep for**, because the closing item has no reason to repeat the figure the
 open note used.
 
+### `docs/reviews/closed-levers.ts`
+
+```text
+bun docs/reviews/closed-levers.ts                  # the whole index
+bun docs/reviews/closed-levers.ts inline props     # "has this been tried?" in one command
+bun docs/reviews/closed-levers.ts --orphans        # markers carrying no item number
+```
+
+The index for the OTHER store. CLAUDE.md says to record rejected optimizations "next to the code
+they would have changed", so the source holds 47 refutation markers — and until item 714 it had no
+index, while `CLOSED.md` had two. Items 710/712/713 were each spent on a closed target; 713 BUILT a
+change that `rejectedByElementDirect`'s own 🛑 marker had already recorded as reverted at 644.
+
+Check BOTH stores. A lever annotated only in an audit item is invisible to this script, and one
+annotated only at a call site is invisible to a `CLOSED.md` grep.
+
 ### `docs/reviews/open-markers.ts`
 
 ```text
@@ -16792,3 +16808,75 @@ reader will actually look.
 Gates, each its own command with its exit code read UNPIPED: `bun run lint` 0; `bun run fmt` 0;
 `bun run check` 0; `product-count.test.ts` 23 pass / 0 fail on the restored tree; probes removed and
 tree verified clean.
+
+## 714 — the second store has an index now: `closed-levers.ts`, and it failed its own motivating case first
+
+**TOOLING (both engines). One annotation added to the Gremlin lowering; no behaviour change.**
+
+Items 710, 712 and 713 were each spent on a target that turned out to be closed, and 713 found the
+mechanism: CLAUDE.md names TWO stores for refutations —
+
+- "has this lever been tried?" → `CLOSED.md`, then the audit item it cites;
+- "Record rejected optimizations with their numbers, **next to the code they would have changed**."
+
+— and only the first had an index. `CLOSED.md` has two (`open-markers.ts` plus its own tables); the
+source had none, while holding **47 refutation markers across 830 files**. Item 713's miss was not
+carelessness and not the wrong pattern: it was the wrong STORE, and the store that held the answer
+could not be searched as a whole.
+
+### `docs/reviews/closed-levers.ts`
+
+```text
+bun docs/reviews/closed-levers.ts                  # the whole index
+bun docs/reviews/closed-levers.ts inline props     # "has this been tried?" in one command
+bun docs/reviews/closed-levers.ts --orphans        # markers carrying no item number
+```
+
+It scans `packages/` and `crates/` for the vocabulary this repo actually uses — `REJECTED`,
+`REVERTED`, `REFUTED`, `WITHDRAWN`, `NOT BUILT`, `WAS TRIED`, `DECLINED ON`, `🛑` — gathered by
+grepping for each form rather than guessed, and prints `item · file:line · the marker`.
+
+**COMMENTS ONLY**, because `REJECTED` in code is an identifier or a string and including those made
+the first run 40% noise. And it does NOT decide whether a hit is a rejected OPTIMIZATION:
+`store.rs` says "REJECTED if `key` backs a unique constraint", which is API behaviour, and a script
+that tried to tell them apart would become one more thing to distrust — the same choice
+`open-markers.ts` makes, for the same reason.
+
+### It failed the one case it was built for, which is why this item has numbers
+
+The first version returned **ZERO hits for `inline props`** — the marker it exists to surface. That
+marker reads inline `` `props` ``, and the backticks broke a literal match. Items 694/695 made the
+same mistake one store over, and 695's own note says it: _a sweep is only as good as its pattern._
+
+Two fixes, both found by testing the instrument against its motivating case rather than by reading
+it:
+
+- **fold to bare words** before matching, on both the text and the needle, so punctuation and
+  backticks cannot hide a term;
+- **search the whole COMMENT BLOCK**, not the matched line. A lever's subject is usually named a
+  line or two below the word `REJECTED`. This also raised the count of markers whose item number
+  could be extracted from **15 to 27**, because the number sits below the marker as often as on it.
+
+With both, `inline props` returns item 644's marker, which is what cost three ticks.
+
+### And it immediately found a gap in my own previous item
+
+`closed-levers.ts unroll` reported **nothing** — because item 711's refutation went into `CLOSED.md`
+and the audit and NOT to the call site, which is the half of CLAUDE.md's rule I skipped one tick
+earlier. `flush_repeat` now carries it: what was tried, the 3.76-against-2.69 it was chasing, that
+it converged to 2.59, that a `VarLength` walk is governed by `limits.trail` while a chain of
+`Expand`s is not, and which test caught it.
+
+**20 of the 47 markers still cite no item**, which `--orphans` lists. Those are the ones a reader
+cannot follow up, and annotating them is a standing piece of work rather than something to do in
+one pass.
+
+### What this does not do
+
+It does not replace `CLOSED.md`. A lever refuted in an audit item and never annotated at the call
+site is invisible here — item 711 was exactly that until this item, and the empty-result message
+says so in those words rather than letting silence read as "never tried".
+
+Gates, each its own command with its exit code read UNPIPED: `cargo fmt` 0;
+`cargo clippy --all-targets --features capi -- -D warnings` 0; `bun run lint` 0; `bun run fmt` 0;
+`bun run check` 0.

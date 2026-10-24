@@ -7646,6 +7646,17 @@ impl Parser {
                 plan
             });
         }
+        // 🛑 UNROLLING A PLAIN FIXED `times(n)` INTO n HOPS WAS TRIED AND REVERTED (item 711).
+        // `repeat(out('K')).times(2)` costs 3.76 ms against the chain's 2.69 on 200,000 vertices
+        // / 1,000,000 edges, in both list positions, and the two ARE the same traversal — settled
+        // against a real TinkerPop console at item 574, and re-checked as a multiset on 24 cases
+        // built to separate a walk from a trail (self-loops, reciprocal pairs, parallel
+        // duplicates). The unroll converged them (3.76 -> 2.59) and was reverted anyway: a
+        // `VarLength` walk is governed by `limits.trail` and a chain of explicit `Expand`s is
+        // NOT, so it silently deleted a runaway-traversal guard, which
+        // `trail_limit_caps_runaway_traversal_and_is_configurable` caught. The 1.36x is the PRICE
+        // OF THAT GUARD, not a missed rewrite.
+        //
         // A fixed-`times` walk carrying an inner `.as('tag')` UNROLLS into N explicit
         // hops, so the tag binds once PER ITERATION (a distinct slot each), which is what
         // select(Pop.first/all, 'tag') reads (first binding / every binding as a list).
