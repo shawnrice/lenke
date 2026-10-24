@@ -11447,6 +11447,93 @@ fn rollback_cost_by_index() {
     }
 }
 
+/// Does an INTERVAL index make an unrelated rollback scale with the whole graph? (item 677)
+///
+/// ```text
+/// cargo test --release -p lenke-engine interval_rollback_cost_by_graph_size -- --ignored --nocapture
+/// ```
+///
+/// Item 676 fixed the edge-type index's rollback path. The OTHER opt-in index is handled
+/// differently and deliberately: `rollback` calls `rebuild_interval`, a WHOLE-GRAPH rebuild
+/// (both per-node axis vectors reallocated, then every node reindexed), because — per the
+/// comment there — the interval index depends on edge PROPS as well as adjacency, restored
+/// in an order per-record maintenance cannot safely track.
+///
+/// That is a sound conservative choice. The question this prices is different: a transaction
+/// that never touched anything the interval index reads STILL pays it. Here the rolled-back
+/// statement sets a NODE property, which the index (over edge props on OUT-edges) cannot
+/// see.
+///
+/// Flat in µs means O(1); flat in ns-per-node means O(V).
+#[test]
+#[ignore = "benchmark"]
+fn interval_rollback_cost_by_graph_size() {
+    use std::time::Instant;
+
+    println!();
+    println!(
+        "{:<34}{:>9}{:>12}{:>14}",
+        "roll back an UNRELATED node SET", "nodes", "us per op", "ns per node"
+    );
+
+    for &v in &[1_000usize, 10_000, 50_000, 200_000] {
+        for &with_index in &[false, true] {
+            let mut best = u128::MAX;
+
+            for _ in 0..5 {
+                let mut b = Builder::default();
+                let mut ids = Vec::with_capacity(v);
+
+                for i in 0..v {
+                    ids.push(b.node(&["N"], &[("k", n(i as f64))]));
+                }
+
+                // One edge per node, carrying the interval keys the index is built on.
+                for i in 0..v {
+                    b.edge(ids[i], ids[(i + 1) % v], "E");
+                }
+
+                let mut store = b.build();
+
+                for e in 0..v as u32 {
+                    store.set_edge_prop(e, "lo", n(e as f64));
+                    store.set_edge_prop(e, "hi", n(e as f64 + 10.0));
+                }
+
+                if with_index {
+                    store.create_interval_index("lo", "hi");
+                }
+
+                // The rolled-back statement touches a NODE prop: nothing the interval
+                // index (over edge props) can read.
+                store.begin();
+                store.set_prop(ids[0], "k", n(-1.0));
+
+                let t0 = Instant::now();
+                store.rollback();
+                best = best.min(t0.elapsed().as_nanos());
+
+                assert!(
+                    matches!(store.prop(ids[0], "k"), Value::Num(x) if x == 0.0),
+                    "not rolled back"
+                );
+            }
+
+            println!(
+                "{:<34}{:>9}{:>12.3}{:>14.4}",
+                if with_index {
+                    "interval index ON"
+                } else {
+                    "interval index off (CONTROL)"
+                },
+                v,
+                best as f64 / 1000.0,
+                best as f64 / v as f64
+            );
+        }
+    }
+}
+
 /// Which READS scale with the GRAPH rather than with their RESULT? (item 668)
 ///
 /// ```text

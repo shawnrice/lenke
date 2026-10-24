@@ -3544,6 +3544,28 @@ impl Store {
 
     /// Whether `key` is one of the active interval index's axes (so a change to it
     /// invalidates the index).
+    /// Whether undoing `rec` could change anything the INTERVAL index reads.
+    ///
+    /// That index covers the two numeric interval keys on OUT-edges, keyed per node, so a
+    /// NODE property or a label cannot reach it, and nor can an edge property under a key
+    /// it is not built on. Everything else moves a node or an adjacency entry and is
+    /// treated as reaching it — the default is conservative on purpose, so a new `Undo`
+    /// variant forces the rebuild until someone proves it safe to skip.
+    ///
+    /// Used to skip `rebuild_interval`, a WHOLE-GRAPH rebuild, when a transaction never
+    /// touched the index: rolling back an unrelated node SET was O(V) and cost 15.2 ms at
+    /// 200,000 nodes (item 677). Scanning the log is O(the transaction), not O(the graph).
+    fn undo_touches_interval(&self, rec: &Undo) -> bool {
+        match rec {
+            Undo::AddLabel { .. } | Undo::RemoveLabel { .. } | Undo::RestoreCell { .. } => false,
+            Undo::RestoreEdgeCell { key, .. } => self.interval_uses_key(key),
+            Undo::AddNode
+            | Undo::AddEdge { .. }
+            | Undo::RestoreEdge { .. }
+            | Undo::RestoreNode { .. } => true,
+        }
+    }
+
     fn interval_uses_key(&self, key: &str) -> bool {
         self.interval
             .as_ref()
@@ -4919,7 +4941,12 @@ impl Store {
     /// rolled-back transaction is observed to have changed nothing).
     pub fn rollback(&mut self) {
         self.changes = None;
+        // Decided BEFORE the undos run, while the log is still intact.
+        let mut interval_touched = false;
         if let Some(log) = self.undo.take() {
+            if self.interval.is_some() {
+                interval_touched = log.iter().any(|rec| self.undo_touches_interval(rec));
+            }
             // `undo` is now None, so the inverse mutations below do not re-log.
             for rec in log.into_iter().rev() {
                 self.apply_undo(rec);
@@ -4928,6 +4955,7 @@ impl Store {
         // Revert any schema op (index / constraint / validator / invariant) declared in the
         // transaction, BEFORE the interval rebuild — so a tx-created interval index is
         // cleared (skipping the rebuild) and a tx-dropped one is recreated (then rebuilt).
+        let schema_reverted = self.tx_schema.is_some();
         if let Some(snap) = self.tx_schema.take() {
             self.restore_schema(*snap);
         }
@@ -4936,7 +4964,19 @@ impl Store {
         // maintenance can't safely track — so rebuild it once against the fully
         // restored graph. (The edge-type index depends only on adjacency, which
         // each undo record reindexes as it restores it.)
-        if self.interval.is_some() {
+        //
+        // But only if this transaction could have REACHED it. The rebuild is O(V + E),
+        // so paying it for a rolled-back node-prop SET made that O(1) operation O(V) —
+        // 15.2 ms at 200,000 nodes (item 677).
+        //
+        // `schema_reverted` is deliberate insurance, NOT load-bearing, and mutation says
+        // so: removing it changes no answer. `restore_schema` above already leaves the
+        // index consistent on its own — it either recreates it with
+        // `create_interval_index` (which reindexes every node) or clears it to `None`. It
+        // is kept because that is a coupling the skip silently depends on: make
+        // `restore_schema` allocate without building, and without this the index would be
+        // left empty.
+        if self.interval.is_some() && (interval_touched || schema_reverted) {
             self.rebuild_interval();
         }
         // Restore the reactive counters to their pre-transaction values (LAST, so neither
@@ -5045,10 +5085,14 @@ impl Store {
         if let Some(ch) = &mut self.changes {
             ch.truncate(mark);
         }
+        let mut interval_touched = false;
         if let Some(mut log) = self.undo.take() {
             let mut undone = Vec::new();
             while log.len() > mark {
                 undone.push(log.pop().expect("len > mark"));
+            }
+            if self.interval.is_some() {
+                interval_touched = undone.iter().any(|rec| self.undo_touches_interval(rec));
             }
             // `undo` is None while applying, so these inverses do not re-log.
             for rec in undone {
@@ -5056,8 +5100,12 @@ impl Store {
             }
             self.undo = Some(log);
         }
-        // Rebuild the interval index against the restored graph (see `rollback`).
-        if self.interval.is_some() {
+        // Rebuild the interval index against the restored graph (see `rollback`), and
+        // only when the undone statement could have reached it. This path is per FAILED
+        // STATEMENT, so an unconditional whole-graph rebuild here is paid once per
+        // statement inside a long transaction (item 677). No schema check is needed:
+        // `rollback_to` does not revert schema ops.
+        if self.interval.is_some() && interval_touched {
             self.rebuild_interval();
         }
     }

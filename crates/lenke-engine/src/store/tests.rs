@@ -1225,6 +1225,192 @@ fn interval_index_survives_rollback() {
     assert_eq!(before, after);
 }
 
+/// Rolling back a transaction whose ONLY interval-relevant change is an edge property
+/// under an interval key still leaves the index correct.
+///
+/// `interval_index_survives_rollback` cannot show this. It rolls back an `add_edge` and a
+/// `delete_edge` as well as the prop writes, so the "did this transaction reach the
+/// interval index?" test that now gates the rebuild (item 677) answers yes from the
+/// ADJACENCY records alone — a version of that test which ignored edge-property keys
+/// entirely would pass it. Here there is no adjacency change at all, so the edge-property
+/// branch is the only thing that can trigger the rebuild.
+#[test]
+fn rolling_back_only_an_interval_prop_change_still_fixes_the_index() {
+    let mut st = interval_graph(4, 2); // edges: [0,2],[1,3],[2,4],[3,5]
+    st.create_interval_index("vf", "vt");
+
+    let before: Vec<Vec<u32>> = (0..8)
+        .map(|t| overlap_eids(&st, 0, f64::from(t), f64::from(t)))
+        .collect();
+
+    st.begin();
+    // Move edge 0's interval far away — no adjacency change anywhere.
+    st.set_edge_prop(0, "vf", n(900.0));
+    st.set_edge_prop(0, "vt", n(999.0));
+    assert!(
+        !overlap_eids(&st, 0, 1.0, 1.0).contains(&0),
+        "inside the txn the edge moved off t=1"
+    );
+    st.rollback();
+
+    let after: Vec<Vec<u32>> = (0..8)
+        .map(|t| overlap_eids(&st, 0, f64::from(t), f64::from(t)))
+        .collect();
+    assert_eq!(
+        before, after,
+        "index stale after rolling back a prop-only txn"
+    );
+
+    // And the seek still agrees with a brute-force scan, which is the real invariant.
+    for t in 0..8 {
+        let q = f64::from(t);
+        assert_eq!(
+            overlap_eids(&st, 0, q, q),
+            overlap_bruteforce(&st, 0, q, q),
+            "t={t}"
+        );
+    }
+}
+
+/// Rolling back an ADJACENCY-only change still leaves the interval index correct.
+///
+/// The exact mirror of `rolling_back_only_an_interval_prop_change_still_fixes_the_index`,
+/// and it closes the other half of the same hole: `interval_index_survives_rollback`
+/// writes interval properties AND changes adjacency, so the gate added in item 677
+/// answers "yes, this transaction reached the index" from the PROPERTY records alone — a
+/// version that ignored adjacency entirely passed it. Here the transaction writes no
+/// properties at all.
+///
+/// `Undo::RestoreEdge` and `Undo::RestoreNode` do NOT maintain the interval index as they
+/// restore (unlike `Undo::AddEdge`, which routes through `delete_edge` and does), so they
+/// genuinely depend on the rebuild.
+#[test]
+fn rolling_back_an_adjacency_only_change_still_fixes_the_interval_index() {
+    let mut st = interval_graph(4, 2); // 4 HELD edges 0 -> 1, intervals [d, d+2]
+    st.create_interval_index("vf", "vt");
+
+    let before: Vec<Vec<u32>> = (0..8)
+        .map(|t| overlap_eids(&st, 0, f64::from(t), f64::from(t)))
+        .collect();
+
+    // --- an edge DELETE, rolled back. No property writes anywhere in the txn.
+    st.begin();
+    st.delete_edge(0, 1, 0);
+    assert!(
+        !overlap_eids(&st, 0, 1.0, 1.0).contains(&0),
+        "inside the txn edge 0 is gone"
+    );
+    st.rollback();
+
+    let after: Vec<Vec<u32>> = (0..8)
+        .map(|t| overlap_eids(&st, 0, f64::from(t), f64::from(t)))
+        .collect();
+    assert_eq!(
+        before, after,
+        "index stale after an adjacency-only rollback"
+    );
+
+    for t in 0..8 {
+        let q = f64::from(t);
+        assert_eq!(
+            overlap_eids(&st, 0, q, q),
+            overlap_bruteforce(&st, 0, q, q),
+            "after edge-delete rollback, t={t}"
+        );
+    }
+
+    // --- a NODE delete, rolled back. Node 1 is the far end of every edge, so deleting
+    // it strips node 0's whole interval index.
+    st.begin();
+    st.delete_node(1);
+    st.rollback();
+
+    let after_node: Vec<Vec<u32>> = (0..8)
+        .map(|t| overlap_eids(&st, 0, f64::from(t), f64::from(t)))
+        .collect();
+    assert_eq!(
+        before, after_node,
+        "index stale after a node-delete rollback"
+    );
+
+    for t in 0..8 {
+        let q = f64::from(t);
+        assert_eq!(
+            overlap_eids(&st, 0, q, q),
+            overlap_bruteforce(&st, 0, q, q),
+            "after node-delete rollback, t={t}"
+        );
+    }
+}
+
+/// A transaction that touches the interval index must be detected even when an
+/// IRRELEVANT change is the most recent record.
+///
+/// This pins that the gate asks "did ANY record reach the index", not "did the last one"
+/// — a cheaper-looking check that would pass every other test here (item 677).
+#[test]
+fn an_irrelevant_last_write_does_not_hide_an_interval_change() {
+    let mut st = interval_graph(4, 2);
+    st.create_interval_index("vf", "vt");
+
+    let before: Vec<Vec<u32>> = (0..8)
+        .map(|t| overlap_eids(&st, 0, f64::from(t), f64::from(t)))
+        .collect();
+
+    st.begin();
+    st.set_edge_prop(0, "vt", n(999.0)); // reaches the index
+    st.set_prop(0, "unrelated", n(1.0)); // ... and is followed by one that does not
+    st.add_label(0, "Tag");
+    st.rollback();
+
+    let after: Vec<Vec<u32>> = (0..8)
+        .map(|t| overlap_eids(&st, 0, f64::from(t), f64::from(t)))
+        .collect();
+    assert_eq!(before, after);
+}
+
+/// `rollback_to` gets the same treatment as `rollback`: undoing one failed statement
+/// that touched the interval index leaves it correct.
+#[test]
+fn rolling_back_to_a_savepoint_fixes_the_interval_index() {
+    let mut st = interval_graph(4, 2);
+    st.create_interval_index("vf", "vt");
+
+    st.begin();
+    // A committed-within-the-txn change we intend to KEEP.
+    let kept = st.add_edge(0, 1, "HELD");
+    st.set_edge_prop(kept, "vf", n(0.0));
+    st.set_edge_prop(kept, "vt", n(1.0));
+
+    let mark = st.savepoint();
+    let at_mark: Vec<Vec<u32>> = (0..8)
+        .map(|t| overlap_eids(&st, 0, f64::from(t), f64::from(t)))
+        .collect();
+
+    // The failed statement: move an existing edge's interval, no adjacency change.
+    st.set_edge_prop(0, "vf", n(900.0));
+    st.set_edge_prop(0, "vt", n(999.0));
+    st.rollback_to(mark);
+
+    let after: Vec<Vec<u32>> = (0..8)
+        .map(|t| overlap_eids(&st, 0, f64::from(t), f64::from(t)))
+        .collect();
+    assert_eq!(at_mark, after, "index stale after rollback_to");
+
+    for t in 0..8 {
+        let q = f64::from(t);
+        assert_eq!(
+            overlap_eids(&st, 0, q, q),
+            overlap_bruteforce(&st, 0, q, q),
+            "t={t}"
+        );
+    }
+
+    // The kept change really was kept.
+    st.commit();
+    assert!(overlap_eids(&st, 0, 0.0, 0.0).contains(&kept));
+}
+
 /// Updating an edge's interval property must cost the same whether the graph has 2k
 /// or 32k nodes — the index is source-partitioned, so only the edge's source node is
 /// reindexed. Guards against the O(V+E) full `rebuild_interval` this path used to do
