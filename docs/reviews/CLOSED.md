@@ -8113,6 +8113,15 @@ relaxed, and this is then the only line between a trail and the walk's arithmeti
 the test fixture). Reachable-after-a-planned-change is a third category beside item 583's
 provably-dead and item 587's reachability-unknown.
 
+> **THE PREDICTION CAME TRUE AT 692, WORD FOR WORD.** The depth-4 closed form relaxed the
+> detector's bound and left this one at 3; a depth-4 trail fell through to the walk's arithmetic and
+> answered 3 where the trail answers 0 on a triangle. Item 690's brute-force oracle caught it on
+> the first run. **A guard kept for a planned relaxation, a note addressed to whoever would land it,
+> and a test able to see the failure — all three were needed and all three fired.** The same note
+> now applies to whoever lands depth 5. (Item 693 found the Rust twin of this guard is a PERF gate
+> rather than a correctness one: declining there returns `None` and the caller enumerates, which is
+> correct. The identical-looking line differs in consequence between the two engines.)
+
 ### Pin the VALUE, not just the engine agreement (588)
 
 I pinned `{1,3}(y {n: 3})` as 10 by copying a neighbouring figure. The TS-vs-native assertion PASSED
@@ -8680,7 +8689,8 @@ self-loops, parallel edges and reverse edges (>20 trials each); the depth-4 test
 and walk answers actually differ (>20 of 120), or its assertion could not distinguish a wrong
 answer.
 
-**Native remains OPEN at ~4-8x** (159.9ms on this row against 4.8 for the chain) — its per-path and
+**~~Native remains OPEN at ~4-8x~~ CLOSED at 602 (11.45x), and item 693 closed depth 4 too.**
+(159.9ms on this row against 4.8 for the chain) — its per-path and
 per-probe constants are close where TS's differ ~68x, so it is its own item on its own evidence.
 
 ### The depth-3 TRAIL correction, RUST — DONE, 11.45x. Both engines now. (602)
@@ -9928,7 +9938,10 @@ deletes it believing it tested or trusts it believing it exercised.
   1347 µs inside `bench_all` and 430 µs isolated — 3.1x, same binary, same case. Item 116's
   caution applies to the SUBJECT, not only the control.
 
-### OPEN: the TS engine has the same cliff and it is WORSE
+### ~~OPEN~~ FIXED AT 618: the TS engine had the same cliff and it was WORSE
+
+> **STALE MARKER CORRECTED (item 694).** This read "OPEN" and "Next item" — and the next item,
+> **618**, fixed it at 5,240x (7,913x for the conjunct form). Nothing here is open.
 
 TS, N=100,000, min-of-9 over 200 ops: GQL `element_id(n) = $x` **4413.55 µs** against its own
 Gremlin `g.V(id)` at **2.79 µs** and an indexed property lookup at **1.75 µs** — **2,522x its
@@ -13092,7 +13105,9 @@ construction; this one did not.
 
 ### What this leaves
 
-The 27.2x on `traverse 1-hop + filter` is **unexplained and still open.** It is NOT refuted as
+The 27.2x on `traverse 1-hop + filter` is **~~unexplained and still open~~ SUPERSEDED BY 660**,
+which built the floor from the engine's OWN algorithm and found a real **1.65x** — so the figure to
+carry is 1.65x, not 27.2x (item 694). As written below, it is NOT refuted as
 layout — the engine is already 3.6x better than the layout's naive cost, so the remaining gap to
 native's 1.5 ms is something else. Pricing it properly needs the floor of whatever route the
 engine actually takes, which means identifying that route first (as item 657 did structurally for
@@ -14192,7 +14207,8 @@ one" — a cheaper-looking check that passed every other test in the file.
 | **interval: unrelated rollback (677)** | **O(1) → O(V), 26,241x** | **O(1), ~1x** |
 
 Still unpriced: `rebuild_interval` on the FORWARD path — `remove_edge_prop` on an interval key
-(store.rs:4533) rebuilds the whole graph per removal. Same function, different caller, not yet
+(store.rs:4533) rebuilds the whole graph per removal — **FIXED AT 678** (8,023x), so this line is
+history, not a target (item 694). Same function, different caller, at the time not yet
 measured.
 
 ## 678 — `remove_edge_prop` rebuilt the WHOLE interval index; its twin `set_edge_prop` already did not
@@ -15324,3 +15340,57 @@ bundling into `Trail4Ctx` exactly as `Trail3Tables` and `DegreeArgs` already do)
 
 Depth 5 remains unbuilt. The identity is recursive (`u4` would be four disjoint cases), but item
 686's rule applies: what those cases need from the adjacency has not been priced.
+
+## 694 — FIVE stale markers in the index, and the pattern that produces them
+
+**INDEX MAINTENANCE. No engine change.** Item 685 found one stale "OPEN TARGET" and cost part of a
+tick to it. This tick hit a second within minutes of looking for a target, so rather than fix one
+more I swept them.
+
+### What was stale, and what closed it
+
+| marker                                                                            | reality                                                             |
+| --------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| 601: "Native remains OPEN at ~4-8x"                                               | closed by **602** (11.45x), the very next item                      |
+| 617: "### OPEN: the TS engine has the same cliff and it is WORSE … Next item."    | fixed by **618** at 5,240x                                          |
+| 659: "The 27.2x … is unexplained and still open"                                  | superseded by **660**, whose correct floor found **1.65x**          |
+| 677: `remove_edge_prop` "rebuilds the whole graph per removal … not yet measured" | fixed by **678** at 8,023x                                          |
+| 588: a guard kept because "the detector's bound WILL be relaxed"                  | the relaxation happened at **692** — the prediction is now an event |
+
+### 🛑 The pattern, which is what makes this worth an item
+
+**Four of the five were closed by the item immediately following them.** 617 even says "Next item."
+That is the mechanism: an item ends by naming what it leaves open, the next item closes exactly
+that, and nothing goes back to amend the first. The record was accurate when written and wrong as a
+whole — and the audit is APPEND-ONLY by design, so the only place that can carry a current status is
+the index.
+
+CLAUDE.md already says _"when a change refutes a lever or settles a question, add its line to
+`CLOSED.md` in the same commit. A list that lags is the failure it exists to prevent."_ The habit
+that was missing is narrower and worth stating: **when an item closes something a PREVIOUS item left
+open, amend that previous entry too, not only append the new one.**
+
+Cost of not doing it, measured: item 685 lost part of a tick re-deriving finished work off item 600's
+header, and this tick nearly repeated it on 617's.
+
+### Item 588's note is a different case, and the best thing in this sweep
+
+588 kept a mutation SURVIVOR deliberately, writing that trail depth "is a RECORDED OPEN TARGET, so
+the detector's bound will be relaxed, and this is then the only line between a trail and the walk's
+arithmetic (32 against 28)". It also coined a category for it: _reachable-after-a-planned-change_,
+beside provably-dead and reachability-unknown.
+
+**That came true at 692, word for word.** The depth-4 form relaxed the detector's bound, left that
+one at 3, and a depth-4 trail answered the walk count — 3 where the trail answers 0 on a triangle.
+Item 690's oracle caught it on the first run.
+
+A guard kept for a planned relaxation, a note addressed to whoever would land it, and a test able to
+see the failure: all three were needed and all three fired. Annotated as fulfilled rather than left
+as a forecast, with the note now addressed to whoever lands depth 5 — and with item 693's finding
+that the Rust twin of that guard is a PERF gate rather than a correctness one, because declining
+there returns `None` and the caller enumerates.
+
+### Markers checked and left alone
+
+587's non-terminating deep WALK count, the citation-rot instrument, duplicate external edge ids, half
+of 619's seed, and the 3.77x spelling — each still open, with no later item closing them.
