@@ -354,6 +354,21 @@ const WORKLOADS: Workload[] = [
     //
     // The insert halves still differ by one property (3 vs 2), which inflates the baseline and
     // therefore UNDERSTATES the delete — a conservative direction.
+    // ⚠️ THIS ROW PRICES A DEGREE-ZERO DELETE, and items 715/717 are the reason to say so. The
+    // victim is the `Tmp` node this iteration just inserted, so it has NO edges: the mirror
+    // detach loop runs zero times and `delete_edge` is never called. Those items made a hub-leaf
+    // node delete 1.58x and a single edge delete 1.99x, and NEITHER can appear here.
+    //
+    // Nor should this fixture grow a hub to show them. It is deliberately small and warm —
+    // "measures per-operation cost, not cache behaviour" — and its biggest in-degree is a Team
+    // at 100 MEMBER_OF edges, which items 715 and 716 both measured INSIDE the control band
+    // (1.06x and 1.10x at D=100). The degree axis belongs to
+    // `delete_cost_by_neighbour_degree` / `edge_delete_cost_by_index`, which hold the node count
+    // fixed and sweep it to 50,000. Read this row as the parse+bind+tombstone cost it is.
+    //
+    // Item 718 checked the other direction too: the cluster did not REGRESS this row. A
+    // cross-process reading suggested 446.2k -> 407.7k, and three alternated rounds gave 0.96x
+    // against `write: append node`'s 0.97x — the control moved as far as the subject.
     name: 'write: append then delete node',
     units: 2,
     op: (e, g, i) => {
