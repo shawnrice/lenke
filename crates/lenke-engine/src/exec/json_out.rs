@@ -585,10 +585,15 @@ fn write_node_ext_or_dense(out: &mut String, store: &Store, n: u32) {
 /// map here means plumbing it through the render path — which is why item 722 priced it and left
 /// it rather than guessing a threshold it could not place.
 ///
-/// Worth: item 721 measured this column at 92.13 µs for 500 rows at ONE distinct label against
-/// 208.45 at forty. The map makes that column flat in the label count. The hazard is a
-/// single-row query against a mutating store, where the cache misses every time and the build is
-/// charged to one row — `bench:usage`'s interleaved rows are where that would show.
+/// ⚠️ THESE SITES ARE ON THE GREMLIN `elementMap` / `valueMap` PATH ONLY — `try_fused_map_json` is
+/// reached from `try_run_gremlin_json_inner`, not from `try_run_gql_json` (item 723). Item 721's
+/// 3.4x label-count measurement was taken on the GQL path and so does NOT price these; it prices
+/// `labels_of_refs` in `render.rs`. A change here needs its own harness, pointed at a Gremlin
+/// element-map query, or it will measure nothing — which is exactly what item 721 did.
+///
+/// The hazard, when it is attempted: on a cache MISS the map costs O(total membership), charged to
+/// however many rows the query returns, so a one-row query against a mutating store misses every
+/// time — `bench:usage`'s interleaved rows are where that would show.
 fn write_node_stub(out: &mut String, store: &Store, v: u32) {
     out.push_str("{\"id\":");
     match store.node_ext_id(v) {

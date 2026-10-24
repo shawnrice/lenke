@@ -2364,11 +2364,15 @@ impl Store {
     /// The fix is a per-node label list (what TS has), which needs a label dictionary and four
     /// write paths, and whose byte-identity surface is the canonical SORTED order these return.
     /// A contained attempt — a `min_label_ref` for the three `labels_of(..).first()` sites in
-    /// `json_out.rs` — measured NULL against a control that tracked it, because the sweep
-    /// dominates the clones (item 721). **And it was a DUPLICATE: `min_label_name` below is the
-    /// same function, and its own doc already names those call sites (item 722).** The lever for
-    /// them is `min_label_map`, the cached whole-store inversion that `evaluator.rs` already picks
-    /// on frontier size — not another per-node probe.
+    /// `json_out.rs` — measured NULL, and **item 723 found why: those sites are on the GREMLIN
+    /// `elementMap` path and the harness measured the GQL one, so the change never ran.** It was
+    /// also a DUPLICATE of `min_label_name` below (item 722).
+    ///
+    /// WHICH ACCESSOR SERVES WHICH PATH (item 723), because two ticks aimed at the wrong file:
+    /// GQL `RETURN n` renders ALL labels through `labels_of_refs` (`render.rs` 331/412) — that is
+    /// where the 3.4x is, and `min_label_map` CANNOT serve it, because the map yields one label a
+    /// node. The four MIN-label sites (`render.rs` 278, `json_out.rs` x3) are the map's case, and
+    /// `evaluator.rs` holds the only correct frontier gate for it.
     pub fn labels_of_refs(&self, id: u32) -> Vec<&str> {
         let mut ls: Vec<&str> = self
             .by_label
