@@ -12995,3 +12995,53 @@ lesson records an edit giving UNRELATED queries a new 4x slow mode. The floor co
 
 **Do not re-target the multi-hop count routes on the strength of a cross-engine ratio.** The ratio
 is real and the routes are already optimal given the layout underneath them.
+
+## 658 — the native engine is 11x FASTER than TS on a 3-scalar projection; the bench row is the JSON EGRESS
+
+**DIAGNOSED (native), nothing built.** `bun run bench`'s `query: project 3 columns` is one of the
+few rows where native looks slower than TS — ts 7.9 ms against ffi 57.8 and wasm 65.9, a 7.3x the
+wrong way. It is not the engine, and it is not even mostly the serializer.
+
+### The split, 200,000 rows, min of five, repeated
+
+`MATCH (n:Person) RETURN n.name AS n, n.city AS c, n.age AS a` on the bench's own `nodesDoc`
+shape (`name` unique per row so no dict column; `city` constant):
+
+| stage                                                                | ms                     | ns/row             |
+| -------------------------------------------------------------------- | ---------------------- | ------------------ |
+| `pull` — engine only, NO egress                                      | **0.7 / 0.7 / 0.7**    | 3.6 / 3.6 / 3.7    |
+| `try_run_gql_json` — engine + egress, what `lnk_query` actually runs | 12.3                   | 61.4               |
+| **egress** (combined − pull)                                         | **11.6 / 11.7 / 11.5** | 57.8 / 58.5 / 57.5 |
+
+JSON output: **6,666,694 bytes** — 6.7 MB of text for 600,000 scalars.
+
+**So the native ENGINE answers this in 0.7 ms, which is 11x faster than TS's ENTIRE 7.9 ms.** The
+bench's 57.8 ms decomposes as ~0.7 engine + ~11.6 Rust-side JSON + **~45 ms of FFI transfer and
+JS-side parsing** of that 6.7 MB. TS wins the row because it never serializes at all — it builds
+JS objects directly in-process.
+
+### Why this was measured as a SPLIT rather than attacked
+
+The ffi and wasm columns sitting close together (57.8 / 65.9) looks like a cost shared by both
+bridges, which it is. But "shared by both bridges" does not say whether the engine, the serializer
+or the transfer holds it — **decomposing one side of a boundary cannot tell you which side the
+cost is on** (item 291). Timing `gql_rows_json` alone would also have understated it, since
+building the row view the serializer needs is part of the cost; so the egress half is measured as
+`combined − pull` through the real `try_run_gql_json`, the same function the FFI calls.
+
+### What this does and does not leave open
+
+- **The engine is not a target on this shape.** 3.6 ns/row for three property reads plus row
+  assembly is consistent with `expression_cost_by_kind`'s `Prop (Str)` at 1.03 ns/row. There is
+  nothing here to win.
+- **The serializer is near its floor.** 6.7 MB in 11.6 ms is ~575 MB/s with escaping, ~19 ns per
+  emitted scalar. Item 654 already removed the per-number allocation from this exact path, and
+  this measurement is POST that fix.
+- **The real lever is the result FORMAT, and it already exists.** `queryArrowIpc` / `toArrowIPC`
+  give a columnar binary egress. Routing bulk scalar results through it instead of JSON text would
+  remove both the 11.6 ms and the ~45 ms of transfer-and-parse. But that is an API choice about
+  what `lnk_query` returns, not a perf tweak, and `lnk_query`'s JSON contract is what every
+  current caller depends on.
+
+**Do not read this row as a native engine deficiency.** It is the price of handing results across
+a process boundary as text, and the engine underneath is an order of magnitude ahead of TS.

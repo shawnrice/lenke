@@ -11000,6 +11000,111 @@ fn gather_cost_by_width() {
     }
 }
 
+/// Where does the time go on a 3-SCALAR projection: the engine, or the JSON egress? (item 658)
+///
+/// ```text
+/// cargo test --release --manifest-path crates/lenke-engine/Cargo.toml \
+///   -- --ignored --nocapture projection_cost_engine_vs_egress
+/// ```
+///
+/// `bun run bench`'s `query: project 3 columns` row is one of the few where NATIVE IS SLOWER THAN
+/// TS: ts 7.9 ms against ffi 57.8 and wasm 65.9, a 7.3x the wrong way. The fixture is 200,000
+/// `Person` nodes with `name`/`city`/`age`, and the query is
+/// `MATCH (n:Person) RETURN n.name AS n, n.city AS c, n.age AS a`.
+///
+/// The engine's own property reads cannot be it: `expression_cost_by_kind` puts `Prop (Str)` at
+/// 1.03 ns/row, so 600,000 reads is ~0.6 ms against 57.8 observed. That leaves ~290 ns/row
+/// somewhere else, and the ffi and wasm columns sitting close together is what a cost SHARED by
+/// both bridges looks like.
+///
+/// ⚠️ This harness exists because **decomposing one side of a boundary cannot say which side the
+/// cost is on** (item 291). It times the two halves separately on the same store:
+///
+/// - `pull` alone — the engine producing the result columns, no serialization at all.
+/// - `gql_rows_json` over that result — the egress the FFI `lnk_query` hands back as text.
+///
+/// Their SUM is what the bench's native column should be, minus the FFI copy. If `pull` is a few
+/// ms and the JSON is tens, the target is egress and the engine is innocent; if `pull` dominates,
+/// the bench row is not about serialization at all.
+#[test]
+#[ignore = "measurement harness: cargo test --release -- --ignored --nocapture projection_cost_engine_vs_egress"]
+fn projection_cost_engine_vs_egress() {
+    use std::time::Instant;
+    const REPS: u32 = 5;
+    const ROWS: usize = 200_000;
+
+    // The bench's `nodesDoc`, verbatim in shape: `city` is the SAME string on every row (so a
+    // dict column is plausible) while `name` is unique per row (so it cannot be).
+    let mut b = Builder::default();
+    for i in 0..ROWS {
+        b.node(
+            &["Person"],
+            &[
+                ("name", Value::Str(format!("person{i}").as_str().into())),
+                ("city", Value::Str("Springfield".into())),
+                ("age", n((i % 90) as f64)),
+            ],
+        );
+    }
+    let store = b.build();
+
+    let plan = opt_plan(
+        "MATCH (n:Person) RETURN n.name AS n, n.city AS c, n.age AS a",
+        &store,
+    );
+
+    println!("{:<40}{:>12}{:>12}", "stage", "total ms", "ns/row");
+
+    let mut best_pull = u128::MAX;
+    let mut rows = None;
+
+    for _ in 0..REPS {
+        let t0 = Instant::now();
+        let got = crate::exec::pull(&plan, &store, false).expect("plan runs");
+        best_pull = best_pull.min(t0.elapsed().as_nanos());
+        assert_eq!(got.rows(), ROWS);
+        rows = Some(got);
+    }
+
+    let got = rows.expect("measured at least once");
+
+    println!(
+        "{:<40}{:>12.1}{:>12.1}",
+        "pull (engine only, no egress)",
+        best_pull as f64 / 1_000_000.0,
+        best_pull as f64 / ROWS as f64
+    );
+
+    std::hint::black_box(&got);
+
+    // The COMBINED path, which is exactly what the FFI `lnk_query` runs: plan -> JSON text. The
+    // egress half is this MINUS `pull`, which is sounder than timing a serializer in isolation —
+    // building the row view the serializer needs is part of the cost and would be missed.
+    let mut best_all = u128::MAX;
+    let mut bytes = 0;
+
+    for _ in 0..REPS {
+        let t0 = Instant::now();
+        let text = crate::exec::json_out::try_run_gql_json(&plan, &store).expect("egress runs");
+        best_all = best_all.min(t0.elapsed().as_nanos());
+        bytes = text.len();
+    }
+
+    println!(
+        "{:<40}{:>12.1}{:>12.1}",
+        "try_run_gql_json (engine + egress)",
+        best_all as f64 / 1_000_000.0,
+        best_all as f64 / ROWS as f64
+    );
+    println!(
+        "{:<40}{:>12.1}{:>12.1}",
+        "EGRESS = combined - pull",
+        best_all.saturating_sub(best_pull) as f64 / 1_000_000.0,
+        best_all.saturating_sub(best_pull) as f64 / ROWS as f64
+    );
+    println!("json bytes: {bytes}");
+}
+
 /// What does each EXPRESSION KIND cost per row?
 ///
 /// ```text
