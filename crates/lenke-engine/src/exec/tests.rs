@@ -11049,6 +11049,60 @@ fn a_seek_returns_each_node_once_after_every_index_write_path() {
     assert_eq!(seek(&st), 2.0, "after a delete");
 }
 
+/// The FORWARD label map agrees with the bucket sweep it replaced, after every write path.
+///
+/// Item 724 replaced an O(graph's distinct labels) probe with a per-node list, which means eight
+/// write paths now have to keep that list right: two node inserts, the sink insert, add label,
+/// remove label, the batch delete sweep, `pop_last_node`, and `Builder::build`'s inversion. A
+/// missed one is a MISSING LABEL — a wrong answer, not a slow path — so the two are compared
+/// directly rather than through anything that might agree for another reason.
+#[test]
+fn the_forward_label_map_agrees_with_the_bucket_sweep() {
+    let check = |st: &Store, where_: &str| {
+        for id in 0..st.node_count() as u32 {
+            assert_eq!(
+                st.labels_of_refs(id),
+                st.labels_of_refs_by_sweep(id),
+                "{where_}: node {id} disagrees"
+            );
+        }
+    };
+
+    let mut bld = Builder::default();
+    let a = bld.node(&["Zed", "Alpha"], &[]);
+    let b = bld.node(&["Alpha"], &[]);
+    let c = bld.node(&[], &[]); // unlabelled: never gets a forward entry at all
+    let mut st = bld.build();
+
+    check(&st, "after build");
+
+    // Builder::build's inversion, then each incremental path in turn.
+    st.add_label(a, "Mid");
+    check(&st, "after add_label");
+
+    st.add_label(a, "Mid"); // idempotent — a duplicate here would show as a repeated label
+    check(&st, "after a repeated add_label");
+
+    st.remove_label(a, "Zed");
+    check(&st, "after remove_label");
+
+    let d = st.add_node(&["Alpha", "Newish"], &[]);
+    check(&st, "after add_node");
+
+    st.delete_nodes(&[b]);
+    check(&st, "after delete_nodes");
+
+    // A rolled-back transaction exercises pop_last_node and the undo label pair.
+    st.begin();
+    let e = st.add_node(&["Rolled"], &[]);
+    st.add_label(a, "AlsoRolled");
+    st.remove_label(a, "Alpha");
+    st.rollback();
+    check(&st, "after rollback");
+
+    std::hint::black_box((c, d, e));
+}
+
 /// Does returning a node cost O(the number of DISTINCT LABELS in the graph)? (item 721)
 ///
 /// ```text

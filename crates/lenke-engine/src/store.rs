@@ -1239,6 +1239,23 @@ pub struct Store {
     parallelism: u32,
     /// label name -> the sorted node ids carrying it (the scan seed).
     by_label: FnvMap<String, Vec<u32>>,
+    /// The FORWARD direction of `by_label`: node id -> the label ids it carries, as indices into
+    /// `label_names`. Length == node_count, so it is pushed with every other per-node vector.
+    ///
+    /// Without it, reading one node's labels meant probing EVERY bucket with a binary search —
+    /// O(the GRAPH's distinct label count) per node, which item 721 measured at 3.4x between a
+    /// one-label and a forty-label graph for the same 500 rows, and which no bench fixture could
+    /// see because every one gives a node a single label. `by_label` STAYS: it is the label-scan
+    /// seed and this does not replace it (item 724).
+    ///
+    /// NOT kept sorted. `labels_of_refs` resolves the names and sorts THOSE, which is the
+    /// canonical order its callers already rely on — sorting ids here would order by intern
+    /// sequence instead, and that is the byte-identity surface this change had to get right.
+    node_labels: Vec<Vec<u32>>,
+    /// Append-only label dictionary: `label_names[id]` is the name, and `label_id` is its inverse.
+    /// A label name, once interned, keeps its id for the life of the store.
+    label_names: Vec<String>,
+    label_id: FnvMap<String, u32>,
     /// property name -> its typed column (length == node_count).
     props: FnvMap<String, Column>,
     /// Cached SORTED property-key list for element-map materialization. Property keys
@@ -1474,6 +1491,9 @@ impl Clone for Store {
             limits: self.limits,
             parallelism: self.parallelism,
             by_label: self.by_label.clone(),
+            node_labels: self.node_labels.clone(),
+            label_names: self.label_names.clone(),
+            label_id: self.label_id.clone(),
             props: self.props.clone(),
             prop_keys_cache: std::sync::RwLock::new(
                 self.prop_keys_cache
@@ -2234,14 +2254,11 @@ impl Store {
     /// path/id) O(total label membership), which dominated those shapes.
     #[must_use]
     pub fn labels_of(&self, id: u32) -> Vec<String> {
-        let mut ls: Vec<String> = self
-            .by_label
-            .iter()
-            .filter(|(_, ids)| ids.binary_search(&id).is_ok())
-            .map(|(l, _)| l.clone())
-            .collect();
-        ls.sort();
-        ls
+        // The owned twin of `labels_of_refs`, off the same forward map (item 724).
+        self.labels_of_refs(id)
+            .into_iter()
+            .map(String::from)
+            .collect()
     }
 
     /// The declared unique constraints as `(label, keys)` — for snapshot/schema
@@ -2355,7 +2372,9 @@ impl Store {
     /// allocation-light twin of [`labels_of`](Self::labels_of) (a small `Vec<&str>`
     /// of pointers, no per-label `String` clone) for the streaming codecs.
     #[must_use]
-    /// 🛑 PRICED AND OPEN (item 721): this and `labels_of` sweep EVERY label bucket with a binary
+    /// ~~PRICED AND OPEN (item 721)~~ **FIXED AT 724** — this reads the forward `node_labels` map
+    /// now. What follows is the history, kept because the 3.4x it records is what justified the
+    /// storage change. Previously this and `labels_of` swept EVERY label bucket with a binary
     /// search, so reading one node's labels is O(the GRAPH's distinct label count) where the TS
     /// engine's per-element label box is O(1). `label_read_cost_by_label_count` measures 50.89 µs
     /// at 1 label against 171.56 at 40, for the same 500 rows — 3.4x, and linear in the label
@@ -2375,11 +2394,33 @@ impl Store {
     /// `evaluator.rs` holds the only correct frontier gate for it.
     pub fn labels_of_refs(&self, id: u32) -> Vec<&str> {
         let mut ls: Vec<&str> = self
+            .node_labels
+            .get(id as usize)
+            .map(|lids| {
+                lids.iter()
+                    .map(|&lid| self.label_names[lid as usize].as_str())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Sorted by NAME, which is the canonical order every caller relies on — the forward map
+        // holds intern order, so this sort is load-bearing rather than tidiness (item 724).
+        ls.sort_unstable();
+        ls
+    }
+
+    /// The bucket sweep `labels_of_refs` used to be, kept ONLY so a test can assert the forward
+    /// map agrees with it. Not a public path — every caller uses the forward map now (item 724).
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn labels_of_refs_by_sweep(&self, id: u32) -> Vec<&str> {
+        let mut ls: Vec<&str> = self
             .by_label
             .iter()
             .filter(|(_, ids)| ids.binary_search(&id).is_ok())
             .map(|(l, _)| l.as_str())
             .collect();
+
         ls.sort_unstable();
         ls
     }
@@ -3163,6 +3204,7 @@ impl Store {
             } else {
                 self.by_label.entry((*l).to_string()).or_default().push(id);
             }
+            self.forward_add_label(id, l);
         }
         if let Some(log) = &mut self.undo {
             log.push(Undo::AddNode);
@@ -3215,6 +3257,7 @@ impl Store {
             } else {
                 self.by_label.entry((*l).to_string()).or_default().push(id);
             }
+            self.forward_add_label(id, l);
         }
         for (k, v) in props {
             // Apply the initial props directly; the single AddNode undo (which
@@ -3826,11 +3869,52 @@ impl Store {
     /// Insert `node` into `label`'s bucket (kept sorted for `has_label`'s binary
     /// search). The label→min-label cache is keyed on `node_count` only, so a
     /// membership change under a stable count must invalidate it by hand.
+    /// Intern a label name and return its id, appending to the dictionary on first sight.
+    fn label_id_of(&mut self, label: &str) -> u32 {
+        if let Some(&id) = self.label_id.get(label) {
+            return id;
+        }
+
+        let id = u32::try_from(self.label_names.len()).unwrap_or(u32::MAX);
+
+        self.label_names.push(label.to_string());
+        self.label_id.insert(label.to_string(), id);
+        id
+    }
+
+    /// Record that `node` carries `label` in the FORWARD map (`by_label` is the caller's job).
+    /// Idempotent, so a double-add cannot duplicate an entry — which is what
+    /// `labels_of_refs` would otherwise surface as a repeated label.
+    fn forward_add_label(&mut self, node: u32, label: &str) {
+        let lid = self.label_id_of(label);
+        let i = node as usize;
+
+        if i >= self.node_labels.len() {
+            self.node_labels.resize(i + 1, Vec::new());
+        }
+
+        if !self.node_labels[i].contains(&lid) {
+            self.node_labels[i].push(lid);
+        }
+    }
+
+    /// The forward half of `apply_remove_label`.
+    fn forward_remove_label(&mut self, node: u32, label: &str) {
+        if let Some(&lid) = self.label_id.get(label) {
+            if let Some(ls) = self.node_labels.get_mut(node as usize) {
+                if let Some(at) = ls.iter().position(|&x| x == lid) {
+                    ls.remove(at);
+                }
+            }
+        }
+    }
+
     fn apply_add_label(&mut self, node: u32, label: &str) {
         let bucket = self.by_label.entry(label.to_string()).or_default();
         if let Err(pos) = bucket.binary_search(&node) {
             bucket.insert(pos, node);
         }
+        self.forward_add_label(node, label);
         self.invalidate_min_label();
     }
 
@@ -3840,6 +3924,7 @@ impl Store {
                 bucket.remove(pos);
             }
         }
+        self.forward_remove_label(node, label);
         self.invalidate_min_label();
     }
 
@@ -4760,6 +4845,21 @@ impl Store {
         // sweep that item earned.
         const TARGETED_MAX: usize = 8;
 
+        // The forward map's half of the sweep, BEFORE the branch (item 724). A tombstoned node
+        // keeps its dense id forever, so its entry is EMPTIED rather than removed — the vector is
+        // indexed by id and shortening it would misalign every later node.
+        //
+        // Above the branch because the targeted path RETURNS, and putting this after it meant the
+        // small-batch delete left the forward map holding a dead node's labels.
+        // `the_forward_label_map_agrees_with_the_bucket_sweep` caught that on its first run.
+        for (i, gone) in deleted.iter().enumerate() {
+            if *gone {
+                if let Some(ls) = self.node_labels.get_mut(i) {
+                    ls.clear();
+                }
+            }
+        }
+
         if ids.len() <= TARGETED_MAX {
             for bucket in self.by_label.values_mut() {
                 if ids.iter().any(|&id| bucket.binary_search(&id).is_ok()) {
@@ -5314,9 +5414,11 @@ impl Store {
                     // unsorted, breaking both the id-order scan seed and the
                     // binary-search label intersection in `index_seek_ids`. Adds are
                     // monotonic and deletes retain order, so this keeps buckets sorted.
+                    let pos_name = l.clone();
                     let bucket = self.by_label.entry(l).or_default();
                     let pos = bucket.partition_point(|&x| x < id);
                     bucket.insert(pos, id);
+                    self.forward_add_label(id, &pos_name);
                 }
                 for (k, present, value) in props {
                     if present {
@@ -5370,6 +5472,12 @@ impl Store {
         }
         self.out_adj.pop();
         self.in_adj.pop();
+        // The forward label map is per-node, so it pops with the rest (item 724). It may be
+        // SHORTER than `node_count` — an unlabelled node never gets an entry — so pop only when
+        // the entry is this node's.
+        if self.node_labels.len() > id as usize {
+            self.node_labels.pop();
+        }
         if self.edge_type_index {
             self.out_type_idx.pop();
             self.in_type_idx.pop();
@@ -5467,11 +5575,34 @@ impl Builder {
                 eid,
             });
         }
+        // The FORWARD label map, inverted from the buckets in one pass (item 724). Built here
+        // rather than maintained during `Builder::node` because the Builder's own `by_label` is
+        // the only place the labels live until now.
+        let mut label_names: Vec<String> = Vec::with_capacity(self.by_label.len());
+        let mut label_id: FnvMap<String, u32> = FnvMap::default();
+        let mut node_labels: Vec<Vec<u32>> = vec![Vec::new(); n];
+
+        for (name, ids) in &self.by_label {
+            let lid = u32::try_from(label_names.len()).unwrap_or(u32::MAX);
+
+            label_names.push(name.clone());
+            label_id.insert(name.clone(), lid);
+
+            for &id in ids {
+                if let Some(ls) = node_labels.get_mut(id as usize) {
+                    ls.push(lid);
+                }
+            }
+        }
+
         let mut st = Store {
             node_count: n,
             limits: GraphLimits::default(),
             parallelism: 0,
             by_label: self.by_label,
+            node_labels,
+            label_names,
+            label_id,
             props,
             prop_keys_cache: std::sync::RwLock::default(),
             edge_prop_keys_cache: std::sync::RwLock::default(),

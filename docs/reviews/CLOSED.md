@@ -17572,3 +17572,84 @@ unattempted; what is gone is the chance of attempting it in the wrong file, whic
 were set up to do.
 
 Gates: no code change to gate beyond the records. `cargo fmt` 0; `bun run fmt` 0; `bun run check` 0.
+
+## 724 — the per-node label list, built: 4.37x at forty labels, and the complexity is GONE
+
+**FIXED (native).** Items 721-723 measured, surveyed and located; this builds it. The three ticks
+before it were not overhead — 723's reachability map is the only reason this one edited the right
+file.
+
+### The change
+
+`by_label` (label → sorted ids) STAYS; it is the label-scan seed. Added alongside it:
+
+```rust
+node_labels: Vec<Vec<u32>>,   // node id -> label ids
+label_names: Vec<String>,     // append-only dictionary
+label_id: FnvMap<String, u32>,
+```
+
+`labels_of_refs` now indexes the forward map and resolves names, instead of probing EVERY bucket
+with a binary search. `labels_of` is its owned twin.
+
+**The forward map is NOT kept sorted.** `labels_of_refs` sorts the resolved NAMES, which is the
+canonical order its callers rely on — sorting ids would order by intern sequence, and that is the
+byte-identity surface item 721 named as the part to get wrong.
+
+### Eight write paths, and the test that found the one I missed
+
+Two node inserts, the sink insert, `add_label`, `remove_label`, the batch delete sweep,
+`pop_last_node`, and `Builder::build`'s one-pass inversion. The undo pair needed nothing — it
+routes through `apply_add_label` / `apply_remove_label`.
+
+`the_forward_label_map_agrees_with_the_bucket_sweep` compares the new reader against the old sweep,
+kept as a `#[cfg(test)]` oracle, over build / add / repeated add / remove / add_node / delete /
+rolled-back transaction. **It failed on its first real run**: "after delete_nodes: node 1
+disagrees". `delete_nodes` has a `TARGETED_MAX = 8` fast path that RETURNS before the sweep, and my
+clear was after the branch — so a small-batch delete left a dead node holding its labels. The clear
+is now above the branch.
+
+**Note what order that happened in.** The test passed BEFORE the readers were switched, because it
+was then comparing the sweep with itself — the "two gates covering one shape" trap. It only became
+an oracle once `labels_of_refs` stopped being the sweep, and that is when it caught the bug.
+
+### The measurement, and a control label I had to correct
+
+`label_read_cost_by_label_count` (item 721), node count pinned at 20,000, 500 rows, varying only
+the graph's distinct label count. Three alternated rounds, both files swapped per arm:
+
+| distinct labels | rows before | after | ratio     | JSON before | after | ratio     |
+| --------------: | ----------: | ----: | --------- | ----------: | ----: | --------- |
+|               1 |       50.60 | 38.31 | 1.32x     |       95.49 | 79.54 | 1.20x     |
+|               4 |       63.67 | 38.10 | 1.67x     |      107.44 | 78.24 | 1.37x     |
+|              10 |       80.71 | 36.44 | 2.21x     |      125.94 | 76.28 | 1.65x     |
+|              20 |      125.78 | 39.20 | 3.21x     |      167.47 | 81.62 | 2.05x     |
+|              40 |      174.06 | 39.87 | **4.37x** |      214.17 | 81.94 | **2.61x** |
+
+**The complexity is gone**: 38.31 → 39.87 across a fortyfold change in label count, where it was
+50.60 → 174.06. The win scales with the axis, which is what a complexity fix looks like.
+
+**Item 721 used the `rows` column as a CONTROL for a `json_out.rs` change. It is not one here** —
+this change is in `store.rs`, which both columns reach, so neither is a control. The real control
+had to come from outside: label-FREE algorithms, measured on both arms, read `degree` 0.95x, `wcc`
+1.03x, `pagerank(20)` 0.94x, `label_prop(10)` 0.99x — flat, so nothing outside the label read moved.
+Saying "control" about a column that the change reaches is the error that cost items 721 and 722,
+and it was avoided here only by checking which files each column touches.
+
+### Mutation 4/4
+
+A node insert forgetting the forward map; `forward_remove_label` as a no-op; the delete clear
+removed; and `labels_of_refs` no longer sorting, which is the byte-identity claim. All caught, by
+the agreement test plus the suite.
+
+### What is left
+
+`min_label_map` and the four min-label sites (item 722) are untouched and still open — this fixes
+the ALL-labels read, which is where 721's 3.4x lived. And `by_label` is now maintained alongside a
+forward map, so the two can drift; the agreement test is what stands between that and a wrong
+answer, which is why it compares the readers rather than asserting on internals.
+
+Gates, each its own command with its exit code read UNPIPED: `cargo fmt` 0; `cargo clippy
+--all-targets --features capi -- -D warnings` 0; `cargo test --release` 1220 + 13 + 725 pass, 0 fail
+(1220 includes the new agreement test); all seven byte-identity fuzzers pass — required rather than
+formal, since labels are rendered into results and their ORDER is part of the bytes.
