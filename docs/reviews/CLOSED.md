@@ -15034,3 +15034,76 @@ generator shape (3-9 vertices, 2-17 edges, ~20% self-loop bias), and the 8 mutan
 itself is not committed, deliberately: an unwired prototype in the repo is clutter, and the next
 step re-derives it as a TEST beside the implementation, where it belongs. If that step does not
 happen, this entry is what remains, and it is sufficient.
+
+## 690 — the brute-force trail oracle is IN THE REPO now, and it catches 7/7 mutants of the shipped formula
+
+**TEST ONLY. No engine change.** Items 687-689 derived and measured the depth-4 closed form. Before
+wiring it, the prerequisite item 602 recorded has to exist — and it did not.
+
+### Why this had to come first
+
+Item 602's own warning: _"THE ORACLE CHANGED — this item costs independence. While native
+enumerated, the seven byte-identity fuzzers checked TS's formula against a DIFFERENT implementation
+for free. Both engines now run the same formula, so they prove only that the two AGREE and would
+pass on a shared wrong answer."_ Nothing in the repo compared the bounded-trail count against
+ENUMERATION.
+
+Item 689 found a second gap: the depth-3 correction had never been brute-forced **per source** —
+item 600 validated the total on one fixture, and a per-source error that cancels in the total is
+exactly what a total cannot see. Items 687-689 build directly on the per-source value.
+
+`trail-count-bruteforce.test.ts` closes both: depths 1-3, TRAIL and WALK, exact depths and ranges,
+with and without an endpoint predicate, over 60 randomized multigraphs — plus a per-source test on a
+fixture whose per-source counts are deliberately UNEQUAL, so a mix-up between sources shows. 909
+assertions.
+
+The generator asserts it produced what the trail terms exist for (self-loops, parallel edges,
+reverse pairs) and that the trail and walk answers actually DIVERGE somewhere — otherwise a green run
+would be reporting on the generator rather than the engine.
+
+### 🛑 Mutation found two gaps in the oracle, each diagnosable to a missing fixture DIMENSION
+
+First run **4/6**, and neither survivor was an equivalence:
+
+- **"the e0 == e1 term uses the RAW out-degree instead of the PASSING one"** survived because every
+  fixture had NO endpoint predicate, so `pass[x] = 1` everywhere and `passDeg[v]` equals the raw
+  degree. The mutant was equivalent on that fixture only.
+- **"the LEVEL-2 correction is dropped"** survived because the test queried only EXACT depths.
+  `trail3` is `isTrail && max === 3`, so at `{2}` that whole block never runs — depth 2 goes to the
+  `max <= 2` route — and the level-2 branch is reachable only through a RANGE like `{1,3}`. This is
+  item 602's "a correction applied once for the whole range answers `{3,3}` correctly and `{1,3}`
+  wrongly", from the testing side.
+
+Added ranges (`{1,3}`, `{2,3}`) and an endpoint predicate (`WHERE y.n > 0`, carried rather than
+refused since item 583). Re-run **7/7**, including a new mutant on the `pass[b] === 0`
+early-continue:
+
+| mutant                                               |        |
+| ---------------------------------------------------- | ------ |
+| all-three-equal add-back `−2x` → `−1x`               | CAUGHT |
+| the reverse-edge term as a BOOLEAN, not a count      | CAUGHT |
+| the `e1 == e2` self-loop-at-the-landing term dropped | CAUGHT |
+| the `e0 == e1` term on the RAW out-degree            | CAUGHT |
+| the LEVEL-2 correction dropped                       | CAUGHT |
+| the LEVEL-3 correction dropped                       | CAUGHT |
+| the `pass[b] === 0` early-continue removed           | CAUGHT |
+
+The boolean/count mutant is the one item 600's comment singles out ("two parallel `v → b` edges make
+`e0, b→v, e2` a valid trail ... a mutant written that way is caught only by a fixture with parallel
+edges") — so that warning is now enforced by a test rather than only written down.
+
+### The pattern in both gaps
+
+Each survivor was a fixture DIMENSION the test did not vary: the endpoint mask, and the depth range.
+Neither is exotic — both are in the route's own contract — and the formula's terms for them were
+unguarded. **A randomized generator does not help with a dimension it holds constant**, however
+many trials it runs; 60 graphs of exact-depth unfiltered queries are 60 samples of one corner.
+
+2,945 TS tests pass. `bun run lint` 0 (it first exited 1 on `curly`/padding in the new file), `bun
+run check` 0.
+
+### Next
+
+The depth-4 wiring, against an oracle that is now in the repo and known to have teeth. Extending
+this test to depth 4 is a two-line change (`[1, 4]`, `[4, 4]` in the depth table) and is what should
+fail before the implementation lands.
