@@ -11000,6 +11000,129 @@ fn gather_cost_by_width() {
     }
 }
 
+/// Which write operations are O(1) in the NODE COUNT, and which are not? (item 667)
+///
+/// ```text
+/// cargo test --release --manifest-path crates/lenke-engine/Cargo.toml \
+///   -- --ignored --nocapture write_cost_by_graph_size
+/// ```
+///
+/// Items 663 and 664 each found an O(total-nodes) cost on the write path — a single-node delete
+/// and an insert rollback — and **neither was visible in any bench row**, because a bench measures
+/// one graph size. The discriminator was always the same: hold the operation count fixed and vary
+/// the GRAPH SIZE, so a cost that scales with it shows as a rising per-operation figure.
+///
+/// This applies that discriminator to the REST of the write surface in one table, so the question
+/// "does this scale with the graph?" is answered for each operation rather than asked again per
+/// item. Degree is held at zero or one as noted, so adjacency is never the variable.
+///
+/// Read the `ns per node` column, not the time: **flat in time means O(1); flat in ns-per-node
+/// means O(V)**. That is exactly how item 663's 0.33 ns/node and item 664's rising µs/inserted
+/// were recognised.
+#[test]
+#[ignore = "measurement harness: cargo test --release -- --ignored --nocapture write_cost_by_graph_size"]
+fn write_cost_by_graph_size() {
+    use std::time::Instant;
+    const OPS: usize = 200;
+
+    println!(
+        "{:<26}{:>10}{:>14}{:>16}",
+        "operation", "nodes", "us per op", "ns per node"
+    );
+
+    for &n_nodes in &[1_000usize, 10_000, 50_000, 200_000] {
+        // ONE store per size, rebuilt per operation so each measurement starts from the same
+        // state — a shared store would let an earlier operation's growth bias a later one.
+        let build = || {
+            let mut b = Builder::default();
+            for i in 0..n_nodes {
+                b.node(&["User"], &[("k", n(i as f64))]);
+            }
+            b.build()
+        };
+
+        let report = |label: &str, best: u128| {
+            println!(
+                "{:<26}{:>10}{:>14.3}{:>16.4}",
+                label,
+                n_nodes,
+                best as f64 / 1000.0,
+                best as f64 / n_nodes as f64
+            );
+        };
+
+        // SET a property on an existing node. Memory records native `SET` as once O(row width)
+        // from a commit-time constraint recheck, fixed by dedup + a no-constraint skip — so this
+        // row is a REGRESSION CHECK on that fix as much as a new question.
+        {
+            let mut store = build();
+            let mut best = u128::MAX;
+
+            for i in 0..OPS {
+                let t0 = Instant::now();
+                store.set_prop((i % n_nodes) as u32, "k", n(-(i as f64)));
+                best = best.min(t0.elapsed().as_nanos());
+            }
+
+            report("set_prop", best);
+        }
+
+        // ADD an edge between two existing nodes.
+        {
+            let mut store = build();
+            let mut best = u128::MAX;
+
+            for i in 0..OPS {
+                let a = (i % n_nodes) as u32;
+                let b = ((i + 1) % n_nodes) as u32;
+                let t0 = Instant::now();
+                store.add_edge(a, b, "E");
+                best = best.min(t0.elapsed().as_nanos());
+            }
+
+            report("add_edge", best);
+        }
+
+        // DELETE an edge. Each victim is its own edge, so degree stays at one and the detach
+        // cannot be the variable.
+        {
+            let mut store = build();
+            let mut eids = Vec::with_capacity(OPS);
+
+            for i in 0..OPS {
+                let a = (i % n_nodes) as u32;
+                let b = ((i + 1) % n_nodes) as u32;
+                eids.push((a, b, store.add_edge(a, b, "E")));
+            }
+
+            let mut best = u128::MAX;
+
+            for &(a, b, eid) in &eids {
+                let t0 = Instant::now();
+                store.delete_edge(a, b, eid);
+                best = best.min(t0.elapsed().as_nanos());
+            }
+
+            report("delete_edge", best);
+        }
+
+        // ADD a node — the control. It appends, so it cannot scale with the node count, and a
+        // rising figure here would mean the harness itself is size-dependent.
+        {
+            let mut store = build();
+            let mut best = u128::MAX;
+
+            for i in 0..OPS {
+                let t0 = Instant::now();
+                store.add_node(&["Tmp"], &[("seq", n(i as f64))]);
+                best = best.min(t0.elapsed().as_nanos());
+            }
+
+            report("add_node (CONTROL)", best);
+        }
+    }
+}
+
 /// Is ROLLING BACK an insert O(inserted), or O(inserted x total nodes)? (item 664)
 ///
 /// ```text
