@@ -11060,12 +11060,38 @@ fn gather_cost_by_width() {
 /// over 6 names followed by a match with ~89 STRING arms. `abs` at 2.02 is the control — a
 /// fast-pathed function bypasses the dispatcher entirely, so the toll is not inherent to a call.
 ///
-/// **So the biggest lever in this family is resolving the name ONCE PER BATCH**, which would take
-/// ~16 ns off `char_length` (2.4x), `upper` (1.7x), `contains` (1.9x) and every other generic
-/// call. It is NOT built: it means restructuring 89 string arms into a function-pointer table,
-/// and every cheap shortcut considered (an integer match, a per-batch cache, a captured closure)
-/// still needs the name-to-behaviour mapping written out once per function. Priced here so the
-/// decision is made with the number rather than from the shape of the code.
+/// ⚠️ **WHERE THE 16 ns IS NOT: the string matching.** This line used to name "resolve the
+/// function name once per batch" as the family's biggest lever, projecting 2.4x on
+/// `char_length`. **That was wrong twice over and item 656 measured it.**
+///
+/// `call_scalar_checked` re-derives its argument checks per row — a 6-name temporal test, a
+/// 27-name numeric list, a ~20-arm `(str_pos, num_pos)` match and three more name tests, all
+/// functions of `name` alone. Hoisting ALL of them into a per-batch `ScalarPlan` was built,
+/// measured, and **reverted**:
+///
+/// ```text
+///                before   after
+/// upper           41.54   41.48
+/// char_length     27.01   26.57
+/// lower           42.34   44.43
+/// contains        33.65   32.89
+/// pi              16.13   15.76
+/// ```
+///
+/// Flat. For `pi` that removed ~38 string comparisons per row for ~2%. **rustc compiles those
+/// `matches!` lists into length-and-prefix switches that branch-predict perfectly**, so the
+/// comparisons are nearly free and neither they nor the 89-arm dispatch (`pi` is its SIXTH arm
+/// and still cost 16 ns) account for the time.
+///
+/// The mistake was reading a spike too coarsely. `call_scalar` — the same dispatch with NO checks
+/// — measured 9 ns/row cheaper, and that 9 ns was attributed to the name tests because they were
+/// the part being looked at. A spike bounds the TOTAL available; it does not say which component
+/// holds it. What remains, unmeasured, is the non-inlined call and the per-row `Result`/`Value`
+/// construction.
+///
+/// So: the 16 ns is real, the 9 ns ceiling is real, and the two obvious mechanisms are both
+/// refuted. Do not re-target the dispatch or the name lists without first isolating a component
+/// rather than removing everything at once.
 ///
 /// 🛑 TWO HYPOTHESES THIS DECOMPOSITION KILLED, both of which looked obvious:
 ///
