@@ -277,8 +277,19 @@ pub fn to_binary(store: &Store) -> Vec<u8> {
         .collect();
     w.u32(live.len());
     for &id in &live {
-        w.str(&store.node_ext_id(id).unwrap_or_default());
-        let labels = store.labels_of(id);
+        // BORROWED accessors throughout (item 720). `node_ext_id` is `.cloned()` and
+        // `labels_of` allocates a `Vec<String>`, and every value here is handed straight to
+        // `w.str`, which takes a `&str` — so each clone existed only to be lent. The edge loop
+        // below already used `edge_labels_of_refs`, which is the asymmetry that made this
+        // visible: the same function borrowed on one side and cloned on the other.
+        //
+        // The bytes written are identical. `binary_round_trips_via_ndjson_equality` is NOT what
+        // pins that, which mutation had to show: it compares two `to_ndjson` outputs, and the
+        // NDJSON writer mints an absent edge id, so dropping every edge id here survived it.
+        // `a_binary_round_trip_keeps_edge_ids_and_label_order` reads the store directly and is
+        // the test this change leans on (item 720).
+        w.str(store.node_ext_id_ref(id).unwrap_or(""));
+        let labels = store.labels_of_refs(id);
         w.u32(labels.len());
         for l in &labels {
             w.str(l);
@@ -301,9 +312,9 @@ pub fn to_binary(store: &Store) -> Vec<u8> {
     }
     w.u32(edges.len());
     for (eid, from, to) in &edges {
-        w.opt_str(store.edge_ext_id(*eid).as_deref());
-        w.str(&store.node_ext_id(*from).unwrap_or_default());
-        w.str(&store.node_ext_id(*to).unwrap_or_default());
+        w.opt_str(store.edge_ext_id_ref(*eid));
+        w.str(store.node_ext_id_ref(*from).unwrap_or(""));
+        w.str(store.node_ext_id_ref(*to).unwrap_or(""));
         let labels = store.edge_labels_of_refs(*eid);
         w.u32(labels.len());
         for l in &labels {
@@ -611,6 +622,55 @@ mod tests {
         assert_eq!(to_ndjson(&back), to_ndjson(&st));
         // The unique constraint survived (schema round-trips).
         assert_eq!(back.unique_constraints(), st.unique_constraints());
+    }
+
+    /// Edge EXTERNAL IDS and node LABEL ORDER survive the binary round trip, read off the store
+    /// rather than through `to_ndjson`.
+    ///
+    /// Found by mutation at item 720. `binary_round_trips_via_ndjson_equality` compares
+    /// `to_ndjson(&back)` with `to_ndjson(&st)`, and that oracle is BLIND to losing an edge id:
+    /// writing `None` for every edge survives it, because the NDJSON writer MINTS an id where one
+    /// is absent and so fills the gap on both sides. Reversing the label order survives too.
+    ///
+    /// That is item 705's lesson in a second place — a round trip cannot see a defect its own
+    /// inverse repairs — and it matters here because `to_binary`/`from_binary` are exposed over
+    /// the FFI, so losing every edge id would be silent data loss on a user-reachable path.
+    ///
+    /// THE LABEL ASSERTION PINS THE READ, NOT THE WRITE, and the distinction is measured rather
+    /// than assumed: reversing the written order still survives this test, because `from_binary`
+    /// inserts labels into the label BUCKETS and `labels_of_refs` sorts on the way out — so the
+    /// stream's order is unobservable by construction. That mutant is EQUIVALENT, not an
+    /// uncovered case. What this does pin is that a reload presents labels in canonical order.
+    #[test]
+    fn a_binary_round_trip_keeps_edge_ids_and_label_order() {
+        let st = from_ndjson(
+            "{\"id\":\"n1\",\"labels\":[\"Zed\",\"Alpha\",\"Mid\"],\"props\":{}}\n\
+             {\"id\":\"n2\",\"labels\":[\"P\"],\"props\":{}}\n\
+             {\"from\":\"n1\",\"to\":\"n2\",\"id\":\"my-edge\",\"type\":\"R\",\"props\":{}}\n",
+        )
+        .unwrap();
+        let back = from_binary(&to_binary(&st)).unwrap();
+
+        // THE EDGE ID, off the store. The fixture's id is not a dense-id string, so a minted
+        // replacement cannot coincide with it.
+        let eid = back
+            .out(back.node_by_ext("n1").expect("n1 reloads"))
+            .first()
+            .expect("the edge reloads")
+            .eid;
+
+        assert_eq!(
+            back.edge_ext_id_ref(eid),
+            Some("my-edge"),
+            "the edge's external id must survive the binary round trip"
+        );
+
+        // LABEL ORDER: declared Zed/Alpha/Mid, stored and emitted in canonical sorted order.
+        assert_eq!(
+            back.labels_of_refs(back.node_by_ext("n1").expect("n1 reloads")),
+            vec!["Alpha", "Mid", "Zed"],
+            "labels must come back in canonical sorted order"
+        );
     }
 
     #[test]

@@ -206,6 +206,15 @@ pub fn run(cfg: &Cfg) {
                 lenke_engine::codec::serialize(&store, format).expect("encodes")
             }
         };
+        // `binary` is the FFI snapshot format (`lnk_*` exposes `to_binary`), so it is an encode
+        // path a user reaches — and it had no bench at all until item 720 needed one.
+        {
+            let ms = best_ms(cfg.reps, || lenke_engine::binary::to_binary(&store));
+            let mib = lenke_engine::binary::to_binary(&store).len() as f64 / (1024.0 * 1024.0);
+
+            println!("{:26} {ms:>10.2} {mib:>10.2} {:>12.3}", "binary", mib / ms);
+        }
+
         for format in ["ndjson", "pg-json", "pg-text", "graphson", "csv"] {
             let ms = best_ms(cfg.reps, || encode(format));
             let mib = encode(format).len() as f64 / (1024.0 * 1024.0);
