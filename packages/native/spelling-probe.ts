@@ -447,6 +447,25 @@ const GROUPS: [string, readonly string[]][] = [
   // the other pattern's variable may be unbound — and it keeps a real ~3.4x against its
   // two-clause twin. Putting a known-divergent pair in a probe that flags divergence makes the
   // probe lie; it is recorded in CLOSED.md instead.
+  //
+  // 🛑 THIS GROUP FLAGS AT ~2.3x AND THE OUTLIER IS THE INLINE `{k: 7}` MEMBER, WHICH IS
+  // **CLOSED AT ITEM 644** — not outstanding, and not what the paragraphs above describe (they
+  // explain the comma-vs-`MATCH MATCH` cause item 285 fixed, and predate this member). Only
+  // `eqProps`/`cmpProps` reach `rejectedByElementDirect`, so the inline-props spelling evaluates
+  // its predicate once per VERTEX while the other three evaluate once per SURVIVOR — 20,004
+  // evaluations against 404 at 20,000 vertices, worth 1.89x at a million.
+  //
+  // Extending the pre-filter to inline `props` was BUILT AND REVERTED there, because the
+  // pre-filter runs BEFORE the binding and so skips a binding that would RAISE:
+  // `MATCH p = (a:P {k: 1}), (p:P {k: 2}) RETURN count(*)` raises on the general path and
+  // answered 0 with the change. `product-count.test.ts`'s "a PATH variable colliding with a node
+  // variable declines, preserving the raise" pins it, and WHICH queries raise is part of the
+  // cross-engine invariant.
+  //
+  // Item 713 re-derived all of this — the diagnosis, the 2.8x, and the same reverted candidate,
+  // which failed that same test — because the reason lived only in a code comment in
+  // `executor.ts` and this group, the thing that PRINTS the flag, did not name it. That is what
+  // this note is for: a flag is only readable where it is printed.
   [
     "a product's one-sided predicate: comma vs MATCH MATCH (item 285)",
     [

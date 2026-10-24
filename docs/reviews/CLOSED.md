@@ -38,6 +38,7 @@ produces the same answer.
 | **A positional column pair instead of `types.get(key)` per cell** (CSV encode)                   | **REJECTED.** CSV encode has no cheap win; two levers priced.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | 118                                        |
 | **The TS insert path** (`addVertex`/`addEdge`)                                                   | **CLOSED as a constant factor** — 3.7x, and it is `JSON.parse` + alloc + freeze, not a missing path. The recorded "71% is `indexEdgeLabel`" was **withdrawn → 34.1%**. ~~Single remaining target is `addVertex` itself.~~ **Withdrawn at 312**: `addVertex` is 7.4% of the ingest row and `addEdge` ~85%. Inside `addEdge`, the label index is 28% and `edgesById.set` 10%; the 20% emission 312 also listed is **not in the decode row at all** (313 — decode disables events), though it is 1.46x cheaper now for every API write.                                                                                                                                                                                                                                                                                                                                                                                                                                | 140, 201, **203**                          |
 | **The end-filtered multi-hop reversal**                                                          | **WON'T-FIX despite 48.7x.** Native prices it and declines on purpose; the remedy is an **index** (53.6x). Recorded with numbers precisely because a 48.7x in a probe invites a later sweep.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | **223**                                    |
+| **Inline `{k: v}` props in a PRODUCT, pre-filtered like a clause `WHERE`**                       | **BUILT AND REVERTED.** Only `eqProps`/`cmpProps` reach `rejectedByElementDirect`, so inline props evaluate per VERTEX and the clause / inline-`WHERE` spellings per SURVIVOR — 20,004 evaluations against 404 at 20,000 vertices, **1.89x at a million**. The lift runs BEFORE the binding, so it skips a binding that would RAISE: `MATCH p = (a:P {k: 1}), (p:P {k: 2})` raises on the general path and answered 0. Pinned by `product-count.test.ts`; WHICH queries raise is part of the cross-engine invariant. **Open with a reason, not a target.**                                                                                                                                                                                                                                                                                                                                                                                                          | **644**, re-derived at 712/**713**         |
 | **Gremlin `V().out().has().count()` and `V().has().count()`**                                    | **SHARED FLOOR, not a Gremlin gap.** `filteredHopCount` already exists and fires. The GQL spelling of the same question costs the same (50.8ms vs 51.9ms), so it is item 200's adjacency-lookup floor — a per-vertex `Map.get` on the id, ~180ns.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | 161, 226, **235**                          |
 | **Gremlin `V().out().values(k)`**                                                                | **TinkerPop ORDERING GUARANTEE, not overhead.** `hopValuesShortcut` fires at its documented rate; Gremlin groups by the START vertex where GQL groups by the FAR one, so the cheaper shape is not available.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | 170, **235**                               |
 | **`bun run bench`'s `query: project 3 columns` row (ts/ffi 0.14x) as an ENGINE gap**             | **IT IS THE JSON CARRIER, NOT EXECUTION.** The largest adverse ratio in that table, on the most ordinary shape there is — and the same fixture with the same work and ONE row out is **30.8x the other way** (`3 x count(prop)`: ts 73.95ms, native 2.40ms). Decomposed against the bytes the FFI returns: **`JSON.parse` 48%** (17.63ms for a 4.47MB carrier), the crate's render + FFI call 33%, `TextDecoder` 0.5%, row shaping 12%. ~80% is the carrier and no engine change touches it; `queryArrowIpc` is the existing answer. Every row native loses in that table has a huge result set and every row it wins big has a tiny one — read the table's SHAPE before reading its ratios.                                                                                                                                                                                                                                                                        | **289**                                    |
@@ -16719,3 +16720,75 @@ passes in one session have already paid for.
 
 Gates: no engine change. `bun run lint` 0; `bun run fmt` 0; `bun run check` 0; tree verified clean
 of probes before the record was written.
+
+## 713 — RETRACTED: item 712's target is CLOSED at 644, and I re-derived the whole of it including the reverted candidate
+
+**RETRACTED (TypeScript). The only change is a comment where the flag is printed.**
+
+Item 712 diagnosed the spelling probe's live flag — inline `{k: 7}` in a product at 2.8x against
+three converged siblings — and named the next step: _"move inline props into `start.where` at plan
+time and re-measure"_. This tick did that. The ablation worked:
+
+| spelling                 |  S=2 |  S=4 |  S=8 | S=16 |
+| ------------------------ | ---: | ---: | ---: | ---: |
+| inline `{k: 7}` before   | 14.5 | 17.8 | 27.9 | 33.4 |
+| inline `{k: 7}` AFTER    |  5.0 |  5.9 |  8.5 |  5.0 |
+| clause `WHERE` (control) |  5.4 |  6.0 |  8.4 |  5.2 |
+
+Converged exactly onto its siblings. A second ablation localized the mechanism further: KEEPING
+`properties` and merely ADDING the equivalent `where` is **also** fast (5.3 / 6.5 / 5.3 / 9.2), so
+the win comes from the `where` being PRESENT rather than from the properties being absent — i.e.
+something gates on `where` instead of on "is this node constrained".
+
+### And then the code said it had all been done
+
+`rejectedByElementDirect` carries a 🛑 marker at the top:
+
+> **EXTENDING THIS TO INLINE `props` WAS TRIED AND REVERTED (item 644). It is NOT a tuning
+> question: it changes WHICH QUERIES RAISE.**
+
+Item 644 has the same diagnosis, the same mechanism (only `eqProps`/`cmpProps` reach the
+pre-filter, so inline props evaluate per VERTEX and the other spellings per SURVIVOR — **20,004
+evaluations against 404** at 20,000 vertices), and the same magnitude (**1.89x at 1,000,000**, with
+the clause spelling and a null control both flat). It also records why it was reverted: the
+pre-filter runs BEFORE the binding, so rejecting a candidate skips a binding that would RAISE.
+
+**My ablation reproduces that failure exactly.** Re-applied and run against the test 644 names:
+
+```
+(fail) product-of-counts shortcut > a PATH variable colliding with a node variable
+       declines, preserving the raise
+       Expected: "raised"    Received: "answered 0"
+```
+
+Same query as 644's comment (`MATCH p = (a:P {k: 1}), (p:P {k: 2})`), same wrong answer. So the
+candidate I built is the candidate that was already rejected, and the guard that rejects it has
+teeth — demonstrated rather than assumed, which is the one useful thing this tick produced beyond
+the retraction.
+
+### Why I missed it, and the one change that follows
+
+CLAUDE.md's rule is to match the store to the kind of fact, and "has this lever been tried?" →
+`CLOSED.md`. I searched `CLOSED.md` — for `inline`, for `clause`, for the row names — and found
+items 579, 669, 285, 286, 287. **Item 644 is not in `CLOSED.md` under any of those terms; its
+reason lives in a code comment in `executor.ts`, three files from the probe that prints the flag.**
+
+So the fix is not in the planner, it is at the point of printing. The spelling probe's group now
+carries the 🛑 note: that the inline member is closed at 644, what the mechanism is, what was
+reverted and which test killed it, and the general point — **a flag is only readable where it is
+printed.** The group's existing commentary explains the comma-vs-`MATCH MATCH` pair item 285 fixed
+and predates this member entirely, so a reader following the probe's own words was being pointed at
+the wrong pair.
+
+### What item 712's record should now say
+
+Its diagnosis stands as measurement — the 2.8x, the per-scanned-vertex finding, the multiplier
+sweep and the fixture correction are all correct and reproduce — but its framing as an open target
+is wrong, and its named next step leads to a reverted change. **The gap is OPEN with a recorded
+reason (644), not open as a target.** Two ticks of this cluster bought: a confirmed counterfactual
+for a known mechanism, a demonstration that the guard has teeth, and a pointer where the next
+reader will actually look.
+
+Gates, each its own command with its exit code read UNPIPED: `bun run lint` 0; `bun run fmt` 0;
+`bun run check` 0; `product-count.test.ts` 23 pass / 0 fail on the restored tree; probes removed and
+tree verified clean.
