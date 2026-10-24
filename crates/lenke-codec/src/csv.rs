@@ -751,12 +751,28 @@ fn write_row(out: &mut String, fixed: &[&str], keys: &[String], types: &[ColType
 }
 
 /// Join a label set into a `;`-separated cell, escaping `;`/`\`/formula per label.
-fn join_labels(labels: &[&str]) -> String {
-    labels
-        .iter()
-        .map(|l| guard_element(escape_element(l)))
-        .collect::<Vec<_>>()
-        .join(";")
+fn join_labels<'a>(labels: &'a [&'a str]) -> Cow<'a, str> {
+    // ONE label that needs neither escaping nor guarding is the overwhelmingly common shape, and
+    // it used to cost four allocations: two `str::replace` in `escape_element` (both allocate
+    // unconditionally, whether or not there is anything to replace), the `Vec` from `collect`, and
+    // the `join`. ~4,800,000 of them per encode on the bench fixture. BYTE-IDENTICAL for this
+    // case by construction: `escape_element` returns the input unchanged when it holds no `\\` and
+    // no `;`, `guard_element` returns it unchanged when it does not lead with a formula char, and
+    // joining one element is that element. Item 707; the ablation that priced this stage at 18% of
+    // the encode is item 706.
+    if let [one] = labels {
+        if !one.contains('\\') && !one.contains(';') && !starts_with_formula(one) {
+            return Cow::Borrowed(one);
+        }
+    }
+
+    Cow::Owned(
+        labels
+            .iter()
+            .map(|l| guard_element(escape_element(l)))
+            .collect::<Vec<_>>()
+            .join(";"),
+    )
 }
 
 fn split_labels(text: &str) -> Vec<String> {
@@ -1351,6 +1367,40 @@ mod tests {
         assert_eq!(ids, vec!["=cmd", "\\back"]);
         assert_eq!(back.edges[0].from, "=cmd");
         assert_eq!(back.edges[0].to, "\\back");
+    }
+
+    /// A node with EXACTLY ONE label that still needs escaping or guarding.
+    ///
+    /// Found by mutation at item 707. `join_labels` borrows the single-label case when it holds no
+    /// `\\`, no `;` and no leading formula char — and dropping the backslash clause or the formula
+    /// clause from that condition left the whole crate green, because every existing fixture with
+    /// a label needing escape work carried TWO labels, which takes the other branch.
+    /// `quoting_labels_and_formulas` has `["has;semi", "Plain"]`, so it pins the semicolon clause
+    /// and nothing else. This is the fixture rule again: a case where the fast path is not taken
+    /// cannot test the fast path's condition.
+    #[test]
+    fn a_lone_label_is_still_escaped_and_guarded() {
+        let g = crate::pg_json::decode(
+            r#"{"nodes":[{"id":"n1","labels":["a\\b"],"properties":{}},{"id":"n2","labels":["=form"],"properties":{}}],"edges":[]}"#,
+        )
+        .unwrap();
+        let enc = encode(&g);
+
+        // A lone backslash label is DOUBLED; a lone formula label is PREFIXED. Asserted on the
+        // emitted text, because a round trip alone passes under both mutants.
+        assert!(
+            enc.contains("a\\\\b"),
+            "lone backslash label not escaped: {enc}"
+        );
+        assert!(
+            enc.contains("\\=form"),
+            "lone formula label not guarded: {enc}"
+        );
+
+        let back = decode(&enc);
+        let mut labels: Vec<String> = back.nodes.iter().flat_map(|n| n.labels.clone()).collect();
+        labels.sort();
+        assert_eq!(labels, vec!["=form", "a\\b"]);
     }
 
     #[test]
