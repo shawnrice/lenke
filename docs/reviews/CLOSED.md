@@ -15736,3 +15736,78 @@ the cheaper route, so there is nothing to move. ("Grep the pattern elsewhere", a
 already in hand.)
 
 2,945 TS tests pass, all seven byte-identity fuzzers pass, lint and check 0.
+
+## 700 — the canonical `ORDER BY … LIMIT k` reaches NO top-k, and the one that does is the shape you would not guess
+
+**DIAGNOSED (TypeScript), not fixed. No engine change.** Item 699's rule — read a sweep for
+orderings that are impossible on their face — applied to the next row.
+
+### The impossible ordering
+
+| row                                | ts       | ffi     | ts/ffi    |
+| ---------------------------------- | -------- | ------- | --------- |
+| ordered projection **[no window]** | 20.7     | 28.1    | **0.74x** |
+| ordered projection **+ limit**     | **21.4** | **1.0** | 21.70x    |
+
+TS is FASTER than native without the window and 21.7x slower with it. Adding a `LIMIT` cannot cost
+more than not adding one.
+
+### The floor, from the engine's own scan-and-keep
+
+`min(n.age)` is top-1 over the same column by the same route family, so it is the floor items
+659/660 ask for. 200,000 vertices, both positions:
+
+| query                                  | ms                        | rows    |
+| -------------------------------------- | ------------------------- | ------- |
+| `min(n.age)` — **the floor**           | **4.6**                   | 1       |
+| project all, unordered                 | 8.1                       | 200,000 |
+| `ORDER BY a` (full sort)               | 17.9                      | 200,000 |
+| `ORDER BY a LIMIT 1 / 5 / 100 / 50000` | 18.7 / 17.0 / 16.8 / 17.7 | —       |
+
+**Flat at every k.** A bounded selection would make `LIMIT 5` land near the 4.6 ms floor.
+
+### 🛑 Two top-k implementations exist. Instrumentation says which runs, and it is not what reading suggested.
+
+`boundedTopK` is a careful O(n log cap) heap with its own doc, two call sites in `applyProjection`,
+and a REJECTED-optimization note carrying numbers (item 424's parallel-arrays experiment, 2.4%,
+under the floor). **It fired zero times for any query above** — verified by a counter, and verified
+that the counter reached `dist`, because a null result from instrumentation is otherwise
+indistinguishable from a build that did not take.
+
+That is not the finding it looks like. An EARLIER branch holds a specialised single-key heap
+(parallel `bs`/`ks`/`ix` arrays with their own siftUp/siftDown, sorting a permutation of only the
+survivors), which supersedes the generic one. Reading the code without instrumenting would have
+produced "the top-k is unreachable"; reading it after instrumenting gives the real shape.
+
+**And that specialised heap fires for exactly ONE of eight shapes:**
+
+| query                                            | reaches a top-k?           |
+| ------------------------------------------------ | -------------------------- |
+| `RETURN n.age AS a ORDER BY a LIMIT 5`           | **no**                     |
+| `… LIMIT 1` / `LIMIT 100` / `LIMIT 50000`        | **no**                     |
+| `… ORDER BY a DESC LIMIT 5`                      | **no**                     |
+| `RETURN n.age AS a ORDER BY n.age LIMIT 5`       | **no**                     |
+| `… ORDER BY a SKIP 2 LIMIT 5`                    | **no**                     |
+| **`RETURN n.name AS nm ORDER BY n.age LIMIT 5`** | **YES** (cap=5, n=200,000) |
+
+The one that reaches it is the one whose sort key is an input property **not among the projected
+columns**. Every spelling where the sort key is also projected — the common case, and the cheaper
+one, since the value is already computed — sorts all 200,000 rows.
+
+### A hypothesis refuted on the way
+
+I predicted the discriminator was the ALIAS: `ORDER BY a` (output column) versus `ORDER BY n.age`
+(input property), since `executor.ts:3045` says an alias spelling "forces `orderNeedsOutput` and
+gives up the top-k". Measured: 17.3 against 17.0 — **both spellings miss the top-k equally**, so
+the alias is not the gate. The gate is whether the sort key is projected at all.
+
+### What a fix has to respect
+
+Not a new algorithm — both heaps exist. The work is widening the gate, and the constraint is the
+one `ordered-rows.ts` and item 604 exist for: the general path keeps top-k INPUT bindings and
+projects only survivors, so a route that projects every row then selects can RAISE where the query
+does not. `cannotFault` (item 610) is the licence, and it is already written.
+
+Item 424 measured this family at "50.1 ms against the `max(a.u)` fold's 20.7 over the same rows,
+and it is NOT allocation" — consistent with the 17.0-against-4.6 here, and now explained: the gap
+is not allocation because **the bounded selection is not running at all.**
