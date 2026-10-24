@@ -420,7 +420,11 @@ pub fn cast(v: &Value, target: CastTarget) -> Result<Value, String> {
                 // non-finite number has no textual form here.
                 Value::Num(x) => {
                     if x.is_finite() {
-                        crate::json_fmt::js_number(*x)
+                        // `js_number_gstr`, not `js_number`: the latter returns an owned
+                        // `String` that `GStr::from` below immediately copies and drops, which
+                        // is a heap allocation per row on `CAST(n.k AS STRING)` (item 654).
+                        // This returns the `GStr` directly out of a stack buffer.
+                        return Ok(Value::Str(crate::json_fmt::js_number_gstr(*x)));
                     } else {
                         return bad("non-finite number", "string");
                     }
