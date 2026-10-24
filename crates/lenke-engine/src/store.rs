@@ -2355,6 +2355,17 @@ impl Store {
     /// allocation-light twin of [`labels_of`](Self::labels_of) (a small `Vec<&str>`
     /// of pointers, no per-label `String` clone) for the streaming codecs.
     #[must_use]
+    /// 🛑 PRICED AND OPEN (item 721): this and `labels_of` sweep EVERY label bucket with a binary
+    /// search, so reading one node's labels is O(the GRAPH's distinct label count) where the TS
+    /// engine's per-element label box is O(1). `label_read_cost_by_label_count` measures 50.89 µs
+    /// at 1 label against 171.56 at 40, for the same 500 rows — 3.4x, and linear in the label
+    /// count. NO BENCH FIXTURE COULD SEE IT: every one gives each node a single label.
+    ///
+    /// The fix is a per-node label list (what TS has), which needs a label dictionary and four
+    /// write paths, and whose byte-identity surface is the canonical SORTED order these return.
+    /// A contained attempt — `min_label_ref` for the three `labels_of(..).first()` sites in
+    /// `json_out.rs` — measured NULL against a control that tracked it, because the sweep
+    /// dominates the clones (item 721).
     pub fn labels_of_refs(&self, id: u32) -> Vec<&str> {
         let mut ls: Vec<&str> = self
             .by_label

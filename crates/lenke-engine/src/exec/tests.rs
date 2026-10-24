@@ -11049,6 +11049,95 @@ fn a_seek_returns_each_node_once_after_every_index_write_path() {
     assert_eq!(seek(&st), 2.0, "after a delete");
 }
 
+/// Does returning a node cost O(the number of DISTINCT LABELS in the graph)? (item 721)
+///
+/// ```text
+/// cargo test --release --manifest-path crates/lenke-engine/Cargo.toml \
+///   -- --ignored --nocapture label_read_cost_by_label_count
+/// ```
+///
+/// `labels_of` / `labels_of_refs` derive a node's labels by sweeping EVERY label bucket with a
+/// binary search — the store has no per-node label list, which `delete_node`'s own comment says
+/// ("no per-node label list yet, so sweep") and item 442 recorded. The TS engine instead holds a
+/// per-element label box, an O(1) read.
+///
+/// THIS AXIS IS SWEPT BY NO OTHER HARNESS, and the reason is the fixture rule: every bench fixture
+/// in the repo gives each node ONE label (`Person`), so L = 1 and the sweep is a single binary
+/// search. A people graph has ten or twenty — Person, Candidate, Employee, Requisition,
+/// Application, Team — and each one multiplies this.
+///
+/// NODE COUNT AND ROW COUNT ARE PINNED: every store has `TOTAL` nodes, the query returns the same
+/// 500 of them, and only the number of distinct labels in the graph varies.
+#[test]
+#[ignore = "measurement harness: cargo test --release -- --ignored --nocapture label_read_cost_by_label_count"]
+fn label_read_cost_by_label_count() {
+    use std::time::Instant;
+    const TOTAL: usize = 20_000;
+    const REPS: usize = 5;
+
+    println!(
+        "{:<34}{:>8}{:>14}{:>14}{:>14}",
+        "return 500 nodes", "labels", "us per call", "us per label", "us json"
+    );
+
+    for &l in &[1usize, 4, 10, 20, 40] {
+        let mut bld = Builder::default();
+
+        for i in 0..TOTAL {
+            // Every node carries `Hit` plus ONE of the other labels, so the number of DISTINCT
+            // buckets is `l` while each node's own label count stays at 2 — the axis is how many
+            // buckets the sweep visits, not how many labels a node has.
+            let own = format!("L{}", i % l.max(1));
+
+            bld.node(&["Hit", own.as_str()], &[]);
+        }
+
+        let st = bld.build();
+        let plan = crate::opt::optimize_indexed(
+            crate::gql::parse("MATCH (n:Hit) RETURN n LIMIT 500").unwrap(),
+            &st,
+        );
+        let mut best = f64::INFINITY;
+
+        for _ in 0..REPS {
+            let t = Instant::now();
+            let rows = crate::exec::run(&plan, &st);
+            let dt = t.elapsed().as_secs_f64() * 1e6;
+
+            assert_eq!(rows.rows.len(), 500);
+
+            if dt < best {
+                best = dt;
+            }
+        }
+
+        // THE JSON CARRIER TOO, because that is where `labels_of(..).first()` lived: three sites
+        // in `json_out.rs` cloned every label and sorted, to read the smallest (item 721).
+        let mut best_json = f64::INFINITY;
+
+        for _ in 0..REPS {
+            let t = Instant::now();
+            let out = crate::exec::json_out::try_run_gql_json(&plan, &st).expect("renders");
+            let dt = t.elapsed().as_secs_f64() * 1e6;
+
+            assert!(out.len() > 500);
+
+            if dt < best_json {
+                best_json = dt;
+            }
+        }
+
+        println!(
+            "{:<34}{:>8}{:>14.2}{:>14.3}{:>14.2}",
+            "MATCH (n:Hit) RETURN n LIMIT 500",
+            l,
+            best,
+            best / l as f64,
+            best_json
+        );
+    }
+}
+
 /// Does a `SET` on an INDEXED property cost O(the bucket it leaves)? (item 716)
 ///
 /// ```text
