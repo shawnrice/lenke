@@ -806,8 +806,32 @@ const propsFromRow = (
 
 // Join a label set, escaping `;`/`\` inside each label (same scheme as list
 // elements) so a label containing the `;` separator round-trips.
-const joinLabels = (labels: Iterable<string>): string =>
-  [...labels].map((l) => guardElement(escapeElement(l))).join(LIST_SEP);
+const joinLabels = (labels: Iterable<string>): string => {
+  // An ARRAY is already indexable, so the spread is skipped for it. A `Set` still pays one.
+  const all = Array.isArray(labels) ? (labels as readonly string[]) : [...labels];
+
+  // ONE label needing neither escaping nor guarding is the overwhelmingly common shape, and it
+  // used to cost four allocations past the spread: the `map` array, two `replaceAll` (each
+  // allocates whether or not there is anything to replace), and the `join`. BYTE-IDENTICAL for
+  // this case by construction — `escapeElement` returns the input unchanged when it holds no `\`
+  // and no `;`, `guardElement` returns it unchanged when it does not lead with a formula char,
+  // and joining one element is that element.
+  //
+  // THE CONDITION IS THE RUST TWIN'S, CHARACTER FOR CHARACTER (`join_labels` in
+  // `crates/lenke-codec/src/csv.rs`, item 707). These two encoders are byte-identical by
+  // invariant, so a fast path admitted on one side and not the other is the one way this change
+  // could break that — see `a_lone_label_is_still_escaped_and_guarded` there and
+  // `a lone label is still escaped and guarded` here (item 708).
+  if (all.length === 1) {
+    const [one] = all;
+
+    if (!one.includes('\\') && !one.includes(LIST_SEP) && !FORMULA_LEAD.test(one)) {
+      return one;
+    }
+  }
+
+  return all.map((l) => guardElement(escapeElement(l))).join(LIST_SEP);
+};
 
 const splitLabels = (text: string): string[] => (text === '' ? [] : splitList(text));
 
