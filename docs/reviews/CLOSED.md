@@ -12459,3 +12459,153 @@ equivalent, because the keep-pass is `Eq`/`Ne`-only for a stated reason (an orde
 on an id is a string ordering under the value contract's total order, which it does not
 reproduce). In TS the node spelling of an id inequality is ~1.5x its string twin. Both are real,
 small, and on a shape that is rare to write deliberately.
+
+## 651 — an ungrouped aggregate stops materializing a `Row` per vertex: 2.65x on `max`, 2.05x on `sum` (TS)
+
+**FIXED (TypeScript).** `detectNodeAggregate` builds a synthetic one-item projection and delegates
+to `detectNodeProjection`, which returns a **materialized `Row[]`**. So `RETURN max(n.w)` over
+200,000 vertices allocated 200,000 row objects, wrote the value under a computed key, pushed each
+to an array, and only then read it back out to fold.
+
+### The result, min of three alternated rounds, 200,000 vertices
+
+|                                          | before   | after    |           |
+| ---------------------------------------- | -------- | -------- | --------- |
+| `RETURN max(n.w)` (fold path)            | 11.46 ms | **4.33** | **2.65x** |
+| `RETURN sum(n.w)` (collecting path)      | 12.32 ms | **6.01** | **2.05x** |
+| `RETURN n.w AS w` — CONTROL, unreachable | 9.61     | 7.81     | flat      |
+| `RETURN n.k AS g, count(*)` — CONTROL    | 3.27     | 3.34     | flat      |
+
+Answers identical in every round.
+
+### How the target was found, and how it was nearly mis-priced twice
+
+It came out of pricing a DIFFERENT target that did not survive.
+`detectGroupedNodeAggregate`'s header excludes grouped `sum`/`avg` and cites 18x and 30x for the
+grouped `count(*)`/`max` that were admitted, stating the blocker is not correctness but that
+admitting them only on an unfiltered scan "is a guard with no test". Priced fresh, grouped `sum`
+is **9.39 ms against grouped `max`'s 7.64 — 1.23x.** The 18-30x was history, not the current cost
+of the excluded folds. **That target is refuted; do not build a guarded route for it.**
+
+The same table showed an inversion worth chasing: the UNGROUPED spelling cost ~1.4x its GROUPED
+twin, for both folds, though it does strictly less work (no key read, no map lookup, one output
+row instead of fifty).
+
+**Then the 1.4x turned out to be the wrong size too.** The grouped route was never the floor — it
+folds during its walk but still reads a key and hashes a group. A bare `RETURN n.w AS w` over the
+same scan — the same materialization, NONE of the fold — measured **9.61 ms, more than the entire
+grouped aggregate (8.45)**. That is the mechanism test, and it reframed the prize from 1.4x to
+~3x before any code was written.
+
+### A throwaway SPIKE measured the ceiling before the refactor was paid for
+
+The production shape needed either a branch inside a hot shared loop (ruled out: item 141
+measured a `for…of` over an EMPTY predicate array at 34%, and a walk inlined in a returned
+closure has given UNRELATED queries a new 4x slow mode), a shared extraction, or a third copy of
+the seed preamble. Rather than choose on taste, a narrow env-gated spike — no gate, no seed, no
+label recheck, label-bucket only — measured 1.86x/2.87x in 20 lines and was deleted.
+
+**The spike also caught a framing error.** Its first version touched only the fold path, and `sum`
+came back COMPLETELY UNCHANGED: `sum` has no `foldFor` entry, so it returns earlier on the
+COLLECTING path and never reached the new code. Measuring only `max` would have shipped a fix
+that silently missed the most common aggregate in the family. There are two paths here, not one.
+
+### The shape: `rowsFn` still decides WHETHER, the new code only changes HOW
+
+The `detectNodeProjection` call and its null check are untouched, so no query becomes newly
+claimable — the failure `count-shortcuts-must-seek` records. Two helpers were extracted so the
+aggregate paths and the row path agree BY CONSTRUCTION rather than by a copy being right:
+
+- `scanCandidates` — the `hopSeek`-vs-label-bucket decision. This was about to become its third
+  copy, and it is the dangerous part: written as a raw bucket walk first, it made an INDEXED point
+  lookup **50x slower** (80.9k → 1.6k ops/s in `bench:usage`).
+- `nodeScanGate` — the inline-constraint + clause-`WHERE` composition.
+
+Both aggregate loops keep the row path's exact ORDER — label recheck, then gate, then
+`binding.set` — because the gate takes the vertex before the binding is set.
+
+`detectMultiNodeAggregate` materializes the same way and is **not** wired here: it reads several
+columns per row, so it needs a per-aggregate accumulator set rather than one argument function.
+Same lever, bigger change, recorded in place for its own measurement.
+
+### Mutation: the oracle was proven to kill FIRST, and that was not ceremony
+
+`packages/gql`'s tests could plausibly have read the BUILT dist, in which case every `src` mutant
+would change nothing, all would "survive", and the conclusion would have been that the new code
+has no teeth when the detector was blind — item 640's failure exactly. Checked by folding a
+constant with NO rebuild: **27 failures.** The tests read `src`.
+
+First run **3/7**. The two unexpected survivors were both the SAME guard — the seeded-set label
+recheck, on each path — the guard whose omission the row path's comment records as caught **as a
+wrong answer, not a slow one**. It survived because the whole 2554-test suite contains no
+aggregate query that reaches the seeded branch: every test covering it projects rows, so none
+enters an aggregate closure. **The guard was correct and UNVERIFIED, a state a green suite cannot
+distinguish from correct and verified.**
+
+`aggregate-seed-label.test.ts` (7 cases) closes it, and the fixture is the substance: the index
+entry must be NARROWER than the label bucket or no seed fires; the wrong-label vertex must share
+the INDEXED value, the only way a seek returns it; and its value must fall OUTSIDE the right
+answer's range, since a `Q` whose `w` sat inside `P`'s range would be folded in and the assertion
+would still pass. Both paths get their own case — one test would have left the other survivor
+standing.
+
+Second run **4/7**, fold-path recheck now CAUGHT. The remaining two are **inert, not gaps**, which
+the count could not have said:
+
+- **COLLECT label recheck** — `unfilteredScanAgg` requires `m.where === undefined` AND
+  `plainNode(start)`, so that closure only runs on a fully unfiltered scan. With no predicate
+  `hopSeek` has nothing to seek, `seeded` is always `undefined`, and the recheck cannot fire. The
+  gate is inert there for the same reason.
+- **`valueScanOf`'s gate decline** — `rowsFn === null` returns BEFORE `valueScanOf` is called, and
+  `detectNodeProjection` builds its gate from the same `nodeScanGate` with identical arguments, so
+  a declining gate means `valueScanOf` is never reached.
+
+Both guards are KEPT rather than deleted as dead code: if `unfilteredScanAgg` is widened to admit
+a filtered scan, that recheck stops being inert and becomes the difference between a right and a
+wrong answer. The row path has precedent — it documents checks as "belt-and-braces, and mutation
+says so rather than my reading it".
+
+### Regression verification
+
+- 2554 `packages/gql` tests pass, 0 fail; 7 new.
+- **All seven byte-identity fuzzers pass, including the TS-vs-native differential** — these
+  aggregates still agree with native byte-for-byte.
+- **`bench:usage` shows no seed regression**: the indexed point lookup reads 1.09M ops/s against
+  2.0k unindexed, 545x apart. The 50x failure's signature was indexed and unindexed collapsing to
+  equal, which did not happen.
+- `bun run lint` 0, `bun run check` (typecheck + lint + fmt:check) 0.
+
+### The spelling probe flagged a group, and it was the THRESHOLD, not the change
+
+`bun run spelling` at `SPELL_N=200000 SPELL_REPS=9` reported **0 groups disagreeing on the
+ANSWER** and three groups over 2x. A detached worktree at HEAD was built to attribute them —
+without it, a **5247x** flag would have had no reference point. Two matched HEAD closely
+(`label on start: redundant vs absent` 5247.29x against 5274.72x; `a product's one-sided
+predicate` 2.27x against 2.15x), both pre-existing.
+
+The third, `one end labelled, the other free: four spellings (item 286)`, appeared only on this
+tree — at **2.08x against a 2.0x threshold**. Flagged/unflagged is a binary read of a threshold
+and a poor instrument for a value sitting on it: my tree flagged 2 of 3 runs, HEAD 0 of 3, and
+the summary prints no ratio at all for an unflagged group, so more probe runs could not resolve
+it.
+
+**Routing was ruled out structurally but that is not sufficient.** `detectNodeAggregate` requires
+zero segments, so a one-hop query provably cannot reach the new code. The live hypothesis was the
+JIT/closure-size effect — a walk inlined in a returned closure has previously given UNRELATED
+queries a new 4x slow mode, and this change adds two such closures to this module. That mechanism
+does not work through routing.
+
+So the four spellings were measured DIRECTLY instead: one case per process, min of 9, alternated
+between the two trees within each round so machine drift loads on both arms rather than one.
+
+| spelling                              | this tree | HEAD |                                    |
+| ------------------------------------- | --------- | ---- | ---------------------------------- |
+| `(a:Q)-[:E]->(b)`                     | 6.64 ms   | 6.55 | 1.01x                              |
+| `(a)-[:E]->(b:Q)`                     | 6.78      | 6.87 | this tree FASTER                   |
+| `(a:P)-[:E]->(b)` / `(a)-[:E]->(b:P)` | 0.00      | 0.00 | O(1) bucket count, below the floor |
+
+Answers identical. **No regression.** The within-arm spread is the explanation: one spelling
+ranged 6.78-9.61 on this tree alone (1.42x) and 6.87-8.29 on HEAD — wider than any difference
+BETWEEN the trees, which is precisely what makes a group at 2.0x flip in and out of flagging.
+This is item 491's lesson recurring: a flagged group near the threshold is a question for an
+isolating instrument, not a finding.

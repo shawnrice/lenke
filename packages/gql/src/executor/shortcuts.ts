@@ -6423,6 +6423,186 @@ const nodeWhereOf = (where: Expr, nodeVar: string): InlinePred | 'decline' => {
  * `for (const ip of preds)` allocated an iterator per vertex over an empty array and cost an
  * unfiltered scan 34%.
  */
+/**
+ * A single-node scan's filter gate: the start node's INLINE constraint and the clause `WHERE`
+ * composed into one predicate, `undefined` for no filter, or `null` to decline the shape.
+ *
+ * Extracted (item 651) so the row-projecting path and the aggregate paths build the SAME gate
+ * from the same pieces. That matters more than the saved lines: an aggregate path assembling its
+ * own gate could admit a shape the row path declines, or filter differently — wrong answers, not
+ * slow ones. Both spellings go through the general path's own `inlineHolds` / `nodeWhereOf`,
+ * which is what keeps this filter identical to the general path's rather than merely similar.
+ *
+ * ⚠️ NOT shared with `detectGroupedNodeAggregate`, whose gate is character-identical at the
+ * `reduceRight` and at everything above the `WHERE` — but carries the `WHERE` through
+ * `compilePredicate` and its own `freePredicateVars` loop instead of `nodeWhereOf`. The two are
+ * not interchangeable, and an anchored edit here matches BOTH sites; that is how this was found.
+ *
+ * The free-variable checks on the `WHERE` and on each item are DEFENSIVE, not load-bearing,
+ * and mutation confirms it: with exactly two clauses, one pattern and no segments, `nodeVar`
+ * is the ONLY name anything can be bound to — there is no earlier clause to bind another and
+ * no far end to introduce one, so a reference to any other name does not resolve at all.
+ * Removing either check changes no answer. They stay because that argument depends on the
+ * clause-count and segment-count guards above keeping their exact shape, and because
+ * (An earlier version of this note claimed `freePredicateVars` descends into a subquery and so
+ * would catch one here. It does NOT — it returns the empty set for `exists` / `countSubquery` /
+ * `valueSubquery`, per item 213 — so the ALLOWLIST is the only thing refusing a subquery, and
+ * these checks are purely about outer names.) The same reasoning, and the same
+ * wording, as `detectHopProjection`'s rel-variable and path-variable checks.
+ */
+const nodeScanGate = (
+  start: NodePattern,
+  where: Expr | undefined,
+  nodeVar: string,
+): InlineGate | undefined | null => {
+  const preds: InlinePred[] = [];
+  const inStart = inlineOf(start);
+
+  if (inStart === null) {
+    return null;
+  }
+
+  if (inStart !== undefined) {
+    preds.push(inStart);
+  }
+
+  if (where !== undefined) {
+    const carried = nodeWhereOf(where, nodeVar);
+
+    if (carried === 'decline') {
+      return null;
+    }
+
+    preds.push(carried);
+  }
+
+  return preds.reduceRight<InlineGate | undefined>(
+    (rest, ip) => (v, binding, params, graph) =>
+      inlineHolds(ip, v, binding, params, graph) &&
+      (rest === undefined || rest(v, binding, params, graph)),
+    undefined,
+  );
+};
+
+/**
+ * The candidate vertices a single-node scan shortcut walks, and whether they came from an INDEX.
+ *
+ * Extracted (item 651) so the row-projecting path and the aggregate paths share ONE copy of the
+ * seed decision rather than three. That decision is the dangerous part of this preamble, not the
+ * loop around it: written as a raw bucket walk first, it made the INDEXED point lookup 50x
+ * SLOWER (80.9k -> 1.6k ops/s in `bench:usage`) while making the unindexed one 2x faster,
+ * because it claimed the query ahead of the general path's index seek and then scanned.
+ * `count-shortcuts-must-seek` names that failure and its signature.
+ *
+ * `hopSeek` returns a candidate set only when it is strictly smaller than the label bucket, so
+ * an unindexed graph still walks the bucket and pays nothing for the attempt.
+ *
+ * ⚠️ `seeded` is returned, not just the iterable, and every caller must use it: a seeded set is
+ * a SUPERSET — an index hint is a NECESSARY condition, not a sufficient one, so it can hand back
+ * a same-named vertex of the WRONG LABEL. Two tests caught that omission as a WRONG ANSWER, not
+ * as a slow one. The bucket walk satisfies the label by construction, which is why the recheck is
+ * guarded on `seeded` rather than run unconditionally.
+ */
+const scanCandidates = (
+  graph: Graph,
+  cstart: CNode | undefined,
+  label: LabelExpr | undefined,
+  labelName: string | undefined,
+  env: EvalEnv,
+): { vertices: Iterable<Vertex>; seeded: ReadonlySet<Vertex> | undefined } => {
+  const seeded = hopSeek(graph, cstart, label, env);
+
+  return {
+    seeded,
+    vertices:
+      seeded ??
+      (labelName === undefined
+        ? graph.verticesById.values()
+        : (graph.verticesByLabel.get(labelName) ?? [])),
+  };
+};
+
+/**
+ * The pieces a single-node aggregate needs to walk the scan and fold VALUES directly, without
+ * `detectNodeProjection` materializing a `Row` per vertex first — or `null` when the shape is
+ * not one this can drive.
+ *
+ * ## Why this exists (item 651)
+ *
+ * `detectNodeAggregate` builds a synthetic one-item projection and delegates to
+ * `detectNodeProjection`, which returns a MATERIALIZED `Row[]`. So `RETURN max(n.w)` over
+ * 200,000 vertices allocated 200,000 row objects, wrote the value under a computed key, pushed
+ * each to an array, and only then read it back out to fold. Measured at 200,000 vertices, min of
+ * 3 alternated rounds:
+ *
+ * | | before | after | |
+ * | --- | --- | --- | --- |
+ * | `RETURN max(n.w)` (fold path) | 11.46 ms | **4.00** | **2.87x** |
+ * | `RETURN sum(n.w)` (collecting path) | 12.32 ms | **6.64** | **1.86x** |
+ *
+ * The materialization was the whole gap and not the fold: a BARE `RETURN n.w AS w` over the same
+ * scan — the same materialization, none of the fold — measured 9.61 ms, MORE than the entire
+ * grouped aggregate (8.45) that folds during its walk.
+ *
+ * ## `rowsFn` still decides WHETHER the shape is claimed
+ *
+ * The caller keeps its `detectNodeProjection` call and its null check, so which queries this
+ * family claims is unchanged by construction — no new shape becomes claimable, which is the
+ * failure mode `count-shortcuts-must-seek` records. This only changes HOW an already-claimed
+ * shape is executed. Everything `detectNodeProjection` verifies about the pattern (no path
+ * variable, no segments, item locality, free variables) therefore holds whenever `rowsFn` is
+ * non-null, and the synthetic projection carries no sort, skip or limit.
+ *
+ * The candidate set and the gate come from `scanCandidates` and `nodeScanGate` — the SAME
+ * helpers the row path uses — so the two agree by construction rather than by a copy being
+ * right. Both callers' loops must keep the row path's exact ORDER: label recheck, then gate,
+ * then `binding.set`. The gate takes the vertex explicitly and runs before the binding is set.
+ */
+const valueScanOf = (
+  m: Clause,
+  cm: CClause,
+  argExpr: Expr,
+): {
+  nodeVar: string;
+  label: LabelExpr | undefined;
+  labelName: string | undefined;
+  cstart: CNode | undefined;
+  gate: InlineGate | undefined;
+  argFn: CompiledExpr;
+} | null => {
+  if (m.kind !== 'match' || cm.kind !== 'match' || m.patterns.length !== 1) {
+    return null;
+  }
+
+  const [{ start }] = m.patterns;
+  const nodeVar = start.variable;
+
+  if (nodeVar === undefined) {
+    return null;
+  }
+
+  const { label } = start;
+
+  if (label !== undefined && label.kind !== 'label') {
+    return null;
+  }
+
+  const gate = nodeScanGate(start, m.where, nodeVar);
+
+  if (gate === null) {
+    return null;
+  }
+
+  return {
+    nodeVar,
+    label,
+    labelName: label?.name,
+    cstart: cm.patterns[0].start,
+    gate,
+    argFn: compileExpr(argExpr),
+  };
+};
+
 export const detectNodeProjection = (
   clauses: readonly Clause[],
   compiled: readonly CClause[],
@@ -6494,46 +6674,12 @@ export const detectNodeProjection = (
     return null;
   }
 
-  const preds: InlinePred[] = [];
-  const inStart = inlineOf(start);
+  const { where } = m;
+  const gate = nodeScanGate(start, where, nodeVar);
 
-  if (inStart === null) {
+  if (gate === null) {
     return null;
   }
-
-  if (inStart !== undefined) {
-    preds.push(inStart);
-  }
-
-  const { where } = m;
-
-  // The free-variable checks on the `WHERE` and on each item are DEFENSIVE, not load-bearing,
-  // and mutation confirms it: with exactly two clauses, one pattern and no segments, `nodeVar`
-  // is the ONLY name anything can be bound to — there is no earlier clause to bind another and
-  // no far end to introduce one, so a reference to any other name does not resolve at all.
-  // Removing either check changes no answer. They stay because that argument depends on the
-  // clause-count and segment-count guards above keeping their exact shape, and because
-  // (An earlier version of this note claimed `freePredicateVars` descends into a subquery and so
-  // would catch one here. It does NOT — it returns the empty set for `exists` / `countSubquery` /
-  // `valueSubquery`, per item 213 — so the ALLOWLIST is the only thing refusing a subquery, and
-  // these checks are purely about outer names.) The same reasoning, and the same
-  // wording, as `detectHopProjection`'s rel-variable and path-variable checks.
-  if (where !== undefined) {
-    const carried = nodeWhereOf(where, nodeVar);
-
-    if (carried === 'decline') {
-      return null;
-    }
-
-    preds.push(carried);
-  }
-
-  const gate = preds.reduceRight<InlineGate | undefined>(
-    (rest, ip) => (v, binding, params, graph) =>
-      inlineHolds(ip, v, binding, params, graph) &&
-      (rest === undefined || rest(v, binding, params, graph)),
-    undefined,
-  );
 
   const cols: string[] = [];
   const fns: CompiledExpr[] = [];
@@ -6587,20 +6733,13 @@ export const detectNodeProjection = (
     // overwrite the node's own variable per vertex, and `preds` and the items are CLOSED over
     // that one name, so nothing can read a stale entry.
     const binding = new Map<string, unknown>();
-    // SEED FROM THE INDEX when one is cheaper than the label bucket, via the SAME `hopSeek` the
-    // count shortcuts use. Written as a raw bucket walk first, this path made the INDEXED point
-    // lookup 50x SLOWER (80.9k -> 1.6k ops/s in `bench:usage`) while making the unindexed one
-    // 2x faster — it claimed the query ahead of the general path's index seek and then scanned.
-    // `count-shortcuts-must-seek` names that exact failure and its signature, which the bench
-    // showed verbatim: the indexed and unindexed columns became equal (1.2k against 1.6k).
-    // `hopSeek` returns a candidate set only when it is strictly smaller than the bucket, so an
-    // unindexed graph still walks and pays nothing for the attempt.
-    const seeded = hopSeek(graph, cstart, label, { binding, params, graph });
-    const vertices: Iterable<Vertex> =
-      seeded ??
-      (labelName === undefined
-        ? graph.verticesById.values()
-        : (graph.verticesByLabel.get(labelName) ?? []));
+    // SEED FROM THE INDEX when one is cheaper than the label bucket. The decision, and the
+    // 50x `bench:usage` regression that shaped it, are documented once on `scanCandidates`.
+    const { vertices, seeded } = scanCandidates(graph, cstart, label, labelName, {
+      binding,
+      params,
+      graph,
+    });
 
     for (const v of vertices) {
       // The label is re-checked because a SEEDED set is a SUPERSET: an index hint is a
@@ -7611,12 +7750,53 @@ export const detectNodeAggregate = (
     return null;
   }
 
+  // `rowsFn` above decided WHETHER to claim this shape; `vs` only changes HOW it runs — folding
+  // the argument's values during the walk instead of materializing a `Row` per vertex. `null`
+  // falls through to the row-reading loops below, which stay the only implementation for
+  // anything this cannot drive. See `valueScanOf`.
+  //
+  // `detectMultiNodeAggregate` materializes the same way and is NOT wired here: it reads SEVERAL
+  // columns off each row, so it needs a per-aggregate accumulator set rather than one argument
+  // function. Same lever, bigger change, measured separately.
+  const vs = valueScanOf(m, compiled[0], argExpr);
+
   // THE COLLECTING PATH (item 468): stream the argument VALUES — one per row, no `Binding`
   // `Map` — and hand them to the same `aggregateOverValues` the general path runs. The nullish
   // filter mirrors the general path's `nonNull`, which is the same rule the fold path applies
   // per step.
   if (collect !== undefined) {
     const [{ name: aggName, frac }] = collect;
+
+    if (vs !== null) {
+      const { nodeVar: sv, label, labelName, cstart, gate, argFn } = vs;
+
+      return (graph, params) => {
+        const binding = new Map<string, unknown>();
+        const env = { binding, params, graph };
+        const { vertices, seeded } = scanCandidates(graph, cstart, label, labelName, env);
+        const values: unknown[] = [];
+
+        for (const v of vertices) {
+          if (seeded !== undefined && !matchesLabel(v, label)) {
+            continue;
+          }
+
+          if (gate !== undefined && !gate(v, binding, params, graph)) {
+            continue;
+          }
+
+          binding.set(sv, v);
+
+          const value = argFn(env);
+
+          if (!isNullish(value)) {
+            values.push(value);
+          }
+        }
+
+        return [{ [outName]: aggregateOverValues(aggName, values, frac) }];
+      };
+    }
 
     return (graph, params) => {
       const values: unknown[] = [];
@@ -7634,6 +7814,39 @@ export const detectNodeAggregate = (
   }
 
   const { fold } = agg!;
+
+  if (vs !== null) {
+    const { nodeVar: sv, label, labelName, cstart, gate, argFn } = vs;
+
+    return (graph, params) => {
+      const binding = new Map<string, unknown>();
+      const env = { binding, params, graph };
+      const { vertices, seeded } = scanCandidates(graph, cstart, label, labelName, env);
+      let acc = fold.init();
+
+      for (const v of vertices) {
+        if (seeded !== undefined && !matchesLabel(v, label)) {
+          continue;
+        }
+
+        if (gate !== undefined && !gate(v, binding, params, graph)) {
+          continue;
+        }
+
+        binding.set(sv, v);
+
+        const value = argFn(env);
+
+        if (!isNullish(value)) {
+          acc = fold.step(acc, value);
+        }
+      }
+
+      // The same `fold.finish` over an untouched accumulator that gives an EMPTY scan its one
+      // row holding null, which is what an ungrouped aggregate owes ISO.
+      return [{ [outName]: fold.finish(acc) }];
+    };
+  }
 
   return (graph, params) => {
     const rows = rowsFn(graph, params);
