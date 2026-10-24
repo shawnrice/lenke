@@ -8992,12 +8992,15 @@ the tie order this item pins. CI green on 604.
 
 ### Still open
 
-> **PARTLY STALE, CORRECTED AT 697.** The cannot-fault check **was built, at item 610**
-> (`ordered-rows.ts`: _"WHY THIS EXISTS (item 610). It is the 'conservative cannot-fault check on
-> the projection' item 426 deferred"_), and the node path's windows now ride the sorted rung — flat
-> at 17.0-18.1 ms across `LIMIT 1/5/1000/200000` and `OFFSET 0`. **Only the HOP half is open**, and
-> its blocker is the arrival-order constraint, NOT a missing check. Re-measured at 697: **136.2 ms
-> against a 60.2 ms unordered reference, 2.26x** — the 3.9x below does not survive.
+> **STALE — REFUTED AT 698 on this item's OWN fixture.** The cannot-fault check was built at item
+> **610** (`ordered-rows.ts`: _"WHY THIS EXISTS (item 610)"_), and on the degree-1 graph this item
+> measured, the sorted hop is now **41.8 ms against a 38.3 ms unordered reference** — and **0.86x of
+> its honest floor** (unordered + a bare sort of the engine's own rows = 48.3 ms), i.e. CHEAPER than
+> materialising and sorting separately. Nothing is left to win here.
+>
+> Item 697's "2.26x" was measured at DEGREE 3 and compared against this item's DEGREE-1 baseline —
+> an unmatched fixture, corrected at 698. The live figure, re-measured against the floor at degree
+> 3, is **1.58x** (135.0 against 85.4), not 2.94x against the unordered reference and not 3.9x.
 
 The HOP projection, behind constraint 3: `farDrivenHopWalk` must either keep the sort off itself or
 establish that its arrival order is unobservable. Item 603 measured that shape at 173.0 ms against
@@ -15597,3 +15600,68 @@ Not "is the sort safe" — 610 settled that. It is: does `farDrivenHopWalk`'s ar
 observably from the general path's, and if so can both engines be made to agree on it? Until that is
 answered the route must keep declining, because the alternative is a byte-identity divergence in tie
 order under a `LIMIT`.
+
+## 698 — the sorted-hop target is REFUTED on its own fixture, and item 697's 2.26x was an unmatched fixture
+
+**REFUTED (degree 1) / RE-PRICED to 1.58x (degree 3). No engine change.**
+
+### Three figures for one target, and only the last is honest
+
+| source     | figure                                   | what it compared                                                   |
+| ---------- | ---------------------------------------- | ------------------------------------------------------------------ |
+| 604/605    | **3.9x**                                 | 173.0 against a 44.5 ms unordered reference, degree 1              |
+| 697 (mine) | 2.26x                                    | 136.2 against 60.2 — **degree 3**, against 604's degree-1 baseline |
+| **698**    | **0.86x at degree 1, 1.58x at degree 3** | against the engine's own FLOOR                                     |
+
+### On item 604's own fixture there is nothing left
+
+200,000 vertices at **degree 1**, both-position timing, rows realised and counted:
+
+|                                              | ms       |
+| -------------------------------------------- | -------- |
+| engine, unordered (200,000 rows)             | 38.3     |
+| a bare sort of the engine's OWN rows         | 10.0     |
+| **the honest floor = unordered + that sort** | **48.3** |
+| engine, `ORDER BY k`                         | **41.8** |
+
+**0.86x of the floor** — the engine sorts _more cheaply than materialising and sorting separately_.
+Item 604's own framing asked for exactly this reference: _"the honest bound is 173.0 → ~(44.5 + a
+sort or a top-k)"_. Measured against it, the target is gone, and item 605's marker is corrected.
+
+### At degree 3 a real gap remains, at 1.58x
+
+|                                  | ms        |
+| -------------------------------- | --------- |
+| engine, unordered (600,000 rows) | 58.9      |
+| a bare sort of its own rows      | 26.5      |
+| **floor**                        | **85.4**  |
+| engine, `ORDER BY k`             | **135.0** |
+
+**1.58x** — against 2.94x if the unordered query is used as the reference. The unordered reference
+OVERSTATES the gap because sorting genuinely costs something, which is items 659/660's whole lesson
+("a floor built from the obvious algorithm can sit above the engine and then proves nothing"; the
+right floor is the engine's own algorithm). Here the right floor shrank the target by ~1.9x and
+refuted it entirely at degree 1.
+
+### 🛑 Item 697's error: I matched the fixture to the SUBJECT and not to the BASELINE
+
+Item 697 measured at degree 3 and compared against 604's degree-1 numbers, concluding "the 3.9x does
+not survive". Both halves were wrong: the comparison was unmatched, and the target is weaker still
+than the 2.26x it reported.
+
+CLAUDE.md's rule is _"match the fixture to the claim"_, and I applied it to the thing I was measuring
+while inheriting the denominator from a six-year-old table without checking its shape. **A recorded
+baseline carries a fixture, and quoting the number without the fixture is the same error as quoting
+a ratio without its control.** The degree matters enormously here: the unordered reference is
+~38-59 ms at both degrees (it is dominated by the 200,000-source scan) while the SORT scales with
+rows, so the ratio moves from 1.11x to 2.54x on degree alone.
+
+Also corrected: 697 reported `LIMIT 5` saving nothing (135.2 against 136.2). With both-position
+timing they separate — 132.5 against 153.2 at degree 3, so the window does save ~14%.
+
+### What is left, and what it is worth
+
+A 1.58x gap above the floor on a 600,000-row sorted hop projection. That is a real number on a real
+shape, and it is small enough that the arrival-order work item 605 contemplated — a cross-engine
+tie-order question — is not obviously worth its risk. **Recorded at its true size rather than
+carried forward at 3.9x.**
