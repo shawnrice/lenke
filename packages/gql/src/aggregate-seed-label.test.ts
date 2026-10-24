@@ -92,4 +92,31 @@ describe('an ungrouped aggregate over a SEEDED scan rechecks the label', () => {
     expect(query(g, 'MATCH (n:P) RETURN max(n.w) AS m')).toEqual([{ m: 5 }]);
     expect(query(g, 'MATCH (n:P) RETURN count(*) AS c')).toEqual([{ c: 205 }]);
   });
+
+  // THE MULTI-AGGREGATE PATH CARRIES ITS OWN COPY OF THE GUARD (item 652), and mutation found it
+  // untested for exactly the reason the single-aggregate one was: the cases above all project ONE
+  // aggregate, so none of them enters `detectMultiNodeAggregate`'s closure. This is item 651's
+  // blind spot one site over — the same shape of gap, found the same way.
+  test('two folded aggregates over a seeded scan exclude the wrong-label vertex', () => {
+    expect(query(g, "MATCH (n:P {tag: 'x'}) RETURN max(n.w) AS m, min(n.w) AS n")).toEqual([
+      { m: 5, n: 1 },
+    ]);
+  });
+
+  // `count(*)` alongside a fold: the row count must exclude the trap vertex too, and it is
+  // counted in the walk rather than derived from any accumulator — a separate arm, so a separate
+  // assertion.
+  test('count(*) beside a fold over a seeded scan counts only the right label', () => {
+    expect(query(g, "MATCH (n:P {tag: 'x'}) RETURN max(n.w) AS m, count(*) AS c")).toEqual([
+      { m: 5, c: 5 },
+    ]);
+  });
+
+  // Two aggregates over DIFFERENT columns, so the per-accumulator argument functions are
+  // genuinely distinct and a single shared one could not answer it.
+  test('two aggregates over different columns exclude the wrong-label vertex', () => {
+    expect(query(g, "MATCH (n:P {tag: 'x'}) RETURN max(n.w) AS m, max(n.tag) AS t")).toEqual([
+      { m: 5, t: 'x' },
+    ]);
+  });
 });

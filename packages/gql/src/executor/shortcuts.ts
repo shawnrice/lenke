@@ -6558,18 +6558,21 @@ const scanCandidates = (
  * right. Both callers' loops must keep the row path's exact ORDER: label recheck, then gate,
  * then `binding.set`. The gate takes the vertex explicitly and runs before the binding is set.
  */
-const valueScanOf = (
-  m: Clause,
-  cm: CClause,
-  argExpr: Expr,
-): {
+type NodeScan = {
   nodeVar: string;
   label: LabelExpr | undefined;
   labelName: string | undefined;
   cstart: CNode | undefined;
   gate: InlineGate | undefined;
-  argFn: CompiledExpr;
-} | null => {
+};
+
+/**
+ * The scan pieces themselves, shared by the single-aggregate path and the MULTI-aggregate one
+ * (item 652). Split out of `valueScanOf` rather than copied: the multi path supplies one compiled
+ * argument function PER ACCUMULATOR, so it cannot use `valueScanOf`'s single `argFn`, but the
+ * derivation of the candidate set and the gate has to stay identical across both.
+ */
+const nodeScanOf = (m: Clause, cm: CClause): NodeScan | null => {
   if (m.kind !== 'match' || cm.kind !== 'match' || m.patterns.length !== 1) {
     return null;
   }
@@ -6599,8 +6602,17 @@ const valueScanOf = (
     labelName: label?.name,
     cstart: cm.patterns[0].start,
     gate,
-    argFn: compileExpr(argExpr),
   };
+};
+
+const valueScanOf = (
+  m: Clause,
+  cm: CClause,
+  argExpr: Expr,
+): (NodeScan & { argFn: CompiledExpr }) | null => {
+  const scan = nodeScanOf(m, cm);
+
+  return scan === null ? null : { ...scan, argFn: compileExpr(argExpr) };
 };
 
 export const detectNodeProjection = (
@@ -7877,7 +7889,19 @@ export const detectNodeAggregate = (
  */
 type MultiAcc =
   | { readonly kind: 'rows'; readonly out: string }
-  | { readonly kind: 'fold'; readonly out: string; readonly fold: AggFold; readonly col: string }
+  | {
+      readonly kind: 'fold';
+      readonly out: string;
+      readonly fold: AggFold;
+      readonly col: string;
+      /**
+       * The aggregate's ARGUMENT, compiled (item 652). The streaming walk evaluates this per
+       * vertex; `col` is the synthetic column the row-reading fallback reads instead. Both are
+       * carried because that fallback is still the only implementation for a shape the walk
+       * cannot drive.
+       */
+      readonly argFn: CompiledExpr;
+    }
   | {
       readonly kind: 'collect';
       readonly out: string;
@@ -7885,6 +7909,8 @@ type MultiAcc =
       readonly col: string;
       /** The percentile fraction, already clamped. 0 for every other name, which ignores it. */
       readonly frac: number;
+      /** See the `fold` variant's `argFn`. */
+      readonly argFn: CompiledExpr;
     };
 
 /**
@@ -7913,6 +7939,30 @@ type MultiAcc =
  *   - `count(*)` counts rows and needs no projected column;
  *   - `DISTINCT` is refused per item, because the general path dedupes by value first.
  */
+/**
+ * Finish a multi-aggregate accumulator set into its single output row. Shared by the streaming
+ * walk and the row-reading fallback (item 652) so the two cannot drift: `fold.finish` over an
+ * untouched accumulator is what gives an EMPTY scan its one row holding null, and
+ * `aggregateOverValues` is the same function the general path calls.
+ */
+const finishMultiAccs = (accs: readonly MultiAcc[], state: readonly unknown[], n: number): Row => {
+  const out: Row = {};
+
+  for (let i = 0; i < accs.length; i += 1) {
+    const a = accs[i];
+
+    if (a.kind === 'rows') {
+      out[a.out] = n;
+    } else if (a.kind === 'fold') {
+      out[a.out] = a.fold.finish(state[i]);
+    } else {
+      out[a.out] = aggregateOverValues(a.name, state[i] as unknown[], a.frac);
+    }
+  }
+
+  return out;
+};
+
 export const detectMultiNodeAggregate = (
   clauses: readonly Clause[],
   compiled: readonly CClause[],
@@ -7980,10 +8030,12 @@ export const detectMultiNodeAggregate = (
     const col = ` nodeagg${i}`;
     const fold = foldFor(e.name, false, false);
 
+    const argFn = compileExpr(arg);
+
     if (fold !== undefined) {
-      accs.push({ kind: 'fold', out, fold, col });
+      accs.push({ kind: 'fold', out, fold, col, argFn });
     } else if (VALUES_AGGREGATES.has(e.name) && unfiltered) {
-      accs.push({ kind: 'collect', out, name: e.name, col, frac });
+      accs.push({ kind: 'collect', out, name: e.name, col, frac, argFn });
     } else {
       return null;
     }
@@ -8013,6 +8065,68 @@ export const detectMultiNodeAggregate = (
 
   if (rowsFn === null) {
     return null;
+  }
+
+  // STREAM the accumulators during the walk instead of over a materialized `Row[]` (item 652,
+  // item 651's lever at the multi-aggregate site). `rowsFn` above still decides WHETHER the shape
+  // is claimed, so nothing becomes newly claimable; this only changes HOW.
+  //
+  // Measured at 200,000 vertices, min of three alternated rounds: `max(n.w), min(n.w)` 8.99 ms
+  // and `max(n.w), min(n.k)` 9.13, against 3.54 for the SINGLE-aggregate spelling over the same
+  // column — which 651 had already put on a streaming walk. A second accumulator is one extra
+  // fold step per row; it was costing 2.5x, and the difference was the `Row` per vertex.
+  const vs = nodeScanOf(m, compiled[0]);
+
+  if (vs !== null) {
+    const { nodeVar: sv, label, labelName, cstart, gate } = vs;
+
+    return (graph, params) => {
+      const binding = new Map<string, unknown>();
+      const env = { binding, params, graph };
+      const { vertices, seeded } = scanCandidates(graph, cstart, label, labelName, env);
+      const state = accs.map((a) => (a.kind === 'fold' ? a.fold.init() : ([] as unknown[])));
+      let n = 0;
+
+      for (const v of vertices) {
+        // The row path's exact order: label recheck, then gate, then `binding.set`. The gate
+        // takes the vertex explicitly and runs before the binding is set.
+        if (seeded !== undefined && !matchesLabel(v, label)) {
+          continue;
+        }
+
+        if (gate !== undefined && !gate(v, binding, params, graph)) {
+          continue;
+        }
+
+        binding.set(sv, v);
+        n += 1;
+
+        // An INDEX loop, not `accs.entries()`, for item 469's measured reason: the iterator
+        // allocates a `[i, a]` tuple per accumulator per row, which alone cost
+        // `count(n.age), count(*)` 17.8 ms against 9.4 at 200,000 rows.
+        for (let i = 0; i < accs.length; i += 1) {
+          const a = accs[i];
+
+          if (a.kind === 'rows') {
+            continue;
+          }
+
+          const value = a.argFn(env);
+
+          if (isNullish(value)) {
+            continue;
+          }
+
+          if (a.kind === 'fold') {
+            state[i] = a.fold.step(state[i], value);
+          } else {
+            (state[i] as unknown[]).push(value);
+          }
+        }
+      }
+
+      return [finishMultiAccs(accs, state, n)];
+    };
   }
 
   return (graph, params) => {
@@ -8048,21 +8162,7 @@ export const detectMultiNodeAggregate = (
       }
     }
 
-    const out: Row = {};
-
-    for (let i = 0; i < accs.length; i += 1) {
-      const a = accs[i];
-
-      if (a.kind === 'rows') {
-        out[a.out] = n;
-      } else if (a.kind === 'fold') {
-        out[a.out] = a.fold.finish(state[i]);
-      } else {
-        out[a.out] = aggregateOverValues(a.name, state[i] as unknown[], a.frac);
-      }
-    }
-
-    return [out];
+    return [finishMultiAccs(accs, state, n)];
   };
 };
 
