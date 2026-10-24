@@ -14794,3 +14794,80 @@ restating it, and isolates the expensive ordered-pair term in one place.
 Validation instrument is ready: 601's brute force over randomized graphs (400/400 at depth 3) and
 `fastpath_fuzz`, which can see depth 4 since 602. **Item 685's fixture hazard applies** — pick a
 fixture where the depth-3 WALK and depth-4 TRAIL differ, and assert that they do.
+
+## 687 — the depth-4 trail DECOMPOSITION, derived and validated 500/500 (not yet wired)
+
+**DERIVATION + VALIDATION. No engine change.** Item 600 declined to derive depth 4 because
+inclusion-exclusion over its six equality events needs up to 63 intersections. This avoids that
+entirely by reducing depth 4 to the depth-3 count the engines ALREADY compute, plus one correction.
+
+### The identity
+
+```text
+T4 = Σ over e0 (an edge a → b) of [ t3(b) − u3(b, e0) ]
+```
+
+- `t3(b)` = 3-trails starting at `b` — the per-source depth-3 count from items 600/601/602.
+- `u3(b, e0)` = 3-trails starting at `b` that USE the edge `e0`.
+
+Every 4-trail is an edge `e0` followed by a 3-trail from `b` that avoids `e0`, and conversely — so
+the identity is exact, not an approximation.
+
+### `u3`, the novel part, in three DISJOINT cases
+
+A trail uses each edge at most once, so `e0` occupies exactly ONE position of the 3-trail
+`(f0, f1, f2)`. The cases therefore simply ADD — no intersection terms at all, which is what
+replaces the 63-term expansion:
+
+| case      | requires                                                                            | count                                                                                  |
+| --------- | ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `f0 = e0` | the trail starts at `b` and `e0` leaves `b`, i.e. **`a == b`** (a self-loop at `b`) | 2-trails from `b` avoiding `e0`                                                        |
+| `f1 = e0` | `f0` leaves `b` and LANDS ON `a`; then `f2` leaves `head(e0) = b`                   | `Σ_{f0: b→a, f0≠e0} #{f2 ∈ out(b) : f2 ∉ {f0, e0}}`                                    |
+| `f2 = e0` | `(f0, f1)` is a 2-trail from `b` to `a`, neither being `e0`                         | `#{(f0,f1) : f0 ∈ out(b), f1 ∈ out(head f0), head(f1) = a, f0 ≠ f1, f0 ≠ e0, f1 ≠ e0}` |
+
+The `f2 = e0` case is the expensive one — a 2-trail count between the ORDERED PAIR `(b, a)`, per
+edge — exactly the term item 686 priced at ~W3 probes. The other two are degree-local.
+
+### Validated against brute force, with the oracle's teeth checked
+
+A self-contained prototype (no engine imports, so the oracle shares no code with the subject):
+enumerate every 4-walk, keep those with four distinct edges, compare against the decomposition.
+
+- **500/500 graphs agree**, 3-9 vertices, 2-17 edges.
+- The generator produced the cases that matter and SAYS so: **452** graphs with self-loops, **313**
+  with parallel edges, **229** with reverse pairs. (Parallel edges are what break a naive version,
+  per item 600.)
+- **Each `u3` case was instrumented and all three fired** — 8804 / 6389 / 5847 hits. A case that
+  never fires is a case the run did not test, however many graphs agreed; this is the "correct,
+  willing, and unreachable" check applied to the formula's own branches rather than to a fast path.
+- **Mutation 6/6.** Caught: the `a == b` self-loop guard dropped; case `f2` omitted; case `f1`
+  forgetting to exclude `e0` from `f2`; case `f2` forgetting to exclude `e0` from `f1`; case `f1`
+  dropping the landing test; and `t3` taken at the TAIL instead of the head. The two
+  forgot-to-exclude mutants are the ones a hand-check would most likely miss.
+
+`t3` is brute-forced in the prototype ON PURPOSE, so that any disagreement is attributable to the
+`u3` case analysis — the part nobody had written down. Substituting the engines' validated closed
+form for `t3` is an implementation step, not a correctness question.
+
+### Why this shape matters beyond depth 4
+
+The identity is **recursive**: `T(k+1) = Σ_{e0} [ t_k(head) − u_k(head, e0) ]`, and `u_k` splits
+into `k` disjoint cases by position. So depth 5 would need `u4`, which is four cases rather than a
+2^10 expansion. Depth 4's cost is dominated by one ordered-pair term; whether depth 5 stays
+tractable depends on what `u4`'s analogous terms need from the adjacency, which is item 686's rule
+("a complexity claim is a claim about the representation") and should be checked before promising
+anything.
+
+### What is left to wire, and the hazards already known
+
+1. A per-source `t3(v)` — both engines compute depth-3 trails, but whether `t3` is exposed PER
+   SOURCE or only as a total needs checking; the identity needs per-source.
+2. The ordered-pair 2-trail count for case `f2`, which is the ~W3 term and the only piece that is
+   not degree-local.
+3. **Item 685's fixture hazard**: on a fixture where the depth-3 WALK and depth-4 TRAIL coincide
+   (both 35 on that six-vertex graph), a test cannot distinguish a correct depth-4 trail from an
+   off-by-one computing a depth-3 walk. Assert they differ.
+4. **Item 602's oracle warning**: once BOTH engines run the same formula, the byte-identity fuzzers
+   only prove they agree, and would pass on a shared wrong answer. The brute-force oracle above is
+   what has to carry it, so it belongs in the repo as a test when the formula lands — not left in a
+   scratchpad.
