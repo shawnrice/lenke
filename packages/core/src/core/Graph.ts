@@ -1433,6 +1433,23 @@ export class Graph {
   // and reconcile the property indexes — drop those created in the transaction, rebuild any
   // it dropped from the (already-restored) data. Called at the outermost rollback, AFTER the
   // data undos, so a rebuild sees the restored graph.
+  //
+  // MEASURED, NOT A TARGET (item 679). The early return below — nothing to do unless a SCHEMA
+  // op ran in this transaction — is what keeps rollback O(1) in the graph, leaving a plain
+  // data rollback's index maintenance to the data undos. The Rust engine lacked exactly this
+  // guard on its interval index and rebuilt the whole structure on EVERY rollback: O(1) became
+  // O(V), 15.2 ms at 200,000 nodes (items 676/677). Swept here to check TS does not share it:
+  //
+  //   vertices   index off   index ON   ON ns/vertex
+  //      1,000     4.210 us   3.300 us       3.3000
+  //     10,000     2.520      2.470          0.2470
+  //     50,000     1.710      1.990          0.0398
+  //    200,000     1.800      1.570          0.0078
+  //
+  // ns-per-vertex collapses, so O(1), and the index is inside the noise of the control at
+  // every size. (Absolute times FALL with size — JIT warmup across the sweep — so the
+  // controlled comparison is index-on vs index-off within a size, not across sizes.)
+  // Do not "optimize" this path; it is already flat. Do keep the early return.
   #restoreSchemaSnapshot = (): void => {
     const snap = this.#txSchema;
 
