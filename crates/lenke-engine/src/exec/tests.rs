@@ -11000,6 +11000,89 @@ fn gather_cost_by_width() {
     }
 }
 
+/// Does deleting a node cost O(ITS degree), or O(its NEIGHBOUR's degree)? (item 670)
+///
+/// ```text
+/// cargo test --release --manifest-path crates/lenke-engine/Cargo.toml \
+///   -- --ignored --nocapture delete_cost_by_neighbour_degree
+/// ```
+///
+/// The complexity sweep (items 663, 664, 667, 668) varied the NODE COUNT with degree pinned at
+/// zero or one. Degree is a separate axis, and `delete_node_inner` has a shape that makes it
+/// interesting:
+///
+/// ```text
+/// for a in &out { self.in_adj[a.nbr as usize].retain(|m| m.eid != a.eid); }
+/// ```
+///
+/// Removing one mirror entry SCANS that neighbour's whole adjacency list. So the cost of deleting
+/// a node is O(sum of its neighbours' degrees), not O(its own degree) — and the sharp case is a
+/// LEAF of a hub: deleting a degree-1 node whose single neighbour has degree D costs O(D).
+///
+/// **That is the hub shape real people-graphs have** — one company node with thousands of
+/// employees, one requisition with thousands of applications — so "delete a leaf" is a common
+/// operation whose cost would be set by the hub it hangs off, not by the leaf.
+///
+/// The fixture is a star: one hub, D leaves, one edge each. Node count is held CONSTANT across
+/// rows (padding keeps the total fixed) so the node-count axis already swept cannot leak in, and
+/// only D varies.
+///
+/// Read the `ns per D` column: **flat in time means O(1) in the neighbour's degree; flat in
+/// ns-per-D means O(D)** — the same reading rule items 663 and 667 used.
+#[test]
+#[ignore = "measurement harness: cargo test --release -- --ignored --nocapture delete_cost_by_neighbour_degree"]
+fn delete_cost_by_neighbour_degree() {
+    use std::time::Instant;
+    const TOTAL: usize = 60_000;
+    const VICTIMS: usize = 50;
+
+    println!(
+        "{:<30}{:>10}{:>14}{:>14}",
+        "delete a leaf of a hub", "hub degree", "us per op", "ns per D"
+    );
+
+    for &d in &[100usize, 1_000, 10_000, 50_000] {
+        let mut b = Builder::default();
+        // The hub.
+        let hub = b.node(&["Hub"], &[("k", n(0.0))]);
+        // D leaves, each with ONE edge to the hub, so every leaf has degree 1 and the hub has D.
+        let mut leaves = Vec::with_capacity(d);
+
+        for i in 0..d {
+            leaves.push(b.node(&["Leaf"], &[("k", n(i as f64))]));
+        }
+
+        // PAD to a fixed node count, so the node-count axis is held constant and cannot be
+        // mistaken for the degree effect.
+        for i in d..TOTAL {
+            b.node(&["Pad"], &[("k", n(i as f64))]);
+        }
+
+        for &l in &leaves {
+            b.edge(l, hub, "E");
+        }
+
+        let mut store = b.build();
+        let mut best = u128::MAX;
+
+        // Delete leaves from the END, so the hub's list is scanned at close to its full length
+        // each time rather than shrinking into the measurement.
+        for &l in leaves.iter().rev().take(VICTIMS) {
+            let t0 = Instant::now();
+            store.delete_nodes(&[l]);
+            best = best.min(t0.elapsed().as_nanos());
+        }
+
+        println!(
+            "{:<30}{:>10}{:>14.3}{:>14.4}",
+            "leaf (degree 1)",
+            d,
+            best as f64 / 1000.0,
+            best as f64 / d as f64
+        );
+    }
+}
+
 /// Which READS scale with the GRAPH rather than with their RESULT? (item 668)
 ///
 /// ```text
