@@ -14297,3 +14297,78 @@ It is evidence the Rust fixes were corrections to Rust, not a shared design flaw
 the right discipline — maintain incrementally, rebuild only when identity changes — and the Rust
 engine had it in `set_edge_prop` and `add_edge` but not in their twins. Three of the five fixes just
 extended a technique already present in the same file.
+
+## 680 — ONE adjacency write permanently demotes every later read, and the penalty is SELECTIVITY not 2x
+
+**DIAGNOSED (native), fix named with its blocker. No code change.** Tonight's lever — grep every
+`rebuild_*` caller and ask what the host path costs — applied to the CSR read overlay.
+
+`rebuild_csr` runs at LOAD only (`Builder::build`, the codec and ndjson readers) and nowhere else
+outside tests. Every adjacency write calls `invalidate_csr`, which just clears `csr_fresh`; the
+readers (`out_typed_csr`, `out_typed_flat`, `out`/`inc`) then return `None` and fall back to the
+per-node `Vec`s. **Nothing re-arms it.**
+
+### It is not a cost of interleaving — it is permanent
+
+Same query three times: fresh, after one `add_edge`, then again with no further writes.
+
+| nodes   | fresh (CONTROL) | after ONE add_edge | the NEXT read    | `rebuild_csr` itself |
+| ------- | --------------- | ------------------ | ---------------- | -------------------- |
+| 1,000   | 3.960 µs        | 7.170 (1.81x)      | 7.190 (1.82x)    | 23.240               |
+| 10,000  | 34.930          | 68.250 (1.95x)     | 67.930 (1.94x)   | 247.660              |
+| 50,000  | 172.330         | 343.511 (1.99x)    | 342.290 (1.99x)  | 1331.840             |
+| 200,000 | 700.400         | 1468.769 (2.10x)   | 1482.030 (2.12x) | 8789.789             |
+
+The third column equals the second at every size, so the loss is for the rest of the session, not a
+one-off. **CLAUDE.md's "interleaving a write with a traversal costs ~2.5x the traversal alone"
+describes the wrong thing** — corrected there in this commit.
+
+### 🛑 The mechanism is SELECTIVITY, and guessing would have set the wrong fix
+
+Two mechanisms predicted different things: locality (one packed array vs per-node `Vec` chasing)
+predicts a roughly CONSTANT penalty; selectivity (`out_typed_flat` scans only the type's partition,
+the fallback walks every edge and filters) predicts it tracks the edge:type ratio. Holding the graph
+at 50k nodes and varying only what fraction of edges carry the queried type — every node gets
+`share` out-edges of which exactly ONE is type E, so the TOTAL edge count moves but the ANSWER does
+not:
+
+| 1 in N carry type E | fresh µs | stale µs | penalty    |
+| ------------------- | -------- | -------- | ---------- |
+| 2                   | 177.610  | 348.220  | 1.96x      |
+| 4                   | 178.390  | 372.530  | 2.09x      |
+| 10                  | 170.061  | 497.610  | 2.93x      |
+| 50                  | 165.850  | 3991.659 | **24.07x** |
+
+**Selectivity.** The fresh arm is FLAT (177.6 → 165.9) across a 25x change in total edges, because
+it only ever scans type E's partition — always V edges. The stale arm grows with the total. So the
+penalty is unbounded as the type gets rarer, and a many-edge-type graph (the realistic people-graph
+shape: HELD, APPLIED_TO, REPORTS_TO, INTERVIEWED …) pays proportionally more. "~2x" was an artifact
+of the first fixture's 1-in-2 type mix.
+
+### Why no fix landed, and what the amortization says
+
+A lazy rebuild on read is the obvious move, and the numbers say when it pays: penalty-per-read vs
+rebuild cost amortizes after **~7 reads** (1k), 7.4 (10k), 7.8 (50k), **11.4** (200k) — strikingly
+stable. But:
+
+- **That threshold is per QUERY SHAPE, not universal.** This query scans the whole graph, the shape
+  the CSR helps most. A point lookup's penalty is near zero, so a read-counting policy tuned here
+  would rebuild (8.8 ms at 200k) for workloads that gain nothing. The policy would have to weigh the
+  WORK of the fallback reads, not count them — and that bookkeeping sits on the hot read path, where
+  item 540's alignment finding and the TS closure-size finding both show incidental additions cost
+  1.08-4x on their own.
+- **Rebuilding on `commit` is worse, not better.** It fits "write burst then many reads", but a loop
+  of one-write transactions would pay a full O(V × ntypes + E) rebuild per commit — 8.8 ms each at
+  200k.
+- The readers take `&self`, so any lazy rebuild needs interior mutability (the struct already uses a
+  `RwLock` for `edge_prop_keys_cache`, so it is possible, not free).
+
+**The narrower fix the diagnosis actually points at:** the selective-type scan needs only a GLOBAL
+per-type edge list, not the whole CSR — appendable O(1) on `add_edge` and O(partition) on delete,
+i.e. maintainable incrementally exactly as items 674-676 made the edge-type index's buckets
+maintainable. That would make the fresh/stale distinction vanish for this shape without any rebuild
+policy. Not costed yet; the maintenance price needs measuring before it is proposed.
+
+Also note `build_typed`'s inner `for t in &mut typed` pushes an offset for EVERY node × EVERY etype,
+so `rebuild_csr` is O(V × ntypes + E), not O(V + E) — which is why the rebuild column climbs from
+5.87x of a read at 1k to 12.55x at 200k.

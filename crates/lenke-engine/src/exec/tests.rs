@@ -11609,6 +11609,194 @@ fn interval_prop_remove_cost_by_graph_size() {
     }
 }
 
+/// Does ONE adjacency write cost every LATER read the CSR fast path, permanently? (item 680)
+///
+/// ```text
+/// cargo test --release -p lenke-engine csr_staleness_cost_after_one_write -- --ignored --nocapture
+/// ```
+///
+/// `rebuild_csr` runs at LOAD time (`Builder::build`, the codec and ndjson readers) and
+/// nowhere else outside tests. Every adjacency write calls `invalidate_csr`, which only
+/// clears `csr_fresh`; the readers (`out_typed_csr`, `out_typed_flat`, `out`/`inc`) then
+/// return `None` / fall back to the per-node `Vec`s. Nothing re-arms it.
+///
+/// So the question is not what an interleaved write costs the traversal next to it — it is
+/// whether ONE write permanently demotes every read for the rest of the session. Measured
+/// by running the same query three times: once on a fresh overlay, then after a single
+/// `add_edge`, then again, so a one-off cost is distinguishable from a permanent one.
+///
+/// The fresh-overlay arm is the control the write cannot reach (it runs before the write).
+#[test]
+#[ignore = "benchmark"]
+fn csr_staleness_cost_after_one_write() {
+    use std::time::Instant;
+
+    const REPS: usize = 9;
+
+    println!();
+    println!(
+        "{:<40}{:>9}{:>12}{:>12}",
+        "typed hop count", "nodes", "us per op", "vs fresh"
+    );
+
+    let plan = crate::gql::parse("MATCH (a)-[:E]->() RETURN count(*) AS c").unwrap();
+
+    for &v in &[1_000usize, 10_000, 50_000, 200_000] {
+        let build = || -> Store {
+            let mut b = Builder::default();
+            let mut ids = Vec::with_capacity(v);
+
+            for i in 0..v {
+                ids.push(b.node(&["N"], &[("k", n(i as f64))]));
+            }
+
+            // A handful of edge types, so the per-type CSR partitions are non-trivial.
+            for i in 0..v {
+                b.edge(ids[i], ids[(i + 1) % v], "E");
+                b.edge(ids[i], ids[(i + 2) % v], if i % 3 == 0 { "F" } else { "G" });
+            }
+
+            b.build()
+        };
+
+        let time = |store: &Store| -> u128 {
+            let mut best = u128::MAX;
+
+            for _ in 0..REPS {
+                let t0 = Instant::now();
+                let out = run(&plan, store);
+                best = best.min(t0.elapsed().as_nanos());
+                assert!(matches!(out.rows[0][0], Value::Num(x) if x == v as f64));
+            }
+
+            best
+        };
+
+        // 1. FRESH overlay, straight out of `Builder::build`.
+        let mut store = build();
+        let fresh = time(&store);
+
+        // 2. ONE adjacency write — the smallest thing that calls `invalidate_csr`.
+        let last = v as u32 - 1;
+        store.add_edge(0, last, "H");
+
+        let after = time(&store);
+
+        // 3. Again, with no further writes: is the loss permanent or a one-off?
+        let later = time(&store);
+
+        // What would re-arming cost? The other half of the trade: a lazy rebuild only pays
+        // if the per-read penalty times the number of later reads exceeds it.
+        let mut rebuild = u128::MAX;
+
+        for _ in 0..REPS {
+            let mut fresh_store = build();
+            fresh_store.add_edge(0, last, "H");
+            let t0 = Instant::now();
+            fresh_store.rebuild_csr();
+            rebuild = rebuild.min(t0.elapsed().as_nanos());
+        }
+
+        for (label, ns) in [
+            ("fresh overlay (CONTROL)", fresh),
+            ("after ONE add_edge", after),
+            ("... and the NEXT read", later),
+            ("[rebuild_csr itself]", rebuild),
+        ] {
+            println!(
+                "{:<40}{:>9}{:>12.3}{:>12.2}",
+                label,
+                v,
+                ns as f64 / 1000.0,
+                ns as f64 / fresh as f64
+            );
+        }
+    }
+}
+
+/// Is the post-write CSR penalty LOCALITY or SELECTIVITY? (item 680, diagnosis)
+///
+/// ```text
+/// cargo test --release -p lenke-engine csr_staleness_mechanism -- --ignored --nocapture
+/// ```
+///
+/// `csr_staleness_cost_after_one_write` measures ~2x on a typed hop whose edge type is
+/// half the edges. Two mechanisms predict different things:
+///
+/// - **Locality** — the CSR is one packed array, the fallback chases per-node `Vec`s. The
+///   penalty would be roughly CONSTANT in the type's selectivity.
+/// - **Selectivity** — `out_typed_flat` scans only that type's partition, while the
+///   fallback walks EVERY edge and filters by type. The penalty would track the
+///   edge:type ratio, i.e. grow as the type gets rarer.
+///
+/// Holding the graph fixed and varying only what FRACTION of edges carry the queried type
+/// separates them. Guessing between these would set the wrong fix.
+#[test]
+#[ignore = "benchmark"]
+fn csr_staleness_mechanism() {
+    use std::time::Instant;
+
+    const V: usize = 50_000;
+    const REPS: usize = 9;
+
+    println!();
+    println!(
+        "{:<30}{:>12}{:>11}{:>12}{:>11}",
+        "typed hop, 50k nodes", "1 in N carry", "fresh us", "stale us", "penalty"
+    );
+
+    let plan = crate::gql::parse("MATCH (a)-[:E]->() RETURN count(*) AS c").unwrap();
+
+    for &share in &[2usize, 4, 10, 50] {
+        let build = || -> Store {
+            let mut b = Builder::default();
+            let mut ids = Vec::with_capacity(V);
+
+            for i in 0..V {
+                ids.push(b.node(&["N"], &[("k", n(i as f64))]));
+            }
+
+            // EVERY node gets `share` out-edges; exactly ONE of them is type E, so the
+            // total edge count is identical across rows and only the type's SHARE moves.
+            for i in 0..V {
+                for d in 0..share {
+                    let ty = if d == 0 { "E" } else { "OTHER" };
+                    b.edge(ids[i], ids[(i + d + 1) % V], ty);
+                }
+            }
+
+            b.build()
+        };
+
+        let time = |store: &Store| -> u128 {
+            let mut best = u128::MAX;
+
+            for _ in 0..REPS {
+                let t0 = Instant::now();
+                let out = run(&plan, store);
+                best = best.min(t0.elapsed().as_nanos());
+                assert!(matches!(out.rows[0][0], Value::Num(x) if x == V as f64));
+            }
+
+            best
+        };
+
+        let mut store = build();
+        let fresh = time(&store);
+        store.add_edge(0, V as u32 - 1, "H");
+        let stale = time(&store);
+
+        println!(
+            "{:<30}{:>12}{:>11.3}{:>12.3}{:>11.2}",
+            "count of type E",
+            share,
+            fresh as f64 / 1000.0,
+            stale as f64 / 1000.0,
+            stale as f64 / fresh as f64
+        );
+    }
+}
+
 /// Which READS scale with the GRAPH rather than with their RESULT? (item 668)
 ///
 /// ```text

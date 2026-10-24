@@ -107,6 +107,17 @@ are different questions and a change can help one while hurting the other —
 interleaving a write with a traversal already costs ~2.5x the traversal alone,
 because a write invalidates the read-side snapshot.
 
+**That ~2.5x understates it in two ways, both measured at item 680.** It is not a
+cost of _interleaving_: `rebuild_csr` runs only at LOAD, and every adjacency write
+clears `csr_fresh` with nothing to re-arm it, so ONE `add_edge` demotes EVERY later
+read for the rest of the session (the read after the next one is just as slow). And
+the size of the penalty is not ~2.5x but **proportional to how selective the queried
+edge type is** — fresh, `out_typed_flat` scans only that type's partition; stale, the
+hop walks every edge and filters. At 50k nodes, a whole-graph typed hop measured
+1.96x when 1 edge in 2 carried the type, 2.93x at 1 in 10, and **24.07x at 1 in 50**,
+with the fresh arm flat across all of them. So a graph with many edge types pays
+proportionally more, and the figure to quote depends on the fixture's type mix.
+
 ### Before trusting a number
 
 Each of these is here because a wrong conclusion was drawn and committed first.
