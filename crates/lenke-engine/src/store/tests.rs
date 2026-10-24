@@ -1203,6 +1203,73 @@ fn interval_index_tracks_writes() {
     assert_eq!(overlap_eids(&st, 0, 10.0, 10.0), Vec::<u32>::new());
 }
 
+/// REMOVING an interval axis takes the edge out of the index, and only the edge's
+/// source node is affected.
+///
+/// `interval_index_tracks_writes` covers `set_edge_prop` and `delete_edge` but never
+/// `remove_edge_prop`, so this path had no interval coverage at all — which is how it kept
+/// a whole-graph `rebuild_interval` that nothing distinguished from the local reindex its
+/// twin `set_edge_prop` does (item 678).
+///
+/// An edge is in the index only when BOTH axes are present and numeric
+/// (`reindex_node_interval` requires it, and so does the brute-force oracle), so removing
+/// one axis must drop it from both.
+#[test]
+fn removing_an_interval_axis_drops_the_edge_from_the_index() {
+    let mut st = interval_graph(4, 2); // 4 HELD edges 0 -> 1, intervals [d, d+2]
+    st.create_interval_index("vf", "vt");
+
+    // Edge 1 covers t=2 ([1,3]); so do edges 0 ([0,2]) and 2 ([2,4]).
+    assert!(overlap_eids(&st, 0, 2.0, 2.0).contains(&1), "precondition");
+
+    st.remove_edge_prop(1, "vt");
+
+    assert!(
+        !overlap_eids(&st, 0, 2.0, 2.0).contains(&1),
+        "edge 1 still indexed after its hi axis was removed"
+    );
+    // Its SIBLINGS off the same source are untouched.
+    assert!(overlap_eids(&st, 0, 2.0, 2.0).contains(&0));
+    assert!(overlap_eids(&st, 0, 2.0, 2.0).contains(&2));
+
+    for t in 0..8 {
+        let q = f64::from(t);
+        assert_eq!(
+            overlap_eids(&st, 0, q, q),
+            overlap_bruteforce(&st, 0, q, q),
+            "after removing hi, t={t}"
+        );
+    }
+
+    // Putting it back re-indexes it.
+    st.set_edge_prop(1, "vt", n(3.0));
+    assert!(
+        overlap_eids(&st, 0, 2.0, 2.0).contains(&1),
+        "edge 1 not re-indexed after the axis came back"
+    );
+
+    for t in 0..8 {
+        let q = f64::from(t);
+        assert_eq!(
+            overlap_eids(&st, 0, q, q),
+            overlap_bruteforce(&st, 0, q, q),
+            "after restoring hi, t={t}"
+        );
+    }
+
+    // The LO axis behaves the same way.
+    st.remove_edge_prop(2, "vf");
+    assert!(!overlap_eids(&st, 0, 3.0, 3.0).contains(&2));
+    for t in 0..8 {
+        let q = f64::from(t);
+        assert_eq!(
+            overlap_eids(&st, 0, q, q),
+            overlap_bruteforce(&st, 0, q, q),
+            "after removing lo, t={t}"
+        );
+    }
+}
+
 /// Rollback restores the interval index exactly (a full rebuild against the
 /// restored graph, so prop AND adjacency undo ordering can't drift it).
 #[test]

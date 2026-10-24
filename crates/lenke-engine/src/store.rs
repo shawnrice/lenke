@@ -4551,8 +4551,17 @@ impl Store {
         if let (Some(rec), Some(log)) = (rec, self.undo.as_mut()) {
             log.push(rec);
         }
+        // Removing an interval axis takes the edge OUT of the index, which is exactly as
+        // local as `set_edge_prop`'s move: the index is out-edge / source-partitioned, so
+        // only the edge's source node's buckets change. That fix landed on `set_edge_prop`
+        // and missed its twin here, which rebuilt the WHOLE index (O(V+E)) per removal —
+        // 4.8 ms at 200,000 nodes for an edge whose source had out-degree 4 (item 678).
         if self.interval_uses_key(key) {
-            self.rebuild_interval();
+            // No endpoints means the edge is already gone, and its buckets went with
+            // it — same reasoning as `set_edge_prop`, which also just skips.
+            if let Some((from, _)) = self.edge_endpoints(eid) {
+                self.reindex_node_interval(from);
+            }
         }
         self.record_change_with(|| Change::EdgeProp {
             eid,

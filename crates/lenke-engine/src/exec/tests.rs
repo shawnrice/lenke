@@ -11534,6 +11534,81 @@ fn interval_rollback_cost_by_graph_size() {
     }
 }
 
+/// Does REMOVING an interval-key edge property scale with the whole graph? (item 678)
+///
+/// ```text
+/// cargo test --release -p lenke-engine interval_prop_remove_cost_by_graph_size -- --ignored --nocapture
+/// ```
+///
+/// `set_edge_prop` reindexes only the edge's SOURCE node when the key is an interval axis,
+/// with a comment explaining why that is sufficient (the index is out-edge /
+/// source-partitioned, so `by_lo[node]` holds only NODE's out-edges). Its twin
+/// `remove_edge_prop` calls `rebuild_interval` instead — the whole graph, per removal.
+/// Same key, same index, same reasoning; the earlier fix landed on one of the pair.
+///
+/// The source's out-degree is held at 4 and only the graph grows, so anything that scales
+/// here is scaling with the GRAPH, not with the edge's fan-out. Flat in µs means the cost
+/// tracks the edge; flat in ns-per-node means it tracks the graph.
+#[test]
+#[ignore = "benchmark"]
+fn interval_prop_remove_cost_by_graph_size() {
+    use std::time::Instant;
+
+    println!();
+    println!(
+        "{:<36}{:>9}{:>12}{:>14}",
+        "remove an interval-key edge prop", "nodes", "us per op", "ns per node"
+    );
+
+    for &v in &[1_000usize, 10_000, 50_000, 200_000] {
+        for &with_index in &[false, true] {
+            let mut best = u128::MAX;
+
+            for _ in 0..9 {
+                let mut b = Builder::default();
+
+                for i in 0..v {
+                    b.node(&["N"], &[("k", n(i as f64))]);
+                }
+
+                let mut store = b.build();
+
+                // The SOURCE's out-degree is fixed at 4 regardless of graph size.
+                let mut eids = Vec::new();
+                for d in 0..4u32 {
+                    let e = store.add_edge(0, (d + 1) % v as u32, "HELD");
+                    store.set_edge_prop(e, "lo", n(f64::from(d)));
+                    store.set_edge_prop(e, "hi", n(f64::from(d) + 10.0));
+                    eids.push(e);
+                }
+
+                if with_index {
+                    store.create_interval_index("lo", "hi");
+                }
+
+                let victim = eids[0];
+                let t0 = Instant::now();
+                store.remove_edge_prop(victim, "hi");
+                best = best.min(t0.elapsed().as_nanos());
+
+                assert!(store.edge_prop(victim, "hi").is_null(), "prop not removed");
+            }
+
+            println!(
+                "{:<36}{:>9}{:>12.3}{:>14.4}",
+                if with_index {
+                    "interval index ON"
+                } else {
+                    "interval index off (CONTROL)"
+                },
+                v,
+                best as f64 / 1000.0,
+                best as f64 / v as f64
+            );
+        }
+    }
+}
+
 /// Which READS scale with the GRAPH rather than with their RESULT? (item 668)
 ///
 /// ```text
