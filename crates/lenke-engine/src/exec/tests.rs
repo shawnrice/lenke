@@ -11639,7 +11639,12 @@ fn csr_staleness_cost_after_one_write() {
         "typed hop count", "nodes", "us per op", "vs fresh"
     );
 
-    let plan = crate::gql::parse("MATCH (a)-[:E]->() RETURN count(*) AS c").unwrap();
+    // OPTIMIZED: `exec::run` executes the plan AS GIVEN, so a bench that runs a raw parse
+    // measures a plan the engine never runs (item 681 lost a tick to exactly that). This
+    // query's raw and optimized plans happen to be identical, so the numbers are unaffected
+    // either way — but the probe should not depend on anyone having checked.
+    let plan =
+        crate::opt::optimize(crate::gql::parse("MATCH (a)-[:E]->() RETURN count(*) AS c").unwrap());
 
     for &v in &[1_000usize, 10_000, 50_000, 200_000] {
         let build = || -> Store {
@@ -11745,7 +11750,12 @@ fn csr_staleness_mechanism() {
         "typed hop, 50k nodes", "1 in N carry", "fresh us", "stale us", "penalty"
     );
 
-    let plan = crate::gql::parse("MATCH (a)-[:E]->() RETURN count(*) AS c").unwrap();
+    // OPTIMIZED: `exec::run` executes the plan AS GIVEN, so a bench that runs a raw parse
+    // measures a plan the engine never runs (item 681 lost a tick to exactly that). This
+    // query's raw and optimized plans happen to be identical, so the numbers are unaffected
+    // either way — but the probe should not depend on anyone having checked.
+    let plan =
+        crate::opt::optimize(crate::gql::parse("MATCH (a)-[:E]->() RETURN count(*) AS c").unwrap());
 
     for &share in &[2usize, 4, 10, 50] {
         let build = || -> Store {
@@ -11794,6 +11804,138 @@ fn csr_staleness_mechanism() {
             stale as f64 / 1000.0,
             stale as f64 / fresh as f64
         );
+    }
+}
+
+/// Does the PLAIN one-hop count reach the degree algebra the QUANTIFIED spelling does? (681)
+///
+/// ```text
+/// cargo test --release -p lenke-engine plain_vs_quantified_hop_count -- --ignored --nocapture
+/// ```
+///
+/// `try_degree_algebra` answers a typed hop count from DEGREE SUMS without enumerating edges,
+/// but it is reached from `try_varlen_count` — the quantified-path shape. A plain
+/// `(a)-[:E]->()` is not quantified, so it may walk the per-type partition instead:
+/// item 680 measured 165-177 µs for a 50,000-edge type where the answer is a length.
+///
+/// `MATCH (a)-[:E]->() RETURN count(*)` and `MATCH (a)-[:E]->{1,1}() RETURN count(*)` must
+/// return the same number AND cost the same.
+///
+/// They do, and the mechanism is `opt.rs`'s one-hop `VarLength` collapse: `{1,1}` with no
+/// `until`/`body_filter` under WALK/TRAIL rewrites to a plain `Expand`, so both spellings
+/// optimize to the identical plan. This probe asserts that structurally and then times both,
+/// the same shape as `spelling_probe`: the PLAN match is the real signal, the time is the
+/// backstop.
+///
+/// It exists because the first version measured the RAW plans — `exec::run` does not optimize
+/// — and reported an 8.5x gap that was entirely the optimizer being skipped.
+#[test]
+#[ignore = "benchmark"]
+fn plain_vs_quantified_hop_count() {
+    use std::time::Instant;
+
+    const V: usize = 50_000;
+    const REPS: usize = 9;
+
+    println!();
+    println!(
+        "{:<42}{:>11}{:>12}{:>10}",
+        "one-hop count(*) of a 50k-edge type", "fresh us", "stale us", "answer"
+    );
+
+    // OPTIMIZED, because `exec::run` executes the plan AS GIVEN — it does not optimize.
+    // Measuring the raw plans compares something the engine never runs: the first version of
+    // this probe did exactly that and "found" an 8.5x spelling gap that is purely the
+    // optimizer's absence (`{1,1}` collapses to `Expand` at opt.rs:1018). Retracted.
+    let plain =
+        crate::opt::optimize(crate::gql::parse("MATCH (a)-[:E]->() RETURN count(*) AS c").unwrap());
+    let quant = crate::opt::optimize(
+        crate::gql::parse("MATCH (a)-[:E]->{1,1}() RETURN count(*) AS c").unwrap(),
+    );
+    // The claim this probe now guards: the two spellings OPTIMIZE to the same plan, so any
+    // cost difference is noise. Checked structurally, not by timing.
+    assert_eq!(
+        format!("{plain:?}"),
+        format!("{quant:?}"),
+        "the two one-hop count spellings no longer optimize to the same plan"
+    );
+
+    let build = || -> Store {
+        let mut b = Builder::default();
+        let mut ids = Vec::with_capacity(V);
+
+        for i in 0..V {
+            ids.push(b.node(&["N"], &[("k", n(i as f64))]));
+        }
+
+        // 1 edge in 10 carries type E, so a walk of ALL edges is 10x a walk of the partition
+        // and an O(1) answer is 50,000x either.
+        for i in 0..V {
+            for d in 0..10 {
+                b.edge(
+                    ids[i],
+                    ids[(i + d + 1) % V],
+                    if d == 0 { "E" } else { "OTHER" },
+                );
+            }
+        }
+
+        b.build()
+    };
+
+    for (label, plan) in [
+        ("plain (a)-[:E]->()", &plain),
+        ("quantified ->{1,1}", &quant),
+    ] {
+        let time = |store: &Store| -> (u128, f64) {
+            let mut best = u128::MAX;
+            let mut answer = 0.0;
+
+            for _ in 0..REPS {
+                let t0 = Instant::now();
+                let out = run(plan, store);
+                best = best.min(t0.elapsed().as_nanos());
+
+                if let Value::Num(x) = out.rows[0][0] {
+                    answer = x;
+                }
+            }
+
+            (best, answer)
+        };
+
+        let mut store = build();
+        let (fresh, a1) = time(&store);
+        store.add_edge(0, V as u32 - 1, "H");
+        let (stale, a2) = time(&store);
+
+        assert!(
+            (a1 - a2).abs() < f64::EPSILON,
+            "{label}: answer changed across the write: {a1} vs {a2}"
+        );
+
+        println!(
+            "{:<42}{:>11.3}{:>12.3}{:>10}",
+            label,
+            fresh as f64 / 1000.0,
+            stale as f64 / 1000.0,
+            a1 as u64
+        );
+    }
+}
+
+/// What do the two one-hop count spellings actually LOWER to? (item 681, diagnosis)
+#[test]
+#[ignore = "benchmark"]
+fn plain_vs_quantified_hop_plans() {
+    for q in [
+        "MATCH (a)-[:E]->() RETURN count(*) AS c",
+        "MATCH (a)-[:E]->{1,1}() RETURN count(*) AS c",
+    ] {
+        let plan = crate::gql::parse(q).unwrap();
+        println!("\n=== {q}");
+        println!("RAW:       {:?}", plan);
+        println!("OPTIMIZED: {:?}", crate::opt::optimize(plan));
     }
 }
 
