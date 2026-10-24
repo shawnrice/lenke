@@ -8104,6 +8104,29 @@ export const detectMultiNodeAggregate = (
         // An INDEX loop, not `accs.entries()`, for item 469's measured reason: the iterator
         // allocates a `[i, a]` tuple per accumulator per row, which alone cost
         // `count(n.age), count(*)` 17.8 ms against 9.4 at 200,000 rows.
+        //
+        // 🛑 DEDUPLICATING IDENTICAL ARGUMENTS IS REFUTED FOR THE COMMON CASE (item 653), and
+        // item 652 recorded it as open before it was priced. `max(n.w), min(n.w)` evaluates
+        // `n.w` twice per vertex, so a compile-time grouping by argument expression looked free.
+        // Priced with NO code written, using `max(n.w), count(*)` — structurally the CSE'd shape,
+        // since it holds the accumulator count at two and varies only the number of argument
+        // evaluations (652 measured the `rows` arm as free). 200,000 vertices, min of three
+        // alternated rounds:
+        //
+        //   max(n.w), min(n.w)   TWO evals   6.13 ms
+        //   max(n.w), count(*)   ONE eval    6.46      <- two evals is FASTER
+        //   grouped twin                     8.06 against 7.76 (3.9%, under the noise floor)
+        //
+        // A bare property read off an already-bound vertex is the cheapest expression there is,
+        // and evaluating it twice costs less than any machinery to avoid it. Since two evals
+        // measure FASTER than one here, an always-dedup would add an extra loop level to a path
+        // where the saving is zero — a REGRESSION on the shape people actually write.
+        //
+        // The other half of the enum is real but narrow: with an EXPENSIVE shared argument
+        // (`abs(n.w) * 2 + 1`) the same pair reads 27.23 against 20.85, about 1.31x. Capturing
+        // it would need a cost model to decide "is this argument expensive", because applying it
+        // unconditionally loses the cheap case above. That is a lot of apparatus for
+        // `max(<non-trivial expr>), min(<the same expr>)`, so it is NOT built.
         for (let i = 0; i < accs.length; i += 1) {
           const a = accs[i];
 
