@@ -995,6 +995,113 @@ fn edge_type_index_survives_rollback() {
     assert_eq!(out_ids(&st, 1, "KNOWS"), vec![2]);
 }
 
+/// Rolling back a delete restores each type bucket to mirror the adjacency EXACTLY,
+/// including the fact that a restore APPENDS rather than restoring position.
+///
+/// `edge_type_index_survives_rollback` cannot show this: its buckets are one or two
+/// entries long and it reads them through the SORTING `out_ids` helper, so neither the
+/// append order nor an over-eager rebuild is visible to it (item 676; the same blind spot
+/// as items 674 and 675).
+///
+/// The load-bearing detail is that rollback does NOT undo the adjacency's ORDER. The
+/// forward delete removes the entry from the middle and the restore pushes it back at the
+/// END, so the adjacency ends up [1, 3, 4, 5, 2] — and the bucket has to match THAT, not
+/// the original [1, 2, 3, 4, 5]. Asserting the pre-delete order here would be asserting a
+/// property the engine does not have.
+#[test]
+fn rolling_back_a_delete_leaves_each_type_bucket_mirroring_the_adjacency() {
+    let mut b = Builder::default();
+    for _ in 0..7 {
+        b.node(&["V"], &[]);
+    }
+    b.edge(0, 1, "KNOWS");
+    b.edge(0, 2, "KNOWS");
+    b.edge(0, 3, "KNOWS");
+    b.edge(0, 4, "KNOWS");
+    b.edge(0, 5, "KNOWS");
+    b.edge(6, 0, "KNOWS");
+    // The victim needs an OUTGOING edge of its own, or the `RestoreNode` branch that
+    // re-pushes a mirror into a neighbour's IN bucket never runs and a mutant deleting
+    // that branch is INERT rather than caught — which is exactly what happened on the
+    // first mutation run for item 676.
+    b.edge(2, 3, "KNOWS");
+    let mut st = b.build();
+    st.create_edge_type_index();
+
+    let knows = st.etype_id("KNOWS").unwrap();
+    let out_raw = |st: &Store, nd: u32| -> Vec<u32> {
+        st.out_typed(nd, knows).iter().map(|a| a.nbr).collect()
+    };
+    let out_flat = |st: &Store, nd: u32| -> Vec<u32> {
+        st.out(nd)
+            .iter()
+            .filter(|a| a.etype == knows)
+            .map(|a| a.nbr)
+            .collect()
+    };
+    let in_flat = |st: &Store, nd: u32| -> Vec<u32> {
+        st.inc(nd)
+            .iter()
+            .filter(|a| a.etype == knows)
+            .map(|a| a.nbr)
+            .collect()
+    };
+    let agrees = |st: &Store, what: &str| {
+        for nd in 0..st.node_count() as u32 {
+            assert_eq!(out_raw(st, nd), out_flat(st, nd), "{what}: node {nd} out");
+            let in_raw: Vec<u32> = st.in_typed(nd, knows).iter().map(|a| a.nbr).collect();
+            assert_eq!(in_raw, in_flat(st, nd), "{what}: node {nd} in");
+        }
+    };
+
+    // --- rolling back an EDGE delete ---
+    let eid = st
+        .out(0)
+        .iter()
+        .find(|a| a.nbr == 2)
+        .expect("edge 0->2")
+        .eid;
+    st.begin();
+    st.delete_edge(0, 2, eid);
+    assert_eq!(out_raw(&st, 0), vec![1, 3, 4, 5], "inside the txn");
+    st.rollback();
+
+    // The restore APPENDS, so 2 comes back last — in both the adjacency and the bucket.
+    assert_eq!(
+        out_flat(&st, 0),
+        vec![1, 3, 4, 5, 2],
+        "adjacency after rollback"
+    );
+    assert_eq!(out_raw(&st, 0), vec![1, 3, 4, 5, 2], "bucket mirrors it");
+    agrees(&st, "after edge-delete rollback");
+
+    // --- rolling back a NODE delete ---
+    // Deleting node 2 strips its mirror from hub 0's bucket; rolling back re-appends it.
+    st.begin();
+    st.delete_node(2);
+    assert_eq!(out_raw(&st, 0), vec![1, 3, 4, 5], "inside the node txn");
+    st.rollback();
+
+    assert_eq!(
+        out_raw(&st, 0),
+        out_flat(&st, 0),
+        "bucket mirrors adjacency"
+    );
+    assert!(out_raw(&st, 0).contains(&2), "node 2's edge is back");
+    // Node 3's IN bucket regained the mirror of the victim's OUTGOING edge 2 -> 3.
+    let in3: Vec<u32> = st.in_typed(3, knows).iter().map(|a| a.nbr).collect();
+    assert!(
+        in3.contains(&2),
+        "victim's out-edge mirror restored on the neighbour"
+    );
+    assert_eq!(in3, in_flat(&st, 3), "and in adjacency order");
+    agrees(&st, "after node-delete rollback");
+
+    // Hub 0's IN bucket survived both round trips.
+    let in0: Vec<u32> = st.in_typed(0, knows).iter().map(|a| a.nbr).collect();
+    assert_eq!(in0, vec![6]);
+}
+
 /// A node added AFTER the index exists grows the index and indexes its edges.
 #[test]
 fn edge_type_index_grows_with_new_node() {

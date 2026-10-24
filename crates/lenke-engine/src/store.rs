@@ -3458,6 +3458,28 @@ impl Store {
     /// bucket, so this is housekeeping, not correctness).
     ///
     /// This mirrors the incremental APPEND that `add_edge` already does on its hot path.
+    /// Append one adjacency entry to `node`'s `etype` bucket in the OUT (`is_out`) or IN
+    /// type index. A no-op when the index is off. The restore counterpart of
+    /// [`drop_etype_entry`](Store::drop_etype_entry).
+    ///
+    /// Equivalent to [`reindex_node_etypes`](Store::reindex_node_etypes) once the same entry
+    /// has been PUSHED onto the flat adjacency, because a bucket is the subsequence of the
+    /// adjacency carrying that etype in adjacency order: an entry appended at the end of the
+    /// adjacency belongs at the end of its etype's bucket. Callers must therefore push onto
+    /// the adjacency and call this in the SAME order (item 676).
+    fn push_etype_entry(&mut self, node: u32, is_out: bool, adj: Adj) {
+        if !self.edge_type_index {
+            return;
+        }
+        let i = node as usize;
+        let m = if is_out {
+            &mut self.out_type_idx[i]
+        } else {
+            &mut self.in_type_idx[i]
+        };
+        m.entry(adj.etype).or_default().push(adj);
+    }
+
     fn drop_etype_entry(&mut self, node: u32, is_out: bool, etype: u32, eid: u32) {
         if !self.edge_type_index {
             return;
@@ -5095,20 +5117,18 @@ impl Store {
                 }
             },
             Undo::RestoreEdge { entries } => {
-                let touched: Vec<u32> = if self.edge_type_index {
-                    entries.iter().map(|(node, _, _)| *node).collect()
-                } else {
-                    Vec::new()
-                };
+                // Push the entry back onto the adjacency and onto its type bucket in the
+                // SAME order, which is what makes the incremental push match a rebuild.
+                // Rebuilding each touched node's whole map made rolling back ONE edge
+                // delete O(hub degree) where the restore itself is O(1) — 1136x at degree
+                // 200,000 (item 676).
                 for (node, is_out, adj) in entries {
                     if is_out {
                         self.out_adj[node as usize].push(adj);
                     } else {
                         self.in_adj[node as usize].push(adj);
                     }
-                }
-                for node in touched {
-                    self.reindex_node_etypes(node);
+                    self.push_etype_entry(node, is_out, adj);
                 }
             }
             Undo::RestoreNode {
@@ -5127,37 +5147,36 @@ impl Store {
                 // lists and are restored by the assignments below.
                 for a in &out {
                     if a.nbr != id {
-                        self.in_adj[a.nbr as usize].push(Adj {
+                        let m = Adj {
                             nbr: id,
                             etype: a.etype,
                             eid: a.eid,
-                        });
+                        };
+                        self.in_adj[a.nbr as usize].push(m);
+                        self.push_etype_entry(a.nbr, false, m);
                     }
                 }
                 for a in &inc {
                     if a.nbr != id {
-                        self.out_adj[a.nbr as usize].push(Adj {
+                        let m = Adj {
                             nbr: id,
                             etype: a.etype,
                             eid: a.eid,
-                        });
+                        };
+                        self.out_adj[a.nbr as usize].push(m);
+                        self.push_etype_entry(a.nbr, true, m);
                     }
                 }
                 self.out_adj[i] = out;
                 self.in_adj[i] = inc;
                 if self.edge_type_index {
-                    // Rebuild id's buckets, and each neighbour that regained a
-                    // mirror (read the restored adjacency for the neighbour set).
+                    // Only id itself is rebuilt: its ENTIRE adjacency was just assigned
+                    // wholesale above, so a rebuild is both correct and O(its own degree),
+                    // which is its own data and unavoidable. The neighbours each regained
+                    // exactly ONE mirror per restored edge and were updated incrementally
+                    // in the loops above — rebuilding them made rolling back a hub-leaf
+                    // delete O(HUB degree) (item 676).
                     self.reindex_node_etypes(id);
-                    let nbrs: Vec<u32> = self.out_adj[i]
-                        .iter()
-                        .chain(self.in_adj[i].iter())
-                        .map(|a| a.nbr)
-                        .filter(|&nb| nb != id)
-                        .collect();
-                    for nb in nbrs {
-                        self.reindex_node_etypes(nb);
-                    }
                 }
                 for l in labels {
                     // Re-insert in SORTED position (not push): a delete removed this

@@ -11270,6 +11270,183 @@ fn edge_delete_cost_by_index() {
     }
 }
 
+/// What do the two ROLLBACK paths pay for the opt-in edge-type index? (item 676)
+///
+/// ```text
+/// cargo test --release -p lenke-engine rollback_cost_by_index -- --ignored --nocapture
+/// ```
+///
+/// Items 674 and 675 fixed the forward deletes. `Undo::RestoreEdge` and `Undo::RestoreNode`
+/// still call `reindex_node_etypes` per touched node, so rolling back a delete against a hub
+/// rebuilds the hub's whole type map. Whether that MATTERS is a separate question from
+/// whether the code looks wrong — item 675's floor turned out to be O(degree) anyway, so a
+/// rebuild can be a constant factor on top of an already-linear path rather than a new cost.
+/// Measured before any fix.
+///
+/// Both arms in ONE process, index the only variable.
+#[test]
+#[ignore = "benchmark"]
+fn rollback_cost_by_index() {
+    use std::time::Instant;
+
+    const D: usize = 50_000;
+
+    // A hub with `D` leaves, each `leaf -E-> hub`.
+    fn hub_graph(with_index: bool) -> (Store, Vec<u32>, u32) {
+        let mut b = Builder::default();
+        let hub = b.node(&["Hub"], &[("k", n(0.0))]);
+        let mut leaves = Vec::with_capacity(D);
+
+        for i in 0..D {
+            leaves.push(b.node(&["Leaf"], &[("k", n(i as f64))]));
+        }
+
+        for &l in &leaves {
+            b.edge(l, hub, "E");
+        }
+
+        let mut store = b.build();
+
+        if with_index {
+            store.create_edge_type_index();
+        }
+
+        (store, leaves, hub)
+    }
+
+    println!();
+    println!(
+        "{:<38}{:>10}{:>14}",
+        "roll back ONE edge delete off a hub", "hub degree", "us per op"
+    );
+
+    for &with_index in &[false, true] {
+        let mut best = u128::MAX;
+
+        for _ in 0..9 {
+            let (mut store, leaves, hub) = hub_graph(with_index);
+            let victim = leaves[D - 1];
+            let eid = store.out(victim)[0].eid;
+
+            store.begin();
+            store.delete_edge(victim, hub, eid);
+
+            // Time the ROLLBACK only; the forward delete is items 674/675' subject.
+            let t0 = Instant::now();
+            store.rollback();
+            best = best.min(t0.elapsed().as_nanos());
+
+            assert_eq!(store.out(victim).len(), 1, "edge not restored");
+        }
+
+        println!(
+            "{:<38}{:>10}{:>14.3}",
+            if with_index {
+                "edge-type index ON"
+            } else {
+                "edge-type index off (CONTROL)"
+            },
+            D,
+            best as f64 / 1000.0
+        );
+    }
+
+    // IS IT A COMPLEXITY CHANGE OR A CONSTANT FACTOR? Hold the operation fixed (roll back
+    // ONE edge delete) and vary the hub degree. FLAT in us means O(1); flat in ns-per-D
+    // means O(D). This is the discriminator items 663/664 used, and it is the whole question
+    // here: a restore is a PUSH, so the index-off arm should be flat, while a per-node
+    // rebuild should track the degree.
+    println!();
+    println!(
+        "{:<24}{:>10}{:>14}{:>12}",
+        "roll back 1 edge delete", "hub degree", "us per op", "ns per D"
+    );
+
+    for &deg in &[1_000usize, 10_000, 50_000, 200_000] {
+        for &with_index in &[false, true] {
+            let mut best = u128::MAX;
+
+            for _ in 0..5 {
+                let mut b = Builder::default();
+                let hub = b.node(&["Hub"], &[("k", n(0.0))]);
+                let mut lv = Vec::with_capacity(deg);
+
+                for i in 0..deg {
+                    lv.push(b.node(&["Leaf"], &[("k", n(i as f64))]));
+                }
+
+                for &l in &lv {
+                    b.edge(l, hub, "E");
+                }
+
+                let mut store = b.build();
+
+                if with_index {
+                    store.create_edge_type_index();
+                }
+
+                let victim = lv[deg - 1];
+                let eid = store.out(victim)[0].eid;
+                store.begin();
+                store.delete_edge(victim, hub, eid);
+
+                let t0 = Instant::now();
+                store.rollback();
+                best = best.min(t0.elapsed().as_nanos());
+
+                assert_eq!(store.out(victim).len(), 1, "edge not restored");
+            }
+
+            println!(
+                "{:<24}{:>10}{:>14.3}{:>12.4}",
+                if with_index {
+                    "index ON"
+                } else {
+                    "index off (CONTROL)"
+                },
+                deg,
+                best as f64 / 1000.0,
+                best as f64 / deg as f64
+            );
+        }
+    }
+
+    println!();
+    println!(
+        "{:<38}{:>10}{:>14}",
+        "roll back a hub-LEAF node delete", "hub degree", "us per op"
+    );
+
+    for &with_index in &[false, true] {
+        let mut best = u128::MAX;
+
+        for _ in 0..9 {
+            let (mut store, leaves, _hub) = hub_graph(with_index);
+            let victim = leaves[D - 1];
+
+            store.begin();
+            store.delete_nodes(&[victim]);
+
+            let t0 = Instant::now();
+            store.rollback();
+            best = best.min(t0.elapsed().as_nanos());
+
+            assert_eq!(store.out(victim).len(), 1, "node not restored");
+        }
+
+        println!(
+            "{:<38}{:>10}{:>14.3}",
+            if with_index {
+                "edge-type index ON"
+            } else {
+                "edge-type index off (CONTROL)"
+            },
+            D,
+            best as f64 / 1000.0
+        );
+    }
+}
+
 /// Which READS scale with the GRAPH rather than with their RESULT? (item 668)
 ///
 /// ```text
