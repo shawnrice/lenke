@@ -11195,6 +11195,81 @@ fn delete_cost_by_neighbour_degree() {
     }
 }
 
+/// Does the opt-in edge-type index make deleting ONE EDGE off a hub worse? (item 675)
+///
+/// ```text
+/// cargo test --release -p lenke-engine edge_delete_cost_by_index -- --ignored --nocapture
+/// ```
+///
+/// Item 674 fixed the hub-leaf NODE delete. `delete_edge` has the same shape and is the
+/// hotter path — it is also what `Undo::AddEdge` routes through, so rolling back an
+/// `add_edge` pays it too. It already spends four O(degree) `retain`s on the flat
+/// adjacency, so the index cannot change the COMPLEXITY here; the question is what the
+/// two full map rebuilds (`reindex_node_etypes(u)` and `(v)` — both directions, a fresh
+/// `Vec` per etype) cost on top of that floor.
+///
+/// Both arms in ONE process, index the only variable, so the index-off arm is a control
+/// the index-on arm cannot reach.
+#[test]
+#[ignore = "benchmark"]
+fn edge_delete_cost_by_index() {
+    use std::time::Instant;
+
+    const D: usize = 50_000;
+
+    println!();
+    println!(
+        "{:<34}{:>10}{:>14}",
+        "delete ONE edge off a hub", "hub degree", "us per op"
+    );
+
+    for &with_index in &[false, true] {
+        let mut best = u128::MAX;
+
+        for _ in 0..9 {
+            let mut b = Builder::default();
+            let hub = b.node(&["Hub"], &[("k", n(0.0))]);
+            let mut leaves = Vec::with_capacity(D);
+
+            for i in 0..D {
+                leaves.push(b.node(&["Leaf"], &[("k", n(i as f64))]));
+            }
+
+            for &l in &leaves {
+                b.edge(l, hub, "E");
+            }
+
+            let mut store = b.build();
+
+            if with_index {
+                store.create_edge_type_index();
+            }
+
+            // Read the eid back off the adjacency rather than assuming insertion order.
+            let victim = leaves[D - 1];
+            let eid = store.out(victim)[0].eid;
+
+            let t0 = Instant::now();
+            store.delete_edge(victim, hub, eid);
+            best = best.min(t0.elapsed().as_nanos());
+
+            // The measurement is worthless if the delete was a no-op.
+            assert!(store.out(victim).is_empty(), "edge not deleted");
+        }
+
+        println!(
+            "{:<34}{:>10}{:>14.3}",
+            if with_index {
+                "edge-type index ON"
+            } else {
+                "edge-type index off (CONTROL)"
+            },
+            D,
+            best as f64 / 1000.0
+        );
+    }
+}
+
 /// Which READS scale with the GRAPH rather than with their RESULT? (item 668)
 ///
 /// ```text

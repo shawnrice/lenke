@@ -895,6 +895,90 @@ fn deleting_a_node_drops_one_type_bucket_entry_per_edge_and_keeps_the_order() {
     }
 }
 
+/// `delete_edge` removes exactly ONE entry from each endpoint's type bucket and leaves
+/// the survivors in bucket order.
+///
+/// The delete_node twin of this test explains the fixture; the same two blind spots apply
+/// to `edge_type_index_tracks_delete`, which asserts only on buckets that end up EMPTY and
+/// reads them through a SORTING helper. `delete_edge` is the hotter path of the two and is
+/// also what `Undo::AddEdge` rolls back through (item 675).
+#[test]
+fn deleting_an_edge_drops_one_type_bucket_entry_and_keeps_the_order() {
+    let mut b = Builder::default();
+    for _ in 0..7 {
+        b.node(&["V"], &[]);
+    }
+    // Hub 0's OUT/KNOWS bucket: [1, 2, 3, 4, 5]. Five with the victim at index 1, so
+    // `retain` ([1,3,4,5]) and `swap_remove` ([1,5,3,4]) are distinguishable.
+    b.edge(0, 1, "KNOWS");
+    b.edge(0, 2, "KNOWS");
+    b.edge(0, 3, "KNOWS");
+    b.edge(0, 4, "KNOWS");
+    b.edge(0, 5, "KNOWS");
+    // Hub 0's IN/KNOWS bucket: [6] — must survive deleting an OUT edge.
+    b.edge(6, 0, "KNOWS");
+    let mut st = b.build();
+    st.create_edge_type_index();
+
+    let knows = st.etype_id("KNOWS").unwrap();
+    let out_raw = |st: &Store, n: u32, et: u32| -> Vec<u32> {
+        st.out_typed(n, et).iter().map(|a| a.nbr).collect()
+    };
+    let in_raw = |st: &Store, n: u32, et: u32| -> Vec<u32> {
+        st.in_typed(n, et).iter().map(|a| a.nbr).collect()
+    };
+
+    assert_eq!(out_raw(&st, 0, knows), vec![1, 2, 3, 4, 5], "precondition");
+
+    // Delete 0 -KNOWS-> 2, reading the eid off the adjacency rather than assuming it.
+    let eid = st
+        .out(0)
+        .iter()
+        .find(|a| a.nbr == 2)
+        .expect("edge 0->2")
+        .eid;
+    st.delete_edge(0, 2, eid);
+
+    assert_eq!(
+        out_raw(&st, 0, knows),
+        vec![1, 3, 4, 5],
+        "one dropped, order kept"
+    );
+    // The other direction on the same node and etype is untouched.
+    assert_eq!(in_raw(&st, 0, knows), vec![6], "wrong-direction drop");
+    // And node 2's IN bucket lost its only entry.
+    assert_eq!(in_raw(&st, 2, knows), Vec::<u32>::new());
+
+    // Endpoint order is documented as irrelevant: deleting with the arguments SWAPPED
+    // must work the same. 0 -KNOWS-> 3 via (3, 0).
+    let eid3 = st
+        .out(0)
+        .iter()
+        .find(|a| a.nbr == 3)
+        .expect("edge 0->3")
+        .eid;
+    st.delete_edge(3, 0, eid3);
+    assert_eq!(out_raw(&st, 0, knows), vec![1, 4, 5], "swapped endpoints");
+
+    // The index still agrees with a filter of the flat adjacency everywhere.
+    for n in 0..st.node_count() as u32 {
+        let flat: Vec<u32> = st
+            .out(n)
+            .iter()
+            .filter(|a| a.etype == knows)
+            .map(|a| a.nbr)
+            .collect();
+        assert_eq!(out_raw(&st, n, knows), flat, "node {n} out");
+        let flat_in: Vec<u32> = st
+            .inc(n)
+            .iter()
+            .filter(|a| a.etype == knows)
+            .map(|a| a.nbr)
+            .collect();
+        assert_eq!(in_raw(&st, n, knows), flat_in, "node {n} in");
+    }
+}
+
 /// Transaction rollback restores the index exactly (a per-node rebuild off the
 /// restored flat adjacency, so no delta bookkeeping can drift).
 #[test]

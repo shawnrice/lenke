@@ -4530,6 +4530,10 @@ impl Store {
         self.invalidate_edge_num();
         let logging = self.undo.is_some();
         let mut removed: Vec<(u32, bool, Adj)> = Vec::new();
+        // Captured off the adjacency entry as it is dropped, so the type-index update below
+        // needs no second scan and no `edge_etype` lookup. `None` means the eid was not
+        // present at either endpoint, i.e. this call was the documented no-op.
+        let mut dropped_etype: Option<u32> = None;
         for node in [u, v] {
             if let Some(adj) = self.out_adj.get_mut(node as usize) {
                 if logging {
@@ -4539,7 +4543,14 @@ impl Store {
                             .map(|a| (node, true, *a)),
                     );
                 }
-                adj.retain(|a| a.eid != eid);
+                adj.retain(|a| {
+                    if a.eid == eid {
+                        dropped_etype = Some(a.etype);
+                        false
+                    } else {
+                        true
+                    }
+                });
             }
             if let Some(adj) = self.in_adj.get_mut(node as usize) {
                 if logging {
@@ -4549,12 +4560,31 @@ impl Store {
                             .map(|a| (node, false, *a)),
                     );
                 }
-                adj.retain(|a| a.eid != eid);
+                adj.retain(|a| {
+                    if a.eid == eid {
+                        dropped_etype = Some(a.etype);
+                        false
+                    } else {
+                        true
+                    }
+                });
             }
         }
         if self.edge_type_index {
-            self.reindex_node_etypes(u);
-            self.reindex_node_etypes(v);
+            // Drop the one entry from each bucket it could be in rather than rebuilding both
+            // endpoints' whole type maps, which cost 17.8x on a hub edge (item 675) — the same
+            // mechanism and the same fix as item 674, on the hotter path.
+            //
+            // All FOUR combinations, because this method is deliberately direction-agnostic
+            // ("safe to call with the endpoints in either order"): the edge may be u->v or
+            // v->u, and `drop_etype_entry` is a no-op where the eid is absent. A self-loop
+            // (u == v) just makes two of the four redundant no-ops.
+            if let Some(et) = dropped_etype {
+                self.drop_etype_entry(u, true, et, eid);
+                self.drop_etype_entry(u, false, et, eid);
+                self.drop_etype_entry(v, true, et, eid);
+                self.drop_etype_entry(v, false, et, eid);
+            }
         }
         if self.interval.is_some() {
             // The interval index is on OUT-edges; the deleted eid was an out-edge
