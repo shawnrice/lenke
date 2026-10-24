@@ -784,15 +784,14 @@ const CASES: Case[] = [
     ),
   },
   {
-    // DEPTH 4, the boundary of items 600-602's correction and the one thing those three left
-    // unbuilt in BOTH engines. The depth-3 closed form is `walk3` minus four correction terms;
-    // item 600 derived those and said plainly that "depth 4 is measurement only; its terms are
-    // not derived", so at `{4}` both engines fall back to enumerating the trail.
+    // DEPTH 4, the boundary of items 600-602's correction. Item 600 said plainly that "depth 4 is
+    // measurement only; its terms are not derived"; items 687-689 derived them by reducing depth 4
+    // to the depth-3 count plus one correction, and item 692 built that in TYPESCRIPT.
     //
-    // Carried here so the open target has a CURRENT number on the same fixture as the depth-3
-    // row above, rather than item 600's figure from an older build. It is also the row that
-    // would show a depth-4 correction landing, and `fastpath_fuzz` can now see depth 4 (602).
-    name: 'count 4-hop quantified [TRAIL, unbuilt]',
+    // So this row is now ASYMMETRIC and that is the point of keeping it: ts 3365.6 -> 17.7ms
+    // (190x) while ffi still enumerates at ~82ms, which makes `ts/ffi` read 0.22x — TS ahead of
+    // native on this one row, the reverse of every other. Native is the open half.
+    name: 'count 4-hop quantified [TRAIL, TS only]',
     ...onGraph(
       () => graphDoc,
       (e, g) => void e.query(g, 'MATCH (a:Person)-[:KNOWS]->{4}(y) RETURN count(*) AS c'),

@@ -1470,6 +1470,225 @@ const reusedTrailsAt3 = (
   return bad - 2 * selfLoops[v] * pass[v];
 };
 
+/**
+ * Everything depth 4 needs beyond the depth-3 tables — bundled for the reason this file already
+ * bundles `DegreeCountSpec` and native bundles `Trail3Tables`: the arity limit, and the
+ * alternative is positional soup (item 692).
+ */
+type Trail4Tables = {
+  off: Int32Array;
+  nbr: Int32Array;
+  selfLoops: Float64Array;
+  /** `walk_2(v)`, snapshotted before the level loop overwrote it. */
+  walk2: Float64Array;
+  /** `t3(v) = walk_3(v) − reusedTrailsAt3(v)`, the per-source depth-3 count. */
+  t3: Float64Array;
+  /** `m(u,v)` — the ordered-pair edge multiplicity, O(1) off an O(E) map. */
+  mult: (u0: number, v0: number) => number;
+};
+
+/**
+ * `u3(b, a)` — the 3-trails STARTING AT `b` that USE a given edge `a → b` (item 692).
+ *
+ * A trail uses each edge at most once, so that edge sits in exactly ONE of the three positions.
+ * The cases are therefore DISJOINT and simply add, which is what replaces inclusion-exclusion over
+ * depth 4's six equality events and its 63 intersections (item 600 declined to derive those; item
+ * 687 sidestepped them). Validated 600/600 against brute force with 8/8 mutants caught (item 689).
+ *
+ * EDGE-IDENTITY-FREE, and that is load-bearing: this CSR carries neighbours only, so parallel edges
+ * are indistinguishable slots and no `f ≠ e0` test could be written directly. Every such exclusion
+ * reduces to a ±1 correction keyed on whether the edge LEAVES `b` — i.e. on `a === b`.
+ *
+ * Derived for a TRIVIAL endpoint mask, which is why the caller is gated on `passesIsVacuous`.
+ */
+const usedTrailsAt3 = (b: number, a: number, t: Trail4Tables): number => {
+  const { off, nbr, selfLoops, walk2, mult } = t;
+  const bEnd = off[b + 1];
+  const od = bEnd - off[b];
+  const loops = selfLoops[b];
+  let total = 0;
+  let acc = 0;
+
+  if (a === b) {
+    // The edge is a SELF-LOOP at `b`, so it leaves `b` and competes with f1 and f2.
+    //   f0 = e0: e0, then a 2-trail from b avoiding e0
+    //   f1 = e0: a self-loop f0 ≠ e0, then e0, then f2 ∉ {f0, e0}
+    total += walk2[b] - loops * od + (loops - 1) * (od - 2);
+    total += (loops - 1) * (od - 2);
+
+    // f2 = e0: a 2-trail b→c→b, then e0. The one f0 that IS e0 is removed AFTER the sum rather
+    // than skipped inside it — that is what keeps this free of edge identities.
+    for (let j = off[b]; j < bEnd; j += 1) {
+      const c = nbr[j];
+
+      acc += c === b ? loops - 2 : mult(c, b);
+    }
+
+    return total + acc - (loops - 2);
+  }
+
+  // The edge does not leave `b`, so it can be neither f0 nor f2 and only the landing tests matter.
+  total += mult(b, a) * (od - 1);
+
+  for (let j = off[b]; j < bEnd; j += 1) {
+    acc += mult(nbr[j], a);
+  }
+
+  return total + acc;
+};
+
+/** `T4(s)` — the 4-trails starting at `s`, as `Σ_{e0: s→b} [ t3(b) − u3(b, s) ]` (item 692). */
+const trailsAt4From = (s: number, t: Trail4Tables): number => {
+  const end = t.off[s + 1];
+  let total = 0;
+
+  for (let k = t.off[s]; k < end; k += 1) {
+    const b = t.nbr[k];
+
+    total += t.t3[b] - usedTrailsAt3(b, s, t);
+  }
+
+  return total;
+};
+
+/**
+ * The ordered-pair edge multiplicity `m(u,v)`, as a lookup over an O(E) map.
+ *
+ * This is the "auxiliary O(E) structure" item 600b named and declined to assume. With it depth 4's
+ * expensive term costs `Σ_b in(b)·out(b)` — the TWO-walk count — in lookups, where probing the
+ * adjacency for the same number costs the THREE-walk count: item 689 measured 197x against
+ * enumeration where item 686's adjacency-probing estimate predicted ~78x.
+ *
+ * A Map, against this function's own rule that "no level consults a Map at all" — that rule
+ * protects depths 1-3, which never reach here. The alternative is a neighbour-SORTED CSR, which
+ * item 688 priced as the wrong trade for TypeScript specifically, since this CSR is rebuilt per
+ * QUERY while native's is a persistent overlay.
+ */
+const pairMultiplicities = (
+  off: Int32Array,
+  nbr: Int32Array,
+  n: number,
+): ((u0: number, v0: number) => number) => {
+  const pairs = new Map<number, number>();
+
+  for (let v = 0; v < n; v += 1) {
+    const end = off[v + 1];
+
+    for (let k = off[v]; k < end; k += 1) {
+      const key = v * n + nbr[k];
+
+      pairs.set(key, (pairs.get(key) ?? 0) + 1);
+    }
+  }
+
+  return (u0, v0) => pairs.get(u0 * n + v0) ?? 0;
+};
+
+/**
+ * The per-LEVEL trail correction: what to SUBTRACT from the walk count at level `len`.
+ *
+ * PER LEVEL and not once per range, which is the distinction item 602 records — a correction
+ * applied once for the whole range answers `{3,3}` correctly and `{1,3}` wrongly. Level 1 needs
+ * none, since one edge cannot repeat.
+ */
+const trailCorrectionAt = (
+  len: number,
+  srcIdx: Int32Array,
+  u: Float64Array,
+  csr: { off: Int32Array; nbr: Int32Array },
+  masks: { pass: Float64Array; selfLoops: Float64Array; passDeg: Float64Array },
+  tables4: Trail4Tables | undefined,
+): number => {
+  const { pass, selfLoops, passDeg } = masks;
+  let bad = 0;
+
+  // LEVEL 2: the one path that reuses a self-loop, `s -> s -> s`, and only when the endpoint
+  // passes — the correction the `max <= 2` closed form already applied.
+  if (len === 2) {
+    for (const si of srcIdx) {
+      bad += selfLoops[si] * pass[si];
+    }
+  } else if (len === 3) {
+    // NOT gated on `tables4`: depth 3 never builds it, and gating here would silently drop the
+    // level-3 correction for `max === 3` — caught by the brute-force oracle on the first run.
+    for (const si of srcIdx) {
+      bad += reusedTrailsAt3(si, csr.off, csr.nbr, pass, selfLoops, passDeg);
+    }
+  } else if (len === 4 && tables4 !== undefined) {
+    // LEVEL 4 (item 692): `walk4(s) − T4(s)`, by the identity validated at items 687 and 689.
+    for (const si of srcIdx) {
+      bad += u[si] - trailsAt4From(si, tables4);
+    }
+  }
+
+  return bad;
+};
+
+/**
+ * Depth 4's tables, built at the end of LEVEL 3 — where `u` still holds `walk_3` (item 692).
+ *
+ * `reusedTrailsAt3` runs once per VERTEX, not once per edge: the identity needs `t3` at every
+ * landing, and a landing is reached by `in(b)` different edges. That makes this O(V + the 2-walk
+ * count), the same order as the depth-3 route's own work rather than a new asymptote (item 688).
+ */
+const buildTrail4Tables = (
+  walk3: Float64Array,
+  csr: { off: Int32Array; nbr: Int32Array },
+  masks: { pass: Float64Array; selfLoops: Float64Array; passDeg: Float64Array },
+  walk2: Float64Array,
+  mult: (u0: number, v0: number) => number,
+): Trail4Tables => {
+  const { off, nbr } = csr;
+  const { pass, selfLoops, passDeg } = masks;
+  const t3 = new Float64Array(walk3.length);
+
+  for (let v = 0; v < walk3.length; v += 1) {
+    t3[v] = walk3[v] - reusedTrailsAt3(v, off, nbr, pass, selfLoops, passDeg);
+  }
+
+  return { off, nbr, selfLoops, walk2, t3, mult };
+};
+
+/**
+ * The depth-3/4 trail correction's masks, all three O(V + E) off the CSR.
+ *
+ * `pass` is `u_0` — the endpoint mask as 0/1, captured BEFORE the level loop overwrites `u`.
+ * `selfLoops[v]` counts wanted `v -> v` edges, and `passDeg[v]` is the PASSING out-degree, which is
+ * what the `e0 == e1` term needs: that walk ends at the third edge's target, so the factor is the
+ * passing out-degree and not the raw one. All three are built with the same mask the level loop
+ * uses, so a correction can never count an edge the walk would not have traversed.
+ */
+const buildTrailMasks = (
+  u0: Float64Array,
+  csr: { off: Int32Array; nbr: Int32Array },
+): { pass: Float64Array; selfLoops: Float64Array; passDeg: Float64Array } => {
+  const { off, nbr } = csr;
+  const pass = Float64Array.from(u0);
+  const selfLoops = new Float64Array(pass.length);
+  const passDeg = new Float64Array(pass.length);
+
+  for (let v = 0; v < pass.length; v += 1) {
+    const end = off[v + 1];
+    let sl = 0;
+    let pd = 0;
+
+    for (let k = off[v]; k < end; k += 1) {
+      const y = nbr[k];
+
+      if (y === v) {
+        sl += 1;
+      }
+
+      pd += pass[y];
+    }
+
+    selfLoops[v] = sl;
+    passDeg[v] = pd;
+  }
+
+  return { pass, selfLoops, passDeg };
+};
+
 const walkLevelCount = (graph: Graph, spec: DegreeCountSpec): number => {
   const { types, min, max, isTrail, startName, passes } = spec;
   const edgesOf = (v: Vertex): Iterable<Edge> => {
@@ -1551,30 +1770,20 @@ const walkLevelCount = (graph: Graph, spec: DegreeCountSpec): number => {
   // the average degree below enumerating three-walks, which is the whole win (item 600b corrects
   // an earlier claim that it was O(V + E)).
   const trail3 = isTrail && max === 3;
-  const pass = trail3 ? Float64Array.from(u) : undefined;
-  const selfLoops = trail3 ? new Float64Array(order.length) : undefined;
-  const passDeg = trail3 ? new Float64Array(order.length) : undefined;
+  // DEPTH 4 (item 692) reuses every depth-3 table and adds three things of its own. It is gated on
+  // `passesIsVacuous` because the depth-4 terms were derived for a TRIVIAL endpoint mask (items
+  // 687-689) and nothing validates them against a filtered one; the detector refuses otherwise.
+  const trail4 = isTrail && max === 4;
+  const trailCorr = trail3 || trail4;
+  const trailMasks = trailCorr ? buildTrailMasks(u, { off, nbr }) : undefined;
 
-  if (trail3 && pass !== undefined && selfLoops !== undefined && passDeg !== undefined) {
-    for (let v = 0; v < order.length; v += 1) {
-      const end = off[v + 1];
-      let sl = 0;
-      let pd = 0;
-
-      for (let k = off[v]; k < end; k += 1) {
-        const y = nbr[k];
-
-        if (y === v) {
-          sl += 1;
-        }
-
-        pd += pass[y];
-      }
-
-      selfLoops[v] = sl;
-      passDeg[v] = pd;
-    }
-  }
+  // DEPTH 4's extra state, built only when `trail4` so no shallower depth pays for it. See
+  // `pairMultiplicities` for why a Map is the right trade here and the wrong one for native.
+  const mult = trail4 ? pairMultiplicities(off, nbr, order.length) : undefined;
+  // `u` is swapped per level, so without this the depth-4 terms would read a vector that has
+  // already been overwritten.
+  let walk2Snap: Float64Array | undefined;
+  let tables4: Trail4Tables | undefined;
 
   // The ZERO-LENGTH path, whose endpoint is the SOURCE — one row per source row. `src` may hold a
   // vertex more than once, so this counts rows rather than summing `u_0` over distinct vertices.
@@ -1603,6 +1812,16 @@ const walkLevelCount = (graph: Graph, spec: DegreeCountSpec): number => {
     u = next;
     next = swap;
 
+    // OUTSIDE the `len >= min` gate on purpose: the recurrence runs at every level whatever `min`
+    // is, and `{4,4}` needs the level-2 and level-3 vectors even though neither is emitted.
+    if (trail4) {
+      if (len === 2) {
+        walk2Snap = Float64Array.from(u);
+      } else if (len === 3) {
+        tables4 = buildTrail4Tables(u, { off, nbr }, trailMasks!, walk2Snap!, mult!);
+      }
+    }
+
     if (len >= min) {
       // AN INDEX LOOP, against `prefer-for-of`, and the exemption is measured rather than
       // asserted. `for (const i of srcIdx)` goes through the iterator protocol once per source
@@ -1614,19 +1833,8 @@ const walkLevelCount = (graph: Graph, spec: DegreeCountSpec): number => {
         total += u[srcIdx[i]];
       }
 
-      if (trail3) {
-        // LEVEL 2's correction is the one this route already had at `max <= 2`: the single path
-        // that reuses a self-loop, `s -> s -> s`, and only when the endpoint passes. Level 1
-        // needs none — one edge cannot repeat. Level 3 is the four-term form above.
-        if (len === 2) {
-          for (const si of srcIdx) {
-            total -= selfLoops![si] * pass![si];
-          }
-        } else if (len === 3) {
-          for (const si of srcIdx) {
-            total -= reusedTrailsAt3(si, off, nbr, pass!, selfLoops!, passDeg!);
-          }
-        }
+      if (trailCorr) {
+        total -= trailCorrectionAt(len, srcIdx, u, { off, nbr }, trailMasks!, tables4);
       }
     }
   }
@@ -1661,7 +1869,7 @@ const walkLevelCount = (graph: Graph, spec: DegreeCountSpec): number => {
  * mistaken for the one under test, which is what cost this item a mutation round.
  */
 const takesTheLevelRecurrence = (spec: DegreeCountSpec): boolean =>
-  spec.max >= 3 && (!spec.isTrail || spec.max === 3);
+  spec.max >= 3 && (!spec.isTrail || spec.max <= 4);
 
 const varLengthDegreeCount = (graph: Graph, spec: DegreeCountSpec): number => {
   // DEPTH 3+ IS A DIFFERENT ALGORITHM, and it is dispatched here rather than in the detector so
@@ -1676,6 +1884,12 @@ const varLengthDegreeCount = (graph: Graph, spec: DegreeCountSpec): number => {
   // whoever lands that will relax the detector's bound — at which point this is the one line
   // standing between a trail and the walk's arithmetic, which would answer 32 where the trail
   // answers 28. A guard against a future relaxation is not the same as a guard against nothing.
+  //
+  // THAT HAPPENED, AT ITEM 692, EXACTLY AS WRITTEN. The depth-4 closed form relaxed the detector's
+  // bound to 4 and left this bound at 3, so a depth-4 trail fell through to the `max <= 2`
+  // arithmetic and answered the WALK count — 3 where the trail answers 0 on a triangle. The
+  // brute-force oracle (item 690) caught it on its first run. The bound is now `max <= 4`, and the
+  // same note applies again to whoever lands depth 5.
   if (takesTheLevelRecurrence(spec)) {
     return walkLevelCount(graph, spec);
   }
@@ -5324,6 +5538,25 @@ const degreeCountShape = (pattern: PathPattern): boolean => {
   );
 };
 
+/**
+ * Whether a depth-4 TRAIL may take the closed form (item 692) — true for every other shape.
+ *
+ * Depth 4 is admitted only with NO endpoint constraint of any kind. Its terms were derived and
+ * validated for a TRIVIAL endpoint mask (items 687-689) and nothing checks them against a filtered
+ * one, so a carried predicate or label falls back to enumeration.
+ *
+ * The test has to be STATIC. `passesIsVacuous` is the flag that actually matters, but it is a
+ * QUERY-TIME value — it calls `vacuousLabel(graph, …)` — and `walkLevelCount` returns a number with
+ * no way to decline once chosen. So this refuses on the SYNTAX, which is stricter than necessary: a
+ * label every node happens to carry would be vacuous at runtime and is refused here anyway.
+ */
+const depth4Admissible = (
+  max: number,
+  mode: string | undefined,
+  endPred: unknown,
+  endLabel: unknown,
+): boolean => max !== 4 || mode === 'walk' || (endPred === undefined && endLabel === undefined);
+
 export const detectVarLengthCount = (
   clauses: readonly Clause[],
 ): ((graph: Graph, params: Params) => Row[]) | null => {
@@ -5358,7 +5591,7 @@ export const detectVarLengthCount = (
   // exactly one way to reuse an edge and the closed form subtracts it, while at three there are
   // several interacting ways and no single term. Native drew the line in the same place at item
   // 587, which is what keeps the two engines on one answer.
-  if (max === null || max < 1 || (max > 3 && pattern.mode !== 'walk')) {
+  if (max === null || max < 1 || (max > 4 && pattern.mode !== 'walk')) {
     return null;
   }
 
@@ -5412,6 +5645,10 @@ export const detectVarLengthCount = (
   );
 
   if (endPred === null) {
+    return null;
+  }
+
+  if (!depth4Admissible(max, pattern.mode, endPred, node.label)) {
     return null;
   }
 
