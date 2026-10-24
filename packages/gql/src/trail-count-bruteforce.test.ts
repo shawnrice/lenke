@@ -41,7 +41,11 @@ const makeGraph = (n: number, edges: readonly Edge[]): Graph => {
   const vs = [];
 
   for (let i = 0; i < n; i += 1) {
-    vs.push(g.addVertex({ labels: ['P'], properties: { n: i } }));
+    // A PER-VERTEX LABEL as well as the shared one, so a single source can be selected while
+    // keeping the start pattern PLAIN. `plainNode` allows a label but NOT properties, so
+    // `(a {n: 3})` would push the query off the degree-count route entirely — see the
+    // per-source test below, which is about the closed form and not the general path.
+    vs.push(g.addVertex({ labels: ['P', `V${i}`], properties: { n: i } }));
   }
 
   for (const [u, v] of edges) {
@@ -142,12 +146,19 @@ describe('bounded trail/walk counts agree with enumeration', () => {
       // EXACT depths, then RANGES. A range is what exercises the per-level corrections: a
       // correction applied once for the whole range answers `{3,3}` right and `{1,3}` wrong
       // (item 602), and the level-2 branch is only reachable through one.
+      // DEPTH 4 is included although the closed form stops at 3: the detector refuses
+      // `max > 3` for a trail, so depth 4 takes the general ENUMERATING path, which is correct
+      // and slow. Pinning its answers now means the oracle is already in place when the depth-4
+      // closed form (items 687-689) lands — the test does not fail first, it guards after.
       for (const [lo, hi] of [
         [1, 1],
         [2, 2],
         [3, 3],
+        [4, 4],
         [1, 3],
         [2, 3],
+        [1, 4],
+        [2, 4],
       ] as const) {
         const q = lo === hi ? `{${lo}}` : `{${lo},${hi}}`;
         const wantTrail = brute(n, edges, lo, hi, true);
@@ -235,8 +246,16 @@ describe('bounded trail/walk counts agree with enumeration', () => {
     // The fixture's own claim: the sources differ, so this test can see a per-source mix-up.
     expect(new Set(counts).size).toBeGreaterThan(2);
 
+    // THE START MUST STAY PLAIN, which is the whole point of the per-vertex label.
+    //
+    // This test was first written as `(a {n: ${v}})`, and that is an inline PROPERTY — so
+    // `plainNode` is false, `degreeCountShape` refuses, and the query answers through the
+    // general enumerating path. It validated the right numbers through the WRONG ROUTE, which
+    // is the "correct, willing, and unreachable" trap applied to a test rather than a fast
+    // path: the closed form it exists to check was never running. A label keeps the start
+    // plain and still narrows the source set to one vertex.
     for (let v = 0; v < n; v += 1) {
-      const got = query(g, `MATCH (a {n: ${v}})-[:K]->{3}(y) RETURN count(*) AS c`) as {
+      const got = query(g, `MATCH (a:V${v})-[:K]->{3}(y) RETURN count(*) AS c`) as {
         c: number;
       }[];
 
