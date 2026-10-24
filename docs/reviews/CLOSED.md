@@ -13804,3 +13804,70 @@ avoids the cost** — TS's `Set` pays nothing per edge removed, for the same mir
 the same logical operation. So the native cost is a consequence of choosing `Vec` (which the CSR
 build and per-type partitions need for ORDER), not of mirroring. That raises the value of an
 eid-keyed per-node index, and bounds what it would buy: everything above the crossover.
+
+## 673 — enabling the edge-type index makes a hub-leaf delete 8.3x WORSE, and this fix IS available
+
+**FOUND (native), fix identified.** Item 670 measured a hub-leaf delete with the opt-in edge-type
+index OFF (its default). With it ON:
+
+|                               | µs per hub-leaf delete, D=50,000 |
+| ----------------------------- | -------------------------------- |
+| edge-type index off (CONTROL) | 34.200                           |
+| **edge-type index ON**        | **283.410**                      |
+
+**8.3x.** Same fixture, same victim position, the index the only variable.
+
+### The mechanism
+
+`delete_node_inner` calls `reindex_node_etypes` for the victim AND EVERY NEIGHBOUR:
+
+```rust
+if self.edge_type_index {
+    self.reindex_node_etypes(id);
+    for a in out.iter().chain(inc.iter()) {
+        if a.nbr != id { self.reindex_node_etypes(a.nbr); }
+    }
+}
+```
+
+and that function **rebuilds a node's whole type map from scratch** — iterating both adjacency
+lists and allocating a fresh `Vec` per edge type:
+
+```rust
+let mut om: U32Map<Vec<Adj>> = U32Map::default();
+for a in &self.out_adj[i] { om.entry(a.etype).or_default().push(*a); }
+```
+
+So deleting one leaf reindexes the hub in full: O(hub degree), twice over, with allocation churn —
+to reflect the removal of ONE entry.
+
+### Why this one matters
+
+The index is OPT-IN, and its whole purpose is to make type-filtered hops seek a per-node bucket
+instead of scanning the adjacency (`create_edge_type_index`'s doc points at `examples/expand_bench`
+for that side). **So a user turns it on for read speed and silently pays 8.3x on hub deletes** —
+exactly the shape a people-graph has, where deleting one application from a 50,000-application
+requisition is a routine write.
+
+The READ side of that trade is benchmarked. The WRITE side never was.
+
+### 🛑 Unlike items 670/671, the fix IS available
+
+Remove the one entry from the relevant type bucket instead of rebuilding both maps:
+
+```text
+out_type_idx[nbr][etype].retain(|a| a.eid != eid)
+```
+
+- **Order is preserved.** `retain` keeps relative order, so the "buckets are filled in
+  out_adj/in_adj order" property — the thing that blocks `swap_remove` in item 670 and makes CSR
+  slices byte-identical — is untouched.
+- **It needs no sortedness**, so item 671's refutation (a restored edge appends out of eid order)
+  does not apply either.
+- **It removes the allocations**, which a full rebuild pays per edge type per neighbour.
+
+Still O(bucket) for a single-type hub, where bucket == degree — so no asymptotic win there — but
+it drops a second O(D) pass, both map rebuilds and the allocation churn. For a MULTI-type hub it
+is O(bucket) instead of O(degree), which is a real asymptotic improvement in the number of types.
+
+Not yet implemented; priced here so the next step starts from 283.41 µs against a 34.20 µs floor.

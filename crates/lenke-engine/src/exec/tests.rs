@@ -11132,6 +11132,67 @@ fn delete_cost_by_neighbour_degree() {
 
         println!("{:<30}{:>10}{:>14.3}", label, D, best as f64 / 1000.0);
     }
+
+    // DOES THE OPT-IN EDGE-TYPE INDEX MAKE THIS WORSE? (item 673)
+    //
+    // `delete_node_inner` calls `reindex_node_etypes` for the victim AND EVERY NEIGHBOUR when the
+    // index is on, and that function rebuilds a node's whole type map from scratch — iterating
+    // both adjacency lists and allocating a fresh `Vec` per edge type. So a hub-leaf delete
+    // reindexes the HUB: O(hub degree) plus allocation churn, on top of the mirror scan the rows
+    // above already measured.
+    //
+    // The index is OPT-IN (`edge_type_index` defaults false), so this is the cost of a choice a
+    // user makes to speed up type-filtered hops — `create_edge_type_index`'s own doc points at
+    // `examples/expand_bench` for that side of the trade. The DELETE side has never been priced.
+    //
+    // Same fixture, same victim position, index the only variable.
+    println!();
+    println!(
+        "{:<34}{:>10}{:>14}",
+        "hub-leaf delete, index on/off", "hub degree", "us per op"
+    );
+
+    for &with_index in &[false, true] {
+        let mut best = u128::MAX;
+
+        for _ in 0..3 {
+            let mut b = Builder::default();
+            let hub = b.node(&["Hub"], &[("k", n(0.0))]);
+            let mut leaves = Vec::with_capacity(D);
+
+            for i in 0..D {
+                leaves.push(b.node(&["Leaf"], &[("k", n(i as f64))]));
+            }
+
+            for &l in &leaves {
+                b.edge(l, hub, "E");
+            }
+
+            let mut store = b.build();
+
+            if with_index {
+                store.create_edge_type_index();
+            }
+
+            // LAST position, matching the sweep above so the two tables are comparable.
+            let victim = leaves[D - 1];
+            let t0 = Instant::now();
+
+            store.delete_nodes(&[victim]);
+            best = best.min(t0.elapsed().as_nanos());
+        }
+
+        println!(
+            "{:<34}{:>10}{:>14.3}",
+            if with_index {
+                "edge-type index ON"
+            } else {
+                "edge-type index off (CONTROL)"
+            },
+            D,
+            best as f64 / 1000.0
+        );
+    }
 }
 
 /// Which READS scale with the GRAPH rather than with their RESULT? (item 668)
