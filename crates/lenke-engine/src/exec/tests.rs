@@ -11939,6 +11939,113 @@ fn plain_vs_quantified_hop_plans() {
     }
 }
 
+/// Item 682's size-answered hop count must agree with the WALK on every shape, including
+/// each one it is supposed to decline.
+///
+/// The oracle is the same store with the CSR overlay turned OFF: `out_typed_flat` then
+/// returns `None`, `typed_hop_count_from_size` declines, and the general aggregate walks the
+/// adjacency. So this compares a size against a walk over identical data — which is the only
+/// way to test a fast path that returns a count WITHOUT looking at the edges it counts. A
+/// wrong gate here is a wrong answer, not a slow one.
+///
+/// The fixture carries every feature a gate exists for: several edge types, a self-loop,
+/// PARALLEL edges between one pair, and a deleted node (whose edges are detached).
+#[test]
+fn typed_hop_count_from_size_agrees_with_the_walk() {
+    let base = || -> Store {
+        let mut b = Builder::default();
+        let l0 = b.node(&["L"], &[("n", n(0.0))]);
+        let l1 = b.node(&["L"], &[("n", n(1.0))]);
+        let m0 = b.node(&["M"], &[("n", n(2.0))]);
+        let m1 = b.node(&["M"], &[("n", n(3.0))]);
+        let gone = b.node(&["L"], &[("n", n(4.0))]);
+
+        b.edge(l0, m0, "E");
+        b.edge(l0, m1, "E"); // same source, two targets
+        b.edge(l1, m0, "E");
+        b.edge(l1, m0, "E"); // PARALLEL: two E edges between one pair
+        b.edge(m0, m0, "E"); // SELF-LOOP
+        b.edge(l0, m0, "F"); // a second type
+        b.edge(gone, m1, "E"); // detached when `gone` is deleted
+        b.edge(m1, gone, "E");
+
+        let mut st = b.build();
+        st.delete_node(gone);
+        st.rebuild_csr(); // the delete invalidated the overlay; re-arm it
+        st
+    };
+
+    let shapes = [
+        // The target shape.
+        "MATCH (a)-[:E]->() RETURN count(*) AS c",
+        // Every gate, each of which must DECLINE and still answer correctly.
+        "MATCH (a:L)-[:E]->() RETURN count(*) AS c",
+        "MATCH (a)-[:E]->(:M) RETURN count(*) AS c",
+        "MATCH (a)<-[:E]-() RETURN count(*) AS c",
+        "MATCH (a)-[:E]-() RETURN count(*) AS c",
+        "MATCH (a)-[e:E]->() RETURN count(*) AS c",
+        "MATCH (a)-[:F]->() RETURN count(*) AS c",
+        // An edge-type DISJUNCTION, which the single-type gate must decline: taking the
+        // first of the list would count only E and miss F. Added after the mutation run
+        // showed this gate was caught by some OTHER test in the suite and not by this one.
+        "MATCH (a)-[:E|F]->() RETURN count(*) AS c",
+        "MATCH (a)-[:MISSING]->() RETURN count(*) AS c",
+        "MATCH (a)-[:E]->() RETURN count(DISTINCT a) AS c",
+        "MATCH (a)-[:E]->(b) RETURN count(DISTINCT b) AS c",
+        // Two hops: only the inner one is a whole-graph scan.
+        "MATCH (a)-[:E]->()-[:E]->() RETURN count(*) AS c",
+        // A filter above the hop.
+        "MATCH (a)-[:E]->(b) WHERE b.n > 1 RETURN count(*) AS c",
+    ];
+
+    for q in shapes {
+        let plan = crate::opt::optimize(crate::gql::parse(q).unwrap());
+        let mut st = base();
+
+        st.set_csr_enabled(true);
+        let fast = run(&plan, &st);
+
+        st.set_csr_enabled(false);
+        let walk = run(&plan, &st);
+
+        assert_eq!(
+            format!("{:?}", fast.rows),
+            format!("{:?}", walk.rows),
+            "size and walk disagree for `{q}`"
+        );
+    }
+
+    // --- the MULTI-LABEL gate, which needs its own store.
+    //
+    // `Adj.etype` holds the PRIMARY type only, so the partition misses an edge whose
+    // SECONDARY type is E. Without the `has_multi_label_edges` gate the size would
+    // undercount, and this is the shape that proves the gate is load-bearing rather than
+    // decorative: edge 5 is primary F, secondary E, so `-[:E]->` must find SIX E edges,
+    // not five.
+    let mut st = base();
+    let f_eid = st
+        .out(0)
+        .iter()
+        .find(|a| st.edge_type_name(a.eid).as_deref() == Some("F"))
+        .expect("the F edge")
+        .eid;
+    st.set_edge_extra_labels(f_eid, &["E"]);
+    st.rebuild_csr();
+    assert!(st.has_multi_label_edges());
+
+    let plan =
+        crate::opt::optimize(crate::gql::parse("MATCH (a)-[:E]->() RETURN count(*) AS c").unwrap());
+    st.set_csr_enabled(true);
+    let fast = run(&plan, &st);
+    st.set_csr_enabled(false);
+    let walk = run(&plan, &st);
+    assert_eq!(
+        format!("{:?}", fast.rows),
+        format!("{:?}", walk.rows),
+        "multi-label edge: the size undercounts a secondary-type edge"
+    );
+}
+
 /// Which READS scale with the GRAPH rather than with their RESULT? (item 668)
 ///
 /// ```text

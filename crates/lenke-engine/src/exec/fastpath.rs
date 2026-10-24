@@ -2927,6 +2927,57 @@ pub(super) fn try_frontier_prop_agg(
 /// label bucket length — buckets hold only live ids) or a single tombstone-bitmap
 /// sweep (unlabelled), WITHOUT materializing the id vector. `None` for any other
 /// shape (a WHERE seed, an Expand, `count(arg)`), which the other paths handle.
+/// The number of type-`T` edges, when `MATCH (a)-[:T]->() RETURN count(*)` can be answered
+/// from a size instead of a walk. `None` whenever anything would make that unequal to the
+/// path count — a decliner falls back to the general aggregate.
+///
+/// Every gate here is a way the size and the path count come apart:
+///
+/// - **`Dir::Out` only.** The flat partition exists for out-edges (`out_typed_flat`); there
+///   is no `in_typed_flat` to answer the IN twin, and `Dir::Both` is a different count
+///   anyway (an undirected self-loop is traversable twice, which `double_loops` selects —
+///   that flag has no effect on a directed hop, so it is deliberately not consulted).
+/// - **Exactly ONE edge type.** A `want` list of several types would need a sum, and an edge
+///   carrying two of them would be counted twice while the walk counts it once.
+/// - **No multi-label edges.** `Adj.etype` holds an edge's PRIMARY type only; a secondary
+///   type lives in `edge_extra`. So the partition misses an edge whose secondary type is
+///   `T`, and the size would UNDERCOUNT. `for_each_nbr` makes the same choice — with
+///   multi-label edges it takes the flat scan plus the secondary-label probe.
+/// - **An unlabelled whole-graph `Scan` source.** A label would restrict the sources; the
+///   partition spans all of them.
+/// - **No `bind_edge`, no `DISTINCT`.** Binding the edge adds a slot the count ignores, but
+///   `count(DISTINCT *)` is a different question entirely.
+/// - **A fresh CSR overlay.** `out_typed_flat` returns `None` when stale, which is also what
+///   keeps this correct across deletes: an adjacency write invalidates the overlay, so a
+///   fresh partition can never contain a detached edge (item 680 prices that staleness).
+fn typed_hop_count_from_size(input: &Plan, agg: &Agg, store: &Store) -> Option<usize> {
+    let Plan::Expand {
+        input: src,
+        from,
+        dir,
+        edge_label,
+        bind_edge,
+        double_loops: _,
+    } = input
+    else {
+        return None;
+    };
+    if agg.distinct || *bind_edge || *from != 0 || *dir != Dir::Out {
+        return None;
+    }
+    if !matches!(**src, Plan::Scan { label: None }) {
+        return None;
+    }
+    let [ty] = edge_label.as_slice() else {
+        return None;
+    };
+    if store.has_multi_label_edges() {
+        return None;
+    }
+    let t = store.etype_id(ty)?;
+    store.out_typed_flat(t).map(<[_]>::len)
+}
+
 pub(super) fn try_scan_count(
     input: &Plan,
     keys: &[(String, Expr)],
@@ -2940,6 +2991,13 @@ pub(super) fn try_scan_count(
     let n = match input {
         Plan::Scan { label: Some(l) } => store.nodes_with_label(l).len(),
         Plan::Scan { label: None } => store.live_node_count(),
+        // The HOP twin, and the same idea one level up (item 682): a single-type OUT hop
+        // off the WHOLE graph counts one path per type-`T` edge, which is the size of that
+        // type's CSR partition. Measured 172 µs walking 50,000 edges to return a length at
+        // 3.4 ns/edge — and NO fast path claimed the shape at all: instrumenting all seven
+        // `try_*_count` entries showed every one of them entered and declined, so it fell
+        // through to the general materializing aggregate.
+        Plan::Expand { .. } => typed_hop_count_from_size(input, agg, store)?,
         // The EDGE twin, which this had never had: `E().count()` built the whole 1,000,000-id
         // vector in `all_edges` and SORTED it, 12.12 ms, to return its length — while the TS
         // engine answered from a size. `live_edge_count` is that length by construction
