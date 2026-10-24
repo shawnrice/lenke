@@ -139,7 +139,10 @@ const quoteField = (raw: string): string => {
     raw.includes('\r') ||
     raw.includes(LIST_SEP)
   ) {
-    return `"${raw.replaceAll('"', '""')}"`;
+    // Same guard as `buildRow`'s, for the same measured reason: this branch is reached by a cell
+    // needing quotes for ANY of five reasons, and only one of them is a quote — a cell holding a
+    // comma but no quote was paying a `replaceAll` that had nothing to do.
+    return raw.includes('"') ? `"${raw.replaceAll('"', '""')}"` : `"${raw}"`;
   }
 
   return raw;
@@ -760,8 +763,22 @@ const buildRow = (
     }
 
     const encoded = encodeCell(types.get(key)!, bag[key]);
+
+    if (!encoded.forceQuote) {
+      cells.push(quoteField(encoded.raw));
+      continue;
+    }
+
+    // `replaceAll` ALLOCATES WHETHER OR NOT THERE IS ANYTHING TO REPLACE, and every `Str` column
+    // sets `forceQuote`, so a graph of quote-free strings paid one throwaway string per cell —
+    // 1,200,000 of them on a string-heavy 200,000-node fixture. Rust removed the same cost at
+    // item 100 (`write_cell` doubles straight into the output buffer and skips `str::replace`
+    // when the text holds no quote); this is that asymmetry closed on the TS side (item 709).
+    //
+    // Byte-identical: `replaceAll` on text with no `"` returns an equal string, so the two
+    // branches differ only in whether that copy is made.
     cells.push(
-      encoded.forceQuote ? `"${encoded.raw.replaceAll('"', '""')}"` : quoteField(encoded.raw),
+      encoded.raw.includes('"') ? `"${encoded.raw.replaceAll('"', '""')}"` : `"${encoded.raw}"`,
     );
   }
 
