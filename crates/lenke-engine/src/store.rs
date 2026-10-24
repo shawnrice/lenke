@@ -2371,7 +2371,7 @@ impl Store {
     /// A node's labels in canonical (sorted) order, BORROWED as `&str` — the
     /// allocation-light twin of [`labels_of`](Self::labels_of) (a small `Vec<&str>`
     /// of pointers, no per-label `String` clone) for the streaming codecs.
-    #[must_use]
+    ///
     /// ~~PRICED AND OPEN (item 721)~~ **FIXED AT 724** — this reads the forward `node_labels` map
     /// now. What follows is the history, kept because the 3.4x it records is what justified the
     /// storage change. Previously this and `labels_of` swept EVERY label bucket with a binary
@@ -2392,6 +2392,7 @@ impl Store {
     /// where the 3.4x is, and `min_label_map` CANNOT serve it, because the map yields one label a
     /// node. The four MIN-label sites (`render.rs` 278, `json_out.rs` x3) are the map's case, and
     /// `evaluator.rs` holds the only correct frontier gate for it.
+    #[must_use]
     pub fn labels_of_refs(&self, id: u32) -> Vec<&str> {
         let mut ls: Vec<&str> = self
             .node_labels
