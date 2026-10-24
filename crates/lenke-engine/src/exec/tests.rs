@@ -12046,6 +12046,229 @@ fn typed_hop_count_from_size_agrees_with_the_walk() {
     );
 }
 
+/// The bounded trail/walk COUNT routes, against brute-force enumeration (item 693).
+///
+/// The TS twin is `trail-count-bruteforce.test.ts` (item 690). Both exist because of item 602's
+/// warning: while native enumerated the trail, the byte-identity fuzzers checked TS's closed form
+/// against a DIFFERENT implementation for free. **Both engines now run the same depth-3 AND depth-4
+/// formulas**, so those fuzzers prove only that the two AGREE and would pass on a shared wrong
+/// answer. Each engine needs its own comparison against enumeration.
+///
+/// `fastpath_fuzz` checks aggregates against MATERIALIZED rows, which is a real oracle for totals —
+/// but it does not brute-force the trail arithmetic per source, and the depth-4 identity is built
+/// on the per-source value (item 689).
+#[test]
+fn bounded_trail_counts_agree_with_enumeration() {
+    // A tiny deterministic LCG so a failure is replayable.
+    let mut seed: u64 = 0x5EED_1024;
+    let mut rnd = move || {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (seed >> 33) as usize
+    };
+
+    // Enumerate every path of `lo..=hi` edges from every source. `trail` forbids reusing an
+    // edge; `min_end` filters the ENDPOINT (0 keeps everything, 1 means `n > 0`), which is what
+    // tests the mask gate — see the filtered assertion below.
+    struct W<'a> {
+        out: &'a [Vec<usize>],
+        edges: &'a [(u32, u32)],
+        lo: usize,
+        hi: usize,
+        trail: bool,
+        min_end: u32,
+    }
+
+    fn walk(at: u32, used: &mut Vec<usize>, w: &W<'_>, count: &mut u64) {
+        if used.len() >= w.lo && !used.is_empty() && at >= w.min_end {
+            *count += 1;
+        }
+
+        if used.len() == w.hi {
+            return;
+        }
+
+        for &e in &w.out[at as usize] {
+            if w.trail && used.contains(&e) {
+                continue;
+            }
+
+            used.push(e);
+            walk(w.edges[e].1, used, w, count);
+            used.pop();
+        }
+    }
+
+    fn brute(
+        n_nodes: usize,
+        edges: &[(u32, u32)],
+        lo: usize,
+        hi: usize,
+        trail: bool,
+        min_end: u32,
+    ) -> u64 {
+        let mut out: Vec<Vec<usize>> = vec![Vec::new(); n_nodes];
+
+        for (i, &(u, _)) in edges.iter().enumerate() {
+            out[u as usize].push(i);
+        }
+
+        let w = W {
+            out: &out,
+            edges,
+            lo,
+            hi,
+            trail,
+            min_end,
+        };
+        let mut count = 0;
+
+        for v in 0..n_nodes {
+            walk(v as u32, &mut Vec::new(), &w, &mut count);
+        }
+
+        count
+    }
+
+    let mut self_loop_graphs = 0;
+    let mut parallel_graphs = 0;
+    let mut reverse_graphs = 0;
+    let mut differed = 0;
+
+    for _ in 0..40 {
+        let nv = 3 + rnd() % 5;
+        let m = 2 + rnd() % 10;
+        let mut edges: Vec<(u32, u32)> = Vec::new();
+
+        for _ in 0..m {
+            let u = (rnd() % nv) as u32;
+            // A deliberate self-loop bias: at uniform random they are too rare to exercise the
+            // terms that exist for them (items 600, 690).
+            let v = if rnd() % 100 < 22 {
+                u
+            } else {
+                (rnd() % nv) as u32
+            };
+
+            edges.push((u, v));
+        }
+
+        if edges.iter().any(|&(u, v)| u == v) {
+            self_loop_graphs += 1;
+        }
+
+        if edges
+            .iter()
+            .enumerate()
+            .any(|(i, e)| edges.iter().position(|x| x == e) != Some(i))
+        {
+            parallel_graphs += 1;
+        }
+
+        if edges
+            .iter()
+            .any(|&(u, v)| u != v && edges.contains(&(v, u)))
+        {
+            reverse_graphs += 1;
+        }
+
+        let mut b = Builder::default();
+
+        for i in 0..nv {
+            b.node(&["P"], &[("n", n(i as f64))]);
+        }
+
+        for &(u, v) in &edges {
+            b.edge(u, v, "K");
+        }
+
+        let store = b.build();
+
+        // Exact depths AND ranges. A range is what exercises the per-level corrections: one
+        // applied for the whole range answers `{3,3}` right and `{1,3}` wrong (item 602).
+        for &(lo, hi) in &[
+            (1, 1),
+            (2, 2),
+            (3, 3),
+            (4, 4),
+            (1, 3),
+            (2, 3),
+            (1, 4),
+            (2, 4),
+        ] {
+            let q = if lo == hi {
+                format!("{{{lo}}}")
+            } else {
+                format!("{{{lo},{hi}}}")
+            };
+            let want_trail = brute(nv, &edges, lo, hi, true, 0);
+            let want_walk = brute(nv, &edges, lo, hi, false, 0);
+
+            let got = |text: String| -> u64 {
+                let plan = crate::opt::optimize(crate::gql::parse(&text).unwrap());
+
+                match run(&plan, &store).rows[0][0] {
+                    Value::Num(x) => x as u64,
+                    ref other => panic!("not a count: {other:?}"),
+                }
+            };
+
+            // No mode keyword is a TRAIL — the DEFAULT spelling (item 601).
+            assert_eq!(
+                got(format!("MATCH (a)-[:K]->{q}(y) RETURN count(*) AS c")),
+                want_trail,
+                "TRAIL {q} over {edges:?}"
+            );
+            assert_eq!(
+                got(format!("MATCH WALK (a)-[:K]->{q}(y) RETURN count(*) AS c")),
+                want_walk,
+                "WALK {q} over {edges:?}"
+            );
+
+            // AN ENDPOINT PREDICATE. This algebra FOLDS one in at depth 3 (the per-node
+            // out-degree becomes a per-node PASSING out-degree), but depth 4's terms were derived
+            // for a TRIVIAL mask and `try_degree_algebra` refuses them when any mask is present.
+            // Without these queries that refusal is unguarded: a mutant admitting depth 4 with a
+            // mask SURVIVED the first run, exactly as it did on the TS side before item 690 added
+            // the same variants there.
+            let want_filtered = brute(nv, &edges, lo, hi, true, 1);
+
+            assert_eq!(
+                got(format!(
+                    "MATCH (a)-[:K]->{q}(y) WHERE y.n > 0 RETURN count(*) AS c"
+                )),
+                want_filtered,
+                "filtered TRAIL {q} over {edges:?}"
+            );
+
+            if want_trail != want_walk {
+                differed += 1;
+            }
+        }
+    }
+
+    // The generator has to have produced the structures the trail terms exist for, or a green run
+    // says nothing about them.
+    assert!(
+        self_loop_graphs > 15,
+        "only {self_loop_graphs} graphs had self-loops"
+    );
+    assert!(
+        parallel_graphs > 5,
+        "only {parallel_graphs} had parallel edges"
+    );
+    assert!(
+        reverse_graphs > 5,
+        "only {reverse_graphs} had reverse pairs"
+    );
+    // ... and trail and walk have to DIVERGE somewhere, or one formula could answer both.
+    assert!(
+        differed > 15,
+        "trail and walk agreed everywhere ({differed})"
+    );
+}
+
 /// Which READS scale with the GRAPH rather than with their RESULT? (item 668)
 ///
 /// ```text

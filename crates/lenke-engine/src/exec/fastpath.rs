@@ -1165,10 +1165,28 @@ fn try_degree_algebra(
     // validated it 400/400 against brute-force triple enumeration over random graphs admitting
     // self-loops and parallel edges; item 601 shipped it in the TS engine at 40.79x.
     //
-    // A TRAIL AT 4 OR MORE is still refused: the coinciding pairs start interacting and item 600
-    // explicitly did not derive that case.
+    // A TRAIL AT 4 is now accepted too (item 693), by a different route from depth 3's: items
+    // 687-689 avoided the interacting-pairs problem entirely rather than deriving it. Every 4-trail
+    // is an edge followed by a 3-trail from its head AVOIDING that edge, so
+    //
+    //   T4(s) = Σ_{e0: s→b} [ t3(b) − u3(b, s) ]
+    //
+    // and `u3` — the 3-trails from `b` that USE `e0` — splits into THREE DISJOINT cases, because a
+    // trail uses each edge at most once and so `e0` sits in exactly one position. No intersection
+    // terms, which is what replaces the 63-term expansion item 600 declined. Validated 600/600
+    // against brute force with 8/8 mutants (689), shipped in TS at 190x (692).
+    //
+    // DEPTH 4 REQUIRES EVERY MASK ABSENT, and that is the one real asymmetry with depth 3. This
+    // algebra FOLDS an endpoint predicate in (the per-node out-degree becomes a per-node PASSING
+    // out-degree), but the depth-4 terms were derived for a TRIVIAL mask and nothing validates them
+    // against a filtered one. The TS side refuses on the syntax for the same reason (692).
+    //
+    // A TRAIL AT 5 OR MORE is still refused. The identity is recursive — `u4` would be four
+    // disjoint cases — but what those cases need from the adjacency has not been priced, which is
+    // item 686's rule.
     let deep_walk = max >= 3 && matches!(mode, PathMode::Walk);
-    let deep_trail = max == 3 && is_trail;
+    let unmasked = end_pred.is_none() && body.is_none() && trav.is_none() && seed.is_none();
+    let deep_trail = is_trail && (max == 3 || (max == 4 && unmasked));
     if matches!(dir, Dir::Out | Dir::In)
         && ((1..=2).contains(&max) || deep_walk || deep_trail)
         && matches!(mode, PathMode::Trail | PathMode::Walk)
@@ -1364,10 +1382,14 @@ fn walk_levels_total<const INWARD: bool>(
     // A TRAIL is admitted only at EXACTLY depth 3, where `reused_trails_at_3` corrects the
     // recurrence. Every other depth must be a walk — the recurrence alone counts walks.
     debug_assert!(
-        !is_trail || max == 3,
-        "the level recurrence counts WALKS; a trail is corrected only at depth 3"
+        !is_trail || max == 3 || max == 4,
+        "the level recurrence counts WALKS; a trail is corrected only at depths 3 and 4"
     );
     let trail3 = is_trail && max == 3;
+    // Depth 4 (item 693) reuses every depth-3 table and adds three of its own. Gated so no
+    // shallower depth pays for them.
+    let trail4 = is_trail && max == 4;
+    let trail_corr = trail3 || trail4;
 
     let adj = |v: u32| if INWARD { store.inc(v) } else { store.out(v) };
     let mut u: Vec<u64> = (0..nc as u32).map(|v| u64::from(passes(v))).collect();
@@ -1378,7 +1400,7 @@ fn walk_levels_total<const INWARD: bool>(
     // traversable `v -> v` edges and `pass_deg[v]` is the PASSING out-degree, both built with the
     // same three mask tests the level loop uses so a correction can never count an edge the walk
     // would not have traversed.
-    let tables = if trail3 {
+    let tables = if trail_corr {
         let pass: Vec<u64> = u.clone();
         let mut self_loops = vec![0u64; nc];
         let mut pass_deg = vec![0u64; nc];
@@ -1420,6 +1442,39 @@ fn walk_levels_total<const INWARD: bool>(
             .count() as u64;
     }
 
+    // DEPTH 4's extra state (item 693), built only when `trail4`.
+    //
+    // `pairs` is the ordered-pair edge multiplicity m(u,v) in ONE pass over the adjacency — the
+    // "auxiliary O(E) structure" item 600b named and declined to assume. With it depth 4's
+    // expensive term costs Σ_b in(b)·out(b) = the TWO-walk count in lookups, where probing the
+    // adjacency for the same number costs the THREE-walk count (686 priced the probing version at
+    // ~78x; 689 measured the map version at 197x on a prototype).
+    let pairs: Option<std::collections::HashMap<u64, u32>> = if trail4 {
+        let mut m = std::collections::HashMap::with_capacity(store.edge_count());
+
+        for v in 0..nc {
+            for a in adj(v as u32) {
+                if edge_carries_wanted(store, a, want) {
+                    *m.entry((v as u64) << 32 | u64::from(a.nbr)).or_insert(0) += 1;
+                }
+            }
+        }
+
+        Some(m)
+    } else {
+        None
+    };
+    let mult = |x: u32, y: u32| -> u64 {
+        pairs
+            .as_ref()
+            .and_then(|m| m.get(&(u64::from(x) << 32 | u64::from(y))))
+            .map_or(0, |&c| u64::from(c))
+    };
+    // `u` is swapped per level, so without these the depth-4 terms would read a vector that has
+    // already been overwritten.
+    let mut walk2: Vec<u64> = Vec::new();
+    let mut t3: Vec<u64> = Vec::new();
+
     for len in 1..=max {
         for (v, slot) in next.iter_mut().enumerate() {
             let mut acc: u64 = 0;
@@ -1439,6 +1494,27 @@ fn walk_levels_total<const INWARD: bool>(
 
         std::mem::swap(&mut u, &mut next);
 
+        // OUTSIDE the `len >= min` gate on purpose: the recurrence runs at every level whatever
+        // `min` is, and `{4,4}` needs the level-2 and level-3 vectors even though neither is
+        // emitted. `t3` is built at level 3 — where `u` still holds walk_3 — with
+        // `reused_trails_at_3` called once per VERTEX rather than once per edge, since the identity
+        // needs it at every landing and a landing is reached by `in(b)` different edges.
+        if trail4 {
+            if len == 2 {
+                walk2 = u.clone();
+            } else if len == 3 {
+                t3 = (0..nc)
+                    .map(|v| {
+                        let bad = reused_trails_at_3::<INWARD>(
+                            v as u32, store, want, &tables, body_fn, trav_fn,
+                        );
+
+                        u[v].saturating_sub(bad)
+                    })
+                    .collect();
+            }
+        }
+
         if len >= min {
             for &s in src {
                 // A NULL SOURCE is the `u32::MAX` sentinel a Nodes column uses for a null node,
@@ -1455,7 +1531,7 @@ fn walk_levels_total<const INWARD: bool>(
                 }
             }
 
-            if trail3 {
+            if trail_corr {
                 // LEVEL 2's correction is the one the `max <= 2` closed form already applies: the
                 // single path that reuses a self-loop, `s -> s -> s`, and only when the endpoint
                 // passes. Level 1 needs none — one edge cannot repeat. Level 3 is the four-term
@@ -1472,6 +1548,19 @@ fn walk_levels_total<const INWARD: bool>(
                         3 => {
                             reused_trails_at_3::<INWARD>(s, store, want, &tables, body_fn, trav_fn)
                         }
+                        // LEVEL 4 (item 693): `walk4(s) − T4(s)`, by the identity items 687/689
+                        // derived and validated and item 692 shipped in TS.
+                        4 => u[v].saturating_sub(trails_at_4_from::<INWARD>(
+                            s,
+                            &Trail4Ctx {
+                                store,
+                                want,
+                                t: &tables,
+                                walk2: &walk2,
+                                t3: &t3,
+                                mult: &mult,
+                            },
+                        )),
                         _ => 0,
                     };
 
@@ -1497,6 +1586,21 @@ struct Trail3Tables {
     pass_deg: Vec<u64>,
 }
 
+/// Everything depth 4 needs beyond [`Trail3Tables`] — bundled for the same reason that struct and
+/// [`DegreeArgs`] are: clippy caps a function at seven arguments and the alternative is positional
+/// soup (item 693).
+struct Trail4Ctx<'a> {
+    store: &'a Store,
+    want: &'a [u32],
+    t: &'a Trail3Tables,
+    /// `walk_2(v)`, snapshotted before the level loop overwrote it.
+    walk2: &'a [u64],
+    /// `t3(v) = walk_3(v) − reused_trails_at_3(v)`, the per-source depth-3 count.
+    t3: &'a [u64],
+    /// `m(u,v)` — the ordered-pair edge multiplicity, O(1) off an O(E) map.
+    mult: &'a dyn Fn(u32, u32) -> u64,
+}
+
 /// The walks of length 3 from `v` that REUSE an edge — subtracted from `u_3(v)` to turn a walk
 /// count into a trail count (item 602, the native twin of `shortcuts.ts`'s `reusedTrailsAt3`).
 ///
@@ -1518,6 +1622,105 @@ struct Trail3Tables {
 /// costs the TWO-WALK count. That is a factor of the average degree below enumerating three-walks,
 /// which is the win — item 600b corrects an earlier claim that it was O(V + E).
 #[inline(always)]
+/// `u3(b, a)` — the 3-trails STARTING AT `b` that USE a given edge `a -> b` (item 693).
+///
+/// A trail uses each edge at most once, so that edge sits in exactly ONE of the three positions.
+/// The cases are therefore DISJOINT and simply add, which is what replaces inclusion-exclusion over
+/// depth 4's six equality events and its 63 intersections — item 600 declined to derive those and
+/// item 687 sidestepped them. Validated 600/600 against brute force with 8/8 mutants (689).
+///
+/// EDGE-IDENTITY-FREE, which is what makes it implementable over an adjacency that is a flat list
+/// of `Adj`: an `f != e0` test would need to know WHICH slot `e0` is, and every such exclusion
+/// instead reduces to a ±1 correction keyed on whether the edge LEAVES `b` — i.e. on `a == b`.
+///
+/// Derived for a TRIVIAL mask, which is why `try_degree_algebra` admits depth 4 only when every
+/// predicate is absent.
+fn used_trails_at_3<const INWARD: bool>(b: u32, a: u32, x: &Trail4Ctx<'_>) -> u64 {
+    let Trail4Ctx {
+        store,
+        want,
+        t,
+        walk2,
+        mult,
+        ..
+    } = x;
+    let adj = |n: u32| if INWARD { store.inc(n) } else { store.out(n) };
+    let bi = b as usize;
+    // i64 THROUGHOUT, not u64 with saturating subtraction. The terms are only non-negative in
+    // TOTAL — `(L-1)` and `(od-2)` are each fine where they are reached, but `walk2 - L·od` is not
+    // guaranteed to be — and `saturating_sub` would silently clamp a negative intermediate to zero,
+    // turning a sign error into a plausible wrong answer rather than a visible one. The final value
+    // is a count, so it is non-negative by construction and the cast back is checked.
+    let loops = t.self_loops[bi] as i64;
+    let od = adj(b)
+        .iter()
+        .filter(|x| edge_carries_wanted(store, x, want))
+        .count() as i64;
+    let mut total: i64 = 0;
+    let mut acc: i64 = 0;
+
+    if a == b {
+        // The edge is a SELF-LOOP at `b`, so it leaves `b` and competes with f1 and f2.
+        //   f0 = e0: e0, then a 2-trail from b avoiding e0
+        //   f1 = e0: a self-loop f0 != e0, then e0, then f2 not in {f0, e0}
+        total += walk2[bi] as i64 - loops * od + (loops - 1) * (od - 2);
+        total += (loops - 1) * (od - 2);
+
+        // f2 = e0: a 2-trail b->c->b, then e0. The one f0 that IS e0 is removed AFTER the sum
+        // rather than skipped inside it — that is what keeps this free of edge identities.
+        for x in adj(b) {
+            if !edge_carries_wanted(store, x, want) {
+                continue;
+            }
+
+            acc += if x.nbr == b {
+                loops - 2
+            } else {
+                mult(x.nbr, b) as i64
+            };
+        }
+
+        total += acc - (loops - 2);
+    } else {
+        // The edge does not leave `b`, so it can be neither f0 nor f2 and only the landings matter.
+        total += mult(b, a) as i64 * (od - 1);
+
+        for x in adj(b) {
+            if edge_carries_wanted(store, x, want) {
+                acc += mult(x.nbr, a) as i64;
+            }
+        }
+
+        total += acc;
+    }
+
+    debug_assert!(total >= 0, "u3({b}, {a}) went negative: {total}");
+
+    u64::try_from(total).unwrap_or(0)
+}
+
+/// `T4(s)` — the 4-trails starting at `s`, as `Σ_{e0: s->b} [ t3(b) - u3(b, s) ]` (item 693).
+fn trails_at_4_from<const INWARD: bool>(s: u32, x: &Trail4Ctx<'_>) -> u64 {
+    let Trail4Ctx {
+        store, want, t3, ..
+    } = x;
+    let adj = |n: u32| if INWARD { store.inc(n) } else { store.out(n) };
+    let mut total: u64 = 0;
+
+    for a in adj(s) {
+        if !edge_carries_wanted(store, a, want) {
+            continue;
+        }
+
+        let b = a.nbr;
+        let used = used_trails_at_3::<INWARD>(b, s, x);
+
+        total += t3[b as usize].saturating_sub(used);
+    }
+
+    total
+}
+
 fn reused_trails_at_3<const INWARD: bool>(
     v: u32,
     store: &Store,
