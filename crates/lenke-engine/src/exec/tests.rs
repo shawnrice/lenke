@@ -11081,6 +11081,57 @@ fn delete_cost_by_neighbour_degree() {
             best as f64 / d as f64
         );
     }
+
+    // POSITION IS THE WHOLE QUESTION for the only fix byte-identity allows. `retain` scans all D
+    // whatever the position; `binary_search_by_key` + `Vec::remove` searches in O(log D) and then
+    // memmoves only the TAIL — so the win is near-total at the END of the list and nil at the
+    // START.
+    //
+    // The sweep above deletes from the END, which is the BEST case. Reporting a fix measured
+    // there would generalise the maximum, which is the "match the fixture to the claim" trap this
+    // repo records costing a 1:1-edge-ratio conclusion and a degree-4 adjacency conclusion.
+    //
+    // So: ONE leaf per store, at a chosen position, rebuilt per repetition — because each delete
+    // shifts every later position and a second delete in the same store would not be measuring
+    // the position asked for.
+    println!();
+    println!(
+        "{:<30}{:>10}{:>14}",
+        "position of the victim", "hub degree", "us per op"
+    );
+
+    const D: usize = 50_000;
+
+    for (label, pos) in [
+        ("FIRST (oldest edge)", 0usize),
+        ("MIDDLE", D / 2),
+        ("LAST (newest)", D - 1),
+    ] {
+        let mut best = u128::MAX;
+
+        for _ in 0..3 {
+            let mut b = Builder::default();
+            let hub = b.node(&["Hub"], &[("k", n(0.0))]);
+            let mut leaves = Vec::with_capacity(D);
+
+            for i in 0..D {
+                leaves.push(b.node(&["Leaf"], &[("k", n(i as f64))]));
+            }
+
+            for &l in &leaves {
+                b.edge(l, hub, "E");
+            }
+
+            let mut store = b.build();
+            let victim = leaves[pos];
+            let t0 = Instant::now();
+
+            store.delete_nodes(&[victim]);
+            best = best.min(t0.elapsed().as_nanos());
+        }
+
+        println!("{:<30}{:>10}{:>14.3}", label, D, best as f64 / 1000.0);
+    }
 }
 
 /// Which READS scale with the GRAPH rather than with their RESULT? (item 668)

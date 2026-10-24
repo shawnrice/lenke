@@ -13710,17 +13710,47 @@ traversal order, which changes row order, which breaks the TS/native invariant.
 
 So removal must keep order, which means a memmove: still O(D) in the worst case.
 
-### What remains, and why it is NOT implemented here
+### 🛑 CORRECTION (item 671): the binary-search route is NOT available either
 
-`binary_search_by_key` + `Vec::remove` preserves order and replaces `retain`'s full predicate
-scan-and-rewrite with a search plus a tail memmove. The win is **position-dependent**: near-free
-for a recently added edge (short tail), a full O(D) memmove for the oldest.
+This section first said `binary_search_by_key` + `Vec::remove` "preserves order and replaces
+`retain`'s full predicate scan", implying it was available and merely position-dependent. **It is
+not available at all, and leaving that written would have invited an incorrect fix.**
 
-**The fixture this was found with deletes from the END of the hub's list — the BEST case.**
-Measuring the fix there would report the maximum and generalise it, which is the "match the
-fixture to the claim" trap that this repo records costing a 1:1-edge-ratio conclusion and a
-degree-4 adjacency conclusion. A fair measurement needs victims sampled across positions, and the
-honest expected value is a 2-3x average rather than the ~100x the end-position case would show.
+A binary search needs the adjacency sorted by eid. It usually is — edges append and eids ascend —
+but **`Undo::RestoreEdge` does `push(adj)`**, appending a restored entry to the END regardless of
+its eid. Within one transaction:
 
-Recorded with the constraint so the next attempt starts from "order is load-bearing, the win is
-position-dependent" rather than rediscovering both.
+```text
+[10, 20]  ->  delete edge 10  ->  [20]  ->  add edge 30  ->  [20, 30]
+rollback, replayed in REVERSE: undo the add -> [20], then restore edge 10 -> [20, 10]
+```
+
+The list is now unsorted. A binary search over it could MISS the entry and leave a dangling mirror
+on the neighbour — corruption, not slowness.
+
+So **both** candidate fixes are refuted, for different reasons:
+
+| fix                                                      | why not                                                                                                |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `swap_remove` after finding the entry — O(1)             | `out_adj` ORDER is load-bearing for byte-identity (CSR slices and per-type partitions are built in it) |
+| `binary_search_by_key` + `Vec::remove` — O(log D + tail) | the list is NOT reliably eid-sorted; `Undo::RestoreEdge` appends out of order                          |
+
+A linear find is what correctness requires, and `retain` already is one. **The O(neighbour-degree)
+cost is inherent to the current adjacency representation**, not an oversight — moving it needs a
+different structure (an eid-keyed index per node, or a tombstone-and-compact scheme), which is a
+design change with its own byte-identity surface.
+
+### The position measurement, kept because it is the baseline a future attempt needs
+
+The baseline is **flat across position** — one leaf per store, rebuilt per repetition so no earlier
+delete shifts the position being asked for:
+
+| position of the victim | hub degree | µs per op |
+| ---------------------- | ---------- | --------- |
+| FIRST (oldest edge)    | 50,000     | 36.310    |
+| MIDDLE                 | 50,000     | 35.390    |
+| LAST (newest)          | 50,000     | 34.250    |
+
+A 6% spread, which is what `retain` should give: it scans all D wherever the entry sits. Any future
+attempt has a position-matched baseline to compare against, so the comparison cannot become an
+unmatched A/B.
