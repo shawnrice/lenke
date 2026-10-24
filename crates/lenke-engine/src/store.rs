@@ -4571,6 +4571,38 @@ impl Store {
         // Disjoint field borrows: `deleted` is read while `by_label` is mutated.
         let deleted = &self.deleted;
 
+        // A SMALL batch only touches the buckets its victims actually belong to, and skipping the
+        // rest is the difference between O(1) and O(total nodes) for a single delete (item 663).
+        //
+        // The sweep below is right for a BATCH and degenerate for a batch of one: deleting one
+        // `Tmp` node rewrote the 20,000-entry `User` bucket too, with a scattered `deleted[]`
+        // probe per element, even though the victim was never in it. Measured as a clean O(V) —
+        // per-delete cost flat at ~0.33 ns PER NODE across 1k/10k/50k/200k, with degree held at
+        // zero so nothing else could scale:
+        //
+        //   1,000 nodes   0.410 us     50,000    16.340 us
+        //  10,000         3.350       200,000    65.180
+        //
+        // A node belongs only to its own labels' buckets, so membership is a binary search per
+        // (bucket, victim) — the buckets are sorted, which `labels_of` already relies on.
+        //
+        // THE THRESHOLD IS NOT COSMETIC. The guard costs O(labels x ids x log n), so for a large
+        // batch it is pure waste on top of a sweep that would have touched nearly every bucket
+        // anyway — and item 443 recorded that per-node bucket removal made a BATCH delete
+        // O(deleted x total). Small batches take the targeted path; everything else keeps the
+        // sweep that item earned.
+        const TARGETED_MAX: usize = 8;
+
+        if ids.len() <= TARGETED_MAX {
+            for bucket in self.by_label.values_mut() {
+                if ids.iter().any(|&id| bucket.binary_search(&id).is_ok()) {
+                    bucket.retain(|&x| !deleted[x as usize]);
+                }
+            }
+
+            return;
+        }
+
         for bucket in self.by_label.values_mut() {
             bucket.retain(|&x| !deleted[x as usize]);
         }

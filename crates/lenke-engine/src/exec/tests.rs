@@ -11000,6 +11000,82 @@ fn gather_cost_by_width() {
     }
 }
 
+/// Is a SINGLE-node delete O(1) in the node count, or O(V)? (item 663)
+///
+/// ```text
+/// cargo test --release --manifest-path crates/lenke-engine/Cargo.toml \
+///   -- --ignored --nocapture delete_one_cost_by_graph_size
+/// ```
+///
+/// `bench:usage` prices a single-node `DETACH DELETE` at ~9.2 µs native against TS's ~2.7 (item
+/// 662), and it is the only write where native loses — append is at parity. The suspected
+/// mechanism is the label-bucket sweep that closes `Store::delete_nodes`:
+///
+/// ```text
+/// for bucket in self.by_label.values_mut() {
+///     bucket.retain(|&x| !deleted[x as usize]);
+/// }
+/// ```
+///
+/// That is **one pass over every bucket per CALL**, which is right for a batch and degenerate for
+/// a batch of one: deleting a single node rewrites every label bucket in full, with a scattered
+/// `deleted[]` probe per element. It is batched on purpose — item 443 recorded that per-node
+/// removal made a BATCH delete O(deleted × total) — so the question is not whether the sweep is
+/// wrong but whether the N=1 case should take it.
+///
+/// ⚠️ **This harness exists because the hypothesis is read off the code, and this session has
+/// mis-attributed three costs that way** (items 655, 656, and 659's floor). A size sweep settles
+/// it without any further reading: if the per-delete cost grows with the NODE COUNT the sweep is
+/// the cost; if it is flat, the sweep is not and the ~3x is elsewhere.
+///
+/// The fixture holds DEGREE constant at zero, so nothing here scales with adjacency — the only
+/// variable is how many nodes exist.
+#[test]
+#[ignore = "measurement harness: cargo test --release -- --ignored --nocapture delete_one_cost_by_graph_size"]
+fn delete_one_cost_by_graph_size() {
+    use std::time::Instant;
+    const REPS: usize = 200;
+
+    println!(
+        "{:<16}{:>14}{:>16}",
+        "nodes", "us per delete", "ns per node"
+    );
+
+    for &n_nodes in &[1_000usize, 10_000, 50_000, 200_000] {
+        // One big `User` bucket plus the `Tmp` nodes that get deleted — the bench's own shape.
+        // Degree is ZERO for every node, so the detach half does no work at all and the only
+        // thing that can scale is the bucket sweep.
+        let mut b = Builder::default();
+        for i in 0..n_nodes {
+            b.node(&["User"], &[("k", n(i as f64))]);
+        }
+
+        let mut victims = Vec::with_capacity(REPS);
+        for i in 0..REPS {
+            victims.push(b.node(&["Tmp"], &[("seq", n(i as f64))]));
+        }
+
+        let mut store = b.build();
+
+        // Time each single-node delete separately and take the MIN, so one reallocation or a
+        // page fault does not set the figure.
+        let mut best = u128::MAX;
+
+        for &v in &victims {
+            let t0 = Instant::now();
+            store.delete_nodes(&[v]);
+            best = best.min(t0.elapsed().as_nanos());
+        }
+
+        println!(
+            "{:<16}{:>14.3}{:>16.4}",
+            n_nodes,
+            best as f64 / 1000.0,
+            best as f64 / n_nodes as f64
+        );
+    }
+}
+
 /// Where does the time go on a 3-SCALAR projection: the engine, or the JSON egress? (item 658)
 ///
 /// ```text

@@ -1802,3 +1802,57 @@ fn batch_delete_keeps_every_label_bucket_exact_sorted_and_restorable() {
     assert_eq!(ids(&st, "Univ"), vec![0, 1, 2, 3, 4, 6, 7, 8, 9, 10, 11]);
     assert_eq!(st.live_node_count(), 11);
 }
+
+/// Item 663: the TARGETED bucket path must clean a bucket that only a LATER victim is in.
+///
+/// `delete_nodes` now skips buckets none of its victims belong to, which is what makes a
+/// single-node delete O(1) in the node count instead of O(total) — deleting one `Tmp` node used
+/// to rewrite the whole `User` bucket too (0.130 us against 65.180 at 200,000 nodes).
+///
+/// ⚠️ MUTATION FOUND THIS CASE MISSING, and the reason is a fixture subtlety worth stating.
+/// `batch_delete_keeps_every_label_bucket_exact_sorted_and_restorable` deletes `[0, 3, 6, 9]`,
+/// and victim `0` happens to carry EVERY label in that fixture — so a mutant that checked only
+/// `ids[0]` still touched every bucket and the test passed. The membership test is only
+/// observable when a bucket holds a LATER victim and NOT the first one.
+///
+/// So the labels here are DISJOINT: `A` holds only node 0, `B` only node 1. Deleting both in one
+/// call means bucket `B` is reachable solely through the second id.
+#[test]
+fn a_batch_delete_cleans_a_bucket_only_a_later_victim_is_in() {
+    use crate::value::Value;
+
+    let mut b = crate::store::Builder::default();
+    let a0 = b.node(&["A"], &[("k", Value::Num(0.0))]);
+    let b1 = b.node(&["B"], &[("k", Value::Num(1.0))]);
+    // A survivor in each bucket, so an over-eager sweep that emptied the bucket would also fail
+    // — the assertions below distinguish "exact" from "cleared".
+    let a2 = b.node(&["A"], &[("k", Value::Num(2.0))]);
+    let b3 = b.node(&["B"], &[("k", Value::Num(3.0))]);
+    let mut st = b.build();
+
+    // ONE call, two victims, in DISJOINT buckets. `A` is reachable through the first id and `B`
+    // only through the second.
+    st.delete_nodes(&[a0, b1]);
+
+    assert_eq!(
+        st.nodes_with_label("A"),
+        vec![a2],
+        "bucket A keeps only its survivor"
+    );
+    assert_eq!(
+        st.nodes_with_label("B"),
+        vec![b3],
+        "bucket B is reachable ONLY through the second victim"
+    );
+    // Also checked from the NODE's side, not just the bucket's: a stale tombstone is observable
+    // as a deleted node still reporting its label.
+    assert!(
+        !st.labels_of(b1).contains(&"B".to_string()),
+        "the second victim must not still report its label"
+    );
+    assert!(
+        !st.labels_of(a0).contains(&"A".to_string()),
+        "nor the first"
+    );
+    assert_eq!(st.live_node_count(), 2);
+}
