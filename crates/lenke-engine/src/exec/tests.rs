@@ -11000,6 +11000,80 @@ fn gather_cost_by_width() {
     }
 }
 
+/// Is ROLLING BACK an insert O(inserted), or O(inserted x total nodes)? (item 664)
+///
+/// ```text
+/// cargo test --release --manifest-path crates/lenke-engine/Cargo.toml \
+///   -- --ignored --nocapture rollback_cost_by_graph_size
+/// ```
+///
+/// Item 663 fixed a single-node DELETE that swept every label bucket, and the method's "grep the
+/// pattern elsewhere" step found the same shape in `pop_last_node` — the undo of `add_node`:
+///
+/// ```text
+/// for b in self.by_label.values_mut() { b.retain(|&x| x != id); }
+/// ```
+///
+/// One id removed by a full scan of every bucket. If that is O(V), rolling back a transaction
+/// that inserted N nodes is O(N x V) — a quadratic on the rollback path, which no bench row
+/// covers.
+///
+/// ⚠️ Measured BEFORE any edit, because the hypothesis is read off the code and this session has
+/// mis-attributed three costs that way. The discriminator is the same one item 663 used: hold the
+/// insert count FIXED and vary the GRAPH SIZE. If the per-rollback cost tracks the node count,
+/// the sweep is it.
+#[test]
+#[ignore = "measurement harness: cargo test --release -- --ignored --nocapture rollback_cost_by_graph_size"]
+fn rollback_cost_by_graph_size() {
+    use std::time::Instant;
+    const INSERTS: usize = 200;
+    const REPS: u32 = 5;
+
+    println!(
+        "{:<16}{:>16}{:>18}",
+        "existing nodes", "us per rollback", "us per inserted"
+    );
+
+    for &n_nodes in &[1_000usize, 10_000, 50_000, 200_000] {
+        let mut b = Builder::default();
+        for i in 0..n_nodes {
+            b.node(&["User"], &[("k", n(i as f64))]);
+        }
+        let mut store = b.build();
+
+        let mut best = u128::MAX;
+
+        for _ in 0..REPS {
+            // INSERT inside a transaction, then roll it back. The inserted count is fixed, so the
+            // only variable across rows is how many nodes already exist.
+            store.begin();
+
+            for i in 0..INSERTS {
+                store.add_node(&["Tmp"], &[("seq", n(i as f64))]);
+            }
+
+            let t0 = Instant::now();
+            store.rollback();
+            best = best.min(t0.elapsed().as_nanos());
+
+            // The rollback must have undone every insert, or the figure is measuring the wrong
+            // thing entirely.
+            assert_eq!(
+                store.live_node_count(),
+                n_nodes,
+                "rollback restored the count"
+            );
+        }
+
+        println!(
+            "{:<16}{:>16.3}{:>18.4}",
+            n_nodes,
+            best as f64 / 1000.0,
+            best as f64 / 1000.0 / INSERTS as f64
+        );
+    }
+}
+
 /// Is a SINGLE-node delete O(1) in the node count, or O(V)? (item 663)
 ///
 /// ```text

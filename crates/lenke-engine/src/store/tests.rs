@@ -1856,3 +1856,61 @@ fn a_batch_delete_cleans_a_bucket_only_a_later_victim_is_in() {
     );
     assert_eq!(st.live_node_count(), 2);
 }
+
+/// Item 664: rolling back an insert must not disturb a bucket the inserted node is NOT in.
+///
+/// `pop_last_node` (the undo of `add_node`) used to drop the id with a full `retain` over every
+/// label bucket, which made a rollback O(inserted x total nodes) — 200 inserts against 200,000
+/// nodes cost 7.37 ms. It now pops only when the bucket's LAST element is that id, which is exact
+/// because the popped node holds the highest id and the buckets are sorted ascending.
+///
+/// ⚠️ MUTATION FOUND THIS CASE MISSING, and it is the CORRUPTION one. Replacing the guarded pop
+/// with an unconditional `b.pop()` SURVIVED the whole suite: every existing rollback test inserts
+/// a node carrying the same label as the nodes already there, so every bucket contains the new id
+/// and popping unconditionally happens to be right.
+///
+/// The failure needs a bucket that does NOT contain the inserted node. Here the graph holds `A`
+/// nodes, the transaction inserts a `B`, and the rollback must leave `A` untouched — an
+/// unconditional pop would evict `a2` from `A` instead, and `a2` would silently stop matching
+/// `MATCH (n:A)`. That is data loss in an unrelated label, not a stale tombstone.
+#[test]
+fn rolling_back_an_insert_leaves_an_unrelated_label_bucket_intact() {
+    use crate::value::Value;
+
+    let mut b = crate::store::Builder::default();
+    let a1 = b.node(&["A"], &[("k", Value::Num(1.0))]);
+    // TWO `A` nodes, because an unconditional pop removes the bucket's LAST entry — with only one
+    // member the bucket would empty either way and the assertion could not tell them apart.
+    let a2 = b.node(&["A"], &[("k", Value::Num(2.0))]);
+    let mut st = b.build();
+
+    st.begin();
+
+    let newcomer = st.add_node(&["B"], &[("k", Value::Num(3.0))]);
+
+    assert_eq!(
+        st.nodes_with_label("B"),
+        vec![newcomer],
+        "inserted while open"
+    );
+
+    st.rollback();
+
+    // The inserted node is gone from its own bucket.
+    assert_eq!(
+        st.nodes_with_label("B"),
+        Vec::<u32>::new(),
+        "its own bucket"
+    );
+    // And the UNRELATED bucket is untouched — both members, in order.
+    assert_eq!(
+        st.nodes_with_label("A"),
+        vec![a1, a2],
+        "a bucket the inserted node was never in must not lose its last entry"
+    );
+    assert!(
+        st.labels_of(a2).contains(&"A".to_string()),
+        "the evicted-by-mistake node must still report its label"
+    );
+    assert_eq!(st.live_node_count(), 2);
+}

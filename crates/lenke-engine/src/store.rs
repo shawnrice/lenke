@@ -5116,8 +5116,34 @@ impl Store {
         let id = (self.node_count - 1) as u32;
         // Drop it from any indexes while its props still exist.
         self.index_drop_node(id);
+        // O(1) PER BUCKET, not a full scan (item 664). `pop_last_node` removes the HIGHEST id,
+        // and the buckets are sorted ascending — `add_node` appends the new id and every other
+        // path preserves order, which `has_label`'s binary search already depends on. So if this
+        // id is in a bucket at all it is necessarily the LAST element.
+        //
+        // The `retain` this replaces scanned every bucket in full to drop one id, which made
+        // rolling back a transaction O(inserted x total nodes). Measured before the change, 200
+        // inserts rolled back against a graph of:
+        //
+        //     1,000 nodes     51.270 us      0.2564 us per inserted
+        //    10,000          384.790         1.9240
+        //    50,000         1838.130         9.1906
+        //   200,000         7371.781        36.8589
+        //
+        // The per-inserted column tracks the node count, which is the signature of the quadratic.
+        // The guard is CONSERVATIVE by construction: it pops only when the last element IS this
+        // id, so it can never remove the wrong one. A violated sort order would leave a stale
+        // entry — the pre-fix behaviour — rather than corrupt the bucket. The assert makes the
+        // assumption fail loudly in tests instead of silently degrading.
         for b in self.by_label.values_mut() {
-            b.retain(|&x| x != id);
+            debug_assert!(
+                b.last() == Some(&id) || !b.contains(&id),
+                "by_label bucket holds the highest id {id} out of sorted position"
+            );
+
+            if b.last() == Some(&id) {
+                b.pop();
+            }
         }
         for col in self.props.values_mut() {
             col.pop_last();

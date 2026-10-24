@@ -13351,3 +13351,74 @@ script so the next run does not read it as a gap.
 1223 + 13 + 726 native tests pass, 0 fail (1 new). All seven byte-identity fuzzers pass, including
 `write-fuzz`, which drives deletes against the TS engine. clippy `--all-targets -D warnings` 0;
 `cargo fmt --check` 0.
+
+## 664 — rolling back an insert was O(inserted x total nodes); now O(inserted), 892x at 200,000 nodes
+
+**FIXED (native).** Item 663's "grep the pattern elsewhere" step, applied to the TECHNIQUE rather
+than the symptom, and the second site is worse than the first.
+
+### The mechanism
+
+`pop_last_node` — the undo of `add_node` — removed one id by scanning every label bucket in full:
+
+```rust
+for b in self.by_label.values_mut() { b.retain(|&x| x != id); }
+```
+
+So rolling back a transaction that inserted N nodes was **O(N × V)**. No bench row covers the
+rollback path, which is why it had gone unnoticed.
+
+### Confirmed quadratic by a size sweep BEFORE any edit
+
+Same discriminator as item 663: hold the INSERT COUNT fixed at 200 and vary only the graph size.
+
+| existing nodes | before       | µs per inserted | after     |          |
+| -------------- | ------------ | --------------- | --------- | -------- |
+| 1,000          | 51.270 µs    | 0.2564          | 7.510 µs  | 6.8x     |
+| 10,000         | 384.790      | 1.9240          | 7.900     | 48.7x    |
+| 50,000         | 1838.130     | 9.1906          | 8.030     | 229x     |
+| 200,000        | **7371.781** | 36.8589         | **8.260** | **892x** |
+
+The before column's µs-per-inserted tracks the node count — the signature of the quadratic. After,
+the total is flat across a 200x range and per-inserted is constant at ~0.04 µs, so the rollback is
+O(inserted).
+
+### The fix needed no threshold, unlike item 663
+
+`pop_last_node` removes the HIGHEST id, and the buckets are sorted ascending — `add_node` appends,
+and `has_label`'s binary search already depends on that order. So if the id is in a bucket at all
+it is necessarily the LAST element: `if b.last() == Some(&id) { b.pop(); }`.
+
+**The guard is conservative by construction.** It pops only when the last element IS that id, so
+it can never remove the wrong one; a violated sort order would leave a stale entry — the pre-fix
+behaviour — rather than corrupt the bucket. A `debug_assert!` pins the assumption (last or
+absent), and the **debug** suite was run so the assert is actually compiled in: 1204 tests pass.
+Verifying an invariant in a release build where `debug_assert!` is a no-op would have proved
+nothing.
+
+### 🛑 Mutation found the CORRUPTION case untested, hidden behind the same fixture blind spot
+
+First run 2/4. The survivor was the worst mutant: an **unconditional** `b.pop()`, which removes the
+actual last element from buckets the inserted node was never in. Inserting a `B` node and rolling
+back would silently evict an unrelated `A` node from its bucket — **data loss in another label**,
+not a stale tombstone.
+
+It survived because **every existing rollback test inserts a node carrying the same label as the
+nodes already present**, so every bucket contains the new id and popping unconditionally happens
+to be right. The `first()`-instead-of-`last()` mutant WAS caught, so the hole was specific.
+
+`rolling_back_an_insert_leaves_an_unrelated_label_bucket_intact` needs two properties to be able
+to fail, and both are in the test's own reasoning: an unrelated label whose bucket does not contain
+the newcomer, and TWO members in it — with one member the bucket empties either way and the
+assertion could not tell the mutant from the fix. Re-run: **3/4, every correctness mutant caught,
+only the equivalence probe (the old full-scan `retain`) surviving as labelled in advance.**
+
+**The general rule, now seen twice in two items:** a fixture where the subject is the ONLY
+candidate cannot test a guard that SELECTS among candidates. Item 663's batch test had a victim
+carrying every label; this one had inserts sharing the existing label.
+
+### Verification
+
+1226 + 13 + 726 native tests pass, 0 fail (1 new); the DEBUG suite passes with the `debug_assert!`
+active. All seven byte-identity fuzzers pass, with the `.so` rebuilt `--features capi`. clippy
+`--all-targets -D warnings` 0; `cargo fmt --check` 0.
