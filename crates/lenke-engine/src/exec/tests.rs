@@ -11000,6 +11000,118 @@ fn gather_cost_by_width() {
     }
 }
 
+/// A SEEK returns each matching node EXACTLY ONCE, across every path that writes an index bucket.
+///
+/// The licence for item 716's `position` + `remove` at the three index sites, which drops the
+/// FIRST match where `retain` dropped every match. A node holds one value per key, so it belongs
+/// to one bucket per index — but that is the kind of claim this repo has been wrong about before
+/// (items 367/368/349 are three instances of one index-pruning asymmetry, found one at a time), so
+/// it is asserted rather than reasoned.
+///
+/// Asserted through the SEEK rather than by reaching into the bucket: a duplicate entry is only a
+/// defect because it would emit a duplicate ROW, and testing the observable thing needs no new
+/// accessor on `Store`.
+#[test]
+fn a_seek_returns_each_node_once_after_every_index_write_path() {
+    let mut bld = Builder::default();
+    let ids: Vec<u32> = (0..8)
+        .map(|i| bld.node(&["N"], &[("k", n(f64::from(i % 3)))]))
+        .collect();
+    let mut st = bld.build();
+
+    st.create_index("k");
+
+    let seek = |st: &Store| match run(
+        &crate::gql::parse("MATCH (x:N) WHERE x.k = 0 RETURN count(*) AS c").unwrap(),
+        st,
+    )
+    .rows[0][0]
+    {
+        Value::Num(x) => x,
+        _ => panic!("count not numeric"),
+    };
+
+    // 0, 3, 6 carry k = 0.
+    assert_eq!(seek(&st), 3.0, "after build");
+
+    st.set_prop(ids[0], "k", Value::Num(1.0));
+    assert_eq!(seek(&st), 2.0, "after a SET out of the bucket");
+
+    st.set_prop(ids[0], "k", Value::Num(0.0));
+    assert_eq!(seek(&st), 3.0, "after a SET back in");
+
+    st.begin();
+    st.set_prop(ids[3], "k", Value::Num(2.0));
+    st.rollback();
+    assert_eq!(seek(&st), 3.0, "after rollback");
+
+    st.delete_nodes(&[ids[6]]);
+    assert_eq!(seek(&st), 2.0, "after a delete");
+}
+
+/// Does a `SET` on an INDEXED property cost O(the bucket it leaves)? (item 716)
+///
+/// ```text
+/// cargo test --release --manifest-path crates/lenke-engine/Cargo.toml \
+///   -- --ignored --nocapture index_set_cost_by_bucket_size
+/// ```
+///
+/// `apply_set_prop` removes the node from its old value's bucket with
+/// `bucket.retain(|&x| x != node)` — a full scan of every node sharing that value. The sharp case
+/// is a LOW-CARDINALITY indexed property, which is the common shape for one (`status`, `stage`,
+/// `tenant`): the bucket is then a large fraction of the graph.
+///
+/// NODE COUNT IS HELD FIXED and only the bucket size varies, so the axis already swept at items
+/// 663-669 cannot leak in: every store has `TOTAL` nodes, and `B` of them share the value the
+/// victim is moved out of.
+#[test]
+#[ignore = "measurement harness: cargo test --release -- --ignored --nocapture index_set_cost_by_bucket_size"]
+fn index_set_cost_by_bucket_size() {
+    use std::time::Instant;
+    const TOTAL: usize = 60_000;
+    const OPS: usize = 50;
+
+    println!(
+        "{:<30}{:>12}{:>14}{:>14}",
+        "SET on an indexed prop", "bucket", "us per op", "ns per B"
+    );
+
+    for &b in &[100usize, 1_000, 10_000, 50_000] {
+        let mut bld = Builder::default();
+        let mut ids = Vec::with_capacity(TOTAL);
+
+        for i in 0..TOTAL {
+            // The first `b` nodes share value 0 — that is the bucket a victim leaves. The rest get
+            // distinct values, so the index exists and is populated either way.
+            let v = if i < b { 0.0 } else { (i + 1) as f64 };
+
+            ids.push(bld.node(&["N"], &[("k", n(v))]));
+        }
+
+        let mut st = bld.build();
+
+        st.create_index("k");
+
+        // Time OPS sets, each moving a DIFFERENT node out of the shared bucket, so no op is
+        // measured against a bucket an earlier op already shrank by much.
+        let t = Instant::now();
+
+        for (j, &id) in ids.iter().take(OPS).enumerate() {
+            st.set_prop(id, "k", Value::Num(-(j as f64) - 1.0));
+        }
+
+        let per = t.elapsed().as_secs_f64() * 1e6 / OPS as f64;
+
+        println!(
+            "{:<30}{:>12}{:>14.3}{:>14.4}",
+            "move one node out",
+            b,
+            per,
+            per * 1000.0 / b as f64
+        );
+    }
+}
+
 /// No node's adjacency holds the same `eid` twice, in either direction.
 ///
 /// Item 715 replaced `retain(|m| m.eid != a.eid)` in the mirror detach with `position` +

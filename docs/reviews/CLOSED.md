@@ -16968,3 +16968,92 @@ Gates, each its own command with its exit code read UNPIPED: `cargo fmt` 0;
 `cargo clippy --all-targets --features capi -- -D warnings` 0; `cargo test --release` 1216 + 13 +
 725 pass, 0 fail (1216 is the new test); all seven byte-identity fuzzers pass — required rather than
 formal, since this touches adjacency order, which is exactly what that invariant covers.
+
+## 716 — the same pattern in the PROPERTY INDEX, three sites: 5.52x on a 50,000-node bucket
+
+**FIXED (native), and one O(1) follow-up priced with the reason it is not taken here.**
+
+"Grep the pattern elsewhere" is a step in the method, and item 715's `retain`-removes-one shape has
+four more instances in `store.rs`. The TS twin needs nothing — item 672 already recorded that TS's
+hub-leaf delete is O(1) because its adjacency is a `Set`. The native ones that matter are the
+PROPERTY INDEX buckets:
+
+- `apply_set_prop` — the node leaves its old value's bucket;
+- `index_drop_node` — the delete path;
+- the RANGE index twin.
+
+A bucket holds every node sharing one value, so for the shape an index is usually created for — a
+LOW-CARDINALITY property like `status`, `stage`, `tenant` — the bucket is a large fraction of the
+graph and a single `SET` scans all of it.
+
+### Confirmed O(bucket) before any edit, with the node count pinned
+
+`index_set_cost_by_bucket_size`, 60,000 nodes in every store so the axis swept at items 663-669
+cannot leak in; only how many share the victim's value varies:
+
+| bucket | µs per op | ns per B   |
+| -----: | --------: | ---------- |
+|    100 |     0.309 | 3.0940     |
+|  1,000 |     0.346 | 0.3456     |
+| 10,000 |     2.023 | 0.2023     |
+| 50,000 |     9.460 | **0.1892** |
+
+ns-per-B flat from 1,000 upward is O(B), and the cost rises 30x on bucket size alone.
+
+### The alternated A/B
+
+Three rounds, min per arm. `B=100` is the control the change cannot help — with a hundred entries
+there is nothing to stop scanning early for.
+
+| row           | BEFORE | AFTER | ratio     |
+| ------------- | -----: | ----: | --------- |
+| B=100 CONTROL |   0.23 |  0.20 | 1.10x     |
+| B=1,000       |   0.35 |  0.20 | **1.73x** |
+| B=10,000      |   2.06 |  0.49 | **4.21x** |
+| B=50,000      |   9.60 |  1.74 | **5.52x** |
+
+Bigger than 715's 1.58x, and for a reason: there the victim sat near the END of the hub's adjacency
+(so `retain` had little to shift), while a bucket's victim is wherever the node was inserted — here
+near the front, which is the case where stopping the scan at the match saves the most. Still O(B);
+the constant is ~5x smaller.
+
+### Mutation 2/3 CAUGHT — and the survivor is the interesting one
+
+Caught: the SET-path match inverted (prunes a wrong node), and the DELETE-path removal skipped (a
+dead node left in the bucket).
+
+**`swap_remove` SURVIVED — the exact opposite of item 715, where it was CAUGHT.** There, `out_adj`
+order is load-bearing because the CSR and the per-type partitions are built from it, and a test
+proved it. Here nothing pins bucket order: not the 1,217-test Rust suite, and not the seven
+byte-identity fuzzers, which I ran against the mutant specifically to find out.
+
+That is worth **O(1) instead of O(B)** — the whole remaining cost of this path — and it is NOT
+taken here, deliberately:
+
+- **Two silent oracles may mean "unobservable" or may mean "untested",** and this repo has the
+  rule for exactly that: a survivor can be equivalent, inert, a skip, or a TEST GAP, and a tally
+  cannot tell them apart. Both readings are live.
+- The policy side points at "available": row order for an unordered query is recorded as
+  unspecified, WON'T-FIX, compare-as-multisets. But bucket order drives the order a SEEK emits
+  rows in, so taking it changes what an unsorted query returns FIRST — observable to a user even
+  where the contract says unspecified, and a contract question is the user's call rather than a
+  tuning decision.
+
+So: **PRICED AND OPEN** — `swap_remove` at these three sites, worth the O(B) term, blocked on
+whether seek order off a bucket is contractually free. Recorded at the call site too, so
+`closed-levers.ts` finds it.
+
+### The invariant the change rests on is a test
+
+`retain` dropped every entry equal to the node; this drops the first. They differ only if a bucket
+can hold a node twice. `a_seek_returns_each_node_once_after_every_index_write_path` asserts it
+through the SEEK rather than by reaching into the bucket — a duplicate entry is only a defect
+because it would emit a duplicate ROW, and the observable form needs no new accessor on `Store`.
+It covers the build, a `SET` out, a `SET` back, a rolled-back transaction, and a delete. Items
+367/368/349 are three instances of one index-pruning asymmetry found one at a time, which is why
+this is asserted rather than reasoned.
+
+Gates, each its own command with its exit code read UNPIPED: `cargo fmt` 0;
+`cargo clippy --all-targets --features capi -- -D warnings` 0; `cargo test --release` 1217 + 13 +
+725 pass, 0 fail; all seven byte-identity fuzzers pass — load-bearing here, since an index feeds
+seek order.

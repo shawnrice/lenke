@@ -4242,7 +4242,24 @@ impl Store {
             if let Some(old) = old {
                 let og = crate::value::group_key(&resolve_path(old, &sub));
                 if let Some(bucket) = self.indexes[j].map.get_mut(&og) {
-                    bucket.retain(|&x| x != node);
+                    // One node holds ONE value per key, so it has at most one entry in one
+                    // value's bucket: `position` + `remove` is the same removal as `retain` with
+                    // the scan stopped at the match and the tail moved by one `ptr::copy`
+                    // (item 716, the same route item 715 took for the adjacency mirror). Order is
+                    // preserved, because a seek yields bucket members in order and that becomes
+                    // ROW order.
+                    // 🛑 PRICED AND OPEN (item 716): `swap_remove` here is O(1) instead of
+                    // O(bucket) and would remove the whole remaining cost of this path. It
+                    // SURVIVED mutation against both the full Rust suite and all seven
+                    // byte-identity fuzzers, so nothing currently pins bucket order — unlike the
+                    // adjacency at item 715, where the same mutant was CAUGHT because the CSR is
+                    // built from `out_adj`. Two silent oracles may mean unobservable or may mean
+                    // untested, and bucket order drives which row a SEEK emits FIRST, so whether
+                    // that is contractually free is a decision about the row-order contract
+                    // rather than a tuning call. Not taken here.
+                    if let Some(at) = bucket.iter().position(|&x| x == node) {
+                        bucket.remove(at);
+                    }
                     // Drop the emptied KEY, the same as `index_drop_node` (item 368). Item 367
                     // added that pruning to the DELETE path and missed this one — the SET path —
                     // which is the twin asymmetry this repo keeps finding (items 333, 335, 349,
@@ -4278,7 +4295,10 @@ impl Store {
             .collect();
         for (j, gk) in removals {
             if let Some(bucket) = self.indexes[j].map.get_mut(&gk) {
-                bucket.retain(|&x| x != id);
+                // See `apply_set_prop`'s note: one entry per node per value (item 716).
+                if let Some(at) = bucket.iter().position(|&x| x == id) {
+                    bucket.remove(at);
+                }
                 // DROP THE EMPTY ENTRY, not just the id (audit item 367). The `retain` above
                 // already pruned the id, so a bucket never holds a deleted node — but the KEY
                 // survived with an empty `Vec`, which made `map.len()` count values that no live
@@ -4353,7 +4373,10 @@ impl Store {
         }
         if let Some(ix) = self.ranges.iter_mut().find(|i| i.key == key) {
             if let Some(bucket) = ix.map.get_mut(&OrdVal(value.clone())) {
-                bucket.retain(|&x| x != node);
+                // The RANGE twin of the two above (item 716).
+                if let Some(at) = bucket.iter().position(|&x| x == node) {
+                    bucket.remove(at);
+                }
                 // Drop the emptied KEY — the RANGE twin of items 367 and 368, and the third
                 // instance of this bug in three items. Unlike the hash index, both write paths
                 // (delete via `index_drop_node`, set via `apply_set_prop`) route through here, so
