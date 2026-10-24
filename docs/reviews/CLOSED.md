@@ -13611,3 +13611,60 @@ seeking, another scanning) would have been invisible to them. It does not exist 
 **Both the read and write paths are now swept for complexity**, and both harnesses
 (`write_cost_by_graph_size`, `read_cost_by_graph_size`) are in the tree, so the next pass runs one
 command instead of rebuilding the instrument.
+
+## 669 — TS reads have no complexity bug either, and item 579's clause-vs-inline gap is SIZE-INDEPENDENT
+
+**SCREENED (TypeScript), nothing to fix.** Item 668's read sweep, pointed at the other engine. It
+matters more here, not less: item 657 established TS adjacency at ~314 ns per edge touched, so a
+TS shape that scans where it should seek costs far more than the native equivalent.
+
+### Result size held at one row; only the graph grows
+
+ONE SIZE PER PROCESS (item 274: in one process the small sizes warm the JIT for the large ones,
+which would flatten the very curve being measured).
+
+| read                               | 1,000      | 10,000      | 50,000       | 200,000      |
+| ---------------------------------- | ---------- | ----------- | ------------ | ------------ |
+| point lookup, numeric clause       | 6.100 µs   | 7.440       | 5.440        | 5.330        |
+| point lookup, string clause        | 5.620      | 5.780       | 5.700        | 5.370        |
+| point lookup, INLINE spelling      | 4.100      | 4.160       | 4.140        | 3.810        |
+| `count(*)` over the label          | 1.410      | 1.460       | 1.410        | 1.260        |
+| **scan all, one column (CONTROL)** | **75.590** | **613.860** | **1568.731** | **5256.750** |
+
+Every seeking shape is flat across a 200x range — slightly FASTER at the top, which is JIT, not a
+trend. **TS seeks are O(1) in the node count**, as native's are (668). No complexity bug on either
+engine's read path.
+
+### ⚠️ The control rises, but its SLOPE is confounded — recorded rather than presented as clean
+
+The scan grows 69.5x for 200x the nodes, not 200x, because its per-row cost FALLS from 75.6 to
+26.3 ns as the graph grows: 9 reps over 200,000 rows is 1.8M row-builds and fully JIT-optimised,
+where 9 over 1,000 is 9,000 and is not. So the control confirms the instrument can see scaling —
+which is its job, and the reason the flat rows mean anything — but its 69.5x is NOT a clean O(V)
+measurement and must not be quoted as one.
+
+Native's equivalent control rose 182x with ns-per-node pinned at ~1.05 (668), because a compiled
+engine has no warm-up of this kind. **The same control behaves differently on the two engines, and
+that difference is the JIT, not the algorithm.**
+
+### Item 579's clause-vs-inline gap reproduces — and does NOT worsen with scale
+
+The INLINE spelling is consistently faster than the numeric clause spelling: **3.81-4.16 against
+5.33-7.44, about 1.4x, at every size.** That is item 579's recorded finding (it flagged 1.3-1.6x
+clause-vs-inline on a numeric seeked key, with the string twin converging), and this adds the
+missing axis:
+
+**The gap is a CONSTANT FACTOR, not a complexity divergence.** Had one spelling been seeking while
+the other scanned, the ratio would have grown with the graph — 1.4x at 1,000 nodes would have
+become ~280x at 200,000. It is 1.4x at both ends. So both spellings seek; one simply pays more
+per operation.
+
+That reframes the target: it is per-operation overhead in the clause path, bounded and not
+scale-dependent, which is a much weaker reason to touch the planner than a divergence would have
+been.
+
+### State of the complexity sweep
+
+Both paths, both engines, now swept: native write (663, 664, 667), native read (668), TS write
+(666), TS read (this item). **No known cost scales with the graph where it should not**, on either
+engine, read or write.
