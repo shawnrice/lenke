@@ -11040,6 +11040,41 @@ fn gather_cost_by_width() {
 /// Two rows are additionally labelled below as planner-UNREACHABLE in the shape the harness
 /// builds. That is the same hazard item 265 recorded for `VarLength {1,1}`, whose
 /// `(walker, unreachable)` label was in the harness all along and was not read.
+///
+/// # Every generic `Call` row carries a 16 ns DISPATCH toll (item 655)
+///
+/// The `Call` rows are not comparable to the others until this is subtracted, and reading them
+/// without it sends you at the wrong half of the cost. Decomposed:
+///
+/// ```text
+/// Prop (Str)                      1.04 ns/row   just reading the column
+/// Call abs                        2.02          a TYPED fast path; never reaches the dispatcher
+/// Call pi (NILADIC)              16.14          DISPATCH ONLY — no argument at all
+/// Call char_length (one Str arg) 26.93          ~16 dispatch + ~9 argument + ~2 work
+/// Call upper                     41.54          ~16 dispatch + ~9 argument + ~16 string
+/// Call lower                     42.34
+/// ```
+///
+/// `pi()` takes no argument, so it does no `value_at`, no boxing and no string production: its
+/// 16.14 ns is the per-row trip through `call_scalar_checked`, whose dispatch is a `matches!`
+/// over 6 names followed by a match with ~89 STRING arms. `abs` at 2.02 is the control — a
+/// fast-pathed function bypasses the dispatcher entirely, so the toll is not inherent to a call.
+///
+/// **So the biggest lever in this family is resolving the name ONCE PER BATCH**, which would take
+/// ~16 ns off `char_length` (2.4x), `upper` (1.7x), `contains` (1.9x) and every other generic
+/// call. It is NOT built: it means restructuring 89 string arms into a function-pointer table,
+/// and every cheap shortcut considered (an integer match, a per-batch cache, a captured closure)
+/// still needs the name-to-behaviour mapping written out once per function. Priced here so the
+/// decision is made with the number rather than from the shape of the code.
+///
+/// 🛑 TWO HYPOTHESES THIS DECOMPOSITION KILLED, both of which looked obvious:
+///
+/// - **`upper`'s String allocation.** `str_map` does `Value::Str(f(s).into())`, so
+///   `to_uppercase()` allocates and `GStr` copies — item 654's exact shape. But it is at most ~16
+///   of 41.54 ns, and the dispatch above it is just as large.
+/// - **A `Vec<Value>` of arguments per row.** Already fixed, and documented in place at the call
+///   site: `buf` is reused across rows. Reading before writing is what stopped it being "fixed"
+///   a second time — the failure item 650 found three stale comments doing.
 #[test]
 #[ignore = "measurement harness: cargo test --release -- --ignored --nocapture expression_cost_by_kind"]
 fn expression_cost_by_kind() {
@@ -11175,6 +11210,45 @@ fn expression_cost_by_kind() {
             Expr::Call {
                 name: "upper".to_string(),
                 args: vec![name()],
+            },
+        ),
+        (
+            // DECOMPOSES the row above (item 655). `char_length` reads the SAME high-cardinality
+            // string column and returns a NUMBER, so it pays the column read and none of the
+            // string production. `upper` minus this is what producing the string costs, which is
+            // the only part a stack-buffer rewrite could reach.
+            //
+            // Measured FIRST, because item 654 removed three allocations from the `Cast` row for
+            // 1.24x: the allocation count is not the cost, and the decomposition says so before
+            // any code is written.
+            "Call char_length (the same column, NO string produced)",
+            Expr::Call {
+                name: "char_length".to_string(),
+                args: vec![name()],
+            },
+        ),
+        (
+            // `lower`'s twin, to show the cost is the SHAPE and not one function's table lookups.
+            "Call lower (high-cardinality)",
+            Expr::Call {
+                name: "lower".to_string(),
+                args: vec![name()],
+            },
+        ),
+        (
+            // THE DECISIVE ROW for what the ~26 ns above `Prop (Str)` actually is (item 655).
+            // `pi()` is NILADIC: no argument column, no `value_at`, no boxing, no string work —
+            // only the per-row trip through `call_scalar_checked`, whose dispatch is a `matches!`
+            // over 6 names followed by a match with ~89 STRING arms.
+            //
+            // So this row is dispatch and nothing else. If it reads ~26 ns/row, the string
+            // dispatch is the cost and resolving the name ONCE PER BATCH is the fix. If it reads
+            // ~2 ns, dispatch is cheap and the 26 ns lives in the argument handling instead —
+            // and an 89-arm refactor would have bought nothing.
+            "Call pi (NILADIC: dispatch only, no argument at all)",
+            Expr::Call {
+                name: "pi".to_string(),
+                args: vec![],
             },
         ),
         (

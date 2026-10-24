@@ -12824,3 +12824,56 @@ so the reach is narrower than it first looks). Now it writes straight through.
   would catch a divergence on the JSON path, and 2 new parity tests.
 - All seven byte-identity fuzzers pass, including the TS-vs-native differential.
 - `cargo clippy --all-targets -D warnings` 0 on both crates; `cargo fmt --check` 0.
+
+## 655 — every generic scalar `Call` pays a 16 ns string-DISPATCH toll; two obvious causes killed first
+
+**PRICED, not built (native).** Item 654 took the largest row of `expression_cost_by_kind`; this
+takes the next one and finds the cost is not where the row's name suggests.
+
+### The decomposition
+
+|                                  | ns/row    |                                                 |
+| -------------------------------- | --------- | ----------------------------------------------- |
+| `Prop (Str)`                     | 1.04      | just reading the column                         |
+| `Call abs`                       | 2.02      | a TYPED fast path; never reaches the dispatcher |
+| **`Call pi` (NILADIC)**          | **16.14** | **DISPATCH ONLY — no argument at all**          |
+| `Call char_length` (one Str arg) | 26.93     | ≈ 16 dispatch + ~9 argument + ~2 work           |
+| `Call upper`                     | 41.54     | ≈ 16 dispatch + ~9 argument + ~16 string        |
+| `Call lower`                     | 42.34     |                                                 |
+
+`pi()` takes no argument, so it does no `value_at`, no boxing and no string production: its 16.14
+ns is the per-row trip through `call_scalar_checked`, whose dispatch is a `matches!` over 6 names
+followed by a match with **~89 string arms**. `abs` at 2.02 is the control — a fast-pathed
+function bypasses the dispatcher entirely, so the toll is not inherent to making a call.
+
+**The `Call` rows of that table are not comparable to the others until this is subtracted.**
+
+### 🛑 Two obvious causes, both killed before any code was written
+
+- **`upper`'s `String` allocation.** `str_map` does `Value::Str(f(s).into())`, so `to_uppercase()`
+  allocates and `GStr` copies it — item 654's exact shape, one row down. It is at most ~16 of
+  41.54 ns, and the dispatch above it is just as big. Going straight at it would have bought a
+  fraction of what is there.
+- **A `Vec<Value>` of arguments per row.** **Already fixed**, and documented at the call site:
+  `buf` is reused across rows. Reading before writing is the only reason this was not "fixed" a
+  second time — exactly the failure item 650 found in three stale comments.
+
+The decisive instrument was the NILADIC row. Comparing `upper` against `char_length` could show
+that string production was not the whole cost, but only a call with NO argument separates dispatch
+from argument handling.
+
+### What the lever is, and why it is not taken here
+
+Resolve the function name ONCE PER BATCH instead of once per row: ~16 ns off `char_length`
+(2.4x), `upper` (1.7x), `contains` (1.9x) and every other generic call — a whole-family win rather
+than one row.
+
+Not built, deliberately. It means restructuring 89 string arms into a function-pointer table, and
+a wrong mapping there is a WRONG ANSWER rather than a slow one. Every cheap shortcut considered —
+an integer match, a per-batch cache, a captured closure — still needs the name-to-behaviour
+mapping written out once per function, so there is no partial version worth landing. Priced here
+so the decision is made with the number in hand rather than from the shape of the code.
+
+The three new harness rows (`char_length`, `lower`, `pi`) are the durable artifact: they keep the
+decomposition reproducible, and the header now carries it so the `Call` rows cannot be re-read as
+whole-function costs.
