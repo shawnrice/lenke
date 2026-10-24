@@ -8992,6 +8992,13 @@ the tie order this item pins. CI green on 604.
 
 ### Still open
 
+> **PARTLY STALE, CORRECTED AT 697.** The cannot-fault check **was built, at item 610**
+> (`ordered-rows.ts`: _"WHY THIS EXISTS (item 610). It is the 'conservative cannot-fault check on
+> the projection' item 426 deferred"_), and the node path's windows now ride the sorted rung — flat
+> at 17.0-18.1 ms across `LIMIT 1/5/1000/200000` and `OFFSET 0`. **Only the HOP half is open**, and
+> its blocker is the arrival-order constraint, NOT a missing check. Re-measured at 697: **136.2 ms
+> against a 60.2 ms unordered reference, 2.26x** — the 3.9x below does not survive.
+
 The HOP projection, behind constraint 3: `farDrivenHopWalk` must either keep the sort off itself or
 establish that its arrival order is unobservable. Item 603 measured that shape at 173.0 ms against
 a 44.5 ms unordered reference. And a window WITH a sort stays declined until item 426's
@@ -9156,6 +9163,10 @@ seven byte-identity fuzzers — comparing ORDERED results, so a cross-engine che
 this item turns on. CI green on 606.
 
 ### Still open
+
+> **PARTLY STALE, CORRECTED AT 697.** Item **610** built that check, and the NODE path's windows
+> ride the rung now (flat across every limit size). The HOP half remains, blocked on arrival order
+> rather than on the check.
 
 A window WITH a sort, in both the node and hop paths, until item 426's conservative cannot-fault
 check exists. Item 603 measured that shape (`ORDER BY x LIMIT 5` over a hop) at 164.3 ms against
@@ -15520,3 +15531,69 @@ ids where the engines disagree on the edge COUNT (615); half of 619's seed; the 
 behind `farDrivenHopWalk`'s sort constraint (605/607, 173.0 ms against a 44.5 ms unordered
 reference); a window WITH a sort, blocked on item 426's cannot-fault check; depth 5 of the trail
 count (693), whose terms are unpriced per item 686's rule.
+
+## 697 — the sorted-hop target re-prices to 2.26x (was 3.9x), its blocker is NOT what 605 said, and I retracted a reading mid-tick
+
+**RE-MEASUREMENT. No engine change.** Item 696's mechanical pass left a short list of genuinely-open
+targets; this prices the largest.
+
+### The target survives at about half its recorded size
+
+200,000 vertices / 600,000 edges, min of 5, all in ONE process:
+
+|                                    | ms        | rows    |
+| ---------------------------------- | --------- | ------- |
+| `MATCH (a:P)-[:E]->(b) RETURN b.k` | 60.2      | 600,000 |
+| `… ORDER BY k`                     | **136.2** | 600,000 |
+| `… ORDER BY k LIMIT 5`             | 135.2     | 5       |
+| `… ORDER BY uniq LIMIT 5`          | 124.2     | 5       |
+
+**2.26x**, against the 173.0/44.5 = 3.9x items 603-605 recorded. The target is real and smaller.
+A `LIMIT 5` saves nothing (135.2 against 136.2): all 600,000 rows are sorted to emit five.
+
+### 🛑 The blocker is not the one item 605 named — that check was built at 610
+
+Item 605 recorded this as waiting on _"item 426's conservative cannot-fault check"_. **That check
+exists.** `ordered-rows.ts` says so in its own header: _"WHY THIS EXISTS (item 610). It is the
+'conservative cannot-fault check on the projection' item 426 deferred."_
+
+And the NODE path behaves accordingly — windows ride the sorted rung, flat across every size:
+
+| node path                     | ms                        |
+| ----------------------------- | ------------------------- |
+| `RETURN a.k`                  | 14.3                      |
+| `ORDER BY k`                  | 17.2                      |
+| `LIMIT 1 / 5 / 1000 / 200000` | 17.0 / 17.3 / 17.1 / 18.1 |
+| `OFFSET 0`                    | 17.1                      |
+
+So only the HOP half is open, and its blocker is the one constraint 605 listed SECOND:
+`farDrivenHopWalk` must keep the sort off itself or establish that its arrival order is
+unobservable. With a STABLE sort, tie order is arrival order, so a different walk order changes
+which tied rows a `LIMIT` keeps — and both engines have to agree, which makes it a cross-engine
+question rather than a local one.
+
+**This is a stale marker found by reading CODE, not the index.** Item 696 tooled the index check and
+this one was still invisible to it: the marker named a dependency, item 610 satisfied it, and
+nothing connected the two. `open-markers.ts` pairs a marker with the next ITEM; it cannot know that
+a check named in prose got built nine items later.
+
+### 🛑 And a reading of my own, retracted inside the tick
+
+An intermediate run had the node path at `ORDER BY k` 18.3 ms and `ORDER BY k LIMIT 5` **26.0 ms**,
+and I was about to write up "adding a LIMIT costs 1.42x while returning 5 rows instead of 200,000",
+which would have been a clean-looking anomaly.
+
+It was a **POSITION PENALTY**. Those queries ran last in that run's list and `LIMIT 5` ran first
+among them. Re-running with the window sweep in one process put every variant at 17.0-18.1 ms.
+
+This is the exact effect `spelling-probe.ts` documents — _"SWAPPING the two made the penalty follow
+the POSITION, not the spelling"_, which cost audit items 180 and 181 a 1.5-2.1x phantom. The probe
+answers it by timing every member in both positions and keeping the better reading; a one-off probe
+has no such protection, so **the first number out of a fresh list is the one to distrust.**
+
+### What a fix would have to establish
+
+Not "is the sort safe" — 610 settled that. It is: does `farDrivenHopWalk`'s arrival order differ
+observably from the general path's, and if so can both engines be made to agree on it? Until that is
+answered the route must keep declining, because the alternative is a byte-identity divergence in tie
+order under a `LIMIT`.
