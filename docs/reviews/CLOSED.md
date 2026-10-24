@@ -15811,3 +15811,109 @@ does not. `cannotFault` (item 610) is the licence, and it is already written.
 Item 424 measured this family at "50.1 ms against the `max(a.u)` fold's 20.7 over the same rows,
 and it is NOT allocation" — consistent with the 17.0-against-4.6 here, and now explained: the gap
 is not allocation because **the bounded selection is not running at all.**
+
+## 701 — item 700's missing top-k was in a DIFFERENT module: the shortcut full-sorts, 2.9-6.4x
+
+**FIXED (TypeScript).** Item 700 instrumented `applyProjection` and found its bounded heap firing
+zero times for `MATCH (n:Person) RETURN n.age AS a ORDER BY a LIMIT 5`. The reason is not a gate
+inside that function at all: **the query never reaches it.** `detectNodeProjection` takes the shape
+first, and that route sorted every row and sliced.
+
+That is why item 700's alias hypothesis measured flat. Both spellings miss the heap because
+neither one gets near it — `aliasDefinition` would have rewritten `ORDER BY a` to `ORDER BY n.age`
+and cleared `orderNeedsOutput` anyway. **Instrumenting one function tells you it did not run; it
+does not tell you what ran instead.** Finding that cost a second tick and the fix took one edit.
+
+### The change
+
+`sortRowsByColumns` (`ordered-rows.ts`) selects instead of sorting when the window is small:
+
+```ts
+if (limit !== undefined && (skip + limit) * 16 <= rows.length) {
+  return boundedTopRows(rows, sorts, skip + limit).slice(skip);
+}
+```
+
+`boundedTopRows` is a max-heap of ROW INDICES, capped at `skip + limit`. Indices rather than rows
+because the index is also the tiebreak: `rows` arrives in arrival order here, so `x < y` IS the
+arrival comparison, where the `applyProjection` heap has to carry an index alongside because it
+evicts from a permuted array. `compareSort` stays the one comparator.
+
+**Why a tiebreak at all.** `Array.prototype.sort` is stable, so the full sort this replaces broke
+ties by arrival order, and tie order is observable between the engines (item 605). Appending
+`x < y` makes the heap's order a TOTAL order that agrees with the sliced full sort row for row —
+which is what the hashes below check.
+
+### The alternated A/B, with four controls the change cannot reach
+
+200,000 vertices, 50 distinct ages over them (deliberately tie-heavy) and 2% null ages. Min of 7
+per arm, three alternated rounds, rebuilding the dist between every arm. The hash is over EVERY
+row, not a head — the fixture ties so densely that a wrong tie order would be invisible in the
+first four rows (item 600's rule, strengthened).
+
+| row                       | BEFORE | AFTER | ratio     | rows+hash |
+| ------------------------- | ------ | ----- | --------- | --------- |
+| `LIMIT 1`                 | 41.6   | 14.2  | **2.93x** | SAME      |
+| `LIMIT 5`                 | 41.5   | 14.1  | **2.94x** | SAME      |
+| `LIMIT 100`               | 38.8   | 12.3  | **3.15x** | SAME      |
+| `LIMIT 1000`              | 37.0   | 11.6  | **3.19x** | SAME      |
+| `LIMIT 2500`              | 37.4   | 13.8  | **2.71x** | SAME      |
+| `LIMIT 5000`              | 37.3   | 18.6  | **2.01x** | SAME      |
+| `LIMIT 10000`             | 37.5   | 25.5  | **1.47x** | SAME      |
+| `ORDER BY a DESC LIMIT 5` | 38.5   | 11.6  | **3.32x** | SAME      |
+| `SKIP 2 LIMIT 5`          | 38.3   | 10.5  | **3.65x** | SAME      |
+| two sort keys, `LIMIT 5`  | 77.7   | 12.2  | **6.37x** | SAME      |
+| the bench row, `LIMIT 5`  | 37.1   | 9.4   | **3.95x** | SAME      |
+| `LIMIT 20000` CONTROL     | 37.4   | 36.6  | 1.02x     | SAME      |
+| `LIMIT 50000` CONTROL     | 37.1   | 37.5  | 0.99x     | SAME      |
+| no window CONTROL         | 38.6   | 37.0  | 1.04x     | SAME      |
+| unordered CONTROL         | 7.1    | 7.2   | 0.99x     | SAME      |
+| `min(n.age)` CONTROL      | 4.6    | 4.9   | 0.94x     | SAME      |
+
+### The `* 16` is a measured crossover, and a looser bound was BUILT and rejected
+
+The heap is O(n log cap) against the sort's O(n log n), so it stops paying as `cap` approaches
+`n`. The first version used `* 8` and the same sweep caught it: `LIMIT 20000` read **0.95x** — a
+real regression, inside the bound, that only a cap sweep would have found. The sweep puts the
+crossover at about `n/10` (20,000 of 200,000 reads 0.99x either way), so the bound admits to
+`n/16`, which is inside the win at 1.47x. `LIMIT 20000` and `LIMIT 50000` are now controls, and
+they are flat.
+
+### Mutation: 7 caught, 1 survivor labelled SURVIVE in advance
+
+Against `ordered-rows-topk.test.ts`, the one file whose claim this change makes, each mutant
+applied to a pristine copy and the tree restored BEFORE the next one, all under
+`timeout 300 systemd-run -p MemoryMax=16G -p MemorySwapMax=0`.
+
+Caught: the tiebreak dropped from `less`; the candidate test inverted; the heap keeping `cap + 1`;
+`siftDown` ignoring the right child; `siftUp` stopping at the first parent; the one-key path
+forgetting `descending`; the survivors not re-sorted. The survivor is the gate widened to `* 1`,
+which is a ROUTE CHOICE and answer-equivalent by construction — no differential test can catch
+one (item 611), and its guard is the cap sweep above.
+
+**The test's fixture is the test.** The bounded branch needs `(skip + limit) * 16 <= rows.length`,
+so a case over a handful of rows exercises the full sort no matter what it asserts — the fixture
+mistake this repo has now made six times, where the subject is unreachable from the fixture. Every
+case keeps 320 rows against a window of at most 10, and each asserts that bound explicitly so the
+guard cannot rot into vacuity.
+
+### The sweep, and the impossible ordering closed
+
+| row                                | before | after   | ffi |
+| ---------------------------------- | ------ | ------- | --- |
+| ordered projection **+ limit**     | 21.4   | **8.9** | 1.0 |
+| top-k by property                  | 15.6   | **8.9** | 1.0 |
+| ordered projection **[no window]** | 20.7   | 16.1    |     |
+
+Adding a `LIMIT` is now cheaper than omitting it, which is the ordering item 700 flagged as
+impossible. The ts/ffi ratio on the windowed row goes 21.70x to 8.85x. The no-window row moving
+20.7 to 16.1 is cross-process variance, not this change — it is a control in the table above and
+reads 1.04x under alternation, which is the measurement that counts.
+
+**The native engine does not have this gap** and nothing moved there: it was already 1.0 ms on
+both windowed rows, which is what made the TS row readable as impossible in the first place.
+
+Gates, each its own command with its exit code read UNPIPED: `bun run lint` 0; `bun run check` 0
+(typecheck+lint+fmt:check); `bun run test` — all 21 projects pass; all seven byte-identity fuzzers
+pass, which this change needs rather than merely survives, because row order under `ORDER BY` is
+cross-engine observable.

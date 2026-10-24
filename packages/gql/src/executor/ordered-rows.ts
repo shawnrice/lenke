@@ -176,6 +176,112 @@ export const outputColumnSorts = (
 };
 
 /**
+ * THE FIRST `cap` ROWS of the sorted order, without sorting the rest.
+ *
+ * `sortRowsByColumns` full-sorted every row and sliced, so `ORDER BY a LIMIT 5` over 200,000 rows
+ * paid an O(n log n) sort to emit five (item 701). The general path has had a bounded heap since
+ * item 425 — but these queries never reach it: `detectNodeProjection` takes them first, which is
+ * why instrumenting `applyProjection` at item 700 found its top-k firing zero times.
+ *
+ * THE ANSWER MUST BE THE FULL SORT'S, ROW FOR ROW. `Array.prototype.sort` is stable, so the sliced
+ * full sort breaks ties by ARRIVAL ORDER, and tie order is observable between the engines (item
+ * 605). `rows` is in arrival order here, so the row's INDEX is its arrival index — unlike the
+ * `applyProjection` heap, which has to carry one alongside, because it evicts from a permuted
+ * array. Adding `x < y` as the final tiebreak makes the heap's order the full sort's total order,
+ * and selecting the least `cap` under a total order yields exactly the sort's first `cap`.
+ *
+ * `compareSort` stays the one comparator, for the reason `sortRowsByColumns` gives.
+ */
+const boundedTopRows = (rows: Row[], sorts: readonly ColSort[], cap: number): Row[] => {
+  const one = sorts.length === 1 ? sorts[0] : undefined;
+  const cmpRows = (a: Row, b: Row): number => {
+    if (one !== undefined) {
+      return compareSort(a[one.col], b[one.col], one.descending, one.nullsFirst);
+    }
+
+    for (const s of sorts) {
+      const c = compareSort(a[s.col], b[s.col], s.descending, s.nullsFirst);
+
+      if (c !== 0) {
+        return c;
+      }
+    }
+
+    return 0;
+  };
+  // A MAX-heap of row indices: the root is the worst row kept, which is the one a candidate has
+  // to beat. Indices rather than rows because the index is also the tiebreak.
+  const h: number[] = [];
+  const less = (x: number, y: number): boolean => {
+    const c = cmpRows(rows[x], rows[y]);
+
+    return c !== 0 ? c < 0 : x < y;
+  };
+  const siftUp = (from: number) => {
+    let i = from;
+
+    while (i > 0) {
+      const parent = (i - 1) >> 1;
+
+      if (!less(h[parent], h[i])) {
+        break;
+      }
+
+      const t = h[parent];
+      h[parent] = h[i];
+      h[i] = t;
+      i = parent;
+    }
+  };
+  const siftDown = () => {
+    let i = 0;
+
+    for (;;) {
+      const l = i * 2 + 1;
+      const r = l + 1;
+      let m = i;
+
+      if (l < h.length && less(h[m], h[l])) {
+        m = l;
+      }
+
+      if (r < h.length && less(h[m], h[r])) {
+        m = r;
+      }
+
+      if (m === i) {
+        break;
+      }
+
+      const t = h[m];
+      h[m] = h[i];
+      h[i] = t;
+      i = m;
+    }
+  };
+
+  for (let i = 0; i < rows.length; i += 1) {
+    if (h.length < cap) {
+      h.push(i);
+      siftUp(h.length - 1);
+    } else if (less(i, h[0])) {
+      h[0] = i;
+      siftDown();
+    }
+  }
+
+  h.sort((x, y) => {
+    if (less(x, y)) {
+      return -1;
+    }
+
+    return less(y, x) ? 1 : 0;
+  });
+
+  return h.map((i) => rows[i]);
+};
+
+/**
  * Sort rows by resolved output columns, IN PLACE.
  *
  * Goes through `compareSort`, the engine's own comparator, whose doc states "the Rust
@@ -193,6 +299,17 @@ export const sortRowsByColumns = (rows: Row[], plan: SortPlan): Row[] => {
 
   if (sorts.length === 0) {
     return rows;
+  }
+
+  // A SMALL WINDOW SELECTS RATHER THAN SORTS (item 701). The heap is O(n log cap) against the
+  // sort's O(n log n), so it only wins while `cap` is a small fraction of `n` and at `cap` near
+  // `n` it is a slower way to sort everything. The `* 16` is the MEASURED crossover rather than a
+  // guess: a cap sweep at 200,000 rows, alternated min-of-three, read 2.9x at 100, 3.2x at 1,000,
+  // 2.1x at 5,000, 1.45x at 10,000 and 0.99x at 20,000 — so the heap stops paying at about `n/10`
+  // and this admits to `n/16`, inside the win. A looser `* 8` was built first and measured 0.95x
+  // on `LIMIT 20,000`, which is the regression this constant exists to keep out.
+  if (limit !== undefined && (skip + limit) * 16 <= rows.length) {
+    return boundedTopRows(rows, sorts, skip + limit).slice(skip);
   }
 
   // ONE sort key, which is the common case, gets a comparator with NO LOOP and no per-call
