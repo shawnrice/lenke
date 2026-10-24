@@ -7713,6 +7713,110 @@ const oneOrderFreeRow = (ret: Extract<Clause, { kind: 'return' }>): boolean => {
  * A `LIMIT`, or an `OFFSET` that is not literally 0, changes which rows reach the projection
  * (`OFFSET 1 RETURN count(*)` reads 1 against 2) and is never dropped.
  */
+/**
+ * A `{1,1}` quantifier asks exactly what a plain hop asks, so drop it (item 684).
+ *
+ * `{1,1}` is ONE repetition. But the quantifier carries the segment past every gate that bails
+ * on `segments.some((s) => s.rel.quantifier)`, so the plain spelling takes the O(1)
+ * `edgesByLabel` bucket size while `{1,1}` enumerates — **1.600us against 3580.920 at 50,000
+ * vertices / 50,000 E edges, a 2238x spread for an identical answer** (item 683). That is the
+ * equivalent-spelling class, which no correctness test can catch because both answers are right.
+ *
+ * The same normalization lives in the native engine's OPTIMIZER (`opt.rs`: a one-hop `VarLength`
+ * with no `until`/`body_filter` under WALK/TRAIL becomes an `Expand`), which is why the two
+ * spellings sit within 3.3% there. This is the TS half; there is no `ir::Plan` to canonicalize,
+ * so it has to happen on the AST.
+ *
+ * EVERY GATE IS A WAY THE TWO SPELLINGS COME APART, and the first two were measured, not assumed:
+ *
+ * - **An edge variable.** Under a quantifier it binds a LIST (`e: [{…}]`); without one it binds a
+ *   SCALAR (`e: {…}`). Dropping the quantifier would change the result's TYPE.
+ * - **`simple` / `acyclic` mode.** `acyclic` forbids any repeated NODE, so at one hop it drops a
+ *   self-loop `A -> A` that a plain hop keeps. (lenke defaults to `trail`, which at one hop
+ *   forbids nothing — one hop uses one edge — so the common case is inside the safe set.)
+ * - **A non-`walk` selector.** `ANY`/`ANY SHORTEST` pick among paths; a plain hop has no paths to
+ *   pick among.
+ * - **A group or nested subpath** (`hopFrom`/`hopTo`/`unitRest`/`innerQ`/`nested`) — a different
+ *   shape, whose inner variables are group vars exposed as LISTS.
+ * - **A `subpathWhere`** — a PER-REPETITION predicate, which is not a per-edge filter. This one
+ *   is REDUNDANT and mutation says so: removing it changes no answer, because `subpathWhere`
+ *   exists only on a parenthesized subpath, which the group gate above has already declined. Kept
+ *   as defence in depth against a future shape that carries one without being a group.
+ *
+ * Runs with a no-allocation pre-scan because this chain is on the EXECUTE path, not behind the
+ * parse cache: a query with no quantifier at all must not pay for the rewrite.
+ */
+const vacuousQuantifier = (pattern: PathPattern, seg: Segment): boolean => {
+  const q = seg.rel.quantifier;
+
+  return (
+    q?.min === 1 &&
+    q?.max === 1 &&
+    seg.rel.variable === undefined &&
+    (pattern.mode === undefined || pattern.mode === 'walk' || pattern.mode === 'trail') &&
+    (pattern.selector === undefined || pattern.selector === 'walk') &&
+    seg.hopFrom === undefined &&
+    seg.hopTo === undefined &&
+    (seg.unitRest === undefined || seg.unitRest.length === 0) &&
+    seg.innerQ === undefined &&
+    seg.nested === undefined &&
+    seg.subpathWhere === undefined
+  );
+};
+
+const dropVacuousQuantifier = (clauses: readonly Clause[]): readonly Clause[] => {
+  let found = false;
+
+  for (const clause of clauses) {
+    if (clause?.kind !== 'match') {
+      continue;
+    }
+
+    for (const pattern of clause.patterns) {
+      if (pattern.segments.some((seg) => vacuousQuantifier(pattern, seg))) {
+        found = true;
+        break;
+      }
+    }
+
+    if (found) {
+      break;
+    }
+  }
+
+  if (!found) {
+    return clauses;
+  }
+
+  return clauses.map((clause) => {
+    if (clause?.kind !== 'match') {
+      return clause;
+    }
+
+    return {
+      ...clause,
+      patterns: clause.patterns.map((pattern) => {
+        if (!pattern.segments.some((seg) => vacuousQuantifier(pattern, seg))) {
+          return pattern;
+        }
+
+        return {
+          ...pattern,
+          segments: pattern.segments.map((seg) => {
+            if (!vacuousQuantifier(pattern, seg)) {
+              return seg;
+            }
+
+            const { quantifier: _dropped, ...rel } = seg.rel;
+
+            return { ...seg, rel };
+          }),
+        };
+      }),
+    };
+  });
+};
+
 const dropVacuousPage = (clauses: readonly Clause[]): readonly Clause[] => {
   const out: Clause[] = [];
 
@@ -7940,7 +8044,9 @@ const compileLinear = (linear: LinearQuery): CLinear => {
       inlineTrailingLet(
         inlineAggregateCall(
           inlineTrailingFilter(
-            unoptionalizeForAggregate(dropUnreadGroupBinds(dropVacuousPage(linear.clauses))),
+            unoptionalizeForAggregate(
+              dropUnreadGroupBinds(dropVacuousPage(dropVacuousQuantifier(linear.clauses))),
+            ),
           ),
         ),
       ),

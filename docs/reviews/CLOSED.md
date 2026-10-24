@@ -14579,3 +14579,69 @@ explains why ("unusable unbounded") — so the common case is inside the safe se
 Not implemented this tick: the normalization point has to be chosen so that every downstream gate
 sees the simplified AST, and that wants its own differential + mutation run rather than being
 bolted on at the end of a measurement tick.
+
+## 684 — `dropVacuousQuantifier`: the TS `{1,1}` gap closed, and TWO gates mutation demoted
+
+**SHIPPED (TypeScript).** Item 683 measured a 2238x equivalent-spelling gap and established the
+gate set. This implements it, as a pass in the chain that already holds `dropVacuousPage` — item
+549's vacuous `ORDER BY`, the same "drop a construct that asks nothing" shape.
+
+| spelling-probe group, 200k/600k | before                       | after                  |
+| ------------------------------- | ---------------------------- | ---------------------- |
+| unlabelled                      | 0.00 vs **69.50 ms**         | 0.00 vs 0.00           |
+| labelled start                  | 24.69 vs **99.27 ms** (4.0x) | 24.07 vs 24.26 (1.01x) |
+
+Both rungs converge; **0 groups over 2x and 0 answer disagreements.** The labelled row is the
+cleanly-measurable one: **99.27 → 24.26 ms, 4.1x.** (The unlabelled pair is below the probe's 1 ms
+floor on both sides now, which is the point — it reaches the O(1) `edgesByLabel` bucket.)
+
+### The pass runs on the EXECUTE path, so it pre-scans without allocating
+
+That chain is NOT behind the parse cache. A query with no quantifier at all must not pay for the
+rewrite, so `dropVacuousQuantifier` scans first and returns the original array unchanged unless
+there is something to drop. (This file has the TS-closure-size finding four times over; an
+incidental addition to a hot path is not free here.)
+
+### 🛑 Mutation, three runs, and the two-column oracle earned its keep
+
+Item 682's lesson applied: the oracle is **the targeted test file**, with the whole `gql` suite as a
+second column, so "my test has teeth" and "something in the repo catches it" stay distinguishable.
+
+**Run 1 — 4/8.** Caught: mode, edge-variable, the bound check, min-only. Three survivors needed
+chasing, and they were three different things:
+
+- **The SELECTOR gate** survived MY test but the suite caught it. A real gate, covered only
+  incidentally. `ANY` keeps one path per endpoint pair (deduping the parallel edges: 3, not 4), and
+  `ANY` on a PLAIN hop is rejected outright — so dropping the gate turns a valid query into an
+  ERROR, not a wrong number.
+- **The GROUP gate** survived both, and was **MASKED**: in `((x)-[e:T]->(y)){1,1}` the edge variable
+  sits on `seg.rel.variable`, so the edge-variable gate declines first and dropping the group gate
+  changes nothing. Two gates covering one shape means neither is testable through it — the
+  fixture-overlap rule for the FIFTH time this session (663, 664, 674, 677, 684). With no edge
+  variable, `((x)-[:T]->(y)){1,1}` isolates it: `y` binds a LIST, so `x.n` is NULL where a plain hop
+  gives 1 or 2.
+- **The `subpathWhere` gate** survived both and is **REDUNDANT BY CONSTRUCTION** — not a test gap.
+  `subpathWhere` exists only on a parenthesized subpath, which IS a group, so the group gate has
+  always declined before it is consulted. It can never be the gate that decides.
+
+**Run 3 — 6/8**, every load-bearing gate caught by the targeted test, with only two labelled
+survivors: the redundant `subpathWhere` gate and the perf probe that reverts to pre-684 behaviour.
+
+`subpathWhere` is KEPT as defence in depth against a future shape that carries one without being a
+group, but the doc comment now says it is redundant and that mutation showed it. **That is the
+second gate this session mutation demoted from load-bearing to insurance** (item 677's
+`schema_reverted` was the first), and both times the error was the comment claiming more than was
+true.
+
+### The gates, and which are measured
+
+- `min === 1 && max === 1`.
+- **No edge variable** — measured: under a quantifier it binds a LIST, without one a SCALAR.
+- **Mode default/`walk`/`trail`, never `simple`/`acyclic`** — measured: `ACYCLIC (x)-[:T]->{1,1}(y)`
+  returns 3 where the plain hop returns 4, because one repetition of a self-loop repeats a node.
+  (`SIMPLE` is provably safe at one hop — TS allows a closing `start == end` — but is excluded to
+  match the native guard rather than widened on one observation.)
+- **`walk` selector only**, **no group/nested**, and the redundant `subpathWhere`.
+
+Verified: 2,943 TS tests pass, all seven byte-identity fuzzers pass (a TS planner change is exactly
+what cross-engine parity exists to guard), `bun run lint` and `bun run check` clean.
