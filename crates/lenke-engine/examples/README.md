@@ -51,6 +51,7 @@ enumeration's is flat.
 | Where does NDJSON decode time go?                                      | `ingest_bench -- phases`             |
 | How close is decode to the raw-scan ceiling?                           | `ingest_bench -- ceiling`            |
 | What does parallel decode / encode buy?                                | `ingest_bench -- threads` / `encode` |
+| What does each ENCODE format cost, per byte?                           | `ingest_bench -- codecs`             |
 | How many resident bytes does an element cost?                          | `ingest_bench -- mem`                |
 | What does a GQL / Gremlin query shape cost?                            | `query_bench -- gql` / `gremlin`     |
 | Which counts still enumerate vs shortcut?                              | `query_bench -- counts`              |

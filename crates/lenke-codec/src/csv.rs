@@ -277,11 +277,15 @@ fn escape_element(s: &str) -> String {
 
 /// Prefix a raw field that would otherwise read as an escape or spreadsheet
 /// formula (a leading `\` or a formula char); `unguard_field` strips one leading `\`.
-fn guard_field(s: &str) -> String {
+fn guard_field(s: &str) -> Cow<'_, str> {
     if s.starts_with('\\') || starts_with_formula(s) {
-        format!("\\{s}")
+        Cow::Owned(format!("\\{s}"))
     } else {
-        s.to_string()
+        // The OVERWHELMINGLY common case, and it used to allocate: `s.to_string()` ran once per
+        // fixed field, so four times per edge row — 3,200,000 `String`s on the bench fixture, all
+        // of them a copy of a borrow the caller already held. Byte-identical by construction: the
+        // guarded branch is untouched and this one returns the same text (item 705).
+        Cow::Borrowed(s)
     }
 }
 
@@ -1305,6 +1309,48 @@ mod tests {
         labels.sort();
         assert_eq!(labels, vec!["Plain", "has;semi"]);
         assert_eq!(g2.edges[0].labels, vec!["REL;X"]);
+    }
+
+    /// An ID that would read as a spreadsheet FORMULA is neutralized, and the guard is asserted
+    /// on the EMITTED TEXT rather than through a round trip.
+    ///
+    /// Found by mutation at item 705. `quoting_labels_and_formulas` covers the same rule for
+    /// property values and labels, but nothing covered it for `id` / `:START_ID` / `:END_ID`, and
+    /// a round trip CANNOT: `unguard_field` is the exact inverse of `guard_field`, so dropping the
+    /// guard entirely, applying it to every field, or dropping half its condition all survive
+    /// encode-then-decode unchanged. Three such mutants survived the whole crate's tests before
+    /// this existed. The guard is the defence against a `=`-leading id becoming a live formula in
+    /// a spreadsheet, so the literal bytes are the claim.
+    #[test]
+    fn an_id_that_reads_as_a_formula_is_guarded_in_the_text() {
+        let g = crate::pg_json::decode(
+            r#"{"nodes":[{"id":"=cmd","labels":["P"],"properties":{}},{"id":"\\back","labels":["P"],"properties":{}}],"edges":[{"id":"+e","from":"=cmd","to":"\\back","labels":["R"],"properties":{}}]}"#,
+        )
+        .unwrap();
+        let enc = encode(&g);
+
+        // Each guarded id, as a whole cell: prefixed with one backslash and comma-terminated.
+        for cell in ["\\=cmd,", "\\\\back,", "\\+e,"] {
+            assert!(enc.contains(cell), "id cell {cell:?} not guarded in: {enc}");
+        }
+
+        // An id needing NO guard is emitted bare — the other arm of the same branch.
+        let plain = crate::pg_json::decode(
+            r#"{"nodes":[{"id":"n1","labels":["P"],"properties":{}}],"edges":[]}"#,
+        )
+        .unwrap();
+        assert!(
+            encode(&plain).contains("\nn1,"),
+            "a plain id must not be guarded"
+        );
+
+        // And the guard is reversible, so the ids survive the trip.
+        let back = decode(&enc);
+        let mut ids: Vec<&str> = back.nodes.iter().map(|n| n.id.as_str()).collect();
+        ids.sort();
+        assert_eq!(ids, vec!["=cmd", "\\back"]);
+        assert_eq!(back.edges[0].from, "=cmd");
+        assert_eq!(back.edges[0].to, "\\back");
     }
 
     #[test]

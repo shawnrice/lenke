@@ -178,4 +178,38 @@ pub fn run(cfg: &Cfg) {
             }
         }
     }
+
+    // THE PER-FORMAT ENCODE COST, PER BYTE. Added at item 705 because this table had been
+    // hand-built ad hoc three times (item 100's MB/ms table, item 703's, and once more while
+    // measuring item 705) and because the TS-side harness CANNOT answer it: the cross-process
+    // `bun run bench` rows spread 0.90-1.14x on the encode family, so a 4% change in a codec is
+    // below its floor and reads as noise either way. In-process min-of-reps resolves it.
+    //
+    // The ratio column of `bun run bench` cannot replace this: `ts/<engine>` compares the two
+    // engines and says nothing about absolute throughput, which is how CSV being the SLOWEST
+    // native codec per byte stayed buried behind a flattering ratio (item 100).
+    if cfg.want("ingest/codecs") {
+        section("ingest/codecs (encode cost per byte, per format)");
+        let text = social_ndjson(base, 2, 5);
+        let store = from_ndjson(&text).expect("decodes");
+        drop(text);
+        println!(
+            "{:26} {:>10} {:>10} {:>12}",
+            "format", "encode_ms", "MiB", "MiB/ms"
+        );
+        // `ndjson` is not one of `codec::serialize`'s formats — it has its own encoder — and it
+        // belongs in the table anyway, as the engine's own baseline for "write every element out".
+        let encode = |format: &str| -> String {
+            if format == "ndjson" {
+                lenke_engine::ndjson::to_ndjson(&store)
+            } else {
+                lenke_engine::codec::serialize(&store, format).expect("encodes")
+            }
+        };
+        for format in ["ndjson", "pg-json", "pg-text", "graphson", "csv"] {
+            let ms = best_ms(cfg.reps, || encode(format));
+            let mib = encode(format).len() as f64 / (1024.0 * 1024.0);
+            println!("{format:26} {ms:>10.2} {mib:>10.2} {:>12.3}", mib / ms);
+        }
+    }
 }
