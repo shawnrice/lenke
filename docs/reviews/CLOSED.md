@@ -15990,3 +15990,86 @@ with a light one.
 `count 3-hop` is therefore CLOSED as a quick win and open only behind the dense-adjacency work.
 I should have reached item 310 before building a fixture rather than after — the sweep row named
 the target and `CLOSED.md` had already answered it.
+
+## 703 — the CSV encoder's per-element allocations: 1.10x, and the remaining 1.9x is now priced against pg-text
+
+**FIXED (native), with the rest of the gap diagnosed.** This tick's target came from the Rust side
+on purpose — 699-702 were all TypeScript. Two candidates were REFUTED by reading before measuring,
+which is the lesson 702 just paid for:
+
+- `query: project 3 columns` (native 44.3 ms against TS's 8.4, the worst native ratio on the
+  sweep) is **CLOSED at item 289** — it is the JSON carrier, not execution, and ~80% of it is
+  `JSON.parse` on a 4.5 MB result.
+- `encode csv`'s own deferred fix — "CSV is the only format left on `to_graph_data`" (item 100) —
+  **has already landed.** `serialize_csv` streams, with
+  `streaming_csv_encode_is_byte_identical_to_the_graphdata_path` pinning it.
+
+What is left is the row still being the worst native codec per byte.
+
+### The floor is the sibling encoder, not a guess
+
+`serialize_pg_text` is the same FLAT two-pass shape over the same store, and on this fixture it
+emits 28.95 MB against CSV's 32.66 — so it is the floor items 659/660 ask for, built from the
+engine's own algorithm rather than the first comparison to hand:
+
+| native encoder | ms, min of 5 |    MB | MB/ms     |
+| -------------- | -----------: | ----: | --------- |
+| **csv**        |    **514.0** | 32.66 | **0.064** |
+| pg-text        |        237.6 | 28.95 | 0.122     |
+| pg-json        |        260.9 | 113.3 | 0.434     |
+| graphson       |        472.7 | 223.7 | 0.473     |
+
+### What landed: three allocations per element that the streaming rewrite left behind
+
+`serialize_csv` no longer builds a `Vec<CNode>`, but it still allocated per element:
+
+- `node_vals` / `edge_vals` held `(String, CValue)` — a **cloned property key per (element,
+  property)**, 1,200,000 of them on this fixture, when `node_keys` outlives the whole function and
+  a `&str` borrow does.
+- the row loops **collected a fresh `Vec<(&str, &CValue)>` per row**, now one reused buffer.
+- the edge external id was `edge_ext_id(..).map(|x| x.to_string())` — **a String per edge, 1,000,000
+  of them**, allocated only to be lent back as a `&str`. `edge_ext_id_ref` already existed and
+  returns `Option<&str>`; `serialize_pg_text` next door already used it.
+
+### The alternated A/B, with four controls the change cannot reach
+
+Four separate encoders, none of which goes through `serialize_csv`. Min of 5 per arm, three
+alternated rounds, rebuilding the `.so` with `--features capi` between every arm. The change is
+1.10x, which is UNDER the 10% CLAUDE.md wants an isolated harness for, so alternation is the gate
+rather than a courtesy.
+
+| format           | BEFORE | AFTER | ratio     | bytes |
+| ---------------- | -----: | ----: | --------- | ----- |
+| **csv**          |  500.3 | 455.4 | **1.10x** | SAME  |
+| pg-json CONTROL  |  262.5 | 271.7 | 0.97x     | SAME  |
+| graphson CONTROL |  394.1 | 388.2 | 1.02x     | SAME  |
+| ndjson CONTROL   |  278.1 | 282.1 | 0.99x     | SAME  |
+| pg-text CONTROL  |  223.4 | 227.5 | 0.98x     | SAME  |
+
+Byte length identical on every format, which is the invariant that matters here.
+
+### Mutation 4/4, against the one test whose claim this is
+
+`streaming_csv_encode_is_byte_identical_to_the_graphdata_path`. Caught: the node row buffer never
+cleared; the edge row buffer never cleared; the edge external id borrowed from the wrong edge; the
+node keys borrowed in the wrong order. Reusing a buffer is exactly the change that fails by
+LEAKING the previous row, so "never cleared" is the mutant that had to be run, and it is caught.
+
+### The remaining 1.9x, priced and left with its blocker written down
+
+`node_vals` / `edge_vals` are still **a `Vec` per element** — 1,200,000 small allocations held at
+once — and that is the whole of the gap to pg-text, which holds `Vec<(&str, &Column)>` ONCE and
+reads `col.present_at` / `col.read` per element, allocating nothing per row.
+
+CSV cannot simply copy it: it needs the COLUMN pass before it can write a header, so values are
+read twice or cached once. **Caching in two reused buffers does not borrow-check** — a
+`Vec<(&str, &CValue)>` keeps the value buffer borrowed for as long as the row vector lives, so it
+cannot be cleared for the next row. The two ways out are to re-read the store on the row pass (two
+column reads per property, no allocation) or to give `CsvColumns::writer` an interface taking keys
+and values as two slices. Neither is measured; the 455-against-227 above is what it is worth. Noted
+in the code at the `node_vals` it would change, per the repo's rule for deferred levers.
+
+Gates, each its own command with its exit code read UNPIPED: `cargo fmt` 0;
+`cargo clippy --all-targets --features capi -- -D warnings` 0; `cargo test --release` 1215 + 13 +
+725 pass, 0 fail; all seven byte-identity fuzzers pass — required rather than merely survived,
+since a codec change is exactly what the TS/Rust byte-identity invariant is for.

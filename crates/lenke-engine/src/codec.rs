@@ -474,13 +474,28 @@ fn serialize_csv(store: &Store) -> Result<String, CodecError> {
     // Per-element values, read once and reused for both the column pass and the row pass. The
     // reads are the ones the bridge already made; what is gone is the whole-document
     // `Vec<CNode>` and the second traversal over it.
-    let node_vals: Vec<Vec<(String, CValue)>> = (0..count)
+    //
+    // STILL THE REMAINING COST, and the next lever here (item 703). This is a `Vec` PER ELEMENT —
+    // 1,200,000 small allocations held at once on the bench fixture — and it is the whole of the
+    // gap to `serialize_pg_text`, which emits a nearly identical 29 MB of flat text in 227 ms
+    // against this encoder's 455 (0.122 against 0.070 MB/ms). pg-text holds
+    // `Vec<(&str, &Column)>` once and reads `col.present_at` / `col.read` per element, allocating
+    // nothing per row.
+    //
+    // CSV cannot simply copy that, because it needs the COLUMN pass before it can write a header,
+    // so the values are read twice or cached once. Caching in two REUSED buffers (one `Vec<CValue>`
+    // plus one `Vec<(&str, &CValue)>`) does not borrow-check: the `&CValue` entries keep the value
+    // buffer borrowed for as long as the row vector exists, so it cannot be cleared for the next
+    // row. The ways out are to re-read the store on the row pass (two column reads per property,
+    // no allocation) or to give `CsvColumns::writer` an interface that takes keys and values as
+    // two slices. Neither is measured yet; the gap above is what it is worth.
+    let node_vals: Vec<Vec<(&str, CValue)>> = (0..count)
         .filter(|id| store.is_alive(*id))
         .map(|id| {
             node_keys
                 .iter()
                 .filter(|k| store.has_prop(id, k))
-                .map(|k| (k.clone(), value_to_neutral(&store.prop(id, k))))
+                .map(|k| (k.as_str(), value_to_neutral(&store.prop(id, k))))
                 .collect()
         })
         .collect();
@@ -498,13 +513,14 @@ fn serialize_csv(store: &Store) -> Result<String, CodecError> {
     }
 
     let mut w = cols.writer(lenke_codec::NODE_FIXED, store.node_count());
+    // ONE row buffer, refilled per element. Collecting a fresh `Vec` per row was an allocation
+    // per element on top of the key clones — 1,200,000 of them on the bench fixture.
+    let mut props: Vec<(&str, &CValue)> = Vec::with_capacity(node_keys.len());
     for (slot, id) in (0..count).filter(|id| store.is_alive(*id)).enumerate() {
         let labels = store.labels_of(id);
         let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
-        let props: Vec<(&str, &CValue)> = node_vals[slot]
-            .iter()
-            .map(|(k, v)| (k.as_str(), v))
-            .collect();
+        props.clear();
+        props.extend(node_vals[slot].iter().map(|(k, v)| (*k, v)));
 
         w.node_row(store.node_ext_id_ref(id).unwrap_or(""), &label_refs, &props);
     }
@@ -515,13 +531,13 @@ fn serialize_csv(store: &Store) -> Result<String, CodecError> {
         .filter(|from| store.is_alive(*from))
         .flat_map(|from| store.out(from).iter().map(move |a| (from, a.nbr, a.eid)))
         .collect();
-    let edge_vals: Vec<Vec<(String, CValue)>> = edge_ids
+    let edge_vals: Vec<Vec<(&str, CValue)>> = edge_ids
         .iter()
         .map(|(_, _, eid)| {
             edge_keys
                 .iter()
                 .filter(|k| store.has_edge_prop(*eid, k))
-                .map(|k| (k.clone(), value_to_neutral(&store.edge_prop(*eid, k))))
+                .map(|k| (k.as_str(), value_to_neutral(&store.edge_prop(*eid, k))))
                 .collect()
         })
         .collect();
@@ -536,19 +552,15 @@ fn serialize_csv(store: &Store) -> Result<String, CodecError> {
     }
 
     let mut w = cols.writer(lenke_codec::EDGE_FIXED, store.edge_count());
+    let mut props: Vec<(&str, &CValue)> = Vec::with_capacity(edge_keys.len());
     for (slot, (from, to, eid)) in edge_ids.iter().enumerate() {
         let label_refs = store.edge_labels_of_refs(*eid);
-        let props: Vec<(&str, &CValue)> = edge_vals[slot]
-            .iter()
-            .map(|(k, v)| (k.as_str(), v))
-            .collect();
-        let eid_ext = store
-            .edge_ext_id(*eid)
-            .map(|x| x.to_string())
-            .unwrap_or_default();
+        props.clear();
+        props.extend(edge_vals[slot].iter().map(|(k, v)| (*k, v)));
+        let eid_ext = store.edge_ext_id_ref(*eid).unwrap_or("");
 
         w.edge_row(
-            &eid_ext,
+            eid_ext,
             store.node_ext_id_ref(*from).unwrap_or(""),
             store.node_ext_id_ref(*to).unwrap_or(""),
             &label_refs,
