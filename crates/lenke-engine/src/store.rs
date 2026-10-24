@@ -3491,7 +3491,11 @@ impl Store {
             &mut self.in_type_idx[i]
         };
         if let Some(b) = m.get_mut(&etype) {
-            b.retain(|a| a.eid != eid);
+            // The same single-removal shape as the adjacency above (item 717); the bucket is this
+            // node's degree IN THIS TYPE, so a hub with one dominant type pays the full scan.
+            if let Some(at) = b.iter().position(|a| a.eid == eid) {
+                b.remove(at);
+            }
             if b.is_empty() {
                 m.remove(&etype);
             }
@@ -4612,38 +4616,44 @@ impl Store {
         let mut dropped_etype: Option<u32> = None;
         for node in [u, v] {
             if let Some(adj) = self.out_adj.get_mut(node as usize) {
-                if logging {
-                    removed.extend(
-                        adj.iter()
-                            .filter(|a| a.eid == eid)
-                            .map(|a| (node, true, *a)),
-                    );
-                }
-                adj.retain(|a| {
-                    if a.eid == eid {
-                        dropped_etype = Some(a.etype);
-                        false
-                    } else {
-                        true
+                // ONE scan, stopped at the match (item 717). This was two full passes over the
+                // node's adjacency when logging — a `filter` to capture the undo entry and then a
+                // `retain` to drop it — and both ran to the end of a hub's 50,000 entries for an
+                // eid that occurs once. `position` finds it, the entry is read before removal, and
+                // `remove` moves the tail with one `ptr::copy`, which preserves order for the
+                // reason item 671 gives (the CSR and the per-type partitions are built in
+                // `out_adj` order, and item 715's mutation proved a test pins it).
+                if let Some(at) = adj.iter().position(|a| a.eid == eid) {
+                    let entry = adj[at];
+
+                    dropped_etype = Some(entry.etype);
+
+                    if logging {
+                        removed.push((node, true, entry));
                     }
-                });
+
+                    adj.remove(at);
+                }
             }
             if let Some(adj) = self.in_adj.get_mut(node as usize) {
-                if logging {
-                    removed.extend(
-                        adj.iter()
-                            .filter(|a| a.eid == eid)
-                            .map(|a| (node, false, *a)),
-                    );
-                }
-                adj.retain(|a| {
-                    if a.eid == eid {
-                        dropped_etype = Some(a.etype);
-                        false
-                    } else {
-                        true
+                // ONE scan, stopped at the match (item 717). This was two full passes over the
+                // node's adjacency when logging — a `filter` to capture the undo entry and then a
+                // `retain` to drop it — and both ran to the end of a hub's 50,000 entries for an
+                // eid that occurs once. `position` finds it, the entry is read before removal, and
+                // `remove` moves the tail with one `ptr::copy`, which preserves order for the
+                // reason item 671 gives (the CSR and the per-type partitions are built in
+                // `out_adj` order, and item 715's mutation proved a test pins it).
+                if let Some(at) = adj.iter().position(|a| a.eid == eid) {
+                    let entry = adj[at];
+
+                    dropped_etype = Some(entry.etype);
+
+                    if logging {
+                        removed.push((node, false, entry));
                     }
-                });
+
+                    adj.remove(at);
+                }
             }
         }
         if self.edge_type_index {
