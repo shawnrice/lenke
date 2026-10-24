@@ -784,6 +784,21 @@ const CASES: Case[] = [
     ),
   },
   {
+    // DEPTH 4, the boundary of items 600-602's correction and the one thing those three left
+    // unbuilt in BOTH engines. The depth-3 closed form is `walk3` minus four correction terms;
+    // item 600 derived those and said plainly that "depth 4 is measurement only; its terms are
+    // not derived", so at `{4}` both engines fall back to enumerating the trail.
+    //
+    // Carried here so the open target has a CURRENT number on the same fixture as the depth-3
+    // row above, rather than item 600's figure from an older build. It is also the row that
+    // would show a depth-4 correction landing, and `fastpath_fuzz` can now see depth 4 (602).
+    name: 'count 4-hop quantified [TRAIL, unbuilt]',
+    ...onGraph(
+      () => graphDoc,
+      (e, g) => void e.query(g, 'MATCH (a:Person)-[:KNOWS]->{4}(y) RETURN count(*) AS c'),
+    ),
+  },
+  {
     // The other half: the same walk, but PROJECTING an endpoint property, so 1,000,000 rows are
     // built. Traversal plus the row pipeline, which is the shape a user actually runs.
     name: 'traverse 1-hop project',
