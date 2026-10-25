@@ -20191,3 +20191,53 @@ which says nothing about test teeth; it was replaced with the widening one.
 two-argument string predicates (`starts_with`, `ends_with`, `contains`, `regex_match`, `split`)
 live in `callScalar`'s switch rather than in a table, as do `byte_length`/`octet_length`, so
 specializing them means pulling bodies into a table first — wider than either of these ticks.
+
+## 762 — REFUTED: skipping the positional argument assert is worth nothing. And the TS A/B harness flatters any change that redistributes call sites
+
+**REFUTED AND REVERTED.** `callScalarUnasserted` — the assert-free half of `callScalar`, picked by
+the compiler once per `Expr::Call` for names with no positional check — was built and measured
+three ways. Three rows that take the IDENTICAL path do not agree in sign: in-process 1.09 / 1.03 /
+1.07x, isolated run 1 1.25 / 0.97 / 1.07x, isolated run 2 1.06 / **0.90** / **0.89**x. The
+positional assert is not a measurable cost, the same shape of result as item 457's dispatch.
+
+The decomposition that pointed here was not wrong about the numbers (`starts_with`, two asserted
+positions, 62 ns a row over the string floor; `nullif`, no asserted position, 35) — it was wrong
+that the difference was the assert. Do not re-derive it.
+
+**TWO INSTRUMENT DEFECTS, which matter beyond this item.**
+
+1. **A multi-shape in-process two-dist A/B flatters any change that REDISTRIBUTES call sites.**
+   For 762 it reported the targets at 1.03-1.09x and the CONTROLS — `starts_with` 1.56x,
+   `byte_length` 1.47x, `substring` 1.23x — four times higher, in the change's favour, on rows the
+   change cannot reach. Cause: in the PRE arm every shape funnels through one `callScalar` site; in
+   the POST arm some are routed elsewhere, so the remaining site is less polymorphic. This applies
+   to items 760, 761 and 762, all of which redistribute call sites. It also corrects 760's own note,
+   which read `nullif` at 1.16x on an unreachable row and called the residual "probably real" — the
+   mechanism was right, the conclusion was not.
+
+2. **`min`-of-N is the wrong estimator for the TS general path, and it was hiding the win.** The
+   per-rep series for pre-760 `count(abs(a.age))` is `128.8 87.0 98.4 98.9 90.7 83.9 80.3 85.9 83.4
+83.8 87.0 89.4 83.5 51.9`: a ~84 plateau with ONE outlier at 51.9, which is what `min` reports.
+   The post arm is flat (16.5-17.1), so `min` summarizes it fairly — the two arms were estimated
+   differently. `nullif` oscillates between a ~45 and a ~82 mode WITHIN one process. The
+   no-`Expr::Call` floor and the specialized closures are not bimodal; the general path is, and the
+   per-row argument array (200,000 arrays a rep) is what it points at.
+
+**THE INSTRUMENT THAT WORKS, for any future TS per-row A/B:** one shape per PROCESS, 14 reps, drop
+the first three as warm-up (visibly the JIT tiering), take the MEDIAN of the rest, and the min of
+that across three order-alternated rounds. Both controls land inside 5% — which nothing earlier in
+this session managed — and items 760/761 re-confirm on it: `abs` **2.73x**, `char_length`
+**2.50x**, `upper` **1.34x**, `nullif` 0.99x, floor 0.95x. The two biases above pushed in opposite
+directions and roughly cancelled, so 760/761's published figures were the right size by luck rather
+than by method.
+
+**A qualitative benefit nothing had stated:** specializing removed the general path's BIMODALITY,
+not just its mean. A specialized closure measures 16.5-17.1 across every rep; the general one
+swings 45-83 in the same process.
+
+**Still open:** the general path's ~35 ns, now known not to be the assert. What is left is the
+per-row argument ARRAY, the dispatch-chain walk and an `env.graph.limits` read. The native engine's
+fix for the same thing reuses ONE buffer across rows, which is safe there because Rust makes
+retention explicit; here `args` reaches `callExtendedScalar` and then `callTemporalFn`,
+`callStringListFn` and `callListSetFn`, so it needs a retention audit of all three first — an
+aliasing bug of that kind would pass every test.

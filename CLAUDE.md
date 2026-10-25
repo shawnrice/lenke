@@ -169,6 +169,22 @@ var-length 1-2 hops` reads 250.7 in-sweep against ~177 isolated, 1.4x.
   count per arm) turns that into a loud failure. Same shape as asserting a patch anchor
   appears exactly once, and it caught nothing only because the run was killed first.
 
+- **A two-dist in-process A/B flatters any change that REDISTRIBUTES call sites, and the
+  giveaway is a control moving MORE than the target.** Item 762 measured its targets at
+  1.03-1.09x and its controls — rows that keep the old code path untouched — at 1.56x, 1.47x
+  and 1.23x in the change's favour. In the PRE arm every query shape funnels through one
+  dispatch site; in the POST arm some are routed elsewhere, so the site left behind is less
+  polymorphic and its inline caches are cleaner. Every specialization change has this shape.
+  The fix is **one shape per PROCESS**, so no other shape pollutes the dispatch.
+- **For the TS per-row path, `min`-of-N is the wrong estimator, and it can hide the win.**
+  Print the per-rep series before trusting any summary of it. The general scalar path plateaus
+  high and emits a RARE fast rep — `128.8 87.0 98.4 98.9 90.7 83.9 80.3 85.9 83.4 83.8 87.0
+89.4 83.5 51.9`, where `min` reports 51.9 — while a specialized closure is flat (16.5-17.1),
+  so the two arms get estimated differently. Some shapes are outright BIMODAL: `nullif` swings
+  between a ~45 and a ~82 mode inside one process. What works: 14 reps, drop the first three as
+  warm-up (they are visibly the JIT tiering up), take the MEDIAN of the rest, and the min of
+  that across three order-alternated rounds. On that instrument both controls land inside 5%.
+
 Record rejected optimizations with their numbers, next to the code they would
 have changed. Several have been re-attempted otherwise.
 
