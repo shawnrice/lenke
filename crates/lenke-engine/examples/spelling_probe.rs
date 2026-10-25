@@ -188,6 +188,51 @@ fn main() {
             ],
         ),
         (
+            // The Rust twin of item 776's TS gap: an ANONYMOUS end node against a NAMED one that
+            // nothing reads. In TypeScript `hopEnds` refused `node.variable === undefined`, so
+            // `->()` fell to the general row pipeline and cost 4.6-4.9x the `->(b)` spelling.
+            //
+            // Here they are one question by construction — the two lower to one plan — and this
+            // group is the guard on that, not a target. Added at item 779 together with the
+            // inline-start pair below, because both TS gaps were fast-path ADMISSION gates and
+            // this engine's defence against that class is canonicalization rather than a wider
+            // gate.
+            "an ANONYMOUS end node vs a named one",
+            &[
+                (Gql, "MATCH (:Person)-[r:KNOWS]->() RETURN count(r) AS c"),
+                (Gql, "MATCH (:Person)-[r:KNOWS]->(b) RETURN count(r) AS c"),
+            ],
+        ),
+        (
+            // The HOP twin of the group above, which only covers a node SCAN (item 779). The TS
+            // engine had an 8.4x gap in exactly this shape — `plainNode` refused a start with
+            // inline properties, so the inline spelling fell off `detectHopProjection` while the
+            // clause spelling was admitted (items 777/778) — and the scan case gave no warning,
+            // because the scan rungs accept both spellings there.
+            //
+            // So this asks the Rust engine the same question one position along: an inline
+            // property on the hop's START, against the same predicate in a clause `WHERE`, with a
+            // PROJECTION rather than a count so the row-building path is exercised.
+            //
+            // THE ANSWER IS NEGATIVE, and it is the architecture's claim holding rather than luck:
+            // both spellings lower to ONE optimized plan (0.664 ms against 0.653, and the probe's
+            // own `identical optimized plan` check passes), so there is no Rust twin of items
+            // 777/778 to build. The reason the two engines differ here is structural — TypeScript's
+            // fast paths read the PATTERN, so a predicate's SPELLING decides which rung admits it,
+            // while this engine canonicalizes before any routing decision is made. That is why 778
+            // needed a clause-list rewrite (`liftStartProps`) and this side needs nothing.
+            //
+            // Both of these groups therefore stay as GUARDS, not targets: they are the test that
+            // the canonicalization keeps covering the two positions where the other engine was
+            // caught, and a future routing change that started reading the pattern instead of the
+            // plan would show up here as a plan mismatch.
+            "inline {k:v} on a hop START vs WHERE equality",
+            &[
+                (Gql, "MATCH (a:Person {dept: 'eng'})-[:KNOWS]->(b) RETURN count(b.age) AS c"),
+                (Gql, "MATCH (a:Person)-[:KNOWS]->(b) WHERE a.dept = 'eng' RETURN count(b.age) AS c"),
+            ],
+        ),
+        (
             "multi-predicate: inline map vs WHERE-AND (both orders)",
             &[
                 (Gql, "MATCH (n:Person {dept: 'eng', age: 30}) RETURN count(*) AS c"),

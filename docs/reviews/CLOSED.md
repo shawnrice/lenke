@@ -20925,3 +20925,21 @@ another purpose.
 clause twin's 14.36 — inline is 1.7x FASTER there, so the CLAUSE form is the slow spelling and
 closing it wants the opposite rewrite (pushing a clause predicate on the far node INTO the
 pattern), which is a different and less obviously safe transformation.
+
+## 779 — NEGATIVE: the Rust engine has no twin of items 776 or 778. Do not look for one
+
+**CLOSED (no change).** Items 776 and 778 fixed two TypeScript fast-path gaps of one shape: a gate
+testing whether an AST field is PRESENT (an end-node variable; a start's inline property map) rather
+than whether it is USED. Applying "grep the pattern elsewhere" across engines: the native
+`spelling_probe` now carries both pairs on a HOP with a projection, and both report
+**`✓ identical optimized plan`** (0.247 vs 0.246 ms; 0.664 vs 0.653 ms), with the whole probe at
+`NO PERF CLIFFS`.
+
+**The reason is structural, so this generalizes to the whole family.** TypeScript's fast paths read
+the PATTERN, so a predicate's SPELLING decides which rung admits it — that is how items 444, 505,
+776 and 777 all happened in one file. This engine canonicalizes before any routing decision, so
+there is no position at which a spelling can be refused. **A TS gap in this family is not evidence
+of a Rust gap**; check the plan before pricing one.
+
+The two groups stay as GUARDS: a future change that routed on the pattern instead of the plan would
+show up as a plan mismatch at the two shapes that already cost two ticks in the other engine.
