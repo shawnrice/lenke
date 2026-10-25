@@ -112,6 +112,13 @@ const NUM_2: &[(&str, &str)] = &[
     // argument is a digit COUNT with its own non-finite rule, so it stays on the general dispatch
     // by design. The gap between this and the three above is the table entry's whole value.
     ("round/2", "round(a.n, 2)"),
+    // DIAGNOSTIC (item 786): `round/2` cost 35.0 ns on the general dispatch while `left`, also
+    // two-argument and also general, cost 8.3. The per-row argument `Vec` is already gone (the
+    // evaluator reuses one buffer), so the gap is dispatch overhead that is NOT uniform — and
+    // these say whether it is a property of two-argument NUMERIC calls or of `round` alone.
+    ("nullif/2", "nullif(a.n, 7)"),
+    ("log/2", "log(a.n, 2)"),
+    ("duration?", "coalesce(a.n, 7)"),
 ];
 
 /// Cases where the call's OUTPUT COLUMN is consumed rather than merely counted (item 784).

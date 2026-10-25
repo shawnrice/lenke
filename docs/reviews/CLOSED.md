@@ -21130,3 +21130,37 @@ exception to 764/768/769/773/776/778/780/782, recorded so the streak is not read
 
 **Still open:** `atan2` 16.3 against `mod` 10.1 — a 1.6x spread across three names reached through
 identical machinery, so that is the libm bodies, not the dispatch. Not a dispatch question.
+
+## 786 — NATIVE: the two-arg numeric table is worth 18-25 ns/row. `nullif` at 28.4 ns is the one name left, and its arm must take UNFOLDED operands
+
+**OPEN TARGET, priced, with its hazard identified (no change).** Item 785 left a question: the same
+`round` body cost 35.0 ns general and 10.1 in the table, while `left` — also two-arg, also general —
+cost 8.3. Measured instead of reasoned:
+
+```text
+  coalesce(a.n,7)  3.2   its OWN path (item 458)      left(a.s,3)    8.3   general
+  mod              10.0  table                        nullif(a.n,7) 28.4   general  <- TARGET
+  round/2          10.1  table (785)                  round/2 before 35.0  general
+  log              11.6  table      power 13.1 table      atan2 16.3 table
+```
+
+So the band is real and not about `round`: **a two-arg numeric name on the general dispatch costs
+28-35 ns where a table-claimed one costs 10-16.** The entry is worth 18-25 ns/row, which confirms
+item 759's 3.33x a second way. `nullif` is the only name left in the slow band — a **2.6x** target.
+
+**`coalesce` is NOT a target:** item 458 already gave it a column-level path (a non-nullable first
+argument makes it the identity, 6.5x there).
+
+**MECHANISM NOT ISOLATED — do not assume one.** `left` 8.3 sits on the same general dispatch as
+`nullif` 28.4, so "general dispatch is slow" is too coarse. Ruled out already: the per-row argument
+`Vec` (the evaluator reuses one buffer) and the `match name` chain by name LENGTH (`left`'s 4-char
+bucket is more crowded than `round`'s 5, and `left` is the fast one).
+
+**THE TRAP any `nullif` arm must avoid.** It needs a `fn(f64, f64) -> Value` shape (precedent:
+`unary_str_fn`). The general arm returns `args[0].clone()` — the RAW first argument — while every
+existing arm in `scalar.rs` receives operands through `num_of`/`zero_folded`, which folds `-0.0` to
+`+0.0`. An arm fed folded operands answers `0.0` where the engine answers `-0.0`. A stored `-0.0`
+does reach these paths (item 785's value probe shows `round(a.x)` returning `Num(-0.0)`), **no row
+count changes, and nothing in the suite looks at the sign of a zero returned by `nullif`** — a
+silent divergence. The comparison itself is safe: `value::equals` on two `Num` is plain f64 `==`, so
+NaN equals nothing and `-0.0 == 0.0` either way.
