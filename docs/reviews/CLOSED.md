@@ -21088,3 +21088,45 @@ cost, not waste. A win there needs a different output representation.
 **The instrument is committed:** `examples/scalarfn_bench`, indexed in `examples/README.md`. Items
 759, 765, 766 and 767 each rebuilt an ad-hoc harness for this question. Adding a name there now says
 which band it lands in.
+
+## 784 — NATIVE: REFUTED, a typed-slice arm in `eval_unary_num` is worth ZERO. With 783, one finding: what costs is an ALLOCATION, not a `Value`
+
+**REFUTED (reverted).** `eval_binary_num` has had a typed-slice arm since item 759 and
+`eval_unary_num` never got the twin — the clearest "grep the pattern elsewhere" hit in the file.
+`count(abs(a.n))` 4.3/4.4 with it against 4.3/4.5 without; `max(abs(a.n))` spreads overlap; two
+controls flat. Three alternated rounds, arms grepped. **The arm IS reached** — a panic probe inside
+it confirms, because "free" and "never fires" are the same null otherwise (item 339).
+
+**Mechanism:** a `Value::Num` box is a register-level enum construction, not an allocation, so for a
+`Col::Num` input LLVM elides `value_at` → `Value::Num(x)` → `num_of` → `Some(x)` entirely. **Same
+finding as item 783's `size` ≈ `char_length`: in `scalar.rs`, what costs is an ALLOCATION, not a
+`Value`.** Recorded in `eval_unary_num`'s doc.
+
+## 785 — NATIVE: `round(x, d)` joins `binary_num_fn` — 3.45x, and the refutation above is what found it
+
+**DONE.** With 784 refuting the typed arm, item 759's 3.33x had to be the table ENTRY — so the entry
+was priced alone, against the one two-arg numeric name deliberately excluded:
+
+```text
+  power 13.1   mod 10.1   atan2 16.3   |   round/2 35.0   (NOT in the table)
+```
+
+The general dispatch costs **2.7-3.5x** the table for a two-argument numeric call, which confirms
+759's attribution. And `round/2`'s 35.0 was the exclusion, not the function — its body is three
+arithmetic operations. The stated reason ("its second argument is a digit COUNT with its own
+non-finite rule") is a VALUE rule, and a value rule fits in an `fn(f64, f64) -> f64`.
+
+**`count(round(a.n, 2))` 35.0 → 10.1 (3.45x) at 200k, 38.1 → 13.0 (2.92x) at 1M**, landing beside
+`mod`. Five controls agree to within 0.3 ns — the tightest this harness has read. Values diffed
+across arms over ten inputs × nine digit-count spellings (literal, a COLUMN of counts, 0, -1,
+absent, `1e400`, 400, null): **identical**, NaN rule and `-0.0` outputs included. The one-arg
+spelling stays in `unary_num_fn`; the tables are arity-separated.
+
+**Mutation:** removing `d.is_finite()` fails `round_with_a_non_finite_digit_count_is_nan` — and the
+load-bearing half is the **NaN** count (which saturates to 0 digits and would return `x` unrounded),
+not the infinite one (which saturates to `i32::MAX`, giving an infinite factor that divides to NaN
+by itself). **First refusal in nine items already covered at the position that mattered** — the
+exception to 764/768/769/773/776/778/780/782, recorded so the streak is not read as a law.
+
+**Still open:** `atan2` 16.3 against `mod` 10.1 — a 1.6x spread across three names reached through
+identical machinery, so that is the libm bodies, not the dispatch. Not a dispatch question.

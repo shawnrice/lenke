@@ -983,6 +983,38 @@ pub(super) fn unary_finite_num_fn(name: &str) -> Option<fn(f64) -> f64> {
 /// measured at 1.4x on a three-bound count and `ts-closure-size-is-load-bearing` records on the
 /// other engine.
 #[inline(never)]
+///
+/// REFUTED, with numbers, at item 784: do NOT add a typed-slice arm here.
+///
+/// [`eval_binary_num`] has had one since item 759 — `if let (Col::Num(xs), Col::Num(ys))`, reading
+/// the `f64` slices and skipping the per-row `Value` boxing — and this function never got the
+/// twin. It is the clearest "grep the pattern elsewhere" hit in this file, and it is worth zero:
+///
+/// ```text
+///                        200k          1M
+///   count(abs(a.n))     4.3  / 4.3    4.4 / 4.5     typed arm / without it
+///   max(abs(a.n))       7.0  / 7.5    7.3 / 7.5     overlapping spreads
+///   CONTROL char_length 6.3  / 6.3    8.7 / 8.6     a STRING argument, unreachable
+///   CONTROL count(a.s)  0.6  / 0.6    0.6 / 0.6     no call at all
+/// ```
+///
+/// Three alternated rounds, each arm rebuilt and GREPPED to confirm it was the code it claimed.
+///
+/// AND THE ARM IS REACHED — checked with a panic probe inside it, because "the arm is free" and
+/// "the arm never fires" are the same null otherwise (item 339). It fires on `abs(a.n)` and the
+/// timings do not move.
+///
+/// WHY, and it generalizes: a `Value::Num` box is a register-level enum construction, not an
+/// allocation, so for a `Col::Num` input LLVM sees straight through `value_at` → `Value::Num(x)`
+/// → `num_of` → `Some(x)` and elides the whole round trip. The boxing this arm removes was
+/// already gone. That is also the mechanism behind item 783's result one tick earlier — `size` on
+/// the general dispatch costs what `char_length` costs on the vectorized path — so the two
+/// refutations are one finding: **in this file, what costs is an ALLOCATION, not a `Value`.**
+///
+/// Which leaves item 759's 3.33x/3.55x needing a different explanation than the typed arm it was
+/// credited to. That item changed two things at once (the table entry AND the arm), so its win is
+/// attributable to the table entry; nothing here re-measures that, and it is recorded as an open
+/// question rather than a conclusion.
 pub(super) fn eval_unary_num(f: fn(f64) -> f64, name: &str, c: Col) -> Result<Col, String> {
     let n = c.len();
     let mut out: Vec<Value> = Vec::with_capacity(n);
@@ -1246,6 +1278,31 @@ pub(super) fn binary_num_fn(name: &str) -> Option<fn(f64, f64) -> f64> {
         // The fn form of `%`. A zero divisor is NaN and does NOT throw — that is the
         // OPERATOR's behaviour, which the TS engine reserves for the operator.
         "mod" => |x: f64, y: f64| x % y,
+        // `round(x, digits)`, which this table excluded until item 785 on the grounds that its
+        // second argument is a digit COUNT with its own non-finite rule. That rule is a value
+        // rule, and a value rule fits in an `fn(f64, f64) -> f64` — so the exclusion cost 2.7x
+        // for nothing: the general dispatch measured 35.3 ns a row at 200k against `power`'s 13.2
+        // in this table, and `mod`'s 10.0.
+        //
+        // The body is the general dispatch's expression, unchanged and in its order: a NON-FINITE
+        // digit count makes the whole result NaN (which renders as null), because Rust's `as i32`
+        // SATURATES where the TS engine reaches NaN by arithmetic — `round(3, <nan>)` answered 3
+        // here and null there before that was named. Only the NaN half is load-bearing, and the
+        // general arm's comment records the mutation that says so; `!is_finite()` is kept in both
+        // places because it states the rule rather than relying on an infinite count saturating
+        // to `i32::MAX` and dividing to NaN by itself.
+        //
+        // The ONE-argument spelling stays in `unary_num_fn` as `f64::round`, which is this
+        // expression at `digits = 0` (`(x * 1.0).round() / 1.0`). The tables are separated by
+        // arity, so both spellings are claimed and neither shadows the other.
+        "round" => |x: f64, d: f64| {
+            if d.is_finite() {
+                let f = 10f64.powi(d.trunc() as i32);
+                (x * f).round() / f
+            } else {
+                f64::NAN
+            }
+        },
         _ => return None,
     })
 }

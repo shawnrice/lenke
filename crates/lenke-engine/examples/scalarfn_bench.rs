@@ -100,6 +100,39 @@ const STR_2: &[(&str, &str)] = &[
     ("split", "split(a.s, '-')"),
 ];
 
+/// Two-argument NUMERIC calls, which item 759 put in `binary_num_fn` and measured at 3.33x
+/// (`power`) and 3.55x (`mod`). That item changed two things at once — the table entry AND a
+/// typed-slice arm — and item 784 refuted the arm at zero, so these rows are here to let the
+/// table entry be priced on its own by removing a name from the table and re-running.
+const NUM_2: &[(&str, &str)] = &[
+    ("power", "power(a.n, 2)"),
+    ("mod", "mod(a.n, 7)"),
+    ("atan2", "atan2(a.n, 2)"),
+    // CONTROL: a two-argument numeric name that is NOT in the table and never was — its second
+    // argument is a digit COUNT with its own non-finite rule, so it stays on the general dispatch
+    // by design. The gap between this and the three above is the table entry's whole value.
+    ("round/2", "round(a.n, 2)"),
+];
+
+/// Cases where the call's OUTPUT COLUMN is consumed rather than merely counted (item 784).
+///
+/// `count(f(x))` counts non-nulls and may not read the values deeply, so it prices the INPUT side
+/// and the dispatch — which is what item 783 used it for, and why that item's refutation is about
+/// the dispatch only. An aggregate FOLD is the other question: `try_scan_num_agg` folds a `Num`
+/// column and its gate declines every other kind (`strag_421` is that question for a stored
+/// column), and every vectorized scalar arm here emits `Col::Gen`. So `max(char_length(a.s))`
+/// cannot reach the fold that `max(a.n)` does, and the pair below says what that costs.
+const CONSUMED: &[(&str, &str)] = &[
+    ("max(char_length)", "max(char_length(a.s)) AS c"),
+    ("max(byte_length)", "max(byte_length(a.s)) AS c"),
+    ("max(abs)", "max(abs(a.n)) AS c"),
+    ("sum(char_length)", "sum(char_length(a.s)) AS c"),
+    // CONTROLS: the same folds over a STORED column, which is what the fast fold is for. The gap
+    // between these and the rows above is the output column's doing, not the fold's.
+    ("CONTROL max(a.n)", "max(a.n) AS c"),
+    ("CONTROL sum(a.n)", "sum(a.n) AS c"),
+];
+
 fn main() {
     // Both sides of the cache transition (CLAUDE.md: between 200k and 1M elements), because a
     // per-row expression cost and a memory-bound one are different questions.
@@ -140,6 +173,34 @@ fn main() {
                     (ms - floor) * 1e6 / f64::from(n)
                 ),
                 Err(e) => println!("  {name:<14}    SKIP  {e}"),
+            }
+        }
+
+        for (name, call) in NUM_2 {
+            let q = format!("MATCH (a:Univ) RETURN count({call}) AS c");
+
+            match probe(&q, &store, reps) {
+                Ok(ms) => println!(
+                    "  {:<18} {:>8.2}ms  {:>6.1} ns/row   [two-arg numeric]",
+                    name,
+                    ms,
+                    ms * 1e6 / f64::from(n)
+                ),
+                Err(e) => println!("  {name:<18}    SKIP  {e}"),
+            }
+        }
+
+        for (name, agg) in CONSUMED {
+            let q = format!("MATCH (a:Univ) RETURN {agg}");
+
+            match probe(&q, &store, reps) {
+                Ok(ms) => println!(
+                    "  {:<18} {:>8.2}ms  {:>6.1} ns/row   [output CONSUMED by a fold]",
+                    name,
+                    ms,
+                    ms * 1e6 / f64::from(n)
+                ),
+                Err(e) => println!("  {name:<18}    SKIP  {e}"),
             }
         }
 
