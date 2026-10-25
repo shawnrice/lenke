@@ -799,11 +799,21 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
             // (key order matches the pure-TS Path serialization), each vertex/edge a
             // full element map. NULL when the plan tracks no lineage (which
             // `needs_lineage` prevents when Path is actually read).
-            Some(lin) => Col::Gen(
+            Some(lin) => Col::Gen({
+                // ONE memo per column, not per row — the paths in a column share their elements
+                // (item 809). See `render::RenderMemo`.
+                let mut nmemo = super::render::RenderMemo::new();
+                let mut ememo = super::render::RenderMemo::new();
+
                 (0..batch.rows())
                     .map(|i| {
-                        let vertices = path_node_values(store, lin.path_at(i));
-                        let edges = path_edge_values(store, lin.edges_at(i));
+                        let vertices =
+                            super::render::path_node_values_memo(store, lin.path_at(i), &mut nmemo);
+                        let edges = super::render::path_edge_values_memo(
+                            store,
+                            lin.edges_at(i),
+                            &mut ememo,
+                        );
                         let len = edges.len() as f64;
                         Value::Map(std::sync::Arc::new(vec![
                             (Value::Str("vertices".into()), Value::List(vertices)),
@@ -811,8 +821,8 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
                             (Value::Str("length".into()), Value::Num(len)),
                         ]))
                     })
-                    .collect(),
-            ),
+                    .collect()
+            }),
             None => Col::Gen(vec![Value::Null; batch.rows()]),
         },
         Expr::GremlinPath { ends_on_edge, bys } => match &batch.lineage {
@@ -892,7 +902,12 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
         Expr::PathAccess { part } => {
             use crate::ir::PathPart;
             match &batch.lineage {
-                Some(lin) => Col::Gen(
+                Some(lin) => Col::Gen({
+                    // ONE memo per column (item 809) — `nodes(p)` over a shortest-path TREE renders
+                    // each shared prefix element once per path through it. See `render::RenderMemo`.
+                    let mut nmemo = super::render::RenderMemo::new();
+                    let mut ememo = super::render::RenderMemo::new();
+
                     (0..batch.rows())
                         .map(|i| {
                             let nodes = lin.path_at(i);
@@ -900,10 +915,12 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
                             match part {
                                 // `nodes(p)` / `edges(p)` materialize the full element
                                 // maps (a vertex/edge object each), not bare ids.
-                                PathPart::Nodes => Value::List(path_node_values(store, nodes)),
-                                PathPart::Relationships => {
-                                    Value::List(path_edge_values(store, edges))
-                                }
+                                PathPart::Nodes => Value::List(
+                                    super::render::path_node_values_memo(store, nodes, &mut nmemo),
+                                ),
+                                PathPart::Relationships => Value::List(
+                                    super::render::path_edge_values_memo(store, edges, &mut ememo),
+                                ),
                                 // Hops == number of relationships. Read through the
                                 // accessor, not `edges.len()`: when the plan reads only
                                 // sizes the elements are never materialized, and the
@@ -916,8 +933,12 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
                                 }
                                 PathPart::Elements => {
                                     // n0, e0, n1, e1, …, nk — each a full element map.
-                                    let ns = path_node_values(store, nodes);
-                                    let es = path_edge_values(store, edges);
+                                    let ns = super::render::path_node_values_memo(
+                                        store, nodes, &mut nmemo,
+                                    );
+                                    let es = super::render::path_edge_values_memo(
+                                        store, edges, &mut ememo,
+                                    );
                                     let mut items = Vec::with_capacity(ns.len() + es.len());
                                     for (j, node) in ns.iter().enumerate() {
                                         items.push(node.clone());
@@ -929,8 +950,8 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
                                 }
                             }
                         })
-                        .collect(),
-                ),
+                        .collect()
+                }),
                 None => Col::Gen(vec![Value::Null; batch.rows()]),
             }
         }
@@ -1532,10 +1553,22 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
                 // Read the node-id lineage DIRECTLY — `args[0]` is `Expr::Path` (kept so
                 // `needs_lineage` fires), but its GQL value is now a rich Path object.
                 let n = batch.rows();
+                // Memoized across the rows of this column for the same reason `nodes(p)` is
+                // (item 809): Gremlin's `path()` over a traversal repeats shared prefix nodes.
                 let out: Vec<Value> = match &batch.lineage {
-                    Some(lin) => (0..n)
-                        .map(|i| Value::List(path_node_values(store, lin.path_at(i))))
-                        .collect(),
+                    Some(lin) => {
+                        let mut nmemo = super::render::RenderMemo::new();
+
+                        (0..n)
+                            .map(|i| {
+                                Value::List(super::render::path_node_values_memo(
+                                    store,
+                                    lin.path_at(i),
+                                    &mut nmemo,
+                                ))
+                            })
+                            .collect()
+                    }
                     None => vec![Value::Null; n],
                 };
                 return Ok(Col::Gen(out));

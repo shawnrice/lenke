@@ -436,21 +436,60 @@ pub(super) fn resolve_node_cols<'a>(
 /// key)}`, byte-identical to the TS engine's `val_to_value(Node)`.
 /// Map a lineage node-id slice (`Value::Num(dense_id)` entries) to full vertex
 /// element maps — the materialization behind `nodes(p)` and a Path's `vertices`.
-pub(super) fn path_node_values(store: &Store, ids: &[Value]) -> Vec<Value> {
+/// A per-column render MEMO for the path accessors (item 809).
+///
+/// `nodes(p)` and `edges(p)` render one element map per element per ROW, and the paths in one
+/// column share their elements heavily: `ANY SHORTEST (x)->*(y)` from one anchored source is a BFS
+/// TREE, so a node at depth `d` lies on every path into its subtree and is rendered once per such
+/// path. On the bench's 50,000-node social graph that is 47,007 rows whose path lengths sum to far
+/// more renders than there are distinct nodes.
+///
+/// This is the shape item 355's rule says YES to — "a memo helps a REVISITED element and taxes a
+/// VISITED-ONCE one" — and it is why five of `side()`'s six call sites were refused a memo at item
+/// 591 while this one takes it: here an element is revisited once per path through it, by
+/// construction of a shortest-path tree.
+///
+/// **It also LOWERS peak memory**, which is why there is no size cap. Without it every row's list
+/// owns its own rendered copy of each shared prefix element and all rows are live at once in the
+/// `Col`; with it they share one `Arc`, so the memo's entries replace duplicates rather than adding
+/// to them.
+///
+/// Byte-identical by construction: `node_result_value`/`edge_result_value` are pure functions of
+/// `(store, id)`, the store does not change during a column's evaluation, and a `Value::Map` clone
+/// is an `Arc` refcount bump of the identical content.
+pub(super) type RenderMemo = std::collections::HashMap<u32, Value>;
+
+/// Map a lineage node-id slice to full node element maps, through a memo shared across the
+/// rows of one column — behind `nodes(p)`, a Path value and Gremlin `path()`.
+pub(super) fn path_node_values_memo(
+    store: &Store,
+    ids: &[Value],
+    memo: &mut RenderMemo,
+) -> Vec<Value> {
     ids.iter()
         .map(|v| match v {
-            Value::Num(n) => node_result_value(store, *n as u32),
+            Value::Num(n) => memo
+                .entry(*n as u32)
+                .or_insert_with(|| node_result_value(store, *n as u32))
+                .clone(),
             other => other.clone(),
         })
         .collect()
 }
 
-/// Map a lineage edge-id slice to full edge element maps — behind `edges(p)` and a
-/// Path's `edges`.
-pub(super) fn path_edge_values(store: &Store, ids: &[Value]) -> Vec<Value> {
+/// Map a lineage edge-id slice to full edge element maps, through the same memo — behind
+/// `edges(p)` and a Path value.
+pub(super) fn path_edge_values_memo(
+    store: &Store,
+    ids: &[Value],
+    memo: &mut RenderMemo,
+) -> Vec<Value> {
     ids.iter()
         .map(|v| match v {
-            Value::Num(n) => edge_result_value(store, *n as u32),
+            Value::Num(n) => memo
+                .entry(*n as u32)
+                .or_insert_with(|| edge_result_value(store, *n as u32))
+                .clone(),
             other => other.clone(),
         })
         .collect()
