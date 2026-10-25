@@ -627,6 +627,50 @@ export const resolveCount = (v: CountValue | undefined, params: Params): number 
   return Number(params[v.param]);
 };
 
+/**
+ * The compiled reader for a `$param` (item 799).
+ *
+ * Its own function because `compileExpr` sits at this file's complexity gate and the two
+ * compile-time exceptions below put it over — the same reason `filterPredicate` and the scalar
+ * factories are not inline.
+ */
+const compileParam = (name: string): CompiledExpr => {
+  // THE PER-ROW `Object.hasOwn` IS REDUNDANT FOR ALMOST EVERY NAME, and item 798 priced what
+  // it costs: `WHERE k > $a` ran **45.4 ns a vertex against the identical literal's 25.2** on a
+  // 200,000-vertex count — **1.76x with disjoint ranges** — for a value that cannot change
+  // during one execution. The injection-safe spelling paying 1.76x the interpolated one is
+  // this repo's named defect class.
+  //
+  // The redundancy is PROVED by code that already runs, not assumed: plan execution validates
+  // every referenced name with `Object.hasOwn` BEFORE any row is touched and throws
+  // `MissingParameter` unless it is present. So at row time the property is own, and the
+  // check cannot fail. Even `$__proto__` unbound never reaches a row — it fails that
+  // validation first.
+  //
+  // TWO NAMES ARE NOT COVERED BY THAT PROOF, and both are decided HERE so the hot closure
+  // carries no test at all:
+  //
+  //   - `__now`, the one name the eager validation admits as ABSENT: an unsupplied
+  //     `current_*` reads NULL rather than raising, and `undefined` would be wrong.
+  //   - a name that exists on `Object.prototype` (`toString`, `constructor`, `__proto__`, …),
+  //     which must read undefined rather than the INHERITED value. That is not merely
+  //     theoretical: `compileValidator` runs these closures with `params: {}` and WITHOUT the
+  //     eager validation, so `$toString` there would read `Object.prototype.toString` from the
+  //     fast closure. The slow closure stays for those names, which is also what keeps the
+  //     Rust engine's behaviour (its params live in a `HashMap`, immune by construction).
+  if (name === '__now' || name in Object.prototype) {
+    return (env) => {
+      if (Object.hasOwn(env.params, name)) {
+        return env.params[name];
+      }
+
+      return name === '__now' ? null : undefined;
+    };
+  }
+
+  return (env) => env.params[name];
+};
+
 export const compileExpr = (expr: Expr): CompiledExpr => {
   switch (expr.kind) {
     case 'lit': {
@@ -643,21 +687,7 @@ export const compileExpr = (expr: Expr): CompiledExpr => {
       const { name } = expr;
       paramCollector?.add(name);
 
-      // Own-property only: a query text referencing `$__proto__` / `$constructor`
-      // must read undefined (an unbound param), never `Object.prototype`. The
-      // Rust engine is immune (params live in a HashMap); this matches it. A
-      // param the caller genuinely passed under that key is an own property and
-      // still resolves.
-      return (env) => {
-        if (Object.hasOwn(env.params, name)) {
-          return env.params[name];
-        }
-
-        // An unsupplied `$__now` (from a bare `current_*`) reads as null to match
-        // the Rust engine; any other unbound param can't reach here (it fails the
-        // eager validation above).
-        return name === '__now' ? null : undefined;
-      };
+      return compileParam(name);
     }
     case 'prop': {
       const { variable, key } = expr;

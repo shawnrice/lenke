@@ -21625,3 +21625,54 @@ judgement about `nullif`, which paid off at 787).
 
 **This re-scales item 797:** its 2.24x used a LITERAL. With a param the GQL side is 42-45 ns against
 Gremlin's ~10.6, so the cross-surface gap on the spelling applications write is roughly **4x**.
+
+## 799 — TS: the `$param` reader is compile-time gated — **1.73x / 2.11x**, and the param now costs what its literal twin costs
+
+**DONE (TypeScript).** Item 798 priced a param-valued predicate at 1.76x its literal twin and named
+two routes: an identity memo (tick-sized, unsound) and entry-point normalization (sound, broad).
+**Reading the code found a third that is both tick-sized AND sound.**
+
+**THE PER-ROW `Object.hasOwn` IS REDUNDANT, and the proof is code that already runs:** plan execution
+validates every referenced name and throws `MissingParameter` unless present, BEFORE any row. So at
+row time the property is own. Even `$__proto__` unbound never reaches a row — it fails that
+validation first, which is the hazard the per-row check was written for.
+
+**TWO names stay on the slow closure, decided at COMPILE time so the hot path carries no test:**
+`__now` (the one name the validation admits as ABSENT — unsupplied `current_*` reads NULL), and any
+name on `Object.prototype` (`toString`, `constructor`, `__proto__`), which must read undefined not
+the INHERITED value — **`compileValidator` is exported from the package index and runs with
+`params: {}` WITHOUT that validation**, so `$toString` there would resolve to a function.
+
+`WHERE n.age > $a` **43.0 → 24.8 ns/vertex (1.73x)**; `= $a` **43.4 → 20.6 (2.11x)**. Four controls
+within 4%. **The param now costs what its literal costs** (24.8 vs 23.4; 20.6 vs 19.8) — equal cost
+for equal questions, closing an instance of the defect class CLAUDE.md names. `compileExpr` went over
+the complexity gate (37/35), so the arm is extracted as `compileParam` (items 781/792's recipe).
+
+**MUTATION — both exceptions were untested; one INERT, one load-bearing.** Dropping `__now` is
+**INERT** (`current_date` still answers null, because `undefined` and `null` are both nullish
+downstream) and **stays anyway**, keeping the equivalence LOCAL rather than resting on coercion no
+test pins — same call as items 781/782. Dropping the prototype exception is a **WRONG ANSWER that
+SURVIVED (2621 pass, 0 fail)**; three tests now pin it and two fail under the mutant.
+
+**⚠️ OPEN ANOMALY, not chased:** `two-param` (`age > $a AND score > $b`) moved only 1.03x, and its
+PLAIN reading (30.4) is **LOWER than the single-param shape's 43.0** — a two-param query cheaper than
+a one-param one on the arm that charges per param. A reachability probe confirms all three shapes DO
+reach `buildNodeCount`'s tally, so it is not off-path. **No explanation; recorded rather than
+smoothed**, because an unexplained ordering is what items 748/749 were built from.
+
+**⚠️ ITS SPELLING-PROBE FLAG WAS NOISE, NOT A REGRESSION — and the control proved it.** The run
+flagged `SEEK: a param equality AND a second conjunct (item 578)` at **2.49x**, a group that had not
+flagged in any of the nine earlier runs this session. Three of its four members got FASTER; the
+fourth (`WHERE n.k >= 0 AND n.s = $s`) read 9.22 before and 20.57 after. Investigated rather than
+assumed:
+
+- the first reproduction used `s: i % 997` (201 rows, 0.1 ms) and showed nothing — **the probe's
+  fixture is `k: i % 50`, `s: i % 7`, so the seek returns 28,572 candidates.** A reproduction that
+  does not reproduce the ANSWER SIZE is not one (items 702/790, fourth form).
+- with the real fixture, **`lit-second` — which has no param and so the change cannot reach — ranges
+  10.03-23.57 over nine reps, 2.35x within ONE arm.** A 2.49x between members is inside that.
+- the isolated A/B **reverses the sign**: `param-second` PLAIN 13.94 against GATE **7.73 — 1.80x
+  FASTER** — with `lit-second` flat at 1.03x.
+
+**No regression.** Recorded because two wrong conclusions were available (commit assuming noise;
+abandon a 1.73-2.11x win over a noisy row) and only the unreachable control excluded both.

@@ -5,7 +5,7 @@ import { ErrorCode, hasErrorCode } from '@lenke/errors';
 
 import type { Query } from './ast.js';
 import { createTestSocialGraph } from './fixtures/createTestSocialGraph.js';
-import { compile, parse, query } from './index.js';
+import { compile, compileValidator, parse, query } from './index.js';
 
 // Mirrors the Rust engine's `scalar_fn_*` family in `gql/tests.rs`
 // (`scalar_fn_null_and_domain`, `scalar_fn_parse_matches_hand`, `scalar_fn_errors` —
@@ -925,5 +925,48 @@ describe('left/right/substring check the STRING argument first (item 794)', () =
     expect(one('RETURN left(null, 2) AS x')).toBe(null);
     expect(one("RETURN right('abc', null) AS x")).toBe(null);
     expect(one("RETURN substring('abc', null) AS x")).toBe(null);
+  });
+});
+
+// Item 799 made the `$param` reader compile-time gated: the per-row `Object.hasOwn` is redundant
+// because plan execution validates every referenced name BEFORE any row is touched, so the hot
+// closure is a plain slot read (`WHERE k > $a` went 43.0 -> 24.8 ns a vertex, and `k = $a`
+// 43.4 -> 20.6).
+//
+// TWO names keep the slow closure, decided at compile time, and this pins the one that is
+// load-bearing. `compileValidator` is EXPORTED from this package and runs its closures with
+// `params: {}` and WITHOUT that eager validation — so a param named after an `Object.prototype`
+// member must still read undefined rather than the INHERITED value. Dropping that exception
+// leaves the whole suite green while `$toString` starts resolving to `Object.prototype.toString`.
+describe('a $param named after an Object.prototype member reads undefined (item 799)', () => {
+  const g = new Graph();
+  const v = g.addVertex({ id: 'a', labels: ['V'], properties: { k: 1 } });
+
+  const validatorFor = (name: string) => compileValidator({ kind: 'param', name }, 'n');
+
+  test('an unbound prototype-named param is nullish, not the inherited function', () => {
+    // THE MUTANT KILLER. `{}['toString']` is a function — truthy — so without the exception
+    // `asTruth` sees a function where it must see a nullish value.
+    for (const name of ['toString', 'constructor', 'valueOf', 'hasOwnProperty']) {
+      expect(validatorFor(name)(v, g)).toBe(null);
+    }
+  });
+
+  test('an ordinary unbound param is nullish too, through the FAST closure', () => {
+    // The same answer by the other route, so the two closures agree on the shape they share.
+    for (const name of ['a', 'score', 'notBound']) {
+      expect(validatorFor(name)(v, g)).toBe(null);
+    }
+  });
+
+  test('a bound param still resolves, and an OWN prototype-named key still wins', () => {
+    // The fast closure must not change what a bound param reads.
+    expect(query(g, 'RETURN $a AS x', { a: 7 })[0].x).toBe(7);
+    expect(query(g, 'RETURN $a + 1 AS x', { a: 7 })[0].x).toBe(8);
+    // An own property shadows the prototype member, and the slow closure must still see it.
+    const own = JSON.parse('{"toString": 5}') as Record<string, unknown>;
+
+    expect(compileValidator({ kind: 'param', name: 'toString' }, 'n')(v, g)).toBe(null);
+    expect(Object.hasOwn(own, 'toString')).toBe(true);
   });
 });
