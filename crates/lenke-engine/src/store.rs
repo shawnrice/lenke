@@ -2368,6 +2368,26 @@ impl Store {
         self.edge_ext.get(eid as usize).map(|g| &**g)
     }
 
+    /// This node's label names, BORROWED and in intern order, with no allocation (item 772).
+    ///
+    /// [`labels_of_refs`](Self::labels_of_refs) allocates a `Vec<&str>` to sort, and every
+    /// caller that wants `Value`s then allocates a second `Vec` — two allocations per rendered
+    /// element where one would do. A caller that sorts the `Value`s itself can use this: `GStr`
+    /// orders by `as_bytes().cmp()`, which is exactly `&str`'s byte order, so sorting either
+    /// representation gives the same sequence.
+    ///
+    /// INTERN ORDER, NOT SORTED — the caller must sort. The forward map holds intern order and
+    /// the canonical order every consumer relies on is by NAME (item 724), so this is only safe
+    /// for a caller that does its own sort.
+    pub fn label_names_of(&self, id: u32) -> impl Iterator<Item = &str> + '_ {
+        self.node_labels
+            .get(id as usize)
+            .map(|lids| lids.as_slice())
+            .unwrap_or(&[])
+            .iter()
+            .map(|&lid| self.label_names[lid as usize].as_str())
+    }
+
     /// A node's labels in canonical (sorted) order, BORROWED as `&str` — the
     /// allocation-light twin of [`labels_of`](Self::labels_of) (a small `Vec<&str>`
     /// of pointers, no per-label `String` clone) for the streaming codecs.

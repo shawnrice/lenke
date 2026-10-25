@@ -20636,3 +20636,47 @@ it needs an iterator accessor on the store. Expect ~15 ns of 384 by the same rea
 measure it with the one-case-per-process harness before believing it. The structural answer for
 this row remains item 341's: the TS engine does not materialize an element at all (213 ns/row
 against native's 492).
+
+## 772 — the labels path: ONE allocation instead of two. 1.07x at one label, 0.99x at three — and item 767's execution check confirmed the in-loop fuzz failure mechanism
+
+**DONE (Rust), with the trade stated both ways.** Item 771 priced `labels(p)` at 85.91 ns a row for
+a ONE-element list: `labels_of_refs` allocates a `Vec<&str>` to sort, then every caller that wants
+`Value`s allocates a second `Vec`. `Store::label_names_of(id)` now yields the names borrowed and
+UNSORTED with no allocation, and the three render sites collect the `Value`s once and sort them in
+place. Byte-identical by construction — `GStr` orders by `as_bytes().cmp()`, which IS `&str`'s byte
+order.
+
+One case per PROCESS, three alternated rounds (item 771's instrument): `labels(x)` with ONE label
+**1.07x** (87.93 -> 82.14, series separate), with THREE labels **0.99x**, with ZERO labels 1.01x,
+`x.a` scalar control 0.99x, full `RETURN x` element **1.02x**.
+
+**THE TRADE GOES BOTH WAYS, so do not quote only the 1.07x.** At one label the saved allocation
+wins 7%; at three it loses ~1%, because sorting `Value` enums costs a `match` per comparison where
+sorting `&str` did not, and that grows with the label count while the saved allocation does not.
+One label is overwhelmingly the common case and 0.99x is inside the band the untouched controls
+show, so it ships — but a multi-label-heavy store does not benefit.
+
+**The accessor's contract is a hazard worth reading before reusing it:** `label_names_of` returns
+INTERN order, not sorted. The canonical order every consumer relies on is by NAME (item 724), so a
+caller that forgets to sort is wrong in a way no type catches. Mutation confirms the order is
+pinned: removing the sort FAILS, reversing it FAILS, and the unreachable non-`Str` arm is
+EQUIVALENT (it is `Equal` rather than a panic so a future caller cannot turn a render into an
+abort).
+
+**ITEM 767'S EXECUTION CHECK EARNED ITSELF ONE TICK LATER — the mechanism is now confirmed by
+instrument.** The equivalent mutant's first in-loop reading was `fuzz=FAIL(1)` where SURVIVE was
+predicted, the FOURTH time this session (765, 766, 767, 772). Item 767 had diagnosed it as a
+runner-startup failure and added the rule that a mutation verdict needs evidence of EXECUTION, not
+an exit code. The harness now checks for a result line and prints **`fuzz=DID-NOT-RUN`**, and the
+verdict reads SURVIVE as predicted. Items 765/766 called this "the documented run-many flake";
+that attribution is superseded — the fuzz process exits non-zero WITHOUT running a test.
+
+**One self-inflicted error, caught by the gate:** the new accessor was spliced between
+`labels_of_refs`' own `#[must_use]` and its signature, so the attribute landed on a function
+returning an `Iterator` (already `#[must_use]`) and clippy failed with `double_must_use`. Same
+shape as item 733's orphaned doc block — inserting above a function means inserting above its
+ATTRIBUTES, not just its doc comment.
+
+**Still open:** `labels(p)` at 82 ns for one label is still 30x a scalar read; what remains is the
+`Value::List` allocation and a `GStr` per label. For the full element, item 771 stands: ~242 ns is
+map assembly, and the structural answer is item 341's laziness.

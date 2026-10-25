@@ -300,6 +300,26 @@ pub(super) fn render_gpath_elem(
 /// sorted. The big win for element-materializing shapes — `fold()`, `path`, `valueMap`,
 /// `elementMap`, and a bare `g.V()` frontier — where the per-node column re-resolution
 /// dominated.
+/// Sort a list of `Value::Str` labels by NAME, in place (item 772).
+///
+/// The labels path allocated TWICE per rendered element: `labels_of_refs` builds a `Vec<&str>`
+/// to sort, then the caller builds a `Vec<Value>` from it. Collecting the `Value`s directly and
+/// sorting them here is one allocation, and byte-identical: `GStr` orders by
+/// `as_bytes().cmp()`, which IS `&str`'s byte order.
+///
+/// Measured at item 771: `labels(p)` cost 85.91 ns a row to render a ONE-element list.
+///
+/// The non-`Str` arm is unreachable — every element is built as `Value::Str` two lines above
+/// each call — and is `Equal` rather than a panic so a future caller cannot turn a render into
+/// an abort. A label list is at most a handful of entries, so `sort_unstable_by` on it is a few
+/// comparisons.
+fn sort_label_values(labels: &mut [Value]) {
+    labels.sort_unstable_by(|a, b| match (a, b) {
+        (Value::Str(x), Value::Str(y)) => x.cmp(y),
+        _ => std::cmp::Ordering::Equal,
+    });
+}
+
 /// How much room to reserve for an element's property pairs before filling it (item 771).
 ///
 /// `collect()` from a `filter`/`filter_map` reserves NOTHING, because the iterator's `size_hint`
@@ -356,13 +376,15 @@ pub(super) fn render_nodes(store: &Store, ids: &[u32]) -> Vec<Value> {
             // `labels_of_refs` borrows each name and sorts once, where `labels_of` cloned a
             // `String` per label and sorted, and then this sorted again. Same order: both sort
             // the same names by the same byte ordering.
-            let labels_list = Value::List(
-                store
-                    .labels_of_refs(id)
-                    .into_iter()
+            let labels_list = {
+                let mut ls: Vec<Value> = store
+                    .label_names_of(id)
                     .map(|l| Value::Str(l.into()))
-                    .collect(),
-            );
+                    .collect();
+
+                sort_label_values(&mut ls);
+                Value::List(ls)
+            };
             let mut props: Vec<(Value, Value)> = Vec::new();
 
             for (j, (_, c)) in cols.iter().enumerate() {
@@ -439,16 +461,18 @@ pub(super) fn node_result_value(store: &Store, id: u32) -> Value {
     let ext = store
         .node_ext_id(id)
         .unwrap_or_else(|| GStr::from(id.to_string()));
-    // `labels_of_refs` BORROWS each name and sorts once; `labels_of` cloned a `String` per label
-    // and sorted, and then this sorted the result again. Same order either way — both sort the
-    // same names by the same byte ordering.
-    let labels_list = Value::List(
-        store
-            .labels_of_refs(id)
-            .into_iter()
+    // `label_names_of` BORROWS each name and does NOT sort, so the `Value`s are collected once
+    // and sorted in place (item 772) — one allocation where this had two. Same order: `GStr`
+    // compares by bytes, which is what sorting the `&str`s did.
+    let labels_list = {
+        let mut ls: Vec<Value> = store
+            .label_names_of(id)
             .map(|l| Value::Str(l.into()))
-            .collect(),
-    );
+            .collect();
+
+        sort_label_values(&mut ls);
+        Value::List(ls)
+    };
     // Present properties on this node, keyed in `prop_keys()` order — which is ALREADY
     // sorted, so the filtered subset stays sorted (the TS engine's props_map ordering) with no
     // re-sort and no intermediate Vec.
