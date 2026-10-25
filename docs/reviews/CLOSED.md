@@ -24961,3 +24961,91 @@ matching six records to the decimal.
 Gates, each its own command with its exit code read UNPIPED: `cargo clippy --all-targets -- -D
 warnings` 0; `cargo fmt` 0; `bun run fmt` 0; `bun run fmt:check` 0; `bun run check` 0. Comment-only
 change in the bench corpus; no engine change.
+
+## 850 — TS `DISTINCT`/`GROUP BY` over a date: **5.1x and 4.5x, to PARITY with the number control** — found only after an ablation and a fixture both misled me
+
+**SHIPPED (TypeScript).** The TS twins of items 847/848. Item 843 fixed `valueKey`'s temporal arm
+and named a residual it could not attribute; this attributes it, and the attribution is somewhere
+neither of us guessed.
+
+```text
+  200,000 rows, 1,000 distinct      PRE     POST    vs its control
+  RETURN DISTINCT <date>          20.37     3.98    5.1x   (control 3.82 -> 1.04x)
+  GROUP BY <date>, count(*)       19.18     4.27    4.5x   (control 3.53 -> 1.21x)
+  CONTROL DISTINCT num             3.47     3.82    flat
+  CONTROL GROUP BY num             3.27     3.53    flat
+  CONTROL DISTINCT str             6.60     6.29    flat
+```
+
+Three order-alternated rounds, min of three, one build behind a temporary env switch asserted
+present in the built dist. Both targets disjoint; all three controls flat, two of them drifting
+slightly AGAINST the change. `hop DISTINCT <date>` went 53.99 → 25.10 against its control's 23.62.
+**The gap does not shrink, it closes.**
+
+### The cause, after two wrong answers
+
+`valueSet.add` and `groupIndex.bump` both branch on `typeof v !== 'object'`: a **primitive** is
+keyed on the RAW value in a native `Set`/`Map`, building **no string at all**, while an object pays
+a `valueKey` string per row. `groupIndex`'s own doc comment prices that difference at **50.7 ns
+against 12.5, 4.1x** — it was measured years before this item and attributed to the right mechanism
+for strings.
+
+Its next sentence is where the date fell through: _"Non-primitives are NOT raw-keyable — two equal
+lists, records, temporals or elements are different objects."_ True of every case it lists except
+one. **A `LocalDate`'s whole identity is `days`**, which items 843/847/848 established is in
+bijection with its rendering, so two dates belong in one group iff they share that number. A third
+container keyed on `days` gives a date the primitive treatment; it is separate from `prim` for the
+reason the comment gives for having a second map at all — a raw `5` and `LocalDate(5)` would
+otherwise collide.
+
+### Two instruments lied, in opposite directions
+
+**The ablation said there was nothing to fix.** A seven-arm ladder over the keying code —
+template only, + finiteness, + `instanceof`, + `isTemporal`'s chain, + the whole object-branch
+preamble, and a `kind`-switch alternative — came out **flat at 13.9-14.8 ns/key**, with every guard
+free. Even made polymorphic (one function reached with numbers, strings and dates, which is the
+engine's real shape) it read 14.77 for a date against 12.97 for a number: **1.14x, against a
+query-level 4.15x.** The ladder could not see the defect because **the number path never builds the
+string the ladder was comparing against** — it was measuring an operation the control does not
+perform.
+
+**And my fixture flattered the control.** The first query probe read 4.75x with `score = i % K`
+(0-999) against dates at day ~19,000. A plain number in the dates' own range keys at **13.69 ns
+against 0-999's 4.00** — digit count and V8's small-integer string cache, nothing to do with type.
+Range-matching the control moved the measured gap from 4.75x to 4.15x, and the honest number is the
+second one. **A control has to match the target on every axis the instrument is sensitive to, and
+"it is the same type" is not that list.**
+
+So the sequence was: a real gap, an ablation that said the code was already optimal, a fixture that
+inflated the gap, and a cause that was sitting in a doc comment one function away — which is the
+third time this session a comment named the answer (items 836, 843, and this). The ablation is not
+worthless; it **excluded** the keying arithmetic, and that exclusion is what forced the search
+somewhere else.
+
+### Item 843's test caught me one item later
+
+The first version of this change dropped `Number.isFinite`, and
+`a non-finite field keeps the JSON.stringify classing` failed: `LocalDate(NaN)` and
+`LocalDate(Infinity)` are ONE group under `valueKey` (stringify renders both as `null`) and two
+under a raw `days` key. Item 843 chose to keep that collapse bit-for-bit rather than improve it
+inside a speedup, and pinned it. **A decision recorded as a test held a change made an hour later
+by the person who recorded it** — which is the entire argument for pinning a deliberate oddity
+rather than noting it in prose.
+
+### Teeth: three of three
+
+- **M1, the finiteness guard dropped** — caught by item 843's test, which is how it was found.
+- **M2, the date key made constant** — caught, 2 failures.
+- **M3, keying into `prim` instead of its own container** — caught by a case added here:
+  `DISTINCT [LocalDate(5), 5]` must be 2, in both orders. Nothing else in the file would have
+  noticed a date merging with an unrelated integer.
+
+Gates, each its own command with its exit code read UNPIPED: `bun run fmt` 0; `bun run fmt:check`
+0; `bun run check` 0; `bun test packages/gql` **2,640 pass 0 fail**; `bun run fuzz` (all seven
+byte-identity fuzzers, random seeds) 13 pass 0 fail, run TWICE. Both temporary probes removed.
+
+**Where the family stands now, both engines:** aggregates (840, 841, 844), the DISTINCT keyer (847),
+the group key (848) and `valueKey` (843) in native and TS; DISTINCT and GROUP BY at parity with
+their number controls on both sides; cross-engine coverage at 842 and 848. The remaining temporal
+cost on either engine is in the kinds with more than one field, which no item has yet had reason to
+take.

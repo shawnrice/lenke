@@ -106,6 +106,12 @@ describe('temporal values as a DISTINCT / GROUP BY key (item 843)', () => {
     // A `Duration` whose `days` equals a `LocalDate`'s, which is the pair that shares a field NAME
     // rather than a shape.
     expect(distinctCount([new LocalDate(5), new Duration(0, 5, 0, 0)])).toBe(2);
+    // A `LocalDate` beside the RAW NUMBER its `days` equals (item 850). `valueSet`/`groupIndex`
+    // key a finite date on `days` in their own container precisely so this pair cannot collide;
+    // keying it into the primitive set instead would merge a date with an unrelated integer, and
+    // nothing else in this file would notice.
+    expect(distinctCount([new LocalDate(5), 5])).toBe(2);
+    expect(distinctCount([5, new LocalDate(5)])).toBe(2);
   });
 
   test('DISTINCT rows and GROUP BY agree with the count', () => {

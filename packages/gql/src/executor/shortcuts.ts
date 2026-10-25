@@ -35,6 +35,7 @@
 // SPELL_REPS=9 — single runs are bimodal). Two spellings that mean the same thing and cost
 // differently is the bug class this whole file is most exposed to, and it returns correct
 // answers, so no correctness test catches it.
+import { LocalDate } from '@lenke/core';
 import type { Edge, Graph, Vertex } from '@lenke/core';
 
 import type {
@@ -6213,6 +6214,7 @@ type GroupSlot = { key: unknown; n: number; rep: Vertex };
  */
 export const valueSet = (): { add: (v: unknown) => boolean } => {
   const prim = new Set<unknown>();
+  let dates: Set<number> | undefined;
   let structural: Set<string> | undefined;
 
   return {
@@ -6224,6 +6226,42 @@ export const valueSet = (): { add: (v: unknown) => boolean } => {
         }
 
         prim.add(v);
+
+        return true;
+      }
+
+      // A `LocalDate` IS raw-keyable, on its epoch-day count (item 850). The note below says
+      // non-primitives are not, because "two equal lists, records, temporals or elements are
+      // different objects" — true of every other case and false of this one: a `LocalDate`'s
+      // whole identity is `days`, which items 843/847/848 established is in bijection with its
+      // rendering, so two dates share a group iff they share the number.
+      //
+      // WHY IT MATTERS, AND WHY THE KEYING ABLATION COULD NOT SEE IT. `RETURN DISTINCT <date>`
+      // over 200,000 rows cost 19.56 ms against a range-matched number column's 4.71 (4.15x).
+      // That is not the key's arithmetic: keying a date and keying a number of the same magnitude
+      // measured 14.77 against 12.97 ns, 1.14x. It is that the primitive branch above builds NO
+      // STRING AT ALL, while an object pays a `valueKey` string per row — so the number path was
+      // never doing the work the ablation compared it on.
+      //
+      // A THIRD container rather than `prim`, for the reason the note gives for a second one: a
+      // raw `5` and `LocalDate(5)` would otherwise collide.
+      //
+      // Only `LocalDate`. The kinds carrying a sub-second or zone part have more than one field
+      // and no single raw key, so they keep `valueKey`.
+      // FINITE only, and the test that found this is item 843's. `JSON.stringify` renders both
+      // `NaN` and `Infinity` as `null`, so `valueKey` puts those two dates in ONE group; raw
+      // keying on `days` separates them, because a `Set` uses SameValueZero. Item 843 chose to
+      // keep that collapse bit-for-bit rather than "improve" it inside a speedup, and pinned it —
+      // so this guard is that decision holding one item later, caught by the assertion rather
+      // than by review.
+      if (v instanceof LocalDate && Number.isFinite(v.days)) {
+        dates ??= new Set();
+
+        if (dates.has(v.days)) {
+          return false;
+        }
+
+        dates.add(v.days);
 
         return true;
       }
@@ -6272,6 +6310,7 @@ const groupIndex = (): {
 } => {
   const prim = new Map<unknown, GroupSlot>();
   const slots: GroupSlot[] = [];
+  let dates: Map<number, GroupSlot> | undefined;
   let structural: Map<string, GroupSlot> | undefined;
 
   const open = (raw: unknown, by: number, rep: Vertex): GroupSlot => {
@@ -6289,6 +6328,27 @@ const groupIndex = (): {
 
         if (hit === undefined) {
           prim.set(raw, open(raw, by, rep));
+        } else {
+          hit.n += by;
+        }
+
+        return;
+      }
+
+      // A `LocalDate` keys on its epoch-day count — see `valueSet` above for why this one
+      // non-primitive IS raw-keyable and why it needs its own map rather than `prim`. Measured:
+      // `GROUP BY <date>` with `count(*)` over 200,000 rows cost 21.82 ms against a range-matched
+      // number key's 3.21 (6.8x), which is the string-key cost this function's own ladder prices
+      // at 50.7 ns against 12.5.
+      // FINITE only — see `valueSet` above: the non-finite collapse is item 843's pinned
+      // behaviour.
+      if (raw instanceof LocalDate && Number.isFinite(raw.days)) {
+        dates ??= new Map();
+
+        const hit = dates.get(raw.days);
+
+        if (hit === undefined) {
+          dates.set(raw.days, open(raw, by, rep));
         } else {
           hit.n += by;
         }
