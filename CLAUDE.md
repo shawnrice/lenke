@@ -321,6 +321,15 @@ Three rules when you add or change a rewrite, all learned the hard way:
   - **Prove the harness kills before trusting it with a mutant.** One allocator bomb and
     one bare `while true` under the cap, checking for 137 and 124, costs seconds and is the
     difference between a safety net and the belief in one.
+  - **A mutation verdict needs evidence of EXECUTION, not an exit code.** A harness that reads
+    only the exit status cannot tell "the tests ran and disagreed" from "the tests never ran",
+    so it reports a mutant as CAUGHT when nothing executed — and that is invisible exactly
+    when FAIL is what you predicted. Seen three times in three ticks (items 765-767): a
+    `bun run fuzz` inside the loop exited 1 with its stdout stopping after `bun test v1.4.0`
+    and no test-result line, which is a runner-startup failure carrying no information about
+    the mutant. It never reproduced when the same mutant was run alone. Require a result line
+    (`N pass`, `test result:`) in the output before believing either verdict, and re-run any
+    unexpected one on its own.
 
 - **A passing integration probe is not evidence of correctness.** The probes in
   `examples/` do assert answers, and they passed while the engine returned wrong

@@ -20419,3 +20419,50 @@ until re-run on its own.** Item 765's mutant 3 and item 766's mutant 3 both repo
 where SURVIVE was predicted, and both pass in isolation — the documented run-many flake. Believing
 either would have meant reporting a non-equivalence that does not exist. After re-running isolated,
 the fuzzers were run THREE times on the real tree: 13 pass, 0 fail, every time.
+
+## 767 — NATIVE: `utf16_slice` allocated TWICE a row. `substring` 2.53x, `left`/`right` 2.10x — and item 765's refutation DIED because its denominator shrank
+
+**DONE (Rust).** `utf16_slice` did `encode_utf16().collect()` into a `Vec<u16>` and then
+`String::from_utf16_lossy`, and the caller converted that into a `GStr` — up to three heap
+allocations for one `substring` row. For ASCII a unit index IS a byte index, so the slice is
+already valid UTF-8 and the `GStr` is built straight from it (inline, zero allocations, when the
+result is ≤ 12 bytes). Three ALTERNATED rounds: `substring` **2.53x** (114.21 -> 45.09), bounded
+`substring` **2.15x**, `left` **2.11x**, `right` **2.10x**. Controls: `replace` 1.02x,
+`char_length` 0.98x, `starts_with` 1.04x, numeric floor 1.00x.
+
+**THE CONTROL WAS INSIDE THE FUNCTION, and it caught a regression a neighbouring control would
+have missed.** A non-ASCII column (`é…`) cannot take the fast path, so it exercises the same
+function and call site and must not move. The first version returned `Cow<'_, str>` and borrowed on
+the ASCII arm — that cost the NON-ASCII rows **0.92x / 0.95x**: an enum discriminant and a failed
+`is_ascii` on the one path that cannot use the fast arm. Returning the `GStr` the callers want
+anyway removed the wrapper, took non-ASCII `substring` to 1.01x AND improved the ASCII win from
+2.31x to 2.53x. The residual 0.96x on non-ASCII `left`/`right` is two failed `is_ascii` scans (~4 ns
+on a 100 ns row) — an accepted, measured trade.
+
+**A REFUTATION DIED ONE TICK AFTER IT WAS RECORDED, and the mechanism generalizes.** Item 765
+refuted an ASCII fast path in `utf16_len` at **30.33 -> 30.09 ns**, correctly, with a panic probe
+confirming reachability. The same three lines are now worth **1.16x** on `char_length` (12.16 ->
+10.47, four alternated rounds, non-overlapping series). Nothing about the lever changed — the
+DENOMINATOR did: the saving was ~1.7 ns throughout, which was 6% of a 30 ns boxed path and is 16%
+of the 12 ns vectorized one. **A refutation is relative to the path it was measured on, and
+vectorizing a path resurrects every small lever inside it.** The mirror of item 739's "a price can
+die".
+
+**Teeth, and a question item 765 left open.** Taking the ASCII slice arm UNCONDITIONALLY (byte
+indices where unit indices are required) FAILS `corpus_tests_b` and the fuzzers; ignoring `start`
+FAILS `substring_edges`. So UTF-16 SLICING _is_ pinned — whereas 765 found UTF-16 LENGTH is pinned
+only by the corpus test, because the fuzzers generate no non-ASCII strings. Removing both fast
+paths SURVIVES, so their guard is the A/B.
+
+**A CORRECTION to items 765 and 766 about my own harness.** Both records blamed an unexpected
+in-loop fuzz failure on "the documented run-many flake". With stdout captured the evidence is
+specific: the output stops after `bun test v1.4.0` with NO test-result line, so the process never
+ran a test and its exit code says nothing about the mutant. The real defect is that **a mutation
+harness reading only an exit code cannot distinguish "ran and disagreed" from "never ran"** — it
+will report a mutant as CAUGHT when nothing executed, invisibly, because FAIL is the prediction.
+All verdicts in 765-767 stand (every FAIL came with NAMED failing tests), but that was reporting
+luck, not a check. Now a rule in `CLAUDE.md`: require a result line before believing either
+verdict.
+
+**Still open:** `replace` (67 ns) allocates a result per row through `str::replace`, so the fix is
+not this shape; `split` (a list per row) has never been priced.

@@ -434,7 +434,7 @@ fn call_scalar(name: &str, args: &[Value]) -> Value {
                 } else {
                     utf16_slice(s, units - take, take)
                 };
-                Value::Str(out.into())
+                Value::Str(out)
             }
             _ => Value::Null,
         },
@@ -868,15 +868,43 @@ fn regex_match(v: &Value, pat: &Value) -> Value {
 /// yields U+FFFD there (lossy) — byte-identical to the TS engine
 /// (`utf16_slice`). The whole string model here counts UTF-16 units, NOT `chars()`,
 /// so `size('😀')` is 2 (a surrogate pair), matching the TS engine.
-fn utf16_slice(s: &str, start: usize, len: usize) -> String {
+fn utf16_slice(s: &str, start: usize, len: usize) -> GStr {
+    // ASCII FAST PATH (item 767). The general arm below allocates TWICE per call — a
+    // `Vec<u16>` from `encode_utf16().collect()` and then a `String` from
+    // `from_utf16_lossy` — and the caller converts that into a `GStr`, so a one-row
+    // `substring` is up to three heap allocations. For ASCII none of them are needed: one
+    // ASCII byte is exactly one UTF-16 unit, so a UNIT index IS a byte index, the slice is
+    // already valid UTF-8, and it can be borrowed.
+    //
+    // This is NOT the fast path item 765 refuted. That one was in `utf16_len`, where the
+    // work is COUNTING and `encode_utf16().count()` is already cheap (30.33 -> 30.09 ns, no
+    // effect). Here the work is ALLOCATING, which is a different cost; `substring` measured
+    // 118.88 ns a row against 12.31 for a vectorized one-argument string function.
+    //
+    // RETURNS A `GStr`, NOT A `Cow<str>`. The first version returned a `Cow` and borrowed on
+    // the ASCII arm, which cost the NON-ASCII rows 0.92x and 0.95x over three alternated
+    // rounds — an enum discriminant and a failed `is_ascii` on the one path that cannot use
+    // the fast arm. Returning the `GStr` the callers want anyway leaves that path as it was.
+    if s.is_ascii() {
+        let end = start.saturating_add(len).min(s.len());
+        let start = start.min(end);
+
+        return GStr::from(&s[start..end]);
+    }
+
     let units: Vec<u16> = s.encode_utf16().collect();
     let end = start.saturating_add(len).min(units.len());
     let start = start.min(end);
-    String::from_utf16_lossy(&units[start..end])
+
+    GStr::from(String::from_utf16_lossy(&units[start..end]).as_str())
 }
 
 /// Length of `s` in UTF-16 code units — the JS `.length` model the TS engine uses.
 fn utf16_len(s: &str) -> usize {
+    if s.is_ascii() {
+        return s.len();
+    }
+
     s.encode_utf16().count()
 }
 
@@ -901,7 +929,7 @@ fn substring(args: &[Value]) -> Value {
         }
         _ => usize::MAX,
     };
-    Value::Str(utf16_slice(s, from, count).into())
+    Value::Str(utf16_slice(s, from, count))
 }
 
 /// Apply a unary numeric scalar function. A NULL / non-numeric argument yields
