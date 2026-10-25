@@ -296,6 +296,8 @@ import {
   asTruth,
   BINARY_NUM,
   binaryNumCall,
+  BINARY_STR_PRED,
+  binaryStrPredCall,
   BOOL3,
   bufferedScalarCall,
   callScalar,
@@ -2061,6 +2063,19 @@ const compileFunc = (expr: FuncExpr): CompiledExpr => {
 
   if (unaryStr !== undefined && args.length === 1 && SCALAR_ASSERTS_STR0_ONLY.has(name)) {
     return unaryStrCall(name, unaryStr, args[0]);
+  }
+
+  // The two-argument string PREDICATES (item 769) — the TS counterpart of item 766, which took
+  // the same three natively from 36-40 ns a row to 8-10. Expect less here: a good part of that
+  // was a `Col::Bool` output column, and TypeScript has no typed columns to write into.
+  //
+  // `SCALAR_ASSERTS_STR0_ONLY` does NOT admit these (they assert positions 0 AND 1), so the
+  // closure folds both checks in, in the order `assertScalarArgTypes` performs them — see
+  // `binaryStrPredCall`, where the order is the contract rather than a detail.
+  const binaryStrPred = BINARY_STR_PRED[name];
+
+  if (binaryStrPred !== undefined && args.length === 2) {
+    return binaryStrPredCall(name, binaryStrPred, args[0], args[1]);
   }
 
   // Everything else keeps the general dispatch, but not the per-row argument ARRAY (item

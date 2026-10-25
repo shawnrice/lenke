@@ -720,6 +720,11 @@ export const UNARY_STR: Record<string, (s: string) => unknown> = {
   lower: (s) => s.toLowerCase(),
   char_length: (s) => s.length,
   character_length: (s) => s.length,
+  // One-argument string functions that happen to live in `callStringPredicateFn`, which is why
+  // item 761's `unaryStrCall` did not cover them (item 769). The general path answers through
+  // its own `unaryStr` branch above the switch, so this is the same value either way.
+  byte_length: (s) => byteLen(s),
+  octet_length: (s) => byteLen(s),
 };
 
 // `trim`/`btrim` (both ends), `ltrim` (leading), `rtrim` (trailing). With a 2nd
@@ -2264,3 +2269,48 @@ export const bufferedScalarCall = <E extends { graph: { limits: GraphLimits } }>
     return callScalar(name, buf, env.graph.limits);
   };
 };
+
+/** The two-argument string PREDICATES, as plain `(s, sub) => boolean` — item 769. */
+export const BINARY_STR_PRED: Record<string, (s: string, sub: string) => boolean> = {
+  contains: (s, sub) => s.includes(sub),
+  starts_with: (s, sub) => s.startsWith(sub),
+  ends_with: (s, sub) => s.endsWith(sub),
+};
+
+/**
+ * A two-argument string predicate with both argument steps, resolved once per `Expr::Call`
+ * (item 769) — the two-argument twin of [`unaryStrCall`], and the TS counterpart of item 766's
+ * native `eval_binary_str_pred`. `regex_match` is excluded: it compiles or caches a regex
+ * rather than scanning, so it has a different cost profile.
+ *
+ * THE ORDER OF THE CHECKS IS THE WHOLE CONTRACT. `assertScalarArgTypes` validates BOTH
+ * positions before `callStringPredicateFn` short-circuits on a nullish argument, so
+ * `starts_with(null, 5)` THROWS — it does not return null. Checking nullishness first (which
+ * reads more naturally and is one branch cheaper) would silently turn that data exception into
+ * a null, and `starts_with(null, 'a')` must still BE null. Both spellings are pinned by a test.
+ */
+export const binaryStrPredCall =
+  <E>(
+    name: string,
+    f: (s: string, sub: string) => boolean,
+    a: (env: E) => unknown,
+    b: (env: E) => unknown,
+  ) =>
+  (env: E): unknown => {
+    const x = a(env);
+    const y = b(env);
+
+    if (!isNullish(x) && typeof x !== 'string') {
+      dataException(requiresStringMessage(name));
+    }
+
+    if (!isNullish(y) && typeof y !== 'string') {
+      dataException(requiresStringMessage(name));
+    }
+
+    if (isNullish(x) || isNullish(y)) {
+      return null;
+    }
+
+    return f(x as string, y as string);
+  };

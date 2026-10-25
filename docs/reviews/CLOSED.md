@@ -20516,3 +20516,40 @@ in `CLAUDE.md` after three runner-startup failures were nearly read as findings.
 **Still open:** the two-argument string PREDICATES remain on the TS general path (59-71 ns against
 `char_length`'s 24). Natively they went 4.5x at item 766, but partly through a `Col::Bool` output
 with no TS equivalent, so expect less. `substring` at 87 ns is still the dearest string row.
+
+## 769 — TS: the two-argument string predicates 1.57-2.43x, `byte_length` 1.49-1.76x. The check ORDER had no test, and `regex_match` is unreachable from GQL
+
+**DONE (TypeScript).** `BINARY_STR_PRED` + `binaryStrPredCall` for `contains`/`starts_with`/
+`ends_with`, the counterpart of item 766's native `eval_binary_str_pred`. Two alternated A/B reads:
+`starts_with` **2.43x / 2.00x**, `contains` **2.05x / 1.68x**, `ends_with` **1.93x / 1.87x**,
+two-slot `starts_with` **1.79x / 1.57x**. The sharpest control is `split` — two arguments, the SAME
+two asserted positions, unspecialized — at 0.95x / 1.02x.
+
+**Quote the range, not a figure.** The controls span 0.87-1.17x across the two reads, so this
+instrument's band for these rows is about ±15%.
+
+**Smaller than native's 4.5x, as item 766 predicted:** part of that was writing a `Col::Bool`
+output column instead of a boxed one, and TypeScript has no typed columns.
+
+**`byte_length`/`octet_length` were in the wrong dispatcher.** They are ONE-argument string
+functions living in `callStringPredicateFn` beside the predicates, so item 761's `unaryStrCall`
+never covered them even though `SCALAR_ASSERTS_STR0_ONLY` admits them. Moved into `UNARY_STR`:
+**1.49-1.76x**. The shape generalizes — a function's cost here depends on which TABLE it is in, and
+the tables are organized by family rather than by arity.
+
+**THE CHECK ORDER IS A CONTRACT WITH NO TEST (now fixed).** `assertScalarArgTypes` validates BOTH
+positions before the nullish short-circuit, so `starts_with(null, 5)` THROWS while
+`starts_with(null, 'a')` is null. Writing the specialized closure the other way round — nullish
+first, one branch cheaper, the way it reads most naturally — **passes all 2,589 unit tests and all
+seven byte-identity fuzzers** while silently turning that data exception into a null. Pinned now,
+teeth verified. **Third consecutive tick in which a behaviour one of my own fast paths depends on
+had no test** (768: `sanitizeSurrogates`, multi-character `replace`; 764: `coalesce`'s values).
+
+**A CONFORMANCE QUESTION, not a perf one:** `regex_match` is in `STR_ARG_POSITIONS` and in the
+scalar library, but the GQL surface REJECTS it — a probe using it died with
+`E_UNKNOWN_FUNCTION: regex_match()`. So the presence of a name in the scalar tables does not mean
+the surface accepts it. Worth deciding deliberately rather than leaving as an accident.
+
+**Still open:** `split` at 164-180 ns a row is now the dearest TS string shape, and part of that is
+inherent — it returns a LIST per row. Whether the rest is the general path or the split itself has
+not been separated.

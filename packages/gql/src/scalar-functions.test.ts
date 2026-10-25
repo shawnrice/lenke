@@ -348,6 +348,27 @@ describe('GQL: byte-identity regressions from the differential fuzzer', () => {
     expect(val(`RETURN substring('a\u{1F600}b', 2, 2) AS x`)).toBe('\u{1F600}');
   });
 
+  test('a string predicate type-checks BOTH arguments before the null short-circuit', () => {
+    // Item 769 specialized these three, and the order of the two checks is the contract:
+    // `assertScalarArgTypes` validates both POSITIONS before `callStringPredicateFn`
+    // short-circuits on a nullish argument. So a null beside a NUMBER is a data exception,
+    // while a null beside a STRING is null.
+    //
+    // Mutation found nothing pinned this: moving the nullish check first — one branch cheaper
+    // and the way it reads most naturally — passed all 2,589 tests and all seven fuzzers while
+    // turning the first two cases below into nulls.
+    expect(() => val(`RETURN starts_with(null, 5) AS x`)).toThrow(
+      'starts_with() requires a string (a number is not coerced)',
+    );
+    expect(() => val(`RETURN starts_with(5, null) AS x`)).toThrow(
+      'starts_with() requires a string (a number is not coerced)',
+    );
+    expect(val(`RETURN starts_with(null, 'a') AS x`)).toBeNull();
+    expect(val(`RETURN contains('abc', null) AS x`)).toBeNull();
+    expect(val(`RETURN ends_with('abc', 'bc') AS x`)).toBe(true);
+    expect(val(`RETURN starts_with('abc', 'bc') AS x`)).toBe(false);
+  });
+
   test('replace takes a MULTI-CHARACTER search, advancing by its whole length', () => {
     // Item 768 replaced `split(search).join(repl)` with an `indexOf` loop, and mutation showed
     // no test used a search longer than one character: advancing by 1 instead of
