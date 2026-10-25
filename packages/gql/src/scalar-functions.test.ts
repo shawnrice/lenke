@@ -340,6 +340,17 @@ describe('GQL: byte-identity regressions from the differential fuzzer', () => {
     // to_string()/CAST above are the only stringification path.
     expect(() => val(`RETURN upper({a: 'q'}) AS x`)).toThrow();
     expect(() => val(`RETURN char_length({a: 1}) AS x`)).toThrow();
+    // The MESSAGE, not just the throw. It is a cross-engine contract — native's
+    // `call_scalar_checked` raises the same text — and item 761 put a second copy of it in
+    // the specialized one-argument string path before noticing that nothing pinned it. Both
+    // paths are asserted here: `upper` is specialized at compile time, `replace` is not
+    // (three string positions), and both must read identically.
+    expect(() => val(`RETURN upper(1) AS x`)).toThrow(
+      'upper() requires a string (a number is not coerced)',
+    );
+    expect(() => val(`RETURN replace(1, 'a', 'b') AS x`)).toThrow(
+      'replace() requires a string (a number is not coerced)',
+    );
     expect(() => val(`RETURN ({a: 1} || 'x') AS x`)).toThrow();
     // A record nested in a list goes through `str` too — `Array.join` would have
     // re-entered `String` and reproduced "[object Map]".

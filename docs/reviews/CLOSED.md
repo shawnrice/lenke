@@ -20154,3 +20154,40 @@ family is gated out because its argument positions are asserted; folding that as
 specialized closure has to reproduce the `dataException` messages exactly, since they are
 byte-identical cross-engine. The generic path still allocates the per-row argument array, which
 needs `callScalar` to stop taking an array.
+
+## 761 — TS: the one-argument STRING family specialized. `char_length` 2.03x, `lower` 1.64x, `upper` 1.49x — and the rest of `upper` is the `toUpperCase`
+
+**DONE (TypeScript).** `unaryStrCall`, resolved in `compileFunc`. It needs its own factory rather
+than a reuse of 760's `unaryNumCall` because this family IS argument-checked by position, so the
+check moves INTO the closure instead of being skipped. Three alternated A/B runs: `char_length`
+2.03/2.19/2.21x, `lower` 1.64/1.82/1.81x, `upper` 1.49/1.65/1.58x. Five controls, every one
+straddling 1.0 across the three runs (0.90-1.15x), which is this instrument's noise band.
+
+**The decomposition is the part worth keeping.** `upper` was 46 ns over the string floor, but it
+allocates a string per row, so that is machinery plus work. `char_length` is gated out for the same
+reason and returns a NUMBER: it cost **35.19 ns over the floor — the same machinery figure item 760
+measured for the numerics — so only ~11 ns of `upper`'s 46 is the `toUpperCase` itself** and is not
+available to any change here. That is why `upper` improves least of the three.
+
+**A flag retracted:** the single-process probe showed `starts_with` — a control this change cannot
+reach — at 1.26x SLOWER. Three alternated rounds put it at 1.08/1.10/1.03x. A single-process,
+single-order probe is not enough to flag a 1.26x on this harness.
+
+**A duplicated cross-engine contract, caught by reading rather than by a test.** The first version
+spelled the `requires a string (a number is not coerced)` message a second time in the new closure,
+with a doc comment claiming a test pinned the two copies together. Nothing pinned it anywhere: the
+text existed in exactly two places (this engine and `exec::scalar.rs`) and the only `upper` test
+asserted a bare `toThrow()`. There is now ONE `requiresStringMessage` helper behind both TS paths
+and a test pinning the exact text through the specialized path (`upper`) and the general one
+(`replace`).
+
+**Gate mutation, same finding as 760's:** widening `SCALAR_ASSERTS_STR0_ONLY` (dropping its numeric
+and polymorphic conditions) is EQUIVALENT today, because the names it would admit —
+`left`/`right`/`substring`, `reverse`/`size`/`cardinality` — are not in `UNARY_STR`. Defensive only,
+verified rather than assumed. Also recorded: a mutant that RENAMES an export only breaks the build,
+which says nothing about test teeth; it was replaced with the widening one.
+
+**Still open here:** `starts_with` at 62 ns over the floor is now the most expensive row. The
+two-argument string predicates (`starts_with`, `ends_with`, `contains`, `regex_match`, `split`)
+live in `callScalar`'s switch rather than in a table, as do `byte_length`/`octet_length`, so
+specializing them means pulling bodies into a table first — wider than either of these ticks.

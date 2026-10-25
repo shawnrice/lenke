@@ -907,6 +907,15 @@ const POLY_STR_LIST = new Set(['reverse', 'size', 'cardinality']);
  * the wrong type — the strict typing the native engine enforces in `call_scalar_checked`.
  * A NULL argument passes (it propagates to NULL downstream).
  */
+/**
+ * The data exception for a non-string argument where a string is required. ONE spelling,
+ * because it is a cross-engine contract — native's `call_scalar_checked` raises the same text
+ * and the differential harness compares it. Both the positional assert below and the
+ * specialized `unaryStrCall` closure raise through here, so the two cannot drift.
+ */
+const requiresStringMessage = (name: string): string =>
+  `${name}() requires a string (a number is not coerced)`;
+
 const assertScalarArgTypes = (name: string, args: readonly unknown[]): void => {
   const strPos = STR_ARG_POSITIONS[name];
 
@@ -915,7 +924,7 @@ const assertScalarArgTypes = (name: string, args: readonly unknown[]): void => {
       const v = args[i];
 
       if (v !== undefined && !isNullish(v) && typeof v !== 'string') {
-        dataException(`${name}() requires a string (a number is not coerced)`);
+        dataException(requiresStringMessage(name));
       }
     }
   }
@@ -2081,4 +2090,60 @@ export const binaryNumCall =
     const ny = isNullish(y) ? null : numArg(y);
 
     return nx === null || ny === null ? null : f(nx, ny);
+  };
+
+/**
+ * The names whose ONLY positional argument check is "position 0 must be a string" — no
+ * numeric position, not polymorphic over a list. A specialized path can fold that one check
+ * into its own closure and skip `assertScalarArgTypes` entirely; `left`/`right`/`substring`
+ * are excluded because they also check a numeric position, and `reverse`/`size`/
+ * `cardinality` because their check accepts a list and raises a different message.
+ *
+ * DERIVED from the same tables the assert reads, like [`SCALAR_NEEDS_ARG_ASSERT`], so a new
+ * position cannot leave it stale.
+ */
+export const SCALAR_ASSERTS_STR0_ONLY: ReadonlySet<string> = new Set(
+  Object.keys(STR_ARG_POSITIONS).filter((n) => {
+    const positions = STR_ARG_POSITIONS[n];
+
+    return (
+      positions.length === 1 &&
+      positions[0] === 0 &&
+      NUM_ARG_POSITIONS[n] === undefined &&
+      !POLY_STR_LIST.has(n)
+    );
+  }),
+);
+
+/**
+ * A one-argument STRING function with its argument step, resolved once per `Expr::Call`
+ * (item 761) — the string twin of [`unaryNumCall`], and the reason it needs its own factory
+ * rather than reusing that one: this family IS argument-checked by position, so the check
+ * moves INTO the closure instead of being skipped.
+ *
+ * The message comes from `requiresStringMessage`, the ONE place it is spelled, so this path
+ * and `assertScalarArgTypes` cannot drift — it is a cross-engine contract, matching native's
+ * `call_scalar_checked`. (A first version duplicated the text here, and this comment claimed
+ * a test pinned the two copies together. No such test existed; now there is one, and there is
+ * also only one copy.)
+ *
+ * `str()` is not called: the type has just been proven to be `string`, and `str`'s fallback
+ * for one is `String(v)`, which is identity on a primitive. The null check runs FIRST, which
+ * is the same order the general path reaches — `assertScalarArgTypes` passes a nullish
+ * argument through untouched and `callScalar` then short-circuits it to null.
+ */
+export const unaryStrCall =
+  <E>(name: string, f: (s: string) => unknown, a: (env: E) => unknown) =>
+  (env: E): unknown => {
+    const v = a(env);
+
+    if (isNullish(v)) {
+      return null;
+    }
+
+    if (typeof v !== 'string') {
+      dataException(requiresStringMessage(name));
+    }
+
+    return f(v as string);
   };

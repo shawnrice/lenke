@@ -316,11 +316,14 @@ import {
   percentileOf,
   recordGet,
   scalarArityOk,
+  SCALAR_ASSERTS_STR0_ONLY,
   SCALAR_NEEDS_ARG_ASSERT,
   structuralEq,
   temporalSum,
   UNARY_NUM,
   unaryNumCall,
+  UNARY_STR,
+  unaryStrCall,
   unsupportedTemporalAgg,
 } from './executor/scalars.js';
 import type { FuncExpr, Truth } from './executor/scalars.js';
@@ -2039,6 +2042,24 @@ const compileFunc = (expr: FuncExpr): CompiledExpr => {
     if (binary !== undefined && args.length === 2) {
       return binaryNumCall(binary, args[0], args[1]);
     }
+  }
+
+  // The one-argument STRING family (item 761), which the gate above excludes because
+  // `assertScalarArgTypes` checks its argument POSITION. So this path folds that one check
+  // into the closure rather than skipping it, and `SCALAR_ASSERTS_STR0_ONLY` admits only the
+  // names whose entire positional check is "position 0 is a string" — `left`/`right`/
+  // `substring` also check a numeric position, and `reverse`/`size`/`cardinality` accept a
+  // list and raise a different message.
+  //
+  // Priced the same way as 760, with the row that separates machinery from work:
+  // `char_length` is gated out for the same reason as `upper` and returns a NUMBER, so it
+  // allocates nothing. At 200,000 rows it cost 53.86 ns a row against an 18.67 string floor —
+  // 35.19 ns of machinery, the same figure 760 found — while `upper` cost 65.16, so about
+  // 11 ns of its 46 is the `toUpperCase` itself and is not available to any fix here.
+  const unaryStr = UNARY_STR[name];
+
+  if (unaryStr !== undefined && args.length === 1 && SCALAR_ASSERTS_STR0_ONLY.has(name)) {
+    return unaryStrCall(name, unaryStr, args[0]);
   }
 
   return (env) =>
