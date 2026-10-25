@@ -18934,3 +18934,82 @@ write change is invisible in it. The right write controls are `storage/write` (b
 **85.05**), both captured here as the before-arm for whoever lands it.
 
 Gates: `cargo build --release` 0 errors on the reverted tree; `git status` clean. No engine change.
+
+## 743 — the direction enum's third variant had no bench row, and the deliberate refusal of it costs 48.78x
+
+**PRICED, one new bench row. No engine change.** Item 736's method — find the code path no bench row
+reaches — applied to an enum rather than a query shape. `Dir` has three variants; the degree fast
+path gates on `matches!(dir, Dir::Out | Dir::In)`; and **nothing in the corpus used an undirected
+hop at all.** The one pattern that looked undirected to a careless grep is
+`query: distinct over a reversed hop`, which is `<-[:KNOWS]-` — a direction, not the absence of one.
+
+### The prediction, and it was wrong
+
+TS has a dedicated `undirectedHopCount` with an O(1) route (per-type bucket sizes minus a self-loop
+tally, `2*|E_t| - loops(t)`, which an earlier item took from 1352 ms to 0.0 at this fixture's size),
+while native's fast path declines `Dir::Both`. I predicted a reversal — native much slower than TS.
+
+| 200k nodes / 1M edges               |  ts |     ffi |
+| ----------------------------------- | --: | ------: |
+| `count 1-hop [shortcut]` (directed) | 0.0 |     0.5 |
+| `count 1-hop UNDIRECTED`            | 0.0 | **1.5** |
+
+Native pays 3x for the undirected spelling of a 1-hop count and that is all — 1.5 ms, no cliff. So
+a 1-hop count has a route that does not care about direction, and **the gate I found is not on the
+path I measured.** The first probe landed on the O(1) case, where the gate is irrelevant.
+
+### Where the gate actually bites: the QUANTIFIED spelling
+
+| 20,000 vertices, depth 3    |         ts |      ffi |     ts/ffi |
+| --------------------------- | ---------: | -------: | ---------: |
+| directed `->{3}` (item 732) |       14.4 |      1.4 |      10.3x |
+| **undirected `-{3}`**       | **4828.1** | **99.0** | **48.78x** |
+
+An undirected walk has twice the degree, so depth 3 visits **8x** the paths. Per PATH:
+
+| engine |     directed |       undirected |  penalty |
+| ------ | -----------: | ---------------: | -------: |
+| ts     |  5.8 ns/path |  **241 ns/path** |  **41x** |
+| ffi    | 0.56 ns/path | **4.95 ns/path** | **8.8x** |
+
+So both engines fall off their fast path for `Dir::Both`, and TS falls 4.7x further than native
+does.
+
+### The refusal is CORRECT, and that is the point of pricing it
+
+`CLOSED.md` already states the obstacle, and it is a real one rather than an oversight:
+
+> _"`Dir::Both` stays refused and is a DIFFERENT SHAPE, not a third branch: from one node an
+> undirected edge is traversable two ways, so one edge-indexed traversal mask cannot represent both,
+> and a self-loop sits in both adjacency lists."_
+
+Nothing here argues with that. What was missing is the **cost** of the refusal: a reasoned decision
+with no number attached is indistinguishable, to the next reader, from one that is cheap. Now it is
+48.78x on the cross-engine ratio and 8.8x per path on native's own terms, which is what tells
+someone whether a trail-correct undirected recurrence is worth deriving.
+
+**And the TS side is the larger half (41x per path), with a different cause** — TS has no
+edge-indexed traversal mask, so native's stated obstacle is not TS's. That half is unexplained and
+unattributed here; it is a separate question from the one `CLOSED.md` answers.
+
+### What was added, and what deliberately was not
+
+`count 1-hop UNDIRECTED` stays: it is 0.0/1.5 ms, so it costs the sweep nothing, and it guards two
+real shortcuts that had no watcher — TS's `undirectedHopCount` O(1) route and whatever native uses
+for the same shape.
+
+The quantified undirected row does NOT stay. At the default N it would be ~48 seconds on ts, which
+is item 732's lesson exactly: a regression sweep nobody runs catches nothing. Its numbers live in
+the bench comment and here, with the instruction to add it back temporarily.
+
+### 🛑 And the `.so` trap fired, exactly as CLAUDE.md says it does
+
+The first attempt to measure died with `Symbol "lnk_abi_version" not found`. Item 742's conversion
+attempt had run `cargo build --release` without `--features capi`, which overwrites
+`liblenke_engine.so` with a copy that has no C ABI. It reads like a broken build and is a missing
+feature flag; the rebuild with the flag takes 7 seconds. Worth noting that the trap triggered as a
+side effect of an UNRELATED item two ticks earlier — the `.so` stays clobbered until something
+notices.
+
+Gates, each its own command with its exit code read UNPIPED: `bun run fmt` 0; `bun run check` 0.
+No engine change; one bench row added.

@@ -500,6 +500,39 @@ const CASES: Case[] = [
     ),
   },
   {
+    // THE UNDIRECTED SPELLING of the row above, which NOTHING in this corpus measured (item 743).
+    // `-[:KNOWS]-` is not `-[:KNOWS]->`: it is a third variant of the direction enum, and the two
+    // engines treat it completely differently.
+    //
+    // TS has a dedicated `undirectedHopCount` shortcut with an O(1) route — per-type bucket sizes
+    // and a self-loop tally, `2*|E_t| - loops(t)` — which a prior item took from 1352 ms to 0.0 at
+    // this size. NATIVE's degree fast path gates on `matches!(dir, Dir::Out | Dir::In)` and so
+    // declines `Dir::Both` outright.
+    //
+    // A direction enum with three variants, a fast path covering two of them, and no bench row on
+    // the third is exactly the shape item 736 found for row-returning var-length: the uncovered
+    // variant is where the unpriced cost lives.
+    name: 'count 1-hop UNDIRECTED',
+    ...onGraph(
+      () => graphDoc,
+      (e, g) => void e.query(g, 'MATCH (a:Person)-[:KNOWS]-(x) RETURN count(*) AS c'),
+    ),
+  },
+  // 🛑 AND THERE IS NO QUANTIFIED UNDIRECTED ROW, because the number is why (item 743).
+  //
+  // `MATCH (a:Person)-[:KNOWS]-{3}(y) RETURN count(*)` at 20,000 vertices: ts 4828.1 ms, ffi 99.0
+  // — 48.78x — against the DIRECTED twin at the same N and depth, ts 14.4 and ffi 1.4 (item 732).
+  // An undirected walk has twice the degree, so depth 3 visits 8x the paths; per PATH the
+  // undirected spelling costs TS 41x more (5.8 -> 241 ns) and native 8.8x (0.56 -> 4.95).
+  //
+  // Native's refusal is DELIBERATE and reasoned: "from one node an undirected edge is traversable
+  // two ways, so one edge-indexed traversal mask cannot represent both, and a self-loop sits in
+  // both adjacency lists". What was never priced is what that refusal COSTS, and now it is.
+  //
+  // At the default N this row would be ~48 SECONDS on ts, so it stays out of the sweep for item
+  // 732's reason: a regression sweep nobody runs catches nothing. Add it back temporarily to
+  // re-price.
+  {
     // A REAL adjacency walk: a predicate on the far endpoint defeats the bucket-size shortcut,
     // so every edge is visited, and the result is one row — so this measures traversal rather
     // than row materialization.
