@@ -21494,3 +21494,45 @@ components in the code**, since item 324 had falsified "no micro moves a spread 
 
 **Two of three components are spent and the third is the layout change, so no tick-sized win remains
 on the widest row in the bench.** Stated positively to stop a fourth pricing pass.
+
+## 796 — `bench:usage` (the third instrument): item 319's cache win CONFIRMED at 2.05x, ITEM 291'S HEADLINE IS STALE, six candidates found already-closed, and a correction to item 791
+
+**VERIFICATION, no change.** The only committed instrument unrun this session, and it asks a
+different question from the other two (per-operation serving cost, not bulk throughput).
+
+**A second recorded win confirmed in a third instrument.** `read: point lookup` engine(+)
+**239.9k → 493.1k ops/s (2.05x)** against item 318's 2.38x prediction, on a machine measurably
+slower (the TS side fell 1.20M → 911.9k). First time 319's cache has been read off `bench:usage`
+itself rather than its own A/B. Same shape as item 795 confirming 324 in the cross-engine sweep.
+
+**⚠️ ITEM 291'S TITLE IS STALE.** It reads "`bench:usage`'s indexed read rows, where native LOSES
+3-5x to pure TS". With 319 landed the point lookup is **1.85x**, not 5x. Its accounting is still
+right — the parse share is what 319 removed — but the ratio in its title is two items out of date.
+
+**SIX CONSECUTIVE CANDIDATES, ALL ALREADY CLOSED** — recorded so the next pass does not repeat the
+search: the three spelling-probe flags (789 → 286/285/644); `bench_all`'s biggest figures (793 →
+342/382/339); FFI marshalling on `project 3 columns` (795 → 289); `count 4-hop quantified [TRAIL]`'s
+18x (**750**); TS multi-hop counts (795 → 617/324); `neighborAggregate` vectorization (415);
+`bench:usage` indexed reads (318/319).
+
+**Two of those predict the exact misreading in advance.** Item 750: its 18x is "noted because the
+two rows now sit near each other in the output and _the comparison invites itself_" — and it did, to
+me, from those same two rows. Item 289: "read the table's SHAPE before reading its ratios" — and I
+had begun pricing ~275 ns/row of marshalling. **A record that anticipates the wrong conclusion is
+worth more than one that states the right one.**
+
+**CORRECTION TO ITEM 791.** I recorded a `head -6` truncation as a new finding, "same shape as the
+`tail -8` truncations". **The repo already had a sharper rule naming `head` specifically** — from
+item 319's write-up, where the same mistake left a MUTANT LIVE in the working tree because SIGPIPE
+killed the harness between applying it and the next restore: _"Never close a mutation harness's
+stdout early (`tail` is safe, `head` is not), and `git diff` before trusting the tree."_ That
+distinguishes `head` from `tail` (only `head` closes the pipe) and its consequence was worse. 791
+stands as an instance; this is the rule it should have cited.
+
+**WHAT REMAINS — three structural options, none tick-sized, all already priced:** item **342**'s
+packed presence (rung 2 **1.67x** at K=200 and it reaches every `present_at` caller; rung 3 ~2.7x
+more; 343 retracted 342's own preference for rung 2); item **617**'s CSR for TS multi-hop counts (the
+last component is two nested-map lookups; only a flat per-type index removes them); item **415**'s
+`neighborAggregate` output contract (`Vec<(u32, Value)>` = 3.2M `Value`s at dim 64). **The micro
+surface is swept** — each of the three carries a snapshot-format or public-API consequence and is a
+decision, not a 60-second iteration.
