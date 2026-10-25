@@ -24285,3 +24285,82 @@ Gates, each its own command with its exit code read UNPIPED: `cargo build --rele
 passed; `cargo clippy --all-targets -- -D warnings` 0; `cargo fmt` 0; `bun run fuzz` (all seven
 byte-identity fuzzers) 13 pass 0 fail. The temporary example and all four pristine/ship copies
 removed.
+
+## 842 — the differential fuzzer had **no temporal property at all**, so items 840 and 841 shipped uncovered by the hard invariant; closed, and the first fixture I chose did not have teeth
+
+**TEST COVERAGE, no engine change.** Items 840 and 841 each shipped a Rust aggregate fast path for
+`Column::Temporal`, and each found a wrong-answer mutant that passed the whole 1,22x-test suite.
+Both were then unit-tested. This item asks the question those two should have provoked
+immediately: **are they covered by the invariant that actually matters?**
+
+They were not. `differential-fuzz.test.ts` — random GQL, pure-TS engine against Rust, 20,000
+queries a run — **mentioned temporals zero times.** Its fixture's node properties were numbers,
+strings and maps; its generators picked keys from explicit lists (`['n','s','x','nan']`,
+`['n','x','s','nan','st','zz','m.k']`) that contained no temporal key. So two new code paths that
+produce answers which must be byte-identical across engines were cross-engine unverified.
+
+### What was added
+
+- A tagged `d` date on five of the six fixture vertices (`{"@date":"…"}`, the NDJSON form both
+  engines already round-trip). Vertex 5 deliberately carries none.
+- `'d'` in the `count(<property>)` key list, which reaches item 840's shape directly.
+- `temporalShapes`, a named generator of thirteen shapes with its own probability band: `min`,
+  `max`, `count(DISTINCT)`, each also under a `WHERE`, a different label, `ORDER BY` ascending and
+  descending, `DISTINCT … ORDER BY`, a `GROUP BY` fold, a `DATE '…'` literal comparison across all
+  six operators, a cross-slot `a.d <op> b.d` over a hop, and a far-side `max(b.d)`.
+- A `temp=<generated>/<non-empty>` coverage counter with floors, because an un-counted arm is one
+  nobody notices has stopped being drawn.
+
+### The fuzzer's own coverage guard refused my first attempt, correctly
+
+Adding a band took `genQuery` to complexity 36 against a limit of 35. The first fix was to fold the
+thirteen temporal shapes into the existing `count` band instead of taking a new one — and the
+fuzzer **failed on its own coverage assertion**: `cntPropGenerated` fell from ~430 to **139**
+against a `> 200` floor, because thirteen new shapes in a 2.5% band crowd out the five that were
+there.
+
+That is the guard doing exactly its job. **Dodging a complexity cap by diluting an existing arm is
+a coverage regression wearing a refactor's clothes**, and the file had a tripwire for it. The cap
+was then paid off honestly, by extracting the subquery-item arm into `genSubqueryItem` (its three
+ternaries were the cheapest honest thing to move, and the draws stay in the same order so a
+recorded seed still means what it meant).
+
+### THE FIRST FIXTURE DID NOT HAVE TEETH, AND ONLY MUTATION SHOWED IT
+
+With coverage in place, both mutants were re-applied to confirm the differential now catches what
+the unit suite missed:
+
+```text
+  item 841's M1, the min/max comparison INVERTED      CAUGHT (divergence)
+  item 840's M1, dedup on `days / 2`                  SURVIVED  ← first fixture
+```
+
+The reasoning behind the first fixture was that `2024-01-01` and `2024-01-02` are **consecutive
+days**, so halving must collapse them. **It does not.** Those are day numbers 19723 and 19724;
+`19723 / 2 = 9861` and `19724 / 2 = 9862` are distinct, because integer halving collides only when
+the _smaller_ day number is EVEN. The fixture now uses `2024-01-02` and `2024-01-03` — 19724 and
+19725, both mapping to 9862 — and keeps the duplicate on another vertex so a distinct count still
+differs from a plain one. The mutant is then caught.
+
+**The argument was right in shape and wrong in arithmetic, which is precisely the class of fixture
+error no passing run can reveal.** Item 840's unit test caught this mutant and the cross-engine
+check did not, so "it is covered somewhere" would have been a true statement hiding a false one.
+The dates now carry their day numbers and the parity requirement in the comment, so the next person
+changing them knows what the choice is load-bearing for.
+
+### What this closes
+
+The temporal variant is now checked on all three levels it needed: unit (840, 841), cross-engine
+differential (here), and mutation-verified at each. **Three ticks for one variant** — which is the
+honest cost of a type that a storage layer de-boxes, a planner has fast paths for, and no test
+generator had ever produced.
+
+Floors are set to catch the arm going DEAD rather than to pin its rate: the band is 0.5% of 20,000
+so ~100 draws are expected, a floor AT 100 flakes (the first run measured 94/94), and the floors
+are `> 50` / `> 40`. Three consecutive runs read `temp=121/119`, `117/112`, `100/99`.
+
+Gates, each its own command with its exit code read UNPIPED: `bun run fmt` 0; `bun run fmt:check`
+0; `bun run check` 0; `bun run fuzz` (all seven byte-identity fuzzers, random seeds) 13 pass 0
+fail, run TWICE; `cargo test --release` 1,227 passed 0 failed; `cargo clippy --all-targets -- -D
+warnings` 0. No engine change in this item — the two mutants were reverted and the tree verified
+clean of both.

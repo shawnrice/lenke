@@ -279,6 +279,19 @@ const tally = (
     }
   }
 
+  // TEMPORAL shapes (item 842). The counter exists because an un-counted arm is one nobody
+  // notices has stopped being drawn — the same reason every tally above exists. NON-EMPTY is the
+  // floor that matters here for a sharper reason than usual: `min(n.d)` over a label that matches
+  // nothing answers NULL, and a NULL answer cannot distinguish a working extremum from a broken
+  // one.
+  if (/\bn?\.d\b/.test(q) || q.includes("DATE '")) {
+    cov.tempGenerated++;
+
+    if (nonEmpty) {
+      cov.tempNonEmpty++;
+    }
+  }
+
   tallyGroupShapes(cov, q, nonEmpty);
 
   // The ABBREVIATED quantified form, which takes a DIFFERENT path from the group form above:
@@ -349,14 +362,14 @@ const suite = nativeReady ? describe : describe.skip;
 // A tiny two-vertex, one-edge graph so property access, record fields, edge
 // patterns, and aggregates over rows can all be fuzzed.
 const NDJSON = [
-  '{"type":"node","id":"1","labels":["T"],"properties":{"n":3,"s":"a","x":-1,"st":"p","m":{"k":1,"j":"q"}}}',
-  '{"type":"node","id":"2","labels":["T"],"properties":{"n":7,"s":"z","x":4,"m":{"k":2,"j":"r"}}}',
+  '{"type":"node","id":"1","labels":["T"],"properties":{"n":3,"s":"a","x":-1,"st":"p","d":{"@date":"2024-01-02"},"m":{"k":1,"j":"q"}}}',
+  '{"type":"node","id":"2","labels":["T"],"properties":{"n":7,"s":"z","x":4,"d":{"@date":"1999-12-31"},"m":{"k":2,"j":"r"}}}',
   // Vertex 3 carries TWO labels, so `(n:T)` and `(n:U)` must BOTH find it. With
   // every vertex single-labelled, "match any label" and "match the first label"
   // are indistinguishable, and a label bug hides — which is how native's Gremlin
   // `hasLabel` matched only the first label for a long time without any fuzzer
   // noticing.
-  '{"type":"node","id":"3","labels":["T","U"],"properties":{"n":5,"s":"m","x":2,"st":"w","m":{"k":3,"j":"s"}}}',
+  '{"type":"node","id":"3","labels":["T","U"],"properties":{"n":5,"s":"m","x":2,"st":"w","d":{"@date":"2024-01-03"},"m":{"k":3,"j":"s"}}}',
   '{"type":"edge","id":"e1","labels":["E"],"from":"1","to":"2","properties":{"w":2}}',
   // ...and edge e2 carries TWO types, for the same reason on the edge side. The
   // label indexes bucket an edge under every type it carries, so anything that
@@ -396,9 +409,9 @@ const NDJSON = [
   // byte length, which `size()` and `substring()` both depend on), vertex 5's is EMPTY, and
   // vertex 6's is long enough to cross any short-string threshold. Edges keep them reachable
   // from a traversal rather than only from a scan.
-  '{"type":"node","id":"4","labels":["T"],"properties":{"n":11,"s":"😀","x":0,"m":{"k":4,"j":"t"}}}',
+  '{"type":"node","id":"4","labels":["T"],"properties":{"n":11,"s":"😀","x":0,"d":{"@date":"2031-11-30"},"m":{"k":4,"j":"t"}}}',
   '{"type":"node","id":"5","labels":["T"],"properties":{"n":13,"s":"","x":3,"m":{"k":5,"j":"u"}}}',
-  '{"type":"node","id":"6","labels":["T"],"properties":{"n":17,"s":"qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq","x":5,"m":{"k":6,"j":"v"}}}',
+  '{"type":"node","id":"6","labels":["T"],"properties":{"n":17,"s":"qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq","x":5,"d":{"@date":"2024-01-02"},"m":{"k":6,"j":"v"}}}',
   '{"type":"edge","id":"e4","labels":["E"],"from":"3","to":"4","properties":{"w":1}}',
   '{"type":"edge","id":"e5","labels":["F"],"from":"4","to":"5","properties":{"w":3}}',
   // A SELF-LOOP, without which the repeated-endpoint shapes below compare almost nothing.
@@ -1391,6 +1404,68 @@ const genGrouped = (r: () => number): string => {
   return `MATCH (n:T) LET k = ${genExpr(r, 1)} RETURN k, count(*) AS c GROUP BY k ORDER BY k, c`;
 };
 
+/**
+ * The SUBQUERY-as-projected-item arm, lifted out of `genQuery` (item 842).
+ *
+ * Extracted for the complexity cap, not for style: adding the temporal band took `genQuery` to 36
+ * against a limit of 35, and this arm's three ternaries were the cheapest honest thing to move.
+ * The draws happen in the same order as before, so a recorded seed still means what it meant.
+ *
+ * The collision is generated deliberately and often: without it item 213's bug is unreachable,
+ * which is exactly why it reached main.
+ */
+const genSubqueryItem = (r: () => number): string => {
+  const inner = r() < 0.6 ? 'b' : pick(r, ['x', 'c']);
+  // COLLIDE: the alias IS the subquery's far variable.
+  const alias = r() < 0.6 ? inner : 'q';
+  const dir = pick(r, ['', ' DESC']);
+  const paged = r() < 0.3 ? ` LIMIT ${1 + Math.floor(r() * 3)}` : '';
+
+  return `MATCH (n:T) RETURN ${genSubquery(r, inner)} AS ${alias}, n.n AS t ORDER BY ${alias}${dir}, t${paged}`;
+};
+
+/**
+ * TEMPORAL aggregates, ordering and comparisons — shapes NO fuzzer generated in either engine,
+ * because the fixture carried no temporal property at all until item 842 added `d`.
+ *
+ * That gap let TWO independent wrong-answer mutants survive the whole Rust suite: item 840's
+ * `count(DISTINCT <date>)` arm accepted a dedup key that HALVED the answer, and item 841's
+ * `min`/`max` arm accepted an INVERTED comparison. Unit tests now cover both; this makes them
+ * CROSS-ENGINE checked, which is the invariant that actually matters.
+ *
+ * The fixture's dates are chosen against the ways such an arm can be accidentally right, and the
+ * choice is ARITHMETIC rather than aesthetic:
+ *
+ *   - vertices 1 and 6 SHARE `2024-01-02`, so a distinct count differs from a plain count;
+ *   - `2024-01-02` and `2024-01-03` are day numbers 19724 and 19725, and **19724 is EVEN**, so
+ *     `days / 2` maps both to 9862 — a lossy or divided dedup key collapses them. A first version
+ *     used `2024-01-01`/`2024-01-02` (19723/19724) on the reasoning that CONSECUTIVE days must
+ *     collide under halving. They do not: the smaller day number has to be even, 19723 is odd, and
+ *     item 840's `days / 2` mutant SURVIVED this fuzzer until the pair was fixed. The unit test
+ *     caught it; the cross-engine check did not;
+ *   - the extremes `1999-12-31` and `2031-11-30` sit at neither end of insertion order, so an arm
+ *     returning the first or the last present value fails;
+ *   - vertex 5 carries no `d` at all, so absence is drawn.
+ *
+ * `ORDER BY` comes too, because a temporal column has its own total order, and the cross-type
+ * comparison because `d <op> <number>` is the rule this repo has settled twice.
+ */
+const temporalShapes = (r: () => number): string[] => [
+  'MATCH (n:T) RETURN min(n.d) AS x',
+  'MATCH (n:T) RETURN max(n.d) AS x',
+  'MATCH (n:T) RETURN count(DISTINCT n.d) AS x',
+  'MATCH (n:T) WHERE n.n > 3 RETURN min(n.d) AS x',
+  'MATCH (n:T) WHERE n.n > 3 RETURN count(DISTINCT n.d) AS x',
+  'MATCH (n:U) RETURN min(n.d) AS x',
+  'MATCH (n:T) RETURN n.d AS x, n.n AS t ORDER BY x, t',
+  'MATCH (n:T) RETURN n.d AS x, n.n AS t ORDER BY x DESC, t',
+  'MATCH (n:T) RETURN DISTINCT n.d AS x ORDER BY x',
+  'MATCH (n:T) LET g = n.s RETURN g, min(n.d) AS x GROUP BY g ORDER BY g, x',
+  `MATCH (n:T) WHERE n.d ${pick(r, CMP)} DATE '2024-01-02' RETURN n.n AS x ORDER BY x`,
+  `MATCH (a:T)-[:E]->(b:T) WHERE a.d ${pick(r, CMP)} b.d RETURN a.n AS x, b.n AS t ORDER BY t, x`,
+  'MATCH (a:T)-[:E]->(b:T) RETURN max(b.d) AS x',
+];
+
 const genQuery = (r: () => number): string => {
   const p = r();
 
@@ -1860,7 +1935,7 @@ const genQuery = (r: () => number): string => {
   //
   // Placed last, above the fallback, so it takes no other arm's band.
   if (p < 0.985) {
-    const k = pick(r, ['n', 'x', 's', 'nan', 'st', 'zz', 'm.k']);
+    const k = pick(r, ['n', 'x', 's', 'nan', 'st', 'zz', 'm.k', 'd']);
 
     return pick(r, [
       `MATCH (n:T) RETURN count(n.${k}) AS x`,
@@ -1886,13 +1961,17 @@ const genQuery = (r: () => number): string => {
   // is otherwise unspecified), and the window is generated because a wrong sort key under one
   // returns the wrong ROW rather than merely the wrong order.
   if (r() < 0.5) {
-    const inner = r() < 0.6 ? 'b' : pick(r, ['x', 'c']);
-    // COLLIDE: the alias IS the subquery's far variable.
-    const alias = r() < 0.6 ? inner : 'q';
-    const dir = pick(r, ['', ' DESC']);
-    const paged = r() < 0.3 ? ` LIMIT ${1 + Math.floor(r() * 3)}` : '';
+    return genSubqueryItem(r);
+  }
 
-    return `MATCH (n:T) RETURN ${genSubquery(r, inner)} AS ${alias}, n.n AS t ORDER BY ${alias}${dir}, t${paged}`;
+  // TEMPORAL shapes get their own band rather than sharing the `count` arm's. Sharing was tried
+  // first and the fuzzer's OWN COVERAGE GUARD refused it: thirteen temporal shapes in a 2.5%
+  // band cut `count(<property>)` from ~500 draws to ~139 against a `> 200` floor. The guard was
+  // right — dodging the complexity cap by diluting an existing arm is a coverage regression
+  // wearing a refactor's clothes — so the cap was paid off properly instead, by extracting
+  // `genSubqueryItem` above.
+  if (p < 0.99) {
+    return pick(r, temporalShapes(r));
   }
 
   return `MATCH (n:T) RETURN ${genExpr(r, 3)} AS x, n.n AS t ORDER BY t`;
@@ -2058,6 +2137,8 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       crossNonEmpty: 0,
       cntPropGenerated: 0,
       cntPropNonZero: 0,
+      tempGenerated: 0,
+      tempNonEmpty: 0,
       hopFilterGenerated: 0,
       hopFilterNonZero: 0,
       hopUntypedGenerated: 0,
@@ -2185,6 +2266,7 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
         `sink=${cov.sinkGenerated}/${cov.sinkNonZero} peel=${cov.peelGenerated}/${cov.peelNonZero} ` +
         `cross=${cov.crossGenerated}/${cov.crossNonEmpty} ` +
         `cntProp=${cov.cntPropGenerated}/${cov.cntPropNonZero} ` +
+        `temp=${cov.tempGenerated}/${cov.tempNonEmpty} ` +
         `hopFilter=${cov.hopFilterGenerated}/${cov.hopFilterNonZero} ` +
         `hopUntyped=${cov.hopUntypedGenerated}/${cov.hopUntypedNonZero} ` +
         `page=${cov.pageGenerated}/${cov.pageRows}`,
@@ -2303,6 +2385,11 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       // Measured 410-433 generated and 359-376 of those non-zero, of 20,000.
       cntPropGenerated: cov.cntPropGenerated > 200,
       cntPropNonZero: cov.cntPropNonZero > 150,
+      // The band is 0.5% of 20,000, so ~100 draws are expected and a floor AT 100 flakes — the
+      // first run measured 94/94. These floors are set to catch the arm going DEAD, which is what
+      // a coverage guard is for, not to pin the rate.
+      tempGenerated: cov.tempGenerated > 50,
+      tempNonEmpty: cov.tempNonEmpty > 40,
       // These floors are PER-SHAPE shares of one arm, so they fall whenever the arm gains
       // shapes — adding the inline-endpoint shapes of item 125 dropped `hopUntyped` from
       // 98-120 to 47-81 without anything getting worse. So: when this arm grows, RE-MEASURE
@@ -2398,6 +2485,8 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       crossNonEmpty: true,
       cntPropGenerated: true,
       cntPropNonZero: true,
+      tempGenerated: true,
+      tempNonEmpty: true,
       hopFilterGenerated: true,
       hopFilterNonZero: true,
       hopUntypedGenerated: true,
