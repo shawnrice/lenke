@@ -466,6 +466,24 @@ pub fn serialize(store: &Store, format: &str) -> Result<String, CodecError> {
 /// The ORDER has to match `to_graph_data` exactly or the output is not byte-identical: nodes by
 /// dense id skipping dead, properties in `prop_keys()` order filtered by presence, edges by
 /// source then adjacency. `streaming_csv_matches_the_graphdata_path` pins that.
+/// REJECTED LEVER — hoisting the node columns out of the row loop (audit item 829).
+///
+/// The row build below is `node_keys.iter().filter(|k| store.has_prop(id, k)).map(|k| store.prop(id,
+/// k))` — TWO string-hash lookups per (element, key), which is exactly the anti-pattern
+/// `ndjson::encode_object_cols` was written to avoid and whose doc names it ("the per-node, per-key
+/// `props.get(key)` hashmap lookups the `keys`+closure form pays twice over"). And the cost here DOES
+/// track the key count: 260.1 ns an element at 4 keys against 2470.0 at 202, i.e. 11.2 ns a key an
+/// element, which the corpus fixture cannot show because it carries two.
+///
+/// So resolving the columns once — the same `Vec<(&str, &Column)>` the renderer and the ndjson
+/// writer both build — looked like the same win. It is worth NOTHING: three ORDER-ALTERNATED rounds,
+/// min of three, **260.8 -> 259.9 at 4 keys (1.00x), 648.6 -> 654.5 at 52 (0.99x), 2434.6 -> 2338.3
+/// at 202 (1.04x)**, with the untouched `ndjson` encode flat at 439.9 -> 437.8 as the control.
+///
+/// So the 11.2 ns a key is NOT the hash lookups. What is left in the per-key path is
+/// `value_to_neutral`, the `cols.observe` pass that discovers the column set, and the row writer —
+/// none of them measured, and none of them named here as the cause. Fourth time this session that
+/// the plausible mechanism was not the one (items 804, 808, 814).
 fn serialize_csv(store: &Store) -> Result<String, CodecError> {
     let node_keys = store.prop_keys();
     let edge_keys = store.edge_prop_keys();

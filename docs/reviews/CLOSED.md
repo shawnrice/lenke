@@ -23329,3 +23329,73 @@ Gates, each its own command with its exit code read UNPIPED: `cargo fmt` 0; `car
 `cargo clippy --all-targets -- -D warnings` 0; `cargo test --release` **1225 + 13 + 725 passed, 0
 failed** under `systemd-run -p MemoryMax=16G -p MemorySwapMax=0`; `rewrite_fuzz` 10 passed;
 `bun run fuzz` (all seven byte-identity fuzzers, random seeds) 13 pass 0 fail, run TWICE.
+
+## 829 — item 828's grep: the codec IS K-dependent at **11.2 ns a key an element**, the hoist is REFUTED at 1.00-1.04x, and `render_edges` cannot take the reorder at all
+
+**NO ENGINE CHANGE** (built, measured, reverted; the diff is one rejection record). Item 828 fixed the
+element render by walking columns outside and rows inside, and flagged the shape for a grep. The grep
+found it in two places and neither one takes the fix.
+
+### `render_edges` has the shape and the precondition does NOT hold
+
+`render_edges` is row-major over the key set exactly as `render_nodes` was. **But 828's win came from
+POSITIONAL indexing, not from the loop order**: node props live in a presence vector indexed by node
+id, so ascending ids are sequential memory. Edge props are `EdgeMap = HashMap<u32, Value>` — hashed,
+so ascending eids give no locality and the reorder buys nothing by construction. Not attempted.
+
+Its own doc already prices the residue: 1.54 ns a key a row with the maps hoisted, against 7.99
+without — so the edge path took item 391's hoist and is 3x cheaper per key than the node path was.
+
+**The conditional lever, recorded not taken:** iterate each `EdgeMap`'s OWN entries and filter by
+membership in the batch, which is O(|map|) instead of O(rows) probes — a win for a SPARSE edge
+property and a loss for a dense one, and it needs a batch-membership set. Priced as conditional
+rather than built blind.
+
+### The codec IS K-dependent, and much more than the renderer was
+
+`serialize_csv` builds each row as `node_keys.iter().filter(|k| store.has_prop(id, k)).map(|k|
+store.prop(id, k))` — **two string-hash lookups per (element, key)**, which is precisely the
+anti-pattern `ndjson::encode_object_cols` exists to avoid and whose doc names it. Measured first,
+before changing anything:
+
+```text
+  keys   ndjson ns/el   csv ns/el
+     4           87.9       260.1
+    52          146.1       679.4
+   202          495.7      2470.0        csv 9.5x, i.e. 11.2 ns a key an element
+```
+
+So the same story as items 825-827 in a third place, invisible for the same reason: the corpus
+fixture carries two node keys.
+
+### 🛑 But the hoist is REFUTED
+
+Resolving the columns once — the identical `Vec<(&str, &Column)>` the renderer and the ndjson writer
+both build — is worth nothing. Three ORDER-ALTERNATED rounds, min of three:
+
+```text
+            PRE min   POST min
+  csv K=4     260.8      259.9   1.00x
+  csv K=52    648.6      654.5   0.99x
+  csv K=202  2434.6     2338.3   1.04x
+  ndjson 202  439.9      437.8   flat — UNTOUCHED, the control
+```
+
+**So the 11.2 ns a key is not the hash lookups.** The change was correct (1,963 tests green) and
+worthless, so it is reverted with its numbers recorded on `serialize_csv`. What remains in the
+per-key path is `value_to_neutral`, the `cols.observe` pass that discovers the column set, and the row
+writer — none measured, **and none named here as the cause.**
+
+**Fourth time this session the plausible mechanism was not the one** (804: `split`'s capacity; 808:
+interning; 814: the per-row `Vec`; now this). The pattern across all four: the mechanism was read off
+the code and sounded sufficient, and the arithmetic or the A/B said otherwise. The one that paid —
+828 — was also read off the code, so the lesson is not "stop reading" but that **reading tells you
+WHERE to measure, never WHETHER you are right.**
+
+One instrument note: PRE round 2 read 440.0 ns at csv K=4 against 260.8 and 265.5 in the other two
+rounds — a 1.7x outlier inside one arm. Min-of-three is what makes the 1.00x readable at all.
+
+Gates, each its own command with its exit code read UNPIPED: `cargo fmt` 0; `cargo clippy
+--all-targets -- -D warnings` 0; `cargo test --release` 1225 + 13 + 725 passed 0 failed under
+`systemd-run -p MemoryMax=16G -p MemorySwapMax=0`; the codec diff asserted to be comments only (zero
+added non-comment lines); the temporary example removed.
