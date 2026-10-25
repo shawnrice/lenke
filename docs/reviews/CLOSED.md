@@ -18596,3 +18596,35 @@ every round, which is what makes the enumerating row's movement interpretable at
 
 Gates, each its own command with its exit code read UNPIPED: `bun run lint` 0; `bun run fmt` 0;
 `bun run check` 0. The engine is back to item 736's code plus the refutation marker.
+
+## 738 — the two instrument failures from item 737, promoted into CLAUDE.md's list
+
+**PROCESS. No engine change.** `CLAUDE.md`'s "Before trusting a number" list says each bullet is
+there "because a wrong conclusion was drawn and committed first". Item 737 produced two that
+qualify and neither was on it, so the next pass would have paid for them again.
+
+**A per-row question needs a per-row instrument.** Running the whole sweep per arm feels more
+rigorous and is the opposite: rows interfere, the `ffi` column drifts ~10% between arms on a
+TS-only change, and arms taking 5 and 15 minutes get compared across whatever the machine did in
+between. It reported a **1.66x regression that does not exist** (44.8 against 27.0 on
+`project the element + materialize`), refuted by an isolated A/B at 25.2 against 24.7. The isolated
+run was also **6x faster in wall clock** — so this is not a rigour-for-speed trade, which is why the
+bullet is worth having: the slower, more thorough-looking instrument was worse on both axes.
+
+**Assert each A/B arm IS the code it claims, before building it.** `cp "$S/matching-$arm.ts"` with
+one of the two files never written leaves the previous arm in place, and the "after" reading is then
+the "before" code — a null that looks like a result. A `grep -c` of the new symbol against an
+expected count per arm makes that a loud failure instead. It is the same shape as asserting a patch
+anchor appears exactly once, which this session has leaned on repeatedly; the A/B harness simply
+never had the equivalent.
+
+Both are now in the list, next to the LCG bullet item 702 added for the same reason.
+
+### Why this is its own item and not a line in 737
+
+737 records what was measured. This records what changed about how the next measurement gets made.
+The audit is searched for "what did we conclude about X"; a process rule buried in a refutation
+entry is findable only by someone who already knows to look there, and the whole point of the list
+in `CLAUDE.md` is that it is read before measuring rather than after.
+
+Gates: `bun run fmt` 0; `bun run check` 0. Markdown only.

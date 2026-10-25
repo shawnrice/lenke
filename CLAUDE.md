@@ -146,6 +146,21 @@ Each of these is here because a wrong conclusion was drawn and committed first.
 - **Know the noise floor.** Some rows range 2x for the same binary. Anything under
   ~10% needs its own isolated harness, and "obviously correct so it must be
   faster" is not evidence — several such changes measured neutral or worse.
+- **A per-row question needs a per-row instrument.** Running the WHOLE sweep per arm
+  feels more rigorous and is not: rows interfere, the `ffi` column drifts ~10% between
+  arms on a TS-only change, and arms that take 5 and 15 minutes are compared across
+  whatever the machine did in between. It reported `project the element + materialize`
+  at 44.8 against 27.0 — a 1.66x regression that does not exist, which an isolated A/B
+  on that row refuted at 25.2 against 24.7 (item 737). The isolated run was also 6x
+  faster in wall clock, so this is not a rigour-for-speed trade. Select the rows the
+  change can reach, plus a control it cannot, and leave the sweep for the regression
+  pass it is for.
+- **Assert each A/B arm IS the code it claims, before building it.** `cp
+"$S/matching-$arm.ts"` with one of the two files never written leaves the previous
+  arm in place, and the "after" reading is then the "before" code — a null that looks
+  like a result. One line (`grep -c <the new symbol>`, compared against an expected
+  count per arm) turns that into a loud failure. Same shape as asserting a patch anchor
+  appears exactly once, and it caught nothing only because the run was killed first.
 
 Record rejected optimizations with their numbers, next to the code they would
 have changed. Several have been re-attempted otherwise.
