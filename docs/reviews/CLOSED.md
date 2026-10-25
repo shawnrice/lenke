@@ -22681,3 +22681,71 @@ Gates: `cargo test --release` 1225 + 13 + 725 passed, 0 failed, under `systemd-r
 -p MemorySwapMax=0` (run WITH the change, before reverting — it was correct, just redundant);
 `cargo build --release --features capi` 0 on the reverted tree; `git status` clean; the temporary
 example removed and the gate grepped to 0.
+
+## 817 — `bench:usage` (the fourth instrument) run alone: item 803 is **1.24-1.28x** on a shape the sweep misses, and the 2.52x spelling flag is the ROW'S OWN SPREAD
+
+**VERIFICATION, no engine change.** `bench:usage` was the only committed instrument unrun this
+session, and it asks the question the sweeps do not: many small operations on a warm graph, reads and
+writes interleaved. Run alone, per item 810.
+
+### The flag, and why it is not one
+
+The sweep's biggest outlier was an equivalent-spelling pair:
+`read: keyed dedup lookup` **79.0k ops/s** against `read: keyed dedup lookup [inline]` **31.4k** —
+**2.52x** — where the native engine reads 151.4k against 152.7k, identical. TS-only, and
+CLAUDE.md's named bug class by construction.
+
+It is already recorded: `bench-usage.ts`'s own comment measured this pair standalone at **1.41x**
+where a seek returns many rows, unresolvable where it returns few, diagnosed as a PER-ROW cost, and
+noted "native shows no such gap, so whatever this is, it is TS-side".
+
+**Today's 2.52x is not a sharpening of that 1.41x — it is noise.** Four arms of an A/B, indexed
+column:
+
+```text
+             POST 1   PRE 1   PRE 2   POST 2
+  clause      70.4k   51.7k   73.4k   78.9k
+  inline      22.4k   43.5k   59.9k   53.8k
+```
+
+**The inline row ranges 22.4k to 53.8k inside the POST arm alone — a 2.4x spread, which is the
+"gap".** At 250 ms batches this row is bimodal, so a single sweep reading cannot establish it. The
+recorded 1.41x, taken standalone over three rounds, remains the trustworthy figure; item 455's rule
+("any probe flag needs isolated confirmation before it is a claim") applies to this instrument too,
+and this is the first time it has been applied here.
+
+**Instrument note:** the indexed `keyed dedup` rows need `BENCH_BUDGET_MS` well above the 250 ms
+default before they are a comparison. The unindexed rows at the same budget are stable to ~2%.
+
+### Item 803 on a shape item 810's sweep does not cover — 1.24-1.28x, disjoint
+
+The unindexed column is the stable one, and it is also the one this pair's predicate actually
+reaches (a scan with a clause or inline predicate is exactly what item 803's `bindVar` gating acts
+on). Two order-alternated rounds, the dist grepped per arm (`predFor` 11 against 0):
+
+```text
+  clause   PRE 2.9k / 2.9k    POST 3.6k / 3.7k    1.24-1.28x, DISJOINT
+  inline   PRE 3.4k / 3.4k    POST 4.3k / 4.3k    1.26x,      DISJOINT
+```
+
+**So item 803 is a 1.24-1.28x win here, on both spellings**, and the cross-engine sweep at item 810
+could not have seen it — none of its rows binds a param or builds an index, which is this pair's
+whole shape. That is the third independent confirmation of 803 (1.11x and 1.14x on filtered counts at
+803 itself, flat-and-structurally-unreachable on `count 4-hop` at 810, 1.24-1.28x here) and the
+largest of the three.
+
+**No regression anywhere in the table.** The engine and wasm columns are unchanged in shape: point
+lookup 485.4k/375.3k indexed, `gremlin read: fixed count` 1.13M, the interleaved rows 90.2k-273.2k.
+
+### What the interleaved rows say about item 816
+
+`interleaved: write + traversal` reads **25.7k engine(-) / 187.1k engine(+)** and
+`interleaved: write + point read` 24.0k / 90.2k, against read-only traversal rows at 42.9k / 246.9k.
+So an interleaved write costs the native engine ~1.3-1.7x of the read alone — **not the 20.4x item
+816 measured for a stale typed hop without the edge-type index.** The difference is the shape: 816's
+fixture made type E 1 in 50, where this bench's workloads are not type-selective, and 816 recorded
+exactly that ("the penalty is unbounded as the type gets rarer"). The two numbers agree; they are
+different questions, and this is the row that would have made them look contradictory.
+
+Gates: `bun run build` 0 and the dist re-grepped to confirm the tree is back at HEAD (`predFor` 11);
+`git status` clean; no engine change in this item.
