@@ -21825,3 +21825,63 @@ not `propOf`'s chain, not the loop headers, not `compareTruth`'s dispatch. ~10 n
 read and ~4 is `inlineHolds`'s per-element `Map` write; Gremlin answers at ~10.6. The `Map` write is
 the one term still unpriced, and removing it is a structural change to how a per-element predicate
 reaches its own variable, not a tick.
+
+## 803 — the per-element binding `Map` write is compile-time gated: **1.11-1.34x** (TS), and "alternated rounds" means alternating the ORDER
+
+**DONE.** Item 802's ladder left one unpriced term in the TS filtered-count path —
+`inlineHolds`'s `binding.set(bindVar, element)`, ~4 of the ~24 ns a vertex. It is now omitted
+wherever nothing can read it back.
+
+**THE RULE.** The binding is read in exactly one of the places a predicate's values come from: a
+surviving general compiled `where` (through `env`). `eqProps`/`cmpProps` are CLOSED by construction
+in `directEqProps`; `props` are closed where the caller has proved it. So a predicate that lifts
+ENTIRELY — inline `WHERE n.k > 10`, clause `WHERE n.s = 's3'`, inline `{k: 2}`, the common case and
+the point of items 224/230/276 — writes a `Map` entry per element that nothing ever reads.
+
+**TEN SITES, ONE HELPER.** `grep -n 'bindVar:'` found ten construction sites, nine of them the same
+four lines rewritten. All now go through `predFor(pred, ownVar, closedProps)` and `bindVar:` appears
+once in the package. `closedProps` is REQUIRED, not inferred, because it cannot be inferred — a
+compiled value is a closure and nothing can ask it what it reads.
+
+**Measured end-to-end, 200,000 vertices, one shape per process, ORDER-ALTERNATED:**
+
+```text
+  clause 1bound        PRE 4.68/4.74/4.89 ms   POST 4.11/4.42/4.24   1.14x DISJOINT
+  inline {k: 2}            3.39/3.47/4.23           2.85/3.26/6.91   1.19x on min (one outlier)
+  clause str-eq            7.10/6.16/5.86           5.13/5.99/4.96   1.18x on min
+  inline WHERE             4.54/7.52/4.78           3.89/4.63/4.76   1.17x on min
+  CONTROL non-lifting     10.19/11.17/11.18        12.57/10.08/13.99  flat
+  CONTROL no-pred         13.74/14.58/10.44        10.42/10.60/ 9.88  flat/noisy
+```
+
+An independent A/B of the two-site arm agreed: `clause 1bound` 4.90/4.69/5.26 against
+4.24/4.58/4.40 (**1.11x**, disjoint), `inline {k: 2}` 3.57/4.14/3.65 against 2.75/2.67/3.24
+(**1.34x**, disjoint).
+
+**Item 802's ladder PREDICTED the magnitude** (~4 of ~24 ns, i.e. ~1.2x), which is why 1.11x is a
+result rather than noise: **a number inside the ~10% band needs a prior reason to be the size it
+is.** Both controls are unreachable BY CONSTRUCTION — `n.k * 1 > 10` does not lift so `bindVar`
+stays, and the no-predicate projection runs no predicate — which is the lesson item 802 paid for.
+
+**⚠️ NEW METHOD RESULT — THE ORDER CONFOUND, which cost two A/Bs.** The first two A/Bs ran **PRE
+first in every round**. Under that order the `non-lifting` control appeared to improve
+10.19-15.10 -> 10.08-11.03 consistently in the change's favour — a control the change cannot reach
+moving more than some targets, which is item 762's signature and sent me hunting a redistribution
+effect that was not there. With the order alternated (POST,PRE / PRE,POST / POST,PRE) the control is
+flat and the targets stand: the PRE arm had been absorbing each round's cold start. **CLAUDE.md's
+"min across three order-alternated rounds" means alternating the ORDER, not repeating three times.
+Three rounds in a fixed order are one observation of an order, not three of a change.**
+
+**Teeth: four of four, after the first two survived.** Inverting the `where` test — caught, 147
+fail. Never binding — caught, 149 fail. Neutering `!closedProps` and `props.length > 0` — **both
+survived the full 2,624-test suite**, structurally, because every current caller passes
+`closedProps: true` and that disjunct is unreachable from any query. It is not redundant (it is the
+precondition that makes the other nine sites safe), so per item 475 it was given teeth rather than
+deleted: `predFor` is exported and `bindvar-gating.test.ts` pins all three inputs directly,
+including `closedProps: false` over a `props` entry whose value closure THROWS if called. Both
+mutants now caught.
+
+Gates: `bun run fmt` 0; `bun run check` 0; `bun test packages/gql` 2634 pass 0 fail; `bun run fuzz`
+13 pass 0 fail TWICE; `bun run spelling` 0 answer disagreements and only its two pre-existing >2x
+groups. **Rust side NOT checked and not claimed** — whether `exec` pays an analogous per-element
+write is its own tick.

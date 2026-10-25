@@ -367,6 +367,42 @@ const buildNodeCount = <T>(
  */
 type InlinePred = { pred: CPredicate; bindVar?: string };
 
+/**
+ * An `InlinePred` carrying `bindVar` ONLY WHEN THE PREDICATE CAN READ THE BINDING (item 803).
+ *
+ * `inlineHolds` does `binding.set(bindVar, element)` once per ELEMENT, and in a filtered walk that
+ * is one `Map` write per vertex. It is needed only where something in the predicate reads the
+ * binding back, and there are exactly three places a value can come from:
+ *
+ *   - a general compiled `where` — reads the binding, through `env`. THIS is the case that needs it.
+ *   - `eqProps` / `cmpProps` — CLOSED by construction in `directEqProps`, which admits only
+ *     `<ownVar>.<key> <op> <closed value>`.
+ *   - `props` — closed only when the CALLER has proved it, which is what `closedProps` asserts.
+ *
+ * So when an inline `WHERE n.k > 10` or a clause `WHERE n.s = 's3'` lifts ENTIRELY — the common
+ * case, and the whole point of items 224/230/276 — nothing reads the binding and the write is
+ * pure waste. Measured end-to-end, 200,000 vertices, one shape per process, three ORDER-ALTERNATED
+ * rounds: a clause-filtered count 4.69/4.90/5.26 ms against 4.24/4.40/4.58 (1.11x, disjoint) and an
+ * inline `{k: 2}` count 3.57/3.65/4.14 against 2.67/2.75/3.24 (1.34x, disjoint), with two controls
+ * the change cannot reach — a NON-lifting `n.k * 1 > 10`, whose `where` survives so `bindVar` stays,
+ * and a no-predicate projection — both flat. Item 802's ladder priced the `Map` write at ~4 of the
+ * ~24 ns a vertex and so PREDICTED this magnitude, which is why 1.11x is a result and not noise.
+ *
+ * `closedProps` is a REQUIRED argument rather than inferred, because it cannot be inferred: a
+ * compiled value is a closure and nothing can ask it what it reads. A caller passing `props` it has
+ * not proved closed must pass `false`, or a correlated `(b {k: a.k})` would read a binding this
+ * never wrote. Both props-carrying callers (`inlinePredOf`, `gateWith`) prove it with the same
+ * `freePredicateVars(c.value).size > 0` loop; every other caller passes no properties at all.
+ */
+export const predFor = (
+  pred: CPredicate,
+  ownVar: string | undefined,
+  closedProps: boolean,
+): InlinePred =>
+  ownVar !== undefined && (pred.where !== undefined || (!closedProps && pred.props.length > 0))
+    ? { pred, bindVar: ownVar }
+    : { pred };
+
 /** A composed per-element filter: every carried `InlinePred` must hold. */
 type InlineGate = (
   element: Vertex,
@@ -418,13 +454,11 @@ const inlinePredOf = (n: InlineShape): InlinePred | null => {
     }
   }
 
-  return {
-    // The node's OWN variable is passed, which is sound exactly here: the loop above has just
-    // proved the inline `WHERE` reads nothing but it. A clause `WHERE` cannot make that claim and
-    // so never takes this route.
-    pred: compilePredicate(n.properties, n.where, n.variable),
-    ...(n.variable !== undefined ? { bindVar: n.variable } : {}),
-  };
+  // The node's OWN variable is passed, which is sound exactly here: the loop above has just
+  // proved the inline `WHERE` reads nothing but it. A clause `WHERE` cannot make that claim and
+  // so never takes this route. `closedProps` is `true` for the same reason — the FIRST loop in
+  // this function is the proof `predFor` asks for.
+  return predFor(compilePredicate(n.properties, n.where, n.variable), n.variable, true);
 };
 
 const inlineOf = (n: NodePattern): InlinePred | null | undefined =>
@@ -627,7 +661,9 @@ const gateWith = (
 
   const where: Expr = parts.length === 1 ? parts[0] : { kind: 'and', items: parts };
 
-  return { pred: compilePredicate(n.properties, where, n.variable), bindVar: n.variable };
+  // `closedProps` is `true` on the strength of the `freePredicateVars(c.value)` loop above —
+  // `inlinePredOf`'s proof, made here because this path does not go through it.
+  return predFor(compilePredicate(n.properties, where, n.variable), n.variable, true);
 };
 
 /** A clause `WHERE` the 1-hop count can evaluate per edge, with the vars it reads. */
@@ -3373,10 +3409,7 @@ const patternCountOf = <T>(
       // `where` IS `start.variable`, so the predicate is element-local. Without it the clause
       // spelling paid 29.0 ns a vertex against the inline spelling's 17.2 for the same answer, and
       // 47.4 against 21.1 for an AND of two equalities (audit item 230).
-      preds.push({
-        pred: compilePredicate(undefined, where, start.variable),
-        bindVar: start.variable,
-      });
+      preds.push(predFor(compilePredicate(undefined, where, start.variable), start.variable, true));
     }
 
     return buildNodeCount(start, rowOf, preds, cstart);
@@ -3471,7 +3504,7 @@ const patternCountOf = <T>(
         // `midName` doubles as the predicate's OWN variable: `readsOnly(midName)` has just proved
         // the predicate is element-local, which is what lets `directEqProps` read the element
         // directly rather than through the binding (item 230).
-        midPred = { pred: compilePredicate(undefined, where, midName), bindVar: midName };
+        midPred = predFor(compilePredicate(undefined, where, midName), midName, true);
       } else if (readsOnly(endName)) {
         // The END is admissible too, as the START of the REVERSED pattern — see `reversedTwoHop`.
         // The predicate is shaped for the reversed reading, where the end node IS the start.
@@ -4997,7 +5030,7 @@ const anchorFilterGate = (
       }
     }
 
-    preds.push({ pred: compilePredicate(undefined, where, anchorVar), bindVar: anchorVar });
+    preds.push(predFor(compilePredicate(undefined, where, anchorVar), anchorVar, true));
   }
 
   return preds.reduceRight<InlineGate | undefined>(
@@ -6685,12 +6718,13 @@ const nodeWhereOf = (where: Expr, nodeVar: string): InlinePred | 'decline' => {
   // indirection alone. A subquery-bearing predicate has nothing else available anyway —
   // `compilePredicate` does not know about subqueries, and a correlated sub-pattern is not a
   // property equality — so `ownVar` would buy it nothing even if it were passed.
-  return {
-    pred: hasSubqueryExpr(where)
+  return predFor(
+    hasSubqueryExpr(where)
       ? { props: [], where: gatePredicate(where) }
       : compilePredicate(undefined, where, nodeVar),
-    bindVar: nodeVar,
-  };
+    nodeVar,
+    true,
+  );
 };
 
 /**
@@ -7139,10 +7173,7 @@ export const detectGroupedNodeCount = (clauses: readonly Clause[]): ReachFn | nu
       }
     }
 
-    preds.push({
-      pred: compilePredicate(undefined, where, start.variable),
-      bindVar: start.variable,
-    });
+    preds.push(predFor(compilePredicate(undefined, where, start.variable), start.variable, true));
   }
 
   // Fold the (at most two) predicates into ONE gate at compile time, or `undefined` when
@@ -7436,10 +7467,7 @@ export const detectGroupedHopCount = (clauses: readonly Clause[]): ReachFn | nul
       }
     }
 
-    preds.push({
-      pred: compilePredicate(undefined, where, keyed.variable),
-      bindVar: keyed.variable,
-    });
+    preds.push(predFor(compilePredicate(undefined, where, keyed.variable), keyed.variable, true));
   }
 
   const gate = preds.reduceRight<InlineGate | undefined>(
@@ -8752,7 +8780,7 @@ export const detectGroupedNodeAggregate = (
       }
     }
 
-    preds.push({ pred: compilePredicate(undefined, where, nodeVar), bindVar: nodeVar });
+    preds.push(predFor(compilePredicate(undefined, where, nodeVar), nodeVar, true));
   }
 
   // Composed rather than looped, for the reason item 141 measured on the tally: a `for…of` over
@@ -9013,10 +9041,7 @@ export const detectGroupedHopAggregate = (
       }
     }
 
-    preds.push({
-      pred: compilePredicate(undefined, where, keyed.variable),
-      bindVar: keyed.variable,
-    });
+    preds.push(predFor(compilePredicate(undefined, where, keyed.variable), keyed.variable, true));
   }
 
   // THE SEED HAZARD, checked here rather than at the `groupedAccs` call because `preds` is what
