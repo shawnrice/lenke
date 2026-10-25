@@ -326,6 +326,7 @@ import {
   structuralEq,
   temporalSum,
   UNARY_NUM,
+  TRIM_1,
   unaryNumCall,
   UNARY_STR,
   unaryStrCall,
@@ -2079,6 +2080,16 @@ const compileFunc = (expr: FuncExpr): CompiledExpr => {
 
   if (unaryStr !== undefined && args.length === 1 && SCALAR_ASSERTS_STR0_ONLY.has(name)) {
     return unaryStrCall(name, unaryStr, args[0]);
+  }
+
+  // The ONE-ARGUMENT trim family (item 790), through the same factory. `SCALAR_ASSERTS_STR0_ONLY`
+  // cannot admit these — their `STR_ARG_POSITIONS` entry is `[0, 1]` — but `assertScalarArgTypes`
+  // skips an `undefined` argument, so at ONE argument the check IS str0-only. `TRIM_1`'s doc
+  // carries the argument and the measurement; the arity test here is what makes it true.
+  const trim1 = args.length === 1 ? TRIM_1[name] : undefined;
+
+  if (trim1 !== undefined) {
+    return unaryStrCall(name, trim1, args[0]);
   }
 
   // The two-argument string PREDICATES (item 769) — the TS counterpart of item 766, which took

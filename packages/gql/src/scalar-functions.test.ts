@@ -727,3 +727,45 @@ describe('GQL: graph settings are constructor-only', () => {
     expect('configure' in new Graph()).toBe(false);
   });
 });
+
+// Item 790 routed the ONE-ARGUMENT trim family through `unaryStrCall`, gated on `args.length === 1`
+// because `assertScalarArgTypes` skips an `undefined` argument and the positional check therefore
+// reduces to "position 0 is a string" at that arity only. The TWO-argument forms must keep
+// `callTrim`, char set and all.
+//
+// Dropping that arity test returns a WRONG ANSWER — the char set is ignored and whitespace is
+// trimmed instead, and a NULL char set stops propagating — with the whole 2,608-test suite GREEN.
+// The only trim coverage that existed was the one-argument forms (`gql.test.ts`), so nothing
+// looked at the second argument at all.
+describe('the two-argument trim forms keep their character set (item 790)', () => {
+  test('a char set trims exactly those characters, not whitespace', () => {
+    // The tab and newline survive: they are not in the set, and the 2-arg form is NOT a
+    // whitespace trim. This is the assertion the arity test exists for.
+    expect(one("RETURN btrim('\tmix\n ', ' a') AS x")).toBe('\tmix\n');
+    expect(one("RETURN btrim('  pad  ', ' ') AS x")).toBe('pad');
+    expect(one("RETURN ltrim('aab', 'a') AS x")).toBe('b');
+    expect(one("RETURN rtrim('baa', 'a') AS x")).toBe('b');
+    // CODE POINTS, not UTF-16 units — `multiTrim` iterates `Array.from`, matching Rust's
+    // `chars()`, and that is a cross-engine contract.
+    expect(one("RETURN btrim('  naïve ßé  ', 'é ') AS x")).toBe('naïve ß');
+  });
+
+  test('a NULL char set propagates null, where the one-argument form trims whitespace', () => {
+    // The pair is the point: same function, same input, different arity, different answer.
+    expect(one("RETURN btrim('  pad  ', null) AS x")).toBe(null);
+    expect(one("RETURN ltrim('  pad  ', null) AS x")).toBe(null);
+    expect(one("RETURN rtrim('  pad  ', null) AS x")).toBe(null);
+    expect(one("RETURN btrim('  pad  ') AS x")).toBe('pad');
+  });
+
+  test('the one-argument forms trim whitespace, each at its own end', () => {
+    // The specialized path itself, so a wrong `TRIM_1` entry is caught here rather than by the
+    // two tests above.
+    expect(one("RETURN trim('  pad  ') AS x")).toBe('pad');
+    expect(one("RETURN btrim('  pad  ') AS x")).toBe('pad');
+    expect(one("RETURN ltrim('  pad  ') AS x")).toBe('pad  ');
+    expect(one("RETURN rtrim('  pad  ') AS x")).toBe('  pad');
+    expect(one("RETURN trim('\t\n pad \n\t') AS x")).toBe('pad');
+    expect(one('RETURN trim(null) AS x')).toBe(null);
+  });
+});

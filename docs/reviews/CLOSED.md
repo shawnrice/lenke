@@ -21278,3 +21278,43 @@ ruled out decisively. The numeric-validation block is ruled out too: **`nullif` 
 remains on the general dispatch. **Do not carry it forward as a rule** — a third name must be
 MEASURED, not assumed slow for being numeric and two-argument. What survives: the table entry was
 worth 18-25 ns _for those two names_, and `split` is the one real outlier.
+
+## 790 — TS: committed scalar survey + the 1-arg trim family 1.67x. ITEM 783'S REFUTATION DOES NOT TRANSFER, and `btrim/2` is 265.6 ns with its cause located
+
+**DONE (TypeScript).** `bun run probe:scalar`
+(`packages/native/scalarfn-probe.ts`) — the TS twin of `examples/scalarfn_bench`, **one shape per
+PROCESS** (item 762: a multi-shape in-process run makes every dispatch site megamorphic). Items 760,
+761, 763, 769, 773 and 788 each rebuilt this ad hoc.
+
+**THE PAIR THAT ISOLATES TS'S DISPATCH COST: `char_length` 19.9 ns against `size` 42.0** — same
+work, one specialized and one not, **2.1x, so ~22 ns a row of machinery** (item 760's pricing said
+35).
+
+**ITEM 783'S REFUTATION DOES NOT TRANSFER — the tick's main lesson.** 783 refuted adding this exact
+family to the native `unary_str_fn` at 3%, and the native `char_length`-vs-`size` pair is **1.03x**.
+The mechanism it refuted was INPUT BOXING (which 784 showed LLVM elides); TS's cost is DISPATCH
+MACHINERY, a different quantity by two orders of magnitude. **A refutation is about a mechanism in an
+engine, not about a function name.** Item 788 is the mirror: a native fix whose TS twin WAS missing.
+
+**The change:** the one-argument trim family through the existing `unaryStrCall`, via a `TRIM_1`
+table. Safe at that arity ONLY: `STR_ARG_POSITIONS` gives these `[0, 1]`, but
+`assertScalarArgTypes` skips an `undefined` argument, so at one argument the check reduces to
+"position 0 is a string" — exactly what `unaryStrCall` folds in.
+
+`trim` **56.9 → 34.1 (1.67x)**, `ltrim` **69.3 → 51.7 (1.34x)**. Controls: `char_length` 0.97x,
+`size` 1.02x, `upper` 0.88x — **that last is not resolvable** (its readings span 64.5-80.8 across
+BOTH arms), stated rather than smoothed over because a control moving against a change is item 762's
+signature.
+
+**MUTATION — a WRONG ANSWER the whole suite passes.** Dropping the arity test makes
+`btrim('\tmix\n ', ' a')` answer `"mix"` instead of `"\tmix\n"` and `btrim('  pad  ', null)` answer
+`"pad"` instead of NULL, **with 2608 pass 0 fail**: the only trim coverage was the ONE-argument
+forms, so **nothing looked at the second argument at all**. Three tests added, teeth verified.
+(The values probe's first version had two char-set lines running against a NUMERIC fixture row, so
+they raised before the char-set logic and tested nothing — same shape as items 702 and 787.)
+
+**NEXT TARGET, priced with its cause: `btrim(a.s, ' ')` is 265.6 ns/row**, 7.5x its 1-arg form and
+**31x the native engine's 8.4 ns** — the largest cross-engine ratio in this family. `multiTrim` does
+three allocations PER ROW (`new Set(Array.from(chars))` for a constant char set, `Array.from(s)` for
+the whole string, then `slice().join('')`). Not built: the code-point iteration is a cross-engine
+contract (`Array.from` matches Rust's `chars()`), so it needs its own tick and test.

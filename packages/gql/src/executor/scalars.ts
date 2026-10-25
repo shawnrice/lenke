@@ -757,6 +757,35 @@ export const multiTrim = (
 
 export const TRIM_FNS = new Set(['trim', 'btrim', 'ltrim', 'rtrim']);
 
+/**
+ * The ONE-ARGUMENT trim family as a plain `string -> string`, so `compileFunc` can route it
+ * through [`unaryStrCall`] instead of the general dispatch (item 790).
+ *
+ * WHY IT IS SAFE AT THIS ARITY AND ONLY THIS ARITY. `STR_ARG_POSITIONS` gives these names
+ * positions `[0, 1]`, which is why `SCALAR_ASSERTS_STR0_ONLY` does not admit them and the
+ * specialization gate skips them. But `assertScalarArgTypes` skips an `undefined` argument, so at
+ * ONE argument the whole positional check reduces to "position 0 is a string" — exactly what
+ * `unaryStrCall` folds in, raising through `requiresStringMessage` as the assert does. The
+ * two-argument forms keep `callTrim` and the general path, char set and all.
+ *
+ * The bodies are `callTrim`'s own `b === undefined` branch, unchanged: `ltrim` and `rtrim` use the
+ * anchored regexes rather than `trimStart`/`trimEnd` because that is what the engine has always
+ * done and the two differ on the exact set of characters each treats as whitespace.
+ *
+ * THE NATIVE REFUTATION DOES NOT TRANSFER, which is the reason this is worth doing after item 783
+ * said not to. That item refuted adding the same family to the native `unary_str_fn` at 3% — but
+ * the mechanism it refuted was INPUT BOXING, which LLVM already elided (item 784). TypeScript's
+ * cost here is DISPATCH MACHINERY, which is a different quantity and a measured 22 ns a row: the
+ * TS survey (`probe:scalar`) reads `char_length` at 19.9 ns a row against `size` at 42.0 for the
+ * same work — a specialized name against an unspecialized one — where the native pair is 1.03x.
+ */
+export const TRIM_1: Record<string, (s: string) => string> = {
+  trim: (s) => s.trim(),
+  btrim: (s) => s.trim(),
+  ltrim: (s) => s.replace(/^\s+/, ''),
+  rtrim: (s) => s.replace(/\s+$/, ''),
+};
+
 export const callTrim = (name: string, a: unknown, b: unknown): unknown => {
   if (isNullish(a)) {
     return null;
