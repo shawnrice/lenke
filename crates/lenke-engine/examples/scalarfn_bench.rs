@@ -98,6 +98,14 @@ const STR_2: &[(&str, &str)] = &[
     ("ltrim/2", "ltrim(a.s, ' ')"),
     ("left", "left(a.s, 3)"),
     ("split", "split(a.s, '-')"),
+    // THREE-argument names, which items 783 and 786 did not price. 786 found the two-argument
+    // NUMERIC band (28-35 ns general against 10-16 table-claimed) while `left`, a two-argument
+    // STRING call on the same general dispatch, cost 8.3 — so the cost is not arity and these say
+    // whether it is reached at three.
+    ("replace/3", "replace(a.s, 'pad', 'X')"),
+    ("substring/3", "substring(a.s, 1, 3)"),
+    ("substring/2", "substring(a.s, 1)"),
+    ("right/2", "right(a.s, 3)"),
 ];
 
 /// Two-argument NUMERIC calls, which item 759 put in `binary_num_fn` and measured at 3.33x

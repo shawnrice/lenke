@@ -21236,3 +21236,45 @@ validates non-null args even beside a null`, which reaches the new closure as so
 Second item running where the property was already covered where the change needed it (785 too) —
 against the eight-in-a-row with no coverage at 764/768/769/773/776/778/780/782. **Both directions
 recorded so the streak is not read as a law.**
+
+## 789 — Gremlin reaches the one-hop rung; ARITY is not the dispatch's cost; and item 786's "band" was TWO FUNCTIONS, not a class
+
+**NO CHANGE — three checks, one of which narrows item 786.**
+
+**1. Every group the TS spelling probe flags is already documented.** `label on start` (~5363x) is
+NOT equivalent work — O(1) bucket size against O(|label|) degree sum — and is a regression guard on
+item 286's 54.06 ms. `one end labelled` (item 286, 2.00x) is the straddler item 504 measured at
+1.09x isolated. `a product's one-sided predicate` (item 285, 2.14x) has its outlier **closed at item
+644**, where the fix was built and REVERTED because the pre-filter skips a binding that would RAISE.
+Nothing outstanding. (Item 713 re-derived 285 for want of this note, so it is worth having.)
+
+**2. GREMLIN REACHES THE ONE-HOP COUNT RUNG.** Items 285/286 took that count from 54.06 ms to 21.38
+and all of it was reached through the GQL spelling; no cross-language pair existed for the shape.
+
+```text
+  MATCH (a:Person)-[:KNOWS]->(b) RETURN count(*)   0.243 ms
+  g.V().hasLabel('Person').out('KNOWS').count()    0.245 ms   ✓ 1.01x
+  (start unlabelled: both 0.000 ms — the O(1) bucket path)
+```
+
+Two groups added as guards (item 779's reasoning). Third negative cross-engine result this session;
+**the single-IR claim holds wherever it has been checked, and checking it is cheap.** Item 788 was
+not a hole in that claim — it was a TS fast path that never existed.
+
+**3. ARITY IS NOT THE COST, AND ITEM 786'S CLAIM IS NARROWED.** 786 concluded "a two-argument
+numeric name on the general dispatch costs 28-35 ns" from `nullif` 28.4 and `round/2` 35.0, while
+recording `left` at 8.3 and admitting the mechanism was unisolated. Pricing the rest:
+
+```text
+  left/2 7.6   right/2 7.5   substring/2 7.7   substring/3 7.5   replace/3 7.8
+  contains/2 (table-claimed) 6.3        split/2 26.0 (a LIST output, item 783)
+```
+
+The string general dispatch is **uniformly 7.5-7.8 ns at one, two AND three arguments** — arity
+ruled out decisively. The numeric-validation block is ruled out too: **`nullif` is not in its
+`matches!` list** yet was still 28.4 ns.
+
+**So 786's "band" was two functions, not a class.** Both are fixed (785, 787) and no numeric name
+remains on the general dispatch. **Do not carry it forward as a rule** — a third name must be
+MEASURED, not assumed slow for being numeric and two-argument. What survives: the table entry was
+worth 18-25 ns _for those two names_, and `split` is the one real outlier.

@@ -486,6 +486,34 @@ fn main() {
             ],
         ),
         (
+            // THE ONE-HOP COUNT, across the two surface languages — the shape with the biggest
+            // documented fast path in this engine and, until item 789, the one cross-language
+            // pair this probe did not carry.
+            //
+            // Items 285 and 286 are both about this count: the unfiltered branch of
+            // `buildOneHopCount` went from an O(1) bucket size straight to a per-edge walk, and
+            // giving it the degree-sum rung took 54.06 ms to 21.38. All of that work was reached
+            // through the GQL spelling. Whether the GREMLIN spelling of the same question lands on
+            // the same rung is a question about the single-IR claim — CLAUDE.md's "speed is a
+            // property of the optimized plan, not the surface syntax" — and it had never been
+            // asked for this shape.
+            "one-hop count: GQL vs Gremlin",
+            &[
+                (Gql, "MATCH (a:Person)-[:KNOWS]->(b) RETURN count(*) AS c"),
+                (Gremlin, "g.V().hasLabel('Person').out('KNOWS').count()"),
+            ],
+        ),
+        (
+            // The same question with the hop UNLABELLED at the start, which is the member item
+            // 286's group proved cannot converge with its labelled twin (O(1) against
+            // O(|label|)). Here both members ARE the same work, so they must converge.
+            "one-hop count, start unlabelled: GQL vs Gremlin",
+            &[
+                (Gql, "MATCH (a)-[:KNOWS]->(b) RETURN count(*) AS c"),
+                (Gremlin, "g.V().out('KNOWS').count()"),
+            ],
+        ),
+        (
             "filtered count: GQL vs Gremlin",
             &[
                 (Gql, "MATCH (n:Person) WHERE n.age > 28 RETURN count(*) AS c"),
