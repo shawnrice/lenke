@@ -20802,3 +20802,44 @@ pattern CORRELATING on an already-bound name from one binding it freshly. Relaxi
 lacked it. It flags at **2.88x** on the probe's own fixture (4.4x on mine; different fixture, same
 direction) with **0 groups disagreeing on the ANSWER**. The group's comment carries the
 measurement, the cause, the two sibling items and the reason it is not yet relaxed.
+
+## 776 — TS: an anonymous end node takes the hop fast path. 4.60-4.88x, the two spellings CONVERGE, and the sentinel that makes it safe had no test
+
+**DONE (TypeScript).** Item 775 found the gap and deliberately deferred the fix; this closes it.
+`hopEnds` returned `null` for `node.variable === undefined`, so an anonymous end refused
+`detectHopProjection` and fell to the general row pipeline.
+
+**NOT fixed by threading `string | undefined`** — `farVar` has ~50 uses, six of them
+`binding.set(farVar, far)` in separate walk implementations. In a file recording two relaxations
+that broke correctness, a fifty-site refactor is the wrong instrument. Instead an anonymous end
+gets a SYNTHESIZED name: `ANON_FAR_VAR = '\u0000anon_far'`, with `node.variable ?? ANON_FAR_VAR`.
+The walks are untouched and nothing can read the binding, because **the parser cannot produce that
+name** — `MATCH (a)-[:E]->(\u0000anon_far)` is rejected as an unexpected character, checked rather
+than assumed.
+
+Two alternated A/B reads, one shape per process, row counts asserted:
+`MATCH (:P)-[r:E]->() RETURN r.k` **4.88x** (82.13 → 16.83) and **4.60x** (75.84 → 16.48);
+controls `->(b) RETURN r.k` 1.02-1.03x, `->(b) RETURN b.age` 0.96-1.01x, node scan 0.92-1.00x.
+
+**The convergence is the result, not the ratio:** 16.48 against the named spelling's 17.40. And the
+spelling probe confirms it from its own instrument — item 775 added this pair there, where it
+flagged at **2.88x**; it is now ABSENT from the >2x list, leaving only `label on start` and item
+285's product predicate. A gap found by hand, recorded as a probe group, closed, and confirmed by
+the probe.
+
+**THE SENTINEL'S UNIQUENESS IS LOAD-BEARING AND WAS UNTESTED.** With it set to a plausible name
+(`'b'`), `MATCH (b:P)-[r:E]->() RETURN b.age` binds the FAR node to `b` and reads its age — 20
+where the start's is 10 — and **the entire 2,591-test suite passed that mutant.** Two tests now pin
+it (a start named `b` with an anonymous end still reads the start; the two spellings agree on
+`r.k`, `a.age` and `count(*)`), teeth verified. Reverting to the refusal SURVIVES as EQUIVALENT, so
+that route choice's guard is the A/B and the probe.
+
+**THE PATTERN, stated plainly after five consecutive ticks of it:** a fast path's ADMISSION GATE is
+where this repo's tests are thinnest, because every such gate is answer-equivalent when it is
+right. Items 764, 768, 769, 773 and 776 each depended on an untested property, found by mutation,
+not by review.
+
+**Still open:** a SECOND `farVar === undefined` refusal exists in the same file (around line 844,
+which also rejects `farVar === startVar`). Untouched here, and the main projection path converged
+without it — so whatever it guards is either already served or still refused. Probe before
+assuming either.

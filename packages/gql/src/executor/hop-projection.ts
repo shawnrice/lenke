@@ -353,6 +353,14 @@ const containsSubquery = (node: unknown): boolean => {
  * 446's one extra branch put the function at 37 against a limit of 35.
  */
 /**
+ * The binding name a hop's ANONYMOUS end node is given (item 776). A NUL is not a valid
+ * identifier character in the GQL lexer — `MATCH (a)-[:E]->(\u0000anon_far)` is rejected as an
+ * unexpected character — so no query can reference this, which is what makes binding to it
+ * invisible to a projection, a `WHERE`, or a correlated subquery.
+ */
+const ANON_FAR_VAR = '\u0000anon_far';
+
+/**
  * The hop's endpoints and edge type, or `null` to decline — the three validations
  * `detectHopProjection` opened with, extracted to keep it under the complexity cap for the same
  * reason `projectionIsStreamable` was.
@@ -370,17 +378,28 @@ const hopEnds = (
   // ONE concrete edge type, so the per-vertex bucket is exact. `relTypeNames` returns `undefined`
   // for an untyped hop and `null` for a shape with no single bucket.
   const types = relTypeNames(rel.label);
-  const farVar = node.variable;
+  // An ANONYMOUS end node gets a synthesized name rather than a refusal (item 776).
+  //
+  // This returned `null` for `node.variable === undefined`, so `MATCH (:P)-[r:E]->() RETURN r.k`
+  // fell to the general row pipeline while `->(b)` took this fast path: **83.51 ms against 19.03
+  // over the same 200,000 rows, 4.4x**, both answers correct — an equivalent-spelling gap of the
+  // kind item 444 closed for `-[e:E]->` against `-[:E]->` (3.7x) and item 505 for a split `MATCH`
+  // (747.9 ms against 0.0). Three in this one file, all the same shape: a gate on whether a name
+  // is PRESENT rather than on whether it is USED.
+  //
+  // Synthesizing beats threading `string | undefined` through fifty-odd uses — six walk
+  // implementations do `binding.set(farVar, far)` and would each need a branch. The sentinel
+  // cannot collide with a user variable because the PARSER cannot produce it: a NUL is not a
+  // valid identifier character, checked rather than assumed. Nothing can read it either, so
+  // `vars.includes(farVar)` is false exactly as it should be and `startOnly` resolves the same
+  // way it does for a named-but-unread end.
+  const farVar = node.variable ?? ANON_FAR_VAR;
   const startLabel = start.label;
 
   // `candidateVertices` seeds from the label bucket ONLY for a simple label; for anything else it
   // yields every vertex and leaves the filtering to its caller. Requiring a simple (or absent)
   // label keeps the seed exact without re-deriving that filtering here.
-  if (
-    types?.length !== 1 ||
-    farVar === undefined ||
-    (startLabel !== undefined && startLabel.kind !== 'label')
-  ) {
+  if (types?.length !== 1 || (startLabel !== undefined && startLabel.kind !== 'label')) {
     return null;
   }
 

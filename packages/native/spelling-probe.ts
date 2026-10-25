@@ -408,10 +408,14 @@ const GROUPS: [string, readonly string[]][] = [
   // called "defensive, not load-bearing", and item 505 found split `MATCH` clauses at 747.9 ms
   // against 0.0.
   //
-  // NOT FIXED HERE, deliberately: that file records two guards that looked defensive and were
-  // load-bearing (item 444's removal broke a rel variable correlating from a subquery), so the
-  // relaxation needs those cases in front of it. This group is the regression guard and the
-  // reminder.
+  // FIXED at item 776: an anonymous end now gets a SYNTHESIZED binding name the parser cannot
+  // produce, rather than a refusal — 4.60-4.88x, and the two spellings converge (16.48 against
+  // the named spelling's 17.40). This group stopped flagging in the same run that measured it,
+  // which is the cycle it was added for. It stays as the REGRESSION guard.
+  //
+  // The sentinel's uniqueness is load-bearing: with a plausible name like `b`,
+  // `MATCH (b:P)-[r:E]->() RETURN b.age` would bind the FAR node to `b` and read its age. The
+  // whole suite passed that mutant before item 776 added tests for it.
   [
     'an ANONYMOUS end node vs a named one (item 775)',
     ['MATCH (:P)-[r:E]->() RETURN r.k AS v', 'MATCH (:P)-[r:E]->(b) RETURN r.k AS v'],

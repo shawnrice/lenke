@@ -745,3 +745,50 @@ describe('a three-hop count gated by an inline constraint (item 456)', () => {
     ).toEqual([{ c: 4 }]);
   });
 });
+
+describe('an ANONYMOUS end node on the hop fast path (item 776)', () => {
+  // `hopEnds` refused `node.variable === undefined`, so `MATCH (:P)-[r:E]->() RETURN r.k` fell to
+  // the general row pipeline while `->(b)` took this path — 82.13 ms against 18.25 over the same
+  // 200,000 rows, 4.88x, both answers correct. An anonymous end now gets a SYNTHESIZED binding
+  // name instead of a refusal.
+  //
+  // THE SYNTHESIZED NAME MUST BE ONE NO QUERY CAN WRITE, and that is what these tests pin.
+  // Mutation found nothing covered it: replacing the sentinel with a plausible name like `b`
+  // passed the whole suite, while `MATCH (b:P)-[r:E]->() RETURN b.age` would then bind the FAR
+  // node to `b` and read ITS age instead of the start's — a wrong answer only a query that names
+  // its start `b` can see.
+  const two = (): Graph => {
+    const g = new Graph();
+    const a = g.addVertex({ id: 'a', labels: ['P'], properties: { age: 10 } });
+    const b = g.addVertex({ id: 'b', labels: ['P'], properties: { age: 20 } });
+
+    g.addEdge({ id: 'e1', from: a, to: b, labels: ['E'], properties: { k: 1 } });
+
+    return g;
+  };
+
+  test('a START named like a synthesized far binding still reads the start', () => {
+    const g = two();
+
+    // The start is the age-10 vertex and the far end is age 20. Both spellings of the start's
+    // name must answer 10 — if the far binding could shadow the start, the first would read 20.
+    expect(query(g, 'MATCH (b:P)-[r:E]->() RETURN b.age AS v')).toEqual([{ v: 10 }]);
+    expect(query(g, 'MATCH (x:P)-[r:E]->() RETURN x.age AS v')).toEqual([{ v: 10 }]);
+    // The same, with the far end NAMED, which is the spelling that always took this path.
+    expect(query(g, 'MATCH (b:P)-[r:E]->(c) RETURN b.age AS v')).toEqual([{ v: 10 }]);
+  });
+
+  test('an anonymous end agrees with a named one it does not read', () => {
+    const g = two();
+
+    // The two spellings are the same question when the end is unread, which is the whole reason
+    // the refusal was a gap: equal answers, 4.88x apart in cost.
+    expect(query(g, 'MATCH (:P)-[r:E]->() RETURN r.k AS v')).toEqual(
+      query(g, 'MATCH (:P)-[r:E]->(b) RETURN r.k AS v'),
+    );
+    expect(query(g, 'MATCH (a:P)-[:E]->() RETURN a.age AS v')).toEqual(
+      query(g, 'MATCH (a:P)-[:E]->(b) RETURN a.age AS v'),
+    );
+    expect(query(g, 'MATCH (:P)-[:E]->() RETURN count(*) AS v')).toEqual([{ v: 1 }]);
+  });
+});
