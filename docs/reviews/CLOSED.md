@@ -23040,3 +23040,57 @@ is five lines of fixture and one loop; the next pass that wants it should add it
 rather than rebuild it.
 
 Gates: `cargo build --release` 0; `git status` clean; the temporary example removed.
+
+## 824 — item 823's `set_prop` flag RETRACTED: it was my probe, in two different ways. `set_prop` is flat in history; a TYPE DE-OPT is the one thing that is not
+
+**RETRACTION + one real finding, no engine change** (a temporary example, reverted). Item 823
+recorded `set_prop` growing 25 → 43 → 78 ns across 0 → 300k → 1M churn, noted that the obvious cache
+story did not fit because every write targeted the first 20,000 slots, and recorded it as a flag
+rather than a mechanism. Reading `apply_set_prop` found two candidates in my own probe, and both are
+it.
+
+```text
+  churned    cold key   warm key   existing(Num)   same type
+        0          35         24              95          56
+   300000          40         22             312          52
+  1000000          37         22             729          50
+```
+
+**1. The first set for a NEW key allocates the whole column.** `apply_set_prop` runs
+`Column::new_absent(&value, node_count)` when the key does not exist — a column sized to the FULL
+node count, dead slots included. 823's probe used a fresh `score` key, so that one-time O(V)
+allocation was amortized over its 5,000 timed writes. `warm key`, with one `set_prop` outside the
+timed region, is **flat at 24/22/22**.
+
+**2. 823's growth did not even reproduce.** `cold key` reads 35/40/37 here against 823's 25/43/78 —
+no trend on a second run. The allocation is lazy (zeroed pages on first touch), so whether it costs
+anything depends on which pages get touched, which makes it exactly the kind of reading that needs a
+second run before it is a flag. **823's 3.1x is withdrawn.**
+
+**3. ⚠️ But a TYPE DE-OPT is genuinely O(nodes ever created).** The `existing(Num)` arm writes a
+`Num` into `name`, a STRING column — so `col.accepts(&value)` fails and `*col = col.to_gen()`
+rewrites the whole column as boxed `Value`s. That grows **95 → 312 → 729 ns** amortized over 5,000
+writes, i.e. a one-time cost of ~3.6 ms at a million dead slots. The same-type control writes a
+string into the same column and is **flat at 56/52/50**.
+
+That is not a defect — a de-opt must rewrite the column — but it IS history-dependent, and the
+reason is item 820's reason: **ids are never reused, so a column is as long as the node count
+INCLUDING every tombstoned slot.** In a churn-heavy store the first heterogeneous write to a
+property pays for the whole history, not the live set. Worth knowing before anyone proposes
+compaction or id reuse: this is one of the costs it would pay for.
+
+### The methodology residue, which is the part worth keeping
+
+**Two different one-time costs hid inside a per-op average in the same probe**, and both inflated the
+arm that looked like a finding: a column creation and a type de-opt. The giveaway in each case was
+the same — the growth was sublinear where a real O(V)-per-op defect is linear (item 820's was 30x
+for a 67x churn increase).
+
+**So: when timing a write in a loop, the timed region must contain no first-time work.** Pre-create
+the column, and write the type the column already holds. Both of 823's arms failed that and item 820
+passed it only by accident — its probe wrote nodes, which allocate nothing new per call.
+
+This is the third instrument defect this session after items 801 and 817, and the second where my own
+arithmetic was the tell rather than a control.
+
+Gates: `cargo build --release` 0; `git status` clean; the temporary example removed.
