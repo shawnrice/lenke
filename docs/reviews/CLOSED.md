@@ -23633,3 +23633,76 @@ By this session's standards 1.26x is shippable — 803 shipped at 1.11x and 828 
 decision is whether the planner change is worth it against the 22 ns that is still unaccounted.
 
 Gates: `bun run fmt` 0; `bun run fmt:check` 0; `git status` clean; the temporary probe removed.
+
+## 834 — item 833's residue cut from 22 ns to ~10: the COMPUTED-KEY row build is **+12.5 ns a row**, the largest term after the read, and its fix is codegen or a contract change
+
+**MEASUREMENT, no engine change** (a temporary probe, reverted). Item 833 reached 32.7 ns a row
+standalone against the engine's 55.1 and recorded the ~22 ns residue as unexplained, refusing to name
+it. Reading `detectNodeProjection`'s hot loop found two things the ladder had not modelled:
+
+```ts
+binding.set(nodeVar, v);
+const row: Row = {};
+for (let i = 0; i < width; i++) {
+  row[cols[i]] = fns[i]({ binding, params, graph });
+}
+out.push(row);
+```
+
+The row is built with a **COMPUTED key**, where 833 used a literal `{ k: value }` whose shape V8
+knows up front; and the closure arrives through an **array index**, where 833 called one closure
+directly. Each arm adds exactly one of those. Min of three rounds, 200,000 rows, one arm per process:
+
+```text
+  closure + literal row (833's arm)   31.3 ns/row          36.8 / 34.9 / 31.3
+  + COMPUTED key                      43.8      +12.5      48.7 / 43.8 / 45.1
+  + fns[i] and the width loop          45.1       +1.3      45.1 / 49.3 / 45.4
+```
+
+**The computed-key row build costs 12.5 ns a row** — the largest single term in this path after the
+property read itself — and **the array indirection is nearly free at 1.3**, which is the other half
+of the result: the `fns[i]` call site is not the problem, so nothing is gained by specializing it.
+
+833's arm reproduced at 31.3 here against its own 32.7, so the two runs agree and the ladder is
+stable across processes.
+
+### The decomposition is now near-complete
+
+```text
+  17.8   read + literal row object      (item 832's hand loop)
+ + 2.9   binding.set                    (833)
+ + 5.6   a fresh env per row            (833)
+ + 6.4   the closure reading BACK OUT of the binding   (833)
+ +12.5   the COMPUTED-KEY row build     (here)
+ + 1.3   fns[i] and the width loop      (here)
+ ------
+  45.1   reproduced
+  55.1   the engine (item 832)
+ ~10     still outside the ladder
+```
+
+**The residue is cut from 22 ns to ~10, and that remainder is still not named.** It is `query()`'s
+entry, the plan dispatch, the detector's own checks and the result wrapper — unmeasured, so
+unattributed, per items 804/808/814/829.
+
+### Why the 12.5 ns is not a tick
+
+`{ k: v }` allocates one object with its final shape. `const row = {}; row[k] = v` allocates with the
+empty shape and then does a keyed store; the shape transition is cached after the first row, so what
+is left is the store itself against a literal's single allocation. The column names are per QUERY, so
+a literal cannot be written in the source.
+
+The ways out are both out of scope: **compile a row factory** (`new Function` with the key baked in —
+real codegen, and this repo targets wasm and browser contexts where it may be unavailable), or
+**return results columnar** (an array per column rather than an object per row — an output-contract
+change, item 415's family). A computed-key literal `{ [col]: v }` is the same keyed store and buys
+nothing.
+
+### State of the TS projection line
+
+Two levers priced, neither started: **11.3 ns** for the binding round-trip (item 833, scoped at 832
+to a single-variable projection at the node-scan site) and **12.5 ns** for the row build (codegen or
+contract). Together they bound the shape at 55.1 → ~31, which would take the gap against native's
+7.4 from 7.4x to ~4.2x. The binding one is the tick-sized half.
+
+Gates: `bun run fmt` 0; `bun run fmt:check` 0; `git status` clean; the temporary probe removed.
