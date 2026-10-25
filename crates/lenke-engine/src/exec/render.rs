@@ -364,12 +364,48 @@ pub(super) fn render_nodes(store: &Store, ids: &[u32]) -> Vec<Value> {
         .iter()
         .map(|(k, _)| Value::Str(Arc::clone(k).into()))
         .collect();
+    // COLUMN-MAJOR, not row-major (item 828). Row-major asked, for each row, "is this row present
+    // in column 0? column 1? … column K?" — so a wide store cost K probes into K SEPARATE presence
+    // vectors per row, one cache line each, and `element p` grew from 169.8 ns/row at K=0 to 1785.7
+    // at K=200 (item 806's ladder) with item 827 confirming 313 -> 1181 through a whole query.
+    //
+    // Walking the columns OUTSIDE and the rows inside asks the same questions in the other order:
+    // one presence vector at a time, probed at ASCENDING positions (a label bucket is sorted), so
+    // the inner loop streams one allocation instead of striding across K.
+    //
+    // BYTE-IDENTICAL BY CONSTRUCTION, which is the whole reason this is a loop reorder and not a
+    // representation change: `cols` is in `prop_keys_arc()` order, which is sorted, so appending
+    // column by column leaves each row's pairs in exactly the order the row-major build produced.
+    //
+    // The cost is holding every row's `props` at once rather than one at a time. They are the
+    // OUTPUT — each is about to become a `Value::Map`'s contents — so the total allocation is
+    // unchanged and only its timing moves.
+    let mut props_per_row: Vec<Vec<(Value, Value)>> = vec![Vec::new(); ids.len()];
+
+    for (j, (_, c)) in cols.iter().enumerate() {
+        for (r, &id) in ids.iter().enumerate() {
+            if id == u32::MAX {
+                continue;
+            }
+
+            if c.present_at(id as usize) {
+                let props = &mut props_per_row[r];
+
+                if props.capacity() == 0 {
+                    props.reserve(cols.len().min(PROP_PAIRS_RESERVE));
+                }
+
+                props.push((key_vals[j].clone(), c.read(id as usize)));
+            }
+        }
+    }
+
     ids.iter()
-        .map(|&id| {
+        .zip(props_per_row)
+        .map(|(&id, props)| {
             if id == u32::MAX {
                 return Value::Null;
             }
-            let i = id as usize;
             let ext = store
                 .node_ext_id(id)
                 .unwrap_or_else(|| GStr::from(id.to_string()));
@@ -385,17 +421,6 @@ pub(super) fn render_nodes(store: &Store, ids: &[u32]) -> Vec<Value> {
                 sort_label_values(&mut ls);
                 Value::List(ls)
             };
-            let mut props: Vec<(Value, Value)> = Vec::new();
-
-            for (j, (_, c)) in cols.iter().enumerate() {
-                if c.present_at(i) {
-                    if props.capacity() == 0 {
-                        props.reserve(cols.len().min(PROP_PAIRS_RESERVE));
-                    }
-
-                    props.push((key_vals[j].clone(), c.read(i)));
-                }
-            }
             Value::Map(Arc::new(vec![
                 (field_key(Field::Id), Value::Str(ext)),
                 (field_key(Field::Labels), labels_list),
