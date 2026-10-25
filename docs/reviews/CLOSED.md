@@ -19565,3 +19565,75 @@ each other in the output and the comparison invites itself.
 
 Gates, each its own command with its exit code read UNPIPED: `bun run fmt` 0; `bun run lint` 0; `bun
 run check` 0. No engine change — `git diff` on `fastpath.rs` is empty — so no cargo gate applies.
+
+## 751 — a filtered query slower than its unfiltered parent is NOT automatically a bug: the filter removed the closed form
+
+**NEGATIVE RESULT. No change. The finding is a limit on the heuristic that produced items 748 and 749.** Those two came from reading a sweep for an ordering impossible on its face. Applied to the TS
+side of the same family, it produces a candidate that looks at least as strong and is not a defect
+at all.
+
+### The apparent anomaly
+
+TS, isolated, 200,000 vertices:
+
+| row                          |       ts |
+| ---------------------------- | -------: |
+| `count 2-hop` (ungated)      | **72.8** |
+| `count 2-hop + start filter` | **89.9** |
+| `count 2-hop + mid filter`   |     42.3 |
+| `count 2-hop + end filter`   |     99.8 |
+
+A start filter narrows the sources to ~39% — strictly fewer — and costs **1.23x MORE than no filter
+at all**, and 2.1x more than a mid filter. On its face that is 748's shape: less work, more time.
+
+### Reachability first, and it ruled out the obvious answer
+
+A throw in `walkSegments` (the general matcher): **all four rows answer** — none falls off the
+shortcut family, so this is not shortcut-versus-general. A throw in `longChainCount`: the **3-hop**
+row reaches it and none of the 2-hop rows do, so two hops has its own route.
+
+### The cause: the filter does not shrink the problem, it changes the algorithm
+
+Two documented routes, and the file states the reason plainly:
+
+- `buildTwoHopCount` iterates the **MIDDLE** and multiplies the two sides — `Σ_b indeg(b) ×
+outdeg(b)`. It never traverses an edge; two degree lookups per middle vertex answer the whole
+  count.
+- `buildFilteredTwoHopCount` drives from the **START**, because _"once a predicate selects which
+  `a`s count, the start side's factor is no longer a plain degree"_. Gate a vertex, then expand it.
+
+So the operation counts run the other way from the input sizes. Ungated: ~400k degree lookups, zero
+edge visits. Start-gated: ~200k predicate calls, ~390k edge visits, ~390k lookups — **more total
+work on 61% fewer sources**, because the degree product is unavailable once the start side is
+conditional.
+
+The gated route is also already the better of its options: item 206 built it precisely because the
+filtered shape fell to the general pipeline at 97.7 ns a scanned vertex against the one-hop walk's
+25.7.
+
+### 🛑 What this costs the heuristic, which is the part worth keeping
+
+"An ordering impossible on its face" is a good detector — it found a 4.12x and a 1.53x in the two
+items before this one. This is its failure mode, and it is specific: **a filter can remove a closed
+form.** When it does, the filtered query is legitimately dearer than its unfiltered parent, and the
+comparison that looked impossible was never valid, because the two rows are not the same algorithm
+with different inputs.
+
+So the refined rule: before treating `filtered > unfiltered` as a defect, ask whether the unfiltered
+case has a route the filtered one cannot take. Where the answer is no — items 748 and 749, where
+`count 2-hop + start filter` and the 3-hop ran the SAME sweep with the same gates — the ordering
+really is impossible and the defect is real. Where the answer is yes, as here, there is nothing to
+fix.
+
+Noted too: the mid filter at 42.3 is the fastest of the four and cheaper than ungated, which is the
+reverse again. That one IS consistent with work done — a mid gate prunes the frontier between the
+hops, which is the one position where a predicate removes work from the remaining pass rather than
+adding a pass of its own. It needed no separate investigation once the start case was understood.
+
+### What was checked and left alone
+
+No code changed. Both probed files were restored and `git status` is clean of source edits; the
+throws were temporary. `count 2-hop` and the three filtered rows all already exist as bench rows
+(the ungated one added at item 749), so the family stays measurable without anything new.
+
+Gates: no change to gate. `bun run build` 0 on the restored tree.
