@@ -3902,6 +3902,72 @@ fn late_materialize_top_k_matches_eager() {
     );
 }
 
+/// `stddev_pop`/`stddev_samp` over a bare scan — the fast path item 844 added, pinned against the
+/// general fold on a column that is only PARTIALLY present.
+///
+/// The partial presence is the whole point. A mutant dropping the `present[i]` test from the
+/// whole-column loop — so an absent cell contributes 0.0 to both moments and 1 to the count —
+/// passed every test binary. The corpus covers stddev over a FULLY present column, which cannot
+/// distinguish "skips nulls" from "counts them as zero".
+#[test]
+fn stddev_over_a_partially_present_column() {
+    let mut b = Builder::default();
+
+    // Six nodes all carrying the label, so the scan is `whole` and takes the vectorized loop,
+    // but only four carrying `score`. If absence contributed 0.0 the moments and the count would
+    // all be wrong, and in the direction that still produces a plausible number.
+    b.node(&["P"], &[("score", n(2.0))]);
+    b.node(&["P"], &[("other", n(1.0))]);
+    b.node(&["P"], &[("score", n(4.0))]);
+    b.node(&["P"], &[("score", n(4.0))]);
+    b.node(&["P"], &[("other", n(1.0))]);
+    b.node(&["P"], &[("score", n(10.0))]);
+
+    let store = b.build();
+    let num = |q: &str| match run(&crate::gql::parse(q).unwrap(), &store).rows[0][0] {
+        Value::Num(x) => x,
+        ref v => panic!("not a number: {v:?}"),
+    };
+
+    // The four present values are 2, 4, 4, 10: mean 5, squared deviations 9 + 1 + 1 + 25 = 36, so
+    // the POPULATION variance is 36/4 = 9 and the SAMPLE variance 36/3 = 12. If the two absent
+    // cells contributed 0.0 the count would be 6 and the mean 10/3, which is a perfectly
+    // plausible-looking number — which is why this is asserted against the arithmetic and not
+    // just against the other path.
+    let pop = num("MATCH (p:P) RETURN stddev_pop(p.score) AS m");
+    let samp = num("MATCH (p:P) RETURN stddev_samp(p.score) AS m");
+
+    assert_eq!(pop, 3.0);
+    assert_eq!(samp, 12.0f64.sqrt());
+
+    // AND BIT-FOR-BIT AGAINST THE GENERAL FOLD, which `WHERE true` forces by making the plan a
+    // `Filter` (item 570: it is not folded away). Float addition is order-dependent, so equality
+    // here is the claim that the fast path accumulates in the same order with the same
+    // arithmetic — not merely that it is close.
+    assert_eq!(
+        pop,
+        num("MATCH (p:P) WHERE true RETURN stddev_pop(p.score) AS m")
+    );
+    assert_eq!(
+        samp,
+        num("MATCH (p:P) WHERE true RETURN stddev_samp(p.score) AS m")
+    );
+
+    // The count-dependent edges: `pop` is NULL over 0 rows, `samp` over fewer than 2.
+    let mut eb = Builder::default();
+    eb.node(&["P"], &[("score", n(7.0))]);
+    eb.node(&["Q"], &[("other", n(1.0))]);
+
+    let estore = eb.build();
+    let val = |q: &str| run(&crate::gql::parse(q).unwrap(), &estore).rows[0][0].clone();
+
+    assert!(
+        matches!(val("MATCH (p:P) RETURN stddev_pop(p.score) AS m"), Value::Num(x) if x == 0.0)
+    );
+    assert!(val("MATCH (p:P) RETURN stddev_samp(p.score) AS m").is_null());
+    assert!(val("MATCH (p:Q) RETURN stddev_pop(p.score) AS m").is_null());
+}
+
 /// `min`/`max` over a packed DATE column — the fast path item 841 added.
 ///
 /// LIKE ITEM 840'S TWIN, THIS EXISTS BECAUSE NOTHING COVERED THE SHAPE. A mutant inverting the

@@ -3662,7 +3662,21 @@ pub(super) fn try_scan_num_agg(
     // claiming scan min/max and answering them at 6.4x what this columnar fold charges for
     // `sum` over the SAME column — 180.5us vs 28.1us at 50k. Nothing was wrong with either
     // path; the aggregate set was split across two of them and each covered only half of it.
-    if agg.distinct || !matches!(agg.func, AggFn::Sum | AggFn::Avg | AggFn::Min | AggFn::Max) {
+    //
+    // `StddevPop`/`StddevSamp` joined at item 844, in a SEPARATE early-return block below rather
+    // than as another arm of the fold — see the note there for what sharing a live range cost the
+    // `min` control.
+    if agg.distinct
+        || !matches!(
+            agg.func,
+            AggFn::Sum
+                | AggFn::Avg
+                | AggFn::Min
+                | AggFn::Max
+                | AggFn::StddevPop
+                | AggFn::StddevSamp
+        )
+    {
         return None;
     }
     let label = match input {
@@ -3675,6 +3689,79 @@ pub(super) fn try_scan_num_agg(
     let Some(Column::Num { data, present, .. }) = store.column(key) else {
         return None; // non-numeric column: the general path handles poison
     };
+    let all_live_sd = store.live_node_count() == store.node_count();
+    let whole_sd = all_live_sd
+        && match label {
+            None => true,
+            Some(l) => store.nodes_with_label(l).len() == store.node_count(),
+        };
+
+    // THE STDDEV PATH IS WHOLLY SEPARATE, and the reason is measured rather than stylistic.
+    //
+    // An `AggFn` census put `Count` at 38 matches in this file, `Min` 36, `Max` 24, `Sum` 17,
+    // `Avg` 12 — and `Collect`, `CollectList`, both stddevs and both percentiles at ZERO, six of
+    // eleven variants falling to the general grouped fold. At 200,000 rows against `sum`'s 110us
+    // on the SAME column: `stddev_pop` 777 and `stddev_samp` 790 (7.1x), `collect_list` 2,999
+    // (27x), `percentile_cont` 5,588 and `percentile_disc` 5,816 (51x). The stddevs are taken
+    // here because their own doc says they are one-pass moments — `sum`'s loop plus one
+    // multiply-accumulate — so the 7.1x was the fold and nothing else. The percentiles need a
+    // SORT, so most of their 51x is inherent, and `collect_list` must materialize the list.
+    //
+    // The first draft added `sum_sq` beside `total` and a third arm to the existing fold. It
+    // worked and it REGRESSED A CONTROL: `min` went 394us -> 632us, 1.6x the wrong way, disjoint
+    // across three alternated rounds, because an accumulator declared at that scope stays live
+    // across the min/max loop that never reads it. This function's own comment records the same
+    // hazard one level in, for a shared loop BODY; a shared live RANGE is the same tax collected
+    // somewhere else. Returning early leaves every byte of the fold below untouched, so the
+    // question cannot arise — and the `min`/`sum`/`avg` controls then measured flat.
+    //
+    // BYTE-IDENTICAL BY CONSTRUCTION. The general fold's moments are exactly
+    // `sum += x; sum_sq += x * x; cnt += 1` over the group's rows with nulls skipped, finishing
+    // with `stddev_of` — which this calls rather than repeating its formula. Float addition is
+    // order-dependent, so the ORDER is as load-bearing as the arithmetic: a bare `Scan`'s group
+    // rows arrive in scan order, which is the order these loops accumulate in.
+    if matches!(agg.func, AggFn::StddevPop | AggFn::StddevSamp) {
+        let (mut sd_total, mut sd_sq, mut sd_cnt) = (0f64, 0f64, 0u64);
+
+        if whole_sd {
+            for (i, &x) in data.iter().enumerate() {
+                if present[i] {
+                    sd_total += x;
+                    sd_sq += x * x;
+                    sd_cnt += 1;
+                }
+            }
+        } else {
+            let mut visit = |i: usize| {
+                if present[i] {
+                    let x = data[i];
+                    sd_total += x;
+                    sd_sq += x * x;
+                    sd_cnt += 1;
+                }
+            };
+
+            match label {
+                Some(l) => store
+                    .nodes_with_label(l)
+                    .iter()
+                    .for_each(|&id| visit(id as usize)),
+                None => (0..store.node_count()).for_each(|i| {
+                    if store.is_alive(i as u32) {
+                        visit(i);
+                    }
+                }),
+            }
+        }
+
+        return Some(Batch::of(vec![Col::Gen(vec![stddev_of(
+            sd_cnt,
+            sd_total,
+            sd_sq,
+            agg.func == AggFn::StddevSamp,
+        )])]));
+    }
+
     let (mut total, mut cnt) = (0f64, 0u64);
     let mut best: Option<f64> = None;
     // Whole-column fast path: when the scan covers EVERY live node (an unlabelled

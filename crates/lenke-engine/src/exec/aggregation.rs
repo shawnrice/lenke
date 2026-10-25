@@ -1051,7 +1051,7 @@ fn percentile_of(mut nums: Vec<f64>, frac: f64, cont: bool) -> Value {
 /// from the TS engine's `stddev_of`. `pop` is NULL over 0 rows, `samp` over fewer than 2; the
 /// summed squared deviation is clamped at 0 (preserving NaN) so f64 cancellation
 /// can't slip a tiny negative into `sqrt`.
-fn stddev_of(n: u64, sum: f64, sum_sq: f64, sample: bool) -> Value {
+pub(super) fn stddev_of(n: u64, sum: f64, sum_sq: f64, sample: bool) -> Value {
     let denom = if sample {
         if n < 2 {
             return Value::Null;
