@@ -11127,6 +11127,21 @@ fn the_forward_label_map_agrees_with_the_bucket_sweep() {
 ///
 /// NODE COUNT AND ROW COUNT ARE PINNED: every store has `TOTAL` nodes, the query returns the same
 /// 500 of them, and only the number of distinct labels in the graph varies.
+///
+/// 🛑 THE AXIS IS FLAT AS OF ITEM 724 — this harness now measures the ABSENCE of the cost it was
+/// written to document, and item 739 re-ran it to establish that. Min of three runs, 1 label
+/// against 40: `exec::run` 40.50 -> 41.73 us (was 50.89 -> 171.56) and the JSON carrier
+/// 83.82 -> 85.53 (was 92.13 -> 208.45). So 3.37x across the axis became 1.03x. The forward label
+/// map (`node_labels`, indexed per node) removed the per-bucket binary search entirely, so the
+/// read is O(labels on THIS node) and no longer O(distinct labels in the graph).
+///
+/// KEEP IT ANYWAY: it is the only harness that sweeps this axis, so it is what would catch the
+/// term coming back. Do NOT quote 721's table as a current price — item 731 did, in an
+/// open-lever list, because 724 never re-ran this (it takes 0.02 s).
+///
+/// AND TAKE THE MIN: the 40-label row is the noisiest here. Single runs produced 129.57 us on the
+/// JSON path and 62.62 on `exec::run`, neither of which reproduced in two further runs, and the
+/// first of those nearly went into the record as a 1.49x residual.
 #[test]
 #[ignore = "measurement harness: cargo test --release -- --ignored --nocapture label_read_cost_by_label_count"]
 fn label_read_cost_by_label_count() {
