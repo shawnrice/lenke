@@ -421,6 +421,19 @@ const hopOrderPlan = (
     return null;
   }
 
+  // 🛑 `sorts !== undefined` FORCING THE START-DRIVEN WALK IS THE SORTED-HOP COST, and it is
+  // REFUTED as a target at item 698 (re-priced at 697) — do not re-derive it. The far-driven walk
+  // is cheaper and cannot be used here: it REORDERS rows deliberately, and
+  // `Array.prototype.sort` is stable, so tie order would change — which is observable between the
+  // engines (item 605 measured both agreeing over a fixture with 20 ties per group).
+  // `ordered-rows.ts` states the rule.
+  //
+  // WHAT THE COST IS, measured against the HONEST floor (the unordered query PLUS a bare sort of
+  // its own rows, not the unordered query alone): 0.86x of that floor at degree 1 — the engine
+  // sorts more cheaply than materialising and sorting separately — and 1.58x at degree 3.
+  // Comparing against the unordered row alone overstates it ~1.9x, which is items 659/660's
+  // lesson and the mistake item 727 walked into from the other direction: the bench's
+  // `+ order by` row looks 2.6x worse than `traverse 1-hop project` and most of that is the floor.
   return {
     sorted: (inner) => sortedRows(inner, sorts ?? undefined),
     startDriven: forceStartDriven || sorts !== undefined,
