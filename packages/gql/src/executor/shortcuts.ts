@@ -7024,6 +7024,8 @@ export const detectNodeProjection = (
 
   const cols: string[] = [];
   const fns: CompiledExpr[] = [];
+  /** Per item: the property key when it is `<nodeVar>.<key>`, else `undefined`. See the push. */
+  const directKeys: (string | undefined)[] = [];
 
   for (const item of proj.items) {
     if (!itemLocal(item.expr)) {
@@ -7052,7 +7054,33 @@ export const detectNodeProjection = (
 
     cols.push(item.alias ?? columnName(item.expr));
     fns.push(compileExpr(item.expr));
+    // A DIRECT READ for `<nodeVar>.<key>` (item 835). `compileExpr`'s `prop` arm is exactly
+    // `(env) => propOf(env.binding.get(variable), key)`, so for the scan's OWN variable the
+    // compiled closure writes the element into a `Map`, builds an `env`, and reads it straight
+    // back out. Recording the key here lets the loop call `propOf(v, key)` on the vertex it
+    // already holds — byte-identical by construction, because it is the same function on the same
+    // element.
+    //
+    // This is the projection half of what items 224/230 did for PREDICATES (lifting
+    // `<ownVar>.<key>` out of the general evaluator) and what item 803 did for the binding write.
+    // Measured at item 833: the write, the env and the read-back-out are 11.3 ns a row together,
+    // disjoint over three rounds.
+    //
+    // `variable === nodeVar` is REDUNDANT TODAY and kept deliberately — mutation says so: removing
+    // it leaves all 2,634 tests green, because the `freePredicateVars` loop above has already
+    // returned `null` for any item reading another name, and a `prop` expr carries no subquery so
+    // that loop always ran for it. It is the coupling this read silently depends on, so it stays
+    // as the thing that fails loudly if that check is ever loosened — the same reason the rollback
+    // path keeps its `schema_reverted` guard. Item 475's rule: a surviving mutant on a new guard
+    // means "redundant" as readily as "untested", and the two have opposite fixes.
+    directKeys.push(
+      item.expr.kind === 'prop' && item.expr.variable === nodeVar ? item.expr.key : undefined,
+    );
   }
+
+  // When EVERY item reads the element directly, nothing in the projection consults the binding, so
+  // the per-vertex `Map` write is dead too — item 803's rule, applied to the projection.
+  const allDirect = directKeys.every((k) => k !== undefined);
 
   // The sort is resolved AFTER `cols`, because the rule is about output columns and those are
   // what `cols` holds. `undefined` means no sort (the streaming path, unchanged); `null` declines.
@@ -7100,12 +7128,16 @@ export const detectNodeProjection = (
 
       // Only SURVIVORS reach here, so the row object and the item evaluations are paid per
       // result rather than per scanned vertex.
-      binding.set(nodeVar, v);
+      if (!allDirect) {
+        binding.set(nodeVar, v);
+      }
 
       const row: Row = {};
 
       for (let i = 0; i < width; i++) {
-        row[cols[i]] = fns[i]({ binding, params, graph });
+        const dk = directKeys[i];
+
+        row[cols[i]] = dk === undefined ? fns[i]({ binding, params, graph }) : propOf(v, dk);
       }
 
       out.push(row);
