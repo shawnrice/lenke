@@ -20593,3 +20593,46 @@ owner: it is the Gremlin `regex()` predicate sharing the scalar library. By desi
 the labels `Value::List`, the properties `Value::Map` behind an `Arc`. Item 341 found the structural
 answer (the TS engine does not materialize an element at all, and does the same work in 213 ns/row
 against native's 492), so the lever is LAZINESS, a representation change.
+
+## 771 — element rendering: 1.03-1.04x from the LOOP FORM, the pair-`Vec` growth ladder is refuted, and a multi-case probe faked a 3.2x regression
+
+**DONE (Rust), small and attributed to the right cause.** `render_nodes`/`render_edges` build the
+property pairs with an explicit `for` loop instead of
+`.iter().enumerate().filter().map().collect()`, reserving on the FIRST push. One case per process,
+three alternated rounds: **dense (3 of 3 present) 1.04x, sparse (0 of 3) 1.03x**, controls `p.a`
+1.00x and `labels(p)` 0.99x, series non-overlapping.
+
+**THE DECOMPOSITION, which is the part to keep.** `RETURN p` over 200,000 three-property nodes, by
+part: `p.a` 2.70, three scalars 24.81, `element_id(p)` 9.54, `labels(p)` **85.91**, id + labels +
+three scalars 141.48, **the element 383.46**. So ~242 ns is the map ASSEMBLY rather than reading
+values. On ONE store with three property columns: a node with **3 of 3 present costs 393.21 ns
+against 104.23 with 0 of 3**.
+
+**REFUTED — the pair `Vec`'s growth ladder as the cost.** `collect()` from a `filter` reserves
+nothing (`size_hint` lower bound 0), so the pairs grow 1, 2, 4 and ~96 ns per property looked like
+three allocations and two copies. Pre-sizing is worth **~15 ns of 384, not ~190**: the 289 ns for
+three properties is the property WORK (reads, `Value` clones, key clones). The arithmetic was fine
+and the causal story was wrong.
+
+**AND THE GAIN IS NOT THE RESERVATION.** `dense` and `sparse` both move 3-4%, and a sparse node
+reserves nothing and pushes nothing — so the loop form is what moved them. The reservation is kept
+because it is correct and cannot fire on an empty node, but it is NOT separately measurable and
+should not be cited as a win.
+
+**A MULTI-CASE PROBE FAKED A 3.2x REGRESSION, and the tell was a control.** The first version used
+`Vec::with_capacity` UP FRONT, which allocates even when nothing is present — a real design flaw,
+since a heterogeneous store is mostly sparse. The multi-case probe showed the sparse row at
+96.76 -> 308.19 (3.2x worse) — and in the same table a store with NO property columns, where the
+reserve is `min(0, 16) = 0` and the code is unchanged, went 216 -> 91 (2.37x FASTER). A row the
+change cannot reach cannot move 2.37x. The probe builds seven stores and runs sixteen queries in
+ONE process, so a change to the early rows' allocation pattern moves the late ones — exactly why
+`strag_421` carries `PROBE_ONLY`. One case per process showed no regression anywhere (sparse
+1.03x). The design flaw was still real, so the shipped version reserves on the first push.
+
+**Still open:** `labels(p)` at 86 ns for a ONE-label list — `labels_of_refs` allocates a `Vec<&str>`
+to sort and then the renderer allocates a `Vec<Value>`, two where one would do. `GStr::cmp` is
+`as_bytes().cmp()`, the same order as `&str`, so sorting the `Value`s directly is byte-identical;
+it needs an iterator accessor on the store. Expect ~15 ns of 384 by the same reasoning as above, so
+measure it with the one-case-per-process harness before believing it. The structural answer for
+this row remains item 341's: the TS engine does not materialize an element at all (213 ns/row
+against native's 492).
