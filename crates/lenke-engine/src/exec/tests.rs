@@ -3902,6 +3902,79 @@ fn late_materialize_top_k_matches_eager() {
     );
 }
 
+/// `min`/`max` over a packed DATE column — the fast path item 841 added.
+///
+/// LIKE ITEM 840'S TWIN, THIS EXISTS BECAUSE NOTHING COVERED THE SHAPE. A mutant inverting the
+/// comparison, so that `min` returns the MAXIMUM, passed all 1,226 tests. The `Temporal` variant
+/// was untested across the whole aggregate family, not merely in one arm.
+#[test]
+fn min_max_over_a_date_column() {
+    use crate::temporal::{Date, Temporal};
+
+    let d = |iso: &str| Value::Temporal(Temporal::Date(Date::parse(iso).unwrap()));
+    let mut b = Builder::default();
+
+    // Deliberately NOT in sorted insertion order, and the extremes are neither first nor last —
+    // a fast path that returned the first or the last present value would pass otherwise.
+    for iso in [
+        "2024-06-15",
+        "1999-12-31",
+        "2024-01-02",
+        "2031-11-30",
+        "2024-01-01",
+    ] {
+        b.node(&["P"], &[("hired", d(iso))]);
+    }
+
+    // A node with no `hired` key: skipped, and it must not become the extremum.
+    b.node(&["P"], &[("other", n(1.0))]);
+
+    let store = b.build();
+
+    assert!(matches!(
+        store.column("hired"),
+        Some(crate::store::Column::Temporal { .. })
+    ));
+
+    let one = |q: &str| match &run(&crate::gql::parse(q).unwrap(), &store).rows[0][0] {
+        Value::Temporal(t) => t.format(),
+        Value::Null => "NULL".to_string(),
+        v => panic!("not a temporal: {v:?}"),
+    };
+
+    assert_eq!(one("MATCH (n:P) RETURN min(n.hired) AS m"), "1999-12-31");
+    assert_eq!(one("MATCH (n:P) RETURN max(n.hired) AS m"), "2031-11-30");
+    // THE SAME QUESTIONS THROUGH THE GENERAL PATH, which `WHERE true` forces by making the plan
+    // a `Filter` (item 570: it is not folded away). The fast path and the fold must agree.
+    assert_eq!(
+        one("MATCH (n:P) WHERE true RETURN min(n.hired) AS m"),
+        "1999-12-31"
+    );
+    assert_eq!(
+        one("MATCH (n:P) WHERE true RETURN max(n.hired) AS m"),
+        "2031-11-30"
+    );
+
+    // AN EMPTY SET has no extremum, so NULL — the answer the numeric and string arms give. The
+    // label matches nothing, so the scan is empty while the column still exists.
+    let mut eb = Builder::default();
+    eb.node(&["P"], &[("hired", d("2024-01-01"))]);
+    eb.node(&["Q"], &[("other", n(1.0))]);
+
+    let estore = eb.build();
+    let eone = |q: &str| match &run(&crate::gql::parse(q).unwrap(), &estore).rows[0][0] {
+        Value::Temporal(t) => t.format(),
+        Value::Null => "NULL".to_string(),
+        v => panic!("not a temporal: {v:?}"),
+    };
+
+    assert_eq!(eone("MATCH (n:Q) RETURN min(n.hired) AS m"), "NULL");
+    assert_eq!(
+        eone("MATCH (n:Q) WHERE true RETURN min(n.hired) AS m"),
+        "NULL"
+    );
+}
+
 /// `count(DISTINCT <date column>)` — the fast path item 840 added, pinned against the general
 /// path that answered the shape before it.
 ///

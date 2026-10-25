@@ -24198,3 +24198,90 @@ Gates, each its own command with its exit code read UNPIPED: `cargo build --rele
 `cargo test --release` **1,226 passed 0 failed** (1,225 before the new test); `rewrite_fuzz` 10
 passed; `cargo clippy --all-targets -- -D warnings` 0; `cargo fmt` 0; `bun run fuzz` (all seven
 byte-identity fuzzers) 13 pass 0 fail. The temporary example and both pristine copies removed.
+
+## 841 — `min`/`max` over a date column: **2.65x and 2.82x, both disjoint** — and the inverted-comparison mutant passed all 1,226 tests, exactly as in 840
+
+**SHIPPED (Rust).** Item 840 found `Temporal` absent from every aggregate fast path, took the
+largest piece (`count(DISTINCT)`, 36.6x) and named this half with its number. This is it.
+
+`try_scan_str_agg`'s own comment had already marked the spot:
+
+> Every other encoding declines. `Gen` is a mixed column, where the extremum crosses type ranks
+> and belongs to the general fold; `Bool` and `Temporal` have their own orders and are **simply
+> not measured here, so they are left where they were rather than extended on a guess.**
+
+Item 840 supplied the measurement that comment was waiting for, so `try_scan_temporal_agg` is now
+its temporal twin: gates identical to the string arm's with `Column::Temporal` in place of
+`Column::Str`/`Dict`.
+
+**BYTE-IDENTICAL BY CONSTRUCTION, and not by inspection.** `value::cmp_total` on two
+`Value::Temporal`s is one line — `x.cmp_total(y)` — so this arm calls _the same function on the
+same values_ as the general fold and can only agree with it. That is the argument item 835 rested
+on, and it is the only kind worth having here.
+
+### Measured: three ORDER-ALTERNATED rounds, min of three
+
+Both arms built as **separate binaries** from the pristine and ship sources, each asserted to be
+the code it claims (`try_scan_temporal_agg` occurs 0 times in PRE across both files, 1 in POST)
+before a reading was taken.
+
+```text
+  shape                        PRE min   POST min
+  min(p.hired)                    1626        613   2.65x   DISJOINT
+  max(p.hired)                    1727        612   2.82x   DISJOINT
+  CONTROL min(p.score)   Num       401        437   0.92x
+  CONTROL max(p.score)   Num       432        467   0.93x
+  CONTROL min(p.city)    Str      1334       1467   0.91x
+  CONTROL count(p.hired) same col    92        100   0.92x
+  CONTROL count(*)                   0          0   —
+```
+
+**All five controls moved AGAINST the change by ~8%**, which is the direction that makes the
+result trustworthy rather than the one that flatters it. The cause is visible in the raw rounds: the
+third PRE round was globally the fastest (401 / 432 / 1334 / 92, every row its lowest), so the
+machine was quieter for it — a ROUND effect, and because it lands in the PRE arm's minimum it makes
+the reported ratios **conservative**. `count(p.hired)` is the control that matters most: the same
+temporal column, declined by this arm because it is not `min`/`max`, so it isolates the aggregate
+from the column type.
+
+`min(p.city)` over a `Str` column at 1,467 is now the slowest of these — worth noting, since the
+temporal arm overtaking the string one was not a goal and suggests where to look next.
+
+### The gap is closed but not to parity
+
+`min(p.hired)` at 613 against the `Num` arm's 437 is still **1.4x**. The residual is the `Date`
+comparison against an `f64` one plus the boxed `Col::Gen` output, and it is **not attributed** —
+unmeasured, so unnamed, per items 804/808/814/829.
+
+### The same hole as item 840, one arm over
+
+- **M1, the comparison inverted** so `min` returns the MAXIMUM — **SURVIVED all 1,226 tests.**
+  Nothing covered `min`/`max` over a temporal column by either route.
+- So the test came first, and the mutants were re-run against it: **M1 caught**, **M2 (presence
+  check dropped) caught**, **M3 (the wrong value emitted) caught** — three of three.
+
+**Two arms, two independent wrong-answer mutants that the whole suite accepted. That is not two
+incidents, it is one fact: the `Temporal` variant was untested across the aggregate family.**
+Recorded as the generalization, because the next person to add a temporal arm should expect no
+safety net rather than discover it.
+
+The fixture is built against the ways a fast path can be accidentally right: the dates are **not in
+sorted insertion order** and **neither extreme is first or last**, so an arm returning the first or
+the last present value fails. It also pins the key-less node (skipped, and must not become the
+extremum), both questions through the general path via `WHERE true`, and the **empty scan**, where
+the label matches nothing while the column still exists — NULL, the answer the numeric and string
+arms give.
+
+### One ordering decision, taken for a recorded reason
+
+The new entry sits **beside** the numeric and string twins and **before** `try_frontier_prop_agg`,
+not after. A bare `Scan` is a trivial frontier, so the frontier path claims this shape; it declines
+on `Column::Temporal` _today_, and ordering the new arm after it would leave that arm DEAD the
+moment the frontier path grew a temporal case — which is items 371 and 375's mistake, already made
+twice in this file.
+
+Gates, each its own command with its exit code read UNPIPED: `cargo build --release --tests` 0;
+`cargo test --release` **1,227 passed 0 failed** (1,226 before the new test); `rewrite_fuzz` 10
+passed; `cargo clippy --all-targets -- -D warnings` 0; `cargo fmt` 0; `bun run fuzz` (all seven
+byte-identity fuzzers) 13 pass 0 fail. The temporary example and all four pristine/ship copies
+removed.

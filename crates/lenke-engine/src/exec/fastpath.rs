@@ -3895,6 +3895,72 @@ pub(super) fn try_scan_str_agg(
     ])]))
 }
 
+/// `MATCH (n:L) RETURN min(n.hired)` over a packed TEMPORAL column — the arm the string twin's
+/// own comment left open: "`Bool` and `Temporal` have their own orders and are simply not
+/// measured here, so they are left where they were rather than extended on a guess."
+///
+/// Item 840 supplied the measurement that comment was waiting for. Over 200,000 nodes carrying a
+/// `Date` and a `Num` of the same cardinality, `min` cost **1,925us against the number column's
+/// 438 — 4.4x** (and `max` 1,923 against 472, 4.1x), because the general fold boxes a `Value` per
+/// row and compares through `cmp_total`'s dispatch.
+///
+/// BYTE-IDENTICAL BY CONSTRUCTION: the comparator here IS the general fold's. `cmp_total` on two
+/// `Value::Temporal`s is exactly `x.cmp_total(y)` — one line of dispatch — so this calls the same
+/// function on the same values and can only agree with it.
+///
+/// Unlike the numeric and string arms there is no second encoding to handle: a temporal column is
+/// `Temporal` or it is `Gen`, and a `Gen` one is mixed-kind (a stored `Value::Null` beside dates
+/// is enough to promote it, item 840), where the extremum can cross type ranks and belongs to the
+/// general fold.
+///
+/// `agg.numeric_only` (Gremlin) is deliberately NOT checked, matching the string twin: the general
+/// path's cross-type fault needs a group holding both a number and a non-number, and a packed
+/// temporal column's scanned values are all `Value::Temporal`, so the fault it would raise cannot
+/// arise for this shape either way.
+pub(super) fn try_scan_temporal_agg(
+    input: &Plan,
+    keys: &[(String, Expr)],
+    aggs: &[Agg],
+    store: &Store,
+) -> Option<Batch> {
+    let agg = sole_agg(keys, aggs)?;
+    if agg.distinct || !matches!(agg.func, AggFn::Min | AggFn::Max) {
+        return None;
+    }
+    let label = match input {
+        Plan::Scan { label } => label,
+        _ => return None,
+    };
+    let Some(Expr::Prop { slot: 0, key }) = agg.arg.as_ref() else {
+        return None;
+    };
+    let Some(Column::Temporal { data, present, .. }) = store.column(key) else {
+        return None; // Gen / non-temporal / absent-everywhere -> general path
+    };
+    let want_min = agg.func == AggFn::Min;
+    // The extremum is tracked as an INDEX, like the string arm: `scan_visit` takes an `FnMut`.
+    let mut best_i: Option<usize> = None;
+    scan_visit(store, label, |i| {
+        if present[i] {
+            best_i = Some(match best_i {
+                None => i,
+                Some(b) => {
+                    let ord = data[i].cmp_total(&data[b]);
+                    if (want_min && ord.is_lt()) || (!want_min && ord.is_gt()) {
+                        i
+                    } else {
+                        b
+                    }
+                }
+            });
+        }
+    });
+    // An empty set has no extremum, so NULL — the answer the numeric and string arms give.
+    Some(Batch::of(vec![Col::Gen(vec![
+        best_i.map_or(Value::Null, |i| Value::Temporal(data[i]))
+    ])]))
+}
+
 /// Visit each scanned node's dense id (as `usize`) for a bare `Scan`. Iterates the
 /// raw `0..node_count` range directly when the scan covers every live node (an
 /// unlabelled scan, or a label all nodes carry, nothing deleted) — sequential and

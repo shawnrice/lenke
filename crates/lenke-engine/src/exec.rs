@@ -1668,6 +1668,14 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
                         // numeric arm's with `Column::Str`/`Column::Dict` in place of
                         // `Column::Num`, so the two never contend for one shape (421).
                         .or_else(|| try_scan_str_agg(input, keys, aggs, store))
+                        // The TEMPORAL twin, placed beside the other two for the same reason:
+                        // a bare `Scan` is a trivial frontier, so `try_frontier_prop_agg` below
+                        // would claim the shape — it declines on `Column::Temporal` today, but
+                        // ordering this entry after it would make the arm DEAD the moment that
+                        // changed, which is item 371/375's mistake twice over. Its gates are the
+                        // string arm's with `Column::Temporal` in its place, so no two of the
+                        // three contend for one shape (item 841).
+                        .or_else(|| try_scan_temporal_agg(input, keys, aggs, store))
                         .or_else(|| try_frontier_prop_agg(input, keys, aggs, store))
                         .or_else(|| try_scan_count_prop(input, keys, aggs, store))
                         // AFTER the scan twin, which owns the bare-`Scan` shape. `count`
