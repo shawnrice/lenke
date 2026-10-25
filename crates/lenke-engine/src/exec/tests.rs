@@ -26400,3 +26400,76 @@ fn a_two_hop_chain_gated_at_its_first_position_agrees_with_the_general_path() {
          gate would be invisible"
     );
 }
+
+/// The same shape gated at its INTERIOR position, which item 749 newly routes to the sweep.
+///
+/// Item 306 measured this case at **0.74x** — genuinely slower than the product arm — and excluded
+/// it deliberately, unlike the FIRST position, which its table simply has no row for (item 748).
+/// That verdict is now stale and does not reproduce at any fixture size: three alternated rounds
+/// read 17.2/16.9/16.7 -> 11.7/10.9/11.0 at 200,000 vertices (**1.53x, disjoint**) and 1.1 -> 1.0
+/// at 20,000, with the UNGATED row flat at 2.6-2.7 both arms. The likely reason is that item 309
+/// landed AFTER 306 and made the sweep faster — it reverses a chain to turn an end gate into a
+/// start one — so 306's number was measured against a worse sweep. That is a hypothesis, not a
+/// verified claim: confirming it would need the pre-309 code rebuilt.
+///
+/// Same oracle as its first-position sibling, and for the same reason: `count(c.k)` does not take
+/// this route, so the comparison is against an independent path rather than the fast path itself.
+#[test]
+fn a_two_hop_chain_gated_at_its_interior_position_agrees_with_the_general_path() {
+    use crate::value::Value;
+
+    let store = {
+        let mut b = crate::store::Builder::default();
+        for i in 0..16u32 {
+            b.node(&["Univ"], &[("k", Value::Num(f64::from(i % 3)))]);
+        }
+        for (from, to) in [
+            (0u32, 1u32),
+            (0, 2),
+            (1, 3),
+            (1, 4),
+            (2, 5),
+            (3, 6),
+            (4, 6),
+            (5, 7),
+            (6, 8),
+            (7, 9),
+            (8, 10),
+            (9, 11),
+            (10, 12),
+            (11, 13),
+            (12, 14),
+            (13, 0),
+            (14, 2),
+            (15, 1),
+        ] {
+            b.edge(from, to, "K");
+        }
+        b.build()
+    };
+
+    let run = |q: &str| -> f64 {
+        let plan = crate::opt::optimize(crate::gql::parse(q).expect("parse"));
+        let out = crate::exec::try_run(&plan, &store).expect("run");
+        match out.rows.iter().next().and_then(|r| r.first()) {
+            Some(Value::Num(n)) => *n,
+            other => panic!("not a number: {other:?}"),
+        }
+    };
+
+    let gated_sweep = run("MATCH (a:Univ)-[:K]->(b)-[:K]->(c) WHERE b.k > 0 RETURN count(*) AS n");
+    let gated_general =
+        run("MATCH (a:Univ)-[:K]->(b)-[:K]->(c) WHERE b.k > 0 RETURN count(c.k) AS n");
+    let ungated = run("MATCH (a:Univ)-[:K]->(b)-[:K]->(c) RETURN count(*) AS n");
+
+    assert!(gated_sweep > 0.0, "a vacuous fixture proves nothing");
+    assert_eq!(
+        gated_sweep, gated_general,
+        "the newly-routed interior gate must agree with a spelling that does not take this route"
+    );
+    assert!(
+        gated_sweep < ungated,
+        "the interior gate must EXCLUDE something ({gated_sweep} against {ungated}), or a dropped \
+         gate would be invisible"
+    );
+}

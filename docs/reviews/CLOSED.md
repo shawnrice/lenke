@@ -19423,3 +19423,85 @@ Gates, each its own command with its exit code read UNPIPED: `cargo fmt` 0; `car
 --all-targets --features capi -- -D warnings` 0; `cargo test --release` **1221** + 13 + 725 pass, 0
 fail; `rewrite_fuzz` 10 pass; the seven byte-identity fuzzers 13 pass 0 fail; `bun run fmt` 0; `bun
 run check` 0.
+
+## 749 — item 306's OTHER 2-hop exclusion is stale too: 1.53x, and my first probe would have stolen a case with no bench row
+
+**SHIPPED (native), 1.53x disjoint, four controls flat — and the item's real content is the control
+that did not exist.** Item 748 fixed one of the two cases item 306 excluded at two hops (the FIRST
+position, which 306 never measured). This is the other one, which 306 _did_ measure.
+
+### 306's measured verdict does not reproduce
+
+Item 306 recorded a 2-hop INTERIOR gate at **0.74x** — slower than the product arm that already
+answers it — and excluded it deliberately. Re-measured, three alternated rounds per size:
+
+| `count 2-hop + mid filter` | clean              | after                  |
+| -------------------------- | ------------------ | ---------------------- |
+| 200,000 vertices           | 17.2 / 16.9 / 16.7 | **11.7 / 10.9 / 11.0** |
+| 20,000 vertices            | 1.1 / 1.1 / 1.1    | **1.0 / 1.0 / 1.0**    |
+
+**1.53x at 200k, disjoint; a small win at 20k; no loss at any size** (5,000 read 0.3 → 0.2 and
+50,000 2.8 → 2.5 as single readings). So this is not 306's verdict inverting with scale — it is
+stale.
+
+**Why, as a hypothesis and not a claim:** item 309 landed AFTER 306 and made this sweep faster by
+reversing a chain to turn an end gate into a start one. 306's 0.74x was therefore measured against a
+worse sweep. Confirming that would mean rebuilding pre-309 code, which was not done, so it stays a
+hypothesis — the same shape as item 739's "a price can die when a later item kills it".
+
+### 🛑 My first probe was `2 => true`, and it would have stolen a case with no bench row
+
+To test the interior case I admitted _every_ 2-hop chain. That also admits the **UNGATED** one — and
+the code states the invariant plainly two lines above: _"The tuned degree-product arms own the
+ungated shallow chains and this must not steal them — item 301 measured the sweep LOSING 1.50x to
+the three-segment product when there is nothing to filter."_
+
+My A/B used the start- and end-gate rows as controls and **never measured the ungated case**. Worse:
+`count 2-hop` did not exist as a bench row at all. The three rows were `+ start filter`,
+`+ mid filter`, `+ end filter` — every one of them gated. So the case an explicit code comment
+protects had no instrument, and a condition that stole it would have read as a clean win on every
+row I was looking at.
+
+That is items 736 and 743's shape for a third time: **the uncovered variant is where the cost
+hides**, and here the uncovered variant was the one the code already told me to protect.
+
+### What shipped
+
+```rust
+2 | 3 => chain.gates.iter().any(Option::is_some),
+```
+
+Admit any GATED shallow chain; leave the ungated one to the product arms. It fixes both of 306's
+exclusions, preserves 301's protection, and MERGES the two arms — one clause fewer than before item
+748, not one more.
+
+And `count 2-hop` is now a permanent row. Final A/B, three alternated rounds:
+
+| row                              | clean              | final                  |
+| -------------------------------- | ------------------ | ---------------------- |
+| `count 2-hop + mid filter`       | 17.2 / 16.9 / 16.7 | **11.7 / 10.9 / 11.0** |
+| `count 2-hop` — UNGATED CONTROL  | 2.6 / 2.7 / 2.7    | 2.7 / 2.7 / 2.7        |
+| `+ start filter` — CONTROL (748) | 3.3 / 3.3 / 3.3    | 3.8 / 3.3 / 3.3        |
+| `+ end filter` — CONTROL         | 3.4 / 3.3 / 3.4    | 3.8 / 3.4 / 3.3        |
+
+### Mutation: both predicted, and the perf guard checked AS a guard
+
+| mutant                               | predicted | actual                  |
+| ------------------------------------ | --------- | ----------------------- |
+| `2 \| 3 => true` (steal the ungated) | survive   | **SURVIVED**, 1222 pass |
+| every gate passes (`gate_ok` → true) | caught    | **CAUGHT**, 21 failures |
+
+The survivor is the regression my own probe would have shipped, so "the bench row is its guard" had
+to be verified rather than asserted: under that mutant `count 2-hop` reads **3.1 ms against the
+clean band's 2.6-2.7 across six readings** — outside it, so the row does see it. Worth recording
+that the penalty today is ~1.15x and not item 301's 1.50x; that is one reading, flagged as such, and
+another figure that has moved since it was taken.
+
+The interior-gated shape also had no test — same gap as 748's first position, one position over — so
+`a_two_hop_chain_gated_at_its_interior_position_agrees_with_the_general_path` joins its sibling,
+against `count(c.k)` for the same reason.
+
+Gates, each its own command with its exit code read UNPIPED: `cargo fmt` 0; `cargo clippy
+--all-targets --features capi -- -D warnings` 0; `cargo test --release` **1222** + 13 + 725 pass, 0
+fail; `rewrite_fuzz` 10 pass; the seven byte-identity fuzzers 13 pass 0 fail; `bun run fmt` 0; `bun
+run check` 0.

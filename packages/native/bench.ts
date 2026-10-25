@@ -657,6 +657,21 @@ const CASES: Case[] = [
     // walk since item 129: 52.6ms against 14.0 on 20,000 users (audit item 206). The filter is
     // selective on purpose — that is what the walk exploits, rejecting a start before it expands
     // the start's adjacency at all.
+    // 🛑 THE UNGATED CONTROL, which did not exist until item 749 and is the row this family most
+    // needed. `try_nhop_sweep_count` must NOT take an ungated shallow chain — item 301 measured
+    // the sweep LOSING 1.50x to the three-segment product when there is nothing to filter, and
+    // the code says so: "the tuned degree-product arms own the ungated shallow chains and this
+    // must not steal them". There was no row for it, so a condition that admitted the ungated
+    // case would have stolen it invisibly — which is exactly what item 749's first probe
+    // (`2 => true`) did before this row caught it.
+    name: 'count 2-hop',
+    ...onGraph(
+      () => graphDoc,
+      (e, g) =>
+        void e.query(g, 'MATCH (a:Person)-[:KNOWS]->(b)-[:KNOWS]->(c) RETURN count(*) AS c'),
+    ),
+  },
+  {
     name: 'count 2-hop + start filter',
     ...onGraph(
       () => graphDoc,

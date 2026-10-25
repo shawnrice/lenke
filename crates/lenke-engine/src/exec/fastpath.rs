@@ -5274,8 +5274,7 @@ pub(super) fn try_nhop_sweep_count(
     // keeps 306's exclusion, because 306 measured it and this does not.
     let take = match hops {
         0 | 1 => false,
-        2 => chain.gates[hops].is_some() || chain.gates[0].is_some(),
-        3 => chain.gates.iter().any(Option::is_some),
+        2 | 3 => chain.gates.iter().any(Option::is_some),
         _ => true,
     };
     if !take {
