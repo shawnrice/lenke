@@ -3522,6 +3522,16 @@ const projectBinding = (
  * same keys in the same order. A repeated column name keeps its first position
  * in both a `Map` and an object, and `item.fn` is called in the same order, so a
  * projection that throws throws on the same row at the same point.
+ *
+ * REJECTED (item 836): hoisting the per-call `env` out of the caller's loop. Every
+ * `projectRow` caller in `hop-projection.ts` passes a `Binding` allocated once and mutated in
+ * place, so `{ binding, params, graph }` is invariant for a whole walk and is rebuilt per call
+ * anyway — item 833 priced that object at 5.6 ns a row. It is not worth taking, because
+ * `farDrivenHopWalk` already calls this once per far VERTEX and clones a template for the
+ * vertex's whole bucket (item 167): the env is amortized over the degree, so the ceiling is
+ * 5.6 / degree ns a row — 1.4 against ~70 at four edges a vertex, about 2%. Measured alongside:
+ * at four edges a vertex the hop walk is 70.4 ns a row against a hand loop's 129.6, so it is
+ * already PAST the hand floor. Do not re-derive this.
  */
 export const projectRow = (
   proj: CProjection,

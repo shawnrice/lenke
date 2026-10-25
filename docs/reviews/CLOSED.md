@@ -23769,3 +23769,81 @@ it.**
 Gates, each its own command with its exit code read UNPIPED: `bun run fmt` 0; `bun run check` 0;
 `bun test packages/gql` **2,634 pass 0 fail**; `bun run fuzz` (all seven byte-identity fuzzers,
 random seeds) 13 pass 0 fail, run TWICE.
+
+## 836 — the hop projection's per-row `EvalEnv`: **REFUTED structurally**, ceiling 5.6/degree ns a row — and the locality result the probe "found" was already in the walk's own doc comment
+
+**MEASUREMENT, no engine change** (a temporary probe, removed). Item 835 shipped the direct-read
+projection at the node-scan site and item 832 scoped it there, because a multi-variable hop
+projection has no single element to read from. This item asked the follow-up the grep was for: the
+13 `projectRow` call sites in `hop-projection.ts` all pass a `Binding` **allocated once and mutated
+in place**, while `projectRow` rebuilds `{ binding, params, graph }` every call — item 833's 5.6 ns
+term, apparently paid per row at 13 sites.
+
+### It is not paid per row, and the code says so
+
+`farDrivenHopWalk` — the walk this shape actually takes — calls `projectRow` **once per far
+VERTEX**, not once per edge, and clones a key/value template for the vertex's whole bucket (item
+167's hoist). So the env allocation is already amortized over the degree and the hoist's ceiling is
+**5.6 / degree** ns a row: 1.4 ns against ~70 at four edges a vertex, about 2%. The start-driven
+walk at line 790 does allocate one env per edge, but it is chosen only when `needsStart`, a far
+predicate or a gate refuses the far-driven one — shapes whose per-row cost is higher for other
+reasons. **Refused on the structure, not on a measurement that came out small.**
+
+### What the probe measured on the way
+
+60,000 vertices, one arm per process, 14 reps, drop 3, median of the plateau. `epv` is edges per
+vertex; `ctlscan` is the node-scan projection, which after item 835 does not call `projectRow` at
+all.
+
+```text
+  arm                       ns/row     total ms     rows
+  hop        epv=1           288.7         17.3    60000
+  hop        epv=2           166.2         19.9   120000
+  hop        epv=4            71.9         17.3   240000
+  hop        epv=8            83.5         40.1   480000
+  ctlscan    epv=1..8      20.2-35.3    1.2-2.1    60000
+  gen (pathVar, REFUSED)  2002.2        120.1    60000
+```
+
+**The total is flat at ~17-20 ms while the rows go 60k → 240k.** So the per-row figure at `epv=1`
+is a per-VERTEX cost divided by one row — exactly the fixture trap this repo's bench notes open
+with, and the reason the `epv` sweep is here rather than a single ratio.
+
+The shortcut **is** reached, which the `pathVar` row establishes rather than assumes: a path
+variable is refused by the detector's first gate and costs 2002 ns a row, 6.9x the admitted
+spelling.
+
+### The hand floor says the remaining cost is not machinery
+
+A hand walk over the same public structures (`verticesByLabel` → `adjFrom.get('E')` →
+`e.to.properties.k`):
+
+```text
+  epv=1    hand 203.6    hop 261.5     hop is 1.28x the floor
+  epv=4    hand 129.6    hop  70.4     hop BEATS the floor 1.84x
+```
+
+At four edges a vertex the engine is **faster than a hand loop doing the same job**, because the
+template hoist projects once per vertex where the hand loop projects once per edge. A part measured
+dearer than the whole is normally an instrument result (item 802); here it is the real relation, and
+it is the strongest available statement that this path is near its floor.
+
+### The locality finding was already written down
+
+Making the far endpoints sequential instead of permuted took `hop` from 261.5 to **159.6 ns a row,
+1.64x**, while the hand walk stayed flat at 198.5 → 203.6 (its `from`-side adjacency is scattered
+either way, so it has no far-locality term to lose). That looked like a finding until
+`farDrivenHopWalk`'s doc comment was read to the end:
+
+> LOCALITY — the start-driven walk reads a far vertex per EDGE, in edge order, which is random with
+> respect to how vertices sit in memory. Over a 1,000,000-edge fixture that lookup and its pointer
+> chase cost ~180ns, which is most of the 266ns a row took.
+
+**266 ns there against 261.5 measured here** — independent agreement on a different fixture, and
+the whole reason the far-driven walk exists. This is item 802's failure repeated: the answer was in
+a doc comment above the function, and the probe was built before the comment was read to the end.
+The eighth closed candidate recorded this session, and the second whose record lived in the SOURCE
+rather than in `CLOSED.md`.
+
+Gates: `bun run fmt` 0; `bun run fmt:check` 0; `bun run check` 0; `git status` clean of any engine
+change (docs only), the temporary probe removed.
