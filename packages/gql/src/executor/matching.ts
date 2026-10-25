@@ -1572,6 +1572,75 @@ export const resolve = (
  */
 export const relHasInlinePred = (rel: CRel): boolean => hasPredicate(rel.pred);
 
+/** The flat walk's per-frame adjacency: parallel arrays, never an array of `{edge, node}`
+ *  pairs (item 733).
+ *
+ *  `expandFilteredArr` allocates one wrapper object PER NEIGHBOUR per frame, on top of the array
+ *  and `expand`'s generator resumes. A depth-5 trail over a degree-5 graph pushes ~780 frames a
+ *  source, so at 20,000 sources that is ~78M wrapper objects for ~15.6M frames — and the walk
+ *  needs the pair only to carry a vertex it can derive from the edge.
+ *
+ *  So: `edges` always, and `nodes` ONLY when the direction makes it underivable. For a directed
+ *  single-label hop the neighbour is `fwd ? edge.to : edge.from`, which is exactly what `expand`'s
+ *  own fast path yields, so that case copies the label bucket and leaves `nodes` null. Everything
+ *  else — `both`, a label set, an inline predicate — fills both arrays through `expand` and is
+ *  unchanged in cost.
+ *
+ *  ORDER IS LOAD-BEARING. A `Set` iterates in insertion order and `Array.from` preserves it, which
+ *  is the order `expand` yields for the same bucket; the emission SEQUENCE of a quantified pattern
+ *  is observable and the differential fuzzers compare it. The shape is kept monomorphic (all three
+ *  fields always present) because this frame is the hot object.
+ *
+ *  🛑 NOT a per-frame adjacency CACHE — that was measured and REJECTED at item 172. Nothing is
+ *  memoized across frames here; a frame still builds its own list and drops it when it pops.
+ *
+ *  🛑 AND IT IS WORTH ONLY ~10%, WHICH REFUTES WHAT IT WAS BUILT TO TEST (item 733). The
+ *  hypothesis was that the wrapper objects explain TS's 40x gap to native on enumerated
+ *  var-length counting (ts 8124.7 ms against ffi 196.9 at depth 5, 10,000 vertices). Removing
+ *  them measured 1.11x — 8124.7/8173.8/8537.0 before against 7346.1/7563.3/7629.9 after, three
+ *  alternated rounds, disjoint, ffi flat at 196.9/199.2 as the control a TS change cannot reach.
+ *  So ~90% of the gap is NOT allocation and this is kept for the 11%, not as the answer.
+ *  On every SHALLOW standing row the change is neutral with overlapping ranges (`count
+ *  var-length 1-2 hops` 12.5 against 12.3, `+ end filter` 12.1 against 12.6, `1-3 hops [WALK]`
+ *  10.5 against 10.5) — the win needs the depth-5 path volume to show at all.
+ *
+ *  The named suspect for the remaining 90% is the GENERATOR CHAIN per emitted path: at depth 5
+ *  this yields ~31M ends through several `yield*` layers, and `expand`'s own note prices a
+ *  resume in this pipeline at ~40ns. Unmeasured — do not quote it as a finding. */
+type FlatAdj = { edges: Edge[]; nodes: Vertex[] | null; fwd: boolean };
+
+const NO_EDGES: Edge[] = [];
+
+const flatAdj = (graph: Graph, v: Vertex, rel: CRel, binding: Binding, params: Params): FlatAdj => {
+  const hasPred = relHasInlinePred(rel);
+  const { label } = rel;
+
+  if (!hasPred && rel.direction !== 'both' && label?.kind === 'label') {
+    const fwd = rel.direction === 'out';
+    const bucket = (fwd ? graph.edgesFromByLabel : graph.edgesToByLabel).get(v.id)?.get(label.name);
+
+    return { edges: bucket === undefined ? NO_EDGES : Array.from(bucket), nodes: null, fwd };
+  }
+
+  const edges: Edge[] = [];
+  const nodes: Vertex[] = [];
+
+  for (const step of expand(graph, v, rel)) {
+    if (hasPred) {
+      const eb = withBinding(binding, rel.variable, step.edge);
+
+      if (!satisfies(step.edge, rel.pred, eb, params, graph)) {
+        continue;
+      }
+    }
+
+    edges.push(step.edge);
+    nodes.push(step.node);
+  }
+
+  return { edges, nodes, fwd: true };
+};
+
 /** A hop's out-edges materialized and filtered by its inline predicate. Mirrors native
  *  `exec::expand`, which applies the hop's edge predicate as it materializes. */
 export const expandFilteredArr = (
@@ -2049,7 +2118,7 @@ export const trailEnds = function* (
   }
 
   type FlatFrame = {
-    edges: { edge: Edge; node: Vertex }[];
+    adj: FlatAdj;
     idx: number;
     // The mark this frame's entry hop added, deleted when the frame pops — the general matcher's
     // `entryMark`.
@@ -2058,13 +2127,14 @@ export const trailEnds = function* (
 
   let steps = 0;
   const stack: FlatFrame[] = [
-    { edges: expandFilteredArr(graph, from, rel, binding, params), idx: 0, mark: null },
+    { adj: flatAdj(graph, from, rel, binding, params), idx: 0, mark: null },
   ];
 
   while (stack.length > 0) {
     const top = stack[stack.length - 1];
+    const { adj } = top;
 
-    if (top.idx >= top.edges.length) {
+    if (top.idx >= adj.edges.length) {
       if (top.mark !== null) {
         (marks as Set<Edge | Vertex>).delete(top.mark);
       }
@@ -2073,7 +2143,18 @@ export const trailEnds = function* (
       continue;
     }
 
-    const { edge, node: nbr } = top.edges[top.idx];
+    const edge = adj.edges[top.idx];
+    // The neighbour, derived rather than stored for a directed single-label hop (item 733).
+    // Spelled as if/else rather than a nested ternary: `no-nested-ternary` is a lint gate here,
+    // and a module-scope helper would put a call in the hottest loop in the file.
+    let nbr: Vertex;
+
+    if (adj.nodes === null) {
+      nbr = adj.fwd ? edge.to : edge.from;
+    } else {
+      nbr = adj.nodes[top.idx];
+    }
+
     top.idx += 1;
     // `stack.length` hops have been taken counting this one: the seed frame is depth 1.
     const rep = stack.length;
@@ -2117,6 +2198,6 @@ export const trailEnds = function* (
       continue;
     }
 
-    stack.push({ edges: expandFilteredArr(graph, nbr, rel, binding, params), idx: 0, mark });
+    stack.push({ adj: flatAdj(graph, nbr, rel, binding, params), idx: 0, mark });
   }
 };
