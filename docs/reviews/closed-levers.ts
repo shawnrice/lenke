@@ -31,10 +31,15 @@
  *
  * ## What it deliberately does not do
  *
- * It does not decide whether a hit is a rejected OPTIMIZATION. `store.rs` says "REJECTED if `key`
- * backs a unique constraint", which is API behaviour and not a lever, and a script that tried to
- * tell them apart would become one more thing to distrust (`open-markers.ts` makes the same
- * choice, for the same reason). It reports candidates and the reader judges.
+ * It does not decide whether a hit is a rejected OPTIMIZATION, and a script that tried to tell a
+ * lever from a behaviour clause would become one more thing to distrust (`open-markers.ts` makes
+ * the same choice, for the same reason). It reports candidates and the reader judges.
+ *
+ * THE CONVENTION THAT KEEPS THAT CHEAP (item 730): this vocabulary is for refuted LEVERS. Three
+ * sites said "REJECTED if `key` backs a unique constraint", meaning the API REFUSES a call, and
+ * they were reworded to "REFUSED" rather than taught to the script. If you are documenting what a
+ * function refuses, say refused; `REJECTED`/`REVERTED`/`REFUTED` mean "this optimization was tried
+ * and did not work".
  *
  * It also does not replace `CLOSED.md`. A lever refuted in a commit message or an audit item and
  * NOT annotated at the call site is invisible here — which is what `--orphans` is for: a marker
@@ -77,7 +82,25 @@ const args = process.argv.slice(2);
 const orphansOnly = args.includes('--orphans');
 const needle = args.filter((a) => !a.startsWith('--')).join(' ');
 
-type Hit = { file: string; line: number; item: string; text: string; body: string };
+type Hit = {
+  file: string;
+  line: number;
+  item: string;
+  /** An `item NNN`, a `(2026-09-27)` date, or an `E79`/`E68` run tag — anything followable. */
+  referenced: boolean;
+  text: string;
+  body: string;
+};
+
+/**
+ * A DATE or an `E<n>` run tag counts as a reference, the same as an item number.
+ *
+ * `--orphans` exists to list the markers a reader cannot follow up, and the first version counted
+ * only `item NNN` — so it reported 20, of which SEVEN say things like "REJECTED (2026-09-27, E80)"
+ * and are perfectly followable through the session notes. A flag that over-reports gets ignored,
+ * which is the one failure mode a to-do list cannot survive (item 730).
+ */
+const REFERENCE = /\b(?:audit )?item\s+\d{2,4}\b|\b20\d\d-\d\d-\d\d\b|\bE\d{1,3}\b/i;
 
 /**
  * Fold text to bare words for matching. The FIRST version of this script searched the raw line
@@ -166,6 +189,7 @@ for (const file of files) {
       file,
       line: i + 1,
       item: citation(text, block.join(' ')),
+      referenced: REFERENCE.test(block.join(' ')),
       text: text.replace(/^(\/\/+|\/\*+|\*+|#+)\s?/, '').slice(0, 96),
       body: fold(block.join(' ')),
     });
@@ -173,7 +197,7 @@ for (const file of files) {
 }
 
 const shown = hits
-  .filter((h) => (orphansOnly ? h.item === '' : true))
+  .filter((h) => (orphansOnly ? !h.referenced : true))
   .filter((h) => needle === '' || `${fold(h.file)} ${h.body}`.includes(fold(needle)));
 
 for (const h of shown) {
@@ -183,10 +207,12 @@ for (const h of shown) {
 }
 
 const withItem = hits.filter((h) => h.item !== '').length;
+const unreferenced = hits.filter((h) => !h.referenced).length;
 
 console.log(
   `\n${shown.length} shown of ${hits.length} markers in ${files.length} files` +
-    ` — ${withItem} cite an item, ${hits.length - withItem} do not (see --orphans).`,
+    ` — ${withItem} cite an item, ${hits.length - withItem - unreferenced} cite a date or run tag,` +
+    ` ${unreferenced} cite nothing (see --orphans).`,
 );
 
 if (needle !== '' && shown.length === 0) {

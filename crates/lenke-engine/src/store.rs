@@ -4182,7 +4182,7 @@ impl Store {
 
     /// Drop the vertex index(es) on `key` — the hash index on that exact path
     /// AND/OR the range index on that key. Idempotent: a no-op (still `Ok`) if no
-    /// such index exists. REJECTED if `key` backs a unique constraint — drop the
+    /// such index exists. REFUSED if `key` backs a unique constraint — drop the
     /// constraint first (mirrors the TS engine, which keeps a unique constraint's
     /// backing index an invariant).
     pub fn drop_vertex_index(&mut self, key: &str) -> Result<(), String> {
@@ -4204,7 +4204,7 @@ impl Store {
     }
 
     /// Drop the edge interval index if `key` is one of its `[lo, hi]` keys.
-    /// Idempotent (a no-op otherwise). REJECTED if `key` backs an edge unique
+    /// Idempotent (a no-op otherwise). REFUSED if `key` backs an edge unique
     /// constraint (mirrors the TS engine).
     pub fn drop_edge_index(&mut self, key: &str) -> Result<(), String> {
         if self

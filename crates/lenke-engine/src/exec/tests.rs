@@ -4508,7 +4508,7 @@ fn insert_edge_between_bound_match_vars_connects_them() {
     assert_eq!(store.edge_count(), 1);
 }
 
-/// A `SET` that collides with a unique constraint is REJECTED and rolled back —
+/// A `SET` that collides with a unique constraint is REFUSED and rolled back —
 /// the Update path enforces constraints like INSERT/_MERGE, not silently apply.
 #[test]
 fn set_enforces_unique_constraint() {

@@ -15503,7 +15503,7 @@ open note used.
 ```text
 bun docs/reviews/closed-levers.ts                  # the whole index
 bun docs/reviews/closed-levers.ts inline props     # "has this been tried?" in one command
-bun docs/reviews/closed-levers.ts --orphans        # markers carrying no item number
+bun docs/reviews/closed-levers.ts --orphans        # markers citing NOTHING followable (item 730)
 ```
 
 The index for the OTHER store. CLAUDE.md says to record rejected optimizations "next to the code
@@ -17962,3 +17962,52 @@ blast radius of the four.
 
 Gates: no code change to gate. `cargo build --features capi` 0 on the restored tree; `git status`
 clean of source edits.
+
+## 730 — the orphan list was over-reporting by half, and a wrong citation would be worse than none
+
+**TOOLING. No engine change; three doc clauses reworded.** `closed-levers.ts --orphans` reported 20
+markers that a reader cannot follow up. Triaged one by one, it was reporting three different things
+and only half of them were the thing.
+
+| what it reported                  | count | what it is                                         |
+| --------------------------------- | ----: | -------------------------------------------------- |
+| cites an item                     |    31 | followable                                         |
+| cites a DATE or an `E<n>` run tag |     7 | **also followable** — "REJECTED (2026-09-27, E80)" |
+| not a lever at all                |     3 | "REJECTED **if** `key` backs a unique constraint"  |
+| genuinely unreferenced            |    10 | the real list                                      |
+
+### Two fixes, each at the right level
+
+**The date/run-tag reference is a reference.** `--orphans` counted only `item NNN`, so seven markers
+that say "REJECTED (2026-09-17, E68/E69)" were in a to-do list they do not belong in. A flag that
+over-reports gets ignored, which is the one failure mode a to-do list cannot survive. The reference
+test now accepts a date or an `E<n>` tag.
+
+**The three non-levers were fixed in the PROSE, not in the script.** They said "REJECTED if `key`
+backs a unique constraint", meaning the API REFUSES a call — the same word for a different thing.
+Teaching the script to tell a lever from a behaviour clause is exactly the judging it refuses to do
+(`open-markers.ts` makes the same choice), so instead they now say **REFUSED**, and the tool's doc
+records the convention: `REJECTED`/`REVERTED`/`REFUTED` mean "this optimization was tried and did
+not work"; a function that turns a call away is _refused_. Three sites, and the false positives are
+gone without the script guessing.
+
+**20 → 10, and every remaining entry is a genuine unreferenced lever.**
+
+### Why the remaining ten are left alone
+
+I tried to attribute one: `exec.rs:6149` ("tie. REJECTED, all measured NEUTRAL at 200k", with three
+sub-levers each carrying its own numbers). `CLOSED.md` has no match for its phrasing, so attributing
+it means a content search through a 23,000-line append-only log, not a grep.
+
+**And a guessed citation would be worse than no citation.** An orphan says "read the comment"; a
+wrong item number says "read item 412", and the reader who does has been sent somewhere that does
+not discuss it — which is precisely the failure items 721-723 cost three ticks to, in the form of a
+comment pointing at the wrong pair. So the ten stay orphaned, honestly, and the list is now short
+enough to be worked through one at a time by someone with the session context to do it right.
+
+Note what each remaining marker still gives a reader even unattributed: the lever, the direction it
+failed in, and usually its numbers. The missing part is only the audit entry.
+
+Gates, each its own command with its exit code read UNPIPED: `cargo fmt` 0; `cargo clippy
+--all-targets --features capi -- -D warnings` 0; `cargo test --release` 1220 + 13 + 725 pass, 0
+fail; `bun run lint` 0; `bun run fmt` 0; `bun run check` 0.
