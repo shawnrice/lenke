@@ -20756,3 +20756,49 @@ engine is unaffected: 20 consecutive clean fuzz runs on the pristine tree.
 **Newly possible:** the rare-seed residual now has a capture path. An in-loop non-zero exit will
 name the fuzzer and seed in the stderr now being read, and `bun run fuzz <name> --seed N` replays
 it — which has not been possible at any point in this session.
+
+## 775 — TS: an ANONYMOUS end node costs 4.4x a named one, cause located in `hopEnds`. Item 773's "edge projection is 22x" is REFUTED
+
+**NO ENGINE CHANGE. A 4.4x equivalent-spelling gap found, located, and added to the spelling probe.**
+
+**ITEM 773'S CLAIM IS WITHDRAWN.** It closed with "TS edge projection is ~22x node projection per
+row", from two bench rows that differ in TWO clauses: `MATCH (n:Person) RETURN n` is a 1-slot label
+scan, `MATCH (:Person)-[r:KNOWS]->() RETURN r` a 3-slot traversal. The discriminator: **`RETURN
+r.since` costs MORE than `RETURN r`** (84.62 ms against 73.80 over the same 200,000 edges). If the
+edge RENDER were the cost, adding a property read could not exceed it — so the lazy render is
+nearly free and the ~400 ns/row is the traversal.
+
+**Also: `count(*)` cannot baseline enumeration here.** Both `MATCH (:Person)-[r:KNOWS]->() RETURN
+count(*)` and its `->(b)` twin measure **0.00 ms** (the count shortcut), so "traversal minus
+count(*)" is not available as a subtraction.
+
+**THE REAL FINDING, isolated to ONE clause and with row counts asserted:**
+
+| query                                  |    rows |        ms |
+| -------------------------------------- | ------: | --------: |
+| `MATCH (:P)-[r:E]->() RETURN r.since`  | 200,000 | **83.51** |
+| `MATCH (:P)-[r:E]->(b) RETURN r.since` | 200,000 | **19.03** |
+
+**4.4x, both answers correct**, differing only in whether the end node is anonymous.
+
+**CAUSE LOCATED:** `hopEnds` in `executor/hop-projection.ts` returns `null` when
+`node.variable === undefined`, so an anonymous end refuses `detectHopProjection` entirely and the
+query falls to the general row pipeline. The machinery for "the projection does not read the far
+end" already exists (`startOnly: readsStart && !vars.includes(farVar) && !needsRel`).
+
+**THIRD INSTANCE OF THIS SHAPE IN THAT ONE FILE:** item 444 (`-[e:E]->` against `-[:E]->`, **3.7x**,
+from a guard its own comment called "defensive, not load-bearing"), item 505 (split `MATCH`
+spelling, **747.9 ms against 0.0**), and now this. **A fast path that gates on the PRESENCE of a
+name rather than on whether the name is USED produces this every time** — that is the pattern to
+check for, not the individual gap.
+
+**NOT FIXED, deliberately.** Item 444's guard removal broke `a REL VARIABLE bound OUTSIDE
+correlates on that edge, not the degree`: `MATCH (p:U)-[r:T]->(q) RETURN COUNT { MATCH (p)-[r:T]->(z)
+}` must answer 1 and answered `p`'s degree, because `freePredicateVars` cannot distinguish an inner
+pattern CORRELATING on an already-bound name from one binding it freshly. Relaxing
+`farVar === undefined` needs those cases in front of it.
+
+**What shipped: the pair is now a spelling-probe group** — the probe exists for this class and
+lacked it. It flags at **2.88x** on the probe's own fixture (4.4x on mine; different fixture, same
+direction) with **0 groups disagreeing on the ANSWER**. The group's comment carries the
+measurement, the cause, the two sibling items and the reason it is not yet relaxed.

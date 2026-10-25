@@ -396,6 +396,26 @@ const GROUPS: [string, readonly string[]][] = [
     'label on start: redundant vs absent',
     ['MATCH (a:P)-[:E]->(b) RETURN count(*) AS c', 'MATCH (a)-[:E]->(b) RETURN count(*) AS c'],
   ],
+  // An ANONYMOUS end node against a NAMED one, when the projection reads neither (item 775).
+  // `->()` and `->(b)` ask the same question here — one row per edge, 200,000 either way,
+  // measured — and they cost 83.51 ms against 19.03, a **4.4x** gap found by this probe's own
+  // method applied by hand.
+  //
+  // The cause is located: `hopEnds` in `hop-projection.ts` returns `null` when
+  // `node.variable === undefined`, so an anonymous end refuses the whole hop-projection fast
+  // path and falls to the general row pipeline. It is the THIRD instance of this shape in that
+  // file — item 444 found `-[e:E]->` against `-[:E]->` at 3.7x from a guard its own comment
+  // called "defensive, not load-bearing", and item 505 found split `MATCH` clauses at 747.9 ms
+  // against 0.0.
+  //
+  // NOT FIXED HERE, deliberately: that file records two guards that looked defensive and were
+  // load-bearing (item 444's removal broke a rel variable correlating from a subquery), so the
+  // relaxation needs those cases in front of it. This group is the regression guard and the
+  // reminder.
+  [
+    'an ANONYMOUS end node vs a named one (item 775)',
+    ['MATCH (:P)-[r:E]->() RETURN r.k AS v', 'MATCH (:P)-[r:E]->(b) RETURN r.k AS v'],
+  ],
   // FOUR spellings of one question that ARE equivalent work — one end labelled, the other
   // free, every arrow direction and every side. All four now take a degree sum over the same
   // 200,000-vertex bucket, so unlike the pair above they SHOULD converge.
