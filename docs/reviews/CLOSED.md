@@ -21423,3 +21423,39 @@ of items 761/769/792's shape folding a TWO-POSITION assert (`STR_ARG_POSITIONS` 
 "the contract rather than a detail". **`left` and `right` have their bodies INLINE in `callScalar`'s
 switch** (unlike `substringScalar`) so they must be lifted first, and `left`'s `sanitizeSurrogates`
 placement is item 768's finding.
+
+## 794 — TS: the last scalar family leaves the general dispatch — `substring/2` 1.75x, `substring/3` 1.66x, `left` 1.51x, `right` 1.24x. THE TS SCALAR SURFACE IS NOW CLOSED
+
+**DONE (TypeScript).** Item 793 specified this down to the two inline bodies needing a lift. It was
+right about the shape and UNDERSTATED the size — it estimated 1.3-1.4x and three of four names beat
+that.
+
+`strNumCall` is the fourth factory of this kind (after 761's `unaryStrCall`, 769's `binaryStrCall`,
+792's `polyStrListCall`), for "a STRING at 0, then NUMBERS". **`left` and `right` were lifted out of
+`callScalar`'s switch verbatim WITH their comments**, which record two behaviours a rewrite would
+lose: `right` truncates a fractional length toward zero (native's `as usize`) where `left`'s fraction
+lands in `slice`'s END argument, and `right` tests `n > 0` not `!(n <= 0)` so a NaN length takes the
+empty branch rather than `slice(NaN)` returning everything.
+
+`substring/2` **66.2 → 37.9 (1.75x)**, `substring/3` **88.4 → 53.3 (1.66x)**, `left` **76.5 → 50.8
+(1.51x)**, `right` **63.3 → 51.0 (1.24x)**. **Four controls within 3%** — tightest of the session
+(contrast item 791's 5-8% one-way drift).
+
+**THE ORDER OF THE TWO FOLDED CHECKS IS THE CONTRACT.** `assertScalarArgTypes` walks
+`STR_ARG_POSITIONS` before `NUM_ARG_POSITIONS`, so `left(7, 'x')` — both wrong — raises the STRING
+message. Item 769 recorded that order as "the contract rather than a detail"; this is the second
+factory to depend on it. Mutation: swapping the checks raises `requires a number` instead — **a
+wrong ERROR TEXT, not a wrong row, with 2618 pass 0 fail.** No row count moves, which is why the
+suite was blind; the differential harness compares the text, so it is a real divergence class. Three
+tests pin it; teeth verified. Values diffed across arms over 17 queries: identical.
+
+**A fixture mistake worth recording.** My first body test asserted `right('abcdef', 0.0/0.0)` is
+`''`; this engine **RAISES "division by zero"** rather than producing NaN — and my own values probe
+had printed exactly that minutes earlier. `ln(-1)` is the NaN (item 785's native twin uses it for
+the same reason). Third probe/fixture mistake this session (790, 791, 794) with one pattern: **the
+probe output answers the question the test is about, and reading it beats guessing.**
+
+**THE TS SCALAR SURFACE IS CLOSED.** Items 788/790/791/792/794 moved TEN names off the general
+dispatch. Remaining: `replace` (99.6) and `to_string` (84.8) — `replace`'s body is already an
+allocation-free `indexOf` loop (item 793), so both are ~22 ns of dispatch on a large body, 1.2-1.3x,
+and **no shape is left that a factory of this kind has not claimed.**

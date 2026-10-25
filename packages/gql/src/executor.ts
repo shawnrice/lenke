@@ -327,10 +327,12 @@ import {
   temporalSum,
   UNARY_NUM,
   POLY_STR_LIST_FN,
+  STR_NUM_FN,
   TRIM_1,
   unaryNumCall,
   UNARY_STR,
   polyStrListCall,
+  strNumCall,
   unaryStrCall,
   unsupportedTemporalAgg,
 } from './executor/scalars.js';
@@ -2103,6 +2105,15 @@ const compileFunc = (expr: FuncExpr): CompiledExpr => {
 
   if (poly !== undefined) {
     return polyStrListCall(name, poly, args[0]);
+  }
+
+  // The "a STRING at 0, then NUMBERS" family — `left`, `right`, `substring` (item 794), the last
+  // one on the general dispatch. `strNumCall` folds BOTH positional checks in, in the assert's own
+  // order. The arity test admits `substring`'s optional third argument and nothing wider.
+  const strNum = args.length === 2 || args.length === 3 ? STR_NUM_FN[name] : undefined;
+
+  if (strNum !== undefined) {
+    return strNumCall(name, strNum, args[0], args[1], args[2]);
   }
 
   // The two-argument string PREDICATES (item 769) — the TS counterpart of item 766, which took

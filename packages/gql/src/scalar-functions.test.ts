@@ -867,3 +867,63 @@ describe('only cardinality accepts a PATH, not size or reverse (item 792)', () =
     }
   });
 });
+
+// Item 794 routed `left`, `right` and `substring` onto `strNumCall` — the last family on the
+// general dispatch (1.24-1.75x). The factory folds BOTH of `assertScalarArgTypes`'s positional
+// checks in, and their ORDER is a cross-engine contract rather than a detail: the assert walks
+// `STR_ARG_POSITIONS` before `NUM_ARG_POSITIONS`, so a call whose string argument AND numeric
+// argument are both wrong raises the STRING message.
+//
+// Swapping the two checks raises "requires a number" there instead — a wrong error TEXT rather
+// than a wrong row, which is why no row-count test could see it, and the whole 2,618-test suite
+// stays green. The differential harness compares this text, so it is a real divergence class.
+describe('left/right/substring check the STRING argument first (item 794)', () => {
+  test('both arguments wrong raises the STRING message, not the numeric one', () => {
+    // THE MUTANT KILLER. `7` is not a string and `'x'` is not a number; the first check wins.
+    for (const fn of ['left', 'right', 'substring']) {
+      let caught: unknown;
+
+      try {
+        query(g, `RETURN ${fn}(7, 'x') AS x`);
+      } catch (e) {
+        caught = e;
+      }
+
+      expect(hasErrorCode(caught, ErrorCode.InvalidValue)).toBe(true);
+      expect((caught as Error).message).toContain(`${fn}() requires a string`);
+    }
+  });
+
+  test('each argument wrong on its own raises its own message', () => {
+    for (const fn of ['left', 'right', 'substring']) {
+      expect(() => query(g, `RETURN ${fn}(7, 2) AS x`)).toThrow(`${fn}() requires a string`);
+      expect(() => query(g, `RETURN ${fn}('abc', 'x') AS x`)).toThrow(`${fn}() requires a number`);
+    }
+
+    // `substring`'s THIRD position is numeric too, and the factory checks it last.
+    expect(() => query(g, "RETURN substring('abc', 1, 'x') AS x")).toThrow(
+      'substring() requires a number',
+    );
+  });
+
+  test('the bodies are unchanged by the lift, including the two documented edges', () => {
+    // `right` truncates a FRACTIONAL length toward zero (native's `as usize`), where `left`'s
+    // fraction lands in slice's END argument. Both comments survived the lift out of the switch.
+    expect(one("RETURN right('abcdef', 2.9) AS x")).toBe('ef');
+    expect(one("RETURN left('abcdef', 2.9) AS x")).toBe('ab');
+    // A NaN length takes the EMPTY branch in `right` (native's `NaN as usize` saturates to 0),
+    // which `n > 0` rather than `!(n <= 0)` is what secures.
+    // `ln(-1)` is the NaN, NOT `0.0/0.0` — this engine RAISES "division by zero" rather than
+    // producing a NaN, which the values probe showed before this test was written (item 785's
+    // native twin uses `ln(-1)` for the same reason).
+    expect(one("RETURN right('abcdef', ln(-1)) AS x")).toBe('');
+    expect(one("RETURN left('abcdef', ln(-1)) AS x")).toBe('');
+    // `substring` is 1-BASED, and a start <= 0 shrinks the window from the front.
+    expect(one("RETURN substring('crystal hawk river', 1, 7) AS x")).toBe('crystal');
+    expect(one("RETURN substring('abcdef', -2, 4) AS x")).toBe('a');
+    // Nulls propagate through all three rather than raising.
+    expect(one('RETURN left(null, 2) AS x')).toBe(null);
+    expect(one("RETURN right('abc', null) AS x")).toBe(null);
+    expect(one("RETURN substring('abc', null) AS x")).toBe(null);
+  });
+});

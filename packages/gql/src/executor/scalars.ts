@@ -1131,27 +1131,9 @@ export const callScalar = (
     case 'path_length':
       return lengthOf(a);
     case 'left':
-      return isNullish(a) || isNullish(b)
-        ? null
-        : sanitizeSurrogates(str(a).slice(0, Math.max(0, numArg(b))));
-    case 'right': {
-      if (isNullish(a) || isNullish(b)) {
-        return null;
-      }
-
-      const s = str(a);
-      // Truncate toward zero to mirror native's `as usize` cast: a fractional
-      // length takes whole characters, so `right('abcdef', 2.9)` is 'ef' (2), not
-      // the 'def' that `slice(6 - 2.9)` = `slice(3.1)` would give. `left` already
-      // truncates, because its fraction lands in `slice`'s END argument.
-      const n = Math.trunc(numArg(b));
-
-      // `n > 0`, not `!(n <= 0)`, so a NaN length (`right(s, 'nan')`) takes the
-      // empty branch. Falling through with NaN would `slice(NaN)` — i.e.
-      // `slice(0)`, the WHOLE string — whereas native's `NaN as usize` saturates
-      // to 0 and yields ''. `left` is already empty for NaN.
-      return n > 0 ? sanitizeSurrogates(s.slice(Math.max(0, s.length - n))) : '';
-    }
+      return leftScalar(a, b);
+    case 'right':
+      return rightScalar(a, b);
     case 'coalesce':
       return firstNonNullish(args);
     case 'nullif':
@@ -1267,6 +1249,36 @@ export const roundScalar = (a: unknown, b: unknown): number | null => {
   const f = 10 ** digits;
 
   return roundHalfAway(numArg(a) * f) / f;
+};
+
+/**
+ * `left(s, n)`, lifted out of `callScalar`'s switch so [`strNumCall`] can reach it (item 794).
+ * The body is unchanged.
+ */
+export const leftScalar = (a: unknown, b: unknown): string | null =>
+  isNullish(a) || isNullish(b) ? null : sanitizeSurrogates(str(a).slice(0, Math.max(0, numArg(b))));
+
+/**
+ * `right(s, n)`, lifted the same way (item 794) — body unchanged, including both comments, which
+ * record two behaviours a rewrite would quietly lose.
+ */
+export const rightScalar = (a: unknown, b: unknown): string | null => {
+  if (isNullish(a) || isNullish(b)) {
+    return null;
+  }
+
+  const s = str(a);
+  // Truncate toward zero to mirror native's `as usize` cast: a fractional
+  // length takes whole characters, so `right('abcdef', 2.9)` is 'ef' (2), not
+  // the 'def' that `slice(6 - 2.9)` = `slice(3.1)` would give. `left` already
+  // truncates, because its fraction lands in `slice`'s END argument.
+  const n = Math.trunc(numArg(b));
+
+  // `n > 0`, not `!(n <= 0)`, so a NaN length (`right(s, 'nan')`) takes the
+  // empty branch. Falling through with NaN would `slice(NaN)` — i.e.
+  // `slice(0)`, the WHOLE string — whereas native's `NaN as usize` saturates
+  // to 0 and yields ''. `left` is already empty for NaN.
+  return n > 0 ? sanitizeSurrogates(s.slice(Math.max(0, s.length - n))) : '';
 };
 
 export const substringScalar = (a: unknown, b: unknown, len: unknown): string | null => {
@@ -2405,6 +2417,65 @@ export const POLY_STR_LIST_FN: Record<string, (a: unknown) => unknown> = {
  * it is a cross-engine contract: native's `call_scalar_checked` raises the same text and the
  * differential harness compares it. The `okPath` exception is `cardinality`'s alone.
  */
+/**
+ * The "a STRING at position 0, then NUMBERS" family — `left`, `right`, `substring` — with its
+ * bodies, so `compileFunc` can resolve the dispatch once per `Expr::Call` (item 794).
+ *
+ * The last family on the general dispatch after items 788, 790, 791 and 792. `substring` takes an
+ * optional third argument, so the table's functions are uniformly `(a, b, c)` and the factory
+ * passes `undefined` for an absent one — which is exactly what `callScalar` passes today
+ * (`args[2]`), so the bodies see no change.
+ *
+ * Declared after `substringScalar`, `leftScalar` and `rightScalar` because a `const` is not
+ * hoisted.
+ */
+export const STR_NUM_FN: Record<string, (a: unknown, b: unknown, c: unknown) => unknown> = {
+  left: (a, b) => leftScalar(a, b),
+  right: (a, b) => rightScalar(a, b),
+  substring: (a, b, c) => substringScalar(a, b, c),
+};
+
+/**
+ * A call with a STRING at position 0 and NUMBERS after it, with `assertScalarArgTypes`'s two
+ * positional checks folded in (item 794) — the fourth factory of this shape, after
+ * [`unaryStrCall`] (761), [`binaryStrCall`] (769) and [`polyStrListCall`] (792).
+ *
+ * THE ORDER IS THE CONTRACT, not a detail — item 769's words for the same requirement. The assert
+ * walks `STR_ARG_POSITIONS` before `NUM_ARG_POSITIONS`, so a call whose string argument AND numeric
+ * argument are both wrong raises the STRING message; checking the number first would change the
+ * error text, and that text is compared cross-engine.
+ *
+ * An `undefined` argument is skipped exactly as the assert skips it (`args[2]` of a two-argument
+ * `substring`). A NULL is not: it passes the check and propagates through the body.
+ */
+export const strNumCall =
+  <E>(
+    name: string,
+    f: (a: unknown, b: unknown, c: unknown) => unknown,
+    a: (env: E) => unknown,
+    b: (env: E) => unknown,
+    c: ((env: E) => unknown) | undefined,
+  ) =>
+  (env: E): unknown => {
+    const x = a(env);
+    const y = b(env);
+    const z = c === undefined ? undefined : c(env);
+
+    if (!isNullish(x) && typeof x !== 'string') {
+      dataException(requiresStringMessage(name));
+    }
+
+    if (!isNullish(y) && typeof y !== 'number') {
+      dataException(`${name}() requires a number (a string is not coerced)`);
+    }
+
+    if (z !== undefined && !isNullish(z) && typeof z !== 'number') {
+      dataException(`${name}() requires a number (a string is not coerced)`);
+    }
+
+    return f(x, y, z);
+  };
+
 export const polyStrListCall =
   <E>(name: string, f: (a: unknown) => unknown, a: (env: E) => unknown) =>
   (env: E): unknown => {
