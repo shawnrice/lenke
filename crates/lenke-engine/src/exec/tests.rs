@@ -3559,6 +3559,59 @@ fn signed_zero_folds_in_atan2() {
     assert!(num("RETURN atan2(-0.0, -0.0) AS r").abs() < 1e-12); // atan2(+0, +0) = 0
 }
 
+/// The same contract with a COLUMN operand, which is the path the vectorized two-argument
+/// numeric arm takes (item 759): a `-0.0` literal broadcasts to a `Col::Num` and a stored
+/// `-0.0` is one, so this is where a lost fold would show.
+///
+/// It pins the contract END TO END and not that arm's own fold, which mutation shows is
+/// unreachable: replacing it with the identity leaves this test green, because the `-0.0` has
+/// already been collapsed by the parser (for the literal) and by ingest (for the stored
+/// property) before the arm sees it. Three collapses in series, and this asserts the one
+/// thing a user can observe — that no `-0` reaches a result.
+#[test]
+fn a_negative_zero_literal_beside_a_column_still_folds_in_atan2() {
+    let store =
+        crate::ndjson::from_ndjson("{\"id\":\"n\",\"labels\":[\"V\"],\"props\":{\"z\":-1.0}}")
+            .unwrap();
+    let num = |q: &str| -> f64 {
+        match run(&crate::gql::parse(q).unwrap(), &store).rows[0][0].clone() {
+            Value::Num(n) => n,
+            other => panic!("want num, got {other:?}"),
+        }
+    };
+    let pi = std::f64::consts::PI;
+    // atan2(-0, -1) is -PI under IEEE and +PI under the numeric model, which has no -0.
+    assert!(
+        (num("MATCH (v:V) RETURN atan2(-0.0, v.z) AS r") - pi).abs() < 1e-12,
+        "atan2(-0.0, column) must fold the sign of zero"
+    );
+    // The mirror: the column on the left, the literal on the right, so both operand
+    // positions of the typed arm are covered.
+    assert!(
+        (num("MATCH (v:V) RETURN atan2(v.z, -0.0) AS r") + pi / 2.0).abs() < 1e-12,
+        "atan2(-1, -0.0) must fold the sign of zero"
+    );
+    // And a STORED -0.0, which is the only way a `Col::Num` could carry one.
+    let stored = crate::ndjson::from_ndjson(
+        "{\"id\":\"n\",\"labels\":[\"V\"],\"props\":{\"z\":-1.0,\"w\":-0.0}}",
+    )
+    .unwrap();
+    let r = match run(
+        &crate::gql::parse("MATCH (v:V) RETURN atan2(v.w, v.z) AS r").unwrap(),
+        &stored,
+    )
+    .rows[0][0]
+        .clone()
+    {
+        Value::Num(n) => n,
+        other => panic!("want num, got {other:?}"),
+    };
+    assert!(
+        (r - pi).abs() < 1e-12,
+        "atan2(stored -0.0, -1) must be +PI, got {r}"
+    );
+}
+
 /// NaN has no sign: `sign(NaN)` is NaN (→ null at egress), NOT the 0 that a naive
 /// `>0 / <0 / else` would give. Finite inputs are unchanged.
 #[test]

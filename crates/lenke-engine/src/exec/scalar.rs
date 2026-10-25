@@ -1196,3 +1196,91 @@ fn trim_fn(name: &str, args: &[Value]) -> Value {
     };
     Value::Str(trimmed.into())
 }
+
+/// The two-argument numeric functions, as a function pointer — the binary twin of
+/// [`unary_num_fn`]. `None` for everything else, including a name that is numeric at
+/// another arity (`round(x, digits)` is NOT here: its second argument is a digit COUNT with
+/// its own non-finite rule, so it stays in the general dispatch).
+///
+/// The argument order of `log` is the surface order, not the maths one: `log(base, x)` is
+/// `ln(x) / ln(base)`, which the TS engine spells the same way. Both operands reach `f`
+/// through [`value::num_of`], which collapses `-0.0` to `+0.0` (item 460) — so the `+ 0.0`
+/// that `atan2` carries in the general dispatch is already done and is kept only as a
+/// statement of the rule.
+pub(super) fn binary_num_fn(name: &str) -> Option<fn(f64, f64) -> f64> {
+    Some(match name {
+        "log" => |x: f64, y: f64| y.ln() / x.ln(),
+        "power" => |x: f64, y: f64| x.powf(y),
+        // atan2 is the one math fn whose result distinguishes the sign of a zero operand
+        // (`atan2(-0, -1) = -PI` vs `atan2(+0, -1) = +PI`). `num_of` has already folded -0 to
+        // +0 on both inputs, as the pure-TS engine does.
+        "atan2" => |x: f64, y: f64| (x + 0.0).atan2(y + 0.0),
+        // The fn form of `%`. A zero divisor is NaN and does NOT throw — that is the
+        // OPERATOR's behaviour, which the TS engine reserves for the operator.
+        "mod" => |x: f64, y: f64| x % y,
+        _ => return None,
+    })
+}
+
+/// A two-argument numeric function over two argument COLUMNS, with the name resolved once
+/// (item 759) — the binary twin of [`eval_unary_num`].
+///
+/// These four fell through to the general per-row path, which rebuilds a `Vec<Value>`
+/// argument buffer for every row and reads each operand back out of it. Measured on
+/// `count(power(a.age, 2))` at 200,000 rows: 44.04 ns a row against the vectorized floor of
+/// 4.09 (`count(abs(a.age))`). The general path's cost is that buffer round trip, NOT the
+/// name dispatch — hoisting the name match alone out of the row loop measured ZERO (see the
+/// rejected-refactor note on item 759 in the audit).
+///
+/// The output stays BOXED, for the same reason [`eval_unary_num`] does: every one of these
+/// can make a NaN or an infinity out of finite input (`power(0, -1)`, `log(1, 2)`,
+/// `mod(x, 0)`), and a `Col::Num` is all-finite by invariant.
+///
+/// A row that is not two numbers delegates to [`call_scalar_checked`], so the NULL-versus-
+/// `E_INVALID_VALUE` decision — including that a non-null non-numeric argument beside a null
+/// is a type error rather than a null — stays defined in exactly one place.
+pub(super) fn eval_binary_num(
+    f: fn(f64, f64) -> f64,
+    name: &str,
+    a: Col,
+    b: Col,
+) -> Result<Col, String> {
+    let n = a.len().min(b.len());
+    let mut out: Vec<Value> = Vec::with_capacity(n);
+
+    // Both operands TYPED: read the `f64` slices and skip two `Value` boxings a row. A
+    // `Col::Num` holds no null and no non-number, so the delegation below is unreachable for
+    // it, and `zero_folded` is `num_of`'s own expression rather than a `+ 0.0` that means the
+    // same for every input a stored column can hold: `x + 0.0` is free to canonicalize a
+    // NaN's payload, and `num_of` leaves it alone.
+    //
+    // THE FOLD IS UNREACHABLE HERE, and is kept anyway because it states the rule. `atan2` is
+    // the one function in this family whose result can see the sign of a zero operand, and
+    // mutation says no path delivers one: replacing `zero_folded` with the identity leaves all
+    // 1,224 tests green, including `signed_zero_folds_in_atan2` and
+    // `a_negative_zero_literal_beside_a_column_still_folds_in_atan2` — both of which a panic
+    // probe confirms DO reach this arm. A `-0.0` literal is already folded by the time it is
+    // broadcast, and so is a `-0.0` stored through ndjson. Same precedent as `round`'s
+    // `!is_finite()` digit-count guard, which is also redundant today and also kept.
+    let zero_folded = |x: f64| if x == 0.0 { 0.0 } else { x };
+
+    if let (Col::Num(xs), Col::Num(ys)) = (&a, &b) {
+        for i in 0..n {
+            out.push(Value::Num(f(zero_folded(xs[i]), zero_folded(ys[i]))));
+        }
+
+        return Ok(Col::Gen(out));
+    }
+
+    for i in 0..n {
+        let x = a.value_at(i);
+        let y = b.value_at(i);
+
+        match (value::num_of(&x), value::num_of(&y)) {
+            (Some(p), Some(q)) => out.push(Value::Num(f(p, q))),
+            _ => out.push(call_scalar_checked(name, &[x, y])?),
+        }
+    }
+
+    Ok(Col::Gen(out))
+}

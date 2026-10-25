@@ -20077,3 +20077,42 @@ the 1,223 unit tests and the seven byte-identity fuzzers as the guard, plus an a
 vectorized function never enters this dispatch).
 
 Gates: no code change. `git status` clean; the probe example was deleted.
+
+## 759 — the two-argument numerics vectorized: `power` 3.33x, `mod` 3.55x. And item 457's PREMISE is REFUTED: the per-row name dispatch costs ZERO
+
+**TWO things close here, and the second is the one to read before pricing anything in the scalar
+path.**
+
+**DONE.** `binary_num_fn` + `eval_binary_num` are the binary twins of item 459's pair, with a
+typed-slice arm for two `Col::Num` operands. Min of three ALTERNATED rounds from two saved
+binaries, 200,000 rows: `count(power(a.age, 2))` 42.88 -> 12.88 (**3.33x**),
+`count(power(a.age, a.age))` 43.77 -> 13.78 (3.18x), `count(mod(a.age, 7))` 34.91 -> 9.83
+(**3.55x**). Five controls: `abs` 1.00x and `round` 1.00x (vectorized, cannot enter the dispatch),
+`coalesce` 0.98x, `nullif` 1.00x (generic AND two-argument but not numeric — it isolates
+"two-argument" from "numeric"), the no-`Expr::Call` floor 0.93x on 0.04 ns. `query_bench` (95
+comparable rows) and `value_bench` (6) swept from both arms: the one flag, `element p` at 1.12x,
+goes to **1.00x** over three alternated rounds with interleaving ranges, and everything else was
+sub-nanosecond rounding.
+
+**REFUTED — do not re-price this.** Item 457 priced the per-row `call_scalar_checked(name, …)`
+string match at ~15 of ~27 ns; item 459 re-sized it at **~20 ns a row**; items 458/459 and two code
+comments credit their (real) wins to "matching the function NAME as a STRING against dozens of
+arms". Item 759 BUILT the hoist — 50-variant `ScalarId`, `resolve_scalar` called once per
+`Expr::Call`, all 50 arms and all five pre-check passes re-keyed on the id, 1,223 tests green — and
+measured **43.45 -> 44.04 ns/row on `count(power(a.age, 2))`. Zero.** The hoisted code was the
+measured path, confirmed POSITIVELY: deleting `"power"` from `resolve_scalar` makes the probe assert.
+The refactor was reverted.
+
+So what items 458/459 actually removed was the generic path's per-row `Vec<Value>` argument buffer,
+the read-back of each operand out of it, and the boxed output — not the name match, which rustc
+compiles to a length switch and which is free. **The cost of a generic scalar call is the per-row
+buffer and boxing; the dispatch is not in it.** The next instance is `nullif` at 28 ns a row, and
+the general fix is a vectorized two-argument form keyed on the ARGUMENT kinds, not another
+per-function arm.
+
+A third thing, for whoever next reads a surviving mutant: `eval_binary_num`'s `-0.0` fold is
+UNREACHABLE and deliberately kept. `atan2` is the one function here that can see the sign of a
+zero, and `broadcast` does put a `-0.0` literal into a `Col::Num`, but the parser has already
+folded the literal and ingest has already folded a stored property — so the mutant survives as
+EQUIVALENT, not as a gap. A panic probe confirms the tests reach the arm; the end-to-end contract
+is pinned by `a_negative_zero_literal_beside_a_column_still_folds_in_atan2`.

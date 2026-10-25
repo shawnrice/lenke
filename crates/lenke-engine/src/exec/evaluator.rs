@@ -1940,6 +1940,26 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
                     return super::scalar::eval_unary_num(f, name, eval(&args[0], store, batch)?);
                 }
             }
+            // The TWO-argument numerics — `power`, `log`, `mod`, `atan2` (item 759).
+            //
+            // The arm above left these in the general path below, which rebuilds a
+            // `Vec<Value>` argument buffer per row and reads both operands back out of it.
+            // `count(power(a.age, 2))` measured 44.04 ns a row against a vectorized floor of
+            // 4.09. That cost is the buffer round trip and the boxed-per-row machinery around
+            // it, not the name dispatch: hoisting the name match alone out of the row loop —
+            // the whole of item 457 — measured ZERO on this same shape, which is why items 458
+            // and 459 crediting their wins to "matching the NAME as a STRING" is the wrong
+            // reading of a real result.
+            //
+            // BOTH arguments are evaluated before the loop, exactly as the general path does,
+            // so an argument that faults raises in the same place.
+            if args.len() == 2 {
+                if let Some(f) = super::scalar::binary_num_fn(name) {
+                    let x = eval(&args[0], store, batch)?;
+                    let y = eval(&args[1], store, batch)?;
+                    return super::scalar::eval_binary_num(f, name, x, y);
+                }
+            }
             // `size`/`cardinality` over a BOXED column, read by REFERENCE. The generic
             // path below materializes each argument with `Col::value_at`, and
             // `Col::Gen(v) => v[i].clone()` on a `Value::List(Vec<Value>)` DEEP-COPIES the
