@@ -429,10 +429,18 @@ const GROUPS: [string, readonly string[]][] = [
   // pushed down at one end of the same hop and fatal at the other.
   //
   // FOURTH instance in `hop-projection.ts` of a gate on whether something is PRESENT rather than
-  // whether it is USED (items 444, 505, 776, this). The fix is item 505's shape — a REWRITE that
-  // lifts the inline property into the `WHERE` the fast path already handles — and it must refuse
-  // a NULL literal and a PARAM: inline `{k: null}` means IS NULL (item 260), which `k = null`
-  // does not, and `{k: $p}` cannot be known non-null at compile time.
+  // whether it is USED (items 444, 505, 776, this).
+  //
+  // FIXED at item 778 by `liftStartProps`, item 505's shape: a REWRITE lifting the inline property
+  // into the `WHERE` the fast path already handles. 5.31x, and the two spellings converge (0.95
+  // against 0.95). This group stopped flagging in the same run that measured the fix. It stays as
+  // the REGRESSION guard.
+  //
+  // THREE refusals carry its correctness, and mutation found all three untested: a NULL literal
+  // (inline `{k: null}` is IS NULL per item 260, where `k = null` is UNKNOWN), a PARAM (which
+  // cannot be shown non-null at compile time), and a QUANTIFIED segment — that last one found by
+  // the suite rather than by reasoning, because a clause `WHERE` DISQUALIFIES the unbounded
+  // var-length BFS rung and `->+` then faults on the trail budget.
   [
     'an INLINE start property vs a clause WHERE (item 777)',
     [

@@ -7577,6 +7577,85 @@ const fuse = (a: Clause, b: Clause): Clause | undefined => {
   };
 };
 
+/**
+ * `MATCH (a:L {k: 5})-[:T]->(b)` IS `MATCH (a:L)-[:T]->(b) WHERE a.k = 5` — an inline property on
+ * the hop's START lifted into the clause `WHERE`, before anything looks at the clause list
+ * (item 778).
+ *
+ * `plainNode` is `(n.properties?.length ?? 0) === 0 && n.where === undefined`, so an inline
+ * property on the START refuses `detectHopProjection` outright while the clause spelling is
+ * admitted. Item 777 measured the pair at **8.69 / 8.34 / 8.42 ms against 1.00 / 1.00 / 0.99** over
+ * three reads of `MATCH (a:P {k: 5})-[:E]->(b) RETURN b.k` and its clause twin, with equal row
+ * counts asserted — **8.4x**, both answers correct. The FAR node has no such problem:
+ * `closedFarPred` pushes an inline predicate there into the walk, which is why the mirror pair
+ * runs the OTHER way (inline on the end is 1.7x FASTER). So inline predicates were pushed down at
+ * one end of the same hop and fatal at the other.
+ *
+ * A REWRITE rather than a second predicate position in the fast path, which is item 505's shape
+ * and for its reason: the rewritten clause is an ordinary pattern, so every rung of the ladder
+ * applies to it with no rung knowing this happened.
+ *
+ * Each refusal below is a case where the lifted form would not mean the same thing:
+ *
+ *   - **a NULL literal value stays inline.** `{k: null}` is IS NULL (item 260) — it matches a
+ *     STORED null — where `a.k = null` is UNKNOWN and matches nothing. This is the one refusal
+ *     that changes an answer rather than a plan, and it is the reason this rewrite is narrow.
+ *   - **a PARAM value stays inline.** `{k: $p}` cannot be shown non-null at compile time, so it
+ *     inherits the hazard above.
+ *   - **a start with no VARIABLE stays inline**: `MATCH (:P {k: 5})-…` has no name to write
+ *     `?.k = 5` against. (Item 776's synthesized name is for a BINDING nothing reads; a `WHERE`
+ *     referencing one would have to be bound before the predicate runs, which is a different
+ *     question.)
+ *   - **a clause that already carries a `WHERE` stays as it is.** Combining the two needs an
+ *     `AND` whose operand order carries the short-circuit contract of items 258/259 — the same
+ *     refusal `fuse` makes, for the same reason, and worth its own measurement rather than a
+ *     guess here.
+ *   - a clause with more than one pattern, or a pattern with no segments (a bare node, which is
+ *     already served by the scan rungs and would gain nothing).
+ */
+const liftStartProps = (clauses: readonly Clause[]): readonly Clause[] =>
+  clauses.map((c) => {
+    if (c.kind !== 'match' || c.where !== undefined || c.patterns.length !== 1) {
+      return c;
+    }
+
+    const [pattern] = c.patterns;
+    const { start } = pattern;
+    const props = start.properties ?? [];
+    const name = start.variable;
+
+    if (
+      name === undefined ||
+      props.length === 0 ||
+      pattern.segments.length === 0 ||
+      // A QUANTIFIED segment stays inline, and this one was found by the suite rather than
+      // reasoned out. Lifting is not free: a clause `WHERE` DISQUALIFIES the unbounded
+      // var-length BFS rung, so `MATCH (a:N {k: 1})-[:E]->+(b) RETURN DISTINCT b` stopped
+      // taking it and fell to the general path, which then FAULTED on the trail budget —
+      // `reachability.test.ts` turned two passes into two errors. One rung's admission gate is
+      // another rung's disqualifier, which is the real hazard in rewriting a clause list and
+      // is not visible from the gate being opened.
+      pattern.segments.some((seg) => seg.rel.quantifier !== undefined) ||
+      // A NULL literal means IS NULL and a param could BE null — neither lifts (item 260).
+      !props.every((pc) => pc.value.kind === 'lit' && pc.value.value !== null)
+    ) {
+      return c;
+    }
+
+    const conjuncts: Expr[] = props.map((pc) => ({
+      kind: 'compare',
+      op: '=',
+      left: { kind: 'prop', variable: name, key: pc.key },
+      right: pc.value,
+    }));
+
+    return {
+      ...c,
+      patterns: [{ ...pattern, start: { ...start, properties: undefined } }],
+      where: conjuncts.length === 1 ? conjuncts[0] : { kind: 'and', items: conjuncts },
+    };
+  });
+
 const fuseAnchorThenHop = (clauses: readonly Clause[]): readonly Clause[] => {
   const out: Clause[] = [];
 
@@ -8111,16 +8190,21 @@ const dropUnreadGroupBinds = (clauses: readonly Clause[]): readonly Clause[] => 
 };
 
 const compileLinear = (linear: LinearQuery): CLinear => {
-  const source = fuseAnchorThenHop(
-    inlineCorrelatedCall(
-      // `inlineAggregateCall` runs INSIDE `inlineTrailingLet` so the `LET` it produces is itself
-      // inlined when it is the last binding before the RETURN — the two compose into "a CALL with
-      // an aggregate body is a projection subquery", which is where the rungs are.
-      inlineTrailingLet(
-        inlineAggregateCall(
-          inlineTrailingFilter(
-            unoptionalizeForAggregate(
-              dropUnreadGroupBinds(dropVacuousPage(dropVacuousQuantifier(linear.clauses))),
+  // `liftStartProps` runs OUTSIDE `fuseAnchorThenHop` so a FUSED clause gets the lift too: the
+  // fused pattern's start is the anchor's, and an anchor written `MATCH (a:P {k: 5})` carries
+  // exactly the inline property this lifts (item 778).
+  const source = liftStartProps(
+    fuseAnchorThenHop(
+      inlineCorrelatedCall(
+        // `inlineAggregateCall` runs INSIDE `inlineTrailingLet` so the `LET` it produces is itself
+        // inlined when it is the last binding before the RETURN — the two compose into "a CALL with
+        // an aggregate body is a projection subquery", which is where the rungs are.
+        inlineTrailingLet(
+          inlineAggregateCall(
+            inlineTrailingFilter(
+              unoptionalizeForAggregate(
+                dropUnreadGroupBinds(dropVacuousPage(dropVacuousQuantifier(linear.clauses))),
+              ),
             ),
           ),
         ),

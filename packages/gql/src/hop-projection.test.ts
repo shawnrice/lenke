@@ -792,3 +792,59 @@ describe('an ANONYMOUS end node on the hop fast path (item 776)', () => {
     expect(query(g, 'MATCH (:P)-[:E]->() RETURN count(*) AS v')).toEqual([{ v: 1 }]);
   });
 });
+
+describe('lifting an INLINE start property into the WHERE (item 778)', () => {
+  // `plainNode` refuses a start with inline properties, so `MATCH (a:P {k: 5})-[:E]->(b)` fell to
+  // the general pipeline while its clause twin took the fast path — 5.04 ms against 0.95, item
+  // 777 measured 8.4x on a larger fixture. The lift is a REWRITE, so what needs pinning is not
+  // the speed but the three cases where the lifted form would MEAN something else. Mutation found
+  // all three unguarded by tests: dropping the null refusal, the param refusal or the quantifier
+  // refusal each passed the whole suite (the last one failed `reachability.test.ts` instead).
+  const nulled = (): Graph => {
+    const g = new Graph();
+    const a = g.addVertex({ id: 'a', labels: ['P'], properties: { k: null, tag: 'has-null' } });
+    const b = g.addVertex({ id: 'b', labels: ['P'], properties: { k: 5, tag: 'has-five' } });
+    const c = g.addVertex({ id: 'c', labels: ['P'], properties: { tag: 'target' } });
+
+    g.addEdge({ id: 'e1', from: a, to: c, labels: ['E'], properties: {} });
+    g.addEdge({ id: 'e2', from: b, to: c, labels: ['E'], properties: {} });
+
+    return g;
+  };
+
+  test('an inline NULL is IS NULL and must NOT become `= null`', () => {
+    const g = nulled();
+
+    // `{k: null}` matches the node carrying a STORED null (null is a present value in this
+    // engine), where `a.k = null` is UNKNOWN and matches nothing. Lifting the first into the
+    // second would silently drop the row — the one refusal in this rewrite that changes an
+    // answer rather than a plan (item 260).
+    expect(query(g, 'MATCH (a:P {k: null})-[:E]->(x) RETURN a.tag AS v')).toEqual([
+      { v: 'has-null' },
+    ]);
+    expect(query(g, 'MATCH (a:P)-[:E]->(x) WHERE a.k = null RETURN a.tag AS v')).toEqual([]);
+  });
+
+  test('an inline PARAM does not lift, because it could BE null', () => {
+    const g = nulled();
+
+    // Indistinguishable from the literal case at compile time, so `{k: $p}` keeps the inline
+    // form and keeps IS NULL semantics when the param is null.
+    expect(query(g, 'MATCH (a:P {k: $p})-[:E]->(x) RETURN a.tag AS v', { p: null })).toEqual([
+      { v: 'has-null' },
+    ]);
+    expect(query(g, 'MATCH (a:P {k: $p})-[:E]->(x) RETURN a.tag AS v', { p: 5 })).toEqual([
+      { v: 'has-five' },
+    ]);
+  });
+
+  test('a non-null literal DOES lift, and agrees with its clause twin', () => {
+    const g = nulled();
+
+    // The case the rewrite exists for: equal answers, and now equal plans.
+    expect(query(g, 'MATCH (a:P {k: 5})-[:E]->(x) RETURN a.tag AS v')).toEqual([{ v: 'has-five' }]);
+    expect(query(g, 'MATCH (a:P {k: 5})-[:E]->(x) RETURN a.tag AS v')).toEqual(
+      query(g, 'MATCH (a:P)-[:E]->(x) WHERE a.k = 5 RETURN a.tag AS v'),
+    );
+  });
+});

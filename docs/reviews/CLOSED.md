@@ -20885,3 +20885,43 @@ with 0 groups disagreeing on the ANSWER.
 
 **Also seen and not chased:** item 286's group at 2.01x — the threshold-straddler item 504 measured
 at **1.09x in isolation**, recorded as flagging 2 of 3 runs on one tree and 0 of 3 on HEAD.
+
+## 778 — TS: an inline START property lifts into the `WHERE`. 5.31x, the spellings converge, and ONE RUNG'S GATE IS ANOTHER RUNG'S DISQUALIFIER
+
+**DONE (TypeScript).** `liftStartProps`, a clause-list rewrite beside `fuseAnchorThenHop`:
+`MATCH (a:L {k: 5})-[:T]->(b)` becomes `MATCH (a:L)-[:T]->(b) WHERE a.k = 5`. Item 505's shape —
+the rewritten clause is an ordinary pattern, so every rung applies with none knowing it happened.
+It runs OUTSIDE `fuseAnchorThenHop` so a fused clause gets the lift too.
+
+`MATCH (a:P {age: 5})-[:E]->(b) RETURN b.age` **5.04 → 0.95 ms, 5.31x**, converging with its
+clause twin at 0.95. Controls: the twin 1.01x, inline on the END 1.09x, unfiltered hop 1.00x, node
+scan 0.98x. The spelling probe's item 777 group, which flagged at 3.80x one tick ago, is **absent
+from the >2x list** after this, with 0 groups disagreeing on the ANSWER.
+
+**ONE RUNG'S ADMISSION GATE IS ANOTHER RUNG'S DISQUALIFIER — the finding to carry forward.** The
+first version lifted any non-null literal, including on a QUANTIFIED pattern, and two
+`reachability.test.ts` cases turned from passes into ERRORS: _"Variable-length pattern exceeded the
+trail budget"_. A clause `WHERE` **disqualifies the unbounded var-length BFS rung**, so
+`MATCH (a:N {k: 1})-[:E]->+(b) RETURN DISTINCT b` stopped taking it, fell to the general path and
+faulted. **Nothing about the gate being opened reveals this** — it is only visible from the far
+side. Fixed by refusing a quantified segment; found by the suite, not by reasoning.
+
+**ALL THREE REFUSALS WERE UNTESTED.** Dropping the NULL refusal and dropping the PARAM refusal each
+passed the entire 2,593-test suite AND the fuzzers. Verified against the engine first:
+`MATCH (a:P {k: null})-[:E]->(x)` returns the stored-null row where
+`WHERE a.k = null` returns `[]`, and `{k: $p}` with a null param behaves like the inline null. So
+lifting a null silently drops a row (item 260), and a param inherits that because it cannot be
+shown non-null at compile time. Three tests now pin all of it, teeth verified. (A fourth mutant —
+removing the rewrite — BUILD FAILED on a bad anchor and is recorded as uninformative, not as a
+survival; the route choice's guard is the A/B.)
+
+**THE COUNT IS NOW SIX.** Items 764, 768, 769, 773, 776, 778 each depended on a property with no
+test, found by mutation. Item 776 stated the pattern — a fast path's ADMISSION GATE is where this
+repo's tests are thinnest — and this is the strongest case: the gate had THREE load-bearing
+conditions and the suite covered exactly one, by accident, through a reachability test written for
+another purpose.
+
+**Still open:** the MIRROR asymmetry. Item 777 measured inline on the END at 8.34 against its
+clause twin's 14.36 — inline is 1.7x FASTER there, so the CLAUSE form is the slow spelling and
+closing it wants the opposite rewrite (pushing a clause predicate on the far node INTO the
+pattern), which is a different and less obviously safe transformation.
