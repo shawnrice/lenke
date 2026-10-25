@@ -20976,3 +20976,38 @@ item 777's 1.7x. Its fix routes a far-local clause conjunct into `farPred` inste
 the refusal it needs is now known: the conjunct must be a PREFIX of the AND chain, since `satisfies`
 runs before the gate and moving a fault-free filter earlier suppresses a throw that currently
 happens.
+
+## 781 — TS: a far-only clause `WHERE` lifts into `farPred`. 1.45x, and the refusal item 780 predicted was the WRONG one
+
+**DONE (TypeScript).** A clause `WHERE` reading nothing but the far variable satisfies
+`compilePredicate`'s `ownVar` proof exactly as an inline constraint does, so it compiles to a far
+predicate and the per-edge gate disappears. `->(b) WHERE b.k = 5` **21.07 → 14.48 (1.45x)**; with a
+second far-local conjunct **22.49 → 14.13 (1.59x)**. Controls: inline 1.03x, a REFUSED mixed clause
+1.05x (the change runs on it and must decline — a flat reading there is evidence the refusal fires),
+a node scan 1.00x. Min of three order-alternated rounds, arms grepped in the built bundle.
+
+**All three spellings now land together** (13.85 / ~14.1 / 14.48) where before item 780 they spanned
+13.83 / 20.55 / 21.07. The group in `spelling-probe.ts` carries it.
+
+**ITEM 780'S PREDICTED REFUSAL WAS NOT THE ONE THAT MATTERS — do not re-derive it.** 780 reasoned
+the lift would need a PREFIX refusal, since `satisfies` runs before the gate and moving a fault-free
+filter earlier suppresses a throw. Sound reasoning, wrong conclusion: `directEqProps` is
+ALL-OR-NOTHING, so there is no partial lift to reorder and the question never arises.
+
+What it actually needs: `mergeFarPreds` carries `props`/`eqProps`/`cmpProps` and NOT `where`
+(`satisfies` evaluates `where` last, so nothing can keep a generic inline predicate ahead of a
+lifted clause one), so **an inline far constraint that did not lift must block the whole lift**.
+Mutating that away gives `->(b WHERE b.k IS NULL) WHERE b.j = 1` the answer `[null, five, absent]`
+instead of `[null, absent]` — **with 2600 pass, 0 fail**. Four tests pin it; the fixture gives every
+far node `j = 1` on purpose, so only the inline constraint can distinguish them and a selective
+clause cannot hide the drop. **Seventh consecutive item whose defect was in a fast path's admission
+gate, and the first where the gate was written in the same tick.**
+
+**The free-variable refusal is INERT** (mutating it changed nothing — `directEqProps` declines a
+foreign variable and the no-gain refusal catches it) and **stays anyway**, because it does not
+depend on that internal. Pinned with the explanation so a later reader does not delete a refusal
+because a mutant survived it.
+
+**Still open:** a clause reading the far node AND the start stays on the gate (21.71 against 14.48).
+Splitting a conjunction so only the far-local part lifts IS a partial lift, and that is where item
+780's fault-ordering reasoning becomes load-bearing for real.

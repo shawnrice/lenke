@@ -908,3 +908,80 @@ describe('an inline node or rel WHERE on a hop lifts to eqProps (item 780)', () 
     expect(tags('MATCH (s:S)-[:E]->(b WHERE b.k <> 5) RETURN b.tag AS t')).toEqual([]);
   });
 });
+
+// Item 781 routes a clause `WHERE` that reads only the far variable into `farPred`, so the clause
+// spelling costs what the inline ones do (21.07 → 13.90 ms). `mergeFarPreds` carries `props`,
+// `eqProps` and `cmpProps` but NOT `where`, because `satisfies` evaluates `where` last and there
+// is no position left that keeps a generic inline predicate ahead of a lifted clause one.
+//
+// So an inline far constraint that did NOT lift has to block the whole lift. Mutating that refusal
+// away returns a WRONG ANSWER — the inline `IS NULL` is merged out of existence — while the entire
+// 2,600-test suite stays green, which is why these exist.
+//
+// Every far node here has `j = 1`, so the clause predicate alone admits all three and only the
+// inline constraint can tell them apart. A fixture where the clause were selective would hide the
+// dropped conjunct behind the right answer.
+describe('a far-only clause WHERE lifts into farPred (item 781)', () => {
+  const g = new Graph();
+  const src = g.addVertex({ id: 's', labels: ['S'], properties: { tag: 'src' } });
+
+  for (const [id, properties] of [
+    ['null', { k: null, j: 1, tag: 'null' }],
+    ['five', { k: 5, j: 1, tag: 'five' }],
+    ['absent', { j: 1, tag: 'absent' }],
+  ] as [string, Record<string, unknown>][]) {
+    g.addEdge({ labels: ['E'], from: src, to: g.addVertex({ id, labels: ['P'], properties }) });
+  }
+
+  const tags = (q: string, params?: Record<string, unknown>): unknown[] => query(g, q, params);
+
+  test('a NON-LIFTING inline far constraint still applies beside a lifted clause', () => {
+    // THE MUTANT KILLER. `IS NULL` does not lift (it is not a `compare`), so it stays in
+    // `farPred.where` and the clause must NOT be merged in beside it.
+    expect(tags('MATCH (s:S)-[:E]->(b WHERE b.k IS NULL) WHERE b.j = 1 RETURN b.tag AS t')).toEqual(
+      [{ t: 'null' }, { t: 'absent' }],
+    );
+    // The same query without the clause, to show the clause is what the lift could have eaten.
+    expect(tags('MATCH (s:S)-[:E]->(b WHERE b.k IS NULL) RETURN b.tag AS t')).toEqual([
+      { t: 'null' },
+      { t: 'absent' },
+    ]);
+  });
+
+  test('a LIFTING inline far constraint composes with the clause', () => {
+    // Both spellings of the inline side, since `props` and `eqProps` are different lists in
+    // `mergeFarPreds` and only one of them is exercised by each.
+    expect(tags('MATCH (s:S)-[:E]->(b {k: 5}) WHERE b.j = 1 RETURN b.tag AS t')).toEqual([
+      { t: 'five' },
+    ]);
+    expect(tags('MATCH (s:S)-[:E]->(b WHERE b.k = 5) WHERE b.j = 1 RETURN b.tag AS t')).toEqual([
+      { t: 'five' },
+    ]);
+  });
+
+  test('an AND of two far-local conjuncts lifts, and a disjunction does not', () => {
+    expect(tags('MATCH (s:S)-[:E]->(b) WHERE b.j = 1 AND b.k = 5 RETURN b.tag AS t')).toEqual([
+      { t: 'five' },
+    ]);
+    // An `or` is not a `compare`, so nothing lifts and the gate keeps it — same answer either way,
+    // which is the point of pinning it.
+    expect(tags('MATCH (s:S)-[:E]->(b) WHERE b.k = 5 OR b.j = 1 RETURN b.tag AS t')).toEqual([
+      { t: 'null' },
+      { t: 'five' },
+      { t: 'absent' },
+    ]);
+  });
+
+  test('a clause reading the START is left to the gate', () => {
+    // Pinned even though the refusal that names it has NO teeth of its own: mutating the
+    // free-variable loop away is INERT, because `directEqProps` declines a conjunct whose
+    // variable is not `ownVar` and the no-gain refusal then catches it. The loop stays because
+    // it does not depend on that internal, and this test is what would notice if it changed.
+    expect(
+      tags('MATCH (s:S)-[:E]->(b) WHERE b.j = 1 AND s.tag = $t RETURN b.tag AS t', { t: 'src' }),
+    ).toEqual([{ t: 'null' }, { t: 'five' }, { t: 'absent' }]);
+    expect(
+      tags('MATCH (s:S)-[:E]->(b) WHERE b.j = 1 AND s.tag = $t RETURN b.tag AS t', { t: 'no' }),
+    ).toEqual([]);
+  });
+});

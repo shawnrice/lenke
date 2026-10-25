@@ -314,6 +314,89 @@ const closedFarPred = (
 };
 
 /**
+ * The far predicate and the per-edge gate, deciding between them (item 781).
+ *
+ * Its own function for the reason `carriedWhere` and `closedFarPred` are: `detectHopProjection`
+ * sits at this file's complexity gate, and writing this inline put it at 42 against a limit of 35.
+ *
+ * When the clause lifts, the gate is GONE rather than merely cheaper — which also means a rung
+ * keyed on `gate === undefined` can now admit a filtered query it previously refused. That is the
+ * intent, and item 778's lesson is why it is said out loud: opening one gate can disqualify
+ * another rung, and nothing about the gate being opened reveals it.
+ */
+const farPredAndGate = (
+  clauseWhere: Expr | undefined,
+  compiledWhere: CompiledExpr | undefined,
+  closedFar: CPredicate | undefined,
+  farVar: string,
+): { farPred: CPredicate | undefined; gate: CompiledExpr | undefined } => {
+  if (clauseWhere === undefined || compiledWhere === undefined || closedFar?.where !== undefined) {
+    return { farPred: closedFar, gate: compiledWhere };
+  }
+
+  const lifted = liftFarOnlyClause(clauseWhere, farVar);
+
+  if (lifted === undefined) {
+    return { farPred: closedFar, gate: compiledWhere };
+  }
+
+  return {
+    farPred: closedFar === undefined ? lifted : mergeFarPreds(closedFar, lifted),
+    gate: undefined,
+  };
+};
+
+/**
+ * A clause `WHERE` that reads NOTHING but the far variable, compiled as a far predicate that
+ * lifts entirely — or `undefined` when any part of that is untrue (item 781).
+ *
+ * `compilePredicate`'s `ownVar` contract is a PROOF that the expression is element-local, and this
+ * establishes it the same way `closedFarPred` does for an inline constraint: every free variable
+ * is the far one. The extra condition is that the result carry no generic `where`, because a
+ * conjunct `directEqProps` declined gains nothing from being moved out of the gate.
+ */
+const liftFarOnlyClause = (where: Expr, farVar: string): CPredicate | undefined => {
+  for (const name of freePredicateVars(where)) {
+    if (name !== farVar) {
+      return undefined;
+    }
+  }
+
+  const lifted = compilePredicate(undefined, where, farVar);
+
+  // `where` present means NOTHING lifted — `directEqProps` declines the whole chain on its first
+  // unliftable conjunct — so this is the "no gain" arm rather than a partial one. The second test
+  // catches a predicate that compiled to no constraint at all.
+  if (lifted.where !== undefined) {
+    return undefined;
+  }
+
+  return (lifted.eqProps?.length ?? 0) > 0 || (lifted.cmpProps?.length ?? 0) > 0
+    ? lifted
+    : undefined;
+};
+
+/**
+ * The far node's inline predicate followed by a lifted clause predicate, in that order.
+ *
+ * The order is the query's: an inline constraint is written before the clause `WHERE`, and
+ * `satisfies` walks `props`, then `eqProps`, then `cmpProps`, so appending preserves it.
+ *
+ * `where` is deliberately NOT carried, and that is why the caller refuses an inline constraint
+ * that has one: `satisfies` evaluates `where` LAST, so there is no way to keep it ahead of a
+ * lifted clause conjunct. Dropping it silently would answer a different question.
+ */
+const mergeFarPreds = (inline: CPredicate, clause: CPredicate): CPredicate => ({
+  props: inline.props,
+  ...(inline.eqProps === undefined && clause.eqProps === undefined
+    ? {}
+    : { eqProps: [...(inline.eqProps ?? []), ...(clause.eqProps ?? [])] }),
+  ...(inline.cmpProps === undefined && clause.cmpProps === undefined
+    ? {}
+    : { cmpProps: [...(inline.cmpProps ?? []), ...(clause.cmpProps ?? [])] }),
+});
+
+/**
  * Does `name` appear ANYWHERE in this AST fragment, in any position?
  *
  * A GENERIC structural walk rather than a per-variant match, for the reason `hasSubquery` in
@@ -1168,13 +1251,42 @@ export const detectHopProjection = (
   // no free variables and an inline `WHERE` may read nothing but the node's own variable.
   // `(v {score: u.score})` is correlated and would need the start bound per edge — that is the
   // correlation problem of items 121-123, not this one.
-  const farPred = closedFarPred(node, farVar);
+  const closedFar = closedFarPred(node, farVar);
 
-  if (farPred === null) {
+  if (closedFar === null) {
     return null;
   }
 
-  const gate = cm.where;
+  // THE CLAUSE SPELLING TAKES THE SAME ROUTE AS THE INLINE ONE (item 781).
+  //
+  // Item 780 made an inline `->(b WHERE b.k = 5)` lift into `eqProps`, read straight off the
+  // element, and that left the CLAUSE twin as the slow spelling of the three — 21.07 ms against
+  // 14.24 for the inline `WHERE` and 13.83 for `->(b {k: 5})`. The clause form compiles to `gate`,
+  // a general `CompiledExpr` evaluated per edge through the binding `Map`, which is exactly the
+  // cost item 780 removed from the other spelling.
+  //
+  // So when the whole clause `WHERE` reads nothing but the far variable, compile it as a far
+  // PREDICATE instead and drop the gate. `compilePredicate` already takes the proof as `ownVar`;
+  // the only new thing here is noticing that a clause `WHERE` can satisfy it too. Measured
+  // 21.07 -> 13.90 (1.52x), and an AND of two far-local conjuncts 22.49 -> 14.93 (1.51x), both
+  // converging with the inline spellings.
+  //
+  // THE SECOND REFUSAL IS THE LOAD-BEARING ONE. `mergeFarPreds` carries `props`, `eqProps` and
+  // `cmpProps` and NOT `where`, because there is no position left in `satisfies` that would keep
+  // a generic inline predicate ahead of a lifted clause one. So an inline constraint that did not
+  // lift must block the whole lift — merging would DROP it and answer a different question. The
+  // other two are weaker than they look and the comments say which is which, so a later reader
+  // does not spend a tick re-deriving it:
+  //
+  //   - `liftFarOnlyClause` refusing a clause that does not lift ENTIRELY is a NO-GAIN refusal,
+  //     not a correctness one. `directEqProps` is all-or-nothing, so "did not lift entirely"
+  //     means nothing lifted at all, and the predicate would land in `farPred.where` — the same
+  //     generic evaluator the gate already is. Every walk here sets `binding.set(farVar, far)`
+  //     BEFORE its `farPred` check, so it would still answer correctly; it would just not be
+  //     faster.
+  //   - a clause reading the START or the REL is left to `carried`, which has the walks that bind
+  //     them. That refusal is structural: this predicate is handed only the far element.
+  const { farPred, gate } = farPredAndGate(m.where, cm.where, closedFar, farVar);
   // The start is bound when the carried predicate reads it OR a projected item does.
   const needsStart = carried.needsStart || itemsReadStart;
 

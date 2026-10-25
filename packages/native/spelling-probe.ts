@@ -458,8 +458,16 @@ const GROUPS: [string, readonly string[]][] = [
   //   `->(b {k: 5})`          13.83 ms    `->(b WHERE b.k = 5)`   20.55 -> 14.14 (1.45x)
   //   `->(b) WHERE b.k = 5`   19.31
   //
-  // Passing the proof closed it. The CLAUSE form is still the slow one of the three and is the
-  // remaining asymmetry in this position — the group is here to keep measuring it.
+  // Passing the proof closed it. Item 781 then closed the clause form the same way — a clause
+  // `WHERE` reading nothing but the far variable satisfies `ownVar`'s proof too, so it compiles
+  // to a far PREDICATE and drops the gate: 21.07 -> 13.90 (1.52x), and an AND of two far-local
+  // conjuncts 22.49 -> 14.93 (1.51x). All three spellings now land together, which is what this
+  // group is here to keep true.
+  //
+  // What it canNOT reach, deliberately: a clause that also reads the START or the REL (those
+  // belong to `carried`, which has the walks that bind them), and a clause combined with an
+  // inline far constraint that does not lift — merging would drop the inline one, so the lift
+  // refuses. Both are pinned as tests rather than as probe rows, because they are correctness.
   [
     'a predicate on the FAR node: three spellings (item 780)',
     [
