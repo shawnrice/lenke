@@ -20843,3 +20843,45 @@ not by review.
 which also rejects `farVar === startVar`). Untouched here, and the main projection path converged
 without it — so whatever it guards is either already served or still refused. Probe before
 assuming either.
+
+## 777 — item 776's second gate costs NOTHING (closed by measurement). An INLINE start property costs 8.4x its clause twin — located, guarded, not yet fixed
+
+**NO ENGINE CHANGE.**
+
+**CLOSED BY A NEGATIVE RESULT — item 776's second `farVar === undefined` refusal.** It sits in the
+anchor-hop FUSION detector (item 505's two-`MATCH` shape). Four spellings, one shape per process,
+row counts asserted: `MATCH (a:P)-[:E]->() RETURN a.age` 15.99 ms, the split-clause twin 15.62,
+the named-end twin 15.85, the named-rel twin 15.89 — all converged, both `count(*)` twins 0.00 via
+the shortcut. **Item 505's fusion rewrite plus item 776's relaxation already cover these shapes**,
+so there is nothing behind that gate. Do not "fix" it.
+
+**FOUND — an INLINE property on the hop's START costs 8.4x the same predicate in a clause
+`WHERE`.** Equivalent spellings, asserted-equal row counts (2,065 each), three reads:
+
+| predicate position |       inline `{k: 5}` |     clause `WHERE` |                 |
+| ------------------ | --------------------: | -----------------: | --------------- |
+| on the START       | 8.69 / 8.34 / 8.42 ms | 1.00 / 1.00 / 0.99 | **8.4x SLOWER** |
+| on the END         |                  8.34 |              14.36 | 1.7x FASTER     |
+
+**Inline predicates are pushed down at one end of the same hop and fatal at the other.** Cause:
+`plainNode` is `(n.properties?.length ?? 0) === 0 && n.where === undefined`, so an inline property
+on the START refuses `detectHopProjection` outright, while `closedFarPred` pushes the far-node
+equivalent into the walk. The start/end asymmetry is the tell — one position has support, the other
+a refusal.
+
+**FOURTH instance in `hop-projection.ts` of a gate on PRESENCE rather than USE**, and the largest:
+item 444 (`-[e:E]->`, 3.7x), item 505 (split `MATCH`, 747.9 ms against 0.0), item 776 (anonymous
+end, 4.6-4.9x), this (8.4x).
+
+**THE FIX AND ITS CONSTRAINT, for whoever takes it.** Item 505's shape — a REWRITE lifting the
+inline property into the `WHERE` the fast path already handles, not a second predicate position in
+the fast path. It **must refuse a NULL literal and a PARAM**: inline `{k: null}` means IS NULL
+(item 260) where `k = null` is UNKNOWN, and `{k: $p}` cannot be proven non-null at compile time.
+That guard is the whole correctness story, which is why it was not done in the tail of a tick.
+
+**Guarded meanwhile:** the pair is a spelling-probe group flagging at **3.80x** on the probe's
+fixture, carrying the measurement, the cause, the mirror asymmetry and the null/param constraint,
+with 0 groups disagreeing on the ANSWER.
+
+**Also seen and not chased:** item 286's group at 2.01x — the threshold-straddler item 504 measured
+at **1.09x in isolation**, recorded as flagging 2 of 3 runs on one tree and 0 of 3 on HEAD.

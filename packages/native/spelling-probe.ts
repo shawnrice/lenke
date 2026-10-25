@@ -416,6 +416,30 @@ const GROUPS: [string, readonly string[]][] = [
   // The sentinel's uniqueness is load-bearing: with a plausible name like `b`,
   // `MATCH (b:P)-[r:E]->() RETURN b.age` would bind the FAR node to `b` and read its age. The
   // whole suite passed that mutant before item 776 added tests for it.
+  // An INLINE property on the START against the same predicate in a clause `WHERE` (item 777).
+  // Equivalent spellings, asserted-equal row counts (2,065 each on the probe's own fixture
+  // shape), and **8.4x apart** — 8.69 / 8.34 / 8.42 ms against 1.00 / 1.00 / 0.99 over three
+  // reads of `MATCH (a:P {k: 5})-[:E]->(b) RETURN b.k` and its clause twin.
+  //
+  // Cause located: `plainNode` is `(n.properties?.length ?? 0) === 0 && n.where === undefined`,
+  // so an inline property on the start refuses `detectHopProjection` outright, while the clause
+  // form is admitted. The FAR node does not have this problem — `closedFarPred` pushes an inline
+  // predicate there into the walk, which is why the mirror pair runs the other way (inline on the
+  // END is 1.7x FASTER than its clause twin, 8.34 against 14.36). So inline predicates are
+  // pushed down at one end of the same hop and fatal at the other.
+  //
+  // FOURTH instance in `hop-projection.ts` of a gate on whether something is PRESENT rather than
+  // whether it is USED (items 444, 505, 776, this). The fix is item 505's shape — a REWRITE that
+  // lifts the inline property into the `WHERE` the fast path already handles — and it must refuse
+  // a NULL literal and a PARAM: inline `{k: null}` means IS NULL (item 260), which `k = null`
+  // does not, and `{k: $p}` cannot be known non-null at compile time.
+  [
+    'an INLINE start property vs a clause WHERE (item 777)',
+    [
+      'MATCH (a:P {k: 5})-[:E]->(b) RETURN b.k AS v',
+      'MATCH (a:P)-[:E]->(b) WHERE a.k = 5 RETURN b.k AS v',
+    ],
+  ],
   [
     'an ANONYMOUS end node vs a named one (item 775)',
     ['MATCH (:P)-[r:E]->() RETURN r.k AS v', 'MATCH (:P)-[r:E]->(b) RETURN r.k AS v'],
