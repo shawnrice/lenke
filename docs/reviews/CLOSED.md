@@ -24631,3 +24631,83 @@ real, which is exactly what made "the aggregates will have it too" feel like kno
 
 Gates: `bun run fmt` 0; `bun run fmt:check` 0; `bun run check` 0; `git status` clean of any engine
 change (docs only), the temporary probe removed.
+
+## 846 — 🛑 **item 831's "first CLEAN absolutes" are the outlier**: its own code reproduces at 350/315, not 234.1/217.7, and the figures it rejected as contaminated were right
+
+**MEASUREMENT, no engine change.** A `bench_all` regression pass after item 844 read `element p` at
+**344.6 ns/row** against item 831's recorded **234.1** — 1.47x, on a row no change since then
+touches. That is either a regression I introduced or a bad record, and it is not a thing to wave
+through.
+
+### It is not a regression: three source versions, one band
+
+The in-sweep figure first had to be separated from in-sweep inflation (items 737/747), so the
+`perrow` group was run alone, three times. Then the same group was run against the engine source
+checked out at item 839 (before every native change this session) and at **item 831's own commit**:
+
+```text
+  source               element p                element r
+  HEAD (846)           350.5 / 342.1 / 342.3    310.1 / 330.0 / 315.7
+  item 839 (pre-840)   351.8 / 352.9            318.4 / 311.6
+  item 831's own       362.8 / 350.0            314.5 / 315.7
+  in-sweep (bench_all) 344.6                    308.5
+```
+
+**Seven runs, three source versions, one band: ~342-363 and ~308-330.** Items 840, 841 and 844 did
+not touch the render path — the question item 844's own `min` control makes worth asking rather than
+assuming — and the bisect says so directly.
+
+### What item 831 concluded, and why it was backwards
+
+831 ran the post-828 sweep, read `element p` 234.1 and `element r` 217.7 against records of 392.6
+and 323.9, and reasoned: `element r` is **a control the change cannot reach** (item 829 established
+that 828's reorder cannot apply to the edge renderer), it moved 1.49x, therefore per item 762 the
+comparison is instrument rather than effect — so **the older figures came from item 809's
+contaminated run**, and items 811 and 827 were corrected to cite 234.1.
+
+The logic is sound and the direction is wrong. Set beside today's numbers:
+
+```text
+  element r    323.9 "contaminated"   vs ~315 reproducible    2.7% apart
+  element p    392.6 "contaminated"   vs ~355 reproducible     10% apart
+  element r    217.7 "clean"          vs ~315 reproducible      31% LOW
+  element p    234.1 "clean"          vs ~355 reproducible      34% LOW
+```
+
+**The run 831 called contaminated reproduces. The run it called clean does not.** Its own
+reasoning identified the right pair of suspicious rows for the right reason — `element p` at 47 ms
+and `element r` at 218 ms are the only rows long enough for machine state to matter, where every
+other row in the sweep is ≤ 11 ms and matched its record to the decimal. It then assumed the
+anomaly must be in the older run, because contamination makes things SLOWER. **A quiet, boosting box
+makes a long row FASTER by the same mechanism**, and nothing in the evidence distinguished those two
+cases. 831 had one run on each side and picked.
+
+### Corrections this forces
+
+- **`element p` is ~350 ns/row and `element r` ~315**, at the sizes those rows use (200,000 and
+  1,000,000). These are stated as a band from seven runs rather than as a figure from one, which is
+  the whole point.
+- **Item 831's correction of items 811 and 827 is REVERTED.** Those two cite `element p` at 392.6,
+  831 told them to read 234.1, and 392.6 is within 10% of reproducible. Their own conclusions did
+  not rest on the precision — 811 showed a part exceeding a whole, 827 did a fixture-width
+  reconciliation anchored elsewhere — and they stand either way, but the number they should carry is
+  theirs.
+- **Item 828's shipped win is untouched.** Its evidence is its own A/B from saved PRE/POST binaries
+  at four key counts, order-alternated and disjoint (1.27-2.82x) — independent of any sweep. What
+  this removes is 831's claim that the `perrow` row shows that win as 1.68x. It does not show it at
+  all: `element p` reads the same before and after 828 on this fixture, because the social store's
+  key count is not where the column-major reorder pays.
+
+### The rule, which item 831 half-stated
+
+810 said a contaminated run's RATIOS must not enter the record; 831 extended that to absolutes and
+then did the thing the extended rule forbids — **it replaced two recorded absolutes on the strength
+of a single run.** The rule that survives both items is stronger and symmetric:
+
+**A single sweep cannot establish an absolute, however clean it looks, and "this run disagrees with
+the record" names a disagreement rather than a culprit.** Deciding which side is wrong needs a third
+measurement — here, re-running the older code — and that is cheap compared to what a wrong absolute
+costs: 392.6 travelled two items before 831, and 234.1 travelled four items after it.
+
+Gates: `bun run fmt` 0; `bun run fmt:check` 0; `bun run check` 0; `git status` clean of any engine
+change (docs only), the bisected sources restored to HEAD and verified clean.
