@@ -1011,9 +1011,30 @@ if (engines.length === 0) {
   process.exit(1);
 }
 
-/** Minimum of `REPS` runs, in milliseconds. */
+/**
+ * Minimum of `REPS` runs, in milliseconds.
+ *
+ * 🛑 THE SINGLE WARM CALL IS ADEQUATE HERE, AND IS NOT IN `bench-usage.ts` — do not carry item
+ * 752's conclusion across (item 753). There the unit is ONE small operation, so one warm call
+ * tiers up almost nothing, two index columns run in one process at different warmth, and
+ * best-of-batches cannot absorb it because the bias is BETWEEN the cells being compared: a
+ * parse-dominated row read 1.26-1.52x in the warmer column, which made indexing look like it
+ * SPEEDS UP a write.
+ *
+ * Here the unit is a whole query over the fixture, so one call is a substantial warmup, and what
+ * it leaves is absorbed by the min. Measured with `BENCH_REPS=1` against the default 5:
+ *
+ *   count 3-hop                        353.3 -> 312.5   (1.13x)
+ *   query: project the element [ts lazy]  7.9 ->   6.6   (1.20x)
+ *   traverse 1-hop + filter             44.6 ->  40.9   (1.09x)
+ *
+ * So the first timed run is 9-20% slow and the MIN discards it. The property that matters is not
+ * the size of that residual but that **every column pays it identically** — each engine gets its
+ * own warm call and its own min — so an engine-vs-engine ratio is not a warmth comparison. The
+ * same holds for an A/B across two BUILDS, which runs each arm in its own process.
+ */
 const best = (f: () => void): number => {
-  f(); // warm
+  f(); // warm — see above for why one call is enough at this unit size
 
   let ms = Infinity;
 
