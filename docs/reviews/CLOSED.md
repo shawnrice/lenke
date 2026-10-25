@@ -23399,3 +23399,63 @@ Gates, each its own command with its exit code read UNPIPED: `cargo fmt` 0; `car
 --all-targets -- -D warnings` 0; `cargo test --release` 1225 + 13 + 725 passed 0 failed under
 `systemd-run -p MemoryMax=16G -p MemorySwapMax=0`; the codec diff asserted to be comments only (zero
 added non-comment lines); the temporary example removed.
+
+## 830 — item 829's open question CLOSED: **~2.1 ns a key is the "ask every key" cost in EVERY format**, and csv's extra 5x is the format's own output
+
+**MEASUREMENT, no engine change** (a temporary probe, reverted). Item 829 measured the csv encode at
+11.2 ns a key an element, refuted the column hoist (1.00-1.04x), and left three candidates
+unmeasured: `value_to_neutral`, the `cols.observe` pass, and the row writer. Pricing every FORMAT on
+the key axis discriminates between them with no code change, because the per-row property bag is
+shared by all of them where csv's two extra passes are its alone.
+
+```text
+  keys         csv     pg-text     pg-json    graphson      ndjson
+     4       260.2       108.0        98.3       152.2        86.6
+    52       615.8       169.1       160.1       220.9       146.1
+   202      2371.7       482.0       479.3       574.2       440.0
+  ns/key      10.7        2.19        2.09        2.23        2.08
+```
+
+### Result 1: every format pays ~2.1 ns a key, and HOISTING DOES NOT TOUCH IT
+
+**`ndjson` goes through `encode_object_cols`, which already resolves the columns once** — it is the
+one arm written the hoisted way — and it pays **2.08 ns a key**, the same as the three unhoisted
+formats. So item 829's refutation is confirmed from a second direction: the shared per-key cost is
+not the hash lookups, because the arm without hash lookups pays it too.
+
+What it is, then, is the irreducible question itself: for every key in the STORE, does this element
+carry it? That is `present_at` per (element, key) and nothing in the encoders can skip it — only a
+per-node key list can, which is items 342/825/827's lever, now priced on a fourth shape.
+
+### Result 2: csv's extra 8.6 ns a key is the FORMAT's output, measured not argued
+
+csv's slope is 5x the others', and the obvious reading — a flat format must emit a field for every
+column on every row, where the others emit only the keys an element carries — is an argument. The
+measurement is the output size:
+
+```text
+  keys     csv bytes/element     pg-json bytes/element
+     4                    26                        76
+    52                    74                        76
+   202                   224                        76
+```
+
+**csv's output grows linearly with K (26 → 224) while pg-json's is FLAT at 76.** So csv is doing
+proportionally more writing because it is asked to produce proportionally more bytes. That is the
+format's obligation and not engine waste, and it closes the csv question rather than leaving it as a
+target.
+
+### What this leaves
+
+The codec's K-dependence decomposes completely: **~2.1 ns a key of unavoidable presence-asking,
+shared by every format and immune to hoisting, plus csv's own output growth.** Nothing here is a
+defect, and the reducible half is the lever items 825 and 827 already named.
+
+So the key-count arc (825, 826, 827, 828, 829, 830) ends with: **one real win shipped** (828's
+column-major render, 1.27-2.82x), **two refutations with numbers** (829's hoist; the edge reorder,
+which cannot apply because `EdgeMap` is hashed rather than positionally indexed), and **one lever
+priced on four shapes** — insert, element render, codec encode, and the original render ladder —
+still gated on item 806's 123-site census.
+
+Gates: `cargo build --release` 0; `bun run fmt` 0; `bun run fmt:check` 0; `git status` clean; the
+temporary probe removed.
