@@ -22619,3 +22619,65 @@ and the remaining one is a contract change. Continuing would be sunk cost; the b
 exhausted and the next instrument for this shape would be a profiler, which this box does not have.
 
 Gates: `cargo build --release` 0; `git status` clean; the temporary example removed.
+
+## 816 — item 680's named fix is ALREADY BUILT AND WIRED. My redundant change was caught by its own PRE arm, not by reading
+
+**NO ENGINE CHANGE** (written, measured, reverted). Item 680 diagnosed that `rebuild_csr` runs at
+LOAD only, that every adjacency write clears `csr_fresh`, that **nothing re-arms it**, and that the
+penalty is selectivity — up to **24.07x** on a 1-in-50 type. It named the fix ("a GLOBAL per-type
+edge list … maintainable incrementally") and left it "not costed yet". I verified the diagnosis
+holds — `rebuild_csr()` has exactly five non-test callers, all at load — and built the per-node half
+of that fix.
+
+### It is already there, and `exec.rs` says so in a comment
+
+`out_typed_csr`/`in_typed_csr` do return `None` when stale, which is what made this look open. But
+**`exec.rs` already falls back to the maintained index at both read sites**, with a comment that
+states it outright: _"The CSR overlay is stale (an adjacency write since the last rebuild); the
+incrementally-maintained index still answers."_ The opt-in `out_type_idx` survives the write that
+killed the overlay — O(1) push on `add_edge`, single-removal on delete, per-node rebuild otherwise —
+so the data item 680 asked for is built, correct, and consulted.
+
+### 🛑 THE PRE ARM IS WHAT CAUGHT IT — reading had not
+
+My change made the two accessors consult the index themselves. 50,000 nodes, type E 1 in 50, one
+`add_edge`, each arm in its own process:
+
+```text
+                     PRE (no change)   POST (accessors consult the index)
+  fresh                   140.3 us          148.8      the ceiling
+  stale, NO index        2867.9            2632.7      CONTROL — gated off, unreachable
+  stale, +index           344.6             369.0      no better; slightly worse
+```
+
+**`stale +index` already read 344.6 µs WITHOUT my change.** Had I measured only the POST arm and
+compared it against item 680's recorded 24.07x, I would have shipped a redundant accessor with an
+8.3x story attached — a story that happens to be TRUE about the engine and FALSE about my change.
+Sixteenth already-closed candidate this session, and **the first one that reading did not catch**:
+the accessor really does return `None`, and the fallback lives in a different file.
+
+The rule this earns: **an A/B's PRE arm is not a formality, it is the only thing that establishes the
+change is new.** Comparing a POST reading against a number recorded by another item measures the
+engine's history, not your diff.
+
+### What the measurement DOES establish, which item 680 did not have
+
+```text
+  fresh                     140.3 us     1.00x
+  stale WITHOUT the index   2867.9      20.4x   confirms 680's 24.07x on a nearby fixture
+  stale WITH the index        344.6      2.5x   the index recovers 8.3x of the 20.4x
+```
+
+So the opt-in index already closes most of the gap, and **the residual exposure is graphs that have
+not opted in** — they still pay 20.4x on a selective typed hop after a single write, permanently.
+
+That sharpens the trade item 680 left open, and both sides now have numbers: the index costs a typed
+hop **2x in the shape it does not suit** (recorded as E82 in `exec.rs`'s own comment, which is why it
+is opt-in and why `expand_bench` exists), against **20.4x for not having it after any write** on a
+many-edge-type graph — which is the realistic people-graph shape item 680 named. Whether it should
+default ON is a storage decision with that trade stated, not an optimization.
+
+Gates: `cargo test --release` 1225 + 13 + 725 passed, 0 failed, under `systemd-run -p MemoryMax=16G
+-p MemorySwapMax=0` (run WITH the change, before reverting — it was correct, just redundant);
+`cargo build --release --features capi` 0 on the reverted tree; `git status` clean; the temporary
+example removed and the gate grepped to 0.
