@@ -21925,3 +21925,52 @@ the labelled pair went **2.12/2.18/2.25x to 1.73/1.79/1.74x** (GQL's own 4.59-4.
 the unlabelled 2.06/2.05/2.12 to 1.80/1.95/2.63 (one noisy round). **~2.1x is now ~1.75x**,
 consistent with 803's 1.14-1.19x, and the remaining term is the property read item 802 priced at ~10
 of the ~24 ns a vertex.
+
+## 805 — `probe:elemread`: item 802's ladder MIS-ATTRIBUTED its biggest line. The walk is 2 ns, the read is 2 ns, together they are 10
+
+**DONE (instrument), no engine change.** `packages/native/elemread-probe.ts`,
+`bun run probe:elemread`.
+
+**Item 802's "property read and compare at 9.6-11.1 ns a vertex" is wrong**, and item 804 repeated
+it as the remaining term of item 801's gap. Separating the two halves was all it took.
+
+**REFUTED FIRST: `CONST key` vs `DYN key` cannot diagnose V8 dictionary mode.** Item 802 found them
+equal and I read that as a hash lookup on both. They are equal in EVERY arm, including a plain
+object literal that is certainly fast-mode (1.1-1.3 ns either way), because a hoisted
+`const key = 'k'` is as constant to V8 as the literal. The arms stay as the record of the refuted
+reading.
+
+**THE DECOMPOSITION** (200,000 vertices, one arm per process, built OUTSIDE the timed region,
+median of 11, three rounds):
+
+```text
+  walk map values (NO read)        1.4-2.3 ns/vertex
+  walk map + read v.properties.k   9.2-10.0            the engine's own shape
+  walk label Set + read            8.8- 9.7
+  walk ARRAY + read (same objects) 7.1- 8.2
+  property bags in a dense array   1.8- 2.2            the read alone, in order
+  plain / frozen object literal    1.1- 1.3            the read's floor
+  a Map per element                14.9-15.8
+```
+
+**The walk is ~2 ns, the read is ~2 ns, together they are ~10** — so **~6 ns a vertex exists only
+in the PAIRING**: the `Map` yields vertices in insertion order and `v.properties` is a dependent
+load into a separately-allocated bag, one cold line each, which no prefetcher can anticipate.
+
+- **`Map`-per-element REFUTED as a property layout: 8x worse** (14.9-15.8 against 1.8-2.2).
+- **The label `Set` walks slightly cheaper than the id `Map`**, the right direction for
+  `probe:surface` showing the labelled pair faster.
+
+**PRICED AND DECLINED — a dense vertex array walked instead of the `Map`:** 7.1-8.2 against
+9.2-10.0, **1.2-1.3x of the pair**, ~2 ns of the ~24 a vertex, about 1.08x end to end — under the
+noise floor, against a structural `@lenke/core` change and a second collection to keep correct
+through deletes.
+
+**⚠️ A correction to my own first reading of that arm.** It read 1.5-1.9x while using
+`for (let i = …)` where the `Map` arms use `for...of`, so it carried the ACCESS FORM as well as the
+collection; the lint gate flagged the indexed loop and matching both sides roughly halved the gap.
+**A difference between two arms is only the thing you changed if nothing else differs.**
+
+**WHAT THIS GIVES ITEM 342** (packed presence / columnar), which had no number on this shape: if a
+per-element property read were CONTIGUOUS the pair would cost ~4 ns instead of ~10 — ~6 of the ~24
+ns a vertex, **~1.3x on a filtered node count**, and the largest single term left in it.
