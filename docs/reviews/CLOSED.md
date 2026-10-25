@@ -18518,3 +18518,81 @@ shape has not diverged in 720,000 generated queries.
 
 Gates, each its own command with its exit code read UNPIPED: `bun run lint` 0; `bun run fmt` 0;
 `bun run check` 0; the seven byte-identity fuzzers 13 pass 0 fail, plus 36 seeded differential runs.
+
+## 737 — skipping the terminal generator frame: BUILT, measured NEUTRAL, REVERTED — and the full-sweep A/B invented a 1.66x regression
+
+**REFUTED, with the methodology finding worth more than the lever.** Item 736 priced the
+recursion-plus-pipeline third of a depth-5 walk at ~53% and added the first bench row that reaches
+the enumerating path. This is the obvious lever against that third, and it does not survive.
+
+### The lever
+
+On the final segment, `walkSegments(… index + 1 …)` does exactly one thing: construct a generator,
+take the `index >= segments.length` branch, yield one binding, return. A `yield*` delegation plus a
+generator **per emitted row**, paid by every pattern — a one-segment `MATCH (a)-[:R]->(b)` as much
+as a quantified walk, because the terminal frame is always the last one. So: hoist
+`index + 1 >= pattern.segments.length` out of the loop and reproduce the base case inline at both
+call sites, `pathAcc` and `pathVar` included so the emitted value and its sequence position are
+unchanged.
+
+Correctness held throughout: `packages/gql` 2585 pass 0 fail, the seven byte-identity fuzzers 13
+pass 0 fail.
+
+### 🛑 But a full-sweep A/B reported a 1.66x REGRESSION that does not exist
+
+The first design ran the FULL corpus per arm. On its single completed after-arm,
+`query: project the element + materialize` read **44.8 against the clean arm's 27.0 and 26.5** — a
+1.66x regression on a row the change barely touches, which is exactly the shape
+`ts-closure-size-is-load-bearing` warns about (a hot-path edit handing an unrelated query a new slow
+mode). I was ready to revert on that basis.
+
+Isolated, that row does not move:
+
+| 3 alternated rounds, isolated       | clean              | after              |
+| ----------------------------------- | ------------------ | ------------------ |
+| `project the element + materialize` | 25.2 / 24.9 / 25.5 | 24.7 / 25.0 / 25.7 |
+| `project the element [ts lazy]`     | 6.9 / 6.8 / 6.9    | 7.2 / 6.7 / 6.8    |
+
+**The regression was an artifact of the instrument.** A full sweep per arm is the wrong tool for a
+per-row question: rows interfere, its own ffi column drifts ~10% between arms on a TS-only change,
+and the arms themselves took 5 to 15 minutes each, so the comparison drifts with the machine. The
+isolated run answered both questions in eight minutes for all six arms — faster AND tighter, which
+is not the usual trade.
+
+### And the lever itself is neutral
+
+| 3 alternated rounds                          | clean                 | after                 | controls |
+| -------------------------------------------- | --------------------- | --------------------- | -------- |
+| `project var-length 1-3 hops … [ENUMERATES]` | 131.9 / 114.0 / 128.3 | 122.7 / 89.3 / 116.4  | flat     |
+| `count var-length 1-2 hops` (UNREACHABLE)    | 177.1 / 177.4 / 174.6 | 177.6 / 175.1 / 175.4 | ✓        |
+| `… + end filter` (UNREACHABLE)               | 150.3 / 148.2 / 150.0 | 153.3 / 145.1 / 148.0 | ✓        |
+| `… 1-3 hops [WALK]` (UNREACHABLE)            | 198.2 / 142.5 / 142.8 | 144.4 / 143.1 / 144.1 | ✓        |
+
+The after arm wins **3/3 pairs at 1.08x, 1.28x and 1.10x** — suggestive, and under a sign test worth
+p = 0.125, which is nothing. The ranges OVERLAP, and that row's own **ffi column swings 1.33x
+(24.0-31.9)** across rounds while native did not change, so the row cannot resolve a 10% effect at
+three rounds.
+
+By this repo's own precedent that is not a win: item 726 reverted an all-equal short-circuit at
+1.05x against controls moving 1.06-1.18x, and item 704 refuted a 1.2M-allocation change at 1.02x
+against a 1.02x control. Reverted, and the cost it would have carried is recorded too — the base
+case duplicated into two call sites, which is the kind of thing a 10% claim has to earn.
+
+The three unreachable controls are the part that worked. Item 736 established WHICH rows cannot
+reach this code, and that knowledge turned three previously-useless rows into real controls: flat in
+every round, which is what makes the enumerating row's movement interpretable at all.
+
+### What generalises
+
+- **A per-row question deserves a per-row instrument.** The full sweep did not just cost 50 minutes
+  of wall clock; it produced a confident wrong answer (1.66x) that an eight-minute isolated run
+  refuted. More measurement is not more evidence when the instrument is coarser than the effect.
+- **Two of this session's three "regressions" have now been instrument artifacts** — this one, and
+  item 736's bimodal before-arm that would have read as a 1.35x regression on mins. Both looked
+  exactly like the real thing.
+- **Suspecting your own change is correct; believing the first number that confirms it is not.**
+  The closure-size precedent made 44.8 feel explained, which is precisely when a reading needs its
+  isolated re-run most.
+
+Gates, each its own command with its exit code read UNPIPED: `bun run lint` 0; `bun run fmt` 0;
+`bun run check` 0. The engine is back to item 736's code plus the refutation marker.

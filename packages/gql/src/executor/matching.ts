@@ -1942,6 +1942,31 @@ export const walkSegments = function* (
   }
 
   const { rel, node, unit } = pattern.segments[index];
+  // 🛑 SKIPPING THE TERMINAL FRAME WAS BUILT AND REVERTED — measured NEUTRAL (item 737).
+  //
+  // On the final segment `walkSegments(… index + 1 …)` does one thing: construct a generator, take
+  // the `index >= segments.length` branch, yield one binding, return. That is a `yield*` plus a
+  // generator PER EMITTED ROW, on every pattern, and item 736 had just priced the recursion-plus-
+  // pipeline third of a depth-5 walk at ~53%. Hoisting `index + 1 >= segments.length` out of the
+  // loop and inlining the base case at both call sites looked like free money.
+  //
+  // It is not. Three alternated rounds, isolated, with the shortcut-routed `count var-length` rows
+  // as controls this code cannot reach (all flat):
+  //
+  //   project var-length 1-3 hops [ENUMERATES]  clean 131.9/114.0/128.3   after 122.7/89.3/116.4
+  //   project the element + materialize         clean  25.2/ 24.9/ 25.5   after  24.7/25.0/ 25.7
+  //
+  // The after arm wins 3/3 pairs on the enumerating row at 1.08-1.28x, but the ranges OVERLAP and
+  // that row's own ffi column swings 1.33x (24.0-31.9) while nothing about native changed — so the
+  // row cannot resolve a 10% effect. By this file's own standard (item 726 reverted at 1.05x
+  // against controls moving 1.06-1.18x; item 704 refuted at 1.02x) that is not a win, and it cost
+  // the base case being duplicated into two call sites.
+  //
+  // ⚠️ AND A FULL-SWEEP A/B SAID 1.66x REGRESSION ON `project the element + materialize` — a
+  // PHANTOM. In-sweep it read 27.0 then 44.8; isolated it does not move at all. A full sweep per
+  // arm is the wrong instrument for a per-row question: its own ffi control drifts ~10% between
+  // arms, rows interfere, and one arm took 15 minutes against another's 5. The isolated run that
+  // settled both questions took eight minutes for all six arms.
 
   // Variable-length: enumerate the endpoint of every trail within [min, max]
   // repetitions (one per trail → ISO per-path multiplicity), then continue from
