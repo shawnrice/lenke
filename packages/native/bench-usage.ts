@@ -670,6 +670,25 @@ console.log('-'.repeat(header.length));
 
 for (const w of SELECTED) {
   const cells = engines.flatMap((e) =>
+    // 🛑 THESE TWO COLUMNS ARE NOT INDEPENDENT MEASUREMENTS (item 752). They run in THIS order in
+    // ONE process, and `rate` warms with a single operation — the pilot that sizes the batch, which
+    // is a different job despite the word "Warm" on it. So `(+)` is measured on code the `(-)` cell
+    // has already executed thousands of times, and on a PARSE-DOMINATED row that tier-up beats the
+    // effect being measured: `write: append node` read ts(-) 88.7k against ts(+) 135.0k, i.e.
+    // indexing making a write 1.52x FASTER, which it cannot.
+    //
+    // Reversing this `[false, true]` moved the advantage with the ORDER and not with the index
+    // (indexed-first 94-105k, unindexed-second 128-145k), which is the proof. `best of BATCHES`
+    // cannot help: every batch of the first column is colder than every batch of the second.
+    //
+    // Three fixes were tried and NONE shipped: a 600-op warmup converged in isolation but not in
+    // the full matrix; 3000 ops corrected the SIGN (ts(-) 111.2k against ts(+) 88.7k) at minutes of
+    // extra wall clock; discarding each cell's first batch read 1.54x / 0.98x / 1.11x over three
+    // rounds, which is not a fix.
+    //
+    // SO: read `(-)` against `(+)` only from an ISOLATED run of one row, and only where the two
+    // columns differ by more than ~1.5x. Where they differ by orders of magnitude — `read: point
+    // lookup` is 2.2k against 927.3k — the index effect dominates and the bias cannot reach it.
     [false, true].map((indexed) => {
       if (w.needs === 'gremlin' && e.gremlin === undefined) {
         return '-'.padStart(10);

@@ -19637,3 +19637,74 @@ throws were temporary. `count 2-hop` and the three filtered rows all already exi
 (the ungated one added at item 749), so the family stays measurable without anything new.
 
 Gates: no change to gate. `bun run build` 0 on the restored tree.
+
+## 752 — `bench:usage`'s two index columns are not independent: the second is warmer, and on a parse-dominated row that beats the effect being measured
+
+**DIAGNOSED AND PROVED; the cheap fix was tried and did NOT survive, so nothing ships but the
+warning.** The serving benchmark holds the largest cross-engine ratios in the repo, so items
+739/740's rule — re-run the harness that priced it — pointed here.
+
+### The impossible reading
+
+| row                           |     ts(-) |      ts(+) | engine(-) | engine(+) |
+| ----------------------------- | --------: | ---------: | --------: | --------: |
+| `write: append node`          | **88.7k** | **135.0k** |    463.7k |    427.5k |
+| `write: append node [params]` |    548.0k |     410.0k |    462.6k |    417.4k |
+
+**Indexing makes TS's plain append 1.52x FASTER.** It cannot: an index adds maintenance to a write,
+which is what native shows (8% cost) and what the parameterized twin shows (1.34x cost). Isolated
+and repeated, the ordering held 3/3: ts(-) 77.2/90.5/106.5k against ts(+) 97.1/137.6/134.7k.
+
+### The cause, proved by reversing it
+
+`rate` warms with ONE operation — the pilot that sizes the batch, which is a different job and is
+labelled "Warm" in the source — and `[false, true].map(…)` runs both columns in ONE process,
+unindexed first. The interpolated append is parse-dominated (6x its parameterized twin), so by the
+time `(+)` runs, the `(-)` cell has executed that path thousands of times.
+
+**Reversing the column order moved the advantage with the ORDER, not with the index:**
+
+| order    | measured FIRST    | measured SECOND        |
+| -------- | ----------------- | ---------------------- |
+| original | unindexed 77-106k | indexed **97-137k**    |
+| reversed | indexed 94-105k   | unindexed **128-145k** |
+
+That is decisive. The difference is tier-up, and `best of BATCHES` cannot see it because every
+batch of the first column is colder than every batch of the second.
+
+### 🛑 Three fixes tried; the cheap one does not hold
+
+| fix                               | result                                                                                                                                                                                      |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 600-op warmup before both columns | converged ISOLATED (131.8 vs 131.6) but **not** in the full matrix (112.7 vs 138.7)                                                                                                         |
+| 3000-op warmup                    | **corrected the SIGN** — ts(-) 111.2k against ts(+) 88.7k, indexed slower, which is what index maintenance should look like — but minutes of extra wall clock, and only one round completed |
+| discard each cell's FIRST BATCH   | **INCONSISTENT**: 1.54x, 0.98x, 1.11x over three rounds                                                                                                                                     |
+
+The third was the one I expected to ship: it costs one 250ms box a cell instead of thousands of
+operations, and at ~100k ops/s a discarded batch is ~25,000 warm operations, far above the 3,000
+that worked. It still does not reliably remove the bias, and **a fix whose benefit cannot be
+demonstrated is the thing items 726 and 737 were reverted for.** So the harness is back at HEAD.
+
+What the three together do show: the unindexed arm is the unstable one (77-133k across every run
+this item made) while the indexed arm is steady (127-138k). That is consistent with warming as the
+mechanism — sometimes the first column warms enough inside its own batches and sometimes it does
+not — and it is why one round of any arm proves nothing here.
+
+### What this costs the record
+
+**Every `(-)` vs `(+)` figure in `bench:usage` was taken under this bias**, including the recorded
+claim that TS's indexed column WINS. Where the columns differ by orders of magnitude the index
+effect obviously dominates — `read: point lookup` is 2.2k against 927.3k, and no amount of tier-up
+explains 400x. Where they sit within ~1.5x the comparison is confounded, and `write: append node` is
+the case that was.
+
+A second casualty: that row's own comment says it "carries an INDEXED key deliberately" so the
+columns differ and indexes do not "look free on writes". With the bias removed at a 3000-op warmup
+the honest reading is ts(-) 111.2k against ts(+) 88.7k — so the row CAN show the cost, but only
+under a warmup the harness does not perform.
+
+**So the rule until someone fixes it: read `(-)` against `(+)` only from an isolated run of that
+row, and only on a row whose columns differ by more than ~1.5x.** The corrected full matrix is in
+this item for the rows where that holds.
+
+Gates: `bun run check` 0 on the reverted tree; `git status` clean. No change shipped.
