@@ -4873,11 +4873,22 @@ impl Store {
         // Above the branch because the targeted path RETURNS, and putting this after it meant the
         // small-batch delete left the forward map holding a dead node's labels.
         // `the_forward_label_map_agrees_with_the_bucket_sweep` caught that on its first run.
-        for (i, gone) in deleted.iter().enumerate() {
-            if *gone {
-                if let Some(ls) = self.node_labels.get_mut(i) {
-                    ls.clear();
-                }
+        //
+        // OVER `ids`, NOT OVER `deleted` (item 820). Scanning the tombstone vector made this
+        // O(NODES EVER CREATED) on every call, including a batch of one — the same shape item 663
+        // fixed for the bucket sweep below and this loop reintroduced, at the same ~0.38 ns a node.
+        // Measured with the LIVE set pinned at 20,000 and only the churn varied: one delete cost
+        // 14.9 us on a fresh store and 377.7 us after 1,000,000 create-and-delete pairs, linear in
+        // the churn, with the append half FLAT at 278-734 ns throughout.
+        //
+        // Equivalent because `deleted[i]` is set in exactly ONE place — `delete_node_inner`, whose
+        // only caller is this function — so every tombstoned node's labels were cleared by the very
+        // call that tombstoned it, and re-clearing them is a no-op repeated V times. A rollback
+        // (`Undo::RestoreNode`) clears the tombstone AND restores the labels, so a node deleted
+        // again afterwards is cleared by its own later call.
+        for &id in ids {
+            if let Some(ls) = self.node_labels.get_mut(id as usize) {
+                ls.clear();
             }
         }
 

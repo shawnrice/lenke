@@ -22814,3 +22814,71 @@ axis and the un-compacted structures, not from the index.**
 
 Gates: no engine change; `git status` clean. The sweep is one command:
 `BENCH_BUDGET_MS=3000 BENCH_ENGINES=ts,engine BENCH_ONLY='append then delete' bun run bench:usage`.
+
+## 820 — a node delete was **O(NODES EVER CREATED)**. Now O(1): flat across the churn axis, **114.9x at 1M** and unbounded in churn
+
+**FIXED (Rust), and it is a COMPLEXITY change, not a constant factor.** `delete_nodes` ended with a
+loop over `deleted` — the tombstone vector, one entry per node ever created — clearing each
+tombstoned node's forward label entry. Item 724 placed it BEFORE the targeted-path branch for a good
+reason (that path returns early), which meant **even a one-node delete paid an O(total) scan.**
+
+It now iterates `ids`.
+
+### Measured: the delete goes FLAT
+
+Live set pinned at 20,000, churn (create-then-delete pairs) the only variable, 20,000 timed
+append+delete pairs per point:
+
+```text
+  churned    PRE delete    POST delete            append (CONTROL)
+        0      14,729 ns       3,877 ns   3.80x    237 / 281 ns
+  100,000      50,637          4,093     12.4x     240 / 187
+  300,000     129,184          3,868     33.4x     359 / 347
+1,000,000     444,558          3,871    114.9x     298 / 214
+```
+
+**PRE is linear in churn; POST is flat.** The speedup is therefore unbounded — 114.9x at a million
+and growing — and the 3.80x at ZERO churn is the same loop scanning the 40,000 nodes that exist
+there. The append half is flat in both arms at 187-359 ns, which is the control the change cannot
+reach: it touches no delete path.
+
+### How it was found, and why the budget sweep could not have found it
+
+Item 818 saw this row degrade 1.64x as `bench:usage`'s batch budget lengthened and framed it as
+"the INDEXED arm only". **Both halves of that framing were wrong**, and isolating the variable is
+what showed it: holding the live set fixed and sweeping only the churn, the indexed and unindexed
+arms track within 1-5% at every point (9,478/8,910 … 373,035/378,609). The budget axis conflates
+elapsed time with nodes created; only the churn axis separates them, and it turned a 1.64x into a
+39x.
+
+Then splitting the pair localized it: append flat at 278-734 ns, delete 14.9 → 377.7 µs. One probe,
+two arms, one variable each — the discipline items 808 and 814 were about.
+
+### The equivalence is checkable, not plausible
+
+`deleted[i] = true` is set in **exactly one place** — `delete_node_inner`, whose only caller is
+`delete_nodes`. So every tombstoned node's labels were cleared by the very call that tombstoned it,
+and the old loop re-cleared every earlier one on every call: a no-op repeated V times. A rollback
+(`Undo::RestoreNode`) clears the tombstone AND restores the labels, so a node deleted again
+afterwards is cleared by its own later call. `get_mut` bounds-checks, so a stale or duplicate id in
+`ids` is a no-op exactly as before.
+
+**This is the same defect item 663 fixed for the bucket sweep twenty lines below** — it measured
+"~0.33 ns PER NODE across 1k/10k/50k/200k" and added the targeted path to avoid it — and this loop
+reintroduced the shape above the branch at the same constant (~0.38 ns a node here). Worth a grep
+the next time a per-node sweep is added near a per-batch one.
+
+### Teeth: three of three
+
+- clear NOTHING (`ids.iter().take(0)`) — **caught**.
+- clear only the FIRST id (`take(1)`) — **caught**, so the multi-id batch really is covered.
+- off-by-one on the index (`id as usize + 1`) — **caught**.
+
+`the_forward_label_map_agrees_with_the_bucket_sweep` is the test item 724 added when the ORIGINAL
+placement was wrong, and it is what catches all three.
+
+Gates, each its own command with its exit code read UNPIPED: `cargo fmt` 0; `cargo fmt --check` 0;
+`cargo clippy --all-targets -- -D warnings` 0; `cargo test --release` **1225 + 13 + 725 passed, 0
+failed** under `systemd-run -p MemoryMax=16G -p MemorySwapMax=0`; `rewrite_fuzz` 10 passed;
+`bun run fuzz` (all seven byte-identity fuzzers, random seeds) 13 pass 0 fail, run TWICE;
+`bun run fmt` 0.
