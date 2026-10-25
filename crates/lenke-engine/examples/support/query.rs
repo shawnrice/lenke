@@ -479,6 +479,27 @@ pub fn run(cfg: &Cfg) {
             //
             // What remains is three `Arc` allocations and a boxed `Value` per property, per row,
             // by construction.
+            //
+            // DO NOT QUOTE THESE TWO ROWS' ABSOLUTES FROM A FULL `bench_all` RUN (item 849).
+            // They depend on work done EARLIER IN THE SAME PROCESS, and they are the only rows
+            // big enough for that to show: `element p` materializes 200,000 node elements and
+            // `element r` a million edge ones, where every other row in the group is under 2 ms.
+            // Measured three ways on one binary, minutes apart:
+            //
+            //   full bench_all                       element p 233.0   element r 212.3
+            //   bench_all -- perrow  (same harness)            341.0             294.2
+            //   query_bench perrow   (own process)      342.9-349.9       297.5-324.6
+            //
+            // The last two agree and only the full sweep differs, so the variable is the
+            // preceding groups, not the harness or the machine. The ISOLATED figure is the
+            // quotable one: ~345 and ~300, stable across four source versions. The full-sweep
+            // figure has read 392.6, 344.6 and 233.0 at different times with no code change
+            // between the last two that touches rendering.
+            //
+            // This is why item 831's "first CLEAN absolutes" (234.1 / 217.7) and item 846's
+            // correction of them (~350 / ~315) disagreed: both were right about their own
+            // harness. Use the full sweep to catch a regression in a CHEAP row; use the isolated
+            // group for anything you intend to write down about these two.
             ("element p", "MATCH (p:Person) RETURN p"),
             ("element r", "MATCH (p:Person)-[r:KNOWS]->() RETURN r"),
         ] {

@@ -24892,3 +24892,72 @@ Gates, each its own command with its exit code read UNPIPED: `cargo build --rele
 10 passed; `cargo clippy --all-targets -- -D warnings` 0; `cargo fmt` 0; `bun run check` 0;
 `bun run fuzz` (all seven byte-identity fuzzers) 13 pass 0 fail. The temporary example and all
 pristine/ship copies removed.
+
+## 849 — the post-848 sweep: **NO regression** — and the `element` rows' three-way disagreement is finally EXPLAINED: the full sweep's figure depends on work done earlier in the same process
+
+**MEASUREMENT, no behaviour change** (one comment added to the bench corpus). Five native changes
+have landed since the last clean sweep — 840, 841, 844, 847, 848, three of them in `fastpath.rs` or
+`aggregation.rs`, files whose neighbours have already shown they are layout-sensitive (item 844's
+`min` control caught a 1.6x regression from one variable's live range).
+
+**No regression.** Every stable row matches its record: `scalar age (flat)` 92.0 against 92.0,
+`scalar age (map graph)` 92.0 against 92.4, `degree` 0.19 against 0.19, `pagerank(20)` 11.20 against
+11.09/12.08, `betweenness` 264.82 against 266.10/268.34, `wcc` 1.00 against 0.96/0.91. The
+sub-millisecond rows match to the decimal, which is the same evidence item 831 used from the other
+side.
+
+### The element rows: three harnesses, one variable, finally isolated
+
+The full sweep read `element p` **233.0** and `element r` **212.3** — within 1% of item 831's
+"first CLEAN absolutes" (234.1 / 217.7) that **item 846 declared the outlier forty minutes earlier**
+on the strength of seven runs across three source versions, all reading 342-363.
+
+Both items were right about their own instrument. Measured three ways on ONE binary, minutes apart:
+
+```text
+  full bench_all                          element p  233.0    element r  212.3
+  bench_all -- perrow   (same harness)               341.0               294.2
+  query_bench perrow    (its own process)      342.9-349.9         297.5-324.6
+```
+
+**The last two agree and only the full sweep differs, so the variable is the preceding groups —
+not the harness, not the machine, and not any code change.** `bench_all` runs `ingest::run` and
+part of `query::run` before this group in the same process; the filtered sweep runs the same
+harness with those cases skipped and lands on the isolated figure. These two rows are the only ones
+big enough to show it: `element p` materializes 200,000 node elements and `element r` a million edge
+ones, where every other row in the group is under 2 ms.
+
+**Why the full-sweep figure moved from 846's 344.6 to today's 233.0 is NOT attributed.** Items 847
+and 848 made several pre-perrow cases much faster, so the allocation history before this group did
+change — but the mechanism inside the allocator was not measured, and naming it would be the thing
+items 804/808/814/829 are records against.
+
+### What this settles, and what it costs each previous item
+
+- **The quotable figure is the ISOLATED one: ~345 and ~300**, stable across item 831's source, item
+  839's, item 846's HEAD and today's, and across two different harnesses.
+- **Item 831's 234.1/217.7 are not wrong, they are full-sweep figures** — reproducible, as today
+  shows, but not absolutes. Its error was calling them "CLEAN absolutes" and correcting two other
+  items to them.
+- **Item 846's correction stands in its practical conclusion** (no regression; a single sweep cannot
+  establish an absolute) **and is wrong in its attribution.** It said 831's figures "do not
+  reproduce" and inferred a quiet, boosting box. They do reproduce; 846 never ran a FILTERED sweep,
+  so it could not separate "the run" from "the work before the run" and mislocated the variable.
+- **Item 846's revert of 831's correction to items 811/827 stands**, because those cite `element p`
+  as a per-row cost for a shape-level argument, and ~345 is the figure that shape actually has.
+
+**The rule, third revision.** 810: a contaminated run's ratios must not enter the record. 831:
+extended to absolutes, then broke its own extension. 846: a single sweep cannot establish an
+absolute. **849: an absolute from a row that is expensive relative to its group cannot be
+established by ANY number of runs of the same harness — the harness itself is a variable, and
+separating it needs the same measurement with the suspected cause removed.** Seven runs in one
+window are one measurement repeated, not seven independent ones.
+
+The caveat is now recorded **at the two cases** in `support/query.rs`, with the three-way table, so
+the next person to read a number off a full sweep sees why not to quote it. The full sweep remains
+the right instrument for catching a regression in a CHEAP row — which is what it just did, by
+matching six records to the decimal.
+
+Gates, each its own command with its exit code read UNPIPED: `cargo clippy --all-targets -- -D
+warnings` 0; `cargo fmt` 0; `bun run fmt` 0; `bun run fmt:check` 0; `bun run check` 0. Comment-only
+change in the bench corpus; no engine change.
