@@ -5329,6 +5329,17 @@ const perRowForCount = (
  * an empty list contributes none (the anchor's row disappears), NULL or a missing key contributes
  * none, and any other scalar contributes ONE row — a non-list unwinds as a one-element list.
  */
+/**
+ * How a `FOR` projection item's cell is produced when the walk already holds the value (item 838):
+ * the current list ELEMENT, the ANCHOR vertex, or a property read off that vertex. `undefined`
+ * means "not a direct shape", and the item's compiled closure runs as before.
+ */
+type ForDirect = { kind: 'elem' } | { kind: 'anchor' } | { kind: 'prop'; key: string } | undefined;
+
+/** The two parameterless variants, allocated once rather than per plan. */
+const ELEM: ForDirect = { kind: 'elem' };
+const ANCHOR: ForDirect = { kind: 'anchor' };
+
 export const detectForProjection = (
   clauses: readonly Clause[],
   compiled: readonly CClause[],
@@ -5404,6 +5415,42 @@ export const detectForProjection = (
   const { projection } = cret;
   const listFn = cloop.list;
 
+  // ITEM 838: the direct read, item 835's lever where the loop holds BOTH variables.
+  //
+  // Item 832 scoped 835 to a single-variable projection because "a multi-variable projection has
+  // no single element to read from". That is true of a HOP, where one end is reached per edge, and
+  // false here: this walk holds the anchor vertex and the current list element at once, so every
+  // name the admission above permits is already in hand. `compileExpr`'s `var` arm is
+  // `(env) => env.binding.get(name)` and its `prop` arm is
+  // `(env) => propOf(env.binding.get(variable), key)`, so for these three shapes the closure
+  // writes a value into a `Map`, builds an `env` and reads the same value straight back out.
+  // Byte-identical by construction: the same value, and `propOf` is the same function on the same
+  // vertex.
+  //
+  // `star` keeps the old path — it projects the BINDING rather than items, so there is nothing to
+  // read directly. (`plainRowProjection` already refuses it; this is belt and braces, because the
+  // cost of being wrong here is a wrong answer rather than a slow one.)
+  const directs: readonly ForDirect[] =
+    projection.star || ret.projection.items.length !== projection.items.length
+      ? projection.items.map(() => undefined)
+      : ret.projection.items.map((it): ForDirect => {
+          const e = it.expr;
+
+          if (e.kind === 'prop') {
+            return e.variable === anchor ? { kind: 'prop', key: e.key } : undefined;
+          }
+
+          if (e.kind !== 'var') {
+            return undefined;
+          }
+
+          if (e.name === alias) {
+            return ELEM;
+          }
+
+          return e.name === anchor ? ANCHOR : undefined;
+        });
+
   return (graph, params) =>
     forProjectionRows(graph, params, {
       anchor,
@@ -5414,6 +5461,9 @@ export const detectForProjection = (
       listFn,
       invariant,
       key,
+      cols: projection.items.map((it) => it.name),
+      fns: projection.items.map((it) => it.fn),
+      directs,
     });
 };
 
@@ -5434,9 +5484,18 @@ const forProjectionRows = (
     listFn: CompiledExpr;
     invariant: boolean;
     key: string | null;
+    cols: readonly string[];
+    fns: readonly CompiledExpr[];
+    directs: readonly ForDirect[];
   },
 ): Row[] => {
   const { anchor, name, alias, ordinality, projection, listFn, invariant, key } = plan;
+  const { cols, fns, directs } = plan;
+  const width = cols.length;
+  // Item 838. `anyDirect` keeps the untouched shapes on EXACTLY the old path, `projectRow` and
+  // all, so a projection this lever cannot serve cannot be slowed by it either.
+  const anyDirect = directs.some((d) => d !== undefined);
+  const allDirect = width > 0 && directs.every((d) => d !== undefined);
   const vertices: Iterable<Vertex> =
     name === undefined ? graph.verticesById.values() : (graph.verticesByLabel.get(name) ?? []);
   const binding = new Map<string, unknown>();
@@ -5447,7 +5506,11 @@ const forProjectionRows = (
   const shared = invariant ? listFn({ binding, params, graph }) : undefined;
 
   for (const vertex of vertices) {
-    binding.set(anchor, vertex);
+    // When every item is direct the binding is never read, so writing it is dead work — item
+    // 803's rule, and the same deletion item 835 made at the node-scan site.
+    if (!allDirect) {
+      binding.set(anchor, vertex);
+    }
 
     const value = key === null ? shared : vertex.properties[key];
 
@@ -5458,13 +5521,36 @@ const forProjectionRows = (
     const elems: readonly unknown[] = Array.isArray(value) ? value : [value];
 
     for (let i = 0; i < elems.length; i++) {
-      binding.set(alias, elems[i]);
+      if (!allDirect) {
+        binding.set(alias, elems[i]);
 
-      if (ordinality !== undefined) {
-        binding.set(ordinality.var, ordinality.kind === 'ordinality' ? i + 1 : i);
+        if (ordinality !== undefined) {
+          binding.set(ordinality.var, ordinality.kind === 'ordinality' ? i + 1 : i);
+        }
       }
 
-      out.push(projectRow(projection, binding, params, graph));
+      if (!anyDirect) {
+        out.push(projectRow(projection, binding, params, graph));
+        continue;
+      }
+
+      const row: Row = {};
+
+      for (let c = 0; c < width; c++) {
+        const d = directs[c];
+
+        if (d === undefined) {
+          row[cols[c]] = fns[c]({ binding, params, graph });
+        } else if (d.kind === 'elem') {
+          row[cols[c]] = elems[i];
+        } else if (d.kind === 'anchor') {
+          row[cols[c]] = vertex;
+        } else {
+          row[cols[c]] = propOf(vertex, d.key);
+        }
+      }
+
+      out.push(row);
     }
   }
 

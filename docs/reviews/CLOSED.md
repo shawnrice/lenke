@@ -23914,3 +23914,103 @@ Gates, each its own command with its exit code read UNPIPED: `cargo build --rele
 `cargo test --release` **1,225 passed 0 failed** (1,224/1 under the ablation, which is how the
 teeth were established); `cargo clippy --all-targets -- -D warnings` 0; `cargo fmt` 0. The
 temporary example and the pristine copy removed.
+
+## 838 — the direct read reaches the `FOR` projection: **1.23x disjoint on two items**, because item 832's "no single element" blocker is false where the walk holds BOTH variables
+
+**SHIPPED (TypeScript).** Item 835 lifted `<nodeVar>.<key>` projection items to read the scanned
+element directly, and item 832 scoped that lever with a blocker worth quoting:
+
+> A direct read needs ONE element, and a multi-variable projection — `RETURN a.name, b.age` over a
+> hop — has no single element to read from.
+
+Item 836 confirmed that for hops. **It is false for `FOR`.** `forProjectionRows` holds the anchor
+vertex and the current list element _at the same time_, and `detectForProjection`'s admission
+already proves every item's free names are a subset of `{anchor, alias, ordinality}`. So for three
+item shapes the value is in hand before the closure is called:
+
+```text
+  RETURN t AS t          a `var` naming the alias   -> elems[i]
+  RETURN n AS v          a `var` naming the anchor  -> vertex
+  RETURN n.k AS k        a `prop` on the anchor     -> propOf(vertex, key)
+```
+
+`compileExpr`'s `var` arm is `(env) => env.binding.get(name)` and its `prop` arm is
+`(env) => propOf(env.binding.get(variable), key)`, so each of these writes a value into a `Map`,
+builds an `env`, and reads the same value straight back out. **Byte-identical by construction** —
+the same value, and `propOf` is the same function on the same vertex. When every item is direct the
+per-vertex and per-element `binding.set` calls are dead too (item 803's rule).
+
+### Measured: three ORDER-ALTERNATED rounds, min of three
+
+200,000 vertices × 3 tags = 600,000 rows, one shape per process, 14 reps, drop 3, median of the
+plateau. Both arms came from ONE build behind a temporary env switch, asserted present in the
+built dist before measuring — so each arm provably IS the code it claims.
+
+```text
+  shape                 PRE min   POST min            PRE rounds          POST rounds
+  mixed (2 items)          51.8       42.0   1.23x    51.8/58.4/54.3      42.0/42.8/43.5  DISJOINT
+  bare (1 item)            44.2       38.7   1.14x    45.0/48.0/44.2      38.7/44.9/40.0  overlaps
+  CONTROL same walk        45.7       42.9   1.07x    49.6/45.7/52.6      42.9/44.4/48.0
+  CONTROL node scan        39.9       43.6   0.92x    115.4/56.3/39.9     49.3/43.6/53.3
+```
+
+**The two-item arm is disjoint at 1.23x** — every POST reading beats every PRE reading — and the win
+growing with width is what the change predicts, the same shape item 835 saw (1.61x on two columns
+against 1.26x on one). **The one-item arm is 1.14x and NOT disjoint**, stated rather than rounded
+up.
+
+**The controls move in BOTH directions, which is what says the 1.07x is noise.** The same-walk
+control (`RETURN n.s + 1`) has no direct item, so `anyDirect` is false and it takes the old
+`projectRow` path unchanged — its per-row code is not merely unreached but identical. It reads
+1.07x "in favour" with ranges that overlap heavily (PRE's 45.7 sits inside POST's 42.9-48.0). The
+node-scan control reads 1.09x _against_. A floor of roughly ±8% in both directions is the honest
+reading, and it is why the 1.14x arm is reported as weak and the 1.23x disjoint one as the result.
+
+### The per-item saving is HALF what item 833 predicted, and that is not glossed
+
+Item 833's standalone ablation priced the binding round-trip at **11.3 ns a row** and item 835
+delivered 10.8 at the node-scan site. Here the deltas are **5.5 ns for one item** (44.2 → 38.7) and
+**9.8 ns for two** (51.8 → 42.0) — about 4.9 ns an item, less than half. The shape is right (linear
+in width) and the magnitude is not. **No cause is claimed**: this walk differs from the node-scan
+site in that one scratch binding is already shared across every element of every anchor, so there
+was less per-row binding work to remove, but that is a hypothesis and nothing here measured it.
+Recorded as a discrepancy, per items 804/808/814/829.
+
+### Teeth: three of three caught
+
+- `allDirect = true` always, skipping the binding writes even when a closure needs them —
+  **caught**, 2 failures.
+- `elem` and `anchor` swapped, so a row gets the vertex where the element belongs — **caught**, 4
+  failures.
+- the property read taking the column ALIAS instead of the key (`propOf(vertex, cols[c])`) —
+  **caught**, 1 failure across the suite, and **2 in the new test file alone**, which is why that
+  file was added rather than resting on the existing coverage.
+
+### The tests are a differential, not an expectation list
+
+`for-projection.test.ts` already asked every case twice — once admitted, once with `FILTER true`
+inserted so the clause count takes it to the general path — and compared the two as multisets. Nine
+cases were added there for the three direct shapes: the element alone and twice under two aliases,
+the anchor vertex, an anchor property whose key differs from its alias in both column orders, a
+MIXED projection where one item is direct and one is not (so both arms of the per-cell branch run
+on the same row), a key the anchor does not carry, and `WITH ORDINALITY`, where the ordinality
+variable is not a direct shape and so the binding must still be written. The anchor-vertex case has
+no concise literal form, so it is compared against the general path's own answer **and** checked to
+contain `"id":"q"` — two paths agreeing on the wrong thing would still fail.
+
+### What the regression sweep can and cannot say
+
+`bun run bench` completed clean (exit 0, no row anywhere near an order of magnitude off its
+recorded value — `traverse 1-hop project` reads ffi 71.1 against the 71.3 recorded before item
+724's regression, and `project 3 columns` ts 6.9). **But it has no `FOR` row at all, so it cannot
+show this change's effect either way**, and there is no same-session PRE sweep to diff it against,
+which is the comparison items 737/747 are about. What actually bounds the regression risk is the
+diff: all six hunks are inside `detectForProjection` and `forProjectionRows`, no shared code is
+touched, and `anyDirect === false` keeps every shape this lever cannot serve on the identical old
+`projectRow` path — which the same-walk control then confirms empirically. The sweep is reported
+here as a completed regression pass, not as evidence for the win.
+
+Gates, each its own command with its exit code read UNPIPED: `bun run fmt` 0; `bun run fmt:check`
+0; `bun run check` 0; `bun test packages/gql` **2,635 pass 0 fail**; `bun run fuzz` (all seven
+byte-identity fuzzers, random seeds) 13 pass 0 fail, run TWICE; `bun run bench` exit 0. The
+temporary probe and the env switch removed.

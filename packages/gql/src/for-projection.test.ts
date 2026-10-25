@@ -88,6 +88,43 @@ describe('the FOR projection off the label bucket (item 528)', () => {
     both('MATCH (n:Q) FOR t IN n.tags RETURN n.n + t AS k', [{ k: 106 }]);
   });
 
+  // ITEM 838's three DIRECT shapes, each against the general path. The rung reads these cells off
+  // the vertex and the element the walk already holds, instead of writing them into the scratch
+  // binding and having the compiled closure read them back out — so what has to be pinned is that
+  // the two paths still agree, which `both` is exactly the instrument for.
+  test('the direct-read shapes agree with the general path (item 838)', () => {
+    // The ELEMENT alone, and the element twice under two aliases — the second is what catches a
+    // row built from the column ALIAS rather than the item.
+    both('MATCH (n:Q) FOR t IN n.tags RETURN t AS t', [{ t: 99 }]);
+    both('MATCH (n:Q) FOR t IN n.tags RETURN t AS a, t AS b', [{ a: 99, b: 99 }]);
+    // The ANCHOR ELEMENT itself, which is a vertex rather than a scalar. A vertex has no concise
+    // literal form, so this is compared against the general path's own answer — and then checked
+    // to actually CONTAIN the anchor, so that two paths agreeing on the wrong thing would still
+    // fail.
+    const anchorQ = 'MATCH (n:Q) FOR t IN n.tags RETURN n AS v, t AS t';
+    const direct = bag(query(g, anchorQ));
+
+    expect(direct).toBe(bag(query(g, anchorQ.replace(' RETURN ', ' FILTER true RETURN '))));
+    expect(JSON.stringify(query(g, anchorQ))).toContain('"id":"q"');
+    // A property of the anchor whose key differs from its alias, both orders.
+    both('MATCH (n:Q) FOR t IN n.tags RETURN n.n AS k, t AS t', [{ k: 7, t: 99 }]);
+    both('MATCH (n:Q) FOR t IN n.tags RETURN t AS t, n.n AS k', [{ t: 99, k: 7 }]);
+    // A MIXED projection: one direct item and one the lever cannot serve, so both arms of the
+    // per-cell branch run on the same row.
+    both('MATCH (n:Q) FOR t IN n.tags RETURN t AS t, n.n + 1 AS k', [{ t: 99, k: 8 }]);
+    // A property the anchor does NOT carry reads as null through the direct path too.
+    both('MATCH (n:Q) FOR t IN n.tags RETURN n.nope AS k, t AS t', [{ k: null, t: 99 }]);
+    // WITH ORDINALITY: the ordinality variable is not a direct shape, so the binding must still
+    // be written for the item that reads it.
+    both('MATCH (n:P) FOR t IN n.tags WITH ORDINALITY i RETURN t AS t, i AS i', [
+      { t: 10, i: 1 },
+      { t: 20, i: 2 },
+      { t: 30, i: 3 },
+      { t: 40, i: 1 },
+      { t: 'solo', i: 1 },
+    ]);
+  });
+
   test('a ROW-INVARIANT list is evaluated once and shared', () => {
     both('MATCH (n:Q) FOR x IN [1, 2, 3] RETURN x AS x', [{ x: 1 }, { x: 2 }, { x: 3 }]);
     // Seven `:P` and `:Q` vertices, two elements each.
