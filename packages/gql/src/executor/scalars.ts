@@ -2270,18 +2270,32 @@ export const bufferedScalarCall = <E extends { graph: { limits: GraphLimits } }>
   };
 };
 
-/** The two-argument string PREDICATES, as plain `(s, sub) => boolean` — item 769. */
-export const BINARY_STR_PRED: Record<string, (s: string, sub: string) => boolean> = {
+/**
+ * Two-argument STRING functions, as plain `(s, sub) => unknown` — item 769 for the three
+ * predicates, widened at item 773 to admit `split`, which has the same two asserted positions
+ * and the same specialized closure but returns a LIST rather than a bool.
+ *
+ * `split`'s own body stays in `splitScalar`: the EMPTY-delimiter case yields one element per
+ * UTF-16 unit through `fromUtf16UnitsLossy`, which is a cross-engine contract, so it is called
+ * rather than re-spelled. The nullish and type checks `splitScalar` repeats are unreachable
+ * from here — the closure has already proven both arguments are strings — and harmless.
+ *
+ * Measured at item 773, one shape per process: `count(split(a.s, '0'))` cost 127.74 ns a row
+ * against a 15.44 floor, with the `s.split('0')` body itself 56 ns in a tight loop over the
+ * same 200,000 strings. So ~50 ns was machinery, which is what this removes.
+ */
+export const BINARY_STR_FN: Record<string, (s: string, sub: string) => unknown> = {
   contains: (s, sub) => s.includes(sub),
   starts_with: (s, sub) => s.startsWith(sub),
   ends_with: (s, sub) => s.endsWith(sub),
+  split: (s, sub) => splitScalar(s, sub),
 };
 
 /**
- * A two-argument string predicate with both argument steps, resolved once per `Expr::Call`
- * (item 769) — the two-argument twin of [`unaryStrCall`], and the TS counterpart of item 766's
- * native `eval_binary_str_pred`. `regex_match` is excluded: it compiles or caches a regex
- * rather than scanning, so it has a different cost profile.
+ * A two-argument string function with both argument steps, resolved once per `Expr::Call`
+ * (item 769, widened at 773) — the two-argument twin of [`unaryStrCall`], and the TS
+ * counterpart of item 766's native `eval_binary_str_pred`. `regex_match` is excluded: it
+ * compiles or caches a regex rather than scanning, so it has a different cost profile.
  *
  * THE ORDER OF THE CHECKS IS THE WHOLE CONTRACT. `assertScalarArgTypes` validates BOTH
  * positions before `callStringPredicateFn` short-circuits on a nullish argument, so
@@ -2289,10 +2303,10 @@ export const BINARY_STR_PRED: Record<string, (s: string, sub: string) => boolean
  * reads more naturally and is one branch cheaper) would silently turn that data exception into
  * a null, and `starts_with(null, 'a')` must still BE null. Both spellings are pinned by a test.
  */
-export const binaryStrPredCall =
+export const binaryStrCall =
   <E>(
     name: string,
-    f: (s: string, sub: string) => boolean,
+    f: (s: string, sub: string) => unknown,
     a: (env: E) => unknown,
     b: (env: E) => unknown,
   ) =>

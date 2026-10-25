@@ -20680,3 +20680,43 @@ ATTRIBUTES, not just its doc comment.
 **Still open:** `labels(p)` at 82 ns for one label is still 30x a scalar read; what remains is the
 `Value::List` allocation and a `GStr` per label. For the full element, item 771 stands: ~242 ns is
 map assembly, and the structural answer is item 341's laziness.
+
+## 773 — TS: `split` joins item 769's two-argument string table, 1.24-1.54x. The empty-delimiter contract had NO test, and the in-loop fuzzers run NOTHING
+
+**DONE (TypeScript).** `BINARY_STR_PRED` widened to `BINARY_STR_FN` (`(s, sub) => unknown`) with
+`split` added, so it uses the closure item 769 built — whose check-ORDER test now guards all four
+names. Two alternated reads, one shape per process: `count(split(a.s, '0'))` **1.36x / 1.24x**,
+`count(split(a.s, '9'))` **1.39x / 1.54x**; controls `starts_with` 1.01x, `to_list` 1.02x, `upper`
+0.97x, floor 0.97-1.00x.
+
+**Diagnosed before building:** `count(split(a.s, '0'))` was 127.74 ns a row against a 15.44 floor,
+and `s.split('0')` in a tight loop over the same 200,000 strings is 56.06 — so ~50 ns was
+machinery, above `to_list`'s ~29, which fits one more argument step and one more asserted position.
+
+**`split`'s body MUST stay in `splitScalar`** — the entry is `(s, sub) => splitScalar(s, sub)`, not
+`s.split(sub)`. They differ on exactly one input class: an EMPTY delimiter over a surrogate pair.
+JS keeps the lone surrogates; this engine replaces each with U+FFFD (native's UTF-8 cannot carry
+one — item 768's deviation). **The simplification passed all 2,590 tests**, so it is now pinned:
+`split('a😀b','')` is `['a','�','�','b']`. FOURTH consecutive tick where a contract one of
+my own fast paths depends on had no test (768, 769, 764 being the others).
+
+**A SWEEP RESULT WORTH MORE THAN THE CHANGE: TS edge projection is ~22x node projection per row.**
+`project the edge [ts lazy]` 496.6 ms over 1,000,000 rows (496 ns/row) against
+`project the element [ts lazy]` 4.5 ms over 200,000 (22.5 ns/row); materialized, 933 against 130.
+No record covers this. The sweep's largest rows are the decode fixtures (3425.9 ms for pg-text at 5
+edges/node) and those were NOT chased — `ts-ingest-is-constant-factor` closes them.
+
+**THE IN-LOOP FUZZERS CONTRIBUTE NO SIGNAL, and the check from 767/772 now says so out loud.** All
+three mutants this tick reported `fuzz=DID-NOT-RUN` — no result line at all, not a failure. Without
+that check they would have read as three FAILs, two of them agreeing with the prediction and so
+invisible. Every mutation verdict here rests on the 2,591-test unit suite; the fuzzers were run
+TWICE standalone afterwards (13 pass, 0 fail) and that is where their signal comes from. Fixing the
+in-loop invocation is a harness task, not an engine one.
+
+**Also recorded:** the mutation script crashed mid-run on a variable name AFTER building mutant 1
+into the dist, leaving tree and artifact both mutated. Restored from the pristine copy under
+`target/` and rebuilt before anything else — which is exactly why "restore BEFORE the next mutant"
+and item 767's "the dist is a build step away" both exist.
+
+**Still open:** `replace` (~168 ns after 768) and `substring` (~87) are three- and mixed-arity, so
+neither fits the two-argument table widened here.

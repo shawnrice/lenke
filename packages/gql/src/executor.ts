@@ -296,8 +296,8 @@ import {
   asTruth,
   BINARY_NUM,
   binaryNumCall,
-  BINARY_STR_PRED,
-  binaryStrPredCall,
+  BINARY_STR_FN,
+  binaryStrCall,
   BOOL3,
   bufferedScalarCall,
   callScalar,
@@ -2071,11 +2071,11 @@ const compileFunc = (expr: FuncExpr): CompiledExpr => {
   //
   // `SCALAR_ASSERTS_STR0_ONLY` does NOT admit these (they assert positions 0 AND 1), so the
   // closure folds both checks in, in the order `assertScalarArgTypes` performs them — see
-  // `binaryStrPredCall`, where the order is the contract rather than a detail.
-  const binaryStrPred = BINARY_STR_PRED[name];
+  // `binaryStrCall`, where the order is the contract rather than a detail.
+  const binaryStr = BINARY_STR_FN[name];
 
-  if (binaryStrPred !== undefined && args.length === 2) {
-    return binaryStrPredCall(name, binaryStrPred, args[0], args[1]);
+  if (binaryStr !== undefined && args.length === 2) {
+    return binaryStrCall(name, binaryStr, args[0], args[1]);
   }
 
   // Everything else keeps the general dispatch, but not the per-row argument ARRAY (item

@@ -348,6 +348,21 @@ describe('GQL: byte-identity regressions from the differential fuzzer', () => {
     expect(val(`RETURN substring('a\u{1F600}b', 2, 2) AS x`)).toBe('\u{1F600}');
   });
 
+  test('split with an EMPTY delimiter yields one UTF-16 unit per element, lossily', () => {
+    // Item 773 routed `split` through the specialized two-argument string closure, which calls
+    // `splitScalar` rather than `String.prototype.split`. Mutation showed why that matters and
+    // that nothing pinned it: `split: (s, sub) => s.split(sub)` passed all 2,590 tests.
+    //
+    // The two differ ONLY on a surrogate pair. JS `'a😀b'.split('')` keeps the two lone
+    // surrogates; this engine replaces each with U+FFFD, because native's UTF-8 strings cannot
+    // carry one — the same documented deviation `sanitizeSurrogates` exists for (item 768).
+    expect(val(`RETURN split('ab', '') AS x`)).toEqual(['a', 'b']);
+    expect(val(`RETURN split('a\u{1F600}b', '') AS x`)).toEqual(['a', '\uFFFD', '\uFFFD', 'b']);
+    // A non-empty delimiter is the ordinary path, and the arguments are not interchangeable.
+    expect(val(`RETURN split('a-b', '-') AS x`)).toEqual(['a', 'b']);
+    expect(val(`RETURN split('-', 'a-b') AS x`)).toEqual(['-']);
+  });
+
   test('a string predicate type-checks BOTH arguments before the null short-circuit', () => {
     // Item 769 specialized these three, and the order of the two checks is the contract:
     // `assertScalarArgTypes` validates both POSITIONS before `callStringPredicateFn`
