@@ -1600,9 +1600,14 @@ export const relHasInlinePred = (rel: CRel): boolean => hasPredicate(rel.pred);
  *  them measured 1.11x — 8124.7/8173.8/8537.0 before against 7346.1/7563.3/7629.9 after, three
  *  alternated rounds, disjoint, ffi flat at 196.9/199.2 as the control a TS change cannot reach.
  *  So ~90% of the gap is NOT allocation and this is kept for the 11%, not as the answer.
- *  On every SHALLOW standing row the change is neutral with overlapping ranges (`count
- *  var-length 1-2 hops` 12.5 against 12.3, `+ end filter` 12.1 against 12.6, `1-3 hops [WALK]`
- *  10.5 against 10.5) — the win needs the depth-5 path volume to show at all.
+ *  ⚠️ AND THAT NEUTRALITY WAS WORTHLESS AS EVIDENCE (corrected at item 736). The three shallow
+ *  rows it was read off — `count var-length 1-2 hops`, `+ end filter`, `1-3 hops [WALK]` — are
+ *  all `count(*)`, and EVERY var-length count takes a shortcut that never enters this walk,
+ *  verified by throwing here. So those rows could not move whatever this code did: the
+ *  unreachability null of items 721-723, drawn in the entry that cited them. A row that does
+ *  reach it now exists (`project var-length 1-3 hops + start filter [ENUMERATES]`), and on that
+ *  row the change is ~1.04x at the median with a BIMODAL before-arm (149-231 ms over eight
+ *  readings against a unimodal 220-224 after), which is no win worth claiming.
  *
  *  WHERE THE REST OF IT IS, now measured by ablation rather than suspected (item 735). Counting
  *  each end in place of yielding it — so the walk runs in full and nothing above it does — gives

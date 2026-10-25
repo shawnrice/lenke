@@ -18411,3 +18411,110 @@ next pass from re-deriving the allocation hypothesis for a third time.
 Gates: `bun run lint` 0; `bun run fmt` 0; `bun run check` 0. Comment-only edit; the engine, the
 bench and the probe are all back to their committed state (`git status` clean before the comment
 was written, and the temp row and probe file are gone).
+
+## 736 — every var-length COUNT takes a shortcut, so item 733's "neutral on the standing rows" was the unreachability null again
+
+**CORRECTION + the missing bench row + the second ablation.** Item 735 split 20/80 between the walk
+and everything above its `yield`. This splits the 80, and in checking which rows could see any of it
+found that item 733 drew the conclusion items 721-723 exist to prevent — in the entry that cited
+them.
+
+### The second ablation: the 80% is not one thing
+
+Keeping `trailEnds`'s yield and `matchNode` but cutting the recursion to the next segment and
+everything above it, three rounds, 10,000 vertices, depth 5:
+
+| arm                                 |        min |  share of full |
+| ----------------------------------- | ---------: | -------------: |
+| walk only (item 735)                |     1462.2 |           ~20% |
+| + `trailEnds`'s yield + `matchNode` | **3545.5** |      ~28% more |
+| full pipeline                       |     7477.9 | remaining ~53% |
+
+So the largest single component is the recursion plus the consuming pipeline at **~53%**, with the
+yield-and-match layer at ~28%. No hot spot: three comparable thirds, which is why no small change
+here has moved it.
+
+### 🛑 The correction: those rows cannot reach the code item 733 changed
+
+Item 733 reported itself _"neutral with overlapping ranges"_ on `count var-length 1-2 hops`,
+`+ end filter` and `1-3 hops [WALK]`, and said — correcting what it called an earlier wrong
+assumption — that these rows _"exercise `trailEnds` at depths 1-3"_. They do not. Throwing at the
+flat walk's entry and running each query verbatim:
+
+| query                                        | result                 |
+| -------------------------------------------- | ---------------------- |
+| `->{1,2}(b) RETURN count(*)`                 | **answers** — shortcut |
+| `->{1,2}(b WHERE b.n > 4) RETURN count(*)`   | **answers** — shortcut |
+| `MATCH WALK ->{1,3}(b) RETURN count(*)`      | **answers** — shortcut |
+| `MATCH WALK ->{1,5}(b) RETURN count(*)`      | **answers** — shortcut |
+| `->{1,2}(b) RETURN b.n`                      | **ENUMERATES**         |
+| `->{3}(b) RETURN b.n`, `{4}`, `{5}`, `{1,5}` | **ENUMERATES**         |
+| `->{5}(b) RETURN count(*)`, `{1,5}` count    | **ENUMERATES**         |
+
+**A `count(*)` is shortcut up through `{4}`; a ROW-RETURNING var-length query enumerates at EVERY
+depth.** All three standing rows are counts, so none of them could move whatever that change did.
+The overlapping ranges were guaranteed by construction, not measured evidence of no harm — and the
+entry presented them as the latter while quoting 721-723 at the reader. **The same null, one item
+later, by the same mechanism: a row that cannot reach the code reports no effect.**
+
+That also means item 733's self-correction was backwards. Its original instinct — that this path had
+no standing coverage — was right; the "correction" introduced the error.
+
+### The row that was missing, and what the corpus was blind to
+
+A row-returning var-length query is an entirely ordinary shape and the corpus had **none** — every
+var-length row is a count, which is exactly the family that routes around this code. So the ~80%
+overhead item 735 measured sits on a common shape with no standing guard at all.
+
+Added: `project var-length 1-3 hops + start filter [ENUMERATES]`, start-filtered to ~N/90 sources
+(`age` is `i % 90`) so it is ~344k rows rather than 31M, projecting `y.age`, which is PRESENT on
+every node (item 726's trap). **Verified positively that it reaches the walk** — the throw fires on
+it and on none of the four counts. It reads **ts 219.3 against ffi 26.9, 8.16x** at the default N.
+
+### Item 733 re-measured on a row it can actually reach: no win
+
+Eight readings an arm, two alternated blocks, ffi flat at 26.2-27.2 throughout:
+
+| arm    | readings                                            | median |   min |
+| ------ | --------------------------------------------------- | -----: | ----: |
+| before | 230.2 224.1 200.7 230.1 231.3 230.1 231.5 **149.1** | ~230.1 | 149.1 |
+| after  | 220.2 219.6 221.1 222.7 223.8 221.8 220.6 223.8     | ~221.5 | 219.6 |
+
+**~1.04x at the median, and no win worth claiming.** The before arm is BIMODAL — a 1.55x spread with
+sporadic fast readings the after arm never produces — while the after arm is unimodal within 2%.
+Comparing mins would read as a 1.35x REGRESSION, and that would be cherry-picking the old arm's best
+outlier against the new arm's tight distribution; reporting the median as a win would be the mirror
+of it. The disciplined statement is that this row cannot separate the two, and the bimodality itself
+is unexplained and recorded with its numbers.
+
+Item 733's 1.11x at depth 5 stands — tight, disjoint, with a flat control. It simply does not
+generalise to the shape users write, and nothing in that entry had established that it would.
+
+### 🛑 And the red CI was not mine: a recorded intermittent divergence
+
+Item 735's CI failed on `differential fuzz … 20000 random queries render byte-identically`, which
+looked like item 734's widened generator finding a real divergence. It is not.
+
+`CLOSED.md` already records it (items 259, **279**): the boolean-context asymmetry where TS raises
+`E_INVALID_VALUE` and native answers NON-EMPTY rows, a direction the divergence registry refuses to
+excuse **on purpose**, so the fuzzer fails rather than declaring it — _"intermittently: 12 pass / 1
+fail on a random seed, `FUZZ_SEED=3668867883`"_. That seed replays on HEAD today, verbatim:
+
+```
+MATCH (t:T) OPTIONAL MATCH (t)-[:E]->(n WHERE (n.x AND (0.0 IN [1e21, n.s])))
+  RETURN t.n AS x, n.n AS y ORDER BY x, y
+    ts:  err E_INVALID_VALUE
+```
+
+And the evidence that it is not item 734's shape: **36 random-seed runs clean** (6 + 30), and item
+734's CI passed on byte-identical fuzzer code. So a push to this repo is intermittently red by a
+deferred conformance decision, and the next person to see it will suspect their own change, as I
+did. **The entry that matters is at `CLOSED.md`:120** — read it before debugging a red differential
+fuzzer.
+
+This also corrects item 734 on a smaller point: it said three clean seeds showed the new shape "is
+NOT a divergence". Three seeds show very little; 36 show more, and the right statement is that the
+shape has not diverged in 720,000 generated queries.
+
+Gates, each its own command with its exit code read UNPIPED: `bun run lint` 0; `bun run fmt` 0;
+`bun run check` 0; the seven byte-identity fuzzers 13 pass 0 fail, plus 36 seeded differential runs.

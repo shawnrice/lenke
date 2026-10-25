@@ -768,6 +768,28 @@ const CASES: Case[] = [
     ),
   },
   {
+    // 🛑 THE ONLY VAR-LENGTH ROW HERE THAT ENUMERATES. Every `count(*)` var-length row above
+    // takes a shortcut and never enters `trailEnds`'s flat walk — verified by throwing at its
+    // entry (item 736): `{1,2}`, `{1,3}`, the end-filtered form and the WALK form all ANSWER.
+    // A ROW-RETURNING var-length query enumerates at EVERY depth, which is the shape this row
+    // covers and the one the whole corpus was missing.
+    //
+    // That absence cost something concrete: item 733 read its change as "neutral on the shallow
+    // standing rows" when those rows cannot reach the code it changed — the unreachability null
+    // of items 721-723, drawn in the very entry that cited them.
+    //
+    // START-FILTERED so it stays a bench row rather than a bulk dump: `age` is `i % 90`, so
+    // `a.age = 7` takes ~N/90 sources, and `{1,3}` over degree 5 is 155 paths each — ~344k rows
+    // at the default N. `y.age` is PRESENT on every node (unlike `name`, item 726), so this
+    // prices a real property read and not an absent one.
+    name: 'project var-length 1-3 hops + start filter [ENUMERATES]',
+    ...onGraph(
+      () => graphDoc,
+      (e, g) =>
+        void e.query(g, 'MATCH (a:Person WHERE a.age = 7)-[:KNOWS]->{1,3}(y) RETURN y.age AS c'),
+    ),
+  },
+  {
     // THE DEFAULT SPELLING, which nothing watched until item 601. `parsePathMode` returns `trail`
     // when no mode keyword is given, so `-[:KNOWS]->{3}` — the natural way to write this — is a
     // TRAIL, and the row above is the only one the harness carried. The two are not the same
@@ -803,6 +825,14 @@ const CASES: Case[] = [
     ...onGraph(
       () => graphDoc,
       (e, g) => void e.query(g, 'MATCH (a:Person)-[:KNOWS]->{4}(y) RETURN count(*) AS c'),
+    ),
+  },
+  {
+    // TEMPORARY depth-5 row for item 736 ablation. Remove before commit.
+    name: 'count 5-hop quantified [TRAIL, TEMP]',
+    ...onGraph(
+      () => graphDoc,
+      (e, g) => void e.query(g, 'MATCH (a:Person)-[:KNOWS]->{5}(y) RETURN count(*) AS c'),
     ),
   },
   // 🛑 THERE IS DELIBERATELY NO DEPTH-5 ROW, and the reason is the measurement itself.
