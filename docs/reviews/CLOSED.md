@@ -21974,3 +21974,71 @@ collection; the lint gate flagged the indexed loop and matching both sides rough
 **WHAT THIS GIVES ITEM 342** (packed presence / columnar), which had no number on this shape: if a
 per-element property read were CONTIGUOUS the pair would cost ~4 ns instead of ~10 — ~6 of the ~24
 ns a vertex, **~1.3x on a filtered node count**, and the largest single term left in it.
+
+## 806 — packed presence ATTEMPTED and re-scoped: item 741's census missed **123** sites, and item 342's ladder has a rung that is already built
+
+**NO ENGINE CHANGE** (built, reverted, re-priced with a real count). Item 342's packed presence has
+been "the best-priced unbuilt Rust lever" since item 740, which called it multi-tick; **item 741
+corrected that to "five operations and one real rewrite"**. Built on 741's scoping. **741 was
+wrong, and its METHOD is why.**
+
+**RUNG 1 IS ALREADY BUILT, and the ladder's biggest number is not a clean pair.** The
+`element_render_cost` step from baseline to "columns hoisted" looks like 4.08x at K=200 (1785.7 →
+437.7 ns/row). It is not a candidate: the baseline arm calls the real `node_result_value` while the
+hoisted arm ALSO skips the ext-id, the label list and two `Arc` `Value::Map` allocations. The
+apples-to-apples pair is elsewhere in the same harness — `props: one lookup per key` **95.4**
+against `columns hoisted` **92.6**, i.e. **3%** — and `render_nodes`, the batch renderer, **already
+hoists columns and key `Value`s** (items 390/391). Per-node `node_result_value` cannot: it is called
+one node at a time from a `Gen` cell, a path and the JSON sinks.
+
+**THE CLEAN PAIR (hoisted vs packed — both pre-resolve columns, both build the same `Vec`):**
+
+```text
+  K=  0 extra store keys    92.2 -> 90.4 ns/row   1.02x
+  K= 12                    116.4 -> 105.2         1.11x
+  K= 60                    168.0 -> 147.7         1.14x
+  K=200                    437.7 -> 246.4         1.78x
+```
+
+342's "rung 2 1.67x at K=200" is confirmed. **What was NOT recorded: K=12 and K=60 — much closer to
+most graphs — are only 1.11x and 1.14x.** This pays in proportion to store WIDTH.
+
+**THE CENSUS THAT WAS WRONG.** A `Presence` bitmap (`words: Vec<u64>` + `len`, with
+`zeros/len/get/set/push/pop`, deliberately not a `Vec<bool>` drop-in) went into all six `Column`
+variants and all of `store.rs` almost exactly as 741 predicted — then failed to compile in **seven
+other files**.
+
+|                                                          | 741 said    | actually |
+| -------------------------------------------------------- | ----------- | -------- |
+| `.present` FIELD accesses outside `store.rs`             | 0           | 0 (true) |
+| `present`/`nulls` INDEXING sites outside `store.rs`      | not counted | **123**  |
+| pattern-match bindings destructuring a column's presence | not counted | **84**   |
+| `&[bool]` parameters that ARE a presence slice           | not counted | **16**   |
+| files with code sites outside `store.rs`                 | 0 implied   | **10**   |
+
+**The method is the error.** 741 counted `.present`, a FIELD ACCESS, and the exec layer never writes
+one — it writes `Column::Num { data, present, .. }` and then `present[i]`. Two of those are even
+renamed on the way in (`present: lp`, `present: rp`), so a grep for `present[` misses them too.
+**A census is only a scope if it counts the ways the thing is REACHED, not one syntax for reaching
+it.**
+
+**And it is not just more renaming:** 16 helper signatures take `&[bool]`, and the vectorized scan
+loops gate per row inside a branch-free pass — the "byte-wide presence gate" `scan_layout_probe`
+named, i.e. exactly where the win comes from. Converting those to shift-and-mask is its own piece of
+work with its own measurement (a packed gate inside a branch-free loop may lose).
+
+**So item 740 was right and 741's correction of it was wrong**, now by measurement rather than
+impression. Lever state: priced by width, scoped for real, **not started**, and its precondition is
+explicit — the branch-free gates first, measured on their own.
+
+**My own version of 741's mistake:** I checked 741's claim with a grep piped through `head -15`, got
+codec prose and two examples back, and concluded there were no bindings outside `store.rs`. **The
+`fastpath.rs` hits started at line 16.** Item 319's rule is about `head` closing a mutation
+harness's pipe; the general form is what bit here — **a conclusion from a truncated listing is a
+conclusion about the truncation.** `wc -l` first costs nothing.
+
+**CORRECTION to item 805's closing line.** It said its ~6 ns pointer-chase finding gave "item 342
+(packed presence / columnar) a number on this shape". Item 342 is a Rust `Column` representation;
+805 measured TypeScript property bags, and the TS engine has no columns at all. The finding stands —
+a contiguous per-element read would take the walk-plus-read pair from ~10 ns to ~4 — but it belongs
+to item 617's family (TS layout), not to 342.
