@@ -24551,3 +24551,83 @@ removed.
 **Still open, with numbers:** `collect_list` at 27x and the two percentiles at 51-53x, both named
 here and deliberately not taken — the percentile cost is substantially the sort, and a fast path
 would have to beat it rather than merely avoid the fold.
+
+## 845 — the TS engine has **NO** aggregate gap: stddev and collect are FASTER than its own `sum` — and the cross-engine table reframes item 844's two open numbers
+
+**MEASUREMENT, no engine change** (a temporary probe, removed). Item 844 found six of eleven native
+`AggFn` variants with no scan fast path and closed the stddevs at 7.0x. The obvious next move is
+"do the same in TypeScript", and item 843 is the record of why that is a measurement and not an
+inference: the two engines had the SAME temporal defect from DIFFERENT causes, so neither "it will
+be there too" nor "it cannot be there" is worth acting on.
+
+**It is not there.** 200,000 nodes, one shape per process, 14 reps, drop 3, median of the plateau,
+min of three rounds:
+
+```text
+  sum              6.65 ms      the reference, which has a shortcut (item 468)
+  stddev_pop       5.27         0.79x — FASTER than sum
+  stddev_samp      4.90         0.74x — FASTER
+  collect_list     5.07         0.76x — FASTER
+  min              4.06
+  max              3.90
+  percentile_cont 15.70         2.4x
+  count(*)         0.00         reads no property
+```
+
+**The three aggregates item 844 had to add or left open in the native engine are all at or below
+`sum` here, and disjointly so** — every `stddev`/`collect_list` reading across three rounds sits
+below every `sum` reading. The TS engine folds them through `aggregateOverValues` over a streamed
+value sequence, which is the same work `sum` does, so there is no fold-vs-fast-path split to
+exploit. `percentile_cont` at 2.4x needs a sort, which is the honest cost of an ordered-set
+aggregate.
+
+**Nothing to ship, and that is the result.** Recorded with its numbers so the symmetry argument
+("844 shipped 7x natively, therefore TS") is refused by a measurement rather than re-derived.
+
+### The cross-engine table, which changes how 844's open items read
+
+Both from this session, same machine, same fixture shape and size — different harnesses (`Instant`
+against `performance.now`), so these are wall-clock comparisons of the same query, not one
+instrument:
+
+```text native        TS      native is
+  sum                            110 us    6,650      60x faster
+  stddev_pop (after item 844)     111      5,270      47x
+  min                             397      4,060      10x
+  percentile_cont               5,588     15,700       2.8x
+  collect_list                  2,999      5,070       1.7x
+```
+
+**The native advantage ranges from 60x to 1.7x, and it is SMALLEST exactly on the two aggregates
+item 844 named as open.** That reframes those numbers: `collect_list` at "27x `sum`" and
+`percentile_cont` at "51x `sum`" are ratios against a reference that happens to be one of the
+fastest things the native engine does, not evidence of absolute weakness — native percentile is
+still 2.8x the TS engine's, and native `collect_list` only 1.7x.
+
+So the remaining headroom in those two is real but it is **not the fold**. Both have to
+materialize something — a 200,000-element list, or a sorted copy — and that cost is paid in both
+engines, which is why the ratio between them collapses. A fast path that only avoids the general
+fold would be chasing the part that is already cheap. **That is a sharper reason to leave them than
+item 844's "mostly inherent", and it took this item's measurement to get it.**
+
+### What is now settled about the aggregate family
+
+Native: `Count`/`Sum`/`Min`/`Max`/`Avg` fast-pathed, the stddevs added at 844, `Collect`/
+`CollectList` and both percentiles deliberately on the general fold for the reason above. TS: no
+gap on this axis at all.
+
+**And the cross-engine coverage is already there**, which is worth stating because this entry
+nearly claimed the opposite. The draft of this item asserted that the differential fuzzer's
+generator does not draw the stddevs, the collects or the percentiles — item 842's finding
+generalized by analogy — and then the list was read: `AGG` holds `count`, `sum`, `avg`, `min`,
+`max`, `collect_list`, `stddev_pop` and `stddev_samp`, drawn into
+`RETURN <agg>(<expr>)`, and the percentiles have their own arm with an out-of-range-fraction case
+from item 531. **The whole aggregate family is cross-engine checked, so item 844 shipped covered.**
+
+That is the second time in two ticks that checking a claim before writing it reversed the claim
+(item 842's fixture arithmetic was the first), and both were the same mistake in different
+clothing: reasoning from a pattern that had just been established elsewhere. The temporal gap was
+real, which is exactly what made "the aggregates will have it too" feel like knowledge.
+
+Gates: `bun run fmt` 0; `bun run fmt:check` 0; `bun run check` 0; `git status` clean of any engine
+change (docs only), the temporary probe removed.
