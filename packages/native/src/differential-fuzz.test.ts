@@ -1256,6 +1256,18 @@ const genAbbrevQuantified = (r: () => number): string => {
     '-[e:E]->',
     '-[e:E WHERE e.w > 2]->',
     '<-[e:E WHERE e.w >= 0]-',
+    // AN INLINE PROPERTY MAP, which is NOT the same code path as the bracket `WHERE` above and
+    // had no coverage here at all (item 734). `relHasInlinePred` is `hasPredicate(rel.pred)`, and
+    // only this spelling populates `rel.pred` — a bracket `WHERE` is applied elsewhere. Measured
+    // on the mutant that makes `trailEnds`'s flat walk skip `rel.pred` filtering: the `WHERE`
+    // spelling answered 2 both ways, while `{w: 5}` went 1 -> 4. So every hop this arm drew left
+    // the abbreviated form's inline-predicate filter unguarded across engines, and the mutant
+    // survived 60,000 generated queries over three seeds.
+    //
+    // Added to the existing `pick` rather than given a band of its own, for item 256's reason:
+    // no boundary moves and the arm's counters keep their meaning.
+    '-[:E {w: 5}]->',
+    '-[e:E {w: 9}]->',
   ]);
   // `{2}` is the SINGLE-NUMBER spelling of `{2,2}` — the same question, two parses, which is
   // the bug class this repo is named after. Added to the existing pick rather than given a band
