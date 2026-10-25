@@ -23150,3 +23150,62 @@ change** — where before it had neither number. It is a storage decision, not a
 third item (with 342 and 415) in that class.
 
 Gates: `cargo build --release` 0; `git status` clean; the temporary example removed.
+
+## 826 — ⚠️ A CROSS-ENGINE INVERSION on the key-count axis: pure TS is FLAT, native is linear, and they cross at **~32 distinct keys**. Above it TS wins by up to **13.9x**
+
+**MEASUREMENT, no engine change** (two temporary probes, reverted). Item 825 priced native
+`add_node` at 18.4 ns per distinct property key, because a columnar store pushes an absent slot to
+EVERY column to keep cell `i` aligned with node `i`. The TS engine stores properties per ELEMENT and
+has no such obligation, so it should be flat — and "should be" is what items 804/808/814 are records
+about, so it was measured.
+
+```text
+  keys     TS ns/insert     native ns/insert      verdict
+     4              701                  327      native 2.1x faster
+    52              714                 1181      TS 1.65x faster
+   202              660                 3915      TS 5.9x faster
+   502              685                 9516      TS 13.9x faster
+```
+
+**TS is flat across a 125x change in key count (660-714 ns, no trend); native is linear.** The TS
+arm used a fresh graph per rep built OUTSIDE the timed region — item 824's rule, learned there the
+hard way twice.
+
+### The crossover is MEASURED, not interpolated
+
+825's slope put it near 24 keys. That is an estimate, and an estimate is what this item's whole claim
+rests on, so the narrow end was measured directly:
+
+```text
+  keys     4    12    20    24    28    36    52
+  native 331   386   614   601   603   785  1060      TS band: 660-714
+```
+
+**Native crosses the TS band between 28 and 36 keys — call it ~32.** The interpolation said 24; the
+measurement says ~32, and the measured number is the one to quote. (The native curve has a plateau at
+20-28 and the 4→52 slope is 15.2 ns a key against 825's 18.4 over 4→502, which is allocator
+granularity rather than a different law.)
+
+### Why this matters more than the raw numbers
+
+**The native engine's insert advantage is not a property of the engine, it is a property of the
+schema width.** Below ~32 distinct keys native wins by up to 2.1x; above it the pure-TS engine wins,
+by 1.65x at 52 keys and **13.9x at 502**. Nothing in the corpus could have shown this: `bun run
+bench` compares the engines on fixtures of a handful of keys, which is on the native side of the
+crossover, so every recorded ingest ratio is measured where native happens to win.
+
+**And ~32 keys is an ordinary schema.** The heterogeneous people-graph this repo names repeatedly
+(50-200 keys, a handful on any one node) sits firmly on the TS side.
+
+Three consequences, none of them an engine change:
+
+- **Item 825's ragged-column lever is worth more than 825 said.** It would not just remove 18.4 ns a
+  key; it would restore native's insert advantage on the shape the repo calls realistic. Its
+  precondition is still item 806's 123-site census.
+- **The mitigation available today is unchanged and now has a target**: keep distinct keys under ~32,
+  which is what first-class map values (GV45) are for — one `meta` column against fifty flat ones.
+- **Any future ingest comparison must state its key count**, the way item 810 established that a
+  ratio needs its absolutes. A cross-engine ingest number without K is not reproducible.
+
+Gates: `cargo build --release` 0; `bun run fmt` 0; `bun run fmt:check` 0; `git status` clean; both
+temporary probes removed.
