@@ -19013,3 +19013,105 @@ notices.
 
 Gates, each its own command with its exit code read UNPIPED: `bun run fmt` 0; `bun run check` 0.
 No engine change; one bench row added.
+
+## 744 — the var-length count detector was `out`-only, so the mirror spelling cost 53x and nobody had measured it
+
+**SHIPPED (TypeScript), 53x, disjoint, controls flat.** Item 743 priced the undirected variant and
+left TS's per-path penalty unexplained. Chasing that found something larger and simpler one step
+away: `detectVarLengthCount`'s shape predicate refused `rel.direction !== 'out'`, so of the
+direction enum's three variants **the var-length count shortcut covered exactly one.**
+
+### The repo's named bug class, on a traversal instead of a predicate
+
+`CLAUDE.md` describes it precisely: _"the planner recognized one spelling of a predicate and scanned
+for another that meant exactly the same thing… Each cost 100-300x and each returned the correct
+answer, so no correctness test could catch it."_ Same shape here, one level up — the spelling is the
+direction of a hop, and the mirror is the same traversal read backwards.
+
+| 20,000 vertices, depth 3 |        ts |     ffi |
+| ------------------------ | --------: | ------: |
+| `-[:KNOWS]->{3}`         |      14.4 |     1.4 |
+| `<-[:KNOWS]-{3}`         | **682.2** | **1.4** |
+
+Native was **1.4 ms either way** — its gate is `matches!(dir, Dir::Out | Dir::In)`, so it had the
+mirror all along. That is the existence proof that the arithmetic works backwards; only TS's
+detector declined.
+
+### The fix is the two lines that build the CSR
+
+`walkLevelCount` numbers the vertices once and flattens the adjacency into `{off, nbr}`, and
+**everything downstream takes only that** — the level recurrence, and the depth-3/4 trail
+correction through `buildTrailMasks(u0, csr)` and `buildTrail4Tables(csr, …)`. So direction is a
+property of how the CSR is built and is inherited for free:
+
+- the box: `inward ? v.adjTo : v.adjFrom`
+- the neighbour end: `idx.get(inward ? e.from : e.to)`
+
+plus `inward` on `DegreeCountSpec` and its two construction sites, and the shape predicate widened
+to accept `in`.
+
+**`mirrorAdmissible(inward, max)` refuses a shallow or unbounded mirror**, because
+`takesTheLevelRecurrence` is `max >= 2` and below it `varLengthDegreeCount` falls to arithmetic
+whose `edgesOf` reads `v.adjFrom` directly — it would answer the FORWARD count for a backward
+query. That is items 692 and 699's mistake exactly (a relaxed bound meeting arithmetic nobody
+relaxed with it), and it is a named function rather than three inline clauses because
+`detectVarLengthCount` sits ON the complexity gate: inline it read 36 against a maximum of 35,
+which is why this file already factors out `depth4Admissible`.
+
+### The measurement, with two controls
+
+Three alternated rounds, per-arm assertion on the `inward` symbol count before each build (the
+guard item 738 added after nearly measuring a stale arm):
+
+| row                  | clean                 | after                  |
+| -------------------- | --------------------- | ---------------------- |
+| `rev {3}`            | 682.2 / 708.2 / 692.5 | **12.0 / 13.0 / 13.7** |
+| `fwd {3}` — CONTROL  | 16.0 / 13.5           | 15.0 / 13.0 / 14.1     |
+| ffi column — CONTROL | 1.4-1.5               | 1.4                    |
+
+**~53x, fully disjoint.** The forward spelling is the control that matters most — the change touches
+the shared `walkLevelCount` and the shared detector, so a regression there was the real risk — and
+it is flat. ffi is flat because a TS change cannot reach it.
+
+### 🛑 Correctness: a TOTAL count cannot witness a direction bug
+
+The bench row cannot validate this change, and item 586 says why: _"over ALL sources, reversing
+every path is a bijection between the forward and backward path sets, so `(a:P)-[:T]->{1,2}(y)` and
+its `<-[:T]-` twin return the SAME NUMBER whatever the engine does."_ Every node in the bench
+fixture is a `Person`, so the row would read identically with the direction wired backwards.
+
+So the guard is a new case in item 690's brute-force oracle, built on the SELECTIVE source
+`makeGraph` already provides (a per-vertex `V{i}` label, kept plain enough for the degree-count
+route). For each source and each depth in 1-3 it compares the forward count against enumeration
+over `edges` and the mirror against enumeration over **`edges` reversed**, and then asserts that at
+least one pair DIFFERS — item 586's finding written as an assertion rather than left as a hope.
+
+### Mutation: 2 of 3, and the survivor is honest
+
+| mutant                                      | outcome    |
+| ------------------------------------------- | ---------- |
+| the adjacency box ignores `inward`          | **caught** |
+| the neighbour end ignores `inward`          | **caught** |
+| `mirrorAdmissible` always admits the mirror | SURVIVED   |
+
+The survivor matters and I did not explain it. With the gate removed, an inward `{1}` should reach
+the `max <= 2` arithmetic, which reads `v.adjFrom` and would answer the out-degree where the test
+expects the in-degree — and on this fixture vertex 1 has 2 out against 3 in, so the test IS
+asymmetric at depth 1 and should have failed. It passed, so **something upstream already refuses a
+depth-1 inward spec and the gate is not currently reachable.** `varLengthCount` is first in the
+shortcut precedence and the detector's existing bound only refuses `max === null || max < 1`, so
+which refusal fires is unestablished.
+
+Kept anyway, for the reason this file already keeps `!spec.isTrail` — a documented unreachable guard
+against a future relaxation — and recorded as unexplained rather than given a guessed cause, which
+item 734 is the standing lesson for.
+
+### What else to look at
+
+`shortcuts.ts` has one more direction-shaped line worth a look: `out: rel.direction !== 'out'`,
+which collapses `in` and `both` into a single flag. Not touched here and not measured; noted so it
+is not lost.
+
+Gates, each its own command with its exit code read UNPIPED: `bun run lint` 0; `bun run fmt` 0;
+`bun run check` 0; `packages/gql` **2586** pass 0 fail (one new test); the seven byte-identity
+fuzzers 13 pass 0 fail.

@@ -1368,6 +1368,8 @@ type DegreeCountSpec = {
   min: number;
   max: number;
   isTrail: boolean;
+  /** Walk the IN-adjacency instead of the out-adjacency — the mirror spelling (item 744). */
+  inward: boolean;
   startName: string | undefined;
   passes: (v: Vertex) => boolean;
   /** True when `passes` cannot reject, so the degree is a set SIZE rather than a walk. */
@@ -1690,9 +1692,13 @@ const buildTrailMasks = (
 };
 
 const walkLevelCount = (graph: Graph, spec: DegreeCountSpec): number => {
-  const { types, min, max, isTrail, startName, passes } = spec;
+  const { types, min, max, isTrail, inward, startName, passes } = spec;
+  // THE ONLY THING DIRECTION CHANGES (item 744): which adjacency box the CSR is built from, and
+  // which end of each edge is the neighbour. Everything downstream — the level recurrence, and the
+  // depth-3/4 trail correction via `buildTrailMasks` and `buildTrail4Tables` — takes `{off, nbr}`
+  // and never consults the graph again, so it inherits the direction for free.
   const edgesOf = (v: Vertex): Iterable<Edge> => {
-    const box = v.adjFrom;
+    const box = inward ? v.adjTo : v.adjFrom;
 
     return box === undefined ? [] : edgesOfTypes(box, types);
   };
@@ -1718,7 +1724,7 @@ const walkLevelCount = (graph: Graph, spec: DegreeCountSpec): number => {
     off[i] = at;
 
     for (const e of edgesOf(order[i])) {
-      nbr[at] = idx.get(e.to) ?? 0;
+      nbr[at] = idx.get(inward ? e.from : e.to) ?? 0;
       at += 1;
     }
   }
@@ -5541,7 +5547,7 @@ const degreeCountShape = (pattern: PathPattern): boolean => {
     seg.hopFrom !== undefined ||
     seg.nested !== undefined ||
     rel.quantifier === undefined ||
-    rel.direction !== 'out' ||
+    (rel.direction !== 'out' && rel.direction !== 'in') ||
     (rel.properties?.length ?? 0) > 0 ||
     rel.where !== undefined ||
     rel.variable !== undefined
@@ -5566,6 +5572,23 @@ const depth4Admissible = (
   endPred: unknown,
   endLabel: unknown,
 ): boolean => max !== 4 || mode === 'walk' || (endPred === undefined && endLabel === undefined);
+
+/**
+ * Whether the MIRROR spelling (`<-[:T]-{n,m}`) may take this route (item 744).
+ *
+ * `true` for every forward query. For a backward one it needs the LEVEL RECURRENCE, which is the
+ * only route taught about direction: it builds a CSR from the named adjacency and hands `{off,
+ * nbr}` on, so the trail correction inherits the direction. `takesTheLevelRecurrence` is
+ * `max >= 2`, so a shallower or UNBOUNDED mirror would fall to the `max <= 2` arithmetic, whose
+ * `degreeOf` reads the out-adjacency directly and would answer the FORWARD count for a backward
+ * query.
+ *
+ * Its own function rather than three clauses inline, because `detectVarLengthCount` sits ON the
+ * complexity gate — inline it read 36 against a maximum of 35, which is the same reason this file
+ * already factors out `depth4Admissible`.
+ */
+const mirrorAdmissible = (inward: boolean, max: number | null): boolean =>
+  !inward || (max !== null && max >= 2);
 
 export const detectVarLengthCount = (
   clauses: readonly Clause[],
@@ -5595,6 +5618,14 @@ export const detectVarLengthCount = (
   const [seg] = pattern.segments;
   const { rel, node } = seg;
   const { min, max } = rel.quantifier!;
+  const inward = rel.direction === 'in';
+
+  // Refusing here keeps a shallow or unbounded mirror on the route it has always taken, rather
+  // than letting a relaxed bound meet arithmetic that was not relaxed with it — the mistake items
+  // 692 and 699 both made one depth down.
+  if (!mirrorAdmissible(inward, max)) {
+    return null;
+  }
 
   // DEPTH (item 588). `max > 2` was refused outright; a WALK now takes the level recurrence, so
   // only a TRAIL is still bounded at two. The bound is the trail CORRECTION: at two hops there is
@@ -5698,6 +5729,7 @@ export const detectVarLengthCount = (
             min,
             max,
             isTrail,
+            inward,
             startName: startLabel?.name,
             passes: eff === undefined ? alwaysTrue : (v: Vertex): boolean => v.labels.has(eff),
             passesIsVacuous: eff === undefined,
@@ -5725,6 +5757,7 @@ export const detectVarLengthCount = (
           min,
           max,
           isTrail,
+          inward,
           startName: startLabel?.name,
           passes,
           // A carried predicate is never vacuous — it is the whole reason this arm exists.

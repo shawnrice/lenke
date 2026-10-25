@@ -518,6 +518,26 @@ const CASES: Case[] = [
       (e, g) => void e.query(g, 'MATCH (a:Person)-[:KNOWS]-(x) RETURN count(*) AS c'),
     ),
   },
+  {
+    // THE MIRROR of `count 3-hop quantified [TRAIL]`, and the row that found item 744.
+    //
+    // `<-[:KNOWS]-{3}` is the same traversal read backwards and NOTHING measured it. TS's
+    // var-length count detector refused `rel.direction !== 'out'`, so the mirror took no fast
+    // path at all while its forward twin used the level recurrence: at 20,000 vertices it read
+    // 682.2 ms against 14.4, a 47.4x penalty for the spelling, while native — whose gate accepts
+    // `Dir::Out | Dir::In` — was 1.4 ms either way. Three alternated rounds after the fix: clean
+    // 682.2/708.2/692.5 against 12.0/13.0/13.7, ~53x, disjoint, with the forward row and the whole
+    // ffi column flat.
+    //
+    // KEPT as the guard for that route. It is the repo's named bug class — "the planner recognized
+    // one spelling and scanned for another that meant exactly the same thing" — and the answers
+    // were correct the whole time, so only a timing row can see it come back.
+    name: 'count 3-hop quantified MIRROR [TRAIL]',
+    ...onGraph(
+      () => graphDoc,
+      (e, g) => void e.query(g, 'MATCH (a:Person)<-[:KNOWS]-{3}(y) RETURN count(*) AS c'),
+    ),
+  },
   // 🛑 AND THERE IS NO QUANTIFIED UNDIRECTED ROW, because the number is why (item 743).
   //
   // `MATCH (a:Person)-[:KNOWS]-{3}(y) RETURN count(*)` at 20,000 vertices: ts 4828.1 ms, ffi 99.0

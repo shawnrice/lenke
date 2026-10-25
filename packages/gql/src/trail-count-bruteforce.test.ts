@@ -262,4 +262,86 @@ describe('bounded trail/walk counts agree with enumeration', () => {
       expect(got[0]?.c).toBe(counts[v]);
     }
   });
+
+  test('the MIRROR spelling agrees with enumeration over REVERSED edges (item 744)', () => {
+    // `<-[:K]-{n}` took no fast path at all until item 744 — the detector refused anything but
+    // `out` — so it enumerated while its forward twin used the level recurrence: 682.2 ms against
+    // 14.4 at 20,000 vertices. The fix builds the CSR from the in-adjacency, which the trail
+    // correction inherits because it only ever sees `{off, nbr}`.
+    //
+    // 🛑 THE SOURCE MUST BE SELECTIVE, and this is the whole reason the test is shaped this way.
+    // Item 586: over ALL sources, reversing every path is a bijection between the forward and
+    // backward path sets, so `(a:P)-[:K]->{3}(b)` and its `<-[:K]-` twin return the SAME NUMBER
+    // whatever the engine does. A total count cannot witness a direction bug. `makeGraph` gives
+    // every vertex its own `V{i}` label precisely so one source can be picked while the start
+    // pattern stays plain enough for the degree-count route.
+    const edges: Edge[] = [
+      [0, 1],
+      [0, 1], // parallel
+      [1, 2],
+      [2, 0], // a path back
+      [1, 1], // self-loop at the busy middle
+      [2, 3],
+      [3, 0],
+    ];
+    const n = 4;
+    const g = makeGraph(n, edges);
+    const reversed: Edge[] = edges.map(([u, v]) => [v, u]);
+
+    // Trails of EXACTLY `depth` edges from one source, over whichever edge list it is given.
+    const fromSource = (v: number, es: readonly Edge[], depth: number): number => {
+      const out: number[][] = Array.from({ length: n }, () => []);
+
+      es.forEach(([u], i) => out[u].push(i));
+
+      let count = 0;
+      const walk = (at: number, used: number[]): void => {
+        if (used.length === depth) {
+          count += 1;
+
+          return;
+        }
+
+        for (const e of out[at]) {
+          if (used.includes(e)) {
+            continue;
+          }
+
+          used.push(e);
+          walk(es[e][1], used);
+          used.pop();
+        }
+      };
+
+      walk(v, []);
+
+      return count;
+    };
+
+    const ask = (q: string): number => ([...query(g, q)][0]?.c ?? 0) as number;
+    let asymmetric = 0;
+
+    for (let v = 0; v < n; v += 1) {
+      // DEPTH 1 IS THE GATE'S OWN BOUNDARY: `mirrorAdmissible` refuses an inward `{1}`, so it
+      // falls to the general path. A mutant loosening that gate sends it to the `max <= 2`
+      // arithmetic, which reads the OUT-adjacency and answers the forward count — invisible
+      // unless depth 1 is asked for here.
+      for (const depth of [1, 2, 3]) {
+        const fwd = ask(`MATCH (a:V${v})-[:K]->{${depth}}(b) RETURN count(*) AS c`);
+        const rev = ask(`MATCH (a:V${v})<-[:K]-{${depth}}(b) RETURN count(*) AS c`);
+
+        expect(fwd).toBe(fromSource(v, edges, depth));
+        // The mirror counts trails over the REVERSED edge set, which is what it means.
+        expect(rev).toBe(fromSource(v, reversed, depth));
+
+        if (fwd !== rev) {
+          asymmetric += 1;
+        }
+      }
+    }
+
+    // Without this the test could pass with the direction wired backwards, which is item 586's
+    // finding stated as an assertion rather than a hope.
+    expect(asymmetric).toBeGreaterThan(0);
+  });
 });
