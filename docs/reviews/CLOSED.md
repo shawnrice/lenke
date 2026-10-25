@@ -18768,3 +18768,80 @@ a tick-sized one, and it is not started here.
 
 Gates: `cargo build --release --tests` 0; both harnesses are `#[ignore]` and measurement-only. No
 engine change.
+
+## 741 — I called packing presence "multi-tick" without counting the call sites; it is five operations and one real rewrite
+
+**SCOPING + a correction of item 740, one item old. No engine change.** Item 740 named 342's
+packed-presence ladder the best-priced unbuilt Rust lever and closed with: _"It is a `Column`
+representation change, so it is a multi-tick piece of work rather than a tick-sized one, and it is
+not started here."_ That sentence is an assumption stated as a fact. I never counted the call sites.
+
+### The census
+
+| what                                         | count |
+| -------------------------------------------- | ----: |
+| `.present` field accesses OUTSIDE `store.rs` | **0** |
+| `present_at(..)` callers outside tests       |    31 |
+| `present` mentions INSIDE `store.rs`         |   211 |
+| `nulls` mentions inside `store.rs`           |    89 |
+
+The 211 looks like the multi-tick number, and it is why "representation change" felt like the right
+label. But the DISTINCT OPERATIONS are what has to be implemented, and there are five:
+
+| operation               | sites | under a bitset                          |
+| ----------------------- | ----: | --------------------------------------- |
+| `present.push(b)`       |    10 | trivial                                 |
+| `present.pop()`         |     6 | trivial                                 |
+| `present.len()`         |     1 | trivial                                 |
+| `present.get_mut(i)`    |     1 | the ONE real rewrite — see below        |
+| `present[i]`            |    33 | mechanical rename to `present.get(i)`   |
+| `present:` in a literal |    16 | `vec![false; n]` → `Presence::zeros(n)` |
+
+Plus the same for `nulls` (8 `push`, 5 `pop`).
+
+**The 31 external callers need no change at all**, because they go through `present_at` and its
+signature does not move. That is the number that decides whether this is contained, and it is zero
+work.
+
+**The single hard site** is a bounds-checked clear:
+
+```rust
+if let Some(p) = present.get_mut(eid as usize) {
+    *p = false;
+}
+```
+
+`Index`/`IndexMut` cannot return a `bool` by reference out of a packed word, which is exactly why a
+bitset is not literally drop-in — but this is the only place that needs the borrow, and `set(i,
+false)` with the same bounds check replaces it in one line.
+
+So the real shape is **a ~60-line `Presence` newtype over `Vec<u64>` with five methods, ~50
+mechanical edits, and one rewrite.** One tick to write, one to verify. Not a storage feature.
+
+### 🛑 What IS a real hazard, and it is not the one I named
+
+Item 342 measured the READ side and says so explicitly: the packed variant's bitset was _"built
+OUTSIDE the timed closure on purpose, since a per-batch build is O(KxN) and the question is what a
+permanently-packed `Column` is worth on the read side."_
+
+Making it permanent moves the cost to the WRITE side: every `push` becomes a bit-set in a word
+instead of a byte store, and `pop` a mask. That is unmeasured. The repo already has the harness for
+it — `write_cost_by_graph_size` — and it is the control the read-side sweep cannot provide. A read
+win of 1.9x at K=200 that costs 10% on every property write is a different trade from a free one,
+and which it is has not been established.
+
+**That is the thing worth deferring on, and it is a measurement, not a size.** I deferred on size,
+which I had not measured, while the actual open question went unnamed.
+
+### The pattern, now three items deep
+
+739: a price inside the window can be dead. 740: a lever outside the window is invisible. 741: the
+COST of a lever can be asserted rather than counted, and a one-line census refutes it. All three are
+defects in how the open list describes reality, and all three were cheap to check — this census is
+four `grep -c` calls against a sentence that had already been committed.
+
+Next: build the `Presence` newtype, measure the read side against `element_render_cost`'s existing
+packed variant (which cross-checks itself against the byte-wise one for 1,000 rows before timing)
+and the write side against `write_cost_by_graph_size`, with the fuzzers for byte-identity.
+
+Gates: no code change. Census by `grep` against `crates/lenke-engine/src/`.
