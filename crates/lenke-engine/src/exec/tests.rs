@@ -3902,6 +3902,171 @@ fn late_materialize_top_k_matches_eager() {
     );
 }
 
+/// `RETURN DISTINCT` over a DATE column — item 847's keyer, on the scan and on a hop frontier.
+///
+/// THE HOP-FRONTIER CASE IS WHY THIS TEST EXISTS. `ColKeyer` has two keying methods: `key_into`
+/// (bytes, used by the scan and by a single-column frontier) and `key_part` (a typed tuple, used
+/// only by a frontier with exactly two columns). A mutant reducing `key_part`'s Date to a constant
+/// — merging rows that differ only in their date — passed all 1,228 unit tests AND the
+/// cross-engine differential fuzzer, because nothing generated a two-column DISTINCT over a hop
+/// frontier where a date is the only distinguishing part.
+#[test]
+fn distinct_rows_over_a_date_column() {
+    use crate::temporal::{Date, Temporal};
+
+    let d = |iso: &str| Value::Temporal(Temporal::Date(Date::parse(iso).unwrap()));
+    let mut b = Builder::default();
+
+    // Three sources, and three targets that all share `score` = 1 while their dates differ. So a
+    // two-column key is distinguished ONLY by the date part, which is exactly what a constant
+    // date key destroys.
+    let s0 = b.node(&["S"], &[("n", n(0.0))]);
+    let t0 = b.node(&["P"], &[("hired", d("2024-01-02")), ("score", n(1.0))]);
+    let t1 = b.node(&["P"], &[("hired", d("2024-01-03")), ("score", n(1.0))]);
+    let t2 = b.node(&["P"], &[("hired", d("2031-11-30")), ("score", n(1.0))]);
+    // A fourth target duplicating t0 exactly, so dedup still has something to do.
+    let t3 = b.node(&["P"], &[("hired", d("2024-01-02")), ("score", n(1.0))]);
+
+    b.edge(s0, t0, "E");
+    b.edge(s0, t1, "E");
+    b.edge(s0, t2, "E");
+    b.edge(s0, t3, "E");
+
+    let store = b.build();
+
+    assert!(matches!(
+        store.column("hired"),
+        Some(crate::store::Column::Temporal { .. })
+    ));
+
+    let rows = |q: &str| {
+        let batch = run(&crate::gql::parse(q).unwrap(), &store);
+        let mut out: Vec<String> = batch
+            .rows
+            .iter()
+            .map(|r| {
+                r.iter()
+                    .map(|v| match v {
+                        Value::Temporal(t) => t.format(),
+                        other => format!("{other:?}"),
+                    })
+                    .collect::<Vec<_>>()
+                    .join("|")
+            })
+            .collect();
+        out.sort();
+        out
+    };
+
+    // TWO COLUMNS OVER A HOP FRONTIER — the `key_part` path. Three distinct tuples, differing
+    // only in the date.
+    assert_eq!(
+        rows("MATCH (a:S)-[:E]->(b:P) RETURN DISTINCT b.hired AS h, b.score AS s"),
+        vec![
+            "2024-01-02|Num(1.0)",
+            "2024-01-03|Num(1.0)",
+            "2031-11-30|Num(1.0)"
+        ]
+    );
+    // A SINGLE column over the hop frontier — item 847's second change admits this shape, which
+    // used to decline to the general path.
+    assert_eq!(
+        rows("MATCH (a:S)-[:E]->(b:P) RETURN DISTINCT b.hired AS h"),
+        vec!["2024-01-02", "2024-01-03", "2031-11-30"]
+    );
+    // And over a bare SCAN, which is the `key_into` path. `(n:P)` is the four targets.
+    assert_eq!(
+        rows("MATCH (b:P) RETURN DISTINCT b.hired AS h"),
+        vec!["2024-01-02", "2024-01-03", "2031-11-30"]
+    );
+    // Every one of those against the GENERAL path, which `WHERE true` forces (item 570).
+    for q in [
+        "MATCH (a:S)-[:E]->(b:P) WHERE true RETURN DISTINCT b.hired AS h, b.score AS s",
+        "MATCH (a:S)-[:E]->(b:P) WHERE true RETURN DISTINCT b.hired AS h",
+        "MATCH (b:P) WHERE true RETURN DISTINCT b.hired AS h",
+    ] {
+        let fast = q.replace(" WHERE true", "");
+
+        assert_eq!(rows(q), rows(&fast), "fast and general disagree for {q}");
+    }
+}
+
+/// The `key_part` arm of item 847's Date keyer, which needed a fixture built backwards from the
+/// gate to reach at all.
+///
+/// `ColKeyer::key_part` is used ONLY by `try_distinct_frontier_multi`'s
+/// `ncol == 2 && any(ColKeyer::Str)` branch — a two-column frontier key with a RAW `Str` side. A
+/// Date+Num pair takes the byte-key instead, so three successive attempts to give this arm teeth
+/// failed: a constant-key mutant survived the whole unit suite, the differential fuzzer, a
+/// Date+Num probe AND a first version of this test. The fixture has to satisfy all three
+/// conditions at once:
+///
+///   - a `Str` column that stays RAW, so > `dict_max_distinct` (4,096) distinct values;
+///   - that same column REPEATING, so the string alone does not already separate every row;
+///   - the DATE differing between those repeats, so the date part is what distinguishes them.
+///
+/// 10,000 nodes with 5,000 distinct names, each appearing twice under two different dates: 10,000
+/// distinct pairs, which collapse to 5,000 if the date part is dropped.
+#[test]
+fn distinct_rows_date_with_a_raw_str_frontier_key() {
+    use crate::temporal::{Date, Temporal};
+
+    let mut b = Builder::default();
+    let src = b.node(&["S"], &[("n", n(0.0))]);
+    let mut targets = Vec::new();
+
+    for i in 0..10_000u32 {
+        targets.push(b.node(
+            &["P"],
+            &[
+                ("name", s(&format!("n{}", i % 5_000))),
+                (
+                    "hired",
+                    Value::Temporal(Temporal::Date(Date {
+                        days: 19_000 + i32::from(i >= 5_000),
+                    })),
+                ),
+            ],
+        ));
+    }
+
+    for t in &targets {
+        b.edge(src, *t, "E");
+    }
+
+    let store = b.build();
+
+    // The gate's three preconditions, asserted rather than assumed — this test is worthless if
+    // any of them silently stops holding.
+    assert!(
+        matches!(store.column("name"), Some(crate::store::Column::Str { .. })),
+        "name must stay a RAW Str column, not dictionary-encode"
+    );
+    assert!(matches!(
+        store.column("hired"),
+        Some(crate::store::Column::Temporal { .. })
+    ));
+
+    let count = |q: &str| run(&crate::gql::parse(q).unwrap(), &store).rows.len();
+
+    // 10,000 distinct (name, date) pairs: 5,000 names x 2 dates. Dropping the date part gives
+    // 5,000; dropping the name part gives 2.
+    assert_eq!(
+        count("MATCH (a:S)-[:E]->(b:P) RETURN DISTINCT b.name AS s, b.hired AS h"),
+        10_000
+    );
+    // The other column order, since the `any(Str)` branch keys positionally.
+    assert_eq!(
+        count("MATCH (a:S)-[:E]->(b:P) RETURN DISTINCT b.hired AS h, b.name AS s"),
+        10_000
+    );
+    // And the general path agrees.
+    assert_eq!(
+        count("MATCH (a:S)-[:E]->(b:P) WHERE true RETURN DISTINCT b.hired AS h, b.name AS s"),
+        10_000
+    );
+}
+
 /// `stddev_pop`/`stddev_samp` over a bare scan — the fast path item 844 added, pinned against the
 /// general fold on a column that is only PARTIALLY present.
 ///

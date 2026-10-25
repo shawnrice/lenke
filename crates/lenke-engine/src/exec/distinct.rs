@@ -33,6 +33,8 @@ enum KeyPart<'a> {
     Num(u64),
     Code(u32),
     Str(&'a str),
+    /// A `Date`'s epoch-day count — the whole value (item 847).
+    Date(i32),
 }
 
 enum ColKeyer<'a> {
@@ -51,6 +53,11 @@ enum ColKeyer<'a> {
     },
     Bool {
         data: &'a [bool],
+        present: &'a [bool],
+    },
+    /// A packed temporal column of kind `Date` (item 847). Only `Date`: see `of`.
+    Date {
+        data: &'a [crate::temporal::Temporal],
         present: &'a [bool],
     },
 }
@@ -73,6 +80,29 @@ impl<'a> ColKeyer<'a> {
             Column::Num { data, present, .. } => Some(Self::Num { data, present }),
             Column::Str { data, present, .. } => Some(Self::Str { data, present }),
             Column::Bool { data, present, .. } => Some(Self::Bool { data, present }),
+            // A DATE column (item 847). `RETURN DISTINCT p.hired` is a DIFFERENT path from
+            // `count(DISTINCT p.hired)`, which items 840/841 closed — measured at 200,000 rows
+            // with 1,000 distinct values, this shape cost 21,693us against a `Num` column's 408
+            // (53.2x) and a `Str` column's 1,257 (17.3x), while the aggregate form read 570. The
+            // cross-check is in the same probe rather than assumed: two paths, one already fast.
+            //
+            // ONLY `Date`, for the reason item 840 records: the general path's equivalence is
+            // `group_key`'s, which keys a temporal by `t.format()` — RENDER equality — while a
+            // field is STRUCTURAL. The two coincide where `format` is injective, which for `Date`
+            // is demonstrable (`civil_from_days` through `fmt_year`, which pads but never
+            // truncates). The kinds carrying a sub-second or zone part keep the general path.
+            //
+            // The old comment here said Temporal/Gen "may carry present-null or need typed
+            // compare". The present-null half is moot and worth saying so: `Column::read` returns
+            // `Value::Null` for an absent cell AND for a present-null one, so both belong in the
+            // same group, which is exactly what keying both as `Absent`/tag 0 does — the `Num`
+            // arm has always ignored its own `nulls` vector for the same reason.
+            Column::Temporal {
+                kind: crate::temporal::TemporalKind::Date,
+                data,
+                present,
+                ..
+            } => Some(Self::Date { data, present }),
             _ => None,
         }
     }
@@ -109,6 +139,30 @@ impl<'a> ColKeyer<'a> {
                 if present[i] {
                     out.push(2);
                     out.extend_from_slice(&value::num_group_bits(data[i]).to_le_bytes());
+                } else {
+                    out.push(0);
+                }
+            }
+            Self::Date { data, present } => {
+                if present[i] {
+                    // Tag 9 with the epoch-day count, the same deviation the `Dict` arm above
+                    // makes for the same reason: a key is only ever compared with keys this
+                    // keyer built for this column at this offset, so it has to be INJECTIVE on
+                    // the column's values, not equal to `group_key_into`'s bytes. Distinct days
+                    // render as distinct ISO dates, so the induced equivalence is the general
+                    // path's.
+                    out.push(9);
+
+                    match data[i] {
+                        crate::temporal::Temporal::Date(d) => {
+                            out.extend_from_slice(&d.days.to_le_bytes());
+                        }
+                        // Unreachable: `of` admits only a Date-kind column and a column holds one
+                        // kind. Keyed as absent rather than silently dropped, so a future change
+                        // that broke that invariant would merge groups loudly in a test rather
+                        // than produce a key that ignores the cell.
+                        _ => out.push(0),
+                    }
                 } else {
                     out.push(0);
                 }
@@ -161,6 +215,10 @@ impl<'a> ColKeyer<'a> {
                     KeyPart::Absent
                 }
             }
+            Self::Date { data, present } => match (present[i], data[i]) {
+                (true, crate::temporal::Temporal::Date(d)) => KeyPart::Date(d.days),
+                _ => KeyPart::Absent,
+            },
         }
     }
 
@@ -196,6 +254,13 @@ impl<'a> ColKeyer<'a> {
             Self::Bool { data, present } => {
                 if present[i] {
                     Value::Bool(data[i])
+                } else {
+                    Value::Null
+                }
+            }
+            Self::Date { data, present } => {
+                if present[i] {
+                    Value::Temporal(data[i])
                 } else {
                     Value::Null
                 }
@@ -654,7 +719,7 @@ pub(super) fn try_distinct_frontier_multi(input: &Plan, store: &Store) -> Option
     // for a raw Str/Num the byte-key here loses to its `FnvSet<&str>` / f64-bits set. The
     // byte-key only pays off when it skips a Dict DECODE (a low-card code, 4 bytes) or when
     // a composite (multi-column) key is unavoidable anyway.
-    if readers.len() == 1 && !matches!(readers[0], ColKeyer::Dict { .. }) {
+    if readers.len() == 1 && !matches!(readers[0], ColKeyer::Dict { .. } | ColKeyer::Date { .. }) {
         return None;
     }
     // A pure Scan/Expand chain yields just the endpoint ids (no intermediate slots
