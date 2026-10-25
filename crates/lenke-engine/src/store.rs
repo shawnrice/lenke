@@ -4979,6 +4979,29 @@ impl Store {
         // Between this line and that sweep the buckets hold tombstoned ids. Nothing reads them in
         // between: `delete_nodes` is the only caller and it sweeps before returning.
         // Clear its properties.
+        //
+        // THIS LOOP IS THE WHOLE OF `del_node`'s KEY-COUNT DEPENDENCE (item 837). Items 823 and
+        // 825 both measured that dependence and both left it unattributed; 825 ruled out "the
+        // `push_absent` shape (that is per-insert)", which is right about `push_absent` and misses
+        // its `set_absent` twin here. Ablated — the loop emptied, everything else identical — a
+        // 20,000-node one-at-a-time delete goes FLAT in K: 3798/3801/3816/3806 ns at K =
+        // 4/52/202/502, against 3816/3915/4231/4909 with the loop. So the lever is worth 1.11x at
+        // K=202 and 1.29x at K=502, at 2.2 ns per distinct key per delete, with `add_edge` flat at
+        // 101-105 as the control.
+        //
+        // REJECTED, and the test says why: `delete_node_tombstones_and_cleans_up` asserts
+        // `st.prop(b, "name").is_null()` on the DELETED node — "a deleted node has no properties"
+        // is a public-API observable, not internal tidiness, so dropping the clear is a semantic
+        // change and not an optimization. (It is also the only one of 1,225 tests that notices,
+        // which is worth knowing: the surface query paths cannot reach a deleted slot, because
+        // `all_nodes` filters `!deleted` and `delete_nodes` sweeps the label buckets, and dense ids
+        // are never reused. The exposure is an id held ACROSS the delete.)
+        //
+        // The obvious alternative — drop the loop and have `prop`/`has_prop` answer null when
+        // `deleted[i]` — preserves the semantics exactly and makes this O(1) in K. It is refused on
+        // the asymmetry: it moves a per-DELETE cost onto the per-READ property path, which item
+        // 216/224/230 worked on precisely because it is the hot one, and reads outnumber deletes by
+        // orders of magnitude in every fixture here. Measure it before believing otherwise.
         for col in self.props.values_mut() {
             col.set_absent(i);
         }
