@@ -20285,3 +20285,56 @@ on those two records.
 that the two relevant precedents point OPPOSITE ways — item 457 refuted the name dispatch as a
 cost in the NATIVE engine, while item 760's table specialization in TS was most of a 2x — so this
 one has to be measured in isolation, not reasoned from either.
+
+## 764 — REFUTED: `callScalar`'s dispatch DEPTH is free (the deepest call is the cheapest). The cost was `coalesce`'s per-row CLOSURE
+
+**REFUTED, AND A SMALL WIN SHIPPED.** Item 763 left the dispatch chain as the general path's last
+suspect, with the two precedents pointing opposite ways (457 refuted the name dispatch NATIVELY;
+760's TS table specialization was most of a 2x). Depth settles it:
+
+| shape                | depth                                 | over a 21.2 ns floor |
+| -------------------- | ------------------------------------- | -------------------: |
+| `coalesce(a.age, 0)` | switch case **1**                     |             **38.3** |
+| `nullif(a.age, 7)`   | switch case 2                         |                 26.9 |
+| `to_integer(a.age)`  | later in the switch                   |                 32.6 |
+| `_is_nan(a.age)`     | past every table AND the whole switch |             **17.8** |
+| `abs(a.age)`         | specialized at compile time (760)     |                  3.5 |
+
+**The DEEPEST path in the library is the CHEAPEST general call and the shallowest is the dearest.**
+Depth is anti-correlated with cost, so the chain is not the cost — do not re-derive it, and do not
+convert the switch to a handler table on the strength of it.
+
+**What the ordering pointed at instead:** `coalesce`'s body was
+`args.find((x) => !isNullish(x)) ?? null`, a FRESH CLOSURE on every row. Replaced with a loop
+(`firstNonNullish`, named because inlining it put `callScalar` at complexity 36 against a limit of
+35). `coalesce` is now the cheapest general call, at 17.7 over the floor.
+
+**Two instruments, two answers, both reported.** Seven shapes in one process: **1.53x** (59.49 ->
+38.97 ns/row). One shape per process, two reads: 1.06x / 1.18x on `coalesce(a.age, 0)` and 1.24x /
+1.02x on the null-first form, with five controls at 0.95-1.04x. So: ~5-20% isolated, 1.53x mixed.
+A monomorphic call site lets V8 escape-analyze that closure away; a megamorphic `callScalar` in a
+mixed workload does not. Item 762's redistribution bias does NOT apply (this change moves no call
+sites), so the mixed figure is not an artifact — and a real workload has many shapes.
+
+**A TEST GAP, found by mutation and now closed.** `coalesce` had NO value test anywhere — only two
+arity tests asserting `not.toThrow()`. Two wrong-answer mutants (returning `args[0]` regardless of
+null; falling out as `undefined` instead of `null`) **both passed all 2,586 unit tests** and were
+caught only by the byte-identity fuzzers. There is now a value test, and its teeth are verified:
+both mutants FAIL the unit suite where they previously passed.
+
+**A method corollary for TS mutation runs.** An interrupted run left `src` pristine but the DIST
+carrying the mutant, because the assert fires before the write while the build is a separate step.
+Restoring the source is not enough in this repo — the artifact the tests read is a build away.
+
+`bun run spelling`: 0 groups disagree on the ANSWER; the two groups over 2x are the pre-existing
+pair (items 325 and 285), and 763's third flag is absent again. NOTE: the first reading of this
+gate was piped through `tail -8`, which cut the answer line — the only non-heuristic thing it
+prints — and had to be re-run.
+
+**Still open:** the structural gap, now better posed. `abs` (specialized) is 3.5 ns over the floor;
+`_is_nan` (the cheapest GENERAL call) is 17.8. That ~14 ns is not the assert (762), not the chain
+(this item) and not the argument array (763). What is left is that a specialized closure is tiny
+and monomorphic while `callScalar` is a ~100-line megamorphic function that cannot inline into the
+aggregate loop. Also unpriced: the list set-ops allocate a closure per ELEMENT at four
+`a.some((w) => structuralEq(w, b))` sites plus the dedup helper — they CAPTURE, so they need loops
+rather than hoists, and no fixture here has lists.

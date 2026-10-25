@@ -913,6 +913,30 @@ const POLY_STR_LIST = new Set(['reverse', 'size', 'cardinality']);
  * and the differential harness compares it. Both the positional assert below and the
  * specialized `unaryStrCall` closure raise through here, so the two cannot drift.
  */
+/**
+ * `coalesce`: the first non-nullish argument, else null.
+ *
+ * A plain loop, not `args.find((x) => !isNullish(x))` (item 764). That arrow was a FRESH
+ * CLOSURE on every row, and it made `coalesce` the most expensive general scalar call in the
+ * library — 38.3 ns a row over a `count(a.age)` floor of 21.2 — while `_is_nan`, which
+ * resolves past every table AND the whole switch in `callScalar`, cost 17.8. Dispatch DEPTH
+ * is free here; a per-row allocation is not.
+ *
+ * It is a named function rather than an inlined loop because inlining it put `callScalar` at
+ * complexity 36 against a limit of 35. Behaviour is identical to the `find`: that returned the
+ * first non-nullish element, and its `?? null` only fired when there was none — which is what
+ * falling out of this loop does.
+ */
+const firstNonNullish = (args: readonly unknown[]): unknown => {
+  for (const x of args) {
+    if (!isNullish(x)) {
+      return x;
+    }
+  }
+
+  return null;
+};
+
 const requiresStringMessage = (name: string): string =>
   `${name}() requires a string (a number is not coerced)`;
 
@@ -1031,7 +1055,7 @@ export const callScalar = (
       return n > 0 ? sanitizeSurrogates(s.slice(Math.max(0, s.length - n))) : '';
     }
     case 'coalesce':
-      return args.find((x) => !isNullish(x)) ?? null;
+      return firstNonNullish(args);
     case 'nullif':
       // ISO `<case abbreviation>`: NULLIF(a, b) = NULL when a = b, else a. The
       // equality is the engine's VALUE equality (`structuralEq`, what `=` uses),

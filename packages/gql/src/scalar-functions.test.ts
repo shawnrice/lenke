@@ -330,6 +330,19 @@ describe('GQL: byte-identity regressions from the differential fuzzer', () => {
   const g2 = createTestSocialGraph();
   const val = (q: string): unknown => query(g2, q)[0].x;
 
+  test('coalesce returns the first NON-NULL argument, and NULL when there is none', () => {
+    // Item 764 replaced `args.find((x) => !isNullish(x))` with a loop, and mutation found that
+    // coalesce's VALUE behaviour had no unit test at all — only arity tests. Two wrong-answer
+    // mutants (returning `args[0]` regardless of null, and falling out as `undefined` instead
+    // of `null`) both passed all 2,586 tests and were caught only by the byte-identity
+    // fuzzers. The fuzzers are the right backstop, but they localize nothing.
+    expect(val(`RETURN coalesce(null, 5) AS x`)).toBe(5);
+    expect(val(`RETURN coalesce(1, 2) AS x`)).toBe(1);
+    // NULL and not `undefined`: both render as null at JSON egress, so only an in-engine
+    // assertion tells them apart.
+    expect(val(`RETURN coalesce(null, null) AS x`)).toBeNull();
+  });
+
   test('a value stringifies like the native engine, not like String(v)', () => {
     // A record is a `Map` subclass, so `String(v)` gave "[object Map]"; an element
     // and a path have debug `toString`s. All of them render through `str` now.
