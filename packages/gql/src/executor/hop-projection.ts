@@ -2054,6 +2054,31 @@ const filteredHopWalk = (w: {
           continue;
         }
 
+        // REJECTED HERE AND AT EVERY OTHER PER-EDGE `projectRow` IN THIS FILE (item 839): item
+        // 835's direct read, lifting `a.k`/`b.k` items to read the endpoint the loop already
+        // holds instead of going through the binding and the compiled closure. It APPLIES — this
+        // walk holds `v` and `far` at once, so item 832's "a multi-variable projection has no
+        // single element to read from" is false here, as item 838 showed it is for `FOR`. It is
+        // not worth taking, and a width ladder is what says so. Min of three rounds, 60,000
+        // vertices at 4 edges each, 240,000 rows:
+        //
+        //   items     1       2       4      ns/row
+        //           295.0   294.9   311.7    the START-driven walk, this one
+        //                           73.6     `RETURN b.k` alone -> the far-driven template walk
+        //
+        // A projection item costs ~5.6 ns here, so at width 2 the whole addressable term — one
+        // `env`, two binding reads, one `set` — is about 14 ns of 295, under 5%, which is below
+        // the ±8% this corpus's own controls measure (item 838). Against a change spanning seven
+        // call sites, that is not a trade.
+        //
+        // The ladder also says where the cost IS. This walk is 4.0x the far-driven one (295
+        // against 73.6) and the projection is ~2% of its row, so the gap is the far-vertex
+        // pointer chase in EDGE order that `farDrivenHopWalk`'s own comment prices at ~180 ns,
+        // plus the loss of its template hoist. Neither is reachable from here: with `needsStart`
+        // there is no per-vertex template to hoist, and `farDrivenFilteredHopWalk` already offers
+        // the far-outer ordering, which `hopDrivesFar` declines when the two labels are the same
+        // size because the locality it gains on the far end it loses on the start. Optimize the
+        // ACCESS PATTERN or nothing; the projection is not the cost.
         rows.push(projectRow(proj, binding, params, graph));
       }
     }
