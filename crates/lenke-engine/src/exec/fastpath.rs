@@ -5251,12 +5251,30 @@ pub(super) fn try_nhop_sweep_count(
     //
     // A SPLIT VERDICT at two hops, which is why the rule is per-depth rather than a floor: a gate
     // on the last position wins 1.5x there, but a gate on the INTERIOR reads 0.51 -> 0.69ms,
-    // **0.74x SLOWER** than the arm that already answers it, so two hops is taken only for the
-    // END constraint that nothing else can carry. Three hops gains at both (4.21 -> 0.77 at the
-    // end, 1.21 -> 0.73 at an interior). Same shape of answer as item 301's.
+    // **0.74x SLOWER** than the arm that already answers it. Three hops gains at both (4.21 ->
+    // 0.77 at the end, 1.21 -> 0.73 at an interior). Same shape of answer as item 301's.
+    //
+    // 🛑 AND THE FIRST POSITION IS ADMITTED TOO (item 748), which item 306 never measured. Its
+    // table has rows for UNGATED and for a gate at the LAST position only, and the condition it
+    // produced — `gates[hops].is_some()` — excluded the start and the interior TOGETHER. But item
+    // 309, nine items later, established that a start gate is this sweep's BEST case: it reverses
+    // a chain precisely to turn an end gate into a start one, 0.80ms against 0.29. So the excluded
+    // case was the good one.
+    //
+    // The cost of that omission, read off `bun run bench`'s own row: `count 2-hop + start filter`
+    // was **3.3x SLOWER than the 3-hop with the same filter** — 5x the work in a fifth of the time,
+    // an ordering impossible on its face (item 699's rule for reading a sweep). Admitting it:
+    // three alternated rounds **13.6/15.7/14.6 -> 3.3/3.3/3.3, 4.12x, disjoint**, with the mid-gate
+    // row (16.5-17.2 both arms) and the end-gate row (3.3-3.4 both arms) flat as the controls that
+    // matter — the first is the case still excluded, the second the case already taken.
+    //
+    // A WIN AT EVERY SIZE, which is what distinguishes this from inverting 306's verdict rather
+    // than completing it. In-process, 2-hop + start filter, before -> after: 5,000 vertices
+    // 0.6 -> 0.1; 20,000 1.8 -> 0.4; 50,000 6.3 -> 1.0; 200,000 26.3 -> 4.1. The interior case
+    // keeps 306's exclusion, because 306 measured it and this does not.
     let take = match hops {
         0 | 1 => false,
-        2 => chain.gates[hops].is_some(),
+        2 => chain.gates[hops].is_some() || chain.gates[0].is_some(),
         3 => chain.gates.iter().any(Option::is_some),
         _ => true,
     };

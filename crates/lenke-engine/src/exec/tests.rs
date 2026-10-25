@@ -26314,3 +26314,89 @@ fn a_deep_walk_counts_what_enumeration_counts() {
         "the depth-3 TRAIL count disagrees with its own enumeration"
     );
 }
+
+/// A TWO-hop chain whose FIRST position is gated: the shape item 748 newly routes to
+/// `try_nhop_sweep_count`, and which had no test at all before it did.
+///
+/// The sweep took two hops only when the LAST position was gated
+/// (`2 => chain.gates[hops].is_some()`). Item 306 measured that split and recorded an INTERIOR
+/// gate as 0.74x — slower than the product arm that already answers it — but its table has no row
+/// for a gate on the FIRST position, and the condition excluded start and interior together. Item
+/// 309 had meanwhile established that a START gate is the sweep's BEST case: it reverses a chain
+/// to turn an end gate into a start one, 0.80ms against 0.29. So the excluded case was the good
+/// one, and admitting it measured 4.5-6.4x at every fixture size from 5,000 to 200,000 vertices.
+///
+/// A ROUTE CHOICE IS ANSWER-EQUIVALENT, so nothing here can fail if the route simply flips back —
+/// that guard is the alternated A/B ([[perf-gate-needs-its-own-test]]). What this test covers is
+/// the thing the A/B cannot see: the sweep now receives a shape it never received before, and its
+/// seed gate has to be applied correctly on it.
+///
+/// Compared against `count(c.k)`, which does NOT take this route — the technique
+/// `three_hop_product_agrees_with_the_general_path_in_every_direction` records, and for its reason:
+/// the first version of that test compared the fast path WITH ITSELF and all five mutants survived.
+/// Every node carries `k`, so the two spellings count the same rows.
+#[test]
+fn a_two_hop_chain_gated_at_its_first_position_agrees_with_the_general_path() {
+    use crate::value::Value;
+
+    let store = {
+        let mut b = crate::store::Builder::default();
+        for i in 0..16u32 {
+            b.node(&["Univ"], &[("k", Value::Num(f64::from(i % 3)))]);
+        }
+        // Irregular, with cycles (13 -> 0, 14 -> 2), so a mis-walked hop finds walks rather than
+        // returning a silent zero.
+        for (from, to) in [
+            (0u32, 1u32),
+            (0, 2),
+            (1, 3),
+            (1, 4),
+            (2, 5),
+            (3, 6),
+            (4, 6),
+            (5, 7),
+            (6, 8),
+            (7, 9),
+            (8, 10),
+            (9, 11),
+            (10, 12),
+            (11, 13),
+            (12, 14),
+            (13, 0),
+            (14, 2),
+            (15, 1),
+        ] {
+            b.edge(from, to, "K");
+        }
+        b.build()
+    };
+
+    let run = |q: &str| -> f64 {
+        let plan = crate::opt::optimize(crate::gql::parse(q).expect("parse"));
+        let out = crate::exec::try_run(&plan, &store).expect("run");
+        match out.rows.iter().next().and_then(|r| r.first()) {
+            Some(Value::Num(n)) => *n,
+            other => panic!("not a number: {other:?}"),
+        }
+    };
+
+    let gated_sweep = run("MATCH (a:Univ)-[:K]->(b)-[:K]->(c) WHERE a.k > 0 RETURN count(*) AS n");
+    let gated_general =
+        run("MATCH (a:Univ)-[:K]->(b)-[:K]->(c) WHERE a.k > 0 RETURN count(c.k) AS n");
+    let ungated = run("MATCH (a:Univ)-[:K]->(b)-[:K]->(c) RETURN count(*) AS n");
+
+    assert!(
+        gated_sweep > 0.0,
+        "a vacuous fixture proves nothing; the gated count must be positive"
+    );
+    assert_eq!(
+        gated_sweep, gated_general,
+        "the newly-routed sweep must agree with a spelling that does not take it"
+    );
+    // THE MUTATION TARGET: if the seed gate is dropped, the gated count becomes the ungated one.
+    assert!(
+        gated_sweep < ungated,
+        "the start gate must EXCLUDE something ({gated_sweep} against {ungated}), or a dropped \
+         gate would be invisible"
+    );
+}
