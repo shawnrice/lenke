@@ -98,6 +98,11 @@ const STR_2: &[(&str, &str)] = &[
     ("ltrim/2", "ltrim(a.s, ' ')"),
     ("left", "left(a.s, 3)"),
     ("split", "split(a.s, '-')"),
+    // The DISCRIMINATOR for `split`'s 49 ns/row (item 804). `zz` occurs in no fixture string, so
+    // this splits into exactly ONE part and allocates exactly one `Vec` of capacity 1. If it costs
+    // what the 1.7-parts-average row above costs, the cost is the per-row `Vec` malloc/free pair
+    // and not the parts; if it is much cheaper, the cost scales with the part count.
+    ("split/1part", "split(a.s, 'zz')"),
     // THREE-argument names, which items 783 and 786 did not price. 786 found the two-argument
     // NUMERIC band (28-35 ns general against 10-16 table-claimed) while `left`, a two-argument
     // STRING call on the same general dispatch, cost 8.3 — so the cost is not arity and these say

@@ -440,6 +440,32 @@ fn call_scalar(name: &str, args: &[Value]) -> Value {
         },
         // split(s, delim) → a list of substrings. An EMPTY delimiter splits into one
         // element per UTF-16 unit (JS model), matching the TS engine — NOT Rust's `split("")`.
+        //
+        // AT THE ALLOCATOR FLOOR, and item 783's by-inspection reading of it was wrong (item 804).
+        // 783 priced this at 49 ns/row — five times the next worst string function — and said "its
+        // body is already a single `Vec` and one `GStr` a piece, so that cost is the allocation
+        // itself". The allocation is real but it is the `Vec`'s, not the parts':  a `GStr` of 12
+        // bytes or fewer is stored ENTIRELY INLINE, and every part of a split like `naïve-7-ßé`
+        // is under that, so the part strings allocate NOTHING.
+        //
+        // REJECTED LEVER — `Vec::with_capacity(s.matches(d).count() + 1)` in place of `collect`.
+        // `str::Split` is not an `ExactSizeIterator` and its `size_hint` is `(0, None)`, so
+        // `collect` starts at zero and grows; counting the delimiter first buys an exact
+        // allocation. Measured by `examples/scalarfn_bench`, three ORDER-ALTERNATED rounds at 1M
+        // rows: 50.04/49.16/49.40 ns/row before against 51.54/49.05/49.83 after, with every other
+        // string function and both `count` controls flat. Nothing.
+        //
+        // WHY it bought nothing, measured rather than reasoned: the `split/1part` row in that
+        // example splits on `zz`, which occurs in no fixture string, so it builds exactly ONE part
+        // in one `Vec` of capacity 1 — and it costs **42.4 ns/row** against this row's 49.6. The
+        // other two-argument string functions (`replace/3`, `substring/3`) cost ~10 ns through the
+        // same dispatch, so ~32 ns is this arm's own per-row list construction and teardown, FLAT
+        // in the part count; the extra 0.7 parts this fixture averages cost ~10 ns each. Exact
+        // capacity can only remove growth, and growth was never the term.
+        //
+        // What would remove it is not a tick: an inline representation for a short `Value::List`,
+        // the way `GStr` inlines a short string. That changes `Value`'s layout, which the
+        // cross-engine byte-identity contract runs through, and it pays only for small lists.
         "split" => match (&args[0], &args[1]) {
             (Value::Str(s), Value::Str(d)) => {
                 let parts: Vec<Value> = if d.is_empty() {

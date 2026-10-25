@@ -21885,3 +21885,43 @@ Gates: `bun run fmt` 0; `bun run check` 0; `bun test packages/gql` 2634 pass 0 f
 13 pass 0 fail TWICE; `bun run spelling` 0 answer disagreements and only its two pre-existing >2x
 groups. **Rust side NOT checked and not claimed** — whether `exec` pays an analogous per-element
 write is its own tick.
+
+## 804 — native `split` is AT THE ALLOCATOR FLOOR. Exact capacity REFUTED, and item 783 was wrong about which allocation
+
+**DONE (no engine change).** `scalarfn_bench` prices 30 scalar functions and `split` is the outlier
+by five times — 49.4 ns/row against 9.7-10.3 for every other string function.
+
+**Item 783's reading was a guess.** It said "its body is already a single `Vec` and one `GStr` a
+piece, so that cost is the allocation itself" — right that there is one, wrong about which, and
+reached by reading the body. **`GStr` is INLINE up to 12 bytes**, and every part of every fixture
+row (`naïve`, `7`, `ßé`, `  pad7  `, `plain7`) is under that cap, so **the part strings allocate
+nothing**. The only heap allocation is the `Vec`.
+
+**REFUTED: `Vec::with_capacity(s.matches(d).count() + 1)`** in place of `collect`. `str::Split` is
+not an `ExactSizeIterator` and its `size_hint` is `(0, None)`, so `collect` starts at zero and
+doubles. Three ORDER-ALTERNATED rounds at 1M rows: **50.04/49.16/49.40 against 51.54/49.05/49.83**,
+with `upper`, `char_length`, `replace/3` and both `count` controls flat.
+
+**THE DISCRIMINATOR, which is the keeper.** One bench row settles the null instead of explaining it:
+`split/1part` splits on `zz`, which occurs in no fixture string, so it builds exactly ONE part in
+one `Vec` of capacity 1 and growth is impossible by construction. It costs **42.4 ns/row** against
+49.6. With `replace/3` and `substring/3` at ~10 ns through the same dispatch:
+
+```text
+  ~10 ns   the general two-argument scalar dispatch (every string function pays it)
+  ~32 ns   split's OWN per-row list construction + teardown — FLAT in the part count
+  ~10 ns   per EXTRA part beyond the first
+```
+
+**Exact capacity can only remove growth, and growth was never the term.** The null now has a
+measured cause, not a plausible one.
+
+**What would remove it is not a tick:** an inline representation for a short `Value::List`, the way
+`GStr` inlines a short string. It changes `Value`'s layout, which the cross-engine byte-identity
+contract runs through, and pays only for small lists. Priced, not taken.
+
+**Also: item 801's gap after 803.** First `probe:surface` reading since 803 shipped, three runs —
+the labelled pair went **2.12/2.18/2.25x to 1.73/1.79/1.74x** (GQL's own 4.59-4.76 ms to 3.71-4.38),
+the unlabelled 2.06/2.05/2.12 to 1.80/1.95/2.63 (one noisy round). **~2.1x is now ~1.75x**,
+consistent with 803's 1.14-1.19x, and the remaining term is the property read item 802 priced at ~10
+of the ~24 ns a vertex.
