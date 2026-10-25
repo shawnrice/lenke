@@ -155,6 +155,13 @@ Each of these is here because a wrong conclusion was drawn and committed first.
   faster in wall clock, so this is not a rigour-for-speed trade. Select the rows the
   change can reach, plus a control it cannot, and leave the sweep for the regression
   pass it is for.
+  **That 1.66x had a specific cause, found at item 747**: the sweep was carrying a
+  temporary depth-5 row committed by accident, 16 s per rep against a 17 s sweep. With
+  it gone the same row reads 26.7 in-sweep against ~25 isolated — the phantom is gone.
+  So a full sweep is not inherently untrustworthy, and reading it that way would
+  discourage the regression pass it exists for. The rule above still holds on its own
+  terms, because residual in-sweep inflation is real but much smaller: `count
+var-length 1-2 hops` reads 250.7 in-sweep against ~177 isolated, 1.4x.
 - **Assert each A/B arm IS the code it claims, before building it.** `cp
 "$S/matching-$arm.ts"` with one of the two files never written leaves the previous
   arm in place, and the "after" reading is then the "before" code — a null that looks

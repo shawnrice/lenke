@@ -19261,3 +19261,61 @@ that site works too.
 Gates, each its own command with its exit code read UNPIPED: `bun run fmt` 0; `bun run lint` 0;
 `bun run check` 0; the new hygiene test 2 pass 0 fail, and 0 pass 2 fail against the reinstated
 leftover.
+
+## 747 — item 737's phantom 1.66x was the stray row, so "a full sweep is untrustworthy" was the wrong lesson to draw from it
+
+**DIAGNOSIS. No engine change; one CLAUDE.md bullet refined.** Item 746 removed a temporary depth-5
+row that had been committed by accident and sat in the sweep for four commits. Item 737's phantom
+regression was measured through that sweep, so it could finally be tested against a corpus without
+it.
+
+### The phantom is gone
+
+| `query: project the element + materialize` |            reading |
+| ------------------------------------------ | -----------------: |
+| item 737, in-sweep, stray row PRESENT      |           **44.8** |
+| now, in-sweep, stray row GONE (two sweeps) |    28.6 / **26.7** |
+| item 737, isolated                         | 25.2 / 24.9 / 25.5 |
+
+In-sweep now agrees with isolated. The 1.66x that nearly got item 737's change reverted was a
+16-second-per-rep row running in the same process against a sweep that otherwise takes 17 s at
+`BENCH_N=20000`.
+
+### 🛑 So the lesson I drew at 737 was over-general, and that matters
+
+737 concluded that a full sweep per arm is "the wrong instrument… rows interfere", and item 738
+promoted that into `CLAUDE.md`. The **rule is right** but the stated reason was a property of
+sweeps in general, when the dominant term was a specific defect in mine. Left as written, it reads
+as "do not trust the regression sweep" — which would discourage the one instrument the corpus exists
+to provide.
+
+**The rule still holds on its own terms**, because residual in-sweep inflation is real and much
+smaller: from the same clean sweep, `count var-length 1-2 hops` reads **250.7 in-sweep against
+~177 isolated (1.4x)**, and `traverse 1-hop + filter` 43.4 against 39.7. A per-row question still
+wants a per-row instrument. It just does not want the 1.66x figure as its justification, so the
+bullet now carries both halves: the phantom had a cause, and the residual is 1.4x rather than 1.66x.
+
+That is worth separating because the two failure modes have different fixes. Interference you cannot
+remove is a reason to choose a different instrument; a stray row is a reason to fix the corpus — and
+item 746 added the hygiene test that makes the second one impossible to recommit.
+
+### 🛑 Three process errors of mine in this one tick, none of which reached a committed figure
+
+1. **I wrote a log with bare `>`.** `CLAUDE.md`'s first rule for this shell is never to do that, and
+   `run_in_background` captures output with no redirection at all — which is what the confirming
+   sweep used. The file name was fresh, so nothing stale was consumed, but the rule is not
+   conditional on getting lucky.
+2. **I started a second sweep while the first was still running.** Two benches contending for CPU
+   corrupts both, which is the self-inflicted noise this whole run of ticks keeps finding. The first
+   sweep survived only because the second died early (at `decode ndjson`) while the row in question
+   runs late in the corpus — and I re-ran it cleanly rather than relying on that.
+3. **`pkill -f 'bun bench.ts'` killed my own shell** (exit 144), because the pattern matched the
+   invoking command line. `CLAUDE.md` warns about exactly this; the right form is `pgrep` then kill
+   by PID.
+
+All three are instrument-handling errors in a tick whose subject was instrument-handling errors.
+Recording them because the alternative — fixing them silently — is what makes the same mistake
+available next time.
+
+Gates, each its own command with its exit code read UNPIPED: `bun run fmt` 0; `bun run check` 0.
+Markdown and record only.
