@@ -21459,3 +21459,38 @@ probe output answers the question the test is about, and reading it beats guessi
 dispatch. Remaining: `replace` (99.6) and `to_string` (84.8) — `replace`'s body is already an
 allocation-free `indexOf` loop (item 793), so both are ~22 ns of dispatch on a large body, 1.2-1.3x,
 and **no shape is left that a factory of this kind has not claimed.**
+
+## 795 — `bun run bench` run for the first time this session: no regression, item 324's win CONFIRMED in the sweep, and item 617's ceiling re-confirmed AT THE CODE LEVEL
+
+**VERIFICATION, no change.** The TS counterpart of item 793. Five TS changes landed this session
+(788, 790, 791, 792, 794) and none had run the only place the two engines are compared.
+
+**A recorded win confirmed by a second instrument:** `count 3-hop` TS **401.6 → 318.6 ms (1.26x)**
+with the native column flat (4.8 → 4.9). That 1.26x **is item 324's 1.253x** — measured there in
+isolation, seen here for the first time in the sweep the row belongs to.
+
+**ITEM 289 STOPPED ME PRICING A CLOSED TARGET — third time this session.** The query rows show TS
+beating ffi (`project 3 columns` 9.1 vs 60.1; `project the element` 4.5 vs 155.3), and in-process
+`bench_all` prices native `project 3` at 24.5 ns/row against ffi's 300 — so I began pricing ~275
+ns/row of FFI marshalling. 289 had already decomposed it: `JSON.parse` 48%, render + FFI call 33%,
+row shaping 12%, **~80% carrier, no engine change touches it**, `queryArrowIpc` is the answer. Its
+rule: _read the table's SHAPE before its ratios_ — native loses every row with 200k-1M rows out and
+wins 29-85x every row with one. (789 and 793 were the first two; each check cost one grep.)
+
+**THE WIDEST REAL GAP, RE-CONFIRMED IN CODE.** Carrier rows aside, TS multi-hop counts are
+`count 4-hop` **84.58x**, `count 3-hop` **65.61x**, `count var-length 1-2` **48.01x**, `count 2-hop`
+**39.19x** — one row out, so no carrier. `count 1-hop [shortcut]` is 0.0; TS has that shortcut and
+only that one.
+
+Item 617 refuted both cheap answers (sweep-instead-of-product **1.33x WORSE**; the degree memo
+refuted **by its own unreachable control**) and called it a data-layout target. **Traced its three
+components in the code**, since item 324 had falsified "no micro moves a spread cost":
+
+1. the `edgesOfTypes` generator frame — **spent at 324**, and the 1.26x above is it;
+2. the `Edge` property reads — **already avoided here**: the ungated branch reads `e.toId`/`e.fromId`
+   (plain fields), not `.to`/`.from` (a string-keyed `Map.get`, ~190 ns, item 194);
+3. the two hash lookups — `dSide` → `side` → `bucketSize` is `.get(bId)` then `.get(type)`; **a
+   nested map costs two by construction**, and one needs the flat per-type index = the CSR 617 names.
+
+**Two of three components are spent and the third is the layout change, so no tick-sized win remains
+on the widest row in the bench.** Stated positively to stop a fourth pricing pass.
