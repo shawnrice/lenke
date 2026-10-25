@@ -394,6 +394,27 @@ const correlatedSubqueries = new WeakSet<object>();
  * rules to a property it read directly. Reimplementing them there would be the mistake
  * `patternCountOf`'s doc warns about ("a shortcut that half-applies a predicate is a wrong
  * answer"): the type handling below IS the semantics, not a detail around it.
+ *
+ * REJECTED LEVER — a two-number ORDERING fast path at the top of this function (audit item 802).
+ *
+ * `if (op !== '=' && op !== '<>' && typeof lv === 'number' && typeof rv === 'number') return
+ * fn(lv, rv)` is byte-identical, NaN included: `isNullish` is `null`/`undefined` only so a NaN is
+ * not nullish, a number is not a temporal, and `typeof lv === typeof rv === 'number'` IS the
+ * `orderable` test below. It skips two `isNullish` calls, two `op` comparisons and two
+ * `isTemporal` calls per row. It was written and measured and it moved NOTHING.
+ *
+ * Five real query shapes that reach it, 200,000 vertices, one shape per process, three
+ * alternated rounds each, twice over: a filtered count 4.70/4.75/4.86 against 4.74/5.13/4.32 and
+ * 4.69/5.50/5.08 against 4.41/4.65/4.22; a two-bound count 6.31/5.97/5.78 against 5.55/6.17/5.46;
+ * a 156,000-row projection 10.54/11.22/10.30 against 10.37/10.09/14.11; a non-lifting
+ * `n.k * 1 > 10` (this function's general arm) 13.24/12.21/11.04 against 10.30/11.61/11.24; a
+ * per-edge hop 48.1/48.8/48.9 against 48.0/48.6/47.8. Every range overlaps, and the one reading
+ * that looked disjoint in the first run reversed in the second.
+ *
+ * The per-row cost here is the PROPERTY READ, not the dispatch around it: a hand-written ladder
+ * over the same 200,000 vertices measured the loop floor at 1.4 ns a vertex, a property read and
+ * compare at 9.6-11.1, and the whole engine query at 21-27 — so a handful of branches was never
+ * going to be visible. Do not re-derive it.
  */
 const compareTruth = (
   op: CompareOp,
@@ -5268,6 +5289,16 @@ const compilePath = (pattern: PathPattern): CPath => {
  *
  * Do not re-derive it: the reasoning is correct and the measurement is not. The per-element cost
  * here is the predicate evaluation, not the wrapper around it.
+ *
+ * ALSO REJECTED — replacing the three `for...of` loops below with INDEXED loops (audit item 802).
+ * `for...of` over an array builds an iterator and a step result per element, and `props` is EMPTY
+ * whenever the predicate came from a clause `WHERE` — an iterator allocated to visit nothing. It
+ * is a TRADE, not a win: on a count whose predicate lifts into `eqProps` (`WHERE n.s = 's3'`) the
+ * indexed form read 5.66/5.49/5.36 ms against 5.77/6.51/6.14, but on a two-bound `cmpProps` count
+ * it read 6.47/7.42/6.14 against 5.93/6.13/5.66 — SLOWER in all three rounds. With both halves of
+ * item 802 applied the two shapes come out flat, which is the two effects cancelling rather than
+ * either one paying. Item 454's ladder is the reason: 4 ns of the ~24 ns a vertex is the binding
+ * `Map` write and ~10 is the property read, so the loop header is not where the time is.
  */
 export const satisfies = (
   element: Bound,

@@ -21756,3 +21756,72 @@ so the O(1) pairs printed `Infinityx faster` from 0.00 vs 0.01 — item 124's ex
 **OPEN:** the ~2.1x itself. Item 798 located it in the ~18-20 ns of per-vertex scaffolding around
 `satisfies` (not the shared implementation); item 799 removed the param term. The rest is shared by
 every predicate caller in the TS engine — its own tick.
+
+## 802 — the `satisfies` scaffolding: BOTH halves REFUTED. A part measured dearer than the whole is an instrument result
+
+**DONE (no engine change).** Item 801 named the remaining per-vertex scaffolding as the open target.
+Two changes built, both refuted on real queries, both recorded in doc comments on the code they
+would have changed.
+
+**The planned change was item 454**, refuted with numbers in a doc comment on `satisfies` ending
+"do not re-derive it". It was re-derived anyway — the extraction was written before the comment
+three lines above the signature was read. **The seventh already-closed candidate this session**
+(789, 793, 795, 796) and the first whose record lives in the SOURCE rather than here, which is the
+half of "check the list before pricing" that gets skipped.
+
+**THE LADDER, which is the result worth keeping.** Hand-written loops, 200,000 vertices, one arm per
+process, median of 11:
+
+```text
+  loop floor                                 1.4-2.1 ns/vertex
+  CONSTANT-key property read + compare       9.6-11.1
+  propOf: DYNAMIC keyed load + 2 ?. + ??     9.8-11.1    <- the SAME as the named load
+  + inlineHolds's binding.set                12.8-15.8   (+~4)
+  + { binding, params, graph } + value(env)  13.2-15.7   (+~0.5 — confirms 454 independently)
+  the engine's whole filtered count          21-27
+```
+
+So **the property read is ~10 of the ~24 ns a vertex**, not the dispatch around it, and a dynamic
+keyed load is free relative to a named one. That re-reads **item 798**: its "~18-20 ns is
+scaffolding" came from three predicate arms sitting within 5.5 ns of each other, and agreement
+across arms is not a floor (item 791's rule, in a new place).
+
+**THE ARITHMETIC CHECK AN ISOLATED MEASUREMENT MUST PASS.** A sixth arm called the real `satisfies`
+with a HAND-BUILT predicate and read 41.4-46.8 ns/vertex against the hand loop's 13-15. That 31 ns
+looked like the finding and two changes were built to collect it. **It cannot have been real, and
+the number says so unaided: the whole query costs 21-27 ns a vertex and `satisfies` is a part of
+it.** The literal `{ props: [], cmpProps: [...] }` is a different hidden class from what
+`compilePredicate` emits, so the sites inside `satisfies` saw a shape they never see in production.
+**Rule: when a probe prices a PART, check it against the measured WHOLE before believing it; if the
+part exceeds the whole, the argument is the instrument.** Same family as "a reproduction that does
+not reproduce the ANSWER SIZE is not a reproduction" — and answer size would NOT have caught this
+one, every arm answered 156,000.
+
+**REFUTED (1): a two-number ORDERING fast path in `compareTruth`** — byte-identical NaN included
+(`isNullish` is null/undefined only; a number is not a temporal; `typeof lv === typeof rv ===
+'number'` IS the `orderable` test; `=`/`<>` excluded as `structuralEq`'s call). Five reaching
+shapes, three alternated rounds, twice: filtered count 4.70/4.75/4.86 -> 4.74/5.13/4.32, two-bound
+6.31/5.97/5.78 -> 5.55/6.17/5.46, 156k-row projection 10.54/11.22/10.30 -> 10.37/10.09/14.11,
+general arm 13.24/12.21/11.04 -> 10.30/11.61/11.24, per-edge hop 48.1/48.8/48.9 -> 48.0/48.6/47.8.
+All overlapping.
+
+**REFUTED (2): indexed loops for the three `for...of` + destructuring loops** in `satisfies` and in
+its pre-filter twin (same three loops; a grep found the second copy the first patch missed). It is a
+**TRADE**: `eqProps` count 5.66/5.49/5.36 against 5.77/6.51/6.14, but two-bound `cmpProps` count
+6.47/7.42/6.14 against 5.93/6.13/5.66 — slower in all three rounds. Both halves together cancel.
+
+**One reading looked like a win and the second A/B took it back**: a string-equality count read
+6.69/6.53/6.33 against 5.68/5.69/5.24 (disjoint, 1.17x) and then 5.93/6.23/6.31 against
+6.92/5.79/5.49. **A single disjoint triple inside the ~10% noise floor is not a flag.**
+
+**THE CONTROL WAS WRONG, with item 762's exact symptom.** `WHERE n.s = 's3'` was picked as
+unreachable because the fast path excludes `=` and strings — but it reaches the indexed loops, so
+when it moved while every target stayed flat it read as "the control moved more than the target"
+when it was a target. **A control must be unreachable by EVERY change in the arm, not by the one you
+have in mind.** Replaced with a no-predicate projection; it did not move.
+
+**STILL OPEN:** item 801's ~2.1x cross-surface gap. The ladder says where it is NOT — not the env,
+not `propOf`'s chain, not the loop headers, not `compareTruth`'s dispatch. ~10 ns is the property
+read and ~4 is `inlineHolds`'s per-element `Map` write; Gremlin answers at ~10.6. The `Map` write is
+the one term still unpriced, and removing it is a structural change to how a per-element predicate
+reaches its own variable, not a tick.
