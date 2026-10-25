@@ -23459,3 +23459,68 @@ still gated on item 806's 123-site census.
 
 Gates: `cargo build --release` 0; `bun run fmt` 0; `bun run fmt:check` 0; `git status` clean; the
 temporary probe removed.
+
+## 831 — the post-828 sweep: NO regression, the first CLEAN absolutes for the two render rows, and a correction — items 811 and 827 cite a CONTAMINATED figure
+
+**VERIFICATION, no engine change.** Item 828 changed `render_nodes`, the hottest per-row path in the
+corpus, and the last trustworthy sweep (item 810) predates it. `bench_all` run alone, per item 810's
+rule.
+
+### No regression: every group matches its recorded figure
+
+```text
+  scalar age (flat)       92.0   against 92.4        map field meta.city  5056.5 against 5004.0
+  scalar age (map graph)  92.4   against 92.5        degree                  0.19 against 0.19
+  scalar p.age             1.7   against 1.7         wcc                     0.96 against 0.91
+  string p.name            6.3   against 6.8         pagerank(20)           11.09 against 12.08
+  count(*)               290.0   against 300.0       betweenness           266.10 against 268.34
+  betweenness parallel  625/316/170/95.8, speedup 6.52  against 631/327/173/95.8, 6.59
+```
+
+Item 382's `map field` 20x stands, item 359's matched pair stands, the algo parallel ladder stands.
+**Nothing moved against its record except the two render rows.**
+
+### 🛑 And `element r` moving is what invalidates the comparison
+
+```text
+  element p   392.6 recorded -> 234.1   1.68x
+  element r   323.9 recorded -> 217.7   1.49x
+```
+
+`element r` is the EDGE renderer. **Item 829 established that 828's reorder cannot apply to it** —
+edge props are `EdgeMap = HashMap<u32, Value>`, hashed rather than positionally indexed — and the
+diff does not touch it. So this is a control the change cannot reach, moving 1.49x, which per item
+762 means the comparison is instrument rather than effect.
+
+**The instrument is identifiable: the recorded figures came from the CONTAMINATED run.** Item 809
+started `bench_all` and `bun run bench` together and then built over both. That run's cross-engine
+numbers were flagged there and at 810 — but its NATIVE `query/perrow` figures were not, and the
+contamination hit exactly the two rows that run long enough to overlap a concurrent process:
+`element r` takes 218 ms and `element p` 47, where every other row in the sweep is ≤ 11 ms. The
+sub-millisecond rows match their records to the decimal, which is the same evidence from the other
+side.
+
+**So the sweep cannot quantify 828.** Its own A/B remains the trustworthy figure — 1.49x at K=4
+across three order-alternated rounds from saved PRE/POST binaries, with all four key counts disjoint
+— and these are the first CLEAN absolutes for the two rows:
+
+```text
+  element p   234.1 ns/row at 200,000 rows
+  element r   217.7 ns/row at 1,000,000 rows
+```
+
+### Correction: two items cite the contaminated number
+
+**Items 811 and 827 both quote `element p` at 392.6 ns/row** as a reference point. It is 234.1. The
+conclusions do not rest on its precision — 811 used it to show that a part (41-47 ns/vertex) exceeded
+a whole measured by a different probe at 21-27, and 827 used it for a fixture-width reconciliation
+whose other anchors are item 806's ladder — so both findings stand. **The number is corrected here
+and should be read as 234.1 wherever those items use it.**
+
+The general rule, which item 810 stated for ratios and this extends to absolutes: **a contaminated
+run's figures must not enter the record at all.** 809 and 810 both flagged the contamination for the
+numbers they were discussing and left the rest of the same run quotable, which is how 392.6 travelled
+two items.
+
+Gates: `cargo build --release` 0; `git status` clean; no engine change in this item. `bench_all` run
+alone with nothing else on the machine.
