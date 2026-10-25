@@ -21389,3 +21389,37 @@ returns NO rows, so `one()` fails on the row count and looks like a disproof), a
 
 **Remaining on the general dispatch**, each worth ~22 ns (1.3-1.55x, no large win left): `replace`
 99.6, `substring` 85.2/64.4, `to_string` 84.8, `left` 78.1, `right` 62.1.
+
+## 793 — `bench_all` run for the first time this session: NO regression, every large number already closed, and the last TS scalar family specified
+
+**VERIFICATION, no change.** Items 759-787 changed the native engine eight times, each verified by a
+targeted A/B, the unit suite and the fuzzers — but none ran the corpus's own regression sweep.
+
+**No regression** against CLOSED.md's recorded numbers: `string city (flat)` 249.5 → 246.4 us (−1%),
+`map field meta.city` 4953.6 → 5010.1 (+1%), element render 481.2 → ~514 ns/row net of item 381's
+17.5 ns dedup (+7%). Within machine variation.
+
+**Every large figure in the sweep is already closed — worth recording because they look alarming in
+isolation:**
+
+- `hop node, NO distinct` 545 ns/row and `distinct node` 531 ns/row → the element renderer, **item
+  342**'s priced ladder (item 381 attributed it: dedup is 17.5 ns, the rest is the render).
+- `map field meta.city` 20x the flat string → **item 382**: real map-access cost; closing it means
+  shredding nested fields into columns, a storage change, not an optimization.
+- `algo/call` `project` 15.71x → **item 339**'s three-number design exists for this row; the
+  dispatch-and-plumbing cost is `counted / direct` = **3.64x**, 14 ns a node, not a target. The old
+  "69x CALL overhead" was the two-number framing and is already corrected.
+
+**NEXT TARGET, specified rather than left as a lead.** One TS family remains on the general
+dispatch, all one shape — a STRING at position 0 followed by NUMBERS:
+
+```text
+  substring/3 85.2 ns/row   left 78.1   substring/2 64.4   right 62.1
+```
+
+~22 ns of dispatch each (item 790's isolated figure), so **1.3-1.4x apiece**. Needs a FOURTH factory
+of items 761/769/792's shape folding a TWO-POSITION assert (`STR_ARG_POSITIONS` [0] then
+`NUM_ARG_POSITIONS` [1] or [1,2]) in `assertScalarArgTypes`'s order — item 769 records that order as
+"the contract rather than a detail". **`left` and `right` have their bodies INLINE in `callScalar`'s
+switch** (unlike `substringScalar`) so they must be lifted first, and `left`'s `sanitizeSurrogates`
+placement is item 768's finding.
