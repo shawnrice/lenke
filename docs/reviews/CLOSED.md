@@ -19115,3 +19115,68 @@ is not lost.
 Gates, each its own command with its exit code read UNPIPED: `bun run lint` 0; `bun run fmt` 0;
 `bun run check` 0; `packages/gql` **2586** pass 0 fail (one new test); the seven byte-identity
 fuzzers 13 pass 0 fail.
+
+## 745 — the three threads item 744 left open, all closed by reading rather than measuring
+
+**VERIFICATION. One comment corrected; no behaviour change.** Item 744 shipped a 53x win and left
+three loose ends. All three resolve from the source, and one of them corrects 744 itself.
+
+### 1. The surviving mutant, explained
+
+744 recorded that replacing `mirrorAdmissible`'s body with `true` SURVIVES, said it should not have
+(the oracle's fixture IS asymmetric at depth 1 — vertex 1 has 2 out-edges against 3 in), and left
+the cause unestablished rather than guessing. The cause is that **both clauses of the guard are
+redundant today**:
+
+- **`max === 1` cannot reach it.** `dropVacuousQuantifier` removes a `{1,1}` quantifier before the
+  detectors run — `vacuousQuantifier` is `q.min === 1 && q.max === 1` plus a plain rel, no variable,
+  walk/trail mode, no `hopFrom`/`hopTo`/`nested`/`subpathWhere`. So `<-[:K]-{1}` arrives at
+  `degreeCountShape` with `rel.quantifier === undefined` and is refused there.
+- **`max === null` is already refused nine lines below**, for both directions, by the depth bound
+  `max === null || max < 1 || (max > 4 && mode !== 'walk')`.
+
+So the mutant is **EQUIVALENT**, not a test gap, and the distinction is the one CLAUDE.md asks for:
+a survivor may be equivalent, inert, a skip or a gap, and a tally cannot tell them apart. This one
+needed two mechanisms found in two different files to classify.
+
+**The guard stays**, for the reason this file already keeps `!spec.isTrail`: below `max >= 2`,
+`varLengthDegreeCount` falls to arithmetic whose `edgesOf` reads `v.adjFrom` directly and **cannot
+decline once chosen** — it returns a number — so the only place to refuse an inward spec is upstream
+in the detector. Item 692 is the record of exactly this kind of guard being needed when the future
+arrived. The code now carries the mechanism instead of "unexplained".
+
+### 2. `out: rel.direction !== 'out'` is safe
+
+744 flagged it as worth a look, since `'both' !== 'out'` collapses to `out: true` and would make an
+undirected pattern traverse one way. It cannot happen: `keyedCountOf` opens at 4726, **refuses
+`rel.direction === 'both'` at 4773**, and computes the flag at 4810 — so by then the value is `out`
+or `in` and the inversion comment (_"`(x)-[:T]->(q)` is written out from `x`, so from `q` it is an
+IN edge"_) is exactly right. Recorded so it is not re-flagged.
+
+### 3. The direction-coverage audit: 744 fixed the LAST out-only shortcut
+
+Every direction test in `shortcuts.ts`, classified:
+
+| sites                   | what they do                                          |
+| ----------------------- | ----------------------------------------------------- |
+| 2179 / 2200 / 2202      | handle `both` explicitly (the undirected hop count)   |
+| 3034-3039, 3236-3239    | handle `both` explicitly (`aBoth`/`midBoth`/`dBoth`)  |
+| 2803 / 2804, 3818, 4773 | refuse `both` outright                                |
+| 2830 / 2831, 3865, 4810 | `out` vs `in` as a boolean, with `both` refused above |
+| 5544                    | **was** `out`-only — fixed at 744                     |
+
+So after 744 **no shortcut covers `out` without covering `in`**, and `both` is either handled or
+refused everywhere — never silently treated as one direction. That is the "grep the pattern
+elsewhere" step done to completion rather than on the first hit, and the answer is that 744's bug
+was the only instance of its kind left.
+
+### Why this is an item and not three comments
+
+Each thread was one `grep` or one `sed` away, and all three were cheap precisely because 744 wrote
+them down instead of leaving them in my head. The one that mattered is the first: a survivor
+recorded as "unexplained" is a standing invitation to delete the guard as dead code, and the real
+reason it survives is that two OTHER conditions in two other files happen to cover it — which is
+exactly the state in which a future edit to either one turns it from redundant into load-bearing.
+
+Gates, each its own command with its exit code read UNPIPED: `bun run fmt` 0; `bun run check` 0.
+Comment-only change.

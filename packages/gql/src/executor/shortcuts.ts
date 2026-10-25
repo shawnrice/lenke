@@ -5586,6 +5586,21 @@ const depth4Admissible = (
  * Its own function rather than three clauses inline, because `detectVarLengthCount` sits ON the
  * complexity gate — inline it read 36 against a maximum of 35, which is the same reason this file
  * already factors out `depth4Admissible`.
+ *
+ * 🛑 BOTH CLAUSES ARE REDUNDANT TODAY, which is why a mutant replacing this whole body with `true`
+ * SURVIVES (item 744 recorded that survivor as unexplained; item 745 explains it):
+ *
+ *   - `max === 1` cannot reach here. `dropVacuousQuantifier` removes a `{1,1}` quantifier outright
+ *     (`vacuousQuantifier`: `min === 1 && max === 1` plus a plain rel), so `degreeCountShape` then
+ *     sees `rel.quantifier === undefined` and refuses the segment before this is consulted.
+ *   - `max === null` is refused nine lines below, for BOTH directions, by the depth bound
+ *     `max === null || max < 1 || (max > 4 && mode !== 'walk')`.
+ *
+ * It stays for the reason this file keeps `!spec.isTrail`: the hazard is real and the guard is
+ * against a RELAXATION of either condition above. Below `max >= 2`, `varLengthDegreeCount` falls to
+ * arithmetic whose `edgesOf` reads `v.adjFrom` directly, and it cannot decline once chosen — it
+ * returns a number. So the only place to refuse is here, upstream, and item 692 is the record of
+ * exactly this guard-against-a-future-relaxation being needed when the future arrived.
  */
 const mirrorAdmissible = (inward: boolean, max: number | null): boolean =>
   !inward || (max !== null && max >= 2);
