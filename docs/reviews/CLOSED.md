@@ -19815,3 +19815,73 @@ it does support is one engine against another within a single cell, which is wha
 recorded figures are, and which nothing here disturbs.
 
 Gates: no change to gate. `git status` clean.
+
+## 755 — I re-priced frontier `sum`, which `CLOSED.md` forbids by name; the figure is 34x and the search terms are the fix
+
+**RE-PRICED REFUTED GROUND. No change but the index.** Item 419 ends with: _"the native frontier
+`sum` is refuted and `CLOSED.md` says in as many words: **do not re-price frontier `sum` as a
+target**."_ I priced it anyway. The useful parts are the number, which is larger than the one on
+record, and the reason my search did not find the refutation.
+
+### What the measurement said
+
+`AggFn` looked like an enum with an uncovered variant — 38 `AggFn::Count` mentions in `fastpath.rs`
+against 54 for Sum/Min/Max/Avg, so the coverage question was which _shapes_ each reaches. In-process,
+200,000 vertices of degree 5, identical 3-chain, varying only the aggregate:
+
+| query                             |        ms |
+| --------------------------------- | --------: |
+| `count(*)`                        |       4.7 |
+| `count(d.age)`                    |       4.7 |
+| `min(d.age)`                      |       5.2 |
+| **`sum(d.age)`**                  | **177.3** |
+| **`avg(d.age)`**                  | **178.3** |
+| 1-hop `sum(x.age)` (for contrast) |       5.5 |
+
+**34x between `min` and `sum` on the same shape**, and the 1-hop sum is fast, so it is specifically
+the multi-hop case. It also looked implementable: the sweep already builds `ways[]`, so
+`Σ ways[d] × age(d)` is one weighted pass.
+
+### Why it is refused, which the code says twice
+
+- `try_frontier_multi_agg`: _"`count` folds the per-node multiplicities because it does not care
+  about order, and `min`/`max` ignore multiplicity entirely. `sum`/`avg` would have to add a value
+  `c` times in an order the general path does not promise."_
+- `try_frontier_prop_agg`: _"SUM/AVG would change the summation order."_
+
+Floating-point addition is not associative and byte-identity is a hard invariant, so
+`Σ ways[d] × age(d)` is not the same f64 as the general path's path-order addition. The weighted
+pass I had in mind is precisely the thing that breaks it. Items 376 and 419 settled this on both
+engines.
+
+The hazard note I _did_ find first pointed the other way and nearly misled me: _"DO NOT add `Sum` to
+`try_frontier_prop_agg` while it sits earlier in the chain"_ reads as a PRECEDENCE problem, and item
+375 has since moved `try_scan_num_agg` above it (verified: `exec.rs` 1663 before 1671), so that
+precondition is now inverted and the note looks satisfied. It is not the blocker. The blocker is one
+level up and unaffected by ordering.
+
+### 🛑 The figure that is new, and worth having anyway
+
+`CLOSED.md` prices this decision at **2.5x on hops** — a one-hop figure. On a 3-chain it is **34x**
+(177.3 against 5.2). That is not a reason to reopen it: the contract is the contract, and
+`order-is-unspecified` plus the summation-order rule are load-bearing. But a reasoned decline is
+worth more with its true price attached, the same point item 743 made about `Dir::Both`, and 2.5x
+understates what byte-identity costs here by an order of magnitude.
+
+### What actually failed: my search terms, not the record
+
+I checked `CLOSED.md` before implementing — correctly — and grepped `weighted sweep`, `chain sum`,
+`sum over a chain`, `multi-hop sum`. All empty. The record's vocabulary is **"frontier"**, and a
+measurement does not suggest that word: the thing I measured was a 3-hop CHAIN, and only the code
+calls its endpoint set a frontier.
+
+What found it was the CODE's doc chain — `try_frontier_prop_agg`'s note → item 376 → item 419 —
+reached by grepping `AggFn::Sum` in `fastpath.rs`. **For "has this lever been tried", the fast path's
+own doc comment is the better index than `CLOSED.md` keywords**, because the comment sits on the gate
+you are about to change and cannot be missed by vocabulary.
+
+So this item adds the missing terms deliberately — **chain sum, multi-hop sum, 3-chain sum,
+sum(d.age) over a chain, weighted sweep** — so the next grep in any of them lands here and then on
+376/419.
+
+Gates: no code change. `git status` clean; the probe example was deleted.
