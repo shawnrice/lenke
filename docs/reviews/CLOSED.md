@@ -20338,3 +20338,44 @@ and monomorphic while `callScalar` is a ~100-line megamorphic function that cann
 aggregate loop. Also unpriced: the list set-ops allocate a closure per ELEMENT at four
 `a.some((w) => structuralEq(w, b))` sites plus the dedup helper — they CAPTURE, so they need loops
 rather than hoists, and no fixture here has lists.
+
+## 765 — NATIVE: the one-argument STRING family vectorized. `char_length` 2.47x, `upper` 1.89x — and an ASCII fast path in `utf16_len` is REFUTED
+
+**DONE (Rust).** `unary_str_fn` + `eval_unary_str`, the string twins of item 459's numeric pair,
+reading `&str` straight out of a `Col::Str` instead of cloning each cell into a `Value`. Three
+ALTERNATED rounds from two saved binaries: `char_length` **2.47x** (12-byte column) and **2.40x**
+(13-byte), `upper` **1.89x** / **1.63x**. Four controls — the numeric floor, vectorized `abs`, and
+both bare string projections — at **1.00x** to two decimals.
+
+**The diagnosis, so nobody re-derives it.** `count(abs(a.n))` is vectorized and produces the
+IDENTICAL `Col::Gen` output column, and it cost 4.14 ns a row against `char_length`'s 30.33. Output
+identical, dispatch refuted at 759 — so the ~26 ns was the INPUT boxing: `value_at` clones the
+`GStr` into a `Value` that the arm derefs and drops.
+
+**REFUTED on the way there: an ASCII fast path in `utf16_len`** (`if s.is_ascii() { return s.len();
+}`, exactly equal since one ASCII byte is one UTF-16 unit). **30.33 -> 30.09 ns a row, noise.** A
+panic probe confirms `utf16_len` is ON this path, so it is a refutation and not an unreachability
+null: `encode_utf16().count()` over a short ASCII string is already cheap, and the counting was
+never the cost.
+
+**Also measured, also small:** the `GStr` heap clone itself. `GStr` inlines up to 12 bytes, so a
+fixture one byte either side of the cap (`{:012}` against `{:013}`) isolates the atomic refcount
+from length-proportional work — `char_length` cost 30.33 against 35.90, so **~5.6 ns is the heap
+clone's two atomics**. Real, but a fifth of what the boxing cost. (`upper`'s +15.3 across the same
+pair is TWO effects, since its result is also heap over 12 bytes.)
+
+**A CONTROL THAT MUST NOT BE READ AS A BASELINE.** The bare string projections measure 0.46 ns a
+row. That is the count-over-projection SHORTCUT, which never materializes a value — it is useless
+as "what a per-row string read costs" and valid only as a row the change must not move.
+
+**A COVERAGE FACT: the byte-identity fuzzers do NOT catch a UTF-16-versus-bytes error.** Mutating
+`char_length` to count bytes FAILS the Rust corpus test (which has non-ASCII data) and PASSES all
+seven fuzzers, because they generate no non-ASCII strings and the two lengths agree for every ASCII
+input. The UTF-16 string model is a standing rule in `CLAUDE.md`; the fuzzer is not its guard.
+
+**Still open:** `upper` still allocates a `String` via `to_uppercase` and converts it to a `GStr`
+per row (a heap block for results over 12 bytes). An in-place ASCII uppercase would avoid both but
+is correct only for ASCII, so it is a second fast path rather than a simplification. The
+TWO-argument string family (`starts_with`, `ends_with`, `contains`, `split`, `substring`, `left`,
+`right`, `replace`) still boxes both arguments per row — the same pair of functions extends to it,
+keyed on two `Col::Str` columns, and that is the native twin of what item 761 left open in TS.

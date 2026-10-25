@@ -1284,3 +1284,66 @@ pub(super) fn eval_binary_num(
 
     Ok(Col::Gen(out))
 }
+
+/// The one-argument STRING functions, as a function pointer over a borrowed `&str` — the
+/// string twin of [`unary_num_fn`]. `None` for everything else, including a name that is a
+/// string function at another arity (`left`, `substring`, `replace`) or polymorphic over a
+/// list (`reverse`, `size`, `cardinality`).
+///
+/// The bodies are the SAME expressions the general dispatch uses, read off a `&str` instead of
+/// a `Value::Str`: `str_map`'s `Value::Str(f(s).into())` and the two length arms.
+pub(super) fn unary_str_fn(name: &str) -> Option<fn(&str) -> Value> {
+    Some(match name {
+        "upper" => |s: &str| Value::Str(s.to_uppercase().into()),
+        "lower" => |s: &str| Value::Str(s.to_lowercase().into()),
+        "char_length" | "character_length" => |s: &str| Value::Num(utf16_len(s) as f64),
+        "byte_length" | "octet_length" => |s: &str| Value::Num(s.len() as f64),
+        _ => return None,
+    })
+}
+
+/// A one-argument string function over an argument COLUMN, reading `&str` straight out of a
+/// `Col::Str` (item 765) — the string twin of [`eval_unary_num`].
+///
+/// These six fell through to the general per-row path, which materializes each argument with
+/// `Col::value_at` — and `Col::Str(v) => Value::Str(v[i].clone())` CLONES the `GStr` into a
+/// `Value` that the arm then immediately derefs and drops. Measured at 200,000 rows:
+/// `count(char_length(a.s))` cost **30.33 ns a row** over a 12-byte column while
+/// `count(abs(a.n))`, which is vectorized and produces the same boxed output, cost 4.14. The
+/// output column is identical either way, so that gap is the input boxing.
+///
+/// A `Col::Str` holds NO null and no non-string — a column with nulls is a `Col::Gen` — so the
+/// fast arm needs neither a null check nor an error path, and every other column kind falls
+/// through to the general loop, which keeps `call_scalar_checked` as the single definition of
+/// the NULL-versus-`E_INVALID_VALUE` decision.
+///
+/// REJECTED while measuring this (item 765): an ASCII fast path in `utf16_len`
+/// (`if s.is_ascii() { return s.len(); }`, which is exactly equal because one ASCII byte is one
+/// UTF-16 unit). It measured 30.33 -> 30.09 ns a row, which is noise. A panic probe confirms
+/// `utf16_len` IS on this path, so that is a real refutation and not an unreachable null:
+/// `encode_utf16().count()` over a short ASCII string is already cheap, and the cost was never
+/// the counting.
+pub(super) fn eval_unary_str(f: fn(&str) -> Value, name: &str, c: Col) -> Result<Col, String> {
+    let n = c.len();
+    let mut out: Vec<Value> = Vec::with_capacity(n);
+
+    if let Col::Str(xs) = &c {
+        for x in xs {
+            out.push(f(x));
+        }
+
+        return Ok(Col::Gen(out));
+    }
+
+    for i in 0..n {
+        let v = c.value_at(i);
+
+        match &v {
+            Value::Str(s) => out.push(f(s)),
+            Value::Null => out.push(Value::Null),
+            _ => out.push(call_scalar_checked(name, std::slice::from_ref(&v))?),
+        }
+    }
+
+    Ok(Col::Gen(out))
+}

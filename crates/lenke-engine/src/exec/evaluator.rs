@@ -1939,6 +1939,17 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
                 if let Some(f) = super::scalar::unary_num_fn(name) {
                     return super::scalar::eval_unary_num(f, name, eval(&args[0], store, batch)?);
                 }
+
+                // The one-argument STRING family (item 765), reading `&str` out of a
+                // `Col::Str` instead of cloning each cell into a `Value`. Same shape as the
+                // numeric arm above and the same reason: `count(char_length(a.s))` cost 30.33
+                // ns a row against 4.14 for the vectorized `count(abs(a.n))`, which produces
+                // the identical boxed output column — so the gap is the input boxing, not the
+                // dispatch (item 759 refuted that) and not the counting (item 765 refuted an
+                // ASCII fast path in `utf16_len` at 30.33 -> 30.09).
+                if let Some(f) = super::scalar::unary_str_fn(name) {
+                    return super::scalar::eval_unary_str(f, name, eval(&args[0], store, batch)?);
+                }
             }
             // The TWO-argument numerics — `power`, `log`, `mod`, `atan2` (item 759).
             //
