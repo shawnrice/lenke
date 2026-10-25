@@ -22562,3 +22562,60 @@ one wrong change shipped with a story attached.
 
 Gates: `cargo build --release` 0; `git status` clean; the temporary example removed. The ladder above
 is reconstructible from this entry — a pool of shared `Value::Map`s, five arms, `best_us`.
+
+## 815 — `nodes(p)` is PAGE-FAULT BOUND: 69,995 extra minor faults account for the 129 ms that items 812-814 could not place. The arithmetic closes
+
+**DIAGNOSIS, no engine change** (a temporary example, reverted). Four ticks have chased the
+~265 ns/element in `nodes(p)` that item 811 isolated. 812 split it build-vs-carry; 813 refuted the
+row assembly by reading and found the cost linear in retention; 814 reproduced the retention shape
+standalone at 20 ns/element — a 13x shortfall — and named faulting a growing heap as the one
+remaining candidate nothing had measured. This measures it.
+
+`perf` is not installed and `perf_event_paranoid` is 2, so the counter is `/proc/self/stat`'s
+`minflt`/`majflt`, which is all the question needs.
+
+### Measured, one arm per process
+
+```text
+  arm       time        minflt    majflt   minflt/element
+  length     7266.6us     5450         0       0.002
+  size      87029.4      86315         0       0.025
+  nodes    216019.2     156310         0       0.045
+```
+
+**`nodes` takes 69,995 more minor faults than `size`, and at ~1.8 µs apiece that is ~126 ms against
+a measured 129 ms gap.** The step below it closes the same way: `size` takes 80,865 more faults than
+`length`, ~80 ms against its ~80 ms gap. **Two independent steps of the ladder, both accounted for by
+the same counter** — which is what makes this an explanation rather than a correlation. (The ~1.8 µs
+is IMPLIED by dividing, not independently measured; a minor fault with page zeroing is usually
+0.2-1 µs, and these are interleaved with real work.)
+
+One fault per ~22 elements is one 4 KiB page per ~180 bytes of element — the 40-byte list slot plus
+an amortized share of the memoized maps. The rate is what the footprint predicts.
+
+### Why item 814's standalone probe could not have found this
+
+It allocated ~40 MiB in total where the engine arm's high-water is 444, and its shared pool was
+already resident — so it faulted an order of magnitude less per element and measured the writes
+rather than the faulting. **A reproduction that does not reproduce the FOOTPRINT is not a
+reproduction**, which is the same family as item 702's answer-size rule and a new member of it.
+Item 814's 20 ns/element stands as a correct measurement of a different thing: what retention costs
+when the pages are already there.
+
+### What this licenses, and what it does not
+
+**The lever is BYTES TOUCHED, not allocations.** Item 814 refuted the allocation count directly
+(47,007 fresh `Vec`s dropped per row cost 8.3 ns/element against a single reserved buffer's 7.9), so
+arena-allocating or pre-reserving the lists changes nothing — the pages still have to be first-
+touched. What would move it is a more compact retained output: a list of element IDs rendered at the
+consumer boundary instead of 47,007 materialized lists of maps.
+
+**That is item 415's family — an output-contract change with a public API consequence — and it is a
+decision, not a tick.** It now has a mechanism and a number where before it had neither.
+
+**This line is PARKED here, deliberately and not from exhaustion.** Four ticks in, the cost is
+explained, the two cheap levers are refuted with numbers (the move at 813, the allocation at 814),
+and the remaining one is a contract change. Continuing would be sunk cost; the bench-level ladder is
+exhausted and the next instrument for this shape would be a profiler, which this box does not have.
+
+Gates: `cargo build --release` 0; `git status` clean; the temporary example removed.
