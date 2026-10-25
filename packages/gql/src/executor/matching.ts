@@ -1604,9 +1604,20 @@ export const relHasInlinePred = (rel: CRel): boolean => hasPredicate(rel.pred);
  *  var-length 1-2 hops` 12.5 against 12.3, `+ end filter` 12.1 against 12.6, `1-3 hops [WALK]`
  *  10.5 against 10.5) — the win needs the depth-5 path volume to show at all.
  *
- *  The named suspect for the remaining 90% is the GENERATOR CHAIN per emitted path: at depth 5
- *  this yields ~31M ends through several `yield*` layers, and `expand`'s own note prices a
- *  resume in this pipeline at ~40ns. Unmeasured — do not quote it as a finding. */
+ *  WHERE THE REST OF IT IS, now measured by ablation rather than suspected (item 735). Counting
+ *  each end in place of yielding it — so the walk runs in full and nothing above it does — gives
+ *  1462.2/1462.4/1466.6 ms against the full pipeline's 7477.9/7795.1/7490.4 at 10,000 vertices.
+ *  **5.11x: the walk itself is ~20% of depth-5 enumeration and ~80% is DOWNSTREAM OF THE YIELD.**
+ *  Reachability was checked positively first, not inferred — a `throw` here fires for depth 5 and
+ *  not for depths 3 or 4, which take the closed form (the mistake items 721-723 cost three ticks
+ *  to was reading a null as "no effect" when it was "never ran").
+ *
+ *  So the lever is the per-emitted-path pipeline, NOT this walk: the `yield*` chain through
+ *  `walkSegments`, `matchNode` per end, and the counting sink. The ablation removes all three at
+ *  once, so 80% belongs to that BUNDLE — which of the three dominates is still open, and the next
+ *  ablation is the inner `yield* walkSegments` in the quantified branch.
+ *
+ *  For scale: TS's bare walk alone (1462.2) is still 7.3x native's WHOLE pipeline (199.2). */
 type FlatAdj = { edges: Edge[]; nodes: Vertex[] | null; fwd: boolean };
 
 const NO_EDGES: Edge[] = [];
