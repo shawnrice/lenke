@@ -3991,6 +3991,223 @@ fn distinct_rows_over_a_date_column() {
     }
 }
 
+/// `GROUP BY <date>` — item 848's grouping arms, on a scan and on a hop frontier, plus the MIXED
+/// column that must not take them.
+///
+/// FOURTH uncovered spot in the Temporal family. A mutant grouping every date into one bucket
+/// passed the whole unit suite AND the differential fuzzer: item 842's temporal shapes group BY A
+/// STRING with a date aggregate (`LET g = n.s … min(n.d) … GROUP BY g`), which never puts a date
+/// in the KEY position.
+#[test]
+fn group_by_a_date_key() {
+    use crate::temporal::{Date, Temporal};
+
+    let d = |iso: &str| Value::Temporal(Temporal::Date(Date::parse(iso).unwrap()));
+    let mut b = Builder::default();
+    let src = b.node(&["S"], &[("n", n(0.0))]);
+
+    // Three dates with multiplicities 3, 2, 1 — so a collapsed key gives one group of 6 and a
+    // per-date key gives three groups whose counts are a signature, not just a count of groups.
+    let mut targets = Vec::new();
+
+    for iso in [
+        "2024-01-02",
+        "2024-01-02",
+        "2024-01-02",
+        "2024-01-03",
+        "2024-01-03",
+        "2031-11-30",
+    ] {
+        targets.push(b.node(&["P"], &[("hired", d(iso)), ("w", n(2.0))]));
+    }
+
+    for t in &targets {
+        b.edge(src, *t, "E");
+    }
+
+    let store = b.build();
+
+    assert!(matches!(
+        store.column("hired"),
+        Some(crate::store::Column::Temporal { .. })
+    ));
+
+    // Each group as "<date>=<count>", sorted — so both the grouping AND the per-group fold are
+    // pinned. A key that collapses gives a single `…=6`.
+    let groups = |q: &str| {
+        let batch = run(&crate::gql::parse(q).unwrap(), &store);
+        let mut out: Vec<String> = batch
+            .rows
+            .iter()
+            .map(|r| {
+                let k = match &r[0] {
+                    Value::Temporal(t) => t.format(),
+                    other => format!("{other:?}"),
+                };
+
+                format!("{k}={:?}", r[1])
+            })
+            .collect();
+        out.sort();
+        out
+    };
+
+    let want = vec![
+        "2024-01-02=Num(3.0)".to_string(),
+        "2024-01-03=Num(2.0)".to_string(),
+        "2031-11-30=Num(1.0)".to_string(),
+    ];
+
+    // The SCAN arm.
+    assert_eq!(
+        groups("MATCH (p:P) LET k = p.hired RETURN k, count(*) AS c GROUP BY k"),
+        want
+    );
+    // NOTE: the hop-frontier arm is NOT reachable from this fixture and is tested separately
+    // below — `try_node_prop_grouping` declines any batch under `FRONTIER_FOLD_MIN` (50,000
+    // rows), so a six-node hop takes the scan/general path however it is spelled. A first version
+    // of this test asserted the hop here and a constant-key mutant in the frontier arm survived
+    // it, which is how the threshold was found.
+    assert_eq!(
+        groups("MATCH (a:S)-[:E]->(p:P) LET k = p.hired RETURN k, count(*) AS c GROUP BY k"),
+        want
+    );
+    // A numeric fold per group rather than a count, so the group CONTENTS are checked too:
+    // `w` is 2.0 on every node, so the sums are 6/4/2.
+    assert_eq!(
+        groups("MATCH (p:P) LET k = p.hired RETURN k, sum(p.w) AS c GROUP BY k"),
+        vec![
+            "2024-01-02=Num(6.0)".to_string(),
+            "2024-01-03=Num(4.0)".to_string(),
+            "2031-11-30=Num(2.0)".to_string(),
+        ]
+    );
+    // And against the general path, which `WHERE true` forces (item 570).
+    assert_eq!(
+        groups("MATCH (p:P) WHERE true LET k = p.hired RETURN k, count(*) AS c GROUP BY k"),
+        want
+    );
+
+    // THE MIXED COLUMN, which gives the homogeneity check its teeth. A date beside a number
+    // promotes the column to `Gen`, so the `all(Date | Null)` guard must decline and the byte key
+    // must group them apart — a guard that always admitted would key the number as NULL.
+    let mut mb = Builder::default();
+    mb.node(&["P"], &[("x", d("2024-01-02"))]);
+    mb.node(&["P"], &[("x", d("2024-01-02"))]);
+    mb.node(&["P"], &[("x", n(5.0))]);
+    mb.node(&["P"], &[("other", n(1.0))]);
+
+    let mstore = mb.build();
+
+    assert!(
+        matches!(mstore.column("x"), Some(crate::store::Column::Gen { .. })),
+        "a date beside a number must promote the column to Gen"
+    );
+
+    let mut got: Vec<String> = run(
+        &crate::gql::parse("MATCH (p:P) LET k = p.x RETURN k, count(*) AS c GROUP BY k").unwrap(),
+        &mstore,
+    )
+    .rows
+    .iter()
+    .map(|r| {
+        let k = match &r[0] {
+            Value::Temporal(t) => t.format(),
+            other => format!("{other:?}"),
+        };
+
+        format!("{k}={:?}", r[1])
+    })
+    .collect();
+    got.sort();
+
+    // Three groups: the repeated date, the number, and the absent cell as NULL.
+    assert_eq!(
+        got,
+        vec![
+            "2024-01-02=Num(2.0)".to_string(),
+            "Null=Num(1.0)".to_string(),
+            "Num(5.0)=Num(1.0)".to_string(),
+        ]
+    );
+}
+
+/// The HOP-FRONTIER half of item 848, which needs **50,000 rows** to reach at all.
+///
+/// `try_node_prop_grouping` declines any batch under `FRONTIER_FOLD_MIN` — on a small or filtered
+/// batch the random `store.column[node]` reads lose to materializing a compact key column — so
+/// every small fixture, including the differential fuzzer's six vertices, takes a different path.
+/// A constant-key mutant in the frontier arm survived the whole unit suite, the fuzzer, and a
+/// six-node version of this assertion before this test existed.
+///
+/// 50,001 frontier rows over three dates with multiplicities that are a signature rather than a
+/// row count.
+#[test]
+fn group_by_a_date_key_on_a_large_hop_frontier() {
+    use crate::temporal::{Date, Temporal};
+
+    const N: u32 = 50_001;
+
+    let mut b = Builder::default();
+    let src = b.node(&["S"], &[("n", n(0.0))]);
+    let mut targets = Vec::with_capacity(N as usize);
+
+    // `i % 3` gives 16,667 / 16,667 / 16,667 for N = 50,001.
+    for i in 0..N {
+        targets.push(b.node(
+            &["P"],
+            &[(
+                "hired",
+                Value::Temporal(Temporal::Date(Date {
+                    days: 19_000 + i32::try_from(i % 3).unwrap_or(0),
+                })),
+            )],
+        ));
+    }
+
+    for t in &targets {
+        b.edge(src, *t, "E");
+    }
+
+    let store = b.build();
+
+    assert!(matches!(
+        store.column("hired"),
+        Some(crate::store::Column::Temporal { .. })
+    ));
+
+    let batch = run(
+        &crate::gql::parse(
+            "MATCH (a:S)-[:E]->(p:P) LET k = p.hired RETURN k, count(*) AS c GROUP BY k",
+        )
+        .unwrap(),
+        &store,
+    );
+    let mut got: Vec<String> = batch
+        .rows
+        .iter()
+        .map(|r| {
+            let k = match &r[0] {
+                Value::Temporal(t) => t.format(),
+                other => format!("{other:?}"),
+            };
+
+            format!("{k}={:?}", r[1])
+        })
+        .collect();
+    got.sort();
+
+    // Three groups of 16,667. A collapsed key gives one group of 50,001.
+    assert_eq!(
+        got,
+        vec![
+            "2022-01-08=Num(16667.0)".to_string(),
+            "2022-01-09=Num(16667.0)".to_string(),
+            "2022-01-10=Num(16667.0)".to_string(),
+        ]
+    );
+}
+
 /// The `key_part` arm of item 847's Date keyer, which needed a fixture built backwards from the
 /// gate to reach at all.
 ///

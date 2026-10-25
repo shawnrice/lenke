@@ -475,6 +475,44 @@ pub(super) fn assign_groups(key_cols: &[Col], n: usize) -> (Vec<u32>, Vec<usize>
             Col::Nodes(v) | Col::Edges(v) => return group_by(n, v.iter().map(|&x| u64::from(x))),
             Col::Bool(v) => return group_by(n, v.iter().map(|&b| u64::from(b))),
             Col::Str(v) => return group_by_arc(v),
+            // A homogeneous DATE column groups on its `days` (item 848). A temporal key
+            // materializes as `Col::Gen`, so before item 848 it fell to the byte-key path below,
+            // which calls `group_key_into` -> `t.format()` and allocates an ISO String PER ROW.
+            // Measured at 200,000 rows over 1,000 distinct keys: `GROUP BY <date>` with
+            // `count(*)` cost 21,463us against a `Num` key's 1,137 (18.9x) and `sum` 22,285
+            // against 1,929 (11.6x).
+            //
+            // TWO PASSES AND NO ALLOCATION: the first confirms every cell is a `Date` or `Null`,
+            // the second groups. That replaces n String allocations with 2n reads, and it is why
+            // the check is not "look at the first value" — a `Col::Gen` is the MIXED column, so
+            // the homogeneous case has to be established rather than assumed.
+            //
+            // The equivalence is the general path's, for item 840's reason: `group_key` keys a
+            // temporal by its rendering, and `Date::format` is injective on `days`. `u64::MAX` is
+            // the Null group and no date can collide with it — `d.days as u32` widens to at most
+            // 0xFFFF_FFFF. First-seen order is unchanged, since `group_by` assigns in row order
+            // exactly as the byte-key loop does.
+            //
+            // Only `Date`: the kinds carrying a sub-second or zone part have not had their
+            // field-vs-render injectivity established, so they keep the byte key.
+            Col::Gen(v)
+                if v.iter().all(|x| {
+                    matches!(
+                        x,
+                        Value::Null | Value::Temporal(crate::temporal::Temporal::Date(_))
+                    )
+                }) =>
+            {
+                return group_by(
+                    n,
+                    v.iter().map(|x| match x {
+                        Value::Temporal(crate::temporal::Temporal::Date(d)) => {
+                            u64::from(d.days as u32)
+                        }
+                        _ => u64::MAX,
+                    }),
+                );
+            }
             Col::Gen(_) => {} // mixed: fall through to the byte-key path
         }
     }

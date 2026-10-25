@@ -1461,6 +1461,12 @@ const temporalShapes = (r: () => number): string[] => [
   'MATCH (n:T) RETURN n.d AS x, n.n AS t ORDER BY x DESC, t',
   'MATCH (n:T) RETURN DISTINCT n.d AS x ORDER BY x',
   'MATCH (n:T) LET g = n.s RETURN g, min(n.d) AS x GROUP BY g ORDER BY g, x',
+  // A DATE in the KEY position, not the aggregate's — item 848. The line above groups BY A
+  // STRING with a date aggregate, which never exercises a temporal group key, and a mutant
+  // collapsing every date into one group passed this fuzzer because of exactly that gap.
+  'MATCH (n:T) LET g = n.d RETURN g, count(*) AS c GROUP BY g ORDER BY g, c',
+  'MATCH (n:T) LET g = n.d RETURN g, sum(n.n) AS c GROUP BY g ORDER BY g, c',
+  'MATCH (a:T)-[:E]->(b:T) LET g = b.d RETURN g, count(*) AS c GROUP BY g ORDER BY g, c',
   `MATCH (n:T) WHERE n.d ${pick(r, CMP)} DATE '2024-01-02' RETURN n.n AS x ORDER BY x`,
   `MATCH (a:T)-[:E]->(b:T) WHERE a.d ${pick(r, CMP)} b.d RETURN a.n AS x, b.n AS t ORDER BY t, x`,
   'MATCH (a:T)-[:E]->(b:T) RETURN max(b.d) AS x',
