@@ -20116,3 +20116,41 @@ zero, and `broadcast` does put a `-0.0` literal into a `Col::Num`, but the parse
 folded the literal and ingest has already folded a stored property — so the mutant survives as
 EQUIVALENT, not as a gap. A panic probe confirms the tests reach the arm; the end-to-end contract
 is pinned by `a_negative_zero_literal_beside_a_column_still_folds_in_atan2`.
+
+## 760 — TS: a scalar CALL cost 35-43 ns a row OVER the floor, flat across every family. Unary and binary numerics now 1.93-2.24x
+
+**DONE (TypeScript).** `unaryNumCall`/`binaryNumCall`, resolved in `compileFunc` while the query
+compiles instead of once per row. Alternated A/B, both dists in ONE process: `abs` **2.07x**,
+`sqrt` 1.96x, `power` 1.93x, `mod` **2.24x**, `atan2` 1.66x. Four controls, each unreachable for a
+different reason — `nullif` (generic AND two-argument), `upper` (string family, gated out),
+`round(x, d)` (two-argument numeric but in the switch, not `BINARY_NUM`), and the no-`Expr::Call`
+floor — read 1.16x / 0.97x / 1.08x / 0.99x.
+
+**The diagnosis, which is the part to not re-derive.** At 200,000 rows a scalar call cost 35-43 ns
+a row over a `count(a.age)` floor of 20.9, and it was FLAT across unary, binary, generic and
+string — with `nullif`, which `callScalar` reaches last, CHEAPER than `abs`, which it reaches
+first. So it is not dispatch depth. The per-row work that does not vary by function is the fresh
+argument ARRAY from `args.map((f) => f(env))`, three dictionary misses in
+`assertScalarArgTypes`, the walk down the chain, and a read of `env.graph.limits`.
+
+**This INVERTS one half of item 759 and the two must not be carried across.** In Rust, hoisting the
+name match alone measured ZERO (rustc compiles a 50-arm string match to a length switch). In
+JavaScript the same hoist is most of a 2x, because a `Record` lookup on a megamorphic string key
+and a per-row array allocation are not that. "The cost is the machinery, not the function" holds in
+both engines; WHICH machinery is free does not.
+
+`SCALAR_NEEDS_ARG_ASSERT` gates the specialized path away from any name whose arguments
+`assertScalarArgTypes` validates by POSITION, and is BUILT from the same three tables that function
+reads, so a new position cannot leave it stale. Emptying it is an EQUIVALENT mutant today (no
+numeric function is in those tables) and was predicted to survive as one.
+
+**Teeth, and a gap in the unit tests worth knowing.** Dropping the null guard on a binary
+numeric's SECOND argument — so `power(a.age, null)` throws instead of propagating null — **passes
+all 2,586 gql unit tests and is caught only by the byte-identity fuzzers.** That also settles
+positively that the fuzzers reach this path.
+
+**Still open here:** `upper` at 64 ns over the floor is now the most expensive row, and the string
+family is gated out because its argument positions are asserted; folding that assert into a
+specialized closure has to reproduce the `dataException` messages exactly, since they are
+byte-identical cross-engine. The generic path still allocates the per-row argument array, which
+needs `callScalar` to stop taking an array.

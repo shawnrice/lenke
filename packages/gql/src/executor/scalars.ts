@@ -2031,3 +2031,54 @@ export const callExtendedScalar = (
     code: ErrorCode.UnknownFunction,
   });
 };
+
+/**
+ * The names whose arguments `assertScalarArgTypes` validates by POSITION before the
+ * dispatch runs. A specialized call path (see `unaryNumCall`/`binaryNumCall`) skips that
+ * pass, so it must refuse any name in here — this is the gate that keeps the skip honest
+ * rather than a silent loss of a type error. Built from the same three tables the assert
+ * reads, so adding a position there cannot leave this stale.
+ */
+export const SCALAR_NEEDS_ARG_ASSERT: ReadonlySet<string> = new Set([
+  ...Object.keys(STR_ARG_POSITIONS),
+  ...Object.keys(NUM_ARG_POSITIONS),
+  ...POLY_STR_LIST,
+]);
+
+/**
+ * A one-argument numeric function with its argument step, resolved ONCE per `Expr::Call`
+ * instead of once per row (item 760). Identical to `callScalar`'s `unaryNum` branch, minus
+ * the per-row argument ARRAY, the three dictionary misses in `assertScalarArgTypes` and the
+ * walk down the dispatch chain. `numArg` is what raises on a non-number, so the strict
+ * typing is unchanged.
+ *
+ * MODULE SCOPE, not inlined at the call site: a closure built inside a large function body
+ * gave unrelated queries a new slow mode once already (the TS closure-size finding), so the
+ * factory lives here and the compiler only calls it.
+ */
+export const unaryNumCall =
+  <E>(f: (x: number) => number, a: (env: E) => unknown) =>
+  (env: E): unknown => {
+    const v = a(env);
+
+    return isNullish(v) ? null : f(numArg(v));
+  };
+
+/**
+ * The two-argument twin of [`unaryNumCall`] — `power`, `log`, `mod`, `atan2`.
+ *
+ * BOTH arguments are validated before the null short-circuit, exactly as `callScalar`'s
+ * `binaryNum` branch does: a named numeric function faults on a non-numeric argument even
+ * beside a null (`atan2(null, duration)` is a type error), where an arithmetic OPERATOR
+ * would propagate the null first.
+ */
+export const binaryNumCall =
+  <E>(f: (x: number, y: number) => number, a: (env: E) => unknown, b: (env: E) => unknown) =>
+  (env: E): unknown => {
+    const x = a(env);
+    const y = b(env);
+    const nx = isNullish(x) ? null : numArg(x);
+    const ny = isNullish(y) ? null : numArg(y);
+
+    return nx === null || ny === null ? null : f(nx, ny);
+  };

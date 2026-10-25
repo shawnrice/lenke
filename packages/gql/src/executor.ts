@@ -294,6 +294,8 @@ import {
   ARITH,
   arithStep,
   asTruth,
+  BINARY_NUM,
+  binaryNumCall,
   BOOL3,
   callScalar,
   cmpKey,
@@ -314,8 +316,11 @@ import {
   percentileOf,
   recordGet,
   scalarArityOk,
+  SCALAR_NEEDS_ARG_ASSERT,
   structuralEq,
   temporalSum,
+  UNARY_NUM,
+  unaryNumCall,
   unsupportedTemporalAgg,
 } from './executor/scalars.js';
 import type { FuncExpr, Truth } from './executor/scalars.js';
@@ -2004,6 +2009,36 @@ const compileFunc = (expr: FuncExpr): CompiledExpr => {
     throw new LenkeError(`${name}() called with the wrong number of arguments`, {
       code: ErrorCode.Syntax,
     });
+  }
+
+  // The NUMERIC families, specialized while the query compiles (item 760). The general
+  // closure below pays, for every row: a fresh argument ARRAY from `args.map`, three
+  // dictionary misses inside `assertScalarArgTypes`, the walk down `callScalar`'s dispatch
+  // chain, and a read of `env.graph.limits`. Measured at 200,000 rows, a scalar call cost
+  // 35-43 ns a row OVER a `count(a.age)` floor of 20.9 — and flat across unary, binary,
+  // generic and string, which is what says the cost is the machinery and not the function.
+  //
+  // This is the TS twin of item 759, where the native engine's same question had the
+  // OPPOSITE answer for one of its parts: hoisting the name match alone bought nothing
+  // there, because rustc compiles a string match to a length switch. A JS `Record` lookup on
+  // a megamorphic string key is not that.
+  //
+  // `SCALAR_NEEDS_ARG_ASSERT` is the gate: a name whose arguments are validated by POSITION
+  // keeps the general path, so skipping the assert cannot silently lose a type error. No
+  // member of `UNARY_NUM`/`BINARY_NUM` is in it today — the gate is there so that adding one
+  // does not have to be noticed.
+  if (!SCALAR_NEEDS_ARG_ASSERT.has(name)) {
+    const unary = UNARY_NUM[name];
+
+    if (unary !== undefined && args.length === 1) {
+      return unaryNumCall(unary, args[0]);
+    }
+
+    const binary = BINARY_NUM[name];
+
+    if (binary !== undefined && args.length === 2) {
+      return binaryNumCall(binary, args[0], args[1]);
+    }
   }
 
   return (env) =>
