@@ -19505,3 +19505,63 @@ Gates, each its own command with its exit code read UNPIPED: `cargo fmt` 0; `car
 --all-targets --features capi -- -D warnings` 0; `cargo test --release` **1222** + 13 + 725 pass, 0
 fail; `rewrite_fuzz` 10 pass; the seven byte-identity fuzzers 13 pass 0 fail; `bun run fmt` 0; `bun
 run check` 0.
+
+## 750 — the `_ => true` arm was never measured either, and this time the code was right: 7.9x
+
+**VERIFICATION. Two new bench rows, no engine change.** Items 748 and 749 found both of item 306's
+two-hop exclusions wrong. The obvious next question is whether the arm nobody questioned — four or
+more hops, taken UNCONDITIONALLY — is right, and item 749's lesson says to ask it with an
+instrument: that arm had none.
+
+### The gap
+
+`try_nhop_sweep_count`'s decision, after 749:
+
+```rust
+0 | 1 => false,
+2 | 3 => chain.gates.iter().any(Option::is_some),   // ungated stays with the product arms
+_     => true,                                       // FOUR or more, gated or not
+```
+
+The corpus had **no fixed 4-hop chain row at all**. Its only 4-hop row is
+`count 4-hop quantified [TRAIL]`, which is the `->{4}` quantified form over different machinery. So
+the one arm that takes a shape unconditionally — including the ungated case that items 301/306 say
+belongs to the product arms at shallower depths — was never exercised.
+
+### The answer: at four hops the ownership is the OPPOSITE way, by 7.9x
+
+| fixed 4-chain, 200k vertices | sweep (shipped) | forced to the product arms |
+| ---------------------------- | --------------: | -------------------------: |
+| ungated                      |      **7.0 ms** |                **55.5 ms** |
+| with a start gate            |          4.9 ms |                     5.0 ms |
+
+Routing the ungated 4-chain away from the sweep costs **7.9x**. The gated row is unchanged, as it
+must be — it is gated either way, so the probe cannot reach it, which makes it the control.
+
+So `_ => true` is correct and the inversion against two and three hops is real: the product arms win
+the ungated SHALLOW chain and lose the ungated DEEP one. That is coherent rather than surprising —
+a degree product has one term per hop and the sweep has one pass per level — but it was an
+assumption until now, and three items in a row have shown what an unmeasured assumption in this
+`match` is worth.
+
+**This is the first of the three where the code was right.** Worth saying plainly: 748 and 749 both
+found a real defect, which makes it tempting to keep pulling and expect another. The arm got the
+same treatment and defended itself, and recording that is what stops a fourth pass from re-probing
+it.
+
+### What was added
+
+`count 4-hop` and `count 4-hop + start filter`, both cheap (6.9 and 4.9 ms at the default N, 0.7 and
+0.5 at 20,000), carrying the measurement above in the comment. Together with `count 2-hop` from item
+749, every arm of the decision now has a row that would notice if its ownership flipped.
+
+### An incidental figure, correctly NOT a finding
+
+`count 4-hop quantified [TRAIL]` reads **123.9 ms** against the fixed 4-chain's 6.9 in the same
+sweep — an 18x gap that looks alarming beside it. It is not a routing defect: a TRAIL forbids
+reusing an edge and the fixed chain is a WALK, so they are different questions, and the 123.9
+includes the depth-4 trail correction's inclusion-exclusion. Noted because the two rows now sit near
+each other in the output and the comparison invites itself.
+
+Gates, each its own command with its exit code read UNPIPED: `bun run fmt` 0; `bun run lint` 0; `bun
+run check` 0. No engine change — `git diff` on `fastpath.rs` is empty — so no cargo gate applies.

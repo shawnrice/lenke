@@ -664,6 +664,37 @@ const CASES: Case[] = [
     // must not steal them". There was no row for it, so a condition that admitted the ungated
     // case would have stolen it invisibly — which is exactly what item 749's first probe
     // (`2 => true`) did before this row caught it.
+    // 🛑 THE `_ => true` ARM'S FIRST COVERAGE (item 750). `try_nhop_sweep_count` takes FOUR or
+    // more hops unconditionally — gated or not — and no row exercised a fixed 4-chain at all; the
+    // only 4-hop row in the corpus is the QUANTIFIED `->{4}`, which is different machinery.
+    //
+    // Unlike two and three hops, where the tuned degree-product arms own the ungated chain (items
+    // 301/306, guarded by `count 2-hop`), at four the sweep SHOULD own it: routing this row to the
+    // product arms instead costs **55.5 ms against 7.0 — a 7.9x loss** — while the gated row below
+    // is unchanged at 4.9/5.0. So the arm is verified rather than assumed, and the two rows are
+    // what would notice if that ownership ever flipped.
+    name: 'count 4-hop',
+    ...onGraph(
+      () => graphDoc,
+      (e, g) =>
+        void e.query(
+          g,
+          'MATCH (a:Person)-[:KNOWS]->(b)-[:KNOWS]->(c)-[:KNOWS]->(d)-[:KNOWS]->(x) RETURN count(*) AS c',
+        ),
+    ),
+  },
+  {
+    name: 'count 4-hop + start filter',
+    ...onGraph(
+      () => graphDoc,
+      (e, g) =>
+        void e.query(
+          g,
+          'MATCH (a:Person)-[:KNOWS]->(b)-[:KNOWS]->(c)-[:KNOWS]->(d)-[:KNOWS]->(x) WHERE a.age > 60 RETURN count(*) AS c',
+        ),
+    ),
+  },
+  {
     name: 'count 2-hop',
     ...onGraph(
       () => graphDoc,
