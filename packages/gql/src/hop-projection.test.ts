@@ -848,3 +848,63 @@ describe('lifting an INLINE start property into the WHERE (item 778)', () => {
     );
   });
 });
+
+// Item 780 passed `farVar`/`rel.variable` as `ownVar` to `compilePredicate`, so an inline node or
+// rel `WHERE` on a hop now lifts into `eqProps`/`cmpProps` and is read straight off the element
+// (1.45x, and `>` 1.41x). The lift's answer-equivalence rests entirely on ONE guard — the
+// `rhs === null` rejection in `satisfies`'s `eqProps` loop, which gives `=`'s EXPRESSION reading
+// where `{k: null}` means IS NULL (item 260).
+//
+// That guard was already well tested — removing it fails EIGHT tests — but every one of them is at
+// the NODE position (`node-projection-direct-eq.test.ts`). Nothing pinned it at the two positions
+// this change newly routes through, so a future refactor that lifted a far-node or rel `WHERE`
+// into `props` instead would keep all eight green while silently turning `= null` into IS NULL on
+// a hop. These tests close that: all four below fail with the guard removed.
+describe('an inline node or rel WHERE on a hop lifts to eqProps (item 780)', () => {
+  const g = new Graph();
+  const src = g.addVertex({ id: 's', labels: ['S'], properties: { tag: 'src' } });
+  const hasNull = g.addVertex({ id: 'n', labels: ['P'], properties: { k: null, tag: 'null' } });
+  const hasFive = g.addVertex({ id: 'f', labels: ['P'], properties: { k: 5, tag: 'five' } });
+  const absent = g.addVertex({ id: 'a', labels: ['P'], properties: { tag: 'absent' } });
+
+  g.addEdge({ labels: ['E'], from: src, to: hasNull, properties: { w: null } });
+  g.addEdge({ labels: ['E'], from: src, to: hasFive, properties: { w: 5 } });
+  g.addEdge({ labels: ['E'], from: src, to: absent });
+
+  const tags = (q: string, params?: Record<string, unknown>): unknown[] => query(g, q, params);
+
+  test('an inline far `WHERE k = null` is UNKNOWN, not IS NULL', () => {
+    // The two WHERE spellings agree with each other and BOTH differ from the inline property,
+    // which is the whole distinction the guard carries.
+    expect(tags('MATCH (s:S)-[:E]->(b WHERE b.k = null) RETURN b.tag AS t')).toEqual([]);
+    expect(tags('MATCH (s:S)-[:E]->(b) WHERE b.k = null RETURN b.tag AS t')).toEqual([]);
+    expect(tags('MATCH (s:S)-[:E]->(b {k: null}) RETURN b.tag AS t')).toEqual([
+      { t: 'null' },
+      { t: 'absent' },
+    ]);
+  });
+
+  test('an inline far `WHERE k = $p` with a NULL param matches nothing', () => {
+    // A param cannot be shown non-null at compile time, so it lifts and is settled per row by
+    // the same guard rather than by a compile-time refusal.
+    expect(tags('MATCH (s:S)-[:E]->(b WHERE b.k = $p) RETURN b.tag AS t', { p: null })).toEqual([]);
+    expect(tags('MATCH (s:S)-[:E]->(b WHERE b.k = $p) RETURN b.tag AS t', { p: 5 })).toEqual([
+      { t: 'five' },
+    ]);
+  });
+
+  test('an inline REL `WHERE w = null` is UNKNOWN too', () => {
+    // `closedRelPred`'s own `ownVar` omission, fixed in the same change and reached by a
+    // different walk.
+    expect(tags('MATCH (s:S)-[r:E WHERE r.w = null]->(b) RETURN b.tag AS t')).toEqual([]);
+    expect(tags('MATCH (s:S)-[r:E WHERE r.w = 5]->(b) RETURN b.tag AS t')).toEqual([{ t: 'five' }]);
+  });
+
+  test('a lifted ORDERING comparison drops a null operand rather than matching it', () => {
+    // `cmpProps` (item 276) goes through `compareTruth`, so UNKNOWN settles the row — a FILTER
+    // keeps only a clean TRUE (item 259). `<>` is the sharp one: `null <> 5` is UNKNOWN, so the
+    // stored-null and absent rows drop rather than counting as "different".
+    expect(tags('MATCH (s:S)-[:E]->(b WHERE b.k > 1) RETURN b.tag AS t')).toEqual([{ t: 'five' }]);
+    expect(tags('MATCH (s:S)-[:E]->(b WHERE b.k <> 5) RETURN b.tag AS t')).toEqual([]);
+  });
+});

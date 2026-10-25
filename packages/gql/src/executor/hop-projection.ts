@@ -260,7 +260,12 @@ const closedRelPred = (rel: RelPattern): CPredicate | undefined | null => {
     }
   }
 
-  return compilePredicate(rel.properties, rel.where);
+  // `rel.variable` AS `ownVar`, which this omitted. The loop above has just PROVED the `WHERE`
+  // reads nothing but the rel's own variable — and that proof is exactly `compilePredicate`'s
+  // precondition for lifting a conjunct into `eqProps`/`cmpProps`, read straight off the element
+  // instead of through the binding `Map`. Not passing it meant the proof was computed, used to
+  // admit the fast path, and then discarded (item 780).
+  return compilePredicate(rel.properties, rel.where, rel.variable);
 };
 
 const closedFarPred = (
@@ -285,7 +290,27 @@ const closedFarPred = (
     }
   }
 
-  return compilePredicate(node.properties as never, node.where);
+  // `farVar` AS `ownVar` — the same omission as in `closedRelPred`, and the one that was
+  // MEASURED. The loop above refuses any free variable other than `farVar`, so the precondition
+  // holds; without the argument `directEqProps` declines outright and an inline node `WHERE`
+  // lands on the generic evaluator. Three spellings of one question, 40,000 nodes at degree 5,
+  // one shape per process, min of three order-alternated rounds (item 780):
+  //
+  //   `->(b {age: 5})`              13.83 ms   inline props, read off the element
+  //   `->(b) WHERE b.age = 5`       19.31      the clause form, a per-edge gate
+  //   `->(b WHERE b.age = 5)`       20.55      THIS — admitted, then evaluated generically
+  //
+  // The inline node `WHERE` was the SLOWEST of the three despite being the most specific, which
+  // is this repo's named defect class pointing at its own fast path. With the argument passed it
+  // is 14.14 (1.45x), and `> 45` — the `cmpProps` lift of item 276 — is 22.96 to 16.34 (1.41x).
+  //
+  // THE NULL BOUNDARY MOVES WITH IT, which is why this is not purely a route choice: an inline
+  // node `WHERE b.k = null` now settles in `satisfies`'s `eqProps` loop rather than the generic
+  // evaluator. Both give the EXPRESSION reading (no rows) — `=` yields UNKNOWN, and the loop
+  // rejects a null right-hand side for exactly this reason — but the two readings differ for
+  // `{k: null}`, so the guard is load-bearing and now load-bearing HERE. See the test named for
+  // this item.
+  return compilePredicate(node.properties as never, node.where, farVar);
 };
 
 /**

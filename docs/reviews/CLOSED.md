@@ -20943,3 +20943,36 @@ of a Rust gap**; check the plan before pricing one.
 
 The two groups stay as GUARDS: a future change that routed on the pattern instead of the plan would
 show up as a plan mismatch at the two shapes that already cost two ticks in the other engine.
+
+## 780 — TS: a far-node or rel inline `WHERE` lifts to `eqProps`. 1.45x, and the most SPECIFIC spelling was the slowest
+
+**DONE (TypeScript).** `closedFarPred` and `closedRelPred` proved their inline `WHERE` reads nothing
+but the element's own variable — the exact precondition `compilePredicate`'s `ownVar` wants — and
+then called it with two arguments, so `directEqProps` declined and the predicate ran on the generic
+evaluator. Passing the proof is the change.
+
+Three spellings on 40,000 nodes at degree 5, one shape per process, min of three order-alternated
+rounds, each arm grepped in the built bundle to confirm it IS the code it claims:
+
+| `->(b {k: 5})` | `->(b) WHERE b.k = 5` |     `->(b WHERE b.k = 5)` |
+| -------------: | --------------------: | ------------------------: |
+|       13.83 ms |                 19.31 | **20.55 → 14.14 (1.45x)** |
+
+`> 45` (item 276's `cmpProps` lift) 22.96 → 16.34, **1.41x**. Controls: inline props 1.05x, a node
+scan the change cannot reach 0.99x.
+
+**A NEW shape of test gap — the property was tested, the POSITION was not.** The lift is only
+answer-equivalent because `satisfies`'s `eqProps` loop rejects a null right-hand side, keeping
+`= null` as UNKNOWN where `{k: null}` is IS NULL (item 260). Dropping that guard fails EIGHT tests —
+but all eight are at the NODE position. Under the mutant the far-node spelling returned the
+stored-null and absent rows and diverged from its own clause twin with the rest of the suite green.
+Items 764/768/769/773/776/778 each found a gate whose PROPERTY had no test; **this is the first
+where the property is well tested and the position is not**, which a refactor lifting a far-node
+`WHERE` into `props` would walk straight through. Four tests pin both new positions; teeth verified
+by two mutants (the second exists because the first does not reach `cmpProps`).
+
+**Still open, re-priced:** the CLAUSE form is now the slow one of the three, **1.40x** rather than
+item 777's 1.7x. Its fix routes a far-local clause conjunct into `farPred` instead of the gate, and
+the refusal it needs is now known: the conjunct must be a PREFIX of the AND chain, since `satisfies`
+runs before the gate and moving a fault-free filter earlier suppresses a throw that currently
+happens.

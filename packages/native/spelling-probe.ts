@@ -448,6 +448,26 @@ const GROUPS: [string, readonly string[]][] = [
       'MATCH (a:P)-[:E]->(b) WHERE a.k = 5 RETURN b.k AS v',
     ],
   ],
+  // THREE spellings of a predicate on the hop's FAR node, which is the MIRROR of the group above
+  // and where the gap turned out to be between the two forms that both already took the fast
+  // path. Item 777 recorded inline-vs-clause here and left it as the open asymmetry; item 780
+  // found the real outlier was the INLINE NODE `WHERE` — admitted by `closedFarPred`, which had
+  // already proved it reads nothing but the far variable, and then compiled WITHOUT that proof,
+  // so `directEqProps` declined and it ran on the generic evaluator:
+  //
+  //   `->(b {k: 5})`          13.83 ms    `->(b WHERE b.k = 5)`   20.55 -> 14.14 (1.45x)
+  //   `->(b) WHERE b.k = 5`   19.31
+  //
+  // Passing the proof closed it. The CLAUSE form is still the slow one of the three and is the
+  // remaining asymmetry in this position — the group is here to keep measuring it.
+  [
+    'a predicate on the FAR node: three spellings (item 780)',
+    [
+      'MATCH (a:P)-[:E]->(b {k: 5}) RETURN b.k AS v',
+      'MATCH (a:P)-[:E]->(b WHERE b.k = 5) RETURN b.k AS v',
+      'MATCH (a:P)-[:E]->(b) WHERE b.k = 5 RETURN b.k AS v',
+    ],
+  ],
   [
     'an ANONYMOUS end node vs a named one (item 775)',
     ['MATCH (:P)-[r:E]->() RETURN r.k AS v', 'MATCH (:P)-[r:E]->(b) RETURN r.k AS v'],
