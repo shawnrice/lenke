@@ -17909,3 +17909,56 @@ were spent on closed targets; it has now had its own first mis-citation found an
 
 Gates, each its own command with its exit code read UNPIPED: `bun run lint` 0 (one
 `no-nested-ternary` fix); `bun run fmt` 0; `bun run check` 0. No engine source changed.
+
+## 729 — the deep sweeps are clean AND the fuzzers have teeth for this session's storage changes, which is the part worth proving
+
+**VERIFICATION. No code change.** Four storage changes shipped this session — 715 (the adjacency
+mirror detach), 716 (the index buckets), 717 (`delete_edge`), 724 (the forward label map) — each
+with a default-seed fuzzer run. CLAUDE.md asks for more than that on a storage change, and two
+things were missing.
+
+### The deeper sweeps
+
+| sweep                                        | result                   |
+| -------------------------------------------- | ------------------------ |
+| `LENKE_OPT_FUZZ_SEEDS=200000 … rewrite_fuzz` | 10 pass, 0 fail (42.3 s) |
+| all seven byte-identity fuzzers, seed 11     | 13 pass, 0 fail          |
+| … seed 2026                                  | 13 pass, 0 fail          |
+| … seed 77731                                 | 13 pass, 0 fail          |
+
+So the optimizer invariant and the cross-engine invariant both hold past the default seeds.
+
+### But green is not evidence until the teeth are checked
+
+CLAUDE.md is blunt about this — _"a generative test whose teeth were never verified is worse than no
+test, because it is believed"_ — and my mutation runs this session all used the UNIT SUITE as the
+oracle. Whether the FUZZERS catch a storage defect was never tested, so "all seven pass" was
+carrying more weight than it had earned.
+
+Mutant: `forward_remove_label` as a no-op, so a removed label keeps appearing in every render. It is
+the mutant item 724's agreement test already catches; the question here is whether the fuzzers catch
+it INDEPENDENTLY.
+
+**They do.** Fuzzers alone, unit suite not run: **12 pass, 1 fail** —
+
+```
+(fail) differential fuzz: write path (TS engine vs Rust engine)
+       > 400 random write sequences agree on rows and graph state
+```
+
+The write-path differential generates label mutations and compares TS against Rust on rows AND graph
+state, so item 724's forward map is covered by two independent oracles: the agreement test inside
+the store, and the cross-engine differential from outside. The mutant was reverted from the pristine
+copy and the suite re-run (13 pass, 0 fail) before this was written.
+
+### What that settles, and what it does not
+
+It settles that the four storage changes sit under a generative guard with demonstrated teeth, which
+is what "without regressions" needs in order to mean anything on a storage change. It does NOT
+generalise to every defect shape — one caught mutant proves coverage of one shape, which is the same
+caution item 690 recorded about its own oracle. What is now known rather than assumed: **a wrong
+per-node label reaches the differential fuzzer**, and that was the structural change with the widest
+blast radius of the four.
+
+Gates: no code change to gate. `cargo build --features capi` 0 on the restored tree; `git status`
+clean of source edits.

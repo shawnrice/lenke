@@ -11056,6 +11056,11 @@ fn a_seek_returns_each_node_once_after_every_index_write_path() {
 /// remove label, the batch delete sweep, `pop_last_node`, and `Builder::build`'s inversion. A
 /// missed one is a MISSING LABEL — a wrong answer, not a slow path — so the two are compared
 /// directly rather than through anything that might agree for another reason.
+///
+/// NOT the only guard, and that is measured rather than hoped (item 729): the same no-op mutant on
+/// `forward_remove_label` also fails `differential fuzz: write path`, which generates label
+/// mutations and compares TS against Rust on rows AND graph state. Two independent oracles — this
+/// one inside the store, that one across the engines.
 #[test]
 fn the_forward_label_map_agrees_with_the_bucket_sweep() {
     let check = |st: &Store, where_: &str| {
