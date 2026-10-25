@@ -21011,3 +21011,45 @@ because a mutant survived it.
 **Still open:** a clause reading the far node AND the start stays on the gate (21.71 against 14.48).
 Splitting a conjunction so only the far-local part lifts IS a partial lift, and that is where item
 780's fault-ordering reasoning becomes load-bearing for real.
+
+## 782 — TS: a MIXED clause hoists its far-local conjuncts and the residual goes start-only. 1.47-1.66x, and a refusal COPIED one function over was untested
+
+**DONE (TypeScript).** Hoist a mixed clause's far-local conjuncts into `farPred`; what is LEFT is
+start-only, so `carriedWhere` reports `startOnly` and the existing start-gated walk — which rejects
+a vertex before reading its adjacency, and applies `farPred` itself — takes over. **No walk
+changed.**
+
+`WHERE b.age = 5 AND a.age > 1` **22.00 → 14.93 (1.47x)**; start-first **24.18 → 14.61 (1.66x)**.
+Four controls at increasing distance (far-only 1.09x, both-far 0.98x, start-only 0.99x, node scan
+0.99x). Min of three order-alternated rounds, arms grepped in the bundle.
+
+**Two things the decomposition found that nothing had measured.** A mixed clause was **slower than
+the unfiltered hop** (21.66 against 17.72) — the gate runs per edge and rejects few rows. And the
+two spellings of one predicate differed **1.13x**, because `filterPredicate` DECLINES when no
+conjunct can raise, so written order survives and the spelling decides which conjunct
+short-circuits. Both closed: the spread is now 1.02x.
+
+**Safety rests on a key shared with Rust, not on our own caution.** Reordering in FILTER position
+cannot change the row set (only whether a row already lost pays for a fault), and `filterPredicate`
+ALREADY hoists every `truthCannotRaise` conjunct ahead of every one that can. Restricting the hoist
+to that key reorders nothing the engine does not. It also blocks the item-420 hazard:
+`freePredicateVars` cannot see a subquery's correlated names, and `truthCannotRaise` refuses a
+subquery arm.
+
+**A TEST IS PINNED TO THE CODE PATH IT REACHES, NOT THE RULE IT IS NAMED FOR.** The same refusal
+(`mergeFarPreds` carries no `where`, so a non-lifting inline far constraint must block the lift)
+exists in item 781's full-lift path and in 782's split. 781's test uses a single far-local conjunct,
+so `rest` is empty, the split declines and the test never reaches the split's copy. Mutating that
+copy returns six rows where the answer is empty — **2604 pass, 0 fail**. Eighth consecutive
+admission-gate defect. The new test reaches the split specifically, by giving the clause a far-local
+conjunct AND something else.
+
+Two other refusals are **INERT** (dropping `truthCannotRaise`, and hoisting any conjunct) for item
+781's reason: `directEqProps` admits only a `compare` with a plain property against a closed value,
+a strict subset of both. They stay because they do not depend on that internal.
+
+**Also:** `bun test packages` is NOT a whole-repo gate — `packages/react` runs on vitest and reports
+19 bogus `document is not defined` failures under `bun test`, 22/22 green under `bun run test`.
+
+**Still open:** a conjunct reading BOTH ends cannot hoist (pinned as a test); evaluating one per
+edge against the bound start is the items 121-123 correlation question.

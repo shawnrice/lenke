@@ -476,6 +476,24 @@ const GROUPS: [string, readonly string[]][] = [
       'MATCH (a:P)-[:E]->(b) WHERE b.k = 5 RETURN b.k AS v',
     ],
   ],
+  // A MIXED clause written both ways round. These are one question — `AND` in FILTER position,
+  // where `filterPredicate`'s contract makes conjunct order unobservable — and they cost
+  // differently, because `filterPredicate` DECLINES when no conjunct can raise and the written
+  // order then survives. Item 782 measured 22.00 far-first against 24.18 start-first and closed
+  // it by hoisting the far-local conjunct, which always goes first whichever way it is written:
+  // 14.93 and 14.61 after, a 1.02x spread against 1.10x.
+  //
+  // Worth keeping because the residual is what makes it fast rather than the hoist alone — what
+  // is left after the far conjuncts leave is START-ONLY, so the walk that gates a vertex before
+  // touching its adjacency takes over. A change that stopped the residual being recognised that
+  // way would show up here as the spread returning, with both answers still correct.
+  [
+    'a MIXED clause, far-first vs start-first (item 782)',
+    [
+      'MATCH (a:P)-[:E]->(b) WHERE b.k = 5 AND a.k >= 0 RETURN b.k AS v',
+      'MATCH (a:P)-[:E]->(b) WHERE a.k >= 0 AND b.k = 5 RETURN b.k AS v',
+    ],
+  ],
   [
     'an ANONYMOUS end node vs a named one (item 775)',
     ['MATCH (:P)-[r:E]->() RETURN r.k AS v', 'MATCH (:P)-[r:E]->(b) RETURN r.k AS v'],

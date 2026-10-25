@@ -18,6 +18,9 @@ import {
   compileExpr,
   edgesOfTypes,
   compilePredicate,
+  filterPredicate,
+  flattenConjuncts,
+  truthCannotRaise,
   foldFor,
   percentileFraction,
   compareSort,
@@ -311,6 +314,133 @@ const closedFarPred = (
   // `{k: null}`, so the guard is load-bearing and now load-bearing HERE. See the test named for
   // this item.
   return compilePredicate(node.properties as never, node.where, farVar);
+};
+
+/**
+ * A clause `WHERE` whose far-local conjuncts are hoisted out of the gate, leaving the rest behind
+ * — a PARTIAL lift, where item 781's is all-or-nothing (item 782).
+ *
+ * WHY THIS IS WORTH A SEPARATE PATH. A mixed clause measured SLOWER than no predicate at all:
+ * `WHERE b.age = 5 AND a.age > 1` ran 22.00 ms against 17.72 for the unfiltered hop, because the
+ * gate evaluates both conjuncts per EDGE and this one rejects few rows. And the two spellings of
+ * that same predicate differed — 22.00 written far-first against 24.18 written start-first —
+ * because `filterPredicate` declines when no conjunct can raise, so the written order survives and
+ * the user's spelling decides which conjunct short-circuits first. An equivalent-spelling gap of
+ * exactly the kind this repo exists to close.
+ *
+ * Hoisting the far conjuncts fixes both at once (14.93 and 14.61, a 1.02x spread against 1.10x),
+ * and it does something better than make the gate cheaper: what is LEFT is start-only, so
+ * `carriedWhere` reports `startOnly` and the existing start-gated walk takes it — the one that
+ * rejects a vertex BEFORE reading its adjacency, and which applies `farPred` itself. No walk
+ * changed; the split just lets the machinery item 177 built see a shape it could not see before.
+ *
+ * ORDER IS WHAT MAKES IT SAFE, and the key is not ours. Hoisting reorders conjuncts, which in
+ * FILTER position cannot change the row set (a row that is not cleanly TRUE is lost whatever its
+ * siblings say — `filterPredicate`'s own contract) and can only change whether a row the filter
+ * has already lost pays for a FAULT. `filterPredicate` ALREADY hoists every conjunct that
+ * `truthCannotRaise` ahead of every one that can, by a key it shares with the Rust engine, so a
+ * hoist restricted to that same key reorders nothing the engine does not also reorder. Requiring
+ * it is therefore not caution, it is agreement — the file's own note says being conservative in
+ * one engine is not safety but disagreement, and 41 divergences were found that way.
+ *
+ * It also closes a hazard that has nothing to do with faults. `freePredicateVars` does NOT report
+ * a rel variable that a SUBQUERY correlates on (the paragraph in `detectHopProjection` about item
+ * 420 is that bug), so partitioning conjuncts by free variables alone could hoist one that secretly
+ * reads the start. `truthCannotRaise` answers false for a subquery arm, so such a conjunct never
+ * enters the hoisted bucket.
+ */
+const splitFarConjuncts = (
+  where: Expr | undefined,
+  farVar: string,
+  closedFar: CPredicate | undefined,
+): { farPred: CPredicate; gate: CompiledExpr; residual: Expr } | undefined => {
+  // The same refusal as item 781's, for the same reason: `mergeFarPreds` cannot carry a generic
+  // inline predicate, so one that did not lift blocks the whole thing.
+  if (where === undefined || closedFar?.where !== undefined) {
+    return undefined;
+  }
+
+  const conjuncts = flattenConjuncts(where);
+  const far: Expr[] = [];
+  const rest: Expr[] = [];
+
+  for (const conjunct of conjuncts) {
+    const vars = [...freePredicateVars(conjunct)];
+
+    if (vars.length === 1 && vars[0] === farVar && truthCannotRaise(conjunct)) {
+      far.push(conjunct);
+    } else {
+      rest.push(conjunct);
+    }
+  }
+
+  // Nothing to hoist, or nothing left behind — the second is item 781's whole-clause lift, which
+  // is order-preserving by construction and needs no `truthCannotRaise` key.
+  if (far.length === 0 || rest.length === 0) {
+    return undefined;
+  }
+
+  const lifted = liftFarOnlyClause(andOf(far), farVar);
+
+  if (lifted === undefined) {
+    return undefined;
+  }
+
+  const residual = andOf(rest);
+
+  return {
+    farPred: closedFar === undefined ? lifted : mergeFarPreds(closedFar, lifted),
+    // `filterPredicate` rather than `compileExpr`, because that is what compiled the gate this
+    // replaces (`compileClause`), and the residual must keep its contract: a row that is not
+    // cleanly TRUE is dropped, not merely one that is FALSE.
+    gate: filterPredicate(residual),
+    residual,
+  };
+};
+
+/** One conjunct as itself, several as an `and` — the inverse of `flattenConjuncts`. */
+const andOf = (items: readonly Expr[]): Expr =>
+  items.length === 1 ? items[0] : { kind: 'and', items: [...items] };
+
+/**
+ * The far predicate, the gate and the carried-`WHERE` flags, preferring a SPLIT clause when the
+ * residual still qualifies (item 782).
+ *
+ * `carriedWhere` has to be asked about the RESIDUAL rather than the original, because that is what
+ * the gate will hold: the whole point of the split is that a mixed clause's leftovers are
+ * start-only, and only a `carriedWhere` reading the residual reports that. It can still refuse —
+ * `rowLocal` turns away a subquery `WHERE` — so a refused residual falls back to the unsplit form
+ * rather than losing the fast path altogether.
+ */
+const hopPredicates = (
+  clauseWhere: Expr | undefined,
+  compiledWhere: CompiledExpr | undefined,
+  closedFar: CPredicate | undefined,
+  farVar: string,
+  startVar: string | undefined,
+  relVar: string | undefined,
+): {
+  farPred: CPredicate | undefined;
+  gate: CompiledExpr | undefined;
+  carried: { needsStart: boolean; startOnly: boolean; needsRel: boolean };
+} | null => {
+  const split = splitFarConjuncts(clauseWhere, farVar, closedFar);
+
+  if (split !== undefined) {
+    const carried = carriedWhere(split.residual, farVar, startVar, relVar);
+
+    if (carried !== null) {
+      return { farPred: split.farPred, gate: split.gate, carried };
+    }
+  }
+
+  const carried = carriedWhere(clauseWhere, farVar, startVar, relVar);
+
+  if (carried === null) {
+    return null;
+  }
+
+  return { ...farPredAndGate(clauseWhere, compiledWhere, closedFar, farVar), carried };
 };
 
 /**
@@ -1235,11 +1365,6 @@ export const detectHopProjection = (
   // evaluation count and the elements evaluated are unchanged — which is what items 139/142
   // require of a fast path.
   const startVar = startVarName;
-  const carried = carriedWhere(m.where, farVar, startVar, rel.variable);
-
-  if (carried === null) {
-    return null;
-  }
 
   // The FAR node's own inline constraint — `(v {score: 5})` or `(v WHERE v.score = 5)` — is
   // carried rather than refused. Leaving it out made the two spellings of ONE question differ
@@ -1286,7 +1411,13 @@ export const detectHopProjection = (
   //     faster.
   //   - a clause reading the START or the REL is left to `carried`, which has the walks that bind
   //     them. That refusal is structural: this predicate is handed only the far element.
-  const { farPred, gate } = farPredAndGate(m.where, cm.where, closedFar, farVar);
+  const preds = hopPredicates(m.where, cm.where, closedFar, farVar, startVar, rel.variable);
+
+  if (preds === null) {
+    return null;
+  }
+
+  const { farPred, gate, carried } = preds;
   // The start is bound when the carried predicate reads it OR a projected item does.
   const needsStart = carried.needsStart || itemsReadStart;
 

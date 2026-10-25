@@ -985,3 +985,77 @@ describe('a far-only clause WHERE lifts into farPred (item 781)', () => {
     ).toEqual([]);
   });
 });
+
+// Item 782 hoists the FAR-LOCAL conjuncts of a mixed clause `WHERE` into `farPred`, leaving the
+// rest on the gate. What is left is start-only, so the existing start-gated walk takes it:
+// `WHERE b.age = 5 AND a.age > 1` went 22.00 → 14.93 ms, and its start-first spelling 24.18 →
+// 14.61, converging from a 1.10x spread to 1.02x.
+//
+// The split has its OWN copy of item 781's refusal 2, and item 781's test does not reach it:
+// there the clause is a single far-local conjunct, so `rest` is empty, the split declines and the
+// whole-clause lift handles it. Mutating the split's copy away therefore survived the entire
+// suite while answering a different question. These tests reach the split path specifically — the
+// clause must have BOTH a far-local conjunct and something else.
+describe('a MIXED clause hoists its far-local conjuncts (item 782)', () => {
+  const g = new Graph();
+
+  for (let i = 0; i < 6; i += 1) {
+    const a = g.addVertex({ id: `a${i}`, labels: ['P'], properties: { age: i, s: `s${i}` } });
+    const b = g.addVertex({ id: `b${i}`, labels: ['Q'], properties: { k: i, j: i } });
+    g.addEdge({ labels: ['E'], from: a, to: b });
+  }
+
+  const vs = (q: string): unknown[] => query(g, q);
+
+  test('a NON-LIFTING inline far constraint blocks the split', () => {
+    // THE MUTANT KILLER, and the one item 781's equivalent does not reach. `IS NULL` does not
+    // lift, so it lives in `farPred.where`; `mergeFarPreds` cannot carry that, so the split must
+    // decline. No far node has a null `k`, so the answer is empty — and dropping the refusal
+    // returns all six rows.
+    expect(
+      vs('MATCH (a:P)-[:E]->(b WHERE b.k IS NULL) WHERE b.j >= 0 AND a.age >= 0 RETURN b.j AS v'),
+    ).toEqual([]);
+    // The LIFTING inline spelling of the same shape still composes, so the refusal is not simply
+    // turning the split off whenever an inline constraint is present.
+    expect(
+      vs('MATCH (a:P)-[:E]->(b {j: 2}) WHERE b.j >= 0 AND a.age >= 0 RETURN b.j AS v'),
+    ).toEqual([{ v: 2 }]);
+  });
+
+  test('both spellings of a mixed clause agree with each other and with the general path', () => {
+    const want = [{ v: 3 }, { v: 4 }, { v: 5 }];
+    expect(vs('MATCH (a:P)-[:E]->(b) WHERE b.j >= 3 AND a.age >= 3 RETURN b.j AS v')).toEqual(want);
+    expect(vs('MATCH (a:P)-[:E]->(b) WHERE a.age >= 3 AND b.j >= 3 RETURN b.j AS v')).toEqual(want);
+    // Forced onto the general path by projecting the START, which the fast path's projection
+    // guard refuses — so this is the same question answered by the other implementation.
+    expect(
+      vs('MATCH (a:P)-[:E]->(b) WHERE b.j >= 3 AND a.age >= 3 RETURN a.s AS s, b.j AS v'),
+    ).toEqual([
+      { s: 's3', v: 3 },
+      { s: 's4', v: 4 },
+      { s: 's5', v: 5 },
+    ]);
+  });
+
+  test('the residual is kept, not dropped', () => {
+    // `gate: undefined` in place of the compiled residual is caught here and by three older
+    // tests: the start half of the predicate simply vanishes and every row survives.
+    expect(vs('MATCH (a:P)-[:E]->(b) WHERE b.j >= 0 AND a.age = 2 RETURN b.j AS v')).toEqual([
+      { v: 2 },
+    ]);
+  });
+
+  test('a conjunct that cannot hoist leaves the clause whole', () => {
+    // A disjunction is not a `compare`, so nothing lifts and the gate keeps everything; a
+    // conjunct reading BOTH ends likewise. Pinned because the split must decline, not partially
+    // apply.
+    expect(vs('MATCH (a:P)-[:E]->(b) WHERE b.j = 1 OR a.age = 2 RETURN b.j AS v')).toEqual([
+      { v: 1 },
+      { v: 2 },
+    ]);
+    expect(vs('MATCH (a:P)-[:E]->(b) WHERE b.j = a.age AND b.j >= 4 RETURN b.j AS v')).toEqual([
+      { v: 4 },
+      { v: 5 },
+    ]);
+  });
+});

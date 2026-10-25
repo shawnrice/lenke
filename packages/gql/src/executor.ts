@@ -6310,7 +6310,7 @@ export const gatePredicate = (where: Expr): CompiledExpr => {
  * defined inside a returned closure's builder is a shape this engine has been bitten by
  * (`ts-closure-size-is-load-bearing`). The linter asks for the same thing.
  */
-const flattenConjuncts = (e: Expr): readonly Expr[] =>
+export const flattenConjuncts = (e: Expr): readonly Expr[] =>
   e.kind === 'and' ? e.items.flatMap(flattenConjuncts) : [e];
 
 /**
@@ -6387,7 +6387,7 @@ const valueCannotRaise = (e: Expr): boolean =>
  * reason — it is TRUE here, so it settles nothing and the sibling is essential either way.
  * Admitting them would be the mirror-image mistake.
  */
-const truthCannotRaise = (e: Expr): boolean => {
+export const truthCannotRaise = (e: Expr): boolean => {
   switch (e.kind) {
     case 'lit':
       // A non-boolean literal in a truth position is a fault — and a statically detectable
@@ -6468,7 +6468,7 @@ const truthCannotRaise = (e: Expr): boolean => {
  * exactly the closure it has today, which on this engine is load-bearing
  * (`ts-closure-size-is-load-bearing`).
  */
-const filterPredicate = (where: Expr): CompiledExpr => {
+export const filterPredicate = (where: Expr): CompiledExpr => {
   // DECLINE WITHOUT ALLOCATING — see `conjunctMix`, and the 1.7x that measured why. Nothing can
   // raise, or nothing cannot: in the first case this path is unobservable, in the second there is
   // no safe conjunct to put in front and the early exit is all that is left, which
