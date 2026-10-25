@@ -1951,6 +1951,16 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
                     return super::scalar::eval_unary_str(f, name, eval(&args[0], store, batch)?);
                 }
             }
+            // The two-argument string PREDICATES (item 766), which also get a `Col::Bool`
+            // output rather than a boxed one — see `eval_binary_str_pred` for why that is
+            // available to a predicate and not to the other vectorized arms.
+            if args.len() == 2 {
+                if let Some(f) = super::scalar::binary_str_pred_fn(name) {
+                    let x = eval(&args[0], store, batch)?;
+                    let y = eval(&args[1], store, batch)?;
+                    return super::scalar::eval_binary_str_pred(f, name, x, y);
+                }
+            }
             // The TWO-argument numerics — `power`, `log`, `mod`, `atan2` (item 759).
             //
             // The arm above left these in the general path below, which rebuilds a

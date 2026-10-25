@@ -1347,3 +1347,71 @@ pub(super) fn eval_unary_str(f: fn(&str) -> Value, name: &str, c: Col) -> Result
 
     Ok(Col::Gen(out))
 }
+
+/// The two-argument string PREDICATES, as a function pointer over two borrowed `&str` — the
+/// binary twin of [`unary_str_fn`]. `regex_match` is deliberately absent: it compiles (or
+/// looks up) a regex rather than scanning, so it has a different cost profile and a cache of
+/// its own.
+///
+/// The bodies are the SAME closures the general dispatch passes to `str_bool`.
+pub(super) fn binary_str_pred_fn(name: &str) -> Option<fn(&str, &str) -> bool> {
+    Some(match name {
+        "starts_with" => |s: &str, sub: &str| s.starts_with(sub),
+        "ends_with" => |s: &str, sub: &str| s.ends_with(sub),
+        "contains" => |s: &str, sub: &str| s.contains(sub),
+        _ => return None,
+    })
+}
+
+/// A two-argument string predicate over two argument COLUMNS (item 766), reading `&str` out of
+/// each and writing a `Col::Bool`.
+///
+/// TWO savings, and the second is only available to a PREDICATE:
+///
+/// - the per-row `Value` boxing of both arguments, as item 765 removed for one argument;
+/// - the OUTPUT column. Every other vectorized arm in this file must return `Col::Gen` because
+///   its function can produce a null, a NaN or an infinity. A predicate over two `Col::Str`
+///   columns cannot: a `Col::Str` holds no null and no non-string, so every row yields a real
+///   bool and the result is a `Col::Bool` — one byte a row instead of a `Value`.
+///
+/// Measured at 200,000 rows: `count(starts_with(a.s, '0'))` cost 38.00 ns a row against the
+/// 12.31 that item 765's one-argument arm now costs for `char_length` over the same column.
+///
+/// The literal's BROADCAST was measured and is NOT the cost: `starts_with(a.s, a.t)` with two
+/// real slot columns reads 40.22 against the literal form's 38.00, so building
+/// `Col::Str(vec![s; n])` once per call is about 2 ns a row and not worth a special case.
+///
+/// Any other column kind falls through to the general loop, which keeps `call_scalar_checked`
+/// as the single definition of the NULL-versus-`E_INVALID_VALUE` decision.
+pub(super) fn eval_binary_str_pred(
+    f: fn(&str, &str) -> bool,
+    name: &str,
+    a: Col,
+    b: Col,
+) -> Result<Col, String> {
+    let n = a.len().min(b.len());
+
+    if let (Col::Str(xs), Col::Str(ys)) = (&a, &b) {
+        let mut flags: Vec<bool> = Vec::with_capacity(n);
+
+        for i in 0..n {
+            flags.push(f(&xs[i], &ys[i]));
+        }
+
+        return Ok(Col::Bool(flags));
+    }
+
+    let mut out: Vec<Value> = Vec::with_capacity(n);
+
+    for i in 0..n {
+        let x = a.value_at(i);
+        let y = b.value_at(i);
+
+        match (&x, &y) {
+            (Value::Str(s), Value::Str(sub)) => out.push(Value::Bool(f(s, sub))),
+            _ => out.push(call_scalar_checked(name, &[x, y])?),
+        }
+    }
+
+    Ok(Col::Gen(out))
+}

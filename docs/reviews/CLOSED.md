@@ -20379,3 +20379,43 @@ is correct only for ASCII, so it is a second fast path rather than a simplificat
 TWO-argument string family (`starts_with`, `ends_with`, `contains`, `split`, `substring`, `left`,
 `right`, `replace`) still boxes both arguments per row — the same pair of functions extends to it,
 keyed on two `Col::Str` columns, and that is the native twin of what item 761 left open in TS.
+
+## 766 — NATIVE: the two-argument string PREDICATES vectorized with a `Col::Bool` output. `starts_with` 4.49x, `ends_with` 4.19x, `contains` 3.61x
+
+**DONE (Rust).** `binary_str_pred_fn` + `eval_binary_str_pred`, reading `&str` out of each
+`Col::Str`. Three ALTERNATED rounds from two saved binaries: `starts_with` **4.49x** (37.58 ->
+8.37), `ends_with` **4.19x**, two-slot `starts_with` **4.15x**, `contains` **3.61x**. Controls:
+`abs` 1.00x, item 765's `char_length` 1.00x, `left` 1.00x, `replace` 1.00x, `substring` 0.98x, the
+numeric floor 0.84x on 0.09 ns of a 0.46 ns row.
+
+**Why these reach 4.5x where item 765's family reached 2.5x — the OUTPUT column.** Every other
+vectorized arm in `scalar.rs` must return `Col::Gen` because its function can make a null, a NaN or
+an infinity (item 459 says so in as many words). A predicate over two `Col::Str` columns cannot: a
+`Col::Str` holds no null and no non-string, so every row yields a real bool and the result is a
+`Col::Bool` — one byte a row instead of a `Value`. `regex_match` is excluded on purpose; it
+compiles or caches a regex rather than scanning.
+
+**TWO THINGS MEASURED AND REJECTED AS TARGETS, so they are not re-derived:**
+
+1. **The literal's broadcast.** `Expr::Lit` becomes `Col::Str(vec![s; n])` — 200,000 `GStr` clones
+   per call, which looks like an obvious cost. The two-slot form prices it at **~2 ns a row**
+   (40.22 against the literal form's 38.00). Not worth a special case.
+2. **`substring` (119 ns) and `left` (102), the two biggest numbers in the family.** Their cost is
+   an allocation per row plus the UTF-16 index walk, NOT argument boxing — removing the boxing
+   would be a 1.2x there. Item 765 separately refuted the UTF-16 DECODE as a cost (an exactly-equal
+   ASCII fast path in `utf16_len`: 30.33 -> 30.09), so what remains in those two is the allocation.
+   `replace` (68) has the same shape. Price the allocation before touching them.
+
+**A flag retracted:** the single-run probe read `substring` at +15%, on a row this change cannot
+reach. Three alternated rounds: 0.98x.
+
+**The guard that caught the sharpest mutant already existed.** Negating only the TYPED arm — leaving
+the general loop correct — is caught by `gql::tests::typed_and_gen_columns_agree`, which is the
+invariant every fast arm in this file depends on. Deleting the typed arm SURVIVES, which is also
+direct evidence that `Col::Bool` and `Col::Gen` are observationally identical here.
+
+**METHOD, now observed twice: an unexpected fuzz failure inside a MUTATION LOOP is unconfirmed
+until re-run on its own.** Item 765's mutant 3 and item 766's mutant 3 both reported `fuzz=FAIL`
+where SURVIVE was predicted, and both pass in isolation — the documented run-many flake. Believing
+either would have meant reporting a non-equivalence that does not exist. After re-running isolated,
+the fuzzers were run THREE times on the real tree: 13 pass, 0 fail, every time.
