@@ -21578,3 +21578,50 @@ tick with the differential fuzzers (the judgement item 786 made about `nullif`, 
 The native `spelling_probe` does (item 779's two, `grouped count: GQL vs Gremlin`, others), so a
 native GQL/Gremlin divergence is caught and a TS one is not. **This finding came from a bench, by
 accident, not from the probe whose job it is.** The groups are three lines each.
+
+## 798 — ⚠️ OPEN, NEW: a PARAM-valued predicate costs **1.76x** its literal twin per vertex. Diagnosed to one line; route 2 is the sound fix
+
+**OPEN TARGET, priced and diagnosed (no change).** Item 797 specified "price `satisfies`'s arms
+against each other" as its next step. That comparison found something larger than the gap it was run
+to explain.
+
+**THE SCAFFOLDING DOMINATES, which answers 797's question.** 200k vertices, one shape per process,
+all counting:
+
+```text
+  CONTROL none / label-only   0.0 ns   O(1) bucket
+  {age: 28} inline  19.7  (props)      age = 28  22.0  (eqProps)     age > 28  25.2  (cmpProps)
+  age > $a          45.4  (cmpProps, PARAM)
+  a SECOND predicate adds only 2.3-4.0 ns
+```
+
+The three arms sit within 5.5 ns and a second predicate is nearly free, so **~18-20 ns is per-VERTEX
+scaffolding** (`inlineHolds`'s `Map` write, `satisfies`'s `{ binding, params, graph }` allocation,
+the `value(env)` call) and 2-4 ns is the predicate. **The shared `satisfies` implementation is NOT
+the cost** — item 797's concern about re-deriving semantics does not apply.
+
+**THE PARAM GAP — 1.76x, ranges DISJOINT over three rounds** (literal 24.0/26.6/27.0 against param
+42.2/42.6/46.6). `WHERE k > $a` and `WHERE k > 28` ask the same question and the param is the
+INJECTION-SAFE spelling this repo's own notes call "the spelling applications actually write". It is
+CLAUDE.md's named defect class (`k = $a OR k = $b` vs `k IN [$a, $b]` is on that list).
+
+**NOT PREVIOUSLY RECORDED** — no entry for param-resolution cost, no literal-vs-param comparison, no
+mention of `Object.hasOwn`. Checked before claiming novelty (the discipline that caught six closed
+candidates at 789-796).
+
+**DIAGNOSED TO ONE LINE.** `compileExpr`'s `param` arm runs `Object.hasOwn(env.params, name)` plus a
+dynamic property read **per row**, to produce a value that cannot change during one execution. The
+`hasOwn` exists for a real reason (`$__proto__` must read undefined, matching the Rust engine's
+`HashMap`) — but that reason is about WHICH value resolves, not about resolving it repeatedly.
+
+**TWO FIXES; route 2 is the recommendation.** (1) Memoize on the params OBJECT identity — tick-sized,
+but it assumes params are never mutated mid-execution, trading cost for a behaviour change nobody has
+specified (item 310's memo is the precedent for how such a thing fails review). (2) **Normalize
+`params` ONCE at the entry point** so the per-row closure is a plain slot read with `hasOwn`'s
+semantics already applied — no identity assumption, no mutation hazard, but an entry-point change
+touching every `query`/`exec` caller. **Not started: param resolution reaches every predicate in both
+surface languages and wants the differential fuzzers plus its own mutation pass** (item 786's
+judgement about `nullif`, which paid off at 787).
+
+**This re-scales item 797:** its 2.24x used a LITERAL. With a param the GQL side is 42-45 ns against
+Gremlin's ~10.6, so the cross-surface gap on the spelling applications write is roughly **4x**.
