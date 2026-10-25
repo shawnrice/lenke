@@ -769,3 +769,41 @@ describe('the two-argument trim forms keep their character set (item 790)', () =
     expect(one('RETURN trim(null) AS x')).toBe(null);
   });
 });
+
+// Item 791 made an all-BMP character set scan UTF-16 UNITS instead of code points, which removed
+// three allocations a row (4.0-4.4x). The equivalence rests on one fact: when the set holds no
+// surrogate code unit, a surrogate half can never match, so the scan cannot split a pair.
+//
+// A set that DOES hold a surrogate must therefore fall through to the code-point path, and
+// mutating that gate away returns MOJIBAKE while the whole suite stays green: `btrim('😁x😁',
+// '😀')` answers a LONE LOW SURROGATE, because U+1F601 and U+1F600 share the high surrogate
+// 0xD83D. That subject is the only thing that catches it — a first version of the probe used only
+// 😀 against a 😀 set, where the unit scan happens to agree.
+describe('a trim character set with an astral character keeps code-point semantics (item 791)', () => {
+  const SMILE = '\u{1F600}'; // 😀  D83D DE00
+  const GRIN = '\u{1F601}'; // 😁  D83D DE01 — the SAME high surrogate
+
+  test('an astral char set does not split a different pair that shares its high surrogate', () => {
+    // THE MUTANT KILLER. `GRIN` is not in the set, so nothing is trimmed and the pair survives
+    // whole. A unit-wise scan would eat the shared high surrogate and leave `\uDE01`.
+    expect(one(`RETURN btrim('${GRIN}x${GRIN}', '${SMILE}') AS x`)).toBe(`${GRIN}x${GRIN}`);
+    expect(one(`RETURN ltrim('${GRIN} pad', '${SMILE}') AS x`)).toBe(`${GRIN} pad`);
+    expect(one(`RETURN rtrim('pad ${GRIN}', '${SMILE}') AS x`)).toBe(`pad ${GRIN}`);
+  });
+
+  test('an astral char set still trims its OWN character', () => {
+    // The fallback must remain correct, not merely safe.
+    expect(one(`RETURN btrim('${SMILE}pad${SMILE}', '${SMILE}') AS x`)).toBe('pad');
+    expect(one(`RETURN btrim('  ${SMILE}pad${SMILE}  ', ' ${SMILE}') AS x`)).toBe('pad');
+    expect(one(`RETURN btrim('${SMILE}${SMILE}', '${SMILE}') AS x`)).toBe('');
+  });
+
+  test('a BMP char set leaves astral characters in the subject intact', () => {
+    // The fast path itself: the set has no surrogate, so the scan stops at the pair rather than
+    // entering it.
+    expect(one(`RETURN btrim('  ${SMILE}pad${SMILE}  ', ' ') AS x`)).toBe(`${SMILE}pad${SMILE}`);
+    expect(one(`RETURN btrim(' ${SMILE} ', ' ') AS x`)).toBe(SMILE);
+    // A BMP NON-ASCII set member, which is one UTF-16 unit and so takes the fast path too.
+    expect(one("RETURN btrim('  naïve ßé  ', 'é ') AS x")).toBe('naïve ß');
+  });
+});

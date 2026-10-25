@@ -731,12 +731,76 @@ export const UNARY_STR: Record<string, (s: string) => unknown> = {
 // arg — a SET of characters to strip — they trim those code points (mirrors
 // `exec::scalar::trim_fn`); without one they strip whitespace (the existing JS
 // behavior, kept as-is for byte-identity on the whitespace path).
+/**
+ * Is `code` one of the UTF-16 code units in `chars`? (item 791)
+ *
+ * A linear scan with no allocation, which beats a `Set` here because a trim character set is one
+ * to three characters in every real call and building the `Set` was itself one of the three
+ * per-row allocations this replaces. Module scope rather than a closure inside `multiTrim`, for
+ * the TS closure-size finding.
+ */
+const hasCode = (chars: string, code: number): boolean => {
+  for (let k = 0; k < chars.length; k += 1) {
+    if (chars.charCodeAt(k) === code) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
 export const multiTrim = (
   s: string,
   chars: string,
   leading: boolean,
   trailing: boolean,
 ): string => {
+  // AN ALL-BMP CHARACTER SET SCANS UTF-16 UNITS INSTEAD (item 791), which is the common case and
+  // where the cost was: the code-point path below allocates THREE times a row — a `Set` over the
+  // char set, an array of the whole subject string, and the `slice().join('')` that rebuilds it.
+  // `btrim(a.s, ' ')` measured 265.6 ns a row against 35.6 for the one-argument form and 8.4 for
+  // the same shape natively (item 790).
+  //
+  // WHY IT IS EQUIVALENT, which is the only reason it is allowed. Trimming only ever STOPS at the
+  // first character that is not in the set, and every character it removes is a set member. When
+  // the set holds no surrogate code unit:
+  //
+  //   - a surrogate half can never match, so the scan stops at a surrogate pair exactly where
+  //     code-point iteration stops — it can never split one;
+  //   - every removed character is BMP and so exactly ONE UTF-16 unit, which makes the unit
+  //     offsets of the trimmed prefix and suffix equal their code-point offsets;
+  //   - so `s.slice(lo, hi)` is the string `cps.slice(lo, hi).join('')` would build.
+  //
+  // A set containing a surrogate half, or an astral character, falls through to the code-point
+  // path, which stays the definition. The membership test compares CODE UNITS rather than building
+  // a `Set`, because a char set is one to three characters in every real call and `s[i]` would
+  // allocate a one-character string per comparison.
+  let setIsBmp = true;
+
+  for (let k = 0; k < chars.length; k += 1) {
+    const c = chars.charCodeAt(k);
+
+    if (c >= 0xd800 && c <= 0xdfff) {
+      setIsBmp = false;
+      break;
+    }
+  }
+
+  if (setIsBmp) {
+    let from = 0;
+    let to = s.length;
+
+    while (leading && from < to && hasCode(chars, s.charCodeAt(from))) {
+      from += 1;
+    }
+
+    while (trailing && to > from && hasCode(chars, s.charCodeAt(to - 1))) {
+      to -= 1;
+    }
+
+    return s.slice(from, to);
+  }
+
   // Code-point iteration (matches the Rust `chars()`), so the trim is
   // byte-identical across engines for the character-set case.
   const set = new Set(Array.from(chars));

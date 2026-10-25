@@ -21318,3 +21318,38 @@ they raised before the char-set logic and tested nothing — same shape as items
 three allocations PER ROW (`new Set(Array.from(chars))` for a constant char set, `Array.from(s)` for
 the whole string, then `slice().join('')`). Not built: the code-point iteration is a cross-engine
 contract (`Array.from` matches Rust's `chars()`), so it needs its own tick and test.
+
+## 791 — TS: an all-BMP trim char set scans UTF-16 units — 4.0-4.4x. The mutant's wrong answer is MOJIBAKE, and ONE fixture row catches it
+
+**DONE (TypeScript).** Item 790 priced this at 265.6 ns/row with its cause located. `multiTrim`
+allocated THREE times a row (a `Set` over the char set, an array of the whole subject, then
+`slice().join('')`) for a set that is one to three characters in every real call.
+
+**The equivalence, which is the whole item:** trimming only ever STOPS at the first non-member, and
+every removed character is a member. So when the set holds NO surrogate code unit, a surrogate half
+can never match (the scan cannot enter a pair), every removed character is exactly one UTF-16 unit
+(so unit offsets equal code-point offsets), and `s.slice(lo, hi)` is what the code-point path would
+build. A set with a surrogate or astral character falls through to the code-point path, which stays
+the definition. Membership compares CODE UNITS — `s[i]` would allocate a one-char string per test.
+
+`btrim(a.s, ' ')` **254.0 → 63.3 (4.01x)**; `ltrim(a.s, ' ')` **245.8 → 55.4 (4.44x)**. Min of three
+alternated rounds, arms grepped in the dist.
+
+**The three unreachable controls all read 0.92-0.95x — a systematic drift, not noise** (noise would
+scatter). The astral control's 6% is the design's own cost (it now pays the surrogate scan before
+falling through); the other two are most likely the larger module's JIT effect and are not worth
+isolating against a 4x win. Recorded because "every control moved the same way" is item 762's shape.
+
+**MUTANT: MOJIBAKE, AND THE SUITE PASSES IT.** Disabling the surrogate check makes
+`btrim('😁x😁', '😀')` answer `"\ude01x😁"` — a **lone low surrogate** — because U+1F601
+and U+1F600 share the high surrogate `0xD83D`. **2611 pass, 0 fail.**
+
+**AGREEMENT ACROSS ARMS IS NOT COVERAGE.** The values probe's first version used 😀 against a 😀 set,
+where the unit scan happens to agree; 25 queries × 11 subjects matched across both arms and would
+have missed this entirely. The distinguishing case needs a DIFFERENT astral character sharing a high
+surrogate, added only after reasoning about what the mutant would do. Third form of the items
+702/790 lesson. Three tests pin it; teeth verified.
+
+**The family now:** `btrim/1` 33.1, `trim/1` 37.0, `ltrim/2` 55.4, `btrim/2` 63.3, astral 335.9.
+Items 790+791 took the 2-arg form 265.6 → 63.3 and the 1-arg form 56.9 → 33.1. The astral path keeps
+its cost, which is the right place for it — that spelling genuinely needs code points.

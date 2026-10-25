@@ -74,6 +74,10 @@ const SHAPES: readonly (readonly [string, string])[] = [
   // The TWO-argument trim form, which keeps `callTrim` and the general path — the control for
   // item 790's arity test.
   ['btrim/2', "count(btrim(a.s, ' '))"],
+  ['ltrim/2', "count(ltrim(a.s, ' '))"],
+  // A char set containing an ASTRAL character, which falls through to the code-point path — the
+  // control for item 791's all-BMP gate. The change must leave this one alone.
+  ['btrim/2 astral', "count(btrim(a.s, ' 😀'))"],
   ['reverse', 'count(reverse(a.s))'],
   ['to_string', 'count(to_string(a.n))'],
   ['left', 'count(left(a.s, 3))'],
