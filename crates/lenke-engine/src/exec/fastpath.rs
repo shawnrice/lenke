@@ -4508,7 +4508,48 @@ pub(super) fn try_scan_distinct_count(
             });
             usize::from(seen[0]) + usize::from(seen[1])
         }
-        _ => return None, // Temporal / Gen → the general aggregate
+        // A DATE column dedups on its `days`, which is the whole value (item 840). Measured at
+        // 200,000 rows: this shape cost 21,730us against a `Num` column's 441 — 49x, and linear
+        // in N (2,955 / 6,043 / 11,647 / 21,730 at 25k/50k/100k/200k), so a per-row constant
+        // rather than a complexity defect. The general aggregate byte-keys every row through
+        // `group_key`, which for a temporal is `t.format()` — an allocated ISO String per row.
+        //
+        // WHY ONLY `Date`, AND WHY THIS IS NOT A LOOSER MATCH. `group_key`'s equivalence is
+        // RENDER equality ("two temporals group together iff they render identically AND are the
+        // same kind"), while `Temporal` derives STRUCTURAL equality. Those are the same relation
+        // only where `format` is injective. For `Date` it demonstrably is: `format` is
+        // `civil_from_days(days)` through `fmt_year`, which pads to four digits but never
+        // truncates, so distinct `days` render distinctly and dedup on `days` yields exactly the
+        // general path's classes. For the kinds carrying a sub-second or zone part that is an
+        // argument still to be made, so they keep the general path rather than being swept in by
+        // a wider pattern — the cost of being wrong here is a wrong COUNT, not a slow one.
+        Column::Temporal {
+            kind: crate::temporal::TemporalKind::Date,
+            data,
+            present,
+            ..
+        } => {
+            let mut seen: FnvSet<i32> = FnvSet::default();
+            // A column holds exactly one kind (see `TemporalKind`), so this match always takes
+            // the `Date` arm — but the assumption is CHECKED rather than trusted, because the
+            // failure mode if it ever breaks is a silently wrong count.
+            let mut foreign = false;
+            scan_visit(store, label, |i| {
+                if present[i] {
+                    match data[i] {
+                        crate::temporal::Temporal::Date(d) => {
+                            seen.insert(d.days);
+                        }
+                        _ => foreign = true,
+                    }
+                }
+            });
+            if foreign {
+                return None;
+            }
+            seen.len()
+        }
+        _ => return None, // other Temporal kinds / Gen → the general aggregate
     };
     Some(scalar_num(count as f64))
 }

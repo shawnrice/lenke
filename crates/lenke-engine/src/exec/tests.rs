@@ -3902,6 +3902,114 @@ fn late_materialize_top_k_matches_eager() {
     );
 }
 
+/// `count(DISTINCT <date column>)` — the fast path item 840 added, pinned against the general
+/// path that answered the shape before it.
+///
+/// THIS TEST EXISTS BECAUSE THERE WAS NO COVERAGE AT ALL. A mutant dedupping on `d.days / 2`,
+/// which halves the answer, passed all 1,225 tests. So the fixture is built to make a lossy or
+/// colliding key visible rather than merely to exercise the arm: four CONSECUTIVE days, which
+/// guarantees an even/odd adjacent pair that any divide-by-two key collapses, plus a far date and
+/// repeats of two of them.
+#[test]
+fn distinct_count_over_a_date_column() {
+    use crate::temporal::{Date, Temporal};
+
+    let d = |iso: &str| Value::Temporal(Temporal::Date(Date::parse(iso).unwrap()));
+    let mut b = Builder::default();
+
+    for iso in [
+        "2024-01-01",
+        "2024-01-02",
+        "2024-01-03",
+        "2024-01-04",
+        "2031-11-30",
+        "2024-01-02",
+        "2031-11-30",
+    ] {
+        b.node(&["P"], &[("hired", d(iso))]);
+    }
+
+    // A node with NO `hired` key: `count(DISTINCT)` ignores it. An explicit stored
+    // `Value::Null` is deliberately NOT in this fixture — it promotes the column to `Gen`
+    // (measured: the assertion below read discriminant 5), which routes to the general path and
+    // so would test a different arm than the one this test is for. The null case is pinned on
+    // its own below.
+    b.node(&["P"], &[("other", n(1.0))]);
+
+    let store = b.build();
+
+    // The arm under test only runs for a packed temporal column, so that is asserted rather than
+    // assumed — a boxed `Gen` column would answer correctly and test nothing.
+    assert!(matches!(
+        store.column("hired"),
+        Some(crate::store::Column::Temporal { .. })
+    ));
+
+    let cnt = |q: &str| match run(&crate::gql::parse(q).unwrap(), &store).rows[0][0] {
+        Value::Num(x) => x,
+        ref v => panic!("count is not a number: {v:?}"),
+    };
+
+    // Five distinct dates among seven present values; the key-less node contributes nothing.
+    assert_eq!(cnt("MATCH (n:P) RETURN count(DISTINCT n.hired) AS c"), 5.0);
+    // THE SAME QUESTION THROUGH THE GENERAL PATH. `WHERE true` keeps every row but makes the plan
+    // a `Filter`, which `try_scan_distinct_count` declines (item 570 records that it is not
+    // folded away) — so the two routes are compared, not just the fast one asserted.
+    assert_eq!(
+        cnt("MATCH (n:P) WHERE true RETURN count(DISTINCT n.hired) AS c"),
+        5.0
+    );
+    // `count(arg)` counts PRESENT values without dedupping: seven, ignoring the absent and the
+    // null. This is what separates "the dedup is wrong" from "presence is wrong".
+    assert_eq!(cnt("MATCH (n:P) RETURN count(n.hired) AS c"), 7.0);
+    // And the value set itself, so a count that is right by luck still fails.
+    let mut got: Vec<String> = run(
+        &crate::gql::parse("MATCH (n:P) RETURN DISTINCT n.hired AS h").unwrap(),
+        &store,
+    )
+    .rows
+    .iter()
+    .filter_map(|r| match &r[0] {
+        Value::Temporal(t) => Some(t.format()),
+        _ => None,
+    })
+    .collect();
+    got.sort();
+    assert_eq!(
+        got,
+        vec![
+            "2024-01-01",
+            "2024-01-02",
+            "2024-01-03",
+            "2024-01-04",
+            "2031-11-30"
+        ]
+    );
+
+    // THE NULL CASE, on its own store because it changes the column's TYPE. A stored
+    // `Value::Null` beside dates promotes the column to `Gen`, so this shape never reaches the
+    // new arm — and it must still answer 2, ignoring the null, through the general path.
+    let mut nb = Builder::default();
+    nb.node(&["P"], &[("hired", d("2024-01-01"))]);
+    nb.node(&["P"], &[("hired", d("2024-01-02"))]);
+    nb.node(&["P"], &[("hired", Value::Null)]);
+
+    let nstore = nb.build();
+
+    assert!(matches!(
+        nstore.column("hired"),
+        Some(crate::store::Column::Gen { .. })
+    ));
+    assert!(matches!(
+        run(
+            &crate::gql::parse("MATCH (n:P) RETURN count(DISTINCT n.hired) AS c").unwrap(),
+            &nstore
+        )
+        .rows[0][0],
+        Value::Num(x) if x == 2.0
+    ));
+}
+
 /// A low-cardinality string column dictionary-encodes, and every read shape
 /// (DISTINCT / GROUP BY / equality filter / ORDER BY) returns exactly what the
 /// plain `Str` column would — while a high-cardinality column stays `Str`.

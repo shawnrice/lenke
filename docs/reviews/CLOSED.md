@@ -24090,3 +24090,111 @@ build at 12.5 ns, which needs codegen or an output-contract change.
 Gates, each its own command with its exit code read UNPIPED: `bun run fmt` 0; `bun run fmt:check`
 0; `bun run check` 0; `bun test packages/gql` **2,635 pass 0 fail**. Comment-only change in the
 engine; the temporary probe removed.
+
+## 840 — `count(DISTINCT <date>)` was **36.6x** slower than the same shape over a number, and a mutant that HALVED the answer passed all 1,225 tests
+
+**SHIPPED (Rust).** Pricing an enum's variants, which is what this method opens with. `fastpath.rs`
+matches `Column::Num` 19 times, `Dict` 16, `Str` 10, `Bool` 3 — and **`Temporal` and `Gen` zero.**
+Several arms say so in as many words:
+
+```rust
+(AggFn::Min | AggFn::Max, _) => return None,   // Temporal/Bool/Gen → general path
+_ => return None,                              // Temporal/Gen → the general aggregate
+```
+
+So a date column falls off every aggregate fast path. That is not a corner: this repo's own domain
+is people-data-over-time, where MIN/MAX/DISTINCT over a hire date is an ordinary question.
+
+**CLAUDE.md lists temporal-column cost as DEFERRED** because it "needs host `Temporal`
+construction". That blocker is real for the TS harness and false for a Rust example: `Date` is a
+public struct with a public `days` field, so `Value::Temporal(Temporal::Date(Date { days }))` is one
+expression. **The deferred question is answerable; it was only ever unanswerable from one side.**
+
+### The gap, and which aggregate owns it
+
+200,000 `Person` nodes, each carrying a `score` (`Num`) and a `hired` (`Date`) of the same
+cardinality — so each pair is the SAME aggregate over the SAME rows and differs only in the
+column's type:
+
+```text
+  query                       us        vs its Num twin
+  min(p.score)               438
+  min(p.hired)              1925        4.4x
+  max(p.score)               472
+  max(p.hired)              1923        4.1x
+  count(p.score)             102
+  count(p.hired)             101        flat — this one already had a path
+  count(DISTINCT p.score)    442
+  count(DISTINCT p.hired)  23211        52.5x
+  count(*)                     0        CONTROL, reads no column
+```
+
+**`count(DISTINCT)` owns the gap at 52x**, and the N sweep says it is a per-row constant rather
+than a complexity defect — 2,955 / 6,043 / 11,647 / 21,730 µs at 25k / 50k / 100k / 200k, linear,
+ratio steady at ~50x. The general aggregate byte-keys every row through `group_key`, which for a
+temporal is `t.format()`: an allocated ISO `String` per row.
+
+### Why only `Date`, and why not a wider pattern
+
+`group_key`'s own comment defines its equivalence: _"two temporals group together iff they render
+identically AND are the same kind"_ — **render** equality. `Temporal` derives **structural**
+equality. Those coincide only where `format` is injective, so the arm is written for the one kind
+where that is demonstrable: `Date::format` is `civil_from_days(days)` through `fmt_year`, which pads
+to four digits but never truncates, so distinct `days` render distinctly and dedup on `days` yields
+exactly the general path's classes. The kinds carrying a sub-second or zone part keep the general
+path — the cost of being wrong here is a wrong COUNT, not a slow query.
+
+### Measured: three ORDER-ALTERNATED rounds, min of three
+
+Both arms built as **separate binaries** and asserted to be the code they claim (the new pattern
+occurs 0 times in PRE, 1 in POST) before a single reading was taken.
+
+```text
+  shape                      PRE min   POST min
+  count(DISTINCT p.hired)      21351        584   36.6x   DISJOINT
+  CONTROL count(DISTINCT p.score)  408        406   flat
+  CONTROL min(p.hired)          1787       1754   flat
+  CONTROL count(*)                 0          0   —
+```
+
+**`min(p.hired)` is the control that carries the result.** It is the _same temporal column_ on the
+_same general-aggregate route_, differing only in which aggregate asks — so its flatness says the
+win is this arm and not something about temporal columns in general. Every arm answered 1,000.
+
+### The hole this opened: a wrong-answer mutant passed EVERYTHING
+
+Mutation under `timeout 900` + `MemoryMax=16G -p MemorySwapMax=0`, built uncapped first:
+
+- **M1, dedup on `d.days / 2`** — a key that halves the distinct count — **SURVIVED all 1,225
+  tests.** There was no coverage for `count(DISTINCT <date column>)` at all, by either route. The
+  fast path was shipped into a gap in the suite, and the only reason that is not how it stayed is
+  that the mutation ran.
+- So the test was written first and the mutants re-run against it: **M1 caught**, **M2 (presence
+  check dropped) caught**, **M3 (the homogeneity bail removed) SURVIVED** — correctly, because a
+  `Temporal` column holds exactly one kind by construction and
+  `temporal_props_use_a_typed_column_and_promote_on_mixed_kind` is the test that makes that true.
+  Defence in depth with a named dependency, per item 475 and the same argument item 835's survivor
+  carries.
+
+The fixture is built so a lossy key cannot hide: **four CONSECUTIVE days**, which guarantees an
+even/odd adjacent pair that any divide-by-two key collapses, plus a far date and two repeats. It
+pins the count, the value SET (so a count right by luck still fails), `count(arg)` without the dedup
+(separating "the dedup is wrong" from "presence is wrong"), and the same question through the
+general path via `WHERE true` (item 570 records that it is not folded away).
+
+**One storage fact found while building it:** an explicit stored `Value::Null` beside dates promotes
+the column to `Gen` — measured, the assertion read discriminant 5 — so the null case can never reach
+this arm. It is pinned on its own store rather than left implicit, since a reader would otherwise
+reasonably expect the nulls vector in `Column::Temporal` to carry it.
+
+### What stays open
+
+`min`/`max` over a temporal column remain on the general path at **4.1-4.4x**, which this item
+measured and deliberately did not take: a MIN over a `Date` column is a scan of `days` and looks
+easy, but it must return a `Temporal` and match the engine's total order for temporals, and that is
+its own argument. Named with its number so the next attempt starts from the measurement.
+
+Gates, each its own command with its exit code read UNPIPED: `cargo build --release --tests` 0;
+`cargo test --release` **1,226 passed 0 failed** (1,225 before the new test); `rewrite_fuzz` 10
+passed; `cargo clippy --all-targets -- -D warnings` 0; `cargo fmt` 0; `bun run fuzz` (all seven
+byte-identity fuzzers) 13 pass 0 fail. The temporary example and both pristine copies removed.
