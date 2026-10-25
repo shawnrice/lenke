@@ -21716,3 +21716,43 @@ is where a cross-language comparison belongs.** Its own tick.
 **Item 797's finding STANDS, and this is why it was trustworthy:** it was measured one shape per
 process, which is the only reason its 2.24x was a comparison rather than a position in a run order.
 The gap it named is real; the TS side still cannot catch a cross-language divergence.
+
+## 801 — `probe:surface` (one spelling per PROCESS): item 797's cross-surface gap CONFIRMED at ~2.1x, and a SECOND gap found running the other way
+
+**DONE (instrument).** Item 797 named the gap, item 800 built the fix in the wrong place and
+specified the right one — **one shape per process**. `packages/native/surface-probe.ts`,
+`bun run probe:surface`: the parent re-executes itself once per SPELLING, so each child times one
+query in a process that has run no other (item 762's rule, `scalarfn-probe.ts`'s design).
+
+Three runs, median-of-11 per spelling:
+
+```text
+  filtered node count, unlabelled   GQL 4.71-5.18ms  GRM 2.30-2.52   GQL ~2.1x SLOWER  (2.06/2.05/2.12)
+  filtered node count, labelled     GQL 4.59-4.76    GRM 2.11-2.18   GQL ~2.2x SLOWER  (2.12/2.18/2.25)
+  project one property              GQL 6.92-10.41   GRM 18.19-26.41 GQL 1.75-3.82x FASTER
+  one-hop count / unfiltered count  0.00 vs 0.01     too fast to compare
+```
+
+**~2.1x against item 797's 2.24x and item 800's isolated 1.71x** — three measurements, two fixtures,
+two harnesses.
+
+**A SECOND GAP, THE OTHER WAY, and it is what bounds the first.** `values('k')` is 1.75-3.82x SLOWER
+than `RETURN n.k AS k`. So this is NOT "GQL is slower than Gremlin": **each surface is faster at a
+different shape** — Gremlin at a filtered scan, GQL at a projection. Direction stable across three
+runs; magnitude reported as a RANGE because one number there would be invented.
+
+**Item 800 is corrected twice:** its one-hop group claimed "no gap", but on this fixture both
+surfaces answer that count from a bucket size and the pair **cannot be compared** (0.00 vs 0.01);
+and its in-sweep LABELLED reading showed the gap narrowing to 1.34x where per-process it is 2.2x,
+slightly WIDER than unlabelled. Both were instrument, which is what 800 concluded about its own
+numbers.
+
+**Two defects in the probe, caught by reading its first output** — neither in the engine, both would
+have shipped a lie: `answerOf` read the first row's single value whatever the length, so a 200k-row
+projection reported `0` against `200000 rows` and flagged ANSWERS DIFFER on my own bug; and no FLOOR,
+so the O(1) pairs printed `Infinityx faster` from 0.00 vs 0.01 — item 124's exact mistake, which
+`spelling-probe.ts` keeps `FLOOR_MS` for.
+
+**OPEN:** the ~2.1x itself. Item 798 located it in the ~18-20 ns of per-vertex scaffolding around
+`satisfies` (not the shared implementation); item 799 removed the param term. The rest is shared by
+every predicate caller in the TS engine — its own tick.

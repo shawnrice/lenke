@@ -46,7 +46,8 @@
     "bench:chain": "bun chain-sweep-bench.ts",
     "bench:gate": "bun chain-gate-bench.ts",
     "xref": "bun xref-probe.ts",
-    "probe:scalar": "bun scalarfn-probe.ts"
+    "probe:scalar": "bun scalarfn-probe.ts",
+    "probe:surface": "bun surface-probe.ts"
   },
   "dependencies": {
     "@lenke/core": "workspace:*",
