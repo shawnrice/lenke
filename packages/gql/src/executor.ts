@@ -326,9 +326,11 @@ import {
   structuralEq,
   temporalSum,
   UNARY_NUM,
+  POLY_STR_LIST_FN,
   TRIM_1,
   unaryNumCall,
   UNARY_STR,
+  polyStrListCall,
   unaryStrCall,
   unsupportedTemporalAgg,
 } from './executor/scalars.js';
@@ -2090,6 +2092,17 @@ const compileFunc = (expr: FuncExpr): CompiledExpr => {
 
   if (trim1 !== undefined) {
     return unaryStrCall(name, trim1, args[0]);
+  }
+
+  // The POLYMORPHIC string-or-list family — `size`, `cardinality`, `reverse` (item 792). Their
+  // positional check is "a string OR a list" (plus a PATH for `cardinality`), which is why neither
+  // the numeric gate nor `SCALAR_ASSERTS_STR0_ONLY` admits them; `polyStrListCall` folds that check
+  // in rather than skipping it. `size` was the largest RATIO left in the TS survey — 42.0 ns a row
+  // against `char_length`'s 19.9 for the same work.
+  const poly = args.length === 1 ? POLY_STR_LIST_FN[name] : undefined;
+
+  if (poly !== undefined) {
+    return polyStrListCall(name, poly, args[0]);
   }
 
   // The two-argument string PREDICATES (item 769) — the TS counterpart of item 766, which took

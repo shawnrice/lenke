@@ -807,3 +807,63 @@ describe('a trim character set with an astral character keeps code-point semanti
     expect(one("RETURN btrim('  naïve ßé  ', 'é ') AS x")).toBe('naïve ß');
   });
 });
+
+// Item 792 routed the POLYMORPHIC string-or-list family — `size`, `cardinality`, `reverse` — onto
+// `polyStrListCall`, which folds in `assertScalarArgTypes`'s "a string OR a list" check rather
+// than skipping it. `size` went 42.8 -> 22.7 ns a row, level with `char_length`.
+//
+// The folded check has ONE exception and it is name-gated: `cardinality` also accepts a PATH
+// (nodes + edges), where `size` and `reverse` must RAISE. Dropping the name from that gate makes
+// `size(p)` answer 1 and `reverse(p)` answer null instead of raising — with the whole 2,614-test
+// suite GREEN, because nothing passed a path to either.
+describe('only cardinality accepts a PATH, not size or reverse (item 792)', () => {
+  const pathQ = (fn: string): string =>
+    `MATCH p = (u:Person)-[:KNOWS]->(w) RETURN ${fn}(p) AS x LIMIT 1`;
+
+  test('cardinality counts a path as nodes + edges', () => {
+    expect(one(pathQ('cardinality'))).toBe(3);
+  });
+
+  test('size and reverse REJECT a path, with the cross-engine message', () => {
+    // THE MUTANT KILLER. The message text is a contract — native's `call_scalar_checked` raises
+    // the same words and the differential harness compares them.
+    for (const fn of ['size', 'reverse']) {
+      let caught: unknown;
+
+      try {
+        query(g, pathQ(fn));
+      } catch (e) {
+        caught = e;
+      }
+
+      expect(hasErrorCode(caught, ErrorCode.InvalidValue)).toBe(true);
+      expect((caught as Error).message).toContain(`${fn}() requires a string or list`);
+    }
+  });
+
+  test('the family still accepts a string and a list, and propagates null', () => {
+    // The fast path itself, both branches of the polymorphic body.
+    expect(one("RETURN size('abc') AS x")).toBe(3);
+    expect(one("RETURN cardinality('abc') AS x")).toBe(3);
+    expect(one("RETURN reverse('abc') AS x")).toBe('cba');
+    expect(one('RETURN size([1, 2, 3]) AS x')).toBe(3);
+    expect(one('RETURN cardinality([1, 2, 3]) AS x')).toBe(3);
+    expect(one('RETURN reverse([1, 2, 3]) AS x')).toEqual([3, 2, 1]);
+    expect(one('RETURN size(null) AS x')).toBe(null);
+    expect(one('RETURN reverse(null) AS x')).toBe(null);
+  });
+
+  test('a NUMBER raises rather than coercing', () => {
+    for (const fn of ['size', 'cardinality', 'reverse']) {
+      let caught: unknown;
+
+      try {
+        query(g, `RETURN ${fn}(7) AS x`);
+      } catch (e) {
+        caught = e;
+      }
+
+      expect(hasErrorCode(caught, ErrorCode.InvalidValue)).toBe(true);
+    }
+  });
+});

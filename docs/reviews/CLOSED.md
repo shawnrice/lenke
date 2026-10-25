@@ -21353,3 +21353,39 @@ surrogate, added only after reasoning about what the mutant would do. Third form
 **The family now:** `btrim/1` 33.1, `trim/1` 37.0, `ltrim/2` 55.4, `btrim/2` 63.3, astral 335.9.
 Items 790+791 took the 2-arg form 265.6 → 63.3 and the 1-arg form 56.9 → 33.1. The astral path keeps
 its cost, which is the right place for it — that spelling genuinely needs code points.
+
+## 792 — TS: the POLYMORPHIC string-or-list family gets a factory — `size` 1.89x, `cardinality` 1.79x, `reverse` 1.50x. THE ANCHOR COUNT CAUGHT A MUTANT THAT NEVER APPLIED
+
+**DONE (TypeScript).** Item 790's survey left `size` as the largest RATIO: **42.0 ns/row against
+`char_length`'s 19.9 for the same work.** `size`, `cardinality` and `reverse` are _why_
+`SCALAR_NEEDS_ARG_ASSERT` exists — their check is "a string OR a list" (plus a PATH for
+`cardinality`), which neither the numeric gate nor `SCALAR_ASSERTS_STR0_ONLY` can admit.
+
+`polyStrListCall` is the third factory of this shape (after 761's `unaryStrCall`, 769's
+`binaryStrCall`), folding the check in rather than skipping it — **copied verbatim**, since the
+message text is a cross-engine contract.
+
+`size` **42.8 → 22.7 (1.89x)**, `cardinality` **43.3 → 24.2 (1.79x)**, `reverse` **122.0 → 81.3
+(1.50x)**, a LIST argument 1.33x. Controls: `char_length` 1.07x, `trim` 0.96x. `size` now lands level
+with `char_length` — two functions computing a string's length cost the same, which is the point.
+
+**THE PATH ASYMMETRY is the correctness story.** `cardinality(p)` counts nodes + edges; `size(p)` and
+`reverse(p)` must RAISE, so `okPath` is NAME-gated. Dropping the name makes `size(p)` answer **1** and
+`reverse(p)` answer **null** instead of raising — **2614 pass, 0 fail**; nothing passed a path to
+either. Four tests pin it, teeth verified. Values diffed across arms over 17 queries (strings with an
+astral char, lists, the three path cases, a raising number, nulls): identical.
+
+**THE ANCHOR COUNT CAUGHT A MUTANT THAT NEVER APPLIED — first time it has earned itself.** The check
+is copied verbatim from `assertScalarArgTypes`, so that line exists TWICE; the patch script printed
+`ANCHOR 2` and refused, and the run that followed measured the UNMUTATED tree — path rows raising,
+suite green. **Read without the anchor count that is exactly a surviving mutant's output.** Fixed by
+scoping the replacement to `polyStrListCall` alone (item 780's technique).
+
+**Two bugs in my own tests, both caught by running them** against correct code: the queries used
+`(u:User)-[:FOLLOWS]->` where the fixture is `Person`/`KNOWS` (a path query over absent labels
+returns NO rows, so `one()` fails on the row count and looks like a disproof), and
+`ErrorCode.E_INVALID_VALUE` does not exist — the member is `ErrorCode.InvalidValue`, and
+`hasErrorCode(e, undefined)` is false, so the check failed in the safe-looking direction.
+
+**Remaining on the general dispatch**, each worth ~22 ns (1.3-1.55x, no large win left): `replace`
+99.6, `substring` 85.2/64.4, `to_string` 84.8, `left` 78.1, `right` 62.1.

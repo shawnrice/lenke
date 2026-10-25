@@ -2375,6 +2375,50 @@ export const SCALAR_ASSERTS_STR0_ONLY: ReadonlySet<string> = new Set(
  * is the same order the general path reaches — `assertScalarArgTypes` passes a nullish
  * argument through untouched and `callScalar` then short-circuits it to null.
  */
+/**
+ * The POLYMORPHIC string-or-list family — `size`, `cardinality`, `reverse` — with its body, so
+ * `compileFunc` can resolve the dispatch once per `Expr::Call` (item 792).
+ *
+ * These three are the reason `SCALAR_NEEDS_ARG_ASSERT` exists in the first place: their positional
+ * check is neither "a string at 0" nor "a number at 1" but "a string OR a list", with
+ * `cardinality` also accepting a PATH. So neither the numeric gate nor `SCALAR_ASSERTS_STR0_ONLY`
+ * can admit them, and all three sat on the general dispatch — where the TS survey
+ * (`probe:scalar`) priced `size` at 42.0 ns a row against `char_length` at 19.9 for the SAME work,
+ * the pair that isolates this engine's ~22 ns of dispatch machinery (item 790).
+ *
+ * Declared after `reverseScalar` because a `const` is not hoisted.
+ */
+export const POLY_STR_LIST_FN: Record<string, (a: unknown) => unknown> = {
+  size: lengthOf,
+  // `cardinality` ALSO accepts a path (nodes + edges count) — `size` does not. The arm is
+  // `callScalar`'s own, unchanged.
+  cardinality: (a) => (a instanceof Path ? a.vertices.length + a.edges.length : lengthOf(a)),
+  reverse: reverseScalar,
+};
+
+/**
+ * A one-argument POLYMORPHIC string-or-list call, with `assertScalarArgTypes`'s own check folded
+ * in (item 792) — the third factory of this shape, after [`unaryStrCall`] (item 761) and the
+ * two-argument [`binaryStrCall`] (item 769).
+ *
+ * The check is COPIED rather than referenced, in the same order and with the same message, because
+ * it is a cross-engine contract: native's `call_scalar_checked` raises the same text and the
+ * differential harness compares it. The `okPath` exception is `cardinality`'s alone.
+ */
+export const polyStrListCall =
+  <E>(name: string, f: (a: unknown) => unknown, a: (env: E) => unknown) =>
+  (env: E): unknown => {
+    const v = a(env);
+    // `cardinality` ALSO accepts a path — see `assertScalarArgTypes`, whose arm this mirrors.
+    const okPath = name === 'cardinality' && v instanceof Path;
+
+    if (!isNullish(v) && typeof v !== 'string' && !Array.isArray(v) && !okPath) {
+      dataException(`${name}() requires a string or list`);
+    }
+
+    return f(v);
+  };
+
 export const unaryStrCall =
   <E>(name: string, f: (s: string) => unknown, a: (env: E) => unknown) =>
   (env: E): unknown => {

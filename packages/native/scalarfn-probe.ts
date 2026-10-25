@@ -86,6 +86,11 @@ const SHAPES: readonly (readonly [string, string])[] = [
   ['substring/3', 'count(substring(a.s, 1, 3))'],
   ['replace', "count(replace(a.s, 'pad', 'X'))"],
   ['size', 'count(size(a.s))'],
+  ['reverse-str', 'count(reverse(a.s))'],
+  // `size`/`cardinality`/`reverse` over a LIST, the other half of the polymorphic surface — the
+  // assert accepts it and the body takes a different branch, so it is priced separately.
+  ['size-list', "count(size(split(a.s, '-')))"],
+  ['cardinality', 'count(cardinality(a.s))'],
   ['coalesce', 'count(coalesce(a.n, 7))'],
 ];
 
