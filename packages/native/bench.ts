@@ -880,14 +880,6 @@ const CASES: Case[] = [
       (e, g) => void e.query(g, 'MATCH (a:Person)-[:KNOWS]->{4}(y) RETURN count(*) AS c'),
     ),
   },
-  {
-    // TEMPORARY depth-5 row for item 736 ablation. Remove before commit.
-    name: 'count 5-hop quantified [TRAIL, TEMP]',
-    ...onGraph(
-      () => graphDoc,
-      (e, g) => void e.query(g, 'MATCH (a:Person)-[:KNOWS]->{5}(y) RETURN count(*) AS c'),
-    ),
-  },
   // 🛑 THERE IS DELIBERATELY NO DEPTH-5 ROW, and the reason is the measurement itself.
   //
   // Depth 5 is the first depth neither engine has a closed form for — native refuses it in the
