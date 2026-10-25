@@ -22501,3 +22501,64 @@ written into a pre-reserved buffer against the same bytes in 47,007 fresh `Vec`s
 probe, not a change.
 
 Gates: `cargo build --release --features capi` 0; `git status` clean; the temporary example removed.
+
+## 814 — the probe item 813 specified REFUTES the hypothesis it was built for: per-row `Vec` retention is **20 ns/element**, not 265
+
+**DIAGNOSIS, no engine change** (a temporary standalone example, reverted). Item 813 left three
+unseparated candidates for `nodes(p)`'s 265 ns/element — the per-row allocation, page faults on a
+growing heap, the bulk free — and specified the instrument: the same bytes into a pre-reserved buffer
+against 47,007 fresh `Vec`s. Built, measured, and it does not account for the cost.
+
+### The ladder, standalone, one arm per process
+
+Every arm moves the same 498,969 `Value::Map` clones out of a pool of 47,007 SHARED maps, which is
+what item 811's 90.6% hit rate means the engine actually does. The arms differ only in where the
+clones land:
+
+```text
+  CONTROL the Arc clones alone          1642.0 us    3.2 ns/element
+  one buffer, reserved, retained        4075.5       7.9
+  47,007 fresh Vecs, DROPPED each row   4304.7       8.3
+  47,007 Vec::with_capacity, KEPT      11054.5      21.4
+  47,007 fresh Vecs, KEPT              14645.8      28.3
+```
+
+**Three things, all measured rather than reasoned:**
+
+- **An `Arc` clone of an element map is 3.2 ns.** 498,969 of them total 1.6 ms, so sharing is as
+  cheap as item 809 assumed.
+- **Allocating 47,007 `Vec`s and freeing each immediately is nearly FREE** — 8.3 ns against the
+  single reserved buffer's 7.9. The allocator hands back the same hot block every row, so "47,007
+  distinct allocations" is not a cost by itself.
+- **Retaining them costs ~20 ns/element**, of which **growth is 7** (`with_capacity` 21.4 against
+  fresh 28.3) and the retained allocation itself is ~13.
+
+### ⚠️ So the hypothesis is refuted: 20 ns is not 265
+
+The engine's own pair — `size(nodes(p))` build-and-discard against `nodes(p)` build-and-keep — is
+**265 ns/element apart** (item 812). The standalone reproduction of exactly that shape is **20**. A
+13x shortfall is not a calibration difference; **the per-row `Vec` is not where the engine's cost
+is**, and item 813's leading candidate is closed.
+
+### What the next suspect is, and the evidence for it
+
+Item 813's own peak-RSS figures already contradict the assumption underneath this whole line:
+`size(nodes(p))` peaks at **132 MiB** where `nodes(p)` peaks at **444**. If both arms built the same
+`Col::Gen` of 47,007 `Value::List`s and differed only in when it was dropped, their peaks would be
+close. They are 3.4x apart, so **the two arms do not retain the same thing**, and every
+per-element number derived from their difference — including item 812's 159-to-build and
+265-to-carry split — is a comparison between two different quantities of work.
+
+That is the thing to establish next, and it is a reading task before it is a measuring one: what the
+`size`/`cardinality` fast path does with a non-`Slot` argument. Its comment says it borrows the
+column when the argument is a bare slot and otherwise evaluates it into an owned `Col` — but the
+RSS says the owned `Col` it builds is a third the size of the one `nodes(p)` returns, and that
+difference is unexplained.
+
+**No mechanism is being named for the 265 ns.** This is the second tick in a row whose specified
+probe came back negative, which is the method working rather than failing: items 804 and 808 are the
+records of what asserting at this point costs, and three negative results in a row are cheaper than
+one wrong change shipped with a story attached.
+
+Gates: `cargo build --release` 0; `git status` clean; the temporary example removed. The ladder above
+is reconstructible from this entry — a pool of shared `Value::Map`s, five arms, `best_us`.
