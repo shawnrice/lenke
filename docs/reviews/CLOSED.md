@@ -22983,3 +22983,60 @@ have done the other two's job.
 Gates: no engine change; `git status` clean of everything but the two docs. The `.so` was verified
 fresh (`stat`) and carrying `lnk_abi_version` before the run, since a stale artifact here would have
 measured the old code and reported it as the fix.
+
+## 823 — the CHURN axis priced across EVERY store operation: no second O(history) defect, item 820 re-confirmed, and `set_prop` grows 3.1x for a reason that is not column length
+
+**SURVEY, no engine change** (a temporary example, reverted). Item 820's defect was found on an axis
+no committed bench varies: every fixture is built once and queried, so nothing sweeps how many nodes
+have EVER existed. That axis just paid 114.9x, which makes the systematic question "what else is
+O(history)" rather than "what else is slow" — and the way to answer it is to price every operation on
+it, not to pick another row.
+
+Live set pinned at 20,000 (with one edge per node), churn the only variable, 5,000 ops timed per
+cell:
+
+```text
+  churned   set_prop     seek     scan   add_edge   del_edge   del_node
+        0         25      152        5        109         26       1251
+   300000         43      167        5        183         41       1193
+  1000000         78      160        4        130         36       1173
+```
+
+### Three results
+
+**1. `del_node` is FLAT — item 820 confirmed a third time, on a different fixture.** 1251 / 1193 /
+1173 ns, where before the fix it was linear in churn. This fixture carries edges where item 820's did
+not, so the flatness is not an artifact of the degenerate zero-degree case.
+
+**2. Nothing else is O(history), and the reads are flat.** An index seek (152/167/160) and a label
+bucket read (5/5/4) do not move, which also settles the last of item 818's framing: the seek path it
+blamed is flat on the axis that actually mattered. `add_edge` (109/183/130) and `delete_edge`
+(26/41/36) have no monotone trend — the middle point is the high one in both, which is noise, not
+growth. **So item 820's defect was singular**, consistent with item 821's grep finding no other
+unconditional per-node sweep.
+
+**3. ⚠️ `set_prop` grows 3.1x (25 → 43 → 78 ns), and the obvious explanation does not fit.**
+
+It is NOT O(history) in the algorithmic sense — 820's loop went 30x for a 67x churn increase, while
+this is 3.1x for an unbounded one, i.e. sublinear. The natural reading is memory pressure: the
+property columns are indexed by node id and never compacted, so they grow from 20,000 slots to over a
+million and a write walks a colder structure.
+
+**But the writes in this probe all target `i % LIVE` — the FIRST 20,000 slots — which stay hot
+however long the column gets.** On a pure cache-pressure story those writes should not care. So
+either something in `set_prop` touches more than the addressed slot, or the growth is in a structure
+the probe is not thinking about (the undo log, the dirty-set bookkeeping, a presence vector reallocating).
+**Recorded as a flag with that reasoning rather than a mechanism**, because the cache story is the
+one that sounds right and the probe's own access pattern argues against it — and this session has
+three records (804, 808, 814) of what the plausible-sounding mechanism costs.
+
+### Why this axis belongs in the corpus
+
+Nothing in `bench_all`, `bun run bench`, `bench:gremlin` or `bench:usage` varies it: the first three
+build a fixture and query it, and `bench:usage` only reaches it incidentally, through elapsed time at
+a long budget — which is how item 818 saw a 1.64x where the real figure was 39x. **An engine whose
+ids are never reused has a history dimension, and it is unmeasured by construction.** The probe above
+is five lines of fixture and one loop; the next pass that wants it should add it to `storage_bench`
+rather than rebuild it.
+
+Gates: `cargo build --release` 0; `git status` clean; the temporary example removed.
