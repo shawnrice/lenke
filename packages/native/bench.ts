@@ -786,17 +786,45 @@ const CASES: Case[] = [
   {
     // DEPTH 4, the boundary of items 600-602's correction. Item 600 said plainly that "depth 4 is
     // measurement only; its terms are not derived"; items 687-689 derived them by reducing depth 4
-    // to the depth-3 count plus one correction, and item 692 built that in TYPESCRIPT.
+    // to the depth-3 count plus one correction, item 692 built that in TYPESCRIPT and item 693
+    // built it in RUST AND WASM.
     //
-    // So this row is now ASYMMETRIC and that is the point of keeping it: ts 3365.6 -> 17.7ms
-    // (190x) while ffi still enumerates at ~82ms, which makes `ts/ffi` read 0.22x — TS ahead of
-    // native on this one row, the reverse of every other. Native is the open half.
-    name: 'count 4-hop quantified [TRAIL, TS only]',
+    // ⚠️ BOTH ENGINES NOW TAKE THE CLOSED FORM HERE. This row's comment claimed for a while that
+    // "ffi still enumerates at ~82ms" and that "native is the open half", and the row was NAMED
+    // "TS only" — all three outlived item 693 by describing the state item 692 left behind. At
+    // 20,000 vertices the recorded figures are ts 3365.6 -> 18.3 (190x, item 692) and ffi
+    // 82.4 -> 10.5 (7.8x, item 693), both reproduced at item 732 as ts 18.2-18.6 and ffi 10.6.
+    //
+    // ⚠️ AND THOSE FIGURES ARE AT 20,000 VERTICES, WHICH IS NOT WHAT THIS ROW RUNS. The bench
+    // default is `BENCH_N=200000`, where the same two rows read ts 264.6 and ffi 122.7 (item 732).
+    // A figure quoted in a row's comment is only comparable to a run at the N it was measured at;
+    // pass `BENCH_N=20000` to compare against the numbers above.
+    name: 'count 4-hop quantified [TRAIL]',
     ...onGraph(
       () => graphDoc,
       (e, g) => void e.query(g, 'MATCH (a:Person)-[:KNOWS]->{4}(y) RETURN count(*) AS c'),
     ),
   },
+  // 🛑 THERE IS DELIBERATELY NO DEPTH-5 ROW, and the reason is the measurement itself.
+  //
+  // Depth 5 is the first depth neither engine has a closed form for — native refuses it in the
+  // `deep_trail` gate (`fastpath.rs`) and says why: `u4` is four disjoint cases and what they
+  // need from the adjacency is unpriced, which is item 686's rule. So its cost is the prize for
+  // deriving `u4`, and item 732 priced it by adding this row, measuring, and taking it back out:
+  //
+  //   20,000 vertices    depth 4 (closed form)    depth 5 (enumerated)
+  //   ts                 18.6 ms                  16,325.9     878x
+  //   ffi                10.6 ms                  402.9         38x
+  //
+  // I carried the row for one measurement on item 692's precedent — its depth-4 row was carried
+  // as "unbuilt" before the formula existed, which is what made 692/693 measurable the moment it
+  // landed. That precedent does NOT transfer. Unbuilt depth 4 cost 82 ms on ffi; unbuilt depth 5
+  // costs 16.3 SECONDS on ts at a tenth of this bench's default N, so at `BENCH_N=200000` over
+  // five reps it would add something like a quarter-hour to a routine sweep. The corpus's slowest
+  // row today is 13.2 s TOTAL. A regression sweep nobody runs because it takes a quarter-hour
+  // catches nothing, so the number lives here and in item 732 instead of in the sweep.
+  //
+  // To re-price it, add the row back temporarily rather than reaching for `BENCH_N=200000`.
   {
     // The other half: the same walk, but PROJECTING an endpoint property, so 1,000,000 rows are
     // built. Traversal plus the row pipeline, which is the shape a user actually runs.

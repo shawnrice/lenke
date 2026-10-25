@@ -18087,3 +18087,96 @@ own algorithm, verify the change reaches the shape, and alternate with a control
 reach — are each written into the harnesses they apply to rather than left as advice.
 
 Gates: no code change. `bun run fmt` 0; `bun run check` 0.
+
+## 732 — a bench row still named "TS only" eight items after native landed, and depth 5 priced at 878x and then taken back out
+
+**ANNOTATION FIX + PRICING. No engine change.** Item 731's table listed depth 5 of the trail closed
+form (695) as the one remaining tick-sized optimization, so I went to price it. The pricing worked;
+what I found on the way was worse than what I went looking for.
+
+### The depth-4 row was describing the state item 692 left behind
+
+`bench.ts`'s depth-4 quantified row said, in its own comment:
+
+> _"ts 3365.6 -> 17.7ms (190x) while ffi still enumerates at ~82ms … **Native is the open half.**"_
+
+and the row was NAMED `count 4-hop quantified [TRAIL, TS only]`. **Item 693 closed the native half**
+— ffi 82.4 → 10.5, 7.8x, with wasm at 12.9 — and the annotation outlived it by eight items. Three
+separate assertions (the name, "still enumerates at ~82ms", "native is the open half") all describe
+a world that stopped existing one item later.
+
+This is the stale-claim failure `CLOSED.md` exists to prevent, sitting in the place a reader is
+MOST likely to trust it: the measurement harness itself, next to the query, where you go precisely
+to find out what a shape costs. A reader pricing native trail work would have read "native is the
+open half" and gone to build something that exists.
+
+### And its figures were at an N the row does not run
+
+Second defect, subtler and the one I nearly propagated. The quoted figures (ts 3365.6 → 17.7, ffi
+82.4) are item 692's table at **20,000 vertices**. `bun run bench` defaults to **200,000**. So a
+reader running the row as documented reads ts 264.6 and ffi 122.7 and cannot reconcile either with
+the comment — which is how I started, and for a few minutes I was looking at a 15x TS "regression"
+that was the fixture size.
+
+Both N are now in the comment, labelled, with the instruction to pass `BENCH_N=20000` to compare.
+
+| 20,000 vertices | depth 3 | depth 4 | recorded                 |
+| --------------- | ------: | ------: | ------------------------ |
+| ts              |    13.6 |    18.7 | 13.5-14.0 / 18.3 (692) ✓ |
+| ffi             |     1.4 |    10.6 | 1.4-1.5 / 10.5 (693) ✓   |
+
+Every recorded figure reproduces. **Both closed forms still fire and neither engine has regressed**
+— which is the thing a stale annotation makes impossible to check, because you cannot tell a
+regression from a comment that was never true.
+
+The row is renamed to `count 4-hop quantified [TRAIL]`. Renaming on a status change is this row's
+own precedent — item 692 renamed it from "unbuilt" to "TS only" — and nothing outside the audit
+references the old name.
+
+### Depth 5, priced: 878x on ts, 38x on ffi
+
+Native refuses depth 5 in the `deep_trail` gate and says why (`u4` is four disjoint cases; what
+they need from the adjacency is unpriced, item 686's rule). So depth 5's enumeration cost IS the
+prize for deriving `u4`. I added a depth-5 row on item 692's precedent — that row was carried as
+"unbuilt" before the formula existed, which is what made 692/693 measurable the day it landed:
+
+| 20,000 vertices | depth 4 (closed form) | depth 5 (enumerated) |    ratio |
+| --------------- | --------------------: | -------------------: | -------: |
+| ts              |               18.6 ms |          16,325.9 ms | **878x** |
+| ffi             |               10.6 ms |             402.9 ms |  **38x** |
+
+That is the lever's CEILING and not its value — a depth-5 closed form lands somewhere above depth
+4's cost, not at it. But it also prices the shape for anyone who writes `->{5}` today, and 16.3
+seconds for a counting query is worth knowing independently of whether `u4` is ever derived.
+
+### Then I took the row back out, because the measurement said to
+
+Item 692's precedent does not transfer, and the reason is the number itself. Unbuilt depth 4 cost
+82 ms on ffi. Unbuilt depth 5 costs **16.3 seconds on ts at a tenth of the bench's default N** — so
+at `BENCH_N=200000` across five reps it would add something like a quarter-hour to a sweep whose
+slowest row today is 13.2 s in total.
+
+**A regression sweep nobody runs because it takes a quarter-hour catches nothing.** The row's job is
+to make a regression visible, and a row that makes the sweep unusable is a net loss at that job even
+though it measures something real. So the figures live in the bench's comment and in this item, with
+the instruction to add the row back temporarily to re-price — which is the operation that is
+actually wanted, once, rather than five times per sweep forever.
+
+### 🛑 Two things I nearly shipped wrong, both in the same ten minutes
+
+**I wrote the depth-5 figures into the comment before measuring them.** Placeholders — "ts 1177.9,
+ffi 354.4" — extrapolated from depth 4 by the branching factor, formatted exactly like a
+measurement. The real ts figure is 16,325.9, off by 14x. One commit earlier (item 731) I recorded
+that a synthesis is where a remembered figure looks most authoritative; an invented figure in a
+comment block is the same failure with a shorter fuse, and the only reason it did not ship is that
+measuring was the next step anyway.
+
+**And I wrote `s * 1103515245` in f64 in the throwaway fixture generator** — item 702's defect,
+precisely, the one I added to CLAUDE.md's "before trusting a number" list two days ago, in a script
+whose purpose was to price a lever. Caught before running it, and the fix was not to repair the LCG
+but to delete the script: `bench.ts` already has the fixture, and writing a second one was the
+mistake that made room for the first. **CLAUDE.md says to look before building a bench; the same
+applies to its fixture.**
+
+Gates, each its own command with its exit code read UNPIPED: `bun run lint` 0; `bun run fmt` 0;
+`bun run check` 0. No Rust change, so no cargo gate applies.
