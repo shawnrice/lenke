@@ -22092,3 +22092,64 @@ through inserts and deletes.
 **CORRECTION to this file's own open-set summary**, which calls the remaining lever "item **617**'s
 CSR for TS multi-hop counts". Item 617 is the GQL point-lookup-by-id fix (`Plan::NodeSeed`, 1258x);
 the CSR diagnosis is in item **795**'s sweep, which cites 617 rather than being it.
+
+## 808 — the widest bench gap is CLOSED, not open: interning is worth NOTHING, and the one available layout was refuted at item 200
+
+**DONE (no engine change).** Item 807 shipped `probe:adjlayout` and read it as "a flat INTERNED
+index is 3.4-3.7x on the lookup". **Two discriminator arms, added one tick later, retract that
+framing and close the target.**
+
+**The arms that were missing.** `numeric` changed TWO things at once — two lookups became one AND
+the key became an SMI — and 807 credited the win to the interning. Two new arms separate them:
+`prekeyed` (ONE lookup, string key, pre-built so nothing is concatenated per call) and `short keys`
+(ONE lookup into a 200,000-entry map, short key, still built per call).
+
+```text
+  nested       49.6 / 54.2 / 68.3 ns/lookup   two long-lived-key lookups — the engine
+  concat      103.2 /107.5 /106.9             one lookup, key concatenated per call
+  short keys   83.5 / 83.9 / 90.7             one lookup, SHORT key, still built per call
+  prekeyed     14.2 / 14.9 / 14.9             one lookup, string key ALREADY in hand
+  numeric      14.2 / 14.6 / 15.6             one lookup, ids and types INTERNED
+  CONTROL       6.5 /  8.1 /  8.3             an 8-entry map — NOT a one-lookup floor
+```
+
+**1. INTERNING IS WORTH NOTHING.** `prekeyed` 14.2-14.9 against `numeric` 14.2-15.6 — a long-lived
+STRING key costs what an SMI costs. **Item 807's "flat INTERNED index" is the wrong name for the
+lever**; there is no case here for an id→u32 intern table, which was the expensive half of what 807
+said the change would need.
+
+**2. WHAT COSTS IS BUILDING A KEY PER LOOKUP.** `short keys` does ONE lookup where nested does two
+and is still **WORSE** (83.5-90.7 against 49.6-68.3). A fresh string is ~70 ns of allocation plus a
+hash never computed; a long-lived string carries V8's cached hash. That is `concat`'s mechanism too,
+now isolated rather than asserted.
+
+**3. SO THE LEVER IS 3.3-4.5x AT THE LOOKUP AND NOT AVAILABLE.** Three records between it and a
+change:
+
+- **Item 590** measured the one-lookup version at the QUERY level: "per-edge `Map.get` on a memoized
+  degree map 42.07 — **only 1.5x**", against the per-edge bucket lookup's 61.80. The lookup-level
+  3.3-4.5x does not survive the trip to a query.
+- **Item 590** also measured a flattened CSR at **37.65 ms to BUILD** on 200k edges — "so no help at
+  all" for a per-query index.
+- The one layout that gets a single lookup with keys ALREADY IN HAND is the **type-first inversion**
+  (`Map<type, Map<vertexId, Set<Edge>>>`): the type string is long-lived and there are ~8 of them, so
+  the outer hit is a tiny cache-resident map and the inner is one long-lived-key lookup. **Refuted at
+  item 200 and USER-CONFIRMED CLOSED** — it wins the typed lookup 2.2-4.1x (which is what this probe
+  re-derives) and **loses get-by-id 1.4x at three edge types and 4.8x at twenty**, with the
+  dual-spine variant costing 2.0-2.4x on `indexEdgeLabel`.
+
+**So item 795's "no tick-sized win remains on the widest row" is stronger than it was stated: there
+is no win of any size available on that component without the opt-in index item 200 left as the only
+surviving direction — a feature with an API, not an optimization.** The target is closed, not open
+with a number.
+
+**A correction to item 807's own reading.** Its `CONTROL inner only` is an 8-entry map, and 807 used
+its 6.3-8.4 ns as the floor for "one lookup" to attribute ~45 ns to the outer. The arithmetic holds —
+the outer IS most of the nested cost — but 6.5 ns is a tiny-cache-resident-map number and does not
+generalize; `prekeyed` at 14.2-14.9 is what one lookup into a 200,000-entry map actually costs. Both
+arms stay, the control relabelled.
+
+**Eleventh already-closed candidate caught by reading before building this session** (789, 793, 795,
+796, 802's item 454, 805's 784, 806's rungs, 807's 450/453/459/462, and now 590 and 200). The two
+that found something new (803, and this probe's own discriminators) both came from measuring a pair
+that differed in exactly one thing.
