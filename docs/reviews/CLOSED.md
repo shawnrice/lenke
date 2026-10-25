@@ -21053,3 +21053,38 @@ a strict subset of both. They stay because they do not depend on that internal.
 
 **Still open:** a conjunct reading BOTH ends cannot hoist (pinned as a test); evaluating one per
 edge against the bound start is the items 121-123 correlation question.
+
+## 783 — NATIVE: REFUTED, extending `unary_str_fn` is worth 3%. Do not re-attempt; the instrument is now committed
+
+**REFUTED (no change).** The trim family (`trim`, `btrim`, `ltrim`, `rtrim`) sits on the general
+per-row dispatch while `upper`/`lower` are in `unary_str_fn`, and item 765 measured that exact move
+at 2.4x — so it reads like a free repeat. Measured by the new `examples/scalarfn_bench`,
+`count(f(a.s))` over the same rows, min of 9 at 200k and 5 at 1M:
+
+|                                |    200k |  1M | output | dispatch       |
+| ------------------------------ | ------: | --: | ------ | -------------- |
+| `char_length`                  |  6.2 ns | 8.7 | `Num`  | **vectorized** |
+| `size`                         |     6.4 | 8.8 | `Num`  | general        |
+| `upper`                        |     7.5 | 9.7 | String | **vectorized** |
+| `trim`/`btrim`/`ltrim`/`rtrim` | 7.7-7.8 | 9.9 | String | general        |
+
+**`size` is the measurement that settles it** (item 339: a two-way difference needs a third
+measurement). It is general-dispatch and returns a `Num` with no output string — `char_length`'s
+exact shape on the fast path — and they land **0.2 ns apart, 3%, under the noise floor**. So table
+membership is worth ~0.2 ns/row; the 1.5 ns separating the two bands is the OUTPUT STRING
+ALLOCATION, which every candidate does and the table cannot avoid.
+
+**Item 765's 2.4x does not transfer because its baseline was 30.33 ns/row.** Items 765/767 removed
+the boxing that made the clone dominant and took the headroom with it. (The inverse of item 767,
+where a refuted path came back once the denominator shrank — same mechanism, opposite direction.)
+`reverse`/`size` were never candidates: the table's doc already excludes them as polymorphic over
+lists.
+
+**Where scalar work should go instead:** the OUTPUT column, not the dispatch. `Num`/`Bool` output is
+1.5 ns/row cheaper than a string, and `split` (a LIST) is **49 ns at 1M, 5x the next worst** — but
+its body is already one `Vec` and one `GStr` a piece with no double scan, so that is allocation
+cost, not waste. A win there needs a different output representation.
+
+**The instrument is committed:** `examples/scalarfn_bench`, indexed in `examples/README.md`. Items
+759, 765, 766 and 767 each rebuilt an ad-hoc harness for this question. Adding a name there now says
+which band it lands in.

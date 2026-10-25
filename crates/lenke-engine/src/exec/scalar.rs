@@ -1320,6 +1320,46 @@ pub(super) fn eval_binary_num(
 ///
 /// The bodies are the SAME expressions the general dispatch uses, read off a `&str` instead of
 /// a `Value::Str`: `str_map`'s `Value::Str(f(s).into())` and the two length arms.
+///
+/// REFUTED, with numbers, at item 783: do NOT extend this table.
+///
+/// The obvious next step is the TRIM FAMILY — `trim`, `btrim`, `ltrim` and `rtrim` are
+/// one-argument string functions at this arity, sitting on the general per-row dispatch while
+/// `upper` and `lower` are here. (`reverse` and `size` are NOT candidates — the paragraph above
+/// excludes them for being polymorphic over lists, which is exactly what makes `size` the control
+/// this refutation needed.) Item 765 measured such a move at 2.4x, so it reads like a free repeat. It is
+/// not: that 2.4x was against a 30.33 ns/row baseline, and the work since has compressed this whole
+/// family to ~6-10 ns, taking the headroom with it.
+///
+/// Measured by `examples/scalarfn_bench` (added for this), `count(f(a.s))` over the same rows,
+/// min of 9 at 200k and 5 at 1M:
+///
+/// ```text
+///                        200k        1M      output shape          dispatch
+///   char_length        6.2 ns     8.7 ns    Num                    VECTORIZED (here)
+///   size               6.4        8.8       Num                    general
+///   upper              7.5        9.7       a new String           VECTORIZED (here)
+///   trim / btrim       7.7        9.9       a new String           general
+///   ltrim / rtrim      7.8        9.9       a new String           general
+///   reverse            7.8        9.9       a new String           general
+/// ```
+///
+/// `size` IS the decisive measurement and the reason it is in that example's list: it is on the
+/// general dispatch and returns a `Num` without allocating an output string, which is exactly
+/// `char_length`'s shape here. The two land 0.2 ns apart — 3%, under this repo's noise floor. So
+/// membership in this table is worth ~0.2 ns a row, and the 1.5 ns step that separates the two
+/// bands is the OUTPUT STRING ALLOCATION, which every candidate name does and which being in this
+/// table cannot avoid.
+///
+/// Without `size` the pair `upper` 7.5 against `trim` 7.7 has two readings — the fast path buys
+/// nothing, or it is not firing at all — and nothing in the pair distinguishes them (item 339).
+/// That is why the refutation needed a third measurement rather than an explanation.
+///
+/// What this says about where scalar work should go: not at the dispatch, which items 759 and 765
+/// already took, but at the output column. A function returning `Num` or `Bool` is 1.5 ns cheaper
+/// per row than one returning a string, and `split` — which returns a LIST — is 49 ns at 1M, five
+/// times the next worst. Its body is already a single `Vec` and one `GStr` a piece, so that cost is
+/// the allocation itself, not waste around it.
 pub(super) fn unary_str_fn(name: &str) -> Option<fn(&str) -> Value> {
     Some(match name {
         "upper" => |s: &str| Value::Str(s.to_uppercase().into()),

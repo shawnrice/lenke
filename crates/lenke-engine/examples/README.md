@@ -71,6 +71,7 @@ enumeration's is flat.
 | What does a scalar min/max cost by COLUMN TYPE and ENCODING?                   | `strag_421`                          |
 | What does a PAGED query pay, and does the page's depth matter?                 | `skippage_428`                       |
 | What does a filter's EXPRESSION cost, at equal selectivity?                    | `exprpred_437`                       |
+| What does ONE scalar function call cost, and is its name vectorized?           | `scalarfn_bench`                     |
 | Why is DETACH DELETE the slow write, and in WHAT does it scale?                | `detach_442`                         |
 
 **Deferred** (need crate-private access or a large bespoke fixture, so not in a
@@ -211,6 +212,21 @@ question in its module header — read the header before touching it.
   while the same query with an `ORDER BY` succeeds. Both engines agree on all four
   spellings, so the differential fuzzer cannot find it. Run it before changing paging in
   either engine.
+
+- `scalarfn_bench` — the per-call question for the scalar library. `Expr::Call` is a chain of
+  specialization tables consulted by NAME and arity (`unary_num_fn`, `unary_str_fn`,
+  `binary_str_pred_fn`, `binary_num_fn`; items 759, 765, 766) and anything no table claims falls to
+  the general per-row dispatch, so "is this name vectorized?" has a measurable answer. It exists
+  because items 759, 765, 766 and 767 each rebuilt an ad-hoc harness to ask it — four times for one
+  question. Every case is `count(f(a.s))` over the same rows, so only the expression differs, and
+  two controls sit at the bottom: `count(a.s)` with no call at all, and `count(abs(a.n))`, a
+  vectorized NUMERIC call that no string-side change can reach. `size` is in the list on purpose —
+  it is on the general dispatch and returns a `Num` without allocating an output string, which is
+  `char_length`'s shape on the vectorized path, so the pair separates "the fast path buys nothing"
+  from "the fast path is not firing". That is what refuted extending the table at item 783: the two
+  land 0.2 ns apart, while the 1.5 ns that separates the two bands is the OUTPUT STRING
+  allocation. The fixture mixes ASCII and non-ASCII because `utf16_len` has an ASCII fast path
+  (item 767), so an all-ASCII fixture prices `char_length` as a different function than it is.
 
 - `strag_421` — the column-TYPE question for a scalar aggregate. `try_scan_num_agg`
   folds a `Num` column and its gate declines every other ("non-numeric column: the
