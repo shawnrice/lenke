@@ -21164,3 +21164,39 @@ does reach these paths (item 785's value probe shows `round(a.x)` returning `Num
 count changes, and nothing in the suite looks at the sign of a zero returned by `nullif`** — a
 silent divergence. The comparison itself is safe: `value::equals` on two `Num` is plain f64 `==`, so
 NaN equals nothing and `-0.0 == 0.0` either way.
+
+## 787 — NATIVE: `nullif` gets a typed arm — 3.26x. The `-0.0` trap item 786 predicted was real, untested and SILENT. The two-arg numeric band is now closed
+
+**DONE.** `nullif` cannot join `binary_num_fn` (it returns a NULL), so the numeric case gets a named
+function `eval_nullif` with a typed arm over two `Col::Num`, general dispatch for every other kind
+(it is polymorphic over strings, lists, temporals). **Deliberately not a second table:** a
+`fn(f64, f64) -> Value` table would have one entry whose operand convention differs from every other
+arm, and the next name added would inherit the convention rather than the exception.
+
+`count(nullif(a.n, 7))` **28.7 → 8.8 (3.26x)** at 200k, **31.6 → 11.8 (2.70x)** at 1M. Six controls
+within 1% (mod, round/2, power, atan2, char_length, count(a.s)). Three alternated rounds, arms
+grepped. At 8.8 ns it is now the cheapest two-arg numeric — correct, since its body is one compare
+where `mod`/`power` call libm.
+
+**THE TRAP, confirmed exactly as item 786 predicted it.** Every other arm takes operands through
+`num_of`/`zero_folded` (`-0.0` → `+0.0`); `nullif` must not, because the general dispatch returns
+`args[0].clone()` RAW. Mutant: apply the conventional fold to the returned value → `Num(0.0)` where
+the engine answers `Num(-0.0)`, **with 1224 pass 0 fail**. The asymmetry is the subtlety: the
+COMPARISON needs no care (`value::equals` on two `Num` is plain `f64 ==`, so `-0.0 == 0.0` already
+and NaN equals nothing), so folding changes only what the SURVIVING rows carry — no row count moves,
+which is why the suite was blind.
+
+One test pins it, teeth verified. Two load-bearing details: **both operands must be STORED columns**
+(a broadcast literal may not reach `Col::Num`, so `nullif(a.x, -1)` could pass without touching the
+arm), and **the assertion is on the `Debug` rendering** (`-0.0 == 0.0` is true, so an `assert_eq!` on
+the float passes under the mutant). Values diffed across arms over twelve spellings: identical.
+
+**THE TWO-ARG NUMERIC BAND IS CLOSED** — every name is table-claimed or has its own arm:
+
+```text
+  coalesce 3.2   nullif 8.8   mod 10.1   round/2 10.1   power 13.1   atan2 16.3
+```
+
+**Still open (not a dispatch question):** `atan2` 16.3 vs `mod` 10.1 is the libm bodies, per item 785. **Process note:** a first values diff reported six missing lines; the cause was piping the run
+through `head -6`, which SIGPIPEs `tee` and truncates its file — same shape as the `tail -8`
+truncations at items 764/765.

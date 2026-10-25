@@ -10259,6 +10259,57 @@ fn a_nested_group_count_over_an_unknown_edge_type_was_already_right() {
 
 // --- round() with a non-finite digit count ---
 
+/// `nullif(x, y)` must return its first argument RAW — above all the SIGN OF A ZERO.
+///
+/// Item 787 lifted the numeric case onto a typed arm over two `Col::Num`. Every other arm in
+/// `scalar.rs` receives its operands through `num_of`/`zero_folded`, which collapses `-0.0` to
+/// `+0.0` because the numeric model has no negative zero; `nullif` must NOT, because the general
+/// dispatch returns `args[0].clone()` and a stored `-0.0` has to come back as `-0.0`.
+///
+/// Item 786 predicted this from reading the code and mutation confirmed both halves: applying the
+/// conventional fold to the returned value answers `Num(0.0)` here, and the whole suite stays
+/// green — no row count changes, and nothing else looks at the sign of a zero returned by
+/// `nullif`. This test is what makes that fold fail.
+///
+/// Both operands are STORED columns, which is what the typed arm requires: a broadcast literal may
+/// not reach `Col::Num`, so a test written with `nullif(a.x, -1)` could pass while never touching
+/// the arm it is here to pin.
+#[test]
+fn nullif_returns_its_first_argument_raw_including_a_negative_zero() {
+    let mut b = Builder::default();
+
+    // (x, z) per row: the trap first, then the cases that must still null out, then NaN — which
+    // equals nothing, so it SURVIVES rather than nulling.
+    for (x, z) in [
+        (-0.0_f64, -1.0_f64),
+        (-0.0, 0.0),
+        (0.0, -0.0),
+        (f64::NAN, f64::NAN),
+        (1.0, 1.0),
+    ] {
+        b.node(&["Z"], &[("x", Value::Num(x)), ("z", Value::Num(z))]);
+    }
+
+    let store = b.build();
+    let q = "MATCH (a:Z) RETURN nullif(a.x, a.z) AS v";
+    let out = crate::exec::try_run(&opt_plan(q, &store), &store).unwrap();
+    let cells: Vec<String> = out.rows.iter().map(|r| format!("{:?}", r[0])).collect();
+
+    // `Num(-0.0)` and `Num(0.0)` are DIFFERENT strings under `Debug`, which is the whole reason
+    // this assertion is on the rendering rather than on a float comparison: `-0.0 == 0.0` is
+    // true, so an `assert_eq!` on the value would pass under the mutant.
+    assert_eq!(
+        cells,
+        vec![
+            "Num(-0.0)".to_string(),
+            "Null".to_string(),
+            "Null".to_string(),
+            "Num(NaN)".to_string(),
+            "Null".to_string(),
+        ]
+    );
+}
+
 /// `round(x, digits)` with a NON-FINITE digit count must yield NaN — which is `Num(NaN)` at this
 /// level and `null` at JSON egress, where the engine coerces it (the K4 rule).
 ///

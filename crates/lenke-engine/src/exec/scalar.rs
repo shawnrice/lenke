@@ -1488,6 +1488,60 @@ pub(super) fn binary_str_pred_fn(name: &str) -> Option<fn(&str, &str) -> bool> {
     })
 }
 
+/// `nullif(x, y)` over two argument COLUMNS, with a typed arm for two `Col::Num` (item 787).
+///
+/// WHY A NAMED FUNCTION AND NOT A TABLE ENTRY. `nullif` returns a NULL, so it cannot join
+/// [`binary_num_fn`] (`fn(f64, f64) -> f64`), and the obvious alternative — a second table of
+/// `fn(f64, f64) -> Value` — would be a table with ONE entry whose convention differs from every
+/// other arm in this file. The next name added to it would inherit the convention and not the
+/// exception, which is exactly the trap below. So the exception lives in a function named for the
+/// one function that needs it.
+///
+/// THE EXCEPTION: THE OPERANDS ARE RAW, NOT FOLDED. Every other arm here receives its operands
+/// through [`value::num_of`] or `zero_folded`, which collapses `-0.0` to `+0.0` because the
+/// numeric model has no negative zero. `nullif` must NOT: the general dispatch returns
+/// `args[0].clone()`, the RAW first argument, so a stored `-0.0` has to come back as `-0.0`. An
+/// arm fed folded operands would answer `0.0` there — no row count changes, and nothing in the
+/// suite looks at the sign of a zero returned by `nullif`, so it would be silent.
+///
+/// The COMPARISON needs no such care and that asymmetry is the whole subtlety: `value::equals` on
+/// two `Value::Num` is plain `f64 ==`, under which `-0.0 == 0.0` is already true and `NaN` equals
+/// nothing — so folding would not have changed which rows null out, only what the surviving rows
+/// carry.
+///
+/// A `Col::Num` holds no null, so the general arm's two `is_null` tests are satisfied by
+/// construction and are not re-spelled. Measured at 200,000 rows: `count(nullif(a.n, 7))` 28.4 ns
+/// a row on the general dispatch, where a table-claimed two-argument numeric costs 10-16
+/// (item 786).
+pub(super) fn eval_nullif(a: Col, b: Col) -> Result<Col, String> {
+    let n = a.len().min(b.len());
+    let mut out: Vec<Value> = Vec::with_capacity(n);
+
+    if let (Col::Num(xs), Col::Num(ys)) = (&a, &b) {
+        for i in 0..n {
+            // RAW on both sides — see the doc above. `xs[i] == ys[i]` IS `value::equals`'s own
+            // numeric arm.
+            out.push(if xs[i] == ys[i] {
+                Value::Null
+            } else {
+                Value::Num(xs[i])
+            });
+        }
+
+        return Ok(Col::Gen(out));
+    }
+
+    // Any other column kind keeps `call_scalar_checked` as the single definition — `nullif` is
+    // polymorphic (it works on strings, lists, temporals) and only the numeric case is lifted.
+    for i in 0..n {
+        let x = a.value_at(i);
+        let y = b.value_at(i);
+        out.push(call_scalar_checked("nullif", &[x, y])?);
+    }
+
+    Ok(Col::Gen(out))
+}
+
 /// A two-argument string predicate over two argument COLUMNS (item 766), reading `&str` out of
 /// each and writing a `Col::Bool`.
 ///

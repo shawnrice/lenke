@@ -1954,6 +1954,16 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
             // The two-argument string PREDICATES (item 766), which also get a `Col::Bool`
             // output rather than a boxed one — see `eval_binary_str_pred` for why that is
             // available to a predicate and not to the other vectorized arms.
+            // `nullif` (item 787), which the two tables below cannot claim: it returns a
+            // NULL, so it is not an `fn(f64, f64) -> f64`, and item 786 measured it at 28.4 ns a
+            // row on the general path where a table-claimed two-argument numeric costs 10-16.
+            // `eval_nullif` carries the one exception this file has to the folded-operand
+            // convention; its doc is where that is explained.
+            if args.len() == 2 && name == "nullif" {
+                let x = eval(&args[0], store, batch)?;
+                let y = eval(&args[1], store, batch)?;
+                return super::scalar::eval_nullif(x, y);
+            }
             if args.len() == 2 {
                 if let Some(f) = super::scalar::binary_str_pred_fn(name) {
                     let x = eval(&args[0], store, batch)?;
