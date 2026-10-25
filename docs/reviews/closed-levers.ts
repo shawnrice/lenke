@@ -47,8 +47,31 @@ const ROOTS = ['packages', 'crates'];
 // `WITHDRAWN` and `NOT BUILT` are included because items 312 and 442 used them for the same act.
 const MARKERS = /(REJECTED|REVERTED|REFUTED|WITHDRAWN|NOT BUILT|WAS TRIED|DECLINED ON|🛑)/;
 
-/** `(item 644)` / `(audit item 424)` / `item 358` — the first one on the line. */
-const ITEM = /\(?\b(?:audit )?item\s+(\d{2,4})\b\)?/i;
+/** `(item 644)` / `(audit item 424)` / `item 358`. */
+const ITEM = /\b(?:audit )?item\s+(\d{2,4})\b/gi;
+
+/**
+ * The item a marker CITES, preferring one on the marker's own line.
+ *
+ * The first version took the first match in the whole comment block, which cites whatever the prose
+ * happens to mention first: a marker about item 698 that opened by referring to 605 was printed as
+ * "605", and the only reason it is right now is that I reordered the sentence to suit the tool.
+ * A citation that depends on prose order is a citation a reader cannot trust, so the rule is
+ * explicit — the marker line wins, the block is the fallback, and a block citing several items
+ * shows the count so the reader knows to read it rather than trust one number.
+ */
+const citation = (markerLine: string, block: string): string => {
+  const on = [...markerLine.matchAll(ITEM)].map((m) => m[1]);
+  const all = [...new Set([...block.matchAll(ITEM)].map((m) => m[1]))];
+
+  const primary = on.length > 0 ? on[0] : all[0];
+
+  if (primary === undefined) {
+    return '';
+  }
+
+  return all.length > 1 ? `${primary}+` : primary;
+};
 
 const args = process.argv.slice(2);
 const orphansOnly = args.includes('--orphans');
@@ -142,7 +165,7 @@ for (const file of files) {
     hits.push({
       file,
       line: i + 1,
-      item: block.join(' ').match(ITEM)?.[1] ?? '',
+      item: citation(text, block.join(' ')),
       text: text.replace(/^(\/\/+|\/\*+|\*+|#+)\s?/, '').slice(0, 96),
       body: fold(block.join(' ')),
     });
