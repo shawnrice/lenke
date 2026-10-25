@@ -1832,6 +1832,31 @@ impl Store {
                 .push(u32::try_from(self.csr_in.len()).expect("edge count exceeds u32"));
         }
         // Per-type partitions: one (off, adj) per etype id, filled in out_adj/in_adj order.
+        //
+        // COST, AND WHY RE-ARMING THIS ON A WRITE IS NOT A FREE WIN (items 851/852). Nothing
+        // outside the LOAD paths calls this, so one `add_edge` leaves the overlay stale for the
+        // session — a demotion item 851 measured at 1.8x to 10.7x depending on edge density AND
+        // the queried type's selectivity. The obvious fix, rebuilding here at a write boundary,
+        // was then priced at 50,000 nodes (min of 5, each arm from a loaded store):
+        //
+        //   epv  types   fresh   stale   rebuild   BREAK-EVEN in reads
+        //     2      2     161     295       860          6.4
+        //     2     50     163     304      3764         26.8
+        //    10     50     160     574      8237         19.9
+        //    50     50     159    1483     21579         16.3
+        //
+        // So a rebuild costs 6 to 27 stale reads. It wins only where that many reads follow a
+        // write with no write between them — the bulk-update-then-serve shape — and loses on any
+        // workload with frequent small write batches. An UNCONDITIONAL commit hook is therefore
+        // the wrong change, and the policy it would need depends on a future read count the store
+        // does not have.
+        //
+        // The loop below is also where the rebuild's second term lives: `for t in &mut typed`
+        // pushes an offset for EVERY type at EVERY node, including types with no edge there, so
+        // the offset arrays are O(types x nodes) per direction. That is the dominant term at low
+        // density (860 -> 3764 us for 25x the types at the same edge count) and it is a property
+        // of the dense per-type offset LAYOUT, not of this loop — shrinking it means a sparse
+        // layout, which is item 825's class of decision rather than a tick.
         let ntypes = self.etype_ids.len();
         let build_typed = |adjs: &[Vec<Adj>]| -> Vec<(Vec<u32>, Vec<Adj>)> {
             let mut typed: Vec<(Vec<u32>, Vec<Adj>)> = (0..ntypes)

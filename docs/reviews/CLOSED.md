@@ -25127,3 +25127,71 @@ fixture anyone would write measures nothing. All three are now recorded.
 
 Gates: `bun run fmt` 0; `bun run fmt:check` 0; `bun run check` 0; `cargo clippy --all-targets -- -D
 warnings` 0; `git status` clean of any engine change (docs only), the temporary example removed.
+
+## 852 — rebuild-at-commit REFUSED with its number: a rebuild costs **6 to 27 stale reads**, and the rebuild's own second term is O(types × nodes) by layout
+
+**MEASUREMENT, no behaviour change** (a temporary example, removed; both findings recorded at
+`rebuild_csr`). Item 851 priced the CSR demotion at 1.8-10.7x, excluded lazy-on-read structurally,
+and left exactly one tractable design: rebuild at a write boundary. **That design needed one number
+nobody had — what a rebuild costs relative to what a stale read costs — and it does not survive it.**
+
+50,000 nodes, min of 5, each arm from its own loaded store. Break-even in reads is
+`rebuild / (stale − fresh)`:
+
+```text
+  epv  types   fresh   stale   rebuild   BREAK-EVEN in reads
+    2      2     161     295       860          6.4
+    2     50     163     304      3764         26.8
+   10      2     161     469      2929          9.5
+   10     50     160     574      8237         19.9
+   50      2     158    1225     14937         14.0
+   50     50     159    1483     21579         16.3
+```
+
+**A rebuild costs between 6 and 27 stale reads.** It wins where that many reads follow a write with
+no write between them — the bulk-update-then-serve shape, which is real — and loses on any workload
+with frequent small write batches. So an **unconditional** commit hook is the wrong change, and the
+policy that would make it right depends on a future read count the store does not have. Refused,
+with the number that refuses it.
+
+### The rebuild's second term, found in the same measurement
+
+`rebuild_csr` cost **860 µs at 2 edge types and 3,764 at 50**, on the same edge count — 4.4x for
+25x the types. The cause is in the loop:
+
+```rust
+for adj in adjs {          // every node
+    for a in adj { … }
+    for t in &mut typed {  // EVERY type
+        t.0.push(…);
+    }
+}
+```
+
+An offset is pushed for every type at every node, including types with no edge there, so the offset
+arrays are **O(types × nodes) per direction** — 5M pushes at 50 types over 50,000 nodes. At high
+density the edge copying dominates instead (14,937 µs at 50 edges a node), so the rebuild is
+O(E + types × N) and **which term rules depends on the fixture**, which is why one row could not
+have shown this either.
+
+That term is a property of the **dense per-type offset layout**, not of the loop: a sparse layout
+(only the types present at a node) would remove it, and that is item 825's class of decision — a
+storage change — rather than a tick. Named with its number so the next attempt starts from the
+measurement.
+
+### What the pair of items leaves standing
+
+- The demotion is real and large (851: 1.8-10.7x, growing with density AND selectivity).
+- Lazy-on-read is structurally excluded: the accessors return borrows into the `Vec`s a rebuild
+  replaces, and the store is `Sync`-shared under the rayon pool (851).
+- Rebuild-at-commit is refused unconditionally at a 6-27 read break-even (here).
+- Incremental per-type maintenance remains the only undisproven design, and it now has a cost
+  model to beat: it must beat `O(E + types × N)` amortized over fewer than 6 reads.
+
+**Two ticks to refuse a lever is the right trade when the lever is a storage change.** The
+alternative was building the commit hook and discovering the break-even from a regression in
+`bench:usage`, which is how this corpus acquired several of the rules in CLAUDE.md.
+
+Gates, each its own command with its exit code read UNPIPED: `cargo clippy --all-targets -- -D
+warnings` 0; `cargo fmt` 0; `bun run fmt` 0; `bun run fmt:check` 0; `bun run check` 0. Comment-only
+change in the engine; the temporary example removed.
