@@ -21676,3 +21676,43 @@ assumed:
 
 **No regression.** Recorded because two wrong conclusions were available (commit assuming noise;
 abandon a 1.73-2.11x win over a noisy row) and only the unreachable control excluded both.
+
+## 800 — BUILT AND REVERTED: a cross-language group cannot live in the TS spelling probe. The GQL side arrives POLLUTED, the Gremlin side clean
+
+**REVERTED (no engine change).** Item 797 recommended adding cross-language groups to the TS probe,
+"three lines each". Built, measured, reverted — **both halves of that recommendation are wrong.**
+
+**"Three lines" was wrong structurally:** the TS Gremlin surface has NO text entry point (it is a
+composable builder), so a Gremlin member cannot be a query string. It needed a `Member` type
+(`string | { label, run }`), a runner dispatch plus `labelOf`, and a `ROWS_MAY_DIFFER` opt-out on the
+answer check (the surfaces return `[{"c":N}]` against `[N]`, so without it every such group reports
+`ANSWERS DIFFER` forever).
+
+**And the probe is the wrong HOME, because the groups measure the probe.** Isolated against the full
+sweep, same binary and fixture:
+
+```text
+                     isolated   in-sweep
+  GQL  unlabelled      4.51 ms    8.84     1.96x
+  GRM  unlabelled      2.64       2.54     1.04x
+  GQL  labelled        6.27      14.42     2.30x
+  GRM  labelled        4.68       3.37     faster
+  GQL  one-hop        23.87      54.67     2.29x
+  GRM  one-hop        25.10      21.81     faster
+```
+
+**Every Gremlin member is stable; every GQL member roughly doubles.** A fixture or warm-up effect
+moves BOTH — only the GQL side moving is GQL-path pollution: ~40 GQL groups run first, so those
+dispatch sites are megamorphic by then (**item 762**), while the Gremlin member is the first Gremlin
+query in the process. Item 747 recorded this at **1.4x** for GQL rows; at the END of the GQL run it
+is 2.0-2.3x. The full-sweep ratios (3.49x / 4.27x / 2.51x) are substantially instrument and flagged
+as three new >2x entries — exactly the _flag that means nothing_ the opt-out existed to avoid.
+
+**Three fixes considered:** keep them as "isolation only" (rejected — the summary is where readers
+arrive, per the probe's own item-635 comment); run them FIRST (fair pair, but moves ~40 recorded
+figures to add 3); **ONE SHAPE PER PROCESS, which is what `probe:scalar` does (item 790) — and that
+is where a cross-language comparison belongs.** Its own tick.
+
+**Item 797's finding STANDS, and this is why it was trustworthy:** it was measured one shape per
+process, which is the only reason its 2.24x was a comparison rather than a position in a run order.
+The gap it named is real; the TS side still cannot catch a cross-language divergence.
