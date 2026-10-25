@@ -1227,8 +1227,29 @@ export const fromUtf16UnitsLossy = (units: readonly number[]): string => {
 // LONE surrogate. The native engine's UTF-8 strings can't carry one, so it
 // renders U+FFFD; run every sliced result through the same lossy decode so the
 // two engines stay byte-identical on astral-boundary slices.
+/** Any UTF-16 code unit in the surrogate range — the only input `sanitizeSurrogates` changes. */
+const SURROGATE_UNIT = /[\uD800-\uDFFF]/;
+
+/**
+ * A string with NO surrogate code unit is returned UNCHANGED (item 768). The general path
+ * builds an ARRAY of code units per call — `Array.from({length: s.length}, …)`, one element
+ * per character — and then rebuilds a string from it, which `substring`, `left` and `right`
+ * were paying on every row. Measured over 200,000 distinct 12-character strings: **83.17 ns a
+ * call against 8.15 with the guard, 10.2x**.
+ *
+ * The equivalence does not depend on what the slow path does with a surrogate, which is the
+ * point: the guard only SKIPS it when there is none, and a string of non-surrogate units
+ * decodes to exactly itself. Checked against the slow path on 200,000 strings, on an astral
+ * character (a valid pair, preserved) and on a lone surrogate (which still takes the slow
+ * path and still becomes U+FFFD).
+ *
+ * The regex is at MODULE scope. Built per call it would be a fresh object a row, which is the
+ * cost item 764 found in `coalesce`.
+ */
 export const sanitizeSurrogates = (s: string): string =>
-  fromUtf16UnitsLossy(Array.from({ length: s.length }, (_, i) => s.charCodeAt(i)));
+  SURROGATE_UNIT.test(s)
+    ? fromUtf16UnitsLossy(Array.from({ length: s.length }, (_, i) => s.charCodeAt(i)))
+    : s;
 
 export const splitScalar = (a: unknown, b: unknown): string[] | null => {
   if (isNullish(a) || isNullish(b)) {
@@ -1245,6 +1266,44 @@ export const splitScalar = (a: unknown, b: unknown): string[] | null => {
     : s.split(delim);
 };
 
+/**
+ * Replace every occurrence of `search` with `repl`, LITERALLY — no `$&`/`$1` expansion.
+ *
+ * This was `s.split(search).join(repl)`, which allocates an array of pieces per call. An
+ * `indexOf` loop measured **60.56 ns a call against 118.64, 1.96x**, over 200,000 distinct
+ * 12-character strings (item 768).
+ *
+ * `String.prototype.replaceAll` is NOT the fix even though it reads better and measured
+ * 103.28 — it expands `$&`, `$1` and friends in the REPLACEMENT, where `split`/`join` and
+ * native's `str::replace` do not, so it would be a silent cross-engine divergence on any
+ * replacement containing a `$`.
+ *
+ * ONE MEASUREMENT TRAP, recorded because it reversed a verdict: benchmarked over a CONSTANT
+ * string, `split`/`join` reads 54.44 and `replaceAll` 102.62, so `replaceAll` looks 1.9x
+ * SLOWER. Over VARYING strings the order flips (118.64 against 103.28). The constant-string
+ * loop lets the JIT cache the split, which is the "match the fixture to the claim" rule in a
+ * form that is easy to miss: a per-row helper has to be measured over per-row DATA.
+ */
+const literalReplaceAll = (s: string, search: string, repl: string): string => {
+  let at = s.indexOf(search);
+
+  if (at === -1) {
+    return s;
+  }
+
+  let out = '';
+  let from = 0;
+
+  while (at !== -1) {
+    out += s.slice(from, at);
+    out += repl;
+    from = at + search.length;
+    at = s.indexOf(search, from);
+  }
+
+  return out + s.slice(from);
+};
+
 export const replaceScalar = (a: unknown, b: unknown, repl: unknown): string | null => {
   if (isNullish(a) || isNullish(b)) {
     return null;
@@ -1252,11 +1311,11 @@ export const replaceScalar = (a: unknown, b: unknown, repl: unknown): string | n
 
   const search = str(b);
 
-  return search === ''
-    ? str(a)
-    : str(a)
-        .split(search)
-        .join(isNullish(repl) ? '' : str(repl));
+  if (search === '') {
+    return str(a);
+  }
+
+  return literalReplaceAll(str(a), search, isNullish(repl) ? '' : str(repl));
 };
 
 // ISO GQL `to_boolean`: bool → itself; number → (x != 0), NaN → null; string →

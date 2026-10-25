@@ -330,6 +330,35 @@ describe('GQL: byte-identity regressions from the differential fuzzer', () => {
   const g2 = createTestSocialGraph();
   const val = (q: string): unknown => query(g2, q)[0].x;
 
+  test('slicing a surrogate PAIR in half yields U+FFFD, like native from_utf16_lossy', () => {
+    // Item 768 gave `sanitizeSurrogates` a fast path that returns any string with NO surrogate
+    // code unit unchanged, and mutation then showed the function had NO test at all: making it
+    // never sanitize passed all 2,587 tests AND the seven byte-identity fuzzers, which
+    // generate no non-ASCII strings (item 765 found the same blind spot for char_length).
+    //
+    // `😀` is one astral character, two UTF-16 units. Slicing between them leaves a LONE
+    // surrogate, which this engine replaces with U+FFFD so the result matches what native's
+    // UTF-8 strings can represent — a documented cross-engine deviation from JS `slice`.
+    expect(val(`RETURN substring('a\u{1F600}b', 2, 1) AS x`)).toBe('\uFFFD');
+    expect(val(`RETURN left('a\u{1F600}b', 2) AS x`)).toBe('a\uFFFD');
+    expect(val(`RETURN right('a\u{1F600}b', 2) AS x`)).toBe('\uFFFDb');
+    // A string with no surrogate at all is returned unchanged — the fast path's own case.
+    expect(val(`RETURN substring('abcdef', 2, 3) AS x`)).toBe('bcd');
+    // An INTACT pair survives: the guard sends it down the slow path and it re-encodes.
+    expect(val(`RETURN substring('a\u{1F600}b', 2, 2) AS x`)).toBe('\u{1F600}');
+  });
+
+  test('replace takes a MULTI-CHARACTER search, advancing by its whole length', () => {
+    // Item 768 replaced `split(search).join(repl)` with an `indexOf` loop, and mutation showed
+    // no test used a search longer than one character: advancing by 1 instead of
+    // `search.length` passed everything.
+    expect(val(`RETURN replace('aXYbXYc', 'XY', 'Z') AS x`)).toBe('aZbZc');
+    // Overlapping candidates: 'aaa' with 'aa' matches ONCE, at 0, leaving the trailing 'a'.
+    expect(val(`RETURN replace('aaa', 'aa', 'b') AS x`)).toBe('ba');
+    // The tail after the last match is kept.
+    expect(val(`RETURN replace('xAy', 'A', 'B') AS x`)).toBe('xBy');
+  });
+
   test('coalesce returns the first NON-NULL argument, and NULL when there is none', () => {
     // Item 764 replaced `args.find((x) => !isNullish(x))` with a loop, and mutation found that
     // coalesce's VALUE behaviour had no unit test at all — only arity tests. Two wrong-answer

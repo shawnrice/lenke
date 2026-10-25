@@ -20466,3 +20466,53 @@ verdict.
 
 **Still open:** `replace` (67 ns) allocates a result per row through `str::replace`, so the fix is
 not this shape; `split` (a list per row) has never been priced.
+
+## 768 — TS: `sanitizeSurrogates` built an ARRAY per row (`substring` 1.85-1.91x) and `replace` split into one (1.48-1.60x). `replaceAll` and a `str()` fast path are REFUTED
+
+**DONE (TypeScript).** `replace` was the engine's most expensive row at **249.80 ns** (natively
+67). The cost was two per-row allocations, not the dispatch:
+
+- `sanitizeSurrogates` — called per row by `substring`, `left` and `right` — did
+  `fromUtf16UnitsLossy(Array.from({length: s.length}, (_, i) => s.charCodeAt(i)))`: **an array with
+  one element per character**, built and re-joined. A module-scope surrogate regex returns any
+  string with NO surrogate code unit unchanged: **83.17 -> 8.15 ns a call, 10.2x**. The
+  equivalence does not depend on what the slow path does with a surrogate — the guard only SKIPS
+  it when there is none.
+- `replace` used `split(search).join(repl)`, which allocates an array of pieces. An `indexOf` loop
+  is **60.56 against 118.64, 1.96x** on the body.
+
+Alternated A/B, two reads: `substring` **1.85x / 1.91x**, `replace` **1.60x / 1.48x**. Controls
+0.93-1.09x (`char_length` drifts 1.18 -> 1.09 across reads, which is noise, not an effect).
+
+**TWO REFUTATIONS, both worth not re-deriving:**
+
+1. **`String.prototype.replaceAll` is NOT the fix** — and the first measurement said the opposite.
+   Over a CONSTANT string `split`/`join` reads 54.44 and `replaceAll` 102.62, so `replaceAll` looks
+   1.9x slower; over 200,000 VARYING strings the order flips (118.64 against 103.28) because the
+   constant-string loop lets the JIT cache the split. **A per-row helper must be benchmarked over
+   per-row DATA.** It is still not used, for a SEMANTIC reason: `replaceAll` expands `$&`/`$1` in
+   the replacement where `split`/`join` and native's `str::replace` do not, so it would diverge
+   cross-engine on any replacement containing a `$`.
+2. **A `typeof v === 'string'` fast path in `str()` is worth nothing.** It tries `isRecord`,
+   `isElement`, `Array.isArray` and `instanceof Path` before `String(v)`, and `replaceScalar` calls
+   it three times a row — measured **0.202 ns a call either way**. The JIT folds the chain when the
+   site is monomorphic.
+
+**TWO UNTESTED BEHAVIOURS, found by mutation and now pinned.** Both mutants passed the 2,587 unit
+tests AND all seven fuzzers:
+
+- **`sanitizeSurrogates` had NO test.** Making it never sanitize was invisible — the fuzzers
+  generate no non-ASCII strings (item 765 found this for `char_length`; it covers this whole
+  function). Now pinned: a surrogate PAIR sliced in half yields U+FFFD through `substring`, `left`
+  and `right`; an INTACT pair survives; a no-surrogate string is unchanged.
+- **No test used a MULTI-CHARACTER search in `replace`.** Advancing by one unit instead of
+  `search.length` is wrong for every longer search and nothing noticed. Now pinned, including an
+  OVERLAPPING search (`replace('aaa', 'aa', 'b')` is `'ba'` — one match) and a kept tail.
+
+Teeth verified: both surviving mutants now FAIL the unit suite. This was also the first unexpected
+mutation result this session to arrive WITH evidence of execution, which is the check item 767 put
+in `CLAUDE.md` after three runner-startup failures were nearly read as findings.
+
+**Still open:** the two-argument string PREDICATES remain on the TS general path (59-71 ns against
+`char_length`'s 24). Natively they went 4.5x at item 766, but partly through a `Col::Bool` output
+with no TS equivalent, so expect less. `substring` at 87 ns is still the dearest string row.
