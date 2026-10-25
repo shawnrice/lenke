@@ -25049,3 +25049,81 @@ the group key (848) and `valueKey` (843) in native and TS; DISTINCT and GROUP BY
 their number controls on both sides; cross-engine coverage at 842 and 848. The remaining temporal
 cost on either engine is in the kinds with more than one field, which no item has yet had reason to
 take.
+
+## 851 — the never-re-armed CSR, priced on a density × selectivity grid: **up to 10.7x**, "once stale always stale" confirmed — and lazy-on-read is STRUCTURALLY excluded, not merely awkward
+
+**MEASUREMENT, no engine change** (a temporary example, removed). CLAUDE.md records this as a known
+defect: `rebuild_csr` is called only from the LOAD paths (`codec.rs`, `ndjson.rs`), every adjacency
+write sets `csr_fresh = false`, and nothing ever sets it back — so one `add_edge` demotes every
+later typed read for the rest of the session, "proportional to how selective the queried edge type
+is", quoted as 1.96x / 2.93x / 24.07x at 1 edge in 2 / 10 / 50. **That is one fixture's slice of a
+two-dimensional surface**, and the grid is what makes the lever decidable.
+
+50,000 nodes, a whole-graph typed hop (`MATCH (a:P)-[:T0]->(b) RETURN count(*)`), 10 hops an arm,
+min of 5, each arm from its own LOADED store:
+
+```text
+  edges/node      fresh    demoted   ratio        interleaved
+  2                1457  2647-2712   1.8-1.9x     2611-2751
+  10               1442  3986-5001   2.8-3.5x     3989-5028
+  50               1428 11233-15264  7.9-10.7x   11323-15316
+```
+
+Three things the grid shows that a single row cannot:
+
+- **The penalty grows with BOTH density and selectivity.** At 50 edges a node it is 7.9x for a type
+  carrying half the edges and **10.7x** for one carrying a fiftieth. CLAUDE.md's 24.07x is the same
+  direction at a density this grid does not reach; the selectivity term alone is only 1.3x of it,
+  and the density term is the larger one.
+- **The fresh arm is FLAT at ~1,430 across a 25x change in edge count.** That is the whole value of
+  the overlay: `out_typed_flat` reads one type's partition, so a fresh store does not care how many
+  edges the other types hold. The stale path walks all of them.
+- **Interleaved is indistinguishable from demoted** at every point (within 1%). Once the flag is
+  down it does not matter how often you write, which is the "nothing re-arms it" claim measured
+  rather than read.
+
+### My first fixture measured the slow path against itself
+
+The first run had all three arms within 5% (5,773 / 5,730 / 6,051 µs at 1 in 2) and the obvious
+reading was "the demotion does not reproduce". It was the fixture: **a store built through
+`add_edge` is already stale**, so `fresh` was the same path as `demoted`. Only a LOAD calls
+`rebuild_csr`, so every arm now starts from an NDJSON round-trip. The first version's own comment
+said this ("a store built through `add_edge` is never fresh, and only a LOAD is") — written as a
+caveat and then not acted on until the numbers came out flat.
+
+### Lazy rebuild on read is structurally excluded
+
+The obvious fix — rebuild when a read finds the overlay stale — is not available, and the reason is
+stronger than a borrow-checker inconvenience:
+
+```rust
+pub fn out_typed_csr(&self, v: u32, etype: u32) -> Option<&[Adj]>
+pub fn out_typed_flat(&self, etype: u32) -> Option<&[Adj]>
+```
+
+Both take `&self` and **return a borrow into the very `Vec`s a rebuild would replace.** Interior
+mutability does not rescue that: handing out a `&[Adj]` that outlives a `RefCell` guard is the thing
+the guard exists to prevent, so the accessors' signatures would have to change at every call site.
+And `algo.rs` takes `&Store` under the opt-in rayon pool, so the store is `Sync`-shared — a lock on
+this path is the hot read path.
+
+So the viable designs are both write-boundary, and both are `&mut self`:
+
+1. **Rebuild at `commit`** (store.rs:5098) or at an explicit end-of-batch, so a transaction that
+   adds edges pays one O(E) rebuild and every later read is fast. Amortizes exactly where a user
+   already has a boundary, and `end_bulk` shows the shape is already in the codebase.
+2. **Maintain the typed CSR incrementally** per `add_edge`. O(degree) in principle, but an insert
+   into the middle of a type's partition shifts the rest, so it needs an append-side overlay per
+   type and a merge policy — materially more design than (1).
+
+**(1) is the one to try, and it is NOT free:** a transaction adding one edge to a 2.5M-edge store
+would pay a full O(E) rebuild at commit, which is the opposite trade from today for a
+write-heavy-small-read workload. The next tick's measurement is that trade — rebuild cost at commit
+against the reads it saves — not whether the demotion is real, which this item settles.
+
+**Why this was worth a tick on its own:** the figure in CLAUDE.md is a single row of a surface, the
+"lazy rebuild" that any reader would reach for first is excluded by two signatures, and the first
+fixture anyone would write measures nothing. All three are now recorded.
+
+Gates: `bun run fmt` 0; `bun run fmt:check` 0; `bun run check` 0; `cargo clippy --all-targets -- -D
+warnings` 0; `git status` clean of any engine change (docs only), the temporary example removed.
