@@ -19950,3 +19950,66 @@ test excludes nothing (item 721's trap). None of the figures above depend on a l
 they could be taken at all.
 
 Gates: no code change. `git status` clean; the probe example was deleted.
+
+## 757 — the widening item 756 floated is REFUTED on two nodes and one edge, and the doc that suggested it is now a test
+
+**REFUTED AND PINNED. Doc corrected, one test added; no behaviour change.** Item 756 measured a real
+cliff — `count(DISTINCT y)` over `->{1,2}` fails with `E_RESOURCE_EXHAUSTED` at 50,000 vertices while
+its `MATCH WALK` twin answers in 0.5 ms — and floated widening the fast path's trail region from
+`max <= 1` to `min <= 1` on the strength of the fast path's own doc. It left the semantics question
+open with the fixture to test first. This tests it.
+
+### My reading of the BFS was wrong; the doc's argument was wrong too, differently
+
+756 suspected the BFS computed shortest distance, which would make it wrong for WALK as well.
+Reading it line by line: the `min <= 1` arm sets `reached[nbr] = true` on **every encounter** and
+uses `visited` only to gate RE-EXPANSION, and the `min >= 2` arm walks level sets. Both admit a node
+arrived at by a walk longer than its shortest path, which is exactly WALK semantics. **The code is
+right and the doc's "nodes at shortest distance" phrasing was the loose part.**
+
+That relocated the question rather than answering it, and the answer is a counterexample. Two nodes,
+one edge, `(x:S)-[:R]-{1,3}(y)`:
+
+| spelling        | distinct endpoints | rows |
+| --------------- | -----------------: | ---: |
+| `MATCH WALK`    |              **2** |    3 |
+| default (TRAIL) |              **1** |    1 |
+| both at `{1,1}` |                  1 |    — |
+
+A WALK returns to the source by re-crossing the single edge; a TRAIL cannot. So the source is a walk
+endpoint and not a trail one, and the sets differ at `min = 1`.
+
+**The doc's argument fails on exactly one word.** It said walk and trail reachability coincide for
+`min <= 1` because "the shortest path is simple, reusing no edge" — true, but the shortest path is an
+admissible answer only when its length is **`>= min`**, and for a SOURCE on a cycle that length is
+**0**. Item 68's counterexample had `min = 2` and so looked like the only hazard; this one has
+`min = 1` and `max = 3`.
+
+So `max <= 1` is the trail region and the gate was right all along: at one hop no edge can be
+reused, which the same fixture confirms (both spellings answer 1 at `{1,1}`).
+
+### The guard is a test, not the corrected comment
+
+The widening produces a **wrong answer** (2 against 1), not a slow one, so a comment cannot refuse
+it. `a_trail_distinct_endpoint_count_is_not_the_walks_at_min_one` pins both halves — that the two
+spellings DIFFER at `{1,3}` and AGREE at `{1,1}` — and **the mutation is the widening itself**:
+`PathMode::Trail => max <= 1` relaxed to `true` fails that test and nothing else in 1,223. Verified,
+not assumed.
+
+That is the mirror of `perf-gate-needs-its-own-test`: a route choice is answer-equivalent and needs a
+perf A/B, while a SEMANTICS choice needs a pinned answer. This one is the second kind, and item 756
+had correctly declined to make it without one.
+
+### What remains true from 756
+
+The cliff is real and unaddressed: the DEFAULT spelling of a distinct-endpoint count over a
+var-length hop enumerates and can exhaust the trail limit, where the `WALK` spelling is
+sub-millisecond. What is now settled is that the cheap fix is not available — a trail-correct
+distinct-endpoint count past one hop needs per-path edge sets, which is not a BFS, as the fast
+path's own doc says. Anyone revisiting it should price the general path instead of widening the
+gate.
+
+Gates, each its own command with its exit code read UNPIPED: `cargo fmt` 0; `cargo clippy
+--all-targets --features capi -- -D warnings` 0; `cargo test --release` **1223** + 13 + 725 pass, 0
+fail; `fastpath_fuzz` 1 pass; the seven byte-identity fuzzers 13 pass 0 fail; `bun run fmt` 0; `bun
+run check` 0.

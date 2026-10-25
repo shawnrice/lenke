@@ -2381,14 +2381,30 @@ pub(super) fn varlen_step(
 /// Answer `count(DISTINCT endpoint)` over a bounded var-length hop by MULTI-SOURCE
 /// BFS with a visited bitset — O(V+E) — instead of enumerating every path (with its
 /// full multiplicity) and deduping the endpoints, which explodes with fan-out. The
-/// DISTINCT endpoint set is exactly the nodes at shortest distance in `min..=max`
-/// from the source set: a node with ANY walk of length `L ≤ max` has shortest
-/// distance ≤ L, so a `min ≤ 1` reachability is the same set whether paths are
-/// walks or trails (the shortest path is simple, reusing no edge). That equivalence
-/// only holds for `min ≤ 1` (a node discovered at its shortest distance `< min`
-/// might still be a valid longer-walk endpoint, which BFS would miss), so deeper
-/// lower bounds fall back to the general path. The count is a set size, so it is
-/// byte-identical to the TS engine's regardless of visitation order.
+/// DISTINCT endpoint set is the nodes ENCOUNTERED at any hop in `min..=max` from the source set.
+/// Note "encountered", not "at shortest distance": the `min <= 1` arm marks `reached` on every
+/// neighbour it sees and uses `visited` only to gate RE-EXPANSION, and the `min >= 2` arm walks
+/// level sets. Both therefore admit a node arrived at by a longer walk than its shortest path,
+/// which is what WALK semantics require. The count is a set size, so it is byte-identical to the
+/// TS engine's regardless of visitation order.
+///
+/// 🛑 THIS IS WALK REACHABILITY, AND IT DOES NOT COINCIDE WITH A TRAIL'S AT `min <= 1` — an
+/// earlier version of this comment argued that it did, and item 757 measured the counterexample.
+/// Two nodes, one edge, `(x:S)-[:R]-{1,3}(y)`:
+///
+/// | spelling        | distinct endpoints | rows |
+/// | --------------- | -----------------: | ---: |
+/// | `MATCH WALK`     |              **2** |    3 |
+/// | default (TRAIL)  |              **1** |    1 |
+///
+/// A WALK returns to `x` by re-crossing the single edge; a TRAIL cannot, so `x` is a walk endpoint
+/// and not a trail one. The old argument — "the shortest path is simple, so it is a trail" — holds
+/// only when that shortest path has length `>= min`, and for a SOURCE on a cycle it has length 0.
+/// So `max <= 1` is the trail region, NOT `min <= 1`: at one hop no edge can be reused and the two
+/// semantics coincide, which the same fixture confirms (both answer 1 at `{1,1}`).
+///
+/// Pinned by `a_trail_distinct_endpoint_count_is_not_the_walks_at_min_one`, because the attractive
+/// widening is a wrong ANSWER and only a test can refuse it.
 pub(super) fn try_varlen_distinct_count(
     input: &Plan,
     keys: &[(String, Expr)],

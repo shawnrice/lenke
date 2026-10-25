@@ -26473,3 +26473,67 @@ fn a_two_hop_chain_gated_at_its_interior_position_agrees_with_the_general_path()
          gate would be invisible"
     );
 }
+
+/// A TRAIL's distinct-endpoint set is NOT a WALK's at `min <= 1`, so `try_varlen_distinct_count`'s
+/// `max <= 1` trail region cannot be widened to `min <= 1` (items 756, 757).
+///
+/// That widening is attractive: the default path mode is TRAIL, so the shape a user writes —
+/// `MATCH (a)-[:R]->{1,2}(y) RETURN count(DISTINCT y)` — declines the BFS and enumerates, and at
+/// 50,000 vertices of degree 5 it does not merely run slowly, it fails with E_RESOURCE_EXHAUSTED
+/// while the `MATCH WALK` twin answers in 0.5 ms. Item 756 floated the widening on the strength of
+/// the fast path's own doc, which argued the two coincide for `min <= 1` because "the shortest path
+/// is simple, reusing no edge".
+///
+/// It does not hold. The shortest path is a trail only when its length is `>= min`, and for a
+/// SOURCE on a cycle that length is 0. Two nodes and one edge is the whole counterexample: a WALK
+/// returns to the source by re-crossing the edge, a TRAIL cannot.
+///
+/// This test is the guard rather than the comment, because the widening produces a wrong ANSWER
+/// (2 against 1) and not a slow one — [[perf-gate-needs-its-own-test]] in reverse: a route choice
+/// needs a perf A/B, and a SEMANTICS choice needs a pinned answer.
+#[test]
+fn a_trail_distinct_endpoint_count_is_not_the_walks_at_min_one() {
+    let store = {
+        let mut b = crate::store::Builder::default();
+        b.node(&["S"], &[]); // 0: the only source
+        b.node(&["T"], &[]); // 1
+        b.edge(0, 1, "R");
+        b.build()
+    };
+
+    let num = |q: &str| -> f64 {
+        use crate::value::Value;
+        let plan = crate::opt::optimize(crate::gql::parse(q).expect("parse"));
+        let out = crate::exec::try_run(&plan, &store).expect("run");
+
+        match out.rows.iter().next().and_then(|r| r.first()) {
+            Some(Value::Num(n)) => *n,
+            other => panic!("not a number: {other:?}"),
+        }
+    };
+
+    // `-[:R]-` is both-directions, so a WALK may cross the single edge back.
+    let walk = num("MATCH WALK (x:S)-[:R]-{1,3}(y) RETURN count(DISTINCT y) AS n");
+    let trail = num("MATCH (x:S)-[:R]-{1,3}(y) RETURN count(DISTINCT y) AS n");
+
+    assert_eq!(
+        walk, 2.0,
+        "a walk reaches the source again by re-crossing the edge"
+    );
+    assert_eq!(
+        trail, 1.0,
+        "a trail cannot re-cross it, so the source is NOT an endpoint"
+    );
+    assert_ne!(
+        walk, trail,
+        "if these ever agree the counterexample has gone and the widening needs re-deriving, \
+         not enabling"
+    );
+
+    // At ONE hop the two semantics do coincide, which is why `max <= 1` is the region.
+    let walk1 = num("MATCH WALK (x:S)-[:R]-{1,1}(y) RETURN count(DISTINCT y) AS n");
+    let trail1 = num("MATCH (x:S)-[:R]-{1,1}(y) RETURN count(DISTINCT y) AS n");
+
+    assert_eq!(walk1, trail1, "at one hop no edge can be reused");
+    assert_eq!(trail1, 1.0, "and the answer is the single neighbour");
+}
