@@ -21536,3 +21536,45 @@ last component is two nested-map lookups; only a flat per-type index removes the
 `neighborAggregate` output contract (`Vec<(u32, Value)>` = 3.2M `Value`s at dim 64). **The micro
 surface is swept** — each of the three carries a snapshot-format or public-API consequence and is a
 decision, not a 60-second iteration.
+
+## 797 — ⚠️ OPEN, NEW: TS **GQL** is 2.24x its own **Gremlin** twin on a filtered node count, both on their fast paths. And the TS spelling probe has NO cross-language group
+
+**OPEN TARGET, diagnosed and located (no change).** The fourth instrument, `bun run bench:gremlin`,
+was the last unrun this session — and unlike items 789-796's six candidates, this one is not already
+closed.
+
+**The hypothesis was refuted in a useful direction.** `bench:gremlin`'s three filtered counts with NO
+hop read 22.4x / 27.4x / 13.1x ts-vs-native, so the guess was a missing node-scan-count lowering on
+the GREMLIN side (GQL has that family, items 204-209). **The floor had to be the GQL TWIN, not
+native** (item 234: a big ts/native ratio can be data layout). Measured at 200k vertices, one shape
+per process, answers asserted equal:
+
+```text
+  count age > 28         GQL 4.78 ms   Gremlin 2.13   GQL 2.24x SLOWER   (140,202 both)
+  + a label                  2.61              2.10   1.24x              ( 70,101)
+  two predicates             4.52              4.06   1.11x              ( 10,786)
+  CONTROL unfiltered         0.00              0.01   both O(1)
+```
+
+**~10.6 ns a vertex for Gremlin against ~24 for GQL** — same engine, same fixture, identical
+answers. Native's 22.4x is the data layout item 234 predicted. **This is an equivalent-spelling gap
+ACROSS the two surface languages**, the class this repo is named for.
+
+**DIAGNOSED, not assumed: the GQL shape does NOT fall off its shortcut.** A throw inside
+`buildNodeCount`'s constrained tally (item 751's technique) fires for all three GQL shapes — the
+clause `WHERE` is pushed into the node and the tally is taken. **The 2.24x is INSIDE the tally**, at
+the per-vertex `inlineHolds` → `satisfies` call against Gremlin's `has` step.
+
+**Careful, and why it was not started here.** That tally's comment names its own design: the
+predicate goes through `satisfies` "so the two spellings of a constrained node count agree by
+construction rather than by re-deriving inline-pattern semantics here". The obvious fix is that
+re-derivation. **Next step is a COMPARISON, not a change**: price `satisfies`'s `cmpProps` arm (item
+276's element-direct lift) against the Gremlin `has` closure over the same vertex set, and find which
+does more work. A change to a path whose stated reason is cross-spelling agreement deserves its own
+tick with the differential fuzzers (the judgement item 786 made about `nullif`, which paid off at
+787).
+
+**⚠️ INSTRUMENT GAP, actionable and cheap:** the **TS spelling probe has no cross-language group**.
+The native `spelling_probe` does (item 779's two, `grouped count: GQL vs Gremlin`, others), so a
+native GQL/Gremlin divergence is caught and a TS one is not. **This finding came from a bench, by
+accident, not from the probe whose job it is.** The groups are three lines each.
