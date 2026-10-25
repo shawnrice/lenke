@@ -23579,3 +23579,57 @@ was written.
 the next pass should ablate the binding read before changing a planner.
 
 Gates: `bun run fmt` 0; `bun run fmt:check` 0; `git status` clean; the temporary probe removed.
+
+## 833 — the binding round-trip priced at **11.3 ns a row**, disjoint — and **22 of the engine's 55.1 ns remain unreproduced**, which bounds what the lever can deliver
+
+**MEASUREMENT, no engine change** (a temporary probe, reverted). Item 832 decomposed the TS scalar
+projection and said the next pass should ablate the binding round-trip before touching a planner,
+because `projectRow` writes the element into a `Map` and then calls a closure that reads it back out.
+This is that ablation.
+
+### The ladder, min of three rounds
+
+Each arm adds one piece of the engine's shape, so a difference between neighbours IS that piece.
+200,000 rows, one arm per process, graph built outside the timed region:
+
+```text
+  read + row object                        17.8 ns/row              17.8 / 27.2 / 28.8
+  + binding.set('n', v)                    20.7        +2.9         29.6 / 20.7 / 28.1
+  + a fresh { binding, params, graph }     26.3        +5.6         26.3 / 29.8 / 30.2
+  + fn(env) reading BACK OUT of the Map    32.7        +6.4         32.7 / 32.8 / 34.2
+  DIRECT: fn(element) passed as an arg     21.4       -11.3         27.6 / 27.1 / 21.4
+```
+
+**The lever is worth 11.3 ns a row and the ranges are DISJOINT** — every `+closure` reading
+(32.7-34.2) is above every `DIRECT` reading (21.4-27.6). That is the binding write, the env
+allocation and the read-back-out together, which is exactly what passing the element as an argument
+removes.
+
+**The first run of this ladder was not usable and said so**: it read `+env` 25.7 BELOW `+map write`
+30.7, though `+env` is a superset — non-monotone, so the noise was ≥5 ns and no decomposition could
+be read off it. Min-of-three fixed the ordering (17.8 → 20.7 → 26.3 → 32.7). **A ladder whose arms
+are not monotone in their own superset relation is not yet a measurement**, which is a cheap check
+this file has not stated before.
+
+### ⚠️ What bounds the lever: 22 ns the ladder does NOT reproduce
+
+The full standalone reproduction is **32.7 ns a row** against the engine's **55.1** (item 832). So
+~22 ns of the real query is something this ladder does not contain at all — plan dispatch, the scan
+setup, the result wrapper, the `Rows` assembly. **The lever's 11.3 ns is measured against the
+reproduction, not against the query**, so its effect on a real `MATCH (n:User) RETURN n.name AS k`
+could be smaller, and the honest upper bound is 55.1 → 43.8, i.e. **1.26x** — which would narrow the
+7.4x gap against native to 5.9x and leave native still well ahead.
+
+**No mechanism is claimed for the 22 ns.** It is the residue of this decomposition and the next thing
+to ablate if the lever is pursued; naming it now is what items 804, 808, 814 and 829 are records
+against.
+
+### State of the lever
+
+Priced (11.3 ns standalone, 37% of item 832's 30.8 ns engine overhead, 1.26x as the upper bound on
+the query), scoped (item 832: a single-variable projection over the walked element, a fast path at the
+node-scan site rather than a signature change across `projectRow`'s 13 callers), and **not started**.
+By this session's standards 1.26x is shippable — 803 shipped at 1.11x and 828 at 1.27x — so the
+decision is whether the planner change is worth it against the 22 ns that is still unaccounted.
+
+Gates: `bun run fmt` 0; `bun run fmt:check` 0; `git status` clean; the temporary probe removed.
