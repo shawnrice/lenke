@@ -2162,6 +2162,68 @@ export const unaryNumCall =
   };
 
 /**
+ * `round(x)` and `round(x, digits)`, resolved once per `Expr::Call` (item 788) — the TS twin of
+ * item 785, which put `round/2` in the native two-argument numeric table for 3.45x.
+ *
+ * WHY IT CANNOT JOIN `BINARY_NUM`. That table's closure applies `(x, y) => number` only after
+ * `binaryNumCall` has turned EITHER null argument into a null result. `round` does not work that
+ * way: a null digit count means ZERO digits, so `round(5, null)` is `5` where `BINARY_NUM` would
+ * answer null. And it cannot join `UNARY_NUM` either, because its second argument is optional —
+ * which is why `round` is the one numeric name in neither table and was paying the general
+ * dispatch at BOTH arities (40.6 ns a row at two arguments, 35.4 at one, against a specialized
+ * band of 18-27 and a 15.6 floor).
+ *
+ * The body is `roundScalar`'s, in its order, and the ORDER is the contract: the digit count is
+ * validated BEFORE the first argument's null is checked, so `round(null, 'x')` raises rather than
+ * answering null. `10 ** NaN` is NaN and NaN/NaN is NaN, which is how this engine reaches the
+ * non-finite-digit-count rule by arithmetic where native needs an explicit guard (the native
+ * `round` entry's own comment records that asymmetry).
+ */
+export const roundCall =
+  <E>(a: (env: E) => unknown, b: ((env: E) => unknown) | undefined) =>
+  (env: E): unknown => {
+    const x = a(env);
+    const y = b === undefined ? null : b(env);
+
+    // BEFORE the null check on `x` — see above.
+    if (!isNullish(y)) {
+      numArg(y);
+    }
+
+    if (isNullish(x)) {
+      return null;
+    }
+
+    const digits = isNullish(y) ? 0 : Math.trunc(numArg(y));
+    const f = 10 ** digits;
+
+    return roundHalfAway(numArg(x) * f) / f;
+  };
+
+/**
+ * `nullif(a, b)`, resolved once per `Expr::Call` (item 788) — the TS twin of item 787, which gave
+ * the native engine a typed arm for 3.26x. Measured 39.4 ns a row on the general dispatch here.
+ *
+ * It cannot join `BINARY_NUM` for a different reason than `round`: it is POLYMORPHIC (strings,
+ * lists, records and temporals all work) and it RETURNS a null, so neither the numeric argument
+ * step nor the `number` return type fits.
+ *
+ * `structuralEq` is the equality, NOT JS `===` — the engine's VALUE equality, what `=` uses. Two
+ * temporals or lists holding the same value are distinct objects, so `===` answered "not equal"
+ * where native's `value::equals` answered equal. And the surviving row carries `a` RAW (`a ??
+ * null`), which is the same rule item 787 had to protect natively: there the hazard was a folded
+ * `-0.0`, and here it is simply that nothing may be substituted for `a`.
+ */
+export const nullifCall =
+  <E>(a: (env: E) => unknown, b: (env: E) => unknown) =>
+  (env: E): unknown => {
+    const x = a(env);
+    const y = b(env);
+
+    return !isNullish(x) && !isNullish(y) && structuralEq(x, y) ? null : (x ?? null);
+  };
+
+/**
  * The two-argument twin of [`unaryNumCall`] — `power`, `log`, `mod`, `atan2`.
  *
  * BOTH arguments are validated before the null short-circuit, exactly as `callScalar`'s

@@ -296,6 +296,8 @@ import {
   asTruth,
   BINARY_NUM,
   binaryNumCall,
+  nullifCall,
+  roundCall,
   BINARY_STR_FN,
   binaryStrCall,
   BOOL3,
@@ -2044,6 +2046,20 @@ const compileFunc = (expr: FuncExpr): CompiledExpr => {
 
     if (binary !== undefined && args.length === 2) {
       return binaryNumCall(binary, args[0], args[1]);
+    }
+
+    // `round` and `nullif` (item 788), the two names in neither table — `round` because its
+    // second argument is OPTIONAL and a null one means zero digits rather than a null result,
+    // `nullif` because it is polymorphic and returns a null. Both were on the general dispatch
+    // at 40.6 and 39.4 ns a row against a specialized band of 18-27. Inside this gate for the
+    // reason the gate exists: neither name is in `SCALAR_NEEDS_ARG_ASSERT` today, and adding one
+    // later must not silently skip its positional check.
+    if (name === 'round' && args.length >= 1 && args.length <= 2) {
+      return roundCall(args[0], args[1]);
+    }
+
+    if (name === 'nullif' && args.length === 2) {
+      return nullifCall(args[0], args[1]);
     }
   }
 

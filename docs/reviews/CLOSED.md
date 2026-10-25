@@ -21200,3 +21200,39 @@ the float passes under the mutant). Values diffed across arms over twelve spelli
 **Still open (not a dispatch question):** `atan2` 16.3 vs `mod` 10.1 is the libm bodies, per item 785. **Process note:** a first values diff reported six missing lines; the cause was piping the run
 through `head -6`, which SIGPIPEs `tee` and truncates its file — same shape as the `tail -8`
 truncations at items 764/765.
+
+## 788 — TS: the twins of 785/787 — `nullif` 1.97x, `round` 1.65x (1 arg) and 1.44x (2 args). The cross-engine grep FOUND the gap this time
+
+**DONE (TypeScript).** Item 779 established that a TS fast-path gap is not evidence of a Rust one
+(the Rust optimizer canonicalizes). **The converse does not follow and is checked here:** TS's
+`BINARY_NUM` holds `power`, `log`, `mod`, `atan2` — exactly the four names native had before item
+785 — with `round`/`nullif` in the general `switch`. Same two names, same two tables, both engines.
+
+```text
+  round(a.n,2) 40.6   nullif 39.4   round(a.n) 35.4   | general dispatch
+  mod 26.9   power 22.7   abs 18.0   | specialized (item 760)      floor 15.6
+```
+
+**`round` is in NEITHER table at EITHER arity**, which the pricing surfaced. Not `BINARY_NUM`,
+because that applies its closure only after `binaryNumCall` turns either null argument into a null
+RESULT — and a null digit count means ZERO digits, so `round(5, null)` is `5` (verified:
+`round(a.x, null)` → `[3,-3,3,0,1]`, not nulls). Not `UNARY_NUM`, because the second argument is
+optional. `nullif` for a third reason: polymorphic and returns a null.
+
+| `nullif` 40.4 → **20.5 (1.97x)** | `round/1` 35.3 → **21.4 (1.65x)** | `round/2` 38.2 → **26.5 (1.44x)** |
+
+Min of three order-alternated rounds; four controls, three within 3% and the cheapest (the no-call
+floor) at 0.91x — inside the noise floor. **Each arm rebuilt into the dist AND grepped there**,
+which matters more than natively since `@lenke/*` resolve to `dist`. Less than native's 3.26-3.45x,
+as item 769 said to expect: much of the native win was a typed output column and TS has none.
+
+**Verified:** 20 value spellings diffed across arms, identical. Three behaviours confirmed present:
+`round(x, null)` is digits-0 not null; `round(null, 'x')` RAISES (the order contract); `nullif` on
+lists uses `structuralEq`, not `===`.
+
+**Mutation — three caught, and one prediction WRONG.** Checking `x`'s null before validating the
+digit count was predicted "likely a gap" and is in fact pinned by `a named numeric function
+validates non-null args even beside a null`, which reaches the new closure as soon as it exists.
+Second item running where the property was already covered where the change needed it (785 too) —
+against the eight-in-a-row with no coverage at 764/768/769/773/776/778/780/782. **Both directions
+recorded so the streak is not read as a law.**
