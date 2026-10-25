@@ -22042,3 +22042,53 @@ conclusion about the truncation.** `wc -l` first costs nothing.
 805 measured TypeScript property bags, and the TS engine has no columns at all. The finding stands —
 a contiguous per-element read would take the walk-plus-read pair from ~10 ns to ~4 — but it belongs
 to item 617's family (TS layout), not to 342.
+
+## 807 — `probe:adjlayout`: the widest bench gap finally has a layout number. Flat interned index **3.4-3.7x** on the lookup; the concat half-measure is **2.0-2.5x WORSE**
+
+**DONE (instrument), no engine change.** `packages/native/adjlayout-probe.ts`,
+`bun run probe:adjlayout`.
+
+TS multi-hop counts are the widest real gap in the bench (`count 4-hop` **84.58x** native, 3-hop
+65.61x, 2-hop 39.19x, one row out). Item 795's sweep traced three components, found two spent, and
+left the third — `edgesFromByLabel.get(nodeId)` then `.get(type)` — as the only lever **with no
+number**. It has one now.
+
+**200,000 (node, type) lookups, 8 types, one arm per process, built outside the timed region, median
+of 11, three rounds:**
+
+```text
+  nested   Map<string, Map<string, Set>>   52.1 / 54.8 / 55.8 ns/lookup   what the engine has
+  concat   Map<string, Set>, key per call 100.2 /113.7 /137.6             2.0-2.5x WORSE
+  numeric  Map<number, Set>, ids interned  15.2 / 14.7 / 16.9             3.4-3.7x FASTER
+  CONTROL  inner short-key lookup only      6.3 /  6.5 /  8.4             the floor
+```
+
+**The OUTER lookup is almost all of it:** the inner is 6.3-8.4 ns, so ~45 of the ~52-56 belongs to
+`get(nodeId)` on a 200,000-entry string-keyed map — a multi-megabyte table probed in random order,
+one cache miss each. The same 200,000 entries under SMI keys cost 14.7-16.9 for BOTH levels.
+
+**THE HALF-MEASURE IS REFUTED WITH A NUMBER.** A single `Map<string, Set>` keyed by
+`` `${nodeId}\u0000${type}` `` needs no interning and no new structure — and it is **2.0-2.5x worse
+than the two lookups it replaces**: the concatenation allocates a fresh string per lookup whose hash
+has never been computed, where both nested keys are long-lived strings V8 has already hashed. I
+predicted this before running it; **predicting is not measuring**, and the number is what stops it
+being re-proposed.
+
+**TWO OTHER LEVERS CLOSED BY READING, this tick:**
+
+- `scan_layout_probe`'s "hoisting the operator out of the loop is an independent, much cheaper win"
+  **is items 450/453/459/462, built** (453: two-bound range 1.782 → 0.458 ms with monomorphic arms;
+  462: the two `match`es hoisted into `arith_step`/`num_pred`).
+- `scan_layout_probe`'s variant **C' (6.3-9.7x) is NOT independent of item 806** — it needs both the
+  bitset gate and the mask output, since variant B (memory order, byte gate) "barely beats A". It
+  inherits 806's precondition.
+
+**WHAT IT DOES NOT LICENSE.** This prices the LOOKUP, not a query: the hot loop looks up once per
+middle EDGE and `side()` does more than the lookup, so the honest claim is "3.4-3.7x on one
+component of three, two already spent". And the interning the `numeric` arm assumes IS the work —
+node ids are strings in `@lenke/core`, so a flat index means an id→u32 intern table maintained
+through inserts and deletes.
+
+**CORRECTION to this file's own open-set summary**, which calls the remaining lever "item **617**'s
+CSR for TS multi-hop counts". Item 617 is the GQL point-lookup-by-id fix (`Plan::NodeSeed`, 1258x);
+the CSR diagnosis is in item **795**'s sweep, which cites 617 rather than being it.
