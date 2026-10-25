@@ -20553,3 +20553,43 @@ the surface accepts it. Worth deciding deliberately rather than leaving as an ac
 **Still open:** `split` at 164-180 ns a row is now the dearest TS string shape, and part of that is
 inherent — it returns a LIST per row. Whether the rest is the general path or the split itself has
 not been separated.
+
+## 770 — a zero-allocation dense-id render is REFUTED at 1.00x; item 342's per-key term re-confirmed at ~2.1 ns/key; `regex_match` is Gremlin's by design
+
+**NO ENGINE CHANGE.** Ten ticks (759-769) worked inside the scalar path, so this one re-priced the
+whole `query_bench` surface first. Element projection dwarfs everything: `hop node, NO distinct`
+**599 ns/row** and `distinct node` **603**, against `cmp str prop/prop` at 48 and `project 3` at 27.
+
+**REFUTED — a zero-allocation dense-id render.** `node_result_value` does
+`GStr::from(id.to_string())` for any node with no EXTERNAL id: a malloc, the digits, a copy into
+the `GStr`, a free, per rendered element. A `u32` is ≤10 digits and `GStr` inlines 12 bytes, so a
+stack buffer makes the allocation impossible. **Three alternated rounds, two saved binaries: 1.00x,
+1.00x, 0.98x, 1.01x, 0.98x.** Nothing. Do not re-derive it.
+
+**AND THE 65 ns GAP THAT MOTIVATED IT IS UNATTRIBUTED, not explained.** `RETURN p` over 200,000
+three-property nodes cost **383 ns/row without external ids against 312 with**, stable across three
+runs. That looked like the id formatting; the refutation above proves it is not. The two sides are
+two different STORES (one carries a 200,000-entry ext-id index), not two paths through one store —
+item 339's rule applies (_"if the sentences differ in more than one clause the ratio needs a third
+measurement, not an explanation"_), and the zero-allocation A/B was that third measurement. Also
+WITHDRAWN from this item's first draft: the claim that corpus element rows are inflated by the
+id-less fixture. The per-row id cost is zero, so they are not.
+
+**ITEM 342'S LADDER IS NOT REFUTED — its term is re-confirmed.** Holding PRESENT properties at
+three and varying the store's column count: `RETURN n` 376 / 393 / 440 ns/row at 3 / 10 / 30
+columns, so **~2.1 ns per extra store key per row**, matching the 1.79 ns/key recorded at items
+340/740 about thirty items later. `RETURN n.a` is flat (2.45-2.48) and `count(*)` takes the
+shortcut. I nearly wrote that the ladder "buys 1.5%" from the 3-key case; the record already says
+the lever is for a HETEROGENEOUS store (50-200 keys, a handful per node), where the term is ~180
+ns/row, and a 3-30 key fixture cannot speak to it. Confirmed from the code too: `render_nodes` and
+`render_edges` already hoist the per-key column resolution, so the ~2.1 ns/key IS the hoisted
+figure and there is nothing left to hoist.
+
+**`regex_match` — item 769's open conformance question, CLOSED.** The NATIVE parser rejects
+`regex_match` and `_regex_match` too, so both engines agree, and native's own comment names the
+owner: it is the Gremlin `regex()` predicate sharing the scalar library. By design, not a gap.
+
+**Still open and NOT tick-sized:** element rendering's floor is the allocation per element — the id,
+the labels `Value::List`, the properties `Value::Map` behind an `Arc`. Item 341 found the structural
+answer (the TS engine does not materialize an element at all, and does the same work in 213 ns/row
+against native's 492), so the lever is LAZINESS, a representation change.
