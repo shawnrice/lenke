@@ -20241,3 +20241,47 @@ fix for the same thing reuses ONE buffer across rows, which is safe there becaus
 retention explicit; here `args` reaches `callExtendedScalar` and then `callTemporalFn`,
 `callStringListFn` and `callListSetFn`, so it needs a retention audit of all three first — an
 aliasing bug of that kind would pass every test.
+
+## 763 — TS: ONE argument buffer per compiled call instead of one array per row. `nullif` 1.39-1.55x, `starts_with` 1.32-1.34x
+
+**DONE (TypeScript).** `bufferedScalarCall` replaces `args.map((f) => f(env))` in the general
+`Expr::Call` closure: one buffer per compiled call, filled in place. The native engine's
+`Expr::Call` arm has done the same for the same reason; this is its TS twin, and it is the lever
+item 762's bimodality finding pointed at.
+
+Measured on 762's instrument (one shape per PROCESS, 14 reps, first three dropped, median of the
+rest, min across three order-alternated rounds), TWO independent reads: `nullif` 1.55x / 1.39x,
+`starts_with` 1.32x / 1.34x, `byte_length` 1.15x / 1.32x, `substring` 1.07x / 1.11x, `replace`
+1.10x / 1.07x. Three specialized controls that never enter the factory: 0.95-1.01x.
+
+**Quote the ns, not the ratio.** The saving is a near-constant **10-27 ns a row**, so the ratio
+falls as the function's own work rises — `nullif` does almost nothing and moves 1.5x, `replace`
+and `substring` have expensive bodies and move 1.1x. Any single headline figure from this change
+is an artifact of which function it was measured on.
+
+**THE RETENTION AUDIT IS THE PRECONDITION, and it is recorded in the factory's doc comment.** A
+reused buffer is only safe because nothing below `callScalar` keeps the array: `callScalar`
+destructures it, reads `args.length` and calls `args.find` (returning an ELEMENT);
+`callExtendedScalar`, `callTemporalFn`, `callStringListFn` and `callListSetFn` only index it.
+Nothing returns, stores or closes over it. A future arm that does turns this into a
+use-after-free in slow motion — the returned value would be rewritten on the next row, and a
+single-row result still looks right. Re-entrancy cannot alias it: the buffer belongs to one
+compiled `Expr::Call`, and a nested call is a different node with its own buffer.
+
+**Mutation, all three as predicted:** a STALE last slot (`i < n - 1`) FAILS tests and fuzzers — it
+is the exact failure mode a retention bug would have; the buffer hoisted to MODULE scope, which is
+the aliasing bug the doc warns about, also FAILS, so nested general calls already have coverage
+and there is no gap; and allocating per row again SURVIVES as EQUIVALENT, so the route choice's
+guard is the A/B rather than a test.
+
+`bun run spelling`: 0 groups disagree on the ANSWER. It flagged a THIRD group over 2x,
+`one end labelled, the other free` at 2.03x — which item 504 already measured at **1.09x in
+isolation** (the flag was shared-process contamination) and which a later entry records as
+straddling the 2.0x threshold, flagging 2 of 3 runs on one tree and 0 of 3 on HEAD. Not chased,
+on those two records.
+
+**Still open:** the general closure's remaining cost is the walk down `callScalar`'s dispatch chain
+(four `Record` lookups and a `Set.has` before the switch) and a read of `env.graph.limits`. Note
+that the two relevant precedents point OPPOSITE ways — item 457 refuted the name dispatch as a
+cost in the NATIVE engine, while item 760's table specialization in TS was most of a 2x — so this
+one has to be measured in isolation, not reasoned from either.

@@ -297,6 +297,7 @@ import {
   BINARY_NUM,
   binaryNumCall,
   BOOL3,
+  bufferedScalarCall,
   callScalar,
   cmpKey,
   COMPARE,
@@ -2062,12 +2063,15 @@ const compileFunc = (expr: FuncExpr): CompiledExpr => {
     return unaryStrCall(name, unaryStr, args[0]);
   }
 
-  return (env) =>
-    callScalar(
-      name,
-      args.map((f) => f(env)),
-      env.graph.limits,
-    );
+  // Everything else keeps the general dispatch, but not the per-row argument ARRAY (item
+  // 763). `args.map((f) => f(env))` allocated one array per row — 200,000 a rep on the probe
+  // fixture — and item 762 found that allocation is what makes this path BIMODAL, swinging
+  // between a ~45 ns and a ~82 ns mode inside one process while the specialized closures sit
+  // flat. The native engine's `Expr::Call` arm reuses one buffer for the same reason.
+  //
+  // The factory is at module scope and the retention audit that makes it safe is documented
+  // there.
+  return bufferedScalarCall(name, args);
 };
 
 // A shared empty probe arg list — `callScalar` treats absent args as null, so a

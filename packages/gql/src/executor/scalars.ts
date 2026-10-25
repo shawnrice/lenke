@@ -2147,3 +2147,37 @@ export const unaryStrCall =
 
     return f(v as string);
   };
+
+/**
+ * The general scalar call, with ONE argument buffer reused across rows instead of a fresh
+ * array per row (item 763). The native engine does the same thing in its `Expr::Call` arm and
+ * says why: `n` allocations for a function that may do nothing with them.
+ *
+ * SAFE ONLY BECAUSE NOTHING RETAINS THE ARRAY, which was audited rather than assumed: every
+ * use of `args` below `callScalar` indexes it (`args[0]`, `args[1]`, `args[2]`), destructures
+ * it, or forwards it to `callTemporalFn` / `callStringListFn` / `callListSetFn`, which do the
+ * same. `coalesce`'s `args.find` returns an ELEMENT. Nothing returns the array, stores it, or
+ * closes over it. If a new arm ever does, this buffer becomes a use-after-free in slow motion:
+ * the value handed back would be rewritten on the next row, and no test would see it, because
+ * a single-row result looks right.
+ *
+ * Re-entrancy cannot alias it either: the buffer belongs to ONE compiled `Expr::Call`, and for
+ * a nested call (`abs(power(x, 2))`) the inner node is a different node with its own buffer. A
+ * node cannot appear inside its own argument subtree, so the same buffer is never being filled
+ * twice at once.
+ */
+export const bufferedScalarCall = <E extends { graph: { limits: GraphLimits } }>(
+  name: string,
+  steps: readonly ((env: E) => unknown)[],
+): ((env: E) => unknown) => {
+  const n = steps.length;
+  const buf: unknown[] = new Array(n);
+
+  return (env: E): unknown => {
+    for (let i = 0; i < n; i++) {
+      buf[i] = steps[i](env);
+    }
+
+    return callScalar(name, buf, env.graph.limits);
+  };
+};
