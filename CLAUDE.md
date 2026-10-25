@@ -321,15 +321,17 @@ Three rules when you add or change a rewrite, all learned the hard way:
   - **Prove the harness kills before trusting it with a mutant.** One allocator bomb and
     one bare `while true` under the cap, checking for 137 and 124, costs seconds and is the
     difference between a safety net and the belief in one.
-  - **A mutation verdict needs evidence of EXECUTION, not an exit code.** A harness that reads
-    only the exit status cannot tell "the tests ran and disagreed" from "the tests never ran",
-    so it reports a mutant as CAUGHT when nothing executed — and that is invisible exactly
-    when FAIL is what you predicted. Seen three times in three ticks (items 765-767): a
-    `bun run fuzz` inside the loop exited 1 with its stdout stopping after `bun test v1.4.0`
-    and no test-result line, which is a runner-startup failure carrying no information about
-    the mutant. It never reproduced when the same mutant was run alone. Require a result line
-    (`N pass`, `test result:`) in the output before believing either verdict, and re-run any
-    unexpected one on its own.
+  - **A mutation verdict needs evidence of EXECUTION, not an exit code** — and the evidence is
+    on **stderr**. `bun test` writes `N pass` / `N fail` to STDERR, never stdout, for the unit
+    suite and for `bun run fuzz` alike; `cargo test` writes `test result:` to stdout. A check
+    that reads one stream is blind to the other, and both failure modes have happened here:
+    item 767 saw an empty stdout and concluded the runner "never ran a test" (it had, and
+    reported to stderr), then items 772-773 implemented that rule against stdout and printed
+    `DID-NOT-RUN` for runs that passed cleanly — a diagnostic that made a working step look
+    absent. **Concatenate stdout and stderr, look for a result line there, and only then read
+    the exit code.** An unexpected verdict still gets re-run on its own: a `bun run fuzz`
+    exiting 1 inside the loop while 20 standalone runs pass is the rare-seed residual
+    (`gremlin-fuzz-families`), and its reason is in the stderr you now have.
 
 - **A passing integration probe is not evidence of correctness.** The probes in
   `examples/` do assert answers, and they passed while the engine returned wrong

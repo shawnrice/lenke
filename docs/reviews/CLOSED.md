@@ -20720,3 +20720,39 @@ and item 767's "the dist is a build step away" both exist.
 
 **Still open:** `replace` (~168 ns after 768) and `substring` (~87) are three- and mixed-arity, so
 neither fits the two-argument table widened here.
+
+## 774 — `bun test` reports to STDERR. Items 767, 772 and 773's mutation diagnostics were reading an empty stream, and all three are corrected
+
+**NO ENGINE CHANGE — a guard repaired.** `bun test` writes `N pass` / `N fail` to **stderr**, never
+stdout, for the unit suite and for `bun run fuzz` alike; `cargo test` writes `test result:` to
+stdout. Measured: a clean `bun run fuzz --no-build` has rc=0 with NO result line in stdout and one
+in stderr; a failing `bun test` has rc=1, likewise.
+
+**THE COMPOUNDING ERROR, four ticks long, from one unexamined assumption:**
+
+1. Items 765/766/767/772 saw an in-loop `fuzz=FAIL(1)` with empty stdout.
+2. **Item 767 concluded the runner "never ran a test"** and that the exit code carried no
+   information. WRONG — it ran and reported to stderr. Those were REAL non-zero exits whose reason
+   was never captured. With 20 consecutive clean standalone runs on the pristine tree, the
+   remaining explanation is the rare-seed residual `gremlin-fuzz-families` already records.
+3. **Items 772/773 then implemented 767's rule against stdout** and printed `DID-NOT-RUN` for runs
+   that passed cleanly. Item 773's claim that _"the in-loop fuzz step currently contributes no
+   signal at all"_ is WRONG and is corrected here: the step worked throughout, only the label was
+   false.
+
+**THE FIX:** concatenate stdout and stderr, look for a result line there, and only then read the
+exit code (124/137/-9 still distinguished as timeout/OOM). Validated by re-running item 773's three
+mutants: `split` bypassing `splitScalar` FAIL(1)/fuzz pass, arguments swapped FAIL(1)/fuzz pass,
+not specialized pass/pass — all as predicted, with the fuzz column reading `pass` where it said
+`DID-NOT-RUN` an hour earlier. `CLAUDE.md`'s rule now NAMES the stream, which the version item 767
+wrote did not — and that omission is why my own two implementations of it were wrong.
+
+**WHAT THIS DOES NOT CHANGE.** Every verdict in items 765-773 stands. The decisive ones came with
+NAMED failing tests from a stream being read correctly (`cargo test` on stdout for the Rust
+mutants; the unit suite's exit plus test name for the TS ones). What was lost was the fuzz column,
+and this tick shows it would have read `pass` — so no mutant was wrongly declared caught by it. The
+engine is unaffected: 20 consecutive clean fuzz runs on the pristine tree.
+
+**Newly possible:** the rare-seed residual now has a capture path. An in-loop non-zero exit will
+name the fuzzer and seed in the stderr now being read, and `bun run fuzz <name> --seed N` replays
+it — which has not been possible at any point in this session.
