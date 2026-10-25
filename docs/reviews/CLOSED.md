@@ -19885,3 +19885,68 @@ sum(d.age) over a chain, weighted sweep** — so the next grep in any of them la
 376/419.
 
 Gates: no code change. `git status` clean; the probe example was deleted.
+
+## 756 — `count(DISTINCT y)` over `->{1,2}` ERRORS where its `MATCH WALK` twin answers in 0.5 ms, and the gate is stricter than its own argument
+
+**MEASURED. No change — the widening it suggests needs a correctness proof this item does not
+have.** Item 374 left a note that `try_varlen_distinct_count` and `try_varlen_distinctby_count`
+"decline their own shapes even unlabelled". Following the method that worked at item 755 — read the
+fast path's own doc before measuring — explains it, and measuring it turns up something sharper than
+slowness.
+
+### What the gate says, and what it does
+
+The path answers `count(DISTINCT endpoint)` by multi-source BFS in O(V+E) instead of enumerating
+every path. Its TRAIL region is `max <= 1`, and item 68 (`fastpath_fuzz`, seed 3249) is why: on two
+nodes and one edge, `(x)-[:R]-{2,3}(y)` returns NO rows as a trail — length 2 needs two distinct
+edges — while the BFS walks `a -> b -> a` and reports 2.
+
+**TRAIL is the DEFAULT mode.** So the shape a user writes declines, and only an explicit
+`MATCH WALK` reaches the fast path. That is the whole of item 374's note.
+
+### The cliff, at 50,000 vertices of degree 5
+
+| query                                                     | result                                     |
+| --------------------------------------------------------- | ------------------------------------------ |
+| `MATCH (a:Person)-[:KNOWS]->{1,2}(y) … count(DISTINCT y)` | **E_RESOURCE_EXHAUSTED** (27.8 ms to fail) |
+| `MATCH WALK (a:Person)-[:KNOWS]->{1,2}(y) … same`         | **0.5 ms** → 49,657                        |
+| `MATCH (a:Person)-[:KNOWS]->{1,1}(y) … same`              | 0.5 ms → 49,657                            |
+| `MATCH WALK … ->{1,3}(y) … same`                          | 0.7 ms → 49,657                            |
+| `MATCH (a:Person)-[:KNOWS]->{1,3}(y) … same`              | **E_RESOURCE_EXHAUSTED**                   |
+
+This is not a perf gap, it is a **failure**: the default spelling blows the 1,000,000-row trail
+limit on a graph of 50,000 nodes, while one keyword makes it sub-millisecond. `{1,1}` answers because
+`max <= 1` is inside the safe region, which confirms the mechanism from the outside.
+
+Every spelling that answers agrees on **49,657**, so on this fixture the trail and walk
+distinct-endpoint sets coincide — which is what makes the next section tempting and is not proof of
+anything.
+
+### 🛑 The gate is stricter than the argument in its own doc, and I could not close the gap
+
+The doc argues: _"a node with ANY walk of length `L ≤ max` has shortest distance ≤ L, so a `min ≤ 1`
+reachability is the same set whether paths are walks or trails (the shortest path is simple, reusing
+no edge)"_ — a **`min <= 1`** condition. The gate then implements **`max <= 1`**, which is far
+narrower, and item 68's counterexample had `min = 2`, so `min <= 1` would already have excluded it.
+
+That looks like a free widening worth the cliff above. **I am not making it**, because trying to
+construct the correctness argument produced a case I cannot dismiss: undirected `x—y`, one edge,
+`{1,3}` from `x`. A WALK of length 2 reaches `x` itself, so the walk endpoint set is `{x, y}`; the
+set of nodes at shortest distance in `1..=3` is `{y}`, since `x` is at distance 0. If the BFS
+computes the latter — which is what the doc says it computes — then it and the true WALK answer
+differ at `min = 1`, and the equivalence the doc asserts does not hold in the direction that matters.
+
+Either my reading of the BFS is wrong or the doc's argument is loose. Settling it needs the actual
+BFS read line by line plus a `fastpath_fuzz` run over that fixture shape, which is more than this
+item did. So: **a candidate widening with a measured 0.5 ms-against-failure payoff, blocked on a
+semantics question, with the exact fixture to test first written down.**
+
+### Why the note said "even unlabelled"
+
+Item 373/374's family note says a fix here "needs a MIXED fixture to be measured honestly and a
+mixed fixture to be TESTED at all". That is true of the LABEL-filtered variants and is a separate
+blocker: `social_store` gives every node `["Person"]` and every edge `"KNOWS"`, so a label or type
+test excludes nothing (item 721's trap). None of the figures above depend on a label, which is why
+they could be taken at all.
+
+Gates: no code change. `git status` clean; the probe example was deleted.
