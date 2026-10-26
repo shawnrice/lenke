@@ -26592,3 +26592,19 @@ undefined`). None of these is discoverable from the list's definition. (Those ga
   slow" (items 900-903).** Four items and three wrong attributions for one one-line omission, each
   reasoned from real code plus ONE instrumented shape. What ended it was calling the exported
   function directly and printing a table across four spellings. Tabulate before instrumenting.
+- **CLOSED AS A TARGET — the TS nested read, now fully accounted for (item 904).** After item 903's
+  lift the ladder reads `scalarProp` 24.6 ns/row, `recordProp` 24.2, `nestedField` **75.6** (was
+  101.5), field step **52.0** (was 75.8). Those 52 decompose with no residual: `propOf` on the
+  element ~17 (the flat rung pays it too), a SECOND read via `recordGet` into the `LenkeRecord` ~17
+  (item 899 measured a `Map.get` at 17.1 against a plain-object read's 3.4), and the
+  `instanceof` + segment loop + array indexes + `compareTruth` overhead. **No unexplained residual
+  left** — the difference between "still open" and "at its floor".
+- **REFUTED ON INSPECTION, before it cost a build (item 904).** `eqProps` uses `structuralEq` where
+  `pathProps` goes through `compareTruth`'s op-table dispatch, which looked like the missing ~35 ns.
+  For `op === '='`, `compareTruth` is a nullish check, two string compares on the op, and then
+  **`structuralEq` itself** — a few ns. Reading the function was enough; no arm was built.
+- **NAMED AND NOT TAKEN — a 2-segment `pathOf` specialization (item 904).** No loop, no array
+  indexing; worth perhaps 5-8 ns of the 52, about **1.1x** — the boundary where this repo's own rule
+  says a change needs its own isolated harness. Not worth that against a closed thread. The only
+  remaining lever of SIZE is the record representation, which item 899 priced at 4-7x per read and
+  left for the byte-identity reasons recorded there.
