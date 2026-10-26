@@ -25741,3 +25741,13 @@ Gates, each its own command with its exit code read UNPIPED: `bun run fmt` 0; `b
 packages/gremlin` 3,453 pass 0 fail (during the experiment). Comment-only change in the engine; the
 temporary probe and the env switch removed, and all three touched files restored from pristine
 copies before the comment was added.
+
+- **A `hasListeners` guard on the TS property mutators — DEAD CODE (item 862).** The eight
+  `Vertex`/`Edge` property events each build an `EmitterEvent` unconditionally, 45 of a 99 ns 4-key
+  `setProperty`, and `Emitter.hasListeners` exists to skip exactly that. It can never fire: all
+  eight types are in `graphMutationEvents`, and `Graph`'s constructor subscribes `markMutated` +
+  `onMutate` to each of those sixteen for the graph's lifetime, so `hasListeners` is always true
+  for them. Zero win on any real `Graph`; no measurement taken or needed. The 45 ns splits 13
+  allocation (inside a 19% noise floor) / **32 DISPATCH** to those two always-present listeners —
+  so the remaining lever is a cheaper dispatch (one merged internal listener, or inline bookkeeping
+  leaving an empty snapshot), NOT a guarded construction.

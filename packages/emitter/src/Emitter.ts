@@ -88,6 +88,10 @@ export class Emitter<
    * be skipped. (`on` allocates the bucket, and `off` leaves it behind empty, so the size has to
    * be checked and not just the key.)
    */
+  // Item 862: this does NOT work as a guard for `Graph`'s eight property-mutation events. Its
+  // constructor subscribes two internal listeners to each of the sixteen `graphMutationEvents`, so
+  // `hasListeners` is always true for them; see the refutation at that registration loop. The one
+  // caller that does benefit is the `@graph/mutate` relay, a type nothing internal subscribes to.
   hasListeners(type: Key): boolean {
     const set = this.listeners.get(type);
 

@@ -1118,6 +1118,30 @@ export class Graph {
       this.emit(new EmitterEvent('@graph/mutate', { original: event }));
     };
 
+    // ITEM 862 — A `hasListeners` GUARD ON THE PROPERTY MUTATORS IS DEAD CODE, AND THIS LOOP IS
+    // WHY. The eight property events (`Vertex`/`Edge` x `Property`/`Properties` x
+    // `Changed`/`Removed`) each build an `EmitterEvent` unconditionally, which ablates to 45 of a
+    // 99 ns 4-key `setProperty` — the largest single term, so guarding the construction on
+    // `emitter.hasListeners(type)` looks like the obvious win. It cannot fire: every one of those
+    // eight types is in `graphMutationEvents`, and this loop subscribes TWO listeners to each of
+    // them for the lifetime of the graph. `hasListeners` is therefore ALWAYS TRUE for exactly the
+    // types a guard would want to skip. No measurement was needed or taken.
+    //
+    // What the ablation does establish is where the 45 ns sits, min of three order-alternated
+    // rounds at k=4, against a 19% noise floor measured on three runs of one identical arm:
+    //
+    //     full 100 ns/write    build-but-do-not-emit 68    neither 55
+    //     => allocation 13 ns (inside the noise), DISPATCH 32 ns (2.5x it, and robust)
+    //
+    // So the cost is not an unobserved allocation; it is real dispatch to two internal listeners
+    // that are always present. A lever here has to make THIS path cheaper — one merged listener
+    // rather than two try/catch frames per emit, or calling the bookkeeping inline and leaving the
+    // snapshot empty when no host listener is subscribed. Guarding the construction is not it.
+    //
+    // (The ablation's `build` arm was silently DROPPED by the bundler on the first attempt: a
+    // module-level `let` that is never read is a dead store. It had to escape via `globalThis` to
+    // survive, and dist had to be grepped to confirm all three arms were present — otherwise
+    // `build` would have measured as `none` and reported the allocation as free.)
     graphMutationEvents.forEach((type) => {
       // The same listener is registered against many event types; we erase
       // the per-event listener type here.
