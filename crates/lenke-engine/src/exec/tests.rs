@@ -27277,3 +27277,116 @@ fn a_trail_distinct_endpoint_count_is_not_the_walks_at_min_one() {
     assert_eq!(walk1, trail1, "at one hop no edge can be reused");
     assert_eq!(trail1, 1.0, "and the answer is the single neighbour");
 }
+
+/// Item 864: the RANK-BOUNDED streaming top-K for a dictionary key. A dictionary's smallest (or
+/// largest) string bounds every value in the column, so once `skip+limit` rows at that extreme
+/// rank have been seen IN ARRIVAL ORDER — which is the total order's own tiebreak — nothing later
+/// can displace them and the scan stops. Measured at ~1800x on an 8-way column at 200k nodes.
+///
+/// Every number here was diffed against the PREVIOUS implementation's output before being written
+/// down, so these are the old path's answers, not this path's self-report. The fixture is sized
+/// and shaped for mutation sensitivity, which took two tries:
+///   - 400 nodes, not 60: with a buffer smaller than the trim threshold a DROPPED arrival tiebreak
+///     still happened to return the right rows, so that mutant survived.
+///   - `d` is ABSENT on most nodes rather than holding an explicit `Value::Null`: an explicit null
+///     makes the column `Gen`, which this path declines, so the null case never reached it at all.
+///
+/// The spelling matters and is the reason an earlier version of this test was vacuous: a
+/// CLAUSE-position `ORDER BY` (`RETURN x ORDER BY k`) sorts above the projection, so the plan is
+/// `OrderPage{Project{Scan}}` and `try_late_materialize` handles it. Only the STATEMENT position
+/// (`ORDER BY k LIMIT n RETURN x`) leaves a bare `Scan` under the sort. A mutant that made this
+/// path return NO rows survived all 1,972 tests until the spelling was fixed.
+#[test]
+fn top_k_rank_bounded_dict_key() {
+    const CY: [&str; 4] = ["bb", "aa", "dd", "cc"]; // sorted: aa < bb < cc < dd
+    let mut b = Builder::default();
+    for i in 0..400u32 {
+        let mut props = vec![
+            ("c", s(CY[(i % 4) as usize])),
+            ("s", s(&format!("s{i:03}"))),
+        ];
+        // present on three nodes, ABSENT (not null-valued) elsewhere, so the column stays
+        // dictionary-encoded and a wide window has to reach past the present rows into NULLs
+        if i % 137 == 0 {
+            props.push(("d", s(&format!("r{i}"))));
+        }
+        b.node(&["T"], &props);
+    }
+    let store = b.build();
+
+    // Asserted, not assumed: if these stopped being dictionary-encoded the arm under test would
+    // silently stop being exercised and every case below would still pass.
+    assert!(
+        matches!(store.column("c"), Some(crate::store::Column::Dict { .. })),
+        "c must be dictionary-encoded"
+    );
+    assert!(
+        matches!(store.column("d"), Some(crate::store::Column::Dict { .. })),
+        "d must be dictionary-encoded with absent cells"
+    );
+
+    let col = |q: &str| -> Vec<String> {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &store);
+        run(&plan, &store)
+            .rows
+            .iter()
+            .map(|r| match &r[0] {
+                Value::Str(x) => x.to_string(),
+                Value::Null => "NULL".to_string(),
+                o => panic!("{o:?}"),
+            })
+            .collect()
+    };
+
+    // ASC: "aa" is the smallest, carried by i % 4 == 1, and the tiebreak is arrival — so the
+    // answer is the FIRST five such rows, which is also exactly what the early exit claims.
+    assert_eq!(
+        col("MATCH (t:T) ORDER BY t.c LIMIT 5 RETURN t.s AS x"),
+        ["s001", "s005", "s009", "s013", "s017"]
+    );
+    // DESC: "dd", i % 4 == 2. DESC flips which rank is extreme; it does NOT flip the tiebreak.
+    assert_eq!(
+        col("MATCH (t:T) ORDER BY t.c DESC LIMIT 5 RETURN t.s AS x"),
+        ["s002", "s006", "s010", "s014", "s018"]
+    );
+    // SKIP pages INSIDE the extreme group, so the window is a slice of it and not its head.
+    assert_eq!(
+        col("MATCH (t:T) ORDER BY t.c SKIP 3 LIMIT 4 RETURN t.s AS x"),
+        ["s013", "s017", "s021", "s025"]
+    );
+    assert_eq!(
+        col("MATCH (t:T) ORDER BY t.c DESC SKIP 2 LIMIT 3 RETURN t.s AS x"),
+        ["s010", "s014", "s018"]
+    );
+    // A WINDOW WIDER THAN THE EXTREME GROUP: 100 rows carry "aa", so a 103-wide window spills into
+    // the next rank and the early exit must NOT fire. The three spilled rows are the first "bb"s by
+    // arrival, which is what a dropped tiebreak gets wrong.
+    let wide = col("MATCH (t:T) ORDER BY t.c LIMIT 103 RETURN t.s AS x");
+    assert_eq!(wide.len(), 103);
+    assert_eq!(wide[0], "s001");
+    assert_eq!(wide[99], "s397", "the hundredth and last \"aa\" by arrival");
+    assert_eq!(
+        &wide[100..103],
+        ["s000", "s004", "s008"],
+        "the spill must be the FIRST rows of the next rank, by arrival"
+    );
+    // NULLS INSIDE THE WINDOW: only three nodes have `d`, so a 6-wide window must place three
+    // NULLs after them. This path skips nulls and so cannot order them — it must DECLINE and let
+    // the general path do it, rather than return three rows.
+    assert_eq!(
+        col("MATCH (t:T) ORDER BY t.d LIMIT 6 RETURN t.d AS x"),
+        ["r0", "r137", "r274", "NULL", "NULL", "NULL"]
+    );
+    // Same key DESC: null placement is the front-end's contract and is decided BEFORE the total
+    // order, so GQL keeps nulls last under DESC too.
+    assert_eq!(
+        col("MATCH (t:T) ORDER BY t.d DESC LIMIT 4 RETURN t.d AS x"),
+        ["r274", "r137", "r0", "NULL"]
+    );
+    // CONTROL: a plain string key has no bounded rank, so it has no arm here and goes through the
+    // general path. It must still be right, and it must not change when this path changes.
+    assert_eq!(
+        col("MATCH (t:T) ORDER BY t.s LIMIT 4 RETURN t.s AS x"),
+        ["s000", "s001", "s002", "s003"]
+    );
+}

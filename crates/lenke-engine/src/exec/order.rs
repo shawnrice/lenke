@@ -362,8 +362,15 @@ pub(super) fn try_scan_top_k(
     let Plan::Scan { label } = input else {
         return None;
     };
-    let Some(Column::Num { data, present, .. }) = store.column(key) else {
-        return None; // numeric, unboxed key only (matches order_page's Col::Num path)
+    let column = store.column(key)?;
+    let Column::Num { data, present, .. } = column else {
+        // Item 864: every OTHER representation used to stop here, so a string or dictionary key
+        // fell back to `order_page` — which decodes a `Dict` column into a whole `Col::Str`
+        // (200,000 `Arc` clones to answer a question about ten rows). Handled separately rather
+        // than by generalizing the numeric body: item 844 shipped a 1.6x regression on the `min`
+        // CONTROL by giving two arms a shared live range, so the numeric path below is left
+        // byte-for-byte alone.
+        return try_scan_top_k_wide(column, label, k, skip, limit, store);
     };
     let kcap = skip.unwrap_or(0).checked_add(limit)?;
     if kcap == 0 {
@@ -401,6 +408,136 @@ pub(super) fn try_scan_top_k(
     });
     if has_null {
         return None;
+    }
+    let end = kcap.min(buf.len());
+    if end < buf.len() {
+        buf.select_nth_unstable_by(end - 1, cmp);
+        buf.truncate(end);
+    }
+    buf.sort_unstable_by(cmp);
+    let start = skip.unwrap_or(0).min(buf.len());
+    Some(Batch::of(vec![Col::Nodes(
+        buf[start..].iter().map(|&(_, _, n)| n).collect(),
+    )]))
+}
+
+/// STREAMING TOP-K for a `Str` or `Dict` key (item 864). Two different wins under one roof:
+///
+/// - **`Str`**: stream the key and keep a bounded buffer, exactly as the numeric path does. Saves
+///   materializing the frontier, a 200,000-entry `Col::Str` (an `Arc` clone per row) and an index
+///   array to return ten rows. Priced at 1.7x — the fallback already partial-sorts, so this is the
+///   materialization only, NOT a sort that was being avoided.
+/// - **`Dict`**: the key is replaced by its RANK in the sorted dictionary, which makes the top-K
+///   bounded below (ASC) or above (DESC) by a value known before the scan starts. Once `skip+limit`
+///   rows at that extreme rank have been seen — and the scan runs in arrival order, which is the
+///   total order's own tiebreak — nothing later can displace them, so the scan STOPS. Priced at
+///   15.4x on an 8-way column.
+///
+/// NULLs are skipped rather than disqualifying the whole path (the numeric arm bails on the first
+/// one). That is sound only for a nulls-LAST key, so `nulls_first` declines: null placement is the
+/// front-end's contract and is decided BEFORE the total order, so it is not reversed by `DESC`, and
+/// a null that sorts FIRST could outrank rows this path would never look at. If the scan ends with
+/// fewer than `skip+limit` non-null rows the nulls are inside the window after all, and it declines
+/// so the general path can place them.
+fn try_scan_top_k_wide(
+    column: &Column,
+    label: &Option<String>,
+    k: &crate::ir::SortKey,
+    skip: Option<usize>,
+    limit: usize,
+    store: &Store,
+) -> Option<Batch> {
+    if k.nulls_first {
+        // A null outranks everything, including rows an early exit would never read. This guard
+        // is DEFENSIVE, and item 864 says so with evidence rather than claiming a test: removing
+        // it was the one mutant of six that survived, because no front end can currently reach
+        // this plan shape with nulls-first. GQL places nulls LAST always; Gremlin places them
+        // first but its `order().by(k).limit(n)` does not lower to `OrderPage{Scan}` at all (four
+        // spellings checked against an instrumented build, none entered this function). The guard
+        // stays because it is the precondition that makes skipping nulls sound, and it costs one
+        // branch per query — but it is unexercised, not verified.
+        return None;
+    }
+    let kcap = skip.unwrap_or(0).checked_add(limit)?;
+    if kcap == 0 {
+        return Some(Batch::of(vec![Col::Nodes(Vec::new())]));
+    }
+    if kcap.saturating_mul(2) >= store.node_count() {
+        return None; // window is not a small prefix — a full sort is as cheap
+    }
+    let desc = k.descending;
+    // Rank keys, so one comparator serves both representations: ASC by rank then arrival, which
+    // is `order_page`'s Col::Str path (`GStr: Ord` delegates to `str`) plus its row-order tiebreak.
+    let cmp = |a: &(u32, u32, u32), b: &(u32, u32, u32)| {
+        let o = if desc { b.0.cmp(&a.0) } else { a.0.cmp(&b.0) };
+        o.then(a.1.cmp(&b.1))
+    };
+    let trim = kcap.saturating_mul(4).max(1024);
+    let mut buf: Vec<(u32, u32, u32)> = Vec::with_capacity(trim);
+    let mut arrival = 0u32;
+    let mut nulls_seen = false;
+
+    match column {
+        Column::Dict {
+            dict,
+            codes,
+            present,
+            ..
+        } => {
+            if dict.is_empty() {
+                return None;
+            }
+            // `dict` is in FIRST-APPEARANCE order, not sorted, so the code is not the rank.
+            // Sorting it is O(|dict| log |dict|) over at most `dict_max_distinct` entries,
+            // against the O(N) scan it bounds.
+            let mut order: Vec<u32> = (0..u32::try_from(dict.len()).ok()?).collect();
+            order.sort_unstable_by(|&a, &b| dict[a as usize].cmp(&dict[b as usize]));
+            let mut rank = vec![0u32; dict.len()];
+            for (r, &c) in order.iter().enumerate() {
+                rank[c as usize] = u32::try_from(r).ok()?;
+            }
+            // The extreme rank is a bound on the whole column whether or not it appears among
+            // the scanned rows: if it never does, the early exit simply never fires.
+            let best = if desc {
+                u32::try_from(dict.len() - 1).ok()?
+            } else {
+                0
+            };
+            let mut at_best = 0usize;
+            fastpath::scan_visit_while(store, label, |i| {
+                if !present[i] {
+                    nulls_seen = true;
+                    return true;
+                }
+                let r = rank[codes[i] as usize];
+                buf.push((r, arrival, u32::try_from(i).unwrap_or(u32::MAX)));
+                arrival += 1;
+                if r == best {
+                    at_best += 1;
+                    if at_best >= kcap {
+                        return false; // settled: nothing later can displace these
+                    }
+                }
+                if buf.len() >= trim {
+                    buf.select_nth_unstable_by(kcap - 1, cmp);
+                    buf.truncate(kcap);
+                }
+                true
+            });
+        }
+        // NO `Column::Str` ARM, and that is a measured decision, not an omission. One was
+        // written and REFUTED at item 864: streaming a string key means the surviving buffer
+        // carries row INDICES and every comparison loads `data[idx]` at random, which is the
+        // cache behaviour the numeric path's own comment warns about. Measured against the
+        // fallback over three order-alternated rounds it was 1.22x the WRONG way on ASC
+        // (1.726 ms -> 2.119) while nominally helping DESC, so it was dropped. A string key has
+        // no bounded rank either, so it cannot have the early exit that makes the dictionary arm
+        // worth having — there is nothing left for it to win.
+        _ => return None,
+    }
+
+    if nulls_seen && buf.len() < kcap {
+        return None; // nulls are inside the window — the general path places them
     }
     let end = kcap.min(buf.len());
     if end < buf.len() {

@@ -25771,3 +25771,23 @@ copies before the comment was added.
   placement is per-key and decided before the total order, so nulls-last is not reversed by `DESC`;
   that same fact makes the blanket `has_null` bail stricter than the contract requires. Needs an
   early-exiting `scan_visit`. Priced in `examples/topk_864.rs` — read that table before re-guessing.
+- **A rank-bounded early exit for a dictionary-key top-K — SHIPPED at ≥1785x (item 865).**
+  `ORDER BY <dict prop> LIMIT k` in STATEMENT position (`MATCH … ORDER BY k LIMIT n RETURN x`, the
+  only spelling that leaves a bare `Scan` under the sort) now ranks the key by its position in the
+  sorted dictionary, which bounds every value in the column — so once `skip+limit` rows at the
+  extreme rank are seen in arrival order (the total order's own tiebreak) the scan STOPS. 1.785 ms
+  -> 0.001 at 200k nodes, DESC 2.202 -> 0.001; `Num` and `Str` controls flat. Adds
+  `scan_visit_while`. 5 of 6 mutants caught; the `nulls_first` guard survives because no front end
+  can reach this shape with nulls-first (GQL is nulls-last; Gremlin's `order().by().limit()` does
+  not lower to `OrderPage{Scan}`) — defensive, documented as unexercised.
+- **The same widening for a plain `Str` key — REFUTED (item 865).** 1.22x the WRONG way on ASC
+  (1.726 ms -> 2.119): a streaming buffer carries row indices, so every compare loads `data[idx]`
+  at random, where the fallback compares a materialized column sequentially. No bounded rank, so no
+  early exit to pay for it. Numbers recorded where the arm would have gone. Do not re-attempt.
+- **CORRECTION to item 864 — its table measured `try_late_materialize`, not `try_scan_top_k`
+  (item 865).** A CLAUSE-position `ORDER BY` (`RETURN x ORDER BY k`) sorts above the projection, so
+  the plan is `OrderPage{Project{Scan}}` and the streaming top-K, which requires a bare
+  `Plan::Scan`, is never entered — confirmed with an instrumented build. **Two equivalent spellings
+  reach two different code paths.** 864's ceiling finding stands (the fallback sits 6.8x below a
+  full sort, so the representation gap there is 1.7-1.9x, not ~7x); only the attribution was wrong,
+  and the probe header plus README entry are corrected.

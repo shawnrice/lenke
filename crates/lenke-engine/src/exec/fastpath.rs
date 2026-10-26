@@ -4242,6 +4242,48 @@ pub(super) fn scan_visit<F: FnMut(usize)>(store: &Store, label: &Option<String>,
     }
 }
 
+/// `scan_visit`, but `f` returns `false` to STOP the scan. Needed by the rank-bounded top-K
+/// path (item 864): a dictionary key has a lower bound on every value in the column, so once
+/// `k` rows at the extreme rank have been seen in arrival order the answer is settled and the
+/// remaining nodes cannot change it. `scan_visit`'s `for_each` has no way to say that, and
+/// walking N anyway is the entire cost being removed.
+pub(super) fn scan_visit_while<F: FnMut(usize) -> bool>(
+    store: &Store,
+    label: &Option<String>,
+    mut f: F,
+) {
+    let all_live = store.live_node_count() == store.node_count();
+    let whole = all_live
+        && match label {
+            None => true,
+            Some(l) => store.nodes_with_label(l).len() == store.node_count(),
+        };
+    if whole {
+        for i in 0..store.node_count() {
+            if !f(i) {
+                return;
+            }
+        }
+    } else {
+        match label {
+            Some(l) => {
+                for &id in store.nodes_with_label(l) {
+                    if !f(id as usize) {
+                        return;
+                    }
+                }
+            }
+            None => {
+                for i in 0..store.node_count() {
+                    if store.is_alive(i as u32) && !f(i) {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// A group's accumulators: row count (for `count(*)`) plus `(total, count, best)`
 /// per numeric aggregate.
 struct GroupAcc {

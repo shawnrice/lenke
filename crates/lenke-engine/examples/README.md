@@ -92,15 +92,23 @@ question in its module header — read the header before touching it.
   adjacency and filter by edge type (scales with degree × type spread).
 - `interval_bench` — what an "as of T" bitemporal query pays to post-filter all
   of a node's edges by validity interval, vs an interval-index seek.
-- `topk_864` — what does `ORDER BY <prop> LIMIT k` pay when the key column is NOT
-  `Column::Num`? `try_scan_top_k` (the streaming O(N) time / O(k) space path) accepts the numeric
-  representation only, so a string or dictionary key falls back to `order_page`. The probe runs the
-  same query over four columns of ONE fixture that differ only in representation — `age` (Num),
-  `name` (Str, N distinct), `city`/`dept` (Dict, 8- and 5-way) — between a `count(*)` floor and a
-  no-`LIMIT` full-sort ceiling. It also prints the floor a DICTIONARY key could reach: the smallest
-  of eight cities is found after ~80 of 200,000 rows, so a rank-bounded early exit has a provable
-  stopping point that a high-cardinality string does not. Read the two floors as the targets, not
-  the ceiling: the fallback already partial-sorts, so it is 1.7-1.9x off, not 7x.
+- `topk_864` — what does a CLAUSE-position `RETURN x ORDER BY <prop> LIMIT k` pay by key
+  representation? The same query over four columns of ONE fixture that differ only in
+  representation — `age` (Num), `name` (Str, N distinct), `city`/`dept` (Dict, 8- and 5-way) —
+  between a `count(*)` floor and a no-`LIMIT` full-sort ceiling. **Its header originally credited
+  this to `try_scan_top_k` and that was wrong** (item 865): a clause-position `ORDER BY` sorts
+  above the projection, so the plan is `OrderPage{Project{Scan}}` and `try_late_materialize`
+  handles it — an instrumented build showed `try_scan_top_k` is never entered by any query in this
+  file. So read this table as the late-materialize path's, and use `topk2_864` for the fast path.
+  The ceiling column is the useful part either way: the fallback already partial-sorts, so it sits
+  6.8x BELOW a full sort and the representation gap is only 1.7-1.9x.
+- `topk2_864` — the SPELLING × representation table, and the instrument for `try_scan_top_k`.
+  `MATCH … ORDER BY k LIMIT n RETURN x` (statement position) leaves a bare `Scan` under the sort
+  and reaches the streaming top-K; `MATCH … RETURN x ORDER BY k LIMIT n` (clause position) does
+  not. Two equivalent spellings, two code paths — which by this repo's own rule must still cost the
+  same, so the probe prints both. It is also where the dictionary arm's ≥1785x was measured: a
+  dictionary key has a bounded rank, so once `skip+limit` rows at the extreme rank are seen in
+  arrival order the scan can STOP.
 - `frontier_guard_probe` — does the intermediate-frontier guard REFUSE a runaway before it
   allocates, and does it leave everything else alone? Written after an OOM took a 61 GB box into
   its swapfile (item 296). **Run it under the cap** — the header gives the line. Its most useful

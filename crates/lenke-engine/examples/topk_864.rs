@@ -1,4 +1,11 @@
-//! Item 864: `try_scan_top_k` accepts ONLY `Column::Num`. What do the other representations pay?
+//! Item 864: what does a sorted LIMIT pay by key representation?
+//!
+//! CORRECTION (item 865): this file's original header credited the result to `try_scan_top_k`.
+//! That was wrong. Every query here uses a CLAUSE-position `ORDER BY` (`RETURN x ORDER BY k`),
+//! which sorts above the projection — so the plan is `OrderPage{Project{Scan}}`, `try_scan_top_k`
+//! requires a bare `Plan::Scan` and is NEVER ENTERED by anything below (confirmed with an
+//! instrumented build). What this table actually measures is `try_late_materialize`/`order_page`.
+//! The statement-position spelling, which does reach the streaming top-K, is in `topk2_864`.
 //!
 //! The census is the function's own bail list: `ORDER BY <numeric prop> [DESC] LIMIT k` over a
 //! bare `Scan` streams in O(N) time and O(k) space, and every other key column falls back to
