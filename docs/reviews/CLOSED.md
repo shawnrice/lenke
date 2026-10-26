@@ -26775,3 +26775,17 @@ the element [ts lazy]` (0.07x, native SLOWER) → item 882, an output-shape cont
 UNDIRECTED` (native 1.7 vs TS 0.0) → item 478 already retracted it ("sublinear in the 2x edge
   steps, so … is the work"). **The table looks like a target list and is a map of settled
   questions** — an 85x row invites attention regardless of how many items have been spent on it.
+- **NO REGRESSION — this window's GQL executor changes do not cost the hot indexed point lookup
+  (item 915).** `bench:usage` read `point lookup` ts(+) at **885.4k** against figures recorded here
+  of 956.0k-1.29M, which looks like a regression — and 903 added a `pred.pathProps !== undefined`
+  check to `matchesPredicate`, on exactly that path. Isolated A/B, pre = item 902, three alternated
+  rounds: **pre 1.843M best / 1.842M median against post 1.944M best / 1.808M median.** Post's best
+  exceeds pre's; no regression.
+- **⚠️ `bench:usage`'s "best recorded" figures are NOT a baseline (item 915).** Three consecutive
+  runs of one build: `point lookup` 885.4k / 1.04M / 890.4k (**1.17x**), `100 updates in one
+statement` 969.7k / 774.8k / 973.6k (**1.26x**). It cannot resolve a 1.2x question about itself,
+  and its top figures are labelled "best recorded" — the top of a noisy distribution. Quoting them
+  as a baseline is how a noisy instrument manufactures a regression.
+- **AND ITS NUMBERS ARE NOT ENGINE FIGURES (item 915).** `point-lookup-probe.ts` measures ~1.8M
+  ops/s for the operation `bench:usage` reads at ~0.9-1.0M — the difference is that bench's own
+  per-operation harness. Its rows are comparable to ITSELF across builds, not to an isolated probe.
