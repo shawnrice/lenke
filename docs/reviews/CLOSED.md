@@ -26048,3 +26048,25 @@ p.flag` 4.51x (item 872).** Only the comparison spelling had one: `= true` lower
   `dirs[i] === 'desc'` STRING comparison** per comparison, ~20M times. Build the single-`by`
   specialization (parallel key array, direction as a sign resolved once, no loop); do NOT generalize
   the hoist — `sortRowsByColumns` records that measuring 1.00-1.02x and being reverted.
+- **The single-`by` `order()` specialization — 1.19x on the row, 1.33x on the step (item 879).**
+  `sortByBys` allocated a wrapper object AND a `keys` array per item and compared through a loop
+  that indexed both plus re-tested `dirs[i] === 'desc'` (a STRING compare) every comparison — ~20M
+  of them at 1M values. One `by` now carries a scalar key and a loop-free comparator chosen before
+  the sort: 464.54 ms -> 389.52 isolated (DISJOINT), `bench:gremlin` 507.2 -> 398.6, ts/native 6.5
+  -> 5.1. Controls (`engineValues`, `rawSortNum`) flat. Kept stable (one object per item,
+  `Array.prototype.sort`), `desc` negates the same comparison rather than swapping arguments, and
+  all keys are evaluated before the element check so error ORDER is unchanged. The multi-key loop is
+  NOT hoisted — `sortRowsByColumns` records that measuring 1.00-1.02x and being reverted.
+- **STILL OPEN — ~131 ms above the 88 ms sort floor (item 879).** Three full passes over 1M wrapper
+  objects (key evaluation, element check, `NO_VALUE` filter) plus the final `map` back, and 1M
+  allocations. Closing it means sorting an index permutation with an explicit arrival tiebreak
+  instead of inheriting `Array.prototype.sort`'s stability — a different stability argument, so its
+  own item.
+- **METHOD — `V().order()` throws at PARSE time, so it cannot test the runtime element fault
+  (item 879).** `checkStep` rejects a pure-element `order()` before the executor runs, so that
+  assertion passes while the runtime fault's mutant SURVIVES. The reachable shape is a MIXED stream
+  (`V().inject(1).order()`), whose frontier is no longer "element".
+- **METHOD — a `desc` that reverses the ARRAY instead of the comparison is only visible to an
+  ARRIVAL-ORDER assertion (item 879).** It returns a correctly-sorted result with the tie groups
+  flipped. Give fixture rows a distinct tag recording arrival position and compare tag sequences,
+  not key sets.

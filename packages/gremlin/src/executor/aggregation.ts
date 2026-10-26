@@ -177,6 +177,51 @@ const sortByBys = <T>(
   graph: Graph,
   ctx: RunContext,
 ): T[] => {
+  // ONE `by` — the common case — gets a SCALAR key and a comparator with no loop (item 879).
+  //
+  // The general path below allocates a wrapper object AND a `keys` array per item, then compares
+  // through a loop that indexes both arrays and re-tests `dirs[i] === 'desc'` — a STRING compare
+  // — on every comparison. At 1,000,000 values that is ~20M comparisons, and item 878 measured
+  // what it costs: `values(age).order()` 474.30 ms against 174.30 without the `order()`, where
+  // sorting a million numbers with a plain numeric comparator is 88.36 and the engine's own
+  // NaN-total order is 87.05 — so the ordering CONTRACT is free and ~212 ms was the scaffolding.
+  //
+  // Deliberately NOT a hoist of the multi-key loop as well: `sortRowsByColumns` in the GQL
+  // executor records that exact attempt measuring 1.00-1.02x and being reverted, at the cost of
+  // three array allocations per call. One key is the case worth specializing; the rest keeps the
+  // general shape.
+  //
+  // Equivalence, point by point with the general path below:
+  //   - every key is evaluated BEFORE the element check, so an `evalBy` that throws still wins
+  //     over the element fault exactly as it did when `items.map` ran first;
+  //   - `desc` negates the SAME comparison (`-compareTotal(a, b)`) rather than swapping the
+  //     arguments, so nothing rests on `compareTotal` being antisymmetric;
+  //   - the sort is still `Array.prototype.sort` over one object per item, so it is still STABLE
+  //     and ties keep arrival order — which is observable and compared against native.
+  if (bys.length === 1) {
+    const [by] = bys;
+    const descending = (by.direction ?? (desc ? 'desc' : 'asc')) === 'desc';
+    const keyed1 = items.map((item) => ({ item, key: evalBy(by, project(item), graph, ctx) }));
+
+    for (const k of keyed1) {
+      if (isElement(k.key)) {
+        throw new LenkeError(
+          `order() over graph elements is not supported — elements have no natural order; ` +
+            `use order().by('<key>')`,
+          { code: ErrorCode.Syntax },
+        );
+      }
+    }
+
+    const live1 = keyed1.filter((k) => k.key !== NO_VALUE);
+
+    live1.sort(
+      descending ? (a, b) => -compareTotal(a.key, b.key) : (a, b) => compareTotal(a.key, b.key),
+    );
+
+    return live1.map((k) => k.item);
+  }
+
   const dirs = bys.map((by) => by.direction ?? (desc ? 'desc' : 'asc'));
   const keyed = items.map((item) => ({
     item,
