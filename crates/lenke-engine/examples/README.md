@@ -115,6 +115,13 @@ question in its module header — read the header before touching it.
   (`packages/native/parseplan-cost-probe.ts`) reads 2.962 and 3.979 on the same statement — so the
   TS PARSER is 4.5x native's and the TS PLANNER adds ~1.02 us against native's 0.08, 12.6x. Read
   the pair together; either alone says nothing about whether a number is large.
+- **TS-side companion, no Rust twin:** `packages/native/lexer-census-probe.ts` — WHICH of the
+  tokenizer's scanners carries the characters? A static census, not a timing, for choosing a target
+  before changing one: identifier characters are **46-60%** of a realistic query, whitespace 11-18%,
+  punctuation 6-20%, and string literals **3-12% of the benchmark fixtures but 49.7% of ordinary
+  string-heavy application query text**. Every row re-sums to its own length, so no class is dropped
+  or double-counted. It is what told item 886 to change the identifier scanner AND the string
+  scanner, and to measure them on separate arms.
 - `barehop_882` — is native's bare-hop cost ENGINE time or FFI serialization? Item 881's new bench
   row showed `V().out()` at native 329.61 ms against TS's 185.4, which looks like native being the
   slow side. This runs the same plans IN PROCESS (`exec::try_run`, no boundary) and answers it:

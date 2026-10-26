@@ -195,7 +195,29 @@ const BASE_DIGIT_CLASS: Record<string, RegExp> = {
 };
 const isIdentStart = (c: string): boolean =>
   (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c === '_';
-const isIdentPart = (c: string): boolean => isIdentStart(c) || isDigit(c);
+// THE IDENTIFIER-CHARACTER CLASS, ON A CHARACTER CODE (item 886).
+//
+// This replaced a string version (`isIdentStart(c) || isDigit(c)`) that took a one-character
+// STRING and did up to four string range comparisons. Item 886's census says identifier
+// characters are 46-60% of a realistic query, so the loop that calls this carries more
+// characters than any other path in the tokenizer. `charCodeAt` compares integers and allocates
+// nothing, where `src[i]` produces a single-character string per character.
+//
+// `isIdentStart` and `isDigit` above keep their string form: they are called on a character the
+// dispatch already has in hand, once per TOKEN rather than once per character.
+const CC_0 = 48;
+const CC_9 = 57;
+const CC_A = 65;
+const CC_Z = 90;
+const CC_LOWER_A = 97;
+const CC_LOWER_Z = 122;
+const CC_UNDERSCORE = 95;
+
+const isIdentPartCode = (k: number): boolean =>
+  (k >= CC_LOWER_A && k <= CC_LOWER_Z) ||
+  (k >= CC_A && k <= CC_Z) ||
+  (k >= CC_0 && k <= CC_9) ||
+  k === CC_UNDERSCORE;
 
 /** The ISO/IEC 39075 single-character string escapes (besides the quote forms). */
 const SIMPLE_ESCAPES: Record<string, string> = {
@@ -374,8 +396,25 @@ export const tokenize = (src: string): Token[] => {
       const start = i;
       const quote = c;
       i += 1;
-      let str = '';
 
+      // THE COMMON CASE IS ONE SLICE (item 886). The old loop appended `src[i]` per character,
+      // so a 20-character literal did 20 string concatenations and built 20 single-character
+      // strings. Item 886's census puts string-literal characters at 3-12% of the benchmark
+      // fixtures but 49.7% of ordinary string-heavy application query text, so this is not a
+      // negligible path — it is only a fixture-dependent one.
+      //
+      // Scan to the closing quote first. With no backslash in between, the value IS the span,
+      // and `readEscape` never needs to run.
+      const bodyStart = i;
+
+      while (i < src.length && src[i] !== quote && src[i] !== '\\') {
+        i += 1;
+      }
+
+      let str = src.slice(bodyStart, i);
+
+      // Only a literal that actually contains an escape pays the per-character path, and only
+      // from the first backslash onwards.
       while (i < src.length && src[i] !== quote) {
         if (src[i] === '\\' && i + 1 < src.length) {
           const { text, next } = readEscape(src, i);
@@ -435,7 +474,7 @@ export const tokenize = (src: string): Token[] => {
       i += 1;
       const nameStart = i;
 
-      while (i < src.length && isIdentPart(src[i])) {
+      while (i < src.length && isIdentPartCode(src.charCodeAt(i))) {
         i += 1;
       }
 
@@ -515,7 +554,10 @@ export const tokenize = (src: string): Token[] => {
     if (isIdentStart(c)) {
       const start = i;
 
-      while (i < src.length && isIdentPart(src[i])) {
+      // The hottest loop in the tokenizer — item 886's census puts 46-60% of a query's
+      // characters here. On codes, so it neither allocates a single-character string per
+      // character nor does string range comparisons.
+      while (i < src.length && isIdentPartCode(src.charCodeAt(i))) {
         i += 1;
       }
 

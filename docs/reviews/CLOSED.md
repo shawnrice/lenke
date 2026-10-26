@@ -26168,3 +26168,25 @@ p.flag` 4.51x (item 872).** Only the comparison spelling had one: `= true` lower
   moves it (item 885).** Hoisting a const block to just above `tokenize` put it between the
   suppression and the function; lint then failed on `tokenize`'s pre-existing complexity, which
   reads like the change caused it.
+- **SHIPPED — the tokenizer's two biggest character paths (item 886): 1.22x string-heavy, 1.18x
+  identifier-heavy.** Identifier/parameter scanning moved from `isIdentPart(src[i])` (a
+  single-character STRING plus four string range comparisons, per character) to
+  `isIdentPartCode(src.charCodeAt(i))`; and a string literal with no escape in it is now ONE
+  `slice` instead of `str += src[i]` per character. Min of three order-alternated rounds, control
+  (`textOnly`) flat at 1.00x. Slope refits **42.4 → 35.9 ns/char**; cumulative since 884 **64.2 →
+  35.9**, `parseBig` 1.69x, and the gap to native's 22.4 is now **1.6x** from 2.9x.
+- **METHOD — census the characters by consuming scanner BEFORE picking a tokenizer target (item
+  886).** `packages/native/lexer-census-probe.ts`: identifier characters are 46-60% of a realistic
+  query, but string-literal characters are **3-12% of the benchmark fixtures and 49.7% of ordinary
+  string-heavy application query text**. The existing arms would have priced the string path at
+  near zero — and it was the only one doing per-character concatenation. Each target then got the
+  arm that reaches it, so the 1.22x and the 1.18x are attributable to different changes.
+- **METHOD — a cgroup kill arrives as a NEGATIVE signal through a process API, not 137 (item 886).**
+  Under a shell an OOM kill is exit 137; through `subprocess.run` with no shell the same kill is
+  rc=-9. A verdict check matching only 124/137 called a caught mutant `DID-NOT-RUN`. Same shape as
+  the stdout-vs-stderr trap (767, 772-773): the check must match how the runner was invoked.
+- **STILL OPEN — the TS parser's remaining ~13 ns a character (item 886).** 35.9 ns/char against
+  native's 22.4, 1.6x. The per-character allocations are gone from the two biggest paths, so what
+  remains is spread: the number scanner, `toLowerCase()` per identifier for the keyword lookup, and
+  the token objects themselves (4 fields, `num` usually `undefined`). Each is now a small share, so
+  this is no longer one lever — price before picking.

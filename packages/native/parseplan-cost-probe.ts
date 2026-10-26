@@ -168,6 +168,43 @@ ARMS.parseBig = (n) => {
 // Each arm asserted itself two ways before running: the source's TWO_CHAR count (pre 0, post 4)
 // and the built bundle's sha256, which had to DIFFER between arms and match within one —
 // identifiers are minified, so the source grep alone cannot see whether the build picked it up.
+// ITEM 886: a STRING-HEAVY arm. The census in lexer-census-probe.ts puts string-literal
+// characters at 3-12% of the arms above but 49.7% of ordinary application query text, so a change
+// to the string scanner is invisible here without a fixture that actually contains strings. This
+// is that fixture, and it doubles as the arm the identifier change reaches LEAST (32.9% ident
+// against big's 60%), so the two arms move for different reasons.
+ARMS.parseStrHeavy = (n) => {
+  let sink = 0;
+
+  for (let i = 0; i < n; i += 1) {
+    sink +=
+      parse(
+        `MATCH (p:Person) WHERE p.name = 'Alexandra Whitfield${i}' OR p.city = 'San Francisco Bay Area' ` +
+          `OR p.title = 'Senior Staff Software Engineer' RETURN p.name AS n`,
+      ) === undefined
+        ? 0
+        : 1;
+  }
+
+  return sink;
+};
+
+// ITEM 886 RESULT, measured on these arms, min of three ORDER-ALTERNATED rounds at 20k ops.
+// Two changes with deliberately different reach — identifier scanning moved to `charCodeAt`, and
+// a string literal with no escape in it is now one `slice` instead of a per-character append:
+//
+//     arm             ident%  str%      pre     post    ratio
+//     parseTiny           52     0    1.578    1.415    1.12x
+//     parseOnly           46    12    2.432    2.196    1.11x
+//     parseBig            60   3.1    7.337    6.232    1.18x
+//     parseStrHeavy       33  49.7    4.071    3.332    1.22x
+//     textOnly             -     -    0.022    0.022    1.00x  (the control)
+//
+// The two arms move for DIFFERENT reasons, which is what makes this two findings and not one:
+// `parseStrHeavy` has the LEAST identifier share and gains the MOST, so that is the string
+// change; `parseBig` is 60% identifier characters and 3% string, so its 1.18x is the scanner.
+// Slope refits 42.4 -> 35.9 ns/char, and cumulatively since item 884, 64.2 -> 35.9 (parseBig
+// 10.547 -> 6.232, 1.69x). The gap to native's 22.4 ns/char is now 1.6x, from 2.9x.
 ARMS.sizes = () => {
   console.log(
     `  lengths: tiny=${TINY.length} insert=${freshText(1).length} big=${big(1).length} chars`,
