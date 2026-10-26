@@ -9,7 +9,7 @@
 // neither side dereferences the other at module-init — `applyStep` and
 // `applyPlanToStream` are only called inside generator bodies.
 
-import { isTemporal } from '@lenke/core';
+import { isTemporal, LocalDate } from '@lenke/core';
 import type { Graph } from '@lenke/core';
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
@@ -216,6 +216,9 @@ export const applyStep = (
       const seen = new Set<unknown>();
       let seenComposite: Set<string> | null = null;
       let seenRefs: WeakSet<object> | null = null;
+      // A `LocalDate` keys on its epoch-day count, in its own `Set` (item 857). See the branch
+      // below for why it is lifted out of the composite path and why the container is separate.
+      let seenDates: Set<number> | null = null;
       const { labels } = step;
       const by = step.bys?.[0];
 
@@ -249,6 +252,46 @@ export const applyStep = (
         // already do too via `tupleKey`, which stringifies a temporal's tagged form).
         // Elements (stable refs), JS `Map`s, and other class instances keep cheap
         // reference identity.
+        // A `LocalDate` IS raw-keyable, on `days` — lifted out of the composite path below
+        // (item 857). The composite path costs a date THREE things per row: a `WeakSet` insert,
+        // a `tupleKey` string build, and a string-`Set` probe. The `WeakSet` is there to
+        // short-circuit a repeated REFERENCE, and every vertex carries its own `LocalDate`
+        // object, so for this type it never hits — 200,000 distinct objects inserted for nothing.
+        //
+        // Measured at 200,000 vertices over 1,000 distinct values, against the GQL spelling of
+        // the same question in the same engine:
+        //
+        // ```text
+        //   values('hired').dedup()   105.35 ms   vs  RETURN DISTINCT p.hired   4.49   23.5x
+        //   values('score').dedup()    14.99       vs  RETURN DISTINCT p.score   4.17    3.6x
+        //   values('name').dedup()     18.59       vs  RETURN DISTINCT p.name    5.48    3.4x
+        // ```
+        //
+        // The num and str rows take the cheap `seen` path already, so their 3.4-3.6x is the
+        // traversal stream's own cost and NOT a keying defect — this change cannot reach them,
+        // which is what makes them its controls.
+        //
+        // `days` is in bijection with the rendering `tupleKey` would produce (items 843/847/848),
+        // so the dedup classes are unchanged. A SEPARATE container because a raw `5` and
+        // `LocalDate(5)` would otherwise collide in `seen` — the same reason item 850 gave for
+        // the TS GQL executor's third container.
+        //
+        // FINITE only: `tupleKey` renders a non-finite field the way `JSON.stringify` does, so
+        // `LocalDate(NaN)` and `LocalDate(Infinity)` are ONE key there and two under a raw
+        // `days`. Item 850 pinned that collapse rather than "improving" it inside a speedup, and
+        // this keeps the same decision.
+        if (v instanceof LocalDate && Number.isFinite(v.days)) {
+          seenDates ??= new Set();
+
+          if (seenDates.has(v.days)) {
+            return false;
+          }
+
+          seenDates.add(v.days);
+
+          return true;
+        }
+
         const proto =
           v !== null && typeof v === 'object' ? (Object.getPrototypeOf(v) as unknown) : false;
         const isComposite =
