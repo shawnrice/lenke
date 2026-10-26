@@ -4782,6 +4782,28 @@ const pushHint = (into: HintMap, variable: string, hint: CSeedHint): void => {
 };
 
 /** A `prop <op> const` comparison, normalized so the property is on the left. */
+// ATTEMPTED AND REVERTED, item 900: do NOT extend this to a DOTTED path (`n.meta.city = 'x'`)
+// without first finding which compile call feeds the SCAN.
+//
+// `asPropCompare` matches a plain `prop` only, so a dotted conjunct makes `directEqProps` decline
+// and takes the WHOLE predicate to the generic evaluator — item 874 priced that route at 2.02x for
+// a flat property, and item 899 measured the dotted spelling at 101.5 ns/row against a flat 26.5.
+// So a `pathProps` list looks like the obvious fourth lift beside `eqProps`/`cmpProps`/`truthProps`.
+//
+// It was built — type, module-scope reader, extractor taking both operand orders, the application
+// loop through `compareTruth`, `hasPredicate`, and the `hop-projection` merge — and measured
+// **0.96x**. Instrumented, the reason is not that the lift is worthless: the conjunct lifted 3
+// times at COMPILE, and **0 of 5,000 runtime predicates carried the list**. The compiled predicate
+// that reaches the scan comes from a call where `ownVar` is undefined, so `direct` is null and the
+// `WHERE` stays generic; the lifted copies belong to other compile calls.
+//
+// THE DIAGNOSTIC THAT SHOWED IT, worth reusing: count `matchesPredicate` entries. For the dotted
+// query it ran 5,000 times — once per SCANNED vertex — and for the flat one 1,250, once per
+// MATCHING vertex, because a lifted predicate filters before `matchesPredicate` is reached. That
+// asymmetry is a direct read of whether a predicate was lifted at all.
+//
+// So the work is in the planner plumbing (which compile call feeds the scan, and why it has no
+// `ownVar`), not in the predicate lists. Do not re-attempt the list without that first.
 const asPropCompare = (
   expr: Extract<Expr, { kind: 'compare' }>,
 ): { variable: string; key: string; op: CompareOp; value: Expr } | null => {

@@ -26488,3 +26488,27 @@ INDEXED)` — a plain `Expr::Prop` — **1.09x slower**, reproducible to three s
   half of the field step, after the ~13 ns of representation: the extra closure invocation for the
   nested `'field'` arm, the `instanceof LenkeRecord` test, and the two-level dispatch. A question
   about how the expression compiler nests closures, not about records.
+- **UNMEASURED, NOT REFUTED — the dotted-path predicate lift (item 900).** Built completely
+  (`pathProps` + a module-scope `pathOf` + `asPathCompare` taking both operand orders + the
+  `compareTruth` application loop + `hasPredicate` + the `hop-projection` merge) and measured
+  **0.96x** — but **the code never ran**: the conjunct lifted 3 times at COMPILE and **0 of 5,000
+  runtime predicates carried the list**. The predicate reaching the scan comes from a
+  `compilePredicate` call with no `ownVar`, so `direct` is null and the `WHERE` stays generic.
+  Reverted; the numbers are next to `asPropCompare`. **The next step is a PLANNER question** (which
+  compile call feeds the scan, and why it has no `ownVar`), not the list. Do not rebuild the list
+  first.
+- **METHOD — a null A/B cannot distinguish "does not help" from "DID NOT RUN" (item 900).** 0.96x
+  on the target with controls flat reads exactly like a refutation. Two counters — one at the lift,
+  one at the application — showed the application count was ZERO. This is the same distinction
+  mutation already requires (a `DID-NOT-RUN` verdict separated from `CAUGHT` by looking for a result
+  line before the exit code, items 866/886): **an A/B needs an execution counter, not just a
+  timing.** Without one, "worth nothing" would have been recorded about code that was never reached.
+- **DIAGNOSTIC worth reusing — count `matchesPredicate` entries to see whether a predicate was
+  LIFTED (item 900).** A lifted predicate filters BEFORE `matchesPredicate`, so its entry count
+  equals the MATCHING rows; an unlifted one equals the SCANNED rows. Measured 1,250 (flat, lifted)
+  against 5,000 (dotted, not lifted) on the same 5,000-vertex fixture. No timing needed, and stable.
+- **A new predicate list has MORE consumers than `hasPredicate` and the merge (item 900).**
+  `rejectedByElementDirect` is a second application site, and the two `preFilter` gates in
+  `matching.ts` enumerate the lifted lists BY NAME (`pre.eqProps !== undefined || pre.cmpProps !==
+undefined`). None of these is discoverable from the list's definition. (Those gates also omit
+  `truthProps` — a missed optimization, not a bug, since `matchesPredicate` still applies it.)
