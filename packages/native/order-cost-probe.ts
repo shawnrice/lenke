@@ -23,7 +23,7 @@
  * best. If those two are close the row is at its floor and the target is the pipeline instead.
  */
 import { Graph } from '@lenke/core';
-import { count, order, out, toArray, traversal, V, values } from '@lenke/gremlin';
+import { count, id, order, out, toArray, traversal, V, values } from '@lenke/gremlin';
 
 const N = Number(process.env.A_N ?? 200_000);
 const DEG = Number(process.env.A_DEG ?? 5);
@@ -92,6 +92,28 @@ const ARMS: Record<string, () => number> = {
   engineValues: () => toArray(traversal(V(), out('KNOWS'), values('age')), g).length,
   engineOrdered: () => toArray(traversal(V(), out('KNOWS'), values('age'), order()), g).length,
   engineCount: () => toArray(traversal(V(), out('KNOWS'), count()), g).length,
+  // ITEM 880: these were added to split `engineValues` into "the hop" and "the values step", and
+  // THAT SUBTRACTION IS INVALID — kept, with this comment, because removing the arms would let the
+  // next reader re-derive the mistake.
+  //
+  // `engineHop` (325 ms) costs NEARLY TWICE `engineValues` (170): adding a step makes the query
+  // 1.9x FASTER, because `executor/hop-values.ts` fuses `out(T).values(k)` into one walk and
+  // nothing fuses the bare hop. So `engineHop` is a pipeline-prefix of `engineValues` and NOT a
+  // cost floor for it — a subset in pipeline terms is not a subset in cost terms.
+  //
+  // `engineHopId` is the control that settles the cause: it also reduces each traverser to a
+  // scalar and is just as slow as the bare hop (322), so the gap is the missing FUSION and not
+  // vertex materialization. `engineScanOnly`/`engineScanValues` are the pair that IS valid —
+  // same 200,000 inputs, one extra property read — and they give 77 ns a value, which is item
+  // 234's known per-step traverser cost rather than a new finding.
+  engineHop: () => toArray(traversal(V(), out('KNOWS')), g).length,
+  engineScanOnly: () => toArray(traversal(V()), g).length,
+  engineScanValues: () => toArray(traversal(V(), values('age')), g).length,
+  // Same 1,000,000 landing vertices as `engineHop`, but each reduced to a scalar before it
+  // leaves the pipeline. If these are far cheaper than `engineHop`, materializing traverser-
+  // wrapped VERTICES is the outlier rather than the hop itself.
+  engineHopId: () => toArray(traversal(V(), out('KNOWS'), id()), g).length,
+  engineHopValues: () => toArray(traversal(V(), out('KNOWS'), values('age')), g).length,
 };
 
 const arm = process.env.A_ARM ?? 'rawSortNum';

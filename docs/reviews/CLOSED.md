@@ -26070,3 +26070,20 @@ p.flag` 4.51x (item 872).** Only the comparison spelling had one: `= true` lower
   ARRIVAL-ORDER assertion (item 879).** It returns a correctly-sorted result with the tie groups
   flipped. Give fixture rows a distinct tag recording arrival position and compare tag sequences,
   not key sets.
+- **OPEN, PRICED — `V().out(T)` and `V().out(T).id()` have no fused walk, ~1.9x (item 880).**
+  `V().out(T)` is 325.21 ms over 1M edges and `.id()` 322.60, where `V().out(T).values(k)` is
+  **169.93** — adding a step makes it 1.9x FASTER, because `executor/hop-values.ts` fuses the
+  values form and nothing fuses the other two. The machinery is in place (that file walks with the
+  engine's own `adjacentEdges`/`otherEndpoint`, so row order is identical by construction, and item
+  608's residual lets a trailing step ride the shortcut). A new arm must respect the same
+  preconditions — path tracking, sack, anything carried on a traverser rather than derivable from
+  the edge — and "yield the far vertex" is a different output contract from "yield its property",
+  so it is its own item.
+- **METHOD — a ladder can be invalid because the CONTAINMENT is about the wrong quantity
+  (item 880).** `V().out(T)` is a pipeline-prefix of `V().out(T).values(k)` and costs NEARLY TWICE
+  AS MUCH, so "with minus without" is meaningless for them. The negative is what revealed it. A
+  subset in pipeline terms is not a subset in cost terms; check the sign before subtracting.
+- **The TS per-step traverser cost (~77 ns for `values()`) is item 234's, already recorded.**
+  Re-derived in item 880 and then dropped as a target on finding 234/537 — ~40-50 ns a vertex per
+  step, "a traverser allocated per vertex to be filtered and discarded". Attacking it generally
+  means restructuring the pipeline; the fused-walk route above is the tractable form.
