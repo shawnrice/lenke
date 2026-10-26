@@ -305,6 +305,15 @@ question in its module header — read the header before touching it.
   rewritten, so a change to bucket removal reaches it; it pins the cost to BUCKET SIZE. The control
   for the targeted arm is sweeps A-D, which cannot reach it.
 
+- `churn_925` — what gets slower as a store CHURNS? Every other fixture here varies graph
+  SIZE; this one pins the live set at 20,000 and varies **ids ever created**, which is the axis
+  item 818's open anomaly is about. It refuted that anomaly's hypothesis: the indexed seek is
+  FLAT across 1,000,000 create-and-delete pairs (67.2 -> 67.2 ns) and so is the unindexed
+  CONTROL, while `add_node`/`delete_node` step ~1.4x between 100k and 300k churn and then come
+  back DOWN at 1M — bounded, not a leak. **Keep the control column**: the unindexed scan is
+  what makes "the index is innocent" a measurement rather than an assertion. Run it before
+  believing any claim that a cost grows with churn.
+
 - `setindexcount_922` — does the INDEX COUNT cost a `SET` on a key none of those indexes
   covers? `apply_set_prop` asks `index_on_base(key) || is_range_indexed(key)` before every
   write, and both were linear scans, so the answer was yes: 22.6 ns at 0 indexes rising to

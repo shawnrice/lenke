@@ -21581,7 +21581,7 @@ The native `spelling_probe` does (item 779's two, `grouped count: GQL vs Gremlin
 native GQL/Gremlin divergence is caught and a TS one is not. **This finding came from a bench, by
 accident, not from the probe whose job it is.** The groups are three lines each.
 
-## 798 — ⚠️ OPEN, NEW: a PARAM-valued predicate costs **1.76x** its literal twin per vertex. Diagnosed to one line; route 2 is the sound fix
+## 798 — ~~⚠️ OPEN~~ **CLOSED BY ITEM 799** (1.73x / 2.11x, and the param now costs what its literal costs): a PARAM-valued predicate cost **1.76x** its literal twin per vertex. Diagnosed to one line; 799 found a THIRD route, tick-sized and sound
 
 **OPEN TARGET, priced and diagnosed (no change).** Item 797 specified "price `satisfies`'s arms
 against each other" as its next step. That comparison found something larger than the gap it was run
@@ -22752,7 +22752,7 @@ different questions, and this is the row that would have made them look contradi
 Gates: `bun run build` 0 and the dist re-grepped to confirm the tree is back at HEAD (`predFor` 11);
 `git status` clean; no engine change in this item.
 
-## 818 — ⚠️ OPEN, NEW: a native append+delete loop degrades **1.64x over a 12x batch**, on the INDEXED arm only. First hypothesis refuted by reading
+## 818 — ⚠️ NARROWED by item 925: a native append+delete loop degrades **1.64x over a 12x batch**. Its SECOND hypothesis is refuted too — the indexed seek is FLAT across 1M churn, and the write cost is BOUNDED
 
 **OBSERVATION, no engine change.** Item 817 ran `bench:usage` and left one row unexplained: TS beats
 the native engine on `write: append then delete node` (443.8k against 178.8k ops/s), which is the
@@ -27047,3 +27047,24 @@ p` at **1.54x FASTER** and `query/shortest repeat-group unread` at **0.81x slowe
   section AND to exit non-zero on zero comparisons. The dangerous form of a broken check is not the
   one that crashes — it is the one that returns the reassuring answer, which is also how the
   `noclobber` append and the stale mutation anchors failed this session.
+- **ITEM 818 NARROWED, two of three mechanisms dead (item 925).** Its recorded hypothesis was that
+  uncompacted per-node growth makes the SEEK path slower — _"whatever grows, the seek path touches it
+  and the tiny-bucket scan does not."_ **REFUTED:** with the live set pinned at 20,000 and only the
+  churn varied, the indexed seek is **FLAT across 1,000,000 create-and-delete pairs** (67.2 → 67.2 ns
+  round one, 70.2 → 69.7 round two) and the unindexed CONTROL is flat too (4.2-4.4 ns). The index is
+  innocent at the store level.
+- **And what DOES move is BOUNDED (item 925).** `add_node` and `delete_node` step ~1.4x between
+  100,000 and 300,000 churn and then come back DOWN at 1,000,000 — reproducibly, in both rounds. A
+  monotonic leak keeps climbing; a peak that recedes is a capacity effect (per-node columns crossing
+  a `Vec` doubling). So the write primitives do NOT degrade without bound, which is what 818's "a
+  rate that falls as the batch lengthens is accumulating state" would need. What remains of 818 is a
+  `bench:usage` reading whose own caveat says a single-budget write-heavy row is not steady state,
+  plus item 915's finding that its "best recorded" is not a baseline.
+- **`churn_925` is kept, because the corpus had no probe on this axis (item 925).** Every other
+  fixture varies graph SIZE; this one varies **ids ever created** with the live set pinned. Item 820
+  measured the same axis with a temporary probe, so its finding had to be rediscovered from a source
+  comment. Keep its CONTROL column — the unindexed scan is what makes "the index is innocent" a
+  measurement rather than an assertion.
+- **STALE HEADER FIXED — item 798 was marked ⚠️ OPEN and item 799 had already closed it** (1.73x /
+  2.11x, param now costing what its literal costs). Same class as the five item 913 corrected; a
+  list that says OPEN about settled work is the failure it exists to prevent.
