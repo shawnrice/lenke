@@ -92,6 +92,15 @@ question in its module header — read the header before touching it.
   adjacency and filter by edge type (scales with degree × type spread).
 - `interval_bench` — what an "as of T" bitemporal query pays to post-filter all
   of a node's edges by validity interval, vs an interval-index seek.
+- `topk_864` — what does `ORDER BY <prop> LIMIT k` pay when the key column is NOT
+  `Column::Num`? `try_scan_top_k` (the streaming O(N) time / O(k) space path) accepts the numeric
+  representation only, so a string or dictionary key falls back to `order_page`. The probe runs the
+  same query over four columns of ONE fixture that differ only in representation — `age` (Num),
+  `name` (Str, N distinct), `city`/`dept` (Dict, 8- and 5-way) — between a `count(*)` floor and a
+  no-`LIMIT` full-sort ceiling. It also prints the floor a DICTIONARY key could reach: the smallest
+  of eight cities is found after ~80 of 200,000 rows, so a rank-bounded early exit has a provable
+  stopping point that a high-cardinality string does not. Read the two floors as the targets, not
+  the ceiling: the fallback already partial-sorts, so it is 1.7-1.9x off, not 7x.
 - `frontier_guard_probe` — does the intermediate-frontier guard REFUSE a runaway before it
   allocates, and does it leave everything else alone? Written after an OOM took a 61 GB box into
   its swapfile (item 296). **Run it under the cap** — the header gives the line. Its most useful

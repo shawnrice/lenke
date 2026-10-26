@@ -25760,3 +25760,14 @@ copies before the comment was added.
   vs `pushTokens`) is **invalid by construction** — its arm selector sits inside the measured loop,
   so each arm pays a different number of per-write string comparisons, and `notx` measured slower
   than `base` in 6/6 rounds while doing strictly less work. Any retry needs one BINARY per arm.
+- **OPEN, PRICED — native `ORDER BY <prop> LIMIT k` for a non-numeric key (item 864).**
+  `try_scan_top_k` accepts `Column::Num` only; `Str`/`Dict`/`Bool`/`Temporal` and any null-bearing
+  key fall back to `order_page`. **The fallback does NOT pay a full sort** — 1.857 ms against a
+  12.713 ms no-`LIMIT` ceiling, because `order_page` already `select_nth`s — so the honest target
+  for a `Str`/`Temporal` widening is **1.7-1.9x**, not the ~7x the census alone suggests. The real
+  prize is the DICTIONARY case: a bounded rank makes an early exit provable (once `k` rows at rank 0
+  are seen in arrival order nothing later can displace them, since the tiebreak is arrival
+  ascending), and the measured floor is **15.4x** (1.915 ms -> 0.124). Sound only because NULL
+  placement is per-key and decided before the total order, so nulls-last is not reversed by `DESC`;
+  that same fact makes the blanket `has_null` bail stricter than the contract requires. Needs an
+  early-exiting `scan_visit`. Priced in `examples/topk_864.rs` — read that table before re-guessing.
