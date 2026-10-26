@@ -89,7 +89,17 @@ fn main() {
             i % 7
         )
     };
-    let mut size_best = [f64::MAX; 2];
+    // ITEM 887: a LENGTH-MATCHED, token-sparse shape. `big` is 158 characters in ~60 tokens;
+    // this is ~156 characters in ~31, because most of its characters sit inside string literals.
+    // Comparing those two is what separates "cost per character" from "cost per token" — the
+    // tiny-vs-big pair cannot, because it varies length and token count together.
+    let strheavy = |i: u32| {
+        format!(
+            "MATCH (p:Person) WHERE p.name = 'Alexandra Whitfield{i}' OR p.city = 'San Francisco Bay Area' \
+             OR p.title = 'Senior Staff Software Engineer' RETURN p.name AS n"
+        )
+    };
+    let mut size_best = [f64::MAX; 3];
     for _ in 0..reps {
         let t = Instant::now();
         for i in 0..ops {
@@ -106,6 +116,14 @@ fn main() {
             }
         }
         size_best[1] = size_best[1].min(t.elapsed().as_secs_f64() * 1e6 / f64::from(ops));
+
+        let t = Instant::now();
+        for i in 0..ops {
+            if lenke_engine::gql::parse(&strheavy(i)).is_ok() {
+                sink += 1;
+            }
+        }
+        size_best[2] = size_best[2].min(t.elapsed().as_secs_f64() * 1e6 / f64::from(ops));
     }
 
     println!("textOnly       {:9.3} us/op", best[0]);
@@ -120,6 +138,11 @@ fn main() {
         "parse big      {:9.3} us/op  ({} chars)",
         size_best[1],
         big(1).len()
+    );
+    println!(
+        "parse strheavy {:9.3} us/op  ({} chars, token-SPARSE: same length as big, ~half the tokens)",
+        size_best[2],
+        strheavy(1).len()
     );
     println!("\n(sink {sink}, non-zero means every arm ran)");
 }

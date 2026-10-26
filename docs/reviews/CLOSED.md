@@ -26190,3 +26190,20 @@ p.flag` 4.51x (item 872).** Only the comparison spelling had one: `= true` lower
   remains is spread: the number scanner, `toLowerCase()` per identifier for the keyword lookup, and
   the token objects themselves (4 fields, `num` usually `undefined`). Each is now a small share, so
   this is no longer one lever — price before picking.
+- **METHOD, AND A RETRACTED MODEL — parse cost tracks TOKENS, not characters (item 887).** Items
+  884-886 reasoned in ns/char. On a LENGTH-MATCHED pair (158 chars/60 tokens vs 156 chars/31
+  tokens), ns/char spans **1.93x in TS and 1.72x in native** while ns/token is flat to **1.01x and
+  1.11x** — both engines agree. This does NOT touch 885 or 886, which were pre-vs-post A/Bs on the
+  same fixtures where the denominator cancels; it retracts the CROSS-SHAPE model, i.e. 884's "64.2
+  ns/char marginal" and its 42.4 / 35.9 restatements. Restated: **TS ~106 ns/token against native's
+  ~61, 1.75x.** The tiny-vs-big pair cannot see this because it varies length and token count
+  together; `parseplan_883` now carries a token-sparse arm so it can.
+- **REFUTED AS AN ASSUMPTION — "the tokenizer is where parse cost lives" (item 887).** The
+  tokenizer is **27.9% of parse on a 7-token statement, 54.0% on a 60-token one**; the recursive
+  descent is the larger half on three of four shapes. Items 885 and 886 both changed the tokenizer
+  without knowing its share — they won anyway, but the next tokenizer change should be priced
+  against the descent, not assumed.
+- **STILL OPEN — ~45 ns/token between TS and native parse (item 887), now split.** Roughly half
+  tokenizer, half descent on a token-dense statement. Remaining per-TOKEN candidates in the
+  tokenizer: `toLowerCase()` per identifier for the keyword lookup, and the token object (4 fields,
+  `num` usually `undefined`). The descent is unexamined.

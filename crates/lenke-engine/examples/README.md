@@ -122,6 +122,13 @@ question in its module header — read the header before touching it.
   string-heavy application query text**. Every row re-sums to its own length, so no class is dropped
   or double-counted. It is what told item 886 to change the identifier scanner AND the string
   scanner, and to measure them on separate arms.
+- **TS-side companion, no Rust twin:** `packages/native/lexer-split-probe.ts` — of the TS parser's
+  cost, how much is the TOKENIZER and how much the recursive descent above it? Items 885 and 886
+  both changed the tokenizer without knowing its share. Answer: **28% on a 7-token statement rising
+  to 54% on a 60-token one**, so the descent is the larger half on most shapes and "keep going in
+  the tokenizer" was an assumption. It reaches into `packages/gql/src` deliberately (`tokenize` is
+  not public, and both halves must come from ONE compilation), so its absolute figures are NOT
+  comparable with `parseplan-cost-probe.ts` — only its two arms with each other.
 - `barehop_882` — is native's bare-hop cost ENGINE time or FFI serialization? Item 881's new bench
   row showed `V().out()` at native 329.61 ms against TS's 185.4, which looks like native being the
   slow side. This runs the same plans IN PROCESS (`exec::try_run`, no boundary) and answers it:
