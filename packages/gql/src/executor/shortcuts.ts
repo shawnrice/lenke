@@ -6837,7 +6837,13 @@ const nodeWhereOf = (where: Expr, nodeVar: string): InlinePred | 'decline' => {
   // Skipped for a subquery-bearing predicate for the reason given above the items' copy of this
   // check: `freePredicateVars` reports the variables bound INSIDE a subquery, so it would
   // refuse every one of them, and `nodeVar` is the only name anything here can be bound to.
-  if (!hasSubqueryExpr(where)) {
+  // COMPUTED ONCE (item 919). `hasSubqueryExpr` is a generic structural walk of the whole
+  // expression and was called twice on the same `where` — here, negated, and again in the ternary
+  // at the end of this function. A CPU profile put it at 184.2 ms of a clause-`WHERE` compile
+  // against 31.9 for the inline spelling.
+  const hasSub = hasSubqueryExpr(where);
+
+  if (!hasSub) {
     for (const nameRead of freePredicateVars(where)) {
       if (nameRead !== nodeVar) {
         return 'decline';
@@ -6852,9 +6858,21 @@ const nodeWhereOf = (where: Expr, nodeVar: string): InlinePred | 'decline' => {
   // literal>`, compiled to read the ELEMENT directly rather than through the binding — and item
   // 230, which extended it from one comparison to an all-`=` AND-chain.
   //
-  // `nodeVar` is passed as that own variable, and the free-variable loop directly above is the
-  // proof the argument requires: every free name of `where` IS `nodeVar`, so the predicate is
-  // element-local. Without it the clause spelling of a filtered projection cost 9.64 ms against
+  // `nodeVar` is passed as that own variable, and the free-variable loop directly above is what
+  // establishes the argument: every free name of `where` IS `nodeVar`, so the predicate is
+  // element-local.
+  //
+  // THAT LOOP IS A ROUTE GATE, NOT A CORRECTNESS GUARD — measured, not assumed (item 919).
+  // Inverting its condition (so a subquery-free predicate SKIPS the check and never declines)
+  // survived the whole gql suite, and a direct probe of the shape it exists to decline — a node
+  // projection whose clause `WHERE` reads an OUTER variable, `MATCH (z:P) WHERE z.k = 'b' MATCH
+  // (n:P) WHERE n.n = z.n RETURN n.k` — returned identical rows with and without it, across `=`,
+  // `>` and `<>`. The reason is the one item 128 recorded for this guard's twin in
+  // `pushWhereIntoNode`: a node predicate is evaluated against the INCOMING binding, which
+  // already holds every earlier clause's variables, so an outer reference resolves in the
+  // pattern exactly as it did in the clause filter. Kept regardless, on item 128's rule — a
+  // guard whose necessity is unproven is not a guard shown to be unnecessary — but do not cite
+  // it as load-bearing for correctness. Without it the clause spelling of a filtered projection cost 9.64 ms against
   // the inline spelling's 6.78 on 200,000 vertices — 1.42x for one question, and the last group
   // the spelling probe still flagged (audit item 231).
   //
@@ -6865,7 +6883,7 @@ const nodeWhereOf = (where: Expr, nodeVar: string): InlinePred | 'decline' => {
   // `compilePredicate` does not know about subqueries, and a correlated sub-pattern is not a
   // property equality — so `ownVar` would buy it nothing even if it were passed.
   return predFor(
-    hasSubqueryExpr(where)
+    hasSub
       ? { props: [], where: gatePredicate(where) }
       : compilePredicate(undefined, where, nodeVar),
     nodeVar,

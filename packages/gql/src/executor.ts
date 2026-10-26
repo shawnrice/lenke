@@ -6578,13 +6578,30 @@ const pushWhereIntoNode = (clause: Extract<Clause, { kind: 'match' }>): typeof c
   // 111x for one question spelled two ways, which is the bug class this engine is
   // named after. Splitting makes the first spelling plan as the second.
   const conjuncts: readonly Expr[] = where.kind === 'and' ? where.items : [where];
-  const pushable = conjuncts.filter((c) => !hasSubquery(c));
+  // MUTATION (item 919): SWAPPING this partition's two destinations — so subquery conjuncts get
+  // pushed into the node and cheap ones stay as the clause filter — SURVIVED the whole gql suite,
+  // including `subquery-conjunct-split.test.ts`, whose oracle is a faulting subquery body that
+  // raises if and only if it was evaluated. That oracle is the strongest one available here, so
+  // the survivor is answer-equivalence and not a coverage hole: `gatePredicate` re-gates the
+  // subquery downstream. The partition direction is therefore a PERF choice. The same swap in
+  // `gatePredicate` itself is CAUGHT, 7 failures.
+  //
+  // ONE `hasSubquery` walk per conjunct, not two (item 919). This was a `filter` on the negated
+  // predicate followed by a `filter` on the predicate, so every conjunct was walked TWICE — and
+  // `hasSubquery` is a GENERIC structural walk of the whole AST fragment, which a CPU profile put
+  // at the single largest frame of a clause-`WHERE` compile (279.5 ms of a 1743.7 ms run against
+  // 29.7 for the inline spelling).
+  const pushable: Expr[] = [];
+  const kept: Expr[] = [];
+
+  for (const c of conjuncts) {
+    (hasSubquery(c) ? kept : pushable).push(c);
+  }
 
   if (pushable.length === 0) {
     return clause;
   }
 
-  const kept = conjuncts.filter(hasSubquery);
   const all = path.start.where === undefined ? pushable : [path.start.where, ...pushable];
   const merged: Expr = all.length === 1 ? all[0] : { kind: 'and', items: all };
   const residual = conjoin(kept);
@@ -6686,8 +6703,16 @@ const pushWhereIntoNode = (clause: Extract<Clause, { kind: 'match' }>): typeof c
  */
 export const gatePredicate = (where: Expr): CompiledExpr => {
   const conjuncts: readonly Expr[] = where.kind === 'and' ? where.items : [where];
-  const cheap = conjuncts.filter((c) => !hasSubquery(c));
-  const costly = conjuncts.filter(hasSubquery);
+  // One walk per conjunct rather than two (item 919). THIS partition has teeth where
+  // `pushWhereIntoNode`'s does not: swapping these two destinations fails 7 tests, because a
+  // faulting subquery then evaluates for a vertex the cheap conjunct should have rejected.
+  // `subquery-conjunct-split.test.ts` is the file that catches it.
+  const cheap: Expr[] = [];
+  const costly: Expr[] = [];
+
+  for (const c of conjuncts) {
+    (hasSubquery(c) ? costly : cheap).push(c);
+  }
 
   // Nothing to order: no subquery to defer, or nothing cheap to defer it behind.
   if (cheap.length === 0 || costly.length === 0) {

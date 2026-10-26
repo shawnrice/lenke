@@ -26827,8 +26827,10 @@ statement` 969.7k / 774.8k / 973.6k (**1.26x**). It cannot resolve a 1.2x questi
   measured: `checkLinearScope` **+0.007**, `directEqProps` **+0.080**, the seed-hint block
   (`collectHints`/`attach`/`pinFor`, gated on exactly `clause.where`) **0.000** — it reads 0.027 for
   every spelling including the control, i.e. two `performance.now()` calls and no work — and
-  `pushWhereIntoNode` was already refuted at 906 (disabling it is 1.20x WORSE). **~95% of the gap is
-  unlocated.**
+  `pushWhereIntoNode` was already refuted at 906 (disabling it is 1.20x WORSE). ~~**~95% of the gap
+  is unlocated.**~~ **SUPERSEDED by item 919**, which located 73% of it with a CPU profile on the
+  very next tick. The four dead ends above still stand as dead ends; the "unlocated" verdict does
+  not.
 - **METHOD — targeted timers can only confirm the site you guessed; use a PROFILER when the site is
   unknown (item 918).** Four hypotheses on one gap, four refutations, each a plausible mechanism in
   real code. Across this window: 900-902 were three wrong attributions of one null, and 912/917
@@ -26838,3 +26840,41 @@ statement` 969.7k / 774.8k / 973.6k (**1.26x**). It cannot resolve a 1.2x questi
 - **AND THE SIZE ARGUES THE SAME WAY (item 918).** ~1.5 us on a parse+plan cache MISS only; repeated
   query text pays it once. Real (item 883: dynamically-built text misses every time) but narrow, and
   three targets of this size have now been retracted for costing more to chase than they return.
+- **SHIPPED — `hasSubquery` was walking every conjunct TWICE, and a CPU profile found it in one run
+  (item 919). 1.22x on a one-conjunct clause `WHERE`, 1.31x on two**, measured as the over-control
+  delta (end to end: 4.511 -> 4.209 us and 5.821 -> 5.253). Three sites, all the same defect: two
+  partitions built with complementary `filter`s (`conjuncts.filter((c) => !hasSubquery(c))` then
+  `conjuncts.filter(hasSubquery)`, in `pushWhereIntoNode` and in `gatePredicate`) and one
+  `hasSubqueryExpr(where)` computed twice inside `nodeWhereOf`. `hasSubquery` is a GENERIC
+  structural walk, so each duplicate walked a whole AST fragment for nothing. Fix is a single-pass
+  partition and a hoisted `const` — strictly less work, no new route, no data structure. Two
+  conjuncts gaining more than one is the predicted shape, since the saving is one walk per conjunct.
+  Both controls flat or moving AGAINST the change.
+- **METHOD — "where does the time go" and "does it go HERE" are different questions with different
+  instruments (item 919, confirming 918).** The profiler's top frame was in NONE of 918's four
+  hypotheses, and no further hand-placed timer could have reached it. 918 called this correctly
+  before paying for a fifth guess; the four refutations were the cost of not calling it sooner.
+- **METHOD — deprioritizing a TARGET is not deprioritizing the DIAGNOSIS (item 919).** 918 was right
+  that the gap is small (~1.5 us, cache MISS only) and right to stop chasing it. But once LOCATED,
+  73% of it cost three mechanical edits to remove. Price the diagnosis separately from the fix: a
+  cheap diagnosis on a small target can still be worth it.
+- **METHOD — an unexpected mutation survivor is a hypothesis about the MUTANT, and diagnosing it
+  beats filing it (item 919).** Predicted two of three mutants caught; got one. Both survivors were
+  answer-equivalent rather than coverage holes: swapping `pushWhereIntoNode`'s partition passed
+  `subquery-conjunct-split.test.ts`, whose oracle (a FAULTING subquery body raises iff it was
+  evaluated) is the strongest available — `gatePredicate` re-gates downstream, so that site's
+  partition direction is a PERF choice, which is why the same swap IN `gatePredicate` fails 7 tests.
+- **CORRECTED A COMMENT that claimed correctness (item 919).** `nodeWhereOf`'s free-variable loop was
+  described as "the proof the argument requires". Inverting it survived the suite, and a direct probe
+  of the shape it exists to decline (a node projection whose clause `WHERE` reads an OUTER variable,
+  across `=`, `>`, `<>`) returned identical rows. Same mechanism item 128 recorded for this guard's
+  TWIN: a node predicate evaluates against the INCOMING binding, so an outer reference resolves in
+  the pattern as it did in the clause filter. KEPT on 128's rule, but it is a route gate and must not
+  be cited as load-bearing for correctness.
+- **HARNESS — `>>` FAILS on a path that does not exist yet (item 919).** This shell has `noclobber`
+  with `APPEND_CREATE` unset, so CLAUDE.md's "`>>` (append) is fine" holds only for an EXISTING file —
+  and it conflicts with the same file's "never reuse a scratch filename", since a unique name is by
+  construction a path that does not exist. An A/B loop logged nothing for four arms and still printed
+  `--- ALL DONE ---`: the write fails, the next statement runs anyway, and the failure surfaces as an
+  empty result. `touch` first, then assert the log is NON-EMPTY before trusting any run that wrote to
+  it.
