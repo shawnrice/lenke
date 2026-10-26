@@ -27105,3 +27105,17 @@ p` at **1.54x FASTER** and `query/shortest repeat-group unread` at **0.81x slowe
 - **STALE HEADER FIXED — item 832 was marked ⚠️ OPEN and the lever it named shipped at item 835**
   (1.61x / 1.26x), was extended at 838 and refused at 839 for the per-edge sites. Second such fix
   this session after 798's.
+- **🛑 REFUTED — hoisting `satisfies`'s per-vertex `{ binding, params, graph }` allocation (item
+  927).** It is allocated on every call, its three fields have identical identity every time, and for
+  a lifted predicate the `value(env)` closures never read it — so it looked free to remove, worth
+  ~1.4x against item 926's 15.65 ns. **Measured: two of three arms get WORSE** (`WHERE true` 0.96x,
+  `n.k = 28` 0.94x) and the third's 1.11x sits inside a **1.32x** self-variance on its own PRE arm. A
+  short-lived object V8 keeps in young generation is cheap, and a reused singleton's three property
+  writes cost at least as much. **The 14-site signature change is not taken.**
+- **🛑 METHOD — A NUMBER IS EVIDENCE ABOUT THE PATH IT WAS MEASURED ON (item 927).** Item 833
+  measured a fresh `{ binding, params, graph }` at **+5.6 ns a row** for PROJECTIONS and item 835
+  shipped its removal there. The PREDICATE path allocates the same object in the same shape and
+  removing it is **negative**. Porting 833's figure would have justified a 14-site change that
+  measurement says makes things slightly worse. Same rule as items 843/868/870 (the engines land on
+  the same gap from different causes, in mirrored directions, in only one of them) — it generalises
+  from cross-ENGINE to cross-PATH.
