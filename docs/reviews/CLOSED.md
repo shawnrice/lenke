@@ -27082,6 +27082,13 @@ p` at **1.54x FASTER** and `query/shortest repeat-group unread` at **0.81x slowe
   bound, identical answers — reads **0.98x** (literal 18.95, param 18.64, readings interleaved).
   `predicate-scaffold-probe.ts` asserts both arms answer identically before printing a ratio, for
   exactly this reason.
+- **And `WHERE true` IS a valid floor, verified not folded (item 926).** The worry is that a
+  constant-true predicate gets optimized away, leaving a bare scan. It is not: `WHERE true` reads
+  9.16 ns/vertex where `count(*)` with no predicate reads 0.01, and a folded predicate would collapse
+  to the same O(1) bucket count. (`alwaysTrue` in `shortcuts.ts` is the unfiltered-HOP
+  representation, not a folder for this.) Checked rather than inherited from item 570 — and note
+  798's 18-20 and this 9.16 are the same quantity in intent but not the same measurement, so the
+  TOTALS are the result and the floor is its decomposition.
 - **`count(*)` with no predicate is NOT a floor — it is O(1) (item 926).** Answered from the label
   bucket's length: **0.01 ns/vertex**, a series of literal zeros. Item 801 hit this comparing
   surfaces and `spelling-probe.ts` keeps `FLOOR_MS` for it. **`WHERE true` is the floor** (item 570's
