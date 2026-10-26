@@ -26120,8 +26120,11 @@ p.flag` 4.51x (item 872).** Only the comparison spelling had one: `= true` lower
 - **METHOD — a ts/native ratio is only a verdict when both engines RETURN the same thing
   (item 882).** TS hands back graph references; native materializes owned values. Same query text,
   different work. Check what crosses the boundary before reading a sub-1.0 ratio as a native defect.
-- **OPEN, PRICED FROM BOTH SIDES — the TS parser is 4.5x native's and the TS planner 12.6x
-  (item 883).** Same `INSERT`, fresh text so no cache serves it: parse **TS 2.962 us against native
+- **SUPERSEDED (items 887, 905) — the TS parser is 4.5x native's and the TS planner 12.6x
+  (item 883).** ⚠️ BOTH halves of this have been restated since: 887 showed the per-CHARACTER
+  denominator was wrong (cost tracks TOKENS), and 905 showed "the planner" is a SHAPE not a number —
+  883's figure is the INSERT, and a MATCH plans for **18x** it. Kept for its method (two engines,
+  one statement, a `textOnly` control); do not quote its ratios as the current state. Same `INSERT`, fresh text so no cache serves it: parse **TS 2.962 us against native
   0.653**; parse+plan **3.979 against 0.734**. So the planner half is TS ~1.02 us against native
   0.081. `textOnly` control 0.022/0.046, so formatting is not the cost. Reached from
   `bench:usage`'s two append spellings — TS 4.4x apart where native is FLAT, which the bench's own
@@ -26140,7 +26143,9 @@ p.flag` 4.51x (item 872).** Only the comparison spelling had one: `= true` lower
   at 24 chars, 3.515 at 47, 10.487 at 158. Fitted, that is **64.2 ns/char marginal with only ~0.35
   us fixed** — so the closures are at most 10% of a parse and removing all of them could not buy
   more. Killed by one probe arm instead of a refactor.
-- **OPEN, LOCALISED — the TS parser is ~3x native's PER CHARACTER (item 884).** native: 0.638 us at
+- **SUPERSEDED (item 887) — the TS parser is ~3x native's PER CHARACTER (item 884).** ⚠️ The
+  per-character MODEL was retracted at 887: on a length-matched pair `ns/char` spans 1.93x in TS
+  while `ns/token` is flat to 1.01x. The measurements stand; the denominator does not. native: 0.638 us at
   24 chars, 3.634 at 158 → **22.4 ns/char, ~0.10 us fixed**. The ratio is 3.0x at 24 chars and 2.9x
   at 158, i.e. uniform, so the gap is per-character work (~200 cycles a character) and NOT fixed
   setup. That makes it a TOKENIZER question — what is allocated per token, and how the scan reads
@@ -26156,7 +26161,9 @@ p.flag` 4.51x (item 872).** Only the comparison spelling had one: `= true` lower
   24**, control (`textOnly`, never calls parse) flat at 0.023. The win GROWING with size is the
   signature of a per-character fix. Slope refits **64.2 → 42.4 ns/char**, closing the gap to native's
   22.4 from 2.9x to 1.9x.
-- **STILL OPEN — the TS parser's remaining ~20 ns a character (item 885).** After 885 the TS parser
+- **SUPERSEDED (item 887) — the TS parser's remaining ~20 ns a character (item 885).** ⚠️ Stated in
+  the retracted per-character unit; see 887/888 for the current figure (~106 ns/token against
+  native's ~61). After 885 the TS parser
   is 42.4 ns/char against native's 22.4, 1.9x. The per-character allocations named in 884 are gone,
   so the next candidate is how the scan READS characters (string indexing vs `charCodeAt`) and what
   each token object costs — not the tables, which are now module-scope.
@@ -26185,7 +26192,8 @@ p.flag` 4.51x (item 872).** Only the comparison spelling had one: `= true` lower
   Under a shell an OOM kill is exit 137; through `subprocess.run` with no shell the same kill is
   rc=-9. A verdict check matching only 124/137 called a caught mutant `DID-NOT-RUN`. Same shape as
   the stdout-vs-stderr trap (767, 772-773): the check must match how the runner was invoked.
-- **STILL OPEN — the TS parser's remaining ~13 ns a character (item 886).** 35.9 ns/char against
+- **SUPERSEDED (item 887) — the TS parser's remaining ~13 ns a character (item 886).** ⚠️ Same
+  retracted unit; see 887/888. 35.9 ns/char against
   native's 22.4, 1.6x. The per-character allocations are gone from the two biggest paths, so what
   remains is spread: the number scanner, `toLowerCase()` per identifier for the keyword lookup, and
   the token objects themselves (4 fields, `num` usually `undefined`). Each is now a small share, so
@@ -26635,7 +26643,10 @@ undefined`). None of these is discoverable from the list's definition. (Those ga
   the mitigation, not the cost. The residual +0.77 is the clause-level handling itself —
   `checkLinearScope` over the clause, its `where` plumbing, and the push — not one function worth
   attacking. Recorded next to `pushWhereIntoNode`.
-- **OPEN, LOCALISED — the TS planner's bulk is ONE node pattern: 1.714 us (item 907).** Stage ladder,
+- **REFINED (items 908, 910, 912) — the TS planner's bulk is ONE node pattern: 1.714 us
+  (item 907).** ⚠️ 908 showed the match-clause ARM is only 25% of that 1.714 (and `compileNode` 9%),
+  910 split `compileLinear` into rewrites/compileClause/detectors, and 912 retracted the detector
+  target. The 1.714 figure stands; "look in `compileMatch`" does not. Stage ladder,
   min of three alternated rounds: `RETURN 1` 0.637 us, `MATCH (n) RETURN 1` **2.352**, so one bare
   node pattern is **+1.714 — 73% of the simplest MATCH's total**, larger than either half of item
   905's clause-vs-inline gap (+0.61, +0.77). Projecting the variable is +0.341.
@@ -26747,3 +26758,10 @@ undefined`). None of these is discoverable from the list's definition. (Those ga
 - **STILL WORTH HAVING — item 911's route assertions, despite 912 (item 912).** They guard nineteen
   answer-equivalent routes whose pre-existing coverage was UNEVEN (disabling `detectNodeProjection`
   survived all 2,723 tests), which is worth having whether or not anyone refactors the detectors.
+- **MAINTENANCE — five "open" entries were stale and are now marked (item 913).** 883 (parser/planner
+  ratios), 884/885/886 (the per-CHARACTER unit) and 907 ("look in `compileMatch`") were all
+  superseded by 887, 905, 908, 910 or 912 within this same window. Each now carries a `SUPERSEDED` or
+  `REFINED` pointer to the item that moved it, with the original note KEPT — the measurements stand,
+  the framing moved, and 884's numbers are the data you would need to fix its own denominator.
+  **The index decays fastest when the work is going well**: every tick that corrects a framing leaves
+  the superseded framing behind it. Read the whole open list after a run of items, not just append.
