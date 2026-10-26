@@ -67,6 +67,20 @@ const GROUPS: ReadonlyArray<{ name: string; cases: ReadonlyArray<readonly [strin
     ],
   },
   {
+    // ITEM 907: where the planner's bulk is. Each rung adds ONE stage, so the differences are the
+    // stages. The dominant single cost is the FIRST node pattern, and a second one costs half as
+    // much — which points at per-query setup rather than per-pattern work.
+    name: 'inside the planner, stage by stage',
+    cases: [
+      ['RETURN 1', 'RETURN 1'],
+      ['RETURN 1 + 2', 'RETURN 1 + 2'],
+      ['MATCH (n) RETURN 1', 'MATCH (n) RETURN 1'],
+      ['MATCH (n) RETURN n', 'MATCH (n) RETURN n'],
+      ['MATCH (n) RETURN n.k', 'MATCH (n) RETURN n.k'],
+      ['two MATCH clauses', 'MATCH (n) MATCH (m) RETURN 1'],
+    ],
+  },
+  {
     name: 'the planner by SHAPE (not a spelling group — a scale)',
     cases: [
       ['no pattern', 'RETURN 1'],

@@ -26635,3 +26635,15 @@ undefined`). None of these is discoverable from the list's definition. (Those ga
   the mitigation, not the cost. The residual +0.77 is the clause-level handling itself —
   `checkLinearScope` over the clause, its `where` plumbing, and the push — not one function worth
   attacking. Recorded next to `pushWhereIntoNode`.
+- **OPEN, LOCALISED — the TS planner's bulk is ONE node pattern: 1.714 us (item 907).** Stage ladder,
+  min of three alternated rounds: `RETURN 1` 0.637 us, `MATCH (n) RETURN 1` **2.352**, so one bare
+  node pattern is **+1.714 — 73% of the simplest MATCH's total**, larger than either half of item
+  905's clause-vs-inline gap (+0.61, +0.77). Projecting the variable is +0.341.
+- **AND THE SECOND PATTERN COSTS HALF THE FIRST (item 907).** `MATCH (n) MATCH (m) RETURN 1` adds
+  only **+0.43 to +0.85** over `MATCH (n) RETURN 1` across two runs (against +1.71 to +1.88 for the
+  first pattern) — the two runs disagree on the size and agree on the direction. A bare node has no properties, no `WHERE` and no label,
+  so there is no per-pattern work that could differ — which points at **per-query setup inside the
+  first `match` compile**, and a one-time cost paid per compile is exactly what a cache MISS pays.
+  The next instrument is inside `compileMatch` (the matcher closure, `orient` precomputation,
+  `checkLinearScope`); the query ladder has given all it can. Deliberately NOT attributed further —
+  three items this window went wrong attributing from a reading plus one shape.
