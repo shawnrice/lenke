@@ -26627,3 +26627,11 @@ undefined`). None of these is discoverable from the list's definition. (Those ga
   arm actually compiled, and prints the planner by shape as well as by spelling. A PROBE, not a test
   (time is the only signal). Run it when touching `pushWhereIntoNode`, `directEqProps` or the clause
   compiler, and add new spelling pairs there.
+- **REFUTED — `pushWhereIntoNode` is NOT the clause spelling's compile cost (item 906).** Item 905's
+  +0.77 us (inline `WHERE` → clause `WHERE`) looked like it. Ablated to `return clause` immediately
+  — answer-equivalent, since the predicate then stays a clause filter — the clause spelling gets
+  **WORSE: 4.434 → 5.336 us, 1.20x**. Pushing a predicate into the node is cheaper to PLAN as well as
+  to RUN (items 127/128/285 record 1.44x and 15.8x on the runtime side), so the function is part of
+  the mitigation, not the cost. The residual +0.77 is the clause-level handling itself —
+  `checkLinearScope` over the clause, its `where` plumbing, and the push — not one function worth
+  attacking. Recorded next to `pushWhereIntoNode`.

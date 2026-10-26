@@ -6499,6 +6499,15 @@ const pushWhereAcrossPatterns = (
   };
 };
 
+// NOT the clause-spelling COMPILE cost, and do not attack it as such (item 906).
+//
+// Item 905 measured planning one predicate at +0.409 us as an inline `{k: 1}`, +1.021 as an inline
+// `WHERE` and +1.793 as a clause `WHERE`, and the obvious reading of that last +0.77 is "the clause
+// spelling pays for this function". Ablated — `return clause` immediately, which is
+// answer-equivalent and only slower at run time — the clause spelling gets **WORSE, 4.434 -> 5.336
+// us**. So pushing the predicate into the node is CHEAPER to compile than leaving it a clause
+// filter, and this function is part of the mitigation rather than the cost. The residual +0.77 is
+// the clause-level handling itself.
 const pushWhereIntoNode = (clause: Extract<Clause, { kind: 'match' }>): typeof clause => {
   const { where } = clause;
 
