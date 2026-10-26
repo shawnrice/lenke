@@ -26908,3 +26908,36 @@ statement` 969.7k / 774.8k / 973.6k (**1.26x**). It cannot resolve a 1.2x questi
   guard refused to apply it — printing VOID rather than a verdict. Without that guard it would have
   been skipped and read as a survivor of a suite that never saw it. Re-anchored, it fails 7 tests
   including four `rewrite_fuzz` ones.
+- **REFUTED and DECLINED — `compareCodePoints`' surrogate guard (item 921).** It scans BOTH WHOLE
+  STRINGS with a regex on EVERY comparison (6.9% of a sorted-page profile, with the function another
+  8.0%), re-establishing a per-string fact O(log N) times in a sort. Three arms: replacing the regex
+  with a manual charCode loop is **1.08x on ASCII and 3.6x WORSE on long shared prefixes** (V8's
+  character-class match beats a hand loop — the regex is the right tool); deciding from the first
+  differing code UNIT is **wrong**, premise and all; hoisting the guard out of the comparator is
+  SOUND but can only remove the regex, **~1.07x** on that shape at best, for an invasive change to a
+  value-generic comparator. All three recorded above the function.
+- **METHOD — a correctness corpus that does not CONSTRUCT the dangerous case will agree with
+  anything (item 921).** The first-differing-unit arm had a narrow bug the corpus caught; after
+  fixing it the corpus reported **ALL AGREE over 676 pairs**, and the arm was still unsound. Its real
+  defect needs the SAME high surrogate PAIRED in one string and LONE in the other (segmentation
+  depends on the FOLLOWING unit, so equal unit prefixes do not imply equal code-point prefixes) — and
+  the corpus used 0xD800 for lone surrogates and 0xD83D for its astral char, so the two never met.
+  One added string produced 6 mismatches. Same discipline as verifying a fuzzer's teeth by mutation,
+  applied to a hand corpus; the stakes were a wrong sort order behind a hard byte-identity invariant.
+- **THE TS RUNTIME PATH HAS NO UNPRICED HOT CODE ABOVE 2% — measured, five query shapes (item
+  921).** New `runtime-profile-probe.mjs` + `runtime-profile-analyze.mjs` profile one shape per
+  process and cross-check every frame name against THIS file and the audit. Across `control`,
+  `point`, `hopfilter`, `sortedpage` and `grouped`, every hot frame carries mentions (`satisfies`
+  127, `propOf` 46, `structuralEq` 36, `inlineHolds` 26, `less` 569, `compareSort` 16). **The next TS
+  win is unlikely to come from profiling the runtime path**, which is worth knowing before spending a
+  tick there.
+- **METHOD — a frame's NAME is not its code, and a screen that confuses the two manufactures targets
+  (item 921).** The screen's largest "find" was `variable.variable` at 22.8% of the hop-filter
+  profile with ZERO mentions. It is the anonymous closure `(env) => propOf(env.binding.get(variable),
+key)`: V8 synthesises names for arrows from the binding they were assigned through, so no document
+  can ever mention one, and that path is items 216/224/230's territory. Synthetic names, `RegExp:`
+  frames and Node loader frames now report `n/a`. **The screen's most confident output was the one to
+  distrust.**
+- **A lone surrogate is not valid UTF-8 and does not survive a source file (item 921).** A literal
+  surrogate pair written into a probe was silently normalised into one real character, quietly
+  removing the case it was added to test. Build them with `fromCharCode`.
