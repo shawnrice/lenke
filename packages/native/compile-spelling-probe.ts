@@ -81,6 +81,21 @@ const GROUPS: ReadonlyArray<{ name: string; cases: ReadonlyArray<readonly [strin
     ],
   },
   {
+    // ITEM 909: a SCOPE-SIZE scale. `checkLinearScope`'s match arm used to copy the whole visible
+    // scope per MATCH clause, so the wasted work was O(clauses^2) — invisible at the 1-3 variables
+    // every other group here has, and 1.48x at 48 clauses. This group exists so that the next
+    // change to the scope checker is measured against a fixture whose scope is big enough to see
+    // it: item 909's first A/B used a 3-variable scope and read 1.01x, which is the repo's own
+    // "match the fixture to the claim" rule catching a null that was the fixture's fault.
+    name: 'scope SIZE (one MATCH clause per variable)',
+    cases: [
+      ['chain 1', 'MATCH (v0) RETURN 1'],
+      ['chain 8', `${Array.from({ length: 8 }, (_, i) => `MATCH (v${i})`).join(' ')} RETURN 1`],
+      ['chain 24', `${Array.from({ length: 24 }, (_, i) => `MATCH (v${i})`).join(' ')} RETURN 1`],
+      ['chain 48', `${Array.from({ length: 48 }, (_, i) => `MATCH (v${i})`).join(' ')} RETURN 1`],
+    ],
+  },
+  {
     name: 'the planner by SHAPE (not a spelling group — a scale)',
     cases: [
       ['no pattern', 'RETURN 1'],

@@ -26666,3 +26666,22 @@ undefined`). None of these is discoverable from the list's definition. (Those ga
   inline `bun -e` lost its percentage columns to unit-file expansion, with a warning naming the eaten
   expression. Harmless here; at 897 the same thing silently collapsed a 200,000-node fixture to one
   node. **Recording a trap does not stop it — put the code in a FILE.**
+- **SHIPPED — `checkLinearScope` copied the whole scope per MATCH clause (item 909): 1.48x at 48
+  clauses, nothing at 1-3 variables.** The match arm built `withPat = new Set(scope)`, added the
+  pattern's vars to the COPY, checked the clause `WHERE` against it, then iterated the whole copy
+  back into `scope`. The copy bought nothing — `scope` ends up `scope ∪ patternVars` either way and
+  the `WHERE` must see exactly that. Measured on a scope-size scale: chain 1 **1.023x**, chain 8
+  **1.087x**, chain 24 **1.227x**, chain 48 **1.482x DISJOINT**. The saving is QUADRATIC in clause
+  count (delta 4.52 ms at 24 against 17.28 at 48 = 3.8x for 2x clauses, against the 4.0 a `Σi` copy
+  predicts) — the curve's shape matching the removed work's shape is what makes it an attribution.
+  Mutants: checking the `WHERE` before adding the vars **813 fail**; never adding them **1814 fail**.
+- **METHOD, AND A NULL THAT WAS THE FIXTURE'S FAULT (item 909).** The first A/B read **1.01x on every
+  arm with the control moving MORE** — a textbook refutation. It was wrong: the removed work is a Set
+  copy whose cost scales with SCOPE SIZE, and every fixture had 1-3 variables. **"Match the fixture
+  to the claim" applies to a per-scope-entry cost exactly as it does to a per-edge one.** A null from
+  a fixture that cannot express the cost is worse than no measurement, because it reads as a
+  refutation. `compile-spelling-probe.ts` now carries a `scope SIZE` group so the next scope-checker
+  change is measured against a scope big enough to see one.
+- **STILL OPEN — item 908's fuse-the-two-walks proposal (noted at 909).** Not what shipped. 909 took
+  the cheaper half, which needed no restructuring and no decision about which compile-time error
+  wins; the fusion still wants the fault-ordering question settled first.

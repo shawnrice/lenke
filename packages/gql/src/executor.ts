@@ -6095,18 +6095,25 @@ const checkLinearScope = (clauses: readonly Clause[], initial: ReadonlySet<strin
   for (const clause of clauses) {
     switch (clause.kind) {
       case 'match': {
-        const withPat = new Set(scope);
-
+        // NO SCOPE COPY (item 909). This used to build `withPat = new Set(scope)`, add the
+        // pattern's variables to the COPY, check the clause `WHERE` against it, and then iterate
+        // the WHOLE copy back into `scope` — so a MATCH clause cost one `Set` allocation plus a
+        // full iteration of the entire visible scope, every compile.
+        //
+        // The copy bought nothing. `scope` ends up as `scope ∪ patternVars` either way (that is
+        // what the copy-back did), and the `WHERE` has to see exactly that set — so adding the
+        // pattern's variables to `scope` directly and checking against `scope` is the same two
+        // facts with neither the allocation nor the second pass.
+        //
+        // The one behavioural difference is unobservable: if `checkExprScope` THROWS, the old
+        // code left `scope` without the pattern's variables and this leaves them in. A throw here
+        // aborts the whole compile, so nothing reads `scope` afterwards.
         for (const v of patternVars(clause.patterns)) {
-          withPat.add(v);
+          scope.add(v);
         }
 
         if (clause.where) {
-          checkExprScope(clause.where, withPat);
-        }
-
-        for (const v of withPat) {
-          scope.add(v);
+          checkExprScope(clause.where, scope);
         }
 
         break;
