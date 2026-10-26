@@ -26377,3 +26377,22 @@ p.flag` 4.51x (item 872).** Only the comparison spelling had one: `= true` lower
   pre-894 read went through `prop_ref`, which checks `present` itself. Moving the read out of the
   accessor silently makes that the caller's job, and a tombstone/`present` check is the easiest one
   to leave behind — invisible to tests unless one DELETES a property and re-queries.
+- **OPEN, PRICED — an index on a dotted key makes the query 4.1x SLOWER, and the planner is RIGHT
+  (item 895).** New indexed arms in `value/maps`: `map field meta.city` **10699.5 us INDEXED against
+  2594.8 unindexed**; the flat twin 306.0 against 253.9 (1.2x). Not a planner bug — at 4 distinct
+  values over 200k nodes the predicate matches ~25%, above the 15% `SEEK_MAX_FRACTION` cap, so
+  `seek_beats_scan` correctly rejects the seek (`dottedindex_895` prints `IndexSeek x0` with the
+  index, `x1` without). **The engine has TWO unindexed paths for one predicate and they differ 4.1x:**
+  without an index the plan keeps an `IndexSeek` that executes as the no-index fallback filter (what
+  359/893/894 optimized), with an index it becomes `Scan` + `Filter`, which evaluates
+  `Expr::Field{base: Prop}` by materializing the WHOLE base column of boxed records before
+  projecting one field. The cost model picks between them on grounds that do not include this.
+  **Item 894's 1.65x WIDENED the gap.** The fix is a fused `Field{base: Prop}` arm; it is on the
+  byte-identity evaluator path and must match for every base kind (element/record/map/list/null/
+  absent), so it is its own item.
+- **METHOD — three consecutive items optimized ONE of two sibling paths (items 359, 893, 894 →
+  found at 895).** The loop's "grep the pattern elsewhere" step was skipped each time: the same
+  predicate has a `Filter` implementation beside the `IndexSeek` fallback, and nobody looked. The
+  giveaway was a MISSING BENCH ROW — every arm in `value/maps` was unindexed, so the faster-path
+  work was never compared against the path a user with an index actually gets. Same lesson as item
+  877: bench the SHAPES, not just the step.

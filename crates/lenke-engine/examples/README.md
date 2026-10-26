@@ -129,6 +129,15 @@ question in its module header — read the header before touching it.
   the tokenizer" was an assumption. It reaches into `packages/gql/src` deliberately (`tokenize` is
   not public, and both halves must come from ONE compilation), so its absolute figures are NOT
   comparable with `parseplan-cost-probe.ts` — only its two arms with each other.
+- `dottedindex_895` — why is a query SLOWER with an index on a dotted key than without one?
+  `value/maps`'s indexed arms read `map field meta.city` at **10699.5 us indexed against 2594.8
+  unindexed, 4.1x slower**, and the flat twin 306.0 against 253.9. Not a planner bug: at 4 distinct
+  values over 200k nodes the predicate matches ~25%, above the 15% `SEEK_MAX_FRACTION` cap, so
+  `seek_beats_scan` correctly rejects the seek. The probe prints the surviving `IndexSeek` count and
+  settles it — **without** an index the plan keeps an `IndexSeek` that executes as the no-index
+  fallback filter (the path items 359/893/894 optimized); **with** one it becomes `Scan` + `Filter`,
+  a different evaluator that materializes the whole base column. Two unindexed paths for one
+  predicate, 4.1x apart, and the cost model chooses between them on grounds that do not include it.
 - `barehop_882` — is native's bare-hop cost ENGINE time or FFI serialization? Item 881's new bench
   row showed `V().out()` at native 329.61 ms against TS's 185.4, which looks like native being the
   slow side. This runs the same plans IN PROCESS (`exec::try_run`, no boundary) and answers it:

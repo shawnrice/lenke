@@ -63,12 +63,26 @@ pub fn run(cfg: &Cfg) {
         // un-matched ratio understated the real nested-path penalty. One extra row makes the
         // comparison sound; a ratio is only as honest as the sameness of its two sides.
         let flat_str = "MATCH (p:P) WHERE p.city = 'NYC' RETURN count(*) AS c";
+        // THE MISSING INDEXED ARMS, added at item 895. Every row above is the UNINDEXED path, and
+        // the scan this section measures is explicitly the fallback twin of a dotted
+        // `index_lookup` — so without an indexed arm the section cannot say whether the nested
+        // penalty it reports is something a user should care about or something they should index
+        // away. Item 877's lesson in a different key: a missing ROW is why a gap sits unmeasured.
+        //
+        // Both arms are indexed so the comparison stays matched (item 359's rule): a dotted index
+        // against a FLAT index, not against an unindexed flat scan.
+        let mut flat_ix = from_ndjson(&flat_ndjson(n)).expect("decodes");
+        flat_ix.create_index("city");
+        let mut maps_ix = from_ndjson(&map_ndjson(n)).expect("decodes");
+        maps_ix.create_index("meta.city");
         println!("{:30} {:>10}", "query", "us");
         for (name, q, store) in [
             ("scalar age (flat)", scalar, &flat),
             ("scalar age (map graph)", scalar, &maps),
             ("string city (flat)", flat_str, &flat),
             ("map field meta.city", field, &maps),
+            ("string city (flat, INDEXED)", flat_str, &flat_ix),
+            ("map field meta.city (INDEXED)", field, &maps_ix),
         ] {
             match time_query(q, false, store, cfg.reps) {
                 Ok((us, _)) => println!("{name:30} {us:>10.1}"),
