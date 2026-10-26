@@ -27014,3 +27014,36 @@ key)`: V8 synthesises names for arrows from the binding they were assigned throu
   which path ran rather than on correctness. Also recorded: the forced-zero mutant fell from 14
   failures to 4 once the single-label fast path landed, because the line it mutates now sits behind
   `n_lids > 1` — its REACH shrank with the change, so the other mutant carries the general case.
+- **NO REGRESSION from 919/920/922/923 anywhere in the Rust corpus (item 924).** `bench_all` BASE vs
+  HEAD, order-alternated, 322 row-columns: the largest excess over a row's OWN same-binary variance
+  is **1.10x**, in no direction and no cluster. The one row the Rust changes reach,
+  `storage/write (bulk SET throughput)`, is **0.99x — parity**, as item 922 predicts on a zero-index
+  fixture. The TS arm is clean on the same standard — 57 paired rows, self-variance median 1.074x,
+  largest excess 1.08x. BASE was verified byte-identical to `90ed30e7` for all three changed files
+  before it was trusted as a baseline.
+- **🛑 METHOD — A SWEEP'S OWN TWO-RUN SPREAD IS THE ONLY THRESHOLD WORTH USING, and a hand-picked
+  band manufactures findings (item 924).** A ±10% band over ONE round reported `query/perrow element
+p` at **1.54x FASTER** and `query/shortest repeat-group unread` at **0.81x slower**. Both are
+  noise: that per-row row moves **1.48x between two runs of the same binary**, so its excess is 1.04.
+  The claim would have been a 1.5x win on per-row projection from a DELETE-PATH change that cannot
+  reach per-row projection. An alternated sweep already contains the null control needed to refute
+  this — HEAD, BASE, BASE, HEAD gives two readings per arm per row — so compute `self` before
+  reading `cross`. Same family as items 737 and 747.
+- **Twelve rows cannot support a perf claim at all, and that is now written down (item 924).**
+  Self-variance ≥1.5x with cross ≈ 1.00: `algo/parallel`'s pagerank and betweenness speedup columns
+  swing **8x** run to run, `ingest/phases` 4x, `query/gremlin dedup out.out` 2.07x. They are a smoke
+  test that the path still runs, not a measurement. Check a row's self-variance before reading any
+  movement in it.
+- **A BENCHMARK THAT CACHES WHAT YOU CHANGED CANNOT MEASURE YOUR CHANGE — checked, not assumed (item
+  924).** `bun run bench`'s query rows call `e.query(g, '<literal text>')` with the SAME text every
+  rep, and the engine has both a `parseCache` and a `planCache` (228/229), so only the first rep pays
+  compile against hundreds of ms of execution. Item 919 changed the compile MISS path, so the TS
+  sweep is blind to it in both directions and is only a coarse "nothing else moved" check. 919's real
+  instrument is `compile-spelling-probe.ts`, which plans from FRESH ASTs so no cache can serve them.
+  **A clean sweep over a blind instrument reads exactly like evidence and is not.**
+- **METHOD — a comparator that matches nothing must FAIL, not report success (item 924).** The sweep
+  comparator required a `=== section ===` header before recording a row; the TS bench prints a flat
+  table, so it would have compared **zero rows and printed a clean result**. Fixed to default the
+  section AND to exit non-zero on zero comparisons. The dangerous form of a broken check is not the
+  one that crashes — it is the one that returns the reassuring answer, which is also how the
+  `noclobber` append and the stale mutation anchors failed this session.
