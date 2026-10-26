@@ -26685,3 +26685,23 @@ undefined`). None of these is discoverable from the list's definition. (Those ga
 - **STILL OPEN — item 908's fuse-the-two-walks proposal (noted at 909).** Not what shipped. 909 took
   the cheaper half, which needed no restructuring and no decision about which compile-time error
   wins; the fusion still wants the fault-ordering question settled first.
+- **OPEN, PRICED — the 19 compile-time DETECTORS are 25% of planning (item 910).** `compileLinear`
+  ends by running nineteen independent shape probes (`detectVarLengthCount` …
+  `detectGroupedHopAggregate`); its own comment says _"EVERY detector RUNS … not a ladder"_. Measured
+  for the first time: **1.955 us, 25%** of planning the big query, **0.414 (17%)** for the simplest
+  MATCH. Several bail on a `clauses.length` guard, but a 2-clause `MATCH … RETURN` is exactly the
+  length they admit. **NOT attempted**: the fix is a precomputed shape summary, a refactor across 19
+  functions in a 7,000-line file whose failure mode is a wrong summary SILENTLY DISABLING a shortcut
+  — answer-equivalent, invisible to every correctness test. Prerequisite is a route assertion per
+  detector (item 888's `toLowerCase`-counting test is the pattern); that is its own, bigger item.
+- **OPEN, PRICED — the rewrite pipeline is another 16% (item 910).** Ten nested clause-list
+  transformations (`dropVacuousQuantifier` … `liftStartProps`), each walking the list it is handed:
+  **1.259 us, 16%** of the big query. Fusing them means preserving a documented composition order
+  (`inlineAggregateCall` runs INSIDE `inlineTrailingLet` so the `LET` it produces is itself inlined),
+  which the current nesting expresses structurally.
+- **THE PLANNER, FULLY SPLIT (items 908, 909, 910).** For the big query: `compileClause` 2.909 (37%),
+  **19 detectors 1.955 (25%)**, checkLinearScope ~1.43 (18%), **rewrite pipeline 1.259 (16%)**,
+  remainder ~0.25. So **~41% is shape DETECTION and REWRITING**, not building the plan. Three
+  independent findings now point at the same shape — **N separate walks over one small clause list**:
+  checkLinearScope's second walk (908), the per-clause scope copy (909, FIXED at up to 1.48x), and
+  the ten rewrite walks plus nineteen detector walks here.
