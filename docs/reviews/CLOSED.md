@@ -26512,3 +26512,25 @@ INDEXED)` — a plain `Expr::Prop` — **1.09x slower**, reproducible to three s
   `matching.ts` enumerate the lifted lists BY NAME (`pre.eqProps !== undefined || pre.cmpProps !==
 undefined`). None of these is discoverable from the list's definition. (Those gates also omit
   `truthProps` — a missed optimization, not a bug, since `matchesPredicate` still applies it.)
+- **CORRECTION to item 900 — `ownVar` was never the problem (item 901).** `compileNode` IS reached
+  with `var=p` and `where=compare` for every spelling (instrumented), and `freePredicateVars`
+  handles a `field` node correctly (walks the base to the `prop`). So the predicate IS built with an
+  `ownVar` and DOES carry the lift; the gap is entirely on the CONSUMER side. `shortcuts.ts` builds
+  its own `CPredicate` for a filtered count and its `InlinePred` contract names exactly three
+  carriers (`where`, `eqProps`/`cmpProps`, `props`); add `rejectedByElementDirect` and the two
+  `preFilter` gates and a new list must reach **at least five** consumers, none discoverable from
+  the list's definition.
+- **THE HAZARD ITEM 900 MISSED — a predicate lift MOVES the constraint, it does not add a shortcut
+  (item 901).** `generic = direct === null ? where : direct.residual` and `residual` is ALWAYS
+  `undefined`, so a successful lift **empties `where`**. The new list becomes the ONLY carrier of
+  that conjunct, and any consumer that enumerates the lists by name and misses it returns a silent
+  **SUPERSET** — `hasPredicate`'s named bug class (item 277) one level up, in a change that wired
+  `hasPredicate` itself and still left four consumers unwired.
+- **AND IT PASSED THE WHOLE SUITE IN THAT STATE (item 901).** 2,711 GQL + 828 Gremlin + 370 core
+  green, because no fixture combines a dotted conjunct with the un-wired consumer. A 0.96x number
+  plus a green suite looked like a harmless no-op and was a latent wrong answer. **A green suite is
+  evidence about the fixtures, not about the wiring.**
+- **RULE — a performance list that REPLACES a general path is a CORRECTNESS surface (item 901).**
+  The tell is whether the general carrier is emptied on success. When it is, "add a fourth list
+  beside the other three" is not a local change however local it looks: audit every consumer BEFORE
+  writing the list, and do not trust a grep for the sibling list's name to find them.

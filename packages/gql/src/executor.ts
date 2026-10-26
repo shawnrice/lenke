@@ -4802,8 +4802,24 @@ const pushHint = (into: HintMap, variable: string, hint: CSeedHint): void => {
 // MATCHING vertex, because a lifted predicate filters before `matchesPredicate` is reached. That
 // asymmetry is a direct read of whether a predicate was lifted at all.
 //
-// So the work is in the planner plumbing (which compile call feeds the scan, and why it has no
-// `ownVar`), not in the predicate lists. Do not re-attempt the list without that first.
+// CORRECTED at item 901, and the correction matters. `compileNode` IS reached with `var=p` and a
+// `where=compare` for the dotted query, so the predicate IS built with an `ownVar` and DOES carry
+// the lift — the gap is on the CONSUMER side, not the compile side. `shortcuts.ts` builds its own
+// `CPredicate` (`compilePredicate(undefined, where, nodeVar)`) for a filtered count, and its
+// `InlinePred` contract enumerates exactly three places a value can come from — a general `where`,
+// `eqProps`/`cmpProps`, and `props`. A fourth list is invisible to it.
+//
+// AND THE LIFT IS NOT ADDITIVE, WHICH IS THE HAZARD. `compilePredicate` computes
+// `generic = direct === null ? where : direct.residual`, and `residual` is ALWAYS `undefined` — so
+// a successful lift EMPTIES `where`. A new list therefore MOVES a constraint rather than adding a
+// shortcut for it, and any consumer that enumerates the lists by name and misses the new one
+// returns a silent SUPERSET. That is `hasPredicate`'s named bug class (item 277) in a new place,
+// and the attempted change passed all 2,711 GQL tests while in exactly that state: no fixture
+// combines a dotted conjunct with the un-wired consumer.
+//
+// So re-attempting this needs an AUDIT OF EVERY CONSUMER first — `matchesPredicate`,
+// `rejectedByElementDirect`, both `preFilter` gates in `matching.ts`, and `shortcuts.ts`'
+// `InlinePred` — not a grep for `eqProps`.
 const asPropCompare = (
   expr: Extract<Expr, { kind: 'compare' }>,
 ): { variable: string; key: string; op: CompareOp; value: Expr } | null => {
