@@ -26822,3 +26822,19 @@ statement` 969.7k / 774.8k / 973.6k (**1.26x**). It cannot resolve a 1.2x questi
   window (912 was the detectors), all three failing the same way — **a block- or shape-level
   description invited a structural fix, and pricing what the fix would actually REMOVE showed the
   time was elsewhere.**
+- **DEPRIORITIZED with FOUR dead ends recorded — the clause-vs-inline PLANNING gap (item 918).**
+  Item 905's +1.634 us (inline `WHERE` → clause `WHERE`) is in **none** of the four places I
+  measured: `checkLinearScope` **+0.007**, `directEqProps` **+0.080**, the seed-hint block
+  (`collectHints`/`attach`/`pinFor`, gated on exactly `clause.where`) **0.000** — it reads 0.027 for
+  every spelling including the control, i.e. two `performance.now()` calls and no work — and
+  `pushWhereIntoNode` was already refuted at 906 (disabling it is 1.20x WORSE). **~95% of the gap is
+  unlocated.**
+- **METHOD — targeted timers can only confirm the site you guessed; use a PROFILER when the site is
+  unknown (item 918).** Four hypotheses on one gap, four refutations, each a plausible mechanism in
+  real code. Across this window: 900-902 were three wrong attributions of one null, and 912/917
+  retracted named targets. **Finding _a_ mechanism is easy and finding _the_ one is not** — and hand-
+  placed instrumentation cannot tell you about a site you did not suspect. The next attempt on this
+  gap should start from a CPU profile, and must not re-walk the four dead ends above.
+- **AND THE SIZE ARGUES THE SAME WAY (item 918).** ~1.5 us on a parse+plan cache MISS only; repeated
+  query text pays it once. Real (item 883: dynamically-built text misses every time) but narrow, and
+  three targets of this size have now been retracted for costing more to chase than they return.
