@@ -5,7 +5,7 @@
 import { runAlgorithmSync } from '@lenke/core';
 import type { AlgorithmConfig, AlgorithmName, Edge, Graph, Vertex } from '@lenke/core';
 import { ErrorCode, LenkeError } from '@lenke/errors';
-import { filter, flatMap, map, toArray } from '@lenke/fp';
+import { filter, flatMap, map, skip, slice, toArray } from '@lenke/fp';
 
 import type { Query, SetOp, TxControl } from '../ast.js';
 // Back-edges into the executor trunk (compiled types + helpers), used lazily.
@@ -1566,10 +1566,33 @@ export const runLinearClauses = (
           break;
         }
 
-        let rows = toArray(bindings);
         const start = resolveCount(clause.skip, params) ?? 0;
 
-        if (clause.orderBy.length > 0) {
+        if (clause.orderBy.length === 0) {
+          // A KEYLESS page keeps the first `skip + limit` rows in ARRIVAL order, so it can stop
+          // PULLING at the window's end instead of forcing the whole working table and slicing.
+          //
+          // Item 869 measured what forcing it cost: `MATCH (n:P) LIMIT 10 RETURN n.k AS c` took
+          // **36.68 ms** over 200,000 bindings against **0.04 ms** for `MATCH (n:P) RETURN n.k AS c
+          // LIMIT 10` — the same query, the other spelling, 917x. The clause position already
+          // took lazily; this one materialized 200,000 `Binding` maps to return ten rows.
+          //
+          // `slice` is lazy and BREAKS at its end, so the upstream generator chain produces only
+          // the window. `toArray` is still applied because `slice`/`skip` return ONE-SHOT
+          // generators and a later clause that iterated `bindings` twice would find the second
+          // pass empty. That is DEFENSIVE rather than demonstrated: dropping the `toArray` passes
+          // all 3,838 TS tests, so no covered path double-iterates, and it may be that none
+          // exists. It stays because it costs O(limit) — ten rows for a `LIMIT 10` — which is not
+          // worth reasoning about every time a clause is added below.
+          bindings = toArray(
+            take === undefined ? skip(start, bindings) : slice(start, start + take, bindings),
+          );
+          break;
+        }
+
+        let rows = toArray(bindings);
+
+        {
           const keysOf = (b: Binding): readonly unknown[] =>
             clause.orderBy.map((s) => s.fn({ binding: b, params, graph }));
 

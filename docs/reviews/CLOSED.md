@@ -25854,3 +25854,18 @@ copies before the comment was added.
   `parsePageClause` accepts `OFFSET` only, while the clause position accepts both `SKIP` and
   `OFFSET`. ISO's `<offset clause>` admits both spellings, so this may be a gap — unverified
   against the BNF artifact, and recorded rather than acted on.
+- **A KEYLESS statement `LIMIT` no longer materializes the working table — 941x (item 869).**
+  The page clause called `toArray(bindings)` before testing whether an `ORDER BY` existed, so
+  `MATCH (n:P) LIMIT 10` forced 200,000 `Binding` maps to return ten rows: **36.68 ms against 0.04
+  for `MATCH (n:P) RETURN … LIMIT 10`**, the same query the other way. Now a lazy `slice`, which
+  breaks at the window's end. 0.04 ms, identical to the clause spelling to the printed digit, so
+  the pair is CONVERGED. Control: a sorted page is gated on `orderBy.length === 0` and is flat.
+  Both keyless pairs added to the spelling probe.
+- **This was the larger half of item 868's remaining 4.6x.** What is left for the SORTED statement
+  shape is the per-row key evaluation through a context object; the sorted path must still see every
+  row to find the top K, so it cannot take the lazy window.
+- **METHOD — a comment that reads like a measurement and is not is worse than no comment (item
+  869).** The `toArray` wrapper was justified as protecting a later clause that iterates `bindings`
+  twice. Dropping it passes all 3,838 TS tests, so no covered path does that and possibly none
+  exists. It stays (it costs O(limit)) but the comment now says DEFENSIVE and unexercised. Same
+  treatment as item 865's `nulls_first` guard.

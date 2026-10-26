@@ -388,6 +388,21 @@ const GROUPS: [string, readonly string[]][] = [
     ],
   ],
   [
+    // ADDED AT ITEM 869, which found the worst spelling gap in this file after the label one:
+    // a KEYLESS `LIMIT` in statement position forced the whole working table and sliced, where
+    // the clause position took lazily — 36.68 ms against 0.04 at 200,000 rows, the same query
+    // written two ways. Both now stop pulling at the window's end.
+    'keyless LIMIT: statement vs clause position (item 869)',
+    ['MATCH (n:P) LIMIT 10 RETURN n.k AS c', 'MATCH (n:P) RETURN n.k AS c LIMIT 10'],
+  ],
+  [
+    'keyless OFFSET + LIMIT: statement vs clause position',
+    [
+      'MATCH (n:P) OFFSET 5 LIMIT 10 RETURN n.k AS c',
+      'MATCH (n:P) RETURN n.k AS c SKIP 5 LIMIT 10',
+    ],
+  ],
+  [
     'sorted LIMIT DESC: statement vs clause position',
     [
       'MATCH (n:P) ORDER BY n.k DESC LIMIT 10 RETURN n.k AS c',

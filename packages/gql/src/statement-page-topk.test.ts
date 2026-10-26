@@ -136,3 +136,62 @@ describe('statement-position ORDER BY … LIMIT (item 868)', () => {
     ]);
   });
 });
+
+describe('statement-position KEYLESS page (item 869)', () => {
+  // A keyless `LIMIT`/`OFFSET` keeps the first rows in ARRIVAL order, so it can stop pulling at
+  // the window's end. It used to force the whole working table first: `MATCH (n:P) LIMIT 10`
+  // measured 36.68 ms over 200,000 bindings against 0.04 for the clause-position spelling — 917x
+  // for the same query written the other way.
+  const g = graph();
+
+  test('a keyless LIMIT is the first rows in arrival order', () => {
+    expect(col(g, 'MATCH (p:P) LIMIT 4 RETURN p.uniq AS x')).toEqual([0, 1, 2, 3]);
+  });
+
+  test('OFFSET pages without pulling the rest', () => {
+    expect(col(g, 'MATCH (p:P) OFFSET 3 LIMIT 4 RETURN p.uniq AS x')).toEqual([3, 4, 5, 6]);
+  });
+
+  test('OFFSET with NO limit keeps everything after it', () => {
+    const rows = col(g, `MATCH (p:P) OFFSET ${N - 3} RETURN p.uniq AS x`);
+
+    expect(rows).toEqual([N - 3, N - 2, N - 1]);
+  });
+
+  test('a LIMIT wider than the input yields every row, not an error', () => {
+    expect(col(g, 'MATCH (p:P) LIMIT 999999 RETURN p.uniq AS x').length).toBe(N);
+  });
+
+  test('an OFFSET past the end yields nothing', () => {
+    expect(col(g, `MATCH (p:P) OFFSET ${N + 10} LIMIT 5 RETURN p.uniq AS x`)).toEqual([]);
+  });
+
+  test('LIMIT 0 keeps no rows', () => {
+    expect(col(g, 'MATCH (p:P) LIMIT 0 RETURN p.uniq AS x')).toEqual([]);
+  });
+
+  // THE HAZARD OF MAKING THIS LAZY: a clause BEFORE the page may have side effects, and stopping
+  // the pull early must not stop them. Mutating clauses force their own evaluation, so a `SET`
+  // ahead of a `LIMIT` still touches every row — asserted here because the whole point of the
+  // change is that the page no longer forces the chain on its behalf.
+  test('an upstream SET still applies to every row, not just the window', () => {
+    const h = new Graph();
+
+    for (let i = 0; i < 50; i += 1) {
+      h.addVertex({ id: `u${i}`, labels: ['R'], properties: { uniq: i } });
+    }
+
+    const seen = [...query(h, 'MATCH (r:R) SET r.touched = 1 LIMIT 3 RETURN r.uniq AS x')];
+
+    expect(seen.length).toBe(3);
+
+    // every vertex was written, not only the three the LIMIT kept
+    const touched = [...query(h, 'MATCH (r:R) WHERE r.touched = 1 RETURN count(*) AS x')];
+
+    expect((touched[0] as Record<string, unknown>).x).toBe(50);
+  });
+
+  test('a FILTER after a keyless page sees the window, and only the window', () => {
+    expect(col(g, 'MATCH (p:P) LIMIT 10 FILTER p.uniq > 6 RETURN p.uniq AS x')).toEqual([7, 8, 9]);
+  });
+});
