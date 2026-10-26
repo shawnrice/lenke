@@ -25344,3 +25344,73 @@ Gates, each its own command with its exit code read UNPIPED: `cargo build --rele
 passed; `cargo clippy --all-targets -- -D warnings` 0; `cargo fmt` 0; `bun run fuzz gremlin` 1 pass
 0 fail; `bun run fuzz` (all seven byte-identity fuzzers) 13 pass 0 fail, run TWICE. The temporary
 example and all pristine/ship copies removed.
+
+## 855 — item 847's residual closed: GQL `DISTINCT <date>` **2.85x**, now within **1.09x** of the Gremlin spelling it was 3.1x behind
+
+**SHIPPED (Rust).** Item 854 made `values(k).dedup()` fast and thereby exposed its twin: the GQL
+`RETURN DISTINCT p.hired` read **2,344 µs against the Gremlin form's 748**, so the GQL spelling of
+the same shape was 3.1x the slower one. `try_distinct_scan_prop` — the single-column arm — has
+`Str`, `Dict`, `Num` and `Bool` cases and no `Temporal`, so a date fell through to
+`try_distinct_scan_multi`, whose `ColKeyer` builds a byte key per row. **Item 847 added `Date` to
+the keyer and never looked one function up**, which is why its own entry recorded a residual of
+"still 5.6x the Num control" without a cause.
+
+```text
+  200,000 nodes, 1,000 distinct, 1 in 97 lacking `hired`     PRE     POST
+  TARGET   gql DISTINCT date                                 2277      800   2.85x  DISJOINT
+  CONTROL  gql DISTINCT num                                   406      409   flat
+  CONTROL  gql DISTINCT str                                  1260     1260   flat
+  CONTROL  gql min(date)                                      565      558   flat
+  REFERENCE grm dedup date (item 854's path)                  738      733   flat
+```
+
+Three order-alternated rounds, min of three, both arms as separate binaries each asserted to have
+compiled. **GQL is now 1.09x of the Gremlin spelling**, from 3.1x behind; the Gremlin reference is
+itself flat, which is what says this change did not simply move the cost.
+
+### The fixture proves the semantics rather than assuming them
+
+One node in 97 lacks `hired`, and the two spellings return **1,001 rows (GQL) against 1,000
+(Gremlin)** — GQL treats an absent property as a NULL VALUE and emits it once, where
+`values(k).dedup()` drops the row. That difference is in the output of every round, so the
+`saw_null` branch is demonstrably running rather than assumed to be. It is also why these two are
+not the same question and the 1.09x is a floor rather than a target.
+
+`days` is in bijection with the rendering `group_key` keys a temporal by (items 843/847/848), so
+the dedup classes are the general path's, and first-seen order is preserved by pushing on insert
+exactly as the `Str` and `Num` arms do.
+
+### Teeth, and the mutant that needed a fixture change
+
+- **M1**, the date key made constant — caught, 3 failures (item 847's test).
+- **M3**, `Value::Null` pushed in place of the date — caught, 3 failures.
+- **M2**, the `saw_null` branch's `out.push` deleted — **SURVIVED.** Item 847's scan fixture gave
+  every `P` node a `hired`, so the NULL path never ran. A key-less node was added to that test and
+  its expectation updated to include the NULL; M2 is now caught (2 failures).
+
+So the hole was in a test I wrote eight items ago, and the mutant found it rather than a review.
+**That is the sixth plan-gated arm this run to ship into a gap in the suite** (840, 841, 843, 848,
+854, here) — and the first where the gap was in coverage I had added myself for the adjacent case.
+The rule from item 854 holds and gains a corollary: a test written for one arm's representation
+does not cover the NULL path of another, because absence is a property of the FIXTURE and not of
+the column type.
+
+### Where the temporal DISTINCT family now stands
+
+```text
+  gql  RETURN DISTINCT <date>      scan   2277 -> 800   (855)
+  gql  count(DISTINCT <date>)              21693 -> 570  (840)
+  grm  values(<date>).dedup()              23019 -> 748  (854)
+  gql  GROUP BY <date>                     21607 -> 2882 (848)
+  ts   DISTINCT / GROUP BY <date>          20.4ms -> 4.0 (850)
+```
+
+Every spelling of "distinct dates" on either engine is now within ~2x of its number-column control,
+from 10-38x. The one remaining asymmetry is `DISTINCT str` at 1,260 µs — 3.1x the `Num` arm's 409 —
+which is string hashing and not a missing arm, and no item has priced whether that is reducible.
+
+Gates, each its own command with its exit code read UNPIPED: `cargo build --release --tests` 0;
+`cargo test --release` **1,233 passed 0 failed**; `rewrite_fuzz` 10 passed; `cargo clippy
+--all-targets -- -D warnings` 0; `cargo fmt` 0; `bun run fmt` 0; `bun run fmt:check` 0; `bun run
+check` 0; `bun run fuzz` (all seven byte-identity fuzzers) 13 pass 0 fail, run TWICE. The temporary
+example and both pristine/ship copies removed.

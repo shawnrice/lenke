@@ -950,7 +950,45 @@ pub(super) fn try_distinct_scan_prop(input: &Plan, store: &Store) -> Option<Batc
                 });
             }
         }
-        _ => return None, // Temporal / Gen → the general Distinct path
+        // A DATE column keys on its epoch-day count (item 855). Without this arm a Date fell
+        // through to `try_distinct_scan_multi`, whose `ColKeyer` builds a BYTE key per row — and
+        // item 854 then made the Gremlin spelling of the same shape faster than the GQL one,
+        // which is how this was found rather than guessed:
+        //
+        // ```text
+        //   RETURN DISTINCT p.hired   gql 2344us   gremlin 748us   the GQL form 3.1x SLOWER
+        //   RETURN DISTINCT p.score   gql  414us                   the Num arm, for scale
+        // ```
+        //
+        // `days` is in bijection with the rendering `group_key` keys a temporal by (items
+        // 843/847/848), so the classes are the general path's. First-seen order is preserved by
+        // pushing on insert, exactly as the `Str` and `Num` arms do.
+        //
+        // The NULL handling is this path's own and not the Gremlin one's: GQL `DISTINCT p.k`
+        // treats an absent property as a NULL VALUE and emits it once, where `values(k).dedup()`
+        // drops the row. That is the `saw_null` branch every arm here carries.
+        Column::Temporal {
+            kind: crate::temporal::TemporalKind::Date,
+            data,
+            present,
+            ..
+        } => {
+            let mut seen: FnvSet<i32> = FnvSet::default();
+
+            scan_visit(store, label, |i| {
+                if present[i] {
+                    if let crate::temporal::Temporal::Date(d) = data[i] {
+                        if seen.insert(d.days) {
+                            out.push(Value::Temporal(data[i]));
+                        }
+                    }
+                } else if !saw_null {
+                    saw_null = true;
+                    out.push(Value::Null);
+                }
+            });
+        }
+        _ => return None, // other Temporal kinds / Gen → the general Distinct path
     }
     Some(Batch::of(vec![Col::Gen(out)]))
 }

@@ -3926,6 +3926,12 @@ fn distinct_rows_over_a_date_column() {
     let t2 = b.node(&["P"], &[("hired", d("2031-11-30")), ("score", n(1.0))]);
     // A fourth target duplicating t0 exactly, so dedup still has something to do.
     let t3 = b.node(&["P"], &[("hired", d("2024-01-02")), ("score", n(1.0))]);
+    // A fifth P with NO `hired` (item 855). GQL treats an absent property as a NULL VALUE and
+    // emits it ONCE in a DISTINCT, which is what separates this path from Gremlin's
+    // `values(k).dedup()` (that drops the row). A mutant deleting the null branch survived every
+    // test until this node existed, because the fixture gave every P a date. It is NOT wired to
+    // the source, so the hop assertions below are unchanged.
+    b.node(&["P"], &[("score", n(1.0))]);
 
     b.edge(s0, t0, "E");
     b.edge(s0, t1, "E");
@@ -3974,10 +3980,11 @@ fn distinct_rows_over_a_date_column() {
         rows("MATCH (a:S)-[:E]->(b:P) RETURN DISTINCT b.hired AS h"),
         vec!["2024-01-02", "2024-01-03", "2031-11-30"]
     );
-    // And over a bare SCAN, which is the `key_into` path. `(n:P)` is the four targets.
+    // And over a bare SCAN, which is the `key_into` path. `(b:P)` is the four dated targets PLUS
+    // the key-less fifth, whose absent property is one NULL value in the output.
     assert_eq!(
         rows("MATCH (b:P) RETURN DISTINCT b.hired AS h"),
-        vec!["2024-01-02", "2024-01-03", "2031-11-30"]
+        vec!["2024-01-02", "2024-01-03", "2031-11-30", "Null"]
     );
     // Every one of those against the GENERAL path, which `WHERE true` forces (item 570).
     for q in [
