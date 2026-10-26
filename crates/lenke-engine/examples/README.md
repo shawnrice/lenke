@@ -129,6 +129,14 @@ question in its module header — read the header before touching it.
   the tokenizer" was an assumption. It reaches into `packages/gql/src` deliberately (`tokenize` is
   not public, and both halves must come from ONE compilation), so its absolute figures are NOT
   comparable with `parseplan-cost-probe.ts` — only its two arms with each other.
+- **TS-side companion, no Rust twin:** `packages/native/nested-read-ladder-probe.ts` — where do the
+  ~75 ns a row go that make a TS nested read 3.4x a flat one? A ladder of QUERIES (no engine change,
+  no deliberately-wrong arm), each rung reading one stage more than the one below. Answer: reading a
+  RECORD-valued property costs the SAME as a scalar one (−0.8 ns/row), so the whole gap is the FIELD
+  step, 75.8 ns/row. Inside it: `LenkeRecord extends Map` is NOT the cause (a subclassed `Map.get`
+  is 17.5 ns against a plain one's 17.7), and `has+get` costs no more than `get` alone — but a
+  `Map.get` is **4-7x a plain-object property read** (17.7 against 4.3 ns), which prices the
+  representation at ~13 of the 75.8 and leaves ~63 as expression plumbing.
 - `dottedindex_895` — why is a query SLOWER with an index on a dotted key than without one?
   `value/maps`'s indexed arms read `map field meta.city` at **10699.5 us indexed against 2594.8
   unindexed, 4.1x slower**, and the flat twin 306.0 against 253.9. Not a planner bug: at 4 distinct

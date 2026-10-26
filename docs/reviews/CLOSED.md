@@ -26465,3 +26465,26 @@ INDEXED)` — a plain `Expr::Prop` — **1.09x slower**, reproducible to three s
   one- and two-probe forms satisfy it, which is what made the revert safe. Mutation: coalescing at
   the `get`, or dropping the `has` fallback, fails this file and nothing else. **Second refuted
   optimization this window to leave a real guard behind (item 892 was the first).**
+- **MEASURED, and the gap is LOCALISED — the TS nested read's 75.8 ns/row is ALL the field step
+  (item 899).** A ladder of queries with no wrong arms: `p.tier = 'NYC'` 26.5 ns/row, `p.meta =
+'NYC'` (reads a RECORD-valued property, same comparison shape, NO field step) **25.7**, and
+  `p.meta.other = 'NYC'` **101.5**. So reading a record-valued property costs the same as a scalar
+  one (−0.8 ns/row) — `propOf` and the optional chain are free — and the field step is the whole
+  gap. The zero-match control is 4.2 ns/row CHEAPER than a matching scalar, so `recordProp`'s empty
+  result is not what is being measured.
+- **REFUTED — `LenkeRecord extends Map` losing the engine's Map fast path (item 899).** The obvious
+  suspect, and a real JS engine behaviour. Measured: a subclassed `Map.get` is **17.5 ns against a
+  plain one's 17.7** — no penalty.
+- **CONFIRMED BY A SECOND INSTRUMENT — the `has`+`get` pair is free (items 898, 899).** 16.0 ns for
+  `has`+`get` against 17.5 for `get` alone, agreeing with 898's A/B null result (0.96x/1.00x) by a
+  completely different route.
+- **PRICED, NOT ATTEMPTED — records as `Map` rather than plain objects costs 4-7x per read (item
+  899).** 17.7 against 4.3 ns, i.e. ~13 of the field step's 75.8 ns. But `LenkeRecord` is a `Map`
+  subclass _specifically_ so a record is distinguishable from a graph element and a plain object, it
+  keeps keys sorted for canonical JSON, and it is shared by both engines and every codec where
+  byte-identity with the native `Value::Map` is a hard invariant. Not a perf decision to take in a
+  perf tick.
+- **STILL OPEN — ~63 ns/row of expression PLUMBING in the TS nested read (item 899).** The larger
+  half of the field step, after the ~13 ns of representation: the extra closure invocation for the
+  nested `'field'` arm, the `instanceof LenkeRecord` test, and the two-level dispatch. A question
+  about how the expression compiler nests closures, not about records.
