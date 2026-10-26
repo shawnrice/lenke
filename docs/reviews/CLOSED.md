@@ -26685,7 +26685,9 @@ undefined`). None of these is discoverable from the list's definition. (Those ga
 - **STILL OPEN — item 908's fuse-the-two-walks proposal (noted at 909).** Not what shipped. 909 took
   the cheaper half, which needed no restructuring and no decision about which compile-time error
   wins; the fusion still wants the fault-ordering question settled first.
-- **OPEN, PRICED — the 19 compile-time DETECTORS are 25% of planning (item 910).** `compileLinear`
+- **~~OPEN, PRICED — the 19 compile-time DETECTORS are 25% of planning~~ — WITHDRAWN AT ITEM 912:
+  87% of that block is ONE detector (`detectHopProjection`) BUILDING the plan for the route it
+  selected, not probing. The shareable part is 3.6-14%, not 25%. Original note follows. (item 910).** `compileLinear`
   ends by running nineteen independent shape probes (`detectVarLengthCount` …
   `detectGroupedHopAggregate`); its own comment says _"EVERY detector RUNS … not a ladder"_. Measured
   for the first time: **1.955 us, 25%** of planning the big query, **0.414 (17%)** for the simplest
@@ -26725,3 +26727,23 @@ undefined`). None of these is discoverable from the list's definition. (Those ga
   My first run compared `routes-fired.test.ts` against "the whole gql suite", which includes it — so
   it reported 4 and 4 and looked like existing coverage. Remove the new file and run the rest. Same
   error shape as item 897's two-process arms: the thing under test leaking into the baseline.
+- **RETRACTED — item 910's "the 19 detectors are 25% of planning" target (item 912).** Priced per
+  detector: **`detectHopProjection` is 1.7547 us, 70.8% of the block**; the other eighteen are
+  0.032-0.059 us each, a call plus a guard. And that one is not declining — it **FIRES** for the big
+  query (`routes-fired.test.ts`'s instrument says so), so its cost is **plan CONSTRUCTION for the
+  route it selected** (compiling predicates, planning the order, resolving the ends), work
+  `compileClause` would otherwise do. Re-measured with two timer pairs instead of nineteen: big query
+  total 7.703, all 19 **2.098**, hopProjection **1.823 (87%)**, **the other 18 just 0.275**. Across
+  shapes the shareable part is **0.275-0.430 us = 3.6-14%**, not 25% — and `detectHopProjection`
+  declines for **0.042 us** when it does not apply, so there is no expensive-and-fruitless probe to
+  fix. A shape-summary refactor across 19 functions in a 7,000-line file, whose failure mode is a
+  silently disabled shortcut, is not worth a 3.6-14% ceiling. **Do not re-propose it from the block
+  figure.**
+- **METHOD — a BLOCK measurement invites a block-shaped fix (item 912).** Item 910 priced the
+  detectors as a block (1.955 us, 25%) and reasoned about the block, reaching for "share work across
+  all nineteen". Pricing the VARIANTS — the loop's own first instruction — showed 87% of the block is
+  one member and that member is productive. Same lesson as item 902's table-across-spellings, one
+  level up: **the unit you measure in determines the fix you reach for.**
+- **STILL WORTH HAVING — item 911's route assertions, despite 912 (item 912).** They guard nineteen
+  answer-equivalent routes whose pre-existing coverage was UNEVEN (disabling `detectNodeProjection`
+  survived all 2,723 tests), which is worth having whether or not anyone refactors the detectors.
