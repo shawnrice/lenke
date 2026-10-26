@@ -525,6 +525,65 @@ fn values_dedup_over_each_column_representation() {
     assert_eq!(json("g.V().values('nope').dedup().count()"), "[0]");
 }
 
+/// `values(k).dedup()` where a vertex carries a STORED PRESENT NULL — item 858's regression.
+///
+/// THIS IS THE CASE ITEM 854's TEST LACKED, and the cross-engine fuzzer found it on a commit that
+/// changed no code: `g.V().values('age').dedup().count()` answered 1 in one engine and 5 in the
+/// other. A present null and an absent cell BOTH read `!present[i]`, and only `nulls[i]` separates
+/// them — so the fast path item 854 widened from `Dict` to every representation inherited a test
+/// that silently dropped present nulls for the newly admitted types.
+///
+/// TinkerPop keeps a present null as a VALUE and drops an absent property, which
+/// `by_absent_property_filters_present_null_kept` below states for the keying `by()` family. The
+/// fast path cannot emit a NULL into its dedup, so it must DECLINE when the column holds one
+/// rather than skip the row.
+#[test]
+fn values_dedup_declines_on_a_stored_present_null() {
+    let nd = [
+        // Two real ages, one repeated — so the dedup has work either way.
+        r#"{"id":"1","labels":["P"],"props":{"age":29}}"#,
+        r#"{"id":"2","labels":["P"],"props":{"age":31}}"#,
+        r#"{"id":"3","labels":["P"],"props":{"age":29}}"#,
+        // A STORED PRESENT NULL: `values('age')` keeps it as a value.
+        r#"{"id":"4","labels":["P"],"props":{"age":null}}"#,
+        // No `age` at all: dropped.
+        r#"{"id":"5","labels":["P"],"props":{"other":1}}"#,
+    ]
+    .join("\n");
+    let st = crate::ndjson::from_ndjson(&nd).unwrap();
+    let json = |q: &str| {
+        let plan = crate::opt::optimize_indexed(super::parse(q).unwrap(), &st);
+        crate::exec::run_gremlin_json(&plan, &st)
+    };
+
+    // 29, 31 and the null — THREE distinct values. Treating the null as absent answers 2, which
+    // is the shape of the divergence the fuzzer reported.
+    assert_eq!(json("g.V().values('age').dedup().count()"), "[3]");
+
+    let vals = json("g.V().values('age').dedup()");
+
+    assert!(
+        vals.contains("29") && vals.contains("31") && vals.contains("null"),
+        "dedup lost the present null or a value: {vals}"
+    );
+
+    // The same column WITHOUT the null still takes the fast path and answers 2 — so the decline
+    // above is specific to the null and has not simply disabled the arm.
+    let nd2 = [
+        r#"{"id":"1","labels":["P"],"props":{"age":29}}"#,
+        r#"{"id":"2","labels":["P"],"props":{"age":31}}"#,
+        r#"{"id":"3","labels":["P"],"props":{"age":29}}"#,
+    ]
+    .join("\n");
+    let st2 = crate::ndjson::from_ndjson(&nd2).unwrap();
+    let plan2 = crate::opt::optimize_indexed(
+        super::parse("g.V().values('age').dedup().count()").unwrap(),
+        &st2,
+    );
+
+    assert_eq!(crate::exec::run_gremlin_json(&plan2, &st2), "[2]");
+}
+
 /// A keying `by('k')` (group/groupCount/order/dedup/select) over an ABSENT property
 /// FILTERS the traverser (TinkerPop semantics — no null bucket), while a stored PRESENT
 /// null is a value and is KEPT; `project('k').by(absent)` OMITS the key (keeps the row).

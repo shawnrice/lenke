@@ -861,8 +861,9 @@ pub(super) fn try_distinct_value_col(input: &Plan, store: &Store) -> Option<Batc
     // key closure: this function's neighbours in this file record (items 375, 844) that sharing a
     // body across typed arms taxes the arm that was already fast.
     macro_rules! dedup {
-        ($present:expr, $new_seen:expr, $key:expr, $val:expr, $col:expr) => {{
+        ($present:expr, $nulls:expr, $new_seen:expr, $key:expr, $val:expr, $col:expr) => {{
             let present = $present;
+            let nulls = $nulls;
             let mut seen = $new_seen;
             let mut out = Vec::new();
 
@@ -874,6 +875,21 @@ pub(super) fn try_distinct_value_col(input: &Plan, store: &Store) -> Option<Batc
                 let i = id as usize;
 
                 if !present[i] {
+                    // A STORED PRESENT NULL is a VALUE, not an absent cell, and `values(k)` KEEPS
+                    // it where it DROPS an absent one (`by_absent_property_filters_present_null
+                    // _kept` in the gremlin tests states that rule). Both read `!present[i]`, so
+                    // only `nulls[i]` tells them apart — and this path cannot emit a NULL into the
+                    // dedup, so a present null goes to the general path.
+                    //
+                    // THIS IS THE BUG ITEM 858 FIXES. Item 854 widened this arm from `Dict` to
+                    // every representation, inherited the `!present[i]` test unchanged, and so
+                    // silently dropped present nulls for the newly admitted types. The
+                    // cross-engine fuzzer caught it on `g.V().values('age').dedup().count()` —
+                    // one engine 1, the other 5 — on a commit that changed no code.
+                    if nulls[i] {
+                        return None;
+                    }
+
                     if absent_dropped {
                         continue;
                     }
@@ -896,9 +912,10 @@ pub(super) fn try_distinct_value_col(input: &Plan, store: &Store) -> Option<Batc
             dict,
             codes,
             present,
-            ..
+            nulls,
         } => dedup!(
             present,
+            nulls,
             vec![false; dict.len()],
             |seen: &mut Vec<bool>, i: usize| {
                 let c = codes[i] as usize;
@@ -911,8 +928,13 @@ pub(super) fn try_distinct_value_col(input: &Plan, store: &Store) -> Option<Batc
         ),
         // `num_group_bits` is the equivalence the value contract defines (-0.0 with 0.0, NaN
         // with itself), so this is the general path's grouping and not a stricter one.
-        Column::Num { data, present, .. } => dedup!(
+        Column::Num {
+            data,
             present,
+            nulls,
+        } => dedup!(
+            present,
+            nulls,
             FnvSet::<u64>::default(),
             |seen: &mut FnvSet<u64>, i: usize| seen.insert(value::num_group_bits(data[i])),
             |i: usize| data[i],
@@ -923,7 +945,11 @@ pub(super) fn try_distinct_value_col(input: &Plan, store: &Store) -> Option<Batc
         // that borrow and the key cannot outlive `store`, so the macro's typed-closure form does
         // not express this arm. Keying on an owned `GStr` clone would compile and costs a clone
         // per row for nothing.
-        Column::Str { data, present, .. } => {
+        Column::Str {
+            data,
+            present,
+            nulls,
+        } => {
             let mut seen: FnvSet<&str> = FnvSet::default();
             let mut out: Vec<GStr> = Vec::new();
 
@@ -935,6 +961,11 @@ pub(super) fn try_distinct_value_col(input: &Plan, store: &Store) -> Option<Batc
                 let i = id as usize;
 
                 if !present[i] {
+                    // A stored present null is a VALUE — see the macro above (item 858).
+                    if nulls[i] {
+                        return None;
+                    }
+
                     if absent_dropped {
                         continue;
                     }
@@ -949,8 +980,13 @@ pub(super) fn try_distinct_value_col(input: &Plan, store: &Store) -> Option<Batc
 
             Some(Batch::of(vec![Col::Str(out)]))
         }
-        Column::Bool { data, present, .. } => dedup!(
+        Column::Bool {
+            data,
             present,
+            nulls,
+        } => dedup!(
+            present,
+            nulls,
             [false; 2],
             |seen: &mut [bool; 2], i: usize| {
                 let b = usize::from(data[i]);
@@ -967,9 +1003,10 @@ pub(super) fn try_distinct_value_col(input: &Plan, store: &Store) -> Option<Batc
             kind: crate::temporal::TemporalKind::Date,
             data,
             present,
-            ..
+            nulls,
         } => dedup!(
             present,
+            nulls,
             FnvSet::<i32>::default(),
             |seen: &mut FnvSet<i32>, i: usize| match data[i] {
                 crate::temporal::Temporal::Date(d) => seen.insert(d.days),
