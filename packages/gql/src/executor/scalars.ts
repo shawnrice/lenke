@@ -98,7 +98,20 @@ export const cmpKey = (a: string, b: string): number => {
 export const makeRecord = (fields: readonly (readonly [string, unknown])[]): LenkeRecord =>
   LenkeRecord.from(fields);
 
-/** Read field `key` from a record/map, or `null` if absent (three-valued). */
+/**
+ * Read field `key` from a record/map, or `null` if absent (three-valued).
+ *
+ * REJECTED, item 898: the two probes here are NOT worth collapsing into one. A version that called
+ * `get` first and used `has` only to disambiguate `undefined` — strictly fewer probes, and
+ * answer-equivalent (its mutant survives, and so does reverting to this form) — measured **0.96x
+ * and 1.00x** on the two nested-path arms that call this once per row, with the flat controls flat.
+ * A `Map` probe on a small record is too cheap to matter, or the JIT already fuses the pair. The
+ * nested-path cost (~3.4x a flat property read on the same scan) is somewhere else.
+ *
+ * `record-get-probes.test.ts` stays from that attempt: it pins the three-valued contract including
+ * a key stored WITH the value `undefined`, which must read back as `undefined` and not as the
+ * `null` an absent key gives. Nothing tested that before.
+ */
 export const recordGet = (rec: LenkeRecord, key: string): unknown =>
   rec.has(key) ? rec.get(key) : null;
 

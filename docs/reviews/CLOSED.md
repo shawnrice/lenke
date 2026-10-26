@@ -26447,3 +26447,21 @@ INDEXED)` — a plain `Expr::Prop` — **1.09x slower**, reproducible to three s
   building ids as `v${i}` gave every vertex the id `v`, collapsing a 200,000-node fixture to ONE
   node; the timings looked plausible and only the asserted row count caught it. File-based probes
   are unaffected; only inline `-e`. Assert the fixture's own statistic every rep.
+- **REFUTED — collapsing `recordGet`'s two Map probes into one (item 898): 0.96x / 1.00x.** It is
+  `rec.has(key) ? rec.get(key) : null`, two hash probes per read, called once per row by every
+  nested-path query. A one-probe form (`get` first, `has` only to disambiguate `undefined`) is
+  answer-equivalent and measured **0.96x on `nested INDEXED` and 1.00x on `nested unindexed`**, with
+  both flat controls flat. A Map probe on a small record is too cheap to matter, or the JIT fuses
+  the pair. Reverted; numbers recorded next to `recordGet`, because "two lookups where one would do"
+  reads like a defect and measures like nothing.
+- **STILL OPEN — the TS nested-path read is ~3.4x a flat one (items 897, 898).** 15.3 ms against
+  4.99 over 200k rows. Item 898 rules out the record lookup. Unpriced: `propOf`'s
+  `?.properties?.[key]` chain, the extra closure dispatch for the nested `'field'` arm, and whatever
+  `addVertex` does to normalize a nested object into a `LenkeRecord`.
+- **KEPT FROM A REFUTED CHANGE — `record-get-probes.test.ts` (item 898).** Pins `recordGet`'s
+  three-valued contract: present → the value, ABSENT → `null`, and present with the value
+  `undefined` → `undefined`, **not** `null`. That last row was untested; `LenkeRecord` stores values
+  as-is and leaves normalization to callers, so a stored `undefined` is not impossible. Both the
+  one- and two-probe forms satisfy it, which is what made the revert safe. Mutation: coalescing at
+  the `get`, or dropping the `has` fallback, fails this file and nothing else. **Second refuted
+  optimization this window to leave a real guard behind (item 892 was the first).**
