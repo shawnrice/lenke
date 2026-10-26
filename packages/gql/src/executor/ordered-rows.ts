@@ -282,6 +282,108 @@ const boundedTopRows = (rows: Row[], sorts: readonly ColSort[], cap: number): Ro
 };
 
 /**
+ * THE FIRST `cap` ITEMS of the sorted order for a KEYED sequence, without sorting the rest.
+ *
+ * The twin of `boundedTopRows`, for callers that hold opaque items plus a key FUNCTION rather than
+ * rows with resolved columns — specifically the statement-position `<order by and page statement>`,
+ * which sorts the working BINDING table. That clause full-sorted every binding and sliced, so
+ * `MATCH (n:P) ORDER BY n.k LIMIT 10` over 200,000 rows measured **62.4 ms against 9.5** for the
+ * clause-position spelling of the same query (item 868) — a 6.6x gap between two ways of writing
+ * one thing, which the TS spelling probe flagged the moment the group was added.
+ *
+ * Two costs go, not one: the O(n log n) sort becomes O(n log cap), and a loser is discarded as soon
+ * as it is compared, so only `cap` key arrays are retained instead of one per row. Keys are still
+ * evaluated for every item — nothing here knows which will win — so that part is unavoidable.
+ *
+ * THE ANSWER MUST BE THE FULL SORT'S, ITEM FOR ITEM, including ties: `Array.prototype.sort` is
+ * stable, so the sliced full sort breaks ties by ARRIVAL ORDER, and tie order under `ORDER BY` is
+ * OBSERVABLE between the engines (item 605). The arrival index is therefore carried as the final
+ * tiebreak, which makes the heap's order total and selecting the least `cap` under a total order
+ * yield exactly the sort's first `cap`. `compareSort` stays the one comparator, so DESC and NULLS
+ * placement cannot drift from native.
+ */
+export const boundedTopKeyed = <T>(
+  items: readonly T[],
+  keysOf: (item: T) => readonly unknown[],
+  sorts: readonly { readonly descending: boolean; readonly nullsFirst?: boolean | undefined }[],
+  cap: number,
+): T[] => {
+  type Kept = { item: T; keys: readonly unknown[]; at: number };
+  const cmp = (a: Kept, b: Kept): number => {
+    for (const [i, spec] of sorts.entries()) {
+      const c = compareSort(a.keys[i], b.keys[i], spec.descending, spec.nullsFirst);
+
+      if (c !== 0) {
+        return c;
+      }
+    }
+
+    // Arrival order, so the heap's order is the stable sort's total order.
+    return a.at - b.at;
+  };
+  // A MAX-heap: the root is the worst item kept, the one a candidate has to beat.
+  const h: Kept[] = [];
+  const siftUp = (from: number) => {
+    let i = from;
+
+    while (i > 0) {
+      const parent = (i - 1) >> 1;
+
+      if (cmp(h[parent], h[i]) >= 0) {
+        break;
+      }
+
+      const t = h[parent];
+      h[parent] = h[i];
+      h[i] = t;
+      i = parent;
+    }
+  };
+  const siftDown = () => {
+    let i = 0;
+
+    for (;;) {
+      const l = i * 2 + 1;
+      const r = l + 1;
+      let m = i;
+
+      if (l < h.length && cmp(h[m], h[l]) < 0) {
+        m = l;
+      }
+
+      if (r < h.length && cmp(h[m], h[r]) < 0) {
+        m = r;
+      }
+
+      if (m === i) {
+        break;
+      }
+
+      const t = h[m];
+      h[m] = h[i];
+      h[i] = t;
+      i = m;
+    }
+  };
+
+  for (let at = 0; at < items.length; at += 1) {
+    const cand: Kept = { item: items[at], keys: keysOf(items[at]), at };
+
+    if (h.length < cap) {
+      h.push(cand);
+      siftUp(h.length - 1);
+    } else if (cmp(cand, h[0]) < 0) {
+      h[0] = cand;
+      siftDown();
+    }
+  }
+
+  h.sort(cmp);
+
+  return h.map((k) => k.item);
+};
+
+/**
  * Sort rows by resolved output columns, IN PLACE.
  *
  * Goes through `compareSort`, the engine's own comparator, whose doc states "the Rust

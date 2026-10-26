@@ -25831,3 +25831,26 @@ copies before the comment was added.
   `NUM_TOP_K_MIN_NODES - 1`, which underflows in a const context — a catch that depends on how the
   test is spelled, not on what it checks. `saturating_sub` removes the accident so the assertion
   does the work. Prefer a verdict that survives rewording the test.
+- **The TS statement-position sorted LIMIT now selects instead of full-sorting — 1.45x (item
+  868).** `MATCH … ORDER BY k LIMIT 10 RETURN x` full-sorted the whole working binding table to
+  emit ten rows; the projection's `ORDER BY` has had a bounded heap since item 701 and this clause
+  never got one. `boundedTopKeyed` (the keyed twin of `boundedTopRows`, same measured `* 16`
+  admission) takes it from 67.08 ms to 46.12 at 200k, DISJOINT, DESC 71.62 -> 50.27. Controls: the
+  clause spelling cannot be reached by the switch (null control, 1.19x = the noise floor, which is
+  why the claim rests on disjointness) and `LIMIT 50,000` is flat because the gate declines it.
+- **STILL OPEN — the TS sorted-LIMIT spelling gap is NARROWED, not closed (item 868).** The probe
+  reads 4.6x where it read 6.6x. At 43-46 ms against the clause spelling's 9.5, the remainder is
+  materializing the binding table and evaluating keys through a per-row context object; the heap
+  cannot reach either, since keys must be evaluated for every row. **The two engines had this same
+  gap in OPPOSITE directions** (native: clause slow, items 865/866; TS: statement slow) — item 843's
+  rule, twice.
+- **METHOD — a SURVIVING mutant may be an EQUIVALENT mutant, which says nothing about the tests
+  (item 868).** Two of six survived and both are provable no-ops: `cmp` carries an arrival-index
+  tiebreak so it is a total order and `<= 0` cannot differ from `< 0` for distinct items; and a heap
+  keeping `cap + 1` items still holds the true `cap` smallest in its first `cap`, which is all the
+  caller's `slice` reads. Check for equivalence before recording a survivor as a hole, or the next
+  reader hunts for a gap that is not there.
+- **OPEN CONFORMANCE QUESTION — `SKIP` is rejected in STATEMENT position (item 868).**
+  `parsePageClause` accepts `OFFSET` only, while the clause position accepts both `SKIP` and
+  `OFFSET`. ISO's `<offset clause>` admits both spellings, so this may be a gap — unverified
+  against the BNF artifact, and recorded rather than acted on.

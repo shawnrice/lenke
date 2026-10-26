@@ -373,6 +373,40 @@ const GROUPS: [string, readonly string[]][] = [
       'MATCH (n:P) RETURN n.k AS c ORDER BY n.k LIMIT 10',
     ],
   ],
+  [
+    // ADDED AT ITEM 868, because the NATIVE engine had a >=1785x gap on exactly this axis. A
+    // sorted LIMIT can be written with the ORDER BY in STATEMENT position (before RETURN) or in
+    // CLAUSE position (after it). They mean the same thing, but natively they lowered to
+    // different plans — `OrderPage{Scan}` vs `OrderPage{Project{Scan}}` — and only the first
+    // reached the streaming top-K, so item 866 had to lift the second onto the same path. The TS
+    // engine is a separate implementation and item 843's rule applies: whether the same asymmetry
+    // is here is a measurement, not an inference either way.
+    'sorted LIMIT: ORDER BY in STATEMENT vs CLAUSE position (item 868)',
+    [
+      'MATCH (n:P) ORDER BY n.k LIMIT 10 RETURN n.k AS c',
+      'MATCH (n:P) RETURN n.k AS c ORDER BY n.k LIMIT 10',
+    ],
+  ],
+  [
+    'sorted LIMIT DESC: statement vs clause position',
+    [
+      'MATCH (n:P) ORDER BY n.k DESC LIMIT 10 RETURN n.k AS c',
+      'MATCH (n:P) RETURN n.k AS c ORDER BY n.k DESC LIMIT 10',
+    ],
+  ],
+  [
+    // A LOW-CARDINALITY key is where the native win came from: the dictionary's smallest value
+    // bounds the column, so a rank-bounded scan can STOP. The TS engine stores properties per
+    // element with no dictionary, so it has no such bound — this group asks whether the spread
+    // between the two spellings is nonetheless different for a low-cardinality key. Uses the
+    // fixture's existing 7-way `s` rather than adding a property: this fixture is SHARED, and
+    // the comment above records how four added nodes silently changed an unrelated group.
+    'sorted LIMIT on a LOW-CARDINALITY key: statement vs clause',
+    [
+      'MATCH (n:P) ORDER BY n.s LIMIT 10 RETURN n.s AS c',
+      'MATCH (n:P) RETURN n.s AS c ORDER BY n.s LIMIT 10',
+    ],
+  ],
   // THIS GROUP FOUND A 5400x CLIFF AND IS WHY ITEM 286 EXISTS — keep both members.
   //
   // It used to read 0.00ms on both and be skipped under `FLOOR_MS`, because every node in the

@@ -41,6 +41,7 @@ import {
 } from '../executor.js';
 import { hasIncidentEdges } from '../graph-queries.js';
 import { matchPattern } from './matching.js';
+import { boundedTopKeyed } from './ordered-rows.js';
 import { asTruth } from './scalars.js';
 
 export const evalProps = (
@@ -1566,30 +1567,46 @@ export const runLinearClauses = (
         }
 
         let rows = toArray(bindings);
+        const start = resolveCount(clause.skip, params) ?? 0;
 
         if (clause.orderBy.length > 0) {
-          // Key each row once, then a STABLE sort — the same comparator (so the
-          // same total order and NULLS FIRST/LAST) as a projection's ORDER BY.
-          const keyed = rows.map((b: Binding) => ({
-            b,
-            keys: clause.orderBy.map((s) => s.fn({ binding: b, params, graph })),
-          }));
+          const keysOf = (b: Binding): readonly unknown[] =>
+            clause.orderBy.map((s) => s.fn({ binding: b, params, graph }));
 
-          keyed.sort((x, y) => {
-            for (const [i, sortItem] of clause.orderBy.entries()) {
-              const c = compareSort(x.keys[i], y.keys[i], sortItem.descending, sortItem.nullsFirst);
+          // A SMALL WINDOW SELECTS RATHER THAN SORTS (item 868), the same lever item 701 applied
+          // to the projection's ORDER BY and the same measured `* 16` admission. Without it this
+          // clause full-sorted the whole working table to emit a handful of rows: `MATCH (n:P)
+          // ORDER BY n.k LIMIT 10` over 200,000 bindings measured 62.4 ms against 9.5 for the
+          // CLAUSE-position spelling of the same query, a 6.6x gap between two ways of writing
+          // one thing. The native engine had the same defect on this axis in the opposite
+          // direction (items 865/866), which is item 843's rule twice over: same gap, different
+          // cause, neither engine's version inferable from the other's.
+          if (take !== undefined && (start + take) * 16 <= rows.length) {
+            rows = boundedTopKeyed(rows, keysOf, clause.orderBy, start + take);
+          } else {
+            // Key each row once, then a STABLE sort — the same comparator (so the
+            // same total order and NULLS FIRST/LAST) as a projection's ORDER BY.
+            const keyed = rows.map((b: Binding) => ({ b, keys: keysOf(b) }));
 
-              if (c !== 0) {
-                return c;
+            keyed.sort((x, y) => {
+              for (const [i, sortItem] of clause.orderBy.entries()) {
+                const c = compareSort(
+                  x.keys[i],
+                  y.keys[i],
+                  sortItem.descending,
+                  sortItem.nullsFirst,
+                );
+
+                if (c !== 0) {
+                  return c;
+                }
               }
-            }
 
-            return 0;
-          });
-          rows = keyed.map((r) => r.b);
+              return 0;
+            });
+            rows = keyed.map((r) => r.b);
+          }
         }
-
-        const start = resolveCount(clause.skip, params) ?? 0;
 
         rows = rows.slice(start, take === undefined ? undefined : start + take);
         bindings = rows;
