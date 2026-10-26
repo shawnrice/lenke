@@ -21539,7 +21539,7 @@ last component is two nested-map lookups; only a flat per-type index removes the
 surface is swept** — each of the three carries a snapshot-format or public-API consequence and is a
 decision, not a 60-second iteration.
 
-## 797 — ⚠️ OPEN, NEW: TS **GQL** is 2.24x its own **Gremlin** twin on a filtered node count, both on their fast paths. And the TS spelling probe has NO cross-language group
+## 797 — ⚠️ OPEN, RE-PRICED at item 926 (the scaffolding it blames is **9.16 ns a vertex, not 18-20**): TS **GQL** is 2.24x its own **Gremlin** twin on a filtered node count, both on their fast paths. And the TS spelling probe has NO cross-language group
 
 **OPEN TARGET, diagnosed and located (no change).** The fourth instrument, `bun run bench:gremlin`,
 was the last unrun this session — and unlike items 789-796's six candidates, this one is not already
@@ -23527,7 +23527,7 @@ two items.
 Gates: `cargo build --release` 0; `git status` clean; no engine change in this item. `bench_all` run
 alone with nothing else on the machine.
 
-## 832 — ⚠️ OPEN, NEW: the TS scalar projection decomposed — the engine's own machinery is **30.8 of 55.1 ns a row (56%)**, and a hand loop does the same job in 24.3
+## 832 — ~~⚠️ OPEN~~ **the lever it named SHIPPED at item 835** (1.61x on two columns, 1.26x on one), extended at 838 and refused at 839 for the per-edge sites: the TS scalar projection decomposed — the engine's own machinery was **30.8 of 55.1 ns a row (56%)**, and a hand loop did the same job in 24.3
 
 **MEASUREMENT, no engine change** (a temporary probe, reverted). Item 827 measured
 `MATCH (n:User) RETURN n.name AS k` at 52.5-55.6 ns/row in TS against **7.4-7.5 native** — 7x, flat
@@ -27068,3 +27068,33 @@ p` at **1.54x FASTER** and `query/shortest repeat-group unread` at **0.81x slowe
 - **STALE HEADER FIXED — item 798 was marked ⚠️ OPEN and item 799 had already closed it** (1.73x /
   2.11x, param now costing what its literal costs). Same class as the five item 913 corrected; a
   list that says OPEN about settled work is the failure it exists to prevent.
+- **ITEM 798'S DECOMPOSITION RE-PRICED AND IT IS STALE IN BOTH HALVES (item 926).** It recorded
+  "~18-20 ns is per-VERTEX scaffolding and 2-4 ns is the predicate". At HEAD the FLOOR (`WHERE true`)
+  is **9.16 ns a vertex** — tight at 1.03x over three alternated rounds — and the predicate adds
+  **4.2-10.6**. Totals moved with it: inline 19.7 → 13.40, `=` 22.0 → 15.34, `> $a` 45.4 → 19.76.
+  Three changes landed after 798 was measured (799's compile-time param gate, 803's dropped binding
+  write, 835's direct-read projection), which is why item 261's rule exists. **So item 801's "its own
+  tick" lever on the ~2.1x cross-surface gap is about HALF the size the list carries** — price
+  against 9.16, not 18-20.
+- **Item 799's param parity CONFIRMED at HEAD, and my first comparison was wrong (item 926).** `> $a`
+  (19.76) against `= 28` (15.34) looks like a 1.29x param residual; it is not. The arms differed in
+  OPERATOR and in SELECTIVITY (135,542 rows against 2,222). The matched pair — same operator, same
+  bound, identical answers — reads **0.98x** (literal 18.95, param 18.64, readings interleaved).
+  `predicate-scaffold-probe.ts` asserts both arms answer identically before printing a ratio, for
+  exactly this reason.
+- **`count(*)` with no predicate is NOT a floor — it is O(1) (item 926).** Answered from the label
+  bucket's length: **0.01 ns/vertex**, a series of literal zeros. Item 801 hit this comparing
+  surfaces and `spelling-probe.ts` keeps `FLOOR_MS` for it. **`WHERE true` is the floor** (item 570's
+  reason for having it): it runs the filter machinery per vertex and keeps every row.
+- **Selectivity is NOT a confound for a filtered COUNT — measured, against expectation (item 926).**
+  Comparisons cost 17.5-19.9 ns whether they keep 2,222 rows or 200,000, so a cmp-vs-eq difference is
+  the OPERATOR and not the survivors. Checked rather than assumed in either direction.
+- **HARNESS — zsh does NOT word-split an unquoted parameter, and the failure was silent (item 926).**
+  `for s in $ORDER` ran ONE iteration with the whole string as `A_SHAPE`; the probe threw, `tail -1`
+  captured Bun's panic banner, and the analysis printed a header with no rows. Use `${=ORDER}` **and
+  make the analysis exit non-zero when fewer shapes parse than expected.** Third instance this
+  session of a broken check returning a reassuring answer instead of failing, after the `noclobber`
+  append and the sweep comparator.
+- **STALE HEADER FIXED — item 832 was marked ⚠️ OPEN and the lever it named shipped at item 835**
+  (1.61x / 1.26x), was extended at 838 and refused at 839 for the per-edge sites. Second such fix
+  this session after 798's.
