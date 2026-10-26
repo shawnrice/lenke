@@ -148,6 +148,26 @@ ARMS.parseBig = (n) => {
 
   return sink;
 };
+// ITEM 885: the fix the slope pointed at, measured on these arms. The tokenizer declared its
+// two operator tables (8 keys and 20 keys) as object literals INSIDE the per-character loop, so
+// it allocated two objects for every character of query text, and it built a 2-character
+// lookahead string for every character whether or not one could start a multi-char token.
+// Hoisting the tables to module scope and gating the lookahead on the six characters that can
+// begin a multi-character token, min of three ORDER-ALTERNATED rounds, 20k ops:
+//
+//     arm         chars     pre      post     ratio
+//     parseTiny      24    1.781    1.546     1.15x
+//     parseOnly      47    3.393    2.433     1.39x
+//     parseBig      158   10.547    7.230     1.46x
+//     textOnly        -    0.023    0.023     flat  (the control: it never calls parse)
+//
+// The win GROWS with input size, which is the signature of a per-character fix and is why the
+// slope was worth measuring first. Refitting: 64.2 -> 42.4 ns/char marginal, so the gap to
+// native's 22.4 closes from 2.9x to 1.9x. The remaining 20 ns a character is still the target.
+//
+// Each arm asserted itself two ways before running: the source's TWO_CHAR count (pre 0, post 4)
+// and the built bundle's sha256, which had to DIFFER between arms and match within one —
+// identifiers are minified, so the source grep alone cannot see whether the build picked it up.
 ARMS.sizes = () => {
   console.log(
     `  lengths: tiny=${TINY.length} insert=${freshText(1).length} big=${big(1).length} chars`,

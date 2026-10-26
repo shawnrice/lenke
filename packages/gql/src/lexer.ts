@@ -237,6 +237,60 @@ const readEscape = (src: string, i: number): { text: string; next: number } => {
   return { text: esc, next: i + 2 };
 };
 
+// THE TWO OPERATOR TABLES, AT MODULE SCOPE (item 885).
+//
+// Both used to be object literals declared INSIDE the per-character loop, so tokenizing a query
+// allocated an 8-key object AND a 20-key object for EVERY CHARACTER. They are pure data with no
+// capture, so hoisting them changes allocation and nothing else.
+//
+// Item 884 measured the TS parser at 64.2 ns a character against native's 22.4, uniform across
+// three input sizes — so the cost was per-character work, and this is some of that work.
+const TWO_CHAR: Readonly<Record<string, TokenType>> = {
+  '->': 'rarrow',
+  '<-': 'larrow',
+  '<~': 'ltilde',
+  '~>': 'tilder',
+  '<>': 'neq',
+  '<=': 'lte',
+  '>=': 'gte',
+  '||': 'concat',
+};
+
+const SINGLE: Readonly<Record<string, TokenType>> = {
+  '(': 'lparen',
+  ')': 'rparen',
+  '[': 'lbracket',
+  ']': 'rbracket',
+  '{': 'lbrace',
+  '}': 'rbrace',
+  ':': 'colon',
+  '.': 'dot',
+  ',': 'comma',
+  '|': 'pipe',
+  '&': 'amp',
+  '!': 'bang',
+  '%': 'percent',
+  '+': 'plus',
+  '*': 'star',
+  '/': 'slash',
+  '-': 'dash',
+  '~': 'tilde',
+  '=': 'eq',
+  '<': 'lt',
+  '>': 'gt',
+};
+
+/**
+ * Whether `c` can BEGIN a two- or three-character token — a comment opener (`//`, `--`, `/*`), one
+ * of `TWO_CHAR`'s keys, or `<->`.
+ *
+ * Only for these does the scanner need to look ahead, and looking ahead means building a short
+ * string. Gating on this keeps that allocation off the common path — letters, digits and spaces,
+ * which are most of a query.
+ */
+const startsMulti = (c: string): boolean =>
+  c === '/' || c === '-' || c === '<' || c === '>' || c === '~' || c === '|';
+
 // A hand-written scanner: one long switch over source characters. Splitting it
 // would scatter the token rules and hurt readability more than the length costs.
 // eslint-disable-next-line complexity, max-statements
@@ -257,7 +311,8 @@ export const tokenize = (src: string): Token[] => {
       continue;
     }
 
-    const two = src.slice(i, i + 2);
+    // Only build the lookahead string when this character can START a multi-character token.
+    const two = startsMulti(c) ? src.slice(i, i + 2) : '';
 
     // Comments (ISO/IEC 39075 §5.2): `//` and `--` line comments, `/* */`
     // block comments. Note `--` is a comment, NOT an undirected edge — that is
@@ -287,24 +342,14 @@ export const tokenize = (src: string): Token[] => {
     }
 
     // Three-char operators (greedy: `<->` must beat `<-` and `<`).
-    if (src.slice(i, i + 3) === '<->') {
+    if (c === '<' && src.slice(i, i + 3) === '<->') {
       push('lrarrow', '<->', i);
       i += 3;
       continue;
     }
 
-    // Two-char operators.
-    const twoChar: Record<string, TokenType> = {
-      '->': 'rarrow',
-      '<-': 'larrow',
-      '<~': 'ltilde',
-      '~>': 'tilder',
-      '<>': 'neq',
-      '<=': 'lte',
-      '>=': 'gte',
-      '||': 'concat',
-    };
-    const twoType = twoChar[two];
+    // Two-char operators (table hoisted to module scope — see TWO_CHAR).
+    const twoType = two === '' ? undefined : TWO_CHAR[two];
 
     if (twoType) {
       push(twoType, two, i);
@@ -312,34 +357,11 @@ export const tokenize = (src: string): Token[] => {
       continue;
     }
 
-    // Single-char punctuation/operators.
-    const single: Record<string, TokenType> = {
-      '(': 'lparen',
-      ')': 'rparen',
-      '[': 'lbracket',
-      ']': 'rbracket',
-      '{': 'lbrace',
-      '}': 'rbrace',
-      ':': 'colon',
-      '.': 'dot',
-      ',': 'comma',
-      '|': 'pipe',
-      '&': 'amp',
-      '!': 'bang',
-      '%': 'percent',
-      '+': 'plus',
-      '*': 'star',
-      '/': 'slash',
-      '-': 'dash',
-      '~': 'tilde',
-      '=': 'eq',
-      '<': 'lt',
-      '>': 'gt',
-    };
+    // Single-char punctuation/operators (table hoisted to module scope — see SINGLE).
     // A `.` immediately followed by a digit is a leading-dot float (`.5`), not
     // the property-access dot — let it fall through to the number scanner below.
     const dotNumber = c === '.' && isDigit(src[i + 1] ?? '');
-    const singleType = dotNumber ? undefined : single[c];
+    const singleType = dotNumber ? undefined : SINGLE[c];
 
     if (singleType) {
       push(singleType, c, i);

@@ -26148,3 +26148,23 @@ p.flag` 4.51x (item 872).** Only the comparison spelling had one: `= true` lower
 - **METHOD — one size cannot tell "slower per character" from "large fixed setup" (item 884).**
   Item 883's single point was consistent with both, and they have OPPOSITE fixes (the tokenizer
   versus the 96 closures). Measure at three sizes and fit the slope before choosing what to change.
+- **SHIPPED — the TS tokenizer allocated two objects and a string PER CHARACTER (item 885): 1.46x.**
+  `tokenize`'s 8-key and 20-key operator tables were object literals INSIDE the per-character loop,
+  and `src.slice(i, i + 2)` plus a `<->` slice built two short strings per character. Tables hoisted
+  to module scope; lookahead gated on the six characters that can begin a multi-char token
+  (`/ - < > ~ |`). Min of three order-alternated rounds: **1.46x at 158 chars, 1.39x at 47, 1.15x at
+  24**, control (`textOnly`, never calls parse) flat at 0.023. The win GROWING with size is the
+  signature of a per-character fix. Slope refits **64.2 → 42.4 ns/char**, closing the gap to native's
+  22.4 from 2.9x to 1.9x.
+- **STILL OPEN — the TS parser's remaining ~20 ns a character (item 885).** After 885 the TS parser
+  is 42.4 ns/char against native's 22.4, 1.9x. The per-character allocations named in 884 are gone,
+  so the next candidate is how the scan READS characters (string indexing vs `charCodeAt`) and what
+  each token object costs — not the tables, which are now module-scope.
+- **METHOD — an A/B whose probe imports from `dist` must assert the BUILD, not just the source
+  (item 885).** Identifiers are minified, so grepping the bundle for a new symbol finds nothing even
+  when the change is in. Assert the source's symbol count AND the bundle's hash, requiring it to
+  differ between arms and match within one.
+- **METHOD — `eslint-disable-next-line` is positional, and inserting above a function silently
+  moves it (item 885).** Hoisting a const block to just above `tokenize` put it between the
+  suppression and the function; lint then failed on `tokenize`'s pre-existing complexity, which
+  reads like the change caused it.
