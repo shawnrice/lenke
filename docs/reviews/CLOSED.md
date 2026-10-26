@@ -25966,3 +25966,22 @@ p.flag` 4.51x (item 872).** Only the comparison spelling had one: `= true` lower
   `hasPredicate`** — that function's doc records six of seven emptiness checks once listing only
   two of `CPredicate`'s three fields, producing a WRONG ANSWER, because a skipped predicate filter
   returns a SUPERSET that no fixture lacking the spelling can catch.
+- **`WHERE n.flag` now lifts into `truthProps` — 2.25x, and CONVERGED with `= true` (item 875).**
+  `directEqProps` declined its whole chain on the first non-`compare` conjunct, so a bare property
+  fell to the generic evaluator (7.467 ms against 3.315 at 200k); it now lifts into a third list
+  read off the element. **Not `eqProps` with a `true` value** — a property in boolean context is
+  DYNAMIC and a non-boolean must RAISE, so the gate applies `asTruth`. Seven shapes compared
+  against the pre-lift build, both `E_INVALID_VALUE` raises included: identical. Three controls
+  (`= true`, a numeric equality, `WHERE true`) flat. Touches `hasPredicate` and `mergeFarPreds`
+  too — a missed list returns a silent SUPERSET.
+- **`mergeFarPreds`'s `truthProps` merge is UNREACHABLE today, measured not assumed (item 875).**
+  Its mutant survives. The clause side cannot carry one (`splitFarConjuncts` requires
+  `truthCannotRaise`, and a bare property can raise — correct, since a raising conjunct must not be
+  hoisted); the inline side can in principle but is intercepted upstream (instrumented: 4 entries
+  across the whole GQL suite, `clause.truthProps` undefined every time; three hand-built inline
+  spellings did not enter it). Kept as the precondition for when the lift widens, documented as
+  unreachable rather than as tested.
+- **METHOD — a SELECTIVE inline constraint hides a dropped clause predicate (item 875).** The first
+  hop fixture used `{ok: true}` inline, which filtered to the right count by itself, so deleting
+  the clause predicate changed nothing. Make the inline constraint NON-selective (`{tag: 1}` on
+  every neighbour) when the assertion is about the clause predicate surviving a merge.

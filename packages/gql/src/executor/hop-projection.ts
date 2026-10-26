@@ -501,7 +501,9 @@ const liftFarOnlyClause = (where: Expr, farVar: string): CPredicate | undefined 
     return undefined;
   }
 
-  return (lifted.eqProps?.length ?? 0) > 0 || (lifted.cmpProps?.length ?? 0) > 0
+  return (lifted.eqProps?.length ?? 0) > 0 ||
+    (lifted.cmpProps?.length ?? 0) > 0 ||
+    (lifted.truthProps?.length ?? 0) > 0
     ? lifted
     : undefined;
 };
@@ -524,6 +526,24 @@ const mergeFarPreds = (inline: CPredicate, clause: CPredicate): CPredicate => ({
   ...(inline.cmpProps === undefined && clause.cmpProps === undefined
     ? {}
     : { cmpProps: [...(inline.cmpProps ?? []), ...(clause.cmpProps ?? [])] }),
+  // `truthProps` is merged here because forgetting it would be the exact failure `hasPredicate`'s
+  // doc records: a dropped predicate list returns a SUPERSET, and no correctness test on a
+  // fixture lacking the spelling can see it. Added with the list itself (item 875) rather than
+  // left for a later reader to notice.
+  //
+  // IT IS CURRENTLY UNREACHABLE, and that was measured rather than assumed — its mutant (delete
+  // these three lines) survives. Two independent reasons, one per side of the merge. The CLAUSE
+  // side cannot carry one: `splitFarConjuncts` admits a conjunct only if `truthCannotRaise`, and
+  // a bare property can raise (`asTruth` on a non-boolean), so it never enters the hoisted
+  // bucket — which is correct, not an oversight. The INLINE side can in principle
+  // (`closedFarPred` runs the same `compilePredicate`), but the shapes that would exercise it are
+  // intercepted upstream: instrumented, this function is entered 4 times across the whole GQL
+  // suite and `clause.truthProps` is `undefined` every time, and three hand-built inline spellings
+  // did not enter it at all. So this is a correctness precondition kept live for when the lift
+  // widens, not a line any current query depends on.
+  ...(inline.truthProps === undefined && clause.truthProps === undefined
+    ? {}
+    : { truthProps: [...(inline.truthProps ?? []), ...(clause.truthProps ?? [])] }),
 });
 
 /**

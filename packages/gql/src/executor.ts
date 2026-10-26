@@ -4387,6 +4387,25 @@ export type CPredicate = {
    * for a generality only this list needs.
    */
   cmpProps?: readonly CCmpProp[];
+  /**
+   * Keys of `<ownVar>.<key>` conjuncts that stand ALONE as a boolean predicate (`WHERE n.flag`),
+   * read off the element like `eqProps`/`cmpProps` instead of through the binding `Map`.
+   *
+   * A third list for the reason `cmpProps` gives for being the second one: these carry no value
+   * side and no operator at all, so folding them in would make the tuned equality path pay for a
+   * shape that needs neither field.
+   *
+   * NOT `eqProps` with a `true` right-hand side, and that is a correctness condition rather than
+   * tidiness. A property in boolean context is DYNAMIC under the static boolean-context check, so
+   * a non-boolean value must RAISE; a lifted equality would silently fail to match instead, which
+   * changes which queries error. The gate loop therefore applies `asTruth` and keeps the raise.
+   *
+   * Item 875. Item 874 measured why this exists: `directEqProps` declines its whole chain on the
+   * first conjunct that is not a `compare`, so `WHERE n.flag` fell to the generic evaluator at
+   * 20,000 `prop`-closure calls per 20,000 vertices where `WHERE n.flag = true` made ZERO — a
+   * comparison never reaches `compileExpr` at all.
+   */
+  truthProps?: readonly string[];
 };
 
 /** A lifted ordering comparison: the property, the operator, and its closed right-hand side. */
@@ -4568,7 +4587,7 @@ const compileProps = (props: readonly PropertyConstraint[] | undefined): CProp[]
 const directEqProps = (
   where: Expr,
   ownVar: string | undefined,
-): { eq: CProp[]; cmp: CCmpProp[]; residual: Expr | undefined } | null => {
+): { eq: CProp[]; cmp: CCmpProp[]; truth: string[]; residual: Expr | undefined } | null => {
   if (ownVar === undefined) {
     return null;
   }
@@ -4580,8 +4599,20 @@ const directEqProps = (
   const conjuncts = where.kind === 'and' ? where.items : [where];
   const eq: CProp[] = [];
   const cmp: CCmpProp[] = [];
+  const truth: string[] = [];
 
   for (const conjunct of conjuncts) {
+    // A BARE PROPERTY standing alone as the predicate (`WHERE n.flag`), which this used to
+    // decline along with the whole chain — it is not a `compare`. Item 874 counted the cost of
+    // that: the generic evaluator does a binding `Map` lookup and a closure call per scanned
+    // vertex, where a lifted conjunct reads the element directly, and the two spellings of this
+    // one question measured 2.02x apart. `truthProps` carries no value side, so there is nothing
+    // to check for closedness; the variable check is the whole precondition.
+    if (conjunct.kind === 'prop' && conjunct.variable === ownVar) {
+      truth.push(conjunct.key);
+      continue;
+    }
+
     if (conjunct.kind !== 'compare') {
       return null;
     }
@@ -4626,7 +4657,7 @@ const directEqProps = (
     eq.push({ key: pc.key, value: compileExpr(pc.value) });
   }
 
-  if (eq.length === 0 && cmp.length === 0) {
+  if (eq.length === 0 && cmp.length === 0 && truth.length === 0) {
     return null;
   }
 
@@ -4637,7 +4668,7 @@ const directEqProps = (
   // `direct.residual` because the shape is what a future MIXED chain would need: item 259 made
   // reordering a FILTER's conjuncts unobservable, so lifting the equalities and leaving the rest
   // is now sound where it previously was not, and that is the next step rather than this one.
-  return { eq, cmp, residual: undefined };
+  return { eq, cmp, truth, residual: undefined };
 };
 
 /**
@@ -4667,6 +4698,7 @@ export const hasPredicate = (pred: CPredicate): boolean =>
   pred.props.length > 0 ||
   pred.where !== undefined ||
   (pred.eqProps?.length ?? 0) > 0 ||
+  (pred.truthProps?.length ?? 0) > 0 ||
   (pred.cmpProps?.length ?? 0) > 0;
 
 export const compilePredicate = (
@@ -4693,6 +4725,7 @@ export const compilePredicate = (
     where: generic === undefined ? undefined : filterPredicate(generic),
     ...(direct === null || direct.eq.length === 0 ? {} : { eqProps: direct.eq }),
     ...(direct === null || direct.cmp.length === 0 ? {} : { cmpProps: direct.cmp }),
+    ...(direct === null || direct.truth.length === 0 ? {} : { truthProps: direct.truth }),
   };
 };
 
@@ -5440,6 +5473,19 @@ export const satisfies = (
   if (pred.cmpProps !== undefined) {
     for (const { key, op, value } of pred.cmpProps) {
       if (compareTruth(op, COMPARE[op], propOf(element, key), value(env)) !== true) {
+        return false;
+      }
+    }
+  }
+
+  // A bare property standing alone as a boolean predicate (item 875). `asTruth` is the SAME
+  // function the generic `where` below goes through, so this is a cheaper route to an identical
+  // answer — including the RAISE on a non-boolean, which is the reason these are not lifted as
+  // an equality against `true`. A null or absent cell is UNKNOWN and a filter keeps only TRUE,
+  // so it drops here exactly as it does there.
+  if (pred.truthProps !== undefined) {
+    for (const key of pred.truthProps) {
+      if (asTruth(propOf(element, key)) !== true) {
         return false;
       }
     }
