@@ -30,6 +30,25 @@ const DEG = Number(process.env.A_DEG ?? 5);
 const REPS = 9;
 const DROP = 2;
 
+// ITEM 890 RESULT — a REFUTATION, kept so the rewrite is not re-attempted. Item 879 attributed
+// the ~131 ms residual above the sort floor to this file's scaffolding (1M wrapper objects, four
+// passes). Replacing it with an index permutation over a flat key array, min of three
+// ORDER-ALTERNATED rounds at 200k vertices x degree 5:
+//
+//     arm                 pre     post    post2  post/pre
+//     engineOrdered    387.30   373.30   370.67     1.04x   <- the target
+//     engineValues     171.61   170.63   173.80     1.01x   <- control (no order())
+//     rawSortNum        88.47    87.98    87.57     1.01x   <- the floor, unreachable
+//     engineHop        144.80   139.82   144.00     1.04x   <- CONTROL, moved the SAME 1.04x
+//
+// `post2` drops the explicit arrival tiebreak (answer-equivalent: ES2019 requires a stable sort
+// and the index array is built in arrival order) and is indistinguishable from `post`.
+//
+// The target's 1.04x equals an unreachable control's drift, so nothing was measured. What IS
+// established: the wrapper objects and the extra passes are ~11% of the residual (14 ms of 127),
+// so 879's attribution was wrong and the remaining ~89% is unpriced — `evalBy` + `project` as 2M
+// calls, `[...stream]` materializing 1M traversers, and `compareTotal` over two `unknown` loads
+// ~20M times.
 const g = new Graph();
 const verts: unknown[] = [];
 

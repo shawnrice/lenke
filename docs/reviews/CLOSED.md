@@ -26263,3 +26263,25 @@ p.flag` 4.51x (item 872).** Only the comparison spelling had one: `= true` lower
   `'score'.toLowerCase()` in a loop over a literal measures the fold, not the call — same trap as
   the libm constants. Why the lexer's calls cost ~20.5 ns each and the parser's ~9.8 is STILL
   UNEXPLAINED; do not repeat the guess as fact.
+- **REFUTED — the index-permutation sort for `order()` (item 890): 1.04x, matched exactly by an
+  unreachable control.** Item 879 named this fix and priced it at ~131 ms. Built as specified (keys
+  in one flat array, the sort permuting indexes, two passes instead of four, no wrapper objects):
+  target `engineOrdered` 387.30 -> 373.30 (**1.04x**) while `engineHop` — a bare hop with no sort,
+  which the change cannot reach — moved 144.80 -> 139.82, **also 1.04x**. Reverted; tree
+  byte-identical. The explicit-arrival-tiebreak and stability-inherited variants measured
+  identically (1.04x both), so that design question is moot too.
+- **REFUTED ATTRIBUTION — item 879's ~131 ms residual is NOT the wrapper objects and passes (item
+  890).** The residual reproduces (~127 ms = 216 ms of `order()` minus the 88 ms floor), but
+  removing 1M wrapper objects and two of four passes recovers **~14 ms, about 11%**. The other ~89%
+  is unpriced, with three candidates: `evalBy` + `project` as 2M calls per query, `[...stream]`
+  materializing 1M traversers, and how `compareTotal` is REACHED (item 878 measured that comparator
+  at 87.05 on a raw number array — the same as a numeric one — so the function is not the cost).
+  Price those before touching `sortByBys` again.
+- **METHOD — a mutant that changes TWO things measures neither (item 890).** A "fuse the two
+  passes" mutant also used a different error message, and the element-fault test matches on message
+  text, so it reported CAUGHT. With the real message preserved it SURVIVES: the two-pass phase
+  order (an `evalBy` throw must win over the element fault) is guarded by construction only, by no
+  test. Isolate one change per mutant, exactly as A/B arms must.
+- **CONFIRMED USEFUL — item 879's arrival-order assertion (item 890).** The `desc`-tiebreak mutant
+  was caught by precisely one test: the tag-sequence comparison 879 added. A flipped tie group is a
+  correctly-sorted result, so a key-set assertion cannot see it.

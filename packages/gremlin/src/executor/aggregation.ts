@@ -198,6 +198,23 @@ const sortByBys = <T>(
   //     arguments, so nothing rests on `compareTotal` being antisymmetric;
   //   - the sort is still `Array.prototype.sort` over one object per item, so it is still STABLE
   //     and ties keep arrival order — which is observable and compared against native.
+  // REJECTED, item 890: do NOT rewrite this to sort an INDEX PERMUTATION over a flat key array.
+  //
+  // Item 879 priced the residual above the sort floor at ~131 ms and attributed it to the
+  // scaffolding here — one `{item, key}` object per item, an element-check pass, a `filter` pass
+  // allocating a second array, and a `map` pass allocating a third. It was built: keys in one flat
+  // array, the sort permuting indexes into it, two passes instead of four, no wrapper objects.
+  //
+  // It recovers ~14 ms of the ~127, and the 1.04x it measures on the target is EXACTLY what a
+  // control the change cannot reach (a bare hop, no sort) drifted in the same rounds. An explicit
+  // arrival tiebreak and the stability-inherited form measured identically (1.04x both), so that
+  // design question is moot as well.
+  //
+  // So 879's ATTRIBUTION is refuted, which is the useful part: the wrapper objects and the extra
+  // passes are ~11% of the residual, and the other ~89% is elsewhere — `evalBy` plus `project`
+  // being 2M closure/switch calls, `[...stream]` materializing 1M traversers, and `compareTotal`
+  // over two `unknown` loads ~20M times are the unpriced candidates. Do not re-attempt this
+  // rewrite; price those first. See packages/native/order-cost-probe.ts.
   if (bys.length === 1) {
     const [by] = bys;
     const descending = (by.direction ?? (desc ? 'desc' : 'asc')) === 'desc';
