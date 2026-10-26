@@ -361,15 +361,21 @@ const suite = nativeReady ? describe : describe.skip;
 
 // A tiny two-vertex, one-edge graph so property access, record fields, edge
 // patterns, and aggregates over rows can all be fuzzed.
+// `nu` (item 859) holds a VALUE on vertices 1/3/6, a STORED PRESENT NULL on 2/4, and is ABSENT on
+// 5 — the three-way distinction that `present[i]`, `nulls[i]` and `present_at(i)` answer
+// differently, and the axis on which item 858 shipped a wrong answer. Every other property here is
+// either always present or plainly absent, so before this column no generated GQL query could
+// distinguish "no cell" from "a cell holding null". The gremlin fuzzer's own fixture has carried
+// `"lang":null` and `"age":null` all along, which is why IT caught item 858 and this one could not.
 const NDJSON = [
-  '{"type":"node","id":"1","labels":["T"],"properties":{"n":3,"s":"a","x":-1,"st":"p","d":{"@date":"2024-01-02"},"m":{"k":1,"j":"q"}}}',
-  '{"type":"node","id":"2","labels":["T"],"properties":{"n":7,"s":"z","x":4,"d":{"@date":"1999-12-31"},"m":{"k":2,"j":"r"}}}',
+  '{"type":"node","id":"1","labels":["T"],"properties":{"n":3,"s":"a","x":-1,"st":"p","nu":5,"d":{"@date":"2024-01-02"},"m":{"k":1,"j":"q"}}}',
+  '{"type":"node","id":"2","labels":["T"],"properties":{"n":7,"s":"z","x":4,"nu":null,"d":{"@date":"1999-12-31"},"m":{"k":2,"j":"r"}}}',
   // Vertex 3 carries TWO labels, so `(n:T)` and `(n:U)` must BOTH find it. With
   // every vertex single-labelled, "match any label" and "match the first label"
   // are indistinguishable, and a label bug hides — which is how native's Gremlin
   // `hasLabel` matched only the first label for a long time without any fuzzer
   // noticing.
-  '{"type":"node","id":"3","labels":["T","U"],"properties":{"n":5,"s":"m","x":2,"st":"w","d":{"@date":"2024-01-03"},"m":{"k":3,"j":"s"}}}',
+  '{"type":"node","id":"3","labels":["T","U"],"properties":{"n":5,"s":"m","x":2,"st":"w","nu":5,"d":{"@date":"2024-01-03"},"m":{"k":3,"j":"s"}}}',
   '{"type":"edge","id":"e1","labels":["E"],"from":"1","to":"2","properties":{"w":2}}',
   // ...and edge e2 carries TWO types, for the same reason on the edge side. The
   // label indexes bucket an edge under every type it carries, so anything that
@@ -409,9 +415,9 @@ const NDJSON = [
   // byte length, which `size()` and `substring()` both depend on), vertex 5's is EMPTY, and
   // vertex 6's is long enough to cross any short-string threshold. Edges keep them reachable
   // from a traversal rather than only from a scan.
-  '{"type":"node","id":"4","labels":["T"],"properties":{"n":11,"s":"😀","x":0,"d":{"@date":"2031-11-30"},"m":{"k":4,"j":"t"}}}',
+  '{"type":"node","id":"4","labels":["T"],"properties":{"n":11,"s":"😀","x":0,"nu":null,"d":{"@date":"2031-11-30"},"m":{"k":4,"j":"t"}}}',
   '{"type":"node","id":"5","labels":["T"],"properties":{"n":13,"s":"","x":3,"m":{"k":5,"j":"u"}}}',
-  '{"type":"node","id":"6","labels":["T"],"properties":{"n":17,"s":"qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq","x":5,"d":{"@date":"2024-01-02"},"m":{"k":6,"j":"v"}}}',
+  '{"type":"node","id":"6","labels":["T"],"properties":{"n":17,"nu":9,"s":"qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq","x":5,"d":{"@date":"2024-01-02"},"m":{"k":6,"j":"v"}}}',
   '{"type":"edge","id":"e4","labels":["E"],"from":"3","to":"4","properties":{"w":1}}',
   '{"type":"edge","id":"e5","labels":["F"],"from":"4","to":"5","properties":{"w":3}}',
   // A SELF-LOOP, without which the repeated-endpoint shapes below compare almost nothing.
@@ -554,7 +560,7 @@ const genLeaf = (r: () => number): string => {
   // property access over the row (n: number, s: string, x: number)
   // `nan` is present on two of the vertices and ABSENT on the rest, so a predicate over it is
   // three-valued as well as NaN-valued.
-  return `n.${pick(r, ['n', 's', 'x', 'n', 's', 'x', 'nan'])}`;
+  return `n.${pick(r, ['n', 's', 'x', 'n', 's', 'x', 'nan', 'nu'])}`;
 };
 
 const ARITH = ['+', '-', '*', '/', '%'] as const;
@@ -1918,8 +1924,8 @@ const genQuery = (r: () => number): string => {
   // absent-on-either-side rule. Placed last, above the fallback, so it takes no other arm's band.
   if (p < 0.96) {
     const op = pick(r, CMP);
-    const k = pick(r, ['n', 'x', 's', 'nan', 'st', 'zz']);
-    const k2 = pick(r, ['n', 'x', 's', 'nan', 'st', 'zz']);
+    const k = pick(r, ['n', 'x', 's', 'nan', 'st', 'zz', 'nu']);
+    const k2 = pick(r, ['n', 'x', 's', 'nan', 'st', 'zz', 'nu']);
 
     return pick(r, [
       `MATCH (a:T)-[:E]->(b:T) WHERE (a.${k} ${op} b.${k}) RETURN a.n AS x, b.n AS t ORDER BY t, x`,
@@ -1941,7 +1947,7 @@ const genQuery = (r: () => number): string => {
   //
   // Placed last, above the fallback, so it takes no other arm's band.
   if (p < 0.985) {
-    const k = pick(r, ['n', 'x', 's', 'nan', 'st', 'zz', 'm.k', 'd']);
+    const k = pick(r, ['n', 'x', 's', 'nan', 'st', 'zz', 'm.k', 'd', 'nu']);
 
     return pick(r, [
       `MATCH (n:T) RETURN count(n.${k}) AS x`,
@@ -1949,6 +1955,18 @@ const genQuery = (r: () => number): string => {
       `MATCH (n:T) WHERE n.n > 3 RETURN count(n.${k}) AS x`,
       `MATCH (n:T) LET g = n.s RETURN g, count(n.${k}) AS x GROUP BY g ORDER BY g, x`,
       `MATCH (a:T)-[:E]->(b:T) RETURN count(b.${k}) AS x`,
+      // `RETURN DISTINCT <prop>` as a ROW projection (item 859). Before this, the ONLY such shape
+      // in the whole generator was item 842's `RETURN DISTINCT n.d` — so of
+      // `try_distinct_scan_prop`'s five typed arms the fuzzer reached exactly one, and a mutant
+      // deleting the Num arm's NULL row survived even after the `nu` column existed. The column
+      // and this shape are useless apart: one supplies a cell that is neither present nor absent,
+      // the other asks a question that can see it.
+      //
+      // `ORDER BY` because DISTINCT row order is unspecified (item 198) and the engines are
+      // compared row by row.
+      `MATCH (n:T) RETURN DISTINCT n.${k} AS x ORDER BY x`,
+      `MATCH (n:T) WHERE n.n > 3 RETURN DISTINCT n.${k} AS x ORDER BY x`,
+      `MATCH (a:T)-[:E]->(b:T) RETURN DISTINCT b.${k} AS x ORDER BY x`,
     ]);
   }
 
