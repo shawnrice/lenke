@@ -109,6 +109,16 @@ question in its module header — read the header before touching it.
   same, so the probe prints both. It is also where the dictionary arm's ≥1785x was measured: a
   dictionary key has a bounded rank, so once `skip+limit` rows at the extreme rank are seen in
   arrival order the scan can STOP.
+- `barehop_882` — is native's bare-hop cost ENGINE time or FFI serialization? Item 881's new bench
+  row showed `V().out()` at native 329.61 ms against TS's 185.4, which looks like native being the
+  slow side. This runs the same plans IN PROCESS (`exec::try_run`, no boundary) and answers it:
+  266.98 ms, so the cost is the engine. It then puts that next to the shapes that return the same
+  1,000,000 rows as a SCALAR — `id()` 20.64, `values(age)` 4.95, and the GQL twins `RETURN b` 266.75
+  against `RETURN b.age` 5.82 — which is the 46x that matters. **The conclusion is a retraction, not
+  a target**: native materializes an OWNED element per row (external id, sorted labels, property
+  map) where TS returns a reference, and that render loop is already item 828's column-major rewrite
+  with a further hoist refuted at 829. Every row prints its ROW COUNT because the shapes differ in
+  what they return, not just in speed.
 - `edgecount_877` — every spelling of "how many edges are there", in both front ends, each with
   its PLAN (`PLAN=1`) next to its time and its answer. Written because `E().count()` was the last
   bench row where native was the slow side, and it found something much larger on the way:

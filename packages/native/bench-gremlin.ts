@@ -78,6 +78,15 @@ const SHAPES: [string, Plan][] = [
   // 2.23x gap sat unmeasured. `V().out()` and `V().out().id()` had no fused walk while
   // `V().out().values(k)` did, which made ADDING a step 1.9x faster (item 880). The
   // `.count()` row above cannot see it — that one is answered by a shortcut.
+  //
+  // ⚠️ THE `[bare]` ROW'S ts/native RATIO IS NOT LIKE-FOR-LIKE (item 882). It reads ~0.6, i.e.
+  // native "slower", and that is a difference in what the two RETURN rather than in how fast they
+  // are: TS hands back references to vertices already in its graph, while native materializes an
+  // OWNED element value per row — external id, sorted labels and a property map. Measured in
+  // process (no FFI), native is 266.98 ms for 1,000,000 elements against 4.95 for the same rows as
+  // a property, and that render loop is already item 828's column-major rewrite with a further
+  // hoist REFUTED at item 829. Read this row for regressions in the TS column; the cross-engine
+  // ratio on it is a category difference.
   ['V().out() [bare]', traversal(V(), out('KNOWS'))],
   ['V().out().id()', traversal(V(), out('KNOWS'), id())],
   // THE SAME TRAVERSAL WITH A TRAILING STEP (item 608). `hopValuesShortcut` matched a plan of

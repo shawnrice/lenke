@@ -26108,3 +26108,15 @@ p.flag` 4.51x (item 872).** Only the comparison spelling had one: `= true` lower
   undefined `proj` — a TypeError in the OFF arm only. The shipped ordering is safe because the
   undefined check comes first; the switch broke that. Put the gate as an early return INSIDE the
   branch.
+- **~~Native's bare hop is the slow side~~ — RETRACTED (item 882, revising 881).** Not FFI: in
+  process (`exec::try_run`, no boundary) `V().out('KNOWS')` is **266.98 ms** for 1M rows, and the GQL
+  spelling agrees to 0.1%. The real shape is **54x between returning an ELEMENT and returning a
+  property** on the same rows (266.98 against 4.95; `id()` 20.64), because `render_nodes` builds an
+  OWNED element per row — external id, sorted labels, every present property. That is the contract,
+  and the loop is already item 391's key hoist plus item **828**'s column-major rewrite, with a
+  further hoist **REFUTED at 829**. TS reads lower only because it returns REFERENCES into its own
+  graph, so item 881's ts/native ratio on that row is a CATEGORY DIFFERENCE, not a verdict — the
+  bench row now carries that warning in place.
+- **METHOD — a ts/native ratio is only a verdict when both engines RETURN the same thing
+  (item 882).** TS hands back graph references; native materializes owned values. Same query text,
+  different work. Check what crosses the boundary before reading a sub-1.0 ratio as a native defect.
