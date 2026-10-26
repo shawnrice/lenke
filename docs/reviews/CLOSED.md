@@ -25814,3 +25814,20 @@ copies before the comment was added.
   when they had passed** — biased toward flattering the change. Caught only because one verdict was
   implausible on its face. **The EXIT CODE is the verdict**; the result line only proves the tests
   ran. Complements items 767/772-773, which established the execution-evidence half of the rule.
+- **The NUMERIC streaming top-K now has a measured SIZE GATE — 1.31x at 200k, flat above it
+  (item 867).** `try_scan_top_k`'s numeric arm was taken at every size and is a net LOSS while the
+  data is cache-resident: generic beats it 1.28x at 200k, 1.29x at 300k, 1.18x at 500k, and loses
+  1.08x at 600k, 1.26x at 700k, 1.20x at 4M. **One measurement would have gotten this exactly
+  wrong in either direction.** Gated at `NUM_TOP_K_MIN_NODES = 600_000` (tuned on this box's L3 —
+  a route, never an answer). The crossover table lives in the constant's doc comment. The gate must
+  NOT switch off the dictionary arm with it: that one has item 865's rank-bounded early exit and
+  wins at any size.
+- **METHOD — the "sweep the size" rule, second confirmed save (item 867).** The numeric top-K reads
+  as a clean disjoint 1.28x LOSS at 200k and a clean 1.20x WIN at 4M. Deleting it or keeping it
+  unconditionally are both defensible from one size and both wrong. The transition is between 200k
+  and 1M, exactly where the bench notes already place it.
+- **METHOD — a compile error is a WEAKER mutation catch than a failing assertion (item 867).** A
+  mutant setting a threshold constant to 0 was caught because the test wrote
+  `NUM_TOP_K_MIN_NODES - 1`, which underflows in a const context — a catch that depends on how the
+  test is spelled, not on what it checks. `saturating_sub` removes the accident so the assertion
+  does the work. Prefer a verdict that survives rewording the test.

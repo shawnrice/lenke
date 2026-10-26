@@ -331,6 +331,44 @@ fn sort_idx(idx: &mut [usize], key_cols: &[Col], keys: &[crate::ir::SortKey], en
     }
 }
 
+/// Below how many nodes the NUMERIC streaming top-K is not worth taking.
+///
+/// Item 867 measured it as a net LOSS at small-to-middling sizes and a win only once the data stops
+/// being cache-resident — the transition this repo's bench notes already name as "between 200k and
+/// 1M elements". Generic path vs streaming, min of alternated rounds, `ORDER BY p.age LIMIT 10`:
+///
+/// ```text
+///   nodes      streaming   generic    winner
+///     200,000      1.251     0.976    generic, 1.28x
+///     300,000      1.898     1.466    generic, 1.29x
+///     500,000      3.201     2.708    generic, 1.18x
+///     600,000      4.068     4.382    streaming, 1.08x
+///     700,000      4.399     5.529    streaming, 1.26x
+///   1,000,000      6.324     6.648    streaming, 1.05x
+///   4,000,000     25.780    30.825    streaming, 1.20x
+/// ```
+///
+/// Taking the gap at ONE size would have deleted the path (it reads as a clean 1.28x loss at 200k)
+/// or kept it everywhere (a clean 1.20x win at 4M). Both readings are wrong, and the sweep is the
+/// only thing that shows it. The mechanism is the generic path's three N-sized allocations — the
+/// frontier, an `f64` key column and a `usize` index array — which are cheaper than a streaming
+/// buffer's per-row tuple plus a `select_nth` every 1024 pushes while they fit in cache, and more
+/// expensive once they do not.
+///
+/// THE CONSTANT IS TUNED ON ONE MACHINE. The crossover is where ~N x 20 bytes stops fitting in
+/// this box's L3, so a machine with a different cache will cross somewhere else. It is a
+/// performance route and never an answer, so a mis-tuned value costs time and nothing else.
+const NUM_TOP_K_MIN_NODES: usize = 600_000;
+
+/// Whether a numeric streaming top-K beats the generic path at this size — see
+/// [`NUM_TOP_K_MIN_NODES`] for the measurements. A pure predicate because the choice is
+/// ANSWER-EQUIVALENT: both routes return identical rows, so no correctness test can tell which
+/// ran, and item 866 watched a mutant disabling exactly this kind of route survive a whole suite.
+/// Tested directly in `num_top_k_gate`.
+fn num_top_k_worthwhile(node_count: usize) -> bool {
+    node_count >= NUM_TOP_K_MIN_NODES
+}
+
 /// STREAMING TOP-K for `ORDER BY <numeric prop> [DESC] LIMIT k` over a bare `Scan`:
 /// instead of materializing the whole frontier + key column + an index array and then
 /// partial-sorting (what `order_page` does on a pulled batch), scan the nodes once,
@@ -362,6 +400,14 @@ pub(super) fn try_scan_top_k(
     let Plan::Scan { label } = input else {
         return None;
     };
+    if !num_top_k_worthwhile(store.node_count()) {
+        // Below the crossover the GENERIC path is faster; see `num_top_k_worthwhile`.
+        return match store.column(key) {
+            Some(Column::Num { .. }) => None,
+            Some(column) => try_scan_top_k_wide(column, label, k, skip, limit, store),
+            None => None,
+        };
+    }
     let column = store.column(key)?;
     let Column::Num { data, present, .. } = column else {
         // Item 864: every OTHER representation used to stop here, so a string or dictionary key
@@ -912,6 +958,87 @@ mod top_k_lift_route {
         assert!(
             !top_k_liftable(&other, &[&c], &st),
             "only a bare Scan is liftable"
+        );
+    }
+}
+
+/// Item 867: the numeric top-K SIZE GATE, tested directly. Both routes return identical rows, so
+/// this choice is invisible to every correctness test — the same hole item 866 found. These
+/// assertions pin the measured crossover so it cannot be "simplified" to always-on (a 1.28x loss
+/// at 200k) or always-off (a 1.20x loss at 4M).
+#[cfg(test)]
+mod num_top_k_gate {
+    use super::{num_top_k_worthwhile, NUM_TOP_K_MIN_NODES};
+
+    #[test]
+    fn gate_follows_the_measured_crossover() {
+        // sizes where the GENERIC path measured faster
+        for n in [0, 1, 1_000, 200_000, 300_000, 500_000] {
+            assert!(
+                !num_top_k_worthwhile(n),
+                "{n} nodes: generic measured faster, must not stream"
+            );
+        }
+        // sizes where STREAMING measured faster
+        for n in [600_000, 700_000, 1_000_000, 4_000_000, usize::MAX] {
+            assert!(
+                num_top_k_worthwhile(n),
+                "{n} nodes: streaming measured faster, must stream"
+            );
+        }
+        // the boundary is exactly the documented constant, inclusive
+        assert!(!num_top_k_worthwhile(NUM_TOP_K_MIN_NODES.saturating_sub(1)));
+        assert!(num_top_k_worthwhile(NUM_TOP_K_MIN_NODES));
+    }
+
+    /// The gate turns the NUMERIC path off below the crossover; it must NOT turn the dictionary
+    /// path off with it. Both routes return the same rows, so only calling the entry point and
+    /// looking at whether it CLAIMED the query can tell — a mutant that dropped the dictionary
+    /// branch below the gate survived the whole suite until this existed.
+    #[test]
+    fn gate_keeps_the_dictionary_path_below_the_crossover() {
+        use super::{try_scan_top_k, Expr, Plan};
+        use crate::store::Builder;
+        use crate::value::Value;
+
+        const CY: [&str; 3] = ["bb", "aa", "cc"];
+        let mut b = Builder::default();
+        for i in 0..400u32 {
+            b.node(
+                &["T"],
+                &[
+                    ("c", Value::Str(CY[(i % 3) as usize].into())),
+                    ("a", Value::Num(f64::from(i))),
+                ],
+            );
+        }
+        let store = b.build();
+        assert!(
+            !num_top_k_worthwhile(store.node_count()),
+            "fixture must sit BELOW the gate or this test proves nothing"
+        );
+        let scan = Plan::Scan {
+            label: Some("T".into()),
+        };
+        let key = |k: &str| {
+            [crate::ir::SortKey {
+                expr: Expr::Prop {
+                    slot: 0,
+                    key: k.into(),
+                },
+                descending: false,
+                nulls_first: false,
+            }]
+        };
+        // the dictionary arm has a rank-bounded early exit, so it is worth taking at ANY size
+        assert!(
+            try_scan_top_k(&scan, &key("c"), None, Some(5), &store, false).is_some(),
+            "a dictionary key must still stream below the gate"
+        );
+        // the numeric arm is the one the gate turns off here
+        assert!(
+            try_scan_top_k(&scan, &key("a"), None, Some(5), &store, false).is_none(),
+            "a numeric key must fall to the generic path below the gate"
         );
     }
 }
