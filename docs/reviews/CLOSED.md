@@ -26120,3 +26120,18 @@ p.flag` 4.51x (item 872).** Only the comparison spelling had one: `= true` lower
 - **METHOD — a ts/native ratio is only a verdict when both engines RETURN the same thing
   (item 882).** TS hands back graph references; native materializes owned values. Same query text,
   different work. Check what crosses the boundary before reading a sub-1.0 ratio as a native defect.
+- **OPEN, PRICED FROM BOTH SIDES — the TS parser is 4.5x native's and the TS planner 12.6x
+  (item 883).** Same `INSERT`, fresh text so no cache serves it: parse **TS 2.962 us against native
+  0.653**; parse+plan **3.979 against 0.734**. So the planner half is TS ~1.02 us against native
+  0.081. `textOnly` control 0.022/0.046, so formatting is not the cost. Reached from
+  `bench:usage`'s two append spellings — TS 4.4x apart where native is FLAT, which the bench's own
+  note attributes to a cache miss per op (item 662); the miss is ~5.9 us and dynamically-built query
+  text is ordinary application code. A cached TS query (2.269 us INCLUDING execute) is cheaper than
+  one raw TS parse (2.962). "The parser is slow" is not yet a diagnosis — find where inside it.
+- **The exported `parse()` does NOT consult the parse cache (item 883).** The memoization lives
+  inside `query()`. A one-fixed-text `parse()` arm measures 2.969 against a fresh-text arm's 3.486 —
+  nearly identical — so an arm named `parseCached` is measuring a raw parse.
+- **METHOD — an arm NAMED for the mechanism it exercises is a claim, and the measurement checks it
+  (item 883).** My `parseCached` arm was not cached, and the 0.5 us between it and the "miss" arm was
+  one `format!` plus allocator noise. Had I trusted the name I would have reported the cache as worth
+  15% when it is worth more than an entire parse.

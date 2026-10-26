@@ -109,6 +109,12 @@ question in its module header — read the header before touching it.
   same, so the probe prints both. It is also where the dictionary arm's ≥1785x was measured: a
   dictionary key has a bounded rank, so once `skip+limit` rows at the extreme rank are seen in
   arrival order the scan can STOP.
+- `parseplan_883` — the native half of "what does a parse+plan cache MISS cost?". A FRESH query
+  text per iteration so no cache can serve it, with `textOnly` as the control that `format!` is not
+  what is being measured. Native: parse **0.653 us/op**, parse+optimize **0.734**. The TS twin
+  (`packages/native/parseplan-cost-probe.ts`) reads 2.962 and 3.979 on the same statement — so the
+  TS PARSER is 4.5x native's and the TS PLANNER adds ~1.02 us against native's 0.08, 12.6x. Read
+  the pair together; either alone says nothing about whether a number is large.
 - `barehop_882` — is native's bare-hop cost ENGINE time or FFI serialization? Item 881's new bench
   row showed `V().out()` at native 329.61 ms against TS's 185.4, which looks like native being the
   slow side. This runs the same plans IN PROCESS (`exec::try_run`, no boundary) and answers it:
