@@ -25414,3 +25414,55 @@ Gates, each its own command with its exit code read UNPIPED: `cargo build --rele
 --all-targets -- -D warnings` 0; `cargo fmt` 0; `bun run fmt` 0; `bun run fmt:check` 0; `bun run
 check` 0; `bun run fuzz` (all seven byte-identity fuzzers) 13 pass 0 fail, run TWICE. The temporary
 example and both pristine/ship copies removed.
+
+## 856 — the post-855 sweep: **NO regression** across four native changes, and a third datapoint confirming item 849's harness finding
+
+**VERIFICATION, no change.** Items 847, 848, 854 and 855 have landed since item 849's clean sweep,
+three of them in `distinct.rs` or `fastpath.rs` — files whose neighbours have twice shown they are
+layout-sensitive (item 844's `min` control caught a 1.6x regression from one variable's live range;
+item 849's `element` rows move with the work before them).
+
+**Every row with a record matches it:**
+
+```text
+  scalar age (flat)         92.4   against 92.0 / 92.4
+  scalar age (map graph)    92.4   against 92.4
+  scalar p.age             343.4   against 343.6 / 343.8
+  count(prop) str/num   93.5/93.4  against 93.4 / 93.4
+  count(DISTINCT prop)     164.7   against 166.5
+  count(DISTINCT p.age)    396.2   against a record of 400.5
+  pagerank(20)             11.48   against 11.20 / 11.09 / 12.08
+  betweenness             265.09   against 264.82 / 266.10 / 268.34
+  betweenness parallel  618/318/167/94.8, speedup 6.52  against 615/316/170/95.8, 6.52
+```
+
+The rows the four changes could actually reach are flat or better: `count(DISTINCT p.age)` 396.2
+against 399.5 at item 849, `count(DISTINCT prop)` 164.7 against 166.5. `count(DISTINCT p.name)`
+reads 4,395 against 4,222 — **+4% on a row whose own history spans that much**, and it routes
+through `try_scan_distinct_count`, which none of these four items touched. Noise, named rather than
+ignored.
+
+### A third datapoint for item 849
+
+This sweep's `element p` reads **346.1** and `element r` **317.5** — the ISOLATED band (~345 / ~300),
+not item 849's full-sweep 233.0 / 212.3. So the full-sweep figure for those two rows has now read
+**392.6, 344.6, 233.0 and 346.1** across this session, with no rendering change behind any of the
+moves.
+
+That is item 849's conclusion arriving from a third direction and worth recording as such: the
+figure depends on the work done earlier in the same process, items 854/855 changed exactly that
+work (the distinct rows run before `perrow`), and it has now landed back on the isolated band by
+coincidence rather than by anything converging. **Do not quote it.** The caveat at the two cases in
+`support/query.rs` is the durable form of this.
+
+### One process note against myself
+
+The sweep was launched in a background command that also ran `gh run list`, so the output file was
+non-empty on its first byte and a monitor keyed on `until [ -s "$file" ]` fired immediately. A
+one-line file was then read as the sweep's result, and the mistake was caught by checking the
+PROCESS rather than believing the file. **Do not chain a fast command into a backgrounded slow one
+when a monitor keys on output appearing** — key the monitor on the process, or keep the long command
+alone.
+
+Gates, each its own command with its exit code read UNPIPED: `bun run fmt` 0; `bun run fmt:check`
+0; `bun run check` 0; `git status` clean of any engine change (docs only).
