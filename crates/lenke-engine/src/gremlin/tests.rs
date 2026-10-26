@@ -444,6 +444,87 @@ fn math_reads_named_vars_from_project_row() {
     );
 }
 
+/// `values(k).dedup()` over every column representation — item 854's widened fast path.
+///
+/// THREE MUTANTS SURVIVED THE WHOLE SUITE BEFORE THIS TEST: a constant date key, a `Num` key on
+/// raw `to_bits()` instead of `num_group_bits`, and dropping the absent-row skip. The last is not
+/// merely a slow path — an absent row falls through and keys whatever `data[i]` holds, so a
+/// garbage value enters the dedup. Nothing covered `values(k).dedup()` on a Num, Str or Date
+/// column; only the `Dict` case the path originally served was tested.
+#[test]
+fn values_dedup_over_each_column_representation() {
+    use crate::temporal::{Date, Temporal};
+
+    let mut b = crate::store::Builder::default();
+    let d = |iso: &str| Value::Temporal(Temporal::Date(Date::parse(iso).unwrap()));
+
+    // `score` holds BOTH -0.0 and 0.0, which the value contract groups as ONE value. A key on raw
+    // bits splits them and answers one more.
+    b.node(
+        &["P"],
+        &[
+            ("score", Value::Num(-0.0)),
+            ("hired", d("2024-01-02")),
+            ("name", Value::Str("a".into())),
+            ("flag", Value::Bool(true)),
+        ],
+    );
+    b.node(
+        &["P"],
+        &[
+            ("score", Value::Num(0.0)),
+            ("hired", d("2024-01-03")),
+            ("name", Value::Str("b".into())),
+            ("flag", Value::Bool(false)),
+        ],
+    );
+    b.node(
+        &["P"],
+        &[
+            ("score", Value::Num(7.0)),
+            ("hired", d("2024-01-02")),
+            ("name", Value::Str("a".into())),
+            ("flag", Value::Bool(true)),
+        ],
+    );
+    // A node carrying NONE of them: `values(k)` drops it (TinkerPop), so it must not contribute a
+    // value — and must not be keyed off an absent cell either.
+    b.node(&["P"], &[("other", Value::Num(1.0))]);
+
+    let st = b.build();
+    let json = |q: &str| {
+        let plan = crate::opt::optimize_indexed(super::parse(q).unwrap(), &st);
+        crate::exec::run_gremlin_json(&plan, &st)
+    };
+
+    // -0.0 and 0.0 are ONE value, 7 is another: two distinct, and the absent node adds none.
+    assert_eq!(json("g.V().values('score').dedup().count()"), "[2]");
+    // Two distinct dates among three present values.
+    assert_eq!(json("g.V().values('hired').dedup().count()"), "[2]");
+    assert_eq!(json("g.V().values('name').dedup().count()"), "[2]");
+    assert_eq!(json("g.V().values('flag').dedup().count()"), "[2]");
+
+    // The VALUES themselves, not just the counts — a count can be right while the wrong value is
+    // emitted (the Dict arm pushes `dict[codes[i]]`, the others push `data[i]`).
+    let dates = json("g.V().values('hired').dedup()");
+
+    assert!(
+        dates.contains("2024-01-02") && dates.contains("2024-01-03"),
+        "dedup lost a date: {dates}"
+    );
+
+    let names = json("g.V().values('name').dedup()");
+
+    assert!(
+        names.contains('a') && names.contains('b'),
+        "dedup lost a name: {names}"
+    );
+
+    // The absent node again, from the other side: a count over a key NO node carries is 0, not a
+    // row keyed off an absent cell.
+    assert_eq!(json("g.V().values('nope').dedup().count()"), "[0]");
+}
+
 /// A keying `by('k')` (group/groupCount/order/dedup/select) over an ABSENT property
 /// FILTERS the traverser (TinkerPop semantics — no null bucket), while a stored PRESENT
 /// null is a value and is KEPT; `project('k').by(absent)` OMITS the key (keeps the row).

@@ -782,27 +782,49 @@ pub(super) fn try_stream_membership_count(
     Some(count)
 }
 
-/// `DISTINCT`/`dedup()` over `values(<dict col>)`: emit the distinct dict values in
-/// FIRST-SEEN order by scanning codes against a `dict.len()` bitset — never decoding or
-/// hashing the per-row strings. Byte-identical to the general first-seen dedup (first
-/// occurrence of a code == first occurrence of its string). Bails (→ general path) on any
-/// absent value or null-sentinel id, whose NULL dedup this fast path doesn't model.
-pub(super) fn try_distinct_dict_col(input: &Plan, store: &Store) -> Option<Batch> {
+/// `DISTINCT`/`dedup()` over `values(<col>)`: emit the distinct values in FIRST-SEEN order,
+/// deduping on the column's own representation — never boxing a `Value` or building a key
+/// string per row. Byte-identical to the general first-seen dedup, because each arm's key is
+/// injective on that column's values (see the per-arm notes). Bails (→ general path) on a
+/// null-sentinel id, or on an absent value unless the plan's own `PropertyExists` filter says
+/// absent rows are dropped.
+///
+/// WAS DICT-ONLY UNTIL ITEM 854. The shape was recognized for a `Dict` column and nothing else,
+/// so `values('score').dedup()` over a `Num` column went to the general path. Item 853 measured
+/// that at 200,000 rows, same store, against the GQL spelling of the same question:
+///
+/// ```text
+///   count(DISTINCT p.score)   gql 411us   gremlin 5326us   12.96x
+///   DISTINCT p.score rows     gql 421     gremlin 5327     12.65x
+///   count(DISTINCT p.hired)   gql 596     gremlin 22613    37.92x
+///   min(p.hired)              gql 568     gremlin  569      1.00x  <- already surface-neutral
+/// ```
+///
+/// The `min` row is why this is a lowering gap and not a surface tax: `values(k).min()` reaches
+/// item 841's arm at ratio 1.00, so the machinery is shared and only this gate was narrow.
+pub(super) fn try_distinct_value_col(input: &Plan, store: &Store) -> Option<Batch> {
     let Plan::Project { input: pin, items } = input else {
         return None;
     };
     let [(_, Expr::Prop { slot, key })] = items.as_slice() else {
         return None;
     };
-    let Some(Column::Dict {
-        dict,
-        codes,
-        present,
-        ..
-    }) = store.column(key)
-    else {
-        return None;
-    };
+    let col = store.column(key)?;
+    // Admit before the PULL, which is the expensive part — a column type with no arm below must
+    // decline here rather than after materializing the frontier.
+    if !matches!(
+        col,
+        Column::Dict { .. }
+            | Column::Num { .. }
+            | Column::Str { .. }
+            | Column::Bool { .. }
+            | Column::Temporal {
+                kind: crate::temporal::TemporalKind::Date,
+                ..
+            }
+    ) {
+        return None; // Gen, or a non-Date temporal kind
+    }
     // `values(k)` drops an element whose property is ABSENT, so Gremlin lowers it to
     // `Project(Filter(PropertyExists{k}))`. That filter is exactly the `present[i]` test
     // this loop already performs — running it as a separate pass materializes and then
@@ -835,26 +857,132 @@ pub(super) fn try_distinct_dict_col(input: &Plan, store: &Store) -> Option<Batch
     let Col::Nodes(ids) = frontier.slot(*slot) else {
         return None;
     };
-    let mut seen = vec![false; dict.len()];
-    let mut out: Vec<GStr> = Vec::new();
-    for &id in ids {
-        if id == u32::MAX {
-            return None; // a NULL value in the dedup — let the general path handle it
-        }
-        let i = id as usize;
-        if !present[i] {
-            if absent_dropped {
-                continue;
+    // One loop per representation. They are deliberately separate rather than one loop behind a
+    // key closure: this function's neighbours in this file record (items 375, 844) that sharing a
+    // body across typed arms taxes the arm that was already fast.
+    macro_rules! dedup {
+        ($present:expr, $new_seen:expr, $key:expr, $val:expr, $col:expr) => {{
+            let present = $present;
+            let mut seen = $new_seen;
+            let mut out = Vec::new();
+
+            for &id in ids {
+                if id == u32::MAX {
+                    return None; // a NULL value in the dedup — let the general path handle it
+                }
+
+                let i = id as usize;
+
+                if !present[i] {
+                    if absent_dropped {
+                        continue;
+                    }
+
+                    return None;
+                }
+
+                if $key(&mut seen, i) {
+                    out.push($val(i));
+                }
             }
-            return None;
-        }
-        let c = codes[i] as usize;
-        if !seen[c] {
-            seen[c] = true;
-            out.push(dict[c].clone());
-        }
+
+            return Some(Batch::of(vec![$col(out)]));
+        }};
     }
-    Some(Batch::of(vec![Col::Str(out)]))
+    match col {
+        // A distinct value IS a distinct code, so a `dict.len()` bitset needs no hash and no
+        // string decode. The original arm, unchanged.
+        Column::Dict {
+            dict,
+            codes,
+            present,
+            ..
+        } => dedup!(
+            present,
+            vec![false; dict.len()],
+            |seen: &mut Vec<bool>, i: usize| {
+                let c = codes[i] as usize;
+                let fresh = !seen[c];
+                seen[c] = true;
+                fresh
+            },
+            |i: usize| dict[codes[i] as usize].clone(),
+            Col::Str
+        ),
+        // `num_group_bits` is the equivalence the value contract defines (-0.0 with 0.0, NaN
+        // with itself), so this is the general path's grouping and not a stricter one.
+        Column::Num { data, present, .. } => dedup!(
+            present,
+            FnvSet::<u64>::default(),
+            |seen: &mut FnvSet<u64>, i: usize| seen.insert(value::num_group_bits(data[i])),
+            |i: usize| data[i],
+            Col::Num
+        ),
+        // Keyed on the BORROWED `&str` — no per-row copy. Written as its own loop rather than
+        // through the macro above: a closure annotated `&mut FnvSet<&str>` infers `'static` for
+        // that borrow and the key cannot outlive `store`, so the macro's typed-closure form does
+        // not express this arm. Keying on an owned `GStr` clone would compile and costs a clone
+        // per row for nothing.
+        Column::Str { data, present, .. } => {
+            let mut seen: FnvSet<&str> = FnvSet::default();
+            let mut out: Vec<GStr> = Vec::new();
+
+            for &id in ids {
+                if id == u32::MAX {
+                    return None;
+                }
+
+                let i = id as usize;
+
+                if !present[i] {
+                    if absent_dropped {
+                        continue;
+                    }
+
+                    return None;
+                }
+
+                if seen.insert(data[i].as_ref()) {
+                    out.push(data[i].clone());
+                }
+            }
+
+            Some(Batch::of(vec![Col::Str(out)]))
+        }
+        Column::Bool { data, present, .. } => dedup!(
+            present,
+            [false; 2],
+            |seen: &mut [bool; 2], i: usize| {
+                let b = usize::from(data[i]);
+                let fresh = !seen[b];
+                seen[b] = true;
+                fresh
+            },
+            |i: usize| data[i],
+            Col::Bool
+        ),
+        // A DATE keys on its epoch-day count, which items 843/847/848 established is in bijection
+        // with its rendering — so two dates dedup together iff the general path groups them.
+        Column::Temporal {
+            kind: crate::temporal::TemporalKind::Date,
+            data,
+            present,
+            ..
+        } => dedup!(
+            present,
+            FnvSet::<i32>::default(),
+            |seen: &mut FnvSet<i32>, i: usize| match data[i] {
+                crate::temporal::Temporal::Date(d) => seen.insert(d.days),
+                // Unreachable: a column holds one kind. Treated as NOT fresh rather than pushed,
+                // so a broken invariant loses a row loudly in a test instead of emitting a value
+                // this arm never keyed.
+                _ => false,
+            },
+            |i: usize| Value::Temporal(data[i]),
+            Col::Gen
+        ),
+        _ => None,
+    }
 }
 
 /// `MATCH (a)-[]->(b) WHERE b.k <op> a.k RETURN count(*)` — a hop whose survival compares

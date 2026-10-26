@@ -2085,11 +2085,14 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
             b
         }
         Plan::DistinctBy { input, key_slots } => {
-            // `values(<dict col>).dedup()`: dedup on the dict CODES (≤ dict size) in one
-            // pass instead of decoding + hashing every row's string. First-seen by code is
-            // the same order as first-seen by string, so byte-identical.
+            // `values(<col>).dedup()`: dedup on the column's own representation in one pass
+            // instead of boxing a `Value` and keying it per row. Dict codes, num group bits, a
+            // borrowed `&str`, a 2-slot bool table, or a date's epoch day — each injective on
+            // that column's values, so first-seen order and the classes are the general path's.
+            // Widened from dict-only at item 854, which priced the gap at 12.6-37.9x against the
+            // GQL spelling of the same question.
             if key_slots.as_slice() == [0] {
-                if let Some(b) = try_distinct_dict_col(input, store) {
+                if let Some(b) = try_distinct_value_col(input, store) {
                     return Ok(b);
                 }
             }

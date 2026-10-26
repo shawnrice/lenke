@@ -25268,3 +25268,79 @@ belongs in the next item that adds a plan-gated arm.
 Gates, each its own command with its exit code read UNPIPED: `cargo clippy --all-targets -- -D
 warnings` 0; `cargo fmt` 0; `bun run fmt` 0; `bun run fmt:check` 0; `bun run check` 0; `git status`
 clean of any engine change (docs only), the temporary example removed.
+
+## 854 — the Gremlin dedup gap closed: **30.8x on dates, 4.7-5.6x on num/str** — the fast path existed and was gated on `Dict` alone
+
+**SHIPPED (Rust).** Item 853 measured `values(k).dedup()` at 9.7-37.9x its GQL twin and found the
+lowering, not the surface, was the cause. The fix turned out to be a widening rather than a new
+path: `try_distinct_dict_col` already recognized the Gremlin plan shape — including the
+`Filter { PropertyExists }` that TinkerPop's "skip an absent property" semantics emits, with its own
+measured note (270.1 → 86.9 µs) — and then gated on `Column::Dict` and nothing else. A `Num`, `Str`,
+`Bool` or `Temporal` column fell to the general path.
+
+It is now `try_distinct_value_col`, with an arm per representation: dict codes against a bitset,
+`num_group_bits`, a borrowed `&str`, a two-slot bool table, and a date's epoch day.
+
+```text
+  200,000 nodes, 1,000 distinct     gql     grm PRE    grm POST    speedup
+  DISTINCT date rows               2344       23019         748      30.8x
+  count(DISTINCT date)              587       22601         751      30.1x
+  DISTINCT str rows                1273        6357        1129       5.6x
+  DISTINCT num rows                 414        5366        1140       4.7x
+  count(DISTINCT num)               412        5344        1155       4.6x
+  CONTROL min(date)                 572         570         569       flat
+  CONTROL sum(num)                  113         113         113       flat
+```
+
+Three order-alternated rounds, min of three, both arms as separate binaries each asserted to have
+compiled. **The whole GQL column is itself a control the change cannot reach, and it is flat across
+all six rounds** (414-419 for num, 2336-2366 for date) — which is a stronger control than a single
+unreachable query, because it is the same question asked the other way.
+
+The two `min`/`sum` rows stay at ratio 1.00: item 853 established they were already surface-neutral,
+and they still are.
+
+### Each arm's key is the general path's equivalence, not a stricter one
+
+`num_group_bits` is the value contract's own grouping (−0.0 with 0.0, NaN with itself), the dict
+code is in bijection with its string, `GStr`'s equality is its content, and a date's `days` is in
+bijection with its rendering (items 843/847/848). So first-seen order and the classes are
+unchanged in every arm.
+
+The `Str` arm is written as its own loop rather than through the shared macro, and the comment says
+why: a closure annotated `&mut FnvSet<&str>` infers `'static` for that borrow, so the key cannot
+outlive `store`. Keying an owned `GStr` clone would compile and costs a clone per row for nothing.
+
+### A side effect worth naming: the GQL date spelling is now the SLOWER one
+
+`DISTINCT p.hired` reads 2,344 µs in GQL against the Gremlin spelling's 748 — **the GQL form is now
+3.1x slower than the Gremlin one for the same shape.** They are not the same question (GQL emits
+NULL for an absent property where Gremlin drops the row), so this is not a spelling violation. But
+it is a measurement: item 847's `ColKeyer` builds byte keys where this arm keys a date on `days` in
+an `FnvSet`, and the arm added here is faster. **That is item 847's stated residual — "still 5.6x
+the Num control" — with a named cause and a demonstrated alternative.** Next lever, priced at 3.1x.
+
+### Teeth: three mutants, all three survived the whole suite first
+
+- **M1**, the date key made constant.
+- **M2**, the `Num` key on raw `to_bits()` instead of `num_group_bits` — splits −0.0 from 0.0.
+- **M3**, the absent-row skip dropped. **Not merely a slow path:** the row falls through and keys
+  whatever `data[i]` holds for an absent cell, so a garbage value enters the dedup.
+
+All three passed all 1,232 tests, because only the `Dict` case the path originally served was
+covered. A Gremlin-surface test was added over a fixture built against each mutant — a column
+holding both −0.0 and 0.0, two dates among three present values, and a node carrying none of the
+keys — and all three are now caught (2 failures each). It asserts the VALUES as well as the counts,
+since a count can be right while the wrong value is emitted: the dict arm pushes
+`dict[codes[i]]` and the others push `data[i]`.
+
+**That is the fifth time in this run that a plan-gated arm shipped into a hole in the suite**
+(840, 841, 843, 848, here). The pattern is stable enough to state as a rule: **a fast path gated on
+a column representation needs a test per representation it admits, because the suite's fixtures
+exercise whichever one the original author had.**
+
+Gates, each its own command with its exit code read UNPIPED: `cargo build --release --tests` 0;
+`cargo test --release` **1,233 passed 0 failed** (1,232 before the new test); `rewrite_fuzz` 10
+passed; `cargo clippy --all-targets -- -D warnings` 0; `cargo fmt` 0; `bun run fuzz gremlin` 1 pass
+0 fail; `bun run fuzz` (all seven byte-identity fuzzers) 13 pass 0 fail, run TWICE. The temporary
+example and all pristine/ship copies removed.
