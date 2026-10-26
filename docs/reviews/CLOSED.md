@@ -26765,3 +26765,13 @@ undefined`). None of these is discoverable from the list's definition. (Those ga
   the framing moved, and 884's numbers are the data you would need to fix its own denominator.
   **The index decays fastest when the work is going well**: every tick that corrects a framing leaves
   the superseded framing behind it. Read the whole open list after a run of items, not just append.
+- **NEGATIVE RESULT — the cross-engine bench has NO unexploited target (item 914).** Ran
+  `bun run bench` to find a native target; every large ratio is already decomposed. `count
+4-hop/3-hop/2-hop` (85.4x/65.7x/44.5x) → items 290, 795/807/808, 590, 200, whose remaining lever is
+  refuted and user-confirmed closed. `traverse 1-hop + filter` (27.8x) → item 311 (predicate
+  machinery is 9%; the cost is two Map lookups, cache-bound) and 321 (1.207x taken). `decode
+pg-text/csv` (10.1x/7.6x) → the TS ingest constant factor, `addVertex` withdrawn at 312. `project
+the element [ts lazy]` (0.07x, native SLOWER) → item 882, an output-shape contract. `count 1-hop
+UNDIRECTED` (native 1.7 vs TS 0.0) → item 478 already retracted it ("sublinear in the 2x edge
+  steps, so … is the work"). **The table looks like a target list and is a map of settled
+  questions** — an 85x row invites attention regardless of how many items have been spent on it.
