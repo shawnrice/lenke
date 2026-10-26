@@ -25951,3 +25951,18 @@ p.flag` 4.51x (item 872).** Only the comparison spelling had one: `= true` lower
   0 rows for every date shape with entirely plausible timings: the fixture stored dates as ISO
   STRINGS, and string-vs-temporal is a documented cross-type no-match. The timings could not reveal
   that; the row column did.
+- **CLOSED — the cause of item 873's TS bare-bool gap: a comparison never reaches `compileExpr`
+  (item 874).** Counted per-row closure invocations at 20,000 vertices: `WHERE p.bul` does 20,000
+  `prop`-closure calls (a binding `Map` lookup per vertex), while `WHERE p.bul = true` and
+  `WHERE p.num = 7` do **zero** — zero compile-arm hits too. A comparison is rewritten before
+  compilation into a lifted property constraint (`eqProps`/`cmpProps`) read straight off the
+  element; `directEqProps` opens with `if (conjunct.kind !== 'compare') return null`, so a bare
+  `prop` declines the whole chain. That one line is the 2x.
+- **THE FIX, specified and NOT yet built (item 874).** A third lifted category `truthProps` (keys
+  that must be TRUE in boolean context), following `cmpProps`'s stated precedent of a separate list
+  over per-entry dispatch. It may NOT be lifted as `eqProps` with value `true`: a property in
+  boolean context is DYNAMIC and a non-boolean must RAISE, where a lifted equality silently would
+  not match. The new loop applies `asTruth` and keeps the raise. **It must also update
+  `hasPredicate`** — that function's doc records six of seven emptiness checks once listing only
+  two of `CPredicate`'s three fields, producing a WRONG ANSWER, because a skipped predicate filter
+  returns a SUPERSET that no fixture lacking the spelling can catch.
