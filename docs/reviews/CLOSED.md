@@ -25670,3 +25670,74 @@ Gates, each its own command with its exit code read UNPIPED: `bun run fmt` 0; `b
 0; `bun run check` 0; `cargo test --release` **1,234 passed 0 failed**; `bun run fuzz differential`
 clean on three consecutive random seeds; `bun run fuzz` (all seven byte-identity fuzzers) 13 pass
 0 fail, run TWICE. No engine change — both mutants reverted and the tree verified clean of each.
+
+## 861 — the TS `SET` claim corrected (TWO passes, 21-38% of a write), an undo guard REFUTED at flat, and `grep` silently finding nothing in a 165 KB file
+
+**MEASUREMENT, no behaviour change** (the change was built, measured, and reverted; the refutation
+is recorded at the getter it would have changed).
+
+### The recorded claim was stale and pointed at the minority term
+
+"TS SET makes 3 O(K) passes per write" is carried as an open defect. Reading `Vertex.setProperty`
+finds **two** — the `{ ...previous }` spread and `Object.freeze(bag)` — because the third
+(normalizing the whole bag) was removed at item 349, which that code's own comment states. So the
+count was stale. **And the two that remain are the minority of a write:**
+
+```text
+  k      engine setProperty   spread+freeze   spread   mutate
+  4            113 ns              24          11       2
+  32           126                 37          25       1
+  128          194                 73          57       1
+```
+
+**The O(K) pair is 21% of a write at 4 keys and 38% at 128.** So 62-79% is a per-write CONSTANT —
+the validations, three constraint asserts, the `key in properties` test, two box lookups, a
+`recordUndo` closure and an `EmitterEvent` allocation. Framing this path as "O(width)" aims at the
+smaller half.
+
+### The lever that followed, and its refutation
+
+Two of those constants looked unconditional, and the codebase said so itself: `undoWanted`'s doc
+claims **"Every call site tests this before building its closure"**, citing item 334 and the native
+twin at 331. That claim is false outside `Graph` — `Vertex` and `Edge` call `recordUndo` four times
+each, reference `undoWanted` zero times, and cannot reach a private getter; two sites per class also
+build `Object.fromEntries(...)` captures for the closure. It reads exactly like item 334 left
+half-done.
+
+Made public, all eight sites guarded, min of three ORDER-ALTERNATED rounds:
+
+```text
+  setProperty     k=4   87 -> 87     k=32  111 -> 107    k=128   164 -> 181  (WORSE)
+  setProperties   k=4  388 -> 408    k=32 2329 -> 2357   k=128 10224 -> 10167
+```
+
+**Flat everywhere, and slower at the widest point.** V8's escape analysis makes a closure that
+never leaves the call nearly free, and the O(P) captures are a rounding error against the per-key
+validate/assert loop those calls already run — a 128-key `setProperties` costs ~10 µs a write, so
+three small allocations cannot show. **Reverted**, with the numbers recorded at the getter so the
+next reader of that doc comment does not repeat it.
+
+**A single round read 113 → 100 and I nearly took it.** Alternating erased it. That is the third
+time this session a first reading pointed somewhere the third did not (items 839, 849, here).
+
+### `grep` returned NOTHING for a string that occurs 13 times
+
+Diagnosing this, `grep -c recordUndo packages/core/src/core/Graph.ts` printed **no output at all** —
+not `0`, nothing — and the same for `undoWanted`, `Undo` and `emit(`. `wc -l` reported 4,466 lines
+and `head` showed the right file. I was one step from concluding the engine calls a method that does
+not exist, which would have been a fabricated bug report about working code.
+
+`python3`'s `str.count` finds `recordUndo` **13 times** and `undoWanted` **9**. The file is UTF-8
+with non-ASCII content, and this repo's `grep` is `ugrep`, which silently yields nothing on it. My
+own notes already carry "`grep -I` skips Unicode files" from a rename that went wrong the same way,
+and I did not apply it even after `file` printed "Unicode text".
+
+**The rule, stated so it is actionable:** a `grep` that finds nothing in a file known to be large
+is evidence about the TOOL, not the file. Confirm with a second reader — `python3 -c "print(open(p).read().count(s))"` — before concluding an identifier is absent. Every "X is not in Graph.ts"
+claim from grep in this repo is worthless.
+
+Gates, each its own command with its exit code read UNPIPED: `bun run fmt` 0; `bun run fmt:check`
+0; `bun run check` 0; `bun test packages/core` 370 pass 0 fail; `bun test packages/gql
+packages/gremlin` 3,453 pass 0 fail (during the experiment). Comment-only change in the engine; the
+temporary probe and the env switch removed, and all three touched files restored from pristine
+copies before the comment was added.

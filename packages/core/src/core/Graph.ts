@@ -4151,6 +4151,26 @@ export class Graph {
    * sites also deep-copied the element's labels and properties to capture them, so a removal
    * paid four allocations for a rollback that could not happen. Audit item 334; the native
    * engine had the same shape at item 331, where `record_change` took its `Change` by value.
+   *
+   * ⚠️ "EVERY CALL SITE" IS TRUE ONLY OF THIS CLASS, AND GUARDING THE OTHERS MEASURED NOTHING
+   * (item 861). `Vertex` and `Edge` call `recordUndo` four times each and cannot reach a private
+   * getter, so every property write there builds its inverse closure unconditionally — and
+   * `setProperties`/`removeProperties` also build the `Object.fromEntries(...)` captures it closes
+   * over. That reads like item 334's defect left half-done, and it was measured rather than
+   * assumed: making this getter public and guarding all eight sites, min of three
+   * ORDER-ALTERNATED rounds at 4/32/128 keys,
+   *
+   * ```text
+   *   setProperty     k=4   87 -> 87    k=32  111 -> 107   k=128  164 -> 181 (WORSE)
+   *   setProperties   k=4  388 -> 408   k=32 2329 -> 2357  k=128 10224 -> 10167
+   * ```
+   *
+   * — flat everywhere, and slower at the widest point. V8's escape analysis makes a closure that
+   * never leaves the call nearly free, and the O(P) captures are a rounding error against the
+   * per-key validate/assert loop those calls already run (a `setProperties` at 128 keys costs
+   * ~10us a write). The change was reverted; do not re-derive it. A first single-round reading
+   * showed 113 -> 100 and alternating rounds erased it, which is why the numbers above are
+   * min-of-three.
    */
   private get undoWanted(): boolean {
     return this.txDepth > 0 && !this.applyingUndo;
