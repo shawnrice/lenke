@@ -600,6 +600,43 @@ fn label_mode_prefers_bitset(probe_cost: usize, bitset_cost: usize) -> bool {
     probe_cost >= bitset_cost
 }
 
+/// The fused `n.rec.field` read (item 896), out of line ON PURPOSE.
+///
+/// Inlining this into `eval`'s `Expr::Field` arm grew that arm enough to move an arm BESIDE it:
+/// `string city (flat, INDEXED)` — a plain `Expr::Prop` that this code cannot reach — measured
+/// **298.7 -> 326.3, a reproducible 1.09x REGRESSION**, stable and disjoint across four rounds.
+/// Same phenomenon the audit records for `exec::pull`, whose alignment is load-bearing. Keeping
+/// the body in its own function keeps the match arm small.
+///
+/// `None` means "not this shape" and the caller takes the general path: anything but a node slot
+/// whose base property is a BOXED (`Gen`) column — a typed base, an absent one, an edge slot, or
+/// a base that is not a plain `Expr::Prop` at all.
+fn fused_prop_field(store: &Store, batch: &Batch, base: &Expr, key: &str) -> Option<Col> {
+    let Expr::Prop {
+        slot,
+        key: base_key,
+    } = base
+    else {
+        return None;
+    };
+    let (Col::Nodes(ids), Some((data, present))) = (batch.slot(*slot), store.gen_column(base_key))
+    else {
+        return None;
+    };
+
+    Some(Col::Gen(
+        ids.iter()
+            .map(|&id| {
+                if id == u32::MAX || !present[id as usize] {
+                    Value::Null
+                } else {
+                    super::boxed_value_prop(&data[id as usize], key)
+                }
+            })
+            .collect(),
+    ))
+}
+
 pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, String> {
     // No rows → no values to produce, and nothing to evaluate: a constant faulting
     // expression (`1/0` under `… LIMIT 0 RETURN 1/0`) must not error over an empty
@@ -621,8 +658,33 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
         // `<base>.key` — evaluate the base to a column, then read the field/property
         // from it (the general form of `Prop`).
         Expr::Field { base, key } => {
-            let col = eval(base, store, batch)?;
-            read_property(store, &col, key)
+            // FUSED: `n.rec.field` over a node slot whose base property is a BOXED column
+            // (item 896). The general form below evaluates the base to a COLUMN first, which
+            // for a record property means materializing one cloned `Value::Record` per row and
+            // then projecting a single field out of it. Item 895 measured that against the
+            // no-index fallback filter, which borrows per row instead: 10699.5 us against
+            // 2594.8, so a query with an INDEX on the dotted key ran 4.1x slower than the same
+            // query without one, because the index makes the planner (correctly) pick `Scan` +
+            // `Filter` and `Filter` took this path.
+            //
+            // EQUIVALENT BY CONSTRUCTION, not by hope. For a `Col::Nodes` slot and a `Gen` base
+            // column the two-step does exactly this, in this order:
+            //   * a `u32::MAX` OPTIONAL sentinel      -> the base read yields `Null`, and
+            //     `boxed_value_prop(&Null, key)` is `Null`
+            //   * absent at this node                 -> `Column::read` yields `Null`, likewise
+            //   * present                             -> the base cell, then
+            //     `boxed_value_prop(cell, key)` — the SAME function called here
+            // So every base kind (record, map, list, scalar, null) resolves through the one
+            // function it already resolved through. Only the intermediate column is gone.
+            let fused = fused_prop_field(store, batch, base.as_ref(), key);
+
+            match fused {
+                Some(col) => col,
+                None => {
+                    let col = eval(base, store, batch)?;
+                    read_property(store, &col, key)
+                }
+            }
         }
         // `base[index]` — 0-based list element or record/map field. Out of range /
         // negative / non-integer index → NULL; null-safe. Mirrors the TS engine.

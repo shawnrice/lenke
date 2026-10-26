@@ -26396,3 +26396,30 @@ p.flag` 4.51x (item 872).** Only the comparison spelling had one: `= true` lower
   giveaway was a MISSING BENCH ROW — every arm in `value/maps` was unindexed, so the faster-path
   work was never compared against the path a user with an index actually gets. Same lesson as item
   877: bench the SHAPES, not just the step.
+- **SHIPPED (native) — the fused `n.rec.field` read: 2.27x on the INDEXED dotted row (item 896),
+  closing most of item 895.** `Filter` evaluated `Expr::Field{base: Prop}` by building the base
+  COLUMN first (one cloned `Value::Record` per row) and then projecting one field. Now a fused arm
+  reads the field directly when the slot is `Col::Nodes` and the base column is `Gen`; everything
+  else declines and takes the general path. Equivalent BY CONSTRUCTION — sentinel → `Null`, absent →
+  `Null`, present → `boxed_value_prop`, the SAME function the two-step called. Three arms
+  alternated, min of three: target **10331.8 → 4546.2**; `bench_all` in situ 10699.5 → 4859.6. The
+  4.1x "index makes it slower" gap from 895 is now ~1.9x (4859.6 against 2605.4 unindexed).
+- **METHOD — a control that moves on a change it CANNOT REACH may be layout, not noise; check
+  stability (item 896).** The first draft inlined the fused body and made `string city (flat,
+INDEXED)` — a plain `Expr::Prop` — **1.09x slower**, reproducible to three significant figures
+  across four extra rounds (pre 298.6-298.9, post 324.9-326.4). `Expr::Prop` and `Expr::Field` are
+  arms of the same `match`, so growing one perturbs the other's codegen (same phenomenon as
+  `exec::pull`'s load-bearing alignment). **Extracting the body into its own function recovered the
+  control to 1.00x with the win intact.** The remedy was a code move, not a tolerance.
+- **A CRASH FOUND BY A SURVIVING MUTANT — the `u32::MAX` sentinel guard (item 896).** Dropping it
+  SURVIVED the whole suite: nothing combined an OPTIONAL hop with a nested-path read, and an
+  OPTIONAL miss binds `u32::MAX`, so `present[u32::MAX as usize]` is an out-of-bounds slice index —
+  a PANIC, in release too. Pinned by `optional_miss_then_dotted_path_is_null`; the mutant now fails
+  with `index out of bounds: the len is 2 but the index is 4294967295`.
+- **METHOD — fusing a path inherits every guard the path it replaced applied (items 894, 896).**
+  Twice in two items: 894 had to carry `present`, 896 the OPTIONAL sentinel, and `read_property`
+  handles both explicitly. **The guards worth checking are the ones for values an ordinary fixture
+  does not contain** — a removed property, a null-sentinel element. Enumerate the replaced
+  function's early returns and test each.
+- **NOTE — `WHERE` inside `OPTIONAL MATCH` is `E_NOT_IMPLEMENTED` (observed at item 896).** So the
+  predicate form of an optional-miss nested read is not reachable to assert; the projection form is.

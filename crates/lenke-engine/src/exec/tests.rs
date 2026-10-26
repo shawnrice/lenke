@@ -28293,3 +28293,57 @@ fn prop_path_contract() {
     // ...while its typed siblings still read normally through that same fallback.
     assert!(equals(&store.prop_path(n1, "age"), &Value::Num(41.0)));
 }
+
+/// Item 896: a dotted path read off an OPTIONAL hop's MISS must be `Null`, not a panic.
+///
+/// The fused `n.rec.field` arm indexes the base column's `present` slice directly, and an OPTIONAL
+/// hop that matches nothing binds the `u32::MAX` null sentinel — so without the sentinel guard,
+/// `present[u32::MAX as usize]` is an out-of-bounds slice index and the query PANICS. Rust bounds-
+/// checks slice indexing in release too, so this is a crash, not a wrong answer.
+///
+/// Found by mutation: dropping that guard SURVIVED the whole suite, because nothing combined an
+/// OPTIONAL hop with a nested-path read. `read_property`, the path this fuses, handles the sentinel
+/// explicitly and returns `Null` for it — so this is a check the fused arm had to CARRY, and the
+/// second one in two items (894 carried `present`; this carries the sentinel).
+#[test]
+fn optional_miss_then_dotted_path_is_null() {
+    let nd = concat!(
+        r#"{"id":"a","labels":["N"],"props":{"tag":"start"}}"#,
+        "\n",
+        // A node with a record property, reachable only by an edge type the OPTIONAL hop below
+        // does NOT follow — so the hop misses and binds the sentinel.
+        r#"{"id":"b","labels":["N"],"props":{"tag":"other","meta":{"city":"nyc"}}}"#,
+        "\n",
+        r#"{"id":"e0","from":"a","to":"b","labels":["R"],"props":{}}"#,
+        "\n",
+    );
+    let store = crate::ndjson::from_ndjson(nd).unwrap();
+    let ids = |q: &str| -> Vec<String> {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &store);
+        let mut v = names_of(&run(&plan, &store), 0);
+        v.sort();
+        v
+    };
+
+    // The hop MISSES (no `:NOSUCH` edge), so `m` is the null sentinel and `m.meta.city` is Null.
+    // Without the guard this panics on an out-of-bounds index rather than returning a row.
+    assert_eq!(
+        ids(
+            "MATCH (a:N {tag:'start'}) OPTIONAL MATCH (a)-[:NOSUCH]->(m) \
+             RETURN m.meta.city AS x"
+        ),
+        vec!["Null"]
+    );
+
+    // (The PREDICATE form of this shape is not reachable to assert: a `WHERE` inside
+    // `OPTIONAL MATCH` is E_NOT_IMPLEMENTED in this engine. The projection above is the reachable
+    // one, and it is the one that indexes `present`.)
+
+    // And the hop that HITS still reads the nested value through the same arm, so the test is not
+    // merely asserting that everything is Null.
+    assert_eq!(
+        ids("MATCH (a:N {tag:'start'}) OPTIONAL MATCH (a)-[:R]->(m) \
+             RETURN m.meta.city AS x"),
+        vec!["nyc"]
+    );
+}
