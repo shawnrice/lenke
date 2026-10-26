@@ -1147,6 +1147,135 @@ fn sweep_num_count<F: Fn(f64) -> bool>(
     count
 }
 
+/// `num_conj_on_slot`'s TEMPORAL twin: a conjunction of comparisons against DATE literals on one
+/// property of `slot`, reduced to that key plus its bounds in RAW DAYS. Mirrors the numeric
+/// version exactly, including the FLIPPED spelling (`DATE '...' >= p.k` is `p.k <= DATE '...'`) and
+/// the `PropertyExists` presence atom that `has(k, pred)` desugars to — two spellings that mean the
+/// same thing must reach the same path, and the numeric one already honours both.
+fn date_conj_on_slot(pred: &Expr, slot: usize) -> Option<(String, Vec<(CompareOp, i32)>)> {
+    let atom = |e: &Expr| -> Option<(String, Option<(CompareOp, i32)>)> {
+        match e {
+            Expr::PropertyExists { slot: s, key } if *s == slot => Some((key.clone(), None)),
+            Expr::Compare { op, left, right } => {
+                let (key, op, lit) = match (left.as_ref(), right.as_ref()) {
+                    (Expr::Prop { slot: s, key }, Expr::Lit(v)) if *s == slot => {
+                        (key.clone(), *op, v)
+                    }
+                    (Expr::Lit(v), Expr::Prop { slot: s, key }) if *s == slot => {
+                        (key.clone(), flip_op(*op), v)
+                    }
+                    _ => return None,
+                };
+                match lit {
+                    Value::Temporal(crate::temporal::Temporal::Date(d)) => {
+                        Some((key, Some((op, d.days))))
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    };
+    let mut conjuncts = Vec::new();
+    flatten_and(pred, &mut conjuncts);
+    let mut key0: Option<String> = None;
+    let mut bounds: Vec<(CompareOp, i32)> = Vec::with_capacity(conjuncts.len());
+    for c in &conjuncts {
+        let (key, bound) = atom(c)?;
+        match &key0 {
+            Some(k) if *k != key => return None, // a second key can't stream one column
+            _ => key0 = Some(key),
+        }
+        if let Some(b) = bound {
+            bounds.push(b);
+        }
+    }
+    Some((key0?, bounds))
+}
+
+fn sweep_date_count<F: Fn(i32) -> bool>(
+    store: &Store,
+    label: &Option<String>,
+    data: &[crate::temporal::Temporal],
+    present: &[bool],
+    cmp: F,
+) -> u64 {
+    let mut count = 0u64;
+    scan_visit(store, label, |i| {
+        if present[i] {
+            if let crate::temporal::Temporal::Date(d) = &data[i] {
+                if cmp(d.days) {
+                    count += 1;
+                }
+            }
+        }
+    });
+    count
+}
+
+/// STREAM a DATE predicate over the label bucket, counting matches with raw `i32` day compares.
+///
+/// Item 871 censused the filter family by column representation and found this missing. A date
+/// predicate fell to the general evaluator, and the numbers say it was not merely un-specialized
+/// but actively expensive — 200,000 nodes, min of 9:
+///
+/// ```text
+///   Num  = 7                 147.3 us      the reference, already streamed
+///   WHERE true               731.1         the filter machinery with NO column read
+///   Date = DATE '...'      2,753.5         18.7x the numeric, and 3.8x WHERE TRUE
+///   Date >= DATE '...'     1,293.6         12.7x the numeric `>`
+/// ```
+///
+/// Costing MORE than `WHERE true` is the tell: `WHERE true` reads no property at all, so the ~10 ns
+/// a row above it was the per-row boxing of a `Value::Temporal` plus a generic `cmp_total`, to
+/// answer a question about one `i32`. `Date` is in bijection with `days` (item 840), so the compare
+/// is an integer compare and the column is homogeneous by construction — `kind` is checked once
+/// here rather than per row.
+///
+/// Single bound only. The two-bound range arm is deliberately absent: item 451 measured the numeric
+/// range sweep at 3.9x its single-bound twin and traced it to lost VECTORIZATION rather than to the
+/// extra compare, so a range arm here would need its own measurement rather than inheriting this
+/// one's.
+pub(super) fn try_stream_date_count(
+    store: &Store,
+    label: &Option<String>,
+    pred: &Expr,
+) -> Option<u64> {
+    let (key, bounds) = date_conj_on_slot(pred, 0)?;
+    let Some(Column::Temporal {
+        kind,
+        data,
+        present,
+        ..
+    }) = store.column(&key)
+    else {
+        return None;
+    };
+    if *kind != crate::temporal::TemporalKind::Date {
+        // A BAIL, not a correctness guard, and that was checked rather than assumed: removing it
+        // is answer-equivalent (its mutant survives). A cross-kind comparison is INCOMPARABLE, so
+        // the general path yields UNKNOWN and the row drops — measured at 0 rows for a Date
+        // column against DATETIME, TIME and even a string literal, so nothing throws here. With
+        // the check gone the sweep's `if let Temporal::Date` simply never matches and returns the
+        // same 0. It stays to skip a scan that cannot produce a row.
+        return None;
+    }
+    let [(op, t)] = bounds.as_slice() else {
+        return None; // no bound (a bare presence gate) or a range — the general path
+    };
+    let t = *t;
+    let count = match op {
+        CompareOp::Eq => sweep_date_count(store, label, data, present, |x| x == t),
+        CompareOp::Ne => sweep_date_count(store, label, data, present, |x| x != t),
+        CompareOp::Lt => sweep_date_count(store, label, data, present, |x| x < t),
+        CompareOp::Le => sweep_date_count(store, label, data, present, |x| x <= t),
+        CompareOp::Gt => sweep_date_count(store, label, data, present, |x| x > t),
+        CompareOp::Ge => sweep_date_count(store, label, data, present, |x| x >= t),
+    };
+
+    Some(count)
+}
+
 /// The TWO-BOUND arm of [`try_stream_num_count`], in its own function so that one stays small
 /// (item 453).
 ///

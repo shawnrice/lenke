@@ -3843,6 +3843,28 @@ fn index_seek_ids(store: &Store, label: Option<&str>, key: &str, value: &Value) 
                             .filter(|&id| present[id as usize] && data[id as usize] == t)
                             .collect();
                     }
+                    // TEMPORAL, added at item 871. The comment above used to name this as one of
+                    // the two cases that "must stay on the boxed path", and the boxed path was
+                    // expensive enough to be visible from outside: at 200,000 nodes
+                    // `WHERE p.dat = DATE '...'` measured **2,532 us** against 133 for the same
+                    // query on a numeric column — 19x — and, tellingly, 3.8x `WHERE true`, which
+                    // reads no property at all. Boxing a `Value::Temporal` per row to answer a
+                    // question about one `i32` is the whole of that gap.
+                    //
+                    // `Temporal` is `Copy` and its DERIVED `==` is exactly what `value::equals`
+                    // delegates to for a temporal pair — including cross-kind, which the derive
+                    // makes false between variants — so this arm is byte-identical to the boxed
+                    // comparison it replaces rather than a second equality rule. (A cross-KIND
+                    // literal never reaches here anyway: `accepts` above answers it from the
+                    // schema and returns empty without reading a node.)
+                    (Some(Column::Temporal { data, present, .. }), Value::Temporal(t)) => {
+                        let t = *t;
+                        return ids
+                            .iter()
+                            .copied()
+                            .filter(|&id| present[id as usize] && data[id as usize] == t)
+                            .collect();
+                    }
                     _ => {}
                 }
             }
@@ -4891,6 +4913,9 @@ fn try_filtered_count(
         return Some(scalar_num(c as f64));
     }
     if let Some(c) = try_stream_dict_pred_count(store, label, pred) {
+        return Some(scalar_num(c as f64));
+    }
+    if let Some(c) = try_stream_date_count(store, label, pred) {
         return Some(scalar_num(c as f64));
     }
     // Fallback: materialize the scan and run the general vectorized filter (string /

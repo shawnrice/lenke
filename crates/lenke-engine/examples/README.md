@@ -109,6 +109,18 @@ question in its module header — read the header before touching it.
   same, so the probe prints both. It is also where the dictionary arm's ≥1785x was measured: a
   dictionary key has a bounded rank, so once `skip+limit` rows at the extreme rank are seen in
   arrival order the scan can STOP.
+- `filtercensus_871` — which column REPRESENTATIONS does a filtered scan have a fast path for?
+  One fixture whose five columns differ ONLY in representation (Num, Dict, Str over the 4,096
+  dictionary cap, Bool, Date), each predicate built to select the same 1/50 of rows. Two controls
+  per row and they answer different questions: `count(*)` reads no property (the floor) and
+  `WHERE true` runs the filter machinery over every row while keeping them all — so if `WHERE
+<pred>` and `WHERE true` agree the predicate is free and the cost is the scan, and if they
+  diverge the predicate is the cost. That pair is what showed the Date predicate costing 3.8x
+  `WHERE true`, i.e. more than the generic boolean path it should beat. `PLAN=1` dumps the
+  optimized plan for three predicates instead of timing them, which is how item 871 found that
+  EQUALITY lowers to `IndexSeek` and never reaches the filter family at all; `XKIND=1` prints what
+  a cross-KIND temporal comparison does (0 rows, no fault) — the fact a fast path's `kind` bail
+  depends on.
 - `keyless_870` — do the two spellings of a KEYLESS `LIMIT` converge natively? The TS engine's
   statement-position keyless page forced the whole working table and sliced (36.68 ms against 0.04
   for the clause spelling, item 869), so this asks the same of native across seven pairs: bare,

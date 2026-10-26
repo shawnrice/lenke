@@ -25885,3 +25885,28 @@ copies before the comment was added.
   printed a clean table answering the OLDER question. The row count was the only tell. Check the
   build for a `Compiling` line (or `^error`) before reading any number — the same trap item 847
   recorded for `cargo test`.
+- **TEMPORAL filter predicates now have typed paths — 11.2x streamed, 6.4x seeked (item 871).**
+  A representation census of the filter family found Date (and Bool) named in no fast path. A DATE
+  predicate cost **3.8x `WHERE true`** — i.e. more than the generic boolean machinery, because it
+  boxed a `Value::Temporal` per row to compare one `i32`. Two fixes, because **equality lowers to
+  `IndexSeek` and never reaches the filter family**: `try_stream_date_count` for the range form
+  (1,159 -> 103 us) and a `Column::Temporal` arm in the unindexed seek fallback for equality
+  (2,506 -> 391). Num/Dict/Str/Bool controls all flat. Residual: `Date =` is still 3x the numeric
+  arm (a `Temporal` is a wider value than an `f64`); parity is not claimed.
+- **OPEN, PRICED — `WHERE p.bul` costs 2.3x `WHERE p.bul = true` (item 871).** 312.2 us against
+  125.7 at 200,000 nodes, two spellings of one predicate. A bare property in boolean context is a
+  different mechanism from a comparison, so it needs its own item; priced in
+  `examples/filtercensus_871.rs`.
+- **METHOD — two controls per row, not one (item 871).** `count(*)` (reads no property) bounds the
+  floor; `WHERE true` (filter machinery, keeps every row) separates "the predicate is free and the
+  scan is the cost" from "the predicate IS the cost". With only the first, Date would have read as
+  "19x the numeric" with the cause open; with both, "3.8x WHERE TRUE" named it immediately.
+- **METHOD — check the plan before believing a fast path is the target (item 871).** A date
+  EQUALITY and a date RANGE on the same column lower to different plans (`IndexSeek` vs `Filter`),
+  so a fix to the filter family moved the range by 11.2x and the equality by nothing. One
+  `PLAN=1` dump found it; the first measurement alone would have shipped half a fix and reported it
+  as a whole one.
+- **A cross-KIND temporal comparison returns 0 rows and does NOT fault (item 871).** Measured for a
+  Date column against `DATETIME`, `TIME` and a string literal. So a temporal fast path's `kind`
+  check is a BAIL (skip a scan that cannot match), not a correctness guard — its mutant is
+  equivalent, which is why the comment says so rather than implying correctness.

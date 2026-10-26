@@ -27420,3 +27420,149 @@ fn top_k_rank_bounded_dict_key() {
         ["r0", "r137", "r274", "NULL", "NULL", "NULL"]
     );
 }
+
+/// Item 871: the two TEMPORAL filter paths added by the filter-representation census — a streaming
+/// DATE range predicate, and the typed arm in the unindexed seek fallback that answers a DATE
+/// EQUALITY. Both are answer-equivalent to the boxed paths they replace, so the ROUTE has to be
+/// asserted alongside the answers: a mutant turning either off returns identical rows.
+///
+/// The fixture gives every node a date AND a numeric twin carrying the same ordinal, so each date
+/// expectation has an independent arithmetic check that does not go through the date path at all.
+#[test]
+fn temporal_filter_paths() {
+    use crate::temporal::{Date, Temporal};
+    let mut b = Builder::default();
+    for i in 0..400u32 {
+        let m = i % 50;
+        b.node(
+            &["T"],
+            &[
+                (
+                    "d",
+                    Value::Temporal(Temporal::Date(Date {
+                        days: 19_723 + i32::try_from(m).unwrap_or(0),
+                    })),
+                ),
+                ("m", n(f64::from(m))),
+            ],
+        );
+    }
+    // a node with the key ABSENT, which must never match a comparison
+    b.node(&["T"], &[("m", n(-1.0))]);
+    let store = b.build();
+
+    assert!(
+        matches!(
+            store.column("d"),
+            Some(crate::store::Column::Temporal { .. })
+        ),
+        "d must be a packed temporal column or neither path under test is reached"
+    );
+
+    let cnt = |q: &str| -> f64 {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &store);
+        match run(&plan, &store).rows[0][0] {
+            Value::Num(x) => x,
+            ref o => panic!("{o:?}"),
+        }
+    };
+
+    // 400 nodes over 50 distinct days => 8 per day. The numeric twin proves the 8 independently.
+    assert_eq!(cnt("MATCH (t:T) WHERE t.m = 0 RETURN count(*) AS c"), 8.0);
+    assert_eq!(
+        cnt("MATCH (t:T) WHERE t.d = DATE '2024-01-01' RETURN count(*) AS c"),
+        8.0
+    );
+    // >= the 8th distinct day keeps 43 of 50 days
+    assert_eq!(
+        cnt("MATCH (t:T) WHERE t.m >= 7 RETURN count(*) AS c"),
+        344.0
+    );
+    assert_eq!(
+        cnt("MATCH (t:T) WHERE t.d >= DATE '2024-01-08' RETURN count(*) AS c"),
+        344.0
+    );
+    assert_eq!(
+        cnt("MATCH (t:T) WHERE t.d < DATE '2024-01-08' RETURN count(*) AS c"),
+        56.0
+    );
+    assert_eq!(
+        cnt("MATCH (t:T) WHERE t.d <> DATE '2024-01-01' RETURN count(*) AS c"),
+        392.0
+    );
+    // THE FLIPPED SPELLING must reach the same path and the same answer — `num_conj_on_slot`
+    // already honoured it and the temporal twin has to as well.
+    assert_eq!(
+        cnt("MATCH (t:T) WHERE DATE '2024-01-08' <= t.d RETURN count(*) AS c"),
+        344.0
+    );
+    // A DIFFERENT temporal KIND never equals a Date, and must not match rather than fault.
+    assert_eq!(
+        cnt("MATCH (t:T) WHERE t.d = DATETIME '2024-01-01T00:00:00' RETURN count(*) AS c"),
+        0.0
+    );
+    // The absent-key node is in the label but carries no `d`, so it matches no comparison and
+    // IS NOT NULL sees exactly the 400 that do.
+    assert_eq!(
+        cnt("MATCH (t:T) WHERE t.d IS NOT NULL RETURN count(*) AS c"),
+        400.0
+    );
+    assert_eq!(
+        cnt("MATCH (t:T) WHERE t.d IS NULL RETURN count(*) AS c"),
+        1.0
+    );
+    // THE ABSENT CELL'S BACKING VALUE MUST NOT MATCH. A packed column still stores something at
+    // an absent row, and for a date column that is day 0 — 1970-01-01. So this query is the one
+    // that distinguishes "skipped because `present[i]` is false" from "happened not to equal the
+    // literal": without the presence check the absent node would match it. Nothing else in this
+    // test can see that, and its mutant survived until this line existed.
+    assert_eq!(
+        cnt("MATCH (t:T) WHERE t.d = DATE '1970-01-01' RETURN count(*) AS c"),
+        0.0,
+        "an absent temporal cell must not match its backing default"
+    );
+    assert_eq!(
+        cnt("MATCH (t:T) WHERE t.d >= DATE '1970-01-01' RETURN count(*) AS c"),
+        400.0,
+        "and must not be swept in by a range that covers its backing default"
+    );
+
+    // THE ROUTES, asserted directly. Both are answer-equivalent, so nothing above can tell
+    // whether they fired.
+    let scan = Plan::Scan {
+        label: Some("T".into()),
+    };
+    let ge = Expr::Compare {
+        op: crate::ir::CompareOp::Ge,
+        left: Box::new(Expr::Prop {
+            slot: 0,
+            key: "d".into(),
+        }),
+        right: Box::new(Expr::Lit(Value::Temporal(Temporal::Date(Date {
+            days: 19_730,
+        })))),
+    };
+    assert!(
+        matches!(scan, Plan::Scan { .. }),
+        "the shape under test is a bare scan"
+    );
+    assert_eq!(
+        fastpath::try_stream_date_count(&store, &Some("T".into()), &ge),
+        Some(344),
+        "a single-bound DATE range must take the streaming path"
+    );
+    // a NUMERIC predicate must NOT be claimed by the date path
+    let numge = Expr::Compare {
+        op: crate::ir::CompareOp::Ge,
+        left: Box::new(Expr::Prop {
+            slot: 0,
+            key: "m".into(),
+        }),
+        right: Box::new(Expr::Lit(Value::Num(7.0))),
+    };
+    assert_eq!(
+        fastpath::try_stream_date_count(&store, &Some("T".into()), &numge),
+        None,
+        "the date path must decline a numeric column"
+    );
+}
