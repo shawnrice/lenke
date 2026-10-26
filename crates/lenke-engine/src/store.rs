@@ -2126,6 +2126,38 @@ impl Store {
         resolve_path(&self.prop(node, parts[0]), &parts[1..])
     }
 
+    /// The BOXED (`Gen`) column behind `key`, as `(data, present)` — the handle a per-row loop
+    /// should hold instead of re-deriving it per row (item 894).
+    ///
+    /// [`prop_ref`] and [`prop_path_parts`] both begin with `self.props.get(key)`, a HashMap
+    /// lookup that HASHES the key string. Called from inside a scan's filter closure that is a
+    /// hash of a constant, once per node — 200,000 hashes of `"meta"` to scan 200,000 nodes.
+    /// Resolving the column once and indexing it per row removes that.
+    ///
+    /// `None` for a typed column (`Num`/`Str`/`Dict`/`Bool`/`Temporal`), which holds no `Value`
+    /// to reference, and for an absent property; the caller keeps its general path for those.
+    ///
+    /// Fourth item in the family the audit names: a key is constant across a scan, and
+    /// splitting it (359), owning it (331), parsing it (332) or — here — HASHING it per row is
+    /// the recurring bug.
+    #[must_use]
+    pub fn gen_column(&self, key: &str) -> Option<(&[Value], &[bool])> {
+        match self.props.get(key)? {
+            Column::Gen { data, present } => Some((data, present)),
+            _ => None,
+        }
+    }
+
+    /// Resolve record sub-fields against an already-read base value.
+    ///
+    /// The per-row half of [`prop_path_parts`], exposed so a caller holding a hoisted
+    /// [`gen_column`] can do it without going back through the property map. `sub` is the path
+    /// AFTER the base segment; empty means "the base itself".
+    #[must_use]
+    pub fn resolve_sub(base: &Value, sub: &[&str]) -> Value {
+        resolve_path(base, sub)
+    }
+
     /// The typed column for `key`, for a bulk gather. `None` = no such property.
     #[must_use]
     pub fn column(&self, key: &str) -> Option<&Column> {

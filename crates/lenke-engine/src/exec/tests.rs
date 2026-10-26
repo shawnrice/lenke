@@ -28090,6 +28090,12 @@ fn dotted_path_base_kinds() {
         // n2: NO `meta` at all — the absent-base case.
         r#"{"id":"n2","labels":["P"],"props":{"age":60,"city":"bern"}}"#,
         "\n",
+        // n3: `meta` PRESENT IN THE SCHEMA but NULL at this node. This is the case the hoisted
+        // scan's `present[id]` guard exists for (item 894): with the column resolved once, the
+        // per-row read indexes `data` directly, so the present flag is the only thing standing
+        // between a null-at-this-node record and a bogus read. Nothing covered it until now.
+        r#"{"id":"n3","labels":["P"],"props":{"age":70,"city":"lima","meta":null}}"#,
+        "\n",
     );
     let store = crate::ndjson::from_ndjson(nd).unwrap();
     let ids = |q: &str| -> Vec<String> {
@@ -28114,6 +28120,17 @@ fn dotted_path_base_kinds() {
     assert_eq!(
         ids("MATCH (n:P) WHERE n.meta.tier = 7 RETURN n.city AS x"),
         vec!["rome"]
+    );
+
+    // A record column that is NULL at this node matches nothing, and must not be confused with
+    // a record that HAS the field. n3 is the only node whose `meta` is null.
+    assert_eq!(
+        ids("MATCH (n:P) WHERE n.meta.city = 'lima' RETURN n.city AS x"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        ids("MATCH (n:P) WHERE n.city = 'lima' RETURN n.meta.city AS x"),
+        vec!["Null"]
     );
 
     // A TYPED base with a sub-field: `prop_ref` declines and the fallback resolves to Null, so
@@ -28155,6 +28172,55 @@ fn dotted_path_base_kinds() {
     assert_eq!(
         ids2("MATCH (n:Q) WHERE n.a.b.c.d = 5 RETURN n.tag AS x"),
         Vec::<String>::new()
+    );
+}
+
+/// Item 894: a REMOVED record property must not match on its stale value.
+///
+/// The hoisted dotted-path scan resolves the base column once and then indexes `data` per row, so
+/// `present[id]` is the only thing standing between a removed property and a bogus read — and
+/// `Column::set_absent` for a `Gen` column clears `present[i]` while LEAVING `data[i]` untouched,
+/// so the old record is still physically there.
+///
+/// Found by mutation: dropping that guard SURVIVED the whole suite including the null-at-this-node
+/// cases, because a never-set slot holds `Value::Null` anyway. Only a REMOVE leaves a stale
+/// non-null value behind, and nothing exercised it. The pre-894 path read through `prop_ref`,
+/// which checks `present` itself, so this is a guard the change had to carry rather than a new
+/// idea — and an unguarded version returns a WRONG ROW, not an error.
+#[test]
+fn removed_record_prop_does_not_match_stale_value() {
+    let nd = concat!(
+        r#"{"id":"n0","labels":["P"],"props":{"city":"oslo","meta":{"city":"nyc"}}}"#,
+        "\n",
+        r#"{"id":"n1","labels":["P"],"props":{"city":"rome","meta":{"city":"nyc"}}}"#,
+        "\n",
+    );
+    let mut store = crate::ndjson::from_ndjson(nd).unwrap();
+
+    let ids = |st: &crate::store::Store, q: &str| -> Vec<String> {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), st);
+        let mut v = names_of(&run(&plan, st), 0);
+        v.sort();
+        v
+    };
+    let q = "MATCH (n:P) WHERE n.meta.city = 'nyc' RETURN n.city AS x";
+
+    // Both match to begin with, so the removal below has something to remove.
+    assert_eq!(ids(&store, q), vec!["oslo", "rome"]);
+
+    // Remove n0's `meta`. Its slot in `data` still holds the record; only `present` is cleared.
+    store.remove_prop(0, "meta");
+
+    // n0 must be GONE from the result. Without the `present[]` guard it is still there, matching
+    // on a property it no longer has.
+    assert_eq!(ids(&store, q), vec!["rome"]);
+    // And reading the path on n0 yields Null rather than the stale value.
+    assert_eq!(
+        ids(
+            &store,
+            "MATCH (n:P) WHERE n.city = 'oslo' RETURN n.meta.city AS x"
+        ),
+        vec!["Null"]
     );
 }
 

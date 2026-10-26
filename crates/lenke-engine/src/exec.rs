@@ -3880,6 +3880,28 @@ fn index_seek_ids(store: &Store, label: Option<&str>, key: &str, value: &Value) 
             // 200,000 nodes) where the work either side of the split is the same shape.
             let parts: Vec<&str> = key.split('.').collect();
 
+            // And the BASE COLUMN is resolved once here, not once per row (item 894). Item 359
+            // took the key's SPLIT out of this closure; `prop_path_parts` still began with
+            // `self.props.get(parts[0])`, a HashMap lookup that hashes the key — a constant —
+            // once per node. Holding `(data, present)` and indexing it per row removes 200,000
+            // hashes of `"meta"` from a 200,000-node scan.
+            //
+            // Only for a BOXED (`Gen`) base, which is the only kind a record path can walk into.
+            // A typed or absent base keeps the general path below, where it still resolves to
+            // `Null` for a sub-field exactly as before.
+            if let Some((data, present)) = store.gen_column(parts[0]) {
+                let sub = &parts[1..];
+
+                return ids
+                    .iter()
+                    .copied()
+                    .filter(|&id| {
+                        present[id as usize]
+                            && value::equals(&Store::resolve_sub(&data[id as usize], sub), value)
+                    })
+                    .collect();
+            }
+
             ids.iter()
                 .copied()
                 .filter(|&id| value::equals(&store.prop_path_parts(id, &parts), value))

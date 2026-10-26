@@ -26354,3 +26354,26 @@ p.flag` 4.51x (item 872).** Only the comparison spelling had one: `= true` lower
 - **CONFIRMED USEFUL AGAIN — the equivalence control mutant (item 893, after 359).** Deleting the
   new fast arm so every row takes the fallback SURVIVES, and that survival is the assertion that the
   two routes agree. Worth more than a control that only shows the suite runs.
+- **SHIPPED (native) — the dotted-path scan HASHED its constant key once per row: 1.65x, 1.92x
+  cumulative with 893 (item 894).** `prop_path_parts` begins with `self.props.get(key)`, a HashMap
+  lookup that hashes the key string, and it was called from inside the scan's filter closure — so a
+  200,000-node scan for `meta.city` hashed the constant `"meta"` 200,000 times. New
+  `Store::gen_column(key) -> Option<(&[Value], &[bool])>` resolves the boxed column ONCE before the
+  loop. Two binaries alternated, min of three: **4272.5 → 2592.1, DISJOINT** (21.4 → 13.0 ns/row,
+  i.e. 8.4 ns = a short-string hash plus probe); all three controls **1.00x**. With 893: **4977 →
+  2592, 1.92x**, and 4.7x against the pre-359 state. Gap to the matched flat row **20.2x → 10.5x**.
+- **FOURTH IN THE FAMILY — "a key is constant across a scan" now includes HASHING it (item 894).**
+  331 owned the key three times, 332 allocated a `String` per JSON key, 359 SPLIT it per row, 894
+  HASHED it per row — three of the four in or around this one closure. Item 359's line should read:
+  splitting, parsing, owning **or hashing** a key per row is the recurring bug.
+- **A WRONG-ANSWER BUG FOUND BY A SURVIVING MUTANT — the `present[]` guard on a hoisted column read
+  (item 894).** Dropping it SURVIVED the whole suite, including a null-at-this-node case, because
+  `Column::push_absent` stores `Value::Null` for a `Gen` column so a never-set slot reads Null
+  either way. But **`Column::set_absent` clears `present[i]` and leaves `data[i]` UNTOUCHED**, so
+  after a property REMOVAL the old record is still physically in the column and an unguarded scan
+  matches a value the node no longer has — a wrong ROW, not an error. Pinned by
+  `removed_record_prop_does_not_match_stale_value`; the mutant is now CAUGHT.
+- **METHOD — a hoist inherits every check the accessor it bypassed was doing (item 894).** The
+  pre-894 read went through `prop_ref`, which checks `present` itself. Moving the read out of the
+  accessor silently makes that the caller's job, and a tombstone/`present` check is the easiest one
+  to leave behind — invisible to tests unless one DELETES a property and re-queries.
