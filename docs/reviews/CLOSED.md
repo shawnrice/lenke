@@ -25930,3 +25930,24 @@ p.flag` 4.51x (item 872).** Only the comparison spelling had one: `= true` lower
   both representations return identical counts for the bare, negated, `IS NULL` and `IS NOT NULL`
   spellings, so it is representational only. It does mean a typed-column fast path is not reached
   for ingest-time nulls, and that a test wanting a typed column must use ABSENT cells instead.
+- **The TS engine HAS item 872's bare-bool gap (2.13x) and does NOT have item 871's temporal one
+  (item 873).** Measured, not inferred: `WHERE p.bul` 7.499 ms against `WHERE p.bul = true` 3.526
+  at 200k, where a date predicate lands at 1.15x the numeric (native's was 19x, because it boxed a
+  typed-column value per row and TS has no typed columns to box out of). **Fourth data point on
+  item 843's rule, and the third distinct answer: one gap shared, one not, in the same census.**
+- **OPEN — the cause of the TS bare-bool gap, with three candidates ELIMINATED (item 873).** Not
+  the count shortcut (the gap persists in a value projection: 7.489 vs 3.703). Not a different
+  evaluation count (`pushWhereIntoNode` pushes both into the node predicate and says so). Not
+  `asTruth` (three branches, against a ~20 ns/row gap). And `compileExpr`'s comparison arm compiles
+  the `prop` arm's closure PLUS a compare, so it should be slower and is 2x faster — so the
+  comparison is probably not going through that closure at all, but reaching the
+  `collectHints`/`seedHints` inline-gate route. Instrument the route before changing anything.
+- **CONSTRAINT on any fix to the above (item 873).** A property in boolean context is DYNAMIC under
+  the static boolean-context check — a per-row `asTruth` that RAISES on a non-boolean. A fix must
+  not convert `WHERE p.b` into a seed or inline constraint that silently drops a non-boolean row.
+  See [[boolean-context-static-check]]: the adjacent attempt was tried twice and took ~1 divergence
+  per 20,000 queries to 7.
+- **METHOD — print the ROW COUNT next to every timing (item 873).** This probe's first run reported
+  0 rows for every date shape with entirely plausible timings: the fixture stored dates as ISO
+  STRINGS, and string-vs-temporal is a documented cross-type no-match. The timings could not reveal
+  that; the row column did.
