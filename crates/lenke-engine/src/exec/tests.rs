@@ -28065,3 +28065,165 @@ fn edge_label_and_untyped_counts() {
         "the two spellings agree with multi-label edges present too"
     );
 }
+
+/// Item 893: a dotted path reads its BASE property by reference when the column can give one, and
+/// falls back to an owned read when it cannot. The three base kinds route DIFFERENTLY, and only a
+/// record base takes the new arm:
+///
+/// - a RECORD base (`Gen` column)  -> `prop_ref` returns `Some`, the new arm resolves the field
+/// - a TYPED base (`Num`/`Str`/…)  -> `prop_ref` returns `None`; the fallback must still yield
+///   `Null` for a sub-field of a scalar, not a panic and not the scalar itself
+/// - an ABSENT base                -> `prop_ref` returns `None`; `Null` again
+///
+/// The two paths are answer-equivalent, which is exactly why this needs asserting: the route is
+/// invisible to every other test, and a mutant that deletes the fast arm SURVIVES the suite (that
+/// survival is the equivalence assertion, cf. item 359's control mutant).
+#[test]
+fn dotted_path_base_kinds() {
+    let nd = concat!(
+        // n0: a record base with two fields, plus a typed scalar and a typed string.
+        r#"{"id":"n0","labels":["P"],"props":{"age":40,"city":"oslo","meta":{"city":"nyc","tier":2}}}"#,
+        "\n",
+        // n1: a record base whose sub-field is ABSENT from the record.
+        r#"{"id":"n1","labels":["P"],"props":{"age":50,"city":"rome","meta":{"tier":7}}}"#,
+        "\n",
+        // n2: NO `meta` at all — the absent-base case.
+        r#"{"id":"n2","labels":["P"],"props":{"age":60,"city":"bern"}}"#,
+        "\n",
+    );
+    let store = crate::ndjson::from_ndjson(nd).unwrap();
+    let ids = |q: &str| -> Vec<String> {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &store);
+        let mut v = names_of(&run(&plan, &store), 0);
+        v.sort();
+        v
+    };
+
+    // A RECORD base, one sub-field: the new by-reference arm. Only n0 matches.
+    assert_eq!(
+        ids("MATCH (n:P) WHERE n.meta.city = 'nyc' RETURN n.city AS x"),
+        vec!["oslo"]
+    );
+    // The same path PROJECTED, so the value itself is checked and not just the predicate.
+    assert_eq!(
+        ids("MATCH (n:P) WHERE n.city = 'oslo' RETURN n.meta.city AS x"),
+        vec!["nyc"]
+    );
+    // A sub-field absent FROM the record is Null, so it matches nothing — n1 has `meta` but no
+    // `meta.city`, and must not be confused with n2, which has no `meta` at all.
+    assert_eq!(
+        ids("MATCH (n:P) WHERE n.meta.tier = 7 RETURN n.city AS x"),
+        vec!["rome"]
+    );
+
+    // A TYPED base with a sub-field: `prop_ref` declines and the fallback resolves to Null, so
+    // nothing matches. The scalar must NOT leak through as its own value.
+    assert_eq!(
+        ids("MATCH (n:P) WHERE n.age.anything = 40 RETURN n.city AS x"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        ids("MATCH (n:P) WHERE n.city.anything = 'oslo' RETURN n.city AS x"),
+        Vec::<String>::new()
+    );
+
+    // An ABSENT base with a sub-field: Null, nothing matches, no panic.
+    assert_eq!(
+        ids("MATCH (n:P) WHERE n.nosuch.field = 1 RETURN n.city AS x"),
+        Vec::<String>::new()
+    );
+
+    // And a THREE-segment path, which is the one shape that still takes `resolve_path`'s general
+    // loop rather than its one-segment arm — a record nested in a record resolves, and going one
+    // level too deep is Null.
+    let nd2 = concat!(
+        r#"{"id":"m0","labels":["Q"],"props":{"tag":"deep","a":{"b":{"c":5}}}}"#,
+        "\n",
+    );
+    let store2 = crate::ndjson::from_ndjson(nd2).unwrap();
+    let ids2 = |q: &str| -> Vec<String> {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &store2);
+        let mut v = names_of(&run(&plan, &store2), 0);
+        v.sort();
+        v
+    };
+
+    assert_eq!(
+        ids2("MATCH (n:Q) WHERE n.a.b.c = 5 RETURN n.tag AS x"),
+        vec!["deep"]
+    );
+    assert_eq!(
+        ids2("MATCH (n:Q) WHERE n.a.b.c.d = 5 RETURN n.tag AS x"),
+        Vec::<String>::new()
+    );
+}
+
+/// Item 893: `Store::prop_path` / `prop_path_parts` tested DIRECTLY, because their contract is
+/// wider than any query exercises.
+///
+/// `prop_path_parts` has exactly one caller inside the engine (the unindexed `IndexSeek` fallback
+/// filter) and it only ever passes a DOTTED key — two segments or more. `prop_path` has no
+/// internal caller at all: it is public API for a host. So the documented single-segment case
+/// ("`parts[0]` is the base property and the rest are record sub-fields") is unreachable from
+/// GQL, and a mutant that replaced the owned-read fallback with `Value::Null` SURVIVED all 1980
+/// tests — the engine never asks for the one case that fallback exists to serve.
+///
+/// These assertions close that gap. They are unit-level on purpose: routing them through a query
+/// cannot reach the shape.
+#[test]
+fn prop_path_contract() {
+    use crate::value::{equals, Value};
+
+    let nd = concat!(
+        r#"{"id":"n0","labels":["P"],"props":{"age":40,"city":"oslo","meta":{"city":"nyc","tier":2}}}"#,
+        "\n",
+        // A record column that is NULL at this node, so `prop_ref` declines and the owned read is
+        // what answers — the other way the fallback is reached.
+        r#"{"id":"n1","labels":["P"],"props":{"age":41,"city":"rome","meta":null}}"#,
+        "\n",
+    );
+    let store = crate::ndjson::from_ndjson(nd).unwrap();
+
+    // Node ids come from document order. ASSERTED rather than assumed, so a change in that
+    // ordering fails here instead of silently testing the wrong node.
+    let (n0, n1) = (0u32, 1u32);
+    assert!(
+        equals(&store.prop(n0, "city"), &Value::Str("oslo".into()))
+            && equals(&store.prop(n1, "city"), &Value::Str("rome".into())),
+        "fixture nodes are not in the assumed order"
+    );
+
+    // ONE SEGMENT, typed base: must return the SCALAR, not Null. This is the case the surviving
+    // mutant broke and nothing else covered.
+    assert!(equals(&store.prop_path(n0, "age"), &Value::Num(40.0)));
+    assert!(equals(
+        &store.prop_path(n0, "city"),
+        &Value::Str("oslo".into())
+    ));
+    assert!(equals(
+        &store.prop_path_parts(n0, &["age"]),
+        &Value::Num(40.0)
+    ));
+
+    // ONE SEGMENT, record base: the whole record comes back.
+    assert!(matches!(store.prop_path(n0, "meta"), Value::Record(_)));
+
+    // TWO SEGMENTS, through the by-reference arm.
+    assert!(equals(
+        &store.prop_path(n0, "meta.city"),
+        &Value::Str("nyc".into())
+    ));
+    assert!(equals(&store.prop_path(n0, "meta.tier"), &Value::Num(2.0)));
+
+    // A sub-field of a TYPED base is Null, not the scalar. An absent base, and an absent
+    // sub-field of a present record, likewise.
+    assert!(store.prop_path(n0, "age.anything").is_null());
+    assert!(store.prop_path(n0, "nosuch.field").is_null());
+    assert!(store.prop_path(n0, "meta.nosuch").is_null());
+
+    // A record column NULL at this node: `prop_ref` declines, the owned read answers.
+    assert!(store.prop_path(n1, "meta").is_null());
+    assert!(store.prop_path(n1, "meta.city").is_null());
+    // ...while its typed siblings still read normally through that same fallback.
+    assert!(equals(&store.prop_path(n1, "age"), &Value::Num(41.0)));
+}

@@ -2105,6 +2105,24 @@ impl Store {
     /// Panics if `parts` is empty.
     #[must_use]
     pub fn prop_path_parts(&self, node: u32, parts: &[&str]) -> Value {
+        // Read the BASE property by reference when the column can give one (item 893).
+        //
+        // `prop` returns an OWNED `Value`, and a record/map property lives in a `Gen` column, so
+        // reading one costs an `Arc` refcount BUMP and a matching DROP — two atomics per row — to
+        // hand back a record this function then throws away after reading ONE field out of it.
+        // `prop_ref` borrows instead, so the only clone left is the field actually wanted.
+        //
+        // This is the same shape item 641 found for `n.tags[0]` (a list property cloned whole to
+        // read one element, 191x a plain read) and `prop_ref` is the accessor that item added for
+        // it. Item 359 fixed the per-row path SPLIT here; this is the per-row base-value clone.
+        //
+        // `prop_ref` is `None` for a typed column (`Num`/`Str`/`Dict`/`Bool`/`Temporal`) and for
+        // an absent or null-at-this-node property, so the fallback keeps those cases exactly as
+        // they were — a typed base with sub-fields still resolves to `Null`, via `resolve_path`.
+        if let Some(base) = self.prop_ref(node, parts[0]) {
+            return resolve_path(base, &parts[1..]);
+        }
+
         resolve_path(&self.prop(node, parts[0]), &parts[1..])
     }
 

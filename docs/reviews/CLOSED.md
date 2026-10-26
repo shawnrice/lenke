@@ -26326,3 +26326,31 @@ p.flag` 4.51x (item 872).** Only the comparison spelling had one: `= true` lower
   rewrite fails 2 assertions while all 826 other gremlin tests stay green. Eagerness matters because
   it moves the sort and the element fault to `applyStep` time, and this engine has a recorded
   lazy-vs-eager deviation on `limit(0)` shapes.
+- **SHIPPED (native) — a nested path cloned its BASE RECORD once per row: 1.17x (item 893).**
+  `prop_path_parts` read its base with `prop()`, which returns an OWNED `Value`; a record lives in a
+  `Gen` column and `Value::Record` is `Arc<[(GStr, Value)]>`, so that is an atomic refcount bump AND
+  drop per row to hand back a record the function throws away after reading ONE field. Now it reads
+  through `prop_ref` (the accessor item 641 added after measuring the analogous list case,
+  `n.tags[0]`, at 191x), leaving the field clone as the only one. Two binaries alternated, min of
+  three: **4977.3 → 4267.3, DISJOINT** (24.9 → 21.3 ns/row); `bench_all`'s own row 5030.6 → 4300.8.
+  All three controls (matched flat string, flat scalar, scalar on the map graph) at **1.00x**. The
+  gap to the matched flat row goes 20.2x → **17.4x**; what remains is the unindexed `IndexSeek`
+  fallback doing a per-row record lookup against a columnar compare. THIRD item in the
+  per-row-constant family (331, 332, 359) and the SECOND in this function.
+- **NOTE ON ITEM 359'S NOISE FLOOR — not inherent to `value/maps` (item 893).** 359 recorded its
+  flat-NUMERIC controls moving ~1.11x on a change that could not reach them and concluded the floor
+  on this bench was ~1.11x. Item 893's run shows all three controls at 1.00x across six readings, so
+  that was layout drift on that particular change, not a property of the bench. Do not discount a
+  result here against an assumed 1.11x floor; measure the controls.
+- **A TEST GAP FOUND BY A SURVIVING MUTANT — `Store::prop_path`'s single-segment contract (item
+  893).** Replacing the owned-read fallback with `Value::Null` SURVIVED all 1980 tests, because the
+  fallback's only live job inside the engine is producing `Null`: `prop_path_parts` has exactly ONE
+  internal caller (the unindexed `IndexSeek` fallback filter), which always passes ≥2 segments, and
+  `Store::prop_path` has NO internal caller — it is public API for a host. So the single-segment case
+  its own doc comment specifies was unreachable from GQL and untested. Closed by
+  `prop_path_contract`, a UNIT-level test (a query cannot reach the shape); the mutant is now
+  CAUGHT. **A public function whose only callers are external needs unit tests, not integration
+  ones.**
+- **CONFIRMED USEFUL AGAIN — the equivalence control mutant (item 893, after 359).** Deleting the
+  new fast arm so every row takes the fallback SURVIVES, and that survival is the assertion that the
+  two routes agree. Worth more than a control that only shows the suite runs.
