@@ -26647,3 +26647,22 @@ undefined`). None of these is discoverable from the list's definition. (Those ga
   The next instrument is inside `compileMatch` (the matcher closure, `orient` precomputation,
   `checkLinearScope`); the query ladder has given all it can. Deliberately NOT attributed further —
   three items this window went wrong attributing from a reading plus one shape.
+- **OPEN, PRICED — `checkLinearScope` is 15-19% of EVERY compile (item 908).** `compile`'s first act
+  is an eager scope-validation pass over the clause list, which `compileLinear` then walks again.
+  Measured: `RETURN 1` 0.109 of 0.708 (15%), `MATCH (n) RETURN 1` 0.428 of 2.313 (18%), the big query
+  **1.428 of 8.453 (17%)**. The share is flat across shapes, which is what makes it a target rather
+  than a fixture artifact. The fix is **one walk instead of two**, not cheaper validation — it has to
+  happen. NOT attempted: fusing it changes WHEN a scope error is raised relative to the other eager
+  compile-time fault (`E_UNKNOWN_FUNCTION`, raised after `compileLinear`), and error order is
+  observable and compared against native. Needs its own item with the fault-ordering question settled
+  first and a test pinning which error wins when a query has both.
+- **REFUTED — the match-clause arm is NOT where a node pattern's compile cost goes (item 908).**
+  Adding `MATCH (n)` costs ~1.83 us; the WHOLE `case 'match'` arm (patterns + prefilter) is **0.466 —
+  25%**, `compilePath` 0.342, `seedPrefilter` 0.026, and `compileNode` just **0.148 (9%)**. Item 907
+  named `compileMatch` as where to look and the instrument says it is mostly not there. Attributing
+  from the ladder plus a reading would have aimed at `compileNode` — the same trap items 900-902 fell
+  into three times.
+- **TRAP, SECOND OFFENCE — `systemd-run` ate a `${...}` again (item 908, recorded at 897).** An
+  inline `bun -e` lost its percentage columns to unit-file expansion, with a warning naming the eaten
+  expression. Harmless here; at 897 the same thing silently collapsed a 200,000-node fixture to one
+  node. **Recording a trap does not stop it — put the code in a FILE.**
