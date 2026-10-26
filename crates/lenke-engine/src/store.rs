@@ -90,6 +90,21 @@ type U32Map<V> = HashMap<u32, V, U32BuildHasher>;
 /// the set does not.
 const INDEX_SET_MIN: usize = 12;
 
+/// How many distinct label ids a small delete batch's victims may carry before `delete_nodes`
+/// stops tracking them on the stack and falls back to sweeping every bucket (item 923).
+///
+/// `TARGETED_MAX` victims with one or two labels each fits easily; the cap exists so the capture
+/// needs no allocation on a path whose whole cost is a few hundred nanoseconds.
+const VICTIM_LABELS_MAX: usize = 16;
+
+/// How many DISTINCT labels the store must hold before a small delete bothers to look up which
+/// buckets its victims are actually in, rather than sweeping them all (item 923).
+///
+/// Below this the sweep visits almost nothing and the lookup is pure overhead. Chosen from the
+/// break-even: the capture costs a fixed ~10-20 ns and each avoided bucket visit is a
+/// `binary_search` worth about 7 ns, so it pays once it skips three or four buckets.
+const LABEL_CAPTURE_MIN: usize = 4;
+
 /// A `Value` ordered by the value contract's total order (`cmp_total`) — the key
 /// type for a range index's `BTreeMap`. It DELEGATES to `cmp_total`; it does not
 /// restate ordering. `Eq` is "compares equal under `cmp_total`", so values the
@@ -5038,6 +5053,67 @@ impl Store {
         // call that tombstoned it, and re-clearing them is a no-op repeated V times. A rollback
         // (`Undo::RestoreNode`) clears the tombstone AND restores the labels, so a node deleted
         // again afterwards is cleared by its own later call.
+        // CAPTURED BEFORE THE CLEAR BELOW DESTROYS IT (item 923). The targeted arm needs to know
+        // which buckets the victims are actually in, and `node_labels` is exactly that — but the
+        // clear immediately after this runs first, so the loop that wants the answer used to find it
+        // already gone and had to visit EVERY bucket instead.
+        //
+        // Stack-only: a victim carries one or two labels and there are at most `TARGETED_MAX`
+        // victims, so a fixed array covers the real cases without an allocation on a path whose
+        // whole cost is a few hundred nanoseconds. On overflow `labels_known` goes false and the
+        // code falls back to sweeping every bucket, which is correct and merely slower.
+        let mut victim_lids = [0u32; VICTIM_LABELS_MAX];
+        let mut n_lids = 0;
+        // AND ONLY WHEN THERE ARE ENOUGH LABELS FOR IT TO PAY. The capture is a fixed ~10-20 ns and
+        // each bucket visit it avoids is a `binary_search` worth about 7 ns (sweep F: 0.72 us over
+        // ~100 buckets), so it breaks even around three or four labels. Below that the old sweep
+        // already visits almost nothing and the capture is pure overhead — measured, not assumed:
+        // a first version captured unconditionally and left sweep E, whose fixture gives every node
+        // the SAME single label, 2-6% slower across all four of its rows.
+        //
+        // `by_label.len()` is the number of DISTINCT labels and is O(1) to read. Third instance of
+        // this shape in the store now, after `TARGETED_MAX` and `INDEX_SET_MIN`: a guard that pays
+        // for itself only past a size gets gated on that size.
+        let mut labels_known = ids.len() <= TARGETED_MAX && self.by_label.len() > LABEL_CAPTURE_MIN;
+
+        if labels_known {
+            'capture: for &id in ids {
+                let Some(ls) = self.node_labels.get(id as usize) else {
+                    continue;
+                };
+
+                for &lid in ls {
+                    if n_lids == VICTIM_LABELS_MAX {
+                        labels_known = false;
+                        break 'capture;
+                    }
+
+                    victim_lids[n_lids] = lid;
+                    n_lids += 1;
+                }
+            }
+        }
+
+        // SKIPPED FOR THE COMMON CASE, because it was costing the common case. One victim with one
+        // label needs no sort and no dedup, and sweep E's fixture — every node carrying the SAME
+        // single label — measured 2-6% SLOWER with the sort and dedup run unconditionally, since
+        // there PRE and POST visit the very same one bucket and this was pure added work.
+        if labels_known && n_lids > 1 {
+            victim_lids[..n_lids].sort_unstable();
+            let deduped = {
+                let mut w = 0;
+                for r in 0..n_lids {
+                    if r == 0 || victim_lids[r] != victim_lids[w - 1] {
+                        victim_lids[w] = victim_lids[r];
+                        w += 1;
+                    }
+                }
+                w
+            };
+
+            n_lids = deduped;
+        }
+
         for &id in ids {
             if let Some(ls) = self.node_labels.get_mut(id as usize) {
                 ls.clear();
@@ -5092,6 +5168,53 @@ impl Store {
             // only in `delete_node_inner`, whose only caller is this function, so a tombstoned
             // node was removed from its buckets by the very call that tombstoned it.
             let mut hits = [0usize; TARGETED_MAX];
+
+            // ONLY THE VICTIMS' OWN BUCKETS (item 923). This loop used to run over
+            // `self.by_label.values_mut()` — every distinct label in the store — doing a
+            // `binary_search` in each to discover what `node_labels` already knew. With the node
+            // count FIXED at 20,000 and one label per node, `detach_442` sweep F measured one
+            // delete at a time:
+            //
+            //   labels      1     10     100    1000
+            //   before   0.42   0.19    0.73    4.01 us    (`add_edge` control flat at 0.08)
+            //
+            // Non-monotonic because two terms compete: item 920's memmove is over a bucket of N/L
+            // entries and FALLS as labels rise, while this loop is over L and RISES. The minimum is
+            // near ten labels; past that the loop dominates, 21x from 10 to 1000.
+            if labels_known {
+                for &lid in &victim_lids[..n_lids] {
+                    let Some(name) = self.label_names.get(lid as usize) else {
+                        continue;
+                    };
+                    let Some(bucket) = self.by_label.get_mut(name.as_str()) else {
+                        continue;
+                    };
+                    let mut n = 0;
+
+                    for &id in ids {
+                        if let Ok(pos) = bucket.binary_search(&id) {
+                            hits[n] = pos;
+                            n += 1;
+                        }
+                    }
+
+                    if n == 0 {
+                        continue;
+                    }
+
+                    hits[..n].sort_unstable_by(|a, b| b.cmp(a));
+                    let mut last = usize::MAX;
+
+                    for &pos in &hits[..n] {
+                        if pos != last {
+                            bucket.remove(pos);
+                            last = pos;
+                        }
+                    }
+                }
+
+                return;
+            }
 
             for bucket in self.by_label.values_mut() {
                 let mut n = 0;

@@ -315,6 +315,13 @@ question in its module header — read the header before touching it.
   that `small` in `detach_442` sweep E and the `SET indexed` column here are NOT controls —
   both are reached by the code under test.
 
+  `detach_442` gained **sweep F** alongside it (item 923): one delete at a time with the NODE
+  COUNT FIXED and the DISTINCT LABEL count rising, which is the axis sweep E holds constant.
+  Its before curve is NON-MONOTONIC — 0.43 / 0.18 / 0.71 / 4.02 µs at 1 / 10 / 100 / 1000
+  labels — because item 920's memmove runs over a bucket of N/L and falls while the bucket
+  loop runs over L and rises. **Keep all four points:** a sweep stopping at ten labels sees a
+  cost that is going DOWN and concludes there is nothing to fix.
+
 - `exprpred_437` — what does an EXPRESSION cost inside a filter, as opposed to the rows
   it selects? Every pair of cases selects exactly the same rows and differs only in the
   predicate's shape, so a gap cannot be the selectivity: `a.k > 5` against

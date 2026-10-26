@@ -2627,3 +2627,98 @@ fn derived_index_key_sets_agree_with_the_vectors_at_every_mutation_site() {
     );
     assert!(wst.index_on_base("w1"), "its neighbour survives");
 }
+
+/// The same exactness claim as `batch_delete_keeps_every_label_bucket_exact_sorted_and_restorable`,
+/// but ABOVE `LABEL_CAPTURE_MIN` and one delete at a time — the only shape that reaches item 923's
+/// bucket-capture path.
+///
+/// THIS TEST EXISTS BECAUSE THE THRESHOLD HID THE CODE IT GUARDS. Item 923 stopped the targeted
+/// delete arm from sweeping every label bucket, looking up the victim's own labels instead; the
+/// lookup only pays past a few labels, so it is gated on `LABEL_CAPTURE_MIN`. Every pre-existing
+/// delete test uses three labels or fewer, so after the gate went in **both mutants that had been
+/// catching the capture logic SURVIVED the whole suite** — the capture path was unreachable from
+/// any test while still running in production. Measured, not guessed: `take(1)` on the captured
+/// labels and forcing the captured count to zero both passed 1,247 tests.
+///
+/// So the fixture needs SIX distinct labels and nodes carrying SEVERAL of them. A node that leaves
+/// only its first bucket is the `take(1)` bug; a node that leaves none is the zero-count bug; both
+/// are invisible unless a victim really is in more than one bucket.
+#[test]
+fn single_deletes_above_the_label_threshold_keep_every_bucket_exact() {
+    use crate::value::Value;
+
+    const N: u32 = 24;
+    let label_set = |i: u32| {
+        let mut ls: Vec<&'static str> = vec!["Univ"];
+
+        if i.is_multiple_of(2) {
+            ls.push("M2");
+        }
+
+        if i.is_multiple_of(3) {
+            ls.push("M3");
+        }
+
+        if i.is_multiple_of(5) {
+            ls.push("M5");
+        }
+
+        if i.is_multiple_of(7) {
+            ls.push("M7");
+        }
+
+        if i.is_multiple_of(4) {
+            ls.push("Tag");
+        }
+
+        ls
+    };
+
+    let mut b = Builder::default();
+
+    for i in 0..N {
+        b.node(&label_set(i), &[("k", Value::Num(f64::from(i)))]);
+    }
+
+    let mut st = b.build();
+
+    assert!(
+        st.by_label.len() > LABEL_CAPTURE_MIN,
+        "the fixture must cross LABEL_CAPTURE_MIN or the capture path is never reached: {} labels",
+        st.by_label.len()
+    );
+
+    // ONE AT A TIME, so every call is a batch of one and takes the targeted arm.
+    let victims = [0u32, 7, 12, 15, 20];
+
+    for &v in &victims {
+        st.delete_node(v);
+    }
+
+    // Every bucket must hold exactly the SURVIVING nodes that carry that label, ascending.
+    for l in ["Univ", "M2", "M3", "M5", "M7", "Tag"] {
+        let want: Vec<u32> = (0..N)
+            .filter(|i| !victims.contains(i) && label_set(*i).contains(&l))
+            .collect();
+
+        assert_eq!(
+            st.nodes_with_label(l).to_vec(),
+            want,
+            "bucket {l} after deletes"
+        );
+    }
+
+    // A victim carrying FIVE labels must be gone from all of them, which is what a capture that
+    // kept only the first label would get wrong.
+    assert_eq!(label_set(0).len(), 6, "node 0 is the multi-label victim");
+
+    for l in label_set(0) {
+        assert!(
+            !st.nodes_with_label(l).contains(&0),
+            "deleted node 0 still in bucket {l}"
+        );
+    }
+
+    // And the live count agrees, so a bucket cannot be right by being empty.
+    assert_eq!(st.live_node_count(), (N as usize) - victims.len());
+}

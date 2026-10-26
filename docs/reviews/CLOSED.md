@@ -26979,3 +26979,38 @@ key)`: V8 synthesises names for arrows from the binding they were assigned throu
   fixed at 922 — reverting them is a semantics change needing its own decision, not a rider on a perf
   commit. `derived_index_key_sets_agree_with_the_vectors_at_every_mutation_site` PINS the current
   behaviour and names the line to flip.
+- **SHIPPED — a single delete searched EVERY label bucket to rediscover what it had just thrown
+  away (item 923). 50.25x at 1000 labels, 7.89x at 100, 1.50x at 10, parity at 1.** `delete_nodes`'
+  targeted arm looped `self.by_label.values_mut()` doing a `binary_search` per bucket, while
+  `node_labels[id]` — the forward map that answers exactly that — is CLEARED one block above the
+  branch (item 724 moved the clear there because the targeted path returns early). Item 663 earned
+  skipping the REWRITE of unrelated buckets; the loop still VISITED them all. Now the victims' label
+  ids are captured before the clear, on the stack, gated on `LABEL_CAPTURE_MIN = 4`. CONTROL
+  `add_edge` flat at 0.08 µs across the whole sweep.
+- **THE BEFORE CURVE IS NON-MONOTONIC, and a shorter sweep would have missed this entirely (item
+  923).** 0.43 / 0.18 / 0.71 / 4.02 µs at 1 / 10 / 100 / 1000 labels: item 920's memmove runs over a
+  bucket of N/L and FALLS as labels rise, while the bucket loop runs over L and RISES, so the minimum
+  sits near ten. A sweep stopping at 10 labels concludes there is nothing here.
+- **THE CHEAP END AGAIN, and the first fix was wrong about the cause (item 923).** The capture is a
+  fixed ~10-20 ns, so sweep E — every node carrying the SAME single label, where before and after
+  visit the identical bucket — read 0.94-0.98x, consistently slower. Skipping the `sort_unstable` and
+  dedup for a single-label victim did NOT move it (0.94-0.99x), so the sort was never the cost; the
+  capture loop was. Gated on `LABEL_CAPTURE_MIN = 4` and sweep E is back to 1.00-1.02x. **Third
+  instance of this shape in `store.rs`** after `TARGETED_MAX` and `INDEX_SET_MIN`: a guard that pays
+  only past a size gets gated on that size, and the end of the sweep the change was NOT aimed at is
+  where you find out.
+- **🛑 METHOD — ADDING A SIZE GATE CAN HIDE THE CODE IT GUARDS FROM THE SUITE, AND ONLY MUTATION
+  FOUND IT (item 923).** Before `LABEL_CAPTURE_MIN`, two wrong-answer mutants on the capture logic
+  were caught (2 and 14 failures). After it, **BOTH SURVIVED all 1,247 tests** — every pre-existing
+  delete test uses three labels or fewer, so the gate made the capture path unreachable from any test
+  while it still ran in production above four labels. Item 922 hit the same hazard one item earlier
+  and reasoning caught it there; here it did not. **Re-run the mutants AFTER adding a size gate, not
+  before** — the gate changes which code the suite reaches, so an earlier verdict is a verdict about
+  different code. Closed by `single_deletes_above_the_label_threshold_keep_every_bucket_exact`, which
+  uses six labels, asserts it CROSSES the threshold so the fixture cannot drift back under, and
+  derives every expected bucket from the surviving set.
+- **And the CONTROL mutant is what licenses the other verdicts (item 923).** Forcing the old full
+  sweep is answer-equivalent and SURVIVED; had the new test flagged it, the test would be keying on
+  which path ran rather than on correctness. Also recorded: the forced-zero mutant fell from 14
+  failures to 4 once the single-label fast path landed, because the line it mutates now sits behind
+  `n_lids > 1` — its REACH shrank with the change, so the other mutant carries the general case.

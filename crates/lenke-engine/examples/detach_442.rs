@@ -118,6 +118,84 @@ fn single_delete_us(nodes: u32, victim_in_big: bool) -> (f64, u64) {
     (best, removed)
 }
 
+/// Sweep F: does ONE delete scale with the number of DISTINCT LABELS in the store?
+///
+/// `delete_nodes`' targeted arm loops `for bucket in self.by_label.values_mut()` — EVERY distinct
+/// label's bucket — and does a `binary_search` in each to decide whether the victim is in it. A node
+/// belongs to one or two labels, so with L labels that is L searches to find 1-2 hits. Item 663
+/// earned skipping the REWRITE of unrelated buckets; the loop still VISITS them all.
+///
+/// The information needed to visit only the right buckets exists: `node_labels[id]` is the forward
+/// map. It is CLEARED immediately before this branch (item 724 moved the clear above it because the
+/// targeted path returns early), so the loop cannot consult it — the answer is destroyed one block
+/// before the code that wants it.
+///
+/// Node count is FIXED and the label count varies, so bucket size falls as L rises (N/L entries
+/// each). Total work is L searches over N/L entries: if the per-delete cost climbs with L, the
+/// bucket LOOP is the cost, not the searching.
+///
+/// `add_edge` is the CONTROL again — it never touches `by_label` — so if it climbs too, the fixture
+/// is measuring the label map's own memory and this sweep proves nothing.
+fn delete_by_label_count(labels: u32) -> (f64, u64) {
+    const VICTIMS: u32 = 200;
+    const N: u32 = 20_000;
+    let mut best = f64::MAX;
+    let mut removed = 0u64;
+
+    for _ in 0..3 {
+        let mut b = Builder::default();
+        let names: Vec<String> = (0..labels).map(|l| format!("L{l}")).collect();
+
+        for i in 0..N {
+            let one = [names[(i % labels) as usize].as_str()];
+
+            b.node(&one, &[("k", Value::Num(f64::from(i % 7)))]);
+        }
+
+        let mut store = b.build();
+        let before = store.live_node_count() as u64;
+        let step = (N / VICTIMS).max(1);
+        let ids: Vec<u32> = (0..VICTIMS).map(|v| v * step).collect();
+        let t = Instant::now();
+
+        for &id in &ids {
+            store.delete_node(id);
+        }
+
+        best = best.min(t.elapsed().as_secs_f64() * 1e6 / ids.len() as f64);
+        removed = before - store.live_node_count() as u64;
+    }
+
+    (best, removed)
+}
+
+fn add_edge_control(labels: u32) -> f64 {
+    const N: u32 = 20_000;
+    let mut best = f64::MAX;
+
+    for _ in 0..3 {
+        let mut b = Builder::default();
+        let names: Vec<String> = (0..labels).map(|l| format!("L{l}")).collect();
+
+        for i in 0..N {
+            let one = [names[(i % labels) as usize].as_str()];
+
+            b.node(&one, &[("k", Value::Num(f64::from(i % 7)))]);
+        }
+
+        let mut store = b.build();
+        let t = Instant::now();
+
+        for i in 0..200u32 {
+            store.add_edge(i, (i * 7 + 3) % N, "E");
+        }
+
+        best = best.min(t.elapsed().as_secs_f64() * 1e6 / 200.0);
+    }
+
+    best
+}
+
 fn main() {
     let q = "MATCH (a:P) DETACH DELETE a";
     println!("A — DELETED COUNT FIXED (2,000), EDGES DOUBLING. A scan per delete doubles here.");
@@ -186,5 +264,14 @@ fn main() {
             "  {nodes:>7} nodes   big {big:>8.2} us   small {ctl:>7.2} us   big/small {:>6.1}x",
             big / ctl
         );
+    }
+    println!("\nF — ONE delete at a time, NODE COUNT FIXED (20,000), DISTINCT LABELS rising.");
+    println!("    Each node carries ONE label, so buckets SHRINK as the label count grows.");
+    for labels in [1u32, 10, 100, 1_000] {
+        let (us, n) = delete_by_label_count(labels);
+        let ctl = add_edge_control(labels);
+
+        assert!(n == 200, "the arm must delete 200 nodes, got {n}");
+        println!("  {labels:>5} labels   delete {us:>8.2} us   add_edge (CONTROL) {ctl:>6.2} us");
     }
 }
