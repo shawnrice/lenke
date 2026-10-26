@@ -25985,3 +25985,25 @@ p.flag` 4.51x (item 872).** Only the comparison spelling had one: `= true` lower
   hop fixture used `{ok: true}` inline, which filtered to the right count by itself, so deleting
   the clause predicate changed nothing. Make the inline constraint NON-selective (`{tag: 1}` on
   every neighbour) when the assertion is about the clause predicate surviving a merge.
+- **A VACUOUS label no longer defeats the O(1) typed-hop count — ~2340x (item 876).**
+  `typed_hop_count_from_size` answers `()-[:T]->()` from `T`'s CSR partition length but required
+  `Scan { label: None }` LITERALLY, so writing the label every vertex carries cost 0.4677 ms
+  against 0.0002 for the same answer — in BOTH front ends (`g.V().hasLabel('Person').out(…)
+.count()` and `MATCH (p:Person)-[:KNOWS]->()`). Its own doc said the precondition was that "a
+  label would RESTRICT the sources", and a vacuous one does not. Now `whole_graph_scan`. Selective
+  label and unlabelled controls flat; row counts identical. **The TS engine already had this
+  elision** (`vacuousLabel`), so it was a cross-engine spelling gap too.
+- **The coverage test is against `live_node_count`, NOT `node_count` (item 876).** `delete_node`
+  REMOVES the id from the label's list — measured (100 nodes, one deleted: node_count 100, live 99,
+  list 99) — so comparing with `node_count` declined a label that genuinely covered every live
+  vertex. Deliberately NOT `scan_visit`'s `whole` test, which justifies iterating the dense range
+  and so needs no tombstones at all; this needs only label coverage of the live set.
+- **The same literal gate elsewhere is CLEAN (item 876).** Four other `Scan { label: None }` sites
+  already carry a labelled arm with its own O(1) answer. Checked, not assumed.
+- **METHOD — a route assertion must test the CALL SITE, not the predicate (item 876).** Reverting
+  the call site to its old literal check leaves the extracted predicate intact and true, so
+  predicate-level assertions all pass while the elision never fires. Ask the ENTRY POINT whether it
+  claims the shape (`try_scan_count(...).is_some()`).
+- **METHOD — read the bench's ABSOLUTE columns, not just the ratio (item 876).** This was found in
+  a row where native was the slow side (ts 0.0 against native 0.50) — invisible in a ts/native
+  ratio sorted for big numbers, since the big ratios were all native winning.

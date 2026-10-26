@@ -3456,8 +3456,9 @@ pub(super) fn try_frontier_prop_agg(
 ///   type lives in `edge_extra`. So the partition misses an edge whose secondary type is
 ///   `T`, and the size would UNDERCOUNT. `for_each_nbr` makes the same choice — with
 ///   multi-label edges it takes the flat scan plus the secondary-label probe.
-/// - **An unlabelled whole-graph `Scan` source.** A label would restrict the sources; the
-///   partition spans all of them.
+/// - **A WHOLE-GRAPH `Scan` source** — unlabelled, or labelled with a label every live vertex
+///   carries (item 876). A label that restricts the sources declines; one that does not is the
+///   same scan written differently, and `whole_graph_scan` is that test.
 /// - **No `bind_edge`, no `DISTINCT`.** Binding the edge adds a slot the count ignores, but
 ///   `count(DISTINCT *)` is a different question entirely.
 /// - **A fresh CSR overlay.** `out_typed_flat` returns `None` when stale, which is also what
@@ -3478,7 +3479,7 @@ fn typed_hop_count_from_size(input: &Plan, agg: &Agg, store: &Store) -> Option<u
     if agg.distinct || *bind_edge || *from != 0 || *dir != Dir::Out {
         return None;
     }
-    if !matches!(**src, Plan::Scan { label: None }) {
+    if !whole_graph_scan(src, store) {
         return None;
     }
     let [ty] = edge_label.as_slice() else {
@@ -3489,6 +3490,50 @@ fn typed_hop_count_from_size(input: &Plan, agg: &Agg, store: &Store) -> Option<u
     }
     let t = store.etype_id(ty)?;
     store.out_typed_flat(t).map(<[_]>::len)
+}
+
+/// Whether this plan scans EVERY LIVE VERTEX — an unlabelled scan, or one whose label every live
+/// vertex carries.
+///
+/// Item 876. The second case is why this exists. `typed_hop_count_from_size` required
+/// `Scan { label: None }` literally, and its own doc gives the reason as "a label would RESTRICT
+/// the sources" — but a label every vertex has restricts nothing, and writing it is the natural
+/// spelling. The cost of the literal check, at 200,000 vertices x degree 5, both answering
+/// 1,000,000:
+///
+/// ```text
+///   g.V().out('KNOWS').count()                     0.0003 ms   the CSR partition's length
+///   g.V().hasLabel('Person').out('KNOWS').count()  0.5573      1857x, degree-summed over 200k
+///   MATCH ()-[:KNOWS]->() RETURN count(*)          0.0003      the GQL spelling, same split
+///   MATCH (p:Person)-[:KNOWS]->() ...              0.5387
+/// ```
+///
+/// Both front ends, and the TS engine answers both at 0.0 because it HAS this elision
+/// (`vacuousLabel` in `shortcuts.ts`) — so this was also a cross-engine spelling gap.
+///
+/// THE CONDITION IS AGAINST THE LIVE COUNT, and it is deliberately NOT `scan_visit`'s `whole`
+/// test even though that function asks a similar-sounding question. `whole` justifies iterating
+/// the dense range `0..node_count` directly, which needs there to be no tombstones at all; this
+/// needs only "every LIVE vertex carries the label", which is the weaker and correct property
+/// here. My first version copied `whole` anyway and was wrong twice over: it added a redundant
+/// `live_node_count == node_count` conjunct, and it compared coverage against `node_count`, so a
+/// graph with a single deleted vertex declined a label that genuinely did cover every live one.
+///
+/// `delete_node` REMOVES the id from the label's list — measured, not assumed (100 nodes, one
+/// deleted: `node_count` 100, live 99, the `Person` list 99). So a list whose length equals the
+/// live count contains exactly the live vertices, and the comparison needs nothing else.
+///
+/// Deletes are additionally safe for a reason outside this function: `out_typed_flat` returns
+/// `None` once the CSR overlay is stale, and an adjacency write invalidates it — so the caller
+/// declines on a mutated graph regardless of what this says.
+pub(super) fn whole_graph_scan(plan: &Plan, store: &Store) -> bool {
+    let Plan::Scan { label } = plan else {
+        return false;
+    };
+    match label {
+        None => true,
+        Some(l) => store.nodes_with_label(l).len() == store.live_node_count(),
+    }
 }
 
 pub(super) fn try_scan_count(

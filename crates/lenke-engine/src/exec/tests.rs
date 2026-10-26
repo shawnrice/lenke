@@ -27745,3 +27745,157 @@ fn bare_bool_property_predicate() {
          path's (and the static check's) business"
     );
 }
+
+/// Item 876: a VACUOUS label no longer defeats the O(1) typed-hop count.
+///
+/// `typed_hop_count_from_size` answers `()-[:T]->()` from the length of `T`'s CSR partition. It
+/// required `Scan { label: None }` literally, so writing the label every vertex already carries
+/// cost 0.4777 ms against 0.0002 for the same answer — about 2400x, in both front ends, and the TS
+/// engine has had this elision all along.
+///
+/// The SELECTIVE label is the control that matters: an elision that fired there would return a
+/// spectacular wrong answer (every edge instead of the labelled sources' edges), so every case
+/// below asserts the COUNT and not just the timing's sibling.
+#[test]
+fn vacuous_label_hop_count() {
+    // `verts`, not `n` — this file's `n(f64)` Value helper is used inside the closure and a
+    // parameter of that name shadows it.
+    let build = |staff_every: u32, verts: u32| -> crate::store::Store {
+        let mut b = Builder::default();
+        for i in 0..verts {
+            if i % staff_every == 0 {
+                b.node(&["Person", "Staff"], &[("i", n(f64::from(i)))]);
+            } else {
+                b.node(&["Person"], &[("i", n(f64::from(i)))]);
+            }
+        }
+        for k in 0..(verts * 3) {
+            b.edge((k * 7) % verts, (k * 13) % verts, "KNOWS");
+        }
+        b.build()
+    };
+    let store = build(10, 100);
+    let cnt = |q: &str, st: &crate::store::Store| -> f64 {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), st);
+        match run(&plan, st).rows[0][0] {
+            Value::Num(x) => x,
+            ref o => panic!("{o:?}"),
+        }
+    };
+
+    // 100 vertices x 3 edges each = 300 KNOWS edges. Every vertex is a `Person`, so the labelled
+    // and unlabelled spellings are the same question and must agree.
+    assert_eq!(
+        cnt("MATCH ()-[:KNOWS]->() RETURN count(*) AS c", &store),
+        300.0
+    );
+    assert_eq!(
+        cnt("MATCH (p:Person)-[:KNOWS]->() RETURN count(*) AS c", &store),
+        300.0
+    );
+    // THE SELECTIVE LABEL MUST NOT BE ELIDED. 10 of 100 are `Staff`; their out-edges are a
+    // fraction of 300, so an elision firing here would answer 300 and be loudly wrong.
+    let staff = cnt("MATCH (p:Staff)-[:KNOWS]->() RETURN count(*) AS c", &store);
+
+    assert!(
+        staff > 0.0 && staff < 300.0,
+        "a selective label must count only its own sources, got {staff}"
+    );
+    // and the Gremlin spellings answer the same three things
+    let gcnt = |q: &str| -> f64 {
+        let plan = crate::opt::optimize_indexed(crate::gremlin::parse(q).unwrap(), &store);
+        match run(&plan, &store).rows[0][0] {
+            Value::Num(x) => x,
+            ref o => panic!("{o:?}"),
+        }
+    };
+
+    assert_eq!(gcnt("g.V().out('KNOWS').count()"), 300.0);
+    assert_eq!(gcnt("g.V().hasLabel('Person').out('KNOWS').count()"), 300.0);
+    assert_eq!(gcnt("g.V().hasLabel('Staff').out('KNOWS').count()"), staff);
+
+    // THE ROUTE, asserted directly — the elision is answer-equivalent, so no count above can tell
+    // whether it fired.
+    let scan_none = Plan::Scan { label: None };
+    let scan_vac = Plan::Scan {
+        label: Some("Person".into()),
+    };
+    let scan_sel = Plan::Scan {
+        label: Some("Staff".into()),
+    };
+
+    assert!(fastpath::whole_graph_scan(&scan_none, &store));
+    assert!(
+        fastpath::whole_graph_scan(&scan_vac, &store),
+        "a label every live vertex carries IS the whole graph"
+    );
+    assert!(
+        !fastpath::whole_graph_scan(&scan_sel, &store),
+        "a selective label is not"
+    );
+    assert!(
+        !fastpath::whole_graph_scan(&Plan::EdgeScan, &store),
+        "only a node Scan is a whole-graph node scan"
+    );
+
+    // THE CALL SITE, not just the predicate. Reverting the call site to its old literal
+    // `label: None` check leaves `whole_graph_scan` itself intact and true, so the assertions
+    // above all still pass while the elision no longer fires — that mutant survived until this
+    // block existed. `try_scan_count` is the entry point, so asking it directly is the only way
+    // to see that the hop was CLAIMED.
+    let hop = |label: Option<&str>| {
+        Plan::Scan {
+            label: label.map(Into::into),
+        }
+        .expand(0, Dir::Out, &["KNOWS".to_string()])
+    };
+    let count_agg = [Agg {
+        func: AggFn::Count,
+        arg: None,
+        distinct: false,
+        name: "c".into(),
+        frac: None,
+        null_on_empty: false,
+        numeric_only: false,
+    }];
+
+    assert!(
+        fastpath::try_scan_count(&hop(None), &[], &count_agg, &store).is_some(),
+        "an unlabelled hop count is answered from the CSR partition size"
+    );
+    assert!(
+        fastpath::try_scan_count(&hop(Some("Person")), &[], &count_agg, &store).is_some(),
+        "and so is a VACUOUS label's — this is the elision, and the call site has to use it"
+    );
+    assert!(
+        fastpath::try_scan_count(&hop(Some("Staff")), &[], &count_agg, &store).is_none(),
+        "a SELECTIVE label must decline: the partition spans sources it does not"
+    );
+
+    // A DELETE REMOVES THE ID FROM THE LABEL'S LIST — measured, not assumed, which is what
+    // corrected this predicate. `node_count` stays 100 while both the live count and the
+    // `Person` list drop to 99, so a label that still covers every LIVE vertex keeps counting as
+    // whole-graph. The first version compared coverage against `node_count` and declined here.
+    let mut holed = build(10, 100);
+
+    holed.delete_node(7);
+    assert_eq!(holed.node_count(), 100);
+    assert_eq!(holed.live_node_count(), 99);
+    assert_eq!(holed.nodes_with_label("Person").len(), 99);
+    assert!(
+        fastpath::whole_graph_scan(&scan_vac, &holed),
+        "a label covering every LIVE vertex is still the whole graph after a delete"
+    );
+    assert!(fastpath::whole_graph_scan(&scan_none, &holed));
+    assert!(
+        !fastpath::whole_graph_scan(&scan_sel, &holed),
+        "and a selective label is still not"
+    );
+    // The ANSWERS are what ultimately matter, and the two spellings agree over the holed graph
+    // whichever route each takes — a delete also staleness-invalidates the CSR overlay, so the
+    // size shortcut declines there on its own.
+    assert_eq!(
+        cnt("MATCH (p:Person)-[:KNOWS]->() RETURN count(*) AS c", &holed),
+        cnt("MATCH ()-[:KNOWS]->() RETURN count(*) AS c", &holed)
+    );
+}

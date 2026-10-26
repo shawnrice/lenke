@@ -109,6 +109,14 @@ question in its module header — read the header before touching it.
   same, so the probe prints both. It is also where the dictionary arm's ≥1785x was measured: a
   dictionary key has a bounded rank, so once `skip+limit` rows at the extreme rank are seen in
   arrival order the scan can STOP.
+- `vacuouslabel_876` — what does a VACUOUS label cost? `V().hasLabel('Person').out('KNOWS')
+.count()` measured 0.5380 ms against 0.0003 for `V().out('KNOWS').count()` — the same question,
+  since every vertex in the fixture is a `Person` — because the O(1) CSR-partition shortcut
+  required `Scan { label: None }` literally. Both front ends, both spellings, with a SELECTIVE
+  label (`Staff`, 1 in 50) as the control that must keep filtering: an elision firing there would
+  answer every edge instead of the labelled sources' edges, which is why every row prints its ROW
+  COUNT. `PLAN=1` dumps the three plans (they differ only in the `Scan`'s label); `TOMB=1` prints
+  what a `delete_node` does to the label list, which is the fact the coverage predicate rests on.
 - `filtercensus_871` — which column REPRESENTATIONS does a filtered scan have a fast path for?
   One fixture whose five columns differ ONLY in representation (Num, Dict, Str over the 4,096
   dictionary cap, Bool, Date), each predicate built to select the same 1/50 of rows. Two controls
