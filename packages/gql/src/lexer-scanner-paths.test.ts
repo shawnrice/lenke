@@ -64,6 +64,62 @@ describe('string literal scanner', () => {
   });
 });
 
+/**
+ * Item 888's change is a ROUTE choice: all three keyword-lookup branches return the same answer,
+ * so every correctness test above passes whichever branch runs, and a mutant that forces one
+ * branch for everything SURVIVES them. That is the shape the repo's own rule warns about — a perf
+ * route needs its own assertion, not a differential one.
+ *
+ * The route has one observable consequence, which is the whole point of it: how many times
+ * `toLowerCase` runs. Counting it is a real assertion with teeth and costs production nothing.
+ */
+describe('keyword lookup avoids normalizing (route assertion)', () => {
+  const countLowerCalls = (src: string): number => {
+    // The original FUNCTION VALUE has to be captured eagerly. Wrapping it in an arrow that
+    // dereferences `String.prototype.toLowerCase` at call time instead reads back the STUB
+    // installed below and recurses forever — which it duly did.
+    // eslint-disable-next-line typescript/unbound-method -- invoked via .call with an explicit receiver
+    const original = String.prototype.toLowerCase;
+    let calls = 0;
+
+    // eslint-disable-next-line no-extend-native, func-names -- restored in the finally below
+    String.prototype.toLowerCase = function (this: string): string {
+      calls += 1;
+
+      return original.call(this);
+    };
+
+    try {
+      tokenize(src);
+    } finally {
+      // eslint-disable-next-line no-extend-native -- restoring what the line above replaced
+      String.prototype.toLowerCase = original;
+    }
+
+    return calls;
+  };
+
+  it('normalizes NOTHING for an all-lowercase statement', () => {
+    expect(countLowerCalls('match (a) where a.b = 1 return a')).toBe(0);
+  });
+
+  it('normalizes NOTHING for conventional UPPERCASE keywords', () => {
+    expect(countLowerCalls('MATCH (a) WHERE a.b = 1 RETURN a')).toBe(0);
+  });
+
+  it('normalizes ONLY the mixed-case words', () => {
+    // One mixed-case keyword and one mixed-case identifier: two words that cannot be resolved
+    // without normalizing, and nothing else in the statement should pay.
+    expect(countLowerCalls('MaTcH (a) RETURN a.userName')).toBe(2);
+  });
+
+  it('counts the baseline it is measuring against', () => {
+    // Sanity on the counter itself: if the stub were not installed this would be 0 and every
+    // assertion above would pass vacuously.
+    expect(countLowerCalls('MaTcH')).toBeGreaterThan(0);
+  });
+});
+
 describe('identifier and parameter scanners', () => {
   it('takes a digit as a CONTINUING identifier character', () => {
     expect(valuesOf('a1 b22 c3d')).toEqual(['a1', 'b22', 'c3d']);
@@ -96,6 +152,50 @@ describe('identifier and parameter scanners', () => {
   it('throws when a parameter has no name', () => {
     expect(() => tokenize('$ x')).toThrow();
     expect(() => tokenize('$')).toThrow();
+  });
+
+  // Item 888 resolves keywords down THREE distinct branches, picked by whether the identifier
+  // contains an uppercase letter: all-lowercase goes to one set lookup, all-uppercase to a map
+  // lookup, and only mixed case normalizes. Each branch needs a keyword AND a non-keyword, since
+  // getting either verdict wrong in one branch is invisible from the others.
+  it('resolves an all-LOWERCASE keyword and a lowercase identifier', () => {
+    expect(tokenize('match')[0].type).toBe('keyword');
+    expect(tokenize('match')[0].value).toBe('match');
+    expect(tokenize('notakeyword')[0].type).toBe('ident');
+  });
+
+  it('resolves an all-UPPERCASE keyword and an uppercase identifier', () => {
+    expect(tokenize('MATCH')[0].type).toBe('keyword');
+    // The keyword's value is the canonical lowercase; its raw spelling is kept separately.
+    expect(tokenize('MATCH')[0].value).toBe('match');
+    expect(tokenize('MATCH')[0].raw).toBe('MATCH');
+    expect(tokenize('NOTAKEYWORD')[0].type).toBe('ident');
+    // An identifier keeps its ORIGINAL spelling as its value.
+    expect(tokenize('NOTAKEYWORD')[0].value).toBe('NOTAKEYWORD');
+  });
+
+  it('resolves a MIXED-case keyword and a mixed-case identifier', () => {
+    expect(tokenize('MaTcH')[0].type).toBe('keyword');
+    expect(tokenize('MaTcH')[0].value).toBe('match');
+    expect(tokenize('MaTcH')[0].raw).toBe('MaTcH');
+    expect(tokenize('userName')[0].type).toBe('ident');
+    expect(tokenize('userName')[0].value).toBe('userName');
+  });
+
+  it('classifies single-character and underscore identifiers correctly', () => {
+    // A one-character uppercase identifier takes the uppercase branch on a text of length 1,
+    // and `_` alone takes the lowercase branch because `_` has the case bit SET.
+    expect(tokenize('A')[0].type).toBe('ident');
+    expect(tokenize('A')[0].value).toBe('A');
+    expect(tokenize('_')[0].type).toBe('ident');
+    expect(tokenize('_')[0].value).toBe('_');
+  });
+
+  it('does not let a digit or underscore make a keyword look mixed-case', () => {
+    // `MATCH_1` has the case bit clear (uppercase letters present) but is not a keyword in any
+    // casing, so it must come back as an identifier rather than matching `match`.
+    expect(tokenize('MATCH_1')[0].type).toBe('ident');
+    expect(tokenize('match_1')[0].type).toBe('ident');
   });
 
   it('still recognizes a keyword regardless of case', () => {

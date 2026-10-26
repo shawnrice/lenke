@@ -205,6 +205,23 @@ ARMS.parseStrHeavy = (n) => {
 // change; `parseBig` is 60% identifier characters and 3% string, so its 1.18x is the scanner.
 // Slope refits 42.4 -> 35.9 ns/char, and cumulatively since item 884, 64.2 -> 35.9 (parseBig
 // 10.547 -> 6.232, 1.69x). The gap to native's 22.4 ns/char is now 1.6x, from 2.9x.
+// ITEM 888 RESULT. Keywords now resolve WITHOUT normalizing every identifier: an identifier with
+// no uppercase letter already is its own lowercasing, so one set lookup settles it; an all-caps
+// one is settled by a map lookup; only a mixed-case word normalizes. Min of three
+// ORDER-ALTERNATED rounds:
+//
+//     arm                  pre     post    ratio
+//     parseTiny          1.514    1.329    1.14x
+//     parseOnly          2.279    2.108    1.08x
+//     parseBig           6.301    5.712    1.10x
+//     parseStrHeavy      3.334    2.999    1.11x
+//     textOnly           0.022    0.022    1.00x  (the control)
+//
+// The target was chosen by a CEILING ABLATION first: replacing `toLowerCase()` with the identity
+// (deliberately wrong — lowercase keywords stop being recognized) bounded the whole idea at
+// 1.24-1.26x of the tokenizer, and the same ablation priced the token object at only 1.03-1.07x,
+// which killed that second idea without an implementation being written. On the tokenizer's own
+// instrument this change captured roughly half the ablation's ceiling.
 ARMS.sizes = () => {
   console.log(
     `  lengths: tiny=${TINY.length} insert=${freshText(1).length} big=${big(1).length} chars`,

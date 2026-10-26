@@ -26207,3 +26207,40 @@ p.flag` 4.51x (item 872).** Only the comparison spelling had one: `= true` lower
   tokenizer, half descent on a token-dense statement. Remaining per-TOKEN candidates in the
   tokenizer: `toLowerCase()` per identifier for the keyword lookup, and the token object (4 fields,
   `num` usually `undefined`). The descent is unexamined.
+- **SHIPPED — keywords resolve without normalizing every identifier (item 888): 1.08-1.14x on
+  parse.** `toLowerCase()` used to run on EVERY identifier (33 of 60 tokens in the big statement).
+  Now: no uppercase letter means the text already IS its own lowercasing so one set lookup settles
+  it; ALL CAPS is settled by an uppercase-keyed map; only MIXED case normalizes. "Contains an
+  uppercase letter" costs one `&` per character and no branch, because within the identifier class
+  `[A-Za-z0-9_]` ASCII bit 0x20 is clear iff the character is an uppercase letter. Min of three
+  order-alternated rounds, control flat at 1.00x; ~half the ablation ceiling captured.
+- **REFUTED — shrinking or pooling the lexer's token object (item 888).** A ceiling ablation
+  pushing one shared CONSTANT instead of a fresh token — a hard upper bound, since it is as wrong
+  as code gets — measured **1.07x (token-dense) and 1.03x (token-sparse) against the tokenizer**,
+  which is itself only 28-54% of parse. Making `num` conditional would also give tokens two hidden
+  classes, and polymorphic shape has measured as a loss here before. Recorded next to `push` in
+  `lexer.ts`. Do not re-attempt without a new reason.
+- **METHOD — ablate to a CEILING before implementing anything awkward (item 888).** Both of 887's
+  candidates were hard to do correctly, so both were first measured as deliberately WRONG code
+  bounding what any correct version could buy. That killed the token-object idea (1.03-1.07x) with
+  no implementation written, and told the keyword idea (1.24-1.26x) it was worth the effort. The
+  ablated code never leaves the harness: pristine copy, restore BEFORE each arm, byte-identity
+  checked after.
+- **METHOD — an ablated arm that cannot RUN reports nothing, and a shell loop will walk past it
+  (item 888).** The first ablation run used a probe that calls `parse()`, which throws under both
+  ablations, so every ablated row came back EMPTY while the arm assertion passed. Measure the
+  narrowest thing the ablation leaves working (here `tokenize` alone), and make a missing result an
+  ABORT rather than a blank row.
+- **METHOD — a lazy reference to the function you are stubbing is an infinite loop (item 888).**
+  The route test first captured `toLowerCase` as an arrow dereferencing
+  `String.prototype.toLowerCase` at call time — by then its own stub. Capture the function value
+  eagerly.
+- **PROVEN, not asserted — a route choice needs its own test (item 888).** The three keyword-lookup
+  branches are answer-equivalent, so a mutant forcing one branch for everything **survived all 23
+  correctness tests** and was caught ONLY by a route assertion (stub `toLowerCase`, count calls:
+  zero for all-lowercase, zero for all-UPPERCASE, exactly two for one mixed keyword plus one mixed
+  identifier). Run both ways in the same sweep so the claim is evidence.
+- **STILL OPEN — the TS parser after 888.** The tokenizer's remaining per-token cost is the
+  per-character `&`, a Map-vs-Set lookup and the mixed-case fallback (together ~half the 1.24x
+  ablation ceiling, so a small residual). The recursive DESCENT — the larger half on most shapes
+  per item 887 — is still unexamined and is now the biggest unpriced path in parse.

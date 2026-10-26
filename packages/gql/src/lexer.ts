@@ -213,6 +213,37 @@ const CC_LOWER_A = 97;
 const CC_LOWER_Z = 122;
 const CC_UNDERSCORE = 95;
 
+// BIT 0x20 DISTINGUISHES CASE, AND WITHIN THE IDENTIFIER CLASS THAT IS EXACT (item 888).
+//
+// ASCII sets bit 0x20 on lowercase letters and clears it on uppercase. That is NOT a general
+// case test — plenty of characters outside this class have the bit clear — but the identifier
+// class is only `[A-Za-z0-9_]`, and across exactly those characters bit 0x20 is clear if and
+// only if the character is an UPPERCASE LETTER:
+//
+//     'a' 0x61 set    'A' 0x41 CLEAR    '0' 0x30 set    '_' 0x5f set
+//     'z' 0x7a set    'Z' 0x5a CLEAR    '9' 0x39 set
+//
+// So ANDing every character's code together and testing one bit says whether the identifier
+// contains an uppercase letter, at the cost of one `&` per character and no branch. Item 888
+// needs that because of the next comment.
+const CASE_BIT = 0x20;
+
+// Keywords by their ALL-UPPERCASE spelling, to the canonical lowercase the parser dispatches on.
+//
+// Proving a word IS a keyword is a set lookup; proving it is NOT requires normalizing it, which is
+// why `toLowerCase()` used to run on EVERY identifier — 33 of the 60 tokens in the benchmark's
+// big statement. Item 888's ablation priced removing it at 1.24-1.26x of the tokenizer.
+//
+// Two observations make it avoidable. If an identifier contains NO uppercase letter then it
+// already IS its own lowercasing, so `KEYWORDS.has(text)` is the complete answer. And if it is
+// written in ALL CAPS — which is how keywords are conventionally spelled — this map answers
+// without allocating. Only a MIXED-case word (`MaTcH`, `userName`) falls back to `toLowerCase`.
+const KEYWORDS_UPPER = new Map<string, string>();
+
+for (const kw of KEYWORDS) {
+  KEYWORDS_UPPER.set(kw.toUpperCase(), kw);
+}
+
 const isIdentPartCode = (k: number): boolean =>
   (k >= CC_LOWER_A && k <= CC_LOWER_Z) ||
   (k >= CC_A && k <= CC_Z) ||
@@ -320,6 +351,13 @@ export const tokenize = (src: string): Token[] => {
   const tokens: Token[] = [];
   let i = 0;
 
+  // REJECTED, item 888: do NOT stop building this object, or make `num` conditional to shrink it.
+  // A ceiling ablation that pushed one shared CONSTANT instead of a fresh token — as wrong as code
+  // gets, so a hard upper bound — measured only 1.07x on a token-dense statement and 1.03x on a
+  // token-sparse one, against the tokenizer, which is itself 28-54% of parse (item 887). Making
+  // `num` conditional would also give tokens two hidden classes, and polymorphic shape has
+  // measured as a loss here repeatedly. The 1.24x lever in this function was the keyword lookup
+  // above, not this allocation.
   const push = (type: TokenType, value: string, pos: number, num?: number): void => {
     tokens.push({ type, value, pos, num });
   };
@@ -557,14 +595,36 @@ export const tokenize = (src: string): Token[] => {
       // The hottest loop in the tokenizer — item 886's census puts 46-60% of a query's
       // characters here. On codes, so it neither allocates a single-character string per
       // character nor does string range comparisons.
+      //
+      // `caseAcc` ANDs every character's code together; see CASE_BIT. After the loop,
+      // `caseAcc & CASE_BIT` is set if and only if NO character was an uppercase letter.
+      let caseAcc = CASE_BIT;
+
       while (i < src.length && isIdentPartCode(src.charCodeAt(i))) {
+        caseAcc &= src.charCodeAt(i);
         i += 1;
       }
 
       const text = src.slice(start, i);
-      const lower = text.toLowerCase();
+      // Resolve the keyword WITHOUT normalizing where possible — see KEYWORDS_UPPER.
+      //   all lowercase  -> the text is its own lowercasing, so one set lookup settles it
+      //   all uppercase  -> one map lookup settles it
+      //   mixed case     -> normalize, the only case that allocates
+      let lower: string | undefined;
 
-      if (KEYWORDS.has(lower)) {
+      if ((caseAcc & CASE_BIT) !== 0) {
+        lower = KEYWORDS.has(text) ? text : undefined;
+      } else {
+        lower = KEYWORDS_UPPER.get(text);
+
+        if (lower === undefined) {
+          const normalized = text.toLowerCase();
+
+          lower = KEYWORDS.has(normalized) ? normalized : undefined;
+        }
+      }
+
+      if (lower !== undefined) {
         // Keep `value` lowercased so the parser can dispatch on it, but carry the
         // original casing in `raw` so a reserved-word rejection can suggest the
         // user's exact spelling as a delimited identifier.
