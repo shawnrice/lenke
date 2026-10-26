@@ -1071,8 +1071,10 @@ min(k)`: the gate encodes a consistency decision (every sibling declines `distin
   **CONTROL 242/243/241 against NEW 238/235/235 ns/op, DISJOINT, and the pruning is marginally
   FASTER**: dropping the entry keeps the `BTreeMap` smaller so later `get_mut`s are cheaper. It pays
   for itself in a workload that empties buckets.
-- **⚠️ OPEN, found incidentally at 370 — a DELETE is ~33µs at 200,000 nodes, and it is O(LABEL
-  SIZE).** The same probe's delete column reads **33.2-33.8µs per `delete_node`** on a 200k-node
+- ~~**⚠️ OPEN, found incidentally at 370 — a DELETE is ~33µs at 200,000 nodes, and it is O(LABEL
+  SIZE).**~~ **CLOSED by item 920 at 11.9-21.7x** (75.03 → 3.45 µs at 200,000). Still O(bucket) —
+  the constant changed, not the curve — so the residual memmove and the storage change that would
+  remove the linear term are named at `delete_nodes`. The entry below stands as the diagnosis. The same probe's delete column reads **33.2-33.8µs per `delete_node`** on a 200k-node
   label with NO EDGES — three orders of magnitude above the set column's 235ns. `delete_node`
   removes the node from every label bucket and a bucket is a sorted `Vec`, so the removal is a
   memmove over the whole label. **`bench:usage` cannot see it**: its fixture is 20,000 nodes, where
@@ -26878,3 +26880,31 @@ statement` 969.7k / 774.8k / 973.6k (**1.26x**). It cannot resolve a 1.2x questi
   `--- ALL DONE ---`: the write fails, the next statement runs anyway, and the failure surfaces as an
   empty result. `touch` first, then assert the log is NON-EMPTY before trusting any run that wrote to
   it.
+- **SHIPPED — the single `delete_node` threw away a position it had already computed (item 920).
+  11.9x at 5,000 nodes to 21.7x at 200,000** (75.03 → 3.45 µs). Closes item 370's open entry, the
+  oldest unclaimed perf item in section 5. `delete_nodes`' targeted arm guarded each bucket with
+  `ids.iter().any(|id| bucket.binary_search(id).is_ok())` and then `retain`ed the bucket it hit —
+  discarding the index the guard had just found and rescanning every entry with a closure call and a
+  SCATTERED `deleted[x]` probe, where the removal needs one contiguous memmove. Item 663 earned the
+  bucket-SKIPPING; the bucket the victim is in never stopped paying a full scan. **Remedy was already
+  in the same file**: item 715 made exactly this `retain` → `position`+`remove` trade on the
+  adjacency path. `remove` keeps the sort order, so this is not 715's refuted `swap_remove`.
+  Control = sweeps A-D (the batch path, unreachable): all 13 rows 0.967-1.000x.
+- **METHOD — `CLOSED.md` before pricing saved three ticks, exactly as advertised (item 920).**
+  CLAUDE.md presents the never-re-armed CSR as the headline Rust defect at 24.07x; items 851 and 852
+  had already priced it, excluded lazy-on-read STRUCTURALLY and refused rebuild-at-commit at a 6-27
+  read break-even. The Gremlin dedup gap (853, up to 37.9x) closed at 854/855/857. Two of the three
+  biggest-looking numbers in the docs were already dead.
+- **METHOD — a "control" whose own bucket is still rewritten is NOT a control (item 920).** Sweep E's
+  small-label arm has the BIG bucket skipped, so it looked independent; its own 200-entry bucket is
+  rewritten by the same code, and it moved 0.13 → 0.10 µs. It is a SMALL-BUCKET arm — it pins the cost
+  to bucket size and establishes nothing about reachability. Second instance this window of
+  mislabelling a reachable arm as a control; the test is what the arm EXECUTES, not what it looks
+  like it isolates.
+- **METHOD — a wrong mutation prediction is evidence either way, and the exactly-once anchor guard
+  earns its keep (item 920).** Predicted the duplicate-id mutant would SURVIVE; it was CAUGHT, so the
+  suite has more teeth than modelled and no test was needed. Separately, the `swap_remove` mutant's
+  first anchor (`bucket.remove(pos);`) also matched `apply_remove_label`, appeared TWICE, and the
+  guard refused to apply it — printing VOID rather than a verdict. Without that guard it would have
+  been skipped and read as a survivor of a suite that never saw it. Re-anchored, it fails 7 tests
+  including four `rewrite_fuzz` ones.

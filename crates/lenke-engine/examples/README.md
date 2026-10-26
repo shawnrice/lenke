@@ -297,6 +297,13 @@ question in its module header — read the header before touching it.
   and the NODE count 8x with the deleted count fixed (LINEAR per node — which is the
   answer). Run it before touching `delete_node`, and keep the three sweeps: any two of them
   alone are consistent with the wrong explanation.
+  **Sweep E is a different question on the same subject (item 920): what does ONE `delete_node`
+  cost, and in what does it scale?** A-D all drive `DETACH DELETE`, which batches into
+  `delete_nodes` and so measures the BATCH path; a single delete takes the targeted arm instead.
+  Its `big` arm puts the victim's own label around every node and its `small` arm puts the victim
+  in a 200-node label beside a big one. **`small` is NOT a control** — its own bucket is still
+  rewritten, so a change to bucket removal reaches it; it pins the cost to BUCKET SIZE. The control
+  for the targeted arm is sweeps A-D, which cannot reach it.
 
 - `exprpred_437` — what does an EXPRESSION cost inside a filter, as opposed to the rows
   it selects? Every pair of cases selects exactly the same rows and differs only in the

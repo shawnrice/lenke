@@ -58,6 +58,66 @@ fn once(q: &str, nodes: u32, deg: u32, tagged_every: u32) -> Result<(f64, u64), 
     Ok((best, deleted))
 }
 
+/// Item 370's question, which sweeps A-D cannot reach: what does ONE `delete_node` cost, and in
+/// what does it scale? `DETACH DELETE` hands its whole match to `delete_nodes` (`write.rs:166`),
+/// which sweeps each bucket ONCE for the batch — so every sweep above measures the BATCH path. A
+/// plain single delete takes `delete_nodes(&[id])`, whose targeted arm skips the buckets the
+/// victim is not in (item 663) and then `retain`s the one it IS in, over the whole label.
+///
+/// `victim_in_big` picks the arm:
+///   - true  — every node carries `:Univ`, so the victim's own bucket IS the node set.
+///   - false — the victims carry `:Tmp` (200 of them) beside a `:Univ` bucket holding the rest.
+///     The targeted path's `binary_search` MISSES `:Univ`, so that bucket is skipped and only the
+///     200-entry one is touched. It stays flat in `nodes`, which is what separates "the cost is
+///     the victim's OWN bucket" from "the cost is the store's size".
+///
+/// THE SMALL ARM IS NOT A CONTROL, and calling it one was wrong (item 920). The victim's 200-entry
+/// bucket is still rewritten, so any change to how a bucket drops an entry REACHES this arm — it
+/// measured 0.13 -> 0.10 us across item 920's change. It is a SMALL-BUCKET arm: it pins the cost to
+/// the bucket's size, and that is all. The control for anything in `delete_nodes`' targeted path is
+/// SWEEPS A-D, which delete in batches above `TARGETED_MAX` and so take the full sweep instead.
+///
+/// Degree is 0 and every node carries exactly one property, so neither adjacency detach nor the
+/// `set_absent` loop over distinct keys can scale with `nodes` and be mistaken for the bucket.
+fn single_delete_us(nodes: u32, victim_in_big: bool) -> (f64, u64) {
+    const VICTIMS: u32 = 200;
+    let mut best = f64::MAX;
+    let mut removed = 0u64;
+
+    for _ in 0..3 {
+        let mut b = Builder::default();
+        for i in 0..nodes {
+            let labels: &[&str] = if victim_in_big || i >= VICTIMS {
+                &["Univ"]
+            } else {
+                &["Tmp"]
+            };
+            b.node(labels, &[("k", Value::Num(f64::from(i % 7)))]);
+        }
+        let mut store = b.build();
+        let before = store.live_node_count() as u64;
+
+        // Spread the victims across the bucket rather than taking a prefix: removing from the
+        // FRONT is the worst case for a memmove and from the BACK is the best, so a prefix would
+        // flatter or punish one arm by position alone.
+        let step = (nodes / VICTIMS).max(1);
+        let ids: Vec<u32> = if victim_in_big {
+            (0..VICTIMS).map(|v| v * step).collect()
+        } else {
+            (0..VICTIMS).collect()
+        };
+
+        let t = Instant::now();
+        for &id in &ids {
+            store.delete_node(id);
+        }
+        best = best.min(t.elapsed().as_secs_f64() * 1e6 / ids.len() as f64);
+        removed = before - store.live_node_count() as u64;
+    }
+
+    (best, removed)
+}
+
 fn main() {
     let q = "MATCH (a:P) DETACH DELETE a";
     println!("A — DELETED COUNT FIXED (2,000), EDGES DOUBLING. A scan per delete doubles here.");
@@ -109,5 +169,22 @@ fn main() {
             Ok((ms, _)) => println!("  {name:<18} {ms:>8.3} ms"),
             Err(e) => println!("  {name:<18} ERROR {e}"),
         }
+    }
+    println!("\nE — ONE delete at a time (item 370), NODE COUNT doubling. Degree 0.");
+    println!("    big  = the victim's OWN label holds every node");
+    println!("    small = the victim is in a 200-node label beside a big one (big bucket SKIPPED)");
+    println!("    NB: `small` is NOT a control - its own bucket is still rewritten. A-D are.");
+    for nodes in [5_000u32, 10_000, 50_000, 200_000] {
+        let (big, nb) = single_delete_us(nodes, true);
+        let (ctl, nc) = single_delete_us(nodes, false);
+
+        assert!(
+            nb == 200 && nc == 200,
+            "both arms must delete 200: {nb} and {nc}"
+        );
+        println!(
+            "  {nodes:>7} nodes   big {big:>8.2} us   small {ctl:>7.2} us   big/small {:>6.1}x",
+            big / ctl
+        );
     }
 }

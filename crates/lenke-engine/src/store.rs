@@ -4968,9 +4968,76 @@ impl Store {
         }
 
         if ids.len() <= TARGETED_MAX {
+            // REMOVE AT THE FOUND POSITION rather than `retain`ing the whole bucket (item 920).
+            // The `binary_search` that decides whether this bucket is touched at all ALREADY
+            // yields the victim's index, and item 663's skip meant the one bucket the victim IS
+            // in still paid a full scan: `retain` visits every entry, calls a closure on each and
+            // probes a SCATTERED `deleted[x]` per element, where the removal needs one contiguous
+            // memmove. Same O(bucket), far smaller constant — and exactly the trade item 715
+            // already made on the adjacency path for the same reason ("`retain` compares all D
+            // entries and shifts; `position` + `remove` ... only one").
+            //
+            // Measured on `detach_442` sweep E, one delete at a time, degree 0, the victim's own
+            // label holding every node. Min of three ORDER-ALTERNATED rounds, each arm rebuilt
+            // from its own pristine copy with the source marker asserted first:
+            //
+            //   nodes      before      after     gain
+            //   5,000       1.91 us    0.16 us   11.9x
+            //   10,000      3.80       0.25      15.2x
+            //   50,000     18.75       0.91      20.6x
+            //   200,000    75.03       3.45      21.7x
+            //
+            // The gain GROWS with the label because both forms are O(bucket) and only the
+            // constant changed, so this moves the cost down rather than off the curve. The
+            // remaining 3.45 us at 200,000 is the memmove; removing the linear term needs a
+            // different bucket representation, and the scans that read these buckets are the hot
+            // path, so that is a storage decision and not this change.
+            //
+            // THE CONTROL IS SWEEPS A-D, not sweep E's small-label arm. A victim in a 200-entry
+            // `:Tmp` bucket still has that bucket rewritten, so the change REACHES it (0.13 ->
+            // 0.10 us) and it cannot be a control — it only shows the effect is bucket-sized.
+            // Sweeps A-D go through `delete_nodes` with a batch above `TARGETED_MAX`, which takes
+            // the full sweep below and is genuinely unreachable from here: all 13 rows read
+            // 0.967-1.000x, i.e. flat to 3% AGAINST the change.
+            //
+            // `remove` PRESERVES the sort order the bucket relies on, which is why this is not
+            // item 715's refuted `swap_remove`.
+            //
+            // `hits` is collected BEFORE any removal because a removal shifts every later index,
+            // and it is walked in DESCENDING order for the same reason. The `pos != last` skip is
+            // load-bearing: `ids` may hold the SAME id twice (a node matched by several rows — see
+            // `node_deletes` in `write.rs`), both lookups find the one position, and removing it
+            // twice would take an innocent neighbour with it. `retain` was immune to that by
+            // construction, so the duplicate guard is new work this form has to do.
+            //
+            // Unlike `retain` this trusts the invariant that a bucket holds no OTHER tombstoned
+            // node — the same reliance item 715 took on, and the same reason: `deleted[i]` is set
+            // only in `delete_node_inner`, whose only caller is this function, so a tombstoned
+            // node was removed from its buckets by the very call that tombstoned it.
+            let mut hits = [0usize; TARGETED_MAX];
+
             for bucket in self.by_label.values_mut() {
-                if ids.iter().any(|&id| bucket.binary_search(&id).is_ok()) {
-                    bucket.retain(|&x| !deleted[x as usize]);
+                let mut n = 0;
+
+                for &id in ids {
+                    if let Ok(pos) = bucket.binary_search(&id) {
+                        hits[n] = pos;
+                        n += 1;
+                    }
+                }
+
+                if n == 0 {
+                    continue;
+                }
+
+                hits[..n].sort_unstable_by(|a, b| b.cmp(a));
+                let mut last = usize::MAX;
+
+                for &pos in &hits[..n] {
+                    if pos != last {
+                        bucket.remove(pos);
+                        last = pos;
+                    }
                 }
             }
 
