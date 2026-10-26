@@ -26608,3 +26608,22 @@ undefined`). None of these is discoverable from the list's definition. (Those ga
   says a change needs its own isolated harness. Not worth that against a closed thread. The only
   remaining lever of SIZE is the record representation, which item 899 priced at 4-7x per read and
   left for the byte-identity reasons recorded there.
+- **OPEN, PRICED FROM THREE SPELLINGS — equivalent spellings do NOT cost the same to PLAN (item
+  905).** `bun run spelling` checks RUNTIME only. Against a shared no-predicate control (median of
+  11, min of three alternated rounds), one predicate on one node: inline `{k: 1}` **+0.409 us**,
+  inline `WHERE` **+1.021**, clause `WHERE` **+1.793** — a **4.4x** spread for one question, disjoint
+  (clause's fastest round 4.43 above inline's slowest 3.52). Two predicates: +0.822 inline against
+  **+3.124** clause, 3.8x. **The third spelling decomposes it**: expressing the predicate as an
+  EXPRESSION costs +0.61, putting it in CLAUSE position another +0.77 — so neither half dominates and
+  a fix aimed only at `pushWhereIntoNode` addresses about half. Item 231 closed the RUNTIME gap for
+  this exact pair; the compile gap sat behind it. Item 883 measured a cache MISS at ~5.9 us over a
+  hit, so ~2 us of that — a third — is this.
+- **THE TS PLANNER IS A SHAPE, NOT A NUMBER (item 905).** `MATCH (n) RETURN n` (18 chars) plans in
+  **2.653 us** where a 47-char INSERT plans in **0.531** — **18x**, and the big MATCH 9.500. So item
+  883's "the TS planner adds ~1.02 us", measured on a single INSERT, understated the MATCH case by
+  that factor. Same single-shape trap item 902 had just recorded, two items later.
+- **NEW PROBE — `packages/native/compile-spelling-probe.ts` (item 905).** The compile-time twin of
+  `spelling-probe.ts`: plans each spelling from FRESH ASTs so no cache can serve them, asserts each
+  arm actually compiled, and prints the planner by shape as well as by spelling. A PROBE, not a test
+  (time is the only signal). Run it when touching `pushWhereIntoNode`, `directEqProps` or the clause
+  compiler, and add new spelling pairs there.

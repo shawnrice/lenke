@@ -137,6 +137,14 @@ question in its module header — read the header before touching it.
   is 17.5 ns against a plain one's 17.7), and `has+get` costs no more than `get` alone — but a
   `Map.get` is **4-7x a plain-object property read** (17.7 against 4.3 ns), which prices the
   representation at ~13 of the 75.8 and leaves ~63 as expression plumbing.
+- **TS-side companion, no Rust twin:** `packages/native/compile-spelling-probe.ts` — do equivalent
+  spellings cost the same TO PLAN? `bun run spelling` only checks RUNTIME. They do not: against a
+  shared no-predicate control, one predicate on one node costs **+0.409 us as an inline `{k: 1}`,
+  +1.021 as an inline `WHERE`, and +1.793 as a clause `WHERE`** — a 4.4x spread for one question,
+  disjoint across three alternated rounds. It also prints the planner BY SHAPE, which is the other
+  half of the finding: a MATCH plans for **18x** what a longer INSERT does (2.65 us for
+  `MATCH (n) RETURN n` against 0.53 for a 47-char INSERT), so item 883's single-INSERT figure for
+  "the TS planner" understated the MATCH case by that much.
 - `dottedindex_895` — why is a query SLOWER with an index on a dotted key than without one?
   `value/maps`'s indexed arms read `map field meta.city` at **10699.5 us indexed against 2594.8
   unindexed, 4.1x slower**, and the flat twin 306.0 against 253.9. Not a planner bug: at 4 distinct
