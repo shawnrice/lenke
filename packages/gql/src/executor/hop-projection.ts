@@ -503,7 +503,8 @@ const liftFarOnlyClause = (where: Expr, farVar: string): CPredicate | undefined 
 
   return (lifted.eqProps?.length ?? 0) > 0 ||
     (lifted.cmpProps?.length ?? 0) > 0 ||
-    (lifted.truthProps?.length ?? 0) > 0
+    (lifted.truthProps?.length ?? 0) > 0 ||
+    (lifted.pathProps?.length ?? 0) > 0
     ? lifted
     : undefined;
 };
@@ -544,6 +545,12 @@ const mergeFarPreds = (inline: CPredicate, clause: CPredicate): CPredicate => ({
   ...(inline.truthProps === undefined && clause.truthProps === undefined
     ? {}
     : { truthProps: [...(inline.truthProps ?? []), ...(clause.truthProps ?? [])] }),
+  // `pathProps` merged for the same reason as `truthProps` above and with the same caveat: a
+  // dropped predicate list returns a SUPERSET, and no correctness test on a fixture lacking the
+  // spelling can see it. Added with the list itself (item 900), not left for a later reader.
+  ...(inline.pathProps === undefined && clause.pathProps === undefined
+    ? {}
+    : { pathProps: [...(inline.pathProps ?? []), ...(clause.pathProps ?? [])] }),
 });
 
 /**

@@ -26534,8 +26534,9 @@ undefined`). None of these is discoverable from the list's definition. (Those ga
   The tell is whether the general carrier is emptied on success. When it is, "add a fourth list
   beside the other three" is not a local change however local it looks: audit every consumer BEFORE
   writing the list, and do not trust a grep for the sibling list's name to find them.
-- **OPEN, AND THE REAL QUESTION — the dotted lift declines a LONE conjunct and admits one in an
-  AND-chain (item 902).** Asked `compilePredicate` directly, with the 900 lift applied:
+- **~~OPEN, AND THE REAL QUESTION~~ — RESOLVED AT ITEM 903, and it was MY OWN MISSING GUARD, not
+  an engine asymmetry: `path.length` was absent from `directEqProps`' "did anything lift" check.
+  The original note follows for the record. (item 902).** Asked `compilePredicate` directly, with the 900 lift applied:
   `n.meta.city = 'x'` → `where` KEPT, pathProps **0**; `n.k = 1` → emptied, eqProps 1;
   `n.meta.city = 'x' AND n.k = 1` → emptied, eqProps 1, pathProps **1**. There is no lone-conjunct
   guard in `directEqProps` (`conjuncts` is just `where.kind === 'and' ? where.items : [where]`), so
@@ -26559,3 +26560,35 @@ undefined`). None of these is discoverable from the list's definition. (Those ga
   `residual: undefined` as a live superset risk). What worked was calling the exported function
   across THREE spellings and printing a table — a wider instrument, not a cleverer one. In an engine
   whose named bug class is "equivalent spellings cost differently", the table is the minimum.
+- **SHIPPED — the dotted-path predicate lift: 1.31x (item 903), closing items 900/901/902.**
+  `asPropCompare` matches a plain `prop` only, so a dotted conjunct made `directEqProps` decline and
+  took the whole predicate to the generic evaluator. Now a fourth list (`pathProps`, carrying
+  `{path, op, value}` and applied through `compareTruth` — the generic `compare` arm's own function,
+  so the lift cannot change an answer) reads it off the element. VERIFIED TO RUN before timing
+  (5,000 loop entries for 5,000 vertices, answer correct): `nestedField` **98.7 → 75.4 ns/row,
+  DISJOINT**, both controls flat (1.02x, 0.98x).
+- **CORRECTION — item 902's "unexplained asymmetry" was MY OWN MISSING GUARD (item 903).**
+  `directEqProps` asks `if (eq.length === 0 && cmp.length === 0 && truth.length === 0) return null`
+  after its loop, and I never added `path.length` to it — so a LONE dotted conjunct accumulated and
+  was then DISCARDED, lifting only when another conjunct lifted beside it. Item 900's benchmark is a
+  lone dotted compare, so it measured the one shape the change could not reach. 902 filed this as an
+  open ENGINE question in this index; it was neither unexplained nor the engine's. **A new list must
+  be added to every place that asks "did anything lift", not just to the return type.**
+- **DEMONSTRATED AT LAST — the superset guard works (item 903).** Item 901 predicted a silent
+  superset if a consumer were unwired and 902 could not reproduce it (with the broken guard, the lone
+  shape never lifted and so never emptied `where`). With the guard fixed the hazard is live, and
+  deleting the application loop is **CAUGHT with 9 failures** — nine of the twelve cases in
+  `dotted-predicate-routes.test.ts`, which item 902 added for exactly this.
+- **NOT demonstrated, and left on the same footing as `truthProps` (item 903).** Mutants that stop
+  `hasPredicate` counting `pathProps`, or drop it from the hop merge, both SURVIVE: the predicate is
+  still applied by `matchesPredicate`, so neither is load-bearing for current shapes. Same status the
+  codebase already records for `truthProps`' merge — a precondition kept live for when the lift
+  widens. So item 901's "these are correctness-critical" is unproven for this list.
+- **METHOD — a MUTANT needs an equivalence check too (item 903).** A "pathOf resolves from segment
+  0" mutant survived because it is answer-equivalent: the loop body's `propOf` fallback handles a
+  vertex exactly as the pre-loop line did, so it was a refactor, not a defect. An unexpected survivor
+  is a claim about the mutant as often as about the suite.
+- **METHOD — when a change measures nothing, ask "did it RUN, for THIS shape" before "why is it
+  slow" (items 900-903).** Four items and three wrong attributions for one one-line omission, each
+  reasoned from real code plus ONE instrumented shape. What ended it was calling the exported
+  function directly and printing a table across four spellings. Tabulate before instrumenting.

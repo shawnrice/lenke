@@ -4365,6 +4365,18 @@ export const applyProjection = (
 
 /** A compiled property map + inline WHERE (the ISO element-pattern predicate). */
 export type CProp = { key: string; value: CompiledExpr };
+/**
+ * One lifted DOTTED-path comparison (item 900): the path's segments, the operator, and the
+ * right-hand side as a compiled closure.
+ *
+ * `path[0]` is a property of the element; every later segment is a record/map field.
+ */
+export type CPathProp = {
+  readonly path: readonly string[];
+  readonly op: CompareOp;
+  readonly value: (env: EvalEnv) => unknown;
+};
+
 export type CPredicate = {
   props: readonly CProp[];
   where?: CompiledExpr;
@@ -4406,6 +4418,26 @@ export type CPredicate = {
    * comparison never reaches `compileExpr` at all.
    */
   truthProps?: readonly string[];
+
+  /**
+   * The same lift for a DOTTED path — `WHERE n.meta.city = 'nyc'` (item 900).
+   *
+   * A fourth list for a blunt reason: `asPropCompare` matches a plain `prop` only, so a dotted
+   * conjunct made `directEqProps` decline and took THE WHOLE PREDICATE to the generic evaluator.
+   * Item 874 priced that route at 2.02x for a flat property; item 899 measured the dotted spelling
+   * at 101.5 ns/row against a flat 26.5 on the same scan, and attributed all of it to the field
+   * step rather than to reading the record.
+   *
+   * Carries its `op` and applies through `compareTruth` — the SAME function the generic `compare`
+   * arm uses — so an `=` here means what `=` means there (the EXPRESSION reading: a null operand
+   * is UNKNOWN and the row drops), and the lift cannot change an answer. That is why it needs no
+   * null-right-hand-side guard of its own, where `eqProps` does: `eqProps` reaches for
+   * `structuralEq` and has to rule out the inline reading, this does not.
+   *
+   * `path` always has at least TWO segments. One segment is `eqProps`/`cmpProps`' own case and
+   * stealing it would re-route a tuned path for nothing.
+   */
+  pathProps?: readonly CPathProp[];
 };
 
 /** A lifted ordering comparison: the property, the operator, and its closed right-hand side. */
@@ -4587,7 +4619,13 @@ const compileProps = (props: readonly PropertyConstraint[] | undefined): CProp[]
 const directEqProps = (
   where: Expr,
   ownVar: string | undefined,
-): { eq: CProp[]; cmp: CCmpProp[]; truth: string[]; residual: Expr | undefined } | null => {
+): {
+  eq: CProp[];
+  cmp: CCmpProp[];
+  truth: string[];
+  path: CPathProp[];
+  residual: Expr | undefined;
+} | null => {
   if (ownVar === undefined) {
     return null;
   }
@@ -4600,6 +4638,7 @@ const directEqProps = (
   const eq: CProp[] = [];
   const cmp: CCmpProp[] = [];
   const truth: string[] = [];
+  const path: CPathProp[] = [];
 
   for (const conjunct of conjuncts) {
     // A BARE PROPERTY standing alone as the predicate (`WHERE n.flag`), which this used to
@@ -4620,6 +4659,20 @@ const directEqProps = (
     // `asPropCompare` is the seed-hint extractor's own reader: it handles both operand orders
     // (because `n.k = 2` and `2 = n.k` are one question and this engine's named bug class is the
     // two costing differently) and already requires a CLOSED value side.
+    // A DOTTED path lifts too (item 900), and it is tried BEFORE the plain-property decline
+    // below — otherwise one dotted conjunct in an AND chain takes the WHOLE predicate to the
+    // generic evaluator, including every flat conjunct beside it that would have lifted.
+    const pathc = asPathCompare(conjunct);
+
+    if (pathc !== null) {
+      if (pathc.variable !== ownVar) {
+        return null;
+      }
+
+      path.push({ path: pathc.path, op: pathc.op, value: compileExpr(pathc.value) });
+      continue;
+    }
+
     const pc = asPropCompare(conjunct);
 
     if (pc === null || pc.variable !== ownVar) {
@@ -4657,7 +4710,12 @@ const directEqProps = (
     eq.push({ key: pc.key, value: compileExpr(pc.value) });
   }
 
-  if (eq.length === 0 && cmp.length === 0 && truth.length === 0) {
+  // `path` IS part of this guard, and leaving it out is why item 900's attempt measured nothing
+  // (item 903). A LONE dotted conjunct accumulated into `path` and was then discarded here because
+  // the other three lists were empty — so it lifted only when some OTHER conjunct lifted beside
+  // it, and the benchmark predicate is a lone dotted compare. A new list has to be added to every
+  // place that asks "did anything lift", not just to the return type.
+  if (eq.length === 0 && cmp.length === 0 && truth.length === 0 && path.length === 0) {
     return null;
   }
 
@@ -4668,7 +4726,7 @@ const directEqProps = (
   // `direct.residual` because the shape is what a future MIXED chain would need: item 259 made
   // reordering a FILTER's conjuncts unobservable, so lifting the equalities and leaving the rest
   // is now sound where it previously was not, and that is the next step rather than this one.
-  return { eq, cmp, truth, residual: undefined };
+  return { eq, cmp, truth, path, residual: undefined };
 };
 
 /**
@@ -4699,7 +4757,8 @@ export const hasPredicate = (pred: CPredicate): boolean =>
   pred.where !== undefined ||
   (pred.eqProps?.length ?? 0) > 0 ||
   (pred.truthProps?.length ?? 0) > 0 ||
-  (pred.cmpProps?.length ?? 0) > 0;
+  (pred.cmpProps?.length ?? 0) > 0 ||
+  (pred.pathProps?.length ?? 0) > 0;
 
 export const compilePredicate = (
   properties: readonly PropertyConstraint[] | undefined,
@@ -4726,6 +4785,7 @@ export const compilePredicate = (
     ...(direct === null || direct.eq.length === 0 ? {} : { eqProps: direct.eq }),
     ...(direct === null || direct.cmp.length === 0 ? {} : { cmpProps: direct.cmp }),
     ...(direct === null || direct.truth.length === 0 ? {} : { truthProps: direct.truth }),
+    ...(direct === null || direct.path.length === 0 ? {} : { pathProps: direct.path }),
   };
 };
 
@@ -4782,61 +4842,89 @@ const pushHint = (into: HintMap, variable: string, hint: CSeedHint): void => {
 };
 
 /** A `prop <op> const` comparison, normalized so the property is on the left. */
-// ATTEMPTED AND REVERTED, item 900: do NOT extend this to a DOTTED path (`n.meta.city = 'x'`)
-// without first finding which compile call feeds the SCAN.
+/**
+ * Read a dotted path off an element: `path[0]` as a property, every later segment as a record
+ * field (item 900).
+ *
+ * The same chain the compiled `'field'` closures walk — `recordGet` for a `LenkeRecord`, `propOf`
+ * otherwise — so a lifted path reads what the generic evaluator read. At MODULE SCOPE deliberately:
+ * the audit records that putting a walk INLINE in a returned closure gave unrelated queries a new
+ * slow mode (4x), and this is called from inside the per-element predicate loop.
+ */
+const pathOf = (element: unknown, path: readonly string[]): unknown => {
+  let v: unknown = propOf(element, path[0]);
+
+  for (let i = 1; i < path.length; i += 1) {
+    v = v instanceof LenkeRecord ? recordGet(v, path[i]) : propOf(v, path[i]);
+  }
+
+  return v;
+};
+
+/**
+ * `<var>.a.b[.c…] <op> <const>` in EITHER operand order, or null (item 900).
+ *
+ * Both orders for the reason `asPropCompare` gives: accepting one spelling and scanning for the
+ * other is the equivalent-spelling cliff this engine is named for.
+ *
+ * At least TWO segments — a single one is `asPropCompare`'s case.
+ */
+const fieldChain = (expr: Expr): { variable: string; path: string[] } | null => {
+  if (expr.kind === 'prop') {
+    return { variable: expr.variable, path: [expr.key] };
+  }
+
+  if (expr.kind === 'field') {
+    const base = fieldChain(expr.base);
+
+    return base === null ? null : { variable: base.variable, path: [...base.path, expr.key] };
+  }
+
+  return null;
+};
+
+const asPathCompare = (
+  expr: Extract<Expr, { kind: 'compare' }>,
+): { variable: string; path: string[]; op: CompareOp; value: Expr } | null => {
+  if (expr.left.kind === 'field' && isConstExpr(expr.right)) {
+    const chain = fieldChain(expr.left);
+
+    return chain === null || chain.path.length < 2
+      ? null
+      : { ...chain, op: expr.op, value: expr.right };
+  }
+
+  if (expr.right.kind === 'field' && isConstExpr(expr.left)) {
+    const chain = fieldChain(expr.right);
+
+    return chain === null || chain.path.length < 2
+      ? null
+      : { ...chain, op: FLIP[expr.op], value: expr.left };
+  }
+
+  return null;
+};
+
+// A DOTTED path lifts into `pathProps` (item 903), and the four items it took are worth one note.
 //
-// `asPropCompare` matches a plain `prop` only, so a dotted conjunct makes `directEqProps` decline
-// and takes the WHOLE predicate to the generic evaluator — item 874 priced that route at 2.02x for
-// a flat property, and item 899 measured the dotted spelling at 101.5 ns/row against a flat 26.5.
-// So a `pathProps` list looks like the obvious fourth lift beside `eqProps`/`cmpProps`/`truthProps`.
+// `asPropCompare` below matches a plain `prop` only, so before this a dotted conjunct made
+// `directEqProps` decline and took THE WHOLE PREDICATE to the generic evaluator — the route item
+// 874 priced at 2.02x for a flat property. Lifting it measures 1.31x (98.7 -> 75.4 ns/row,
+// disjoint, both controls flat).
 //
-// It was built — type, module-scope reader, extractor taking both operand orders, the application
-// loop through `compareTruth`, `hasPredicate`, and the `hop-projection` merge — and measured
-// **0.96x**. Instrumented, the reason is not that the lift is worthless: the conjunct lifted 3
-// times at COMPILE, and **0 of 5,000 runtime predicates carried the list**. The compiled predicate
-// that reaches the scan comes from a call where `ownVar` is undefined, so `direct` is null and the
-// `WHERE` stays generic; the lifted copies belong to other compile calls.
+// IT MEASURED NOTHING FOR THREE ITEMS FIRST, and the cause was one missing term in the "did
+// anything lift" guard after `directEqProps`' loop: a LONE dotted conjunct accumulated into `path`
+// and was then discarded because the other three lists were empty, so it lifted only when some
+// OTHER conjunct lifted beside it — and the benchmark predicate is a lone dotted compare. Items
+// 900, 901 and 902 each attributed that null to something else (a missing `ownVar`, an unwired
+// consumer, an unexplained engine asymmetry), all plausible readings of real code. A new list has
+// to be added to every place that asks "did anything lift", not just to the return type.
 //
-// THE DIAGNOSTIC THAT SHOWED IT, worth reusing: count `matchesPredicate` entries. For the dotted
-// query it ran 5,000 times — once per SCANNED vertex — and for the flat one 1,250, once per
-// MATCHING vertex, because a lifted predicate filters before `matchesPredicate` is reached. That
-// asymmetry is a direct read of whether a predicate was lifted at all.
-//
-// CORRECTED at item 901, and the correction matters. `compileNode` IS reached with `var=p` and a
-// `where=compare` for the dotted query, so the predicate IS built with an `ownVar` and DOES carry
-// the lift — the gap is on the CONSUMER side, not the compile side. `shortcuts.ts` builds its own
-// `CPredicate` (`compilePredicate(undefined, where, nodeVar)`) for a filtered count, and its
-// `InlinePred` contract enumerates exactly three places a value can come from — a general `where`,
-// `eqProps`/`cmpProps`, and `props`. A fourth list is invisible to it.
-//
-// AND THE LIFT IS NOT ADDITIVE, WHICH IS THE HAZARD. `compilePredicate` computes
-// `generic = direct === null ? where : direct.residual`, and `residual` is ALWAYS `undefined` — so
-// a successful lift EMPTIES `where`. A new list therefore MOVES a constraint rather than adding a
-// shortcut for it, and any consumer that enumerates the lists by name and misses the new one
-// returns a silent SUPERSET. That is `hasPredicate`'s named bug class (item 277) in a new place,
-// and the attempted change passed all 2,711 GQL tests while in exactly that state: no fixture
-// combines a dotted conjunct with the un-wired consumer.
-//
-// CORRECTED AGAIN at item 902, which finally asked `compilePredicate` directly instead of reading
-// the code. Across three spellings, with the 900 lift applied:
-//
-//     n.meta.city = 'x'                  where: KEPT     eqProps 0  pathProps 0   <- declines
-//     n.k = 1                            where: EMPTIED  eqProps 1  pathProps 0
-//     n.meta.city = 'x' AND n.k = 1      where: EMPTIED  eqProps 1  pathProps 1   <- lifts
-//
-// A LONE dotted conjunct declines, and the SAME conjunct inside an AND-chain lifts. That is the
-// equivalent-spelling class this engine is named for, and it explains item 900's null A/B: the
-// benchmark predicate is a lone dotted conjunct, so the measurement was of the one shape that
-// never lifts. Item 901's "the predicate IS built with the lift" was true only of the AND shape.
-//
-// And 901's SUPERSET HAZARD IS NOT DEMONSTRATED. Re-applying the un-wired lift leaves all twelve
-// cases in `dotted-predicate-routes.test.ts` passing — in the AND shape `matchesPredicate` does
-// apply the list, and in the lone shape nothing is lifted so nothing is emptied. The structural
-// risk is real (a lift DOES empty `where`), but no shape reaches it today; 901 over-stated it.
-//
-// So the open question is the ASYMMETRY — why a lone dotted compare is declined where the same
-// conjunct in an AND-chain is admitted — and it is unexplained. Answer that before rebuilding the
-// list; the consumer audit 901 called for is secondary to it.
+// SAFETY, because a lift is NOT additive: `compilePredicate` computes
+// `generic = direct === null ? where : direct.residual` and `residual` is always `undefined`, so a
+// successful lift EMPTIES `where` and the list becomes the ONLY carrier of that conjunct. Deleting
+// the application loop is therefore a silent SUPERSET, and `dotted-predicate-routes.test.ts` catches
+// it with 9 of its 12 cases. Any further list added here needs that fixture widened first.
 const asPropCompare = (
   expr: Extract<Expr, { kind: 'compare' }>,
 ): { variable: string; key: string; op: CompareOp; value: Expr } | null => {
@@ -5541,6 +5629,18 @@ export const satisfies = (
   if (pred.truthProps !== undefined) {
     for (const key of pred.truthProps) {
       if (asTruth(propOf(element, key)) !== true) {
+        return false;
+      }
+    }
+  }
+
+  // A DOTTED path, read straight off the element (item 900). `compareTruth` is the generic
+  // `compare` arm's own function — the same one `cmpProps` uses — so UNKNOWN (a null operand, a
+  // cross-type ordering, an absent segment) drops the row here exactly as it does there, and an
+  // `=` means the EXPRESSION reading rather than the inline one.
+  if (pred.pathProps !== undefined) {
+    for (const { path, op, value } of pred.pathProps) {
+      if (compareTruth(op, COMPARE[op], pathOf(element, path), value(env)) !== true) {
         return false;
       }
     }
