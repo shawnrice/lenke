@@ -26087,3 +26087,24 @@ p.flag` 4.51x (item 872).** Only the comparison spelling had one: `= true` lower
   Re-derived in item 880 and then dropped as a target on finding 234/537 — ~40-50 ns a vertex per
   step, "a traverser allocated per vertex to be filtered and discarded". Attacking it generally
   means restructuring the pipeline; the fused-walk route above is the tractable form.
+- **The fused hop walk now claims a BARE hop and `id()` — 2.23x and 2.12x (item 881).**
+  `hopValuesShortcut` required `steps.length >= 3` AND an exactly-`values(k)` third step, so
+  `V().out(T)` and `V().out(T).id()` paid the full traverser pipeline while the projected form rode
+  a fused walk — which is why ADDING a step made the query 1.9x faster (item 880). 315.54 ms ->
+  141.53 and 341.20 -> 160.60 over 1M edges, DISJOINT; `values(age)` (already fused) and `V()`
+  alone flat. The walk is unchanged, so row order stays identical by construction. Any OTHER third
+  step still declines — treating one as a residual over a bare hop would re-route an unmeasured
+  family, and that decision has its own mutant.
+- **OPEN, PRICED — NATIVE's bare hop is now the slow side (item 881).** With the new bench rows in:
+  `V().out() [bare]` is ts 185.4 against **native 329.61**, and native's own bare hop is **4.5x its
+  `id()`** (329.61 against 72.81) — the same inversion item 881 just fixed in TS, now in the engine.
+  Item 876's lens (read the ABSOLUTE columns, not the ratio) pointing at native.
+- **METHOD — a function with TWO implementations of one contract needs a fixture that visits both
+  (item 881).** `hopValuesShortcut` has a tuned single-type walk and a general `both`/label-set
+  walk; the fixture only used `out('K')`, so a mutant deleting the absent-key DROP from the general
+  walk SURVIVED. A `both('K')` case over a far vertex lacking the key reaches it.
+- **METHOD — an A/B switch must preserve the control flow it instruments (item 881).** Gating the
+  `proj === undefined` branch on an env var let control fall through to `proj.kind === 'id'` on an
+  undefined `proj` — a TypeError in the OFF arm only. The shipped ordering is safe because the
+  undefined check comes first; the switch broke that. Put the gate as an early return INSIDE the
+  branch.

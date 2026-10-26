@@ -26,6 +26,7 @@ import {
   gt,
   has,
   hasLabel,
+  id,
   out,
   order,
   planToGremlin,
@@ -73,6 +74,12 @@ const SHAPES: [string, Plan][] = [
   ['E().hasLabel().count()', traversal(E(), hasLabel('KNOWS'), count())],
   ['V().out().count()', traversal(V(), out('KNOWS'), count())],
   ['V().out().values(age)', traversal(V(), out('KNOWS'), values('age'))],
+  // ADDED AT ITEM 881, for the reason item 877 records: the corpus had no BARE-hop row, so a
+  // 2.23x gap sat unmeasured. `V().out()` and `V().out().id()` had no fused walk while
+  // `V().out().values(k)` did, which made ADDING a step 1.9x faster (item 880). The
+  // `.count()` row above cannot see it — that one is answered by a shortcut.
+  ['V().out() [bare]', traversal(V(), out('KNOWS'))],
+  ['V().out().id()', traversal(V(), out('KNOWS'), id())],
   // THE SAME TRAVERSAL WITH A TRAILING STEP (item 608). `hopValuesShortcut` matched a plan of
   // EXACTLY three steps, so this was four and dropped the whole query onto the traverser
   // pipeline. The row above is its reference and its control: a change letting a residual ride

@@ -56,12 +56,11 @@ export type HopValues = { values: Iterable<unknown>; rest: readonly Step[] };
 export const hopValuesShortcut = (plan: Plan, graph: Graph): HopValues | undefined => {
   const { steps } = plan;
 
-  if (steps.length < 3) {
+  if (steps.length < 2) {
     return undefined;
   }
 
   const [source, hop, proj] = steps;
-  const rest = steps.slice(3);
 
   // `V(id, …)` enumerates a given set, not the whole graph.
   if (source.kind !== 'V' || (source.ids?.length ?? 0) > 0) {
@@ -72,13 +71,48 @@ export const hopValuesShortcut = (plan: Plan, graph: Graph): HopValues | undefin
     return undefined;
   }
 
+  // WHAT COMES OFF THE FAR VERTEX, and how many steps that consumes (item 881).
+  //
+  // This used to require exactly a `values(k)` third step, so the two commonest hops in the
+  // language went down the traverser pipeline while the projected form rode a fused walk —
+  // and ADDING A STEP made the query 1.9x FASTER. Measured over 1,000,000 edges (item 880):
+  //
+  //   V().out(T)              325.21 ms   no shortcut: the full pipeline
+  //   V().out(T).id()         322.60      no shortcut either — so it is not the vertex
+  //   V().out(T).values(age)  169.93      the fused walk
+  //
+  // `pick` is a monomorphic closure chosen ONCE per plan, not a per-edge branch. The file's own
+  // warning above is about generator DELEGATION (375.6 against 251), not about a call.
+  //
+  // Any OTHER third step still declines the whole shortcut, exactly as before. Treating an
+  // unrecognised step as a residual over a bare hop would quietly re-route a large family of
+  // plans that nothing here has measured, which is a different change.
   // ONE key. `values()` with no key emits every property value and `values(a, b)` fans out per
   // key — both are different shapes, not this one.
-  if (proj.kind !== 'values' || proj.keys.length !== 1) {
+  const valueKey = proj?.kind === 'values' && proj.keys.length === 1 ? proj.keys[0] : undefined;
+  // A far vertex, structurally — enough for all three pickers and nothing more.
+  type Far = { readonly id: string; readonly properties: Record<string, unknown> };
+  let pick: (far: Far) => unknown;
+  // `values(k)` DROPS a far vertex lacking `k`; a bare hop and `id()` drop nothing, so the
+  // emptiness test belongs to the VALUE mode rather than to the walk.
+  let drops = false;
+  let consumed: number;
+
+  if (valueKey !== undefined) {
+    pick = (far) => far.properties[valueKey];
+    drops = true;
+    consumed = 3;
+  } else if (proj === undefined) {
+    pick = (far) => far;
+    consumed = 2;
+  } else if (proj.kind === 'id') {
+    pick = (far) => far.id;
+    consumed = 3;
+  } else {
     return undefined;
   }
 
-  const [key] = proj.keys;
+  const rest = steps.slice(consumed);
   const { kind, labels } = hop;
 
   // A SINGLE named type on `out`/`in` is the common shape, and for it the engine's adjacency
@@ -113,9 +147,9 @@ export const hopValuesShortcut = (plan: Plan, graph: Graph): HopValues | undefin
 
             for (const edge of bucket) {
               const far = forward ? edge.to : edge.from;
-              const value = far.properties[key];
+              const value = pick(far);
 
-              if (value !== undefined) {
+              if (!drops || value !== undefined) {
                 yield value;
               }
             }
@@ -131,13 +165,14 @@ export const hopValuesShortcut = (plan: Plan, graph: Graph): HopValues | undefin
       *[Symbol.iterator]() {
         for (const v of graph.vertices) {
           for (const edge of adjacentEdges(kind, graph, v, labels)) {
-            const value = otherEndpoint(kind, edge, v).properties[key];
+            const value = pick(otherEndpoint(kind, edge, v));
 
             // `values(k)` DROPS an element lacking `k` rather than emitting null — verified
             // against a real TinkerPop console (`V().count()` 6 against
             // `V().values('age').count()` 4). A STORED null is a present value and IS emitted,
-            // which is why this tests `undefined` and not nullishness.
-            if (value !== undefined) {
+            // which is why this tests `undefined` and not nullishness. A bare hop and `id()`
+            // drop nothing, which is what `drops` carries.
+            if (!drops || value !== undefined) {
               yield value;
             }
           }
