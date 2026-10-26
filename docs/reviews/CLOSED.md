@@ -26285,3 +26285,26 @@ p.flag` 4.51x (item 872).** Only the comparison spelling had one: `= true` lower
 - **CONFIRMED USEFUL — item 879's arrival-order assertion (item 890).** The `desc`-tiebreak mutant
   was caught by precisely one test: the tag-sequence comparison 879 added. A flipped tie group is a
   correctly-sorted result, so a key-set assertion cannot see it.
+- **CLOSED AS A TARGET — the TS `order()` residual, decomposed (item 891).** Items 878, 879 and 890
+  all attacked a residual nobody had decomposed. A stage-removal ladder over the 225.6 ms that
+  `order()` adds (medians of three alternated rounds; controls spread 1.018-1.091x; stages reconcile
+  to within 0.1 ms): **the sort itself 98.02 ms (43.5%)**, **an INERT `order()` step 95.73 (42.4%)**,
+  keys+check+filter+objects 26.89 (11.9%), `[...stream]` of 1M traversers 4.92 (2.2%). So **86% is
+  the sort at its floor plus the step's own existence** — the sort runs at **1.13x** its 86.94 ms
+  floor, and an `order()` that sorts NOTHING still costs 95.73 ms (~96 ns an item, consistent with
+  items 234/537's per-step traverser cost). No change to `sortByBys` can reach that. The only
+  tractable slice left is the 26.89 ms of keying, which item 890 measured at ~14 ms and lost in the
+  noise. Do not reopen without attacking the generator pipeline itself.
+- **REFUTED — `[...stream]` materializing 1M traversers in `orderStep` (item 891).** Named as a
+  candidate by item 890; measured at **4.92 ms, 2.2%** of what `order()` adds.
+- **REFUTED — the sort/comparator in `order()` (item 891).** 98.02 ms against an 86.94 ms floor for
+  sorting 1M numbers with the same total-order comparator: **1.13x**, so ~12 ms in it, not 98.
+- **METHOD — `min` can coincide across DIFFERENT arms and look like a broken arm (item 891).**
+  `noKeys` and `passthru` both reported exactly 266.17 ms, reading like one arm that failed to
+  apply. The raw per-round series settled it (275.02/266.17/283.18 against 266.17/270.71/270.10):
+  distinct arms, wrong estimator. Within-arm spread reaches 6% here; switching to MEDIANS moved that
+  stage from a flat 0.00 ms to 4.92. Print the series — a summary statistic coinciding across arms
+  is not evidence they are the same code.
+- **METHOD — an arm assertion on a SHARED marker cannot distinguish arms (item 891).** All three
+  ablated arms carried `ABLATION-891`, so the count proved only that _some_ ablation applied, never
+  which; it would have passed with two arms swapped. Assert what an arm uniquely contains.

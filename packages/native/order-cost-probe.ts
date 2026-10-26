@@ -49,6 +49,27 @@ const DROP = 2;
 // so 879's attribution was wrong and the remaining ~89% is unpriced — `evalBy` + `project` as 2M
 // calls, `[...stream]` materializing 1M traversers, and `compareTotal` over two `unknown` loads
 // ~20M times.
+// ITEM 891 — THE DECOMPOSITION THAT CLOSES THIS ROW. A stage-removal ladder (each ablated arm
+// deletes one stage and is deliberately WRONG) over the 225.6 ms that `order()` adds, medians of
+// three order-alternated rounds at 200k vertices x degree 5:
+//
+//     stage                                       ms    share
+//     the sort itself                          98.02    43.5%
+//     an INERT order() step (yield* only)      95.73    42.4%
+//     keys + check + filter + wrapper objects  26.89    11.9%
+//     [...stream] of 1M traversers              4.92     2.2%
+//     (sums to 225.56 against a measured 225.6)
+//
+// Two of item 890's three named candidates die here. `[...stream]` is 2.2%. And the sort runs at
+// 1.13x its own floor (rawSortTotal, 86.94 ms for 1M numbers), so there is nothing in it.
+//
+// THE FINDING: an `order()` that sorts NOTHING — `yield* stream`, no keys, no comparator — still
+// costs 95.73 ms, ~96 ns an item, 42% of the total. That is the step boundary existing at all, not
+// anything `sortByBys` does, and it is consistent with items 234/537 (~40-50 ns a vertex per step,
+// a traverser allocated per vertex). So this row is AT its floor given the generator pipeline, and
+// the only remaining tractable slice is the 26.89 ms of keying — which item 890 already showed
+// yields ~14 ms and is lost in the noise. Do not open this row again without attacking the
+// pipeline itself.
 const g = new Graph();
 const verts: unknown[] = [];
 
