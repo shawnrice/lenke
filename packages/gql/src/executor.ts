@@ -8602,7 +8602,18 @@ const dropUnreadGroupBinds = (clauses: readonly Clause[]): readonly Clause[] => 
   return changed ? [{ ...m, patterns: [{ ...pattern, segments }] }, ret] : clauses;
 };
 
-const compileLinear = (linear: LinearQuery): CLinear => {
+// EXPORTED for ROUTE ASSERTIONS, and deliberately not from `index.ts` (item 911).
+//
+// The nineteen detectors below are answer-equivalent routes: a query whose shortcut stops firing
+// returns the same rows by the general pipeline, so NO correctness test can see the difference.
+// Item 910 priced them at 25% of planning the big query and named "a route assertion per detector"
+// as the prerequisite for sharing work between them — because the failure mode of that refactor is
+// a shape summary that silently stops a shortcut firing.
+//
+// `routes-fired.test.ts` calls this and reads which fields came back non-null. Exported from this
+// module only, the way `predFor`, `selectiveFirst` and `invertedHopBudget` already are for their
+// own tests; the package's public surface is unchanged.
+export const compileLinear = (linear: LinearQuery): CLinear => {
   // `liftStartProps` runs OUTSIDE `fuseAnchorThenHop` so a FUSED clause gets the lift too: the
   // fused pattern's start is the anchor's, and an anchor written `MATCH (a:P {k: 5})` carries
   // exactly the inline property this lifts (item 778).

@@ -26705,3 +26705,23 @@ undefined`). None of these is discoverable from the list's definition. (Those ga
   independent findings now point at the same shape — **N separate walks over one small clause list**:
   checkLinearScope's second walk (908), the per-clause scope copy (909, FIXED at up to 1.48x), and
   the ten rewrite walks plus nineteen detector walks here.
+- **PREREQUISITE DELIVERED — route assertions for all nineteen detectors (item 911).** Item 910
+  named this as what the 25% detector target needs first. `compileLinear` is exported from
+  `executor.ts` only (public API unchanged; same pattern as `predFor`/`selectiveFirst`), and
+  `routes-fired.test.ts` reads which detector fields came back non-null. **A firing spelling for all
+  nineteen**, with a meta-assertion that the covered set equals the field set, plus five negatives.
+  Four needed their guards read rather than guessed: `varLengthCount` wants a BOUNDED quantifier
+  (`->{1,3}`, not `->*`); `forCount`/`forProjection` want ≥3 clauses with `FOR` second-to-last over a
+  PROPERTY list; `multi*Aggregate` want ≥2 projection items; `groupHopShortcut` fires only on the FAR
+  key.
+- **CORRECTION — the pre-existing route coverage was PARTIAL, not absent (item 911).** I claimed no
+  correctness test could see a disabled detector. Measured, with `routes-fired.test.ts` REMOVED:
+  disabling `detectCountShortcut` is **CAUGHT (4 failures)**, disabling `detectNodeProjection`
+  **SURVIVES** all 2,723 tests. Two tests happen to assert something only the count shortcut
+  produces. **The unevenness is worse than uniform absence**: a refactor disabling three detectors
+  may fail loudly for one and silently for two, which reads as "the suite caught it" when it caught a
+  third.
+- **METHOD — a before/after over a suite that CONTAINS the "after" is not a comparison (item 911).**
+  My first run compared `routes-fired.test.ts` against "the whole gql suite", which includes it — so
+  it reported 4 and 4 and looked like existing coverage. Remove the new file and run the rest. Same
+  error shape as item 897's two-process arms: the thing under test leaking into the baseline.
