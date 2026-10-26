@@ -94,7 +94,7 @@ fn main() {
     }
     println!();
 
-    let cases: [(&str, &str); 13] = [
+    let cases: [(&str, &str); 14] = [
         ("floor  count(*)", "MATCH (p:P) RETURN count(*) AS c"),
         (
             "Num   = 7",
@@ -130,6 +130,10 @@ fn main() {
         ),
         ("Bool  bare", "MATCH (p:P) WHERE p.bul RETURN count(*) AS c"),
         (
+            "Bool  NOT bare",
+            "MATCH (p:P) WHERE NOT p.bul RETURN count(*) AS c",
+        ),
+        (
             "Date  = 19730",
             "MATCH (p:P) WHERE p.dat = DATE '2024-01-08' RETURN count(*) AS c",
         ),
@@ -142,6 +146,57 @@ fn main() {
             "MATCH (p:P) WHERE p.dat IS NOT NULL RETURN count(*) AS c",
         ),
     ];
+    if std::env::var("BOOLCOL").is_ok() {
+        use lenke_engine::store::Builder as B2;
+        for (name, nulls) in [("no nulls", false), ("with a stored null", true)] {
+            let mut b = B2::default();
+            for i in 0..12u32 {
+                let m = i % 6;
+                let props: Vec<(&str, Value)> = match m {
+                    0 | 1 => vec![("f", Value::Bool(true))],
+                    2 | 3 => vec![("f", Value::Bool(false))],
+                    4 => vec![],
+                    _ => {
+                        if nulls {
+                            vec![("f", Value::Null)]
+                        } else {
+                            vec![]
+                        }
+                    }
+                };
+                b.node(&["T"], &props);
+            }
+            let st = b.build();
+            let kind = match st.column("f") {
+                Some(lenke_engine::store::Column::Bool { .. }) => "Bool",
+                Some(lenke_engine::store::Column::Gen { .. }) => "Gen",
+                Some(_) => "other",
+                None => "absent",
+            };
+            println!("{name:22} -> {kind}");
+            for q in [
+                "MATCH (t:T) WHERE t.f RETURN count(*) AS c",
+                "MATCH (t:T) WHERE NOT t.f RETURN count(*) AS c",
+                "MATCH (t:T) WHERE t.f IS NULL RETURN count(*) AS c",
+                "MATCH (t:T) WHERE t.f IS NOT NULL RETURN count(*) AS c",
+            ] {
+                let raw = lenke_engine::gql::parse(q).unwrap();
+                let plan = lenke_engine::opt::optimize_indexed(raw, &st);
+                match lenke_engine::exec::try_run(&plan, &st) {
+                    Ok(out) => println!(
+                        "    {:>4}  {q}",
+                        out.rows
+                            .iter()
+                            .next()
+                            .map(|r| format!("{:?}", r[0]))
+                            .unwrap_or_default()
+                    ),
+                    Err(e) => println!("    ERR   {q} -> {e}"),
+                }
+            }
+        }
+        return;
+    }
     if std::env::var("XKIND").is_ok() {
         // What does the GENERAL path do for a cross-KIND temporal comparison? If it throws, a
         // fast path that returned 0 instead would be a WRONG ANSWER, which is what the date
@@ -169,6 +224,9 @@ fn main() {
             "MATCH (p:P) WHERE p.dat = DATE '2024-01-08' RETURN count(*) AS c",
             "MATCH (p:P) WHERE p.dat >= DATE '2024-01-08' RETURN count(*) AS c",
             "MATCH (p:P) WHERE p.num = 7 RETURN count(*) AS c",
+            "MATCH (p:P) WHERE p.bul = true RETURN count(*) AS c",
+            "MATCH (p:P) WHERE p.bul RETURN count(*) AS c",
+            "MATCH (p:P) WHERE NOT p.bul RETURN count(*) AS c",
         ] {
             let raw = lenke_engine::gql::parse(q).unwrap();
             let plan = lenke_engine::opt::optimize_indexed(raw, &store);

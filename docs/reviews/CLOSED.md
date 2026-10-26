@@ -25910,3 +25910,23 @@ copies before the comment was added.
   Date column against `DATETIME`, `TIME` and a string literal. So a temporal fast path's `kind`
   check is a BAIL (skip a scan that cannot match), not a correctness guard — its mutant is
   equivalent, which is why the comment says so rather than implying correctness.
+- **A bare property in boolean context now has a typed path — `WHERE p.flag` 1.95x, `WHERE NOT
+p.flag` 4.51x (item 872).** Only the comparison spelling had one: `= true` lowers to an
+  `IndexSeek` with a typed Bool arm (127.7 us), while a bare property stayed a `Filter` with no
+  case in `try_filter_keep`'s chain and fell to the boxed eval (283.4 bare, 837.9 negated). The
+  three spellings' spread closes **6.6x -> 1.47x**; `= true` is a control and stayed flat.
+  Restricted to `Column::Bool`, which is the correctness condition (a `Gen` column can hold a
+  non-boolean, which is the general path's and the static check's business).
+- **METHOD — a SYMMETRIC fixture cannot see a negation bug (item 872).** With 100 true and 100
+  false rows, a mutant that ignored the negation returned the correct COUNT with the wrong rows and
+  survived the whole test. Make the groups unequal (now 150/50) whenever a predicate's complement is
+  under test.
+- **METHOD — the `u32::MAX` optional-miss sentinel needs an OPTIONAL MATCH to reach (item 872).** No
+  plain scan produces one, so a guard against it is unreachable from an ordinary fixture and its
+  mutant survives. `WHERE` inside `OPTIONAL MATCH` is `E_NOT_IMPLEMENTED`, so the case has to be
+  written as a statement-position `FILTER` after it.
+- **A null written through `Builder::node` promotes a typed column to `Gen` (item 872).** `store.rs`
+  says the column never de-opts on a null; that is the `SET` path. Measured consequence: NONE —
+  both representations return identical counts for the bare, negated, `IS NULL` and `IS NOT NULL`
+  spellings, so it is representational only. It does mean a typed-column fast path is not reached
+  for ingest-time nulls, and that a test wanting a typed column must use ABSENT cells instead.

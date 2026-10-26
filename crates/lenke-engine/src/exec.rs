@@ -6859,6 +6859,59 @@ fn try_filter_keep_element_id(pred: &Expr, store: &Store, batch: &Batch) -> Opti
     Some(keep)
 }
 
+/// A BARE property as a boolean predicate (`WHERE p.flag`) and its negation (`WHERE NOT p.flag`),
+/// over a typed `Column::Bool`.
+///
+/// Item 872. Three spellings of one question measured 6.6x apart at 200,000 nodes, because only
+/// the comparison form had a typed path — `= true` is rewritten to an `IndexSeek`, whose no-index
+/// fallback has a `Column::Bool` arm, while a bare property stays a `Filter` and fell to the boxed
+/// general eval:
+///
+/// ```text
+///   WHERE p.bul = true    127.7 us     IndexSeek, typed arm
+///   WHERE p.bul           285.0        2.2x
+///   WHERE NOT p.bul       842.3        6.6x
+/// ```
+///
+/// Restricted to a TYPED bool column, and that is the correctness condition rather than
+/// conservatism: every present cell of a `Column::Bool` is a boolean, so there is no value here
+/// that a boolean context could reject. A `Gen` column can hold anything, where a non-boolean in
+/// boolean position is the general path's business (and its static check's), so this declines and
+/// leaves that behaviour exactly where it was.
+///
+/// An absent or NULL cell is UNKNOWN, which a keep-TRUE filter drops — `present[i] && …`, the same
+/// rule the typed comparison arms use. `NOT UNKNOWN` is also UNKNOWN, not TRUE, which is why the
+/// negation keeps the presence test rather than inverting the whole condition.
+fn try_filter_keep_bool_prop(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec<usize>> {
+    let (negated, inner) = match pred {
+        Expr::Not(e) => (true, e.as_ref()),
+        e => (false, e),
+    };
+    let Expr::Prop { slot, key } = inner else {
+        return None;
+    };
+    let Col::Nodes(ids) = batch.slot(*slot) else {
+        return None; // an edge slot reads a different column family
+    };
+    let Some(Column::Bool { data, present, .. }) = store.column(key) else {
+        return None;
+    };
+    Some(
+        ids.iter()
+            .enumerate()
+            .filter(|&(_, &id)| {
+                // An optional miss is the `u32::MAX` sentinel, which reads as NULL.
+                if id == u32::MAX {
+                    return false;
+                }
+                let i = id as usize;
+                present[i] && (data[i] != negated)
+            })
+            .map(|(row, _)| row)
+            .collect(),
+    )
+}
+
 fn try_filter_keep(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec<usize>> {
     // A boolean `CASE` wrapping a predicate this function can already answer (item 450). First,
     // because it is a pure rewrite: it adds no evaluation of its own, it just unwraps.
@@ -6868,6 +6921,10 @@ fn try_filter_keep(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec<usiz
     // A predicate that is a pure function of ONE dict column: evaluate per distinct value
     // (≤ dict size) and keep by code, instead of a boxed eval per row.
     if let Some(keep) = try_filter_keep_dict(pred, store, batch) {
+        return Some(keep);
+    }
+    // A bare property in boolean context, and its negation, over a typed bool column (item 872).
+    if let Some(keep) = try_filter_keep_bool_prop(pred, store, batch) {
         return Some(keep);
     }
     // Arithmetic over one property and a constant, fused into the keep pass (item 438).

@@ -27566,3 +27566,182 @@ fn temporal_filter_paths() {
         "the date path must decline a numeric column"
     );
 }
+
+/// Item 872: a BARE property in boolean context (`WHERE p.flag`) and its negation, over a typed
+/// bool column. Only the comparison spelling (`= true`) had a typed path, so three spellings of
+/// one question measured 6.6x apart.
+///
+/// The fixture carries the two cells a bool column can hold besides `true`/`false`: an ABSENT key
+/// and a STORED PRESENT NULL. Both are UNKNOWN in boolean context, and `NOT UNKNOWN` is UNKNOWN
+/// rather than TRUE — so neither spelling may keep them. That is the whole correctness question
+/// here, and a fixture of only true/false cannot ask it.
+#[test]
+fn bare_bool_property_predicate() {
+    let mut b = Builder::default();
+    for i in 0..300u32 {
+        // 150 true, 50 false, 100 absent. The true and false groups are DELIBERATELY UNEQUAL:
+        // with 100 each, a mutant that ignored the negation (keeping the TRUE rows for `NOT f`)
+        // returned the same COUNT as the correct answer and survived the whole test.
+        let m = i % 6;
+        let props: Vec<(&str, Value)> = match m {
+            0..=2 => vec![("f", Value::Bool(true)), ("i", n(f64::from(i)))],
+            3 => vec![("f", Value::Bool(false)), ("i", n(f64::from(i)))],
+            // ABSENT, which is UNKNOWN in boolean context. A stored `Value::Null` would be too,
+            // but writing one through `Builder` promotes the column to `Gen` (measured — the
+            // "never de-opts on a null" rule in `store.rs` is about the `SET` path), and a `Gen`
+            // column is not what this arm claims. The `Gen` spelling gets its own fixture below.
+            _ => vec![("i", n(f64::from(i)))],
+        };
+        b.node(&["T"], &props);
+    }
+    let store = b.build();
+    assert!(
+        matches!(store.column("f"), Some(crate::store::Column::Bool { .. })),
+        "f must be a typed bool column or the arm under test is not reached"
+    );
+
+    let cnt = |q: &str| -> f64 {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &store);
+        match run(&plan, &store).rows[0][0] {
+            Value::Num(x) => x,
+            ref o => panic!("{o:?}"),
+        }
+    };
+
+    // 150 true, 50 false, 100 ABSENT
+    assert_eq!(cnt("MATCH (t:T) WHERE t.f RETURN count(*) AS c"), 150.0);
+    assert_eq!(cnt("MATCH (t:T) WHERE NOT t.f RETURN count(*) AS c"), 50.0);
+    // the comparison spelling must agree with the bare one, which is the point of the item
+    assert_eq!(
+        cnt("MATCH (t:T) WHERE t.f = true RETURN count(*) AS c"),
+        150.0
+    );
+    assert_eq!(
+        cnt("MATCH (t:T) WHERE t.f = false RETURN count(*) AS c"),
+        50.0
+    );
+    // THE UNKNOWNS ARE KEPT BY NEITHER SPELLING. `WHERE t.f` plus `WHERE NOT t.f` is 200, not
+    // 300 — if the negation inverted the presence test too it would read 200 here and 300 there.
+    assert_eq!(
+        cnt("MATCH (t:T) WHERE t.f IS NULL RETURN count(*) AS c"),
+        100.0
+    );
+    assert_eq!(
+        cnt("MATCH (t:T) WHERE t.f IS NOT NULL RETURN count(*) AS c"),
+        200.0
+    );
+    // a double negation is the positive, and still drops the unknowns
+    assert_eq!(
+        cnt("MATCH (t:T) WHERE NOT NOT t.f RETURN count(*) AS c"),
+        150.0
+    );
+    // conjunction with another predicate still works (the arm must not claim a compound)
+    assert_eq!(
+        cnt("MATCH (t:T) WHERE t.f AND t.i < 6 RETURN count(*) AS c"),
+        3.0
+    );
+    // AN OPTIONAL MISS carries the `u32::MAX` sentinel in the node slot, and indexing the column
+    // by it would be out of bounds. No plain scan produces one, so without an OPTIONAL MATCH the
+    // guard is unreachable and its mutant survived. Nothing here has an `R` edge, so EVERY row's
+    // `u` is a miss: the predicate must keep none of them rather than panic.
+    assert_eq!(
+        cnt("MATCH (t:T) OPTIONAL MATCH (t)-[:R]->(u) FILTER u.f RETURN count(*) AS c"),
+        0.0,
+        "a bool predicate on an optional miss keeps nothing"
+    );
+    assert_eq!(
+        cnt("MATCH (t:T) OPTIONAL MATCH (t)-[:R]->(u) FILTER NOT u.f RETURN count(*) AS c"),
+        0.0,
+        "and NOT on an optional miss is UNKNOWN, not TRUE"
+    );
+
+    // THE ROUTE, asserted directly: the arm is answer-equivalent, so nothing above can tell
+    // whether it fired.
+    let batch = pull(
+        &Plan::Scan {
+            label: Some("T".into()),
+        },
+        &store,
+        false,
+    )
+    .unwrap();
+    let bare = Expr::Prop {
+        slot: 0,
+        key: "f".into(),
+    };
+    let negated = Expr::Not(Box::new(bare.clone()));
+    assert_eq!(
+        try_filter_keep_bool_prop(&bare, &store, &batch).map(|k| k.len()),
+        Some(150),
+        "a bare bool property must take the typed arm"
+    );
+    assert_eq!(
+        try_filter_keep_bool_prop(&negated, &store, &batch).map(|k| k.len()),
+        Some(50),
+        "and so must its negation, keeping the FALSE rows and not the true ones"
+    );
+    // a NUMERIC property is not a boolean context this arm may claim
+    let numeric = Expr::Prop {
+        slot: 0,
+        key: "i".into(),
+    };
+    assert!(
+        try_filter_keep_bool_prop(&numeric, &store, &batch).is_none(),
+        "a non-bool column must be declined, leaving the general path to judge it"
+    );
+
+    // A STORED NULL makes the column `Gen`, so the typed arm declines and the general path
+    // answers — and it must answer identically. Measured before being written down: both
+    // representations return the same four counts, so the asymmetry is representational only and
+    // carries no correctness consequence.
+    let mut gb = Builder::default();
+    for i in 0..12u32 {
+        let props: Vec<(&str, Value)> = match i % 6 {
+            0 | 1 => vec![("f", Value::Bool(true))],
+            2 | 3 => vec![("f", Value::Bool(false))],
+            4 => vec![],
+            _ => vec![("f", Value::Null)],
+        };
+        gb.node(&["T"], &props);
+    }
+    let gen_store = gb.build();
+    assert!(
+        matches!(
+            gen_store.column("f"),
+            Some(crate::store::Column::Gen { .. })
+        ),
+        "a stored NULL written through Builder promotes the column to Gen"
+    );
+    let gcnt = |q: &str| -> f64 {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &gen_store);
+        match run(&plan, &gen_store).rows[0][0] {
+            Value::Num(x) => x,
+            ref o => panic!("{o:?}"),
+        }
+    };
+    // 4 true, 4 false, 2 absent, 2 stored null
+    assert_eq!(gcnt("MATCH (t:T) WHERE t.f RETURN count(*) AS c"), 4.0);
+    assert_eq!(gcnt("MATCH (t:T) WHERE NOT t.f RETURN count(*) AS c"), 4.0);
+    assert_eq!(
+        gcnt("MATCH (t:T) WHERE t.f IS NULL RETURN count(*) AS c"),
+        4.0
+    );
+    assert_eq!(
+        gcnt("MATCH (t:T) WHERE t.f IS NOT NULL RETURN count(*) AS c"),
+        8.0,
+        "a stored NULL must read as NULL even where the column stores it with present = true"
+    );
+    let gbatch = pull(
+        &Plan::Scan {
+            label: Some("T".into()),
+        },
+        &gen_store,
+        false,
+    )
+    .unwrap();
+    assert!(
+        try_filter_keep_bool_prop(&bare, &gen_store, &gbatch).is_none(),
+        "a Gen column must be declined — it can hold a non-boolean, which is the general \
+         path's (and the static check's) business"
+    );
+}
