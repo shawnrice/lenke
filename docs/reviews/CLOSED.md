@@ -26032,3 +26032,19 @@ p.flag` 4.51x (item 872).** Only the comparison spelling had one: `= true` lower
   two-type fixture, now pinned. Also: `Builder::edge` takes ONE label, so a multi-label-edge guard
   is unconstructible with a Builder fixture and its mutant survives — use `ndjson::from_ndjson`,
   and assert `has_multi_label_edges()` before asserting the decline.
+- **~~`live_edge_count()` O(1)~~ — RETRACTED on cost/benefit (item 878, revising 877).** The win is
+  **32 µs once per query** on two rare shapes (two callers, both once per query), not a per-row
+  cost. The cost is correctness-critical state: there is no edge tombstone bitmap, so it needs
+  either a counter maintained across six sites (`mem::take` + a per-neighbour `remove` loop + the
+  undo/restore pushes, self-loops in both lists) or a version-keyed cache with ATOMICS, since
+  `Store` is shared across threads for the parallel algorithms. Not worth it. 877's "~100x on two
+  rows" was the right ratio and the wrong frame.
+- **OPEN, PRICED — the TS `order()` row is ~212 ms of overhead around an 88 ms sort (item 878).**
+  `V().out().values(age).order()` is 474.30 ms against 174.30 without `.order()`, so ordering adds
+  300 — where sorting 1M numbers with a numeric comparator costs **88.36**, and the engine's
+  NaN-total order costs the same (87.05), so the ordering CONTRACT is free. `sortByBys` allocates a
+  wrapper object with a `keys` ARRAY per item (2M allocations), makes two full passes before
+  sorting, and its comparator does a loop + two array indexes + a general `compareTotal` + **a
+  `dirs[i] === 'desc'` STRING comparison** per comparison, ~20M times. Build the single-`by`
+  specialization (parallel key array, direction as a sign resolved once, no loop); do NOT generalize
+  the hoist — `sortRowsByColumns` records that measuring 1.00-1.02x and being reverted.
