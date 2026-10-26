@@ -26534,3 +26534,28 @@ undefined`). None of these is discoverable from the list's definition. (Those ga
   The tell is whether the general carrier is emptied on success. When it is, "add a fourth list
   beside the other three" is not a local change however local it looks: audit every consumer BEFORE
   writing the list, and do not trust a grep for the sibling list's name to find them.
+- **OPEN, AND THE REAL QUESTION — the dotted lift declines a LONE conjunct and admits one in an
+  AND-chain (item 902).** Asked `compilePredicate` directly, with the 900 lift applied:
+  `n.meta.city = 'x'` → `where` KEPT, pathProps **0**; `n.k = 1` → emptied, eqProps 1;
+  `n.meta.city = 'x' AND n.k = 1` → emptied, eqProps 1, pathProps **1**. There is no lone-conjunct
+  guard in `directEqProps` (`conjuncts` is just `where.kind === 'and' ? where.items : [where]`), so
+  this is UNEXPLAINED. **It explains item 900's null A/B completely**: the benchmark predicate is a
+  lone dotted conjunct, so the measurement was of the one shape that never lifts. Answer this before
+  rebuilding the list; the consumer audit 901 called for is secondary.
+- **CORRECTION — item 901's superset hazard is NOT demonstrated (item 902).** Re-applying the exact
+  un-wired lift leaves all twelve cases of `dotted-predicate-routes.test.ts` passing: in the AND
+  shape `matchesPredicate` does apply the list, and in the lone shape nothing lifts so nothing is
+  emptied. The structural risk is real (a successful lift DOES empty `where`) but no shape reaches
+  it today. 901's "latent wrong answer waiting for a fixture" was too strong.
+- **NEW COVERAGE — `dotted-predicate-routes.test.ts` (item 902).** A dotted predicate through every
+  route that carries a node predicate: count shortcut (clause + inline), a PROJECTION (rows, not a
+  tally), AND-chains in both orders, a three-segment path, the FAR node of a hop, both operand
+  orders, an ordering comparison, an absent final segment, an absent BASE, plus a no-predicate
+  control. Twelve cases that did not exist.
+- **METHOD — an attribution from ONE shape is a hypothesis; a TABLE across spellings is a finding
+  (items 892, 901, 902).** Three successive corrections of my own attributions in one window, same
+  cause each time: reasoned from reading the code plus one instrumented shape, then generalized (891
+  read a stage difference as a generator layer; 900 read a null A/B as a missing `ownVar`; 901 read
+  `residual: undefined` as a live superset risk). What worked was calling the exported function
+  across THREE spellings and printing a table — a wider instrument, not a cleverer one. In an engine
+  whose named bug class is "equivalent spellings cost differently", the table is the minimum.

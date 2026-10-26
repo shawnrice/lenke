@@ -4817,9 +4817,26 @@ const pushHint = (into: HintMap, variable: string, hint: CSeedHint): void => {
 // and the attempted change passed all 2,711 GQL tests while in exactly that state: no fixture
 // combines a dotted conjunct with the un-wired consumer.
 //
-// So re-attempting this needs an AUDIT OF EVERY CONSUMER first — `matchesPredicate`,
-// `rejectedByElementDirect`, both `preFilter` gates in `matching.ts`, and `shortcuts.ts`'
-// `InlinePred` — not a grep for `eqProps`.
+// CORRECTED AGAIN at item 902, which finally asked `compilePredicate` directly instead of reading
+// the code. Across three spellings, with the 900 lift applied:
+//
+//     n.meta.city = 'x'                  where: KEPT     eqProps 0  pathProps 0   <- declines
+//     n.k = 1                            where: EMPTIED  eqProps 1  pathProps 0
+//     n.meta.city = 'x' AND n.k = 1      where: EMPTIED  eqProps 1  pathProps 1   <- lifts
+//
+// A LONE dotted conjunct declines, and the SAME conjunct inside an AND-chain lifts. That is the
+// equivalent-spelling class this engine is named for, and it explains item 900's null A/B: the
+// benchmark predicate is a lone dotted conjunct, so the measurement was of the one shape that
+// never lifts. Item 901's "the predicate IS built with the lift" was true only of the AND shape.
+//
+// And 901's SUPERSET HAZARD IS NOT DEMONSTRATED. Re-applying the un-wired lift leaves all twelve
+// cases in `dotted-predicate-routes.test.ts` passing — in the AND shape `matchesPredicate` does
+// apply the list, and in the lone shape nothing is lifted so nothing is emptied. The structural
+// risk is real (a lift DOES empty `where`), but no shape reaches it today; 901 over-stated it.
+//
+// So the open question is the ASYMMETRY — why a lone dotted compare is declined where the same
+// conjunct in an AND-chain is admitted — and it is unexplained. Answer that before rebuilding the
+// list; the consumer audit 901 called for is secondary to it.
 const asPropCompare = (
   expr: Extract<Expr, { kind: 'compare' }>,
 ): { variable: string; key: string; op: CompareOp; value: Expr } | null => {
