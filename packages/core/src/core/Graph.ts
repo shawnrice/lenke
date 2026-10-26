@@ -1142,6 +1142,27 @@ export class Graph {
     // module-level `let` that is never read is a dead store. It had to escape via `globalThis` to
     // survive, and dist had to be grepped to confirm all three arms were present — otherwise
     // `build` would have measured as `none` and reported the allocation as free.)
+    // ITEM 863 — MERGING THESE TWO LISTENERS INTO ONE BUYS NOTHING, measured. Item 862 left that
+    // as the recommended next lever: two frames per emit means two loop iterations and two
+    // try/catch frames, so halving them looked free money. Priced it the cheap way instead of
+    // building it — registered a THIRD, no-op listener on the same sixteen types and read the
+    // marginal cost of one frame, min of three order-alternated rounds at k=4:
+    //
+    //     base (2 listeners) 109.5 ns/write     plus1 (3 listeners) 108.0
+    //
+    // One extra frame is indistinguishable from zero, and the three-listener arm came out nominally
+    // FASTER. `snapshotFor` is cached (the listener set never changes after construction), so a
+    // frame is an array step, a try/catch entry and a call — all of which V8 does for free here.
+    // The 32 ns of item 862's dispatch is therefore the frame BODIES, not the plumbing around them,
+    // and no restructuring of the registration can reach it. Do not re-attempt the merge.
+    //
+    // This arm is trustworthy precisely because its gate is HERE, in the constructor, outside the
+    // measured loop. The companion attempt to decompose the bodies (`markMutated`'s absent-symbol
+    // `TX_TOKENS` read vs `pushTokens`) put its gate INSIDE the loop and is invalid for it: each
+    // arm then pays a different number of per-write string comparisons, and the ladder came back
+    // non-monotone in its own superset relation — `notx` does strictly less work than `base` and
+    // measured SLOWER in 6 of 6 rounds, across two different harnesses. Pricing those bodies needs
+    // one BINARY per arm, not one env var.
     graphMutationEvents.forEach((type) => {
       // The same listener is registered against many event types; we erase
       // the per-event listener type here.

@@ -25751,3 +25751,12 @@ copies before the comment was added.
   allocation (inside a 19% noise floor) / **32 DISPATCH** to those two always-present listeners —
   so the remaining lever is a cheaper dispatch (one merged internal listener, or inline bookkeeping
   leaving an empty snapshot), NOT a guarded construction.
+- **Merging `Graph`'s two internal mutation listeners into one — REFUTED at zero (item 863).**
+  Item 862 proposed it as the way to reach its 32 ns of dispatch. A third, no-op listener on the
+  same sixteen types prices one frame at **indistinguishable from zero** (base 109.5 ns/write vs
+  plus1 108.0, min of three alternated rounds) — `snapshotFor` is cached, so a frame is an array
+  step, a try/catch entry and a call. The 32 ns is the frame BODIES; no registration change can
+  reach it. Do not re-attempt. The companion attempt to split those bodies (`TX_TOKENS` symbol read
+  vs `pushTokens`) is **invalid by construction** — its arm selector sits inside the measured loop,
+  so each arm pays a different number of per-write string comparisons, and `notx` measured slower
+  than `base` in 6/6 rounds while doing strictly less work. Any retry needs one BINARY per arm.
