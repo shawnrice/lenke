@@ -109,6 +109,15 @@ question in its module header — read the header before touching it.
   same, so the probe prints both. It is also where the dictionary arm's ≥1785x was measured: a
   dictionary key has a bounded rank, so once `skip+limit` rows at the extreme rank are seen in
   arrival order the scan can STOP.
+- `edgecount_877` — every spelling of "how many edges are there", in both front ends, each with
+  its PLAN (`PLAN=1`) next to its time and its answer. Written because `E().count()` was the last
+  bench row where native was the slow side, and it found something much larger on the way:
+  `g.E().hasLabel('KNOWS').count()` lowers to `Aggregate{Filter{EdgeScan, IsLabeled}}`, which no
+  fast path claimed, against `MATCH ()-[:KNOWS]->() RETURN count(*)` answering the same question
+  from a CSR partition length — **89,800x**. It also pins the semantics a label-set count depends
+  on: a multi-label `hasLabel` is an OR (every edge on a two-type fixture) and an unknown label is
+  0, both measured here rather than assumed. The remaining row is `live_edge_count`'s own O(V) sum
+  (~33 µs at 1M edges), which is why the untyped hop count stops at 0.0325 rather than 0.0003.
 - `vacuouslabel_876` — what does a VACUOUS label cost? `V().hasLabel('Person').out('KNOWS')
 .count()` measured 0.5380 ms against 0.0003 for `V().out('KNOWS').count()` — the same question,
   since every vertex in the fixture is a `Person` — because the O(1) CSR-partition shortcut

@@ -3482,14 +3482,83 @@ fn typed_hop_count_from_size(input: &Plan, agg: &Agg, store: &Store) -> Option<u
     if !whole_graph_scan(src, store) {
         return None;
     }
-    let [ty] = edge_label.as_slice() else {
+    match edge_label.as_slice() {
+        // UNTYPED (item 877): an out-expansion from every vertex yields one row per edge — each
+        // edge is an out-edge of exactly one source — so the answer is the live edge count, with
+        // no partition and no type filter involved. `MATCH ()-[]->() RETURN count(*)` measured
+        // 0.6070 ms against 0.0003 for the typed spelling of the same shape, because this arm
+        // required exactly ONE type and an empty list fell through to the degree sum.
+        //
+        // No multi-label guard here and none needed: that guard exists because a partition holds
+        // an edge's PRIMARY type only, and this arm reads no partition.
+        [] => Some(store.live_edge_count()),
+        [ty] => {
+            if store.has_multi_label_edges() {
+                return None;
+            }
+            let t = store.etype_id(ty)?;
+            store.out_typed_flat(t).map(<[_]>::len)
+        }
+        _ => None,
+    }
+}
+
+/// `count(*)` over an EDGE SCAN filtered by edge label — Gremlin's `E().hasLabel(T, …).count()` —
+/// answered from the CSR partitions' lengths instead of materializing every edge and filtering.
+///
+/// Item 877. This is the same question as GQL's `MATCH ()-[:T]->() RETURN count(*)`, which
+/// `typed_hop_count_from_size` already answers from a size, and the two spellings were
+/// **61,000x** apart at 200,000 vertices x degree 5 (750,000 matching edges both):
+///
+/// ```text
+///   MATCH ()-[:KNOWS]->() RETURN count(*)       0.0003 ms
+///   g.E().hasLabel('KNOWS').count()            18.4041
+/// ```
+///
+/// The Gremlin form lowers to `Aggregate{Filter{EdgeScan, IsLabeled}}`, which no fast path
+/// claimed, so it built the whole edge id vector and ran the label test per edge.
+///
+/// A LABEL SET IS AN OR, verified rather than assumed: `E().hasLabel('KNOWS','LIKES').count()`
+/// returns every edge on a fixture carrying only those two types, and `hasLabel('NOPE')` returns
+/// 0. So the answer is the SUM of the named types' partitions — exact only because an edge has one
+/// primary type, which is what `has_multi_label_edges` declines. Duplicate labels are deduped, or
+/// `hasLabel('K', 'K')` would count that partition twice.
+pub(super) fn try_edge_label_count(
+    input: &Plan,
+    keys: &[(String, Expr)],
+    aggs: &[Agg],
+    store: &Store,
+) -> Option<Batch> {
+    let agg = sole_agg(keys, aggs)?;
+    if agg.func != AggFn::Count || agg.arg.is_some() || agg.distinct {
+        return None;
+    }
+    let Plan::Filter { input: edges, pred } = input else {
+        return None;
+    };
+    if !matches!(**edges, Plan::EdgeScan) {
+        return None;
+    }
+    let Expr::IsLabeled { slot: 0, labels } = pred else {
         return None;
     };
     if store.has_multi_label_edges() {
-        return None;
+        return None; // a partition holds the PRIMARY type only, so the sum would undercount
     }
-    let t = store.etype_id(ty)?;
-    store.out_typed_flat(t).map(<[_]>::len)
+    let mut seen: Vec<&str> = Vec::with_capacity(labels.len());
+    let mut total = 0usize;
+    for l in labels {
+        if seen.contains(&l.as_str()) {
+            continue; // `hasLabel('K', 'K')` is one partition, not two
+        }
+        seen.push(l.as_str());
+        // An unknown edge type matches nothing and contributes 0 — it must not decline the
+        // whole path, or `hasLabel('KNOWS', 'NOPE')` would fall off it.
+        if let Some(t) = store.etype_id(l) {
+            total += store.out_typed_flat(t)?.len();
+        }
+    }
+    Some(scalar_num(total as f64))
 }
 
 /// Whether this plan scans EVERY LIVE VERTEX — an unlabelled scan, or one whose label every live

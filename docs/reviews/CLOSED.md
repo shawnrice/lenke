@@ -26007,3 +26007,28 @@ p.flag` 4.51x (item 872).** Only the comparison spelling had one: `= true` lower
 - **METHOD — read the bench's ABSOLUTE columns, not just the ratio (item 876).** This was found in
   a row where native was the slow side (ts 0.0 against native 0.50) — invisible in a ts/native
   ratio sorted for big numbers, since the big ratios were all native winning.
+- **`E().hasLabel(T).count()` now answers from the CSR partitions — ~89,800x (item 877).** The
+  Gremlin spelling lowered to `Aggregate{Filter{EdgeScan, IsLabeled}}`, which no fast path claimed,
+  so it built the whole edge id vector and label-tested per edge: **17.9617 ms against 0.0003 for
+  `MATCH ()-[:KNOWS]->() RETURN count(*)`**, the same question in the other front end. A label set
+  is an OR (measured), so the answer is the sum of the named types' partitions; duplicates are
+  deduped and an unknown type contributes 0 without forfeiting the path. Declines on multi-label
+  edges, because a partition holds the PRIMARY type only.
+- **An UNTYPED hop count is the edge count — 18.2x (item 877).** `typed_hop_count_from_size`
+  required exactly one edge type, so `MATCH ()-[]->() RETURN count(*)` fell to a degree sum (0.5902
+  ms against 0.0003 for the typed spelling). An out-expansion from every vertex yields one row per
+  edge, so the answer is `live_edge_count()`.
+- **OPEN, PRICED — `live_edge_count()` is O(V), not O(1) (item 877).** It is
+  `out_adj.iter().map(Vec::len).sum()`, ~33 µs at 1M edges, which is why the untyped hop count stops
+  at 0.0325 rather than 0.0003 and why `E().count()` reads 0.04. Item 412's "that length by
+  construction" is wrong. `edge_count()` is O(1) but monotonic (`next_eid`, includes deleted), and
+  there is no deleted-edge tally. A fix means a maintained counter on every edge write/delete path —
+  the node equivalent has one AND an invariant test, because a cached counter is wrong the moment a
+  path forgets it. ~100x on two rows; its own item.
+- **METHOD — a missing bench ROW is why an 89,800x gap sat unmeasured (item 877).** The corpus had
+  `E().count()` and no `E().hasLabel().count()`, and the unlabelled spelling cannot see the gap.
+  Row added. When a shortcut is keyed on a plan shape, bench the SHAPES, not just the step.
+- **A multi-label `hasLabel` is an OR, and an unknown label is 0 (item 877).** Measured on a
+  two-type fixture, now pinned. Also: `Builder::edge` takes ONE label, so a multi-label-edge guard
+  is unconstructible with a Builder fixture and its mutant survives — use `ndjson::from_ndjson`,
+  and assert `has_multi_label_edges()` before asserting the decline.

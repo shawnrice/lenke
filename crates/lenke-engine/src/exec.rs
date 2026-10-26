@@ -1630,6 +1630,7 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
                                 .map(|c| scalar_num(c as f64))
                         })
                         .or_else(|| try_fused_hop_mask_agg(input, keys, aggs, store))
+                        .or_else(|| try_edge_label_count(input, keys, aggs, store))
                         .or_else(|| try_edge_filtered_count(input, keys, aggs, store))
                         .or_else(|| try_varlen_count(input, keys, aggs, store))
                         .or_else(|| try_group_count(input, keys, aggs, store))

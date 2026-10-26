@@ -27899,3 +27899,169 @@ fn vacuous_label_hop_count() {
         cnt("MATCH ()-[:KNOWS]->() RETURN count(*) AS c", &holed)
     );
 }
+
+/// Item 877: `count(*)` over an edge scan filtered by edge label, and the UNTYPED hop count —
+/// two spellings that were answered by materializing where a stored size would do.
+///
+/// Both are the same question GQL already answered from a size, so the cross-spelling equality is
+/// the assertion that matters most: `g.E().hasLabel('KNOWS').count()` and
+/// `MATCH ()-[:KNOWS]->() RETURN count(*)` must agree, and they were 89,800x apart.
+#[test]
+fn edge_label_and_untyped_counts() {
+    let build = || -> crate::store::Store {
+        let mut b = Builder::default();
+        for i in 0..200u32 {
+            b.node(&["P"], &[("i", n(f64::from(i)))]);
+        }
+        // 600 edges: one in four LIKES, the rest KNOWS
+        for k in 0..600u32 {
+            let ty = if k % 4 == 0 { "LIKES" } else { "KNOWS" };
+            b.edge(k % 200, (k * 7) % 200, ty);
+        }
+        b.build()
+    };
+    let store = build();
+    let g = |q: &str, st: &crate::store::Store| -> f64 {
+        let plan = crate::opt::optimize_indexed(crate::gremlin::parse(q).unwrap(), st);
+        match run(&plan, st).rows[0][0] {
+            Value::Num(x) => x,
+            ref o => panic!("{o:?}"),
+        }
+    };
+    let q = |s: &str, st: &crate::store::Store| -> f64 {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(s).unwrap(), st);
+        match run(&plan, st).rows[0][0] {
+            Value::Num(x) => x,
+            ref o => panic!("{o:?}"),
+        }
+    };
+
+    // 150 LIKES, 450 KNOWS, 600 total.
+    assert_eq!(g("g.E().hasLabel('KNOWS').count()", &store), 450.0);
+    assert_eq!(g("g.E().hasLabel('LIKES').count()", &store), 150.0);
+    // THE CROSS-SPELLING EQUALITY, which is the point of the item.
+    assert_eq!(
+        g("g.E().hasLabel('KNOWS').count()", &store),
+        q("MATCH ()-[:KNOWS]->() RETURN count(*) AS c", &store)
+    );
+    // A LABEL SET IS AN OR — verified by measurement before it was relied on, and pinned here.
+    assert_eq!(g("g.E().hasLabel('KNOWS','LIKES').count()", &store), 600.0);
+    // An UNKNOWN type contributes 0 and must not decline the path for the others.
+    assert_eq!(g("g.E().hasLabel('NOPE').count()", &store), 0.0);
+    assert_eq!(g("g.E().hasLabel('KNOWS','NOPE').count()", &store), 450.0);
+    // A DUPLICATE label is one partition, not two — `450 + 450` is the mistake this guards.
+    assert_eq!(g("g.E().hasLabel('KNOWS','KNOWS').count()", &store), 450.0);
+
+    // THE UNTYPED HOP: one row per edge, because each edge is an out-edge of exactly one source.
+    assert_eq!(q("MATCH ()-[]->() RETURN count(*) AS c", &store), 600.0);
+    assert_eq!(g("g.E().count()", &store), 600.0);
+    assert_eq!(
+        q("MATCH ()-[]->() RETURN count(*) AS c", &store),
+        g("g.E().count()", &store),
+        "the untyped hop count and the edge count are the same number"
+    );
+
+    // AFTER A DELETE both spellings must still agree. A delete invalidates the CSR overlay, so
+    // the typed arm declines and the general path answers — the point is that the ANSWERS match
+    // whichever route each takes.
+    let mut holed = build();
+
+    holed.delete_node(3);
+    assert_eq!(
+        g("g.E().hasLabel('KNOWS').count()", &holed),
+        q("MATCH ()-[:KNOWS]->() RETURN count(*) AS c", &holed),
+        "the two spellings agree on a mutated graph too"
+    );
+    assert_eq!(
+        q("MATCH ()-[]->() RETURN count(*) AS c", &holed),
+        g("g.E().count()", &holed)
+    );
+
+    // THE ROUTES, asserted directly — both arms are answer-equivalent, so no count above can tell
+    // whether either fired.
+    let count_agg = [Agg {
+        func: AggFn::Count,
+        arg: None,
+        distinct: false,
+        name: "c".into(),
+        frac: None,
+        null_on_empty: false,
+        numeric_only: false,
+    }];
+    let labelled = Plan::EdgeScan.filter(Expr::IsLabeled {
+        slot: 0,
+        labels: vec!["KNOWS".to_string()],
+    });
+
+    assert!(
+        fastpath::try_edge_label_count(&labelled, &[], &count_agg, &store).is_some(),
+        "an edge-label count must be answered from the partitions"
+    );
+    // a NODE-label filter over a node scan is a different shape and must be declined
+    let node_labelled = Plan::Scan { label: None }.filter(Expr::IsLabeled {
+        slot: 0,
+        labels: vec!["P".to_string()],
+    });
+
+    assert!(
+        fastpath::try_edge_label_count(&node_labelled, &[], &count_agg, &store).is_none(),
+        "only an EdgeScan input is this shape"
+    );
+    // and the untyped hop reaches the size arm
+    let untyped = Plan::Scan { label: None }.expand(0, Dir::Out, &[]);
+
+    assert!(
+        fastpath::try_scan_count(&untyped, &[], &count_agg, &store).is_some(),
+        "an untyped hop count is answered from the live edge count"
+    );
+
+    // AN UNKNOWN TYPE MUST CONTRIBUTE 0 AND STILL BE CLAIMED. Declining instead is
+    // answer-equivalent — the general path also answers 0, just by walking every edge — so only
+    // a route assertion sees it, and its mutant survived until these two lines existed.
+    let unknown = Plan::EdgeScan.filter(Expr::IsLabeled {
+        slot: 0,
+        labels: vec!["NOPE".to_string()],
+    });
+    let mixed = Plan::EdgeScan.filter(Expr::IsLabeled {
+        slot: 0,
+        labels: vec!["KNOWS".to_string(), "NOPE".to_string()],
+    });
+
+    assert!(
+        fastpath::try_edge_label_count(&unknown, &[], &count_agg, &store).is_some(),
+        "an unknown type is 0 edges, which this path knows without walking any"
+    );
+    assert!(
+        fastpath::try_edge_label_count(&mixed, &[], &count_agg, &store).is_some(),
+        "and one unknown type among known ones must not forfeit the path"
+    );
+
+    // A MULTI-LABEL EDGE MUST DECLINE. `Adj.etype` holds an edge's PRIMARY type only, so summing
+    // partitions would UNDERCOUNT an edge whose secondary type is the one being asked for.
+    // `Builder` cannot create one — it takes a single label — so this goes through NDJSON ingest,
+    // which is the only reachable way to build the shape. Without it the guard's mutant survived.
+    let multi = crate::ndjson::from_ndjson(
+        "{\"type\":\"node\",\"id\":\"a\",\"labels\":[\"P\"],\"properties\":{}}\n\
+         {\"type\":\"node\",\"id\":\"b\",\"labels\":[\"P\"],\"properties\":{}}\n\
+         {\"type\":\"edge\",\"id\":\"e0\",\"labels\":[\"KNOWS\"],\"from\":\"a\",\"to\":\"b\",\"properties\":{}}\n\
+         {\"type\":\"edge\",\"id\":\"e1\",\"labels\":[\"EXTRA\",\"KNOWS\"],\"from\":\"b\",\"to\":\"a\",\"properties\":{}}",
+    )
+    .expect("the multi-label fixture must parse");
+
+    assert!(
+        multi.has_multi_label_edges(),
+        "the fixture must actually carry a multi-label edge or the guard is untested"
+    );
+    assert!(
+        fastpath::try_edge_label_count(&labelled, &[], &count_agg, &multi).is_none(),
+        "a graph with multi-label edges must decline: the partition sum would undercount"
+    );
+    // and the ANSWER stays right on the general path — both edges carry KNOWS
+    assert_eq!(g("g.E().hasLabel('KNOWS').count()", &multi), 2.0);
+    assert_eq!(g("g.E().hasLabel('EXTRA').count()", &multi), 1.0);
+    assert_eq!(
+        g("g.E().hasLabel('KNOWS').count()", &multi),
+        q("MATCH ()-[:KNOWS]->() RETURN count(*) AS c", &multi),
+        "the two spellings agree with multi-label edges present too"
+    );
+}

@@ -66,6 +66,11 @@ const SHAPES: [string, Plan][] = [
   ['V().hasLabel.count()', traversal(V(), hasLabel('Person'), count())],
   ['V().has(age,gt).count()', traversal(V(), has('age', gt(44)), count())],
   ['E().count()', traversal(E(), count())],
+  // ADDED AT ITEM 877. This row did not exist, which is why a 89,800x gap went unmeasured:
+  // `E().hasLabel(T).count()` lowers to `Aggregate{Filter{EdgeScan, IsLabeled}}`, which no
+  // fast path claimed, while GQL's `MATCH ()-[:T]->() RETURN count(*)` answered the same
+  // question from a CSR partition length. Keep both — the unlabelled row above cannot see it.
+  ['E().hasLabel().count()', traversal(E(), hasLabel('KNOWS'), count())],
   ['V().out().count()', traversal(V(), out('KNOWS'), count())],
   ['V().out().values(age)', traversal(V(), out('KNOWS'), values('age'))],
   // THE SAME TRAVERSAL WITH A TRAILING STEP (item 608). `hopValuesShortcut` matched a plan of
