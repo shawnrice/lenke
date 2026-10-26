@@ -396,6 +396,25 @@ const GROUPS: [string, readonly string[]][] = [
     ['MATCH (n:P) LIMIT 10 RETURN n.k AS c', 'MATCH (n:P) RETURN n.k AS c LIMIT 10'],
   ],
   [
+    // ADDED AT ITEM 870. Item 869 fixed the BARE keyless page by taking the window lazily, and
+    // only measured that shape. A FILTER or a hop ahead of the page is a different question: the
+    // lazy `slice` has to pull THROUGH them, and natively these are the shapes where
+    // `pull_capped` declines and `pull_capped_stream` takes over instead. Native measured all
+    // four pairs within 1.5% (item 870's probe); this asks the same of TS.
+    'keyless LIMIT after a WHERE: statement vs clause',
+    [
+      'MATCH (n:P) WHERE n.k > 25 LIMIT 10 RETURN n.k AS c',
+      'MATCH (n:P) WHERE n.k > 25 RETURN n.k AS c LIMIT 10',
+    ],
+  ],
+  [
+    'keyless LIMIT after a hop: statement vs clause',
+    [
+      'MATCH (a:P)-[:E]->(b) LIMIT 10 RETURN b.k AS c',
+      'MATCH (a:P)-[:E]->(b) RETURN b.k AS c LIMIT 10',
+    ],
+  ],
+  [
     'keyless OFFSET + LIMIT: statement vs clause position',
     [
       'MATCH (n:P) OFFSET 5 LIMIT 10 RETURN n.k AS c',

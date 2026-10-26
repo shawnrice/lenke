@@ -109,6 +109,13 @@ question in its module header — read the header before touching it.
   same, so the probe prints both. It is also where the dictionary arm's ≥1785x was measured: a
   dictionary key has a bounded rank, so once `skip+limit` rows at the extreme rank are seen in
   arrival order the scan can STOP.
+- `keyless_870` — do the two spellings of a KEYLESS `LIMIT` converge natively? The TS engine's
+  statement-position keyless page forced the whole working table and sliced (36.68 ms against 0.04
+  for the clause spelling, item 869), so this asks the same of native across seven pairs: bare,
+  with an `OFFSET`, on a string key, after a `WHERE`, after a selective `WHERE`, and after a hop —
+  the last three being where `pull_capped` declines and `pull_capped_stream` takes over. All seven
+  land within 1.5% and ~1000x below the no-`LIMIT` ceilings the table also prints, so the defect is
+  TS-only. Keep the ceilings: without them "0.0002 ms" says nothing about whether a cap applied.
 - `frontier_guard_probe` — does the intermediate-frontier guard REFUSE a runaway before it
   allocates, and does it leave everything else alone? Written after an OOM took a 61 GB box into
   its swapfile (item 296). **Run it under the cap** — the header gives the line. Its most useful

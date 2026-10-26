@@ -25869,3 +25869,19 @@ copies before the comment was added.
   twice. Dropping it passes all 3,838 TS tests, so no covered path does that and possibly none
   exists. It stays (it costs O(limit)) but the comment now says DEFENSIVE and unexercised. Same
   treatment as item 865's `nulls_first` guard.
+- **The NATIVE engine has NO keyless-LIMIT spelling defect — measured, not inferred (item 870).**
+  Item 869's TS defect (a statement `LIMIT` forcing the whole working table, 917x) does not exist
+  natively at any of seven pairs: bare, with `OFFSET`, on a string key, after a `WHERE`, after a
+  selective `WHERE`, after a hop. All within 1.5% and ~1000x below the no-`LIMIT` ceilings. The last
+  three matter because `pull_capped` declines a `FILTER`/`EXPAND` chain and `pull_capped_stream`
+  takes over — both mechanisms converge on both spellings. Priced in `examples/keyless_870.rs`.
+  **Third data point on item 843's rule, and this time the engines DIVERGED**: same axis, defect in
+  one engine only.
+- **Item 869's TS fix covers the filter and hop shapes too (item 870).** 869 measured only the bare
+  keyless page; the lazy `slice` also pulls correctly through a `WHERE` (0.01/0.01) and a hop
+  (0.01/0.02). Four keyless pairs are now permanent spelling-probe groups.
+- **METHOD — a failed build runs the PREVIOUS binary, and the output looks plausible (item 870).**
+  An un-updated array-length annotation broke the compile; the shell ran the stale binary, which
+  printed a clean table answering the OLDER question. The row count was the only tell. Check the
+  build for a `Compiling` line (or `^error`) before reading any number — the same trap item 847
+  recorded for `cargo test`.
