@@ -76,8 +76,50 @@ fn main() {
         best[2] = best[2].min(t.elapsed().as_secs_f64() * 1e6 / f64::from(ops));
     }
 
+    // ITEM 884: the same statement at THREE sizes, so the comparison is a SLOPE and not a point.
+    // The TS side reads 1.573 us at 18 chars, 3.515 at 47 and 10.487 at 158 — about 64 ns a
+    // character marginal with only ~0.43 us fixed, which refuted the hypothesis that its 96
+    // per-call closures dominate. One size cannot say that; three can.
+    let tiny = |i: u32| format!("MATCH (n) RETURN n /*{i}*/");
+    let big = |i: u32| {
+        format!(
+            "MATCH (a:User)-[:KNOWS]->(b:User) WHERE a.score > {} AND b.name <> 'x{i}' \
+             AND a.seq >= {} RETURN a.name AS an, b.name AS bn, a.score AS s ORDER BY s DESC LIMIT 10",
+            i % 50,
+            i % 7
+        )
+    };
+    let mut size_best = [f64::MAX; 2];
+    for _ in 0..reps {
+        let t = Instant::now();
+        for i in 0..ops {
+            if lenke_engine::gql::parse(&tiny(i)).is_ok() {
+                sink += 1;
+            }
+        }
+        size_best[0] = size_best[0].min(t.elapsed().as_secs_f64() * 1e6 / f64::from(ops));
+
+        let t = Instant::now();
+        for i in 0..ops {
+            if lenke_engine::gql::parse(&big(i)).is_ok() {
+                sink += 1;
+            }
+        }
+        size_best[1] = size_best[1].min(t.elapsed().as_secs_f64() * 1e6 / f64::from(ops));
+    }
+
     println!("textOnly       {:9.3} us/op", best[0]);
     println!("parse          {:9.3} us/op", best[1]);
     println!("parse+optimize {:9.3} us/op", best[2]);
+    println!(
+        "parse tiny     {:9.3} us/op  ({} chars)",
+        size_best[0],
+        tiny(1).len()
+    );
+    println!(
+        "parse big      {:9.3} us/op  ({} chars)",
+        size_best[1],
+        big(1).len()
+    );
     println!("\n(sink {sink}, non-zero means every arm ran)");
 }

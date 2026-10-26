@@ -111,6 +111,51 @@ const ARMS: Record<string, (n: number) => number> = {
   },
 };
 
+// ITEM 884: is the parse cost FIXED or proportional to the input? `parse()` allocates 96 closures
+// (counted) before it consumes a token, so a tiny statement should cost nearly what a big one does
+// if that fixed setup dominates. Three sizes, each parsed with a FRESH text so no cache can serve
+// it, and the per-CHARACTER figure printed alongside.
+const TINY = 'MATCH (n) RETURN n';
+const big = (i: number): string =>
+  `MATCH (a:User)-[:KNOWS]->(b:User) WHERE a.score > ${i % 50} AND b.name <> 'x${i}' ` +
+  `AND a.seq >= ${i % 7} RETURN a.name AS an, b.name AS bn, a.score AS s ORDER BY s DESC LIMIT 10`;
+
+ARMS.parseTiny = (n) => {
+  let sink = 0;
+
+  for (let i = 0; i < n; i += 1) {
+    // a fresh text of the SAME length, so this is a miss of a short statement
+    sink += parse(`MATCH (n) RETURN n /*${i}*/`) === undefined ? 0 : 1;
+  }
+
+  return sink;
+};
+ARMS.parseTinyFixed = (n) => {
+  let sink = 0;
+
+  for (let i = 0; i < n; i += 1) {
+    sink += parse(TINY) === undefined ? 0 : 1;
+  }
+
+  return sink;
+};
+ARMS.parseBig = (n) => {
+  let sink = 0;
+
+  for (let i = 0; i < n; i += 1) {
+    sink += parse(big(i)) === undefined ? 0 : 1;
+  }
+
+  return sink;
+};
+ARMS.sizes = () => {
+  console.log(
+    `  lengths: tiny=${TINY.length} insert=${freshText(1).length} big=${big(1).length} chars`,
+  );
+
+  return 1;
+};
+
 const arm = process.env.A_ARM ?? 'parseOnly';
 const fn = ARMS[arm];
 

@@ -26135,3 +26135,16 @@ p.flag` 4.51x (item 872).** Only the comparison spelling had one: `= true` lower
   (item 883).** My `parseCached` arm was not cached, and the 0.5 us between it and the "miss" arm was
   one `format!` plus allocator noise. Had I trusted the name I would have reported the cache as worth
   15% when it is worth more than an entire parse.
+- **~~The TS parser's 96 per-call closures are the cost~~ — REFUTED (item 884).** `parse()` does
+  allocate **96 closures at depth 1** on every call, but parse cost SCALES with input: TS 1.886 us
+  at 24 chars, 3.515 at 47, 10.487 at 158. Fitted, that is **64.2 ns/char marginal with only ~0.35
+  us fixed** — so the closures are at most 10% of a parse and removing all of them could not buy
+  more. Killed by one probe arm instead of a refactor.
+- **OPEN, LOCALISED — the TS parser is ~3x native's PER CHARACTER (item 884).** native: 0.638 us at
+  24 chars, 3.634 at 158 → **22.4 ns/char, ~0.10 us fixed**. The ratio is 3.0x at 24 chars and 2.9x
+  at 158, i.e. uniform, so the gap is per-character work (~200 cycles a character) and NOT fixed
+  setup. That makes it a TOKENIZER question — what is allocated per token, and how the scan reads
+  characters — not a parser-structure one.
+- **METHOD — one size cannot tell "slower per character" from "large fixed setup" (item 884).**
+  Item 883's single point was consistent with both, and they have OPPOSITE fixes (the tokenizer
+  versus the 96 closures). Measure at three sizes and fit the slope before choosing what to change.
