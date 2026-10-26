@@ -2449,3 +2449,181 @@ fn rolling_back_an_insert_leaves_an_unrelated_label_bucket_intact() {
     );
     assert_eq!(st.live_node_count(), 2);
 }
+
+/// The derived index-key sets must agree with the vectors they summarise, after EVERY path that
+/// mutates those vectors (item 922).
+///
+/// `index_bases` and `range_keys` replace two linear scans in `apply_set_prop`, which cost a `SET`
+/// 1.88x at 64 indexes. They are derived state, and the failure mode of stale derived state here is
+/// not a slow write but an index that stops being maintained — a WRONG query result. The readers
+/// carry a `debug_assert` for the same invariant, but the project's own test command is
+/// `cargo test --release`, where `debug_assertions` is OFF and that assert never runs. So the
+/// invariant needs a real test, and this is it.
+///
+/// Mutation-verified: removing the `refresh_index_key_sets()` call from `create_index` fails this
+/// test, and so does removing the one in `restore_schema`. The second is the one that matters —
+/// the first grep for mutation sites found four and missed that fifth, multi-line, `retain`.
+#[test]
+fn derived_index_key_sets_agree_with_the_vectors_at_every_mutation_site() {
+    let derived = |st: &Store| {
+        let bases: std::collections::BTreeSet<String> =
+            st.indexes.iter().map(|i| i.base().to_string()).collect();
+        let keys: std::collections::BTreeSet<String> =
+            st.ranges.iter().map(|i| i.key.clone()).collect();
+
+        (bases, keys)
+    };
+    let cached = |st: &Store| {
+        let bases: std::collections::BTreeSet<String> = st.index_bases.iter().cloned().collect();
+        let keys: std::collections::BTreeSet<String> = st.range_keys.iter().cloned().collect();
+
+        (bases, keys)
+    };
+
+    let mut b = Builder::default();
+
+    for i in 0..8u32 {
+        b.node(
+            &["P"],
+            &[
+                ("a", Value::Num(f64::from(i))),
+                ("b", Value::Num(f64::from(i % 3))),
+                ("c", Value::Num(f64::from(i % 2))),
+            ],
+        );
+    }
+
+    let mut st = b.build();
+
+    assert_eq!(cached(&st), derived(&st), "a fresh store");
+
+    // create_index
+    st.create_index("a");
+    assert_eq!(cached(&st), derived(&st), "after create_index");
+
+    // create_range_index
+    st.create_range_index("b");
+    assert_eq!(cached(&st), derived(&st), "after create_range_index");
+
+    // a DOTTED index, whose base is only its first segment — the distinction `index_on_base`
+    // rests on, so a set built from `path.join(".")` instead of `base()` would fail here.
+    st.create_index("c.inner");
+    assert_eq!(cached(&st), derived(&st), "after a dotted create_index");
+    assert!(
+        st.index_bases.contains("c"),
+        "a dotted index registers its BASE"
+    );
+    assert!(!st.index_bases.contains("c.inner"), "not its whole path");
+
+    // drop_vertex_index (mutates BOTH vectors in one call)
+    st.drop_vertex_index("a").expect("drop a");
+    assert_eq!(cached(&st), derived(&st), "after drop_vertex_index");
+    st.drop_vertex_index("b").expect("drop b");
+    assert_eq!(cached(&st), derived(&st), "after dropping the range index");
+
+    // clone
+    let copy = st.clone();
+    assert_eq!(cached(&copy), derived(&copy), "after clone");
+
+    // restore_snapshot, reached by a rollback: an index created INSIDE the transaction is dropped
+    // by the restoring `retain`, which is the mutation site the first grep missed.
+    st.create_index("a");
+    assert_eq!(cached(&st), derived(&st), "pre-transaction baseline");
+    st.begin();
+    // The executor's DDL path captures the schema on its first op (`exec/ddl.rs`), and
+    // `create_index` on the store does NOT do it for you — so a raw `create_index` inside a
+    // transaction is deliberately not reverted. Mirrored here, as `tx_schema_rollback` already
+    // does, or the rollback below would have nothing to restore and this test would be asserting
+    // the wrong engine.
+    st.snapshot_schema_for_tx();
+    st.create_index("b");
+    st.create_range_index("a");
+    assert_eq!(cached(&st), derived(&st), "inside the transaction");
+    st.rollback();
+    assert_eq!(
+        cached(&st),
+        derived(&st),
+        "after rollback restored the snapshot"
+    );
+
+    // And the point of all of it: the cheap check still answers correctly.
+    assert!(st.index_on_base("a"), "the surviving index is still seen");
+    assert!(!st.index_on_base("b"), "the tx-created hash index is gone");
+
+    // DESCRIPTIVE, NOT ASPIRATIONAL — and it records an asymmetry this test found by accident
+    // (item 922). `SchemaSnapshot` carries `index_paths`, `interval_keys` and `edge_type_index`,
+    // but NOTHING for range indexes, so `restore_schema` reverts a tx-created HASH index and
+    // leaves a tx-created RANGE index in place. That is pre-existing — the snapshot struct has
+    // never had the field — and it is out of scope for a perf change, so it is pinned here as the
+    // behaviour that actually holds rather than quietly asserted away. If rollback is later taught
+    // to revert range indexes, this line is the one to flip.
+    assert!(
+        st.is_range_indexed("a"),
+        "a tx-created RANGE index SURVIVES rollback: SchemaSnapshot has no field for it"
+    );
+
+    // Whatever rollback does or does not revert, the derived sets must still agree with it — which
+    // is the invariant this test exists for.
+    assert_eq!(
+        cached(&st),
+        derived(&st),
+        "the sets track whatever survived"
+    );
+
+    // ACROSS THE THRESHOLD, which is the only place the SETS ARE ACTUALLY READ. `INDEX_SET_MIN`
+    // gates the readers, so everything above this point exercised the SCAN path only — a stale set
+    // would have been invisible to it while still being read in production. Crossing the threshold
+    // is what makes the rest of this test mean anything.
+    let mut wide = Builder::default();
+
+    for i in 0..8u32 {
+        let props: Vec<(String, Value)> = (0..24u32)
+            .map(|k| (format!("w{k}"), Value::Num(f64::from(i % (3 + k)))))
+            .collect();
+        let as_refs: Vec<(&str, Value)> =
+            props.iter().map(|(n, v)| (n.as_str(), v.clone())).collect();
+
+        wide.node(&["P"], &as_refs);
+    }
+
+    let mut wst = wide.build();
+
+    for k in 0..24u32 {
+        wst.create_index(&format!("w{k}"));
+    }
+
+    assert!(
+        wst.indexes.len() > INDEX_SET_MIN,
+        "the fixture must cross INDEX_SET_MIN or the set path is never read: {} indexes",
+        wst.indexes.len()
+    );
+    assert_eq!(cached(&wst), derived(&wst), "above the threshold");
+
+    // The answers must be the ones the scan would have given.
+    for k in 0..24u32 {
+        let key = format!("w{k}");
+
+        assert!(
+            wst.index_on_base(&key),
+            "{key} is indexed, via the SET path"
+        );
+    }
+
+    assert!(
+        !wst.index_on_base("nope"),
+        "an unindexed key via the SET path"
+    );
+
+    // A drop above the threshold must be reflected too, since that is the stale-cache hazard.
+    wst.drop_vertex_index("w0").expect("drop w0");
+    assert_eq!(
+        cached(&wst),
+        derived(&wst),
+        "after a drop above the threshold"
+    );
+    assert!(
+        !wst.index_on_base("w0"),
+        "the dropped key is gone from the SET"
+    );
+    assert!(wst.index_on_base("w1"), "its neighbour survives");
+}

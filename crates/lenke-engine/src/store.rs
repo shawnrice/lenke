@@ -8,6 +8,7 @@
 //! than retrofitted.
 
 use crate::exec::fnv::Map as FnvMap;
+use crate::exec::fnv::Set as FnvSet;
 use crate::gstr::GStr;
 
 use std::cmp::Ordering;
@@ -78,6 +79,16 @@ pub type EdgeMap = HashMap<u32, Value, U32BuildHasher>;
 /// buckets and edge extra-labels, probed per node/edge on the hot traversal + ingest
 /// paths (the same ~65ns-per-SipHash-probe win the edge-property map already takes).
 type U32Map<V> = HashMap<u32, V, U32BuildHasher>;
+
+/// Above this many indexes (or ranges), `index_on_base` / `is_range_indexed` read a SET instead of
+/// scanning the vector (item 922).
+///
+/// Chosen from the break-even, not by taste. A `SET` on an UNINDEXED key, 20,000 writes, min of 3:
+/// the scan costs about 0.32 ns per index (22.6 ns at 0 rising to 44.0 at 64) and the set is a flat
+/// ~27 ns whatever the count, so the two cross near twelve. Below that the scan is cheaper and the
+/// set form measured 18% WORSE at one index and 14% at four; above it the scan keeps climbing and
+/// the set does not.
+const INDEX_SET_MIN: usize = 12;
 
 /// A `Value` ordered by the value contract's total order (`cmp_total`) — the key
 /// type for a range index's `BTreeMap`. It DELEGATES to `cmp_total`; it does not
@@ -1397,6 +1408,28 @@ pub struct Store {
     indexes: Vec<Index>,
     /// range indexes on a node property `key` (ordered by `cmp_total`).
     ranges: Vec<RangeIndex>,
+    /// `index_on_base` / `is_range_indexed` as SETS rather than scans (item 922).
+    ///
+    /// Every `SET` asks "is this key indexed?" before it writes, and both answers used to be a
+    /// LINEAR SCAN with a string compare per entry — so the per-write cost grew with the number of
+    /// indexes in the store, including indexes on keys that have nothing to do with the one being
+    /// written. Measured on `setindexcount_922`, a `SET` on an UNINDEXED key:
+    ///
+    ///   indexes      0      1      4     16     64
+    ///   before    22.9   22.9   24.4   30.3   43.2 ns   (1.88x)
+    ///   control   72.2   72.1   73.1   72.4   74.4 ns   (`add_edge`, flat)
+    ///
+    /// Derived state, so it is REBUILT by `refresh_index_key_sets` at every site that mutates
+    /// `indexes` or `ranges` — and the readers `debug_assert` the set against the scan it replaced,
+    /// so a mutation site added later without a refresh is caught rather than silently leaving an
+    /// index unmaintained. The first grep for mutation sites found four and MISSED a fifth (the
+    /// multi-line `retain` in `restore_schema`), which is why the invariant is also a real test:
+    /// `debug_assert` is compiled OUT of `cargo test --release`, the project's own test command, so
+    /// the assert alone would never have run. See
+    /// `derived_index_key_sets_agree_with_the_vectors_at_every_mutation_site`.
+    index_bases: FnvSet<String>,
+    /// See `INDEX_SET_MIN` — below it the readers scan instead.
+    range_keys: FnvSet<String>,
     /// OPT-IN edge-type index: `edge_type_index` is false and the vectors empty
     /// unless [`create_edge_type_index`](Store::create_edge_type_index) was called
     /// (so a graph that does not need it pays nothing — see `examples/expand_bench`
@@ -1550,6 +1583,8 @@ impl Clone for Store {
             edge_props: self.edge_props.clone(),
             indexes: self.indexes.clone(),
             ranges: self.ranges.clone(),
+            index_bases: self.index_bases.clone(),
+            range_keys: self.range_keys.clone(),
             edge_type_index: self.edge_type_index,
             out_type_idx: self.out_type_idx.clone(),
             in_type_idx: self.in_type_idx.clone(),
@@ -4273,6 +4308,7 @@ impl Store {
             }
         }
         self.indexes.push(Index { path, map });
+        self.refresh_index_key_sets();
     }
 
     /// Drop the vertex index(es) on `key` — the hash index on that exact path
@@ -4295,6 +4331,7 @@ impl Store {
         let path: Vec<String> = key.split('.').map(String::from).collect();
         self.indexes.retain(|i| i.path != path);
         self.ranges.retain(|r| r.key != key);
+        self.refresh_index_key_sets();
         Ok(())
     }
 
@@ -4325,7 +4362,24 @@ impl Store {
     /// it must maintain that index).
     #[must_use]
     fn index_on_base(&self, base: &str) -> bool {
-        self.indexes.iter().any(|i| i.base() == base)
+        // BELOW THE THRESHOLD THE SCAN WINS, measured rather than assumed. The set is a flat ~4 ns
+        // hash of a `String` key; the scan is ~0.32 ns per index. A first version used the set
+        // unconditionally and was 18% WORSE at one index and 14% at four — the common case — for a
+        // win only a 64-index store sees. Same shape as `TARGETED_MAX` in `delete_nodes`: a guard
+        // that pays for itself only past a size, so it is gated on that size.
+        let hit = if self.indexes.len() <= INDEX_SET_MIN {
+            self.indexes.iter().any(|i| i.base() == base)
+        } else {
+            self.index_bases.contains(base)
+        };
+
+        debug_assert_eq!(
+            hit,
+            self.indexes.iter().any(|i| i.base() == base),
+            "index_bases is stale for {base:?} — a site that mutates `indexes` is missing its \
+             refresh_index_key_sets() call"
+        );
+        hit
     }
 
     /// Whether a HASH index exists on the exact (possibly dotted) property path
@@ -4554,11 +4608,34 @@ impl Store {
             key: key.to_string(),
             map,
         });
+        self.refresh_index_key_sets();
     }
 
     #[must_use]
     fn is_range_indexed(&self, key: &str) -> bool {
-        self.ranges.iter().any(|i| i.key == key)
+        let hit = if self.ranges.len() <= INDEX_SET_MIN {
+            self.ranges.iter().any(|i| i.key == key)
+        } else {
+            self.range_keys.contains(key)
+        };
+
+        debug_assert_eq!(
+            hit,
+            self.ranges.iter().any(|i| i.key == key),
+            "range_keys is stale for {key:?} — a site that mutates `ranges` is missing its \
+             refresh_index_key_sets() call"
+        );
+        hit
+    }
+
+    /// Rebuild the derived key sets from `indexes` and `ranges`.
+    ///
+    /// Called from every site that mutates either vector. A full rebuild rather than an
+    /// incremental update because creating or dropping an index is RARE and off the hot path,
+    /// while an incremental update would have to be correct at five call sites instead of one.
+    fn refresh_index_key_sets(&mut self) {
+        self.index_bases = self.indexes.iter().map(|i| i.base().to_string()).collect();
+        self.range_keys = self.ranges.iter().map(|i| i.key.clone()).collect();
     }
 
     fn range_add(&mut self, key: &str, value: &Value, node: u32) {
@@ -5287,6 +5364,7 @@ impl Store {
         // tx dropped from the restored data.
         self.indexes
             .retain(|i| snap.index_paths.iter().any(|p| p == &i.path));
+        self.refresh_index_key_sets();
         for path in &snap.index_paths {
             if !self.indexes.iter().any(|i| &i.path == path) {
                 self.create_index(&path.join("."));
@@ -5840,6 +5918,8 @@ impl Builder {
             edge_props: FnvMap::default(),
             indexes: Vec::new(),
             ranges: Vec::new(),
+            index_bases: FnvSet::default(),
+            range_keys: FnvSet::default(),
             // The edge-type index is opt-in; bulk build never turns it on (the
             // caller runs `create_edge_type_index` after load if it wants it).
             edge_type_index: false,

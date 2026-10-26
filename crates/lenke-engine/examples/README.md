@@ -305,6 +305,16 @@ question in its module header — read the header before touching it.
   rewritten, so a change to bucket removal reaches it; it pins the cost to BUCKET SIZE. The control
   for the targeted arm is sweeps A-D, which cannot reach it.
 
+- `setindexcount_922` — does the INDEX COUNT cost a `SET` on a key none of those indexes
+  covers? `apply_set_prop` asks `index_on_base(key) || is_range_indexed(key)` before every
+  write, and both were linear scans, so the answer was yes: 22.6 ns at 0 indexes rising to
+  43.1 at 64. Varies the index count, which **nothing else in this corpus does** — with zero
+  indexes the scans are an empty-iterator check and cost nothing, which is why no other
+  fixture can see this. Keep the `add_edge` control: it never reaches `apply_set_prop`, so if
+  it climbs with the index count the probe is measuring the index maps' memory instead. Note
+  that `small` in `detach_442` sweep E and the `SET indexed` column here are NOT controls —
+  both are reached by the code under test.
+
 - `exprpred_437` — what does an EXPRESSION cost inside a filter, as opposed to the rows
   it selects? Every pair of cases selects exactly the same rows and differs only in the
   predicate's shape, so a gap cannot be the selectivity: `a.k > 5` against

@@ -26941,3 +26941,41 @@ key)`: V8 synthesises names for arrows from the binding they were assigned throu
 - **A lone surrogate is not valid UTF-8 and does not survive a source file (item 921).** A literal
   surrogate pair written into a probe was silently normalised into one real character, quietly
   removing the case it was added to test. Build them with `fromCharCode`.
+- **SHIPPED — a `SET` paid for every index in the store, including ones on UNRELATED keys (item
+  922). 1.61x at 64 indexes, 1.14x at 16, PARITY below the threshold.** `apply_set_prop` asks
+  `index_on_base(key) || is_range_indexed(key)` before every write, and both were linear scans with
+  a string compare per entry (~0.32 ns per index: 22.6 ns at 0 indexes rising to 43.1 at 64). Now
+  derived `FnvSet`s, read only above `INDEX_SET_MIN = 12`. CONTROL `add_edge` — which never reaches
+  `apply_set_prop` — flat at 0.99-1.01x across the sweep; `SET` on an INDEXED key unchanged (its
+  cost is bucket maintenance).
+- **WHY NOTHING SAW IT, and it is this file's own rule (item 922).** With zero indexes both scans are
+  an empty-iterator check and cost nothing, and **no fixture in the corpus varies the index count** —
+  `bench:usage` and `bench_all`'s write rows build a store with none or one. `is_range_indexed` and
+  `index_on_base` had ZERO mentions in this file and the audit. New `setindexcount_922` varies it.
+- **METHOD — a lever refuted in ONE engine for an engine-SPECIFIC reason may be live in the other
+  (item 922).** `Graph.ts`'s `deIndexVertexLabel` records collapsing `has`-then-`get` as REFUTED in
+  TS and gives the mechanism: "JSC appears to cache the key's hash, making a `get` right after a
+  `has` on the same key nearly free." Rust's `HashMap` caches nothing between calls. The note reads
+  like a general refutation and is not one; porting the SCAN rather than the CONCLUSION found this.
+- **THE FIRST VERSION WAS A REGRESSION AND THE THRESHOLD IS THE FIX (item 922).** Unconditional sets
+  measured **0.85x at one index and 0.88x at four** — the common case — against 1.64x at 64, because
+  the set is a flat ~27 ns `String` hash and the scan is ~0.32 ns per index, so they cross near
+  twelve. An `is_empty()` bail protects the ZERO case only; at one index the hash is paid in full.
+  Gated on `INDEX_SET_MIN = 12`, same shape as `TARGETED_MAX` in `delete_nodes`. **Measure the cheap
+  end of a sweep, not just the end the change was aimed at.**
+- **METHOD — a `debug_assert` is NOT a guard in this repo (item 922).** The project's test command is
+  `cargo test --release`, where `debug_assertions` is OFF, so an invariant asserted only that way
+  never runs and would be cited as protection it does not give. The invariant needs a real `#[test]`;
+  the `debug_assert` is a bonus for debug builds.
+- **METHOD — a threshold can hollow out the test that guards it (item 922).** Gating the readers on
+  `INDEX_SET_MIN` meant the invariant test, which built four indexes, exercised only the SCAN path —
+  a stale set would have been invisible to it while still being read in production above twelve. The
+  test now builds 24 indexes and **asserts it crosses the threshold**, so the fixture cannot drift
+  back under it. Same question as "verify the planner reaches the shape", asked of a test.
+- **⚠️ OPEN, found incidentally at 922 — a transaction-created RANGE index SURVIVES rollback.**
+  `SchemaSnapshot` carries `index_paths`, `interval_keys` and `edge_type_index` but **nothing for
+  range indexes**, so `restore_schema` reverts a tx-created HASH index and leaves a tx-created RANGE
+  index in place. Pre-existing (the field has never existed) and unrecorded in either store. Not
+  fixed at 922 — reverting them is a semantics change needing its own decision, not a rider on a perf
+  commit. `derived_index_key_sets_agree_with_the_vectors_at_every_mutation_site` PINS the current
+  behaviour and names the line to flip.
