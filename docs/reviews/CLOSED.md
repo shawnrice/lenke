@@ -26423,3 +26423,27 @@ INDEXED)` — a plain `Expr::Prop` — **1.09x slower**, reproducible to three s
   function's early returns and test each.
 - **NOTE — `WHERE` inside `OPTIONAL MATCH` is `E_NOT_IMPLEMENTED` (observed at item 896).** So the
   predicate form of an optional-miss nested read is not reachable to assert; the projection form is.
+- **REFUTED AS A CROSS-ENGINE CONCERN — the TS engine does NOT have item 895's "index makes it
+  slower" bug (item 897).** One process, one graph, indexed key against an unindexed TWIN of the
+  same type and cardinality: flat 4.34 vs 4.68 ms (indexed marginally FASTER), nested 17.05 vs 14.98
+  (inside that arm's own 17.05-23.49 spread). `idx.equals` — the materializing seek — is called
+  **ZERO** times for both the clause-`WHERE` and inline `{k: v}` spellings: `SEEK_MAX_FRACTION` is
+  1/8 and the predicate matches 25% of the bucket, so item 409's gate declines just as native's
+  `seek_beats_scan` does. Mechanism: TS evaluates row-at-a-time through a compiled closure, so there
+  is no intermediate column to materialize and no second path to disagree with. **895's bug is
+  specific to the native columnar evaluator.**
+- **METHOD, AND AN EXCEPTION TO "ONE SHAPE PER PROCESS" — when the change alters the HEAP, separate
+  processes are not comparable (item 897).** The first version of this probe used one process per
+  arm and reported the indexed arm **1.65-1.98x slower, reproducibly across two runs**. Artifact:
+  building an index over 200k vertices changes allocation history, live-set size and GC behaviour,
+  and that lands in the query timing as if it were query cost. In ONE process the effect is gone.
+  Item 762's rule (one shape per process, against inline-cache pollution) and this one are in
+  tension; which applies depends on whether the change ALLOCATES.
+- **METHOD — a discriminator built on a broken axis does not fix the axis (item 897).** An
+  "index on a key the query never names" arm came back fast and looked like proof the cost was
+  key-specific. It was still a different process, so it proved nothing — and it produced a confident
+  wrong conclusion that stood until the one-process run contradicted it.
+- **TRAP — `systemd-run` expands `${...}` in the command it runs (item 897).** An inline `bun -e`
+  building ids as `v${i}` gave every vertex the id `v`, collapsing a 200,000-node fixture to ONE
+  node; the timings looked plausible and only the asserted row count caught it. File-based probes
+  are unaffected; only inline `-e`. Assert the fixture's own statistic every rep.
