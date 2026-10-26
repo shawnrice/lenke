@@ -279,6 +279,21 @@ const sortByBys = <T>(
 
 // `order` (global scope) materializes the stream, sorts the traversers by their
 // value, then re-yields. Boundary step.
+// REJECTED, item 892: making this a lazy `Iterable` that hands back an ARRAY ITERATOR instead of
+// a generator does NOT recover item 891's inert-step cost. Measured 1.05x on min and **1.01x on
+// medians** with the `engineValues` control moving 1.04x — inside the noise, three alternated
+// rounds. Reverted.
+//
+// The attribution was the error. Item 891 measured "an inert `order()` step" at 95.73 ms over 1M
+// items (42% of what the step costs) by comparing a plan WITH an order step against a plan
+// WITHOUT one — so that figure is the cost of the pipeline having one more STEP, including
+// dispatch and the consumer's own iteration machinery, not the cost of this function's `yield*`.
+// Removing this generator layer leaves the rest of it in place, which is why it measures nothing.
+// Consistent with items 234/537: it is the per-step pipeline, and no single step can fix it.
+//
+// The laziness tests that came with the attempt were KEPT (`order-step-laziness.test.ts`): the
+// contract they pin — constructing does no work — holds for the generator too, and only an eager
+// `return sortByBys(...)` breaks it, which is the simplest thing a future change would reach for.
 export const orderStep = function* (
   stream: Iterable<Traverser<unknown>>,
   bys: readonly By[],

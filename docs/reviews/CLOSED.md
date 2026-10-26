@@ -26308,3 +26308,21 @@ p.flag` 4.51x (item 872).** Only the comparison spelling had one: `= true` lower
 - **METHOD — an arm assertion on a SHARED marker cannot distinguish arms (item 891).** All three
   ablated arms carried `ABLATION-891`, so the count proved only that _some_ ablation applied, never
   which; it would have passed with two arms swapped. Assert what an arm uniquely contains.
+- **REFUTED — replacing `orderStep`'s generator with a lazy array-iterator `Iterable` (item 892):
+  1.01x on medians.** Target `engineOrdered` 388.70 -> 383.14 (median, **1.01x**; 1.05x on min)
+  while the `engineValues` control moved **1.04x** on medians. Both estimators reported because
+  they disagree. Reverted; `aggregation.ts` byte-identical.
+- **CORRECTED ATTRIBUTION — item 891's 95.73 ms "inert step" is the PER-STEP PIPELINE, not
+  `orderStep`'s `yield*` (item 892).** 891 got that figure by comparing a plan WITH an order step
+  against one WITHOUT, so it includes dispatch and the consumer's iteration machinery. Removing
+  this one generator layer leaves the rest in place and measures nothing. 891's conclusion (the row
+  is closed) STANDS and is now stronger: the cost is the pipeline as a whole, consistent with items
+  234/537, and **no single step can fix it** — which also rules out the same follow-up for every
+  other boundary step.
+- **KEPT FROM A REFUTED CHANGE — `order-step-laziness.test.ts` (item 892).** Pins that constructing
+  `orderStep` consumes nothing and raises nothing, and that the first pull does both. Holds for the
+  generator and for a lazy wrapper alike; only an EAGER `return sortByBys(...)` breaks it — the
+  simplest thing a future change would reach for, and previously unguarded. Mutation: the eager
+  rewrite fails 2 assertions while all 826 other gremlin tests stay green. Eagerness matters because
+  it moves the sort and the element fault to `applyStep` time, and this engine has a recorded
+  lazy-vs-eager deviation on `limit(0)` shapes.
