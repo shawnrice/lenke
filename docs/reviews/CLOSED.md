@@ -26803,3 +26803,22 @@ statement` 969.7k / 774.8k / 973.6k (**1.26x**). It cannot resolve a 1.2x questi
   against native". **It is not compared** — native does not share TS's order-independence. The fusion
   is still a deliberate behaviour change for TS callers (it would move TS towards native's
   written-order behaviour), but that is now a known consequence rather than an unknown.
+- **RETRACTED — item 908's "fuse `checkLinearScope` into `compileLinear`" (item 917).** The two
+  traversals are not of the CLAUSE LIST: `checkExprScope` fully traverses every expression tree and
+  `compileExpr` traverses the same trees again. Merging the two clause loops saves ~nothing (the
+  list is 2-4 items). Saving the 15-19% means threading scope validation INTO `compileExpr` — **66
+  call sites across three files, a 29-arm switch, and callers (the detectors, `hop-projection`) that
+  have no scope in hand** — coupling validation to compilation for a win that only appears on a
+  parse+plan cache MISS and is at most ~1.4 us. Not worth it.
+- **RETRACTED — item 910's "the rewrite pipeline is ten walks over one clause list" (item 917).**
+  Ten walks of a 2-item array is nanoseconds, so its 1.259 us (16%) is what each transformation DOES
+  when it inspects the patterns and projections, not the walking. Fusing the walks would save the
+  walking, which is not the cost.
+- **METHOD — "N walks over a small list" is only a target when N × the list length is LARGE (item
+  917).** I described items 908, 909 and 910 as one family with one fix. **Only 909 was actually
+  that**, and it is the one that shipped — what it removed was a `Set` COPY whose cost scales with
+  SCOPE SIZE (1.48x at 48 clauses). The other two look identical and are not: their cost is per-item
+  work inside the walk, and the list is 2 items long. Third target retracted after naming it this
+  window (912 was the detectors), all three failing the same way — **a block- or shape-level
+  description invited a structural fix, and pricing what the fix would actually REMOVE showed the
+  time was elsewhere.**
