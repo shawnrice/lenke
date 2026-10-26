@@ -26789,3 +26789,17 @@ statement` 969.7k / 774.8k / 973.6k (**1.26x**). It cannot resolve a 1.2x questi
 - **AND ITS NUMBERS ARE NOT ENGINE FIGURES (item 915).** `point-lookup-probe.ts` measures ~1.8M
   ops/s for the operation `bench:usage` reads at ~0.9-1.0M — the difference is that bench's own
   per-operation harness. Its rows are comparable to ITSELF across builds, not to an isolated probe.
+- **NEW CROSS-ENGINE DIVERGENCE — the engines disagree on WHICH static fault wins (item 916).** For
+  `MATCH (n:L) RETURN nosuchfn(n.k) AS a, missingVar.k AS b` TS raises the SCOPE fault and native
+  raises **`E_UNKNOWN_FUNCTION`**; with the two faults written in the other order both raise the
+  scope fault. **Native is written-order sensitive, TS is not**: TS raises both from `compile` in a
+  fixed order (`checkLinearScope` walks every clause before `compileLinear`, the unknown-function
+  check runs after it), native raises both from the PARSER. They agree on a query with ONE fault.
+  Neither is obviously wrong — a standard rarely fixes which static error is reported first — but
+  which error CODE a caller receives is observable, which is this engine's own invariant. Pinned by
+  `fault-precedence.test.ts` (six cases, including TS's order-independence as its own assertion).
+- **UNBLOCKS — item 908's fusion no longer has the reason I recorded against it (item 916).** 908
+  said fusing `checkLinearScope` into `compileLinear` would change a fault ordering that is "compared
+  against native". **It is not compared** — native does not share TS's order-independence. The fusion
+  is still a deliberate behaviour change for TS callers (it would move TS towards native's
+  written-order behaviour), but that is now a known consequence rather than an unknown.
