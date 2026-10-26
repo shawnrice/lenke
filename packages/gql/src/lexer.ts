@@ -165,6 +165,14 @@ const RESERVED = new Set<string>(
 );
 
 /** Is `word` (case-insensitive) an ISO reserved word, hence not a bare identifier? */
+// REJECTED, item 889: do NOT give this the item-888 treatment. `isReserved` is the single
+// biggest source of normalization during a parse — 15 of the 40 `toLowerCase` calls a 158-char
+// statement makes — so the shape looks identical to the keyword lookup that won 1.08-1.14x. The
+// COST is not identical. A ceiling ablation removing EVERY normalization call from a parse
+// measured 1.015x on that statement while the zero-call control swung 0.949x: the control moves
+// more than the target, and two runs of the same question disagreed by 5.5 points. The effect is
+// below the instrument's resolution, so a correct version (which captured about half the ceiling
+// last time) is not worth having. See packages/native/parse-normalization-probe.ts.
 export const isReserved = (word: string): boolean => RESERVED.has(word.toLowerCase());
 
 // A bare (un-delimited) identifier: an ASCII letter/underscore start, then

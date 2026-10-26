@@ -26244,3 +26244,22 @@ p.flag` 4.51x (item 872).** Only the comparison spelling had one: `= true` lower
   per-character `&`, a Map-vs-Set lookup and the mixed-case fallback (together ~half the 1.24x
   ablation ceiling, so a small residual). The recursive DESCENT — the larger half on most shapes
   per item 887 — is still unexamined and is now the biggest unpriced path in parse.
+- **REFUTED — case normalization during PARSE (item 889): 1.015x, inside the noise.** Item 888's win
+  in the lexer made the same pattern in the parser look like the next target: a `big` parse makes 40
+  `toLowerCase` calls, 37 in the descent (15 from `isReserved` alone), against the 33 the lexer was
+  making before 888. A ceiling ablation (both arms carrying an identical stub so its call cost
+  cancels; `identity` deliberately wrong) with a DOSE-RESPONSE ladder: 0 calls **0.949x**, 9 calls
+  0.990x, 40 calls **1.015x**. The zero-call control swings 5.1% while the target moves 1.5%, and a
+  screening run of the same question read 1.070x — 5.5 points apart. Noise floor ≥5%, effect inside
+  it. Recorded next to `isReserved`. Do not re-attempt on the strength of the pattern matching.
+- **METHOD — a dose-response ladder beats one arm plus one control for a SMALL effect (item 889).**
+  Three shapes making 0, 9 and 40 of the calls under test. Monotonicity is weak evidence FOR the
+  effect; the control moving more than the target is strong evidence against resolving it. One arm
+  would have reported 1.015x with no way to judge it.
+- **METHOD — print a control's dose, never assert it (item 889).** The screening run called a shape
+  zero-call when it made nine; only the probe's own printed counter showed it. A true zero-call
+  statement had to be found by testing candidates (`RETURN 1`).
+- **METHOD — a `toLowerCase` micro-benchmark constant-folds to ~0.3 ns (item 889).** Timing
+  `'score'.toLowerCase()` in a loop over a literal measures the fold, not the call — same trap as
+  the libm constants. Why the lexer's calls cost ~20.5 ns each and the parser's ~9.8 is STILL
+  UNEXPLAINED; do not repeat the guess as fact.
