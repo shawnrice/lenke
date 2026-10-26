@@ -25791,3 +25791,26 @@ copies before the comment was added.
   reach two different code paths.** 864's ceiling finding stands (the fallback sits 6.8x below a
   full sort, so the representation gap there is 1.7-1.9x, not ~7x); only the attribution was wrong,
   and the probe header plus README entry are corrected.
+- **The CLAUSE spelling of a sorted LIMIT now reaches the rank-bounded exit too — SHIPPED at
+  ≥1760x (item 866).** Item 865 left `RETURN x ORDER BY <dict> LIMIT n` ~1785x slower than
+  `ORDER BY <dict> LIMIT n RETURN x`, which is the equivalent-spelling defect this repo refuses to
+  ship. `try_late_materialize` now lifts the streaming top-K onto the projection's input when that
+  input is a bare `Scan` and the (single) key is a dictionary property. 1.760 ms -> 0.001; `Num`
+  and `Str` controls flat. The spellings' agreement is asserted in the unit test over five windows.
+- **Lifting a NUMERIC key the same way — REFUTED at 1.28x WORSE (item 866).** 0.980 ms -> 1.255
+  (DESC 0.941 -> 1.143): the generic path builds one plain `f64` key column and `select_nth`s ONCE,
+  where the streaming buffer builds a 16-byte tuple per row and trims every 1024 pushes (~195
+  partial sorts at 200k). The route is now the pure predicate `top_k_liftable` with the numeric
+  exclusion asserted, because a route choice is answer-equivalent and every correctness mutant
+  survives it. Do not generalize the lift to all property keys.
+- **OPEN, unpriced — `try_scan_top_k` may be a net LOSS for a NUMERIC key (item 866).** Statement
+  position measures 1.24 ms through the streaming path while the clause form measures 0.98 through
+  late-materialize, on the same query and fixture. Not a head-to-head measurement, but it suggests
+  the pre-existing numeric fast path costs more than the generic one at 200k rows. Price it before
+  adding anything else to that function.
+- **METHOD — a pass-count substring is the wrong verdict for a mutation run (item 866).** The rule
+  `"1 passed" in out` silently broke when the filter selected six tests instead of one: the string
+  never appeared, every mutant fell to the else branch, and **eight mutants were reported CAUGHT
+  when they had passed** — biased toward flattering the change. Caught only because one verdict was
+  implausible on its face. **The EXIT CODE is the verdict**; the result line only proves the tests
+  ran. Complements items 767/772-773, which established the execution-evidence half of the rule.

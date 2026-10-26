@@ -559,6 +559,30 @@ fn try_scan_top_k_wide(
 /// row, say) are built for K rows, not all N. `Ok(None)` when the shape doesn't
 /// fit (no limit, input not a Project, a key that isn't a projected alias, or the
 /// window is the whole set so there is nothing to save).
+/// Whether a clause-position sorted LIMIT can be answered by lifting the streaming top-K onto the
+/// projection's INPUT (item 866). Extracted as a PURE predicate on purpose: the lift is
+/// answer-equivalent — disabling it falls back to the generic path and returns the same rows — so
+/// no correctness assertion can tell whether it fired. A mutant turning it off survived the whole
+/// suite, and the only thing with teeth against a route CHOICE is a direct test of the route.
+/// See `top_k_lift_route`.
+///
+/// `true` requires: a bare `Scan` under the projection, exactly ONE sort key, that key being a
+/// plain property of the scanned element, and that property's column being DICTIONARY-encoded.
+/// The last condition is measured rather than conservative — lifting a NUMERIC key was a 1.28x
+/// REGRESSION (0.980 ms -> 1.255, DESC 0.941 -> 1.143), because for a numeric key the generic
+/// path builds one plain `f64` key column and calls `select_nth` ONCE, where the streaming buffer
+/// builds a 16-byte tuple per row and trims every 1024 pushes — about 195 partial sorts at 200k
+/// rows. Only the dictionary arm has the rank-bounded early exit that pays for streaming.
+fn top_k_liftable(pinput: &Plan, key_exprs: &[&Expr], store: &Store) -> bool {
+    if !matches!(pinput, Plan::Scan { .. }) {
+        return false;
+    }
+    let [Expr::Prop { slot: 0, key }] = key_exprs else {
+        return false;
+    };
+    matches!(store.column(key), Some(Column::Dict { .. }))
+}
+
 pub(super) fn try_late_materialize(
     input: &Plan,
     keys: &[crate::ir::SortKey],
@@ -590,6 +614,27 @@ pub(super) fn try_late_materialize(
     let Some(key_exprs) = key_exprs else {
         return Ok(None);
     };
+
+    // ITEM 866: the STATEMENT spelling (`ORDER BY k LIMIT n RETURN x`) leaves a bare `Scan`
+    // under the sort and reaches the streaming top-K; this CLAUSE spelling
+    // (`RETURN x ORDER BY k LIMIT n`) puts a `Project` in between and used to `pull` the whole
+    // base before sorting it. After item 865 gave the dictionary key a rank-bounded early exit
+    // that was a ~1785x gap between two ways of writing the same query — exactly the asymmetry
+    // this repo refuses to ship. So try the streaming path on the projection's INPUT first: the
+    // sort key has already been mapped through the aliases above, so if it is a bare property of
+    // a bare scan the same machinery applies, and the projection then runs over the K survivors
+    // just as it does below.
+    if top_k_liftable(pinput, &key_exprs, store) {
+        let lifted = [crate::ir::SortKey {
+            expr: key_exprs[0].clone(),
+            descending: keys[0].descending,
+            nulls_first: keys[0].nulls_first,
+        }];
+        if let Some(top) = try_scan_top_k(pinput, &lifted, skip, Some(limit), store, track) {
+            let cols = eval_all(items.iter().map(|(_, e)| e), store, &top)?;
+            return Ok(Some(Batch::of(cols)));
+        }
+    }
 
     let base = pull(pinput, store, track)?;
     let n = base.rows();
@@ -785,4 +830,88 @@ pub(super) fn try_node_prop_grouping(
     };
     let (group_of, key_out, n_groups) = frontier_group_by(store, key, frontier)?;
     Some((group_of, Col::Gen(key_out), n_groups))
+}
+
+/// Item 866: the LIFT ROUTE, tested directly. `top_k_liftable` decides whether a clause-position
+/// sorted LIMIT is answered by the streaming top-K or by the generic path, and both answer
+/// identically — so this choice is invisible to every correctness test in the suite (a mutant
+/// disabling the lift survived all of them). These assertions are the route's only teeth.
+#[cfg(test)]
+mod top_k_lift_route {
+    use super::{top_k_liftable, Expr, Plan};
+    use crate::store::Builder;
+    use crate::value::Value;
+
+    fn store() -> crate::store::Store {
+        const CY: [&str; 3] = ["bb", "aa", "cc"];
+        let mut b = Builder::default();
+        for i in 0..40u32 {
+            b.node(
+                &["T"],
+                &[
+                    ("c", Value::Str(CY[(i % 3) as usize].into())),
+                    ("s", Value::Str(format!("s{i}").into())),
+                    ("a", Value::Num(f64::from(i))),
+                ],
+            );
+        }
+        b.build()
+    }
+
+    fn prop(key: &str, slot: usize) -> Expr {
+        Expr::Prop {
+            slot,
+            key: key.into(),
+        }
+    }
+
+    #[test]
+    fn lifts_only_a_dict_prop_of_a_bare_scan() {
+        let st = store();
+        let scan = Plan::Scan {
+            label: Some("T".into()),
+        };
+        let c = prop("c", 0);
+        let a = prop("a", 0);
+        let sx = prop("s", 0);
+
+        // the one shape that pays: a dictionary key, one key, a bare scan
+        assert!(top_k_liftable(&scan, &[&c], &st), "dict prop over a scan");
+
+        // a NUMERIC key must NOT lift — measured as a 1.28x regression, so this is the assertion
+        // that keeps the restriction from being "simplified" away later
+        assert!(
+            !top_k_liftable(&scan, &[&a], &st),
+            "numeric key must not lift"
+        );
+        // a plain string column has no arm in the streaming path at all
+        assert!(
+            !top_k_liftable(&scan, &[&sx], &st),
+            "string key must not lift"
+        );
+        // more than one key: the streaming path is single-key only
+        assert!(
+            !top_k_liftable(&scan, &[&c, &a], &st),
+            "multi-key must not lift"
+        );
+        // zero keys
+        assert!(!top_k_liftable(&scan, &[], &st), "no key must not lift");
+        // a property of a slot OTHER than the scanned element is not this shape
+        let c1 = prop("c", 1);
+        assert!(!top_k_liftable(&scan, &[&c1], &st), "slot 1 must not lift");
+        // an unknown property has no column
+        let missing = prop("nope", 0);
+        assert!(
+            !top_k_liftable(&scan, &[&missing], &st),
+            "absent column must not lift"
+        );
+        // not a bare scan: anything else under the projection keeps the generic path
+        let other = Plan::Distinct {
+            input: Box::new(scan.clone()),
+        };
+        assert!(
+            !top_k_liftable(&other, &[&c], &st),
+            "only a bare Scan is liftable"
+        );
+    }
 }

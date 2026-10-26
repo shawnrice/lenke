@@ -27389,4 +27389,34 @@ fn top_k_rank_bounded_dict_key() {
         col("MATCH (t:T) ORDER BY t.s LIMIT 4 RETURN t.s AS x"),
         ["s000", "s001", "s002", "s003"]
     );
+
+    // THE CLAUSE SPELLING MUST AGREE WITH THE STATEMENT SPELLING (item 866). `RETURN x ORDER BY k
+    // LIMIT n` puts a `Project` between the sort and the scan, so it reaches this path only
+    // because `try_late_materialize` lifts it; before that it was ~1760x slower than the
+    // statement spelling of the same query. Asserting the two against EACH OTHER is the property
+    // that actually matters, and it is what keeps the lift from drifting.
+    for tail in [
+        "LIMIT 5",
+        "DESC LIMIT 5",
+        "SKIP 3 LIMIT 4",
+        "LIMIT 103",
+        "DESC SKIP 2 LIMIT 3",
+    ] {
+        let (key, rest) = tail
+            .strip_prefix("DESC ")
+            .map_or(("t.c", tail), |r| ("t.c DESC", r));
+        let stmt = col(&format!(
+            "MATCH (t:T) ORDER BY {key} {rest} RETURN t.s AS x"
+        ));
+        let clause = col(&format!(
+            "MATCH (t:T) RETURN t.s AS x ORDER BY {key} {rest}"
+        ));
+        assert_eq!(stmt, clause, "spellings must agree for `{key} {rest}`");
+        assert!(!stmt.is_empty(), "`{key} {rest}` returned nothing");
+    }
+    // And the same for a NULL-bearing key, where both spellings must decline to the general path.
+    assert_eq!(
+        col("MATCH (t:T) RETURN t.d AS x ORDER BY t.d LIMIT 6"),
+        ["r0", "r137", "r274", "NULL", "NULL", "NULL"]
+    );
 }
