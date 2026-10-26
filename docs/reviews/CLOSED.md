@@ -27119,3 +27119,16 @@ p` at **1.54x FASTER** and `query/shortest repeat-group unread` at **0.81x slowe
   measurement says makes things slightly worse. Same rule as items 843/868/870 (the engines land on
   the same gap from different causes, in mirrored directions, in only one of them) — it generalises
   from cross-ENGINE to cross-PATH.
+- **INCONCLUSIVE, no conclusion recorded — the cross-surface gap re-measurement (item 928).** Three
+  runs of `probe:surface` span **1.26-2.21x** on the unlabelled filtered count where item 801's three
+  spanned 2.06-2.12, and the GREMLIN arm alone moved **2.11 → 3.13 ms (1.48x)** between runs while
+  its GQL twin held at 3.91/3.95. A ratio built from an arm that swings 1.48x cannot resolve a 2.1x
+  claim. The labelled pair read 1.35x, which LOOKS like the gap halving and is exactly the reading
+  caught as false twice today (924's `query/perrow`, 926's param "residual"). **Item 801's ~2.1x
+  stands as recorded: not re-confirmed, not refuted.**
+- **`probe:surface` needs a quiet machine and a published per-arm self-variance (item 928).** The
+  machine was in interactive use (a Steam client running; load 2.70 on 32 cores — plausible
+  contributor, NOT a demonstrated cause, and thermal state and the probe's own variance at the
+  default `SURFACE_N` are equally unexcluded). Before reading any ratio off it, run each arm enough
+  times to publish its own spread — the discipline item 924 established for `bench_all`, which this
+  probe does not yet have.
