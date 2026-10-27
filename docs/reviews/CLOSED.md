@@ -29193,3 +29193,24 @@ multiTypeEdgeCount === 0`) — one named type cannot double-count. Native's `Adj
   directions, 40 nodes, both loop modes) passed throughout, so the change was a route change. The
   pin was **strengthened, not relaxed**: a never-secondary type must take the slice AND a
   secondary-carried type must still decline.
+- **⚠️ PRICED, NOT BUILT — the DISJUNCTION taint penalty is 2.3x and the obvious narrowing FAILS
+  (item 1009).** After 1008 a single-type hop takes the per-type CSR, so the remaining guards
+  serve disjunctions, stale CSR and secondary types. `-[:T0|T1]->` at degree 256 / 64 types with
+  ONE tainted edge, three rounds: clean 6470.7/6446.8/6482.9 against tainted
+  14695.2/15161.8/14806.9 — **2.27 / 2.35 / 2.28x**, stable to 0.6%.
+- **❌ REFUTED — applying item 1008's narrowing to `edge_carries_wanted` (item 1009).** Adding
+  `type_ever_secondary(w)` before `edge_has_label` provably skips a useless probe and **bought
+  nothing**. `edge_has_label` early-outs in TWO Vec index reads (`edge_etype`, then
+  `edge_has_extra` → false); `type_ever_secondary` is a hash-set lookup. The change swapped two
+  cheap indexed reads for one dearer hash probe, per edge per type. **The same narrowing was
+  worth 24x at item 1008 and nothing here** — a check is worth what it SKIPS, which is 1008's
+  own model applied to the fix instead of the guard.
+- **The fix would be a HOIST, not a gate (item 1009).** Decide once per hop which wanted types
+  can be secondary and pass it in, rather than asking per edge. `edge_carries_wanted` has 6+ call
+  sites across `exec`, `varlen`, `nested` and `fastpath`, so it is a signature change. Recorded
+  with its 2.3x rather than attempted.
+- **⚠️ A single run of the narrowed build read 3.05x — WORSE — on a 1.3x faster CLEAN arm that a
+  `&&` term after a false short-circuit cannot cause (item 1009).** Almost certainly inlining
+  perturbation. Reading it as "the change helped clean" would have been the session's fifth wrong
+  mechanism; three alternated rounds on the reverted build gave the stable baseline to compare
+  against.
