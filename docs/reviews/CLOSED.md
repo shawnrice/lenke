@@ -29213,15 +29213,27 @@ multiTypeEdgeCount === 0`) — one named type cannot double-count. Native's `Adj
   differential and answer assertion in the repo. It is caught only by asserting on the selector
   itself (`fused_hop_shape(..).is_some()`) in both directions. Second instance of the hazard after
   1008's degree-reader pin.
-- **⚠️ OPEN, DIAGNOSED — a TWO-SIDED range never seeds on a scan; the `And` is the blocker, not
-  the selectivity (item 1024).** At the scan site `range_seek_target` is handed the WHOLE predicate
-  and matches a single `Compare`. Proved directly: `n.name >= 'name99998'` (ONE row, single-sided)
-  optimizes to a **`RangeSeek`**, while `n.name >= 'name5000' AND n.name < 'name5001'` (ELEVEN
-  rows, MORE selective) optimizes to **`Filter { Scan }`** — the more selective query gets the
-  worse plan. So a bounded interval, the natural way to write one and what a `BETWEEN` lowers to,
-  cannot reach a range index there while its own half can. **The conjunct path
-  (`opt.rs:1683`/`1734`) already extracts a seed from one conjunct and re-ANDs the residual, for a
-  different plan shape; the scan site does not use it.**
+- **⚠️ OPEN, DIAGNOSED — a tight INTERVAL never seeds because each BOUND is priced on its own
+  (items 1024 + 1025).** `seek_beats_scan` asks `seed_fraction` per conjunct, so `>= lo` and
+  `< hi` are each ~50% on a wide-ranging key and both decline — correctly in isolation — while
+  their conjunction is 11 rows of 100,000. **A bounded interval's selectivity is the INTERSECTION
+  of its bounds, and nothing computes that.** The two-sided scan measured 0.458 ms where the same
+  interval through the index should be nearer the equality seek's 0.001.
+- **~~The `And` is the blocker~~ — WITHDRAWN at item 1025.** 1024 claimed the scan site hands
+  `range_seek_target` the whole `And`. It does not matter if it does: `seed_from_conjuncts` has an
+  indexed-RANGE rung (`range_cand`) and the scan site calls it, so an `And` of two ranges IS
+  reached. The controlled experiment, varying only per-bound selectivity with the shape fixed:
+  both bounds unselective / ~11-row interval → `Filter { Scan }`; **one bound selective / ~5-row
+  interval → `RangeSeek`**; one bound selective / single-sided → `RangeSeek`. The two-sided form
+  seeds whenever one bound is selective alone.
+- **METHOD — the difference you can SEE is not the only difference there is (item 1025).** 1024's
+  two queries differed in shape AND in per-bound selectivity; it attributed the result to the shape
+  and wrote that into `CLOSED.md` and the probe. One experiment holding shape fixed refuted it.
+  A plan dump FEELS like a controlled comparison and is not one — vary one axis at a time.
+- **➡️ A FIX NEEDS A TWO-SIDED SEEK, not a gate tweak (item 1025).** `Plan::RangeSeek` carries one
+  `op` and one `value`, and seeding on either unselective bound alone is what `seek_beats_scan` is
+  right to refuse (walking half the index then filtering loses to the columnar scan). So: a
+  bounded range node (or an optional upper bound) plus an interval estimate.
 - **THE PREFIX HYPOTHESIS WAS BACKWARDS (item 1024).** `STARTS WITH` lowers to a scalar `Call` so it
   cannot seed, which predicted it would LOSE to the explicit range. Measured the other way:
   **0.280 ms against 0.458, 1.64x, with the seekable spelling losing.** The plans say why —

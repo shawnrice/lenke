@@ -430,19 +430,26 @@ fn main() {
             //
             //   * NEITHER spelling seeds. Both optimize to `Filter { Scan }`, so the 1.64x is
             //     filter cost — one `starts_with` call per row against two string compares.
-            //   * The reason the range does not seed is the `And`. At the scan site
-            //     `range_seek_target` is handed the WHOLE predicate, and it matches a single
-            //     `Compare` — so a two-sided range never seeds there. Confirmed directly:
-            //     `n.name >= 'name99998'` (one row, single-sided) optimizes to a `RangeSeek`,
-            //     while `n.name >= 'name5000' AND n.name < 'name5001'` (eleven rows, MORE
-            //     selective) optimizes to `Filter { Scan }`. **The blocker is the shape, not the
-            //     selectivity.**
+            //   * The range does not seed because **each BOUND is priced on its own**, and
+            //     neither half of a tight interval is selective by itself. Item 1024 blamed the
+            //     `And` and was WRONG — the conjunct picker has a range rung
+            //     (`opt.rs`'s `range_cand`) and does reach an `And`. Item 1025 settled it by
+            //     varying only the bounds' individual selectivity:
             //
-            // So a bounded interval — the natural way to write one, and what a `BETWEEN` would
-            // lower to — cannot reach a range index on a scan, while its own one-sided half can.
-            // That is the spelling class CLAUDE.md lists first among the historical 100-300x bugs.
-            // Recorded here rather than fixed in the same breath: it is a planner change with
-            // byte-identity reach and it earns its own item.
+            //     ```text
+            //       both bounds unselective, interval ~11 rows   ->  Filter { Scan }
+            //       lower bound selective,   interval  ~5 rows   ->  RangeSeek
+            //       lower bound selective,   single-sided        ->  RangeSeek
+            //     ```
+            //
+            //     The tiny interval with two unselective halves is the only one that declines, so
+            //     the shape is not the blocker and the per-bound pricing is.
+            //
+            // A bounded interval is the natural way to write one and what a `BETWEEN` lowers to,
+            // and its selectivity is the INTERSECTION of its bounds — which nothing computes.
+            // Fixing it needs a two-sided seek (`Plan::RangeSeek` carries ONE op and value, and
+            // seeding on either unselective bound alone is what `seek_beats_scan` rightly
+            // declines), so it is a plan-shape change and earns its own item.
             "prefix predicate vs the explicit range it implies (indexed string key)",
             &[
                 (Gql, "MATCH (n:Person) WHERE n.name STARTS WITH 'name500' RETURN count(*) AS c"),
