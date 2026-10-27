@@ -29069,3 +29069,29 @@ disagree on the ANSWER` — item 984 confirmed through the repo's own gate.
   reasoning at the constant. **Repetition detects noise; it does not detect a biased estimator** —
   six agreeing medians were six repetitions of one sampling error. Only widening the sample finds
   it.
+- **✅ `bench:usage` surfaces NOTHING NEW — its standout cells are the native serving residual,
+  CLOSED as DIFFUSE at item 599 (item 1002).** The eye-catching reading is `read: point lookup`
+  ts(+) **1.15M** ops/s against engine(+) **496.9k** — TS 2.3x faster than native — repeated on
+  `permission check` (2.9x) and `2-hop recommendation` (2.2x). Checked before chasing:
+  - The lazy-TS hypothesis is **refuted by reading**: `query` returns `R[]`, eagerly executed, so
+    `void e.query(...)` does the work. The TS arm is not winning by skipping it.
+  - The gap is the **native serving residual, open since item 291 and closed as DIFFUSE at 599**
+    after THREE refuted attributions (the FFI boundary at 291, per-argument marshalling at 292,
+    "wrapper layering" at 599's own first pass). What remains is _"a trivial call is 614ns, a
+    point lookup ~1280, across a dozen items of 30-150ns with no dominant term"_, and the stated
+    next step is the ARCHITECTURAL change items 289 and 594 both arrived at independently —
+    dense vertex indices instead of string ids — "not another rung".
+  - Item 915 separately records that **`bench:usage` figures are not a baseline** (1.17-1.26x
+    run-to-run on one build) and **not engine figures** (an isolated probe reads ~1.8M for the
+    operation bench reads at ~0.9-1.0M; the difference is bench's own per-operation harness).
+- **⚠️ STATE OF TICK-SIZED PERF WORK, recorded so the next sweep starts from it (item 1002).**
+  Five areas examined in consecutive ticks, all already settled: the native query corpus (998),
+  the seek-ceiling enum beyond Bool (998), the codec encode rows (999-1001), the CSR demotion
+  (851/852), and the serving residual (here). **What is left is not tick-shaped:**
+  - ARCHITECTURAL — dense vertex indices instead of string ids (289, 594, 599); the sparse
+    per-type CSR offset layout, O(types x N), explicitly scoped out at 852 as "a storage change
+    rather than a tick".
+  - DECISIONS for the user — item 908's `checkLinearScope` fusion (a perf win that also changes
+    fault precedence), whether a tx-created RANGE index should revert on rollback (922, a test
+    pins today's behaviour), and whether cold-query latency matters at all (945 paused the whole
+    planning-cost line on exactly that question).
