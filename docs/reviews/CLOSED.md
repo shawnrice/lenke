@@ -29213,6 +29213,39 @@ multiTypeEdgeCount === 0`) — one named type cannot double-count. Native's `Adj
   differential and answer assertion in the repo. It is caught only by asserting on the selector
   itself (`fused_hop_shape(..).is_some()`) in both directions. Second instance of the hazard after
   1008's degree-reader pin.
+- **✅ SHIPPED (Rust) — the INTERVAL seek, 153x on a selective bounded range (item 1026).**
+  `Plan::RangeSeek` gained `upper: Option<(CompareOp, Value)>`, `range_lookup` closes its BTreeMap
+  bound with it, and `seed_from_conjuncts` gained an INTERVAL rung above the equality one, priced
+  by a new `interval_fraction` oracle. `n.name >= 'name500' AND n.name < 'name501'` **0.458 → 0.003
+  ms**. Landed in two stages — plumbing verified as a true no-op (1,261/0 unchanged), then the rung.
+- **⚠️ THE FIRST ATTEMPT SHIPPED A 3x REGRESSION, CAUGHT BY A CONTROL (item 1026).** Under the
+  existing `SEEK_MAX_FRACTION` (15.4%, measured for a ONE-sided seek against a one-conjunct scan)
+  the probe's `range AND` group (`30 <= age < 40`, a 10% interval) went **0.047 → 0.142 ms**. An
+  interval competes against a TWO-conjunct vectorized filter and materializes the interval's ids,
+  so its curve is its own: 57x better at 0.1%, 7.6x at 1%, 2.2x at 5%, **3.4x WORSE at 10%**.
+  `INTERVAL_SEEK_MAX_FRACTION = 0.05`, the widest point measured to WIN — not an extrapolated
+  crossover, because the filter column is non-monotone above 5% and a threshold inside an
+  unexplained region is indefensible.
+- **`rewrite_fuzz` CAUGHT A PANIC ON ITS FIRST RUN (item 1026).** `BTreeMap::range` panics when the
+  start bound exceeds the end — `k >= 10 AND k < 5`, and also `k >= 5 AND k < 5`
+  (`Included(5)..Excluded(5)`). Generated plans reach `range_lookup` directly, so "the planner only
+  emits sane pairs" was not the guarantee needed. Both walks now return empty for an inverted or
+  empty interval, equal endpoints kept only when BOTH bounds are inclusive. The unit suite passed
+  before this fix.
+- **A CAP MUTANT NEEDS A CASE INSIDE THE BAND THE TWO CEILINGS DISAGREE ON (item 1026).** The first
+  "must not seek" assertion used a 30% interval, which exceeds BOTH ceilings, so widening the cap
+  to the one-sided one survived it. A 10% interval — under 15.4%, over 5% — separates them.
+- **⚠️ ONE OPEN SURVIVOR, LABELLED RATHER THAN DRESSED UP (item 1026).** Forcing `range_lookup`'s
+  equal-endpoint branch to report "empty" changes no answer across three attempts to reach it:
+  `count(*)` never reaches the walk (items 1007/1008's lesson, which is why row-returning cases
+  were added), and the row-returning form provably DOES seed and provably returns the right rows.
+  The guard is not in doubt — the panic mutant fails loudly without it — but that branch is
+  untested and says so.
+- **➡️ KNOWN CONSEQUENCE, NOT A REGRESSION: the prefix spelling is now 95x behind (item 1026).**
+  `STARTS WITH` lowers to a scalar `Call` and cannot seed: 0.287 ms against the range's 0.003. **No
+  query got slower**, but the gap between two spellings of one question went 1.64x → 95x, and by
+  this repo's doctrine that gap IS the defect. Fix: lower a prefix to `>= p AND < succ(p)` with the
+  `starts_with` filter kept as the residual, so correctness never depends on `succ`.
 - **⚠️ OPEN, DIAGNOSED — a tight INTERVAL never seeds because each BOUND is priced on its own
   (items 1024 + 1025).** `seek_beats_scan` asks `seed_fraction` per conjunct, so `>= lo` and
   `< hi` are each ~50% on a wide-ranging key and both decline — correctly in isolation — while

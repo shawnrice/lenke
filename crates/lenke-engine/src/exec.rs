@@ -1212,8 +1212,9 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
             key,
             op,
             value,
+            upper,
         } => {
-            let ids = range_seek_ids(store, label.as_deref(), key, *op, value);
+            let ids = range_seek_ids(store, label.as_deref(), key, *op, value, upper.as_ref());
             let lineage = track.then(|| Lineage::seed(&ids));
             let mut batch = Batch::single(Col::Nodes(ids));
             batch.lineage = lineage;
@@ -2707,11 +2708,13 @@ fn pull_capped(
             key,
             op,
             value,
+            upper,
         } => {
-            let ids: Vec<u32> = range_seek_ids(store, label.as_deref(), key, *op, value)
-                .into_iter()
-                .take(cap)
-                .collect();
+            let ids: Vec<u32> =
+                range_seek_ids(store, label.as_deref(), key, *op, value, upper.as_ref())
+                    .into_iter()
+                    .take(cap)
+                    .collect();
             let lineage = track.then(|| Lineage::seed(&ids));
             let mut b = Batch::single(Col::Nodes(ids));
             b.lineage = lineage;
@@ -2982,9 +2985,10 @@ fn streaming_chain(plan: &Plan, store: &Store) -> Option<(Plan, Vec<u32>)> {
             key,
             op,
             value,
+            upper,
         } => Some((
             Plan::Row,
-            range_seek_ids(store, label.as_deref(), key, *op, value),
+            range_seek_ids(store, label.as_deref(), key, *op, value, upper.as_ref()),
         )),
         Plan::Filter { input, pred } => {
             let (body, ids) = streaming_chain(input, store)?;
@@ -3736,7 +3740,7 @@ fn index_seek_ids(store: &Store, label: Option<&str>, key: &str, value: &Value) 
         // so `k = v` on a range-indexed key was linear in the label (audit item 402).
         None if store.has_range_index(key) => {
             let cands = store
-                .range_lookup(key, crate::ir::CompareOp::Eq, value)
+                .range_lookup(key, crate::ir::CompareOp::Eq, value, None)
                 .unwrap_or_default();
             // Label intersection exactly as the hash arm does it: binary-search each
             // candidate against the sorted bucket rather than building a set of the whole
@@ -3969,11 +3973,13 @@ fn range_seek_ids(
     key: &str,
     op: CompareOp,
     value: &Value,
+    upper: Option<&(CompareOp, Value)>,
 ) -> Vec<u32> {
-    if value.is_null() {
+    if value.is_null() || upper.is_some_and(|(_, v)| v.is_null()) {
+        // A null bound selects nothing, on either end.
         return Vec::new();
     }
-    match store.range_lookup(key, op, value) {
+    match store.range_lookup(key, op, value, upper.map(|(o, v)| (*o, v))) {
         Some(cands) => {
             // Test label membership with a per-candidate binary search of the sorted
             // label bucket (O(cands·log|label|)), NOT a HashSet built from the whole
@@ -3994,7 +4000,16 @@ fn range_seek_ids(
                 // each candidate with `range_pass` so an indexed seek returns
                 // exactly the scan-filter rows (the equivalent-spellings invariant);
                 // for a homogeneous column this keeps every candidate.
-                .filter(|&id| range_pass(&store.prop(id, key), op, value))
+                .filter(|&id| {
+                    let cell = store.prop(id, key);
+
+                    // BOTH bounds, for the reason the single-bound version gives: the index
+                    // orders by the TOTAL order while the OPERATOR is three-valued, so a
+                    // cross-type candidate inside the interval must still drop. The seed removes
+                    // the upper conjunct from the residual, so this is where it is enforced.
+                    range_pass(&cell, op, value)
+                        && upper.is_none_or(|(uop, uv)| range_pass(&cell, *uop, uv))
+                })
                 .collect()
         }
         None => {
@@ -4021,15 +4036,38 @@ fn range_seek_ids(
                 (store.column(key), value)
             {
                 let t = *t;
-                return ids
-                    .iter()
-                    .copied()
-                    .filter(|&id| present[id as usize] && num_pred(op, data[id as usize], t))
-                    .collect();
+                // The upper bound joins the same raw-f64 compare when it is numeric too; a
+                // non-numeric one declines this fast path rather than being silently dropped.
+                let hi = match upper {
+                    None => None,
+                    Some((uop, Value::Num(u))) => Some((*uop, *u)),
+                    Some(_) => None,
+                };
+
+                if upper.is_none() || hi.is_some() {
+                    return ids
+                        .iter()
+                        .copied()
+                        .filter(|&id| {
+                            present[id as usize]
+                                && num_pred(op, data[id as usize], t)
+                                && hi.is_none_or(|(uop, u)| num_pred(uop, data[id as usize], u))
+                        })
+                        .collect();
+                }
             }
             ids.iter()
                 .copied()
-                .filter(|&id| range_pass(&store.prop(id, key), op, value))
+                .filter(|&id| {
+                    let cell = store.prop(id, key);
+
+                    // BOTH bounds, for the reason the single-bound version gives: the index
+                    // orders by the TOTAL order while the OPERATOR is three-valued, so a
+                    // cross-type candidate inside the interval must still drop. The seed removes
+                    // the upper conjunct from the residual, so this is where it is enforced.
+                    range_pass(&cell, op, value)
+                        && upper.is_none_or(|(uop, uv)| range_pass(&cell, *uop, uv))
+                })
                 .collect()
         }
     }
@@ -4586,7 +4624,15 @@ fn frontier_ids(plan: &Plan, store: &Store) -> Option<Vec<u32>> {
             key,
             op,
             value,
-        } => Some(range_seek_ids(store, label.as_deref(), key, *op, value)),
+            upper,
+        } => Some(range_seek_ids(
+            store,
+            label.as_deref(),
+            key,
+            *op,
+            value,
+            upper.as_ref(),
+        )),
         Plan::Expand {
             input,
             from,
@@ -4785,8 +4831,9 @@ fn frontier_counts(plan: &Plan, store: &Store) -> Option<Counts> {
             key,
             op,
             value,
+            upper,
         } => Some(sparse_or_dense(
-            range_seek_ids(store, label.as_deref(), key, *op, value),
+            range_seek_ids(store, label.as_deref(), key, *op, value, upper.as_ref()),
             n,
             dense_cut,
         )),

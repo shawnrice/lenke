@@ -4884,6 +4884,7 @@ impl Store {
         key: &str,
         op: crate::ir::CompareOp,
         value: &Value,
+        upper: Option<(crate::ir::CompareOp, &Value)>,
     ) -> Option<Vec<u32>> {
         use crate::ir::CompareOp::{Eq, Ge, Gt, Le, Lt};
         use std::ops::Bound::{Excluded, Included, Unbounded};
@@ -4892,11 +4893,47 @@ impl Store {
             return Some(Vec::new());
         }
         let k = OrdVal(value.clone());
+        // An UPPER bound closes the range into an interval (item 1026). It replaces the
+        // `Unbounded` end a single-bound form leaves open, so the map walks only the interval
+        // instead of a whole tail — which is the point: each bound alone can be half the index
+        // while their intersection is a handful of keys (items 1024/1025).
+        let close = |other: std::ops::Bound<OrdVal>| -> std::ops::Bound<OrdVal> {
+            match upper {
+                Some((Lt | Gt, v)) => Excluded(OrdVal(v.clone())),
+                Some((Le | Ge, v)) => Included(OrdVal(v.clone())),
+                _ => other,
+            }
+        };
+        // AN EMPTY OR INVERTED INTERVAL MUST NOT REACH `range`, which PANICS when the start bound
+        // exceeds the end (`k >= 10 AND k < 5`, and also `k >= 5 AND k < 5`, whose bounds are
+        // Included(5)..Excluded(5)). The rewrite fuzzer found this on its first run after the
+        // interval seed landed — generated plans reach `range_lookup` directly, so a planner that
+        // only ever emits sane pairs is not the guarantee this needs.
+        if let Some((_, uv)) = upper {
+            let lo_hi = match op {
+                Gt | Ge => Some((value, uv)),
+                Lt | Le => Some((uv, value)),
+                _ => None,
+            };
+
+            if let Some((lo, hi)) = lo_hi {
+                let ord = OrdVal(lo.clone()).cmp(&OrdVal(hi.clone()));
+
+                // Equal endpoints are empty unless BOTH are inclusive.
+                let both_inclusive = matches!(op, Ge | Le) && matches!(upper, Some((Ge | Le, _)));
+
+                if ord == std::cmp::Ordering::Greater
+                    || (ord == std::cmp::Ordering::Equal && !both_inclusive)
+                {
+                    return Some(Vec::new());
+                }
+            }
+        }
         let bounds: (std::ops::Bound<OrdVal>, std::ops::Bound<OrdVal>) = match op {
-            Gt => (Excluded(k), Unbounded),
-            Ge => (Included(k), Unbounded),
-            Lt => (Unbounded, Excluded(k)),
-            Le => (Unbounded, Included(k)),
+            Gt => (Excluded(k), close(Unbounded)),
+            Ge => (Included(k), close(Unbounded)),
+            Lt => (close(Unbounded), Excluded(k)),
+            Le => (close(Unbounded), Included(k)),
             // A POINT PROBE is a degenerate range, and the map's key order already agrees
             // with equality on the domain that reaches here: `cmp_num_total` ties -0.0 with
             // 0.0 exactly as `equals` does, cross-type values differ by rank so they never
@@ -4927,6 +4964,66 @@ impl Store {
     /// `None` therefore means "no index, or more than `cap`" — both of which a caller
     /// should read as "not selective enough to be worth it". Deleted ids are counted,
     /// so the result is an upper bound.
+    /// The capped count for an INTERVAL — two bounds on one key (item 1026).
+    ///
+    /// Not expressible as two `range_count_capped` calls: each bound alone can cover half the
+    /// index while their intersection is a handful of keys, which is exactly why the planner
+    /// declined these (items 1024/1025). Delegates the walk to `range_count_capped` by handing it
+    /// the lower bound and stopping at the upper, so the NaN rule and the cap semantics are
+    /// defined in one place.
+    #[must_use]
+    pub fn range_count_in_capped(
+        &self,
+        key: &str,
+        lo: (crate::ir::CompareOp, &Value),
+        hi: (crate::ir::CompareOp, &Value),
+        cap: usize,
+    ) -> Option<usize> {
+        use crate::ir::CompareOp::{Ge, Gt, Le, Lt};
+        use std::ops::Bound::{Excluded, Included};
+        let ix = self.ranges.iter().find(|i| i.key == key)?;
+        if lo.1.is_null() || hi.1.is_null() {
+            return Some(0);
+        }
+        let lob = match lo.0 {
+            Gt => Excluded(OrdVal(lo.1.clone())),
+            Ge => Included(OrdVal(lo.1.clone())),
+            _ => return None,
+        };
+        let hib = match hi.0 {
+            Lt => Excluded(OrdVal(hi.1.clone())),
+            Le => Included(OrdVal(hi.1.clone())),
+            _ => return None,
+        };
+        // Same panic guard as `range_lookup`: an inverted or empty interval must not reach `range`.
+        let ord = OrdVal(lo.1.clone()).cmp(&OrdVal(hi.1.clone()));
+        let both_inclusive = matches!(lo.0, Ge) && matches!(hi.0, Le);
+
+        if ord == std::cmp::Ordering::Greater
+            || (ord == std::cmp::Ordering::Equal && !both_inclusive)
+        {
+            return Some(0);
+        }
+        let mut n = 0usize;
+
+        for (k, ids) in ix.map.range((lob, hib)) {
+            // Same NaN rule as `range_count_capped`, and for the same reason: the index orders by
+            // the TOTAL order where NaN sorts above every number, while the filter this estimate
+            // stands in for drops every NaN comparison.
+            if matches!(&k.0, Value::Num(x) if x.is_nan()) {
+                continue;
+            }
+
+            n += ids.len();
+
+            if n > cap {
+                return Some(n);
+            }
+        }
+
+        Some(n)
+    }
+
     #[must_use]
     pub fn range_count_capped(
         &self,

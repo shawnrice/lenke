@@ -88,6 +88,35 @@ const SEEK_MAX_FRACTION_CHEAP_SCAN: f64 = 0.031;
 /// measurement discipline gives them different numbers.
 const SEEK_MAX_FRACTION_BOOL: f64 = 0.05;
 
+/// Break-even for an INTERVAL seek — two bounds on one key — against the TWO-conjunct vectorized
+/// filter it replaces (item 1026).
+///
+/// A FOURTH constant, and the curve is why it cannot be [`SEEK_MAX_FRACTION`]: that 15.4% was
+/// measured for a ONE-sided seek against a one-conjunct scan, and an interval both competes with a
+/// different scan and materializes the interval's ids. 200,000 rows, `age = i % 1000`, interval
+/// seek against the filter the same query gets without this rung:
+///
+/// ```text
+///   width   fraction   filter      interval     ratio
+///       1      0.1%    222.4 us       3.9 us    57x   better
+///       2      0.2%    226.3          7.2       31x
+///       5      0.5%    235.5         16.7       14x
+///      10      1.0%    247.6         32.6      7.6x
+///      20      2.0%    275.6         64.4      4.3x
+///      50      5.0%    358.2        160.1      2.2x
+///     100     10.0%     94.1        319.0      3.4x   WORSE
+/// ```
+///
+/// Set at 5%, the widest point measured to win, rather than extrapolating to the crossover: the
+/// filter column is NOT monotone above 5% (94.1 us at 10% against 358.2 at 5%, so some other path
+/// serves the wider shapes), and a threshold placed inside an unexplained region is a threshold
+/// nobody can defend. The 5-15% band is left to the filter deliberately.
+///
+/// This also fixes a regression the first attempt shipped: `spelling_probe`'s "range AND" group
+/// (`30 <= age < 40`, a 10% interval) went 0.047 -> 0.142 ms under `SEEK_MAX_FRACTION`, which is
+/// the 3.4x row above.
+const INTERVAL_SEEK_MAX_FRACTION: f64 = 0.05;
+
 /// The selectivity ceiling above which an indexed seek loses to the scan it replaces.
 ///
 /// Shared by both callers deliberately: the cap was computed inline in TWO places, which is one
@@ -152,6 +181,23 @@ pub trait IndexOracle {
     /// selective predicate and a LOSS on an unselective one. Defaults to `None`, so
     /// an oracle that cannot answer simply declines the rewrite.
     fn seed_fraction(&self, _key: &str, _op: crate::ir::CompareOp, _value: &Value) -> Option<f64> {
+        None
+    }
+
+    /// What fraction of the graph an INTERVAL on `key` selects, or `None` when the oracle cannot
+    /// say (item 1026).
+    ///
+    /// Separate from [`IndexOracle::seed_fraction`] because an interval's selectivity is the
+    /// INTERSECTION of its bounds and that is not derivable from the two per-bound answers: on a
+    /// wide-ranging key `>= lo` and `< hi` are each ~50% and both decline, while their conjunction
+    /// can be eleven rows of 100,000 (items 1024/1025). Defaults to `None`, so a store-less oracle
+    /// plans exactly as before.
+    fn interval_fraction(
+        &self,
+        _key: &str,
+        _lo: (crate::ir::CompareOp, &Value),
+        _hi: (crate::ir::CompareOp, &Value),
+    ) -> Option<f64> {
         None
     }
 
@@ -226,6 +272,23 @@ impl IndexOracle for crate::store::Store {
 
     fn column_is_bool(&self, key: &str) -> bool {
         matches!(self.column(key), Some(crate::store::Column::Bool { .. }))
+    }
+
+    fn interval_fraction(
+        &self,
+        key: &str,
+        lo: (crate::ir::CompareOp, &Value),
+        hi: (crate::ir::CompareOp, &Value),
+    ) -> Option<f64> {
+        let live = self.live_node_count();
+        if live == 0 {
+            return None;
+        }
+        // Capped at the same threshold the caller compares against, so an unselective interval
+        // costs a bounded walk rather than a full one.
+        let cap = (live as f64 * SEEK_MAX_FRACTION).ceil() as usize;
+
+        Some(self.range_count_in_capped(key, lo, hi, cap)? as f64 / live as f64)
     }
 }
 
@@ -1603,7 +1666,8 @@ fn map_children(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
 /// One seedable conjunct: an equality (→ `IndexSeek`) or a range (→ `RangeSeek`).
 enum Seed {
     Index(String, Value),
-    Range(String, CompareOp, Value),
+    /// `key op value`, with an optional SECOND bound closing it into an interval (item 1026).
+    Range(String, CompareOp, Value, Option<(CompareOp, Value)>),
     /// `element_id(n) = '<id>'` as a CONJUNCT — the most selective seed there is (at most
     /// ONE row), so it outranks every other rung. Lowers to a `Plan::NodeSeed`.
     Id(String),
@@ -1622,6 +1686,62 @@ enum Seed {
 /// unindexed conjunct is chosen changes no cost, just avoids the far slower
 /// `Filter(And(…))(Scan)`. `None` if the predicate is not an `AND`, or no conjunct
 /// is seekable.
+/// A qualifying interval: the two conjunct positions, the key, then the LOWER and UPPER bounds in
+/// that order regardless of how they were written.
+type IntervalCandidate = (usize, usize, String, (CompareOp, Value), (CompareOp, Value));
+
+/// Two conjuncts bounding ONE range-indexed key from opposite sides, whose INTERVAL is selective
+/// enough to seek (item 1026). Returns the two conjunct positions, the key, and the ordered bounds.
+///
+/// Both bounds must name the same key and point opposite ways; a pair pointing the same way (`> a
+/// AND > b`) is not an interval and is left to the per-bound rung, which will pick the tighter of
+/// them by selectivity. Only the FIRST qualifying pair is taken: a predicate with two intervals on
+/// two keys is rare enough that ranking them is not worth the plan churn, and the per-bound rung
+/// behind this one has always taken a single pick too.
+fn interval_candidate(conjuncts: &[&Expr], idx: &dyn IndexOracle) -> Option<IntervalCandidate> {
+    let lower = |op: CompareOp| matches!(op, CompareOp::Gt | CompareOp::Ge);
+    let upper = |op: CompareOp| matches!(op, CompareOp::Lt | CompareOp::Le);
+
+    for (i, a) in conjuncts.iter().enumerate() {
+        let Some((ka, oa, va)) = range_seek_target(a) else {
+            continue;
+        };
+        if !idx.has_range_index(&ka) {
+            continue;
+        }
+
+        for (j, b) in conjuncts.iter().enumerate().skip(i + 1) {
+            let Some((kb, ob, vb)) = range_seek_target(b) else {
+                continue;
+            };
+            if kb != ka {
+                continue;
+            }
+
+            // Order them so the LOWER bound leads, whichever way round they were written —
+            // `k < hi AND k >= lo` is the same interval as `k >= lo AND k < hi`, and giving the
+            // two spellings different plans is the defect this whole family is about.
+            let (lo_i, hi_i, lo, hi) = if lower(oa) && upper(ob) {
+                (i, j, (oa, va.clone()), (ob, vb))
+            } else if upper(oa) && lower(ob) {
+                (j, i, (ob, vb), (oa, va.clone()))
+            } else {
+                continue;
+            };
+
+            let frac = idx.interval_fraction(&ka, (lo.0, &lo.1), (hi.0, &hi.1))?;
+
+            // The INTERVAL ceiling, not `seek_cap`'s: see `INTERVAL_SEEK_MAX_FRACTION`. A cheap-scan
+            // or bool column keeps the tighter of the two, since those scans are cheaper still.
+            if frac <= INTERVAL_SEEK_MAX_FRACTION.min(seek_cap(idx, &ka)) {
+                return Some((lo_i, hi_i, ka, lo, hi));
+            }
+        }
+    }
+
+    None
+}
+
 fn seed_from_conjuncts(pred: &Expr, idx: &dyn IndexOracle) -> Option<(Seed, Option<Expr>)> {
     fn flatten<'a>(e: &'a Expr, out: &mut Vec<&'a Expr>) {
         match e {
@@ -1636,6 +1756,31 @@ fn seed_from_conjuncts(pred: &Expr, idx: &dyn IndexOracle) -> Option<(Seed, Opti
     flatten(pred, &mut conjuncts);
     if conjuncts.len() < 2 {
         return None; // not a conjunction — the single-comparison arms handle it
+    }
+    // AN INTERVAL FIRST (item 1026): two conjuncts bounding ONE key from opposite sides.
+    //
+    // This rung exists because every other one prices a conjunct ALONE, and an interval's
+    // selectivity is the INTERSECTION of its bounds. On a wide-ranging key `>= lo` and `< hi` are
+    // each about half the index, so each is declined — correctly, since seeking either alone walks
+    // half the index and loses to the columnar scan — while their conjunction can be eleven rows
+    // of 100,000. Items 1024/1025 measured that: the two-sided form read 0.458 ms as a scan, and
+    // the SAME shape seeds as soon as one bound happens to be selective by itself, which is what
+    // identified per-bound pricing (and not the `And`) as the cause.
+    //
+    // It sits ABOVE the equality rung rather than beside the range one on purpose: when an
+    // interval qualifies it is the most selective thing available by construction — it is
+    // strictly narrower than either of its own bounds, and both of those already lost to whatever
+    // the equality rung would have picked. An interval that does NOT qualify falls through and
+    // every existing plan is unchanged, which is the property that keeps this additive.
+    if let Some((lo_i, hi_i, key, lo, hi)) = interval_candidate(&conjuncts, idx) {
+        let residual = conjuncts
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != lo_i && *i != hi_i)
+            .map(|(_, c)| (*c).clone())
+            .reduce(|a, b| Expr::And(Box::new(a), Box::new(b)));
+
+        return Some((Seed::Range(key, lo.0, lo.1, Some(hi)), residual));
     }
     // Selection priority (best first): an INDEXED equality worth seeking, then an
     // INDEXED range, then any UNINDEXED equality — whose seek degrades to a typed
@@ -1732,7 +1877,7 @@ fn seed_from_conjuncts(pred: &Expr, idx: &dyn IndexOracle) -> Option<(Seed, Opti
         Seed::Multi(k, vs)
     } else {
         let (k, op, v) = range_seek_target(conjuncts[pick])?;
-        Seed::Range(k, op, v)
+        Seed::Range(k, op, v, None)
     };
     // Residual: the other conjuncts, re-`AND`ed (or `None` if the seed was the only
     // one besides itself — i.e. exactly two conjuncts leaves a lone residual).
@@ -2604,6 +2749,7 @@ fn apply_local(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
                             key,
                             op,
                             value,
+                            upper: None,
                         },
                         true,
                     )
@@ -2625,11 +2771,12 @@ fn apply_local(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
                             key,
                             value,
                         },
-                        Seed::Range(key, op, value) => Plan::RangeSeek {
+                        Seed::Range(key, op, value, upper) => Plan::RangeSeek {
                             label: l,
                             key,
                             op,
                             value,
+                            upper,
                         },
                         // An `IN`/`=`-OR-chain conjunct: the same union of seeks a whole-predicate
                         // one builds. `expect` is sound because `seed_from_conjuncts` only emits

@@ -701,6 +701,15 @@ pub enum Plan {
         key: String,
         op: CompareOp,
         value: Value,
+        /// A SECOND bound on the same key, closing the range into an interval (item 1026).
+        ///
+        /// `None` is the one-sided seek every earlier item built. The pair exists because a
+        /// bounded interval's selectivity is the INTERSECTION of its bounds and the planner prices
+        /// each conjunct alone: `k >= lo` and `k < hi` are each ~50% on a wide-ranging key, so
+        /// both decline — correctly in isolation — while their conjunction can be eleven rows of
+        /// 100,000 (items 1024/1025). Seeding on either bound alone is not the fix: that walks
+        /// half the index, which is what `seek_beats_scan` is right to refuse.
+        upper: Option<(CompareOp, Value)>,
     },
     /// Hop from the element in `from` slot along `dir`/`edge_label`, appending the
     /// landed node as a new slot. Rows without a matching neighbour drop; rows

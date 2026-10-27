@@ -4669,6 +4669,163 @@ fn group_by_a_temporal_key_over_a_frontier() {
     );
 }
 
+/// The INTERVAL seek — two bounds on one key seeded as one `RangeSeek` (item 1026).
+///
+/// THE ORACLE IS THE GENERAL PATH, forced with `WHERE true` (item 570), so every case asserts the
+/// claim that matters: closing the range into an interval changes no answer. A seek that walked
+/// the wrong half, or dropped an inclusive endpoint, fails here rather than in a fuzzer later.
+#[test]
+fn an_interval_seek_answers_what_the_filter_answers() {
+    let mut b = Builder::default();
+
+    // 2,000 rows so the planner is past `SEEK_FLOOR_NODES` and the gate is a real decision, with
+    // 1,000 distinct values so a narrow interval is inside `INTERVAL_SEEK_MAX_FRACTION`.
+    for i in 0..2_000u32 {
+        b.node(&["P"], &[("v", n(f64::from(i % 1_000)))]);
+    }
+    // One row with the property ABSENT: null is outside every interval, on both ends.
+    b.node(&["P"], &[("other", n(1.0))]);
+
+    let mut store = b.build();
+    store.create_range_index("v");
+
+    let count = |q: &str| -> String {
+        let batch = run(&crate::gql::parse(q).unwrap(), &store);
+        format!("{:?}", batch.rows.iter().next().map(|r| r[0].clone()))
+    };
+    let seeks = |q: &str| -> bool {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &store);
+
+        format!("{plan:?}").contains("upper: Some")
+    };
+
+    // Every combination of bound strictness, and BOTH written orders — the orders must agree,
+    // which is the equivalent-spelling invariant this whole family is about.
+    for (lo_op, hi_op) in [(">=", "<"), (">", "<"), (">=", "<="), (">", "<=")] {
+        let fwd =
+            format!("MATCH (p:P) WHERE p.v {lo_op} 10 AND p.v {hi_op} 20 RETURN count(*) AS c");
+        let rev =
+            format!("MATCH (p:P) WHERE p.v {hi_op} 20 AND p.v {lo_op} 10 RETURN count(*) AS c");
+        let general = fwd.replacen("WHERE ", "WHERE true AND ", 1);
+
+        assert!(seeks(&fwd), "{fwd} should take the interval seek");
+        assert!(seeks(&rev), "{rev} should take the interval seek");
+        assert_eq!(
+            count(&fwd),
+            count(&general),
+            "fast and general disagree: {fwd}"
+        );
+        assert_eq!(
+            count(&rev),
+            count(&fwd),
+            "written order changes the answer: {rev}"
+        );
+    }
+
+    // AN EMPTY OR INVERTED INTERVAL. `BTreeMap::range` PANICS when the start bound exceeds the
+    // end, and `rewrite_fuzz` found exactly that on its first run after the seed landed — so
+    // these are not hypothetical shapes.
+    for q in [
+        // Inverted: no row can satisfy both.
+        "MATCH (p:P) WHERE p.v >= 20 AND p.v < 10 RETURN count(*) AS c",
+        // Equal endpoints, one exclusive: empty.
+        "MATCH (p:P) WHERE p.v >= 10 AND p.v < 10 RETURN count(*) AS c",
+        "MATCH (p:P) WHERE p.v > 10 AND p.v <= 10 RETURN count(*) AS c",
+        // Equal endpoints, BOTH inclusive: exactly the rows equal to 10.
+        "MATCH (p:P) WHERE p.v >= 10 AND p.v <= 10 RETURN count(*) AS c",
+    ] {
+        let general = q.replacen("WHERE ", "WHERE true AND ", 1);
+
+        assert_eq!(count(q), count(&general), "fast and general disagree: {q}");
+    }
+    assert_eq!(
+        count("MATCH (p:P) WHERE p.v >= 10 AND p.v <= 10 RETURN count(*) AS c"),
+        "Some(Num(2.0))",
+        "both-inclusive equal endpoints must keep the matching rows, not drop them"
+    );
+
+    // AND THE SAME SHAPES ROW-RETURNING, which is NOT the same code path. A `count(*)` over a
+    // seek is answered without materializing the ids, so none of the assertions above reach
+    // `range_lookup`'s bound arithmetic at all — a mutant forcing its equal-endpoint case to
+    // report "empty" passed every one of them. Same lesson as items 1007/1008: a count never
+    // reaches the gate a walk does.
+    let rows = |q: &str| -> usize {
+        run(&crate::gql::parse(q).unwrap(), &store)
+            .rows
+            .iter()
+            .count()
+    };
+
+    for q in [
+        "MATCH (p:P) WHERE p.v >= 10 AND p.v <= 10 RETURN p.v AS v",
+        "MATCH (p:P) WHERE p.v >= 10 AND p.v < 20 RETURN p.v AS v",
+        "MATCH (p:P) WHERE p.v < 20 AND p.v >= 10 RETURN p.v AS v",
+        "MATCH (p:P) WHERE p.v >= 20 AND p.v < 10 RETURN p.v AS v",
+        "MATCH (p:P) WHERE p.v > 10 AND p.v <= 10 RETURN p.v AS v",
+        "MATCH (p:P) WHERE p.v >= 'ten' AND p.v < 'twenty' RETURN p.v AS v",
+    ] {
+        let general = q.replacen("WHERE ", "WHERE true AND ", 1);
+
+        assert_eq!(rows(q), rows(&general), "fast and general disagree: {q}");
+    }
+    assert_eq!(
+        rows("MATCH (p:P) WHERE p.v >= 10 AND p.v <= 10 RETURN p.v AS v"),
+        2,
+        "the walk must keep both-inclusive equal endpoints too"
+    );
+    assert!(
+        seeks("MATCH (p:P) WHERE p.v >= 10 AND p.v <= 10 RETURN p.v AS v"),
+        "the row-returning form must take the interval seek, or the walk's bound arithmetic is \
+         untested"
+    );
+
+    // A CROSS-TYPE bound is incomparable, so the predicate is UNKNOWN and no row survives — the
+    // index orders by the TOTAL order, so this is the case where a seek without the re-check
+    // would return rows the filter drops.
+    for q in [
+        "MATCH (p:P) WHERE p.v >= 'ten' AND p.v < 'twenty' RETURN count(*) AS c",
+        "MATCH (p:P) WHERE p.v >= 10 AND p.v < 'twenty' RETURN count(*) AS c",
+    ] {
+        let general = q.replacen("WHERE ", "WHERE true AND ", 1);
+
+        assert_eq!(count(q), count(&general), "fast and general disagree: {q}");
+    }
+
+    // AN UNSELECTIVE interval must NOT seek — 300 of 1,000 values is 30%, past the ceiling, and
+    // item 1026 measured the seek losing 3.4x at 10%.
+    assert!(
+        !seeks("MATCH (p:P) WHERE p.v >= 100 AND p.v < 400 RETURN count(*) AS c"),
+        "a 30% interval must stay a filter"
+    );
+    // AND ONE INSIDE THE BAND THE TWO CEILINGS DISAGREE ON. 10% is under the one-sided
+    // `SEEK_MAX_FRACTION` (15.4%) and over `INTERVAL_SEEK_MAX_FRACTION` (5%), so only the
+    // interval ceiling declines it — the 30% case above passes either way, which is why a mutant
+    // widening the cap to the one-sided ceiling SURVIVED until this line existed. Item 1026
+    // measured that band at 3.4x WORSE than the filter.
+    assert!(
+        !seeks("MATCH (p:P) WHERE p.v >= 100 AND p.v < 200 RETURN count(*) AS c"),
+        "a 10% interval is inside the one-sided ceiling but past the interval one"
+    );
+    // A SAME-DIRECTION pair is not an interval; it falls to the per-bound rung.
+    assert!(
+        !seeks("MATCH (p:P) WHERE p.v >= 10 AND p.v >= 20 RETURN count(*) AS c"),
+        "two lower bounds are not an interval"
+    );
+    // A third conjunct must survive as the residual.
+    let q = "MATCH (p:P) WHERE p.v >= 10 AND p.v < 20 AND p.v <> 15 RETURN count(*) AS c";
+    let general = q.replacen("WHERE ", "WHERE true AND ", 1);
+
+    assert!(
+        seeks(q),
+        "the interval should still seed with a third conjunct"
+    );
+    assert_eq!(
+        count(q),
+        count(&general),
+        "the residual conjunct was dropped: {q}"
+    );
+}
+
 /// `ORDER BY <temporal> LIMIT k` — item 1020's streaming top-K arm.
 ///
 /// THE ORACLE IS THE GENERAL PATH. Every shape is asserted against its `WHERE true` twin (item
@@ -4833,7 +4990,7 @@ fn ordered_limit_over_a_temporal_column() {
                 let q = format!(
                     "MATCH (p:P) ORDER BY p.{key}{dir}{offset} LIMIT {limit} RETURN p.{key} AS t, p.seq AS s"
                 );
-                let general = q.replacen("MATCH (p:P)", "MATCH (p:P) WHERE true", 1);
+                let general = q.replacen("WHERE ", "WHERE true AND ", 1);
 
                 // ORDER is compared, not a sorted multiset — the whole point of the arm is that it
                 // reproduces the general path's sequence.
@@ -6971,6 +7128,7 @@ fn range_seek_matches_scan_filter_all_ops() {
         }
         for (op, v, want) in &ops {
             let seek = Plan::RangeSeek {
+                upper: None,
                 label: Some("P".into()),
                 key: "age".into(),
                 op: *op,
@@ -7003,6 +7161,7 @@ fn range_seek_null_and_cross_type_match_filter() {
     st.create_range_index("v");
     let check = |st: &Store, op, val: Value| {
         let seek = Plan::RangeSeek {
+            upper: None,
             label: Some("P".into()),
             key: "v".into(),
             op,
@@ -7024,7 +7183,11 @@ fn range_index_maintained_and_rolls_back() {
     let mut st = indexed_store();
     st.create_range_index("age");
     // Candidates > 25 across any label (index_lookup is any-label).
-    let cand = |st: &Store, v: f64| st.range_lookup("age", CompareOp::Gt, &n(v)).unwrap().len();
+    let cand = |st: &Store, v: f64| {
+        st.range_lookup("age", CompareOp::Gt, &n(v), None)
+            .unwrap()
+            .len()
+    };
     assert_eq!(cand(&st, 25.0), 3); // a,c (P,30) + d (Q,30)
     st.set_prop(0, "age", n(10.0)); // a drops below 25
     assert_eq!(cand(&st, 25.0), 2);
@@ -20353,6 +20516,7 @@ fn seed_cost_by_entry_point() {
         (
             "RangeSeek (num < 5, RANGE index)",
             Box::new(|_| Plan::RangeSeek {
+                upper: None,
                 label: None,
                 key: "num".to_string(),
                 op: CompareOp::Lt,
@@ -20362,6 +20526,7 @@ fn seed_cost_by_entry_point() {
         (
             "RangeSeek (bare < 5, NO index -> scan)",
             Box::new(|_| Plan::RangeSeek {
+                upper: None,
                 label: None,
                 key: "bare".to_string(),
                 op: CompareOp::Lt,

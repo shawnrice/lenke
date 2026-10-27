@@ -1833,6 +1833,7 @@ fn main() {
             Box::new(cmp(CompareOp::Le, "age", hi)),
         ));
         let seeded_shape = Plan::RangeSeek {
+            upper: None,
             label: Some("Person".to_string()),
             key: "age".to_string(),
             op: CompareOp::Ge,

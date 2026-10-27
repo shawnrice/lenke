@@ -640,7 +640,7 @@ pub(super) fn seed_pure(pred: &Expr, slot: usize, store: &Store) -> Option<Vec<u
     }
     if let Some((k, op, v)) = endpoint_range(pred, slot) {
         if store.has_range_index(&k) {
-            return store.range_lookup(&k, op, &v);
+            return store.range_lookup(&k, op, &v, None);
         }
     }
     if let Some((k, vals)) = endpoint_in(pred, slot) {

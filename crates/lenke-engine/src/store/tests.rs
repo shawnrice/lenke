@@ -2771,7 +2771,7 @@ fn rollback_reverts_a_tx_created_range_index_and_rebuilds_a_dropped_one() {
     // The rebuilt index must ANSWER, not just exist: a range seek over it has to find the rows
     // the restored column holds. Eight nodes with score 0..8, so `> 5` keeps 6 and 7.
     let hits = st
-        .range_lookup("score", crate::ir::CompareOp::Gt, &Value::Num(5.0))
+        .range_lookup("score", crate::ir::CompareOp::Gt, &Value::Num(5.0), None)
         .expect("the surviving index answers");
     assert_eq!(hits.len(), 2, "score > 5 keeps two of eight");
 }
