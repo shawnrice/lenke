@@ -27455,3 +27455,40 @@ contributes nothing` — the far-driven mistake reports 2 where the answer is 1,
   verified against native first. **Second consecutive item where the mutation pass found a gap in the
   TESTS rather than in the implementation** (item 934 found a vacuous assertion in item 933's own new
   tests), which is the argument for running it on every change and not only on risky ones.
+- **⚠️ OPEN, PRICED AND DIAGNOSED, NOT BUILT — GQL's filtered hop tally is EDGE-driven where
+  Gremlin's is FAR-VERTEX-driven, ~2x (item 936).** After item 935 corrected the GQL column,
+  `post:1` and `post:2` are the widest one-sided cells in `probe:arity`: GQL **60.26** / **62.42** ms
+  against Gremlin **29.09** / **30.23** (**2.07x** / **2.06x**, 200k vertices / 600k edges). They did
+  NOT move when the negative-literal fold landed (`post:1` 59.58 → 60.26), which already ruled out
+  the per-row predicate. **The cause is the drive direction, written into each function:**
+  Gremlin's `filteredHopCount` tests each far VERTEX once and adds its whole degree (skipping
+  `deg === 0` so the evaluated set stays exact) — **200,000 evaluations**; GQL's `tallyHopCount` does
+  `for (const edge of tallyEdges(...))` and tests `inFar` per edge — **600,000 evaluations** plus a
+  far-vertex pointer chase in edge order. At degree 3 that is 3x the far-end work. Item 930's comment
+  that GQL "answers its spelling of this question the same way (`tallyHopCount`)" is true of the
+  ROUTE and not of the direction.
+- **GQL ALREADY HAS the far-driven walk and it declines every filter — the raise-parity question was
+  AVOIDED, not solved (item 936).** `farDrivenHopWalk` (item 167, **2.3x**) is the same idea, and its
+  header names LOCALITY as the larger cause: _"the start-driven walk reads a far vertex per EDGE, in
+  edge order, which is random with respect to how vertices sit in memory … ~180ns, which is most of
+  the 266ns a row took."_ Both causes apply to the tally. But its selection reads
+  `if (farPred === undefined && gate === undefined && !needsStart)` — **no predicate at all** — so
+  nothing on this path has ever far-driven a FILTER. **Check that guard first: the work is not a port,
+  it is the fault argument below.**
+- **THE OBSTACLE, and it is fault ORDER rather than the fault SET (item 936).** Far-driving changes
+  neither the answer (a degree sum) nor which far vertices are evaluated (the `deg === 0` skip keeps
+  the set identical to the edge walk's far endpoints), so no fault appears or disappears. What changes
+  is WHICH fault escapes first, since the walks reach far vertices in different orders. **This bites
+  GQL and not Gremlin, and item 930 is why: Gremlin's `matches` CANNOT throw** (every ordering
+  predicate filters an incomparable value out via a `NaN` from `predCmp`), so its rung gets raise
+  parity free. GQL's predicates CAN raise (`compareValues` throws on a cross-type compare), this path
+  carries bespoke raise-parity handling (items 139/142/144/145), and `fault-precedence.test.ts` pins
+  orderings. Two candidate designs: **(1)** gate the arm on a raise-free far predicate — sound with no
+  fault reasoning, but `b.k > -1` can raise when `k` is a string, so it would decline the measured
+  shape and probably buy little; **(2)** admit a raising predicate and establish that fault order is
+  unobservable for a COUNT, which emits one row so the only observable is the escaping message —
+  needs a real answer on what `fault-precedence.test.ts` pins and what the differential fuzzers
+  compare for a faulting query, where a TS-raises/native-fails-the-rep divergence is already open.
+  **Price ~2x, and no more:** CLOSED.md's item 167 line records that its 2.3x _is_ the `projectRow`
+  hoist to once per far vertex, so a rel-reading or start-reading shape must take the start-driven
+  walk regardless.
