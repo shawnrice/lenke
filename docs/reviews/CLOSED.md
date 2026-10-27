@@ -29031,3 +29031,27 @@ disagree on the ANSWER` — item 984 confirmed through the repo's own gate.
   not thereby the mechanism** — the test is whether the data varies when the proposed cause is
   held fixed. Items 936-939 failed four times this way on the hop predicate; this is the same
   shape compressed into one item, and only repetition caught it both times.
+- **❌ REFUTED — item 999's `encode pg-json` candidate: native is **1.27x FASTER**, not 0.89x
+  slower (item 1000).** The isolated harness 999 said it needed (`encode-isolated-probe.ts`: one
+  arm per PROCESS, 14 reps, first three dropped, MEDIAN, series printed), three alternated rounds:
+  ts 41.96/33.86/40.19/36.14/35.33/31.09 (~35.7) against ffi
+  28.25/27.81/34.18/28.13/28.09/28.11 (~28.1). Byte counts identical on every arm
+  (20,555,572). The control `csv` reads 1.10x. **999 was right to file a candidate and right that
+  it needed this instrument; it was wrong about the direction.**
+- **⚠️ THE MECHANISM — `bun run bench` reports MIN-of-N, and the TS encode arm is BIMODAL
+  (item 1000).** ffi is clustered at 27.8-28.3 in five of six samples; the ts series within ONE
+  process runs `… 40.3 41.3 47.7 29.4 25.6 40.4 …` — a main mode near 39-41 with a rare fast mode
+  near 25-30. So **ts min under-reports ts median by ~25% while ffi's min and median agree within
+  2%**, and min on a row where one arm is bimodal flatters that arm. That is how a 1.27x native
+  win printed as a 0.89x native loss. Same shape as `ts-closure-size-is-load-bearing` and the TS
+  spelling probe's "print the per-rep series", now on the codec rows.
+- **READING RULE (item 1000).** A `bun run bench` ts/ffi ratio is a **LOWER BOUND on native's
+  advantage wherever the ts arm is bimodal**; the per-rep series is the only way to tell, and only
+  the isolated probe prints it. **NOT a licence to change `bench.ts`** — min-of-N is a deliberate
+  property of the shared harness and every recorded baseline was taken with it (item 527's trap).
+  That is a decision, not a rider.
+- **⚠️ A known mechanism FITTING the circumstances is not evidence (item 1000).** `dlopen` failed
+  on the first ffi run; the documented capi trap (a plain `cargo build --release` clobbering the
+  `.so`) fit perfectly, and I had run exactly that build several times this session. The `.so` had
+  16 `lnk_` symbols and was current — the cause was a missing `libPath` argument in my own probe.
+  Third instance in two items of the familiar explanation being the wrong one.
