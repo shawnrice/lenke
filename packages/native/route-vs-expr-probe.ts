@@ -8,7 +8,7 @@
  * the same route. A detector that recognises `count(*)` under a bare-prop equality would make the
  * whole 3.4x a route difference, with the expression tree merely what disqualifies the nested one.
  *
- * THE FOUR ARMS, and what each one can and cannot tell you. All four return the SAME count over the
+ * THE SIX ARMS, and what each one can and cannot tell you. All six return the SAME count over the
  * SAME rows, so downstream work is identical and the ratio is the predicate alone.
  *
  *   A  `p.tier = 'NYC'`        bare prop, prop on the LEFT      the baseline
@@ -46,7 +46,14 @@ for (let i = 0; i < N; i += 1) {
   g.addVertex({
     id: `v${i}`,
     labels: ['P'],
-    properties: { tier: city, lst: [city, city], meta: { other: city, pad: city } },
+    // `q` is 0..3 alongside `tier`, so `q = 0` and `q <= 0` select exactly the rows `tier = 'NYC'`
+    // does — which makes the eqProps and cmpProps arms row-matched with the baseline.
+    properties: {
+      tier: city,
+      q: i % CITIES.length,
+      lst: [city, city],
+      meta: { other: city, pad: city },
+    },
   });
 }
 
@@ -76,6 +83,13 @@ const CASES: ReadonlyArray<readonly [string, string, number, string]> = [
     MATCHING,
     'one MAP read',
   ],
+  // E and F are the pair that isolates the COMPARATOR from the read (item 952). Same key, same
+  // rows, same lifted-and-element-direct route — the only difference is which list carries it:
+  // `eqProps` settles with `structuralEq`, `cmpProps` with `compareTruth(op, COMPARE[op], ..)`,
+  // and `pathProps` (arm D) uses `compareTruth` too. If F is cheap and E is dear, D's residual is
+  // the comparator and not the path walk.
+  ['E cmpProps num', 'MATCH (p:P) WHERE p.q <= 0 RETURN count(*) AS c', MATCHING, 'compareTruth'],
+  ['F eqProps num', 'MATCH (p:P) WHERE p.q = 0 RETURN count(*) AS c', MATCHING, 'structuralEq'],
 ];
 
 const best: Record<string, number[]> = {};
@@ -95,7 +109,7 @@ for (let round = 0; round < ROUNDS; round += 1) {
       const c = Number((rows[0] as Record<string, unknown>)?.c ?? -1);
 
       // A ratio between arms answering different questions is meaningless, so the count is
-      // asserted per rep rather than once: all four arms must select the identical rows.
+      // asserted per rep rather than once: every arm must select the identical rows.
       if (c !== expect) {
         throw new Error(`FIXTURE/QUERY WRONG for ${name}: count=${c}, expected ${expect}`);
       }
@@ -108,7 +122,7 @@ for (let round = 0; round < ROUNDS; round += 1) {
 console.log(
   `# item 951 — route or expression? (N=${N}, min of ${REPS}, ${ROUNDS} alternated rounds)`,
 );
-console.log('# All four arms return the same count over the same rows.\n');
+console.log('# All six arms return the same count over the same rows.\n');
 
 const baseline = Math.min(...(best['A bare prop LEFT'] ?? [0]));
 

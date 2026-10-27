@@ -27978,3 +27978,29 @@ Prop}` 160.0 / 4,000; `NOT` → `Filter{Scan, Not(Prop)}` 214.7 / 196,000; `= fa
   `<ownVar>.<key>.<field>` and `<ownVar>.<key>[<int>]` against a closed value, closed by the same
   argument the single-key case already makes. **Read `dotted-predicate-routes.test.ts` FIRST** — it
   may already record a deliberate decline, which would make this settled rather than open.
+- **RETRACTED — item 951's target "widen `directEqProps` to lift `<ownVar>.<key>.<field>`" was
+  ALREADY SHIPPED at item 903 (item 952).** A temporary counter in the `pathProps` loop: the field
+  arm logs **5,000 entries for 5,000 vertices**, the subscript arm 0, the bare-prop arms 0.
+  `fieldChain` walks `kind: 'field'`, so the dotted lift has been live since 903 (1.31x). **I
+  proposed rebuilding a lever `CLOSED.md` records three lines from the entries item 951 cites** —
+  the exact failure the index exists to prevent, and the prescribed search ("has this lever been
+  tried?" → `CLOSED.md`) would have caught it.
+- **STANDS — the SUBSCRIPT arm genuinely does not lift (item 952).** `p.lst[0]` is `kind: 'index'`,
+  accepted by neither `fieldChain` nor `asPropCompare`. That half of item 951 survives.
+- **REFUTED — "`pathProps` is dear because it settles with `compareTruth` where `eqProps` uses
+  `structuralEq`" (item 952).** Arms E/F isolate the comparator on the same key over the same rows:
+  `p.q <= 0` (cmpProps) 26.2–29.2 ns/row against `p.q = 0` (eqProps) 22.8–24.8. **~4 ns.** A
+  one-line comparator swap would have bought ~5% of a gap priced at 300%.
+- **CORRECTED — item 951's magnitudes (item 952).** Adding `q: i % 4`, one numeric property read by
+  no other arm, moved the field arm from **117.9 to ~81 ns/row**; three independent processes then
+  agree (A 24.1/26.9/26.6, C 84.4/87.7/83.2, D 81.1/80.3/81.0). So **4.96x becomes ~3.1x** and
+  3.42x becomes ~3.3x. The direction is the warning: an extra property made the nested arm
+  **faster** by 1.45x, so **its absolute cost is process-composition-dependent and no fix may be
+  priced off one fixture** (item 762's redistribution trap, from the other side).
+- **⚠️ OPEN, and both standing explanations are now dead (item 952).** The unlifted subscript arm
+  (84) costs what the LIFTED field arm (81) costs, and E≈F kills the comparator — so it is **not
+  the route and not the comparator**. The two reads differ by ~14 ns (item 899: array 3.4,
+  `LenkeRecord` subclass 17.5), far too little to be it. **The question for the next pass, to be
+  answered with a per-stage instrument and not a third reading: why does indexing one level into a
+  property value cost ~57 ns/row when reading the property itself is free?** (Item 899 established
+  the second half: `recordProp` costs what `scalarProp` costs.)
