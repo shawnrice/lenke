@@ -29143,3 +29143,21 @@ multiTypeEdgeCount === 0`) — one named type cannot double-count. Native's `Adj
   exists. M1/M2/M3 all CAUGHT; **M3 (snapshot records nothing) would drop every PRE-EXISTING
   range index on rollback** — a worse failure than the original bug, which is why the "keep" case
   is asserted beside the two that change.
+- **🛑 BLOCKED ON CORRECTNESS, not on a decision — item 908's `checkLinearScope` fusion LOSES
+  faults (item 1006).** The fault-ordering question 908 was waiting on was settled by the user,
+  so this went to build it. `compileLinear` does not walk the list `checkLinearScope` validates:
+  its first act is a chain of eleven REWRITES, and **a clause a rewrite DROPS takes its scope
+  fault with it.** Measured by disabling the pre-pass and checking the rewritten list:
+  `unread LET` and `unread LET, grouped` go from faulting to **NO FAULT**, so
+  `MATCH (n:P) LET x = nosuchvar.k RETURN n.k` would silently return rows. That is fault LOSS,
+  not fault ORDER, and the approval covers the second.
+- **What is left of the 15-19% (item 1006).** Moving the pre-pass inside `compileLinear` before
+  the rewrites is SOUND and buys NOTHING — it is still two walks, and the second walk is the
+  cost. Making each clause-dropping rewrite check what it discards would work but spreads the
+  obligation across eleven rewrites, where a twelfth added later reopens the hole silently. **The
+  target is not available at acceptable risk**; 908's disposition should read blocked-on-
+  correctness.
+- **⚠️ A SETTLED DECISION IS NOT A LICENCE TO SKIP THE DIAGNOSIS (item 1006).** "Whatever is
+  fastest as long as it's reproducible" is satisfied by losing an error reproducibly. The
+  obstacle that actually stopped this was one nobody had written down, found by experiment in
+  minutes. Ask what the code does before asking whether you are allowed to change it.
