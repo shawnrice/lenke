@@ -396,11 +396,11 @@ type InlinePred = { pred: CPredicate; bindVar?: string };
  * `freePredicateVars(c.value).size > 0` loop; every other caller passes no properties at all.
  */
 /**
- * The clause `WHERE` as a LIFTED element-local predicate, or `undefined` when it is not one
- * (item 995).
+ * The clause `WHERE` as a LIFTED element-local predicate for ONE endpoint, or `undefined` when it
+ * is not one (items 995, 996).
  *
  * Element-local is the precondition `compilePredicate`'s `ownVar` parameter documents: the
- * predicate reads exactly one variable and it is the far node's. `freePredicateVars` is the proof,
+ * predicate reads exactly one variable and it is this endpoint's. `freePredicateVars` is the proof,
  * the same one item 230's two-hop middle case uses.
  *
  * A free function for the LINT gate rather than for speed — inlined, its three conditions took
@@ -408,13 +408,13 @@ type InlinePred = { pred: CPredicate; bindVar?: string };
  * It is the right thing to move for the same reason: this decides a route ONCE PER QUERY, where
  * the walk it selects runs once per candidate.
  */
-const liftedFarPred = (
+const liftedOwnPred = (
   where: Expr,
   free: ReadonlySet<string>,
-  farName: string | undefined,
+  ownName: string | undefined,
 ): CPredicate | undefined =>
-  farName !== undefined && free.size === 1 && free.has(farName)
-    ? compilePredicate(undefined, where, farName)
+  ownName !== undefined && free.size === 1 && free.has(ownName)
+    ? compilePredicate(undefined, where, ownName)
     : undefined;
 
 export const predFor = (
@@ -711,6 +711,16 @@ type HopPred = {
    * and its two-hop sibling already had.
    */
   farLifted?: CPredicate;
+  /**
+   * The START mirror of {@link HopPred.farLifted} (item 996).
+   *
+   * Item 939 established by READING that the two hop walks are structurally identical and
+   * measured them at the same cost per vertex (far 290/292/300 against start 305/291/304). Item
+   * 995 lifted the FAR side only and so BROKE that symmetry: `post:1` fell to 42.3 ms while
+   * `pre:1` stayed at 57.5. Two mirror spellings of one question costing 1.36x apart is the
+   * defect class CLAUDE.md names, so the twin is not an optional follow-up.
+   */
+  startLifted?: CPredicate;
 };
 
 /** Everything a filtered 1-hop walk needs, resolved for one call: the graph and
@@ -892,6 +902,8 @@ const startOnlyHopCount = (scan: HopScan, startVar: string | undefined): number 
   // caches it on first read (audit items 162, 321). This drive is the NEAR side, so `out` selects
   // the out-adjacency; the far-side twin below selects the opposite one.
   const boxOf = (v: Vertex): Map<string, Set<Edge>> | undefined => (out ? v.adjFrom : v.adjTo);
+  // Hoisted out of the loop: one polymorphic load per query rather than per candidate.
+  const lifted = pred.startLifted;
   let n = 0;
 
   // Driven from the VERTEX side, not the edge index. Both changes this buys are measured in
@@ -935,12 +947,26 @@ const startOnlyHopCount = (scan: HopScan, startVar: string | undefined): number 
         continue;
       }
 
-      if (startVar !== undefined) {
-        binding.set(startVar, v);
-      }
+      // THE LIFTED ROUTE, the mirror of the far walk's (item 996). `satisfies` reads the element
+      // directly for every conjunct it lifted, so the binding is needed only for a RESIDUAL
+      // `where` — and a predicate that lifts completely costs no Map write and no Map read per
+      // candidate.
+      if (lifted !== undefined) {
+        if (lifted.where !== undefined && startVar !== undefined) {
+          binding.set(startVar, v);
+        }
 
-      if (asTruth(pred.fn(env)) !== true) {
-        continue;
+        if (!satisfies(v, lifted, binding, params, graph)) {
+          continue;
+        }
+      } else {
+        if (startVar !== undefined) {
+          binding.set(startVar, v);
+        }
+
+        if (asTruth(pred.fn(env)) !== true) {
+          continue;
+        }
       }
     } catch (e) {
       // Evaluating before the degree lookup would otherwise surface a fault on a vertex the
@@ -3621,7 +3647,8 @@ const patternCountOf = <T>(
       startVar: reads(start.variable),
       farVar: reads(seg.node.variable),
       relVar: reads(seg.rel.variable),
-      farLifted: liftedFarPred(where, free, farName),
+      farLifted: liftedOwnPred(where, free, farName),
+      startLifted: liftedOwnPred(where, free, start.variable),
     };
   }
 

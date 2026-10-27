@@ -28932,3 +28932,31 @@ disagree on the ANSWER` — item 984 confirmed through the repo's own gate.
   `farOnlyHopCount` the predicate provably reads the far variable alone. Item 933's "two different
   rules overlapping" category, not a test gap: the guard is kept so `farLifted`'s contract holds
   for a future caller that does not validate, and is marked expected-to-survive.
+- **✅ SHIPPED — the START twin of item 995's lift, 57.5 → 42.6 ms (1.35x), and it is a SYMMETRY
+  REPAIR (item 996).** Item 939 established by reading that the two hop walks are structurally
+  identical and measured them at the same cost per vertex (far 290/292/300, start 305/291/304).
+  **Item 995 lifted the FAR side only and so broke that symmetry** — `post:1` 42.3 against `pre:1`
+  57.5, **1.36x apart between two mirror spellings of one question**, the defect class CLAUDE.md
+  names, newly CREATED by an optimization rather than found. `HopPred.startLifted` + `liftedOwnPred`
+  (995's helper generalized, since the sides differ only in which variable they prove
+  element-local). Three alternated rounds: `pre:1` 40.99/42.09/42.57/43.07/44.24 (median 42.57),
+  `post:1` CONTROL median 43.3, `node:1` CONTROL 4.63-6.61 — **the mirrors agree again at 1.02x**.
+  Dispatch verified first: 2,800,000 hits, `residual=false`.
+- **⚠️ RULE — an optimization that makes two EQUIVALENT ROUTES diverge is not finished (item
+  996).** 995 traded a slow route for an asymmetric one, and in an engine whose premise is that
+  spelling must not decide cost that is a defect introduced, not a follow-up deferred. Check the
+  MIRROR of any walk you lift, in the same session.
+- **M3 survives BY CONSTRUCTION on the start side too, checked and not carried over (item 996).**
+  M1 (lifted route always accepts) CAUGHT; M2 (binding dropped despite a residual) CAUGHT; M3 (the
+  element-local guard removed) SURVIVED — because `startWalkFits` requires
+  `pred.farVar === undefined && pred.relVar === undefined`, so inside `startOnlyHopCount` the
+  predicate provably reads the start variable alone. Mirrors 995's M2; the reason was re-verified
+  against `startWalkFits` rather than assumed to mirror.
+- **NOT WIDENED, and why — two `asTruth(pred.fn(env))` sites remain (item 996).** The per-edge
+  tally and one other serve shapes where the predicate may read MORE THAN ONE endpoint, so the
+  element-local proof is unavailable and a lift would be unsound. Recorded so the pattern is not
+  mistaken for an unfinished sweep.
+- **WHERE THE PAIR LEAVES IT (items 995, 996).** GQL one-hop filtered count ~60 → ~42 ms on BOTH
+  sides, against Gremlin's 29-37. Still **1.2-1.4x** and still unexplained in mechanism beyond the
+  ~90 ns the closure chain accounted for — item 994's profiler harness
+  (`hop-predicate-profile.ts`) is the instrument for a further attempt.
