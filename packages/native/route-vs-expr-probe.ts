@@ -8,7 +8,7 @@
  * the same route. A detector that recognises `count(*)` under a bare-prop equality would make the
  * whole 3.4x a route difference, with the expression tree merely what disqualifies the nested one.
  *
- * THE EIGHT ARMS, and what each one can and cannot tell you. All eight return the SAME count over the
+ * THE NINE ARMS, and what each one can and cannot tell you. All nine return the SAME count over the
  * SAME rows, so downstream work is identical and the ratio is the predicate alone.
  *
  *   A  `p.tier = 'NYC'`        bare prop, prop on the LEFT      the baseline
@@ -96,6 +96,17 @@ const CASES: ReadonlyArray<readonly [string, string, number, string]> = [
     MATCHING,
     'one MAP read',
   ],
+  // D' is D's ROW-MATCHED TWIN and the instrument that prices the lift (item 954). A STRING index
+  // on a record is field access, so `p.meta['other']` reads the same cell as `p.meta.other` and
+  // returns the same rows — but it parses as `kind: 'index'`, which `fieldChain` does not accept,
+  // so it CANNOT lift. D minus D' is therefore the whole value of lifting, with the read, the
+  // container, the locality and the answer all held fixed. Nothing else in this file isolates it.
+  [
+    "D' field UNLIFTED",
+    "MATCH (p:P) WHERE p.meta['other'] = 'NYC' RETURN count(*) AS c",
+    MATCHING,
+    'same cell, generic path',
+  ],
   // E and F are the pair that isolates the COMPARATOR from the read (item 952). Same key, same
   // rows, same lifted-and-element-direct route — the only difference is which list carries it:
   // `eqProps` settles with `structuralEq`, `cmpProps` with `compareTruth(op, COMPARE[op], ..)`,
@@ -149,7 +160,7 @@ for (let round = 0; round < ROUNDS; round += 1) {
 console.log(
   `# item 951 — route or expression? (N=${N}, min of ${REPS}, MEDIAN of ${ROUNDS} alternated rounds)`,
 );
-console.log('# All eight arms return the same count over the same rows.\n');
+console.log('# All nine arms return the same count over the same rows.\n');
 
 /**
  * MEDIAN of the rounds, not the min (item 953).

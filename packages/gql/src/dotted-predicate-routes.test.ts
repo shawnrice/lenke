@@ -43,7 +43,16 @@ for (let i = 0; i < 8; i += 1) {
   g.addVertex({
     id: `v${i}`,
     labels: ['P'],
-    properties: { n: i, tag: city, meta: { city, deep: { z: city } } },
+    // `tags` and `which` carry the SAME value again, so the two declined-lift cases in the
+    // bracket block below (a numeric subscript, a subscript computed from the row) are
+    // row-matched with every other case and a dropped predicate shows as a doubled count.
+    properties: {
+      n: i,
+      tag: city,
+      which: 'city',
+      tags: [city, city],
+      meta: { city, deep: { z: city } },
+    },
   });
 }
 
@@ -128,5 +137,80 @@ describe('a dotted predicate filters through every predicate route', () => {
   it('CONTROL: no predicate returns all eight', () => {
     expect(count('MATCH (p:P) RETURN count(*) AS c')).toBe(8);
     expect(count('MATCH (a:P)-[:R]->(b:P) RETURN count(*) AS c')).toBe(7);
+  });
+});
+
+/**
+ * THE BRACKET SPELLING OF THE SAME PATH (item 954).
+ *
+ * A constant string subscript is the same segment as a dot — a string index on a record IS field
+ * access — so `p.meta['city']` must answer exactly as `p.meta.city` does. Item 954 taught
+ * `fieldChain` to accept it so that it LIFTS like the dotted form, which it previously could not:
+ * the two spellings measured **1.18x apart** for identical rows, which is the equivalent-spelling
+ * cliff this engine is named for.
+ *
+ * That makes these the same correctness surface as the dotted cases above, for the same reason: a
+ * successful lift EMPTIES `where`, so `pathProps` becomes the ONLY carrier of the conjunct and a
+ * route that does not apply it returns a silent SUPERSET. Every dotted case above has its twin
+ * here deliberately — the point is that no route answers one spelling and not the other.
+ */
+describe('the bracket spelling answers exactly as the dotted one', () => {
+  it('clause WHERE + count(*) — the count shortcut', () => {
+    expect(count("MATCH (p:P) WHERE p.meta['city'] = 'NYC' RETURN count(*) AS c")).toBe(4);
+  });
+
+  it('inline WHERE + count(*) — the inline-predicate route', () => {
+    expect(count("MATCH (p:P WHERE p.meta['city'] = 'NYC') RETURN count(*) AS c")).toBe(4);
+  });
+
+  it('clause WHERE + projection — the rows, not a tally', () => {
+    expect([
+      ...query(g, "MATCH (p:P) WHERE p.meta['city'] = 'NYC' RETURN p.n AS c ORDER BY c"),
+    ]).toEqual([{ c: 0 }, { c: 2 }, { c: 4 }, { c: 6 }]);
+  });
+
+  it('AND: flat conjunct then bracketed', () => {
+    expect(
+      count("MATCH (p:P) WHERE p.tag = 'NYC' AND p.meta['city'] = 'NYC' RETURN count(*) AS c"),
+    ).toBe(4);
+  });
+
+  it('a THREE-segment path, mixing a dot and a bracket', () => {
+    expect(count("MATCH (p:P) WHERE p.meta['deep'].z = 'NYC' RETURN count(*) AS c")).toBe(4);
+    expect(count("MATCH (p:P) WHERE p.meta.deep['z'] = 'NYC' RETURN count(*) AS c")).toBe(4);
+  });
+
+  it('the FAR node of a hop', () => {
+    expect(count("MATCH (a:P)-[:R]->(b:P) WHERE b.meta['city'] = 'NYC' RETURN count(*) AS c")).toBe(
+      3,
+    );
+  });
+
+  it('the flipped operand order', () => {
+    expect(count("MATCH (p:P) WHERE 'NYC' = p.meta['city'] RETURN count(*) AS c")).toBe(4);
+  });
+
+  it('an ORDERING comparison', () => {
+    expect(count("MATCH (p:P) WHERE p.meta['city'] > 'LDN' RETURN count(*) AS c")).toBe(4);
+  });
+
+  it('an absent final segment matches nothing', () => {
+    expect(count("MATCH (p:P) WHERE p.meta['nope'] = 'NYC' RETURN count(*) AS c")).toBe(0);
+  });
+
+  it('an absent BASE property matches nothing', () => {
+    expect(count("MATCH (p:P) WHERE p.none['city'] = 'NYC' RETURN count(*) AS c")).toBe(0);
+  });
+
+  // THE CASES THE LIFT MUST STILL DECLINE, which is where a too-eager widening goes wrong rather
+  // than merely slow. A NUMERIC subscript has list semantics (integer-ness, bounds) that `pathOf`
+  // does not carry, and a NON-CONSTANT subscript is not closed at compile time at all.
+  it('a NUMERIC subscript still reads the list', () => {
+    expect(count("MATCH (p:P) WHERE p.tags[0] = 'NYC' RETURN count(*) AS c")).toBe(4);
+    expect(count('MATCH (p:P) WHERE p.tags[9] = 1 RETURN count(*) AS c')).toBe(0);
+  });
+
+  it('a subscript computed from the row is not lifted and still answers', () => {
+    expect(count("MATCH (p:P) WHERE p.meta[p.which] = 'NYC' RETURN count(*) AS c")).toBe(4);
   });
 });

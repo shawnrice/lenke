@@ -4880,13 +4880,37 @@ const fieldChain = (expr: Expr): { variable: string; path: string[] } | null => 
     return base === null ? null : { variable: base.variable, path: [...base.path, expr.key] };
   }
 
+  // A CONSTANT STRING SUBSCRIPT IS THE SAME SEGMENT AS A DOT (item 954). `base['y']` and `base.y`
+  // are one operation under ISO — a string index on a record/map IS field access — and the two
+  // arms agree on every base kind a path segment can meet, verified rather than read off the
+  // code: record `"hit"`/`"hit"`, scalar null/null, absent null/null, number null/null, list
+  // null/null. Only `fieldChain` disagreed, so the bracket spelling could not lift and measured
+  // **1.18x** the dotted one for the same rows (92.3 against 109.3 ns/row, `route-vs-expr-probe`
+  // arms D and D'). That is the equivalent-spelling cliff this engine is named for, in the
+  // narrowest possible form: one `kind` the chain walker did not accept.
+  //
+  // A NUMERIC subscript is deliberately NOT accepted. `p.lst.0` is not valid syntax, so it has no
+  // dotted twin and no spelling gap — and admitting it would need `pathOf` to carry list
+  // semantics (integer-ness, bounds, `Array.isArray`) that a dotted segment never has. Lifting it
+  // is a separate, optional ~17 ns question, not this one.
+  if (expr.kind === 'index' && expr.index.kind === 'lit' && typeof expr.index.value === 'string') {
+    const base = fieldChain(expr.base);
+
+    return base === null
+      ? null
+      : { variable: base.variable, path: [...base.path, expr.index.value] };
+  }
+
   return null;
 };
 
 const asPathCompare = (
   expr: Extract<Expr, { kind: 'compare' }>,
 ): { variable: string; path: string[]; op: CompareOp; value: Expr } | null => {
-  if (expr.left.kind === 'field' && isConstExpr(expr.right)) {
+  // `index` joins `field` here for the reason item 954 gives at `fieldChain`: a constant string
+  // subscript is the same segment as a dot, so gating on `field` alone would leave the chain
+  // walker unreachable for the spelling it was just taught to accept.
+  if ((expr.left.kind === 'field' || expr.left.kind === 'index') && isConstExpr(expr.right)) {
     const chain = fieldChain(expr.left);
 
     return chain === null || chain.path.length < 2
@@ -4894,7 +4918,7 @@ const asPathCompare = (
       : { ...chain, op: expr.op, value: expr.right };
   }
 
-  if (expr.right.kind === 'field' && isConstExpr(expr.left)) {
+  if ((expr.right.kind === 'field' || expr.right.kind === 'index') && isConstExpr(expr.left)) {
     const chain = fieldChain(expr.right);
 
     return chain === null || chain.path.length < 2

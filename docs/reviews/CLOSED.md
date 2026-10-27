@@ -28030,3 +28030,36 @@ Prop}` 160.0 / 4,000; `NOT` → `Filter{Scan, Not(Prop)}` 214.7 / 196,000; `= fa
   worth up to the D-minus-H gap, ~43 ns/row** — NOT taken, because `LenkeRecord` carries map/record
   semantics that are byte-identical with the native engine (key ordering, iteration, reserved keys),
   so the representation is a design call like item 949's bool prior.
+- **SHIPPED — the bracket spelling of a path now lifts: `p.meta['city']` cost **1.18x**
+  `p.meta.city` for identical rows (item 954).** `fieldChain` accepted `kind: 'field'` and not
+  `kind: 'index'`, so a constant **string** subscript — which IS field access on a record — could
+  not reach `pathProps`. Taught `fieldChain` that segment and widened `asPathCompare`'s gate to
+  `field | index` (without it the walker is unreachable). Arm D′ of `route-vs-expr-probe` is D's
+  row-matched twin that cannot lift: **D′/D 1.18x → 1.00x** (109.3 → 87.0 ns/row against D's 86.8).
+  **The convergence is itself the proof the lift runs**, which is the verification item 900's null
+  A/B lacked.
+- **METHOD — the equivalence was MEASURED, and the code reading was WRONG (item 954).** Reading the
+  arms predicted a divergence (generic `index` returns `null` for a non-record base where `field`
+  falls back to `propOf`); checking it on five base kinds showed they agree everywhere — record
+  `"hit"`/`"hit"`, scalar, absent, number and list all `null`/`null` — because `propOf` of a
+  non-element is `null` anyway. **Trusting the reading would have declined a safe change for an
+  imaginary hazard**, the inverse of items 947/948 which trusted a reading and proposed an unsafe
+  one.
+- **DECLINED deliberately, with tests that say so (item 954).** A **numeric** subscript is not
+  lifted: `p.lst.0` is not valid syntax, so there is no dotted twin and no spelling gap, and
+  admitting it would need `pathOf` to carry list semantics (integer-ness, bounds, `Array.isArray`)
+  a dotted segment never has. A **non-constant** subscript (`p.meta[p.which]`) is not closed at
+  compile time. Both still answer through the generic path.
+- **TEETH — two mutants, both CAUGHT, each only by a case this item added (item 954).** M1 (drop
+  the lifted segment) and M2 (lift a numeric subscript too), run under `timeout` + cgroup cap with
+  a restore before each. **The pre-existing 2,761 tests were blind to both** — expected for a lift,
+  whose failure mode is a silent superset (item 901). M1 is invisible for a TWO-segment path
+  (dropping a segment leaves `path.length < 2`, `asPathCompare` declines, the generic path answers
+  correctly), so only the mixed three-segment case reaches it.
+- **METHOD — every nested CONTROL moved too, and that is item 762, not a bigger win (item 954).**
+  C 3.56x→3.09x of baseline, G 4.19x→3.53x, H 1.89x→1.77x: with D′ off the generic route, the site
+  it left behind is less polymorphic. **The defensible claim is the CONVERGENCE (1.18x → 1.00x,
+  both arms in one process), not an absolute speedup.**
+- **TOOLING — a mutation pristine copy under `target/` is gitignored but still LINTED (item 954).**
+  `bun run lint` reported 30 errors in `target/pristine-954/executor.ts`. Delete the copy after the
+  run, or `lint` fails for reasons that have nothing to do with the change.
