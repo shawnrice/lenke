@@ -821,12 +821,16 @@ pub(super) fn try_distinct_frontier_multi(input: &Plan, store: &Store) -> Option
 //     WHERE PROPERTY_EXISTS … DISTINCT   571.4     1674.6 us    2.9x SLOWER
 //     WHERE n.dept > 'a'      DISTINCT   585.3     1181.4       2.0x SLOWER
 //
-// WHY, and it is the part worth keeping: the general route pays `Filter` ~277 us (item 962's
-// measured filter-and-scan arm) plus ~293 for the generic dedup. The replacement pays ~1400 for
-// its mask step ALONE — `eval_mask` over a synthesized `Col::Nodes` batch reads the property per
-// row through the generic evaluator, where the `Filter` OPERATOR in the pipeline has a
-// vectorized path over the typed column. So the trade was a vectorized filter swapped for a
-// generic one in order to save hashing, and the filter is the larger half.
+// WHY — and the per-step figures are an INFERENCE, corrected at item 975. What is MEASURED is
+// the end-to-end pair above. The attribution below came from subtracting item 962's
+// filter-and-scan arm (~277 us), which does NOT do this route's projection, so it is the same
+// unverified-subtrahend defect item 963 withdrew — one item after recording it.
+//
+// What survives: `eval_mask` over a synthesized `Col::Nodes` batch reads the property per row
+// through the generic evaluator, where the `Filter` OPERATOR in the pipeline has a vectorized
+// path over the typed column; that difference is structural and is the only candidate large
+// enough to explain a 2.9x. So the trade was a vectorized filter swapped for a generic one in
+// order to save hashing — but HOW MUCH the mask step costs is not measured here.
 //
 // `distinct_chain_endpoints` uses the same `eval_mask`-over-`Col::Nodes` device and is right to:
 // there the candidate set is a hop frontier that is already materialized and usually small. Over

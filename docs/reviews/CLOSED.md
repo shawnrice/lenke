@@ -28497,11 +28497,13 @@ predicate` closed at 644. Every remaining flag on either side is recorded as cor
   `WHERE PROPERTY_EXISTS … DISTINCT` **571.4 → 1674.6 us (2.9x slower)**,
   `WHERE n.dept > 'a' … DISTINCT` **585.3 → 1181.4 (2.0x)**. Reverted; note recorded at the
   function.
-- **WHY — a vectorized filter was swapped for a generic one to save hashing, and the filter is
-  the larger half (item 974).** The general route pays `Filter` ~277 us (962's measured arm) plus
-  ~293 for the generic dedup; the replacement pays **~1400 for its mask step alone**, because
-  `eval_mask` over a synthesized `Col::Nodes` batch reads the property per row through the
-  generic evaluator while the `Filter` OPERATOR has a vectorized path over the typed column.
+- **WHY — a vectorized filter was swapped for a generic one to save hashing (item 974, per-step
+  figures CORRECTED at 975).** `eval_mask` over a synthesized `Col::Nodes` batch reads the
+  property per row through the generic evaluator while the `Filter` OPERATOR has a vectorized
+  path over the typed column — structural, and the only candidate large enough for a 2.9x.
+  **The "~1400 us for the mask step alone" was an INFERENCE, not a measurement**: it subtracted
+  item 962's filter-and-scan arm, which does not do this route's projection — the same
+  unverified-subtrahend defect item 963 withdrew, repeated one item after recording it.
 - **METHOD — the `eval_mask`-over-`Col::Nodes` device does NOT port from a FRONTIER to a SCAN
   (item 974).** `distinct_chain_endpoints` uses it correctly: there the candidate set is a hop
   frontier, already materialized and usually small. Over a whole-label scan it is 200,000 rows
@@ -28513,3 +28515,21 @@ predicate` closed at 644. Every remaining flag on either side is recorded as cor
   a mechanism EXISTS; only the measurement establishes what it COSTS, and only the second decides.
 - **Item 973's unit error was ISOLATED, not systemic (item 974).**
   `grep -nE "ffi [0-9.]+ ?(us|µs)"` over both documents matches only 973's own quotation of it.
+- **CORRECTED — item 974's own per-step figure was an inference, and repeated item 963's defect
+  ONE ITEM after recording it (item 975).** The "~1400 us for the mask step alone" subtracted
+  item 962's filter-and-scan arm, which does not do that route's projection. **The rejection is
+  unaffected** — it rests on two end-to-end pairs each measured on both sides (571.4 → 1674.6,
+  2.9x; 585.3 → 1181.4, 2.0x). What does not stand is which STEP spent the difference.
+- **The structural claim survives on its own terms (item 975).** `eval_mask` over a synthesized
+  `Col::Nodes` batch reads the property per row through the generic evaluator while the `Filter`
+  operator has a vectorized path over the typed column — a real difference in mechanism and the
+  only candidate large enough for a 2.9x. **How much it costs is unmeasured.**
+- **Why it mattered beyond tidiness (item 975).** The inferred figure read as an independent
+  finding — _"`eval_mask` on a Nodes batch is 5x the Filter operator"_ — and was the first
+  candidate target of the next tick. The correction is what stopped an item being built on a
+  number produced by subtraction.
+- **METHOD — RECORDING A RULE DOES NOT INSTALL IT (item 975).** Four this session: 947/948 priced
+  against behaviour without reading the mechanism (949), 951 attributed a gap to a route without
+  verifying it (952), 962 decomposed with a subtrahend that omitted work (963), 974 decomposed
+  with a subtrahend that omitted different work (975). **Three of the four were committed after
+  the relevant rule was already written in the same document.**
