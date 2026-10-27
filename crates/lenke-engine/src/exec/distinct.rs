@@ -804,6 +804,34 @@ pub(super) fn try_distinct_frontier_multi(input: &Plan, store: &Store) -> Option
 /// Absence is a distinct value (a present-null / missing prop → one `Null` row, as
 /// grouping treats it). `None` unless the shape is exactly that over a `Num`/`Str`/
 /// `Bool` column.
+// 🛑 A FILTERED SIBLING OF THIS FUNCTION WAS BUILT AND REJECTED (item 974) — it is 2.9x SLOWER.
+//
+// This fast path requires `Project { Scan }` with nothing between, so a `Filter` disqualifies it
+// and the row falls to `distinct_batch`'s hash-per-row. Item 964 verified the planner reaches
+// that shape for an ordinary predicate (`MATCH (n:P) WHERE n.dept > 'a' RETURN DISTINCT n.dept`
+// → `Distinct { Project { Filter { Scan } } }`, 593.0 us against the unfiltered twin's 164) and
+// specified the fix: accept `Filter { Scan }`, masking with `eval_mask` as
+// `distinct_chain_endpoints`' own `Plan::Filter` arm already does.
+//
+// Built as a SEPARATE function so this one's body was not touched at all (E79 below: moving the
+// `Dict` loop into a closure costs 1.7x, and item 957 rejected a change for regressing an
+// untouched neighbour). The hazard both of those warn about never arrived; a different one did.
+//
+//     arm                            PRE        POST
+//     WHERE PROPERTY_EXISTS … DISTINCT   571.4     1674.6 us    2.9x SLOWER
+//     WHERE n.dept > 'a'      DISTINCT   585.3     1181.4       2.0x SLOWER
+//
+// WHY, and it is the part worth keeping: the general route pays `Filter` ~277 us (item 962's
+// measured filter-and-scan arm) plus ~293 for the generic dedup. The replacement pays ~1400 for
+// its mask step ALONE — `eval_mask` over a synthesized `Col::Nodes` batch reads the property per
+// row through the generic evaluator, where the `Filter` OPERATOR in the pipeline has a
+// vectorized path over the typed column. So the trade was a vectorized filter swapped for a
+// generic one in order to save hashing, and the filter is the larger half.
+//
+// `distinct_chain_endpoints` uses the same `eval_mask`-over-`Col::Nodes` device and is right to:
+// there the candidate set is a hop frontier that is already materialized and usually small. Over
+// a whole-label scan it is 200,000 rows and the comparison is against a vectorized operator.
+// **The device is not portable from a frontier to a scan**, which is what this attempt learned.
 pub(super) fn try_distinct_scan_prop(input: &Plan, store: &Store) -> Option<Batch> {
     let Plan::Project { input: scan, items } = input else {
         return None;
