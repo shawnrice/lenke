@@ -26,6 +26,7 @@ import { describe, expect, it } from 'bun:test';
 import { Graph } from '@lenke/core';
 
 import { query } from './index.ts';
+import { parse } from './parser.ts';
 
 const CITIES = ['NYC', 'LDN'];
 
@@ -212,5 +213,38 @@ describe('the bracket spelling answers exactly as the dotted one', () => {
 
   it('a subscript computed from the row is not lifted and still answers', () => {
     expect(count("MATCH (p:P) WHERE p.meta[p.which] = 'NYC' RETURN count(*) AS c")).toBe(4);
+  });
+});
+
+/**
+ * THE PARSER CANONICALIZES A CONSTANT STRING SUBSCRIPT TO A FIELD (item 959).
+ *
+ * `p.meta['city']` and `p.meta.city` are the same read on every base kind (item 954 measured
+ * record, scalar, absent, number and list), so the AST builder emits one shape for both. Item 954
+ * taught `fieldChain` the bracket form, which fixed PREDICATES; a PROJECTION never lifts, so
+ * `compileExpr`'s `case 'index'` arm still ran and measured **99.1 ns/row against the dotted
+ * form's 77.9 — 1.27x** over 100,000 rows with identical rows asserted.
+ *
+ * THE ASSERTION IS ON THE AST, and it has to be: both spellings always returned the same rows, so
+ * no correctness test can see the difference. This is the native engine's own standard (item 958)
+ * brought to TS — one shape means the two spellings cannot drift apart again.
+ */
+describe('the parser canonicalizes a constant string subscript', () => {
+  it('builds the SAME ast as the dotted spelling', () => {
+    const dotted = JSON.stringify(parse('MATCH (p:P) RETURN p.meta.city AS v'));
+    const bracket = JSON.stringify(parse("MATCH (p:P) RETURN p.meta['city'] AS v"));
+
+    expect(bracket).toBe(dotted);
+    expect(dotted).toContain('"field"');
+  });
+
+  it('leaves a NUMERIC subscript as an index', () => {
+    // A list position is not a path segment and has no dotted spelling, so folding it would read
+    // a property named "0".
+    expect(JSON.stringify(parse('MATCH (p:P) RETURN p.lst[0] AS v'))).toContain('"index"');
+  });
+
+  it('leaves a COMPUTED subscript as an index', () => {
+    expect(JSON.stringify(parse('MATCH (p:P) RETURN p.meta[p.which] AS v'))).toContain('"index"');
   });
 });

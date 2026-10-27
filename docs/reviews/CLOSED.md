@@ -28165,3 +28165,25 @@ Prop{0,"meta"}, key: "city" }, .. } }` for both — so the gap cannot come back:
 - **Item 956's `prop_path` `Expr::Index` arm is now unreachable from GQL and deliberately kept
   (item 958).** It still covers IR built by other means — Gremlin lowering, direct construction,
   the opt tests — and its own mutants proved it load-bearing for those.
+- **SHIPPED — TS canonicalizes a constant string subscript to `field`, the twin of item 958, worth
+  1.27x in a PROJECTION (item 959).** Item 954's `fieldChain` fix covered PREDICATES, which lift
+  either way; a projection never lifts, so `compileExpr`'s `case 'index'` arm ran — an inner
+  closure for the index, `instanceof`, `typeof`, `Array.isArray`, bounds — against `case
+'field'`'s single `instanceof`. `bracket-projection-probe.ts`, 100k rows, median of 5 alternated
+  rounds, full row set fingerprinted: **bracket 99.1 → 89.4 ns/row, 1.27x → 0.98x of dotted.**
+- **METHOD — the RATIO is the result; the absolutes drifted 17% between runs (item 959).** The
+  CONTROL (a flat `p.tier` read the parser change cannot reach) moved 18.2 → 22.9 ns/row and the
+  dotted arm 77.9 → 91.0. Both arms alternate inside each process, which is what makes the
+  within-process ratio trustworthy and the cross-run absolutes not.
+- **METHOD — priced BEFORE building, because "native did it" is not a price (item 959).** Item 950
+  recorded exactly that mistake (porting item 896's native fusion to TS on the strength of its
+  2.27x, and getting a null), so this measured the TS gap first and only then ported item 958.
+- **TEETH (item 959).** M1 (fold any literal, not just a string) CAUGHT — 2 failures; M2 (remove
+  the canonicalization) CAUGHT — "builds the SAME ast as the dotted spelling". Both under
+  `timeout` + cgroup cap with a restore before each. **The assertion is on the AST** because both
+  spellings always returned the same rows, so no correctness test can see the difference — the
+  same reason item 958 asserts the plan natively.
+- **Both engines now canonicalize identically (items 958 + 959).** `p.meta['city']` and
+  `p.meta.city` are ONE shape in TS and in Rust, so they cannot drift apart again.
+  `fieldChain`'s `kind: 'index'` arm is now unreachable from the TS parser and is kept as the
+  native twin is — it costs nothing and is the safety net if the canonicalization is narrowed.

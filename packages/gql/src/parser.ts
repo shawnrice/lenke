@@ -1799,7 +1799,25 @@ export const parse = (
           const idx = parseExpr();
 
           expect('rbracket', "']' to close a list subscript");
-          e = { kind: 'index', base: e, index: idx };
+          // A CONSTANT STRING SUBSCRIPT IS A FIELD ACCESS — canonicalized at the one place the
+          // AST is built, so every consumer sees one shape (item 959, the TS twin of 958).
+          //
+          // `base['k']` and `base.k` are the same read: item 954 ran both over every base kind a
+          // segment can meet — record `"hit"`/`"hit"`, and scalar, absent, number and list all
+          // `null`/`null` — so emitting `field` cannot change an answer. What it changes is cost.
+          // Item 954 taught `fieldChain` the bracket form so a PREDICATE lifts either way; a
+          // PROJECTION never lifts, so `compileExpr`'s `case 'index'` arm ran — an inner closure
+          // for the index, an `instanceof`, a `typeof`, `Array.isArray` and bounds, against
+          // `case 'field'`'s single `instanceof`. Measured at 100,000 rows with identical rows
+          // asserted: **99.1 ns/row against the dotted form's 77.9 — 1.27x**.
+          //
+          // A NUMERIC subscript stays an `index`: a list position is not a path segment, it has
+          // no dotted spelling (`p.lst.0` does not parse), and folding it would read a property
+          // named "0". A non-constant subscript is not known at parse time at all.
+          e =
+            idx.kind === 'lit' && typeof idx.value === 'string'
+              ? { kind: 'field', base: e, key: idx.value }
+              : { kind: 'index', base: e, index: idx };
         } else if (!bareLiteral && check('dot')) {
           advance();
           e = { kind: 'field', base: e, key: memberName() };
