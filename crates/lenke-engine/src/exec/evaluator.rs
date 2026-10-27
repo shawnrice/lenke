@@ -739,6 +739,36 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
             }
         }
         Expr::Index { base, index, elem } => {
+            // 🛑 FUSING `<node>.<key>['field']` HERE WAS TRIED AND REJECTED (item 957).
+            //
+            // The gap is real: a constant string subscript over a RECORD-valued property falls
+            // past the list fast path below (whose pre-scan requires `Value::List`) to the
+            // general path, which clones a `Value::Record` per row in `eval(base)` and clones it
+            // AGAIN in `value_at` to project one field. On the identical `Filter { Scan }` route,
+            // 200,000 nodes, `p.meta['city']` measured **8864.9 us against `p.meta.city`'s
+            // 4786.9 — 1.85x** (item 955).
+            //
+            // Four lines calling `fused_prop_field` — the helper `Expr::Field` already uses —
+            // closed it to 1.01x and won 1.62x on the bracket arm. It was still rejected,
+            // because the DOTTED arm, which the change cannot logically reach, REGRESSED.
+            // Alternated POST/PRE rounds on that control, in us:
+            //
+            //     POST  5013.0  5166.6        PRE  4695.0  4786.0        1.07x, DISJOINT
+            //
+            // That is `fused_prop_field`'s own documented hazard from the other side: its note
+            // records a 1.09x regression on a NEIGHBOURING arm when its body was inlined here,
+            // and merely growing this arm costs the same toll (cf. `exec::pull`, whose alignment
+            // is load-bearing). Three blocked rounds first read 1.16x; alternating them put the
+            // real figure at 1.07x — smaller, and still a regression on the COMMON spelling to
+            // speed up the rarer one.
+            //
+            // THE RIGHT FIX IS CANONICALIZATION IN THE OPTIMIZER, not a second fused path here:
+            // rewrite `Index { base, Lit(Str(k)), elem: Plain }` to `Field { base, key: k }`.
+            // The two are the same read on every base kind (item 956 measured all five), so the
+            // rewrite is sound; it adds nothing to this arm, so it cannot perturb alignment; and
+            // it makes the two spellings produce the IDENTICAL plan, which is this repo's own
+            // standard — two spellings that optimize to the same plan cannot differ.
+            //
             // FUSED `<node>.<key>[<i>]`: read ONE element off the STORED list, instead of
             // evaluating the base into a `Col::Gen` of CLONED lists and indexing that.
             //

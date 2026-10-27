@@ -28111,3 +28111,29 @@ Prop}` 160.0 / 4,000; `NOT` → `Filter{Scan, Not(Prop)}` 214.7 / 196,000; `= fa
 - **Verification (item 956).** Engine suite 1,249/0 (up 1); `rewrite_fuzz` at
   `LENKE_OPT_FUZZ_SEEDS=200000` — the deep sweep, because this IS a planner rewrite — 10/0; all 7
   byte-identity fuzzers pass, run because a native planner change can move the engines apart.
+- **DIAGNOSED — item 955's second finding, the 1.85x `Expr::Index` gap (item 957).** `Expr::Index`
+  already has a fused fast path, but its pre-scan is
+  `matches!(store.prop_ref(id, key), Some(Value::List(_)))` — **a RECORD-valued property fails
+  it**, so `p.meta['city']` falls to the general path, which clones a `Value::Record` per row in
+  `eval(base)` and clones it AGAIN in `value_at` to project one field. `Expr::Field` has
+  `fused_prop_field` (item 896) and no such problem.
+- **REJECTED — fusing it in the evaluator, although it WORKS (item 957).** Four lines calling the
+  same `fused_prop_field` close the gap to **1.01x** and win **1.62x** on the bracket arm. The
+  **dotted** arm, which the change cannot logically reach, REGRESSED: alternated POST/PRE on that
+  control, **POST 5013.0/5166.6 against PRE 4695.0/4786.0 — 1.07x, disjoint.** Trading 1.07x on
+  the COMMON spelling for 1.62x on the rare one is a bad bargain. Note recorded in the arm itself.
+- **CONFIRMED from the other side — growing a match arm costs the alignment toll, not just
+  inlining into it (item 957).** `fused_prop_field`'s own note records a **1.09x regression on a
+  NEIGHBOURING arm** when its body was inlined into `Expr::Field`; merely adding a branch to
+  `Expr::Index` costs the same. Same family as `exec::pull`, whose alignment charges 1.08–1.24x
+  for any edit.
+- **METHOD — BLOCKED rounds overstated a real regression by half again (item 957).** Three POST
+  then three PRE read 5407.6/4680.6 = **1.16x**; alternating the same arms gave **1.07x**. Not
+  only _which_ summary you take (item 953's estimator) but _in what order you collect the
+  rounds_ — and here the error inflated rather than invented, which is the harder case to notice.
+- **⚠️ OPEN, with the right shape named — CANONICALIZE in the optimizer (item 957).** Rewrite
+  `Index { base, Lit(Str(k)), elem: Plain }` to `Field { base, key: k }`. **Sound by a measurement
+  already taken** (item 956: both spellings agree on record, scalar, absent, number and list);
+  **adds nothing to the evaluator**, so it cannot perturb alignment — the exact failure above; and
+  **the two spellings then produce the IDENTICAL plan**, this repo's own standard, so the bracket
+  form inherits every future `Field` improvement instead of needing its own copy.
