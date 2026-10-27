@@ -8,7 +8,7 @@
  * the same route. A detector that recognises `count(*)` under a bare-prop equality would make the
  * whole 3.4x a route difference, with the expression tree merely what disqualifies the nested one.
  *
- * THE SIX ARMS, and what each one can and cannot tell you. All six return the SAME count over the
+ * THE EIGHT ARMS, and what each one can and cannot tell you. All eight return the SAME count over the
  * SAME rows, so downstream work is identical and the ratio is the predicate alone.
  *
  *   A  `p.tier = 'NYC'`        bare prop, prop on the LEFT      the baseline
@@ -34,11 +34,22 @@ import { query } from '@lenke/gql';
 
 const N = Number(process.env.A_N ?? 200_000);
 const REPS = 9;
-const ROUNDS = 3;
+const ROUNDS = 5;
 const CITIES = ['NYC', 'LDN', 'TYO', 'BER'];
 const MATCHING = Math.floor(N / CITIES.length);
 
 const g = new Graph();
+
+/**
+ * FOUR shared nested containers, one per city, reused by every vertex (item 953).
+ *
+ * `meta`/`lst` give each vertex its OWN nested object, so indexing into one chases a pointer to a
+ * cold heap container — 200,000 distinct ones. `shared`/`slst` carry the identical values through
+ * just FOUR, which stay hot. The predicate still selects exactly the same rows, so a collapse in
+ * cost is memory locality and nothing else.
+ */
+const SHARED = CITIES.map((city) => ({ other: city, pad: city }));
+const SLST = CITIES.map((city) => [city, city]);
 
 for (let i = 0; i < N; i += 1) {
   const city = CITIES[i % CITIES.length];
@@ -53,6 +64,8 @@ for (let i = 0; i < N; i += 1) {
       q: i % CITIES.length,
       lst: [city, city],
       meta: { other: city, pad: city },
+      slst: SLST[i % CITIES.length],
+      shared: SHARED[i % CITIES.length],
     },
   });
 }
@@ -90,6 +103,20 @@ const CASES: ReadonlyArray<readonly [string, string, number, string]> = [
   // the comparator and not the path walk.
   ['E cmpProps num', 'MATCH (p:P) WHERE p.q <= 0 RETURN count(*) AS c', MATCHING, 'compareTruth'],
   ['F eqProps num', 'MATCH (p:P) WHERE p.q = 0 RETURN count(*) AS c', MATCHING, 'structuralEq'],
+  // G and H are C and D with the nested container SHARED four ways instead of one per vertex
+  // (item 953). Same route, same code path, same rows, same reads — only the locality differs.
+  [
+    'G field SHARED',
+    "MATCH (p:P) WHERE p.shared.other = 'NYC' RETURN count(*) AS c",
+    MATCHING,
+    '4 hot records',
+  ],
+  [
+    'H subscript SHARED',
+    "MATCH (p:P) WHERE p.slst[0] = 'NYC' RETURN count(*) AS c",
+    MATCHING,
+    '4 hot arrays',
+  ],
 ];
 
 const best: Record<string, number[]> = {};
@@ -120,15 +147,30 @@ for (let round = 0; round < ROUNDS; round += 1) {
 }
 
 console.log(
-  `# item 951 — route or expression? (N=${N}, min of ${REPS}, ${ROUNDS} alternated rounds)`,
+  `# item 951 — route or expression? (N=${N}, min of ${REPS}, MEDIAN of ${ROUNDS} alternated rounds)`,
 );
-console.log('# All six arms return the same count over the same rows.\n');
+console.log('# All eight arms return the same count over the same rows.\n');
 
-const baseline = Math.min(...(best['A bare prop LEFT'] ?? [0]));
+/**
+ * MEDIAN of the rounds, not the min (item 953).
+ *
+ * `min` picked 16.93 for the field arm whose other two rounds read 20.38 and 20.30, and then
+ * reported the IDENTICAL shared-container arm as 1.21x slower — an effect that was entirely the
+ * estimator. The TS per-row path emits a rare fast rep and `min` latches onto it; the repo's own
+ * rule is median-of-rounds with the warm-up dropped. Every round is still printed, so a reader can
+ * see the spread rather than take this on trust.
+ */
+const medianOf = (xs: readonly number[]): number => {
+  const s = [...xs].sort((a, b) => a - b);
+
+  return s.length === 0 ? 0 : s[(s.length - 1) >> 1];
+};
+
+const baseline = medianOf(best['A bare prop LEFT'] ?? [0]);
 
 for (const [name, , , note] of CASES) {
   const rounds = best[name] ?? [];
-  const ms = Math.min(...rounds);
+  const ms = medianOf(rounds);
   const ns = (ms * 1e6) / N;
   const rel = ms / baseline;
 

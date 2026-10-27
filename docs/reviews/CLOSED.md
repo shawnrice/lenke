@@ -28004,3 +28004,29 @@ Prop}` 160.0 / 4,000; `NOT` → `Filter{Scan, Not(Prop)}` 214.7 / 196,000; `= fa
   answered with a per-stage instrument and not a third reading: why does indexing one level into a
   property value cost ~57 ns/row when reading the property itself is free?** (Item 899 established
   the second half: `recordProp` costs what `scalarProp` costs.)
+- **ANSWERED — item 952's open "~57 ns/row" is TWO costs, not one (item 953).** Arms G and H repeat
+  the field and subscript arms with the nested container shared four ways instead of one per vertex
+  (same route, same rows, same reads; only locality differs). Median of 5 alternated rounds, 200k
+  vertices: A 22.9, B 22.9, C 95.1, D 84.4, E 23.1, F 20.3, **G 86.3, H 41.1** ns/row.
+- **CONFIRMED — for a LIST, the cost is container locality: 2.31x (item 953).** `H` (4 shared
+  arrays) 41.1 against `C` (200k per-vertex arrays) 95.1. A list property is stored by reference,
+  so ~54 of C's 72 ns/row over the baseline is **cold-container cost, not evaluation**; the generic
+  `index` path plus the array read is only the 18 ns H still pays over A.
+- **REFUTED — for a RECORD, locality is NOT the cost: G/D is 1.02x (item 953).** Sharing the source
+  object does not share what the engine stores — a record-valued property is converted to a
+  **`LenkeRecord` per vertex**, so 200,000 distinct `Map` instances exist however few objects were
+  handed in. The record arm's cost is the REPRESENTATION and sharing cannot reach it.
+- **METHOD — `min`-of-rounds MANUFACTURED a 1.21x, in the arm just added and in the direction that
+  made a tidy story (item 953).** The first run reported G 1.21x slower than D, two arms differing
+  only in how many source objects exist; D's rounds were `16.93 20.38 20.30`, so `min` latched onto
+  one unrepresentative round. **Median of five alternated rounds** (the repo's own recorded rule for
+  the TS per-row path) makes D flat (`17.10 16.99 16.85 16.87 16.78`) and the gap 1.02x. **An
+  estimator that can invent a 1.21x can invent a win; printing every round beside the summary is
+  what caught it.**
+- **⚠️ OPEN, and a conformance question before a performance one (item 953).** `LenkeRecord` is a
+  `Map` subclass instantiated once per vertex per record-valued property; item 899 prices the
+  representation at plain object `[k]` **3.4 ns** against `Map` subclass `.get` **17.5**, and at
+  200k distinct instances it is larger. **Storing a record-valued property as a plain object is
+  worth up to the D-minus-H gap, ~43 ns/row** — NOT taken, because `LenkeRecord` carries map/record
+  semantics that are byte-identical with the native engine (key ordering, iteration, reserved keys),
+  so the representation is a design call like item 949's bool prior.
