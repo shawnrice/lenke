@@ -29010,3 +29010,24 @@ disagree on the ANSWER` — item 984 confirmed through the repo's own gate.
   anchor-count assertion in every mutation script, `--exact` filters, the cgroup cap. Prefer
   making the check impossible to skip over writing it down again. (Same tick: a `cmd > file` that
   CLAUDE.md forbids — unique path, nothing lost, still the wrong reflex.)
+- **⚠️ CANDIDATE, priced not built — `encode pg-json` is reproducibly ~0.89x, i.e. NATIVE IS
+  SLOWER than TS (item 999).** Agrees across the 3-engine run and two of three `ts,ffi` rounds:
+  **0.88 / 0.90 / 0.89**, with a stable ffi arm (35.4 / 36.4 / 35.6). Round 1 is a cold-start
+  outlier — its ts column is high on ALL THREE encode rows while ffi is normal — and excluding it
+  is stated rather than done silently. **But 0.89x is an 11-12% effect and CLAUDE.md requires its
+  own isolated harness under ~10%**, so this has survived repetition and has NOT been measured on
+  an instrument that can resolve it. The FFI carrier is the obvious first suspect for an ENCODE
+  (the output string crosses the boundary); item 399's isolated A/B on these rows is the
+  instrument shape, at absolutes 6x this harness's.
+- **❌ NOT CALLABLE — `encode ndjson` from `bun run bench` (item 999).** 0.90 / 1.42 / 1.25 with
+  the ffi arm itself drifting 30.1 → 39.5. `encode csv` is the in-table control and is
+  consistently native-favourable (1.09-1.30x), so the instrument is not uniformly broken — which
+  is precisely why "the rows are too noisy" was the WRONG blanket conclusion.
+- **⚠️ METHOD — two wrong explanations in one item, both from reaching for a KNOWN mechanism
+  (item 999).** (1) After round 1 inverted the ratio I drafted "the engine SET is the variable",
+  invoking item 762's in-process cohabitation. Round 2 refuted it inside the same configuration.
+  (2) I then wrote "these rows cannot support a ratio at all"; round 3 refuted that, since
+  `pg-json` is stable and `csv` is fine. **A mechanism that explains the sample in front of you is
+  not thereby the mechanism** — the test is whether the data varies when the proposed cause is
+  held fixed. Items 936-939 failed four times this way on the hop predicate; this is the same
+  shape compressed into one item, and only repetition caught it both times.
