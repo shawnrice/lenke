@@ -22296,7 +22296,7 @@ ratios"; this is the recording half of it. The four figures above are this file'
 these rows WITH absolutes:
 
 ```text
-  count 4-hop            TS 598.6-639.6 ms   ffi 6.6-6.7 us   wasm 11.4-11.7
+  count 4-hop            TS 598.6-639.6 ms   ffi 6.6-6.7 ms   wasm 11.4-11.7
   count 3-hop            TS 325.8           ffi 4.9          wasm 7.5    (in-sweep)
   count 2-hop            TS 107.7           ffi 2.8          wasm 4.5    (in-sweep)
   count var-length 1-2   TS 240.1           ffi 4.7          wasm 7.9    (in-sweep)
@@ -28467,3 +28467,26 @@ predicate` **2.39x has its outlier closed at item 644**, where the fix was built
   groups over 2x, both settled — `label on start` correct by design (325), `a product's one-sided
 predicate` closed at 644. Every remaining flag on either side is recorded as correct-by-design
   or closed-with-a-reason.
+- **CORRECTED — a 1000x UNIT ERROR in item 810's absolutes (item 973).** The block read
+  `count 4-hop  TS 598.6-639.6 ms  ffi 6.6-6.7 us`. `bench.ts` computes
+  `(Bun.nanoseconds() - t) / 1e6`, so its columns are **milliseconds**, and `bench_all`
+  independently prints native `4-hop` at **6506.4 us = 6.5 ms**. Fixed in place. **A reader taking
+  the absolutes at face value would price this row as a 90,000x algorithmic hole instead of the
+  88x constant-factor gap it is.**
+- **It surfaced from the entry CONTRADICTING ITSELF (item 973).** Two lines above the table the
+  same item reports the ratio as 91-97x; with `6.6 us` it would be 90,600x. **Third payment from
+  the impossible-number check** — item 942 (4972% cannot be a percentage), item 963 (a part cannot
+  exceed its whole), and now a stated ratio cannot disagree with its own operands by 1000x.
+- **METHOD — an ABSOLUTE needs its unit checked against the instrument that produced it; a ratio
+  never did (item 973).** Item 810's argument was _"record the ABSOLUTES alongside the ratio"_,
+  and it was right — the absolute it stored carried the wrong unit, and the re-derivation that
+  rule enabled is what caught it. The rule stands; it just has a second half.
+- **FOUR closed targets declined in one tick, one grep each (item 973).** `project 3 columns`
+  (ffi 10x slower than ts) — **item 289: ~80% carrier, `JSON.parse` 48% + FFI 33% + row shaping
+  12%, no engine change reaches it, `queryArrowIpc` is the answer; its note already records three
+  earlier passes stopped, this is the fourth.** The other inverted rows are the same carrier cost
+  by 289's rule (_read the table's SHAPE before its ratios_). **`count 4-hop`: my hypothesis that
+  `longChainCount` is gated at FIVE was WRONG — the gate is already FOUR**, and item 301 measured
+  the split (3 hops product wins 1.50x, 4 hops sweep wins 1.91x), with `fourSegmentCount` deleted
+  rather than left unreachable. Plus `label on start` and `a product's one-sided predicate` from
+  item 971.
