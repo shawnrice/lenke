@@ -27401,3 +27401,57 @@ contributes nothing` — the far-driven mistake reports 2 where the answer is 1,
   `post:1` and `post:3` read 31.2 and 61.7 as single readings against baselines of 28.49 and 55.11 —
   which looked like two regressions paying for one win — and three alternated rounds put them at
   0.99x and 1.02x. Another instance of a single reading in this family inventing an effect.
+- **SHIPPED — a negated numeric literal is now FOLDED in the GQL parser: `n.k > -1` cost 1.93x its
+  own twin `n.k >= 0` (item 935).** `parseUnary` built `{kind:'neg', expr:{kind:'lit', value:1}}` and
+  nothing folded it, so every downstream predicate fast path — which requires a LITERAL operand —
+  declined and the general evaluator ran the row. Measured on 926's probe, three order-alternated
+  rounds over `k = i % 90` where the two bounds are the same predicate: `>= 0` 20.04/18.44/19.00 ns a
+  vertex against `> -1` 44.13/43.12/41.63. A/B PRE/POST on the built bundle: **1.93x**, and the
+  decisive evidence is the convergence rather than the ratio — **POST `cmpneg` 18.46 lands on the
+  CONTROL `cmpall` 18.96**, the identical predicate with a positive bound, which did not move
+  (0.99x), alongside `wheretrue` 1.00x and `cmpsel` 0.96x. The Gremlin surface never had this cliff
+  because `gt(-1)` is built programmatically with the value already negative. Numeric literals ONLY:
+  `-n.s` must still fault, `-$p` must still read the param at run time, `-0` folds to `-0` (what
+  evaluating `neg` on `0` produces anyway) and `- -1` folds twice to `1`.
+- **CLOSED — the negative-percentile-fraction cross-engine divergence (item 935 closes it; it was
+  recorded in `values-aggregate-scan.test.ts`).** TS refused `percentile_cont(n.age, -1)` _because_
+  `-1` was not a literal token, while native accepted and clamped to the minimum. Folding removes the
+  cause. **Verified against the real native engine, not assumed from the comment: 9 of 9 value cases
+  now agree where three disagreed** — `percentile_cont(-1)`, `percentile_disc(-1)` and
+  `percentile_cont(-0.5)` all answer 10 on both engines. The executor's `valueCannotRaise` already
+  carried a `neg`-of-numeric-literal arm whose comment records that native folds to `Lit(Num(-1.0))`
+  and that the mismatch caused FOUR of five divergences in a 20,000-query differential run — so this
+  fold is the direction of convergence, and that arm's reason is now also satisfied upstream. Only
+  the error MESSAGE TEXT still differs for `-'abc'` / `-true` (both throw), which remains the
+  separately-tracked open item.
+- **CORRECTION to item 932 — its matrix's GQL column measured the UNFOLDED path, so its
+  cross-surface ratios were inflated in GQL's disfavour (item 935).** `probe:arity` writes every GQL
+  bound as `> -1`, so all twelve GQL cells were on the slow route. Re-run at HEAD: `node:1` 9.08 →
+  **4.68** (grm 1.68x, not the 3.12x that was 932's headline), `node:2` 13.88 → **5.24** and
+  `node:3` 16.31 → **6.93** — both of which **GQL now WINS** (1.33x and 1.08x). **So 932's Finding 3
+  is partly wrong as recorded**: it said "Gremlin wins all nine one-sided cells". The hop cells
+  barely moved (`post:1` 59.58 → 60.26), consistent with being dominated by edge walking rather than
+  the per-row predicate. **932's structural conclusion survives and is strengthened** — its real
+  content was that the winner flips with position and arity, the signature of two independent
+  fast-path tables rather than one badly-lowered surface, and it now flips in more places.
+- **RULE — a cross-surface ratio can be an artefact of the PROBE'S OWN QUERY TEXT (item 935).** The
+  widest one-sided gap in a twelve-cell generated matrix turned out to be a spelling cliff in the
+  harness, not an engine difference: one surface's bound was written `> -1` and the other's was built
+  programmatically. Before pricing a cross-surface gap, check that both arms' predicates reach the
+  same ROUTE and not merely express the same question — `routes-fired.test.ts` now carries
+  route-equality assertions for negative bounds for exactly this reason. Three candidates were
+  eliminated one at a time first (edges, by `A_DEG=0`; selectivity, which also **independently
+  CONFIRMED item 926's claim** that it is not a confound for a filtered count, `cmpsel` 2,222 rows
+  and `cmpall` 200,000 rows interleaving; then the literal).
+- **RULE — two instruments disagreeing is how a stale dist announces itself (item 935).** The gql
+  suite (which runs `src`) said `percentile_cont(-1)` returns 10 while a differential probe (which
+  imports `@lenke/gql`, resolving to `dist`) said it threw. Both were right about different code; the
+  build had not been re-run. A single instrument would simply have been believed. Same family as
+  `fuzzers-read-built-dists`, but found by contradiction rather than by checking timestamps.
+- **A mutant that SURVIVED 2,760 tests found an untested edge, not a bug (item 935).** Dropping the
+  `typeof operand.value === 'number'` guard folds `-'abc'` to `lit(NaN)`, which the numeric model
+  renders as `null` instead of faulting — a wrong answer, invisible because nothing in the suite
+  negated a non-numeric literal. Pinned now (`-'abc'` throws, `-true` throws, `-null` is null), each
+  verified against native first. **Second consecutive item where the mutation pass found a gap in the
+  TESTS rather than in the implementation** (item 934 found a vacuous assertion in item 933's own new
+  tests), which is the argument for running it on every change and not only on risky ones.

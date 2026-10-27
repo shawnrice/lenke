@@ -1724,7 +1724,33 @@ export const parse = (
       if (check('dash')) {
         advance();
 
-        return { kind: 'neg', expr: parseUnary() };
+        const operand = parseUnary();
+
+        // A NEGATED NUMERIC LITERAL IS FOLDED, and item 935 measured why it matters: unfolded,
+        // `n.k > -1` costs **2.2x** its own twin `n.k >= 0` — 44.13/43.12/41.63 ns a vertex
+        // against 20.04/18.44/19.00, three order-alternated rounds, same survivors, same operator
+        // family, the only difference being the minus sign. The downstream predicate fast paths
+        // (`cmpProps` and the compiled-predicate family) require a LITERAL operand, and a
+        // `neg` node is not one, so every one of them declined and the general evaluator ran.
+        //
+        // This is the equivalent-spelling class this repo is named for: two ways to write one
+        // bound, the same answer, 2.2x apart. The Gremlin surface never had it because `gt(-1)`
+        // is built programmatically with the value already negative.
+        //
+        // It also CONVERGES THE TWO ENGINES rather than diverging them: `valueCannotRaise` in the
+        // executor already carries a `neg`-of-numeric-literal arm whose comment records that the
+        // native engine folds this to `Lit(Num(-1.0))`, and that the mismatch caused four of five
+        // divergences in a 20,000-query differential run. TS now folds it the same way.
+        //
+        // ONLY a numeric literal. `-n.s` negates a string and must still fault, and `-$p` must
+        // still read the param at run time, so neither is folded. `-0` folds to `-0`, which is
+        // what evaluating `neg` on `0` produces anyway, and `- -1` folds twice through the
+        // recursion to `1`.
+        if (operand.kind === 'lit' && typeof operand.value === 'number') {
+          return { kind: 'lit', value: -operand.value };
+        }
+
+        return { kind: 'neg', expr: operand };
       }
 
       if (check('plus')) {

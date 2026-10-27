@@ -39,7 +39,10 @@
  */
 import { describe, expect, it } from 'bun:test';
 
+import { Graph } from '@lenke/core';
+
 import { compileLinear } from './executor.ts';
+import { query } from './index.ts';
 import { parse } from './parser.ts';
 
 /** The detector fields that came back non-null, sorted — i.e. the routes this query will take. */
@@ -180,4 +183,67 @@ describe('a shape with no shortcut takes NO fast path', () => {
       expect(routes(src)).toEqual([]);
     });
   }
+});
+
+/**
+ * ITEM 935 — a NEGATIVE numeric literal must route exactly like its positive twin.
+ *
+ * `-1` parsed as a unary-minus EXPRESSION rather than a literal, and every predicate fast path
+ * downstream requires a LITERAL operand — so `n.k > -1` quietly fell to the general evaluator
+ * while `n.k >= 0`, the same predicate over a non-negative column, took the fast route. Measured
+ * at **2.2x**: 44.13/43.12/41.63 ns a vertex against 20.04/18.44/19.00, three order-alternated
+ * rounds, same survivors.
+ *
+ * The assertion is route EQUALITY against the twin rather than a hard-coded route name, because the
+ * claim is "these two spellings cost the same", which is the claim this repo is named for — and it
+ * stays true if the route set is renamed or extended later.
+ */
+describe('a negative numeric literal routes like its positive twin (item 935)', () => {
+  const TWINS: ReadonlyArray<readonly [string, string, string]> = [
+    [
+      'a filtered node count',
+      'MATCH (n:L) WHERE n.k > -1 RETURN count(*) AS c',
+      'MATCH (n:L) WHERE n.k >= 0 RETURN count(*) AS c',
+    ],
+    [
+      'an inline property constraint',
+      'MATCH (n:L {k: -1}) RETURN count(*) AS c',
+      'MATCH (n:L {k: 1}) RETURN count(*) AS c',
+    ],
+    [
+      'a projection with a filter',
+      'MATCH (n:L) WHERE n.k > -1 RETURN n.k AS k',
+      'MATCH (n:L) WHERE n.k >= 0 RETURN n.k AS k',
+    ],
+    [
+      'a far-end filter on a hop',
+      'MATCH (a:L)-[:R]->(b) WHERE b.k > -1 RETURN count(*) AS c',
+      'MATCH (a:L)-[:R]->(b) WHERE b.k >= 0 RETURN count(*) AS c',
+    ],
+  ];
+
+  for (const [name, neg, pos] of TWINS) {
+    it(`${name} routes identically`, () => {
+      // Non-empty, or the assertion would hold vacuously for two shapes that both route nowhere.
+      expect(routes(pos).length).toBeGreaterThan(0);
+      expect(routes(neg)).toEqual(routes(pos));
+    });
+  }
+
+  // THE GUARD'S BOUNDARY — values and faults, not routes, but kept here so the fold's whole
+  // contract reads in one place. The fold is numeric LITERALS only; a mutant that drops the
+  // `typeof` check folds `-'abc'` to `lit(NaN)`, which the numeric model then renders as `null`
+  // instead of faulting. That mutant SURVIVED the whole 2,760-test suite before these three
+  // existed. Each expectation is verified against the real native engine, which throws for the
+  // string and the boolean and answers `null` for `null`.
+  it('a negated NON-numeric literal still faults, and is not folded', () => {
+    const g = new Graph();
+
+    g.addVertex({ id: 'a', labels: ['L'], properties: { k: 1 } });
+
+    expect(() => query(g, "MATCH (n:L) RETURN -'abc' AS m")).toThrow();
+    expect(() => query(g, 'MATCH (n:L) RETURN -true AS m')).toThrow();
+    // `null` is the one that must NOT fault: negating it is null in both engines.
+    expect((query(g, 'MATCH (n:L) RETURN -null AS m')[0] as Record<string, unknown>).m).toBeNull();
+  });
 });

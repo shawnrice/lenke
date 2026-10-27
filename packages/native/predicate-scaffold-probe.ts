@@ -65,6 +65,17 @@ const SHAPES: Record<string, { q: string; params?: Record<string, unknown> }> = 
   // SELECTIVITY-MATCHED the other way: keeps everything, like `wheretrue`, so the difference from
   // `wheretrue` is the property read and the comparison with nothing else moving.
   cmpall: { q: 'MATCH (n:P) WHERE n.k >= 0 RETURN count(*) AS c' },
+  // A NEGATIVE LITERAL, and otherwise identical to `cmpall`: `k` is `i % 90`, so `> -1` and `>= 0`
+  // are the same predicate over this fixture — same truth value for every row, same survivors,
+  // same operator family. The ONLY difference is that the bound is written with a minus sign.
+  //
+  // Item 934 added it because item 932's cross-surface matrix writes every GQL bound as `> -1` and
+  // its GQL cells cost ~45 ns a vertex where this probe measures ~19 for a comparison. Selectivity
+  // was ruled out (cmpsel 2,222 rows and cmpall 200,000 rows interleave) and so were edges, which
+  // leaves the literal itself: if `-1` arrives as a unary-minus EXPRESSION rather than a folded
+  // constant, the predicate is not a simple literal comparison and the compiled fast path can
+  // decline — the same class as item 931's arithmetic conjunct at ~6x.
+  cmpneg: { q: 'MATCH (n:P) WHERE n.k > -1 RETURN count(*) AS c' },
   // The param spelling, to confirm item 799's fix still holds at HEAD.
   param: { q: 'MATCH (n:P) WHERE n.k > $a RETURN count(*) AS c', params: { a: 28 } },
 };

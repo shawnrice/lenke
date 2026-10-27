@@ -94,11 +94,20 @@ describe('the values-aggregate scan rung (item 530)', () => {
     // bounds` in the `cont` interpolation) and item 530 clamps it at the point of use.
     expect(both('percentile_cont(n.age, 2)')).toBe(40);
     expect(both('percentile_disc(n.age, 2)')).toBe(40);
-    // A NEGATIVE fraction is a REFUSAL in this engine, not a clamp: `-1` is a unary-minus
-    // expression rather than a literal token, so `compileAggregate` raises before any value is
-    // read. Native accepts it and clamps to the minimum — an open cross-engine divergence on an
-    // input ISO does not define, recorded rather than papered over.
-    expect(() => query(g, 'MATCH (n:P) RETURN percentile_cont(n.age, -1) AS m')).toThrow();
+    // A NEGATIVE fraction CLAMPS to the minimum, and agrees with native — the divergence this
+    // line used to record is CLOSED by item 935.
+    //
+    // It used to read `expect(...).toThrow()`, because `-1` parsed as a unary-minus EXPRESSION
+    // rather than a literal token, so `compileAggregate` refused it before reading any value while
+    // native accepted and clamped. Item 935 folds `neg` of a numeric literal in the parser — for
+    // performance, since the unfolded form cost 2.2x on a filtered count — and this convergence
+    // came with it. Verified against the real native engine, not assumed: `percentile_cont(-1)`,
+    // `percentile_disc(-1)` and `percentile_cont(-0.5)` all answer 10 on BOTH engines.
+    expect(both('percentile_cont(n.age, -1)')).toBe(10);
+    expect(both('percentile_disc(n.age, -1)')).toBe(10);
+    // A non-literal fraction is still a refusal: the fold is numeric LITERALS only, so a property
+    // read stays an expression and `compileAggregate` raises exactly as before.
+    expect(() => query(g, 'MATCH (n:P) RETURN percentile_cont(n.age, -n.age) AS m')).toThrow();
   });
 
   test('the shapes the rung must refuse are unchanged', () => {
