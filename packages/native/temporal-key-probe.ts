@@ -140,3 +140,9 @@ time('GROUP BY t', 'MATCH (p:P) RETURN p.t AS m, count(*) AS c');
 // role as `list`: it walks past the new `instanceof` chain on every row.
 time('DISTINCT the element', 'MATCH (p:P) RETURN DISTINCT p AS m');
 timeGremlin('gremlin dedup');
+// The TS twin of item 1020 (item 1021). The Rust engine's sorted LIMIT dispatches on COLUMN
+// representation and had no temporal arm; the TS engine keeps top-k over input bindings with a
+// value comparator and no per-type dispatch, so the prediction is NO analogous gap — `num` and
+// `date` are the controls that say whether that prediction holds.
+time('ORDER BY t LIMIT 10', 'MATCH (p:P) ORDER BY p.t LIMIT 10 RETURN p.t AS m');
+time('ORDER BY t (ceiling)', 'MATCH (p:P) ORDER BY p.t RETURN p.t AS m');

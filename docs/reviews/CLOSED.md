@@ -29213,6 +29213,24 @@ multiTypeEdgeCount === 0`) — one named type cannot double-count. Native's `Adj
   differential and answer assertion in the repo. It is caught only by asserting on the selector
   itself (`fused_hop_shape(..).is_some()`) in both directions. Second instance of the hazard after
   1008's degree-reader pin.
+- **✅ CLOSED — item 1020 does NOT transfer to the TS engine (item 1021).** The Rust sorted LIMIT
+  dispatches on COLUMN REPRESENTATION, which is the shape that leaves one behind; TS's
+  `ordered-rows.ts` keeps top-k over INPUT BINDINGS with a value comparator and no per-type
+  branch, so there is no arm for a temporal to be missing from. Measured anyway: every kind sits
+  well under its own full-sort ceiling (`datetime` **5.6 ms against 20.2**), so the top-k IS
+  firing. The whole `num`→`zoned` spread is 2.3x and tracks how many fields a comparator reads
+  (date 1, datetime 2, zoned 3), where Rust's pre-fix gap was 4.8x against a DECLINED route.
+- **FOUR CONSECUTIVE CROSS-ENGINE TRANSFERS MADE "CHECK THE OTHER ENGINE" FEEL LIKE A GENERATOR
+  (item 1021).** 1014→1015, 1015→1016, 1016→1017, 1017→1018 all found the twin. This is the case
+  where a STRUCTURAL difference stops the pattern at one engine, and the negative result is
+  recorded with numbers so a later pass does not re-derive it.
+- **⚠️ PRICED, NOT BUILT — decorate-sort-undecorate for the TS temporal comparator (item 1021).**
+  The 2.3x LIMIT spread and the 3x CEILING spread are comparator cost: a temporal is compared as
+  an object, per comparison, through a kind dispatch. Paying it once per row would help the
+  no-LIMIT ceiling too (the larger number). Not attempted because item 1018 measured that an
+  allocation per row dominates at these magnitudes, and a decorated key for a multi-field kind
+  cannot be one number (`LocalDateTime`'s `secs` is unbounded) — the same design question that
+  refuted 1017's shared helper.
 - **✅ SHIPPED (Rust) — the temporal streaming top-K, 3.5-4.5x (item 1020).** Three alternated
   rounds, 200,000 rows / 1,000 distinct: `date` **5,996 → 1,704**, `time` 6,629 → 1,475,
   `datetime` 6,041 → 1,723, `zoned` 6,320 → 1,512, `zonedtime` 6,649 → 1,467. Every kind lands on
