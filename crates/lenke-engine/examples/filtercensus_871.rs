@@ -94,7 +94,7 @@ fn main() {
     }
     println!();
 
-    let cases: [(&str, &str); 14] = [
+    let cases: [(&str, &str); 15] = [
         ("floor  count(*)", "MATCH (p:P) RETURN count(*) AS c"),
         (
             "Num   = 7",
@@ -132,6 +132,14 @@ fn main() {
         (
             "Bool  NOT bare",
             "MATCH (p:P) WHERE NOT p.bul RETURN count(*) AS c",
+        ),
+        // ITEM 946: the ROW-MATCHED twin of `NOT bare`, without which that row cannot be read.
+        // `= true` keeps 4,000 rows and `NOT p.bul` keeps 196,000, so comparing them measures the
+        // survivor count as much as the predicate. `= false` keeps the same 196,000 as `NOT`, so
+        // the pair isolates the spelling — which is the comparison this census was missing.
+        (
+            "Bool  = false",
+            "MATCH (p:P) WHERE p.bul = false RETURN count(*) AS c",
         ),
         (
             "Date  = 19730",

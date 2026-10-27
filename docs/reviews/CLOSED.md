@@ -25895,7 +25895,7 @@ copies before the comment was added.
   (1,159 -> 103 us) and a `Column::Temporal` arm in the unindexed seek fallback for equality
   (2,506 -> 391). Num/Dict/Str/Bool controls all flat. Residual: `Date =` is still 3x the numeric
   arm (a `Temporal` is a wider value than an `f64`); parity is not claimed.
-- **OPEN, PRICED — `WHERE p.bul` costs 2.3x `WHERE p.bul = true` (item 871).** 312.2 us against
+- **~~OPEN, PRICED~~ RETRACTED AT ITEM 946 on re-measurement (1.16x at HEAD, not 2.48x — overtaken by unrelated work; the TS twin was fixed at 875) — `WHERE p.bul` costs 2.3x `WHERE p.bul = true` (item 871).** 312.2 us against
   125.7 at 200,000 nodes, two spellings of one predicate. A bare property in boolean context is a
   different mechanism from a comparison, so it needs its own item; priced in
   `examples/filtercensus_871.rs`.
@@ -27803,3 +27803,36 @@ product's one-sided predicate` 2.22x (285), `one end labelled, the other free` 2
   **139.95** (138.48 at 933), `node:1` gql **4.16** (4.68 at 935). A benchmark sweep was NOT run,
   deliberately — with no engine source changed it could only measure noise, and a number produced
   for form is a number someone later treats as evidence.
+- **RETRACTED ON RE-MEASUREMENT — item 871's native bare-bool gap is 1.16x, not 2.48x (item 946).**
+  `filtercensus_871` at HEAD, 200,000 nodes, min of 9, three runs: `p.bul = true` **137.6 / 138.0 /
+  138.5 us** (871 recorded 125.7) against `p.bul` bare **160.3 / 160.0 / 160.1** (871 recorded
+  **312.2**). The `= true` arm is unchanged and the bare arm improved ~1.95x, so something between
+  871 and HEAD closed most of it; **not bisected**, because the useful fact is that the target is
+  gone. **A fifth kind of stale entry: not retracted, not built, OVERTAKEN by unrelated work** —
+  item 941's audit could not catch this one, since nothing in the file contradicts 871 and the
+  engine simply moved underneath it. The TS twin was separately fixed at item 875 (`truthProps`),
+  so the whole bare-bool family is now closed on both engines.
+- **⚠️ OPEN, NEWLY PRICED — `p.bul = false` costs 3.18x `NOT p.bul` in the NATIVE engine, row
+  matched (item 946).** The census could not see this for want of one arm: `NOT p.bul` keeps
+  196,000 rows and `= true` keeps 4,000, so they were never comparable. `= false` is the
+  row-matched twin — same survivors, same answer, one spelling apart — and reads **683.0 / 682.7 /
+  683.4 us against NOT's 214.1 / 214.6 / 214.7**, stable to 1.001x. **Survivor count is excluded as
+  the cause**: `NOT p.bul` keeps the same 196,000 for 214.7 us, so rows cannot explain a 3.18x the
+  other 196,000-row spelling does not pay. Warm-cache-relevant execution path.
+- **MIRRORED DIRECTION between the engines on the boolean pair (item 946).** Item 873's TS census
+  measured the same two spellings: `NOT p.bul` **5.020 ms** against `p.bul = false` **3.749** — so
+  **TS pays for NOT and native pays for `= false`**, opposite ways round. Item 843's taxonomy
+  records "same gap different cause" (843), "same gap MIRRORED direction" (868) and "gap in one
+  engine only" (870); this is a fourth instance of the mirrored kind. **Neither engine's fix
+  transfers**, and a change to either must not be assumed to help the other.
+- **NOT DIAGNOSED, and the next step is named: dump the PLAN first (item 946).** No claim is made
+  about why `= false` is slower natively. The obvious guess — a pattern list one spelling reaches
+  and the other misses — is the shape of guess items 936-939 got wrong four times running, and
+  **item 871's own entry already records the applicable rule**: _"check the plan before believing a
+  fast path is the target"_, after a `PLAN=1` dump showed two spellings of a date predicate
+  lowering to `IndexSeek` against `Filter`. Start with a plan dump of both spellings.
+- **METHOD — a census row is unreadable without a ROW-MATCHED twin (item 946).** `filtercensus_871`
+  carried `= true`, bare and `NOT` but no `= false`, so its `NOT` row could only be compared against
+  a 4,000-row arm and the 3.18x sat invisible from item 871 until now. When a census varies a
+  predicate's SPELLING, every row needs a sibling that keeps the same number of rows, or the
+  comparison measures selectivity as much as the spelling.
