@@ -23,6 +23,58 @@ use crate::value::{self, Value};
 /// same) and produces the row's output `Value` — both reading the column directly,
 /// borrowing a `&str` for the key rather than boxing or cloning per row. A `Dict`
 /// column keys on its decoded string, exactly as a `Str` would.
+/// A temporal's STRUCTURAL key — the fields its `format` renders — or `None` for a kind whose
+/// render-injectivity is not established.
+///
+/// **Why injectivity is the whole question (items 840/847/1015).** The general DISTINCT path keys
+/// a temporal by `group_key`, which uses `t.format()`: RENDER equality. Keying on fields instead
+/// is STRUCTURAL equality. Substituting one for the other is only answer-preserving where
+/// `format` is injective — otherwise two values that render alike would land in different groups.
+/// Item 847 established that for `Date` and left the rest on the general path, which cost
+/// `RETURN DISTINCT <datetime>` **38,511 us against the Date arm's 814** at 200,000 rows
+/// (`temporal_distinct_1015`); zoned read 52,914.
+///
+/// The other four are injective too, and `temporal.rs` is where that is read off rather than
+/// assumed:
+///
+/// * `fmt_frac` zero-pads `nanos` to nine digits then trims trailing zeros — `""` for 0 and
+///   distinct for every other value, so no two `nanos` share a rendering.
+/// * `fmt_year` pads to four digits and WIDENS beyond that; `civil_from_days` is a bijection on
+///   `days`, and a time-of-day splits into `h/m/s` by division. So a `DateTime`'s `(secs, nanos)`
+///   is recoverable from its rendering.
+/// * `fmt_offset` renders whole minutes as `Z` or `±HH:MM` with `{:02}`, which also widens rather
+///   than truncates. A zoned kind renders its LOCAL value plus that offset, and the stored
+///   instant is the local value minus the offset — so `(secs, nanos, offset)` is recoverable.
+///
+/// `Duration` is NOT admitted: its four fields (`months`, `days`, `secs`, `nanos`) are not
+/// independent under rendering in the way the above are, and nothing here needed it enough to
+/// prove. It stays on the general path at a measured 11.3 ms, which is a stop with a number on
+/// it rather than an assumption.
+fn temporal_struct_key(t: crate::temporal::Temporal) -> Option<(i64, u32, i16)> {
+    use crate::temporal::Temporal as T;
+
+    match t {
+        T::Date(d) => Some((i64::from(d.days), 0, 0)),
+        T::Time(v) => Some((i64::from(v.secs), v.nanos, 0)),
+        T::DateTime(v) => Some((v.secs, v.nanos, 0)),
+        T::ZonedTime(v) => Some((i64::from(v.secs), v.nanos, v.offset)),
+        T::ZonedDateTime(v) => Some((v.secs, v.nanos, v.offset)),
+        T::Duration(_) => None,
+    }
+}
+
+/// Whether a packed temporal COLUMN of this kind can be keyed structurally.
+///
+/// DERIVED from `temporal_struct_key` rather than listing the kinds again. Written as its own
+/// `matches!` on `Duration` it was a SECOND place holding one decision, and a mutant admitting
+/// `Duration` to `temporal_struct_key` then survived the whole suite — the kind gate still
+/// rejected the column, so the arm was dead code and the mutant was equivalent. Asking the key
+/// itself (via the kind's canonical zero, whose fields no arm inspects) makes the two agree by
+/// construction, and makes that mutant reachable and caught.
+fn temporal_kind_keyable(k: crate::temporal::TemporalKind) -> bool {
+    temporal_struct_key(k.zero()).is_some()
+}
+
 /// One column's contribution to a composite DISTINCT key — the typed alternative to the
 /// byte-key, so a high-card Str cell hashes as a BORROWED `&str` (no per-node byte copy). The
 /// key tuple is positional, so parts of different types never need a discriminating tag.
@@ -33,8 +85,8 @@ enum KeyPart<'a> {
     Num(u64),
     Code(u32),
     Str(&'a str),
-    /// A `Date`'s epoch-day count — the whole value (item 847).
-    Date(i32),
+    /// A temporal's structural key (items 847/1015) — see `temporal_struct_key`.
+    Temporal((i64, u32, i16)),
 }
 
 enum ColKeyer<'a> {
@@ -55,8 +107,9 @@ enum ColKeyer<'a> {
         data: &'a [bool],
         present: &'a [bool],
     },
-    /// A packed temporal column of kind `Date` (item 847). Only `Date`: see `of`.
-    Date {
+    /// A packed temporal column of any structurally-keyable kind (item 847 for `Date`, item
+    /// 1015 for the rest; `Duration` excluded). See `temporal_struct_key`.
+    Temporal {
         data: &'a [crate::temporal::Temporal],
         present: &'a [bool],
     },
@@ -98,11 +151,11 @@ impl<'a> ColKeyer<'a> {
             // same group, which is exactly what keying both as `Absent`/tag 0 does — the `Num`
             // arm has always ignored its own `nulls` vector for the same reason.
             Column::Temporal {
-                kind: crate::temporal::TemporalKind::Date,
+                kind,
                 data,
                 present,
                 ..
-            } => Some(Self::Date { data, present }),
+            } if temporal_kind_keyable(*kind) => Some(Self::Temporal { data, present }),
             _ => None,
         }
     }
@@ -143,7 +196,7 @@ impl<'a> ColKeyer<'a> {
                     out.push(0);
                 }
             }
-            Self::Date { data, present } => {
+            Self::Temporal { data, present } => {
                 if present[i] {
                     // Tag 9 with the epoch-day count, the same deviation the `Dict` arm above
                     // makes for the same reason: a key is only ever compared with keys this
@@ -153,15 +206,17 @@ impl<'a> ColKeyer<'a> {
                     // path's.
                     out.push(9);
 
-                    match data[i] {
-                        crate::temporal::Temporal::Date(d) => {
-                            out.extend_from_slice(&d.days.to_le_bytes());
+                    match temporal_struct_key(data[i]) {
+                        Some((a, b, c)) => {
+                            out.extend_from_slice(&a.to_le_bytes());
+                            out.extend_from_slice(&b.to_le_bytes());
+                            out.extend_from_slice(&c.to_le_bytes());
                         }
-                        // Unreachable: `of` admits only a Date-kind column and a column holds one
-                        // kind. Keyed as absent rather than silently dropped, so a future change
-                        // that broke that invariant would merge groups loudly in a test rather
-                        // than produce a key that ignores the cell.
-                        _ => out.push(0),
+                        // Unreachable: `of` admits only a structurally-keyable kind and a column
+                        // holds one kind. Keyed as absent rather than silently dropped, so a
+                        // future change that broke that invariant would merge groups loudly in a
+                        // test rather than produce a key that ignores the cell.
+                        None => out.push(0),
                     }
                 } else {
                     out.push(0);
@@ -215,8 +270,8 @@ impl<'a> ColKeyer<'a> {
                     KeyPart::Absent
                 }
             }
-            Self::Date { data, present } => match (present[i], data[i]) {
-                (true, crate::temporal::Temporal::Date(d)) => KeyPart::Date(d.days),
+            Self::Temporal { data, present } => match (present[i], temporal_struct_key(data[i])) {
+                (true, Some(k)) => KeyPart::Temporal(k),
                 _ => KeyPart::Absent,
             },
         }
@@ -258,7 +313,7 @@ impl<'a> ColKeyer<'a> {
                     Value::Null
                 }
             }
-            Self::Date { data, present } => {
+            Self::Temporal { data, present } => {
                 if present[i] {
                     Value::Temporal(data[i])
                 } else {
@@ -719,7 +774,12 @@ pub(super) fn try_distinct_frontier_multi(input: &Plan, store: &Store) -> Option
     // for a raw Str/Num the byte-key here loses to its `FnvSet<&str>` / f64-bits set. The
     // byte-key only pays off when it skips a Dict DECODE (a low-card code, 4 bytes) or when
     // a composite (multi-column) key is unavoidable anyway.
-    if readers.len() == 1 && !matches!(readers[0], ColKeyer::Dict { .. } | ColKeyer::Date { .. }) {
+    if readers.len() == 1
+        && !matches!(
+            readers[0],
+            ColKeyer::Dict { .. } | ColKeyer::Temporal { .. }
+        )
+    {
         return None;
     }
     // A pure Scan/Expand chain yields just the endpoint ids (no intermediate slots
@@ -1008,6 +1068,10 @@ pub(super) fn try_distinct_scan_prop(input: &Plan, store: &Store) -> Option<Batc
         // The NULL handling is this path's own and not the Gremlin one's: GQL `DISTINCT p.k`
         // treats an absent property as a NULL VALUE and emits it once, where `values(k).dedup()`
         // drops the row. That is the `saw_null` branch every arm here carries.
+        // `Date` KEEPS ITS OWN ARM, narrower than the general one below. Generalizing it to the
+        // `(i64, u32, i16)` tuple cost this column **813.5 -> 1633.4 us**, 2.0x, measured by the
+        // probe's own control row — a 14-byte hash key where 4 bytes carry the whole value. The
+        // controls are there to catch exactly this, and they did.
         Column::Temporal {
             kind: crate::temporal::TemporalKind::Date,
             data,
@@ -1020,6 +1084,27 @@ pub(super) fn try_distinct_scan_prop(input: &Plan, store: &Store) -> Option<Batc
                 if present[i] {
                     if let crate::temporal::Temporal::Date(d) = data[i] {
                         if seen.insert(d.days) {
+                            out.push(Value::Temporal(data[i]));
+                        }
+                    }
+                } else if !saw_null {
+                    saw_null = true;
+                    out.push(Value::Null);
+                }
+            });
+        }
+        Column::Temporal {
+            kind,
+            data,
+            present,
+            ..
+        } if temporal_kind_keyable(*kind) => {
+            let mut seen: FnvSet<(i64, u32, i16)> = FnvSet::default();
+
+            scan_visit(store, label, |i| {
+                if present[i] {
+                    if let Some(k) = temporal_struct_key(data[i]) {
+                        if seen.insert(k) {
                             out.push(Value::Temporal(data[i]));
                         }
                     }

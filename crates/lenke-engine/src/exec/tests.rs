@@ -3998,6 +3998,227 @@ fn distinct_rows_over_a_date_column() {
     }
 }
 
+/// `RETURN DISTINCT` over the NON-DATE temporal kinds — item 1015's keyer.
+///
+/// Item 847 admitted only `Date`, because the general path keys a temporal by `format()` (RENDER
+/// equality) while a field key is STRUCTURAL, and the two coincide only where `format` is
+/// injective. Item 1015 read that off `temporal.rs` for `Time`, `DateTime`, `ZonedTime` and
+/// `ZonedDateTime` and admitted them; `Duration` is still declined.
+///
+/// **The oracle is the general path itself.** Every shape below is asserted against its own
+/// `WHERE true` twin (item 570), so the test states the actual claim — that substituting a
+/// structural key changes no answer — rather than restating the keyer's arithmetic. A kind whose
+/// `format` were NOT injective would show up here as the fast path splitting a group the general
+/// path merges.
+#[test]
+fn distinct_rows_over_the_non_date_temporal_kinds() {
+    use crate::temporal::{DateTime, Duration, Temporal, Time, ZonedDateTime, ZonedTime};
+
+    // Each fixture holds values that differ in ONE field only, so a key dropping that field
+    // merges groups the general path keeps — and the `WHERE true` comparison catches it.
+    let cases: Vec<(&str, Vec<Temporal>)> = vec![
+        (
+            "time",
+            vec![
+                Temporal::Time(Time {
+                    secs: 3600,
+                    nanos: 0,
+                }),
+                // NANOS alone.
+                Temporal::Time(Time {
+                    secs: 3600,
+                    nanos: 1,
+                }),
+                // ...and a nanos value whose rendering trims trailing zeros, which is the step
+                // `fmt_frac` injectivity turns on.
+                Temporal::Time(Time {
+                    secs: 3600,
+                    nanos: 100_000_000,
+                }),
+                Temporal::Time(Time {
+                    secs: 3601,
+                    nanos: 0,
+                }),
+            ],
+        ),
+        (
+            "dt",
+            vec![
+                Temporal::DateTime(DateTime {
+                    secs: 1_700_000_000,
+                    nanos: 0,
+                }),
+                Temporal::DateTime(DateTime {
+                    secs: 1_700_000_000,
+                    nanos: 1,
+                }),
+                Temporal::DateTime(DateTime {
+                    secs: 1_700_000_001,
+                    nanos: 0,
+                }),
+                // A PRE-EPOCH instant, where `format` floor-divides — the arithmetic most likely
+                // to differ between the two paths.
+                Temporal::DateTime(DateTime { secs: -1, nanos: 0 }),
+            ],
+        ),
+        (
+            "zdt",
+            vec![
+                Temporal::ZonedDateTime(ZonedDateTime {
+                    secs: 1_700_000_000,
+                    nanos: 0,
+                    offset: 0,
+                }),
+                // OFFSET alone. These two name the SAME instant and render differently, so the
+                // general path keeps them apart and so must the structural key.
+                Temporal::ZonedDateTime(ZonedDateTime {
+                    secs: 1_700_000_000,
+                    nanos: 0,
+                    offset: 60,
+                }),
+                Temporal::ZonedDateTime(ZonedDateTime {
+                    secs: 1_700_000_000,
+                    nanos: 0,
+                    offset: -60,
+                }),
+                Temporal::ZonedDateTime(ZonedDateTime {
+                    secs: 1_700_000_000,
+                    nanos: 5,
+                    offset: 60,
+                }),
+            ],
+        ),
+        (
+            "zt",
+            vec![
+                Temporal::ZonedTime(ZonedTime {
+                    secs: 3600,
+                    nanos: 0,
+                    offset: 0,
+                }),
+                Temporal::ZonedTime(ZonedTime {
+                    secs: 3600,
+                    nanos: 0,
+                    offset: 90,
+                }),
+                Temporal::ZonedTime(ZonedTime {
+                    secs: 3600,
+                    nanos: 7,
+                    offset: 90,
+                }),
+                Temporal::ZonedTime(ZonedTime {
+                    secs: 3660,
+                    nanos: 0,
+                    offset: 0,
+                }),
+            ],
+        ),
+        // DECLINED, and asserted anyway: a `Duration` column must keep answering correctly
+        // through the general path. If it is ever admitted, these assertions are what say the
+        // admission was sound.
+        (
+            "dur",
+            vec![
+                Temporal::Duration(Duration {
+                    months: 0,
+                    days: 0,
+                    secs: 0,
+                    nanos: 0,
+                }),
+                Temporal::Duration(Duration {
+                    months: 1,
+                    days: 0,
+                    secs: 0,
+                    nanos: 0,
+                }),
+                Temporal::Duration(Duration {
+                    months: 0,
+                    days: 1,
+                    secs: 0,
+                    nanos: 0,
+                }),
+                Temporal::Duration(Duration {
+                    months: 0,
+                    days: 0,
+                    secs: 0,
+                    nanos: 1,
+                }),
+            ],
+        ),
+    ];
+
+    for (key, vals) in cases {
+        let mut b = Builder::default();
+        let src = b.node(&["S"], &[("n", n(0.0))]);
+        // Every target shares `score`, so a TWO-COLUMN key over the hop frontier (the `key_part`
+        // path) is distinguished ONLY by the temporal — the gap item 847's test was written for.
+        for t in &vals {
+            let id = b.node(&["P"], &[(key, Value::Temporal(*t)), ("score", n(1.0))]);
+            b.edge(src, id, "E");
+        }
+        // A duplicate of the first, so dedup has work to do, and one target with the property
+        // ABSENT, which GQL emits as a single NULL.
+        let dup = b.node(
+            &["P"],
+            &[(key, Value::Temporal(vals[0])), ("score", n(1.0))],
+        );
+        b.edge(src, dup, "E");
+        b.node(&["P"], &[("score", n(1.0))]);
+
+        let store = b.build();
+
+        assert!(
+            matches!(
+                store.column(key),
+                Some(crate::store::Column::Temporal { .. })
+            ),
+            "{key} must be a packed temporal column, or this tests nothing"
+        );
+
+        let rows = |q: &str| {
+            let batch = run(&crate::gql::parse(q).unwrap(), &store);
+            let mut out: Vec<String> = batch
+                .rows
+                .iter()
+                .map(|r| {
+                    r.iter()
+                        .map(|v| match v {
+                            Value::Temporal(t) => t.format(),
+                            other => format!("{other:?}"),
+                        })
+                        .collect::<Vec<_>>()
+                        .join("|")
+                })
+                .collect();
+            out.sort();
+            out
+        };
+
+        for shape in [
+            format!("MATCH (a:S)-[:E]->(b:P) RETURN DISTINCT b.{key} AS h, b.score AS s"),
+            format!("MATCH (a:S)-[:E]->(b:P) RETURN DISTINCT b.{key} AS h"),
+            format!("MATCH (b:P) RETURN DISTINCT b.{key} AS h"),
+        ] {
+            let general = shape.replacen("RETURN", "WHERE true RETURN", 1);
+
+            assert_eq!(
+                rows(&shape),
+                rows(&general),
+                "fast and general paths disagree for {shape}"
+            );
+            // ...and the four values really are four groups, so an all-merging key cannot pass by
+            // agreeing with a general path that was never exercised.
+            let want = if shape.starts_with("MATCH (b:P)") {
+                5
+            } else {
+                4
+            };
+
+            assert_eq!(rows(&shape).len(), want, "wrong group count for {shape}");
+        }
+    }
+}
+
 /// `GROUP BY <date>` — item 848's grouping arms, on a scan and on a hop frontier, plus the MIXED
 /// column that must not take them.
 ///

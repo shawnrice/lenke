@@ -29213,6 +29213,35 @@ multiTypeEdgeCount === 0`) — one named type cannot double-count. Native's `Adj
   differential and answer assertion in the repo. It is caught only by asserting on the selector
   itself (`fused_hop_shape(..).is_some()`) in both directions. Second instance of the hazard after
   1008's degree-reader pin.
+- **✅ SHIPPED (Rust) — `RETURN DISTINCT <temporal>` for every kind but `Duration`, up to 33.8x
+  (item 1015).** `distinct.rs`'s `ColKeyer` had item 847's `Date` arm and `_ => None` for the
+  rest. Three alternated rounds, 200,000 rows / 1,000 distinct: `time` **18,098 → 1,645
+  (11.0x)**, `datetime` 39,071 → 1,617 (24.2x), `zoned` 56,433 → 1,649 (**33.8x**), `zonedtime`
+  29,920 → 1,662 (17.8x); num/str/date controls flat.
+- **THE RUST BLOCKER WAS SEMANTIC, NOT CONVENIENCE — AND IT HAD TO BE PROVED (item 1015).** Unlike
+  TS's item 850 note, item 840's was a correctness constraint: the general path keys a temporal by
+  `format()` (RENDER equality) and a field key is STRUCTURAL, so they coincide only where `format`
+  is injective. Established by READING `temporal.rs`: `fmt_frac` pads to 9 digits then trims
+  trailing zeros, `fmt_year` and `fmt_offset` widen rather than truncate, `civil_from_days` is a
+  bijection, and a zoned kind's instant is recoverable from its rendered local value minus its
+  rendered offset. `Duration` NOT admitted — its four fields are not independent under rendering.
+- **A SURVIVING MUTANT CAN MEAN THE CODE IS WRONG, NOT THE TEST MISSING (item 1015).** Admitting
+  `Duration` to `temporal_struct_key` survived the whole suite — because `temporal_kind_keyable`
+  was a SECOND `matches!` holding the same decision, so the arm was unreachable dead code.
+  Deriving the gate from the key (`temporal_struct_key(k.zero()).is_some()`) makes the two agree
+  by construction and the mutant is then CAUGHT. The survivor bought a design fix, not a test.
+- **GENERALIZING A NARROW KEY COST THE ARM THAT ALREADY HAD ONE (item 1015).** Folding `Date` into
+  the shared `(i64, u32, i16)` tuple cost that column **813.5 → 1,633.4 us (2.0x)** — a 14-byte
+  hash key where 4 bytes carry the whole value. `Date` keeps its own arm. Caught by the probe's
+  own control row on the first run.
+- **➡️ `count(DISTINCT <temporal>)` STILL HAS THE DATE-ONLY GATE (item 1015)**, in a different
+  path: the aggregate form reads **38 ms** for `datetime` in BOTH arms while the scan form went
+  24x. Same split items 840/847 drew for `Date`. Next item.
+- **PIN THE ORACLE, NOT THE ARITHMETIC (item 1015).** The new test asserts every shape against its
+  own `WHERE true` twin (item 570), so it states the claim — a structural key changes no answer —
+  instead of restating the keyer. A non-injective kind appears as the fast path SPLITTING a group
+  the general path merges. `Duration` is asserted too, though declined, so a future admission has
+  its evidence ready.
 - **✅ SHIPPED (TS) — `LocalDateTime` and `LocalTime` raw-keyed, 3.3-5.6x (item 1014).** Item 850
   raw-keyed `LocalDate` and stopped, saying the other kinds "have more than one field and no
   single raw key" — true of the FIELDS, not the VALUE, and never priced. A `LocalTime` IS one
