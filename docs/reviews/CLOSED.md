@@ -27559,8 +27559,9 @@ contributes nothing` — the far-driven mistake reports 2 where the answer is 1,
   problem". With a NON-VACUOUS `:Q` label — required, because an all-`:P` fixture answers the
   unfiltered shape from the bucket size in 0.01 ms and measures no walk — over 20,000 candidates:
   walk with no predicate **far 119 / start 121 ns**, walk + 1 conjunct **far 217 / start 157**.
-- **⚠️ OPEN, NEW AND SPECIFIC — the far walk's predicate term is 2.7x the start walk's, between two
-  functions written as mirrors (item 938).** 98 ns a candidate against 36. Both do the same work per
+- **⚠️ REFUTED AT ITEM 939, DO NOT ACT ON THIS — the far walk's predicate term is 2.7x the start
+  walk's (item 938).** It is 1.48x against a 2.20x noise floor; the four arms were one unalternated
+  round. Kept for the delta-of-deltas lesson only. 98 ns a candidate against 36. Both do the same work per
   candidate (label test, `binding.set`, `asTruth(pred.fn(env))` inside a `try` whose `catch`
   re-throws only when the degree is non-zero, `degreeOfTypes`), so 62 ns is not symmetry. **NOT
   attributed:** candidates are the `try` frame, the binding write, whether one side reaches a lifted
@@ -27576,3 +27577,39 @@ contributes nothing` — the far-driven mistake reports 2 where the answer is 1,
   in MECHANISM and three successive attributions have failed.** Each attempt was cheap because it
   shipped as measurement rather than as a change, and the measured facts accumulate even as the
   explanations are retracted — which is the argument for the priced-not-built outcome existing at all.
+- **⚠️ REFUTED — item 938's "far predicate 2.7x the start walk's" does not survive alternated rounds
+  (item 939).** Four arms, four alternated rounds, each divided by its own 20,000 candidates and
+  asserted to answer 60,000: `farFloor` min **86** ns/cand (86/97/117/94, self-var 1.37x), `farPred`
+  **117** (126/117/118/188, 1.60x), `startFloor` **84** (101/184/95/84, **2.20x**), `startPred`
+  **105** (119/112/127/105, 1.21x). Predicate shares **32 ns far against 21 start = 1.48x, under a
+  2.20x worst-arm noise floor** — not a reading. 938's single round was a bad sample; every absolute
+  number moved (119/217/121/157 → 86/117/84/105).
+- **RULE — a DIFFERENCE OF DIFFERENCES needs its own noise floor, and usually cannot clear one
+  (item 939).** 938 derived its headline as `(farPred − farFloor)` against
+  `(startPred − startFloor)`, compounding four readings into two deltas and then comparing those.
+  Arms of 84-117 ns cannot support a claim about a 20-30 ns delta. **And the error was internal to
+  one item: 938 alternated its conjunct-slope measurement over three rounds and did NOT alternate
+  the floor pair — the unalternated half produced the headline.** Apply the rounds to every arm of
+  an item or to none.
+- **READING SETTLES WHAT THE TIMINGS COULD NOT: the two hop walks are symmetric (item 939).**
+  `startOnlyHopCount` and `farOnlyHopCount` are structurally identical — same
+  `hopSeek ?? candidateVertexSource`, same `matchesLabel`, the same `try` holding `inlineHolds` /
+  `binding.set` / `asTruth(pred.fn(env))`, the same `catch` re-throwing only when
+  `degreeOfTypes(boxOf(v), types) > 0`, one `degreeOfTypes` on the happy path — differing only in
+  which adjacency box they read. And the boxes are symmetric in `@lenke/core`'s `Vertex`:
+  `adjFrom ??= edgesFromByLabel.get(id)` against `adjTo ??= edgesToByLabel.get(id)`, both cached.
+  **There was no mechanism for a 2.7x**, which should have made the number suspect before a fifth
+  item was spent on it.
+- **CHAIN CLOSED — the GQL hop-predicate cost, four items and no change (item 939).** SOLID, because
+  alternated and clearing their floors: the two hop walks cost **290-305 ns a vertex** with a
+  one-conjunct predicate at 200,000 candidates and the mirrors agree (far 290/292/300, start
+  305/291/304); the **marginal conjunct is ~30 ns** for the second and ~0 for the third, so most of
+  the per-vertex cost is fixed; and the cross-surface screen reading is real (`post:1` GQL 60.26
+  against Gremlin 29.09) with `farOnlyHopCount` confirmed as GQL's route. **NOT ESTABLISHED:** which
+  component of the ~270 ns fixed cost dominates. Three attributions have failed (936 FALSE, 937
+  INVALID, 938 REFUTED) and this instrument cannot resolve 20-60 ns effects against arms that
+  self-vary 1.2-2.2x. **Do not attempt a fourth attribution by timing subtraction.** A future attempt
+  needs a profiler on the real query — which no item in this chain used — or a microbenchmark
+  isolating ONE component (the `try` frame, the `binding.set`, the `pred.fn` call, the
+  `degreeOfTypes`). The repo's own rule was available and ignored: anything under ~10% needs its own
+  isolated harness.
