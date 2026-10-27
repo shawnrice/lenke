@@ -28746,3 +28746,19 @@ disagree on the ANSWER` — item 984 confirmed through the repo's own gate.
 - **That keeps it an OPTIMIZATION rather than the design call item 949 named.** 949's option (1)
   was a type PRIOR — changing planner behaviour on a guess — and it declined to take it. This is
   949's option (2), "make the statistic available", which decides on the data in front of it.
+- **THE CONSTANT for item 978's finding A, measured (item 988).** `FRACS=…` makes
+  `seekcross_948` sample between its decades, which it could not do before — and the crossover
+  sits in the gap the old set jumped: **break-even ~6-7%** (1% 0.83x seek, 5% 0.95x seek, 6%
+  0.98x tie, 8% 1.04x, 12% 1.15x FILTER). So the gate wants **~0.06, well below
+  `SEEK_MAX_FRACTION` (0.154)** — it must not be spelled as a reuse of the hash-index threshold.
+- **⚠️ E75's justification for the unconditional no-index seed is STALE (item 988).** It rests on
+  one point — _"194.7us on a 20%-selectivity key against 291.7us for the `Filter(Scan)`"_, 0.67x
+  with the seek winning. That same row today is **236.2 / 168.1 = 1.41x with the FILTER winning**:
+  the filter arm nearly halved while the seek arm did not improve. (At 0.84 ns/row that arm is the
+  bool fast path; items 982 and 875 are the candidates, not established here.) **A planner
+  constant justified by a single point expires silently when the other arm gets faster.**
+- **The fix is Bool-SCOPED, and that is a measured limit not a hedge (item 988).** The curve is
+  bool only; the un-indexed Num and Str curves are unmeasured, so `unindexed_eq_fraction` answers
+  `None` for every other type and leaves them on today's behaviour. It is also where the win is: a
+  bool column has two values, so high-selectivity equality is the COMMON case, where on a
+  near-unique Str/Num key equality sits far below any break-even anyway.

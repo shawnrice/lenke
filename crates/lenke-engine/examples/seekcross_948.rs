@@ -36,6 +36,24 @@ use std::time::Instant;
 /// The true-fractions swept, as percentages.
 const FRACTIONS: [u32; 7] = [2, 10, 20, 40, 60, 80, 98];
 
+/// `FRACS=2,3,4,5,6,8` overrides the swept percentages (item 988).
+///
+/// The default set answers "which way does each decade go"; it CANNOT locate a crossover that
+/// falls between two of its points, and after item 982 made the bare-bool filter arm faster this
+/// one does — the sweep flips between 2% and 10% with nothing in between. A constant read off a
+/// gap between samples is a guess, so the instrument has to be able to sample the gap.
+fn fractions() -> Vec<u32> {
+    std::env::var("FRACS").ok().map_or_else(
+        || FRACTIONS.to_vec(),
+        |s| {
+            s.split(',')
+                .filter_map(|p| p.trim().parse::<u32>().ok())
+                .filter(|p| *p > 0 && *p < 100)
+                .collect()
+        },
+    )
+}
+
 fn key_of(pct: u32) -> String {
     format!("b{pct:02}")
 }
@@ -47,13 +65,13 @@ fn key_of(pct: u32) -> String {
 /// measures the NO-INDEX degraded seek; `scan_is_cheap`, the thing that would be widened, is on
 /// the INDEXED path — all four of its call sites are behind an index check — so the un-indexed
 /// curve cannot price it. This mode is the missing half.
-fn fixture(n: u32) -> Store {
+fn fixture(n: u32, fracs: &[u32]) -> Store {
     let mut b = Builder::default();
     for i in 0..n {
         // Scattered rather than a prefix: `97` is coprime with 100, so each column's true rows are
         // spread across the whole id space instead of forming one contiguous block.
         let spread = (i * 97) % 100;
-        let props: Vec<(String, Value)> = FRACTIONS
+        let props: Vec<(String, Value)> = fracs
             .iter()
             .map(|pct| (key_of(*pct), Value::Bool(spread < *pct)))
             .collect();
@@ -116,10 +134,11 @@ fn main() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(9);
-    let mut store = fixture(n);
+    let fracs = fractions();
+    let mut store = fixture(n, &fracs);
 
     if std::env::var("INDEXED").is_ok() {
-        for pct in FRACTIONS {
+        for pct in fracs.iter().copied() {
             store.create_index(&key_of(pct));
         }
         println!("# INDEXED: a hash index on every swept key\n");
@@ -127,7 +146,7 @@ fn main() {
     let store = store;
 
     if std::env::var("PLAN").is_ok() {
-        for pct in FRACTIONS {
+        for pct in fracs.iter().copied() {
             let k = key_of(pct);
             for q in [
                 format!("MATCH (p:P) WHERE p.{k} = true RETURN count(*) AS c"),
@@ -145,7 +164,7 @@ fn main() {
     println!("# {n} nodes, min of {reps} (us). Both spellings select the SAME rows.\n");
     println!("  true%   seek(= true)   filter(bare)    seek/filter   rows   winner");
 
-    for pct in FRACTIONS {
+    for pct in fracs.iter().copied() {
         let k = key_of(pct);
         let seek = probe_routed(
             &format!("MATCH (p:P) WHERE p.{k} = true RETURN count(*) AS c"),
