@@ -13,6 +13,7 @@ import {
   gt,
   has,
   hasLabel,
+  identity,
   in_,
   out,
   toArray,
@@ -27,6 +28,21 @@ import {
 // question through the general walk. `dedupe()` over a frontier that is already distinct is the
 // identity, so `V().hasLabel(L).dedupe().count()` must equal `V().hasLabel(L).count()` while
 // taking a completely different route. Arithmetic from the known fixture backs it up.
+//
+// THE HOP DECLINES USE `identity()`, AND ITEM 930 IS WHY THEY HAD TO CHANGE. They used to force
+// the decline by DUPLICATING the filter — `out('E'), has('k', gt(1)), has('k', gt(1))` — which was
+// answer-equivalent (the predicate is idempotent) and pushed `mid.length` past the rung's
+// `!== 2` arity gate. Item 930 taught that rung to fold a CHAIN of filters, so every one of those
+// ten comparisons silently became the shortcut against ITSELF: the whole suite stayed green
+// because both sides had moved to the same route. `identity()` is a step `countShortcut` does not
+// recognise at all, so it cannot be absorbed by a future widening of which FILTERS are foldable.
+//
+// The lesson is the file's, not just the item's: **an oracle built from a shape the optimizer is
+// allowed to learn will eventually stop being an oracle, and it fails SILENTLY — green, and
+// comparing one route to itself.** Items 921 and 923 are the same failure from the other side (a
+// corpus that does not construct the dangerous case, and a size gate that hid the code it
+// guarded). Force a decline with a step that is semantically inert, never with a shape the rung
+// might one day accept.
 
 const EDGES: readonly (readonly [number, number, string])[] = [
   [0, 1, 'E'],
@@ -53,7 +69,11 @@ const build = (): Graph => {
       // Q only. |P| = 4, |Q| = 3, union = 6.
       id: `v${i}`,
       labels: [...LABELS[i]],
-      properties: { k: i },
+      // `j` is a SECOND key, added for item 930's filter-chain cases. Every case before them
+      // tests one key twice, which a fold that ignored `key` and reused the first filter's would
+      // still pass. It is `k` doubled so its thresholds are distinct from `k`'s, and nothing that
+      // predates it filters on `j`, so no existing count moves.
+      properties: { k: i, j: i * 2 },
     }),
   );
 
@@ -401,7 +421,7 @@ describe('a filtered hop count is answered from the far side', () => {
 
     expect(n(g, V(), out('E'), has('k', gt(1)), count())).toBe(3);
     expect(n(g, V(), out('E'), has('k', gt(1)), count())).toBe(
-      declined(g, V(), out('E'), has('k', gt(1)), has('k', gt(1)), count()),
+      declined(g, V(), out('E'), has('k', gt(1)), identity(), count()),
     );
   });
 
@@ -422,7 +442,7 @@ describe('a filtered hop count is answered from the far side', () => {
 
     expect(n(g, V(), in_('E'), has('k', gt(1)), count())).toBe(1);
     expect(n(g, V(), in_('E'), has('k', gt(1)), count())).toBe(
-      declined(g, V(), in_('E'), has('k', gt(1)), has('k', gt(1)), count()),
+      declined(g, V(), in_('E'), has('k', gt(1)), identity(), count()),
     );
   });
 
@@ -432,7 +452,7 @@ describe('a filtered hop count is answered from the far side', () => {
 
     expect(n(g, V(), out(), has('k', gt(1)), count())).toBe(3);
     expect(n(g, V(), out(), has('k', gt(1)), count())).toBe(
-      declined(g, V(), out(), has('k', gt(1)), has('k', gt(1)), count()),
+      declined(g, V(), out(), has('k', gt(1)), identity(), count()),
     );
   });
 
@@ -447,7 +467,7 @@ describe('a filtered hop count is answered from the far side', () => {
 
     expect(n(g, V(), out(), has('k', gt(0)), count())).toBe(6);
     expect(n(g, V(), out(), has('k', gt(0)), count())).toBe(
-      declined(g, V(), out(), has('k', gt(0)), has('k', gt(0)), count()),
+      declined(g, V(), out(), has('k', gt(0)), identity(), count()),
     );
   });
 
@@ -456,7 +476,7 @@ describe('a filtered hop count is answered from the far side', () => {
 
     expect(n(g, V(), out('E', 'F'), has('k', gt(1)), count())).toBe(3);
     expect(n(g, V(), out('E', 'F'), has('k', gt(1)), count())).toBe(
-      declined(g, V(), out('E', 'F'), has('k', gt(1)), has('k', gt(1)), count()),
+      declined(g, V(), out('E', 'F'), has('k', gt(1)), identity(), count()),
     );
   });
 
@@ -481,7 +501,7 @@ describe('a filtered hop count is answered from the far side', () => {
 
     expect(g.multiTypeEdgeCount).toBeGreaterThan(0);
     expect(n(g, V(), out('E', 'F'), has('k', gt(1)), count())).toBe(
-      declined(g, V(), out('E', 'F'), has('k', gt(1)), has('k', gt(1)), count()),
+      declined(g, V(), out('E', 'F'), has('k', gt(1)), identity(), count()),
     );
   });
 
@@ -492,7 +512,7 @@ describe('a filtered hop count is answered from the far side', () => {
 
     expect(n(g, V(), out('E'), has('k', gt(2)), count())).toBe(1);
     expect(n(g, V(), out('E'), has('k', gt(2)), count())).toBe(
-      declined(g, V(), out('E'), has('k', gt(2)), has('k', gt(2)), count()),
+      declined(g, V(), out('E'), has('k', gt(2)), identity(), count()),
     );
   });
 
@@ -501,7 +521,104 @@ describe('a filtered hop count is answered from the far side', () => {
     const g = build();
 
     expect(n(g, V(), both('E'), has('k', gt(1)), count())).toBe(
-      declined(g, V(), both('E'), has('k', gt(1)), has('k', gt(1)), count()),
+      declined(g, V(), both('E'), has('k', gt(1)), identity(), count()),
+    );
+  });
+
+  // ITEM 930 — A CHAIN of filters after the hop. This route did not exist before, so nothing
+  // below was covered by anything: the rung's `mid.length !== 2` gate sent every one of these
+  // shapes to the general walk. Each case is here because it is a way the fold can be wrong that
+  // a single-filter test cannot see.
+
+  test('TWO filters on the SAME key intersect, and are not the first alone', () => {
+    // Far ends of out('E') are 1, 2, 2, 3 -> k = 1, 2, 2, 3.
+    // gt(1) keeps {2,2,3} = 3.  gt(2) keeps {3} = 1.  Together: 1, NOT 3.
+    const g = build();
+
+    expect(n(g, V(), out('E'), has('k', gt(1)), has('k', gt(2)), count())).toBe(1);
+    expect(n(g, V(), out('E'), has('k', gt(1)), has('k', gt(2)), count())).toBe(
+      declined(g, V(), out('E'), has('k', gt(1)), has('k', gt(2)), identity(), count()),
+    );
+  });
+
+  test('the filters are ANDed, not ORed — the order of the pair does not change the answer', () => {
+    // An OR would read 3 here, and a fold that kept only the LAST filter would read 1 both ways
+    // while being wrong for the pair below. Reversing the pair is the discriminator.
+    const g = build();
+
+    expect(n(g, V(), out('E'), has('k', gt(2)), has('k', gt(1)), count())).toBe(1);
+    expect(n(g, V(), out('E'), has('k', gt(1)), has('k', gt(2)), count())).toBe(
+      n(g, V(), out('E'), has('k', gt(2)), has('k', gt(1)), count()),
+    );
+  });
+
+  test('filters on DIFFERENT keys both apply', () => {
+    // Every case above tests one key twice, which a fold that ignored `key` and reused the first
+    // would still pass. `j` is k doubled, so `gt(4)` on it keeps only k=3.
+    const g = build();
+
+    expect(n(g, V(), out('E'), has('k', gt(1)), has('j', gt(4)), count())).toBe(1);
+    expect(n(g, V(), out('E'), has('k', gt(1)), has('j', gt(4)), count())).toBe(
+      declined(g, V(), out('E'), has('k', gt(1)), has('j', gt(4)), identity(), count()),
+    );
+  });
+
+  test('THREE filters chain, so the fold is not two-at-a-time', () => {
+    const g = build();
+
+    expect(n(g, V(), out('E'), has('k', gt(0)), has('k', gt(1)), has('k', gt(2)), count())).toBe(1);
+    expect(n(g, V(), out('E'), has('k', gt(0)), has('k', gt(1)), has('k', gt(2)), count())).toBe(
+      declined(
+        g,
+        V(),
+        out('E'),
+        has('k', gt(0)),
+        has('k', gt(1)),
+        has('k', gt(2)),
+        identity(),
+        count(),
+      ),
+    );
+  });
+
+  test('a chain whose far vertex contributes its WHOLE degree still does so', () => {
+    // Vertex 2 is the far end of two `E` edges. Both filters keep it, so the pair must contribute
+    // 2 — counting the vertex once instead of its degree is the mistake the far-side drive makes
+    // available, and it is reachable through the chain exactly as through one filter.
+    const g = build();
+
+    expect(n(g, V(), out('E'), has('k', gt(1)), has('k', gt(1)), count())).toBe(3);
+    expect(n(g, V(), out('E'), has('k', gt(1)), has('k', gt(1)), count())).toBe(
+      declined(g, V(), out('E'), has('k', gt(1)), has('k', gt(1)), identity(), count()),
+    );
+  });
+
+  test('a chain on the MULTI-TYPE edge arm agrees with the general walk', () => {
+    // The second arm of `filteredHopCount` — several named types with an edge carrying two of
+    // them — is a separate loop over edge buckets and folds the chain separately. A test that
+    // only drove the far side would leave it uncovered.
+    const g = build();
+    const vs = toArray(traversal(V()), g) as ReturnType<Graph['addVertex']>[];
+
+    g.addEdge({ from: vs[4], to: vs[2], labels: ['E', 'F'], properties: {} });
+
+    expect(g.multiTypeEdgeCount).toBeGreaterThan(0);
+    expect(n(g, V(), out('E', 'F'), has('k', gt(1)), has('k', gt(2)), count())).toBe(
+      declined(g, V(), out('E', 'F'), has('k', gt(1)), has('k', gt(2)), identity(), count()),
+    );
+  });
+
+  test('a chain containing a NON-`has` step declines, so `dedupe` keeps its own rung', () => {
+    // `filteredHopCount` must return undefined unless EVERY step after the hop is a `has`, or
+    // `distinctHopCount` below it becomes unreachable and `out(E).dedupe().count()` changes
+    // answer. This is the guard on the widening, not a property of it.
+    const g = build();
+
+    expect(n(g, V(), out('E'), dedupe(), count())).toBe(
+      declined(g, V(), out('E'), dedupe(), identity(), count()),
+    );
+    expect(n(g, V(), out('E'), has('k', gt(1)), dedupe(), count())).toBe(
+      declined(g, V(), out('E'), has('k', gt(1)), dedupe(), identity(), count()),
     );
   });
 });
@@ -534,7 +651,7 @@ describe('the filtered hop count agrees with the general walk on a cross-type co
 
       expect(n(g, V(), out('E'), has('k', gt(0)), count())).toBe(1);
       expect(n(g, V(), out('E'), has('k', gt(0)), count())).toBe(
-        declined(g, V(), out('E'), has('k', gt(0)), has('k', gt(0)), count()),
+        declined(g, V(), out('E'), has('k', gt(0)), identity(), count()),
       );
     }
   });
@@ -544,7 +661,7 @@ describe('the filtered hop count agrees with the general walk on a cross-type co
       const g = mixed(withEdge);
 
       expect(n(g, V(), out('E'), has('k', gt('aa')), count())).toBe(
-        declined(g, V(), out('E'), has('k', gt('aa')), has('k', gt('aa')), count()),
+        declined(g, V(), out('E'), has('k', gt('aa')), identity(), count()),
       );
     }
   });

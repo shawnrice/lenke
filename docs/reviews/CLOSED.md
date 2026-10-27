@@ -27167,3 +27167,60 @@ p` at **1.54x FASTER** and `query/shortest repeat-group unread` at **0.81x slowe
   prints a clean report, the fourth check this session built against that failure mode). Measured
   order effect: **≤0.12x** on every pair, consistent in sign — too small to have caused 928, large
   enough to keep alternating.
+- **SHIPPED — a hop followed by MORE THAN ONE `has()` fell off the Gremlin count shortcut: 4.73-4.85x
+  (item 930).** `countShortcut`'s hop+filter rung sat behind `if (mid.length !== 2)`, so
+  `out(E).has(k,p1)` reached it and `out(E).has(k,p1).has(k,p2)` fell off the end of every rung to
+  the general traversal. Measured as a **cliff, not a slope**: the Gremlin arm steps **+220.62 ms**
+  between one and two conjuncts and then only +8.43 ms/conjunct, where the GQL twin pays +4.89 then
+  +4.04 — so the cross-surface gap **INVERTS**, GQL 2.14x slower at one filter and ~4x faster at two.
+  Fixed by folding a chain; PRE/POST by swapping the BUILT BUNDLE, 4 alternated rounds: conj 2/3/4
+  read **4.73x / 4.85x / 4.75x** with the GQL ladder as the control the change cannot reach, flat at
+  0.99-1.06x against a 1.16x worst arm self-variance. **There was no semantic obstacle and the
+  siblings prove it:** `filterChainCount` had folded an arbitrary-length chain for the no-hop shape
+  since it was written, and `startFilteredHopCount` already folds an arbitrary chain BEFORE the hop.
+  Only the post-hop side was gated.
+- **RULE — an oracle built from a shape the optimizer is allowed to learn will stop being an oracle,
+  and it fails SILENTLY (item 930).** `count-shortcut.test.ts` tests a route CHOICE, which is
+  answer-equivalent, so its design is a forced decline. For the hop rungs it forced that decline by
+  **duplicating the filter** (`out('E'), has('k', gt(1)), has('k', gt(1))`) — answer-equivalent, and
+  effective only because it pushed `mid.length` past the arity gate. **That is the exact shape item
+  930 taught the rung to absorb**, so all **10** `declined(...)` comparisons silently became the
+  shortcut against ITSELF and the suite stayed green at 828 pass. Nothing went red; the oracle just
+  stopped being one, and it was found by READING the helper. Repaired with `identity()`, a step
+  `countShortcut` does not model at all and so cannot be absorbed by a future widening of which
+  FILTERS are foldable. Third instance this session after 921 (a corpus that does not construct the
+  dangerous case) and 923 (a size gate that hid the code it guarded), and the first where **the
+  optimization itself disarmed the test**. Force a decline with a semantically inert step, never with
+  a shape a rung might one day accept.
+- **CORRECTED — `matches` CANNOT throw, and `count-shortcut.ts` claimed it could (item 930).** The
+  comment above `filteredHopCount` justified its raise-parity argument with "`matches` can throw (a
+  cross-type comparison, mirroring TinkerPop's `ClassCastException`)". Every ordering predicate in
+  `predicates.ts` reads `value != null && predCmp(...) > 0` and `predCmp` returns `NaN` for a
+  cross-type pair, so an incomparable or missing value is **FILTERED**. `count-shortcut.test.ts` had
+  already found this and says so — "two tests were written asserting a throw, both failed" — so the
+  source and the tests disagreed for some time. Consequence for new work on this rung: a written-order
+  short-circuit over a filter chain is **not observable** here, confirmed by a mutant that removes it
+  SURVIVING 835 tests as predicted. Keep it for the cheaper work and for parity with the
+  step-by-step walk, not for fault parity.
+- **REJECTED, with numbers — duplicating `filteredHopCount` per arity to erase a ≤5% residue
+  (item 930).** Folding the chain cost the one-filter shape a real **1.14x** at first (PRE
+  [28 28 27 29] ms vs POST [31 31 30 31], non-overlapping). A `filters.length === 1` early return
+  inside the helper recovered almost nothing (0.88x → 0.91x), which **refuted the iterator-allocation
+  guess** and left the per-vertex CALL as the cause; hoisting the branch out of the loop took it to
+  0.93x. A dedicated 8-round instrument on that one shape then read median **0.956x — ~4.6%, under
+  its own 8.6% noise floor, ranges overlapping.** Splitting the function into a single-filter copy
+  plus a chain sibling would drive it to zero by construction, at ~60 duplicated lines across both
+  the vertex-driven and edge-driven loops, to chase an effect **no instrument here can resolve** —
+  so the fix's success would be unverifiable. Shipped trade: 4.7-4.9x on two or more filters for an
+  unresolvable ≤5% on one. Four independent A/B runs all put PRE marginally ahead (0.88, 0.91, 0.93,
+  0.956), so treat the residue as a small real cost rather than zero.
+- **⚠️ OPEN, NEW: filters on BOTH sides of a hop still decline the count shortcut (item 930).**
+  `V().has(x,p).out(E).has(k,q)` gives `mid = [has, out, has]`, and neither half's chain-folding
+  reaches it: `filteredHopCount` needs `mid[0]` to be the hop, `startFilteredHopCount` needs the hop
+  LAST, and `filterChainCount` rejects the `out`. The hop is in the middle, so the shape falls through
+  every rung to the general traversal. Named and NOT priced — the ~220 ms cliff item 930 removed is
+  the measured size of one such miss, so this is worth pricing before anything smaller.
+- **⚠️ OPEN, NEW: the RUST engine is unmeasured for the hop+filter-chain shape (item 930).** Item 930
+  moved the TS Gremlin surface only. The native engine lowers both surfaces to one `ir::Plan`, so the
+  question is whether its own count fast-path carries a comparable arity gate. Item 930's TS cliff
+  was 11.15x on the raw shape, which is the scale that makes this worth checking rather than assuming.

@@ -152,11 +152,26 @@ export const countShortcut = (plan: Plan, graph: Graph): number | undefined => {
     return chained;
   }
 
+  // A hop followed by a CHAIN of one or more `has` filters (item 930). This was gated behind
+  // `mid.length !== 2` — exactly one filter — and a second `has` fell off the end of every rung to
+  // the general traversal at 11.15x. `filteredHopCount` returns `undefined` unless every step
+  // after the hop is a `has`, so `dedupe` still reaches `distinctHopCount` below.
+  if (mid.length < 2) {
+    return undefined;
+  }
+
+  const filtered = filteredHopCount(mid[0], mid.slice(1), graph);
+
+  if (filtered !== undefined) {
+    return filtered;
+  }
+
+  // `distinctHopCount` is the [hop, dedupe] pair and takes exactly two.
   if (mid.length !== 2) {
     return undefined;
   }
 
-  return filteredHopCount(mid[0], mid[1], graph) ?? distinctHopCount(mid[0], mid[1], graph);
+  return distinctHopCount(mid[0], mid[1], graph);
 };
 
 /**
@@ -239,6 +254,49 @@ const hasAny = (
 };
 
 /**
+ * Every `has` in a chain, tested against one element's properties IN WRITTEN ORDER and
+ * SHORT-CIRCUITING on the first failure.
+ *
+ * THE SHORT-CIRCUIT IS NOT OBSERVABLE TODAY, AND THE REASON IS WORTH WRITING DOWN, because the
+ * comment on `filteredHopCount` below asserts the opposite and is wrong. It says raise parity is a
+ * live concern because "`matches` can throw (a cross-type comparison, mirroring TinkerPop's
+ * `ClassCastException`)". **`matches` cannot throw.** Every ordering predicate in `predicates.ts`
+ * reads `value != null && predCmp(...) > 0`, and `predCmp` returns `NaN` for a cross-type pair, so
+ * an incomparable or missing value is FILTERED, never raised — which is TinkerPop's `has()`
+ * behaviour too. `count-shortcut.test.ts` found this independently and says so: two tests were
+ * written asserting a throw and "both failed: `has` filters the incomparable value out instead".
+ *
+ * So evaluating every filter unconditionally would be answer-equivalent AND fault-equivalent here,
+ * and a mutant that removes the short-circuit is expected to SURVIVE the suite. It is kept anyway,
+ * for two reasons that are honest about being non-observable:
+ *
+ *   - it is strictly less work, since a rejected element stops at its first failing predicate, and
+ *   - it is what the step-by-step traversal does, so if a predicate that CAN fault is ever added
+ *     (`compareValues` throws today, for `max`/`min`), this rung does not silently diverge.
+ *
+ * Same shape as `filterChainCount`'s `&& ok` loop, and as the written-order short-circuit items
+ * 258/259 settled for AND on the GQL side — where it IS observable, because that path can fault.
+ */
+const allMatch = (
+  filters: readonly Extract<Step, { kind: 'has' }>[],
+  props: Readonly<Record<string, unknown>>,
+): boolean => {
+  // ONLY EVER CALLED WITH TWO OR MORE FILTERS. `filteredHopCount` hoists the one-filter test into
+  // its own loops, so a `filters.length === 1` fast path in here would be unreachable — it was
+  // tried and removed. Worth recording WHY, because the first guess was wrong: routing the common
+  // single-filter shape through this function cost it 1.14x, and an early return here recovered
+  // 0.88x -> 0.91x, almost nothing. That refuted the iterator-allocation guess and left the
+  // per-vertex CALL itself as the cause, which only hoisting out of the loop can remove.
+  for (const f of filters) {
+    if (!matches(f.pred, props[f.key])) {
+      return false;
+    }
+  }
+
+  return true;
+};
+
+/**
  * `V().out(T).has(k, pred).count()` — walk the edge bucket and tally, with no
  * traversers at all.
  *
@@ -253,16 +311,55 @@ const hasAny = (
  * visits exactly the same far endpoints in the same multiset — the count cannot
  * differ, only the cost.
  */
-const filteredHopCount = (hop: Step, filter: Step, graph: Graph): number | undefined => {
+const filteredHopCount = (hop: Step, rest: readonly Step[], graph: Graph): number | undefined => {
   if (hop.kind !== 'out' && hop.kind !== 'in') {
     return undefined; // `both` double-counts a self-loop; see `vertexStepCount`
   }
 
-  // A `has` with a predicate on ONE key, and nothing else. `hasLabel` and the
+  // ONE OR MORE `has` steps, each a predicate on one key, and nothing else. `hasLabel` and the
   // other filters have their own semantics and are not this shape.
-  if (filter.kind !== 'has') {
+  //
+  // THE CHAIN, not just a single filter, since item 930. `countShortcut` gated this rung behind
+  // `mid.length !== 2`, so `out(E).has(k,p1)` reached it and `out(E).has(k,p1).has(k,p2)` fell off
+  // the end to the general traversal — measured at 200,000 vertices / 600,000 edges, one shape per
+  // process, median of 11:
+  //
+  //   V().hasLabel(P).out(E).has(k,>-1).count()                  25.6 ms
+  //   V().hasLabel(P).out(E).has(k,>-1).has(k,>-2).count()      285.4       11.15x
+  //   V().hasLabel(P).has(k,>-1).has(k,>-2).count()               6.0   (no hop: already folded)
+  //   V().hasLabel(P).has(k,>-1).has(k,>-2).has(k,>-3).count()    6.7   (any length, likewise)
+  //
+  // `filterChainCount` had folded an arbitrary-length chain for the NO-HOP shape since it was
+  // written, so the cliff was this rung's arity limit alone and not a semantic obstacle. It is the
+  // same class as the spelling cliffs CLAUDE.md names: two conjuncts after a hop mean exactly what
+  // one conjunction means, and cost 11x.
+  const filters: Extract<Step, { kind: 'has' }>[] = [];
+
+  for (const step of rest) {
+    if (step.kind !== 'has') {
+      return undefined;
+    }
+
+    filters.push(step);
+  }
+
+  if (filters.length === 0) {
     return undefined;
   }
+
+  // THE ONE-FILTER TEST IS HOISTED INLINE, measured twice because the first attempt barely worked.
+  // Routing the common single-filter shape through `allMatch` cost it 1.14x (PRE [28 28 27 29] ms
+  // against POST [31 31 30 31], four alternated rounds, GQL control flat at 0.97-1.06x). An early
+  // `filters.length === 1` return INSIDE `allMatch` recovered almost none of it — 0.88x to 0.91x —
+  // which refuted the iterator-allocation guess and left the per-vertex CALL as the cause: 200,000
+  // extra non-inlined calls plus the array indexing to reach `pred`/`key`.
+  //
+  // So the branch is taken ONCE, here, and the single-filter arm reads the two fields straight out
+  // of locals in the loop below exactly as the pre-change code did. `undefined` means "a chain, use
+  // `allMatch`"; the loops stay single-copy rather than duplicated per arity.
+  const only = filters.length === 1 ? filters[0] : undefined;
+  const onlyKey = only?.key ?? '';
+  const onlyPred = only?.pred;
 
   const forward = hop.kind === 'out';
 
@@ -283,11 +380,17 @@ const filteredHopCount = (hop: Step, filter: Step, graph: Graph): number | undef
   // that type gives the identical total — the same argument the edge-driven walk relies on,
   // read from the other end. A COUNT is order-free, so nothing observable moves.
   //
-  // RAISE PARITY comes free here, unlike the GQL twin (item 164): `matches` can throw (a
-  // cross-type comparison, mirroring TinkerPop's `ClassCastException`), and the predicate is
-  // evaluated for exactly the vertices carrying at least one edge of the queried type — which
-  // is exactly the set of far endpoints the edge walk visits. No vertex gains or loses an
-  // evaluation, so no fault appears or disappears.
+  // RAISE PARITY comes free here, unlike the GQL twin (item 164): the predicate is evaluated for
+  // exactly the vertices carrying at least one edge of the queried type — which is exactly the set
+  // of far endpoints the edge walk visits. No vertex gains or loses an evaluation, so no fault
+  // appears or disappears.
+  //
+  // CORRECTED at item 930: this comment used to give the reason as "`matches` can throw (a
+  // cross-type comparison, mirroring TinkerPop's `ClassCastException`)". It cannot — every
+  // ordering predicate in `predicates.ts` filters an incomparable or missing value out via a `NaN`
+  // from `predCmp`, and `count-shortcut.test.ts` records two tests written to assert a throw that
+  // both failed for that reason. The evaluated-set argument above is the real content and stands
+  // on its own; the throw it invoked does not exist. See `allMatch`.
   if (hop.labels.length === 1 || graph.multiTypeEdgeCount === 0) {
     let n = 0;
 
@@ -316,7 +419,11 @@ const filteredHopCount = (hop: Step, filter: Step, graph: Graph): number | undef
         continue;
       }
 
-      if (matches(filter.pred, v.properties[filter.key])) {
+      if (
+        onlyPred === undefined
+          ? allMatch(filters, v.properties)
+          : matches(onlyPred, v.properties[onlyKey])
+      ) {
         n += deg;
       }
 
@@ -365,7 +472,11 @@ const filteredHopCount = (hop: Step, filter: Step, graph: Graph): number | undef
     for (const edge of bucket) {
       const far = forward ? edge.to : edge.from;
 
-      if (matches(filter.pred, far.properties[filter.key])) {
+      if (
+        onlyPred === undefined
+          ? allMatch(filters, far.properties)
+          : matches(onlyPred, far.properties[onlyKey])
+      ) {
         n += 1;
       }
     }

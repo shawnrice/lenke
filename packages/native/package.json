@@ -48,6 +48,8 @@
     "xref": "bun xref-probe.ts",
     "probe:scalar": "bun scalarfn-probe.ts",
     "probe:surface": "bun surface-probe.ts",
+    "probe:hopladder": "bun hop-filter-ladder-probe.ts",
+    "probe:hopmap": "bun hop-filter-route-map-probe.ts",
     "probe:elemread": "bun elemread-probe.ts",
     "probe:adjlayout": "bun adjlayout-probe.ts"
   },
