@@ -2214,6 +2214,49 @@ impl Store {
         self.props.get(key)
     }
 
+    /// How many nodes carry a BOOL `key` equal to `value`, counted straight off the column and
+    /// SATURATED at `cap + 1` (item 988).
+    ///
+    /// Prices the no-index equality seed, which has no bucket to measure — `index_bucket_len`
+    /// answers `None` there, so before this the planner seeded UNCONDITIONALLY on the strength of
+    /// one measured point that has since reversed (item 988). Counting a `Vec<bool>` is the
+    /// cheapest statistic this store can produce and needs no new state.
+    ///
+    /// Two `None`s would be a bug, so there is only one: `None` means **not applicable** (no such
+    /// column, not `Bool`, or a non-`Bool` literal) and leaves the caller on its existing
+    /// behaviour, while "more than `cap`" returns `Some(cap + 1)` — a real count the caller
+    /// compares against its threshold like any other. Collapsing those two into `None` would make
+    /// an unselective predicate seed, which is the exact defect this prices.
+    ///
+    /// Saturating is also what bounds the cost where it matters: a predicate matching 80% of the
+    /// graph stops after ~`cap` rows. The selective case still walks the column, which is the
+    /// O(N) item 986 priced as acceptable because `parse_cache` holds the optimized plan, so it
+    /// is paid once per distinct query text rather than per execution.
+    ///
+    /// The count is over the column, which is indexed by node id and so may include deleted
+    /// nodes. That biases the estimate UPWARD and therefore toward declining a seek, never toward
+    /// taking one it should not; intersecting with liveness per row would cost more than the
+    /// decision is worth.
+    #[must_use]
+    pub fn bool_eq_count_capped(&self, key: &str, value: &Value, cap: usize) -> Option<usize> {
+        let Value::Bool(want) = value else {
+            return None;
+        };
+        let Some(Column::Bool { data, present, .. }) = self.props.get(key) else {
+            return None;
+        };
+        let mut n = 0usize;
+        for (i, p) in present.iter().enumerate() {
+            if *p && data[i] == *want {
+                n += 1;
+                if n > cap {
+                    return Some(n);
+                }
+            }
+        }
+        Some(n)
+    }
+
     /// Is a SCAN of `key` unusually cheap — i.e. is the column DICTIONARY-encoded, so a
     /// predicate compares `u32` codes rather than values?
     ///

@@ -3604,3 +3604,127 @@ fn a_group_variable_string_subscript_is_not_a_field_read() {
         "today's answers for both spellings on a GROUP variable"
     );
 }
+
+/// A stub oracle that answers the no-index seed question with a CHOSEN fraction (item 989).
+///
+/// The point of testing against a stub rather than a `Store` is that a route choice is
+/// answer-equivalent: every mutant of the threshold comparison in `unindexed_eq_seek_worth_it`
+/// returns the same ROWS and so survives the whole differential and fuzz suite. The arithmetic
+/// therefore needs a test that reads the DECISION, which means being able to hand it a fraction
+/// either side of the constant without building a fixture that happens to have one.
+struct FracOracle {
+    frac: Option<f64>,
+    nodes: usize,
+}
+
+impl IndexOracle for FracOracle {
+    fn has_hash_index(&self, _key: &str) -> bool {
+        false
+    }
+    fn has_range_index(&self, _key: &str) -> bool {
+        false
+    }
+    fn live_nodes(&self) -> Option<usize> {
+        Some(self.nodes)
+    }
+    fn unindexed_eq_fraction(&self, _key: &str, _value: &Value) -> Option<f64> {
+        self.frac
+    }
+}
+
+fn worth_it(frac: Option<f64>, nodes: usize) -> bool {
+    unindexed_eq_seek_worth_it(&FracOracle { frac, nodes }, "b", &Value::Bool(true))
+}
+
+/// The no-index seed gate decides on the MEASURED break-even, and declining is a real outcome.
+///
+/// Item 988 measured the crossover at ~6-7% of the graph (seek 0.95x the filter at 5%, 1.04x at
+/// 8%), which is where [`UNINDEXED_SEEK_MAX_FRACTION`] sits. Before item 989 this half of
+/// `eq_seek_worth_it` was the constant `true`, so the assertions that matter are the ones that
+/// expect FALSE — a mutant restoring the old unconditional seed fails exactly those.
+#[test]
+fn the_unindexed_equality_seed_declines_past_its_measured_break_even() {
+    let big = 200_000;
+    let cap = UNINDEXED_SEEK_MAX_FRACTION;
+
+    // Comfortably selective: the degraded seek wins, so seed.
+    assert!(worth_it(Some(0.01), big), "1% must seed");
+    assert!(worth_it(Some(cap / 2.0), big), "half the cap must seed");
+
+    // ON the boundary. The comparison is `<=`, so the cap itself seeds; a mutant flipping it to
+    // `<` fails here and nowhere else in the suite.
+    assert!(worth_it(Some(cap), big), "exactly the cap must seed");
+
+    // Past it: this is the 3.22x cliff item 985 flagged, and declining is the fix.
+    assert!(
+        !worth_it(Some(cap + 0.001), big),
+        "just past the cap must DECLINE"
+    );
+    assert!(!worth_it(Some(0.20), big), "20% must DECLINE");
+    assert!(!worth_it(Some(0.98), big), "98% must DECLINE");
+
+    // ABSOLUTE points off item 988's measured curve, which the relative assertions above CANNOT
+    // supply: they are written in terms of `UNINDEXED_SEEK_MAX_FRACTION`, so they move with it
+    // and a mutant that widens the constant passes them all. (Verified — that mutant SURVIVED
+    // the first version of this test.) These two are the measurement itself: at 5% the seek was
+    // 0.95x the filter and must be taken, at 8% it was 1.04x and must not be.
+    assert!(worth_it(Some(0.05), big), "5% measured 0.95x — seek");
+    assert!(!worth_it(Some(0.08), big), "8% measured 1.04x — FILTER");
+
+    // UNPRICEABLE is not the same as unselective. `None` means the oracle cannot answer — a
+    // non-`Bool` column, whose un-indexed curve is unmeasured — and must keep the old behaviour.
+    // A mutant collapsing the two (`is_none_or` -> `is_some_and`) fails here, and it is the
+    // failure mode that would silently de-seed every Str and Num key in the engine.
+    assert!(worth_it(None, big), "an unpriceable key must keep seeding");
+
+    // The small-graph floor, shared with `seek_beats_scan`: below it neither route is
+    // measurable, so the gate must not churn the plan.
+    assert!(
+        worth_it(Some(0.98), SEEK_FLOOR_NODES - 1),
+        "below the floor even 98% must seed"
+    );
+    assert!(
+        !worth_it(Some(0.98), SEEK_FLOOR_NODES),
+        "at the floor the gate applies"
+    );
+}
+
+/// The store-side statistic distinguishes "cannot answer" from "too many", which is the one
+/// place a single `None` would have been a bug (item 989).
+#[test]
+fn the_bool_count_saturates_rather_than_giving_up() {
+    let mut b = Builder::default();
+    for i in 0..1000u32 {
+        b.node(
+            &["P"],
+            &[
+                ("b", Value::Bool(i % 10 == 0)),
+                ("s", Value::Str("x".into())),
+            ],
+        );
+    }
+    let store = b.build();
+
+    // An exact count under the cap.
+    assert_eq!(
+        store.bool_eq_count_capped("b", &Value::Bool(true), 500),
+        Some(100)
+    );
+    // Over the cap it SATURATES at cap + 1 — a number the caller can compare, not a `None` the
+    // caller would read as "unpriceable" and seed on.
+    assert_eq!(
+        store.bool_eq_count_capped("b", &Value::Bool(false), 500),
+        Some(501)
+    );
+    // Not applicable, each for its own reason: no such column, a non-bool column, and a
+    // non-bool literal against a bool column.
+    assert_eq!(
+        store.bool_eq_count_capped("nope", &Value::Bool(true), 500),
+        None
+    );
+    assert_eq!(
+        store.bool_eq_count_capped("s", &Value::Bool(true), 500),
+        None
+    );
+    assert_eq!(store.bool_eq_count_capped("b", &Value::Num(1.0), 500), None);
+}

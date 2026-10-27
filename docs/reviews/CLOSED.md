@@ -28762,3 +28762,31 @@ disagree on the ANSWER` — item 984 confirmed through the repo's own gate.
   `None` for every other type and leaves them on today's behaviour. It is also where the win is: a
   bool column has two values, so high-selectivity equality is the COMMON case, where on a
   near-unique Str/Num key equality sits far below any break-even anyway.
+- **✅ SHIPPED — item 978's finding A, open since item 948 (item 989).** `eq_seek_worth_it`'s
+  no-index half was the literal `true`; it now asks the oracle, which prices a `Bool` column by
+  counting it. **3.22x → 1.00x at 98% selectivity**, 2.87x → 1.01x at 80%, with the
+  sub-break-even rows untouched (131.9 against 131.9 at 1%, 154.1 against 154.0 at 5%) — the
+  control is inside the sweep. `spelling_probe` is back to **NO PERF CLIFFS**; item 985's flagged
+  group reads 0.099 / 0.099 / 0.099 against 0.095 / 0.265 / 0.257.
+- **The statistic needs TWO distinct failure answers, and one `None` would have been the bug
+  (item 989).** `bool_eq_count_capped` SATURATES at `cap + 1` for "too many" and reserves `None`
+  for "not applicable" (no column, not `Bool`, non-`Bool` literal). Collapsing them would make an
+  unselective predicate seed — the exact defect being fixed.
+- **⚠️ KNOWN COST, measured not argued (item 989).** The gate runs at PLAN time, which the
+  execution sweep cannot see; `PLANTIME=1` on `seekcross_948` prices it: a SELECTIVE bool key
+  costs **81.6 us** on a cold plan against **0.4 us** for a string control the gate declines on
+  type, because proving a column selective means reading all of it. Saturation bounds the
+  unselective case to 6.6 us. The cost falls on the case the gate keeps SEEKING and the win on
+  the case it now DECLINES; `parse_cache` makes it once per distinct query text.
+- **OPEN, with a design: bound the plan-time cost with a STRIDED SAMPLE (item 989).** Constant
+  work, deterministic (so byte-identity is unaffected), and its estimation error is worst exactly
+  at the boundary — where the two routes are within 2% of each other and a wrong choice costs
+  nothing. Deliberately NOT folded into 989, so each change keeps a clean before/after.
+- **A route choice is answer-equivalent, so the gate needed its own test — and the first version
+  had NO TEETH on the constant (item 989).** 5 mutants, first run: M2 and M5 caught, M1/M3
+  NOT-APPLIED (the anchor assertion catching a bad `sed`), and **M4 — widening the constant to
+  `SEEK_MAX_FRACTION` — SURVIVED**, because the test's boundary was written as
+  `UNINDEXED_SEEK_MAX_FRACTION` and moved with it. Fixed with ABSOLUTE points off item 988's
+  curve (5% must seek, 8% must not). Second trap: the anchor check used a BRE, where
+  `#[allow(unreachable_code)]` is a bracket expression, so an applied mutant read as not-applied;
+  with `grep -F` the set is **5/5 caught**.

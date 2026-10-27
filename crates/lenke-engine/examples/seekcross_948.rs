@@ -75,8 +75,11 @@ fn fixture(n: u32, fracs: &[u32]) -> Store {
             .iter()
             .map(|pct| (key_of(*pct), Value::Bool(spread < *pct)))
             .collect();
-        let borrowed: Vec<(&str, Value)> =
+        let mut borrowed: Vec<(&str, Value)> =
             props.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
+        // A STRING column, for `PLANTIME`'s control: the gate declines on it by type, so it
+        // isolates the gate's dispatch from the column scan the bool keys pay (item 989).
+        borrowed.push(("tag", Value::Str(format!("t{spread:02}").into())));
         b.node(&["P"], &borrowed);
     }
     b.build()
@@ -156,6 +159,57 @@ fn main() {
                 let plan = lenke_engine::opt::optimize_indexed(raw, &store);
                 println!("\nQ: {q}\n{plan:?}");
             }
+        }
+        return;
+    }
+
+    // `PLANTIME=1`: what the no-index gate costs the OPTIMIZER (item 989).
+    //
+    // The sweep below optimizes once and times only execution, so it cannot see this at all. The
+    // gate counts the bool column to price the seed, which is O(min(N, cap)) — bounded where the
+    // predicate is unselective (it saturates) and a FULL column walk where it is selective, which
+    // is the case the gate goes on to seed anyway. That cost is real and lands on a COLD plan, so
+    // it needs its own number rather than an argument.
+    //
+    // The control is the same query shape over a STRING key: `unindexed_eq_fraction` answers
+    // `None` for a non-bool column after a map lookup and a type check, so the control is the
+    // gate's own dispatch minus its scan, and the difference between the columns is the scan.
+    if std::env::var("PLANTIME").is_ok() {
+        println!("# item 989 — what the no-index gate costs at PLAN time ({n} nodes, min of {reps} us)\n");
+        println!("  key          optimize(us)   note");
+        let reps = reps.max(50);
+        let mut cases: Vec<(String, String)> = fracs
+            .iter()
+            .map(|pct| {
+                (
+                    format!("b{pct:02} (bool)"),
+                    format!(
+                        "MATCH (p:P) WHERE p.{} = true RETURN count(*) AS c",
+                        key_of(*pct)
+                    ),
+                )
+            })
+            .collect();
+        cases.push((
+            "tag (string)".to_string(),
+            "MATCH (p:P) WHERE p.tag = 'zz' RETURN count(*) AS c".to_string(),
+        ));
+        for (name, q) in cases {
+            let raw = lenke_engine::gql::parse(&q).unwrap();
+            let mut best = f64::MAX;
+            for _ in 0..reps {
+                let r = raw.clone();
+                let t = Instant::now();
+                let plan = lenke_engine::opt::optimize_indexed(r, &store);
+                best = best.min(t.elapsed().as_secs_f64() * 1e6);
+                std::hint::black_box(&plan);
+            }
+            let note = if name.ends_with("(string)") {
+                "CONTROL — the gate declines on type, no scan"
+            } else {
+                ""
+            };
+            println!("  {name:12}   {best:12.1}   {note}");
         }
         return;
     }

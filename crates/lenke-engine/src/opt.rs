@@ -66,6 +66,29 @@ const SEEK_MAX_FRACTION: f64 = 0.154;
 /// paying when `seedspell_401` flagged it.
 const SEEK_MAX_FRACTION_CHEAP_SCAN: f64 = 0.031;
 
+/// Break-even for the NO-INDEX degraded seek against the `Filter(Scan)` it replaces (item 988).
+///
+/// A DIFFERENT pair of routes from [`SEEK_MAX_FRACTION`], and deliberately not spelled as a reuse
+/// of it. That constant prices a hash-index seek against a scan; this one prices the typed column
+/// scan `index_seek_ids` degrades to, whose cost is the id list it materializes and then gathers.
+///
+/// Measured at 200,000 nodes, min of 9, over a bool column whose true rows are scattered
+/// (`seekcross_948`, `FRACS=1,2,3,4,5,6,8,12`):
+///
+/// ```text
+///   true%     1      3      5      6      8     12
+///   seek/filter   0.83x  0.89x  0.95x  0.98x  1.04x  1.15x
+/// ```
+///
+/// The seek arm climbs with the match count while the filter arm is flat — 160 to 167 us across
+/// a 50x change in selectivity — so they cross at ~6-7%.
+///
+/// This REPLACES a rule that seeded unconditionally on one point, E75's *"194.7us on a
+/// 20%-selectivity key against 291.7us for the `Filter(Scan)`"*. That same row now reads
+/// 236.2/168.1 — the filter arm nearly halved while the seek arm did not improve, so the point
+/// that justified seeding now argues against it.
+const UNINDEXED_SEEK_MAX_FRACTION: f64 = 0.06;
+
 pub trait IndexOracle {
     /// A hash index exists on the exact (possibly dotted) property path `key`.
     fn has_hash_index(&self, key: &str) -> bool;
@@ -92,6 +115,16 @@ pub trait IndexOracle {
     /// selective predicate and a LOSS on an unselective one. Defaults to `None`, so
     /// an oracle that cannot answer simply declines the rewrite.
     fn seed_fraction(&self, _key: &str, _op: crate::ir::CompareOp, _value: &Value) -> Option<f64> {
+        None
+    }
+
+    /// What fraction of the graph `key = value` selects when there is NO hash index, or `None`
+    /// when the oracle cannot say — in which case the caller keeps its existing behaviour.
+    ///
+    /// A separate question from [`IndexOracle::seed_fraction`], which prices the INDEXED seek and
+    /// answers `None` here because it has no bucket to measure. Defaults to `None`, so a
+    /// store-less oracle plans exactly as before.
+    fn unindexed_eq_fraction(&self, _key: &str, _value: &Value) -> Option<f64> {
         None
     }
 }
@@ -141,6 +174,16 @@ impl IndexOracle for crate::store::Store {
     }
     fn scan_is_cheap(&self, key: &str) -> bool {
         Store::scan_is_cheap(self, key)
+    }
+
+    fn unindexed_eq_fraction(&self, key: &str, value: &Value) -> Option<f64> {
+        let live = self.live_node_count();
+        if live == 0 {
+            return None;
+        }
+        let cap = (live as f64 * UNINDEXED_SEEK_MAX_FRACTION).ceil() as usize;
+        let n = self.bool_eq_count_capped(key, value, cap)?;
+        Some(n as f64 / live as f64)
     }
 }
 
@@ -3586,7 +3629,31 @@ fn seek_beats_scan(idx: &dyn IndexOracle, key: &str, op: CompareOp, value: &Valu
 /// batch overhead. Closing it wants a scan that takes a pushed-down predicate (which
 /// the scan-fallback seek effectively IS), not a different index decision; see E75.
 fn eq_seek_worth_it(idx: &dyn IndexOracle, key: &str, value: &Value) -> bool {
-    !idx.has_hash_index(key) || seek_beats_scan(idx, key, CompareOp::Eq, value)
+    if idx.has_hash_index(key) {
+        return seek_beats_scan(idx, key, CompareOp::Eq, value);
+    }
+    unindexed_eq_seek_worth_it(idx, key, value)
+}
+
+/// The no-index half, extracted so the ARITHMETIC has somewhere to be tested (item 988).
+///
+/// A route choice is answer-equivalent by construction, so every mutant of a threshold comparison
+/// survives the differential and fuzz suites — the lesson of `perf-gate-needs-its-own-test`. As a
+/// free function over the oracle trait it can be unit-tested against a stub that returns a chosen
+/// fraction, which is what gives the `<=` and the constant teeth.
+///
+/// Seeding remains the DEFAULT: the gate only fires when the oracle can actually price the
+/// predicate (today, a `Bool` column — see [`UNINDEXED_SEEK_MAX_FRACTION`] for the curve and
+/// `Store::bool_eq_count_capped` for why the other types answer `None`). A tiny graph seeds
+/// regardless, for the same reason [`seek_beats_scan`] has a floor: below a few thousand nodes
+/// neither route is measurable, and churning plans nobody can measure is how a planner acquires
+/// behaviour nobody can explain.
+fn unindexed_eq_seek_worth_it(idx: &dyn IndexOracle, key: &str, value: &Value) -> bool {
+    if idx.live_nodes().is_some_and(|n| n < SEEK_FLOOR_NODES) {
+        return true;
+    }
+    idx.unindexed_eq_fraction(key, value)
+        .is_none_or(|frac| frac <= UNINDEXED_SEEK_MAX_FRACTION)
 }
 
 /// How many `IndexSeek` arms a multi-value seed will build — a DEPTH SAFETY VALVE, deliberately
