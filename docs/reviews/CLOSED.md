@@ -27455,8 +27455,9 @@ contributes nothing` — the far-driven mistake reports 2 where the answer is 1,
   verified against native first. **Second consecutive item where the mutation pass found a gap in the
   TESTS rather than in the implementation** (item 934 found a vacuous assertion in item 933's own new
   tests), which is the argument for running it on every change and not only on risky ones.
-- **⚠️ OPEN, PRICED AND DIAGNOSED, NOT BUILT — GQL's filtered hop tally is EDGE-driven where
-  Gremlin's is FAR-VERTEX-driven, ~2x (item 936).** After item 935 corrected the GQL column,
+- **⚠️ RETRACTED AT ITEM 937, DO NOT ACT ON THIS — GQL's filtered hop tally is EDGE-driven where
+  Gremlin's is FAR-VERTEX-driven, ~2x (item 936).** FALSE: `farOnlyHopCount` exists and the measured
+  shape already takes it; both engines far-drive. Kept for the method lesson only. After item 935 corrected the GQL column,
   `post:1` and `post:2` are the widest one-sided cells in `probe:arity`: GQL **60.26** / **62.42** ms
   against Gremlin **29.09** / **30.23** (**2.07x** / **2.06x**, 200k vertices / 600k edges). They did
   NOT move when the negative-literal fold landed (`post:1` 59.58 → 60.26), which already ruled out
@@ -27492,3 +27493,47 @@ contributes nothing` — the far-driven mistake reports 2 where the answer is 1,
   **Price ~2x, and no more:** CLOSED.md's item 167 line records that its 2.3x _is_ the `projectRow`
   hoist to once per far vertex, so a rel-reading or start-reading shape must take the start-driven
   walk regardless.
+- **⚠️ RETRACTED — item 936's claim that GQL's filtered hop tally is EDGE-driven is FALSE
+  (item 937).** `farOnlyHopCount` exists, is the far mirror of `startOnlyHopCount`, reads the
+  vertex's own `adjTo`/`adjFrom` box (item 591's lesson applied), and **the measured shape already
+  takes it.** Three temporary route markers settle it:
+  `MATCH (a:P)-[:E]->(b) WHERE b.k > -1 RETURN count(*)` → `farOnlyHopCount`; the start-predicate
+  twin → `startOnlyHopCount`; an inline far constraint → `farOnlyHopCount`. Both engines far-drive,
+  so 936's "opposite directions" and its fault-order obstacle both fall. **936 read two functions
+  (`tallyHopCount`, which IS edge-driven, and `farDrivenHopWalk`, gated on
+  `farPred === undefined`) and INFERRED the route instead of verifying it.**
+- **RULE — "verify the dispatch reaches the function" applies to a DIAGNOSIS, not only to a change
+  (item 937).** Items 371 and 439 established it for measuring a change (439 paid three alternated
+  rounds). A claim about which code runs is a claim to verify either way; item 936 made one with no
+  change in hand and was wrong within a tick. Cost was one tick and no engine damage, because 936
+  shipped as PRICED-NOT-BUILT rather than as a change — which is the argument for that outcome
+  existing.
+- **⚠️ OPEN, NEWLY LOCATED AND MUCH LARGER — the far-hop walk's PREDICATE costs 272 ns a far vertex
+  where the node scan's costs ~10 (item 937).** Decomposed on the same fixture, 200k vertices /
+  600k edges, median of 11: `WHERE b.k > -1` **58.03 ms (290 ns a far vertex)**, `WHERE true`
+  **3.69 ms (18 ns)** — so the WALK is 18 ns and the PREDICATE is **272 ns on top** — while no
+  `WHERE` at all and a far label only are both O(1) bucket reads. Item 926 measured the same
+  operator class on a node scan at 19-20 ns over a 9.16 ns `WHERE true` floor, i.e. a ~10 ns
+  predicate term. **A ~27x discrepancy in the predicate term between two walks in the SAME engine**,
+  which is a far better-located target than the ~2x cross-surface ratio that led here (the
+  cross-surface gap was only where it became visible — Gremlin's rung calls
+  `matches(pred, props[key])` directly). Upper bound if this walk's predicate reached the node
+  scan's: 58.03 ms → ~6 ms, about **9x**.
+- **HYPOTHESIS, explicitly NOT measured — the 272 ns is the per-vertex scaffolding, not the
+  comparison (item 937).** `farOnlyHopCount` writes `binding.set(farVar, v)` and evaluates
+  `asTruth(pred.fn(env))` inside a `try` whose `catch` re-throws only when
+  `degreeOfTypes(boxOf(v), types) > 0`, where the node scan reaches the same predicate through the
+  lifted `satisfies`/`eqProps`/`cmpProps` family (items 224/230/798/799/803). **Record of guesses
+  about this exact cost is poor** — item 437 recorded two wrong ones (not a tree walk, not boxing)
+  and item 934 a third (not the polymorphic property load) — so decompose the 272 ns BEFORE changing
+  anything. First cut: a trivially-true predicate against `WHERE true`, which separates the call
+  scaffolding from the comparison.
+- **A candidate RETIRED by fixture statistics before it could be believed (item 937).** Reading the
+  two implementations showed a real asymmetry: GQL evaluates the predicate and calls `degreeOfTypes`
+  AFTER, where Gremlin computes the degree first and skips `deg === 0` vertices before testing
+  anything. The in-degree histogram of the measured fixture is `deg3=200000` — every vertex has
+  in-degree exactly 3, no degree-0 vertices — so it cannot explain anything here. Item 702's rule
+  (check the fixture's own statistics, not just its output) retiring a candidate that reading alone
+  made look promising. The asymmetry is still real for a graph where many vertices carry no edge of
+  the queried type — the `:S` shape `startWalkFits`' comment records at 7684x — just not on this
+  fixture.
