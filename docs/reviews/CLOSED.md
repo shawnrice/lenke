@@ -29213,6 +29213,29 @@ multiTypeEdgeCount === 0`) — one named type cannot double-count. Native's `Adj
   differential and answer assertion in the repo. It is caught only by asserting on the selector
   itself (`fused_hop_shape(..).is_some()`) in both directions. Second instance of the hazard after
   1008's degree-reader pin.
+- **✅ SHIPPED (TS) — the Gremlin `dedup()` over non-date temporals, up to 8.0x (item 1017).** The
+  TS engine's third site in this family, raw-keyed for `Date` only since item 857. Three
+  alternated rounds at 100,000 rows / 1,000 distinct: `zoned` **73.8 → 9.2 (8.0x)**, `datetime`
+  77.2 → 15.7 (4.9x), `localtime` 50.1 → 16.7 (3.0x). `Duration` is the ideal control — a temporal
+  that reaches the same branch and is the one kind declined — and is unchanged; date and num flat.
+- **THE KEY DECISION NOW LIVES IN ONE PLACE: `@lenke/core`'s `temporalKeyFields` (item 1017).**
+  Four consecutive items tripped over the same structural fault: 1014 found `valueSet`/`groupIndex`
+  were two implementations of one shape with only one tested; 1015 found a per-kind decision in two
+  places making one arm dead code; **1016 reintroduced that shape within the hour**; and the kinds
+  had been extended site-by-site across 850/857/1014. Callers now choose only a CONTAINER.
+- **THE KIND RANK LEADS THE FIELD LIST (item 1017)**, so one container holds every kind.
+  `LocalTime(5, 7)` and `LocalDateTime(5, 7)` carry identical fields and are different values —
+  the collision 1014 hit in the GQL twin and solved with a container per kind. Nested rather than
+  packed into one number: a `LocalTime`'s `secs * 1e9 + nanos` is exact, a `LocalDateTime`'s
+  `secs` is unbounded and the same packing silently collides after ~104 days.
+- **A NON-FINITE `offset` COLLAPSES TWO ZonedDateTimes THAT DIFFER IN `secs` (item 1017).** I
+  asserted 2 and the engine said 1; checked against the PRE build, which also says 1, so it is
+  pre-existing — the composite path renders a non-finite offset in a form that swallows the rest.
+  Pinned with that note. **Raw keying would have SPLIT them**, so the finite guard is load-bearing
+  in this direction too, not just the one item 843 recorded.
+- **➡️ The GQL sites are not yet extended to the ZONED kinds (item 1017).** `temporalKeyFields`
+  admits them, so it is a container change at two call sites rather than a key question. `Duration`
+  stays on the string path in BOTH engines, at 40-46 ms against a raw-keyed date's 11.8.
 - **✅ SHIPPED (Rust) — `count(DISTINCT <temporal>)` up to 41.5x and Gremlin `values(k).dedup()`
   up to 37.1x (item 1016).** The other two live Date-only gates in `fastpath.rs`, found by
   grepping `TemporalKind::Date` outside `distinct.rs`. Three alternated rounds: aggregate

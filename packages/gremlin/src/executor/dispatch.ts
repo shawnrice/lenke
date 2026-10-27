@@ -9,7 +9,13 @@
 // neither side dereferences the other at module-init — `applyStep` and
 // `applyPlanToStream` are only called inside generator bodies.
 
-import { isTemporal, LocalDate } from '@lenke/core';
+import {
+  isTemporal,
+  LocalDate,
+  temporalKeyAdd,
+  temporalKeyFields,
+  type TemporalKeyNode,
+} from '@lenke/core';
 import type { Graph } from '@lenke/core';
 import { ErrorCode, LenkeError } from '@lenke/errors';
 
@@ -219,6 +225,12 @@ export const applyStep = (
       // A `LocalDate` keys on its epoch-day count, in its own `Set` (item 857). See the branch
       // below for why it is lifted out of the composite path and why the container is separate.
       let seenDates: Set<number> | null = null;
+      // The OTHER temporal kinds (item 1017). `LocalDate` keeps its own flat `Set` above — the
+      // Rust twin measured folding a date into the wider container at 2.0x on the date column
+      // alone (item 1015) — and everything else lands in this nested one, keyed by the fields
+      // `temporalKeyFields` names — which lead with a KIND RANK, so one container holds every
+      // kind without two of them ever sharing a key.
+      let seenTemporals: TemporalKeyNode | null = null;
       const { labels } = step;
       const by = step.bys?.[0];
 
@@ -290,6 +302,25 @@ export const applyStep = (
           seenDates.add(v.days);
 
           return true;
+        }
+
+        // Item 1017: every other raw-keyable temporal kind, by the fields `@lenke/core` names
+        // rather than by a `tupleKey` string plus a `WeakSet` insert that can never hit (each
+        // vertex carries its own temporal object — item 857's finding for dates, which is true of
+        // every kind). Measured on the TS Gremlin dedup at 200,000 rows / 1,000 distinct values:
+        // `datetime` 64.0 ms, `localtime` 55.8, `zoned` 74.7 against a raw-keyed `date`'s 12.3
+        // and a plain number's 12.9.
+        //
+        // The separation between kinds comes from `temporalKeyFields`' leading kind rank, not
+        // from a container per kind — see its doc for the collision that makes it necessary.
+        if (isTemporal(v) && !(v instanceof LocalDate)) {
+          const fields = temporalKeyFields(v);
+
+          if (fields !== undefined) {
+            seenTemporals ??= new Map();
+
+            return temporalKeyAdd(seenTemporals, fields);
+          }
         }
 
         const proto =

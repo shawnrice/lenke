@@ -31,6 +31,7 @@ import {
   ZonedDateTime,
 } from '@lenke/core';
 import { query as tsQuery } from '@lenke/gql';
+import { V, dedupe, hasLabel, toArray, traversal, values } from '@lenke/gremlin';
 
 const N = Number(process.env.N ?? 200_000);
 const D = Number(process.env.DISTINCT_VALUES ?? 1000);
@@ -107,6 +108,30 @@ const time = (label: string, q: string): void => {
   );
 };
 
+// The GREMLIN twin (item 1017). `values(k).dedup()` is a DIFFERENT implementation from the GQL
+// forms above — `executor/dispatch.ts`'s own keying, with its own LocalDate-only raw-key arm from
+// item 857 — so it needs its own arm rather than an assumption that one surface's number carries.
+const timeGremlin = (label: string): void => {
+  const plan = traversal(V(), hasLabel('P'), values('t'), dedupe());
+  const series: number[] = [];
+  let answer = 0;
+
+  for (let r = 0; r < REPS; r++) {
+    const t = performance.now();
+    const rows = toArray(plan, g);
+
+    series.push(performance.now() - t);
+    answer = rows.length;
+  }
+
+  const warm = series.slice(3).sort((a, b) => a - b);
+  const median = warm[Math.floor(warm.length / 2)] ?? series[0] ?? 0;
+
+  console.log(
+    `${KIND.padEnd(15)} ${label.padEnd(22)} median=${median.toFixed(1).padStart(8)} ms  answer=${String(answer).padStart(7)}  reps=[${series.map((x) => x.toFixed(0)).join(' ')}]`,
+  );
+};
+
 console.log(`# temporal DISTINCT key cost — KIND=${KIND}, N=${N}, ${D} distinct values`);
 time('count(DISTINCT t)', 'MATCH (p:P) RETURN count(DISTINCT p.t) AS m');
 time('RETURN DISTINCT t', 'MATCH (p:P) RETURN DISTINCT p.t AS m');
@@ -114,3 +139,4 @@ time('GROUP BY t', 'MATCH (p:P) RETURN p.t AS m, count(*) AS c');
 // ELEMENTS are objects too, and the most common non-temporal DISTINCT key there is. Same control
 // role as `list`: it walks past the new `instanceof` chain on every row.
 time('DISTINCT the element', 'MATCH (p:P) RETURN DISTINCT p AS m');
+timeGremlin('gremlin dedup');

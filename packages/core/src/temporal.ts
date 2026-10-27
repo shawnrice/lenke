@@ -1214,3 +1214,139 @@ export const temporalLiteralParts = (v: Temporal): { kind: string; iso: string }
 
   return kind === undefined ? null : { kind, iso: tagged[tag] };
 };
+
+/**
+ * The fields that KEY a temporal for a DISTINCT / dedup / GROUP BY container, or `undefined` when
+ * this value is not raw-keyable and the caller must fall back to its structural string key.
+ *
+ * **ONE definition, because three sites need it and duplicating the decision has gone wrong three
+ * times.** `@lenke/gql`'s `valueSet` and `groupIndex` and `@lenke/gremlin`'s `dedup` each key a
+ * temporal, each grew a `LocalDate` raw-key arm separately (items 850, 857), and each then had to
+ * be extended separately (item 1014 did two of them). Worse, the Rust twin of this work found the
+ * same shape twice: a per-kind decision written in two places made one of them dead code, and the
+ * surviving mutant was a design flaw rather than a missing test (items 1015, 1016). So the kinds
+ * and their fields are decided HERE, and callers only choose a container.
+ *
+ * **Why fields and not a rendering.** Keying on fields is STRUCTURAL equality; the fallback path
+ * keys on the value's rendered form. Substituting one for the other is only answer-preserving
+ * where the rendering is injective — otherwise two values that render alike would land in
+ * different groups. That holds for every kind below: a `nanos` is rendered in full, an `offset` in
+ * whole minutes, and a day count is in bijection with its ISO date (items 843/847/848, and item
+ * 1015 which read the same argument off the Rust formatter).
+ *
+ * `Duration` is NOT keyable here. Its four fields are not independent under rendering the way the
+ * others are, and nothing has needed it enough to prove — it keeps the string key, at a measured
+ * 44.8 ms against a raw-keyed date's 12.3 on the Gremlin dedup path (item 1017).
+ *
+ * Every field must be FINITE. A non-finite field renders through the same collapse
+ * `JSON.stringify` applies (`NaN` and `Infinity` both become `null`), so raw keying would SPLIT
+ * values the fallback merges — item 843 pinned that collapse rather than "improving" it inside a
+ * speedup, and returning `undefined` here keeps it bit-for-bit.
+ */
+export const temporalKeyFields = (v: unknown): readonly number[] | undefined => {
+  // THE KIND RANK LEADS THE FIELDS, so two kinds can never share a key however a caller stores
+  // them. `LocalTime(5, 7)` and `LocalDateTime(5, 7)` carry identical fields and are different
+  // values of different types — the collision item 1014's tests caught in the GQL executor, where
+  // the fix was a container per kind. Leading with the rank gives every caller that separation
+  // without restating it, which is the point of this function.
+  if (v instanceof LocalDate) {
+    return Number.isFinite(v.days) ? [1, v.days] : undefined;
+  }
+
+  if (v instanceof LocalTime) {
+    return Number.isFinite(v.secs) && Number.isFinite(v.nanos) ? [2, v.secs, v.nanos] : undefined;
+  }
+
+  if (v instanceof LocalDateTime) {
+    return Number.isFinite(v.secs) && Number.isFinite(v.nanos) ? [3, v.secs, v.nanos] : undefined;
+  }
+
+  if (v instanceof ZonedTime) {
+    return Number.isFinite(v.secs) && Number.isFinite(v.nanos) && Number.isFinite(v.offset)
+      ? [4, v.secs, v.nanos, v.offset]
+      : undefined;
+  }
+
+  if (v instanceof ZonedDateTime) {
+    return Number.isFinite(v.secs) && Number.isFinite(v.nanos) && Number.isFinite(v.offset)
+      ? [5, v.secs, v.nanos, v.offset]
+      : undefined;
+  }
+
+  return undefined;
+};
+
+/** A node of the nested container `temporalKeyAdd` / `temporalKeySlot` walk. */
+export type TemporalKeyNode = Map<number, unknown>;
+
+/**
+ * Add `fields` to a nested `Map` container; `true` when the tuple was NEW.
+ *
+ * Nested rather than packed into one number: a `LocalTime`'s `secs * 1e9 + nanos` would fit the
+ * exactly-representable integers, but a `LocalDateTime`'s `secs` is unbounded and the same packing
+ * leaves that range after ~104 days — a silent collision. One level per field is uniform across
+ * the kinds and costs one `Map` per distinct prefix, against one STRING per row.
+ */
+export const temporalKeyAdd = (root: TemporalKeyNode, fields: readonly number[]): boolean => {
+  let node = root;
+
+  for (let i = 0; i < fields.length - 1; i++) {
+    const f = fields[i];
+    let next = node.get(f) as TemporalKeyNode | undefined;
+
+    if (next === undefined) {
+      next = new Map();
+      node.set(f, next);
+    }
+
+    node = next;
+  }
+
+  const last = fields[fields.length - 1];
+
+  if (node.has(last)) {
+    return false;
+  }
+
+  node.set(last, true);
+
+  return true;
+};
+
+/**
+ * The slot stored at `fields` in a nested `Map` container, creating it with `make` when absent —
+ * the `temporalKeyAdd` twin for a caller that keeps a VALUE per key (a group tally) rather than
+ * mere membership.
+ */
+export const temporalKeySlot = <T>(
+  root: TemporalKeyNode,
+  fields: readonly number[],
+  make: () => T,
+): T => {
+  let node = root;
+
+  for (let i = 0; i < fields.length - 1; i++) {
+    const f = fields[i];
+    let next = node.get(f) as TemporalKeyNode | undefined;
+
+    if (next === undefined) {
+      next = new Map();
+      node.set(f, next);
+    }
+
+    node = next;
+  }
+
+  const last = fields[fields.length - 1];
+  const hit = node.get(last) as T | undefined;
+
+  if (hit !== undefined) {
+    return hit;
+  }
+
+  const fresh = make();
+
+  node.set(last, fresh);
+
+  return fresh;
+};
