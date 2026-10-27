@@ -29161,3 +29161,18 @@ multiTypeEdgeCount === 0`) — one named type cannot double-count. Native's `Adj
   fastest as long as it's reproducible" is satisfied by losing an error reproducibly. The
   obstacle that actually stopped this was one nobody had written down, found by experiment in
   minutes. Ask what the code does before asking whether you are allowed to change it.
+- **GREPPED THE PATTERN — nine more `has_multi_label_edges()` sites; two are item 1004's exact
+  shape and are NOT changed (item 1007).** `exec.rs:4324` (`for_each_nbr`) and `exec.rs:4479`
+  (the degree reader) both ask the GLOBAL question about a SINGLE wanted type and would narrow to
+  `type_ever_secondary(*w)` by 1004's argument. **They do not measure on the available fixture**:
+  `storage/multilabel` gained a row-returning `walk_us` column and reads **690.4 single against
+  666.3 double — no penalty**, because every node there has exactly ONE out-edge, so a per-type
+  bucket and a one-element scan are the same work. Degree-1 cannot price an adjacency-filtering
+  guard ("match the fixture to the claim"); `expand_bench` is the instrument, its own header
+  saying the win lives on high-degree, many-type nodes.
+- **WHY THE COUNT SITES PAID AND THESE MAY NOT (item 1007).** A guard costs what it DENIES.
+  Denying the count path denies an O(1) partition-length read, so the query falls to a full walk —
+  1200x. Denying the per-type structure on a traversal that walks the adjacency anyway costs only
+  bucket-seek against filtered-scan: zero at degree 1, growing with degree and type count. **Same
+  code shape, completely different prize** — which is the argument for measuring each site rather
+  than sweeping the pattern.

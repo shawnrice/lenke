@@ -64,9 +64,21 @@ pub fn run(cfg: &Cfg) {
             lines.join("\n")
         };
         let hop = "MATCH (p:P)-[:KNOWS]->() RETURN count(*) AS c";
+        // A ROW-RETURNING typed hop, added at item 1007. The count above is answered by a
+        // partition-length shortcut, so it measures the COUNT path only; the guards that gate
+        // the per-type CSR and index in `for_each_nbr` are on the TRAVERSAL path.
+        //
+        // IT CANNOT PRICE THOSE GUARDS, and the reason is this fixture's DEGREE. Every node has
+        // exactly ONE out-edge, so seeking a per-type bucket and scanning a one-element
+        // adjacency are the same work — measured 690.4 us single-label against 666.3 double,
+        // i.e. no penalty to find. `expand_bench` is the instrument for the adjacency/edge-type
+        // question and its own header says why: the win lives on high-degree, many-type nodes.
+        // This row is kept because it shows the count and walk paths differ, which is what sent
+        // item 1004 to the right one.
+        let walk = "MATCH (p:P)-[:KNOWS]->(q) RETURN q.age AS a";
         println!(
-            "{:22} {:>12} {:>12} {:>10}",
-            "edges", "rss_MiB", "bytes/edge", "1hop_us"
+            "{:22} {:>12} {:>12} {:>10} {:>10}",
+            "edges", "rss_MiB", "bytes/edge", "1hop_us", "walk_us"
         );
         for (name, labels) in [
             ("single [KNOWS]", r#"["KNOWS"]"#),
@@ -79,8 +91,9 @@ pub fn run(cfg: &Cfg) {
             let after = rss_bytes().unwrap_or(before);
             let used = after.saturating_sub(before) as f64;
             let us = time_query(hop, false, &store, cfg.reps).map_or(f64::NAN, |(u, _)| u);
+            let wk = time_query(walk, false, &store, cfg.reps).map_or(f64::NAN, |(u, _)| u);
             println!(
-                "{name:22} {:>12.1} {:>12.1} {us:>10.1}",
+                "{name:22} {:>12.1} {:>12.1} {us:>10.1} {wk:>10.1}",
                 used / (1024.0 * 1024.0),
                 used / f64::from(n as u32)
             );
