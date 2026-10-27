@@ -3443,3 +3443,94 @@ fn the_algebraic_count_agrees_with_enumeration_under_a_body_filter() {
         );
     }
 }
+
+/// A CONSTANT STRING SUBSCRIPT SEEDS THE SAME TARGET AS A DOT (item 956).
+///
+/// `p.meta['city']` and `p.meta.city` read the same cell on every base kind — measured in
+/// `bracketseek_955 EQUIV=1`, not read off `prop_path` — so they must seed the same key. Before
+/// this, only the dotted form produced a path: the bracket form fell to `Filter { Scan }` and
+/// measured **3.47x** the dotted spelling over 200,000 nodes for the identical 50,000 rows.
+///
+/// THIS TEST EXISTS BECAUSE THE DIFFERENTIAL TESTS CANNOT SEE IT (item 585). Seeding is
+/// answer-equivalent — the slow route returns exactly the same rows — so a mutant that stops the
+/// fold is invisible to every correctness test in the crate. The assertion is on the PLAN.
+#[test]
+fn bracket_subscript_seeds_the_same_target_as_a_dot() {
+    let mut b = Builder::default();
+    let meta = crate::value::make_record(vec![("city".into(), s("oslo"))]);
+    b.node(&["P"], &[("meta", meta), ("tag", s("t"))]);
+    let store = b.build();
+
+    let field = Expr::Field {
+        base: Box::new(prop(0, "meta")),
+        key: "city".to_string(),
+    };
+    let bracket = |idx: Expr, elem: ElemKind| Expr::Index {
+        base: Box::new(prop(0, "meta")),
+        index: Box::new(idx),
+        elem,
+    };
+    let plan_of = |lhs: Expr| {
+        Plan::Scan {
+            label: Some("P".into()),
+        }
+        .filter(cmp(CompareOp::Eq, lhs, Expr::Lit(s("oslo"))))
+        .project(vec![("tag".into(), prop(0, "tag"))])
+    };
+
+    let seek_key = |p: &Plan| -> Option<String> {
+        let Plan::Project { input, .. } = p else {
+            return None;
+        };
+        match input.as_ref() {
+            Plan::IndexSeek { key, .. } => Some(key.clone()),
+            _ => None,
+        }
+    };
+
+    // THE FOLD: both spellings seed `meta.city`, and both still answer.
+    let dotted = assert_rows_preserved_indexed(&plan_of(field), &store);
+    let brack = assert_rows_preserved_indexed(
+        &plan_of(bracket(Expr::Lit(s("city")), ElemKind::Plain)),
+        &store,
+    );
+    assert_eq!(seek_key(&dotted).as_deref(), Some("meta.city"));
+    assert_eq!(
+        seek_key(&dotted),
+        seek_key(&brack),
+        "the two spellings must seed the IDENTICAL key"
+    );
+
+    // THE DECLINES, which is where a too-eager fold returns a WRONG answer rather than a slow one.
+    // A NUMERIC subscript is a list position, not a path segment, and has no dotted spelling.
+    let numeric = assert_rows_preserved_indexed(
+        &plan_of(bracket(Expr::Lit(n(0.0)), ElemKind::Plain)),
+        &store,
+    );
+    assert_eq!(
+        seek_key(&numeric),
+        None,
+        "a numeric subscript must NOT seed"
+    );
+
+    // A NON-`Plain` elem means a group-variable list, where `x[i].prop` resolves an ELEMENT
+    // property — folding it would seed an index for a key the row does not carry.
+    for elem in [ElemKind::Node, ElemKind::Edge] {
+        let grouped =
+            assert_rows_preserved_indexed(&plan_of(bracket(Expr::Lit(s("city")), elem)), &store);
+        assert_eq!(
+            seek_key(&grouped),
+            None,
+            "a non-Plain elem must NOT seed: {elem:?}"
+        );
+    }
+
+    // A NON-CONSTANT subscript is not known at plan time at all.
+    let dynamic =
+        assert_rows_preserved_indexed(&plan_of(bracket(prop(0, "tag"), ElemKind::Plain)), &store);
+    assert_eq!(
+        seek_key(&dynamic),
+        None,
+        "a computed subscript must NOT seed"
+    );
+}

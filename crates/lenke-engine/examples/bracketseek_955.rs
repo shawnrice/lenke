@@ -66,7 +66,88 @@ fn probe(q: &str, store: &Store, reps: u32) -> Result<(f64, f64, String), String
     Ok((best, got, shape))
 }
 
+/// `EQUIV=1`: do `x.y` and `x['y']` return the SAME value on every base kind a path segment can
+/// meet (item 956)?
+///
+/// Item 955 made this a precondition of the `prop_path` fix and said why: item 954's TS reading
+/// predicted a divergence that did not exist, so the equivalence must be MEASURED, and one record
+/// base is one base kind rather than five. A seeding change folds `['y']` into the same index key
+/// as `.y`, which is only sound if the two read the same cell everywhere — and where they differ,
+/// seeding the bracket form would return a WRONG answer, not a slow one.
+fn equivalence() {
+    let mut b = Builder::default();
+    let rec = make_record(vec![("y".into(), Value::Str("hit".into()))]);
+    b.node(
+        &["P"],
+        &[
+            ("rec", rec),
+            ("scalar", Value::Str("plain".into())),
+            ("n", Value::Num(1.0)),
+            (
+                "lst",
+                Value::List(vec![Value::Str("a".into()), Value::Str("b".into())]),
+            ),
+        ],
+    );
+    let store = b.build();
+
+    let read = |expr: &str| -> String {
+        let q = format!("MATCH (p:P) RETURN {expr} AS v");
+        match lenke_engine::gql::parse(&q) {
+            Err(e) => format!("PARSE-ERR {e}"),
+            Ok(raw) => {
+                let plan = lenke_engine::opt::optimize_indexed(raw, &store);
+                match lenke_engine::exec::try_run(&plan, &store) {
+                    Err(e) => format!("THROW {e}"),
+                    Ok(out) => out
+                        .rows
+                        .iter()
+                        .next()
+                        .map_or("<no row>".to_string(), |r| format!("{:?}", r[0])),
+                }
+            }
+        }
+    };
+
+    println!("\n=== EQUIV: does `x.y` read the same cell as `x['y']`, by base kind?");
+    let mut all_agree = true;
+    for (label, base) in [
+        ("record", "p.rec"),
+        ("scalar", "p.scalar"),
+        ("absent", "p.nosuch"),
+        ("number", "p.n"),
+        ("list", "p.lst"),
+    ] {
+        let a = read(&format!("{base}.y"));
+        let c = read(&format!("{base}['y']"));
+        let same = a == c;
+        all_agree &= same;
+        println!(
+            "  {:7} {:14} -> {:16} {:18} -> {:16} {}",
+            label,
+            format!("{base}.y"),
+            a,
+            format!("{base}['y']"),
+            c,
+            if same { "agree" } else { "DIFFER" }
+        );
+    }
+    println!(
+        "  => {}",
+        if all_agree {
+            "every base kind agrees — folding `['y']` into the path is sound"
+        } else {
+            "a base kind DIFFERS — the fold would change an answer, do NOT build it"
+        }
+    );
+}
+
 fn main() {
+    if std::env::var("EQUIV").is_ok() {
+        equivalence();
+        return;
+    }
+
     let n: u32 = std::env::var("N")
         .ok()
         .and_then(|v| v.parse().ok())

@@ -28088,3 +28088,26 @@ Prop}` 160.0 / 4,000; `NOT` → `Filter{Scan, Not(Prop)}` 214.7 / 196,000; `= fa
   equivalence must be MEASURED across base kinds, not read** — item 954's reading predicted a
   divergence that did not exist and the inverse error is equally available; one record base is one
   base kind, not five. (3) It is a **seeding** change, so every mutant is answer-equivalent (item 585) and the evidence is this probe plus a route assertion, not the differential tests.
+- **SHIPPED — the bracket spelling seeds natively, closing item 955's 3.47x (item 956).** One arm
+  on `prop_path`: `Expr::Index { base, index, elem: ElemKind::Plain }` with
+  `Expr::Lit(Value::Str(k))` folds to `"{base}.{k}"`. **WITHOUT an index, bracket 9782.0 → 2636.6
+  us against dotted's 2636.7 — the IDENTICAL `IndexSeek { key: "meta.city" }` plan, 3.47x →
+  1.00x.** The plan match is the signal; the time is the backstop.
+- **CONTROL held (item 956).** The with-index pair, where both spellings stay on `Filter { Scan }`
+  because `seek_beats_scan` correctly declines at 25% selectivity, did not move: **1.87x → 1.85x**.
+  That 1.85x is item 955's SECOND finding — `Expr::Index` evaluation costing more per row than
+  `Expr::Field` — and stays **OPEN**, deliberately unbundled.
+- **The `elem: Plain` and string-only guards are CORRECTNESS guards, not hygiene — found by
+  mutation (item 956).** Three mutants under `timeout` + cgroup cap, restored before each: M1
+  (accept any `elem`) and M2 (accept any literal subscript) were both caught by
+  **`assert_rows_preserved_indexed` — "optimize_indexed changed the rows"**, not by the decline
+  assertions. Folding a `Node`/`Edge` elem or a numeric subscript **seeds an index for a key the
+  row does not carry and changes the answer**. Written as conservatism, proven load-bearing. M3
+  (the fold never fires) was caught by the spelling-equality assertion.
+- **ROUTE ASSERTION — `bracket_subscript_seeds_the_same_target_as_a_dot` (item 956).** Seeding is
+  answer-equivalent, so every mutant of it survives every correctness test in the crate (item
+  585); the test asserts the PLAN — both spellings seed `meta.city`, while a numeric subscript, a
+  `Node`/`Edge` elem and a computed subscript each seed nothing.
+- **Verification (item 956).** Engine suite 1,249/0 (up 1); `rewrite_fuzz` at
+  `LENKE_OPT_FUZZ_SEEDS=200000` — the deep sweep, because this IS a planner rewrite — 10/0; all 7
+  byte-identity fuzzers pass, run because a native planner change can move the engines apart.

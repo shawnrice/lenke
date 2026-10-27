@@ -9,7 +9,7 @@
 //! ROWS are unchanged (run original vs optimized, compare as bags) and the plan
 //! SHAPE changed as intended.
 
-use crate::ir::{Agg, AggFn, CompareOp, Expr, Plan};
+use crate::ir::{Agg, AggFn, CompareOp, ElemKind, Expr, Plan};
 use crate::store::Store;
 use crate::value::Value;
 
@@ -1965,6 +1965,29 @@ fn prop_path(e: &Expr) -> Option<String> {
     match e {
         Expr::Prop { slot: 0, key } => Some(key.clone()),
         Expr::Field { base, key } => Some(format!("{}.{key}", prop_path(base)?)),
+        // A CONSTANT STRING SUBSCRIPT IS THE SAME SEGMENT AS A DOT (item 956). `base['y']` and
+        // `base.y` read the same cell on every base kind a segment can meet — measured, not read
+        // off this file: record `Str("hit")`/`Str("hit")`, and scalar, absent, number and list
+        // all `Null`/`Null` (`bracketseek_955 EQUIV=1`). Before this, `p.meta['city']` could not
+        // produce a path, so it never seeded and fell to `Filter { Scan }` where the dotted
+        // spelling got `IndexSeek { key: "meta.city" }` — **3.47x** over 200,000 nodes for the
+        // identical 50,000 rows, which is the equivalent-spelling cliff this engine is named for.
+        //
+        // `elem` MUST be `Plain`. A `Node`/`Edge` elem means the base is a group-variable list and
+        // `x[i].prop` resolves an ELEMENT property — a different operation, and folding it into a
+        // property path would seed an index for a key the row does not have.
+        //
+        // A NUMERIC subscript is deliberately absent: a list position is not a property-path
+        // segment, there is no dotted spelling of it (`p.lst.0` does not parse), and no index is
+        // ever keyed that way.
+        Expr::Index {
+            base,
+            index,
+            elem: ElemKind::Plain,
+        } => match index.as_ref() {
+            Expr::Lit(Value::Str(k)) => Some(format!("{}.{k}", prop_path(base)?)),
+            _ => None,
+        },
         _ => None,
     }
 }
