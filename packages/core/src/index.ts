@@ -61,7 +61,6 @@ export {
   temporalKeyFields,
   type TemporalKeyNode,
   temporalKeyAdd,
-  temporalKeySlot,
   temporalLiteralParts,
   temporalRelCmp,
   temporalArith,

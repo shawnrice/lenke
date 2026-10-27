@@ -174,6 +174,42 @@ describe('temporal values as a DISTINCT / GROUP BY key (item 843)', () => {
   // path neither item changed. That asymmetry between the kinds is pre-existing and is recorded
   // rather than altered here, since changing it inside a performance item is exactly what 843
   // declined to do.
+  // THE ZONED GUARDS (item 1018), which are the direction a `true`-stubbed guard breaks.
+  test('a non-finite zoned field keeps the fallback grouping, in both directions', () => {
+    // NON-FINITE OFFSET: the fallback renders it in a form that swallows the rest, so these two
+    // ZonedDateTimes are ONE group despite differing `secs`. Measured, not assumed — the same
+    // asymmetry item 1017 found on the Gremlin path. Raw keying would SPLIT them, so a guard
+    // stubbed to `true` answers 2 and passes every other test in this file.
+    const offsetPair = [new ZonedDateTime(1, 0, Number.NaN), new ZonedDateTime(2, 0, Number.NaN)];
+
+    expect(distinctCount(offsetPair)).toBe(1);
+    expect(groupCount(offsetPair)).toBe(1);
+    // NON-FINITE NANOS goes the other way: the finite `secs` still separates them, so two.
+    const nanosPair = [new ZonedTime(1, Number.NaN, 60), new ZonedTime(2, Number.NaN, 60)];
+
+    expect(distinctCount(nanosPair)).toBe(2);
+    expect(groupCount(nanosPair)).toBe(2);
+    // AND THE PACKING BOUND. `zonedTailKey` packs `(nanos, offset)` into one number and declines
+    // an offset outside ±2^20 minutes rather than letting it overflow into the `nanos` field.
+    // These two differ ONLY in an offset past that bound, so they must stay apart through the
+    // fallback — a packing that silently wrapped would merge them.
+    const hugePair = [new ZonedDateTime(1, 0, 2 ** 21), new ZonedDateTime(1, 0, 2 ** 22)];
+
+    expect(distinctCount(hugePair)).toBe(2);
+    expect(groupCount(hugePair)).toBe(2);
+    // ...and the pair that shows WHY the bound is 2^20 and not merely "large". The packing is
+    // `nanos * 2 ** 21 + (offset + 2 ** 20)`, so the additive term must stay under 2^21 or it
+    // carries into the `nanos` field. These two values differ in `nanos` and in `offset` by
+    // exactly the amount that cancels under a widened bound: with the guard at 2^20 the second
+    // is DECLINED and reaches the fallback, so they are two groups; with the bound widened both
+    // are packed and collide into one. The previous pair cannot show this, because `nanos = 0`
+    // leaves nothing for the offset to carry into — a mutant widening the bound survived it.
+    const carryPair = [new ZonedDateTime(1, 1, 0), new ZonedDateTime(1, 0, 2 ** 21)];
+
+    expect(distinctCount(carryPair)).toBe(2);
+    expect(groupCount(carryPair)).toBe(2);
+  });
+
   test('two non-finite datetimes collapse, as valueKey has them', () => {
     const pair = [new LocalDateTime(Number.NaN, 0), new LocalDateTime(Number.POSITIVE_INFINITY, 0)];
 

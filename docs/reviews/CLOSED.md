@@ -29213,6 +29213,33 @@ multiTypeEdgeCount === 0`) — one named type cannot double-count. Native's `Adj
   differential and answer assertion in the repo. It is caught only by asserting on the selector
   itself (`fused_hop_shape(..).is_some()`) in both directions. Second instance of the hazard after
   1008's degree-reader pin.
+- **✅ SHIPPED (TS) — the ZONED kinds in GQL `count(DISTINCT)` and `GROUP BY`, 3.8-5.3x (item
+  1018).** `zonedTailKey` packs `(nanos, offset)` into one number (`nanos * 2**21 + (offset +
+2**20)` ≤ ~2.1e15, exactly representable), so a zoned key nests two levels like
+  `LocalDateTime`'s. Three alternated rounds: `count(DISTINCT)` **12.6/9.1/12.8 → 2.6/2.5/2.4**,
+  `GROUP BY` 9.0/9.3/11.3 → 3.3/3.0/2.8; datetime, localtime, date and num controls flat.
+- **⚠️ ITEM 1017's SHARED ABSTRACTION IS REFUTED AT THESE TWO SITES, THREE WAYS (item 1018).**
+  (1) `temporalKeyFields` returns an ARRAY — one allocation per row, noise at the Gremlin path's
+  50-77 ms and fatal at 2 ms: `count(DISTINCT <localtime>)` **2.1 → 4.8**, `GROUP BY <datetime>`
+  **2.7 → 5.2**. (2) A non-allocating `temporalKeyInto` fixed the first, not the second — the
+  tally needs a SLOT, and that helper returned `{slot, created}` and took a closure: **8.0**.
+  (3) One `kind`-tag dispatch with a shared `bumpNested` — a closure per row: **7.1**. The sites
+  keep direct field reads. **The abstraction is right where the key is cheap relative to the work
+  and wrong where the key IS the work.**
+- **THE TWO UNUSED HELPERS WERE DELETED, NOT LEFT BEHIND (item 1018).** `temporalKeyInto` and
+  `temporalKeySlot` had no caller after the revert. Items 1015 and 1016 were both about a second
+  definition becoming dead code; keeping them would have been that mistake a third time.
+- **⚠️ A BIMODAL ROW FAKED A REGRESSION AND NEARLY COST THE WIN (item 1018).**
+  `GROUP BY <duration>` read **7.2 ms** on one process and **11.1** after the change, and three
+  attempts were spent chasing it. The alternated A/B put PRE at 11.4/11.0/11.4 and POST at
+  7.1/6.8/7.3 — **POST is 1.5x FASTER**, and the 7.2 was the same HEAD code in a different
+  process. **Two readings from different builds are not a comparison, however carefully each was
+  taken** — the trap repetition cannot detect and alternation can.
+- **A PACKING BOUND NEEDS A CARRY CASE, NOT JUST A BIG VALUE (item 1018).** A mutant widening
+  `zonedTailKey`'s offset bound from 2^20 to 2^40 survived a huge-offset pair with `nanos = 0` —
+  nothing for the offset to carry into. The pair that catches it differs in `nanos` AND in an
+  offset past the bound: packed under the widened bound they collide, declined under the real one
+  they reach the fallback.
 - **✅ SHIPPED (TS) — the Gremlin `dedup()` over non-date temporals, up to 8.0x (item 1017).** The
   TS engine's third site in this family, raw-keyed for `Date` only since item 857. Three
   alternated rounds at 100,000 rows / 1,000 distinct: `zoned` **73.8 → 9.2 (8.0x)**, `datetime`

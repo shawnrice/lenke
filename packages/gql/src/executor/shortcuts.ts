@@ -35,7 +35,7 @@
 // SPELL_REPS=9 — single runs are bimodal). Two spellings that mean the same thing and cost
 // differently is the bug class this whole file is most exposed to, and it returns correct
 // answers, so no correctness test catches it.
-import { LocalDate, LocalDateTime, LocalTime } from '@lenke/core';
+import { LocalDate, LocalDateTime, LocalTime, ZonedDateTime, ZonedTime } from '@lenke/core';
 import type { Edge, Graph, Vertex } from '@lenke/core';
 
 import type {
@@ -6331,6 +6331,35 @@ const addNested = (m: Map<number, Set<number>>, a: number, b: number): boolean =
 };
 
 /**
+ * A ZONED value's second-level key — its `(nanos, offset)` pair packed into one number — or
+ * `undefined` when it is not raw-keyable (item 1018).
+ *
+ * `nanos < 1e9` and an `offset` is whole minutes, so `nanos * 2 ** 21 + (offset + 2 ** 20)` is at
+ * most ~2.1e15: inside the exactly-representable integers, so the packing is a bijection on the
+ * pair and a zoned key nests only TWO levels like `LocalDateTime`'s. The guard rejects an offset
+ * outside ±2^20 minutes rather than assuming none exists.
+ *
+ * **Written out rather than calling `@lenke/core`'s shared `temporalKeyFields`, and that was
+ * MEASURED rather than assumed (item 1018).** Routing these two sites through the shared form
+ * cost `count(DISTINCT <localtime>)` **2.1 -> 4.8 ms** and `GROUP BY <datetime>` **2.7 -> 5.2**,
+ * because it returns an ARRAY — one allocation per row, which is noise against the Gremlin dedup
+ * path's 50-77 ms (item 1017) and dominates at 2 ms. A non-allocating `temporalKeyInto` writing
+ * into scratch fixed the first and not the second, since the tally also needs a slot per key and
+ * that helper returned `{ slot, created }` and took a closure: `GROUP BY` went to 8.0. A third
+ * attempt replaced the `instanceof` chain with one dispatch on the `kind` tag and a shared
+ * `bumpNested` — which is a CLOSURE PER ROW, and `GROUP BY <datetime>` read 7.1. So the shared
+ * abstraction is right where keys are cheap relative to the work and wrong here. Item 1015's "a
+ * narrow key beats a general one", for the third and fourth time.
+ */
+const zonedTailKey = (v: ZonedTime | ZonedDateTime): number | undefined =>
+  Number.isFinite(v.secs) &&
+  Number.isFinite(v.nanos) &&
+  Number.isFinite(v.offset) &&
+  Math.abs(v.offset) < 2 ** 20
+    ? v.nanos * 2 ** 21 + (v.offset + 2 ** 20)
+    : undefined;
+
+/**
  * A SET of values under `valueKey`'s equivalence, keyed on the raw value wherever that is exact.
  *
  * The same trade `groupIndex` makes below, for the callers that only need "have I seen this?" —
@@ -6347,6 +6376,10 @@ export const valueSet = (): { add: (v: unknown) => boolean } => {
   // or a `LocalTime` and a `LocalDateTime` with equal fields would collapse into one group.
   let times: Set<number> | undefined;
   let datetimes: Map<number, Set<number>> | undefined;
+  // Item 1018: the zoned kinds, a container each for the reason item 1014 gives — the tagged
+  // `valueKey` strings keep the kinds apart, so raw keying has to as well.
+  let zonedTimes: Map<number, Set<number>> | undefined;
+  let zonedDateTimes: Map<number, Set<number>> | undefined;
   let structural: Set<string> | undefined;
 
   return {
@@ -6423,6 +6456,17 @@ export const valueSet = (): { add: (v: unknown) => boolean } => {
         return addNested(datetimes, v.secs, v.nanos);
       }
 
+      if (v instanceof ZonedTime || v instanceof ZonedDateTime) {
+        const tail = zonedTailKey(v);
+
+        if (tail !== undefined) {
+          const root =
+            v instanceof ZonedTime ? (zonedTimes ??= new Map()) : (zonedDateTimes ??= new Map());
+
+          return addNested(root, v.secs, tail);
+        }
+      }
+
       structural ??= new Set();
 
       const k = valueKey(v);
@@ -6471,6 +6515,8 @@ const groupIndex = (): {
   // Item 1014, mirroring `valueSet`: one container per KIND, never shared.
   let times: Map<number, GroupSlot> | undefined;
   let datetimes: Map<number, Map<number, GroupSlot>> | undefined;
+  let zonedTimes: Map<number, Map<number, GroupSlot>> | undefined;
+  let zonedDateTimes: Map<number, Map<number, GroupSlot>> | undefined;
   let structural: Map<string, GroupSlot> | undefined;
 
   const open = (raw: unknown, by: number, rep: Vertex): GroupSlot => {
@@ -6556,6 +6602,34 @@ const groupIndex = (): {
         }
 
         return;
+      }
+
+      // Item 1018: the zoned kinds, same two-level shape with `zonedTailKey` as the second level.
+      // Open-or-bump is written out rather than factored into a helper: a closure built per row
+      // cost `GROUP BY <datetime>` 2.7 -> 7.1 ms when this was tried that way.
+      if (raw instanceof ZonedTime || raw instanceof ZonedDateTime) {
+        const tail = zonedTailKey(raw);
+
+        if (tail !== undefined) {
+          const root =
+            raw instanceof ZonedTime ? (zonedTimes ??= new Map()) : (zonedDateTimes ??= new Map());
+          let inner = root.get(raw.secs);
+
+          if (inner === undefined) {
+            inner = new Map();
+            root.set(raw.secs, inner);
+          }
+
+          const hit = inner.get(tail);
+
+          if (hit === undefined) {
+            inner.set(tail, open(raw, by, rep));
+          } else {
+            hit.n += by;
+          }
+
+          return;
+        }
       }
 
       structural ??= new Map();
