@@ -28830,3 +28830,23 @@ disagree on the ANSWER` — item 984 confirmed through the repo's own gate.
     The process lesson is the cheaper one: CLAUDE.md says to match the store to the kind of fact —
     _"has this lever been tried?"_ goes to CLOSED.md FIRST. Items 986 and 989 asked a cost question
     of their own reasoning instead, and shipped a wrong claim for two commits.
+- **❌ REFUTED — the far-vertex memo on `bothFilteredHopCount`, item 933's one named remaining
+  lever (item 992).** 933 left it unpriced: _"the lookup may cost more than the 400,000 saved
+  evaluations."_ It does. A `Map<Vertex, boolean>` per call, wired ONLY into
+  `bothFilteredHopCount` so `filteredHopCount` stays byte-identical as the in-bundle control:
+  `both:1+1` **139.0/141.0 → 157.4/154.8, 1.12x WORSE**, control `post:2` flat (29.0/30.6 →
+  30.8/30.8). 600,000 edges over 200,000 far vertices, so it removes ~400,000 predicate
+  evaluations and adds 600,000 `Map` ops — a `Map.get` on an object key costs more than
+  `far.properties[k]` plus `matches`. Revert restores 141.0/141.8. **The both-sides cell is DONE
+  at item 933's 1.94x and the 2.6x structural residual has no remaining named lever.**
+- **⚠️ METHOD — an `OPEN` bullet in THIS FILE is a snapshot at its own item number, not maintained
+  status (item 992).** Item 932's `both`-cell entry reads fully live — priced at ~5x, mechanism
+  named, "isolate before building" — and was closed **forty lines later** by item 933, which
+  shipped the rung. Grepping for the `OPEN` marker found it; grepping for the SUBJECT
+  (`bothFilteredHopCount`) would have answered in one line. **Grep the subject, not the marker**,
+  and read forward from any entry before acting on it.
+- **CONFIRMED by independent re-measurement — item 933's rung still holds its win (item 992).**
+  `both:1+1` grm measures 139.2 / 133.3 / 142.8 isolated against 933's post-fix 138.48, and a
+  dispatch trace shows the rung firing (`HIT mid=[has,out,has]`, 4 of 4). Item 932's screen figure
+  of 54.81 for `post:2` reads **29.0-30.6 isolated**, which is the in-sweep inflation item 737
+  warns about, measured again here.
