@@ -45,6 +45,16 @@ fn fixture(n: u32, deg: u32) -> Store {
                     "dept",
                     Value::Str((*DEPTS.get((i % 5) as usize).unwrap()).into()),
                 ),
+                // A RECORD-valued property, so the dotted/bracket path group below has a nested
+                // cell to read. Items 954-959 closed a 3.47x seeding gap and a 1.27x evaluation
+                // gap between `m.city` and `m['city']`; this is the guard on both.
+                (
+                    "meta",
+                    lenke_engine::value::make_record(vec![(
+                        "city".into(),
+                        Value::Str((*CITIES.get((i % 8) as usize).unwrap()).into()),
+                    )]),
+                ),
             ],
         );
     }
@@ -92,6 +102,20 @@ fn main() {
 
     // Each group: queries that MUST be semantically equivalent. Mixed GQL & Gremlin.
     let groups: &[(&str, &[(Lang, &str)])] = &[
+        (
+            // Items 954-959. A constant STRING subscript is a field access, so these are one
+            // question. They were not: `prop_path` matched `Expr::Field` only, so the bracket
+            // form never seeded a dotted IndexSeek (3.47x), and `fused_prop_field` matched it
+            // only too, so a projection paid the general `Expr::Index` arm (1.27x in TS). Both
+            // engines now CANONICALIZE the bracket form to a field at the IR builder, which is
+            // why these must stay identical rather than merely close.
+            "a dotted path vs a constant string subscript",
+            &[
+                (Gql, "MATCH (n:Person) WHERE n.meta.city = 'NYC' RETURN count(*) AS c"),
+                (Gql, "MATCH (n:Person) WHERE n.meta['city'] = 'NYC' RETURN count(*) AS c"),
+                (Gql, "MATCH (n:Person) WHERE 'NYC' = n.meta['city'] RETURN count(*) AS c"),
+            ],
+        ),
         (
             // Item 550. ISO's `<order by and page statement>` (§14.10) can stand UNDER the
             // aggregate. A keyless `Aggregate` is one row and an order-free fold cannot read the

@@ -28187,3 +28187,16 @@ Prop{0,"meta"}, key: "city" }, .. } }` for both — so the gap cannot come back:
   `p.meta.city` are ONE shape in TS and in Rust, so they cannot drift apart again.
   `fieldChain`'s `kind: 'index'` arm is now unreachable from the TS parser and is kept as the
   native twin is — it costs nothing and is the safety net if the canonicalization is narrowed.
+- **GUARDED — the dotted/bracket spelling group is now in BOTH probes (item 960), the obligation
+  items 954-959 owed.** Native `spelling_probe`: three spellings (dotted, bracket, flipped
+  bracket) at 0.950/0.950/0.951 ms — **"identical optimized plan → identical exec (perf
+  guaranteed)"**, the strongest verdict it gives, which is what item 958's canonicalization bought.
+  TS `spelling-probe` at `SPELL_N=200000 SPELL_REPS=9`: 7.44/7.50/7.47 ms, **1.01x spread**, absent
+  from the over-2x list. Both fixtures gained a record-valued `meta`, since neither had a nested
+  cell to read.
+- **The TS fixture change touches every group, and was checked (item 960).** Full run: **"0
+  group(s) disagree on the ANSWER"**, and the seven groups over 2x are all named for pre-existing
+  items (868 ×3, 286, 285, 578). The addition is uniform across nodes and the probe compares
+  spellings WITHIN a group over one graph, so it moves a group's absolute cost, not its spread.
+  **Limitation stated rather than hidden**: no before-the-change run was taken, so "nothing new"
+  rests on the flag names matching known items, not on a diffed baseline.

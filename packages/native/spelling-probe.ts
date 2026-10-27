@@ -57,7 +57,7 @@ const FLOOR_MS = Number(process.env.SPELL_FLOOR ?? 1);
 const lines = Array.from(
   { length: N },
   (_, i) =>
-    `{"type":"node","id":"v${i}","labels":${i % 3 === 0 ? '["P","Q","Univ"]' : '["P","Univ"]'},"properties":{"k":${i % 50},"s":"s${i % 7}"}}`,
+    `{"type":"node","id":"v${i}","labels":${i % 3 === 0 ? '["P","Q","Univ"]' : '["P","Univ"]'},"properties":{"k":${i % 50},"s":"s${i % 7}","meta":{"s":"s${i % 7}"}}}`,
 );
 
 // BOTH ENDPOINT KEYS ARE SCATTERED, by different multipliers, and that is load-bearing.
@@ -95,6 +95,20 @@ const g = tsDeserialize(lines.join('\n'), 'ndjson', new TsGraph());
 
 /** Groups of spellings of ONE question. Every member must answer identically. */
 const GROUPS: [string, readonly string[]][] = [
+  [
+    // Items 954-959. A constant STRING subscript IS a field access, so these are one question.
+    // They were not: `fieldChain` matched only `kind: 'field'`, so the bracket spelling could
+    // not lift into `pathProps` (1.18x on a filtered count), and `compileExpr`'s `case 'index'`
+    // arm ran for a projection that never lifts (1.27x). The parser now CANONICALIZES the
+    // bracket form to a field, so all four below build one AST — this group is the guard that
+    // they stay one.
+    'a dotted path vs a constant string subscript',
+    [
+      "MATCH (n:P) WHERE n.meta.s = 's3' RETURN count(*) AS c",
+      "MATCH (n:P) WHERE n.meta['s'] = 's3' RETURN count(*) AS c",
+      "MATCH (n:P) WHERE 's3' = n.meta['s'] RETURN count(*) AS c",
+    ],
+  ],
   [
     // Item 549: ISO's `<order by and page statement>` standing in FRONT of the projection. An
     // `OFFSET 0` keeps every row and an `ORDER BY` cannot move a one-row order-free aggregate, so
