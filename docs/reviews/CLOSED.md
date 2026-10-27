@@ -28318,3 +28318,25 @@ asc` and 1.13x on a control with no sort and no page clause** — which a change
   STRUCTURAL, not allocational: the clause spelling sorts rows whose key is already a projected
   column, while the statement spelling evaluates the key through a compiled closure over a
   `Binding` for every row and then projects again. No context hoisting reaches that.
+- **REGRESSION PASS for items 954-965: both sweeps CLEAN (item 966).** `bench_all` 231 lines,
+  zero panics or errors; `bun run bench` 67 lines, zero errors, run SERIALLY with the machine
+  otherwise idle. Nothing anomalous against recorded figures — `project the element + materialize`
+  **26.6** (item 737's isolated 25.2/24.7, not its 44.8 phantom) and `count var-length 1-2 hops`
+  **224.9** (below the 250.7 that item saw in-sweep).
+- **⚠️ THE FINDING — NEITHER CORPUS COVERS WHAT WAS CHANGED (item 966).** `bench_all` cannot reach
+  any of the five: item 965 is TS-only with no native counterpart, and **no native query uses a
+  dotted or constant-string-subscript spelling** (956/958). `bun run bench` has **no subscript row
+  and no statement-position `ORDER BY` row** — `ordered projection + limit` (6.9 ms) is the CLAUSE
+  spelling, item 965's comparison target rather than the arm it changed. **So both demonstrate
+  "nothing broke", not "nothing regressed"**; the real evidence is the three probes written
+  alongside the changes (`route-vs-expr-probe`, `bracket-projection-probe`, `sorted-page-probe`),
+  each carrying a control the change cannot reach.
+- **DECLINED — adding rows to the corpora (item 966).** Item 747 recorded the cost: one stray
+  depth-5 row ran **16 s inside a 17 s sweep** and its in-sweep inflation was misread as a 1.66x
+  regression across two items. Three focused probes answer these questions more cheaply and with
+  controls.
+- **BASELINES recorded, since neither corpus had committed figures to diff against (item 966).**
+  Native GQL, 200k nodes, best_us: `filter age>50` 90.5, `2-hop` 3921.4, `4-hop` 6506.4, `6-hop`
+  10051.2, `group by dept` 381.8, `distinct prop` 2972.9, `project bool` 392.5, `two preds` 206.9.
+  TS, ms: `decode ndjson (5 edges/node)` 2792.4, `top-k by property` 11.8, `count 4-hop` 584.2,
+  `count var-length 1-2 hops` 224.9, `traverse 1-hop project + order by` 226.6.
