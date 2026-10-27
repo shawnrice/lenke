@@ -28291,3 +28291,30 @@ DISTINCT` to `DistinctBy` does not merely sidestep a missing fast path — it la
   alternated — it is what item 957's twin failed. (4) First-seen order is the correctness
   surface: the `Dict` arm pushes on first observation because dict order can differ from scan
   order under deletes or a label subset, so a mask must not change which occurrence is first.
+- **SHIPPED — one context object for the whole sorted page: 1.09x DISJOINT (item 965), taking the
+  second half of item 868's open remainder.** `case 'page'` built
+  `{ binding, params, graph }` INSIDE the `.map`, so 200k rows with one sort key made 200k context
+  objects plus 200k one-element arrays — and the clause must key every row, since the top K
+  requires seeing them all. Now one context reassigned per row, single-key case specialized out of
+  the `.map` (item 934's arity step). Safe because a compiled sort key reads `env.binding` during
+  the call and does not retain `env`.
+- **⚠️ METHOD — alternating PRE/POST is NOT enough if PRE always runs FIRST within each pair
+  (item 965).** The first alternation credited the change with 1.11x on target, **1.34x on `clause
+asc` and 1.13x on a control with no sort and no page clause** — which a change confined to
+  `case 'page'` cannot reach. Reversing the WITHIN-PAIR order (POST first) made it vanish. Pooled
+  over both orders: target **POST 37.21/37.44/37.91/37.56 against PRE 40.28/40.42/42.78/39.62 —
+  every POST below every PRE, disjoint, 1.09x**; control 3.86 against 3.98, OVERLAPPING.
+  **`PRE,POST,PRE,POST` is still biased if every pair starts with PRE** — any warming trend across
+  a pair is credited to POST. Neighbour of item 957's blocked-rounds finding (3 POST then 3 PRE
+  read 1.16x where alternating read 1.07x): that was about BLOCKING, this is about ORDERING INSIDE
+  the alternation, which looks correct and is not.
+- **`clause asc` is NOT a control and was wrongly used as one (item 965).** It moved 1.31x in the
+  PRE-first pairs; whether it genuinely benefits is UNRESOLVED and not claimed. A real control has
+  no `ORDER BY`, no `LIMIT` and no page clause.
+- **TEETH (item 965).** M1 (multi-key branch returns nulls) CAUGHT, 1 failure; M2 (single-key
+  branch returns null) CAUGHT, 9 failures. Both under `timeout` + cgroup cap — which also proves
+  the new specialization's ELSE branch is covered.
+- **STILL OPEN — item 868 is narrowed to ~3.9x, not closed (item 965).** The remainder is
+  STRUCTURAL, not allocational: the clause spelling sorts rows whose key is already a projected
+  column, while the statement spelling evaluates the key through a compiled closure over a
+  `Binding` for every row and then projects again. No context hoisting reaches that.

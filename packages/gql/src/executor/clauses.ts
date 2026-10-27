@@ -1593,8 +1593,33 @@ export const runLinearClauses = (
         let rows = toArray(bindings);
 
         {
-          const keysOf = (b: Binding): readonly unknown[] =>
-            clause.orderBy.map((s) => s.fn({ binding: b, params, graph }));
+          // ONE context object for the whole sort, not one per row per key (item 965).
+          //
+          // The previous spelling allocated `{ binding, params, graph }` inside the `.map`, so a
+          // 200,000-row table with one sort key made 200,000 context objects plus 200,000
+          // one-element arrays — and this clause evaluates keys for EVERY row, since finding the
+          // top K requires seeing them all (item 868). The context is reassigned rather than
+          // rebuilt; `params` and `graph` never vary within a page clause.
+          //
+          // SAFE BECAUSE NOTHING RETAINS IT. A compiled sort key reads `env.binding` during the
+          // call and returns a value; it does not store `env`. The single-key specialization
+          // below is the same shape as item 934's arity step, for the same reason — the common
+          // case should not pay for `.map` over a one-element list.
+          const ctx = { binding: undefined as unknown as Binding, params, graph };
+          const sortFns = clause.orderBy.map((s) => s.fn);
+          const [onlyFn] = sortFns;
+          const keysOf =
+            sortFns.length === 1
+              ? (b: Binding): readonly unknown[] => {
+                  ctx.binding = b;
+
+                  return [onlyFn(ctx)];
+                }
+              : (b: Binding): readonly unknown[] => {
+                  ctx.binding = b;
+
+                  return sortFns.map((f) => f(ctx));
+                };
 
           // A SMALL WINDOW SELECTS RATHER THAN SORTS (item 868), the same lever item 701 applied
           // to the projection's ORDER BY and the same measured `* 16` admission. Without it this
