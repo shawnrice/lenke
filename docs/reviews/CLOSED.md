@@ -28715,3 +28715,20 @@ predicate` closed at 644. Every remaining flag on either side is recorded as cor
   `hasPredicate`, the accumulator, the **"did anything lift" guard** (the exact line 903 forgot),
   the declared return type (caught by `tsc`), the `satisfies` loop, and the hop-projection gate
   and merge.
+- **GUARDED — the bool spelling groups items 982 and 984 owed, in BOTH probes (item 985).** Each
+  fixture gained a `flag` boolean with **no stored null** (one would keep the column `Gen` and
+  make the group measure the general path — item 982's measured trap). **TS: both groups
+  converge** (negated 3.03/3.46/3.79, 1.25x; positive 3.54/3.70/3.71, 1.05x) with `0 group(s)
+  disagree on the ANSWER` — item 984 confirmed through the repo's own gate.
+- **⚠️ The NATIVE positive group FLAGS 2.78x, and it is NOT what item 982 fixed (item 985).**
+  `0.095ms` bare against `0.265ms` for `= true`. That fixture has no index on `flag`, so `= true`
+  takes the **unconditional no-index seed** rather than the `Filter` route and loses at 80%
+  selectivity — **item 978's finding A**, now visible in the spelling gate as a user-visible
+  difference between two spellings of one question. **Item 972 left that probe at NO PERF CLIFFS
+  and this takes it to one: a pre-existing defect newly EXPOSED, not newly caused**, and left
+  flagged rather than tagged because unlike `DISTINCT vs dedup` it IS a defect.
+- **Item 578 is back at 2.45x in the TS probe, and that is what noise looks like (item 985).**
+  Items 635/636 refuted BOTH halves as noise; item 971 saw it below threshold. A group at that
+  level crossing the line on some runs is the definition, not a regression.
+- **Item 978's finding A now has a STANDING GATE ENTRY (item 985)**, so the fix — when taken —
+  has a pass/fail signal rather than a bespoke sweep.

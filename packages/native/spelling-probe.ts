@@ -57,7 +57,7 @@ const FLOOR_MS = Number(process.env.SPELL_FLOOR ?? 1);
 const lines = Array.from(
   { length: N },
   (_, i) =>
-    `{"type":"node","id":"v${i}","labels":${i % 3 === 0 ? '["P","Q","Univ"]' : '["P","Univ"]'},"properties":{"k":${i % 50},"s":"s${i % 7}","meta":{"s":"s${i % 7}"}}}`,
+    `{"type":"node","id":"v${i}","labels":${i % 3 === 0 ? '["P","Q","Univ"]' : '["P","Univ"]'},"properties":{"k":${i % 50},"s":"s${i % 7}","flag":${i % 5 !== 0},"meta":{"s":"s${i % 7}"}}}`,
 );
 
 // BOTH ENDPOINT KEYS ARE SCATTERED, by different multipliers, and that is load-bearing.
@@ -95,6 +95,27 @@ const g = tsDeserialize(lines.join('\n'), 'ndjson', new TsGraph());
 
 /** Groups of spellings of ONE question. Every member must answer identically. */
 const GROUPS: [string, readonly string[]][] = [
+  [
+    // Item 984. `NOT n.flag` IS `n.flag = false`. `directEqProps` admits a bare `prop` or a
+    // `compare` and nothing else, so a `NOT` conjunct declined the WHOLE chain and the
+    // predicate ran through the generic evaluator — 2.20x the equality spelling (item 983)
+    // until `notTruthProps` lifted it. Both polarities, because they reach the lift by
+    // different arms.
+    'a NEGATED boolean vs the equality spelling',
+    [
+      'MATCH (n:P) WHERE NOT n.flag RETURN count(*) AS c',
+      'MATCH (n:P) WHERE n.flag = false RETURN count(*) AS c',
+      'MATCH (n:P) WHERE n.flag <> true RETURN count(*) AS c',
+    ],
+  ],
+  [
+    'a boolean compared against a literal vs the bare predicate',
+    [
+      'MATCH (n:P) WHERE n.flag RETURN count(*) AS c',
+      'MATCH (n:P) WHERE n.flag = true RETURN count(*) AS c',
+      'MATCH (n:P) WHERE true = n.flag RETURN count(*) AS c',
+    ],
+  ],
   [
     // Items 954-959. A constant STRING subscript IS a field access, so these are one question.
     // They were not: `fieldChain` matched only `kind: 'field'`, so the bracket spelling could

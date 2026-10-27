@@ -48,6 +48,10 @@ fn fixture(n: u32, deg: u32) -> Store {
                 // A RECORD-valued property, so the dotted/bracket path group below has a nested
                 // cell to read. Items 954-959 closed a 3.47x seeding gap and a 1.27x evaluation
                 // gap between `m.city` and `m['city']`; this is the guard on both.
+                // A boolean, so the bool-spelling group below has a `Column::Bool` to read —
+                // and NO stored null, which would keep the column `Gen` and make the group
+                // measure the general path instead (item 982 measured that trap directly).
+                ("flag", Value::Bool(i % 5 != 0)),
                 (
                     "meta",
                     lenke_engine::value::make_record(vec![(
@@ -102,6 +106,27 @@ fn main() {
 
     // Each group: queries that MUST be semantically equivalent. Mixed GQL & Gremlin.
     let groups: &[(&str, &[(Lang, &str)])] = &[
+        (
+            // Item 982. `p.flag = true` IS `p.flag`, and `= false` IS `NOT p.flag`.
+            // `try_filter_keep_bool_prop` served only the bare and `NOT` spellings, so the
+            // comparison form fell to the general vectorized filter and measured **5.71x** the
+            // bare one on an identical `Filter { Scan }` plan. Both polarities are here because
+            // the positive and negative spellings reach the fast path by different arms.
+            "a boolean compared against a literal vs the bare predicate",
+            &[
+                (Gql, "MATCH (n:Person) WHERE n.flag RETURN count(*) AS c"),
+                (Gql, "MATCH (n:Person) WHERE n.flag = true RETURN count(*) AS c"),
+                (Gql, "MATCH (n:Person) WHERE true = n.flag RETURN count(*) AS c"),
+            ],
+        ),
+        (
+            "a NEGATED boolean vs the equality spelling",
+            &[
+                (Gql, "MATCH (n:Person) WHERE NOT n.flag RETURN count(*) AS c"),
+                (Gql, "MATCH (n:Person) WHERE n.flag = false RETURN count(*) AS c"),
+                (Gql, "MATCH (n:Person) WHERE n.flag <> true RETURN count(*) AS c"),
+            ],
+        ),
         (
             // Items 954-959. A constant STRING subscript is a field access, so these are one
             // question. They were not: `prop_path` matched `Expr::Field` only, so the bracket
