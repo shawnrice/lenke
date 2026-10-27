@@ -28638,3 +28638,25 @@ predicate` closed at 644. Every remaining flag on either side is recorded as cor
   `= true`, `= false`, `<> true`, `<> false` and both operand orders; (2) the same over a stored
   NULL and an absent cell on that route; (3) the polarity mutant re-run against those tests — it
   must FAIL; (4) the string-column case asserted to still raise.
+- **⚠️ STILL NOT SHIPPED — three attempts to TEST the bool fold all failed, each caught by a
+  counter or a mutant (item 981).** The fix itself is unchanged from item 980 (5.8x, measured on
+  `seekcross_948`). What could not be built is a unit test that reaches
+  `try_filter_keep_bool_prop`:
+  **(1)** 202 nodes, no index — route assertion fired: the plan was an `IndexSeek`, because
+  without an index `eq_seek_worth_it` seeds UNCONDITIONALLY (947-949).
+  **(2)** 20,000 nodes + an index, 50/50 true/false — route assertion passed, test passed, and
+  **the inverted-polarity mutant passed too**: a SYMMETRIC fixture cannot distinguish a polarity
+  flip, because the complement of 10,000 rows is also 10,000. Same shape as
+  `long-chain-count.test.ts`'s warning that equal degrees hide a mis-weighted sweep.
+  **(3)** 16,000/4,000 asymmetric — mutant STILL passed, and a counter in the fast path explains
+  why: **it fires ZERO times**, even for the bare spelling. The index added in (1) to defeat the
+  seek pushed the query onto a third route.
+- **THE GENERALIZABLE FINDING — which route a query takes is extremely fixture-sensitive (item
+  981).** Node count, index presence and projection shape each moved it in one tick: 202 vs
+  20,000 nodes changed seek-vs-filter; adding an index changed it again; `count(*)` vs a
+  projection changed which filter path runs. **"Write a test for this fast path" is itself a
+  measurement problem**, and the only configuration known to reach it is `seekcross_948`'s
+  200,000-node indexed sweep.
+- **Everything was reverted (item 981).** Keeping a test whose stated purpose it does not serve
+  is the believed-test trap this audit cites repeatedly, so the test went back too — a passing
+  test that cannot fail for its reason is worse than none.
