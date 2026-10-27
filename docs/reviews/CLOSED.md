@@ -29213,6 +29213,32 @@ multiTypeEdgeCount === 0`) — one named type cannot double-count. Native's `Adj
   differential and answer assertion in the repo. It is caught only by asserting on the selector
   itself (`fused_hop_shape(..).is_some()`) in both directions. Second instance of the hazard after
   1008's degree-reader pin.
+- **⚠️ THE FIX 1009 NAMED WORKS AT 3x, AND ITS COST IS DEAD CODE — not shipped, placement one
+  level off (item 1012).** 1009 looked at `edge_carries_wanted`; `exec.rs` has FOUR sites where
+  the decision is ALREADY hoisted (`for_each_nbr`, `node_has_num_nbr`, `node_has_matching_nbr`,
+  `node_has_nbr`), each once per node with `want` in scope. Narrowing those: disjunction taint
+  ratio **2.76/2.86/2.84 → 0.98/0.98/1.18** at degree 256 / 64 types (15.1 ms → 5.4), semijoin
+  **1.62/1.60/1.59 → 1.01** at 256x8, three alternated rounds, disjoint.
+- **THE COST: 4-8% on the CLEAN semijoin, from code that NEVER EXECUTES (item 1012).** Three
+  hypotheses refuted in order — the per-want loop (refuted by a `has_multi_label_edges() &&`
+  short-circuit, so the loop is dead on a clean graph and the regression survived), `Store`'s
+  layout (refuted by restoring the `FnvSet`), and the extracted call (refuted by
+  `#[inline(always)]`). **A cheap dead term is free and an expensive dead term is not**: register
+  pressure in the enclosing per-edge closure. Item 1009's withdrawn "1.3x from dead code is an
+  inlining artifact", now with a mechanism and a control.
+- **"IT IS JUST THE TOLL FOR EDITING A HOT FUNCTION" IS A HYPOTHESIS, AND IT NEEDS A NULL CONTROL
+  (item 1012).** The `exec::pull` alignment toll made that the obvious last explanation. A
+  SEMANTICALLY IDENTICAL edit to the same four functions (`&& !want.is_empty()`, unreadable when
+  `want` is empty) cost **nothing** — 269.6/271.0/270.8 against 278.9/268.7/262.4, overlapping. So
+  the toll does not generalize from `pull` to every hot function, and attributing a regression to
+  it without the null control would have mis-closed a real 3x lever.
+- **➡️ NEXT: pass the decision in as a PARAMETER (item 1012).** The four functions are private and
+  compute `has_extra` from arguments they already hold, so the expensive term moves to their cold
+  callers and the hot bodies gain no code. 1009's hoist, one level further out.
+- **A SEMIJOIN ARM NOW EXISTS IN `multilabel_taint_1008` (item 1012).** The other three arms all
+  walk an adjacency and emit rows; none reaches the early-stopping `node_has_*` family. Its PRE
+  column showed the taint demoting semijoins **1.59-1.64x**, which nothing had measured, and its
+  clean column is what caught the regression above three rounds running.
 - **⚠️ PRICED, NOT BUILT — the DISJUNCTION taint penalty is 2.3x and the obvious narrowing FAILS
   (item 1009).** After 1008 a single-type hop takes the per-type CSR, so the remaining guards
   serve disjunctions, stale CSR and secondary types. `-[:T0|T1]->` at degree 256 / 64 types with

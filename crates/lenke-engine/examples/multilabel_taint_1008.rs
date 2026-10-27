@@ -102,6 +102,17 @@ fn main() {
     // that paid 24x there rather than the per-edge-probe kind that paid nothing at 1009/1010.
     // Neither arm above reaches it: one has no filter, the other has two types.
     let qf = "MATCH (n:V)-[:T0]->(m) WHERE m.k > 50 RETURN m.k AS k";
+    // A SEMIJOIN, added at item 1012. The three arms above all walk an adjacency and emit rows;
+    // none reaches `node_has_num_nbr` / `node_has_matching_nbr` / `node_has_nbr`, which EARLY-STOP
+    // on the first matching neighbour and carry the same hoisted `has_extra` decision. The want is
+    // a disjunction for the same reason as `qd`: a single type takes the per-type CSR instead.
+    //
+    // The CLEAN column of this arm is the control that matters for 1012's own cost — a semijoin
+    // calls the decision once per NODE and may early-stop after one edge, so it amortizes the
+    // per-node work over the fewest edges of any shape here. If a per-want decision were too dear,
+    // this row is where it would show.
+    let qs =
+        "MATCH (n:V) WHERE EXISTS { MATCH (n)-[:T0|T1]->(m) WHERE m.k > 50 } RETURN count(*) AS c";
 
     println!("# item 1008 — does ONE multi-label edge demote every typed hop?");
     println!("# {nodes} nodes, min of {reps} (us). The taint is a SECOND label on ONE edge.\n");
@@ -122,6 +133,9 @@ fn main() {
         let (fc, fcr) = time_rows(qf, &clean, reps);
         let (ft, ftr) = time_rows(qf, &tainted, reps);
         let fsame = if fcr == ftr { "" } else { " ROWS DIFFER" };
+        let (sc, scr) = time_rows(qs, &clean, reps);
+        let (st, str_) = time_rows(qs, &tainted, reps);
+        let ssame = if scr == str_ { "" } else { " ROWS DIFFER" };
 
         println!(
             "  {degree:6}  {types:5}  {cu:11.1}  {tu:12.1}  {:9.2}x  {cr:>6}   {same}   |  {dc:10.1}  {dt:10.1}  {:6.2}x{dsame}",
@@ -132,6 +146,10 @@ fn main() {
         println!(
             "         (filtered)                                              |  {fc:10.1}  {ft:10.1}  {:6.2}x{fsame}",
             ft / fc
+        );
+        println!(
+            "         (semijoin)                                              |  {sc:10.1}  {st:10.1}  {:6.2}x{ssame}",
+            st / sc
         );
     }
 }
