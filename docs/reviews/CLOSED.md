@@ -27297,3 +27297,58 @@ p` at **1.54x FASTER** and `query/shortest repeat-group unread` at **0.81x slowe
   for every row on three distinct keys so arity and position are the only variables. Row counts
   asserted per arm; every generated spelling is printed so a pair that is not the same question is
   visible rather than implicit. It is a SCREEN: it finds cells, it does not measure them.
+- **SHIPPED — filters on BOTH sides of a hop now have a rung: 1.70-2.06x (item 933).** Closes item
+  932's largest open cell and item 930's named gap. `V().has(x,p).out(T).has(k,q)` is
+  `mid = [has, out, has]` and the hop sits in the MIDDLE, where `filteredHopCount` needs it first,
+  `startFilteredHopCount` needs it last and `filterChainCount` rejects the `out` — so the shape fell
+  to the general traversal. `bothFilteredHopCount` is disjoint from both siblings by construction
+  (it requires at least one step on each side of exactly one hop), so the dispatch order among the
+  three cannot change which shapes they answer. PRE/POST by swapping the BUILT BUNDLE, 3 alternated
+  rounds: `both:1+1` 268.21 → 138.48 (**1.94x**), `both:2+1` 288.83 → 140.47 (**2.06x**),
+  `both:1+2` 278.52 → 163.44 (**1.70x**), against three same-package grm controls (`post:2` 1.01x,
+  `pre:2` 1.02x, `node:2` 1.00x) and a gql control (0.98x), with a 1.10x worst arm self-variance.
+- **MIS-PRICED, and the reason is structural — item 932 estimated 5x for this and the achievable win
+  is 1.70-2.06x (item 933).** 932 priced it as "if Gremlin's split case reached its own one-sided
+  twin it would be ~55 ms against 277", which silently assumed the FAR-DRIVEN walk was available.
+  It is not. `filteredHopCount` tests each far VERTEX once and adds its whole degree, sound only
+  because with no start filter every edge of the type reaches it; **once starts are filtered, a far
+  vertex's contribution depends on which of its in-edges start at a surviving vertex**, so the rung
+  must visit each qualifying EDGE once — 600,000 predicate evaluations against the far-driven arm's
+  200,000. **RULE: before pricing a missing rung at its one-sided twin's cost, check whether the
+  trick that makes the twin cheap is still available.** The residual 2.6x against `post:2` is
+  structural, not a remaining optimization. A far-vertex memo (test each far vertex at most once,
+  cache the verdict) is the only obvious further lever and is NOT priced — the lookup may cost more
+  than the 400,000 saved evaluations.
+- **`dropVacuousLabels` decides whether a hop+filter rung is REACHABLE, and an all-one-label fixture
+  hides it (item 933).** Item 540's pass removes a `hasLabel` every element carries before
+  `countShortcut` sees the plan, because the fast paths match a plan PREFIX from the source and one
+  vacuous step in front of the hop makes them all decline. So in a fixture where every vertex shares
+  the label, `V().hasLabel(L).out(T).has(k,p)` arrives as `[out, has]` — the far-driven rung's
+  shape, not the both-sides one. Confirmed by measurement: that shape reads 27.9 ms after item 933
+  against 28.2 before, so **the commonest labelled hop is untouched.** Two consequences: a probe over
+  an all-`:P` fixture must use a `has` pre-filter to reach the both-sides rung at all, and **a unit
+  test written against an all-one-label fixture would exercise `filteredHopCount` while appearing to
+  test the new rung.** The repo fixture has `P` on 4 of 6 vertices and `Q` on 3 precisely so both
+  survive.
+- **A mutant can survive BY CONSTRUCTION when two different rules overlap, and that is not a test
+  gap (item 933).** Dropping `soleHopAt`'s multi-hop refusal makes it return the FIRST of two hops —
+  and everything after that hop still contains the SECOND, which `collectHasFilters` refuses because
+  a hop is never a `has`, so the rung declines either way. The refusal is **defence in depth, not
+  load-bearing**; it is kept so the helper's contract is true for a future caller that does not
+  validate the tail, and marked expected-to-survive in the mutation list so the survivor is never
+  read as a missing test. **Distinguish this from `pushable`'s warning**, which is about ONE rule
+  split across two places (where a mutation of either survives because the other still declines) —
+  these are two different rules that happen to overlap on this input.
+- **RULE — on a brand-new rung the mutation run also verifies DISPATCH (item 933).** Six independent
+  kills are what establish the route is reached; a new rung whose mutants all survived would be dead
+  code behind a green suite. That is item 439's rule (verify the dispatch reaches the function BEFORE
+  the A/B, which it paid three alternated rounds to learn) satisfied by the mutation pass rather than
+  by separate instrumentation. The discriminating test is `a far vertex reached from a REJECTED start
+contributes nothing` — the far-driven mistake reports 2 where the answer is 1, and it is what kills
+  the start-filters-ignored mutant.
+- **A per-VERTEX closure allocation, caught by the lint complexity cap (item 933).** The first
+  version declared the bucket-tallying function inside the per-vertex loop — 200,000 closures on the
+  measured fixture — which is the shape that gave UNRELATED queries a new slow mode at 4x
+  (the lesson already recorded for a walk inlined in a returned closure). Hoisted to module scope as `tallyFarEnds`; the long
+  parameter list is the price of not allocating. Found only because the complexity cap forced the
+  function apart, which is a gate earning its keep for a reason it was not written for.

@@ -1,6 +1,6 @@
 import type { Edge, Graph, Vertex } from '@lenke/core';
 
-import type { Plan, Step } from '../ast.js';
+import type { Plan, Predicate, Step } from '../ast.js';
 import { matches } from '../predicates.js';
 import { seedForStep } from './index-seed.js';
 
@@ -142,6 +142,16 @@ export const countShortcut = (plan: Plan, graph: Graph): number | undefined => {
 
   if (started !== undefined) {
     return started;
+  }
+
+  // Filters on BOTH sides of ONE hop (item 932). Disjoint from its two siblings by construction —
+  // `startFilteredHopCount` above requires the hop LAST and `filteredHopCount` below requires it
+  // FIRST, while this one requires at least one step on each side — so the order among the three
+  // cannot change which shapes they answer.
+  const bothSides = bothFilteredHopCount(mid, graph);
+
+  if (bothSides !== undefined) {
+    return bothSides;
   }
 
   // A CHAIN of two or more hops (item 574). After the one-hop rung, so that one keeps every
@@ -1044,6 +1054,224 @@ const startFilteredHopCount = (mid: readonly Step[], graph: Graph): number | und
 
     if (byType !== undefined) {
       n += degreeOfTypes(byType, hop.labels);
+    }
+  }
+
+  return n;
+};
+
+/**
+ * The index of the ONE movement step in `mid`, or `undefined` if there is none or more than one.
+ *
+ * More than one hop is `hopChainCount`'s shape and must not be taken by a single-hop rung — a rung
+ * that silently accepted the first of two hops would answer a different question.
+ */
+const soleHopAt = (mid: readonly Step[]): number | undefined => {
+  let at: number | undefined;
+
+  for (let i = 0; i < mid.length; i += 1) {
+    const k = mid[i].kind;
+
+    if (k === 'out' || k === 'in' || k === 'both') {
+      if (at !== undefined) {
+        return undefined;
+      }
+
+      at = i;
+    }
+  }
+
+  return at;
+};
+
+/**
+ * Every step as a vertex filter, or `undefined` if any step is something else.
+ *
+ * An indexable `has` is REFUSED rather than accepted, because the index-seed path is strictly
+ * better than the scan a caller would do with it — the same decline `startFilteredHopCount` makes
+ * inline, kept in one place now that two rungs need it.
+ */
+const collectVertexFilters = (steps: readonly Step[], graph: Graph): VertexFilter[] | undefined => {
+  const out: VertexFilter[] = [];
+
+  for (const step of steps) {
+    if (step.kind !== 'hasLabel' && step.kind !== 'has') {
+      return undefined;
+    }
+
+    if (step.kind === 'has' && seedForStep(step, graph.vertexPropertyIndex) !== null) {
+      return undefined;
+    }
+
+    out.push(step);
+  }
+
+  return out;
+};
+
+/** Every step as a `has`, or `undefined` if any step is something else. */
+const collectHasFilters = (
+  steps: readonly Step[],
+): Extract<Step, { kind: 'has' }>[] | undefined => {
+  const out: Extract<Step, { kind: 'has' }>[] = [];
+
+  for (const step of steps) {
+    if (step.kind !== 'has') {
+      return undefined;
+    }
+
+    out.push(step);
+  }
+
+  return out;
+};
+
+/**
+ * How many edges in one adjacency bucket have a far end passing every far filter.
+ *
+ * AT MODULE SCOPE DELIBERATELY. The first version of this was a closure declared inside the
+ * per-vertex loop of `bothFilteredHopCount`, which allocates one closure per VERTEX — 200,000 of
+ * them on the fixture item 932 measured. The repo has this lesson already: a walk written inline in
+ * a returned closure gave UNRELATED queries a new slow mode at 4x, and the fix was to hoist it to
+ * module scope. The parameter list is the price of not allocating.
+ */
+const tallyFarEnds = (
+  set: ReadonlySet<Edge>,
+  forward: boolean,
+  fars: readonly Extract<Step, { kind: 'has' }>[],
+  onlyFarPred: Predicate | undefined,
+  onlyFarKey: string,
+): number => {
+  let n = 0;
+
+  for (const edge of set) {
+    const far = forward ? edge.to : edge.from;
+
+    if (
+      onlyFarPred === undefined
+        ? allMatch(fars, far.properties)
+        : matches(onlyFarPred, far.properties[onlyFarKey])
+    ) {
+      n += 1;
+    }
+  }
+
+  return n;
+};
+
+/**
+ * `V().hasLabel(L).has(x, p).out(T).has(k, q).count()` — filters on BOTH sides of the hop.
+ *
+ * ITEM 932 MEASURED THIS AS THE WORST CELL IN THE CROSS-SURFACE MATRIX, and item 930 had named it
+ * and said why. The hop sits in the MIDDLE, where none of the existing rungs can reach it:
+ * `filteredHopCount` needs the hop FIRST, `startFilteredHopCount` needs it LAST, and
+ * `filterChainCount` rejects the `out` outright. So the whole shape fell to the general traversal.
+ * Moving ONE of two filters across the hop — same answer, same number of predicate tests, only the
+ * position different — cost 5.06x: `out(E).has(k).has(j)` 54.81 ms against
+ * `has(k).out(E).has(j)` 277.41 at 200,000 vertices / 600,000 edges.
+ *
+ * WHY THIS ONE IS EDGE-DRIVEN WHERE `filteredHopCount` IS FAR-DRIVEN, which is the whole design
+ * difference and not an oversight. `filteredHopCount` tests each far VERTEX once and adds its whole
+ * degree, because with no start filter every edge of the type reaches it. Here a far vertex's
+ * contribution depends on WHICH of its in-edges start at a surviving vertex, so a per-vertex test
+ * multiplied by degree would count edges from rejected starts. The walk therefore visits each
+ * qualifying EDGE once — strictly more predicate evaluations than the far-driven arm, and still far
+ * less than materialising traversers through the general path.
+ *
+ * It also makes the evaluated set exactly the general walk's: start filters in written order with a
+ * short-circuit, then the far filters only for edges leaving a surviving start — which is what
+ * `rows.filter(start).flatMap(expand).filter(far)` evaluates. Nothing gains or loses an evaluation,
+ * so no fault can appear or disappear (and per item 930, `matches` cannot fault anyway).
+ */
+const bothFilteredHopCount = (mid: readonly Step[], graph: Graph): number | undefined => {
+  const at = soleHopAt(mid);
+
+  // At least one step on each side, which is what makes this disjoint from both siblings.
+  if (at === undefined || at === 0 || at === mid.length - 1) {
+    return undefined;
+  }
+
+  const hop = mid[at];
+
+  // `both` walks out-edges then in-edges, so a self-loop is incident twice — the same exclusion
+  // `vertexStepCount` and the two sibling rungs make.
+  if (hop.kind !== 'out' && hop.kind !== 'in') {
+    return undefined;
+  }
+
+  // Several named types AND an edge carrying two of them would be visited once per type by the
+  // per-bucket walk below, counting it twice. Same guard as `startFilteredHopCount`.
+  if (hop.labels.length > 1 && graph.multiTypeEdgeCount !== 0) {
+    return undefined;
+  }
+
+  const starts = collectVertexFilters(mid.slice(0, at), graph);
+  const fars = collectHasFilters(mid.slice(at + 1));
+
+  if (starts === undefined || fars === undefined) {
+    return undefined;
+  }
+
+  const [first] = starts;
+  // The source: the FIRST filter's bucket when that filter is a single-label `hasLabel`, because
+  // the bucket is exactly its survivors and nothing before it could have faulted.
+  const canSeed = first.kind === 'hasLabel' && first.labels.length === 1;
+  const source: Iterable<Vertex> =
+    first.kind === 'hasLabel' && first.labels.length === 1
+      ? (graph.verticesByLabel.get(first.labels[0]) ?? EMPTY_VERTICES)
+      : graph.verticesById.values();
+  const rest = canSeed ? starts.slice(1) : starts;
+  const forward = hop.kind === 'out';
+  // The one-filter far test is hoisted inline, for item 932's measured reason: routing a per-row
+  // test through `allMatch` costs ~40 ns a row in call and array-indexing overhead, and this loop
+  // runs per EDGE. `undefined` means "a chain, use `allMatch`".
+  const onlyFar = fars.length === 1 ? fars[0] : undefined;
+  const onlyFarKey = onlyFar?.key ?? '';
+  const onlyFarPred = onlyFar?.pred;
+  let n = 0;
+
+  for (const v of source) {
+    let ok = true;
+
+    for (let i = 0; i < rest.length && ok; i += 1) {
+      const step = rest[i];
+
+      ok =
+        step.kind === 'hasLabel'
+          ? step.labels.some((l) => v.labels.has(l))
+          : matches(step.pred, v.properties[step.key]);
+    }
+
+    if (!ok) {
+      continue;
+    }
+
+    // The vertex's OWN adjacency box, not a hash of its id into the graph's map (items 162/321/591).
+    // START-driven, so `out` reads the FROM side — the opposite of `filteredHopCount`, which drives
+    // from the far end.
+    const byType = forward ? v.adjFrom : v.adjTo;
+
+    if (byType === undefined) {
+      continue;
+    }
+
+    // An EMPTY type list is an untyped hop and so every type — reached only where no edge carries
+    // two types, which is what makes walking the buckets separately safe. `degreeOfTypes` splits on
+    // the same condition.
+    if (hop.labels.length === 0) {
+      for (const set of byType.values()) {
+        n += tallyFarEnds(set, forward, fars, onlyFarPred, onlyFarKey);
+      }
+
+      continue;
+    }
+
+    for (const t of hop.labels) {
+      const set = byType.get(t);
+
+      if (set !== undefined) {
+        n += tallyFarEnds(set, forward, fars, onlyFarPred, onlyFarKey);
+      }
     }
   }
 

@@ -15,6 +15,7 @@ import {
   hasLabel,
   identity,
   in_,
+  lt,
   out,
   toArray,
   traversal,
@@ -605,6 +606,143 @@ describe('a filtered hop count is answered from the far side', () => {
     expect(g.multiTypeEdgeCount).toBeGreaterThan(0);
     expect(n(g, V(), out('E', 'F'), has('k', gt(1)), has('k', gt(2)), count())).toBe(
       declined(g, V(), out('E', 'F'), has('k', gt(1)), has('k', gt(2)), identity(), count()),
+    );
+  });
+
+  // ITEM 932 — filters on BOTH SIDES of the hop. This route did not exist before: the hop sits in
+  // the MIDDLE, where `filteredHopCount` wants it first, `startFilteredHopCount` wants it last and
+  // `filterChainCount` rejects it, so every shape below previously fell to the general traversal.
+  //
+  // THE LABEL MUST BE NON-VACUOUS TO REACH THIS RUNG AT ALL. `dropVacuousLabels` (item 540) removes
+  // a `hasLabel` every element carries BEFORE `countShortcut` sees the plan, so in a fixture where
+  // every vertex shares the label, `V().hasLabel(L).out(T).has(k,p)` arrives as `[out, has]` and is
+  // the far-driven `filteredHopCount`'s shape, not this one. Here `P` covers 4 of 6 and `Q` 3 of 6,
+  // so both survive — which is why these tests exercise the new rung and a probe over an all-`:P`
+  // fixture would not.
+
+  test('a far vertex reached from a REJECTED start contributes nothing', () => {
+    // THE DISCRIMINATING CASE, and the reason this rung is edge-driven rather than far-driven.
+    // Vertex 2 is the far end of TWO `E` edges, 0->2 and 1->2. The start filter `k < 1` keeps only
+    // vertex 0, so exactly ONE of those edges survives. `filteredHopCount`'s trick — test the far
+    // vertex once and add its whole degree — would count both and report 2.
+    const g = build();
+
+    expect(n(g, V(), has('k', lt(1)), out('E'), has('k', gt(1)), count())).toBe(1);
+    expect(n(g, V(), has('k', lt(1)), out('E'), has('k', gt(1)), count())).toBe(
+      declined(g, V(), has('k', lt(1)), out('E'), has('k', gt(1)), identity(), count()),
+    );
+  });
+
+  test('a NON-vacuous label on the start, with a filter on the far end', () => {
+    // `Q` is 3 of 6, so it survives `dropVacuousLabels`. Only `3->3` leaves a `Q` vertex by `E`.
+    const g = build();
+
+    expect(n(g, V(), hasLabel('Q'), out('E'), has('k', gt(0)), count())).toBe(1);
+    expect(n(g, V(), hasLabel('Q'), out('E'), has('k', gt(0)), count())).toBe(
+      declined(g, V(), hasLabel('Q'), out('E'), has('k', gt(0)), identity(), count()),
+    );
+  });
+
+  test('filters on DIFFERENT keys, one each side', () => {
+    // starts k>0: 1,2,3,4,5 — their `E` edges are 1->2 and 3->3, far ends j=4 and j=6, both > 3.
+    const g = build();
+
+    expect(n(g, V(), has('k', gt(0)), out('E'), has('j', gt(3)), count())).toBe(2);
+    expect(n(g, V(), has('k', gt(0)), out('E'), has('j', gt(3)), count())).toBe(
+      declined(g, V(), has('k', gt(0)), out('E'), has('j', gt(3)), identity(), count()),
+    );
+  });
+
+  test('TWO filters on the start side and TWO on the far side', () => {
+    const g = build();
+
+    expect(
+      n(
+        g,
+        V(),
+        hasLabel('P'),
+        has('k', lt(1)),
+        out('E'),
+        has('k', gt(1)),
+        has('j', gt(3)),
+        count(),
+      ),
+    ).toBe(1);
+    expect(
+      n(
+        g,
+        V(),
+        hasLabel('P'),
+        has('k', lt(1)),
+        out('E'),
+        has('k', gt(1)),
+        has('j', gt(3)),
+        count(),
+      ),
+    ).toBe(
+      declined(
+        g,
+        V(),
+        hasLabel('P'),
+        has('k', lt(1)),
+        out('E'),
+        has('k', gt(1)),
+        has('j', gt(3)),
+        identity(),
+        count(),
+      ),
+    );
+  });
+
+  test('a self-loop across both filters is counted once', () => {
+    // 3->3 is an `E` self-loop, so vertex 3 is both the surviving start and the passing far end.
+    const g = build();
+
+    expect(n(g, V(), has('k', gt(2)), out('E'), has('k', gt(2)), count())).toBe(1);
+    expect(n(g, V(), has('k', gt(2)), out('E'), has('k', gt(2)), count())).toBe(
+      declined(g, V(), has('k', gt(2)), out('E'), has('k', gt(2)), identity(), count()),
+    );
+  });
+
+  test('`in` reads the other side, and the far end is the FROM vertex', () => {
+    // Driving from starts k>1 (2,3,4,5): vertex 2's in-`E` edges come from 0 and 1, and `k < 1`
+    // keeps only vertex 0. A direction mix-up here reads the TO vertex and answers differently.
+    const g = build();
+
+    expect(n(g, V(), has('k', gt(1)), in_('E'), has('k', lt(1)), count())).toBe(1);
+    expect(n(g, V(), has('k', gt(1)), in_('E'), has('k', lt(1)), count())).toBe(
+      declined(g, V(), has('k', gt(1)), in_('E'), has('k', lt(1)), identity(), count()),
+    );
+  });
+
+  test('`both` in the middle still declines', () => {
+    // `both` is incident to a self-loop twice, the same exclusion the sibling rungs make.
+    const g = build();
+
+    expect(n(g, V(), has('k', gt(-1)), both('E'), has('k', gt(-1)), count())).toBe(
+      declined(g, V(), has('k', gt(-1)), both('E'), has('k', gt(-1)), identity(), count()),
+    );
+  });
+
+  test('TWO hops decline, so `hopChainCount` keeps its own shape', () => {
+    // `soleHopAt` returns undefined for more than one movement step. A rung that took the first of
+    // two hops would answer a different question entirely.
+    const g = build();
+
+    expect(n(g, V(), has('k', gt(-1)), out('E'), out('E'), has('k', gt(-1)), count())).toBe(
+      declined(g, V(), has('k', gt(-1)), out('E'), out('E'), has('k', gt(-1)), identity(), count()),
+    );
+  });
+
+  test('a multi-type hop over an edge carrying two of those types declines', () => {
+    const g = build();
+    const vs = toArray(traversal(V()), g) as ReturnType<Graph['addVertex']>[];
+
+    g.addEdge({ from: vs[4], to: vs[2], labels: ['E', 'F'], properties: {} });
+
+    expect(g.multiTypeEdgeCount).toBeGreaterThan(0);
+    expect(n(g, V(), has('k', gt(-1)), out('E', 'F'), has('k', gt(-1)), count())).toBe(
+      declined(g, V(), has('k', gt(-1)), out('E', 'F'), has('k', gt(-1)), identity(), count()),
     );
   });
 
