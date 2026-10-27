@@ -29213,6 +29213,28 @@ multiTypeEdgeCount === 0`) — one named type cannot double-count. Native's `Adj
   differential and answer assertion in the repo. It is caught only by asserting on the selector
   itself (`fused_hop_shape(..).is_some()`) in both directions. Second instance of the hazard after
   1008's degree-reader pin.
+- **⚠️ PRICED, NOT BUILT — `ORDER BY <temporal> LIMIT k` misses the streaming top-K (item
+  1019).** `order.rs` mentions `Temporal` ZERO times, so a temporal key falls past
+  `try_scan_top_k_wide`'s `Dict` arm to `_ => return None`. Statement-position spelling (item 865:
+  the clause-position one never enters `try_scan_top_k`), 200,000 rows / 1,000 distinct:
+  `date` **5,962 us**, `time` 6,179, `datetime` 6,013, `zoned` 6,033, `zonedtime` 5,980 — all
+  ~4.8x `num`'s 1,239 and ~9x under the ~56,000 full-sort ceiling.
+- **ITEM 864's REFUSAL OF A `Str` ARM DOES NOT COVER A TEMPORAL ONE (item 1019).** That arm was
+  written and dropped because streaming a string key makes every comparison load `data[idx]` at
+  random (1.22x the wrong way on ASC). A `Column::Temporal` is a packed vector of fixed-size
+  `Copy` values, so its loads ARE the numeric path's — the reason the `Str` arm failed is the
+  reason a temporal arm should not.
+- **THE `str` CONTROL AT 70 us IS WHY THE DICTIONARY ARM IS THE ONE WORTH HAVING (item 1019).**
+  1,000 distinct over 200,000 rows is inside `dict_max_distinct`, so that column is
+  dictionary-encoded and gets the rank-bounded early exit — 18x FASTER than the numeric fast path,
+  not slower. Two controls read in opposite directions: `num` is the floor to aim at, `str` is the
+  shape already refused.
+- **➡️ Deliberately deferred to its own item (1019).** It is an ORDERING change, so the streaming
+  key must induce EXACTLY `order_page`'s order per kind (a zoned value against its own offset
+  included) — wrong there is a wrong ANSWER, not a slow one, and the fuzzers compare ordered
+  output. `order.rs`'s history is mostly refuted attempts (844's 1.6x on an unrelated `min`
+  control from a shared live range; 866's 1.28x for a numeric key), so it earns a careful item
+  rather than the tail of a long one.
 - **✅ SHIPPED (TS) — the ZONED kinds in GQL `count(DISTINCT)` and `GROUP BY`, 3.8-5.3x (item
   1018).** `zonedTailKey` packs `(nanos, offset)` into one number (`nanos * 2**21 + (offset +
 2**20)` ≤ ~2.1e15, exactly representable), so a zoned key nests two levels like

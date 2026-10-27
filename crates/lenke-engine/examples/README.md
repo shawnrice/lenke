@@ -74,6 +74,7 @@ enumeration's is flat.
 | What does ONE scalar function call cost, and is its name vectorized?             | `scalarfn_bench`                     |
 | Why is DETACH DELETE the slow write, and in WHAT does it scale?                  | `detach_442`                         |
 | What does `RETURN DISTINCT <temporal>` cost PER KIND, and which reach the keyer? | `temporal_distinct_1015`             |
+| And what does a statement-position `ORDER BY <temporal> LIMIT k` pay?            | `temporal_distinct_1015` (topk)      |
 
 **Deferred** (need crate-private access or a large bespoke fixture, so not in a
 group binary yet): the eval-vs-columnar floor (`eval_vec` is crate-private — it

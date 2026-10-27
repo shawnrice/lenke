@@ -129,7 +129,7 @@ fn main() {
     println!("# RETURN DISTINCT <temporal> per kind — {rows} rows, {distinct} distinct, min of {reps} (us)");
     println!("# num and date are the CONTROLS: both already reach ColKeyer, so a fix cannot move them.\n");
     println!(
-        "  kind              scan_distinct_us   rows   count_distinct_us   gremlin_dedup_us   g_rows"
+        "  kind              scan_distinct_us   rows   count_distinct_us   gremlin_dedup_us   g_rows   topk_us   topk_ceiling_us"
     );
 
     for kind in [
@@ -146,6 +146,17 @@ fn main() {
         let (scan, n) = time_q("MATCH (p:P) RETURN DISTINCT p.t AS t", &store, reps);
         let (agg, _) = time_q("MATCH (p:P) RETURN count(DISTINCT p.t) AS c", &store, reps);
         let (grem, gn) = time_gremlin("g.V().hasLabel('P').values('t').dedup()", &store, reps);
+        // A STATEMENT-POSITION sorted LIMIT (item 1019), which is the spelling that reaches
+        // `try_scan_top_k` — `order.rs` mentions `Temporal` zero times, so a temporal key hits
+        // its `_ => return None` and pays a full sort. The unlimited form is the ceiling: a key
+        // landing on it is getting no top-k treatment at all. `num` and `dict` are the controls
+        // that already have a path; `str` is the one item 864 MEASURED and refused.
+        let (topk, _) = time_q(
+            "MATCH (p:P) ORDER BY p.t LIMIT 10 RETURN p AS p",
+            &store,
+            reps,
+        );
+        let (ceil, _) = time_q("MATCH (p:P) ORDER BY p.t RETURN p AS p", &store, reps);
         // The row count is CHECKED, not assumed: every kind must find exactly `distinct` groups,
         // so a fixture whose values collide (or a key that over-splits) is loud rather than fast.
         let ok = if n == distinct {
@@ -154,6 +165,8 @@ fn main() {
             " <- WRONG GROUPS"
         };
 
-        println!("  {kind:16}  {scan:14.1}  {n:6}  {agg:17.1}  {grem:16.1}  {gn:6}{ok}");
+        println!(
+            "  {kind:16}  {scan:14.1}  {n:6}  {agg:17.1}  {grem:16.1}  {gn:6}  {topk:8.1}  {ceil:15.1}{ok}"
+        );
     }
 }

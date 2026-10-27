@@ -10,6 +10,13 @@
 //! The two spellings mean the same thing, so by this repo's own rule they must cost the same. This
 //! probe prints both, over the same four columns that differ only in representation, so the table
 //! answers two questions at once: what each representation pays, and whether the spellings agree.
+//! THE TEMPORAL KEY IS NOT IN THIS FIXTURE, and its answer lives in
+//! `temporal_distinct_1015`'s `topk` column (item 1019): `order.rs` mentions `Temporal` zero
+//! times, so a temporal key falls past `try_scan_top_k_wide`'s dictionary arm to `_ => return
+//! None`. Measured at 200,000 rows / 1,000 distinct: ~6,000 us against `num`'s 1,239 and a
+//! dictionary-backed `str`'s 70, with the unlimited ceiling at ~56,000. So it gets partial
+//! benefit from `order_page` and none of the streaming top-K.
+//!
 use lenke_engine::store::Store;
 use std::time::Instant;
 
