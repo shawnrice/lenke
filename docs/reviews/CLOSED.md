@@ -27865,3 +27865,35 @@ Prop}` 160.0 / 4,000; `NOT` → `Filter{Scan, Not(Prop)}` 214.7 / 196,000; `= fa
   selectivity trivially; whether the same inversion appears on a many-valued key at the same
   fraction is part of what the sweep must answer, since the degraded path's cost may depend on the
   id distribution and not only on the match count.
+- **MEASURED — the no-index degraded seek's crossover against `Filter(Scan)` is between 2% and 10%
+  selectivity, not 20% (item 948).** The sweep item 947 asked for, `seekcross_948`, 200,000 nodes,
+  min of 9, three runs, both routes verified by `PLAN=1` before timing and the two arms' counts
+  asserted equal before any ratio is printed: **2% 0.86x (seek wins), 10% 1.11-1.14x, 20%
+  1.35-1.41x, 40% 1.76-1.95x, 60% 2.11-2.44x, 80% 2.43-2.85x, 98% 2.68-3.17x — FILTER from 10% on.**
+  The seek arm is reproducible to ±0.4 us at every point and rises linearly with the match count.
+  The pair is row-matched by construction: a boolean column whose TRUE fraction is dialled per
+  column makes `p.bXX = true` (IndexSeek) and `p.bXX` (Filter{Scan,Prop}) two spellings over
+  identical rows.
+- **⚠️ OPEN, NEW — `scan_is_cheap` does not recognise `Column::Bool`, so fixing the seed gate alone
+  would still use the wrong cap (item 948).** It reads
+  `matches!(self.props.get(key), Some(Column::Dict { .. }))`, so only a dictionary column is
+  "cheap" and a bool gets `SEEK_MAX_FRACTION = 0.154` — admitting seeks to ~15% where the measured
+  crossover is 2-10%. **The measured crossover lands on the constant the codebase already derived**,
+  `SEEK_MAX_FRACTION_CHEAP_SCAN = 0.031` (item 407's dict-versus-f64 curves, break-even moving "from
+  ~15% to ~3%"), and a `Vec<bool>` is a byte per row against a dict's `u32` and an f64's eight — so
+  a bool belonging to the cheap class is mechanically unsurprising. **What was measured is the
+  CROSSOVER, not the scan rate**; the two are consistent rather than the first proving the second.
+- **THE FIX, in two parts and in this order (item 948).** (1) Teach `scan_is_cheap` that
+  `Column::Bool` is cheap, so the existing 0.031 cap applies — a one-line `matches!` widening with
+  a measured justification. (2) Route the no-index equality seed through `seek_beats_scan` instead
+  of seeding unconditionally, so the cap is consulted at all. **Doing (2) without (1) leaves bools
+  admitting seeks to ~15%; doing (1) without (2) changes nothing because the gate is never
+  reached.** Both are ROUTE changes, so every mutant of them survives the differential tests
+  (item 585's rule) and they need a route assertion plus this sweep as the before/after.
+- **⚠️ UNRESOLVED — this sweep contradicts E75's "seek wins at 20%" (item 948).** E75 justifies the
+  unconditional seed with _"194.7us on a 20%-selectivity key, against 291.7us for the
+  `Filter(Scan)`"_; the sweep has FILTER winning at 20% by 1.35-1.41x. Both cannot describe the
+  same column. The likely difference is the column TYPE — E75's key is not identified as a bool, and
+  if it is numeric then the 0.154 cap and a seek win at 20% are consistent with it. **E75 is not
+  called wrong**; the honest reading is that each measured its own column, which is precisely why
+  the fix must be type-aware rather than one new constant.
