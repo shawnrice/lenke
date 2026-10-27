@@ -29095,3 +29095,18 @@ disagree on the ANSWER` — item 984 confirmed through the repo's own gate.
     fault precedence), whether a tx-created RANGE index should revert on rollback (922, a test
     pins today's behaviour), and whether cold-query latency matters at all (945 paused the whole
     planning-cost line on exactly that question).
+- **⚠️ CANDIDATE, priced not built — the multi-label edge demotion is now ~1200x and its "not a
+  new target" disposition is STALE (item 1003).** `storage/multilabel`,
+  `MATCH (p:P)-[:KNOWS]->() RETURN count(*)`, same nodes and endpoints both arms: **single
+  [KNOWS] 0.3 us against double [KNOWS,X] 368.6 us**. The corpus entry recorded 242.9 → 369.2
+  (1.5x) and called it settled; **the double arm has not moved and the single arm went 242.9 →
+  0.3**, so the gap grew ~800x without the multi-label path being touched. Same shape as items
+  993 and 941 — a disposition is only as current as the numbers under it.
+- **Why native cannot reuse TS's escape (item 1003).** TS gates narrowly (`labels.length === 1 ||
+multiTypeEdgeCount === 0`) — one named type cannot double-count. Native's `Adj.etype` holds only
+  the PRIMARY label with secondaries in `edge_extra`, so `:KNOWS` must also find edges carrying it
+  as a secondary, which the per-type bucket count omits: unusable, not merely unsafe. The fix
+  shape is a per-type count maintained over ALL labels (O(1) on insert/delete). **Check first how
+  common multi-label edges are in the intended workload — the whole 1200x is zero without them.**
+- **The `storage/multilabel` RSS columns are NOT usable (item 1003).** This run read 11.8 → 3.9
+  bytes/edge, i.e. the TWO-label arm resident smaller than the one-label arm. Read `1hop_us` only.
