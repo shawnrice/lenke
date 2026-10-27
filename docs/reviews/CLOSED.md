@@ -28430,3 +28430,20 @@ count(*)` is 3, not 6), `GROUP BY` (the two smallest `k` fall in DIFFERENT group
   as a price for TS, here "TS needed it" would be wrongly treated as a price for native.
   **Item 843's rule — neither engine's version is inferable from the other's — measured rather
   than assumed for this gap.**
+- **VERIFIED through the repo's own gate — item 969 took the TS spelling probe from SEVEN
+  flagged groups to TWO (item 971).** `SPELL_N=200000 SPELL_REPS=9`, `0 group(s) disagree on the
+ANSWER`. Gone: the three `sorted LIMIT` statement-vs-clause groups (4.71/4.72/3.53x, item 868 —
+  **this is item 969 measured through the gate rather than through its own probe**), plus
+  `SEEK: param equality + a second conjunct` (2.70x) and `one end labelled, the other free`
+  (2.06x), both already recorded as noise (635/636 and 287) so their going is consistent with
+  that and NOT claimed as this session's doing.
+- **The TS spelling probe is at its FLOOR: both survivors are settled (item 971).**
+  `label on start` **5239x is CORRECT** — the members are not equivalent work, O(1) bucket size
+  against O(|label|), and the probe file says not to quiet it (item 325). `a product's one-sided
+predicate` **2.39x has its outlier closed at item 644**, where the fix was built and REVERTED
+  because the pre-filter skips a binding that would RAISE. **No open spelling cliff remains in
+  TS.**
+- **The index stopped a re-derivation again (item 971).** `CLOSED.md` records against 285 that
+  _"item 713 re-derived 285 for want of this note"_. Checking before pricing the 5239x and the
+  2.39x cost one grep each and both came back closed — CLAUDE.md's "has this lever been tried?"
+  → `CLOSED.md`, working exactly as intended.
