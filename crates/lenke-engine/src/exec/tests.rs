@@ -4669,6 +4669,73 @@ fn group_by_a_temporal_key_over_a_frontier() {
     );
 }
 
+/// A PARAM prefix seeds exactly as a literal one does (item 1030).
+///
+/// Item 1029 recorded this as open in Rust, reasoning that bounds here are plan-time `Value`s
+/// rather than closures so a param would need a new plan shape. **It does not, and the record was
+/// wrong:** `bind.rs` substitutes `$p` into an `Expr::Lit` BEFORE `opt` runs, exactly so "the
+/// planner [can] seed indexes on the now-literal predicate". Item 1027's literal path therefore
+/// covers the param spelling already.
+///
+/// THIS TEST EXISTS BECAUSE THAT PROPERTY IS AN ORDERING, not a local rule. It holds only while
+/// binding precedes optimization, and nothing pinned it: moving binding after `opt` — or adding a
+/// path that optimizes a still-parameterized plan — would silently drop the seek and leave a
+/// 72x-slower query that still answers correctly. Verified by plan, not by timing, because the
+/// claim is that the two spellings produce the SAME plan.
+#[test]
+fn a_param_prefix_seeds_like_a_literal_one() {
+    let mut b = Builder::default();
+
+    for i in 0..2_000u32 {
+        b.node(&["P"], &[("s", s(&format!("k{:04}", i % 1_000)))]);
+    }
+
+    let mut store = b.build();
+    store.create_range_index("s");
+
+    let seeks = |plan: &crate::ir::Plan| format!("{plan:?}").contains("upper: Some");
+    let bound = |p: &str| -> crate::ir::Plan {
+        let mut plan =
+            crate::gql::parse_prepared("MATCH (n:P) WHERE n.s STARTS WITH $p RETURN count(*) AS c")
+                .expect("parses");
+
+        crate::bind::bind_params(&mut plan, &[("p".to_string(), Value::Str(p.into()))])
+            .expect("binds");
+
+        crate::opt::optimize_indexed(plan, &store)
+    };
+    let literal = |p: &str| -> crate::ir::Plan {
+        let q = format!("MATCH (n:P) WHERE n.s STARTS WITH '{p}' RETURN count(*) AS c");
+
+        crate::opt::optimize_indexed(crate::gql::parse(&q).unwrap(), &store)
+    };
+    let count = |plan: &crate::ir::Plan| -> String {
+        format!(
+            "{:?}",
+            run(plan, &store).rows.iter().next().map(|r| r[0].clone())
+        )
+    };
+
+    // A selective prefix seeds, through either spelling, with the SAME plan and the same answer.
+    assert!(seeks(&bound("k0005")), "a param prefix must seed");
+    assert_eq!(
+        format!("{:?}", bound("k0005")),
+        format!("{:?}", literal("k0005")),
+        "the param and literal spellings must optimize to one plan"
+    );
+    assert_eq!(count(&bound("k0005")), count(&literal("k0005")));
+
+    // ...and the DECLINE carries too: an empty prefix has no successor, so neither spelling seeks.
+    assert!(
+        !seeks(&bound("")),
+        "an empty param prefix has no upper bound"
+    );
+    assert_eq!(count(&bound("")), count(&literal("")));
+    // A prefix matching nothing still seeks, and still agrees.
+    assert!(seeks(&bound("zzzz")));
+    assert_eq!(count(&bound("zzzz")), count(&literal("zzzz")));
+}
+
 /// `STARTS WITH` lowered to the interval it denotes (item 1027).
 ///
 /// Item 1026 gave a bounded interval a seek and left this spelling 95x behind its own equivalent

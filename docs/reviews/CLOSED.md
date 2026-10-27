@@ -29284,10 +29284,23 @@ multiTypeEdgeCount === 0`) — one named type cannot double-count. Native's `Adj
   changes no answer, only the speed. `prefixBound` is exported and asserted directly — both sides
   or neither, `''` and the top of the range decline, a non-string declines — and the mutant then
   fails. A non-string param coerced through `String(v)` is caught end-to-end.
-- **➡️ The RUST prefix seed still takes a literal only (item 1029), and the cost is NOT the same.**
-  Rust's bounds are `Value`s computed at plan time, not closures, so a param there is a genuine
-  plan-shape question rather than a wrapper. Recorded with that distinction, since 1028's mistake
-  was assuming both engines' "needs a new form" costs were alike.
+- **✅ CLOSED — the RUST param prefix was ALREADY covered; item 1029's "still open" is WITHDRAWN
+  (item 1030).** `bind.rs` substitutes `$p` into an `Expr::Lit` BEFORE `opt` runs — its own doc
+  says binding there "lets the planner seed indexes on the now-literal predicate" — so item 1027's
+  literal path covers the param spelling with no new work. Verified rather than read off the
+  comment: `$p = "name500"` → **INTERVAL seek**, 111 rows; `$p = ""` → `Filter { Scan }` (no
+  successor, correctly declines); `$p = "zzz"` → seek, 0 rows. Same plan as the literal, so 1027's
+  72x carries by construction.
+- **⚠️ TWO ITEMS IN A ROW GOT THIS WRONG IN OPPOSITE DIRECTIONS (item 1030).** 1028 assumed the TS
+  param needed a new compiled form (it needed a closure wrapper); 1029 assumed the Rust param
+  needed a new plan shape (it needed NOTHING). The common error is treating "what this cost in the
+  engine I just worked in" as evidence about the other — **both engines answered in one grep of
+  their own binding code.**
+- **THE SEEK DEPENDS ON AN ORDERING, AND IT IS NOW PINNED (item 1030).** It holds only while
+  binding precedes optimization. Moving binding after `opt`, or optimizing a still-parameterized
+  plan, would silently drop the seek and leave a 72x-slower query **that still answers correctly**.
+  `a_param_prefix_seeds_like_a_literal_one` asserts the two spellings optimize to the SAME PLAN
+  (not merely the same answer), plus the empty-prefix decline through both; two mutants confirm it.
 - **✅ CLOSED by item 1027 — `STARTS WITH` seeds the interval it denotes, 72x.** 1026 left the
   prefix spelling 95x behind its own equivalent (0.287 ms against 0.003). `prefix_seek_target`
   reads the key and literal out of the scalar `Call`, `prefix_upper` computes the first string NOT
