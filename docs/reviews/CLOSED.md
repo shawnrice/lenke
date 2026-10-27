@@ -28612,3 +28612,29 @@ predicate` closed at 644. Every remaining flag on either side is recorded as cor
 - **NEXT, addressed correctly: price `= true` against the bare spelling through
   `try_filtered_count`** and add the bool twin there — **with the dispatch counter BEFORE the
   timing, not after** (item 979).
+- **⚠️ BUILT AND MEASURED AT ~5.8x, HELD BACK — the bool-comparison fast path (item 980).**
+  `try_filter_keep_bool_prop` serves a BARE bool prop and has no arm for
+  `Compare { Eq, Prop, Lit(Bool) }`. Widening that one pattern converges the two spellings across
+  the whole sweep: at 20%, **919.2 → 158.5 us against the bare form's 160.7 — 5.71x → 0.99x**,
+  and 1.00-1.01x from 40% to 98%. Engine suite 1,251/0; `rewrite_fuzz` 200k seeds 10/0; all 7
+  byte-identity fuzzers pass. **NOT SHIPPED** — see below.
+- **WHY NOT: a POLARITY mutant (`!=` for `==`, which returns the complement) passes all 1,251
+  tests (item 980).** Not an equivalent mutant. Nothing in the suite covers `WHERE p.b = true`
+  over a `Column::Bool` on this route, so the change would ship with its central decision
+  untested.
+- **AND THE EQUIVALENCE EVIDENCE WAS FROM THE WRONG ROUTE (item 980).** `bool3vl_980` reports
+  SAME over TRUE/FALSE/NULL/ABSENT — **and reports SAME with the mutant applied**, twice: the
+  4-node fixture seeds an `IndexSeek`, and the padded 404-node version projects `p.tag`, making
+  it `Project { Filter { Scan } }` — a different filter path from the `count(*)` shape the 5.8x
+  was measured on. **Item 936's error committed about a TEST rather than a diagnosis.** The only
+  answer-evidence covering the changed route is `seekcross_948`'s per-row count assertion, and
+  that fixture has no NULLs.
+- **The type hazard is real and the design already handles it (item 980).** `p.tag = true` on a
+  STRING column returns no rows while the bare `p.tag` **RAISES `E_INVALID_VALUE`** — so the
+  spellings are not interchangeable in general, which rules out the optimizer (`normalize_pred`
+  has no store to check the column type with). `try_filter_keep_bool_prop` already requires
+  `Column::Bool` and declines otherwise. That reasoning survives; only the coverage does not.
+- **BEFORE IT SHIPS (item 980).** (1) a test on the COUNT route with a Bool column asserting
+  `= true`, `= false`, `<> true`, `<> false` and both operand orders; (2) the same over a stored
+  NULL and an absent cell on that route; (3) the polarity mutant re-run against those tests — it
+  must FAIL; (4) the string-column case asserted to still raise.
