@@ -4317,11 +4317,28 @@ fn for_each_nbr(
     //   * a type DISJUNCTION (`want.len() >= 2`) must not union buckets — that reorders
     //     against the flat stored-order scan and would break byte-identity. It costs
     //     nothing anyway: 963.0us against 953.5us indexed, because both walk the adjacency.
-    //   * a graph with ANY multi-label edge skips BOTH structures, since each keys on an
-    //     edge's primary label and would miss a `:Y` match on an `[X, Y]` edge. The flat
-    //     scan below consults the secondary set.
+    //   * a type that is EVER carried as a SECONDARY label skips both structures, since each
+    //     keys on an edge's primary label and would miss a `:Y` match on an `[X, Y]` edge. The
+    //     flat scan below consults the secondary set.
+    //
+    //     PER TYPE since item 1008, where this asked the GLOBAL question — whether ANY edge
+    //     anywhere was multi-label — and so demoted every typed hop in the graph the moment one
+    //     unrelated edge gained a second label. Measured by tainting exactly ONE edge out of
+    //     `nodes * degree` (`multilabel_taint_1008`), 20,000 nodes:
+    //
+    //     ```text
+    //       degree  types    clean_us   tainted_us    ratio
+    //            4      1       313.3        347.2    1.11x
+    //           32      8       317.5       1233.6    3.88x
+    //          256      8      2718.6       9829.3    3.62x
+    //          256     64       291.8       7957.2   27.27x
+    //     ```
+    //
+    //     A guard costs what it DENIES: at one type the structure saves nothing (every edge
+    //     matches), and at 64 types it is the difference between a selective bucket and a full
+    //     adjacency scan.
     if let [w] = want {
-        if !store.has_multi_label_edges() {
+        if !store.type_ever_secondary(*w) {
             match dir {
                 Dir::Out => {
                     if let Some(sl) = store.out_typed_csr(v, *w) {
@@ -4476,7 +4493,10 @@ fn slice_degree(store: &Store, v: u32, dir: Dir, want: &[u32], all_types: bool) 
         });
     }
     let [w] = want else { return None };
-    if store.has_multi_label_edges() {
+    if store.type_ever_secondary(*w) {
+        // PER TYPE (item 1008), the mirror of `for_each_nbr`'s gate above: only a type carried
+        // BEHIND a primary is missing from the per-type structures, so an unrelated multi-label
+        // edge must not demote this one.
         return None; // a secondary label can match, and the per-type structures miss it
     }
     // Same precedence as `for_each_nbr`: the CSR span first, the index bucket only when the

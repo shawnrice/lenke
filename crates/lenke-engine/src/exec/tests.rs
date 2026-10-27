@@ -15521,12 +15521,29 @@ fn a_degree_read_agrees_with_walking_the_adjacency() {
         }
         // And the read must actually be taken for a single-type directed hop, or this test
         // is only checking the walk against itself.
+        //
+        // PER TYPE since item 1008. This used to assert `taken == !multi_label` — the GLOBAL
+        // rule, where one `EXTRA` secondary anywhere demoted every type. The fixture taints with
+        // `EXTRA` and never with `R`, so `R`'s per-type structures are complete and the slice is
+        // taken in BOTH shapes now. The answer assertions above are unaffected either way: they
+        // passed before this line did, which is how the route change was told apart from a
+        // correctness change.
         let single = vec![etype("R")];
         let taken = slice_degree(&store, 4, Dir::Out, &single, false).is_some();
-        assert_eq!(
-            taken, !multi_label,
-            "{shape}: a single-type hop should read a slice unless edges are multi-label"
+        assert!(
+            taken,
+            "{shape}: a single-type hop on a never-secondary type reads a slice"
         );
+
+        // The DECLINE still has to happen for a type that IS carried as a secondary, or the
+        // gate is gone rather than narrowed — the per-type structures hold no `EXTRA` edge.
+        if multi_label {
+            let secondary = vec![etype("EXTRA")];
+            assert!(
+                slice_degree(&store, 4, Dir::Out, &secondary, false).is_none(),
+                "{shape}: a hop on a SECONDARY-carried type must decline the slice"
+            );
+        }
     }
 }
 
@@ -28504,4 +28521,20 @@ fn the_typed_count_fast_path_is_gated_per_type_not_globally() {
     );
     // Both edges carry X: one as primary, one as secondary. The partition holds only the first.
     assert_eq!(count_of("MATCH ()-[:X]->() RETURN count(*) AS c", &s2), 2.0);
+
+    // THE TRAVERSAL PATH, not just the count (item 1008). `for_each_nbr` and the degree reader
+    // gate the per-type CSR and index the same way, and a count is answered from a partition
+    // LENGTH without reaching either — so a row-returning hop is the only shape that tests them.
+    let rows_of = |q: &str, st: &Store| -> usize {
+        run(&crate::gql::parse(q).unwrap(), st).rows.iter().count()
+    };
+
+    // KNOWS is primary on every edge of the first fixture: the gate must ALLOW the per-type
+    // structures and still return all three rows.
+    assert_eq!(rows_of("MATCH ()-[:KNOWS]->(m) RETURN m AS m", &store), 3);
+    // X is carried only as a SECONDARY there, so the per-type structures hold none of it. The
+    // gate must DECLINE, or the hop returns 0 rows instead of 3.
+    assert_eq!(rows_of("MATCH ()-[:X]->(m) RETURN m AS m", &store), 3);
+    // And on the mixed fixture, where X is primary on one edge and secondary on another.
+    assert_eq!(rows_of("MATCH ()-[:X]->(m) RETURN m AS m", &s2), 2);
 }

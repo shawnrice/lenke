@@ -29176,3 +29176,20 @@ multiTypeEdgeCount === 0`) — one named type cannot double-count. Native's `Adj
   bucket-seek against filtered-scan: zero at degree 1, growing with degree and type count. **Same
   code shape, completely different prize** — which is the argument for measuring each site rather
   than sweeping the pattern.
+- **✅ SHIPPED — one multi-label edge demoted EVERY typed hop; 27.27x → 1.12x at degree 256 / 64
+  types (item 1008).** `for_each_nbr` and the degree reader asked the GLOBAL
+  `has_multi_label_edges()` about a SINGLE wanted type; both now ask `type_ever_secondary(*w)`.
+  Measured with `multilabel_taint_1008` (ONE tainted edge, row-returning hop — a count never
+  reaches these gates): 32x8 **3.88 → 1.10**, 256x8 **3.62 → 1.03**, 256x64 **27.27 → 1.12**,
+  clean arm flat, row counts identical.
+- **THE "A GUARD COSTS WHAT IT DENIES" MODEL, CONFIRMED (item 1008).** At ONE type the per-type
+  structure saves nothing (every edge matches) and the ratio is ~1.1x; at 64 types it is a
+  selective bucket against a full adjacency scan and the ratio is 27x. **Same code, same change,
+  two orders of magnitude apart depending on fixture** — item 1007 declined to sweep the pattern
+  on sight for exactly this reason, and was right to.
+- **A ROUTE assertion failed while every ANSWER assertion passed, which is how the two were told
+  apart (item 1008).** `a_degree_read_agrees_with_walking_the_adjacency` pinned
+  `taken == !multi_label` — the global rule. Its `read == walked` checks (all wants, both
+  directions, 40 nodes, both loop modes) passed throughout, so the change was a route change. The
+  pin was **strengthened, not relaxed**: a never-secondary type must take the slice AND a
+  secondary-carried type must still decline.
