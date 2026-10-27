@@ -28981,3 +28981,32 @@ disagree on the ANSWER` — item 984 confirmed through the repo's own gate.
   assertions close it, 4/4. **The test to ask is whether ANOTHER RULE already forces the answer**;
   three items in a row produced a survivor and treating them alike would either ship this gap or
   add noise tests to the other two.
+- **✅ THE SEEK-CEILING ENUM IS NOW FULLY PRICED, and the remaining variants need NO constant
+  (item 998).** After item 997 added the bool arm the obvious next move is to sweep
+  `Column::Temporal`, `Num` and plain `Str` for their own break-evens. **Do not** — the ceiling
+  can only BIND on a column with fewer than ~6.5 distinct values (1 / 0.154), and:
+  - **Bool** has 2, which is why it was the variant with a 2.76x cliff (997).
+  - **Dict** is the low-cardinality string case and already has 0.031 (407).
+  - **Temporal / Num / plain Str** carry near-unique values in practice — a date at day
+    granularity over a year is 0.27% per value — so an equality seed sits one to two orders of
+    magnitude below any ceiling and the cap is never consulted. A measured constant for them
+    would be a number no query reaches.
+    **The cardinality argument settles this without the sweeps**, and it is also the explanation for
+    997 rather than a coincidence beside it: the gate misprices exactly the columns whose distinct
+    count is small enough for an equality to be unselective. A future "finish the enum" pass should
+    check CARDINALITY first and will find nothing left.
+- **✅ `query_bench`'s four biggest outliers are ALL already settled — do not re-chase (item
+  998).** Checked by SUBJECT, not by scanning for `OPEN`: `nested count :label` 155,802 us and
+  `k2 count :label` 64,346 are _"within 6% and 14% of the enumeration floor — there is no prize
+  there"_; `optional hop + landing pred` ~10,042 is an established CONTROL row in four items and
+  its neighbour `landing label` was already taken 19.5x; `quantified + per-rep EDGE WHERE` 23,615
+  against `per-rep target` 12,255 is **the fixture's edge:node ratio** (350,000 against 200,000 —
+  1.75x predicted, 1.93x measured), recorded at items 570/571 when that row went 117,888 →
+  20,006. The native query corpus has no fresh outlier at this fixture size.
+- **⚠️ PROCESS — a rule written in a document is not installed; a rule built into a command is
+  (item 998).** Item 996 recorded "capture a probe's output by what you need to READ from it" and
+  item 998 ran `query_bench | tail -40` one item later, hiding the 40 rows every candidate above
+  lives in. Item 975 named the shape. **What has actually held this session is mechanical**: the
+  anchor-count assertion in every mutation script, `--exact` filters, the cgroup cap. Prefer
+  making the check impossible to skip over writing it down again. (Same tick: a `cmd > file` that
+  CLAUDE.md forbids — unique path, nothing lost, still the wrong reflex.)
