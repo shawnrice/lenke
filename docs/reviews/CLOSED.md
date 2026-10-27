@@ -27690,8 +27690,9 @@ product's one-sided predicate` 2.22x (285), `one end labelled, the other free` 2
   nesting expresses structurally"_, 910's own words — and trading a structurally-expressed
   invariant for 5% of cold queries is a poor deal whose failure mode is a WRONG plan, not a slow
   one. Same call item 878 made about 877.
-- **⚠️ NOT ATTRIBUTED, named for the next attempt — most of the ~24 us is probably PARSE, not
-  compile (item 942).** Item 912 measured compile at 7.703 us for its big query and a point
+- **⚠️ REFUTED AT ITEM 943 — "most of the ~24 us is probably PARSE, not compile" (item 942).**
+  Measured: parse 27-31%, COMPILE 56-69%, run ~5%. The guess was wrong and item 887 is NOT where
+  the cold-query cost lives. Original reasoning kept below for the record. Item 912 measured compile at 7.703 us for its big query and a point
   lookup's compile is smaller still, so the bulk of the cold cost sits outside the part items
   908/910/912 instrumented — which would point at item 887 (~45 ns/token TS vs native parse) rather
   than at the rewrite pipeline or the detectors. **The parse/compile split for this query was NOT
@@ -27704,3 +27705,32 @@ product's one-sided predicate` 2.22x (285), `one end labelled, the other free` 2
   merely WRONG rather than impossible are the ones this session has had to retract four times; where
   a quantity has a natural bound, print it in a form that violates the bound when the arithmetic
   is wrong.
+- **MEASURED — a cold small query is parse 27-31%, COMPILE 56-69%, run ~5% (item 943).** One arm
+  per process, 3 alternated rounds, indexed point lookup: parse **8.2-9.2 us**, compile **17-21**,
+  run **~1.5**, whole **~30**. Sum check (parts against the whole) 1.05x / 0.88x / 0.91x, all inside
+  the 0.85-1.15 band, so the split is reportable. **Item 942's own guess — "most of the ~24 us is
+  probably PARSE" — is REFUTED**: parse is real but not the bulk, so item 887 is NOT where the
+  cold-query cost lives, and items 908/910/912 were aimed at the right phase. Being wrong cost one
+  probe because 942 recorded it as a direction to measure rather than a finding.
+- **RULE — item 762's "one shape per PROCESS" generalises to any arm-to-arm SHARED STATE, not just
+  the JIT (item 943).** The first attempt timed all four phases in one process and its SUM CHECK
+  rejected it: parts/whole **1.38x, 0.56x, 1.37x** across three alternated rounds. The cause is
+  CACHE POLLUTION — this path carries a parse cache and a plan cache, `query()` fills both with the
+  very texts the other arms use, so whichever arm ran first paid the cold cost and warmed the rest.
+  Reversing the order flipped the answer (the 0.56x round is the one where `query()` ran first and
+  left `execute` nothing to compile). 762 was written about megamorphic dispatch sites; the fix is
+  identical for an engine-internal cache — re-exec per arm so every arm starts empty.
+- **RULE — a decomposition needs a SUM CHECK, and it must refuse to print when it fails
+  (item 943).** "Do the parts add to the whole?" caught the cache pollution above before any number
+  was believed. Item 937's invalid split is precisely what happens without one: it compared two
+  different walks in two different units and had no way to notice. Cheap to add, and it is the only
+  check that tests the decomposition itself rather than its inputs.
+- **⚠️ UNEXPLAINED, recorded not resolved — item 943's 17-21 us compile against item 912's 7.703 us
+  (item 943).** 912 measured a BIGGER query than this point lookup, so a simpler query costing 2-3x
+  more in the same phase is backwards. Two candidates, neither measured: 943's term is
+  `execute(distinct) − execute(repeated)` so it includes plan-cache INSERTION and whatever eviction
+  3,000 distinct plans provoke, and the two items may draw the compile boundary differently. **Do
+  not treat 943's number as `compileLinear`'s cost** — it is what a cold query pays between parse
+  and run, which is the right figure for the cold-start question and the wrong one for pricing a
+  change inside the compiler. The four retractions at items 936-939 each began with a number that
+  looked close enough to explain away.
