@@ -27767,3 +27767,39 @@ product's one-sided predicate` 2.22x (285), `one end labelled, the other free` 2
   WITHIN one probe with arms alternated, which is the only form that survives the difference. A
   bare "compile is 16 us" would be quoting a property of the harness, which is plausibly how the
   912 discrepancy arose in the first place.
+- **PAUSED — the planning-cost line (items 887, 905, 908, 910, 912, 942, 943, 944), because its
+  CEILING is cold-query latency and whether that matters is a product question (item 945).** What
+  the line established: a cold small query is **94-97% planning** (~30 us, execution ~1.5), compile
+  is **56-69%** of it, compile's cost **does not vary with query size** so the bulk is FIXED work —
+  **and all of it is ZERO once the query text repeats**, the parse and plan caches taking the same
+  lookup from 22.90-25.75 us cold to 0.79-1.39 warm. A warm server pays none of it; a one-shot or
+  embedded caller with varied text pays all of it. **That is a workload question, not an engine
+  one**, so the line pauses rather than continuing on an assumption about which workload counts.
+  Two items were already retracted on exactly this reasoning (910 at 942, 877 at 878); continuing
+  without the answer would be the third.
+- **⚠️ DECISION NEEDED, not a measurement gap — item 908's `checkLinearScope` fusion is a PERF WIN
+  AND A CONFORMANCE CONVERGENCE together (item 945).** `compile` runs
+  `checkLinearScope(part.clauses, new Set())` over every part BEFORE `compileLinear`, so TS always
+  reports a SCOPE fault where a query has both a scope error and an unknown function, while
+  **native reports whichever comes FIRST IN THE TEXT** (item 916, pinned in
+  `fault-precedence.test.ts`). Fusing the walks saves **15-19% of planning** AND moves TS toward
+  native's written-order behaviour, closing part of that divergence. `fault-precedence.test.ts`
+  exists to make the change detectable and its header calls it _"a decision to take deliberately
+  rather than discover"_. **Both halves are small** — the perf half is a share of a cost that is
+  zero on a warm workload — which is exactly why it should be chosen rather than slipped in as a
+  side effect of an optimization.
+- **METHOD — a line that keeps generating its own next step needs a CEILING CHECK FROM OUTSIDE IT
+  (item 945).** Items 936-944 are nine consecutive items with no engine change. Each ended by
+  naming a next step inside the same line, and each next step was individually reasonable; what was
+  missing was anyone asking what the line's best possible outcome was worth. The check is cheap —
+  "if this entirely succeeded, what would it buy?" — and item 942 could have asked it four items
+  earlier. **Nine ticks is too many to spend without shipping**, and that is the lesson rather than
+  any of the measurements.
+- **SESSION REGRESSION CHECK CLEAN across items 936-945 (item 945).** No engine source changed
+  across any of them, verified by `git diff` against `crates/` and `packages/` on each. gql **2761**
+  / gremlin **845** / core **370** / native **933**, all 0 fail; all seven byte-identity fuzzers
+  **13 pass / 0 fail**. The session's shipped wins verified against the numbers they shipped with,
+  not against a vague impression: `post:2` grm **30.38** (29.98 at item 934), `both:1+1` grm
+  **139.95** (138.48 at 933), `node:1` gql **4.16** (4.68 at 935). A benchmark sweep was NOT run,
+  deliberately — with no engine source changed it could only measure noise, and a number produced
+  for form is a number someone later treats as evidence.
