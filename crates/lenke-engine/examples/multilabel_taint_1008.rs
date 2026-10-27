@@ -96,10 +96,16 @@ fn main() {
     // buckets for `want.len() >= 2` (it would reorder against the stored-order scan and break
     // byte-identity), so this always walks the flat adjacency.
     let qd = "MATCH (n:V)-[:T0|T1]->(m) RETURN m.k AS k";
+    // A FILTERED typed hop, added at item 1011. `exec.rs`'s route selector for
+    // `Filter { Expand { Scan } }` takes a SINGLE wanted type and returns `None` outright when
+    // the graph has any multi-label edge — item 1008's exact shape, and the ROUTE-DECLINE kind
+    // that paid 24x there rather than the per-edge-probe kind that paid nothing at 1009/1010.
+    // Neither arm above reaches it: one has no filter, the other has two types.
+    let qf = "MATCH (n:V)-[:T0]->(m) WHERE m.k > 50 RETURN m.k AS k";
 
     println!("# item 1008 — does ONE multi-label edge demote every typed hop?");
     println!("# {nodes} nodes, min of {reps} (us). The taint is a SECOND label on ONE edge.\n");
-    println!("  degree  types     clean_us    tainted_us      ratio   rows   same   |  disj_clean  disj_taint   ratio");
+    println!("  degree  types     clean_us    tainted_us      ratio   rows   same   |  disj_clean  disj_taint   ratio  |  filt_clean  filt_taint   ratio");
 
     for (degree, types) in [(4usize, 1usize), (32, 1), (32, 8), (256, 8), (256, 64)] {
         let clean = fixture(nodes, degree, types, false);
@@ -113,11 +119,19 @@ fn main() {
         let (dc, dcr) = time_rows(qd, &clean, reps);
         let (dt, dtr) = time_rows(qd, &tainted, reps);
         let dsame = if dcr == dtr { "" } else { " ROWS DIFFER" };
+        let (fc, fcr) = time_rows(qf, &clean, reps);
+        let (ft, ftr) = time_rows(qf, &tainted, reps);
+        let fsame = if fcr == ftr { "" } else { " ROWS DIFFER" };
 
         println!(
             "  {degree:6}  {types:5}  {cu:11.1}  {tu:12.1}  {:9.2}x  {cr:>6}   {same}   |  {dc:10.1}  {dt:10.1}  {:6.2}x{dsame}",
             tu / cu,
             dt / dc
+        );
+        print!("");
+        println!(
+            "         (filtered)                                              |  {fc:10.1}  {ft:10.1}  {:6.2}x{fsame}",
+            ft / fc
         );
     }
 }

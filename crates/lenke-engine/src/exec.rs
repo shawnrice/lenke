@@ -4995,14 +4995,30 @@ fn fused_hop_shape<'a>(
     let Plan::Scan { label } = scan.as_ref() else {
         return None;
     };
-    if store.has_multi_label_edges() {
-        return None;
-    }
     // A single wanted etype (the per-type CSR keys on one type; a disjunction reorders).
     let want = want_etypes(store, edge_label).ok()?;
     let [w] = want.as_slice() else {
         return None;
     };
+    // PER TYPE (item 1011), the third site of item 1008's shape and the one that declines a whole
+    // ROUTE rather than skipping a per-edge probe. The partition for `w` is complete unless some
+    // edge carries `w` BEHIND its primary; one unrelated multi-label edge said nothing about it.
+    //
+    // Measured by tainting ONE edge (`multilabel_taint_1008`'s filtered arm, 20,000 nodes):
+    //
+    // ```text
+    //   degree 4,   types 1    228.7 -> 391.5   1.71x
+    //   degree 32,  types 1   1837.2 -> 2732.0  1.49x
+    //   degree 32,  types 8    227.2 ->  412.7  1.82x
+    //   degree 256, types 8   3084.5 -> 3000.8  0.97x   (route not taken at this degree)
+    // ```
+    //
+    // Unlike `edge_carries_wanted` (items 1009/1010) this runs ONCE PER QUERY, so the lookup's
+    // own cost cannot swamp what it saves — which is why the identical narrowing pays here and
+    // measured flat there.
+    if store.type_ever_secondary(*w) {
+        return None;
+    }
     Some((label, *w, pred, exp.as_ref()))
 }
 

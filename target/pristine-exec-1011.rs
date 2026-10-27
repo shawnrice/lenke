@@ -1,0 +1,8557 @@
+//! Execution: pull a batch up through the plan, then materialize the projection.
+//!
+//! Expression evaluation is columnar — `eval` produces a `Col` over the whole
+//! batch, reading typed storage columns in bulk where it can. It calls the value
+//! contract for every comparison and equality; it never restates those rules.
+//! This is the lineage-FREE strategy; the lineage-preserving strategy for the
+//! same operators lands with the operators (path/tags) that need it.
+
+use crate::gstr::GStr;
+use std::collections::VecDeque;
+use std::sync::Arc;
+
+use crate::batch::{Batch, Col, Lineage};
+use crate::ir::{Agg, AggFn, CombineOp, CompareOp, Dir, Expr, PathMode, Plan, TxKind};
+use crate::store::{Column, Store};
+use crate::value::{self, Value};
+
+// THE SUBMODULE MAP. `exec` is one pipeline split across thirteen files; this is the whole
+// list, in the order the pipeline reads rather than alphabetically. Each file carries a `//!`
+// header saying what it owns and the one non-obvious thing about it.
+//
+//   fastpath    ~50 `try_*` aggregate/projection fast paths. ORDER-SENSITIVE — read its header
+//               before adding or moving an entry.
+//   evaluator   `eval` plus the whole-batch shortcuts that exist to avoid calling it.
+//   scalar      the scalar function library (every `Expr::Call`).
+//   reverse     reverse seeding: walk the pattern from the selective far end.
+//   varlen      variable-length and quantified paths; `ANY SHORTEST`.
+//   nested      subqueries and `CALL` — an inner plan bound per outer row.
+//   distinct    `DISTINCT` fast paths and the general dedup.
+//   order       `ORDER BY`, paging, `DISTINCT BY` — anything comparing two rows.
+//   aggregation the general aggregate, the one every shape `fastpath` declines falls back to.
+//   write       `INSERT`, `_MERGE`, `SET`/`REMOVE`.
+//   ddl         schema operations and the commit-time constraint check.
+//   render      `Batch` -> `Rows`; owns the observable COLUMN order.
+//   json_out    direct-to-JSON egress, bypassing `Rows` entirely.
+//
+// These were all extracted from one 25,000-line `exec.rs` and the declarations stayed wherever
+// the extracted code had been, scattered over six places between lines 850 and 5700. Keep them
+// here: a reader should be able to learn the engine's shape from the top of this file.
+
+pub(crate) mod fastpath;
+use self::fastpath::*;
+
+#[cfg(test)]
+mod fastpath_fuzz;
+
+pub(crate) mod evaluator;
+use self::evaluator::*;
+
+mod scalar;
+pub(crate) use self::scalar::temporal_ctor;
+use self::scalar::*;
+
+mod reverse;
+use self::reverse::*;
+
+mod varlen;
+use self::varlen::*;
+
+mod nested;
+use self::nested::*;
+
+mod distinct;
+use self::distinct::*;
+
+mod order;
+use self::order::*;
+
+mod aggregation;
+use self::aggregation::*;
+
+mod write;
+use self::write::*;
+
+mod ddl;
+use self::ddl::*;
+// Re-exported at exec scope so existing `crate::exec::…` call sites resolve: ffi/lib
+// reach apply_schema_op; binary.rs declares validators/invariants on binary load.
+pub use self::ddl::apply_schema_op;
+pub(crate) use self::ddl::{declare_invariant, declare_validator};
+
+pub(crate) mod render;
+use self::render::*;
+
+mod json_out;
+pub use self::json_out::{
+    run_gremlin_json, try_run_gql_json, try_run_gremlin_json, try_stream_gremlin_json,
+};
+
+/// Mulberry32 PRNG — the fully-specified generator `sample()` uses with a FIXED seed,
+/// byte-identical to the TS engine: same seed + same draw order ⇒ the
+/// same seeded shuffle on every engine.
+struct Mulberry32 {
+    s: u32,
+}
+impl Mulberry32 {
+    fn new(seed: u32) -> Self {
+        Self { s: seed }
+    }
+    fn next_f64(&mut self) -> f64 {
+        self.s = self.s.wrapping_add(0x6d2b_79f5);
+        let mut t = (self.s ^ (self.s >> 15)).wrapping_mul(1u32 | self.s);
+        t ^= t.wrapping_add((t ^ (t >> 7)).wrapping_mul(61u32 | t));
+        f64::from(t ^ (t >> 14)) / 4_294_967_296.0
+    }
+}
+
+/// A fast, dependency-free hasher for the engine's INTERNAL grouping, distinct,
+/// and join maps. The default `HashMap` hasher (SipHash) is DoS-resistant, which
+/// these maps — built and dropped inside one operator over trusted, already-
+/// materialized keys — do not need; FNV-1a is several times faster on the short
+/// byte/integer keys grouping produces. It never escapes the executor, so hash
+/// quality only affects speed, never results.
+pub(crate) mod fnv {
+    use std::collections::{HashMap, HashSet};
+    use std::hash::{BuildHasherDefault, Hasher};
+
+    pub type Map<K, V> = HashMap<K, V, BuildHasherDefault<Fnv>>;
+    pub type Set<K> = HashSet<K, BuildHasherDefault<Fnv>>;
+
+    pub struct Fnv(u64);
+
+    impl Default for Fnv {
+        fn default() -> Self {
+            Self(0xcbf2_9ce4_8422_2325) // FNV-1a 64-bit offset basis
+        }
+    }
+
+    impl Hasher for Fnv {
+        fn finish(&self) -> u64 {
+            self.0
+        }
+        fn write(&mut self, bytes: &[u8]) {
+            let mut h = self.0;
+            for &b in bytes {
+                h ^= u64::from(b);
+                h = h.wrapping_mul(0x0000_0100_0000_01b3); // FNV prime
+            }
+            self.0 = h;
+        }
+    }
+}
+use fnv::{Map as FnvMap, Set as FnvSet};
+
+/// A materialized result: column names and rows of values. `Value` intentionally
+/// has no `PartialEq` (f64/NaN policy lives in the value contract, not a derive),
+/// so compare results through `value::equals`/`cmp_total`, not `==`.
+/// Result cells in a FLAT row-major buffer (`data[i*ncols + j]`) — one allocation
+/// for the whole result instead of a `Vec` per row. The nested `Vec<Vec<Value>>`
+/// layout measured ~4x slower to build (a malloc per row), and this matches the TS engine's
+/// `RowSet`. It still indexes and iterates like the old nested layout —
+/// `flat[i]` / `flat[i][j]` yield a row slice / cell, `flat.len()` the row count,
+/// `flat.iter()` (and `&flat`) yield `&[Value]` rows — so read sites are unchanged;
+/// only construction goes through [`Flat::from_rows`] or the direct push in `run`.
+#[derive(Debug, Clone, Default)]
+pub struct Flat {
+    data: Vec<Value>,
+    ncols: usize,
+}
+
+impl Flat {
+    fn with_capacity(nrows: usize, ncols: usize) -> Self {
+        Self {
+            data: Vec::with_capacity(nrows.saturating_mul(ncols)),
+            ncols,
+        }
+    }
+    /// The number of rows (`data.len() / ncols`).
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.data.len().checked_div(self.ncols).unwrap_or(0)
+    }
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+    /// Iterate rows as `&[Value]` slices — the drop-in for the old `Vec::iter`.
+    pub fn iter(&self) -> std::slice::Chunks<'_, Value> {
+        self.data.chunks(self.ncols.max(1))
+    }
+    /// Build from the nested layout — the construction path for tests and callers
+    /// that already hold a `Vec<Vec<Value>>`.
+    #[must_use]
+    pub fn from_rows(rows: Vec<Vec<Value>>) -> Self {
+        let ncols = rows.first().map_or(0, Vec::len);
+        let mut data = Vec::with_capacity(rows.len().saturating_mul(ncols));
+        for r in rows {
+            data.extend(r);
+        }
+        Self { data, ncols }
+    }
+}
+
+impl std::ops::Index<usize> for Flat {
+    type Output = [Value];
+    fn index(&self, i: usize) -> &[Value] {
+        let c = self.ncols.max(1);
+        &self.data[i * c..i * c + c]
+    }
+}
+
+impl<'a> IntoIterator for &'a Flat {
+    type Item = &'a [Value];
+    type IntoIter = std::slice::Chunks<'a, Value>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+#[derive(Debug)]
+pub struct Rows {
+    pub names: Vec<String>,
+    pub rows: Flat,
+}
+
+/// Run `plan` over `store`, returning materialized rows. Output column names come
+/// from the outermost naming operator (`Project` or `Aggregate`, seen through
+/// `Distinct`/`OrderPage`); a plan with none surfaces slot 0 under a single
+/// implicit column so partial plans stay runnable in tests.
+///
+/// Panics on a faulting plan, so it is for tests and benchmarks only — every production
+/// entry point goes through [`try_run`]. Two things fault: a user `CAST`, and a
+/// shortest-path traversal that trips the `intermediate` ceiling (see
+/// [`varlen::guard_path_growth`]).
+#[must_use]
+pub fn run(plan: &Plan, store: &Store) -> Rows {
+    try_run(plan, store).expect("read plan evaluation faulted")
+}
+
+/// The fallible core of [`run`]: an expression can fault at runtime (a failed
+/// `CAST` throws `E_INVALID_VALUE`), so the read pipeline threads a `Result`. A
+/// plan that never evaluates a fallible expression cannot error, which is why
+/// [`run`] can wrap this with `.expect` — the panic path is unreachable for such
+/// plans, and callers that may run user CASTs use `try_run` (or `execute`).
+/// Does the plan contain a variable-length / repeat / shortest-path operator? Those run a
+/// recursive DFS whose depth is the traversal depth, so an unbounded quantifier on a deep
+/// graph can recurse far enough to overflow the default 8 MB stack (a stack overflow
+/// aborts the process — `catch_unwind` cannot recover it). Such a plan runs on a
+/// large-stack thread instead. Everything else keeps the cheap direct path.
+/// The `E_FAIL` error string for a `fail([message])` step that a traverser reached.
+/// The `E_FAIL:` prefix routes it through the FFI whitelist to the shared error code;
+/// the default message matches the TS engine byte-for-byte.
+fn fail_error(message: &Option<String>) -> String {
+    format!("E_FAIL: {}", message.as_deref().unwrap_or("fail() reached"))
+}
+
+// Only the non-wasm `on_big_stack` consults this; wasm runs traversals inline.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+fn plan_has_varlen(plan: &Plan) -> bool {
+    match plan {
+        // `VarLength` now runs the ITERATIVE `varlen_walk` (O(1) call stack — see
+        // `deep_varlen_walk_runs_on_a_tiny_stack`), so it never *commits* the big stack.
+        // We still take the reservation: it is virtual (≈0 RSS) and protects the whole
+        // read pipeline around the walk, which does use call-stack proportional to plan
+        // shape. The others below still recurse on data and genuinely need it.
+        Plan::VarLength { .. }
+        | Plan::RepeatGroup { .. }
+        | Plan::NestedGroup { .. }
+        | Plan::ShortestPath { .. }
+        | Plan::ShortestPathEnum { .. } => true,
+        Plan::Scan { .. }
+        | Plan::NodeSeed { .. }
+        | Plan::EdgeScan
+        | Plan::EdgeSeed { .. }
+        | Plan::EdgeEndpointSeed { .. }
+        | Plan::Row
+        | Plan::IndexSeek { .. }
+        | Plan::RangeSeek { .. }
+        | Plan::Insert { .. }
+        | Plan::InsertReturn { .. }
+        | Plan::Merge { .. }
+        | Plan::MergeEdge { .. }
+        | Plan::AddEdge { .. }
+        | Plan::AddEdgeStep { .. }
+        | Plan::AddVertexStep { .. }
+        | Plan::CallProcedure { .. } => false,
+        Plan::Filter { input, .. }
+        | Plan::Project { input, .. }
+        | Plan::Aggregate { input, .. }
+        | Plan::Expand { input, .. }
+        | Plan::EdgeVertex { input, .. }
+        | Plan::Distinct { input }
+        | Plan::DistinctBy { input, .. }
+        | Plan::OrderPage { input, .. }
+        | Plan::Sample { input, .. }
+        | Plan::Enumerate { input, .. }
+        | Plan::GroupToMap { input }
+        | Plan::SortLocal { input, .. }
+        | Plan::Unwind { input, .. }
+        | Plan::Update { input, .. }
+        | Plan::CallInline { input, .. } => plan_has_varlen(input),
+        Plan::Join { left, right, .. } | Plan::Union { left, right, .. } => {
+            plan_has_varlen(left) || plan_has_varlen(right)
+        }
+        // Rare/other operators (tree, subgraph, interval/optional expand, algo wrappers):
+        // conservatively use the big stack — they may wrap a traversal, and the cost of a
+        // reserved-but-untouched stack is nil.
+        _ => true,
+    }
+}
+
+/// Run `f` on a large (virtual) stack when `plan` contains a deep-recursion traversal, so
+/// an unbounded quantifier's recursive DFS can't overflow the default 8 MB stack; a simple
+/// plan runs `f` directly. Reserving a big stack costs nothing until the recursion uses
+/// it. Used by every entry that may drive a traversal — `try_run` and the Gremlin-JSON
+/// sinks, which call `pull` off the main path.
+#[cfg(not(target_arch = "wasm32"))]
+fn on_big_stack<T: Send>(plan: &Plan, f: impl FnOnce() -> T + Send) -> T {
+    if !plan_has_varlen(plan) {
+        return f();
+    }
+    const BIG_STACK: usize = 1 << 30; // 1 GiB
+    std::thread::scope(|s| {
+        std::thread::Builder::new()
+            .stack_size(BIG_STACK)
+            .spawn_scoped(s, f)
+            .expect("spawn traversal thread")
+            .join()
+            .expect("traversal thread panicked")
+    })
+}
+
+/// wasm has no threads, so a deep traversal runs inline on the module's own stack.
+/// If an unbounded quantifier overflows it, raise the wasm stack size at link time
+/// (`-C link-arg=-zstack-size=…`) rather than spawning — there is nothing to spawn.
+#[cfg(target_arch = "wasm32")]
+fn on_big_stack<T>(_plan: &Plan, f: impl FnOnce() -> T) -> T {
+    f()
+}
+
+pub fn try_run(plan: &Plan, store: &Store) -> Result<Rows, String> {
+    on_big_stack(plan, || try_run_inner(plan, store))
+}
+
+fn try_run_inner(plan: &Plan, store: &Store) -> Result<Rows, String> {
+    // Lineage is plan-global: if anything reads the path, the whole plan tracks
+    // it (Scan seeds, Expand extends); otherwise no operator builds a sidecar and
+    // the query pays nothing for lineage.
+    let track = needs_lineage(plan);
+    let batch = match pull_top_output_streamed(plan, store, track)? {
+        Some(b) => b,
+        None => pull(plan, store, track)?,
+    };
+    let n = batch.rows();
+    // CONSUME the batch to build the result — the final render is the LAST use of these
+    // columns, so a materialized Str/Num/Bool/Gen cell MOVES into its `Value` instead of
+    // being cloned out of a column we then drop. The old build re-cloned every cell (a
+    // second full materialization on top of the projection's Col::Str), doubling the
+    // per-row Arc-clone work a string projection pays.
+    let names = output_names(plan).unwrap_or_else(|| vec!["_".to_string()]);
+    let ncols = names.len();
+    let slots = batch.slots;
+    let data = if ncols == 1 {
+        // Single output column (values/label/id/count, or a one-item RETURN): its cells
+        // ARE the rows — move them straight into a row-major buffer, no transpose.
+        let col = slots
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| Col::Gen(vec![Value::Null; n]));
+        col_into_values(col, store)
+    } else {
+        // Multi-column: a row-major buffer filled column-by-column (each column consumed).
+        let mut data = vec![Value::Null; n * ncols];
+        for (c, col) in slots.into_iter().enumerate() {
+            if c >= ncols {
+                break; // defensive: never write past the declared columns
+            }
+            render_col_into(col, store, &mut data, c, ncols);
+        }
+        data
+    };
+    Ok(Rows {
+        names,
+        rows: Flat { data, ncols },
+    })
+}
+
+/// Move a single output column's cells into a fresh row-major `Vec<Value>`, CONSUMING
+/// the column: a `Str`/`Num`/`Bool` cell moves into its `Value` (no clone), a `Gen`
+/// column IS already `Vec<Value>` (returned as-is, zero work), and a node/edge frontier
+/// renders to its element value via the store. Matches `render_cell` exactly, minus the
+/// clone.
+/// Resolve any UNBOXED element ref (`Value::Node`/`Value::Edge`, from a heterogeneous
+/// branch/inject) to its element map at EGRESS — including refs nested inside a list/map/record
+/// (`inject(v).fold()` → a list of maps). A plain scalar passes through untouched.
+fn resolve_elem(v: Value, store: &Store) -> Value {
+    match v {
+        Value::Node(id) => node_result_value(store, id),
+        Value::Edge(id) => edge_result_value(store, id),
+        Value::List(xs) => Value::List(xs.into_iter().map(|x| resolve_elem(x, store)).collect()),
+        Value::Map(pairs) => Value::Map(std::sync::Arc::new(
+            pairs
+                .iter()
+                .map(|(k, val)| {
+                    (
+                        resolve_elem(k.clone(), store),
+                        resolve_elem(val.clone(), store),
+                    )
+                })
+                .collect(),
+        )),
+        Value::Record(fs) => Value::Record(
+            fs.iter()
+                .map(|(k, val)| (k.clone(), resolve_elem(val.clone(), store)))
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+fn col_into_values(col: Col, store: &Store) -> Vec<Value> {
+    match col {
+        Col::Str(data) => data.into_iter().map(Value::Str).collect(),
+        Col::Num(data) => data.into_iter().map(Value::Num).collect(),
+        Col::Bool(data) => data.into_iter().map(Value::Bool).collect(),
+        Col::Gen(data) => data.into_iter().map(|v| resolve_elem(v, store)).collect(),
+        Col::Nodes(ids) => render_nodes(store, &ids),
+        Col::Edges(eids) => render_edges(store, &eids),
+    }
+}
+
+/// The multi-column twin of [`col_into_values`]: move column `col`'s cells into the
+/// row-major `out` buffer at column `c` (stride `ncols`), consuming the column.
+fn render_col_into(col: Col, store: &Store, out: &mut [Value], c: usize, ncols: usize) {
+    match col {
+        Col::Str(data) => {
+            for (i, s) in data.into_iter().enumerate() {
+                out[i * ncols + c] = Value::Str(s);
+            }
+        }
+        Col::Num(data) => {
+            for (i, x) in data.into_iter().enumerate() {
+                out[i * ncols + c] = Value::Num(x);
+            }
+        }
+        Col::Bool(data) => {
+            for (i, b) in data.into_iter().enumerate() {
+                out[i * ncols + c] = Value::Bool(b);
+            }
+        }
+        Col::Gen(data) => {
+            for (i, v) in data.into_iter().enumerate() {
+                out[i * ncols + c] = resolve_elem(v, store);
+            }
+        }
+        Col::Nodes(ids) => {
+            for (i, v) in render_nodes(store, &ids).into_iter().enumerate() {
+                out[i * ncols + c] = v;
+            }
+        }
+        Col::Edges(eids) => {
+            for (i, v) in render_edges(store, &eids).into_iter().enumerate() {
+                out[i * ncols + c] = v;
+            }
+        }
+    }
+}
+
+/// Run a plan that MAY write, against a mutable store. A write plan (`Insert`)
+/// mutates the store and returns no rows; any other plan is a pure read and is
+/// dispatched to [`run`] over a shared borrow. This is the entry point for
+/// statements that can mutate; read-only callers can keep using [`run`]. Returns
+/// `Err` when a write violates a constraint (the write is rolled back); reads and
+/// successful writes are `Ok` (a write's result is the empty row set).
+/// Run an `Insert`'s writes (nodes then edges) inside a transaction, enforcing
+/// unique + required constraints on every touched label and rolling the whole
+/// statement back on the first violation. Returns the ids of the created nodes,
+/// in creation order (index i is the node declared at position i). Shared by
+/// A per-statement atomic scope. A GQL write wraps its mutations so a constraint
+/// violation rolls back exactly that statement. If a transaction is ALREADY open
+/// (an explicit `transaction()`), the scope is a SAVEPOINT within it — the statement
+/// undoes to its own mark on failure without abandoning the caller's transaction, and
+/// its changes commit with the caller's. Standalone, it is an implicit single-statement
+/// `begin`/`commit`. This is what lets the same write run both bare and nested (the
+/// unconditional `begin` used to panic "nested transactions are not supported").
+#[derive(Clone, Copy)]
+enum StmtScope {
+    /// No transaction was open: this scope owns an implicit begin/commit.
+    Implicit,
+    /// A transaction was already open: a savepoint at this undo-log mark.
+    Nested(usize),
+}
+
+fn stmt_begin(store: &mut Store) -> StmtScope {
+    if store.in_transaction() {
+        StmtScope::Nested(store.savepoint())
+    } else {
+        store.begin();
+        StmtScope::Implicit
+    }
+}
+
+/// End a statement scope on SUCCESS: an implicit scope commits; a nested scope leaves
+/// its changes in the enclosing transaction (committed when the caller commits).
+fn stmt_commit(store: &mut Store, scope: StmtScope) {
+    if matches!(scope, StmtScope::Implicit) {
+        store.commit();
+    }
+}
+
+/// End a statement scope on FAILURE: an implicit scope rolls the whole thing back; a
+/// nested scope rolls back only to its savepoint, keeping the caller's transaction open.
+fn stmt_rollback(store: &mut Store, scope: StmtScope) {
+    match scope {
+        StmtScope::Implicit => store.rollback(),
+        StmtScope::Nested(mark) => store.rollback_to(mark),
+    }
+}
+
+/// Run a write statement's DEFERRED declared-constraint checks (unique / required /
+/// type / cardinality / validators / invariants) — but ONLY when the statement is
+/// standalone (`Implicit` scope, its own auto-commit transaction). Inside an explicit
+/// transaction (`Nested`) the checks are DEFERRED to that transaction's COMMIT
+/// ([`commit_with_deferred_checks`]), so a later statement can complete a state that is
+/// temporarily invalid mid-transaction — the SQL DEFERRABLE-constraint model the TS engine uses.
+/// Immediate faults (a string-`id` collision, a syntax error) are NOT deferred; they
+/// still roll the one statement back at the write site.
+fn check_deferred_if_standalone(store: &Store, scope: StmtScope) -> Result<(), String> {
+    if matches!(scope, StmtScope::Implicit) {
+        store
+            .run_deferred_checks()
+            .and_then(|()| enforce_expr_constraints(store))
+    } else {
+        Ok(())
+    }
+}
+
+/// Commit an explicit transaction: run the deferred declared-constraint checks against
+/// the fully-staged graph, then commit — or roll the WHOLE transaction back on the first
+/// violation. Shared by the GQL `COMMIT` keyword and the host `transaction()` commit.
+pub(crate) fn commit_with_deferred_checks(store: &mut Store) -> Result<(), String> {
+    if let Err(e) = store
+        .run_deferred_checks()
+        .and_then(|()| enforce_expr_constraints(store))
+    {
+        store.rollback();
+        return Err(e);
+    }
+    store.commit();
+    Ok(())
+}
+
+/// Execute an ISO GQL transaction-control command against the store's transaction
+/// frame, returning an empty result (no rows/columns), like a write-only query. ISO
+/// semantics are enforced HERE (matching the TS engine's `run_tx_control`), every violation
+/// carrying the `E_INVALID_GRAPH_OP` wire code: `START TRANSACTION` while one is
+/// active → error (no nesting); `COMMIT` / `ROLLBACK` with no active transaction →
+/// error. The transaction persists across `lnk_query` calls (the store IS the
+/// session), so a `START` here stays open for later statements until a `COMMIT` /
+/// `ROLLBACK`. `READ ONLY` is recorded on the store (cleared on commit/rollback) for
+/// a later write to consult.
+pub(crate) fn run_tx_control(
+    store: &mut Store,
+    kind: TxKind,
+    read_only: bool,
+) -> Result<Rows, String> {
+    match kind {
+        TxKind::Start => {
+            if store.in_transaction() {
+                return Err(
+                    "E_INVALID_GRAPH_OP: START TRANSACTION: a transaction is already active".into(),
+                );
+            }
+            store.begin();
+            store.set_tx_read_only(read_only);
+        }
+        TxKind::Commit => {
+            if !store.in_transaction() {
+                return Err("E_INVALID_GRAPH_OP: COMMIT: no active transaction".into());
+            }
+            // Run the DEFERRED declared-constraint checks against the fully-staged
+            // graph; a violation rolls the whole transaction back (read-only mode
+            // clears either way).
+            let checked = commit_with_deferred_checks(store);
+            store.set_tx_read_only(false);
+            checked?;
+        }
+        TxKind::Rollback => {
+            if !store.in_transaction() {
+                return Err("E_INVALID_GRAPH_OP: ROLLBACK: no active transaction".into());
+            }
+            store.rollback();
+            store.set_tx_read_only(false);
+        }
+    }
+    Ok(empty_rows())
+}
+
+/// Reject a write statement issued inside a `READ ONLY` transaction, before it
+/// applies. Called by the FFI write path (a read is always allowed). Matches the TS engine's
+/// `enforce_read_only`.
+pub(crate) fn enforce_read_only(store: &Store) -> Result<(), String> {
+    if store.tx_read_only() {
+        return Err(
+            "E_INVALID_GRAPH_OP: write statement rejected: the active transaction is READ ONLY"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+/// The outcome of [`run_query`]: either rows already materialized (a transaction
+/// -control command or a write), or a read whose optimized plan is handed back so
+/// the caller can take its language-specific STREAMING JSON path (the perf-critical
+/// route we must not collapse into a materialized batch).
+pub enum Executed {
+    /// A `TxControl` result or a write's returned rows — already produced.
+    Rows(Rows),
+    /// A read: the optimized plan, for the caller to stream.
+    Read(Plan),
+}
+
+/// The single query entry point for a parsed plan against a MUTABLE store. In one
+/// place — so every embedder (the C ABI, a future in-process host) gets identical
+/// semantics — it dispatches ISO transaction control (`START TRANSACTION`/`COMMIT`/
+/// `ROLLBACK`), enforces `READ ONLY`, and splits writes from reads. This mirrors
+/// the TS engine, whose eval layer (not its ABI) owns transaction dispatch; previously the
+/// engine duplicated this decision at each FFI language arm.
+///
+/// A `TxControl` command yields no rows and is neither optimized nor planned. Every
+/// other plan is optimized here; a write is rejected under a READ ONLY transaction,
+/// then executed; a read is returned as [`Executed::Read`] for the caller to stream.
+pub fn run_query(plan: Plan, store: &mut Store) -> Result<Executed, String> {
+    if let Plan::TxControl { kind, read_only } = plan {
+        return run_tx_control(store, kind, read_only).map(Executed::Rows);
+    }
+    let plan = crate::opt::optimize_indexed(plan, store);
+    if is_write(&plan) {
+        enforce_read_only(store)?;
+        execute(&plan, store).map(Executed::Rows)
+    } else {
+        Ok(Executed::Read(plan))
+    }
+}
+
+/// The `FAULT_ID_DUP` message, matching the TS engine: a string `id` is an element's unique
+/// external identity. The `E_UNIQUE:` prefix maps to `E_CONSTRAINT_VIOLATION`.
+const ID_DUP_ERR: &str = "E_UNIQUE: an element with this id already exists — a string `id` \
+     property is the element's unique identity; use _MERGE to upsert, or a fresh id";
+
+/// The `FAULT_ID_IMMUTABLE` message, matching the TS engine: a string `id` is an element's
+/// fixed identity, so `SET x.id = …` is rejected (`E_INVALID_GRAPH_OP`).
+const ID_IMMUTABLE_ERR: &str = "E_INVALID_GRAPH_OP: cannot SET `id`: a string `id` is the \
+     element's identity and is fixed at creation — insert a new element with the new id instead";
+
+pub fn execute(plan: &Plan, store: &mut Store) -> Result<Rows, String> {
+    match plan {
+        Plan::Insert { nodes, edges } => {
+            run_insert(store, nodes, edges)?;
+            Ok(empty_rows())
+        }
+        Plan::InsertFrom {
+            input,
+            nodes,
+            edges,
+        } => {
+            run_insert_from(store, input, nodes, edges)?;
+            Ok(empty_rows())
+        }
+        Plan::InsertReturn { nodes, edges, tail } => {
+            // First write-then-return path: run the INSERT, then bind each created
+            // node into the slot equal to its creation index and project the tail.
+            let ids = run_insert(store, nodes, edges)?;
+            // A one-row seed: slot i carries the id of the i-th created node, so the
+            // tail's `Expr::Prop{slot}` reads the node just created at that index.
+            let seed = Batch::of(ids.iter().map(|&id| Col::Nodes(vec![id])).collect());
+            // The tail is restricted (by the parser + this guard) to pure
+            // projections; `pull_body` covers Row/Project/Filter, not the read
+            // pipeline's grouping/paging operators.
+            let store_ref: &Store = store;
+            let batch = pull_body(tail, store_ref, &seed)?;
+            Ok(rows_from_batch(tail, &batch, store_ref))
+        }
+        Plan::Update { input, ops } => {
+            run_update(store, input, ops, needs_lineage(input))?;
+            Ok(empty_rows())
+        }
+        Plan::UpdateReturn { input, ops, tail } => {
+            // Read-after-write: run `input`, apply `ops`, then read `tail` over the
+            // SAME frontier against the mutated store (write-then-return, the twin of
+            // InsertReturn). `run_update` returns the frontier it wrote so the tail
+            // reads the just-written values without re-scanning.
+            let track = needs_lineage(input) || needs_lineage(tail);
+            let frontier = run_update(store, input, ops, track)?;
+            let store_ref: &Store = store;
+            let batch = pull_body(tail, store_ref, &frontier)?;
+            Ok(rows_from_batch(tail, &batch, store_ref))
+        }
+        Plan::Merge {
+            label,
+            props,
+            on_create,
+            on_update,
+            tail,
+        } => execute_merge(store, label, props, on_create, on_update, tail.as_deref()),
+        Plan::MergeEdge {
+            start_label,
+            start_props,
+            end_label,
+            end_props,
+            dir,
+            etype,
+            edge_props,
+            on_create,
+            on_update,
+        } => execute_merge_edge(
+            store,
+            start_label,
+            start_props,
+            end_label,
+            end_props,
+            *dir,
+            etype,
+            edge_props,
+            on_create,
+            on_update,
+        ),
+        Plan::AddEdge {
+            from,
+            to,
+            etype,
+            props,
+        } => {
+            let nc = u32::try_from(store.node_count()).unwrap_or(u32::MAX);
+            if *from >= nc || *to >= nc || !store.is_alive(*from) || !store.is_alive(*to) {
+                return Err(format!(
+                    "addE: endpoint out of range or deleted ({from} -> {to})"
+                ));
+            }
+            let eid = store.add_edge(*from, *to, etype);
+            for (k, v) in props {
+                store.set_edge_prop(eid, k, v.clone());
+            }
+            Ok(empty_rows())
+        }
+        Plan::AddVertexStep { tail, .. } => {
+            // Run the write (and any nested writes in `input`) and bind the created
+            // vertices as the frontier (slot 0), then project the tail.
+            let seed = write_frontier(plan, store)?;
+            let store_ref: &Store = store;
+            let batch = pull_body(tail, store_ref, &seed)?;
+            Ok(rows_from_batch(tail, &batch, store_ref))
+        }
+        Plan::AddEdgeStep { tail, .. } => {
+            let seed = write_frontier(plan, store)?;
+            let store_ref: &Store = store;
+            let batch = pull_body(tail, store_ref, &seed)?;
+            Ok(rows_from_batch(tail, &batch, store_ref))
+        }
+        // A `union(<writes>)` (Gremlin `union(addV(...), addV(...))`): the arms are writes,
+        // so run them via `write_frontier` (mutating) and render the concatenated created
+        // frontier. A read union stays on the pull path (`try_run`).
+        Plan::Union { .. } if is_write(plan) => {
+            let seed = write_frontier(plan, store)?;
+            let tail = Plan::Row.project(vec![("_".to_string(), crate::ir::Expr::Slot(0))]);
+            let store_ref: &Store = store;
+            let batch = pull_body(&tail, store_ref, &seed)?;
+            Ok(rows_from_batch(&tail, &batch, store_ref))
+        }
+        // `<write>.fail([msg])`: the barrier wraps a write. Run the write (mutating), then
+        // throw if it produced any traverser — `fail()`'s arrive-then-throw contract. An
+        // empty write frontier never reaches the barrier, so it returns empty (no throw).
+        Plan::Fail { input, message } if is_write(input) => {
+            let seed = write_frontier(input, store)?;
+            if seed.rows() > 0 {
+                return Err(fail_error(message));
+            }
+            let tail = Plan::Row.project(vec![("_".to_string(), crate::ir::Expr::Slot(0))]);
+            let store_ref: &Store = store;
+            let batch = pull_body(&tail, store_ref, &seed)?;
+            Ok(rows_from_batch(&tail, &batch, store_ref))
+        }
+        _ => try_run(plan, store),
+    }
+}
+
+/// Run a WRITE step (or a nested chain of them) and return the CREATED elements as a
+/// frontier batch (`Col::Nodes`/`Col::Edges` at slot 0) — WITHOUT rendering the tail. This
+/// is the write-aware counterpart of `pull`: it lets a write feed another write (`repeat`'s
+/// per-iteration chaining) or a container, and lets the write-step exec arms share one
+/// creation path. A non-write `plan` is a read input and is pulled. `store` is `&mut` (the
+/// writes mutate); a read input reborrows it immutably.
+fn write_frontier(plan: &Plan, store: &mut Store) -> Result<Batch, String> {
+    use crate::ir::EdgeEnd;
+    match plan {
+        Plan::AddVertexStep {
+            input,
+            labels,
+            props,
+            ..
+        } => {
+            // One created vertex per input row (the input may itself be a write).
+            let n = write_frontier(input, store)?.rows();
+            let spec = crate::ir::InsertNode {
+                labels: labels.clone(),
+                props: props.clone(),
+            };
+            let ids = run_insert(store, &vec![spec; n], &[])?;
+            Ok(Batch::single(Col::Nodes(ids)))
+        }
+        Plan::AddEdgeStep {
+            input,
+            from,
+            to,
+            etype,
+            props,
+            ..
+        } => {
+            // Resolve each row's endpoints (a `Slot` reads the input frontier, an `ExtId`
+            // resolves `V('id')`); a missing vertex is a hard error (matching TS).
+            let batch = write_frontier(input, store)?;
+            let resolve_ext = |s: &str, store: &Store| -> Result<u32, String> {
+                store
+                    .node_by_ext(s)
+                    .filter(|&id| store.is_alive(id))
+                    .ok_or_else(|| {
+                        format!(
+                            "E_MISSING_VERTEX: addE('{etype}'): endpoint vertex `{s}` not found"
+                        )
+                    })
+            };
+            let from_fixed = match from {
+                EdgeEnd::ExtId(s) => Some(resolve_ext(s, store)?),
+                EdgeEnd::Slot(_) => None,
+            };
+            let to_fixed = match to {
+                EdgeEnd::ExtId(s) => Some(resolve_ext(s, store)?),
+                EdgeEnd::Slot(_) => None,
+            };
+            let node_at = |end: &EdgeEnd, fixed: Option<u32>, i: usize| -> Option<u32> {
+                match end {
+                    EdgeEnd::ExtId(_) => fixed,
+                    EdgeEnd::Slot(n) => match batch.slot(*n) {
+                        Col::Nodes(ids) => ids.get(i).copied(),
+                        _ => None,
+                    },
+                }
+            };
+            let mut pairs: Vec<(u32, u32)> = Vec::with_capacity(batch.rows());
+            for i in 0..batch.rows() {
+                match (node_at(from, from_fixed, i), node_at(to, to_fixed, i)) {
+                    (Some(f), Some(t)) => pairs.push((f, t)),
+                    _ => {
+                        return Err(format!(
+                            "E_MISSING_VERTEX: addE('{etype}'): could not resolve endpoint vertices"
+                        ))
+                    }
+                }
+            }
+            drop(batch);
+            let mut eids: Vec<u32> = Vec::with_capacity(pairs.len());
+            for (f, t) in pairs {
+                let eid = store.add_edge(f, t, etype);
+                for (k, v) in props {
+                    store.set_edge_prop(eid, k, v.clone());
+                }
+                eids.push(eid);
+            }
+            Ok(Batch::single(Col::Edges(eids)))
+        }
+        // A `union(<writes>)`: run each arm over the input and concatenate the created
+        // frontiers (Gremlin union runs every arm over the same incoming traversers).
+        Plan::Union { left, right, .. } => {
+            let l = write_frontier(left, store)?;
+            let r = write_frontier(right, store)?;
+            let lc = l.slots.into_iter().next().unwrap_or(Col::Nodes(Vec::new()));
+            let rc = r.slots.into_iter().next().unwrap_or(Col::Nodes(Vec::new()));
+            let merged = match (lc, rc) {
+                (Col::Nodes(mut a), Col::Nodes(b)) => {
+                    a.extend(b);
+                    Col::Nodes(a)
+                }
+                (Col::Edges(mut a), Col::Edges(b)) => {
+                    a.extend(b);
+                    Col::Edges(a)
+                }
+                // Mixed write frontiers (union(addV, addE)) are deferred.
+                _ => return Err("union of mixed addV/addE write arms is not yet supported".into()),
+            };
+            Ok(Batch::single(merged))
+        }
+        // A read input: pull it (immutable reborrow).
+        _ => pull(plan, &*store, false),
+    }
+}
+
+/// Render a tail projection's output `Batch` to `Rows` — the shared tail of the
+/// write-then-return paths (`InsertReturn` / `UpdateReturn`). Uses the tail's output
+/// names when it is a projection, else a single `_` column over slot 0.
+fn rows_from_batch(tail: &Plan, batch: &Batch, store: &Store) -> Rows {
+    let n = batch.rows();
+    match output_names(tail) {
+        Some(names) => {
+            let ncols = names.len();
+            let mut rows = Flat::with_capacity(n, ncols);
+            for i in 0..n {
+                for c in &batch.slots {
+                    rows.data.push(render_cell(c, i, store));
+                }
+            }
+            Rows { names, rows }
+        }
+        None => {
+            let slot0 = batch.slot(0);
+            let mut rows = Flat::with_capacity(n, 1);
+            for i in 0..n {
+                rows.data.push(render_cell(slot0, i, store));
+            }
+            Rows {
+                names: vec!["_".to_string()],
+                rows,
+            }
+        }
+    }
+}
+
+/// The concrete write a matched row expands to, computed while the store is still
+/// immutably borrowed (the read phase) so the write phase can mutate freely.
+enum Applied {
+    Set(u32, String, Value),
+    Remove(u32, String),
+    AddLabel(u32, String),
+    RemoveLabel(u32, String),
+    DeleteNode(u32, bool), // (node, detach)
+    DeleteEdge(u32),       // eid
+    SetEdge(u32, String, Value),
+    RemoveEdge(u32, String),
+}
+
+/// Pull a batch up through a (non-terminal) plan node. `track` is the plan-global
+/// lineage decision: when true, row-producing operators build the path sidecar.
+///
+/// THIS FUNCTION'S CODEGEN IS LOAD-BEARING, AND NOT IN A WAY ANY EDIT CAN PRESERVE. The
+/// filtered-count bench cluster (`filtered`, `filter age>50`, `has age>50` — all the same
+/// `MATCH (p:Person) WHERE p.age > 50 RETURN count(*)`) sits on an alignment that ANY textual
+/// change to this function loses, by 1.08-1.24x, in every case measured and never in the
+/// favourable direction. Four perturbations, each min-of-three interleaved:
+///
+/// | perturbation | cluster |
+/// |---|---|
+/// | +3 lines inline in the `SortLocal` arm (item 89) | 1.21x slower |
+/// | -93 lines, the `CallInline` arm hoisted out (item 90) | 1.21-1.24x slower |
+/// | TWO ONE-CHARACTER call-site edits (`&elems` -> `elems`) | 1.22x slower |
+/// | ~20 lines replaced by a call, twice (item 91's unwind) | 1.10x slower |
+/// | a dead ~20-line fn added to this MODULE, never called | NO CHANGE |
+///
+/// So it is this function's own code, not the module's size, and the magnitude tracks neither
+/// the size nor the content of the edit. Two consequences, both practical:
+///
+/// - A ~10-24% move in that cluster alongside a change to `pull` is the cost of EDITING
+///   `pull`, not evidence about the change. Judge a change here on the rows its own operator
+///   touches, and report the cluster move as the toll.
+/// - There is a real ~20% sitting in that query shape for whoever can control the alignment
+///   deliberately. Nothing reachable from source did: see the two rejected levers recorded at
+///   the `CallInline` arm and at the aggregate fast-path chain.
+fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
+    Ok(match plan {
+        // A write plan is never pulled (a read sub-plan cannot contain one); it
+        // is run through `execute`. Yield an empty batch if it somehow reaches
+        // here so `run` on a bare write is a harmless no-op rather than a panic.
+        Plan::Insert { .. }
+        | Plan::InsertFrom { .. }
+        | Plan::InsertReturn { .. }
+        | Plan::Update { .. }
+        | Plan::UpdateReturn { .. }
+        | Plan::Merge { .. }
+        | Plan::MergeEdge { .. }
+        | Plan::AddEdge { .. }
+        | Plan::AddEdgeStep { .. }
+        | Plan::AddVertexStep { .. }
+        | Plan::TxControl { .. } => Batch::of(Vec::new()),
+        Plan::PathRecord { input, value, tag } => {
+            let mut batch = pull(input, store, track)?;
+            // Append this step's frontier value to each row's Gremlin step-history. `value`
+            // is `Slot(frontier)` for a node/edge (its dense id) or the projected scalar; the
+            // `tag` records which, so `path()` renders a vertex, an edge, or the raw value.
+            // A `Slot` beyond the runtime width (a branch collapsed the layout, so the parser
+            // frontier slot is gone) is skipped rather than evaluated — matching that a
+            // path-through-a-branch is not yet the full history.
+            let in_range = !matches!(value, Expr::Slot(n) if *n >= batch.slots.len());
+            if track && in_range {
+                if let Some(lin) = batch.lineage.take() {
+                    let col = eval(value, store, &batch)?;
+                    let vals: Vec<Value> = (0..batch.rows()).map(|i| col.value_at(i)).collect();
+                    batch.lineage = Some(lin.push_step(&vals, *tag));
+                }
+            }
+            batch
+        }
+        // `Row` is the leaf of an EXISTS body and is only ever fed a batch by
+        // `pull_body`; reaching it through the main pipeline is a bug.
+        Plan::Row => {
+            // ONE unit row (a single dummy cell so `rows()` == 1) — the input to a
+            // bare `RETURN <items>` with no MATCH. A row with no bound variables; the
+            // projected items reference no slots. (Inside an EXISTS body, `Plan::Row`
+            // is seeded by `pull_body`, not this path.)
+            Batch::single(Col::Num(vec![0.0]))
+        }
+        Plan::Scan { label } => {
+            let ids = match label {
+                Some(l) => store.nodes_with_label(l).to_vec(),
+                None => store.all_nodes(),
+            };
+            // Lineage FIRST, off the slice, so `ids` can be moved into the batch rather than
+            // cloned into it. Every seed site here used to build its `Col` from a copy and
+            // then read the original for lineage, which on an untracked query — almost all of
+            // them — was a whole extra id vector copied for nothing: 800KB on a 200k scan.
+            //
+            // Worth 1-5% and no more (`Filter(Scan)` on a 20% predicate 289.0us -> 275.4us,
+            // a bare scan projection 1044.8us -> 1029.6us), which is AT this repo's noise
+            // floor. Kept because it is strictly less allocation and copying for identical
+            // output, not on the strength of those numbers — do not quote them as a win.
+            let lineage = track.then(|| Lineage::seed(&ids));
+            let mut batch = Batch::single(Col::Nodes(ids));
+            batch.lineage = lineage;
+            batch
+        }
+        Plan::NodeSeed { ext_ids, label } => {
+            // Resolve each external id to a LIVE node; an unknown/deleted id is
+            // silently dropped (Gremlin `g.V(<missing>)` yields nothing for it).
+            //
+            // `label`, when present, keeps only the nodes carrying it — `is_labeled` is a
+            // binary search of the (sorted) label bucket, so this is O(log |label|) per id
+            // and not a bucket scan. It makes the seed equivalent to the
+            // `Scan(label) + Filter(element_id = id)` that `opt` rewrote away; without it a
+            // labelled GQL point lookup would return a node of the WRONG label.
+            let ids: Vec<u32> = ext_ids
+                .iter()
+                .filter_map(|e| store.node_by_ext(e).filter(|&id| store.is_alive(id)))
+                .filter(|&id| label.as_ref().is_none_or(|l| store.is_labeled(id, l)))
+                .collect();
+            let lineage = track.then(|| Lineage::seed(&ids));
+            let mut batch = Batch::single(Col::Nodes(ids));
+            batch.lineage = lineage;
+            batch
+        }
+        Plan::EdgeEndpointSeed {
+            ext,
+            source_end,
+            label,
+        } => {
+            // One id -> at most one node, so this is two O(1) probes and a label test:
+            // `edge_by_ext` (the reverse map item 615 added) then `edge_endpoints`.
+            //
+            // Seeds exactly as `NodeSeed` does, including the lineage, so an `Expand` above
+            // extends a path from here the same way it would from a `Scan`.
+            let ids: Vec<u32> = store
+                .edge_by_ext(ext)
+                .and_then(|eid| store.edge_endpoints(eid))
+                .map(|(from, to)| if *source_end { from } else { to })
+                .filter(|&id| store.is_alive(id))
+                .filter(|&id| label.as_ref().is_none_or(|l| store.is_labeled(id, l)))
+                .into_iter()
+                .collect();
+            let lineage = track.then(|| Lineage::seed(&ids));
+            let mut batch = Batch::single(Col::Nodes(ids));
+            batch.lineage = lineage;
+            batch
+        }
+        Plan::EdgeScan => {
+            // The frontier is EDGES, not nodes. When a full `path()`/`tree()` is read
+            // (`track`), seed the step-history with the source edge — `E().path()` yields
+            // `[e]` per edge — so `PathRecord` can extend it with later steps.
+            let ids = store.all_edges();
+            let lineage = track.then(|| Lineage::seed_edges(&ids));
+            let mut batch = Batch::single(Col::Edges(ids));
+            batch.lineage = lineage;
+            batch
+        }
+        Plan::EdgeSeed { ext_ids } => {
+            // Resolve each external id to a LIVE edge, preserving request order; an
+            // unknown/deleted id is dropped. `store.edge_by_ext` is an O(1) probe of the
+            // store's reverse map (built on this first call, then maintained).
+            //
+            // This arm used to build its OWN ext→edge `HashMap` over every live edge on
+            // EVERY pull, to resolve what is usually one id — O(E) with an allocation per
+            // edge, per `g.E(id)`. Its comment said no reverse map existed, which was
+            // true and is the reason; item 615 added one rather than rebuilding here.
+            let ids: Vec<u32> = ext_ids
+                .iter()
+                .filter_map(|e| store.edge_by_ext(e))
+                .collect();
+            Batch::single(Col::Edges(ids))
+        }
+        Plan::Sample { input, n } => {
+            // A fixed-seed Mulberry32 partial Fisher-Yates shuffle over the whole row
+            // stream, truncated to n — byte-identical to the TS engine's sampleStep (same seed,
+            // same draw order). The engine's frontier order matches the TS engine's here, so the
+            // selected subset agrees.
+            let b = pull(input, store, track)?;
+            let len = b.rows();
+            let k = (*n).min(len);
+            let mut idx: Vec<usize> = (0..len).collect();
+            let mut rng = Mulberry32::new(0x9e37_79b9);
+            for i in 0..k {
+                let j = i + (rng.next_f64() * (len - i) as f64) as usize;
+                idx.swap(i, j);
+            }
+            idx.truncate(k);
+            b.gather(&idx)
+        }
+        Plan::Enumerate { input, slot } => {
+            // Gremlin index(): each row → [element, stream-position]. The element renders
+            // as its value (vertices/edges as element maps); position is the row index.
+            let b = pull(input, store, track)?;
+            let n = b.rows();
+            let col = b.slot(*slot);
+            let out: Vec<Value> = (0..n)
+                .map(|i| Value::List(vec![render_cell(col, i, store), Value::Num(i as f64)]))
+                .collect();
+            Batch::single(Col::Gen(out))
+        }
+        Plan::EdgeVertex {
+            input,
+            edge_slot,
+            which,
+            other,
+        } => {
+            // Edge frontier → endpoint vertex. Out=src (outV), In=dst (inV), Both=both
+            // (fans out to two rows/edge). `other`=otherV: the endpoint the traverser did NOT
+            // arrive from, read from the lineage's reference vertex. The endpoint lands in a
+            // new appended slot; every other slot is carried through (duplicated for Both).
+            let b = pull(input, store, track)?;
+            let n = b.rows();
+            let mut keep: Vec<usize> = Vec::new();
+            let mut nodes: Vec<u32> = Vec::new();
+            // Branch on the representation ONCE, not per row: a typed edge frontier reads
+            // its id straight out of the column. The boxed arm stays for a branch/mixed
+            // frontier, which is the only thing that needs it.
+            let ecol = b.slot(*edge_slot);
+            let typed = elem_ids(ecol);
+            for i in 0..n {
+                let eid = match typed {
+                    // No `u32::MAX` check: the OPTIONAL sentinel is not a known eid, and
+                    // `edge_endpoints` below is a bounds-checked `.get()` that returns `None`
+                    // for it — so the row is skipped there, exactly as the boxed path skipped
+                    // it on `value_at`'s NULL. Mutating the check out leaves the whole suite
+                    // green BECAUSE it is redundant, not because nothing covers it.
+                    Some(ids) => ids[i],
+                    None => match ecol.value_at(i) {
+                        Value::Num(x) if x >= 0.0 => x as u32,
+                        // A branch/mixed frontier carries edges UNBOXED; a non-edge cell (a
+                        // vertex/scalar from another arm) has no endpoint, so skip it.
+                        Value::Edge(e) => e,
+                        _ => continue,
+                    },
+                };
+                let Some((src, dst)) = store.edge_endpoints(eid) else {
+                    continue;
+                };
+                if *other {
+                    // The reference vertex is the last node in the row's path (where the
+                    // traverser arrived before this edge); otherV is the opposite endpoint. With
+                    // no reference (an edge reached without a prior vertex, via a branch) default
+                    // to the OUT vertex (src), matching pure-TS. A DIRECT bare edge source
+                    // (`g.E().otherV()`) is rejected earlier, at parse.
+                    let reference = b
+                        .lineage
+                        .as_ref()
+                        .and_then(|l| otherv_reference(l.path_at(i), src, dst));
+                    keep.push(i);
+                    // Arrived from dst -> otherV is src; arrived from src (or NO reference: a
+                    // bare edge reached via a branch) -> otherV is dst's opposite, i.e. src is
+                    // the default OUT vertex, matching pure-TS.
+                    nodes.push(match reference {
+                        Some(r) if r == dst => src,
+                        Some(_) => dst,
+                        None => src,
+                    });
+                    continue;
+                }
+                match which {
+                    Dir::Out => {
+                        keep.push(i);
+                        nodes.push(src);
+                    }
+                    Dir::In => {
+                        keep.push(i);
+                        nodes.push(dst);
+                    }
+                    Dir::Both => {
+                        keep.push(i);
+                        nodes.push(src);
+                        keep.push(i);
+                        nodes.push(dst);
+                    }
+                }
+            }
+            let mut out = b.gather(&keep);
+            // Record the landed vertex into the lineage node path (not just the new slot):
+            // an endpoint move traverses no new edge, so `extend_nodes` appends the vertex
+            // and leaves the edge path alone. A following `otherV` after a branch reads this
+            // vertex as its reference — without it a reconverged `outV().inE(..)` arm keeps
+            // only the neighbour and `otherV` resolves against the wrong endpoint.
+            if track {
+                if let Some(lin) = b.lineage.as_ref() {
+                    out.lineage = Some(lin.extend_nodes(&keep, &nodes));
+                }
+            }
+            out.slots.push(Col::Nodes(nodes));
+            out
+        }
+        Plan::IndexSeek { label, key, value } => {
+            let ids = index_seek_ids(store, label.as_deref(), key, value);
+            let lineage = track.then(|| Lineage::seed(&ids));
+            let mut batch = Batch::single(Col::Nodes(ids));
+            batch.lineage = lineage;
+            batch
+        }
+        Plan::RangeSeek {
+            label,
+            key,
+            op,
+            value,
+        } => {
+            let ids = range_seek_ids(store, label.as_deref(), key, *op, value);
+            let lineage = track.then(|| Lineage::seed(&ids));
+            let mut batch = Batch::single(Col::Nodes(ids));
+            batch.lineage = lineage;
+            batch
+        }
+        Plan::Expand {
+            input,
+            from,
+            dir,
+            edge_label,
+            bind_edge,
+            double_loops,
+        } => guard_intermediate(
+            expand(
+                &pull(input, store, track)?,
+                store,
+                *from,
+                *dir,
+                edge_label,
+                *bind_edge,
+                *double_loops,
+            )?,
+            store,
+        )?,
+        Plan::OptionalExpand {
+            input,
+            from,
+            dir,
+            edge_label,
+            keep_source,
+            bind_edge,
+            landing_pred,
+        } => optional_expand(
+            &pull(input, store, track)?,
+            store,
+            *from,
+            *dir,
+            edge_label,
+            *keep_source,
+            *bind_edge,
+            landing_pred.as_deref(),
+        )?,
+        Plan::IntervalExpand {
+            input,
+            from,
+            dir,
+            edge_label,
+            lo_key,
+            hi_key,
+            qlo,
+            qhi,
+            bind_edge,
+        } => {
+            let batch = pull(input, store, track)?;
+            let qlo_col = eval(qlo, store, &batch)?;
+            let qhi_col = eval(qhi, store, &batch)?;
+            interval_expand(
+                &batch, store, *from, *dir, edge_label, lo_key, hi_key, &qlo_col, &qhi_col,
+                *bind_edge,
+            )
+        }
+        Plan::Filter { input, pred } => {
+            // Anchor flip: a selective indexed `=` on the traversal TARGET is far
+            // cheaper to seed-and-walk-in-reverse than to scan every source and
+            // filter. Same slot layout, multiset-preserving.
+            if let Some(b) = try_reverse_expand(pred, input, store, track) {
+                return Ok(b);
+            }
+            // Same flip for a VAR-LENGTH hop: seed the selective indexed endpoint and walk
+            // the quantified path in reverse, instead of enumerating every forward path
+            // (which trips the trail-limit guard on a fanning graph).
+            if let Some(b) = try_reverse_varlen(pred, input, store, track) {
+                return Ok(b);
+            }
+            // Target-aware shortest path: a `= t` on the endpoint bounds the BFS to the
+            // target's distance (the outer filter here still runs, so this only skips
+            // work the filter would discard).
+            if let Some(b) = try_shortest_early_stop(pred, input, store, track) {
+                return b;
+            }
+            let batch = pull(input, store, track)?;
+            let keep = filter_keep(pred, store, &batch)?;
+            batch.gather(&keep)
+        }
+        Plan::VarLength {
+            input,
+            from,
+            dir,
+            edge_label,
+            min,
+            max,
+            mode,
+            until,
+            body_filter,
+            double_loops,
+            path_need,
+        } => var_length(
+            &pull(input, store, track)?,
+            store,
+            *from,
+            *dir,
+            edge_label,
+            *min,
+            *max,
+            *mode,
+            &[],
+            None,
+            1,
+            until.as_deref(),
+            body_filter.as_deref(),
+            *double_loops,
+            *path_need,
+        )?,
+        Plan::RepeatGroup {
+            input,
+            from,
+            dir,
+            edge_label,
+            min,
+            max,
+            mode,
+            endpoint_slot: _,
+            group_binds,
+            k,
+            per_rep_pred,
+        } => var_length(
+            &pull(input, store, track)?,
+            store,
+            *from,
+            *dir,
+            edge_label,
+            *min,
+            *max,
+            *mode,
+            group_binds,
+            per_rep_pred.as_deref(),
+            *k,
+            None,
+            None,
+            false,
+            // `RepeatGroup` has no `path_need` of its own yet, so it materializes.
+            crate::ir::PathNeed::Full,
+        )?,
+        Plan::NestedGroup {
+            input,
+            from,
+            unit,
+            min,
+            max,
+            mode,
+            endpoint_slot: _,
+            bind_slots,
+            per_rep_pred,
+        } => nested_group(
+            &pull(input, store, track)?,
+            store,
+            *from,
+            unit,
+            *min,
+            *max,
+            *mode,
+            bind_slots,
+            per_rep_pred.as_deref(),
+        ),
+        Plan::ShortestPath {
+            input,
+            from,
+            dir,
+            edge_label,
+            min,
+            max,
+            selector,
+            edge_pred,
+            path_need,
+        } => shortest_path(
+            &pull(input, store, track)?,
+            store,
+            *from,
+            *dir,
+            edge_label,
+            *min,
+            *max,
+            *selector,
+            edge_pred.as_deref(),
+            None,
+            *path_need,
+        )?,
+        Plan::GroupToMap { input } => {
+            // Fold the grouped `[key, value]` rows into one Gremlin Map, first-seen
+            // key order (the harness compares map content order-independently; the TS engine
+            // is also first-seen). A single-column value the group produced (count,
+            // list) is the map value; a missing second column reads as NULL.
+            let b = pull(input, store, track)?;
+            let n = b.rows();
+            let mut pairs: Vec<(Value, Value)> = Vec::with_capacity(n);
+            for i in 0..n {
+                let k = b.slots[0].value_at(i);
+                let v = b.slots.get(1).map_or(Value::Null, |c| c.value_at(i));
+                pairs.push((k, v));
+            }
+            Batch::single(Col::Gen(vec![Value::Map(std::sync::Arc::new(pairs))]))
+        }
+        Plan::MapSlot {
+            input,
+            slot,
+            value,
+            append,
+        } => {
+            let mut b = pull(input, store, track)?;
+            let col = eval(value, store, &b)?;
+            if *append {
+                b.slots.push(col);
+            } else if *slot < b.slots.len() {
+                b.slots[*slot] = col;
+            }
+            b
+        }
+        Plan::ShortestPathEnum {
+            input,
+            node_slot,
+            target,
+        } => {
+            // For each source vertex, emit one row per shortest path (undirected), each
+            // a list of the path vertices' external ids (so it compares cleanly — the
+            // engine has no Value::Node). Path order is unspecified (multiset). A
+            // `with(target, has(…))` keeps only paths whose LAST vertex matches.
+            let b = pull(input, store, track)?;
+            let n = b.rows();
+            let dest_ok = |v: u32| match target {
+                None => true,
+                Some((key, pred)) => {
+                    if !store.has_prop(v, key) {
+                        return false;
+                    }
+                    match pred {
+                        None => true,
+                        Some((op, want)) => cmp_apply(*op, &store.prop(v, key), want),
+                    }
+                }
+            };
+            let mut out: Vec<Value> = Vec::new();
+            for i in 0..n {
+                let src = match b.slot(*node_slot).value_at(i) {
+                    Value::Num(x) if x >= 0.0 => x as u32,
+                    _ => continue,
+                };
+                for path in crate::algo::shortest_paths_from(store, src, crate::ir::Dir::Both) {
+                    if !path.last().is_some_and(|&v| dest_ok(v)) {
+                        continue;
+                    }
+                    let ids: Vec<Value> = path
+                        .into_iter()
+                        .map(|v| store.node_ext_id(v).map_or(Value::Null, Value::Str))
+                        .collect();
+                    out.push(Value::List(ids));
+                }
+            }
+            Batch::single(Col::Gen(out))
+        }
+        Plan::Subgraph { input, edge_slot } => {
+            // Collect the edge frontier (deduped, first-seen) + their endpoint vertices
+            // (deduped), into one {vertices:[…], edges:[…]} Map of element records.
+            let b = pull(input, store, track)?;
+            let n = b.rows();
+            let mut edge_seen: FnvSet<u32> = FnvSet::default();
+            let mut vert_seen: FnvSet<u32> = FnvSet::default();
+            let mut edges: Vec<Value> = Vec::new();
+            let mut verts: Vec<Value> = Vec::new();
+            for i in 0..n {
+                let eid = match b.slot(*edge_slot).value_at(i) {
+                    Value::Num(x) if x >= 0.0 => x as u32,
+                    _ => continue,
+                };
+                if !edge_seen.insert(eid) {
+                    continue;
+                }
+                edges.push(subgraph_edge_value(store, eid));
+                if let Some((src, dst)) = store.edge_endpoints(eid) {
+                    for v in [src, dst] {
+                        if vert_seen.insert(v) {
+                            verts.push(node_result_value(store, v));
+                        }
+                    }
+                }
+            }
+            let map = Value::Map(std::sync::Arc::new(vec![
+                (Value::Str("vertices".into()), Value::List(verts)),
+                (Value::Str("edges".into()), Value::List(edges)),
+            ]));
+            Batch::single(Col::Gen(vec![map]))
+        }
+        Plan::Tree {
+            input,
+            by,
+            leaf_value,
+        } => {
+            // Fold every traverser's vertex-hop path (node-id lineage) into one nested
+            // Map, keyed level-by-level by each element's full element map (bare tree)
+            // or its `by` property. Force lineage tracking (Expr::Path reads it).
+            let b = pull(input, store, true)?;
+            // Read the node-id lineage DIRECTLY (not via `eval(Expr::Path)`, whose GQL
+            // value is now a rich Path object, not a bare id list).
+            let mut tree = GremlinTree::default();
+            if let Some(lin) = &b.lineage {
+                for i in 0..b.rows() {
+                    let ids = lin.path_at(i);
+                    let mut keys: Vec<Value> = ids
+                        .iter()
+                        .map(|v| match v {
+                            Value::Num(id) => match by {
+                                Some(k) => store.prop(*id as u32, k),
+                                None => node_result_value(store, *id as u32),
+                            },
+                            other => other.clone(),
+                        })
+                        .collect();
+                    // A trailing `values('k').tree()` adds a deeper LEAF level keyed by the
+                    // last vertex's property (`out(...).values('name').tree()`).
+                    if let (Some(lk), Some(Value::Num(last))) = (leaf_value, ids.last()) {
+                        keys.push(store.prop(*last as u32, lk));
+                    }
+                    tree.insert(&keys);
+                }
+            }
+            Batch::single(Col::Gen(vec![tree.to_value()]))
+        }
+        Plan::AlgoAnnotate {
+            input,
+            algo,
+            edge_label,
+            node_slot,
+        } => {
+            use crate::ir::GremlinAlgo;
+            let mut b = pull(input, store, track)?;
+            let el = edge_label.as_deref();
+            // Compute the per-node result once over the whole store (byte-identical to
+            // the TS engine — same summation/root rules in `algo`). Component/cluster ids are
+            // the ROOT vertex's external-id STRING (the TS engine writes the same), pageRank a
+            // numeric score.
+            let scores: std::collections::HashMap<u32, Value> = match algo {
+                GremlinAlgo::PageRank {
+                    damping,
+                    iterations,
+                } => crate::algo::pagerank(
+                    store,
+                    el,
+                    None,
+                    *damping,
+                    *iterations,
+                    store.effective_parallelism(),
+                )
+                .into_iter()
+                .map(|(v, s)| (v, Value::Num(s)))
+                .collect(),
+                GremlinAlgo::ConnectedComponent => {
+                    crate::algo::weakly_connected_components(store, el)
+                        .into_iter()
+                        .map(|(v, root)| (v, root_ext_id(store, root)))
+                        .collect()
+                }
+                GremlinAlgo::PeerPressure { iterations } => crate::algo::peer_pressure(
+                    store,
+                    el,
+                    *iterations,
+                    store.effective_parallelism(),
+                )
+                .into_iter()
+                .map(|(v, root)| (v, root_ext_id(store, root)))
+                .collect(),
+            };
+            let n = b.rows();
+            let col: Vec<Value> = (0..n)
+                .map(|i| match &b.slots[*node_slot] {
+                    Col::Nodes(ids) => scores.get(&ids[i]).cloned().unwrap_or(Value::Null),
+                    _ => Value::Null,
+                })
+                .collect();
+            b.slots.push(Col::Gen(col));
+            b
+        }
+        Plan::Aggregate { input, keys, aggs } => {
+            // REJECTED lever — `WITH <expr> AS a WHERE <pred on a> RETURN count(*)` inlined to
+            // one filtered count (fold the alias back, drop the rename projection) so the
+            // count ladder could fuse the predicate. Measured a REGRESSION (0.50x -> 0.37x):
+            // the WITH's projection NARROWS the batch to one column, which the downstream
+            // count rides cheaply; dropping it widens the materialization, and the fused count
+            // does not match the combined multi-predicate filter, so nothing is recovered.
+            // Frontier fast path: a scalar count over an Expand chain need not
+            // build the wide intermediate batch. Falls back to the general
+            // aggregate for every shape it does not recognize. (The fused paths
+            // never evaluate arbitrary expressions, so they cannot fault.)
+            // A raw `order()` over a (possibly-element) frontier feeding the count carries a
+            // runtime type-check the fast paths would elide — bail to general exec so it runs.
+            // REJECTED lever — `#[inline(never)]` on all 32 `try_*` fast paths below, to stop
+            // them being inlined into this arm and so make the layout above stable. It buys
+            // NOTHING: ~2-3% slower (`filtered` 289.6 -> 298.9, `filter age>50` 292.3 ->
+            // 299.0, min of three; only the 0.2ns `label` rows flagged), and it does not
+            // confer the immunity that was the whole point — re-applying item 89's inline
+            // perturbation on top of the pinned build reproduces the same 1.21x (366.6 min).
+            // So the sensitivity is not cross-module inlining of this chain.
+            let shortcuts_ok = !plan_has_raw_element_order(input);
+            let mut out = if let Some(b) = shortcuts_ok
+                .then(|| {
+                    try_scan_count(input, keys, aggs, store)
+                        .or_else(|| try_filtered_count(input, keys, aggs, store))
+                        .or_else(|| {
+                            (keys.is_empty()
+                                && aggs.len() == 1
+                                && aggs[0].func == AggFn::Count
+                                && aggs[0].arg.is_none()
+                                && !aggs[0].distinct)
+                                .then(|| try_fused_hop_num_count(input, store))
+                                .flatten()
+                                .map(|c| scalar_num(c as f64))
+                        })
+                        .or_else(|| try_fused_hop_mask_agg(input, keys, aggs, store))
+                        .or_else(|| try_edge_label_count(input, keys, aggs, store))
+                        .or_else(|| try_edge_filtered_count(input, keys, aggs, store))
+                        .or_else(|| try_varlen_count(input, keys, aggs, store))
+                        .or_else(|| try_group_count(input, keys, aggs, store))
+                        .or_else(|| try_edge_cross_count(input, keys, aggs, store))
+                        .or_else(|| try_frontier_count(input, keys, aggs, store))
+                        .or_else(|| try_varlen_distinct_count(input, keys, aggs, store))
+                        .or_else(|| try_varlen_distinctby_count(input, keys, aggs, store))
+                        .or_else(|| try_varlen_agg(input, keys, aggs, store))
+                        // BEFORE the frontier/scan aggregate paths (item 371). THREE of them
+                        // can claim `min`/`max` over a bare `Scan`: `try_frontier_prop_agg` (whose
+                        // `chain_width` counts a `Scan` as a single-slot frontier),
+                        // `try_scan_multi_agg`, and the general aggregate. Sitting below any of
+                        // them made this path DEAD — the bench row read 1.0x while the unit test,
+                        // which calls the function directly, passed. A fast path can be correct,
+                        // willing, and still unreachable; an `eprintln` at function entry is what
+                        // shows it, not a test.
+                        //
+                        // Diverting only the bare-`Scan` shape is safe because the gates require
+                        // `Plan::Scan` exactly, and the differential test pins that the answers
+                        // agree.
+                        .or_else(|| try_indexed_min_max(input, keys, aggs, store))
+                        // ABOVE `try_frontier_prop_agg`, for exactly the reason stated just
+                        // above about the indexed min/max: a bare `Scan` is a trivial
+                        // frontier, so the frontier path CLAIMS a scan aggregate. It was
+                        // answering scan `min`/`max` at 6.4x what this columnar fold charges
+                        // for `sum` over the SAME column (180.5us vs 28.1us at 50k) — not
+                        // because either path was wrong, but because the aggregate set was
+                        // split across two of them and each covered only half of it. Giving
+                        // this entry `Min`/`Max` without moving it would have left the arm
+                        // DEAD below the frontier path, item 371 over again (375).
+                        .or_else(|| try_scan_num_agg(input, keys, aggs, store))
+                        // The STRING twin of the entry above, and placed beside it for the same
+                        // reason: a bare `Scan` is a trivial frontier, so `try_frontier_prop_agg`
+                        // would claim a scan `min`/`max` over a string column and answer it at
+                        // 21x what `count` on that same column charges. Its gates are the
+                        // numeric arm's with `Column::Str`/`Column::Dict` in place of
+                        // `Column::Num`, so the two never contend for one shape (421).
+                        .or_else(|| try_scan_str_agg(input, keys, aggs, store))
+                        // The TEMPORAL twin, placed beside the other two for the same reason:
+                        // a bare `Scan` is a trivial frontier, so `try_frontier_prop_agg` below
+                        // would claim the shape — it declines on `Column::Temporal` today, but
+                        // ordering this entry after it would make the arm DEAD the moment that
+                        // changed, which is item 371/375's mistake twice over. Its gates are the
+                        // string arm's with `Column::Temporal` in its place, so no two of the
+                        // three contend for one shape (item 841).
+                        .or_else(|| try_scan_temporal_agg(input, keys, aggs, store))
+                        .or_else(|| try_frontier_prop_agg(input, keys, aggs, store))
+                        .or_else(|| try_scan_count_prop(input, keys, aggs, store))
+                        // AFTER the scan twin, which owns the bare-`Scan` shape. `count`
+                        // is the one aggregate in the frontier family that is NOT
+                        // order-dependent, so it can fold the per-node multiplicities
+                        // that `sum`/`avg` deliberately cannot (item 376).
+                        .or_else(|| try_frontier_count_prop(input, keys, aggs, store))
+                        // TWO OR MORE aggregates over one frontier, which every entry above
+                        // refuses by arity (item 473). Disjoint from all of them for that
+                        // reason, so it cannot shadow a single-aggregate shape.
+                        //
+                        // NARROWED by the test that pins this, which needed BOTH aggregate
+                        // orders before it had teeth. Each entry above reads `aggs[0]` and
+                        // then applies its own CONTENT gate, so on any one shape all but one
+                        // of them decline on content before arity is consulted — an arity
+                        // mutant in the others survives. The disjointness holds; "by arity"
+                        // is what is too strong, since for most entries the content gate is
+                        // the load-bearing one. See
+                        // `the_single_aggregate_frontier_entries_all_decline_a_two_aggregate_shape`.
+                        .or_else(|| try_frontier_multi_agg(input, keys, aggs, store))
+                        .or_else(|| try_filtered_scan_num_agg(input, keys, aggs, store))
+                        // Its STRING twin. Beside it rather than anywhere else, for the reason
+                        // 421 and 375 both record: these entries own the `Filter(Scan)` shape
+                        // between them, and an arm placed below a path that claims the shape is
+                        // dead (422).
+                        .or_else(|| try_filtered_scan_str_agg(input, keys, aggs, store))
+                        .or_else(|| try_scan_multi_agg(input, keys, aggs, store))
+                        // The INDEX answer first (item 369): O(1) from the hash index's key
+                        // count where the scan below is O(live nodes). Identical gates, so the
+                        // two never disagree about a shape; this one additionally requires an
+                        // index on the key and a vacuous label.
+                        .or_else(|| try_indexed_distinct_count(input, keys, aggs, store))
+                        .or_else(|| try_scan_distinct_count(input, keys, aggs, store))
+                        .or_else(|| try_frontier_distinct_count(input, keys, aggs, store))
+                        .or_else(|| try_3hop_product_count(input, keys, aggs, store))
+                        // FOUR hops and up, where the 3-hop product stops: the same
+                        // identity swept to any depth (item 298).
+                        .or_else(|| try_nhop_sweep_count(input, keys, aggs, store))
+                        .or_else(|| try_fused_count(input, keys, aggs, store))
+                        .or_else(|| try_node_grouped_count(input, keys, aggs, store))
+                        .or_else(|| try_scan_dict_count(input, keys, aggs, store))
+                        .or_else(|| try_frontier_dict_count(input, keys, aggs, store, track))
+                        .or_else(|| try_scan_group_agg(input, keys, aggs, store))
+                        // Added LAST on purpose: `or_else` is lazy, so every shape an
+                        // earlier entry answers never calls this one, and a cartesian
+                        // `Join` root matches none of them.
+                        .or_else(|| try_join_product_count(input, keys, aggs, store))
+                })
+                .flatten()
+            {
+                b
+            } else if let Some(b) = shortcuts_ok
+                .then(|| try_frontier_group_fold(input, keys, aggs, store))
+                .flatten()
+            {
+                b
+            } else if let Some(b) = if shortcuts_ok {
+                try_frontier_aggregate(input, keys, aggs, store)?
+            } else {
+                None
+            } {
+                b
+            } else {
+                aggregate(&pull(input, store, track)?, store, keys, aggs)?
+            };
+            // A GLOBAL reducer (`count()`/`sum()`/`fold()`/… — no group keys, one agg) collapses
+            // the stream to a single value; TinkerPop RESETS the traverser path to [that value],
+            // so a following `path()` reads it (`count().path()` → [7], and `count().path().path()`
+            // nests [7, [7]]). Seed a fresh per-row step-history from the agg column when a path()
+            // is read (`track`) — the fast paths above return no lineage. The node/edge path stays
+            // empty (a reduced value is not a graph element).
+            if track && keys.is_empty() && aggs.len() == 1 && !out.slots.is_empty() {
+                let col = out.slot(out.slots.len() - 1);
+                let vals: Vec<Value> = (0..out.rows()).map(|i| col.value_at(i)).collect();
+                out.lineage = Some(crate::batch::Lineage::seed_steps(
+                    &vals,
+                    crate::batch::STEP_SCALAR,
+                ));
+            }
+            out
+        }
+        Plan::OrderPage {
+            input,
+            keys,
+            skip,
+            limit,
+            ..
+        } if *limit == Some(0) => {
+            // LIMIT 0 keeps no rows, so the input's projection is never evaluated —
+            // a faulting expression (`RETURN 1/0 AS x LIMIT 0`) must yield the empty
+            // result, not the fault. Short-circuit without pulling the input, but keep the
+            // input's WIDTH (0 rows, N empty slots): a mid-chain `out().range(1,1).out()`
+            // has a following step read a later slot, which a width-1 batch would panic on.
+            let _ = (keys, skip);
+            let w = crate::opt::width(input).max(1);
+            Batch::of((0..w).map(|_| Col::Nodes(vec![])).collect())
+        }
+        Plan::OrderPage {
+            input,
+            keys,
+            skip,
+            limit,
+            fault_on_element,
+        } => {
+            // A keyless page (LIMIT/SKIP without ORDER BY) keeps the first
+            // `skip+limit` rows in scan order — so cap the input at that many rows
+            // instead of materializing the whole scan and slicing. Only safe for a
+            // row-preserving Scan/Seek/Project chain (a Filter/Expand would need
+            // MORE rows to still yield `limit`), which `pull_capped` recognizes.
+            let cap = limit.map(|l| skip.unwrap_or(0).saturating_add(l));
+            let capped = match cap {
+                Some(c) if keys.is_empty() => match pull_capped(input, store, track, c)? {
+                    Some(b) => Some(b),
+                    None if track => None,
+                    // The row-preserving cap didn't apply (a Filter/Expand/VarLength in
+                    // the chain). Stream the chain block-by-block until `c` rows land —
+                    // identical rows, computed early. A `DISTINCT … LIMIT` streams with
+                    // incremental dedup, stopping at `c` distinct rows.
+                    None if reverse_seed_applies(input, store, track) => {
+                        // The chain's Filter reverse-seeds a selective indexed endpoint,
+                        // so the whole (bounded) result materializes far cheaper than
+                        // streaming the forward walk to the cap — which, for an empty or
+                        // selective bucket, walks the entire fan-out chasing `limit` rows
+                        // that mostly do not exist. Pull it; `order_page` slices. Keyless
+                        // page order is unspecified either way, same as the un-capped seed.
+                        Some(pull(input, store, track)?)
+                    }
+                    None => match input.as_ref() {
+                        // A `DISTINCT <low-card dict prop> LIMIT n` whose distinct count
+                        // cannot reach `n` has a non-binding LIMIT — the capped stream then
+                        // scans every block (never hitting the cap) paying per-block dedup,
+                        // while the vectorized dedup is far cheaper. Drop to the plain
+                        // DISTINCT; `order_page` slices (a no-op). The `+1` leaves room for a
+                        // NULL, which DISTINCT counts but the dict does not.
+                        Plan::Distinct { input: inner }
+                            if distinct_cap_cannot_bind(inner, c, store) =>
+                        {
+                            Some(pull(input, store, track)?)
+                        }
+                        Plan::Distinct { input: inner } => {
+                            pull_distinct_capped_stream(inner, store, c)?
+                        }
+                        _ => pull_capped_stream(input, store, c)?,
+                    },
+                },
+                _ => None,
+            };
+            if let Some(b) = capped {
+                order_page(&b, store, keys, *skip, *limit, *fault_on_element)?
+            } else if let Some(b) = try_scan_top_k(input, keys, *skip, *limit, store, track) {
+                // Streaming bounded top-K over a bare scan — no full frontier/idx array.
+                b
+            } else if let Some(b) = try_late_materialize(input, keys, *skip, *limit, store, track)?
+            {
+                // Sorted top-K over a projection: project only the surviving rows.
+                b
+            } else {
+                order_page(
+                    &pull(input, store, track)?,
+                    store,
+                    keys,
+                    *skip,
+                    *limit,
+                    *fault_on_element,
+                )?
+            }
+        }
+        Plan::Tail { input, n } => {
+            // The last `n` rows in input order (Gremlin tail): gather the tail window,
+            // computing its start from the materialized row count. `gather` carries
+            // the slots AND the lineage sidecar, so a path survives the trim.
+            let b = pull(input, store, track)?;
+            let rows = b.rows();
+            let start = rows.saturating_sub(*n);
+            b.gather(&(start..rows).collect::<Vec<usize>>())
+        }
+        Plan::Branch { input, bodies } => {
+            // Gremlin union: run every branch body over the SAME input frontier (each
+            // is Row-rooted, correlating on the current slot) and concatenate their
+            // sub-rows. Every branch lands its element at the same slot, so the
+            // concatenated column keeps its node/edge type — a continuable frontier.
+            let inb = pull(input, store, track)?;
+            let subs: Vec<Batch> = bodies
+                .iter()
+                .map(|b| pull_body(b, store, &inb))
+                .collect::<Result<_, _>>()?;
+            concat_batches(&subs, store)
+        }
+        Plan::PerElementBranch {
+            input,
+            kind,
+            cond,
+            arms,
+            source_slot,
+        } => {
+            // TinkerPop coalesce/optional/choose are PER-TRAVERSER: each arm runs on ONE
+            // incoming element, so a barrier/reducer inside an arm reduces that element's
+            // sub-stream, not the whole batch. Pull the input frontier, then route each row
+            // through the arms (the shared `per_element_branch_exec`, which `pull_body` also
+            // calls so a NESTED branch inside an arm evaluates the same way).
+            let inb = pull(input, store, track)?;
+            per_element_branch_exec(inb, kind, cond, arms, *source_slot, store, track)?
+        }
+        Plan::Reconverge { input, slot } => {
+            // Collapse to the single element/value column at `slot` (cloned, so a
+            // Nodes/Edges frontier keeps its type), PRESERVING the lineage sidecar so a
+            // reconverged branch arm still answers path(). A `slot` past the width (an
+            // empty/zero-slice arm narrowed the batch) reads NULL.
+            let b = pull(input, store, track)?;
+            let col = b
+                .slots
+                .get(*slot)
+                .cloned()
+                .unwrap_or_else(|| Col::Gen(vec![Value::Null; b.rows()]));
+            let mut out = Batch::of(vec![col]);
+            out.lineage = b.lineage;
+            // 1:1 on rows and reordering nothing, so the provenance sidecar still describes
+            // the output — but this builds a FRESH batch rather than gathering, so it has to
+            // hand it over explicitly. Without this the whole-stream branch router (item 624)
+            // never fires at all: every Gremlin branch arm is wrapped in a `Reconverge`.
+            out.prov = b.prov;
+            out
+        }
+        Plan::Project { input, items } => {
+            // Fused numeric-filtered projection streams the surviving frontier instead of
+            // materializing the whole `[src, nbr]` expand batch (a fixed cost that loses to
+            // the TS engine's streaming when the filter is mid-selective). Falls through otherwise.
+            if let Some(b) = try_fused_hop_project(input, items, store, track) {
+                return Ok(b);
+            }
+            // Project produces a batch whose slots ARE the projected columns, so
+            // an operator above it (Distinct, OrderPage) works on the output
+            // values, not the pre-projection bindings.
+            let batch = pull(input, store, track)?;
+            let cols = eval_all(items.iter().map(|(_, e)| e), store, &batch)?;
+            // A Project is row-preserving, so the path lineage stays aligned and flows
+            // through — a following `PathRecord` (Gremlin value-step) needs it, and it does
+            // not disturb the GQL node/edge path either (same rows).
+            let mut out = Batch::of(cols);
+            out.lineage = batch.lineage;
+            out
+        }
+        Plan::Unwind {
+            input,
+            list,
+            var_slot: _,
+            ordinal,
+        } => {
+            // For each input row, evaluate the list and emit one row per element
+            // (NULL/empty → none; a non-list scalar → a one-element singleton),
+            // appending the element and, optionally, its ordinal counter. The body is in
+            // `unwind_batch`, leaving this arm pure dispatch — see item 89.
+            unwind_batch(pull(input, store, track)?, list, ordinal, store)?
+        }
+        Plan::Union {
+            left,
+            right,
+            all,
+            op,
+        } => {
+            // Run both arms, materialize each row (render_cell → nodes/edges as maps),
+            // pad to the LEFT arm's width. UNION concatenates (deduped unless ALL);
+            // EXCEPT keeps left rows absent from the right; INTERSECT keeps left rows
+            // present in the right (both deduped). Column names come from the left arm.
+            let bl = pull(left, store, track)?;
+            let br = pull(right, store, track)?;
+            let ncols = bl.slots.len();
+            // Fast path: UNION ALL of same-width arms concatenates COLUMN-wise — but ONLY
+            // when each column's arm variants agree. A mixed column (e.g. `V().inject(0)`:
+            // a Nodes column unioned with a Num) would otherwise fall into `concat_cols`'
+            // Gen fallback, which reads a node through `value_at` as its DENSE ID — losing
+            // node identity, so a downstream `values('name')` sees a number and yields
+            // nothing. The general path below renders such a node as its element map
+            // (`render_cell`), matching the TS engine's heterogeneous stream.
+            // UNION ALL preserves row order (no dedup), so a `path()` over an `inject`-mixed
+            // stream survives: concatenate each arm's step-history, seeding a per-row single
+            // element for an arm that has none (the injected literals' path is `[value]`).
+            let arm_lin = |b: &Batch| -> crate::batch::Lineage {
+                b.lineage.clone().unwrap_or_else(|| {
+                    let vals: Vec<Value> = (0..b.rows()).map(|i| b.slot(0).value_at(i)).collect();
+                    crate::batch::Lineage::seed_steps(&vals, crate::batch::STEP_SCALAR)
+                })
+            };
+            let union_all_lineage = (matches!(op, CombineOp::Union) && *all && track)
+                .then(|| crate::batch::Lineage::concat(&[&arm_lin(&bl), &arm_lin(&br)]));
+            // The width check comes FIRST and short-circuits, because `variants_agree`
+            // indexes the right arm up to the LEFT arm's width. Computing it eagerly
+            // panicked with an out-of-range column read whenever the right arm was
+            // narrower — reachable from ordinary GQL (`… RETURN x, y UNION ALL …
+            // RETURN x`), and a panic rather than a coded error. The general path
+            // below has always handled that shape correctly, by padding the short row
+            // with NULLs; only this fast-path guard could not survive reaching it.
+            let variants_agree = br.slots.len() == ncols
+                && (0..ncols).all(|j| same_col_variant(bl.slot(j), br.slot(j)));
+            if matches!(op, CombineOp::Union) && *all && variants_agree {
+                let mut out = concat_batches(&[bl, br], store);
+                if let Some(l) = union_all_lineage {
+                    out.lineage = Some(l);
+                }
+                return Ok(out);
+            }
+            let row_of = |b: &Batch, i: usize| -> Vec<Value> {
+                let mut row: Vec<Value> = b.slots.iter().map(|c| cell_value(c, i, store)).collect();
+                row.resize(ncols, Value::Null);
+                row
+            };
+            let key_of = |row: &[Value]| -> Vec<u8> {
+                let mut buf = Vec::new();
+                for v in row {
+                    value::group_key_into(v, &mut buf);
+                }
+                buf
+            };
+            let rows: Vec<Vec<Value>> = match op {
+                CombineOp::Union => {
+                    let mut rows: Vec<Vec<Value>> = Vec::with_capacity(bl.rows() + br.rows());
+                    for b in [&bl, &br] {
+                        for i in 0..b.rows() {
+                            rows.push(row_of(b, i));
+                        }
+                    }
+                    if !*all {
+                        let mut seen: FnvSet<Vec<u8>> = FnvSet::default();
+                        rows.retain(|row| seen.insert(key_of(row)));
+                    }
+                    rows
+                }
+                CombineOp::Except | CombineOp::Intersect => {
+                    // The right arm's key set; keep a LEFT row iff its key is absent
+                    // (EXCEPT) or present (INTERSECT). Always deduped.
+                    let mut right_keys: FnvSet<Vec<u8>> = FnvSet::default();
+                    for i in 0..br.rows() {
+                        right_keys.insert(key_of(&row_of(&br, i)));
+                    }
+                    let want_present = matches!(op, CombineOp::Intersect);
+                    let mut seen: FnvSet<Vec<u8>> = FnvSet::default();
+                    let mut rows = Vec::new();
+                    for i in 0..bl.rows() {
+                        let row = row_of(&bl, i);
+                        let k = key_of(&row);
+                        if right_keys.contains(&k) == want_present && seen.insert(k) {
+                            rows.push(row);
+                        }
+                    }
+                    rows
+                }
+            };
+            let mut cols: Vec<Vec<Value>> = vec![Vec::with_capacity(rows.len()); ncols.max(1)];
+            for row in rows {
+                for (j, v) in row.into_iter().enumerate() {
+                    cols[j].push(v);
+                }
+            }
+            let mut out = Batch::of(cols.into_iter().map(Col::Gen).collect());
+            // Same UNION ALL step-history concat as the fast path above (computed before the
+            // arms were consumed).
+            if let Some(l) = union_all_lineage {
+                out.lineage = Some(l);
+            }
+            out
+        }
+        Plan::Distinct { input } => {
+            // Fused `DISTINCT n.k` over a bare Scan: read the storage column and
+            // dedup in one pass, emitting ONLY the distinct values — never
+            // materializing the 100k-row projected column.
+            if let Some(b) = try_distinct_scan_prop(input, store) {
+                return Ok(b);
+            }
+            // The multi-column sibling: dedup several storage columns on a composite
+            // key without materializing any of them (the `Arc<str>` dept column above
+            // all). Single-column shapes are already handled above; this catches
+            // `DISTINCT n.a, n.b, …`.
+            if let Some(b) = try_distinct_scan_multi(input, store) {
+                return Ok(b);
+            }
+            // The hop-endpoint sibling: DISTINCT over properties of a chain frontier keys
+            // each endpoint node off storage (dict codes), never building the exploded
+            // frontier's property columns. Lineage-free (DISTINCT collapses paths).
+            if !track {
+                // `DISTINCT x, x, …` (every item the identical property) has the same
+                // distinct tuples in the same first-seen order as `DISTINCT x` replicated —
+                // route to the single-column fast path and clone the output, instead of the
+                // composite byte-key (measured ~3x slower on a duplicated Str column).
+                if let Some(b) = try_distinct_identical_cols(input, store, track) {
+                    return Ok(b);
+                }
+                if let Some(b) = try_distinct_frontier_prop(input, store) {
+                    return Ok(b);
+                }
+                if let Some(b) = try_distinct_frontier_multi(input, store) {
+                    return Ok(b);
+                }
+                // The expression sibling: `DISTINCT <expr over the endpoint>` (substring,
+                // coalesce, arithmetic …) over a var-length hop — dedup endpoints, then
+                // project + dedup, never materializing the paths.
+                if let Some(b) = try_distinct_varlen_expr(input, store) {
+                    return Ok(b);
+                }
+            }
+            distinct_batch(pull(input, store, track)?)
+        }
+        Plan::Fail { input, message } => {
+            let b = pull(input, store, track)?;
+            if b.rows() > 0 {
+                return Err(fail_error(message));
+            }
+            b
+        }
+        Plan::DistinctBy { input, key_slots } => {
+            // `values(<col>).dedup()`: dedup on the column's own representation in one pass
+            // instead of boxing a `Value` and keying it per row. Dict codes, num group bits, a
+            // borrowed `&str`, a 2-slot bool table, or a date's epoch day — each injective on
+            // that column's values, so first-seen order and the classes are the general path's.
+            // Widened from dict-only at item 854, which priced the gap at 12.6-37.9x against the
+            // GQL spelling of the same question.
+            if key_slots.as_slice() == [0] {
+                if let Some(b) = try_distinct_value_col(input, store) {
+                    return Ok(b);
+                }
+            }
+            // Gremlin dedup('a','b'): keep the first row per distinct tuple of the
+            // tagged key slots, preserving every other column (group-first-seen keyed
+            // on those slots only). Same NaN-never-a-duplicate rule as Distinct.
+            // Over a LARGE streamable fan-out, dedup incrementally block-by-block so the
+            // exploding frontier is never fully materialized (same first-seen result).
+            if let Some(b) = try_distinct_by_streamed(input, key_slots, store, track)? {
+                return Ok(b);
+            }
+            let batch = pull(input, store, track)?;
+            // Nothing to dedup on an empty batch — and reading `key_slots` would panic
+            // when a preceding empty/zero-slice hop narrowed the batch below the tagged
+            // slot (`inE('UNKNOWN').otherV().range(0,0).dedup()` keeps the endpoint slot
+            // in the plan's slot map but not in the 0-row batch's width).
+            if batch.rows() == 0 {
+                return Ok(batch);
+            }
+            let typed = distinct_by_typed(&batch, key_slots);
+            let mut seen_ids = SeenIds::default();
+            let mut seen_bytes: FnvSet<Vec<u8>> = FnvSet::default();
+            let keep = distinct_by_keep(&batch, key_slots, typed, &mut seen_ids, &mut seen_bytes);
+            batch.gather(&keep)
+        }
+        Plan::SortLocal {
+            input,
+            descending,
+            by_key,
+        } => {
+            // Gremlin `order(local)`: sort inside each row's slot-0 cell, leaving the batch
+            // shape and every other slot untouched. Ordering is the value contract's
+            // `cmp_total` (the single home for order); DESC reverses it. The body is in
+            // `sort_local_batch` because code in THIS match moves every other arm — see there.
+            sort_local_batch(pull(input, store, track)?, *descending, *by_key)?
+        }
+        Plan::Join { left, right, on } => {
+            hash_join(&pull(left, store, track)?, &pull(right, store, track)?, on)
+        }
+        Plan::NullPadIfEmpty { input, width } => {
+            // A leading OPTIONAL MATCH: pass the pattern's rows through, or — when it
+            // matched nothing — emit one row of NULL columns. The u32::MAX node
+            // sentinel reads back as NULL for any property/element access.
+            let batch = pull(input, store, track)?;
+            if batch.rows() == 0 {
+                Batch::of((0..*width).map(|_| Col::Nodes(vec![u32::MAX])).collect())
+            } else {
+                batch
+            }
+        }
+        Plan::OptionalScan {
+            input,
+            label,
+            filters,
+            node_slot: _,
+        } => {
+            // A correlated left-outer node lookup: for each input row, the `label` nodes
+            // whose prop `k` equals `expr` over that row; else one NULL-node row. The
+            // filter exprs are evaluated over the whole input batch (column-at-a-time).
+            let batch = pull(input, store, track)?;
+            let candidates: Vec<u32> = match label {
+                Some(l) => store.nodes_with_label(l).to_vec(),
+                None => (0..store.node_count() as u32).collect(),
+            };
+            let fcols: Vec<Col> = filters
+                .iter()
+                .map(|(_, e)| eval(e, store, &batch))
+                .collect::<Result<_, _>>()?;
+            let mut keep: Vec<usize> = Vec::new();
+            let mut nodes: Vec<u32> = Vec::new();
+            for row in 0..batch.rows() {
+                let mut matched = false;
+                for &c in &candidates {
+                    let ok = filters.iter().zip(&fcols).all(|((key, _), col)| {
+                        value::equals(&store.prop(c, key), &col.value_at(row))
+                    });
+                    if ok {
+                        keep.push(row);
+                        nodes.push(c);
+                        matched = true;
+                    }
+                }
+                if !matched {
+                    keep.push(row);
+                    nodes.push(u32::MAX); // left-outer: no match → NULL node
+                }
+            }
+            let mut slots: Vec<Col> = batch.slots.iter().map(|c| c.gather(&keep)).collect();
+            slots.push(Col::Nodes(nodes));
+            Batch::of(slots)
+        }
+        // REJECTED lever — hoisting this 93-line COLD arm out of `pull` into an
+        // `#[inline(never)] fn`, on item 89's finding that added code in one of these 45 arms
+        // moves the others. It is 1.21-1.24x SLOWER, not faster: min of three interleaved
+        // rounds over 68 query rows, `filter age>50` 303.9 -> 367.4, `filtered` 297.8 ->
+        // 362.5, `has age>50` 299.0 -> 371.5, every other row flat (sum 1.002x). The
+        // filtered-count cluster sits on an alignment that perturbing `pull` loses in EITHER
+        // direction — adding three lines costs the same 1.21x as removing ninety-three.
+        // Treat `pull`'s layout as load-bearing and measure that cluster after touching it.
+        Plan::CallInline {
+            input,
+            body,
+            yields,
+            outer_width,
+            optional,
+            parts,
+        } => {
+            // Inline correlated (lateral) subquery: run `body` over the outer rows
+            // (it is rooted at `Plan::Row`, which yields them), then emit one row
+            // per sub-row — the outer slots the sub-row still carries, followed by
+            // the yield expressions. Outer rows with no sub-row drop out (inner
+            // lateral join), UNLESS `optional`.
+            //
+            // Slot `ow` seeds a PROVENANCE id (the outer row index) the body carries
+            // through; OPTIONAL reads it to find which outer rows produced no sub-row.
+            // The body's own variables land at `ow + 1…`.
+            let outer = pull(input, store, track)?;
+            let ow = *outer_width;
+            let n = outer.rows();
+            let mut seed_slots = outer.slots.clone();
+            seed_slots.push(Col::Num((0..n).map(|i| i as f64).collect()));
+            let seed = Batch::of(seed_slots);
+            if !parts.is_empty() {
+                return call_inline_setop(
+                    store, &outer, &seed, ow, n, body, yields, parts, *optional,
+                );
+            }
+            let sub = pull_body(body, store, &seed)?;
+            let mut out_slots: Vec<Col> = (0..ow).map(|i| sub.slot(i).clone()).collect();
+            for (_, e) in yields {
+                out_slots.push(eval(e, store, &sub)?);
+            }
+            let mut matched = Batch::of(out_slots);
+            // Carry any path the sub-rows accumulated (present only under lineage).
+            matched.lineage = sub.lineage.clone();
+            if *optional {
+                // LEFT-outer: an outer row that produced no sub-row survives once,
+                // with every yield column NULL. The prov column (slot `ow` of `sub`)
+                // records which outer row each sub-row came from.
+                let prov = sub.slot(ow);
+                let mut seen = vec![false; n];
+                for r in 0..sub.rows() {
+                    if let Value::Num(p) = prov.value_at(r) {
+                        let i = p as usize;
+                        if i < n {
+                            seen[i] = true;
+                        }
+                    }
+                }
+                let missing: Vec<usize> = (0..n).filter(|&i| !seen[i]).collect();
+                if !missing.is_empty() {
+                    // Build a fill SEED shaped like the body's row: the imported
+                    // scope vars (slots < ow) keep their outer value; every body slot
+                    // (prov and the subquery's own variables, >= ow) is NULL. Evaluate
+                    // the yields over it — so a `RETURN *` that re-yields an imported
+                    // var keeps it, while a fresh body var yields NULL (ISO: the outer
+                    // row survives with the imported binding intact, the new one unbound).
+                    let sub_width = sub.slots.len();
+                    let k = missing.len();
+                    let fill_seed = Batch::of(
+                        (0..sub_width)
+                            .map(|j| {
+                                if j < ow {
+                                    outer.slot(j).gather(&missing)
+                                } else {
+                                    // NULL of the body slot's own variant, so a node/edge
+                                    // yield stays a node/edge column (u32::MAX sentinel → NULL)
+                                    // rather than downgrading to Gen — which keeps `f.name`
+                                    // (property access on a node column) resolving to NULL.
+                                    match sub.slot(j) {
+                                        Col::Nodes(_) => Col::Nodes(vec![u32::MAX; k]),
+                                        Col::Edges(_) => Col::Edges(vec![u32::MAX; k]),
+                                        _ => Col::Gen(vec![Value::Null; k]),
+                                    }
+                                }
+                            })
+                            .collect(),
+                    );
+                    let mut fill_slots: Vec<Col> =
+                        (0..ow).map(|j| fill_seed.slot(j).clone()).collect();
+                    for (_, e) in yields {
+                        fill_slots.push(eval(e, store, &fill_seed)?);
+                    }
+                    let fill = Batch::of(fill_slots);
+                    // The null-fill rows carry no path; drop lineage rather than
+                    // desync it (OPTIONAL CALL over a path binding is niche).
+                    matched.lineage = None;
+                    matched = concat_batches(&[matched, fill], store);
+                }
+            }
+            matched
+        }
+        Plan::CallProcedure { name, config } => {
+            // A bad config (unknown key / wrong-type value) is a data exception — not
+            // silently ignored — matching the TS engine.
+            crate::algo::validate_config(config)?;
+            // Run the named graph algorithm over the whole store into a two-slot
+            // batch: node ids, then the per-node result. The parser validates the
+            // name, so an unknown one here is defensive.
+            let results = crate::algo::run_procedure(store, name, config)
+                .ok_or_else(|| format!("unknown procedure `{name}`"))?;
+            let ids: Vec<u32> = results.iter().map(|(v, _)| *v).collect();
+            // The result column carries per-node Values (a scalar Num for most
+            // procedures, a List for neighbor_aggregate's feature vectors).
+            let vals: Vec<Value> = results.into_iter().map(|(_, r)| r).collect();
+            Batch::of(vec![Col::Nodes(ids), Col::Gen(vals)])
+        }
+    })
+}
+
+/// Hash-join two batches on `(left_slot, right_slot)` key equalities. Output is
+/// every left slot gathered by the matched left rows, followed by every right
+/// slot gathered by the matched right rows — so right slot `j` lands at output
+/// slot `left.len() + j`. Keys are `group_key`-hashed (bound-variable identity),
+/// consistent with grouping/distinct.
+fn join_key(batch: &Batch, slots: impl Iterator<Item = usize>, row: usize) -> Vec<u8> {
+    let mut k = Vec::new();
+    for s in slots {
+        value::group_key_into(&batch.slot(s).value_at(row), &mut k);
+    }
+    k
+}
+
+/// Anti-runaway guard on a materialized frontier. A multi-segment fixed-length MATCH
+/// (or a hash join) can fan out to a graph-wide product that only the trailing
+/// WHERE/LIMIT prunes back down; the interim batch is what a later `read_property` or
+/// gather must allocate, and on the 32-bit wasm build that allocation aborts the whole
+/// module (`rust_oom`) instead of failing cleanly. Trip `E_RESOURCE_EXHAUSTED` at the
+/// declared `intermediate` ceiling so the failure is a catchable error, identical on
+/// every target (row count is the portable unit — column data is fixed-width u32/f64/i64
+/// on both 32- and 64-bit), rather than an OOM the CLI cannot survive.
+/// The rows a `Filter` keeps: those whose predicate evaluates TRUE.
+///
+/// Fast path: `<prop> <cmp> <literal>` reads storage in one pass to keep-indices; otherwise the
+/// predicate is evaluated as a vectorized three-valued mask (typed numeric leaves, Kleene
+/// AND/OR/NOT). Factored out because the counting fast paths apply an ENDPOINT-ONLY filter
+/// themselves, and a second derivation of "which rows does this predicate keep" is exactly the
+/// kind of drift that makes two spellings of one query disagree.
+pub(super) fn filter_keep(pred: &Expr, store: &Store, batch: &Batch) -> Result<Vec<usize>, String> {
+    if let Some(keep) = try_filter_keep(pred, store, batch) {
+        return Ok(keep);
+    }
+    // A FILTER keeps a row only on a clean TRUE, so a conjunct that is not cleanly TRUE settles
+    // it and the rest are an inessential part of the search condition — which makes conjunct
+    // ORDER unobservable here and lets the ones that cannot raise go first. Its own door, for
+    // the same reason `fold_raising_conjunct` has one: the `eval_mask` tail below is the hot
+    // path and stays the size it was.
+    if let Some(parts) = filter_conjuncts_reordered(pred) {
+        return filter_keep_ordered(&parts, store, batch);
+    }
+    let mask = eval_mask(pred, store, batch)?;
+    Ok((0..mask.len()).filter(|&i| mask[i] == Some(true)).collect())
+}
+
+/// The top-level conjuncts of a FILTER predicate with the ones that cannot raise moved to the
+/// front — or `None` when that reordering cannot be observed and the caller should take its
+/// ordinary whole-predicate path.
+///
+/// `None` covers both degenerate partitions. With nothing that can raise there is nothing to
+/// defer; with nothing that cannot, there is no safe conjunct to put in front. Only a MIXED
+/// predicate reaches the ordered path, which is what keeps this off every filter in the corpus.
+///
+/// `narrowing_is_transparent` is the test, reused through `filter_conjunct_cannot_raise`:
+/// "definitely yields a boolean and cannot fault" is exactly the question a filter conjunct
+/// poses. The TS engine's `truthCannotRaise` is the same whitelist on the same reasoning.
+/// Whether a FILTER conjunct can be left unevaluated safely — `narrowing_is_transparent` plus the
+/// one case it deliberately excludes.
+///
+/// It refuses a bare `Lit` because an `AND` operand is put through `as_truth`, which faults on a
+/// non-boolean, and narrowing a faulting literal to zero rows would hide that fault. A `Bool` or
+/// `Null` literal has no such hazard: it is exactly the complement of the literal arm of
+/// `gql::definitely_non_bool`, so any other literal has already been rejected at plan time. Kept
+/// here rather than widened in `narrowing_is_transparent`, which `fold_operand`'s sampled speed
+/// path and `plan_is_transparent` also read and which is tuned.
+fn filter_conjunct_cannot_raise(e: &Expr) -> bool {
+    match e {
+        Expr::Lit(v) => matches!(v, Value::Bool(_) | Value::Null),
+        _ => narrowing_is_transparent(e),
+    }
+}
+
+fn filter_conjuncts_reordered(pred: &Expr) -> Option<Vec<&Expr>> {
+    fn flatten<'a>(e: &'a Expr, out: &mut Vec<&'a Expr>) {
+        match e {
+            Expr::And(a, b) => {
+                flatten(a, out);
+                flatten(b, out);
+            }
+            _ => out.push(e),
+        }
+    }
+
+    // Decide WITHOUT ALLOCATING, because this runs once per filter call per batch and declines
+    // for nearly every predicate in the corpus — a `Vec` built and dropped on the decline path
+    // is a per-block allocation on the hot filter.
+    fn scan(e: &Expr, safe: &mut bool, risky: &mut bool) {
+        match e {
+            Expr::And(a, b) => {
+                scan(a, safe, risky);
+                scan(b, safe, risky);
+            }
+            _ => {
+                if filter_conjunct_cannot_raise(e) {
+                    *safe = true;
+                } else {
+                    *risky = true;
+                }
+            }
+        }
+    }
+
+    if !matches!(pred, Expr::And(..)) {
+        return None;
+    }
+
+    let (mut safe_seen, mut risky_seen) = (false, false);
+    scan(pred, &mut safe_seen, &mut risky_seen);
+
+    if !(safe_seen && risky_seen) {
+        return None;
+    }
+
+    let mut parts = Vec::new();
+    flatten(pred, &mut parts);
+
+    let mut safe = Vec::with_capacity(parts.len());
+    let mut risky = Vec::new();
+
+    for p in parts {
+        if filter_conjunct_cannot_raise(p) {
+            safe.push(p);
+        } else {
+            risky.push(p);
+        }
+    }
+
+    safe.extend(risky);
+    Some(safe)
+}
+
+/// Keep the rows every conjunct answers TRUE for, evaluating each conjunct over only the rows its
+/// predecessors left alive.
+///
+/// This is `fold_raising_conjunct`'s narrowing applied to a whole conjunct list rather than one
+/// operand, and with the stronger settling rule a filter allows: there, only `Some(false)`
+/// settles, because an `AND` must still produce a value and `and(null, false)` is `false`; here
+/// anything that is not `Some(true)` settles, because the row is dropped whatever its siblings
+/// say. That difference is the whole reason `WHERE n.zz = 'a' AND n.s` answers no rows instead of
+/// faulting on `n.s` — an UNKNOWN conjunct cannot settle a Kleene `AND` but does settle a filter.
+fn filter_keep_ordered(
+    parts: &[&Expr],
+    store: &Store,
+    batch: &Batch,
+) -> Result<Vec<usize>, String> {
+    let n = batch.rows();
+    let mut keep: Vec<usize> = (0..n).collect();
+
+    for p in parts {
+        if keep.is_empty() {
+            return Ok(keep);
+        }
+
+        // While nothing has been eliminated, `keep[j] == j`, so the whole batch is both cheaper
+        // and indexed the same way as the narrowed one — no special case needed below.
+        let mask = if keep.len() == n {
+            eval_mask(p, store, batch)?
+        } else {
+            // An unknown slot set becomes a full gather rather than a refusal: `narrow_to_slots`
+            // substitutes placeholders only for the slots it is NOT told to gather, so naming
+            // every slot is correct and merely slower (same argument as `fold_raising_conjunct`).
+            let mut read = Vec::new();
+
+            if !slots_read(p, &mut read) {
+                read = (0..batch.slots.len()).collect();
+            }
+
+            read.sort_unstable();
+            read.dedup();
+            eval_mask(p, store, &narrow_to_slots(batch, &keep, &read))?
+        };
+
+        keep = keep
+            .iter()
+            .enumerate()
+            .filter(|&(j, _)| mask.get(j) == Some(&Some(true)))
+            .map(|(_, &i)| i)
+            .collect();
+    }
+
+    Ok(keep)
+}
+
+fn guard_intermediate(batch: Batch, store: &Store) -> Result<Batch, String> {
+    let cap = store.limits().intermediate;
+    let rows = batch.rows() as u64;
+    if std::env::var_os("LENKE_DEBUG_FRONTIER").is_some() {
+        eprintln!("frontier: {rows} rows (cap {cap})");
+    }
+    if rows > cap {
+        return Err(format!(
+            "E_RESOURCE_EXHAUSTED: an intermediate frontier of {rows} rows exceeded the limit \
+             of {cap}. A multi-segment pattern is materializing a large cross-product before it \
+             is filtered — add a more selective anchor, reorder the pattern so the selective hop \
+             comes first, or raise the intermediate limit."
+        ));
+    }
+    Ok(batch)
+}
+
+/// The raw ids of a TYPED element column, or `None` for any other representation.
+///
+/// Lets a per-row loop branch ONCE on the representation instead of boxing every cell: a
+/// `Col::Nodes`/`Col::Edges` cell IS a `u32`, but the loops that wanted an id read it as
+/// `value_at(i)` -> `Value::Num(f64::from(id))` -> `x as u32`, building a `Value` and taking a
+/// float round-trip per row to recover the number the column already held.
+///
+/// `plan_cost_by_operator` measured the cost on `EdgeVertex`: 9.87ns a row against `Expand`'s
+/// 3.98 for the same frontier, where the only extra work is reading one id and looking up its
+/// endpoints.
+///
+/// The caller keeps its own boxed match for the `None` case, because what a non-element cell
+/// means differs between them — `EdgeVertex` accepts an unboxed `Value::Edge` from a branch
+/// arm, while the shortest-path and subgraph readers take only `Value::Num`.
+fn elem_ids(col: &Col) -> Option<&[u32]> {
+    match col {
+        Col::Nodes(v) | Col::Edges(v) => Some(v),
+        _ => None,
+    }
+}
+
+fn hash_join(lb: &Batch, rb: &Batch, on: &[(usize, usize)]) -> Batch {
+    let (mut keep_l, mut keep_r) = (Vec::new(), Vec::new());
+    // A join on ONE slot of two ELEMENT frontiers keys on the dense id, not on bytes.
+    //
+    // `join_key` boxes each cell (`Col::Nodes` → `Value::Num(f64::from(id))`) and then
+    // serializes it into a fresh `Vec<u8>` — an allocation and a `Value` per row, on BOTH
+    // sides. For an element frontier the key IS a `u32`, which is the entire content of that
+    // byte string. Measured at 208.56ns a row over 200,000 rows, 284x the scan floor and the
+    // most expensive of the 19 operators `plan_cost_by_operator` prices.
+    //
+    // Byte-identical by construction rather than by argument: the key derivation agrees cell
+    // for cell (`value_at` maps the `u32::MAX` OPTIONAL sentinel to NULL on both sides, so
+    // sentinel-matches-sentinel either way, and every other id to its number), and the output
+    // order is the same because the right side is indexed with `j` ASCENDING and probed with
+    // `i` ascending — so each bucket's rows stay in input order.
+    //
+    // ANY single slot pair, not slot 0: the shared variable of `MATCH (p)-[:R]->(q) MATCH
+    // (r)-[:R]->(q)` is `q`, which is slot 1 on both sides. Written `[(0, 0)]` first, this
+    // fast path fired in the isolated harness and never once in the bench query — the harness
+    // was measuring a slot pairing the planner does not produce.
+    let dense = match on {
+        [(l, r)] => match (lb.slot(*l), rb.slot(*r)) {
+            (Col::Nodes(l) | Col::Edges(l), Col::Nodes(r) | Col::Edges(r)) => Some((l, r)),
+            _ => None,
+        },
+        _ => None,
+    };
+    if let Some((lids, rids)) = dense {
+        // A COUNTING index rather than a map of buckets: dense ids mean the bucket for an id
+        // can be a slice of one flat array, so the whole index is three allocations instead of
+        // one `Vec` per distinct key. (The map-of-buckets version measured 59.96ns a row —
+        // already 3.5x the byte keys, but 200,000 distinct keys is 200,000 allocations.)
+        //
+        // The `u32::MAX` OPTIONAL sentinel gets the slot just past the largest real id, so it
+        // keys as itself without sizing the index by 4 billion.
+        let maxid = rids.iter().copied().filter(|&x| x != u32::MAX).max();
+        let sentinel = maxid.map_or(0, |m| m as usize + 1);
+        let slot_of = |id: u32| -> usize {
+            if id == u32::MAX {
+                sentinel
+            } else {
+                id as usize
+            }
+        };
+        let mut counts = vec![0u32; sentinel + 2];
+        for &id in rids {
+            counts[slot_of(id)] += 1;
+        }
+        // Prefix sums, so `offs[k]..offs[k + 1]` is key `k`'s span.
+        let mut offs = vec![0u32; counts.len() + 1];
+        for k in 0..counts.len() {
+            offs[k + 1] = offs[k] + counts[k];
+        }
+        // Fill with `j` ASCENDING, so each bucket keeps input order — the byte-key path's
+        // buckets are built the same way, which is what makes the output order identical.
+        let mut cursor = offs.clone();
+        let mut flat = vec![0u32; rids.len()];
+        for (j, &id) in rids.iter().enumerate() {
+            let k = slot_of(id);
+            flat[cursor[k] as usize] = j as u32;
+            cursor[k] += 1;
+        }
+        for (i, &id) in lids.iter().enumerate() {
+            let k = slot_of(id);
+            if k >= counts.len() {
+                continue; // an id larger than anything on the right matches nothing
+            }
+            for &j in &flat[offs[k] as usize..offs[k + 1] as usize] {
+                keep_l.push(i);
+                keep_r.push(j as usize);
+            }
+        }
+    } else if on.is_empty() {
+        // A CROSS PRODUCT NEEDS NO INDEX. With no join key every left row matches every right
+        // row, which the generic branch below arrives at the long way round: it computes a key
+        // per row on BOTH sides, funnels all of them into ONE bucket, and probes it — building
+        // an `FnvMap` and a `Vec<usize>` of |R| entries to rediscover that everything matches.
+        //
+        // Emitted directly instead, in the same order the probe produced: left rows ascending,
+        // and each one's right rows ascending, so the output is left-major and byte-identical
+        // to what the index path returned (it indexed `j` ascending and probed `i` ascending,
+        // which is that order).
+        //
+        // This is the engine's multi-pattern `MATCH (a) MATCH (b)` shape, so it is not a corner:
+        // every uncorrelated comma pattern and every `Join { on: [] }` the planner emits lands
+        // here.
+        keep_l.reserve(lb.rows() * rb.rows());
+        keep_r.reserve(lb.rows() * rb.rows());
+
+        for i in 0..lb.rows() {
+            for j in 0..rb.rows() {
+                keep_l.push(i);
+                keep_r.push(j);
+            }
+        }
+    } else {
+        // Index the right side by its join key.
+        let mut index: FnvMap<Vec<u8>, Vec<usize>> = FnvMap::default();
+        for j in 0..rb.rows() {
+            let k = join_key(rb, on.iter().map(|&(_, r)| r), j);
+            index.entry(k).or_default().push(j);
+        }
+        // Probe with the left side, emitting one combined row per match (a shared key
+        // with several matches on each side fans out to their product).
+        for i in 0..lb.rows() {
+            let k = join_key(lb, on.iter().map(|&(l, _)| l), i);
+            if let Some(js) = index.get(&k) {
+                for &j in js {
+                    keep_l.push(i);
+                    keep_r.push(j);
+                }
+            }
+        }
+    }
+    let mut slots: Vec<Col> = lb.slots.iter().map(|c| c.gather(&keep_l)).collect();
+    slots.extend(rb.slots.iter().map(|c| c.gather(&keep_r)));
+    let mut out = Batch::of(slots);
+    // CARRY THE LINEAGE. `Batch::of` sets `lineage: None`, so before this every path accessor
+    // above a comma-pattern join read NULL — a silent wrong answer on a shape that parses and
+    // runs, and one the TS engine gets right (it returns the path). `p` is bound to one pattern
+    // and joining on a shared variable has no business destroying it.
+    //
+    // The row indices are already to hand: `keep_l` and `keep_r` are exactly the gathers the
+    // slot columns use, so the lineage gathers by the same ones and each output row keeps ITS
+    // OWN path rather than some other row's.
+    //
+    // A `Batch` holds ONE lineage, so when BOTH sides carry one only the left survives. That is
+    // a real limit rather than a choice, and it is the left because a named path written before
+    // the comma (`MATCH p = <pattern>, <pattern2>`) lands there; two named paths across a join
+    // would need the sidecar keyed by path variable, which is a larger change than this fix.
+    out.lineage = match (lb.lineage.as_ref(), rb.lineage.as_ref()) {
+        (Some(l), _) => Some(l.gather(&keep_l)),
+        (None, Some(r)) => Some(r.gather(&keep_r)),
+        (None, None) => None,
+    };
+    out
+}
+
+/// Pull at most `cap` rows from a ROW-PRESERVING chain (Scan / IndexSeek /
+/// RangeSeek / Project over one), so a keyless `LIMIT` need not materialize the
+/// whole scan. `Ok(None)` when the input is not cap-safe (a Filter/Expand/Distinct
+/// changes the row count, so an input cap could under-produce) — the caller then
+/// does the full pull. Faults propagate as `Err`.
+fn pull_capped(
+    plan: &Plan,
+    store: &Store,
+    track: bool,
+    cap: usize,
+) -> Result<Option<Batch>, String> {
+    Ok(match plan {
+        Plan::Scan { label } => {
+            let ids: Vec<u32> = match label {
+                Some(l) => store
+                    .nodes_with_label(l)
+                    .iter()
+                    .copied()
+                    .take(cap)
+                    .collect(),
+                None => (0..store.node_count() as u32)
+                    .filter(|&i| store.is_alive(i))
+                    .take(cap)
+                    .collect(),
+            };
+            let lineage = track.then(|| Lineage::seed(&ids));
+            let mut b = Batch::single(Col::Nodes(ids));
+            b.lineage = lineage;
+            Some(b)
+        }
+        Plan::IndexSeek { label, key, value } => {
+            let ids: Vec<u32> = index_seek_ids(store, label.as_deref(), key, value)
+                .into_iter()
+                .take(cap)
+                .collect();
+            let lineage = track.then(|| Lineage::seed(&ids));
+            let mut b = Batch::single(Col::Nodes(ids));
+            b.lineage = lineage;
+            Some(b)
+        }
+        Plan::RangeSeek {
+            label,
+            key,
+            op,
+            value,
+        } => {
+            let ids: Vec<u32> = range_seek_ids(store, label.as_deref(), key, *op, value)
+                .into_iter()
+                .take(cap)
+                .collect();
+            let lineage = track.then(|| Lineage::seed(&ids));
+            let mut b = Batch::single(Col::Nodes(ids));
+            b.lineage = lineage;
+            Some(b)
+        }
+        Plan::Project { input, items } => match pull_capped(input, store, track, cap)? {
+            Some(batch) => {
+                let cols = eval_all(items.iter().map(|(_, e)| e), store, &batch)?;
+                let mut out = Batch::of(cols);
+                out.lineage = batch.lineage;
+                Some(out)
+            }
+            None => None,
+        },
+        // A CROSS product (`Join` with an empty `on`) is the one row-MULTIPLYING operator
+        // that can still be capped, because capping both sides bounds the output without
+        // disturbing its prefix. Without this a keyless page over a comma pattern built the
+        // whole product and sliced it: `MATCH (s:Tiny) MATCH (u:User) … LIMIT 1` cost 22ms to
+        // return ONE row over a 64 x 50,000 product — flat in the limit, and 12x behind the
+        // TS engine, which streams it (audit item 151).
+        //
+        // EXACT, not approximate. `hash_join` emits LEFT-MAJOR (`i` over left rows outer, `j`
+        // over the right's matches inner, both ascending), so output row `k` pairs left row
+        // `k / R` with right row `k % R` for a right side of `R` rows. Both indices are below
+        // `cap` for every `k < cap`, so neither cap can drop a row the window needs:
+        //
+        //   R <= cap   the right cap does not bind, so the right side is whole and the
+        //              enumeration is the full one; reaching output row `cap` needs only
+        //              left row `cap / R`, which the left cap keeps.
+        //   R > cap    the right cap keeps `cap` rows, so left row 0 alone supplies `cap`
+        //              output rows — and those are the product's first `cap`, because there
+        //              every one of them pairs with left row 0 too.
+        //
+        // So this does not lean on keyless page order being unspecified; it would hold even
+        // if that order were part of the contract. The product of two capped sides can be up
+        // to `cap * cap` rows, so it is truncated to keep this function's "at most `cap`"
+        // promise — both callers slice anyway, but the next one might not.
+        Plan::Join { left, right, on } if on.is_empty() => {
+            // Both sides must cap. Pulling an uncappable side WHOLE would reintroduce the
+            // cost this avoids on the very shapes that need it most (a filtered side over
+            // a big bucket).
+            //
+            // A SIDE THAT `pull_capped` DECLINES FALLS BACK TO `pull_capped_stream`, which is
+            // the first `cap` rows OUT of that side's chain — and that IS the right bound here,
+            // correcting what this comment used to claim. For a left-major cross product with
+            // cap `c`: if the right side has MORE than `c` rows, the first `c` output rows all
+            // pair with the first left row, so `c` right rows are exactly enough; if it has
+            // `|R| <= c`, then `ceil(c / |R|) <= c` left rows suffice. Either way a `c`-row
+            // PREFIX of each side contains the `c`-row prefix of the product, which is the same
+            // argument the arm already rested on for two `pull_capped` sides.
+            //
+            // Both helpers return a PREFIX — `pull_capped` by `take(cap)`/`truncate_batch`, and
+            // `pull_capped_stream` by running source-id-ordered blocks and concatenating — so
+            // the truncated join is the same rows the uncapped one would have produced first.
+            //
+            // This is what makes a FILTERED side cappable. `pull_capped` declines a `Filter`
+            // (you need more source rows than `cap` to get `cap` survivors) so before this the
+            // whole filtered product was materialized: measured at 4 x 100,000,
+            // `MATCH (s:Tiny) MATCH (u:User) WHERE u.k > 5 RETURN s.k LIMIT 1` cost 11.189ms and
+            // was FLAT in the limit, against 0.001ms for the same product without the `WHERE`.
+            // Item 273's right-side pushdown is what moves that `Filter` INTO the side, where
+            // the stream can cap it.
+            //
+            // Only when NOT tracking lineage: the streamed path has no lineage plumbing, the
+            // same restriction the `OrderPage` call site applies before reaching it.
+            let side = |p: &Plan| -> Result<Option<Batch>, String> {
+                match pull_capped(p, store, track, cap)? {
+                    Some(b) => Ok(Some(b)),
+                    None if track => Ok(None),
+                    None => pull_capped_stream(p, store, cap),
+                }
+            };
+
+            match (side(left)?, side(right)?) {
+                (Some(lb), Some(rb)) => Some(truncate_batch(hash_join(&lb, &rb, &[]), cap)),
+                _ => None,
+            }
+        }
+        // A CORRELATING predicate over a cross product, under a keyless cap — the shape items
+        // 282 and 283 were about, and the one the arm above cannot reach. Item 273's pushdown
+        // moves a ONE-SIDED predicate into its side, where the cap applies; a predicate reading
+        // BOTH sides stays here, above the join, so `pull_capped` declined (a `Filter` changes
+        // the row count) and `pull_capped_stream` declined too (`streaming_chain` has no `Join`
+        // arm) — and the whole product was built and then paged. Measured at 4 x 100,000:
+        //
+        //   WHERE u.k = s.k LIMIT 1   1420.2 us      <- builds 400,000 rows to return ONE
+        //   WHERE u.k = s.k           1468.5 us      <- the UNCAPPED cost, i.e. the cap buys 3%
+        //
+        // THE DESIGN IS ITEM 283'S, MINUS ITS BET. That item streamed the right side FROM THE
+        // PLAN inside the left loop, so a cap that did not fill early re-scanned the whole right
+        // side once per left row: 1,640x where the bet won and 1.9x WORSE on `LIMIT 4`, where
+        // the answer is exactly one row per left row and the cap never fills early. It was
+        // retracted for that.
+        //
+        // Pulling the right side ONCE, before the loop, removes the bet entirely. The uncapped
+        // path materializes both sides anyway — `hash_join` takes two `Batch`es — so this pays
+        // nothing the baseline does not already pay, and what it SAVES is the product: the
+        // uncapped path gathers |L| x |R| rows across every slot and then filters them, where
+        // this gathers a block at a time and stops at `cap`. There is no shape where it does
+        // more pulling than the baseline, which is why there is no gate and no lost bet.
+        //
+        // The ceiling that buys is therefore the right side's own pull, 265.4 us of the 1420.2,
+        // and not the ~6 us floor item 283 reached by streaming. A lazily-CACHED block stream
+        // would get both (no bet, and no full pull when the cap fills in block one); it is a
+        // separate change with its own verification, recorded rather than smuggled in here.
+        //
+        // LEFT-MAJOR, ascending within each left row — the same order `hash_join`'s empty-`on`
+        // path emits (item 284 pins it with `a_cross_product_emits_rows_left_major`) and
+        // `filter_keep` preserves. So the result is a PREFIX of the uncapped plan's rows, which
+        // is the property the arm above rests on and `truncate_batch` would otherwise supply.
+        Plan::Filter { input, pred } if matches!(input.as_ref(), Plan::Join { on, .. } if on.is_empty()) =>
+        {
+            let Plan::Join { left, right, .. } = input.as_ref() else {
+                unreachable!("guarded by the `matches!` above")
+            };
+            let lb = pull(left, store, track)?;
+            let rb = pull(right, store, track)?;
+            let (mut keep_l, mut keep_r) = (Vec::new(), Vec::new());
+
+            // ADAPTIVE, and that is what keeps the never-fills case honest. A small first block
+            // makes a cap that fills immediately cheap; doubling to a large one makes a cap that
+            // never fills approach the baseline's single gather instead of paying per-block
+            // overhead 400,000/BLOCK times. Both ends of the same loop, no decision to get wrong.
+            const FIRST_BLOCK: usize = 256;
+            const MAX_BLOCK: usize = 65_536;
+
+            'outer: for i in 0..lb.rows() {
+                let mut start = 0;
+                let mut block = FIRST_BLOCK;
+
+                while start < rb.rows() {
+                    let end = (start + block).min(rb.rows());
+                    // ONE left row against this block of right rows — the join the baseline
+                    // would have built for the whole product at once.
+                    let li = vec![i; end - start];
+                    let rj: Vec<usize> = (start..end).collect();
+                    let mut slots: Vec<Col> = lb.slots.iter().map(|c| c.gather(&li)).collect();
+                    slots.extend(rb.slots.iter().map(|c| c.gather(&rj)));
+
+                    for k in filter_keep(pred, store, &Batch::of(slots))? {
+                        // Checked BEFORE pushing, so `cap == 0` keeps nothing rather than one.
+                        if keep_l.len() >= cap {
+                            break 'outer;
+                        }
+
+                        keep_l.push(i);
+                        keep_r.push(start + k);
+                    }
+
+                    if keep_l.len() >= cap {
+                        break 'outer;
+                    }
+
+                    start = end;
+                    block = (block * 2).min(MAX_BLOCK);
+                }
+            }
+
+            let mut slots: Vec<Col> = lb.slots.iter().map(|c| c.gather(&keep_l)).collect();
+            slots.extend(rb.slots.iter().map(|c| c.gather(&keep_r)));
+            let mut out = Batch::of(slots);
+            // The same rule as `hash_join`'s, copied rather than reasoned about afresh: a
+            // `Batch` holds ONE lineage and the left's wins, because a named path written before
+            // the comma lands there.
+            out.lineage = match (lb.lineage.as_ref(), rb.lineage.as_ref()) {
+                (Some(l), _) => Some(l.gather(&keep_l)),
+                (None, Some(r)) => Some(r.gather(&keep_r)),
+                (None, None) => None,
+            };
+            Some(out)
+        }
+        // `FOR x IN <list>` over a single seed row, for the shape `FOR x IN [...] MATCH (u:L)`:
+        // that plans as a CROSS JOIN of the unwind against the scan, and the join's cap needs
+        // BOTH sides cappable, so without this arm the whole product was built — 2.6ms to
+        // return one row (audit item 153).
+        //
+        // The unwind is evaluated IN FULL and then truncated. So the `Plan::Row` restriction is
+        // a COST guard, not a correctness one, and dropping it is answer-neutral — verified by
+        // mutation, which found the comment that used to claim otherwise. For a `Row` input the
+        // full pull is bounded by the list's own length; over a general input it would pull the
+        // whole upstream chain, which is the cost the cap exists to avoid.
+        //
+        // Why not cap the unwind's INPUT instead, which would bound it properly? Because that
+        // IS unsound: each input row contributes `len(list)` rows and a row whose list is EMPTY
+        // contributes none, so the first output row can come from an arbitrarily later input
+        // row. Bounding the work honestly means teaching `unwind_batch` a row budget, which is
+        // a bigger change than this shape has earned — `FOR x IN range(1, 1000000)` is then a
+        // million cheap rows instead of a million times the bucket, which is already the win.
+        Plan::Unwind { input, .. } if matches!(input.as_ref(), Plan::Row) => {
+            Some(truncate_batch(pull(plan, store, track)?, cap))
+        }
+        // A LEFT-OUTER hop keeps every source row — `optional_expand`'s own contract, in its
+        // words: "every input row yields at least one output row", upheld by both its fast
+        // path and its landing-predicate path, each emitting a miss row when a source has no
+        // neighbour. So output row `k` comes from input row `i <= k`, and capping the input to
+        // `cap` cannot drop a row the window needs. Without this a leading `OPTIONAL MATCH`
+        // under a `LIMIT` scanned the whole bucket: 0.208ms for one row against a 0.005ms
+        // scan floor.
+        //
+        // It is NOT sound for a plain `Expand`, which drops a source with no neighbour — there
+        // output row `k` can come from an arbitrarily later input row, exactly as for `Unwind`
+        // over a general input.
+        Plan::OptionalExpand {
+            input,
+            from,
+            dir,
+            edge_label,
+            keep_source,
+            bind_edge,
+            landing_pred,
+        } => match pull_capped(input, store, track, cap)? {
+            Some(batch) => Some(truncate_batch(
+                optional_expand(
+                    &batch,
+                    store,
+                    *from,
+                    *dir,
+                    edge_label,
+                    *keep_source,
+                    *bind_edge,
+                    landing_pred.as_deref(),
+                )?,
+                cap,
+            )),
+            None => None,
+        },
+        _ => None, // Filter/Expand/Aggregate/Distinct/… change the row count
+    })
+}
+
+/// Keep a batch's first `cap` rows, lineage included. Returns it untouched when it already
+/// fits, so the common case allocates nothing.
+///
+/// Row-multiplying arms of [`pull_capped`] need this: capping their inputs bounds the output
+/// but does not make it `cap` rows exactly, and `pull_capped` promises at most `cap`.
+fn truncate_batch(batch: Batch, cap: usize) -> Batch {
+    if batch.rows() <= cap {
+        return batch;
+    }
+    let keep: Vec<usize> = (0..cap).collect();
+    let mut out = Batch::of(batch.slots.iter().map(|c| c.gather(&keep)).collect());
+    out.lineage = batch.lineage.as_ref().map(|l| l.gather(&keep));
+    out
+}
+
+/// If `plan` is a STREAMABLE chain — Project/Filter/Expand/VarLength over a
+/// chunkable leaf (Scan/IndexSeek/RangeSeek) — return the chain with the leaf
+/// replaced by `Plan::Row` (so it runs from a seeded frontier) plus the leaf's full
+/// id list. `None` for any operator the row-by-row `pull_body` cannot stream
+/// (Aggregate/Distinct/Join/OrderPage/OptionalExpand/…).
+fn streaming_chain(plan: &Plan, store: &Store) -> Option<(Plan, Vec<u32>)> {
+    match plan {
+        Plan::Scan { label } => {
+            let ids: Vec<u32> = match label {
+                Some(l) => store.nodes_with_label(l).to_vec(),
+                None => (0..store.node_count() as u32)
+                    .filter(|&i| store.is_alive(i))
+                    .collect(),
+            };
+            Some((Plan::Row, ids))
+        }
+        Plan::IndexSeek { label, key, value } => Some((
+            Plan::Row,
+            index_seek_ids(store, label.as_deref(), key, value),
+        )),
+        Plan::RangeSeek {
+            label,
+            key,
+            op,
+            value,
+        } => Some((
+            Plan::Row,
+            range_seek_ids(store, label.as_deref(), key, *op, value),
+        )),
+        Plan::Filter { input, pred } => {
+            let (body, ids) = streaming_chain(input, store)?;
+            Some((
+                Plan::Filter {
+                    input: Box::new(body),
+                    pred: pred.clone(),
+                },
+                ids,
+            ))
+        }
+        Plan::Expand {
+            input,
+            from,
+            dir,
+            edge_label,
+            bind_edge,
+            double_loops,
+        } => {
+            let (body, ids) = streaming_chain(input, store)?;
+            Some((
+                Plan::Expand {
+                    input: Box::new(body),
+                    from: *from,
+                    dir: *dir,
+                    edge_label: edge_label.clone(),
+                    bind_edge: *bind_edge,
+                    double_loops: *double_loops,
+                },
+                ids,
+            ))
+        }
+        Plan::VarLength {
+            input,
+            from,
+            dir,
+            edge_label,
+            min,
+            max,
+            mode,
+            until,
+            body_filter,
+            double_loops,
+            path_need,
+        } => {
+            let (body, ids) = streaming_chain(input, store)?;
+            Some((
+                Plan::VarLength {
+                    input: Box::new(body),
+                    from: *from,
+                    dir: *dir,
+                    edge_label: edge_label.clone(),
+                    min: *min,
+                    max: *max,
+                    mode: *mode,
+                    until: until.clone(),
+                    body_filter: body_filter.clone(),
+                    double_loops: *double_loops,
+                    path_need: *path_need,
+                },
+                ids,
+            ))
+        }
+        Plan::Project { input, items } => {
+            let (body, ids) = streaming_chain(input, store)?;
+            Some((
+                Plan::Project {
+                    input: Box::new(body),
+                    items: items.clone(),
+                },
+                ids,
+            ))
+        }
+        Plan::EdgeVertex {
+            input,
+            edge_slot,
+            which,
+            other,
+        } => {
+            // otherV needs the lineage reference vertex; the streaming fast path is
+            // lineage-free, so it cannot take it.
+            if *other {
+                return None;
+            }
+            let (body, ids) = streaming_chain(input, store)?;
+            Some((
+                Plan::EdgeVertex {
+                    input: Box::new(body),
+                    edge_slot: *edge_slot,
+                    which: *which,
+                    other: false,
+                },
+                ids,
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// Short-circuit a keyless `LIMIT`/`SKIP` (no `ORDER BY`) over a streamable chain
+/// that `pull_capped` can't cap because it filters/expands: run the chain over
+/// successive BLOCKS of the source, stopping once `cap` rows have accumulated. The
+/// blocks are taken in source-id order and concatenated in order, and per-block
+/// operators are the same row-wise ones — so the accumulated rows are IDENTICAL
+/// (same order) to materializing the whole input and slicing, just computed early.
+/// Only for `!track` (a path-reading LIMIT keeps the full path via the slow path).
+fn pull_capped_stream(plan: &Plan, store: &Store, cap: usize) -> Result<Option<Batch>, String> {
+    if cap == 0 {
+        return Ok(None); // LIMIT 0 handled by the general path (empty, right width)
+    }
+    let Some((body, ids)) = streaming_chain(plan, store) else {
+        return Ok(None);
+    };
+    if ids.is_empty() {
+        return Ok(None); // empty source → let the full path build the right shape
+    }
+    // ADAPTIVE block size, starting at 1 and doubling. A high-fan-out chain (double
+    // var-length) makes even one source overshoot `cap`, so the first block must be
+    // tiny — else a fixed block materializes thousands of rows per source. A
+    // selective filter / low fan-out grows the block geometrically, so the overhead
+    // stays logarithmic. This mirrors a lazy engine producing just past `cap`.
+    let mut acc: Vec<Batch> = Vec::new();
+    let mut total = 0usize;
+    let mut start = 0usize;
+    let mut block = 1usize;
+    while start < ids.len() && total < cap {
+        let end = (start + block).min(ids.len());
+        let seed = Batch::single(Col::Nodes(ids[start..end].to_vec()));
+        let b = pull_body(&body, store, &seed)?;
+        total += b.rows();
+        acc.push(b);
+        start = end;
+        block = block.saturating_mul(2).min(8192);
+    }
+    Ok(Some(concat_batches(&acc, store)))
+}
+
+/// Streaming `DISTINCT … LIMIT k` over a streamable chain: dedup incrementally
+/// (the same whole-row grouping key as `Plan::Distinct`) while streaming source
+/// blocks, stopping once `cap` DISTINCT rows are collected. First-occurrence order
+/// is preserved (blocks in source-id order), so the result matches a full
+/// distinct-then-slice. Lets "give me N distinct X" short-circuit instead of
+/// materializing every reachable row before deduping.
+fn pull_distinct_capped_stream(
+    inner: &Plan,
+    store: &Store,
+    cap: usize,
+) -> Result<Option<Batch>, String> {
+    if cap == 0 {
+        return Ok(None);
+    }
+    let Some((body, ids)) = streaming_chain(inner, store) else {
+        return Ok(None);
+    };
+    if ids.is_empty() {
+        return Ok(None);
+    }
+    let mut seen: FnvSet<Vec<u8>> = FnvSet::default();
+    let mut buf = Vec::new();
+    let mut acc: Vec<Batch> = Vec::new();
+    let mut distinct = 0usize;
+    let mut start = 0usize;
+    let mut block = 1usize;
+    while start < ids.len() && distinct < cap {
+        let end = (start + block).min(ids.len());
+        let b = pull_body(
+            &body,
+            store,
+            &Batch::single(Col::Nodes(ids[start..end].to_vec())),
+        )?;
+        let mut keep = Vec::new();
+        for i in 0..b.rows() {
+            buf.clear();
+            for c in &b.slots {
+                value::group_key_into(&c.value_at(i), &mut buf);
+            }
+            if !seen.contains(buf.as_slice()) {
+                seen.insert(buf.clone());
+                keep.push(i);
+                distinct += 1;
+                if distinct >= cap {
+                    break;
+                }
+            }
+        }
+        acc.push(b.gather(&keep));
+        start = end;
+        block = block.saturating_mul(2).min(8192);
+    }
+    Ok(Some(concat_batches(&acc, store)))
+}
+
+// The estimated-row threshold past which the top projection streams in blocks instead of
+// materializing. See the note inside `pull_top_output_streamed`.
+#[cfg(test)]
+thread_local! {
+    static STREAM_ROWS: std::cell::Cell<Option<f64>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn stream_output_threshold() -> f64 {
+    STREAM_ROWS.with(|c| c.get()).unwrap_or(1_000_000.0)
+}
+
+#[cfg(not(test))]
+fn stream_output_threshold() -> f64 {
+    1_000_000.0
+}
+
+/// Run `f` with the streamed-projection threshold forced, so a caller can compare the
+/// streamed and materialized projections on the same plan and store.
+#[cfg(test)]
+pub(crate) fn with_stream_threshold<T>(rows: f64, f: impl FnOnce() -> T) -> T {
+    let prev = STREAM_ROWS.with(|c| c.replace(Some(rows)));
+    let out = f();
+    STREAM_ROWS.with(|c| c.set(prev));
+    out
+}
+
+/// The TOP-LEVEL output over a VERY large streamable chain (`<hops>.values(k)` /
+/// `.label()` / `.id()`): stream the source in blocks so the exploding per-hop
+/// intermediate frontiers are never materialized — expand + project fuse into one pass
+/// per block. Only at the top level (never an intermediate projection, which feeds a
+/// reducing op that would shrink it anyway) and behind a HIGH size gate, so the block
+/// overhead is amortized and medium frontiers stay on the vectorized materialized path.
+/// Blocks run in source-id order and concatenate in order → byte-identical. `None`
+/// otherwise (small input, lineage, or a non-projection output).
+fn pull_top_output_streamed(
+    plan: &Plan,
+    store: &Store,
+    track: bool,
+) -> Result<Option<Batch>, String> {
+    if track {
+        return Ok(None);
+    }
+    let Plan::Project { input, items } = plan else {
+        return Ok(None);
+    };
+    // A deliberately HIGH threshold: the win is avoiding the per-hop intermediate Cols,
+    // which only matters once the fan-out is huge; below it the vectorized materialized
+    // project is faster (the block/concat overhead would regress it).
+    //
+    // OVERRIDABLE UNDER `cfg(test)`. The threshold is high enough that generated plans never
+    // reach this path — verified by assertion injection at 20,000 nodes — so the streamed
+    // projection and the materialized one were never compared, and they must produce the same
+    // rows. Forcing the choice is the only way to check that without building million-row
+    // fixtures. Same technique as `with_dense_cut` and `with_label_mode`, and for the same
+    // reason: an alternative implementation picked by a cost estimate is untested for
+    // EQUIVALENCE even when it is reachable.
+    if crate::cost::estimate(input, store).rows < stream_output_threshold() {
+        return Ok(None);
+    }
+    let Some((inner_body, ids)) = streaming_chain(input, store) else {
+        return Ok(None);
+    };
+    if ids.is_empty() {
+        return Ok(None);
+    }
+    let body = Plan::Project {
+        input: Box::new(inner_body),
+        items: items.to_vec(),
+    };
+    const BLOCK: usize = 8192;
+    let mut acc: Vec<Batch> = Vec::new();
+    let mut start = 0usize;
+    while start < ids.len() {
+        let end = (start + BLOCK).min(ids.len());
+        acc.push(pull_body(
+            &body,
+            store,
+            &Batch::single(Col::Nodes(ids[start..end].to_vec())),
+        )?);
+        start = end;
+    }
+    Ok(Some(concat_batches(&acc, store)))
+}
+
+/// PROTOTYPE streaming result sink (Gremlin single-column array): serialize the result
+/// JSON directly, block by block, instead of materializing the whole output `Batch` then
+/// the `Rows` then the string. `streaming_chain` runs each hop PER BLOCK, so the full
+/// frontier is never built, and only O(block) intermediate values coexist — the win for a
+/// projection over a big fan-out and the defuse for a deep-traversal blow-up.
+///
+/// CONSERVATIVE opt-in: only a terminal single-item `Project` over a streamable chain, and
+/// only when the estimated row count clears a high bar (below it the block/serialize
+/// overhead loses to the vectorized materialized path). Returns `None` to fall back to
+/// `gremlin_results_json(run(plan))`. Byte-identical: same rows in the same
+/// (source-id/frontier) order, same per-cell rendering (`col_into_values` +
+/// `json::write_value`).
+/// Is `body` (the per-block body from `streaming_chain`, with its leaf source replaced
+/// by `Plan::Row`) exactly one `Expand` over the block source, carrying no operator that
+/// breaks the two invariants the streaming win depends on? That is the only chain whose
+/// streamed form reliably beats materializing (measured):
+///   - exactly ONE hop — a deeper chain re-runs every hop per block and loses (1.3-7.6x);
+///   - the only `Filter` allowed is a bare `PropertyExists` presence check (which
+///     `values()` always inserts) — the row estimate the caller gates on models presence
+///     accurately, but a VALUE comparison (`has(eq(..))`) it over-counts wildly, which
+///     would wave a large regression through the row floor.
+fn single_hop_no_filter(body: &Plan) -> bool {
+    match body {
+        Plan::Project { input, .. } | Plan::EdgeVertex { input, .. } => single_hop_no_filter(input),
+        Plan::Filter { input, pred } => {
+            matches!(pred, crate::ir::Expr::PropertyExists { .. }) && single_hop_no_filter(input)
+        }
+        Plan::Expand { input, .. } => matches!(input.as_ref(), Plan::Row),
+        _ => false,
+    }
+}
+
+/// `keep`, so no per-row struct is built.
+/// A fixed-length hop, with the PREDICTIVE half of the frontier guard built in.
+///
+/// Returns `E_RESOURCE_EXHAUSTED` when the frontier it is growing crosses
+/// `limits.intermediate_cells`, tested once per SOURCE ROW so the refusal lands while
+/// `keep`/`nbrs` are still growing — before the per-slot gathers and the `nbrs`/`eids` clones,
+/// which are the bulk of the allocation. `guard_intermediate` cannot do this: its argument is an
+/// already-materialized batch, so by the time it reads a row count the memory is spent. That is
+/// how a 6-hop `MATCH` took a 61 GB box into its swapfile (2026-10-10) while staying under the
+/// 50M-ROW ceiling — 62.5M rows at width 7 is 437M cells.
+fn expand(
+    batch: &Batch,
+    store: &Store,
+    from: usize,
+    dir: Dir,
+    edge_label: &[String],
+    bind_edge: bool,
+    double_loops: bool,
+) -> Result<Batch, String> {
+    // An empty expand still appends the landed slot(s), so the output has the same
+    // shape a successful expand would (K+1 slots, or K+2 with the edge bound) — a
+    // projection referencing a new slot must not go out of bounds.
+    let empty = || {
+        let mut slots: Vec<Col> = batch.slots.iter().map(|_| Col::Nodes(vec![])).collect();
+        if bind_edge {
+            slots.push(Col::Edges(vec![]));
+        }
+        slots.push(Col::Nodes(vec![]));
+        let mut b = Batch::of(slots);
+        if batch.lineage.is_some() {
+            b.lineage = Some(Lineage::empty());
+        }
+        // No rows, but the SIDECAR still has to be present-or-absent in step with the
+        // input: its reader treats absence as "this operator dropped it" (item 624).
+        if batch.prov.is_some() {
+            b.prov = Some(Vec::new());
+        }
+        b
+    };
+    // Resolve the edge label to an interned id up front; an unknown label matches
+    // nothing (not everything).
+    let want = match want_etypes(store, edge_label) {
+        Ok(w) => w,
+        Err(()) => return Ok(empty()),
+    };
+    // A node frontier expands directly (the hot path, borrowed). A heterogeneous `Col::Gen`
+    // (a mixed branch / inject) expands only its UNBOXED `Value::Node` cells — a scalar or an
+    // edge cell contributes no vertex-neighbours (matches the pure-TS heterogeneous stream);
+    // `u32::MAX` marks a skip. Any other column type has no node to expand.
+    let src_owned: Vec<u32>;
+    let src: &[u32] = match batch.slot(from) {
+        Col::Nodes(v) => v,
+        Col::Gen(cells) => {
+            src_owned = cells
+                .iter()
+                .map(|c| match c {
+                    Value::Node(id) => *id,
+                    _ => u32::MAX,
+                })
+                .collect();
+            &src_owned
+        }
+        _ => return Ok(empty()),
+    };
+
+    // Collect edge ids only when something needs them — a bound edge slot or
+    // lineage — so the lineage-free hot path pushes nothing extra per neighbour.
+    let track = batch.lineage.is_some();
+    let need_eids = bind_edge || track;
+    let mut keep = Vec::new();
+    let mut nbrs = Vec::new();
+    let mut eids = Vec::new();
+    // The OUTPUT width is what makes the ceiling width-aware: every input slot is gathered,
+    // plus the landed node and (optionally) the crossed edge.
+    let out_width = batch.slots.len() + 1 + usize::from(bind_edge);
+    let cell_cap = store.limits().intermediate_cells;
+    for (row, &v) in src.iter().enumerate() {
+        if v == u32::MAX {
+            continue; // an optional-null or a non-node Gen cell — no neighbours
+        }
+        // ONCE PER SOURCE ROW, not per neighbour: the outer loop already runs |src| times and a
+        // single vertex can add at most its own degree, so the overshoot is bounded by one
+        // degree while the check stays off the per-neighbour hot path entirely.
+        let cells = (keep.len() as u64).saturating_mul(out_width as u64);
+        if cells > cell_cap {
+            return Err(format!(
+                "E_RESOURCE_EXHAUSTED: an intermediate frontier reached {} rows x {out_width} \
+                 slots ({cells} cells) while expanding, exceeding the limit of {cell_cap}. A \
+                 multi-segment pattern is fanning out faster than it is filtered — add a more \
+                 selective anchor, reorder the pattern so the selective hop comes first, or \
+                 raise the intermediate-cells limit.",
+                keep.len()
+            ));
+        }
+        for_each_nbr(store, v, dir, &want, double_loops, |nbr, eid| {
+            keep.push(row);
+            nbrs.push(nbr);
+            if need_eids {
+                eids.push(eid);
+            }
+        });
+    }
+
+    let mut slots: Vec<Col> = batch.slots.iter().map(|c| c.gather(&keep)).collect();
+    if bind_edge {
+        slots.push(Col::Edges(eids.clone())); // edge slot at index W
+    }
+    slots.push(Col::Nodes(nbrs.clone())); // node slot at index W (or W+1)
+    let mut out = Batch::of(slots);
+    // Lineage strategy: when the input carried a path, extend each output row's
+    // path by the neighbour it landed on AND the edge it crossed, so both
+    // `nodes(p)` and `relationships(p)` are recoverable.
+    if let Some(lin) = &batch.lineage {
+        out.lineage = Some(lin.extend(&keep, &nbrs, &eids));
+    }
+    // `keep` IS the provenance mapping -- the source row behind each output row -- and this
+    // function already had it and threw it away. The columns are gathered one by one here
+    // rather than through `Batch::gather`, so the sidecar needs the hand-off spelled out.
+    out.prov = batch
+        .prov
+        .as_ref()
+        .map(|p| keep.iter().map(|&i| p[i]).collect());
+    Ok(out)
+}
+
+/// LEFT-OUTER single hop (`Plan::OptionalExpand`, GQL `OPTIONAL MATCH`): like
+/// [`expand`], but a source row with NO matching neighbour is KEPT, its appended
+/// node slot holding the `u32::MAX` null sentinel (read back as NULL everywhere).
+/// Node-only, no lineage. So every input row yields at least one output row.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "left-outer hop plus its optional landing predicate"
+)]
+fn optional_expand(
+    batch: &Batch,
+    store: &Store,
+    from: usize,
+    dir: Dir,
+    edge_label: &[String],
+    keep_source: bool,
+    bind_edge: bool,
+    landing_pred: Option<&Expr>,
+) -> Result<Batch, String> {
+    // The value a missed row lands: the source element (Gremlin optional) or the
+    // null sentinel (GQL OPTIONAL MATCH). `miss(v)` picks per row.
+    let miss = |v: u32| if keep_source { v } else { u32::MAX };
+    // Every left row gets exactly one neighbour-less row — used when the edge type
+    // is unknown, or the `from` slot isn't a node frontier.
+    let all_miss = || {
+        let keep: Vec<usize> = (0..batch.rows()).collect();
+        let mut slots: Vec<Col> = batch.slots.iter().map(|c| c.gather(&keep)).collect();
+        let landed: Vec<u32> = match (keep_source, batch.slot(from)) {
+            (true, Col::Nodes(src)) => src.clone(),
+            _ => vec![u32::MAX; batch.rows()],
+        };
+        if bind_edge {
+            slots.push(Col::Edges(vec![u32::MAX; batch.rows()])); // no edge on a miss
+        }
+        slots.push(Col::Nodes(landed));
+        Batch::of(slots)
+    };
+    let want = match want_etypes(store, edge_label) {
+        Ok(w) => w,
+        Err(()) => return Ok(all_miss()), // unknown edge type → no match for any row
+    };
+    let Col::Nodes(src) = batch.slot(from) else {
+        return Ok(all_miss());
+    };
+    // NO LANDING PREDICATE: one pass, and none of the candidate buffers.
+    //
+    // The two-pass shape below exists only so a landing predicate can be masked over the
+    // whole candidate set before the left-outer decision is made. Without one, pass 2 just
+    // re-emits every candidate in source order and pass 1's four buffers (`cand_row`,
+    // `cand_nbr`, `cand_eid`, `ranges`) are written and read once each for nothing — and
+    // `cand_eid`/`eids` are built even when no edge is bound.
+    //
+    // `plan_cost_by_operator` measured the cost: 18.10ns a row against `Expand`'s 9.14 for the
+    // SAME 1:1 hop, where every source matches and the only extra work the left-outer contract
+    // needs is noticing that a source had no neighbour.
+    //
+    // Emission order is unchanged — each source in order, its neighbours in adjacency order,
+    // and a single miss row when it has none — because that is the same loop, writing to the
+    // output instead of to a buffer.
+    if landing_pred.is_none() {
+        let mut keep = Vec::with_capacity(src.len());
+        let mut nbrs = Vec::with_capacity(src.len());
+        let mut eids = if bind_edge {
+            Vec::with_capacity(src.len())
+        } else {
+            Vec::new()
+        };
+        for (row, &v) in src.iter().enumerate() {
+            let before = keep.len();
+            for_each_nbr(store, v, dir, &want, false, |nbr, eid| {
+                keep.push(row);
+                nbrs.push(nbr);
+                if bind_edge {
+                    eids.push(eid);
+                }
+            });
+            if keep.len() == before {
+                keep.push(row);
+                nbrs.push(miss(v));
+                if bind_edge {
+                    eids.push(u32::MAX);
+                }
+            }
+        }
+        let mut slots: Vec<Col> = batch.slots.iter().map(|c| c.gather(&keep)).collect();
+        if bind_edge {
+            slots.push(Col::Edges(eids)); // edge column BEFORE the node column
+        }
+        slots.push(Col::Nodes(nbrs));
+        return Ok(Batch::of(slots));
+    }
+    // Pass 1: gather every candidate neighbour in source order, recording each
+    // source's candidate range so a landing predicate can be applied per source.
+    let mut cand_row = Vec::new();
+    let mut cand_nbr = Vec::new();
+    let mut cand_eid = Vec::new();
+    let mut ranges: Vec<(usize, usize)> = Vec::with_capacity(src.len());
+    for (row, &v) in src.iter().enumerate() {
+        let start = cand_nbr.len();
+        for_each_nbr(store, v, dir, &want, false, |nbr, eid| {
+            cand_row.push(row);
+            cand_nbr.push(nbr);
+            cand_eid.push(eid);
+        });
+        ranges.push((start, cand_nbr.len()));
+        let _ = v;
+    }
+    // A landing predicate (`OPTIONAL MATCH (a)-[:R]->(b WHERE …)`): build the candidate
+    // batch (source columns + [edge] + landing node) and mask it with the SAME
+    // three-valued evaluator a `Plan::Filter` uses, so the inline and trailing spellings
+    // agree. A candidate survives only when the predicate is TRUE (Kleene).
+    let mask: Option<Vec<bool>> = match landing_pred {
+        None => None,
+        Some(pred) => {
+            let mut cand: Vec<Col> = batch.slots.iter().map(|c| c.gather(&cand_row)).collect();
+            if bind_edge {
+                cand.push(Col::Edges(cand_eid.clone()));
+            }
+            cand.push(Col::Nodes(cand_nbr.clone()));
+            let cb = Batch::of(cand);
+            // FILTER ORDER, as in `filter_keep` and `pull_body` — a candidate survives only on
+            // a clean TRUE, which is this arm's own stated rule, so conjunct order is
+            // unobservable and the ones that cannot raise go first. The third site that needed
+            // it: the differential fuzzer found an inline landing `WHERE` on an OPTIONAL expand
+            // answering rows in TS and raising here, because the TS engine reorders every
+            // filter position and this one did not.
+            let m = match filter_conjuncts_reordered(pred) {
+                Some(parts) => {
+                    let keep = filter_keep_ordered(&parts, store, &cb)?;
+                    let mut out = vec![false; cb.rows()];
+
+                    for i in keep {
+                        out[i] = true;
+                    }
+
+                    out
+                }
+                None => eval_mask(pred, store, &cb)?
+                    .into_iter()
+                    .map(|t| t == Some(true))
+                    .collect(),
+            };
+
+            Some(m)
+        }
+    };
+    // Pass 2: per source, emit its surviving candidates in order; if none survive, land
+    // the miss value (source or null) so the source is kept — the left-outer contract.
+    let mut keep = Vec::new();
+    let mut nbrs = Vec::new();
+    let mut eids = Vec::new();
+    for (row, &v) in src.iter().enumerate() {
+        let (start, end) = ranges[row];
+        let mut any = false;
+        for i in start..end {
+            if mask.as_ref().is_none_or(|m| m[i]) {
+                keep.push(cand_row[i]);
+                nbrs.push(cand_nbr[i]);
+                eids.push(cand_eid[i]);
+                any = true;
+            }
+        }
+        if !any {
+            keep.push(row);
+            nbrs.push(miss(v));
+            eids.push(u32::MAX);
+        }
+    }
+    let mut slots: Vec<Col> = batch.slots.iter().map(|c| c.gather(&keep)).collect();
+    if bind_edge {
+        slots.push(Col::Edges(eids)); // edge column BEFORE the node column
+    }
+    slots.push(Col::Nodes(nbrs));
+    Ok(Batch::of(slots))
+}
+
+/// Interval-overlap hop (`Plan::IntervalExpand`): like [`expand`], but keeps only
+/// edges whose `[lo_key, hi_key]` interval overlaps `[qlo, qhi]` (per input row).
+/// Seek-or-scan: an OUT hop over a store with a matching interval index seeks
+/// (`for_each_overlap`); otherwise it scans the adjacency and applies the overlap
+/// itself — the rows are identical either way, so the optimizer can fuse without
+/// knowing whether the index exists. A non-numeric/absent bound or edge interval
+/// yields no match for that edge (matching what the `<=`/`>=` filter would do).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "mirrors `expand` plus the two bounds and keys"
+)]
+fn interval_expand(
+    batch: &Batch,
+    store: &Store,
+    from: usize,
+    dir: Dir,
+    edge_label: &[String],
+    lo_key: &str,
+    hi_key: &str,
+    qlo_col: &Col,
+    qhi_col: &Col,
+    bind_edge: bool,
+) -> Batch {
+    let empty = || {
+        let mut slots: Vec<Col> = batch.slots.iter().map(|_| Col::Nodes(vec![])).collect();
+        if bind_edge {
+            slots.push(Col::Edges(vec![]));
+        }
+        slots.push(Col::Nodes(vec![]));
+        let mut b = Batch::of(slots);
+        if batch.lineage.is_some() {
+            b.lineage = Some(Lineage::empty());
+        }
+        b
+    };
+    let want = match want_etypes(store, edge_label) {
+        Ok(w) => w,
+        Err(()) => return empty(),
+    };
+    let Col::Nodes(src) = batch.slot(from) else {
+        return empty();
+    };
+    // Seek only an OUT hop over a matching index (the index is over out-edges);
+    // any other case scans and applies the overlap.
+    let can_seek = matches!(dir, Dir::Out) && store.has_interval_index(lo_key, hi_key);
+
+    let mut keep = Vec::new();
+    let mut nbrs = Vec::new();
+    let mut eids = Vec::new();
+    for (row, &v) in src.iter().enumerate() {
+        let qlo = qlo_col.value_at(row);
+        let qhi = qhi_col.value_at(row);
+        // A NULL bound can never satisfy the comparison, so the row contributes
+        // nothing (matching what the `<=`/`>=` filter would do).
+        if qlo.is_null() || qhi.is_null() {
+            continue;
+        }
+        // The RI-tree seek is numeric-only; NUMERIC bounds over a matching OUT index
+        // take it. Temporal (or index-less) bounds fall to the scan below.
+        if can_seek {
+            if let (Value::Num(qlo_n), Value::Num(qhi_n)) = (&qlo, &qhi) {
+                store.for_each_overlap(v, *qlo_n, *qhi_n, |eid, nbr| {
+                    // The EDGE TYPE still has to match. The RI-tree is keyed on the
+                    // interval alone and knows nothing about types, so without this
+                    // an `-[r:T]->` hop returned edges of every type as soon as an
+                    // interval index existed — i.e. CREATING AN INDEX CHANGED THE
+                    // ANSWER, silently, on exactly the bitemporal `as of` query the
+                    // index is for. The scan path below has always filtered by
+                    // `want` via `for_each_nbr`; this is the seek path catching up.
+                    if !eid_carries_wanted(store, eid, &want) {
+                        return;
+                    }
+                    keep.push(row);
+                    nbrs.push(nbr);
+                    eids.push(eid);
+                });
+                continue;
+            }
+        }
+        // General scan: keep an edge whose `[lo, hi]` overlaps `[qlo, qhi]` — `lo <=
+        // qhi AND hi >= qlo` under the value contract's 3VL ordering (`cmp_partial`),
+        // the SAME comparison the `<=`/`>=` filter uses. So numeric AND temporal
+        // bounds work, and an absent / incomparable bound drops out exactly as the
+        // filter would (an unknown comparison is not an overlap).
+        for_each_nbr(store, v, dir, &want, false, |nbr, eid| {
+            let lo = store.edge_prop(eid, lo_key);
+            let hi = store.edge_prop(eid, hi_key);
+            let lo_le_qhi = value::cmp_partial(&lo, &qhi).map(std::cmp::Ordering::is_le);
+            let hi_ge_qlo = value::cmp_partial(&hi, &qlo).map(std::cmp::Ordering::is_ge);
+            if lo_le_qhi == Some(true) && hi_ge_qlo == Some(true) {
+                keep.push(row);
+                nbrs.push(nbr);
+                eids.push(eid);
+            }
+        });
+    }
+
+    let mut slots: Vec<Col> = batch.slots.iter().map(|c| c.gather(&keep)).collect();
+    if bind_edge {
+        slots.push(Col::Edges(eids.clone()));
+    }
+    slots.push(Col::Nodes(nbrs.clone()));
+    let mut out = Batch::of(slots);
+    if let Some(lin) = &batch.lineage {
+        out.lineage = Some(lin.extend(&keep, &nbrs, &eids));
+    }
+    out
+}
+
+/// The nodes with `label` whose property `key` equals `value` under predicate
+/// `=` — the rows an `IndexSeek` produces. Uses a property index when present
+/// (candidates intersected with the label), else scans the label and filters by
+/// `value::equals`. A NaN/NULL literal matches nothing (as `=` does).
+fn index_seek_ids(store: &Store, label: Option<&str>, key: &str, value: &Value) -> Vec<u32> {
+    if value.is_null() || matches!(value, Value::Num(x) if x.is_nan()) {
+        return Vec::new();
+    }
+    match store.index_lookup(key, value) {
+        Some(cands) => {
+            // group_key == equals for a finite, non-null value, so the index bucket
+            // is exact; intersect with the label. The label bucket is sorted
+            // ascending, so binary-search each (usually few) candidate rather than
+            // building a HashSet of the WHOLE label per query — that O(label) build
+            // made an indexed seek SLOWER than the typed scan it was meant to beat.
+            //
+            // No label means no intersection: the index bucket IS the answer.
+            let Some(label) = label else {
+                return cands;
+            };
+            let bucket = store.nodes_with_label(label);
+            cands
+                .into_iter()
+                .filter(|id| bucket.binary_search(id).is_ok())
+                .collect()
+        }
+        // No HASH index, but a RANGE index on the same key answers a point probe in
+        // O(log n) — it is a `BTreeMap` ordered by `cmp_total`, and the bucket for one key
+        // IS the equality bucket (see `range_lookup`'s `Eq` arm for why the two orders
+        // agree here). Before this the seek fell straight to the typed column scan below,
+        // so `k = v` on a range-indexed key was linear in the label (audit item 402).
+        None if store.has_range_index(key) => {
+            let cands = store
+                .range_lookup(key, crate::ir::CompareOp::Eq, value)
+                .unwrap_or_default();
+            // Label intersection exactly as the hash arm does it: binary-search each
+            // candidate against the sorted bucket rather than building a set of the whole
+            // label, which is the mistake that once made a seek slower than its scan.
+            let Some(label) = label else {
+                return cands;
+            };
+            let bucket = store.nodes_with_label(label);
+            cands
+                .into_iter()
+                .filter(|id| bucket.binary_search(id).is_ok())
+                .collect()
+        }
+        None => {
+            // Without an index the seek degrades to a scan — of the label when there
+            // is one, of every live node when there is not.
+            let all_nodes;
+            let ids = match label {
+                Some(l) => store.nodes_with_label(l),
+                None => {
+                    all_nodes = store.all_nodes();
+                    &all_nodes
+                }
+            };
+            // Typed fast paths for a plain (non-dotted) key: compare the raw column
+            // — a `&str`/`f64`/`bool` compare, no per-cell `Value` boxing or `Arc`
+            // clone. Equality semantics match `value::equals` (a present cell of the
+            // literal's type; a NULL cell — `present == false` — never equals).
+            if !key.contains('.') {
+                // A column that CANNOT HOLD `value` matches nothing, so the seek is empty
+                // without reading a single node. Two cases, both decided by the store's own
+                // schema:
+                //
+                //   no column at all — nobody carries `key`, so every cell reads NULL, and
+                //   `value` is non-null here (checked at the top).
+                //
+                //   a TYPED column of another type — writing a value of a different type
+                //   promotes the column to `Gen` (`Column::set`), so a column that is still
+                //   typed has present cells of only its own type, and `value::equals` is false
+                //   across types. `accepts` is exactly that question, and it says yes for `Gen`
+                //   and for a same-kind `Temporal` — the two the typed arms below do not cover
+                //   and which must stay on the boxed path.
+                //
+                // `try_filter_keep` has carried the first case for the `Filter` spelling of the
+                // same predicate since before the typed masks existed; the seek's no-index
+                // fallback never got it, and the two spellings differed by 570x. Measured over
+                // 200,000 vertices: `WHERE p.no_such_key = 5` 7,328us against `WHERE
+                // p.no_such_key > 5` (which stays a `Filter`) 12.9us. Answering from the schema
+                // takes the equality spelling to 0.2us -- faster than the filter, which still
+                // builds the scan it then discards -- and `p.age = 'fifty'`, the type-mismatch
+                // case on a key that does exist, from 7,427us to the same 0.2us.
+                //
+                // Inside the non-dotted guard deliberately: for a DOTTED path `store.column`
+                // looks up the whole path and is `None` for a record sub-field that exists.
+                match store.column(key) {
+                    None => return Vec::new(),
+                    Some(col) if !col.accepts(value) => return Vec::new(),
+                    Some(_) => {}
+                }
+                match (store.column(key), value) {
+                    (Some(Column::Str { data, present, .. }), Value::Str(t)) => {
+                        let t: &str = t;
+                        return ids
+                            .iter()
+                            .copied()
+                            .filter(|&id| present[id as usize] && &*data[id as usize] == t)
+                            .collect();
+                    }
+                    (
+                        Some(Column::Dict {
+                            dict,
+                            codes,
+                            present,
+                            ..
+                        }),
+                        Value::Str(t),
+                    ) => {
+                        // Resolve the literal to its code ONCE, then match rows on the
+                        // `u32` — no per-row string compare. A literal absent from the
+                        // dict matches nothing.
+                        let t: &str = t;
+                        let Some(want) = dict.iter().position(|s| &**s == t) else {
+                            return Vec::new();
+                        };
+                        let want = want as u32;
+                        return ids
+                            .iter()
+                            .copied()
+                            .filter(|&id| present[id as usize] && codes[id as usize] == want)
+                            .collect();
+                    }
+                    (Some(Column::Num { data, present, .. }), Value::Num(t)) => {
+                        let t = *t;
+                        return ids
+                            .iter()
+                            .copied()
+                            .filter(|&id| present[id as usize] && data[id as usize] == t)
+                            .collect();
+                    }
+                    (Some(Column::Bool { data, present, .. }), Value::Bool(t)) => {
+                        let t = *t;
+                        return ids
+                            .iter()
+                            .copied()
+                            .filter(|&id| present[id as usize] && data[id as usize] == t)
+                            .collect();
+                    }
+                    // TEMPORAL, added at item 871. The comment above used to name this as one of
+                    // the two cases that "must stay on the boxed path", and the boxed path was
+                    // expensive enough to be visible from outside: at 200,000 nodes
+                    // `WHERE p.dat = DATE '...'` measured **2,532 us** against 133 for the same
+                    // query on a numeric column — 19x — and, tellingly, 3.8x `WHERE true`, which
+                    // reads no property at all. Boxing a `Value::Temporal` per row to answer a
+                    // question about one `i32` is the whole of that gap.
+                    //
+                    // `Temporal` is `Copy` and its DERIVED `==` is exactly what `value::equals`
+                    // delegates to for a temporal pair — including cross-kind, which the derive
+                    // makes false between variants — so this arm is byte-identical to the boxed
+                    // comparison it replaces rather than a second equality rule. (A cross-KIND
+                    // literal never reaches here anyway: `accepts` above answers it from the
+                    // schema and returns empty without reading a node.)
+                    (Some(Column::Temporal { data, present, .. }), Value::Temporal(t)) => {
+                        let t = *t;
+                        return ids
+                            .iter()
+                            .copied()
+                            .filter(|&id| present[id as usize] && data[id as usize] == t)
+                            .collect();
+                    }
+                    _ => {}
+                }
+            }
+            // `key` may be a dotted record path — resolve it (plain keys read as
+            // `prop`), so the no-index fallback matches a dotted seek too.
+            //
+            // The path is split ONCE here, not once per row (audit item 359). `prop_path`
+            // splits on every call, so calling it inside this filter allocated a `Vec` and an
+            // owned `String` per segment PER NODE — 600,000 allocations to scan 200,000 nodes
+            // for `meta.city`, all of them recomputing the same constant. That made an
+            // unindexed dotted-path scan 48x an unindexed flat one (13126us against 271us at
+            // 200,000 nodes) where the work either side of the split is the same shape.
+            let parts: Vec<&str> = key.split('.').collect();
+
+            // And the BASE COLUMN is resolved once here, not once per row (item 894). Item 359
+            // took the key's SPLIT out of this closure; `prop_path_parts` still began with
+            // `self.props.get(parts[0])`, a HashMap lookup that hashes the key — a constant —
+            // once per node. Holding `(data, present)` and indexing it per row removes 200,000
+            // hashes of `"meta"` from a 200,000-node scan.
+            //
+            // Only for a BOXED (`Gen`) base, which is the only kind a record path can walk into.
+            // A typed or absent base keeps the general path below, where it still resolves to
+            // `Null` for a sub-field exactly as before.
+            if let Some((data, present)) = store.gen_column(parts[0]) {
+                let sub = &parts[1..];
+
+                return ids
+                    .iter()
+                    .copied()
+                    .filter(|&id| {
+                        present[id as usize]
+                            && value::equals(&Store::resolve_sub(&data[id as usize], sub), value)
+                    })
+                    .collect();
+            }
+
+            ids.iter()
+                .copied()
+                .filter(|&id| value::equals(&store.prop_path_parts(id, &parts), value))
+                .collect()
+        }
+    }
+}
+
+/// Whether `prop <op> value` holds — the exact test the `Filter` executor applies
+/// for a range comparison. Three-valued via `cmp_partial`: a NULL operand OR
+/// incomparable operands (different types / NaN) are UNKNOWN → false (the row
+/// drops), matching the general `compare` path. `op` must be a range op; `value`
+/// is non-null.
+fn range_pass(prop: &Value, op: CompareOp, value: &Value) -> bool {
+    if prop.is_null() {
+        return false;
+    }
+    let Some(ord) = value::cmp_partial(prop, value) else {
+        return false; // incomparable → UNKNOWN → drop
+    };
+    match op {
+        CompareOp::Lt => ord.is_lt(),
+        CompareOp::Le => ord.is_le(),
+        CompareOp::Gt => ord.is_gt(),
+        CompareOp::Ge => ord.is_ge(),
+        CompareOp::Eq | CompareOp::Ne => false,
+    }
+}
+
+/// The nodes with `label` whose property `key` satisfies `key <op> value` — the
+/// rows a `RangeSeek` produces. Uses a range index when present (candidates
+/// intersected with the label), else scans and filters via `range_pass`. A NULL
+/// `value` matches nothing (predicate UNKNOWN), matching a scan+filter.
+/// Raw-f64 comparison matching the value contract for two present numbers: `==`/
+/// `!=` for equality, `<`/`<=`/`>`/`>=` for ordering (a NaN operand makes ordering
+/// false — 3VL "unknown → drop", as `cmp_partial` gives). Used by the typed
+/// scan/filter fast paths so a numeric predicate never boxes a `Value`.
+fn num_pred(op: CompareOp, x: f64, t: f64) -> bool {
+    match op {
+        CompareOp::Eq => x == t,
+        CompareOp::Ne => x != t,
+        CompareOp::Lt => x < t,
+        CompareOp::Le => x <= t,
+        CompareOp::Gt => x > t,
+        CompareOp::Ge => x >= t,
+    }
+}
+
+/// Byte-lexicographic string comparison — the same order `value::cmp_partial`/`equals`
+/// give two present `Str`/`Dict` values, so a typed leaf matches the boxed `compare`.
+fn str_pred(op: CompareOp, a: &str, b: &str) -> bool {
+    match op {
+        CompareOp::Eq => a == b,
+        CompareOp::Ne => a != b,
+        CompareOp::Lt => a < b,
+        CompareOp::Le => a <= b,
+        CompareOp::Gt => a > b,
+        CompareOp::Ge => a >= b,
+    }
+}
+
+fn range_seek_ids(
+    store: &Store,
+    label: Option<&str>,
+    key: &str,
+    op: CompareOp,
+    value: &Value,
+) -> Vec<u32> {
+    if value.is_null() {
+        return Vec::new();
+    }
+    match store.range_lookup(key, op, value) {
+        Some(cands) => {
+            // Test label membership with a per-candidate binary search of the sorted
+            // label bucket (O(cands·log|label|)), NOT a HashSet built from the whole
+            // bucket — that build is O(|label|) and dominates when the label covers
+            // most of the graph (a single-label store makes it pure waste: the range
+            // index already narrowed to `cands`, then we'd rebuild a set of everything
+            // to intersect back down). When the bucket covers ALL non-deleted nodes,
+            // every candidate is in-label, so skip the test entirely.
+            // No label to intersect with is the same case as a label covering the
+            // whole graph: every candidate qualifies.
+            let all_in_label =
+                label.is_none_or(|l| store.nodes_with_label(l).len() == store.live_node_count());
+            cands
+                .into_iter()
+                .filter(|&id| all_in_label || label.is_none_or(|l| store.is_labeled(id, l)))
+                // The index orders by the TOTAL order (cross-type by rank), but the
+                // OPERATOR is three-valued (cross-type → UNKNOWN → drop). Re-check
+                // each candidate with `range_pass` so an indexed seek returns
+                // exactly the scan-filter rows (the equivalent-spellings invariant);
+                // for a homogeneous column this keeps every candidate.
+                .filter(|&id| range_pass(&store.prop(id, key), op, value))
+                .collect()
+        }
+        None => {
+            // NOT given `index_seek_ids`' schema shortcut, deliberately. The same rule holds
+            // here — a plain key with no column is UNKNOWN on every row — but this branch is
+            // not reachable with one: the planner emits a `RangeSeek` only where a range index
+            // can serve it, so a range on an absent key stays a `Filter`, which has dropped
+            // every row without reading one since long before this. Mutating the guard in and
+            // removing the dotted exclusion left the whole suite green (857 tests), which is
+            // what unreachable looks like, and an unmeasurable, untestable guard is worse than
+            // none. `a_range_seek_on_a_dotted_path_is_not_mistaken_for_an_absent_key` pins the
+            // behaviour either way.
+            let all_nodes;
+            let ids = match label {
+                Some(l) => store.nodes_with_label(l),
+                None => {
+                    all_nodes = store.all_nodes();
+                    &all_nodes
+                }
+            };
+            // Typed fast path: a Num column vs a Num bound compares RAW f64 (no
+            // per-cell Value boxing) — the no-index scan is the common case.
+            if let (Some(Column::Num { data, present, .. }), Value::Num(t)) =
+                (store.column(key), value)
+            {
+                let t = *t;
+                return ids
+                    .iter()
+                    .copied()
+                    .filter(|&id| present[id as usize] && num_pred(op, data[id as usize], t))
+                    .collect();
+            }
+            ids.iter()
+                .copied()
+                .filter(|&id| range_pass(&store.prop(id, key), op, value))
+                .collect()
+        }
+    }
+}
+
+/// Visit each neighbour of `v` along `dir` matching edge type `want`, calling `f`
+/// with `(neighbour, eid)`. The one place Expand's adjacency walk is spelled —
+/// shared by the batch operator and the frontier executor so the two can never
+/// disagree on what an Expand reaches.
+/// Resolve an edge-type constraint (the plan's `edge_label` list) to the matching
+/// type ids the walkers filter on. An EMPTY list is untyped — any edge — so it
+/// returns `Ok(vec![])` (an empty `want` slice reads as "any"). A typed list whose
+/// names ALL fail to resolve matches no edge, so it returns `Err(())` and the caller
+/// short-circuits to its own empty result. Otherwise the known ids, unknown names
+/// dropped — mirroring the TS engine's `lower_labels`.
+/// Does node `v` have ANY neighbour over `dir`/`want` (empty `want` = any type)? A
+/// short-circuiting existence check for `where(out/in/both)` — scans adjacency until
+/// the first match, never materializing the neighbours. Self-loop doubling is moot for
+/// existence.
+/// A simple predicate on the neighbour a `where(out()/in()/both())` hop lands on — the
+/// leaf inside `Exists { Filter{pred} over Expand }`. Extracted so the semijoin can test
+/// it per neighbour with early-stop instead of expanding the whole frontier.
+enum NbrPred {
+    Cmp(String, CompareOp, Value),
+    Exists(String),
+    Labeled(Vec<String>),
+}
+
+/// Recognize a single leaf predicate on the hop's neighbour (a property compare, a
+/// presence test, or a label test), referencing a slot OTHER than the source `from` — so
+/// it is the appended endpoint. `None` for anything compound/unsupported (→ general path).
+fn simple_nbr_pred(pred: &Expr, from: usize) -> Option<NbrPred> {
+    match pred {
+        Expr::Compare { op, left, right } => {
+            let (slot, key, v, flip) = match (left.as_ref(), right.as_ref()) {
+                (Expr::Prop { slot, key }, Expr::Lit(v)) => (*slot, key.clone(), v.clone(), false),
+                (Expr::Lit(v), Expr::Prop { slot, key }) => (*slot, key.clone(), v.clone(), true),
+                _ => return None,
+            };
+            if slot == from || v.is_null() {
+                return None;
+            }
+            let op = if flip {
+                match op {
+                    CompareOp::Lt => CompareOp::Gt,
+                    CompareOp::Le => CompareOp::Ge,
+                    CompareOp::Gt => CompareOp::Lt,
+                    CompareOp::Ge => CompareOp::Le,
+                    other => *other,
+                }
+            } else {
+                *op
+            };
+            Some(NbrPred::Cmp(key, op, v))
+        }
+        Expr::PropertyExists { slot, key } if *slot != from => Some(NbrPred::Exists(key.clone())),
+        Expr::IsLabeled { slot, labels } if *slot != from => Some(NbrPred::Labeled(labels.clone())),
+        // `<label> IN labels(m)` — the `(m:Label)` test, UNNORMALIZED inside an EXISTS body
+        // (the optimizer doesn't descend into subquery bodies), treated as a label test.
+        Expr::In { needle, haystack } => {
+            if let (Expr::Lit(Value::Str(l)), Expr::Call { name, args }) =
+                (needle.as_ref(), haystack.as_ref())
+            {
+                if name == "labels" && args.len() == 1 {
+                    if let Expr::Slot(s) = args[0] {
+                        if s != from {
+                            return Some(NbrPred::Labeled(vec![l.to_string()]));
+                        }
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// A CONJUNCTION of simple neighbour predicates — `has(k,v)` plus the `(m:Label)` label
+/// test the GQL `EXISTS { (n)->(m:Label) WHERE … }` and `(b:Label)` patterns add. Every
+/// leaf of the `And`-tree must be a simple neighbour predicate, else `None`.
+fn simple_nbr_preds(pred: &Expr, from: usize) -> Option<Vec<NbrPred>> {
+    fn collect(e: &Expr, from: usize, out: &mut Vec<NbrPred>) -> bool {
+        match e {
+            Expr::And(a, b) => collect(a, from, out) && collect(b, from, out),
+            other => match simple_nbr_pred(other, from) {
+                Some(p) => {
+                    out.push(p);
+                    true
+                }
+                None => false,
+            },
+        }
+    }
+    let mut out = Vec::new();
+    collect(pred, from, &mut out).then_some(())?;
+    (!out.is_empty()).then_some(out)
+}
+
+/// Does node `nbr` satisfy the leaf (3VL: only a definite TRUE counts, matching the body
+/// filter's "keep if TRUE" — a NULL operand is UNKNOWN, not a match).
+fn nbr_pred_ok(store: &Store, nbr: u32, p: &NbrPred) -> bool {
+    match p {
+        NbrPred::Exists(k) => store.has_prop(nbr, k),
+        NbrPred::Labeled(ls) => ls.iter().any(|l| store.is_labeled(nbr, l)),
+        NbrPred::Cmp(k, op, v) => {
+            let a = store.prop(nbr, k);
+            if a.is_null() {
+                return false;
+            }
+            match op {
+                CompareOp::Eq => value::equals(&a, v),
+                CompareOp::Ne => !value::equals(&a, v),
+                other => value::cmp_partial(&a, v).is_some_and(|o| match other {
+                    CompareOp::Lt => o.is_lt(),
+                    CompareOp::Le => o.is_le(),
+                    CompareOp::Gt => o.is_gt(),
+                    CompareOp::Ge => o.is_ge(),
+                    _ => false,
+                }),
+            }
+        }
+    }
+}
+
+/// Does `v` have ANY neighbour whose (pre-resolved) numeric column satisfies `op t`?
+/// Early-stops. The raw-column form of [`node_has_matching_nbr`] — one column resolution
+/// for the whole query instead of a `store.prop` hash lookup per neighbour.
+fn node_has_num_nbr(
+    store: &Store,
+    v: u32,
+    dir: Dir,
+    want: &[u32],
+    col: (&[f64], &[bool]),
+    cmp: (CompareOp, f64),
+) -> bool {
+    let (data, present) = col;
+    let (op, t) = cmp;
+    let has_extra = store.has_multi_label_edges();
+    let type_ok = |et: u32, eid: u32| {
+        want.is_empty()
+            || want
+                .iter()
+                .any(|&w| w == et || (has_extra && store.edge_type_matches(et, eid, w)))
+    };
+    let hit = |a: &crate::store::Adj| {
+        type_ok(a.etype, a.eid) && present[a.nbr as usize] && num_pred(op, data[a.nbr as usize], t)
+    };
+    (matches!(dir, Dir::Out | Dir::Both) && store.out(v).iter().any(hit))
+        || (matches!(dir, Dir::In | Dir::Both) && store.inc(v).iter().any(hit))
+}
+
+/// Does `v` have ANY neighbour (in `dir`, edge-type in `want`) satisfying ALL of `preds`?
+/// Early-stops on the first match — the semijoin win over expanding every neighbour.
+fn node_has_matching_nbr(store: &Store, v: u32, dir: Dir, want: &[u32], preds: &[NbrPred]) -> bool {
+    let has_extra = store.has_multi_label_edges();
+    let type_ok = |et: u32, eid: u32| {
+        want.is_empty()
+            || want
+                .iter()
+                .any(|&w| w == et || (has_extra && store.edge_type_matches(et, eid, w)))
+    };
+    let hit = |a: &crate::store::Adj| {
+        type_ok(a.etype, a.eid) && preds.iter().all(|p| nbr_pred_ok(store, a.nbr, p))
+    };
+    (matches!(dir, Dir::Out | Dir::Both) && store.out(v).iter().any(hit))
+        || (matches!(dir, Dir::In | Dir::Both) && store.inc(v).iter().any(hit))
+}
+
+fn node_has_nbr(store: &Store, v: u32, dir: Dir, want: &[u32]) -> bool {
+    let has_extra = store.has_multi_label_edges();
+    let type_ok = |et: u32, eid: u32| {
+        // Pass the primary type `et` (already in a register from the Adj) to
+        // edge_type_matches instead of edge_has_label, so a primary-type MISS does not
+        // pay a redundant random read of edge_etype[eid] to re-learn `et != w` — only
+        // the (rare) secondary-set probe. Guard the probe on has_extra so a single-label
+        // graph never touches it. See edge_type_matches / the TS engine's 4.3x note.
+        want.is_empty()
+            || want
+                .iter()
+                .any(|&w| w == et || (has_extra && store.edge_type_matches(et, eid, w)))
+    };
+    if matches!(dir, Dir::Out | Dir::Both) && store.out(v).iter().any(|a| type_ok(a.etype, a.eid)) {
+        return true;
+    }
+    if matches!(dir, Dir::In | Dir::Both) && store.inc(v).iter().any(|a| type_ok(a.etype, a.eid)) {
+        return true;
+    }
+    false
+}
+
+fn want_etypes(store: &Store, edge_label: &[String]) -> Result<Vec<u32>, ()> {
+    if edge_label.is_empty() {
+        return Ok(Vec::new());
+    }
+    // A leading "!" sentinel marks a NEGATED label set (`-[:!T]->` / `-[:!(A|B)]->`):
+    // the hop matches any edge whose type is NOT one of the named ones. Resolve to the
+    // COMPLEMENT id set so every downstream membership check is unchanged. An unknown
+    // named type contributes nothing to exclude; if the complement is empty (every
+    // type excluded) the hop matches nothing (`Err`).
+    if edge_label[0] == "!" {
+        let excluded: Vec<u32> = edge_label[1..]
+            .iter()
+            .filter_map(|n| store.etype_id(n))
+            .collect();
+        let complement: Vec<u32> = store
+            .all_etype_ids()
+            .into_iter()
+            .filter(|id| !excluded.contains(id))
+            .collect();
+        if complement.is_empty() {
+            return Err(());
+        }
+        return Ok(complement);
+    }
+    let ids: Vec<u32> = edge_label
+        .iter()
+        .filter_map(|n| store.etype_id(n))
+        .collect();
+    if ids.is_empty() {
+        return Err(());
+    }
+    Ok(ids)
+}
+
+/// Does adjacency entry `a` carry one of the `want` labels? Empty `want` = any
+/// edge. Checks the primary type (`a.etype`, already in a register) then, only on a
+/// multi-label graph, the eid's secondary set. The one predicate every edge-type
+/// filter shares, so a `:Y` hop over a multi-label edge matches everywhere.
+#[inline]
+/// The same test as [`edge_carries_wanted`], from an edge id alone.
+///
+/// The adjacency walk has an `Adj` in hand (with its primary etype inline); a seek
+/// through the interval index has only the eid, so it has to ask the store. Both must
+/// consult the WHOLE label set, not just the primary type, or a multi-label edge
+/// matches one way and not the other.
+fn eid_carries_wanted(store: &Store, eid: u32, want: &[u32]) -> bool {
+    want.is_empty() || want.iter().any(|&w| store.edge_carries_type(eid, w))
+}
+
+fn edge_carries_wanted(store: &Store, a: &crate::store::Adj, want: &[u32]) -> bool {
+    want.is_empty()
+        || want.iter().any(|&w| {
+            w == a.etype || (store.has_multi_label_edges() && store.edge_has_label(a.eid, w))
+        })
+}
+
+fn for_each_nbr(
+    store: &Store,
+    v: u32,
+    dir: Dir,
+    want: &[u32],
+    double_loops: bool,
+    mut f: impl FnMut(u32, u32),
+) {
+    // An undirected walk reaches a self-loop from BOTH the out- and the in-index.
+    // GQL emits it ONCE (drops the in-side copy); Gremlin `both()` keeps BOTH
+    // (`double_loops`) — the self-loop is an out-edge AND an in-edge. Directed walks
+    // touch one index, so they keep it either way.
+    let drop_loop = matches!(dir, Dir::Both) && !double_loops;
+    // A SINGLE-type hop can read just this node's type-`w` edges instead of filtering its
+    // whole adjacency. TWO structures can serve that, and the order between them matters:
+    //
+    //   1. the per-type CSR overlay — a contiguous slice of one shared array, addressed by
+    //      an offset pair;
+    //   2. the opt-in edge-type INDEX — a per-node `HashMap<etype, Vec<Adj>>`, so a hash
+    //      lookup plus a pointer chase into a small scattered allocation.
+    //
+    // The CSR wins, and the index used to be tried first, which meant DECLARING the index
+    // made a typed hop slower. Measured on 50k nodes at degree 32 across 8 edge types with
+    // the wanted type 1 in 32 (E82):
+    //
+    //   ```text
+    //   -[:RARE]-> count       no index 151.0us   indexed 306.8us   2.03x SLOWER
+    //   -[:RARE]-> projected   no index 279.7us   indexed 502.0us   1.79x SLOWER
+    //   ```
+    //
+    // Both are built by walking `out_adj` in order, so they yield the same edges in the same
+    // order and the precedence is a pure cost choice. The index is still the fallback, and
+    // not vestigially: the CSR overlay is dropped by any adjacency write and rebuilt in bulk,
+    // while the index is maintained incrementally — so on a write-heavy store the CSR returns
+    // `None` and the index is what keeps a typed hop off the flat scan.
+    //
+    // Two DELIBERATE declines, both measured before being left alone (E82):
+    //
+    //   * a type DISJUNCTION (`want.len() >= 2`) must not union buckets — that reorders
+    //     against the flat stored-order scan and would break byte-identity. It costs
+    //     nothing anyway: 963.0us against 953.5us indexed, because both walk the adjacency.
+    //   * a type that is EVER carried as a SECONDARY label skips both structures, since each
+    //     keys on an edge's primary label and would miss a `:Y` match on an `[X, Y]` edge. The
+    //     flat scan below consults the secondary set.
+    //
+    //     PER TYPE since item 1008, where this asked the GLOBAL question — whether ANY edge
+    //     anywhere was multi-label — and so demoted every typed hop in the graph the moment one
+    //     unrelated edge gained a second label. Measured by tainting exactly ONE edge out of
+    //     `nodes * degree` (`multilabel_taint_1008`), 20,000 nodes:
+    //
+    //     ```text
+    //       degree  types    clean_us   tainted_us    ratio
+    //            4      1       313.3        347.2    1.11x
+    //           32      8       317.5       1233.6    3.88x
+    //          256      8      2718.6       9829.3    3.62x
+    //          256     64       291.8       7957.2   27.27x
+    //     ```
+    //
+    //     A guard costs what it DENIES: at one type the structure saves nothing (every edge
+    //     matches), and at 64 types it is the difference between a selective bucket and a full
+    //     adjacency scan.
+    if let [w] = want {
+        if !store.type_ever_secondary(*w) {
+            match dir {
+                Dir::Out => {
+                    if let Some(sl) = store.out_typed_csr(v, *w) {
+                        for a in sl {
+                            f(a.nbr, a.eid);
+                        }
+                        return;
+                    }
+                }
+                Dir::In => {
+                    if let Some(sl) = store.in_typed_csr(v, *w) {
+                        for a in sl {
+                            if !(drop_loop && a.nbr == v) {
+                                f(a.nbr, a.eid);
+                            }
+                        }
+                        return;
+                    }
+                }
+                Dir::Both => {
+                    if let (Some(o), Some(i)) =
+                        (store.out_typed_csr(v, *w), store.in_typed_csr(v, *w))
+                    {
+                        for a in o {
+                            f(a.nbr, a.eid);
+                        }
+                        for a in i {
+                            if !(drop_loop && a.nbr == v) {
+                                f(a.nbr, a.eid);
+                            }
+                        }
+                        return;
+                    }
+                }
+            }
+            // The CSR overlay is stale (an adjacency write since the last rebuild); the
+            // incrementally-maintained index still answers.
+            if store.has_edge_type_index() {
+                if matches!(dir, Dir::Out | Dir::Both) {
+                    for a in store.out_typed(v, *w) {
+                        f(a.nbr, a.eid);
+                    }
+                }
+                if matches!(dir, Dir::In | Dir::Both) {
+                    for a in store.in_typed(v, *w) {
+                        if !(drop_loop && a.nbr == v) {
+                            f(a.nbr, a.eid);
+                        }
+                    }
+                }
+                return;
+            }
+        }
+    }
+    // Empty `want` = any type; otherwise the edge must carry one of the wanted
+    // labels. `edge_has_label` checks the primary type (already in `a.etype`) then,
+    // only when the graph has multi-label edges, the eid's secondary set.
+    let has_extra = store.has_multi_label_edges();
+    let type_ok = |et: u32, eid: u32| {
+        // Pass the primary type `et` (already in a register from the Adj) to
+        // edge_type_matches instead of edge_has_label, so a primary-type MISS does not
+        // pay a redundant random read of edge_etype[eid] to re-learn `et != w` — only
+        // the (rare) secondary-set probe. Guard the probe on has_extra so a single-label
+        // graph never touches it. See edge_type_matches / the TS engine's 4.3x note.
+        want.is_empty()
+            || want
+                .iter()
+                .any(|&w| w == et || (has_extra && store.edge_type_matches(et, eid, w)))
+    };
+    if matches!(dir, Dir::Out | Dir::Both) {
+        for a in store.out(v) {
+            if type_ok(a.etype, a.eid) {
+                f(a.nbr, a.eid);
+            }
+        }
+    }
+    if matches!(dir, Dir::In | Dir::Both) {
+        for a in store.inc(v) {
+            if type_ok(a.etype, a.eid) && !(drop_loop && a.nbr == v) {
+                f(a.nbr, a.eid);
+            }
+        }
+    }
+}
+
+/// Whether a hop's wanted-type set `want` matches EVERY edge (so a count needs no
+/// per-edge type check): an empty `want` (any type), or a set that covers all
+/// interned edge types. `want` is always a distinct subset of the etype ids, so a
+/// length match is the fast test; the `all` probe is a cheap guard against a
+/// degenerate duplicate (`-[:R|R]->`) inflating the length. Computed ONCE per
+/// count, not per node.
+fn want_covers_all_etypes(store: &Store, want: &[u32]) -> bool {
+    want.is_empty()
+        || (want.len() == store.num_etypes()
+            && store.all_etype_ids().iter().all(|id| want.contains(id)))
+}
+
+/// `v`'s matching out/in degree as an f64 — the number of times `for_each_nbr`
+/// would fire for this node — WITHOUT walking each edge whenever the matching set is
+/// already a CONTIGUOUS SLICE, in which case its length is the answer. `Dir::Both`
+/// always walks (it dedups the in-side self-loop copy). Byte-identical in VALUE: a
+/// count, not an order, and exact (integers below 2^53).
+///
+/// This MIRRORS `for_each_nbr`'s dispatch and must keep mirroring it — if that function
+/// gains a branch, this one needs the matching arm or it silently returns a different
+/// degree. `a_degree_read_agrees_with_walking_the_adjacency` is the differential guard:
+/// it compares the two across every store configuration and direction.
+fn matching_degree(
+    store: &Store,
+    v: u32,
+    dir: Dir,
+    want: &[u32],
+    double_loops: bool,
+    all_types: bool,
+) -> f64 {
+    if let Some(n) = slice_degree(store, v, dir, want, all_types) {
+        return n as f64;
+    }
+    let mut deg = 0f64;
+    for_each_nbr(store, v, dir, want, double_loops, |_, _| deg += 1.0);
+    deg
+}
+
+/// The length of the slice `for_each_nbr` would iterate for `v`, or `None` when it would
+/// not iterate exactly one slice (so the caller must walk).
+///
+/// Three cases, each matching a branch of `for_each_nbr`:
+///
+///   * the type filter is trivial (`all_types`) — the raw adjacency is the answer;
+///   * a SINGLE wanted type on a graph with no multi-label edges and an edge-type index
+///     — the index bucket is the answer;
+///   * the same without the index, once the per-type CSR overlay is fresh — the per-type
+///     span is the answer.
+///
+/// The single-type cases are the ones that matter in practice: a hop is spelled
+/// `-[:KNOWS]->` far more often than untyped, and walking 5,000 edges to learn a number
+/// the CSR already knows was costing a `count(*)` its whole advantage. `Dir::Both` is
+/// excluded throughout — it can visit a self-loop from both indexes, and whether it
+/// counts once or twice depends on `double_loops`, which is not a slice length.
+fn slice_degree(store: &Store, v: u32, dir: Dir, want: &[u32], all_types: bool) -> Option<usize> {
+    // `out` says which index to read; `Dir::Both` is excluded above.
+    let out = match dir {
+        Dir::Out => true,
+        Dir::In => false,
+        Dir::Both => return None,
+    };
+    if all_types {
+        return Some(if out {
+            store.out(v).len()
+        } else {
+            store.inc(v).len()
+        });
+    }
+    let [w] = want else { return None };
+    if store.type_ever_secondary(*w) {
+        // PER TYPE (item 1008), the mirror of `for_each_nbr`'s gate above: only a type carried
+        // BEHIND a primary is missing from the per-type structures, so an unrelated multi-label
+        // edge must not demote this one.
+        return None; // a secondary label can match, and the per-type structures miss it
+    }
+    // Same precedence as `for_each_nbr`: the CSR span first, the index bucket only when the
+    // overlay is stale. Reading them the other way round is what made declaring an edge-type
+    // index cost a typed hop 2x (E82), and this function must mirror that one exactly or it
+    // returns a degree for a different edge set.
+    let csr = if out {
+        store.out_typed_csr(v, *w)
+    } else {
+        store.in_typed_csr(v, *w)
+    };
+    if let Some(sl) = csr {
+        return Some(sl.len());
+    }
+    if store.has_edge_type_index() {
+        return Some(if out {
+            store.out_typed(v, *w).len()
+        } else {
+            store.in_typed(v, *w).len()
+        });
+    }
+    None
+}
+
+/// Slot count of a pure Scan/Expand chain; `None` for anything else (Filter,
+/// Join, VarLength, …). The frontier executor only handles such chains.
+fn chain_width(plan: &Plan) -> Option<usize> {
+    match plan {
+        // A seek, like a scan, seeds a single-slot frontier.
+        Plan::Scan { .. } | Plan::IndexSeek { .. } | Plan::RangeSeek { .. } => Some(1),
+        // A bind_edge Expand appends TWO slots (edge then node), else one.
+        Plan::Expand {
+            input, bind_edge, ..
+        } => Some(chain_width(input)? + if *bind_edge { 2 } else { 1 }),
+        // A frontier `hasLabel(…)` filter keeps the width (it drops rows, not slots) —
+        // so a fused counter can see the chain through it (see `frontier_counts`).
+        Plan::Filter {
+            input,
+            pred: Expr::IsLabeled { .. },
+        } => chain_width(input),
+        _ => None,
+    }
+}
+
+/// Slot count of a Scan/Expand chain, seeing through ANY row-filter — safe ONLY for an
+/// executor that PULLS the chain (the pull applies every filter, so the frontier is already
+/// filtered). The count-fold paths must NOT use this (they re-walk and re-check the filter
+/// themselves, so they stay on the IsLabeled-only `chain_width`); the DISTINCT frontier
+/// paths, which pull, can.
+fn chain_pull_width(plan: &Plan) -> Option<usize> {
+    match plan {
+        Plan::Scan { .. } | Plan::IndexSeek { .. } | Plan::RangeSeek { .. } => Some(1),
+        Plan::Expand {
+            input, bind_edge, ..
+        } => Some(chain_pull_width(input)? + if *bind_edge { 2 } else { 1 }),
+        // A plain var-length hop appends one endpoint slot (no bound edge / groups here).
+        Plan::VarLength { input, .. } => Some(chain_pull_width(input)? + 1),
+        Plan::Filter { input, .. } => chain_pull_width(input),
+        _ => None,
+    }
+}
+
+/// The current node frontier of a pure Scan/Expand chain — the last slot's node
+/// ids, WITH multiplicity (one entry per path reaching the node) — produced
+/// without ever materializing the earlier slots. `None` if the plan is not such
+/// a chain. This is the batch model's payoff: when nothing above the chain reads
+/// an earlier slot, the chain need only carry its frontier.
+///
+/// Rejected optimization: replacing this Vec with a streaming `for_each_frontier`
+/// callback (so the fused counts never build the intermediate at all). It had to
+/// pass the callback as `&mut dyn FnMut` — a generic bound blows monomorphization
+/// on the recursion — and the resulting per-node indirect call, nested one level
+/// per hop, cost MORE than building and rescanning the vector: at 1M/8 it moved
+/// 2-hop count(*) 40->64ms and count(DISTINCT) 54->62ms. The sequential Vec push
+/// is cheap; per-element dynamic dispatch over tens of millions of nodes is not.
+fn frontier_ids(plan: &Plan, store: &Store) -> Option<Vec<u32>> {
+    match plan {
+        Plan::Scan { label } => Some(match label {
+            Some(l) => store.nodes_with_label(l).to_vec(),
+            None => store.all_nodes(),
+        }),
+        Plan::IndexSeek { label, key, value } => {
+            Some(index_seek_ids(store, label.as_deref(), key, value))
+        }
+        Plan::RangeSeek {
+            label,
+            key,
+            op,
+            value,
+        } => Some(range_seek_ids(store, label.as_deref(), key, *op, value)),
+        Plan::Expand {
+            input,
+            from,
+            dir,
+            edge_label,
+            double_loops,
+            ..
+        } => {
+            // Must expand the CURRENT frontier (the last slot); a linear pattern
+            // always does, but a hand-built plan might not.
+            if *from + 1 != chain_width(input)? {
+                return None;
+            }
+            let src = frontier_ids(input, store)?;
+            let want = match want_etypes(store, edge_label) {
+                Ok(w) => w,
+                Err(()) => return Some(Vec::new()), // unknown label matches nothing
+            };
+            // Gremlin `both()` walks a self-loop TWICE (`double_loops`), so the endpoint
+            // multiset matches the TS engine.
+            let dl = *double_loops;
+            let mut out = Vec::new();
+            for &v in &src {
+                for_each_nbr(store, v, *dir, &want, dl, |nbr, _eid| out.push(nbr));
+            }
+            Some(out)
+        }
+        _ => None,
+    }
+}
+
+/// The number of `Expand` hops in a pure Scan/Expand chain (0 for a bare seed).
+/// A raw `order()` / `order().by(desc)` — a bare self-slot sort key — somewhere on the linear
+/// spine feeding a count. It sorts the current element itself, which faults over graph elements
+/// at RUNTIME (see [`order_page`]); a build-time fault only fires when the frontier is a KNOWN
+/// element, and a post-branch frontier is unknown, so this shape reaches the runtime check.
+/// The count fast-paths peel `order()` away (a sort cannot change a count), which would ALSO
+/// swallow that fault and silently return a count where pure-TS rejects the query. When one is
+/// present, bail to general execution so the order runs and rejects an element frontier. A keyed
+/// `by('k')`/`by(id)` sort projects a comparable scalar and is fine — its key is not a bare
+/// `Slot`, so it is not flagged here.
+fn plan_has_raw_element_order(p: &Plan) -> bool {
+    match p {
+        Plan::OrderPage { input, keys, .. } => {
+            keys.iter().any(|k| matches!(k.expr, Expr::Slot(_)))
+                || plan_has_raw_element_order(input)
+        }
+        // The single-input wrappers the count fast-paths peel through — follow the spine.
+        Plan::Expand { input, .. }
+        | Plan::OptionalExpand { input, .. }
+        | Plan::EdgeVertex { input, .. }
+        | Plan::VarLength { input, .. }
+        | Plan::Filter { input, .. }
+        | Plan::Distinct { input }
+        | Plan::DistinctBy { input, .. }
+        | Plan::Sample { input, .. }
+        | Plan::Enumerate { input, .. }
+        | Plan::Tail { input, .. }
+        | Plan::Project { input, .. }
+        | Plan::Reconverge { input, .. }
+        | Plan::SortLocal { input, .. }
+        | Plan::PathRecord { input, .. }
+        | Plan::NullPadIfEmpty { input, .. }
+        | Plan::Branch { input, .. }
+        | Plan::PerElementBranch { input, .. } => plan_has_raw_element_order(input),
+        _ => false,
+    }
+}
+
+fn count_hops(plan: &Plan) -> usize {
+    match plan {
+        Plan::Sample { input, .. }
+        | Plan::Enumerate { input, .. }
+        | Plan::EdgeVertex { input, .. }
+        | Plan::Expand { input, .. } => 1 + count_hops(input),
+        _ => 0,
+    }
+}
+
+/// A per-node PATH-COUNT frontier, stored SPARSE (a list of active `(node, count)`)
+/// while few nodes carry a path, DENSE (indexed by node id) once the frontier
+/// covers a large fraction of the graph. A 5-hop count from a SINGLE source touches
+/// at most fan-out^hops distinct nodes — kept sparse, it costs O(active) per hop
+/// instead of the O(node_count) alloc + full scan a dense array pays every hop
+/// (that made `aml/chain5` 30x SLOWER than the TS engine: an 8 MB zeroed array and a 1M-entry
+/// scan, five times, for a frontier of a few hundred nodes). Counts are exact
+/// integers (< 2^53), so the f64 sums are order-independent and the representation
+/// switch is byte-identical.
+enum Counts {
+    Sparse(Vec<(u32, f64)>),
+    Dense(Vec<f64>),
+}
+
+impl Counts {
+    /// Call `f(node, count)` for every node carrying a non-zero count.
+    fn for_each(&self, mut f: impl FnMut(u32, f64)) {
+        match self {
+            Counts::Sparse(v) => {
+                for &(id, c) in v {
+                    f(id, c);
+                }
+            }
+            Counts::Dense(a) => {
+                for (i, &c) in a.iter().enumerate() {
+                    if c != 0.0 {
+                        f(i as u32, c);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Number of nodes carrying a path — the cost driver for the next hop.
+    fn active(&self) -> usize {
+        match self {
+            Counts::Sparse(v) => v.len(),
+            Counts::Dense(a) => a.iter().filter(|&&c| c != 0.0).count(),
+        }
+    }
+}
+
+// The sparse/dense switch for a count frontier, overridable under `cfg(test)`.
+//
+// Not for convenience: the DENSE representation is unreachable from generated plans at any
+// graph size, verified by assertion injection at every one of its entry points. It needs a
+// frontier larger than `max(n/16, 1024)`, and since the selectivity gate landed a seek is by
+// construction selective — so a large frontier can only come from a bare `Scan` with no
+// seedable predicate on the seed, which optimization almost always turns into a seek. The
+// switch is documented as byte-identical; the only way to test that claim is to run the same
+// plan both ways, which is what `the_sparse_and_dense_count_frontiers_agree` does.
+#[cfg(test)]
+thread_local! {
+    static DENSE_CUT: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// The active-set size past which a count frontier switches from a sparse list to a dense
+/// array. `Counts`' own doc explains why the switch exists; this is where it is decided.
+#[cfg(test)]
+fn dense_cut_for(n: usize) -> usize {
+    DENSE_CUT
+        .with(|c| c.get())
+        .unwrap_or_else(|| (n / 16).max(1024))
+}
+
+/// The active-set size past which a count frontier switches to a dense array.
+#[cfg(not(test))]
+fn dense_cut_for(n: usize) -> usize {
+    (n / 16).max(1024)
+}
+
+/// Run `f` with the sparse/dense switch forced, so a caller can compare the two
+/// representations on the same plan and store.
+#[cfg(test)]
+pub(crate) fn with_dense_cut<T>(cut: usize, f: impl FnOnce() -> T) -> T {
+    let prev = DENSE_CUT.with(|c| c.replace(Some(cut)));
+    let out = f();
+    DENSE_CUT.with(|c| c.set(prev));
+    out
+}
+
+/// The per-node PATH-COUNT frontier of a pure Scan/Expand chain: `counts[v]` is the
+/// number of chain paths whose last node is `v`. Propagated one hop at a time
+/// (`next[nbr] += counts[v]` over each matching edge) so it never materializes the
+/// exploding path multiset that [`frontier_ids`] carries — O(hops * edges) time.
+/// Sparse until the frontier is large (see [`Counts`]), so a narrow deep chain pays
+/// O(active) not O(node_count) per hop. `None` for a non-chain.
+fn frontier_counts(plan: &Plan, store: &Store) -> Option<Counts> {
+    let n = store.node_count();
+    // Go dense once the active set is a large fraction of the graph: past this a
+    // dense array's O(1) scatter beats an FnvMap's hashing, and a full-scan seed is
+    // dense from the start. Below it the sparse list wins by touching only live nodes.
+    let dense_cut = dense_cut_for(n);
+    match plan {
+        Plan::Scan { label } => {
+            let seed: &[u32] = match label {
+                Some(l) => store.nodes_with_label(l),
+                None => return Some(dense_from(store.all_nodes().into_iter(), n)),
+            };
+            if seed.len() > dense_cut {
+                let mut counts = vec![0.0f64; n];
+                for &v in seed {
+                    counts[v as usize] = 1.0;
+                }
+                Some(Counts::Dense(counts))
+            } else {
+                Some(Counts::Sparse(seed.iter().map(|&v| (v, 1.0)).collect()))
+            }
+        }
+        Plan::IndexSeek { label, key, value } => Some(sparse_or_dense(
+            index_seek_ids(store, label.as_deref(), key, value),
+            n,
+            dense_cut,
+        )),
+        Plan::RangeSeek {
+            label,
+            key,
+            op,
+            value,
+        } => Some(sparse_or_dense(
+            range_seek_ids(store, label.as_deref(), key, *op, value),
+            n,
+            dense_cut,
+        )),
+        Plan::Expand {
+            input,
+            from,
+            dir,
+            edge_label,
+            double_loops,
+            ..
+        } => {
+            if *from + 1 != chain_width(input)? {
+                return None;
+            }
+            let prev = frontier_counts(input, store)?;
+            let want = match want_etypes(store, edge_label) {
+                Ok(w) => w,
+                Err(()) => return Some(Counts::Sparse(Vec::new())), // unknown label → no paths
+            };
+            // Gremlin `both()` walks a self-loop TWICE — `for_each_nbr` doubles it under
+            // `double_loops`, so the multiplicity (hence the count) matches the TS engine.
+            let dl = *double_loops;
+            // Estimate the next frontier's fan-out from the source count and the
+            // average degree; go dense when it will be large, sparse otherwise. The
+            // scatter itself is identical either way — only the accumulator differs.
+            let avg_deg = if n == 0 {
+                0.0
+            } else {
+                store.edge_count() as f64 / n as f64
+            };
+            let est_next = prev.active() as f64 * avg_deg.max(1.0);
+            if est_next > dense_cut as f64 {
+                let mut next = vec![0.0f64; n];
+                prev.for_each(|v, c| {
+                    for_each_nbr(store, v, *dir, &want, dl, |nbr, _| next[nbr as usize] += c);
+                });
+                Some(Counts::Dense(next))
+            } else {
+                // Sparse scatter into an FnvMap keyed by neighbour — touches only the
+                // few nodes a narrow frontier reaches, no O(node_count) allocation.
+                let mut next: FnvMap<u32, f64> = FnvMap::default();
+                prev.for_each(|v, c| {
+                    for_each_nbr(store, v, *dir, &want, dl, |nbr, _| {
+                        *next.entry(nbr).or_insert(0.0) += c;
+                    });
+                });
+                Some(Counts::Sparse(next.into_iter().collect()))
+            }
+        }
+        // A frontier `hasLabel(L…)` filter: drop the count of any node not carrying one
+        // of the labels (a bucket binary-search per active node), so a fused count/agg
+        // sees through `<hops>.hasLabel(L).count()` instead of materializing.
+        Plan::Filter {
+            input,
+            pred: Expr::IsLabeled { slot, labels },
+        } => {
+            if *slot + 1 != chain_width(input)? {
+                return None; // the filter must test the current frontier
+            }
+            let counts = frontier_counts(input, store)?;
+            // Membership BITSET once (O(total wanted membership)), then O(1) per node —
+            // a mid-traversal `hasLabel` over a big count frontier tests up to node_count
+            // ids, and a per-node binary_search into the label buckets (is_labeled) is
+            // cache-hostile at that scale.
+            let mut member = vec![false; store.node_count()];
+            for l in labels {
+                for &id in store.nodes_with_label(l) {
+                    member[id as usize] = true;
+                }
+            }
+            let keep = |id: u32| member[id as usize];
+            Some(match counts {
+                Counts::Sparse(v) => {
+                    Counts::Sparse(v.into_iter().filter(|&(id, _)| keep(id)).collect())
+                }
+                Counts::Dense(mut a) => {
+                    for (i, c) in a.iter_mut().enumerate() {
+                        if *c != 0.0 && !keep(i as u32) {
+                            *c = 0.0;
+                        }
+                    }
+                    Counts::Dense(a)
+                }
+            })
+        }
+        _ => None,
+    }
+}
+
+/// A DENSE count frontier with each listed id set to 1.0 (for a full unlabeled scan).
+fn dense_from(ids: impl Iterator<Item = u32>, n: usize) -> Counts {
+    let mut counts = vec![0.0f64; n];
+    for v in ids {
+        counts[v as usize] = 1.0;
+    }
+    Counts::Dense(counts)
+}
+
+/// Seed a count frontier from a seek's id list: sparse when the result is small
+/// (the common selective seek), dense when it is large. Duplicate ids accumulate.
+fn sparse_or_dense(ids: Vec<u32>, n: usize, dense_cut: usize) -> Counts {
+    if ids.len() > dense_cut {
+        let mut counts = vec![0.0f64; n];
+        for v in ids {
+            counts[v as usize] += 1.0;
+        }
+        Counts::Dense(counts)
+    } else {
+        // A seek CAN repeat an id (an index bucket with dups); fold so each node appears
+        // once with its multiplicity, matching the dense accumulation.
+        //
+        // But it usually does NOT: a range seek walks a BTreeMap of distinct values and a
+        // node holds one value per key, so the ids come back strictly increasing. Checking
+        // that costs one comparison an id and skips the hashing entirely — measured 28.7us
+        // to 15.4us on a 1%-seeded 1-hop count, where the map was half the query (E77).
+        // The check is exact, so a bucket with dups still takes the map.
+        //
+        // The two branches produce the same (node, count) pairs in a DIFFERENT ORDER —
+        // ascending here, arbitrary from the map. That is already true of `Sparse` against
+        // `Dense`, so every consumer of a count frontier is order-insensitive by
+        // construction: they sum, take a min/max under a total order, or insert into a set.
+        // Nothing emits rows in frontier order. Do not add a consumer that does.
+        if ids.windows(2).all(|w| w[0] < w[1]) {
+            return Counts::Sparse(ids.into_iter().map(|v| (v, 1.0)).collect());
+        }
+        let mut map: FnvMap<u32, f64> = FnvMap::default();
+        for v in ids {
+            *map.entry(v).or_insert(0.0) += 1.0;
+        }
+        Counts::Sparse(map.into_iter().collect())
+    }
+}
+
+/// Answer a scalar `count(*)` over `Filter(Scan)` by running only the filter and
+/// returning the number of survivors — NO gather of the surviving rows' columns
+/// (which the general Filter → Aggregate path builds and immediately discards for a
+/// count). Relies on `try_filter_keep`'s vectorized filter; falls back (`None`) when
+/// the predicate isn't a fast-path shape or the input isn't `Filter(Scan)`.
+fn try_filtered_count(
+    input: &Plan,
+    keys: &[(String, Expr)],
+    aggs: &[Agg],
+    store: &Store,
+) -> Option<Batch> {
+    if !keys.is_empty() || aggs.len() != 1 {
+        return None;
+    }
+    let agg = &aggs[0];
+    if agg.func != AggFn::Count || agg.arg.is_some() || agg.distinct {
+        return None; // count(*) only
+    }
+    let Plan::Filter { input: scan, pred } = input else {
+        return None;
+    };
+    let Plan::Scan { label } = scan.as_ref() else {
+        return None;
+    };
+    // STREAM a numeric predicate over the label bucket — count matches with raw-f64
+    // compares, never materializing the scan's id vector or a keep list. This is
+    // the TS engine's structure (it iterates the bucket and tests inline) but with the
+    // engine's typed compare instead of the TS engine's boxed CExpr tree-walk: measured 3.67x
+    // the TS engine (and ~5x the engine's own materialize-then-filter) on a 200k range count.
+    if let Some(c) = try_stream_num_count(store, label, pred) {
+        return Some(scalar_num(c as f64));
+    }
+    if let Some(c) = try_stream_membership_count(store, label, pred) {
+        return Some(scalar_num(c as f64));
+    }
+    if let Some(c) = try_stream_dict_pred_count(store, label, pred) {
+        return Some(scalar_num(c as f64));
+    }
+    if let Some(c) = try_stream_date_count(store, label, pred) {
+        return Some(scalar_num(c as f64));
+    }
+    // Fallback: materialize the scan and run the general vectorized filter (string /
+    // disjunction / NOT predicates the streaming path does not special-case).
+    let batch = pull(scan, store, false).ok()?;
+    let keep = try_filter_keep(pred, store, &batch)?;
+    Some(scalar_num(keep.len() as f64))
+}
+
+/// Common gate for the fused single-hop fast paths: `Filter(<pred>, Expand{single-type, Out,
+/// from:0, non-bind}(Scan))` over a single-label graph. Returns the scan label, the endpoint
+/// edge type, the predicate, and the Expand plan (for `reverse_seed_decide`). `None` otherwise.
+fn fused_hop_shape<'a>(
+    input: &'a Plan,
+    store: &Store,
+) -> Option<(&'a Option<String>, u32, &'a Expr, &'a Plan)> {
+    let Plan::Filter { input: exp, pred } = input else {
+        return None;
+    };
+    let Plan::Expand {
+        from: 0,
+        dir: Dir::Out,
+        edge_label,
+        bind_edge: false,
+        double_loops: false,
+        ..
+    } = exp.as_ref()
+    else {
+        return None;
+    };
+    let Plan::Expand { input: scan, .. } = exp.as_ref() else {
+        return None;
+    };
+    let Plan::Scan { label } = scan.as_ref() else {
+        return None;
+    };
+    // A single wanted etype (the per-type CSR keys on one type; a disjunction reorders).
+    let want = want_etypes(store, edge_label).ok()?;
+    let [w] = want.as_slice() else {
+        return None;
+    };
+    // PER TYPE (item 1011), the third site of item 1008's shape and the one that declines a whole
+    // ROUTE rather than skipping a per-edge probe. The partition for `w` is complete unless some
+    // edge carries `w` BEHIND its primary; one unrelated multi-label edge said nothing about it.
+    //
+    // Measured by tainting ONE edge (`multilabel_taint_1008`'s filtered arm, 20,000 nodes):
+    //
+    // ```text
+    //   degree 4,   types 1    228.7 -> 391.5   1.71x
+    //   degree 32,  types 1   1837.2 -> 2732.0  1.49x
+    //   degree 32,  types 8    227.2 ->  412.7  1.82x
+    //   degree 256, types 8   3084.5 -> 3000.8  0.97x   (route not taken at this degree)
+    // ```
+    //
+    // Unlike `edge_carries_wanted` (items 1009/1010) this runs ONCE PER QUERY, so the lookup's
+    // own cost cannot swamp what it saves — which is why the identical narrowing pays here and
+    // measured flat there.
+    if store.type_ever_secondary(*w) {
+        return None;
+    }
+    Some((label, *w, pred, exp.as_ref()))
+}
+
+/// Visit each type-`w` OUT edge's neighbour whose source is in `label`, in expand order — the
+/// flat per-type partition when the source set is the WHOLE graph (an unlabelled scan, or a
+/// label every live node carries; 5x fewer touches than a source walk for a sparse type), else
+/// each labelled source's per-type slice. One call per (src, nbr) PATH, so multiplicity is
+/// preserved. `None` if the per-type CSR overlay is stale (caller falls back to the general
+/// path). Shared by the fused count / aggregate / projection.
+fn for_each_typed_out(
+    store: &Store,
+    label: &Option<String>,
+    w: u32,
+    mut f: impl FnMut(u32),
+) -> Option<()> {
+    let flat = store.out_typed_flat(w)?; // freshness gate
+    let universal = match label {
+        None => true,
+        Some(l) => store.nodes_with_label(l).len() == store.live_node_count(),
+    };
+    if universal {
+        for a in flat {
+            f(a.nbr);
+        }
+    } else {
+        scan_visit(store, label, |i| {
+            if let Some(sl) = store.out_typed_csr(i as u32, w) {
+                for a in sl {
+                    f(a.nbr);
+                }
+            }
+        });
+    }
+    Some(())
+}
+
+/// Evaluate an `EXISTS` body against a correlated `seed` batch (the outer rows
+/// plus a provenance column). The body is a chain of the operators an EXISTS
+/// pattern can contain — `Expand`/`VarLength`/`Filter` — rooted at `Plan::Row`,
+/// which yields `seed`. Every operator gathers the whole input row, so the
+/// provenance column rides through untouched; the caller reads it off the result.
+/// Concatenate several same-shaped batches row-wise (Gremlin `union`'s reconverge).
+/// Each output slot is the type-preserving concatenation of that slot across the
+/// batches — so a column that is `Col::Nodes` in every branch stays a node frontier
+/// (continuable), falling back to `Col::Gen` only when the branch column types
+/// differ. Empty input → an empty batch.
+fn concat_batches(subs: &[Batch], store: &Store) -> Batch {
+    if subs.is_empty() {
+        return Batch::of(Vec::new());
+    }
+    // A branch/coalesce reconverges bodies that need not share a width — `out('X')`
+    // (an expand, wider) beside `limit(3).label()` (a scalar projection, narrow). The
+    // output is as WIDE as the widest arm; a narrower arm contributes NULL for the
+    // columns it lacks, so a downstream slot read never indexes past a short arm (a
+    // slot-out-of-bounds panic before this padding).
+    let ncols = subs.iter().map(|b| b.slots.len()).max().unwrap_or(0);
+    let cols: Vec<Col> = (0..ncols)
+        .map(|j| {
+            // NULL placeholders for the arms that have no column `j` — kept alive for
+            // the borrow below; unused (empty) when every arm has the column.
+            let fills: Vec<Col> = subs
+                .iter()
+                .map(|b| {
+                    if j < b.slots.len() {
+                        Col::Gen(Vec::new())
+                    } else {
+                        Col::Gen(vec![Value::Null; b.rows()])
+                    }
+                })
+                .collect();
+            let refs: Vec<&Col> = subs
+                .iter()
+                .enumerate()
+                .map(|(k, b)| {
+                    if j < b.slots.len() {
+                        b.slot(j)
+                    } else {
+                        &fills[k]
+                    }
+                })
+                .collect();
+            concat_cols(&refs, store)
+        })
+        .collect();
+    let mut out = Batch::of(cols);
+    // Preserve lineage: when every sub carries a sidecar, concatenate them row-wise so
+    // path()/GremlinPath survives a union/coalesce branch. (All-or-nothing — a partial
+    // set would desync the row alignment.)
+    if subs.iter().all(|b| b.lineage.is_some()) {
+        let lins: Vec<&crate::batch::Lineage> =
+            subs.iter().map(|b| b.lineage.as_ref().unwrap()).collect();
+        out.lineage = Some(crate::batch::Lineage::concat(&lins));
+    }
+    out
+}
+
+/// Whether two columns hold the same `Col` variant — the guard for the Union
+/// concat fast path. A `Nodes`/`Num` mismatch must NOT concat (see `Plan::Union`),
+/// because the Gen fallback would surface a node as its dense id.
+fn same_col_variant(a: &Col, b: &Col) -> bool {
+    use std::mem::discriminant;
+    discriminant(a) == discriminant(b)
+}
+
+/// Concatenate columns of (ideally) the same variant. Same variant → keep it and
+/// extend the inner vector; MIXED variants → materialize every value into `Gen`,
+/// rendering a node/edge as its ELEMENT MAP (`render_cell`) rather than its dense id
+/// (`value_at`) — a heterogeneous union/branch arm (a Nodes column beside a Str one)
+/// must still surface real vertices/edges downstream, not bare numbers.
+fn concat_cols(cols: &[&Col], store: &Store) -> Col {
+    let gen = || {
+        Col::Gen(
+            cols.iter()
+                .flat_map(|c| (0..c.len()).map(|i| cell_value(c, i, store)))
+                .collect(),
+        )
+    };
+    macro_rules! same {
+        ($variant:ident) => {{
+            let mut v = Vec::new();
+            for c in cols {
+                if let Col::$variant(xs) = c {
+                    v.extend(xs.iter().cloned());
+                } else {
+                    return gen();
+                }
+            }
+            Col::$variant(v)
+        }};
+    }
+    match cols.first() {
+        None => Col::Gen(Vec::new()),
+        Some(Col::Nodes(_)) => same!(Nodes),
+        Some(Col::Edges(_)) => same!(Edges),
+        Some(Col::Num(_)) => same!(Num),
+        Some(Col::Bool(_)) => same!(Bool),
+        Some(Col::Str(_)) => same!(Str),
+        Some(Col::Gen(_)) => gen(),
+    }
+}
+
+/// The per-outer-row set-op combine for an inline CALL body with a `UNION`/`EXCEPT`/
+/// `INTERSECT` tail. Each arm is provenance-tagged; its yield tuples are grouped by the
+/// outer row that produced them, then combined left-associatively PER GROUP with the same
+/// multiset semantics as the top-level set operators. Output rows are laid out in outer
+/// order: each outer row's combined tuples (or one NULL-yield row under OPTIONAL when its
+/// group is empty). The outer columns are gathered natively (kept as Nodes/Edges cols) so
+/// downstream `x.name` still resolves; the yield columns are materialized (`Gen`) like the
+/// top-level set-op, which is what the dedup keys already compare.
+#[allow(clippy::too_many_arguments)]
+fn call_inline_setop(
+    store: &Store,
+    outer: &Batch,
+    seed: &Batch,
+    ow: usize,
+    n: usize,
+    body: &Plan,
+    yields: &[(String, Expr)],
+    parts: &[crate::ir::CallPart],
+    optional: bool,
+) -> Result<Batch, String> {
+    let ny = yields.len();
+    let key_of = |t: &[Value]| -> Vec<u8> {
+        let mut buf = Vec::new();
+        for v in t {
+            value::group_key_into(v, &mut buf);
+        }
+        buf
+    };
+    // Collect one arm's yield tuples, grouped by provenance (the outer row index each
+    // sub-row came from). A fresh-scan arm carries prov through the cross-join too.
+    let collect =
+        |arm_body: &Plan, arm_yields: &[(String, Expr)]| -> Result<Vec<Vec<Vec<Value>>>, String> {
+            let sub = pull_body(arm_body, store, seed)?;
+            let ycols: Vec<Col> = arm_yields
+                .iter()
+                .map(|(_, e)| eval(e, store, &sub))
+                .collect::<Result<_, _>>()?;
+            let prov = sub.slot(ow);
+            let mut groups: Vec<Vec<Vec<Value>>> = vec![Vec::new(); n];
+            for r in 0..sub.rows() {
+                let p = match prov.value_at(r) {
+                    Value::Num(x) => x as usize,
+                    _ => continue,
+                };
+                if p < n {
+                    groups[p].push(ycols.iter().map(|c| render_cell(c, r, store)).collect());
+                }
+            }
+            Ok(groups)
+        };
+    let mut acc = collect(body, yields)?;
+    for part in parts {
+        let rhs = collect(&part.body, &part.yields)?;
+        for (p, rgroup) in rhs.into_iter().enumerate() {
+            let lgroup = std::mem::take(&mut acc[p]);
+            acc[p] = combine_call_groups(part.op, part.all, lgroup, rgroup, &key_of);
+        }
+    }
+    // Lay out output rows in outer order: each group's tuples, then a NULL-yield row
+    // under OPTIONAL for an empty group.
+    let mut provs: Vec<usize> = Vec::new();
+    let mut ycols_out: Vec<Vec<Value>> = vec![Vec::new(); ny];
+    for (p, group) in acc.iter().enumerate() {
+        if group.is_empty() {
+            if optional {
+                provs.push(p);
+                for col in ycols_out.iter_mut() {
+                    col.push(Value::Null);
+                }
+            }
+            continue;
+        }
+        for tuple in group {
+            provs.push(p);
+            for (k, v) in tuple.iter().enumerate() {
+                ycols_out[k].push(v.clone());
+            }
+        }
+    }
+    let mut out_slots: Vec<Col> = (0..ow).map(|j| outer.slot(j).gather(&provs)).collect();
+    for col in ycols_out {
+        out_slots.push(Col::Gen(col));
+    }
+    Ok(Batch::of(out_slots))
+}
+
+/// Combine two provenance groups' yield tuples under one set operator — the multiset
+/// rules of the top-level `Plan::Union` exec, applied within a single outer-row group.
+fn combine_call_groups(
+    op: crate::ir::CombineOp,
+    all: bool,
+    mut l: Vec<Vec<Value>>,
+    r: Vec<Vec<Value>>,
+    key_of: &impl Fn(&[Value]) -> Vec<u8>,
+) -> Vec<Vec<Value>> {
+    use crate::ir::CombineOp;
+    match op {
+        CombineOp::Union => {
+            l.extend(r);
+            if !all {
+                let mut seen: FnvSet<Vec<u8>> = FnvSet::default();
+                l.retain(|t| seen.insert(key_of(t)));
+            }
+            l
+        }
+        CombineOp::Except | CombineOp::Intersect => {
+            let mut rkeys: FnvSet<Vec<u8>> = FnvSet::default();
+            for t in &r {
+                rkeys.insert(key_of(t));
+            }
+            let want_present = matches!(op, CombineOp::Intersect);
+            let mut seen: FnvSet<Vec<u8>> = FnvSet::default();
+            let mut out = Vec::new();
+            for t in l {
+                let k = key_of(&t);
+                if rkeys.contains(&k) == want_present && seen.insert(k) {
+                    out.push(t);
+                }
+            }
+            out
+        }
+    }
+}
+
+/// Whether a branch ARM may run WHOLE-STREAM over the frontier instead of row by row.
+///
+/// ROW-LOCAL is the property being asserted: an output row group depends only on its own input
+/// row, the groups come out in input order, and the operator carries the provenance sidecar
+/// through its `gather`. All three together are what make running the arm once over N rows
+/// equal to running it N times over one row.
+///
+/// A WHITELIST with a `false` catch-all, and that direction is the point: a new `Plan` variant
+/// is excluded until someone shows it qualifies, where a `true` catch-all would silently admit
+/// it. Excluded today and why: a reducer (`count()`/`fold()`) collapses the whole stream, so
+/// one row of output stands for N inputs; `OrderPage`, `Distinct`, `DistinctBy`, `SortLocal`,
+/// `Tail` and `Sample` all decide a row's fate by looking at OTHER rows — and all of them
+/// `gather`, so the sidecar SURVIVES them and its presence alone would wave them through;
+/// `Project` and `Aggregate` build a fresh `Batch` and drop the sidecar, so they are caught
+/// twice over.
+fn arm_is_row_local(p: &Plan) -> bool {
+    match p {
+        Plan::Row => true,
+        // `Reconverge` is here because the instrumentation put it here: every Gremlin branch
+        // arm is wrapped in one, so without it the router refuses every arm it exists for.
+        Plan::Expand { input, .. }
+        | Plan::EdgeVertex { input, .. }
+        | Plan::Filter { input, .. }
+        | Plan::Reconverge { input, .. } => arm_is_row_local(input),
+        _ => false,
+    }
+}
+
+// See the doc on the static inside.
+#[cfg(test)]
+thread_local! {
+    /// Forces the per-row branch path. Flipped by the tests so ONE process can run both paths on
+    /// one query, which is the only way to compare them: the whole-stream router's entire claim is
+    /// that it returns what the per-row loop returns (item 624).
+    ///
+    /// **THREAD-LOCAL, not a global.** `cargo test` runs tests in PARALLEL THREADS, so a global
+    /// switch is read by whatever else happens to be running: the timing test that asserts the
+    /// router FIRES measured its fast side while the differential test had the per-row path
+    /// forced, and failed once in a full-suite run before this was thread-local. A flaky
+    /// assertion in CI is worse than no assertion, and the flake was mine.
+    pub(super) static FORCE_PER_ROW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the per-row path has been forced on THIS thread -- a `const false` outside tests,
+/// so the gate folds away in release.
+fn force_per_row() -> bool {
+    #[cfg(test)]
+    {
+        FORCE_PER_ROW.with(std::cell::Cell::get)
+    }
+    #[cfg(not(test))]
+    {
+        false
+    }
+}
+
+/// `PerElementBranch` with every arm run ONCE over the whole frontier instead of once per row
+/// — `None` when the shape does not qualify, and the caller then takes the per-row path.
+///
+/// Item 623 priced the two routers against each other on the same two arms: `union` (`Branch`,
+/// whole-stream) at 8.39 ns/row for 400,000 output rows, `coalesce` (`PerElementBranch`,
+/// per-row) at 368.41 for 200,000 — 44x per input row, 57x per output row, and flat from 25k
+/// to 200k, so it is a per-row constant rather than a tail. The constant is a `gather(&[i])`
+/// per row (a 1-row `Batch`, one `Vec` per column), a `pull_body` per arm on it, a push into
+/// an N-element `Vec<Batch>` and a final concat over all of them.
+///
+/// Three things make the regrouping exact rather than approximate:
+///
+/// - **Provenance comes from the sidecar, not a column.** See `Batch::prov`. An arm that drops
+///   it (anything building a fresh `Batch`) is refused here, not guessed at.
+/// - **Output order is by INPUT ROW, not by arm.** The per-row path emits row 0's chosen arm,
+///   then row 1's. Whole-stream produces all of arm A's rows then all of arm B's, so the parts
+///   are concatenated and then gathered through a counting sort on prov — stable, so the order
+///   WITHIN one input row's group is the arm's own.
+/// - **An error falls BACK rather than propagating.** Running an arm over N rows at once can
+///   trip `guard_intermediate`'s frontier cap where N separate one-row runs never would, and
+///   that must not turn a working query into `E_RESOURCE_EXHAUSTED`. On any error the fast
+///   path returns `None` and the per-row path runs, which re-raises anything genuinely wrong.
+///
+/// `Optional` and an else-less `Choose` fall back to the SOURCE element rather than to an arm
+/// (item 626). That is a width-1 batch, which is why they were deferred at 624 -- but every
+/// Gremlin branch arm is wrapped in a `Reconverge` to a uniform width-1 frontier, so the two
+/// agree by construction on the shapes this router actually serves, and the width check below
+/// keeps anything else on the per-row path instead of guessing.
+fn per_element_branch_whole_stream(
+    inb: &Batch,
+    kind: &crate::ir::PerElemKind,
+    cond: Option<&Plan>,
+    arms: &[Plan],
+    source_slot: usize,
+    store: &Store,
+) -> Option<Result<Batch, String>> {
+    if force_per_row() {
+        return None;
+    }
+    let n = inb.rows();
+    // A lineage-carrying frontier takes the per-row path: `source_of` and the reducer-arm
+    // step-history seeding below both read it, and neither has a whole-stream twin yet.
+    if n == 0 || inb.lineage.is_some() || arms.is_empty() {
+        return None;
+    }
+    if !arms.iter().all(arm_is_row_local) {
+        return None;
+    }
+
+    let mut seeded = inb.clone();
+    seeded.prov = Some((0..n as u32).collect());
+
+    // Run one arm over a SUBSET of the frontier, keeping provenance. `None` on anything that
+    // disqualifies the shape — including an error, deliberately (see the doc comment).
+    let run = |rows: &[usize], arm: &Plan| -> Option<Batch> {
+        let sub = seeded.gather(rows);
+        let out = pull_body(arm, store, &sub).ok()?;
+        let p = out.prov.as_ref()?;
+        (p.len() == out.rows()).then_some(out)
+    };
+    // The pass-through fallback as a part: the SOURCE element of the given rows, width-1,
+    // carrying their provenance so the final counting sort places them by input row. The
+    // whole-stream twin of the per-row `source_of`.
+    let source_part = |rows: &[usize]| -> Batch {
+        let sub = seeded.gather(rows);
+        let col = sub
+            .slots
+            .get(source_slot)
+            .cloned()
+            .unwrap_or_else(|| Col::Gen(vec![Value::Null; sub.rows()]));
+        let mut b = Batch::of(vec![col]);
+        b.prov = sub.prov;
+        b
+    };
+    let served = |out: &Batch| -> Option<Vec<bool>> {
+        let mut hit = vec![false; n];
+        for &p in out.prov.as_ref()? {
+            *hit.get_mut(p as usize)? = true;
+        }
+        Some(hit)
+    };
+
+    let mut parts: Vec<Batch> = Vec::new();
+    match kind {
+        crate::ir::PerElemKind::Coalesce => {
+            // The arms in order, each over only the rows no earlier arm claimed — the
+            // whole-stream reading of "the first arm that produces anything wins".
+            let mut pending: Vec<usize> = (0..n).collect();
+            for arm in arms {
+                if pending.is_empty() {
+                    break;
+                }
+                let out = run(&pending, arm)?;
+                let hit = served(&out)?;
+                pending.retain(|&i| !hit[i]);
+                if out.rows() > 0 {
+                    parts.push(out);
+                }
+            }
+        }
+        crate::ir::PerElemKind::Choose { has_else: true } => {
+            let cond = cond?;
+            if !arm_is_row_local(cond) || arms.len() < 2 {
+                return None;
+            }
+            let all: Vec<usize> = (0..n).collect();
+            // The per-row test is "the cond body produced at least one row", so whole-stream
+            // the TRUE set is exactly the set of input rows the cond's output mentions.
+            let taken = served(&run(&all, cond)?)?;
+            for (arm, want) in [(&arms[0], true), (&arms[1], false)] {
+                let rows: Vec<usize> = (0..n).filter(|&i| taken[i] == want).collect();
+                if rows.is_empty() {
+                    continue;
+                }
+                let out = run(&rows, arm)?;
+                if out.rows() > 0 {
+                    parts.push(out);
+                }
+            }
+        }
+        crate::ir::PerElemKind::Optional => {
+            // One arm over everything; the rows it did not serve pass their source through.
+            let out = run(&(0..n).collect::<Vec<_>>(), &arms[0])?;
+            let hit = served(&out)?;
+            if out.rows() > 0 {
+                parts.push(out);
+            }
+            let miss: Vec<usize> = (0..n).filter(|&i| !hit[i]).collect();
+            if !miss.is_empty() {
+                parts.push(source_part(&miss));
+            }
+        }
+        crate::ir::PerElemKind::Choose { has_else: false } => {
+            let cond = cond?;
+            if !arm_is_row_local(cond) {
+                return None;
+            }
+            let taken = served(&run(&(0..n).collect::<Vec<_>>(), cond)?)?;
+            let trues: Vec<usize> = (0..n).filter(|&i| taken[i]).collect();
+            if !trues.is_empty() {
+                // A row whose cond held but whose arm produced nothing contributes nothing,
+                // which is what the per-row path does with the arm's empty output.
+                let out = run(&trues, &arms[0])?;
+                if out.rows() > 0 {
+                    parts.push(out);
+                }
+            }
+            let falses: Vec<usize> = (0..n).filter(|&i| !taken[i]).collect();
+            if !falses.is_empty() {
+                parts.push(source_part(&falses));
+            }
+        }
+    }
+
+    // Every part has to agree on width, because the per-row concat's handling of a ragged set
+    // is a behaviour this path must not change by regrouping. All-empty falls back too: the
+    // per-row path derives the output SHAPE from an empty run of arm 0, which this does not.
+    let width = parts.first()?.slots.len();
+    if parts.iter().any(|b| b.slots.len() != width) {
+        return None;
+    }
+
+    let prov: Vec<u32> = parts
+        .iter()
+        .filter_map(|b| b.prov.clone())
+        .flatten()
+        .collect();
+    let combined = concat_batches(&parts, store);
+    if prov.len() != combined.rows() {
+        return None;
+    }
+    // Counting sort on the input row — O(rows), and stable, so an input row served by one arm
+    // keeps that arm's ordering inside its group.
+    let mut at = vec![0usize; n + 1];
+    for &p in &prov {
+        at[p as usize + 1] += 1;
+    }
+    for i in 0..n {
+        at[i + 1] += at[i];
+    }
+    let mut order = vec![0usize; prov.len()];
+    for (i, &p) in prov.iter().enumerate() {
+        order[at[p as usize]] = i;
+        at[p as usize] += 1;
+    }
+    let mut out = combined.gather(&order);
+    // The sidecar is this router's private state; nothing above it may read it as its own.
+    out.prov = None;
+    Some(Ok(out))
+}
+
+/// The per-element routing of a `PerElementBranch` (coalesce / optional / choose), over an
+/// ALREADY-PULLED input frontier `inb`. Shared by the main `pull` (input via `pull`) and
+/// `pull_body` (input via `pull_body`) so a NESTED branch inside a branch arm evaluates
+/// identically. Each row runs through the arms on a 1-row sub-batch — TinkerPop's
+/// per-traverser semantics — and the per-row outputs concatenate in row order.
+fn per_element_branch_exec(
+    inb: Batch,
+    kind: &crate::ir::PerElemKind,
+    cond: &Option<Box<Plan>>,
+    arms: &[Plan],
+    source_slot: usize,
+    store: &Store,
+    track: bool,
+) -> Result<Batch, String> {
+    // An EMPTY frontier: per element there are NO elements to route, so the result is
+    // empty — but `concat_batches(&[])` is a 0-slot batch and a downstream slot read would
+    // index a column that isn't there. Reproduce the arms' natural width-1 shape (typed
+    // column) and then take ZERO rows: running the arms whole-stream over the empty input
+    // yields the right column TYPE, and `gather(&[])` drops any row a reducer fabricated
+    // (`count()` over empty = [0]) so the output is truly empty.
+    if inb.rows() == 0 {
+        let subs: Vec<Batch> = arms
+            .iter()
+            .map(|b| pull_body(b, store, &inb))
+            .collect::<Result<_, _>>()?;
+        return Ok(concat_batches(&subs, store).gather(&[]));
+    }
+    // WHOLE-STREAM first (item 624). `track` is the hard gate: the per-row loop below seeds a
+    // step-history from a reducer arm's output, and that has no whole-stream twin. Everything
+    // else that disqualifies a shape is decided inside, which returns `None` and leaves this
+    // loop to run exactly as it did.
+    if !track {
+        if let Some(fast) =
+            per_element_branch_whole_stream(&inb, kind, cond.as_deref(), arms, source_slot, store)
+        {
+            return fast;
+        }
+    }
+    // The source element as a width-1 batch (the pass-through fallback), preserving the
+    // row's lineage so a following path() still answers.
+    let source_of = |sub: &Batch| -> Batch {
+        let col = sub
+            .slots
+            .get(source_slot)
+            .cloned()
+            .unwrap_or_else(|| Col::Gen(vec![Value::Null; sub.rows()]));
+        let mut out = Batch::of(vec![col]);
+        out.lineage = sub.lineage.clone();
+        out
+    };
+    let mut outs: Vec<Batch> = Vec::with_capacity(inb.rows());
+    for i in 0..inb.rows() {
+        let sub = inb.gather(&[i]);
+        let row_out = match kind {
+            crate::ir::PerElemKind::Coalesce => {
+                let mut chosen: Option<Batch> = None;
+                for arm in arms {
+                    let r = pull_body(arm, store, &sub)?;
+                    if r.rows() > 0 {
+                        chosen = Some(r);
+                        break;
+                    }
+                }
+                match chosen {
+                    Some(b) => b,
+                    // No arm produced — an EMPTY row shaped like an arm's WIDTH-1 output
+                    // (running arm[0] on the empty sub), NOT `sub.gather(&[])` which keeps
+                    // the sub's full width: a leading hop makes sub width-2, and the width
+                    // mismatch would desync the concat into a Gen column that a following
+                    // fused hop mishandles (`out('KNOWS').coalesce(...).outE()` → null).
+                    None => pull_body(&arms[0], store, &sub.gather(&[]))?,
+                }
+            }
+            crate::ir::PerElemKind::Optional => {
+                let r = pull_body(&arms[0], store, &sub)?;
+                if r.rows() > 0 {
+                    r
+                } else {
+                    source_of(&sub)
+                }
+            }
+            crate::ir::PerElemKind::Choose { has_else } => {
+                let c = pull_body(cond.as_ref().expect("choose has a cond"), store, &sub)?;
+                if c.rows() > 0 {
+                    pull_body(&arms[0], store, &sub)?
+                } else if *has_else {
+                    pull_body(&arms[1], store, &sub)?
+                } else {
+                    source_of(&sub)
+                }
+            }
+        };
+        // A reducer arm (`count()`/`fold()`) collapses its sub-stream and drops the lineage;
+        // TinkerPop resets the path to the reduced value, so seed a per-row single-element
+        // step-history from the arm's output when a path() is read and the arm produced none.
+        // Without it, `coalesce(values('name').count(), …).path()` loses ALL lineage in the
+        // concat (all-or-nothing) and path() is [null].
+        let mut row_out = row_out;
+        if track && row_out.lineage.is_none() && !row_out.slots.is_empty() {
+            let vals: Vec<Value> = (0..row_out.rows())
+                .map(|i| row_out.slot(0).value_at(i))
+                .collect();
+            row_out.lineage = Some(crate::batch::Lineage::seed_steps(
+                &vals,
+                crate::batch::STEP_SCALAR,
+            ));
+        }
+        outs.push(row_out);
+    }
+    Ok(concat_batches(&outs, store))
+}
+
+fn pull_body(plan: &Plan, store: &Store, seed: &Batch) -> Result<Batch, String> {
+    Ok(match plan {
+        Plan::Row => seed.clone(),
+        // A `path()`-through-branch records each arm step into the seed's step-history, so a
+        // path() reads the arm's hops — the streaming twin of the main `PathRecord` arm.
+        Plan::PathRecord { input, value, tag } => {
+            let mut batch = pull_body(input, store, seed)?;
+            let in_range = !matches!(value, Expr::Slot(n) if *n >= batch.slots.len());
+            if in_range {
+                if let Some(lin) = batch.lineage.take() {
+                    let col = eval(value, store, &batch)?;
+                    let vals: Vec<Value> = (0..batch.rows()).map(|i| col.value_at(i)).collect();
+                    batch.lineage = Some(lin.push_step(&vals, *tag));
+                }
+            }
+            batch
+        }
+        // A correlated fresh Scan (a CALL set-op arm that starts from `(x:Label)` rather
+        // than a scope variable): cross-join every seed row with every matching node,
+        // appending the node at the next slot. Ignores its position as a "leaf" — the
+        // seed IS its input, so the prov column the seed carries fans out with it.
+        Plan::Scan { label } => {
+            let nodes: Vec<u32> = match label {
+                Some(l) => store.nodes_with_label(l).to_vec(),
+                None => (0..store.node_count() as u32).collect(),
+            };
+            let mut keep: Vec<usize> = Vec::with_capacity(seed.rows() * nodes.len());
+            let mut ncol: Vec<u32> = Vec::with_capacity(seed.rows() * nodes.len());
+            for r in 0..seed.rows() {
+                for &nd in &nodes {
+                    keep.push(r);
+                    ncol.push(nd);
+                }
+            }
+            let mut out = seed.gather(&keep);
+            out.slots.push(Col::Nodes(ncol));
+            out
+        }
+        Plan::Expand {
+            input,
+            from,
+            dir,
+            edge_label,
+            bind_edge,
+            double_loops,
+        } => guard_intermediate(
+            expand(
+                &pull_body(input, store, seed)?,
+                store,
+                *from,
+                *dir,
+                edge_label,
+                *bind_edge,
+                *double_loops,
+            )?,
+            store,
+        )?,
+        // Edge frontier → endpoint vertex (`inV`/`outV`/`otherV` off a bound edge) —
+        // the streamable twin of the main EdgeVertex arm; appends the endpoint slot
+        // (Both fans out to two rows). Lineage-free (streaming is `!track`).
+        Plan::EdgeVertex {
+            input,
+            edge_slot,
+            which,
+            other,
+        } => {
+            let b = pull_body(input, store, seed)?;
+            let mut keep: Vec<usize> = Vec::new();
+            let mut nodes: Vec<u32> = Vec::new();
+            // See the `Plan::EdgeVertex` arm in `pull`: the representation is checked once,
+            // not boxed per row.
+            let ecol = b.slot(*edge_slot);
+            let typed = elem_ids(ecol);
+            for i in 0..b.rows() {
+                let eid = match typed {
+                    // See the `pull` arm: `edge_endpoints` rejects the sentinel for us.
+                    Some(ids) => ids[i],
+                    None => match ecol.value_at(i) {
+                        Value::Num(x) if x >= 0.0 => x as u32,
+                        // A branch/mixed frontier carries edges UNBOXED; a non-edge cell (a
+                        // vertex/scalar from another arm) has no endpoint, so skip it.
+                        Value::Edge(e) => e,
+                        _ => continue,
+                    },
+                };
+                let Some((src, dst)) = store.edge_endpoints(eid) else {
+                    continue;
+                };
+                if *other {
+                    let reference = b
+                        .lineage
+                        .as_ref()
+                        .and_then(|l| otherv_reference(l.path_at(i), src, dst));
+                    keep.push(i);
+                    // Arrived from dst -> otherV is src; arrived from src (or NO reference: a
+                    // bare edge reached via a branch) -> otherV is dst's opposite, i.e. src is
+                    // the default OUT vertex, matching pure-TS.
+                    nodes.push(match reference {
+                        Some(r) if r == dst => src,
+                        Some(_) => dst,
+                        None => src,
+                    });
+                    continue;
+                }
+                match which {
+                    Dir::Out => {
+                        keep.push(i);
+                        nodes.push(src);
+                    }
+                    Dir::In => {
+                        keep.push(i);
+                        nodes.push(dst);
+                    }
+                    Dir::Both => {
+                        keep.push(i);
+                        nodes.push(src);
+                        keep.push(i);
+                        nodes.push(dst);
+                    }
+                }
+            }
+            let mut out = b.gather(&keep);
+            // Mirror the main EdgeVertex arm: record the landed vertex into the lineage node
+            // path so a following branch-separated `otherV` reads it as its reference. A no-op
+            // on the usual streaming (`!track`) input, which carries no lineage.
+            if let Some(lin) = b.lineage.as_ref() {
+                out.lineage = Some(lin.extend_nodes(&keep, &nodes));
+            }
+            out.slots.push(Col::Nodes(nodes));
+            out
+        }
+        Plan::VarLength {
+            input,
+            from,
+            dir,
+            edge_label,
+            min,
+            max,
+            mode,
+            until,
+            body_filter,
+            double_loops,
+            path_need,
+        } => var_length(
+            &pull_body(input, store, seed)?,
+            store,
+            *from,
+            *dir,
+            edge_label,
+            *min,
+            *max,
+            *mode,
+            &[],
+            None,
+            1,
+            until.as_deref(),
+            body_filter.as_deref(),
+            *double_loops,
+            *path_need,
+        )?,
+        Plan::Filter { input, pred } => {
+            let b = pull_body(input, store, seed)?;
+            // `filter_keep`, not a second derivation of it. This arm used to build its own
+            // keep-set with `value_at(i).is_true()`, which reads a NON-BOOLEAN as `false` where
+            // the main `Plan::Filter` arm rejects it — so a predicate that is a truth value for
+            // some rows and not others silently dropped the offending rows inside a CALL
+            // subquery body and raised everywhere else (audit item 169):
+            //
+            //   MATCH (n:T) CALL (n) { MATCH (n)-[:E]->(m)
+            //     WHERE CASE WHEN n.x > 0 THEN true ELSE 1.0 END RETURN m.n AS mn }
+            //     RETURN mn AS x
+            //       ts: E_INVALID_VALUE     native: [{"x":11}]
+            //
+            // The divergence registry names this shape the "`CALL`-body laziness bug" and
+            // deliberately refuses to absorb it. It was never laziness: it was this missing
+            // truth-type check. `filter_keep`'s own comment is the rule it broke — "a second
+            // derivation of 'which rows does this predicate keep' is exactly the kind of drift
+            // that makes two spellings of one query disagree".
+            // `as_truth`, which REJECTS a non-boolean, rather than the `value_at(i).is_true()`
+            // this arm used to derive its keep-set with — `is_true()` reads a non-boolean as
+            // `false`, where every other filter in the engine raises.
+            //
+            // NOT `filter_keep`, which would be the ideal single derivation: routing through it
+            // cost this bench's `filter` row 78.2 -> 93.1 / 307.5 -> 375.3 / 789.6 -> 935.0ms
+            // across the three sizes, a measured ~20% that is non-overlapping and reproducible
+            // (`pull_body` serves the STREAMING driver, so this arm is on the hot filter path,
+            // not just subquery bodies). `as_truth` over the evaluated column is what
+            // `filter_keep`'s own general path reduces to, so the semantics are its semantics —
+            // the three-valued mask, UNKNOWN dropped — at the cost this arm already paid.
+            // FILTER ORDER, the same rule as `filter_keep`'s and for the same reason — and it
+            // has to be stated twice because this arm deliberately is not that function. This
+            // one serves the STREAMING driver where the main `Plan::Filter` arm serves the
+            // materialized one, and `the_streamed_and_materialized_projections_agree` compares
+            // them: applying the reordering to only one side made seed 107 raise
+            // "division by zero" streamed and answer rows materialized, which is the sharpest
+            // possible reminder that "which rows does this predicate keep" has two derivations
+            // here. The ordered path uses `eval_mask`, which this arm's own comment below
+            // records as the semantics it reduces to.
+            //
+            // Behind its own door, so the ~20% this arm exists to keep is untouched: only a
+            // MIXED conjunction (something that can raise beside something that cannot) leaves
+            // the three lines below, and they are unchanged.
+            if let Some(parts) = filter_conjuncts_reordered(pred) {
+                let keep = filter_keep_ordered(&parts, store, &b)?;
+
+                return Ok(b.gather(&keep));
+            }
+
+            let mask = as_truth(&eval(pred, store, &b)?)?;
+            let keep: Vec<usize> = (0..mask.len()).filter(|&i| mask[i] == Some(true)).collect();
+
+            b.gather(&keep)
+        }
+        // A projection is streamable too (used by the LIMIT short-circuit driver;
+        // EXISTS bodies never contain one). Evaluate the items over the sub-frontier.
+        Plan::Project { input, items } => {
+            let b = pull_body(input, store, seed)?;
+            let cols = eval_all(items.iter().map(|(_, e)| e), store, &b)?;
+            let mut out = Batch::of(cols);
+            out.lineage = b.lineage;
+            out
+        }
+        // Append/overwrite one column — a `choose(...identity())` else arm copies the
+        // pass-through element into the reconverge slot inside a Branch body.
+        Plan::MapSlot {
+            input,
+            slot,
+            value,
+            append,
+        } => {
+            let mut b = pull_body(input, store, seed)?;
+            let col = eval(value, store, &b)?;
+            if *append {
+                b.slots.push(col);
+            } else if *slot < b.slots.len() {
+                b.slots[*slot] = col;
+            }
+            b
+        }
+        // A reducing body (`fold()`/`count()` inside a union/coalesce branch) folds the
+        // sub-frontier; run the general aggregate over the pulled body.
+        Plan::Aggregate { input, keys, aggs } => {
+            let b = pull_body(input, store, seed)?;
+            let mut out = aggregate(&b, store, keys, aggs)?;
+            // A GLOBAL reducer resets the traverser path (see the main Aggregate arm): seed a
+            // fresh step-history [agg value] so a following path() reads the reduced value
+            // (`union(count(), …).path()` → [count]).
+            if seed.lineage.is_some() && keys.is_empty() && aggs.len() == 1 && !out.slots.is_empty()
+            {
+                let col = out.slot(out.slots.len() - 1);
+                let vals: Vec<Value> = (0..out.rows()).map(|i| col.value_at(i)).collect();
+                out.lineage = Some(crate::batch::Lineage::seed_steps(
+                    &vals,
+                    crate::batch::STEP_SCALAR,
+                ));
+            }
+            out
+        }
+        // A per-cell list sort inside a branch body.
+        Plan::SortLocal {
+            input,
+            descending,
+            by_key,
+        } => sort_local_body(pull_body(input, store, seed)?, *descending, *by_key)?,
+        // An unwind inside a branch body (a union of fold/unfold, etc.).
+        Plan::Unwind {
+            input,
+            list,
+            ordinal,
+            ..
+        } => {
+            let b = pull_body(input, store, seed)?;
+            let (keep, elems, ords) = unwind_rows(list, &b, ordinal, store)?;
+            let mut slots: Vec<Col> = b.slots.iter().map(|c| c.gather(&keep)).collect();
+            slots.push(reunfold_elements(elems, store));
+            if ordinal.is_some() {
+                slots.push(Col::Gen(ords));
+            }
+            Batch::of(slots)
+        }
+        // Paging / dedup / tail in a Row-seeded tail (a `SET … RETURN … ORDER BY` /
+        // `DISTINCT`, or a Gremlin `property(…).values(…).dedup()`). The seed is already
+        // materialized, so apply the batch-level operators directly — no streaming cap.
+        Plan::OrderPage {
+            input,
+            keys,
+            skip,
+            limit,
+            fault_on_element,
+        } => {
+            let b = pull_body(input, store, seed)?;
+            order_page(&b, store, keys, *skip, *limit, *fault_on_element)?
+        }
+        Plan::Distinct { input } => distinct_batch(pull_body(input, store, seed)?),
+        Plan::Fail { input, message } => {
+            let b = pull_body(input, store, seed)?;
+            if b.rows() > 0 {
+                return Err(fail_error(message));
+            }
+            b
+        }
+        // Gremlin `dedup()` / `dedup('a',…)` inside a branch arm — first-seen per distinct
+        // key tuple over the seeded body (same as the main path's materialized fallback).
+        Plan::DistinctBy { input, key_slots } => {
+            let batch = pull_body(input, store, seed)?;
+            if batch.rows() == 0 {
+                batch
+            } else {
+                let typed = distinct_by_typed(&batch, key_slots);
+                let mut seen_ids = SeenIds::default();
+                let mut seen_bytes: FnvSet<Vec<u8>> = FnvSet::default();
+                let keep =
+                    distinct_by_keep(&batch, key_slots, typed, &mut seen_ids, &mut seen_bytes);
+                batch.gather(&keep)
+            }
+        }
+        Plan::Reconverge { input, slot } => {
+            // Collapse a branch arm to its element/value column at `slot` (cloned so a
+            // Nodes/Edges frontier keeps its type), preserving the lineage sidecar so
+            // path()-through-branch still works. `slot` past the width reads NULL.
+            let b = pull_body(input, store, seed)?;
+            let col = b
+                .slots
+                .get(*slot)
+                .cloned()
+                .unwrap_or_else(|| Col::Gen(vec![Value::Null; b.rows()]));
+            let mut out = Batch::of(vec![col]);
+            out.lineage = b.lineage;
+            // 1:1 on rows and reordering nothing, so the provenance sidecar still describes
+            // the output — but this builds a FRESH batch rather than gathering, so it has to
+            // hand it over explicitly. Without this the whole-stream branch router (item 624)
+            // never fires at all: every Gremlin branch arm is wrapped in a `Reconverge`.
+            out.prov = b.prov;
+            out
+        }
+        // A NESTED branch inside a branch arm (`optional(out().optional(out()))`,
+        // `coalesce(choose(...), ...)`): pull the arm's input frontier here, then route it
+        // through the shared per-element executor. `track` follows the seed's lineage — path
+        // tracking is on iff the outer per-row sub-batch carries a lineage sidecar.
+        Plan::PerElementBranch {
+            input,
+            kind,
+            cond,
+            arms,
+            source_slot,
+        } => {
+            let inb = pull_body(input, store, seed)?;
+            let track = seed.lineage.is_some();
+            per_element_branch_exec(inb, kind, cond, arms, *source_slot, store, track)?
+        }
+        Plan::Tail { input, n } => {
+            let b = pull_body(input, store, seed)?;
+            let rows = b.rows();
+            let start = rows.saturating_sub(*n);
+            b.gather(&(start..rows).collect::<Vec<usize>>())
+        }
+        other => {
+            // Name the operator; do NOT print it. `{other:?}` here dumped the whole
+            // subtree — slots, predicates, the lot — at a user who wrote a traversal,
+            // which reads as a crash rather than as "that shape isn't supported here".
+            return Err(format!(
+                "E_UNSUPPORTED: this traversal is not supported inside a filter body \
+                 (Gremlin `where(…)` / `filter(…)`, GQL `EXISTS {{ … }}`): the \
+                 `{}` operator cannot run there. A filter body walks and tests; lift a \
+                 branching or reordering step (union/choose/order/local) out of it, or \
+                 end the body in count()/fold().",
+                other.op_name()
+            ));
+        }
+    })
+}
+
+/// Evaluate several expressions to columns, short-circuiting on the first error.
+fn eval_all<'a>(
+    exprs: impl IntoIterator<Item = &'a Expr>,
+    store: &Store,
+    batch: &Batch,
+) -> Result<Vec<Col>, String> {
+    exprs.into_iter().map(|e| eval(e, store, batch)).collect()
+}
+
+/// Per-row presence mask for a Gremlin `project()` map entry under `omit_absent`.
+/// `Some(mask)` when the entry's value is a bare property projection (`Expr::Prop`) over
+/// an element frontier — `mask[i]` is false where that row's element lacks the property
+/// (an OPTIONAL `u32::MAX` sentinel counts as absent). `None` means "always keep" (a
+/// non-property entry, or a non-element frontier where a Prop read is not an absence
+/// test) — matching the TS engine, which omits a project key only when `by()` yields no
+/// value. Shared by the `MapLit` evaluator arm and the fused project JSON fast path so
+/// the two stay byte-identical.
+fn prop_present_mask(e: &Expr, store: &Store, batch: &Batch) -> Option<Vec<bool>> {
+    let Expr::Prop { slot, key } = e else {
+        return None;
+    };
+    if *slot >= batch.slots.len() {
+        return Some(vec![false; batch.rows()]);
+    }
+    match batch.slot(*slot) {
+        Col::Nodes(ids) => Some(
+            ids.iter()
+                .map(|&id| id != u32::MAX && store.has_prop(id, key))
+                .collect(),
+        ),
+        Col::Edges(eids) => Some(
+            eids.iter()
+                .map(|&eid| eid != u32::MAX && store.has_edge_prop(eid, key))
+                .collect(),
+        ),
+        _ => None,
+    }
+}
+
+/// `op` with its operands swapped — used to normalize `literal <cmp> prop` to
+/// `prop <cmp> literal`. Equality is symmetric; the orderings mirror.
+fn flip_op(op: CompareOp) -> CompareOp {
+    match op {
+        CompareOp::Eq => CompareOp::Eq,
+        CompareOp::Ne => CompareOp::Ne,
+        CompareOp::Lt => CompareOp::Gt,
+        CompareOp::Gt => CompareOp::Lt,
+        CompareOp::Le => CompareOp::Ge,
+        CompareOp::Ge => CompareOp::Le,
+    }
+}
+
+/// The negation of a compare operator — `NOT (x op y)` ≡ `x invert_op(op) y` for
+/// present, finite operands. Stored Num/Str cells always are (NaN/absent → NULL,
+/// gated by `present`), so the raw fast paths keep the exact keep-TRUE semantics.
+fn invert_op(op: CompareOp) -> CompareOp {
+    match op {
+        CompareOp::Eq => CompareOp::Ne,
+        CompareOp::Ne => CompareOp::Eq,
+        CompareOp::Lt => CompareOp::Ge,
+        CompareOp::Ge => CompareOp::Lt,
+        CompareOp::Gt => CompareOp::Le,
+        CompareOp::Le => CompareOp::Gt,
+    }
+}
+
+/// De Morgan push-down of `NOT` for the keep-TRUE filter: an equivalent positive
+/// predicate (`NOT` eliminated) when `e` is built from compares / AND / OR / NOT,
+/// else `None`. Exact in Kleene 3-valued logic for "keep rows where TRUE": `NOT e`
+/// is TRUE iff `e` is FALSE, and each rule preserves that (`AND` is FALSE iff an
+/// operand is FALSE → `OR` of the negations; `>` inverts to `<=`; etc.). Absent /
+/// NaN cells stay dropped on both sides because every compare is UNKNOWN there.
+fn invert_pred(e: &Expr) -> Option<Expr> {
+    Some(match e {
+        // EQUALITY ONLY. `=` and `<>` are genuine complements even when an operand is NaN
+        // (`NaN = x` is false, `NaN <> x` is true), but the ORDERING operators are not: under
+        // IEEE unordered comparison a NaN operand makes `<`, `<=`, `>` and `>=` all FALSE, so
+        // `NOT (NaN < 3)` is TRUE while `NaN >= 3` is FALSE. Inverting one into the other
+        // dropped the row.
+        //
+        // This is the executor's copy of the mistake the planner's `normalize_pred` made (item
+        // 53). That one was found and fixed first, and its tests used `sin(1e400)` — a `Call`,
+        // which `try_filter_keep` declines — so they never reached this path at all. With the
+        // NaN arriving from a PROPERTY the fast path applies and the bug was still live. Two
+        // implementations of one idea, and fixing the first hid the second.
+        //
+        // Returning `None` for an ordering comparison costs the typed fast path on a negated
+        // range filter; the caller then evaluates the original `NOT` through the general boxed
+        // path, which is correct.
+        Expr::Compare { op, left, right } if matches!(op, CompareOp::Eq | CompareOp::Ne) => {
+            Expr::Compare {
+                op: invert_op(*op),
+                left: left.clone(),
+                right: right.clone(),
+            }
+        }
+        Expr::And(a, b) => Expr::Or(Box::new(invert_pred(a)?), Box::new(invert_pred(b)?)),
+        Expr::Or(a, b) => Expr::And(Box::new(invert_pred(a)?), Box::new(invert_pred(b)?)),
+        Expr::Not(inner) => (**inner).clone(),
+        _ => return None,
+    })
+}
+
+/// Flatten a conjunction into its atoms (`a AND b AND c` → `[a, b, c]`); a
+/// non-`And` expression is a single atom.
+fn flatten_and<'a>(e: &'a Expr, out: &mut Vec<&'a Expr>) {
+    match e {
+        Expr::And(a, b) => {
+            flatten_and(a, out);
+            flatten_and(b, out);
+        }
+        _ => out.push(e),
+    }
+}
+
+fn flatten_or<'a>(e: &'a Expr, out: &mut Vec<&'a Expr>) {
+    match e {
+        Expr::Or(a, b) => {
+            flatten_or(a, out);
+            flatten_or(b, out);
+        }
+        _ => out.push(e),
+    }
+}
+
+/// Keep rows satisfying a DISJUNCTION of `prop <op> num-literal` compares, all on
+/// the same node slot and all reading `Num` columns — one raw-f64 pass keeping a
+/// row when ANY disjunct is TRUE. This is the OR mirror of [`try_num_conjunction`],
+/// and it also catches `x IN [a, b, …]`, which the parser desugars to an OR-chain of
+/// equalities. 3VL WHERE semantics hold: a disjunct over a NULL/NaN cell is never
+/// TRUE, so the row is kept iff some disjunct is definitely TRUE (else FALSE/UNKNOWN
+/// → dropped), matching the general `Or` evaluator under `is_true`.
+fn try_num_disjunction(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec<usize>> {
+    if !matches!(pred, Expr::Or(..)) {
+        return None;
+    }
+    let mut atoms = Vec::new();
+    flatten_or(pred, &mut atoms);
+    let mut slot0: Option<usize> = None;
+    let mut specs: Vec<(&[f64], &[bool], CompareOp, f64)> = Vec::with_capacity(atoms.len());
+    for atom in atoms {
+        let Expr::Compare { op, left, right } = atom else {
+            return None;
+        };
+        let (slot, key, op, lit) = match (left.as_ref(), right.as_ref()) {
+            (Expr::Prop { slot, key }, Expr::Lit(v)) => (*slot, key, *op, v),
+            (Expr::Lit(v), Expr::Prop { slot, key }) => (*slot, key, flip_op(*op), v),
+            _ => return None,
+        };
+        match slot0 {
+            Some(s) if s != slot => return None, // all disjuncts on the same slot
+            _ => slot0 = Some(slot),
+        }
+        let Value::Num(t) = lit else { return None };
+        let Some(Column::Num { data, present, .. }) = store.column(key) else {
+            return None;
+        };
+        specs.push((data, present, op, *t));
+    }
+    let Col::Nodes(ids) = batch.slot(slot0?) else {
+        return None;
+    };
+    Some(
+        ids.iter()
+            .enumerate()
+            .filter(|&(_, &id)| {
+                if id == u32::MAX {
+                    return false; // NULL element → UNKNOWN → dropped
+                }
+                let i = id as usize;
+                specs
+                    .iter()
+                    .any(|&(data, present, op, t)| present[i] && num_pred(op, data[i], t))
+            })
+            .map(|(row, _)| row)
+            .collect(),
+    )
+}
+
+/// Keep rows satisfying a CONJUNCTION of `prop <op> num-literal` compares, all on
+/// the same node slot and all reading `Num` columns — one raw-f64 pass over the id
+/// list, each conjunct a `num_pred` (a NULL/NaN cell fails its conjunct → the row
+/// drops, matching AND's 3VL). `None` unless every atom fits that shape (the
+/// caller then tries the single-compare / general paths).
+fn try_num_conjunction(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec<usize>> {
+    if !matches!(pred, Expr::And(..)) {
+        return None; // a single compare is handled by the caller's typed path
+    }
+    let mut atoms = Vec::new();
+    flatten_and(pred, &mut atoms);
+    let mut slot0: Option<usize> = None;
+    let mut specs: Vec<(&[f64], &[bool], CompareOp, f64)> = Vec::with_capacity(atoms.len());
+    for atom in atoms {
+        let Expr::Compare { op, left, right } = atom else {
+            return None;
+        };
+        let (slot, key, op, lit) = match (left.as_ref(), right.as_ref()) {
+            (Expr::Prop { slot, key }, Expr::Lit(v)) => (*slot, key, *op, v),
+            (Expr::Lit(v), Expr::Prop { slot, key }) => (*slot, key, flip_op(*op), v),
+            _ => return None,
+        };
+        match slot0 {
+            Some(s) if s != slot => return None, // all atoms on the same slot
+            _ => slot0 = Some(slot),
+        }
+        let Value::Num(t) = lit else { return None };
+        let Some(Column::Num { data, present, .. }) = store.column(key) else {
+            return None;
+        };
+        specs.push((data, present, op, *t));
+    }
+    let Col::Nodes(ids) = batch.slot(slot0?) else {
+        return None;
+    };
+    // Same-column range (`lo <= x AND x < hi`) — the overwhelmingly common
+    // conjunction. Normalize the two bounds to a concrete lower/upper with
+    // inclusivity, then run ONE loop of LITERAL f64 comparisons: no per-element `match
+    // op` and no runtime spec loop. NaN fails both compares (dropped), matching
+    // `num_pred`'s 3VL; `present` gates nulls — byte-identical to the general path
+    // below. At 1M this turns range filter+project from 0.68x to 1.10x.
+    //
+    // The 200k cache-resident `scan/range-and` PROJECTION sits at ~0.85x, and that is
+    // projection-bound, not filter-bound: the FILTER, streamed, is 3.67x the TS engine (see
+    // `try_stream_num_count` — the win was skipping the scan-id materialization, the TS engine's
+    // trick), but this shape returns 20k names and the ~0.66ms of string projection
+    // dominates the ~0.12ms filter, so both engines pay it and the ratio parks near a
+    // tie. REJECTED, all measured NEUTRAL at 200k:
+    //   - Streaming the projection too (collect survivors by borrowing the bucket, then
+    //     project): neutral for the range (projection-bound) and it REGRESSED the
+    //     single-compare `scan/gt` 1.05x -> 0.78x (a lone compare loses the vectorized
+    //     `try_filter_keep` path for no materialization win).
+    //   - Sequential column read when the id list is the contiguous full scan
+    //     (`id == row`), to drop the `d0[ids[row]]` gather: no change.
+    //   - Mask-then-compact: the default release target has no SIMD gather, so it would
+    //     not vectorize either.
+    if specs.len() == 2 {
+        let (d0, p0, op0, t0) = specs[0];
+        let (d1, _, op1, t1) = specs[1];
+        if std::ptr::eq(d0.as_ptr(), d1.as_ptr()) {
+            let bound = |op, t| match op {
+                CompareOp::Ge => Some((true, t, true)), // (is_lower, value, inclusive)
+                CompareOp::Gt => Some((true, t, false)),
+                CompareOp::Le => Some((false, t, true)),
+                CompareOp::Lt => Some((false, t, false)),
+                _ => None, // Eq/Ne is not a range bound
+            };
+            if let (Some((lo_a, va, ia)), Some((lo_b, vb, ib))) = (bound(op0, t0), bound(op1, t1)) {
+                // One bound must be lower and the other upper (else e.g. `x>=5 AND x>=10`,
+                // not a range — fall through to the general path).
+                let lohi = match (lo_a, lo_b) {
+                    (true, false) => Some(((va, ia), (vb, ib))),
+                    (false, true) => Some(((vb, ib), (va, ia))),
+                    _ => None,
+                };
+                if let Some(((lo, lo_inc), (hi, hi_inc))) = lohi {
+                    macro_rules! range_loop {
+                        ($lo_cmp:tt, $hi_cmp:tt) => {{
+                            let mut keep = Vec::new();
+                            for (row, &id) in ids.iter().enumerate() {
+                                if id == u32::MAX {
+                                    continue; // NULL element → UNKNOWN → dropped
+                                }
+                                let i = id as usize;
+                                let x = d0[i];
+                                if p0[i] && x $lo_cmp lo && x $hi_cmp hi {
+                                    keep.push(row);
+                                }
+                            }
+                            keep
+                        }};
+                    }
+                    let keep = match (lo_inc, hi_inc) {
+                        (true, true) => range_loop!(>=, <=),
+                        (true, false) => range_loop!(>=, <),
+                        (false, true) => range_loop!(>, <=),
+                        (false, false) => range_loop!(>, <),
+                    };
+                    return Some(keep);
+                }
+            }
+        }
+    }
+    Some(
+        ids.iter()
+            .enumerate()
+            .filter(|&(_, &id)| {
+                if id == u32::MAX {
+                    return false; // NULL element → UNKNOWN → dropped
+                }
+                let i = id as usize;
+                specs
+                    .iter()
+                    .all(|&(data, present, op, t)| present[i] && num_pred(op, data[i], t))
+            })
+            .map(|(row, _)| row)
+            .collect(),
+    )
+}
+
+/// Raw Str/Dict scan for `col STARTS/ENDS/CONTAINS lit`, keeping matches (`negate=false`)
+/// or the complement (`negate=true`, i.e. `NOT (…)`). Semantics match `str_bool`: a present
+/// string cell tests `f` (or `!f`); an absent/NULL cell is UNKNOWN under the inner test and
+/// dropped EITHER way — the present-guard stays, so `NOT` does not resurrect absent rows,
+/// exactly as `eval_mask`'s `Not(Some(false)) = Some(true)`, `Not(None) = None` does. A
+/// non-string / absent-everywhere column yields no match (empty) in both directions. `None`
+/// when the predicate is not this shape (caller falls to the general path).
+fn try_keep_strsearch(
+    pred: &Expr,
+    store: &Store,
+    batch: &Batch,
+    negate: bool,
+) -> Option<Vec<usize>> {
+    let Expr::Call { name, args } = pred else {
+        return None;
+    };
+    let (test, slot, key, sub) = match (name.as_str(), args.as_slice()) {
+        (
+            t @ ("starts_with" | "ends_with" | "contains"),
+            [Expr::Prop { slot, key }, Expr::Lit(Value::Str(sub))],
+        ) => (t, *slot, key, sub),
+        _ => return None,
+    };
+    let Col::Nodes(ids) = batch.slot(slot) else {
+        return None;
+    };
+    let f: fn(&str, &str) -> bool = match test {
+        "starts_with" => |s, t| s.starts_with(t),
+        "ends_with" => |s, t| s.ends_with(t),
+        _ => |s, t| s.contains(t),
+    };
+    let sub = sub.as_ref();
+    let mut keep = Vec::new();
+    match store.column(key) {
+        Some(Column::Str { data, present, .. }) => {
+            for (row, &id) in ids.iter().enumerate() {
+                if id == u32::MAX {
+                    continue; // NULL element → UNKNOWN → dropped
+                }
+                let i = id as usize;
+                if present[i] && (f(data[i].as_ref(), sub) != negate) {
+                    keep.push(row);
+                }
+            }
+            Some(keep)
+        }
+        Some(Column::Dict {
+            dict,
+            codes,
+            present,
+            ..
+        }) => {
+            for (row, &id) in ids.iter().enumerate() {
+                if id == u32::MAX {
+                    continue; // NULL element → UNKNOWN → dropped
+                }
+                let i = id as usize;
+                if present[i] && (f(dict[codes[i] as usize].as_ref(), sub) != negate) {
+                    keep.push(row);
+                }
+            }
+            Some(keep)
+        }
+        // A boxed (de-opted) column may still hold STRING cells per row — a Str/Dict
+        // column that a null or type-mixed write promoted to `Gen`. Test each string
+        // cell; a non-string or absent cell is UNKNOWN → dropped (both directions),
+        // matching `str_bool`. (Skipping this returned NO rows for a de-opted column.)
+        // Column absent everywhere → every cell null → dropped, no error (both directions).
+        None => Some(Vec::new()),
+        // A Gen (mixed) or non-string typed column (Num/Bool/…) may hold a non-null
+        // non-string value, on which STARTS/ENDS/CONTAINS now FAULTS (a type error, not a
+        // silent no-match). Defer to the general evaluator so it raises the exception — an
+        // all-string/null column yields the same rows there, only without this fast path.
+        _ => None,
+    }
+}
+
+/// `<prop> <arith> <lit>  <cmp>  <lit>` — a comparison whose left (or right) side is ARITHMETIC
+/// over one numeric property and a constant: `a.k * 2 > 10`, `5 - a.k >= 1`, `a.k + 1 <> 7`.
+///
+/// Item 437 measured what this costs without a fused arm, at identical selectivity (the row count
+/// is constant down the group, so the gap is the expression and nothing else):
+///
+/// ```text
+///                        200,000     1,000,000
+///   a.k > 5               0.365 ms    1.662 ms
+///   a.k + 0 > 5           2.087       9.902      5.7x / 6.0x
+///   a.k * 1 > 5           2.166      10.208
+/// ```
+///
+/// The general path is columnar, not a per-row tree walk, and it is not boxing either — `Col` has
+/// a typed `Num` variant, `read_property` returns one for a fully-present numeric column, and
+/// `arith_general` has a raw-f64 arm. The 5.7x is MATERIALIZATION: it builds `a.k`, then
+/// `a.k + 0`, then the comparison, then the keep-list — four passes and three allocations of
+/// 200,000 values against the one pass and zero allocations here.
+///
+/// SEMANTICS, each matched to the general path rather than to what looks right:
+///
+///   - NO finiteness check on the result. `arith_general`'s raw-f64 arm pushes `x + y` and does
+///     not test it, so an overflow to infinity is compared as infinity. Adding an `is_finite`
+///     guard here would be a DIVERGENCE, which is the opposite of the obvious reading of the
+///     `Expr::Arith` doc ("any … non-finite operand OR result yields NULL" describes the
+///     per-cell fallback, not the raw arm).
+///   - A ZERO literal divisor DECLINES rather than drops: `arith_general` returns
+///     `Err("division by zero")` for `Div`/`Rem` by zero, and a fast path must not silently
+///     answer where the engine throws. Declining hands it back to the general path, which throws.
+///   - `present[i]` gates NULL (UNKNOWN → dropped) and the `u32::MAX` sentinel an OPTIONAL hop
+///     lands on is skipped, both exactly as the plain comparison arm does.
+///   - The comparison itself reuses that arm's `match op` block verbatim, so ordering stays 3VL
+///     (a NaN cell is unordered and drops, because `<`/`>` are false on NaN) and equality stays
+///     `==`/`!=`.
+fn try_filter_keep_arith(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec<usize>> {
+    let Expr::Compare { op, left, right } = pred else {
+        return None;
+    };
+    // The ARITH side may be either side of the comparison; `flip_op` normalizes to
+    // `<arith> <op> <lit>`, the same normalization the plain arm does for `<prop> <op> <lit>`.
+    let (arith, cmp_lit, op) = match (left.as_ref(), right.as_ref()) {
+        (a @ Expr::Arith { .. }, Expr::Lit(v)) => (a, v, *op),
+        (Expr::Lit(v), a @ Expr::Arith { .. }) => (a, v, flip_op(*op)),
+        _ => return None,
+    };
+    let Value::Num(threshold) = cmp_lit else {
+        return None; // a non-numeric or NULL threshold is the general path's business
+    };
+    let Expr::Arith {
+        op: aop,
+        left: al,
+        right: ar,
+    } = arith
+    else {
+        return None;
+    };
+    // The property may be either operand, and which it is CHANGES the arithmetic for the
+    // non-commutative operators — `5 - a.k` is not `a.k - 5`. `prop_first` carries that.
+    //
+    // An operand may also be ANOTHER arithmetic step over the same property (item 462):
+    // `a.k * 2 + 1 > 7` is `Arith(Arith(Prop, 2), 1)`, which this declined, and declining cost
+    // 6.0x — 12.7-13.5 ms against 2.08-2.26 for the one-level `a.k * 2 > 6` at the same row
+    // count. One extra step is not 6x of arithmetic; it is the whole predicate falling off this
+    // arm onto the materializing path.
+    //
+    // ONE extra level, not a chain. A `Vec` of steps iterated per row is what item 453 measured
+    // as the thing that stops the loop vectorizing, so the inner step is a second pair of
+    // loop-invariant locals and nothing more. Three levels still decline.
+    let (inner, slot, key, operand, prop_first) = match (al.as_ref(), ar.as_ref()) {
+        (Expr::Prop { slot, key }, Expr::Lit(Value::Num(v))) => (None, *slot, key, *v, true),
+        (Expr::Lit(Value::Num(v)), Expr::Prop { slot, key }) => (None, *slot, key, *v, false),
+        // `(<prop> <op> <lit>) <op> <lit>` and the literal-first spellings of either level.
+        (
+            Expr::Arith {
+                op: iop,
+                left: il,
+                right: ir,
+            },
+            Expr::Lit(Value::Num(v)),
+        ) => match (il.as_ref(), ir.as_ref()) {
+            (Expr::Prop { slot, key }, Expr::Lit(Value::Num(iv))) => {
+                (Some((*iop, *iv, true)), *slot, key, *v, true)
+            }
+            (Expr::Lit(Value::Num(iv)), Expr::Prop { slot, key }) => {
+                (Some((*iop, *iv, false)), *slot, key, *v, true)
+            }
+            _ => return None,
+        },
+        (
+            Expr::Lit(Value::Num(v)),
+            Expr::Arith {
+                op: iop,
+                left: il,
+                right: ir,
+            },
+        ) => match (il.as_ref(), ir.as_ref()) {
+            (Expr::Prop { slot, key }, Expr::Lit(Value::Num(iv))) => {
+                (Some((*iop, *iv, true)), *slot, key, *v, false)
+            }
+            (Expr::Lit(Value::Num(iv)), Expr::Prop { slot, key }) => {
+                (Some((*iop, *iv, false)), *slot, key, *v, false)
+            }
+            _ => return None,
+        },
+        _ => return None,
+    };
+    // The INNER step owes the same zero-divisor rule as the outer one, for the same reason: the
+    // general path throws and a keep-pass cannot express a throw. Checked against the inner
+    // operand's own position, since `5 / a.k` is a column divisor either way.
+    if let Some((iop, ivalue, iprop_first)) = inner {
+        if matches!(iop, crate::ir::ArithOp::Div | crate::ir::ArithOp::Rem)
+            && (!iprop_first || ivalue == 0.0)
+        {
+            return None;
+        }
+    }
+    // A zero divisor THROWS in the general path, so decline anything this arm cannot prove is
+    // non-zero: `a.k / 0` declines (the general path throws), and `5 / a.k` declines because the
+    // divisor is then a COLUMN and any row holding 0 would have to throw — which a keep-pass
+    // cannot express.
+    if matches!(aop, crate::ir::ArithOp::Div | crate::ir::ArithOp::Rem)
+        && (!prop_first || operand == 0.0)
+    {
+        return None;
+    }
+    let Col::Nodes(ids) = batch.slot(slot) else {
+        return None;
+    };
+    let Some(Column::Num { data, present, .. }) = store.column(key) else {
+        return None;
+    };
+    let t = *threshold;
+    // TWO LOOPS, chosen before either runs, rather than one loop with a `match inner` in it.
+    // Written as one loop first, and the ONE-LEVEL shape it must not touch paid for it:
+    // `a.k + 0 > 5` went 1.859/1.877/1.889 ms to 2.046/2.058/2.067, ~1.10x, consistently over
+    // three rounds each. That is item 453's finding for the third time — a fast path costing a
+    // shape it never serves — and the remedy is the same one the hop walks in the TS engine use:
+    // the branch is a per-CALL decision, so it belongs outside the row loop.
+    //
+    // The compare block is duplicated rather than factored into a closure. That is deliberate:
+    // the duplication is fifteen lines a reader can diff, and a closure here would be the thing
+    // being measured rather than the arithmetic.
+    let mut keep = Vec::new();
+
+    match inner {
+        None => {
+            for (row, &id) in ids.iter().enumerate() {
+                if id == u32::MAX {
+                    continue; // the OPTIONAL-miss sentinel has no property → UNKNOWN → dropped
+                }
+
+                let i = id as usize;
+
+                if !present[i] {
+                    continue; // NULL → UNKNOWN → dropped
+                }
+
+                let x = data[i];
+                let (a, b) = if prop_first {
+                    (x, operand)
+                } else {
+                    (operand, x)
+                };
+                let y = arith_step(*aop, a, b);
+
+                if num_pred(op, y, t) {
+                    keep.push(row);
+                }
+            }
+        }
+        Some((iop, ivalue, iprop_first)) => {
+            for (row, &id) in ids.iter().enumerate() {
+                if id == u32::MAX {
+                    continue;
+                }
+
+                let i = id as usize;
+
+                if !present[i] {
+                    continue;
+                }
+
+                let raw = data[i];
+                let (ia, ib) = if iprop_first {
+                    (raw, ivalue)
+                } else {
+                    (ivalue, raw)
+                };
+                let x = arith_step(iop, ia, ib);
+                let (a, b) = if prop_first {
+                    (x, operand)
+                } else {
+                    (operand, x)
+                };
+                let y = arith_step(*aop, a, b);
+
+                if num_pred(op, y, t) {
+                    keep.push(row);
+                }
+            }
+        }
+    }
+
+    Some(keep)
+}
+
+/// One arithmetic step on raw `f64`s, matching `arith_general`'s raw arm exactly — including
+/// that the result is NOT tested for finiteness (item 438's note: an overflow to infinity is
+/// compared as infinity, and adding an `is_finite` guard here would be the divergence).
+fn arith_step(op: crate::ir::ArithOp, a: f64, b: f64) -> f64 {
+    match op {
+        crate::ir::ArithOp::Add => a + b,
+        crate::ir::ArithOp::Sub => a - b,
+        crate::ir::ArithOp::Mul => a * b,
+        crate::ir::ArithOp::Div => a / b,
+        crate::ir::ArithOp::Rem => a % b,
+    }
+}
+
+/// `<call over one prop> <cmp> <lit>` — a comparison whose left (or right) side is a SCALAR
+/// FUNCTION of one numeric property: `abs(a.k) > 5`, `coalesce(a.k, 0) > 5`, `floor(a.n) <= 3`.
+///
+/// Item 437 measured these, at identical selectivity down the group (the row count is constant,
+/// so the gap is the expression and nothing else), and item 448 re-measured them after item 438
+/// fused the arithmetic arm:
+///
+/// ```text
+///                        200,000     1,000,000
+///   a.k > 5               0.341 ms    1.699 ms
+///   a.k + 0 > 5           0.394       2.005      1.16x  <- item 438 fused this
+///   abs(a.k) > 5          1.994      10.582      5.8x / 6.2x
+///   coalesce(a.k, 0) > 5  7.160      38.435     21.0x / 22.6x
+/// ```
+///
+/// The cause is item 438's: MATERIALIZATION, not a tree walk and not boxing. The general path
+/// builds `a.k`, then the call's result column, then the comparison, then the keep-list — four
+/// passes and three allocations of N values against the one pass and zero allocations here.
+///
+/// SEMANTICS, each matched to the general path rather than to what looks right. The two
+/// families differ on the one thing that matters most, which is why they are separate arms:
+///
+///   - A UNARY numeric function DROPS an absent cell. `scalar_num_fn` returns NULL for a NULL
+///     argument, so the comparison is UNKNOWN and the row goes — exactly as the plain and
+///     arithmetic arms do. Verified: `abs(a.missing) > 5` answers 0 rows over 3 nodes.
+///   - `coalesce` KEEPS it, with the DEFAULT substituted. That is the entire point of the
+///     function and the opposite of every other arm here. Verified against the general path
+///     before this was written: over three nodes where one has no `k`,
+///     `coalesce(a.k, 0) > 5` answers 1 and `coalesce(a.k, 99) > 5` answers 2 — the absent
+///     cell passing on the default. An arm that skipped absent rows would answer 1 for both
+///     and look right in the only test anyone writes first.
+///
+/// The function set is [`unary_finite_num_fn`], reused rather than re-listed: it already returns
+/// raw `f64 -> f64` closures documented to match `scalar_num_fn` EXACTLY, and it already excludes
+/// the functions that can make a NaN or an infinity out of a finite input. A new name added there
+/// arrives here with its semantics already settled.
+///
+/// Declines, each because the general path does something this pass cannot express:
+///
+///   - A column ABSENT everywhere. `coalesce(a.missing, 99) > 5` keeps EVERY row (verified: 3 of
+///     3), which is correct and is the general path's business — there is no column to stream.
+///   - The `u32::MAX` OPTIONAL-miss sentinel, for `coalesce` only. The arithmetic arm skips it as
+///     UNKNOWN, but `coalesce(NULL, d)` is `d`, so skipping would be wrong and substituting is a
+///     GUESS: `WHERE` inside `OPTIONAL MATCH` is rejected by the parser, so the shape could not
+///     be measured against the general path. Declining is the one option that needs no guess.
+///   - A non-numeric or NULL threshold, a non-`Num` column, more than one property operand, and
+///     `coalesce` with any arity but 2.
+fn try_filter_keep_call(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec<usize>> {
+    let Expr::Compare { op, left, right } = pred else {
+        return None;
+    };
+    // Either side may hold the call; `flip_op` normalizes to `<call> <op> <lit>`, the same
+    // normalization the plain and arithmetic arms do.
+    let (call, cmp_lit, op) = match (left.as_ref(), right.as_ref()) {
+        (c @ Expr::Call { .. }, Expr::Lit(v)) => (c, v, *op),
+        (Expr::Lit(v), c @ Expr::Call { .. }) => (c, v, flip_op(*op)),
+        _ => return None,
+    };
+    let Value::Num(threshold) = cmp_lit else {
+        return None;
+    };
+    let Expr::Call { name, args } = call else {
+        return None;
+    };
+
+    // `coalesce(<prop>, <num lit>)` substitutes the default for an absent cell; a unary numeric
+    // function drops it. Resolve which family this is before touching the column.
+    enum Kind {
+        Coalesce(f64),
+        Unary(fn(f64) -> f64),
+    }
+
+    let (kind, slot, key) = match (name.as_str(), args.as_slice()) {
+        ("coalesce", [Expr::Prop { slot, key }, Expr::Lit(Value::Num(d))]) => {
+            (Kind::Coalesce(*d), *slot, key)
+        }
+        (_, [Expr::Prop { slot, key }]) => (
+            Kind::Unary(self::scalar::unary_finite_num_fn(name)?),
+            *slot,
+            key,
+        ),
+        _ => return None,
+    };
+
+    let Col::Nodes(ids) = batch.slot(slot) else {
+        return None;
+    };
+    let Some(Column::Num { data, present, .. }) = store.column(key) else {
+        return None; // absent everywhere: `coalesce` keeps every row, `abs` keeps none
+    };
+    let t = *threshold;
+    let mut keep = Vec::new();
+
+    for (row, &id) in ids.iter().enumerate() {
+        let y = match kind {
+            Kind::Coalesce(d) => {
+                if id == u32::MAX {
+                    return None; // see the decline list above — substituting here is a guess
+                }
+
+                let i = id as usize;
+
+                if present[i] {
+                    data[i]
+                } else {
+                    d
+                }
+            }
+            Kind::Unary(f) => {
+                if id == u32::MAX {
+                    continue; // the OPTIONAL-miss sentinel has no property → UNKNOWN → dropped
+                }
+
+                let i = id as usize;
+
+                if !present[i] {
+                    continue; // NULL → NULL → UNKNOWN → dropped
+                }
+
+                f(data[i])
+            }
+        };
+        // The same `match op` block as the plain and arithmetic arms, so ordering stays 3VL (a
+        // NaN is unordered and drops, `<`/`>` being false on NaN) and equality stays `==`/`!=`.
+        let hit = match op {
+            CompareOp::Eq => y == t,
+            CompareOp::Ne => y != t,
+            CompareOp::Lt => y < t,
+            CompareOp::Le => y <= t,
+            CompareOp::Gt => y > t,
+            CompareOp::Ge => y >= t,
+        };
+
+        if hit {
+            keep.push(row);
+        }
+    }
+
+    Some(keep)
+}
+
+/// A boolean `CASE` used AS a filter predicate keeps exactly the rows its condition keeps, so
+/// this arm DELEGATES rather than evaluating anything itself (item 450).
+///
+/// `CASE WHEN c THEN true ELSE false END` in a FILTER is `c`:
+///
+/// ```text
+///   c TRUE     -> the THEN arm -> true   -> kept
+///   c FALSE    -> the ELSE arm -> false  -> dropped
+///   c UNKNOWN  -> the ELSE arm -> false  -> dropped
+/// ```
+///
+/// and a filter drops FALSE and UNKNOWN identically, which is what makes the three-valued
+/// collapse sound HERE and nowhere else — in a PROJECTION the same `CASE` is observably
+/// different from `c`, since it yields `false` where `c` yields NULL. A missing `ELSE` (NULL)
+/// and `ELSE false` behave the same way for the same reason.
+///
+/// Item 437 named CASE as one of three expression leads at 14.5x a plain comparison, and item
+/// 450 measured the whole family before touching it:
+///
+/// ```text
+///                                                200,000    1,000,000
+///   a.k > 5                                      0.398 ms    1.672 ms
+///   CASE WHEN a.k > 5 THEN true ELSE false END   5.196      26.676
+///   CASE WHEN a.k > 5 THEN true END              5.360      27.795
+///   CASE WHEN a.k > 5 THEN 1 ELSE 0 END = 1      6.023      34.135
+///   CASE WHEN a.k>5 THEN true WHEN a.k<0 …       5.432      29.617
+///   CASE WHEN a.k > 5 THEN a.k ELSE 0 END > 5    5.566      34.234
+/// ```
+///
+/// Every shape costs the same to within a third, and a table whose rows all agree is measuring
+/// something they share (item 442). What they share is `Expr::Case`'s output: its eager path
+/// collects `Col::Gen` — N boxed `Value`s — which the filter then re-interprets per row. The
+/// ARMS are irrelevant, so an arm-by-arm fusion would have been the wrong shape of fix.
+///
+/// Delegation is what makes this general: the condition goes back through `try_filter_keep`, so
+/// `CASE WHEN coalesce(a.k, 0) > 5 THEN true END` picks up item 449's arm and
+/// `CASE WHEN a.k * 2 > 10 THEN true END` picks up item 438's, with no new code per condition
+/// form. And it is exactly as conservative as those arms: when none of them can answer the
+/// condition, this declines and the general path evaluates the whole `CASE` as before — which is
+/// also what preserves every raise, since a condition that would fault is one no arm can prove.
+///
+/// Restricted to ONE branch. A multi-branch all-`true` `CASE` is the union of its conditions'
+/// keep-lists, which is a sorted merge rather than a delegation, and `CASE … THEN false ELSE
+/// true END` is the complement — both are correct and neither is written, so both stay at the
+/// general path's cost (recorded in `CLOSED.md`).
+fn try_filter_keep_case(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec<usize>> {
+    let Expr::Case {
+        branches,
+        otherwise,
+    } = pred
+    else {
+        return None;
+    };
+    let [(cond, then)] = branches.as_slice() else {
+        return None; // see the restriction note above
+    };
+    // The THEN must be literal TRUE: anything else makes the collapse to `c` unsound (a
+    // non-boolean THEN is a value the filter would have to test, and `THEN false` inverts).
+    if !matches!(then, Expr::Lit(Value::Bool(true))) {
+        return None;
+    }
+    // The ELSE must be absent (NULL), literal NULL, or literal FALSE — the three spellings a
+    // filter drops. `ELSE true` would keep the rows `c` drops, which is the complement.
+    match otherwise.as_deref() {
+        None | Some(Expr::Lit(Value::Null)) | Some(Expr::Lit(Value::Bool(false))) => {}
+        _ => return None,
+    }
+
+    try_filter_keep(cond, store, batch)
+}
+
+/// `element_id(<slot>) <Eq|Ne> <string literal>` as a keep-pass over a BORROWED `&str`.
+///
+/// The general path materializes the id PER ROW: `eval` builds a `Vec<Value>` of
+/// `Value::Str`, cloning a `GStr` for every row, and the comparison then walks that boxed
+/// column. Item 619 measured what that costs on a 100,000-edge walk — **2,274 µs for
+/// `WHERE element_id(r) = $x` against 196 µs for `WHERE r.w = $w` over the same edges**, so
+/// the id materialization was ~12x the comparison it fed. This arm does one pass, borrows
+/// each id as `&str` and compares, and allocates only the keep-list.
+///
+/// ✅ **Re-measured (item 650), and this pass is 4.4x.** Far side of a hop, 100,000 rows, min
+/// of 9: `element_id(b) = '<miss>'` **5.71 ns/row** here, against **25.20** for
+/// `element_id(b) > '<lit>'`, which the `Eq`/`Ne` restriction below sends to the general
+/// materializing path. 5.71 is parity with a typed-column compare over the same walk (5.72),
+/// so on this shape the id materialization is gone, not merely reduced.
+///
+/// It does NOT remove the walk — that is the SEED, and `opt::edge_id_pin` is it (619's other
+/// half, built; this comment's "still unbuilt" was stale, item 650). This pass is what makes
+/// the shapes that CANNOT seed cheap: the FAR-SIDE node case
+/// (`WHERE element_id(b) = $x` after a hop reads a slot the `Scan` does not produce, so
+/// `opt`'s seed rewrite correctly declines and the filter runs).
+///
+/// SEMANTICS, matched to the general path rather than to what looks right:
+///
+/// - Only `Eq`/`Ne`. An ORDERING comparison on an id is a string ordering under the value
+///   contract's total order, which this pass does not reproduce, so it declines.
+/// - The `u32::MAX` OPTIONAL-miss sentinel has no element, so `element_id` is NULL there, the
+///   comparison is UNKNOWN and the row DROPS — for `Ne` as well as `Eq`. Getting that
+///   backwards would make `element_id(x) <> 'a'` keep optional misses that the general path
+///   drops.
+/// - A `Col::Gen` (mixed/branch) frontier declines: the general path reads each cell's own
+///   kind, and this pass would have to re-derive it per row for no saving.
+/// - A non-string literal declines. An external id IS a string, so the comparison is a
+///   cross-type one and the general path's answer (no match for `Eq`) is what must stand —
+///   this pass is not the place to decide it.
+///
+/// **Duplicate external ids are handled by construction**, which is why this compares the
+/// row's id to the literal rather than resolving the literal to a dense id once. Two live
+/// elements CAN share an external id (item 615 measured it for edges: NDJSON decode accepts
+/// the pair and keeps both), and a resolve-once-then-compare-dense pass would match only the
+/// one the reverse map holds.
+fn try_filter_keep_element_id(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec<usize>> {
+    let Expr::Compare { op, left, right } = pred else {
+        return None;
+    };
+    // Either side may hold the call, as in the plain, arithmetic and call arms.
+    let (call, cmp_lit) = match (left.as_ref(), right.as_ref()) {
+        (c @ Expr::Call { .. }, Expr::Lit(v)) | (Expr::Lit(v), c @ Expr::Call { .. }) => (c, v),
+        _ => return None,
+    };
+    // `Eq`/`Ne` are symmetric, so no `flip_op` is needed once the operands are sorted.
+    if !matches!(op, CompareOp::Eq | CompareOp::Ne) {
+        return None;
+    }
+    let Value::Str(want) = cmp_lit else {
+        return None;
+    };
+    let Expr::Call { name, args } = call else {
+        return None;
+    };
+    if name != "element_id" {
+        return None;
+    }
+    let [Expr::Slot(slot)] = args.as_slice() else {
+        return None;
+    };
+
+    let want: &str = want;
+    let eq = matches!(op, CompareOp::Eq);
+    let ids: &[u32] = match batch.slot(*slot) {
+        Col::Nodes(ids) | Col::Edges(ids) => ids,
+        _ => return None, // a mixed frontier is the general path's business
+    };
+    let is_node = matches!(batch.slot(*slot), Col::Nodes(_));
+
+    let mut keep = Vec::new();
+
+    for (row, &id) in ids.iter().enumerate() {
+        if id == u32::MAX {
+            continue; // the OPTIONAL-miss sentinel: NULL id -> UNKNOWN -> dropped, both ops
+        }
+        let Some(ext) = (if is_node {
+            store.node_ext_id_ref(id)
+        } else {
+            store.edge_ext_id_ref(id)
+        }) else {
+            continue; // no id recorded -> NULL -> UNKNOWN -> dropped
+        };
+
+        if (ext == want) == eq {
+            keep.push(row);
+        }
+    }
+
+    Some(keep)
+}
+
+/// A BARE property as a boolean predicate (`WHERE p.flag`) and its negation (`WHERE NOT p.flag`),
+/// over a typed `Column::Bool`.
+///
+/// Item 872. Three spellings of one question measured 6.6x apart at 200,000 nodes, because only
+/// the comparison form had a typed path — `= true` is rewritten to an `IndexSeek`, whose no-index
+/// fallback has a `Column::Bool` arm, while a bare property stays a `Filter` and fell to the boxed
+/// general eval:
+///
+/// ```text
+///   WHERE p.bul = true    127.7 us     IndexSeek, typed arm
+///   WHERE p.bul           285.0        2.2x
+///   WHERE NOT p.bul       842.3        6.6x
+/// ```
+///
+/// Restricted to a TYPED bool column, and that is the correctness condition rather than
+/// conservatism: every present cell of a `Column::Bool` is a boolean, so there is no value here
+/// that a boolean context could reject. A `Gen` column can hold anything, where a non-boolean in
+/// boolean position is the general path's business (and its static check's), so this declines and
+/// leaves that behaviour exactly where it was.
+///
+/// An absent or NULL cell is UNKNOWN, which a keep-TRUE filter drops — `present[i] && …`, the same
+/// rule the typed comparison arms use. `NOT UNKNOWN` is also UNKNOWN, not TRUE, which is why the
+/// negation keeps the presence test rather than inverting the whole condition.
+fn try_filter_keep_bool_prop(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec<usize>> {
+    let (negated, inner) = match pred {
+        Expr::Not(e) => (true, e.as_ref()),
+        Expr::Compare { op, left, right } if matches!(op, CompareOp::Eq | CompareOp::Ne) => {
+            match (left.as_ref(), right.as_ref()) {
+                (p, Expr::Lit(Value::Bool(b))) | (Expr::Lit(Value::Bool(b)), p) => {
+                    (*b != matches!(op, CompareOp::Eq), p)
+                }
+                _ => (false, pred),
+            }
+        }
+        e => (false, e),
+    };
+    let Expr::Prop { slot, key } = inner else {
+        return None;
+    };
+    let Col::Nodes(ids) = batch.slot(*slot) else {
+        return None; // an edge slot reads a different column family
+    };
+    let Some(Column::Bool { data, present, .. }) = store.column(key) else {
+        return None;
+    };
+    Some(
+        ids.iter()
+            .enumerate()
+            .filter(|&(_, &id)| {
+                // An optional miss is the `u32::MAX` sentinel, which reads as NULL.
+                if id == u32::MAX {
+                    return false;
+                }
+                let i = id as usize;
+                present[i] && (data[i] != negated)
+            })
+            .map(|(row, _)| row)
+            .collect(),
+    )
+}
+
+fn try_filter_keep(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec<usize>> {
+    // A boolean `CASE` wrapping a predicate this function can already answer (item 450). First,
+    // because it is a pure rewrite: it adds no evaluation of its own, it just unwraps.
+    if let Some(keep) = try_filter_keep_case(pred, store, batch) {
+        return Some(keep);
+    }
+    // A predicate that is a pure function of ONE dict column: evaluate per distinct value
+    // (≤ dict size) and keep by code, instead of a boxed eval per row.
+    if let Some(keep) = try_filter_keep_dict(pred, store, batch) {
+        return Some(keep);
+    }
+    // A bare property in boolean context, and its negation, over a typed bool column (item 872).
+    if let Some(keep) = try_filter_keep_bool_prop(pred, store, batch) {
+        return Some(keep);
+    }
+    // Arithmetic over one property and a constant, fused into the keep pass (item 438).
+    if let Some(keep) = try_filter_keep_arith(pred, store, batch) {
+        return Some(keep);
+    }
+    // A scalar function of one property — `abs`/`floor`/`ceil`/`round`/`sign`, or `coalesce`
+    // with a literal default — fused the same way (item 449).
+    if let Some(keep) = try_filter_keep_call(pred, store, batch) {
+        return Some(keep);
+    }
+    // `element_id(x) = '<id>'` compared over BORROWED ids, instead of materializing a
+    // `Value::Str` per row (item 619). The shapes that reach here are the ones `opt` cannot
+    // seed: an EDGE pattern, and a node id read on the FAR SIDE of a hop.
+    if let Some(keep) = try_filter_keep_element_id(pred, store, batch) {
+        return Some(keep);
+    }
+    // A numeric compare on an EDGE property (`e0.w <op> lit`): read the edge column by each
+    // row's edge id in one raw-f64 pass. Without this an edge predicate is not fast-pathable,
+    // so a conjunction like `c.name = 'x' AND e0.w <> 680` fell off the intersection path onto
+    // the boxed general eval over the whole materialized 2-hop frontier. Absent → dropped
+    // (NULL compare is UNKNOWN), matching the general filter.
+    if let Expr::Compare { op, left, right } = pred {
+        let bound = match (left.as_ref(), right.as_ref()) {
+            (Expr::Prop { slot, key }, Expr::Lit(Value::Num(t))) => Some((*slot, key, *op, *t)),
+            (Expr::Lit(Value::Num(t)), Expr::Prop { slot, key }) => {
+                Some((*slot, key, flip_op(*op), *t))
+            }
+            _ => None,
+        };
+        if let Some((slot, key, op, t)) = bound {
+            if let (Col::Edges(eids), Some((data, present))) =
+                (batch.slot(slot), store.edge_num_column(key))
+            {
+                return Some(
+                    eids.iter()
+                        .enumerate()
+                        .filter(|&(_, &eid)| {
+                            // A bound edge is the `u32::MAX` sentinel on an optional
+                            // miss, exactly as a landing node is.
+                            if eid == u32::MAX {
+                                return false;
+                            }
+                            let i = eid as usize;
+                            present[i] && num_pred(op, data[i], t)
+                        })
+                        .map(|(row, _)| row)
+                        .collect(),
+                );
+            }
+        }
+    }
+    // `NOT p` pushes into the raw fast paths by inverting `p` (De Morgan + operator
+    // flip), exact for the keep-TRUE filter. If the inverted form is not itself
+    // fast-pathable, this returns None and the caller evaluates the original `NOT`
+    // through the general (boxed) path.
+    if let Expr::Not(inner) = pred {
+        // `has(k, neq(v))` (and any negated `has(k, <cmp>)`) desugars to
+        // `Not(And(PropertyExists{k}, Compare{k}))`. Per node the keep is `absent OR
+        // !cmp` — a raw Num pass (an absent node IS kept) — instead of the general boxed
+        // eval, which materialized ~all rows for a non-selective complement like neq.
+        if let Expr::And(a, b) = inner.as_ref() {
+            // Identify (PropertyExists{k}, Compare on k) in either order.
+            let pair = match (a.as_ref(), b.as_ref()) {
+                (pe @ Expr::PropertyExists { .. }, cmp @ Expr::Compare { .. })
+                | (cmp @ Expr::Compare { .. }, pe @ Expr::PropertyExists { .. }) => Some((pe, cmp)),
+                _ => None,
+            };
+            if let Some((
+                Expr::PropertyExists { slot: s1, key: k1 },
+                Expr::Compare { op, left, right },
+            )) = pair
+            {
+                let bound = match (left.as_ref(), right.as_ref()) {
+                    (Expr::Prop { slot, key }, Expr::Lit(Value::Num(t)))
+                        if key == k1 && slot == s1 =>
+                    {
+                        Some((*op, *t))
+                    }
+                    (Expr::Lit(Value::Num(t)), Expr::Prop { slot, key })
+                        if key == k1 && slot == s1 =>
+                    {
+                        Some((flip_op(*op), *t))
+                    }
+                    _ => None,
+                };
+                if let (Some((op, t)), Col::Nodes(ids), Some(Column::Num { data, present, .. })) =
+                    (bound, batch.slot(*s1), store.column(k1))
+                {
+                    return Some(
+                        ids.iter()
+                            .enumerate()
+                            .filter(|&(_, &id)| {
+                                if id == u32::MAX {
+                                    return false; // NULL element → UNKNOWN → dropped
+                                }
+                                let i = id as usize;
+                                !present[i] || !num_pred(op, data[i], t)
+                            })
+                            .map(|(row, _)| row)
+                            .collect(),
+                    );
+                }
+            }
+        }
+        // `NOT (col STARTS/ENDS/CONTAINS lit)` — the same raw Str/Dict scan as the
+        // positive case, keeping the COMPLEMENT. `invert_pred` cannot turn a search Call
+        // into a positive fast form, so without this the negation fell to the boxed eval
+        // over the whole hop (the recurring `NOT ends_with` + projection loss).
+        if let Some(keep) = try_keep_strsearch(inner, store, batch, true) {
+            return Some(keep);
+        }
+        return invert_pred(inner).and_then(|pos| try_filter_keep(&pos, store, batch));
+    }
+    // A CONJUNCTION of typed-numeric `prop <op> literal` compares on one node slot
+    // (e.g. `age >= 30 AND age < 40`) keeps rows satisfying ALL, in one raw-f64
+    // pass — no per-cell boxing, and no falling to the general And evaluator.
+    if let Some(keep) = try_num_conjunction(pred, store, batch) {
+        return Some(keep);
+    }
+    // The OR mirror — `age < 5 OR age > 95`, and `age IN [1, 2, …]` (an OR-chain).
+    if let Some(keep) = try_num_disjunction(pred, store, batch) {
+        return Some(keep);
+    }
+    // A general MIXED conjunction: keep rows satisfying BOTH conjuncts by intersecting
+    // each one's fast-path keep-set (both built in ascending row order, so a linear
+    // merge). This is what generalizes `try_num_conjunction` (all-numeric) to the shape
+    // a projection creates — `values(k)` / `valueMap` AND-s a `PropertyExists{k}` onto
+    // the user's selective filter, and `And(PropertyExists, age = 90)` used to knock the
+    // WHOLE filter off the raw path onto the boxed general eval over the full scan (the
+    // selective-filter-then-projection cliff). Only fires when EVERY conjunct is itself
+    // fast-pathable; otherwise `None` → the general path (no worse than before).
+    if let Expr::And(a, b) = pred {
+        // Evaluate the likely-more-SELECTIVE conjunct first, then test the other only on
+        // its survivors — so a selective `age = 90` (100 of 100k) makes the second pass
+        // 100 rows, not another 100k. A bare `PropertyExists` is a presence gate that
+        // rarely reduces, so it goes LAST. Reduces the two-full-pass intersection to one
+        // selective pass + a tiny follow-up.
+        let a_gate = matches!(a.as_ref(), Expr::PropertyExists { .. });
+        let b_gate = matches!(b.as_ref(), Expr::PropertyExists { .. });
+        let (first, second) = if a_gate && !b_gate { (b, a) } else { (a, b) };
+        let kf = try_filter_keep(first, store, batch)?;
+        let sub = batch.gather(&kf);
+        let ks = try_filter_keep(second, store, &sub)?;
+        return Some(ks.iter().map(|&j| kf[j]).collect());
+    }
+    // `PropertyExists{k}` (the presence gate `values(k)` / element maps add): keep rows
+    // whose column `k` is present — a raw `present[]` pass, no boxing. An
+    // absent-everywhere column keeps nothing.
+    if let Expr::PropertyExists { slot, key } = pred {
+        // A slot past the runtime width (a branch/inject collapsed the layout) has no column
+        // to gate on — fall back to the general evaluator rather than indexing out of bounds.
+        let Some(Col::Nodes(ids)) = batch.slots.get(*slot) else {
+            return None;
+        };
+        // Present = `present_at` (a typed value OR a stored present-null via the column's
+        // nulls bit), so a stored null is counted.
+        let Some(column) = store.column(key) else {
+            return Some(Vec::new());
+        };
+        return Some(
+            ids.iter()
+                .enumerate()
+                .filter(|&(_, &id)| id != u32::MAX && column.present_at(id as usize))
+                .map(|(row, _)| row)
+                .collect(),
+        );
+    }
+    // A string-search predicate `col STARTS WITH / ENDS WITH / CONTAINS lit` (which
+    // desugars to a `starts_with`/`ends_with`/`contains` call) over a raw Str/Dict
+    // column — scan `&str` directly, no per-cell `Value` boxing through `call_scalar`.
+    if let Some(keep) = try_keep_strsearch(pred, store, batch, false) {
+        return Some(keep);
+    }
+    let Expr::Compare { op, left, right } = pred else {
+        return None;
+    };
+    let (slot, key, op, lit) = match (left.as_ref(), right.as_ref()) {
+        (Expr::Prop { slot, key }, Expr::Lit(v)) => (*slot, key, *op, v),
+        (Expr::Lit(v), Expr::Prop { slot, key }) => (*slot, key, flip_op(*op), v),
+        _ => return None,
+    };
+    let Col::Nodes(ids) = batch.slot(slot) else {
+        return None;
+    };
+    // A NULL literal makes every comparison UNKNOWN — no row is kept.
+    if lit.is_null() {
+        return Some(Vec::new());
+    }
+    let Some(column) = store.column(key) else {
+        return Some(Vec::new()); // property absent everywhere → UNKNOWN → all dropped
+    };
+    let mut keep = Vec::new();
+    // Typed fast path: a Num column vs a Num literal compares RAW f64 — no per-cell
+    // `Value` boxing (the eval-vs-columnar cost). Semantics match the general
+    // `compare`: ordering is 3VL (a NaN cell is unordered → dropped, via `<`/`>`
+    // being false on NaN); equality via `==`/`!=`.
+    if let (Column::Num { data, present, .. }, Value::Num(t)) = (column, lit) {
+        let t = *t;
+        for (row, &id) in ids.iter().enumerate() {
+            // A NULL element (the `u32::MAX` sentinel an OPTIONAL hop lands on a
+            // miss) has no property, so the comparison is UNKNOWN and the row drops —
+            // the same answer the general `eval_mask` path gives. Without this the
+            // typed fast paths indexed the column BY the sentinel and panicked.
+            if id == u32::MAX {
+                continue;
+            }
+            let i = id as usize;
+            if !present[i] {
+                continue; // NULL → UNKNOWN → dropped
+            }
+            let x = data[i];
+            let hit = match op {
+                CompareOp::Eq => x == t,
+                CompareOp::Ne => x != t,
+                CompareOp::Lt => x < t,
+                CompareOp::Le => x <= t,
+                CompareOp::Gt => x > t,
+                CompareOp::Ge => x >= t,
+            };
+            if hit {
+                keep.push(row);
+            }
+        }
+        return Some(keep);
+    }
+    // Typed fast path: a Str column vs a Str literal compares `&str` directly — no
+    // per-cell `Value` boxing. `=`/`<>` are byte equality (== `value::equals`);
+    // ordering is lexicographic (== `cmp_partial` for two strings). A NULL cell is
+    // gated by `present`; a NULL literal was handled above.
+    if let (Column::Str { data, present, .. }, Value::Str(t)) = (column, lit) {
+        let t = t.as_ref();
+        for (row, &id) in ids.iter().enumerate() {
+            // A NULL element (the `u32::MAX` sentinel an OPTIONAL hop lands on a
+            // miss) has no property, so the comparison is UNKNOWN and the row drops —
+            // the same answer the general `eval_mask` path gives. Without this the
+            // typed fast paths indexed the column BY the sentinel and panicked.
+            if id == u32::MAX {
+                continue;
+            }
+            let i = id as usize;
+            if !present[i] {
+                continue; // NULL → UNKNOWN → dropped
+            }
+            let x = data[i].as_ref();
+            let hit = match op {
+                CompareOp::Eq => x == t,
+                CompareOp::Ne => x != t,
+                CompareOp::Lt => x < t,
+                CompareOp::Le => x <= t,
+                CompareOp::Gt => x > t,
+                CompareOp::Ge => x >= t,
+            };
+            if hit {
+                keep.push(row);
+            }
+        }
+        return Some(keep);
+    }
+    // Typed fast path: a DICTIONARY-encoded string column vs a Str literal. `=`/`<>`
+    // resolve the literal's code ONCE and compare `u32` codes per row (no per-cell string
+    // read); ordering decodes `dict[code]` (a cheap indexed lookup, still no boxing). A
+    // categorical column (`city`/`status`) is Dict, so this is what keeps a
+    // `has('city','oslo').count()` off the boxed general path (which read a `Value::Str`
+    // per node — the whole scan).
+    if let (
+        Column::Dict {
+            dict,
+            codes,
+            present,
+            ..
+        },
+        Value::Str(t),
+    ) = (column, lit)
+    {
+        let t = t.as_ref();
+        // For =/<> the answer is purely code equality against the literal's code (absent
+        // from the dict ⇒ nothing equals it / everything present is unequal).
+        if matches!(op, CompareOp::Eq | CompareOp::Ne) {
+            let target = dict.iter().position(|d| d.as_ref() == t);
+            for (row, &id) in ids.iter().enumerate() {
+                // A NULL element (the `u32::MAX` sentinel an OPTIONAL hop lands on a
+                // miss) has no property, so the comparison is UNKNOWN and the row drops —
+                // the same answer the general `eval_mask` path gives. Without this the
+                // typed fast paths indexed the column BY the sentinel and panicked.
+                if id == u32::MAX {
+                    continue;
+                }
+                let i = id as usize;
+                if !present[i] {
+                    continue;
+                }
+                let eq = target.is_some_and(|tc| codes[i] as usize == tc);
+                if (op == CompareOp::Eq) == eq {
+                    keep.push(row);
+                }
+            }
+            return Some(keep);
+        }
+        for (row, &id) in ids.iter().enumerate() {
+            // A NULL element (the `u32::MAX` sentinel an OPTIONAL hop lands on a
+            // miss) has no property, so the comparison is UNKNOWN and the row drops —
+            // the same answer the general `eval_mask` path gives. Without this the
+            // typed fast paths indexed the column BY the sentinel and panicked.
+            if id == u32::MAX {
+                continue;
+            }
+            let i = id as usize;
+            if !present[i] {
+                continue;
+            }
+            let x = dict[codes[i] as usize].as_ref();
+            let hit = match op {
+                CompareOp::Lt => x < t,
+                CompareOp::Le => x <= t,
+                CompareOp::Gt => x > t,
+                CompareOp::Ge => x >= t,
+                _ => unreachable!(), // Eq/Ne handled above
+            };
+            if hit {
+                keep.push(row);
+            }
+        }
+        return Some(keep);
+    }
+    // General path (Bool/Temporal/Gen columns): read the cell, then compare via the
+    // value contract. Ordering uses `cmp_partial` (3VL — cross-type/NaN → drop,
+    // matching `compare`), NOT the total order.
+    for (row, &id) in ids.iter().enumerate() {
+        if id == u32::MAX {
+            continue; // NULL element → UNKNOWN → dropped
+        }
+        let v = column.read(id as usize);
+        if v.is_null() {
+            continue;
+        }
+        let hit = match op {
+            CompareOp::Eq => value::equals(&v, lit),
+            CompareOp::Ne => !value::equals(&v, lit),
+            _ => match value::cmp_partial(&v, lit) {
+                Some(o) => match op {
+                    CompareOp::Lt => o.is_lt(),
+                    CompareOp::Le => o.is_le(),
+                    CompareOp::Gt => o.is_gt(),
+                    CompareOp::Ge => o.is_ge(),
+                    _ => unreachable!("Eq/Ne handled above"),
+                },
+                None => continue, // incomparable → UNKNOWN → dropped
+            },
+        };
+        if hit {
+            keep.push(row);
+        }
+    }
+    Some(keep)
+}
+
+/// Read `key` off an element frontier as a column, bulk-gathering the typed
+/// storage column and staying unboxed when it and every read entry are
+/// present-and-typed; fall to `Gen` (with nulls) otherwise.
+/// If `pairs` is a BOXED element map — a vertex `{id, labels, properties}` or an
+/// edge `{id, from, to, labels, properties}`, the shape `render_cell` produces when
+/// a heterogeneous union collapses a Nodes/Edges column into `Gen` — return its
+/// nested `properties` map. A property read/existence check on such a value must
+/// look INSIDE `properties` (`values('name')` on a boxed vertex is `props.name`,
+/// not the top-level `name`, which does not exist). `None` for a plain map, whose
+/// caller keeps the top-level-key behavior.
+fn boxed_element_props(pairs: &[(Value, Value)]) -> Option<&std::sync::Arc<Vec<(Value, Value)>>> {
+    let (mut has_id, mut has_labels) = (false, false);
+    let mut props = None;
+    for (k, v) in pairs {
+        let Value::Str(ks) = k else {
+            return None;
+        };
+        match ks.as_ref() {
+            "id" => has_id = true,
+            "labels" => has_labels = true,
+            "from" | "to" => {}
+            "properties" => match v {
+                Value::Map(p) => props = Some(p),
+                _ => return None,
+            },
+            _ => return None, // an unexpected key → a plain map, not an element
+        }
+    }
+    // Exactly a vertex (3 keys) or an edge (5 keys) map.
+    if has_id && has_labels && props.is_some() && (pairs.len() == 3 || pairs.len() == 5) {
+        props
+    } else {
+        None
+    }
+}
+
+/// The value of property `key` off a boxed `Value` — reading through a boxed element
+/// map's `properties`, a record's field, or a plain map's top-level key.
+fn boxed_value_prop(v: &Value, key: &str) -> Value {
+    let lookup = |pairs: &[(Value, Value)]| {
+        pairs
+            .iter()
+            .find(|(k, _)| matches!(k, Value::Str(s) if s.as_ref() == key))
+            .map_or(Value::Null, |(_, v)| v.clone())
+    };
+    match v {
+        Value::Record(fields) => value::record_field(fields, key),
+        Value::Map(pairs) => match boxed_element_props(pairs) {
+            Some(props) => lookup(props),
+            None => lookup(pairs),
+        },
+        _ => Value::Null,
+    }
+}
+
+fn read_property(store: &Store, col: &Col, key: &str) -> Col {
+    // An edge slot reads an EDGE property (boxed map, keyed by eid). A `u32::MAX`
+    // eid is the OPTIONAL null sentinel → NULL.
+    if let Col::Edges(eids) = col {
+        // Fastest path: the typed numeric overlay — read `data[eid]` as a raw f64 with
+        // NO per-edge hash probe (the boxed `map.get` below). Only when every edge has
+        // a present value (the null sentinel `u32::MAX` indexes past `present`, so it
+        // fails the check and falls through to the null-carrying general column).
+        if let Some((data, present)) = store.edge_num_column(key) {
+            if eids
+                .iter()
+                .all(|&e| (e as usize) < present.len() && present[e as usize])
+            {
+                return Col::Num(eids.iter().map(|&e| data[e as usize]).collect());
+            }
+        }
+        // Fast path: a fully-present NUMERIC edge property → a raw `Col::Num`, so the
+        // downstream compare / aggregate hits the unboxed f64 path (the same win the
+        // node columns already get). One outer hash lookup for `key`, then a probe
+        // per edge; bail to the boxed `Gen` path the moment any edge is missing the
+        // key, is the OPTIONAL null sentinel (`u32::MAX`, absent from the map), or is
+        // non-numeric — those need the null-carrying general column.
+        if let Some(map) = store.edge_prop_map(key) {
+            let mut nums = Vec::with_capacity(eids.len());
+            let ok = eids.iter().all(|&e| match map.get(&e) {
+                Some(Value::Num(x)) => {
+                    nums.push(*x);
+                    true
+                }
+                _ => false,
+            });
+            if ok {
+                return Col::Num(nums);
+            }
+        }
+        return Col::Gen(
+            eids.iter()
+                .map(|&e| {
+                    if e == u32::MAX {
+                        Value::Null
+                    } else {
+                        store.edge_prop(e, key)
+                    }
+                })
+                .collect(),
+        );
+    }
+    // A node column carrying any OPTIONAL null sentinel reads per row (sentinel →
+    // NULL, else the stored property); u32::MAX would index the property column out
+    // of bounds on the fast path below.
+    if let Col::Nodes(ids) = col {
+        if ids.contains(&u32::MAX) {
+            return Col::Gen(
+                ids.iter()
+                    .map(|&id| {
+                        if id == u32::MAX {
+                            Value::Null
+                        } else {
+                            store.prop(id, key)
+                        }
+                    })
+                    .collect(),
+            );
+        }
+    }
+    let Col::Nodes(ids) = col else {
+        // A non-element column (e.g. a projected Record): `x.key` reads the record
+        // field; an UNBOXED element ref (Value::Node/Edge in a heterogeneous Col::Gen)
+        // reads its stored property off the store; anything else has no property → NULL.
+        return Col::Gen(
+            (0..col.len())
+                .map(|i| match col.value_at(i) {
+                    Value::Node(id) => store.prop(id, key),
+                    Value::Edge(e) => store.edge_prop(e, key),
+                    other => boxed_value_prop(&other, key),
+                })
+                .collect(),
+        );
+    };
+    let Some(column) = store.column(key) else {
+        return Col::Gen(vec![Value::Null; ids.len()]);
+    };
+    // Gather `data_at(i)` for every id in ONE pass, bailing to `None` the moment a value
+    // is absent — so a fully-present column (the common case) does a single scattered
+    // pass instead of the separate `all(present)` pre-check + gather (two passes over the
+    // frontier). A null-bearing column bails and falls to the general per-row path.
+    fn gather<T>(ids: &[u32], present: &[bool], data_at: impl Fn(usize) -> T) -> Option<Vec<T>> {
+        let mut out = Vec::with_capacity(ids.len());
+        for &id in ids {
+            // A NULL element (the `u32::MAX` sentinel an OPTIONAL hop lands on a
+            // miss) has no property, so the comparison is UNKNOWN and the row drops —
+            // the same answer the general `eval_mask` path gives. Without this the
+            // typed fast paths indexed the column BY the sentinel and panicked.
+            if id == u32::MAX {
+                continue;
+            }
+            let i = id as usize;
+            if !present[i] {
+                return None;
+            }
+            out.push(data_at(i));
+        }
+        Some(out)
+    }
+    // The boxed fallback, for a column where ANY row's value is absent — `Col` has no nullable
+    // typed variant, so a partially-present property has to be boxed.
+    //
+    // It reads through the `column` already resolved above rather than calling `store.prop`, which
+    // re-resolves `key` through a hash map FOR EVERY ROW. That lookup was the whole cliff: a
+    // property present on half the rows cost 7.36ns a row against 1.05ns for one present on all of
+    // them, and the gather below is not the difference — it bails on the first absent row.
+    //
+    // No `u32::MAX` check is needed: a column carrying the OPTIONAL null sentinel returned far
+    // above, before `column` was resolved.
+    let general = || Col::Gen(ids.iter().map(|&i| column.read(i as usize)).collect());
+    match column {
+        Column::Num { data, present, .. } => {
+            gather(ids, present, |i| data[i]).map_or_else(general, Col::Num)
+        }
+        Column::Str { data, present, .. } => {
+            gather(ids, present, |i| data[i].clone()).map_or_else(general, Col::Str)
+        }
+        Column::Dict {
+            dict,
+            codes,
+            present,
+            ..
+        } => {
+            gather(ids, present, |i| dict[codes[i] as usize].clone()).map_or_else(general, Col::Str)
+        }
+        Column::Bool { data, present, .. } => {
+            gather(ids, present, |i| data[i]).map_or_else(general, Col::Bool)
+        }
+        _ => general(),
+    }
+}
+
+fn broadcast(v: Value, n: usize) -> Col {
+    match v {
+        Value::Num(x) => Col::Num(vec![x; n]),
+        Value::Bool(b) => Col::Bool(vec![b; n]),
+        Value::Str(s) => Col::Str(vec![s; n]),
+        // Null and List have no unboxed column form.
+        other => Col::Gen(vec![other; n]),
+    }
+}
+
+/// Compare two columns elementwise into a `Bool` column. `=`/`<>` use the value
+/// contract's `equals`; ordering uses `cmp_total`. A NULL operand yields UNKNOWN,
+/// carried as a `Gen` cell of `Null` so the three-valued logic upstream sees it.
+fn compare(op: CompareOp, l: &Col, r: &Col) -> Col {
+    let n = l.len().min(r.len());
+    let mut out = Vec::with_capacity(n);
+    let mut any_unknown = false;
+    for i in 0..n {
+        let a = l.value_at(i);
+        let b = r.value_at(i);
+        if a.is_null() || b.is_null() {
+            any_unknown = true;
+            out.push(None);
+            continue;
+        }
+        // Equality uses the value contract's `equals` (cross-type = false, not unknown).
+        // Ordering uses `cmp_partial`: a genuinely incomparable pair — DIFFERENT types — is
+        // UNKNOWN (→ NULL). A NaN operand is IEEE, NOT 3VL: `<`/`>`/`<=`/`>=` are definitely
+        // FALSE (matching JS and the pure-TS engine). Two Nums are incomparable ONLY via a
+        // NaN, so `None` there → Some(false); `None` across types stays UNKNOWN.
+        let order = |f: fn(std::cmp::Ordering) -> bool| -> Option<bool> {
+            match value::cmp_partial(&a, &b) {
+                Some(ord) => Some(f(ord)),
+                None if matches!((&a, &b), (Value::Num(_), Value::Num(_))) => Some(false),
+                None => None,
+            }
+        };
+        let res = match op {
+            CompareOp::Eq => Some(value::equals(&a, &b)),
+            CompareOp::Ne => Some(!value::equals(&a, &b)),
+            CompareOp::Lt => order(std::cmp::Ordering::is_lt),
+            CompareOp::Le => order(std::cmp::Ordering::is_le),
+            CompareOp::Gt => order(std::cmp::Ordering::is_gt),
+            CompareOp::Ge => order(std::cmp::Ordering::is_ge),
+        };
+        if res.is_none() {
+            any_unknown = true;
+        }
+        out.push(res);
+    }
+    if any_unknown {
+        Col::Gen(
+            out.into_iter()
+                .map(|o| o.map_or(Value::Null, Value::Bool))
+                .collect(),
+        )
+    } else {
+        Col::Bool(out.into_iter().map(|o| o.expect("no unknowns")).collect())
+    }
+}
+
+/// Read a column as three-valued booleans (None = UNKNOWN).
+/// Coerce a non-boolean predicate column to Kleene truth for WHERE/FILTER, matching
+/// the TS engine's `as_truth`: a NUMBER is true when non-zero and non-NaN; a STRING when
+/// non-empty; NULL is unknown (`None`); any other non-null value (temporal, list,
+/// record, element) is true. (A bare `WHERE <number>` / `WHERE <string>` is thus a
+/// truthiness test, not a no-match — the engine used to drop every non-bool row.)
+/// The message for a non-boolean used where a truth value is required (WHERE / FILTER /
+/// CASE WHEN / AND / OR / NOT / XOR). A number or string is NOT coerced to a truth value
+/// (SQL / ISO-GQL); the only path to a boolean is an explicit CAST AS BOOLEAN / to_boolean.
+pub(crate) const TRUTH_TYPE_ERR: &str =
+    "E_INVALID_VALUE: a boolean is required — a non-boolean value is not coerced to a truth \
+     value (use CAST(x AS BOOLEAN) or to_boolean(x))";
+
+/// Three-valued truth of each cell in a boolean context. A present non-null NON-boolean
+/// is a data exception (strict typing — no truthiness coercion); NULL is UNKNOWN (`None`).
+pub(super) fn as_truth(col: &Col) -> Result<Vec<Option<bool>>, String> {
+    match col {
+        Col::Bool(bs) => Ok(bs.iter().map(|&b| Some(b)).collect()),
+        other => (0..other.len())
+            .map(|i| match other.value_at(i) {
+                Value::Null => Ok(None),
+                Value::Bool(b) => Ok(Some(b)),
+                _ => Err(TRUTH_TYPE_ERR.to_string()),
+            })
+            .collect(),
+    }
+}
+
+/// A vectorized three-valued predicate mask over `batch` (`Some(true)`/`Some(false)`/
+/// `None` = UNKNOWN). The boolean connectives combine their operands' masks with the SAME
+/// Kleene tables `eval` uses, and a numeric leaf `prop <cmp> lit` reads the typed column
+/// directly instead of boxing two `Value`s per row through `compare`. Any other
+/// sub-expression falls back to the boxed `eval` for that node only, so the result is
+/// exactly `as_truth(eval(expr))` — this removes allocation/boxing on the boolean spine
+/// and the numeric leaves, nothing more. Used by the filter keep-set (a complex predicate
+/// that `try_filter_keep` declines) and the reverse-seed residual.
+/// Which slots does this expression read? `false` means "could not determine", and the caller
+/// must then not narrow.
+///
+/// A WHITELIST, and that direction is load-bearing: narrowing replaces the slots this does not
+/// name with placeholders, so a MISSED slot is a wrong answer. Anything unrecognized returns
+/// false. An over-approximation is safe (more columns gathered than needed); an
+/// under-approximation is not.
+/// The `Plan::Unwind` body: expand each row's list into one row per element, gathering the
+/// other slots alongside.
+fn unwind_batch(
+    batch: Batch,
+    list: &Expr,
+    ordinal: &Option<(usize, bool)>,
+    store: &Store,
+) -> Result<Batch, String> {
+    let (keep, elems, ords) = unwind_rows(list, &batch, ordinal, store)?;
+    let mut slots: Vec<Col> = batch.slots.iter().map(|c| c.gather(&keep)).collect();
+    // A folded VERTEX/EDGE round-trips through fold().unfold() as its element map;
+    // reconstitute a live element frontier by resolving the `id` field back to a dense id, so
+    // `values`/`out`/`order` operate on nodes again. Falls back to the raw map column if any
+    // element is not a resolvable element map.
+    slots.push(reunfold_elements(elems, store));
+    if ordinal.is_some() {
+        slots.push(Col::Gen(ords));
+    }
+    Ok(Batch::of(slots))
+}
+
+/// The source row index, element and ordinal columns an unwind produces, before they are
+/// gathered into a `Batch`.
+type UnwoundRows = (Vec<usize>, Vec<Value>, Vec<Value>);
+
+/// The per-row expansion behind `Plan::Unwind`: for each input row, the list's elements, the
+/// row index each came from, and (optionally) its ordinal.
+///
+/// A ROW-INVARIANT list — `UNWIND $ids AS id`, `UNWIND [1, 2] AS x`, the common bulk-lookup
+/// spelling — is evaluated ONCE instead of once per row. `Expr::List` builds a separate
+/// `Value::List` per row and `value_at` then CLONES each one, so the old path paid two
+/// allocations per input row to carry a list that never changed: 400,000 of them on a
+/// 200,000-row scan of a 2-element constant list.
+///
+/// Invariance is `slots_read` reporting success with no slots touched, which is exactly
+/// "depends on no column". Every callable function in this engine is deterministic (the
+/// `localtime`/`datetime` family are TYPE CONSTRUCTORS over their arguments, not clock
+/// reads), so one evaluation and n evaluations cannot disagree. A 0-row batch evaluates
+/// NOTHING, which keeps the set of queries that raise exactly as it was.
+fn unwind_rows(
+    list: &Expr,
+    batch: &Batch,
+    ordinal: &Option<(usize, bool)>,
+    store: &Store,
+) -> Result<UnwoundRows, String> {
+    let n = batch.rows();
+    let mut keep = Vec::new();
+    let mut elems: Vec<Value> = Vec::new();
+    let mut ords: Vec<Value> = Vec::new();
+    let mut slots = Vec::new();
+    let invariant = n > 0 && slots_read(list, &mut slots) && slots.is_empty();
+    if invariant {
+        // One row in, one evaluation, one list — then the same elements for every row.
+        let probe = batch.gather(&[0]);
+        let once = eval(list, store, &probe)?;
+        let items: Vec<Value> = match once.value_at(0) {
+            Value::List(v) => v,
+            Value::Null => Vec::new(),
+            scalar => vec![scalar],
+        };
+        let k = items.len();
+        keep.reserve(n * k);
+        elems.reserve(n * k);
+        if ordinal.is_some() {
+            ords.reserve(n * k);
+        }
+        for i in 0..n {
+            for (j, e) in items.iter().enumerate() {
+                keep.push(i);
+                elems.push(e.clone());
+                if let Some((_, one_based)) = ordinal {
+                    ords.push(Value::Num((j + usize::from(*one_based)) as f64));
+                }
+            }
+        }
+        return Ok((keep, elems, ords));
+    }
+    let lists = eval(list, store, batch)?;
+
+    // MOVE each row's list out of the evaluated column rather than CLONING it back out.
+    // `value_at` returns an OWNED `Value`, so the `Vec<Value>` that `eval` just built was
+    // copied a second time for every row — measured at ~9 ns PER ELEMENT against the
+    // constant-list control (item 640): 11.3 ns/element for a stored list property where the
+    // invariant path, which copies each element once, pays 2.4.
+    //
+    // Only `Col::Gen` can hold a list; a typed column (`Num`/`Str`/…) is one scalar per row
+    // and takes the singleton-list branch below, where there is nothing to move. The length
+    // check is not ceremony: a folded constant could evaluate to a shorter column, and
+    // zipping that against `n` rows would silently drop rows.
+    if let Col::Gen(vals) = lists {
+        if vals.len() == n {
+            for (i, v) in vals.into_iter().enumerate() {
+                let items: Vec<Value> = match v {
+                    Value::List(v) => v,
+                    Value::Null => Vec::new(),
+                    scalar => vec![scalar], // a non-list value is a singleton list
+                };
+
+                for (j, e) in items.into_iter().enumerate() {
+                    keep.push(i);
+                    elems.push(e);
+                    if let Some((_, one_based)) = ordinal {
+                        ords.push(Value::Num((j + usize::from(*one_based)) as f64));
+                    }
+                }
+            }
+
+            return Ok((keep, elems, ords));
+        }
+
+        return unwind_rows_from_col(&Col::Gen(vals), n, ordinal, keep, elems, ords);
+    }
+
+    unwind_rows_from_col(&lists, n, ordinal, keep, elems, ords)
+}
+
+/// The per-row read for a column `unwind_rows` could not consume: a typed column (one scalar
+/// per row) or the length-mismatch guard. Split out so the moving path above stays a straight
+/// loop rather than a branch inside one.
+fn unwind_rows_from_col(
+    lists: &Col,
+    n: usize,
+    ordinal: &Option<(usize, bool)>,
+    mut keep: Vec<usize>,
+    mut elems: Vec<Value>,
+    mut ords: Vec<Value>,
+) -> Result<UnwoundRows, String> {
+    for i in 0..n {
+        let items: Vec<Value> = match lists.value_at(i) {
+            Value::List(v) => v,
+            Value::Null => Vec::new(),
+            scalar => vec![scalar], // a non-list value is a singleton list
+        };
+        for (j, e) in items.into_iter().enumerate() {
+            keep.push(i);
+            elems.push(e);
+            if let Some((_, one_based)) = ordinal {
+                ords.push(Value::Num((j + usize::from(*one_based)) as f64));
+            }
+        }
+    }
+    Ok((keep, elems, ords))
+}
+
+fn slots_read(e: &Expr, out: &mut Vec<usize>) -> bool {
+    match e {
+        Expr::Lit(_) | Expr::Param(_) => true,
+        Expr::Slot(s) => {
+            out.push(*s);
+            true
+        }
+        Expr::Prop { slot, .. }
+        | Expr::PropertyExists { slot, .. }
+        | Expr::IsLabeled { slot, .. } => {
+            out.push(*slot);
+            true
+        }
+        Expr::Not(a) | Expr::IsNull { expr: a, .. } => slots_read(a, out),
+        Expr::And(a, b) | Expr::Or(a, b) | Expr::Xor(a, b) => {
+            slots_read(a, out) && slots_read(b, out)
+        }
+        Expr::Compare { left, right, .. } => slots_read(left, out) && slots_read(right, out),
+        Expr::In { needle, haystack } => slots_read(needle, out) && slots_read(haystack, out),
+        Expr::Arith { left, right, .. } => slots_read(left, out) && slots_read(right, out),
+        Expr::Call { args, .. } => args.iter().all(|a| slots_read(a, out)),
+        Expr::List { items } => items.iter().all(|a| slots_read(a, out)),
+        Expr::Cast { expr, .. } => slots_read(expr, out),
+        // A correlated subquery may read ANY outer slot below its width, so claim all of them.
+        // An over-approximation is safe here (more columns gathered than needed); the opposite
+        // would substitute a placeholder for a column the body reads.
+        Expr::Exists { outer_width, .. } => {
+            out.extend(0..*outer_width);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// May this expression be narrowed to a SUBSET of the rows without changing which queries raise?
+///
+/// Two independent hazards, and the first version of this handled only one of them.
+///
+/// 1. **Evaluation** can raise: arithmetic on a zero divisor or a non-number, a function or CAST
+///    that faults. ISO permits skipping those (US008 / UA004, see `research/iso-39075/`) and the
+///    optimizer takes that latitude elsewhere, but the TS engine narrows only an `AND` and
+///    cross-engine byte-identity is a stricter promise than conformance.
+///
+/// Since 2026-10-08 this answers a NARROWER question than it used to: whether narrowing is safe
+/// FOR SPEED. An `AND` whose operand can raise narrows anyway (`fold_operand`'s `must_narrow`),
+/// because there the skip is the decided semantics rather than an optimization. So a `false` here
+/// no longer means "do not narrow" — it means "narrowing this is observable", which for `OR` is
+/// still a refusal and for `AND` is now the reason it is mandatory.
+/// 2. **Boolean coercion** can raise, independently of evaluation. An `AND`/`OR` operand is put
+///    through `as_truth`, which faults on a non-boolean — so a perfectly safe `Lit` or `Prop` as a
+///    direct operand is NOT narrowable: reducing it to zero rows makes `eval` short-circuit on the
+///    empty batch and the fault never happens.
+///
+/// Missing (2) was caught by the differential fuzzer on
+/// `RETURN ((NOT (3 IS UNKNOWN)) OR 'nan')`, where the first operand is true on every row: TS
+/// raised `E_INVALID_VALUE` and native answered. So the top-level operand must be something that
+/// definitely YIELDS a boolean, and only the inside of a comparison may be a plain read.
+fn narrowing_is_transparent(e: &Expr) -> bool {
+    match e {
+        // Definitely boolean, and cannot fault.
+        Expr::IsLabeled { .. } | Expr::PropertyExists { .. } => true,
+        Expr::IsNull { expr, .. } => operand_cannot_raise(expr),
+        Expr::Compare { left, right, .. } => {
+            operand_cannot_raise(left) && operand_cannot_raise(right)
+        }
+        Expr::Not(a) => narrowing_is_transparent(a),
+        Expr::And(a, b) | Expr::Or(a, b) | Expr::Xor(a, b) => {
+            narrowing_is_transparent(a) && narrowing_is_transparent(b)
+        }
+        // An `EXISTS` yields a boolean by construction and raises only if its BODY does. It is
+        // also where the prize is: a correlated subquery is the most expensive thing a predicate
+        // can hold, measured at 9.0x when its rows are eliminated rather than walked (item 70),
+        // and it is the shape that actually REACHES this code — an `AND` of two plain compares is
+        // absorbed by the filter fast paths.
+        Expr::Exists { body, .. } => plan_is_transparent(body),
+        _ => false,
+    }
+}
+
+/// Can this be evaluated without faulting, as the OPERAND OF A COMPARISON — where its value is
+/// compared rather than coerced to a boolean, so the hazard in (2) above does not apply?
+///
+/// A whitelist. Arithmetic, calls and casts are excluded because they fault; everything
+/// unrecognized is excluded because it has not been checked.
+fn operand_cannot_raise(e: &Expr) -> bool {
+    matches!(
+        e,
+        Expr::Lit(_)
+            | Expr::Param(_)
+            | Expr::Slot(_)
+            | Expr::Prop { .. }
+            | Expr::PropertyExists { .. }
+            | Expr::IsLabeled { .. }
+    )
+}
+
+/// Does this expression hold a correlated subquery — the one thing that makes an operand expensive
+/// enough to be worth narrowing for even a small saving? See `fold_operand`'s threshold.
+pub(crate) fn contains_subquery(e: &Expr) -> bool {
+    match e {
+        Expr::Exists { .. } | Expr::CountSubquery { .. } => true,
+        Expr::Not(a) | Expr::IsNull { expr: a, .. } => contains_subquery(a),
+        Expr::And(a, b) | Expr::Or(a, b) | Expr::Xor(a, b) => {
+            contains_subquery(a) || contains_subquery(b)
+        }
+        Expr::Compare { left, right, .. } => contains_subquery(left) || contains_subquery(right),
+        _ => false,
+    }
+}
+
+/// Does no predicate anywhere in this plan raise?
+///
+/// A whitelist over the plan shapes a subquery body can take, for the same reason as
+/// `narrowing_is_transparent`: an unrecognized node returns false. A body that merely TRAVERSES is
+/// transparent — an `Expand` cannot fault — so it is the predicates inside it that decide.
+fn plan_is_transparent(p: &Plan) -> bool {
+    match p {
+        Plan::Row | Plan::Scan { .. } => true,
+        Plan::Filter { input, pred } => {
+            narrowing_is_transparent(pred) && plan_is_transparent(input)
+        }
+        Plan::Expand { input, .. } => plan_is_transparent(input),
+        Plan::Distinct { input } => plan_is_transparent(input),
+        _ => false,
+    }
+}
+
+/// A batch of the same ARITY holding only `keep`'s rows, with the columns `read` names gathered
+/// and the rest replaced by cheap same-length placeholders.
+///
+/// The arity is preserved so slot indices still resolve; the placeholders exist only to keep them
+/// aligned. `Batch::gather` copies EVERY column, which is what this avoids — measured at 1,000,000
+/// rows keeping 6%, gathering sixteen `Col::Gen` columns costs 11,554us against 159us for one, and
+/// the elimination it would pay for is worth ~1,600us for a cheap operand. Narrowing the whole
+/// batch would turn a 2.1x gain into a 7x loss.
+fn narrow_to_slots(batch: &Batch, keep: &[usize], read: &[usize]) -> Batch {
+    let slots = (0..batch.slots.len())
+        .map(|i| {
+            if read.contains(&i) {
+                batch.slot(i).gather(keep)
+            } else {
+                // Four bytes a row and never read. `Col::Gen` here would cost what the gather
+                // this avoids would have.
+                Col::Nodes(vec![0; keep.len()])
+            }
+        })
+        .collect();
+    Batch::of(slots)
+}
+
+/// Fold the second operand of an `AND`/`OR` into `a`, IN PLACE, evaluating it over only the rows
+/// the first operand left undecided.
+///
+/// `settled` is the value of `a` that already decides the combination — `false` for `AND`, `true`
+/// for `OR`. Two things follow from that and both are used here: a row holding it needs no second
+/// evaluation, and the value it holds IS the final answer, so those rows need no write either.
+/// `UNKNOWN` settles neither, which is why the test is `!= Some(settled)` and not
+/// `== Some(!settled)`.
+///
+/// Measured prize, by `predicate_elimination_floor` (audit item 70): with an expensive second
+/// operand and 6% of rows surviving the first, evaluating it over the survivors instead of over
+/// everything is worth 9.1x; with a plain compare, 2.1x. At 100% surviving — nothing eliminated —
+/// it is a LOSS of 2% to 16%, which is what the sampled decision below avoids paying.
+///
+/// # Two reasons to narrow, and they have opposite gates
+///
+/// **For SPEED**, when the operand is TRANSPARENT (it cannot raise, so skipping rows is
+/// unobservable). Optional, and declined unless all of:
+/// * the sampled prefix says at least half the rows are settled, so the gather is paid on at most
+///   half of them;
+/// * the slot set is KNOWN, because narrowing replaces unnamed slots with placeholders.
+///
+/// **FOR THE ANSWER**, when the operand can raise and this is an `AND` (`must_narrow`). An
+/// `AND` settled FALSE on a row makes its other operand an INESSENTIAL part of the search
+/// condition, and an inessential part is not evaluated — so the skip is mandatory and the sample
+/// does not get a vote. ISO/IEC 39075 leaves this open (`US008` order of evaluation, `UA004`
+/// exceptions from inessential parts), and the choice between the two conformant outcomes was
+/// made on cost: a FALSE is cheaper than an exception (user, 2026-10-08). The TS engine's `and`
+/// arm short-circuits to match; `OR` is excluded because that decision was taken for `AND` and
+/// the TS engine evaluates both `OR` operands.
+///
+/// This gate used to read the other way round — transparency was required for ANY narrowing,
+/// because "the TS engine does not narrow, and cross-engine byte-identity is a stricter promise
+/// than conformance". That premise is what changed; the transparency gate survives verbatim on
+/// the speed path, which is the only one `OR` can take.
+fn fold_operand(
+    a: &mut [Option<bool>],
+    r: &Expr,
+    store: &Store,
+    batch: &Batch,
+    settled: bool,
+    combine: impl Fn(Option<bool>, Option<bool>) -> Option<bool>,
+) -> Result<(), String> {
+    let n = a.len();
+    let mut read = Vec::new();
+    // THE SHORT-CIRCUIT, and it leaves by its own door. If the operand can raise, the rows the
+    // first operand already SETTLED must not be evaluated at all — that is the decided
+    // semantics, not an optimization, so it does not get the sample's vote and it does not
+    // belong in the gate below.
+    //
+    // `AND` ONLY, which `!settled` selects. The decision was taken for `AND`; the symmetric
+    // `TRUE OR <data exception>` was not, so `OR` keeps evaluating both operands, which is what
+    // the TS engine does and agreeing with it is the constraint. Lifting it to `OR` is a
+    // one-word change here plus the matching short-circuit in `compileExpr`'s `or` arm; doing
+    // it here alone diverges (measured: `RETURN true OR (1.0 / 0.0)` answers `true` in native
+    // and raises in TS).
+    //
+    // SEPARATE FUNCTION, and that is load-bearing for SPEED rather than for clarity. Folding
+    // this into the gate and the branches below — two extra conditions on the gate, two extra
+    // branches and a `Vec` before the gather — cost a measured **1.17x** on BOTH of
+    // `query_bench`'s `AND` rows, including `project bool AND`, whose operands are transparent
+    // compares and which the new path therefore never touches. A null control (the same HEAD
+    // with one error string lengthened, md5-distinct binary) moved those rows 1.003x and
+    // 1.007x, so it was not the layout toll items 90 and 250 describe — it was this function
+    // getting bigger. Keeping the transparent path's body exactly as it was is what gives it
+    // back.
+    let transparent = narrowing_is_transparent(r);
+
+    if n > 0 && !settled && !transparent {
+        return fold_raising_conjunct(a, r, store, batch, combine);
+    }
+
+    // Unchanged, and the `transparent` term still has to be here: what reaches this line is
+    // either an `AND` with a transparent operand or an `OR` with any operand, and an `OR` whose
+    // operand can raise must NOT narrow. Dropping this term is mutant N4, which
+    // `a_non_boolean_or_operand_still_faults_when_the_other_decides_every_row` catches.
+    let narrowable = n > 0 && transparent && slots_read(r, &mut read);
+
+    // DECIDE FROM A SAMPLE, so the decision costs the same whichever way it goes. Counting the
+    // whole mask first cost a 10% regression on the DECLINED case (a cheap operand at 53%
+    // surviving: 32.1us against 35.2us), and bailing out of a partial build only halved it.
+    //
+    // The sample is POSITIONAL, not random: the first `SAMPLE` rows. That keeps the decision
+    // deterministic, which byte-identity needs, and an unrepresentative prefix costs only a worse
+    // choice, never a wrong answer.
+    const SAMPLE: usize = 1024;
+    // How much must be settled to pay for the gather? It depends on what the second operand
+    // costs, and the one thing known statically about that is whether it holds a SUBQUERY.
+    //
+    // Measured at 100,000 rows with 47% of rows settled: eliminating them saves ~1,442us of a
+    // correlated `EXISTS` for a ~20us gather of one column, so a half-settled bar leaves 1.76x on
+    // the floor. The same row with a plain compare as the operand saves ~70us for the same gather
+    // and comes out slightly BEHIND. One bar cannot serve both.
+    let min_settled = if contains_subquery(r) { 16 } else { 2 };
+    let worth_it = narrowable && {
+        let probe = n.min(SAMPLE);
+        a[..probe].iter().filter(|&&m| m == Some(settled)).count() * min_settled >= probe
+    };
+
+    if !worth_it {
+        let b = eval_mask(r, store, batch)?;
+        let n = n.min(b.len());
+        for i in 0..n {
+            a[i] = combine(a[i], b[i]);
+        }
+        return Ok(());
+    }
+
+    let keep: Vec<usize> = (0..n).filter(|&i| a[i] != Some(settled)).collect();
+    read.sort_unstable();
+    read.dedup();
+    let sub = narrow_to_slots(batch, &keep, &read);
+    let m = eval_mask(r, store, &sub)?;
+    // Only the undecided rows are written: a settled row already holds `Some(settled)`, which is
+    // the combination's answer whatever the second operand would have said. That is what lets this
+    // run with no second full-length allocation and no scatter.
+    for (j, &i) in keep.iter().enumerate() {
+        a[i] = combine(a[i], m[j]);
+    }
+    Ok(())
+}
+
+/// Fold a RAISING conjunct of an `AND` into `a`, evaluating it over only the rows the first
+/// conjunct left undecided — because a conjunct a `FALSE` sibling has already settled is an
+/// INESSENTIAL part of the search condition and is not evaluated at all.
+///
+/// This is the decided semantics (`UA004`; see `fold_operand`, and the TS engine's `and` arm
+/// which short-circuits to match), so unlike `fold_operand`'s narrowing it is unconditional —
+/// no sample, and no transparency gate, since a raising operand is the whole reason to be here.
+/// It lives in its own function to keep `fold_operand`'s hot path the size it was; inlining it
+/// there cost 1.17x on both of `query_bench`'s `AND` rows.
+fn fold_raising_conjunct(
+    a: &mut [Option<bool>],
+    r: &Expr,
+    store: &Store,
+    batch: &Batch,
+    combine: impl Fn(Option<bool>, Option<bool>) -> Option<bool>,
+) -> Result<(), String> {
+    let n = a.len();
+    // `settled` is `false` here by construction — only an `AND` reaches this.
+    let keep: Vec<usize> = (0..n).filter(|&i| a[i] != Some(false)).collect();
+
+    // Every row settled, which is the `FALSE AND <data exception>` case itself. The early
+    // return is PURELY an optimization — it skips a gather that would produce a zero-row batch
+    // — and NOT what stops the raise; the narrowing does that, because `eval_mask` over an
+    // empty batch faults on nothing. Mutating this branch out leaves the whole suite green,
+    // which is how that was established rather than assumed.
+    if keep.is_empty() {
+        return Ok(());
+    }
+
+    // NOTHING settled, so narrowing would gather every row to save no evaluation at all, and an
+    // `AND` whose first conjunct is true throughout is the ordinary shape. Evaluating over the
+    // whole batch is cheaper and, with nothing to skip, identical.
+    if keep.len() == n {
+        let b = eval_mask(r, store, batch)?;
+        let n = n.min(b.len());
+        for i in 0..n {
+            a[i] = combine(a[i], b[i]);
+        }
+        return Ok(());
+    }
+
+    // A raising operand whose slot set is UNKNOWN still must not see the settled rows, and
+    // `narrow_to_slots` substitutes placeholders only for the slots it is NOT told to gather —
+    // so naming every slot turns it into a plain full gather. Slower than the targeted one and
+    // correct, which is the right way round for a path the answer depends on.
+    let mut read = Vec::new();
+    if !slots_read(r, &mut read) {
+        read = (0..batch.slots.len()).collect();
+    }
+    read.sort_unstable();
+    read.dedup();
+    let sub = narrow_to_slots(batch, &keep, &read);
+    let m = eval_mask(r, store, &sub)?;
+    for (j, &i) in keep.iter().enumerate() {
+        a[i] = combine(a[i], m[j]);
+    }
+    Ok(())
+}
+
+pub(super) fn eval_mask(
+    expr: &Expr,
+    store: &Store,
+    batch: &Batch,
+) -> Result<Vec<Option<bool>>, String> {
+    Ok(match expr {
+        Expr::Not(x) => eval_mask(x, store, batch)?
+            .into_iter()
+            .map(|o| o.map(|b| !b))
+            .collect(),
+        // The second operand is evaluated only over the rows the first left undecided, when that
+        // is worth the gather and cannot change which queries raise — see `operand_mask`.
+        Expr::And(l, r) => {
+            let mut a = eval_mask(l, store, batch)?;
+            fold_operand(&mut a, r, store, batch, false, |x, y| match (x, y) {
+                (Some(false), _) | (_, Some(false)) => Some(false),
+                (Some(true), Some(true)) => Some(true),
+                _ => None,
+            })?;
+            a
+        }
+        Expr::Or(l, r) => {
+            let mut a = eval_mask(l, store, batch)?;
+            fold_operand(&mut a, r, store, batch, true, |x, y| match (x, y) {
+                (Some(true), _) | (_, Some(true)) => Some(true),
+                (Some(false), Some(false)) => Some(false),
+                _ => None,
+            })?;
+            a
+        }
+        Expr::Xor(l, r) => {
+            let (a, b) = (eval_mask(l, store, batch)?, eval_mask(r, store, batch)?);
+            let n = a.len().min(b.len());
+            (0..n)
+                .map(|i| match (a[i], b[i]) {
+                    (Some(x), Some(y)) => Some(x != y),
+                    _ => None,
+                })
+                .collect()
+        }
+        Expr::Compare { op, left, right } => {
+            if let Some(m) = typed_num_mask(*op, left, right, store, batch) {
+                m
+            } else if let Some(m) = typed_str_mask(*op, left, right, store, batch) {
+                m
+            } else {
+                as_truth(&eval(expr, store, batch)?)?
+            }
+        }
+        Expr::Call { name, args } => match typed_strsearch_mask(name, args, store, batch) {
+            Some(m) => m,
+            None => as_truth(&eval(expr, store, batch)?)?,
+        },
+        _ => as_truth(&eval(expr, store, batch)?)?,
+    })
+}
+
+/// A numeric leaf `prop <cmp> lit` (or its mirror) over a node/edge frontier → typed mask,
+/// reading the Num column raw. `None` when the leaf is not a Num-column-vs-num-literal. A
+/// present Num cell is always finite (NaN/Inf are stored as NULL), so `num_pred` matches
+/// the boxed `compare`'s three-valued result exactly; an absent cell is UNKNOWN.
+/// The id column of `slot` paired with the numeric column `key` it indexes, or `None` when either
+/// is not the shape this serves.
+///
+/// Node and edge slots read different columns for the same key, so the caller does not have to
+/// care which it has.
+fn num_side<'a>(
+    slot: usize,
+    key: &str,
+    store: &'a Store,
+    batch: &'a Batch,
+) -> Option<(&'a [u32], &'a [f64], &'a [bool])> {
+    match batch.slot(slot) {
+        Col::Nodes(ids) => match store.column(key)? {
+            Column::Num { data, present, .. } => Some((ids, data, present)),
+            _ => None,
+        },
+        Col::Edges(eids) => {
+            let (data, present) = store.edge_num_column(key)?;
+            Some((eids, data, present))
+        }
+        _ => None,
+    }
+}
+
+/// `a.x <op> b.y` over two numeric columns, without boxing either side.
+///
+/// Three-valued exactly as the boxed path: a NULL element (`u32::MAX`) or an absent cell on EITHER
+/// side makes the row UNKNOWN. The two sides may be different slots, different keys, and one a node
+/// and the other an edge.
+fn typed_num_prop_mask(
+    op: CompareOp,
+    l_slot: usize,
+    l_key: &str,
+    r_slot: usize,
+    r_key: &str,
+    store: &Store,
+    batch: &Batch,
+) -> Option<Vec<Option<bool>>> {
+    let (lids, ldata, lpres) = num_side(l_slot, l_key, store, batch)?;
+    let (rids, rdata, rpres) = num_side(r_slot, r_key, store, batch)?;
+    let n = lids.len().min(rids.len());
+    Some(
+        (0..n)
+            .map(|i| {
+                let (a, b) = (lids[i], rids[i]);
+                if a == u32::MAX || b == u32::MAX {
+                    return None;
+                }
+                let (ai, bi) = (a as usize, b as usize);
+                (lpres[ai] && rpres[bi]).then(|| num_pred(op, ldata[ai], rdata[bi]))
+            })
+            .collect(),
+    )
+}
+
+pub(super) fn typed_num_mask(
+    op: CompareOp,
+    left: &Expr,
+    right: &Expr,
+    store: &Store,
+    batch: &Batch,
+) -> Option<Vec<Option<bool>>> {
+    let (slot, key, op, t) = match (left, right) {
+        (Expr::Prop { slot, key }, Expr::Lit(Value::Num(t))) => (*slot, key, op, *t),
+        (Expr::Lit(Value::Num(t)), Expr::Prop { slot, key }) => (*slot, key, flip_op(op), *t),
+        // PROPERTY against PROPERTY (`WHERE a.x < b.y`), which had no typed path at all — both
+        // evaluators boxed it, measured at 8.62ns a row against 1.26ns for the same comparison
+        // against a literal, over a 200,000-row two-slot batch.
+        (Expr::Prop { slot: ls, key: lk }, Expr::Prop { slot: rs, key: rk }) => {
+            return typed_num_prop_mask(op, *ls, lk, *rs, rk, store, batch)
+        }
+        _ => return None,
+    };
+    match batch.slot(slot) {
+        Col::Nodes(ids) => {
+            // A key NO node carries is every row UNKNOWN, which is the answer without touching a
+            // column — the same rule `read_property` applies when `store.column` is `None`.
+            // Without this the comparison declined to the boxed path and cost 9.04ns a row to
+            // produce a column of NULLs and compare each one.
+            if store.column(key).is_none() {
+                return Some(vec![None; ids.len()]);
+            }
+            let Some(Column::Num { data, present, .. }) = store.column(key) else {
+                return None;
+            };
+            Some(
+                ids.iter()
+                    .map(|&id| {
+                        // A NULL element is UNKNOWN, which is what `None` means here.
+                        if id == u32::MAX {
+                            return None;
+                        }
+                        let i = id as usize;
+                        present[i].then(|| num_pred(op, data[i], t))
+                    })
+                    .collect(),
+            )
+        }
+        Col::Edges(eids) => {
+            let (data, present) = store.edge_num_column(key)?;
+            Some(
+                eids.iter()
+                    .map(|&eid| {
+                        if eid == u32::MAX {
+                            return None;
+                        }
+                        let i = eid as usize;
+                        present[i].then(|| num_pred(op, data[i], t))
+                    })
+                    .collect(),
+            )
+        }
+        _ => None,
+    }
+}
+
+/// A string leaf `prop <cmp> lit` (or its mirror) over a node frontier → typed mask,
+/// reading the `Str`/`Dict` column raw (no per-row `Value`). Equality/inequality on a
+/// `Dict` column compares interned codes (code equality ⟺ string equality); ordering and
+/// `Str` columns compare the strings directly. `None` when not a string-column-vs-string-
+/// literal; an absent cell is UNKNOWN. Cross-type (`Str` prop vs non-`Str` lit) returns
+/// `None`, so the boxed `compare` keeps its cross-type semantics.
+/// One side of a string property comparison, resolved to something indexable per row.
+///
+/// A `Dict` column is read through its dictionary rather than by code: codes are only comparable
+/// within ONE column, and the two sides here may be different keys with unrelated dictionaries.
+/// Decoding still beats boxing, and the literal path above keeps its code-compare for `Eq`/`Ne`.
+enum StrSide<'a> {
+    Plain {
+        data: &'a [GStr],
+        present: &'a [bool],
+    },
+    Dict {
+        dict: &'a [GStr],
+        codes: &'a [u32],
+        present: &'a [bool],
+    },
+}
+
+impl StrSide<'_> {
+    fn at(&self, i: usize) -> Option<&str> {
+        match self {
+            StrSide::Plain { data, present } => present[i].then(|| data[i].as_ref()),
+            StrSide::Dict {
+                dict,
+                codes,
+                present,
+            } => present[i].then(|| dict[codes[i] as usize].as_ref()),
+        }
+    }
+}
+
+/// The id column of `slot` paired with the string column `key` it indexes.
+///
+/// Nodes only: an edge string column has no typed accessor here, so an edge side declines and the
+/// boxed path handles it.
+fn str_side<'a>(
+    slot: usize,
+    key: &str,
+    store: &'a Store,
+    batch: &'a Batch,
+) -> Option<(&'a [u32], StrSide<'a>)> {
+    let Col::Nodes(ids) = batch.slot(slot) else {
+        return None;
+    };
+    match store.column(key)? {
+        Column::Str { data, present, .. } => Some((ids, StrSide::Plain { data, present })),
+        Column::Dict {
+            dict,
+            codes,
+            present,
+            ..
+        } => Some((
+            ids,
+            StrSide::Dict {
+                dict,
+                codes,
+                present,
+            },
+        )),
+        _ => None,
+    }
+}
+
+/// `a.x <op> b.y` over two string columns, without boxing either side. Three-valued exactly as the
+/// boxed path: a NULL element or an absent cell on either side makes the row UNKNOWN.
+fn typed_str_prop_mask(
+    op: CompareOp,
+    l_slot: usize,
+    l_key: &str,
+    r_slot: usize,
+    r_key: &str,
+    store: &Store,
+    batch: &Batch,
+) -> Option<Vec<Option<bool>>> {
+    let (lids, lside) = str_side(l_slot, l_key, store, batch)?;
+    let (rids, rside) = str_side(r_slot, r_key, store, batch)?;
+    let n = lids.len().min(rids.len());
+    Some(
+        (0..n)
+            .map(|i| {
+                let (a, b) = (lids[i], rids[i]);
+                if a == u32::MAX || b == u32::MAX {
+                    return None;
+                }
+                match (lside.at(a as usize), rside.at(b as usize)) {
+                    (Some(x), Some(y)) => Some(str_pred(op, x, y)),
+                    _ => None,
+                }
+            })
+            .collect(),
+    )
+}
+
+pub(super) fn typed_str_mask(
+    op: CompareOp,
+    left: &Expr,
+    right: &Expr,
+    store: &Store,
+    batch: &Batch,
+) -> Option<Vec<Option<bool>>> {
+    let (slot, key, op, lit) = match (left, right) {
+        (Expr::Prop { slot, key }, Expr::Lit(Value::Str(s))) => (*slot, key, op, s),
+        (Expr::Lit(Value::Str(s)), Expr::Prop { slot, key }) => (*slot, key, flip_op(op), s),
+        // PROPERTY against PROPERTY, the string twin of the numeric arm — measured at 19.10ns a
+        // row boxed, against 3.85ns for the same comparison against a literal.
+        (Expr::Prop { slot: ls, key: lk }, Expr::Prop { slot: rs, key: rk }) => {
+            return typed_str_prop_mask(op, *ls, lk, *rs, rk, store, batch)
+        }
+        _ => return None,
+    };
+    let Col::Nodes(ids) = batch.slot(slot) else {
+        return None;
+    };
+    // See the note in `typed_num_mask`: a key no node carries is every row UNKNOWN.
+    if store.column(key).is_none() {
+        return Some(vec![None; ids.len()]);
+    }
+    let lit: &str = lit.as_ref();
+    match store.column(key)? {
+        Column::Str { data, present, .. } => Some(
+            ids.iter()
+                .map(|&id| {
+                    if id == u32::MAX {
+                        return None;
+                    }
+                    let i = id as usize;
+                    present[i].then(|| str_pred(op, data[i].as_ref(), lit))
+                })
+                .collect(),
+        ),
+        Column::Dict {
+            dict,
+            codes,
+            present,
+            ..
+        } if matches!(op, CompareOp::Eq | CompareOp::Ne) => {
+            // Code compare: a present cell matches iff its code equals the literal's; a
+            // literal absent from the dict matches nothing (eq→false, ne→true).
+            let lit_code = dict.iter().position(|s| s.as_ref() == lit);
+            let want_eq = matches!(op, CompareOp::Eq);
+            Some(
+                ids.iter()
+                    .map(|&id| {
+                        if id == u32::MAX {
+                            return None; // NULL element → UNKNOWN → dropped
+                        }
+                        let i = id as usize;
+                        present[i].then(|| match lit_code {
+                            Some(lc) => (codes[i] as usize == lc) == want_eq,
+                            None => !want_eq,
+                        })
+                    })
+                    .collect(),
+            )
+        }
+        Column::Dict {
+            dict,
+            codes,
+            present,
+            ..
+        } => Some(
+            ids.iter()
+                .map(|&id| {
+                    if id == u32::MAX {
+                        return None; // NULL element → UNKNOWN → dropped
+                    }
+                    let i = id as usize;
+                    present[i].then(|| str_pred(op, dict[codes[i] as usize].as_ref(), lit))
+                })
+                .collect(),
+        ),
+        _ => None,
+    }
+}
+
+/// A string-search leaf `prop STARTS WITH / ENDS WITH / CONTAINS lit` (a `Call` over a
+/// node `Str`/`Dict` column) → typed mask, scanning `&str` directly instead of boxing each
+/// cell through `str_bool`. `None` when it is not that shape; a present string cell tests,
+/// an absent cell — or a non-string / missing column — is UNKNOWN (matching `str_bool`'s
+/// NULL), so the mask equals the boxed result row-for-row.
+fn typed_strsearch_mask(
+    name: &str,
+    args: &[Expr],
+    store: &Store,
+    batch: &Batch,
+) -> Option<Vec<Option<bool>>> {
+    let (Expr::Prop { slot, key }, Expr::Lit(Value::Str(sub))) = (args.first()?, args.get(1)?)
+    else {
+        return None;
+    };
+    let f: fn(&str, &str) -> bool = match name {
+        "starts_with" => |s, t| s.starts_with(t),
+        "ends_with" => |s, t| s.ends_with(t),
+        "contains" => |s, t| s.contains(t),
+        _ => return None,
+    };
+    let Col::Nodes(ids) = batch.slot(*slot) else {
+        return None;
+    };
+    let sub = sub.as_ref();
+    // Only a pure Str/Dict column (every present cell is a string) can be vectorized here.
+    // An ABSENT column is NULL for every row → null-propagation, no error (matches the
+    // general evaluator). A Gen (mixed) or a non-string typed column may hold a non-null
+    // non-string cell, on which the predicate now FAULTS — return None so `eval_mask`
+    // falls to the general `eval`, which raises the type error per row (identical to the
+    // function-form `starts_with(...)`).
+    match store.column(key) {
+        None => Some(vec![None; ids.len()]),
+        Some(Column::Str { data, present, .. }) => Some(
+            ids.iter()
+                .map(|&id| {
+                    if id == u32::MAX {
+                        return None;
+                    }
+                    let i = id as usize;
+                    present[i].then(|| f(data[i].as_ref(), sub))
+                })
+                .collect(),
+        ),
+        Some(Column::Dict {
+            dict,
+            codes,
+            present,
+            ..
+        }) => Some(
+            ids.iter()
+                .map(|&id| {
+                    if id == u32::MAX {
+                        return None; // NULL element → UNKNOWN → dropped
+                    }
+                    let i = id as usize;
+                    present[i].then(|| f(dict[codes[i] as usize].as_ref(), sub))
+                })
+                .collect(),
+        ),
+        _ => None,
+    }
+}
+
+pub(super) fn truth_to_col(out: Vec<Option<bool>>) -> Col {
+    if out.iter().all(Option::is_some) {
+        Col::Bool(out.into_iter().map(|o| o.expect("all some")).collect())
+    } else {
+        Col::Gen(
+            out.into_iter()
+                .map(|o| o.map_or(Value::Null, Value::Bool))
+                .collect(),
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests;

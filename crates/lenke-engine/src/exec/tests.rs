@@ -28469,9 +28469,11 @@ fn the_typed_count_fast_path_is_gated_per_type_not_globally() {
 
     // Every edge is [KNOWS, X]: KNOWS is PRIMARY everywhere, X is secondary everywhere.
     let mut b = Builder::default();
-    let a = b.node(&["P"], &[]);
-    let c = b.node(&["P"], &[]);
-    let d = b.node(&["P"], &[]);
+    // `k` exists so item 1011's FILTERED assertions below have a property to test; every node
+    // carries 0 so `k >= 0` keeps all of them and the filter selects nothing away.
+    let a = b.node(&["P"], &[("k", Value::Num(0.0))]);
+    let c = b.node(&["P"], &[("k", Value::Num(0.0))]);
+    let d = b.node(&["P"], &[("k", Value::Num(0.0))]);
     b.edge(a, c, "KNOWS");
     b.edge(a, d, "KNOWS");
     b.edge(c, d, "KNOWS");
@@ -28537,4 +28539,57 @@ fn the_typed_count_fast_path_is_gated_per_type_not_globally() {
     assert_eq!(rows_of("MATCH ()-[:X]->(m) RETURN m AS m", &store), 3);
     // And on the mixed fixture, where X is primary on one edge and secondary on another.
     assert_eq!(rows_of("MATCH ()-[:X]->(m) RETURN m AS m", &s2), 2);
+
+    // THE FILTERED SHAPE (item 1011), which neither of the two above reaches: the route selector
+    // for `Filter { Expand { Scan } }` takes a SINGLE wanted type and used to decline the whole
+    // route when ANY edge was multi-label. A count never reaches it and a bare hop has no filter.
+    //
+    // Every node here carries `k = 0`, so `k >= 0` keeps all of them and the row counts match the
+    // unfiltered assertions above — the filter is there to reach the route, not to select.
+    assert_eq!(
+        rows_of(
+            "MATCH ()-[:KNOWS]->(m) WHERE m.k >= 0 RETURN m AS m",
+            &store
+        ),
+        3
+    );
+    // ...and the DECLINE still has to happen for a secondary-carried type, or the filtered hop
+    // takes a partition that holds none of its edges and returns nothing.
+    assert_eq!(
+        rows_of("MATCH ()-[:X]->(m) WHERE m.k >= 0 RETURN m AS m", &store),
+        3
+    );
+
+    // THE ROUTE ITSELF, pinned in both directions. Both assertions above pass whichever way the
+    // gate goes — taking the route for a secondary type is the only wrong ANSWER, and inverting
+    // the gate is a pure perf regression no answer can see (the hazard CLAUDE.md records as "a
+    // perf gate needs its own test"). So ask the selector directly.
+    fn fused_route_taken(q: &str, store: &Store) -> bool {
+        // Only the two wrappers these queries actually produce — a generic walk would hide a
+        // plan-shape change behind a `false` that reads like a route decision.
+        fn walk(p: &Plan, store: &Store) -> bool {
+            match p {
+                Plan::Filter { input, .. } => {
+                    super::fused_hop_shape(p, store).is_some() || walk(input, store)
+                }
+                Plan::Project { input, .. } => walk(input, store),
+                _ => false,
+            }
+        }
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), store);
+        walk(&plan, store)
+    }
+    assert!(
+        fused_route_taken(
+            "MATCH ()-[:KNOWS]->(m) WHERE m.k >= 0 RETURN m AS m",
+            &store
+        ),
+        "KNOWS is never carried as a secondary label, so its partition is complete and the \
+         fused route must be taken even though the graph has multi-label edges"
+    );
+    assert!(
+        !fused_route_taken("MATCH ()-[:X]->(m) WHERE m.k >= 0 RETURN m AS m", &store),
+        "X is carried only as a secondary label, so its partition is incomplete and the fused \
+         route must still decline"
+    );
 }

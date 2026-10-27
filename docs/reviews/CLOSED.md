@@ -29193,6 +29193,26 @@ multiTypeEdgeCount === 0`) — one named type cannot double-count. Native's `Adj
   directions, 40 nodes, both loop modes) passed throughout, so the change was a route change. The
   pin was **strengthened, not relaxed**: a never-secondary type must take the slice AND a
   secondary-carried type must still decline.
+- **✅ SHIPPED — the THIRD site of 1008's shape declines a whole ROUTE; 1.71x → 1.00x (item
+  1011).** `fused_hop_shape` in `exec.rs` gates the fused single-hop fast paths for
+  `Filter(<pred>, Expand{single-type, Out}(Scan))`; it took a SINGLE wanted type and declined on
+  the GLOBAL flag. Narrowed to `type_ever_secondary(*w)`. Filtered arm of `multilabel_taint_1008`
+  (new): 4x1 **1.71 → 1.00**, 32x1 **1.49 → 0.99**, 32x8 **1.82 → 1.00**; the clean column and
+  both other arms flat.
+- **THE DISCRIMINATOR BETWEEN A 1008 SITE AND A 1009 SITE IS READABLE IN THE CODE (item 1011).**
+  Not every instance of this guard pays. `edge_carries_wanted` runs PER EDGE and denies a per-edge
+  probe — the lookup costs what it saves, hence 1009/1010's flat result. `fused_hop_shape` runs
+  ONCE PER QUERY and denies a whole ROUTE. **Ask what the guard denies and how often it runs,
+  before building the fixture** — the prediction here was made in advance and held.
+- **THE FIXTURE PROFILE CAN INVERT BETWEEN TWO SITES OF THE SAME GUARD (item 1011).** 1008 paid
+  most at degree 256 / 64 types and ~1.1x at one type; 1011 pays at LOW degree and **nothing at
+  256**, because the fused route is only chosen for small adjacencies. A single "representative"
+  fixture would have missed one of them.
+- **REVERTING A ROUTE GATE IS ANSWER-EQUIVALENT, SO IT NEEDS A ROUTE PIN (item 1011).** The mutant
+  that restores `has_multi_label_edges()` changes no answer anywhere and survived every
+  differential and answer assertion in the repo. It is caught only by asserting on the selector
+  itself (`fused_hop_shape(..).is_some()`) in both directions. Second instance of the hazard after
+  1008's degree-reader pin.
 - **⚠️ PRICED, NOT BUILT — the DISJUNCTION taint penalty is 2.3x and the obvious narrowing FAILS
   (item 1009).** After 1008 a single-type hop takes the per-type CSR, so the remaining guards
   serve disjunctions, stale CSR and secondary types. `-[:T0|T1]->` at degree 256 / 64 types with
