@@ -395,6 +395,28 @@ type InlinePred = { pred: CPredicate; bindVar?: string };
  * never wrote. Both props-carrying callers (`inlinePredOf`, `gateWith`) prove it with the same
  * `freePredicateVars(c.value).size > 0` loop; every other caller passes no properties at all.
  */
+/**
+ * The clause `WHERE` as a LIFTED element-local predicate, or `undefined` when it is not one
+ * (item 995).
+ *
+ * Element-local is the precondition `compilePredicate`'s `ownVar` parameter documents: the
+ * predicate reads exactly one variable and it is the far node's. `freePredicateVars` is the proof,
+ * the same one item 230's two-hop middle case uses.
+ *
+ * A free function for the LINT gate rather than for speed — inlined, its three conditions took
+ * the one-hop builder to a complexity of 38 against a limit of 35, the same wall item 993 hit.
+ * It is the right thing to move for the same reason: this decides a route ONCE PER QUERY, where
+ * the walk it selects runs once per candidate.
+ */
+const liftedFarPred = (
+  where: Expr,
+  free: ReadonlySet<string>,
+  farName: string | undefined,
+): CPredicate | undefined =>
+  farName !== undefined && free.size === 1 && free.has(farName)
+    ? compilePredicate(undefined, where, farName)
+    : undefined;
+
 export const predFor = (
   pred: CPredicate,
   ownVar: string | undefined,
@@ -673,6 +695,22 @@ type HopPred = {
   startVar?: string;
   farVar?: string;
   relVar?: string;
+  /**
+   * The SAME predicate as a lifted [`CPredicate`], set only when it reads nothing but the far
+   * node's own variable (item 995).
+   *
+   * Item 994 profiled the far walk and found **283 of its 307 ns a candidate inside one frame** —
+   * `compileExpr`'s `compare` arm, `(env) => compareTruth(op, fn, l(env), r(env))` — while
+   * `farOnlyHopCount` itself was 0.9% of samples. Gremlin's twin has no separate predicate frame
+   * at all and does the walk AND the test in 149 ns, so the closure chain is the gap.
+   *
+   * The lift is not new machinery: the two-hop path has routed its MIDDLE node this way since
+   * item 230, `satisfies` applies the lifted `eqProps`/`cmpProps` by reading the element
+   * DIRECTLY rather than through the binding, and `farOnlyHopCount` already applies an
+   * `InlinePred` the same way. This gives the one-hop clause `WHERE` the route its inline twin
+   * and its two-hop sibling already had.
+   */
+  farLifted?: CPredicate;
 };
 
 /** Everything a filtered 1-hop walk needs, resolved for one call: the graph and
@@ -1048,6 +1086,8 @@ const farOnlyHopCount = (scan: HopScan, farVar: string | undefined): number => {
   // The FAR-side drive, so the box is the opposite of the near one above — reading it off the
   // wrong side is a wrong answer, not a slow one.
   const boxOf = (v: Vertex): Map<string, Set<Edge>> | undefined => (out ? v.adjTo : v.adjFrom);
+  // Hoisted out of the loop: one polymorphic load per query rather than per candidate.
+  const lifted = pred.farLifted;
   let n = 0;
 
   // The vertex-side drive, for the reasons spelled out on the twin above: creation order for
@@ -1076,12 +1116,26 @@ const farOnlyHopCount = (scan: HopScan, farVar: string | undefined): number => {
         continue;
       }
 
-      if (farVar !== undefined) {
-        binding.set(farVar, v);
-      }
+      // THE LIFTED ROUTE (item 995). `satisfies` reads the element directly for every conjunct
+      // it lifted, so the binding is needed only for a RESIDUAL `where` — and when the predicate
+      // lifts completely there is no Map write and no Map read per candidate at all, which is
+      // what Gremlin's twin has always had.
+      if (lifted !== undefined) {
+        if (lifted.where !== undefined && farVar !== undefined) {
+          binding.set(farVar, v);
+        }
 
-      if (asTruth(pred.fn(env)) !== true) {
-        continue;
+        if (!satisfies(v, lifted, binding, params, graph)) {
+          continue;
+        }
+      } else {
+        if (farVar !== undefined) {
+          binding.set(farVar, v);
+        }
+
+        if (asTruth(pred.fn(env)) !== true) {
+          continue;
+        }
       }
     } catch (e) {
       // See the twin: re-throw only where the old walk would have evaluated this vertex.
@@ -3560,11 +3614,14 @@ const patternCountOf = <T>(
     const reads = (v: string | undefined): string | undefined =>
       v !== undefined && free.has(v) ? v : undefined;
 
+    const farName = seg.node.variable;
+
     pred = {
       fn: compileExpr(where),
       startVar: reads(start.variable),
       farVar: reads(seg.node.variable),
       relVar: reads(seg.rel.variable),
+      farLifted: liftedFarPred(where, free, farName),
     };
   }
 

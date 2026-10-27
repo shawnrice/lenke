@@ -28906,3 +28906,29 @@ disagree on the ANSWER` — item 984 confirmed through the repo's own gate.
   guessing this cost. Upper bound if the predicate term reached Gremlin's inlined cost is
   307 → ~160 ns a candidate (~1.9x); floor is nothing. `hop-predicate-profile.ts` exists so the
   before/after is cheap.
+- **✅ SHIPPED — the far-hop clause `WHERE` takes the LIFTED route, 307 → 213 ns a candidate
+  (1.44x) (item 995).** The fix item 994's profiler pointed at, and NOT new machinery: the two-hop
+  MIDDLE node has lifted since item 230 and an inline far constraint lifts through
+  `inFar`/`inlineHolds`/`satisfies` — the one-hop clause `WHERE` was the only one of the three on
+  the general closure. `HopPred` gains `farLifted?: CPredicate`, built with item 230's own proof
+  (`freePredicateVars` showing the predicate reads nothing but the far node's variable).
+  Three alternated rounds: gql 210/213/214/216/218/230 (median 215), grm CONTROL
+  146/147/150/150/166/200 (median 150, was 152) — flat, and a different package besides.
+- **The binding is never touched when the predicate lifts COMPLETELY (item 995).** `satisfies`
+  needs it only for a residual `where`; everything it lifted reads the element directly. So the
+  route skips the `Map` write and the `Map` read inside `l(env)` per candidate — the asymmetry with
+  Gremlin, whose walk holds the vertex in hand. Verified by counter: **400,000 hits,
+  `residual=false`**.
+- **⚠️ ITEM 994's UPPER BOUND WAS WRONG, recorded as a miss (item 995).** 994 priced it at
+  307 → ~160 ns (~1.9x) _if the predicate term reached Gremlin's inlined cost_; actual is 213
+  (1.44x), so the closure chain was ~90 ns of the 283 rather than all of it. **A profiler proves
+  WHERE the time is, not WHICH PART of that frame is removable** — the bound assumed the whole
+  frame was scaffolding. The residual **213 against Gremlin's 150 (1.42x) is still unexplained in
+  mechanism**, and this chain is now 1 for 5 on attributions.
+- **A mutant SURVIVES BY CONSTRUCTION here, and the routing was read to prove it (item 995).**
+  M1 (lifted route always accepts) CAUGHT; M3 (binding dropped despite a residual) CAUGHT;
+  **M2 (the element-local guard removed) SURVIVED all 2,787 GQL tests** — because `farWalkFits`
+  already requires `pred.startVar === undefined && pred.relVar === undefined`, so inside
+  `farOnlyHopCount` the predicate provably reads the far variable alone. Item 933's "two different
+  rules overlapping" category, not a test gap: the guard is kept so `farLifted`'s contract holds
+  for a future caller that does not validate, and is marked expected-to-survive.
