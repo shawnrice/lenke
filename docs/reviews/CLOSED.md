@@ -28063,3 +28063,28 @@ Prop}` 160.0 / 4,000; `NOT` → `Filter{Scan, Not(Prop)}` 214.7 / 196,000; `= fa
 - **TOOLING — a mutation pristine copy under `target/` is gitignored but still LINTED (item 954).**
   `bun run lint` reported 30 errors in `target/pristine-954/executor.ts`. Delete the copy after the
   run, or `lint` fails for reasons that have nothing to do with the change.
+- **⚠️ OPEN, and the NATIVE twin of item 954 is worth 3.47x not 1.18x (item 955).** `opt.rs`'
+  `prop_path` has the same shape `fieldChain` had — `Expr::Prop` and `Expr::Field`, no
+  `Expr::Index` — but natively it gates **whether an `IndexSeek` is seeded at all**, not which
+  per-row closure runs. `bracketseek_955`, 200k nodes, min of 9, both spellings asserted to return
+  the same 50,000 rows: **WITHOUT an index**, dotted gets
+  `IndexSeek { key: "meta.city" }` at 2817.4 us and bracket gets `Filter { Scan }` at 9782.0 —
+  **3.47x**.
+- **A SECOND, independent gap: `Expr::Index` evaluation costs 1.87x `Expr::Field` on the IDENTICAL
+  route (item 955).** With a hash index present both spellings take `Filter { Scan }` and still
+  differ, 5158.7 against 9645.4 us. That is exec-side per-row cost, separate from seeding, and is
+  deliberately not bundled with the seeding fix.
+- **NOT A BUG — the dotted spelling seeks WITHOUT an index and scans WITH one (item 955).**
+  `eq_seek_worth_it` working as items 947–949 described: with an index the planner consults
+  `seek_beats_scan`, and 50,000/200,000 = **25% selectivity** is past `SEEK_MAX_FRACTION = 0.154`,
+  so it correctly declines; without one there is no statistic to read, so it seeds
+  unconditionally. **Here that unconditional seed WINS by 3.47x**, where item 948's sweep had
+  `Filter` winning from 10% on — both right about their own column (948 measured a `Column::Bool`,
+  this is a dotted record path), which is why 948 concluded the fix must be type-aware rather than
+  one new constant.
+- **PRECONDITIONS for the `prop_path` fix, none optional (item 955).** (1) `elem` must be
+  `ElemKind::Plain` — a non-`Plain` `elem` means a group-variable list where `x[i].prop` resolves
+  an element property, a different operation that must not be folded into a path. (2) **The
+  equivalence must be MEASURED across base kinds, not read** — item 954's reading predicted a
+  divergence that did not exist and the inverse error is equally available; one record base is one
+  base kind, not five. (3) It is a **seeding** change, so every mutant is answer-equivalent (item 585) and the evidence is this probe plus a route assertion, not the differential tests.
