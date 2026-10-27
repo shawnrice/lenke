@@ -404,11 +404,21 @@ pub(super) fn try_scan_top_k(
         // Below the crossover the GENERIC path is faster; see `num_top_k_worthwhile`.
         return match store.column(key) {
             Some(Column::Num { .. }) => None,
+            // Item 1020: a temporal column has its own streaming arm, for the reasons
+            // `try_scan_top_k_temporal` documents.
+            Some(Column::Temporal { data, present, .. }) => {
+                try_scan_top_k_temporal(data, present, label, k, skip, limit, store)
+            }
             Some(column) => try_scan_top_k_wide(column, label, k, skip, limit, store),
             None => None,
         };
     }
     let column = store.column(key)?;
+    if let Column::Temporal { data, present, .. } = column {
+        // Item 1020, placed BEFORE the numeric destructure so the numeric body below stays
+        // byte-for-byte what item 864 left (its own note asks for exactly that).
+        return try_scan_top_k_temporal(data, present, label, k, skip, limit, store);
+    }
     let Column::Num { data, present, .. } = column else {
         // Item 864: every OTHER representation used to stop here, so a string or dictionary key
         // fell back to `order_page` — which decodes a `Dict` column into a whole `Col::Str`
@@ -485,6 +495,99 @@ pub(super) fn try_scan_top_k(
 /// a null that sorts FIRST could outrank rows this path would never look at. If the scan ends with
 /// fewer than `skip+limit` non-null rows the nulls are inside the window after all, and it declines
 /// so the general path can place them.
+/// The streaming top-K for a packed TEMPORAL column (item 1020).
+///
+/// **Why this is a separate function and not an arm of `try_scan_top_k_wide`.** That function's
+/// buffer is `(u32 rank, u32 arrival, u32 node)` and its comparator ranks on a `u32`; a temporal
+/// has no bounded rank that fits one. It could be mapped to a wider integer, but then the ORDER
+/// would be a re-derivation of `Temporal::cmp_total` rather than that function — and a sort key
+/// that is subtly not the general path's order is a wrong ANSWER, not a slow one. So the buffer
+/// carries the `Temporal` itself (`Copy`, at most 24 bytes) and compares with `cmp_total`
+/// directly, which makes the order identical BY CONSTRUCTION.
+///
+/// Separate also because item 844 shipped a 1.6x regression on an unrelated `min` control by
+/// giving two arms a shared live range, and item 864's numeric path carries a note to leave it
+/// byte-for-byte alone for that reason. A new function shares nothing.
+///
+/// NO EARLY EXIT, unlike the dictionary arm. That arm knows the extreme rank from the dict and can
+/// stop once `kcap` rows at it are seen; a temporal column has no such bound, exactly as the
+/// numeric path has none. What it gets is the same stream-and-trim: O(N) time, O(kcap) space,
+/// against `order_page`'s materialize-the-frontier-and-partial-sort.
+///
+/// Measured (`temporal_distinct_1015`'s `topk` column, 200,000 rows, 1,000 distinct):
+///
+/// ```text
+///   kind        PRE (order_page)   num control   full-sort ceiling
+///   date               5,962 us        1,239 us          56,760 us
+///   datetime           6,013          (same)             56,269
+/// ```
+fn try_scan_top_k_temporal(
+    data: &[crate::temporal::Temporal],
+    present: &[bool],
+    label: &Option<String>,
+    k: &crate::ir::SortKey,
+    skip: Option<usize>,
+    limit: usize,
+    store: &Store,
+) -> Option<Batch> {
+    if k.nulls_first {
+        // Same precondition as `try_scan_top_k_wide`'s: skipping nulls is only sound when they
+        // sort LAST. See that function for why the guard is unexercised rather than verified.
+        return None;
+    }
+    let kcap = skip.unwrap_or(0).checked_add(limit)?;
+    if kcap == 0 {
+        return Some(Batch::of(vec![Col::Nodes(Vec::new())]));
+    }
+    if kcap.saturating_mul(2) >= store.node_count() {
+        return None; // window is not a small prefix — a full sort is as cheap
+    }
+    let desc = k.descending;
+    // `cmp_total` is the ordering `order_page` applies to a temporal (via `value::cmp_total`,
+    // which only dispatches to it), then arrival ascending as the row-order tiebreak — the same
+    // total order the other arms use.
+    let cmp = |a: &(crate::temporal::Temporal, u32, u32),
+               b: &(crate::temporal::Temporal, u32, u32)| {
+        let o = if desc {
+            b.0.cmp_total(&a.0)
+        } else {
+            a.0.cmp_total(&b.0)
+        };
+        o.then(a.1.cmp(&b.1))
+    };
+    let trim = kcap.saturating_mul(4).max(1024);
+    let mut buf: Vec<(crate::temporal::Temporal, u32, u32)> = Vec::with_capacity(trim);
+    let mut arrival = 0u32;
+    let mut nulls_seen = false;
+
+    fastpath::scan_visit(store, label, |i| {
+        if !present[i] {
+            nulls_seen = true;
+            return;
+        }
+        buf.push((data[i], arrival, u32::try_from(i).unwrap_or(u32::MAX)));
+        arrival += 1;
+        if buf.len() >= trim {
+            buf.select_nth_unstable_by(kcap - 1, cmp);
+            buf.truncate(kcap);
+        }
+    });
+
+    if nulls_seen && buf.len() < kcap {
+        return None; // nulls are inside the window — the general path places them
+    }
+    let end = kcap.min(buf.len());
+    if end < buf.len() {
+        buf.select_nth_unstable_by(end - 1, cmp);
+        buf.truncate(end);
+    }
+    buf.sort_unstable_by(cmp);
+    let start = skip.unwrap_or(0).min(buf.len());
+    Some(Batch::of(vec![Col::Nodes(
+        buf[start..].iter().map(|&(_, _, n)| n).collect(),
+    )]))
+}
+
 fn try_scan_top_k_wide(
     column: &Column,
     label: &Option<String>,

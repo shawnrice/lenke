@@ -4436,6 +4436,181 @@ fn group_by_a_date_key_on_a_large_hop_frontier() {
     );
 }
 
+/// `ORDER BY <temporal> LIMIT k` — item 1020's streaming top-K arm.
+///
+/// THE ORACLE IS THE GENERAL PATH. Every shape is asserted against its `WHERE true` twin (item
+/// 570), which forces `order_page`, so the test states the claim that matters: **the streaming arm
+/// returns the general path's rows in the general path's order.** A key that ordered subtly
+/// differently — the real hazard, since the buffer carries its own comparator — fails here rather
+/// than being discovered by the fuzzers later.
+///
+/// Both DIRECTIONS, because `desc` flips the comparator; TIES, because arrival is the tiebreak and
+/// a wrong one permutes equal keys; and a NULL, because the arm bails only when nulls land inside
+/// the window and must otherwise skip them.
+#[test]
+fn ordered_limit_over_a_temporal_column() {
+    use crate::temporal::{DateTime, Duration, Temporal, Time, ZonedDateTime, ZonedTime};
+
+    let cases: Vec<(&str, Vec<Temporal>)> = vec![
+        (
+            "o_date",
+            (0..40)
+                .map(|i| {
+                    Temporal::Date(crate::temporal::Date {
+                        days: 19_000 + (i % 7),
+                    })
+                })
+                .collect(),
+        ),
+        (
+            "o_time",
+            (0..40)
+                .map(|i| {
+                    Temporal::Time(Time {
+                        secs: (i % 7) as u32,
+                        nanos: ((i % 3) * 100) as u32,
+                    })
+                })
+                .collect(),
+        ),
+        (
+            "o_dt",
+            (0..40)
+                .map(|i| {
+                    Temporal::DateTime(DateTime {
+                        // Straddling the epoch, where `format` floor-divides — the arithmetic most
+                        // likely to order differently between a field key and a rendering.
+                        secs: i64::from(i % 9) - 4,
+                        nanos: ((i % 3) * 7) as u32,
+                    })
+                })
+                .collect(),
+        ),
+        (
+            "o_zdt",
+            (0..40)
+                .map(|i| {
+                    Temporal::ZonedDateTime(ZonedDateTime {
+                        secs: i64::from(i % 5),
+                        nanos: 0,
+                        // The OFFSET varies independently of the instant, so two values naming the
+                        // same instant must still order by `cmp_total`'s field order.
+                        offset: ((i % 3) as i16 - 1) * 60,
+                    })
+                })
+                .collect(),
+        ),
+        (
+            "o_zt",
+            (0..40)
+                .map(|i| {
+                    Temporal::ZonedTime(ZonedTime {
+                        secs: (i % 5) as u32,
+                        nanos: 0,
+                        offset: ((i % 3) as i16 - 1) * 60,
+                    })
+                })
+                .collect(),
+        ),
+        (
+            // `Duration` orders by `total_key()` under `cmp_total`, which is NOT its predicate
+            // order — so it is the kind most likely to diverge if the arm invented a key. The arm
+            // carries the `Temporal` and calls `cmp_total`, so it cannot; this asserts that.
+            "o_dur",
+            (0..40)
+                .map(|i| {
+                    Temporal::Duration(Duration {
+                        months: i64::from(i % 3),
+                        days: i64::from(i % 5),
+                        secs: i64::from(i % 7),
+                        nanos: 0,
+                    })
+                })
+                .collect(),
+        ),
+    ];
+
+    // A TOTAL TIE is its own case, and it is the one with teeth for the ARRIVAL TIEBREAK. With
+    // distinct keys the window is determined by the keys alone, so dropping the tiebreak permutes
+    // nothing observable and that mutant SURVIVED. When every row carries the SAME key, which
+    // rows fall inside `LIMIT 5` is decided entirely by arrival — `select_nth_unstable_by` and
+    // `sort_unstable_by` are unstable, so without the tiebreak the window is whichever five the
+    // partition happened to leave.
+    let mut cases = cases;
+    // ...AND IT HAS TO BE BIG ENOUGH TO TRIM. The buffer only partitions once it reaches
+    // `max(kcap * 4, 1024)` rows; below that `select_nth_unstable_by` and `sort_unstable_by` are
+    // handed an already-ordered 40-element slice and move nothing, so the tiebreak mutant stayed
+    // invisible at 40 rows and SURVIVED. 1,100 identical keys force the partition, and then which
+    // five rows survive is decided by the tiebreak alone.
+    cases.push((
+        "o_tie",
+        (0..1_100)
+            .map(|_| Temporal::Date(crate::temporal::Date { days: 19_000 }))
+            .collect(),
+    ));
+
+    for (key, vals) in cases {
+        let mut b = Builder::default();
+
+        // `seq` IDENTIFIES THE ROW, and without it the tie case proves nothing: projecting only
+        // the temporal makes every tied row print the same string, so the test could not see
+        // WHICH rows the window kept — and the arrival-tiebreak mutant survived twice before
+        // this existed. The sort key is still the temporal; `seq` is only carried to the output.
+        for (i, t) in vals.iter().enumerate() {
+            b.node(&["P"], &[(key, Value::Temporal(*t)), ("seq", n(i as f64))]);
+        }
+        // One node with the property ABSENT. GQL sorts nulls LAST, so with a small window the arm
+        // skips it; a mutant that kept it would place a null inside the window.
+        b.node(&["P"], &[("other", n(0.0))]);
+
+        let store = b.build();
+
+        assert!(
+            matches!(
+                store.column(key),
+                Some(crate::store::Column::Temporal { .. })
+            ),
+            "{key} must be a packed temporal column, or this tests nothing"
+        );
+
+        let ids = |q: &str| -> Vec<String> {
+            let batch = run(&crate::gql::parse(q).unwrap(), &store);
+            batch
+                .rows
+                .iter()
+                .map(|r| {
+                    r.iter()
+                        .map(|v| match v {
+                            Value::Temporal(t) => t.format(),
+                            other => format!("{other:?}"),
+                        })
+                        .collect::<Vec<_>>()
+                        .join("|")
+                })
+                .collect()
+        };
+
+        for dir in ["", " DESC"] {
+            for (skip, limit) in [(0usize, 5usize), (0, 1), (3, 4)] {
+                let offset = if skip == 0 {
+                    String::new()
+                } else {
+                    format!(" OFFSET {skip}")
+                };
+                let q = format!(
+                    "MATCH (p:P) ORDER BY p.{key}{dir}{offset} LIMIT {limit} RETURN p.{key} AS t, p.seq AS s"
+                );
+                let general = q.replacen("MATCH (p:P)", "MATCH (p:P) WHERE true", 1);
+
+                // ORDER is compared, not a sorted multiset — the whole point of the arm is that it
+                // reproduces the general path's sequence.
+                assert_eq!(ids(&q), ids(&general), "fast and general disagree for {q}");
+                assert_eq!(ids(&q).len(), limit, "wrong window size for {q}");
+            }
+        }
+    }
+}
+
 /// `count(DISTINCT <temporal>)` and Gremlin's `values(k).dedup()` over the NON-DATE kinds —
 /// item 1016's two sites.
 ///

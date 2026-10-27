@@ -29213,6 +29213,28 @@ multiTypeEdgeCount === 0`) — one named type cannot double-count. Native's `Adj
   differential and answer assertion in the repo. It is caught only by asserting on the selector
   itself (`fused_hop_shape(..).is_some()`) in both directions. Second instance of the hazard after
   1008's degree-reader pin.
+- **✅ SHIPPED (Rust) — the temporal streaming top-K, 3.5-4.5x (item 1020).** Three alternated
+  rounds, 200,000 rows / 1,000 distinct: `date` **5,996 → 1,704**, `time` 6,629 → 1,475,
+  `datetime` 6,041 → 1,723, `zoned` 6,320 → 1,512, `zonedtime` 6,649 → 1,467. Every kind lands on
+  `num`'s 1,220 floor; `num` and `str` top-k controls flat, ceilings unchanged.
+- **THE ORDERING RISK WAS REMOVED, NOT MANAGED (item 1020).** Mapping a temporal to a wide integer
+  the existing `(u32, u32, u32)` buffer can rank would be a RE-DERIVATION of `Temporal::cmp_total`
+  — and a key subtly unlike the general path's order is a wrong ANSWER, not a slow one. The buffer
+  carries the `Temporal` itself (`Copy`, ≤24 bytes) and calls `cmp_total`, the same function
+  `value::cmp_total` dispatches to, so the order is identical BY CONSTRUCTION. A separate function
+  rather than a new arm, because item 844's 1.6x came from two arms sharing a live range.
+- **A SURVIVING MUTANT MEANT "THE FIXTURE CANNOT EXPRESS IT" THREE TIMES RUNNING (item 1020).** The
+  arrival-tiebreak mutant needed: (1) a TOTAL TIE, since distinct keys determine the window by
+  themselves; (2) **1,100 rows**, because the buffer only partitions at `max(kcap*4, 1024)` and
+  below that the unstable sorts are handed an ordered slice and move nothing; (3) a `seq` property
+  in the OUTPUT, because projecting only the temporal makes every tied row print identically so
+  the assertion cannot see which rows were kept. None of the three was obvious before it failed.
+- **⚠️ TWO MUTANT RUNS WERE NULLS AND NEARLY READ AS VERDICTS (item 1020).** `cargo fmt`
+  reformatted the anchors between steps, so the edits raised instead of applying and the suite
+  then passed as the PRISTINE build — "ok" meaning "no mutant", not "survived". Anchors are now
+  asserted with a LOUD message rather than a bare assert whose traceback scrolls past. Same class
+  as CLAUDE.md's `cp` arm-assertion rule, in a new disguise: **re-read the anchor after anything
+  that rewrites the file.**
 - **⚠️ PRICED, NOT BUILT — `ORDER BY <temporal> LIMIT k` misses the streaming top-K (item
   1019).** `order.rs` mentions `Temporal` ZERO times, so a temporal key falls past
   `try_scan_top_k_wide`'s `Dict` arm to `_ => return None`. Statement-position spelling (item 865:
