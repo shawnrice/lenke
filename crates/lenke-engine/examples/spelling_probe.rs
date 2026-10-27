@@ -82,6 +82,10 @@ fn fixture(n: u32, deg: u32) -> Store {
     // so leaving it unindexed left the probe blind to its own headline case.
     store.create_index("name");
     store.create_index("dept");
+    // A RANGE index on the STRING key too (item 1024), so the prefix group below can ask whether a
+    // `STARTS WITH` reaches it. A range index is a `BTreeMap<OrdVal, _>`, so strings are ordered
+    // in it exactly as numbers are.
+    store.create_range_index("name");
     store
 }
 
@@ -401,6 +405,51 @@ fn main() {
                     Gql,
                     "MATCH (n:Person) WHERE EXISTS { (n)-[:KNOWS]->() } AND n.dept = 'eng' \
                      RETURN n.name AS x",
+                ),
+            ],
+        ),
+        (
+            // Item 1024. A PREFIX predicate is a RANGE on a sorted index: every string starting
+            // with `name500` is exactly the half-open interval `['name500', 'name501')`. The two
+            // spellings below are therefore the same question over this fixture, where `name` is
+            // `name0..name99999` and a range index exists on it.
+            //
+            // `STARTS WITH` lowers to a scalar CALL (`starts_with(n.name, 'name500')`), and both
+            // `seek_target` and `range_seek_target` admit only `Expr::Compare` — so the prefix form
+            // cannot seed an index while the explicit range can. If that costs, this group is the
+            // first place it shows; if it does not, the group is the guard that says so.
+            //
+            // The prefix is three digits deep on purpose: `name500` selects ~111 of 100,000 rows
+            // (0.1%), inside `seek_cap`'s fraction, where a one-digit `name5` selects ~11% and a
+            // seek would rightly be declined on selectivity alone.
+            //
+            // THIS GROUP FLAGS, AND THE FLAG IS THE FINDING (item 1024) — not a regression to
+            // chase on sight. Measured 0.280 ms for the prefix against 0.458 for the explicit
+            // range, 1.64x, reproducible. The plans say why, and it is NOT what the group was
+            // written to catch:
+            //
+            //   * NEITHER spelling seeds. Both optimize to `Filter { Scan }`, so the 1.64x is
+            //     filter cost — one `starts_with` call per row against two string compares.
+            //   * The reason the range does not seed is the `And`. At the scan site
+            //     `range_seek_target` is handed the WHOLE predicate, and it matches a single
+            //     `Compare` — so a two-sided range never seeds there. Confirmed directly:
+            //     `n.name >= 'name99998'` (one row, single-sided) optimizes to a `RangeSeek`,
+            //     while `n.name >= 'name5000' AND n.name < 'name5001'` (eleven rows, MORE
+            //     selective) optimizes to `Filter { Scan }`. **The blocker is the shape, not the
+            //     selectivity.**
+            //
+            // So a bounded interval — the natural way to write one, and what a `BETWEEN` would
+            // lower to — cannot reach a range index on a scan, while its own one-sided half can.
+            // That is the spelling class CLAUDE.md lists first among the historical 100-300x bugs.
+            // Recorded here rather than fixed in the same breath: it is a planner change with
+            // byte-identity reach and it earns its own item.
+            "prefix predicate vs the explicit range it implies (indexed string key)",
+            &[
+                (Gql, "MATCH (n:Person) WHERE n.name STARTS WITH 'name500' RETURN count(*) AS c"),
+                (
+                    Gql,
+                    "MATCH (n:Person) WHERE n.name >= 'name500' AND n.name < 'name501' \
+                     RETURN count(*) AS c",
                 ),
             ],
         ),

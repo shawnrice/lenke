@@ -29213,6 +29213,25 @@ multiTypeEdgeCount === 0`) — one named type cannot double-count. Native's `Adj
   differential and answer assertion in the repo. It is caught only by asserting on the selector
   itself (`fused_hop_shape(..).is_some()`) in both directions. Second instance of the hazard after
   1008's degree-reader pin.
+- **⚠️ OPEN, DIAGNOSED — a TWO-SIDED range never seeds on a scan; the `And` is the blocker, not
+  the selectivity (item 1024).** At the scan site `range_seek_target` is handed the WHOLE predicate
+  and matches a single `Compare`. Proved directly: `n.name >= 'name99998'` (ONE row, single-sided)
+  optimizes to a **`RangeSeek`**, while `n.name >= 'name5000' AND n.name < 'name5001'` (ELEVEN
+  rows, MORE selective) optimizes to **`Filter { Scan }`** — the more selective query gets the
+  worse plan. So a bounded interval, the natural way to write one and what a `BETWEEN` lowers to,
+  cannot reach a range index there while its own half can. **The conjunct path
+  (`opt.rs:1683`/`1734`) already extracts a seed from one conjunct and re-ANDs the residual, for a
+  different plan shape; the scan site does not use it.**
+- **THE PREFIX HYPOTHESIS WAS BACKWARDS (item 1024).** `STARTS WITH` lowers to a scalar `Call` so it
+  cannot seed, which predicted it would LOSE to the explicit range. Measured the other way:
+  **0.280 ms against 0.458, 1.64x, with the seekable spelling losing.** The plans say why —
+  NEITHER seeds, both are `Filter { Scan }`, so the gap is filter cost (one `starts_with` call per
+  row against two string compares). The fast numeric range (0.047 ms) is likewise a COLUMNAR FILTER
+  fast path and not a seek. Neither fact was visible in the times alone.
+- **`spelling_probe` NOW FLAGS ONE CLIFF, AND IT IS INTENDED (item 1024).** The group carries the
+  diagnosis above so a later run reads it as a recorded open finding, not a regression. It is the
+  first cliff flagged since the probe was given indexes at item 1023 — which is what giving them
+  was for.
 - **✅ FIXED (instrument) — `spelling_probe` was blind to its own headline case (item 1023).** Its
   fixture indexed only `age` (added because unindexed groups "silently measured something else"),
   while the EQUALITY and INLINE groups key on `name` and `dept` — neither indexed — so
