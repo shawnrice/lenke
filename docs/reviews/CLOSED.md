@@ -29232,7 +29232,28 @@ multiTypeEdgeCount === 0`) — one named type cannot double-count. Native's `Adj
   `want` is empty) cost **nothing** — 269.6/271.0/270.8 against 278.9/268.7/262.4, overlapping. So
   the toll does not generalize from `pull` to every hot function, and attributing a regression to
   it without the null control would have mis-closed a real 3x lever.
-- **➡️ NEXT: pass the decision in as a PARAMETER (item 1012).** The four functions are private and
+- **⚠️ ITEM 1012'S DIAGNOSIS WAS WRONG, AND FIVE MORE MECHANISMS ARE REFUTED (item 1013).** 1012
+  blamed an inlined expensive term. Tried: `#[inline(never)] #[cold]` (the fix that diagnosis
+  implies), a `Vec<bool>` + indexed `while` with no call/closure so the four functions stay LEAF,
+  plus 1012's short-circuit, `FnvSet` restore and `#[inline(always)]`. **All six variants cost the
+  clean semijoin the same 4-7%.** The effect appears iff those functions compute the per-want
+  answer AT ALL — inlined or out-of-line, hot or cold, hashed or indexed, leaf or non-leaf,
+  executed or short-circuited away. NOT diagnosed; recorded as such.
+- **A NEVER-CALLED FUNCTION IS A LAYOUT CONTROL, AND THIS ONE CAME BACK FREE (item 1013).** A new
+  function shifts the addresses of everything after it, and a layout bias is SYSTEMATIC PER
+  BINARY, so repetition cannot detect it — the trap memory records as "repetition detects noise,
+  not a biased estimator". Defining the helper and never calling it: 273.7/266.9/268.9 against
+  264.5/276.1/258.7, overlapping. So the 4-7% is not binary layout either.
+- **THE ARM ASSERTION FIRED TWICE IN ONE ITEM, BOTH ON A WRONG EXPECTED COUNT (item 1013).** The
+  `grep -c <new symbol>` compared against a per-arm expected count caught 6-should-be-5 and
+  3-should-be-2; without it two rounds would have been scored against the previous arm's binary —
+  a null that looks like a result. CLAUDE.md's rule, earning itself twice in one sitting.
+- **➡️ THE REMAINING OPTION IS A 34-SITE SIGNATURE CHANGE, AND THE TRADE IS A JUDGEMENT CALL
+  (item 1013).** Passing the flag in from the callers leaves the four hot bodies untouched, but
+  `for_each_nbr` alone has 34 callers, most inside per-node loops that would each need the flag
+  hoisted. 3x for graphs WITH multi-label edges against 4-7% for the clean semijoin every graph
+  has. Recorded, not taken.
+- **➡️ SUPERSEDED: pass the decision in as a PARAMETER (item 1012).** The four functions are private and
   compute `has_extra` from arguments they already hold, so the expensive term moves to their cold
   callers and the hot bodies gain no code. 1009's hoist, one level further out.
 - **A SEMIJOIN ARM NOW EXISTS IN `multilabel_taint_1008` (item 1012).** The other three arms all
