@@ -27936,3 +27936,23 @@ Prop}` 160.0 / 4,000; `NOT` → `Filter{Scan, Not(Prop)}` 214.7 / 196,000; `= fa
   would have caught both before they were written down. **The measurements stand and only the
   recommendations are withdrawn**, which is the cheap half to get wrong and the reason they shipped
   as priced-not-built.
+- **REFUTED — porting item 896's native `Field{base: Prop}` fusion to TS (item 950).** Built in
+  `compileExpr`'s `case 'field'` arm (special-case `expr.base.kind === 'prop'`, one closure instead
+  of two), measured alternated with the arms asserted on the BUILT bundle (`baseKey` 0 vs 2), and
+  **reverted**: field step PRE 49.2 / POST 48.6, then PRE 53.8 / POST 54.2 ns/row — ±1% within a
+  pair against ~10% drift between pairs, visible on `scalarProp`, a control the change cannot reach.
+  The first pair alone would have read as a small win.
+- **METHOD — a native fusion whose win is DISPATCH does not port to TS; one whose win is WORK does
+  (item 950).** 896 got 2.27x natively because the equivalent is an enum dispatch plus a `Box`
+  indirection; in TS the inner closure is monomorphic at that call site and V8 inlines it to
+  nothing. **"Already shipped natively" is not a price** — the cross-engine twin of item 949's
+  "price against the MECHANISM".
+- **⚠️ DOWNGRADED — item 899's "~63 ns/row of expression PLUMBING in the TS nested read" has an
+  unchecked ROUTE confound (item 950).** The probe's two rows are
+  `WHERE p.tier = 'NYC'` and `WHERE p.meta.other = 'NYC'`; `compileLinear` ends in nineteen
+  compile-time detectors and **the two spellings were never shown to take the same route**. If a
+  detector specialises `count(*)` under a bare-prop equality, the 3.4x is a route difference and the
+  expression tree is only what disqualifies the nested spelling — **the same error as item 936**,
+  retracted at 937 by markers. The 48–54 ns/row is real and reproducible; its attribution is not.
+  **Next step**: a flat-cost read that is not a bare prop (`WHERE p.lst[0] = 'NYC'`) separates the
+  two hypotheses in one row.
