@@ -27253,3 +27253,47 @@ p` at **1.54x FASTER** and `query/shortest repeat-group unread` at **0.81x slowe
   438's pattern list to admit a second property is precisely the arm addition 438 declined.
   Previously re-priced from the node path (437) and from the TS side (441, stopped after three
   ticks); this is the hop path. **Price any future attempt as fusion, and check this line first.**
+- **⚠️ OPEN, PRICED — filters on BOTH sides of a hop are the worst cell in the cross-surface matrix:
+  moving one of two filters across the hop costs 5.06x on Gremlin and 2.33x on GQL (item 932).** Same
+  answer, same number of predicate tests, only the position differs: `grm post:2` 54.81 ms →
+  `both:1+1` **277.41**, `gql post:2` 64.55 → **150.27**. Item 930 named this and gave the Gremlin
+  mechanism: `V().has(x,p).out(E).has(k,q)` is `mid = [has, out, has]`, and `filteredHopCount` needs
+  the hop FIRST, `startFilteredHopCount` needs it LAST, `filterChainCount` rejects the `out` — **the
+  hop sits in the middle where no rung reaches it.** GQL has the same class of miss through a
+  separate implementation. **GQL is also asymmetric in WHICH side carries more**: `both:2+1` 243.61
+  against `both:1+2` 167.10, **1.46x** for three predicates merely redistributed. Prize if Gremlin's
+  split case reached its own one-sided twin: ~55 ms against 277, about **5x (~220 ms on a
+  200k/600k fixture)** — the largest cell in the matrix. A SCREEN reading; isolate with alternated
+  rounds before building.
+- **⚠️ OPEN, PRICED — the 1→2 filter ARITY STEP is a ROUTE boundary, not a predicate cost
+  (item 932).** The second filter costs 40-88x what the third costs, on every Gremlin row of the
+  matrix: `post` +26.33 ms (43.9 ns/row) for the 2nd then +0.29 (0.5 ns/row) for the 3rd; `pre`
+  +23.77 (39.6) then +0.60 (1.0). One extra property read and one extra `matches` is a few ns, not
+  44 — **a step followed by a plateau is a rung boundary.** Partly introduced by item 930: arity 1
+  takes the hoisted inline test 930 added to pay back its own regression, arity 2+ goes through
+  `allMatch`, a per-row call over an array. 930 took `post:2` from 247 ms to ~53; the residual
+  28.5 → 54.8 step is that rung's own overhead. Prize if the chain rung matched the single rung's
+  per-row cost: `post:2` ~31 ms against 55, about **1.8x** — real, but an order of magnitude below
+  the `both` cell, so second in line.
+- **RULE — in TS, "equivalent spellings cost the same" has NO structural guarantee, and the drift is
+  BIDIRECTIONAL (item 932).** `@lenke/gremlin` and `@lenke/gql` are sibling packages — neither
+  depends on the other, there is no shared plan module, and each hand-builds its own fast-path table
+  (`countShortcut`'s rungs against `shortcuts.ts`'s `tallyHopCount` family). The native engine lowers
+  both surfaces to one `ir::Plan` and `spelling_probe` checks the canonicalized plans agree, which is
+  **why every cross-surface item in this audit (797, 801, 929, 930, 932) is TS-only.** The matrix
+  shows the drift running both ways: Gremlin wins all nine one-sided cells (up to 3.12x at `node:1`)
+  and GQL wins all three `both` cells (up to 1.85x), with the margin narrowing as arity rises on one
+  side (`post` 2.09x → 1.18x → 1.19x). **A uniformly worse lowering would lose everywhere** — two
+  tables with different coverage is what produces a winner that flips with position and arity. So:
+  do not reason about a TS cross-surface gap as "one surface is lowered badly"; find which table is
+  missing the rung. Giving TS a shared plan is the structural fix and is effectively re-writing the
+  Rust architecture in TypeScript; `bun run probe:arity` is the cheap alternative that PRICES that
+  decision, which is why it is generated rather than hand-written like `probe:surface`'s 5 pairs.
+- **TOOLING — `probe:arity`, a GENERATED cross-surface matrix over filter arity × position
+  (item 932).** `probe:surface` carries 5 hand-written pairs, and item 930's 11.15x cliff was found
+  only because item 929 happened to add an edge-walking pair for an unrelated reason. This enumerates
+  the axis item 930's cause actually lives on — an arity gate on a step list — as four positions
+  (`node`, `pre`, `post`, `both`) × arity, both surfaces, one shape per PROCESS, every filter true
+  for every row on three distinct keys so arity and position are the only variables. Row counts
+  asserted per arm; every generated spelling is printed so a pair that is not the same question is
+  visible rather than implicit. It is a SCREEN: it finds cells, it does not measure them.
