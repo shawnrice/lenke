@@ -50,6 +50,7 @@
     "probe:surface": "bun surface-probe.ts",
     "probe:hopladder": "bun hop-filter-ladder-probe.ts",
     "probe:hopmap": "bun hop-filter-route-map-probe.ts",
+    "probe:nativehopchain": "bun native-hop-filter-chain-probe.ts",
     "probe:elemread": "bun elemread-probe.ts",
     "probe:adjlayout": "bun adjlayout-probe.ts"
   },

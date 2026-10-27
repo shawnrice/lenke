@@ -27224,3 +27224,32 @@ p` at **1.54x FASTER** and `query/shortest repeat-group unread` at **0.81x slowe
   moved the TS Gremlin surface only. The native engine lowers both surfaces to one `ir::Plan`, so the
   question is whether its own count fast-path carries a comparable arity gate. Item 930's TS cliff
   was 11.15x on the raw shape, which is the scale that makes this worth checking rather than assuming.
+- **REFUTED — the RUST engine has NO twin of item 930's hop+filter-chain cliff, and the
+  `can_raise` merge decline costs nothing measurable (item 931).** The hypothesis was specific:
+  `peel_endpoint_filter` matches exactly ONE `Plan::Filter`, and the optimizer's filter-merge rule
+  (`Filter(Filter(x, p_in), p_out)` → `Filter(x, p_out AND p_in)`) is **DECLINED when the OUTER
+  predicate `can_raise`** — true for `Expr::Arith`/`Call`/`Cast` — so an arithmetic conjunct should
+  leave stacked filters and lose the fast path. It does not. 4 order-alternated rounds, 200k/600k:
+  the arithmetic conjunct ALONE (one filter, no merge involved) costs **+6.56 ms**, an ordinary
+  conjunct **+1.08**, and the pair measures **7.94 ms against the 8.45 predicted by
+  arithOnly + one conjunct — 0.94x, and 1.03x in the reverse conjunct order**, both inside the 1.17x
+  worst arm self-variance. **The `arithOnly` arm is what makes this a measurement**: it prices the
+  arithmetic with the route held fixed, separating "arithmetic is expensive per row" from "the merge
+  was declined", which is the confound that would otherwise read as a cliff. Cross-checked per row:
+  **10.9 ns/row on the hop against 10.1 ns/row on the node control** — equal across two routes, so
+  the cost is the expression and not the route. Do not re-raise the merge decline as a perf lever;
+  it is real in the plan and invisible in the time.
+- **RE-DERIVED, NOT NEW — item 437's arithmetic materialization cost, reached a third time from a
+  third direction (item 931).** The by-product figure (an arithmetic conjunct at ~6.1x an ordinary
+  one) is item 437's already-priced **5.7x**, whose cause is **MATERIALIZATION** — one column per
+  expression node, four passes and three allocations against the fast path's one pass and none —
+  with its two wrong guesses already recorded (**not** a per-row tree walk, `eval` is columnar;
+  **not** boxing, `Col` is typed and arith has a raw-f64 arm). Item 438 built the fused arm for
+  `<prop> <arith> <lit> <cmp> <lit>` at 5.0x and closed with "**still open and NOT more arm
+  additions** — the answer there is fusion, per 437". **What 931 adds is one datum and no target:**
+  437 measured the NODE path with a LITERAL operand; `b.j + b.k` is `<prop> <arith> <prop>`, which
+  438's arm does not admit, and it shows the same per-row cost on the HOP path. So 437's diagnosis
+  generalises across both the route and the operand shape, the fix is still fusion, and widening
+  438's pattern list to admit a second property is precisely the arm addition 438 declined.
+  Previously re-priced from the node path (437) and from the TS side (441, stopped after three
+  ticks); this is the hop path. **Price any future attempt as fusion, and check this line first.**
