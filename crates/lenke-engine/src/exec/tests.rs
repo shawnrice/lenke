@@ -28347,3 +28347,79 @@ fn optional_miss_then_dotted_path_is_null() {
         vec!["nyc"]
     );
 }
+
+/// `WHERE p.b = true` IS `WHERE p.b`, on the route where it matters (items 978-982).
+///
+/// `try_filter_keep_bool_prop` reads a boolean column directly and served only the BARE and
+/// `NOT` spellings; the comparison form fell to the general vectorized filter and cost ~5.8x for
+/// the same rows on the same `Filter { Scan }` plan (item 978: 919.2 us against 160.2 at
+/// 200,000 nodes).
+///
+/// THE FIXTURE IS THREE CORRECTIONS DEEP, each forced by a counter or a mutant (items 980-982):
+///
+///   * NO STORED NULL. One `Value::Null` makes the store keep the column as `Column::Gen`
+///     rather than `Column::Bool` (item 982, measured) — and the fast path requires `Bool`, so
+///     a fixture with a null tests nothing. An ABSENT cell is fine and is kept below, because
+///     absence rides in `present[]` and leaves the column typed.
+///   * AN INDEX, because without one `eq_seek_worth_it` seeds UNCONDITIONALLY (items 947-949)
+///     and the plan is an `IndexSeek`, not a filter.
+///   * ASYMMETRIC counts. At 50/50 the inverted-polarity mutant PASSED: the complement of
+///     10,000 rows is also 10,000. Same trap `long-chain-count.test.ts` warns about for degrees.
+///
+/// The route assertion is first for the same reason: without it the counts below silently stop
+/// describing this path.
+fn bool_cmp_fixture() -> Store {
+    let mut b = Builder::default();
+    for i in 0..20_000 {
+        b.node(&["P"], &[("b", Value::Bool(i % 5 != 0))]);
+    }
+    // ABSENT, not null: UNKNOWN either way, but this keeps the column `Column::Bool`.
+    b.node(&["P"], &[("tag", Value::Str("x".into()))]);
+    let mut s = b.build();
+    s.create_index("b");
+    s
+}
+
+#[test]
+fn a_boolean_comparison_is_the_bare_predicate_on_the_filter_route() {
+    let store = bool_cmp_fixture();
+    let n = |q: &str| -> f64 {
+        match crate::exec::try_run(&opt_plan(q, &store), &store)
+            .unwrap()
+            .rows
+            .iter()
+            .next()
+            .expect("one row")[0]
+        {
+            Value::Num(x) => x,
+            ref o => panic!("count returns a number, got {o:?}"),
+        }
+    };
+
+    let shape = format!(
+        "{:?}",
+        opt_plan("MATCH (p:P) WHERE p.b = true RETURN count(*) AS c", &store)
+    );
+    assert!(
+        !shape.contains("IndexSeek"),
+        "past the seek gate, or this tests the wrong path: {shape}"
+    );
+
+    for q in [
+        "MATCH (p:P) WHERE p.b = true RETURN count(*) AS c",
+        "MATCH (p:P) WHERE true = p.b RETURN count(*) AS c",
+        "MATCH (p:P) WHERE p.b <> false RETURN count(*) AS c",
+        "MATCH (p:P) WHERE p.b RETURN count(*) AS c",
+    ] {
+        assert_eq!(n(q), 16_000.0, "16,000 TRUE, absent not counted: {q}");
+    }
+
+    for q in [
+        "MATCH (p:P) WHERE p.b = false RETURN count(*) AS c",
+        "MATCH (p:P) WHERE false = p.b RETURN count(*) AS c",
+        "MATCH (p:P) WHERE p.b <> true RETURN count(*) AS c",
+        "MATCH (p:P) WHERE NOT p.b RETURN count(*) AS c",
+    ] {
+        assert_eq!(n(q), 4_000.0, "4,000 FALSE, absent not counted: {q}");
+    }
+}

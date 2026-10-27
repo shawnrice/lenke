@@ -6908,6 +6908,14 @@ fn try_filter_keep_element_id(pred: &Expr, store: &Store, batch: &Batch) -> Opti
 fn try_filter_keep_bool_prop(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec<usize>> {
     let (negated, inner) = match pred {
         Expr::Not(e) => (true, e.as_ref()),
+        Expr::Compare { op, left, right } if matches!(op, CompareOp::Eq | CompareOp::Ne) => {
+            match (left.as_ref(), right.as_ref()) {
+                (p, Expr::Lit(Value::Bool(b))) | (Expr::Lit(Value::Bool(b)), p) => {
+                    (*b != matches!(op, CompareOp::Eq), p)
+                }
+                _ => (false, pred),
+            }
+        }
         e => (false, e),
     };
     let Expr::Prop { slot, key } = inner else {

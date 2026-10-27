@@ -28660,3 +28660,23 @@ predicate` closed at 644. Every remaining flag on either side is recorded as cor
 - **Everything was reverted (item 981).** Keeping a test whose stated purpose it does not serve
   is the believed-test trap this audit cites repeatedly, so the test went back too — a passing
   test that cannot fail for its reason is worse than none.
+- **SHIPPED — `p.b = true` now takes the bool fast path: 919.2 → 161.1 us, 5.71x → 0.99x (item
+  982).** `try_filter_keep_bool_prop` accepts `Compare { Eq|Ne, Prop, Lit(Bool) }` in both
+  operand orders; `= true`/`<> false` are the bare predicate, `= false`/`<> true` its negation.
+  The whole sweep converges (1.00-1.01x from 20% to 98%). Engine suite **1,252**/0,
+  `rewrite_fuzz` 200k seeds 10/0, all 7 byte-identity fuzzers pass.
+- **THE FIXTURE TOOK THREE CORRECTIONS, each forced by a counter or a mutant (items 980-982).**
+  (1) **No stored NULL** — one `Value::Null` makes the store keep the column as `Column::Gen`
+  instead of `Column::Bool` (measured at `boolcol_982`), and the fast path requires `Bool`, so a
+  null-bearing fixture tests NOTHING. An ABSENT cell is fine: absence rides in `present[]` and
+  leaves the column typed. **The 3VL coverage I added in item 980 was itself what disabled the
+  path.** (2) **An index**, or `eq_seek_worth_it` seeds unconditionally and the plan is a seek
+  (947-949). (3) **Asymmetric counts** — at 50/50 the inverted-polarity mutant PASSED, because
+  the complement of 10,000 is also 10,000; now 16,000/4,000 and the mutant FAILS 4000 vs 16000.
+- **METHOD — a fixture built to cover semantics can disable the very fast path under test (item
+  982).** Adding a stored NULL to test 3VL silently re-typed the column and took the route with
+  it. **Check the fixture reaches the code, with a counter, before trusting any assertion it
+  makes** — three separate fixtures here passed while testing nothing.
+- **Type safety is structural, not asserted (item 982).** The fold sits behind the existing
+  `Column::Bool` check, so a non-boolean column declines to the general path unchanged — which is
+  also why this could not live in `normalize_pred`, which has no store to check the type with.
