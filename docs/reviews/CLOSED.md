@@ -27883,7 +27883,7 @@ Prop}` 160.0 / 4,000; `NOT` → `Filter{Scan, Not(Prop)}` 214.7 / 196,000; `= fa
   ~15% to ~3%"), and a `Vec<bool>` is a byte per row against a dict's `u32` and an f64's eight — so
   a bool belonging to the cheap class is mechanically unsurprising. **What was measured is the
   CROSSOVER, not the scan rate**; the two are consistent rather than the first proving the second.
-- **THE FIX, in two parts and in this order (item 948).** (1) Teach `scan_is_cheap` that
+- **~~THE FIX, in two parts and in this order~~ BOTH PARTS RETRACTED AT ITEM 949 (part 1 applies a cap that governs the INDEXED path; part 2 would stop all un-indexed equality seeding) (item 948).** (1) Teach `scan_is_cheap` that
   `Column::Bool` is cheap, so the existing 0.031 cap applies — a one-line `matches!` widening with
   a measured justification. (2) Route the no-index equality seed through `seek_beats_scan` instead
   of seeding unconditionally, so the cap is consulted at all. **Doing (2) without (1) leaves bools
@@ -27897,3 +27897,42 @@ Prop}` 160.0 / 4,000; `NOT` → `Filter{Scan, Not(Prop)}` 214.7 / 196,000; `= fa
   if it is numeric then the 0.154 cap and a seek win at 20% are consistent with it. **E75 is not
   called wrong**; the honest reading is that each measured its own column, which is precisely why
   the fix must be type-aware rather than one new constant.
+- **CORRECTED — the no-index seed is a decision under IGNORANCE, not a missing check (item 949,
+  correcting item 947's implied cause).** 947 observed `eq_seek_worth_it` as
+  `!idx.has_hash_index(key) || seek_beats_scan(..)` and read the short-circuit as a gate someone
+  forgot to consult. **`seed_fraction`'s equality arm is `self.index_bucket_len(key, value)?`, so
+  without an index it returns `None`** and `seek_beats_scan` is
+  `seed_fraction(..).is_some_and(..)`. The planner cannot learn an un-indexed key's selectivity
+  cheaply, because the statistic it would read IS the index. The observation stands; the cause does
+  not.
+- **RETRACTED — item 948's fix part (1), widening `scan_is_cheap` to `Column::Bool` (item 949).**
+  `scan_is_cheap` is reached only from `seek_beats_scan`, and **all four call sites are behind an
+  index check**: `1589` `has_hash_index && ..`, `1599` `has_range_index && ..`, `2485`
+  `.filter(has_range_index).filter(seek_beats_scan)`, `3566` `!has_hash_index || ..`. So it sets
+  the cap for an **INDEXED** seek against a scan, where item 948 measured the **UN-INDEXED
+  degraded** seek against `Filter(Scan)` — a different pair of routes, as 948 itself said when it
+  refused to reuse `SEEK_MAX_FRACTION`. **Widening it on that sweep applies one curve's break-even
+  to another: exactly the error 948 accused E75 of, committed one item later in the
+  recommendation.** Whether a bool's INDEXED seek breaks even at 3% or 15% is unmeasured.
+- **RETRACTED — item 948's fix part (2) as specified (item 949).** Dropping the `!has_hash_index`
+  short-circuit does not route the decision through the gate, it turns the gate OFF: `seed_fraction`
+  returns `None` for every un-indexed key, so **no un-indexed equality would seed again** —
+  including the 2% case the sweep shows the seek WINNING by 0.86x, and every numeric and string key
+  this session never measured. Presented as "consult the cap" it would in fact be "never seed
+  without an index".
+- **⚠️ OPEN — what is actually left on the no-index seek, and neither option is a one-liner
+  (item 949).** (1) **Decide on a PRIOR**: a `Column::Bool` has two values, so under ignorance the
+  expected selectivity is ~50%, far past any break-even, and item 948's sweep gives the asymmetry —
+  declining costs **at most 1.16x** (at 2% true, the only point where the seek wins) and saves **up
+  to 3.17x** (at 98%). A favourable bet but a BET: a 2%-true bool is the census's own `bul`, so the
+  losing case is not hypothetical. (2) **Make the statistic available** — a cheap per-column summary
+  for low-cardinality typed columns, so the gate has something to read without an index; larger, and
+  it buys a correct answer rather than a good guess. **Neither taken**: (1) changes planner
+  behaviour on a prior rather than on the data in front of it, which is a design call.
+- **METHOD — price a fix against the MECHANISM, not against the behaviour you measured
+  (item 949).** Items 947 and 948 are both sound as measurements and both proposed fixes the code
+  refuses: 947 saw an unconditional seed and inferred a missing check, 948 saw a cap and inferred
+  it applied here. One grep for the call sites — the loop's own "grep the pattern elsewhere" step —
+  would have caught both before they were written down. **The measurements stand and only the
+  recommendations are withdrawn**, which is the cheap half to get wrong and the reason they shipped
+  as priced-not-built.
