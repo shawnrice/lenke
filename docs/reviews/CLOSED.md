@@ -28447,3 +28447,23 @@ predicate` **2.39x has its outlier closed at item 644**, where the fix was built
   _"item 713 re-derived 285 for want of this note"_. Checking before pricing the 5239x and the
   2.39x cost one grep each and both came back closed — CLAUDE.md's "has this lever been tried?"
   → `CLOSED.md`, working exactly as intended.
+- **The native `spelling_probe` now reports NO PERF CLIFFS (item 972).** Its one standing flag,
+  `DISTINCT vs dedup`, is tagged `[WORK_DIFFERS]` because items 961-964 proved by plan dump that
+  it is **not a defect**: `values('dept')` yields nothing for a vertex lacking the key where
+  `RETURN n.dept` yields null, so the Gremlin side carries a semantically required
+  `Filter { PropertyExists }` worth ~277 us of the ~300 measured — and row-matching the pair
+  **inverts** the finding (`Distinct` then costs ~2x `DistinctBy`).
+- **A NEW tag rather than overloading `ROWS_MAY_DIFFER` (item 972).** That one means "same answer,
+  different CONTAINER" (`groupCount`). Here **the rows match, 5 and 5, and the WORK does not**.
+  Overloading would make both tags mean "ignore this", which is how a tag stops carrying
+  information.
+- **The tag suppresses the VERDICT, not the measurement (item 972).** Both arms are still timed,
+  both times and row counts still print, and the row-count check still runs — so a future
+  regression in either arm stays visible. That is the difference between annotating a result and
+  hiding one, and why the group was tagged rather than deleted or its fixture quietened. The
+  group comment carries the four item numbers so the conclusion is at the site, not only in a
+  27,000-line index.
+- **BOTH spelling gates are now at their floor (items 971 + 972).** Native: no cliffs. TS: two
+  groups over 2x, both settled — `label on start` correct by design (325), `a product's one-sided
+predicate` closed at 644. Every remaining flag on either side is recorded as correct-by-design
+  or closed-with-a-reason.

@@ -561,7 +561,15 @@ fn main() {
             ],
         ),
         (
-            "DISTINCT vs dedup",
+            // WORK_DIFFERS: these two are NOT the same question, which items 961-964 established
+            // by dumping both plans. `values('dept')` yields nothing for a vertex lacking the
+            // key where `RETURN n.dept` yields null, so the Gremlin side carries a
+            // `Filter { PropertyExists }` the GQL side does not — a semantic requirement, not
+            // waste, and worth ~277 us of the ~300 here. Row-matching the pair by giving GQL the
+            // same filter INVERTS the finding: `Distinct` then costs ~2x `DistinctBy`, i.e.
+            // Gremlin's lowering is the better of the two (item 961, magnitudes corrected at
+            // 962/963). Flagged as a cliff every run before this tag, and re-derived once.
+            "DISTINCT vs dedup [WORK_DIFFERS]",
             &[
                 (Gql, "MATCH (n:Person) RETURN DISTINCT n.dept AS d"),
                 (Gremlin, "g.V().hasLabel('Person').values('dept').dedup()"),
@@ -635,6 +643,14 @@ fn main() {
         // every run as a cliff it is not.
         if title.contains("[ROWS_MAY_DIFFER]") {
             println!("  ✓ answers equivalent; row count and cost differ by design (see note)");
+            continue;
+        }
+        // A group tagged WORK_DIFFERS returns the SAME rows, but one spelling is required by its
+        // own semantics to do strictly more work — so the spread is a property of the languages
+        // and not a cliff in the planner. Distinct from ROWS_MAY_DIFFER, where the answers come
+        // back in different containers; here the rows match and the WORK does not.
+        if title.contains("[WORK_DIFFERS]") {
+            println!("  ✓ same rows; one spelling is semantically obliged to do more (see note)");
             continue;
         }
         if !same_rows {
