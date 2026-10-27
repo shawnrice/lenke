@@ -27613,3 +27613,36 @@ contributes nothing` — the far-driven mistake reports 2 where the answer is 1,
   isolating ONE component (the `try` frame, the `binding.set`, the `pred.fn` call, the
   `degreeOfTypes`). The repo's own rule was available and ignored: anything under ~10% needs its own
   isolated harness.
+- **CHECK CLEAN — `bun run spelling` after this session's planner and predicate-form changes
+  (item 940).** CLAUDE.md requires it when the TS planner is touched or a predicate form added;
+  items 930/933/934 changed Gremlin count routes and 935 added a form, and the gate had not been
+  run. At `SPELL_N=200000 SPELL_REPS=9`: **0 groups disagree on the ANSWER**, and all seven groups
+  over 2x are pre-existing and recorded — `label on start: redundant vs absent` 5386x (item 325,
+  which the probe file says not to quiet), the three `sorted LIMIT` statement-vs-clause groups
+  4.71/4.72/3.53x (item 868), `SEEK: param equality AND a second conjunct` 2.70x (578), `a
+product's one-sided predicate` 2.22x (285), `one end labelled, the other free` 2.06x (286).
+  **No new spelling cliff from this session.** Checking CLOSED.md before chasing the 5386x is what
+  stopped it becoming a re-derivation of item 325.
+- **REVERTED — two spelling-probe groups for item 935's negative-literal form, because MUTATION
+  proved them toothless (item 940).** CLAUDE.md's rule has a second half ("add the new form's
+  spellings to it"), so `n.k > -1` against `n.k >= 0` was added on both the node scan and the far
+  hop. Quiet after 935 (1.03x and 1.01x) — but with the fold DISABLED and the tree rebuilt they read
+  **node scan 1.29x (the probe's threshold is 2x, so NO FLAG) and far hop 1.01x (no effect at
+  all)**. **A guard that cannot fail is worse than none because it is believed**, so both were
+  removed rather than left as decoration. **The form is already guarded with PROVEN teeth** by item
+  935's four route-equality tests in `routes-fired.test.ts` (its `m1-fold-removed` mutant was
+  CAUGHT) — a route assertion is the right instrument for a route change; a timing probe over a
+  differently-routed fixture is not.
+- **SCOPE NARROWED — item 935's negative-literal fold helps the NODE SCAN only; the far-hop route is
+  insensitive to it (item 940).** With the fold disabled, the far-hop pair reads 1.01x, so
+  `farOnlyHopCount` never took the lifted path the fold unlocks. Consistent with 935's own matrix
+  re-run, where the hop cells did not move (`post:1` 59.58 → 60.26) while the node cells improved
+  1.9-2.6x — **935 showed this implicitly and 940 measures it directly.** 935's claim is correctly
+  scoped as written; the scope is now explicit.
+- **TWO PROBES DISAGREE ABOUT THE SAME QUERY TEXT, so pick the instrument by ROUTE (item 940).** The
+  folded node scan reads ~47 ns a vertex in `spelling-probe` against ~19 in
+  `predicate-scaffold-probe` at the same `N` — they are not measuring the same route, because
+  `spelling-probe`'s fixture carries an index and params (a seek pass, item 579). **Cause not
+  attributed** — it was not measured, and the record on unmeasured attributions in items 936-939 is
+  poor. The practical rule: before adding a form to a probe, check that the probe's fixture routes
+  that form the way the change touched it.
