@@ -27836,3 +27836,32 @@ product's one-sided predicate` 2.22x (285), `one end labelled, the other free` 2
   a 4,000-row arm and the 3.18x sat invisible from item 871 until now. When a census varies a
   predicate's SPELLING, every row needs a sibling that keeps the same number of rows, or the
   comparison measures selectivity as much as the spelling.
+- **DIAGNOSED — item 946's 3.18x is a ROUTE difference: `p.bul = false` seeds an `IndexSeek` at 98%
+  selectivity where `NOT p.bul` gets `Filter(Scan)` (item 947).** Read off a PLAN dump, not
+  inferred: `= true` → `IndexSeek{value: Bool(true)}` 137.6 us / 4,000 rows; bare → `Filter{Scan,
+Prop}` 160.0 / 4,000; `NOT` → `Filter{Scan, Not(Prop)}` 214.7 / 196,000; `= false` →
+  `IndexSeek{value: Bool(false)}` **683.4 / 196,000**. The two 196,000-row spellings take different
+  plans, which is the whole of the 3.18x.
+- **⚠️ OPEN, PRICED — the no-hash-index equality seed is UNCONDITIONAL, and the measurement
+  justifying it was taken at 20% selectivity (item 947).** `seek_beats_scan` exists and works
+  (`SEEK_MAX_FRACTION = 0.154`, `0.031` for a dictionary column; item 895 records it correctly
+  rejecting a 25% seek) — but the equality rule splits on whether a hash index exists, and the
+  no-index half seeds ANYWAY. Its comment gives the reason: the seek degrades to a typed column
+  scan inside `index_seek_ids`, _"the FASTEST of the three shapes here — 194.7us on a 20%-
+  selectivity key, against 291.7us for the `Filter(Scan)`"_ (E75). **At 2% that is right (`= true`,
+  137.6 us, the fastest bool arm), at 20% it is right, and at 98% it is 3.18x wrong.** A rule
+  validated at one point on a curve and applied at every point — the repo's own _"sweep the size"_
+  and _"match the fixture to the claim"_, applied to SELECTIVITY.
+- **THE FIX AND ITS RISK, so the next attempt does not start by picking a number (item 947).** Fix:
+  give the no-hash-index equality seed a selectivity gate like the compare path's. **Risk:** the
+  branch exists because the degraded seek genuinely BEATS `Filter(Scan)` at 20% by 1.5x, so a cap
+  set too low restores exactly the regression E75 added it to prevent. **The crossover between 20%
+  and 98% is UNMEASURED**, and `SEEK_MAX_FRACTION`'s 0.154 cannot be reused for it — that is the
+  break-even for a HASH-INDEX seek against a scan, a different curve from a DEGRADED typed-column
+  seek against `Filter(Scan)`. Next step is a selectivity sweep of the two routes on one key (2, 10,
+  20, 40, 60, 80, 98%) to find where the lines cross; **do not pick the cap from the numbers already
+  in hand**, which is item 924's fake-1.54x mistake in another costume.
+- **NOT CLAIMED — that a two-valued column is representative (item 947).** `bul` reaches 98%
+  selectivity trivially; whether the same inversion appears on a many-valued key at the same
+  fraction is part of what the sweep must answer, since the degraded path's cost may depend on the
+  id distribution and not only on the match count.

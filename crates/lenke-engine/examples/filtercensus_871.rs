@@ -235,6 +235,8 @@ fn main() {
             "MATCH (p:P) WHERE p.bul = true RETURN count(*) AS c",
             "MATCH (p:P) WHERE p.bul RETURN count(*) AS c",
             "MATCH (p:P) WHERE NOT p.bul RETURN count(*) AS c",
+            // Item 946's row-matched twin of NOT, 3.18x slower than it over the same 196,000 rows.
+            "MATCH (p:P) WHERE p.bul = false RETURN count(*) AS c",
         ] {
             let raw = lenke_engine::gql::parse(q).unwrap();
             let plan = lenke_engine::opt::optimize_indexed(raw, &store);
