@@ -28222,3 +28222,26 @@ Prop{0,"meta"}, key: "city" }, .. } }` for both — so the gap cannot come back:
   differential tests (585) and it needs a plan assertion plus `dedupplan_961` as the before/after;
   (3) **check the row width where they MUST diverge** — `Distinct` over a multi-column row is not
   `DistinctBy` over one slot, and forgetting that is a wrong answer, not a slow one.
+- **CORRECTED — item 961's cause is a DISQUALIFIED FAST PATH, not an operator choice (item
+  962).** `try_distinct_scan_prop` requires `Project { Scan }` with **no filter between them**;
+  961's third arm inserted `Filter { PropertyExists }`, which disqualifies it. So that arm is the
+  GENERAL `Distinct` path, and **"Distinct costs 2.07x DistinctBy" compared two different code
+  paths wearing one name.** Reading the forty lines under the name would have caught it — the same
+  failure as 947/948 (corrected at 949) and 951 (corrected at 952), **three times in one session**.
+- **CORRECTED — the dedup STEP differs by ~15x, not 2.07x (item 962).** Two arms added to
+  apportion: filter+scan with no dedup, and the unfiltered count as the floor. Three runs — GQL
+  `Distinct` unfiltered 164.4/173.8/182.2; GRM filter+`DistinctBy` 296.5/296.7/324.9; GQL
+  filter+`Distinct` 570.8/574.1/630.8; **filter+scan alone 277.4/278.5/305.4**; bare count 0.3
+  (O(1)). Subtracting: **`DistinctBy` step ~19 us, `Distinct` step ~293 us.** The end-to-end
+  2.07x UNDERSTATED it, because both arms carry a 277 us filter that has nothing to do with the
+  operator.
+- **METHOD — a ratio of TOTALS is a ratio of what you care about only when the common part is
+  small (item 962).** Here it was half the total, and it compressed a 15x into a 2.07x.
+- **⚠️ OPEN, better motivated than item 961 had it (item 962).** Routing a one-column `RETURN
+DISTINCT` to `DistinctBy` does not merely sidestep a missing fast path — it lands on a path that
+  is **already good** (19 us against 293). Teaching `try_distinct_scan_prop` to see through a
+  `Filter` fixes one shape; routing to `DistinctBy` fixes every shape whose fast path declines.
+  **NEW precondition**: `Distinct`'s fast path at 164 us fuses scan and dedup, so routing
+  UNCONDITIONALLY to `DistinctBy` could lose it where it currently fires. The route must be _when
+  the fast path declines_ — which the optimizer cannot know without knowing what exec will do.
+  That is the real design question and the reason this stays a diagnosis.

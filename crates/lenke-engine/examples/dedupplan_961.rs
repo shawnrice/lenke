@@ -42,7 +42,7 @@ fn main() {
     // cannot say which costs what. This arm is GQL carrying the SAME filter, so:
     //   arm3 ~ arm2  -> the gap is the semantically required filter, and there is no defect
     //   arm3 ~ arm1  -> the gap is `DistinctBy` against `Distinct`, which IS a lowering choice
-    let pairs: [(&str, &str, &str); 3] = [
+    let pairs: [(&str, &str, &str); 5] = [
         (
             "GQL DISTINCT",
             "gql",
@@ -57,6 +57,21 @@ fn main() {
             "GQL +exists ",
             "gql",
             "MATCH (n:Person) WHERE PROPERTY_EXISTS(n, dept) RETURN DISTINCT n.dept AS d",
+        ),
+        // Item 962: APPORTION the filtered arm. `try_distinct_scan_prop` requires
+        // `Project { Scan }` with NO filter, so arm 3 is the GENERAL `Distinct` path, not the
+        // same operator arm 1 runs. These two split its cost: arm 4 is the filter and scan with
+        // no dedup at all, arm 5 the unfiltered count. Without them "Distinct costs 2.07x" is a
+        // claim about two different code paths wearing one name.
+        (
+            "GQL filt cnt",
+            "gql",
+            "MATCH (n:Person) WHERE PROPERTY_EXISTS(n, dept) RETURN count(*) AS c",
+        ),
+        (
+            "GQL bare cnt",
+            "gql",
+            "MATCH (n:Person) RETURN count(*) AS c",
         ),
     ];
 
