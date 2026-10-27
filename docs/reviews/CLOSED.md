@@ -28245,3 +28245,24 @@ DISTINCT` to `DistinctBy` does not merely sidestep a missing fast path — it la
   UNCONDITIONALLY to `DistinctBy` could lose it where it currently fires. The route must be _when
   the fast path declines_ — which the optimizer cannot know without knowing what exec will do.
   That is the real design question and the reason this stays a diagnosis.
+- **WITHDRAWN — item 962's "~15x" dedup-step ratio: the subtrahend was invalid (item 963).** It
+  subtracted `… RETURN count(*)`, which **never materializes `dept`** while both dedup arms
+  project it, so the subtraction charged the dedup step with the projection's cost. The obvious
+  repair fails too: `RETURN count(n.dept)` forces the column but **costs 1273.3/1239.6/1230.5 us —
+  MORE than either whole** (575.4/566.0/539.5 and 295.4/298.5/291.7), because `count(<expr>)`
+  brings its own aggregate machinery. One candidate omits work the arms do, the other adds work
+  they do not, and the query surface offers no third.
+- **DEFENSIBLE instead: the DIFFERENCE between the two dedup arms (item 963).** Both pay the
+  identical filter, scan and projection, so their difference isolates the operator with no
+  subtrahend: **280 / 268 / 248 us — `Distinct`'s general path costs ~265 us more than
+  `DistinctBy` over 200k rows, about 1.3 ns/row.** A ratio of the dedup STEPS needs the common
+  base, which cannot be measured here. Item 961's end-to-end 1.9-2.07x stands: a ratio of totals
+  is a real statement about two whole queries even when it is not one about an operator.
+- **METHOD — a decomposition by subtraction needs a subtrahend differing from the whole by
+  EXACTLY the removed part (item 963).** When no such query exists, the difference between two
+  arms sharing everything else is available and a per-step ratio is not: report the absolute
+  difference and say why the ratio is unavailable. Neighbour to item 943 (one walk, one
+  denominator, a sum check); **this is the case where the sum check cannot be constructed.**
+- **METHOD — an impossible number caught it again (item 963).** A "part" priced at 1239 us
+  exceeded the 566 us whole containing it. Item 942 found a units bug the same way (4972% cannot
+  be a percentage). The check is free and has now paid twice.

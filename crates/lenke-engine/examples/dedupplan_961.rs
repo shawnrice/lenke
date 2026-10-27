@@ -42,7 +42,7 @@ fn main() {
     // cannot say which costs what. This arm is GQL carrying the SAME filter, so:
     //   arm3 ~ arm2  -> the gap is the semantically required filter, and there is no defect
     //   arm3 ~ arm1  -> the gap is `DistinctBy` against `Distinct`, which IS a lowering choice
-    let pairs: [(&str, &str, &str); 5] = [
+    let pairs: [(&str, &str, &str); 6] = [
         (
             "GQL DISTINCT",
             "gql",
@@ -72,6 +72,15 @@ fn main() {
             "GQL bare cnt",
             "gql",
             "MATCH (n:Person) RETURN count(*) AS c",
+        ),
+        // Item 963: the subtrahend item 962 SHOULD have used. `count(*)` does not materialize
+        // `dept` at all, while both dedup arms do — so subtracting it credited the dedup step
+        // with the projection's cost. `count(n.dept)` forces the column to be built and still
+        // returns one row, which is the closest thing to "everything but the dedup".
+        (
+            "GQL filt proj",
+            "gql",
+            "MATCH (n:Person) WHERE PROPERTY_EXISTS(n, dept) RETURN count(n.dept) AS c",
         ),
     ];
 
