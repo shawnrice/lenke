@@ -5173,6 +5173,28 @@ export const uniformEqChain = (
  * inclusive, both pass every end-to-end case for that reason (item 1028) — they are perf bugs, and
  * CLAUDE.md's rule for an answer-equivalent choice is to extract the arithmetic and unit-test it.
  */
+/**
+ * The `[gte, lt)` pair a prefix seeks, or `undefined` when it cannot seek at all (item 1029).
+ *
+ * EXTRACTED because the decision is a route CHOICE and therefore answer-equivalent: the residual
+ * `starts_with` re-validates whatever the seek returns, so a mutant that seeks on the LOWER bound
+ * alone changes no answer — it only picks the slower shape (measured 3.6 -> 11.3 ms on an empty
+ * prefix, where `>= ''` materializes every id through the index). CLAUDE.md's rule for exactly
+ * this: extract the arithmetic and unit-test it.
+ *
+ * Both sides are present or neither is. A lower bound without its upper is the pessimization
+ * above, so "no successor" means "no seek" rather than "half a seek".
+ */
+export const prefixBound = (v: unknown): { gte: string; lt: string } | undefined => {
+  if (typeof v !== 'string') {
+    return undefined;
+  }
+
+  const lt = prefixUpper(v);
+
+  return lt === undefined ? undefined : { gte: v, lt };
+};
+
 export const prefixUpper = (p: string): string | undefined => {
   const chars = Array.from(p);
   const last = chars.pop();
@@ -5252,19 +5274,38 @@ const collectHints = (where: Expr, into: HintMap): void => {
         return;
       }
 
-      const [subject, literal] = where.args;
+      const [subject, prefix] = where.args;
 
-      if (
-        subject?.kind !== 'prop' ||
-        literal?.kind !== 'lit' ||
-        typeof literal.value !== 'string'
-      ) {
+      // A LITERAL **or a PARAM** (item 1029). Item 1028 handled only the literal and reasoned that
+      // "the literal spelling is the one `STARTS WITH` is written in" — which contradicts this
+      // file's own note on `IN $names`, that binding is the INJECTION-SAFE form and inline
+      // literals are the rare one. The same argument applies here, so the param is likely the
+      // commoner spelling and 1028 dismissed it too quickly.
+      //
+      // The successor is computed at EVALUATION time rather than compile time, which is all the
+      // param case needed: a `CompiledExpr` is a closure, so the upper bound wraps the prefix's
+      // own closure. No new compiled form and no change to `CRangeBound`.
+      if (subject?.kind !== 'prop' || prefix === undefined || !isConstExpr(prefix)) {
         return;
       }
 
-      const upper = prefixUpper(literal.value);
+      const base = compileExpr(prefix);
 
-      if (upper === undefined) {
+      // A LITERAL KEEPS ITS PRECOMPUTED BOUND (item 1028's shape). Routing it through the param
+      // closures instead cost the literal spelling ~10% — 0.067-0.075 -> 0.076-0.085 ms, nearly
+      // disjoint — because each evaluation recomputes `prefixUpper` for a value that was known at
+      // compile time. Small, but it is a control this change can reach and need not move.
+      if (prefix.kind === 'lit' && typeof prefix.value === 'string') {
+        const upper = prefixUpper(prefix.value);
+
+        if (upper !== undefined) {
+          pushHint(into, subject.variable, {
+            kind: 'range',
+            key: subject.key,
+            bound: { gte: base, lt: compileExpr({ kind: 'lit', value: upper }) },
+          });
+        }
+
         return;
       }
 
@@ -5272,8 +5313,16 @@ const collectHints = (where: Expr, into: HintMap): void => {
         kind: 'range',
         key: subject.key,
         bound: {
-          gte: compileExpr(literal),
-          lt: compileExpr({ kind: 'lit', value: upper }),
+          // BOTH SIDES COME FROM `prefixBound`, so they are present together or not at all. When
+          // it declines, each closure returns `undefined`, which is not a scalar — so `evalBound`
+          // finds no usable endpoint and declines the seek, exactly as the scan did before.
+          //
+          // Dropping only the UPPER side was tried first and is a PESSIMIZATION: the lower bound
+          // alone is `>= ''` for an empty prefix, so the seek materializes every id through the
+          // index and then filters — **3.6 -> 11.3 ms**, a 3x regression against the plain scan,
+          // caught by the control that exists for this shape.
+          gte: (env) => prefixBound(base(env))?.gte,
+          lt: (env) => prefixBound(base(env))?.lt,
         },
       });
 

@@ -16,7 +16,7 @@ import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@lenke/core';
 
-import { prefixUpper } from './executor.js';
+import { prefixBound, prefixUpper } from './executor.js';
 import { query } from './index.js';
 
 const VALUES = [
@@ -93,6 +93,23 @@ describe('prefixUpper, tested directly because width errors are answer-equivalen
     }
   });
 
+  // `prefixBound` is the ROUTE CHOICE, and route choices are answer-equivalent: the residual
+  // `starts_with` re-validates the seek, so seeking on the LOWER bound alone returns the same rows
+  // and only picks the slower shape (3.6 -> 11.3 ms on an empty prefix). A mutant doing that
+  // survived every end-to-end case; these assertions are its teeth.
+  test('a prefix bound is BOTH sides or neither', () => {
+    expect(prefixBound('name500')).toEqual({ gte: 'name500', lt: 'name501' });
+    expect(prefixBound('😀')).toEqual({ gte: '😀', lt: '😁' });
+    // No successor -> NO seek, not a lower bound on its own. `>= ''` is every row, so half a
+    // bound is slower than the scan it replaces.
+    expect(prefixBound('')).toBeUndefined();
+    expect(prefixBound(String.fromCodePoint(0x10_ff_ff))).toBeUndefined();
+    // A non-string prefix cannot seek a string key at all.
+    expect(prefixBound(5)).toBeUndefined();
+    expect(prefixBound(null)).toBeUndefined();
+    expect(prefixBound(undefined)).toBeUndefined();
+  });
+
   test('no successor exists for an empty prefix or the top of the range', () => {
     expect(prefixUpper('')).toBeUndefined();
     expect(prefixUpper(String.fromCodePoint(0x10_ff_ff))).toBeUndefined();
@@ -150,6 +167,47 @@ describe('STARTS WITH seeds a range index (item 1028)', () => {
 
     expect(names(indexed, q)).toEqual(['日本', '日本語']);
     expect(names(indexed, q)).toEqual(names(plain, q));
+  });
+
+  // THE PARAM SPELLING (item 1029), which is the injection-safe form and the likelier one in an
+  // application. Item 1028 left it scanning; the successor is now computed at EVALUATION time.
+  test('a param prefix answers what the literal does, for every shape', () => {
+    for (const p of [
+      'name500',
+      'name5',
+      'é',
+      '😀',
+      '日本',
+      'zzz',
+      // The no-successor shapes: the seek is declined and the scan answers.
+      '',
+      `z${String.fromCodePoint(0x10_ff_ff)}`,
+    ]) {
+      const q = 'MATCH (n:P) WHERE n.name STARTS WITH $p RETURN n.name AS v';
+      const got = (query(indexed, q, { p }) as Record<string, unknown>[])
+        .map((r) => String(r.v))
+        .sort();
+      const want = (query(plain, q, { p }) as Record<string, unknown>[])
+        .map((r) => String(r.v))
+        .sort();
+
+      expect(got, `param ${JSON.stringify(p)}`).toEqual(want);
+      // ...and identical to the LITERAL spelling of the same question, which is the point: two
+      // spellings of one query must not answer differently.
+      expect(got, `param vs literal ${JSON.stringify(p)}`).toEqual(
+        names(indexed, `MATCH (n:P) WHERE n.name STARTS WITH '${p}' RETURN n.name AS v`),
+      );
+    }
+  });
+
+  test('a NON-STRING param declines rather than seeking on a number', () => {
+    // `starts_with(string, 5)` throws at evaluation (the scalar's own contract), so the seed must
+    // not have quietly produced a numeric bound first — the error is the correct outcome and a
+    // seek built from `5` would have changed which rows reached the thrower.
+    const q = 'MATCH (n:P) WHERE n.name STARTS WITH $p RETURN n.name AS v';
+
+    expect(() => query(indexed, q, { p: 5 })).toThrow();
+    expect(() => query(plain, q, { p: 5 })).toThrow();
   });
 
   test('the empty prefix returns every row', () => {

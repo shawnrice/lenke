@@ -29263,9 +29263,31 @@ multiTypeEdgeCount === 0`) — one named type cannot double-count. Native's `Adj
 - **A BIMODAL ROW IMPERSONATED A REGRESSION FOR THE SECOND TIME THIS SESSION (item 1028).** The
   unselective-interval control read 1.402 → 2.129 on a single pair; alternated, PRE spans 1.27-3.10
   and POST 1.90-2.15 — overlapping. Item 1022 was the first. **Alternation settles it both times.**
-- **➡️ A PARAM prefix (`STARTS WITH $p`) still scans (item 1028).** The hint's bound is a compiled
-  EXPRESSION, so a param successor needs a compiled "successor of" form rather than a literal
-  computed at compile time. Noted, not built.
+- **✅ SHIPPED (TS) — the PARAM prefix, ~100x (item 1029).** `STARTS WITH $p`:
+  **4.733/4.788/4.967 → 0.051/0.049/0.049 ms**, literal control flat. It needed LESS than 1028
+  assumed — no compiled "successor of" form: a `CompiledExpr` is a closure, so the bound computes
+  the successor at EVALUATION time by wrapping the prefix's own closure.
+- **⚠️ ITEM 1028's REASON FOR SKIPPING IT WAS WRONG (item 1029).** "The literal spelling is the one
+  `STARTS WITH` is written in" contradicts the same file's note on `IN $names` — binding is the
+  INJECTION-SAFE form and inline literals are the rare one. The param is likely the COMMONER
+  spelling, dismissed on a plausible claim the neighbouring comment refutes.
+- **⚠️ THE OBVIOUS DEGRADATION WAS A 3x PESSIMIZATION (item 1029).** A param's value is unknown at
+  plan time, so "no successor" is discovered during evaluation; dropping the UPPER side and keeping
+  the lower gives `>= ''` for an empty prefix, which materializes EVERY id through the index and
+  then filters — **3.6 → 11.3 ms** against the plain scan, caught by the control added for that
+  shape. Both sides are now tied: present together or neither.
+- **AND THAT REMOVED A CHANGE ALREADY MADE (item 1029).** `evalBound` had been taught to tell "this
+  side does not apply" from "this endpoint is unusable"; once both sides are tied, nothing reaches
+  that branch — the dead-guard shape items 1015/1016 are about — so `matching.ts` is reverted.
+- **THE SEEK SHAPE IS ANSWER-EQUIVALENT, SO THE DECISION IS EXTRACTED (item 1029).** The residual
+  `starts_with` re-validates whatever the seek returns, so a mutant seeking the LOWER bound alone
+  changes no answer, only the speed. `prefixBound` is exported and asserted directly — both sides
+  or neither, `''` and the top of the range decline, a non-string declines — and the mutant then
+  fails. A non-string param coerced through `String(v)` is caught end-to-end.
+- **➡️ The RUST prefix seed still takes a literal only (item 1029), and the cost is NOT the same.**
+  Rust's bounds are `Value`s computed at plan time, not closures, so a param there is a genuine
+  plan-shape question rather than a wrapper. Recorded with that distinction, since 1028's mistake
+  was assuming both engines' "needs a new form" costs were alike.
 - **✅ CLOSED by item 1027 — `STARTS WITH` seeds the interval it denotes, 72x.** 1026 left the
   prefix spelling 95x behind its own equivalent (0.287 ms against 0.003). `prefix_seek_target`
   reads the key and literal out of the scalar `Call`, `prefix_upper` computes the first string NOT

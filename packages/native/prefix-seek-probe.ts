@@ -40,13 +40,13 @@ console.log(
   `indexed vertex keys: ${g.vertexPropertyIndex.indexedKeys().join(', ') || 'NONE — these groups measure SCANS'}`,
 );
 
-const time = (label: string, q: string): void => {
+const time = (label: string, q: string, params?: Record<string, unknown>): void => {
   const series: number[] = [];
   let answer: unknown;
 
   for (let r = 0; r < REPS; r++) {
     const t = performance.now();
-    const rows = tsQuery(g, q) as Record<string, unknown>[];
+    const rows = params ? tsQuery(g, q, params) : tsQuery(g, q);
 
     series.push(performance.now() - t);
     answer = rows[0]?.c ?? rows.length;
@@ -73,6 +73,19 @@ time(
 // UNSELECTIVE interval is the shape a seek should decline.
 time('CONTROL equality seek', "MATCH (n:P) WHERE n.name = 'name500' RETURN count(*) AS c");
 time('CONTROL one-sided range', "MATCH (n:P) WHERE n.name >= 'name99998' RETURN count(*) AS c");
+// THE PARAM SPELLING (item 1029), which is the injection-safe form applications actually write —
+// and which item 1028 left scanning on the grounds that the literal is "the one STARTS WITH is
+// written in". The engine's own note on `IN $names` says the opposite about binding.
+time('STARTS WITH $p (param)', 'MATCH (n:P) WHERE n.name STARTS WITH $p RETURN count(*) AS c', {
+  p: 'name500',
+});
+// A param with NO successor: the upper side drops and the seek degrades to the lower bound (or to
+// a scan for the empty prefix), which must still answer correctly.
+time(
+  'CONTROL param with no successor (empty)',
+  'MATCH (n:P) WHERE n.name STARTS WITH $p RETURN count(*) AS c',
+  { p: '' },
+);
 time(
   'CONTROL unselective interval',
   'MATCH (n:P) WHERE n.k >= 30 AND n.k < 40 RETURN count(*) AS c',
