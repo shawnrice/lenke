@@ -27956,3 +27956,25 @@ Prop}` 160.0 / 4,000; `NOT` → `Filter{Scan, Not(Prop)}` 214.7 / 196,000; `= fa
   retracted at 937 by markers. The 48–54 ns/row is real and reproducible; its attribution is not.
   **Next step**: a flat-cost read that is not a bare prop (`WHERE p.lst[0] = 'NYC'`) separates the
   two hypotheses in one row.
+- **REFUTED — item 899's "the TS nested read's gap is the FIELD STEP" (item 951, closing the
+  downgrade item 950 opened).** `route-vs-expr-probe.ts`, 200k vertices, one process, three
+  alternated rounds, all arms asserting the same count per rep:
+  `p.tier = 'NYC'` 23.8 ns/row, `'NYC' = p.tier` 24.6 (1.03x), **`p.lst[0] = 'NYC'` 81.5 (3.42x)**,
+  `p.meta.other = 'NYC'` 117.9 (4.96x). A list subscript is an array index (3.4 ns against the
+  `LenkeRecord` subclass's 17.5) yet pays 57.7 ns/row over the baseline — **the read is not what is
+  being paid for**, and the gap is not specific to the field step.
+- **SETTLED — the bare-prop count route is spelling-symmetric (item 951).** `'NYC' = p.tier` costs
+  what `p.tier = 'NYC'` costs (1.03x), so the equivalent-spelling bug class is not present on this
+  route. The arm is also the instrument: it reads the same property by the same path and allocates
+  nothing extra, so it isolates ROUTE from WORK.
+- **⚠️ OPEN — the real cliff is `directEqProps` declining to lift, worth 3.42x–4.96x (item 951).**
+  `patternCountOf`'s `segments.length === 0` arm admits a clause `WHERE`, so the detector is NOT the
+  gate; C and D reach `buildNodeCount` like A. One level in, `directEqProps` lifts only
+  `<ownVar>.<key> <op> <closed>` into `pred.eqProps` (a direct element read); a left-hand side that
+  is not a single key leaves `pred.where` alive, so `predFor` keeps `bindVar` and every vertex pays
+  a `Map` write plus `satisfies` plus env-based evaluation. **Item 803 names exactly this as the
+  control its change could not reach** (_"a NON-lifting `n.k * 1 > 10`, whose `where` survives"_)
+  and prices the `Map` write at ~4 of ~24 ns, so the write is the small part. **The target**: lift
+  `<ownVar>.<key>.<field>` and `<ownVar>.<key>[<int>]` against a closed value, closed by the same
+  argument the single-key case already makes. **Read `dotted-predicate-routes.test.ts` FIRST** — it
+  may already record a deliberate decline, which would make this settled rather than open.
