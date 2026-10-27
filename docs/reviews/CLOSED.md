@@ -28549,3 +28549,21 @@ predicate` closed at 644. Every remaining flag on either side is recorded as cor
   predicate — a real, now-measured asymmetry. Not chased, because every caller using the device
   today (`distinct_chain_endpoints`) runs it over a hop FRONTIER, where the set is small and a
   second code path is not worth it — item 974's own transferable lesson applied to itself.
+- **SETTLED — there is NO missing read-path clause fold; a vacuous `WITH` costs nothing (item
+  977).** Pricing `Clause`'s fourteen variants: between `MATCH` and `RETURN`, `Filter` folds
+  (548), `Page` folds (969) or is dropped (549), `Let` folds, both `Call` forms inline, `For` has
+  a count rung — and **`WITH` folds too, via `boundExprs`**, which turns a simple renaming into a
+  binding map for the same rewrite that inlines a trailing `LET`.
+- **The prediction was WRONG and the probe cost one run (item 977).** I expected a vacuous `WITH`
+  to cost what item 967 measured for a no-op third clause (1.43x) or item 548 for `FILTER`
+  (7.7-10.9x). Measured: `WHERE n.k = 7 … RETURN count(*)` **3.22 ms** against the same with
+  `WITH n` interposed **3.19 ms — 1.00x**, answers agreeing. (The unfiltered arms are below timer
+  resolution and their ratios are NOT claimed.)
+- **METHOD — a fold can exist without being named after its clause (item 977).** `boundExprs` is
+  the `WITH` fold and nothing in the rewrite list says so; its own comment draws the real line —
+  _"`LET` ADDS a binding and `WITH` REPLACES the row… a `WITH` that FILTERS, aggregates, dedupes,
+  groups, orders or pages is a row boundary rather than a renaming, and declines."_ **Enumerate
+  by BEHAVIOUR per variant, not by the index of rewrite names**, or this one is missed.
+- **Consequence for item 967's remaining 1.43x (item 977).** It is not reachable by folding one
+  more clause — every foldable one already folds. It is the shortcut family's
+  `clauses.length !== 2` precondition itself, on shapes where the intervening clause is real work.
