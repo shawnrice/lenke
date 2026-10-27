@@ -28719,7 +28719,7 @@ predicate` closed at 644. Every remaining flag on either side is recorded as cor
   fixture gained a `flag` boolean with **no stored null** (one would keep the column `Gen` and
   make the group measure the general path — item 982's measured trap). **TS: both groups
   converge** (negated 3.03/3.46/3.79, 1.25x; positive 3.54/3.70/3.71, 1.05x) with `0 group(s)
-  disagree on the ANSWER` — item 984 confirmed through the repo's own gate.
+disagree on the ANSWER` — item 984 confirmed through the repo's own gate.
 - **⚠️ The NATIVE positive group FLAGS 2.78x, and it is NOT what item 982 fixed (item 985).**
   `0.095ms` bare against `0.265ms` for `= true`. That fixture has no index on `flag`, so `= true`
   takes the **unconditional no-index seed** rather than the `Filter` route and loses at 80%
@@ -28732,3 +28732,17 @@ predicate` closed at 644. Every remaining flag on either side is recorded as cor
   level crossing the line on some runs is the definition, not a regression.
 - **Item 978's finding A now has a STANDING GATE ENTRY (item 985)**, so the fix — when taken —
   has a pass/fail signal rather than a bespoke sweep.
+- **FEASIBILITY ESTABLISHED for item 978's finding A, and it needs NO new store state (item
+  986).** The native spelling flag from item 985 is the **UN-INDEXED** case, where
+  `scan_is_cheap` is never consulted — `eq_seek_worth_it` short-circuits on `!has_hash_index` —
+  so **widening `scan_is_cheap` (item 948 part 1) would not fix it**. Distinguishing the two
+  halves matters: 978 supplied the INDEXED curve, and the gate flags the other one.
+- **What the un-indexed case needs, and why it is now cheap (item 986).** `seed_fraction`'s Eq
+  arm is `index_bucket_len(key, value)?`, which is `None` without an index, and the store keeps
+  **no per-column value counts** (`distinct_count` answers for `Dict` only). Counting a
+  `Column::Bool` is O(N) over a `Vec<bool>` — and **`parse_cache.rs` caches the optimized plan**,
+  so that cost is paid once per distinct query text rather than per execution, against a query
+  costing 100-900 us every run. With an early exit at `cap + 1` it is O(min(N, cap)).
+- **That keeps it an OPTIMIZATION rather than the design call item 949 named.** 949's option (1)
+  was a type PRIOR — changing planner behaviour on a guess — and it declined to take it. This is
+  949's option (2), "make the statistic available", which decides on the data in front of it.
