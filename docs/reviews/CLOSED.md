@@ -28812,3 +28812,21 @@ disagree on the ANSWER` — item 984 confirmed through the repo's own gate.
   n = 50,000 is 12, and the two are coprime, so it samples every residue. A fourth layout (period
   10, trues on ODD residues) makes the naive stride report **0% for a 20%-true column**; 7/7
   after. Same shape as item 989's M4, one item later.
+- **⚠️ Item 990's correction was ALREADY IN THIS FILE, recorded at item 320 (item 991).** Going to
+  price "cache the optimized plan too" found the answer on both counts, in two separate entries
+  neither 986 nor 989 consulted:
+  - _"both caches in `parse_cache` hold PARSED plans and `optimize_indexed` runs per call"_ — the
+    exact fact item 986 asserted the opposite of, and item 990 then re-derived by reading the
+    source. The entry even says how it was settled: _"the cache-shape question was settled by
+    READING `parse_cache`, not inferred from item 229's title."_
+  - **REFUTED: caching the OPTIMIZED plan (item 320).** Not a tuning question but a structural
+    one: a cached optimized plan must be optimized BEFORE binding, and every seeding site in
+    `opt.rs` matches `Expr::Lit(v)` to extract a concrete `Value`. `prepared_parity_probe`
+    demonstrates it — bind-then-optimize gives `IndexSeek { key: "name", value: Str("name7") }`,
+    optimize-then-bind gives `Filter { Scan { label: "User" } }`. A full label scan where the
+    live path seeks, **with a correct answer**, so no test in the repo would catch it.
+    **So do not re-attempt the optimized-plan cache**, and note that `optimize_indexed` being ~43%
+    of a serving call (334 ns, item 320) is a KNOWN and accepted cost, not an unexploited target.
+    The process lesson is the cheaper one: CLAUDE.md says to match the store to the kind of fact —
+    _"has this lever been tried?"_ goes to CLOSED.md FIRST. Items 986 and 989 asked a cost question
+    of their own reasoning instead, and shipped a wrong claim for two commits.
