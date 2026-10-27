@@ -3493,10 +3493,14 @@ fn typed_hop_count_from_size(input: &Plan, agg: &Agg, store: &Store) -> Option<u
         // an edge's PRIMARY type only, and this arm reads no partition.
         [] => Some(store.live_edge_count()),
         [ty] => {
-            if store.has_multi_label_edges() {
+            let t = store.etype_id(ty)?;
+            // PER-TYPE, not global (item 1004). The partition for `t` is complete unless some
+            // edge carries `t` as a SECONDARY label; whether an UNRELATED type is doubled up
+            // says nothing about this one. The old global guard cost 0.3 -> 368.6 us on
+            // `-[:KNOWS]->` the moment any edge gained a second label.
+            if store.type_ever_secondary(t) {
                 return None;
             }
-            let t = store.etype_id(ty)?;
             store.out_typed_flat(t).map(<[_]>::len)
         }
         _ => None,
@@ -3542,9 +3546,6 @@ pub(super) fn try_edge_label_count(
     let Expr::IsLabeled { slot: 0, labels } = pred else {
         return None;
     };
-    if store.has_multi_label_edges() {
-        return None; // a partition holds the PRIMARY type only, so the sum would undercount
-    }
     let mut seen: Vec<&str> = Vec::with_capacity(labels.len());
     let mut total = 0usize;
     for l in labels {
@@ -3555,6 +3556,13 @@ pub(super) fn try_edge_label_count(
         // An unknown edge type matches nothing and contributes 0 — it must not decline the
         // whole path, or `hasLabel('KNOWS', 'NOPE')` would fall off it.
         if let Some(t) = store.etype_id(l) {
+            // PER-TYPE, not global (item 1004). A partition holds the PRIMARY type only, so the
+            // sum undercounts exactly when one of the NAMED types is carried secondarily
+            // somewhere. With none of them secondary every named partition is complete, and an
+            // edge sits in at most one of them (it has one primary), so the sum is exact.
+            if store.type_ever_secondary(t) {
+                return None;
+            }
             total += store.out_typed_flat(t)?.len();
         }
     }

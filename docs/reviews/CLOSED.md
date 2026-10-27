@@ -29110,3 +29110,20 @@ multiTypeEdgeCount === 0`) — one named type cannot double-count. Native's `Adj
   common multi-label edges are in the intended workload — the whole 1200x is zero without them.**
 - **The `storage/multilabel` RSS columns are NOT usable (item 1003).** This run read 11.8 → 3.9
   bytes/edge, i.e. the TWO-label arm resident smaller than the one-label arm. Read `1hop_us` only.
+- **✅ SHIPPED — the multi-label typed-count guard is now PER TYPE, 368.6 → 0.3 us (~1200x)
+  (item 1004).** The guard asked _"is ANY edge multi-label"_ where its own comment gives a
+  per-type reason: a partition holds the PRIMARY type only, so it is incomplete exactly for a type
+  carried BEHIND a primary. In `["KNOWS","X"]` edges `KNOWS` is primary everywhere and its
+  partition was complete all along. A MONOTONE `secondary_etypes` set at `set_edge_extra_labels`
+  plus `type_ever_secondary(t)` at both count sites. Monotone keeps it **out of the delete and
+  rollback paths** — a deleted edge leaves its type gated, conservative and never wrong. Controls
+  flat (single-label 0.3 → 0.3, `storage/write` 25.92 → 26.20).
+- **⚠️ ITEM 1003's PROPOSED FIX WAS WRONG, and reading the code is what found it (item 1004).**
+  1003 inferred a per-type counter over all labels — new store state, an architectural call. The
+  actual fix is a set and a changed condition. **Inferring a mechanism from field comments is not
+  reading it**; this session produced three other wrong mechanisms the same way (999, 1000, the
+  `dlopen` capi guess).
+- **TEETH — the second assertion is the load-bearing one (item 1004).** A type carried ONLY as a
+  secondary is in no partition, so reading its length returns 0 instead of 3; a mutant dropping
+  the gate passes the "primary" assertion and fails that one. M1/M3/M4 all CAUGHT. M1's verdict
+  was lost to a `tail` in the first run and re-run alone rather than assumed.

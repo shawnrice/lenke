@@ -1367,6 +1367,20 @@ pub struct Store {
     /// SPARSE: empty unless some edge has >1 label, so a single-label graph pays
     /// nothing and `edge_has_label` stays the single `u32` compare it replaced.
     edge_extra: U32Map<Vec<u32>>,
+    /// Every edge-type id that has EVER appeared as a SECONDARY label (item 1004).
+    ///
+    /// The per-type CSR partitions key an edge by its PRIMARY type only, so
+    /// `out_typed_flat(t).len()` is the exact count of type `t` exactly when no edge carries `t`
+    /// as a secondary. The old guard asked the GLOBAL question — "is ANY edge multi-label" — and
+    /// so refused the O(1) count for every type in the graph as soon as one unrelated edge gained
+    /// a second label: `MATCH (p:P)-[:KNOWS]->() RETURN count(*)` measured 0.3 us on single-label
+    /// edges against 368.6 with `["KNOWS","X"]` on every edge, ~1200x, even though `KNOWS` is the
+    /// PRIMARY there and its partition is complete.
+    ///
+    /// MONOTONE — ids are added and never removed. Deleting the last edge that carried `t`
+    /// secondarily leaves `t` in here, so the fast path stays declined for it: conservative,
+    /// never wrong, and it keeps this free of the delete and rollback paths entirely.
+    secondary_etypes: FnvSet<u32>,
     /// `(src, dst)` node ids per eid (indexed by eid; grows 1:1 with `next_eid` and
     /// never shrinks, like `edge_etype`). Lets an edge be rendered as the TS engine's
     /// `{id, from, to, labels, properties}` map from its eid alone, without scanning
@@ -1613,6 +1627,7 @@ impl Clone for Store {
             edge_etype: self.edge_etype.clone(),
             edge_has_extra: self.edge_has_extra.clone(),
             edge_extra: self.edge_extra.clone(),
+            secondary_etypes: self.secondary_etypes.clone(),
             edge_ends: self.edge_ends.clone(),
             node_ext: self.node_ext.clone(),
             edge_ext: self.edge_ext.clone(),
@@ -3684,6 +3699,9 @@ impl Store {
                 *self.etype_ids.entry((*name).to_string()).or_insert(next)
             })
             .collect();
+        for id in &ids {
+            self.secondary_etypes.insert(*id);
+        }
         self.edge_extra.insert(eid, ids);
         if let Some(flag) = self.edge_has_extra.get_mut(eid as usize) {
             *flag = true;
@@ -3726,6 +3744,17 @@ impl Store {
                     .edge_extra
                     .get(&eid)
                     .is_some_and(|extra| extra.contains(&tid)))
+    }
+
+    /// Has edge type `t` ever appeared as a SECONDARY label? (item 1004)
+    ///
+    /// The per-type question the CSR partitions actually need, where
+    /// [`Store::has_multi_label_edges`] asks the global one. A partition for `t` is complete
+    /// unless some edge carries `t` behind its primary, so this is what gates reading its length
+    /// as a count.
+    #[must_use]
+    pub fn type_ever_secondary(&self, t: u32) -> bool {
+        self.secondary_etypes.contains(&t)
     }
 
     /// Whether ANY edge carries more than one label — lets an adjacency walk keep
@@ -6138,6 +6167,7 @@ impl Builder {
             next_eid: edge_count,
             edge_etype: edge_etypes,
             edge_extra: U32Map::default(),
+            secondary_etypes: FnvSet::default(),
             // Builder edges are single-label (`edge_extra` empty), so no edge carries
             // secondary labels; a later set_edge_extra_labels flips the bit.
             edge_has_extra: vec![false; edge_count as usize],

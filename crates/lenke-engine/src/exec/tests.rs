@@ -28423,3 +28423,85 @@ fn a_boolean_comparison_is_the_bare_predicate_on_the_filter_route() {
         assert_eq!(n(q), 4_000.0, "4,000 FALSE, absent not counted: {q}");
     }
 }
+
+/// The typed-count fast path is gated PER TYPE, not on "any edge is multi-label" (item 1004).
+///
+/// The partitions key an edge by its PRIMARY type, so `out_typed_flat(t).len()` is the exact
+/// count of `t` exactly when no edge carries `t` BEHIND its primary. The old guard asked the
+/// global question and refused the O(1) count for every type as soon as one unrelated edge gained
+/// a second label — `storage/multilabel` measured 0.3 us against **368.6** for
+/// `-[:KNOWS]->` with `["KNOWS","X"]` on every edge, ~1200x, even though `KNOWS` is the PRIMARY
+/// there and its partition is complete.
+///
+/// BOTH DIRECTIONS ARE ASSERTED, and the second is the one with teeth: a type carried as a
+/// SECONDARY is missing from its own partition, so reading the length would UNDERCOUNT. A mutant
+/// that drops the guard entirely passes the first assertion and fails this one.
+#[test]
+fn the_typed_count_fast_path_is_gated_per_type_not_globally() {
+    let count_of = |q: &str, st: &Store| -> f64 {
+        match &run(&crate::gql::parse(q).unwrap(), st)
+            .rows
+            .iter()
+            .next()
+            .expect("one count row")[0]
+        {
+            Value::Num(n) => *n,
+            other => panic!("not a number: {other:?}"),
+        }
+    };
+
+    // Every edge is [KNOWS, X]: KNOWS is PRIMARY everywhere, X is secondary everywhere.
+    let mut b = Builder::default();
+    let a = b.node(&["P"], &[]);
+    let c = b.node(&["P"], &[]);
+    let d = b.node(&["P"], &[]);
+    b.edge(a, c, "KNOWS");
+    b.edge(a, d, "KNOWS");
+    b.edge(c, d, "KNOWS");
+    let mut store = b.build();
+
+    for eid in 0..store.edge_count() as u32 {
+        store.set_edge_extra_labels(eid, &["X"]);
+    }
+    store.rebuild_csr();
+
+    // KNOWS is primary on every edge, so its partition is complete and the count is exact —
+    // this is the case the global guard refused.
+    assert_eq!(
+        count_of("MATCH (p:P)-[:KNOWS]->() RETURN count(*) AS c", &store),
+        3.0
+    );
+    // X is carried ONLY as a secondary, so it is in NO partition. The fast path must decline
+    // here or the answer is 0 instead of 3.
+    assert_eq!(
+        count_of("MATCH (p:P)-[:X]->() RETURN count(*) AS c", &store),
+        3.0
+    );
+
+    // The Gremlin spelling of the same question, which sums named partitions.
+    assert_eq!(
+        count_of("MATCH ()-[:KNOWS]->() RETURN count(*) AS c", &store),
+        3.0
+    );
+    assert_eq!(
+        count_of("MATCH ()-[:X]->() RETURN count(*) AS c", &store),
+        3.0
+    );
+
+    // A MIXED graph: one edge whose primary is X, so X is primary on one and secondary on three.
+    let mut b2 = Builder::default();
+    let a2 = b2.node(&["P"], &[]);
+    let c2 = b2.node(&["P"], &[]);
+    b2.edge(a2, c2, "KNOWS");
+    b2.edge(c2, a2, "X");
+    let mut s2 = b2.build();
+    s2.set_edge_extra_labels(0, &["X"]); // the KNOWS edge also carries X
+    s2.rebuild_csr();
+
+    assert_eq!(
+        count_of("MATCH ()-[:KNOWS]->() RETURN count(*) AS c", &s2),
+        1.0
+    );
+    // Both edges carry X: one as primary, one as secondary. The partition holds only the first.
+    assert_eq!(count_of("MATCH ()-[:X]->() RETURN count(*) AS c", &s2), 2.0);
+}
