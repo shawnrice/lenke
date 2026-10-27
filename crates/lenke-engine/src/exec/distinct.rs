@@ -826,11 +826,20 @@ pub(super) fn try_distinct_frontier_multi(input: &Plan, store: &Store) -> Option
 // filter-and-scan arm (~277 us), which does NOT do this route's projection, so it is the same
 // unverified-subtrahend defect item 963 withdrew — one item after recording it.
 //
-// What survives: `eval_mask` over a synthesized `Col::Nodes` batch reads the property per row
-// through the generic evaluator, where the `Filter` OPERATOR in the pipeline has a vectorized
-// path over the typed column; that difference is structural and is the only candidate large
-// enough to explain a 2.9x. So the trade was a vectorized filter swapped for a generic one in
-// order to save hashing — but HOW MUCH the mask step costs is not measured here.
+// MEASURED AT ITEM 976, by instrumenting the rejected sibling rather than inferring: on the
+// `n.dept > 'a'` arm, `ids` ~95 us, `eval_mask` **~690 us** steady-state, dedup **~405 us**
+// (1190 total, matching the 1194.7 the arm reports). The inferred ~1400 was about 2x high.
+//
+// TWO things are wrong with the replacement, not one:
+//   * `eval_mask` ALONE (~690) exceeds the ENTIRE general route (~585). It reads the property
+//     per row through the generic evaluator; the `Filter` OPERATOR has a vectorized path over
+//     the typed column.
+//   * the dedup is ~405, not the near-free dense-bitset pass it looks like — a per-row
+//     `mask.get(row)` compare plus an id indirection loses the sequential locality that
+//     `scan_visit` has.
+//
+// So the trade was a vectorized filter swapped for a generic one AND a sequential walk swapped
+// for an indirected one, to save hashing that was not the cost.
 //
 // `distinct_chain_endpoints` uses the same `eval_mask`-over-`Col::Nodes` device and is right to:
 // there the candidate set is a hop frontier that is already materialized and usually small. Over

@@ -28533,3 +28533,19 @@ predicate` closed at 644. Every remaining flag on either side is recorded as cor
   verifying it (952), 962 decomposed with a subtrahend that omitted work (963), 974 decomposed
   with a subtrahend that omitted different work (975). **Three of the four were committed after
   the relevant rule was already written in the same document.**
+- **MEASURED — the mask step is ~690 us, not item 974's inferred ~1400 (item 976).** Temporary
+  instrumentation inside the rejected sibling (restored, timed, reverted — item 952's device):
+  on the `n.dept > 'a'` arm, `ids` ~95 us, **`eval_mask` ~690**, **dedup ~405**, totalling 1190
+  against the 1194.7 the arm reports. **The parts account for the whole**, which is item 943's
+  check — available here because the instrument is INSIDE the route rather than beside it.
+- **TWO defects, not one, and that is the real correction (item 976).** (1) `eval_mask` ALONE
+  (~690) exceeds the ENTIRE general route (~585) — correctly identified by 974, just mispriced.
+  (2) **The dedup is ~405 us**, not the near-free dense-bitset pass it looks like: a per-row
+  `mask.get(row)` compare plus an id indirection loses the sequential locality `scan_visit` has,
+  so **the part meant to be the WIN is itself slower than the general route's dedup**. Item 974
+  would have been rejected on either half alone.
+- **⚠️ OPEN but deliberately NOT pursued (item 976).** `eval_mask` over a `Col::Nodes` batch is
+  ~3.45 ns/row at 200k rows where the `Filter` operator is materially cheaper on the same
+  predicate — a real, now-measured asymmetry. Not chased, because every caller using the device
+  today (`distinct_chain_endpoints`) runs it over a hop FRONTIER, where the set is small and a
+  second code path is not worth it — item 974's own transferable lesson applied to itself.
