@@ -27537,3 +27537,42 @@ contributes nothing` — the far-driven mistake reports 2 where the answer is 1,
   made look promising. The asymmetry is still real for a graph where many vertices carry no edge of
   the queried type — the `:S` shape `startWalkFits`' comment records at 7684x — just not on this
   fixture.
+- **⚠️ CORRECTED — item 937's "walk 18 ns, predicate 272 ns" split is INVALID (item 938).** Its two
+  arms take DIFFERENT WALKS and are counted in DIFFERENT UNITS: `WHERE b.k > -1` →
+  `farOnlyHopCount`, 200,000 far VERTICES, 58.03 ms; `WHERE true` → **`tallyHopCount`**, 600,000
+  EDGES, 3.69 ms. `farWalkFits` requires a far reference and `WHERE true` has none, so it falls to
+  the edge-driven tally — the very walk 937 was contrasting against. **Same error class as the one
+  937 retracted 936 for, one item later.** The useful fact underneath: the edge-driven tally answered
+  600,000 edges in 3.69 ms where the far-driven walk answered 200,000 vertices in 58.03, so nothing
+  in these numbers supports "far-driving is the better strategy" either.
+- **RULE — a decomposition needs one WALK and one DENOMINATOR, and both have to be verified
+  (item 938).** Subtracting a floor from a total is only a decomposition when both arms run the same
+  code over the same unit. Verify the route by marker and divide each arm by ITS OWN candidate count.
+  Mixing per-vertex and per-edge is how 937 produced a 272 ns term that does not exist.
+- **MEASURED — the hop walks' floor is ~120 ns a candidate and the comparison is ≤30 ns; the
+  PREDICATE ENTRY is 98 ns on the far side against 36 on the start side (item 938).** All arms
+  route-verified. Per-conjunct slope on `farOnlyHopCount`, 200,000 candidates, 3 alternated rounds:
+  1 conjunct 312/295/302 ns a vertex, 2 conjuncts 344/356/328, 3 conjuncts 340/370/321 — marginal
+  second conjunct +32/+61/+27 ns, marginal third −4/+14/−8, so **~270 ns is fixed per candidate**
+  regardless of predicate complexity (item 934's step-then-plateau signature). The two mirrors cost
+  the SAME per vertex (far 290/292/300 against start 305/291/304), which kills "the far side is the
+  problem". With a NON-VACUOUS `:Q` label — required, because an all-`:P` fixture answers the
+  unfiltered shape from the bucket size in 0.01 ms and measures no walk — over 20,000 candidates:
+  walk with no predicate **far 119 / start 121 ns**, walk + 1 conjunct **far 217 / start 157**.
+- **⚠️ OPEN, NEW AND SPECIFIC — the far walk's predicate term is 2.7x the start walk's, between two
+  functions written as mirrors (item 938).** 98 ns a candidate against 36. Both do the same work per
+  candidate (label test, `binding.set`, `asTruth(pred.fn(env))` inside a `try` whose `catch`
+  re-throws only when the degree is non-zero, `degreeOfTypes`), so 62 ns is not symmetry. **NOT
+  attributed:** candidates are the `try` frame, the binding write, whether one side reaches a lifted
+  `cmpProps`-style closure and the other does not, and the `catch`'s own `degreeOfTypes`.
+  **This file is 0 for 4 on guessing this cost** — 437 twice (not a tree walk, not boxing), 934 once
+  (not the polymorphic property load), 937 once (the invalid split) — so measure which of the four
+  before changing anything. Cheapest discriminator: a start-vs-far pair whose predicate is identical
+  except for which endpoint it names.
+- **STATE OF THE HOP-PREDICATE CHAIN after three items, recorded so a fourth attempt does not restart
+  it (item 938).** 936: "GQL is edge-driven here" — FALSE. 937: "walk 18 ns, predicate 272" —
+  INVALID. 938: walk floor ~120 ns a candidate, comparison ≤30 ns, predicate entry 98 far / 36 start,
+  mirrors otherwise identical. **The ~2x cross-surface ratio that started this is still unexplained
+  in MECHANISM and three successive attributions have failed.** Each attempt was cheap because it
+  shipped as measurement rather than as a change, and the measured facts accumulate even as the
+  explanations are retracted — which is the argument for the priced-not-built outcome existing at all.
