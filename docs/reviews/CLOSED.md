@@ -29214,3 +29214,22 @@ multiTypeEdgeCount === 0`) — one named type cannot double-count. Native's `Adj
   perturbation. Reading it as "the change helped clean" would have been the session's fifth wrong
   mechanism; three alternated rounds on the reverted build gave the stable baseline to compare
   against.
+- **⚠️ WITHDRAWN — item 1009's attribution of the 2.3x disjunction penalty to the per-edge probe
+  (item 1010).** `secondary_etypes` was converted to a dense `Vec<bool>` indexed by etype id, so
+  the gate became ONE index read — cheaper than the two reads of the `edge_has_label` it skips,
+  removing 1009's stated objection. Three rounds at degree 256 / 64 types: **tainted 14961.6 /
+  15080.9 / 15000.1, unchanged from the ~14900 baseline.** Only `UNRELATED` is secondary in that
+  fixture, so the probe IS being skipped; if skipping it changes nothing, the probe was never the
+  cause. 1009's "the fix is a hoist" also falls — hoisting a check that changes nothing changes
+  nothing. **The penalty is LOCATED but NOT ATTRIBUTED**; a profiler on the tainted arm is the
+  next instrument, as at item 994.
+- **❌ NOT SHIPPED — a reproducible 1.3x on the CLEAN arm from code that never executes there
+  (item 1010).** Clean went 6470 → ~5100 across three rounds while the added terms sit behind a
+  `has_multi_label_edges()` that is false. Dead code can only do that by changing how the
+  function compiles — `pull-alignment-is-load-bearing`'s shape. **A number whose mechanism is
+  "the optimiser laid it out differently" is one edit from reversing**, and banking it would
+  attach the claim to a change that provably does not do what its comment says.
+- **THE 1008-1010 PATTERN.** 1008 narrowed a guard for 24x; 1009 applied the identical narrowing
+  one site over for nothing; 1010 removed 1009's explanation and still got nothing. **The same
+  code shape can have an entirely different cause at a neighbouring site** — measure the specific
+  site, never reason from the one next door.
