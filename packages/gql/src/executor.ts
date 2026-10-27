@@ -5155,6 +5155,41 @@ export const uniformEqChain = (
   return variable !== undefined && key !== undefined ? { variable, key, values } : undefined;
 };
 
+/**
+ * The first string NOT prefixed by `p`, so `[p, prefixUpper(p))` covers exactly the strings
+ * starting with `p` — or `undefined` when no such bound exists (item 1028).
+ *
+ * Increments the last CODE POINT, not the last UTF-16 unit: `String.prototype.slice` and index
+ * access work in UTF-16, so a surrogate pair would be split and the bound would be a lone
+ * surrogate. `Array.from` / `codePointAt` iterate code points, which is what the index's own
+ * comparison order uses.
+ *
+ * `undefined` for an empty prefix (every string starts with it, so there is no upper bound) and
+ * for one ending at the maximum code point (nothing sorts above it).
+ *
+ * EXPORTED so the arithmetic can be tested directly, which is the only thing with teeth against
+ * it: the residual WHERE re-applies `starts_with`, so a bound that is merely too WIDE changes no
+ * answer. Mutants replacing the code-point walk with a UTF-16 slice, or making the bound
+ * inclusive, both pass every end-to-end case for that reason (item 1028) — they are perf bugs, and
+ * CLAUDE.md's rule for an answer-equivalent choice is to extract the arithmetic and unit-test it.
+ */
+export const prefixUpper = (p: string): string | undefined => {
+  const chars = Array.from(p);
+  const last = chars.pop();
+
+  if (last === undefined) {
+    return undefined;
+  }
+
+  const next = (last.codePointAt(0) ?? 0) + 1;
+
+  if (next > 0x10_ff_ff) {
+    return undefined;
+  }
+
+  return chars.join('') + String.fromCodePoint(next);
+};
+
 const collectHints = (where: Expr, into: HintMap): void => {
   switch (where.kind) {
     case 'and':
@@ -5195,6 +5230,52 @@ const collectHints = (where: Expr, into: HintMap): void => {
           bound: { [boundKey]: compileExpr(pc.value) },
         });
       }
+
+      return;
+    }
+    case 'func': {
+      // A PREFIX IS A RANGE (item 1028). `STARTS WITH` parses to this `func`, so no compare arm
+      // can see it and the predicate reached no index — measured at **5.287 ms against 0.105**
+      // for the explicit `>= p AND < succ(p)` spelling it is equivalent to, over 100,000 rows.
+      // Two spellings of one question, which is the class every index-seeding bug in this engine
+      // has belonged to.
+      //
+      // The residual WHERE still applies `starts_with`, as it does for every seed here, so the
+      // bound only has to be a SUPERSET and the answer never depends on `prefixUpper`'s
+      // arithmetic. (It is in fact exact: `[p, succ(p))` is the prefix set.)
+      //
+      // LITERAL prefixes only. A param's value is not known when hints are collected, and the
+      // bound is a compiled EXPRESSION rather than a value, so a param prefix would need a
+      // compiled "successor of" form — recorded rather than built, since the literal spelling is
+      // the one `STARTS WITH` is written in.
+      if (where.name !== 'starts_with' || where.args.length !== 2) {
+        return;
+      }
+
+      const [subject, literal] = where.args;
+
+      if (
+        subject?.kind !== 'prop' ||
+        literal?.kind !== 'lit' ||
+        typeof literal.value !== 'string'
+      ) {
+        return;
+      }
+
+      const upper = prefixUpper(literal.value);
+
+      if (upper === undefined) {
+        return;
+      }
+
+      pushHint(into, subject.variable, {
+        kind: 'range',
+        key: subject.key,
+        bound: {
+          gte: compileExpr(literal),
+          lt: compileExpr({ kind: 'lit', value: upper }),
+        },
+      });
 
       return;
     }

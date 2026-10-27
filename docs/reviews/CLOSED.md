@@ -29241,6 +29241,31 @@ multiTypeEdgeCount === 0`) — one named type cannot double-count. Native's `Adj
   were added), and the row-returning form provably DOES seed and provably returns the right rows.
   The guard is not in doubt — the panic mutant fails loudly without it — but that branch is
   untested and says so.
+- **✅ SHIPPED (TS) — `STARTS WITH` seeds a range index, 56-65x (item 1028).** Three alternated
+  rounds, 100,000 rows: **4.465/5.021/5.163 → 0.080/0.082/0.077 ms**, landing on the explicit
+  range it is equivalent to (0.090) where it was 50x behind. Every control flat.
+- **THE TS ENGINE HAD ONLY HALF THE RUST GAP, AND WAS AHEAD ON THE OTHER HALF (item 1028).**
+  `coalesceRangeHints` ALREADY folds `n.k >= lo AND n.k < hi` into one tight bound — what item 1026
+  had to add to Rust. First time in this run of cross-engine transfers that TS was the one ahead,
+  so "check the other engine" found one gap and refuted the other.
+- **THE TS SPELLING PROBE HAS ITEM 1023's BLINDNESS TOO (item 1028).** Its string key holds SEVEN
+  distinct values (no prefix over it is selective) and it declares only HASH indexes. Widening that
+  fixture would invalidate every figure recorded against it (its header says the indexes are
+  created after the unindexed groups for exactly that reason), so `prefix-seek-probe.ts` has its
+  own fixture and a range index.
+- **⚠️ THE RESIDUAL FILTER MAKES BOUND-WIDTH MUTANTS ANSWER-EQUIVALENT (item 1028).** Three of six
+  — a UTF-16 slice instead of a code-point walk, an INCLUSIVE upper bound, and `+2` instead of
+  `+1` — passed every end-to-end case, because the residual `starts_with` cleans up a superset.
+  (For `😀` the UTF-16 slice yields a LONE SURROGATE bound, which still orders above `😀`.) The fix
+  is CLAUDE.md's: `prefixUpper` is EXPORTED and asserted directly — surrogate pairs advance as one
+  code point, the untouched prefix survives (`az` → `a{`), the code-point count is preserved, and
+  the two no-successor cases return `undefined`. All three width mutants then fail.
+- **A BIMODAL ROW IMPERSONATED A REGRESSION FOR THE SECOND TIME THIS SESSION (item 1028).** The
+  unselective-interval control read 1.402 → 2.129 on a single pair; alternated, PRE spans 1.27-3.10
+  and POST 1.90-2.15 — overlapping. Item 1022 was the first. **Alternation settles it both times.**
+- **➡️ A PARAM prefix (`STARTS WITH $p`) still scans (item 1028).** The hint's bound is a compiled
+  EXPRESSION, so a param successor needs a compiled "successor of" form rather than a literal
+  computed at compile time. Noted, not built.
 - **✅ CLOSED by item 1027 — `STARTS WITH` seeds the interval it denotes, 72x.** 1026 left the
   prefix spelling 95x behind its own equivalent (0.287 ms against 0.003). `prefix_seek_target`
   reads the key and literal out of the scalar `Call`, `prefix_upper` computes the first string NOT
