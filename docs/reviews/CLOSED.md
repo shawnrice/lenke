@@ -29055,3 +29055,17 @@ disagree on the ANSWER` — item 984 confirmed through the repo's own gate.
   `.so`) fit perfectly, and I had run exactly that build several times this session. The `.so` had
   16 `lnk_` symbols and was current — the cause was a missing `libPath` argument in my own probe.
   Third instance in two items of the familiar explanation being the wrong one.
+- **⚠️ CORRECTED AT 1001 — item 1000's "the ffi arm is tightly clustered" is FALSE; both arms are
+  MULTIMODAL.** At 30 reps, histogrammed: ts has modes at 30-34 (8) and 38-42 (13); **ffi has
+  THREE** — 28-30 (12), 32-34 (7), 38-40 (7). The six "tight" ffi readings of 27.8-28.3 were six
+  14-rep MEDIANS that each landed on the 28 ms mode. **1000's conclusion stands** (ts 39.4 against
+  ffi 33.6 at 30 reps, native faster, and no sample of any size puts native behind) and so does
+  the asymmetry it needed — min-to-median is ts 1.53x against ffi 1.19x — but the unimodal-ffi
+  half of the explanation does not.
+- **⚠️ INSTRUMENT — at 14 reps a MULTIMODAL series' MEDIAN is itself unstable (item 1001).** A
+  median summarises only when the sample is large enough to contain every mode in roughly its
+  true proportion; below that it reports whichever mode the draw favoured, with a summary
+  statistic's confidence. `encode-isolated-probe.ts` now defaults to **30 reps** with that
+  reasoning at the constant. **Repetition detects noise; it does not detect a biased estimator** —
+  six agreeing medians were six repetitions of one sampling error. Only widening the sample finds
+  it.

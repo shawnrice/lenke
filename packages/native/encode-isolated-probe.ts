@@ -17,10 +17,15 @@
  *     probe both record that the TS path can be BIMODAL, where `min` reports the rare fast mode
  *     and hides the distribution. Here the whole per-rep series is printed.
  *
- * THE ESTIMATOR, from the TS spelling probe's own notes: 14 reps, DROP THE FIRST THREE as warm-up
- * (they are visibly the JIT tiering up), take the MEDIAN of the rest. Round 1 of item 999's sweep
- * was a cold-start outlier on every ts row at once, which is exactly what dropping warm-up reps
- * exists to remove.
+ * THE ESTIMATOR: 30 reps, DROP THE FIRST THREE as warm-up (they are visibly the JIT tiering up),
+ * take the MEDIAN of the rest. Round 1 of item 999's sweep was a cold-start outlier on every ts
+ * row at once, which is exactly what dropping warm-up reps exists to remove.
+ *
+ * **30, not the 14 this file shipped with (item 1001).** BOTH arms here are MULTIMODAL — ts at
+ * ~32 and ~40, ffi at ~28, ~33.5 and ~39 — and at 14 reps the MEDIAN ITSELF is unstable, because
+ * which mode it lands in depends on the draw. Six consecutive 14-rep ffi medians read 27.8-28.3
+ * and looked like a tight distribution; they were six samples of one mode of three. A median is
+ * only a summary when the sample is large enough to see every mode.
  *
  * THE CONTROL IS IN THE SAME RUN: `encode csv` goes through the same `serialize` entry point on
  * both engines and measured consistently native-favourable (1.09-1.30x) while pg-json did not.
@@ -51,7 +56,7 @@ const LIB = new URL(
 ).pathname;
 
 const N = Number(process.env.A_N ?? 200_000);
-const REPS = Number(process.env.A_REPS ?? 14);
+const REPS = Number(process.env.A_REPS ?? 30);
 const WARMUP = Number(process.env.A_WARMUP ?? 3);
 const ARM = process.env.A_ARM ?? 'ts';
 const FORMATS = (process.env.A_FORMATS ?? 'pg-json,csv').split(',');
