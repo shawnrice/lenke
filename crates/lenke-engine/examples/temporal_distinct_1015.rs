@@ -82,9 +82,15 @@ fn value_of(kind: &str, i: usize, distinct: usize) -> Value {
 
 fn fixture(kind: &str, rows: usize, distinct: usize) -> Store {
     let mut b = Builder::default();
+    // ONE source wired to every `P` (item 1022), so a hop reaches the whole set as a FRONTIER.
+    // `frontier_group_by` is a different function from the scan grouping arms item 848 added, and
+    // its `_ => return None` covers EVERY temporal kind — `Date` included — so the frontier shape
+    // needs its own fixture or the gap cannot be reached at all.
+    let src = b.node(&["S"], &[("n", Value::Num(0.0))]);
 
     for i in 0..rows {
-        b.node(&["P"], &[("t", value_of(kind, i, distinct))]);
+        let id = b.node(&["P"], &[("t", value_of(kind, i, distinct))]);
+        b.edge(src, id, "E");
     }
 
     b.build()
@@ -129,7 +135,7 @@ fn main() {
     println!("# RETURN DISTINCT <temporal> per kind — {rows} rows, {distinct} distinct, min of {reps} (us)");
     println!("# num and date are the CONTROLS: both already reach ColKeyer, so a fix cannot move them.\n");
     println!(
-        "  kind              scan_distinct_us   rows   count_distinct_us   gremlin_dedup_us   g_rows   topk_us   topk_ceiling_us"
+        "  kind              scan_distinct_us   rows   count_distinct_us   gremlin_dedup_us   g_rows   topk_us   topk_ceiling_us   frontier_grp_us"
     );
 
     for kind in [
@@ -156,6 +162,14 @@ fn main() {
             &store,
             reps,
         );
+        // THE FRONTIER GROUPED AGGREGATE (item 1022). The scan form goes through item 848's
+        // grouping arms; this one reaches `frontier_group_by`, which declines every temporal kind.
+        // `num` and `str` are the controls that already have arms there.
+        let (fgrp, _) = time_q(
+            "MATCH (s:S)-[:E]->(p:P) RETURN p.t AS k, count(*) AS c",
+            &store,
+            reps,
+        );
         let (ceil, _) = time_q("MATCH (p:P) ORDER BY p.t RETURN p AS p", &store, reps);
         // The row count is CHECKED, not assumed: every kind must find exactly `distinct` groups,
         // so a fixture whose values collide (or a key that over-splits) is loud rather than fast.
@@ -166,7 +180,7 @@ fn main() {
         };
 
         println!(
-            "  {kind:16}  {scan:14.1}  {n:6}  {agg:17.1}  {grem:16.1}  {gn:6}  {topk:8.1}  {ceil:15.1}{ok}"
+            "  {kind:16}  {scan:14.1}  {n:6}  {agg:17.1}  {grem:16.1}  {gn:6}  {topk:8.1}  {ceil:15.1}  {fgrp:12.1}{ok}"
         );
     }
 }

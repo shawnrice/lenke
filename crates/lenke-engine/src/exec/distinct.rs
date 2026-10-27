@@ -63,6 +63,41 @@ pub(super) fn temporal_struct_key(t: crate::temporal::Temporal) -> Option<(i64, 
     }
 }
 
+/// The same key with a KIND RANK in front, for a caller whose rows can mix kinds.
+///
+/// A packed COLUMN holds one kind, so `temporal_struct_key`'s callers in this file and in
+/// `fastpath` need no discriminant — and must not pay for one. `aggregation`'s grouping does need
+/// it, because a temporal key materializes as a `Col::Gen` that can mix kinds across rows, and
+/// `Time(5, 7)` and `DateTime(5, 7)` carry equal fields while being different values that
+/// `group_key` keeps apart.
+///
+/// **Two functions rather than one wide key, and that was MEASURED (item 1022).** Widening
+/// `temporal_struct_key` itself to carry the rank — one definition instead of two — cost the
+/// column paths item 1015/1016 shipped **12-20%**: `count(DISTINCT <time>)` 1,383 -> 1,663 us,
+/// `<datetime>` 1,378 -> 1,576, the Gremlin dedup 1,560 -> 1,755. The FIELDS stay single-sourced
+/// (this calls that), which is the part that must be right; the rank is a discriminant whose only
+/// job is separation.
+pub(super) fn temporal_group_key(t: crate::temporal::Temporal) -> Option<(u8, i64, u32, i16)> {
+    use crate::temporal::Temporal as T;
+
+    // RANKS START AT 1, deliberately. A caller that keys its Null group as a zero-rank sentinel
+    // rather than `None` is then still correct, because no real temporal can produce rank 0 —
+    // which is why a mutant swapping `None` for `Some((0, 0, 0, 0))` in `aggregation` is
+    // EQUIVALENT rather than a test gap (item 1022). `None` is still the form to use: it cannot
+    // be invalidated by a later kind taking rank 0.
+    let rank: u8 = match t {
+        T::Date(_) => 1,
+        T::Time(_) => 2,
+        T::DateTime(_) => 3,
+        T::ZonedTime(_) => 4,
+        T::ZonedDateTime(_) => 5,
+        T::Duration(_) => return None,
+    };
+    let (a, b, c) = temporal_struct_key(t)?;
+
+    Some((rank, a, b, c))
+}
+
 /// Whether a packed temporal COLUMN of this kind can be keyed structurally.
 ///
 /// DERIVED from `temporal_struct_key` rather than listing the kinds again. Written as its own

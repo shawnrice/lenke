@@ -4436,6 +4436,239 @@ fn group_by_a_date_key_on_a_large_hop_frontier() {
     );
 }
 
+/// `GROUP BY <temporal>` over a HOP FRONTIER — item 1022's grouping arm.
+///
+/// A different function from the scan grouping item 848 added: a temporal key over a frontier
+/// materializes as a `Col::Gen`, and the grouper had a `Date` arm (packing `days` into a `u64`)
+/// and nothing for the other kinds. `datetime` cost **40,388 us** there against `num`'s 1,787.
+///
+/// THE MIXED-KIND CASE IS WHY THE KEY CARRIES A RANK. A `Col::Gen` can hold different kinds across
+/// rows — unlike a packed column, which holds one — so `Time(5, 7)` and `DateTime(5, 7)` would
+/// share a key on fields alone while being different values the general path keeps apart.
+#[test]
+fn group_by_a_temporal_key_over_a_frontier() {
+    use crate::temporal::{DateTime, Duration, Temporal, Time, ZonedDateTime, ZonedTime};
+
+    let groups = |vals: &[Temporal], extra_null: bool| -> Vec<String> {
+        let mut b = Builder::default();
+        let src = b.node(&["S"], &[("n", n(0.0))]);
+
+        for t in vals {
+            let id = b.node(&["P"], &[("t", Value::Temporal(*t))]);
+            b.edge(src, id, "E");
+        }
+        if extra_null {
+            // An absent property is ONE Null group, and it must not collide with any key.
+            let id = b.node(&["P"], &[("other", n(1.0))]);
+            b.edge(src, id, "E");
+        }
+
+        let store = b.build();
+        let q = "MATCH (s:S)-[:E]->(p:P) RETURN p.t AS k, count(*) AS c";
+        let general = "MATCH (s:S)-[:E]->(p:P) WHERE true RETURN p.t AS k, count(*) AS c";
+        let rows = |qq: &str| -> Vec<String> {
+            let batch = run(&crate::gql::parse(qq).unwrap(), &store);
+            let mut out: Vec<String> = batch
+                .rows
+                .iter()
+                .map(|r| {
+                    r.iter()
+                        .map(|v| match v {
+                            Value::Temporal(t) => t.format(),
+                            other => format!("{other:?}"),
+                        })
+                        .collect::<Vec<_>>()
+                        .join("=")
+                })
+                .collect();
+            out.sort();
+            out
+        };
+
+        // The ORACLE is the general path, which `WHERE true` forces (item 570) — so this asserts
+        // the claim rather than restating the key's arithmetic.
+        assert_eq!(rows(q), rows(general), "fast and general disagree");
+
+        rows(q)
+    };
+
+    // Each kind: two equal values and one different, so the answer is two groups with counts 2
+    // and 1 — a dropped field gives one group, an over-split three.
+    assert_eq!(
+        groups(
+            &[
+                Temporal::Time(Time { secs: 5, nanos: 7 }),
+                Temporal::Time(Time { secs: 5, nanos: 7 }),
+                Temporal::Time(Time { secs: 5, nanos: 8 }),
+            ],
+            false
+        )
+        .len(),
+        2
+    );
+    assert_eq!(
+        groups(
+            &[
+                Temporal::DateTime(DateTime { secs: -1, nanos: 0 }),
+                Temporal::DateTime(DateTime { secs: -1, nanos: 0 }),
+                Temporal::DateTime(DateTime { secs: -1, nanos: 1 }),
+            ],
+            false
+        )
+        .len(),
+        2
+    );
+    assert_eq!(
+        groups(
+            &[
+                Temporal::ZonedDateTime(ZonedDateTime {
+                    secs: 9,
+                    nanos: 0,
+                    offset: 60
+                }),
+                Temporal::ZonedDateTime(ZonedDateTime {
+                    secs: 9,
+                    nanos: 0,
+                    offset: 60
+                }),
+                // OFFSET alone: same instant, different rendering, so a separate group.
+                Temporal::ZonedDateTime(ZonedDateTime {
+                    secs: 9,
+                    nanos: 0,
+                    offset: 120
+                }),
+            ],
+            false
+        )
+        .len(),
+        2
+    );
+    assert_eq!(
+        groups(
+            &[
+                Temporal::ZonedTime(ZonedTime {
+                    secs: 9,
+                    nanos: 0,
+                    offset: 60
+                }),
+                Temporal::ZonedTime(ZonedTime {
+                    secs: 9,
+                    nanos: 0,
+                    offset: 120
+                }),
+            ],
+            false
+        )
+        .len(),
+        2
+    );
+
+    // MIXED KINDS with identical fields — one group each, not one shared group.
+    assert_eq!(
+        groups(
+            &[
+                Temporal::Time(Time { secs: 5, nanos: 7 }),
+                Temporal::DateTime(DateTime { secs: 5, nanos: 7 }),
+            ],
+            false
+        )
+        .len(),
+        2
+    );
+    assert_eq!(
+        groups(
+            &[
+                Temporal::ZonedTime(ZonedTime {
+                    secs: 5,
+                    nanos: 7,
+                    offset: 60
+                }),
+                Temporal::ZonedDateTime(ZonedDateTime {
+                    secs: 5,
+                    nanos: 7,
+                    offset: 60
+                }),
+            ],
+            false
+        )
+        .len(),
+        2
+    );
+    // ...and a DATE beside another kind, since `Date` keeps its own narrower arm and a mixed
+    // column therefore has to leave that arm and reach this one.
+    assert_eq!(
+        groups(
+            &[
+                Temporal::Date(crate::temporal::Date { days: 5 }),
+                Temporal::DateTime(DateTime { secs: 5, nanos: 0 }),
+            ],
+            false
+        )
+        .len(),
+        2
+    );
+
+    // THE NULL GROUP, which must not collide with any key — the arm keys an absent cell as `None`.
+    assert_eq!(
+        groups(
+            &[
+                Temporal::DateTime(DateTime { secs: 1, nanos: 0 }),
+                Temporal::DateTime(DateTime { secs: 1, nanos: 0 }),
+            ],
+            true
+        )
+        .len(),
+        2
+    );
+
+    // DURATION is declined (`temporal_group_key` returns `None`), so this column falls to the byte
+    // key — asserted anyway, because the guard is what sends it there.
+    assert_eq!(
+        groups(
+            &[
+                Temporal::Duration(Duration {
+                    months: 0,
+                    days: 0,
+                    secs: 1,
+                    nanos: 0
+                }),
+                Temporal::Duration(Duration {
+                    months: 0,
+                    days: 0,
+                    secs: 1,
+                    nanos: 0
+                }),
+                Temporal::Duration(Duration {
+                    months: 0,
+                    days: 1,
+                    secs: 0,
+                    nanos: 0
+                }),
+            ],
+            false
+        )
+        .len(),
+        2
+    );
+    // A DURATION MIXED WITH A KEYABLE KIND must also decline, or the guard's `all()` is wrong.
+    assert_eq!(
+        groups(
+            &[
+                Temporal::Duration(Duration {
+                    months: 0,
+                    days: 0,
+                    secs: 1,
+                    nanos: 0
+                }),
+                Temporal::DateTime(DateTime { secs: 1, nanos: 0 }),
+            ],
+            false
+        )
+        .len(),
+        2
+    );
+}
+
 /// `ORDER BY <temporal> LIMIT k` — item 1020's streaming top-K arm.
 ///
 /// THE ORACLE IS THE GENERAL PATH. Every shape is asserted against its `WHERE true` twin (item

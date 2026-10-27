@@ -29213,6 +29213,30 @@ multiTypeEdgeCount === 0`) — one named type cannot double-count. Native's `Adj
   differential and answer assertion in the repo. It is caught only by asserting on the selector
   itself (`fused_hop_shape(..).is_some()`) in both directions. Second instance of the hazard after
   1008's degree-reader pin.
+- **✅ SHIPPED (Rust) — `GROUP BY <temporal>` over a FRONTIER, up to 18.9x (item 1022).** The
+  FRONTIER grouping is a different function from the scan arms item 848 added; its `Col::Gen`
+  dispatch had a `Date` arm (`days` into a `u64`) and nothing else. Three alternated rounds,
+  200,000 rows / 1,000 distinct: `zoned` **59,274 → 3,256 (18.9x)**, `datetime_nanos` 52,765 →
+  3,062 (17.0x), `datetime` 41,221 → 3,220 (13.2x), `zonedtime` 30,569 → 3,290 (9.9x), `time`
+  19,672 → 3,248 (6.1x). The fixture needed EDGES — the gap is unreachable from a scan.
+- **⚠️ ITS num AND str CONTROLS ARE UP ~3%, STATED NOT ROUNDED (item 1022).** `num` 1,804-1,818 →
+  1,852-1,882 and `str` 1,020-1,029 → 1,053-1,071, on rows the new arm CANNOT execute (both
+  return at their own `Col::` arm first). The dead-code/layout toll items 1012/1013 characterized,
+  below the ~10% that needs an isolated harness, ranges only just separated. Recorded as a cost.
+- **⚠️ SINGLE-SOURCING THE KEY COST 12-20% AND WAS SPLIT (item 1022).** A `Col::Gen` can MIX kinds
+  where a packed column holds one, so grouping needs a kind discriminant the column paths do not.
+  Widening `temporal_struct_key` to carry it — one definition — cost items 1015/1016's paths
+  **`count(DISTINCT <time>)` 1,383 → 1,663 us, `<datetime>` 1,378 → 1,576, Gremlin dedup 1,560 →
+  1,755.** A u8 on the front of a hash key is not free at 1.4 ms. Now two functions:
+  `temporal_struct_key` (narrow, packed columns) and `temporal_group_key`, which CALLS it and
+  prepends the rank — FIELDS single-sourced, rank separate.
+- **FIFTH TIME A GENERAL FORM LOST TO A NARROW ONE IN THIS FAMILY (item 1022)**, and the first
+  time the general form was tried BECAUSE item 1017 argued for single-sourcing. Both lessons hold;
+  what decides is whether the key is cheap relative to the work at that site.
+- **A ZERO-RANK SENTINEL CANNOT COLLIDE, SO ONE MUTANT IS EQUIVALENT (item 1022).** Keying the
+  Null group as `Some((0,0,0,0))` instead of `None` survives — kind ranks start at 1, so no real
+  temporal produces rank 0. NOT a test gap: `None` is kept because it cannot be invalidated by a
+  later kind taking rank 0, and the code says so instead of a test asserting a non-difference.
 - **✅ CLOSED — item 1020 does NOT transfer to the TS engine (item 1021).** The Rust sorted LIMIT
   dispatches on COLUMN REPRESENTATION, which is the shape that leaves one behind; TS's
   `ordered-rows.ts` keeps top-k over INPUT BINDINGS with a value comparator and no per-type

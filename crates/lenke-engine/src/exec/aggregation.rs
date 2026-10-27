@@ -513,7 +513,45 @@ pub(super) fn assign_groups(key_cols: &[Col], n: usize) -> (Vec<u32>, Vec<usize>
                     }),
                 );
             }
-            Col::Gen(_) => {} // mixed: fall through to the byte-key path
+            // EVERY OTHER raw-keyable kind (item 1022), and MIXED kinds among them. The `Date`
+            // arm above packs into a `u64` and cannot widen to `(secs, nanos, offset)`;
+            // `group_by` is generic over its key, so this one groups on the structural tuple
+            // `distinct::temporal_group_key` returns — whose leading KIND RANK is why a mixed
+            // `Col::Gen` is safe here: `Time(5, 7)` and `DateTime(5, 7)` carry equal fields and
+            // are different values that `group_key` keeps apart.
+            //
+            // The arm above stays for `Date` rather than being folded in, for item 1015's
+            // measured reason: a narrow key beats a general one, and generalizing a date key cost
+            // its own column 2.0x there.
+            //
+            // The injectivity the old comment called unestablished was established at item 1015,
+            // from `temporal.rs`: `fmt_frac` pads then trims, `fmt_year` and `fmt_offset` widen
+            // rather than truncate, `civil_from_days` is a bijection, and a zoned instant is the
+            // rendered local value minus the rendered offset. `Duration` is still excluded —
+            // `temporal_group_key` returns `None` for it, so the guard below rejects the column
+            // and it keeps the byte key.
+            //
+            // Measured (`temporal_distinct_1015`'s frontier column, 200,000 rows / 1,000
+            // distinct): `datetime` **40,388 us** and `zoned` **57,161** against `num`'s 1,787
+            // and the already-fast `date` arm's 2,230.
+            Col::Gen(v)
+                if v.iter().all(|x| match x {
+                    Value::Null => true,
+                    Value::Temporal(t) => super::distinct::temporal_group_key(*t).is_some(),
+                    _ => false,
+                }) =>
+            {
+                return group_by(
+                    n,
+                    v.iter().map(|x| match x {
+                        Value::Temporal(t) => super::distinct::temporal_group_key(*t),
+                        // `None` IS the Null group, and it cannot collide with any key because
+                        // every keyable temporal yields `Some`.
+                        _ => None,
+                    }),
+                );
+            }
+            Col::Gen(_) => {} // mixed with non-temporals: fall through to the byte-key path
         }
     }
     // General path: self-delimiting byte key per row, reused buffer, allocate
