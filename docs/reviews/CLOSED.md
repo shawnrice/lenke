@@ -26709,7 +26709,7 @@ undefined`). None of these is discoverable from the list's definition. (Those ga
   functions in a 7,000-line file whose failure mode is a wrong summary SILENTLY DISABLING a shortcut
   — answer-equivalent, invisible to every correctness test. Prerequisite is a route assertion per
   detector (item 888's `toLowerCase`-counting test is the pattern); that is its own, bigger item.
-- **OPEN, PRICED — the rewrite pipeline is another 16% (item 910).** Ten nested clause-list
+- **~~OPEN, PRICED~~ RETRACTED AT ITEM 942 on cost/benefit (1.259 us is ~5% of a COLD small query and 0% of a warm one) — the rewrite pipeline is another 16% (item 910).** Ten nested clause-list
   transformations (`dropVacuousQuantifier` … `liftStartProps`), each walking the list it is handed:
   **1.259 us, 16%** of the big query. Fusing them means preserving a documented composition order
   (`inlineAggregateCall` runs INSIDE `inlineTrailingLet` so the `LET` it produces is itself inlined),
@@ -27673,3 +27673,34 @@ product's one-sided predicate` 2.22x (285), `one end labelled, the other free` 2
   planning' target", but 910's own bullet claims something else (the rewrite pipeline at 16%), so
   **910 STAYS OPEN** and striking it would have been a worse error than the lag. An item can have
   one claim retracted and another still live.
+- **MEASURED — a cold small query is 94-97% PLANNING, and ~25x its warm twin (item 942).** This is
+  the denominator the whole planning-cost family (items 887, 905, 908, 910, 912) was priced
+  without: those items give shares OF PLANNING, and for the serving shape planning is essentially
+  the whole of a cold query. Indexed point lookup, WARM (one text, both caches hit) against COLD
+  (textually distinct, identical work and answer, texts pre-built so string construction is outside
+  the timed region), 3 alternated rounds: warm **0.79 / 1.39 / 1.28 us**, cold **25.32 / 25.75 /
+  22.90**, planning **23.93 / 24.96 / 21.62** = **94.5 / 96.9 / 94.4%**. Execution is ~1 us; getting
+  to it costs ~24. The same pair over a 50,000-vertex SCAN: warm ~806 us, cold ~850, planning ~45 us
+  = **5.4%**, noise against the scan. **So the question for every item in that family is not "what
+  share of planning" but "how many of this workload's queries MISS the cache".**
+- **RETRACTED on cost/benefit — item 910's rewrite-pipeline target (item 942).** 1.259 us is **~5%
+  of a cold** indexed point lookup, **0% of a warm one** (the plan cache removes it entirely) and
+  0.15% of a scan. The fusion must preserve a documented composition order — `inlineAggregateCall`
+  runs INSIDE `inlineTrailingLet` so the `LET` it produces is itself inlined, _"which the current
+  nesting expresses structurally"_, 910's own words — and trading a structurally-expressed
+  invariant for 5% of cold queries is a poor deal whose failure mode is a WRONG plan, not a slow
+  one. Same call item 878 made about 877.
+- **⚠️ NOT ATTRIBUTED, named for the next attempt — most of the ~24 us is probably PARSE, not
+  compile (item 942).** Item 912 measured compile at 7.703 us for its big query and a point
+  lookup's compile is smaller still, so the bulk of the cold cost sits outside the part items
+  908/910/912 instrumented — which would point at item 887 (~45 ns/token TS vs native parse) rather
+  than at the rewrite pipeline or the detectors. **The parse/compile split for this query was NOT
+  instrumented**, and items 936-939 are four consecutive reminders of what unmeasured attribution
+  costs, so this is a direction to measure and not a finding.
+- **METHOD — an impossible number is the cheapest check there is (item 942).** The probe printed
+  item 910's share of a cold query as **4972%**: `out.cold` was in milliseconds and 1.259 in
+  microseconds, so the ratio was off by 1000 and the real figure is 4.97%. The catch was not rigour
+  but implausibility — a share over 100% cannot be right. Worth stating because the numbers that are
+  merely WRONG rather than impossible are the ones this session has had to retract four times; where
+  a quantity has a natural bound, print it in a form that violates the bound when the arithmetic
+  is wrong.
