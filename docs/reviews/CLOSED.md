@@ -28567,3 +28567,26 @@ predicate` closed at 644. Every remaining flag on either side is recorded as cor
 - **Consequence for item 967's remaining 1.43x (item 977).** It is not reachable by folding one
   more clause — every foldable one already folds. It is the shortcut family's
   `clauses.length !== 2` precondition itself, on shapes where the intervening clause is real work.
+- **THE INDEXED CURVE item 949 said was missing (item 978).** `INDEXED=1` on `seekcross_948`.
+  With a real hash index the seek wins at 2% (61.2 against 145.6) and **already LOSES 1.88x at
+  10%** (284.0 against 151.2). `SEEK_MAX_FRACTION = 0.154` admits seeks to 15.4%, so a
+  10%-selective Bool key gets a seek that costs it nearly double. **Item 948's part (1) is now
+  supported by the right curve** — the break-even is near
+  `SEEK_MAX_FRACTION_CHEAP_SCAN = 0.031`, the constant it proposed and 949 retracted only for
+  want of this measurement. Still NOT built: a planner constant is a route change needing its own
+  before/after and a mutation pass.
+- **⚠️ BIGGER, and not about seeking at all — `p.b = true` costs ~5x `p.b` on the SAME plan shape
+  (item 978).** From 20% up the gate correctly DECLINES and both arms are `Filter { Scan }`:
+  `Compare { Eq, Prop, Lit(Bool(true)) }` **919.2 us** against a bare `Prop` predicate **161.0**,
+  same 40,000 rows — 5.71x, and 4.89-5.51x across the rest of the sweep. **Same family as item
+  946's `= false` at 3.18x `NOT`, which until now read as a seeding artifact. It is not: it
+  survives with the seek gone.**
+- **METHOD — a sweep that gains a new MODE needs its LABELS re-checked, not just its numbers
+  (item 978).** Adding `INDEXED=1` made the `seek(= true)` column change meaning halfway down the
+  table — a seek for two rows, a filter for five — so 5.71x would have read as "the seek is 5.71x
+  worse" when the seek is not running. **The same defect item 973 found in a stored absolute,
+  reproduced live in my own new output.** Each row now prints the route read off the optimized
+  plan.
+- **The separate-gates rule paid again (item 978).** `cargo clippy` caught an identity `.map` in
+  the first version of the route labelling, exit 101 — visible because the gates are separate
+  commands with exit codes read unpiped.

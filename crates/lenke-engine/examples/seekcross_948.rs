@@ -40,6 +40,13 @@ fn key_of(pct: u32) -> String {
     format!("b{pct:02}")
 }
 
+/// `INDEXED=1` builds the same fixture WITH a hash index on every swept key (item 978).
+///
+/// Item 949 left this open in as many words: *"Whether a bool column's INDEXED seek breaks even
+/// at 3% or 15% is a real question and this session has no measurement of it."* The sweep below
+/// measures the NO-INDEX degraded seek; `scan_is_cheap`, the thing that would be widened, is on
+/// the INDEXED path — all four of its call sites are behind an index check — so the un-indexed
+/// curve cannot price it. This mode is the missing half.
 fn fixture(n: u32) -> Store {
     let mut b = Builder::default();
     for i in 0..n {
@@ -55,6 +62,23 @@ fn fixture(n: u32) -> Store {
         b.node(&["P"], &borrowed);
     }
     b.build()
+}
+
+/// The ROUTE each arm actually took, not the one its spelling suggests (item 978).
+///
+/// This mattered the moment `INDEXED=1` existed: the `= true` column is an `IndexSeek` only
+/// while the gate admits one. From 20% up the gate correctly DECLINES and the arm becomes
+/// `Filter { Scan, Compare }` — so the column silently stops measuring seek-against-scan and
+/// starts measuring `Compare{Eq,Bool}`-against-bare-`Prop`. A table whose column changes meaning
+/// halfway down is the defect item 973 found in a stored absolute; printing the route per row is
+/// what stops this one doing the same.
+fn route_of(plan: &lenke_engine::ir::Plan) -> &'static str {
+    let s = format!("{plan:?}");
+    if s.contains("IndexSeek") {
+        "seek  "
+    } else {
+        "filter"
+    }
 }
 
 fn probe(q: &str, store: &Store, reps: u32) -> Result<(f64, f64), String> {
@@ -75,6 +99,14 @@ fn probe(q: &str, store: &Store, reps: u32) -> Result<(f64, f64), String> {
     Ok((best, got))
 }
 
+fn probe_routed(q: &str, store: &Store, reps: u32) -> Result<(f64, f64, &'static str), String> {
+    let raw = lenke_engine::gql::parse(q)?;
+    let plan = lenke_engine::opt::optimize_indexed(raw, store);
+    let route = route_of(&plan);
+    let (us, rows) = probe(q, store, reps)?;
+    Ok((us, rows, route))
+}
+
 fn main() {
     let n: u32 = std::env::var("N")
         .ok()
@@ -84,7 +116,15 @@ fn main() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(9);
-    let store = fixture(n);
+    let mut store = fixture(n);
+
+    if std::env::var("INDEXED").is_ok() {
+        for pct in FRACTIONS {
+            store.create_index(&key_of(pct));
+        }
+        println!("# INDEXED: a hash index on every swept key\n");
+    }
+    let store = store;
 
     if std::env::var("PLAN").is_ok() {
         for pct in FRACTIONS {
@@ -107,18 +147,18 @@ fn main() {
 
     for pct in FRACTIONS {
         let k = key_of(pct);
-        let seek = probe(
+        let seek = probe_routed(
             &format!("MATCH (p:P) WHERE p.{k} = true RETURN count(*) AS c"),
             &store,
             reps,
         );
-        let filt = probe(
+        let filt = probe_routed(
             &format!("MATCH (p:P) WHERE p.{k} RETURN count(*) AS c"),
             &store,
             reps,
         );
         match (seek, filt) {
-            (Ok((su, sr)), Ok((fu, fr))) => {
+            (Ok((su, sr, sroute)), Ok((fu, fr, _))) => {
                 // A ratio between two arms answering different questions is meaningless; the pair
                 // is only row-matched if both counts agree, so this is checked rather than assumed.
                 let agree = (sr - fr).abs() < 0.5;
@@ -133,7 +173,7 @@ fn main() {
                     "tie"
                 };
                 println!(
-                    "  {pct:5}   {su:12.1}   {fu:12.1}   {ratio:11.2}x   {sr:>6.0}   {winner}"
+                    "  {pct:5}   {su:12.1}   {fu:12.1}   {ratio:11.2}x   {sr:>6.0}   [{sroute}] {winner}"
                 );
             }
             (Err(e), _) | (_, Err(e)) => println!("  {pct:5}   ERROR {e}"),
