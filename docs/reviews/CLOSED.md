@@ -29241,11 +29241,23 @@ multiTypeEdgeCount === 0`) — one named type cannot double-count. Native's `Adj
   were added), and the row-returning form provably DOES seed and provably returns the right rows.
   The guard is not in doubt — the panic mutant fails loudly without it — but that branch is
   untested and says so.
-- **➡️ KNOWN CONSEQUENCE, NOT A REGRESSION: the prefix spelling is now 95x behind (item 1026).**
-  `STARTS WITH` lowers to a scalar `Call` and cannot seed: 0.287 ms against the range's 0.003. **No
-  query got slower**, but the gap between two spellings of one question went 1.64x → 95x, and by
-  this repo's doctrine that gap IS the defect. Fix: lower a prefix to `>= p AND < succ(p)` with the
-  `starts_with` filter kept as the residual, so correctness never depends on `succ`.
+- **✅ CLOSED by item 1027 — `STARTS WITH` seeds the interval it denotes, 72x.** 1026 left the
+  prefix spelling 95x behind its own equivalent (0.287 ms against 0.003). `prefix_seek_target`
+  reads the key and literal out of the scalar `Call`, `prefix_upper` computes the first string NOT
+  prefixed by `p`, and the scan site seeds 1026's interval node from ONE predicate: **0.287 →
+  0.004 ms, and the group's spread 95x → 1.23x.** `spelling_probe` NO PERF CLIFFS on three
+  consecutive runs.
+- **THE `starts_with` FILTER IS KEPT ABOVE THE SEEK, AND IS NOT NEEDED FOR CORRECTNESS (item
+  1027).** `[p, succ(p))` is exactly the prefix set, so the residual is INSURANCE against
+  `prefix_upper` being wrong — in a family that has shipped two wrong-answer bugs from clever bound
+  arithmetic. A mutant making the upper bound INCLUSIVE is therefore equivalent: it admits rows
+  equal to `succ(p)` and the residual removes them. That is the insurance demonstrated, not a
+  coverage hole.
+- **INCREMENT THE LAST CHARACTER, NOT THE LAST BYTE (item 1027).** A byte increment can land
+  mid-sequence and produce invalid UTF-8. An ASCII-only fixture cannot tell the two apart, so the
+  mutant has teeth only because `é`/`éa`/`éb` and `日`/`日本`/`日本語` are in the fixture with exact
+  counts (3 and 2 — `日本` must not match `日`). An empty prefix and one ending at `char::MAX` have
+  NO upper bound and decline; both declines are mutation-checked.
 - **⚠️ OPEN, DIAGNOSED — a tight INTERVAL never seeds because each BOUND is priced on its own
   (items 1024 + 1025).** `seek_beats_scan` asks `seed_fraction` per conjunct, so `>= lo` and
   `< hi` are each ~50% on a wide-ranging key and both decline — correctly in isolation — while

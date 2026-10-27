@@ -4669,6 +4669,108 @@ fn group_by_a_temporal_key_over_a_frontier() {
     );
 }
 
+/// `STARTS WITH` lowered to the interval it denotes (item 1027).
+///
+/// Item 1026 gave a bounded interval a seek and left this spelling 95x behind its own equivalent
+/// (`>= p AND < succ(p)`) — two spellings of one question, which is the defect this planner guards
+/// hardest. The prefix now seeds the same `[p, succ(p))` walk.
+///
+/// THE `starts_with` FILTER IS KEPT above the seek, so `prefix_upper` only has to bound a SUPERSET
+/// and the answers below do not depend on its arithmetic. These cases exist because the bound is
+/// still the thing most likely to be wrong: a byte increment instead of a character one, an empty
+/// prefix, a prefix ending at `char::MAX`, and a multi-byte boundary.
+#[test]
+fn starts_with_seeds_the_interval_it_denotes() {
+    let mut b = Builder::default();
+
+    for i in 0..2_000u32 {
+        b.node(&["P"], &[("s", s(&format!("k{:04}", i % 1_000)))]);
+    }
+    // Multi-byte and boundary values, so the bound arithmetic is exercised on real UTF-8 rather
+    // than ASCII alone. `char::MAX` is the case with NO upper bound: nothing sorts above it, so a
+    // prefix ending there must decline to a filter rather than seed something wrong.
+    for extra in [
+        "é",
+        "éa",
+        "éb",
+        "日",
+        "日本",
+        "日本語",
+        "z\u{10FFFF}",
+        "z\u{10FFFF}a",
+    ] {
+        b.node(&["P"], &[("s", s(extra))]);
+    }
+
+    let mut store = b.build();
+    store.create_range_index("s");
+
+    let rows = |q: &str| -> usize {
+        run(&crate::gql::parse(q).unwrap(), &store)
+            .rows
+            .iter()
+            .count()
+    };
+    let seeks = |q: &str| -> bool {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &store);
+
+        format!("{plan:?}").contains("upper: Some")
+    };
+    let maxq = format!(
+        "MATCH (p:P) WHERE p.s STARTS WITH 'z{}' RETURN p.s AS v",
+        '\u{10FFFF}'
+    );
+
+    // The ORACLE is the general path, forced by folding `true AND` into the clause (item 570).
+    for q in [
+        "MATCH (p:P) WHERE p.s STARTS WITH 'k0005' RETURN p.s AS v".to_string(),
+        // A MULTI-BYTE prefix: incrementing the last BYTE would produce invalid UTF-8, and
+        // incrementing the last CHARACTER is what makes `é` -> `ê` the right bound.
+        "MATCH (p:P) WHERE p.s STARTS WITH 'é' RETURN p.s AS v".to_string(),
+        "MATCH (p:P) WHERE p.s STARTS WITH '日本' RETURN p.s AS v".to_string(),
+        maxq.clone(),
+        // The EMPTY prefix matches every row, so there is nothing to seek and nothing to narrow.
+        "MATCH (p:P) WHERE p.s STARTS WITH '' RETURN p.s AS v".to_string(),
+        // A prefix matching NOTHING still has to agree with the filter.
+        "MATCH (p:P) WHERE p.s STARTS WITH 'zzzz' RETURN p.s AS v".to_string(),
+    ] {
+        let general = q.replacen("WHERE ", "WHERE true AND ", 1);
+
+        assert_eq!(rows(&q), rows(&general), "fast and general disagree: {q}");
+    }
+
+    assert!(
+        seeks("MATCH (p:P) WHERE p.s STARTS WITH 'k0005' RETURN p.s AS v"),
+        "a selective prefix should seed the interval"
+    );
+    assert!(
+        !seeks("MATCH (p:P) WHERE p.s STARTS WITH '' RETURN p.s AS v"),
+        "an empty prefix has no upper bound"
+    );
+    assert!(
+        !seeks(&maxq),
+        "a prefix ending at char::MAX has no upper bound"
+    );
+    // ...and the multi-byte one DOES seed, which is what says the character increment works —
+    // without it `é` would have no valid bound and this would quietly fall back to a filter.
+    assert!(
+        seeks("MATCH (p:P) WHERE p.s STARTS WITH 'é' RETURN p.s AS v"),
+        "a multi-byte prefix should seed too"
+    );
+    // Exact counts, so a bound that merely AGREES with a filter over a too-wide candidate set is
+    // still visible as the right answer for the right reason.
+    assert_eq!(
+        rows("MATCH (p:P) WHERE p.s STARTS WITH 'é' RETURN p.s AS v"),
+        3,
+        "é, éa, éb"
+    );
+    assert_eq!(
+        rows("MATCH (p:P) WHERE p.s STARTS WITH '日本' RETURN p.s AS v"),
+        2,
+        "日本 and 日本語 — but not 日"
+    );
+}
+
 /// The INTERVAL seek — two bounds on one key seeded as one `RangeSeek` (item 1026).
 ///
 /// THE ORACLE IS THE GENERAL PATH, forced with `WHERE true` (item 570), so every case asserts the

@@ -1742,6 +1742,27 @@ fn interval_candidate(conjuncts: &[&Expr], idx: &dyn IndexOracle) -> Option<Inte
     None
 }
 
+/// A prefix's seekable interval: the key, then the LOWER and UPPER bounds.
+type PrefixInterval = (String, (CompareOp, Value), (CompareOp, Value));
+
+/// A prefix predicate's interval, when a range index can serve it selectively (item 1027).
+///
+/// Shares `INTERVAL_SEEK_MAX_FRACTION` with the two-conjunct rung because it IS that rung's shape:
+/// the same `[lo, hi)` walk, reached from one predicate instead of two. A prefix wide enough to
+/// fail the gate stays a filter, which is the 5-15% band item 1026 measured and left alone.
+fn prefix_interval(pred: &Expr, idx: &dyn IndexOracle) -> Option<PrefixInterval> {
+    let (key, p) = prefix_seek_target(pred)?;
+    if !idx.has_range_index(&key) {
+        return None;
+    }
+    let hi = prefix_upper(p.as_ref())?;
+    let lo = (CompareOp::Ge, Value::Str(p.clone()));
+    let hi = (CompareOp::Lt, Value::Str(hi.into()));
+    let frac = idx.interval_fraction(&key, (lo.0, &lo.1), (hi.0, &hi.1))?;
+
+    (frac <= INTERVAL_SEEK_MAX_FRACTION.min(seek_cap(idx, &key))).then_some((key, lo, hi))
+}
+
 fn seed_from_conjuncts(pred: &Expr, idx: &dyn IndexOracle) -> Option<(Seed, Option<Expr>)> {
     fn flatten<'a>(e: &'a Expr, out: &mut Vec<&'a Expr>) {
         match e {
@@ -2239,6 +2260,49 @@ fn flip_range(op: CompareOp) -> CompareOp {
 /// and a literal — in either spelling — return `(key, op, value)` oriented with
 /// the property on the left (`prop <op> value`). Flipping the op for the
 /// `lit <op> prop` spelling is load-bearing: else `5 < n` never seeks.
+/// A PREFIX predicate's key and literal — `starts_with(n.k, 'p')` (item 1027).
+///
+/// `STARTS WITH` lowers to a scalar `Call`, so neither `seek_target` nor `range_seek_target` can
+/// see it and the predicate could not reach a range index. Item 1026 made that visible rather than
+/// theoretical: once a bounded interval seeded, the explicit `>= p AND < succ(p)` spelling went
+/// 153x faster and left its own prefix twin **95x behind** — two spellings of one question, which
+/// is the defect class this planner is most careful about.
+fn prefix_seek_target(pred: &Expr) -> Option<(String, crate::gstr::GStr)> {
+    let Expr::Call { name, args } = pred else {
+        return None;
+    };
+    if name != "starts_with" || args.len() != 2 {
+        return None;
+    }
+    let [subject, Expr::Lit(Value::Str(p))] = args.as_slice() else {
+        return None;
+    };
+
+    Some((prop_path(subject)?, p.clone()))
+}
+
+/// The first string that is NOT prefixed by `p`, so `[p, prefix_upper(p))` covers exactly the
+/// strings starting with `p` — or `None` when no such bound exists.
+///
+/// Increments the last CHARACTER, not the last byte: a byte increment can land mid-sequence and
+/// produce invalid UTF-8. `None` for an empty prefix (every string starts with it, so there is no
+/// upper bound and nothing to seek) and for one ending at `char::MAX` (nothing above it).
+///
+/// Exactness is NOT relied on. The caller keeps the `starts_with` filter above the seek, so the
+/// bounds only have to be a SUPERSET and a wrong `succ` would cost rows, not correctness. The
+/// surrounding family has shipped two wrong-answer bugs from clever bound arithmetic, so the
+/// residual stays.
+fn prefix_upper(p: &str) -> Option<String> {
+    let last = p.chars().next_back()?;
+    let bumped = char::from_u32(u32::from(last) + 1)?;
+    let mut out = String::with_capacity(p.len() + 1);
+
+    out.push_str(&p[..p.len() - last.len_utf8()]);
+    out.push(bumped);
+
+    Some(out)
+}
+
 fn range_seek_target(pred: &Expr) -> Option<(String, CompareOp, Value)> {
     let Expr::Compare { op, left, right } = pred else {
         return None;
@@ -2733,6 +2797,24 @@ fn apply_local(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
                     // concatenated. Neither spelling seeded at all before — `seek_target` matches
                     // only a single `Compare { op: Eq }` — so both scanned the whole label.
                     (seeks, true)
+                } else if let Some((key, lo, hi)) = prefix_interval(&pred, idx) {
+                    // A PREFIX as the interval it denotes (item 1027). The `starts_with` filter is
+                    // KEPT above the seek: `prefix_upper` only has to bound a superset, so the
+                    // answer does not depend on its arithmetic, and the candidate set it filters
+                    // is tiny by construction (the gate admitted it as selective).
+                    (
+                        Plan::Filter {
+                            input: Box::new(Plan::RangeSeek {
+                                label: l,
+                                key,
+                                op: lo.0,
+                                value: lo.1,
+                                upper: Some(hi),
+                            }),
+                            pred,
+                        },
+                        true,
+                    )
                 } else if let Some((key, op, value)) = range_seek_target(&pred)
                     .filter(|(k, _, _)| idx.has_range_index(k))
                     .filter(|(k, op, v)| seek_beats_scan(idx, k, *op, v))
