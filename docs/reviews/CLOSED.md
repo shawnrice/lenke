@@ -29213,6 +29213,27 @@ multiTypeEdgeCount === 0`) — one named type cannot double-count. Native's `Adj
   differential and answer assertion in the repo. It is caught only by asserting on the selector
   itself (`fused_hop_shape(..).is_some()`) in both directions. Second instance of the hazard after
   1008's degree-reader pin.
+- **✅ FIXED (instrument) — `spelling_probe` was blind to its own headline case (item 1023).** Its
+  fixture indexed only `age` (added because unindexed groups "silently measured something else"),
+  while the EQUALITY and INLINE groups key on `name` and `dept` — neither indexed — so
+  `n.name = 'x'` vs `'x' = n.name` and `{dept:'eng'}` vs `WHERE n.dept='eng'` compared two SCANS.
+  Those are the first two shapes CLAUDE.md lists among the historical 100-300x seeding bugs, so the
+  probe built to catch that class could not see it on a seeked key. `create_index("name")` and
+  `create_index("dept")` added.
+- **THE SEEK IS DEMONSTRATED, NOT ASSUMED (item 1023).** The equality group drops to **0.001 ms**
+  both spellings — the resolution floor, i.e. a predicate that stopped scanning 100,000 nodes. No
+  cliff: both operand orders seek and converge.
+- **ONE GROUP'S 0.162 ms IS THE SELECTIVITY GATE WORKING, NOT A MISSED SEEK (item 1023).** `dept`
+  has 5 distinct values over 100,000 nodes, so a seek would read a fifth of them and `seek_cap`
+  (items 989/997) declines — identical optimized plans for both spellings, which is what the group
+  asserts. Whole probe NO PERF CLIFFS, `IN`-vs-OR included now that `dept` is indexed.
+- **AN INSTRUMENT CAN BE BLIND EXACTLY WHERE IT WAS BUILT TO WATCH (item 1023).** The probe's header
+  says "a plan mismatch is the real signal; the time is the backstop" — but a backstop measuring
+  the wrong path is not one, and the groups covering this file's headline bug class were the ones
+  measuring it.
+- **➡️ STILL OPEN: `seek_target`'s FORM coverage (item 1023).** It admits only `Compare{Eq}` against
+  a literal. `IN` past `normalize_pred`'s 32-term gate has a group and converges; **`STARTS WITH`,
+  `BETWEEN` and `IS NULL` as seed forms are unexamined.**
 - **✅ SHIPPED (Rust) — `GROUP BY <temporal>` over a FRONTIER, up to 18.9x (item 1022).** The
   FRONTIER grouping is a different function from the scan arms item 848 added; its `Col::Gen`
   dispatch had a `Date` arm (`days` into a `u64`) and nothing else. Three alternated rounds,

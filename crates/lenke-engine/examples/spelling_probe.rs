@@ -73,6 +73,15 @@ fn fixture(n: u32, deg: u32) -> Store {
     // which needs one to exist. Without it those groups silently measured something
     // else (pool size before the hop), and read as cliffs that indexing would fix.
     store.create_range_index("age");
+    // HASH indexes too (item 1023). The line above was added because the far-side groups "silently
+    // measured something else" without an index — and the EQUALITY and INLINE groups had exactly
+    // that defect left in them: they key on `name` and `dept`, neither of which was indexed, so
+    // `n.name = 'x'` vs `'x' = n.name` and `{dept: 'eng'}` vs `WHERE n.dept = 'eng'` compared two
+    // SCANS and could not see a seek-side cliff. That is the shape CLAUDE.md lists first among the
+    // historical 100-300x bugs (`$x = u.k` vs `u.k = $x`, a clause `WHERE` vs an inline `{k: $x}`),
+    // so leaving it unindexed left the probe blind to its own headline case.
+    store.create_index("name");
+    store.create_index("dept");
     store
 }
 
