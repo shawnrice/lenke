@@ -42,7 +42,7 @@ fn main() {
     // cannot say which costs what. This arm is GQL carrying the SAME filter, so:
     //   arm3 ~ arm2  -> the gap is the semantically required filter, and there is no defect
     //   arm3 ~ arm1  -> the gap is `DistinctBy` against `Distinct`, which IS a lowering choice
-    let pairs: [(&str, &str, &str); 6] = [
+    let pairs: [(&str, &str, &str); 7] = [
         (
             "GQL DISTINCT",
             "gql",
@@ -81,6 +81,15 @@ fn main() {
             "GQL filt proj",
             "gql",
             "MATCH (n:Person) WHERE PROPERTY_EXISTS(n, dept) RETURN count(n.dept) AS c",
+        ),
+        // Item 964: does an ORDINARY predicate reach the same shape? The arms above all use
+        // PROPERTY_EXISTS, which was chosen to match Gremlin's `values()` semantics — not
+        // because it is what a user writes. If a plain comparison gets seeded or fused instead,
+        // the whole `Distinct`-under-a-filter target is narrower than it looks.
+        (
+            "GQL ord pred",
+            "gql",
+            "MATCH (n:Person) WHERE n.dept > 'a' RETURN DISTINCT n.dept AS d",
         ),
     ];
 

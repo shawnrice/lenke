@@ -28266,3 +28266,28 @@ DISTINCT` to `DistinctBy` does not merely sidestep a missing fast path — it la
 - **METHOD — an impossible number caught it again (item 963).** A "part" priced at 1239 us
   exceeded the 566 us whole containing it. Item 942 found a units bug the same way (4972% cannot
   be a percentage). The check is free and has now paid twice.
+- **VERIFIED REACHABLE — `Distinct` under a `Filter` is the COMMON shape, not an artifact (item
+  964).** Items 961-963 used `PROPERTY_EXISTS` to match Gremlin's `values()` semantics.
+  `MATCH (n:Person) WHERE n.dept > 'a' RETURN DISTINCT n.dept` — an ordinary query — produces
+  **exactly `Distinct { Project { Filter { Scan } } }` at 593.0 us**, matching the
+  `PROPERTY_EXISTS` arm (566-575) against the unfiltered twin's 164.
+- **⚠️ OPEN, specified and priced, NOT built — widen `try_distinct_scan_prop` to accept
+  `Filter { Scan }` (item 964).** Its `Dict` arm dedups on dictionary codes through a dense
+  `vec![false; dict.len()]` bitset with no hashing; a `Filter` disqualifies it and the row falls
+  to `distinct_batch`'s hash-per-row. **The mechanism already exists in the file**:
+  `distinct_chain_endpoints`' `Plan::Filter` arm builds a `Batch` of candidate ids and calls
+  `eval_mask` rather than duplicating filter logic.
+- **WHY NOT BUILT — a named risk, not a size judgement (item 964).** Five column arms each call
+  `scan_visit(store, label, |i| …)`, so a mask threads through all of them, and the `Dict` arm
+  records **E79: moving its body into a closure cost 148.1us against 85.8us**, 1.7x. The obvious
+  tidy implementation is exactly that shape. **Item 957 already paid this toll this session** —
+  a correct, working evaluator fusion rejected because growing a neighbouring arm regressed the
+  untouched twin 1.07x disjoint. The risk is specific: regressing the 164 us unfiltered fast path
+  to buy the 593 us filtered one, and it can only be ruled out by building both arms and
+  alternating, not by reading.
+- **RECIPE for the next pass (item 964).** (1) Accept `Plan::Filter { input: Scan, pred }`,
+  masking via `eval_mask`. (2) Keep the `Dict` whole-graph loop WRITTEN OUT with the mask as a
+  plain index — never a closure (E79). (3) **The control is the unfiltered arm** (164 us),
+  alternated — it is what item 957's twin failed. (4) First-seen order is the correctness
+  surface: the `Dict` arm pushes on first observation because dict order can differ from scan
+  order under deletes or a label subset, so a mask must not change which occurrence is first.
