@@ -72,6 +72,11 @@ const CASES: ReadonlyArray<readonly [string, string, string]> = [
     'MATCH (n:P) RETURN n.k AS c ORDER BY n.k LIMIT 10',
     'what the fold would produce',
   ],
+  // Item 969: `stmt lowcard` did NOT speed up when the fold shipped, while asc and desc did.
+  // Its key `n.lo` is NOT projected, where theirs is. This arm is that query already folded by
+  // hand: if it is also slow, the fold FIRED and the folded shape is simply dearer when the key
+  // is not an output column; if it is fast, the fold DECLINED and the refusal list is too wide.
+  ['folded lowcard', 'MATCH (n:P) RETURN n.k AS c ORDER BY n.lo LIMIT 10', 'key not projected'],
 ];
 
 const medianOf = (xs: readonly number[]): number => {

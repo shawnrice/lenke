@@ -8433,6 +8433,102 @@ const dropVacuousQuantifier = (clauses: readonly Clause[]): readonly Clause[] =>
   });
 };
 
+/**
+ * Fold a trailing page STATEMENT into the `RETURN` that follows it (item 969).
+ *
+ * `MATCH … ORDER BY k LIMIT n RETURN items` and `MATCH … RETURN items ORDER BY k LIMIT n` are the
+ * same question when the projection is row-wise: sorting the working table and then projecting
+ * yields the same ordered rows as projecting and then sorting by the same keys, because a
+ * row-wise projection preserves row identity. Only the second spelling is two clauses, and the
+ * shortcut family opens with `clauses.length !== 2` — so the first paid for the extra clause AND
+ * sorted `Binding` maps instead of projected columns.
+ *
+ * Measured at 200,000 nodes, one process, median of 5 alternated rounds (items 967, 968):
+ *
+ * ```text
+ *   MATCH (n:P) ORDER BY n.k LIMIT 10 RETURN n.k AS c    38.01 ms   3.87x
+ *   MATCH (n:P) RETURN n.k AS c ORDER BY n.k LIMIT 10    10.22      1.04x   <- what this produces
+ *   MATCH (n:P) RETURN n.k AS c ORDER BY c LIMIT 10       9.83      1.00x
+ * ```
+ *
+ * **3.72x**, and it collects both halves of item 967's decomposition at once: the third clause
+ * (1.43x) and the sort position (3.09x). A projection's `ORDER BY` CAN key on an input variable —
+ * verified rather than assumed, on every base shape (item 968) — which is what makes the fold
+ * expressible at all.
+ *
+ * WHAT IT REFUSES, and each of these changes an ANSWER rather than a cost:
+ *
+ *   - **An aggregating / grouping / DISTINCT projection.** `ORDER BY k LIMIT 10 RETURN count(*)`
+ *     takes ten rows and counts them; folded, it would count everything and page the one row.
+ *     `DISTINCT`, `GROUP BY` and `HAVING` all change the row set the `LIMIT` applies to.
+ *   - **A projection that already pages.** Two `LIMIT`s compose; merging them does not.
+ *   - **A sort key naming something the projection ALIASES.** After folding, `ORDER BY k` would
+ *     resolve to the output column `k` rather than to whatever `k` meant before the `RETURN`.
+ *     This is the quiet one: it is the only refusal whose absence would produce a wrong ORDER
+ *     rather than a wrong row count.
+ *   - **`RETURN *`**, where the projected names are not written down here to compare against.
+ *   - **A page clause that is not immediately before the final `RETURN`**, since anything between
+ *     them observes the paged table.
+ */
+const foldPageIntoReturn = (clauses: readonly Clause[]): readonly Clause[] => {
+  if (clauses.length < 2) {
+    return clauses;
+  }
+
+  const page = clauses[clauses.length - 2];
+  const ret = clauses[clauses.length - 1];
+
+  if (page?.kind !== 'page' || ret?.kind !== 'return') {
+    return clauses;
+  }
+
+  const sorts = page.orderBy ?? [];
+  const proj = ret.projection;
+
+  if (
+    sorts.length === 0 ||
+    proj.star ||
+    proj.distinct ||
+    proj.groupBy !== undefined ||
+    proj.having !== undefined ||
+    proj.orderBy !== undefined ||
+    proj.skip !== undefined ||
+    proj.limit !== undefined ||
+    proj.items.length === 0 ||
+    proj.items.some((it) => hasAggregate(it.expr))
+  ) {
+    return clauses;
+  }
+
+  // The shadowing refusal. A key reading a name this projection introduces would re-resolve to
+  // the OUTPUT column once the sort sits on the `RETURN`.
+  // An item with no alias still names a column: for a BARE VARIABLE that name is the variable
+  // itself, so `RETURN n ORDER BY n` would re-resolve after the fold exactly as an alias would.
+  // Anything else un-aliased gets a compound implicit name that cannot collide with a bare
+  // identifier key, so it needs no entry here.
+  const aliases = new Set(
+    proj.items
+      .map((it) => it.alias ?? (it.expr.kind === 'var' ? it.expr.name : undefined))
+      .filter((a) => a !== undefined),
+  );
+
+  for (const sort of sorts) {
+    for (const name of freePredicateVars(sort.expr)) {
+      if (aliases.has(name)) {
+        return clauses;
+      }
+    }
+  }
+
+  return [
+    ...clauses.slice(0, clauses.length - 2),
+    {
+      ...ret,
+      projection: { ...proj, orderBy: sorts, skip: page.skip, limit: page.limit },
+    },
+  ];
+};
+
 const dropVacuousPage = (clauses: readonly Clause[]): readonly Clause[] => {
   const out: Clause[] = [];
 
@@ -8676,7 +8772,12 @@ export const compileLinear = (linear: LinearQuery): CLinear => {
           inlineAggregateCall(
             inlineTrailingFilter(
               unoptionalizeForAggregate(
-                dropUnreadGroupBinds(dropVacuousPage(dropVacuousQuantifier(linear.clauses))),
+                // `foldPageIntoReturn` runs INSIDE `dropVacuousPage` so the vacuous case is
+                // removed first and only a page that actually does something is folded — the
+                // two would otherwise race to claim the same clause (item 969).
+                foldPageIntoReturn(
+                  dropUnreadGroupBinds(dropVacuousPage(dropVacuousQuantifier(linear.clauses))),
+                ),
               ),
             ),
           ),

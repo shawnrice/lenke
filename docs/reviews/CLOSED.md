@@ -28388,3 +28388,28 @@ n.age RETURN count(*)` 126.60 ms → 0.00). This fold is its sibling — the vac
   It is also answer-equivalent where legal, so every mutant survives the differential tests
   (item 585): it needs a route assertion on the clause count plus `sorted-page-probe` as the
   before/after.
+- **SHIPPED — `foldPageIntoReturn`: 3.79x, closing the larger half of item 868 (item 969).** A
+  trailing page STATEMENT is folded onto the `RETURN`, in `compileLinear` beside `dropVacuousPage`
+  (549) and `inlineTrailingFilter` (548), whose shape it copies. `stmt asc` **38.01 → 10.02 ms**,
+  `stmt desc` 37.93 → 10.32. **All four controls flat**: `clause asc` 9.83→10.44, `clause +3rd`
+  12.36→12.50, `folded form` 10.22→10.23, `CONTROL count` 4.63→4.43.
+- **The non-projected-key arm did NOT move, and the fold FIRED anyway (item 969).** `stmt lowcard`
+  (key `n.lo`, not emitted) stayed ~36. Hand-folding it measured **36.89 against 34.33**, so the
+  rewrite fires and the folded shape is simply as dear when the key is not an output column.
+  **3.7x where the key is projected, neutral where it is not** — characterized, not caveated.
+- **⚠️ A MUTANT PROVED ONE OF MY OWN REFUSALS INERT, and the TEST was wrong (item 969).** M1 (drop
+  the aggregate refusal) CAUGHT, 3 failures; **M2 (drop the alias-shadowing guard) SURVIVED all
+  2,786 tests**. Not a suite hole: the test used `ORDER BY n.other` with alias `other`, a
+  **property** expression whose only free variable is `n`, so the guard never fired for it. The
+  real shape needs a bare-variable key, and it settles the question —
+  `MATCH (n:P) LET x = n.other ORDER BY x LIMIT 3 RETURN n.k AS x` and the clause spelling BOTH
+  return `[5,4,3]`, so **a clause `ORDER BY x` resolves in the INPUT scope, not to the output
+  column**. The engine is not vulnerable; the guard protects nothing today and is kept as item
+  869's `toArray` and item 865's `nulls_first` are, with the test now asserting the resolution
+  rule itself. **A test that cannot fail for its stated reason is the believed-generative-test
+  trap, and only mutation exposed it.**
+- **The refusal list, 11 cases asserting ANSWERS (item 969).** Aggregation (`LIMIT 3 RETURN
+count(*)` is 3, not 6), `GROUP BY` (the two smallest `k` fall in DIFFERENT groups — my first
+  expectation was wrong and the test caught it), `DISTINCT`, a projection that already pages (two
+  pages compose: 4 then the last 2), `RETURN *`, and a clause between the page and the `RETURN`,
+  which observes the paged table.
