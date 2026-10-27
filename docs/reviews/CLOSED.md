@@ -27725,7 +27725,7 @@ product's one-sided predicate` 2.22x (285), `one end labelled, the other free` 2
   was believed. Item 937's invalid split is precisely what happens without one: it compared two
   different walks in two different units and had no way to notice. Cheap to add, and it is the only
   check that tests the decomposition itself rather than its inputs.
-- **⚠️ UNEXPLAINED, recorded not resolved — item 943's 17-21 us compile against item 912's 7.703 us
+- **⚠️ NARROWED AT ITEM 944 (two of three candidates eliminated: not size, not bookkeeping) — item 943's 17-21 us compile against item 912's 7.703 us
   (item 943).** 912 measured a BIGGER query than this point lookup, so a simpler query costing 2-3x
   more in the same phase is backwards. Two candidates, neither measured: 943's term is
   `execute(distinct) − execute(repeated)` so it includes plan-cache INSERTION and whatever eviction
@@ -27734,3 +27734,36 @@ product's one-sided predicate` 2.22x (285), `one end labelled, the other free` 2
   and run, which is the right figure for the cold-start question and the wrong one for pricing a
   change inside the compiler. The four retractions at items 936-939 each began with a number that
   looked close enough to explain away.
+- **MEASURED — `compile`'s cost is INDEPENDENT of query size, so every "share of compile" in the
+  planning family is a share of mostly-FIXED work (item 944).** Same harness, one arm per process,
+  order alternated: a 62-char point lookup compiles in **11.63 / 11.72 / 11.36 us** and a 168-char
+  query with a hop, four predicates, a `LET`, a group, an `ORDER` and a `LIMIT` in **10.96 / 11.00 /
+  10.21** — 2.7x longer and structurally far richer, and slightly FASTER. **Corollary, and it is
+  the actionable part: an optimization that makes shape-DEPENDENT work cheaper cannot reach the
+  part that does not vary with shape.** Items 908 (checkLinearScope 15-19%), 910 (rewrite pipeline
+  16%) and 912 (detectors 3.6-14%) all price shares of a whole that is mostly fixed; whatever
+  compile does unconditionally is both the bulk and the only thing worth attacking.
+- **CONFIRMED — item 943's compile term was real, and the plan-cache bookkeeping is ZERO
+  (item 944).** 943 obtained compile by subtraction and could not tell compile from cache
+  maintenance. `compile` measured DIRECTLY over distinct statements, one arm per process, 3
+  alternated rounds: **18.96 / 15.69 / 16.21 us**, against 943's subtraction-derived 17-21. The
+  residual `EC − EW − C` straddles zero (**−3.39 / +3.07 / +0.65**), so inserting into and evicting
+  from the plan cache costs nothing measurable. One of 943's two caveats is discharged.
+- **⚠️ OPEN, NEW AND SYSTEMATIC — `query()` carries ~15-18% that parse + execute do not account for
+  (item 944).** The sum check failed in one direction every round: **P + EC against Q = 0.82x,
+  0.82x, 0.86x**, i.e. ~5 us unexplained on a ~32 us cold query. Not noise (three rounds, same
+  sign) and not the plan cache (measured at zero above). Candidates are the parse-cache lookup and
+  insert that `query()` performs and the direct `parse`/`execute` calls do not, plus `query()`'s
+  own wrapping. **NOT measured.** By item 943's rule a decomposition whose parts miss the whole is
+  not reported as one, so the split is withheld and the residual is named instead.
+- **NARROWED — item 912's 7.703 us against item 944's 16-19 for a SMALLER query (item 944).** Three
+  candidates, two now eliminated: not query SIZE (compile barely notices it) and not plan-cache
+  bookkeeping (zero). What remains is that **912 and 944 draw the compile boundary differently** —
+  a documentation question rather than a measurement one. Still unresolved; do not reconcile the
+  two figures by assuming one is wrong.
+- **METHOD — quote a compile figure WITH its harness, because two probes here differ 1.6x on the
+  same call (item 944).** `compile` reads 16-19 us in a probe that builds a 50,000-vertex graph and
+  runs queries first, and 10-12 us in one that does neither. Every comparison in 944 is drawn
+  WITHIN one probe with arms alternated, which is the only form that survives the difference. A
+  bare "compile is 16 us" would be quoting a property of the harness, which is plausibly how the
+  912 discrepancy arose in the first place.
