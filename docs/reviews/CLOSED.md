@@ -29127,3 +29127,19 @@ multiTypeEdgeCount === 0`) — one named type cannot double-count. Native's `Adj
   secondary is in no partition, so reading its length returns 0 instead of 3; a mutant dropping
   the gate passes the "primary" assertion and fails that one. M1/M3/M4 all CAUGHT. M1's verdict
   was lost to a `tail` in the first run and re-run alone rather than assumed.
+- **✅ FIXED — a tx-created RANGE index no longer survives rollback (item 1005).** Item 922 found
+  it incidentally and left it as a semantics decision rather than a rider on a perf commit; the
+  decision was given ("feels like a bug, fix it"). `SchemaSnapshot` gains `range_keys` and
+  `restore_schema` now does the three cases its hash sibling always had — keep what predates the
+  tx, drop what it created, rebuild what it dropped. `refresh_index_key_sets` already derives
+  `range_keys` from `ranges`, so the cached sets follow for free.
+- **THE PIN WAS WRITTEN FOR THIS, and that is the lesson (item 1005).** 922 did not assert the
+  aspirational behaviour — it pinned what actually held and named the line to flip. Flipping it
+  was a one-line change with the comment rewritten. Had 922 asserted the fix it wanted, the suite
+  would have been RED for 83 items.
+- **TEETH — the DROPPED case is the substantive one (item 1005).** `create_range_index` rebuilds
+  the `BTreeMap` from RESTORED column data, not by replaying undos, so the test asserts the
+  rebuilt index ANSWERS (`range_lookup` on `score > 5` finding two of eight), not merely that it
+  exists. M1/M2/M3 all CAUGHT; **M3 (snapshot records nothing) would drop every PRE-EXISTING
+  range index on rollback** — a worse failure than the original bug, which is why the "keep" case
+  is asserted beside the two that change.

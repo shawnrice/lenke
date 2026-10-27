@@ -845,6 +845,14 @@ struct SchemaSnapshot {
     invariants: Vec<InvariantRule>,
     /// Hash-index identities (the dotted paths) — bucket data is excluded.
     index_paths: Vec<Vec<String>>,
+    /// RANGE-index identities (the keys) — bucket data excluded, exactly as `index_paths`
+    /// excludes it (item 1005).
+    ///
+    /// This field did not exist until 1005, so `restore_schema` reverted a tx-created HASH index
+    /// and left a tx-created RANGE index standing — found incidentally at item 922, left as "a
+    /// semantics change needing its own decision", and decided since: a rollback that leaves an
+    /// index behind is a bug.
+    range_keys: Vec<String>,
     /// The interval index's `(lo, hi)` keys, or `None` if there was none.
     interval_keys: Option<(String, String)>,
     /// Whether the opt-in edge-type index was active.
@@ -5618,6 +5626,7 @@ impl Store {
             validators: self.validators.clone(),
             invariants: self.invariants.clone(),
             index_paths: self.indexes.iter().map(|i| i.path.clone()).collect(),
+            range_keys: self.ranges.iter().map(|i| i.key.clone()).collect(),
             interval_keys: self.interval_index_keys(),
             edge_type_index: self.edge_type_index,
         }));
@@ -5646,6 +5655,19 @@ impl Store {
         for path in &snap.index_paths {
             if !self.indexes.iter().any(|i| &i.path == path) {
                 self.create_index(&path.join("."));
+            }
+        }
+
+        // Range indexes: the same three cases as the hash indexes above — keep what predates the
+        // tx, drop what the tx created, rebuild what it dropped. `create_range_index` builds the
+        // BTreeMap from the RESTORED column data, so a rebuilt index is correct by construction
+        // rather than by replaying undos into it (item 1005).
+        self.ranges
+            .retain(|i| snap.range_keys.iter().any(|k| k == &i.key));
+        self.refresh_index_key_sets();
+        for key in &snap.range_keys {
+            if !self.ranges.iter().any(|i| &i.key == key) {
+                self.create_range_index(key);
             }
         }
 

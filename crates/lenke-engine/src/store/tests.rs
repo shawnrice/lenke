@@ -2550,16 +2550,15 @@ fn derived_index_key_sets_agree_with_the_vectors_at_every_mutation_site() {
     assert!(st.index_on_base("a"), "the surviving index is still seen");
     assert!(!st.index_on_base("b"), "the tx-created hash index is gone");
 
-    // DESCRIPTIVE, NOT ASPIRATIONAL — and it records an asymmetry this test found by accident
-    // (item 922). `SchemaSnapshot` carries `index_paths`, `interval_keys` and `edge_type_index`,
-    // but NOTHING for range indexes, so `restore_schema` reverts a tx-created HASH index and
-    // leaves a tx-created RANGE index in place. That is pre-existing — the snapshot struct has
-    // never had the field — and it is out of scope for a perf change, so it is pinned here as the
-    // behaviour that actually holds rather than quietly asserted away. If rollback is later taught
-    // to revert range indexes, this line is the one to flip.
+    // FLIPPED AT ITEM 1005, which is what this line was left here for. Item 922 found by accident
+    // that `SchemaSnapshot` carried `index_paths`, `interval_keys` and `edge_type_index` but
+    // NOTHING for range indexes, so `restore_schema` reverted a tx-created HASH index and left a
+    // tx-created RANGE index standing. It pinned the asymmetry as the behaviour that actually
+    // held and named this assertion as the one to flip once the semantics were decided. They
+    // were: a rollback that leaves an index behind is a bug.
     assert!(
-        st.is_range_indexed("a"),
-        "a tx-created RANGE index SURVIVES rollback: SchemaSnapshot has no field for it"
+        !st.is_range_indexed("a"),
+        "a tx-created RANGE index is REVERTED by rollback, like its hash sibling (item 1005)"
     );
 
     // Whatever rollback does or does not revert, the derived sets must still agree with it — which
@@ -2721,4 +2720,58 @@ fn single_deletes_above_the_label_threshold_keep_every_bucket_exact() {
 
     // And the live count agrees, so a bucket cannot be right by being empty.
     assert_eq!(st.live_node_count(), (N as usize) - victims.len());
+}
+
+/// Rollback reverts a tx-created RANGE index, rebuilds one the tx dropped, and leaves a
+/// pre-existing one alone — the three cases its hash sibling has always had (item 1005).
+///
+/// Item 922 found the asymmetry by accident and pinned it rather than fixing it, because
+/// reverting range indexes is a semantics change and that was a decision, not a rider on a perf
+/// commit. The decision was taken: a rollback that leaves an index behind is a bug.
+///
+/// The DROPPED case is the one with real content. `create_range_index` rebuilds the `BTreeMap`
+/// from the restored column data, so the rebuilt index is correct by construction rather than by
+/// replaying undos into it — which is why the restored index must be asserted to actually ANSWER,
+/// not merely to exist.
+#[test]
+fn rollback_reverts_a_tx_created_range_index_and_rebuilds_a_dropped_one() {
+    let mut b = Builder::default();
+    for i in 0..8u32 {
+        b.node(&["P"], &[("score", Value::Num(f64::from(i)))]);
+    }
+    let mut st = b.build();
+
+    // `keep` predates the transaction; `made` is created inside it; `gone` is dropped inside it.
+    st.create_range_index("score");
+    st.create_range_index("doomed");
+    assert!(st.is_range_indexed("score") && st.is_range_indexed("doomed"));
+
+    st.begin();
+    st.snapshot_schema_for_tx();
+    st.create_range_index("fresh");
+    st.drop_vertex_index("doomed").expect("drop doomed");
+    assert!(st.is_range_indexed("fresh"), "created inside the tx");
+    assert!(!st.is_range_indexed("doomed"), "dropped inside the tx");
+
+    st.rollback();
+
+    assert!(
+        st.is_range_indexed("score"),
+        "a pre-existing index survives"
+    );
+    assert!(
+        !st.is_range_indexed("fresh"),
+        "a tx-created index is REVERTED"
+    );
+    assert!(
+        st.is_range_indexed("doomed"),
+        "a tx-dropped index is REBUILT"
+    );
+
+    // The rebuilt index must ANSWER, not just exist: a range seek over it has to find the rows
+    // the restored column holds. Eight nodes with score 0..8, so `> 5` keeps 6 and 7.
+    let hits = st
+        .range_lookup("score", crate::ir::CompareOp::Gt, &Value::Num(5.0))
+        .expect("the surviving index answers");
+    assert_eq!(hits.len(), 2, "score > 5 keeps two of eight");
 }
