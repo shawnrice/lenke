@@ -35,7 +35,7 @@
 // SPELL_REPS=9 — single runs are bimodal). Two spellings that mean the same thing and cost
 // differently is the bug class this whole file is most exposed to, and it returns correct
 // answers, so no correctness test catches it.
-import { LocalDate } from '@lenke/core';
+import { LocalDate, LocalDateTime, LocalTime } from '@lenke/core';
 import type { Edge, Graph, Vertex } from '@lenke/core';
 
 import type {
@@ -6288,6 +6288,49 @@ const keepGroups = (
 type GroupSlot = { key: unknown; n: number; rep: Vertex };
 
 /**
+ * A `LocalTime`'s whole identity as ONE finite number, or `undefined` when it is not raw-keyable.
+ *
+ * Item 850 raw-keyed `LocalDate` on `days` and stopped, because the other kinds "have more than
+ * one field and no single raw key". That is true of the FIELDS and not of the VALUE: a
+ * `LocalTime`'s `secs` is bounded by 86,400 and its `nanos` by 1e9, so `secs * 1e9 + nanos` is at
+ * most 8.64e13 — comfortably inside the 2^53 integers a double represents exactly, so the packing
+ * is a bijection and two times share a key iff they share both fields.
+ *
+ * FINITE only, for item 843's reason: `valueKey` renders a non-finite field through a path that
+ * collapses `NaN` and `Infinity` together, and that collapse is PINNED. Falling back here keeps
+ * it bit-for-bit instead of "improving" it inside a speedup.
+ */
+const localTimeKey = (v: LocalTime): number | undefined =>
+  Number.isFinite(v.secs) && Number.isFinite(v.nanos) ? v.secs * 1e9 + v.nanos : undefined;
+
+/**
+ * Whether a `LocalDateTime` is raw-keyable. Unlike `LocalTime` its `secs` is unbounded, so
+ * `secs * 1e9 + nanos` leaves the exact-integer range as soon as `secs` exceeds ~9e6 (104 days).
+ * It gets a TWO-LEVEL container — `secs` outer, `nanos` inner — which still builds no string.
+ */
+const dateTimeKeyable = (v: LocalDateTime): boolean =>
+  Number.isFinite(v.secs) && Number.isFinite(v.nanos);
+
+/** `a -> b` nested membership. True when the pair is NEW. */
+const addNested = (m: Map<number, Set<number>>, a: number, b: number): boolean => {
+  const inner = m.get(a);
+
+  if (inner === undefined) {
+    m.set(a, new Set([b]));
+
+    return true;
+  }
+
+  if (inner.has(b)) {
+    return false;
+  }
+
+  inner.add(b);
+
+  return true;
+};
+
+/**
  * A SET of values under `valueKey`'s equivalence, keyed on the raw value wherever that is exact.
  *
  * The same trade `groupIndex` makes below, for the callers that only need "have I seen this?" —
@@ -6299,6 +6342,11 @@ type GroupSlot = { key: unknown; n: number; rep: Vertex };
 export const valueSet = (): { add: (v: unknown) => boolean } => {
   const prim = new Set<unknown>();
   let dates: Set<number> | undefined;
+  // Item 1014: the kinds item 850's note set aside. One container per KIND, never shared — the
+  // tagged `valueKey` strings (`t1`, `t2`, …) keep the kinds apart, so raw keying has to as well,
+  // or a `LocalTime` and a `LocalDateTime` with equal fields would collapse into one group.
+  let times: Set<number> | undefined;
+  let datetimes: Map<number, Set<number>> | undefined;
   let structural: Set<string> | undefined;
 
   return {
@@ -6350,6 +6398,31 @@ export const valueSet = (): { add: (v: unknown) => boolean } => {
         return true;
       }
 
+      // Item 1014. Both arms keep the per-kind decision in a module-scope helper rather than
+      // inline here: this closure is on the hot path for every DISTINCT, and the repo records a
+      // walk inlined into a returned closure giving UNRELATED queries a new slow mode.
+      if (v instanceof LocalTime) {
+        const k = localTimeKey(v);
+
+        if (k !== undefined) {
+          times ??= new Set();
+
+          if (times.has(k)) {
+            return false;
+          }
+
+          times.add(k);
+
+          return true;
+        }
+      }
+
+      if (v instanceof LocalDateTime && dateTimeKeyable(v)) {
+        datetimes ??= new Map();
+
+        return addNested(datetimes, v.secs, v.nanos);
+      }
+
       structural ??= new Set();
 
       const k = valueKey(v);
@@ -6395,6 +6468,9 @@ const groupIndex = (): {
   const prim = new Map<unknown, GroupSlot>();
   const slots: GroupSlot[] = [];
   let dates: Map<number, GroupSlot> | undefined;
+  // Item 1014, mirroring `valueSet`: one container per KIND, never shared.
+  let times: Map<number, GroupSlot> | undefined;
+  let datetimes: Map<number, Map<number, GroupSlot>> | undefined;
   let structural: Map<string, GroupSlot> | undefined;
 
   const open = (raw: unknown, by: number, rep: Vertex): GroupSlot => {
@@ -6433,6 +6509,48 @@ const groupIndex = (): {
 
         if (hit === undefined) {
           dates.set(raw.days, open(raw, by, rep));
+        } else {
+          hit.n += by;
+        }
+
+        return;
+      }
+
+      // Item 1014. The kinds item 850 set aside, priced at 6.5-12.8 ms against the raw-keyed
+      // date arm's 1.2-1.6 on the same shape and group count. Per-kind decisions live in
+      // module-scope helpers for the reason `valueSet` gives.
+      if (raw instanceof LocalTime) {
+        const k = localTimeKey(raw);
+
+        if (k !== undefined) {
+          times ??= new Map();
+
+          const hit = times.get(k);
+
+          if (hit === undefined) {
+            times.set(k, open(raw, by, rep));
+          } else {
+            hit.n += by;
+          }
+
+          return;
+        }
+      }
+
+      if (raw instanceof LocalDateTime && dateTimeKeyable(raw)) {
+        datetimes ??= new Map();
+
+        let inner = datetimes.get(raw.secs);
+
+        if (inner === undefined) {
+          inner = new Map();
+          datetimes.set(raw.secs, inner);
+        }
+
+        const hit = inner.get(raw.nanos);
+
+        if (hit === undefined) {
+          inner.set(raw.nanos, open(raw, by, rep));
         } else {
           hit.n += by;
         }

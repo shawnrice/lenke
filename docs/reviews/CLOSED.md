@@ -29213,6 +29213,32 @@ multiTypeEdgeCount === 0`) — one named type cannot double-count. Native's `Adj
   differential and answer assertion in the repo. It is caught only by asserting on the selector
   itself (`fused_hop_shape(..).is_some()`) in both directions. Second instance of the hazard after
   1008's degree-reader pin.
+- **✅ SHIPPED (TS) — `LocalDateTime` and `LocalTime` raw-keyed, 3.3-5.6x (item 1014).** Item 850
+  raw-keyed `LocalDate` and stopped, saying the other kinds "have more than one field and no
+  single raw key" — true of the FIELDS, not the VALUE, and never priced. A `LocalTime` IS one
+  number (`secs * 1e9 + nanos` ≤ 8.64e13, inside exact-integer range); a `LocalDateTime` takes a
+  two-level `Map`. `datetime RETURN DISTINCT` **12.2/11.0/11.8 → 2.1/2.2/2.5**; `localtime`
+  8.5/8.4/8.4 → 1.9/1.8/1.7; num and date controls flat.
+- **AN ADDED CHECK NEEDS THE PATH IT CANNOT HELP MEASURED (item 1014).** Every non-temporal
+  OBJECT now walks past two extra `instanceof`. List and element DISTINCT, three rounds:
+  14.9/14.9/15.5 → 15.3/15.4/15.3 and 13.6/12.7/13.5 → 13.8/13.7/13.2, overlapping. Same control
+  class 1012 had to add late.
+- **THREE MUTANTS SURVIVED, EACH NAMING A DIFFERENT HOLE (item 1014).** (1) `count(DISTINCT)` goes
+  through `valueSet` and `RETURN t, count(*)` through `groupIndex` — **two implementations of one
+  shape, and only the first was covered**, so a dropped-`nanos` mutant passed every test while
+  the identical mutation in `valueSet` failed two. (2) The cross-kind collision cases all used
+  small numbers; the date colliding with `LocalTime(5, 0)` is day **5e9**. (3) Nothing paired a
+  non-finite field with a finite one that still separates the values. Four tests added, all eight
+  mutants now caught.
+- **ITEM 843'S NON-FINITE COLLAPSE IS STILL PINNED, AND IT IS WHAT CATCHES THE LAST MUTANT
+  (item 1014).** Two non-finite datetimes must land in ONE group (`JSON.stringify` renders `NaN`
+  and `Infinity` alike); raw keying separates them, so `dateTimeKeyable` stubbed to `true` is
+  caught by exactly that pair. A pre-existing `LocalTime`/`LocalDateTime` asymmetry on the same
+  pair is RECORDED, not altered — changing it inside a perf item is what 843 declined to do.
+- **➡️ `ZonedDateTime`, `ZonedTime` and `Duration` stay on the string path (item 1014)**, at
+  12.8/8.5 and 11.3/6.5 ms against the raw-keyed date arm's 1.5/1.2. Three and four fields need
+  deeper nesting and the single-number packing does not survive an unbounded `offset` or
+  `months`. A measured stop with its numbers, unlike the one it replaces.
 - **⚠️ THE FIX 1009 NAMED WORKS AT 3x, AND ITS COST IS DEAD CODE — not shipped, placement one
   level off (item 1012).** 1009 looked at `edge_carries_wanted`; `exec.rs` has FOUR sites where
   the decision is ALREADY hoisted (`for_each_nbr`, `node_has_num_nbr`, `node_has_matching_nbr`,

@@ -96,6 +96,91 @@ describe('temporal values as a DISTINCT / GROUP BY key (item 843)', () => {
     expect(distinctCount([new Duration(0, 0, 0, 0), new Duration(0, 0, 0, 1)])).toBe(2);
   });
 
+  // THE TALLY, which is a DIFFERENT CODE PATH from everything above and was uncovered.
+  //
+  // `count(DISTINCT t)` goes through `valueSet`; `RETURN t, count(*)` goes through `groupIndex`.
+  // They are separate containers with separate per-kind branches, and item 1014 found that out
+  // the way this file says these bugs are found: a mutant that dropped `nanos` from
+  // `groupIndex`'s datetime key passed all five tests here, while the same mutation in
+  // `valueSet` failed two of them. One shape, two implementations, one of them untested.
+  const groupCount = (vals: readonly unknown[]): number =>
+    (query(withValues(vals), 'MATCH (p:P) RETURN p.t AS k, count(*) AS c') as unknown[]).length;
+
+  test('the GROUP BY tally splits the same values the DISTINCT set does', () => {
+    // Each pair differs in ONE field, as above — a dropped field would answer 1, and a key that
+    // fails to MATCH equal values (the `get`-side mutation) would answer more than the pair size.
+    expect(groupCount([new LocalTime(3600, 0), new LocalTime(3600, 1)])).toBe(2);
+    expect(groupCount([new LocalTime(3600, 0), new LocalTime(3601, 0)])).toBe(2);
+    expect(groupCount([new LocalDateTime(10, 0), new LocalDateTime(10, 1)])).toBe(2);
+    expect(groupCount([new LocalDateTime(10, 0), new LocalDateTime(11, 0)])).toBe(2);
+    expect(groupCount([new ZonedDateTime(10, 0, 0), new ZonedDateTime(10, 0, 30)])).toBe(2);
+    expect(groupCount([new Duration(0, 0, 0, 0), new Duration(0, 0, 0, 1)])).toBe(2);
+    // DUPLICATES COLLAPSE — the direction the pairs above cannot show. Three rows, two values.
+    expect(
+      groupCount([new LocalDateTime(10, 7), new LocalDateTime(10, 8), new LocalDateTime(10, 7)]),
+    ).toBe(2);
+    expect(groupCount([new LocalTime(10, 7), new LocalTime(10, 8), new LocalTime(10, 7)])).toBe(2);
+    // ...and the counts themselves, so a tally that opens a fresh slot per row is visible even
+    // when the group COUNT happens to come out right.
+    const rows = query(
+      withValues([new LocalDateTime(10, 7), new LocalDateTime(10, 7), new LocalDateTime(10, 8)]),
+      'MATCH (p:P) RETURN p.t AS k, count(*) AS c',
+    ) as Record<string, unknown>[];
+
+    expect(rows.map((r) => r.c).sort()).toEqual([1, 2]);
+  });
+
+  test('two kinds with identical fields stay apart in the TALLY too', () => {
+    expect(groupCount([new LocalTime(3600, 7), new LocalDateTime(3600, 7)])).toBe(2);
+    expect(groupCount([new LocalDate(5), new Duration(0, 5, 0, 0)])).toBe(2);
+    expect(groupCount([new LocalTime(5, 0), 5])).toBe(2);
+  });
+
+  // A COLLISION ACROSS THE RAW-KEYED CONTAINERS, which the pairs above cannot reach because the
+  // numbers they use are small. A `LocalTime`'s key is `secs * 1e9 + nanos` and a `LocalDate`'s
+  // is `days`, both plain numbers — so the two kinds collide iff they share ONE map, and the day
+  // count that collides with `LocalTime(5, 0)` is 5e9 rather than 5. A mutant pointing the time
+  // map at the date map survived every other case in this file (item 1014).
+  test('a date and a time whose RAW KEYS coincide stay apart', () => {
+    expect(distinctCount([new LocalDate(5_000_000_000), new LocalTime(5, 0)])).toBe(2);
+    expect(groupCount([new LocalDate(5_000_000_000), new LocalTime(5, 0)])).toBe(2);
+  });
+
+  // THE FINITE GUARD, which is load-bearing and not belt-and-braces. `secs * 1e9 + nanos` is
+  // `NaN` or `Infinity` whenever either field is, so raw keying would put EVERY non-finite time
+  // in one group; `valueKey` reaches these through its structural path, where the finite field
+  // still separates them. Removing `Number.isFinite` from the time key passed all nine other
+  // tests here (item 1014) — it is this pair that fails, answering 1.
+  test('a non-finite field does not collapse values their finite fields separate', () => {
+    expect(distinctCount([new LocalTime(1, Infinity), new LocalTime(2, Infinity)])).toBe(2);
+    expect(groupCount([new LocalTime(1, Infinity), new LocalTime(2, Infinity)])).toBe(2);
+    expect(
+      distinctCount([new LocalDateTime(1, Number.NaN), new LocalDateTime(2, Number.NaN)]),
+    ).toBe(2);
+    expect(groupCount([new LocalDateTime(1, Number.NaN), new LocalDateTime(2, Number.NaN)])).toBe(
+      2,
+    );
+  });
+
+  // THE OTHER DIRECTION OF THE SAME GUARD, and the case that caught a mutant the four above did
+  // not: when the non-finite field is the one the raw key would key OUTERMOST, dropping the
+  // guard SEPARATES values that `valueKey` collapses. `JSON.stringify` renders `NaN` and
+  // `Infinity` both as `null`, so these two datetimes are ONE group — item 843 chose to keep that
+  // collapse bit-for-bit rather than "improve" it inside a speedup, and this is that decision
+  // still holding. A `dateTimeKeyable` stubbed to `true` answers 2 here and passes every other
+  // test in this file (item 1014).
+  //
+  // `LocalTime` is NOT asserted alongside it: the same pair of times answers 2 today, through a
+  // path neither item changed. That asymmetry between the kinds is pre-existing and is recorded
+  // rather than altered here, since changing it inside a performance item is exactly what 843
+  // declined to do.
+  test('two non-finite datetimes collapse, as valueKey has them', () => {
+    const pair = [new LocalDateTime(Number.NaN, 0), new LocalDateTime(Number.POSITIVE_INFINITY, 0)];
+
+    expect(distinctCount(pair)).toBe(1);
+    expect(groupCount(pair)).toBe(1);
+  });
+
   // A SHARED PREFIX is the other way a hand-written key goes wrong, and it is invisible to every
   // case above because each of those holds ONE kind. `LocalTime` and `LocalDateTime` carry the
   // same two fields, so with one prefix between them these two values would collapse into one
