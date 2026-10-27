@@ -28680,3 +28680,18 @@ predicate` closed at 644. Every remaining flag on either side is recorded as cor
 - **Type safety is structural, not asserted (item 982).** The fold sits behind the existing
   `Column::Bool` check, so a non-boolean column declines to the general path unchanged — which is
   also why this could not live in `normalize_pred`, which has no store to check the type with.
+- **⚠️ THE TS ENGINE HAS THE MIRROR OF ITEM 982: `NOT p.b` costs 2.2x `p.b = false` (item 983).**
+  Measured rather than ported, per item 970's rule. 200k nodes, median of 5 alternated rounds:
+  `bare` 3.70 ms, `= true` 3.93 (1.06x), `true =` 3.97 (1.07x), **`NOT bare` 8.14 (2.20x)**,
+  `= false` 3.56 (0.96x), CONTROL `k = 7` 3.65 (0.99x). Rows asserted equal within each pair.
+  **The positives are equal in TS and the NEGATIVES are 2.3x apart — the opposite way round from
+  native, where `= true` was the slow one.** Item 843's rule on a third pair.
+- **Mechanism, read not guessed (item 983).** `directEqProps` lifts a bare bool prop into
+  `truthProps` only when `conjunct.kind === 'prop'`, and its next line is
+  `if (conjunct.kind !== 'compare') return null` — so a `NOT` conjunct **declines the whole
+  chain** and the predicate runs entirely through the generic evaluator, while `p.b = false` is
+  a `compare` and lifts into `eqProps`. **There is no lifted form for a NEGATED bare bool prop.**
+- **⚠️ OPEN, specified not built (item 983).** The fix is a `notTruthProps` list (or a polarity
+  flag on `truthProps`) — a NEW element-direct carrier, and **item 901's rule is that such a list
+  is a CORRECTNESS surface with at least five consumers**, each of which must know about it or
+  return a silent superset. Bounded work with a known hazard, not a one-liner.
