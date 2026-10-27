@@ -28200,3 +28200,25 @@ Prop{0,"meta"}, key: "city" }, .. } }` for both — so the gap cannot come back:
   spellings WITHIN a group over one graph, so it moves a group's absolute cost, not its spread.
   **Limitation stated rather than hidden**: no before-the-change run was taken, so "nothing new"
   rests on the flag names matching known items, not on a diffed baseline.
+- **CORRECTED — `spelling_probe`'s `DISTINCT vs dedup` cliff points the OTHER way (item 961).** It
+  has read as Gremlin lowering worse than GQL (0.086 ms against 0.152). The plans differ in **two**
+  ways, so the ratio can attribute neither: Gremlin carries a `Filter { PropertyExists }` that GQL
+  does not — **required, not waste**, since `values('dept')` yields nothing for a vertex lacking
+  the key where `RETURN n.dept` yields null, so the two are **not the same question** — and it uses
+  `DistinctBy { key_slots: [0] }` where GQL emits `Distinct`.
+- **ROW-MATCHED, the finding inverts: `Distinct` costs 2.07x `DistinctBy` on identical input (item
+  961).** A third arm (`WHERE PROPERTY_EXISTS(n, dept) RETURN DISTINCT n.dept`) gives GQL the same
+  filter. 200k nodes, min of 9, four runs, unusually stable: GQL `Distinct` no-filter
+  164.0/164.1/165.9/165.1 us; GRM `DistinctBy` filtered 292.8/295.3/295.4/300.8; **GQL `Distinct`
+  filtered 608.6/610.8/612.4/650.1**. Gremlin's lowering is the BETTER of the two here and GQL
+  inherits the slower operator.
+- **METHOD — a pair that differs in TWO ways is evidence about neither; the fix is a third arm
+  (item 961).** Not a tie-breaker argument, not a reading of the two functions.
+- **⚠️ OPEN — lower a one-column `RETURN DISTINCT` to `DistinctBy { key_slots: [0] }` (item
+  961).** `Distinct` keys the whole row, `DistinctBy` named slots; for a single-column row those
+  are the same operation, so the 2.07x should be recoverable. **Not built**, preconditions:
+  (1) **read the mechanism first** (947-949) — a generic whole-row hash against typed slot keys is
+  the hypothesis, not the finding; (2) it is **answer-equivalent**, so every mutant survives the
+  differential tests (585) and it needs a plan assertion plus `dedupplan_961` as the before/after;
+  (3) **check the row width where they MUST diverge** — `Distinct` over a multi-column row is not
+  `DistinctBy` over one slot, and forgetting that is a wrong answer, not a slow one.
