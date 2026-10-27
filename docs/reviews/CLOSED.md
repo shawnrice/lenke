@@ -28413,3 +28413,20 @@ count(*)` is 3, not 6), `GROUP BY` (the two smallest `k` fall in DIFFERENT group
   expectation was wrong and the test caught it), `DISTINCT`, a projection that already pages (two
   pages compose: 4 then the last 2), `RETURN *`, and a clause between the page and the `RETURN`,
   which observes the paged table.
+- **NO RUST TWIN — the native engine has no page-statement gap (item 970).** Item 969's 3.79x TS
+  fold has no counterpart: three rounds at 200k nodes, min of 9 — `stmt` 998.0/1090.9/1092.3 us,
+  `clause` 1008.4/1088.3/1091.3, `folded` 1009.1/1088.3/1092.7. **All within 1.00x, identical rows
+  asserted.** Item 868's note that the engines had this gap in opposite directions still holds.
+- **The PLANS differ while the COSTS do not, and that is the point (item 970).** `stmt` lowers to
+  `Project { OrderPage { Scan } }` and the clause spelling to `OrderPage { Project { Scan } }`.
+  The native engine has the same plan asymmetry as TS and none of the cost asymmetry, because a
+  page statement becomes an `OrderPage` OPERATOR rather than a materialized binding table a later
+  clause sorts. **The TS defect was never about where the sort sits in the plan, but about what
+  it sits on.**
+- **METHOD — identical plans GUARANTEE identical cost, but the converse is false (item 970).**
+  The subscript thread (956-959) built the reflex that making plans byte-identical is the fix;
+  here two plans cost the same anyway, and assuming the converse would have sent a pass rewriting
+  native lowering for nothing. The mirror of item 950: there "native did it" was wrongly treated
+  as a price for TS, here "TS needed it" would be wrongly treated as a price for native.
+  **Item 843's rule — neither engine's version is inferable from the other's — measured rather
+  than assumed for this gap.**
