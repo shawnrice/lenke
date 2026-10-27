@@ -28340,3 +28340,27 @@ asc` and 1.13x on a control with no sort and no page clause** — which a change
   10051.2, `group by dept` 381.8, `distinct prop` 2972.9, `project bool` 392.5, `two preds` 206.9.
   TS, ms: `decode ndjson (5 edges/node)` 2792.4, `top-k by property` 11.8, `count 4-hop` 584.2,
   `count var-length 1-2 hops` 224.9, `traverse 1-hop project + order by` 226.6.
+- **DECOMPOSED — item 868's remaining 4.4x is TWO causes, 1.43x x 3.09x, and the product
+  reconstructs the whole exactly (item 967).** `clause asc` 8.74 ms (2 clauses, sort in RETURN);
+  `clause +3rd` 12.54 (3 clauses via a no-op `FILTER true`, sort in RETURN); `stmt asc` 38.76
+  (3 clauses, sort in the PAGE clause). **1.43 x 3.09 = 4.43 = the observed 4.43x.**
+- **PARTIALLY REFUTED before it was written up as the cause (item 967).** `detectNodeProjection`
+  opens `if (clauses.length !== 2) return null`, so the statement spelling (match+page+return) is
+  disqualified where the clause spelling (match+return) is not — which reads like the whole
+  answer. **A no-op third clause costs the CLAUSE spelling only 1.43x**, so losing the shortcut is
+  about a third of the gap in log terms. Items 947/948, 951 and 961 each wrote a reading up as a
+  cause and each had to retract; one arm cost a minute and caught it here.
+- **METHOD — a decomposition into RATIOS BETWEEN ROW-MATCHED PAIRS is valid where a subtraction is
+  not (item 967).** Each ratio differs in exactly one property, so the product is checkable
+  against the whole — item 943's sum check in multiplicative form. This is what item 963 could not
+  construct, when `count(n.dept)` priced a "part" at more than the whole containing it.
+- **⚠️ OPEN, both halves, neither built (item 967).** The **1.43x** is not page-specific — any
+  third clause costs it, so it is the shortcut family's shared `clauses.length !== 2` guard, with
+  nineteen detectors and `routes-fired.test.ts` as the surface (item 910 priced the detectors at
+  25% of planning the big query). The **3.09x** is the prize: folding a trailing page clause into
+  the following `RETURN`'s own `ORDER BY`/`LIMIT` would turn 3 clauses into 2 AND move the sort
+  onto projected columns, collecting both halves. **But they are not the same operation in
+  general** — a statement `ORDER BY` sorts the working table and may key on anything in scope,
+  while `RETURN … ORDER BY` sorts output rows. **Whether ISO permits the fold, and under which
+  condition on the keys, is a SPECIFICATION question** — the BNF artifact and session notes, not a
+  guess made while optimizing.

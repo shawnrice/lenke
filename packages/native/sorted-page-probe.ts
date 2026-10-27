@@ -51,6 +51,16 @@ const CASES: ReadonlyArray<readonly [string, string, string]> = [
   // no page clause of any kind, so nothing in that arm can reach it; if it moves too, the
   // movement is the process and not the change.
   ['CONTROL count', 'MATCH (n:P) WHERE n.lo = 0 RETURN count(*) AS c', 'no sort, no page'],
+  // THE ROUTE TEST (item 967). `detectNodeProjection` bails on `clauses.length !== 2`. The clause
+  // spelling is match+return (2) and reaches it; the statement spelling is match+page+return (3)
+  // and cannot. If that is the cause, then adding a NO-OP third clause to the CLAUSE spelling —
+  // `FILTER true` keeps every row and changes no answer — should make it collapse onto the
+  // statement arm's cost. Reading the guard says this; this arm is what checks it.
+  [
+    'clause +3rd',
+    'MATCH (n:P) FILTER true RETURN n.k AS c ORDER BY c LIMIT 10',
+    'clause spelling, 3 clauses',
+  ],
 ];
 
 const medianOf = (xs: readonly number[]): number => {
