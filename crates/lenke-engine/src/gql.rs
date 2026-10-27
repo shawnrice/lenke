@@ -6376,10 +6376,40 @@ impl Parser {
                     }
                     None => crate::ir::ElemKind::Plain,
                 };
-                base = Expr::Index {
-                    base: Box::new(base),
-                    index: Box::new(index),
-                    elem,
+                // A CONSTANT STRING SUBSCRIPT IS A FIELD ACCESS — canonicalized here, at the one
+                // place the IR is built, rather than taught to each consumer (item 958).
+                //
+                // `base['k']` and `base.k` are the same read: item 956 ran both over every base
+                // kind a segment can meet — record `Str("hit")`/`Str("hit")`, and scalar, absent,
+                // number and list all `Null`/`Null` — so emitting `Field` cannot change an
+                // answer. What it changes is cost. Before this, the bracket spelling missed
+                // `fused_prop_field` (item 896) and `prop_path`'s seeding, because both match on
+                // `Expr::Field`: measured at 200,000 nodes, `p.meta['city']` **8864.9 us against
+                // `p.meta.city`'s 4786.9 — 1.85x** on the identical `Filter { Scan }` route.
+                //
+                // WHY HERE AND NOT IN THE EVALUATOR. Item 957 built exactly that — four lines
+                // calling `fused_prop_field` from the `Expr::Index` arm — and it worked (1.01x,
+                // a 1.62x win) but made the DOTTED arm, which it cannot logically reach,
+                // regress **1.07x disjoint** on alternated rounds. Growing a match arm costs the
+                // alignment toll that `fused_prop_field`'s own note and `exec::pull` both record.
+                // Canonicalizing adds nothing to any hot arm, and it makes the two spellings
+                // produce the IDENTICAL plan — this repo's own standard, and the reason the
+                // bracket form now inherits every future `Field` improvement for free.
+                //
+                // `elem` MUST be `Plain`: a `Node`/`Edge` elem is a group-variable element read,
+                // not a field read, and item 956's mutant proved folding it CHANGES THE ANSWER.
+                base = match (&elem, &index) {
+                    (crate::ir::ElemKind::Plain, Expr::Lit(crate::value::Value::Str(k))) => {
+                        Expr::Field {
+                            base: Box::new(base),
+                            key: k.to_string(),
+                        }
+                    }
+                    _ => Expr::Index {
+                        base: Box::new(base),
+                        index: Box::new(index),
+                        elem,
+                    },
                 };
             } else {
                 break;

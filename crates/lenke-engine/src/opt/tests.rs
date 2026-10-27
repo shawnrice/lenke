@@ -3534,3 +3534,73 @@ fn bracket_subscript_seeds_the_same_target_as_a_dot() {
         "a computed subscript must NOT seed"
     );
 }
+
+/// THE PARSER CANONICALIZES A CONSTANT STRING SUBSCRIPT TO A FIELD (item 958).
+///
+/// `p.meta['city']` and `p.meta.city` are the same read on every base kind (item 956 measured
+/// record, scalar, absent, number and list), so the IR builder emits one shape for both. That is
+/// what makes the two spellings cost the same: `fused_prop_field` (item 896) and `prop_path`'s
+/// seeding BOTH match on `Expr::Field`, and before this the bracket form reached neither —
+/// 8864.9 us against 4786.9 on the identical `Filter { Scan }` route, 1.85x.
+///
+/// THE ASSERTION IS ON THE PLAN, and it has to be: the two spellings always returned the same
+/// rows, so no correctness test in the crate can see the difference (item 585). This is the
+/// repo's own standard made checkable — two spellings that optimize to the same plan cannot
+/// differ in cost.
+#[test]
+fn a_constant_string_subscript_parses_as_a_field() {
+    let plan_of = |q: &str| format!("{:?}", crate::gql::parse(q).expect("parses"));
+
+    let dotted = plan_of("MATCH (p:P) WHERE p.meta.city = 'NYC' RETURN count(*) AS c");
+    let bracket = plan_of("MATCH (p:P) WHERE p.meta['city'] = 'NYC' RETURN count(*) AS c");
+    assert_eq!(dotted, bracket, "the two spellings must build the SAME IR");
+    assert!(dotted.contains("Field"), "expected a Field read: {dotted}");
+
+    // THE DECLINES. A numeric subscript is a list position, not a field — it must stay an Index,
+    // or `p.lst[0]` would read a property named "0".
+    let numeric = plan_of("MATCH (p:P) WHERE p.lst[0] = 'NYC' RETURN count(*) AS c");
+    assert!(
+        numeric.contains("Index"),
+        "numeric must stay Index: {numeric}"
+    );
+
+    // A computed subscript is not known at parse time at all.
+    let dynamic = plan_of("MATCH (p:P) WHERE p.meta[p.which] = 'NYC' RETURN count(*) AS c");
+    assert!(
+        dynamic.contains("Index"),
+        "computed must stay Index: {dynamic}"
+    );
+}
+
+/// A GROUP-VARIABLE subscript is the shape the `elem: Plain` guard exists for (item 958).
+///
+/// In `( (x)-[e:R]->(y) ){1,2}` the variables are LISTS, and a subscript at the group's full
+/// depth yields the typed ELEMENT so that a following `.prop` resolves a node property — that is
+/// what `ElemKind::Node`/`Edge` mean. A constant STRING subscript there is therefore a different
+/// operation from a field read, which is why the canonicalization declines it.
+///
+/// This test exists because the mutant that drops the guard SURVIVED the whole 1,250-test suite:
+/// nothing exercised a group-variable constant-string subscript. It pins today's answer so the
+/// guard is checked rather than assumed.
+#[test]
+fn a_group_variable_string_subscript_is_not_a_field_read() {
+    let nd = concat!(
+        "{\"id\":\"a\",\"labels\":[\"N\"],\"props\":{\"id\":0}}\n",
+        "{\"id\":\"b\",\"labels\":[\"N\"],\"props\":{\"id\":1}}\n",
+        "{\"from\":\"a\",\"to\":\"b\",\"labels\":[\"R\"],\"props\":{}}"
+    );
+    let store = crate::ndjson::from_ndjson(nd).unwrap();
+    let one = |q: &str| -> Value {
+        let plan = optimize_indexed(crate::gql::parse(q).expect("parses"), &store);
+        crate::exec::run(&plan, &store).rows[0][0].clone()
+    };
+
+    let subscripted = one("MATCH (s:N {id:0}) ( (x)-[e:R]->(y) ){1,1} (t) RETURN x['id'] AS v");
+    let field = one("MATCH (s:N {id:0}) ( (x)-[e:R]->(y) ){1,1} (t) RETURN x.id AS v");
+    println!("group-var subscript = {subscripted:?}, field = {field:?}");
+    assert_eq!(
+        (format!("{subscripted:?}"), format!("{field:?}")),
+        ("Null".to_string(), "Null".to_string()),
+        "today's answers for both spellings on a GROUP variable"
+    );
+}

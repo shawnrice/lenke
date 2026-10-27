@@ -28137,3 +28137,31 @@ Prop}` 160.0 / 4,000; `NOT` → `Filter{Scan, Not(Prop)}` 214.7 / 196,000; `= fa
   **adds nothing to the evaluator**, so it cannot perturb alignment — the exact failure above; and
   **the two spellings then produce the IDENTICAL plan**, this repo's own standard, so the bracket
   form inherits every future `Field` improvement instead of needing its own copy.
+- **SHIPPED — a constant string subscript is canonicalized to `Field` at the IR builder, closing
+  item 957's 1.85x (item 958).** In the GQL postfix parser,
+  `(ElemKind::Plain, Expr::Lit(Value::Str(k))) => Expr::Field { base, key: k }`. **The two
+  spellings now build byte-identical plans** — `Filter { Scan, Compare { Eq, Field { base:
+Prop{0,"meta"}, key: "city" }, .. } }` for both — so the gap cannot come back: _two spellings
+  that optimize to the same plan cannot differ._ Both routes 1.00x, and the bracket form inherits
+  `fused_prop_field`, `prop_path` seeding and every future `Field` improvement for free.
+- **The control PASSES here where item 957's failed, and the difference is structural (item
+  958).** This change is in the PARSER, so the dotted arm executes byte-identical IR and the probe
+  times only `exec::try_run`; item 957 added a branch INSIDE the hot evaluator arm. Four
+  alternated pairs — POST 5182.9/4913.8/5082.9/4910.9 against PRE
+  4721.8/4804.4/4709.7/**5594.5** — **PRE's worst exceeds every POST run**, so the distributions
+  overlap and there is no reliable regression. Four pairs were taken because the first single
+  round read 5231.8 and would have looked like a repeat of 957.
+- **A MUTANT SURVIVED AND WAS RIGHT TO — the `elem: Plain` guard is NOT load-bearing at the IR
+  builder, though its `prop_path` twin IS (item 958).** M1 (drop the guard) survived all 1,251
+  tests; M2 (fold any literal) was CAUGHT with 3 failures. Constructing the protected shape — a
+  group variable from `( (x)-[e:R]->(y) ){1,1}`, where a full-depth subscript yields a typed
+  ELEMENT — gives `x['id'] = Null` and `x.id = Null`: **they already agree**, so the fold is
+  answer-preserving and the mutant is equivalent. **The asymmetry is precise:** in `prop_path`
+  the fold changed the SEEK KEY while the evaluator still ran an `Index`, so the halves disagreed
+  and the rows changed; at the IR builder both halves move together. Guard kept as conservatism
+  (same status as `truthProps`' merge, item 903), with
+  `a_group_variable_string_subscript_is_not_a_field_read` pinning the behaviour — **that test
+  documents the shape, it does not give the guard teeth.**
+- **Item 956's `prop_path` `Expr::Index` arm is now unreachable from GQL and deliberately kept
+  (item 958).** It still covers IR built by other means — Gremlin lowering, direct construction,
+  the opt tests — and its own mutants proved it load-bearing for those.
