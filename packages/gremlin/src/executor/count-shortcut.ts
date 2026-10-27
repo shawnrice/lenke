@@ -264,49 +264,6 @@ const hasAny = (
 };
 
 /**
- * Every `has` in a chain, tested against one element's properties IN WRITTEN ORDER and
- * SHORT-CIRCUITING on the first failure.
- *
- * THE SHORT-CIRCUIT IS NOT OBSERVABLE TODAY, AND THE REASON IS WORTH WRITING DOWN, because the
- * comment on `filteredHopCount` below asserts the opposite and is wrong. It says raise parity is a
- * live concern because "`matches` can throw (a cross-type comparison, mirroring TinkerPop's
- * `ClassCastException`)". **`matches` cannot throw.** Every ordering predicate in `predicates.ts`
- * reads `value != null && predCmp(...) > 0`, and `predCmp` returns `NaN` for a cross-type pair, so
- * an incomparable or missing value is FILTERED, never raised — which is TinkerPop's `has()`
- * behaviour too. `count-shortcut.test.ts` found this independently and says so: two tests were
- * written asserting a throw and "both failed: `has` filters the incomparable value out instead".
- *
- * So evaluating every filter unconditionally would be answer-equivalent AND fault-equivalent here,
- * and a mutant that removes the short-circuit is expected to SURVIVE the suite. It is kept anyway,
- * for two reasons that are honest about being non-observable:
- *
- *   - it is strictly less work, since a rejected element stops at its first failing predicate, and
- *   - it is what the step-by-step traversal does, so if a predicate that CAN fault is ever added
- *     (`compareValues` throws today, for `max`/`min`), this rung does not silently diverge.
- *
- * Same shape as `filterChainCount`'s `&& ok` loop, and as the written-order short-circuit items
- * 258/259 settled for AND on the GQL side — where it IS observable, because that path can fault.
- */
-const allMatch = (
-  filters: readonly Extract<Step, { kind: 'has' }>[],
-  props: Readonly<Record<string, unknown>>,
-): boolean => {
-  // ONLY EVER CALLED WITH TWO OR MORE FILTERS. `filteredHopCount` hoists the one-filter test into
-  // its own loops, so a `filters.length === 1` fast path in here would be unreachable — it was
-  // tried and removed. Worth recording WHY, because the first guess was wrong: routing the common
-  // single-filter shape through this function cost it 1.14x, and an early return here recovered
-  // 0.88x -> 0.91x, almost nothing. That refuted the iterator-allocation guess and left the
-  // per-vertex CALL itself as the cause, which only hoisting out of the loop can remove.
-  for (const f of filters) {
-    if (!matches(f.pred, props[f.key])) {
-      return false;
-    }
-  }
-
-  return true;
-};
-
-/**
  * `V().out(T).has(k, pred).count()` — walk the edge bucket and tally, with no
  * traversers at all.
  *
@@ -357,21 +314,30 @@ const filteredHopCount = (hop: Step, rest: readonly Step[], graph: Graph): numbe
     return undefined;
   }
 
-  // THE ONE-FILTER TEST IS HOISTED INLINE, measured twice because the first attempt barely worked.
-  // Routing the common single-filter shape through `allMatch` cost it 1.14x (PRE [28 28 27 29] ms
-  // against POST [31 31 30 31], four alternated rounds, GQL control flat at 0.97-1.06x). An early
-  // `filters.length === 1` return INSIDE `allMatch` recovered almost none of it — 0.88x to 0.91x —
-  // which refuted the iterator-allocation guess and left the per-vertex CALL as the cause: 200,000
-  // extra non-inlined calls plus the array indexing to reach `pred`/`key`.
-  //
-  // So the branch is taken ONCE, here, and the single-filter arm reads the two fields straight out
-  // of locals in the loop below exactly as the pre-change code did. `undefined` means "a chain, use
-  // `allMatch`"; the loops stay single-copy rather than duplicated per arity.
-  const only = filters.length === 1 ? filters[0] : undefined;
-  const onlyKey = only?.key ?? '';
-  const onlyPred = only?.pred;
-
   const forward = hop.kind === 'out';
+  // THE KEYS AND PREDICATES ARE EXTRACTED ONCE, not read off the `Step` objects per row. Item 934
+  // measured this as the whole of the 1->2 arity step: a two-filter count read 54.81 ms against a
+  // one-filter 28.49, while the marginal filter costs ~1.5 ns. Reading `f.pred` / `f.key` inside
+  // the loop was 41.79 and hoisting the pair into locals was 30.25 — so the cost is the PROPERTY
+  // LOAD off a `Step`, not the loop and not the call. `Step` is a wide discriminated union, so
+  // those two loads are polymorphic at a site that runs per row; pulled into dense arrays of a
+  // string and a `Predicate` they are monomorphic element loads instead, and that works at any
+  // arity rather than needing an unroll per filter count.
+  const keys = filters.map((f) => f.key);
+  const preds = filters.map((f) => f.pred);
+  const width = filters.length;
+  // WIDTH 1 AND 2 ARE STRAIGHT-LINE, and item 934 measured why each piece is needed. At two
+  // filters over 200,000 vertices: the original per-row `allMatch` CALL read 54.81 ms, an inline
+  // indexed loop 41.79 (so the call was ~13 ms), the same loop over keys/preds extracted into
+  // monomorphic arrays 43.82 (so the polymorphic `Step` property load was NOT the cost — that
+  // hypothesis is refuted), and an unrolled straight-line pair over captured locals 30.25 — which
+  // lands on the ONE-filter twin at 28.49. So the call and the loop cost ~65 ns a row EACH, and
+  // only removing both recovers the step. Widths above 2 keep the loop: the third filter costs
+  // ~1.5 ns a row, so there is nothing there to unroll for.
+  const [k0] = keys;
+  const [p0] = preds;
+  const k1 = width > 1 ? keys[1] : '';
+  const p1 = width > 1 ? preds[1] : preds[0];
 
   // Drive the FAR side where it is sound: one predicate test per far VERTEX, contributing that
   // vertex's whole degree, instead of one per EDGE with a vertex lookup to go with it.
@@ -400,7 +366,14 @@ const filteredHopCount = (hop: Step, rest: readonly Step[], graph: Graph): numbe
   // ordering predicate in `predicates.ts` filters an incomparable or missing value out via a `NaN`
   // from `predCmp`, and `count-shortcut.test.ts` records two tests written to assert a throw that
   // both failed for that reason. The evaluated-set argument above is the real content and stands
-  // on its own; the throw it invoked does not exist. See `allMatch`.
+  // on its own; the throw it invoked does not exist.
+  //
+  // CONSEQUENCE for the chain loops below, which is why this is worth keeping here: because no
+  // predicate can fault, the written-order SHORT-CIRCUIT in `i < len && hit` is not observable —
+  // evaluating every filter would be answer- AND fault-equivalent. It is kept because it is
+  // strictly less work and because it matches the step-by-step walk, so a predicate that CAN fault
+  // would not silently diverge. Item 930 proved this rather than asserting it: a mutant removing
+  // the short-circuit SURVIVED all 844 tests, exactly as predicted.
   if (hop.labels.length === 1 || graph.multiTypeEdgeCount === 0) {
     let n = 0;
 
@@ -429,11 +402,25 @@ const filteredHopCount = (hop: Step, rest: readonly Step[], graph: Graph): numbe
         continue;
       }
 
-      if (
-        onlyPred === undefined
-          ? allMatch(filters, v.properties)
-          : matches(onlyPred, v.properties[onlyKey])
-      ) {
+      // The chain test is INLINE, not a call. Item 934 measured the call as the whole of the
+      // 1->2 arity step: entering `allMatch` cost ~123 ns a VERTEX while the marginal filter
+      // costs ~1.5 ns, and hoisting the test out of the call put a two-filter count back onto
+      // its one-filter twin. Same `i < len && ok` shape `filterChainCount` has always used.
+      let hit: boolean;
+
+      if (width === 1) {
+        hit = matches(p0, v.properties[k0]);
+      } else if (width === 2) {
+        hit = matches(p0, v.properties[k0]) && matches(p1, v.properties[k1]);
+      } else {
+        hit = true;
+
+        for (let i = 0; i < width && hit; i += 1) {
+          hit = matches(preds[i], v.properties[keys[i]]);
+        }
+      }
+
+      if (hit) {
         n += deg;
       }
 
@@ -482,11 +469,21 @@ const filteredHopCount = (hop: Step, rest: readonly Step[], graph: Graph): numbe
     for (const edge of bucket) {
       const far = forward ? edge.to : edge.from;
 
-      if (
-        onlyPred === undefined
-          ? allMatch(filters, far.properties)
-          : matches(onlyPred, far.properties[onlyKey])
-      ) {
+      let hit: boolean;
+
+      if (width === 1) {
+        hit = matches(p0, far.properties[k0]);
+      } else if (width === 2) {
+        hit = matches(p0, far.properties[k0]) && matches(p1, far.properties[k1]);
+      } else {
+        hit = true;
+
+        for (let i = 0; i < width && hit; i += 1) {
+          hit = matches(preds[i], far.properties[keys[i]]);
+        }
+      }
+
+      if (hit) {
         n += 1;
       }
     }
@@ -1138,20 +1135,34 @@ const collectHasFilters = (
 const tallyFarEnds = (
   set: ReadonlySet<Edge>,
   forward: boolean,
-  fars: readonly Extract<Step, { kind: 'has' }>[],
-  onlyFarPred: Predicate | undefined,
-  onlyFarKey: string,
+  keys: readonly string[],
+  preds: readonly Predicate[],
 ): number => {
+  const width = keys.length;
+  const [k0] = keys;
+  const [p0] = preds;
+  const k1 = width > 1 ? keys[1] : '';
+  const p1 = width > 1 ? preds[1] : preds[0];
   let n = 0;
 
   for (const edge of set) {
     const far = forward ? edge.to : edge.from;
 
-    if (
-      onlyFarPred === undefined
-        ? allMatch(fars, far.properties)
-        : matches(onlyFarPred, far.properties[onlyFarKey])
-    ) {
+    let hit: boolean;
+
+    if (width === 1) {
+      hit = matches(p0, far.properties[k0]);
+    } else if (width === 2) {
+      hit = matches(p0, far.properties[k0]) && matches(p1, far.properties[k1]);
+    } else {
+      hit = true;
+
+      for (let i = 0; i < width && hit; i += 1) {
+        hit = matches(preds[i], far.properties[keys[i]]);
+      }
+    }
+
+    if (hit) {
       n += 1;
     }
   }
@@ -1222,12 +1233,10 @@ const bothFilteredHopCount = (mid: readonly Step[], graph: Graph): number | unde
       : graph.verticesById.values();
   const rest = canSeed ? starts.slice(1) : starts;
   const forward = hop.kind === 'out';
-  // The one-filter far test is hoisted inline, for item 932's measured reason: routing a per-row
-  // test through `allMatch` costs ~40 ns a row in call and array-indexing overhead, and this loop
-  // runs per EDGE. `undefined` means "a chain, use `allMatch`".
-  const onlyFar = fars.length === 1 ? fars[0] : undefined;
-  const onlyFarKey = onlyFar?.key ?? '';
-  const onlyFarPred = onlyFar?.pred;
+  // Extracted ONCE, for item 934's reason: `f.key` / `f.pred` off a `Step` is a polymorphic load,
+  // and this one feeds a loop that runs per EDGE rather than per vertex.
+  const farKeys = fars.map((f) => f.key);
+  const farPreds = fars.map((f) => f.pred);
   let n = 0;
 
   for (const v of source) {
@@ -1260,7 +1269,7 @@ const bothFilteredHopCount = (mid: readonly Step[], graph: Graph): number | unde
     // the same condition.
     if (hop.labels.length === 0) {
       for (const set of byType.values()) {
-        n += tallyFarEnds(set, forward, fars, onlyFarPred, onlyFarKey);
+        n += tallyFarEnds(set, forward, farKeys, farPreds);
       }
 
       continue;
@@ -1270,7 +1279,7 @@ const bothFilteredHopCount = (mid: readonly Step[], graph: Graph): number | unde
       const set = byType.get(t);
 
       if (set !== undefined) {
-        n += tallyFarEnds(set, forward, fars, onlyFarPred, onlyFarKey);
+        n += tallyFarEnds(set, forward, farKeys, farPreds);
       }
     }
   }

@@ -27352,3 +27352,52 @@ contributes nothing` — the far-driven mistake reports 2 where the answer is 1,
   (the lesson already recorded for a walk inlined in a returned closure). Hoisted to module scope as `tallyFarEnds`; the long
   parameter list is the price of not allocating. Found only because the complexity cap forced the
   function apart, which is a gate earning its keep for a reason it was not written for.
+- **SHIPPED — the 1→2 filter arity step was the per-row CALL _and_ the LOOP, ~65 ns each: 1.81x on a
+  two-filter hop count (item 934).** Closes item 932's Finding 2, which priced it at ~1.8x. The
+  anomaly that ruled out the obvious cause first: the SECOND filter cost **+132 ns a vertex** and the
+  THIRD **+1.5 ns**, so the step was the route into `allMatch`, not a marginal predicate. Four
+  in-situ variants of `post:2` decompose it: `allMatch` call 54.81 ms → inline indexed loop 41.79
+  (the call was ~13 ms) → the same loop over keys/preds in dense arrays 43.82 (extraction bought
+  NOTHING) → unrolled straight-line pair over captured locals **30.25**, landing on the one-filter
+  twin at 28.49. Shipped as straight-line at widths 1 and 2 with the loop above, at all three per-row
+  test sites; `allMatch` deleted. Widths above 2 keep the loop deliberately — the third filter costs
+  ~1.5 ns a row, so there is nothing to unroll for, and an unroll per arity is the unbounded
+  special-casing item 438 declined. A/B 3 alternated rounds: `post:2` **1.81x** (PRE [57 54 57] vs
+  POST [30 30 30]), `post:1` 0.99x, `post:3` 1.02x, `both:1+1` 1.00x, controls `pre:2` 1.02x,
+  `node:2` 0.98x, `post:2` gql 1.01x, worst arm self-variance 1.13x.
+- **REFUTED — the per-row cost was NOT the polymorphic `Step` property load (item 934).** Seeing the
+  indexed loop lose to the unrolled pair, the plausible mechanism was that `f.pred` / `f.key` off a
+  wide discriminated union are polymorphic loads at a site running per row. Extracting them into
+  dense arrays of a string and a `Predicate` bought **nothing — 43.82 ms against the loop's 41.79.**
+  So the cost is the loop machinery itself (bounds check, the `hit` carry, a dynamic trip count V8
+  cannot unroll). The arrays were kept because they read better and cost nothing either way, but do
+  not re-attempt them as an optimization.
+- **RULE — a refutation is about the arm it was measured on (item 934).** Item 930 guessed iterator
+  allocation for this cost, tested it with a `filters.length === 1` fast path INSIDE `allMatch`, saw
+  0.88x → 0.91x and concluded the CALL was to blame. **That test was on the arity-1 arm, where the
+  hoist means `allMatch` is never entered** — so it said nothing about arity 2, where it genuinely
+  is. Carrying the refutation forward would have skipped the decomposition that found a second ~65 ns
+  term. Same shape as item 927 ("a number is evidence about the path it was measured on"), applied to
+  a refutation rather than a measurement.
+- **A VACUOUS ASSERTION in item 933's own new tests, found by mutation (item 934).** `m8`, which
+  drops the second far filter from `tallyFarEnds`' width-2 branch, SURVIVED 844 tests. The cause was
+  the test: 933's `TWO filters on the start side and TWO on the far side` passes a second far filter
+  that excludes NOTHING — the starts `k < 1` keep only vertex 0, whose far ends are 1 (j=2) and 2
+  (j=4), and the first far filter `k > 1` has already removed vertex 1, so `j > 3` changes no answer.
+  Fixed by constructing the case where the first far filter keeps BOTH far ends and the second
+  removes one, with the mutant's wrong answer (2) pinned explicitly beside the right one (1).
+  **Item 921's rule earned a second time: a corpus that does not CONSTRUCT the dangerous case will
+  agree with anything** — and note that nine tests were added at 933 against a green suite with one
+  of them checking nothing. The mutation run is what found it.
+- **A non-unique mutation anchor caught by the runner instead of producing a wrong verdict
+  (item 934).** `m8`'s first anchor matched BOTH `far.properties` test sites — the multi-type arm and
+  `tallyFarEnds` — and the runner printed `ANCHOR not unique (2) — NOT a verdict` rather than
+  mutating one at random and reporting a verdict about the wrong site. Pinned by indentation depth
+  (`tallyFarEnds` sits one block shallower). This is the assert-the-anchor-appears-exactly-once rule
+  paying for itself.
+- **NOT CLAIMED — `both:1+2` moved 1.13x against a 1.13x noise floor (item 934).** Directionally
+  consistent with the width-2 unroll reaching `tallyFarEnds`' per-EDGE walk, but it does not clear
+  the arms' own spread, so it is recorded as unresolved rather than counted (item 924's rule).
+  `post:1` and `post:3` read 31.2 and 61.7 as single readings against baselines of 28.49 and 55.11 —
+  which looked like two regressions paying for one win — and three alternated rounds put them at
+  0.99x and 1.02x. Another instance of a single reading in this family inventing an effect.

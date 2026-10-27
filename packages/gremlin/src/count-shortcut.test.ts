@@ -694,6 +694,34 @@ describe('a filtered hop count is answered from the far side', () => {
     );
   });
 
+  test('the SECOND far filter excludes on its own', () => {
+    // ITEM 934 FOUND THIS GAP BY MUTATION. The `TWO filters on the start side and TWO on the far
+    // side` test above passes a second far filter that excludes NOTHING: starts `k < 1` keep only
+    // vertex 0, whose far ends are 1 (j=2) and 2 (j=4), and the first far filter `k > 1` has
+    // already removed vertex 1 — so `j > 3` changes no answer and a mutant dropping it SURVIVED.
+    //
+    // Here the first far filter keeps BOTH far ends and the second removes one, so the pair is the
+    // only thing that gives 1 rather than 2. Item 921's rule: a corpus that does not CONSTRUCT the
+    // dangerous case will agree with anything.
+    const g = build();
+
+    expect(n(g, V(), has('k', lt(1)), out('E'), has('k', gt(0)), has('j', gt(3)), count())).toBe(1);
+    // Without the second far filter the same query is 2 — which is what the mutant answered.
+    expect(n(g, V(), has('k', lt(1)), out('E'), has('k', gt(0)), count())).toBe(2);
+    expect(n(g, V(), has('k', lt(1)), out('E'), has('k', gt(0)), has('j', gt(3)), count())).toBe(
+      declined(
+        g,
+        V(),
+        has('k', lt(1)),
+        out('E'),
+        has('k', gt(0)),
+        has('j', gt(3)),
+        identity(),
+        count(),
+      ),
+    );
+  });
+
   test('a self-loop across both filters is counted once', () => {
     // 3->3 is an `E` self-loop, so vertex 3 is both the surviving start and the passing far end.
     const g = build();
