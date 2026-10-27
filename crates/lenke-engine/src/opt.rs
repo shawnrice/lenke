@@ -66,6 +66,43 @@ const SEEK_MAX_FRACTION: f64 = 0.154;
 /// paying when `seedspell_401` flagged it.
 const SEEK_MAX_FRACTION_CHEAP_SCAN: f64 = 0.031;
 
+/// Break-even for an INDEXED seek on a `Column::Bool` (item 997).
+///
+/// Item 949 flagged that `scan_is_cheap` does not recognise `Column::Bool` and left it open; this
+/// is the curve it was missing. `seekcross_948 INDEXED=1`, 200,000 nodes, min of 9, scattered
+/// true rows:
+///
+/// ```text
+///    3%  0.61x seek     6%  1.18x FILTER    12%  2.23x FILTER
+///    4%  0.81x seek     8%  1.54x FILTER    15%  2.76x FILTER
+///    5%  0.99x tie     10%  1.87x FILTER
+/// ```
+///
+/// Break-even is **5%** while [`SEEK_MAX_FRACTION`] admits to 15.4%, so the whole 5-15% band was
+/// seeded at up to **2.76x** the scan it replaced.
+///
+/// A THIRD constant rather than reusing [`SEEK_MAX_FRACTION_CHEAP_SCAN`], and the curve says why:
+/// at 0.031 the gate would decline the 3.1-5% band where the seek still WINS (0.61x at 3%,
+/// 0.81x at 4%), trading a 2.76x loss for a 1.6x one. The dict break-even is ~3% and the bool
+/// break-even is ~5%; they are different columns with different scan costs and the same
+/// measurement discipline gives them different numbers.
+const SEEK_MAX_FRACTION_BOOL: f64 = 0.05;
+
+/// The selectivity ceiling above which an indexed seek loses to the scan it replaces.
+///
+/// Shared by both callers deliberately: the cap was computed inline in TWO places, which is one
+/// rule in two locations — the shape `pushable`'s warning names, where a change to either drifts
+/// silently from the other.
+fn seek_cap(idx: &dyn IndexOracle, key: &str) -> f64 {
+    if idx.scan_is_cheap(key) {
+        SEEK_MAX_FRACTION_CHEAP_SCAN
+    } else if idx.column_is_bool(key) {
+        SEEK_MAX_FRACTION_BOOL
+    } else {
+        SEEK_MAX_FRACTION
+    }
+}
+
 /// Break-even for the NO-INDEX degraded seek against the `Filter(Scan)` it replaces (item 988).
 ///
 /// A DIFFERENT pair of routes from [`SEEK_MAX_FRACTION`], and deliberately not spelled as a reuse
@@ -116,6 +153,13 @@ pub trait IndexOracle {
     /// an oracle that cannot answer simply declines the rewrite.
     fn seed_fraction(&self, _key: &str, _op: crate::ir::CompareOp, _value: &Value) -> Option<f64> {
         None
+    }
+
+    /// Is `key` a `Column::Bool`? Its INDEXED seek breaks even at a lower selectivity than a
+    /// general column's, for the same reason a dictionary column's does — the scan it competes
+    /// against is cheaper (item 997). Oracles with no store behind them say no.
+    fn column_is_bool(&self, _key: &str) -> bool {
+        false
     }
 
     /// What fraction of the graph `key = value` selects when there is NO hash index, or `None`
@@ -178,6 +222,10 @@ impl IndexOracle for crate::store::Store {
 
     fn unindexed_eq_fraction(&self, key: &str, value: &Value) -> Option<f64> {
         self.bool_eq_fraction(key, value)
+    }
+
+    fn column_is_bool(&self, key: &str) -> bool {
+        matches!(self.column(key), Some(crate::store::Column::Bool { .. }))
     }
 }
 
@@ -3589,11 +3637,7 @@ fn seek_beats_scan(idx: &dyn IndexOracle, key: &str, op: CompareOp, value: &Valu
     // cheaper per row and the break-even selectivity falls with it. Item 407 measured both
     // curves at 200,000 nodes; the numeric one breaks even at ~15%, which is exactly where
     // `SEEK_MAX_FRACTION` already sits, so that path is deliberately untouched.
-    let cap = if idx.scan_is_cheap(key) {
-        SEEK_MAX_FRACTION_CHEAP_SCAN
-    } else {
-        SEEK_MAX_FRACTION
-    };
+    let cap = seek_cap(idx, key);
 
     idx.seed_fraction(key, op, value)
         .is_some_and(|frac| frac <= cap)
@@ -3812,11 +3856,7 @@ fn multi_seek_worth_it(key: &str, values: &[Value], idx: &dyn IndexOracle) -> bo
     }
 
     if idx.live_nodes().is_none_or(|n| n >= SEEK_FLOOR_NODES) {
-        let cap = if idx.scan_is_cheap(key) {
-            SEEK_MAX_FRACTION_CHEAP_SCAN
-        } else {
-            SEEK_MAX_FRACTION
-        };
+        let cap = seek_cap(idx, key);
         let mut total = 0.0;
 
         for v in values {

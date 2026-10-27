@@ -3766,3 +3766,117 @@ fn the_bool_fraction_is_bounded_and_survives_adversarial_layouts() {
 fn n_val(x: f64) -> Value {
     Value::Num(x)
 }
+
+/// A stub oracle for the INDEXED seek cap: a chosen selectivity plus the two column-kind flags
+/// that pick which ceiling applies (item 997).
+struct CapOracle {
+    frac: f64,
+    cheap: bool,
+    boolean: bool,
+}
+
+impl IndexOracle for CapOracle {
+    fn has_hash_index(&self, _key: &str) -> bool {
+        true
+    }
+    fn has_range_index(&self, _key: &str) -> bool {
+        false
+    }
+    fn scan_is_cheap(&self, _key: &str) -> bool {
+        self.cheap
+    }
+    fn column_is_bool(&self, _key: &str) -> bool {
+        self.boolean
+    }
+    fn live_nodes(&self) -> Option<usize> {
+        Some(200_000)
+    }
+    fn seed_fraction(&self, _key: &str, _op: CompareOp, _value: &Value) -> Option<f64> {
+        Some(self.frac)
+    }
+}
+
+/// The indexed seek gate uses a BOOL-specific ceiling, and declines at the measured break-even.
+///
+/// Item 949 flagged that `scan_is_cheap` does not recognise `Column::Bool` and left it open.
+/// Item 997 measured the curve (`seekcross_948 INDEXED=1`): the seek wins at 3-4% (0.61x, 0.81x),
+/// ties at 5% and LOSES from 6% up, reaching **2.76x at 15%** — all of it admitted by the general
+/// 15.4% ceiling.
+///
+/// The assertions that matter are the ABSOLUTE ones. Writing the boundary as
+/// `SEEK_MAX_FRACTION_BOOL` would make every expectation move with the constant, which is exactly
+/// how item 989's first test let a widening mutant through.
+#[test]
+fn an_indexed_bool_seek_declines_at_its_own_measured_break_even() {
+    let seeks = |frac: f64, cheap: bool, boolean: bool| {
+        seek_beats_scan(
+            &CapOracle {
+                frac,
+                cheap,
+                boolean,
+            },
+            "b",
+            CompareOp::Eq,
+            &Value::Bool(true),
+        )
+    };
+
+    // BOOL: measured 0.61x at 3% and 0.81x at 4%, so these must still seek.
+    assert!(seeks(0.03, false, true), "3% measured 0.61x — seek");
+    assert!(seeks(0.04, false, true), "4% measured 0.81x — seek");
+    // Measured 1.18x at 6% and 2.76x at 15% — the band the old ceiling admitted.
+    assert!(!seeks(0.06, false, true), "6% measured 1.18x — FILTER");
+    assert!(!seeks(0.10, false, true), "10% measured 1.87x — FILTER");
+    assert!(!seeks(0.15, false, true), "15% measured 2.76x — FILTER");
+
+    // A NON-bool column keeps the general ceiling: 10% is admitted there and refused for a bool,
+    // which is the whole point of the new arm and the one assertion a mutant collapsing the two
+    // branches must fail.
+    assert!(
+        seeks(0.10, false, false),
+        "10% on a general column still seeks"
+    );
+
+    // A DICT column keeps its own, tighter ceiling (item 407's ~3%), so the three are distinct:
+    // 4% seeks as a bool and declines as a dict.
+    assert!(!seeks(0.04, true, false), "4% on a dict column declines");
+
+    // Dict wins over bool when a column is somehow both — the order in `seek_cap` is observable,
+    // so it is pinned rather than left to reading.
+    assert!(
+        !seeks(0.04, true, true),
+        "dict ceiling applies when both flags are set"
+    );
+
+    // THE ORACLE ITSELF, against a real store. The stub above exercises the CAP arithmetic and
+    // nothing else, so a `column_is_bool` answering `true` for every key would apply the bool
+    // ceiling to Str and Num columns and survive every assertion above — which it did, as a
+    // mutant. Unlike items 995/996's expected survivors this one is a REAL gap: no other rule
+    // guarantees the answer, where those had a routing guard that already did.
+    let mut b = Builder::default();
+    for i in 0..8u32 {
+        b.node(
+            &["P"],
+            &[
+                ("flag", Value::Bool(i % 2 == 0)),
+                ("name", s("x")),
+                ("age", n(f64::from(i))),
+            ],
+        );
+    }
+    let store = b.build();
+
+    assert!(IndexOracle::column_is_bool(&store, "flag"), "a Bool column");
+    assert!(
+        !IndexOracle::column_is_bool(&store, "name"),
+        "a Str column is not"
+    );
+    assert!(
+        !IndexOracle::column_is_bool(&store, "age"),
+        "a Num column is not"
+    );
+    assert!(
+        !IndexOracle::column_is_bool(&store, "nope"),
+        "an absent key is not"
+    );
+}

@@ -28960,3 +28960,24 @@ disagree on the ANSWER` — item 984 confirmed through the repo's own gate.
   sides, against Gremlin's 29-37. Still **1.2-1.4x** and still unexplained in mechanism beyond the
   ~90 ns the closure chain accounted for — item 994's profiler harness
   (`hop-predicate-profile.ts`) is the instrument for a further attempt.
+- **✅ SHIPPED — item 949's LAST open half: the indexed bool seek gate, up to 2.76x (item 997).**
+  989/990 closed the un-indexed half by another route and 993 deliberately kept this one open.
+  `seekcross_948 INDEXED=1`: break-even is **5%** while `SEEK_MAX_FRACTION` admits to **15.4%**,
+  so the whole 5-15% band was seeded at up to 2.76x the scan it replaced. After: 6% 1.18→0.99x,
+  8% 1.54→1.01x, 12% 2.23→1.00x, 15% **2.76→1.00x**, with the sub-break-even rows unmoved
+  (0.61/0.81/0.99 → 0.61/0.79/0.99) and the un-indexed curve flat as a second control.
+- **A THIRD constant (`SEEK_MAX_FRACTION_BOOL = 0.05`), and the curve forbids reusing the dict
+  one (item 997).** Making `scan_is_cheap` answer yes for `Bool` would apply 0.031 and decline the
+  3-4% band where the bool seek still WINS (0.61x, 0.81x) — trading a 2.76x loss for a 1.6x one.
+  Dict break-even ~3%, bool ~5%: different columns, different scan costs, separately measured.
+- **The cap was ONE RULE IN TWO PLACES and is now `seek_cap` (item 997).** Both call sites
+  computed it inline — `pushable`'s drift shape — so the bool arm was added once, not twice.
+- **⚠️ TWO KINDS OF MUTATION SURVIVOR, and the difference decides whether to write a test
+  (item 997).** M1/M2/M3 CAUGHT (M2 and M3 pin the constant from BOTH sides, which item 989's
+  first test failed to do). **M5 — `column_is_bool` always true — SURVIVED and was a REAL gap**,
+  not redundancy: items 995/996's survivors were guaranteed by a routing guard (`farWalkFits`,
+  `startWalkFits`) enforcing the same condition, while nothing forces `column_is_bool` to identify
+  the right column — it would have applied the bool ceiling to Str and Num. Store-backed
+  assertions close it, 4/4. **The test to ask is whether ANOTHER RULE already forces the answer**;
+  three items in a row produced a survivor and treating them alike would either ship this gap or
+  add noise tests to the other two.
