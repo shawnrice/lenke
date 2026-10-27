@@ -61,6 +61,17 @@ const CASES: ReadonlyArray<readonly [string, string, string]> = [
     'MATCH (n:P) FILTER true RETURN n.k AS c ORDER BY c LIMIT 10',
     'clause spelling, 3 clauses',
   ],
+  // THE FOLD, PRICED (item 968). `MATCH … ORDER BY n.k LIMIT 10 RETURN n.k AS c` rewritten as
+  // `MATCH … RETURN n.k AS c ORDER BY n.k LIMIT 10` — two clauses, sort in the RETURN, and
+  // keyed on the INPUT variable rather than the output column. Item 968 verified those two
+  // spellings return identical rows on a 6-node fixture, so this arm asks only what it costs.
+  // If it lands near `clause asc`, the fold collects the whole 4.4x; if it lands near
+  // `clause +3rd`, the sort position is what matters and the clause count is incidental.
+  [
+    'folded form',
+    'MATCH (n:P) RETURN n.k AS c ORDER BY n.k LIMIT 10',
+    'what the fold would produce',
+  ],
 ];
 
 const medianOf = (xs: readonly number[]): number => {

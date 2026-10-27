@@ -28364,3 +28364,27 @@ asc` and 1.13x on a control with no sort and no page clause** — which a change
   while `RETURN … ORDER BY` sorts output rows. **Whether ISO permits the fold, and under which
   condition on the keys, is a SPECIFICATION question** — the BNF artifact and session notes, not a
   guess made while optimizing.
+- **PRICED at 3.72x and the precondition HOLDS — fold a trailing page clause into the following
+  `RETURN` (item 968).** A projection's `ORDER BY` **can key on an INPUT variable**, measured on a
+  six-node fixture: `MATCH (n:P) RETURN n.other AS o ORDER BY n.k LIMIT 3` returns `[50,40,30]`,
+  **identical to the statement spelling** `MATCH (n:P) ORDER BY n.k LIMIT 3 RETURN n.other AS o`,
+  including on a key the projection does not emit. So the fold is expressible in this engine, not
+  merely conceivable.
+- **The folded form costs what the CLAUSE spelling costs (item 968).** `stmt asc` 38.01 ms (3.87x),
+  `clause +3rd` 12.36 (1.26x), **`folded form` 10.22 (1.04x)**, `clause asc` 9.83 (1.00x). The
+  rewrite is therefore worth **38.01 → 10.22, 3.72x**, and it collects BOTH halves of item 967's
+  decomposition at once — removing the third clause (1.43x) and moving the sort into the
+  projection (3.09x).
+- **It has a precedent and a home (item 968).** `dropVacuousPage` already rewrites a page clause
+  away, composed in `compileLinear` ahead of the other rewrites (item 549: `MATCH … ORDER BY
+n.age RETURN count(*)` 126.60 ms → 0.00). This fold is its sibling — the vacuous case drops the
+  clause, this one moves it.
+- **⚠️ NOT BUILT, and the REFUSAL LIST is the work (item 968).** Folding changes an ANSWER, not
+  just a cost, when: the `RETURN` **aggregates** (`ORDER BY k LIMIT 10 RETURN count(*)` takes ten
+  rows then counts; folded it counts everything then pages one row), the `RETURN` carries
+  **`DISTINCT` or `GROUP BY`** (both change the row set the `LIMIT` applies to), the **key reads
+  something dropped before the `RETURN`**, there is a **`SKIP`/`OFFSET`** or more than one page
+  clause, or the page clause is **not immediately before the `RETURN`**. Each needs its own test.
+  It is also answer-equivalent where legal, so every mutant survives the differential tests
+  (item 585): it needs a route assertion on the clause count plus `sorted-page-probe` as the
+  before/after.
