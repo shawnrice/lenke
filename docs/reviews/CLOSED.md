@@ -21539,7 +21539,7 @@ last component is two nested-map lookups; only a flat per-type index removes the
 surface is swept** — each of the three carries a snapshot-format or public-API consequence and is a
 decision, not a 60-second iteration.
 
-## 797 — ⚠️ OPEN, RE-PRICED at item 926 (the scaffolding it blames is **9.16 ns a vertex, not 18-20**): TS **GQL** is 2.24x its own **Gremlin** twin on a filtered node count, both on their fast paths. And the TS spelling probe has NO cross-language group
+## 797 — ⚠️ OPEN, RE-PRICED TWICE — at item 926 (the scaffolding it blames is **9.16 ns a vertex, not 18-20**) and at item 929 (the gap itself is **~1.71-1.85x, not 2.24x**, and is NOT node-scan-specific): TS **GQL** is 2.24x its own **Gremlin** twin on a filtered node count, both on their fast paths. And the TS spelling probe has NO cross-language group
 
 **OPEN TARGET, diagnosed and located (no change).** The fourth instrument, `bun run bench:gremlin`,
 was the last unrun this session — and unlike items 789-796's six candidates, this one is not already
@@ -21719,7 +21719,7 @@ is where a cross-language comparison belongs.** Its own tick.
 process, which is the only reason its 2.24x was a comparison rather than a position in a run order.
 The gap it named is real; the TS side still cannot catch a cross-language divergence.
 
-## 801 — `probe:surface` (one spelling per PROCESS): item 797's cross-surface gap CONFIRMED at ~2.1x, and a SECOND gap found running the other way
+## 801 — `probe:surface` (one spelling per PROCESS): item 797's cross-surface gap CONFIRMED, RE-PRICED to ~1.71-1.85x at item 929 (recorded here as ~2.1x), and a SECOND gap found running the other way
 
 **DONE (instrument).** Item 797 named the gap, item 800 built the fix in the wrong place and
 specified the right one — **one shape per process**. `packages/native/surface-probe.ts`,
@@ -27124,11 +27124,46 @@ p` at **1.54x FASTER** and `query/shortest repeat-group unread` at **0.81x slowe
   spanned 2.06-2.12, and the GREMLIN arm alone moved **2.11 → 3.13 ms (1.48x)** between runs while
   its GQL twin held at 3.91/3.95. A ratio built from an arm that swings 1.48x cannot resolve a 2.1x
   claim. The labelled pair read 1.35x, which LOOKS like the gap halving and is exactly the reading
-  caught as false twice today (924's `query/perrow`, 926's param "residual"). **Item 801's ~2.1x
-  stands as recorded: not re-confirmed, not refuted.**
+  caught as false twice today (924's `query/perrow`, 926's param "residual"). **RESOLVED at item
+  929** on a quiet machine — the gap is real at ~1.71-1.85x, and 928's 1.14-1.35x readings were the
+  noise they looked like.
 - **`probe:surface` needs a quiet machine and a published per-arm self-variance (item 928).** The
   machine was in interactive use (a Steam client running; load 2.70 on 32 cores — plausible
   contributor, NOT a demonstrated cause, and thermal state and the probe's own variance at the
   default `SURFACE_N` are equally unexcluded). Before reading any ratio off it, run each arm enough
   times to publish its own spread — the discipline item 924 established for `bench_all`, which this
-  probe does not yet have.
+  probe does not yet have. **CAUSE FOUND at item 929, and 928 named the wrong one:** a `bun test`
+  of MINE was pinned at **99.8% CPU for 11h08m** throughout those runs, orphaned by a broken
+  `toLowerCase` attempt earlier in the session (source fixed, process never killed). ~1.0 of that
+  2.70 load was me. **RULE — enumerate your OWN processes before blaming a foreign one.** Steam was
+  running, so naming it was true and irrelevant; the honest hedge kept the claim from being false
+  but still pointed the next attempt at the wrong thing, which is most of the damage a wrong
+  attribution does. And CLAUDE.md's `timeout` + cgroup-cap rule would have prevented it: this
+  session applied it to every mutation and fuzz run and not to a plain `bun test`, which is the one
+  that hung. A test file under edit is arbitrary broken code too.
+- **RE-PRICED DOWN at item 929 — the cross-surface gap is ~1.71-1.85x, not ~2.1x, and is NOT
+  node-scan-specific.** 10 order-alternated rounds, 120 arm readings, each arm's own spread
+  published; every pair's effect clears its own worst arm's self-variance, the threshold 924
+  established and 928 could not meet. Filtered node count 1.85x unlabelled / 1.80x labelled
+  (801: 2.06-2.12 / 2.12-2.25), and the new edge-walking pair **1.71x**. So **item 800's bounding
+  claim — "it is the node-scan filter shape or it is nothing" — is REFUTED**: the gap is a property
+  of GQL's per-row filter path generally. Price the next attempt at 801's "own tick" against the
+  filtered HOP, not the node count. Still not "GQL is slower than Gremlin": `project one property`
+  runs **3.20x in GQL's favour** (item 835's direct-read projection).
+- **RULE — a pair named BOUNDING is not one until it is measured (item 929).** `probe:surface`'s
+  `one-hop count` carried item 800's bounding claim while measuring nothing: an unfiltered edge
+  count is **O(1) on both surfaces**, reading 0.00 vs 0.01 ms at 200k/600k AND at 800k/2,400,000 —
+  four times the graph, identical times. Its own `too fast to compare (raise SURFACE_N)` verdict
+  gives advice that cannot work, since no N makes a constant-time answer take a millisecond. Now
+  labelled a second O(1) CONTROL; `one-hop count, FILTERED` replaces it as the bounding pair, with
+  a far-end predicate that cannot be answered from a size, verified to SCALE (42.74 → 97.56 ms as N
+  doubles) before being trusted. Its arms are also the tightest of the six (1.19x / 1.06x) because
+  they run 26-46 ms rather than 2-4 ms — **the two node-count pairs sit close enough to the clock
+  that each still threw one outlier round in ten on an idle machine.**
+- **`probe:surface` ran its arms in a FIXED order, so arm-to-arm machine drift was unexcluded
+  (item 929).** 928's failure was a single arm moving, which is exactly what a fixed order cannot
+  rule out. `SURFACE_ORDER` now flips them, validated to fail loudly on a typo (which would
+  otherwise skip the pair in silence via the pair-level `continue` — a run that measures nothing and
+  prints a clean report, the fourth check this session built against that failure mode). Measured
+  order effect: **≤0.12x** on every pair, consistent in sign — too small to have caused 928, large
+  enough to keep alternating.

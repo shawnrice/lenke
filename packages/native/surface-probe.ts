@@ -82,15 +82,35 @@ const PAIRS: readonly (readonly [string, Spelling, Spelling])[] = [
     },
   ],
   [
-    // The BOUNDING pair. Item 800's one-hop group showed no gap, and that is what keeps the two
-    // rows above from inviting "GQL is slower than Gremlin" as a general claim — it is the
-    // node-scan filter shape or it is nothing.
-    'one-hop count',
+    // NOT A BOUNDING PAIR, and item 929 measured why rather than reading its name. An unfiltered
+    // edge count is answered O(1) from a size on BOTH surfaces: at 200,000 vertices / 600,000 edges
+    // it reads 0.00 against 0.01 ms, and at 800,000 / 2,400,000 — four times the graph — it reads
+    // 0.00 against 0.01 again. It never walks an edge, so it is a SECOND O(1) control beside
+    // `CONTROL unfiltered count`, and the `too fast to compare (raise SURFACE_N)` verdict it earns
+    // gives advice that cannot work: no N makes a constant-time answer take a millisecond.
+    //
+    // It was carrying the claim "it is the node-scan filter shape or it is nothing" (item 800's
+    // one-hop group showing no gap), and that claim was resting on a pair that measures nothing.
+    // `one-hop count, FILTERED` below is the pair that actually bounds it.
+    'CONTROL one-hop count (O(1) both surfaces)',
     gql('MATCH (a:P)-[:E]->(b) RETURN count(*) AS c'),
     {
       surface: 'grm',
       text: "g.V().hasLabel('P').out('E').count()",
       run: (g) => toArray(traversal(V(), hasLabel('P'), out('E'), count()), g),
+    },
+  ],
+  [
+    // THE REAL BOUNDING PAIR (item 929). A predicate on the FAR end cannot be answered from a
+    // size, so this one walks all 600,000 edges on both surfaces. It is what decides whether the
+    // filtered-count gap above is specific to the NODE-SCAN filter shape or is a general property
+    // of GQL's filter path — the question the O(1) pair above was wrongly credited with answering.
+    'one-hop count, FILTERED',
+    gql('MATCH (a:P)-[:E]->(b) WHERE b.k > 10 RETURN count(*) AS c'),
+    {
+      surface: 'grm',
+      text: "g.V().hasLabel('P').out('E').has('k', gt(10)).count()",
+      run: (g) => toArray(traversal(V(), hasLabel('P'), out('E'), has('k', gt(10)), count()), g),
     },
   ],
   [
@@ -217,7 +237,24 @@ if (process.env.SURFACE_ONE !== undefined) {
     // read as a traversal call three lines later.
     const timings: Record<string, { ms: number; answer: string; text: string }> = {};
 
-    for (const which of ['gql', 'grm']) {
+    // The ORDER the two arms run in, flippable so rounds can be ALTERNATED. Item 928 ran this
+    // probe three times and its two filtered-count pairs disagreed by up to 1.75x, with the
+    // GREMLIN arm alone moving 1.48x between runs; no cause was established. Alternating the arms
+    // is what removes "the machine drifted in the ~2s between arm A and arm B" as a candidate,
+    // which a fixed order cannot. Default is unchanged, so an unset environment reads as before.
+    const order = (process.env.SURFACE_ORDER ?? 'gql,grm').split(',');
+
+    // VALIDATED, not trusted: a typo'd `SURFACE_ORDER` would leave `timings.gql` undefined, and the
+    // pair-level `continue` below would then skip the pair in silence — a run that measures nothing
+    // and prints a clean report. Three checks in this session returned a reassuring answer instead
+    // of failing (a `noclobber` append that wrote nothing, a comparator that compared zero rows, a
+    // zsh split that ran one iteration), so this one fails loudly.
+    if (order.length !== 2 || !order.includes('gql') || !order.includes('grm')) {
+      console.error(`SURFACE_ORDER must be a permutation of gql,grm — got ${order.join(',')}`);
+      process.exit(2);
+    }
+
+    for (const which of order) {
       const r = Bun.spawnSync({
         cmd: [process.argv[0] ?? 'bun', import.meta.path],
         env: { ...process.env, SURFACE_ONE: `${index}:${which}` },
