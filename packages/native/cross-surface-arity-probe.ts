@@ -54,7 +54,7 @@ const REPS = Number(process.env.A_REPS ?? 14);
 const DROP = 3;
 
 /** Three always-true keys, so an arity-3 ladder needs no repeated key. */
-const KEYS = ['k', 'j', 'm'] as const;
+const KEYS = ['k', 'j', 'm', 'w'] as const;
 
 type Cell = {
   /** Filters on the start/scanned node. */
@@ -74,6 +74,12 @@ const CELLS: Record<string, Cell> = {
   'post:1': { pre: 0, post: 1, hop: true },
   'post:2': { pre: 0, post: 2, hop: true },
   'post:3': { pre: 0, post: 3, hop: true },
+  // Arity 4 exists to locate the cliff AFTER a width unroll, not to be unrolled in turn. Item 934
+  // unrolled width 2 and wrote "the third filter costs ~1.5 ns a row, so there is nothing there to
+  // unroll for" — true of the code BEFORE that change and false after it, because the unroll moved
+  // the step from 1->2 to 2->3 (item 993). A width arm must therefore be measured one arity BEYOND
+  // the one it adds, or its own justification is written against the code it replaced.
+  'post:4': { pre: 0, post: 4, hop: true },
   'both:1+1': { pre: 1, post: 1, hop: true },
   'both:2+1': { pre: 2, post: 1, hop: true },
   'both:1+2': { pre: 1, post: 2, hop: true },
@@ -117,7 +123,7 @@ const build = (): Graph => {
       g.addVertex({
         id: `v${i}`,
         labels: ['P'],
-        properties: { k: i % 50, j: i % 37, m: i % 11 },
+        properties: { k: i % 50, j: i % 37, m: i % 11, w: i % 7 },
       }),
     );
   }

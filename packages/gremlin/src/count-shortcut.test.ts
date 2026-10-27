@@ -16,6 +16,7 @@ import {
   identity,
   in_,
   lt,
+  neq,
   out,
   toArray,
   traversal,
@@ -74,7 +75,10 @@ const build = (): Graph => {
       // tests one key twice, which a fold that ignored `key` and reused the first filter's would
       // still pass. It is `k` doubled so its thresholds are distinct from `k`'s, and nothing that
       // predates it filters on `j`, so no existing count moves.
-      properties: { k: i, j: i * 2 },
+      // `m` is a THIRD key, added for item 993's width-3 straight-line arm. Two keys cannot
+      // exercise it at all, and a three-filter case written over two keys would let a mutant that
+      // reuses the second filter's key pass.
+      properties: { k: i, j: i * 2, m: i * 3 },
     }),
   );
 
@@ -840,5 +844,55 @@ describe('the filtered hop count agrees with the general walk on a cross-type co
 
     expect(n(g, V(), out('E'), has('k', gt(0)), count())).toBe(1);
     expect(n(g, V(), out('E'), count())).toBe(1);
+  });
+});
+
+describe('the width-3 straight-line arm answers a three-filter hop (item 993)', () => {
+  // Item 934 unrolled widths 1 and 2 and left 3+ on the general loop, writing that "the third
+  // filter costs ~1.5 ns a row, so there is nothing there to unroll for". That was measured on the
+  // code BEFORE its own unroll: once width 2 went straight-line, `post:2` fell 54.81 -> 30.25 and
+  // the arity step MOVED to 2->3, where it measured +26.1 ms (56.2 against 30.1 at 600,000 edges).
+  // Widening the unroll to 3 puts `post:3` back onto its two-filter twin at 30.2 (1.86x).
+  //
+  // EVERY CONJUNCT IS LOAD-BEARING HERE, which is what gives the arm teeth: an untyped hop has far
+  // ends 1,2,2,0,3,1,1, so the far vertices are v0 (x1), v1 (x3), v2 (x2) and v3 (x1), and the
+  // three filters are chosen to exclude exactly one of v0, v1, v2 each while all passing v3.
+  // Dropping any one therefore changes the ANSWER rather than only the route:
+  //
+  //   all three        -> v3 only           1
+  //   without k        -> v3, v0            2
+  //   without j        -> v3, v1            4
+  //   without m        -> v3, v2            3
+  const three = [has('k', gt(0)), has('j', neq(2)), has('m', neq(6))] as const;
+
+  test('three filters after a hop count only the vertex passing all of them', () => {
+    const g = build();
+
+    expect(n(g, V(), out(), ...three, count())).toBe(1);
+  });
+
+  test('each conjunct is load-bearing, so a dropped one is a WRONG ANSWER not a slower route', () => {
+    const g = build();
+
+    expect(n(g, V(), out(), has('j', neq(2)), has('m', neq(6)), count())).toBe(2);
+    expect(n(g, V(), out(), has('k', gt(0)), has('m', neq(6)), count())).toBe(4);
+    expect(n(g, V(), out(), has('k', gt(0)), has('j', neq(2)), count())).toBe(3);
+  });
+
+  test('it agrees with the forced decline, so the arm matches the general walk', () => {
+    const g = build();
+
+    expect(n(g, V(), out(), ...three, count())).toBe(
+      declined(g, V(), out(), ...three, identity(), count()),
+    );
+  });
+
+  test('a FOURTH filter still answers correctly on the general loop', () => {
+    // The unroll stops at 3 and arity 4 keeps the loop — measured, not assumed: `post:4` reads
+    // 56.6-60.8 against `post:3`'s 30.2, so the cliff has MOVED to 3->4 rather than gone. This
+    // case exists so the loop that still serves width 4+ stays covered.
+    const g = build();
+
+    expect(n(g, V(), out(), ...three, has('k', lt(99)), count())).toBe(1);
   });
 });

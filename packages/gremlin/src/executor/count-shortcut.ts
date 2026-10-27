@@ -278,6 +278,51 @@ const hasAny = (
  * visits exactly the same far endpoints in the same multiset — the count cannot
  * differ, only the cost.
  */
+/**
+ * The first three key/predicate pairs as flat locals, padded when there are fewer.
+ *
+ * Cold — once per query — and extracted at item 993 for the same reason as [`hasChain`]: the
+ * width-3 arm pushed `filteredHopCount` past the complexity limit, and the padding ternaries are
+ * the cheapest thing to move because nothing here runs per candidate. The padding value for an
+ * absent predicate is `preds[0]`, never `undefined`, so the slot stays monomorphic for the arms
+ * that read it without using it.
+ */
+const unrollSlots = (
+  keys: readonly string[],
+  preds: readonly Predicate[],
+): [string, Predicate, string, Predicate, string, Predicate] => [
+  keys[0],
+  preds[0],
+  keys.length > 1 ? keys[1] : '',
+  keys.length > 1 ? preds[1] : preds[0],
+  keys.length > 2 ? keys[2] : '',
+  keys.length > 2 ? preds[2] : preds[0],
+];
+
+/**
+ * `rest` as a non-empty chain of `has` steps, or `undefined` if anything else appears.
+ *
+ * Extracted from `filteredHopCount` at item 993, for the LINT gate rather than for speed: adding
+ * the width-3 straight-line arm took that function to a cyclomatic complexity of 38 against a
+ * limit of 35. It is the right thing to move because it is COLD — it runs once per query, where
+ * the width arms it makes room for run once per candidate. Extracting one of THOSE instead would
+ * have undone the change: item 934 measured entering a call at ~65 ns a row, which is the whole
+ * of the step the unrolls exist to remove.
+ */
+const hasChain = (rest: readonly Step[]): Extract<Step, { kind: 'has' }>[] | undefined => {
+  const filters: Extract<Step, { kind: 'has' }>[] = [];
+
+  for (const step of rest) {
+    if (step.kind !== 'has') {
+      return undefined;
+    }
+
+    filters.push(step);
+  }
+
+  return filters.length === 0 ? undefined : filters;
+};
+
 const filteredHopCount = (hop: Step, rest: readonly Step[], graph: Graph): number | undefined => {
   if (hop.kind !== 'out' && hop.kind !== 'in') {
     return undefined; // `both` double-counts a self-loop; see `vertexStepCount`
@@ -300,17 +345,9 @@ const filteredHopCount = (hop: Step, rest: readonly Step[], graph: Graph): numbe
   // written, so the cliff was this rung's arity limit alone and not a semantic obstacle. It is the
   // same class as the spelling cliffs CLAUDE.md names: two conjuncts after a hop mean exactly what
   // one conjunction means, and cost 11x.
-  const filters: Extract<Step, { kind: 'has' }>[] = [];
+  const filters = hasChain(rest);
 
-  for (const step of rest) {
-    if (step.kind !== 'has') {
-      return undefined;
-    }
-
-    filters.push(step);
-  }
-
-  if (filters.length === 0) {
+  if (filters === undefined) {
     return undefined;
   }
 
@@ -334,10 +371,7 @@ const filteredHopCount = (hop: Step, rest: readonly Step[], graph: Graph): numbe
   // lands on the ONE-filter twin at 28.49. So the call and the loop cost ~65 ns a row EACH, and
   // only removing both recovers the step. Widths above 2 keep the loop: the third filter costs
   // ~1.5 ns a row, so there is nothing there to unroll for.
-  const [k0] = keys;
-  const [p0] = preds;
-  const k1 = width > 1 ? keys[1] : '';
-  const p1 = width > 1 ? preds[1] : preds[0];
+  const [k0, p0, k1, p1, k2, p2] = unrollSlots(keys, preds);
 
   // Drive the FAR side where it is sound: one predicate test per far VERTEX, contributing that
   // vertex's whole degree, instead of one per EDGE with a vertex lookup to go with it.
@@ -412,6 +446,11 @@ const filteredHopCount = (hop: Step, rest: readonly Step[], graph: Graph): numbe
         hit = matches(p0, v.properties[k0]);
       } else if (width === 2) {
         hit = matches(p0, v.properties[k0]) && matches(p1, v.properties[k1]);
+      } else if (width === 3) {
+        hit =
+          matches(p0, v.properties[k0]) &&
+          matches(p1, v.properties[k1]) &&
+          matches(p2, v.properties[k2]);
       } else {
         hit = true;
 
@@ -475,6 +514,11 @@ const filteredHopCount = (hop: Step, rest: readonly Step[], graph: Graph): numbe
         hit = matches(p0, far.properties[k0]);
       } else if (width === 2) {
         hit = matches(p0, far.properties[k0]) && matches(p1, far.properties[k1]);
+      } else if (width === 3) {
+        hit =
+          matches(p0, far.properties[k0]) &&
+          matches(p1, far.properties[k1]) &&
+          matches(p2, far.properties[k2]);
       } else {
         hit = true;
 
@@ -1143,6 +1187,8 @@ const tallyFarEnds = (
   const [p0] = preds;
   const k1 = width > 1 ? keys[1] : '';
   const p1 = width > 1 ? preds[1] : preds[0];
+  const k2 = width > 2 ? keys[2] : '';
+  const p2 = width > 2 ? preds[2] : preds[0];
   let n = 0;
 
   for (const edge of set) {
@@ -1154,6 +1200,11 @@ const tallyFarEnds = (
       hit = matches(p0, far.properties[k0]);
     } else if (width === 2) {
       hit = matches(p0, far.properties[k0]) && matches(p1, far.properties[k1]);
+    } else if (width === 3) {
+      hit =
+        matches(p0, far.properties[k0]) &&
+        matches(p1, far.properties[k1]) &&
+        matches(p2, far.properties[k2]);
     } else {
       hit = true;
 

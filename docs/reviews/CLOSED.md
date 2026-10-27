@@ -27214,7 +27214,8 @@ p` at **1.54x FASTER** and `query/shortest repeat-group unread` at **0.81x slowe
   so the fix's success would be unverifiable. Shipped trade: 4.7-4.9x on two or more filters for an
   unresolvable ≤5% on one. Four independent A/B runs all put PRE marginally ahead (0.88, 0.91, 0.93,
   0.956), so treat the residue as a small real cost rather than zero.
-- **⚠️ OPEN, NEW: filters on BOTH sides of a hop still decline the count shortcut (item 930).**
+- **✅ CLOSED AT 933 — filters on BOTH sides of a hop decline the count shortcut (item 930).**
+  `bothFilteredHopCount` shipped at item 933 (1.94x); the far-vertex memo on it was REFUTED at 992.
   `V().has(x,p).out(E).has(k,q)` gives `mid = [has, out, has]`, and neither half's chain-folding
   reaches it: `filteredHopCount` needs `mid[0]` to be the hop, `startFilteredHopCount` needs the hop
   LAST, and `filterChainCount` rejects the `out`. The hop is in the middle, so the shape falls through
@@ -27253,7 +27254,7 @@ p` at **1.54x FASTER** and `query/shortest repeat-group unread` at **0.81x slowe
   438's pattern list to admit a second property is precisely the arm addition 438 declined.
   Previously re-priced from the node path (437) and from the TS side (441, stopped after three
   ticks); this is the hop path. **Price any future attempt as fusion, and check this line first.**
-- **⚠️ OPEN, PRICED — filters on BOTH sides of a hop are the worst cell in the cross-surface matrix:
+- **✅ CLOSED AT 933, AND MIS-PRICED HERE (see 933); the 5x below is NOT achievable — filters on BOTH sides of a hop are the worst cell in the cross-surface matrix:
   moving one of two filters across the hop costs 5.06x on Gremlin and 2.33x on GQL (item 932).** Same
   answer, same number of predicate tests, only the position differs: `grm post:2` 54.81 ms →
   `both:1+1` **277.41**, `gql post:2` 64.55 → **150.27**. Item 930 named this and gave the Gremlin
@@ -27265,7 +27266,7 @@ p` at **1.54x FASTER** and `query/shortest repeat-group unread` at **0.81x slowe
   split case reached its own one-sided twin: ~55 ms against 277, about **5x (~220 ms on a
   200k/600k fixture)** — the largest cell in the matrix. A SCREEN reading; isolate with alternated
   rounds before building.
-- **⚠️ OPEN, PRICED — the 1→2 filter ARITY STEP is a ROUTE boundary, not a predicate cost
+- **✅ SUPERSEDED AT 993 — the step is REAL but sits at 2→3, not 1→2 (item 934's own unroll moved it); the 1→2 filter ARITY STEP is a ROUTE boundary, not a predicate cost
   (item 932).** The second filter costs 40-88x what the third costs, on every Gremlin row of the
   matrix: `post` +26.33 ms (43.9 ns/row) for the 2nd then +0.29 (0.5 ns/row) for the 3rd; `pre`
   +23.77 (39.6) then +0.60 (1.0). One extra property read and one extra `matches` is a few ns, not
@@ -27508,7 +27509,7 @@ contributes nothing` — the far-driven mistake reports 2 where the answer is 1,
   change in hand and was wrong within a tick. Cost was one tick and no engine damage, because 936
   shipped as PRICED-NOT-BUILT rather than as a change — which is the argument for that outcome
   existing.
-- **⚠️ OPEN, NEWLY LOCATED AND MUCH LARGER — the far-hop walk's PREDICATE costs 272 ns a far vertex
+- **❌ INVALID, CORRECTED AT 938 (two walks, two denominators) — the far-hop walk's PREDICATE costs 272 ns a far vertex
   where the node scan's costs ~10 (item 937).** Decomposed on the same fixture, 200k vertices /
   600k edges, median of 11: `WHERE b.k > -1` **58.03 ms (290 ns a far vertex)**, `WHERE true`
   **3.69 ms (18 ns)** — so the WALK is 18 ns and the PREDICATE is **272 ns on top** — while no
@@ -27812,7 +27813,7 @@ product's one-sided predicate` 2.22x (285), `one end labelled, the other free` 2
   item 941's audit could not catch this one, since nothing in the file contradicts 871 and the
   engine simply moved underneath it. The TS twin was separately fixed at item 875 (`truthProps`),
   so the whole bare-bool family is now closed on both engines.
-- **⚠️ OPEN, NEWLY PRICED — `p.bul = false` costs 3.18x `NOT p.bul` in the NATIVE engine, row
+- **✅ CLOSED AT 982 (filter route, 5.71x→0.99x) AND 989 (seed gate) — `p.bul = false` costs 3.18x `NOT p.bul` in the NATIVE engine, row
   matched (item 946).** The census could not see this for want of one arm: `NOT p.bul` keeps
   196,000 rows and `= true` keeps 4,000, so they were never comparable. `= false` is the
   row-matched twin — same survivors, same answer, one spelling apart — and reads **683.0 / 682.7 /
@@ -27842,7 +27843,7 @@ product's one-sided predicate` 2.22x (285), `one end labelled, the other free` 2
 Prop}` 160.0 / 4,000; `NOT` → `Filter{Scan, Not(Prop)}` 214.7 / 196,000; `= false` →
   `IndexSeek{value: Bool(false)}` **683.4 / 196,000**. The two 196,000-row spellings take different
   plans, which is the whole of the 3.18x.
-- **⚠️ OPEN, PRICED — the no-hash-index equality seed is UNCONDITIONAL, and the measurement
+- **✅ CLOSED AT 989/990 — the gate now consults a sampled statistic; the no-hash-index equality seed is UNCONDITIONAL, and the measurement
   justifying it was taken at 20% selectivity (item 947).** `seek_beats_scan` exists and works
   (`SEEK_MAX_FRACTION = 0.154`, `0.031` for a dictionary column; item 895 records it correctly
   rejecting a 25% seek) — but the equality rule splits on whether a hash index exists, and the
@@ -27874,7 +27875,7 @@ Prop}` 160.0 / 4,000; `NOT` → `Filter{Scan, Not(Prop)}` 214.7 / 196,000; `= fa
   The pair is row-matched by construction: a boolean column whose TRUE fraction is dialled per
   column makes `p.bXX = true` (IndexSeek) and `p.bXX` (Filter{Scan,Prop}) two spellings over
   identical rows.
-- **⚠️ OPEN, NEW — `scan_is_cheap` does not recognise `Column::Bool`, so fixing the seed gate alone
+- **⚠️ STILL OPEN for the INDEXED gate only (989 closed the un-indexed half by another route) — `scan_is_cheap` does not recognise `Column::Bool`, so fixing the seed gate alone
   would still use the wrong cap (item 948).** It reads
   `matches!(self.props.get(key), Some(Column::Dict { .. }))`, so only a dictionary column is
   "cheap" and a bool gets `SEEK_MAX_FRACTION = 0.154` — admitting seeks to ~15% where the measured
@@ -27920,7 +27921,7 @@ Prop}` 160.0 / 4,000; `NOT` → `Filter{Scan, Not(Prop)}` 214.7 / 196,000; `= fa
   including the 2% case the sweep shows the seek WINNING by 0.86x, and every numeric and string key
   this session never measured. Presented as "consult the cap" it would in fact be "never seed
   without an index".
-- **⚠️ OPEN — what is actually left on the no-index seek, and neither option is a one-liner
+- **✅ CLOSED AT 989/990 (option 2 taken: a sampled statistic) — what is actually left on the no-index seek, and neither option is a one-liner
   (item 949).** (1) **Decide on a PRIOR**: a `Column::Bool` has two values, so under ignorance the
   expected selectivity is ~50%, far past any break-even, and item 948's sweep gives the asymmetry —
   declining costs **at most 1.16x** (at 2% true, the only point where the seek wins) and saves **up
@@ -28691,7 +28692,7 @@ predicate` closed at 644. Every remaining flag on either side is recorded as cor
   `if (conjunct.kind !== 'compare') return null` — so a `NOT` conjunct **declines the whole
   chain** and the predicate runs entirely through the generic evaluator, while `p.b = false` is
   a `compare` and lifts into `eqProps`. **There is no lifted form for a NEGATED bare bool prop.**
-- **⚠️ OPEN, specified not built (item 983).** The fix is a `notTruthProps` list (or a polarity
+- **✅ BUILT AT 984 (2.1x → 0.96x) (item 983).** The fix is a `notTruthProps` list (or a polarity
   flag on `truthProps`) — a NEW element-direct carrier, and **item 901's rule is that such a list
   is a CORRECTNESS surface with at least five consumers**, each of which must know about it or
   return a silent superset. Bounded work with a known hazard, not a one-liner.
@@ -28850,3 +28851,35 @@ disagree on the ANSWER` — item 984 confirmed through the repo's own gate.
   dispatch trace shows the rung firing (`HIT mid=[has,out,has]`, 4 of 4). Item 932's screen figure
   of 54.81 for `post:2` reads **29.0-30.6 isolated**, which is the in-sweep inflation item 737
   warns about, measured again here.
+- **✅ SHIPPED — the width-3 straight-line arm, 1.86x (item 993).** `post:3` **56.2 → 30.2 ms** at
+  600,000 edges, landing on its two-filter twin (29.6) and one-filter twin (28.6), both flat as
+  controls the arm cannot reach; the arm's own spread tightens from 54-60 to 29.8-30.7. Route
+  verified BEFORE timing (`post:2` traces `width=2`, `post:3` traces `width=3`).
+- **⚠️ CORRECTED — item 932's arity step is at 2→3, not 1→2, because item 934's own unroll MOVED
+  it (item 993).** Isolated, 6 readings each with order alternated inside every round: `post:1`
+  29.9 / `post:2` 30.1 / `post:3` 56.2 — marginal 2nd **+0.2 ms**, marginal 3rd **+26.1 ms**. 932
+  recorded +26.33 for the 2nd and +0.29 for the 3rd: **the same magnitudes, on the wrong steps.**
+  934's comment — _"the third filter costs ~1.5 ns a row, so there is nothing there to unroll
+  for"_ — was true of the code before its own change and false after it.
+- **⚠️ RULE — a width/arity arm must be measured ONE ARITY BEYOND the one it adds (item 993).**
+  Otherwise its justification is written against the code it replaced, which is exactly how 934's
+  comment expired. The cliff here is NOT gone, it has MOVED: `post:4` reads **56.6 / 60.8** against
+  `post:3`'s 30.2 / 30.5. `post:4` is now a permanent probe cell carrying this rule. Unrolling is
+  whack-a-mole and a general fix is hard for 934's recorded reason — the call and the loop cost
+  ~65 ns a row EACH and only removing both recovers the step — so arity 3 gets an arm and 4+ keeps
+  the loop, as a MEASURED fact.
+- **TEETH — three-filter coverage did not exist, and the fixture needed a third key (item 993).**
+  Four cases built so every conjunct is load-bearing (all three → 1 row, drop k → 2, drop j → 4,
+  drop m → 3, hand-computed from the untyped hop's far-end multiset 1,2,2,0,3,1,1). Mutants: third
+  conjunct dropped **CAUGHT**, third key reuses the second **CAUGHT**, arm deleted **SURVIVED —
+  EXPECTED** (falls to an answer-equivalent loop; a route choice needs a route assertion, item
+  933's precedent). The two kills ARE the dispatch evidence. **Coverage limit:** the mutants reach
+  the `filteredHopCount` sites, not the multi-type twin, which this fixture does not route — as is
+  already true of the width-1 and width-2 arms.
+- **🧹 NINE stale `OPEN` headers struck, the lag item 941 diagnosed recurring anyway (item 993).**
+  941 recorded the fix — _"the commit that records a retraction should STRIKE THE HEADER it
+  overturns, in the same commit"_ — and it cost items 991, 992 and half of 993 regardless. Struck
+  after READING each (941's warning that a regex scan over-matches): 930, 932 both-sides (933),
+  932 arity step (993), 937's 272 ns (938), 947 (982/989), 948 (989/990), 949 ×2 (989/990), 983
+  (984). **949's `scan_is_cheap`/`Column::Bool` bullet was deliberately LEFT OPEN** — 989 closed
+  only the un-indexed half and by another route, so the indexed gate still cannot see `Bool`.
