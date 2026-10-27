@@ -28695,3 +28695,23 @@ predicate` closed at 644. Every remaining flag on either side is recorded as cor
   flag on `truthProps`) — a NEW element-direct carrier, and **item 901's rule is that such a list
   is a CORRECTNESS surface with at least five consumers**, each of which must know about it or
   return a silent superset. Bounded work with a known hazard, not a one-liner.
+- **SHIPPED — `notTruthProps`: `NOT p.b` lifts like its positive twin, 2.1x → 0.96x (item 984),
+  closing item 983.** `directEqProps` admits a bare `prop` or a `compare` and nothing else, so a
+  `NOT` conjunct made it DECLINE THE WHOLE CHAIN. Alternated, with a control: **POST 3.46/3.43 ms
+  against PRE 9.48/6.87 — every POST below every PRE**, converging on the bare spelling; control
+  `k = 7` POST 3.51/3.57 against PRE 4.27/4.27, a ~1.2x drift reported rather than hidden.
+- **Dispatch verified BEFORE the timing (item 984).** A counter: **20,000 hits for `NOT p.b`**,
+  **0** for the bare spelling, answer 4,000. Items 979 and 980 are this session's two cases of a
+  change measured before anyone checked it ran, and both were wrong.
+- **The in-process number was bimodal and the isolated alternation fixed it (item 984).** First
+  read 6.50 median over rounds 5.45 … 9.01; alternated isolation gave 3.4x tight. Item 965's
+  rule applied BEFORE believing the first number.
+- **TEETH (item 984).** M1 (lift but never APPLY — the silent superset) **CAUGHT, 165 failures**,
+  which also says `NOT <prop>` is heavily covered already. M2 (drop the hop-projection merge)
+  **SURVIVED** — **the same status item 903 recorded for `truthProps`' and `pathProps`' merges**:
+  `matchesPredicate` still applies the predicate, so it is not load-bearing for current shapes.
+  Kept as a precondition and labelled, not left looking proven.
+- **Seven sites, per item 901's rule that a new carrier has many (item 984).** Type,
+  `hasPredicate`, the accumulator, the **"did anything lift" guard** (the exact line 903 forgot),
+  the declared return type (caught by `tsc`), the `satisfies` loop, and the hop-projection gate
+  and merge.

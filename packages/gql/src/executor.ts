@@ -4418,6 +4418,19 @@ export type CPredicate = {
    * comparison never reaches `compileExpr` at all.
    */
   truthProps?: readonly string[];
+  /**
+   * The NEGATED twin of {@link truthProps}: `WHERE NOT n.flag` (item 984).
+   *
+   * `directEqProps` declined the WHOLE chain on a `NOT` conjunct, because its loop admits a bare
+   * `prop` or a `compare` and nothing else — so `NOT p.b` ran entirely through the generic
+   * evaluator while `p.b = false`, which IS a compare, lifted into `eqProps`. Two spellings of
+   * one question, measured **2.20x apart** at 200,000 rows (item 983: 8.14 ms against 3.56).
+   *
+   * A row survives iff the cell is cleanly FALSE. `asTruth` is the same function the generic
+   * path uses, so a non-boolean RAISES here exactly as it does there — the lift changes the
+   * route, not the answer and not which queries throw.
+   */
+  notTruthProps?: readonly string[];
 
   /**
    * The same lift for a DOTTED path — `WHERE n.meta.city = 'nyc'` (item 900).
@@ -4623,6 +4636,8 @@ const directEqProps = (
   eq: CProp[];
   cmp: CCmpProp[];
   truth: string[];
+  /** Keys of `NOT <ownVar>.<key>` conjuncts — the negated twin of `truth` (item 984). */
+  notTruth: string[];
   path: CPathProp[];
   residual: Expr | undefined;
 } | null => {
@@ -4638,6 +4653,7 @@ const directEqProps = (
   const eq: CProp[] = [];
   const cmp: CCmpProp[] = [];
   const truth: string[] = [];
+  const notTruth: string[] = [];
   const path: CPathProp[] = [];
 
   for (const conjunct of conjuncts) {
@@ -4649,6 +4665,19 @@ const directEqProps = (
     // to check for closedness; the variable check is the whole precondition.
     if (conjunct.kind === 'prop' && conjunct.variable === ownVar) {
       truth.push(conjunct.key);
+      continue;
+    }
+
+    // `WHERE NOT n.flag` (item 984). Before this the check below declined the WHOLE chain on it
+    // — a `not` is neither a bare `prop` nor a `compare` — so the predicate ran entirely through
+    // the generic evaluator, while `n.flag = false` lifted into `eqProps` because it IS a
+    // compare. Item 983 measured those two spellings of one question **2.20x apart**.
+    if (
+      conjunct.kind === 'not' &&
+      conjunct.expr.kind === 'prop' &&
+      conjunct.expr.variable === ownVar
+    ) {
+      notTruth.push(conjunct.expr.key);
       continue;
     }
 
@@ -4715,7 +4744,13 @@ const directEqProps = (
   // the other three lists were empty — so it lifted only when some OTHER conjunct lifted beside
   // it, and the benchmark predicate is a lone dotted compare. A new list has to be added to every
   // place that asks "did anything lift", not just to the return type.
-  if (eq.length === 0 && cmp.length === 0 && truth.length === 0 && path.length === 0) {
+  if (
+    eq.length === 0 &&
+    cmp.length === 0 &&
+    truth.length === 0 &&
+    notTruth.length === 0 &&
+    path.length === 0
+  ) {
     return null;
   }
 
@@ -4726,7 +4761,7 @@ const directEqProps = (
   // `direct.residual` because the shape is what a future MIXED chain would need: item 259 made
   // reordering a FILTER's conjuncts unobservable, so lifting the equalities and leaving the rest
   // is now sound where it previously was not, and that is the next step rather than this one.
-  return { eq, cmp, truth, path, residual: undefined };
+  return { eq, cmp, truth, notTruth, path, residual: undefined };
 };
 
 /**
@@ -4757,6 +4792,7 @@ export const hasPredicate = (pred: CPredicate): boolean =>
   pred.where !== undefined ||
   (pred.eqProps?.length ?? 0) > 0 ||
   (pred.truthProps?.length ?? 0) > 0 ||
+  (pred.notTruthProps?.length ?? 0) > 0 ||
   (pred.cmpProps?.length ?? 0) > 0 ||
   (pred.pathProps?.length ?? 0) > 0;
 
@@ -4785,6 +4821,7 @@ export const compilePredicate = (
     ...(direct === null || direct.eq.length === 0 ? {} : { eqProps: direct.eq }),
     ...(direct === null || direct.cmp.length === 0 ? {} : { cmpProps: direct.cmp }),
     ...(direct === null || direct.truth.length === 0 ? {} : { truthProps: direct.truth }),
+    ...(direct === null || direct.notTruth.length === 0 ? {} : { notTruthProps: direct.notTruth }),
     ...(direct === null || direct.path.length === 0 ? {} : { pathProps: direct.path }),
   };
 };
@@ -5653,6 +5690,18 @@ export const satisfies = (
   if (pred.truthProps !== undefined) {
     for (const key of pred.truthProps) {
       if (asTruth(propOf(element, key)) !== true) {
+        return false;
+      }
+    }
+  }
+
+  // The NEGATED twin (item 984). A row survives iff the cell is cleanly FALSE: `NOT UNKNOWN` is
+  // UNKNOWN and a filter keeps only TRUE, so a null or absent cell drops here exactly as it does
+  // on the generic path. `asTruth` is that same function, so a non-boolean RAISES identically —
+  // the lift changes the route, not the answer and not which queries throw.
+  if (pred.notTruthProps !== undefined) {
+    for (const key of pred.notTruthProps) {
+      if (asTruth(propOf(element, key)) !== false) {
         return false;
       }
     }
