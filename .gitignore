@@ -201,3 +201,6 @@ docs/dogfood/
 # any modifications", NOT redistribution, so these are fetched on demand by
 # research/iso-39075/fetch.sh and never committed.
 research/iso-39075/artifacts/
+
+# CPU profiles from `bun --cpu-prof` (item 994's hop-predicate harness) — large and per-run.
+*.cpuprofile

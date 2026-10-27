@@ -28883,3 +28883,26 @@ disagree on the ANSWER` — item 984 confirmed through the repo's own gate.
   932 arity step (993), 937's 272 ns (938), 947 (982/989), 948 (989/990), 949 ×2 (989/990), 983
   (984). **949's `scan_is_cheap`/`Column::Bool` bullet was deliberately LEFT OPEN** — 989 closed
   only the un-indexed half and by another route, so the indexed gate still cannot see `Bool`.
+- **✅ CHAIN 936-939 ANSWERED — the GQL hop-predicate cost is the generic `compare` CLOSURE, 283
+  of 307 ns a candidate (item 994).** Item 939 said a future attempt _"needs a profiler on the
+  real query — which no item in this chain used"_. `bun --cpu-prof` on `hop-predicate-profile.ts`:
+  **72.4% of samples in one frame**, `compileExpr`'s `case 'compare'` arm —
+  `(env) => compareTruth(op, fn, l(env), r(env))`, three nested closure calls and a generic 3VL
+  dispatch per candidate. 6,796 ms over 120 reps x 200,000 candidates = 283 ns, against 307 ns for
+  the whole query; `farOnlyHopCount`'s own self time is **0.9%**. The CONTROL settles it from the
+  other side: Gremlin has no separate predicate frame — `matches(pred, v.properties[key])` inlines
+  into `filteredHopCount`, 63.8% in one frame at **149 ns for the walk AND the test together**,
+  less than GQL spends on the test alone.
+- **⚠️ METHOD — anything under ~10% needs its own harness; anything over ~70% needs a PROFILER,
+  not a stopwatch (item 994).** Four attributions failed by subtraction (936 FALSE, 937 INVALID,
+  938 REFUTED at 939) while chasing a term that is **92% of the query**. Arms self-varying
+  1.2-2.2x cannot localize that; one profiler run names it. A profile of the existing arity probe
+  is useless for this — **98% of its samples are FIXTURE CONSTRUCTION** (2,700 ms of profile for a
+  57 ms query), which is why the harness builds once and iterates (`A_REPS`).
+- **⚠️ OPEN, NEWLY LOCATED — give the hop walks the lifted compare the NODE SCAN already has
+  (item 994).** Item 938 recorded the asymmetry without knowing it was the whole cost: the node
+  scan reaches a lifted `satisfies`/`eqProps`/`cmpProps` closure (224/230/798/799/803) and
+  `farOnlyHopCount`/`startOnlyHopCount` do not. **NOT a predicted win** — this file is 0 for 4 on
+  guessing this cost. Upper bound if the predicate term reached Gremlin's inlined cost is
+  307 → ~160 ns a candidate (~1.9x); floor is nothing. `hop-predicate-profile.ts` exists so the
+  before/after is cheap.
