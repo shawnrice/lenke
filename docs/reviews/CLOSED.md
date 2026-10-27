@@ -26020,7 +26020,7 @@ p.flag` 4.51x (item 872).** Only the comparison spelling had one: `= true` lower
   required exactly one edge type, so `MATCH ()-[]->() RETURN count(*)` fell to a degree sum (0.5902
   ms against 0.0003 for the typed spelling). An out-expansion from every vertex yields one row per
   edge, so the answer is `live_edge_count()`.
-- **OPEN, PRICED — `live_edge_count()` is O(V), not O(1) (item 877).** It is
+- **~~OPEN, PRICED~~ RETRACTED AT ITEM 878 on cost/benefit — `live_edge_count()` is O(V), not O(1) (item 877).** It is
   `out_adj.iter().map(Vec::len).sum()`, ~33 µs at 1M edges, which is why the untyped hop count stops
   at 0.0325 rather than 0.0003 and why `E().count()` reads 0.04. Item 412's "that length by
   construction" is wrong. `edge_count()` is O(1) but monotonic (`next_eid`, includes deleted), and
@@ -26041,7 +26041,7 @@ p.flag` 4.51x (item 872).** Only the comparison spelling had one: `= true` lower
   undo/restore pushes, self-loops in both lists) or a version-keyed cache with ATOMICS, since
   `Store` is shared across threads for the parallel algorithms. Not worth it. 877's "~100x on two
   rows" was the right ratio and the wrong frame.
-- **OPEN, PRICED — the TS `order()` row is ~212 ms of overhead around an 88 ms sort (item 878).**
+- **~~OPEN, PRICED~~ BUILT AT ITEM 879 (1.19x on the row, 1.33x on the step); the residual was then REFUTED at 890 — the TS `order()` row is ~212 ms of overhead around an 88 ms sort (item 878).**
   `V().out().values(age).order()` is 474.30 ms against 174.30 without `.order()`, so ordering adds
   300 — where sorting 1M numbers with a numeric comparator costs **88.36**, and the engine's
   NaN-total order costs the same (87.05), so the ordering CONTRACT is free. `sortByBys` allocates a
@@ -26059,7 +26059,7 @@ p.flag` 4.51x (item 872).** Only the comparison spelling had one: `= true` lower
   `Array.prototype.sort`), `desc` negates the same comparison rather than swapping arguments, and
   all keys are evaluated before the element check so error ORDER is unchanged. The multi-key loop is
   NOT hoisted — `sortRowsByColumns` records that measuring 1.00-1.02x and being reverted.
-- **STILL OPEN — ~131 ms above the 88 ms sort floor (item 879).** Three full passes over 1M wrapper
+- **~~STILL OPEN~~ REFUTED AT ITEM 890 (1.04x, matched exactly by an unreachable control; reverted) — ~131 ms above the 88 ms sort floor (item 879).** Three full passes over 1M wrapper
   objects (key evaluation, element check, `NO_VALUE` filter) plus the final `map` back, and 1M
   allocations. Closing it means sorting an index permutation with an explicit arrival tiebreak
   instead of inheriting `Array.prototype.sort`'s stability — a different stability argument, so its
@@ -26072,7 +26072,7 @@ p.flag` 4.51x (item 872).** Only the comparison spelling had one: `= true` lower
   ARRIVAL-ORDER assertion (item 879).** It returns a correctly-sorted result with the tie groups
   flipped. Give fixture rows a distinct tag recording arrival position and compare tag sequences,
   not key sets.
-- **OPEN, PRICED — `V().out(T)` and `V().out(T).id()` have no fused walk, ~1.9x (item 880).**
+- **~~OPEN, PRICED~~ BUILT AT ITEM 881 (2.23x and 2.12x) — `V().out(T)` and `V().out(T).id()` have no fused walk, ~1.9x (item 880).**
   `V().out(T)` is 325.21 ms over 1M edges and `.id()` 322.60, where `V().out(T).values(k)` is
   **169.93** — adding a step makes it 1.9x FASTER, because `executor/hop-values.ts` fuses the
   values form and nothing fuses the other two. The machinery is in place (that file walks with the
@@ -26097,7 +26097,7 @@ p.flag` 4.51x (item 872).** Only the comparison spelling had one: `= true` lower
   alone flat. The walk is unchanged, so row order stays identical by construction. Any OTHER third
   step still declines — treating one as a residual over a bare hop would re-route an unmeasured
   family, and that decision has its own mutant.
-- **OPEN, PRICED — NATIVE's bare hop is now the slow side (item 881).** With the new bench rows in:
+- **~~OPEN, PRICED~~ RETRACTED AT ITEM 882 (not FFI — a CATEGORY DIFFERENCE between returning an element and a property) — NATIVE's bare hop is now the slow side (item 881).** With the new bench rows in:
   `V().out() [bare]` is ts 185.4 against **native 329.61**, and native's own bare hop is **4.5x its
   `id()`** (329.61 against 72.81) — the same inversion item 881 just fixed in TS, now in the engine.
   Item 876's lens (read the ABSOLUTE columns, not the ratio) pointing at native.
@@ -27646,3 +27646,30 @@ product's one-sided predicate` 2.22x (285), `one end labelled, the other free` 2
   attributed** — it was not measured, and the record on unmeasured attributions in items 936-939 is
   poor. The practical rule: before adding a form to a probe, check that the probe's fixture routes
   that form the way the change touched it.
+- **FIVE stale `OPEN` headers corrected, found by bouncing off four of them in one tick
+  (item 941).** Looking for the next target, the priced-and-open bullets are the obvious shortlist;
+  the first four taken in turn were all dead — **877** `live_edge_count()` O(V) → RETRACTED at 878
+  on cost/benefit; **881** native's bare hop → RETRACTED at 882 (a category difference); **878** the
+  `order()` row → BUILT at 879 (1.19x/1.33x); **880** the missing fused walk → BUILT at 881
+  (2.23x/2.12x). Plus **879**'s "STILL OPEN ~131 ms" → REFUTED at 890 (1.04x, matched exactly by an
+  unreachable control, reverted). Every resolution was already in the file: this is not missing
+  information, it is **information the headers contradict.** All five now carry the resolution in
+  their first clause.
+- **RULE — the commit that records a retraction should STRIKE THE HEADER it overturns, in the same
+  commit (item 941).** The lag is structural, not careless: a retraction is written as a NEW bullet
+  and the old one is left standing. Items 878, 881, 882 and 890 each recorded their correction
+  properly and near the entry they overturned; none went back to strike it. Two of the five were
+  genuinely hard to spot (879's refutation is ~200 lines later at 890; 878's resolution is split
+  across 879 and 890), and the other three sit a bullet or two from their retraction — which is
+  exactly why they survive, because the correction looks adjacent enough to be seen and a HEADER
+  SCAN does not see it. This is the same-commit discipline CLAUDE.md already requires for adding a
+  line, applied to amending one. **Nine stale headers have been corrected this session** (five here,
+  797 and 801 at 935, and one each at 925 and 926), after the five item 913 corrected.
+- **METHOD — a regex scan for stale headers OVER-MATCHES; read every candidate (item 941).** Eleven
+  of 30 `OPEN` bullets matched a later line naming the same item beside
+  RETRACTED/WITHDRAWN/SUPERSEDED/BUILT/SHIPPED, and **six were rejected on reading** — some matched
+  a coincidental mention of the number, one matched a line that is itself an OPEN bullet. The
+  sharpest is item **910**: a later line reads "RETRACTED — item 910's '19 detectors are 25% of
+  planning' target", but 910's own bullet claims something else (the rewrite pipeline at 16%), so
+  **910 STAYS OPEN** and striking it would have been a worse error than the lag. An item can have
+  one claim retracted and another still live.
