@@ -50,7 +50,7 @@ use crate::value::{self, Value};
 /// independent under rendering in the way the above are, and nothing here needed it enough to
 /// prove. It stays on the general path at a measured 11.3 ms, which is a stop with a number on
 /// it rather than an assumption.
-fn temporal_struct_key(t: crate::temporal::Temporal) -> Option<(i64, u32, i16)> {
+pub(super) fn temporal_struct_key(t: crate::temporal::Temporal) -> Option<(i64, u32, i16)> {
     use crate::temporal::Temporal as T;
 
     match t {
@@ -71,7 +71,7 @@ fn temporal_struct_key(t: crate::temporal::Temporal) -> Option<(i64, u32, i16)> 
 /// rejected the column, so the arm was dead code and the mutant was equivalent. Asking the key
 /// itself (via the kind's canonical zero, whose fields no arm inspects) makes the two agree by
 /// construction, and makes that mutant reachable and caught.
-fn temporal_kind_keyable(k: crate::temporal::TemporalKind) -> bool {
+pub(super) fn temporal_kind_keyable(k: crate::temporal::TemporalKind) -> bool {
     temporal_struct_key(k.zero()).is_some()
 }
 

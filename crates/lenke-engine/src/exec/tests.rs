@@ -4436,6 +4436,200 @@ fn group_by_a_date_key_on_a_large_hop_frontier() {
     );
 }
 
+/// `count(DISTINCT <temporal>)` and Gremlin's `values(k).dedup()` over the NON-DATE kinds —
+/// item 1016's two sites.
+///
+/// Item 1015 extended the `RETURN DISTINCT` keyer and left these alone, which the probe showed:
+/// the scan form went 24x while `count(DISTINCT <datetime>)` stayed at **38 ms** and Gremlin's
+/// dedup at **40 ms**. Three paths, three Date-only gates, one argument — so this test exists to
+/// say the two new ones changed no answer.
+///
+/// THE ORACLES ARE THE PATHS THEMSELVES. The aggregate is checked against its `WHERE true` twin
+/// (item 570, the general fold) and the Gremlin dedup against the GQL count over the same column,
+/// so a kind whose `format` were not injective shows up as the fast path counting MORE groups
+/// than the general one. `Duration` is asserted too, through its general path, since it is the
+/// one kind both gates still decline.
+#[test]
+fn distinct_count_and_gremlin_dedup_over_the_non_date_temporal_kinds() {
+    use crate::temporal::{DateTime, Duration, Temporal, Time, ZonedDateTime, ZonedTime};
+
+    // Four values per kind, each differing from the first in ONE field — so a key that drops any
+    // field counts fewer than four, and the general-path comparison catches it.
+    let cases: Vec<(&str, Vec<Temporal>)> = vec![
+        (
+            "t_time",
+            vec![
+                Temporal::Time(Time {
+                    secs: 3600,
+                    nanos: 0,
+                }),
+                Temporal::Time(Time {
+                    secs: 3600,
+                    nanos: 1,
+                }),
+                Temporal::Time(Time {
+                    secs: 3600,
+                    nanos: 100_000_000,
+                }),
+                Temporal::Time(Time {
+                    secs: 3601,
+                    nanos: 0,
+                }),
+            ],
+        ),
+        (
+            "t_dt",
+            vec![
+                Temporal::DateTime(DateTime {
+                    secs: 1_700_000_000,
+                    nanos: 0,
+                }),
+                Temporal::DateTime(DateTime {
+                    secs: 1_700_000_000,
+                    nanos: 1,
+                }),
+                Temporal::DateTime(DateTime {
+                    secs: 1_700_000_001,
+                    nanos: 0,
+                }),
+                Temporal::DateTime(DateTime { secs: -1, nanos: 0 }),
+            ],
+        ),
+        (
+            "t_zdt",
+            vec![
+                Temporal::ZonedDateTime(ZonedDateTime {
+                    secs: 1_700_000_000,
+                    nanos: 0,
+                    offset: 0,
+                }),
+                Temporal::ZonedDateTime(ZonedDateTime {
+                    secs: 1_700_000_000,
+                    nanos: 0,
+                    offset: 60,
+                }),
+                Temporal::ZonedDateTime(ZonedDateTime {
+                    secs: 1_700_000_000,
+                    nanos: 0,
+                    offset: -60,
+                }),
+                Temporal::ZonedDateTime(ZonedDateTime {
+                    secs: 1_700_000_000,
+                    nanos: 5,
+                    offset: 60,
+                }),
+            ],
+        ),
+        (
+            "t_zt",
+            vec![
+                Temporal::ZonedTime(ZonedTime {
+                    secs: 3600,
+                    nanos: 0,
+                    offset: 0,
+                }),
+                Temporal::ZonedTime(ZonedTime {
+                    secs: 3600,
+                    nanos: 0,
+                    offset: 90,
+                }),
+                Temporal::ZonedTime(ZonedTime {
+                    secs: 3600,
+                    nanos: 7,
+                    offset: 90,
+                }),
+                Temporal::ZonedTime(ZonedTime {
+                    secs: 3660,
+                    nanos: 0,
+                    offset: 0,
+                }),
+            ],
+        ),
+        (
+            "t_dur",
+            vec![
+                Temporal::Duration(Duration {
+                    months: 0,
+                    days: 0,
+                    secs: 0,
+                    nanos: 0,
+                }),
+                Temporal::Duration(Duration {
+                    months: 1,
+                    days: 0,
+                    secs: 0,
+                    nanos: 0,
+                }),
+                Temporal::Duration(Duration {
+                    months: 0,
+                    days: 1,
+                    secs: 0,
+                    nanos: 0,
+                }),
+                Temporal::Duration(Duration {
+                    months: 0,
+                    days: 0,
+                    secs: 0,
+                    nanos: 1,
+                }),
+            ],
+        ),
+    ];
+
+    for (key, vals) in cases {
+        let mut b = Builder::default();
+
+        for t in &vals {
+            b.node(&["P"], &[(key, Value::Temporal(*t))]);
+        }
+        // A duplicate, so dedup has work, and one P with the property ABSENT — which `count`
+        // skips and Gremlin's `values` drops, so neither answer should move.
+        b.node(&["P"], &[(key, Value::Temporal(vals[0]))]);
+        b.node(&["P"], &[("other", n(1.0))]);
+
+        let store = b.build();
+
+        assert!(
+            matches!(
+                store.column(key),
+                Some(crate::store::Column::Temporal { .. })
+            ),
+            "{key} must be a packed temporal column, or this tests nothing"
+        );
+
+        let scalar = |q: &str| -> String {
+            let batch = run(&crate::gql::parse(q).unwrap(), &store);
+            format!(
+                "{:?}",
+                batch.rows.iter().next().and_then(|r| r.first().cloned())
+            )
+        };
+        let fast = scalar(&format!("MATCH (p:P) RETURN count(DISTINCT p.{key}) AS c"));
+        let general = scalar(&format!(
+            "MATCH (p:P) WHERE true RETURN count(DISTINCT p.{key}) AS c"
+        ));
+
+        assert_eq!(
+            fast, general,
+            "fast and general aggregate disagree for {key}"
+        );
+        assert_eq!(fast, "Some(Num(4.0))", "wrong distinct count for {key}");
+
+        // The GREMLIN path, a different lowering of the same question.
+        let g = run(
+            &crate::gremlin::parse(&format!("g.V().hasLabel('P').values('{key}').dedup()"))
+                .unwrap(),
+            &store,
+        );
+
+        assert_eq!(
+            g.rows.iter().count(),
+            4,
+            "gremlin values().dedup() disagrees with the GQL count for {key}"
+        );
+    }
+}
+
 /// The `key_part` arm of item 847's Date keyer, which needed a fixture built backwards from the
 /// gate to reach at all.
 ///

@@ -29213,6 +29213,26 @@ multiTypeEdgeCount === 0`) — one named type cannot double-count. Native's `Adj
   differential and answer assertion in the repo. It is caught only by asserting on the selector
   itself (`fused_hop_shape(..).is_some()`) in both directions. Second instance of the hazard after
   1008's degree-reader pin.
+- **✅ SHIPPED (Rust) — `count(DISTINCT <temporal>)` up to 41.5x and Gremlin `values(k).dedup()`
+  up to 37.1x (item 1016).** The other two live Date-only gates in `fastpath.rs`, found by
+  grepping `TemporalKind::Date` outside `distinct.rs`. Three alternated rounds: aggregate
+  `datetime` **38,853 → 1,379 (28.1x)**, `zoned` 58,042 → 1,391 (41.5x); Gremlin dedup `datetime`
+  43,979 → 1,585 (26.5x), `zoned` 62,582 → 1,600 (37.1x). Item 1015's scan fix is a control here
+  and is flat; `Date` keeps its narrower arm at both sites.
+- **ITEM 1015's ARGUMENT HAD TWO MORE CONSUMERS, AND THE CODE SAID SO (item 1016).** The extended
+  sites' own comment read "for the kinds carrying a sub-second or zone part that is an argument
+  still to be made … the cost of being wrong here is a wrong COUNT, not a slow one." 1015 made
+  that argument from `temporal.rs`; this item spends it rather than re-deriving it. The Date range
+  sweep at `fastpath.rs:1254` is left alone — the repo already records its mutant as equivalent.
+- **⚠️ I REINTRODUCED THE TWO-GATES-ONE-DECISION SHAPE WITHIN THE HOUR (item 1016).** Having just
+  removed a redundant `temporal_kind_keyable` gate in `distinct.rs` at 1015, I added one at the
+  Gremlin admission site while the dedup arms guarded on the same predicate — so its mutant
+  SURVIVED, exactly as 1015's had. Removed, not tested: **a test cannot give teeth to a branch
+  that cannot be reached.** The site next door has carried that same note since two items before.
+- **DERIVE THE ARM-ASSERTION COUNT, DO NOT GUESS IT (item 1016).** The `grep -c` arm check fired
+  three times this session, every time on a wrong expected count of mine rather than a wrong arm.
+  Taking the count from `grep -c` on the live tree before the loop starts passed first time. The
+  check was never the problem.
 - **✅ SHIPPED (Rust) — `RETURN DISTINCT <temporal>` for every kind but `Duration`, up to 33.8x
   (item 1015).** `distinct.rs`'s `ColKeyer` had item 847's `Date` arm and `_ => None` for the
   rest. Three alternated rounds, 200,000 rows / 1,000 distinct: `time` **18,098 → 1,645

@@ -818,13 +818,16 @@ pub(super) fn try_distinct_value_col(input: &Plan, store: &Store) -> Option<Batc
             | Column::Num { .. }
             | Column::Str { .. }
             | Column::Bool { .. }
-            | Column::Temporal {
-                kind: crate::temporal::TemporalKind::Date,
-                ..
-            }
+            | Column::Temporal { .. }
     ) {
-        return None; // Gen, or a non-Date temporal kind
+        return None; // Gen
     }
+    // A temporal column is admitted here for ANY kind, and the per-kind decision is made ONCE, by
+    // the dedup arms below: an unkeyable kind (`Duration`) falls to their `_` arm and declines.
+    // A second `temporal_kind_keyable` check here was written first and REMOVED (item 1016) —
+    // removing it is answer-equivalent and its mutant survived the suite, which is the same
+    // two-gates-one-decision shape item 1015 had to undo in `distinct.rs`. One decision, one
+    // place; a test cannot give teeth to a branch that cannot be reached.
     // `values(k)` drops an element whose property is ABSENT, so Gremlin lowers it to
     // `Project(Filter(PropertyExists{k}))`. That filter is exactly the `present[i]` test
     // this loop already performs — running it as a separate pass materializes and then
@@ -1014,6 +1017,29 @@ pub(super) fn try_distinct_value_col(input: &Plan, store: &Store) -> Option<Batc
                 // so a broken invariant loses a row loudly in a test instead of emitting a value
                 // this arm never keyed.
                 _ => false,
+            },
+            |i: usize| Value::Temporal(data[i]),
+            Col::Gen
+        ),
+        // The other kinds (item 1016), on the same argument as the aggregate above. `Date` keeps
+        // the narrower `i32` arm; this column read **40,387 us for `datetime` against `Date`'s
+        // 740**.
+        Column::Temporal {
+            kind,
+            data,
+            present,
+            nulls,
+        } if super::distinct::temporal_kind_keyable(*kind) => dedup!(
+            present,
+            nulls,
+            FnvSet::<(i64, u32, i16)>::default(),
+            |seen: &mut FnvSet<(i64, u32, i16)>, i: usize| {
+                match super::distinct::temporal_struct_key(data[i]) {
+                    Some(k) => seen.insert(k),
+                    // Unreachable: the gate above admits only keyable kinds and a column holds one.
+                    // NOT fresh rather than pushed, so a broken invariant loses a row loudly.
+                    None => false,
+                }
             },
             |i: usize| Value::Temporal(data[i]),
             Col::Gen
@@ -5160,7 +5186,38 @@ pub(super) fn try_scan_distinct_count(
             }
             seen.len()
         }
-        _ => return None, // other Temporal kinds / Gen → the general aggregate
+        // THE OTHER KINDS (item 1016). The arm above's own comment said their injectivity was
+        // "an argument still to be made"; item 1015 made it from `temporal.rs` and shipped the
+        // same extension on the `RETURN DISTINCT` side, where this column read **38,119 us for
+        // `datetime` against `Date`'s 581** — 66x, and untouched by that item because the
+        // aggregate is a different path. `Date` KEEPS ITS NARROWER ARM above: item 1015 measured
+        // folding it into this tuple at 2.0x on the date column alone.
+        Column::Temporal {
+            kind,
+            data,
+            present,
+            ..
+        } if super::distinct::temporal_kind_keyable(*kind) => {
+            let mut seen: FnvSet<(i64, u32, i16)> = FnvSet::default();
+            // Same CHECKED invariant as the `Date` arm: a column holds one kind, so every cell
+            // keys — and a silently wrong count is the failure mode if that ever breaks.
+            let mut foreign = false;
+            scan_visit(store, label, |i| {
+                if present[i] {
+                    match super::distinct::temporal_struct_key(data[i]) {
+                        Some(k) => {
+                            seen.insert(k);
+                        }
+                        None => foreign = true,
+                    }
+                }
+            });
+            if foreign {
+                return None;
+            }
+            seen.len()
+        }
+        _ => return None, // Duration / Gen → the general aggregate
     };
     Some(scalar_num(count as f64))
 }

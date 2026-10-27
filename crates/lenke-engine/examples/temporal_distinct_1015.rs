@@ -91,7 +91,23 @@ fn fixture(kind: &str, rows: usize, distinct: usize) -> Store {
 }
 
 fn time_q(q: &str, store: &Store, reps: usize) -> (f64, usize) {
-    let plan = lenke_engine::opt::optimize_indexed(lenke_engine::gql::parse(q).unwrap(), store);
+    time_any(q, store, reps, false)
+}
+
+/// The Gremlin twin (item 1016). `values(k).dedup()` is lowered by a DIFFERENT fast path from
+/// either GQL form, with its own Date-only gate, so measuring it needs its own arm rather than an
+/// assumption that one surface's number carries to the other.
+fn time_gremlin(q: &str, store: &Store, reps: usize) -> (f64, usize) {
+    time_any(q, store, reps, true)
+}
+
+fn time_any(q: &str, store: &Store, reps: usize, gremlin: bool) -> (f64, usize) {
+    let raw = if gremlin {
+        lenke_engine::gremlin::parse(q).unwrap()
+    } else {
+        lenke_engine::gql::parse(q).unwrap()
+    };
+    let plan = lenke_engine::opt::optimize_indexed(raw, store);
     let mut best = f64::MAX;
     let mut rows = 0;
 
@@ -112,7 +128,9 @@ fn main() {
 
     println!("# RETURN DISTINCT <temporal> per kind — {rows} rows, {distinct} distinct, min of {reps} (us)");
     println!("# num and date are the CONTROLS: both already reach ColKeyer, so a fix cannot move them.\n");
-    println!("  kind              scan_distinct_us   rows   count_distinct_us   answer");
+    println!(
+        "  kind              scan_distinct_us   rows   count_distinct_us   gremlin_dedup_us   g_rows"
+    );
 
     for kind in [
         "num",
@@ -127,6 +145,7 @@ fn main() {
         let store = fixture(kind, rows, distinct);
         let (scan, n) = time_q("MATCH (p:P) RETURN DISTINCT p.t AS t", &store, reps);
         let (agg, _) = time_q("MATCH (p:P) RETURN count(DISTINCT p.t) AS c", &store, reps);
+        let (grem, gn) = time_gremlin("g.V().hasLabel('P').values('t').dedup()", &store, reps);
         // The row count is CHECKED, not assumed: every kind must find exactly `distinct` groups,
         // so a fixture whose values collide (or a key that over-splits) is loud rather than fast.
         let ok = if n == distinct {
@@ -135,6 +154,6 @@ fn main() {
             " <- WRONG GROUPS"
         };
 
-        println!("  {kind:16}  {scan:14.1}  {n:6}  {agg:17.1}{ok}");
+        println!("  {kind:16}  {scan:14.1}  {n:6}  {agg:17.1}  {grem:16.1}  {gn:6}{ok}");
     }
 }
