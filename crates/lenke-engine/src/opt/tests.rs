@@ -3689,42 +3689,80 @@ fn the_unindexed_equality_seed_declines_past_its_measured_break_even() {
     );
 }
 
-/// The store-side statistic distinguishes "cannot answer" from "too many", which is the one
-/// place a single `None` would have been a bug (item 989).
+/// The store-side statistic is bounded, and it stays accurate on distributions designed to
+/// defeat a naive stride (items 989, 990).
+///
+/// The sample is the whole reason the gate is affordable, so its ACCURACY is the thing under
+/// test, not merely that it returns something. Three shapes, all at 50,000 rows — well past
+/// `BOOL_FRACTION_SAMPLE_ROWS`, so all three take the sampled path:
+///
+///   * SCATTERED `(i * 97) % 100`, the fixture `seekcross_948` uses.
+///   * CLUSTERED, every true row in one contiguous block — the shape a prefix sample gets
+///     catastrophically wrong.
+///   * PERIODIC with a short period, the shape a naive `n / SAMPLE` stride aliases against.
 #[test]
-fn the_bool_count_saturates_rather_than_giving_up() {
-    let mut b = Builder::default();
-    for i in 0..1000u32 {
-        b.node(
-            &["P"],
-            &[
-                ("b", Value::Bool(i % 10 == 0)),
-                ("s", Value::Str("x".into())),
-            ],
+fn the_bool_fraction_is_bounded_and_survives_adversarial_layouts() {
+    let n = 50_000usize;
+    let build = |f: &dyn Fn(usize) -> bool| {
+        let mut b = Builder::default();
+        for i in 0..n {
+            b.node(&["P"], &[("b", Value::Bool(f(i))), ("s", s("x"))]);
+        }
+        b.build()
+    };
+
+    // 20% true in three layouts that all have the SAME true fraction and nothing else in common.
+    type Layout = (&'static str, Box<dyn Fn(usize) -> bool>);
+    let cases: [Layout; 4] = [
+        ("scattered", Box::new(|i: usize| (i * 97) % 100 < 20)),
+        ("clustered", Box::new(move |i: usize| i < 10_000)),
+        ("periodic", Box::new(|i: usize| i.is_multiple_of(5))),
+        // ALIASING, the case that gives the stride choice teeth. At n = 50,000 a naive
+        // `n / BOOL_FRACTION_SAMPLE_ROWS` stride is 12, and 12 mod 10 = 2 — such a walk visits
+        // only EVEN residues of a period-10 column. Putting every true row on an ODD residue
+        // makes that walk report 0% for a column that is 20% true, while the coprime golden
+        // stride (30,901 here, which is 1 mod 10) still sees every residue. The first three
+        // layouts do NOT catch this: a mutant swapping in the naive stride survived them all.
+        ("aliasing", Box::new(|i: usize| i % 10 == 1 || i % 10 == 3)),
+    ];
+    for (name, f) in cases {
+        let store = build(&*f);
+        let got = store
+            .bool_eq_fraction("b", &Value::Bool(true))
+            .unwrap_or_else(|| panic!("{name}: must be priceable"));
+        assert!(
+            (got - 0.20).abs() < 0.02,
+            "{name}: estimated {got} for a true fraction of 0.20"
         );
     }
-    let store = b.build();
 
-    // An exact count under the cap.
-    assert_eq!(
-        store.bool_eq_count_capped("b", &Value::Bool(true), 500),
-        Some(100)
+    // The two decisions the gate actually makes, through the real store rather than a stub.
+    let selective = build(&|i: usize| i.is_multiple_of(100)); // 1%
+    let unselective = build(&|i: usize| !i.is_multiple_of(100)); // 99%
+    assert!(
+        unindexed_eq_seek_worth_it(&selective, "b", &Value::Bool(true)),
+        "1% must seed"
     );
-    // Over the cap it SATURATES at cap + 1 — a number the caller can compare, not a `None` the
-    // caller would read as "unpriceable" and seed on.
-    assert_eq!(
-        store.bool_eq_count_capped("b", &Value::Bool(false), 500),
-        Some(501)
+    assert!(
+        !unindexed_eq_seek_worth_it(&unselective, "b", &Value::Bool(true)),
+        "99% must DECLINE"
     );
-    // Not applicable, each for its own reason: no such column, a non-bool column, and a
-    // non-bool literal against a bool column.
-    assert_eq!(
-        store.bool_eq_count_capped("nope", &Value::Bool(true), 500),
-        None
-    );
-    assert_eq!(
-        store.bool_eq_count_capped("s", &Value::Bool(true), 500),
-        None
-    );
-    assert_eq!(store.bool_eq_count_capped("b", &Value::Num(1.0), 500), None);
+
+    // Not applicable, each for its own reason: no such column, a non-bool column, and a non-bool
+    // literal against a bool column. All three must keep the caller on its old behaviour.
+    assert_eq!(selective.bool_eq_fraction("nope", &Value::Bool(true)), None);
+    assert_eq!(selective.bool_eq_fraction("s", &Value::Bool(true)), None);
+    assert_eq!(selective.bool_eq_fraction("b", &n_val(1.0)), None);
+
+    // A SMALL column is counted exactly, so the boundary between the two paths is covered too.
+    let mut sb = Builder::default();
+    for i in 0..100u32 {
+        sb.node(&["P"], &[("b", Value::Bool(i < 25))]);
+    }
+    let small = sb.build();
+    assert_eq!(small.bool_eq_fraction("b", &Value::Bool(true)), Some(0.25));
+}
+
+fn n_val(x: f64) -> Value {
+    Value::Num(x)
 }

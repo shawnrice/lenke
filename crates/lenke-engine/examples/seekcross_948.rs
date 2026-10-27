@@ -176,7 +176,7 @@ fn main() {
     // gate's own dispatch minus its scan, and the difference between the columns is the scan.
     if std::env::var("PLANTIME").is_ok() {
         println!("# item 989 — what the no-index gate costs at PLAN time ({n} nodes, min of {reps} us)\n");
-        println!("  key          optimize(us)   note");
+        println!("  key          optimize(us)   reopt(us)      note");
         let reps = reps.max(50);
         let mut cases: Vec<(String, String)> = fracs
             .iter()
@@ -204,12 +204,27 @@ fn main() {
                 best = best.min(t.elapsed().as_secs_f64() * 1e6);
                 std::hint::black_box(&plan);
             }
+            // RE-OPTIMIZE an already-optimized plan (item 990). `exec::run_query` calls
+            // `optimize_indexed` on EVERY execution — the parse cache stores the parse, not the
+            // index-aware plan — so whether the gate's scan is a once-per-query-text cost or a
+            // PER-EXECUTION one depends entirely on whether the seed rule still matches a plan it
+            // has already rewritten. Reasoning about that is how item 986's amortization claim got
+            // written; this measures it.
+            let once = lenke_engine::opt::optimize_indexed(raw.clone(), &store);
+            let mut again = f64::MAX;
+            for _ in 0..reps {
+                let p = once.clone();
+                let t = Instant::now();
+                let plan = lenke_engine::opt::optimize_indexed(p, &store);
+                again = again.min(t.elapsed().as_secs_f64() * 1e6);
+                std::hint::black_box(&plan);
+            }
             let note = if name.ends_with("(string)") {
                 "CONTROL — the gate declines on type, no scan"
             } else {
                 ""
             };
-            println!("  {name:12}   {best:12.1}   {note}");
+            println!("  {name:12}   {best:12.1}   {again:12.1}   {note}");
         }
         return;
     }

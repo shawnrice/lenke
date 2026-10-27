@@ -90,6 +90,51 @@ type U32Map<V> = HashMap<u32, V, U32BuildHasher>;
 /// the set does not.
 const INDEX_SET_MIN: usize = 12;
 
+/// Rows [`Store::bool_eq_fraction`] reads before it stops counting and starts estimating.
+///
+/// 4096 keeps the whole walk inside a few cache lines' worth of work and makes the statistic
+/// O(1) in the graph size, which is the point — the exact count it replaces was O(N) and ran on
+/// every execution (item 990). The sampling error at the threshold it feeds is ~0.4% (one sigma
+/// at p = 0.06 over 4096 draws), an order of magnitude finer than the 2% cost difference between
+/// the two routes anywhere near that threshold.
+const BOOL_FRACTION_SAMPLE_ROWS: usize = 4096;
+
+/// A stride near `n`'s golden-ratio section, forced coprime with `n`.
+///
+/// Coprime means the walk `i += step (mod n)` visits distinct indices for the whole sample rather
+/// than cycling early, and the golden ratio is the classical low-discrepancy choice: successive
+/// samples interleave rather than clumping. Both matter because a naive `n / SAMPLE` stride
+/// ALIASES against periodic data — `seekcross_948`'s own columns are `(i * 97) % 100`, so a
+/// stride sharing a factor with 100 would sample a biased slice of the period and could report
+/// 0% or 100% for a column that is neither.
+fn coprime_golden_step(n: usize) -> usize {
+    const fn gcd(mut a: usize, mut b: usize) -> usize {
+        while b != 0 {
+            (a, b) = (b, a % b);
+        }
+        a
+    }
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss
+    )]
+    let mut step = ((n as f64) * 0.618_033_988_749_894_8) as usize | 1;
+    step = step.max(1).min(n - 1);
+    // n >= 2 here (callers check the small case), so a coprime stride always exists; 1 is the
+    // backstop and is itself coprime with everything.
+    let mut guard = 0;
+    while gcd(step, n) != 1 && guard < 64 {
+        step = if step + 2 < n { step + 2 } else { 1 };
+        guard += 1;
+    }
+    if gcd(step, n) == 1 {
+        step
+    } else {
+        1
+    }
+}
+
 /// How many distinct label ids a small delete batch's victims may carry before `delete_nodes`
 /// stops tracking them on the stack and falls back to sweeping every bucket (item 923).
 ///
@@ -2214,47 +2259,85 @@ impl Store {
         self.props.get(key)
     }
 
-    /// How many nodes carry a BOOL `key` equal to `value`, counted straight off the column and
-    /// SATURATED at `cap + 1` (item 988).
+    /// What fraction of the column carries a BOOL `key` equal to `value` — EXACT below
+    /// [`BOOL_FRACTION_SAMPLE_ROWS`] rows and a bounded strided SAMPLE above it (items 988, 990).
     ///
     /// Prices the no-index equality seed, which has no bucket to measure — `index_bucket_len`
     /// answers `None` there, so before this the planner seeded UNCONDITIONALLY on the strength of
     /// one measured point that has since reversed (item 988). Counting a `Vec<bool>` is the
     /// cheapest statistic this store can produce and needs no new state.
     ///
-    /// Two `None`s would be a bug, so there is only one: `None` means **not applicable** (no such
-    /// column, not `Bool`, or a non-`Bool` literal) and leaves the caller on its existing
-    /// behaviour, while "more than `cap`" returns `Some(cap + 1)` — a real count the caller
-    /// compares against its threshold like any other. Collapsing those two into `None` would make
-    /// an unselective predicate seed, which is the exact defect this prices.
+    /// `None` means **not applicable** (no such column, not `Bool`, or a non-`Bool` literal) and
+    /// leaves the caller on its existing behaviour. There is deliberately no second `None` for
+    /// "too many": a fraction above the caller's threshold is an ordinary answer, and collapsing
+    /// the two would make an unselective predicate seed — the exact defect this prices.
     ///
-    /// Saturating is also what bounds the cost where it matters: a predicate matching 80% of the
-    /// graph stops after ~`cap` rows. The selective case still walks the column, which is the
-    /// O(N) item 986 priced as acceptable because `parse_cache` holds the optimized plan, so it
-    /// is paid once per distinct query text rather than per execution.
+    /// # Why BOUNDED work, and not the exact count item 989 shipped
+    ///
+    /// Item 989 counted the whole column with the match count saturated at a cap. That bounds the
+    /// UNSELECTIVE case only: proving a column SELECTIVE means reading all of it, which measured
+    /// 81.6 us at 200,000 rows. Item 986 called that acceptable because `parse_cache` holds the
+    /// optimized plan — and item 990 checked, which 986 and 989 did not: the cache stores
+    /// `parse_prepared_limited`, a PARSE, while `exec::run_query` calls `optimize_indexed` on
+    /// every execution. So the walk was a PER-EXECUTION cost on exactly the queries the gate goes
+    /// on to seed, where there is no execution win to pay for it.
+    ///
+    /// A sample is bounded for both halves and, unlike the exact count, does not grow with the
+    /// graph. It is deterministic — same column, same answer — so it cannot make two runs plan
+    /// differently, and byte-identity is untouched.
+    ///
+    /// The estimate can of course disagree with the exact fraction near the threshold. That is
+    /// where it matters LEAST: at the break-even the two routes are within 2% of each other
+    /// (0.98x at 6%, 1.04x at 8% — item 988), so a wrong call there costs about nothing, while
+    /// the cliff it exists to prevent is 3.22x and nowhere near the boundary.
     ///
     /// The count is over the column, which is indexed by node id and so may include deleted
     /// nodes. That biases the estimate UPWARD and therefore toward declining a seek, never toward
     /// taking one it should not; intersecting with liveness per row would cost more than the
     /// decision is worth.
     #[must_use]
-    pub fn bool_eq_count_capped(&self, key: &str, value: &Value, cap: usize) -> Option<usize> {
+    pub fn bool_eq_fraction(&self, key: &str, value: &Value) -> Option<f64> {
         let Value::Bool(want) = value else {
             return None;
         };
         let Some(Column::Bool { data, present, .. }) = self.props.get(key) else {
             return None;
         };
-        let mut n = 0usize;
-        for (i, p) in present.iter().enumerate() {
-            if *p && data[i] == *want {
-                n += 1;
-                if n > cap {
-                    return Some(n);
-                }
+        let n = data.len();
+        if n == 0 {
+            return None;
+        }
+        let hit = |i: usize| present[i] && data[i] == *want;
+
+        // Small enough that the sample would cost what the exact count costs.
+        if n <= BOOL_FRACTION_SAMPLE_ROWS {
+            let m = (0..n).filter(|i| hit(*i)).count();
+            return Some(m as f64 / n as f64);
+        }
+
+        // A STRIDED walk, not a prefix and not a cap. A prefix is wrong whenever the column is
+        // clustered, and a cap on the MATCH count only bounds the unselective case — the
+        // selective one is what cost 81 us, because proving a column selective means reading all
+        // of it (item 990).
+        //
+        // The stride is near the golden ratio of `n` and forced coprime, so the walk visits
+        // `BOOL_FRACTION_SAMPLE_ROWS` DISTINCT indices spread across the whole id space. A plain
+        // `n / SAMPLE` stride aliases against any data period sharing a factor with it — this
+        // fixture's own `(i * 97) % 100` is exactly such a column, which is how the hazard was
+        // noticed rather than discovered later.
+        let step = coprime_golden_step(n);
+        let mut idx = 0usize;
+        let mut m = 0usize;
+        for _ in 0..BOOL_FRACTION_SAMPLE_ROWS {
+            if hit(idx) {
+                m += 1;
+            }
+            idx += step;
+            if idx >= n {
+                idx -= n;
             }
         }
-        Some(n)
+        Some(m as f64 / BOOL_FRACTION_SAMPLE_ROWS as f64)
     }
 
     /// Is a SCAN of `key` unusually cheap — i.e. is the column DICTIONARY-encoded, so a

@@ -28790,3 +28790,25 @@ disagree on the ANSWER` — item 984 confirmed through the repo's own gate.
   curve (5% must seek, 8% must not). Second trap: the anchor check used a BRE, where
   `#[allow(unreachable_code)]` is a bracket expression, so an applied mutant read as not-applied;
   with `grep -F` the set is **5/5 caught**.
+- **⚠️ CORRECTION — `parse_cache` does NOT hold the optimized plan (item 990).** Item 986 said it
+  did and item 989 shipped that in a doc comment and a commit message. `prepared_equivalent`
+  caches `gql::parse_prepared_limited`, a PARSE, while `exec::run_query` calls
+  `optimize_indexed(plan, store)` on **every execution**. Any statistic computed in the optimizer
+  is therefore a PER-EXECUTION cost, not a per-query-text one. **Do not reuse the amortization
+  argument** — it is wrong for every planner statistic, not just this one.
+- **✅ The gate's cost is now BOUNDED and O(1) in graph size (item 990).** `bool_eq_fraction`
+  counts exactly below 4096 rows and takes a strided sample above it: **81.6 → 3.6 us** at
+  200,000 nodes (selective), flat across selectivity, against a 0.3 us string control. The exact
+  count could not be bounded in the direction that mattered — saturating the match count bounds
+  the UNSELECTIVE case only, and proving a column selective means reading all of it.
+- **The estimate is least accurate exactly where it matters least (item 990).** Routes are
+  unchanged except at 6%, where it picks `filter` over `seek` and the measured ratio is 1.00x.
+  Sampling error ~0.4% (1 sigma at p = 0.06 over 4096 draws) against a 2% cost difference near
+  the break-even and a 3.22x cliff far from it. The stride is golden-ratio and forced coprime, so
+  the walk is deterministic and byte-identity is untouched.
+- **⚠️ "Adversarial" is a claim about a test and needs checking too (item 990).** 7 mutants, first
+  run 6/7: **M6 — the coprime stride replaced by a naive `n / SAMPLE_ROWS` one — SURVIVED** three
+  layouts written to be adversarial. The periodic one used period 5 while the naive stride at
+  n = 50,000 is 12, and the two are coprime, so it samples every residue. A fourth layout (period
+  10, trues on ODD residues) makes the naive stride report **0% for a 20%-true column**; 7/7
+  after. Same shape as item 989's M4, one item later.

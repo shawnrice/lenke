@@ -177,13 +177,7 @@ impl IndexOracle for crate::store::Store {
     }
 
     fn unindexed_eq_fraction(&self, key: &str, value: &Value) -> Option<f64> {
-        let live = self.live_node_count();
-        if live == 0 {
-            return None;
-        }
-        let cap = (live as f64 * UNINDEXED_SEEK_MAX_FRACTION).ceil() as usize;
-        let n = self.bool_eq_count_capped(key, value, cap)?;
-        Some(n as f64 / live as f64)
+        self.bool_eq_fraction(key, value)
     }
 }
 
