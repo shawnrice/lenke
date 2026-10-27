@@ -28590,3 +28590,25 @@ predicate` closed at 644. Every remaining flag on either side is recorded as cor
 - **The separate-gates rule paid again (item 978).** `cargo clippy` caught an identity `.map` in
   the first version of the route labelling, exit 101 — visible because the gates are separate
   commands with exit codes read unpiped.
+- **WRONG LAYER — `typed_bool_mask` built, verified NOT REACHED, reverted (item 979).** Item 978's
+  5x looked like a clean `Value`-variant gap: `eval_mask`'s `Compare` arm has `typed_num_mask` and
+  `typed_str_mask` and no bool sibling. Built one (Eq/Ne only, mirroring both). **A counter in it
+  fired ZERO times.**
+- **⚠️ THE TRAP: it measured 919.2 → 839.1 us, a 1.10x "win", on exactly the targeted arm (item
+  979).** That is run-to-run noise on a row the change could not touch, and without the counter
+  it would have been credited to a function that never executed. **A change that does not RUN,
+  measured as a small win** — item 900's null A/B with the sign flipped, item 937's diagnosis
+  version in a third shape.
+- **Where it actually goes (item 979).** `Aggregate { Filter { Scan } }` over `count(*)` is
+  `try_filtered_count`, not `eval_mask`'s `Compare` arm — `try_filtered_scan_num_agg`'s own
+  comment says so (_"count(_) is try_filtered_count; only a prop agg here"*). **And the enum gap
+  RECURS one layer up**: that family has `try_filtered_scan_num_agg` and
+  `try_filtered_scan_str_agg` and **no bool twin**. The diagnosis shape survives; its address was
+  wrong.
+- **Why reverted rather than kept (item 979).** `typed_bool_mask` is not dead in general —
+  `eval_mask`'s `Compare` arm is live for shapes that miss `try_filtered_count` — but it is
+  **unmeasured on any of them**, and keeping it because it "must help somewhere" is the reasoning
+  items 947, 951, 964 and 974 each had to withdraw.
+- **NEXT, addressed correctly: price `= true` against the bare spelling through
+  `try_filtered_count`** and add the bool twin there — **with the dispatch counter BEFORE the
+  timing, not after** (item 979).
