@@ -31078,3 +31078,46 @@ null control's comment says what it does and does not bound.
 So the probe reports **no unexplained equivalent-spelling defect**, and items 285 and 578 are both
 withdrawn as targets. The probe still earns its place: it caught real 4x and 2.9x gaps (items
 125/126) and flagged item 1062's self-inflicted 3.8x within one run.
+
+## 1074 — ❌ REFUTED as a TS target: the 68x multi-hop count gap is 3x ALGORITHM × ~20x PER-EDGE COST
+
+The widest TS/native ratios in `bun run bench` are the plain multi-hop counts — `count 4-hop` 92x,
+`count 3-hop` 68x, `count 2-hop` 39x. Native answers a 5.4M-walk count in 4.8 ms (0.9 ns a walk,
+not enumeration) and `bench.ts` names its mechanism: "the tuned degree-product arms".
+
+**The semantics checks out**: a concatenated chain is a WALK count, the quantified spelling a TRAIL
+— on a 2-cycle fixture, depth 3 reads 8 concatenated against 6 quantified and both engines agree.
+So multiplicity counting is valid arithmetic for the concatenated form.
+
+### What it is worth in TypeScript (200k vertices, degree 3, 3 hops; three rounds, min)
+
+```text
+  ENGINE (enumerates)        266.7 ms      —
+  map<Vertex, number>        347.9         0.77x   SLOWER than enumerating
+  dense index + Float64      160.8         1.66x
+  scratch field (FLOOR)      102.3         2.61x   NOT shippable (mutates user objects)
+```
+
+```text
+  68x  =  3x   algorithm   (1.8M edge visits instead of 5.4M walks)
+       × ~20x  per-edge    (native's dense u32 ids + Vec accumulators vs TS's object-keyed Map —
+                            the layout ceiling of items 573 and 1066)
+```
+
+**Only the 3x is reachable, and a shippable accumulator captures about half of it.** Even the
+unshippable floor leaves TS 21x behind native. The engine arm would be substantial — concatenated
+chain only, no rel/path variables, label-only endpoints, per-level filter handling — for 1.66x on
+one shape family. **NOT BUILT.**
+
+### 🛑 And the first cut of the probe answered 0 while reading 3-10x FASTER than the engine
+
+`v.adjFrom.get('KNOWS')` holds EDGES, not vertices. All three arms answered 0 against the engine's
+5,400,000 and looked like a huge win. **An arm that does not do the work is always fast.** The probe
+now takes the engine's answer as its oracle and `check`s every arm before printing its time.
+
+### ➡️ What would change the verdict
+
+A dense vertex index maintained BY the graph — so a frontier accumulator is a `Float64Array` with no
+`Map` hop — would move 1.66x toward the 2.61x floor AND apply to every frontier algorithm, not just
+counts. That is a core-data-structure question, not a planner arm, and nothing here prices adding or
+maintaining it.
