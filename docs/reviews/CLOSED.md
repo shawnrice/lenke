@@ -29359,12 +29359,35 @@ multiTypeEdgeCount === 0`) — one named type cannot double-count. Native's `Adj
   ASC gave TS the SAME order (the tell); `ORDER BY a DESC` likewise; and
   `… ORDER BY e.tag DESC LIMIT 2` returned **three** rows where native returned two — a wrong
   CARDINALITY as well as a wrong order. Four for four, all now agreeing with native.
-- **WHY THE FUZZERS COULD NOT SEE IT, and neither reason is a broken invariant (item 1039).** They
-  compare row MULTISETS for unordered results, which is correct — and **a dropped `ORDER BY` is
-  invisible to a multiset comparison.** The `LIMIT` half is visible, but it only rides this route,
-  and the generated hop shapes do not read the REL variable, so `itemsReadRel` is false and the
-  route is never generated. Both halves are COVERAGE: `rel-hop-order.test.ts`, 21 tests, every
-  expectation read off the FFI engine first because the defect was itself a divergence.
+- **WHY THE FUZZERS COULD NOT SEE IT (item 1039, HALF OF IT CORRECTED AT 1040).** They compare row
+  MULTISETS for unordered results, which is correct — and **a dropped `ORDER BY` is invisible to a
+  multiset comparison.** That half stands. ~~The route is never generated because the hop shapes do
+  not read the REL variable~~ is **WRONG** (item 1040): `genHopProjection` emits `RETURN {v: e} AS
+x` and `RETURN CAST([e] AS STRING) AS x`, so the route has been generated all along; what was
+  missing is an `ORDER BY` over it. The two diagnoses imply different fixes, which is why the
+  correction matters. Coverage: `rel-hop-order.test.ts`, 21 tests, every expectation read off the
+  FFI engine first because the defect was itself a divergence.
+- **✅ THE FUZZER NOW ASKS THE ORDERED QUESTION (item 1040).** One band —
+  `MATCH (n:T)-[e:E]->(b:T) RETURN <e.w|e.w+1|n.n|b.n> AS x, n.n AS t ORDER BY x[ ASC| DESC], t[
+LIMIT 1..3]` — sorting on the REL's own property, with `n.n AS t` last so the order is TOTAL and
+  a tie cannot flag a non-bug. **Verified against the REAL BUG, not a mutant**: run against
+  `bfe99880`'s `hop-projection.ts` it goes red with TS in insertion order and native sorted, four
+  divergences before the cap.
+- **⚠️ TWO SELF-INFLICTED NULLS, AND THE COUNTER CAUGHT BOTH (item 1040).** `relSort=<generated>/<compared
+in order>` prints every run. (1) The band's first draft sat AFTER `if (p < 0.68)`, which owns
+  every `p` below it, so it could never fire — bands are checked in SEQUENCE. (2) Then
+  `relSort=298/0`: 298 generated, ZERO compared in order, because `totallyOrdered` matches the
+  literal substring `n.n AS t` and the band named its start variable `a`, emitting `a.n AS t` — so
+  every query was compared as a MULTISET, asking exactly the question that had already missed the
+  bug. Renaming to `n` gives 322/322. **A band that generates the right text and is then compared
+  the wrong way is worse than no band, because it looks like coverage** — and one number alone
+  would have read 298 and looked healthy.
+- **⚠️ `git checkout <sha> -- <path>` STAGES the old version, and a `cp` back does NOT undo that
+  (item 1040).** Reverting the fix to test the new band left the file `MM` — the INDEX holding the
+  pre-fix version while the worktree held the fix — so a commit from there would have **shipped the
+  wrong answer back in**, under a message about adding coverage for it. `git show :<path>` confirmed
+  the staged copy; `git reset` cleared it. **Check `git diff --stat <path>` against HEAD is EMPTY
+  before committing, not just that the file looks right.**
 - **⚠️ THE TIE GUARD TOOK THREE FIXTURES, AND THE FIRST TWO HID IT (item 1039).** Wrapping the
   route in `sorted(...)` alone would trade a dropped sort for a diverging TIE order, because item
   1038's seeded walk arrives in INDEX order and `Array.prototype.sort` is stable (item 605: tie

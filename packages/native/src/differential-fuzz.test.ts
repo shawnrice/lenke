@@ -168,6 +168,23 @@ const tallyGroupShapes = (cov: Record<string, number>, q: string, nonEmpty: bool
     }
   }
 
+  // A HOP PROJECTION SORTED ON A REL KEY (item 1040) — the shape that would have caught item
+  // 1039's dropped `ORDER BY`. Its own counter for the reason every counter here exists: a band
+  // that generates NOTHING passes exactly like one that works, and this band's first draft was
+  // placed AFTER the `p < 0.68` arm that already owns its window, so it could never fire. One
+  // line here turns that into a visible zero.
+  //
+  // The second number is the floor that matters: a query is only compared IN ORDER when
+  // `totallyOrdered` admits it, so a band whose queries all fail that test is asking the
+  // multiset question again and would not have caught anything.
+  if (/^MATCH \(n:T\)-\[e:E\]->\(b:T\) RETURN .* ORDER BY x/.test(q)) {
+    cov.relSortGenerated++;
+
+    if (totallyOrdered(q)) {
+      cov.relSortOrdered++;
+    }
+  }
+
   // The SUBQUERY-PREDICATE placements (item 255). `EXISTS`/`COUNT`/`VALUE` under a bare
   // predicate and an AND-conjunct were covered; `NOT` and `OR` were generated zero times. The
   // non-empty floor is what matters as always: a `COUNT { … }` in boolean context is a static
@@ -1561,6 +1578,34 @@ const genQuery = (r: () => number): string => {
     return `MATCH (n:T) FILTER ${pred} RETURN n.n AS x ORDER BY x`;
   }
 
+  if (p < 0.655) {
+    // A HOP PROJECTION SORTED ON A REL KEY (item 1040), with the `n.n AS t` sentinel so
+    // `totallyOrdered` admits it and the comparison is IN ORDER rather than by multiset.
+    //
+    // THIS IS THE SHAPE THAT WOULD HAVE CAUGHT ITEM 1039, where the rel-bound hop projection
+    // computed its `ORDER BY`, threw it away, and threw away any following `LIMIT` with it — ASC
+    // and DESC returning the same insertion order, and `LIMIT 2` returning three rows. The band
+    // above DOES reach that route (`RETURN {v: e} AS x` reads the rel), so the route was
+    // generated all along; what was missing is an `ORDER BY` over it. A dropped sort is INVISIBLE
+    // to a multiset comparison, which is the correct invariant for an unordered result and
+    // therefore not the thing to change — the generator has to ask the ordered question instead.
+    //
+    // The sort key is the REL's own property, which is the position that was broken: a sort on a
+    // NODE key reached `sorted(...)` through a different return and was always correct.
+    // `n.n AS t` last makes the order TOTAL, so a tie cannot flag a non-bug (the file's own rule).
+    const dir = pick(r, ['', ' DESC', ' ASC']);
+    const paged = r() < 0.3 ? ` LIMIT ${1 + Math.floor(r() * 3)}` : '';
+    const proj = pick(r, ['e.w AS x', 'e.w + 1 AS x', 'n.n AS x', 'b.n AS x']);
+
+    // THE START VARIABLE IS `n`, AND THAT IS LOAD-BEARING. `totallyOrdered` recognises the
+    // sentinel as the literal substring `n.n AS t`, so a start variable named `a` emits
+    // `a.n AS t`, fails that test, and the query is compared as a MULTISET after all. The first
+    // draft of this band did exactly that and the counter read `relSort=298/0` — 298 queries
+    // generated, none of them asking the ordered question. A band that generates the right text
+    // and is then compared the wrong way is worse than no band, because it looks like coverage.
+    return `MATCH (n:T)-[e:E]->(b:T) RETURN ${proj}, n.n AS t ORDER BY x${dir}, t${paged}`;
+  }
+
   if (p < 0.68) {
     // Sometimes a CONTAINER CARRYING AN ELEMENT, which nothing here generated before (item
     // 346). The expression grammar is entirely scalar — every `genLeaf` is a literal or a
@@ -2163,6 +2208,8 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       cntPropNonZero: 0,
       tempGenerated: 0,
       tempNonEmpty: 0,
+      relSortGenerated: 0,
+      relSortOrdered: 0,
       hopFilterGenerated: 0,
       hopFilterNonZero: 0,
       hopUntypedGenerated: 0,
@@ -2276,6 +2323,7 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
     // that matters most — generating a query that matches nothing compares nothing.
     console.log(
       `PRED generated=${cov.predGenerated} rows=${cov.predRows} ` +
+        `relSort=${cov.relSortGenerated}/${cov.relSortOrdered} ` +
         `perRep=${cov.perRepGenerated}/${cov.perRepNonEmpty} ` +
         `groupClauseWhere=${cov.groupClauseWhereGenerated}/${cov.groupClauseWhereNonEmpty} ` +
         `abbrev=${cov.abbrevGenerated}/${cov.abbrevNonEmpty}/${cov.abbrevPath} ` +
