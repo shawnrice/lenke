@@ -14439,6 +14439,19 @@ total** (50,000 hash lookups instead of 150,000 edge visits, against a fresh ans
 `len()`). Also observed, unattributed: declaring the index costs the FRESH path ~2x (3-4 µs absolute
 on an O(1) path), and it is NOT staleness — `create_edge_type_index` touches nothing CSR-related.
 
+**⚠️ AND AFTER ONE WRITE THE TS ENGINE IS 168x FASTER THAN NATIVE ON THIS SHAPE (item 1042).** Same
+graph, same query, median of reps 4+: ts 0.0019 → **0.0021** (FLAT), native 0.0032 → **0.3523**
+(110x worse). Item 573's rule in reverse — the gap is ALGORITHMIC, not the layout ceiling. **TS
+holds the fix already**: `edgesByLabel: Map<string, Set<Edge>>` maintained on insert (`.add`) and
+removal (`.delete`), so `edgesByLabel.get(t)?.size` is an always-current O(1) count that
+`buildOneHopCount` reads directly. Native's CSR partition is built once by `rebuild_csr` and never
+re-armed. **The asymmetry that makes the native fix harder than it looks**: TS maintains its map at
+exactly TWO places (one insert path, one remove path), where native would need `add_edge`,
+`add_edge_with_id`, `delete_edge`, `delete_node`, BOTH undo restore arms and the load/clear paths —
+because `Undo::RestoreEdge`/`RestoreNode` push onto `out_adj`/`in_adj` DIRECTLY rather than through
+`add_edge`, deliberately, since item 676 measured the map-rebuilding alternative at 1136x. A desync
+in any of them is a WRONG ANSWER. **Raised with the user rather than decided unilaterally.**
+
 **The narrower fix the diagnosis actually points at** — and item 1041 makes it the ONLY route that
 keeps the O(1) answer, having ruled out pointing the existing fast paths at the existing index: the
 selective-type scan needs only a GLOBAL per-type edge list, not the whole CSR — appendable O(1) on `add_edge` and O(partition) on delete,
