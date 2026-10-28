@@ -1599,6 +1599,20 @@ const vertexStepCount = (step: Step, graph: Graph): number | undefined => {
     return adjacentCount(step.labels, graph);
   }
 
+  // THE EDGE STEPS ARE THE SAME BUCKET (item 1088), and this rung had none of them — so
+  // `V().outE(T).count()` enumerated 600,000 edges at 125.54 ms where `V().out(T).count()`, the
+  // same number by the same arithmetic, was already O(1). `inE` 119.15 and `bothE` 224.95 likewise.
+  //
+  // `out` traverses one edge per emitted traverser and `outE` emits the edge itself, so both count
+  // |E_T| — and TINKERPOP GROUND TRUTH FOR THIS IS ALREADY IN THIS FILE, recorded on
+  // `edgeHopSeededCount`: "on 4 `T` edges including a self-loop, `V().outE(T).count()` and
+  // `V().inE(T).count()` are both 4 while `V().bothE(T).count()` is 8". So `outE`/`inE` are
+  // `adjacentCount` and `bothE` is twice it, exactly as for the vertex steps — the self-loop
+  // included, since it is one edge from its source and one from its target.
+  if (step.kind === 'outE' || step.kind === 'inE') {
+    return adjacentCount(step.labels, graph);
+  }
+
   if (step.kind === 'has') {
     return propertyCount(step, graph);
   }
@@ -1612,7 +1626,7 @@ const vertexStepCount = (step: Step, graph: Graph): number | undefined => {
   // `adjacentCount`'s own soundness condition carries over unchanged, since this only doubles what
   // it returns: it declines a multi-label hop on a graph with a multi-type edge, because summing
   // per-label buckets would count such an edge once per label.
-  if (step.kind === 'both') {
+  if (step.kind === 'both' || step.kind === 'bothE') {
     const one = adjacentCount(step.labels, graph);
 
     return one === undefined ? undefined : 2 * one;

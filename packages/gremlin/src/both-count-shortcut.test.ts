@@ -41,8 +41,10 @@ import {
   has,
   hasLabel,
   identity,
+  inE,
   in_,
   out,
+  outE,
   toArray,
   traversal,
 } from './index.js';
@@ -142,6 +144,71 @@ describe('the bare both count is twice the bucket', () => {
 
     expect(n(g, V(), both(), count())).toBe(4);
     expect(n(g, V(), both(), identity(), count())).toBe(4);
+  });
+});
+
+describe('the EDGE steps are the same bucket (item 1088)', () => {
+  // `vertexStepCount` had no edge-step arm at all, so `V().outE(T).count()` enumerated 600,000
+  // edges at 125.54 ms where `V().out(T).count()` — the same number by the same arithmetic — was
+  // already O(1). `inE` 119.15, `bothE` 224.95; all three now 0.01.
+  //
+  // The TinkerPop ground truth for this was ALREADY IN THE FILE, recorded on
+  // `edgeHopSeededCount`: "on 4 `T` edges including a self-loop, `V().outE(T).count()` and
+  // `V().inE(T).count()` are both 4 while `V().bothE(T).count()` is 8".
+  test('outE and inE count the edges once, bothE twice', () => {
+    const g = console3();
+
+    expect(n(g, V(), outE('T'), count())).toBe(3);
+    expect(n(g, V(), inE('T'), count())).toBe(3);
+    expect(n(g, V(), bothE('T'), count())).toBe(6);
+  });
+
+  test("the four-edge fixture from this file's own TinkerPop note", () => {
+    // Person->Co, Co->Person, Person->Person and a Person SELF-LOOP: 4 edges, so outE and inE are
+    // 4 and bothE is 8 — the note's numbers exactly.
+    const g = new Graph();
+    const p1 = g.addVertex({ id: 'p1', labels: ['Person'], properties: {} });
+    const p2 = g.addVertex({ id: 'p2', labels: ['Person'], properties: {} });
+    const co = g.addVertex({ id: 'co', labels: ['Co'], properties: {} });
+
+    g.addEdge({ id: 'a', labels: ['T'], from: p1, to: co, properties: {} });
+    g.addEdge({ id: 'b', labels: ['T'], from: co, to: p2, properties: {} });
+    g.addEdge({ id: 'c', labels: ['T'], from: p1, to: p2, properties: {} });
+    g.addEdge({ id: 'd', labels: ['T'], from: p1, to: p1, properties: {} });
+
+    expect(n(g, V(), outE('T'), count())).toBe(4);
+    expect(n(g, V(), inE('T'), count())).toBe(4);
+    expect(n(g, V(), bothE('T'), count())).toBe(8);
+  });
+
+  test('each agrees with its forced decline', () => {
+    const g = console3();
+
+    for (const [fast, slow] of [
+      [n(g, V(), outE('T'), count()), n(g, V(), outE('T'), identity(), count())],
+      [n(g, V(), inE('T'), count()), n(g, V(), inE('T'), identity(), count())],
+      [n(g, V(), bothE('T'), count()), n(g, V(), bothE('T'), identity(), count())],
+      [n(g, V(), outE(), count()), n(g, V(), outE(), identity(), count())],
+      [n(g, V(), bothE(), count()), n(g, V(), bothE(), identity(), count())],
+    ] as ReadonlyArray<readonly [number, number]>) {
+      expect(fast).toBe(slow);
+    }
+  });
+
+  test('a MULTI-LABEL edge step keeps the adjacentCount condition', () => {
+    const g = new Graph();
+    const a = g.addVertex({ id: 'a', labels: ['P'], properties: {} });
+    const b = g.addVertex({ id: 'b', labels: ['P'], properties: {} });
+
+    g.addEdge({ id: 'two', labels: ['T', 'S'], from: a, to: b, properties: {} });
+    g.addEdge({ id: 'one', labels: ['T'], from: b, to: a, properties: {} });
+
+    expect(g.multiTypeEdgeCount).toBe(1);
+    // TWO edges: outE is 2 and bothE is 4. Summing per-label buckets would give |T| + |S| = 3.
+    expect(n(g, V(), outE('T', 'S'), count())).toBe(2);
+    expect(n(g, V(), outE('T', 'S'), identity(), count())).toBe(2);
+    expect(n(g, V(), bothE('T', 'S'), count())).toBe(4);
+    expect(n(g, V(), bothE('T', 'S'), identity(), count())).toBe(4);
   });
 });
 

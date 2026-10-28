@@ -31643,3 +31643,42 @@ is the guard. The third, `filtered-ignores-inward-decline`, is a **dead branch k
 all three of `filteredHopCount`'s declines are DIRECTION-INDEPENDENT, so if outward succeeds inward
 cannot refuse — but the day one reads `forward`, dropping the check would answer HALF the count
 rather than declining. Item 583's distinction, recorded in the code.
+
+## 1088 — ✅ SHIPPED (Gremlin): the EDGE steps had **no bucket rung at all** — `outE`/`inE`/`bothE` bare counts 125/119/225 ms → **0.01**
+
+Item 1087's "grep the pattern elsewhere" found its refuted reason cited again on
+`edgeHopSeededCount`. Pricing that family found something bigger than the seed:
+
+```text
+  outE bare     125.54 ms  answer=600,000      ->  0.01   (DECLINED 125.18)
+  inE bare      119.15     answer=600,000      ->  0.01   (DECLINED 118.03)
+  bothE bare    224.95     answer=1,200,000    ->  0.01   (DECLINED 220.84)
+```
+
+`vertexStepCount` answered `out`/`in` from `adjacentCount` and handled **no edge step**, so
+`V().outE(T).count()` enumerated 600,000 edges where `V().out(T).count()` — same number, same
+arithmetic — was already O(1).
+
+**The TinkerPop ground truth was ALREADY IN THE FILE**, written beside the rung that declined:
+_"on 4 `T` edges including a self-loop, `V().outE(T).count()` and `V().inE(T).count()` are both 4
+while `V().bothE(T).count()` is 8"_ — i.e. `adjacentCount` and twice it. Reproduced as a test.
+
+### ⚠️ TWO OF MY TWELVE MUTANTS WERE WRONG BEFORE THE TESTS WERE
+
+`edge-bothE-not-doubled` first "survived" as a **no-op** — I split the merged `'both' || 'bothE'`
+arm into two that both still doubled. Rewritten properly it fails 4 tests. `edge-inE-reads-outE`
+"survived" because dropping `inE` makes it DECLINE, which is answer-equivalent.
+
+**A surviving mutant is a claim about the tests, and it is only worth making once the mutant does
+what its name says.** Both would otherwise have been written up as coverage gaps. What caught it was
+reading the replacement against the arm it was meant to break — not the exit code.
+
+8/12 caught; the four survivors are three answer-equivalent decline-restorations plus item 1087's
+documented dead branch.
+
+### 🔶 STILL OPEN: the `bothE` SEED
+
+`outE` seeded on an indexed key is **9.17 ms** against `bothE`'s **435.09** (47x; forced decline
+431.56). The bare form is `2 x` the seeded count, but `hasLabel(P).bothE(T)` counts an edge twice
+only when BOTH endpoints pass — not `2 x` anything — so the labelled case needs working out rather
+than doubling. Named, not built.
