@@ -32326,7 +32326,7 @@ Bigger than 1105's ~16% estimate because a remembered pass skips the WHOLE per-e
 `count 4-hop` **547.0 → 323.0, 1.69x**. The first re-measurement read 397.4 with the CONTROL also
 moved (343.9) — a background bench board was still running; it was stopped and the A/B re-run.
 
-⚠️ **The CONTROL moved 4.6%** (`count 3-hop`, the degree product, which never enters `sweepChain`):
+⚠️ **RETRACTED BY 1107 — the drift reversed sign on re-measurement, so no control moved.** (As first reported:) **The CONTROL moved 4.6%** (`count 3-hop`, the degree product, which never enters `sweepChain`):
 312.6/**302.3**/314.5 → **316.3**/321.9/316.6, and `count 3-hop + start filter` 158.2 → 161.9
 (−2.3%) although the threshold makes it unreachable. Adding a function to a hot module changes its
 layout and charges unrelated queries — the effect this repo documents for `pull`'s alignment and TS
@@ -32368,3 +32368,39 @@ vertex a source vs a SINGLE source, so later passes visit slots pass 1 never saw
 one that crosses the initial `cap` of 256 and exercises the array growth that reassigns
 `st.ways`/`st.next`. gql 3117 pass; fuzzers 13/0; spelling 0 answer disagreements, three known
 flags, no fourth.
+
+## 1107 — 1106 VERIFIED on the board; its "control moved 4.6%" ❌ RETRACTED; a board "+38% regression" ❌ refuted as in-sweep inflation; and the Gremlin twin 🔶 PRICED at **84x**
+
+**1106 holds.** Matched `ts,ffi` board vs item 1099's: `count 4-hop` **613.2 → 356.4**;
+`+ start filter` 236.2 → 225.6; `count var-length 1-3` 292.7 → 237.0; `count 3-hop quantified`
+302.4 → 250.0; the gated 3-hop rows flat (173.3 → 175.0, 185.5 → 187.7).
+
+**❌ `count 2-hop` 75.7 → 104.7 (+38%) is NOT a regression.** It is a two-leg chain that the
+two-segment walk owns and `passes > 2` excludes twice over. Isolated, alternated ×3 on a quiet
+machine: **73.6 PRE vs 73.8 POST — identical**, with `count 4-hop` reproducing 548.8 → 327.0 and
+`traverse 1-hop + filter` flat (32.0-32.4 both arms). In-sweep inflation, item 1100's rule.
+
+**❌ RETRACTING 1106's "the control moved 4.6%".** On this board the same control (`count 3-hop`,
+the degree product, which never enters `sweepChain`) reads 323.3 → **296.9, BETTER**, and
+`traverse 1-hop + filter` is flat to 0.4 ms over six isolated readings. A drift that reverses sign
+on re-measurement is noise: **no control moved.** `pull`-alignment / closure-size layout effects
+are real, which is why reaching for one as an explanation BEFORE re-measuring was the wrong order.
+
+**🔶 The Gremlin twin is unpriced no longer.** `hopChainCount`'s 3+ hop arm is the same
+multiplicity propagation with a weighted-degree tail, and NO bench row reached it — every chain row
+stopped at two hops, which the degree inner product answers with no edge walk (item 590). Added:
+
+```text
+  V().out().out().count()          53.5   2.84   18.8x  same   (inner product)
+  V().out().out().out().count()   397.3   4.71   84.3x  same   <- the walk
+  V().out()x4.count()             555.5   6.56   84.7x  same   <- the walk
+```
+
+**84x is the largest gap on that board**; two hops → three is 7.4x for one more hop, and 397.3 ms
+over ~2,000,000 propagation touches is **~200 ns a touch** — where the GQL sweep sat before 1106
+(190 ns, item 1104). ⚠️ **NOT the same arithmetic:** the Gremlin walk keys its frontier by VERTEX
+OBJECT (`w` read straight off the edge), so the string-interning component item 1105 ablated at 24%
+is ABSENT and any port must be re-measured from scratch. Correctness there is already pinned by
+`gremlin-hop-chain-count.test.ts` (TinkerPop 3.7.3 numbers, mixed directions, refusals); both new
+rows report `answers: same` and were smoked at `PROBE_N=2000` first, since a declined rung would
+enumerate 625 paths a vertex instead of measuring.

@@ -138,6 +138,32 @@ const SHAPES: [string, Plan][] = [
     traversal(V(), hasLabel('Person'), repeat(traversal(out('KNOWS'))).times(2), count()),
   ],
   ['V().has().out().count()', traversal(V(), has('age', gt(44)), out('KNOWS'), count())],
+  // THREE AND FOUR HOPS, which no row reached before item 1107. Every chain row above stops at
+  // TWO, and two hops from every vertex is answered by the DEGREE INNER PRODUCT (item 590) — one
+  // pass over vertices, no edge walk at all. So the arm that carries three hops and up, the
+  // per-vertex MULTIPLICITY WALK in `hopChainCount`, had no bench row: the whole `Map<Vertex,
+  // number>` propagation and its weighted-degree tail were unpriced.
+  //
+  // That arm is the Gremlin twin of the GQL way-count sweep item 1106 made 1.69x faster, and it
+  // is NOT the same cost: this one keys its frontier by VERTEX OBJECT, with `w` read straight off
+  // the edge, where the GQL sweep interns a string id per edge — the lookup item 1105 ablated at
+  // 24% of its row. These rows are what says whether the same memo is worth porting.
+  [
+    'V().out().out().out().count()',
+    traversal(V(), hasLabel('Person'), out('KNOWS'), out('KNOWS'), out('KNOWS'), count()),
+  ],
+  [
+    'V().out()x4.count()',
+    traversal(
+      V(),
+      hasLabel('Person'),
+      out('KNOWS'),
+      out('KNOWS'),
+      out('KNOWS'),
+      out('KNOWS'),
+      count(),
+    ),
+  ],
 ];
 
 /**
