@@ -91,6 +91,13 @@ fn main() {
     let (c, _) = time_query("g.V().outE('KNOWS').outV().count()", true, &store, cfg.reps)
         .expect("control shape runs");
 
+    {
+        let raw = lenke_engine::gremlin::parse("g.V().outE('KNOWS').outV().values('name').count()")
+            .expect("parses");
+        let opt = lenke_engine::opt::optimize_indexed(raw, &store);
+        println!("\n  PLAN: {opt:?}\n");
+    }
+
     println!("  ARM A  check, column IS fully present   {a:>10.1} us");
     println!("  ARM A' check, column absent (early out) {a_absent:>10.1} us");
     println!("  ARM B  values(name).count()  [target]   {b:>10.1} us  ({b_rows} rows)");

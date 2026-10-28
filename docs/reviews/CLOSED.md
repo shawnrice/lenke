@@ -33236,3 +33236,37 @@ O(rows), so 1.00% holds only while rows outnumber nodes — a small frontier of 
 full 142.5 us to skip a walk worth a microsecond. **Order is therefore tally FIRST, then check:** ARM
 C shows the row count is available without walking, so run the check only once that count exceeds the
 node count, then answer or fall through. ARM A' shows an absent column costs nothing.
+
+## 1133 — ❌ REFUTED: dropping the `Project` under a `count(*)` is a **1.12x REGRESSION**; and item 1131's diagnosis is wrong — the arm is never reached, and the 23.7x is the `PropertyExists` FILTER
+
+⚠️ **Item 1131 is corrected twice over.** Instrumenting all nine decline points in
+`try_frontier_count_prop` (item 1102's rule) shows `4 enter / 4 decline:arg-not-prop` — the arm is
+**not reached at all**, and not for 1131's stated reason. `values('k')` lowers to a present-filter
+plus a `Project`, and `count()` wraps a keyless `count(*)`, so `agg.arg` is `None`.
+
+⚠️ **DO NOT re-attempt the `Project` drop under a keyless `count(*)`.** It is exact (count(*) counts
+rows; Project is 1:1) and it fires, and it is SLOWER. Three rounds, order alternated, one arm per
+process, each build arm-asserted, control = `outE.outV.count()` (no Project):
+
+```text
+  PRE  14425.1 / 14520.4 / 14426.8     control 608.1 / 597.4 / 599.2
+  POST 16316.6 / 16255.2 / 16110.9     control 589.1 / 589.9 / 591.0
+  => 1.12x SLOWER, control flat within 3%
+```
+
+The `Project` is load-bearing, not overhead: it narrows the batch to one column before the
+aggregate, and a keyless `count(*)` left on the 4-slot chain batch pays more than the projection
+saved. Same shape as the `pull`-alignment toll. (Rewriting the pair to `count(n.k)` instead would be
+a WRONG ANSWER: `values('k')` emits a row for a stored present-null via `present_at`, `count(<arg>)`
+counts non-null via `has_value_at`. The two existing paths do agree with each other.)
+
+✅ **Where the 23.7x really is** — control and target run the same chain and differ by ONE filter:
+
+```text
+  g.V().outE('KNOWS').outV().count()                   608.1 us   a tally
+  g.V().outE('KNOWS').outV().values('name').count()  14425.1      23.7x
+```
+
+`Filter{PropertyExists}` defeats the tally, and it is a **no-op when the column is present on every
+live node** — which item 1132 measured the cost of knowing at 130.5-142.5 us, 1% of this row. The
+rewrite worth building is the FILTER drop, with 1132's presence check as its enabling fact. OPEN.
