@@ -30114,3 +30114,94 @@ fn the_project_see_through_declines_a_projection_that_can_raise() {
         "a faulting projection under count(*) must still fault, not be skipped"
     );
 }
+
+/// The route predicate of item 1137, asserted directly. Both routes return the same count, so an
+/// inline condition here is unfalsifiable by any answer-based test — which is why it is a pure
+/// function (item 1122's rule, and the reason item 1136's M2 verdict could not be resolved).
+#[test]
+fn the_bare_present_count_route_predicate_admits_only_that_shape() {
+    let count_star = Agg {
+        func: AggFn::Count,
+        arg: None,
+        distinct: false,
+        name: "c".into(),
+        frac: None,
+        null_on_empty: false,
+        numeric_only: false,
+    };
+    let present_1 = Expr::PropertyExists {
+        slot: 1,
+        key: "k".into(),
+    };
+    let f = crate::exec::fastpath::bare_present_count_belongs_to_the_frontier_fold;
+
+    // The one admitted shape.
+    assert!(f(&count_star, &present_1));
+
+    // A present-filter on a NON-frontier slot is not this shape.
+    assert!(!f(
+        &count_star,
+        &Expr::PropertyExists {
+            slot: 0,
+            key: "k".into()
+        }
+    ));
+    // A label test still belongs to the mask (the fold has its own IsLabeled arm, and this entry
+    // answers that one faster — measured 777.9us against the fold's path).
+    assert!(!f(
+        &count_star,
+        &Expr::IsLabeled {
+            slot: 1,
+            labels: vec!["P".into()]
+        }
+    ));
+    // `count(DISTINCT *)`, `count(<arg>)`, and every value-reading aggregate keep the mask,
+    // because the mask arm reads a value per row and the fold does not.
+    assert!(!f(
+        &Agg {
+            distinct: true,
+            ..count_star.clone()
+        },
+        &present_1
+    ));
+    assert!(!f(
+        &Agg {
+            arg: Some(Expr::Prop {
+                slot: 1,
+                key: "k".into()
+            }),
+            ..count_star.clone()
+        },
+        &present_1
+    ));
+    for func in [AggFn::Sum, AggFn::Min, AggFn::Max] {
+        assert!(
+            !f(
+                &Agg {
+                    func,
+                    arg: Some(Expr::Prop {
+                        slot: 1,
+                        key: "k".into()
+                    }),
+                    ..count_star.clone()
+                },
+                &present_1
+            ),
+            "{func:?} reads a value per row and must keep the mask"
+        );
+        // ALSO with no arg. A `sum` of nothing is not a shape any surface spelling produces, but
+        // the function is total and the `AggFn::Count` pin is the only thing excluding it — a
+        // mutant widening that pin to `Count | Sum` SURVIVED until this case existed, because
+        // every arg-carrying case above still declined for a different reason.
+        assert!(
+            !f(
+                &Agg {
+                    func,
+                    ..count_star.clone()
+                },
+                &present_1
+            ),
+            "{func:?} is not count(*) whatever its arg"
+        );
+    }
+}

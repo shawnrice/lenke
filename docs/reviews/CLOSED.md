@@ -33382,3 +33382,51 @@ stands as measured — three non-overlapping rounds — and is not retracted, bu
 what governs "no regressions" and it is clean. Logged as a discrepancy, not resolved in the change's
 favour. `rewrite_fuzz` green at default and at `LENKE_OPT_FUZZ_SEEDS=200000`; 7/7 byte-identity
 fuzzers 13 pass / 0 fail, artifact timestamps checked against the clock.
+
+## 1137 — ✅ SHIPPED **3.17x**: the claim trace names `try_fused_hop_mask_agg` as T1's claimer, and declining one shape makes `out().has(k).count()` cost EXACTLY what `out().values(k).count()` costs
+
+Items 1135/1136 left T1 flat and M2 unresolvable and guessed a shared cause. Instrumented, not
+inferred — all ten arms ahead of `try_frontier_count` got an entry marker (item 371's rule: "a fast
+path can be correct, willing, and still unreachable; an `eprintln` at function entry is what shows
+it, not a test"):
+
+```text
+  T1 out.has(name).count            try_fused_hop_mask_agg   <- claimer (NOT try_filtered_count)
+  T2 out.values(name).count         try_frontier_count
+  T3 out.out.has(name).count        try_frontier_count
+  C1 out.count                      try_scan_count
+  C2 out.hasLabel.count             try_fused_hop_mask_agg
+  C3 outE.outV.values.count         (no claim — general path, confirming EdgeVertex is not a chain)
+```
+
+`try_fused_hop_mask_agg` materializes every out-neighbour (1,000,000 `u32`s) PLUS a same-length dummy
+column, then `eval_mask`s the lot. Right for `sum`/`min`/`max` (a value per row); wrong for
+`has('k')`, which the frontier fold does with one O(1) presence test per DISTINCT node.
+
+⚠️ **DECLINE, do not REORDER** — items 371 and 375 both record an arm going silently dead when moved
+below one that could claim its shape.
+
+Three alternated rounds, arm-asserted:
+
+```text
+  T1  out.has(name).count           6153.1 -> 1944.0    3.17x
+  T2/T3 (already on the fold)       flat        C1/C2/C3 [ctl] flat
+```
+
+✅ **T1 now costs what T2 costs** (1944.0 vs 1924.2, within 1%). Two spellings of ONE question
+differed 3.2x and both answered correctly the whole time — the exact class `spelling_probe` exists
+for. ⚠️ **Adding this pair to `spelling_probe` is the follow-through and is NOT done yet.**
+
+✅ **A route choice is answer-equivalent, so it got its own observable** (item 1122's rule, and why
+1136's M2 was unresolvable): the decision is a pure total fn,
+`bare_present_count_belongs_to_the_frontier_fold(agg, pred)`, asserted directly. Mutation on a GREEN
+baseline (1276+13+725): `slot: 1` pin dropped CAUGHT, `!distinct` dropped CAUGHT, `Count` widened to
+`| Sum` CAUGHT — ⚠️ the last only after adding a `Sum` case with **no arg**, since every
+arg-carrying case declined for a different reason than the pin under test. The survivor was the
+missing case.
+
+⚠️ **Sweep flagged `query/gremlin/order(local) then hop` at 1.16x and it does NOT reproduce.**
+Isolated, three alternated rounds: PRE 16313.1/15422.7/14813.9 (10% spread alone), POST
+14671.0/14672.2/15156.8 — POST marginally faster. In-sweep interference on a noisy row (item 737's
+phantom); the row has no `count(*)` so the change cannot reach it. 103 rows compared, nothing else
+moved. `rewrite_fuzz` green; 7/7 byte-identity fuzzers 13 pass / 0 fail, artifact timestamps checked.

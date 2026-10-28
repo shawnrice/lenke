@@ -156,6 +156,21 @@ pub(super) fn try_fused_hop_project(
 /// identical: the mask is per (src, nbr) PATH exactly as the materialize filter, and the flat
 /// partition is in the SAME (source, out_adj) order the expand emits, so a float `sum` folds in
 /// the identical order. Declined for a reverse-seedable (selective) endpoint.
+/// Does this one-hop aggregate belong to the frontier fold rather than the materialized mask?
+/// (item 1137)
+///
+/// EXTRACTED as a pure predicate on purpose. The decision it encodes is a ROUTE choice, and both
+/// routes return the same count — so a mutation of the condition written inline survives every
+/// differential and end-to-end test there is, which is item 1122's rule ("a perf gate needs its
+/// own observable") and the reason item 1136's own M2 verdict is unresolvable. As a total function
+/// of two arguments it can be asserted directly, so a mutant has somewhere to fail.
+pub(super) fn bare_present_count_belongs_to_the_frontier_fold(agg: &Agg, pred: &Expr) -> bool {
+    matches!(agg.func, AggFn::Count)
+        && agg.arg.is_none()
+        && !agg.distinct
+        && matches!(pred, Expr::PropertyExists { slot: 1, .. })
+}
+
 pub(super) fn try_fused_hop_mask_agg(
     input: &Plan,
     keys: &[(String, Expr)],
@@ -174,6 +189,34 @@ pub(super) fn try_fused_hop_mask_agg(
     };
     let (label, w, pred, exp) = fused_hop_shape(input, store)?;
     if !refs_only_slot(pred, 1) {
+        return None;
+    }
+    // DECLINE a bare frontier `PropertyExists` under `count(*)` — item 1137.
+    //
+    // This entry answers a one-hop aggregate by MATERIALIZING every out-neighbour: a `Vec<u32>`
+    // of all 1,000,000 of them at 200k x degree 5, plus a second column of the same length that
+    // is a pure dummy (slot 0, which an endpoint-only predicate never reads), and then an
+    // `eval_mask` over all of it. For `has('k')` that is the wrong instrument — the frontier
+    // fold item 1136 shipped answers the same question with one O(1) presence test per DISTINCT
+    // node, folded against the path multiplicity.
+    //
+    // Measured, 200,000 nodes / degree 5, the two shapes being the SAME question (both answer
+    // 1,000,000) and differing only in which arm claims them:
+    //
+    // ```text
+    //   out().has('name').count()      6133.7us   here, via the materialized mask
+    //   out().values('name').count()   1930.7     the frontier fold (a `Project` diverts it)
+    // ```
+    //
+    // The claim trace is what found this: `out().has(k).count()` never reached
+    // `try_frontier_count` because this arm sits four places above it and says yes. Declining is
+    // the right correction rather than REORDERING the chain — items 371 and 375 both record an
+    // arm going silently DEAD when it was moved below one that could claim its shape.
+    //
+    // Narrow on purpose: only `count(*)`, and only a predicate that is EXACTLY a frontier
+    // `PropertyExists`. `sum`/`min`/`max` still need the mask (they read a value per row), and a
+    // compound predicate still needs the evaluator.
+    if bare_present_count_belongs_to_the_frontier_fold(agg, pred) {
         return None;
     }
     // The agg property must be a plain Num column (min/max/sum semantics; a NULL cell is
