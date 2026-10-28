@@ -32129,3 +32129,27 @@ settled (1085, 1073, 1072). **No fourth flag.**
 That is the independent confirmation 1097's `o3` observation lacked: four directed standing rows
 moved the way the isolated control did. `bench:gremlin`: **`answers` same on every row**; nothing
 moved beyond this instrument's documented noise.
+
+## 1100 — ❌ CORRECTING item 1083: the in-sweep RATIO does not survive the inflation either
+
+1083 wrote "the ratio survives it because both rows pay it". Item 1099's sweep refuted it: the board
+read **225.9 and 274.1 (1.21x)** where isolated the pair is 1.02-1.06x. Re-measured, three rounds:
+
+```text
+                      isolated              in-sweep   inflation
+  plain            144.2 143.8 142.4          225.9      1.58x
+  + end filter     148.8 148.5 148.5          274.1      1.85x
+  ratio                  1.04x                1.21x
+```
+
+**The rows pay DIFFERENT inflation (1.58x vs 1.85x), so the ratio moves.** A common factor cancels
+in a ratio; this is not a common factor — the filtered row does strictly more work per rep (a
+predicate per reached endpoint) and is the more sensitive to what preceding rows did to the machine.
+
+**The failure mode is item 1083's own, one layer up.** Its point was that a watcher calibrated to
+the wrong baseline certifies the regression it exists to catch — and it then recorded ~1.0x as
+healthy in a file whose rows are read from a sweep where healthy is ~1.2x. Either direction misleads:
+a sweep's 1.21x reads as a regression that is not there, or a real 1.2x regression reads as inflation.
+
+The comment now carries both ratios, which row inflates more and why, and the rule: **isolate them**
+(`BENCH_ONLY`). A ratio across two differently-inflated rows is not a ratio.

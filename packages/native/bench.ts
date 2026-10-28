@@ -846,10 +846,23 @@ const CASES: Case[] = [
     // regression watcher — a reopened 2x would mean the inversion stopped being chosen — but the
     // ratio to watch is ~1.0x, and reading ~2x as healthy would HIDE that regression.
     //
-    // AND DO NOT READ THESE TWO FROM A FULL SWEEP: in-sweep they read 222.6 and 230.8 against
-    // ~145 and ~148 isolated, 1.53x inflation — the effect CLAUDE.md records for this very row
-    // (250.7 in-sweep against ~177). The ratio survives it because both rows pay it; the
-    // absolute numbers do not.
+    // AND DO NOT READ THESE TWO FROM A FULL SWEEP — AND NOT THE RATIO EITHER (corrected at item
+    // 1100). Item 1083 wrote that "the ratio survives it because both rows pay it", and the next
+    // full sweep refuted that in one line: the two rows pay DIFFERENT inflation.
+    //
+    //                      isolated (3 rounds)   in-sweep   inflation
+    //   plain                 144.2 143.8 142.4     225.9      1.58x
+    //   + end filter          148.8 148.5 148.5     274.1      1.85x
+    //   ratio                        1.04x           1.21x
+    //
+    // So a sweep reading of ~1.2x is this pair's HEALTHY value and ~1.0x is its isolated one. Read
+    // it the wrong way round and a sweep's 1.21x looks like a regression that is not there, or a
+    // real 1.2x regression looks like inflation. The filtered row pays more inflation because it
+    // does strictly more work per rep (a predicate per reached endpoint), so it is the more
+    // sensitive of the two to whatever the preceding rows did to the machine.
+    //
+    // THE RULE IS THE ONE CLAUDE.md ALREADY GIVES FOR THESE ROWS: isolate them. `BENCH_ONLY` is
+    // one flag, and a ratio measured across two differently-inflated rows is not a ratio.
     name: 'count var-length 1-2 hops',
     ...onGraph(
       () => graphDoc,
