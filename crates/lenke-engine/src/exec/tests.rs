@@ -29750,3 +29750,73 @@ fn the_typed_count_fast_path_is_gated_per_type_not_globally() {
          route must still decline"
     );
 }
+
+#[test]
+fn an_element_renders_a_dict_encoded_column() {
+    // THE DICT ARM of the specialized property loop (item 1071), which mutation found UNTESTED:
+    // `dict[codes[i]]` could be replaced by `dict[0]` and all 1,264 tests still passed, because
+    // no fixture rendered an element off a dictionary-encoded column.
+    //
+    // `dict_encode` takes a string column only when the values REPEAT — distinct * 2 <= rows — so
+    // the fixture needs several rows sharing few values. Ten nodes over three departments
+    // qualifies (3 * 2 <= 10) where the four-node fixtures elsewhere in this file cannot.
+    let mut nd = String::new();
+
+    for i in 0..10 {
+        nd.push_str(&format!(
+            "{{\"id\":\"n{i}\",\"labels\":[\"P\"],\"props\":{{\"dept\":\"d{}\",\"k\":{i}}}}}\n",
+            i % 3
+        ));
+    }
+
+    let store = crate::ndjson::from_ndjson(&nd).unwrap();
+
+    assert!(
+        store.scan_is_cheap("dept"),
+        "`scan_is_cheap` is true only for a Dict column: the fixture must actually dict-encode, or this test proves nothing about that arm"
+    );
+
+    let plan = crate::opt::optimize_indexed(
+        crate::gql::parse("MATCH (p:P) RETURN p ORDER BY p.k").unwrap(),
+        &store,
+    );
+    let out = run(&plan, &store);
+
+    assert_eq!(out.rows.len(), 10);
+
+    // Every row's `dept` must be ITS OWN value, which is what a wrong code index breaks: with
+    // `dict[0]` every row reads `d0`, and three of the ten legitimately do.
+    let depts: Vec<String> = out
+        .rows
+        .iter()
+        .map(|r| {
+            let Value::Map(pairs) = &r[0] else {
+                panic!("an element renders as a map");
+            };
+            let props = pairs
+                .iter()
+                .find(|(k, _)| matches!(k, Value::Str(s) if s.as_str() == "properties"))
+                .map(|(_, v)| v)
+                .expect("an element map carries `properties`");
+            let Value::Map(props) = props else {
+                panic!("`properties` is a map");
+            };
+            let dept = props
+                .iter()
+                .find(|(k, _)| matches!(k, Value::Str(s) if s.as_str() == "dept"))
+                .map(|(_, v)| v)
+                .expect("the node has `dept`");
+
+            match dept {
+                Value::Str(s) => s.as_str().to_string(),
+                other => panic!("dept is a string, got {other:?}"),
+            }
+        })
+        .collect();
+
+    assert_eq!(
+        depts,
+        vec!["d0", "d1", "d2", "d0", "d1", "d2", "d0", "d1", "d2", "d0"],
+        "each row decodes its OWN dictionary code"
+    );
+}

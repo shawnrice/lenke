@@ -30933,3 +30933,62 @@ is only useful if the effect is above the fixture's floor.**
   and the `Arc<[_]>` representation (this item). Close to its floor while each row's map is
   independently owned.
 - **47% property loop — the largest share and unattacked.** That is where the next attempt belongs.
+
+## 1071 — ✅ SHIPPED (RUST): the property loop specialized per COLUMN. 1.08x at K=4, 1.18x at K=64
+
+Item 390's last unattacked share: **47% of an element render is the property loop**. It matched the
+column's variant TWICE per present cell (`present_at` then `read`) and read the presence bitmap
+three times, where the variant is fixed for the whole inner loop. One match per column, then a
+specialized row loop per variant.
+
+Byte-identical by construction: the generic path pushes when `present[i] || nulls[i]` with the datum
+if `present[i]` and `Value::Null` otherwise, and each arm is that pair of conditions inlined — a
+STORED null still pushes `Value::Null`, an absent cell still pushes nothing. `Gen` keeps the generic
+path (no `nulls` bitset).
+
+### 🛑 The corpus could not adjudicate it — and said so
+
+```text
+  element p  (the changed row)                  PRE 341.9 → POST 332.3    1.03x
+  element r  (render_edges — UNREACHABLE)       PRE 267.2 → POST 277.3    0.95x
+  scalar p.age CONTROL                              2.4 → 2.4            flat
+```
+
+**Subject 1.03x, unreachable control 1.04x the other way.** Same magnitude ⇒ the instrument cannot
+separate the change from drift. CLAUDE.md's "under ~10% needs its own isolated harness" as a verdict.
+
+### The isolated instrument: sweep the axis the change acts on
+
+`propcells_1071` sweeps K (properties per node), every cell present, half numeric half string:
+
+```text
+  K=1    162.1 → 160.4   1.01x   ← control at the bottom of the curve
+  K=4    231.2 → 214.1   1.08x   ← the corpus's width
+  K=16   549.2 → 482.4   NOT CLAIMED: POST spanned 482/635/718 (1.5x) against a stable PRE
+  K=64  2667.8 → 2254.1  1.18x
+  CONTROL scalar @ K=64    1.4 → 1.3, flat
+```
+
+**The ratio GROWS with K — the signature of a per-cell saving.** A change to the fixed per-row cost
+would show the opposite shape.
+
+### 🛑 Mutation found a brand-new arm with NO coverage
+
+`present-ignored`, `nulls-dropped`, `num-arm-zero`, `str-arm-first` all CAUGHT. **`dict-code-zero`
+SURVIVED**: no fixture in 1,264 tests rendered an element off a DICTIONARY-encoded column.
+`dict_encode` needs distinct × 2 ≤ rows and the element fixtures here are four nodes wide, so none
+could qualify. Added `an_element_renders_a_dict_encoded_column` — ten nodes over three departments,
+asserting `scan_is_cheap("dept")` FIRST so the fixture is proved to dict-encode, then that each row
+decodes its OWN code (`dict[0]` leaves three of ten legitimately right, so the whole sequence is the
+assertion). All five mutants then die.
+
+Second time in three items that mutation found a fixture unable to reach the code under test (1067's
+guards, 1064's heap), and the first where the untested arm was brand new.
+
+### ➡️ Element render after items 1068-1071
+
+- 12% labels — DONE (1068 nodes, 1069 edges).
+- 37% map allocations — two attacks REFUTED (392 pre-sizing, 1070 `Arc<[_]>`); near its floor.
+- 47% property loop — this item, 1.08x at the corpus's width and 1.18x at K=64. What remains in it
+  is the `GStr` clone per key, the `Value` construction per cell and the `Vec` push — each already
+  minimal for the representation.

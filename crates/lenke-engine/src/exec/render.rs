@@ -436,20 +436,98 @@ pub(super) fn render_nodes(store: &Store, ids: &[u32]) -> Vec<Value> {
     // unchanged and only its timing moves.
     let mut props_per_row: Vec<Vec<(Value, Value)>> = vec![Vec::new(); ids.len()];
 
+    // ONE MATCH PER COLUMN, not two per CELL (item 1071). The generic loop asked
+    // `c.present_at(id)` and then `c.read(id)`, and each of those matches the column's variant and
+    // probes its presence bitmap — so a present cell paid two variant matches and three bitmap
+    // reads where the variant is FIXED for the whole inner loop and one read suffices.
+    //
+    // Item 390's ablation put 47% of an element render in this loop, the largest share and the one
+    // the two map-allocation attacks (392, 1070) left untouched.
+    //
+    // BYTE-IDENTICAL BY CONSTRUCTION, which is why this is a specialization and not a rewrite: the
+    // generic path pushes when `present_at` = `present[i] || nulls[i]`, with the value from `read`,
+    // which yields the datum when `present[i]` and `Value::Null` otherwise. Each arm below is
+    // exactly that pair of conditions, inlined — a STORED null (`SET k = null`, which is
+    // `present=false, nulls=true`) still pushes a `Value::Null` pair, and an absent cell still
+    // pushes nothing.
     for (j, (_, c)) in cols.iter().enumerate() {
-        for (r, &id) in ids.iter().enumerate() {
-            if id == u32::MAX {
-                continue;
-            }
+        // `present`/`nulls` are passed in rather than referred to by name: a `macro_rules!` body
+        // is hygienic, so the match arm's bindings are not in scope inside it.
+        macro_rules! walk {
+            ($present:expr, $nulls:expr, $val:expr) => {
+                for (r, &id) in ids.iter().enumerate() {
+                    if id == u32::MAX {
+                        continue;
+                    }
 
-            if c.present_at(id as usize) {
-                let props = &mut props_per_row[r];
+                    let i = id as usize;
+                    let props = &mut props_per_row[r];
 
-                if props.capacity() == 0 {
-                    props.reserve(cols.len().min(PROP_PAIRS_RESERVE));
+                    if $present[i] {
+                        if props.capacity() == 0 {
+                            props.reserve(cols.len().min(PROP_PAIRS_RESERVE));
+                        }
+
+                        props.push((key_vals[j].clone(), $val(i)));
+                    } else if $nulls[i] {
+                        if props.capacity() == 0 {
+                            props.reserve(cols.len().min(PROP_PAIRS_RESERVE));
+                        }
+
+                        props.push((key_vals[j].clone(), Value::Null));
+                    }
                 }
+            };
+        }
 
-                props.push((key_vals[j].clone(), c.read(id as usize)));
+        match c {
+            Column::Num {
+                data,
+                present,
+                nulls,
+            } => walk!(present, nulls, |i: usize| Value::Num(data[i])),
+            Column::Str {
+                data,
+                present,
+                nulls,
+            } => walk!(present, nulls, |i: usize| Value::Str(data[i].clone())),
+            Column::Dict {
+                dict,
+                codes,
+                present,
+                nulls,
+            } => walk!(present, nulls, |i: usize| Value::Str(
+                dict[codes[i] as usize].clone()
+            )),
+            Column::Bool {
+                data,
+                present,
+                nulls,
+            } => walk!(present, nulls, |i: usize| Value::Bool(data[i])),
+            Column::Temporal {
+                data,
+                present,
+                nulls,
+                ..
+            } => walk!(present, nulls, |i: usize| Value::Temporal(data[i])),
+            // `Gen` has no `nulls` bitset — it stores a `Value::Null` in `data` directly — so it
+            // keeps the generic path rather than being given a near-duplicate arm.
+            Column::Gen { .. } => {
+                for (r, &id) in ids.iter().enumerate() {
+                    if id == u32::MAX {
+                        continue;
+                    }
+
+                    if c.present_at(id as usize) {
+                        let props = &mut props_per_row[r];
+
+                        if props.capacity() == 0 {
+                            props.reserve(cols.len().min(PROP_PAIRS_RESERVE));
+                        }
+
+                        props.push((key_vals[j].clone(), c.read(id as usize)));
+                    }
+                }
             }
         }
     }

@@ -78,6 +78,7 @@ enumeration's is flat.
 | What does a LABEL NAME's length cost an element render, per row?                 | `labelhoist_1068`                    |
 | And an EDGE element, by edge-type COUNT and name length?                         | `edgelabel_1069`                     |
 | What would `Value::Map(Arc<[_]>)` save over `Arc<Vec<_>>` at render sizes?       | `mapalloc_1070`                      |
+| What does ONE property CELL cost an element render, by properties per node?      | `propcells_1071`                     |
 
 **Deferred** (need crate-private access or a large bespoke fixture, so not in a
 group binary yet): the eval-vs-columnar floor (`eval_vec` is crate-private — it
