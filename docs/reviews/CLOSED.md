@@ -31760,3 +31760,47 @@ thing said about this, then act" — not "read the comment".
 `order()` adds **351 ms** at 200k x degree 5 where item 891 measured **225.6** on the same fixture
 shape. Either harness drift or a real regression in the step pipeline — not this row's keying or
 sort, both priced — so it is the per-step cost itself (items 234/537), an architecture change.
+
+## 1091 — ✅ SHIPPED (Gremlin): a `both` hop CHAIN, **68.6-77.0x**; and the first cut cost a control 1.54x
+
+`hopChainCount`'s `HopStep` excluded `both` "for the self-loop reason the rungs above give" — refuted
+at item 1087, and **the third place it was cited** (1087: `filteredHopCount`/`vertexStepCount`;
+1088/1089: `edgeHopSeededCount`). The chain had no rung and enumerated:
+
+```text
+  both.both        declined  6197.62 ms    20,000,000 paths
+  both.both.both   declined 47,842.02     200,000,000 paths — 48 SECONDS
+  (out.out 46.76 with its rung, declined 1425.87)
+```
+
+**TinkerPop 3.7.3** on `a->b`, `b->c` + a SELF-LOOP on `a`: `both.both` 14, `both.both.both` 34,
+`P both.both` 12, **`both.out` 8, `out.both` 6**. A `both` hop's degree sums BOTH boxes (loop twice),
+and the inner product gives all of them: `3*3+2*2+1*1=14`, `3*2+2*1+1*0=8`, `1*3+1*2+1*1=6`. The
+mixed pair differs, so a symmetric implementation gets one wrong — both were checked. (The
+desugaring `out.out+out.in+in.out+in.in` also gives 14 but costs 2^k passes; rejected.)
+
+### ⚠️ THE FIRST CUT REGRESSED A CONTROL 1.54x
+
+Generalizing the shared arms with a `hopBoxes` helper improved the subjects 75x and moved
+`out.out` **46.76 -> 72.19 (1.54x)** and `P out.out` 47.29 -> 73.65. **The per-edge body's SHAPE was
+preserved; its CALL STRUCTURE was not** — an array allocated per vertex even for `out`, a call where
+a box read was inlined. Items 159 (1.6x) and 1033 (~2x on three unreachable shapes) had measured
+this in this file, and I quoted 1033 in the previous item while making its mistake.
+
+Fixed item 159's way — a separate `bothChainCount` chosen once, `out`/`in` arms byte-identical:
+
+```text
+  both.both      6265.95 ->  81.35   77.0x     out.out      46.76 -> 46.64   1.00x
+  P both.both    6255.84 ->  81.26   77.0x     P out.out    47.29 -> 48.15   0.98x
+  both.both.both 47842.02 -> 697.18  68.6x     out.out.out 321.24 -> 337.39  0.95x
+```
+
+### ➡️ MUTATION FOUND A GAP I WOULD NOT HAVE GUESSED
+
+First round 8/11: `walk-in-takes-adjfrom` and `lasthop-reversed` both survived — the same gap. No
+test put an `out`/`in` hop in the MULTIPLICITY WALK of a `both` chain, since every mixed case was a
+2-hop unfiltered chain taking the inner product. **And a `both` LAST hop cannot catch
+`lasthop-reversed`: its arrival and departure degrees coincide, so reversing it is a no-op.** With
+3-hop mixed and filtered 2-hop chains added (oracle = forced decline), 10/11; survivor is the
+answer-equivalent routing decline. `degree-subtracts-a-loop` — the GQL correction applied here —
+fails 3, so the two engines' loop rules stay pinned to each other.

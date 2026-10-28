@@ -1016,8 +1016,19 @@ type VertexFilter = Extract<Step, { kind: 'hasLabel' }> | Extract<Step, { kind: 
  * ignored, the filters disjoined, the index decline removed, and a MULTI-label allowed to seed a
  * single bucket (which drops every vertex carrying only the second label).
  */
-/** A hop step, narrowed: `both` is excluded for the self-loop reason the rungs above give. */
-type HopStep = Extract<Step, { kind: 'out' | 'in' }>;
+/**
+ * A hop step. `both` IS ADMITTED since item 1091 — the self-loop reason the rungs above used to
+ * give was refuted at item 1087 — but it is answered by {@link bothChainCount}, NOT by widening
+ * the `out`/`in` arms below.
+ *
+ * THAT SPLIT IS MEASURED, not stylistic. The first cut generalized the shared arms with a
+ * `hopBoxes(v, hop)` helper and a `hopDegree` call: the target went 6197 -> 82 ms, and the
+ * `out.out` CONTROL — a shape the change cannot reach — went **46.76 -> 72.19 (1.54x SLOWER)**,
+ * with `hasLabel(P).out.out` 47.29 -> 73.65. A one-element array per vertex and a call where a
+ * box read used to be inlined was enough. Items 159 (1.6x) and 1033 (~2x on three unreachable
+ * shapes) had both already measured this effect in this file.
+ */
+type HopStep = Extract<Step, { kind: 'out' | 'in' | 'both' }>;
 
 /**
  * `V().<filters>.out(T).out(T)….count()` — a CHAIN of two or more hops, counted by propagating
@@ -1072,7 +1083,7 @@ const hopChainShape = (
   for (let i = mid.length - 1; i >= 0; i -= 1) {
     const step = mid[i];
 
-    if (step.kind !== 'out' && step.kind !== 'in') {
+    if (step.kind !== 'out' && step.kind !== 'in' && step.kind !== 'both') {
       break;
     }
 
@@ -1132,6 +1143,134 @@ const hopChainShape = (
   return { hops, source, rest, unfiltered: filters.length === 0 };
 };
 
+/**
+ * A hop chain containing at least one `both` (item 1091).
+ *
+ * WHY A SEPARATE FUNCTION. `both` could be folded into `hopChainCount`'s arms with a box-list
+ * helper, and that was built and measured: the target improved 75x and the `out.out` control
+ * REGRESSED 1.54x. So the two live apart and `out`/`in` keep the code they had.
+ *
+ * TINKERPOP 3.7.3 SETTLES THE ARITHMETIC, on `a->b`, `b->c` and a SELF-LOOP on `a`:
+ *
+ *   both 6   both.both 14   both.both.both 34   P both.both 12   both.out 8   out.both 6
+ *
+ * A `both` hop's degree is the sum over BOTH boxes, so a loop counts twice — which is exactly what
+ * `both()` yields, and the degree inner product reproduces all six: `3*3 + 2*2 + 1*1 = 14`,
+ * `3*2 + 2*1 + 1*0 = 8` for `both.out`, `1*3 + 1*2 + 1*1 = 6` for `out.both`. The two MIXED cases
+ * differ (8 against 6), which is why both were checked — a symmetric implementation gets one wrong.
+ *
+ * THE PRIZE, at 200,000 vertices x degree 5, against the forced-`identity()` decline that IS the
+ * route this replaces: `both.both` 6241 -> 82 ms, `both.both.both` 47,842 -> 748 ms.
+ */
+const bothChainCount = (
+  hops: readonly HopStep[],
+  source: Iterable<Vertex>,
+  rest: readonly VertexFilter[],
+  unfiltered: boolean,
+  graph: Graph,
+): number => {
+  // TWO HOPS FROM EVERY VERTEX IS A DEGREE INNER PRODUCT, for `hopChainCount`'s own reason
+  // (item 590): every traversal of the first hop arrives at some `w`, and the ways to arrive are
+  // a degree of `w`. A `both` hop arrives and departs along the same pair of boxes, so its two
+  // factors coincide — which is why `both.out` and `out.both` come out different.
+  if (unfiltered && hops.length === 2) {
+    const [h0, h1] = hops;
+    let total = 0;
+
+    for (const w of graph.verticesById.values()) {
+      const arrive = chainDegree(w, h0, true);
+
+      total += arrive === 0 ? 0 : arrive * chainDegree(w, h1, false);
+    }
+
+    return total;
+  }
+
+  // Otherwise carry a multiplicity per frontier vertex and push it along each traversal, then
+  // finish with a degree sum. ONE implementation for every remaining depth: a `both` chain was
+  // 6.2 s and 48 s before this, so there is nothing to gain from the extra two-hop arm
+  // `hopChainCount` keeps, and a second copy of the walk is a second thing to get wrong.
+  let cur = new Map<Vertex, number>();
+
+  for (const v of source) {
+    let ok = true;
+
+    for (let i = 0; i < rest.length && ok; i += 1) {
+      const step = rest[i];
+
+      ok =
+        step.kind === 'hasLabel'
+          ? step.labels.some((l) => v.labels.has(l))
+          : matches(step.pred, v.properties[step.key]);
+    }
+
+    if (ok) {
+      cur.set(v, 1);
+    }
+  }
+
+  for (let h = 0; h < hops.length - 1; h += 1) {
+    const hop = hops[h];
+    const next = new Map<Vertex, number>();
+
+    for (const [v, m] of cur) {
+      // `undefined` for a direction this hop does not take, so `out` and `in` walk one box and
+      // `both` walks two — and a self-loop, sitting in both, is pushed twice.
+      const from = hop.kind === 'in' ? undefined : v.adjFrom;
+      const to = hop.kind === 'out' ? undefined : v.adjTo;
+
+      if (from !== undefined) {
+        for (const set of hop.labels.length === 0 ? from.values() : bucketsOf(from, hop.labels)) {
+          for (const e of set) {
+            next.set(e.to, (next.get(e.to) ?? 0) + m);
+          }
+        }
+      }
+
+      if (to !== undefined) {
+        for (const set of hop.labels.length === 0 ? to.values() : bucketsOf(to, hop.labels)) {
+          for (const e of set) {
+            next.set(e.from, (next.get(e.from) ?? 0) + m);
+          }
+        }
+      }
+    }
+
+    cur = next;
+  }
+
+  const lastHop = hops[hops.length - 1];
+  let total = 0;
+
+  for (const [v, m] of cur) {
+    total += m * chainDegree(v, lastHop, false);
+  }
+
+  return total;
+};
+
+/**
+ * `v`'s degree along one hop of a `both`-bearing chain: the sum over both boxes for `both`, so a
+ * self-loop counts twice, and one box for `out`/`in`.
+ *
+ * `reverse` asks instead how many traversals of `hop` LAND on `v` — its in-edges for an `out` hop
+ * and its out-edges for an `in` hop. For `both` the two questions coincide.
+ *
+ * Only `bothChainCount` calls this; the `out`/`in` arms read their box inline exactly as before.
+ */
+const chainDegree = (v: Vertex, hop: HopStep, reverse: boolean): number => {
+  if (hop.kind === 'both') {
+    return (
+      (v.adjFrom === undefined ? 0 : degreeOfTypes(v.adjFrom, hop.labels)) +
+      (v.adjTo === undefined ? 0 : degreeOfTypes(v.adjTo, hop.labels))
+    );
+  }
+
+  const box = (hop.kind === 'out') !== reverse ? v.adjFrom : v.adjTo;
+
+  return box === undefined ? 0 : degreeOfTypes(box, hop.labels);
+};
+
 const hopChainCount = (mid: readonly Step[], graph: Graph): number | undefined => {
   const shape = hopChainShape(mid, graph);
 
@@ -1140,6 +1279,15 @@ const hopChainCount = (mid: readonly Step[], graph: Graph): number | undefined =
   }
 
   const { hops, source, rest, unfiltered } = shape;
+
+  // A `both` ANYWHERE in the chain takes its own function, chosen ONCE here. The arms below are
+  // then exactly the code they were, which is the whole point — see `HopStep` for the 1.54x the
+  // alternative cost a control it could not reach.
+  for (const hop of hops) {
+    if (hop.kind === 'both') {
+      return bothChainCount(hops, source, rest, unfiltered, graph);
+    }
+  }
 
   // TWO HOPS FROM EVERY VERTEX IS A DEGREE INNER PRODUCT, and needs no edge walk at all
   // (item 590). Summing over sources, every traversal of the first hop arrives at some `w`, and
