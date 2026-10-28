@@ -29324,7 +29324,43 @@ multiTypeEdgeCount === 0`) — one named type cannot double-count. Native's `Adj
   run read clause 11.356 against inline 6.071; three rounds OVERLAP (7.198-8.723 against
   7.613-9.952). The spellings CONVERGE, as item 1032 found independently. This family's series
   spans 6-17 ms inside one process, so a single pair cannot support a ratio.
-- **➡️ THE BUILD IS TWO HALVES AND THEY MUST LAND TOGETHER (item 1037).**
+- **✅ DONE — the EDGE-SEEDED PROJECTION WALK, 100-190x, both spellings together (item 1038).**
+  `relSeekedHopWalk`, an edge-driven closure routed before `relBoundFilteredHopWalk` (which is
+  byte-for-byte unchanged and is the control). Three things the count side did not need: BOTH
+  endpoint labels (the vertex-driven twin gets the near one free from its source); BOTH spellings
+  (`relPred` plus a new `relLifted`, the projection's twin of item 1034's lift, and `edgeSeek`
+  gained a `props` loop because the projection hands it a bare inline `CPredicate` where the count
+  path hands a lifted one); and DELEGATE rather than `return null` when the index declines — a
+  runtime `null` from a `RowsFn` hands the query to the GENERAL pipeline, which would make an
+  unselective indexed key a pessimization against the walk this replaces. Three alternated rounds:
+  proj-inline 4.478/3.844/6.935 → 0.044/0.046/0.048; proj-clause 7.535/6.736/8.891 →
+  0.038/0.044/0.033; proj-zero 5.608/6.238/10.199 → **0.003** three times; **CONTROL proj-unindexed
+  overlapping, CONTROL named-clause and node-key FLAT.** Both spellings now within 1.4x of each
+  other and 1.2x of the Gremlin ceiling. Row order changes (index order); sound, because row order
+  without `ORDER BY` is unspecified and the fuzzer compares MULTISETS.
+- **METHOD — an in-sweep control manufactured a disjoint range for the SECOND time (item 1038).**
+  The Gremlin ceiling read 0.059 three times in POST against 0.047-0.054 in PRE, disjoint at 1.18x,
+  on a path the change cannot execute. Alone, nine readings an arm: PRE 0.038-0.071, POST
+  0.039-0.057, fully overlapping. Item 1034 was the first. **The isolated instrument settled both.**
+- **METHOD — `narrowerSeed` is the answer-equivalent survivor done properly (item 1038).**
+  `widest-of-two` passed 2,840 tests because both candidate seeds are SUPERSETS and every predicate
+  is re-applied, so the wider one is slower and never wrong. Extracted as a pure exported function
+  and unit-tested (five tests: the tie is deterministic, and an EMPTY seed must beat a non-empty
+  alternative rather than read as "no seed"). The mutant then fails 2; all seven caught.
+- **⚠️ THE SPELLING PROBE'S FLAGGED-GROUP COUNT IS NOT COMPARABLE BETWEEN RUNS (item 1038).** Item
+  1035's entry said "three groups over 2x" and item 1038's run says four. The gate is "clear of the
+  nearest NULL CONTROL", and that control was 23.4 ms in one run and 12.4-12.5 ms in the next, so
+  the threshold moves with it. The fourth group (item 578's, 2.40x) is a pure node-scan count with
+  no relationship and no edge index, and a PRE run on HEAD shows the same four at the same ratios.
+- **🔴 OPEN WRONG ANSWER — an `ORDER BY` on a REL property is DROPPED on the hop projection, and so
+  is a following `LIMIT` (item 1039, found while writing item 1038's tests).** Reproduces
+  identically on the commit before 1038, so it is not that item's:
+  `MATCH ()-[e:T]->() RETURN e.tag AS a ORDER BY e.tag DESC` returns insertion order, ASC returns
+  the SAME order, `ORDER BY a DESC` (the alias) likewise, and `… ORDER BY e.tag DESC LIMIT 2`
+  returns **three** rows. The neighbours are correct — a node scan sorts both directions, and the
+  same hop sorting on a FAR property sorts correctly — so it is specific to a rel-property sort key
+  on this path. A wrong answer, so it outranks the perf queue.
+- **➡️ ~~THE BUILD IS TWO HALVES AND THEY MUST LAND TOGETHER~~ — DONE at 1038 (item 1037).**
   `relBoundFilteredHopWalk` takes `relPred: CPredicate` (the INLINE constraint, which carries the
   `props`/`eqProps` `edgeSeek` reads) and `gate: CompiledExpr` (the CLAUSE `WHERE`, which has no
   `eqProps` to offer) as separate parameters. Seeding only the inline half would take it to

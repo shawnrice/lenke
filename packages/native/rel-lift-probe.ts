@@ -70,6 +70,13 @@ const SHAPES: Record<string, { q: string; reached: boolean }> = {
   },
   // THE CEILING for the projection shape: Gremlin seeds the edge index and then reads the value.
   'proj-gremlin': { q: 'GREMLIN-PROJ', reached: true },
+  // THE PROJECTION CONTROL (item 1038): an UNINDEXED edge key, so `edgeSeek` declines and the
+  // walk delegates to the scanning twin. The arm that says the win is the INDEX, and the one that
+  // would catch a decline routed to the general row pipeline instead of to that twin.
+  'proj-unindexed': {
+    q: 'MATCH ()-[e:PAID]->() WHERE e.other = 500 RETURN e.other AS a',
+    reached: false,
+  },
 };
 
 const name = process.env.SHAPE ?? 'named-clause';

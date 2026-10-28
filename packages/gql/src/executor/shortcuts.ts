@@ -408,7 +408,7 @@ type InlinePred = { pred: CPredicate; bindVar?: string };
  * It is the right thing to move for the same reason: this decides a route ONCE PER QUERY, where
  * the walk it selects runs once per candidate.
  */
-const liftedOwnPred = (
+export const liftedOwnPred = (
   where: Expr,
   free: ReadonlySet<string>,
   ownName: string | undefined,
@@ -1366,6 +1366,15 @@ export const edgeSeek = (
   }
 
   for (const { key, value } of relLifted?.eqProps ?? []) {
+    offer(key, value);
+  }
+
+  // `props` AS WELL AS `eqProps`, since item 1038. The count path only ever hands a LIFTED clause
+  // predicate here, whose equalities are in `eqProps` — but the projection path hands its rel's
+  // INLINE constraint as a bare `CPredicate`, and an inline `{k: v}` lands in `props`. Reading one
+  // list and not the other is how one spelling seeds while its twin scans, which is the defect
+  // this function exists to close rather than to reproduce one layer up.
+  for (const { key, value } of relLifted?.props ?? []) {
     offer(key, value);
   }
 

@@ -1,4 +1,4 @@
-import type { Graph, Vertex } from '@lenke/core';
+import type { Edge, Graph, Vertex } from '@lenke/core';
 
 import type { Clause, CountValue, Expr, LabelExpr, Projection, RelPattern } from '../ast.js';
 import type {
@@ -37,7 +37,9 @@ import { indexCandidates } from './matching.js';
 import { outputColumnSorts, sortedRows } from './ordered-rows.js';
 import { asTruth, isNullish } from './scalars.js';
 import {
+  edgeSeek,
   hopSeek,
+  liftedOwnPred,
   pageGroups,
   pageIsEmpty,
   plainNode,
@@ -1024,6 +1026,261 @@ const relBoundFilteredHopWalk = (w: {
 };
 
 /**
+ * The narrower of two edge seeds, or whichever one exists, or `undefined`.
+ *
+ * EXPORTED AND EXTRACTED because the choice is ANSWER-EQUIVALENT: both candidates are supersets of
+ * the answer — `relSeekedHopWalk` re-applies every predicate afterwards — so picking the wider one
+ * is slower and never wrong, and a mutant flipping `<=` to `>=` passed all 2,840 tests. That is
+ * `perf-gate-needs-its-own-test` exactly: extract the arithmetic as a pure function and unit-test
+ * it, because no result can.
+ *
+ * Both sets come from the same edge index, so comparing sizes is comparing like with like.
+ */
+export const narrowerSeed = (
+  a: ReadonlySet<Edge> | undefined,
+  b: ReadonlySet<Edge> | undefined,
+): ReadonlySet<Edge> | undefined => {
+  if (a === undefined) {
+    return b;
+  }
+
+  if (b === undefined) {
+    return a;
+  }
+
+  return a.size <= b.size ? a : b;
+};
+
+/**
+ * The EDGE-DRIVEN twin of {@link relBoundFilteredHopWalk}: when a declared edge index can answer
+ * the rel's own equality, drive from the SEEDED EDGES rather than from every vertex's adjacency
+ * (item 1038).
+ *
+ * Item 1035 gave the COUNT walks this seed through `tallyEdges`; this path had none, and item 1037
+ * priced the consequence at 130-180x. Three rounds, 100,000 edges, one `amount` = 0.1%:
+ *
+ * ```text
+ *   E().has('amount',500).values('amount')      0.061  0.049  0.055 ms   <- the ceiling
+ *   MATCH ()-[e:PAID {amount: 500}]->() RETURN  7.198  7.871  8.723
+ *   MATCH ()-[e:PAID]->() WHERE e.amount = 500  9.952  7.613  9.065
+ *   the same clause on a value NO edge carries  6.718  5.846  7.785      <- 0 rows
+ * ```
+ *
+ * **The zero-row arm is why this is a seed and not a cheaper filter.** With nothing to return the
+ * walk still cost 5.8-7.8 ms, so ~6-7 of those ms are invariant to the row count: 100,000 edges
+ * visited to produce 100 rows. Row construction is the remaining ~1-2.
+ *
+ * BOTH SPELLINGS OR NEITHER. `relPred` (the INLINE constraint) and `relLifted` (the lifted clause
+ * `WHERE`, the projection's twin of item 1034's lift) are both offered to `edgeSeek`. Seeding only
+ * one would take it to ~0.06 ms and leave the other at ~8 — converting a gap SHARED by two
+ * spellings into a gap BETWEEN them, which is the defect class CLAUDE.md names. Item 1037 measured
+ * the two as overlapping (7.198-8.723 against 7.613-9.952), so there is no already-fast side to
+ * copy either.
+ *
+ * ROW ORDER CHANGES, AND THAT IS SOUND. The vertex-driven walk emits in vertex-creation order and
+ * this one in index order. Row order without `ORDER BY` is unspecified — the differential fuzzer
+ * compares row MULTISETS for exactly this reason, and `sorted()` wraps any caller that asked for
+ * an order.
+ *
+ * ITS OWN CLOSURE, not a branch in the twin. Items 159 and 1033 each measured what a branch in one
+ * of these inner loops costs: 1.6x on the hot unfiltered shape, and ~2x on three unrelated
+ * controls. The twin is left byte-for-byte unchanged and acts as the control for this change.
+ */
+const relSeekedHopWalk = (w: {
+  startLabel: LabelExpr | undefined;
+  typeName: string;
+  out: boolean;
+  farVar: string;
+  relVar: string | undefined;
+  farLabel: LabelExpr | undefined;
+  proj: CProjection;
+  farPred: CPredicate | undefined;
+  relPred: CPredicate | undefined;
+  relLifted: CPredicate | undefined;
+  gate: CompiledExpr | undefined;
+  startVar: string | undefined;
+  startOnly: boolean;
+  /** The SCANNING twin, to delegate to when the index declines the seed.
+   *
+   *  Not a `return null`: a runtime `null` from a {@link RowsFn} hands the query to the GENERAL
+   *  row pipeline, so declining that way would turn an unselective indexed key — the case
+   *  `edgeSeek`'s margin exists to refuse — into a pessimization against the very walk this is an
+   *  alternative to. Delegating keeps the decline free. */
+  fallback: RowsFn | null;
+}): RowsFn | null => {
+  const { startLabel, typeName, out, farVar, relVar, farLabel, proj } = w;
+  const { farPred, relPred, relLifted, gate, startVar, startOnly, fallback } = w;
+
+  if (startOnly) {
+    return null;
+  }
+
+  // Nothing to seed from. Decided per COMPILE, so the twin pays nothing for this rung existing.
+  if (relPred === undefined && relLifted === undefined) {
+    return null;
+  }
+
+  // Hoisted for the twin's reason (item 159): a `!== undefined` test in the loop is what that
+  // item measured at 1.6x, and a GQL identifier is never empty so the sentinel cannot collide.
+  const relKey = relVar ?? '';
+
+  return (graph, params) => {
+    const binding = new Map<string, unknown>();
+    const env: EvalEnv = { binding, params, graph };
+    // ONE type here, always: this walk is reached only through a named `typeName`, where
+    // `tallyEdges` can be handed a list. So the type residual below is a single comparison.
+    const seeded = edgeSeek(graph, undefined, relPred, [typeName], env);
+    const lifted = edgeSeek(graph, undefined, relLifted, [typeName], env);
+    const best = narrowerSeed(seeded, lifted);
+
+    // The index declined (no indexed key, or a seek wider than `TALLY_SEEK_MARGIN` allows), so
+    // the scanning twin answers — see `fallback` above for why this is not a `return null`.
+    if (best === undefined) {
+      return fallback === null ? null : fallback(graph, params);
+    }
+
+    const rows: Row[] = [];
+
+    for (const edge of best) {
+      // The index bucket is keyed by the PROPERTY and knows nothing about the label, so the type
+      // is re-applied — the same residual `edgesOfTypesIn` applies on the count side.
+      if (!edge.labels.has(typeName)) {
+        continue;
+      }
+
+      const near: Vertex = out ? edge.from : edge.to;
+      const far: Vertex = out ? edge.to : edge.from;
+
+      // Both endpoint labels, which the vertex-driven twin gets for free from its source: it
+      // walks the start label's bucket, so only the FAR label needs a check there.
+      if (startLabel !== undefined && !matchesLabel(near, startLabel)) {
+        continue;
+      }
+
+      if (farLabel !== undefined && !matchesLabel(far, farLabel)) {
+        continue;
+      }
+
+      if (startVar !== undefined) {
+        binding.set(startVar, near);
+      }
+
+      binding.set(farVar, far);
+      // BEFORE the gate, which may read the rel variable — the twin's ordering, for its reason.
+      binding.set(relKey, edge);
+
+      // Every predicate is RE-APPLIED. A seed is a superset: the index answers one equality and
+      // the rest of the constraint is still outstanding, so dropping any of these would be a
+      // wrong answer rather than a faster one.
+      if (relPred !== undefined && !satisfies(edge, relPred, binding, params, graph)) {
+        continue;
+      }
+
+      if (farPred !== undefined && !satisfies(far, farPred, binding, params, graph)) {
+        continue;
+      }
+
+      if (gate !== undefined && asTruth(gate(env)) !== true) {
+        continue;
+      }
+
+      rows.push(projectRow(proj, binding, params, graph));
+    }
+
+    return rows;
+  };
+};
+
+/**
+ * The REL-BOUND route: the three walks that bind the edge, in cost order.
+ *
+ * Split out of `detectHopProjection` for the reason several other guards in this file are — item
+ * 1038's seeded rung took that function to a complexity of 38 against a limit of 35, the same wall
+ * `relVariableHidden` and `hopPredicates` were extracted at. It decides a route ONCE PER COMPILE,
+ * where the walk it selects runs once per edge, so the extra frame is free.
+ */
+const relBoundRoute = (r: {
+  startLabel: LabelExpr | undefined;
+  typeName: string;
+  out: boolean;
+  farVar: string;
+  relVar: string | undefined;
+  farLabel: LabelExpr | undefined;
+  proj: CProjection;
+  farPred: CPredicate | undefined;
+  relPred: CPredicate | undefined;
+  gate: CompiledExpr | undefined;
+  clauseWhere: Expr | undefined;
+  startVar: string | undefined;
+  startOnly: boolean;
+  needsStart: boolean;
+  cfar: CNode | undefined;
+}): RowsFn | null => {
+  const { startLabel, typeName, out, farVar, relVar, farLabel, proj, farPred } = r;
+  const { relPred, gate, clauseWhere, startVar, startOnly, needsStart, cfar } = r;
+  const bound = needsStart ? startVar : undefined;
+  const unfiltered =
+    farPred === undefined && gate === undefined && !needsStart && relPred === undefined;
+  // THE PROJECTION'S TWIN OF ITEM 1034's REL LIFT. `gate` is a compiled expression with nothing an
+  // index can seek, so without this the CLAUSE spelling could never seed while its inline twin
+  // could — see the seeded walk on why that is worse than neither seeding.
+  const relLifted =
+    clauseWhere === undefined
+      ? undefined
+      : liftedOwnPred(clauseWhere, freePredicateVars(clauseWhere), relVar);
+  // Built ONCE and used twice — as the seeded walk's runtime fallback and as the route taken when
+  // nothing is seedable at all — so a compile never holds two copies of this closure.
+  const scanning = relBoundFilteredHopWalk({
+    startLabel,
+    typeName,
+    out,
+    farVar,
+    relVar,
+    farLabel,
+    proj,
+    farPred,
+    relPred,
+    gate,
+    startVar: bound,
+    startOnly,
+    cfar,
+  });
+
+  return (
+    relBoundHopWalk({
+      startLabel,
+      typeName,
+      out,
+      farVar,
+      relVar,
+      farLabel,
+      proj,
+      unfiltered,
+    }) ??
+    // THE SEEDED WALK BEFORE THE SCANNING ONE (item 1038). It declines per compile when neither rel
+    // predicate offers an indexed equality, and delegates per call when the index declines the
+    // seed, so the twin takes the query unchanged in both cases.
+    relSeekedHopWalk({
+      startLabel,
+      typeName,
+      out,
+      farVar,
+      relVar,
+      farLabel,
+      proj,
+      farPred,
+      relPred,
+      relLifted,
+      gate,
+      startVar: bound,
+      startOnly,
+      fallback: scanning,
+    }) ??
+    scanning
+  );
+};
+
+/**
  * Is the hop's relationship variable mentioned somewhere this path cannot SEE?
  *
  * Item 444 declined every mention of the rel variable. Item 446 serves a mention instead, by
@@ -1519,36 +1776,23 @@ export const detectHopProjection = (
   }
 
   if (itemsReadRel || carried.needsRel || relPred !== undefined) {
-    const unfiltered =
-      farPred === undefined && gate === undefined && !needsStart && relPred === undefined;
-
-    return (
-      relBoundHopWalk({
-        startLabel,
-        typeName,
-        out,
-        farVar,
-        relVar: rel.variable,
-        farLabel,
-        proj,
-        unfiltered,
-      }) ??
-      relBoundFilteredHopWalk({
-        startLabel,
-        typeName,
-        out,
-        farVar,
-        relVar: rel.variable,
-        farLabel,
-        proj,
-        farPred,
-        relPred,
-        gate,
-        startVar: needsStart ? startVar : undefined,
-        startOnly: carried.startOnly,
-        cfar: compiledFarNode(cm),
-      })
-    );
+    return relBoundRoute({
+      startLabel,
+      typeName,
+      out,
+      farVar,
+      relVar: rel.variable,
+      farLabel,
+      proj,
+      farPred,
+      relPred,
+      gate,
+      clauseWhere: m.where,
+      startVar,
+      startOnly: carried.startOnly,
+      needsStart,
+      cfar: compiledFarNode(cm),
+    });
   }
 
   if (farPred === undefined && gate === undefined && !needsStart) {
