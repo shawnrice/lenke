@@ -32271,3 +32271,34 @@ operation from the per-edge body at a time against the isolated row. Remaining c
 order — the `skipLoops`/`far` guards, the `out ? e.toId : e.fromId` ternary, the `to < 0` intern
 branch (200,000 `Map.set` + two pushes per pass), the **`cached?.get(farId)` second lookup into a
 200,000-entry map on each intern**, and the `st.` property loads through item 1097's state object.
+
+## 1105 — 🔶 ABLATED (the step 1104 called for): the per-edge `Map.get` is **24%** of the TS sweep, the state-object loads are **FREE**, and one arm was invalid in a way worth a rule
+
+Ablating `sweepOneDirection`'s per-edge body one operation at a time, each arm built into the dist
+and measured on the isolated `count 4-hop`, each insertion asserted present exactly once:
+
+| arm          | removes                            | ms               | vs BASE    |
+| ------------ | ---------------------------------- | ---------------- | ---------- |
+| BASE         | —                                  | 570.6, 582.1     | —          |
+| **NO-MAP**   | `slotOf.get(farId)`                | **432.0, 431.9** | **−24%**   |
+| NO-TERNARY   | `out ? e.toId : e.fromId`          | 537.2            | −5.9%      |
+| **NO-STATE** | `st.ways`/`st.next` loads → locals | 570.7            | **0%**     |
+| NO-ACC       | `st.next[to] += w`                 | 1404.4           | ⚠️ INVALID |
+
+**❌ CLOSED: the state object item 1097 introduced costs nothing per edge** (570.7 vs 570.6). The
+extraction that made the complexity cap passable was free; stop suspecting it.
+
+**The Map is ~46 ns an edge, and item 1104's micro UNDERSTATED it** (predicted ~28). A probe whose
+working set is smaller than the engine's understates a cache-sharing cost — the usual direction.
+
+⚠️ **NO-ACC is not an ablation, it is a different algorithm.** Removing the accumulate leaves
+`next[to]` forever 0, so the `=== 0` dedupe admits every edge and the frontier becomes 1,000,000
+entries instead of 200,000. **Rule: an ablation is only valid when the removed operation has no
+CONTROL-FLOW consumer** — same shape as item 1095's absorbed `AND true`.
+
+**OPEN, in size order.** (1) ~24%: the sweep makes THREE passes over the same adjacency and on a
+uniform directed chain already caches it per slot (`cache[slot]`, 1.73x, item 300), so the far
+SLOTS are identical every pass — pass 1 could record an `Int32Array` of neighbour slots and passes
+2-3 skip the lookup entirely (~16% of the row, ~4 MB here). (2) ~5.9%: `out` is loop-invariant, so
+split the body per direction rather than hoisting — items 159/1033/1091, the last of which measured
+**1.54x on an unreachable control** for getting this wrong.
