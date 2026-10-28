@@ -31037,3 +31037,44 @@ is shell-escaped, or `a product's …` would print a command that does not run.
 ```
 
 `seek-conjunct-probe.ts` is the one-per-process instrument for this family.
+
+## 1073 — ❌ REFUTED: item 285's product gap is the HARNESS. The TS probe now reports NO unexplained spelling defect
+
+The second of the two groups that survived item 1072's `SPELL_ONLY` confirmation. One spelling per
+process, four rounds (`product-seed-probe.ts`):
+
+```text
+  arm                r1      r2      r3      r4     min
+  comma-clause     10.94   11.14    9.66    9.08    9.08
+  inline-where      7.19    6.50   10.66   10.01    6.50    ← 1.64x WITHIN ONE ARM
+  match-match       7.86    9.17    7.84    8.89    7.84
+  inline-prop       9.04    9.18    8.97    8.85    8.85    ← the "24.34ms" arm
+  CONTROLS  solo-clause 0.58, solo-inline-prop 0.38 (same constrained side, no product)
+```
+
+**The flagged arm reads 8.85-9.18, and the arm it was 2.3x of swings 6.50-10.66 by itself.** One
+arm's own variance is wider than every between-arm difference. The solo controls show 7-11 ms of
+each product arm is the PRODUCT (16,000 bindings at ~600 ns/row), not the spelling.
+
+### 🛑 The instrument lesson, which is the durable part
+
+Item 285's group **PASSED** item 1072's confirmation (2.30x in one isolated run) and is still noise.
+`SPELL_ONLY` removes cross-group contamination, not between-run variance — and the NULL CONTROL
+cannot bound that either: it runs one query REPS times in ONE process and keeps the min, reporting
+**1.01x at 12.8ms** where the same code across three isolated runs spans **1.64x**.
+
+**A group that clears the null control has cleared a ruler shorter than the thing being measured.**
+Both facts are now written where they are needed: the confirmation line says THREE TIMES, and the
+null control's comment says what it does and does not bound.
+
+### The probe's board, all three flags explained
+
+```text
+  label on start: redundant vs absent    1545x   REAL but EXPLAINED (1067) — not a defect
+  SEEK: param equality + second conjunct 1.05x isolated   — the harness (1072)
+  a product's one-sided predicate        indistinguishable over four rounds — the harness (1073)
+```
+
+So the probe reports **no unexplained equivalent-spelling defect**, and items 285 and 578 are both
+withdrawn as targets. The probe still earns its place: it caught real 4x and 2.9x gaps (items
+125/126) and flagged item 1062's self-inflicted 3.8x within one run.

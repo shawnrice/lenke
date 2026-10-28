@@ -1318,6 +1318,15 @@ for (const [name, spellings, params] of SEEK_GROUPS.filter(([n]) => wanted(n))) 
 console.log(
   `\n${wrong.length} group(s) disagree on the ANSWER${wrong.length > 0 ? `: ${wrong.join('; ')}` : ''}`,
 );
+// 🛑 AND THE NULL CONTROL MEASURES A DIFFERENT VARIANCE FROM THE ONE A FLAG NEEDS (item 1073).
+// It runs one query REPS times in THIS process and keeps the min, so it reports within-run jitter
+// — 1.01x at 12.8ms on a typical run. The variance that matters for a flag is BETWEEN runs, and it
+// is far larger at the same cost: item 1073 measured one member of the product group at
+// 6.50 / 10.66 / 10.01 ms across three isolated runs, a 1.64x spread for the SAME code, wider than
+// the differences between the four spellings it was being compared with. So a group that clears
+// the control is not thereby confirmed — it has cleared a ruler shorter than the thing being
+// measured, which is what the three-run instruction below is for.
+//
 // A flagged group is only a result if it beat the instrument NEAR ITS OWN COST — one query against
 // itself, so a group at or under it has measured the harness, not the engine.
 const clears = (s: { spread: number; ms: number }): boolean => {
@@ -1383,7 +1392,8 @@ console.log(`${heading}${real.length > 0 ? `:\n  - ${real.map(show).join('\n  - 
 // step separates them, which is exactly what makes it worth printing.
 if (real.length > 0) {
   console.log('\n  CONFIRM EACH BEFORE TREATING IT AS A FINDING — a flag can still be this');
-  console.log('  harness. Re-run the group ALONE, where no earlier group has polluted dispatch:');
+  console.log('  harness. Re-run the group ALONE, where no earlier group has polluted dispatch,');
+  console.log('  THREE TIMES: one isolated run is still one reading (item 1073).');
 
   for (const s of real) {
     // The name is single-quoted for the shell, so an apostrophe in it (`a product's …`) has to
