@@ -31489,3 +31489,35 @@ measured ratio, what a reopened 2x would mean, the pointer to 585, and:
 is **1.53x inflation**, the effect CLAUDE.md records for this row (250.7 vs ~177). The ratio survives
 it (both rows pay it); the absolutes do not, and the sweep's 222.6 reads as a 19% regression against
 the comment's 187.
+
+## 1084 — ⚠️ OPEN, MEASURED: TS's WALK depth-3 count is **2.4x its own recorded figure on its own fixture**, route intact
+
+Hunting bench comments whose asserted RATIO the board contradicts (ratios being inflation-immune),
+the depth pair's ratio HOLDS — `{1,3}` WALK 140.4/140.9/142.1 against `{1,2}`'s 144.3/145.0/149.1 =
+**0.96x**, inside its stated ~2x. **Its recorded ABSOLUTE does not.**
+
+The comment records TS at **38.87 ms** for `MATCH WALK (a:Person)-[:KNOWS]->{1,3}(y) RETURN count(*)`
+at 200,000 vertices / 600,000 edges (a ts-vs-native pair: 38.87/3.97 = 9.79, as its two neighbours
+divide the same way). `graphDoc` is hard-coded to `N * 5` with no knob, so matching the claim took an
+A/B on the FIXTURE — arms 5/3/5, each asserted by occurrence count before running, bench.ts restored
+from a pristine copy between arms:
+
+```text
+  deg 5   140.4  140.9  142.1     (second round 143.4  141.3  142.2)
+  deg 3    91.8   94.4   93.9     ← the comment's fixture; the comment says 38.87
+```
+
+**2.4x against its own record.** The deg-5 arms either side agree to 2%, so this is not drift.
+
+**The route is INTACT — a constant, not a lost rung.** 600k → 1M edges moves 92 → 141 ms, 1.53x for
+1.67x the edges: linear in `|E|`, which is one pass per level, not enumeration of 2.4-6M paths.
+Native is healthy for contrast (3.97 at 600k against 5.9 at 1M = 1.49x for 1.67x).
+
+**NOT BISECTED, and not guessed at.** Two candidates sit in `varLengthDegreeCount` (the multi-label
+correction that replaced summing per-label `set.size` with an `edgesOfTypes` walk; item 585's
+forwards/backwards choice) but the fixture has ONE edge type, where `edgesOfTypes` returns the bucket
+directly and allocates no dedup `Set` — so neither is obvious. Naming a cause from reading alone is
+what items 1079-1081 each cost a tick to.
+
+**First suspected REGRESSION of this run rather than a refuted target** — and found by matching a
+fixture to a claim, not by reading a board.
