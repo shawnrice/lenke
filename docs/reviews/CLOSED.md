@@ -32568,3 +32568,32 @@ Tests: `the_shared_and_per_row_node_renderers_agree` (2,000 rows, 3 vertices, nu
 multi-label, stored null, absent key) and `the_shared_render_falls_through_and_still_agrees` (both
 `None` arms). The pre-existing agreement test could NOT reach this path — six ids, under the
 threshold.
+
+## 1113 — 🔶 LOCATED (Rust): the multi-column render writes the output buffer TWICE — a second NUMERIC column is **+12.5 ns a row**, 2.7x the first column's whole cost
+
+Item 1111's decomposition had `hop prop` 4.7 ns/row against `hop two props` 23.9 — but those rows
+differ in TYPE as well as COUNT (`q.age` versus `q.age, q.city`). Two rows separate the axes:
+
+```text
+  hop prop (1 numeric)        4.7 ns/row      hop two num props (2 numeric)  17.2 ns/row
+  hop str prop (1 string)    14.9             hop two props (num+string)     23.9
+```
+
+- **TYPE: +10.2 ns** for a string over a number — a `GStr` clone against an f64 move. The cost of
+  the data, not a defect.
+- **COUNT: +12.5 ns** for a second NUMERIC column — 2.7x everything the first column costs.
+
+**Cause:** `exec::try_run` has two shapes. `ncols == 1` moves the column's cells straight into the
+row buffer ("their cells ARE the rows, no transpose"); `ncols >= 2` allocates
+`vec![Value::Null; n * ncols]` and then `render_col_into` strides `out[i * ncols + c]` per column —
+so the whole buffer is **written twice**, once as NULL and once with values. Every cell is covered
+by the column loop, so the pre-fill is pure waste. One extra pass over a multi-word-enum buffer at
+memory bandwidth is ~10 ns a row, consistent with the 12.5.
+
+**NOT BUILT.** The obvious restructurings trade one pass for another (columns to `Vec<Value>` then
+interleave = columns written once + output once = still two). The win needs the buffer filled
+without the `Value::Null` init, and the safe routes must be measured against item 828's finding in
+`render_nodes` — rows-outside/columns-inside costs K cache lines a row, which bit hard at K=200 and
+should not at K=2, but "should not" is what this corpus exists to check. Controls for that
+measurement are already in the bench: `hop prop` (one column, unreachable) and `hop str prop` (the
+type axis, must not move).

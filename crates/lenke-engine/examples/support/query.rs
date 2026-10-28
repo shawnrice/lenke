@@ -260,6 +260,33 @@ pub fn run(cfg: &Cfg) {
                     "hop two props",
                     "MATCH (p:Person)-[:KNOWS]->(q) RETURN q.age, q.city",
                 ),
+                // THE CONTROL `hop two props` NEEDS, because it is not a column-count comparison:
+                // Measured at 20,000 x degree 5 (item 1113), per row:
+                //
+                //   hop prop (1 num)   4.7 ns     hop two num props (2 num)  17.2 ns
+                //   hop str prop       14.9       hop two props (num+str)    23.9
+                //
+                // TWO SEPARATE AXES, and the first reading of `hop two props` against `hop prop`
+                // confounded them. TYPE: a string column is +10.2 ns a row over a numeric one, a
+                // `GStr` clone against an f64 copy, and that is the cost of the data. COUNT: a
+                // SECOND NUMERIC column is +12.5 ns a row — 2.7x the entire cost of the first —
+                // and that is the one worth attacking. `exec::try_run` moves a single output
+                // column's cells straight into the row buffer ("their cells ARE the rows, no
+                // transpose"), while two or more allocate `vec![Value::Null; n * ncols]` and then
+                // stride `out[i * ncols + c]` per column: the whole buffer is written TWICE, once
+                // as NULL and once with values, where one column writes it once.
+                //
+                // it projects a NUMBER and a STRING, where `hop prop` projects a number alone. A
+                // string gather clones per row where a numeric one copies an f64, so the two rows
+                // differ in TYPE as well as in COUNT. These two separate the axes.
+                (
+                    "hop str prop",
+                    "MATCH (p:Person)-[:KNOWS]->(q) RETURN q.city",
+                ),
+                (
+                    "hop two num props",
+                    "MATCH (p:Person)-[:KNOWS]->(q) RETURN q.age, q.age AS b",
+                ),
                 (
                     "distinct prop",
                     "MATCH (p:Person)-[:KNOWS]->(q) RETURN DISTINCT q.city",
