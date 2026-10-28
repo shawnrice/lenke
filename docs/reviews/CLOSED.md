@@ -33624,3 +33624,46 @@ agreement proved nothing — a claim trace showed that, inspection had not. **Bu
 fixture through the `Builder`.** (2) The assertions written to pin the fixture (`present_at` true,
 `has_value_at` false) hold for `Gen` as well as `Num`, so they could not distinguish the case and
 the test looked rigorous while testing nothing. **Print the variant.**
+
+## 1143 — ✅ SHIPPED **28.5x** on `has(<Str>)` and **1.31x** on `has(<Num>)`: the fused presence stream no longer gates on the column's type, so a property's STORAGE no longer decides what a presence test costs
+
+`try_fused_hop_present_count` is `try_fused_hop_num_count`'s stream with the `Column::Num` gate
+removed, reading a new `Column::presence_bits` — the `(present, nulls)` pair hoisted ONCE instead of
+re-matching the variant per element (item 934's reason). A SEPARATE function, not a branch in the
+tuned numeric loop (item 1133 measured 1.12x SLOWER for perturbing a tuned path).
+
+Three alternated rounds, arm-asserted, 200k nodes degree 1 (`PROBE_DEG` added so both keys are asked
+in one process):
+
+```text
+  T1 out.has(name).count   PRE 2315.4/2310.1/2311.6  POST 81.5/81.3/81.0   28.5x
+  A1 out.has(age).count    PRE  105.6/ 108.8/ 104.8  POST 81.1/80.7/80.2    1.31x
+  C1 / C2           [ctl]  flat
+```
+
+✅ **A1 and T1 now cost the same** (80.2-81.1 vs 81.0-81.5).
+
+⚠️ **THE DISPATCH ORDER IS LOAD-BEARING and I got it wrong first.** I put the numeric sibling first
+and wrote that the two were "disjoint by construction". They are not: the numeric entry accepts a
+`Column::Num` with ANY bound list, empty included. Numeric-first read 105.2 on A1; presence-first
+81.4 — the numeric one still drives `bounds.iter().all(..)` over an empty list per neighbour. The
+whole 1.31x is that flip.
+
+⚠️ **A SURVIVING MUTANT THAT IS THE CODE BEING DEFENSIVE.** Empty-bounds guard removed CAUGHT; the
+`nulls` half of the presence test dropped **SURVIVED**. A `VARIANT1143` print shows all three
+null-bearing columns are `Gen` (storing a present-null promotes them — item 1142) and
+`presence_bits` returns an EMPTY `nulls` for `Gen`, so the half is **unreachable and no fixture can
+distinguish keeping it from dropping it**. KEPT and labelled: it costs nothing measurable and makes
+this entry correct without leaning on the cross-module invariant item 1142 flagged as a latent
+silent wrong answer in the numeric sibling. Same disposition as 1118's `pop_last_node`.
+
+Tested per column type (`Num`/`Str`/`Bool`, each with values, present-nulls and absences) because a
+`presence_bits` arm wrong for ONE variant is invisible to a single-column test; a claim trace
+confirmed the new entry answers all three, since item 1142 is the precedent for agreement being no
+evidence the path ran. Suite 1278+13+725; `rewrite_fuzz` 10; 7/7 fuzzers 13 pass/0 fail. Sweep 103
+rows: one 1.11x flag on a 13us GQL row the change cannot reach, which **does not reproduce**
+isolated (1.04x, overlapping).
+
+⚠️ **STILL OPEN:** `values(k).count()` remains 2290us against this 81 — the native half of item
+1138's Gap 2. The `Project` the `values` lowering emits blocks `fused_hop_shape`, exactly as it
+blocked `try_frontier_count` before item 1135 taught that entry to see through it.

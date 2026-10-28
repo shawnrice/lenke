@@ -513,6 +513,25 @@ impl Column {
         }
     }
 
+    /// The two bit vectors `present_at` reads, hoisted ONCE for a caller that asks per element.
+    ///
+    /// Returns `(present, nulls)`, where `nulls` is EMPTY for a `Gen` column (which keeps its null
+    /// in `data`, and whose `present` bit is already the presence answer). So a caller's per-element
+    /// test is `present[i] || (!nulls.is_empty() && nulls[i])`, which is `present_at(i)` without
+    /// re-matching the column variant on every element — the same reason item 934 hoists keys and
+    /// predicates into dense arrays instead of reading them off a `Step` per row.
+    #[must_use]
+    pub fn presence_bits(&self) -> (&[bool], &[bool]) {
+        match self {
+            Self::Num { present, nulls, .. }
+            | Self::Str { present, nulls, .. }
+            | Self::Dict { present, nulls, .. }
+            | Self::Bool { present, nulls, .. }
+            | Self::Temporal { present, nulls, .. } => (present, nulls),
+            Self::Gen { present, .. } => (present, &[]),
+        }
+    }
+
     /// Does cell `i` hold a NON-NULL value? The question `count(<expr>)` asks, answered
     /// without boxing the cell — which for a `Str`/`Dict` column means no `Arc` clone per
     /// row just to discover that the value exists.

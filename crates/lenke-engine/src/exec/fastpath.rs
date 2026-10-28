@@ -98,6 +98,71 @@ pub(super) fn try_fused_hop_num_count(input: &Plan, store: &Store) -> Option<u64
     Some(count)
 }
 
+/// `V().out(T).has(k).count()` for a column of ANY type — item 1143.
+///
+/// The sibling above, [`try_fused_hop_num_count`], already answers this shape when `k` is a packed
+/// `Num` column, by STREAMING the per-type CSR and testing a bit per neighbour. It declines every
+/// other column type, because its bound test needs the packed `f64` data — and a BARE presence
+/// test has no bounds, so that gate excludes nothing the question depends on. Item 1142 measured
+/// the cost of that at 200,000 nodes, degree 1, both keys in one process:
+///
+/// ```text
+///   out().has(age).count()     116.1 us    numeric — the streaming sibling
+///   out().has(name).count()   2481.5       string  — the SAME question, via the frontier fold
+/// ```
+///
+/// 21.4x for a presence test over the same hop, decided by a property's storage type. The fold
+/// builds a `frontier_counts` map first; this streams and tests a bit, exactly as the numeric
+/// sibling does.
+///
+/// A SEPARATE FUNCTION rather than a branch inside that loop. The numeric one is tuned and its
+/// per-element test is monomorphic; item 1133 shipped a plan simplification that measured 1.12x
+/// SLOWER for perturbing a tuned path, and this file records (item 934) that a per-row branch is
+/// the whole of an arity step.
+///
+/// THE TWO ARE NOT DISJOINT, and the dispatch order in `exec.rs` is therefore load-bearing: the
+/// numeric sibling accepts a `Column::Num` with ANY bound list, the EMPTY one included, so a bare
+/// `has(k)` on a numeric column is claimed by whichever is consulted first. This entry is placed
+/// FIRST because it is cheaper on that shared shape — 81.4us against 105.2 at 200,000 nodes — since
+/// the numeric one still drives `bounds.iter().all(..)` over an empty list per neighbour.
+///
+/// `present_at` semantics, via [`Column::presence_bits`] hoisted ONCE: `PropertyExists` counts a
+/// STORED PRESENT-NULL (`present || nulls`), which `has_value_at` does not. Item 1142 established
+/// that the numeric sibling's bare `present[i]` is sound only because storing a present-null
+/// PROMOTES the column to `Gen`; this entry does not lean on that invariant at all, since it reads
+/// the presence bits the accessor defines.
+pub(super) fn try_fused_hop_present_count(input: &Plan, store: &Store) -> Option<u64> {
+    let (label, w, pred, exp) = fused_hop_shape(input, store)?;
+    let (key, bounds) = num_conj_on_slot(pred, 1)?;
+    if !bounds.is_empty() {
+        return None; // a bounded conjunction belongs to the numeric sibling
+    }
+    let col = store.column(&key)?; // absent everywhere -> no rows; the general path answers 0
+    if reverse_seed_decide(pred, exp, store, false).is_some() {
+        return None;
+    }
+    // THE `nulls` HALF BELOW IS DEFENSIVE, AND ITS MUTANT SURVIVES — labelled rather than left
+    // for someone to find. Item 1142 established that storing a present-null PROMOTES the column
+    // to `Gen`, and `presence_bits` returns an EMPTY `nulls` for `Gen`, so today `has_nulls` is
+    // false for exactly the columns that could have needed it: the half is unreachable and no
+    // fixture can distinguish keeping it from dropping it (verified — a three-column fixture with
+    // present-nulls reports `Gen` for all three, and the drop-the-nulls mutant survived the whole
+    // suite). It is KEPT because it costs nothing measurable (81.1us with it, which is the shipped
+    // number) and because it makes THIS entry correct without depending on that cross-module
+    // invariant — the dependency item 1142 flagged as a latent silent wrong answer in the numeric
+    // sibling. Same disposition as item 1118's `pop_last_node`.
+    let (present, nulls) = col.presence_bits();
+    let has_nulls = !nulls.is_empty();
+    let mut count = 0u64;
+    for_each_typed_out(store, label, w, |nbr| {
+        let j = nbr as usize;
+        if present[j] || (has_nulls && nulls[j]) {
+            count += 1;
+        }
+    })?;
+    Some(count)
+}
+
 /// Fused numeric-filtered PROJECTION over `Project(Filter(<numeric conj>, Expand(Scan)))`.
 /// The general path pulls the whole expand into an `[src, nbr]` batch, filters, and GATHERS
 /// the survivors — a fixed ~0.8ms for an 80k-edge hop no matter how few rows survive, which

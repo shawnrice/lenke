@@ -1626,7 +1626,24 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
                                 && aggs[0].func == AggFn::Count
                                 && aggs[0].arg.is_none()
                                 && !aggs[0].distinct)
-                                .then(|| try_fused_hop_num_count(input, store))
+                                .then(|| {
+                                    // THE PRESENCE ENTRY FIRST, AND THE ORDER IS LOAD-BEARING
+                                    // (item 1143). The two are NOT disjoint: the numeric sibling
+                                    // accepts a `Column::Num` with ANY bound list, the empty one
+                                    // included, so a bare `has(k)` on a numeric column is claimed
+                                    // by whichever runs first. Measured at 200,000 nodes, degree 1:
+                                    //
+                                    //   out().has(age).count()   105.2us  numeric sibling
+                                    //                             81.4    presence entry
+                                    //
+                                    // The presence entry is cheaper on the SAME column because the
+                                    // numeric one still drives `bounds.iter().all(..)` over an
+                                    // empty list per neighbour. (I first wrote this comment
+                                    // claiming the two were disjoint and the order mere
+                                    // documentation; the measurement said otherwise.)
+                                    try_fused_hop_present_count(input, store)
+                                        .or_else(|| try_fused_hop_num_count(input, store))
+                                })
                                 .flatten()
                                 .map(|c| scalar_num(c as f64))
                         })

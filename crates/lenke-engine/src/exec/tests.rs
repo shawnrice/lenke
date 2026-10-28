@@ -30269,3 +30269,75 @@ fn the_fused_streaming_count_and_the_frontier_fold_agree_on_a_present_null() {
         "has('age').count() and values('age').count() are ONE question and must agree"
     );
 }
+
+/// Does the streaming presence count agree with the frontier fold for EVERY column type, and on a
+/// stored present-null? (item 1143)
+///
+/// `try_fused_hop_present_count` reads `Column::presence_bits` instead of a type-specific `present`
+/// slice, so it runs for `Num`, `Str`, `Dict`, `Bool`, `Temporal` and `Gen` alike — which is the
+/// whole point (item 1142 measured a 21.4x gap decided by the storage type). Each variant gets its
+/// own key here, because a `presence_bits` arm that returned the wrong pair for ONE variant would
+/// be invisible to a single-column test.
+///
+/// NOTE ON WHAT THIS CANNOT REACH. A `VARIANT1143` print established that all three columns here
+/// are `Column::Gen`, because storing a present-null promotes them (item 1142) — so the `nulls`
+/// half of the entry's presence test never fires, and its mutant SURVIVES. That is the code being
+/// defensive rather than this test being weak: no public path builds a packed column holding a
+/// null, so no fixture can distinguish the two. Labelled at the function.
+#[test]
+fn the_streaming_presence_count_agrees_with_the_fold_for_every_column_type() {
+    let mut b = Builder::default();
+    b.node(&["P"], &[]); // 0 is the hub
+                         // 600 targets, cycling: has-every-key / present-null-on-every-key / absent.
+    for i in 0..600u32 {
+        match i % 3 {
+            0 => b.node(
+                &["P"],
+                &[
+                    ("num", n(f64::from(i))),
+                    ("txt", s("x")),
+                    ("flag", Value::Bool(true)),
+                ],
+            ),
+            1 => b.node(
+                &["P"],
+                &[
+                    ("num", Value::Null),
+                    ("txt", Value::Null),
+                    ("flag", Value::Null),
+                ],
+            ),
+            _ => b.node(&["P"], &[]),
+        };
+    }
+    for i in 1..=600u32 {
+        b.edge(0, i, "K");
+    }
+    let st = b.build();
+
+    let cnt = |q: &str| {
+        let plan = crate::opt::optimize_indexed(crate::gremlin::parse(q).unwrap(), &st);
+        match run(&plan, &st).rows[0][0] {
+            Value::Num(x) => x,
+            ref v => panic!("count is not a number: {v:?}"),
+        }
+    };
+
+    for key in ["num", "txt", "flag"] {
+        // 200 with a value and 200 with a stored present-null carry the key; 200 do not.
+        let streamed = cnt(&format!("g.V().out('K').has('{key}').count()"));
+        let folded = cnt(&format!("g.V().out('K').values('{key}').count()"));
+
+        assert_eq!(
+            folded, 400.0,
+            "{key}: the fold counts values AND stored present-nulls"
+        );
+        assert_eq!(
+            streamed, folded,
+            "{key}: has(k).count() and values(k).count() are ONE question and must agree"
+        );
+    }
+
+    // A key no node carries is zero, not a decline into something else.
+    assert_eq!(cnt("g.V().out('K').has('nosuchkey').count()"), 0.0);
+}
