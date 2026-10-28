@@ -31168,3 +31168,48 @@ any?" — a different question with the same name.
   vs 0.00 with both ends labelled.
 - **TS's UNTYPED undirected count is 6.60 vs native's 1.30** — the O(1) arm needs the per-type dedup
   condition, and an untyped hop spans every bucket.
+
+## 1076 — ✅ SHIPPED: the constrained UNDIRECTED hop count, 10.1-23.0x
+
+Item 1075's priced target, built. `buildOneHopCount` declined every constrained undirected hop; a
+START-ONLY constraint now takes `undirectedStartOnlyCount` — the passing vertices' degrees summed
+over BOTH adjacency boxes, minus one per self-loop.
+
+```text
+  SUBJECTS  clause         (a:P)-[:KNOWS]-(x) WHERE a.age > 60   252.32 → 25.06   10.1x
+            inline         (a:P {age: 61})-[:KNOWS]-(x)           11.96 →  0.54   22.1x
+            clause-indexed … WHERE a.age = 61                     12.41 →  0.54   23.0x
+  CONTROLS  bare 0.00→0.00 · directed 1.02x · far-label 1.01x · far-pred 1.01x
+            · rel-pred 1.02x · two-types 0.98x · untyped 0.97x
+```
+
+**The DIRECTED control matters most**: the arm calls `startOnlyHopCount` TWICE rather than branching
+inside it (item 159 measured 1.6x on the hot shape from adding even a branch there), so a move there
+would mean the change leaked. 1.02x.
+
+### 🛑 The first cut answered 6 where the truth is 4 — caught by an EXISTING test
+
+`undirected-hop-count.test.ts` compares the unfiltered route against `WHERE true`; my arm claimed
+the `WHERE true` side and `(:P)-[:T|S]-(x)` read 6 against 4. `degreeOfTypes` sums per-type bucket
+SIZES, so an edge carrying both types is counted once per bucket. `startWalkFits` carries the
+condition that prevents this for the directed walk — **and the arm bypassed that rule by not going
+through it.**
+
+Fixed with the compile-time half: exactly ONE relationship type. The runtime half
+(`multiTypeEdgeCount === 0`) is unavailable to a closure that cannot hand the query back, so a
+multi-type alternation and an untyped `-[]-` keep the old decline.
+
+### Teeth
+
+Seven mutants, all CAUGHT: `loops-not-corrected`, `one-direction-only`, `loop-guard-inverted`,
+`admits-many-types`, `admits-far-label`, `admits-far-pred`, `admits-rel-pred`.
+
+17 tests, each asserting the fast route against the general path on the same pattern — the oracle is
+the route being replaced. **Four hand-derived literals were wrong on the first run**; every number is
+now read off the two routes. Fixtures come loop-free, 1-loop and 3-loop.
+
+### ➡️ Still open from the same family
+
+- NATIVE lacks the O(1) typed undirected count TS has (1.33 ms vs 0.00).
+- TS's constrained UNTYPED undirected count still declines (257 ms); it wants the runtime
+  `multiTypeEdgeCount === 0` test this arm could not use.

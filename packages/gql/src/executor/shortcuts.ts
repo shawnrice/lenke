@@ -996,6 +996,86 @@ const bareDegreeSum = (
   return n;
 };
 
+/**
+ * `MATCH (a:L)-[:T]-(x) WHERE <a-only predicate> RETURN count(*)` — the UNDIRECTED twin of
+ * {@link startOnlyHopCount}, as the sum of the passing vertices' degrees over BOTH adjacency boxes.
+ *
+ * WHY THIS EXISTS (item 1076). `buildOneHopCount` declined every CONSTRAINED undirected hop
+ * outright, so the query fell to the general path and built a binding and a row per edge:
+ * `MATCH (a:Person)-[:KNOWS]-(x) WHERE a.age > 60 RETURN count(*)` measured **242.78 ms against
+ * native's 2.29 — 106x** at 200,000 vertices, where the DIRECTED spelling of the same question has
+ * had a degree-sum walk since item 129. Item 1075 priced the arm at **19x on a loop-free graph and
+ * 11x with the self-loop correction**, both answering what the general path answers.
+ *
+ * THE ARITHMETIC, and the one place it differs from the directed walk: an undirected hop meets each
+ * edge from BOTH ends, so a vertex contributes `|adjFrom_T(v)| + |adjTo_T(v)|` — except for a
+ * SELF-LOOP, which sits in both boxes while `expand` emits it once. `undirectedHopCount` makes the
+ * same correction globally (`2 * |E_t| - loops(t)`); here it has to be per vertex, and it is paid
+ * only on a graph that HAS a loop of the type — `loopsOfTypes` is that test, and a loop-free graph
+ * never enters the second loop at all.
+ *
+ * ONE COPY OF THE PER-CANDIDATE RULE. The correction has to apply the same label check, inline
+ * constraint and predicate the walk applies, and this file records what two copies of one rule
+ * cost: "drift between two copies ... is precisely how the far endpoint ended up on the per-edge
+ * tally while the start endpoint had a walk" (`startWalkFits`). So the degree sums come from
+ * `startOnlyHopCount` itself, called once per direction — no new walk, no second rule — and the
+ * correction reuses the same `scan` through it as well, by counting SELF-LOOP endpoints that pass.
+ */
+const undirectedStartOnlyCount = (scan: HopScan, startVar: string | undefined): number => {
+  const { graph, params, pred, pa, types, inNear } = scan;
+  // TWO CALLS, not a branch inside the walk: that loop is the hot one and item 159 measured 1.6x
+  // on the hot shape from adding even a branch to it. The predicate is evaluated twice per
+  // candidate as a result, which is the trade — and it is cheap against the row-per-edge path this
+  // replaces. A predicate that FAULTS raises in the first call, so the raise is unchanged.
+  const forward = startOnlyHopCount({ ...scan, out: true }, startVar);
+  const backward = startOnlyHopCount({ ...scan, out: false }, startVar);
+
+  if (!loopsOfTypes(graph, types)) {
+    return forward + backward;
+  }
+
+  // ONLY a graph with a self-loop of the type reaches here. One pass over the type's edges, which
+  // is still O(|E|) against the general path's binding-and-row per edge.
+  const binding = new Map<string, unknown>();
+  const env: EvalEnv = { binding, params, graph };
+  const lifted = pred.startLifted;
+  let loops = 0;
+
+  for (const edge of edgesOfTypes(graph.edgesByLabel, types)) {
+    const v = edge.from;
+
+    if (edge.to !== v || !matchesLabel(v, pa)) {
+      continue;
+    }
+
+    if (inNear !== undefined && !inlineHolds(inNear, v, binding, params, graph)) {
+      continue;
+    }
+
+    if (lifted !== undefined) {
+      if (lifted.where !== undefined && startVar !== undefined) {
+        binding.set(startVar, v);
+      }
+
+      if (!satisfies(v, lifted, binding, params, graph)) {
+        continue;
+      }
+    } else {
+      if (startVar !== undefined) {
+        binding.set(startVar, v);
+      }
+
+      if (asTruth(pred.fn(env)) !== true) {
+        continue;
+      }
+    }
+
+    loops += 1;
+  }
+
+  return forward + backward - loops;
+};
+
 const startOnlyHopCount = (scan: HopScan, startVar: string | undefined): number => {
   // THE BARE DEGREE SUM FIRST (item 1067), and HERE rather than at the two dispatch sites, for
   // the reason this function's own header gives: the closure `buildOneHopCount` returns is the
@@ -2617,9 +2697,42 @@ const buildOneHopCount = <T>(
     return null;
   }
 
+  // A CONSTRAINED undirected hop used to decline here outright, which sent
+  // `MATCH (a:L)-[:T]-(x) WHERE <a-only>` to the general path at 106x native (item 1075). A
+  // START-ONLY constraint now has `undirectedStartOnlyCount`; everything else still declines,
+  // because a degree sum cannot apply a FAR or REL constraint — it never visits the far end or
+  // the edge — and ignoring one would be a wrong answer rather than a slow one (item 637).
   if (
     rel.direction === 'both' &&
-    (pred !== undefined || inNear !== undefined || inFar !== undefined || inRel !== undefined)
+    (inFar !== undefined || inRel !== undefined || node.label !== undefined)
+  ) {
+    return null;
+  }
+
+  if (
+    rel.direction === 'both' &&
+    pred !== undefined &&
+    (pred.farVar !== undefined || pred.relVar !== undefined)
+  ) {
+    return null;
+  }
+
+  // 🛑 EXACTLY ONE TYPE for the constrained undirected arm, and `undirected-hop-count.test.ts`
+  // caught the first cut without it: `degreeOfTypes` sums the per-type bucket SIZES, so an edge
+  // carrying both `T` and `S` is counted once per bucket and `(:P)-[:T|S]-(x) WHERE true` answered
+  // 6 against the unfiltered route's 4. `startWalkFits` carries the same condition for the directed
+  // walk — "summing per-type bucket sizes is sound only when no edge sits in two of them" — and
+  // this arm bypasses that rule by not going through it.
+  //
+  // The condition there is `types?.length === 1 || multiTypeEdgeCount === 0`; here it is only the
+  // first half, because the second is a RUNTIME property and this closure has no way to hand the
+  // query back once built. So a multi-type alternation and an untyped `-[]-` keep the old decline
+  // even on a graph where the sum would have been sound — conservative, and the wrong answer it
+  // replaces was the alternative.
+  if (
+    rel.direction === 'both' &&
+    (pred !== undefined || inNear !== undefined) &&
+    relTypeNames(rel.label)?.length !== 1
   ) {
     return null;
   }
@@ -2642,7 +2755,35 @@ const buildOneHopCount = <T>(
   const out = rel.direction === 'out';
 
   if (rel.direction === 'both') {
-    return (graph) => rowOf(undirectedHopCount(graph, types, aLabel, bLabel));
+    // UNCONSTRAINED keeps the O(1) arithmetic off the bucket sizes; a START-ONLY constraint takes
+    // the degree-sum walk (item 1076). The two are one branch because they are the same question
+    // with and without a filter, and the unconstrained row must not move.
+    if (pred === undefined && inNear === undefined) {
+      return (graph) => rowOf(undirectedHopCount(graph, types, aLabel, bLabel));
+    }
+
+    const bareBoth: HopPred = pred ?? { fn: alwaysTrue };
+
+    return (graph, params) =>
+      rowOf(
+        undirectedStartOnlyCount(
+          {
+            graph,
+            params,
+            pred: bareBoth,
+            pa: vacuousLabel(graph, aLabel) ? undefined : aLabel,
+            pb: undefined,
+            out: true,
+            types,
+            inNear,
+            inFar: undefined,
+            inRel: undefined,
+            cstart,
+            cfar: undefined,
+          },
+          bareBoth.startVar,
+        ),
+      );
   }
 
   return (graph, params) => {
