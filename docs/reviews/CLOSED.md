@@ -33210,3 +33210,29 @@ since a deleted node's bit may be false while every live node has the property),
 walk it replaces. Three items this session (852, 1123, 495) were refuted by building against an
 estimate. Prize if the check is ~10-20 us: **1334.4 → ~80 us, ~17x**; cost when it fails: ~1.5% on
 top. Measure the check first.
+
+## 1132 — ✅ MEASURED: item 1131's estimated presence check is **142.5 us (7-14x my estimate)**, the shortcut survives at **19.9x**, and the measurement names the gate the estimate hid
+
+`examples/presence_scan_probe.rs`, 200,000 nodes / degree 5, min of 7, all arms one process:
+
+```text
+  ARM A  check, column IS fully present        142.5 us     0.71 ns a node
+  ARM A' check, column absent (early out)        0.0 us
+  ARM B  values(name).count()  [target]      14278.5 us
+  ARM C  outE.outV.count()     [control]       576.0 us     0.58 ns an edge
+
+  check = 1.00% of the target;  projected 718.6 us = 19.9x
+```
+
+⚠️ **The estimate ("~10-20 us") was wrong by 7-14x** — a liveness test per node, not a bare scan of
+200 KB. Fourth estimate this session to miss (852, 1123, 495 were refuted outright); this one
+survives, which is a different outcome and the same lesson.
+
+⚠️ **Item 1131's "O(1) tally" for `outE.outV.count()` is wrong:** it moved 58.5 -> 576.0 (9.8x) with
+the fixture, so it is O(edges) at 0.58 ns an edge. The 22.8x RATIO does carry (24.8x here).
+
+⚠️ **THE GATE, and it is the probe's finding not the plan's:** the check is O(nodes), the walk is
+O(rows), so 1.00% holds only while rows outnumber nodes — a small frontier of a large graph pays the
+full 142.5 us to skip a walk worth a microsecond. **Order is therefore tally FIRST, then check:** ARM
+C shows the row count is available without walking, so run the check only once that count exceeds the
+node count, then answer or fall through. ARM A' shows an absent column costs nothing.
