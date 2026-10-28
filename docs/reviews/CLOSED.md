@@ -30550,3 +30550,75 @@ none proved deferral.
 A first attempt also grouped the walk VARIANTS together and the probe correctly reported
 `ANSWERS DIFFER` — a filtered hop and an unfiltered one are not two spellings of one question. That
 comparison lives in `defer-hop-probe.ts`, against each variant's own plain twin.
+
+## 1064 — ✅ SHIPPED: select the top `cap` during the scan. 2.7x, and `boundedTopKeyed` de-boxed for both its callers
+
+### ❌ NOT A RUST TARGET — the native engine has no cliff on this axis (measured, do not re-derive)
+
+```text
+  node plain 1.10 ms / arith 1.29 / expr-key 1.27 / fn 2.83 / nolimit 29.27
+  hop  plain 0.88    / arith 0.91 / fn 1.43        / relbound 0.95
+```
+
+1.17x between the plain and arithmetic spellings, against TS's 3-4x before items 1062/1063. Native
+already keeps the top-k over input bindings and projects only survivors.
+
+### The TS win
+
+`detectNodeProjection` served a windowed sort by projecting a `Row` for every surviving vertex and
+letting `sortRowsByColumns` select `cap` — 200,000 row objects to emit ten.
+
+```text
+  topk-plain      RETURN n.k AS c ORDER BY c LIMIT 10              13.02 →  4.84   2.69x
+  stmt-topk       ORDER BY n.k LIMIT 10 RETURN n.k AS c            12.76 →  4.75   2.69x
+  topk-two-keys   RETURN n.s AS d, n.k AS c ORDER BY d, c LIMIT 10 15.56 →  8.61   1.81x
+  stmt-two-keys                                                    18.82 → 17.68   1.06x
+  CONTROLS big-cap 1.29x faster, stmt-big-cap 1.24x faster (NOT CLAIMED — bimodality),
+           arith 1.05x, fn 1.00x, nolimit 0.98x, unsorted flat
+```
+
+4.84 ms is within **1.05x of TS's 4.63 ms scan floor** (`min(n.k)` over the same fixture), so what
+remains on this shape is the scan. Native's 1.10 is BELOW that floor — the rest of the gap is the
+layout question, not this one.
+
+### ❌ TWO HYPOTHESES REFUTED on the way, both cheap and both worth not re-trying
+
+- **Routing the plain case through item 1062's deferred arm: 14.25, SLOWER than 12.9.** That arm
+  allocates a key row per candidate — one object traded for another.
+- **A flat key array plus a full index sort: 27.60, much slower.** Avoiding the row object is not
+  the win; the O(n log n) is.
+
+### 🔑 The real cost was in the SHARED helper, so both callers gained
+
+`boundedTopKeyed` boxed EVERY candidate: `keysOf: (item) => readonly unknown[]` allocated an array
+per candidate and the loop allocated a `Kept` per candidate — `n` allocations to keep `cap`.
+
+- `keyAt: (item, i) => unknown` so a LOSER is compared against the root without being boxed:
+  **11.97 → 8.82**.
+- An INDEXED loop instead of `sorts.entries()` in that per-candidate comparison (it allocates an
+  iterator and a tuple per call, and runs `n` times where `cmp` runs O(cap log cap)):
+  **8.82 → 5.26**.
+
+The hand-rolled prototype read 6.65, so the shared helper now BEATS the one-off — the argument for
+fixing the helper rather than adding a second heap.
+
+### 🛑 MUTATION CAUGHT A FIXTURE THAT COULD NOT REACH THE CODE — and nothing else could have
+
+The first mutation run had **six survivors**. Cause: `heapBeatsSort` admits the selection only while
+`cap * 16 <= rows`, so at 30 vertices a `LIMIT 5` took the sort-and-slice branch and **the heap never
+ran**. 23 tests passed and all 20 cross-engine arms agreed. Widening to 320 vertices killed five of
+the six.
+
+Sixth such fixture this session, and the first where neither an empty result nor a vacuous answer
+gave it away. **New corollary: a route guard whose threshold depends on the INPUT SIZE makes every
+small fixture a vacuous one, silently.**
+
+`tiebreak-dropped` survived and is genuinely REDUNDANT (item 475's other horn): candidates arrive in
+increasing `at` and every kept item was seen earlier, so a candidate's arrival index is always
+greater than the root's. Kept as the statement of intent; the tiebreak is load-bearing in `cmp`,
+which orders the kept items.
+
+Both route gates are pure functions with their own unit tests (`topKPlan`, `heapBeatsSort`) —
+answer-equivalent choices, so `perf-gate-needs-its-own-test`. `key-by-position` is why `topKPlan`'s
+tests earn their place: resolving `directKeys` positionally instead of by the key's own column is a
+wrong ANSWER whenever the sort order differs from the projection order.

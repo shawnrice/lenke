@@ -37,6 +37,21 @@ const SHAPES: Record<string, { q: string; reached: boolean }> = {
   // A key that is not projected at all — admitted since the arm compiles its keys.
   'unprojected-key': { q: 'MATCH (n:P) RETURN n.k + 1 AS c ORDER BY n.s LIMIT 10', reached: true },
 
+  // ITEM 1064's shapes: a windowed sort whose keys are DIRECT property reads, which the plain arm
+  // served by projecting every row and letting the heap select.
+  'topk-plain': { q: 'MATCH (n:P) RETURN n.k AS c ORDER BY c LIMIT 10', reached: true },
+  'topk-two-keys': {
+    q: 'MATCH (n:P) RETURN n.s AS d, n.k AS c ORDER BY d, c LIMIT 10',
+    reached: true,
+  },
+  // The STATEMENT-position spelling, whose `boundedTopKeyed` call item 1064 de-boxed as well.
+  'stmt-topk': { q: 'MATCH (n:P) ORDER BY n.k LIMIT 10 RETURN n.k AS c', reached: true },
+  'stmt-two-keys': { q: 'MATCH (n:P) ORDER BY n.s, n.k LIMIT 10 RETURN n.k AS c', reached: true },
+  // ABOVE the `* 16` crossover, where the heap is a slower way to sort everything and both arms
+  // sort-and-slice. It must not regress past the one extra array.
+  'big-cap': { q: 'MATCH (n:P) RETURN n.k AS c ORDER BY c LIMIT 10000', reached: false },
+  'stmt-big-cap': { q: 'MATCH (n:P) ORDER BY n.k LIMIT 10000 RETURN n.k AS c', reached: false },
+
   // CONTROLS, each for a different reason.
   //
   // `plain` already took the rung — every item is a direct property read, so `outputColumnSorts`

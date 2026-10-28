@@ -92,7 +92,7 @@ import { plainRowProjection } from './hop-projection.js';
 import { indexCandidates, matchNode, seedVertices, seekIsWorthIt } from './matching.js';
 import type { SeedCandidate } from './matching.js';
 import type { ColSort, SortPlan } from './ordered-rows.js';
-import { outputColumnSorts, sortRowsByColumns } from './ordered-rows.js';
+import { boundedTopKeyed, outputColumnSorts, sortRowsByColumns } from './ordered-rows.js';
 import { AGGREGATES, asTruth, isNullish } from './scalars.js';
 
 /**
@@ -7779,6 +7779,159 @@ const deferredSortedNodeWalk = (spec: {
 };
 
 /**
+ * Is selecting `cap` of `rows` with a heap cheaper than sorting all of them?
+ *
+ * `* 16` is `sortRowsByColumns`'s own MEASURED crossover, not a guess: a heap is O(n log cap)
+ * against the sort's O(n log n), so it wins only while `cap` is a small fraction of `n`, and at
+ * `cap` near `n` it is a slower way to sort everything. That item's cap sweep at 200,000 rows read
+ * 2.9x at 100, 3.2x at 1,000, 2.1x at 5,000, 1.45x at 10,000 and 0.99x at 20,000 — so the heap
+ * stops paying at about `n/10` and this admits to `n/16`, inside the win. A looser `* 8` measured
+ * 0.95x on `LIMIT 20,000`, which is the regression the constant exists to keep out.
+ *
+ * A PURE FUNCTION because the choice is answer-equivalent — both arms return the same rows in the
+ * same order — so every mutation of it survives the differential tests and only its own unit tests
+ * can see it (`perf-gate-needs-its-own-test`, items 1038/1044).
+ */
+export const heapBeatsSort = (cap: number, rows: number): boolean => cap * 16 <= rows;
+
+/**
+ * Can this sort plan be served by selecting the top `cap` during the scan (item 1064)?
+ *
+ * EXTRACTED AS A PURE FUNCTION because the choice is ANSWER-EQUIVALENT: both arms return the same
+ * rows in the same order, so every mutation of a condition inline in the detector would survive the
+ * differential tests. `perf-gate-needs-its-own-test` is the rule, learned at items 1038 and 1044.
+ *
+ * It needs a WINDOW (without a `limit` there is no `cap` to select) and every sort key must be a
+ * DIRECT property read of the scan's own variable, because the selection reads keys off the vertex
+ * rather than out of a projected row. A key that is not — an arithmetic expression, or a column
+ * whose item is not a `prop` — keeps the plain arm, which is correct and only slower.
+ */
+export const topKPlan = (
+  plan: SortPlan,
+  cols: readonly string[],
+  directKeys: readonly (string | undefined)[],
+): { keyProps: readonly string[]; plan: SortPlan & { limit: number } } | undefined => {
+  if (plan.limit === undefined || plan.sorts.length === 0) {
+    return undefined;
+  }
+
+  const keyProps: string[] = [];
+
+  for (const s of plan.sorts) {
+    const dk = directKeys[cols.indexOf(s.col)];
+
+    if (dk === undefined) {
+      return undefined;
+    }
+
+    keyProps.push(dk);
+  }
+
+  return { keyProps, plan: { ...plan, limit: plan.limit } };
+};
+
+/**
+ * A WINDOWED SORT ON DIRECT PROPERTY KEYS: select the top `cap` during the scan, project only
+ * those.
+ *
+ * WHY (item 1064). The plain arm projects a `Row` for EVERY surviving vertex and then hands all of
+ * them to `sortRowsByColumns`, whose heap selects `cap`. Over 200,000 vertices that is 200,000 row
+ * objects to emit ten, and it measured 12.9 ms where native does the same query in 1.10. Locating
+ * the cost took three measurements and refuted two hypotheses:
+ *
+ * ```text
+ *   count(*)                                   0.00 ms   (no scan of properties at all)
+ *   min(n.k)         scan + property read      4.63      ← the FLOOR for this shape in TS
+ *   RETURN n.k AS c  + a row per vertex        8.42
+ *   … ORDER BY c LIMIT 10                     12.9       ← the 4.5 ms on top is the selection
+ * ```
+ *
+ *   - **Routing it through the deferred arm (item 1062) measured 14.25 — SLOWER.** That arm still
+ *     allocates a key row per candidate, so it trades one object for another.
+ *   - **A flat key array plus a full index sort measured 27.60 — much slower.** Avoiding the row
+ *     object is not the win; the O(n log n) is.
+ *
+ * What works is both together: collect the surviving VERTICES (one array push, no object), select
+ * `cap` of them with `boundedTopKeyed`, and project only those. 12.9 → 6.65 ms, which is within
+ * 1.4x of the scan floor the `min` row establishes — so most of what is left is the scan, and
+ * `pull`-style work on the remaining 2 ms would be chasing the layout ceiling.
+ *
+ * `boundedTopKeyed` is REUSED rather than re-implemented, for the reason `sortRowsByColumns` gives
+ * about comparators: it already carries the arrival-index tiebreak that makes the heap's order the
+ * stable sort's total order, and tie order under `ORDER BY` is observable between the engines (item
+ * 605). A second selection with its own tiebreak is exactly what byte-identity cannot survive.
+ *
+ * THE CAP GUARD IS PER CALL, not per compile, because it depends on the row count. `* 16` is
+ * `sortRowsByColumns`'s own MEASURED crossover — a heap is O(n log cap) against the sort's
+ * O(n log n), so it wins only while `cap` is a small fraction of `n`, and at `cap` near `n` it is a
+ * slower way to sort everything. Above it this walk does what the plain arm does, which is why
+ * the large-`cap` shape cannot regress past one extra array.
+ */
+const topKNodeWalk = (spec: {
+  cstart: CNode | undefined;
+  label: Extract<LabelExpr, { kind: 'label' }> | undefined;
+  gate: InlineGate | undefined;
+  nodeVar: string;
+  cols: readonly string[];
+  fns: readonly CompiledExpr[];
+  directKeys: readonly (string | undefined)[];
+  keyProps: readonly string[];
+  plan: SortPlan & { limit: number };
+}): ((graph: Graph, params: Params) => Row[]) => {
+  const { cstart, label, gate, nodeVar, cols, fns, directKeys, keyProps, plan } = spec;
+  const labelName = label?.name;
+  const width = cols.length;
+  const cap = plan.skip + plan.limit;
+  const allDirect = directKeys.every((k) => k !== undefined);
+
+  return (graph, params) => {
+    const binding = new Map<string, unknown>();
+    const env = { binding, params, graph };
+    const { vertices, seeded } = scanCandidates(graph, cstart, label, labelName, env);
+    const kept: Vertex[] = [];
+
+    for (const v of vertices) {
+      // Both tests, in the same order and for the same reasons the plain arm states.
+      if (seeded !== undefined && !matchesLabel(v, label)) {
+        continue;
+      }
+
+      if (gate !== undefined && !gate(v, binding, params, graph)) {
+        continue;
+      }
+
+      kept.push(v);
+    }
+
+    const project = (v: Vertex): Row => {
+      if (!allDirect) {
+        binding.set(nodeVar, v);
+      }
+
+      const row: Row = {};
+
+      for (let i = 0; i < width; i++) {
+        const dk = directKeys[i];
+
+        row[cols[i]] = dk === undefined ? fns[i](env) : propOf(v, dk);
+      }
+
+      return row;
+    };
+
+    // ABOVE THE CROSSOVER, do what the plain arm does: project everything and let
+    // `sortRowsByColumns` sort and slice. Same answer, and the only extra is the `kept` array.
+    if (!heapBeatsSort(cap, kept.length)) {
+      return sortRowsByColumns(kept.map(project), plan);
+    }
+
+    const top = boundedTopKeyed(kept, (v, i) => propOf(v, keyProps[i]), plan.sorts, cap);
+
+    return top.slice(plan.skip).map(project);
+  };
+};
+
+/**
  * THE DEFERRED ARM's compile-time half (item 1062), extracted because inlining it put
  * `detectNodeProjection` at a complexity of 42 against a ceiling of 35 — the same reason item
  * 1038 pulled `relBoundRoute` out of its own detector.
@@ -8005,6 +8158,26 @@ export const detectNodeProjection = (
       cols,
       fns,
       directKeys,
+    });
+  }
+
+  // THE TOP-K ARM (item 1064). `sorts` is a WINDOWED sort this rung already serves by projecting
+  // every row and letting `sortRowsByColumns` select — so the answer is the same either way and
+  // this is a pure route choice, which is why `topKPlan` is a tested pure function rather than a
+  // condition inline here (`perf-gate-needs-its-own-test`).
+  const topK = sorts === undefined ? undefined : topKPlan(sorts, cols, directKeys);
+
+  if (topK !== undefined) {
+    return topKNodeWalk({
+      cstart: cm.patterns[0].start,
+      label,
+      gate,
+      nodeVar,
+      cols,
+      fns,
+      directKeys,
+      keyProps: topK.keyProps,
+      plan: topK.plan,
     });
   }
 

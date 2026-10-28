@@ -1607,19 +1607,16 @@ export const runLinearClauses = (
           // case should not pay for `.map` over a one-element list.
           const ctx = { binding: undefined as unknown as Binding, params, graph };
           const sortFns = clause.orderBy.map((s) => s.fn);
-          const [onlyFn] = sortFns;
-          const keysOf =
-            sortFns.length === 1
-              ? (b: Binding): readonly unknown[] => {
-                  ctx.binding = b;
+          // ONE KEY AT A TIME for the bounded selection (item 1064): `boundedTopKeyed` now asks
+          // for key `i` of an item rather than for all of them as an array, so a row that loses
+          // allocates nothing. The single-key specialization that used to live here existed only
+          // to avoid `.map` over a one-element list, and there is no `.map` left to avoid.
+          const keyAt = (b: Binding, i: number): unknown => {
+            ctx.binding = b;
 
-                  return [onlyFn(ctx)];
-                }
-              : (b: Binding): readonly unknown[] => {
-                  ctx.binding = b;
-
-                  return sortFns.map((f) => f(ctx));
-                };
+            return sortFns[i](ctx);
+          };
+          const keysOf = (b: Binding): readonly unknown[] => sortFns.map((_, i) => keyAt(b, i));
 
           // A SMALL WINDOW SELECTS RATHER THAN SORTS (item 868), the same lever item 701 applied
           // to the projection's ORDER BY and the same measured `* 16` admission. Without it this
@@ -1630,7 +1627,7 @@ export const runLinearClauses = (
           // direction (items 865/866), which is item 843's rule twice over: same gap, different
           // cause, neither engine's version inferable from the other's.
           if (take !== undefined && (start + take) * 16 <= rows.length) {
-            rows = boundedTopKeyed(rows, keysOf, clause.orderBy, start + take);
+            rows = boundedTopKeyed(rows, keyAt, clause.orderBy, start + take);
           } else {
             // Key each row once, then a STABLE sort — the same comparator (so the
             // same total order and NULLS FIRST/LAST) as a projection's ORDER BY.

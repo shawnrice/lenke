@@ -304,11 +304,18 @@ const boundedTopRows = (rows: Row[], sorts: readonly ColSort[], cap: number): Ro
  */
 export const boundedTopKeyed = <T>(
   items: readonly T[],
-  keysOf: (item: T) => readonly unknown[],
+  keyAt: (item: T, i: number) => unknown,
   sorts: readonly { readonly descending: boolean; readonly nullsFirst?: boolean | undefined }[],
   cap: number,
 ): T[] => {
   type Kept = { item: T; keys: readonly unknown[]; at: number };
+  // ONE KEY AT A TIME rather than an array per item (item 1064). The signature used to be
+  // `keysOf: (item) => readonly unknown[]`, so EVERY candidate allocated an array — and the loop
+  // boxed every candidate into a `Kept` as well, for `n` items to keep `cap`. Over 200,000
+  // vertices that was ~5 ms of pure allocation: a top-10 through this helper measured 11.97 ms
+  // against 6.65 for a hand-rolled heap over a flat key array, and the gap was the boxing, not
+  // the heap. Now a LOSER is compared without being boxed and only a winner is materialized.
+  const keysOf = (item: T): unknown[] => sorts.map((_, i) => keyAt(item, i));
   const cmp = (a: Kept, b: Kept): number => {
     for (const [i, spec] of sorts.entries()) {
       const c = compareSort(a.keys[i], b.keys[i], spec.descending, spec.nullsFirst);
@@ -366,14 +373,42 @@ export const boundedTopKeyed = <T>(
     }
   };
 
+  // A candidate is compared against the root WITHOUT being boxed: `keyAt` is called at most once
+  // per sort level, exactly as the old `keysOf` was, and nothing is allocated unless it wins.
+  // An INDEXED loop and no `sorts.entries()`, unlike `cmp` above. This runs once per CANDIDATE —
+  // `cmp` only runs O(cap log cap) times — and `entries()` allocates an iterator and a tuple per
+  // call, which at 200,000 candidates measured ~2 ms of the shape's total.
+  const beatsRoot = (item: T, at: number): boolean => {
+    const [root] = h;
+
+    for (let i = 0; i < sorts.length; i += 1) {
+      const spec = sorts[i];
+      const c = compareSort(keyAt(item, i), root.keys[i], spec.descending, spec.nullsFirst);
+
+      if (c !== 0) {
+        return c < 0;
+      }
+    }
+
+    // REDUNDANT TODAY, and mutation says so rather than my reading it: a mutant returning `false`
+    // here SURVIVES. Candidates arrive in increasing `at` and every kept item was seen earlier, so
+    // a candidate's arrival index is always GREATER than the root's and this can never be true. It
+    // stays as the statement of intent, and as the thing that fails loudly if this is ever fed
+    // items out of arrival order — the same call the engine makes elsewhere for a guard whose
+    // removal changes no answer (item 475's rule: a survivor means "redundant" as readily as
+    // "untested", and the two have opposite fixes). `cmp` below is where the tiebreak is
+    // load-bearing: it orders the KEPT items, which the heap holds in no particular order.
+    return at < root.at;
+  };
+
   for (let at = 0; at < items.length; at += 1) {
-    const cand: Kept = { item: items[at], keys: keysOf(items[at]), at };
+    const item = items[at];
 
     if (h.length < cap) {
-      h.push(cand);
+      h.push({ item, keys: keysOf(item), at });
       siftUp(h.length - 1);
-    } else if (cmp(cand, h[0]) < 0) {
-      h[0] = cand;
+    } else if (beatsRoot(item, at)) {
+      h[0] = { item, keys: keysOf(item), at };
       siftDown();
     }
   }
