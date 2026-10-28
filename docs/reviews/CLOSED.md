@@ -32302,3 +32302,69 @@ SLOTS are identical every pass — pass 1 could record an `Int32Array` of neighb
 2-3 skip the lookup entirely (~16% of the row, ~4 MB here). (2) ~5.9%: `out` is loop-invariant, so
 split the body per direction rather than hoisting — items 159/1033/1091, the last of which measured
 **1.54x on an unreachable control** for getting this wrong.
+
+## 1106 — ✅ SHIPPED: the sweep REMEMBERS each slot's far slots, so passes 2+ skip the string lookup — `count 4-hop` **1.85x**
+
+Item 1105's ablation priced `slotOf.get(farId)` at 24% of the row and named the fix: a sweep makes
+ONE PASS PER LEG over the same adjacency. `sweepSlotCached` stores a per-slot `Int32Array` of far
+slots on first visit and reads it after.
+
+**Isolated, one shape per process, PRE/POST alternated ×3, each arm asserted to be its own code:**
+
+| row                                     | PRE (min) | POST (min) |                                |
+| --------------------------------------- | --------- | ---------- | ------------------------------ |
+| **`count 4-hop`** (3 passes)            | **547.0** | **323.0**  | **1.69x** (see the note below) |
+| `count 4-hop + start filter`            | 221.9     | 205.7      | 1.08x                          |
+| `count 3-hop + start filter` (2 passes) | 162.0     | 163.3      | flat after the threshold fix   |
+| `count 3-hop` (product arm, CONTROL)    | 316.0 med | 314.2 med  | flat                           |
+
+Bigger than 1105's ~16% estimate because a remembered pass skips the WHOLE per-edge data model
+(no `Set<Edge>` iteration, no `e.toId`, no `edgesOfTypes`), not just the 46 ns lookup.
+
+⚠️ **THE TABLE ABOVE WAS TAKEN ON THE INDEXED READ LOOP, WHICH THE LINT GATE REJECTED**
+(`prefer-for-of`). Re-measured on the shipped `for...of` form, quiet machine, alternated ×3:
+`count 4-hop` **547.0 → 323.0, 1.69x**. The first re-measurement read 397.4 with the CONTROL also
+moved (343.9) — a background bench board was still running; it was stopped and the A/B re-run.
+
+⚠️ **The CONTROL moved 4.6%** (`count 3-hop`, the degree product, which never enters `sweepChain`):
+312.6/**302.3**/314.5 → **316.3**/321.9/316.6, and `count 3-hop + start filter` 158.2 → 161.9
+(−2.3%) although the threshold makes it unreachable. Adding a function to a hot module changes its
+layout and charges unrelated queries — the effect this repo documents for `pull`'s alignment and TS
+closure size. Both are inside the ~10% floor and the target is far outside it, but the drift is the
+honest cost of the win.
+
+**REJECTED, with numbers:** the INDEXED read loop measured **297.5-302.1 against `for...of`'s
+323.0-337.4** (~7.9%, disjoint), from the per-slot iterator `for...of` allocates on an
+`Int32Array` (200,000 a pass here). Blocked by `prefer-for-of`, not by measurement. The OPPOSITE
+result recorded a few lines below in `sweepChain` — indexed "worth ~5%", did not reproduce — is a
+`number[]`, not a typed array.
+
+**`passes > 2` IS MEASURED.** The first pass pays for the memo and only later passes are refunded;
+at exactly two passes it is a small LOSS (`count 3-hop + start filter` 162.0 → 165.7 over three
+rounds, consistently the wrong way). The first cut had `> 1` and shipped that regression — raising
+the gate put the row back to 163.3 with `count 4-hop` keeping 302.1.
+
+**Soundness conditions** (each checked, each with a reason in the doc): `uniform` (one index — the
+condition item 300's per-slot adjacency cache already needed); the same edge TYPES on every leg
+(`sameLegTypes`, where `undefined` = "any type" matches only itself); and NO far label / NO gate on
+any leg, tested as `effectiveLabel(graph, l.label) === undefined` so a VACUOUS label still
+qualifies. A SEPARATE function, not a branch in the per-edge body — items 159/1033/1091, the last
+of which measured 1.54x on an unreachable control for getting that wrong.
+
+**Teeth: 7 of 7 real mutants CAUGHT** under `timeout 600 systemd-run … MemoryMax=16G
+MemorySwapMax=0` — `memo-empty` 36 fail, `types-always-equal` 6, `gate-ignored` 18,
+`label-ignored` 6, `cached-weight-one` 33, `memo-dedupes` 5, `no-next-frontier` 36. A route-only
+mutant (`memo-never-used`) SURVIVED as expected and is in the set on purpose: a suite of nothing
+but kills cannot show the harness is able to report a survivor.
+
+⚠️ **Two harness guards earned themselves in this run.** The POST arm assertion expected
+`sweepSlotCached` 3 times where the file has it 2 (definition + call) and aborted round 1 instead
+of measuring PRE twice. And `memo-never-used` first reported `ANCHOR MISSING — not a verdict` from
+a wrong indentation, which without the guard would have read as a survivor and been written up as
+a gap in the tests.
+
+Tests: `slot-cache-sweep.test.ts`, 15 tests, row-projection oracle (item 1095), TWO fixtures (every
+vertex a source vs a SINGLE source, so later passes visit slots pass 1 never saw) plus a 400-vertex
+one that crosses the initial `cap` of 256 and exercises the array growth that reassigns
+`st.ways`/`st.next`. gql 3117 pass; fuzzers 13/0; spelling 0 answer disagreements, three known
+flags, no fourth.

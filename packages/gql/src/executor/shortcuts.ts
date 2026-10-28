@@ -4931,21 +4931,24 @@ type Sweep = {
  * ones are handed back. `next` and `nextFrontier` accumulate across both of a `both` leg's calls,
  * which is what makes two passes one pass of the chain.
  */
+/** The mutable per-pass state the sweep hands to whichever walk answers a leg. */
+type SweepState = {
+  graph: Graph;
+  params: Params;
+  binding: Map<string, unknown>;
+  slotOf: Map<string, number>;
+  idOf: string[];
+  cache: (Map<string, Set<Edge>> | undefined)[] | undefined;
+  cached: Map<string, Map<string, Set<Edge>>> | undefined;
+  ways: Float64Array;
+  next: Float64Array;
+  cap: number;
+  frontier: readonly number[];
+  nextFrontier: number[];
+};
+
 const sweepOneDirection = (
-  st: {
-    graph: Graph;
-    params: Params;
-    binding: Map<string, unknown>;
-    slotOf: Map<string, number>;
-    idOf: string[];
-    cache: (Map<string, Set<Edge>> | undefined)[] | undefined;
-    cached: Map<string, Map<string, Set<Edge>>> | undefined;
-    ways: Float64Array;
-    next: Float64Array;
-    cap: number;
-    frontier: readonly number[];
-    nextFrontier: number[];
-  },
+  st: SweepState,
   leg: Leg,
   far: LabelExpr | undefined,
   out: boolean,
@@ -5020,6 +5023,105 @@ const sweepOneDirection = (
     }
   }
 };
+
+/**
+ * THE SAME FORWARD PASS, with each slot's FAR SLOTS remembered the first time they are resolved.
+ *
+ * Item 1105 ablated `sweepOneDirection`'s per-edge body and found the `slotOf.get(farId)` string
+ * lookup is **24% of the row** (`count 4-hop`, 570.6 ms against 432.0 with the lookup removed —
+ * ~46 ns an edge, where item 1104's micro-probe had predicted ~28 and so UNDERSTATED it). There is
+ * no dense vertex ordinal to replace it with: `Graph` is string-id-keyed by design (item 1104).
+ *
+ * But a sweep makes ONE PASS PER LEG over the same adjacency, so when every pass would resolve the
+ * same edges to the same slots, the second and later passes need not resolve them again. A 4-hop
+ * chain runs three passes (the last position is a weighted DEGREE sum, not a pass), so two of the
+ * three are answered from the remembered list.
+ *
+ * THE CONDITIONS, each load-bearing and each checked in {@link sweepChain}:
+ *
+ *   * `uniform` — one index for the whole chain, so a slot's adjacency is the same every pass.
+ *     This is the condition the per-slot `cache` already needed (item 300).
+ *   * the same edge TYPES on every leg — `edgesOfTypes` applies each leg's own types, so legs
+ *     that differ would walk different edge subsets out of one slot.
+ *   * NO far label and NO gate on any leg — those decide which far slots are ADMITTED, and the
+ *     remembered list holds slots rather than vertices. Re-testing a label would mean resolving
+ *     `idOf[to]` back to a vertex, which costs more than the lookup it saves.
+ *
+ * A SEPARATE FUNCTION rather than a branch in the shared body, which is items 159, 1033 and
+ * 1091's rule: the last of those measured **1.54x on a control the change cannot reach** for
+ * folding a per-pass choice into a per-edge body. The branch here is per SLOT (one per ~degree
+ * edges), not per edge.
+ *
+ * Byte-identity: the count is a sum of exact-integer way counts, so the order the frontier is
+ * built in cannot change it, and duplicates are kept in the remembered list exactly as parallel
+ * edges produce them.
+ */
+const sweepSlotCached = (st: SweepState, leg: Leg, slotNbrs: (Int32Array | undefined)[]): void => {
+  const { cache, cached, idOf, slotOf, frontier, nextFrontier } = st;
+  const { out } = leg;
+  // Reused across slots, so the walk allocates one `Int32Array` per slot and nothing else.
+  const scratch: number[] = [];
+
+  for (const slot of frontier) {
+    // Nonzero by construction — a slot joins a frontier only on its 0 -> w transition.
+    const w = st.ways[slot];
+    const known = slotNbrs[slot];
+
+    if (known !== undefined) {
+      for (const to of known) {
+        if (st.next[to] === 0) {
+          nextFrontier.push(to);
+        }
+
+        st.next[to] += w;
+      }
+
+      continue;
+    }
+
+    scratch.length = 0;
+
+    for (const e of edgesOfTypes(cache === undefined ? undefined : cache[slot], leg.types)) {
+      const farId = out ? e.toId : e.fromId;
+      let to = slotOf.get(farId) ?? -1;
+
+      if (to < 0) {
+        to = idOf.length;
+        slotOf.set(farId, to);
+        idOf.push(farId);
+        cache?.push(cached?.get(farId));
+
+        if (to >= st.cap) {
+          st.cap *= 2;
+
+          const grownWays = new Float64Array(st.cap);
+          const grownNext = new Float64Array(st.cap);
+
+          grownWays.set(st.ways);
+          grownNext.set(st.next);
+          st.ways = grownWays;
+          st.next = grownNext;
+        }
+      }
+
+      scratch.push(to);
+
+      if (st.next[to] === 0) {
+        nextFrontier.push(to);
+      }
+
+      st.next[to] += w;
+    }
+
+    slotNbrs[slot] = Int32Array.from(scratch);
+  }
+};
+
+/** Do two legs accept the same edge types? `undefined` is "any type" and matches only itself. */
+const sameLegTypes = (a: string[] | undefined, b: string[] | undefined): boolean =>
+  a === undefined || b === undefined
+    ? a === b
+    : a.length === b.length && a.every((t, i) => t === b[i]);
 
 const sweepChain = ({ graph, params, legs, startLabel, startGate }: Sweep): number => {
   const slotOf = new Map<string, number>();
@@ -5100,6 +5202,25 @@ const sweepChain = ({ graph, params, legs, startLabel, startGate }: Sweep): numb
   // whole reason this arm can carry an END constraint where the degree products cannot.
   const lastGated = legs[legs.length - 1].gate !== undefined;
   const passes = lastGated ? legs.length : legs.length - 1;
+  // REMEMBER each slot's far slots when every pass would resolve the same ones (item 1106).
+  //
+  // `passes > 2` IS MEASURED, not a guess. The first pass PAYS for the memo — a scratch push per
+  // edge and an `Int32Array.from` per slot — and only later passes are refunded. With exactly two
+  // passes one building pass is refunded by one consuming pass and the trade is a small LOSS:
+  // `count 3-hop + start filter` (3 legs, 2 passes) read 162.0 ms against 165.7 over three
+  // alternated rounds, consistently the wrong way. At three passes two are refunded and
+  // `count 4-hop` goes 550.5 -> 297.5, **1.85x**.
+  const slotNbrs: (Int32Array | undefined)[] | undefined =
+    uniform &&
+    passes > 2 &&
+    legs.every(
+      (l) =>
+        sameLegTypes(l.types, legs[0].types) &&
+        l.gate === undefined &&
+        effectiveLabel(graph, l.label) === undefined,
+    )
+      ? []
+      : undefined;
 
   for (let i = 0; i < passes; i++) {
     const leg = legs[i];
@@ -5135,8 +5256,12 @@ const sweepChain = ({ graph, params, legs, startLabel, startGate }: Sweep): numb
     // ONE CALL PER DIRECTION the leg traverses: one for `out`/`in`, two for `both` (item 1097).
     // Per LEG, so the per-edge body inside is the same work it was — item 159's rule, and item
     // 1091's 1.54x is what a direction choice inside a hop body costs a control it cannot reach.
-    for (const out of legDirections(leg)) {
-      sweepOneDirection(st, leg, far, out);
+    if (slotNbrs === undefined) {
+      for (const out of legDirections(leg)) {
+        sweepOneDirection(st, leg, far, out);
+      }
+    } else {
+      sweepSlotCached(st, leg, slotNbrs);
     }
 
     // Nothing reaches this position, so nothing reaches any later one either.
