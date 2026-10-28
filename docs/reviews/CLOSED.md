@@ -14496,6 +14496,25 @@ must KEEP raising — `OFFSET 0`, no page, CLAUSE position, and the fold still a
 non-faulting projection. **The CLAUSE-position control is the one a too-broad fix would break**:
 there the projection genuinely precedes the paging, so raising is correct and native agrees.
 
+### ✅ AND THE CLASS IS BOUNDED (item 1057)
+
+Eight sibling rewrites tested for the same fault-order hazard — `dropVacuousPage`,
+`dropVacuousQuantifier`, `dropUnreadGroupBinds`, `liftStartProps`, `pushWhereIntoNode`,
+`pushWhereAcrossPatterns`, `foldedGroupView` — against native, on a fixture where only one row can
+fault. **Nine arms, nine agreements.** `dropUnreadGroupBinds` was the likeliest failure (dropping an
+unread `LET` whose expression faults would make a raising query succeed) and both engines raise. So
+item 1056 was a SINGLE-SITE bug, not the first instance of a systemic one.
+
+**🛑 But the quantifier arm proved NOTHING on the first run**: the fixture had no edges, so
+`->{1,1}` returned `[]` on both without reaching the projection — and printed `AGREE`. With edges it
+becomes "both raise". **That is the THIRD fixture this session that could not reach the code under
+test and read as clean** (after 1045's vacuous label and 1046's symmetric edge layout), so it is now
+a rule: **when an arm agrees, check that it EXECUTED the thing being compared — an arm returning
+empty agrees with everything.**
+
+What this does NOT establish: soundness in general. One faulting expression, one fixture, nine
+queries; a rewrite off that list or a shape outside those nine is untested.
+
 ### The diagnosis, and the two things it corrected
 
 **The fixture was the variable, not the query.** The first bisect built the fixture from the
