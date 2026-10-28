@@ -32530,3 +32530,41 @@ nodes**, so the same map is built ~5 times.
 memo turns four of every five rebuilds into a refcount bump — one site, with `scan node` (no
 repeats) as the control that must not move. Not built yet: the element map's representation decides
 whether the memo clones or rebuilds, and that wants its own measurement.
+
+## 1112 — ✅ SHIPPED: render each DISTINCT node once and clone the repeats — the native side's biggest row **4.20x**
+
+Item 1111's target: `RETURN q` over a hop spends 98.6% of 33,600 us in `render_nodes`, and its
+100,000 rows cover only ~19,861 distinct nodes. A rendered node is `Value::Map(Arc::new(..))`, so a
+repeat is one refcount bump.
+
+**Alternated min-of-three, THREE controls:**
+
+| row                                | PRE         | POST       |           |
+| ---------------------------------- | ----------- | ---------- | --------- |
+| **`hop node, NO distinct`**        | **33600.0** | **7990.9** | **4.20x** |
+| `scan node` (elements, no repeats) | 3011.2      | 3061.7     | +1.7%     |
+| `distinct node` (deduped upstream) | 5748.8      | 5832.0     | +1.4%     |
+| `hop two props` (cannot reach it)  | 2346.6      | 2409.7     | +2.7%     |
+
+`scan node` and `distinct node` are elements with ALL-DISTINCT ids, so they decline and keep the
+per-row path — their flatness is the proof that the win is the repeats, not the render.
+
+**Three declines, each with a reason:** under `DEDUP_MIN_ROWS` = 1024 rows; a first-index table over
+4 entries per row (a 1,000,000-node graph returning a few thousand rows would allocate 4 MB to save
+nothing — GQL's `Counts` doc records that shape as a measured **30x** regression); and fewer than one
+row in eight shared.
+
+**Byte-identity:** the shared path renders distinct ids through the SAME `render_nodes_each` and
+clones, so each row is structurally identical. Repeats now share one `Arc` — unobservable, because
+`Arc::make_mut`/`get_mut` appear NOWHERE in the crate. Rust suite 1267 pass; fuzzers 13/0; whole
+`query_bench` sweep clean.
+
+**Teeth: 4 of 4 real mutants CAUGHT** (`clone-first-element`, `null-sentinel-lost`,
+`row-mapping-constant`, `distinct-never-pushed`), route-only `repeat-test-inverted` SURVIVED as
+expected. The harness now asserts a GREEN BASELINE first and prints it — item 1110's lesson — and
+treats 124/137 as the mutant caught.
+
+Tests: `the_shared_and_per_row_node_renderers_agree` (2,000 rows, 3 vertices, null sentinel,
+multi-label, stored null, absent key) and `the_shared_render_falls_through_and_still_agrees` (both
+`None` arms). The pre-existing agreement test could NOT reach this path — six ids, under the
+threshold.

@@ -17398,6 +17398,93 @@ fn an_edge_element_map_omits_absent_properties_and_keeps_present_nulls() {
     );
 }
 
+/// Item 1112: the SHARED render — each DISTINCT id rendered once, repeats cloned — against the
+/// per-node one. A third implementation of the same map, and the one the biggest row in
+/// `query_bench -- gql` now takes (33,600 -> 7,990.9us, **4.20x**, item 1112).
+///
+/// `the_batch_and_per_node_element_renderers_agree` below CANNOT reach it: six ids are under
+/// `DEDUP_MIN_ROWS`, so that test pins the per-row path only. This one is past the threshold, with
+/// repeats, the OPTIONAL-MATCH null sentinel, a multi-label vertex, a stored present-null and an
+/// absent key all represented — so a shared `Arc` that carried the wrong element, or lost a label
+/// or a property, shows up here.
+#[test]
+fn the_shared_and_per_row_node_renderers_agree() {
+    let store = element_fixture();
+    // 2,000 rows over three vertices plus the sentinel: past the threshold, and ~500 rows per
+    // distinct id so the clone path carries the answer rather than the render path.
+    let ids: Vec<u32> = (0..2_000)
+        .map(|i| match i % 4 {
+            0 => 0,
+            1 => 1,
+            2 => 2,
+            _ => u32::MAX,
+        })
+        .collect();
+    let shared = crate::exec::render::render_nodes(&store, &ids);
+
+    assert_eq!(shared.len(), ids.len());
+
+    for (i, (&id, got)) in ids.iter().zip(&shared).enumerate() {
+        if id == u32::MAX {
+            assert!(got.is_null(), "the null sentinel renders NULL at row {i}");
+
+            continue;
+        }
+
+        assert_eq!(
+            format!("{got:?}"),
+            format!("{:?}", crate::exec::render::node_result_value(&store, id)),
+            "the shared renderer disagrees with the per-node one on vertex {id} at row {i}"
+        );
+    }
+}
+
+/// The two FALL-THROUGHS, which must keep the per-row path and still be right: a column with no
+/// repeats worth sharing, and one too short to amortize the scan. Both are the `None` arms of
+/// `render_nodes_shared`, and a mutant that removed either would be invisible to the test above.
+#[test]
+fn the_shared_render_falls_through_and_still_agrees() {
+    let mut store = Builder::default().build();
+    // 1,200 vertices, each with its own property value, so the ids are ALL DISTINCT past the
+    // row threshold — the repeat test must decline and the answer must not change.
+    let mut q = String::from("INSERT ");
+
+    for i in 0..1_200 {
+        if i > 0 {
+            q.push_str(", ");
+        }
+
+        q.push_str(&format!("(:W {{k: {i}}})"));
+    }
+
+    execute(&crate::gql::parse(&q).unwrap(), &mut store).unwrap();
+
+    let distinct: Vec<u32> = (0..1_200u32).collect();
+    let rendered = crate::exec::render::render_nodes(&store, &distinct);
+
+    assert_eq!(rendered.len(), distinct.len());
+
+    for (&id, got) in distinct.iter().zip(&rendered) {
+        assert_eq!(
+            format!("{got:?}"),
+            format!("{:?}", crate::exec::render::node_result_value(&store, id)),
+            "an all-distinct column must render exactly as the per-node path does, at {id}"
+        );
+    }
+
+    // SHORT and repeat-heavy: under `DEDUP_MIN_ROWS`, so the threshold declines it.
+    let short: Vec<u32> = vec![0, 0, 0, 1, 1, 0];
+    let short_rendered = crate::exec::render::render_nodes(&store, &short);
+
+    for (&id, got) in short.iter().zip(&short_rendered) {
+        assert_eq!(
+            format!("{got:?}"),
+            format!("{:?}", crate::exec::render::node_result_value(&store, id)),
+            "a short column must render exactly as the per-node path does, at {id}"
+        );
+    }
+}
+
 /// The batch renderer and the per-node one are two implementations of one map — a bare node
 /// frontier takes the batch path, while a `Gen` cell, a path and the JSON sinks take the
 /// per-node one. They must be byte-identical, which nothing pinned: the OPTIONAL-MATCH null

@@ -380,7 +380,93 @@ fn sort_label_values(labels: &mut [Value]) {
 /// gives the dense node one allocation instead of a growth ladder.
 const PROP_PAIRS_RESERVE: usize = 16;
 
+/// Rows below which deduping cannot pay for its own pass, however many repeats there are.
+const DEDUP_MIN_ROWS: usize = 1024;
+
+/// How many table entries per ROW the first-index scan may allocate. Keeps a 1,000,000-node graph
+/// returning a few thousand rows from allocating a 4 MB table to save nothing — the shape GQL's
+/// `Counts` doc records as a 30x regression when a dense structure meets a narrow frontier.
+const DEDUP_MAX_TABLE_PER_ROW: usize = 4;
+
+/// Render a node column whose ids REPEAT by rendering each distinct id once and cloning.
+///
+/// Item 1111 priced `MATCH (p:Person)-[:KNOWS]->(q) RETURN q` at **328 ns a row** against 4.6 for
+/// `RETURN q.age` on the identical plan — 98.6% of the row is this render — and found the reason
+/// the hop costs 2.2x the scan PER ROW: its 100,000 rows cover only ~19,861 distinct nodes, so the
+/// same element map is built about five times over.
+///
+/// A rendered node is `Value::Map(Arc::new(..))`, so a repeat is **one refcount bump** instead of
+/// an external-id lookup, a label `Vec` with a sort, and two `Arc` allocations.
+///
+/// `None` falls through to the per-row render, and the two cases that return it are the ones where
+/// this cannot pay: too few rows to amortize the scan, and a table too large for the row count.
+/// The repeat test itself is the third — with fewer than one row in eight shared, the clone saves
+/// less than the scan costs, so a scan-shaped column keeps exactly the path it had.
+fn render_nodes_shared(store: &Store, ids: &[u32]) -> Option<Vec<Value>> {
+    // A `u32::MAX` id is the NULL sentinel an optional hop leaves behind; it never indexes a table.
+    let max_id = ids.iter().copied().filter(|&i| i != u32::MAX).max()?;
+    let table = max_id as usize + 1;
+
+    if table > ids.len().saturating_mul(DEDUP_MAX_TABLE_PER_ROW) {
+        return None;
+    }
+
+    // `first[id]` is the index into `distinct` that id was given, or `u32::MAX` for unseen.
+    let mut first = vec![u32::MAX; table];
+    let mut distinct: Vec<u32> = Vec::new();
+    let mut at: Vec<u32> = Vec::with_capacity(ids.len());
+
+    for &id in ids {
+        if id == u32::MAX {
+            at.push(u32::MAX);
+
+            continue;
+        }
+
+        let seen = first[id as usize];
+
+        if seen == u32::MAX {
+            let k = distinct.len() as u32;
+
+            first[id as usize] = k;
+            distinct.push(id);
+            at.push(k);
+        } else {
+            at.push(seen);
+        }
+    }
+
+    // Fewer than one row in eight shared is not worth the clone indirection.
+    if distinct.len().saturating_mul(8) >= ids.len().saturating_mul(7) {
+        return None;
+    }
+
+    let rendered = render_nodes_each(store, &distinct);
+
+    Some(
+        at.iter()
+            .map(|&k| {
+                if k == u32::MAX {
+                    Value::Null
+                } else {
+                    rendered[k as usize].clone()
+                }
+            })
+            .collect(),
+    )
+}
+
 pub(super) fn render_nodes(store: &Store, ids: &[u32]) -> Vec<Value> {
+    if ids.len() >= DEDUP_MIN_ROWS {
+        if let Some(out) = render_nodes_shared(store, ids) {
+            return out;
+        }
+    }
+
+    render_nodes_each(store, ids)
+}
+
+fn render_nodes_each(store: &Store, ids: &[u32]) -> Vec<Value> {
     use crate::store::Column;
     use std::sync::Arc;
     let keys = store.prop_keys_arc();
