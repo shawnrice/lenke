@@ -33009,3 +33009,38 @@ allocation 3-4% at 1108; frontier representation 31.7/158 at 1109; box swap 355/
 working set is smaller than the engine's UNDERSTATES a cache-sharing cost" — and this is the third
 confirmation. **Next instrument: not another ablation, but a micro that grows its working set to the
 engine's and shows the floor rising to meet it.** If it does, three targets close at once.
+
+## 1126 — ✅ the residual IS the heap: the SAME minimal body is **80.1 ns** synthetic and **140.0 ns** on a real graph — which CLOSES items 1104/1105, 1109 and 1125's shared target
+
+1125 named the instrument: a micro that grows its working set to the engine's. Built. 200,000
+vertices, degree 5, 1,000,000 edges, median of 9 dropping 3, under `timeout` + 16G cgroup cap:
+
+```text
+  ARM 1  synthetic heap, minimal body          76.7-80.1 ns/touch   (two runs)
+  ARM 2  REAL graph, the SAME minimal body   135.9-140.0        1.75-1.77x, from the HEAP alone
+  ARM 3  REAL graph, + per-edge degree read  345.9-353.6        ⚠️ bad model, see below
+```
+
+ARM 2 runs **no engine code** — iterate a vertex's adjacency `Set`, read `e.toId`, hash into a
+200,000-entry `Map`, accumulate — over a real `Graph` (frozen properties, labels `Set` per edge,
+`Map<id, Map<label, Set<Edge>>>` adjacency). **140 ns an edge.**
+
+**That closes the shared target.** The three bodies cost 190 (GQL sweep), 158 (Gremlin walk), ~150
+(GQL 3-hop product); a hand-written minimal body on the same data costs 140. The engine code is
+worth 10-50 ns on top of an unavoidable 140 — **they are at their floor, and 41 ns was never the
+floor.** Every individual refutation (324/1104 generator, 1105 Map, 1108 allocation, 1109 frontier,
+355/495/1125 box swap) was right, and their sum could not find a missing 3-4x because there was
+none. The remaining ratio is a DATA MODEL question — the dense integer-indexed adjacency CLOSED.md
+already records as **refuted on DESIGN, not on perf.** Stop reading these rows as open targets.
+
+⚠️ **ARM 1 is 80.1 where item 1104's equivalent read 41.2** — 2x, and the cause is the same effect:
+1104 picked sets RANDOMLY (200,000 picks over 200,000 sets ⇒ ~63% touched), this walks each once. **A
+smaller effective working set measured faster — the hypothesis confirming itself inside the
+instrument.** 41 understated an already-understated synthetic floor, which is why the gap looked 4x.
+
+⚠️ **ARM 3's 345.9 is a BAD MODEL, not a finding.** It exceeds the whole product's ~150 ns in situ,
+which is impossible — `side()` reaches the bucket more cheaply than a double `Map.get` chain.
+Recorded rather than dropped, since the number is in the output.
+
+`packages/gql/working-set-probe.ts` is KEPT: ARM 1 vs ARM 2 is the floor any future per-edge claim
+here should be judged against.
