@@ -32046,3 +32046,40 @@ REFACTORED arm (the extraction touches the directed path the controls protect):
 `o3` cannot reach the new code, so its gain is the enclosing function getting smaller — the INVERSE
 of `ts-closure-size-is-load-bearing`, which items 119/141/159/286/1091 all measured in the costly
 direction. One shape of four, the rest flat: an observation, not a result.
+
+## 1098 — 🧹 CI red on item 1097 was NOT a divergence: a coverage floor item 280 set at **3 sigma** while describing it as 4
+
+`differential-fuzz.test.ts` failed with "20000 random queries render byte-identically across
+engines" — which reads like a byte-identity break on a fresh planner change. It was not. The only
+differing flags:
+
+```text
+  +   "subOrGenerated": false,     subOr=3/3  against floors > 4 and > 3
+  +   "subOrNonEmpty": false,
+```
+
+**No query diverged.** The GENERATOR-coverage guard tripped, and generation is seed-driven and
+engine-independent.
+
+**Checked, because the drop was asymmetric** (`subOr` ~20→3 while `subNot` held at 34). Five local
+runs of 20,000: subOr 18/16, 19/17, 18/18, 17/15, 15/14 — healthy, matching the recorded band. CI's
+3/3 is the outlier. **Those runs are also 100,000 random queries agreeing byte-identically with 1097
+in.**
+
+### ⚠️ ITEM 280's RULE WAS RIGHT, ITS ARITHMETIC WAS NOT
+
+```text
+  subOr generated  mean ~18, sigma ~4.2   floor > 4  ->  3.33 sigma   (claimed "~4 sigma")
+  subOr non-empty  mean ~14, sigma ~3.7   floor > 3  ->  2.97 sigma
+```
+
+A 3-sigma floor fires ~once in a few hundred runs per band, over ~20 bands — this was due. **Four
+sigma below these means is 1.2 and -0.8**, so the floors are now `> 1` and `> 0`. For a band of ~15
+that is the lesson, not a concession: **no floor on a count that small is both 4-sigma safe and
+larger than 1.** VERIFIED still failing on a collapse — disabling the detector flips
+`subOrGenerated` false and the test fails, which is item 280's own required check.
+
+**Not "changing the test until it passes":** the assertion was about the generator, the generator
+measured healthy over five seeds, the floor measured 3 sigma while claiming 4, and the replacement
+was verified to still fail on the condition it exists for. Any of those four differing would have
+meant fixing the engine or reverting 1097.

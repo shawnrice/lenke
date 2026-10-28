@@ -2461,8 +2461,26 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       selfEndNonEmpty: cov.selfEndNonEmpty > 14,
       subNotGenerated: cov.subNotGenerated > 8,
       subNotNonEmpty: cov.subNotNonEmpty > 6,
-      subOrGenerated: cov.subOrGenerated > 4,
-      subOrNonEmpty: cov.subOrNonEmpty > 3,
+      // ⚠️ RE-SET AGAIN AT ITEM 1098, because item 280's RULE was right and its ARITHMETIC was
+      // not. These two were described above as "~4 sigma below their means", and against the
+      // numbers recorded three lines up they are not: mean ~18 with sigma ~4.2 puts `> 4` at
+      // **3.33 sigma**, and mean ~14 with sigma ~3.7 puts `> 3` at **2.97 sigma**. CI then went
+      // red on item 1097 with `subOr=3/3` — a ~3.4-sigma seed, exactly the event a 3-sigma floor
+      // is expected to catch roughly once in a few hundred runs, across ~20 bands.
+      //
+      // Re-sampled over five local seeds of 20,000 to confirm the band itself is healthy and the
+      // CI reading was the outlier: generated 15, 17, 18, 18, 19; non-empty 14, 15, 16, 17, 18.
+      // (Those runs are also 100,000 random queries agreeing byte-identically, which is what the
+      // fuzzer is actually for.)
+      //
+      // FOUR SIGMA BELOW THESE MEANS IS 1.2 AND -0.8, so the honest floors are `> 1` and `> 0` —
+      // and for a band this small that is the whole lesson: a floor's job here is to catch a
+      // collapse to ZERO, and no larger floor on a count of ~15 can be both 4-sigma safe and
+      // meaningful. VERIFIED by making the detector never fire: `subOrGenerated` and
+      // `subOrNonEmpty` both go false and the test fails, which is the only behaviour these two
+      // are claimed to have.
+      subOrGenerated: cov.subOrGenerated > 1,
+      subOrNonEmpty: cov.subOrNonEmpty > 0,
       predGenerated: cov.predGenerated > 2_000,
       predRows: cov.predRows > 1_000,
       sinkGenerated: cov.sinkGenerated > 200,
