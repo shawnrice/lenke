@@ -1352,6 +1352,22 @@ pub struct Store {
         std::sync::RwLock<Option<(usize, std::sync::Arc<(Vec<std::sync::Arc<str>>, Vec<u32>)>)>>,
     /// edge-type name -> interned id, and the reverse.
     etype_ids: FnvMap<String, u32>,
+    /// LIVE edges per PRIMARY edge type, maintained at every adjacency mutation.
+    ///
+    /// `rebuild_csr` partitions `out_adj` on `a.etype`, so `out_typed_flat(t)?.len()` is this same
+    /// number — but only while the overlay is FRESH, and ONE adjacency write demotes it for the
+    /// rest of the session. Items 680/851/852 priced that at 85x on a typed count and refused both
+    /// automatic repairs: lazy-on-read is structurally excluded (the accessors return borrows into
+    /// the `Vec`s a rebuild replaces) and rebuild-at-commit loses at a 6-27 stale-read break-even.
+    /// This is the one design they leave standing — O(1) per write, which is what the TS engine
+    /// already does with `edgesByLabel` maintained on insert and removal.
+    ///
+    /// Indexed by type id and grown on demand by [`Self::bump_etype_count`], so the three
+    /// interning sites need no change. [`Self::recomputed_etype_counts`] is the oracle a test
+    /// compares this against after every mutation KIND — which is what turns a missed site into a
+    /// loud failure instead of a silently wrong count (item 1117 enumerated nine such sites, two
+    /// of them moving a whole `Vec` rather than an entry).
+    etype_counts: Vec<usize>,
     /// per-node outgoing / incoming adjacency, indexed by node id.
     out_adj: Vec<Vec<Adj>>,
     in_adj: Vec<Vec<Adj>>,
@@ -1629,6 +1645,7 @@ impl Clone for Store {
                     .clone(),
             ),
             etype_ids: self.etype_ids.clone(),
+            etype_counts: self.etype_counts.clone(),
             out_adj: self.out_adj.clone(),
             in_adj: self.in_adj.clone(),
             next_eid: self.next_eid,
@@ -1871,6 +1888,60 @@ impl Store {
     #[must_use]
     pub fn etype_id(&self, name: &str) -> Option<u32> {
         self.etype_ids.get(name).copied()
+    }
+
+    /// Live edges whose PRIMARY edge type is `etype` — ALWAYS current.
+    ///
+    /// `out_typed_flat(etype)?.len()` is the same number, but only while the CSR overlay is fresh;
+    /// one adjacency write demotes it for the session (items 680/851/852). This is maintained at
+    /// every mutation instead, so a count after a write costs the same as a count after a load.
+    #[must_use]
+    pub fn live_etype_count(&self, etype: u32) -> usize {
+        self.etype_counts.get(etype as usize).copied().unwrap_or(0)
+    }
+
+    /// Per-type live counts recomputed from `out_adj` — the ORACLE for the maintained ones.
+    ///
+    /// Each live edge has exactly one `out_adj` entry, so this tally IS the invariant. Only a test
+    /// calls it: the maintained counts are updated at nine sites (item 1117) and two of those move
+    /// a whole `Vec`, so the way a missed site becomes visible is a comparison against this after
+    /// every mutation KIND rather than a reading of the code.
+    #[cfg(test)]
+    pub(crate) fn recomputed_etype_counts(&self) -> Vec<usize> {
+        let mut out = vec![0usize; self.etype_ids.len()];
+
+        for adj in &self.out_adj {
+            for a in adj {
+                if let Some(c) = out.get_mut(a.etype as usize) {
+                    *c += 1;
+                }
+            }
+        }
+
+        out
+    }
+
+    /// Add `delta` live edges to `etype`'s count, growing the table on demand.
+    ///
+    /// Grow-on-demand is what keeps the three interning sites out of this change: a type id is
+    /// `etype_ids.len()` at the moment it is minted, so the first edge of a new type extends the
+    /// table by exactly one.
+    fn bump_etype_count(&mut self, etype: u32, delta: isize) {
+        let i = etype as usize;
+
+        if self.etype_counts.len() <= i {
+            self.etype_counts.resize(i + 1, 0);
+        }
+
+        let slot = &mut self.etype_counts[i];
+
+        *slot = if delta >= 0 {
+            *slot + delta.unsigned_abs()
+        } else {
+            // Saturating rather than wrapping: an under-count is a wrong answer and a panic in a
+            // release build is worse, so the test oracle above is what catches a missed increment.
+            slot.saturating_sub(delta.unsigned_abs())
+        };
     }
 
     /// Every interned edge-type id — the universe an edge-label NEGATION (`-[:!T]->`)
@@ -3712,6 +3783,7 @@ impl Store {
             etype,
             eid,
         });
+        self.bump_etype_count(etype, 1);
         if self.edge_type_index {
             // Hot path: a single append to each endpoint's type bucket — O(1), not
             // a per-node rebuild.
@@ -5265,6 +5337,11 @@ impl Store {
                 }
             }
         }
+        // ONE decrement for the edge, not one per endpoint: `dropped_etype` is set by whichever
+        // branches found it, and a live edge has exactly one `out_adj` entry.
+        if let Some(et) = dropped_etype {
+            self.bump_etype_count(et, -1);
+        }
         if self.edge_type_index {
             // Drop the one entry from each bucket it could be in rather than rebuilding both
             // endpoints' whole type maps, which cost 17.8x on a hub edge (item 675) — the same
@@ -5614,6 +5691,10 @@ impl Store {
         // ever violated; that is not a case any path produces, and `mirror_entries_are_unique_per
         // _direction` pins it rather than leaving the difference unexamined.
         let out = std::mem::take(&mut self.out_adj[i]);
+        // This node's own OUT entries go with the take — one per edge it is the SOURCE of.
+        for a in &out {
+            self.bump_etype_count(a.etype, -1);
+        }
         for a in &out {
             let adj = &mut self.in_adj[a.nbr as usize];
 
@@ -5623,10 +5704,15 @@ impl Store {
         }
         let inc = std::mem::take(&mut self.in_adj[i]);
         for a in &inc {
+            let et = a.etype;
             let adj = &mut self.out_adj[a.nbr as usize];
 
             if let Some(at) = adj.iter().position(|m| m.eid == a.eid) {
                 adj.remove(at);
+                // Only when one was actually removed. A SELF-LOOP is in both `out` and `inc`, and
+                // its entry left with the take above — so this finds nothing and must not
+                // decrement again, which is the double-count the comment below describes.
+                self.bump_etype_count(et, -1);
             }
         }
         // A self-loop appears in both `out` and `inc`; its mirror was in this
@@ -6085,6 +6171,8 @@ impl Store {
                 for (node, is_out, adj) in entries {
                     if is_out {
                         self.out_adj[node as usize].push(adj);
+                        // The OUT entry is the one the count follows, so only this arm bumps.
+                        self.bump_etype_count(adj.etype, 1);
                     } else {
                         self.in_adj[node as usize].push(adj);
                     }
@@ -6124,8 +6212,16 @@ impl Store {
                             eid: a.eid,
                         };
                         self.out_adj[a.nbr as usize].push(m);
+                        // A neighbour's OUT entry for an edge INTO the restored node.
+                        self.bump_etype_count(m.etype, 1);
                         self.push_etype_entry(a.nbr, true, m);
                     }
+                }
+                // THE WHOLE-`Vec` RESTORE, which a per-push hook misses (item 1117): the node's
+                // entire OUT list comes back by assignment, one entry per edge it was the source
+                // of, so the count has to walk it.
+                for a in &out {
+                    self.bump_etype_count(a.etype, 1);
                 }
                 self.out_adj[i] = out;
                 self.in_adj[i] = inc;
@@ -6199,6 +6295,15 @@ impl Store {
         }
         for col in self.props.values_mut() {
             col.pop_last();
+        }
+        // Normally empty by now (a delete detaches first), but this path also rolls back an
+        // `add_node`, so it drops whatever is there rather than assuming.
+        if let Some(adj) = self.out_adj.last() {
+            let gone: Vec<u32> = adj.iter().map(|a| a.etype).collect();
+
+            for et in gone {
+                self.bump_etype_count(et, -1);
+            }
         }
         self.out_adj.pop();
         self.in_adj.pop();
@@ -6325,6 +6430,16 @@ impl Builder {
             }
         }
 
+        // Every builder edge is live and laid down exactly once, so the per-type counts are a
+        // tally over the etypes — the same number `out_adj`'s partitions would give.
+        let mut etype_counts = vec![0usize; self.etype_ids.len()];
+
+        for &t in &edge_etypes {
+            if let Some(c) = etype_counts.get_mut(t as usize) {
+                *c += 1;
+            }
+        }
+
         let mut st = Store {
             node_count: n,
             limits: GraphLimits::default(),
@@ -6338,6 +6453,7 @@ impl Builder {
             edge_prop_keys_cache: std::sync::RwLock::default(),
             min_label_cache: std::sync::RwLock::default(),
             etype_ids: self.etype_ids,
+            etype_counts,
             out_adj,
             in_adj,
             // Incremental edges continue the id sequence the build laid down.

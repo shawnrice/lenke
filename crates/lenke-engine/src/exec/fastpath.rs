@@ -3487,9 +3487,19 @@ pub(super) fn try_frontier_prop_agg(
 ///   same scan written differently, and `whole_graph_scan` is that test.
 /// - **No `bind_edge`, no `DISTINCT`.** Binding the edge adds a slot the count ignores, but
 ///   `count(DISTINCT *)` is a different question entirely.
-/// - **A fresh CSR overlay.** `out_typed_flat` returns `None` when stale, which is also what
-///   keeps this correct across deletes: an adjacency write invalidates the overlay, so a
-///   fresh partition can never contain a detached edge (item 680 prices that staleness).
+/// - **No fresh-overlay requirement any more (item 1118).** This read `out_typed_flat(t)?.len()`,
+///   which returns `None` once any adjacency write has invalidated the overlay — so the whole fast
+///   path declined for the rest of the session after one `add_edge`, measured at **85x** on this
+///   very shape (items 680/851/852, where both automatic repairs were refused). It now reads
+///   `live_etype_count(t)`, maintained at every mutation.
+///
+///   The staleness was also doing CORRECTNESS work, and that argument has to be replaced rather
+///   than dropped: a stale partition can contain a DETACHED edge, and declining was what kept a
+///   delete from being counted. The maintained count carries that instead — decremented at
+///   `delete_edge`, at `delete_node_inner`'s cascade (both the node's own OUT list and its mirrors
+///   in neighbours) and at `pop_last_node`, incremented on both `Undo` restore arms — which
+///   `the_maintained_etype_counts_match_a_recount_after_every_mutation_kind` pins against a recount
+///   from `out_adj` after each of those.
 fn typed_hop_count_from_size(input: &Plan, agg: &Agg, store: &Store) -> Option<usize> {
     let Plan::Expand {
         input: src,
@@ -3527,7 +3537,7 @@ fn typed_hop_count_from_size(input: &Plan, agg: &Agg, store: &Store) -> Option<u
             if store.type_ever_secondary(t) {
                 return None;
             }
-            store.out_typed_flat(t).map(<[_]>::len)
+            Some(store.live_etype_count(t))
         }
         _ => None,
     }
@@ -3589,7 +3599,7 @@ pub(super) fn try_edge_label_count(
             if store.type_ever_secondary(t) {
                 return None;
             }
-            total += store.out_typed_flat(t)?.len();
+            total += store.live_etype_count(t);
         }
     }
     Some(scalar_num(total as f64))

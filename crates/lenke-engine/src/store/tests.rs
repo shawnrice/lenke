@@ -89,6 +89,112 @@ fn csr_overlay_matches_and_invalidates_on_write() {
     assert_eq!(inc(&st, 1), vec![0, 0]);
 }
 
+/// The maintained per-type edge counts must equal a recount from `out_adj` after EVERY mutation
+/// kind (item 1118).
+///
+/// This is the oracle the change could not be made safely without. The counts are updated at nine
+/// sites (item 1117) and TWO of them move a whole `Vec` rather than an entry — `Undo::RestoreNode`
+/// puts a deleted node's entire OUT list back by assignment, and `delete_node_inner` empties one
+/// with `mem::take` — so a hook placed only at the `push` call sites would under-count after a
+/// rolled-back `delete_node` and every later typed count would be silently WRONG, on the undo path
+/// only. Reading the code is how that gets missed; this is how it gets caught.
+///
+/// `recomputed_etype_counts` is the invariant itself rather than a second implementation of it:
+/// every live edge has exactly one `out_adj` entry, so the tally IS the definition.
+#[test]
+fn the_maintained_etype_counts_match_a_recount_after_every_mutation_kind() {
+    let agrees = |st: &Store, what: &str| {
+        let want = st.recomputed_etype_counts();
+
+        for (t, &w) in want.iter().enumerate() {
+            assert_eq!(
+                st.live_etype_count(u32::try_from(t).unwrap()),
+                w,
+                "type {t} disagrees after {what}"
+            );
+        }
+    };
+    let mut b = Builder::default();
+
+    b.node(&["N"], &[]);
+    b.node(&["N"], &[]);
+    b.node(&["N"], &[]);
+    b.edge(0, 1, "R");
+    b.edge(0, 2, "R");
+    b.edge(1, 2, "S");
+    b.edge(2, 2, "R"); // a SELF-LOOP, which is in both `out` and `inc`
+
+    let mut st = b.build();
+
+    agrees(&st, "the builder's load");
+    assert_eq!(st.live_etype_count(st.etype_id("R").unwrap()), 3);
+    assert_eq!(st.live_etype_count(st.etype_id("S").unwrap()), 1);
+
+    // An ordinary add, and one that INTERNS A NEW TYPE so the table has to grow.
+    st.add_edge(1, 0, "R");
+    agrees(&st, "add_edge");
+    st.add_edge(0, 2, "T");
+    agrees(&st, "add_edge interning a new type");
+    assert_eq!(st.live_etype_count(st.etype_id("T").unwrap()), 1);
+
+    // A delete, and a PARALLEL pair so the removal cannot be confused with the whole bucket.
+    st.add_edge(0, 1, "R");
+    agrees(&st, "a parallel add");
+
+    let eid = st
+        .out(0)
+        .iter()
+        .find(|a| a.nbr == 1)
+        .map(|a| a.eid)
+        .unwrap();
+
+    st.delete_edge(0, 1, eid);
+    agrees(&st, "delete_edge");
+
+    // A node delete, cascading over its OUT edges, its IN edges and its self-loop.
+    st.delete_node(2);
+    agrees(&st, "delete_node with a self-loop");
+
+    // THE TWO WHOLE-`Vec` SITES, reached only through a rollback.
+    st.begin();
+    st.delete_node(0);
+    agrees(&st, "delete_node inside a transaction");
+    st.rollback();
+    agrees(&st, "ROLLBACK of delete_node (the whole-Vec restore)");
+
+    st.begin();
+
+    let eid2 = st.out(1).iter().map(|a| a.eid).next().unwrap();
+    let to = st.out(1).iter().map(|a| a.nbr).next().unwrap();
+
+    st.delete_edge(1, to, eid2);
+    agrees(&st, "delete_edge inside a transaction");
+    st.rollback();
+    agrees(&st, "ROLLBACK of delete_edge");
+
+    // A rolled-back node ADD, which pops the highest id.
+    st.begin();
+
+    let fresh = st.add_node(&["N"], &[]);
+
+    st.add_edge(fresh, 1, "R");
+    agrees(&st, "an edge on a node added in a transaction");
+    st.rollback();
+    agrees(&st, "ROLLBACK of add_node (pop_last_node)");
+
+    // And the counts are still the real answer, not merely self-consistent: a rebuilt CSR's
+    // partition length is the same number, which is the claim the consumers rely on.
+    st.rebuild_csr();
+
+    for t in st.all_etype_ids() {
+        assert_eq!(
+            st.out_typed_flat(t).map(<[_]>::len),
+            Some(st.live_etype_count(t)),
+            "the maintained count must equal the FRESH partition's length for type {t}"
+        );
+    }
+}
+
 fn s(x: &str) -> Value {
     Value::Str(x.into())
 }

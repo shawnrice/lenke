@@ -32729,3 +32729,48 @@ what makes the change safe, and it lands before any consumer. Then wire
 **NOT implemented this tick, deliberately** — nine sites, two at `Vec` granularity, with a wrong
 answer on an undo path as the failure mode, is not a half-tick change. The list is now from the
 code rather than from a note, which is the previous tick's lesson applied.
+
+## 1118 — ✅ SHIPPED: the maintained per-type edge count — the stale-CSR typed count cliff is **GONE, 0.347 → 0.003 ms**
+
+The design items 680/851/852 left standing after refusing both automatic repairs (lazy-on-read
+structurally, rebuild-at-commit at a 6-27 read break-even), re-reproduced at 85x by 1116 and
+site-enumerated by 1117. O(1) per write — what TS has always had in `edgesByLabel`.
+
+**Alternated min-of-three, the FRESH path as the control:**
+
+| arm  | fresh | stale (after ONE `add_edge`)     |
+| ---- | ----- | -------------------------------- |
+| PRE  | 0.003 | **0.347 / 0.350 / 0.352** (116x) |
+| POST | 0.003 | **0.003 / 0.003 / 0.003**        |
+
+The fresh arm cannot be made faster (already a `len()`) and does not get slower; answers 3000 in
+every arm.
+
+**Design:** `Store::etype_counts: Vec<usize>` by type id, grown on demand by `bump_etype_count` — so
+the three interning sites need NO change. Ten sites: `+1` at the `add_edge` push (which also covers
+the ndjson/codec LOAD paths, since both call it); a Builder tally over `edge_etypes`; `-1` in
+`delete_edge` (once per edge, not per endpoint); `-N`/`-1` for `delete_node_inner`'s `mem::take` and
+its neighbour mirrors, guarded on the removal actually happening because a SELF-LOOP's entry left
+with the take; `+1` on both `Undo` restore arms and `+N` for `RestoreNode`'s whole-`Vec`
+assignment. Consumers `typed_hop_count_from_size` and `try_edge_label_count` now read
+`live_etype_count(t)` instead of `out_typed_flat(t)?.len()`.
+
+⚠️ **The staleness was doing CORRECTNESS work** — the old doc: a fresh partition "can never contain
+a detached edge". The maintained count carries that instead, and the doc now states the new argument
+rather than the old one.
+
+**Oracle:** `recomputed_etype_counts` tallies `out_adj` — the invariant itself, not a second
+implementation. The test compares after the builder load, an add, an add INTERNING A NEW TYPE, a
+parallel add, `delete_edge`, `delete_node` (in-edges + out-edges + self-loop), and rollbacks of
+`delete_node` / `delete_edge` / `add_node` — then rebuilds the CSR and asserts
+`out_typed_flat(t).len() == live_etype_count(t)` per type.
+
+**Teeth: 6 of 7 caught** — `add-never-counts`, `delete-edge-no-decrement`,
+`delete-node-out-take-missed`, **`restore-node-whole-vec-missed`** (1117's headline risk),
+`restore-edge-missed`, `selfloop-double-decrement` (compile time). ⚠️ **`pop-last-node-missed`
+SURVIVED**: on every path the tests reach, the OUT list is already empty when popped, so that arm is
+INSURANCE and its comment now says so with the mutation result as evidence — rather than reading as
+if a test pinned it.
+
+Rust 1268+13+725 pass; native 933 / gql 3117 / gremlin 918; fuzzers 13/0; `counts` and `gql` bench
+groups flat.
