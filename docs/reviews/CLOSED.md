@@ -14463,6 +14463,43 @@ Also note `build_typed`'s inner `for t in &mut typed` pushes an offset for EVERY
 so `rebuild_csr` is O(V × ntypes + E), not O(V + E) — which is why the rebuild column climbs from
 5.87x of a read at 1k to 12.55x at 200k.
 
+## 1061 — ✅ THE ROUTE IS `nodeProjection`, and the boundary is PAGING + a non-plain item
+
+Item 1060 named finding the route as the next step. Used the repo's own `routes()` helper
+(`compileLinear` + list the non-null detectors) rather than reading gates:
+
+```text
+  ["nodeProjection"]   RETURN n.k AS c ORDER BY n.k LIMIT 10        11-14 ms
+  []                   RETURN n.k + 1 AS c ORDER BY n.k LIMIT 10    ~34
+```
+
+**The boundary is NOT "arithmetic" and NOT "the key must be an output column"** — both plausible,
+both tested, both wrong:
+
+```text
+  ["nodeProjection"]   RETURN n.k AS c ORDER BY c LIMIT 10          key IS an output column
+  []                   RETURN n.k + 1 AS c ORDER BY c LIMIT 10      key IS an output column TOO
+  []                   RETURN n.k AS c, n.k + 1 AS d ORDER BY c …   sort key plain; another item is not
+  ["nodeProjection"]   RETURN n.k + 1 AS c                          arithmetic item, NO paging
+  ["nodeProjection"]   RETURN upper(n.s) AS c                       a FUNCTION CALL, no paging
+  []                   RETURN n.k + 1 AS c LIMIT 10                 arithmetic item + paging
+```
+
+`itemLocal` admits any row-local expression recursively (aggregates excluded), so the route handles
+arithmetic and calls fine. **It refuses PAGING combined with an item that is not a bare property
+read**, and ONE such item disqualifies the whole projection even when the sort key is plain and is an
+output column.
+
+**➡️ THE EXTENSION**: the paging arm builds its heap from property COLUMNS (`directKeys`), which needs
+the item to BE a property — but the top-k emits only `cap` rows, so a compiled expression could be
+applied to THOSE (`cap` evaluations, not N) with the column still serving the sort key. Worth ~3x
+(34 → 11-14). **NOT built**: that arm reads columns and writes rows in one pass, so this is a real
+change to it rather than a gate relaxation, and this family has now punished three assumptions.
+
+**METHOD**: three measurements, each refuting the hypothesis held going in — not the key (1060), not
+arithmetic, not the output-column rule. **The `routes()` helper answered in one run what two rounds
+of gate-reading had got wrong**, and it existed the whole time.
+
 ## 1060 — ⚠️ OPEN, LOCATED: the top-k's 3x is a ROUTE BOUNDARY at "the projection is a bare property read"
 
 Item 1058 left "an arithmetic sort key costs 3.3x" as a cost question. It is a CLIFF, not a slope,
