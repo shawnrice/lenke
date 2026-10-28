@@ -1375,27 +1375,6 @@ fn map_children(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
                 // `bind_edge` wherever the edge is unread" rewrite would need `map_slots` and
                 // would also reach the filtered spellings item 1145 priced at ~30x; that is a
                 // separate, larger change, deliberately not bundled here.
-                Plan::Expand {
-                    input: ex_in,
-                    from,
-                    dir,
-                    edge_label,
-                    double_loops,
-                    bind_edge: true,
-                } if keys.is_empty()
-                    && aggs.iter().all(|a| {
-                        a.func == crate::ir::AggFn::Count && a.arg.is_none() && !a.distinct
-                    }) =>
-                {
-                    Plan::Expand {
-                        input: ex_in,
-                        from,
-                        dir,
-                        edge_label,
-                        double_loops,
-                        bind_edge: false,
-                    }
-                }
                 Plan::EdgeVertex {
                     input: ev_in,
                     edge_slot,
@@ -1419,7 +1398,25 @@ fn map_children(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
                     // declined every query and measured no change.
                     && plan_out_width(&ev_in) == Some(edge_slot + 2) =>
                 {
-                    *ev_in
+                    // COMPOSED with the bound-edge clear below rather than returning `*ev_in`
+                    // raw: this arm proves the same "nothing reads a slot" property, so the edge
+                    // it just stopped reading is unread too (item 1147).
+                    clear_unread_bound_edge(*ev_in)
+                }
+                // A BOUND EDGE NOBODY READS, through endpoint-only Filter/Project nodes — items
+                // 1146 and 1147. PLACED AFTER the `EdgeVertex` arm deliberately: as a catch-all
+                // `other if <the same guards>` it matched FIRST when written above, which
+                // silently shadowed that arm and broke
+                // `a_one_to_one_endpoint_move_is_elided_under_a_bare_count`. Items 371 and 375
+                // record that exact hazard — "a path that merely sits earlier silently claims
+                // another's shape" — and here an existing test caught it rather than a bench row.
+                other
+                    if keys.is_empty()
+                        && aggs.iter().all(|a| {
+                            a.func == crate::ir::AggFn::Count && a.arg.is_none() && !a.distinct
+                        }) =>
+                {
+                    clear_unread_bound_edge(other)
                 }
                 kept => kept,
             };
@@ -3405,6 +3402,155 @@ mod rewrite_fuzz;
 /// slots by index, and a path expression depends on the ORDER hops were taken, which
 /// a reversal changes. Refusing keeps [`reverse_chain`] honest — it only reverses a
 /// pattern when every consumer above it can be renamed exactly.
+/// Clear `bind_edge` on an `Expand` under a keyless bare-`count(*)` aggregate, seeing through the
+/// endpoint-only `Filter`/`Project` nodes between them — items 1146 and 1147.
+///
+/// `outE(T).inV()` is the other spelling of `out(T)` (TinkerPop ground truth at item 1145: both
+/// give ids [2, 4] on the modern toy graph, while `outV` gives [1, 1] and is a DIFFERENT question).
+/// The parser collapses the `inV` onto the Expand's already-landed target, but leaves
+/// `bind_edge: true` — and that lone boolean keeps the chain a slot wider, which is enough for
+/// every count fast path to decline. Item 1145 priced it:
+///
+/// ```text
+///   out().count()                     0.2 us     outE().inV().count()           624.0   3120x
+///   out().has(age).count()           83.4        outE().inV().has(age).count() 2520.7     30x
+///   out().values(age).count()        83.1        outE().inV().values(age)...   2406.3     29x
+/// ```
+///
+/// Item 1146 shipped the FIRST line (the aggregate directly over the Expand, no remapping needed).
+/// This handles the other two: with the edge column gone the target moves from slot `e + 1` to `e`,
+/// so each intervening expression is remapped by exactly that.
+///
+/// THE GUARD IS `reads_only_slot(expr, e + 1)`, and it is doing two jobs at once: it proves nothing
+/// reads the EDGE slot (which would otherwise silently retarget to the node after the remap — a
+/// wrong answer with a plausible count), and it proves the remap is total. It is conservative in
+/// the right direction, answering `false` for every expression shape it cannot classify, `Path`
+/// included — and it also declines an expression that reads NO slot at all (a bare literal), which
+/// is correct if unoptimized.
+///
+/// The caller's guards do the rest: a KEYLESS aggregate whose every agg is a bare non-DISTINCT
+/// `count(*)` reads no slot, so nothing ABOVE needs remapping and this stays a local rewrite rather
+/// than the whole-plan slot renumbering a general version would need.
+fn clear_unread_bound_edge(plan: Plan) -> Plan {
+    // Peel the endpoint-only Filter/Project nodes, innermost last.
+    let mut peeled: Vec<Plan> = Vec::new();
+    let mut cur = plan;
+    loop {
+        match cur {
+            Plan::Expand {
+                input: ex_in,
+                from,
+                dir,
+                edge_label,
+                double_loops,
+                bind_edge: true,
+            } => {
+                // The bound edge sits at the input's width; the target is the slot after it.
+                let Some(e) = plan_out_width(&ex_in) else {
+                    return rebuild_peeled(
+                        Plan::Expand {
+                            input: ex_in,
+                            from,
+                            dir,
+                            edge_label,
+                            double_loops,
+                            bind_edge: true,
+                        },
+                        peeled,
+                    );
+                };
+                let target = e + 1;
+                // Remap every peeled node, or put the whole thing back untouched.
+                let mut remapped: Vec<Plan> = Vec::with_capacity(peeled.len());
+                for node in &peeled {
+                    let ok = match node {
+                        Plan::Filter { pred, .. } => reads_only_slot(pred, target).then(|| {
+                            Plan::Filter {
+                                input: Box::new(Plan::Scan { label: None }), // placeholder
+                                pred: crate::exec::fastpath::remap_slot(pred, target, e),
+                            }
+                        }),
+                        Plan::Project { items, .. } => items
+                            .iter()
+                            .all(|(_, x)| reads_only_slot(x, target))
+                            .then(|| Plan::Project {
+                                input: Box::new(Plan::Scan { label: None }), // placeholder
+                                items: items
+                                    .iter()
+                                    .map(|(n, x)| {
+                                        (n.clone(), crate::exec::fastpath::remap_slot(x, target, e))
+                                    })
+                                    .collect(),
+                            }),
+                        _ => None,
+                    };
+                    match ok {
+                        Some(r) => remapped.push(r),
+                        None => {
+                            return rebuild_peeled(
+                                Plan::Expand {
+                                    input: ex_in,
+                                    from,
+                                    dir,
+                                    edge_label,
+                                    double_loops,
+                                    bind_edge: true,
+                                },
+                                peeled,
+                            )
+                        }
+                    }
+                }
+                return rebuild_peeled(
+                    Plan::Expand {
+                        input: ex_in,
+                        from,
+                        dir,
+                        edge_label,
+                        double_loops,
+                        bind_edge: false,
+                    },
+                    remapped,
+                );
+            }
+            Plan::Filter { input, pred } => {
+                peeled.push(Plan::Filter {
+                    input: Box::new(Plan::Scan { label: None }),
+                    pred,
+                });
+                cur = *input;
+            }
+            Plan::Project { input, items } => {
+                peeled.push(Plan::Project {
+                    input: Box::new(Plan::Scan { label: None }),
+                    items,
+                });
+                cur = *input;
+            }
+            done => return rebuild_peeled(done, peeled),
+        }
+    }
+}
+
+/// Re-stack `peeled` (outermost first) back onto `base`.
+fn rebuild_peeled(base: Plan, peeled: Vec<Plan>) -> Plan {
+    let mut out = base;
+    for node in peeled.into_iter().rev() {
+        out = match node {
+            Plan::Filter { pred, .. } => Plan::Filter {
+                input: Box::new(out),
+                pred,
+            },
+            Plan::Project { items, .. } => Plan::Project {
+                input: Box::new(out),
+                items,
+            },
+            other => other,
+        };
+    }
+    out
+}
+
 fn map_slots(e: &Expr, f: &dyn Fn(usize) -> usize) -> Option<Expr> {
     let rec = |x: &Expr| map_slots(x, f);
     let pair = |x: &Expr, y: &Expr| Some((Box::new(rec(x)?), Box::new(rec(y)?)));

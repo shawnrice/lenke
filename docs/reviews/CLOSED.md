@@ -33786,3 +33786,48 @@ lives), the edge frontier itself, and two shapes that must decline.
 ⚠️ **The corpus had no row for this shape** — items 877/881's failure mode again. `outE.inV` and
 `outE.inV.has` added to `query/gremlin`, beside the existing `outE.outV` pair, whose comment now
 states that `outV` is the edge's SOURCE and a DIFFERENT question.
+
+## 1147 — ✅ SHIPPED **28.8x** (filtered hop spellings) plus a bonus **3069x**; and ⚠️ `rewrite_fuzz` at 500k seeds exposes THREE PRE-EXISTING failures, one a WRONG ANSWER
+
+`clear_unread_bound_edge` peels the endpoint-only `Filter`/`Project` nodes between a keyless
+bare-`count(*)` aggregate and `Expand{bind_edge:true}`, clears the flag, and remaps each peeled
+expression `target -> target - 1` (losing the edge column moves the target from `e+1` to `e`).
+
+⚠️ **The guard `reads_only_slot(expr, e + 1)` does TWO jobs**: proves nothing reads the EDGE slot
+(which would silently retarget to the node after the remap — a wrong answer with a plausible count)
+AND proves the remap total. opt.rs's version probes by mapping other slots to `usize::MAX`, so it is
+`false` for anything it cannot classify, `Path` included.
+
+⚠️ **I SHADOWED A NEIGHBOURING ARM and a unit test caught it.** Written as a catch-all `other if
+<guards>` ABOVE the `EdgeVertex`-elision arm, it matched first and that arm went dead
+(`a_one_to_one_endpoint_move_is_elided_under_a_bare_count` failed). Items 371/375's hazard. Fix:
+place it AFTER, and have the `EdgeVertex` arm return `clear_unread_bound_edge(*ev_in)` so the two
+COMPOSE — which is where the bonus came from.
+
+```text
+  E2 outE.inV.has(age)     PRE 2327.8/2314.6/2314.5  POST 80.5/81.2   28.8x
+  E3 outE.inV.values(age)  PRE 2330.6/2325.6/2319.3  POST 80.5/81.3   28.8x
+  E1/A1/C1/C2      [ctl]   flat
+```
+
+✅ E2/E3 land on A1 (80.5 vs 80.8) — with item 1146, **all six spellings of this family within 1%**.
+
+Sweep 105 rows: ✅ `query/gremlin/outE.outV` **613.8 -> 0.2 = 3069x**, NOT targeted — the composition
+paying off, since that spelling does build an `EdgeVertex`. ⚠️ Two SLOWER flags both **refute
+isolated**: `distinct prop` 1.15x in-sweep but 1.014x isolated (and its in-sweep PRE of 2668.5 was
+itself the outlier against an isolated 3041.7 — **an in-sweep ratio can be wrong in the FAVOURABLE
+direction too**); `for-in const x3` flat, refuted twice now (also item 1143).
+
+⚠️⚠️ **`rewrite_fuzz` at `LENKE_OPT_FUZZ_SEEDS=500000` FAILS THREE TESTS, PRE-EXISTING:**
+
+```text
+  optimizing_preserves_rows_across_shapes    changed the ORDER  (seed 1889763, indexed true)
+  optimizing_preserves_rows_with_indexes     changed the answer (seed  383127, indexed true)
+  optimizing_preserves_rows_without_indexes  changed the answer (seed  383127, indexed false)
+```
+
+Verified pre-existing: pristine `opt.rs` fails the same three at the same two seeds, and the order
+failure's plans differ only by `Filter{Scan} -> RangeSeek` (the SEEK rewrite) over a `ShortestPath`
+pair with no keyless bare-count aggregate. **CLAUDE.md's documented depth is 200000, which passes** —
+so nobody had run it deeper. A "changed the answer" is an optimizer WRONG ANSWER and outranks perf
+work. OPEN, seeds recorded for replay.
