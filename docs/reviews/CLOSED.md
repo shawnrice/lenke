@@ -33831,3 +33831,40 @@ failure's plans differ only by `Filter{Scan} -> RangeSeek` (the SEEK rewrite) ov
 pair with no keyless bare-count aggregate. **CLAUDE.md's documented depth is 200000, which passes** —
 so nobody had run it deeper. A "changed the answer" is an optimizer WRONG ANSWER and outranks perf
 work. OPEN, seeds recorded for replay.
+
+## 1148 — ⚠️🔶 OPEN, PRE-EXISTING OPTIMIZER **WRONG ANSWER**: at `rewrite_fuzz` seed 383127, filter-pushdown through a `Join` turns 0 rows into 6 — and the remap arithmetic is CORRECT
+
+Found by item 1147 running the fuzzer deeper than CLAUDE.md's documented 200000. Pre-existing
+(pristine `opt.rs` fails identically). Reproduce:
+
+```
+LENKE_OPT_FUZZ_SEED=383127 cargo test --release -- --ignored dump_seed --nocapture
+LENKE_OPT_FUZZ_SEEDS=500000 cargo test --release optimizing_preserves_rows_with_indexes
+```
+
+```text
+  raw: []   optimized: 6 rows   <- the optimizer INVENTS rows
+  RAW        Project / Filter{slot2.age<5} / Join{VarLength, Filter{slot3 bounds}}
+  OPTIMIZED  Project /                       Join{VarLength, Filter{AND(slot0.age<5, slot3 bounds)}}
+```
+
+⚠️ **RULED OUT by reading the contracts** (so do not re-chase these): the remap arithmetic is
+correct — `ir.rs` states right slot `j` becomes output slot `left.len() + j`, left is
+`VarLength{Scan}` of width 2, so joined slot 2 IS right slot 0 (corroborated by the Project's slot 5
+= right slot 3); `VarLength` is not under-counted (`width` and `plan_out_width` agree on `input + 1`;
+exec's extra sink columns are `group_cols`, a `RepeatGroup` concern, not `path_need`); the
+conjunction is not weakened (3VL `AND` commutes, and both engines short-circuit on FALSE in written
+order per items 258/259).
+
+**Suspects, in test order:** (1) `OptionalExpand{keep_source: true}` is LEFT-OUTER, so whether right
+slot 0 survives null-padding on the second `OptionalExpand` (`bind_edge: true`, appends two slots) is
+the first check; (2) a runtime/compile width disagreement — raw filtering everything to ZERO is what
+a predicate reading the WRONG column looks like, since `.age` on a non-node column is NULL and
+`NULL < 5` never holds.
+
+⚠️ **"The optimizer changed the answer" does not say WHICH side is correct.** The fuzzer asserts only
+that they agree. The raw plan yielding zero may itself be the broken one. Settle that FIRST. OPEN.
+
+⚠️ Also open from the same run: `optimizing_preserves_rows_across_shapes` "changed the ORDER" at seed
+1889763, whose plans differ only by `Filter{Scan} -> RangeSeek` over a `ShortestPath` pair with tied
+sort keys — plausibly the fuzzer over-asserting order on ties (`order-is-unspecified`), but unchecked.
