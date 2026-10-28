@@ -34,7 +34,8 @@ import {
 import { candidateCount, candidateVertexSource, expand, matchesLabel } from '../graph-queries.js';
 import type { Adjacency } from '../graph-queries.js';
 import { indexCandidates } from './matching.js';
-import { outputColumnSorts, sortedRows } from './ordered-rows.js';
+import type { SortPlan } from './ordered-rows.js';
+import { outputColumnSorts, sortRowsByColumns, sortedRows } from './ordered-rows.js';
 import { asTruth, isNullish } from './scalars.js';
 import {
   edgeSeek,
@@ -700,7 +701,12 @@ const hopOrderPlan = (
   ret: Extract<Clause, { kind: 'return' }>,
   proj: CProjection,
   forceStartDriven: boolean,
-): { sorted: (inner: RowsFn | null) => RowsFn | null; startDriven: boolean } | null => {
+): {
+  sorted: (inner: RowsFn | null) => RowsFn | null;
+  startDriven: boolean;
+  /** Only the DEFERRED plan sets this — the reduced projection the walk builds rows from. */
+  walkProj?: CProjection;
+} | null => {
   // The COMPILED projection's item names, not a re-derivation from the AST: `proj.items[i].name`
   // is what `sortsOnOutputOnly` reads for the aggregate rungs, so both callers resolve a key
   // against the same names.
@@ -729,6 +735,158 @@ const hopOrderPlan = (
   return {
     sorted: (inner) => sortedRows(inner, sorts ?? undefined),
     startDriven: forceStartDriven || sorts !== undefined,
+  };
+};
+
+/**
+ * A column name no output column can collide with. The key rows these name are DISCARDED — only
+ * the re-projected survivors are returned — so the names need not agree with the projection's.
+ */
+const defKey = (i: number): string => `\u0000k${i}`;
+const defCarrier = (i: number): string => `\u0000v${i}`;
+
+/**
+ * THE DEFERRED HOP ORDER (item 1063): rank on the sort keys, project only the rows emitted.
+ *
+ * `hopOrderPlan` refuses a WINDOW whenever any projected item could fault, because the walks
+ * project every row and `sortedRows` slices after — which would raise on a row the query never
+ * emits. Item 1062 fixed the single-node twin of this; the hop rung's cliff is BIGGER and uniform
+ * across every walk variant, measured at 50,000 edges:
+ *
+ * ```text
+ *   plain directed hop   10.34 ms plain item → 51.05 with `b.k + 1`      4.94x
+ *   clause-WHERE filtered 16.96                 53.85                    3.17x
+ *   undirected            33.83                121.91                     3.60x
+ *   seeded start           1.23                  5.44                     4.42x
+ *   rel-bound (`e.w`)     11.89                 57.42                     4.83x
+ *   CONTROL, no window       —                  18.52  (takes the rung)
+ * ```
+ *
+ * WHY THIS NEEDS NO CHANGE TO ANY WALK, which is the whole reason it is affordable here. The walks
+ * are the hottest loops in the engine and item 159 measured that adding even a BRANCH to one costs
+ * the hot shape 1.6x. So instead of teaching them to defer, this hands them a REDUCED PROJECTION:
+ * one item per sort key, plus one item per ENDPOINT the real items read, each a bare
+ * `binding.get(v)`. The walk's code is untouched — same `projectRow` call — it just builds a
+ * two-or-three column row carrying the keys and the raw elements. The wrapper then sorts, applies
+ * the window, rebuilds a binding from the carried elements and projects the real items for the
+ * `cap` survivors.
+ *
+ * That serves ALL FIVE walk variants at once, which matters for more than coverage: a partial
+ * build would make a filtered hop and an unfiltered one take different routes for the same
+ * question, which is the equivalent-spelling gap item 1062's first cut created and this repo names
+ * first.
+ *
+ * WHAT IT REFUSES:
+ *
+ *   - `orderNeedsOutput`. The compiled key closures must read the INPUT binding alone, which is
+ *     exactly what that flag denies; a key reading an output column needs the projection it is
+ *     deferring. It also subsumes the shadowing hazard `aliasDefinition` declines for.
+ *   - `limit === undefined`. A `SKIP` with no `LIMIT` is not a top-k: with no cap the general path
+ *     sorts and projects EVERY row and then drops the skipped ones, so it raises where a deferred
+ *     arm would answer rows. Verified on both engines at item 1062.
+ *   - `limit === 0`, as CORRECTNESS: `applyProjection` returns `[]` before ranking or projecting
+ *     anything, so evaluating keys to emit nothing would raise where the query does not.
+ *   - A PARAMETERIZED window, whose value lives in `params` while the route is chosen once.
+ *
+ * `startDriven` is TRUE, for `hopOrderPlan`'s own reason: the far-driven walk REORDERS rows and a
+ * stable sort leaves ties on arrival order, which is observable between the engines (item 605).
+ */
+const deferredHopOrder = (s: {
+  proj: CProjection;
+  farVar: string;
+  startVar: string | undefined;
+  relVar: string | undefined;
+  readsStart: boolean;
+  readsRel: boolean;
+}): {
+  sorted: (inner: RowsFn | null) => RowsFn | null;
+  startDriven: boolean;
+  walkProj: CProjection;
+} | null => {
+  const { proj, farVar, startVar, relVar, readsStart, readsRel } = s;
+  const { skip, limit } = proj;
+
+  if (
+    proj.orderBy.length === 0 ||
+    proj.orderNeedsOutput ||
+    typeof limit !== 'number' ||
+    limit === 0 ||
+    (skip !== undefined && typeof skip !== 'number')
+  ) {
+    return null;
+  }
+
+  const carriers: string[] = [farVar];
+
+  if (readsStart) {
+    if (startVar === undefined) {
+      return null;
+    }
+
+    carriers.push(startVar);
+  }
+
+  if (readsRel) {
+    if (relVar === undefined) {
+      return null;
+    }
+
+    carriers.push(relVar);
+  }
+
+  const carrierCols = carriers.map((_, i) => defCarrier(i));
+  const items: CReturnItem[] = [
+    ...proj.orderBy.map((k, i) => ({ name: defKey(i), fn: k.fn, isAgg: false })),
+    ...carriers.map((v, i) => ({
+      name: carrierCols[i],
+      fn: (env: EvalEnv) => env.binding.get(v),
+      isAgg: false,
+    })),
+  ];
+  // The window and the sort are cleared from the walk's copy deliberately: the wrapper applies
+  // both, and a walk that paged first would truncate before the ranking.
+  const walkProj: CProjection = { ...proj, items, orderBy: [], skip: undefined, limit: undefined };
+  const plan: SortPlan = {
+    sorts: proj.orderBy.map((k, i) => ({
+      col: defKey(i),
+      descending: k.descending,
+      nullsFirst: k.nullsFirst,
+    })),
+    skip: typeof skip === 'number' ? skip : 0,
+    limit,
+  };
+  const width = carriers.length;
+
+  return {
+    startDriven: true,
+    walkProj,
+    // The run-time null is passed THROUGH, as `sortedRows` does: a walk may decline per call, and
+    // sorting that would answer a declined walk with an empty result.
+    sorted: (inner) =>
+      inner === null
+        ? null
+        : (graph, params) => {
+            const keyed = inner(graph, params);
+
+            if (keyed === null) {
+              return null;
+            }
+
+            const picked = sortRowsByColumns(keyed, plan);
+            const out: Row[] = [];
+            // ONE binding for the re-projection, the same reuse the walks make.
+            const binding = new Map<string, unknown>();
+
+            for (const kr of picked) {
+              for (let i = 0; i < width; i++) {
+                binding.set(carriers[i], kr[carrierCols[i]]);
+              }
+
+              out.push(projectRow(proj, binding, params, graph));
+            }
+
+            return out;
+          },
   };
 };
 
@@ -1646,13 +1804,33 @@ export const detectHopProjection = (
   // complexity cap and this file's own precedent is to extract rather than grow it
   // (`projectionIsStreamable` says the same). Its decline shares this return with `projected`'s
   // for the same reason: one statement instead of two.
-  const order = hopOrderPlan(ret, proj, forceStartDriven);
+  const plainOrder = hopOrderPlan(ret, proj, forceStartDriven);
 
-  if (projected === null || order === null) {
+  if (projected === null) {
+    return null;
+  }
+
+  // THE DEFERRED ARM is asked only once the plain one has refused, and it re-makes every decline
+  // the plain one would (item 1063). It needs `projected` — which endpoints the real items read —
+  // so it is resolved here rather than inside `hopOrderPlan`.
+  const order =
+    plainOrder ??
+    deferredHopOrder({
+      proj,
+      farVar,
+      startVar: startVarName,
+      relVar: rel.variable,
+      readsStart: projected.readsStart,
+      readsRel: projected.readsRel,
+    });
+
+  if (order === null) {
     return null;
   }
 
   const { sorted, startDriven: startDrivenForOrder } = order;
+  // The projection the WALK builds rows from: the real one, or the deferred arm's reduced copy.
+  const walkProj = order.walkProj ?? proj;
 
   const itemsReadStart = projected.readsStart;
   const itemsReadRel = projected.readsRel;
@@ -1781,7 +1959,7 @@ export const detectHopProjection = (
         typeName,
         farVar,
         farLabel,
-        proj,
+        proj: walkProj,
         farPred,
         gate,
         needsStart,
@@ -1803,7 +1981,7 @@ export const detectHopProjection = (
         farVar,
         relVar: rel.variable,
         farLabel,
-        proj,
+        proj: walkProj,
         farPred,
         relPred,
         gate,
@@ -1840,14 +2018,14 @@ export const detectHopProjection = (
           }
 
           binding.set(farVar, far);
-          rows.push(projectRow(proj, binding, params, graph));
+          rows.push(projectRow(walkProj, binding, params, graph));
         }
       }
 
       return rows;
     };
 
-    const farDriven = farDrivenHopWalk({ typeName, out, farVar, farLabel, proj });
+    const farDriven = farDrivenHopWalk({ typeName, out, farVar, farLabel, proj: walkProj });
 
     // Which walk is chosen is a PER-CALL decision, not a per-row one, so the branch costs the
     // inner loop nothing. The far-driven walk cannot apply a START label — it iterates the far
@@ -1867,7 +2045,7 @@ export const detectHopProjection = (
       out,
       farVar,
       farLabel,
-      proj,
+      proj: walkProj,
       farPred,
       gate,
       startOnly: carried.startOnly,

@@ -406,6 +406,28 @@ const GROUPS: [string, readonly string[]][] = [
       'MATCH (n:P) RETURN n.k + 1 AS c ORDER BY n.k + 1 LIMIT 10',
     ],
   ],
+  // Item 1063's HOP twin of the group above. The hop rung refused a windowed sort whose
+  // projection could fault, so these two cost 48-50 ms apiece against 11 for the plain spelling;
+  // deferring the projection brought both to ~12.5. They are in here because item 1062's first
+  // cut made the single-node pair diverge 3.8x and THIS probe is what caught it.
+  [
+    'hop ORDER BY alias vs its expression, windowed (item 1063)',
+    [
+      'MATCH (a:P)-[:E]->(b) RETURN b.k + 1 AS c ORDER BY c LIMIT 10',
+      'MATCH (a:P)-[:E]->(b) RETURN b.k + 1 AS c ORDER BY b.k + 1 LIMIT 10',
+    ],
+  ],
+  // The WALK VARIANTS of the same refusal cannot be a spelling group — a filtered hop and an
+  // unfiltered one answer different questions, and this probe compares answers as well as times.
+  // They are covered by `defer-hop-probe.ts`, one shape per process, where the comparison is
+  // against each variant's OWN plain twin rather than against each other.
+  [
+    'hop windowed sort, FILTERED: alias vs expression (item 1063)',
+    [
+      'MATCH (a:P)-[:E]->(b) WHERE b.k > 1 RETURN b.k + 1 AS c ORDER BY c LIMIT 10',
+      'MATCH (a:P)-[:E]->(b) WHERE b.k > 1 RETURN b.k + 1 AS c ORDER BY b.k + 1 LIMIT 10',
+    ],
+  ],
   [
     'ORDER BY plain-column alias vs its expression',
     [

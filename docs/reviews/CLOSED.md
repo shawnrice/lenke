@@ -30483,3 +30483,70 @@ not cover this shape. **This corrects item 1059's "no backlog of latent divergen
 run was clean; 27 runs of 120,000 were not. Whether to widen the registry entry or fix the check is
 left open — extending the static check to inline pattern predicates has been tried twice and was
 worse both times.
+
+## 1063 — ✅ SHIPPED: the HOP rung's deferred order. 2.7-8.9x across all five walk variants, no walk changed
+
+Item 1062's twin, on the rung it recorded as untouched. `hopOrderPlan` refused a window whenever any
+projected item could fault; `deferredHopOrder` ranks on the keys and projects only the emitted rows.
+
+```text
+  SUBJECTS (50,000 edges, one shape per process, median of reps 4+, POST/PRE/POST)
+    directed-arith      RETURN b.k + 1 AS c ORDER BY c LIMIT 10        49.61 →  12.76   3.89x
+    directed-expr-key   … ORDER BY b.k + 1 LIMIT 10                    48.06 →  12.45   3.86x
+    filtered-arith      WHERE b.k > 10 …                               57.55 →  14.19   4.06x
+    undirected-arith    (a)-[:E]-(b) …                                112.37 →  41.89   2.68x
+    relbound-arith      RETURN e.w + 1 AS c …                          60.29 →  13.88   4.34x
+    seeded-arith        (a:P {k: 7})-… …                                8.94 →   1.00   8.94x
+    fn                  RETURN upper(b.s) AS c …                       62.29 →  13.66   4.56x
+    both-ends           RETURN a.k AS x, b.k + 1 AS c ORDER BY x …     44.43 →  12.44   3.57x
+  CONTROLS  directed/filtered/undirected/relbound plain, nolimit, plain-hop
+                                                                       1.01x 1.00x 1.05x 1.03x
+                                                                       0.98x 1.15x
+```
+
+### 🔑 NO WALK CHANGED, which is the only reason this was affordable
+
+Item 159 measured that adding even a BRANCH to one of these walks costs the hot shape 1.6x. So the
+arm hands the walk a **reduced projection** — one item per sort key, plus one bare `binding.get(v)`
+per endpoint the real items read — and re-projects the survivors. Same `projectRow` call, a
+two-or-three column row instead of N. Five construction sites take `proj: walkProj`, which IS `proj`
+on every other path.
+
+It covers all five variants at once deliberately: **a partial build would make a filtered hop and an
+unfiltered one take different routes for one question**, which is item 1062's first-cut defect.
+
+`proj.orderNeedsOutput` is the whole key check — the flag the general path already sets, mirroring
+the Rust `order_needs_output` — so there is no alias matching and no AST walking, and the shadowing
+hazard is subsumed.
+
+### 🛑 The in-process sweep invented a 1.5x regression on an unreachable control — the THIRD this session
+
+`undirected-plain` read 33.83 → 50.99 in the single-process sweep and **39.91 → 37.90 isolated**. Its
+route does not change and `walkProj` is `proj` on that path. Same shape as items 1034 and 1038. The
+giveaway each time: the arm that "regressed" is one the change cannot execute for.
+
+### Teeth, and two mutants that survived first
+
+Nine mutants, all caught. `order-needs-output-admitted` and `far-driven-allowed` SURVIVED the first
+run and both were untested, not redundant (item 475's rule):
+
+- A key reading an OUTPUT column needed a case — `RETURN b.k AS b, b.k + 1 AS d ORDER BY d`, where
+  `d` reads `b`, itself an output name.
+- `startDriven: true` needed a fixture whose TIES discriminate between the walk orders: three starts
+  wired `s0 → f0,f3,f6` etc. with all nine far vertices tying. Start-driven gives `51,54,57,52,…`,
+  far-driven `51,52,53,…`, and **native gives the start-driven order** — item 605's rule holding on a
+  shape nobody had measured.
+
+33 tests, every value confirmed against native first (24 cross-engine arms).
+
+**🛑 And the fixture caught itself twice**, the fourth and fifth instances of the session's rule: a
+`{t: 1}` inline against a string property returned `[]` and printed AGREE, and two faulting vertices
+at opposite ends of the key order made every window include one — so every faulting case raised and
+none proved deferral.
+
+### The spelling probe gained the pair, and rejected a group that was not one
+
+`hop ORDER BY alias vs its expression, windowed` and its FILTERED twin are now in `bun run spelling`.
+A first attempt also grouped the walk VARIANTS together and the probe correctly reported
+`ANSWERS DIFFER` — a filtered hop and an unfiltered one are not two spellings of one question. That
+comparison lives in `defer-hop-probe.ts`, against each variant's own plain twin.
