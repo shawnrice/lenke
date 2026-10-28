@@ -32210,3 +32210,32 @@ the condition the O(V) form needs: the source set must be EVERY vertex). ~3.0 ms
 random-write edge touch plus 200,000 O(1) degree reads: the floor for this identity. **Do not
 re-open as a missing fastpath.** A new `try_2hop_product_count` is dead below `try_fused_count`
 (422) and a worse duplicate above it.
+
+## 1103 — ❌ NOT A TARGET: "a start filter makes a chain count 2-2.5x FASTER" is the gate pruning the SOURCE SET, and the product still wins the bare chain (item 301 re-verified at 1.33x)
+
+Four board rows read like a route inversion, and isolated (one shape per process) they hold:
+`count 3-hop` 320.0 vs `+ start filter` 159.2 (2.01x); `count 4-hop` 547.5 vs `+ start filter`
+222.9 (2.46x).
+
+**It is the fixture.** The gate is `WHERE a.age > 60` and the bench `age` is `i % 90`, so it keeps
+29 of 90 sources — **32.2%**. A start gate on a chain count adds no per-path work; it deletes two
+thirds of the starting points, so the two rows are a different number of sources, not one question
+with two costs. The Rust engine's own rejected-lever note says the rule: "the honest control for
+'the shortcut was defeated' is the same plan shape with and without the filter."
+
+**Measured, not extrapolated.** `threeSegmentRoute` picks per call via
+`narrow < graph.vertexCount ? swept : product`; every vertex is `:Person` and there is no end
+label, so `narrow == vertexCount` and the bare chain takes the product. Forcing `<` → `<=` so it
+sweeps, alternated ×3, each arm asserted by a `str.count` of the full expression (the file holds
+Unicode, so `grep` is not usable): product min **307.7** vs forced sweep min **409.3** — the
+product wins by **1.33x**. The pass-fraction extrapolation predicted ~494, so the scaling is not
+linear and only its sign was right.
+
+**Re-verifies item 301** (product 250.1 vs sweep 374.9, 1.50x), whose number `threeSegmentRoute`'s
+doc carries as the sole justification for a choice no test can police. Item 1097's faster sweep
+narrowed the margin 1.50x → 1.33x but did not flip it. No change; dist rebuilt from restored
+source.
+
+**Rule:** a bare row and its filtered twin are not a route comparison when the predicate names the
+START position. Check the gate's pass fraction first — one line of the fixture generator accounted
+for the whole 2x here.
