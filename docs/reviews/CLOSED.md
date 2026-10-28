@@ -32456,3 +32456,46 @@ SLOT memo it recommends. A slot memo means a consuming pass touches **no edges a
 2.3 ns arm against 158. Projected (and labelled a projection): 4 hops ~475 → ~179 (**~2.7x**),
 3 hops ~316 → ~176 (**~1.8x**). Both depths worth building, and GQL's `passes > 2` threshold does
 NOT transfer — here the first consuming pass already drops the whole walk, not one lookup.
+
+## 1110 — ✅ SHIPPED: the Gremlin 3+ hop chain count over DENSE SLOTS with a slot memo — **1.43x at three hops, 2.01x at four**
+
+The target items 1107-1109 built: 84x native, cost neither the adjacency allocation (3-4%, 1108)
+nor the frontier Map alone (31.7 ns of a 158 ns pass, 1109). `slotChainCount` interns to dense
+slots, propagates in a `Float64Array` and memoizes neighbour SLOTS; `mapChainCount` is the old
+`Map<Vertex, number>` walk extracted unchanged, so the routes are siblings chosen once (159/1033/1091).
+
+**Alternated min-of-three, two controls:**
+
+| row                             | PRE       | POST      |           |
+| ------------------------------- | --------- | --------- | --------- |
+| `V().out().out().out().count()` | **381.9** | **266.9** | **1.43x** |
+| `V().out()x4.count()`           | **546.2** | **271.6** | **2.01x** |
+| `V().out().out().count()` CTRL  | 52.8      | 52.0      | flat      |
+| `V().has().out().count()` CTRL  | 22.5      | 22.1      | flat      |
+
+A FOURTH hop now costs ~5 ms where it cost 158 — the two deep rows land within 5 ms of each other.
+
+Conditions: `oneWalkThroughout` (a memo is a function of (direction, labels)) and a seed wider than
+`max(n/16, 1024)` — GQL's `Counts` doc records a narrow dense frontier as a measured **30x
+regression**, not a theory.
+
+**Teeth: 7 of 7 real mutants CAUGHT**, route-only `width-gate-dropped` SURVIVED as expected.
+
+⚠️ **THREE PROCESS CATCHES, all from mutation.**
+
+1. **A wrong test literal (5th this session).** `width-gate-dropped` came back CAUGHT, impossible
+   for an answer-equivalent route change — the failure was my own `toBe(1)`; the answer is **3**
+   (the self-loop lets a 3-hop chain spend 1, 2 or 3 hops on it). Confirmed by count shortcut,
+   forced decline, ENUMERATION, and TinkerPop 3.7.3 (`out.out.out = 3`).
+2. **THE FIRST VERDICT SET WAS VOID.** With that literal wrong the baseline was already red, so
+   every mutant exited non-zero and every "CAUGHT" was meaningless. **A CAUGHT verdict is valid only
+   when the baseline is GREEN** — the dual of CLAUDE.md's rule about survivors, and not previously
+   written down. The harness now asserts a green baseline before the first mutant.
+3. **A fixture blind to the intern path.** `intern-collapses` SURVIVED until the wide fixture stopped
+   giving every vertex out-degree 2 — misattributing one degree-2 vertex to another leaves the count
+   unchanged. A degree-22 hub at `v0`, excluded by the start filter so it is interned mid-pass, makes
+   it observable.
+
+Tests: `slot-chain-count.test.ts` (13), forced-decline oracle plus TinkerPop literals, with a
+2,000-vertex fixture wide enough that the dense route is TAKEN and a narrow filter that falls back
+to the map route on the same graph. gremlin 918 pass; fuzzers 13/0.

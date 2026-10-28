@@ -1396,9 +1396,61 @@ const hopChainCount = (mid: readonly Step[], graph: Graph): number | undefined =
   }
 
   // THREE hops or more: carry a multiplicity per frontier vertex and push it along each edge.
+  //
+  // DENSE SLOTS when the frontier is wide and every hop walks the same index with the same labels
+  // (item 1110). The slot walk below pays a `Float64Array` per pass, which is the wrong trade for a
+  // narrow frontier — GQL's `Counts` records exactly that mistake, "an 8 MB zeroed array and a
+  // 1M-entry scan, five times, for a frontier of a few hundred nodes", 30x SLOWER. So the seed has
+  // to be wide, on the same `max(n/16, 1024)` cut that engine settled on.
+  const seeds = Array.from(survivors());
+
+  return denseChainCount(hops, seeds, graph) ?? mapChainCount(hops, seeds);
+};
+
+/**
+ * The 3+ hop chain count over DENSE SLOTS, with each slot's neighbour slots REMEMBERED.
+ *
+ * The same identity the `Map<Vertex, number>` walk above computes, with two representation changes
+ * that items 1108 and 1109 measured in that order:
+ *
+ *   * the frontier is a `Float64Array` indexed by an interned SLOT rather than a `Map` keyed by
+ *     vertex object. Item 1109's micro, on the engine's own shapes: `Map<Vertex,number>` get+set
+ *     **31.7 ns a touch**, a `Float64Array` accumulate with the slot known **2.3**, interning plus
+ *     the accumulate **15.7**;
+ *   * each slot's neighbour SLOTS are stored on first visit, so later passes touch **no edges and
+ *     no Map at all** — the 2.3 ns arm, against a measured **158 ns an edge** for a pass of the
+ *     walk above (item 1109, by depth difference: `V().out()x4` 555.5 ms less
+ *     `V().out().out().out()` 397.3).
+ *
+ * Storing SLOTS rather than vertices is the whole point, and item 1108 first got this wrong: a memo
+ * of vertices would still need `next.get(w)`/`next.set(w)` per edge and would only save the
+ * adjacency iteration, which the same item measured at 3-4%.
+ *
+ * THE CONDITIONS, checked by the caller:
+ *
+ *   * every hop walks the SAME index with the SAME labels — a memo is a function of (direction,
+ *     labels), so hops that differ in either would read a list built for a different edge set;
+ *   * the seed is WIDE, past `max(n/16, 1024)`. A `Float64Array` per pass is the wrong trade for a
+ *     narrow frontier, and GQL's `Counts` doc records that as a 30x regression rather than a
+ *     theory.
+ *
+ * Byte-identity: the total is a sum of exact-integer multiplicities, so the order slots enter the
+ * frontier cannot change it, and parallel edges stay duplicated in the remembered list exactly as
+ * the walk above pushes them twice.
+ */
+/**
+ * The 3+ hop chain count as a `Map<Vertex, number>` multiplicity walk — the route for every chain
+ * the dense-slot one declines (a mixed direction or mixed labels, or a narrow seed).
+ *
+ * EXTRACTED at item 1110, unchanged line for line. `hopChainCount` was at 33 of its 35 complexity
+ * budget before that item and adding a second route put it over; lifting this walk out took the
+ * caller down to a seed materialization and a `??`, which is also the shape items 159, 1033 and
+ * 1091 argue for — two sibling routes chosen ONCE, rather than a branch inside a per-edge body.
+ */
+const mapChainCount = (hops: readonly HopStep[], seeds: readonly Vertex[]): number => {
   let cur = new Map<Vertex, number>();
 
-  for (const v of survivors()) {
+  for (const v of seeds) {
     cur.set(v, 1);
   }
 
@@ -1436,6 +1488,196 @@ const hopChainCount = (mid: readonly Step[], graph: Graph): number | undefined =
 
     if (byType !== undefined) {
       total += m * degreeOfTypes(byType, lastHop.labels);
+    }
+  }
+
+  return total;
+};
+
+/**
+ * The dense-slot chain count when it applies, `undefined` to keep the `Map<Vertex, number>` walk.
+ *
+ * The two conditions live here rather than at the call site so `hopChainCount` keeps its
+ * complexity budget — it was already at 33 of 35 before this item.
+ */
+const denseChainCount = (
+  hops: readonly HopStep[],
+  seeds: readonly Vertex[],
+  graph: Graph,
+): number | undefined =>
+  oneWalkThroughout(hops) && seeds.length > Math.max(graph.vertexCount >> 4, 1024)
+    ? slotChainCount(hops, seeds, graph)
+    : undefined;
+
+/** Do all hops walk the same index with the same labels? The memo is a function of exactly that. */
+const oneWalkThroughout = (hops: readonly HopStep[]): boolean => {
+  const [first] = hops;
+
+  return hops.every(
+    (h) =>
+      h.kind === first.kind &&
+      h.labels.length === first.labels.length &&
+      h.labels.every((l, i) => l === first.labels[i]),
+  );
+};
+
+/** The mutable state one pass of {@link slotChainCount} hands to the per-slot walk. */
+type SlotSweep = {
+  forward: boolean;
+  labels: readonly string[];
+  slotOf: Map<Vertex, number>;
+  vtx: Vertex[];
+  memo: (Int32Array | undefined)[];
+  next: Float64Array<ArrayBuffer>;
+  nextFrontier: number[];
+  scratch: number[];
+};
+
+/**
+ * Walk ONE slot's adjacency, accumulating `m` into each neighbour slot and REMEMBERING the slots.
+ *
+ * Its own function because inlining it trips both the nesting cap (a pass loop, a slot loop, a
+ * bucket loop, an edge loop and the intern branch is six blocks) and the complexity cap. State
+ * travels in an object, which item 1105 measured as free per edge in the GQL twin — 570.7 ms
+ * against 570.6 for the same walk reading locals instead.
+ */
+const expandSlot = (st: SlotSweep, slot: number, m: number): void => {
+  const { forward, labels, slotOf, vtx, next, nextFrontier, scratch } = st;
+  const byType = forward ? vtx[slot].adjFrom : vtx[slot].adjTo;
+
+  scratch.length = 0;
+
+  if (byType !== undefined) {
+    for (const set of labels.length === 0 ? byType.values() : bucketsOf(byType, labels)) {
+      for (const e of set) {
+        const w = forward ? e.to : e.from;
+        let to = slotOf.get(w) ?? -1;
+
+        if (to < 0) {
+          to = vtx.length;
+          slotOf.set(w, to);
+          vtx.push(w);
+        }
+
+        scratch.push(to);
+
+        if (next[to] === 0) {
+          nextFrontier.push(to);
+        }
+
+        next[to] += m;
+      }
+    }
+  }
+
+  st.memo[slot] = Int32Array.from(scratch);
+};
+
+/**
+ * The 3+ hop chain count over DENSE SLOTS, with each slot's neighbour slots REMEMBERED.
+ *
+ * The same identity the `Map<Vertex, number>` walk computes, with two representation changes that
+ * items 1108 and 1109 measured in that order:
+ *
+ *   * the frontier is a `Float64Array` indexed by an interned SLOT rather than a `Map` keyed by
+ *     vertex object. Item 1109's micro, on the engine's own shapes: `Map<Vertex,number>` get+set
+ *     **31.7 ns a touch**, a `Float64Array` accumulate with the slot known **2.3**, interning plus
+ *     the accumulate **15.7**;
+ *   * each slot's neighbour SLOTS are stored on first visit, so later passes touch **no edges and
+ *     no Map at all** — the 2.3 ns arm, against a measured **158 ns an edge** for a pass of the
+ *     `Map` walk (item 1109, by depth difference: `V().out()x4` 555.5 ms less
+ *     `V().out().out().out()` 397.3).
+ *
+ * Storing SLOTS rather than vertices is the whole point, and item 1108 first got this wrong: a memo
+ * of vertices would still need `next.get(w)`/`next.set(w)` per edge and would only save the
+ * adjacency iteration, which that same item measured at 3-4%.
+ *
+ * THE CONDITIONS, checked by the caller:
+ *
+ *   * every hop walks the SAME index with the SAME labels ({@link oneWalkThroughout}) — a memo is
+ *     a function of (direction, labels), so hops differing in either would read a list built for a
+ *     different edge set;
+ *   * the seed is WIDE, past `max(n/16, 1024)`. A `Float64Array` per pass is the wrong trade for a
+ *     narrow frontier, and GQL's `Counts` doc records that as a measured 30x regression — "an 8 MB
+ *     zeroed array and a 1M-entry scan, five times, for a frontier of a few hundred nodes".
+ *
+ * Byte-identity: the total sums exact-integer multiplicities, so the order slots enter the frontier
+ * cannot change it, and parallel edges stay duplicated in the remembered list exactly as the `Map`
+ * walk pushes them twice.
+ */
+const slotChainCount = (
+  hops: readonly HopStep[],
+  seeds: readonly Vertex[],
+  graph: Graph,
+): number => {
+  const n = graph.vertexCount;
+  // Slots are only ever assigned to vertices of this graph, so `n` is an exact bound and no array
+  // here ever grows.
+  const st: SlotSweep = {
+    forward: hops[0].kind === 'out',
+    labels: hops[0].labels,
+    slotOf: new Map<Vertex, number>(),
+    vtx: [],
+    memo: [],
+    next: new Float64Array(0),
+    nextFrontier: [],
+    scratch: [],
+  };
+  let ways = new Float64Array(n);
+  let frontier: number[] = [];
+
+  for (const v of seeds) {
+    const slot = st.vtx.length;
+
+    st.slotOf.set(v, slot);
+    st.vtx.push(v);
+    ways[slot] = 1;
+    frontier.push(slot);
+  }
+
+  for (let h = 0; h < hops.length - 1; h += 1) {
+    st.next = new Float64Array(n);
+    st.nextFrontier = [];
+
+    for (const slot of frontier) {
+      const known = st.memo[slot];
+
+      if (known === undefined) {
+        expandSlot(st, slot, ways[slot]);
+
+        continue;
+      }
+
+      const m = ways[slot];
+
+      for (const to of known) {
+        if (st.next[to] === 0) {
+          st.nextFrontier.push(to);
+        }
+
+        st.next[to] += m;
+      }
+    }
+
+    if (st.nextFrontier.length === 0) {
+      return 0; // nothing reaches this position, so nothing reaches a later one
+    }
+
+    ways = st.next;
+    frontier = st.nextFrontier;
+  }
+
+  // The last hop is a degree SUM weighted by multiplicity — never a pass, so it reads its OWN
+  // direction and labels rather than the shared ones above.
+  const lastHop = hops[hops.length - 1];
+  const lastForward = lastHop.kind === 'out';
+  let total = 0;
+
+  for (const slot of frontier) {
+    const byType = lastForward ? st.vtx[slot].adjFrom : st.vtx[slot].adjTo;
+
+    if (byType !== undefined) {
+      total += ways[slot] * degreeOfTypes(byType, lastHop.labels);
     }
   }
 
