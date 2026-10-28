@@ -3791,7 +3791,59 @@ fn typed_hop_count_from_size(input: &Plan, agg: &Agg, store: &Store) -> Option<u
             }
             Some(per_edge * store.live_etype_count(t) - loop_adjust(Some(t)))
         }
-        _ => None,
+        // SEVERAL TYPES — item 1157. This arm used to decline, and it is the third variant of a
+        // label-ARITY enum whose other two were already O(1); items 1153-1155 found exactly that
+        // shape in the DIRECTION enum. Measured at 200,000 nodes, degree 4 over two types:
+        //
+        // ```text
+        //   -[:KNOWS]->            0.4 us   400,000
+        //   -[:FOLLOWS]->          0.4      400,000
+        //   -[:KNOWS|FOLLOWS]->  482.0      800,000     <- 1205x, and exactly the SUM
+        //
+        // A hop matching several types emits one row per edge of ANY of them, so the answer is
+        // the sum of the per-type answers — each already available and each needing its own
+        // `type_ever_secondary` guard, for the reason item 1004 gives: a partition holds an
+        // edge's PRIMARY type only, so a type carried as a SECONDARY label elsewhere has an
+        // incomplete partition and must decline. Guarding every listed type is what keeps the sum
+        // from counting an edge that carries two of them twice.
+        //
+        // DEDUPED, because `-[:KNOWS|KNOWS]->` is one wanted type and not two: the general path
+        // builds a SET of wanted types and emits one row per matching edge, so summing a repeated
+        // name would double it. (Checked rather than assumed — `want_etypes` is set-valued.)
+        //
+        // An UNKNOWN type name contributes zero rather than declining the query: a hop on a type
+        // no edge carries matches nothing, which is an answer and not an absence.
+        //
+        // THAT LAST CHOICE IS A ROUTE AND NOT A SEMANTIC, so its mutant necessarily SURVIVES —
+        // labelled rather than left for someone to find. Declining instead sends
+        // `-[:KNOWS|NOSUCH]->` to the general path, which returns the SAME count; only the cost
+        // differs. Item 1122's rule ("a perf gate needs its own observable") is why no answer test
+        // can pin it, and item 1137 is the precedent for extracting such a decision as a pure
+        // predicate when it is standalone — this one is a `continue` inside the sum loop, where
+        // extraction would cost more clarity than the pin is worth.
+        tys => {
+            let mut seen: Vec<u32> = Vec::with_capacity(tys.len());
+            let mut total = 0usize;
+
+            for ty in tys {
+                let Some(t) = store.etype_id(ty) else {
+                    continue; // no edge carries this type, so it contributes no rows
+                };
+
+                if store.type_ever_secondary(t) {
+                    return None;
+                }
+
+                if seen.contains(&t) {
+                    continue; // a repeated name is one wanted type
+                }
+
+                seen.push(t);
+                total += per_edge * store.live_etype_count(t) - loop_adjust(Some(t));
+            }
+
+            Some(total)
+        }
     }
 }
 

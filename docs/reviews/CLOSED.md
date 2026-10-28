@@ -34164,3 +34164,41 @@ two engines derive it by different routes (TS: its own bucket sizes and loop tal
 
 That is a stronger check on the new code than the unit test shipped with it, because the oracle is an
 independent implementation rather than a literal computed by hand. Kept as a cross-engine guard.
+
+## 1157 — ✅ SHIPPED **~1521x**: the LABEL-ARITY enum's third variant (a multi-type hop count is the sum of its types). ⚠️ Plus an unpriced **O(nodes)** in the arm beside it
+
+Same shape as the direction enum (items 1153-1155), in the same function: `[]` and `[ty]` were O(1),
+`_ => None` declined. ⚠️ **`social_store` makes ONE edge type, so the corpus could not ask this at
+all** — a dedicated two-type fixture (`examples/label_arity_probe.rs`), not a widened shared one
+(item 1130).
+
+```text
+  -[:KNOWS]->            0.4 us   400,000
+  -[:FOLLOWS]->          0.4      400,000
+  -[:KNOWS|FOLLOWS]->  482.0      800,000   <- 1205x, EXACTLY the sum
+  -[]->         [ctl]   36.6      800,000
+```
+
+⚠️ **THREE conditions the sum needs, two of which silently DOUBLE-COUNT if dropped:** DEDUPE
+(`-[:K|K]->` is one wanted type — `want_etypes` is set-valued; without it 14 where 7 is right); a
+`type_ever_secondary` guard **per listed type**, not just the first (item 1004 — a partition holds an
+edge's PRIMARY type only, so an edge labelled both would be summed twice); and an UNKNOWN name
+contributing ZERO rather than declining.
+
+```text
+  A3 -[:K|F]->  PRE 462.5/462.1/456.2  POST 0.3/0.3   ~1521x
+  A1/A2/A4 [ctl] flat   (A4 = the same function's untyped arm, untouched)
+```
+
+Mutation on a GREEN baseline: dedupe dropped CAUGHT; per-type secondary guard dropped CAUGHT;
+⚠️ unknown-type-declines **SURVIVED, expectedly** — a ROUTE choice, not a semantic (declining
+returns the same count via the general path), so no answer test can pin it (item 1122). Labelled in
+code; item 1137 is the precedent for extracting such a decision, declined here because it is a
+`continue` inside the sum loop. Suite 1285+13+725; `rewrite_fuzz` 10; 7/7 fuzzers.
+
+⚠️ **FOUND ON THE WAY, NOT FIXED: `live_edge_count` is O(nodes)** —
+`self.out_adj.iter().map(Vec::len).sum()`. That is A4's 36.6us against 0.4, **90x for what reads
+like an O(1) fact**, and `live_node_count` directly below it is documented as O(1) _because_ it is
+maintained. Item 1118's `etype_counts` already holds the pieces (their sum is the live edge count,
+O(#types)). Not bundled: `live_edge_count` has callers beyond this arm and wants its own item with a
+recount oracle. OPEN at 90x.

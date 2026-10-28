@@ -30715,3 +30715,110 @@ fn the_self_loop_cache_is_dropped_by_a_write() {
         "a delete must drop the cache as well as an insert"
     );
 }
+
+/// A hop matching SEVERAL edge types counts the sum of the per-type counts — item 1157.
+///
+/// The label-arity enum's third variant used to decline (1205x against a single type). The sum is
+/// only correct under two conditions the arm enforces, and both are pinned here because each one
+/// silently DOUBLE-COUNTS if dropped:
+///
+///   * a repeated name is ONE wanted type, since the general path builds a SET;
+///   * a type carried as a SECONDARY label elsewhere has an incomplete partition (item 1004), so
+///     every listed type needs its own `type_ever_secondary` guard — not just the first.
+#[test]
+fn a_multi_type_hop_count_is_the_sum_of_its_types() {
+    let mut b = Builder::default();
+    for _ in 0..20u32 {
+        b.node(&["Person"], &[]);
+    }
+    for i in 0..6u32 {
+        b.edge(i, i + 1, "KNOWS");
+    }
+    for i in 0..4u32 {
+        b.edge(i, i + 2, "FOLLOWS");
+    }
+    b.edge(9, 9, "KNOWS"); // a self-loop, so the undirected arm is exercised too
+    let st = b.build();
+
+    let cnt = |q: &str, st: &Store| {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), st);
+        match run(&plan, st).rows[0][0] {
+            Value::Num(x) => x,
+            ref v => panic!("count is not a number: {v:?}"),
+        }
+    };
+    let rows = |q: &str, st: &Store| {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), st);
+        run(&plan, st).rows.len() as f64
+    };
+
+    // 7 KNOWS (6 chain + 1 self-loop) and 4 FOLLOWS.
+    assert_eq!(
+        cnt("MATCH (a:Person)-[:KNOWS]->(x) RETURN count(*) AS c", &st),
+        7.0
+    );
+    assert_eq!(
+        cnt("MATCH (a:Person)-[:FOLLOWS]->(x) RETURN count(*) AS c", &st),
+        4.0
+    );
+
+    // THE SUM, and the general path's row count as the cross-route check.
+    assert_eq!(
+        cnt(
+            "MATCH (a:Person)-[:KNOWS|FOLLOWS]->(x) RETURN count(*) AS c",
+            &st
+        ),
+        11.0
+    );
+    assert_eq!(
+        rows("MATCH (a:Person)-[:KNOWS|FOLLOWS]->(x) RETURN a, x", &st),
+        11.0
+    );
+
+    // A REPEATED NAME is one type, not two. Without the dedupe this answers 14.
+    assert_eq!(
+        cnt(
+            "MATCH (a:Person)-[:KNOWS|KNOWS]->(x) RETURN count(*) AS c",
+            &st
+        ),
+        7.0
+    );
+
+    // AN UNKNOWN type contributes zero rather than declining the query.
+    assert_eq!(
+        cnt(
+            "MATCH (a:Person)-[:KNOWS|NOSUCH]->(x) RETURN count(*) AS c",
+            &st
+        ),
+        7.0
+    );
+
+    // UNDIRECTED over two types: 2*11 - 1 self-loop = 21, so the per-type loop adjustment has to
+    // be applied inside the sum and not once outside it.
+    assert_eq!(
+        cnt(
+            "MATCH (a:Person)-[:KNOWS|FOLLOWS]-(x) RETURN count(*) AS c",
+            &st
+        ),
+        21.0
+    );
+
+    // AND A SECONDARY LABEL MAKES THE SUM UNSAFE, so the arm must decline and the general path
+    // answer. Give one FOLLOWS edge a second label of `KNOWS`: it is now matched by BOTH listed
+    // types, and summing the partitions would count it twice.
+    let mut st2 = st.clone();
+    let eid = st2
+        .edge_by_ext("e7")
+        .expect("the first FOLLOWS edge exists with a minted id");
+    st2.set_edge_extra_labels(eid, &["KNOWS"]);
+
+    // 11 edges still, each matched once: the answer must stay 11, not become 12.
+    assert_eq!(
+        cnt(
+            "MATCH (a:Person)-[:KNOWS|FOLLOWS]->(x) RETURN count(*) AS c",
+            &st2
+        ),
+        11.0,
+        "a secondary label must make the sum decline, not double-count"
+    );
+}
