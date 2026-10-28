@@ -3306,13 +3306,44 @@ pub(super) fn try_frontier_count(
     if agg.func != AggFn::Count || agg.arg.is_some() || agg.distinct {
         return None; // count(*) only
     }
+    // SEE THROUGH a row-preserving projection — item 1135.
+    //
+    // Gremlin's `values('k')` lowers to a present-filter plus a `Project` of the value, and
+    // `count()` wraps a keyless `count(*)`, so the filter this entry needs is one level too
+    // deep and the whole shape fell to the general aggregate. A `count(*)` reads no column,
+    // so skipping the projection cannot change the answer — PROVIDED no projected item can
+    // fault, or a plan that used to raise would start returning a number.
+    //
+    // The admission set is `Prop`/`Slot` ONLY, which is exactly what `values('k')` emits and
+    // is total by construction (a missing property reads NULL, it does not raise). This is
+    // deliberately narrower than opt's `can_raise`: that predicate lives in another module and
+    // reasoning about an arbitrary expression's totality is a much bigger claim than this entry
+    // needs. Anything else declines and keeps the general path.
+    //
+    // Item 1133 removed this projection in the OPTIMIZER instead and measured 1.12x SLOWER
+    // across three alternated rounds — the projection narrows the batch to one column before
+    // the aggregate, so dropping it without also reaching this fast path just moves the plan
+    // from one slow form to another. Seeing through it HERE gains the fastpath and leaves the
+    // plan alone, which is the combination item 1134 priced at 33.57x.
+    let input = match input {
+        Plan::Project {
+            input: inner,
+            items,
+        } if items
+            .iter()
+            .all(|(_, e)| matches!(e, Expr::Prop { .. } | Expr::Slot(_))) =>
+        {
+            &**inner
+        }
+        other => other,
+    };
     // Only worth the frontier fold when a plain filter/hop chain would otherwise
     // materialize — i.e. there IS a frontier filter (the bare-chain counts already have
-    // their own fast-paths). Require a top-level IsLabeled filter.
+    // their own fast-paths). Require a top-level IsLabeled or PropertyExists filter.
     if !matches!(
         input,
         Plan::Filter {
-            pred: Expr::IsLabeled { .. },
+            pred: Expr::IsLabeled { .. } | Expr::PropertyExists { .. },
             ..
         }
     ) {

@@ -4579,6 +4579,26 @@ fn chain_width(plan: &Plan) -> Option<usize> {
     }
 }
 
+/// `chain_width`, additionally seeing through a frontier `PropertyExists` filter — item 1135.
+///
+/// SEPARATE from [`chain_width`] on purpose. That one is read by 18 call sites across
+/// `fastpath`, `varlen` and `opt`, and the contract it documents is that a count-fold path
+/// re-walks and re-CHECKS for itself every filter the width sees through. Widening
+/// `chain_width` would therefore hand every one of those callers a chain whose
+/// `PropertyExists` predicate they do not apply — a WRONG ANSWER that returns a plausible
+/// count, which is the exact failure mode item 1135's own fuzzer mutants were written to
+/// catch. So only [`frontier_counts`], which DOES apply the predicate (the arm below), reads
+/// this wider notion.
+fn count_fold_width(plan: &Plan) -> Option<usize> {
+    match plan {
+        Plan::Filter {
+            input,
+            pred: Expr::PropertyExists { .. } | Expr::IsLabeled { .. },
+        } => count_fold_width(input),
+        other => chain_width(other),
+    }
+}
+
 /// Slot count of a Scan/Expand chain, seeing through ANY row-filter — safe ONLY for an
 /// executor that PULLS the chain (the pull applies every filter, so the frontier is already
 /// filtered). The count-fold paths must NOT use this (they re-walk and re-check the filter
@@ -4905,6 +4925,48 @@ fn frontier_counts(plan: &Plan, store: &Store) -> Option<Counts> {
                 }
             }
             let keep = |id: u32| member[id as usize];
+            Some(match counts {
+                Counts::Sparse(v) => {
+                    Counts::Sparse(v.into_iter().filter(|&(id, _)| keep(id)).collect())
+                }
+                Counts::Dense(mut a) => {
+                    for (i, c) in a.iter_mut().enumerate() {
+                        if *c != 0.0 && !keep(i as u32) {
+                            *c = 0.0;
+                        }
+                    }
+                    Counts::Dense(a)
+                }
+            })
+        }
+        // A frontier `has('k')` / `values('k')` present-filter — item 1135. Item 1134 ablated
+        // the shape and measured the prize: with BOTH this filter and the projection above it
+        // seen through, `g.V().outE('KNOWS').outV().values('name').count()` goes from 18947.7us
+        // to 564.5 at 200,000 nodes / 1,000,000 edges, a 33.57x — and with only one of the two
+        // it stays at 15570.7/16309.4, which is why item 1133's half-change measured a 1.12x
+        // REGRESSION.
+        //
+        // `present_at`, NOT `has_value_at`: `PropertyExists` counts a stored present-null, and
+        // `store.rs` names `present_at` the single source of truth for exactly that question
+        // ("every `has('k')` / `PropertyExists` / `hasKey` counts a stored null"). Using
+        // `has_value_at` here would silently drop present-nulls and break the null-first-class
+        // policy — a wrong answer no count test would catch on a fixture without one.
+        //
+        // A column that does not exist at all is not a decline but an EMPTY frontier: no node
+        // carries the key, so no row survives. Declining instead would be merely slower, but
+        // answering 0 directly is both correct and free.
+        Plan::Filter {
+            input,
+            pred: Expr::PropertyExists { slot, key },
+        } => {
+            if *slot + 1 != count_fold_width(input)? {
+                return None; // the filter must test the current frontier
+            }
+            let counts = frontier_counts(input, store)?;
+            let Some(col) = store.column(key) else {
+                return Some(Counts::Sparse(Vec::new()));
+            };
+            let keep = |id: u32| col.present_at(id as usize);
             Some(match counts {
                 Counts::Sparse(v) => {
                     Counts::Sparse(v.into_iter().filter(|&(id, _)| keep(id)).collect())

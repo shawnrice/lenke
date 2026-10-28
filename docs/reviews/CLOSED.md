@@ -33343,3 +33343,42 @@ another ~3x on `out().has(k).count()`. OPEN.
 
 **NOT COMMITTED.** An exec/fastpath change needs the byte-identity fuzzers, `rewrite_fuzz` and
 mutation verification first; a measured win does not invert that order. POST arm under `target/`.
+
+## 1136 — ✅ SHIPPED (item 1135's change): 5 tests, **M1+M3 caught / M2 survived with a diagnosis**, 7/7 byte-identity fuzzers green, 103-row sweep with **zero rows slower** and an untargeted **2.73x**
+
+Mutation on a GREEN baseline (1275+13+725 passing), each mutant on a restored tree, marker-asserted
+before building, under `timeout 900` + `MemoryMax=16G -p MemorySwapMax=0`, judged on a `test result:`
+line in stdout AND stderr concatenated before the exit code:
+
+```text
+  M1  present_at -> has_value_at          CAUGHT    the semantic heart
+  M2  frontier-slot guard removed         SURVIVED  see below
+  M3  Project see-through unguarded       CAUGHT    after test 5 was added
+```
+
+⚠️ **Two of the five tests were written BY surviving mutants** — the survivor was the missing test,
+not a safe line. Test 4 is an EDGE-property `has()` (`outE` binds an edge slot AND a far-node slot,
+so the frontier is the node while the filter tests the edge); test 5 is a hand-built plan with a CAST
+in the projection, since no surface spelling puts a faulting expression there (item 369's practice).
+
+⚠️ **M2 and item 1135's flat T1 row have ONE cause.** `frontier_counts` does accept a `bind_edge`
+Expand, so without the guard an edge-slot filter would hit the node frontier — a wrong answer, and
+test 4 is that shape. It still survives, so the shape never reaches `try_frontier_count`: **an
+earlier arm claims it**, exactly as T1 is claimed. The guard is correct-and-currently-unreachable,
+KEPT (item 375 shipped a reorder of this region) and labelled defensive like item 1118's
+`pop_last_node`. The dispatch-order question is the open follow-up, worth ~3x on
+`out().has(k).count()`.
+
+Sweep — the whole native `query` group, 2 alternated rounds, arm-asserted, **103 rows compared**:
+
+```text
+  slower by >10%:  0      worst row 1.05x
+  faster by >10%:  2      query/gremlin/values 1318.9 -> 483.5  = 2.73x  (NOT TARGETED)
+                          query/gremlin/repeat-group head(b)    = 1.11x
+```
+
+⚠️ **The sweep does NOT reproduce item 1135's 11% C3 toll** (worst row here 1.05x). 1135's figure
+stands as measured — three non-overlapping rounds — and is not retracted, but the 103-row sweep is
+what governs "no regressions" and it is clean. Logged as a discrepancy, not resolved in the change's
+favour. `rewrite_fuzz` green at default and at `LENKE_OPT_FUZZ_SEEDS=200000`; 7/7 byte-identity
+fuzzers 13 pass / 0 fail, artifact timestamps checked against the clock.

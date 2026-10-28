@@ -29907,3 +29907,210 @@ fn an_element_renders_a_dict_encoded_column() {
         "each row decodes its OWN dictionary code"
     );
 }
+
+// --- Frontier count over a `PropertyExists` filter (item 1135) ---
+
+/// Three `P` nodes with an outgoing `K` edge each, and the `name` key in all three states the
+/// frontier filter has to distinguish: a real value, a STORED PRESENT-NULL, and absent.
+///
+/// The present-null is the whole point of the fixture. `PropertyExists` counts it (`present_at`)
+/// while `count(<arg>)` does not (`has_value_at`), so a frontier arm written with the wrong
+/// accessor returns a count that is off by exactly the number of present-nulls — correct-looking,
+/// and invisible to any fixture that has none.
+fn present_filter_store() -> Store {
+    let mut st = Builder::default().build();
+    let a = st.add_node(&["P"], &[("name", s("a"))]);
+    let b = st.add_node(&["P"], &[("name", Value::Null)]); // STORED present-null
+    let c = st.add_node(&["P"], &[]); // absent
+    let hub = st.add_node(&["P"], &[("name", s("hub"))]);
+    st.add_edge(hub, a, "K");
+    st.add_edge(hub, b, "K");
+    st.add_edge(hub, c, "K");
+    st
+}
+
+/// The frontier fold and the general path agree on `count(*)` over a `has('k')` frontier — and
+/// both count the present-null, so the answer is 2 of 3 and not 1 of 3.
+#[test]
+fn the_frontier_count_over_a_present_filter_counts_a_stored_null() {
+    let st = present_filter_store();
+
+    // The fixture really does hold a present-null, asserted rather than assumed: a `Gen` column
+    // would route elsewhere and the test would pin nothing.
+    let col = st.column("name").expect("name column exists");
+    assert!(col.present_at(1), "node 1 must be PRESENT");
+    assert!(!col.has_value_at(1), "node 1 must be a present-NULL");
+    assert!(!col.present_at(2), "node 2 must be absent");
+
+    let q = "g.V().hasLabel('P').out('K').has('name').count()";
+    let plan = crate::opt::optimize_indexed(crate::gremlin::parse(q).unwrap(), &st);
+    let got = match run(&plan, &st).rows[0][0] {
+        Value::Num(x) => x,
+        ref v => panic!("count is not a number: {v:?}"),
+    };
+
+    // a (value) and b (present-null) survive; c (absent) does not.
+    assert_eq!(got, 2.0, "a present-null is PRESENT for has('k')");
+}
+
+/// `values('k').count()` — the shape whose `Project` the entry sees through — agrees with the
+/// same answer, so the see-through has not changed which rows are counted.
+#[test]
+fn the_project_see_through_counts_the_same_rows_as_the_filter_alone() {
+    let st = present_filter_store();
+    let cnt = |q: &str| {
+        let plan = crate::opt::optimize_indexed(crate::gremlin::parse(q).unwrap(), &st);
+        match run(&plan, &st).rows[0][0] {
+            Value::Num(x) => x,
+            ref v => panic!("count is not a number: {v:?}"),
+        }
+    };
+
+    assert_eq!(
+        cnt("g.V().hasLabel('P').out('K').values('name').count()"),
+        cnt("g.V().hasLabel('P').out('K').has('name').count()"),
+        "values(k).count() and has(k).count() count the same rows"
+    );
+    assert_eq!(cnt("g.V().hasLabel('P').out('K').has('name').count()"), 2.0);
+}
+
+/// A key NO node carries is an empty frontier, not a decline into a wrong answer.
+#[test]
+fn a_present_filter_on_an_unknown_key_counts_zero() {
+    let st = present_filter_store();
+    let q = "g.V().hasLabel('P').out('K').has('nosuchkey').count()";
+    let plan = crate::opt::optimize_indexed(crate::gremlin::parse(q).unwrap(), &st);
+
+    assert_eq!(
+        match run(&plan, &st).rows[0][0] {
+            Value::Num(x) => x,
+            ref v => panic!("count is not a number: {v:?}"),
+        },
+        0.0
+    );
+}
+
+/// The fold must agree with the general path on a MULTI-HOP chain, where a node reachable by
+/// several paths carries a multiplicity the fold folds and the general path enumerates. A
+/// frontier arm that dropped the multiplicity would still answer correctly on the single-path
+/// fixture above.
+#[test]
+fn the_frontier_count_over_a_present_filter_keeps_path_multiplicity() {
+    let mut st = Builder::default().build();
+    let a = st.add_node(&["P"], &[("name", s("a"))]);
+    let b = st.add_node(&["P"], &[("name", s("b"))]);
+    let t = st.add_node(&["P"], &[("name", s("t"))]);
+    let u = st.add_node(&["P"], &[]); // absent — must not be counted at any multiplicity
+                                      // a and b both reach t, so t carries multiplicity 2 at hop 2.
+    st.add_edge(a, t, "K");
+    st.add_edge(b, t, "K");
+    st.add_edge(t, u, "K");
+    let seed = st.add_node(&["P"], &[("name", s("seed"))]);
+    st.add_edge(seed, a, "K");
+    st.add_edge(seed, b, "K");
+
+    let cnt = |q: &str, st: &Store| {
+        let plan = crate::opt::optimize_indexed(crate::gremlin::parse(q).unwrap(), st);
+        match run(&plan, st).rows[0][0] {
+            Value::Num(x) => x,
+            ref v => panic!("count is not a number: {v:?}"),
+        }
+    };
+
+    // Two paths seed->a->t and seed->b->t, both ending on a node WITH `name`.
+    assert_eq!(
+        cnt(
+            "g.V().has('name').out('K').out('K').has('name').count()",
+            &st
+        ),
+        2.0
+    );
+    // One more hop lands on `u`, which has no `name`: nothing survives.
+    assert_eq!(
+        cnt(
+            "g.V().has('name').out('K').out('K').out('K').has('name').count()",
+            &st
+        ),
+        0.0
+    );
+}
+
+/// The frontier-slot guard, pinned on the shape that makes it load-bearing: a `has()` on an EDGE
+/// property. `outE('K')` binds an edge slot AND a far-node slot, so the chain's frontier is the
+/// node while the filter tests the edge — and a node column is indexed by node id, so applying an
+/// edge-slot filter to the node frontier is a WRONG ANSWER, not merely a slower one.
+///
+/// Written because the guard's mutant SURVIVED the first test set (which only ever filtered the
+/// frontier itself). The surviving mutant was the missing test, not a safe line.
+#[test]
+fn a_present_filter_on_a_non_frontier_slot_does_not_reach_the_frontier_fold() {
+    let mut st = Builder::default().build();
+    let a = st.add_node(&["P"], &[("name", s("a"))]);
+    let b = st.add_node(&["P"], &[("name", s("b"))]);
+    let e = st.add_edge(a, b, "K");
+    // An edge property whose NAME COLLIDES with nothing on the nodes, and one that DOES collide:
+    // the collision is the case where a mis-slotted filter silently reads the wrong column.
+    st.set_edge_prop(e, "weight", n(1.0));
+    let e2 = st.add_edge(b, a, "K");
+    let _ = e2; // no `weight` on this one
+
+    let cnt = |q: &str| {
+        let plan = crate::opt::optimize_indexed(crate::gremlin::parse(q).unwrap(), &st);
+        match run(&plan, &st).rows[0][0] {
+            Value::Num(x) => x,
+            ref v => panic!("count is not a number: {v:?}"),
+        }
+    };
+
+    // One of the two edges carries `weight`.
+    assert_eq!(cnt("g.V().outE('K').has('weight').count()"), 1.0);
+    // And `name`, which EVERY NODE carries but NO EDGE does, must count zero through the edge
+    // frontier — the exact confusion a dropped frontier-slot guard produces.
+    assert_eq!(cnt("g.V().outE('K').has('name').count()"), 0.0);
+}
+
+/// The `Project` see-through admits only `Prop`/`Slot`, because skipping a projection that can
+/// RAISE would turn a faulting plan into one that returns a number. No Gremlin or GQL spelling
+/// puts a faulting expression in this position today, so the guard is pinned by a DIRECTLY BUILT
+/// plan rather than left unexercised — the practice item 369 established for its own unreachable
+/// gates, and the reason item 1118's defensive arm is labelled as such.
+#[test]
+fn the_project_see_through_declines_a_projection_that_can_raise() {
+    let st = present_filter_store();
+
+    // `Agg{count(*)} / Project{[("c", CAST of a string to INT)]} / Filter{PropertyExists} / chain`.
+    // The cast faults on a non-numeric string, so the plan MUST fault rather than count rows.
+    let chain = Plan::Scan { label: None }
+        .expand(0, Dir::Out, &["K".to_string()])
+        .filter(Expr::PropertyExists {
+            slot: 1,
+            key: "name".into(),
+        })
+        .project(vec![(
+            "c".to_string(),
+            Expr::Cast {
+                target: crate::ir::CastTarget::Integer,
+                expr: Box::new(Expr::Prop {
+                    slot: 1,
+                    key: "name".into(),
+                }),
+            },
+        )])
+        .aggregate(
+            vec![],
+            vec![Agg {
+                func: AggFn::Count,
+                arg: None,
+                distinct: false,
+                name: "count".into(),
+                frac: None,
+                null_on_empty: false,
+                numeric_only: false,
+            }],
+        );
+
+    assert!(
+        crate::exec::try_run(&chain, &st).is_err(),
+        "a faulting projection under count(*) must still fault, not be skipped"
+    );
+}
