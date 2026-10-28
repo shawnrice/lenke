@@ -29301,10 +29301,27 @@ multiTypeEdgeCount === 0`) — one named type cannot double-count. Native's `Adj
   all DISJOINT, all on paths the new code cannot execute. They share the LOOP: a new branch in the
   per-edge body reshapes it for every predicate kind. `ts-closure-size-is-load-bearing`, which is
   why the far and start lifts got DEDICATED MODULE-SCOPE WALKS. Net regression; reverted.
-- **➡️ BUILD `relOnlyHopCount` AT MODULE SCOPE (item 1033)**, mirroring `startOnlyHopCount`, routed
-  to only when the predicate reads just the rel variable — leaving the generic loop byte-for-byte
-  unchanged. That is what items 995/996 did for the other two positions, and the precedent is
-  explicit in the code.
+- **✅ DONE — `relOnlyHopCount` AT MODULE SCOPE, 1.8x, AND THE SPELLING GAP IS CLOSED (item 1034).**
+  `relLifted` consumed by a dedicated module-scope walk, routed after the two endpoint walks; no
+  `relWalkFits`, because the lift IS the fit rule. `tallyHopCount` byte-for-byte unchanged. Per
+  shape in its OWN PROCESS, 14 reps, median of reps 4+, three alternated rounds: anon-clause
+  2.013/1.911/2.185 → 1.029/1.376/1.072; named-clause 1.943/1.889/2.044 → 1.060/1.066/1.070;
+  unindexed edge key 1.721/1.724/2.573 → 0.973/1.077/0.983; **CONTROL inline 1.063/1.042/0.962 →
+  1.031/0.988/1.000 and CONTROL node-key 0.036/0.041/0.035 → 0.041/0.041/0.039, both FLAT.** The
+  clause spelling now lands at 1.06 against the inline spelling's 1.00, so item 1031's gap is gone.
+- **⚠️ ITEM 1033's "2x REGRESSIONS" WERE THE INSTRUMENT (item 1034).** The same change read as 2.6x
+  faster on the target and ~2x slower on two other arms when measured by `edge-index-probe.ts` —
+  nine shapes in ONE process, median of six warm reps — and one of those "regressions" was the
+  ANONYMOUS-ends spelling of the target's own query. One question giving two opposite answers is
+  the instrument. Re-read one shape per PROCESS, every arm moved one way and both controls were
+  flat. The item-1033 verdict on the BRANCH still stands (that was a different shape of code); the
+  2x figures in it do not. **`rel-lift-probe.ts` is the instrument for anything in this family.**
+- **METHOD — a surviving mutant that was a missing TEST, not dead code (item 1034).** `needsBind =
+  false` survived all 2,803 tests: it binds the rel variable for a predicate that leaves a RESIDUAL
+  `where`, and the suite had no `count(*)` over a rel-only clause `WHERE` that leaves one.
+  `liftedOwnPred` returns a `CPredicate` whatever `directEqProps` leaves behind, so the path is
+  reachable. `rel-lift-count.test.ts` covers it (four residual shapes, each also checked against
+  the PROJECTION route); the mutant now fails 4.
 - **METHOD — two consecutive fixes refused, both by the instrument and both the same mistake (item
   1033).** 1032's was caught by 16 tests as WRONG ROWS; 1033's by three controls as a 2x regression
   on paths it cannot reach. In both I took the cheapest edit that looked sufficient instead of the

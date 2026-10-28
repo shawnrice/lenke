@@ -721,6 +721,23 @@ type HopPred = {
    * defect class CLAUDE.md names, so the twin is not an optional follow-up.
    */
   startLifted?: CPredicate;
+  /**
+   * The REL mirror of {@link HopPred.farLifted} and {@link HopPred.startLifted} (item 1034).
+   *
+   * The edge is the THIRD position of the same shape and was the one left without a lift: items
+   * 995/996 gave the two endpoints one, so `MATCH ()-[e:T]->() WHERE e.k = v RETURN count(*)`
+   * stayed on the generic `binding.set(relVar, edge)` + `pred.fn(env)` per edge while its inline
+   * twin `-[e:T {k: v}]->` was an `InlinePred` read straight off the edge. Item 1031 priced that
+   * at 2.1-2.8x between the two spellings of one question, which is the defect class CLAUDE.md
+   * names.
+   *
+   * Item 1033 built the obvious fix — this lift plus a BRANCH inside `tallyHopCount` — and the
+   * controls refused it: three paths that cannot execute the new code got ~2x worse, because a
+   * branch in that per-edge body reshapes the loop for every predicate kind flowing through it
+   * (`ts-closure-size-is-load-bearing`). So the lift is consumed by a DEDICATED module-scope
+   * walk, exactly as the other two positions are.
+   */
+  relLifted?: CPredicate;
 };
 
 /** Everything a filtered 1-hop walk needs, resolved for one call: the graph and
@@ -1339,6 +1356,74 @@ const tallyHopCount = (scan: HopScan): number => {
     }
 
     if (asTruth(pred.fn(env)) === true) {
+      n += 1;
+    }
+  }
+
+  return n;
+};
+
+/**
+ * The REL mirror of {@link startOnlyHopCount} and {@link farOnlyHopCount}: when the clause
+ * `WHERE` reads nothing but the hop's RELATIONSHIP variable, the predicate is applied to the
+ * edge DIRECTLY through `satisfies`, with no per-edge `binding.set` and no general
+ * `pred.fn(env)` frame.
+ *
+ * This is NOT a cheaper walk — unlike its two siblings it cannot trade O(E) for O(V), because a
+ * predicate on the edge needs the edge. It is the same edge source (`tallyEdges`, so the same
+ * seeding) with the same per-edge constant the INLINE spelling already pays. Item 1031 measured
+ * the two spellings of one question 2.1-2.8x apart on the `count(*)` shape for exactly this
+ * reason.
+ *
+ * A SEPARATE MODULE-SCOPE FUNCTION, AND THAT IS MEASURED. Item 1033 put the lift behind a branch
+ * inside `tallyHopCount` instead. All 2,803 tests passed and the target improved 2.4x, but three
+ * controls the new code CANNOT EXECUTE regressed ~2x with disjoint ranges — the inline spelling
+ * 0.85 -> 2.0, an unindexed edge key 3.1 -> 5.6-7.1, a clause on a node key 0.022 -> 0.048 —
+ * because the branch reshapes that per-edge body for every predicate kind that flows through it.
+ * That is `ts-closure-size-is-load-bearing` for the fifth time in this file (items 119, 141,
+ * 159, 1033), and it is why items 995/996 gave the other two positions dedicated walks. The
+ * generic tally is left byte-for-byte unchanged and acts as the control for this change.
+ *
+ * The caller guarantees what this cannot see: `relLifted` is set only when
+ * `freePredicateVars(where)` is exactly the rel's own variable, so `startVar` and `farVar` are
+ * necessarily undefined and no endpoint needs binding.
+ */
+const relOnlyHopCount = (scan: HopScan, lifted: CPredicate): number => {
+  const { graph, params, pa, pb, out, inNear, inFar, inRel } = scan;
+  const binding = new Map<string, unknown>();
+  const env: EvalEnv = { binding, params, graph };
+  // The residual `where` is the only thing that can still read the edge through the binding —
+  // the lifted props are applied to the element directly. Hoisted: one test per query.
+  const needsBind = lifted.where !== undefined;
+  const { relVar } = scan.pred;
+  let n = 0;
+
+  for (const edge of tallyEdges(scan, env)) {
+    const near = out ? edge.from : edge.to;
+    const far = out ? edge.to : edge.from;
+
+    if (!matchesLabel(near, pa) || !matchesLabel(far, pb)) {
+      continue;
+    }
+
+    // The same three gates in the same order as the tally, for the reasons recorded there.
+    if (inRel !== undefined && !inlineHolds(inRel, edge, binding, params, graph)) {
+      continue;
+    }
+
+    if (inNear !== undefined && !inlineHolds(inNear, near, binding, params, graph)) {
+      continue;
+    }
+
+    if (inFar !== undefined && !inlineHolds(inFar, far, binding, params, graph)) {
+      continue;
+    }
+
+    if (needsBind && relVar !== undefined) {
+      binding.set(relVar, edge);
+    }
+
+    if (satisfies(edge, lifted, binding, params, graph)) {
       n += 1;
     }
   }
@@ -2368,6 +2453,14 @@ const buildOneHopCount = <T>(
 
       if (farWalkFits(scan)) {
         return rowOf(farOnlyHopCount(scan, pred.farVar));
+      }
+
+      // THE REL LIFT (item 1034), third and last. No `relWalkFits` predicate: the lift itself IS
+      // the fit rule — it is set only when the clause `WHERE` reads exactly the rel's own
+      // variable, which is the whole precondition, where the two endpoint walks additionally
+      // need the OTHER side unconstrained to sum degrees.
+      if (pred.relLifted !== undefined) {
+        return rowOf(relOnlyHopCount(scan, pred.relLifted));
       }
 
       return rowOf(tallyHopCount(scan));
@@ -3649,6 +3742,7 @@ const patternCountOf = <T>(
       relVar: reads(seg.rel.variable),
       farLifted: liftedOwnPred(where, free, farName),
       startLifted: liftedOwnPred(where, free, start.variable),
+      relLifted: liftedOwnPred(where, free, seg.rel.variable),
     };
   }
 
