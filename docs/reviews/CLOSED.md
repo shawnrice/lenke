@@ -32661,3 +32661,36 @@ rediscovery.
 the transpose. The alternative is row-wise evaluation into the output buffer, and 1114 measured what
 that costs when a cell must be cloned or written back. **~8-11 ns a row per output column is the
 engine's design, now priced** — that number is the result.
+
+## 1116 — 🔶 the stale-CSR typed count RE-REPRODUCED at **85x** on today's build; three closed designs re-read not re-derived; the ONE undisproven fix located to its sites
+
+**Closed, and checked before pricing:** the TS probe's three standing flags are all explained
+(**1078b** the "redundant" start label — retracted the same session, its header says why; **1073**
+item 285's product gap is the HARNESS; **1072** item 578's conjunct order, also the harness).
+**851** excludes lazy-on-read STRUCTURALLY (`&self` accessors return borrows into the `Vec`s a
+rebuild replaces; `algo.rs` shares `&Store` under rayon). **852** REFUSES rebuild-at-commit at a
+**6-27 stale-read** break-even.
+
+**Live, re-measured** (`stale-csr-probe.ts`, 50k nodes / 150k edges / 1 in 50, median of warm reps
+of 14):
+
+```text
+  no index FRESH 0.004 ms  ->  STALE after ONE write 0.342   **85x**
+  index DECLARED 0.006     ->  STALE               0.383     the index does NOT help (1041)
+```
+
+`rebuild_csr` is still called only from load paths, every adjacency write calls `invalidate_csr`,
+nothing re-arms it. Item **1042**'s comparison makes it a defect and not a trade: TS is FLAT across
+the write (0.0019 → 0.0021) because `edgesByLabel` is maintained on insert/remove, so
+`.get(t)?.size` is an always-current O(1) count.
+
+**The fix 852 leaves standing, located:** a GLOBAL PER-TYPE COUNT — O(1) per write, so it clears
+852's "must beat O(E + types × N) over fewer than 6 reads" trivially, and it is what TS already
+does. Consumers that currently decline, both ending in the partition length:
+`fastpath::typed_hop_count_from_size` and `fastpath::try_edge_label_count`.
+
+⚠️ **Semantics to replicate exactly:** a partition holds an edge's **PRIMARY type only** (item 1004) — count per primary type, keep the multi-label guard, and decrement on delete including
+`delete_node`'s cascade. ⚠️ **Maintenance sites** (item 1042 names them): `add_edge`,
+`add_edge_with_id`, `delete_edge`, `delete_node`, **both `Undo` restore arms** (they push onto
+`out_adj`/`in_adj` directly), and load/clear. Missing one is a WRONG ANSWER, not a slow one — needs
+a debug assertion recomputing against the partitions plus mutation at each site.
