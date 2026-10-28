@@ -32937,3 +32937,38 @@ that is not free:** an optimized-once plan is no longer VALUE-specific — fine 
 costs them.
 
 Not built. ~11% of the prepared serving call, two lines, correctness key and risk both named.
+
+## 1124 — ✅ item 1122's serving A/B RESOLVES clean (the flagged row was variance); ❌ item 1123's "blocker is avoidable" is REFUTED — a param-independent plan is a SCAN and costs **3.7x** on the selective value
+
+**1122, `bench:usage` `engine(+)`, alternated ×2:**
+
+```text
+  read: point lookup      CTRL  490.0k/491.4k -> 452.0k/507.2k   the 452.0 did NOT reproduce
+  read: 2-hop             CTRL  255.7k/257.7k -> 254.0k/255.7k   flat
+  interleaved: w+point read      218.8k/216.5k -> 219.1k/219.5k   flat
+  interleaved: w+traversal       180.3k/184.3k -> 188.3k/188.9k   +2.5%
+  interleaved: append+link       264.7k/287.0k -> 281.4k/280.3k   within range
+```
+
+1123 logged the first POST point-lookup reading as PENDING, not as a regression. Correct both ways:
+it was variance (second POST is the best of four), and it was not called variance before the data.
+
+**❌ 1123 REFUTED.** It argued 292's blocker was avoidable because `opt.rs:3805` matches
+`(Prop, Lit | Param)`, so optimize-then-bind should still seed. Measured on
+`WHERE p.age >= $t`, 200,000 nodes, `age = i % 100`, range index, min of 5:
+
+```text
+  t = 99 (1%)   own plan 27.6 us    param-independent 101.9 us   3.7x WORSE   (plans DIFFER)
+  t = 0  (all)  own plan 101.8      param-independent 101.8      (IDENTICAL)
+```
+
+**The param-independent plan costs what the SCAN costs** — it does not seek. Matching `(Prop, Param)`
+collects a candidate KEY; the seek is then gated on SELECTIVITY, which needs the VALUE. Item 409
+built that gate on purpose, so declining a param is the gate working.
+
+⚠️ **292's blocker holds for a reason neither 292 nor 1123 stated:** not that parse substitutes
+params, nor that the shape is unrecognisable — **the seek DECISION is value-dependent by design.**
+Caching the optimized plan trades ~295 ns of optimize for **3.7x on the indexed selective read
+`bench:usage` measures.** A `(text, version, param values)` key would hit only when a value repeats,
+which the serving shape does not. The optimize cost is the price of value-specific planning.
+Refuted for one probe rather than a plan cache plus a correctness key.
