@@ -33303,3 +33303,43 @@ arm, guarded on `*slot + 1 == chain_width(input)?` with an O(1) `keep` per node;
 in all three, `keep = |id| col.present_at(id)` (NOT `has_value_at` — `PropertyExists` counts a
 stored present-null, and `store.rs` names `present_at` the single source of truth), AND let the
 aggregate see through a row-preserving `Project`, or the shape never reaches the arm. OPEN.
+
+## 1135 — ✅ MEASURED (held back pending fuzzers): admitting `PropertyExists` to the count-fold frontier is **5.26x** on `out().values(k).count()`, **1.57x** on the two-hop `has(k)`, with an 11% toll on an unreachable control and one row unexplained
+
+Three parts: a NEW `exec::count_fold_width` (`chain_width` + frontier `PropertyExists`), a
+`Filter{PropertyExists}` arm in `frontier_counts`, and `try_frontier_count` admitting that filter
+plus seeing through a row-preserving `Project`.
+
+⚠️ **Do NOT widen `chain_width` itself** — 18 call sites across `fastpath`/`varlen`/`opt`, and its
+contract is that count-fold callers re-CHECK every filter the width sees through. Widening it hands
+all 18 a chain whose `PropertyExists` they never apply: a wrong answer with a plausible count.
+
+⚠️ **`present_at`, NOT `has_value_at`**, in the new arm: `PropertyExists` counts a stored
+present-null; `has_value_at` would silently drop them, which no count test catches on a fixture
+without one.
+
+Three alternated rounds, arm-asserted per build (PRE 0/0, POST 3/1), 200k nodes / degree 5, min of 7:
+
+```text
+                                  PRE min    POST min    ratio
+  T1  out.has(name).count          6183.1     6133.7      1.01x  ⚠️ flat, unexplained
+  T2  out.values(name).count      10151.9     1930.7      5.26x
+  T3  out.out.has(name).count      5383.8     3437.7      1.57x
+  C1  out.count            [ctl]      0.2        0.2      flat
+  C2  out.hasLabel.count   [ctl]    819.9      801.0      flat
+  C3  outE.outV.values.cnt [ctl]  17847.0    19821.0      0.90x  ⚠️ 11% AGAINST
+```
+
+⚠️ **C3 is a real 11% cost, not noise** (PRE 18737/17847/18616, POST 20118/20724/19821 — no
+overlap). It is the shape the change provably cannot reach: `chain_width` has **no `EdgeVertex`
+arm**, so an edge-then-endpoint hop is not a chain for the count-fold paths. The decline is O(1), so
+this is the documented `exec.rs`-alignment toll (1.08-1.24x, never gains) landing at 1.11x.
+
+⚠️ **T1 is flat although its plan is the arm's exact shape** — `Agg{count(*)} /
+Filter{PropertyExists{slot:1}} / Expand / Scan`, guard satisfied, and T3 is the same shape one hop
+deeper and DOES gain. So an earlier arm claims the one-hop case before `try_frontier_count` is
+consulted — item 375's "a path that merely sits earlier silently claims another's shape". Possibly
+another ~3x on `out().has(k).count()`. OPEN.
+
+**NOT COMMITTED.** An exec/fastpath change needs the byte-identity fuzzers, `rewrite_fuzz` and
+mutation verification first; a measured win does not invert that order. POST arm under `target/`.
