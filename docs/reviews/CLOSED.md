@@ -32833,3 +32833,37 @@ stale (rebuilt reference 207.2 vs 1556.9 stale). **So the cliff splits in two:**
 1118 took the half one integer per type could carry; the other half now has a 6x price on a named
 shape instead of a general claim. The temporary probe was removed (851/852's pattern) and its
 numbers live in `reverse.rs`'s annotation.
+
+## 1121 — ⚠️ REVISES 852: its "6 to 27 stale reads" belongs to a query that NO LONGER HAS A PENALTY; on the shape that does, the break-even is **~2 reads**, stable across a 10x fixture range
+
+852 refused an unconditional rebuild-at-commit hook at a 6-27 read break-even, measured with
+`MATCH (a:P)-[:T0]->(b) RETURN count(*)`. **Item 1118 removed that query's penalty entirely**
+(fresh 0.3 µs, stale 0.3, penalty 0.0 — it is answered from the maintained count), so 852's number
+is now quoted for a shape that cannot produce it.
+
+On item 1120's filtered endpoint predicate, swept (min of 5, break-even = `rebuild / (stale −
+fresh)`):
+
+```text
+  nodes    edges    rebuild    fresh    stale   penalty   BREAK-EVEN
+  200,000   80,000   2757.0     232.0   1548.9   1316.9     2.09 reads
+  200,000  400,000   5254.6    1380.6   3811.4   2430.9     2.16
+  400,000  400,000   8686.2    1462.2   5359.4   3897.2     2.23
+  800,000  800,000  17189.3    2905.4  11626.8   8721.4     1.97
+```
+
+**1.97-2.23 across 10x of both axes** — rebuild and penalty are both ~O(E), so the ratio is a
+property of the SHAPE, not the fixture, which 852's single row could not show.
+
+**Does NOT license a commit hook.** 852's policy objection survives in form and a rebuild per commit
+still loses on write-only workloads. What changes is the size of the bet: at 6-27 reads an
+unconditional hook is a gamble, at **2** any serving workload that reads after a write has paid for
+it. And 852's "depends on a future read count the store does not have" has an answer it did not
+consider — **the store can know the PAST count.** Reads served since the last rebuild is a cheap
+counter and a standard proxy; a hook gated on it costs nothing write-only and converges for
+serving. NEXT THING TO TRY, now with a break-even to size it against.
+
+⚠️ **A measurement error worth the entry:** the first sweep gave IDENTICAL numbers at three fixture
+sizes (2634/2659/2678). `set -- $cfg` — **zsh does not word-split unquoted parameters** — so every
+arm used the same defaults. The TELL: three fixtures differing 5x agreeing to 1% is the instrument,
+not the result.
