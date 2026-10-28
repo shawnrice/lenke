@@ -33073,3 +33073,42 @@ has no measurement behind it. Separate candidate.
 **Not applied this tick:** the session's full regression sweep is running and a `cargo build` beside
 it would contaminate the numbers it exists to produce. Needs a build, the Rust suite, and a
 prepared-statement probe showing the same crossover.
+
+## 1128 — ✅ the session's FULL regression sweep: NO regressions, three unmeasured rows improved; ✅ and item 1127's `prepared_run` gap CLOSED at the same **1.67x/2.74x**
+
+**The sweep** (spelling at `SPELL_N=200000 SPELL_REPS=9`, `ts,ffi` board against items 1080/1099,
+Gremlin board, seven fuzzers, run alone): **fuzzers 13/0**, **all 22 Gremlin rows `answers: same`**,
+**0 spelling answer-disagreements**.
+
+```text
+  count 4-hop                            613.2 -> 338.9    item 1106
+  count 3-hop quantified [TRAIL]         302.4 -> 149.7    2.02x  NOT measured by 1106
+  count var-length 1-3 hops [WALK]       292.7 -> 165.0    1.77x  NOT measured by 1106
+  count 3-hop quantified MIRROR          273.1 -> 163.0    1.68x  NOT measured by 1106
+  V().out()x4 / out().out().out()        555.5/397.3 -> 266.9/265.4   item 1110 holds
+  count 3-hop (product, unreachable)     323.3 -> 323.8    flat
+```
+
+**Item 1106's memo reaches three rows its own A/B never measured** — the quantified-trail and
+var-length shapes are sweeps too. That is what a sweep buys over a targeted A/B.
+
+**Two rows read higher in-sweep; neither is a regression.** `count 2-hop` 75.7 → 101.3 in-sweep but
+**74.8 ISOLATED** (and 73.6/73.8 alternated at 1102/1124); `distinct over a reversed hop` 68.8 →
+87.3 in-sweep but **62.0 isolated**, better than baseline. Item 1100's rule; the isolated
+measurement settles it.
+
+⚠️ **A catch in the probe's own output:** it reported **2** flags where the earlier run reported
+**3**, because **the null control doubled (12.5 → 24.9 ms)**. The threshold is "over 2x AND clear of
+the nearest null control", so **a probe's flag SET is not comparable across runs when its control
+moves.** The item-578 flag's disappearance is an artifact. Both remaining flags are closed (1078b,
+1073).
+
+**Item 1127's gap closed.** `prepared_run` now re-arms before its optimize; verified by enumeration
+(`lnk_query` True, `lnk_command` True). New probe `rearm-prepared-probe.ts` (prepare +
+preparedQueryRows), alternated ×2: k=1/2/3/5 flat (1.6/3.1/4.5/7.5 both arms), **k=10 14.8 → 8.8
+(1.67x)**, **k=20 29.6 → 10.7 (2.74x)** — the same figures `lnk_query` gave, with the same protected
+band below five reads. NOT widened to the algo commands: they would benefit and it would be safe,
+but no measurement, so a named candidate.
+
+Rust 1269+13+725 pass; fuzzers 13/0. Both probes kept — the gap existed because only one surface had
+an instrument.

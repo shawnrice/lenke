@@ -1130,6 +1130,16 @@ pub unsafe extern "C" fn lnk_command(
                 crate::ffi_error::set("E_MISSING_PARAMETER", &e);
                 return std::ptr::null_mut();
             }
+            // RE-ARM THE CSR OVERLAY, exactly as `lnk_query` does (item 1128 closing item 1127's
+            // gap). This is a full query path — clone, bind, optimize, execute — and it was the one
+            // query surface item 1122's hook missed, so a host serving reads through PREPARED
+            // statements got none of its 1.68x/2.74x. Both probes behind 1122 drive `g.query(…)`,
+            // which is `lnk_query`, so no benchmark could have caught it.
+            //
+            // NOT widened to the rest of `lnk_command`: the algo commands read adjacency heavily
+            // and a re-arm would be safe there too (taken while `&mut` is held, before `algo.rs`
+            // takes `&Store` under the rayon pool), but that surface has no measurement behind it.
+            store.rearm_if_warranted();
             let plan = crate::opt::optimize_indexed(plan, store);
             // JSON rows (default) or an Arrow carrier (raw ARW1 / IPC), so a prepared
             // statement has the same output surface as `lnk_query`. Route through the
