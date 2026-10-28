@@ -29501,7 +29501,33 @@ in order>` prints every run. (1) The band's first draft sat AFTER `if (p < 0.68)
   because it is what fooled the first reading and it is what makes the 5.206 attributable to
   SELECTIVITY rather than to the extra step. CLAUDE.md's "check the fixture's own statistics, not
   just its output", from the other direction.
-- **➡️ THE FIX (item 1045)**: seed on the indexed edge key, then re-apply the hop's types, the
+- **✅ DONE — THE START-FILTERED EDGE HOP SEEDS TOO, 320x (item 1046).** `edgeHopSeededCount` gains
+  an optional `startLabels`; a rung peels a leading `hasLabel` from `[hasLabel, outE/inE, …has]` and
+  re-applies the start vertex's label off the EDGE (`edge.from` for `outE`, `edge.to` for `inE`) —
+  item 1038's device. Disjoint from `bothFilteredHopCount`/`startFilteredHopCount`, which require
+  `out`/`in`. Three alternated rounds: **5.334/5.468/5.233 → 0.017/0.016/0.017**, answer 100
+  throughout, every other arm flat or overlapping in the same builds.
+- **TINKERPOP GAVE THE ENDPOINT (item 1046).** Person->Co x2, Co->Person, Person SELF-LOOP:
+  `hasLabel(Person).outE(T).has(w,1)` 3 / `hasLabel(Co)` 1 — `outE` partitions by SOURCE; `inE` 2
+  and 2 — by TARGET; self-loop once each. Also: multi-label is the union, and a leading `has`
+  filters the start vertices (`has(n,1).outE(T).has(w,1)` 2, `has(n,2)` 1).
+- **🛑 THREE FIXTURES TO PROVE ONE MUTANT, AND THE FIRST TWO PROVED NOTHING (item 1046).**
+  `wrong-endpoint` SURVIVED its first run: with ONE `Person->Co` and ONE `Co->Person` the
+  source-split and target-split are BOTH 3/1, so reading `edge.to` for `edge.from` gives IDENTICAL
+  answers — while a comment of mine called it "the sharpest pair". Two against one makes the splits
+  3/1 and 2/2 and only then does direction show. **Both splits still sum to 4, so the totals prove
+  nothing; the SHAPE of the split is the whole signal.** `peel-any-step` survived separately because
+  nothing exercised a leading `has` (reachable, so a missing test, not dead code).
+- **`widen-arity` RETIRED RATHER THAN KEPT (item 1046).** `mid.length >= 3` survived because
+  `hasChain` already refuses an empty rest, so `[hasLabel, outE]` declines inside the rung either
+  way. Item 1016's rule: a gate nothing can observe comes OUT. Now `>= 2`, the real requirement.
+- **⚠️ FOUR FIXTURE ERRORS ACROSS ITEMS 1045-1046, ALL MINE, EVERY ONE MAKING A BROKEN THING LOOK
+  CORRECT**: a VACUOUS label that got elided, two probe arms written as the SAME query, a SYMMETRIC
+  edge layout, and a missing leading-`has` case. Three caught by a mutant or a control, one by
+  re-reading. CLAUDE.md's rule from the other side: **an answer INVARIANT to the property you varied
+  cannot validate the fixture — and a fixture whose splits coincide is invariant to the thing under
+  test.**
+- **➡️ ~~THE FIX~~ — DONE at 1046 (item 1045)**: seed on the indexed edge key, then re-apply the hop's types, the
   residual filters, and **the START vertex's label** — `edge.from.labels` for `outE`,
   `edge.to.labels` for `inE`, since the constrained endpoint is the one the hop departs from. Item
   1038's GQL walk already does exactly this with `edge.from`, so the device is not new. Each edge is

@@ -179,6 +179,25 @@ export const countShortcut = (plan: Plan, graph: Graph): number | undefined => {
     return edgeSeeded;
   }
 
+  // THE START-FILTERED form (item 1046): `[hasLabel, outE/inE, …has]`. `countShortcut` hands each
+  // rung `mid[0]`, so a leading `hasLabel` made the rung above decline and the query fell through
+  // at 5.206 ms against the bare hop's 0.018 — and this is the spelling the realistic question
+  // takes (`hasLabel('Person').outE('APPLIED_TO').has('stage', …)`).
+  //
+  // Disjoint from `bothFilteredHopCount` and `startFilteredHopCount` by construction: both of
+  // those require `out`/`in`, where this requires `outE`/`inE`.
+  // `>= 2` is the real requirement — `mid[1]` must exist — and NOT `>= 3`: a tighter guard was
+  // redundant, because `hasChain` refuses an EMPTY rest, so `[hasLabel, outE]` declines inside the
+  // rung either way. The `widen-arity` mutant proved the redundancy by surviving, and item 1016's
+  // rule is that a gate nothing can observe comes out rather than staying untested.
+  if (mid.length >= 2 && mid[0].kind === 'hasLabel') {
+    const startSeeded = edgeHopSeededCount(mid[1], mid.slice(2), graph, mid[0].labels);
+
+    if (startSeeded !== undefined) {
+      return startSeeded;
+    }
+  }
+
   const filtered = filteredHopCount(mid[0], mid.slice(1), graph);
 
   if (filtered !== undefined) {
@@ -391,7 +410,20 @@ export const beats = (candidate: EdgeCandidate, best: EdgeCandidate | null): boo
  * for them the answer is the number of matching edges. The same console run confirmed
  * `V().outE(T).has(w,1)` = `V().inE(T).has(w,1)` = `E().hasLabel(T).has(w,1)` = 3.
  */
-const edgeHopSeededCount = (hop: Step, rest: readonly Step[], graph: Graph): number | undefined => {
+const edgeHopSeededCount = (
+  hop: Step,
+  rest: readonly Step[],
+  graph: Graph,
+  /** A leading `hasLabel`'s labels, constraining the vertex the hop DEPARTS FROM (item 1046).
+   *
+   *  `undefined` = the bare `V()` form of item 1044. Which endpoint it constrains is the hop's
+   *  direction, and TinkerPop 3.7.3 was asked rather than assumed, on Person->Co, Co->Person,
+   *  Person->Person and a Person SELF-LOOP: `V().hasLabel(Person).outE(T)` is 3 and
+   *  `V().hasLabel(Co).outE(T)` is 1 against 4 edges, so `outE` partitions by the edge's SOURCE;
+   *  `inE` gives 3 and 1 the other way round, so it partitions by the TARGET. The self-loop is
+   *  counted once by each, and `hasLabel(Person, Co)` is the union at 4. */
+  startLabels?: readonly string[],
+): number | undefined => {
   // `bothE` enumerates each edge twice; see the header.
   if (hop.kind !== 'outE' && hop.kind !== 'inE') {
     return undefined;
@@ -422,6 +454,7 @@ const edgeHopSeededCount = (hop: Step, rest: readonly Step[], graph: Graph): num
   }
 
   const { labels } = hop;
+  const forward = hop.kind === 'outE';
   // Every filter stays as a residual EXCEPT a removable winner, whose bucket is exactly its match
   // set. Extracted into dense arrays for `filteredHopCount`'s reason (item 934): reading `f.key` /
   // `f.pred` off a wide `Step` union per row is a polymorphic load at a per-row site.
@@ -456,6 +489,26 @@ const edgeHopSeededCount = (hop: Step, rest: readonly Step[], graph: Graph): num
       }
 
       if (!typed) {
+        continue;
+      }
+    }
+
+    // THE START VERTEX'S LABEL (item 1046), re-applied off the edge itself — `from` for an `outE`
+    // and `to` for an `inE`, per the console readings in `startLabels`'s own doc. This is item
+    // 1038's device: an edge-driven walk gets its endpoints from the edge, so a constraint on the
+    // vertex the hop departs from costs one label test rather than a vertex-side drive.
+    if (startLabels !== undefined) {
+      const start = forward ? edge.from : edge.to;
+      let labelled = false;
+
+      for (const l of startLabels) {
+        if (start.labels.has(l)) {
+          labelled = true;
+          break;
+        }
+      }
+
+      if (!labelled) {
         continue;
       }
     }

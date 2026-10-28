@@ -149,3 +149,81 @@ describe('beats — the answer-equivalent choice, tested directly (item 1044)', 
     expect(beats(c(0), c(9))).toBe(true);
   });
 });
+
+describe('a START-FILTERED edge hop, seeded (item 1046)', () => {
+  // THE TINKERPOP FIXTURE, REPRODUCED EXACTLY, because these expectations are its readings:
+  //
+  //   E(T).has(w,1) 4
+  //   hasLabel(Person).outE(T).has(w,1) 3    hasLabel(Co).outE(T).has(w,1) 1    <- by SOURCE
+  //   hasLabel(Person).inE(T).has(w,1)  2    hasLabel(Co).inE(T).has(w,1)  2    <- by TARGET
+  //
+  // THE FIXTURE IS DELIBERATELY ASYMMETRIC — TWO `Person -> Co` edges against ONE `Co -> Person` —
+  // and that is the whole point. The first version had one of each, which makes the source-split
+  // and the target-split BOTH 3/1, so reading the wrong endpoint gives the identical answers and
+  // the `wrong-endpoint` mutant SURVIVED while a test comment claimed it was "the sharpest pair".
+  // With two against one the splits are 3/1 and 2/2, and only then does the direction show.
+  const g2 = (() => {
+    const graph = new Graph();
+    const p1 = graph.addVertex({ id: 'p1', labels: ['Person'], properties: { n: 1 } });
+    const p2 = graph.addVertex({ id: 'p2', labels: ['Person'], properties: { n: 2 } });
+    const co = graph.addVertex({ id: 'co', labels: ['Co'], properties: { n: 3 } });
+
+    // TWO Person -> Co, ONE Co -> Person: the asymmetry the header explains.
+    graph.addEdge({ id: 'a1', from: p1, to: co, labels: ['T'], properties: { w: 1 } });
+    graph.addEdge({ id: 'a2', from: p1, to: co, labels: ['T'], properties: { w: 1 } });
+    graph.addEdge({ id: 'a3', from: co, to: p2, labels: ['T'], properties: { w: 1 } });
+    // The SELF-LOOP, counted once by each direction.
+    graph.addEdge({ id: 'a4', from: p2, to: p2, labels: ['T'], properties: { w: 1 } });
+    graph.createIndex({ on: 'edge', kind: 'hash', keys: ['w'] });
+
+    return graph;
+  })();
+  const c = (t: ReturnType<typeof traversal>): unknown => toArray(t, g2)[0];
+
+  test('the total is 4, so the splits below must sum to it', () => {
+    expect(c(traversal(E(), hasLabel('T'), has('w', 1), count()))).toBe(4);
+  });
+
+  test('outE partitions by the edge SOURCE — 3 and 1', () => {
+    expect(c(traversal(V(), hasLabel('Person'), outE('T'), has('w', 1), count()))).toBe(3);
+    expect(c(traversal(V(), hasLabel('Co'), outE('T'), has('w', 1), count()))).toBe(1);
+  });
+
+  test("inE partitions by the edge TARGET — 2 and 2, NOT outE's 3 and 1", () => {
+    // THE ARM THAT CATCHES A SWAPPED ENDPOINT. It only works because the fixture is asymmetric:
+    // 3/1 by source against 2/2 by target. Both splits still sum to 4, so the totals prove
+    // nothing and the SHAPE of the split is the whole signal.
+    expect(c(traversal(V(), hasLabel('Person'), inE('T'), has('w', 1), count()))).toBe(2);
+    expect(c(traversal(V(), hasLabel('Co'), inE('T'), has('w', 1), count()))).toBe(2);
+  });
+
+  test('hasLabel with several labels is the UNION', () => {
+    expect(c(traversal(V(), hasLabel('Person', 'Co'), outE('T'), has('w', 1), count()))).toBe(4);
+  });
+
+  test('a label NO vertex carries answers 0', () => {
+    expect(c(traversal(V(), hasLabel('Nope'), outE('T'), has('w', 1), count()))).toBe(0);
+  });
+
+  test('a residual filter applies on top of the label', () => {
+    expect(
+      c(traversal(V(), hasLabel('Person'), outE('T'), has('w', 1), has('w', gt(0)), count())),
+    ).toBe(3);
+  });
+
+  test('an UNINDEXED key still answers — the rung declines and the old path runs', () => {
+    expect(c(traversal(V(), hasLabel('Person'), outE('T'), has('n', 1), count()))).toBe(0);
+  });
+
+  test('a leading step that is NOT a hasLabel must not be PEELED AND DROPPED', () => {
+    // The rung peels `mid[0]` as a start-label constraint. A mutant that peeled ANY leading step
+    // survived the whole suite, because nothing exercised a leading `has` before an edge hop —
+    // and dropping it answers 4 where TinkerPop answers 2. Console readings: `has(n,1).outE(T)`
+    // is 2, `has(n,2).outE(T)` is 1, and `hasLabel(Person).has(n,1).outE(T)` is 2.
+    expect(c(traversal(V(), has('n', 1), outE('T'), has('w', 1), count()))).toBe(2);
+    expect(c(traversal(V(), has('n', 2), outE('T'), has('w', 1), count()))).toBe(1);
+    expect(
+      c(traversal(V(), hasLabel('Person'), has('n', 1), outE('T'), has('w', 1), count())),
+    ).toBe(2);
+  });
+});
