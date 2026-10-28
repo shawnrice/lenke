@@ -197,6 +197,19 @@ pub(super) fn reverse_seed_decide(
     // identical either way — this only picks the cheaper equivalent plan.
     if !loose {
         if let Some(ep) = hops.last() {
+            // ⚠️ `fwd` SILENTLY BECOMES 0 AFTER ANY ADJACENCY WRITE, and item 1119 deliberately
+            // left it that way. `out_typed_flat` returns `None` once the CSR overlay is stale, so
+            // `filter_map` drops every type, the sum is 0, and `fwd > 0` below skips the whole
+            // decline — a route choice that stops working for the rest of the session.
+            //
+            // Item 1118 added `live_etype_count`, which IS always current and would restore the
+            // estimate in one line. It is not used here because the estimate prices a forward
+            // alternative that is ALSO gated on freshness: `for_each_typed_out` returns `None` when
+            // the overlay is stale, so after a write the cheap forward sweep this would decline in
+            // favour of may not exist, and a correct `fwd` could decline the reverse seed into the
+            // general path instead. Which way that lands is a measurement on the shape this
+            // function's own comment names (`age >= 77` = 92k seeds against 80k forward F edges),
+            // not an argument — so the one-line change is NOT made on the reasoning alone.
             let fwd: usize = ep
                 .want
                 .iter()

@@ -32774,3 +32774,31 @@ if a test pinned it.
 
 Rust 1268+13+725 pass; native 933 / gql 3117 / gremlin 918; fuzzers 13/0; `counts` and `gql` bench
 groups flat.
+
+## 1119 — 🔶 the maintained count's REACH mapped: one further consumer could use it and deliberately does NOT, because its staleness may be load-bearing
+
+After item 1118 converted the two declining consumers, exactly three other sites read a per-type
+partition:
+
+- `exec.rs:4382/4390/4401/4545` — `out_typed_csr`/`in_typed_csr`, **PER-NODE** slices. A global
+  per-type total cannot serve a per-node degree; that is `slice_degree`'s question (item 1101).
+- `exec.rs:5084` — `for_each_typed_out` needs the **ENTRIES** (it visits neighbours), so its `?` is
+  a real freshness gate and stays one.
+- `exec/reverse.rs:203` — reads a **LENGTH**, and is the one that could.
+
+**That site's `fwd` silently becomes 0 after any adjacency write** (`filter_map` drops every type
+once `out_typed_flat` returns `None`), so the `fwd > 0 &&` guard skips its decline for the rest of
+the session — the same defect 1118 fixed, in a different dress, and answer-equivalent so no test can
+see it.
+
+⚠️ **`live_etype_count` would restore it in one line and is deliberately NOT used.** The estimate
+prices a forward alternative that is itself freshness-gated (`for_each_typed_out` returns `None` when
+stale), so after a write the cheap forward sweep this guard would decline _in favour of_ may not
+exist — and a correct `fwd` could decline the reverse seed into the GENERAL path, possibly slower
+than what it replaced. **`fwd = 0` may be accidentally right.** Deciding it is a measurement on the
+shape that function's own comment names (`age >= 77` = 92k seeds vs 80k forward F edges), not an
+argument.
+
+**Site ANNOTATED, behaviour unchanged.** The annotation records the staleness, names the fix and says
+why it is withheld — because the risk is now the opposite one: with `live_etype_count` in the tree,
+the next reader has an obvious-looking one-liner and no written reason to measure first.
