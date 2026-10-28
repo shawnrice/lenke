@@ -32802,3 +32802,34 @@ argument.
 **Site ANNOTATED, behaviour unchanged.** The annotation records the staleness, names the fix and says
 why it is withheld — because the risk is now the opposite one: with `live_etype_count` in the tree,
 the next reader has an obvious-looking one-liner and no written reason to measure first.
+
+## 1120 — ❌ the `fwd`-estimate one-liner is MEASURED NEUTRAL (not shipped); ✅ and the same probe prices the half item 1118 did NOT fix: a FILTERED typed count still pays **6x** after one write
+
+Item 1119 named the fix (`live_etype_count` for `reverse_seed_decide`'s `fwd`, which silently
+becomes 0 after any write) and withheld it pending measurement. Measured, on the shape that
+function's own comment names — 200,000 nodes / 80,000 sparse `F` edges /
+`MATCH (a)-[:F]->(b) WHERE b.age >= 77 RETURN count(*)`, min of 5:
+
+```text
+  FRESH 257.9 us    STALE 1556.9 (6.0x)    STALE+rebuild_csr 207.2
+  alternated:  PRE (fwd broken) 1530.6 / 1536.8    POST (fwd correct) 1535.6 / 1525.1
+```
+
+**Identical — NOT SHIPPED.** Both branches cost the same once stale: `fwd = 0` skips the guard and
+keeps the reverse seed; a correct `fwd` fires it and declines — into the general path, because the
+forward sweep it prefers is ALSO freshness-gated. A route choice no test can police, with no
+measured benefit, is not a change.
+
+**🔶 THE 6x IS THE FINDING.** Item 1118's maintained count does NOT reach this shape:
+`typed_hop_count_from_size` needs an unfiltered whole-graph hop, and an endpoint filter sends the
+query through the walk, which loses `out_typed_flat`/`out_typed_csr` the instant the overlay goes
+stale (rebuilt reference 207.2 vs 1556.9 stale). **So the cliff splits in two:**
+
+- **GLOBAL per-type count** — FIXED at 1118 (0.347 → 0.003 ms) by maintaining one integer per type;
+- **PER-NODE typed adjacency** — still **6x** on a filtered shape, unreachable by a global count.
+  This is item 852's "only undisproven design", incremental per-type CSR maintenance, with the bar
+  it must clear: `O(E + types × N)` amortized over fewer than 6 reads.
+
+1118 took the half one integer per type could carry; the other half now has a 6x price on a named
+shape instead of a general claim. The temporary probe was removed (851/852's pattern) and its
+numbers live in `reverse.rs`'s annotation.

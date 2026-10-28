@@ -203,13 +203,21 @@ pub(super) fn reverse_seed_decide(
             // decline — a route choice that stops working for the rest of the session.
             //
             // Item 1118 added `live_etype_count`, which IS always current and would restore the
-            // estimate in one line. It is not used here because the estimate prices a forward
-            // alternative that is ALSO gated on freshness: `for_each_typed_out` returns `None` when
-            // the overlay is stale, so after a write the cheap forward sweep this would decline in
-            // favour of may not exist, and a correct `fwd` could decline the reverse seed into the
-            // general path instead. Which way that lands is a measurement on the shape this
-            // function's own comment names (`age >= 77` = 92k seeds against 80k forward F edges),
-            // not an argument — so the one-line change is NOT made on the reasoning alone.
+            // estimate in one line. **ITEM 1120 BUILT THAT AND MEASURED IT NEUTRAL, so it is not
+            // used here.** 200,000 nodes / 80,000 F edges / `age >= 77`, the shape this function's
+            // own comment names, alternated: the STALE row reads 1530.6 / 1536.8 us with the
+            // estimate broken and 1535.6 / 1525.1 with it correct. Identical.
+            //
+            // The reason is that both branches cost the same once the overlay is stale. With
+            // `fwd = 0` the guard below is skipped and the reverse seed is kept; with `fwd`
+            // correct the guard fires and declines it — but the forward sweep it declines in
+            // favour of is ALSO freshness-gated (`for_each_typed_out` returns `None` when stale),
+            // so the plan falls to the general path, which costs what the reverse seed did.
+            //
+            // So this staleness is real and inconsequential, and the 6x that the same probe shows
+            // on this shape after one write (257.9 fresh / 207.2 rebuilt / 1547 stale) is NOT
+            // this estimate — it is the underlying walk losing the per-type CSR, which is the
+            // PER-NODE half item 852 leaves open and item 1118's global count cannot reach.
             let fwd: usize = ep
                 .want
                 .iter()
