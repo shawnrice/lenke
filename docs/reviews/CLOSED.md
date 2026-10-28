@@ -29312,6 +29312,26 @@ multiTypeEdgeCount === 0`) — one named type cannot double-count. Native's `Adj
   scan floors differ by ~10x, so the same missing index is a millisecond problem in TS and a
   microsecond one in Rust. After item 1035's 27x, **native still answers this question faster by
   SCANNING than TS does by SEEKING.** Always measure the other engine before porting a win to it.
+- **⚠️ OPEN, PRICED, NEXT — the PROJECTION form of item 1035's question is 130-180x off, and it is
+  a SCAN (item 1037).** `hop-projection.ts` references `edgeSeek` nowhere;
+  `relBoundFilteredHopWalk` drives `candidateVertexSource` and iterates each vertex's bucket. Three
+  rounds, each shape in its own process: `proj-gremlin` (the ceiling) **0.061/0.049/0.055 ms**;
+  `proj-inline` 7.198/7.871/8.723; `proj-clause` 9.952/7.613/9.065; the COUNT form of the same
+  question, seeded since 1035, 0.047/0.044/0.040. **`proj-zero` settles the cause**: the same
+  projection on a value NO edge carries returns zero rows and still costs 5.846-7.785, so ~6-7 ms
+  of the 7-9 is invariant to the row count — a scan, with row construction the remaining ~1-2 ms.
+- **⚠️ RETRACTED BY REPETITION — "the two projection spellings are 2.2x apart" (item 1037).** One
+  run read clause 11.356 against inline 6.071; three rounds OVERLAP (7.198-8.723 against
+  7.613-9.952). The spellings CONVERGE, as item 1032 found independently. This family's series
+  spans 6-17 ms inside one process, so a single pair cannot support a ratio.
+- **➡️ THE BUILD IS TWO HALVES AND THEY MUST LAND TOGETHER (item 1037).**
+  `relBoundFilteredHopWalk` takes `relPred: CPredicate` (the INLINE constraint, which carries the
+  `props`/`eqProps` `edgeSeek` reads) and `gate: CompiledExpr` (the CLAUSE `WHERE`, which has no
+  `eqProps` to offer) as separate parameters. Seeding only the inline half would take it to
+  ~0.06 ms and leave its twin at ~8 — converting a shared 130x into a 130x BETWEEN SPELLINGS,
+  this engine's named defect class. The clause half needs the lift item 1034 gave the count path.
+  The walk must be EDGE-DRIVEN and its own closure (`edge.from`/`edge.to` supply both endpoints);
+  items 159 and 1033 priced a branch in one of these loops at 1.6x and ~2x.
 - **⚠️ OPEN — `spelling-probe.ts` CANNOT SEE the edge-seed route (item 1035).** It declares only
   VERTEX indexes and its one edge property is `w = e % 5`, a fifth of 600,000 edges, which the
   margin correctly declines. Giving it a selective edge key means adding a property to a SHARED

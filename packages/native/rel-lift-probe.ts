@@ -16,7 +16,7 @@
  */
 import { Graph as TsGraph } from '@lenke/core';
 import { query as tsQuery } from '@lenke/gql';
-import { E, count, has, toArray, traversal } from '@lenke/gremlin';
+import { E, count, has, toArray, traversal, values } from '@lenke/gremlin';
 
 const N = Number(process.env.EDGE_N ?? 100_000);
 const REPS = Number(process.env.EDGE_REPS ?? 14);
@@ -51,6 +51,25 @@ const SHAPES: Record<string, { q: string; reached: boolean }> = {
     reached: true,
   },
   'node-key': { q: 'MATCH (a)-[e:PAID]->(b) WHERE a.n = 7 RETURN count(*) AS c', reached: false },
+  // THE PROJECTION SHAPE (item 1037). Item 1035's seed lives in `tallyEdges`, which serves the
+  // COUNT walks; `hop-projection.ts` drives per VERTEX (`v.adjFrom`) through `hopSeek` and
+  // `edgesOfTypes` and references `edgeSeek` nowhere. Same question, different result shape — the
+  // exact split item 1032 found between the count and projection forms of the rel predicate.
+  'proj-clause': {
+    q: 'MATCH ()-[e:PAID]->() WHERE e.amount = 500 RETURN e.amount AS a',
+    reached: false,
+  },
+  'proj-inline': { q: 'MATCH ()-[e:PAID {amount: 500}]->() RETURN e.amount AS a', reached: false },
+  // THE DIAGNOSTIC: the same projection on a value NO edge carries, so it returns ZERO rows. If
+  // the cost is the SCAN it is invariant here; if it is row construction it collapses. An answer
+  // that is invariant to the property varied cannot validate the fixture, so this arm is the one
+  // that says which half of the 9.26 ms is which.
+  'proj-zero': {
+    q: 'MATCH ()-[e:PAID]->() WHERE e.amount = 99999 RETURN e.amount AS a',
+    reached: false,
+  },
+  // THE CEILING for the projection shape: Gremlin seeds the edge index and then reads the value.
+  'proj-gremlin': { q: 'GREMLIN-PROJ', reached: true },
 };
 
 const name = process.env.SHAPE ?? 'named-clause';
@@ -85,10 +104,18 @@ let answer: unknown;
 for (let r = 0; r < REPS; r++) {
   const t = performance.now();
 
-  answer =
-    shape.q === 'GREMLIN'
-      ? toArray(traversal(E(), has('amount', 500), count()), g)[0]
-      : tsQuery(g, shape.q)[0]?.c;
+  if (shape.q === 'GREMLIN-PROJ') {
+    answer = toArray(traversal(E(), has('amount', 500), values('amount')), g).length;
+  } else if (shape.q === 'GREMLIN') {
+    [answer] = toArray(traversal(E(), has('amount', 500), count()), g);
+  } else if (name.startsWith('proj-')) {
+    // A PROJECTION returns rows, so the answer is their count — the same 100 either way, which is
+    // what makes it comparable with the count arms above.
+    answer = (tsQuery(g, shape.q) as unknown[]).length;
+  } else {
+    answer = tsQuery(g, shape.q)[0]?.c;
+  }
+
   series.push(performance.now() - t);
 }
 
