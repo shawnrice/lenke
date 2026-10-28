@@ -30,7 +30,13 @@ const g = new TsGraph();
 const verts: ReturnType<TsGraph['addVertex']>[] = [];
 
 for (let i = 0; i < VERTS; i++) {
-  verts.push(g.addVertex({ id: `v${i}`, labels: ['P'], properties: { n: i } }));
+  // HALF the vertices also carry `Q`, so `hasLabel('Q')` is SELECTIVE where `hasLabel('P')` is
+  // VACUOUS. Without that distinction the start-filtered arms cannot be told from the bare hop: a
+  // vacuous label is elided, leaving exactly the shape item 1044's rung already serves, and the
+  // first draft of this probe read 0.022 ms and looked like there was nothing left to fix.
+  verts.push(
+    g.addVertex({ id: `v${i}`, labels: i % 2 === 0 ? ['P', 'Q'] : ['P'], properties: { n: i } }),
+  );
 }
 
 for (let i = 0; i < N; i++) {
@@ -79,4 +85,18 @@ time(
 time(
   'CONTROL  V().outE().has(UNINDEXED)',
   () => toArray(traversal(V(), outE('PAID'), has('other', 500), count()), g)[0],
+);
+// THE START-FILTERED EDGE HOP (item 1045), which item 1043 left open: `countShortcut` hands the
+// rung `mid[0]`, and here that is the `hasLabel`, not the hop — so item 1044's rung declines and
+// the query falls through again. The realistic people-graph spelling
+// (`hasLabel('Person').outE('APPLIED_TO').has('stage', …)`) is this one, not the bare hop.
+time(
+  'CONTROL  V().hasLabel(P).outE() [vacuous]',
+  () => toArray(traversal(V(), hasLabel('P'), outE('PAID'), has('amount', 500), count()), g)[0],
+);
+// ...and the same with a VACUOUS label (every vertex is a `P`), so the comparison isolates the
+// extra step rather than the selectivity it adds.
+time(
+  'OPEN  V().hasLabel(Q).outE().has(amount)',
+  () => toArray(traversal(V(), hasLabel('Q'), outE('PAID'), has('amount', 500), count()), g)[0],
 );

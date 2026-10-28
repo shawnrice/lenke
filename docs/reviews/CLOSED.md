@@ -29486,7 +29486,26 @@ in order>` prints every run. (1) The band's first draft sat AFTER `if (p < 0.68)
   UNMUTATED code, passed, and been read as "caught". Separately, a `python` replace adding a test
   import matched a single-line form `fmt` had already split, silently did nothing, and had to be
   debugged from `beats is not defined`. **Every replace needs an assertion on its hit count.**
-- **➡️ STILL NOT ESTABLISHED (item 1043)**: whether `V()` must be UNFILTERED. `V().hasLabel('Q').outE()`
+- **⚠️ ESTABLISHED AND PRICED — the START-FILTERED edge hop is 250-370x off (item 1045, closing
+  item 1043's open question).** `countShortcut` hands each rung `mid[0]`, and for
+  `V().hasLabel(Q).outE(T).has(k,v).count()` that is the `hasLabel`, so item 1044's rung declines.
+  Median of reps 4+: CEILING `E().has(amount)` 0.022 ms, `E().hasLabel().has()` 0.014; item 1044's
+  bare hop 0.018; **`V().hasLabel(Q).outE().has(amount)` 5.206**. This is the spelling the realistic
+  question takes (`hasLabel('Person').outE('APPLIED_TO').has('stage', …)`).
+- **🛑 A VACUOUS LABEL HID IT TWICE, AND BOTH WERE MINE (item 1045).** (1) Every vertex in the probe
+  carried `P`, so `hasLabel('P')` is VACUOUS — elided before any rung sees `mid`, leaving exactly
+  the shape item 1044 serves. The arm read **0.022 ms** and I wrote down that nothing was left to
+  fix. With `Q` on half the vertices the same arm reads 5.206. (2) In the same edit I wrote the two
+  "open" arms as the SAME traversal and labelled one `[vacuous]` as though it differed — two arms,
+  one query, looking like a comparison. **The vacuous arm is KEPT as a control** at 0.012 ms,
+  because it is what fooled the first reading and it is what makes the 5.206 attributable to
+  SELECTIVITY rather than to the extra step. CLAUDE.md's "check the fixture's own statistics, not
+  just its output", from the other direction.
+- **➡️ THE FIX (item 1045)**: seed on the indexed edge key, then re-apply the hop's types, the
+  residual filters, and **the START vertex's label** — `edge.from.labels` for `outE`,
+  `edge.to.labels` for `inE`, since the constrained endpoint is the one the hop departs from. Item
+  1038's GQL walk already does exactly this with `edge.from`, so the device is not new. Each edge is
+  tested and counted once, so no `multiTypeEdgeCount` guard is needed (item 1044's reasoning). `V().hasLabel('Q').outE()`
   does not cover every edge, so the seed would have to re-apply the start label per edge — reachable
   from `edge.from` as item 1038's walk does, but unmeasured. The 550x describes the narrow shape:
   `V()` with no ids and no leading filters, then `outE`, then commuting filters, then an
