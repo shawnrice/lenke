@@ -30822,3 +30822,78 @@ fn a_multi_type_hop_count_is_the_sum_of_its_types() {
         "a secondary label must make the sum decline, not double-count"
     );
 }
+
+/// Does the maintained per-type count SUM to the live edge count, after every mutation kind?
+/// (item 1158)
+///
+/// `live_edge_count` is `out_adj.iter().map(Vec::len).sum()` — O(nodes), and item 1157 measured the
+/// untyped hop-count arm paying 36.6us for it against 0.4 for the single-type arm. Item 1118's
+/// `etype_counts` already holds the pieces, so the same number is `sum(live_etype_count(t))`, which
+/// is O(#types).
+///
+/// This asserts they agree against an INDEPENDENT adjacency walk (`all_edges().len()`), because
+/// item 1158 made `live_edge_count` the per-type sum itself — comparing those two would be a
+/// tautology. Written BEFORE relying on the equality rather than after:
+/// every edge has exactly one OUT adjacency entry and exactly one PRIMARY type, so the sums must
+/// match — unless a mutation path updates one and not the other, which is precisely what item
+/// 1118's own recount oracle exists to catch for the counts and what this catches for their sum.
+#[test]
+fn the_per_type_counts_sum_to_the_live_edge_count_after_every_mutation() {
+    let mut b = Builder::default();
+    for _ in 0..12u32 {
+        b.node(&["P"], &[]);
+    }
+    b.edge(0, 1, "A");
+    b.edge(1, 2, "B");
+    b.edge(2, 2, "A"); // self-loop
+    let mut st = b.build();
+
+    // THE ORACLE IS `all_edges().len()`, NOT `live_edge_count()`.
+    //
+    // Item 1158 made `live_edge_count` itself the per-type sum, so comparing the two would be a
+    // TAUTOLOGY — the trap this file warns about, caught here while writing the change. `all_edges`
+    // flat-maps `out_adj` independently, and the doc on `live_edge_count` states the equivalence
+    // with it, so it is the right second opinion: an adjacency walk against a maintained sum.
+    let agree = |st: &Store, what: &str| {
+        let walked = st.all_edges().len();
+        let counted = st.live_edge_count();
+        let summed: usize = st
+            .all_etype_ids()
+            .iter()
+            .map(|&t| st.live_etype_count(t))
+            .sum();
+
+        assert_eq!(
+            walked, counted,
+            "{what}: the adjacency WALK and live_edge_count disagree"
+        );
+        assert_eq!(
+            walked, summed,
+            "{what}: the adjacency WALK and the maintained per-type sum disagree"
+        );
+
+        walked
+    };
+
+    assert_eq!(agree(&st, "after load"), 3);
+
+    // INSERTS, including a second type and another self-loop.
+    let e3 = st.add_edge(3, 4, "B");
+    assert_eq!(agree(&st, "after add_edge"), 4);
+    let e4 = st.add_edge(5, 5, "C");
+    assert_eq!(agree(&st, "after add_edge of a new type"), 5);
+
+    // DELETES, of a plain edge and of a self-loop.
+    st.delete_edge(3, 4, e3);
+    assert_eq!(agree(&st, "after delete_edge"), 4);
+    st.delete_edge(5, 5, e4);
+    assert_eq!(agree(&st, "after delete_edge of a self-loop"), 3);
+
+    // A NODE DELETE, which takes its whole adjacency with it — item 1118's `mem::take` arm.
+    st.delete_node(0);
+    assert_eq!(agree(&st, "after delete_node"), 2);
+
+    // AND A NODE ADD, so the id space grows without edges.
+    st.add_node(&["P"], &[]);
+    assert_eq!(agree(&st, "after add_node"), 2);
+}

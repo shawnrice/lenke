@@ -2334,15 +2334,30 @@ impl Store {
     }
 
     /// How many edges [`all_edges`](Self::all_edges) would return, WITHOUT building or sorting
-    /// the vector — the out-adjacency lengths summed, which is O(nodes) and allocates nothing.
+    /// the vector.
     ///
-    /// Exactly `all_edges().len()` by construction: that function flat-maps the same
-    /// `out_adj` and a sort does not change a length. So this is an equivalence, not an
-    /// estimate — which matters because `edge_count()` is the TOTAL EVER CREATED and would
-    /// over-count after a delete.
+    /// Exactly `all_edges().len()` by construction: that function flat-maps `out_adj` and a sort
+    /// does not change a length. So this is an equivalence, not an estimate — which matters
+    /// because `edge_count()` is the TOTAL EVER CREATED and would over-count after a delete.
+    ///
+    /// O(#TYPES, not #NODES) — item 1158. This was `out_adj.iter().map(Vec::len).sum()`, an
+    /// O(nodes) pass, and item 1157 measured the untyped hop-count arm paying **36.6us for it
+    /// against 0.4us** for the single-type arm beside it — 90x for what reads like an O(1) fact.
+    /// The function directly below (`live_node_count`) is documented as O(1) *because* it is
+    /// maintained, so the asymmetry was visible in the source and simply unpriced.
+    ///
+    /// Item 1118's `etype_counts` already holds the pieces: every live edge has exactly ONE out
+    /// adjacency entry and exactly ONE primary type, so the two sums are the same number. A
+    /// handful of types replaces a pass over every node.
+    ///
+    /// The equality is ORACLED, not asserted in prose:
+    /// `the_per_type_counts_sum_to_the_live_edge_count_after_every_mutation` compares this against
+    /// the adjacency scan after a load, an insert, an insert of a NEW type, a delete, a delete of a
+    /// self-loop, a node delete (item 1118's whole-`Vec` `mem::take` arm) and a node add. That test
+    /// was written BEFORE this change, while both formulas were still present to compare.
     #[must_use]
     pub fn live_edge_count(&self) -> usize {
-        self.out_adj.iter().map(Vec::len).sum()
+        self.etype_counts.iter().sum()
     }
 
     /// Whether node `id` is live (not tombstoned). Scans that iterate the id space

@@ -34202,3 +34202,37 @@ like an O(1) fact**, and `live_node_count` directly below it is documented as O(
 maintained. Item 1118's `etype_counts` already holds the pieces (their sum is the live edge count,
 O(#types)). Not bundled: `live_edge_count` has callers beyond this arm and wants its own item with a
 recount oracle. OPEN at 90x.
+
+## 1158 — ✅ SHIPPED **~112x**: `live_edge_count` was **O(nodes)**. All four label-arity arms now 0.3us — and ⚠️ I caught my own test becoming a TAUTOLOGY
+
+Item 1157 priced it: the untyped arm read 36.6us against the single-type arm's 0.4, because
+`live_edge_count` is `out_adj.iter().map(Vec::len).sum()`. Item 1118's `etype_counts` already holds
+the pieces (every live edge has one out entry and one primary type), so the same number is their sum
+— O(#types). Only **2 callers**, both in `fastpath`.
+
+✅ **The test came FIRST**, while both formulas still existed to compare: equality after a load, an
+insert, an insert of a NEW type, a delete, a delete of a self-loop, a node delete (item 1118's
+`mem::take` arm) and a node add.
+
+⚠️ **THEN IT BECAME A TAUTOLOGY.** After the change `live_edge_count` IS the per-type sum, so
+comparing the two asserts nothing — the "test that checks nothing" trap, authored one edit after
+writing the test. Re-pointed at **`all_edges().len()`**, which flat-maps `out_adj` independently and
+which `live_edge_count`'s own doc names as its equivalent. **When you make a formula the
+implementation, re-check what its test is comparing against.**
+
+```text
+  A4 -[]-> untyped   PRE 33.6/33.5/33.5   POST 0.3/0.3   ~112x
+  A1/A2/A3  [ctl]    0.3 flat   (A3 is item 1157's row and must not move)
+```
+
+✅ **All four arms of the label-arity enum are now 0.3us**, from 0.4 / 0.4 / 482.0 / 36.6 two ticks
+ago.
+
+Mutation on a GREEN baseline, both CAUGHT: a type dropped from the new sum; and the DELETE arm
+ceasing to decrement `etype_counts` — the drift the new formula now depends on. Suite 1286+13+725;
+`rewrite_fuzz` 10; 7/7 byte-identity fuzzers.
+
+⚠️ Sweep flagged `query/gremlin/V count` and `query/gremlin/out` at 1.50x — both **0.2 -> 0.3us**,
+one timer tick on the corpus's two fastest rows. Isolated at 15 reps x 3 alternated rounds: flat
+(min 0.2 vs 0.2). **A ratio from two sub-microsecond readings is a quantization artefact, not a
+measurement** — don't chase these.
