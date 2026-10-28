@@ -36,14 +36,29 @@ import { query } from './index.ts';
 const per = (m: Record<number, number>, loops: number): number => m[loops];
 
 /** The fast route and the general path on ONE pattern, asserted equal and returned. */
+/**
+ * The fast route and an INDEPENDENT route on ONE pattern, asserted equal and returned.
+ *
+ * ⚠️ THE ORACLE IS A ROW PROJECTION, NOT `AND true` (corrected at item 1095). `AND true` was
+ * item 570's decline-forcer for the UNFILTERED count, where adding any predicate does change the
+ * route. **It does NOT decline a rung that is already taking a predicate**: tracing shows
+ * `a.k >= 0` and `a.k >= 0 AND true` both enter `undirectedStartOnlyCount`, and both far-reading
+ * spellings both enter `undirectedTally` — so every comparison here was the fast route against
+ * itself. `SKIP 0` is absorbed too.
+ *
+ * Item 930 names this failure: "an oracle built from a shape the optimizer is allowed to learn
+ * will eventually stop being an oracle, and it fails SILENTLY — green, and comparing one route to
+ * itself." A ROW-RETURNING query cannot be answered by any count shortcut, so counting its rows is
+ * an oracle by construction. (The hand-pinned literals below are what gave these tests their teeth
+ * in the meantime; re-running item 1078's and 1086's mutants against the real oracle caught
+ * nothing new, so no shipped answer was wrong — but the comparison was not doing the work its
+ * comment claimed.)
+ */
 const both = (g: Graph, pattern: string, filter: string): number => {
   const fast = query<{ c: number }>(g, `MATCH ${pattern} ${filter} RETURN count(*) AS c`)[0].c;
-  const slow = query<{ c: number }>(
-    g,
-    `MATCH ${pattern} ${filter} AND true RETURN count(*) AS c`,
-  )[0].c;
+  const enumerated = query(g, `MATCH ${pattern} ${filter} RETURN a.k AS x`).length;
 
-  expect(fast).toBe(slow);
+  expect(fast).toBe(enumerated);
 
   return fast;
 };

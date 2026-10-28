@@ -31916,3 +31916,37 @@ count shortcut can answer a row projection. With it: **8/8 mutants caught**, and
 **The self-loop rule is why this is not item 1092's change**: ISO-GQL emits an undirected loop ONCE
 (in-box pass skips it; the second leg uses `undirectedSide`), Gremlin's `both()` yields it TWICE. One
 hand-derived literal was wrong again (4 vs 3) — fourth this run — and the route comparison held.
+
+## 1095 — 🧹 the absorbed oracle was in TWO MORE shipped items (1076/1078 and 1086); fixed, and their mutants caught nothing new
+
+Item 1094 found `AND true` does not decline a rung already taking a predicate. Traced across my own
+files:
+
+```text
+  WHERE a.k >= 0  /  a.k >= 0 AND true   → BOTH enter undirectedStartOnlyCount
+  WHERE x.k >= 0  /  x.k >= 0 AND true   → BOTH enter undirectedTally
+```
+
+So `undirected-start-count.test.ts` (1076, 1078) and `undirected-tally.test.ts` (1086) compared the
+fast route against **itself**.
+
+**What saved them was not the comparison.** Both helpers are now row-projection oracles; **all 47
+tests pass unchanged**, and item 1086's full mutant set re-run against the real oracle is **13/13
+caught, none survived, identical failure counts**. Nothing was hiding — the teeth were the
+**hand-pinned literals** plus **`undirected-hop-count.test.ts`**, where `WHERE true` genuinely
+declines because its baseline is the UNFILTERED route. That is why item 570's oracle works where it
+was invented and fails one rung later.
+
+**A dead comparison beside live assertions is the worst case to detect:** green suite, mutants
+caught, and the only symptom is a comment claiming what the code does not do.
+
+**Scope checked:** `tck`, `operator-chains` and `and-short-circuit` use `AND true` as a boolean
+expression under test, not as a decline-forcer. The defect was confined to this run's three files,
+all now fixed.
+
+### ➡️ THE RULE
+
+> **An oracle must be unabsorbable BY CONSTRUCTION, not by the planner's current behaviour.**
+> `AND true` and `SKIP 0` are absorbed by any rung that already accepts a predicate or a page bound.
+> A ROW-RETURNING query cannot be answered by a count shortcut. When the two sides must differ in
+> ROUTE, trace the route — do not trust the spelling.
