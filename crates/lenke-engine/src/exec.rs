@@ -2575,20 +2575,43 @@ fn hash_join(lb: &Batch, rb: &Batch, on: &[(usize, usize)]) -> Batch {
         // one `Vec` per distinct key. (The map-of-buckets version measured 59.96ns a row —
         // already 3.5x the byte keys, but 200,000 distinct keys is 200,000 allocations.)
         //
-        // The `u32::MAX` OPTIONAL sentinel gets the slot just past the largest real id, so it
-        // keys as itself without sizing the index by 4 billion.
-        let maxid = rids.iter().copied().filter(|&x| x != u32::MAX).max();
-        let sentinel = maxid.map_or(0, |m| m as usize + 1);
-        let slot_of = |id: u32| -> usize {
+        // THE `u32::MAX` OPTIONAL SENTINEL GETS ITS OWN LIST, NOT A SLOT IN THE ID SPACE —
+        // item 1150, and this was a WRONG ANSWER.
+        //
+        // It used to be given "the slot just past the largest real id" ON THE RIGHT, while the
+        // probe maps LEFT ids into that same bucket space. Two ways that collides, and the
+        // second is the general one:
+        //
+        //   - every right id NULL  => `maxid` is None => the sentinel slot is 0, so a real LEFT
+        //     id of 0 lands in the NULL bucket;
+        //   - any right side at all => a real LEFT id equal to `right_max + 1` maps to the
+        //     sentinel slot, and the `k >= counts.len()` guard does not exclude it because
+        //     `counts.len()` is `sentinel + 2`.
+        //
+        // `rewrite_fuzz` seed 383127 is the first instance: a right arm whose
+        // `OptionalExpand { keep_source: true }` padding made EVERY join key NULL, against a left
+        // side holding id 0 on two of its 166 rows — 2 x 3 = the 6 phantom rows it returned where
+        // the correct answer was none. Items 1148 and 1149 have the full derivation; it needed
+        // `LENKE_OPT_FUZZ_SEEDS=500000` to surface, where CLAUDE.md's documented 200000 passes.
+        //
+        // NULL-MATCHES-NULL IS PRESERVED, because it is deliberate here (`value_at` maps the
+        // sentinel to NULL on both sides, so the two agree) — the nulls simply match through
+        // their own list now instead of through a bucket a real id can reach.
+        //
+        // SIZED BY THE RIGHT'S REAL IDS, as before. Taking the max of BOTH sides would also fix
+        // the collision and was rejected: the left is routinely far larger than the right (166
+        // against 7 in the failing seed, and whole-graph against a handful at bench scale), so it
+        // would grow this allocation on every join to fix a case that needs no extra space at all.
+        let rmax = rids.iter().copied().filter(|&x| x != u32::MAX).max();
+        let nbuckets = rmax.map_or(0, |m| m as usize + 1);
+        let mut counts = vec![0u32; nbuckets];
+        let mut rnulls: Vec<u32> = Vec::new();
+        for (j, &id) in rids.iter().enumerate() {
             if id == u32::MAX {
-                sentinel
+                rnulls.push(j as u32); // `j` ASCENDING, same order property as a bucket
             } else {
-                id as usize
+                counts[id as usize] += 1;
             }
-        };
-        let mut counts = vec![0u32; sentinel + 2];
-        for &id in rids {
-            counts[slot_of(id)] += 1;
         }
         // Prefix sums, so `offs[k]..offs[k + 1]` is key `k`'s span.
         let mut offs = vec![0u32; counts.len() + 1];
@@ -2598,14 +2621,25 @@ fn hash_join(lb: &Batch, rb: &Batch, on: &[(usize, usize)]) -> Batch {
         // Fill with `j` ASCENDING, so each bucket keeps input order — the byte-key path's
         // buckets are built the same way, which is what makes the output order identical.
         let mut cursor = offs.clone();
-        let mut flat = vec![0u32; rids.len()];
+        let mut flat = vec![0u32; rids.len() - rnulls.len()];
         for (j, &id) in rids.iter().enumerate() {
-            let k = slot_of(id);
+            if id == u32::MAX {
+                continue;
+            }
+            let k = id as usize;
             flat[cursor[k] as usize] = j as u32;
             cursor[k] += 1;
         }
         for (i, &id) in lids.iter().enumerate() {
-            let k = slot_of(id);
+            if id == u32::MAX {
+                // A NULL left key matches the NULL right rows and nothing else.
+                for &j in &rnulls {
+                    keep_l.push(i);
+                    keep_r.push(j as usize);
+                }
+                continue;
+            }
+            let k = id as usize;
             if k >= counts.len() {
                 continue; // an id larger than anything on the right matches nothing
             }

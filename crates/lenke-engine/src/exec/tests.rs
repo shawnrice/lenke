@@ -30474,3 +30474,62 @@ fn clearing_an_unread_bound_edge_changes_no_answer() {
     assert_eq!(cnt("g.V().outE('K').dedup().count()"), 4.0);
     assert_eq!(cnt("g.V().out('K').dedup().count()"), 2.0);
 }
+
+/// A NULL join key must not match a real node — item 1150, and this was a WRONG ANSWER.
+///
+/// `hash_join`'s dense path used to place the `u32::MAX` OPTIONAL sentinel at "the slot just past
+/// the largest real id" ON THE RIGHT, while probing with LEFT ids. Two collisions followed, and
+/// the second is the general one:
+///
+///   - every right key NULL  => the sentinel slot is 0, so a real LEFT id of 0 matched it;
+///   - any right side at all => a real LEFT id of `right_max + 1` matched it, since
+///     `counts.len()` was `sentinel + 2` and the bounds guard therefore let it through.
+///
+/// Both arms are pinned below. The fixture is built so the colliding id is PRESENT on the left,
+/// because the bug is invisible otherwise — which is exactly why `rewrite_fuzz` needed 500,000
+/// seeds to reach it.
+#[test]
+fn a_null_join_key_does_not_match_a_real_node() {
+    use crate::batch::{Batch, Col};
+
+    // ARM 1: every right key is NULL, and the left holds id 0 — the seed-383127 shape.
+    let left = Batch::of(vec![Col::Nodes(vec![0, 1, 0])]);
+    let right = Batch::of(vec![Col::Nodes(vec![u32::MAX, u32::MAX])]);
+    let out = super::hash_join(&left, &right, &[(0, 0)]);
+    assert_eq!(
+        out.rows(),
+        0,
+        "all-NULL right keys must match no real left id (got {} rows)",
+        out.rows()
+    );
+
+    // ARM 2: a real left id equal to `right_max + 1`. Right max is 3, so left id 4 used to land
+    // in the sentinel bucket and match the NULL row.
+    let left = Batch::of(vec![Col::Nodes(vec![4])]);
+    let right = Batch::of(vec![Col::Nodes(vec![3, u32::MAX])]);
+    let out = super::hash_join(&left, &right, &[(0, 0)]);
+    assert_eq!(
+        out.rows(),
+        0,
+        "a left id of right_max + 1 must not match the NULL row (got {} rows)",
+        out.rows()
+    );
+
+    // AND NULL STILL MATCHES NULL, which is deliberate in this engine: `value_at` maps the
+    // sentinel to NULL on both sides, so the two key derivations agree. Two left NULLs against
+    // two right NULLs is the full 2x2.
+    let left = Batch::of(vec![Col::Nodes(vec![u32::MAX, 7, u32::MAX])]);
+    let right = Batch::of(vec![Col::Nodes(vec![u32::MAX, 7, u32::MAX])]);
+    let out = super::hash_join(&left, &right, &[(0, 0)]);
+    assert_eq!(out.rows(), 5, "2x2 NULL pairs plus the one real 7-7 pair");
+
+    // A plain real-id join is unaffected: id 2 appears twice on the right.
+    let left = Batch::of(vec![Col::Nodes(vec![1, 2, 9])]);
+    let right = Batch::of(vec![Col::Nodes(vec![2, 5, 2])]);
+    let out = super::hash_join(&left, &right, &[(0, 0)]);
+    assert_eq!(
+        out.rows(),
+        2,
+        "left id 2 matches both right 2s, and nothing else"
+    );
+}

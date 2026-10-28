@@ -33909,3 +33909,44 @@ present.
 
 **NOT FIXED** — bucket arithmetic every `Join` goes through, so the fix wants its own cycle with
 mutation, the 500k sweep as the gate, and the byte-identity fuzzers. OPEN.
+
+## 1150 — ✅ FIXED, a WRONG ANSWER: `hash_join`'s NULL sentinel now has its own list instead of a bucket a real id can reach. Both 500k "changed the answer" failures go GREEN
+
+The dense-id path no longer puts `u32::MAX` inside the bucket space: the index covers the right's
+REAL ids, null-keyed right rows go to a separate `rnulls` (filled `j` ascending, same order property
+as a bucket), and the probe routes a NULL left key there and a real one to its bucket.
+NULL-matches-NULL is PRESERVED (deliberate here — `value_at` maps the sentinel to NULL on both
+sides).
+
+⚠️ **Still sized by the RIGHT's real ids.** Maxing over BOTH sides also fixes it and was REJECTED:
+the left is routinely far larger (166 vs 7 in the failing seed; whole-graph vs a handful at bench
+scale), so it would grow the allocation on every join to fix a case needing no extra space.
+
+✅ **Verified by the bug, not a mutant.** The unit test hits `hash_join` directly on both arms
+(all-NULL right with left id 0; a real left id of `right_max + 1`), plus NULL-matches-NULL and a
+plain real-id join. Against the ORIGINAL code it fails: `all-NULL right keys must match no real left
+id (got 4 rows)` — 2 left id-0 rows x 2 right NULLs.
+
+```text
+  LENKE_OPT_FUZZ_SEEDS=500000
+    optimizing_preserves_rows_with_indexes     FAILED -> ok
+    optimizing_preserves_rows_without_indexes  FAILED -> ok
+    optimizing_preserves_rows_across_shapes    still FAILED ("changed the ORDER", seed 1889763)
+```
+
+⚠️ The remaining failure is item 1148's separate ORDER question (tied sort keys under an
+`OrderPage`; `order-is-unspecified` suggests possible fuzzer over-assertion). OPEN, untouched.
+
+⚠️ **COST, reported not claimed away:** a per-row branch on build and probe. Isolated, 3 alternated
+rounds on `join on a shared var`: PRE 4662.1/4711.9/4668.5 vs POST 4785.7/4789.3/4753.8 = **1.020x**,
+non-overlapping — while the 105-row sweep reads **0.970x** for the same row. Sub-noise, opposite
+signs; quote the isolated figure. A "right side has no nulls" specialization could recover it and is
+NOT bundled: a second code path in a shared operator to buy 2%, right after fixing a correctness bug
+in it, is the wrong trade.
+
+Suite 1280+13+725; 7/7 byte-identity fuzzers.
+
+⚠️ **`query/gql/distinct prop` is a CONFIRMED in-sweep false positive** — flagged 1.15x here and at
+item 1147, refuted isolated both times (POST actually FASTER at 0.914x this time); spans
+2726.8-3137.6 alone (15%), and its in-sweep PRE (~2670) sits consistently below its isolated PRE
+(~3000). Known false positive alongside `query/gremlin/order(local) then hop`.
