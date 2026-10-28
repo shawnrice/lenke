@@ -510,6 +510,12 @@ pub fn run(cfg: &Cfg) {
                 // SOURCE and a different question, which is what the two rows below it measure.
                 // The `.inV()` spelling left `bind_edge` set on an edge nobody read, so it ran
                 // 624us against the `out()` spelling's 0.2 until item 1146 cleared the flag.
+                // BOTH, which doubles a self-loop and so is `2*|E_t|` exactly — TinkerPop ground
+                // truth at item 1154 (on a 2-edge graph with one self-loop, `out` is 2 and `both`
+                // is 4). It took no shortcut until then: 2537.4us against 0.2. Its GQL twin
+                // `-[:KNOWS]-` counts a self-loop ONCE, is a DIFFERENT number, and is the
+                // `1-hop UNDIRECTED` row in the gql group above — still declining, deliberately.
+                ("both", "g.V().both('KNOWS').count()"),
                 ("outE.inV", "g.V().outE('KNOWS').inV().count()"),
                 (
                     "outE.inV.has",

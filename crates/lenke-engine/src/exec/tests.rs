@@ -30596,3 +30596,66 @@ fn the_in_spelling_of_a_one_hop_count_matches_the_out_spelling() {
         "Dir::Both counts edge ends, with a self-loop counted once"
     );
 }
+
+/// The two UNDIRECTED spellings count a self-loop differently, and only the doubling one takes
+/// the shortcut — item 1154.
+///
+/// A both-expansion emits a row per edge END, so the count is `2*|E_t|` with a self-loop
+/// contributing two rows or one, and `double_loops` is exactly which:
+///
+///   * Gremlin `both(T)` doubles it. TINKERPOP GROUND TRUTH, run in a console: on a 2-edge graph
+///     where one edge is a self-loop, `out(K)` is 2 and `both(K)` is 4.
+///   * GQL `-[:T]-` counts it once.
+///
+/// So the two spellings legitimately DISAGREE, and a fixture without a self-loop cannot tell them
+/// apart — which is why this one has two.
+#[test]
+fn the_two_undirected_spellings_differ_on_a_self_loop() {
+    let mut b = Builder::default();
+    for _ in 0..30u32 {
+        b.node(&["Person"], &[]);
+    }
+    for i in 0..20u32 {
+        b.edge(i, i + 1, "KNOWS");
+    }
+    b.edge(5, 5, "KNOWS"); // self-loop
+    b.edge(9, 9, "KNOWS"); // and a second, so an off-by-one cannot pass
+    let st = b.build();
+
+    let gql = |q: &str| {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &st);
+        match run(&plan, &st).rows[0][0] {
+            Value::Num(x) => x,
+            ref v => panic!("count is not a number: {v:?}"),
+        }
+    };
+    let gremlin = |q: &str| {
+        let plan = crate::opt::optimize_indexed(crate::gremlin::parse(q).unwrap(), &st);
+        match run(&plan, &st).rows[0][0] {
+            Value::Num(x) => x,
+            ref v => panic!("count is not a number: {v:?}"),
+        }
+    };
+    let rows = |q: &str| {
+        let plan = crate::opt::optimize_indexed(crate::gremlin::parse(q).unwrap(), &st);
+        run(&plan, &st).rows.len() as f64
+    };
+
+    // 22 edges: 20 chain + 2 self-loops.
+    assert_eq!(
+        gql("MATCH (a:Person)-[:KNOWS]->(x) RETURN count(*) AS c"),
+        22.0
+    );
+
+    // Gremlin `both()` DOUBLES both self-loops: 2*22 = 44.
+    assert_eq!(gremlin("g.V().both('KNOWS').count()"), 44.0);
+    // And it equals the rows the general traversal yields, which is the cross-route check.
+    assert_eq!(rows("g.V().both('KNOWS')"), 44.0);
+
+    // GQL `-[:KNOWS]-` counts each self-loop ONCE: 2*22 - 2 = 42. A DIFFERENT number, and the
+    // reason the shortcut must not answer this spelling from `2*|E_t|`.
+    assert_eq!(
+        gql("MATCH (a:Person)-[:KNOWS]-(x) RETURN count(*) AS c"),
+        42.0
+    );
+}

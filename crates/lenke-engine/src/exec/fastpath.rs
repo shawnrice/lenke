@@ -3690,7 +3690,7 @@ fn typed_hop_count_from_size(input: &Plan, agg: &Agg, store: &Store) -> Option<u
         dir,
         edge_label,
         bind_edge,
-        double_loops: _,
+        double_loops,
     } = input
     else {
         return None;
@@ -3721,9 +3721,30 @@ fn typed_hop_count_from_size(input: &Plan, agg: &Agg, store: &Store) -> Option<u
     // `live_etype_count` is direction-free (it counts EDGES of a type), so the arms below need no
     // change, and `type_ever_secondary` guards the in-partition for the same reason it guards the
     // out one.
-    if agg.distinct || *bind_edge || *from != 0 || !matches!(dir, Dir::Out | Dir::In) {
+    // BOTH is admitted only when it DOUBLES a self-loop — item 1154.
+    //
+    // A both-expansion emits a row per edge END, so its count is `2*|E_t|` with a self-loop
+    // contributing either two rows or one, and `double_loops` is exactly which. The two surface
+    // spellings differ, so this is not a corner:
+    //
+    //   - Gremlin `both(T)` sets `double_loops: true` and counts a self-loop TWICE. TinkerPop
+    //     ground truth, run in a console rather than recalled: on a 2-edge graph where one edge
+    //     is a self-loop, `out(K)` is 2 and `both(K)` is 4. lenke agrees — 2,000,000 on a
+    //     1,000,000-edge fixture holding two self-loops, i.e. exactly `2*|E_t|`.
+    //   - GQL `-[:T]-` sets `double_loops: false` and counts it ONCE: 1,999,998 on that same
+    //     fixture, i.e. `2*|E_t| - loops(t)`.
+    //
+    // The doubling case therefore needs NOTHING the store does not already maintain, and is taken
+    // here. The other needs a per-type SELF-LOOP count, which the store does not keep; it is
+    // priced at 2576.8us (item 1153) and left declining, with the `1-hop UNDIRECTED` bench row as
+    // its guard. Admitting it on `2*|E_t|` alone would be a wrong answer of exactly `loops(t)`.
+    let both_ok = matches!(dir, Dir::Both) && *double_loops;
+    if agg.distinct || *bind_edge || *from != 0 || !(matches!(dir, Dir::Out | Dir::In) || both_ok) {
         return None;
     }
+    // Each edge is counted from BOTH ends in the doubling case, and from exactly one in the
+    // directed cases.
+    let per_edge = if both_ok { 2 } else { 1 };
     if !whole_graph_scan(src, store) {
         return None;
     }
@@ -3736,7 +3757,7 @@ fn typed_hop_count_from_size(input: &Plan, agg: &Agg, store: &Store) -> Option<u
         //
         // No multi-label guard here and none needed: that guard exists because a partition holds
         // an edge's PRIMARY type only, and this arm reads no partition.
-        [] => Some(store.live_edge_count()),
+        [] => Some(per_edge * store.live_edge_count()),
         [ty] => {
             let t = store.etype_id(ty)?;
             // PER-TYPE, not global (item 1004). The partition for `t` is complete unless some
@@ -3746,7 +3767,7 @@ fn typed_hop_count_from_size(input: &Plan, agg: &Agg, store: &Store) -> Option<u
             if store.type_ever_secondary(t) {
                 return None;
             }
-            Some(store.live_etype_count(t))
+            Some(per_edge * store.live_etype_count(t))
         }
         _ => None,
     }

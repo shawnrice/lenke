@@ -64,6 +64,13 @@ fn main() {
             "MATCH (a:Person)-[:KNOWS]-(x) RETURN count(*) AS c",
         ),
     ] {
+        {
+            let plan = lenke_engine::opt::optimize_indexed(
+                lenke_engine::gql::parse(q).expect("parses"),
+                &store,
+            );
+            println!("  PLAN1154 {label}: {plan:?}");
+        }
         match time_query(q, false, &store, cfg.reps) {
             Ok((us, _)) => {
                 let plan = lenke_engine::opt::optimize_indexed(
@@ -78,6 +85,31 @@ fn main() {
                         _ => f64::NAN,
                     });
                 println!("  {label:<32} {us:>10.1}   {answer}");
+            }
+            Err(e) => println!("  {label:<32}      ERR   {e}"),
+        }
+    }
+
+    // ITEM 1154: Gremlin's `both()` doubles a SELF-LOOP (TinkerPop ground truth: on a 2-edge
+    // graph with one self-loop, `out()` is 2 and `both()` is 4), so its count is exactly
+    // `2*|E_t|` and needs NO self-loop fact. GQL's `-[:K]-` sets `double_loops: false` and is
+    // `2*|E_t| - loops(t)`, which does.
+    for (label, q) in [("G1 gremlin both().count", "g.V().both('KNOWS').count()")] {
+        match time_query(q, true, &store, cfg.reps) {
+            Ok((us, _)) => {
+                let plan = lenke_engine::opt::optimize_indexed(
+                    lenke_engine::gremlin::parse(q).expect("parses"),
+                    &store,
+                );
+                let answer = lenke_engine::exec::try_run(&plan, &store)
+                    .ok()
+                    .and_then(|r| r.rows.iter().next().and_then(|row| row.first()).cloned())
+                    .map_or(f64::NAN, |v| match v {
+                        lenke_engine::value::Value::Num(n) => n,
+                        _ => f64::NAN,
+                    });
+                println!("  {label:<32} {us:>10.1}   {answer}");
+                println!("  PLAN1154 {label}: {plan:?}");
             }
             Err(e) => println!("  {label:<32}      ERR   {e}"),
         }

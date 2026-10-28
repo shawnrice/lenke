@@ -34058,3 +34058,42 @@ could fail) and cross-checks OUT, IN, the general path's row count, and BOTH (63
 ⚠️ **The corpus had no row for either variant** (items 877/881/1146's failure mode again).
 `1-hop MIRROR` and `1-hop UNDIRECTED` added to `query/gql`, reading 0.3 / 0.3 / 2592.0 — the fix is
 guarded and the remaining `Both` gap is visible rather than remembered.
+
+## 1154 — ✅ SHIPPED **~12,700x** on Gremlin `both(T).count()`: the undirected half splits on `double_loops`, and the doubling side needs NO new store fact
+
+Item 1153 left `Dir::Both` declining because `2*|E_t| - loops(t)` needs a per-type self-loop count.
+⚠️ **That is true of only ONE of the two undirected spellings.** The gate was ignoring
+`Expand.double_loops` (`double_loops: _`), which is exactly whether a self-loop contributes two rows
+or one.
+
+**TinkerPop ground truth** (console, 2-edge graph with one self-loop): `out(K)` = 2, **`both(K)` =
+4** — the self-loop counted TWICE. The two spellings land on opposite sides, measured on a
+1,000,000-edge fixture with two self-loops:
+
+```text
+  g.V().both('KNOWS').count()                     double_loops: true    2,000,000 = 2*|E_t|
+  MATCH (a:Person)-[:KNOWS]-(x) RETURN count(*)    double_loops: false   1,999,998 = 2*|E_t| - 2
+```
+
+Fix: `both_ok = matches!(dir, Dir::Both) && *double_loops`, plus a `per_edge` factor of 2 on the
+typed (`live_etype_count`) and untyped (`live_edge_count`) arms. ⚠️ The non-doubling spelling still
+DECLINES — answering it from `2*|E_t|` would be a wrong answer of exactly `loops(t)`.
+
+```text
+  G1 gremlin both()    PRE 2551.3/2537.4   POST 0.2/0.2   ~12,700x
+  D3 gql -[:K]- [ctl]  PRE 2517.5/2496.6/2502.1  POST 2525.2/2509.1  flat
+  D1/D2/C1/C2   [ctl]  flat
+```
+
+✅ **D3 is the control that matters** — same direction, other flag, left declining — so the gate
+admitted exactly the doubling case, not `Dir::Both` wholesale. A wholesale widening would have moved
+D3 too, and silently, since its answer would still look plausible.
+
+Mutation on a GREEN baseline: ignoring `double_loops` CAUGHT; forcing `per_edge` to 1 CAUGHT. ⚠️ The
+answer test needs TWO self-loops (an off-by-one cannot pass) and asserts the spellings legitimately
+DISAGREE — Gremlin 44 vs GQL 42 on 22 edges — plus the general path's row count. **A fixture without
+a self-loop cannot tell them apart**, so item 1153's fixture had to be extended rather than reused.
+
+Suite 1283+13+725; `rewrite_fuzz` 10; 7/7 byte-identity fuzzers. `both` added to `query/gremlin`
+(0.2us). ⚠️ **STILL OPEN:** the non-doubling GQL `-[:K]-` spelling, needing a per-type self-loop
+count on item 1118's sites — unchanged from item 1153, and guarded by the `1-hop UNDIRECTED` row.
