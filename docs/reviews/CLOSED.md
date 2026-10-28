@@ -29594,6 +29594,26 @@ in order>` prints every run. (1) The band's first draft sat AFTER `if (p < 0.68)
   tells them apart, and here the reason was correctness with a measured item behind it. The
   zero-match arm — one extra probe arm, the same diagnostic item 1037 used on this very question —
   settles reachability directly and would have prevented the whole wrong item.
+- **⚠️ CONFIRMED UNSEEDED, 600x — the GROUP BY on an edge key (item 1050).** Asked the reachability
+  question BEFORE building, which is item 1048's lesson: 100 matches 25.427/25.215/24.523 ms, ZERO
+  matches **24.858/26.118/24.491 — INVARIANT**, so a full scan; `count(*)` on the same predicate
+  0.039-0.053. Refused by `proj.groupKeys.length !== 0`, so it falls to the general matcher.
+- **🛑 AND THE REASON RESULT SHAPES KEEP TURNING UP ONE AT A TIME IS STRUCTURAL (item 1050).**
+  `edgeSeek` lives in the SHORTCUT layer: `count(*)` seeds via `tallyEdges` (1035), the projection
+  via `relSeekedHopWalk` (1038), `min`/`max`/percentile FREE via `detectHopAggregate`'s delegation
+  to `detectHopProjection`, `count(DISTINCT)` via `foldFor` opening that same delegation (1049);
+  `sum`/`avg`/`stddev` refuse by design (532, 1048); GROUP BY falls through. **The general matcher
+  cannot seed at all**: its edge source is `expand(graph, v, rel)`, which takes a VERTEX and yields
+  its incident edges — vertex-driven by construction, with nowhere to hand an edge seed. So every
+  shape with its own shortcut needs its own wiring, and every shape without one can never seed,
+  however selective the predicate.
+- **➡️ THE CHOICE IS ARCHITECTURAL AND IS RAISED, NOT TAKEN (item 1050).** (a) A fourth rung
+  (`detectHopGroupAggregate`) — contained, closes the 600x, leaves the next shape to be found the
+  same way. (b) An EDGE-DRIVEN SOURCE AT THE PATTERN LEVEL — one place to seed, serving the GROUP
+  BY, the general pipeline and shapes not yet enumerated; much larger, changes binding order for
+  unordered results (permitted, but item 1039 is the reminder that "permitted" and "nothing
+  observes it" are different claims), and an order-SENSITIVE aggregate must still refuse it. Open
+  alongside item 1042's CSR question.
 - **⚠️ OPEN — `spelling-probe.ts` CANNOT SEE the edge-seed route (item 1035).** It declares only
   VERTEX indexes and its one edge property is `w = e % 5`, a fifth of 600,000 edges, which the
   margin correctly declines. Giving it a selective edge key means adding a property to a SHARED

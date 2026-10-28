@@ -136,6 +136,14 @@ const SHAPES: Record<string, { q: string; reached: boolean }> = {
   },
   // ...and a node count(*) the change cannot reach at all, as the null control for this pair.
   'node-count': { q: 'MATCH (v:P) RETURN count(*) AS a', reached: false },
+  // THE GROUP BY's ZERO-MATCH TWIN (item 1050). Item 1048's lesson is that a slow reading does not
+  // establish that a route is MISSING — `min`/`max` looked unseeded and were not. So before
+  // building anything, ask the reachability question directly: an INDEXED key matching zero edges
+  // costs ~nothing if the group path seeds, and the full scan if it does not.
+  'group-zero': {
+    q: 'MATCH ()-[e:PAID]->() WHERE e.amount = 99999 LET k = e.amount RETURN k, count(*) AS a GROUP BY k',
+    reached: false,
+  },
 };
 
 const name = process.env.SHAPE ?? 'named-clause';
@@ -174,7 +182,7 @@ for (let r = 0; r < REPS; r++) {
     answer = toArray(traversal(E(), has('amount', 500), values('amount')), g).length;
   } else if (shape.q === 'GREMLIN') {
     [answer] = toArray(traversal(E(), has('amount', 500), count()), g);
-  } else if (name.startsWith('agg-') || name.startsWith('node-')) {
+  } else if (name.startsWith('agg-') || name.startsWith('node-') || name.startsWith('group-')) {
     // An aggregate returns one row (or one per group); take its first cell, whatever it is named.
     const rows = tsQuery(g, shape.q) as Record<string, unknown>[];
 
