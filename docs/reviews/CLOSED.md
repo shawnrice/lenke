@@ -33469,3 +33469,34 @@ relocated this gap rather than closing it.** OPEN; the `values` side's 1.5 ms is
 (the `has` side's 0.1 ms is the frontier fold at ~0.5 ns a node, about right).
 
 Gates: fmt 0, check 0, gremlin package 921 tests passing, 7/7 byte-identity fuzzers 13 pass / 0 fail.
+
+## 1139 — 🔶 DIAGNOSED to one line: the TS 1.64x is `hasChain` admitting `has(k, pred)` and declining `has(k)`, which is a DIFFERENT step kind — the archetypal spelling bug
+
+`executor/count-shortcut.ts`, `hasChain`: `if (step.kind !== 'has') return undefined;`. A
+one-argument `has('age')` builds `{kind:'hasKey'}`, so this declines, every dependent rung declines,
+and the query falls to the general stream. Instrumented, not inferred — the trace fired 5x for S1
+(once per rep):
+
+```text
+  5 TRACE1139 hasChain declines on step kind=hasKey    <- S1 out().has(age).count()
+  5 TRACE1139 hasChain declines on step kind=values    <- S2, which has its OWN hop-values route
+```
+
+S2 declines the chain too and is still 1.64x faster, so the gap is not "S2 is optimized" but "S1
+reaches nothing". ⚠️ **This is exactly CLAUDE.md's archetype** — "recognized one spelling of a
+predicate and scanned for another that meant exactly the same thing" — which historically cost
+100-300x and always returned the right answer.
+
+⚠️ **DO NOT just widen the `kind` check.** The consumers read `filters[i].key`/`.pred`, and **there
+is no presence `Predicate`**: every variant in `ast.ts` reads a VALUE (eq/neq, 4 ordering ops,
+between/inside/outside, within/without, 5 TextP ops). `dispatch.ts` evaluates `hasKey` as
+`keys.some((k) => k in bag)` — presence, counting a stored present-null, the same `present_at` vs
+`has_value_at` distinction that cost a mutant verdict at item 1136. Synthesising
+`has(k, <always-true pred>)` would reintroduce it as a silent wrong answer on a present-null, since
+every predicate drops missing-or-incomparable via the NaN path.
+
+**Contained design (next tick):** split `rest` into single-key `hasKey` and `has` steps; when `rest`
+is PRESENCE-ONLY (the measured shape) take a dedicated arm testing `k in bag` per candidate; leave
+the MIXED case declining (correct, merely slow). ⚠️ Deliberately NOT adding a per-row branch to the
+existing unrolled loops — this file records entering a call at ~65 ns a row (item 934) and the
+unrolls exist to remove exactly that. OPEN.
