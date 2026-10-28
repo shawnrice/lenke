@@ -31843,3 +31843,37 @@ undefined, and the rung declines.
 
 (Two self-inflicted test-edit errors, both caught instantly by the suite: aliasing the `both` step
 import broke ten call sites, and one new test pasted GQL pattern syntax into the Gremlin file.)
+
+## 1093 — ❌ REVERTED, premise wrong: the filtered two-hop undirected count does NOT reach `buildFilteredTwoHopCount`
+
+The target is real and STILL OPEN:
+
+```text
+  (a:P)-[:T]-(b)-[:T]-(c) WHERE a.age > 60     755.89 ms   ← target
+  (a:P)-[:T]->(b)-[:T]->(c) WHERE a.age > 60    35.78      ← directed twin, has a rung
+  (a:P)-[:T]-(b)-[:T]-(c)  bare                 34.90      ← bare undirected, has a rung
+  (a:P)-[:T]-(b)-[:T]-(c) WHERE true          2197.10      ← the general path
+```
+
+I found `buildFilteredTwoHopCount` declining `both`, and built it: `firstBoth`/`secondBoth` flags,
+`undirectedSide` for the second leg (it already carries ISO-GQL's loop-ONCE rule, unlike Gremlin's
+`both()` which yields a loop twice — items 1086/1087), and a SEPARATE `firstLegUndirected` loop for
+the first leg per item 159 / item 1091's 1.54x.
+
+**Correct and dead.** Eight shapes matched the general path on a fixture with TWO self-loops, mixed
+pair included (`both.out` 8 vs `out.both` 9, so not symmetric by accident) — and the measurement did
+not move: 740.54 against 755.89.
+
+One `console.error` at the function's return showed why: **neither the undirected query NOR the
+directed one that runs at 36.97 ms reaches it.** That shape is answered elsewhere.
+
+### ➡️ THE METHOD STEP SKIPPED IS IN THE LOOP'S OWN PROMPT
+
+"**verify the planner reaches the shape**". I checked the arithmetic against the general path, the
+loop rule on a looped fixture, and the control-protecting loop split — and never that the query
+enters the function. **A decline that matches your query's SHAPE is not evidence that your query
+reaches it.** One `console.error` BEFORE the work, not after.
+
+Reverted entirely (gql 3069/0): a correct-but-unreachable arm is maintenance cost with no
+measurement behind it. 755.89 sitting between the rung and `WHERE true` says the query is on a
+PARTIAL route; `detectCountShortcut` is the entry and identifying the real rung is the next step.
