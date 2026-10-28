@@ -96,7 +96,7 @@ enum Lang {
 use Lang::{Gql, Gremlin};
 
 /// Optimized plan (debug) + best-of-N time + row count, or the parse/opt error.
-fn plan_and_time(lang: &Lang, q: &str, store: &Store) -> Result<(String, f64, usize), String> {
+fn plan_and_time(lang: &Lang, q: &str, store: &Store) -> Result<Timed, String> {
     let raw = match lang {
         Gql => lenke_engine::gql::parse(q),
         Gremlin => lenke_engine::gremlin::parse(q),
@@ -111,11 +111,75 @@ fn plan_and_time(lang: &Lang, q: &str, store: &Store) -> Result<(String, f64, us
         best = best.min(t.elapsed().as_secs_f64() * 1e3);
         rows = out.rows.len();
     }
-    Ok((plan_str, best, rows))
+
+    // BELOW THE PRINT'S RESOLUTION: time a BATCH and divide, so a sub-microsecond query gets a
+    // number instead of `0.000` (item 1051).
+    //
+    // WHY THIS AND NOT A BIGGER FIXTURE. Eight of this probe's 38 groups reported "below the
+    // timer's resolution — no cost to compare", i.e. a fifth of the instrument built to catch
+    // equivalent-spelling cliffs could not see one. Raising `SPELL_N` from 100,000 to 1,000,000
+    // left all eight unchanged, which is the answer: those queries are answered in CONSTANT time
+    // (a bucket size, an index point lookup), so no fixture makes a single run resolvable. The
+    // batch does, because 1,000 runs of a 200 ns query is 200 us.
+    //
+    // ONLY the unresolvable ones are batched, so every figure recorded against this probe at the
+    // single-run timing stays comparable — a blanket change would have invalidated them all.
+    let batched = best < RESOLVE_FLOOR_MS;
+
+    if batched {
+        let t = Instant::now();
+        for _ in 0..BATCH {
+            let out = lenke_engine::exec::try_run(&plan, store).map_err(|e| e.to_string())?;
+            rows = out.rows.len();
+        }
+        best = t.elapsed().as_secs_f64() * 1e3 / f64::from(BATCH);
+    }
+
+    Ok((plan_str, best, rows, batched))
+}
+
+/// A plan, its time, its row count, and WHETHER THE TIME IS A BATCH AVERAGE rather than a
+/// min-of-7 single run.
+///
+/// The flag is load-bearing, not bookkeeping: `min` of several runs is an OPTIMISTIC estimator and
+/// a batch average is not, so comparing one against the other biases toward calling the batched
+/// side slower. Within a group every variant must therefore be measured the SAME way, and the
+/// verdict below refuses to compare a group whose variants were not.
+type Timed = (String, f64, usize, bool);
+
+/// Below this, a single run prints as `0.000` and the group is not compared — so it is re-timed as
+/// a batch. Two print digits of headroom above the 0.001 ms the format can show.
+const RESOLVE_FLOOR_MS: f64 = 0.005;
+
+/// Runs per batch for a sub-resolution query. 1,000 x ~200 ns is ~200 us — three orders of
+/// magnitude above the timer's noise, and still a blink per group.
+const BATCH: u32 = 1_000;
+
+/// A `usize`-ish env override, or the default — the knobs the TS twin has had all along
+/// (`SPELL_N`, `SPELL_REPS`) and this probe did not (item 1051).
+///
+/// WHY IT MATTERS RATHER THAN BEING A CONVENIENCE. At the hardcoded 100,000 x 5, EIGHT of this
+/// probe's 38 groups report "below the timer's resolution — no cost to compare", so a fifth of the
+/// instrument built to catch equivalent-spelling cliffs was permanently unable to see one, and
+/// there was no way to raise the size. CLAUDE.md's first rule for trusting a number is to SWEEP THE
+/// SIZE — "cache-resident and not are different questions; the transition is between 200k and 1M
+/// elements" — which a probe pinned at one size cannot honour.
+fn env_u32(key: &str, default: u32) -> u32 {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(default)
 }
 
 fn main() {
-    let store = fixture(100_000, 5);
+    // Defaults UNCHANGED, so every figure recorded against this probe stays comparable; the knobs
+    // only let a deliberate hunt go bigger.
+    let nodes = env_u32("SPELL_N", 100_000);
+    let degree = env_u32("SPELL_DEG", 5);
+    let store = fixture(nodes, degree);
+
+    println!("fixture: {nodes} nodes x degree {degree}");
 
     // Each group: queries that MUST be semantically equivalent. Mixed GQL & Gremlin.
     let groups: &[(&str, &[(Lang, &str)])] = &[
@@ -695,9 +759,17 @@ fn main() {
                 Gremlin => "GRM ",
             };
             match plan_and_time(lang, q, &store) {
-                Ok((plan, ms, rows)) => {
-                    println!("  {tag}{ms:>8.3}ms  rows={rows:<7} {q}");
-                    results.push(Some((plan, ms, rows)));
+                Ok((plan, ms, rows, batched)) => {
+                    // SIX decimals when the figure is a batch average, because the whole point of
+                    // batching is that three digits printed `0.000` — and a `b` so the estimator
+                    // is visible in the output rather than only in the verdict.
+                    if batched {
+                        println!("  {tag}{ms:>8.6}ms b rows={rows:<7} {q}");
+                    } else {
+                        println!("  {tag}{ms:>8.3}ms   rows={rows:<7} {q}");
+                    }
+
+                    results.push(Some((plan, ms, rows, batched)));
                 }
                 Err(e) => {
                     println!("  {tag}   ERR  {q}  -> {e}");
@@ -707,24 +779,38 @@ fn main() {
         }
         // Separate a CAPABILITY gap (a variant did not parse — a missing feature, not
         // a perf finding) from a PERF CLIFF (all variants parsed but cost differs).
-        let ok: Vec<&(String, f64, usize)> = results.iter().flatten().collect();
+        let ok: Vec<&Timed> = results.iter().flatten().collect();
         if ok.len() < variants.len() {
             println!("  ○ capability gap: a variant did not parse/run (a syntax gap, not perf)");
             gaps += 1;
             continue;
         }
         let plan0 = &ok[0].0;
-        let same_plan = ok.iter().all(|(p, _, _)| p == plan0);
+        let same_plan = ok.iter().all(|(p, _, _, _)| p == plan0);
         let rows0 = ok[0].2;
-        let same_rows = ok.iter().all(|(_, _, r)| *r == rows0);
-        let tmin = ok.iter().map(|(_, t, _)| *t).fold(f64::MAX, f64::min);
-        let tmax = ok.iter().map(|(_, t, _)| *t).fold(0.0, f64::max);
+        let same_rows = ok.iter().all(|(_, _, r, _)| *r == rows0);
+        let tmin = ok.iter().map(|(_, t, _, _)| *t).fold(f64::MAX, f64::min);
+        let tmax = ok.iter().map(|(_, t, _, _)| *t).fold(0.0, f64::max);
         let ratio = if tmin > 0.0 { tmax / tmin } else { 1.0 };
-        // Under ~1us the timer's own resolution dominates, and the ratio of two such
-        // numbers is noise — the operand-free count group reported a 1.57x "cliff"
-        // between two measurements that both printed as 0.000ms.
-        if tmax < 0.001 {
-            println!("  ✓ all variants below the timer's resolution — no cost to compare");
+        // ONE ESTIMATOR PER GROUP (item 1051). The blanket `tmax < 0.001` floor that used to sit
+        // here was right about its reason — "under ~1us the timer's own resolution dominates, and
+        // the ratio of two such numbers is noise", after the operand-free count group reported a
+        // 1.57x "cliff" between two readings that both printed 0.000ms — and wrong about the
+        // remedy: it declined to compare EIGHT of 38 groups permanently, and raising `SPELL_N`
+        // from 100,000 to 1,000,000 left all eight unchanged, because those queries answer in
+        // CONSTANT time and no fixture makes a single run resolvable.
+        //
+        // Batch timing removes the cause instead, so the floor goes. What replaces it is the
+        // hazard the batch INTRODUCES: `min`-of-7 is optimistic and a batch average is not, so a
+        // group with one of each is two estimators in one ratio. That is refused rather than
+        // reported.
+        let batched = ok.iter().filter(|(_, _, _, b)| *b).count();
+
+        if batched != 0 && batched != ok.len() {
+            println!(
+                "  ✓ {batched}/{} variants needed batch timing — MIXED ESTIMATORS, not compared",
+                ok.len()
+            );
             continue;
         }
         // A group tagged ROWS_MAY_DIFFER returns the same answer in a different

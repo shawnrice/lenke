@@ -29614,6 +29614,33 @@ in order>` prints every run. (1) The band's first draft sat AFTER `if (p < 0.68)
   unordered results (permitted, but item 1039 is the reminder that "permitted" and "nothing
   observes it" are different claims), and an order-SENSITIVE aggregate must still refuse it. Open
   alongside item 1042's CSR question.
+- **✅ THE RUST SPELLING PROBE COMPARED 15 OF 38 GROUPS; NOW 20 (item 1051).** Eight reported "all
+  variants below the timer's resolution — no cost to compare", and the fixture was hardcoded
+  `fixture(100_000, 5)` with no knob where the TS twin has `SPELL_N`/`SPELL_REPS`. Added
+  `SPELL_N`/`SPELL_DEG` (defaults unchanged), batch timing below `RESOLVE_FLOOR_MS` (1,000 runs
+  divided, six decimals, `b` marker — turns `0.000ms` into `0.000322`), and replaced the blanket
+  `tmax < 0.001` floor with a refusal only for MIXED estimators. **The floor removal is the change
+  that does the work**: blind 8 → 0, compared 15 → 20, and `NO PERF CLIFFS` still, so the engine is
+  genuinely clean on the five groups never checked before.
+- **🛑 MY FIRST TEETH CHECK WAS INVALID AND THE SECOND REFUTED MY EXPLANATION (item 1051).** I
+  claimed batching made the groups comparable. Setting `RESOLVE_FLOOR_MS = 0.0` so nothing batches
+  reported `blind=0 compared=20`, IDENTICAL to shipping — because I had deleted the `println!` that
+  says "below the timer's resolution", so **`grep -c` was counting a string no longer in the
+  program.** Re-tested on the only thing that matters, ratio STABILITY, three runs per arm: batched
+  `1.01 1.01 1.22 1.28 1.00 1.08 1.06 1.34 …` against unbatched `1.00 1.01 1.26 1.17 1.00 1.00 1.04
+1.25 …` — **indistinguishable, and stable in both.** So batching makes the fast groups' figures
+  READABLE and changes no verdict or ratio; the hypothesis that sub-microsecond readings were too
+  noisy to compare is NOT established on this box.
+- **⚠️ LEFT HONESTLY UNPROVEN (item 1051)**: the mixed-estimator guard has never been observed to
+  fire (`mixed=0` in shipping AND at a deliberately splitting floor of 0.06, because no group's
+  variants straddle either) — kept because `min`-of-7 against a batch average is a real bias, but
+  flagged rather than left looking verified. And removing the floor could in principle re-expose the
+  1.57x false positive it was added for; six runs cap the ratio at 1.34 at the same positions, which
+  is evidence, not proof.
+- **METHOD — "the count went to zero" can mean the COUNTER was removed (item 1051).** A grep-based
+  check on a log line is only as good as that line's continued existence, and the edit under test
+  was the one that deleted it. Measure the QUANTITY the change is supposed to affect — here the
+  ratios — not a message about it.
 - **⚠️ OPEN — `spelling-probe.ts` CANNOT SEE the edge-seed route (item 1035).** It declares only
   VERTEX indexes and its one edge property is `w = e % 5`, a fifth of 600,000 edges, which the
   margin correctly declines. Giving it a selective edge key means adding a property to a SHARED
