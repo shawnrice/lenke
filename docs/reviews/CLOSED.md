@@ -33707,3 +33707,40 @@ and 1.16x at item 1137; isolated both times it is flat (here PRE 15930.6/14701.5
 15139.8/14825.7/14832.4 = 1.008x). It has a ~10% spread of its own — isolate before chasing.
 
 Suite 1279+13+725; `rewrite_fuzz` 10; 7/7 byte-identity fuzzers 13 pass / 0 fail.
+
+## 1145 — 🔶 PRICED at **29x-3120x** and GROUND-TRUTHED: the other spelling of the same hop, `outE(T).inV()`, costs 29x to 3120x what `out(T)` costs
+
+⚠️ **Equivalence confirmed in a real TinkerPop console first** (`podman run -i
+docker.io/tinkerpop/gremlin-console:3.7.3`, modern toy graph), not assumed and not read off lenke:
+
+```text
+  out('knows') ids         = [2, 4]
+  outE('knows').inV() ids  = [2, 4]    <- IDENTICAL, so ONE question
+  outE('knows').outV() ids = [1, 1]    <- the SOURCE: a DIFFERENT question, NOT comparable
+```
+
+The probe's C3 row uses `outV` deliberately; conflating it with `inV` would have produced a
+confident measurement of nothing.
+
+200,000 nodes, degree 1, every row answering 200000:
+
+```text
+  out().count()                        0.2 us
+  outE().inV().count()               624.0      3120x
+  out().has(age).count()              83.4
+  outE().inV().has(age).count()     2520.7        30.2x
+  out().values(age).count()           83.1
+  outE().inV().values(age).count()  2406.3        29.0x
+```
+
+Largest gap priced this session. `out().count()` is answered from the CSR offsets without walking;
+the edge spelling walks every edge.
+
+**Cause already on record:** item 1134 found that **`chain_width` has no `EdgeVertex` arm**, so an
+edge-then-endpoint hop is not a chain for any count-fold or fused path; item 1137's claim trace
+confirmed `outE().outV().values().count()` is claimed by NOTHING.
+
+⚠️ **DO NOT widen `chain_width`** — 18 call sites, and its contract is that count-fold callers
+re-CHECK what the width sees through; a caller that does not account for the extra `EdgeVertex` slot
+gets a wrong answer with a plausible count. Use the route that worked at item 1143: a width notion
+for the count-fold paths only plus a matching `frontier_counts` arm. OPEN.

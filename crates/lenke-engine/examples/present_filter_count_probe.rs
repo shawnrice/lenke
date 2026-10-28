@@ -48,6 +48,18 @@ fn main() {
     println!("  label                                   us        answer");
 
     for (label, q) in [
+        // THE OTHER SPELLING OF THE SAME HOP (item 1145). `out(T)` IS `outE(T).inV()` — the
+        // edge's HEAD. (`outV` is the edge's SOURCE and a DIFFERENT question; the C3 row below
+        // uses it deliberately and is not comparable to these.)
+        ("E1 outE.inV.count", "g.V().outE('KNOWS').inV().count()"),
+        (
+            "E2 outE.inV.has(age).count",
+            "g.V().outE('KNOWS').inV().has('age').count()",
+        ),
+        (
+            "E3 outE.inV.values(age).count",
+            "g.V().outE('KNOWS').inV().values('age').count()",
+        ),
         // The NUMERIC key, which is where item 1138 saw the pair 12x apart. `name` is a Str
         // column and `age` a Num one, so these four rows separate the KEY'S TYPE from the degree.
         (
