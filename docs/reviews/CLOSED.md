@@ -14463,6 +14463,25 @@ Also note `build_typed`'s inner `for t in &mut typed` pushes an offset for EVERY
 so `rebuild_csr` is O(V × ntypes + E), not O(V + E) — which is why the rebuild column climbs from
 5.87x of a read at 1k to 12.55x at 200k.
 
+## 1058 — ⚠️ REFUTED: sorting on an output ALIAS does not refuse the top-k
+
+The top-k path is gated on `!proj.orderNeedsOutput`, so `RETURN n.k + 1 AS c ORDER BY c LIMIT 10`
+looked bound to refuse the top-k that `ORDER BY n.k + 1 LIMIT 10` reaches — the named defect class.
+**Measured at 200k, median of warm 9: the spellings CONVERGE**, and the alias form is marginally
+FASTER in both pairs: plain 8.39 (alias) against 11.00 (input), arithmetic 35.44 against 36.88. Two
+no-LIMIT controls land together at ~25.5 ms, confirming the instrument.
+
+**The discriminator is the sort KEY's cost, not the spelling**: a plain property key gives 8-11 ms,
+an arithmetic key 35-37 — **~3.3x**, both spellings alike. And the arithmetic top-k (35-37) is
+SLOWER than a full sort on a plain key (25.75), because the key closure runs per row inside the
+heap. A legitimate separate target, recorded as a COST question rather than renamed to fit the
+defect class I went looking for.
+
+**Why the hypothesis was wrong**: reading the gate told me what the flag MEANS, not when it is SET.
+An alias whose defining expression reads only the input does not count as "needs output" — correct
+behaviour, presumably deliberate. **A gate's existence is not evidence that it fires** — the same
+mistake as item 1048's symbol grep answering a reachability question, one day apart.
+
 ## 1054-1056 — ✅ FIXED: a cross-engine divergence from CI, diagnosed and closed
 
 **`foldPageIntoReturn` (item 969) must REFUSE when the page drops rows and the projection can
