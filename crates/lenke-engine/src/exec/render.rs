@@ -197,6 +197,28 @@ pub(super) fn render_edges(store: &Store, eids: &[u32]) -> Vec<Value> {
         .iter()
         .map(|(k, _)| Value::Str(Arc::clone(k).into()))
         .collect();
+    // THE EDGE-LABEL HOIST (item 1069), the mirror of item 1068's and worth more, because the
+    // edge side paid THREE costs per row where the node side paid one:
+    //
+    //   - `edge_labels_of_refs` allocated a `Vec<&str>` per row;
+    //   - it resolved each type id through `etype_name_ref`, a LINEAR SCAN of `etype_ids`, so a
+    //     graph with T edge types paid O(T) per label per row;
+    //   - `Value::Str(&str)` then COPIED the name's bytes, heap-allocating past `INLINE_CAP`.
+    //
+    // One `Value` per TYPE ID, built once per call, removes all three: the ids come straight off
+    // `edge_label_ids` and the `Value` is cloned (a relaxed `fetch_add`).
+    //
+    // Measured on `edgelabel_1069` at 100,000 rows — the corpus holds BOTH axes at their flat
+    // corner (one short edge type), which is why that probe exists:
+    //
+    //   T=1  len=6   223.3 ns/row       T=1  len=20   236.3
+    //   T=8  len=6   223.3              T=8  len=20   235.5
+    //   T=64 len=6   222.7              T=64 len=20   258.0
+    let etype_vals: Vec<Option<Value>> = store
+        .etype_names_by_id()
+        .into_iter()
+        .map(|n| n.map(|n| Value::Str(n.into())))
+        .collect();
     eids.iter()
         .map(|&eid| {
             if eid == u32::MAX {
@@ -211,9 +233,26 @@ pub(super) fn render_edges(store: &Store, eids: &[u32]) -> Vec<Value> {
                     .node_ext_id(n)
                     .unwrap_or_else(|| GStr::from(n.to_string()))
             };
-            let mut labels = store.edge_labels_of_refs(eid);
-            labels.sort_unstable();
-            let labels = Value::List(labels.into_iter().map(|t| Value::Str(t.into())).collect());
+            let labels = {
+                let (primary, extra) = store.edge_label_ids(eid);
+                // Same ORDER as before: the names were collected type-first then secondaries and
+                // then sorted, and `sort_label_values` sorts the `Value`s by the same bytes
+                // `sort_unstable` sorted the `&str`s by.
+                let mut ls: Vec<Value> = Vec::with_capacity(1 + extra.len());
+
+                if let Some(Some(v)) = primary.and_then(|t| etype_vals.get(t as usize)) {
+                    ls.push(v.clone());
+                }
+
+                for &t in extra {
+                    if let Some(Some(v)) = etype_vals.get(t as usize) {
+                        ls.push(v.clone());
+                    }
+                }
+
+                sort_label_values(&mut ls);
+                Value::List(ls)
+            };
             let mut props: Vec<(Value, Value)> = Vec::new();
 
             for (j, (_, m)) in maps.iter().enumerate() {

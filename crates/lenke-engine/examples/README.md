@@ -76,6 +76,7 @@ enumeration's is flat.
 | What does `RETURN DISTINCT <temporal>` cost PER KIND, and which reach the keyer? | `temporal_distinct_1015`             |
 | And what does a statement-position `ORDER BY <temporal> LIMIT k` pay?            | `temporal_distinct_1015` (topk)      |
 | What does a LABEL NAME's length cost an element render, per row?                 | `labelhoist_1068`                    |
+| And an EDGE element, by edge-type COUNT and name length?                         | `edgelabel_1069`                     |
 
 **Deferred** (need crate-private access or a large bespoke fixture, so not in a
 group binary yet): the eval-vs-columnar floor (`eval_vec` is crate-private — it

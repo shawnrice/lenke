@@ -2580,6 +2580,44 @@ impl Store {
             .map(|(name, _)| name.as_str())
     }
 
+    /// Edge `eid`'s TYPE id and any secondary label ids, borrowed — the index into
+    /// [`etype_names_by_id`](Self::etype_names_by_id).
+    ///
+    /// For callers that render MANY rows, this is what
+    /// [`edge_labels_of_refs`](Self::edge_labels_of_refs) costs them to avoid (item 1069): that
+    /// one allocates a `Vec` per call AND resolves each id through
+    /// [`etype_name_ref`](Self::etype_name_ref), which is a LINEAR SCAN of `etype_ids`.
+    #[must_use]
+    pub(crate) fn edge_label_ids(&self, eid: u32) -> (Option<u32>, &[u32]) {
+        (
+            self.edge_etype.get(eid as usize).copied(),
+            self.edge_extra.get(&eid).map(Vec::as_slice).unwrap_or(&[]),
+        )
+    }
+
+    /// Every edge-type name, indexed by type id — the inverse of `etype_ids`, built once.
+    ///
+    /// `etype_name_ref` answers the same question with a linear scan, which is fine for one
+    /// lookup and is O(T) per label per row for a render loop.
+    #[must_use]
+    pub(crate) fn etype_names_by_id(&self) -> Vec<Option<&str>> {
+        let len = self
+            .etype_ids
+            .values()
+            .copied()
+            .max()
+            .map_or(0, |m| m as usize + 1);
+        let mut out = vec![None; len];
+
+        for (name, &id) in &self.etype_ids {
+            if let Some(slot) = out.get_mut(id as usize) {
+                *slot = Some(name.as_str());
+            }
+        }
+
+        out
+    }
+
     /// All of edge `eid`'s labels BORROWED as `&str` — the allocation-light twin of
     /// [`edge_labels_of`](Self::edge_labels_of), which clones a `String` per label only
     /// for the caller to copy the bytes again into a `GStr`. Same order (type first,

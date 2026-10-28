@@ -30841,3 +30841,54 @@ Element materialization is **129x a scalar read** (349 vs 2.7 ns/row) and remain
 largest per-row cost. Item 390's ablation: 47% property loop, 37% two `Value::Map` allocations, 12%
 labels, ~0 external-id lookup. This item takes a slice of the 12%; the 37% is still open and item
 392 refuted the obvious attack on it (pre-sizing the property vector was 1.25x SLOWER).
+
+## 1069 — ✅ SHIPPED (RUST): the EDGE-label hoist, 1.11-1.31x. 🛑 And its FIRST CUT measured SLOWER than the code it replaced
+
+Item 1068's named next step. The edge side paid THREE costs per row where the node side paid one: a
+`Vec<&str>` allocated per row by `edge_labels_of_refs`, each type id resolved through
+`etype_name_ref` (a LINEAR SCAN of `etype_ids`), and then a byte COPY per name.
+
+### 🛑 The first cut was a regression, and the mechanism is what saved the idea
+
+Written with `chain`/`filter_map`/`collect` over an `Option`:
+
+```text
+  T=1 len=6  222.9 → 241.6  0.92x SLOWER     T=1 len=20  236.3 → 242.8  0.97x
+  T=8 len=6  219.3 → 240.2  0.91x SLOWER     T=8 len=20  235.5 → 240.6  0.98x
+  T=64 len=6 222.4 → 238.3  0.93x SLOWER     T=64 len=20 258.0 → 241.3  1.07x  (only win)
+```
+
+Both axes went flat — which is what the hoist is for — and the FLOOR rose from ~220 to ~240. On those
+numbers the call is to revert. **What stopped me is that the mechanism did not fit**: removing an
+allocation, a linear scan and a byte copy cannot be a net loss unless the REPLACEMENT costs more than
+all three, and the iterator machinery was the only thing added. Rewritten as the node twin writes it
+— `Vec::with_capacity(1 + extra.len())` and two indexed pushes:
+
+```text
+  T=1 len=6  218.6 → 196.5  1.11x     T=1 len=20  231.7 → 196.6  1.18x
+  T=8 len=6  218.5 → 195.1  1.12x     T=8 len=20  235.5 → 196.5  1.20x
+  T=64 len=6 222.4 → 196.4  1.13x     T=64 len=20 258.0 → 196.2  1.31x
+  CONTROL scalar 7.5 → 7.4           (no element rendered)
+```
+
+Flat at ~196 on every arm and below the PRE floor everywhere. PRE is the min of three rounds, POST of
+two, alternated. **The ~45 ns/row the chain cost exceeded everything the hoist removed** — and a
+measurement that only says SLOWER cannot tell you which it was. **If removing three costs makes a
+loop slower, suspect what you added, not the premise.**
+
+### The corpus CAN see this one, unlike item 1068's
+
+`element r` **304.7 → 287.3 ns/row (1.06x)**: the per-row `Vec` and the resolver scan are paid at T=1
+and six characters too, where only the byte copy needed a long name. `element p` 345.3 → 338.4
+(untouched), scalar and string controls flat.
+
+Teeth: `edge-wrong-type-index`, `edge-extras-dropped` and `edge-labels-unsorted` all CAUGHT by the
+existing 1,264-test suite. `bun run fuzz` 13/0 plus three deep differential runs.
+
+### ➡️ Where the element-render target stands now
+
+Items 338/390: element materialization is 129x a scalar read, ablated as **47% property loop, 37% two
+`Value::Map` allocations, 12% labels, ~0 external id**. The labels are now hoisted on both sides
+(1068, 1069). **The 37% is the remaining named target** — and item 392 already refuted the obvious
+attack (pre-sizing the property vector was 1.25x SLOWER), so the next attempt needs a different idea
+rather than a retry.
