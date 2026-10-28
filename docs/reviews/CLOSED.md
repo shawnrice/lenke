@@ -30622,3 +30622,52 @@ Both route gates are pure functions with their own unit tests (`topKPlan`, `heap
 answer-equivalent choices, so `perf-gate-needs-its-own-test`. `key-by-position` is why `topKPlan`'s
 tests earn their place: resolving `directKeys` positionally instead of by the key's own column is a
 wrong ANSWER whenever the sort order differs from the projection order.
+
+## 1065 — ❌ REFUTED: item 1064's lever does NOT apply to hops. ✅ LOCATED: the hop charges ~250 ns per START VERTEX, even for vertices with no edges
+
+### The refutation, which took one measurement
+
+```text
+  hop min(b.k)   scan + one property read, NO rows, NO selection   11.87 ms
+  hop top-10                                                       11.91
+```
+
+The rows and the selection together cost about **zero** on a 50,000-edge hop, so there is nothing for
+item 1064's "select during the scan" to remove. **Do not re-attempt it on the hop rung.**
+
+### What the same measurement located
+
+Two sweeps, each holding a different thing fixed:
+
+```text
+  |E| FIXED at 50,000, degree varied (three rounds)
+    degree  1   50,000 starts   13.54 / 13.47 / 16.07 ms     4.4x more than degree 2
+    degree  2   25,000 starts    3.03 /  3.09 /  3.06
+    degree 10    5,000 starts    0.97 /  1.07 /  0.93
+
+  SCAN FIXED at 50,000 vertices and 50,000 edges, only the number of vertices holding adjacency:
+    sources 50,000   hop-min 15.67   hop-proj 11.73   hop-top10 10.36   node-min 0.92
+    sources 10,000           11.88            12.48             18.17            0.69
+    sources  1,000           10.42            13.73             16.98            0.95
+```
+
+**Flat in the second sweep.** Not the degree, not the adjacency-map count, not the edge count: about
+**210-320 ns per START VERTEX of hop-specific overhead, charged even for the 49,000 vertices with no
+matching edge** — against 0.92 ms for the NODE scan over those same 50,000 vertices. All three hop
+rungs pay it, so it is in the shared walk.
+
+### ➡️ The fix it names, and the ceiling
+
+`hop count(*)` is **0.00 ms** on every arm, because `tallyHopCount` reads the EDGE-TYPE BUCKET
+(item 1035) instead of walking vertices. So one rung already avoids the overhead entirely, which is
+what makes an **edge-driven walk for a whole-graph typed hop** the lever: iterate the type bucket and
+resolve both endpoints off each edge. `relSeekedHopWalk` (item 1038) is already edge-driven, so the
+shape exists in the file.
+
+Priced: **projection 11.73 → 2-3 ms (4-5x)** — it must still build a row per result, ~42 ns each —
+and **aggregate 15.67 → under 1 ms (10x+)**, which builds none.
+
+Two constraints, both already written in `hop-projection.ts`: it applies only to UNORDERED shapes
+(an edge-driven order differs, and tie order is observable between the engines, item 605 — which is
+why a sort forces the start-driven walk), and a START LABEL has to be re-checked per edge, which is
+what the far-driven walk's `vacuousLabel` guard already handles.
