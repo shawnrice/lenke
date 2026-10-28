@@ -32153,3 +32153,32 @@ a sweep's 1.21x reads as a regression that is not there, or a real 1.2x regressi
 
 The comment now carries both ratios, which row inflates more and why, and the rule: **isolate them**
 (`BENCH_ONLY`). A ratio across two differently-inflated rows is not a ratio.
+
+## 1101 — 🔶 LOCATED (Rust): native's **2-hop count has NO fastpath at all**, and the O(1) typed degree it needs already exists
+
+`query_bench -- counts`, the group written for "which still enumerate": every shape is a tally or a
+scan except one.
+
+```text
+  label 0.3us   1-hop 0.3   filtered 91.2   grouped 377.6   count(prop) 93-112   countDISTINCT 164.6
+  2-hop  3695.1us   ← 3.7 ns an edge over 1,000,000 edges; the ONLY walker in the group
+```
+
+**TRACED, not inferred.** Instrumenting the four chain-count arms and running the case shows
+`try_frontier_count`, `try_3hop_product_count`, `try_nhop_sweep_count` and `try_fused_count` all
+ENTERED and all DECLINING — the general batched pipeline answers it. No rung, rather than a slow one.
+
+**The identity** is TS's item 590: `count = Σ_b indeg_{T1}(b) × outdeg_{T2}(b)`, valid only when the
+source set is every vertex (a filtered source makes arrivals a per-edge question again).
+`try_3hop_product_count`'s own doc names the gap, describing its identity as replacing "the 2-hop
+count-propagation SCATTER".
+
+**Why it is cheap here, which is the fact that decides it:** `store.out`/`inc` are NOT ordered by
+etype, so a typed degree looks like a walk — but **`slice_degree` already answers one in O(1)** in
+three cases (trivial filter → raw adjacency length; single wanted type without multi-label edges →
+edge-type index bucket; same without the index → per-type CSR slice once fresh). So on this fixture
+the product is O(V) with two O(1) reads: 200,000 vertices against 1,000,000 edge touches.
+
+**NOT BUILT.** Conditions to carry: unconstrained source (vacuous label folded), the `double_loops`
+flag (`matching_degree` takes it — Gremlin's loop-twice rule), and `slice_degree` returning `None`
+must fall back rather than walk silently.
