@@ -29263,6 +29263,25 @@ multiTypeEdgeCount === 0`) — one named type cannot double-count. Native's `Adj
 - **A BIMODAL ROW IMPERSONATED A REGRESSION FOR THE SECOND TIME THIS SESSION (item 1028).** The
   unselective-interval control read 1.402 → 2.129 on a single pair; alternated, PRE spans 1.27-3.10
   and POST 1.90-2.15 — overlapping. Item 1022 was the first. **Alternation settles it both times.**
+- **⚠️ OPEN, PRICED — an EDGE property index is UNREACHABLE from GQL: 38-150x (item 1031).**
+  `graph.edgePropertyIndex` exists and `@lenke/gremlin`'s `executor/index-seed.ts` seeds from it;
+  **nothing in `@lenke/gql` references it.** 100,000 edges, one `amount` value = 0.1%, edge hash
+  index declared: `E().has('amount', 500)` **0.030 ms**, GQL inline 1.088-1.164, GQL clause
+  2.855-4.543, and an UNINDEXED edge key 3.311-3.787. The clause spelling lands ON the unindexed
+  control, so the declared index does nothing for it; the inline one is a cheaper SCAN (`flatAdj`
+  pushes an inline rel predicate into the adjacency walk), not a seek.
+- **THE GREMLIN ARM IS WHAT MAKES THAT READABLE (item 1031).** Without it, 1.1 ms for 100 of
+  100,000 edges looks respectable rather than 38x off the index.
+- **➡️ (1) GQL EDGE SEEDING is feature-sized (item 1031).** Not a cheaper filter — a missing SEED:
+  the pattern enumerates every vertex and walks each adjacency, where the index would let it START
+  from the matching edges. New plan path plus a qualifying-shape question (both ends unbound, or
+  bound FROM the edge's endpoints).
+- **➡️ (2) `pushWhereIntoNode` HAS NO RELATIONSHIP TWIN, and that is contained (item 1031).** It
+  pushes a clause `WHERE` into the START NODE only (`path.start.variable`), so
+  `WHERE e.amount = 500` stays a clause filter — once per SURVIVING BINDING — while
+  `{amount: 500}` becomes an inline rel predicate evaluated inside the adjacency walk. **2.5-3.9x
+  between two spellings of one question**, by the same mechanism that function's own comment
+  records as 15.8x for the multi-pattern case. Fixable WITHOUT (1).
 - **✅ SHIPPED (TS) — the PARAM prefix, ~100x (item 1029).** `STARTS WITH $p`:
   **4.733/4.788/4.967 → 0.051/0.049/0.049 ms**, literal control flat. It needed LESS than 1028
   assumed — no compiled "successor of" form: a `CompiledExpr` is a closure, so the bound computes
