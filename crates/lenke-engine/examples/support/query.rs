@@ -228,6 +228,38 @@ pub fn run(cfg: &Cfg) {
                     "hop node, NO distinct",
                     "MATCH (p:Person)-[:KNOWS]->(q) RETURN q",
                 ),
+                // AND THE CONTROL THAT ROW NEVER HAD, by the same argument that produced it
+                // (item 1111). `hop node, NO distinct` separates the dedup from everything else,
+                // but not the ELEMENT from the rows: the same plan, the same row count, projecting
+                // a SCALAR off the same endpoint. The difference between the two is what
+                // materializing a node element costs, and nothing else.
+                (
+                    "hop prop, NO distinct",
+                    "MATCH (p:Person)-[:KNOWS]->(q) RETURN q.age",
+                ),
+                // THE DECOMPOSITION of that 68x, so the cause is located rather than guessed.
+                // Measured at 20,000 nodes x degree 5 (item 1111), per row:
+                //
+                //   scan prop       2.65 ns      hop prop         4.6 ns
+                //   hop two props  23.6          scan node      151
+                //                                hop node       328
+                //
+                // So an ELEMENT costs 151 ns a row off a scan and 328 off a hop, where two
+                // properties of the same endpoint cost 23.6. The cause is at EGRESS:
+                // `col_into_values` sends a `Col::Nodes` through `render_nodes`, which builds the
+                // whole element map — id, labels and every property — ONCE PER ROW. The hop is
+                // worse per row than the scan for two reasons that compound: its ids arrive in
+                // neighbour order rather than sequentially, and its 100,000 rows cover only
+                // ~19,861 DISTINCT nodes, so the same map is built about five times over.
+                //
+                // `id(q)` is NOT a row here: this engine has no such function (E_UNKNOWN_FUNCTION),
+                // and a row that always errors measures nothing.
+                ("scan node", "MATCH (p:Person) RETURN p"),
+                ("scan prop", "MATCH (p:Person) RETURN p.age"),
+                (
+                    "hop two props",
+                    "MATCH (p:Person)-[:KNOWS]->(q) RETURN q.age, q.city",
+                ),
                 (
                     "distinct prop",
                     "MATCH (p:Person)-[:KNOWS]->(q) RETURN DISTINCT q.city",

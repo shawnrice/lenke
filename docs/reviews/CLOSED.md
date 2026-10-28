@@ -32499,3 +32499,34 @@ regression**, not a theory.
 Tests: `slot-chain-count.test.ts` (13), forced-decline oracle plus TinkerPop literals, with a
 2,000-vertex fixture wide enough that the dense route is TAKEN and a narrow filter that falls back
 to the map route on the same graph. gremlin 918 pass; fuzzers 13/0.
+
+## 1111 — 🔶 LOCATED (Rust): returning an ELEMENT is **151-328 ns a row** against 2.65-4.6 for a property — a per-ROW element map at EGRESS, and it answers `distinct node`'s open question
+
+`query_bench -- gql`'s biggest row by an order of magnitude is `hop node, NO distinct`
+(33,616 us / 100,000 rows). Its own comment left open whether `distinct node`'s cost "is the dedup
+or simply the cost of producing ~1M rows and materializing 198,672 node elements". The group had no
+row projecting a SCALAR off the same hop, so it could not be told. Added, with a decomposition:
+
+```text
+  scan prop        2.65 ns/row      scan node      151 ns/row
+  hop prop         4.6              hop node       328
+  hop two props   23.6              distinct node  290  (19,861 rows)
+```
+
+**The hop and the rows are 459 us of 32,752 — 1.4%.** So 98.6% is element materialization and
+`distinct node` was never paying for its dedup: it pays the same per-row element cost over a fifth
+as many rows.
+
+**Cause, read not guessed:** `col_into_values`'s `Col::Nodes(ids) => render_nodes(store, &ids)` (and
+`resolve_elem`'s `Value::Node(id) => node_result_value(store, id)`) expand the cheap columnar
+`Col::Nodes(Vec<u32>)` into a FULL element map per ROW — id, labels, every property — at egress.
+`Value::Node` itself is only an id, which is why nothing in the pipeline shows it.
+
+Two effects compound on the hop, explaining why it is 2.2x the scan per row: neighbour-order ids
+make every property read a random access, and its 100,000 rows cover only **~19,861 distinct
+nodes**, so the same map is built ~5 times.
+
+**OPEN, actionable:** `render_nodes` has no memo. If `node_result_value` is `Arc`-backed, a per-id
+memo turns four of every five rebuilds into a refcount bump — one site, with `scan node` (no
+repeats) as the control that must not move. Not built yet: the element map's representation decides
+whether the memo clones or rebuilds, and that wants its own measurement.
