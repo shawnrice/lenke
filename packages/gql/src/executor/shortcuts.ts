@@ -4701,11 +4701,12 @@ const longChainCount = <T>(
   /** Clause-`WHERE` conjuncts bucketed by the node variable each one reads (item 305). */
   clauseGates?: ReadonlyMap<string, Expr[]>,
 ): CountOf<T> | null => {
-  if (
-    segments.some(
-      (s) => !plainRel(s.rel) || s.rel.variable !== undefined || s.rel.direction === 'both',
-    )
-  ) {
+  // `both` USED TO DECLINE HERE (item 1097). Measured at 60,000 vertices x degree 3:
+  // `(a:P)-[:T]-(b)-[:T]-(c)-[:T]-(d) WHERE a.age > 60` **2420.76 ms** against the directed twin's
+  // 68.69 — 35x — while the BARE undirected chain is already answered by `buildThreeHopCount`'s
+  // `aBoth`/`midBoth`/`dBoth`. So only the FILTERED chain fell through, the same boundary item
+  // 1094 found one hop down.
+  if (segments.some((s) => !plainRel(s.rel) || s.rel.variable !== undefined)) {
     return null;
   }
 
@@ -4751,6 +4752,7 @@ const longChainCount = <T>(
   const nodes = [start, ...segments.map((s) => s.node)];
   const allGates = [startGate, ...gates];
   const outs = segments.map((s) => s.rel.direction === 'out');
+  const boths = segments.map((s) => s.rel.direction === 'both');
   const hops = segments.length;
 
   // READ THE CHAIN BACKWARDS when its LAST position is gated and its first is not (item 308).
@@ -4806,6 +4808,9 @@ const longChainCount = <T>(
 
       legs.push({
         out: flip ? !outs[i] : outs[i],
+        // Reversing an undirected leg is the identity, so this needs no `flip` handling — which
+        // is also why item 308's and item 429's backwards readings stay sound with `both` legs.
+        both: boths[i],
         types: resolved[i],
         label: nodes[flip ? i : i + 1].label,
         gate: allGates[flip ? i : i + 1],
@@ -4836,13 +4841,41 @@ const longChainCount = <T>(
   };
 };
 
+/**
+ * The directions one chain leg traverses — module scope so a leg allocates nothing to say which
+ * passes it needs (item 1097). `edgesOfTypes`'s own header records what a per-edge allocation
+ * costs in this family; a per-leg one would be smaller and is still avoidable for free.
+ */
+const BOTH_DIRECTIONS: readonly boolean[] = [true, false];
+const OUT_ONLY: readonly boolean[] = [true];
+const IN_ONLY: readonly boolean[] = [false];
+
 /** One position of a chain: which way its incoming hop runs, its edge types, its node label. */
 type Leg = {
   out: boolean;
+  /** The incoming hop is `-[:T]-` (item 1097), so BOTH adjacency indexes are walked and a
+   *  self-loop is counted ONCE — ISO-GQL emits an undirected loop once, where Gremlin's `both()`
+   *  yields it twice (items 1086/1087/1092). `out` is then meaningless and is left as written. */
+  both: boolean;
   types: string[] | undefined;
   label: LabelExpr | undefined;
   /** The landed node's INLINE constraint, applied once per distinct vertex reached here. */
   gate: InlinePred | undefined;
+};
+
+/**
+ * Which directions one leg traverses: both for `-[:T]-`, one otherwise (item 1097).
+ *
+ * A function rather than a nested ternary at the call site, which `no-nested-ternary` rejects and
+ * which read worse anyway. The three results are module-scope constants, so a leg allocates
+ * nothing to say what it needs.
+ */
+const legDirections = (leg: Leg): readonly boolean[] => {
+  if (leg.both) {
+    return BOTH_DIRECTIONS;
+  }
+
+  return leg.out ? OUT_ONLY : IN_ONLY;
 };
 
 /** Everything one sweep needs, resolved once per query. An object so the call stays under the
@@ -4885,6 +4918,109 @@ type Sweep = {
  * the premise of this arm (items 296-298), and taking both would mean two sweeps, i.e. two
  * definitions of one thing. The CSR floor needs a dense adjacency the TS graph does not expose.
  */
+/**
+ * ONE DIRECTION of one chain leg: the frontier walk, extracted (item 1097).
+ *
+ * It is a function because the per-direction loop pushed `sweepChain` past two lint gates at once
+ * — complexity 42 against a maximum of 35, and a block depth of 6 against 5. `hopChainShape` is
+ * the file's own precedent ("Its own function because `hopChainCount` sits on the complexity
+ * gate"), and the call is per LEG-DIRECTION rather than per edge, so the hot body is untouched:
+ * item 1091 measured what a per-vertex call costs a control it cannot reach (1.54x).
+ *
+ * The slot arrays are REASSIGNED when they grow, so they travel in a mutable `st` and the grown
+ * ones are handed back. `next` and `nextFrontier` accumulate across both of a `both` leg's calls,
+ * which is what makes two passes one pass of the chain.
+ */
+const sweepOneDirection = (
+  st: {
+    graph: Graph;
+    params: Params;
+    binding: Map<string, unknown>;
+    slotOf: Map<string, number>;
+    idOf: string[];
+    cache: (Map<string, Set<Edge>> | undefined)[] | undefined;
+    cached: Map<string, Map<string, Set<Edge>>> | undefined;
+    ways: Float64Array;
+    next: Float64Array;
+    cap: number;
+    frontier: readonly number[];
+    nextFrontier: number[];
+  },
+  leg: Leg,
+  far: LabelExpr | undefined,
+  out: boolean,
+): void => {
+  const { graph, params, binding, slotOf, idOf, cache, cached, frontier, nextFrontier } = st;
+  const index = out ? graph.edgesFromByLabel : graph.edgesToByLabel;
+  // A self-loop sits in BOTH indexes and `-[:T]-` emits it ONCE, so the second pass skips it.
+  // Gated on the graph actually holding one, so a loop-free graph pays one boolean per leg.
+  const skipLoops = leg.both && !out && loopsOfTypes(graph, leg.types);
+
+  for (const slot of frontier) {
+    // Nonzero by construction — a slot joins a frontier only on its 0 -> w transition.
+    const w = st.ways[slot];
+
+    for (const e of edgesOfTypes(
+      cache === undefined ? index.get(idOf[slot]) : cache[slot],
+      leg.types,
+    )) {
+      if (skipLoops && e.fromId === e.toId) {
+        continue;
+      }
+
+      if (far !== undefined && !matchesLabel(out ? e.to : e.from, far)) {
+        continue;
+      }
+
+      const farId = out ? e.toId : e.fromId;
+      let to = slotOf.get(farId) ?? -1;
+
+      if (to < 0) {
+        to = idOf.length;
+        slotOf.set(farId, to);
+        idOf.push(farId);
+        cache?.push(cached?.get(farId));
+
+        if (to >= st.cap) {
+          st.cap *= 2;
+
+          const grownWays = new Float64Array(st.cap);
+          const grownNext = new Float64Array(st.cap);
+
+          grownWays.set(st.ways);
+          grownNext.set(st.next);
+          st.ways = grownWays;
+          st.next = grownNext;
+        }
+      }
+
+      if (st.next[to] === 0) {
+        // The gate is applied on the 0 -> w TRANSITION, so the vertex is resolved only here and
+        // an ungated pass never pays item 194's ~190ns endpoint lookup. A vertex that fails is
+        // simply never pushed, and because `next[to]` stays 0 it is re-tested if another edge
+        // reaches it — which is the behaviour, not an oversight. See below.
+        // `out`, NOT `leg.out` (item 1097). This one line was left on `leg.out` when the
+        // label check and `farId` above moved to the per-pass `out`, so a `both` leg's IN
+        // pass applied the gate to `e.to` — the vertex it came FROM — and admitted positions
+        // it should have rejected. Four tests caught it as an OVERCOUNT (20 against 11, 17
+        // against 8), and only the ones carrying an inline GATE: a label on the same position
+        // is checked above and was already correct, so the label cases passed and read as
+        // proof the leg was right.
+        if (
+          leg.gate !== undefined &&
+          !inlineHolds(leg.gate, out ? e.to : e.from, binding, params, graph)
+        ) {
+          continue;
+        }
+
+        nextFrontier.push(to);
+      }
+
+      st.next[to] += w;
+    }
+  }
+};
+
 const sweepChain = ({ graph, params, legs, startLabel, startGate }: Sweep): number => {
   const slotOf = new Map<string, number>();
   // Reused across every gate evaluation: `inlineHolds` binds the node's own variable into it, and
@@ -4902,7 +5038,10 @@ const sweepChain = ({ graph, params, legs, startLabel, startGate }: Sweep): numb
   // proving the 2.30x had never been available. So the cache is the gap, and a uniform direction
   // is the condition under which it is sound. `types` need not match: `edgesOfTypes` still
   // applies each leg's own types to the cached bucket map, and each leg keeps its own label.
-  const uniform = legs.every((l) => l.out === legs[0].out);
+  // An UNDIRECTED leg has no single index, so the per-slot adjacency cache below cannot apply
+  // (item 1097). It is worth 1.73x on a uniform DIRECTED chain and nothing is lost here: the
+  // shapes this disables it for were declining entirely a moment ago.
+  const uniform = legs.every((l) => !l.both && l.out === legs[0].out);
   const cache: (Map<string, Set<Edge>> | undefined)[] | undefined = uniform ? [] : undefined;
   const oneIndex = legs[0].out ? graph.edgesFromByLabel : graph.edgesToByLabel;
   const cached = uniform ? oneIndex : undefined;
@@ -4965,11 +5104,26 @@ const sweepChain = ({ graph, params, legs, startLabel, startGate }: Sweep): numb
   for (let i = 0; i < passes; i++) {
     const leg = legs[i];
     const far = effectiveLabel(graph, leg.label);
-    const index = leg.out ? graph.edgesFromByLabel : graph.edgesToByLabel;
     const nextFrontier: number[] = [];
     // A SECOND array rather than updating in place: a slot can be both read and written in one
     // pass, through a self-loop or any cycle shorter than the chain.
-    let next = new Float64Array(cap);
+    const next = new Float64Array(cap);
+    // The mutable slot state, handed to each direction pass. `ways`, `next` and `cap` are
+    // REASSIGNED when the arrays grow, so they live here and are read back after the passes.
+    const st = {
+      graph,
+      params,
+      binding,
+      slotOf,
+      idOf,
+      cache,
+      cached,
+      ways,
+      next,
+      cap,
+      frontier,
+      nextFrontier,
+    };
 
     // REJECTED, with its numbers, so it is not re-attempted: an INDEXED loop here instead of
     // `for...of` looked worth ~5% (715.5 against 752.7ms at five hops, three alternated rounds,
@@ -4978,57 +5132,11 @@ const sweepChain = ({ graph, params, legs, startLabel, startGate }: Sweep): numb
     // that side (255 -> 290, 961 -> 1197), which is the tell. DISJOINT RANGES OVER THREE ROUNDS
     // ARE NOT PROOF WHEN THE WHOLE SIDE MOVES; the control has to hold still too, and here it did
     // on the first reading and not on the second.
-    for (const slot of frontier) {
-      // Nonzero by construction — a slot joins a frontier only on its 0 -> w transition.
-      const w = ways[slot];
-
-      for (const e of edgesOfTypes(
-        cache === undefined ? index.get(idOf[slot]) : cache[slot],
-        leg.types,
-      )) {
-        if (far !== undefined && !matchesLabel(leg.out ? e.to : e.from, far)) {
-          continue;
-        }
-
-        const farId = leg.out ? e.toId : e.fromId;
-        let to = slotOf.get(farId) ?? -1;
-
-        if (to < 0) {
-          to = idOf.length;
-          slotOf.set(farId, to);
-          idOf.push(farId);
-          cache?.push(cached?.get(farId));
-
-          if (to >= cap) {
-            cap *= 2;
-
-            const grownWays = new Float64Array(cap);
-            const grownNext = new Float64Array(cap);
-
-            grownWays.set(ways);
-            grownNext.set(next);
-            ways = grownWays;
-            next = grownNext;
-          }
-        }
-
-        if (next[to] === 0) {
-          // The gate is applied on the 0 -> w TRANSITION, so the vertex is resolved only here and
-          // an ungated pass never pays item 194's ~190ns endpoint lookup. A vertex that fails is
-          // simply never pushed, and because `next[to]` stays 0 it is re-tested if another edge
-          // reaches it — which is the behaviour, not an oversight. See below.
-          if (
-            leg.gate !== undefined &&
-            !inlineHolds(leg.gate, leg.out ? e.to : e.from, binding, params, graph)
-          ) {
-            continue;
-          }
-
-          nextFrontier.push(to);
-        }
-
-        next[to] += w;
-      }
+    // ONE CALL PER DIRECTION the leg traverses: one for `out`/`in`, two for `both` (item 1097).
+    // Per LEG, so the per-edge body inside is the same work it was — item 159's rule, and item
+    // 1091's 1.54x is what a direction choice inside a hop body costs a control it cannot reach.
+    for (const out of legDirections(leg)) {
+      sweepOneDirection(st, leg, far, out);
     }
 
     // Nothing reaches this position, so nothing reaches any later one either.
@@ -5036,7 +5144,8 @@ const sweepChain = ({ graph, params, legs, startLabel, startGate }: Sweep): numb
       return 0;
     }
 
-    ways = next;
+    // Read back from `st`, because a pass that grew the arrays replaced them there.
+    ({ next: ways, cap } = st);
     frontier = nextFrontier;
   }
 
@@ -5054,9 +5163,20 @@ const sweepChain = ({ graph, params, legs, startLabel, startGate }: Sweep): numb
 
   const last = legs[legs.length - 1];
   const lastFar = effectiveLabel(graph, last.label);
+  // THE LAST POSITION IS A DEGREE, AND AN UNDIRECTED LAST LEG IS AN UNDIRECTED DEGREE (item 1097).
+  // This read `side(…, last.out, …)` and the per-leg direction loop above does not reach here —
+  // the last position is answered by a weighted sum of degrees rather than by a pass. So an
+  // undirected chain counted ONE direction at its final hop and answered EXACTLY HALF: two
+  // existing tests from item 484 caught it at 8 against 16 and 0 against 1, which is what a test
+  // asserting the answer buys over one asserting the route.
+  const lastLoops = last.both && loopsOfTypes(graph, last.types);
 
   for (const slot of frontier) {
-    count += ways[slot] * side(graph, idOf[slot], last.out, last.types, lastFar);
+    count +=
+      ways[slot] *
+      (last.both
+        ? undirectedSide(graph, idOf[slot], last.types, lastFar, lastLoops)
+        : side(graph, idOf[slot], last.out, last.types, lastFar));
   }
 
   return count;

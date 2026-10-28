@@ -31985,3 +31985,64 @@ and a second loop. Item 1091's first cut (a direction choice folded into a share
 on an unreachable control) says the shape to build is a SEPARATE undirected sweep chosen once — a
 tick's work, not a tail. Reuse `undirectedSide` for the loop-once rule; copy item 1094's
 `firstLegUndirected`.
+
+## 1097 — ✅ SHIPPED: the filtered UNDIRECTED chain, **15.1-21.7x**; the tests caught THREE things I missed, one in code I did not write
+
+```text
+  SUBJECTS                                PRE        POST
+    b3      3 undirected legs          2332.61 ->  107.46   21.7x
+    mixed3  one undirected leg of 3    1158.37 ->   76.81   15.1x
+    b4      4 undirected legs         (declined) -> 200.51
+  CONTROLS (the DIRECTED sweep)
+    o3 / o4 / o5    69.35->69.45 | 82.35->82.49 | 115.51->113.30   1.00 / 1.00 / 0.98x
+    bare3 (unfiltered undirected)          105.63 -> 103.96        0.98x
+```
+
+Alternated POST/PRE/POST, min of two POST rounds, arms asserted by symbol count, dist rebuilt per
+arm. 18 runs, 6 answers each ×3 ⇒ no shape changed its answer.
+
+**An ad-hoc probe said `o3` regressed 1.23x and it had NOT** — 5-rep median in a differently ordered
+process; the alternated A/B says 1.00x. `sweepChain` is the hot loop for every directed long chain,
+so that had to be settled, not explained.
+
+**Implementation:** `for (const out of leg.both ? BOTH_DIRECTIONS : leg.out ? OUT_ONLY : IN_ONLY)`
+around the frontier walk — per LEG, so the per-edge body is unchanged (item 159; item 1091's 1.54x is
+the alternative's price). `uniform` now requires `!l.both` since an undirected leg has no single
+index for the per-slot cache; a mutant dropping that fails 10 tests.
+
+### ⚠️ THREE BUGS, ALL FOUND BY TESTS
+
+1. **The degree tail** — the LAST position is a weighted sum of degrees via `side(…, last.out, …)`,
+   which the direction loop never reaches, so an undirected chain counted one direction at the final
+   hop and answered **exactly half**. Caught by **two pre-existing tests from item 484** (8 vs 16,
+   0 vs 1). **Removing a decline diverts shapes another rung answered correctly into the new path** —
+   which is why someone else's tests mattered more than mine here.
+2. **The gate's endpoint** — one line kept `leg.out` after the label check and `farId` moved to the
+   per-pass `out`, so a `both` leg's IN pass gated on `e.to`, the vertex it came FROM. Overcount
+   (20 vs 11, 17 vs 8), and **only in the GATE cases**: the label check one line above was already
+   correct, so every label case passed and read as proof the leg was fine.
+3. My first hypothesis blamed the labels. A brute-force enumeration of every undirected 3-hop walk
+   gave **29 and 4, matching both the fast route and the projection** — ruling the labels out in one
+   step and leaving the gate as the only candidate.
+
+**Teeth 11/12**; survivor is the answer-equivalent decline. Oracle is a ROW PROJECTION (item 1095) —
+`AND true` would be absorbed here too.
+
+### ➡️ THE LINT GATES FORCED AN EXTRACTION, AND A CONTROL GOT 1.27x FASTER
+
+The direction loop pushed `sweepChain` to **complexity 42 (max 35)** and **depth 6 (max 5)**, so the
+walk became `sweepOneDirection` — the precedent being `hopChainShape`, which exists for this same
+gate. Mutation after the refactor: **11/12 again, identical counts.** Re-running the A/B on the
+REFACTORED arm (the extraction touches the directed path the controls protect):
+
+```text
+                      PRE        POST
+  b3      SUBJECT  2278.08 ->   102.39   22.2x
+  mixed3  SUBJECT  1164.26 ->    75.99   15.3x
+  o3      CONTROL    68.60 ->    53.79    0.78x  ← 1.27x FASTER, NOT claimed
+  o4 / o5 / bare3            1.03 / 0.98 / 0.98x
+```
+
+`o3` cannot reach the new code, so its gain is the enclosing function getting smaller — the INVERSE
+of `ts-closure-size-is-load-bearing`, which items 119/141/159/286/1091 all measured in the costly
+direction. One shape of four, the rest flat: an observation, not a result.
