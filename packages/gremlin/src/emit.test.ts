@@ -11,6 +11,7 @@ import {
   drop,
   fold,
   has,
+  hasKey,
   id,
   max,
   mean,
@@ -104,4 +105,34 @@ describe('planToGremlin: the niladic path filters render', () => {
       expect(planToGremlin(plan)).toContain(expected);
     });
   }
+});
+
+// Item 1138. A presence filter had NO emit arm, so `planToGremlin` threw "unsupported step
+// hasKey" on every plan containing one — found while measuring a spelling pair, because the
+// native engine is driven as `natG.gremlin(planToGremlin(plan))` and a composed plan using
+// `has(k)` therefore could not reach it at all. Both engines always EXECUTED the step; only the
+// emitter was blind, which is the shape item 877 records for `E().hasLabel()`.
+describe('planToGremlin: presence filters', () => {
+  test('a one-argument has(k) emits as hasKey, since that is the step it builds', () => {
+    // `has('age')` with ONE argument builds `{kind:'hasKey'}`, not `{kind:'has'}`.
+    expect(planToGremlin(traversal(V(), hasKey('age')))).toBe("g.V().hasKey('age')");
+    expect(planToGremlin(traversal(V(), has('age')))).toBe("g.V().hasKey('age')");
+    // The two-argument form is a different step and keeps its own spelling, with the implicit
+    // equality rendered EXPLICITLY as `eq(...)` — which is what re-parses to the same predicate.
+    expect(planToGremlin(traversal(V(), has('age', 30)))).toBe("g.V().has('age', eq(30))");
+  });
+
+  test('multiple keys emit as ONE hasKey, because the form is ANY-of in both engines', () => {
+    // The TS executor tests `step.keys.some(...)` and the Rust parser folds the keys into an
+    // `Or` of `PropertyExists`. A chain of `has(k)` would be ALL-of and is the wrong rendering.
+    expect(planToGremlin(traversal(V(), hasKey('age', 'name')))).toBe(
+      "g.V().hasKey('age', 'name')",
+    );
+  });
+
+  test('the shape that found this: a presence filter mid-traversal under a count', () => {
+    expect(planToGremlin(traversal(V(), out('KNOWS'), has('age'), count()))).toBe(
+      "g.V().out('KNOWS').hasKey('age').count()",
+    );
+  });
 });

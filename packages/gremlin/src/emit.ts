@@ -402,6 +402,18 @@ const emitStep = (step: Step): string => {
       return `${step.kind}(${step.labels.map(emitLiteral).join(', ')})`;
     case 'hasLabel':
       return `hasLabel(${step.labels.map(emitLiteral).join(', ')})`;
+    // Item 1138. This arm did not exist, so `planToGremlin` THREW on any plan containing a
+    // presence filter — and `has('k')` with one argument builds a `hasKey` step, not a `has`
+    // one (`steps/filters.ts`). Both engines EXECUTE it correctly; only the emitter could not
+    // render it, which meant a composed plan using `has(k)` could not reach the native engine
+    // at all, since that path is `natG.gremlin(planToGremlin(plan))`.
+    //
+    // `hasKey(...)` rather than a chain of `has(k)`, because the multi-key form is ANY-of in
+    // BOTH engines and the chain would be ALL-of: the TS executor tests `step.keys.some(...)`
+    // and the Rust parser folds the keys into an `Or` of `PropertyExists`. Checked in both
+    // rather than assumed from the step's name.
+    case 'hasKey':
+      return `hasKey(${step.keys.map(emitLiteral).join(', ')})`;
     case 'has':
       return `has(${emitLiteral(step.key)}, ${emitPredicate(step.pred)})`;
     case 'is':

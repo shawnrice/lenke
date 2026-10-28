@@ -33430,3 +33430,42 @@ Isolated, three alternated rounds: PRE 16313.1/15422.7/14813.9 (10% spread alone
 14671.0/14672.2/15156.8 — POST marginally faster. In-sweep interference on a noisy row (item 737's
 phantom); the row has no `count(*)` so the change cannot reach it. 103 rows compared, nothing else
 moved. `rewrite_fuzz` green; 7/7 byte-identity fuzzers 13 pass / 0 fail, artifact timestamps checked.
+
+## 1138 — ✅ FIXED a real emit bug (`planToGremlin` could not render a presence filter at all), then measured TWO open spelling gaps — one of which **item 1137 created**
+
+⚠️ **`emit.ts` had NO `hasKey` arm**, so `planToGremlin` threw `unsupported: step hasKey` on any plan
+containing a presence filter — and `has('k')` with ONE argument builds `hasKey`, not `has`
+(`steps/filters.ts:34`). Both engines always EXECUTED it; only the emitter was blind. Since the
+native engine is driven as `natG.gremlin(planToGremlin(plan))`, **a composed plan using `has(k)`
+could not reach the native engine at all** — item 877's shape (a step the emitter cannot render is
+one the differential path cannot see).
+
+Fixed as `hasKey(...)`, NOT a chain of `has(k)`: the multi-key form is **ANY-of in both engines** (TS
+`step.keys.some(...)`, Rust an `Or` of `PropertyExists`), so a chain would be ALL-of and silently
+wrong. Verified in both rather than inferred from the name. Also note `has('age', 30)` emits
+`has('age', eq(30))` — the implicit equality is rendered explicitly.
+
+`packages/native/present-spelling-probe.ts` (new), 200k nodes / 200k edges, median of 9 dropping 3,
+3 runs, both spellings asserted to return the same answer and TS asserted equal to native:
+
+```text
+                             ts_ms     ffi_ms     answer
+  S1  out.has(age).count     172.0      0.1      [200000]
+  S2  out.values(age).count  104.5      1.5      [200000]
+  C   out.count      [ctl]     0.0      0.0      [200000]
+  ts: S1 172.0/189.8/189.0   S2 104.5/105.2/107.0
+  ffi: S1 0.1/0.2/0.1        S2 1.5/1.5/1.5
+```
+
+⚠️ **GAP 1 — the TS engine has its own 1.64x**, `has` slower, stable. Separate implementation, not
+inherited from the Rust side. OPEN.
+
+⚠️ **GAP 2 — item 1137's claim does NOT generalize, and this corrects it.** 1137 measured T1/T2 at
+1944.0/1924.2 (within 1%) and reported the pair as equalized. On THIS fixture they are ~12x apart
+with the sign REVERSED. The fixtures differ in degree (1 vs 5) and key type (numeric vs string) —
+precisely what "match the fixture to the claim" and "sweep the size" exist to prevent, and I did not
+sweep before claiming. The doctrine is about cost EQUALITY, not which side wins, so **item 1137
+relocated this gap rather than closing it.** OPEN; the `values` side's 1.5 ms is the suspicious half
+(the `has` side's 0.1 ms is the frontier fold at ~0.5 ns a node, about right).
+
+Gates: fmt 0, check 0, gremlin package 921 tests passing, 7/7 byte-identity fuzzers 13 pass / 0 fail.
