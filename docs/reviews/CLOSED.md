@@ -33181,3 +33181,32 @@ measured against an inflated run, so if anything understated.
 can reach finds the regressions you predicted and misses the ones you did not — which is the whole
 point of a sweep over a targeted A/B. Two of four missed, one on the NATIVE side where no change
 this session touched a distinct-values path.
+
+## 1131 — 🔶 PRICED: the native Gremlin `.values(k).count()` shape is **22.8x** the same traversal's `count()`; the existing `count(prop)` arm cannot help; the O(1) route needs a fact that requires NO maintenance
+
+```text
+  V().outE('KNOWS').outV().count()                   58.5 us   a TALLY (edge count, O(1))
+  V().values('name').count()                        136.9
+  V().outE('KNOWS').outV().values('name').count()  1334.4     22.8x
+```
+
+Every fixture node carries `name`, so the answer is 1,000,000 and every row contributes.
+
+⚠️ **`fastpath::try_frontier_count_prop` already answers `count(prop)` over a frontier and CANNOT
+help here.** It is written well — `frontier_counts` then one `has_value_at` per DISTINCT vertex — but
+`frontier_counts` itself walks the chain: 1,000,000 edge touches for `outE(T).outV()`, which IS the
+1334 us. The gap is that **`count(*)` over this frontier is O(1) while `count(k)` is O(rows)**.
+
+**The collapsing fact:** is column `k` present on every LIVE node? Then `count(k)` over any vertex
+frontier = the frontier row count = a tally.
+
+⚠️ **A maintained presence count per column is the WRONG design** and was rejected before being
+written: its surface is every property write/delete/undo arm — strictly larger than the nine
+adjacency sites item 1117 enumerated — for a far narrower shape. **The fact needs no maintenance:**
+`present: Vec<bool>` already exists, so it is an O(nodes) SEQUENTIAL ~200 KB scan (plus liveness,
+since a deleted node's bit may be false while every live node has the property), computed per query.
+
+⚠️ **NOT MEASURED, and it is the number that decides:** the check's cost against the O(rows) random
+walk it replaces. Three items this session (852, 1123, 495) were refuted by building against an
+estimate. Prize if the check is ~10-20 us: **1334.4 → ~80 us, ~17x**; cost when it fails: ~1.5% on
+top. Measure the check first.
