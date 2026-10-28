@@ -826,11 +826,30 @@ const CASES: Case[] = [
     // Both rows are FLAT IN PATH COUNT, which is how you can tell from the table alone that the
     // rung is being taken: at 200,000 vertices they read 189 and 397 with 3 edges/node against
     // 187 and 379 with 5, where the path count went 2.4M to 6.0M. Enumeration would have tracked
-    // the paths. The filtered row is ~2x the plain one rather than ~1x because the LAST hop can
-    // no longer be a degree — a degree cannot say which of a vertex's edges land somewhere that
-    // passes — so it enumerates that hop. Native pays 4.3 against 4.0 because it precomputes a
-    // per-node passing out-degree first (item 570's `node_pass_mask`); doing the same in TS is
-    // the open lever this pair exists to watch.
+    // the paths. THE ~2x BELOW IS HISTORY, AND SO IS THE LEVER IT NAMED (item 1083).
+    //
+    // Written at items 583/584, it said: the filtered row is ~2x the plain one because the LAST
+    // hop can no longer be a degree — a degree cannot say which of a vertex's edges land
+    // somewhere that passes — so it enumerates that hop; native pays 4.3 against 4.0 because it
+    // precomputes a per-node passing out-degree (item 570's `node_pass_mask`), and doing the same
+    // in TS was "the open lever this pair exists to watch".
+    //
+    // ITEM 585 LANDED IT. `varLengthDegreeCount` now accumulates the second hop BACKWARDS when
+    // that is cheaper — for each passing `z`, every in-edge of `z` adds one to its source's
+    // count, costing one visit per edge INTO a passing vertex, which scales with selectivity:
+    // the property the forward walk lacks. Measured isolated, ONE ROW PER PROCESS, three rounds:
+    //
+    //   plain      144.3 / 145.0 / 149.1 ms
+    //   + filter   146.9 / 151.1 / 148.3      ->  1.02-1.06x, NOT ~2x
+    //
+    // against the 189/397 and 187/379 recorded above. The PAIR still earns its place as a
+    // regression watcher — a reopened 2x would mean the inversion stopped being chosen — but the
+    // ratio to watch is ~1.0x, and reading ~2x as healthy would HIDE that regression.
+    //
+    // AND DO NOT READ THESE TWO FROM A FULL SWEEP: in-sweep they read 222.6 and 230.8 against
+    // ~145 and ~148 isolated, 1.53x inflation — the effect CLAUDE.md records for this very row
+    // (250.7 in-sweep against ~177). The ratio survives it because both rows pay it; the
+    // absolute numbers do not.
     name: 'count var-length 1-2 hops',
     ...onGraph(
       () => graphDoc,

@@ -31461,3 +31461,31 @@ They were **the only rows in `query/gql` with no comment**, which is why they we
 decomposition, both rounds, the noise floor, the dispatch fact and why the remainder is unreachable.
 **The fix for "read the comment" is that the comment exists.** Concrete answer to 1079/1080/1081,
 which each lost a tick to an explanation written next to the measurement.
+
+## 1083 — 🧹 the var-length pair watched the WRONG RATIO: its "open lever" shipped at item 585, so ~2x is now the REGRESSION it would certify as healthy
+
+The row's comment predicts the filtered var-length count at **~2x** the plain one (189/397, 187/379)
+and names the TS per-node passing out-degree as "the open lever this pair exists to watch". Both
+halves are stale.
+
+**MEASURED** isolated with `BENCH_ONLY`, one row per process, three rounds:
+
+```text
+  plain      144.3 / 145.0 / 149.1 ms
+  + filter   146.9 / 151.1 / 148.3 ms     →  1.02-1.06x, not ~2x
+```
+
+**DIAGNOSED: item 585 landed it** — `varLengthDegreeCount`'s "THE SECOND HOP, FORWARDS OR BACKWARDS"
+accumulates the second hop backwards when cheaper (one visit per edge INTO a passing vertex, so it
+scales with selectivity — what item 584 measured the forward walk as lacking: 355.24 ms rejecting
+everything against 446.49 accepting everything, over 187.87 unfiltered). The comment was written at
+583/584 and 585 is the NEXT item. Same shape as item 1080's four stale headlines, different store.
+
+**A stale watcher is worse than none**: the paragraph tells its reader ~2x is healthy, so if the
+inversion stopped being chosen the regression would arrive pre-certified. The comment now carries the
+measured ratio, what a reopened 2x would mean, the pointer to 585, and:
+
+**⚠️ DO NOT READ THESE TWO FROM A FULL SWEEP** — 222.6 / 230.8 in-sweep against ~145 / ~148 isolated
+is **1.53x inflation**, the effect CLAUDE.md records for this row (250.7 vs ~177). The ratio survives
+it (both rows pay it); the absolutes do not, and the sweep's 222.6 reads as a 19% regression against
+the comment's 187.
