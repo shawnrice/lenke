@@ -30659,3 +30659,59 @@ fn the_two_undirected_spellings_differ_on_a_self_loop() {
         42.0
     );
 }
+
+/// The lazy self-loop cache must be dropped by a WRITE — item 1155.
+///
+/// `live_etype_loops` caches a per-type self-loop count and `invalidate_csr` clears it. That is
+/// one maintenance site instead of the eight a maintained count would need, and invalidation is
+/// the single thing the design can get wrong: a stale cache answers the undirected count with
+/// yesterday's `loops(t)` and is off by exactly the difference.
+///
+/// So this queries FIRST (populating the cache), then mutates, then queries again — the order
+/// that can fail. A test that writes before its first read cannot see this at all.
+#[test]
+fn the_self_loop_cache_is_dropped_by_a_write() {
+    let mut b = Builder::default();
+    for _ in 0..10u32 {
+        b.node(&["Person"], &[]);
+    }
+    b.edge(0, 1, "KNOWS");
+    b.edge(1, 2, "KNOWS");
+    b.edge(3, 3, "KNOWS"); // one self-loop
+    let mut st = b.build();
+
+    let undirected = |st: &Store| {
+        let plan = crate::opt::optimize_indexed(
+            crate::gql::parse("MATCH (a:Person)-[:KNOWS]-(x) RETURN count(*) AS c").unwrap(),
+            st,
+        );
+        match run(&plan, st).rows[0][0] {
+            Value::Num(x) => x,
+            ref v => panic!("count is not a number: {v:?}"),
+        }
+    };
+
+    // 3 edges, 1 self-loop: 2*3 - 1 = 5. This POPULATES the cache.
+    assert_eq!(undirected(&st), 5.0);
+
+    // ADD A SELF-LOOP. 4 edges, 2 self-loops: 2*4 - 2 = 6. A stale cache would say 2*4 - 1 = 7.
+    let loop_eid = st.add_edge(5, 5, "KNOWS");
+    assert_eq!(
+        undirected(&st),
+        6.0,
+        "a stale self-loop cache would answer 7 here"
+    );
+
+    // ADD A NON-LOOP. 5 edges, 2 self-loops: 2*5 - 2 = 8.
+    st.add_edge(6, 7, "KNOWS");
+    assert_eq!(undirected(&st), 8.0);
+
+    // DELETE the 5->5 self-loop added above. 4 edges, 1 self-loop: 2*4 - 1 = 7.
+    // `add_edge` returns the eid, so capture it rather than looking it up.
+    st.delete_edge(5, 5, loop_eid);
+    assert_eq!(
+        undirected(&st),
+        7.0,
+        "a delete must drop the cache as well as an insert"
+    );
+}

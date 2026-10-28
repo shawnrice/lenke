@@ -1389,6 +1389,16 @@ pub struct Store {
     etype_counts: Vec<usize>,
     /// Reads served since the overlay went stale, for [`Self::rearm_if_warranted`].
     stale_reads: usize,
+    /// Per-type SELF-LOOP count, computed on demand and dropped by `invalidate_csr` — item 1155.
+    ///
+    /// `None` means stale. Lazy rather than MAINTAINED, and that is the whole design decision: a
+    /// maintained count would need a delta at each of the eight sites `bump_etype_count` is called
+    /// from, every one of which has to get `node == adj.nbr` right, and item 1131 rejected a
+    /// maintained count on exactly that surface argument. This hangs off `invalidate_csr`, which
+    /// item 1122 established is called by EVERY adjacency write (7 callers) — so it is ONE site,
+    /// its correctness argument is "cleared by the same thing that clears the CSR", and the worst
+    /// case is one O(E) pass per write-epoch, which is what the query it serves already cost.
+    etype_loops: std::sync::RwLock<Option<Vec<usize>>>,
     /// per-node outgoing / incoming adjacency, indexed by node id.
     out_adj: Vec<Vec<Adj>>,
     in_adj: Vec<Vec<Adj>>,
@@ -1668,6 +1678,11 @@ impl Clone for Store {
             etype_ids: self.etype_ids.clone(),
             etype_counts: self.etype_counts.clone(),
             stale_reads: self.stale_reads,
+            // A CLONE DROPS THE CACHE rather than copying it (item 1155). Copying would be
+            // correct, since a clone's adjacency is identical, but `None` is correct too and
+            // cannot be wrong if the clone diverges — and this is the explicit-field `Clone`
+            // the comment above keeps complete on purpose, so the choice is recorded here.
+            etype_loops: std::sync::RwLock::new(None),
             out_adj: self.out_adj.clone(),
             in_adj: self.in_adj.clone(),
             next_eid: self.next_eid,
@@ -1920,6 +1935,62 @@ impl Store {
     #[must_use]
     pub fn live_etype_count(&self, etype: u32) -> usize {
         self.etype_counts.get(etype as usize).copied().unwrap_or(0)
+    }
+
+    /// How many LIVE edges of `etype` are self-loops — item 1155.
+    ///
+    /// The undirected 1-hop count is `2*|E_t|` when a self-loop is doubled and
+    /// `2*|E_t| - loops(t)` when it is counted once (GQL's `-[:T]-` against Gremlin's `both(T)`;
+    /// item 1154 has the TinkerPop ground truth). This supplies the subtrahend.
+    ///
+    /// Computed from the OUT adjacency, which is the side `live_etype_count` already follows, so
+    /// the two agree by construction: a self-loop appears exactly once in its node's out list.
+    /// Cached until the next adjacency write.
+    ///
+    /// INTERIOR MUTABILITY, because every caller holds `&Store`: `exec::pull` threads an immutable
+    /// store all the way down, so a `&mut self` accessor could not be reached from a fast path at
+    /// all. `prop_keys_cache` next to it is the same shape and the same reason.
+    #[must_use]
+    pub fn live_etype_loops(&self, etype: u32) -> usize {
+        {
+            let guard = self
+                .etype_loops
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+            if let Some(v) = guard.as_ref() {
+                return v.get(etype as usize).copied().unwrap_or(0);
+            }
+        }
+
+        let mut v: Vec<usize> = Vec::new();
+
+        for node in 0..self.node_count() {
+            if !self.is_alive(node as u32) {
+                continue;
+            }
+
+            for adj in &self.out_adj[node] {
+                if adj.nbr as usize == node {
+                    let i = adj.etype as usize;
+
+                    if v.len() <= i {
+                        v.resize(i + 1, 0);
+                    }
+
+                    v[i] += 1;
+                }
+            }
+        }
+
+        let answer = v.get(etype as usize).copied().unwrap_or(0);
+
+        *self
+            .etype_loops
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(v);
+
+        answer
     }
 
     /// Reads counted since the overlay went stale — the perf gate's only observable, so the test
@@ -2189,6 +2260,12 @@ impl Store {
     /// the per-node `Vec`s until the next [`Self::rebuild_csr`].
     fn invalidate_csr(&mut self) {
         self.csr_fresh = false;
+        // Item 1155: the per-type self-loop count is derived from the adjacency, so it goes
+        // stale with the CSR. One line here is the whole maintenance surface.
+        *self
+            .etype_loops
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         // Reads since THIS write, not since the last rebuild — a fresh write restarts the count,
         // so a steady stream of small writes never accumulates its way to a rebuild.
         self.stale_reads = 0;
@@ -6530,6 +6607,7 @@ impl Builder {
             etype_ids: self.etype_ids,
             etype_counts,
             stale_reads: 0,
+            etype_loops: std::sync::RwLock::new(None),
             out_adj,
             in_adj,
             // Incremental edges continue the id sequence the build laid down.

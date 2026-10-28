@@ -34097,3 +34097,42 @@ a self-loop cannot tell them apart**, so item 1153's fixture had to be extended 
 Suite 1283+13+725; `rewrite_fuzz` 10; 7/7 byte-identity fuzzers. `both` added to `query/gremlin`
 (0.2us). ⚠️ **STILL OPEN:** the non-doubling GQL `-[:K]-` spelling, needing a per-type self-loop
 count on item 1118's sites — unchanged from item 1153, and guarded by the `1-hop UNDIRECTED` row.
+
+## 1155 — ✅ SHIPPED **~8333x**, and the DIRECTION FAMILY CLOSES: a per-type self-loop count with ONE maintenance site instead of eight
+
+Items 1153/1154 left the non-doubling undirected spelling declining for want of `loops(t)`.
+
+⚠️ **The design decision is the SITE COUNT, not the formula.** A maintained count needs a delta at
+each of the 8 `bump_etype_count` sites, every one getting `node == adj.nbr` right (I verified they
+all can — the adjacency entry carries `nbr`). **Item 1131 rejected a maintained count on exactly
+that surface argument.** Instead this is LAZY off `invalidate_csr`, which item 1122 established is
+called by EVERY adjacency write (7 callers):
+
+- ONE site; its correctness argument is "cleared by whatever clears the CSR";
+- worst case one O(E) pass per write-epoch = **what the query already cost**, so never worse, O(1)
+  when read-heavy;
+- nothing else touches it (`live_etype_loops` is called only from the non-doubling arm).
+
+⚠️ **Interior mutability was FORCED, not chosen**: `exec::pull` threads `&Store` down, so a
+`&mut self` accessor is unreachable from a fast path. `prop_keys_cache` is the same shape.
+
+```text
+  D3 gql -[:K]-     PRE 2514.3/2499.9/2507.5   POST 0.3/0.3/0.3   ~8333x
+  D1/D2, G1 gremlin both(), C2   [ctl] all flat
+```
+
+✅ **All four spellings, one process: 0.3 / 0.3 / 0.3 / 0.2 us — two DISTINCT correct answers**
+(1,000,000 / 1,000,000 / 1,999,998 / 2,000,000). The family from item 1145 is closed. G1 is the
+control that matters most: 1154 made it fast and this must not disturb it.
+
+Mutation on a GREEN baseline, all three CAUGHT: invalidation removed; the self-loop test inverted;
+the adjustment zeroed. ⚠️ **The invalidation test's ORDER is the point** — query FIRST (populating
+the cache), then mutate, then query again, across an inserted loop, an inserted non-loop and a
+DELETED loop (5→6→8→7). A test that writes before its first read cannot see a stale cache.
+
+⚠️ **COST, measured not explained away.** Sweep 108 rows; isolated at 3 rounds each: `pred AND
+exists` **REFUTED** (0.998x — one outlier rep caused the flag); `project bool AND` **~1.09x, partly
+real**; `distinct prop` the known false positive. The ~9% is the documented store/`exec::pull`
+layout toll (1.08-1.24x, never gains) — reported against ~8333x on the target row.
+
+Suite 1284+13+725; `rewrite_fuzz` 10; 7/7 byte-identity fuzzers.

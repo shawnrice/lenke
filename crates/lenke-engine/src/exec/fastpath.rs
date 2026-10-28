@@ -3738,13 +3738,35 @@ fn typed_hop_count_from_size(input: &Plan, agg: &Agg, store: &Store) -> Option<u
     // here. The other needs a per-type SELF-LOOP count, which the store does not keep; it is
     // priced at 2576.8us (item 1153) and left declining, with the `1-hop UNDIRECTED` bench row as
     // its guard. Admitting it on `2*|E_t|` alone would be a wrong answer of exactly `loops(t)`.
-    let both_ok = matches!(dir, Dir::Both) && *double_loops;
-    if agg.distinct || *bind_edge || *from != 0 || !(matches!(dir, Dir::Out | Dir::In) || both_ok) {
+    // BOTH is now admitted for EITHER flag — item 1155 closed the non-doubling half.
+    //
+    // The two differ by exactly the self-loops: `double_loops` counts one twice, so the answer is
+    // `2*|E_t|`, and the other counts it once, so it is `2*|E_t| - loops(t)`. Item 1154 shipped
+    // the first (no new fact needed) and left the second declining for want of `loops(t)`;
+    // `Store::live_etype_loops` supplies it, computed lazily from the OUT adjacency and dropped by
+    // `invalidate_csr` — one maintenance site rather than the eight a maintained count would need.
+    let both = matches!(dir, Dir::Both);
+    if agg.distinct || *bind_edge || *from != 0 || !matches!(dir, Dir::Out | Dir::In | Dir::Both) {
         return None;
     }
-    // Each edge is counted from BOTH ends in the doubling case, and from exactly one in the
-    // directed cases.
-    let per_edge = if both_ok { 2 } else { 1 };
+    // Each edge is counted from BOTH ends when the direction is undirected, and from exactly one
+    // in the directed cases; a self-loop is then counted twice or once per `double_loops`.
+    let per_edge = if both { 2 } else { 1 };
+    let loop_adjust = |t: Option<u32>| -> usize {
+        if !both || *double_loops {
+            return 0;
+        }
+
+        match t {
+            Some(t) => store.live_etype_loops(t),
+            // UNTYPED: every type's self-loops, since the hop matches every edge.
+            None => store
+                .all_etype_ids()
+                .iter()
+                .map(|&t| store.live_etype_loops(t))
+                .sum(),
+        }
+    };
     if !whole_graph_scan(src, store) {
         return None;
     }
@@ -3757,7 +3779,7 @@ fn typed_hop_count_from_size(input: &Plan, agg: &Agg, store: &Store) -> Option<u
         //
         // No multi-label guard here and none needed: that guard exists because a partition holds
         // an edge's PRIMARY type only, and this arm reads no partition.
-        [] => Some(per_edge * store.live_edge_count()),
+        [] => Some(per_edge * store.live_edge_count() - loop_adjust(None)),
         [ty] => {
             let t = store.etype_id(ty)?;
             // PER-TYPE, not global (item 1004). The partition for `t` is complete unless some
@@ -3767,7 +3789,7 @@ fn typed_hop_count_from_size(input: &Plan, agg: &Agg, store: &Store) -> Option<u
             if store.type_ever_secondary(t) {
                 return None;
             }
-            Some(per_edge * store.live_etype_count(t))
+            Some(per_edge * store.live_etype_count(t) - loop_adjust(Some(t)))
         }
         _ => None,
     }
