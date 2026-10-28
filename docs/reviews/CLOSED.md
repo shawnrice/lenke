@@ -32972,3 +32972,40 @@ Caching the optimized plan trades ~295 ns of optimize for **3.7x on the indexed 
 `bench:usage` measures.** A `(text, version, param values)` key would hit only when a value repeats,
 which the serving shape does not. The optimize cost is the price of value-specific planning.
 Refuted for one probe rather than a plan cache plus a correctness key.
+
+## 1125 — ❌ the 3-hop product's per-edge hash REFUTED BEFORE BUILT (items 355 + 495); 🔶 and THREE independent bodies now show the same **~110-150 ns residual** against a **41 ns** micro floor
+
+`count 3-hop` (~300 ms vs native 4.7) takes the degree PRODUCT (1103), so its body was never ablated.
+Hot line: `count += waysToA * dSide(graph, midOut ? e.toId : e.fromId)` — a string hash per MIDDLE
+EDGE, with `e.to` memoized on the edge right there. Passing the vertex looks free.
+
+**It is not.** ⚠️ **Item 355:** that swap is **1.21x WORSE on first touch** (203.4/171.3 against
+247.0/127.1) because the box pays the same hash plus a memo write — _a memo helps a REVISITED element
+and taxes a VISITED-ONCE one._ ⚠️ **Item 495** then measured it on the revisited position and got
+**FLAT**, concluding: _"492 and 494 won by doing ONE LOOKUP INSTEAD OF TWO, not by the box being
+cheaper. **Do not price a box swap that does not also remove a lookup.**"_ The `!needsC` branch
+already hashes ONCE from the edge's stored id — resolving `e.to` would ADD a resolve, which is the
+two-lookup shape 495 moved away from. No probe run; two items already ran it on both positions.
+
+**Item 310's attribution of this loop is now two-thirds STALE:** it blamed "the `edgesOfTypes`
+generator frame … the `Edge` property reads, and two hash lookups". Item 324 removed the generator
+and item 1104's counters proved the fast path is taken **3,600,000 of 3,600,000** times; and this
+branch does ONE hash, not two.
+
+**🔶 THE REAL OPEN QUESTION, visible only across items:**
+
+```text
+  body                                in-situ/edge   micro floor
+  GQL way-count sweep   (1104/1105)      190 ns         41 ns
+  Gremlin multiplicity walk  (1109)      158 ns         41 ns
+  GQL 3-hop degree product   (1125)     ~150 ns         41 ns
+```
+
+Three unrelated bodies, each **3.7-4.6x** a micro built on the engine's own shapes, and in each the
+named suspects were refuted one by one (generator 324/1104; per-edge Map 24% at 1105; adjacency
+allocation 3-4% at 1108; frontier representation 31.7/158 at 1109; box swap 355/495/1125).
+
+**So the residual belongs to none of the loops.** Item 1105 saw the direction once — "a probe whose
+working set is smaller than the engine's UNDERSTATES a cache-sharing cost" — and this is the third
+confirmation. **Next instrument: not another ablation, but a micro that grows its working set to the
+engine's and shows the floor rising to meet it.** If it does, three targets close at once.
