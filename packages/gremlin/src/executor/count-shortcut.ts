@@ -170,6 +170,15 @@ export const countShortcut = (plan: Plan, graph: Graph): number | undefined => {
     return undefined;
   }
 
+  // THE EDGE-HOP SEED (item 1044), before its VERTEX-hop sibling. The order is not load-bearing —
+  // `filteredHopCount` takes only `out`/`in` and this one only `outE`/`inE`, so the two are
+  // disjoint by construction — but it reads in the same place the shapes are listed.
+  const edgeSeeded = edgeHopSeededCount(mid[0], mid.slice(1), graph);
+
+  if (edgeSeeded !== undefined) {
+    return edgeSeeded;
+  }
+
   const filtered = filteredHopCount(mid[0], mid.slice(1), graph);
 
   if (filtered !== undefined) {
@@ -321,6 +330,151 @@ const hasChain = (rest: readonly Step[]): Extract<Step, { kind: 'has' }>[] | und
   }
 
   return filters.length === 0 ? undefined : filters;
+};
+
+/** An edge-index seed candidate: an estimate, a thunk, and whether its step may be dropped. */
+export type EdgeCandidate = {
+  count: number;
+  build: () => ReadonlySet<Edge>;
+  removable: boolean;
+};
+
+/**
+ * Does `candidate` beat the incumbent — i.e. is it the more selective seed?
+ *
+ * EXPORTED AND EXTRACTED because the choice is ANSWER-EQUIVALENT: every candidate's bucket is a
+ * SUPERSET of the answer and `edgeHopSeededCount` re-applies the hop labels and every residual
+ * filter afterwards, so picking the wider one is slower and never wrong. A mutant flipping `<` to
+ * `>` passed all 864 Gremlin tests. That is `perf-gate-needs-its-own-test`: extract the arithmetic
+ * as a pure function and unit-test it, because no result can.
+ *
+ * (`seedRest` in `index-seed.ts` makes the same choice inline and is untested in the same way —
+ * a separate cleanup, noted rather than bundled in here.)
+ */
+export const beats = (candidate: EdgeCandidate, best: EdgeCandidate | null): boolean =>
+  best === null || candidate.count < best.count;
+
+/**
+ * `V().outE(T…).has(k, v)….count()` — an EDGE hop followed by `has` filters, SEEDED from the edge
+ * property index (item 1044).
+ *
+ * Item 1043 priced the gap at 550-650x and located it exactly: `filteredHopCount` below takes only
+ * `out`/`in` (VERTEX hops, where the filter applies to the far vertex), so an EDGE hop followed by
+ * edge filters reached no rung at all and fell to the general traversal. Meanwhile
+ * `E().hasLabel(T).has(k, v).count()` — the same question, the other spelling — is seeded by
+ * `seedFromIndex` and answers in 0.017-0.019 ms against this shape's 13.8-16.1.
+ *
+ * ```text
+ *   E().has(amount, 500).count()                0.028  0.025  0.025 ms
+ *   E().hasLabel(PAID).has(amount).count()      0.019  0.017  0.017
+ *   V().outE(PAID).has(amount).count()         16.145 13.787 14.471   <- this shape
+ *   V().outE(PAID).has(other).count()          15.789 16.315 16.464   <- unindexed CONTROL
+ * ```
+ *
+ * The subject landing ON the unindexed control is what says the index was UNREACHABLE here rather
+ * than merely less effective.
+ *
+ * SEED OR DECLINE, deliberately. When no filter offers an indexed seek this returns `undefined`
+ * and the existing path takes the query unchanged — so the rung cannot be slower than today for
+ * any shape, and there is no second scanning implementation to keep in step with the first.
+ *
+ * WHY A COUNT IS SAFE WHERE THE GENERAL SEED IS NOT (item 1043). Seeding makes the enumeration
+ * follow the edge index, i.e. `E()`'s order, and TinkerPop 3.7.3 returns `E()` and `V().outE()` in
+ * DIFFERENT orders — `[e1,e2,e3,e4]` against `[e2,e4,e1,e3]` on a fixture built to tell them apart
+ * — which lenke reproduces exactly. A `count()` cannot observe order, so it is the one terminal
+ * that may take this route; an order-visible one must not.
+ *
+ * `bothE` IS EXCLUDED, for `vertexStepCount`'s reason, and TinkerPop was asked rather than assumed:
+ * on 4 `T` edges including a self-loop, `V().outE(T).count()` and `V().inE(T).count()` are both 4
+ * while `V().bothE(T).count()` is **8** — each edge enumerated from both endpoints. `outE`/`inE`
+ * each visit an edge exactly ONCE (from its source, or from its target), and the self-loop too, so
+ * for them the answer is the number of matching edges. The same console run confirmed
+ * `V().outE(T).has(w,1)` = `V().inE(T).has(w,1)` = `E().hasLabel(T).has(w,1)` = 3.
+ */
+const edgeHopSeededCount = (hop: Step, rest: readonly Step[], graph: Graph): number | undefined => {
+  // `bothE` enumerates each edge twice; see the header.
+  if (hop.kind !== 'outE' && hop.kind !== 'inE') {
+    return undefined;
+  }
+
+  const filters = hasChain(rest);
+
+  if (filters === undefined) {
+    return undefined;
+  }
+
+  // The most selective indexed filter wins, exactly as `seedRest` chooses among leading filters —
+  // `seedForStep` estimates without building, so the losing candidates cost nothing.
+  let best: EdgeCandidate | null = null;
+  let bestAt = -1;
+
+  for (let i = 0; i < filters.length; i++) {
+    const candidate = seedForStep<Edge>(filters[i], graph.edgePropertyIndex);
+
+    if (candidate && beats(candidate, best)) {
+      best = candidate;
+      bestAt = i;
+    }
+  }
+
+  if (!best) {
+    return undefined;
+  }
+
+  const { labels } = hop;
+  // Every filter stays as a residual EXCEPT a removable winner, whose bucket is exactly its match
+  // set. Extracted into dense arrays for `filteredHopCount`'s reason (item 934): reading `f.key` /
+  // `f.pred` off a wide `Step` union per row is a polymorphic load at a per-row site.
+  const keys: string[] = [];
+  const preds: Predicate[] = [];
+
+  for (let i = 0; i < filters.length; i++) {
+    if (i === bestAt && best.removable) {
+      continue;
+    }
+
+    keys.push(filters[i].key);
+    preds.push(filters[i].pred);
+  }
+
+  let n = 0;
+
+  for (const edge of best.build()) {
+    // The index bucket is keyed by the PROPERTY and knows nothing about the edge type, so the
+    // hop's labels are re-applied. No label = every type. Each edge is tested ONCE and counted
+    // once, so a multi-label edge matching two of the wanted labels is not double-counted — which
+    // is why this needs no `multiTypeEdgeCount` guard, where SUMMING buckets (`adjacentCount`)
+    // does.
+    if (labels.length > 0) {
+      let typed = false;
+
+      for (const l of labels) {
+        if (edge.labels.has(l)) {
+          typed = true;
+          break;
+        }
+      }
+
+      if (!typed) {
+        continue;
+      }
+    }
+
+    let hit = true;
+
+    for (let i = 0; i < keys.length; i++) {
+      if (!matches(preds[i], edge.properties[keys[i]])) {
+        hit = false;
+        break;
+      }
+    }
+
+    if (hit) {
+      n += 1;
+    }
+  }
+
+  return n;
 };
 
 const filteredHopCount = (hop: Step, rest: readonly Step[], graph: Graph): number | undefined => {

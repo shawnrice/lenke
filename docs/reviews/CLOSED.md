@@ -29458,7 +29458,35 @@ in order>` prints every run. (1) The band's first draft sat AFTER `if (p < 0.68)
   order-insensitive terminal** (`count()`, which is the 550x case). One container run, before
   writing code, against the alternative of building the general rewrite and retracting it — the
   shape of items 1032/1033.
-- **➡️ NOT ESTABLISHED (item 1043)**: whether `V()` must be UNFILTERED. `V().hasLabel('Q').outE()`
+- **✅ DONE — THE EDGE-HOP SEEDED COUNT, 660x, AND THE TWO SPELLINGS CONVERGE (item 1044).**
+  `filteredHopCount` opens with `if (hop.kind !== 'out' && hop.kind !== 'in') return undefined`, so
+  an EDGE hop followed by edge filters matched NO rung in `countShortcut`. New rung
+  `edgeHopSeededCount`, routed before its vertex-hop sibling (disjoint by construction, so order is
+  readability not precedence). **SEED OR DECLINE**: no indexed filter → `undefined` and the old path
+  runs, so it cannot be slower than today, which the unindexed CONTROL verifies. Three alternated
+  rounds: SUBJECT 15.203/15.709/14.550 → **0.022/0.025/0.020**; CONTROL unindexed
+  14.092/15.298/14.076 → 12.600/14.537/17.108 (overlapping); both CEILING arms FLAT. The subject now
+  lands ON the ceiling, so the two spellings cost the same.
+- **TINKERPOP SETTLED THE SEMANTICS, NOT DERIVATION (item 1044).** 4 `T` edges incl. a SELF-LOOP
+  plus a `U`: `V().outE(T).count()` = `V().inE(T).count()` = `E().hasLabel(T).count()` = 4 and
+  `V().bothE(T).count()` = **8**. So `outE`/`inE` visit each edge ONCE (self-loop included) — the
+  basis for "the answer is the number of matching edges" — and `bothE` twice, so it is EXCLUDED and
+  a test asserts 6 for it against 3 for `outE`.
+- **METHOD — `always-removable` is answer-equivalent BY CONSTRUCTION (item 1044).** A residual can
+  only REMOVE bucket members, never add one, and `seedForPred` maps each predicate to an EXACT bound
+  (`inside`→`{gt,lt}`, `between`→`{gte,lt}`, `startsWith`→`[prefix, succ(prefix))`), so the bucket
+  already equals the match set for same-typed data and re-testing the winner cannot change the
+  count. The flag is honoured anyway because it is the index's own contract and `seedFromIndex`
+  honours it. `widest-candidate` was the other survivor and got item 1038's treatment: extracted as
+  `beats`, a pure exported function, unit-tested (tie keeps the incumbent; an EMPTY bucket beats a
+  non-empty one); the mutant then fails 2.
+- **⚠️ TWO SELF-INFLICTED NULLS IN ONE ITEM, AND ONLY THE ASSERTED ONE REPORTED ITSELF (item
+  1044).** A mutation anchor written with six spaces where the file has four printed
+  `ANCHOR-NOT-UNIQUE … hits=0 >>> THIS RUN IS A NULL` — without that guard the run would have built
+  UNMUTATED code, passed, and been read as "caught". Separately, a `python` replace adding a test
+  import matched a single-line form `fmt` had already split, silently did nothing, and had to be
+  debugged from `beats is not defined`. **Every replace needs an assertion on its hit count.**
+- **➡️ STILL NOT ESTABLISHED (item 1043)**: whether `V()` must be UNFILTERED. `V().hasLabel('Q').outE()`
   does not cover every edge, so the seed would have to re-apply the start label per edge — reachable
   from `edge.from` as item 1038's walk does, but unmeasured. The 550x describes the narrow shape:
   `V()` with no ids and no leading filters, then `outE`, then commuting filters, then an
