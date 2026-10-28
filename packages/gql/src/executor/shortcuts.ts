@@ -1772,6 +1772,121 @@ const tallyHopCount = (scan: HopScan): number => {
 };
 
 /**
+ * Can an undirected hop's constraint be answered by a DEGREE SUM, or does it need the tally?
+ *
+ * The degree sum never visits the far end or the edge, so it cannot apply a far label, a far
+ * inline constraint, a far-reading predicate or any rel constraint — ignoring one would be a wrong
+ * answer rather than a slow one (item 637). Everything it CAN apply lives on the start vertex.
+ *
+ * EXPORTED FOR ITS OWN TEST, because no result-based test can reach it: both routes answer
+ * correctly, so choosing the tally where the degree sum would do is SLOW and not WRONG, and
+ * `startonly-never` SURVIVED item 1086's mutation round for exactly that reason. The mirror of
+ * `bucketSumsAreSound` and the same prescription — `perf-gate-needs-its-own-test`.
+ *
+ * The WRONG direction is caught by the differential tests, and loudly: `startonly-always` failed
+ * 24 of them.
+ */
+export const undirectedDegreeSumFits = (c: {
+  inFar: InlinePred | undefined;
+  inRel: InlinePred | undefined;
+  farLabel: LabelExpr | undefined;
+  farVar: string | undefined;
+  relVar: string | undefined;
+}): boolean =>
+  c.inFar === undefined &&
+  c.inRel === undefined &&
+  c.farLabel === undefined &&
+  c.farVar === undefined &&
+  c.relVar === undefined;
+
+/**
+ * The UNDIRECTED tally: `(a)-[:T]-(x)` with a constraint a degree sum cannot apply — a far label,
+ * a far-reading predicate, a rel constraint, or any combination (item 1086).
+ *
+ * WHY IT EXISTS. `buildOneHopCount` declined all of those outright, so the query fell to the
+ * general path and built a binding and a row per edge. Item 1076's own probe measured the cost on
+ * its three declining controls: a far-reading predicate **910.25 ms**, a rel predicate 922.25, a
+ * far label 372.35 — against 25 ms for the start-constrained twin the degree sum now answers.
+ *
+ * THE MECHANISM IS THE ONE ALREADY THERE. `tallyHopCount` decides which endpoint is NEAR and
+ * which is FAR from `scan.out`, and seeds from the matching index. So an undirected hop is that
+ * walk run ONCE PER DIRECTION: for every edge, the orientation `from -> to` and the orientation
+ * `to -> from` are each tested exactly as the directed walk tests them, which is what `expand`
+ * emits for `-[:T]-`. No new per-edge rule, and nothing added to that walk's body — item 1033
+ * measured a branch inside it costing three shapes it could not execute ~2x.
+ *
+ * THE SELF-LOOP CORRECTION, and it is the only arithmetic here. A loop has `near === far` in both
+ * orientations, so both passes test the identical triple and both accept or both reject — it is
+ * counted twice where `expand` emits it once. `loopsOfTypes` gates the third pass, so a loop-free
+ * graph pays nothing for it.
+ */
+const undirectedTally = (scan: HopScan): number => {
+  const forward = tallyHopCount({ ...scan, out: true });
+  const backward = tallyHopCount({ ...scan, out: false });
+  const { graph, types } = scan;
+
+  return loopsOfTypes(graph, types) ? forward + backward - loopTally(scan) : forward + backward;
+};
+
+/**
+ * How many SELF-LOOPS of the type pass {@link undirectedTally}'s gates — the double-count to
+ * subtract.
+ *
+ * A SECOND COPY OF THE PER-EDGE RULE, which this file warns about ("drift between two copies of
+ * one rule is precisely how the far endpoint ended up on the per-edge tally"), and the alternative
+ * was worse: a `loopsOnly` flag inside `tallyHopCount` puts a branch in the per-edge body that item
+ * 1033 measured at ~2x on three shapes that cannot reach it. So the duplication is deliberate and
+ * the drift risk is carried by tests instead — `undirected-tally.test.ts` puts a PASSING self-loop
+ * through every constraint kind separately, which is how item 1078's equivalent duplication is held.
+ *
+ * `near === far` for a loop, so the two endpoints are one vertex and the orientation is immaterial.
+ */
+const loopTally = (scan: HopScan): number => {
+  const { graph, params, pred, pa, pb, types, inNear, inFar, inRel } = scan;
+  const binding = new Map<string, unknown>();
+  const env: EvalEnv = { binding, params, graph };
+  let n = 0;
+
+  for (const edge of edgesOfTypes(graph.edgesByLabel, types)) {
+    const v = edge.from;
+
+    if (edge.to !== v || !matchesLabel(v, pa) || !matchesLabel(v, pb)) {
+      continue;
+    }
+
+    if (inRel !== undefined && !inlineHolds(inRel, edge, binding, params, graph)) {
+      continue;
+    }
+
+    if (inNear !== undefined && !inlineHolds(inNear, v, binding, params, graph)) {
+      continue;
+    }
+
+    if (inFar !== undefined && !inlineHolds(inFar, v, binding, params, graph)) {
+      continue;
+    }
+
+    if (pred.startVar !== undefined) {
+      binding.set(pred.startVar, v);
+    }
+
+    if (pred.farVar !== undefined) {
+      binding.set(pred.farVar, v);
+    }
+
+    if (pred.relVar !== undefined) {
+      binding.set(pred.relVar, edge);
+    }
+
+    if (asTruth(pred.fn(env)) === true) {
+      n += 1;
+    }
+  }
+
+  return n;
+};
+
+/**
  * The REL mirror of {@link startOnlyHopCount} and {@link farOnlyHopCount}: when the clause
  * `WHERE` reads nothing but the hop's RELATIONSHIP variable, the predicate is applied to the
  * edge DIRECTLY through `satisfies`, with no per-edge `binding.set` and no general
@@ -2790,20 +2905,12 @@ const buildOneHopCount = <T>(
   // START-ONLY constraint now has `undirectedStartOnlyCount`; everything else still declines,
   // because a degree sum cannot apply a FAR or REL constraint — it never visits the far end or
   // the edge — and ignoring one would be a wrong answer rather than a slow one (item 637).
-  if (
-    rel.direction === 'both' &&
-    (inFar !== undefined || inRel !== undefined || node.label !== undefined)
-  ) {
-    return null;
-  }
-
-  if (
-    rel.direction === 'both' &&
-    pred !== undefined &&
-    (pred.farVar !== undefined || pred.relVar !== undefined)
-  ) {
-    return null;
-  }
+  // ⚠️ THESE TWO DECLINES ARE GONE (item 1086). A far label, a far-reading predicate and a rel
+  // constraint each made a constrained undirected hop fall to the general path — a binding and a
+  // row per edge, measured by item 1076's own controls at 372.35 ms (far label), 910.25 (far
+  // predicate) and 922.25 (rel predicate). `undirectedTally` answers all of them by running the
+  // existing directed tally ONCE PER DIRECTION, which is what `-[:T]-` means, so the degree-sum
+  // arm below keeps the start-only case and nothing declines for want of a route.
 
   // A MULTI-TYPE alternation and an untyped `-[]-` used to decline here, and item 1076 gave the
   // reason: `degreeOfTypes` sums the per-type bucket SIZES, so an edge carrying both `T` and `S`
@@ -2840,32 +2947,48 @@ const buildOneHopCount = <T>(
     // UNCONSTRAINED keeps the O(1) arithmetic off the bucket sizes; a START-ONLY constraint takes
     // the degree-sum walk (item 1076). The two are one branch because they are the same question
     // with and without a filter, and the unconstrained row must not move.
-    if (pred === undefined && inNear === undefined) {
+    if (pred === undefined && inNear === undefined && inFar === undefined && inRel === undefined) {
       return (graph) => rowOf(undirectedHopCount(graph, types, aLabel, bLabel));
     }
 
     const bareBoth: HopPred = pred ?? { fn: alwaysTrue };
+    // THE DEGREE SUM IS SOUND ONLY FOR A START-ONLY CONSTRAINT, and that is the whole of the
+    // routing rule: it never visits the far end or the edge, so it cannot apply a far label, a
+    // far-reading predicate or a rel constraint, and ignoring one would be a wrong answer rather
+    // than a slow one (item 637). Everything else now takes `undirectedTally` (item 1086) instead
+    // of declining — one pass per direction over the type's edges, which is what `-[:T]-` means.
+    const startOnly = undirectedDegreeSumFits({
+      inFar,
+      inRel,
+      farLabel: bLabel,
+      farVar: bareBoth.farVar,
+      relVar: bareBoth.relVar,
+    });
 
-    return (graph, params) =>
-      rowOf(
-        undirectedStartOnlyCount(
-          {
-            graph,
-            params,
-            pred: bareBoth,
-            pa: vacuousLabel(graph, aLabel) ? undefined : aLabel,
-            pb: undefined,
-            out: true,
-            types,
-            inNear,
-            inFar: undefined,
-            inRel: undefined,
-            cstart,
-            cfar: undefined,
-          },
-          bareBoth.startVar,
-        ),
+    return (graph, params) => {
+      // The far label is dropped when the degree sum claims the query (it never visits that end)
+      // and when it constrains nothing — `vacuousLabel`, item 566. Hoisted rather than nested in
+      // the object literal, which `no-nested-ternary` rejects and which read worse anyway.
+      const farPb = startOnly || vacuousLabel(graph, bLabel) ? undefined : bLabel;
+      const scan: HopScan = {
+        graph,
+        params,
+        pred: bareBoth,
+        pa: vacuousLabel(graph, aLabel) ? undefined : aLabel,
+        pb: farPb,
+        out: true,
+        types,
+        inNear,
+        inFar: startOnly ? undefined : inFar,
+        inRel: startOnly ? undefined : inRel,
+        cstart,
+        cfar: startOnly ? undefined : cfar,
+      };
+
+      return rowOf(
+        startOnly ? undirectedStartOnlyCount(scan, bareBoth.startVar) : undirectedTally(scan),
       );
+    };
   }
 
   return (graph, params) => {

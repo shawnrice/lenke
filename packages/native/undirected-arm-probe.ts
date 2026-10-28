@@ -33,19 +33,24 @@ const SHAPES: Record<string, { q: string; reached: boolean }> = {
     q: 'MATCH (a:Person)-[:KNOWS]->(x) WHERE a.age > 60 RETURN count(*) AS c',
     reached: false,
   },
-  // Still declining, each for its own reason: a far label, a far-reading predicate, a rel
-  // constraint. (A multi-type alternation and an untyped hop were here until item 1078.)
+  // SUBJECTS since item 1086, which replaced the last three declines with `undirectedTally` — the
+  // existing directed tally run once per direction. They were the three LARGEST numbers on this
+  // board while they were controls, which is what made them the target:
+  //   far-label 362.34 -> 76.17 (4.8x), far-pred 895.82 -> 66.61 (13.5x), rel-pred 913.18 -> 35.57
+  //   (25.7x), with `clause` and `untyped` — the degree-sum arm — flat at 0.98x and 1.01x.
+  // NOTHING DECLINES HERE ANY MORE, so this file has no `reached: false` rows left except the ones
+  // that were never declines: the unconstrained O(1) arithmetic and the directed twin.
   'far-label': {
     q: 'MATCH (a:Person)-[:KNOWS]-(x:Person) WHERE a.age > 60 RETURN count(*) AS c',
-    reached: false,
+    reached: true,
   },
   'far-pred': {
     q: 'MATCH (a:Person)-[:KNOWS]-(x) WHERE x.age > 60 RETURN count(*) AS c',
-    reached: false,
+    reached: true,
   },
   'rel-pred': {
     q: 'MATCH (a:Person)-[r:KNOWS]-(x) WHERE r.w = 1 RETURN count(*) AS c',
-    reached: false,
+    reached: true,
   },
   // SUBJECTS since item 1078, which replaced item 1076's decline on these two with an exact
   // correction: `two-types` 331.53 -> 30.58 and `untyped` 254.07 -> 25.94, both answering what

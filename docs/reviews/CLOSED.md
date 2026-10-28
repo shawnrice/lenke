@@ -31554,3 +31554,48 @@ trustworthy, not less.
 (0.96x, route live); deg3 92 against deg5 141 = **1.53x for 1.67x the edges**, the recurrence's
 linearity in `|E|`. The bench comment now labels the table, gives TS's real history and warns that
 comparing a TS reading against 38.87 compares it to an old native number.
+
+## 1086 — ✅ SHIPPED: the UNDIRECTED hop's last three declines, **4.8-25.7x**. Nothing declines there any more
+
+Item 1076's probe had three rows marked CONTROL that were the **three largest numbers on its board**
+— they were controls because `buildOneHopCount` DECLINED them, so each built a binding and a row per
+edge on the general path.
+
+**The mechanism was already in the file.** `tallyHopCount` picks NEAR/FAR from `scan.out`, so an
+undirected hop is that walk run **once per direction** — which is what `expand` emits for `-[:T]-`.
+No new per-edge rule. Two recorded measurements shaped it: nothing was added inside that walk's
+per-edge body (item 1033 measured a branch there at ~2x on three shapes that cannot execute it), and
+the self-loop correction is the only arithmetic (`near === far` in both orientations, so counted
+twice where `expand` emits once; `loopsOfTypes` gates it).
+
+```text
+  SUBJECTS                                              PRE      POST
+    rel-pred   -[r:KNOWS]-(x) WHERE r.w = 1          913.18 ->  35.57   25.67x
+    far-pred   -[:KNOWS]-(x)  WHERE x.age > 60       895.82 ->  66.61   13.45x
+    far-label  -[:KNOWS]-(x:Person) WHERE a.age > 60 362.34 ->  76.17    4.76x
+  CONTROLS (the degree-sum arm)
+    clause     WHERE a.age > 60                       24.65 ->  25.24    0.98x
+    untyped    -[]-(x) WHERE a.age > 60               26.18 ->  25.87    1.01x
+    directed   -[:KNOWS]->(x)                          8.26 ->   8.03    1.03x
+```
+
+Answer check STRUCTURAL: 21 runs, 4 distinct answers, counts 9/6/3/3 — each shape runs once per
+round, so all counts divisible by 3 means no shape changed its answer between arms.
+
+### ⚠️ MUTATION CORRECTED THE TEST DESIGN, not just its coverage
+
+Round one caught 11/13; **`looptally-drops-inrel` SURVIVED**. My guard asserted only loops that PASS
+the constraint, and its comment claimed a FAILING loop proves nothing. **Backwards:** gates only
+REJECT, so a PASSING loop is counted by `loopTally` with or without a gate (no signal); a FAILING
+loop is counted ZERO times by the two directions, so a dropped gate makes `loopTally` subtract one
+that was never added. The fixture compounded it — both edges carried `w: 1`, so the rel gate was
+**vacuous in it**: the coinciding-fixture trap, 8th time this run. With a `failing()` fixture,
+**13/13 caught, none survived.**
+
+`startonly-never` (route everything through the tally) survived round one as answer-equivalent →
+**`undirectedDegreeSumFits`** is now a pure exported predicate with `undirected-route-gate.test.ts`
+asserting the decision and each of its five conditions ALONE. The wrong direction needs no help:
+`startonly-always` fails 36 differential tests.
+
+**The probe has no declining rows left** — its only `reached: false` rows are the two that were never
+declines (the O(1) unconstrained arithmetic, the directed twin). Flags flipped for the third time.
