@@ -2002,6 +2002,20 @@ export const detectHopProjection = (
       const rows: Row[] = [];
       // ONE binding, mutated per edge. This is the allocation the profile found.
       const binding = new Map<string, unknown>();
+      // A VACUOUS FAR LABEL IS DROPPED, ONCE PER CALL (item 1066). `matchesLabel` dereferences the
+      // far vertex to read its labels, and that deref is the dominant cost of a hop when the far
+      // set is large enough not to be cache-resident: holding the scan, the edges and the row
+      // count all fixed and varying ONLY how many distinct vertices the edges point into moved
+      // `RETURN b.k AS c` 9.3x (14.16 ms over a 50,000-wide far pool against 1.52 over a
+      // 100-wide one). A label every vertex carries cannot reject anything, so testing it buys
+      // nothing and costs that deref. The same test already guards the DEDUP walk's far resolve
+      // (`planFor`, items 215/217, where the label test alone measured 189ns a vertex); this is
+      // that decision applied to the walks that project.
+      //
+      // Per CALL, not per compile, because vacuity is a runtime property of the graph — the same
+      // reason the far-driven choice below is made here (items 195, 198). It costs the inner loop
+      // nothing: it replaces a variable rather than adding a branch.
+      const fl = vacuousLabel(graph, farLabel) ? undefined : farLabel;
 
       for (const v of candidateVertexSource(graph, startLabel)) {
         const bucket = (out ? v.adjFrom : v.adjTo)?.get(typeName);
@@ -2013,7 +2027,7 @@ export const detectHopProjection = (
         for (const edge of bucket) {
           const far: Vertex = out ? edge.to : edge.from;
 
-          if (farLabel !== undefined && !matchesLabel(far, farLabel)) {
+          if (fl !== undefined && !matchesLabel(far, fl)) {
             continue;
           }
 
@@ -2502,6 +2516,12 @@ const filteredHopWalk = (w: {
 
     const rows: Row[] = [];
     const binding = new Map<string, unknown>();
+    // A VACUOUS FAR LABEL IS DROPPED, ONCE PER CALL — see the inline start-driven walk above for
+    // the measurement and the reasoning. On this walk it is worth more, because the shapes that
+    // reach it may read ONLY the start: `MATCH (a:P)-[:E]->(b:P) RETURN min(a.k) AS c` measured
+    // 20.38 ms against 8.14 for the same query written `->(b)`, two spellings of one question
+    // over a graph where every vertex carries `P` — 2.5x for a label test that cannot fail.
+    const fl = vacuousLabel(graph, farLabel) ? undefined : farLabel;
 
     for (const v of candidateVertexSource(graph, startLabel)) {
       const bucket = (out ? v.adjFrom : v.adjTo)?.get(typeName);
@@ -2517,7 +2537,7 @@ const filteredHopWalk = (w: {
       for (const edge of bucket) {
         const far: Vertex = out ? edge.to : edge.from;
 
-        if (farLabel !== undefined && !matchesLabel(far, farLabel)) {
+        if (fl !== undefined && !matchesLabel(far, fl)) {
           continue;
         }
 

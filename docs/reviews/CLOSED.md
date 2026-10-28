@@ -30671,3 +30671,69 @@ Two constraints, both already written in `hop-projection.ts`: it applies only to
 (an edge-driven order differs, and tie order is observable between the engines, item 605 — which is
 why a sort forces the start-driven walk), and a START LABEL has to be re-checked per edge, which is
 what the far-driven walk's `vacuousLabel` guard already handles.
+
+## 1066 — ✅ SHIPPED: a vacuous far label costs a hop 2.8x. 🛑 And item 1065's attribution was WRONG
+
+### 🛑 Correction to item 1065 — read this before citing it
+
+- It called `min(b.k)` a **row-free floor**. It is not: `detectHopAggregate` delegates to the hop
+  PROJECTION walks and folds over `row[VALUE_COL]`, so it materializes a row per edge. What survives
+  is the narrow fact the refutation rested on — top-10 11.91, `min` 11.87, all-rows 15.47, within
+  noise — so **the SELECTION costs nothing and item 1064's lever still has nothing to remove on a
+  hop.** That refutation stands; its explanation does not.
+- Its **second sweep held the actual cause constant**: it varied the adjacency distribution while
+  keeping the FAR POOL 50,000 wide in every arm. The flatness says "the cost does not depend on the
+  adjacency distribution", not "the cost is per start vertex". **I varied two things and credited
+  the one I was thinking about.**
+
+### The experiment that actually locates it
+
+50,000 vertices scanned, 50,000 edges, 50,000 rows — identical in every arm. Only the number of
+DISTINCT far endpoints varies:
+
+```text
+  far pool 50,000   min(b.k) 15.88 ms   min(a.k) LABELLED 20.38   min(a.k) BARE  8.14   rows 10.72
+  far pool 10,000             4.25                       10.33                  5.09         3.59
+  far pool  1,000             1.33                        7.64                  5.30         1.03
+  far pool    100             1.06                        5.90                  5.48         1.48
+```
+
+**9.3-15x from nothing but where the edges point.** A hop's cost is DEREFERENCING THE FAR VERTEX and
+it scales with how scattered the far set is — cache residency, CLAUDE.md's first rule as the answer
+rather than the trap. The walk's own primitives (bucket iteration + `adjFrom.get` + every edge)
+cost **0.76-1.36 ms** against the engine's 9.93-13.86, so the deref is not the data structure.
+
+### The fixable part
+
+```text
+  start-only-labelled   MATCH (a:P)-[:E]->(b:P) RETURN min(a.k)   18.06 →  6.46   2.80x
+  start-proj-labelled   … RETURN a.k AS c                         17.13 →  6.12   2.80x
+  CONTROLS  start-only-bare (the spelling twin) 6.43 → 7.59; start-proj-bare 1.03x;
+            far-read 1.04x; far-rows 1.03x; selective-far 1.00x; node-min 1.01x
+```
+
+`matchesLabel(far, farLabel)` dereferenced the far vertex to test a label every vertex carries.
+Hoisted to `const fl = vacuousLabel(graph, farLabel) ? undefined : farLabel` ONCE PER CALL, in the
+inline start-driven walk and `filteredHopWalk`'s general loop — replacing a variable, not adding a
+branch (item 159's 1.6x). **The same decision already guarded the DEDUP walk's far resolve**
+(`planFor`, items 215/217, where the label test alone measured 189 ns a vertex).
+
+**The result is the CONVERGENCE**: 18.06-vs-6.43 became 6.46-vs-7.59, so the labelled and bare
+spellings of one question now cost the same. `selective-far` (a label on a tenth of the vertices)
+did not move, which is the control that matters.
+
+Teeth: `always-drop` 4 fail, `vacuous-means-nonempty` 6 fail, `vacuous-off-by-one` 6 fail;
+`hoist-only-inline` SURVIVED and is answer-equivalent (it loses speed only), guarded by the probe's
+convergence rows. 17 tests built as fixture PAIRS differing in ONE vertex, because `vacuousLabel` is
+a size comparison and the boundary is one vertex wide.
+
+### ➡️ NEXT: the same class on the START label is 5783x, and the probe has been printing it
+
+```text
+  57.83ms   MATCH (a:P)-[:E]->(b) RETURN count(*) AS c
+   0.00ms   MATCH (a)-[:E]->(b) RETURN count(*) AS c
+```
+
+Two spellings of one question where every vertex carries `P`: the unlabelled form takes the O(1)
+edge-bucket count, the labelled form walks 200,000 vertices. `shortcuts.ts` already drops vacuous
+endpoint labels in the UNDIRECTED hop count; the DIRECTED count does not.
