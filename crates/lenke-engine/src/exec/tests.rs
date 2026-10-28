@@ -30205,3 +30205,67 @@ fn the_bare_present_count_route_predicate_admits_only_that_shape() {
         );
     }
 }
+
+/// Does the fused streaming count agree with the frontier fold on a STORED PRESENT-NULL?
+/// (item 1142)
+///
+/// `num_conj_on_slot` accepts a bare `PropertyExists` as an atom with NO bound, on the stated
+/// grounds that the presence gate is "redundant with the streaming count's own `present[i]`
+/// check". For a `Column::Num`, `present[i]` is the NON-NULL bit (`has_value_at`) while
+/// `PropertyExists` is `present || nulls` (`present_at`) — which `store.rs` names the single
+/// source of truth for `has('k')`.
+///
+/// ANSWER: they agree, and the fused path is not even reachable with a present-null in the column,
+/// because storing one promotes the column to `Gen` and the fused path requires `Column::Num`. So
+/// the shortcut is correct — for a reason its own comment does not give.
+///
+/// BUILT THROUGH THE BUILDER, not `add_node`/`add_edge`: the fused path requires a fresh per-type
+/// CSR, which only LOAD arms. A first version of this test used the mutators, both spellings fell
+/// to the fold, and the agreement it asserted proved nothing at all about the path under test —
+/// which a claim trace showed rather than inspection.
+#[test]
+fn the_fused_streaming_count_and_the_frontier_fold_agree_on_a_present_null() {
+    let mut b = Builder::default();
+    // 0 is the hub; 1.. are its targets, cycling value / present-null / absent.
+    b.node(&["P"], &[("age", n(9.0))]);
+    for i in 0..3000u32 {
+        match i % 3 {
+            0 => b.node(&["P"], &[("age", n(f64::from(i)))]),
+            1 => b.node(&["P"], &[("age", Value::Null)]), // STORED present-null
+            _ => b.node(&["P"], &[]),                     // absent
+        };
+    }
+    for i in 1..=3000u32 {
+        b.edge(0, i, "K");
+    }
+    let st = b.build();
+
+    let col = st.column("age").expect("age column");
+    // THE COLUMN IS `Gen` HERE, AND THAT IS THE POINT (measured, not assumed — a `VARIANT1142`
+    // print said so). A stored present-null promotes the column OUT of the packed representation,
+    // so `Column::Num` can never contain one — which is why `try_fused_hop_num_count` testing the
+    // bare `present[i]` bit for a `PropertyExists` atom is CORRECT and not the undercount it
+    // looks like. The fused path declines this fixture on its `Column::Num` gate, so what this
+    // test pins is the AGREEMENT of the two spellings, and the invariant is recorded at the
+    // shortcut itself.
+    assert!(col.present_at(2), "node 2 must be PRESENT (a stored null)");
+    assert!(!col.has_value_at(2), "node 2 must be a present-NULL");
+
+    let cnt = |q: &str| {
+        let plan = crate::opt::optimize_indexed(crate::gremlin::parse(q).unwrap(), &st);
+        match run(&plan, &st).rows[0][0] {
+            Value::Num(x) => x,
+            ref v => panic!("count is not a number: {v:?}"),
+        }
+    };
+
+    // 1000 values and 1000 present-nulls carry `age`; 1000 absent do not.
+    let fused = cnt("g.V().out('K').has('age').count()");
+    let fold = cnt("g.V().out('K').values('age').count()");
+
+    assert_eq!(fold, 2000.0, "the frontier fold counts the present-nulls");
+    assert_eq!(
+        fused, fold,
+        "has('age').count() and values('age').count() are ONE question and must agree"
+    );
+}

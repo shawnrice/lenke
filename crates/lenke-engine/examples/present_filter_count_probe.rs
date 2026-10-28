@@ -34,12 +34,30 @@ use support::{social_store, time_query, Cfg};
 fn main() {
     let cfg = Cfg::from_env();
     let nodes = cfg.scale.unwrap_or(200_000) as u32;
-    let store = social_store(nodes, 5);
+    // DEGREE FROM THE ENVIRONMENT. Item 1138 found the native `has`/`values` pair 12x apart at
+    // degree 1 on a numeric key while item 1137 measured them EQUAL at degree 5 on a string key —
+    // so the degree is part of the question, not a fixture detail, and the probe has to be able
+    // to ask at both.
+    let deg: u32 = std::env::var("PROBE_DEG")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5);
+    let store = social_store(nodes, deg);
 
-    println!("\n# {} nodes / degree 5, min of {}\n", nodes, cfg.reps);
+    println!("\n# {nodes} nodes / degree {deg}, min of {}\n", cfg.reps);
     println!("  label                                   us        answer");
 
     for (label, q) in [
+        // The NUMERIC key, which is where item 1138 saw the pair 12x apart. `name` is a Str
+        // column and `age` a Num one, so these four rows separate the KEY'S TYPE from the degree.
+        (
+            "A1 out.has(age).count",
+            "g.V().out('KNOWS').has('age').count()",
+        ),
+        (
+            "A2 out.values(age).count",
+            "g.V().out('KNOWS').values('age').count()",
+        ),
         (
             "T1 out.has(name).count",
             "g.V().out('KNOWS').has('name').count()",

@@ -301,7 +301,20 @@ pub(super) fn num_conj_on_slot(
 ) -> Option<(String, Vec<(CompareOp, f64)>)> {
     // An atom on `slot` is either a numeric compare (a bound) or a `PropertyExists`
     // presence gate (NO bound — redundant with the streaming count's own `present[i]`
-    // check, and implied by any compare on the same key). `has(k, pred)` desugars to
+    // check, and implied by any compare on the same key).
+    //
+    // WHY THAT `present[i]` IS SOUND, which the line above asserts without saying (item 1142).
+    // `PropertyExists` is `present_at` — `present || nulls`, counting a STORED PRESENT-NULL —
+    // while a packed column's `present[i]` is `has_value_at`, which does not. Those differ, so
+    // dropping the atom in favour of `present[i]` looks like an undercount. It is not, and the
+    // reason is a REPRESENTATION INVARIANT rather than anything in this function: storing a
+    // present-null PROMOTES the column to `Column::Gen`, so a `Column::Num` cannot contain one
+    // and the two accessors coincide there. Verified by building such a fixture and printing the
+    // variant (`Gen`), not by reading the writer.
+    //
+    // CONSEQUENCE IF THE PACKED COLUMNS EVER TRACK NULLS IN PLACE: this shortcut becomes a wrong
+    // answer, silently, on a shape that returns a plausible count. The caller gates on
+    // `Column::Num`, so the invariant is load-bearing at exactly one line. `has(k, pred)` desugars to
     // `And(PropertyExists{k}, <compare>)`, so accepting the presence atom is what keeps
     // a non-selective `has('age', neq(60)).count()` on the streaming path instead of
     // materializing a 99% keep-list.

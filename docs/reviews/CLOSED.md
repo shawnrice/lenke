@@ -33588,3 +33588,39 @@ pass / 0 fail. 7/7 byte-identity fuzzers 13 pass / 0 fail.
 
 ⚠️ **STILL OPEN: the NATIVE pair is 0.1 ms vs 1.5 ms** on this fixture. Item 1138's Gap 2 is
 untouched by this TS-only change; the native `values` side is the next target.
+
+## 1142 — 🔶 PRICED at **21.4x** and CORRECTED: the native gap is the KEY'S TYPE, not the degree. Plus a suspected wrong answer REFUTED by a representation invariant nobody had written down
+
+⚠️ **Item 1138's "degree 1 vs degree 5" framing was WRONG.** Both keys in one process, degree 1,
+200,000 nodes:
+
+```text
+  A1 out.has(age).count        116.1 us   numeric key
+  A2 out.values(age).count    2524.2
+  T1 out.has(name).count      2481.5      string key, SAME question as A1  -> 21.4x
+  T2 out.values(name).count   2296.8
+  C1 out.count        [ctl]      0.2      C2 hasLabel [ctl] 156.1
+```
+
+At degree 1 the string pair is itself equal, so the key's TYPE is the whole effect.
+
+Claim trace: `has(age)` → **`try_fused_hop_num_count`**; `has(name)`, `values(age)`, `values(name)`
+→ `try_frontier_count`. The fused path streams the per-type CSR and tests a bool per neighbour; the
+fold builds a `frontier_counts` map first. A bare presence test needs nothing numeric, so **the 21x
+is a fast path gated on a column type the question does not depend on.** NOT BUILT — the target.
+
+⚠️ **SUSPECTED WRONG ANSWER: REFUTED.** `num_conj_on_slot` admits a bare `PropertyExists` with no
+bound, calling it "redundant with the streaming count's own `present[i]` check" — but
+`PropertyExists` is `present_at` (counts a stored present-null) and packed `present[i]` is
+`has_value_at` (does not). The undercount cannot happen: **storing a present-null PROMOTES the
+column to `Column::Gen`**, so a `Column::Num` never contains one and the accessors coincide. The
+shortcut is correct for a reason its own comment did not give; now recorded there, with the
+consequence — **if the packed columns ever track nulls in place, this becomes a silent wrong answer
+at one gated line.**
+
+⚠️ Two instrument lessons from getting there. (1) The first test used `add_node`/`add_edge`, which
+invalidate the per-type CSR the fused path needs, so BOTH spellings fell to the fold and the
+agreement proved nothing — a claim trace showed that, inspection had not. **Build a fused-path
+fixture through the `Builder`.** (2) The assertions written to pin the fixture (`present_at` true,
+`has_value_at` false) hold for `Gen` as well as `Num`, so they could not distinguish the case and
+the test looked rigorous while testing nothing. **Print the variant.**
