@@ -287,6 +287,28 @@ pub fn run(cfg: &Cfg) {
                     "hop two num props",
                     "MATCH (p:Person)-[:KNOWS]->(q) RETURN q.age, q.age AS b",
                 ),
+                // DOES THE SECOND COLUMN'S COST COME FROM ITS DATA OR FROM BEING A SECOND COLUMN?
+                // ANSWERED at item 1115, per row: `hop prop` 5.0 ns, `+ const col` 16.4,
+                // `hop two num props` 17.3, `+ three const cols` 30.2. A CONSTANT column — no
+                // source, no gather, no presence check — costs 11.4 ns a row against a gathered
+                // one's 12.3, and a fourth column adds the same ~8.4 again. So the cost is being a
+                // COLUMN and not reading anything: every output column is materialized as a full
+                // `Col` (for a constant, `broadcast` builds `vec![x; n]` — 100,000 copies of one
+                // value) and then copied again into the row-major buffer. Item 1114 measured the
+                // render's share of that at ~2 ns and refuted removing it; the rest is the
+                // materialize-then-copy the columnar projection is built on.
+                //
+                // A CONSTANT second column has no gather, no presence check and no source column
+                // at all, so if it still costs what `q.age AS b` costs, the cost is the
+                // multi-column machinery and not the read (item 1115).
+                (
+                    "hop prop + const col",
+                    "MATCH (p:Person)-[:KNOWS]->(q) RETURN q.age, 1 AS b",
+                ),
+                (
+                    "hop prop + three const cols",
+                    "MATCH (p:Person)-[:KNOWS]->(q) RETURN q.age, 1 AS b, 2 AS c, 3 AS d",
+                ),
                 (
                     "distinct prop",
                     "MATCH (p:Person)-[:KNOWS]->(q) RETURN DISTINCT q.city",

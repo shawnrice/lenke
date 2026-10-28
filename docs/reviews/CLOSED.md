@@ -32633,3 +32633,31 @@ for a second render path — recorded so that is a decision, not a rediscovery.
 **Still open:** the +12.5 ns. The render is now measured at ~2 ns of it, so the remaining ~10.5 ns
 is upstream — the PROJECTION evaluating two expressions instead of one. `hop two num props` vs
 `hop prop` isolates it with the type axis held constant.
+
+## 1115 — 🔶 PRICED, and it corrects 1114's remaining framing: the extra output column's cost is **being a column**, not reading anything — a CONSTANT column costs 11.4 ns a row against a gathered one's 12.3
+
+1114 left +12.5 ns a row per extra output column with ~2 ns attributed and pointed at "the
+projection evaluating two expressions", still assuming the cost involved READING a second value.
+
+```text
+  hop prop (1 col)               5.0 ns/row
+  hop prop + const col          16.4          +11.4   <- no source, no gather, no presence check
+  hop two num props             17.3          +12.3
+  hop prop + three const cols   30.2          +8.4 per extra column, linear
+```
+
+**The read is worth under 1 ns of the 12.** Every output column is MATERIALIZED as a full `Col` and
+then COPIED into the row-major buffer — for a constant that is `exec::broadcast`'s
+`Col::Num(vec![x; n])`, 100,000 copies of one f64 allocated and written so the render can copy each
+once more. Decomposition: fill the `Col` ~6-9 ns, pre-fill the output ~2 ns (refuted as a target at
+1114), copy in ~2 ns.
+
+**Actionable but not built:** a constant column need not be materialized — `broadcast` could be a
+scalar plus a length. Bounded, but it needs a new `Col` variant and every `match` on `Col` in the
+engine must handle it, for a shape rare in real queries. Recorded so it is a trade, not a
+rediscovery.
+
+**Not a defect:** a columnar projection that materializes each column and then transposes pays for
+the transpose. The alternative is row-wise evaluation into the output buffer, and 1114 measured what
+that costs when a cell must be cloned or written back. **~8-11 ns a row per output column is the
+engine's design, now priced** — that number is the result.
