@@ -340,7 +340,36 @@ const unrollSlots = (
 const hasChain = (rest: readonly Step[]): Extract<Step, { kind: 'has' }>[] | undefined => {
   const filters: Extract<Step, { kind: 'has' }>[] = [];
 
-  for (const step of rest) {
+  for (let i = 0; i < rest.length; i += 1) {
+    const step = rest[i];
+
+    // A TRAILING single-key `values(k)` under a count IS a presence filter — item 1141.
+    //
+    // `values('k').count()` counts the VALUES emitted, and this engine emits exactly one per
+    // present key: a LIST value is one row, not one per element, and a stored present-null is
+    // emitted rather than skipped. Both verified on a fixture carrying a value, a present-null,
+    // an absent key and a list — `values(k).count()`, `hasKey(k).count()` and the row count all
+    // read 3 — rather than assumed from the step's name.
+    //
+    // So over a frontier the two spellings are ONE question, and item 1140 left them 3.5x apart
+    // with `values` the slow side (30.7 ms against 108.5 at 200,000 nodes). Every `hasChain`
+    // caller is a COUNT rung, so nothing downstream reads the value this step would have emitted.
+    //
+    // LAST STEP ONLY, and that is not a formality: `[values(k), has(x, 1)]` applies `has` to the
+    // VALUE, a scalar, not to the element — a completely different question. Anything after
+    // `values` declines.
+    //
+    // MULTI-KEY `values` declines too: `values(a, b)` emits one row per PRESENT KEY per element,
+    // so its count is a sum over keys and not an element count. Only the single-key form collapses.
+    if (step.kind === 'values') {
+      if (step.keys.length !== 1 || i !== rest.length - 1) {
+        return undefined;
+      }
+
+      filters.push({ kind: 'has', key: step.keys[0], pred: { op: 'present' } });
+      continue;
+    }
+
     // A SINGLE-KEY `hasKey` IS a `has` filter — item 1140.
     //
     // `has('k')` with one argument builds `{kind:'hasKey'}`, not `{kind:'has'}` (`steps/filters.ts`),

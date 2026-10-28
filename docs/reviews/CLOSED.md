@@ -33542,3 +33542,49 @@ Mutation on a GREEN baseline: `present`→`!= null` CAUGHT (4 fails); multi-key 
 `has(k)` and the mutant survived). Third time this session a survivor was a missing fixture row.
 Suites isolated: gremlin 926, gql 3117, native 933, core 370, serialization 144, sync 176 = **5,666
 pass / 0 fail**; root `bun test`'s 68 failures are the documented run-many flake. 7/7 fuzzers green.
+
+## 1141 — ✅ SHIPPED **3.45x**, and the TS spelling family CLOSES: a trailing single-key `values(k)` under a count folds to a presence filter, so the two spellings now agree within noise
+
+Item 1140 left the pair 3.5x apart with `values` the slow side and recorded the family as open
+(the doctrine is cost EQUALITY, not which side wins). Closed here, TS-side.
+
+**Equivalence verified, not assumed** — on a fixture with a value, a stored present-null, an absent
+key and a LIST:
+
+```text
+  values(k) rows = [1, null, [1,2,3]]   -> 3 rows, NOT 5
+  values(k).count() = 3 = hasKey(k).count()
+```
+
+A list value is ONE row and a present-null IS emitted. Either going the other way would have made
+the fold a wrong answer.
+
+⚠️ **Two guards, neither a formality:** LAST STEP ONLY (`[values(k), has(x,1)]` applies `has` to the
+emitted SCALAR, not the element — answers 0), and SINGLE KEY ONLY (`values(a,b)` emits one row per
+present key, so its count sums over keys — `values(k,z).count()`=3 where `hasKey(k,z).count()`=2).
+Sound at all only because every `hasChain` caller is a COUNT rung, so nothing downstream reads the
+value.
+
+Three alternated rounds, arm-asserted on the built dist:
+
+```text
+  S2 out.values(age)       PRE 108.2/108.6     POST 31.4/31.4/31.8    3.45x
+  S1 out.has(age)   [ctl]  PRE  31.5/ 32.6     POST 30.5/32.2/29.6    flat
+  C / ffi           [ctl]  flat (TS-only change)
+```
+
+✅ **The pair is now EQUAL** — S1 29.6-32.2 vs S2 31.4-31.8, overlapping. First time in this family.
+
+⚠️ **AN ARM MARKER THAT IS A COMMENT PASSES VACUOUSLY.** The obvious marker `item 1141` reads **0 in
+BOTH arms** because the bundler STRIPS COMMENTS (verified: `item 1140` also reads 0 in a dist that
+contains that change). Switched to the code string `rest.length - 1`. A marker absent from both arms
+is the exact failure the assertion exists to prevent, wearing its clothes — assert on CODE, in the
+BUILT dist.
+
+Mutation on a GREEN baseline: last-step guard removed CAUGHT; values multi-key guard removed CAUGHT —
+both first attempt, because the fixtures were built from the two ways the equivalence can fail.
+Suites isolated: gremlin 929, gql 3117, native 933, core 370, serialization 144, sync 176 = 5,669
+pass / 0 fail. 7/7 byte-identity fuzzers 13 pass / 0 fail.
+
+⚠️ **STILL OPEN: the NATIVE pair is 0.1 ms vs 1.5 ms** on this fixture. Item 1138's Gap 2 is
+untouched by this TS-only change; the native `values` side is the next target.
