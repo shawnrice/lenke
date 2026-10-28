@@ -14463,6 +14463,49 @@ Also note `build_typed`'s inner `for t in &mut typed` pushes an offset for EVERY
 so `rebuild_csr` is O(V × ntypes + E), not O(V + E) — which is why the rebuild column climbs from
 5.87x of a read at 1k to 12.55x at 200k.
 
+## 1054 — 🔴 OPEN WRONG ANSWER: a cross-engine divergence surfaced in CI, with a deterministic repro
+
+**MAIN IS INTERMITTENTLY RED UNTIL THIS IS FIXED**, which is the correct state for a byte-identity
+divergence. Item 1052's CI went red on the differential fuzzer with a random seed — the fuzzer doing
+its job, not flake.
+
+```text
+  FUZZ_SEED=3076589914 bun test src/differential-fuzz.test.ts
+
+  MATCH (n:T) ORDER BY (-0.0 < cot((-1.0 * 0.0))) DESC, n.n OFFSET 1
+  RETURN ((-0.0 <> cot(0.0)) + (n.nu * n.nan)) AS x, n.n AS t
+
+    ts:     err E_INVALID_VALUE
+    native: ok [{"x":null,"t":5},{"x":null,"t":7},{"x":null,"t":11},{"x":null,"t":13},{"x":null,"t":17}]
+```
+
+Reproduced locally outside CI, so it is the engines and not the runner. **It must NOT be added to
+the registry to make CI green**: the registry's own rule is that a VALUE difference is refused
+whatever the list says, and its boolean-context residual is narrow by design — "an
+`E_INVALID_VALUE` against an EMPTY result, never against rows".
+
+**FOUR hypotheses tested and REFUTED**, so the next attempt starts narrowed:
+
+1. `boolean + number` rejected by one engine only — NO, `(1 < 2) + 1` raises on BOTH.
+2. The comparison is really null, so it is `null + null` — NO, `-0.0 <> cot(0.0)` is `true` on both.
+3. `boolean + null` diverges on operand eagerness — NO, `(1 < 2) + null`, `null + (1 < 2)`,
+   `(1 < 2) + n.missing`, `(1 < 2) * null`, `(1 < 2) - null` all give `null` on both.
+4. An `ORDER BY` on a BOOLEAN / null-valued sort key — NO, all three forms agree, with and without
+   `OFFSET 1`.
+
+Also established: **`nan` is not a fixture property at all**, so `n.nan` is an absent key → null;
+`nu` is 5/9/null. So the right operand is `5 * null` or `null * null`, which agree in isolation.
+
+**➡️ NEXT: bisect by removing one CLAUSE at a time from the ORIGINAL query against the ORIGINAL fuzz
+fixture.** Every refuted hypothesis above rebuilt a minimal fixture instead, and the divergence
+needs something those dropped — most likely the full row set interacting with `OFFSET 1`, or the
+statement-position `ORDER BY`/`OFFSET` against the projection.
+
+Item 1040's new generator band shifts every subsequent random draw, so the sampled population
+changed and may have surfaced this sooner. That does NOT create a divergence — the query and fixture
+are deterministic and the engines disagree outside CI. The two facts are recorded separately so they
+are not conflated.
+
 ## 681 — RETRACTED: the "8.5x one-hop spelling gap" was my harness skipping the optimizer
 
 **NO BUG. The engine is correct and the probe was wrong.** Recorded because the wrong number was
