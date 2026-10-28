@@ -32239,3 +32239,35 @@ source.
 **Rule:** a bare row and its filtered twin are not a route comparison when the predicate names the
 START position. Check the gate's pass fraction first — one line of the fixture generator accounted
 for the whole 2x here.
+
+## 1104 — 🔶 PRICED, cause NARROWED: the TS way-count sweep pays **190 ns an edge** against a measured **41 ns** data-model floor, and the two obvious causes are refuted BY COUNT
+
+`count 4-hop` is the board's largest gap (ts 547.5-592.0 ms vs native 6.5, ~90x) and item 1103
+already settled that it is not routing. A counter built into `sweepOneDirection` gives
+**18,000,000 touches over six runs = 3,000,000 per run** (200,000 sources x degree 5 x three
+passes; the fourth segment is the degree tail) → **190 ns/touch**.
+
+**Floor, measured** — a probe with the engine's own shapes (a `Set<Edge>` per vertex, each edge's
+own `toId` STRING OBJECT, a 200,000-entry `Map<string,number>`, a `Float64Array` accumulate),
+median of 9 dropping 3: **41.2 ns/touch**; without the Map 12.9; with a dense ordinal 0.9. An
+earlier version of the probe reused the same string object as the key and read 29.5 — V8 hits
+identity with a cached hash — so distinct objects are the honest number. **~150 ns/touch is
+unaccounted for: 4.6x headroom.**
+
+**REFUTED ❌ `edgesOfTypes`' generator frame.** A `bun --cpu-prof` profile puts it at **37.9% /
+2765.8 ms self** against `sweepOneDirection`'s 347.5. Counting branches: **3,600,000 calls,
+3,600,000 on item 324's single-type fast path, `edgesOfManyTypes` entered ZERO times.** 2765.8 ms
+over 3.6M calls is 768 ns for one `Map.get` — the profiler is crediting a small hot callee with its
+caller's inlined loop. ⚠️ **A CPU profile of this engine cannot be read as self-time attribution at
+this granularity.**
+
+**REFUTED ❌ the per-edge string-keyed `Map.get`.** Real, but INSIDE the floor: 41.2 with it vs 12.9
+without, so ~28 ns of the 190. (There is no dense vertex ordinal in `Graph.ts` — the engine is
+string-id-keyed by design; one would buy ~28 ns/edge, not ~150.) Also ruled out: `toId`/`fromId`
+are plain `#field` getters, unlike boxed `labels`.
+
+**Next step is ABLATION, not profiling** (the profile misattributes this exact shape): strip one
+operation from the per-edge body at a time against the isolated row. Remaining candidates in call
+order — the `skipLoops`/`far` guards, the `out ? e.toId : e.fromId` ternary, the `to < 0` intern
+branch (200,000 `Map.set` + two pushes per pass), the **`cached?.get(farId)` second lookup into a
+200,000-entry map on each intern**, and the `st.` property loads through item 1097's state object.
