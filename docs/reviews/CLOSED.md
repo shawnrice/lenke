@@ -33868,3 +33868,44 @@ that they agree. The raw plan yielding zero may itself be the broken one. Settle
 ⚠️ Also open from the same run: `optimizing_preserves_rows_across_shapes` "changed the ORDER" at seed
 1889763, whose plans differ only by `Filter{Scan} -> RangeSeek` over a `ShortestPath` pair with tied
 sort keys — plausibly the fuzzer over-asserting order on ties (`order-is-unspecified`), but unchecked.
+
+## 1149 — ⚠️🔧 ROOT CAUSE of item 1148: **`hash_join`'s NULL sentinel shares a bucket with a real node id.** Both suspected rewrites are INNOCENT, the RAW answer was correct, and the bug is WIDER than the seed
+
+Measurements, each ruling out a suspect:
+
+```text
+  Join output (raw plan):               0 rows   -> the outer filter is not what empties it
+  FILTER{Scan(Half),age<16} = 9 rows
+  RANGESEEK{Half,age<16}    = 9 rows             -> the SEEK rewrite is innocent
+  RAW left 166 / right 7 -> Join 0
+  OPT left 166 / right 3 -> Join 6               -> IMPOSSIBLE: R' ⊆ R must give L⋈R' ⊆ L⋈R
+```
+
+Join keys: RAW left slot1 = 166 real node elements (ids include **0**); OPT right slot2 = **ALL
+NULL** (3/3); RAW right slot2 = 6 NULLs of 7. ✅ **So the RAW answer (0 rows) was correct** — the
+question item 1148 said to settle first.
+
+**The bug**, `exec::hash_join` dense path:
+
+```rust
+let maxid = rids.iter().copied().filter(|&x| x != u32::MAX).max();
+let sentinel = maxid.map_or(0, |m| m as usize + 1);   // <- 0 when every right id is NULL
+let slot_of = |id| if id == u32::MAX { sentinel } else { id as usize };
+```
+
+The sentinel is placed inside the RIGHT's id range, and the probe maps LEFT ids into that same
+space. ⚠️ **All-NULL right side → `sentinel == 0` → real left id 0 lands in the NULL bucket** (left
+has id 0 twice, 2 x 3 = exactly the 6 phantom rows). ⚠️ **GENERALLY: any left id equal to
+`right_max + 1` collides with the NULL bucket**, for any right side — `counts.len() == sentinel + 2`,
+so the probe's `if k >= counts.len()` guard does not exclude it. The all-NULL case is just the
+easiest to reach.
+
+NULL-matches-NULL is DELIBERATE here (the comment states it) and is not the defect; the defect is
+that the sentinel's bucket is reachable by a real id.
+
+**Why it hid:** the documented depth is 200000, which passes — this needs 500000 — and the shape
+needs an `OptionalExpand{keep_source:true}` right arm padding every key to NULL with a left id 0
+present.
+
+**NOT FIXED** — bucket arithmetic every `Join` goes through, so the fix wants its own cycle with
+mutation, the 500k sweep as the gate, and the byte-identity fuzzers. OPEN.
