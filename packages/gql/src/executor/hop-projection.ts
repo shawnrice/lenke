@@ -1215,9 +1215,20 @@ const relBoundRoute = (r: {
   startOnly: boolean;
   needsStart: boolean;
   cfar: CNode | undefined;
+  /** Does the query carry an `ORDER BY` this path will sort on the way out?
+   *
+   *  It decides whether the SEEDED walk may be used, and the reason is the one `hopOrderPlan`
+   *  gives for refusing the far-driven walk under a sort: `Array.prototype.sort` is STABLE, so a
+   *  sort pins the sorted order and leaves TIES on arrival order — and tie order is observable
+   *  between the engines (item 605 measured TS and native agreeing exactly over a fixture with 20
+   *  ties per group, on every hop spelling). The seeded walk arrives in INDEX order, so sorting
+   *  its rows would reorder ties away from native: a divergence no timing shows and one a
+   *  differential fuzzer comparing multisets cannot see. */
+  sortedQuery: boolean;
 }): RowsFn | null => {
   const { startLabel, typeName, out, farVar, relVar, farLabel, proj, farPred } = r;
   const { relPred, gate, clauseWhere, startVar, startOnly, needsStart, cfar } = r;
+  const { sortedQuery } = r;
   const bound = needsStart ? startVar : undefined;
   const unfiltered =
     farPred === undefined && gate === undefined && !needsStart && relPred === undefined;
@@ -1259,23 +1270,26 @@ const relBoundRoute = (r: {
     }) ??
     // THE SEEDED WALK BEFORE THE SCANNING ONE (item 1038). It declines per compile when neither rel
     // predicate offers an indexed equality, and delegates per call when the index declines the
-    // seed, so the twin takes the query unchanged in both cases.
-    relSeekedHopWalk({
-      startLabel,
-      typeName,
-      out,
-      farVar,
-      relVar,
-      farLabel,
-      proj,
-      farPred,
-      relPred,
-      relLifted,
-      gate,
-      startVar: bound,
-      startOnly,
-      fallback: scanning,
-    }) ??
+    // seed, so the twin takes the query unchanged in both cases. Under an `ORDER BY` it is skipped
+    // outright — see `sortedQuery`.
+    (sortedQuery
+      ? null
+      : relSeekedHopWalk({
+          startLabel,
+          typeName,
+          out,
+          farVar,
+          relVar,
+          farLabel,
+          proj,
+          farPred,
+          relPred,
+          relLifted,
+          gate,
+          startVar: bound,
+          startOnly,
+          fallback: scanning,
+        })) ??
     scanning
   );
 };
@@ -1776,23 +1790,31 @@ export const detectHopProjection = (
   }
 
   if (itemsReadRel || carried.needsRel || relPred !== undefined) {
-    return relBoundRoute({
-      startLabel,
-      typeName,
-      out,
-      farVar,
-      relVar: rel.variable,
-      farLabel,
-      proj,
-      farPred,
-      relPred,
-      gate,
-      clauseWhere: m.where,
-      startVar,
-      startOnly: carried.startOnly,
-      needsStart,
-      cfar: compiledFarNode(cm),
-    });
+    // `sorted(...)`, LIKE EVERY OTHER RETURN IN THIS FUNCTION (item 1039). Without it this route
+    // DROPPED the `ORDER BY` and a following `LIMIT` outright — `RETURN e.tag AS a ORDER BY e.tag
+    // DESC LIMIT 2` returned three rows in insertion order where native returned two in
+    // descending order. A wrong answer, and a cross-engine one; see the item for why the
+    // differential fuzzers could not see it.
+    return sorted(
+      relBoundRoute({
+        startLabel,
+        typeName,
+        out,
+        farVar,
+        relVar: rel.variable,
+        farLabel,
+        proj,
+        farPred,
+        relPred,
+        gate,
+        clauseWhere: m.where,
+        startVar,
+        startOnly: carried.startOnly,
+        needsStart,
+        cfar: compiledFarNode(cm),
+        sortedQuery: startDrivenForOrder,
+      }),
+    );
   }
 
   if (farPred === undefined && gate === undefined && !needsStart) {

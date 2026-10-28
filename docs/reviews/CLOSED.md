@@ -29352,14 +29352,37 @@ multiTypeEdgeCount === 0`) — one named type cannot double-count. Native's `Adj
   nearest NULL CONTROL", and that control was 23.4 ms in one run and 12.4-12.5 ms in the next, so
   the threshold moves with it. The fourth group (item 578's, 2.40x) is a pure node-scan count with
   no relationship and no edge index, and a PRE run on HEAD shows the same four at the same ratios.
-- **🔴 OPEN WRONG ANSWER — an `ORDER BY` on a REL property is DROPPED on the hop projection, and so
-  is a following `LIMIT` (item 1039, found while writing item 1038's tests).** Reproduces
-  identically on the commit before 1038, so it is not that item's:
-  `MATCH ()-[e:T]->() RETURN e.tag AS a ORDER BY e.tag DESC` returns insertion order, ASC returns
-  the SAME order, `ORDER BY a DESC` (the alias) likewise, and `… ORDER BY e.tag DESC LIMIT 2`
-  returns **three** rows. The neighbours are correct — a node scan sorts both directions, and the
-  same hop sorting on a FAR property sorts correctly — so it is specific to a rel-property sort key
-  on this path. A wrong answer, so it outranks the perf queue.
+- **✅ FIXED WRONG ANSWER — the rel-bound hop projection DROPPED its `ORDER BY` and its `LIMIT`
+  (item 1039).** `detectHopProjection` wraps every return in `sorted(...)`; that one route returned
+  unwrapped, so the sort was computed, admitted, and thrown away along with any `LIMIT`/`OFFSET`.
+  Against native on one fixture: `ORDER BY e.tag DESC` ts `["b","a","c"]` / native `["c","b","a"]`;
+  ASC gave TS the SAME order (the tell); `ORDER BY a DESC` likewise; and
+  `… ORDER BY e.tag DESC LIMIT 2` returned **three** rows where native returned two — a wrong
+  CARDINALITY as well as a wrong order. Four for four, all now agreeing with native.
+- **WHY THE FUZZERS COULD NOT SEE IT, and neither reason is a broken invariant (item 1039).** They
+  compare row MULTISETS for unordered results, which is correct — and **a dropped `ORDER BY` is
+  invisible to a multiset comparison.** The `LIMIT` half is visible, but it only rides this route,
+  and the generated hop shapes do not read the REL variable, so `itemsReadRel` is false and the
+  route is never generated. Both halves are COVERAGE: `rel-hop-order.test.ts`, 21 tests, every
+  expectation read off the FFI engine first because the defect was itself a divergence.
+- **⚠️ THE TIE GUARD TOOK THREE FIXTURES, AND THE FIRST TWO HID IT (item 1039).** Wrapping the
+  route in `sorted(...)` alone would trade a dropped sort for a diverging TIE order, because item
+  1038's seeded walk arrives in INDEX order and `Array.prototype.sort` is stable (item 605: tie
+  order is observable and the engines agree). So `relBoundRoute` takes `sortedQuery` and skips the
+  seed under a sort. To SEE that guard, three things must hold at once: the seed must be admitted
+  (a selective key — `w` with two values is half the bucket and `edgeSeek` rightly refuses it); the
+  sort key must be a PROJECTED OUTPUT COLUMN (else `outputColumnSorts` declines and the query
+  leaves for the general path, which fixture two measured twice while reading "AGREE"); and the
+  matching edges must be INTERLEAVED against vertex creation order (fixture two had all eight on
+  one source vertex, so the two orders coincided). Fixture three: WITH the guard `m2 m1 m3` =
+  native, WITHOUT it `m1 m2 m3`, and `LIMIT 2` returns **different rows** (m1 m2 against m2 m1).
+  `seed-under-sort` survived on fixtures one and two and is caught on three. **A guard whose test
+  fixture cannot reach it is indistinguishable from a guard that does nothing.**
+- **⚠️ DISCLOSED, NOT FIXED — item 1038 introduced a new UNORDERED order difference from native on
+  this shape (item 1039).** `MATCH ()-[e:T]->() WHERE e.k = 7 RETURN e.t AS a` with no `ORDER BY`
+  returns `m1 m2 m3` in TS and `m2 m1 m3` in native. Permitted: row order without `ORDER BY` is
+  unspecified, the policy is explicitly WON'T-FIX rather than something to sort away, and the
+  fuzzers compare multisets. Recorded because nothing else would say so.
 - **➡️ ~~THE BUILD IS TWO HALVES AND THEY MUST LAND TOGETHER~~ — DONE at 1038 (item 1037).**
   `relBoundFilteredHopWalk` takes `relPred: CPredicate` (the INLINE constraint, which carries the
   `props`/`eqProps` `edgeSeek` reads) and `gate: CompiledExpr` (the CLAUSE `WHERE`, which has no
