@@ -32432,3 +32432,27 @@ already had slots and needed only the memo).
 
 Do NOT inherit GQL's `passes > 2` threshold: a consuming pass here drops both the walk AND the Map
 ops, a larger refund, so three hops may pay where it did not in GQL. Measure both depths.
+
+## 1109 — 🔶 the Gremlin walk VERIFIED as the route; a marginal pass **158 ns an edge**; its frontier Map only **31.7** of that; item 1108's framing CORRECTED (the prize is ~1.8-2.7x, not ~20%)
+
+**The planner reaches the shape — counted.** `shapeOk = 12, walk3 = 6`: six entries into the 3+ hop
+multiplicity walk (a warm-up plus two reps for each new row), so the rung CLAIMS the 3- and 4-hop
+chains and nothing enumerates. Worth checking because 397.3 ms also reads perfectly as ~25,000,000
+enumerated paths at ~16 ns — the ambiguity item 1102 was caught by.
+
+**A pass is 158 ns an edge, by DEPTH DIFFERENCE** (an in-situ ablation of the accumulate is invalid:
+`next` feeds the next pass, so removing it changes the algorithm — item 1105's `NO-ACC` rule):
+`V().out()x4` 555.5 − `V().out().out().out()` 397.3 = **158.2 ms for one pass over 1,000,000 edges**;
+and 397.3 / 2,000,000 touches = 199 ns, consistent.
+
+**Frontier micro** (engine shapes: 200,000 vertex objects, 1,000,000 touches, fresh accumulator per
+pass, integer LCG not the f64 one item 702 records collapsing): `Map<Vertex,number>` get+set
+**31.7 ns**; `Float64Array` with the slot known **2.3**; intern + `Float64Array` **15.7**; control
+0.7. So a dense frontier ALONE is ~10% of the row, and ~126 ns a pass is the per-edge data model —
+the same residual GQL's item 1104 could not attribute, now seen in two independent engines.
+
+⚠️ **CORRECTING 1108:** "the memo alone keeps the Map ops" is true of a VERTEX memo and false of the
+SLOT memo it recommends. A slot memo means a consuming pass touches **no edges and no Map** — the
+2.3 ns arm against 158. Projected (and labelled a projection): 4 hops ~475 → ~179 (**~2.7x**),
+3 hops ~316 → ~176 (**~1.8x**). Both depths worth building, and GQL's `passes > 2` threshold does
+NOT transfer — here the first consuming pass already drops the whole walk, not one lookup.
