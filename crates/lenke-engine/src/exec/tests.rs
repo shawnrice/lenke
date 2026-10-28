@@ -30533,3 +30533,66 @@ fn a_null_join_key_does_not_match_a_real_node() {
         "left id 2 matches both right 2s, and nothing else"
     );
 }
+
+/// The IN spelling of a 1-hop count is the same question as the OUT one — item 1153.
+///
+/// Over a whole-graph scan every edge is an out-edge of exactly one source AND an in-edge of
+/// exactly one target, so both emit one row per edge. The shortcut used to refuse `Dir::In`
+/// (1510x at bench scale), and the answers agreed throughout, so only a timing row could see it.
+///
+/// The fixture carries a SELF-LOOP and a PARALLEL edge, because those are where the "one row per
+/// edge" argument could fail: a self-loop is an in-edge of exactly one target (itself), and
+/// parallel edges are two edges rather than one. `Dir::Both` is also asserted, since it counts
+/// edge ENDS and must NOT take this shortcut.
+#[test]
+fn the_in_spelling_of_a_one_hop_count_matches_the_out_spelling() {
+    let mut b = Builder::default();
+    for _ in 0..40u32 {
+        b.node(&["Person"], &[]);
+    }
+    // A plain chain, a SELF-LOOP, and a PARALLEL pair.
+    for i in 0..30u32 {
+        b.edge(i, i + 1, "KNOWS");
+    }
+    b.edge(7, 7, "KNOWS"); // self-loop
+    b.edge(3, 4, "KNOWS"); // parallel with the chain's 3->4
+    let st = b.build();
+
+    let cnt = |q: &str| {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &st);
+        match run(&plan, &st).rows[0][0] {
+            Value::Num(x) => x,
+            ref v => panic!("count is not a number: {v:?}"),
+        }
+    };
+    let rows = |q: &str| {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &st);
+        run(&plan, &st).rows.len() as f64
+    };
+
+    // 32 edges: 30 chain + 1 self-loop + 1 parallel.
+    let out = cnt("MATCH (a:Person)-[:KNOWS]->(x) RETURN count(*) AS c");
+    let inn = cnt("MATCH (a:Person)<-[:KNOWS]-(x) RETURN count(*) AS c");
+    let general = rows("MATCH (a:Person)-[:KNOWS]->(x) RETURN a, x");
+
+    assert_eq!(
+        out, 32.0,
+        "one row per edge, self-loop and parallel included"
+    );
+    assert_eq!(
+        inn, out,
+        "the IN spelling is the SAME question as the OUT one"
+    );
+    assert_eq!(
+        general, out,
+        "and both equal the rows the general path yields"
+    );
+
+    // BOTH counts edge ENDS, so it is a DIFFERENT number and must not take this shortcut:
+    // 2*32 - 1 self-loop = 63.
+    assert_eq!(
+        cnt("MATCH (a:Person)-[:KNOWS]-(x) RETURN count(*) AS c"),
+        63.0,
+        "Dir::Both counts edge ends, with a self-loop counted once"
+    );
+}

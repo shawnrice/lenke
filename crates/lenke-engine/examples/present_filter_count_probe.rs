@@ -47,6 +47,42 @@ fn main() {
     println!("\n# {nodes} nodes / degree {deg}, min of {}\n", cfg.reps);
     println!("  label                                   us        answer");
 
+    // ITEM 1153: the DIRECTION enum's three variants on a plain 1-hop count. The native
+    // typed-hop shortcut gates on `*dir != Dir::Out`, so In and Both both decline — and an
+    // IN-expansion from a whole-graph scan yields exactly one row per edge, the same as Out.
+    for (label, q) in [
+        (
+            "D1 out  1-hop count",
+            "MATCH (a:Person)-[:KNOWS]->(x) RETURN count(*) AS c",
+        ),
+        (
+            "D2 in   1-hop count",
+            "MATCH (a:Person)<-[:KNOWS]-(x) RETURN count(*) AS c",
+        ),
+        (
+            "D3 both 1-hop count",
+            "MATCH (a:Person)-[:KNOWS]-(x) RETURN count(*) AS c",
+        ),
+    ] {
+        match time_query(q, false, &store, cfg.reps) {
+            Ok((us, _)) => {
+                let plan = lenke_engine::opt::optimize_indexed(
+                    lenke_engine::gql::parse(q).expect("parses"),
+                    &store,
+                );
+                let answer = lenke_engine::exec::try_run(&plan, &store)
+                    .ok()
+                    .and_then(|r| r.rows.iter().next().and_then(|row| row.first()).cloned())
+                    .map_or(f64::NAN, |v| match v {
+                        lenke_engine::value::Value::Num(n) => n,
+                        _ => f64::NAN,
+                    });
+                println!("  {label:<32} {us:>10.1}   {answer}");
+            }
+            Err(e) => println!("  {label:<32}      ERR   {e}"),
+        }
+    }
+
     for (label, q) in [
         // THE OTHER SPELLING OF THE SAME HOP (item 1145). `out(T)` IS `outE(T).inV()` — the
         // edge's HEAD. (`outV` is the edge's SOURCE and a DIFFERENT question; the C3 row below

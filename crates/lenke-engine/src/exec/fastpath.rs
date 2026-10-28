@@ -3695,7 +3695,33 @@ fn typed_hop_count_from_size(input: &Plan, agg: &Agg, store: &Store) -> Option<u
     else {
         return None;
     };
-    if agg.distinct || *bind_edge || *from != 0 || *dir != Dir::Out {
+    // IN IS THE SAME COUNT AS OUT, and used to be refused — item 1153.
+    //
+    // Over a WHOLE-GRAPH scan every edge is an out-edge of exactly one source AND an in-edge of
+    // exactly one target, so both expansions emit one row per edge and the answer is identical.
+    // The gate read `*dir != Dir::Out`, so the mirror spelling took no shortcut at all. Measured
+    // at 200,000 nodes / 1,000,000 KNOWS edges, both answering 1,000,000:
+    //
+    // ```text
+    //   MATCH (a:Person)-[:KNOWS]->(x) RETURN count(*)     0.3 us
+    //   MATCH (a:Person)<-[:KNOWS]-(x) RETURN count(*)   453.1        1510x
+    // ```
+    //
+    // This is the repo's named bug class — one spelling recognized, an identical-meaning one
+    // scanned for — and the answers agreed the whole time, so only a timing row could see it.
+    // Item 744 fixed the same asymmetry on the TS side for a QUANTIFIED mirror (47.4x there) and
+    // recorded that native's var-length gate already accepted `Dir::Out | Dir::In`; this entry,
+    // the plain 1-hop one, was still Out-only.
+    //
+    // `Dir::Both` is NOT admitted here: it emits a row per edge END, so the answer is
+    // `2*|E_t| - loops(t)` (a self-loop is counted once), which needs a per-type self-loop count
+    // the store does not maintain. Measured at 2576.8 us against this 0.3, answering 1,999,998 on
+    // a fixture with two self-loops — priced, and left to its own item rather than guessed at.
+    //
+    // `live_etype_count` is direction-free (it counts EDGES of a type), so the arms below need no
+    // change, and `type_ever_secondary` guards the in-partition for the same reason it guards the
+    // out one.
+    if agg.distinct || *bind_edge || *from != 0 || !matches!(dir, Dir::Out | Dir::In) {
         return None;
     }
     if !whole_graph_scan(src, store) {

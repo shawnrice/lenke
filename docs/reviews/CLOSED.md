@@ -34018,3 +34018,43 @@ far vertex (`expandSlot`'s `slotOf.get(w)`). A memo cannot help a slot's FIRST e
 ARE dense `u32` ids, so interning is identity. Closing the gap means giving `Vertex` an internal
 slot field — a cross-cutting change to a user-visible object, a design decision not a local
 optimization. OPEN.
+
+## 1153 — ✅ SHIPPED **1507x**: the MIRROR spelling of a 1-hop count took NO shortcut at all; found by pricing the direction enum's third variant
+
+The tri-engine table (`bun run bench`) flagged the unusual direction — **TS faster than both native
+engines**: `count 1-hop [shortcut]` 0.0/0.0/0.0 against `count 1-hop UNDIRECTED` ts 0.0, ffi 1.4,
+wasm 1.9. Pricing the whole enum found a bigger, cheaper win than the row that led there:
+
+```text
+  (a)-[:KNOWS]->(x) count(*)     0.3 us   1000000
+  (a)<-[:KNOWS]-(x) count(*)   453.1      1000000   <- SAME question, 1510x
+  (a)-[:KNOWS]-(x)  count(*)  2576.8      1999998   = 2*|E| - 2 self-loops
+```
+
+`typed_hop_count_from_size` gated on `*dir != Dir::Out`, so `Dir::In` fell through with `Dir::Both`
+— yet over a whole-graph scan every edge is an in-edge of exactly ONE target, so In needs nothing
+new. Fix is `!matches!(dir, Dir::Out | Dir::In)`. `live_etype_count` is direction-free, so the arms
+below need no change and `type_ever_secondary` guards the in-partition likewise.
+
+⚠️ **`Dir::Both` is NOT admitted** — it counts edge ENDS, so `2*|E_t| - loops(t)`, and no per-type
+self-loop count is maintained. Priced at 2576.8us; the maintenance surface would be item 1118's
+exact sites (known and bounded), but it is a separate change. OPEN.
+
+Three alternated rounds, arm-asserted:
+
+```text
+  D2 in   PRE 461.6/453.6/452.0   POST 0.3/0.3/0.3        1507x
+  D1 out  [ctl] flat    D3 both [ctl] flat    C1/C2 [ctl] flat
+```
+
+✅ **D3 is the strongest control available** — the same family, one variant over, still declining,
+so the gate widened by exactly one variant and no more.
+
+Mutation on a GREEN baseline: admitting `Dir::Both` CAUGHT; dropping the whole-graph-scan
+requirement CAUGHT. The answer test uses a SELF-LOOP and a PARALLEL edge (where "one row per edge"
+could fail) and cross-checks OUT, IN, the general path's row count, and BOTH (63 = 2x32 - 1). Suite
+1282+13+725; `rewrite_fuzz` 10; 7/7 byte-identity fuzzers.
+
+⚠️ **The corpus had no row for either variant** (items 877/881/1146's failure mode again).
+`1-hop MIRROR` and `1-hop UNDIRECTED` added to `query/gql`, reading 0.3 / 0.3 / 2592.0 — the fix is
+guarded and the remaining `Both` gap is visible rather than remembered.

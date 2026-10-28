@@ -67,6 +67,26 @@ pub fn run(cfg: &Cfg) {
                     "1-hop",
                     "MATCH (p:Person)-[:KNOWS]->(q) RETURN count(*) AS c",
                 ),
+                // THE MIRROR AND THE UNDIRECTED SPELLINGS of the row above, added at item 1153
+                // for the reason items 877, 881 and 1146 all record: the corpus had no row for
+                // the other variants of the direction enum, and the uncovered variant is where
+                // the unpriced cost lives. `<-[:KNOWS]-` is the SAME question as `-[:KNOWS]->`
+                // over a whole-graph scan (each edge is an in-edge of exactly one target) and
+                // took no shortcut at all until 1153 — 453.1us against 0.3, a 1510x penalty for
+                // the spelling, with the answers equal throughout.
+                //
+                // `-[:KNOWS]-` is a DIFFERENT question (it counts edge ENDS, so
+                // `2*|E_t| - loops(t)`) and still declines: 2576.8us, priced at item 1153 and
+                // left open because the formula needs a per-type self-loop count the store does
+                // not maintain. Kept as the row that will show it when that lands.
+                (
+                    "1-hop MIRROR",
+                    "MATCH (p:Person)<-[:KNOWS]-(q) RETURN count(*) AS c",
+                ),
+                (
+                    "1-hop UNDIRECTED",
+                    "MATCH (p:Person)-[:KNOWS]-(q) RETURN count(*) AS c",
+                ),
                 (
                     "2-hop",
                     "MATCH (p:Person)-[:KNOWS]->()-[:KNOWS]->(r) RETURN count(*) AS c",
