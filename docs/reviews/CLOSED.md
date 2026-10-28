@@ -32404,3 +32404,31 @@ is ABSENT and any port must be re-measured from scratch. Correctness there is al
 `gremlin-hop-chain-count.test.ts` (TinkerPop 3.7.3 numbers, mixed directions, refusals); both new
 rows report `answers: same` and were smoked at `PROBE_N=2000` first, since a declined rung would
 enumerate 625 paths a vertex instead of measuring.
+
+## 1108 — ❌ REFUTED at 3-4%: the Gremlin walk's cost is its `Map<Vertex, number>`, NOT `bucketsOf`'s per-vertex allocation — and that re-prices what a memo there would buy
+
+`bucketsOf` builds a new one-element array per vertex per pass for a single-label hop (600,000
+allocations for a three-hop count at 200,000 vertices). GQL fixed this exact shape at item 324,
+where returning the `Set` directly instead of wrapping it was **8.4 ns an edge / 1.58x** on its
+sweep. Ablated here with a module-scope reused array (zero allocation):
+
+```text
+  V().out().out().out().count()   397.3 -> 381.7   3.9%
+  V().out()x4.count()             555.5 -> 539.1   3.0%
+  V().out().out().count()          53.3 ->  53.3   CONTROL (inner product) flat
+```
+
+Inside the ~10% floor. **Not shipped.** Worth recording because item 324's number argues it should
+have paid: the same removal is 1.58x in one engine and 3% in the other, and the difference is what
+else the per-edge body does — GQL's sweep body was lean enough for a generator frame to dominate it;
+this one spends ~200 ns an edge.
+
+⚠️ **This re-prices item 1107's "port the memo" plan.** The remaining ~200 ns is
+`next.set(w, (next.get(w) ?? 0) + m)` — a `Map<Vertex, number>` get AND set per edge. A memo removes
+the adjacency iteration (the 3-4% just measured) and KEEPS the Map ops, so **the memo alone is not
+the fix here.** What is: port the whole GQL design — intern vertices to dense SLOTS, propagate in a
+`Float64Array`, memo neighbour SLOTS — so passes 2+ do no Map work. Bigger than 1106 was (which
+already had slots and needed only the memo).
+
+Do NOT inherit GQL's `passes > 2` threshold: a consuming pass here drops both the walk AND the Map
+ops, a larger refund, so three hops may pay where it did not in GQL. Measure both depths.
