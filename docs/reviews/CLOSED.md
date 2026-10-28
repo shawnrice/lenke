@@ -32154,7 +32154,7 @@ a sweep's 1.21x reads as a regression that is not there, or a real 1.2x regressi
 The comment now carries both ratios, which row inflates more and why, and the rule: **isolate them**
 (`BENCH_ONLY`). A ratio across two differently-inflated rows is not a ratio.
 
-## 1101 — 🔶 LOCATED (Rust): native's **2-hop count has NO fastpath at all**, and the O(1) typed degree it needs already exists
+## 1101 — ⚠️ **RETRACTED BY 1102** (the trace did not identify the shape): native's 2-hop count has NO fastpath at all, and the O(1) typed degree it needs already exists
 
 `query_bench -- counts`, the group written for "which still enumerate": every shape is a tally or a
 scan except one.
@@ -32182,3 +32182,31 @@ the product is O(V) with two O(1) reads: 200,000 vertices against 1,000,000 edge
 **NOT BUILT.** Conditions to carry: unconstrained source (vacuous label folded), the `double_loops`
 flag (`matching_degree` takes it — Gremlin's loop-twice rule), and `slice_degree` returning `None`
 must fall back rather than walk silently.
+
+## 1102 — ❌ REFUTED, and it RETRACTS 1101: native's 2-hop count is NOT missing a rung, and the route change is 1.2%
+
+**1101's headline is wrong.** It said the 2-hop count "has NO fastpath at all" on the strength of
+four `ENTER … declining` lines — which never carried the PLAN, so an arm entered for the `label`
+row and one entered for the `2-hop` row were indistinguishable. Printing the plan: the only shape
+reaching the new arm is `Scan{Person}`, while a 32-arm claim trace names the real holder —
+**`try_fused_count`**. Item 1096's lesson, turned on its author.
+
+`try_fused_count` already IS the inner product, with two branches: `count_hops(inner) >= 2`
+propagates a per-node count array (`frontier_counts`), and below that it materializes
+`frontier_ids` with multiplicity (1,000,000 entries here) and collapses it with
+`distinct_with_mult`. A 2-hop has `count_hops(inner) == 1`, so the one-character change `>= 2` →
+`>= 1` routes it to the array. The degree side is already shared and already O(1) via
+`matching_degree` → `slice_degree`. Byte-identity is free: `Counts`' doc warrants that exact
+integer counts make the f64 sums order-independent.
+
+**1.2%, alternated PRE/POST ×3, each arm asserted to be its own code:** min PRE **3067.4 us** vs
+min POST **3030.8**. The same row read 3695.1 / 3892.1 / 3009.9 / 3067-3113 across the session for
+three binaries including two identical ones — a ~20% same-binary spread, so the first run's
+"1.23x" was the spread. Controls (`1-hop` 0.3, `filtered` ~92, `grouped` ~383) flat. Reverted.
+
+**What it prices.** A 2-hop count over a LABELLED seed is irreducibly a scatter over hop-1's
+1,000,000 edges (arrivals from a filtered source set is a per-edge question — TS item 590 states
+the condition the O(V) form needs: the source set must be EVERY vertex). ~3.0 ms is ~3 ns per
+random-write edge touch plus 200,000 O(1) degree reads: the floor for this identity. **Do not
+re-open as a missing fastpath.** A new `try_2hop_product_count` is dead below `try_fused_count`
+(422) and a worse duplicate above it.
