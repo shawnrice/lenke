@@ -31804,3 +31804,42 @@ test put an `out`/`in` hop in the MULTIPLICITY WALK of a `both` chain, since eve
 3-hop mixed and filtered 2-hop chains added (oracle = forced decline), 10/11; survivor is the
 answer-equivalent routing decline. `degree-subtracts-a-loop` — the GQL correction applied here —
 fails 3, so the two engines' loop rules stay pinned to each other.
+
+## 1092 — ✅ SHIPPED (Gremlin): the FIFTH and SIXTH sites of the refuted self-loop reason, **11.6x** and **4.25x**
+
+Item 1091's grep found three more citations: one STALE DOC on `hopChainCount` (still "`out`/`in`
+only, never `both`") and two live declines — `startFilteredHopCount` (hop LAST) and
+`bothFilteredHopCount` (filters BOTH sides, item 932's worst cell).
+
+### ⚠️ ITEM 1087'S OWN PROBE HAD A VACUOUS LABEL, WHICH HID THIS
+
+`both-filter-probe.ts`'s `both-labelled` row is `hasLabel('Person').both(...)` on an ALL-`Person`
+fixture, so `dropVacuousLabels` stripped the label and it reached the rung 1087 had just fixed. **It
+read 32.77 ms and looked like evidence a labelled `both` was fast while the labelled rung declined.**
+With one third `Q`:
+
+```text
+  hasLabel(Q).both(T)                 251.44 ->  21.62   11.6x   (declined 282.26; Q.out 7.65)
+  hasLabel(Q).both(T).has(age,gt 60)  389.78 ->  91.71    4.25x  (declined 351.01; Q.out.has 48.81)
+```
+
+Tenth coinciding-fixture trap this run, and the first where the fixture was one **I** built two items
+earlier and then quoted as a measurement. Answers identical (666,670 / 214,796).
+
+**By RECURSION** (`both` → `out` then `in`, summed), not by widening the walks: 1091's first cut did
+that and cost a control 1.54x, while 1087/1089 recursed and moved nothing.
+
+### ➡️ A STALE DECLINE TEST, CONVERTED, GAVE THE ROUTE TEETH
+
+`has-count-shortcut.test.ts` asserted `countShortcut(...) === undefined` for `both`. Rewritten to
+assert the ANSWER against the pipeline (plus P's both-degree sum 4 against the `out` twin's 3), it
+now CATCHES `start-decline-restored` — the survivor items 1078, 1086, 1087 and 1091 all recorded as
+unavoidable. **A decline test converted into an answer test turns a perf-only choice into a
+checkable one.**
+
+**Teeth 6/7.** `sides-tail-keeps-the-hop` survives and is ANSWER-EQUIVALENT, established by reading
+`soleHopAt`: the tail keeps the `both`, so the recursive call sees two hops, `soleHopAt` returns
+undefined, and the rung declines.
+
+(Two self-inflicted test-edit errors, both caught instantly by the suite: aliasing the `both` step
+import broke ten call sites, and one new test pasted GQL pattern syntax into the Gremlin file.)

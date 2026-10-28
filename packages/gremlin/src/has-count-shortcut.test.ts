@@ -261,10 +261,24 @@ describe('a START-filtered hop count (item 539)', () => {
     expect(claim(traversal(V(), has('age', gt(15)), hasLabel('P'), out('KNOWS'), count()))).toBe(1);
   });
 
-  test('`both` is refused — a self-loop is incident twice', () => {
-    expect(
-      countShortcut(traversal(V(), hasLabel('P'), both('KNOWS'), count()), hg),
-    ).toBeUndefined();
+  test('`both` is ANSWERED since item 1092, as out + in', () => {
+    // This test asserted the DECLINE until item 1092. The reason it gave — "a self-loop is
+    // incident twice" — was refuted at item 1087: in Gremlin that double-count IS the answer, so
+    // the sum of the two arms needs no correction. The assertion is now the ANSWER, against the
+    // pipeline's own, which is what this describe block's header asks for.
+    const both2 = countShortcut(traversal(V(), hasLabel('P'), both('KNOWS'), count()), hg);
+
+    expect(typeof both2).toBe('number');
+    expect(both2).toBe(
+      Number(toArray(traversal(V(), hasLabel('P'), both('KNOWS'), count()), hg)[0]),
+    );
+    // `a` has 2 KNOWS out and 0 in; `b` has 1 out and 1 in. So P's both-degree sum is 4, and the
+    // `out`-only twin is 3 — a mutant that drops either arm cannot give both numbers.
+    expect(both2).toBe(4);
+    expect(countShortcut(traversal(V(), hasLabel('P'), out('KNOWS'), count()), hg)).toBe(3);
+    expect(countShortcut(traversal(V(), hasLabel('Q'), both('KNOWS'), count()), hg)).toBe(
+      Number(toArray(traversal(V(), hasLabel('Q'), both('KNOWS'), count()), hg)[0]),
+    );
   });
 
   test('a MULTI-label start keeps every vertex carrying EITHER label', () => {

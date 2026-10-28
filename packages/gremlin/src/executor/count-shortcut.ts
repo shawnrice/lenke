@@ -1053,9 +1053,10 @@ type HopStep = Extract<Step, { kind: 'out' | 'in' | 'both' }>;
  *
  * SOUNDNESS, two conditions both borrowed from the rungs above:
  *
- * - **`out`/`in` only, never `both`.** `both` walks out-edges then in-edges, so a self-loop is
- *   incident twice and neither a bucket size nor a single pass over one box is the degree —
- *   the same exclusion `vertexStepCount` and `startFilteredHopCount` make.
+ * - ~~**`out`/`in` only, never `both`.**~~ **`both` IS ADMITTED since item 1091**, by
+ *   {@link bothChainCount} rather than by widening the arms here — a `both` hop's degree is the
+ *   sum over both boxes, so a self-loop counts twice, which is what `both()` yields. The arms
+ *   below still see `out`/`in` only, and `HopStep` records the 1.54x the alternative cost.
  * - **A multi-label hop declines when the graph holds a multi-type edge** (`multiTypeEdgeCount`).
  *   Such an edge sits in two buckets, so iterating across types visits it twice where the walk
  *   yields it once. Item 573 shipped exactly that bug on the GQL side and the suite caught it.
@@ -1467,8 +1468,31 @@ const startFilteredHopCount = (mid: readonly Step[], graph: Graph): number | und
 
   const hop = mid[mid.length - 1];
 
-  // `both` walks out-edges then in-edges, so a self-loop is incident twice and the total is not a
-  // degree sum — the same exclusion `vertexStepCount` makes.
+  // `both` IS `out` PLUS `in` (item 1092), the sixth site of the self-loop reason item 1087
+  // refuted. A `both` hop walks out-edges then in-edges, so a self-loop is incident twice and
+  // YIELDED twice — which the sum of the two arms reproduces with no correction.
+  //
+  // BY RECURSION, not by generalizing the walk below. Item 1091's first cut folded `both` into a
+  // shared arm with a box-list helper and cost the `out.out` CONTROL **1.54x** — a shape it could
+  // not reach — because a per-vertex allocation and a call replaced an inlined box read. Recursing
+  // leaves the body byte-identical, which is how items 1087 and 1089 avoided the same trap.
+  //
+  // Measured with a SELECTIVE label (one third `Q`, so it is not dropped as vacuous):
+  // `hasLabel(Q).both(T).count()` 251.44 ms declining against `hasLabel(Q).out(T).count()` 7.65
+  // on the rung.
+  if (hop.kind === 'both') {
+    const head = mid.slice(0, mid.length - 1);
+    const outward = startFilteredHopCount([...head, { kind: 'out', labels: hop.labels }], graph);
+
+    if (outward === undefined) {
+      return undefined;
+    }
+
+    const inward = startFilteredHopCount([...head, { kind: 'in', labels: hop.labels }], graph);
+
+    return inward === undefined ? undefined : outward + inward;
+  }
+
   if (hop.kind !== 'out' && hop.kind !== 'in') {
     return undefined;
   }
@@ -1697,8 +1721,30 @@ const bothFilteredHopCount = (mid: readonly Step[], graph: Graph): number | unde
 
   const hop = mid[at];
 
-  // `both` walks out-edges then in-edges, so a self-loop is incident twice — the same exclusion
-  // `vertexStepCount` and the two sibling rungs make.
+  // `both` IS `out` PLUS `in` (item 1092) — see `startFilteredHopCount` for why by recursion and
+  // not by widening the walk. Measured with a selective label:
+  // `hasLabel(Q).both(T).has(age,gt 60).count()` 389.78 ms declining against the `out` twin's
+  // 48.81 on the rung.
+  if (hop.kind === 'both') {
+    const head = mid.slice(0, at);
+    const tail = mid.slice(at + 1);
+    const outward = bothFilteredHopCount(
+      [...head, { kind: 'out', labels: hop.labels }, ...tail],
+      graph,
+    );
+
+    if (outward === undefined) {
+      return undefined;
+    }
+
+    const inward = bothFilteredHopCount(
+      [...head, { kind: 'in', labels: hop.labels }, ...tail],
+      graph,
+    );
+
+    return inward === undefined ? undefined : outward + inward;
+  }
+
   if (hop.kind !== 'out' && hop.kind !== 'in') {
     return undefined;
   }

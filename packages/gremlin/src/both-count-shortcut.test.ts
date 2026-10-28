@@ -43,6 +43,7 @@ import {
   identity,
   inE,
   in_,
+  lt,
   out,
   outE,
   toArray,
@@ -298,6 +299,77 @@ describe('the bothE SEED (item 1089)', () => {
     expect(n(g, V(), bothE('T'), has('w', eq(2)), count())).toBe(2);
     expect(n(g, V(), hasLabel('Q'), bothE('T'), has('w', eq(2)), count())).toBe(2);
     expect(n(g, V(), hasLabel('P'), bothE('T'), has('w', eq(2)), count())).toBe(0);
+  });
+});
+
+describe('a START-filtered and a BOTH-SIDES both hop (item 1092)', () => {
+  // The fifth and sixth sites of the refuted self-loop reason: `startFilteredHopCount` (filters
+  // BEFORE, hop LAST) and `bothFilteredHopCount` (filters on BOTH sides of one hop). Measured with
+  // a SELECTIVE label — `hasLabel(Q).both(T).count()` 251.44 -> 21.62 ms, and
+  // `hasLabel(Q).both(T).has(age,gt 60)` 389.78 -> 91.71.
+  //
+  // THE LABEL MUST BE SELECTIVE OR THESE TEST NOTHING. Item 1087's probe used an all-`Person`
+  // fixture, so `hasLabel('Person')` was dropped as VACUOUS upstream and the query reached
+  // `filteredHopCount` as a bare `[both, has]` — which is why that probe's `both-labelled` row
+  // looked fast while this rung was still declining. `console3` has a `Q`, so `P` is real.
+  //
+  // `sides-tail-keeps-the-hop` — `mid.slice(at)` for the tail, duplicating the hop — SURVIVED
+  // until this block existed.
+  test('a label before the hop, answered as out + in', () => {
+    const g = console3();
+
+    for (const [fast, slow] of [
+      [
+        n(g, V(), hasLabel('P'), both('T'), count()),
+        n(g, V(), hasLabel('P'), both('T'), identity(), count()),
+      ],
+      [
+        n(g, V(), hasLabel('Q'), both('T'), count()),
+        n(g, V(), hasLabel('Q'), both('T'), identity(), count()),
+      ],
+      [
+        n(g, V(), has('k', gt(1)), both('T'), count()),
+        n(g, V(), has('k', gt(1)), both('T'), identity(), count()),
+      ],
+    ] as ReadonlyArray<readonly [number, number]>) {
+      expect(fast).toBe(slow);
+    }
+
+    // P's both-degree sum: `a` has T to b, T to a (loop) out and the loop in → 3; `b` has 1 out
+    // and 1 in → 2. So 5, and the `out`-only twin is 3.
+    expect(n(g, V(), hasLabel('P'), both('T'), count())).toBe(5);
+    expect(n(g, V(), hasLabel('P'), out('T'), count())).toBe(3);
+  });
+
+  test('filters on BOTH SIDES of the hop', () => {
+    const g = console3();
+
+    for (const [fast, slow] of [
+      [
+        n(g, V(), hasLabel('P'), both('T'), has('k', gt(0)), count()),
+        n(g, V(), hasLabel('P'), both('T'), identity(), has('k', gt(0)), count()),
+      ],
+      [
+        n(g, V(), hasLabel('P'), both('T'), has('k', eq(1)), count()),
+        n(g, V(), hasLabel('P'), both('T'), identity(), has('k', eq(1)), count()),
+      ],
+      [
+        n(g, V(), hasLabel('Q'), both('T'), has('k', eq(2)), count()),
+        n(g, V(), hasLabel('Q'), both('T'), identity(), has('k', eq(2)), count()),
+      ],
+      [
+        n(g, V(), has('k', gt(0)), both('T'), has('k', gt(1)), count()),
+        n(g, V(), has('k', gt(0)), both('T'), identity(), has('k', gt(1)), count()),
+      ],
+      // TWO filters after the hop, so the tail is longer than one step — which is what a `tail`
+      // that keeps the hop gets wrong.
+      [
+        n(g, V(), hasLabel('P'), both('T'), has('k', gt(0)), has('k', lt(9)), count()),
+        n(g, V(), hasLabel('P'), both('T'), identity(), has('k', gt(0)), has('k', lt(9)), count()),
+      ],
+    ] as ReadonlyArray<readonly [number, number]>) {
+      expect(fast).toBe(slow);
+    }
   });
 });
 
