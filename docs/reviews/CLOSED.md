@@ -14463,7 +14463,55 @@ Also note `build_typed`'s inner `for t in &mut typed` pushes an offset for EVERY
 so `rebuild_csr` is O(V × ntypes + E), not O(V + E) — which is why the rebuild column climbs from
 5.87x of a read at 1k to 12.55x at 200k.
 
-## 1054 — 🔴 OPEN WRONG ANSWER: a cross-engine divergence surfaced in CI, with a deterministic repro
+## 1054-1056 — ✅ FIXED: a cross-engine divergence from CI, diagnosed and closed
+
+**`foldPageIntoReturn` (item 969) must REFUSE when the page drops rows and the projection can
+fault.** It rewrites `MATCH … ORDER BY k OFFSET n RETURN items` into the clause-position form,
+justified because "a row-wise projection preserves row identity" — true of the ORDER, **not of
+FAULTS**: folded, the projection is evaluated for rows the `OFFSET` discarded, so the query errors
+where it should return rows. Its refusal list already held five wrong-ANSWER refusals; this was a
+sixth and it was missing.
+
+```ts
+if (
+  (page.skip !== undefined || page.limit !== undefined) &&
+  !proj.items.every((it) => cannotFault(it.expr))
+)
+  return clauses;
+```
+
+`cannotFault` is a WHITELIST (`lit`/`var`/`prop`) so a later kind is assumed to fault. **Narrow on
+BOTH conditions, so item 969's 3.72x survives** — verified: `ORDER BY n.k LIMIT 10 RETURN n.k AS c`
+13.86 ms against the clause form's 13.05 (1.06x, as 969 had it).
+
+**THE COST, STATED**: a statement-position page over an ARITHMETIC projection now pays **1.45x**
+(52.36 against 36.01) because it no longer folds. Real, and named so it is not rediscovered as a
+regression.
+
+Teeth: `no-refusal`, `limit-only` and `arith-cannot-fault` all caught (2 fail each);
+`always-refuse` SURVIVED and is answer-equivalent — refusing unconditionally is correct and only
+loses speed, so the perf table is its guard (`perf-gate-needs-its-own-test`).
+`FUZZ_SEED=3076589914`: **1 pass**. `page-fold-fault.test.ts`, 7 tests, including four CONTROLS that
+must KEEP raising — `OFFSET 0`, no page, CLAUSE position, and the fold still applying to a
+non-faulting projection. **The CLAUSE-position control is the one a too-broad fix would break**:
+there the projection genuinely precedes the paging, so raising is correct and native agrees.
+
+### The diagnosis, and the two things it corrected
+
+**The fixture was the variable, not the query.** The first bisect built the fixture from the
+fuzzer's NDJSON and the full query AGREED. The fuzzer runs `SET n.nan = sin(1e400)` / `ln(-1)`
+first, creating a **stored NaN** that NDJSON cannot express ("ingest coerces NaN and the infinities
+to null"). So item 1054's "`nan` is not a property at all" was WRONG — the grep was over the FILE.
+**A fixture is what the code builds, not what the literal says.**
+
+Only `n = 3` has BOTH `nu = 5` and the NaN, so only that row faults; `ORDER BY` on an all-null key
+tiebreaks on `n.n`, so `OFFSET 1` drops exactly it. **The whole divergence rested on one row.**
+
+**Item 1054's four refuted hypotheses** — `boolean + number`, the comparison being null,
+`boolean + null` eagerness, and an `ORDER BY` on a boolean key — were all refuted correctly and all
+missed the cause, because each rebuilt a MINIMAL fixture instead of bisecting the original.
+
+## ~~1054~~ — the original OPEN record, kept for the hypothesis list
 
 **MAIN IS INTERMITTENTLY RED UNTIL THIS IS FIXED**, which is the correct state for a byte-identity
 divergence. Item 1052's CI went red on the differential fuzzer with a random seed — the fuzzer doing

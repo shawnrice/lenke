@@ -8690,6 +8690,15 @@ const dropVacuousQuantifier = (clauses: readonly Clause[]): readonly Clause[] =>
  *   - **A page clause that is not immediately before the final `RETURN`**, since anything between
  *     them observes the paged table.
  */
+/**
+ * Can evaluating `e` RAISE? Only a literal, a bare variable and a property read cannot (item 1056).
+ *
+ * Deliberately a WHITELIST of three kinds rather than a blacklist of the faulting ones: a new
+ * expression kind added later is then assumed to fault, which refuses a fold that might have been
+ * sound instead of admitting one that is not.
+ */
+const cannotFault = (e: Expr): boolean => e.kind === 'lit' || e.kind === 'var' || e.kind === 'prop';
+
 const foldPageIntoReturn = (clauses: readonly Clause[]): readonly Clause[] => {
   if (clauses.length < 2) {
     return clauses;
@@ -8716,6 +8725,30 @@ const foldPageIntoReturn = (clauses: readonly Clause[]): readonly Clause[] => {
     proj.limit !== undefined ||
     proj.items.length === 0 ||
     proj.items.some((it) => hasAggregate(it.expr))
+  ) {
+    return clauses;
+  }
+
+  // 🛑 THE FAULT REFUSAL (item 1056), and it is a WRONG-ANSWER refusal like the aggregation one
+  // rather than a cost one. This fold's justification is that "a row-wise projection preserves row
+  // identity", so sorting-then-projecting and projecting-then-sorting give the same ordered rows.
+  // True of the ORDER — and not of FAULTS. When the page DROPS rows, the unfolded form evaluates
+  // the projection only for survivors, where the folded form evaluates it for every row and then
+  // pages: so a row the `OFFSET` would have discarded can raise, and the query errors where it
+  // should have returned rows.
+  //
+  // Found by the differential fuzzer at `FUZZ_SEED=3076589914` (items 1054/1055) and CONFIRMED by
+  // disabling this fold, which turned all three real divergences into agreement:
+  //
+  //   MATCH (n:T) WHERE n.n = 3 ORDER BY … OFFSET 1 RETURN <faulting expr> AS x
+  //     ts  raises      native  []          <- native is right; the row was skipped
+  //
+  // Narrow on BOTH conditions, so the measured win survives: with no `skip`/`limit` no row is
+  // dropped and the two forms fault identically, and item 969's own 3.72x case
+  // (`ORDER BY n.k LIMIT 10 RETURN n.k AS c`) projects a plain property read, which cannot fault.
+  if (
+    (page.skip !== undefined || page.limit !== undefined) &&
+    !proj.items.every((it) => cannotFault(it.expr))
   ) {
     return clauses;
   }
