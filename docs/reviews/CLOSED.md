@@ -34136,3 +34136,31 @@ real**; `distinct prop` the known false positive. The ~9% is the documented stor
 layout toll (1.08-1.24x, never gains) — reported against ~8333x on the target row.
 
 Suite 1284+13+725; `rewrite_fuzz` 10; 7/7 byte-identity fuzzers.
+
+## 1156 — ✅ NEGATIVE RESULT: the TS engine has **NO** direction gap (all three spellings already O(1)), and the check independently validates item 1155's new code
+
+The "grep the pattern elsewhere" step on items 1153-1155, which closed a four-spelling direction
+family natively where three of four took no shortcut.
+
+`packages/native/direction-spelling-probe.ts`, 200k nodes / 200k KNOWS edges, median of 9 dropping 3:
+
+```text
+  T1 -[:KNOWS]->  (directed)    0.0 ms   200000
+  T2 <-[:KNOWS]-  (MIRROR)      0.0      200000     <- 1510x natively, free here
+  T3 -[:KNOWS]-   (undirected)  0.0      399990
+  C  label scan        [ctl]    0.0      200000
+```
+
+**Don't re-ask this.** TS's `undirectedHopCount` was already documented in the bench corpus, item 744
+fixed its quantified mirror, and the plain mirror turns out to have been covered all along. Four
+queries, one closed question.
+
+✅ **AND IT VALIDATES ITEM 1155 INDEPENDENTLY.** The probe asserts ts === native for every spelling
+and throws otherwise. Item 1155 added `Store::live_etype_loops` — a lazily cached per-type self-loop
+count the undirected answer SUBTRACTS — and **the byte-identity fuzzers do not generate this shape.**
+The fixture has ten self-loops (`399990 = 2*200000 - 10`), so the subtraction is exercised, and the
+two engines derive it by different routes (TS: its own bucket sizes and loop tally; native: item
+1155's lazy pass over the out adjacency). They agree.
+
+That is a stronger check on the new code than the unit test shipped with it, because the oracle is an
+independent implementation rather than a literal computed by hand. Kept as a cross-engine guard.
