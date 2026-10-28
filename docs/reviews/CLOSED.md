@@ -29637,6 +29637,19 @@ in order>` prints every run. (1) The band's first draft sat AFTER `if (p < 0.68)
   flagged rather than left looking verified. And removing the floor could in principle re-expose the
   1.57x false positive it was added for; six runs cap the ratio at 1.34 at the same positions, which
   is evidence, not proof.
+- **✅ THE RUST ENGINE HAS NO SPELLING CLIFF AT ANY SWEPT SIZE (item 1052).** 20 groups x 3
+  configurations (100k d5, 1M d5, 100k d25) — the sweep item 1051's knobs made possible, and
+  CLAUDE.md's first rule for trusting a number. **Every ratio between 1.00 and 1.47, and no group's
+  ratio moves by 1.5x between configurations**; `NO PERF CLIFFS` at all three, with
+  `blind=0 mixed=0 compared=20` each time. Previously the same claim rested on ONE configuration
+  with a fifth of the groups unmeasured.
+  **What it does not establish**: three points are three points, and the degree axis was swept once.
+  The claim is "at these configurations, with these groups, nothing diverges" — not "no cliff
+  exists".
+  **The one trend worth naming**: `1-hop projection: GQL vs Gremlin` reads 1.26 → 1.43 → 1.47, the
+  only group moving consistently upward on both axes. Inside tolerance and short of the 1.5x flag,
+  so NOT a finding — recorded as the most likely place for one if the sweep widens, so a later run
+  has a baseline.
 - **METHOD — "the count went to zero" can mean the COUNTER was removed (item 1051).** A grep-based
   check on a log line is only as good as that line's continued existence, and the edit under test
   was the one that deleted it. Measure the QUANTITY the change is supposed to affect — here the
