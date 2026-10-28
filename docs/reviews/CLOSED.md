@@ -33145,3 +33145,39 @@ what remains.
 a numeric row** — so that query takes a columnar path and measures no egress floor. It is still the
 cheapest one-row-per-anchor query, which is the comparison that carries the conclusion; left
 unlabelled, the next reader would take 965 us as native's egress cost for 200,000 rows.
+
+## 1130 — ✅ FOUR in-sweep "movers", ONE cause: the sweep run was globally inflated and its own NULL CONTROL said so; item 1128's comparison was incomplete
+
+1128 isolated two high rows and concluded no regressions. **It checked the rows this session's
+changes could reach plus the two that jumped out — not the whole board.** The rest:
+
+```text
+  row                                  baseline  sweep  ISOLATED
+  count 2-hop                              75.7  101.3      74.8   (1128)
+  query: distinct over a reversed hop      68.8   87.3      62.0   (1128)
+  query: top groups by count                4.3    8.6       3.5   ← MISSED
+  query: top distinct values (ffi)          0.4    1.0       0.4   ← MISSED, NATIVE side
+  query: count distinct        CONTROL  3.1/0.4 3.4/0.4   3.1/0.4
+```
+
+All four isolate to baseline or better, and **the control is what makes it conclusive**:
+`count distinct` isolated = 3.1/0.4 = its baseline in-sweep figure, so the isolated harness agrees
+with the baseline and the SWEEP is what differs.
+
+⚠️ **ONE cause, in the sweep's own instrument:** the spelling probe's **null control doubled, 12.5 →
+24.9 ms**, in that same run. 1128 used that to say the flag SET was not comparable and stopped —
+but it explains the board too: **the whole run was globally inflated**, so four unrelated rows
+looked like movers for one reason.
+
+**THE RULE: a sweep carries its own validity check. When the null control moves, no row-to-row
+comparison with another run is admissible for ANY row — not just the flagged ones.** The spelling
+probe's null control is the instrument for the whole run, not only for its own groups.
+
+Does NOT change 1128's verdict — no regressions, now on four rows with a control pinning the
+harness. Its three wins (`3-hop quantified` 2.02x, `var-length 1-3` 1.77x, `MIRROR` 1.68x) were
+measured against an inflated run, so if anything understated.
+
+**The lesson is the procedure: compare EVERY row, or compare none.** Checking only the rows a change
+can reach finds the regressions you predicted and misses the ones you did not — which is the whole
+point of a sweep over a targeted A/B. Two of four missed, one on the NATIVE side where no change
+this session touched a distinct-values path.
