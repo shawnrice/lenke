@@ -91,6 +91,22 @@ time(
     (tsQuery(g, 'MATCH ()-[e:PAID]->() WHERE e.amount = 500 RETURN e.amount AS a') as unknown[])
       .length,
 );
+// NAMED ENDS (item 1033). The arms above use anonymous ends, and `chainGatesOf` buckets clause
+// conjuncts by NODE variable — so an anonymous-end pattern has no names at all, and a rel-reading
+// conjunct cannot bucket for two different reasons at once. Naming the ends separates them: if the
+// clause arm is still slow here, the cause is the missing REL bucket; if it is fast, the cause was
+// the anonymous ends.
+time('NAMED ends, inline', () =>
+  gqlCount('MATCH (a)-[e:PAID {amount: 500}]->(b) RETURN count(*) AS c'),
+);
+time('NAMED ends, clause', () =>
+  gqlCount('MATCH (a)-[e:PAID]->(b) WHERE e.amount = 500 RETURN count(*) AS c'),
+);
+// ...and a clause conjunct on a NODE, which `chainGatesOf` already buckets — the control that says
+// the pushdown works for the shape it covers.
+time('NAMED ends, clause on a NODE key', () =>
+  gqlCount('MATCH (a)-[e:PAID]->(b) WHERE a.n = 7 RETURN count(*) AS c'),
+);
 // A second CONTROL: the same shape on an UNINDEXED edge key, so the figure above can be read as
 // "reaches the index" rather than "edge filters are just fast".
 time('CONTROL GQL on an unindexed edge key', () =>

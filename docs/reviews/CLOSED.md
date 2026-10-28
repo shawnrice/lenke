@@ -29287,11 +29287,28 @@ multiTypeEdgeCount === 0`) — one named type cannot double-count. Native's `Adj
   but as a PROJECTION inline 8.382/9.015/9.848 against clause 9.611/8.184/10.184 — OVERLAPPING.
   1031's "2.5-3.9x between two spellings" is corrected to **2.1-2.8x on the count shape**, and its
   claim that the gap is about clause position is withdrawn.
-- **➡️ THE REAL TARGET: carry the rel predicate in the COUNT path (item 1032).** Item 447 built
-  `relBoundFilteredHopWalk` to CARRY a rel-reading clause `WHERE`, and it lives in
-  `hop-projection.ts` — it serves a projection, not a bare `count(*)`. The mechanism exists and
-  the count path does not use it. Narrower than an AST rewrite, and it starts from a route that is
-  already correct.
+- **⚠️ DIAGNOSED EXACTLY, FIX REFUTED — the count path carries the rel predicate but has no LIFT
+  (item 1033).** Four readings, each ruling something out: the shortcut does NOT decline (item 633
+  already gives the `HopPred` a `relVar`); naming the pattern's ends changes nothing (2.946 against
+  2.871); a clause conjunct on a NODE key reads **0.027 ms** on the same fixture, so the pushdown
+  works where a lift exists; and the difference is the per-edge path — a rel-only predicate pays
+  `binding.set` + a general `fn(env)` where the inline form is an `InlinePred` applied to the edge.
+  `HopPred` has `farLifted` and `startLifted` (items 995/996) and **no `relLifted`**.
+- **⚠️ A BRANCH IN THE HOT LOOP COST THREE CONTROLS 2x (item 1033).** `relLifted` plus a branch in
+  `tallyHopCount` passed all 2,803 tests and improved the target (3.041/3.154/2.967 →
+  2.069/1.178/1.265), but: inline **0.946/0.848/0.845 → 2.062/1.965/2.067**, unindexed edge key
+  3.103/3.137/3.322 → 5.973/7.092/5.602, node-key clause 0.033/0.024/0.022 → 0.048/0.047/0.051 —
+  all DISJOINT, all on paths the new code cannot execute. They share the LOOP: a new branch in the
+  per-edge body reshapes it for every predicate kind. `ts-closure-size-is-load-bearing`, which is
+  why the far and start lifts got DEDICATED MODULE-SCOPE WALKS. Net regression; reverted.
+- **➡️ BUILD `relOnlyHopCount` AT MODULE SCOPE (item 1033)**, mirroring `startOnlyHopCount`, routed
+  to only when the predicate reads just the rel variable — leaving the generic loop byte-for-byte
+  unchanged. That is what items 995/996 did for the other two positions, and the precedent is
+  explicit in the code.
+- **METHOD — two consecutive fixes refused, both by the instrument and both the same mistake (item
+  1033).** 1032's was caught by 16 tests as WRONG ROWS; 1033's by three controls as a 2x regression
+  on paths it cannot reach. In both I took the cheapest edit that looked sufficient instead of the
+  shape the surrounding code had already established for the identical problem one position over.
 - **METHOD — the tests that failed were the ones that knew (item 1032).** All 16 belong to items
   446/447, i.e. the shape being rewritten had already been given a purpose-built route; reading
   those tests first would have found it. An attempted fix that fails loudly on its first suite run
