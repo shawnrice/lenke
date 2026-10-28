@@ -163,6 +163,29 @@ pub fn run(cfg: &Cfg) {
                     "project absent cmp",
                     "MATCH (p:Person) RETURN p.no_such_key = 5 AS f",
                 ),
+                // THESE THREE ARE A DECOMPOSITION, and they were the only rows in this group
+                // with no comment saying so — which cost item 1082 a tick re-deriving it.
+                //
+                // READ THE PAIR, NOT EITHER ROW. Both spellings evaluate the predicate over the
+                // SAME ~1,000,000 candidate rows (deg 5) and project ~500,000, so the DIFFERENCE
+                // is the second property read and nothing else:
+                //
+                //                      round 1    round 2     ns a row
+                //   cmp prop/prop     12,205us   11,833us    24.6 / 23.9
+                //   cmp prop/lit       5,828us    5,687us    11.7 / 11.4
+                //   difference         6,377us    6,146us    ~6.4 / ~6.1 an EVALUATED row
+                //
+                // TWO ROUNDS BECAUSE ONE IS NOT A READING: `project 3` moved 5,738 -> 5,161 (11%)
+                // between the same two runs, which is this group's own noise floor. The ratio
+                // (2.08-2.09x) and the delta are stable across it; a single round could not say so.
+                //
+                // `p.age` is read in frontier order; `q.age` is read through the FAR endpoint's
+                // id, which is scattered, so that 6.4ns is a cache miss per row and not a route
+                // defect. BOTH spellings take the typed mask — `typed_num_mask`'s `(Prop, Prop)`
+                // arm returns `typed_num_prop_mask`, which boxes neither side (its own comment
+                // prices the boxed version it replaced at 8.62ns a row against 1.26 for the
+                // literal form). So the 2.1x is the memory access, and the lever for it would be
+                // reordering the frontier, which is an architecture question and not this row's.
                 (
                     "cmp prop/prop",
                     "MATCH (p:Person)-[:KNOWS]->(q) WHERE p.age < q.age RETURN q.name AS n",
@@ -171,6 +194,10 @@ pub fn run(cfg: &Cfg) {
                     "cmp prop/lit",
                     "MATCH (p:Person)-[:KNOWS]->(q) WHERE p.age < 50 RETURN q.name AS n",
                 ),
+                // The STRING twin, whose `Dict` columns cannot compare interned codes across two
+                // unrelated dictionaries (see `StrSide`), so it decodes — a second axis on the
+                // same pair rather than a third independent row. 20,300us / 437,426 rows =
+                // 46.4 ns a row, 1.9x the numeric prop/prop, which is the decode.
                 (
                     "cmp str prop/prop",
                     "MATCH (p:Person)-[:KNOWS]->(q) WHERE p.city < q.city RETURN q.name AS n",

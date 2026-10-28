@@ -31429,3 +31429,35 @@ this row (55 of 61 ms), which 289 did not.
 `queryArrowIpc` runs query→IPC entirely in Rust. The lever for a host wanting 200,000 rows is an API
 choice, so the real question is whether this is a DOCUMENTATION gap
 (`discoverability-is-the-bottleneck`). Named, not measured.
+
+## 1082 — ❌ REFUTED: `cmp prop/prop`'s 2.1x is ONE SCATTERED COLUMN READ (~6.1-6.4 ns a row); the typed path already exists
+
+```text
+                      round 1    round 2     ns a row
+  cmp prop/prop     12,205us   11,833us    24.6 / 23.9      495,905 rows
+  cmp prop/lit       5,828us    5,687us    11.7 / 11.4      500,000 rows
+  difference         6,377us    6,146us    ~6.4 / ~6.1 an EVALUATED row
+  cmp str prop/prop            20,300us    46.4             437,426 rows
+```
+
+**Read the pair, not either row.** Both evaluate over the SAME ~1M candidate rows (deg 5) and project
+~500k, so the difference IS the second property read.
+
+**The route is not missing** — `typed_num_mask`'s `(Prop, Prop)` arm returns `typed_num_prop_mask`,
+boxing neither side, and its comment prices the boxed version it replaced at 8.62 ns/row against 1.26
+for the literal. Reading the dispatch was the step that decided it: a fall-through to `_ => None`
+would have made this a real missing path. **So the 6.1 ns is MEMORY**: `p.age` reads in frontier
+order, `q.age` through the scattered far-endpoint id. The lever is frontier reordering — architecture,
+cf. item 200 and `parallelism-stance`.
+
+**Two rounds, because one is not a reading:** `project 3` — untouched by either arm, a control by
+construction — moved **5,738 → 5,161 µs (11%)** between the same runs. That is the group's noise
+floor, larger than several effects this corpus has chased. The ratio (2.08-2.09x) is stable across it.
+
+### ✅ What shipped: the comment those three rows never had
+
+They were **the only rows in `query/gql` with no comment**, which is why they were the target — item
+1081's "read the measurement's own comment" rule had nothing to offer here. They now carry the
+decomposition, both rounds, the noise floor, the dispatch fact and why the remainder is unreachable.
+**The fix for "read the comment" is that the comment exists.** Concrete answer to 1079/1080/1081,
+which each lost a tick to an explanation written next to the measurement.
