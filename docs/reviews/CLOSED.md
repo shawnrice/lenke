@@ -33270,3 +33270,36 @@ counts non-null via `has_value_at`. The two existing paths do agree with each ot
 `Filter{PropertyExists}` defeats the tally, and it is a **no-op when the column is present on every
 live node** — which item 1132 measured the cost of knowing at 130.5-142.5 us, 1% of this row. The
 rewrite worth building is the FILTER drop, with 1132's presence check as its enabling fact. OPEN.
+
+## 1134 — 🔶 PRICED at **33.57x**: item 1133's "the filter is the 23.7x" is REFUTED; either node alone blocks the tally and only removing BOTH unlocks it — which is why 1133's half measured a regression
+
+`examples/filter_ablation_probe.rs`, 200,000 nodes / degree 5, min of 7, every arm asserted to
+return the same 1,000,000:
+
+```text
+  ARM 1  Agg / Project / Filter / chain  (as planned)     18947.7 us
+  ARM 2  Agg / Project / chain           (no filter)      15570.7      1.22x
+  ARM 3  Agg / Filter / chain            (no project)     16309.4      1.16x
+  ARM 4  Agg / chain                     (neither)          564.5     33.57x
+  ARM 5  outE.outV.count()               [control]          576.2
+```
+
+⚠️ **ALL-OR-NOTHING.** Neither node is "the cost" — each independently blocks the tally fast path.
+This retro-explains item 1133 fully: its `Project` drop was correct and did fire, but moved the plan
+from one slow form to another, paying the wide-batch aggregate cost without gaining the fastpath.
+**A part that loses alone and wins only in combination looks exactly like a refuted lever.**
+
+⚠️ **AN ABLATION TABLE NEEDS TWO ARMS THAT MUST AGREE.** ARM 4 and ARM 5 are the same plan. The
+first run read 13566.9 against 594.4 — a hand-stripped plan had not been through
+`optimize_indexed` again, so every ablation number was "unoptimized vs optimized". Re-optimizing
+each ablation brings them to 564.5 / 576.2, within 2%. Item 1130's null-control rule, applied
+prospectively.
+
+✅ **The enabling code, read not inferred:** `exec::chain_width` sees through exactly one filter
+(`Filter{IsLabeled}`) and says why — count-fold paths re-check filters themselves, so they stay on
+the IsLabeled-only width while pull paths use `chain_pull_width`. `frontier_counts` has the matching
+arm, guarded on `*slot + 1 == chain_width(input)?` with an O(1) `keep` per node;
+`try_frontier_count` requires that filter as its input. **Extension:** admit `Expr::PropertyExists`
+in all three, `keep = |id| col.present_at(id)` (NOT `has_value_at` — `PropertyExists` counts a
+stored present-null, and `store.rs` names `present_at` the single source of truth), AND let the
+aggregate see through a row-preserving `Project`, or the shape never reaches the arm. OPEN.
