@@ -31950,3 +31950,38 @@ all now fixed.
 > `AND true` and `SKIP 0` are absorbed by any rung that already accepts a predicate or a page bound.
 > A ROW-RETURNING query cannot be answered by a count shortcut. When the two sides must differ in
 > ROUTE, trace the route — do not trust the spelling.
+
+## 1096 — 🔶 PRICED AND LOCATED at **35x**: the filtered THREE-hop undirected count. Planner path verified BEFORE any code
+
+```text
+  (a:P)-[:T]->(b)-[:T]->(c)-[:T]->(d) WHERE a.age > 60     68.69 ms  ← has a rung
+  (a:P)-[:T]-(b)-[:T]-(c)-[:T]-(d)   WHERE a.age > 60    2420.76     ← 35x, declines
+  (a:P)-[:T]-(b)-[:T]-(c)-[:T]-(d)   bare                 157.61     ← undirected BARE is handled
+```
+
+60,000 vertices x degree 3. `buildThreeHopCount` already carries `aBoth`/`midBoth`/`dBoth`, so the
+gap is the FILTERED chain — the same boundary item 1094 found one hop down.
+
+**PATH TRACED FIRST** (items 1093/1094 cost two ticks to a wrong premise about ownership). 48
+functions instrumented, both spellings run:
+
+```text
+  OUT  filtered:  … longChainCount → … → sweepChain      ← the handler
+  BOTH filtered:  … longChainCount → (never reaches it)  ← the decline
+```
+
+`longChainCount`: `segments.some(s => … || s.rel.direction === 'both')`.
+
+(The first instrumentation pass printed nothing because I filtered names on `Hop`/`hop`, and the
+chain helpers are `sweepChain`/`threeSegmentCount`. **An instrument that matches nothing looks
+exactly like a function that is never called** — widen before concluding.)
+
+### ➡️ NOT BUILT, deliberately
+
+`sweepChain` models each leg as `out: boolean` and keys two optimizations to it — `uniform =
+legs.every(l => l.out === legs[0].out)` and `oneIndex`, one adjacency index for the whole sweep. An
+undirected leg has neither, so this is a change to the sweep's core model, not item 1094's two flags
+and a second loop. Item 1091's first cut (a direction choice folded into a shared hop body, **1.54x**
+on an unreachable control) says the shape to build is a SEPARATE undirected sweep chosen once — a
+tick's work, not a tail. Reuse `undirectedSide` for the loop-once rule; copy item 1094's
+`firstLegUndirected`.
