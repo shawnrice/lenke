@@ -125,6 +125,17 @@ const SHAPES: Record<string, { q: string; reached: boolean }> = {
     q: 'MATCH ()-[e:PAID]->() WHERE e.amount = 99999 RETURN max(e.amount) AS a',
     reached: false,
   },
+  // THE NODE CONTROLS for item 1049. Giving `foldFor` a DISTINCT arm opens `foldedAggs` for every
+  // caller, not just the edge path — `routes-fired` caught `nodeAggregate` compiling for the node
+  // distinct count where only `distinctCount` did before. `distinctCount` still PRECEDES it at
+  // `clauses.ts:1458`, so the route is unchanged; these arms are what says the extra compile costs
+  // nothing measurable, rather than my asserting it.
+  'node-distinct': {
+    q: 'MATCH (v:P) RETURN count(DISTINCT v.n) AS a',
+    reached: false,
+  },
+  // ...and a node count(*) the change cannot reach at all, as the null control for this pair.
+  'node-count': { q: 'MATCH (v:P) RETURN count(*) AS a', reached: false },
 };
 
 const name = process.env.SHAPE ?? 'named-clause';
@@ -163,7 +174,7 @@ for (let r = 0; r < REPS; r++) {
     answer = toArray(traversal(E(), has('amount', 500), values('amount')), g).length;
   } else if (shape.q === 'GREMLIN') {
     [answer] = toArray(traversal(E(), has('amount', 500), count()), g);
-  } else if (name.startsWith('agg-')) {
+  } else if (name.startsWith('agg-') || name.startsWith('node-')) {
     // An aggregate returns one row (or one per group); take its first cell, whatever it is named.
     const rows = tsQuery(g, shape.q) as Record<string, unknown>[];
 

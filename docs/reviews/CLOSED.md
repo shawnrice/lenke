@@ -29563,7 +29563,28 @@ in order>` prints every run. (1) The band's first draft sat AFTER `if (p < 0.68)
   far-driven walk, because `sum`/`avg`/`stddev` are order-sensitive in the last ulp (item 532). **An
   edge seed reorders too**, so seeding `sum` would change its ulp and break byte-identity — and
   1047's note that "an aggregate is order-insensitive" was the next tick's plan.
-- **➡️ THE REAL TARGET, NARROWED (item 1048)**: `count(DISTINCT e.k)` 26.447/24.312/25.646 ms and
+- **✅ DONE — `count(DISTINCT x)` IS NOW A LEFT FOLD, 550x (item 1049).** `distinctCountFold`: the
+  accumulator is a `Set<string>` of `valueKey(v)`, `finish` returns `size`. O(distinct) state — the
+  same order the array path already pays to materialize the group. `foldFor` returns it for `count`
+  - `distinct` and keeps refusing every other distinct aggregate. **Order-independent**, which is
+    what makes it reachable where `sum` is not. **ONE DEFINITION of "distinct" — `valueKey`** — shared
+    with the array path's `distinctByValueKey`, as the `AggFold` contract requires. Three alternated
+    rounds: **25.194/25.197/27.694 → 0.051/0.049/0.043**; CONTROLS node-distinct 0.020-0.021 →
+    0.022-0.023, node count(*) 0.002 flat, max/count/projection all overlapping.
+- **✅ THE ROUTE TEST CAUGHT A SIDE DOOR (item 1049).** `routes-fired.test.ts` went red:
+  `count(DISTINCT n.k)` now compiles `nodeAggregate` as well as `distinctCount`, because
+  `foldedAggs` became non-empty. **Item 778's hazard verbatim**, and nothing but that table would
+  have said so. The route TAKEN is unchanged (`clauses.ts` consults `distinctCount` at 1458,
+  `nodeAggregate` at 1474), and the `node-distinct` probe arm MEASURES that rather than asserting
+  it.
+- **🛑 A COVERING TEST ON A DIFFERENT ROUTE IS NOT COVERAGE (item 1049).** `raw-value-key` — dedup by
+  REFERENCE IDENTITY instead of `valueKey`, so value-equal temporals stop collapsing — survived all
+  2,866 tests. `temporal-group-key.test.ts` covers exactly that hazard (its own comment records a
+  `LocalDate`-key mutant passing 2,635 tests), but asks through
+  `MATCH (p:P) RETURN count(DISTINCT p.t)`, which takes the dedicated `distinctCount` route and never
+  reaches a fold. The GROUPED spelling (`LET gk = p.g … GROUP BY gk`) is what reaches `stepFolded`;
+  `distinct-count-fold.test.ts` asks it that way in both failure directions.
+- **➡️ STILL OPEN (item 1048)**: `count(DISTINCT e.k)` ~~26.447/24.312/25.646 ms~~ DONE at 1049, and
   `GROUP BY` on the edge key 27.337, both ~700x against `count(*)`'s 0.034-0.041, each refused for
   its own reason. `count(DISTINCT …)` is refused by `foldFor` because DISTINCT "needs every value" —
   **a refusal about FOLDING, not seeding** — and a DISTINCT over a seeded edge set is a Set, so

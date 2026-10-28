@@ -108,7 +108,18 @@ describe('every fast-path detector fires for its own shape', () => {
       'MATCH (a:L)-[:R]->(b:L) RETURN max(b.k) AS a, min(b.k) AS b',
       ['multiHopAggregate'],
     ],
-    ['distinct count', 'MATCH (n:L) RETURN count(DISTINCT n.k) AS c', ['distinctCount']],
+    // TWO routes since item 1049, and that is this test earning itself. Giving `foldFor` a DISTINCT
+    // arm made `foldedAggs` non-empty for `count(DISTINCT …)`, which opened `detectNodeAggregate`
+    // as well — item 778's hazard exactly ("opening one gate can disqualify another rung, and
+    // nothing about the gate being opened reveals it"), and nothing but this table would have said
+    // so. The ROUTE TAKEN is unchanged: `clauses.ts` consults `distinctCount` at 1458 and
+    // `nodeAggregate` only at 1474, so the second one compiles and never runs. Measured as a
+    // control in `rel-lift-probe.ts` (`node-distinct`) rather than assumed free.
+    [
+      'distinct count',
+      'MATCH (n:L) RETURN count(DISTINCT n.k) AS c',
+      ['distinctCount', 'nodeAggregate'],
+    ],
 
     // --- optional hops ------------------------------------------------------------------
     [

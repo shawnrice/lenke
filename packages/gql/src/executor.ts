@@ -2243,6 +2243,39 @@ const COUNT_FOLD: AggFold = {
   finish: (acc) => acc,
 };
 
+/**
+ * `count(DISTINCT x)` as a left fold: the accumulator is the SET OF VALUE KEYS seen (item 1049).
+ *
+ * `foldFor` refused `distinct` because "DISTINCT needs every value" — true of an O(1) accumulator,
+ * and the comment in `stepFolded` says the same from the other side: the array path dedups AFTER
+ * its `nonNull` filter, so a fold had nowhere to do it. A Set accumulator has somewhere: it dedups
+ * inside `step`. The state is O(distinct) rather than O(1), which is the same order the array path
+ * already pays to materialize the group.
+ *
+ * ORDER-INDEPENDENT, which is the precondition `detectHopAggregate` enforces on anything riding its
+ * possibly-far-driven walk: a Set's `size` does not depend on insertion order, unlike `sum`'s last
+ * ulp (item 532). That is what makes this reachable where `sum` is not — and item 1048 is where
+ * believing otherwise was caught.
+ *
+ * ONE DEFINITION OF "DISTINCT", and it is `valueKey`. The array path's `distinctByValueKey` and this
+ * fold both key by `valueKey`, so value-equal temporals, lists and records collapse identically and
+ * neither can drift on what counts as distinct — the condition the {@link AggFold} contract sets.
+ * What is expressed twice is only "count them", as a pre-dedup plus `COUNT_FOLD` on one path and a
+ * set size on the other, which are the same arithmetic.
+ *
+ * Nullish values never reach `step`: both paths filter them first (`nonNull` in the array path,
+ * `isNullish` in `stepFolded`), and `count(DISTINCT x)` excludes nulls.
+ */
+const distinctCountFold: AggFold = {
+  init: () => new Set<string>(),
+  step: (acc, v) => {
+    (acc as Set<string>).add(valueKey(v));
+
+    return acc;
+  },
+  finish: (acc) => (acc as Set<string>).size,
+};
+
 const extremumFold = (wantMin: boolean): AggFold => ({
   init: () => undefined,
   step: (acc, v) => {
@@ -2327,8 +2360,16 @@ export const sortsOnOutputNames = (
   );
 
 export const foldFor = (name: string, star: boolean, distinct: boolean): AggFold | undefined => {
-  if (distinct || star) {
-    return undefined; // count(*) has its own O(groups) path; DISTINCT needs every value
+  if (star) {
+    return undefined; // count(*) has its own O(groups) path
+  }
+
+  // `count(DISTINCT x)` folds since item 1049 — see `distinctCountFold`. Every OTHER distinct
+  // aggregate still refuses: `sum`/`avg` are order-sensitive in the last ulp whether or not they
+  // dedup first, `collect`'s order IS its answer, and the extremums gain nothing from dedup, so
+  // widening this further would be scope without a number behind it.
+  if (distinct) {
+    return name === 'count' ? distinctCountFold : undefined;
   }
 
   switch (name) {
