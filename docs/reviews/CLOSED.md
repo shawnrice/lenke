@@ -30391,3 +30391,95 @@ false` survived all 2,803 tests: it binds the rel variable for a predicate that 
   one site over for nothing; 1010 removed 1009's explanation and still got nothing. **The same
   code shape can have an entirely different cause at a neighbouring site** — measure the specific
   site, never reason from the one next door.
+
+## 1062 — ✅ SHIPPED: the deferred-projection arm. 2.0-2.6x, and the spelling probe caught the first cut creating a 3.8x gap
+
+Item 1061's extension, built. `detectNodeProjection` refused a window whenever any projected item
+could fault (`outputColumnSorts`'s rule) because it projected every row and sliced, which would
+raise on a row the query never emits. `deferredSortedNodeWalk` ranks on the sort keys and projects
+the full width for the `cap` survivors only — what the general path does after `aliasDefinition`,
+and what native does.
+
+200,000 nodes, one shape per process, median of reps 4+, alternated POST/PRE/POST:
+
+```text
+  arith            RETURN n.k + 1 AS c ORDER BY c LIMIT 10          33.21 → 16.20   2.05x
+  arith-expr       … ORDER BY n.k + 1 LIMIT 10                      33.61 → 15.81   2.13x
+  unprojected-key  … ORDER BY n.s LIMIT 10                          37.45 → 15.01   2.50x
+  fn               RETURN upper(n.s) AS c ORDER BY c LIMIT 10        45.10 → 21.26   2.12x
+  mixed            RETURN n.k AS c, n.k + 1 AS d ORDER BY c LIMIT 10 31.42 → 12.13   2.59x
+  CONTROL plain    RETURN n.k AS c ORDER BY c LIMIT 10               13.09 → 12.95   1.01x
+  CONTROL nolimit  … ORDER BY c  (no window)                         34.10 → 34.19   1.00x
+  CONTROL limit0 / unsorted                                          0.00-0.06, flat
+```
+
+### 🛑 The first cut created a 3.8x equivalent-spelling gap, and `bun run spelling` caught it
+
+It ranked on OUTPUT COLUMNS (a second ask of `outputColumnSorts`), which requires every key to NAME
+a column and substitutes only a `prop` alias. So `ORDER BY c` resolved and `ORDER BY n.k + 1` did
+not — **11.30 ms against 43.13 on the `ORDER BY alias vs its expression` group**, where both had been
+converged at ~34 before the change. This repo's named defect class, created and caught in one tick.
+
+The fix was not a wider alias match but a different thing to rank on: **compile the key expression
+and evaluate it into a synthetic column**. There is then no alias to match, so the asymmetry cannot
+exist — and it admits a key that is not projected at all (`ORDER BY n.s`, 2.50x) as a side effect.
+After the rework the pair reads 10.30 against 12.08 and the group no longer flags.
+
+### The window rules, each load-bearing for a different reason
+
+- **`limit === undefined` declines.** A `SKIP` with no `LIMIT` is not a top-k: with no cap the
+  general path sorts and projects EVERY row and then drops the skipped ones, so
+  `RETURN <faulting> AS x, n.n AS t ORDER BY t OFFSET 1` raises on both engines even though the
+  window discards the faulting row. **`page-fold-fault.test.ts`'s existing CLAUSE-position control
+  caught the first cut admitting this** — item 1056's own test, one item later.
+- **`limit === 0` declines, as CORRECTNESS here.** `applyProjection` returns `[]` before ranking or
+  projecting anything, so evaluating keys to emit nothing would raise where the query does not. In
+  `outputColumnSorts` the same guard is only a speed guard.
+- **A key whose free name is also an output name declines.** The sort scope overlays output columns
+  on the binding, so that name means the COLUMN; `aliasDefinition` declines for the same reason.
+- **A SUBQUERY key declines.** `freePredicateVars` returns the empty set for one and `itemLocal`
+  admits one, so neither can be what refuses it. **Mutation found this guard untested** and it got
+  a correlated-`COUNT` fixture (out-degrees 2/1/0) before the entry was written.
+
+Teeth: nine mutants, nine caught — `limit0-admitted`, `skip-no-limit-admitted`,
+`alias-not-resolved`, `shadow-allowed`, `subquery-key-allowed`, `nonlocal-key-allowed`,
+`stale-binding`, `window-dropped`, `desc-dropped`. 30 new tests in
+`deferred-sorted-projection.test.ts`, every expected value first confirmed against native (34 arms
+across three cross-engine probes, all agreeing).
+
+**🛑 And one process lesson: piping the mutation loop into `head` SIGPIPEs it mid-loop**, so the
+final restore never runs and the mutant stays in the tree. The next two readings — a suite at
+`2908 pass 2 fail` and a spelling run — were taken against the mutant before `grep` on the live
+file found it. Restore-before-each-mutant contained the damage; the lesson is that `| head` on that
+loop is the thing that breaks it.
+
+### The deferred arm is a SEPARATE walk, not a branch
+
+The plain arm is byte-for-byte unchanged, for item 1033's measured reason: a branch added to a
+sibling hot loop cost three unreachable controls ~2x. The `plain` control reading 1.01x is that
+rule being honoured.
+
+**The `plain` control read 0.78x in the first in-sweep pass and that was the mode lottery, not a
+regression.** An isolated six-round alternated A/B put PRE at 12.49/10.14/12.85 and POST at
+9.87/12.70/12.68 — **both arms produce both modes** (~10 and ~12.7), exactly the bimodality
+CLAUDE.md warns of for this family. Min-to-min, POST is ahead.
+
+### ➡️ Open: a PRE-EXISTING divergence this item's deep sweep found
+
+Running `FUZZ_ITERATIONS=120000` **27 times on the PRE arm** failed twice, with a shape item 1062
+cannot reach:
+
+```text
+  MATCH (t:T) OPTIONAL MATCH (t)-[:E]->(n WHERE (n.nu AND (n.x IN ['1e3', ''])))
+    RETURN t.n AS x, n.n AS y ORDER BY x, y
+      ts:     err E_INVALID_VALUE
+      native: ok [{"x":3,"y":null}, …]
+```
+
+`FUZZ_SEED=3728333688` and `FUZZ_SEED=2059721365` both **replay deterministically on both arms**. It
+is the inline-pattern-predicate boolean-context family ([[boolean-context-static-check]]) inside an
+`OPTIONAL MATCH`, and the declared `static-bool-check-misses-inline-pattern-predicates` entry does
+not cover this shape. **This corrects item 1059's "no backlog of latent divergences"**: one 150,000
+run was clean; 27 runs of 120,000 were not. Whether to widen the registry entry or fix the check is
+left open — extending the static check to inline pattern predicates has been tried twice and was
+worse both times.

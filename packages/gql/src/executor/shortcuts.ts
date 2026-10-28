@@ -91,7 +91,7 @@ import type { Adjacency } from '../graph-queries.js';
 import { plainRowProjection } from './hop-projection.js';
 import { indexCandidates, matchNode, seedVertices, seekIsWorthIt } from './matching.js';
 import type { SeedCandidate } from './matching.js';
-import type { ColSort } from './ordered-rows.js';
+import type { ColSort, SortPlan } from './ordered-rows.js';
 import { outputColumnSorts, sortRowsByColumns } from './ordered-rows.js';
 import { AGGREGATES, asTruth, isNullish } from './scalars.js';
 
@@ -7609,6 +7609,250 @@ const valueScanOf = (
   return scan === null ? null : { ...scan, argFn: compileExpr(argExpr) };
 };
 
+/**
+ * The vertex a KEY ROW was ranked for, carried on the row itself.
+ *
+ * A SYMBOL rather than a reserved name because the row's other keys are the query's own output
+ * column names, and a string key cannot be proven not to collide with one. A parallel array
+ * cannot be used at all: the sort permutes the rows and the association has to survive it.
+ */
+const HELD_VERTEX = Symbol('heldVertex');
+
+type KeyRow = Row & { [HELD_VERTEX]: Vertex };
+
+/** One resolved `ORDER BY` key: the column the ranking writes it to, and how to compute it. */
+type DeferredKey = { col: string; fn: CompiledExpr };
+
+/**
+ * The `ORDER BY` keys of a windowed sort, COMPILED, or `null` to decline.
+ *
+ * RANKING ON COMPILED KEYS RATHER THAN ON OUTPUT COLUMNS, which is what makes two spellings of
+ * one question cost the same. `outputColumnSorts` requires every key to NAME an output column and
+ * substitutes only a `prop` alias, so `RETURN n.k + 1 AS c ORDER BY c` resolved and
+ * `… ORDER BY n.k + 1` did not. Ranking the first and not the second measured **3.8x apart on
+ * `bun run spelling`** (11.30 ms against 43.13) — this repo's named defect class, created by the
+ * first cut of item 1062 and caught by the probe before it shipped, where both spellings had been
+ * converged at ~34 ms before. Evaluating the key expression itself has no such asymmetry: there is
+ * nothing to match an alias against.
+ *
+ * The key row is DISCARDED — only the full projection is returned — so the keys go to synthetic
+ * column names and never have to agree with `cols`.
+ *
+ * WHAT IT REFUSES, each for a reason the general path states:
+ *
+ *   - A key that is not ROW-LOCAL to the scan's own variable (`itemLocal`, plus the free-variable
+ *     test the items already pass). An aggregate is excluded by `itemLocal`: it is defined over a
+ *     group, not a row.
+ *   - A SUBQUERY key. `freePredicateVars` returns the empty set for one — it does not descend —
+ *     so the free-variable test cannot see its names, and substituting a subquery sort key was a
+ *     live cross-engine divergence at item 213.
+ *   - A key whose free name is also an OUTPUT name. In the sort scope the output columns are
+ *     overlaid on the binding, so that name resolves to the COLUMN and means something else;
+ *     `aliasDefinition` declines for exactly this and native does the same.
+ */
+const deferredSortKeys = (
+  keys: readonly SortItem[],
+  proj: Projection,
+  cols: readonly string[],
+  nodeVar: string,
+): DeferredKey[] | null => {
+  const outNames = new Set(cols);
+  const out: DeferredKey[] = [];
+
+  for (const [i, k] of keys.entries()) {
+    // `ORDER BY <alias>` IS `ORDER BY <the expression the alias names>`, and the item's own
+    // expression is what gets compiled — the same rewrite `aliasDefinition` performs for the
+    // general path, so the two agree on which expression is the key.
+    const key = k.expr;
+    const named =
+      key.kind === 'var'
+        ? proj.items.find((it) => (it.alias ?? columnName(it.expr)) === key.name)
+        : undefined;
+    const expr = named === undefined ? key : named.expr;
+
+    if (!itemLocal(expr) || hasSubqueryExpr(expr)) {
+      return null;
+    }
+
+    for (const nameRead of freePredicateVars(expr)) {
+      if (nameRead !== nodeVar || outNames.has(nameRead)) {
+        return null;
+      }
+    }
+
+    out.push({ col: `\u0000k${i}`, fn: compileExpr(expr) });
+  }
+
+  return out;
+};
+
+/**
+ * A windowed, sorted node scan that RANKS ON THE KEYS AND PROJECTS ONLY THE EMITTED ROWS.
+ *
+ * WHY IT EXISTS (item 1062). `detectNodeProjection` refused a window whenever any projected item
+ * could fault — `outputColumnSorts`'s rule — because it projected every row and sliced, which
+ * would raise on a row the query never emits. So `RETURN n.k + 1 AS c ORDER BY c LIMIT 10` fell to
+ * the general path at ~34 ms where the plain-property spelling takes this rung at 11-14 (items
+ * 1058/1060/1061 located that boundary and priced it). The refusal was not about the ITEM being
+ * unprojectable — `itemLocal` admits any row-local expression — it was about projecting it too
+ * often.
+ *
+ * This arm does what the general path does, which is also what native does: evaluate the SORT
+ * KEYS per row, rank those, then project the full width for the `cap` survivors only. A non-key
+ * item that faults on a discarded row is never evaluated, exactly as in `applyProjection` after
+ * `aliasDefinition` has substituted the alias; a KEY item that faults still raises, because the
+ * general path evaluates every key per row too.
+ *
+ * A SEPARATE WALK, not a branch in the existing one. The plain arm is byte-for-byte unchanged:
+ * item 1033 measured a branch added to a sibling hot loop costing three queries this rung's
+ * change could not reach about 2x, and item 1034 built a module-scope walk instead for exactly
+ * that reason ([[ts-closure-size-is-load-bearing]]).
+ *
+ * `binding` is always written here, with no `allDirect` test: this arm is reached only when some
+ * item is NOT a direct property read, so the binding is always consulted.
+ */
+const deferredSortedNodeWalk = (spec: {
+  cstart: CNode | undefined;
+  label: LabelExpr | undefined;
+  labelName: string | undefined;
+  gate: InlineGate | undefined;
+  nodeVar: string;
+  cols: readonly string[];
+  fns: readonly CompiledExpr[];
+  directKeys: readonly (string | undefined)[];
+  keys: readonly DeferredKey[];
+  plan: SortPlan;
+}): ((graph: Graph, params: Params) => Row[]) => {
+  const { cstart, label, labelName, gate, nodeVar, cols, fns, directKeys, keys, plan } = spec;
+  const width = cols.length;
+
+  return (graph, params) => {
+    const keyed: KeyRow[] = [];
+    const binding = new Map<string, unknown>();
+    const env = { binding, params, graph };
+    const { vertices, seeded } = scanCandidates(graph, cstart, label, labelName, env);
+
+    for (const v of vertices) {
+      // Both tests, in the same order and for the same reasons the plain arm states.
+      if (seeded !== undefined && !matchesLabel(v, label)) {
+        continue;
+      }
+
+      if (gate !== undefined && !gate(v, binding, params, graph)) {
+        continue;
+      }
+
+      binding.set(nodeVar, v);
+
+      const kr = { [HELD_VERTEX]: v } as KeyRow;
+
+      for (const k of keys) {
+        kr[k.col] = k.fn(env);
+      }
+
+      keyed.push(kr);
+    }
+
+    // The ONE sorter, so the comparator, the bounded heap and the window all stay shared with the
+    // plain arm — the key rows carry fewer columns, and nothing in there reads any other.
+    const picked = sortRowsByColumns(keyed, plan) as KeyRow[];
+    const out: Row[] = [];
+
+    for (const kr of picked) {
+      const v = kr[HELD_VERTEX];
+
+      binding.set(nodeVar, v);
+
+      const row: Row = {};
+
+      for (let i = 0; i < width; i++) {
+        const dk = directKeys[i];
+
+        row[cols[i]] = dk === undefined ? fns[i](env) : propOf(v, dk);
+      }
+
+      out.push(row);
+    }
+
+    return out;
+  };
+};
+
+/**
+ * THE DEFERRED ARM's compile-time half (item 1062), extracted because inlining it put
+ * `detectNodeProjection` at a complexity of 42 against a ceiling of 35 — the same reason item
+ * 1038 pulled `relBoundRoute` out of its own detector.
+ *
+ * `outputColumnSorts` has just refused a window — most often because a projected item could fault
+ * and the plain arm projects every row — and this answers the same shape by ranking on the keys
+ * and projecting only the rows it emits, which is what the general path and native both do. Its
+ * own window rules, each with its reason:
+ *
+ *   - `limit === undefined` DECLINES. A `SKIP` with no `LIMIT` is not a top-k: with no cap the
+ *     general path sorts and projects EVERY row and then drops the skipped ones, so
+ *     `RETURN <faulting> AS x, n.n AS t ORDER BY t OFFSET 1` raises on both engines even though
+ *     the window discards the faulting row. `page-fold-fault.test.ts`'s existing control caught
+ *     the first cut of this arm admitting it.
+ *   - `limit === 0` DECLINES, and here that is CORRECTNESS rather than speed: `applyProjection`
+ *     returns `[]` before ranking or projecting anything, so evaluating keys to emit nothing
+ *     would raise where the query does not. The identical guard in `outputColumnSorts` is only a
+ *     speed guard, which is why it is documented in both places.
+ *   - A PARAMETERIZED window declines: the route is chosen once at compile time while the value
+ *     lives in `params`, which the plan cache is shared across.
+ */
+const deferredRoute = (spec: {
+  proj: Projection;
+  cstart: CNode | undefined;
+  // The NARROWED label, as the detector has it: a plain `:L`, the only form the scan takes.
+  label: Extract<LabelExpr, { kind: 'label' }> | undefined;
+  gate: InlineGate | undefined;
+  nodeVar: string;
+  cols: readonly string[];
+  fns: readonly CompiledExpr[];
+  directKeys: readonly (string | undefined)[];
+}): ((graph: Graph, params: Params) => Row[]) | null => {
+  const { proj, cstart, label, gate, nodeVar, cols, fns, directKeys } = spec;
+  const { skip, limit } = proj;
+  const keys = proj.orderBy;
+
+  if (
+    keys === undefined ||
+    keys.length === 0 ||
+    typeof limit !== 'number' ||
+    limit === 0 ||
+    (skip !== undefined && typeof skip !== 'number')
+  ) {
+    return null;
+  }
+
+  const deferredKeys = deferredSortKeys(keys, proj, cols, nodeVar);
+
+  if (deferredKeys === null) {
+    return null;
+  }
+
+  return deferredSortedNodeWalk({
+    cstart,
+    label,
+    labelName: label?.name,
+    gate,
+    nodeVar,
+    cols,
+    fns,
+    directKeys,
+    keys: deferredKeys,
+    plan: {
+      sorts: keys.map((k, i) => ({
+        col: deferredKeys[i].col,
+        descending: k.descending,
+        nullsFirst: k.nullsFirst,
+      })),
+      skip: typeof skip === 'number' ? skip : 0,
+      limit,
+    },
+  });
+};
+
 export const detectNodeProjection = (
   clauses: readonly Clause[],
   compiled: readonly CClause[],
@@ -7752,7 +7996,16 @@ export const detectNodeProjection = (
   const sorts = outputColumnSorts(ret, cols);
 
   if (sorts === null) {
-    return null;
+    return deferredRoute({
+      proj,
+      cstart: cm.patterns[0].start,
+      label,
+      gate,
+      nodeVar,
+      cols,
+      fns,
+      directKeys,
+    });
   }
 
   const labelName = label?.name;
