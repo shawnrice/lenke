@@ -31490,7 +31490,7 @@ is **1.53x inflation**, the effect CLAUDE.md records for this row (250.7 vs ~177
 it (both rows pay it); the absolutes do not, and the sweep's 222.6 reads as a 19% regression against
 the comment's 187.
 
-## 1084 — ⚠️ OPEN, MEASURED: TS's WALK depth-3 count is **2.4x its own recorded figure on its own fixture**, route intact
+## 1084 — ❌ RETRACTED AT 1085: the "2.4x regression" was me reading a NATIVE before/after table as a ts-vs-native pair. TS is **59x FASTER** on this row, not 2.4x slower
 
 Hunting bench comments whose asserted RATIO the board contradicts (ratios being inflation-immune),
 the depth pair's ratio HOLDS — `{1,3}` WALK 140.4/140.9/142.1 against `{1,2}`'s 144.3/145.0/149.1 =
@@ -31519,5 +31519,38 @@ forwards/backwards choice) but the fixture has ONE edge type, where `edgesOfType
 directly and allocates no dedup `Set` — so neither is obvious. Naming a cause from reading alone is
 what items 1079-1081 each cost a tick to.
 
-**First suspected REGRESSION of this run rather than a refuted target** — and found by matching a
-fixture to a claim, not by reading a board.
+~~**First suspected REGRESSION of this run rather than a refuted target**~~ — **WRONG, RETRACTED AT
+ITEM 1085.** Item 587 is a RUST change (`exec/fastpath.rs`), so its `38.87 -> 3.97 (9.79x)` table is
+**native before -> native after**. Its own commit states TS's figure for this row: **8362.9 ms**, "the
+TS engine has no depth-3 rung at all, so it enumerates". TS went 8362.9 -> ~141 (item 588's level
+recurrence): **59x FASTER**. Nothing regressed, and `k < N * 5` has been in `bench.ts` since the
+harness's first commit, so the deg-3 A/B was comparing against a fixture this row never had.
+
+## 1085 — ❌ RETRACTED item 1084: a ratio does not identify its operands. TS is **59x FASTER** on that row, not 2.4x slower
+
+1084 called TS's WALK depth-3 count a regression — 92 ms against a recorded 38.87. **The 38.87 is an
+old NATIVE number.** Item 587's commit touches `crates/lenke-engine/src/exec/fastpath.rs`: a RUST
+change, so its `38.87 -> 3.97 (9.79x)` table is **native before -> native after**. The same message
+gives TS's figure for the bench row it was adding: **"ts 8362.9ms … the TS engine has no depth-3 rung
+at all, so it enumerates."**
+
+TS went **8362.9 -> ~141 ms** once item 588 added the level recurrence: **59x faster.** No regression.
+
+**The error, because it is reusable:** 1084 argued "a ts-vs-native pair, since 38.87/3.97 = 9.79".
+That arithmetic fits a before/after equally well — **agreement with one hypothesis was treated as
+exclusion of the other.** And the fixture A/B that "confirmed" it inherited the same false premise:
+`k < N * 5` has been in `bench.ts` since its first commit and `k < N * 3` never was, so the deg-3 arm
+matched a fixture this row never had. **A rigorous measurement of the wrong comparison is still the
+wrong comparison** — and the care over arms, restores and occurrence counts made it look more
+trustworthy, not less.
+
+### ➡️ THE RULE
+
+> **A ratio does not identify its operands.** Before using a recorded `X -> Y (Nx)` as a baseline,
+> read what the commit CHANGED. A Rust-only diffstat cannot report a TypeScript before; a TS-only one
+> cannot report native. **Check the diffstat, not the arithmetic.**
+
+**Kept as facts about today:** `{1,3}` WALK 140.4/140.9/142.1 against `{1,2}` 144.3/145.0/149.1
+(0.96x, route live); deg3 92 against deg5 141 = **1.53x for 1.67x the edges**, the recurrence's
+linearity in `|E|`. The bench comment now labels the table, gives TS's real history and warns that
+comparing a TS reading against 38.87 compares it to an old native number.

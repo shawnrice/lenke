@@ -874,11 +874,22 @@ const CASES: Case[] = [
     // mode, since `repeat()` lowers to `PathMode::Walk`, so a regression here would show up as
     // `g.V().repeat(out()).times(3)` getting slow rather than as an ISO-spelling curiosity.
     //
-    // Measured at 200,000 vertices / 600,000 edges, three alternated rounds: WALK `{1,3}` 38.87ms
-    // -> 3.97 (9.8x), `{1,4}` 104.44 -> 5.01 (20.9x), `repeat(out()).times(4).count()` 103.40 ->
-    // 4.39 (23.6x). Its PAIR is the depth-2 row above: the two should stay within ~2x of each
-    // other, because the recurrence costs one pass per level, and a gap that grows means the
-    // route stopped being taken.
+    // ⚠️ THE 38.87 -> 3.97 TABLE BELOW IS NATIVE BEFORE -> NATIVE AFTER, NOT ts-vs-native.
+    // Item 1084 read it as a cross-engine pair because 38.87/3.97 = 9.79 matches the stated ratio
+    // — but so does a before/after, the arithmetic cannot tell them apart, and item 587 is a RUST
+    // change (`exec/fastpath.rs`). Its commit says what TS was on this row: **8362.9 ms**, "the TS
+    // engine has no depth-3 rung at all, so it enumerates", against ffi 5.6 and wasm 11.7.
+    //
+    // So TS's history on this row is 8362.9 ms at item 587 -> ~141 ms isolated today (item 588 gave
+    // it the level recurrence): a 59x IMPROVEMENT, and there is no regression here. Anyone comparing
+    // a TS reading against 38.87 is comparing it to an old NATIVE number.
+    //
+    // Measured at 200,000 vertices / 600,000 edges, three alternated rounds, NATIVE before -> after:
+    // WALK `{1,3}` 38.87ms -> 3.97 (9.8x), `{1,4}` 104.44 -> 5.01 (20.9x),
+    // `repeat(out()).times(4).count()` 103.40 -> 4.39 (23.6x). Its PAIR is the depth-2 row above:
+    // the two should stay within ~2x of each other, because the recurrence costs one pass per level,
+    // and a gap that grows means the route stopped being taken. Isolated today that pair reads
+    // 140.4/140.9/142.1 against 144.3/145.0/149.1 — 0.96x, so the route is being taken.
     name: 'count var-length 1-3 hops [WALK]',
     ...onGraph(
       () => graphDoc,
