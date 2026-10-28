@@ -2453,12 +2453,45 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       // ~5.7), non-empty 25-36 (mean ~29, sigma ~3.1). ~4 sigma below the means (item 280).
       // Measured over NINE seeds of 20,000: generated 156-200 (mean ~180, sigma ~12.6),
       // non-empty 76-96 (mean ~90, sigma ~7.3). Floors ~4 sigma below the means (item 280).
-      pctRangeGenerated: cov.pctRangeGenerated > 128,
-      pctRangeNonEmpty: cov.pctRangeNonEmpty > 58,
-      selfHopGenerated: cov.selfHopGenerated > 18,
-      selfHopNonEmpty: cov.selfHopNonEmpty > 15,
-      selfEndGenerated: cov.selfEndGenerated > 22,
-      selfEndNonEmpty: cov.selfEndNonEmpty > 14,
+      // ⚠️ ELEVEN FLOORS WERE UNDER 4 SIGMA, AND `subOr` WAS NOT THE WORST (item 1099).
+      //
+      // Item 1098 fixed `subOr` after CI went red on a 3-sigma floor, then asked the obvious next
+      // question: how many OTHERS are mis-set? Most floors here record a RANGE ("measured 150-186
+      // generated") rather than a mean and sigma — and a range is exactly the method item 280
+      // called unsafe, so none of them could be checked by reading. Measured instead, over TWELVE
+      // seeds of 20,000, every band at once:
+      //
+      //   band                  floor   min   mean  sigma   was      now
+      //   selfHopNonEmpty          15    23   31.4   6.30   2.60σ -> 4.03σ  (6)
+      //   pctRangeGenerated       128   154  183.2  21.13   2.62  -> 4.03   (98)
+      //   pctRangeNonEmpty         58    80   97.2  14.04   2.80  -> 4.00   (41)
+      //   selfHopGenerated         18    30   44.8   8.81   3.04  -> 4.06   (9)
+      //   selfEndGenerated         22    37   47.7   8.27   3.10  -> 4.07   (14)
+      //   cntPropGenerated        200   238  267.2  19.10   3.52  -> 4.04   (190)
+      //   selfEndNonEmpty          14    27   35.9   6.05   3.62  -> 4.11   (11)
+      //   pageRows                 80   106  140.6  16.54   3.66  -> 4.02   (74)
+      //   hopUntypedGenerated      20    33   39.4   4.93   3.94  -> 4.14   (19)
+      //   subOrGenerated            1    10   16.8   4.49   3.53  -> 3.74   (0, the limit)
+      //   subOrNonEmpty             0     9   13.5   3.61   3.74  -> unchanged (already 0)
+      //
+      // The two `subOr` floors cannot reach 4 sigma: four sigma below their means is NEGATIVE, so
+      // 0 is the floor and 3.7σ is the best available. That is the small-count lesson item 280
+      // stated and item 1098 re-derived — for a band of ~15, catching a collapse to ZERO is all a
+      // floor can safely do.
+      //
+      // The other 27 floors measured 4.5σ to 25σ and are untouched. `crossGenerated` is 25σ,
+      // which is a floor doing nothing, but an over-safe floor costs only its own irrelevance.
+      //
+      // n = 12, so each sigma is itself an estimate; the floors above are deliberately rounded
+      // DOWN to the integer below mean - 4σ rather than fitted, because the cost of a floor being
+      // slightly too low is that it catches a collapse slightly later, and the cost of it being
+      // too high is a red CI on a docs-only commit (which has now happened twice).
+      pctRangeGenerated: cov.pctRangeGenerated > 98,
+      pctRangeNonEmpty: cov.pctRangeNonEmpty > 41,
+      selfHopGenerated: cov.selfHopGenerated > 9,
+      selfHopNonEmpty: cov.selfHopNonEmpty > 6,
+      selfEndGenerated: cov.selfEndGenerated > 14,
+      selfEndNonEmpty: cov.selfEndNonEmpty > 11,
       subNotGenerated: cov.subNotGenerated > 8,
       subNotNonEmpty: cov.subNotNonEmpty > 6,
       // ⚠️ RE-SET AGAIN AT ITEM 1098, because item 280's RULE was right and its ARITHMETIC was
@@ -2479,7 +2512,7 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       // meaningful. VERIFIED by making the detector never fire: `subOrGenerated` and
       // `subOrNonEmpty` both go false and the test fails, which is the only behaviour these two
       // are claimed to have.
-      subOrGenerated: cov.subOrGenerated > 1,
+      subOrGenerated: cov.subOrGenerated > 0,
       subOrNonEmpty: cov.subOrNonEmpty > 0,
       predGenerated: cov.predGenerated > 2_000,
       predRows: cov.predRows > 1_000,
@@ -2492,7 +2525,7 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       crossGenerated: cov.crossGenerated > 250,
       crossNonEmpty: cov.crossNonEmpty > 120,
       // Measured 410-433 generated and 359-376 of those non-zero, of 20,000.
-      cntPropGenerated: cov.cntPropGenerated > 200,
+      cntPropGenerated: cov.cntPropGenerated > 190,
       cntPropNonZero: cov.cntPropNonZero > 150,
       // The band is 0.5% of 20,000, so ~100 draws are expected and a floor AT 100 flakes — the
       // first run measured 94/94. These floors are set to catch the arm going DEAD, which is what
@@ -2553,13 +2586,13 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       // weather, and a red CI with no divergence behind it costs more than the dip it catches.
       hopFilterGenerated: cov.hopFilterGenerated > 60,
       hopFilterNonZero: cov.hopFilterNonZero > 45,
-      hopUntypedGenerated: cov.hopUntypedGenerated > 20,
+      hopUntypedGenerated: cov.hopUntypedGenerated > 19,
       hopUntypedNonZero: cov.hopUntypedNonZero > 12,
       // Measured 263-311 generated and 109-128 of those with rows, AFTER this band gave half
       // its width to the count-shortcut family. If a future change narrows it again, this is
       // what says so.
       pageGenerated: cov.pageGenerated > 200,
-      pageRows: cov.pageRows > 80,
+      pageRows: cov.pageRows > 74,
     }).toEqual({
       groupClauseWhereGenerated: true,
       groupClauseWhereNonEmpty: true,

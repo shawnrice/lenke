@@ -32083,3 +32083,49 @@ larger than 1.** VERIFIED still failing on a collapse — disabling the detector
 measured healthy over five seeds, the floor measured 3 sigma while claiming 4, and the replacement
 was verified to still fail on the condition it exists for. Any of those four differing would have
 meant fixing the engine or reverting 1097.
+
+## 1099 — 🧹 **ELEVEN of 38** coverage floors were under 4 sigma, and `subOr` was NOT the worst; plus the full regression sweep
+
+Item 1098 fixed the floor that fired; this asks how many others are mis-set. **Most floors record a
+RANGE, not a mean and sigma** — the method item 280 called unsafe — so they cannot be audited by
+reading. Measured instead, twelve seeds of 20,000 (~1 minute, every band at once):
+
+```text
+  band                  floor   min   mean  sigma    was        now
+  selfHopNonEmpty          15    23   31.4   6.30   2.60σ ->  4.03σ  (6)
+  pctRangeGenerated       128   154  183.2  21.13   2.62  ->  4.03   (98)
+  pctRangeNonEmpty         58    80   97.2  14.04   2.80  ->  4.00   (41)
+  selfHopGenerated         18    30   44.8   8.81   3.04  ->  4.06   (9)
+  selfEndGenerated         22    37   47.7   8.27   3.10  ->  4.07   (14)
+  cntPropGenerated        200   238  267.2  19.10   3.52  ->  4.04   (190)
+  selfEndNonEmpty          14    27   35.9   6.05   3.62  ->  4.11   (11)
+  pageRows                 80   106  140.6  16.54   3.66  ->  4.02   (74)
+  hopUntypedGenerated      20    33   39.4   4.93   3.94  ->  4.14   (19)
+  subOrGenerated            1    10   16.8   4.49   3.53  ->  3.74   (0, the limit)
+  subOrNonEmpty             0     9   13.5   3.61   3.74  ->  unchanged
+```
+
+**`selfHop` (2.60σ) and `pctRange` (2.62σ) were closer to firing than the floor that fired** — CI
+picked `subOr` by luck. The other 27 measure 4.5-25σ, untouched. `subOr` cannot reach 4σ (negative),
+so 0 and 3.7σ are its limit — item 280's small-count lesson.
+
+Rounded DOWN to the integer below `mean - 4σ`, not fitted: n=12 makes each sigma an estimate, and a
+too-low floor catches a collapse later while a too-high one reddens CI on a docs commit (twice now).
+**VERIFIED still failing on collapse** — disabling `pctRangeGenerated`/`selfHopGenerated` flips both
+false and fails.
+
+### ✅ FULL REGRESSION SWEEP after nine engine changes
+
+`bun run spelling`: **0 groups disagree on the ANSWER**; the three timing flags are the three already
+settled (1085, 1073, 1072). **No fourth flag.**
+
+`bun run bench` vs item 1080's board — **item 1097's extraction reaches the STANDING rows:**
+
+```text
+  count 3-hop + start filter  240.3 -> 173.3     count 4-hop + start filter  317.6 -> 236.2
+  count 3-hop + end filter    264.0 -> 185.5     count 2-hop                 103.4 ->  75.7
+```
+
+That is the independent confirmation 1097's `o3` observation lacked: four directed standing rows
+moved the way the isolated control did. `bench:gremlin`: **`answers` same on every row**; nothing
+moved beyond this instrument's documented noise.
