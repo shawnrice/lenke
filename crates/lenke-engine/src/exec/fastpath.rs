@@ -132,6 +132,37 @@ pub(super) fn try_fused_hop_num_count(input: &Plan, store: &Store) -> Option<u64
 /// PROMOTES the column to `Gen`; this entry does not lean on that invariant at all, since it reads
 /// the presence bits the accessor defines.
 pub(super) fn try_fused_hop_present_count(input: &Plan, store: &Store) -> Option<u64> {
+    // SEE THROUGH a row-preserving projection — item 1144, the same move item 1135 made for
+    // `try_frontier_count` and for the same reason: Gremlin's `values('k')` lowers to a
+    // present-filter plus a `Project` of the value, so the filter this entry needs sits one level
+    // too deep and `values(k).count()` fell to the fold. Measured at 200,000 nodes, degree 1:
+    //
+    // ```text
+    //   out().has(k).count()        81 us    this entry
+    //   out().values(k).count()   2290       the fold, for want of this unwrap
+    // ```
+    //
+    // Sound because the caller's gate is a keyless `count(*)` with no arg and no `distinct`, so
+    // nothing reads the projected column — and the admission set is `Prop`/`Slot` ONLY, which is
+    // exactly what `values('k')` emits and is total by construction, so skipping it cannot turn a
+    // faulting plan into a counting one. Item 1135 records why that is deliberately narrower than
+    // opt's `can_raise`.
+    //
+    // NOT inside `fused_hop_shape`, which several entries share: `try_fused_hop_project` IS a
+    // projection path, and swallowing its `Project` there would be a wrong answer rather than a
+    // faster one.
+    let input = match input {
+        Plan::Project {
+            input: inner,
+            items,
+        } if items
+            .iter()
+            .all(|(_, e)| matches!(e, Expr::Prop { .. } | Expr::Slot(_))) =>
+        {
+            &**inner
+        }
+        other => other,
+    };
     let (label, w, pred, exp) = fused_hop_shape(input, store)?;
     let (key, bounds) = num_conj_on_slot(pred, 1)?;
     if !bounds.is_empty() {

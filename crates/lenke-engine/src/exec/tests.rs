@@ -30323,21 +30323,92 @@ fn the_streaming_presence_count_agrees_with_the_fold_for_every_column_type() {
         }
     };
 
+    // The ROW COUNT of the same traversal, through the GENERAL path. After item 1144 BOTH count
+    // spellings reach the streaming entry (a claim trace says so: 6 `present` claims, 3 per
+    // spelling), so comparing them to each other no longer crosses a route boundary. This does,
+    // and it is what keeps the test from being a self-comparison.
+    let rows = |q: &str| {
+        let plan = crate::opt::optimize_indexed(crate::gremlin::parse(q).unwrap(), &st);
+        run(&plan, &st).rows.len() as f64
+    };
+
     for key in ["num", "txt", "flag"] {
         // 200 with a value and 200 with a stored present-null carry the key; 200 do not.
         let streamed = cnt(&format!("g.V().out('K').has('{key}').count()"));
-        let folded = cnt(&format!("g.V().out('K').values('{key}').count()"));
+        let projected = cnt(&format!("g.V().out('K').values('{key}').count()"));
+        let general = rows(&format!("g.V().out('K').has('{key}')"));
 
         assert_eq!(
-            folded, 400.0,
-            "{key}: the fold counts values AND stored present-nulls"
+            general, 400.0,
+            "{key}: the general path yields a row per value AND per stored present-null"
         );
         assert_eq!(
-            streamed, folded,
-            "{key}: has(k).count() and values(k).count() are ONE question and must agree"
+            streamed, general,
+            "{key}: has(k).count() must equal the rows the general path produces"
+        );
+        assert_eq!(
+            projected, general,
+            "{key}: values(k).count() is the SAME question and must agree too"
         );
     }
 
     // A key no node carries is zero, not a decline into something else.
     assert_eq!(cnt("g.V().out('K').has('nosuchkey').count()"), 0.0);
+}
+
+/// The STREAMING entry's projection see-through must decline a projection that can RAISE —
+/// item 1144.
+///
+/// Item 1136 pins the same guard on `try_frontier_count` with a hand-built CAST plan, and that
+/// test does NOT cover this entry: its store is built with `add_node`/`add_edge`, which leaves the
+/// per-type CSR stale, so `fused_hop_shape` declines and the plan never reaches here. The widened
+/// admission mutant SURVIVED until this test existed, for exactly that reason — item 1142's
+/// lesson about fused-path fixtures, arriving a second time.
+#[test]
+fn the_streaming_see_through_declines_a_projection_that_can_raise() {
+    let mut b = Builder::default();
+    b.node(&["P"], &[]);
+    for i in 0..200u32 {
+        b.node(&["P"], &[("txt", s(if i % 2 == 0 { "zz" } else { "7" }))]);
+    }
+    for i in 1..=200u32 {
+        b.edge(0, i, "K");
+    }
+    let st = b.build();
+
+    // `Agg{count(*)} / Project{[("c", CAST txt AS INT)]} / Filter{PropertyExists} / Expand / Scan`
+    // — the shape this entry claims, with a cast that faults on "zz". It MUST fault, not count.
+    let plan = Plan::Scan { label: None }
+        .expand(0, Dir::Out, &["K".to_string()])
+        .filter(Expr::PropertyExists {
+            slot: 1,
+            key: "txt".into(),
+        })
+        .project(vec![(
+            "c".to_string(),
+            Expr::Cast {
+                target: crate::ir::CastTarget::Integer,
+                expr: Box::new(Expr::Prop {
+                    slot: 1,
+                    key: "txt".into(),
+                }),
+            },
+        )])
+        .aggregate(
+            vec![],
+            vec![Agg {
+                func: AggFn::Count,
+                arg: None,
+                distinct: false,
+                name: "count".into(),
+                frac: None,
+                null_on_empty: false,
+                numeric_only: false,
+            }],
+        );
+
+    assert!(
+        crate::exec::try_run(&plan, &st).is_err(),
+        "a faulting projection under count(*) must still fault, not be skipped by the stream"
+    );
 }

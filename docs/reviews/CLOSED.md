@@ -33667,3 +33667,43 @@ isolated (1.04x, overlapping).
 ⚠️ **STILL OPEN:** `values(k).count()` remains 2290us against this 81 — the native half of item
 1138's Gap 2. The `Project` the `values` lowering emits blocks `fused_hop_shape`, exactly as it
 blocked `try_frontier_count` before item 1135 taught that entry to see through it.
+
+## 1144 — ✅ SHIPPED **28.4x**: the NATIVE spelling family closes too — all FOUR spellings of one question now cost the same, in both engines
+
+Item 1143 left native `values(k).count()` at 2290us against 81. The `Project` from Gremlin's
+`values('k')` lowering sits between the aggregate and the hop, so `fused_hop_shape` never saw the
+shape — exactly as it blocked `try_frontier_count` before item 1135. Same unwrap, same admission set
+(`Prop`/`Slot` only, total by construction).
+
+⚠️ **NOT inside `fused_hop_shape`**, which several entries share: `try_fused_hop_project` IS a
+projection path, so swallowing its `Project` there would be a wrong answer, not a faster one.
+
+Three alternated rounds, arm-asserted:
+
+```text
+  A2 out.values(age)      PRE 2316.8/2303.9/2298.6   POST 81.2/80.8      28.4x
+  T2 out.values(name)     PRE 2316.4/2296.0/2295.4   POST 81.6/82.6      28.1x
+  A1 out.has(age)  [ctl]  PRE   82.5/  80.6/  79.9   POST 81.4/80.9/80.4 flat
+  C1 / C2          [ctl]  flat
+```
+
+✅ **All four spellings, one process: 80.1 / 80.4 / 80.4 / 80.6 us** — two spellings x two column
+types, within 0.6%. Item 1137 claimed this prematurely for one fixture and item 1138 refuted it; it
+now holds across the axis that refuted it. With item 1141 doing the same TS-side, **CLOSED in both
+engines.**
+
+⚠️ **A FUSED-PATH TEST MUST BUILD ITS STORE THROUGH THE `Builder`.** The widened-admission mutant
+SURVIVED at first even though item 1136 wrote that very test for `try_frontier_count` — its store
+uses `add_node`/`add_edge`, which leaves the per-type CSR stale, so `fused_hop_shape` declines and
+the plan never reaches this entry. A `Builder`-built twin catches it. **Second time in three items**
+that a mutator-built fused-path fixture tested nothing (item 1142 was the first).
+
+⚠️ Item 1143's agreement test had to be STRENGTHENED: after this change both count spellings reach
+the streaming entry (claim trace: 6 `present` claims), so comparing them no longer crosses a route.
+Now compares against the general path's ROW COUNT plus the literal 400.
+
+⚠️ **`query/gremlin/order(local) then hop` is a known IN-SWEEP FALSE POSITIVE.** Flagged 1.11x here
+and 1.16x at item 1137; isolated both times it is flat (here PRE 15930.6/14701.5/14794.4 vs POST
+15139.8/14825.7/14832.4 = 1.008x). It has a ~10% spread of its own — isolate before chasing.
+
+Suite 1279+13+725; `rewrite_fuzz` 10; 7/7 byte-identity fuzzers 13 pass / 0 fail.
