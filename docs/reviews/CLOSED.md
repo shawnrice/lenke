@@ -33982,3 +33982,39 @@ the stronger sequence check.
 ✅ **CLAUDE.md now documents 500000**, with the reason and the cost: 200000 is NOT deep enough and
 that is measured — 500000 found the item-1150 wrong answer that 200000 passes over, for ~100 s.
 Suite 1281+13+725; 7/7 byte-identity fuzzers.
+
+## 1152 — 🔶 PRICED at **55.9x** (TS 3-hop count), ✅ item 1110's memo VALIDATED by ablation (1.53x / 2.04x), and the residual is a cost NO MEMO CAN REMOVE
+
+`bun run bench:gremlin`, 200k vertices / 1M edges, min of 5:
+
+```text
+  V().out().out().out().count()   ts 274.7   native 4.92   55.9x  <- biggest in the table
+  V().out()x4.count()                281.2          6.86   41.0x
+  V().out().out().count()             52.9          2.77   19.1x
+```
+
+⚠️ **The progression is the signal:** 2->3 hops costs 5.2x (expected at degree 5) but **3->4 is
+FLAT**. Claim trace: only `hops=3` and `hops=4` reach the dense rung at all; the 2-hop row is
+answered by a cheaper one. The flatness is where the memo is COLD — a 3-hop's two passes are both
+cold (pass 0 memoizes only SEED slots; pass 1 expands the far ends first time), while a 4-hop's
+third pass is memo-warm.
+
+✅ **Item 1110's memo is load-bearing, by ablation** (the suspicion was its ~400k
+`Int32Array.from` allocations):
+
+```text
+                        memo ON   memo OFF
+  out().out().out()       274.7     419.2    1.53x worse without
+  out()x4                 281.2     573.9    2.04x worse without
+  out().out()    [ctl]     52.9      52.5    flat (different rung — as the trace predicted)
+```
+
+⚠️ **The residual is ~2M COLD edge touches**, each paying a `Map<Vertex, number>.get` to intern the
+far vertex (`expandSlot`'s `slotOf.get(w)`). A memo cannot help a slot's FIRST expansion.
+
+⚠️ **Both local levers are ALREADY TAKEN here** — don't re-attempt: the walk reads
+`vtx[slot].adjFrom` (the vertex's own box, item 591's 1.80x) and the per-slot neighbour memo is item
+1106's GQL trick (1.69x there), now ablation-confirmed. Native pays none of it because its vertices
+ARE dense `u32` ids, so interning is identity. Closing the gap means giving `Vertex` an internal
+slot field — a cross-cutting change to a user-visible object, a design decision not a local
+optimization. OPEN.
