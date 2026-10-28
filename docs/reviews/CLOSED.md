@@ -29442,6 +29442,27 @@ in order>` prints every run. (1) The band's first draft sat AFTER `if (p < 0.68)
   this engine's named defect class. The clause half needs the lift item 1034 gave the count path.
   The walk must be EDGE-DRIVEN and its own closure (`edge.from`/`edge.to` supply both endpoints);
   items 159 and 1033 priced a branch in one of these loops at 1.6x and ~2x.
+- **⚠️ OPEN, PRICED — GREMLIN's edge-index seed fires only at the SOURCE: 550-650x (item 1043).**
+  `seedFromIndex` destructures `const [source, ...rest] = plan.steps` and fires only for
+  `source.kind` `'V'`/`'E'`, so an edge predicate reached THROUGH A HOP never sees the edge index.
+  100k edges, one value = 0.1%, three rounds: `E().has(amount).count()` 0.028/0.025/0.025 ms;
+  `E().hasLabel().has().count()` 0.019/0.017/0.017; **`V().outE().has(amount).count()`
+  16.145/13.787/14.471**; CONTROL on an UNINDEXED key 15.789/16.315/16.464 — the subject OVERLAPS
+  the control, so the index is unreachable rather than merely less effective.
+- **✅ AND TINKERPOP SETTLED THE SCOPE BEFORE ANY CODE WAS WRITTEN (item 1043).** Seeding makes the
+  hop spelling enumerate in `E()` order, so: `podman run -i docker.io/tinkerpop/gremlin-console:3.7.3`
+  on a fixture where edge-insertion and vertex-driven order differ gives **`E()` → [e1,e2,e3,e4]
+  but `V().outE()` → [e2,e4,e1,e3]** — genuinely different orders — and **lenke reproduces BOTH
+  exactly.** So the ordering is something this engine gets RIGHT, and a seed on an order-visible
+  result would trade a TinkerPop deviation for speed. **The seed may serve only an
+  order-insensitive terminal** (`count()`, which is the 550x case). One container run, before
+  writing code, against the alternative of building the general rewrite and retracting it — the
+  shape of items 1032/1033.
+- **➡️ NOT ESTABLISHED (item 1043)**: whether `V()` must be UNFILTERED. `V().hasLabel('Q').outE()`
+  does not cover every edge, so the seed would have to re-apply the start label per edge — reachable
+  from `edge.from` as item 1038's walk does, but unmeasured. The 550x describes the narrow shape:
+  `V()` with no ids and no leading filters, then `outE`, then commuting filters, then an
+  order-insensitive terminal.
 - **⚠️ OPEN — `spelling-probe.ts` CANNOT SEE the edge-seed route (item 1035).** It declares only
   VERTEX indexes and its one edge property is `w = e % 5`, a fifth of 600,000 edges, which the
   margin correctly declines. Giving it a selective edge key means adding a property to a SHARED
