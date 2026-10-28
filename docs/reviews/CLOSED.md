@@ -29536,6 +29536,25 @@ in order>` prints every run. (1) The band's first draft sat AFTER `if (p < 0.68)
   from `edge.from` as item 1038's walk does, but unmeasured. The 550x describes the narrow shape:
   `V()` with no ids and no leading filters, then `outE`, then commuting filters, then an
   order-insensitive terminal.
+- **⚠️ OPEN, PRICED — the GQL AGGREGATE over an edge key is the THIRD result shape that cannot seed:
+  270-290x (item 1047).** `edgeSeek` is referenced only in `shortcuts.ts` (its definition) and
+  `hop-projection.ts`'s projection walk; `detectHopAggregate`/`detectMultiHopAggregate` never see
+  it. Three rounds, 100k edges, one value = 0.1%: `count(*)` (seeded since 1035)
+  **0.034/0.035/0.041 ms**; `sum(e.amount)` 9.955/9.668/10.804; `count(DISTINCT e.amount)` 25.160;
+  GROUP BY on the edge key 27.337 (~740x).
+- **THE ZERO-MATCH DIAGNOSTIC, AND THE MIS-READING IT PREVENTS (item 1047).** `sum` over an INDEXED
+  key with ZERO matches costs **9.768/9.415/9.211 ms** — a seeded route would walk an empty bucket,
+  so the index is not reached — and the cost is INVARIANT to the match count (9.2-9.8 at zero
+  against 9.7-10.8 at 100), the signature of a scan. **But the indexed zero-match arm costs 1.6x the
+  UNINDEXED zero-match arm (5.6-6.1), and that is NOT seeding** — both scan. It is the predicate:
+  `e.amount = 99999` tests a property every edge CARRIES where `e.other = 500` tests an ABSENT one,
+  and a null comparison settles sooner. Attributing that 1.6x to the index would have been wrong in
+  a way no timing alone reveals.
+- **➡️ NEXT (item 1047)**: wire `edgeSeek` into the aggregate path as 1035/1038 did for the other two
+  result shapes. Check three sub-shapes separately rather than assume: a plain `sum`/`min`/`max`, a
+  `count(DISTINCT …)`, and a `GROUP BY` on the edge key — the last is the most expensive and may want
+  the group map built FROM the seed rather than filtered into. An aggregate is order-insensitive, so
+  item 1043's ordering constraint does not bind here.
 - **⚠️ OPEN — `spelling-probe.ts` CANNOT SEE the edge-seed route (item 1035).** It declares only
   VERTEX indexes and its one edge property is `w = e % 5`, a fifth of 600,000 edges, which the
   margin correctly declines. Giving it a selective edge key means adding a property to a SHARED

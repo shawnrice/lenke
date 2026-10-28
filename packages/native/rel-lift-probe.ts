@@ -77,6 +77,35 @@ const SHAPES: Record<string, { q: string; reached: boolean }> = {
     q: 'MATCH ()-[e:PAID]->() WHERE e.other = 500 RETURN e.other AS a',
     reached: false,
   },
+  // THE AGGREGATE SHAPES (item 1047). Items 1035 and 1038 wired `edgeSeek` into `tallyEdges` (the
+  // COUNT walks) and `relSeekedHopWalk` (the projection). Grepping the pattern one level on: does
+  // an AGGREGATE over the same indexed edge key reach it, or is this the third result shape that
+  // has to be served separately?
+  'agg-sum': {
+    q: 'MATCH ()-[e:PAID]->() WHERE e.amount = 500 RETURN sum(e.amount) AS a',
+    reached: false,
+  },
+  'agg-distinct': {
+    q: 'MATCH ()-[e:PAID]->() WHERE e.amount = 500 RETURN count(DISTINCT e.amount) AS a',
+    reached: false,
+  },
+  'agg-group': {
+    q: 'MATCH ()-[e:PAID]->() WHERE e.amount = 500 LET k = e.amount RETURN k, count(*) AS a GROUP BY k',
+    reached: false,
+  },
+  // The CONTROL for all three: the same aggregate on an UNINDEXED edge key, so nothing can seed.
+  'agg-unindexed': {
+    q: 'MATCH ()-[e:PAID]->() WHERE e.other = 500 RETURN sum(e.other) AS a',
+    reached: false,
+  },
+  // THE DECISIVE PAIR with the arm above: an INDEXED key matching ZERO edges. If the aggregate
+  // seeded, this would walk an EMPTY set and cost ~nothing; if it scans, it costs what the
+  // unindexed zero-match arm costs. Same row count, same work downstream — the only difference is
+  // whether the index was reachable.
+  'agg-zero': {
+    q: 'MATCH ()-[e:PAID]->() WHERE e.amount = 99999 RETURN sum(e.amount) AS a',
+    reached: false,
+  },
 };
 
 const name = process.env.SHAPE ?? 'named-clause';
@@ -115,6 +144,11 @@ for (let r = 0; r < REPS; r++) {
     answer = toArray(traversal(E(), has('amount', 500), values('amount')), g).length;
   } else if (shape.q === 'GREMLIN') {
     [answer] = toArray(traversal(E(), has('amount', 500), count()), g);
+  } else if (name.startsWith('agg-')) {
+    // An aggregate returns one row (or one per group); take its first cell, whatever it is named.
+    const rows = tsQuery(g, shape.q) as Record<string, unknown>[];
+
+    answer = rows.length === 0 ? 'none' : Object.values(rows[0])[0];
   } else if (name.startsWith('proj-')) {
     // A PROJECTION returns rows, so the answer is their count — the same 100 either way, which is
     // what makes it comparable with the count arms above.
