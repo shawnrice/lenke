@@ -4575,7 +4575,7 @@ never enter it; it needs a column that exists while holding nothing for the scan
 **A test can assert the right answer for the right reason and never visit the code it is aimed
 at.**
 
-## 472 — the arity cliff on a HOP: CLOSED at 4.0-4.2x (TS). The native twin is OPEN
+## 472 — the arity cliff on a HOP: CLOSED at 4.0-4.2x (TS). ~~The native twin is OPEN~~ — **CLOSED AT ITEM 473** (2.5-2.8x; its own headline says "both halves now done")
 
 Item 469's scan cliff, asked of the hop, where it costs more because the general path
 materializes a `Binding` per EDGE. At 200,000 nodes / 1,000,000 edges: `count(*), max(b.age)` 668
@@ -4691,7 +4691,7 @@ a bucket sum would double-count; this rung walks `expand`, which handles both di
 mutant survives with correct answers even on a fixture built to distinguish them. A free win for
 the undirected grouped hop, pending a measurement and an order check.
 
-## 477 — the undirected grouped hop: CLOSED at 1.8-1.9x (TS). Native's twin is OPEN
+## 477 — the undirected grouped hop: CLOSED at 1.8-1.9x (TS). ~~Native's twin is OPEN~~ — **RETRACTED AT ITEM 478**: native's 19.3-vs-9.4 is the work, not a missing path
 
 Item 476 left `direction === 'both'` refused and priced. It cost 1849 ms against the directed
 shape's 399 (count-only: 1536 against 335) at 200,000 nodes / 1,000,000 edges.
@@ -4735,8 +4735,11 @@ directed controls flat. The after-ratio (~1.6x the directed shape) is where nati
 
 **The win is CONDITIONAL: one self-loop anywhere disarms it** — and `route-cost-probe`'s default
 fixture has 50 (`k * 96810 ≡ 0 mod 200,000`), so on it the change measures its own decline. The
-`PNOLOOP` arm (off by default) is what measures the win. **OPEN, priced:** skip self-loops in
-the IN pass so the admission is per-edge, not per-graph.
+`PNOLOOP` arm (off by default) is what measures the win. ~~**OPEN, priced:** skip self-loops in
+the IN pass so the admission is per-edge, not per-graph.~~ — **CLOSED AT ITEM 481**: a looped graph
+switches to a single undirected walk per CALL rather than declining (`hop-projection.ts`:
+`const chosen = noSelfLoops && graph.selfLoopCount !== 0 ? looped : undefined`), verified in the
+code at item 1080.
 
 Also: **a full-repo `bun test packages` is not the gate.** It reported 61 failures, all runner
 artefacts — `packages/react` runs under VITEST (22/22 with its own script), the sync and
@@ -21034,7 +21037,7 @@ engine is unaffected: 20 consecutive clean fuzz runs on the pristine tree.
 name the fuzzer and seed in the stderr now being read, and `bun run fuzz <name> --seed N` replays
 it — which has not been possible at any point in this session.
 
-## 775 — TS: an ANONYMOUS end node costs 4.4x a named one, cause located in `hopEnds`. Item 773's "edge projection is 22x" is REFUTED
+## 775 — ~~TS: an ANONYMOUS end node costs 4.4x a named one, cause located in `hopEnds`~~ — **FIXED AT ITEM 776** (4.60-4.88x, the two spellings CONVERGE; `hopEnds` synthesizes `ANON_FAR_VAR`, verified in the code). Item 773's "edge projection is 22x" is REFUTED
 
 **NO ENGINE CHANGE. A 4.4x equivalent-spelling gap found, located, and added to the spelling probe.**
 
@@ -31339,3 +31342,46 @@ which that measurement says nothing about. **Equivalence of the two members is a
 and for this probe it is written down in a 40-line header directly above the two lines quoted.
 Neither `CLOSED.md` nor that header was searched. Same shape as items 172, 200 and the ISO artifact
 check; cost one tick because the retraction is same-session.
+
+## 1080 — 🧹 FOUR of this file's own "OPEN" headlines were already closed; and the native bench board's one UNEXPLAINED row
+
+Searching this file for open native levers returned five candidates. **Four were already closed or
+retracted — three of them by the very next item:**
+
+| headline said                                  | actually             | verified by                                                         |
+| ---------------------------------------------- | -------------------- | ------------------------------------------------------------------- |
+| 472 "The native twin is OPEN"                  | CLOSED at **473**    | 473's headline: "both halves now done"                              |
+| 477 "Native's twin is OPEN"                    | RETRACTED at **478** | 478: "NOT a missing path"                                           |
+| 775 "cause located in `hopEnds`"               | FIXED at **776**     | the CODE: `node.variable ?? ANON_FAR_VAR`                           |
+| 478 body "**OPEN, priced:** skip self-loops …" | CLOSED at **481**    | the CODE: `noSelfLoops && selfLoopCount !== 0 ? looped : undefined` |
+
+Two were settled **against the engine source, not another document** — both are phrased as live work
+and only `hop-projection.ts` settles them. 469's "the same step is OPEN in native" is LEFT ALONE: not
+verified either way this tick, and asserting it closed is the same error mirrored.
+
+**The lag is not in the entries — 473, 478, 776 and 481 all exist and all say what they did. It is in
+the superseded HEADLINE, which is what a search for open work reads.** CLAUDE.md: "A list that lags is
+the failure it exists to prevent." Second tick in a row lost to this shape (1079 was its
+probe-header twin). Each of the four now carries a struck-through phrase and a pointer; one line per
+entry, no reorganization, audit untouched.
+
+### The board: where native is actually the slower side
+
+`BENCH_ENGINES=ts,ffi bun run bench`, 200,000 nodes, 5 reps, best of each:
+
+```text
+  query: project 3 columns                    10.0     61.0     0.16x   ← 6.1x, UNEXPLAINED
+  query: project the element + materialize    27.5    138.9     0.20x   ← items 827/828's shape
+  query: project the edge + materialize      590.5   1016.7     0.58x
+  query: ordered projection [no window]       14.5     22.4     0.65x
+  count 1-hop UNDIRECTED                       0.0      1.5     0.00x   ← REFUTED at 1077
+```
+
+**`project 3 columns` contradicts a recorded conclusion**, which is why it is the next target: item
+827 measured native's SCALAR projection at "~7x faster, flat", and the 825/826/827 arc blames the
+element-render loss on rendering a MAP per row — three scalar columns render no map.
+
+**NOT yet a finding, because `ffi` is not the engine**: that column includes marshalling 200,000 rows
+across the C ABI where `ts` hands back values in-process. `query_bench` measures the engine with no
+boundary, so the next tick prices the same shape there and attributes the 51 ms before naming
+anything. Calling it "native is 6x slower on scalar projection" first is item 1073's mistake.
