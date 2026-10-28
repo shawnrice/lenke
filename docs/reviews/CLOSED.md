@@ -29292,6 +29292,26 @@ multiTypeEdgeCount === 0`) — one named type cannot double-count. Native's `Adj
   asserts `edgeSeek(…)?.size === 9` — the premise checked rather than assumed. The mutant then
   fails 3. **A correctness fixture for a GUARDED route has to clear the guard, and that is
   checkable.**
+- **⚠️ OPEN, PRICED, AND SMALLER THAN IT LOOKS — the RUST engine has NO edge property index
+  (item 1036).** `schema_op.rs` matches only `("vertex","hash")`, `("vertex","range")`,
+  `("edge","interval")` and `("edge","type")`; `on:'edge', kind:'hash'` has no engine arm, and
+  `packages/native/src/graph.ts` omits the cross product deliberately. Through the FFI it raises
+  `schemaApply: unsupported index: on=edge kind=hash`. So **item 1035 has nothing to port** — this
+  is a feature (store structure, write maintenance, undo log, snapshot codec, byte-identity across
+  FFI and wasm), not a chooser.
+- **✅ AND THE PRICE SAYS DON'T BUILD IT YET (item 1036).** 100,000 edges, one value = 0.1%, median
+  of reps 4+, three rounds: native EDGE predicate with NO index **0.113/0.101/0.105 ms**; ts EDGE
+  predicate WITH item 1035's index 0.037/0.035/0.041; CONTROL native VERTEX key + vertex index
+  0.004/0.003/0.003; CONTROL ts VERTEX key + vertex index 0.025/0.024/0.033. **Native's un-indexed
+  SCAN is 2.9x FASTER than the TS engine's indexed seek** — ~1.05 ns an edge, at the scan floor
+  E64 measured independently (1.88 ns a node). In TS the gap was 27x on a MILLISECOND base; in Rust
+  it is ~25-30x on a 0.10 ms base. The vertex control excludes "native is slow at this shape" (the
+  same question where the index exists is 0.003 ms) and re-measures the layout ceiling at ~8x
+  (item 573).
+- **METHOD — a big ratio in one engine is NOT evidence of a gap in the other (item 1036).** The two
+  scan floors differ by ~10x, so the same missing index is a millisecond problem in TS and a
+  microsecond one in Rust. After item 1035's 27x, **native still answers this question faster by
+  SCANNING than TS does by SEEKING.** Always measure the other engine before porting a win to it.
 - **⚠️ OPEN — `spelling-probe.ts` CANNOT SEE the edge-seed route (item 1035).** It declares only
   VERTEX indexes and its one edge property is `w = e % 5`, a fifth of 600,000 edges, which the
   margin correctly declines. Giving it a selective edge key means adding a property to a SHARED
