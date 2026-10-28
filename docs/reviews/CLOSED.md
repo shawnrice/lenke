@@ -31213,3 +31213,39 @@ now read off the two routes. Fixtures come loop-free, 1-loop and 3-loop.
 - NATIVE lacks the O(1) typed undirected count TS has (1.33 ms vs 0.00).
 - TS's constrained UNTYPED undirected count still declines (257 ms); it wants the runtime
   `multiTypeEdgeCount === 0` test this arm could not use.
+
+## 1077 — ❌ REFUTED as a native target: the undirected count is ALREADY one linear pass; O(1) would cost every edge write
+
+`bun run bench`'s `count 1-hop UNDIRECTED` reads **ts 0.00 / native 1.5 ms** — TS answers from
+`2 * |E_t| - loops(t)`, native declines (`typed_hop_count_from_size` refuses `*dir != Dir::Out`).
+
+**The self-loop semantics are the GQL contract and both engines agree**: a loop contributes ONE row,
+not two — `MATCH (a)-[:T]-(x)` over one edge plus one loop returns `{1,1}, {1,2}, {2,1}`. Native's
+`drop_loop` implements exactly that; `double_loops` is the Gremlin rule where a loop traverses twice.
+
+### Doubling |E| is what settles it
+
+```text
+  MATCH ()-[:T]-() RETURN count(*)      600k 1.458   1.2M 2.880   1.97x  ← LINEAR, 2.4 ns/edge
+  MATCH (a:P)-[:T]-(x) RETURN count(*)       1.292        2.739   2.12x  ← LINEAR
+  MATCH ()-[:T]->() RETURN count(*)          0.004        0.002   0.60x  ← O(1), the partition
+  MATCH ()-[]->() RETURN count(*)            0.039        0.074   1.88x  ← linear too
+  MATCH (a:P) RETURN count(*)                0.002        0.003          ← O(1)
+```
+
+**Native is already doing one near-optimal pass.** `2 * |E_T| - loops(T)` needs a per-type loop
+count, and **the Rust store has no self-loop accounting at all** where TS carries `selfLoopsByLabel`.
+So the arm needs a counter maintained on every edge insert/delete (multi-label edges and tombstones
+included) — priced against the write path — or a one-time partition scan, which is the same order as
+the pass it replaces and buys nothing.
+
+**The offer is 1.5 ms → ~0.002 ms on 600,000 edges: a big ratio, a small absolute, a cost on every
+write. NOT BUILT.** The bench row is the honest difference between an arithmetic TS can do because it
+maintains the counter and a pass native does because it does not.
+
+### ➡️ The other open member is a TS arm and a different question
+
+TS's constrained UNTYPED undirected count still declines (257 ms). `degreeOfTypes(box, undefined)`
+sums ALL buckets, so a two-type edge is counted twice. Two routes both beat 257 ms: sum sizes when
+`multiTypeEdgeCount === 0`, else iterate each PASSING vertex's boxes counting distinct edges —
+survivors' edges only, not every row. Named for its own tick.
