@@ -2653,6 +2653,26 @@ impl Store {
     /// INTERN ORDER, NOT SORTED — the caller must sort. The forward map holds intern order and
     /// the canonical order every consumer relies on is by NAME (item 724), so this is only safe
     /// for a caller that does its own sort.
+    /// A node's label IDS, borrowed — the index into [`label_names_table`](Self::label_names_table).
+    ///
+    /// For callers that render MANY rows: the names table can be turned into `Value`s once and
+    /// cloned per row, where mapping through [`label_names_of`](Self::label_names_of) rebuilds a
+    /// `GStr` from a `&str` per label per row, copying its bytes and heap-allocating past
+    /// `INLINE_CAP` (item 1068, the labels half of item 391's hoist).
+    #[must_use]
+    pub(crate) fn label_ids_of(&self, id: u32) -> &[u32] {
+        self.node_labels
+            .get(id as usize)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    /// Every label name, indexed by label id.
+    #[must_use]
+    pub(crate) fn label_names_table(&self) -> &[String] {
+        &self.label_names
+    }
+
     pub fn label_names_of(&self, id: u32) -> impl Iterator<Item = &str> + '_ {
         self.node_labels
             .get(id as usize)

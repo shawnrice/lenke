@@ -364,6 +364,21 @@ pub(super) fn render_nodes(store: &Store, ids: &[u32]) -> Vec<Value> {
         .iter()
         .map(|(k, _)| Value::Str(Arc::clone(k).into()))
         .collect();
+    // THE SAME HOIST FOR LABEL NAMES (item 1068), which item 391 did for property keys at four
+    // sites and left here. `Value::Str(l.into())` on a `&str` runs `GStr::new`, which COPIES the
+    // bytes — inline to `INLINE_CAP` = 12 and a HEAP ALLOCATION above it — so a label name longer
+    // than twelve characters was allocating once PER NODE PER LABEL for a name shared by the whole
+    // bucket. One `Value` per label ID instead, cloned per row: a relaxed `fetch_add` for a heap
+    // string, a 16-byte copy for an inline one.
+    //
+    // The CORPUS CANNOT SHOW THIS, exactly as item 391's could not: its fixture labels are
+    // `Person`/`Company`, both inline. The axis is name LENGTH, and real schemas are full of
+    // `EmploymentRecord` and `PurchaseOrderLine`.
+    let label_vals: Vec<Value> = store
+        .label_names_table()
+        .iter()
+        .map(|n| Value::Str(n.as_str().into()))
+        .collect();
     // COLUMN-MAJOR, not row-major (item 828). Row-major asked, for each row, "is this row present
     // in column 0? column 1? … column K?" — so a wide store cost K probes into K SEPARATE presence
     // vectors per row, one cache line each, and `element p` grew from 169.8 ns/row at K=0 to 1785.7
@@ -413,9 +428,13 @@ pub(super) fn render_nodes(store: &Store, ids: &[u32]) -> Vec<Value> {
             // `String` per label and sorted, and then this sorted again. Same order: both sort
             // the same names by the same byte ordering.
             let labels_list = {
+                // Through the IDS, so the hoisted `label_vals` can be cloned. Same order as
+                // before: the `Value`s are still sorted by bytes afterwards, and `label_vals` is
+                // indexed by id rather than carrying any order of its own.
                 let mut ls: Vec<Value> = store
-                    .label_names_of(id)
-                    .map(|l| Value::Str(l.into()))
+                    .label_ids_of(id)
+                    .iter()
+                    .map(|&l| label_vals[l as usize].clone())
                     .collect();
 
                 sort_label_values(&mut ls);

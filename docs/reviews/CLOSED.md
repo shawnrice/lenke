@@ -30794,3 +30794,50 @@ Final: 4 caught; 4 survive with each one's masking condition named — `ignores-
 `admits-seek` mask each other through the inline branch's seed hint (the pair is still necessary),
 `ignores-rel-inline` never arrives because `startWalkFits` requires `inRel === undefined`, and
 `wrong-end-label` makes the path DECLINE rather than answer wrongly.
+
+## 1068 — ✅ SHIPPED (RUST): the LABEL names hoisted out of the element render — the half item 391 left
+
+Item 391 hoisted the property KEYS out of `render_nodes`/`render_edges` because
+`Value::Str(&str)` runs `GStr::new`, which COPIES the bytes (inline to 12 chars, a heap allocation
+above). **The LABELS in the same row loops were never hoisted**, so a label name longer than twelve
+characters allocated once per node per label, for a name every node in the bucket shares.
+
+One `Value` per LABEL ID, built once per call and cloned per row (a relaxed `fetch_add`), through two
+new crate-private accessors (`label_ids_of`, `label_names_table`).
+
+### 🛑 The corpus cannot show it, BY DESIGN — the axis is name LENGTH
+
+`element p` **349.0 → 345.3 ns/row (1.01x)**, because `query_bench`'s labels are `Person`/`Company`,
+both inline. Item 391 recorded the identical situation for keys, and its own earlier probe had
+hidden the effect by using keys `"a".."d"`. `labelhoist_1068` sweeps the real axis — 100,000 nodes,
+min of 5, two alternated rounds:
+
+```text
+  label chars      PRE r1   PRE r2     POST r1  POST r2
+   6 (Person)       225.1    223.6       223.0    221.5   ← in-arm control: inline, unchanged
+  12 (boundary)     227.3    226.5       221.3    223.5   ← in-arm control
+  14                239.3    240.9       227.5    222.5     1.07x
+  17                240.7    250.7       221.9    223.2     1.09x
+  39                245.2    253.0       224.1    223.5     1.09x
+  CONTROL scalar      1.3      1.3         1.3      1.3   (no element rendered)
+```
+
+**The claim is that the LENGTH DEPENDENCE is gone**, not a flat 1.09x: PRE steps at the inline
+boundary and rises, POST is flat everywhere. The step landing at 12-to-14 is what identifies the copy
+as the cause. One label per node here; two or three long labels pay proportionally more.
+
+Teeth: `wrong-label-index` and `labels-unsorted` both CAUGHT by the existing 1,264-test suite, which
+is what licenses this as a hoist. `bun run fuzz` 13/0 plus three deep differential runs.
+
+### ➡️ NEXT: the EDGE mirror, which may be worth more
+
+`render_edges` does the same copy AND allocates a `Vec<&str>` per row (`edge_labels_of_refs`), and
+`element r` is the corpus's largest single row (1,000,000 rows, ~300 ms). Needs its own accessors and
+its own length sweep, so it is deliberately NOT bundled here.
+
+### The standing context this sits in (items 338/390/391/392)
+
+Element materialization is **129x a scalar read** (349 vs 2.7 ns/row) and remains the engine's
+largest per-row cost. Item 390's ablation: 47% property loop, 37% two `Value::Map` allocations, 12%
+labels, ~0 external-id lookup. This item takes a slice of the 12%; the 37% is still open and item
+392 refuted the obvious attack on it (pre-sizing the property vector was 1.25x SLOWER).
