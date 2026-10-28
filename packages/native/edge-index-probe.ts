@@ -76,6 +76,21 @@ time('GQL inline  -[e:PAID {amount: 500}]->', () =>
 time('GQL clause  WHERE e.amount = 500', () =>
   gqlCount('MATCH ()-[e:PAID]->() WHERE e.amount = 500 RETURN count(*) AS c'),
 );
+// THE SAME TWO SPELLINGS AS A PROJECTION rather than a count (item 1032). Item 447 built a walk
+// that CARRIES a rel-reading clause `WHERE` (`relBoundFilteredHopWalk`), and it lives in
+// `hop-projection.ts` — so it may serve a projection and not a bare `count(*)`. If the clause arm
+// is fast here and slow above, the gap belongs to the COUNT shape, not to clause position.
+time(
+  'GQL inline  -> projection',
+  () =>
+    (tsQuery(g, 'MATCH ()-[e:PAID {amount: 500}]->() RETURN e.amount AS a') as unknown[]).length,
+);
+time(
+  'GQL clause  -> projection',
+  () =>
+    (tsQuery(g, 'MATCH ()-[e:PAID]->() WHERE e.amount = 500 RETURN e.amount AS a') as unknown[])
+      .length,
+);
 // A second CONTROL: the same shape on an UNINDEXED edge key, so the figure above can be read as
 // "reaches the index" rather than "edge filters are just fast".
 time('CONTROL GQL on an unindexed edge key', () =>

@@ -29276,12 +29276,26 @@ multiTypeEdgeCount === 0`) — one named type cannot double-count. Native's `Adj
   the pattern enumerates every vertex and walks each adjacency, where the index would let it START
   from the matching edges. New plan path plus a qualifying-shape question (both ends unbound, or
   bound FROM the edge's endpoints).
-- **➡️ (2) `pushWhereIntoNode` HAS NO RELATIONSHIP TWIN, and that is contained (item 1031).** It
-  pushes a clause `WHERE` into the START NODE only (`path.start.variable`), so
-  `WHERE e.amount = 500` stays a clause filter — once per SURVIVING BINDING — while
-  `{amount: 500}` becomes an inline rel predicate evaluated inside the adjacency walk. **2.5-3.9x
-  between two spellings of one question**, by the same mechanism that function's own comment
-  records as 15.8x for the multi-pattern case. Fixable WITHOUT (1).
+- **⚠️ ~~(2) give `pushWhereIntoNode` a relationship twin~~ — BUILT AND REVERTED, it returns WRONG
+  ANSWERS (item 1032).** Sixteen GQL tests failed as wrong ROWS, not route assertions:
+  `WHERE r.w = 1` returned a row with `w: 2`, so a pushed `rel.where` is DROPPED on at least one
+  route rather than moved. **Native having byte-identical plans for the two spellings is not a
+  recipe for TS** — the TS pipeline does not read a pushed `rel.where` everywhere it reads a
+  parsed one.
+- **⚠️ ITEM 1031's GAP IS A PROPERTY OF THE RESULT SHAPE, NOT THE SPELLING (item 1032).** Three
+  runs each: `count(*)` inline 1.132/1.012/1.366 against clause 3.032/2.810/2.864 (**2.1-2.8x**),
+  but as a PROJECTION inline 8.382/9.015/9.848 against clause 9.611/8.184/10.184 — OVERLAPPING.
+  1031's "2.5-3.9x between two spellings" is corrected to **2.1-2.8x on the count shape**, and its
+  claim that the gap is about clause position is withdrawn.
+- **➡️ THE REAL TARGET: carry the rel predicate in the COUNT path (item 1032).** Item 447 built
+  `relBoundFilteredHopWalk` to CARRY a rel-reading clause `WHERE`, and it lives in
+  `hop-projection.ts` — it serves a projection, not a bare `count(*)`. The mechanism exists and
+  the count path does not use it. Narrower than an AST rewrite, and it starts from a route that is
+  already correct.
+- **METHOD — the tests that failed were the ones that knew (item 1032).** All 16 belong to items
+  446/447, i.e. the shape being rewritten had already been given a purpose-built route; reading
+  those tests first would have found it. An attempted fix that fails loudly on its first suite run
+  costs one build — far less than one that passes quietly.
 - **✅ SHIPPED (TS) — the PARAM prefix, ~100x (item 1029).** `STARTS WITH $p`:
   **4.733/4.788/4.967 → 0.051/0.049/0.049 ms**, literal control flat. It needed LESS than 1028
   assumed — no compiled "successor of" form: a `CompiledExpr` is a closure, so the bound computes
