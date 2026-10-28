@@ -76,7 +76,12 @@ const lines = Array.from(
 // was never the variable; the fixture was.
 for (let e = 0; e < N * 3; e++) {
   lines.push(
-    `{"type":"edge","id":"e${e}","labels":${e % 11 === 0 ? '["E","F"]' : '["E"]'},"from":"v${(e * 104729) % N}","to":"v${(e * 7919) % N}","properties":{"w":${e % 5}}}`,
+    // `ew` IS NEW AND `w` IS UNTOUCHED (item 1053). Every existing group keys on `w = e % 5` — a
+    // fifth of the edges, which `edgeSeek`'s margin correctly refuses — so those groups keep
+    // scanning exactly as they did and every figure recorded against them stays comparable. `ew`
+    // is 1 in 1,000, selective enough for the seed to be admitted, and it is the key the new
+    // groups below use.
+    `{"type":"edge","id":"e${e}","labels":${e % 11 === 0 ? '["E","F"]' : '["E"]'},"from":"v${(e * 104729) % N}","to":"v${(e * 7919) % N}","properties":{"w":${e % 5},"ew":${e % 1000}}}`,
   );
 }
 
@@ -1047,13 +1052,25 @@ for (const [name, spellings] of GROUPS.filter(([n]) => wanted(n))) {
 // stay comparable with every figure recorded against them. No second fixture, no extra memory.
 g.createIndex({ on: 'vertex', kind: 'hash', keys: ['k'] });
 g.createIndex({ on: 'vertex', kind: 'hash', keys: ['s'] });
+// THE EDGE INDEX, which this probe never had (item 1053). Item 1035 recorded that the probe
+// "CANNOT SEE the edge-seed route" and deferred it because adding a selective key to a SHARED
+// fixture risked every group's numbers. It does not, done this way: the index is on `ew` ALONE, so
+// the groups keyed on `w` cannot seed and are unchanged.
+//
+// WHY IT MATTERS NOW. Items 1035, 1038, 1044, 1046 and 1049 all made an edge index reachable from a
+// route that previously scanned — the GQL count, the GQL projection, the Gremlin edge hop, the
+// start-filtered Gremlin hop, and `count(DISTINCT)`. FIVE shipped routes with no spelling-probe
+// coverage at all, in the instrument whose entire purpose is to catch one spelling reaching an
+// index while its twin does not.
+g.createIndex({ on: 'edge', kind: 'hash', keys: ['ew'] });
 
 // PRINTED, because a seek group that silently measures a SCAN is worthless and looks fine. Item
 // 576 is the precedent: `createIndex` took the edge arm for any unrecognized target and built an
 // index on the wrong element, costing 500x with no error. One line here makes the premise of
 // every group below visible in the output.
 console.log(
-  `\nindexed vertex keys: ${g.vertexPropertyIndex.indexedKeys().join(', ') || 'NONE — the seek groups below measure SCANS'}\n`,
+  `\nindexed vertex keys: ${g.vertexPropertyIndex.indexedKeys().join(', ') || 'NONE — the seek groups below measure SCANS'}` +
+    `\nindexed EDGE keys:   ${g.edgePropertyIndex.indexedKeys().join(', ') || 'NONE — the edge-seed groups below measure SCANS'}\n`,
 );
 
 /**
@@ -1066,6 +1083,36 @@ console.log(
  * seeing it: at 20 matches a seek it was unresolvable and at 1000 it was 1.41x.
  */
 const SEEK_GROUPS: [string, readonly string[], Record<string, unknown>][] = [
+  [
+    // THE EDGE-SEED ROUTES (item 1053), the five this session made reachable and none of which had
+    // spelling coverage. `ew` is 1 in 1,000, so the seed is admitted; every member must land on the
+    // seeded route, and a member that falls back to a scan is 100x+ away — exactly the cliff this
+    // probe exists to catch, and all five routes were verified by hand one at a time instead.
+    //
+    //   item 1035  the GQL COUNT, via `tallyEdges`
+    //   item 1038  the GQL PROJECTION, via `relSeekedHopWalk`
+    //   item 1049  `count(DISTINCT …)`, via `foldFor` gaining a fold
+    //
+    // The clause and inline spellings of each are both here, because "one spelling seeds and its
+    // twin scans" is the precise defect, and items 1031/1038 are where that gap was 100-190x.
+    'EDGE SEED: the count, projection and DISTINCT routes — clause vs inline',
+    [
+      'MATCH ()-[r:E]->() WHERE r.ew = $ew RETURN count(*) AS c',
+      'MATCH ()-[r:E {ew: $ew}]->() RETURN count(*) AS c',
+      'MATCH (a)-[r:E]->(b) WHERE r.ew = $ew RETURN count(*) AS c',
+    ],
+    { ew: 7 },
+  ],
+  [
+    // The PROJECTION and the AGGREGATES over the same seeded key, which reach it through a
+    // different route (`relSeekedHopWalk`, and `detectHopAggregate`'s delegation to it).
+    'EDGE SEED: projection and aggregates over a seeded edge key',
+    [
+      'MATCH ()-[r:E]->() WHERE r.ew = $ew RETURN r.ew AS v',
+      'MATCH ()-[r:E {ew: $ew}]->() RETURN r.ew AS v',
+    ],
+    { ew: 7 },
+  ],
   [
     // THE EDGE TWIN OF THE CLAUSE-VS-INLINE QUESTION, which this probe had no group for at all.
     // Item 125 found a 4x gap between a clause `WHERE` and an inline `{k: v}` on a NODE
@@ -1307,6 +1354,15 @@ if (noise.length > 0) {
   );
 }
 
-const fastTail = fast.length > 0 ? ` (raise SPELL_N to measure them): ${fast.join('; ')}` : '';
+// `SPELL_FLOOR` as well as `SPELL_N`, because for a SEEDED group the old advice is wrong (item
+// 1053). Raising `SPELL_N` raises the match count proportionally and the seeded route stays fast —
+// the edge-seed groups read 0.08-0.11 ms at `SPELL_N=200000` and would at any size — so the knob
+// that makes them comparable is the FLOOR. Telling a reader to raise the fixture instead sends
+// them to the one thing that cannot work, which item 1051 established on the Rust twin by raising
+// its fixture 10x and watching all eight blind groups stay blind.
+const fastTail =
+  fast.length > 0
+    ? ` (raise SPELL_N, or SPELL_FLOOR for a group that is fast because it SEEKS): ${fast.join('; ')}`
+    : '';
 
 console.log(`${fast.length} group(s) under ${FLOOR_MS}ms, not compared${fastTail}`);

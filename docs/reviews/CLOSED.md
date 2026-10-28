@@ -29654,7 +29654,30 @@ in order>` prints every run. (1) The band's first draft sat AFTER `if (p < 0.68)
   check on a log line is only as good as that line's continued existence, and the edit under test
   was the one that deleted it. Measure the QUANTITY the change is supposed to affect — here the
   ratios — not a message about it.
-- **⚠️ OPEN — `spelling-probe.ts` CANNOT SEE the edge-seed route (item 1035).** It declares only
+- **✅ CLOSED — `spelling-probe.ts` NOW SEES the edge-seed routes (item 1053, closing item 1035's
+  deferral).** The shared-fixture worry was avoidable: a NEW `ew = e % 1000` alongside the existing
+  `w = e % 5`, indexed on **`ew` alone**, so every group keyed on `w` (a fifth of the edges, which
+  the margin refuses) is unchanged and its figures stay comparable. Two groups over `ew`, clause and
+  inline. At `SPELL_N=200000 SPELL_REPS=9 SPELL_FLOOR=0.005`, three runs: count 0.08/0.10/0.10 ms,
+  projection 0.09/0.11, against the UNINDEXED `w` group's 241-244 ms — all spellings within 1.25x
+  and the seeded route ~2,400x the scan. Five shipped routes (1035, 1038, 1044, 1046, 1049) had NO
+  coverage before this; each was hand-verified one at a time.
+- **⚠️ THEY WERE INVISIBLE AT FIRST — the Rust twin's lesson arriving on time (item 1053).** Both
+  groups reported "too fast, not compared": `FLOOR_MS` is 1 ms and the seeded route is 0.08-0.11.
+  **A group below the floor guards nothing**, which item 1051 found in the Rust probe one tick
+  earlier. `SPELL_FLOOR` already exists, and these readings are tens of microseconds — above this
+  timer's resolution, unlike the Rust probe's nanosecond case — so no batching is needed. **The
+  probe's own advice was wrong for this class and is corrected**: "raise `SPELL_N`" does not help a
+  seeded route (raising the fixture raises the matches proportionally; item 1051 proved it on the
+  Rust twin by raising 10x and watching all eight blind groups stay blind), so the message now names
+  `SPELL_FLOOR`.
+- **✅ TEETH, AND THE MUTANT REACHES ONE OF THE TWO GUARDS (item 1053).** Broke the seed for ONE
+  spelling — `edgeSeek`'s `relLifted?.props` loop, item 1038's addition for the inline form:
+  **projection group 0.09 ms vs 202.07 ms, FLAGGED at 2229.7x**, a regression that would otherwise
+  need hand-verification. The count group correctly did NOT flag, and that is not a gap: the count
+  path passes `scan.inRel` so its inline spelling is served by the `inRel?.pred.props` loop, a
+  DIFFERENT one. **So the count group's teeth are NOT established by this run** — claiming otherwise
+  would be item 1049's "a covering test on a different route is not coverage" error. It declares only
   VERTEX indexes and its one edge property is `w = e % 5`, a fifth of 600,000 edges, which the
   margin correctly declines. Giving it a selective edge key means adding a property to a SHARED
   fixture, which items 287/471 are both about — its own re-baseline pass, not a side effect.
