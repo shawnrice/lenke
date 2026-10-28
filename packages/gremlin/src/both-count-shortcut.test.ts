@@ -212,6 +212,95 @@ describe('the EDGE steps are the same bucket (item 1088)', () => {
   });
 });
 
+describe('the bothE SEED (item 1089)', () => {
+  /**
+   * The TinkerPop 3.7.3 fixture for the seeded question: P->Q, Q->P, P->P, a P self-loop, a Q
+   * self-loop at `w=2`, and a SECOND P->Q which is the one that makes the fixture decisive.
+   *
+   * WITHOUT that last edge the fixture CANNOT TELL TWO RULES APART: P's total out-degree equalled
+   * its total in-degree, so `P bothE` was 6 and `2 x P outE` was also 6, and the wrong rule would
+   * have passed. With it, the console says:
+   *
+   *   E T w1 5    outE T w1 5    bothE T w1 10        <- bare: twice the matching edges
+   *   P outE T w1 4   P inE T w1 3   P bothE T w1 7   <- labelled: 4 + 3, NOT 2 x 4
+   *
+   * So the rule is the SUM, uniform over both cases, and the `2x` reading of the old exclusion
+   * comment ("`bothE` enumerates each edge twice") holds only when nothing constrains the start.
+   */
+  const seedFixture = (): Graph => {
+    const g = new Graph();
+    const p1 = g.addVertex({ id: 'p1', labels: ['P'], properties: {} });
+    const p2 = g.addVertex({ id: 'p2', labels: ['P'], properties: {} });
+    const q1 = g.addVertex({ id: 'q1', labels: ['Q'], properties: {} });
+
+    g.addEdge({ id: 'a', labels: ['T'], from: p1, to: q1, properties: { w: 1 } });
+    g.addEdge({ id: 'b', labels: ['T'], from: q1, to: p2, properties: { w: 1 } });
+    g.addEdge({ id: 'c', labels: ['T'], from: p1, to: p2, properties: { w: 1 } });
+    g.addEdge({ id: 'd', labels: ['T'], from: p1, to: p1, properties: { w: 1 } });
+    g.addEdge({ id: 'e', labels: ['T'], from: q1, to: q1, properties: { w: 2 } });
+    g.addEdge({ id: 'f', labels: ['T'], from: p2, to: q1, properties: { w: 1 } });
+    g.createIndex({ on: 'edge', kind: 'hash', keys: ['w'] });
+
+    return g;
+  };
+
+  test('the console numbers, seeded and unseeded alike', () => {
+    const g = seedFixture();
+
+    expect(n(g, V(), outE('T'), has('w', eq(1)), count())).toBe(5);
+    expect(n(g, V(), inE('T'), has('w', eq(1)), count())).toBe(5);
+    expect(n(g, V(), bothE('T'), has('w', eq(1)), count())).toBe(10);
+  });
+
+  test('the LABELLED case is the SUM and not twice either half', () => {
+    const g = seedFixture();
+    const outward = n(g, V(), hasLabel('P'), outE('T'), has('w', eq(1)), count());
+    const inward = n(g, V(), hasLabel('P'), inE('T'), has('w', eq(1)), count());
+
+    expect(outward).toBe(4);
+    expect(inward).toBe(3);
+    // 7, and the console agrees. `2 * outward` is 8 and `2 * inward` is 6, so this single
+    // assertion rules out both of the wrong rules.
+    expect(n(g, V(), hasLabel('P'), bothE('T'), has('w', eq(1)), count())).toBe(outward + inward);
+    expect(n(g, V(), hasLabel('P'), bothE('T'), has('w', eq(1)), count())).toBe(7);
+  });
+
+  test('every seeded form agrees with its forced decline', () => {
+    const g = seedFixture();
+
+    for (const [fast, slow] of [
+      [
+        n(g, V(), bothE('T'), has('w', eq(1)), count()),
+        n(g, V(), bothE('T'), identity(), has('w', eq(1)), count()),
+      ],
+      [
+        n(g, V(), hasLabel('P'), bothE('T'), has('w', eq(1)), count()),
+        n(g, V(), hasLabel('P'), bothE('T'), identity(), has('w', eq(1)), count()),
+      ],
+      [
+        n(g, V(), hasLabel('Q'), bothE('T'), has('w', eq(1)), count()),
+        n(g, V(), hasLabel('Q'), bothE('T'), identity(), has('w', eq(1)), count()),
+      ],
+      [
+        n(g, V(), bothE('T'), has('w', eq(2)), count()),
+        n(g, V(), bothE('T'), identity(), has('w', eq(2)), count()),
+      ],
+    ] as ReadonlyArray<readonly [number, number]>) {
+      expect(fast).toBe(slow);
+    }
+  });
+
+  test('the Q self-loop at w=2 is counted TWICE, from each of its own ends', () => {
+    const g = seedFixture();
+
+    // One edge matches `w=2` and it is a loop, so bothE yields it twice while outE yields once.
+    expect(n(g, V(), outE('T'), has('w', eq(2)), count())).toBe(1);
+    expect(n(g, V(), bothE('T'), has('w', eq(2)), count())).toBe(2);
+    expect(n(g, V(), hasLabel('Q'), bothE('T'), has('w', eq(2)), count())).toBe(2);
+    expect(n(g, V(), hasLabel('P'), bothE('T'), has('w', eq(2)), count())).toBe(0);
+  });
+});
+
 describe('what the both rungs must still decline', () => {
   test('a MULTI-LABEL hop on a graph holding a multi-type edge', () => {
     // `adjacentCount` declines this because summing per-label buckets counts a `T,S` edge once per

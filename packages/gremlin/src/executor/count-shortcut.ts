@@ -424,7 +424,50 @@ const edgeHopSeededCount = (
    *  counted once by each, and `hasLabel(Person, Co)` is the union at 4. */
   startLabels?: readonly string[],
 ): number | undefined => {
-  // `bothE` enumerates each edge twice; see the header.
+  // `bothE` IS `outE` PLUS `inE`, AND THE "2x" RULE WOULD HAVE BEEN WRONG (item 1089).
+  //
+  // The header excluded `bothE` because it "enumerates each edge twice", which is true of the BARE
+  // form and not of the labelled one. TinkerPop 3.7.3, on P->Q, Q->P, P->P, a P self-loop, a Q
+  // self-loop at `w=2` and a second P->Q:
+  //
+  //   E T w1 5    outE T w1 5    bothE T w1 10       <- bare: twice the matching edges
+  //   P outE T w1 4   P inE T w1 3   P bothE T w1 7  <- labelled: 4 + 3, NOT 2 x 4
+  //
+  // THE FIRST FIXTURE I BUILT COULD NOT TELL THE TWO RULES APART: without that last P->Q edge,
+  // P's total out-degree equalled its total in-degree, so `P bothE` was 6 and `2 x P outE` was
+  // also 6. One edge breaks the symmetry and the "2x" rule is off by one — the coinciding-fixture
+  // trap, caught here BEFORE the code was written rather than after.
+  //
+  // So the rule is the SUM, which covers both cases uniformly (bare 5 + 5 = 10, labelled 4 + 3 =
+  // 7) and is the same composition item 1087 used for the vertex step. `startLabels` is passed
+  // through unchanged: `outE` partitions by the edge's SOURCE and `inE` by its TARGET, which is
+  // exactly what makes an edge with both ends in the label set count twice and an edge with one
+  // end count once.
+  if (hop.kind === 'bothE') {
+    const outward = edgeHopSeededCount(
+      { kind: 'outE', labels: hop.labels },
+      rest,
+      graph,
+      startLabels,
+    );
+
+    if (outward === undefined) {
+      return undefined;
+    }
+
+    const inward = edgeHopSeededCount(
+      { kind: 'inE', labels: hop.labels },
+      rest,
+      graph,
+      startLabels,
+    );
+
+    // Unreachable today for item 1087's reason — this function's declines read `rest`, the labels,
+    // the graph and the index, never the direction — and kept for item 583's: a direction-dependent
+    // decline added later would otherwise answer HALF the count instead of declining.
+    return inward === undefined ? undefined : outward + inward;
+  }
+
   if (hop.kind !== 'outE' && hop.kind !== 'inE') {
     return undefined;
   }

@@ -31682,3 +31682,44 @@ documented dead branch.
 431.56). The bare form is `2 x` the seeded count, but `hasLabel(P).bothE(T)` counts an edge twice
 only when BOTH endpoints pass — not `2 x` anything — so the labelled case needs working out rather
 than doubling. Named, not built.
+
+## 1089 — ✅ SHIPPED (Gremlin): the `bothE` SEED, **24.5x** bare and **5.1x** labelled. The obvious `2x` rule was WRONG and a degenerate fixture nearly proved it right
+
+Item 1088 left this at 47x: `edgeHopSeededCount` excluded `bothE` ("enumerates each edge twice").
+
+### ⚠️ THE FIRST TINKERPOP FIXTURE COULD NOT TELL THE RIGHT RULE FROM THE WRONG ONE
+
+The comment reads as `bothE = 2 x outE`. On the first fixture (P->Q, Q->P, P->P, P self-loop, Q
+self-loop) **P's total out-degree equalled its total in-degree**, so `P bothE` = 6 and `2 x P outE`
+= 6 — both rules agree. One more edge (`p2 -> q1`):
+
+```text
+  E T w1 5   outE T w1 5   bothE T w1 10        ← bare: twice the matching edges
+  P outE T w1 4   P inE T w1 3   P bothE T w1 7 ← labelled: 4 + 3; 2 x 4 would be 8
+```
+
+**The `2x` rule is off by one on the labelled case.** The uniform rule is the SUM (bare 5+5=10 too).
+Ninth coinciding-fixture trap this run and the FIRST caught before writing the code — the tell was
+noticing two rules predicted the same number, not an assertion failing.
+
+```text
+  bothE seeded     17.39 ms  answer=171,430   DECLINED 425.23   24.5x
+  P bothE seeded   58.79     answer=114,286   DECLINED 299.53    5.1x
+  outE / inE       8.67 / 9.44                                  (17.39 vs 18.11)
+```
+
+Implementation is item 1087's: recurse `outE` + `inE`, `startLabels` passed through — `outE`
+partitions by SOURCE and `inE` by TARGET, which is what makes a both-ends-pass edge count twice.
+
+**Teeth 5/6; `seed-twice-outward` — the rule nearly shipped — fails 2 tests.** Survivor is the
+answer-equivalent decline-restoration.
+
+### ⚠️ THE MUTATION HARNESS ABORTED FOR A THIRD DISTINCT REASON
+
+1078: `count(new) == 1` tripped on a replacement occurring elsewhere. Here: `count(old) == 0`
+tripped on an **insertion** mutant, which keeps `old` by design — exiting with the mutant in the
+tree. Both were trying to say "the arm is the code it claims" and both said something stricter that
+a CORRECT mutant violates. Now: replacement present AND file changed. Anchors also had to be made
+unique — `return inward === undefined ? undefined : outward + inward;` appears twice (one per
+composition), so two mutants applied to neither. **Restore-from-pristine is why both aborts were an
+inconvenience and not a contaminated commit.**
