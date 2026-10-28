@@ -31291,19 +31291,51 @@ treats "unsound" as a wrong ANSWER, not a slower route.
 Also: restoring item 1076's own early return now FAILS 3 tests. With the decline removed it would
 have been a wrong answer, not merely a conservative one.
 
-## 1078b — 🔶 OPEN, found while clearing item 1078's spelling flags: a REDUNDANT start label costs 15 ms where an ABSENT one costs 0.00
+## 1078b — ❌ RETRACTED THE SAME SESSION: the "redundant start label" is NOT redundant, and the probe's own header says so
 
 ```text
   MATCH (a:P)-[:E]->(b) RETURN count(*)    15.0 ms      ← same answer
   MATCH (a)-[:E]->(b)   RETURN count(*)     0.00 ms     ← the O(1) bucket size
 ```
 
-Flagged by `bun run spelling` at 1541x and **isolated on BOTH arms across six POST and three PRE
-rounds at identical readings**, so it is NOT item 1078's doing — but it is a real defect in this
-file's usual shape, not a harness artifact. `vacuousLabel` exists to fold a label that constrains
-nothing and is not reaching this spelling. NOT fixed at 1078: a different route, and bundling it
-would have made both unmeasurable.
+Flagged by `bun run spelling` at 1541x and isolated on BOTH arms across six POST and three PRE
+rounds at identical readings, so it is not item 1078's doing — and **it is not a defect at all.**
+
+**I filed it without reading the group's own header, which refutes it in full.** The group is named
+"redundant vs absent" from when every vertex in the shared fixture was a `P`; item 285 added four
+`S` nodes for an unrelated group, which makes `:P` **genuinely SELECTIVE**. So the two members are
+NOT equivalent work: the untyped spelling reads one bucket size (O(1)) while the labelled one must
+visit every `P` to sum its degree (O(|label|)), and those cannot converge. `vacuousLabel` is not
+failing to fold a vacuous label — the label is not vacuous.
+
+The header also records that this pair already had its fix: **item 286** gave the unfiltered branch
+of `buildOneHopCount` the missing degree-sum rung, 54.06 → 21.38 ms, and it reads 15.0 ms now. The
+group is kept deliberately **as a REGRESSION GUARD on that 54 ms, explicitly not as a target** — its
+own comment says "IT STILL FLAGS, AT ~2100x, AND THAT IS CORRECT RATHER THAN OUTSTANDING".
+
+**The method failure is the finding.** `CLOSED.md` and the probe's own commentary are the two stores
+that answer "has this been closed", and I searched neither before writing an OPEN item — the exact
+shape of the three closed targets re-derived at items 172, 200 and the ISO artifact check. Isolating
+the flag on both arms was the right move and proved only that it was not mine; it says nothing about
+whether it is a defect, and I reported it as if it did.
 
 (The other two flags in the same run are already-explained harness artifacts — `a product's
 one-sided predicate` was refuted at item 1073, and `a trailing FILTER vs a clause WHERE` isolates
 to 3.80 against 3.77, 0 groups over 2x, on both arms.)
+
+## 1079 — ❌ RETRACTED item 1078b: a flag that is reproducible, isolated and NOT YOURS is still not a finding
+
+1078b filed `MATCH (a:P)-[:E]->(b)` at 15.0 ms against `MATCH (a)-[:E]->(b)` at 0.00 as an open
+defect, reasoning that `vacuousLabel` was failing to fold a label that constrains nothing.
+**`spelling-probe.ts`'s own header for that group refutes it:** item 285 added four `S` nodes to the
+shared fixture, so `:P` is **genuinely selective**; the untyped spelling reads one bucket size (O(1))
+while the labelled one visits every `P` to sum its degree (O(|label|)); those cannot converge. The
+group is kept **as a regression guard on item 286's 54.06 → 21.38 ms fix, explicitly not as a
+target**, and reads 15.0 ms now.
+
+**The method failure is the finding.** Isolating the flag on both arms answered _is this mine?_
+correctly — identical PRE and POST over nine rounds, so not mine. I then reported it as a defect,
+which that measurement says nothing about. **Equivalence of the two members is a SEPARATE claim**,
+and for this probe it is written down in a 40-line header directly above the two lines quoted.
+Neither `CLOSED.md` nor that header was searched. Same shape as items 172, 200 and the ISO artifact
+check; cost one tick because the retraction is same-session.
