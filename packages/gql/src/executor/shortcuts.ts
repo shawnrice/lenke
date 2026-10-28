@@ -3476,6 +3476,12 @@ type TwoHopPlan = {
   cLabel: LabelExpr | undefined;
   firstOut: boolean;
   fromCOut: boolean;
+  /** The first leg is `-[:T]-`, so BOTH boxes are walked and a self-loop is yielded ONCE
+   *  (item 1093). ISO-GQL emits an undirected self-loop once where Gremlin's `both()` yields it
+   *  twice, which is why this cannot be the `out + in` desugaring item 1092 used. */
+  firstBoth: boolean;
+  /** The second leg is `-[:T]-`; `undirectedSide` already carries the same loop rule. */
+  secondBoth: boolean;
   t1: string[] | undefined;
   t2: string[] | undefined;
   inStart: InlinePred | undefined;
@@ -3501,6 +3507,7 @@ type TwoHopPlan = {
  */
 const walkTwoHopFiltered = (graph: Graph, params: Params, plan: TwoHopPlan): number => {
   const { aLabel, midLabel, cLabel, firstOut, fromCOut, t1, t2, inStart, pred, cstart } = plan;
+  const { firstBoth, secondBoth } = plan;
   // Once per execution, not per vertex and not per edge — see `effectiveLabel`.
   const midEff = effectiveLabel(graph, midLabel);
   const cEff = effectiveLabel(graph, cLabel);
@@ -3508,6 +3515,10 @@ const walkTwoHopFiltered = (graph: Graph, params: Params, plan: TwoHopPlan): num
   const env: EvalEnv = { binding, params, graph };
   const seeded = hopSeek(graph, cstart, aLabel, env);
   const startVar = pred?.startVar;
+  // Once per execution: does this graph hold a loop of a wanted type at all? The second leg's
+  // correction is `undirectedSide`'s own; the first leg's is the `e.fromId === e.toId` skip below.
+  const loop1 = firstBoth && loopsOfTypes(graph, t1);
+  const loop2 = secondBoth && loopsOfTypes(graph, t2);
   let count = 0;
 
   for (const a of seeded ?? candidateVertexSource(graph, aLabel)) {
@@ -3532,6 +3543,12 @@ const walkTwoHopFiltered = (graph: Graph, params: Params, plan: TwoHopPlan): num
     // Only survivors expand. `outNeighbors` is not used here because the MIDDLE label has to be
     // checked before the second leg is counted, so a rejected middle costs one label test rather
     // than an array entry.
+    if (firstBoth) {
+      count += firstLegUndirected(graph, a, plan, { midEff, cEff, loop1, loop2 });
+
+      continue;
+    }
+
     const byType = (firstOut ? graph.edgesFromByLabel : graph.edgesToByLabel).get(a.id);
 
     for (const e of edgesOfTypes(byType, t1)) {
@@ -3541,7 +3558,9 @@ const walkTwoHopFiltered = (graph: Graph, params: Params, plan: TwoHopPlan): num
       // into `verticesById` (~190ns, item 194), paid once per FIRST-LEG EDGE. Item 140 made the
       // ingest path use these ids for exactly this reason.
       if (midEff === undefined) {
-        count += side(graph, firstOut ? e.toId : e.fromId, fromCOut, t2, cEff);
+        count += secondBoth
+          ? undirectedSide(graph, firstOut ? e.toId : e.fromId, t2, cEff, loop2)
+          : side(graph, firstOut ? e.toId : e.fromId, fromCOut, t2, cEff);
 
         continue;
       }
@@ -3552,11 +3571,72 @@ const walkTwoHopFiltered = (graph: Graph, params: Params, plan: TwoHopPlan): num
         continue;
       }
 
-      count += side(graph, b.id, fromCOut, t2, cEff);
+      count += secondBoth
+        ? undirectedSide(graph, b.id, t2, cEff, loop2)
+        : side(graph, b.id, fromCOut, t2, cEff);
     }
   }
 
   return count;
+};
+
+/**
+ * The FIRST leg undirected: the same walk, over both of `a`'s boxes (item 1093).
+ *
+ * A SEPARATE LOOP, not a branch inside the one above. Item 1091's first cut folded a direction
+ * choice into a shared hop body and cost a control it could not reach **1.54x**; item 159 measured
+ * 1.6x for the same shape and states the rule — "TWO loops, branched ONCE on which path this is,
+ * rather than one loop with the branch inside". So the directed walk above is byte-identical to
+ * what it was, and this is its undirected twin.
+ *
+ * THE SELF-LOOP IS WHY THIS IS NOT `out + in`. ISO-GQL's `-[:T]-` emits a loop ONCE; a loop sits
+ * in `adjFrom` AND `adjTo`, so the in-box pass must skip it. (Gremlin's `both()` yields it twice,
+ * which is why item 1092 could simply sum the two arms and this cannot — the same split items
+ * 1086/1087 recorded between the two surface languages.) `loop1` gates the test, so a loop-free
+ * graph pays one boolean.
+ */
+const firstLegUndirected = (
+  graph: Graph,
+  a: Vertex,
+  plan: TwoHopPlan,
+  mid: {
+    midEff: LabelExpr | undefined;
+    cEff: LabelExpr | undefined;
+    loop1: boolean;
+    loop2: boolean;
+  },
+): number => {
+  const { t1, t2, fromCOut, secondBoth } = plan;
+  const { midEff, cEff, loop1, loop2 } = mid;
+  const second = (id: string): number =>
+    secondBoth ? undirectedSide(graph, id, t2, cEff, loop2) : side(graph, id, fromCOut, t2, cEff);
+  let n = 0;
+
+  for (const e of edgesOfTypes(graph.edgesFromByLabel.get(a.id), t1)) {
+    const b = midEff === undefined ? undefined : e.to;
+
+    if (b === undefined || matchesLabel(b, midEff)) {
+      n += second(e.toId);
+    }
+  }
+
+  for (const e of edgesOfTypes(graph.edgesToByLabel.get(a.id), t1)) {
+    // The loop was already met in the out-box pass, and `-[:T]-` emits it once. GATED on `loop1`
+    // — a graph with no loop of a wanted type pays one boolean instead of a comparison per
+    // in-box edge. `loop1` was computed and NOT USED in the first cut, which a mutant setting it
+    // to `true` revealed by surviving: an unused gate cannot be got wrong.
+    if (loop1 && e.fromId === e.toId) {
+      continue;
+    }
+
+    const b = midEff === undefined ? undefined : e.from;
+
+    if (b === undefined || matchesLabel(b, midEff)) {
+      n += second(e.fromId);
+    }
+  }
+
+  return n;
 };
 
 /**
@@ -3600,8 +3680,12 @@ const buildFilteredTwoHopCount = <T>(
     !plainRel(s2.rel) ||
     s1.rel.variable !== undefined ||
     s2.rel.variable !== undefined ||
-    s1.rel.direction === 'both' ||
-    s2.rel.direction === 'both' ||
+    // ⚠️ `both` USED TO DECLINE HERE (item 1093), on either leg, and the asymmetry it left is what
+    // made this worth doing: `buildTwoHopCount` has carried `aBoth`/`cBoth` for the BARE and
+    // middle-constrained chain all along, and the THREE-hop count carries `aBoth`/`midBoth`/
+    // `dBoth` — so only a START-FILTERED undirected two-hop fell through. Measured at 100,000
+    // vertices x degree 3: `(a:P)-[:T]-(b)-[:T]-(c) WHERE a.age > 60` **755.89 ms** against the
+    // directed twin's 35.78 and the bare undirected's 35.00.
     !plainNode(s1.node) ||
     !plainNode(s2.node)
   ) {
@@ -3629,6 +3713,8 @@ const buildFilteredTwoHopCount = <T>(
     cLabel: s2.node.label,
     firstOut: s1.rel.direction === 'out',
     fromCOut: s2.rel.direction === 'out',
+    firstBoth: s1.rel.direction === 'both',
+    secondBoth: s2.rel.direction === 'both',
     t1,
     t2,
     inStart: w.inStart,

@@ -31877,3 +31877,42 @@ reaches it.** One `console.error` BEFORE the work, not after.
 Reverted entirely (gql 3069/0): a correct-but-unreachable arm is maintenance cost with no
 measurement behind it. 755.89 sitting between the rung and `WHERE true` says the query is on a
 PARTIAL route; `detectCountShortcut` is the entry and identifying the real rung is the next step.
+
+## 1094 — ✅ SHIPPED, REVERSING 1093: the start-filtered two-hop UNDIRECTED count, **5.9-8.5x**. 1093 reverted it on two artefacts of a stale dist
+
+`packages/native` probes import `query` from `@lenke/gql` → **`dist`**. I never rebuilt, so item
+1093's "unchanged 740.54 ms" was measured against a build without the change, **and** its
+`console.error` silence was printed by source the probe never loaded. Both pieces of evidence were
+the same mistake. `fuzzers-read-built-dists` records it; my scripted A/Bs all build per arm, and the
+discipline lapsed in the one ad-hoc probe.
+
+Rebuilt, the trace is unambiguous: DIRECTED reaches `buildFilteredTwoHopCount → walkTwoHopFiltered`;
+UNDIRECTED reaches the same function and declines. The premise was right.
+
+```text
+  SUBJECTS                                        PRE        POST
+    (a:P)-[:T]-(b)-[:T]-(c)  WHERE a.age > 60  755.89 ->   89.00   8.5x
+    (a:P)-[:T]-(b)-[:T]->(c) WHERE …           412.36 ->   70.48   5.9x
+    (a:P)-[:T]->(b)-[:T]-(c) WHERE …           371.38 ->   46.63   8.0x
+  CONTROLS   out.out filtered 35.78 -> 33.43 | both bare 34.90 -> 33.36 | out bare 29.03 -> 31.05
+```
+
+### ⚠️ THE TESTS WERE COMPARING ONE ROUTE TO ITSELF
+
+`first-leg-in-box-wrong-end` survived even an asymmetric fixture. Tracing the in-box loop:
+**`AND true` does NOT decline this rung** (`a.k = 3 AND true` is still start-only), and neither does
+**`SKIP 0`**. Item 570's and item 477's decline-forcers are both absorbed here, so every assertion
+compared the fast route against the fast route — **item 930's silent-oracle failure, verbatim**.
+
+**The fix is an oracle unabsorbable BY CONSTRUCTION: a ROW-RETURNING query, counted in the test.** No
+count shortcut can answer a row projection. With it: **8/8 mutants caught**, and
+`first-leg-out-box-only` went from 3 failures to 16.
+
+### ➡️ MUTATION ALSO FOUND DEAD CODE IN MY OWN CHANGE
+
+`loop1` was computed and never used — the loop skip was unconditional — so a mutant setting it
+`true` survived: **an unused gate cannot be got wrong.** Now load-bearing; `loop1 = false` fails 7.
+
+**The self-loop rule is why this is not item 1092's change**: ISO-GQL emits an undirected loop ONCE
+(in-box pass skips it; the second leg uses `undirectedSide`), Gremlin's `both()` yields it TWICE. One
+hand-derived literal was wrong again (4 vs 3) — fourth this run — and the route comparison held.
