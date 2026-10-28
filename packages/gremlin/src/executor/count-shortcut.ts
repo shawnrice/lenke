@@ -531,8 +531,52 @@ const edgeHopSeededCount = (
 };
 
 const filteredHopCount = (hop: Step, rest: readonly Step[], graph: Graph): number | undefined => {
+  // `both` IS `out` PLUS `in`, EXACTLY, AND THE SELF-LOOP NEEDS NO CORRECTION (item 1087).
+  //
+  // This rung used to decline with "`both` double-counts a self-loop", and the double-count is
+  // real — but in Gremlin it is the RIGHT ANSWER, so there is nothing to correct. TinkerPop 3.7.3
+  // was asked rather than assumed, on three `T` edges including a self-loop on a `P` vertex:
+  //
+  //   out 3   in 3   both 6   bothE 6   both.has(k,gt(0)) 6   both.has(k,eq(1)) 3
+  //   hasLabel(P).both 5      hasLabel(P).both.has(k,eq(1)) 3
+  //
+  // lenke answers all eight identically, and so does the forced-`identity()` decline. `both` walks
+  // a vertex's out-edges and then its in-edges, so a loop is incident twice and YIELDED twice —
+  // which the sum of the two arms reproduces for free.
+  //
+  // THE ISO-GQL TWIN IS DIFFERENT, and that is the whole reason this is the simpler side: `-[:T]-`
+  // emits a loop ONCE, so item 1086's GQL arm has to subtract the passing loops. Two surface
+  // languages, two semantics, one shared walk underneath — the difference belongs here, in the
+  // per-language arithmetic, and not in the walk.
+  if (hop.kind === 'both') {
+    const outward = filteredHopCount({ kind: 'out', labels: hop.labels }, rest, graph);
+
+    if (outward === undefined) {
+      return undefined;
+    }
+
+    const inward = filteredHopCount({ kind: 'in', labels: hop.labels }, rest, graph);
+
+    // ⚠️ `inward === undefined` IS UNREACHABLE TODAY, and a mutant replacing it with
+    // `outward + (inward ?? 0)` SURVIVES (item 1087). Recorded rather than left unexplained, which
+    // is this file's practice two rungs below as well.
+    //
+    // All three of this function's declines are DIRECTION-INDEPENDENT — the `hop.kind` test above,
+    // `hasChain(rest)`, and `bucketsFor(hop.labels, graph)` — so they depend only on `rest`, the
+    // labels and the graph, every one of which is identical in the two calls. If the outward call
+    // returned a number, the inward one cannot refuse.
+    //
+    // IT STAYS, for item 583's distinction: a guard against a FUTURE relaxation is not a guard
+    // against nothing. The day this function gains a decline that reads `forward` — a seed that
+    // exists on one side only is the obvious candidate — dropping this check would answer HALF the
+    // count rather than declining, and a half-count is a wrong answer that no existing test would
+    // catch. Asymmetric by design: the outward check must return early (there is nothing to add
+    // to), while this one is the symmetry that keeps the pair honest.
+    return inward === undefined ? undefined : outward + inward;
+  }
+
   if (hop.kind !== 'out' && hop.kind !== 'in') {
-    return undefined; // `both` double-counts a self-loop; see `vertexStepCount`
+    return undefined;
   }
 
   // ONE OR MORE `has` steps, each a predicate on one key, and nothing else. `hasLabel` and the
@@ -1559,9 +1603,21 @@ const vertexStepCount = (step: Step, graph: Graph): number | undefined => {
     return propertyCount(step, graph);
   }
 
-  // `both` is NOT here on purpose: it walks a vertex's out-edges and then its
-  // in-edges, so a self-loop is incident twice and the total is not a bucket size.
-  // The general path already gets that right; a shortcut would have to re-derive it.
+  // `both` IS TWICE THE BUCKET (item 1087). This used to decline, saying "a self-loop is incident
+  // twice and the total is not a bucket size". The first half is true and the second does not
+  // follow: `out` visits every edge once from its source and `in` once from its target, the loop
+  // included, so `both` is their sum — `2 * adjacentCount` — and TinkerPop 3.7.3 confirms it
+  // (`both` 6 against `out` 3 and `in` 3 on three edges, one of them a loop).
+  //
+  // `adjacentCount`'s own soundness condition carries over unchanged, since this only doubles what
+  // it returns: it declines a multi-label hop on a graph with a multi-type edge, because summing
+  // per-label buckets would count such an edge once per label.
+  if (step.kind === 'both') {
+    const one = adjacentCount(step.labels, graph);
+
+    return one === undefined ? undefined : 2 * one;
+  }
+
   return undefined;
 };
 

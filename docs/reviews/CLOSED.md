@@ -31599,3 +31599,47 @@ asserting the decision and each of its five conditions ALONE. The wrong directio
 
 **The probe has no declining rows left** — its only `reached: false` rows are the two that were never
 declines (the O(1) unconstrained arithmetic, the directed twin). Flags flipped for the third time.
+
+## 1087 — ✅ SHIPPED (Gremlin): `both()` counts, **16.9-18.2x** and one **O(1)**. TinkerPop settled the self-loop, and the answer is the OPPOSITE of the GQL twin
+
+Two rungs declined `both`, both saying the same thing — `filteredHopCount`: "`both` double-counts a
+self-loop"; `vertexStepCount`: "a self-loop is incident twice and the total is not a bucket size".
+**The double-count is real and in Gremlin it is the CORRECT ANSWER**, so there was nothing to correct.
+
+**TinkerPop 3.7.3 asked, not assumed** (three `T` edges, one a self-loop on a `P` vertex):
+
+```text
+  out 3   in 3   both 6   bothE 6   both.has(k,gt(0)) 6   both.has(k,eq(1)) 3
+  hasLabel(P).both 5      hasLabel(P).both.has(k,eq(1)) 3
+```
+
+lenke matches all eight, and so does the forced-`identity()` decline. So `both` = `out + in` exactly.
+
+**⚠️ THE ISO-GQL TWIN IS THE OPPOSITE**: `-[:T]-` emits a loop ONCE, so item 1086's GQL arm SUBTRACTS
+passing loops while this one must not. Two surface languages, two semantics, one shared walk — the
+arithmetic belongs in the per-language rung. `bare-subtracts-a-loop` (the GQL formula `2*one - 1`
+here) fails 7 tests, so each engine's rule is now pinned against the other's.
+
+```text
+  SUBJECTS                                              PRE      POST
+    both           both(T).has(k,gt 60).count()      564.22 ->  33.33   16.93x
+    both-labelled  hasLabel(P).both(T).has(...)      596.94 ->  32.77   18.22x
+    both-bare      both(T).count()                   330.49 ->   0.01   O(1)
+  CONTROLS
+    out            out(T).has(k,gt 60)                24.12 ->  25.14    0.96x
+    in             in(T).has(k,gt 60)                  9.06 ->   8.45    1.07x
+    both-declined  both(T).identity().has(...)       593.83 -> 562.46    1.06x
+```
+
+**The subject lands on the sum of its own control arms** — 33.33 against 25.14 + 8.45 = 33.59 — so it
+costs what its parts cost. `both-bare` answers **1,200,000 = 2 x 600,000 edges**, the `2*|E_T|`
+arithmetic read off the result. 18 runs, 4 answer groups of 3/3/3/9, all divisible by 3 ⇒ no shape
+changed its answer between arms.
+
+**Teeth 6/9, all three survivors explained.** Two are answer-equivalent decline-restorations (the
+class of 1078's `never-sound`, 1086's `startonly-never`); unlike those there is no decision to
+extract — the condition is literally `step.kind === 'both'` — so the probe's `both-declined` control
+is the guard. The third, `filtered-ignores-inward-decline`, is a **dead branch kept deliberately**:
+all three of `filteredHopCount`'s declines are DIRECTION-INDEPENDENT, so if outward succeeds inward
+cannot refuse — but the day one reads `forward`, dropping the check would answer HALF the count
+rather than declining. Item 583's distinction, recorded in the code.
