@@ -911,7 +911,109 @@ export const hopSeek = (
   return best !== undefined && seekIsWorthIt(graph, pa, best.count) ? best.build() : undefined;
 };
 
+/**
+ * THE BARE DEGREE SUM: `MATCH (a:L)-[:T]->(b) RETURN count(*)` with nothing else to apply.
+ *
+ * WHY A SEPARATE LOOP (item 1067). `startOnlyHopCount` already answers this shape by summing
+ * bucket SIZES instead of visiting edges — item 286 built that, and without it the query fell to a
+ * 600,000-edge tally. But the walk carries five things this shape does not need, and a LADDER over
+ * its loop body says they are most of what it costs. 200,000 vertices each with three `E` edges,
+ * `:P` on all of them but four edge-less `:S` vertices (so the label is NOT vacuous and the O(1)
+ * bucket count is unavailable):
+ *
+ * ```text
+ *   iterate the P bucket                                   0.32 ms
+ *     + labels.has('P')                                    3.47
+ *     + adjFrom.get('E').size                             20.32   ← the irreducible part
+ *     + a types loop, as `degreeOfTypes`                  24.66
+ *     + try/catch and a predicate call                    26.83
+ *   THE ENGINE, same walk, same fixture                   59.60   ← 2.2x the same primitives
+ * ```
+ *
+ * So the primitives cost 27 ms and the engine 60. The difference is per-vertex call overhead:
+ * `matchesLabel`, `boxOf`, `degreeOfTypes`, `asTruth(pred.fn(env))` and a `try`/`catch`, none of
+ * which this shape has anything to do.
+ *
+ * WHAT IT CAN DROP, and why each is sound:
+ *
+ *   - **The label re-check.** `candidateVertexSource` returns the label's own bucket for a plain
+ *     `:L`, so every vertex in it carries the label by construction. The general walk re-checks
+ *     because it may be iterating a SEEDED superset instead — this path requires that no seek
+ *     applied, the same `seeded !== undefined` guard the hop walks use.
+ *   - **The predicate call.** Reached only with `alwaysTrue`, which is the identity on this walk.
+ *   - **The `try`/`catch`.** It exists for the raise-parity rule (items 139-145): a predicate that
+ *     faults on a vertex the general path never reached must not raise. With no predicate there is
+ *     nothing that can fault.
+ *   - **`degreeOfTypes`'s loop**, for a single relationship type.
+ *
+ * `null` hands the query back to the general walk, which is the only other caller's behaviour too.
+ */
+const bareDegreeSum = (
+  scan: HopScan,
+  endVar: string | undefined,
+  /** Which end drives. BOTH sides get it, so `(a:L)-[:T]->(b)` and `(a)-[:T]->(b:L)` cannot cost
+   *  different amounts — the mirror-spelling rule this file re-learns in items 125/137/286. */
+  side: 'start' | 'far',
+): number | null => {
+  const { graph, params, pred, pa, pb, out, types, inNear, inFar, inRel, cstart, cfar } = scan;
+  const label = side === 'start' ? pa : pb;
+  const inline = side === 'start' ? inNear : inFar;
+  const lifted = side === 'start' ? pred.startLifted : pred.farLifted;
+  const cnode = side === 'start' ? cstart : cfar;
+
+  if (
+    endVar !== undefined ||
+    inline !== undefined ||
+    inRel !== undefined ||
+    pred.fn !== alwaysTrue ||
+    lifted !== undefined ||
+    label?.kind !== 'label' ||
+    types?.length !== 1
+  ) {
+    return null;
+  }
+
+  // A SEEK would hand back a superset, which this loop cannot re-validate. Asked with the same
+  // arguments the general walk uses, so the two agree on when a seek applies.
+  if (
+    hopSeek(graph, cnode, label, { binding: new Map<string, unknown>(), params, graph }) !==
+    undefined
+  ) {
+    return null;
+  }
+
+  // The FAR endpoint of an `out` hop is the edge's TARGET, so its edges live in the reverse
+  // index — reading the wrong side is a wrong answer, not a slow one, which is why this mirrors
+  // `farOnlyHopCount`'s own `boxOf` rather than re-deriving it.
+  const forward = side === 'start' ? out : !out;
+  const [type] = types;
+  let n = 0;
+
+  for (const v of candidateVertexSource(graph, label)) {
+    n += (forward ? v.adjFrom : v.adjTo)?.get(type)?.size ?? 0;
+  }
+
+  return n;
+};
+
 const startOnlyHopCount = (scan: HopScan, startVar: string | undefined): number => {
+  // THE BARE DEGREE SUM FIRST (item 1067), and HERE rather than at the two dispatch sites, for
+  // the reason this function's own header gives: the closure `buildOneHopCount` returns is the
+  // hot one and item 119 measured 1.17x on an unrelated shape from growing it. So the dispatch
+  // stays module-scope by construction rather than by luck.
+  //
+  // NO PERF CLAIM ATTACHED, and that is deliberate. The first cut asked this at the two dispatch
+  // sites and the BOTH-ENDS control — a shape neither path can reach — read 98.85 ms before
+  // against 106.5 after, which looked exactly like that closure effect. Moving it here did NOT
+  // change the control (106.6), and a SECOND PRE round read 105.56: the 98.85 was the outlier and
+  // there was never a regression. The move is kept because it is the right shape, not because it
+  // fixed anything.
+  const bare = bareDegreeSum(scan, startVar, 'start');
+
+  if (bare !== null) {
+    return bare;
+  }
+
   const { graph, params, pred, pa, out, types, inNear, cstart } = scan;
   const binding = new Map<string, unknown>();
   const env: EvalEnv = { binding, params, graph };
@@ -1121,6 +1223,13 @@ const farWalkFits = (scan: HopScan): boolean => {
  * edge sits in two of the summed type buckets.
  */
 const farOnlyHopCount = (scan: HopScan, farVar: string | undefined): number => {
+  // The mirror of the twin's first line — see there for why it is here and not at the call site.
+  const bare = bareDegreeSum(scan, farVar, 'far');
+
+  if (bare !== null) {
+    return bare;
+  }
+
   const { graph, params, pred, pb, out, types, inFar, cfar } = scan;
   const binding = new Map<string, unknown>();
   const env: EvalEnv = { binding, params, graph };
@@ -2641,7 +2750,11 @@ const buildOneHopCount = <T>(
       // `WHERE b.k = 2` took the walk — one question costing two different amounts, which
       // is the gap items 124-125 were about.
       if (startWalkFits(scan)) {
-        return rowOf(startOnlyHopCount(scan, undefined));
+        // The bare degree sum cannot apply an INLINE constraint, which is why this branch is
+        // reached at all, so it declines here — but it is asked rather than skipped, because
+        // which of the two inline constraints is present is a per-query fact and `bareDegreeSum`
+        // is the one place that rule lives (item 1067).
+        return rowOf(bareDegreeSum(scan, undefined, 'start') ?? startOnlyHopCount(scan, undefined));
       }
 
       if (farWalkFits(scan)) {

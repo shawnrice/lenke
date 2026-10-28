@@ -30737,3 +30737,60 @@ a size comparison and the boundary is one vertex wide.
 Two spellings of one question where every vertex carries `P`: the unlabelled form takes the O(1)
 edge-bucket count, the labelled form walks 200,000 vertices. `shortcuts.ts` already drops vacuous
 endpoint labels in the UNDIRECTED hop count; the DIRECTED count does not.
+
+## 1067 — ✅ SHIPPED: the bare degree sum, 1.6-1.7x. 🛑 And item 1066's "5783x" was a fixture artifact read through an in-process instrument
+
+### 🛑 Two corrections before the result
+
+- **The 5783x is not a missed elision.** `shortcuts.ts` already drops a vacuous endpoint label and
+  takes the O(1) bucket count — proved by removing the spelling probe's four edge-less `:S`
+  vertices, after which all four spellings read 0.00 ms. Those four, out of 200,004 and changing no
+  answer, are what make `:P` non-vacuous. **The engine was being correctly conservative.**
+- **The 56 ms PRE was an in-process reading.** Isolated, one shape per process, it is **25.59**. Two
+  of my probes (and the ladder) ran several shapes per process and inflated in the same direction,
+  which is how a 1.7x looked like 3.6x.
+
+### The win
+
+```text
+  start-labelled     (a:P)-[:E]->(b)      25.59 → 14.75   1.74x
+  far-labelled       (a)-[:E]->(b:P)      25.76 → 15.88   1.62x
+  start-labelled-in  (a:P)<-[:E]-(b)      26.98 → 15.92   1.69x
+  far-labelled-in    (a)<-[:E]-(b:P)      26.01 → 15.38   1.69x
+  CONTROLS  both-ends 0.99x · bare 0.00 (the O(1) count) · filtered 1.02x · inline 1.03x
+            · two-types 1.01x · rows 1.00x
+  SPELLING  `label on start: redundant vs absent`  5783x → 1521x
+```
+
+A ladder over the walk's loop body located it: `adjFrom.get('E').size` is the irreducible 85 ns a
+vertex (against ~9 ns at 50,000 — cache residency, as at item 1066), and the rest is per-vertex call
+overhead on a shape that has nothing for it to do. `bareDegreeSum` drops the label re-check (the
+bucket guarantees it), the `try`/`catch` (raise parity needs a predicate to protect), the predicate
+call (`alwaysTrue`) and `degreeOfTypes`'s loop. Asked at the top of BOTH walks so the two directions
+cannot diverge.
+
+### 🛑 The `both-ends` control's 1.08x was an OUTLIER, and my explanation for it was wrong
+
+It read 98.85 before against 106.5 after, which looked exactly like item 119's closure growth, so I
+moved the dispatch into the module-scope walks. **That changed nothing** (106.6), and a second PRE
+round read 105.56. The move is kept because it is the right shape, not because it fixed anything.
+
+### 🛑 Mutation: 7 of 8 survived first, and the fix was INSTRUMENTATION rather than reasoning
+
+19 tests passed while seven mutants lived. I added a counter to the fast path and printed which
+shapes reach it — the "verify the planner reaches the shape" step I had skipped. It showed only the
+four bare labelled counts arrive; every "decline" test was refused upstream, so its guard was
+masked. Three were answer-equivalent fixtures: every edge had `w: 1`, `WHERE true` is item 570's
+control and answer-equivalent by design, and the multi-type edge made the alternation's right answer
+equal the naive sum.
+
+Discriminators that replaced them: **`WHERE 1 = 0`** (no free variables, so not refused upstream,
+and unlike `WHERE true` it changes the answer), **`[:E|F]` on a fixture with no multi-type edge**
+(there the caller admits many types and only the fast path refuses), **`-[:E {w: 2}]->` over
+alternating `w`**, and **`(a:P&S)`** (a label expression nothing satisfies, where
+`candidateVertexSource` returns every vertex).
+
+Final: 4 caught; 4 survive with each one's masking condition named — `ignores-inline` and
+`admits-seek` mask each other through the inline branch's seed hint (the pair is still necessary),
+`ignores-rel-inline` never arrives because `startWalkFits` requires `inRel === undefined`, and
+`wrong-end-label` makes the path DECLINE rather than answer wrongly.
