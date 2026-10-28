@@ -31723,3 +31723,40 @@ a CORRECT mutant violates. Now: replacement present AND file changed. Anchors al
 unique — `return inward === undefined ? undefined : outward + inward;` appears twice (one per
 composition), so two mutants applied to neither. **Restore-from-pristine is why both aborts were an
 inconvenience and not a contaminated commit.**
+
+## 1090 — ❌ the `values().order()` row is CLOSED (item 891 closed it); I read the file to the middle instead of the end
+
+Item 1089 queued "price the three candidates item 890 named". **Item 891 already did, in the next
+comment block of the same file**, concluding: "do not open this row again without attacking the
+pipeline itself."
+
+```text
+  the sort itself                          98.02    43.5%     ← 1.13x its own floor; nothing in it
+  an INERT order() step (yield* only)      95.73    42.4%     ← the step boundary EXISTING
+  keys + check + filter + wrapper objects  26.89    11.9%     ← item 890: ~14 ms, lost in noise
+  [...stream] of 1M traversers              4.92     2.2%
+```
+
+All three candidates are priced. The `Float64Array` idea my own floor suggested (27.85 ms against
+83.96 for a comparator sort) cannot pay either: it must beat the 98.02 ms sort whose floor is 86.94,
+so ~11 ms of 351, for a `-0`/NaN byte-identity risk.
+
+### ⚠️ A REFINEMENT OF ITEM 1081'S RULE
+
+1081 said: read the measurement's own comment before pricing it. I did — and **stopped at the first
+block that answered me**. `aggregation.ts` keeps its history in append order (878 → 879 → 890 →
+891), so that block was two generations stale and its "price those first" had already been done
+below it.
+
+> **In an append-ordered record, an older entry's "do this next" may already have been done by a
+> newer one. Read to the END, not to the first paragraph that answers you.**
+
+Fourth "the answer was adjacent" of this run (1079, 1080, 1081, 1090) and the most pointed, since
+1089's write-up congratulated itself on avoiding it. The rule that generalizes is "find the LAST
+thing said about this, then act" — not "read the comment".
+
+### 🔶 ONE GENUINELY NEW FACT, named not chased
+
+`order()` adds **351 ms** at 200k x degree 5 where item 891 measured **225.6** on the same fixture
+shape. Either harness drift or a real regression in the step pipeline — not this row's keying or
+sort, both priced — so it is the per-step cost itself (items 234/537), an architecture change.
