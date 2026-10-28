@@ -32694,3 +32694,38 @@ does. Consumers that currently decline, both ending in the partition length:
 `add_edge_with_id`, `delete_edge`, `delete_node`, **both `Undo` restore arms** (they push onto
 `out_adj`/`in_adj` directly), and load/clear. Missing one is a WRONG ANSWER, not a slow one — needs
 a debug assertion recomputing against the partitions plus mutation at each site.
+
+## 1117 — 🔶 the maintained per-type count's SITE LIST, from the code: **nine sites, two at `Vec` granularity**, and one of those is a restore (item 1042's seven were per-entry)
+
+Item 1116 reproduced the 85x and named the fix (a global per-type count, O(1) per write, as TS
+already has). The count must be `counts[t] = |{ live out_adj entries with etype == t }|`, because
+`rebuild_csr` partitions on `a.etype` (the PRIMARY type) and `out_typed_flat(t)?.len()` is exactly
+that.
+
+Searching for `out_adj` STRUCTURAL MUTATIONS, not for function names:
+
+```text
+  +1  3705  add_edge / add_edge_with_id        -1  5244  delete_edge (dropped_etype captured)
+  +1  6087  Undo::RestoreEdge (is_out guard)   -N  5616  delete_node_inner: mem::take a WHOLE Vec
+  +1  6126  Undo::RestoreNode mirror entry     -1  5629  delete_node_inner: neighbour's mirror
+  +N  6130  Undo::RestoreNode: out_adj[i] = out — a WHOLE Vec
+  +N  6297  Builder load path (rebuilds anyway)     -0  6203  out_adj.pop() (already emptied)
+```
+
+⚠️ **The two `Vec`-granularity sites are what a per-entry hook misses, and one is a RESTORE.**
+`Undo::RestoreNode` puts a deleted node's entire out list back by assignment, so a counter updated
+only at `push` sites under-counts after a rolled-back `delete_node` — a WRONG typed count
+thereafter, silently, on the undo path only. The existing `push_etype_entry` hook cannot be copied:
+it maintains the OPT-IN edge-type index beside the per-entry pushes, where this counter must be
+unconditional and must also track those moves.
+
+**Implementation shape:** a `Vec<usize>` by etype (grown on intern, cloned with the store); deltas
+at the seven live sites; **a `debug_assert` recomputing from `out_adj`** so a missed site fails
+loudly across the 1,267-test suite and the fuzzers rather than answering wrongly — that assertion is
+what makes the change safe, and it lands before any consumer. Then wire
+`fastpath::typed_hop_count_from_size` and `fastpath::try_edge_label_count`, which end in
+`out_typed_flat(t)?` and decline whenever the overlay is stale.
+
+**NOT implemented this tick, deliberately** — nine sites, two at `Vec` granularity, with a wrong
+answer on an undo path as the failure mode, is not a half-tick change. The list is now from the
+code rather than from a note, which is the previous tick's lesson applied.
