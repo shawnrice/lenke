@@ -31370,18 +31370,62 @@ entry, no reorganization, audit untouched.
 `BENCH_ENGINES=ts,ffi bun run bench`, 200,000 nodes, 5 reps, best of each:
 
 ```text
-  query: project 3 columns                    10.0     61.0     0.16x   ← 6.1x, UNEXPLAINED
+  query: project 3 columns                    10.0     61.0     0.16x   ← ~~6.1x, UNEXPLAINED~~ REFUTED at 1081: the JSON CARRIER
   query: project the element + materialize    27.5    138.9     0.20x   ← items 827/828's shape
   query: project the edge + materialize      590.5   1016.7     0.58x
   query: ordered projection [no window]       14.5     22.4     0.65x
   count 1-hop UNDIRECTED                       0.0      1.5     0.00x   ← REFUTED at 1077
 ```
 
-**`project 3 columns` contradicts a recorded conclusion**, which is why it is the next target: item
+~~**`project 3 columns` contradicts a recorded conclusion**, which is why it is the next target: item
 827 measured native's SCALAR projection at "~7x faster, flat", and the 825/826/827 arc blames the
-element-render loss on rendering a MAP per row — three scalar columns render no map.
+element-render loss on rendering a MAP per row — three scalar columns render no map.~~
+**REFUTED AT ITEM 1081, and item 289 had already settled it**: the engine-only cost is **5.74 ms**
+against the ffi row's 61.0 and TS's 10.0, so the carrier is ~55 of 61 ms and the native ENGINE is
+**1.74x FASTER than TS**. 827's "flat" holds. `bench.ts` says so in a comment 20 lines from the row.
 
 **NOT yet a finding, because `ffi` is not the engine**: that column includes marshalling 200,000 rows
 across the C ABI where `ts` hands back values in-process. `query_bench` measures the engine with no
 boundary, so the next tick prices the same shape there and attributes the 51 ms before naming
 anything. Calling it "native is 6x slower on scalar projection" first is item 1073's mistake.
+
+## 1081 — ❌ REFUTED: `project 3 columns`' 6.1x is the JSON CARRIER; the native engine is **1.74x FASTER** than TS. And `bench.ts` says so 20 lines from the row
+
+```text
+  MATCH (p:Person) RETURN p.name, p.age, p.city        200,000 rows
+    query_bench -- gql, `project 3`   ENGINE ONLY      5.74 ms   28.7 ns/row
+    bench.ts ffi                      through the FFI 61.00 ms
+    bench.ts ts                       in-process      10.00 ms
+```
+
+**The carrier is ~55 of 61 ms (90%). The native engine at 5.74 ms BEATS TypeScript's 10.0 by
+1.74x.** Item 827's "native scalar projection ~7x faster, flat" holds — nothing contradicts it, and
+item 1080's "UNEXPLAINED" label is withdrawn. Per-row from the same run: `scalar p.age` 2.4 ns,
+`string p.name` 6.5, `element p` 333.5; three columns at 28.7 leaves ~13 ns of row assembly.
+
+**Item 289 had already settled the class**, and `bench.ts` carries it as a comment on the
+row-returning rows: "the ts-vs-ffi gap on any row-returning query is the JSON CARRIER … Anyone
+reading these four rows as a renderer comparison should read `queryArrowIpc` and item 289 first."
+
+### ⚠️ THREE TICKS RUNNING, the answer was written next to the question
+
+| tick | flagged                             | refutation was                  |
+| ---- | ----------------------------------- | ------------------------------- |
+| 1079 | a 1541x spelling flag               | that group's own 40-line header |
+| 1080 | four "OPEN" headlines               | the next item in this file      |
+| 1081 | a 6.1x bench row called UNEXPLAINED | a comment 20 lines away         |
+
+**Before pricing a bench row, read that row's own comment in `bench.ts`. Before treating a spelling
+flag as a defect, read that group's header.** The corpus is documented AT the measurement, not only
+here, and a number copied out of a table has left its explanation behind. (1080 is the least
+culpable — a stale headline is this file's own defect — but 1079 and 1081 are the same error twice,
+the second inside the entry that recorded the first.)
+
+What 1081 did right: it refused to name the finding before separating engine from egress, with the
+instrument item 1080 had written down. The numbers are kept because they price item 289's claim for
+this row (55 of 61 ms), which 289 did not.
+
+**🔶 What is open here is not the engine.** 600,000 values at ~92 ns each through the carrier;
+`queryArrowIpc` runs query→IPC entirely in Rust. The lever for a host wanting 200,000 rows is an API
+choice, so the real question is whether this is a DOCUMENTATION gap
+(`discoverability-is-the-bottleneck`). Named, not measured.
