@@ -32908,3 +32908,32 @@ in-process Rust API `query_bench` uses — which is why the numbers come from a 
 (`rearm-probe.ts`, kept) and the bench groups are unchanged.
 
 Rust 1269+13+725 pass; native 933 / gql 3117 / gremlin 918; fuzzers 13/0.
+
+## 1123 — 🔶 item 292's blocker on caching the OPTIMIZED plan is AVOIDABLE: the optimizer already plans `Prop <op> Param`, so optimize-then-bind still seeds
+
+`bench:usage`'s `read: point lookup` is **ts(+) 977.1k against engine(+) 455.4k** — reproduced. 291
+exonerated the FFI boundary (8 ns) and accounted for the call; 292 named two avoidable items. The
+first, verified against the code:
+
+```text
+  ffi.rs:626-630  lnk_query:    optimize_indexed(parse_cache::parse_for_run(…), store)
+  ffi.rs:1127     prepared_run: let plan = crate::opt::optimize_indexed(plan, store);
+```
+
+**Parse is cached (228/229), optimize is not** — 295-330 ns of a ~3000 ns call, ~11% of the prepared
+path's 2648 ns.
+
+**292's blocker was bind-THEN-optimize, not the optimizer.** It recorded that parse substitutes
+params so the plan depends on their VALUES. But `opt.rs:3805-3806` matches
+`(Prop, Lit | Param)` — the optimizer plans a PARAM the same way it plans a literal. So optimizing
+the prepared plan and binding AFTERWARDS still seeds, and that plan is param-independent and
+text-cacheable — which is what `prepared_run`'s own comment already claims it does.
+
+**Needs:** a STORE VERSION in the key (292 identified it; `Store::version()` exists at
+store.rs:1771) because a cached plan seeking a dropped index is a WRONG answer. ⚠️ **And a trade
+that is not free:** an optimized-once plan is no longer VALUE-specific — fine for a seek, but
+`reverse_seed_decide` and `cost::estimate` both read values, so this is classic parameter sniffing.
+**Measure that first:** a fixture where two param values want different plans, and what one plan
+costs them.
+
+Not built. ~11% of the prepared serving call, two lines, correctness key and risk both named.
