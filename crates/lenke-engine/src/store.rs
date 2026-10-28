@@ -1368,6 +1368,8 @@ pub struct Store {
     /// loud failure instead of a silently wrong count (item 1117 enumerated nine such sites, two
     /// of them moving a whole `Vec` rather than an entry).
     etype_counts: Vec<usize>,
+    /// Reads served since the overlay went stale, for [`Self::rearm_if_warranted`].
+    stale_reads: usize,
     /// per-node outgoing / incoming adjacency, indexed by node id.
     out_adj: Vec<Vec<Adj>>,
     in_adj: Vec<Vec<Adj>>,
@@ -1646,6 +1648,7 @@ impl Clone for Store {
             ),
             etype_ids: self.etype_ids.clone(),
             etype_counts: self.etype_counts.clone(),
+            stale_reads: self.stale_reads,
             out_adj: self.out_adj.clone(),
             in_adj: self.in_adj.clone(),
             next_eid: self.next_eid,
@@ -1898,6 +1901,18 @@ impl Store {
     #[must_use]
     pub fn live_etype_count(&self, etype: u32) -> usize {
         self.etype_counts.get(etype as usize).copied().unwrap_or(0)
+    }
+
+    /// Reads counted since the overlay went stale — the perf gate's only observable, so the test
+    /// for `rearm_if_warranted` can see that a FRESH overlay counts nothing.
+    ///
+    /// Without this, dropping the `csr_fresh` guard rebuilds every `REARM_AFTER` queries on a store
+    /// that needs no rebuild at all — answer-neutral, so no result-based test can see it, and its
+    /// mutant SURVIVED until this existed. The rule this follows is the one the audit records as
+    /// "a perf gate needs its own test".
+    #[cfg(test)]
+    pub(crate) fn stale_reads(&self) -> usize {
+        self.stale_reads
     }
 
     /// Per-type live counts recomputed from `out_adj` — the ORACLE for the maintained ones.
@@ -2155,6 +2170,47 @@ impl Store {
     /// the per-node `Vec`s until the next [`Self::rebuild_csr`].
     fn invalidate_csr(&mut self) {
         self.csr_fresh = false;
+        // Reads since THIS write, not since the last rebuild — a fresh write restarts the count,
+        // so a steady stream of small writes never accumulates its way to a rebuild.
+        self.stale_reads = 0;
+    }
+
+    /// Re-arm the CSR overlay once enough reads have been served on a stale one.
+    ///
+    /// THE DESIGN ITEM 852's OBJECTION LEFT OPEN. That item refused an unconditional
+    /// rebuild-at-commit hook because "the policy it would need depends on a future read count the
+    /// store does not have" — true, but the store CAN know the PAST count, and reads since the last
+    /// write are the standard proxy for reads after it.
+    ///
+    /// The threshold comes from item 1121's sweep, which put the break-even at **1.97-2.23 reads**
+    /// across a 10x fixture range (a rebuild costs ~2x what one stale read of a filtered typed
+    /// query costs). With `REARM_AFTER = 2` a workload with ONE read per write never rebuilds at
+    /// all, two or three reads roughly break even, and anything read-heavier wins — while the
+    /// rebuild is answer-neutral, so this is a route choice and not a semantic one.
+    ///
+    /// Why this is not the lazy-on-read item 851 excluded: that wanted to rebuild inside
+    /// `out_typed_csr`/`out_typed_flat`, which take `&self` and return borrows into the very `Vec`s
+    /// a rebuild replaces. This runs at the QUERY BOUNDARY, where the caller already holds `&mut`,
+    /// before any accessor has handed out a borrow.
+    pub fn rearm_if_warranted(&mut self) {
+        /// Reads on a stale overlay before a rebuild pays for itself (item 1121: break-even
+        /// 1.97-2.23).
+        const REARM_AFTER: usize = 4;
+
+        if self.csr_fresh || self.csr_disabled {
+            return;
+        }
+
+        self.stale_reads += 1;
+
+        if self.stale_reads >= REARM_AFTER {
+            self.rebuild_csr();
+            // NO reset here, and its absence is deliberate: a mutant that ADDED one survived, which
+            // is the measurement saying the line cannot matter. `rebuild_csr` sets `csr_fresh`, so
+            // the guard above returns early on every later call, and the only way back to a stale
+            // overlay is `invalidate_csr`, which resets the count itself. A line no test can
+            // justify is a line that reads as load-bearing and is not.
+        }
     }
 
     /// Every LIVE node id — the scan universe when no label narrows it. Deleted
@@ -6454,6 +6510,7 @@ impl Builder {
             min_label_cache: std::sync::RwLock::default(),
             etype_ids: self.etype_ids,
             etype_counts,
+            stale_reads: 0,
             out_adj,
             in_adj,
             // Incremental edges continue the id sequence the build laid down.

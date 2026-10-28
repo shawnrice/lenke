@@ -195,6 +195,89 @@ fn the_maintained_etype_counts_match_a_recount_after_every_mutation_kind() {
     }
 }
 
+/// `rearm_if_warranted` rebuilds the overlay only after enough reads on a stale one, and a WRITE
+/// restarts the count (item 1122).
+///
+/// The threshold is what protects a write-heavy workload: item 1121 put the rebuild at ~2x one
+/// stale read of a filtered typed query, and the sweep at item 1122 found a fixed threshold of 4
+/// is the smallest that costs a one-write-one-read cycle nothing measurable while still paying
+/// 1.68x at ten reads and 2.74x at twenty. This pins the mechanism those numbers describe: the
+/// count, the threshold, and the reset.
+#[test]
+fn rearm_if_warranted_rebuilds_only_after_enough_stale_reads_and_a_write_resets() {
+    let mut b = Builder::default();
+
+    b.node(&["N"], &[]);
+    b.node(&["N"], &[]);
+    b.edge(0, 1, "R");
+
+    let mut st = b.build();
+
+    assert!(st.csr_fresh, "a loaded store is fresh");
+
+    // A FRESH overlay: the call is a no-op however often it is made. `csr_fresh` alone cannot see
+    // this — it is true either way — so the assertion is on the COUNT, which is the gate's only
+    // observable. Dropping the `csr_fresh` guard would rebuild every fourth query on a store that
+    // needs no rebuild, answer-neutrally, and its mutant survived until this line existed.
+    for _ in 0..10 {
+        st.rearm_if_warranted();
+        assert!(st.csr_fresh, "re-arming a fresh overlay changes nothing");
+        assert_eq!(
+            st.stale_reads(),
+            0,
+            "a FRESH overlay must count no stale reads"
+        );
+    }
+
+    st.add_edge(0, 1, "R");
+    assert!(!st.csr_fresh, "an adjacency write demotes it");
+
+    // Below the threshold: still stale, so the reads that do not pay for a rebuild do not get one.
+    st.rearm_if_warranted();
+    assert!(!st.csr_fresh, "one stale read must not trigger a rebuild");
+    st.rearm_if_warranted();
+    assert!(!st.csr_fresh, "nor two");
+    st.rearm_if_warranted();
+    assert!(!st.csr_fresh, "nor three");
+
+    // The fourth crosses it.
+    st.rearm_if_warranted();
+    assert!(st.csr_fresh, "the fourth stale read re-arms the overlay");
+
+    // AND THE WRITE RESETS THE COUNT, which is what keeps a steady stream of small writes from
+    // accumulating its way to a rebuild: three reads, a write, three more reads, still stale.
+    st.add_edge(1, 0, "R");
+
+    for _ in 0..3 {
+        st.rearm_if_warranted();
+    }
+
+    st.add_edge(0, 1, "R");
+
+    for _ in 0..3 {
+        st.rearm_if_warranted();
+        assert!(
+            !st.csr_fresh,
+            "a write restarts the count, so three reads after it must not re-arm"
+        );
+    }
+
+    // The rebuild it eventually does is answer-preserving, which is the claim that makes this a
+    // route choice rather than a semantic one.
+    st.rearm_if_warranted();
+    assert!(st.csr_fresh);
+
+    let want = st.recomputed_etype_counts();
+    let t = st.etype_id("R").unwrap();
+
+    assert_eq!(st.live_etype_count(t), want[t as usize]);
+    assert_eq!(
+        st.out_typed_flat(t).map(<[_]>::len),
+        Some(st.live_etype_count(t)),
+        "the re-armed partition agrees with the maintained count"
+    );
+}
+
 fn s(x: &str) -> Value {
     Value::Str(x.into())
 }

@@ -583,6 +583,12 @@ pub unsafe extern "C" fn lnk_query(
         crate::ffi_error::set("E_FFI", "null store handle or non-UTF-8 query");
         return std::ptr::null_mut();
     };
+    // RE-ARM THE CSR OVERLAY if enough reads have been served on a stale one (item 1122). The
+    // query boundary is the only place this can happen: the read accessors take `&self` and hand
+    // out borrows into the arrays a rebuild replaces, which is why item 851 excluded a lazy
+    // rebuild inside them — here the mutable borrow is already held and nothing has been lent out.
+    // A no-op when the overlay is fresh, when the cache is disabled, and until the threshold.
+    store.rearm_if_warranted();
     // Decode the JSON params object (`{"name": value, …}`); null / empty = none.
     let params = if p_ptr.is_null() || p_len == 0 {
         Vec::new()

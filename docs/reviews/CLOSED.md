@@ -32867,3 +32867,44 @@ serving. NEXT THING TO TRY, now with a break-even to size it against.
 sizes (2634/2659/2678). `set -- $cfg` — **zsh does not word-split unquoted parameters** — so every
 arm used the same defaults. The TELL: three fixtures differing 5x agreeing to 1% is the instrument,
 not the result.
+
+## 1122 — ✅ SHIPPED: the CSR re-arms at the QUERY BOUNDARY after 4 stale reads — **1.68x at ten reads per write, 2.74x at twenty**, nothing measurable below five
+
+The design item 852's objection left open. 851 excluded a LAZY rebuild structurally; 852 refused an
+UNCONDITIONAL commit hook because "the policy it would need depends on a future read count the store
+does not have"; 1121 measured the real break-even at 1.97-2.23 reads. **The store cannot know the
+future count but it can know the PAST one**, and `lnk_query` already holds `store_mut` — a mutable
+borrow taken before any accessor has lent out a reference, which is exactly what 851's exclusion
+turned on.
+
+**The threshold is the change, and it is measured.** One write then `k` reads, min of 5:
+
+```text
+   k     PRE      T=2      T=3      T=4          then alternated x3 on T=4:
+   1     1.5      1.6      1.5      1.5            k=1  1.5 -> 1.5   flat
+   2     3.0      4.3✗     3.0      3.0            k=2  3.1 -> 3.0   flat
+   3     4.5      4.6      5.8✗     4.5            k=3  4.5 -> 4.5   flat
+   5     7.5      5.1      6.4      7.6            k=5  7.4 -> 7.6   +2.7% (reported)
+  10    14.9      6.3      7.6      8.9            k=10 14.8 -> 8.8  1.68x
+  20    29.6      8.4      9.4     10.9            k=20 29.6 -> 10.8 2.74x
+```
+
+Every threshold has a loss band where the rebuild fires unamortized (T=2: 1.43x at k=2; T=3: 1.29x at
+k=3). **T=4 is the smallest with none above the noise floor.** The +2.7% at k=5 is break-even by
+construction and is stated, not rounded away. A write RESETS the count, so small write batches never
+accumulate into a rebuild — `k=1` flat is that measured.
+
+**Teeth: 4 of 4 after two survivors got two DIFFERENT answers.**
+⚠️ `no-reset-after-rebuild` survived because the line was **REDUNDANT** (`rebuild_csr` sets
+`csr_fresh`, so the guard early-returns; only `invalidate_csr` returns to stale and it resets the
+count itself) — **deleted, not tested.** A surviving mutant is sometimes the measurement saying the
+code cannot matter.
+⚠️ `ignores-fresh` survived because it is a **PERF GATE** — dropping the `csr_fresh` guard rebuilds
+every 4th query on a store needing none, answer-neutrally, and `csr_fresh` is true either way. Added
+a `#[cfg(test)]` `stale_reads()` accessor so the gate's only observable is assertable.
+
+**Scope:** the hook is at `lnk_query`, so it covers both TS engines and every FFI consumer, NOT the
+in-process Rust API `query_bench` uses — which is why the numbers come from a TS probe
+(`rearm-probe.ts`, kept) and the bench groups are unchanged.
+
+Rust 1269+13+725 pass; native 933 / gql 3117 / gremlin 918; fuzzers 13/0.
