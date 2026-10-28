@@ -30992,3 +30992,48 @@ guards, 1064's heap), and the first where the untested arm was brand new.
 - 47% property loop — this item, 1.08x at the corpus's width and 1.18x at K=64. What remains in it
   is the `GStr` clone per key, the `Value` construction per cell and the `Vec` push — each already
   minimal for the representation.
+
+## 1072 — ❌ REFUTED: item 578's 2.4x conjunct-order gap is the HARNESS, not the engine
+
+`bun run spelling` reported `SEEK: a param equality AND a second conjunct` at ~2.4x, with
+`WHERE n.k >= 0 AND n.s = $s` at 18.83 ms against 8.74 for the same conjuncts in the other order —
+read for several items as "the seek fires only when the seekable conjunct comes FIRST".
+
+### Three checks, all saying the engine is fine
+
+1. **The compiled hints are the same SET** — `["eq:s","range:k"]` against `["range:k","eq:s"]`;
+   `collectHints` descends the whole chain.
+2. **The chooser takes the best, on honest estimates** — `countEquals('s',$s)` = 28,572 against
+   `countRange('k',{gte:0})` = 200,000, and `seedVertices` keeps the minimum.
+3. **An ad-hoc in-process probe reproduced 2.85x IN THE OPPOSITE DIRECTION** — whichever spelling
+   ran first was the slow one.
+
+### Isolated, it converges
+
+```text
+  one spelling per process:  eq-first 10.14  eq-second 9.17  inline 9.09  inline-where 7.61
+                             controls: eq-only 9.35, range-only 9.88
+  SPELL_ONLY (the group alone):  4.01 / 3.90 / 4.10 / 3.96      1.05x
+```
+
+**The 18.83 arm reads 9.17 — the fastest of the three clause spellings. The target is withdrawn.**
+
+### Why `runGroup`'s existing fix missed it, and the instrument change
+
+`runGroup` times each member in BOTH positions and keeps the better reading (items 180/181), which
+removes WITHIN-group bias but not the state the ~40 groups before it left behind.
+
+**A flagged group now prints its own confirmation command.** The header already warned against
+reading an UNFLAGGED group's times (item 491 learned that at 1.4x); this item adds that being OVER
+the threshold is not sufficient either, so the step belongs next to the flag. The emitted group name
+is shell-escaped, or `a product's …` would print a command that does not run.
+
+### ✅ And the step DISCRIMINATES — the other two flagged groups survive it
+
+```text
+  label on start: redundant vs absent                   1545.22x alone  — REAL (explained at 1067)
+  a product's one-sided predicate: comma vs MATCH MATCH    2.30x alone  — REAL, still open
+  SEEK: a param equality AND a second conjunct             1.05x alone  — THE HARNESS
+```
+
+`seek-conjunct-probe.ts` is the one-per-process instrument for this family.

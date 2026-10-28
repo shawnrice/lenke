@@ -1368,6 +1368,33 @@ const heading =
 
 console.log(`${heading}${real.length > 0 ? `:\n  - ${real.map(show).join('\n  - ')}` : ''}`);
 
+// A FLAG IS NOT YET A FINDING, and item 1072 is why this line exists rather than only the note
+// in the header. `runGroup` times every member in BOTH positions and keeps its better reading,
+// which removes WITHIN-group position bias (items 180/181) — but not the state the ~40 groups
+// before it have left behind. The `SEEK: a param equality AND a second conjunct` group had been
+// recorded as a real 2.4x gap since item 578 on the strength of being over the threshold:
+//
+//   in the full run   8.74 / 7.91 / 8.72 / 18.83 ms      2.4x
+//   SPELL_ONLY alone  4.01 / 3.90 / 4.10 /  3.96         1.05x
+//
+// Its compiled hints are the same SET in both conjunct orders and the chooser takes the narrowest
+// (28,572 against 200,000), so there was nothing to fix. The other two flagged groups SURVIVE the
+// same check — `label on start` at 1545x and item 285's product at 2.30x — so the confirmation
+// step separates them, which is exactly what makes it worth printing.
+if (real.length > 0) {
+  console.log('\n  CONFIRM EACH BEFORE TREATING IT AS A FINDING — a flag can still be this');
+  console.log('  harness. Re-run the group ALONE, where no earlier group has polluted dispatch:');
+
+  for (const s of real) {
+    // The name is single-quoted for the shell, so an apostrophe in it (`a product's …`) has to
+    // be escaped or the command it prints does not run — which would defeat the whole point of
+    // printing a command.
+    const only = s.name.slice(0, 44).replaceAll("'", String.raw`'\''`);
+
+    console.log(`    SPELL_N=${N} SPELL_REPS=${REPS} SPELL_ONLY='${only}' bun run spelling`);
+  }
+}
+
 if (noise.length > 0) {
   console.log(
     `${noise.length} group(s) over ${TOL}x but NOT clear of the null control — not results:\n  - ${noise
