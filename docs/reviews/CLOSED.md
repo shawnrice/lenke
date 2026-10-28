@@ -14463,6 +14463,31 @@ Also note `build_typed`'s inner `for t in &mut typed` pushes an offset for EVERY
 so `rebuild_csr` is O(V × ntypes + E), not O(V + E) — which is why the rebuild column climbs from
 5.87x of a read at 1k to 12.55x at 200k.
 
+## 1059 — ✅ `FUZZ_ITERATIONS`, and 150,000 queries clean
+
+**Two CI failures in 39 runs, opposite causes.** `40609792604` (item 1034) was MINE: the gates ran
+BEFORE the audit/`CLOSED.md` appends, so `oxfmt` never saw them — fixed at 1035 by running gates
+AFTER the documents, no recurrence in ~20 pushes. `40625821878` (item 1052) was NOT a skipped check:
+all seven fuzzers, five suites and four gates run before every push, but the differential fuzzer
+draws a RANDOM seed, so a 20,000-query sample makes "local green" and "CI green" different claims.
+It found a real wrong answer, fixed at 1056.
+
+`ITERATIONS` was hardcoded at 20,000; now `FUZZ_ITERATIONS`, **default unchanged**.
+
+**UPWARD ONLY**, and two readings in that item were nearly reported as findings:
+`FUZZ_ITERATIONS=500` fails on the COVERAGE FLOORS (`pageGenerated > 200` and a dozen more,
+calibrated for the default) and `=500000` **TIMES OUT** at bun's 30 s per-test limit after 118,190
+predicates. Neither is a divergence. **A red test is not automatically the thing you are hunting** —
+the same lesson as 1051's deleted log line.
+
+**THE RESULT: `FUZZ_ITERATIONS=150000` → 1 pass, 0 fail**, with only the one declared divergence used
+(4 times) and nothing undeclared. 7.5x the default depth, clean — so after 1056 there is NO backlog
+of latent divergences waiting to redden CI one seed at a time. Evidence, not reassurance.
+
+Still true and not promised away: a random fuzzer will find things again, and that is the point.
+Whether CI should pin a fixed seed SET alongside its random one — deterministic regressions, new
+discoveries still possible — is raised with the user, not decided.
+
 ## 1058 — ⚠️ REFUTED: sorting on an output ALIAS does not refuse the top-k
 
 The top-k path is gated on `!proj.orderNeedsOutput`, so `RETURN n.k + 1 AS c ORDER BY c LIMIT 10`

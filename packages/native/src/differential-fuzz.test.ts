@@ -2163,7 +2163,26 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
     process.env.FUZZ_SEED !== undefined
       ? Number(process.env.FUZZ_SEED) >>> 0
       : Math.floor(Math.random() * 0x1_0000_0000);
-  const ITERATIONS = 20_000;
+  // ITERATIONS is a KNOB since item 1059, default UNCHANGED so CI and every recorded figure stay
+  // exactly as they were. It exists because of a question worth answering plainly: CI failed twice
+  // in 39 runs this session, and one of those was the differential fuzzer drawing a RANDOM seed
+  // that generated a query no local run had. The fuzzers ARE run before every push — all seven —
+  // but a 20,000-query sample with a fresh seed each time means local green and CI green are
+  // different claims.
+  //
+  // So a deliberate pre-push sweep can now go deeper than the default without touching CI:
+  //
+  //   FUZZ_ITERATIONS=200000 bun test src/differential-fuzz.test.ts
+  //
+  // That is the honest remedy for "local passed and CI did not" — more of the same sampling,
+  // chosen when it is worth the minutes, rather than a promise that a random fuzzer will stop
+  // finding things. Finding them is the point.
+  //
+  // UPWARD ONLY. The coverage floors at the end of this test ("pageGenerated > 200", and a dozen
+  // more) are calibrated for the default, so a LOWER count fails them — not on a divergence but on
+  // under-generation. `FUZZ_ITERATIONS=500` reports `0 pass 1 fail` and means only that 500
+  // queries cannot exercise twenty bands; read the diff before concluding anything from it.
+  const ITERATIONS = Number(process.env.FUZZ_ITERATIONS ?? 20_000);
 
   test(`${ITERATIONS} random queries render byte-identically across engines`, () => {
     const divergences: string[] = [];
