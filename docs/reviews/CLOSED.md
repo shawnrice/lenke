@@ -29550,11 +29550,29 @@ in order>` prints every run. (1) The band's first draft sat AFTER `if (p < 0.68)
   `e.amount = 99999` tests a property every edge CARRIES where `e.other = 500` tests an ABSENT one,
   and a null comparison settles sooner. Attributing that 1.6x to the index would have been wrong in
   a way no timing alone reveals.
-- **➡️ NEXT (item 1047)**: wire `edgeSeek` into the aggregate path as 1035/1038 did for the other two
-  result shapes. Check three sub-shapes separately rather than assume: a plain `sum`/`min`/`max`, a
-  `count(DISTINCT …)`, and a `GROUP BY` on the edge key — the last is the most expensive and may want
-  the group map built FROM the seed rather than filtered into. An aggregate is order-insensitive, so
-  item 1043's ordering constraint does not bind here.
+- **🛑 ITEM 1047 RETRACTED IN TWO PLACES (item 1048), and the second would have broken
+  byte-identity.** (1) **`min`/`max` ALREADY SEED.** `max` over an indexed key with ZERO matches
+  costs **0.004/0.004/0.003 ms** where `sum` over the IDENTICAL predicate costs 9.768/9.415/9.211 —
+  same question, same zero rows, 2,500x apart. `detectHopAggregate` delegates to
+  `detectHopProjection` with a SYNTHETIC projection (`hop-projection.ts:3507/3516/3521`), so item
+  1038's `relSeekedHopWalk` serves it; the aggregate got the seed for free when the projection did.
+  1047 grepped for `edgeSeek`, found it absent from the aggregate code, and concluded the ROUTE was
+  absent — **a symbol search cannot answer a reachability question.** (2) **`sum` is a DELIBERATE
+  refusal, not a gap.** `foldFor` accepts exactly `count`/`min`/`max` and refuses `distinct || star`;
+  `detectHopAggregate`'s header says only an ORDER-INDEPENDENT aggregate may ride a possibly
+  far-driven walk, because `sum`/`avg`/`stddev` are order-sensitive in the last ulp (item 532). **An
+  edge seed reorders too**, so seeding `sum` would change its ulp and break byte-identity — and
+  1047's note that "an aggregate is order-insensitive" was the next tick's plan.
+- **➡️ THE REAL TARGET, NARROWED (item 1048)**: `count(DISTINCT e.k)` 26.447/24.312/25.646 ms and
+  `GROUP BY` on the edge key 27.337, both ~700x against `count(*)`'s 0.034-0.041, each refused for
+  its own reason. `count(DISTINCT …)` is refused by `foldFor` because DISTINCT "needs every value" —
+  **a refusal about FOLDING, not seeding** — and a DISTINCT over a seeded edge set is a Set, so
+  order-independent and reachable without touching the ordering rule. `GROUP BY` is refused outright
+  by `proj.groupKeys.length !== 0` and needs its own rung.
+- **METHOD — a DOCUMENTED REFUSAL looks identical to a MISSING OPTIMIZATION from outside (item 1048)**: both are "the fast path declines and the query is slow". Only reading WHY it declines
+  tells them apart, and here the reason was correctness with a measured item behind it. The
+  zero-match arm — one extra probe arm, the same diagnostic item 1037 used on this very question —
+  settles reachability directly and would have prevented the whole wrong item.
 - **⚠️ OPEN — `spelling-probe.ts` CANNOT SEE the edge-seed route (item 1035).** It declares only
   VERTEX indexes and its one edge property is `w = e % 5`, a fifth of 600,000 edges, which the
   margin correctly declines. Giving it a selective edge key means adding a property to a SHARED

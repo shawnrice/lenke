@@ -106,6 +106,25 @@ const SHAPES: Record<string, { q: string; reached: boolean }> = {
     q: 'MATCH ()-[e:PAID]->() WHERE e.amount = 99999 RETURN sum(e.amount) AS a',
     reached: false,
   },
+  // THE ORDER-INDEPENDENT aggregates (item 1048). `detectHopAggregate` REFUSES `sum`/`avg`/the
+  // stddevs on purpose: its walk may be FAR-DRIVEN, float addition is not associative, and item
+  // 532 priced that rather than guessing it. So `sum` above is not a seeding gap at all — it is a
+  // documented refusal, and an edge seed (which also reorders) must honour the same rule.
+  // `min`/`max`/`count` do not care about arrival order, so they are the shapes a seed may serve.
+  'agg-max': {
+    q: 'MATCH ()-[e:PAID]->() WHERE e.amount = 500 RETURN max(e.amount) AS a',
+    reached: false,
+  },
+  'agg-min': {
+    q: 'MATCH ()-[e:PAID]->() WHERE e.amount = 500 RETURN min(e.amount) AS a',
+    reached: false,
+  },
+  // The zero-match twin of `agg-max`, the same diagnostic item 1047 used: if the route seeded,
+  // an empty bucket would cost ~nothing.
+  'agg-max-zero': {
+    q: 'MATCH ()-[e:PAID]->() WHERE e.amount = 99999 RETURN max(e.amount) AS a',
+    reached: false,
+  },
 };
 
 const name = process.env.SHAPE ?? 'named-clause';
