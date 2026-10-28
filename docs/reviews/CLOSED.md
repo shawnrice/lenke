@@ -31121,3 +31121,50 @@ A dense vertex index maintained BY the graph — so a frontier accumulator is a 
 `Map` hop — would move 1.66x toward the 2.61x floor AND apply to every frontier algorithm, not just
 counts. That is a core-data-structure question, not a planner arm, and nothing here prices adding or
 maintaining it.
+
+## 1075 — ➡️ PRICED at 11-19x (not built): the count rung DECLINES a constrained undirected hop by construction
+
+```text
+  MATCH (a:Person)-[:KNOWS]-(x) WHERE a.age > 60 RETURN count(*)   ts 242.78   native 2.29   106x
+```
+
+The cause is explicit: `buildOneHopCount` returns `null` when `rel.direction === 'both'` and ANY of
+`pred`/`inNear`/`inFar`/`inRel` is present, so the query falls to the general path and builds a
+binding and a row per edge. The DIRECTED twin has had a degree-sum walk since item 129
+(`startOnlyHopCount`); undirected is the same sum over BOTH adjacency boxes minus one per self-loop.
+
+### The ceiling (200k vertices, degree 3, ~64k passing)
+
+```text
+  graph HAS loops = false    ENGINE 262.8   arm 13.8   19.0x   CONTROL scan+filter 1.9
+  graph HAS loops = true     ENGINE 248.1   arm 22.5   11.0x   CONTROL             2.1
+```
+
+Both arms answer the engine's 386,627. The engine arm would gate the loop correction on
+`loopsOfTypes(graph, types)` (already exists), so a loop-free graph pays nothing for it.
+
+**NOT BUILT**: the arm needs the per-candidate test factored out of `startOnlyHopCount` so there is
+ONE copy of that rule, and that is a refactor of a hot walk (items 119/159 both measured unrelated
+shapes paying for changes to it). Ceiling known; next tick's work.
+
+### 🛑 THREE fixture corrections, none from reading the code
+
+1. The arm answered **386,628 against 386,626** — the loop correction was gated on the loops I had
+   ADDED, and `(i * 7919 + d * 104729) % N` has a fixed point at i = 100,000, so the fixture carried
+   accidental ones. The assertion against the engine's answer caught it; **the gate was the bug, not
+   the arithmetic**.
+2. A second formula still carried loops, and the printed `hasLoops` showed the 24.4 ms I had just
+   credited to the loop-free arm was the CORRECTED arm. **Printing which arm runs caught that.**
+3. Only a GUARD settled it: `t === i ? (i + 1) % N : t` is provably never a loop where a formula is
+   only probably not one.
+
+**The pattern: a fixture property asserted about my own CONSTRUCTION rather than measured on the
+graph that resulted.** The engine asks `loopsOfTypes(graph, types)`; the probe asked "did I add
+any?" — a different question with the same name.
+
+### ➡️ Two smaller findings in the same family
+
+- **NATIVE lacks the O(1) typed undirected count** TS has: 1.33 ms vs 0.00 (`-[:KNOWS]-(x)`), 1.66
+  vs 0.00 with both ends labelled.
+- **TS's UNTYPED undirected count is 6.60 vs native's 1.30** — the O(1) arm needs the per-type dedup
+  condition, and an untyped hop spans every bucket.
