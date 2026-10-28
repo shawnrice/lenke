@@ -33744,3 +33744,45 @@ confirmed `outE().outV().values().count()` is claimed by NOTHING.
 re-CHECK what the width sees through; a caller that does not account for the extra `EdgeVertex` slot
 gets a wrong answer with a plausible count. Use the route that worked at item 1143: a width notion
 for the count-fold paths only plus a matching `frontier_counts` arm. OPEN.
+
+## 1146 — ✅ SHIPPED **2944x**: `outE(T).inV()` and `out(T)` now optimize to the IDENTICAL plan — the gap was a bound edge nobody reads
+
+⚠️ **Item 1145's diagnosis was the wrong one.** It pointed at item 1134's missing `EdgeVertex` arm in
+`chain_width`. The plan print shows no `EdgeVertex` survives for `inV()` at all — the PARSER collapses
+it onto the Expand's landed target slot. The whole 3120x was a stray `bind_edge: true`, which keeps
+the chain three slots wide so `try_scan_count` declines the shape it answers for `out()` in 0.2us.
+
+```text
+  outE('KNOWS').inV().count()   Aggregate{count(*)} / Expand{bind_edge: TRUE } / Scan
+  out('KNOWS').count()          Aggregate{count(*)} / Expand{bind_edge: FALSE} / Scan
+```
+
+⚠️ I first put the fix in the existing `EdgeVertex`-elision arm, where it had NO effect because that
+arm is never reached for this spelling — second time this session an edit landed in a path the shape
+does not take (item 1102 was the first). **Print the plan before editing the arm you think owns it.**
+
+The rewrite: a KEYLESS `Aggregate` whose every agg is a bare non-DISTINCT `count(*)`, over
+`Expand{bind_edge:true}`, clears the flag. Those guards are the same proof the `EdgeVertex` arm needs
+and are what makes it need **no slot remapping** (an aggregate reading no slot cannot notice a
+narrower chain). `bind_edge` appends a COLUMN only; self-loop doubling is `double_loops`, untouched.
+
+Three alternated rounds, arm-asserted:
+
+```text
+  E1 outE.inV.count            PRE 592.9/588.7/591.2   POST 0.2/0.3     2944x
+  E2 outE.inV.has(age) [ctl]   PRE 2348/2331/2317      POST 2306/2315   flat
+  A1 / C1 / C2         [ctl]   flat
+```
+
+E1 lands on C1 exactly. ⚠️ **E2 is the honest limit**: it has a `Filter` reading the frontier so the
+rewrite declines, and the ~30x filtered spellings item 1145 priced need a general "clear `bind_edge`
+wherever unread" rewrite WITH `map_slots`. Not bundled. OPEN.
+
+`rewrite_fuzz` 10 passed at default and at `LENKE_OPT_FUZZ_SEEDS=200000`; mutation on a GREEN
+baseline caught both guards; suite 1280+13+725; 7/7 byte-identity fuzzers. Sweep 103 rows, **zero
+slower >10%**, worst 1.09x. Answer test pins the self-loop `bothE`/`both` case (where `double_loops`
+lives), the edge frontier itself, and two shapes that must decline.
+
+⚠️ **The corpus had no row for this shape** — items 877/881's failure mode again. `outE.inV` and
+`outE.inV.has` added to `query/gremlin`, beside the existing `outE.outV` pair, whose comment now
+states that `outV` is the edge's SOURCE and a DIFFERENT question.

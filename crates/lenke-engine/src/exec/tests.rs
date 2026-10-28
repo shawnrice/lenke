@@ -30412,3 +30412,65 @@ fn the_streaming_see_through_declines_a_projection_that_can_raise() {
         "a faulting projection under count(*) must still fault, not be skipped by the stream"
     );
 }
+
+/// Clearing an unread `bind_edge` must not change any answer — item 1146.
+///
+/// The rewrite fires for a KEYLESS aggregate whose every agg is a bare non-DISTINCT `count(*)`,
+/// and it changes which element sits in the Expand's last slot (the edge, or the target). Nothing
+/// reads that slot under those guards, so the row COUNT is all that is observable — and
+/// `bind_edge` appends a column rather than changing the row count. Pinned here on the shapes
+/// where that could go wrong, including a SELF-LOOP under `bothE`, since self-loop doubling is a
+/// separate flag (`double_loops`) that the rewrite must carry through untouched.
+#[test]
+fn clearing_an_unread_bound_edge_changes_no_answer() {
+    let mut b = Builder::default();
+    b.node(&["P"], &[("age", n(1.0))]); // 0
+    b.node(&["P"], &[("age", n(2.0))]); // 1
+    b.node(&["P"], &[("age", n(3.0))]); // 2
+    b.edge(0, 1, "K");
+    b.edge(0, 2, "K");
+    b.edge(1, 2, "K");
+    b.edge(2, 2, "K"); // a SELF-LOOP
+    let st = b.build();
+
+    let cnt = |q: &str| {
+        let plan = crate::opt::optimize_indexed(crate::gremlin::parse(q).unwrap(), &st);
+        match run(&plan, &st).rows[0][0] {
+            Value::Num(x) => x,
+            ref v => panic!("count is not a number: {v:?}"),
+        }
+    };
+    let rows = |q: &str| {
+        let plan = crate::opt::optimize_indexed(crate::gremlin::parse(q).unwrap(), &st);
+        run(&plan, &st).rows.len() as f64
+    };
+
+    // THE TWO SPELLINGS OF ONE HOP. TinkerPop ground truth (item 1145): `out(T)` IS
+    // `outE(T).inV()`, both yielding the edge's HEAD.
+    assert_eq!(cnt("g.V().out('K').count()"), 4.0);
+    assert_eq!(cnt("g.V().outE('K').inV().count()"), 4.0);
+    // And both equal the rows the general path produces for the same traversal.
+    assert_eq!(rows("g.V().out('K')"), 4.0);
+
+    // The EDGE frontier itself: one row per edge either way, so clearing the flag is invisible.
+    assert_eq!(cnt("g.V().outE('K').count()"), 4.0);
+
+    // `bothE` over a self-loop is where `double_loops` lives. The rewrite preserves that flag, so
+    // these must still match the general path rather than gaining or losing the loop's second
+    // traversal.
+    assert_eq!(
+        cnt("g.V().bothE('K').count()"),
+        rows("g.V().bothE('K')"),
+        "bothE count must equal the rows the general path yields (self-loop doubling intact)"
+    );
+    assert_eq!(
+        cnt("g.V().both('K').count()"),
+        rows("g.V().both('K')"),
+        "both() likewise"
+    );
+
+    // Shapes the rewrite must DECLINE, still answering correctly: a DISTINCT count and an
+    // aggregate with an ARG both read the frontier, so the bound edge is not unread.
+    assert_eq!(cnt("g.V().outE('K').dedup().count()"), 4.0);
+    assert_eq!(cnt("g.V().out('K').dedup().count()"), 2.0);
+}

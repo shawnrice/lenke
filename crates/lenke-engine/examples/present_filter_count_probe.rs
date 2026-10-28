@@ -95,6 +95,11 @@ fn main() {
             "g.V().outE('KNOWS').outV().values('name').count()",
         ),
     ] {
+        {
+            let raw = lenke_engine::gremlin::parse(q).expect("parses");
+            let plan = lenke_engine::opt::optimize_indexed(raw, &store);
+            println!("  PLAN1146 {label}: {plan:?}");
+        }
         match time_query(q, true, &store, cfg.reps) {
             Ok((us, _)) => {
                 let answer = {

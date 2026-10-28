@@ -1350,6 +1350,52 @@ fn map_children(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
             //   - Nothing may READ the dropped slot: no grouping keys, and every aggregate
             //     a bare non-DISTINCT `count(*)`.
             let i = match i {
+                // A BOUND EDGE NOBODY READS — item 1146.
+                //
+                // `outE(T).inV()` is the other spelling of `out(T)`; TinkerPop confirms they are
+                // one question (`out('knows')` and `outE('knows').inV()` both give ids [2, 4],
+                // while `outV` gives [1, 1] and is a DIFFERENT question). The parser collapses
+                // the `inV` onto the Expand's already-landed target slot, so no `EdgeVertex`
+                // survives for the arm below to elide — but it leaves `bind_edge: true`, and the
+                // two plans then differ by exactly that boolean. Item 1145 priced it:
+                //
+                // ```text
+                //   g.V().out('KNOWS').count()            0.2 us
+                //   g.V().outE('KNOWS').inV().count()   624.0      3120x
+                // ```
+                //
+                // `bind_edge` only appends a COLUMN and changes no row count (self-loop doubling
+                // is `double_loops`, untouched). With it cleared the two spellings optimize to
+                // the IDENTICAL plan and cannot differ in cost — the property this engine's
+                // one-plan design is meant to give for free, and did not here.
+                //
+                // The guards are the SAME proof the `EdgeVertex` arm below needs, and they are
+                // what makes this need no slot remapping: a KEYLESS aggregate whose every agg is
+                // a bare non-DISTINCT `count(*)` reads no slot at all. A general "clear
+                // `bind_edge` wherever the edge is unread" rewrite would need `map_slots` and
+                // would also reach the filtered spellings item 1145 priced at ~30x; that is a
+                // separate, larger change, deliberately not bundled here.
+                Plan::Expand {
+                    input: ex_in,
+                    from,
+                    dir,
+                    edge_label,
+                    double_loops,
+                    bind_edge: true,
+                } if keys.is_empty()
+                    && aggs.iter().all(|a| {
+                        a.func == crate::ir::AggFn::Count && a.arg.is_none() && !a.distinct
+                    }) =>
+                {
+                    Plan::Expand {
+                        input: ex_in,
+                        from,
+                        dir,
+                        edge_label,
+                        double_loops,
+                        bind_edge: false,
+                    }
+                }
                 Plan::EdgeVertex {
                     input: ev_in,
                     edge_slot,

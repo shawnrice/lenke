@@ -483,6 +483,18 @@ pub fn run(cfg: &Cfg) {
                     "order(local) then hop",
                     "g.V().order(local).out('KNOWS').values('name')",
                 ),
+                // ADDED AT ITEM 1146, for the reason items 877 and 881 record: the corpus had
+                // no row for the OTHER spelling of a plain hop, so a 2944x gap sat unmeasured.
+                // `out(T)` IS `outE(T).inV()` — TinkerPop ground truth at item 1145, where both
+                // give ids [2, 4] on the modern toy graph — while `outE(T).outV()` is the edge's
+                // SOURCE and a different question, which is what the two rows below it measure.
+                // The `.inV()` spelling left `bind_edge` set on an edge nobody read, so it ran
+                // 624us against the `out()` spelling's 0.2 until item 1146 cleared the flag.
+                ("outE.inV", "g.V().outE('KNOWS').inV().count()"),
+                (
+                    "outE.inV.has",
+                    "g.V().outE('KNOWS').inV().has('name').count()",
+                ),
                 ("outE.outV", "g.V().outE('KNOWS').outV().count()"),
                 (
                     "outE.outV.values",
