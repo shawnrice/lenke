@@ -33112,3 +33112,36 @@ but no measurement, so a named candidate.
 
 Rust 1269+13+725 pass; fuzzers 13/0. Both probes kept — the gap existed because only one surface had
 an instrument.
+
+## 1129 — ❌ item 495's carried "28x apart" for native's per-anchor `COUNT { … }` is REFUTED: **1.3x**, flat across a 4x range of N, and the per-anchor DISPATCH is FREE
+
+`query: 2-hop subquery item` is the widest ratio left on the clean sweep (ts 97.7 vs 5.8, **16.78x**),
+and 495 left its native half open: "the whole-graph two-hop count in 2.7 ms and the per-anchor
+`COUNT { … }` partition of the same traversal in 75.0 ms … **28x apart**." Measured on one store at
+three sizes:
+
+```text
+  nodes    whole-graph 2hop   per-anchor COUNT{2}   COUNT{1}   one scalar/anchor
+  200,000        3856.2            5106.0            953.2          965.0
+  400,000        8526.4           11034.8           1940.5         1915.7
+  800,000       18432.1           23071.3           4552.9         4221.4
+
+  COUNT{2}/whole-graph  1.3x / 1.3x / 1.3x      COUNT{1}/one scalar  1.0x / 1.0x / 1.1x
+```
+
+**1.3x, not 28x, flat across 4x of N** — not a scale effect. Item 261's rule for the THIRD time this
+session: _re-price a carried number before building against it_ (also item 852's break-even, whose
+query no longer has a penalty, and item 1123's blocker, refuted at 1124).
+
+**The per-anchor DISPATCH is FREE:** `COUNT { (n)-[:KNOWS]->(m) }` per anchor costs what
+`RETURN n.age` per anchor costs (953/965, 1940/1916, 4553/4221) — the degree sum answers a one-hop
+subquery and adds nothing over the cheapest one-row-per-anchor query. **The second hop is the whole
+of it** (5.1-5.7x the first): 1,000,000 inner degree reads at ~4 ns each. No native target. The row's
+ratio is the TS side, where 495 took the 1.25x available and item 1126's ~140 ns/edge floor says
+what remains.
+
+⚠️ **One arm was MISLABELLED and the label is corrected rather than the number buried:** I called
+`RETURN n.age` the "EGRESS FLOOR" at 4.8-5.3 ns a row, but item 1111 priced native egress at **58 ns
+a numeric row** — so that query takes a columnar path and measures no egress floor. It is still the
+cheapest one-row-per-anchor query, which is the comparison that carries the conclusion; left
+unlabelled, the next reader would take 965 us as native's egress cost for 200,000 rows.
