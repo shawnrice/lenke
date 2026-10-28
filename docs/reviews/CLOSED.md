@@ -14463,6 +14463,32 @@ Also note `build_typed`'s inner `for t in &mut typed` pushes an offset for EVERY
 so `rebuild_csr` is O(V × ntypes + E), not O(V + E) — which is why the rebuild column climbs from
 5.87x of a read at 1k to 12.55x at 200k.
 
+## 1060 — ⚠️ OPEN, LOCATED: the top-k's 3x is a ROUTE BOUNDARY at "the projection is a bare property read"
+
+Item 1058 left "an arithmetic sort key costs 3.3x" as a cost question. It is a CLIFF, not a slope,
+and not where I predicted.
+
+**The 2x2 refuted the prediction.** The top-k comment says only the top-k bindings are projected, so
+I predicted an arithmetic PROJECTION would be invisible and the KEY would be the whole gap. 200k,
+median of warm 9: plain/plain **14.18 ms**, ARITH-key/plain-proj 36.53, **plain-key/ARITH-proj
+32.52** (predicted ~14), ARITH/ARITH 34.15; both no-sort controls 0.01-0.03 (so the `LIMIT` is lazy
+without an `ORDER BY` and the grid measures the sort path).
+
+**Settled by scaling the projection's own cost**, key plain throughout: `n.k` 11.30, `n.k + 1` 34.11,
+`+1…+6` 33.07, `+1…+12` **33.22**. **FLAT** — twelve additions cost what one does. So the projection
+is NOT per-row and the top-k works as documented; the 11.30 → 34 step is a ROUTE BOUNDARY where a
+bare property read takes one route and anything else takes a ~3x slower one, the expression's
+complexity being irrelevant once on the slow side.
+
+**The route is NOT identified**, and `plainRowProjection` is RULED OUT — it refuses any `ORDER BY`
+(`(proj.orderBy?.length ?? 0) === 0`), so this shape never reaches it. Named as the next step rather
+than guessed, because item 1058's wrong hypothesis came from reading a gate and inferring when it
+fires.
+
+**METHOD**: a prediction stated BEFORE the measurement is what made it worth running — one
+disagreeing cell turned "arithmetic is slower" into a located cliff, and **a cost that does not grow
+with the work cannot be the work.**
+
 ## 1059 — ✅ `FUZZ_ITERATIONS`, and 150,000 queries clean
 
 **Two CI failures in 39 runs, opposite causes.** `40609792604` (item 1034) was MINE: the gates ran
