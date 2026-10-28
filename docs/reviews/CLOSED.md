@@ -32597,3 +32597,39 @@ without the `Value::Null` init, and the safe routes must be measured against ite
 should not at K=2, but "should not" is what this corpus exists to check. Controls for that
 measurement are already in the bench: `hop prop` (one column, unreachable) and `hop str prop` (the
 type axis, must not move).
+
+## 1114 — ❌ REFUTED, and it CORRECTS 1113: the multi-column pre-fill is worth **~2 ns a row, not ~10**, and removing it costs any STRING column more than it saves
+
+1113 attributed its +12.5 ns-a-row multi-column penalty to the output buffer being written twice
+(pre-filled with `Value::Null`, then overwritten), estimating ~10 ns of it. Built
+`render_rows_major` — one row-major pass, `Vec::with_capacity` + push, element/`Gen` columns
+resolved once per column — and measured both ways of getting a cell out:
+
+```text
+                       PRE        clone per cell     move per cell
+  hop two num props   1719.0         1519.6             1536.1
+  hop two props       2393.9         2619.3             2784.3
+  project 3            493.7          508.6              679.1
+  hop prop   CONTROL   469.6          468.2              474.7
+  hop str prop CTRL   1485.0         1504.1             1480.1
+```
+
+- **Two NUMERIC columns 1719.0 → 1519.6 (11.6%)** — no string, so no clone, so this isolates the
+  pre-fill: **~2 ns a row.** 1113's estimate was out by 5x and its ~10.5 ns remainder is NOT the
+  extra pass.
+- **Any STRING column regresses.** Indexing instead of consuming forces a CLONE (+9.4%) or a
+  `mem::take`, which writes a placeholder back — exactly the write the pre-fill was — and is worse
+  still (+16%; `project 3` 1.38x the wrong way).
+
+⚠️ **The general reason, so this is not re-attempted:** you cannot move a cell out of an indexed
+`Vec` without writing something in its place. Column-major gets its moves free from `into_iter()`;
+any row-major build clones or writes back, and both cost about what the pre-fill cost. Controls held
+throughout (`hop prop` 468-475 vs 469.6; `hop str prop` 1480-1504 vs 1485.0).
+
+**NOT SHIPPED**, reverted, baseline reproduces. A numeric-only variant is genuinely available at
+11.6% (every output column `Num`/`Bool`), unshipped because it buys ~2 ns a row on a narrow shape
+for a second render path — recorded so that is a decision, not a rediscovery.
+
+**Still open:** the +12.5 ns. The render is now measured at ~2 ns of it, so the remaining ~10.5 ns
+is upstream — the PROJECTION evaluating two expressions instead of one. `hop two num props` vs
+`hop prop` isolates it with the type axis held constant.
