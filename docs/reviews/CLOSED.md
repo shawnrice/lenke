@@ -33044,3 +33044,32 @@ Recorded rather than dropped, since the number is in the output.
 
 `packages/gql/working-set-probe.ts` is KEPT: ARM 1 vs ARM 2 is the floor any future per-edge claim
 here should be judged against.
+
+## 1127 — ⚠️ a SHIPPED GAP in item 1122, found by reviewing the change rather than the benchmark: `prepared_run` never re-arms
+
+1122 hooked `rearm_if_warranted` into `lnk_query` (1.68x at ten reads per write, 2.74x at twenty)
+and claimed the scope as "both TS engines and every FFI consumer". Checked:
+
+```text
+  lnk_query     runs queries: yes   rearms: TRUE   (line 591, ahead of all lang branches 634/666/679/727)
+  lnk_command   runs queries: yes   rearms: FALSE
+```
+
+`lnk_query`'s placement is correct and covers GQL **and** Gremlin. But `lnk_command` hosts
+`prepared_run` — clone the prepared plan, bind, optimize, execute — a full query path that never
+touches the counter. **A host serving reads through prepared statements gets item 1118's engine-side
+fix and none of 1122's re-arm.**
+
+⚠️ **Why the benchmark missed it:** `rearm-probe.ts` and `bench:usage` both drive `g.query(…)` =
+`lnk_query`. Every number in 1122 is true and none of them covers the other surface. **A measured
+win on one entry point is not a claim about the others** — "every FFI consumer" was an inference
+from one hook, not a checked fact.
+
+**Fix:** one line in the `prepared_run` arm before the optimize. Deliberately NOT widened to the
+algo commands in the same breath — they read adjacency heavily and the re-arm would be safe there
+(taken while `&mut` is held, before `algo.rs` takes `&Store` under the rayon pool), but that surface
+has no measurement behind it. Separate candidate.
+
+**Not applied this tick:** the session's full regression sweep is running and a `cargo build` beside
+it would contaminate the numbers it exists to produce. Needs a build, the Rust suite, and a
+prepared-statement probe showing the same crossover.
