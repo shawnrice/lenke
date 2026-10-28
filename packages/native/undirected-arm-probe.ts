@@ -34,7 +34,7 @@ const SHAPES: Record<string, { q: string; reached: boolean }> = {
     reached: false,
   },
   // Still declining, each for its own reason: a far label, a far-reading predicate, a rel
-  // constraint, a multi-type alternation, an untyped hop.
+  // constraint. (A multi-type alternation and an untyped hop were here until item 1078.)
   'far-label': {
     q: 'MATCH (a:Person)-[:KNOWS]-(x:Person) WHERE a.age > 60 RETURN count(*) AS c',
     reached: false,
@@ -47,11 +47,15 @@ const SHAPES: Record<string, { q: string; reached: boolean }> = {
     q: 'MATCH (a:Person)-[r:KNOWS]-(x) WHERE r.w = 1 RETURN count(*) AS c',
     reached: false,
   },
+  // SUBJECTS since item 1078, which replaced item 1076's decline on these two with an exact
+  // correction: `two-types` 331.53 -> 30.58 and `untyped` 254.07 -> 25.94, both answering what
+  // the declining arm answered. They were CONTROLS here for exactly two ticks, and leaving the
+  // flag stale would have printed the two subjects of a change as rows it could not reach.
   'two-types': {
     q: 'MATCH (a:Person)-[:KNOWS|LIKES]-(x) WHERE a.age > 60 RETURN count(*) AS c',
-    reached: false,
+    reached: true,
   },
-  untyped: { q: 'MATCH (a:Person)-[]-(x) WHERE a.age > 60 RETURN count(*) AS c', reached: false },
+  untyped: { q: 'MATCH (a:Person)-[]-(x) WHERE a.age > 60 RETURN count(*) AS c', reached: true },
 };
 
 const name = process.env.SHAPE ?? 'clause';

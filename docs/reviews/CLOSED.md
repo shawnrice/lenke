@@ -31249,3 +31249,61 @@ TS's constrained UNTYPED undirected count still declines (257 ms). `degreeOfType
 sums ALL buckets, so a two-type edge is counted twice. Two routes both beat 257 ms: sum sizes when
 `multiTypeEdgeCount === 0`, else iterate each PASSING vertex's boxes counting distinct edges —
 survivors' edges only, not every row. Named for its own tick.
+
+## 1078 — ✅ SHIPPED: the UNTYPED and MULTI-TYPE constrained undirected count, 9.8-10.8x; and item 1076's reason for declining them was FALSE
+
+Item 1076 built the arm for ONE relationship type and declined the rest on the grounds that
+`multiTypeEdgeCount === 0` "is a RUNTIME property and this closure has no way to hand the query back
+once built". **The closure can read it** — the undirected branch returns `(graph, params) => …` and
+the branch beside it already reads it there. What a closure cannot do is DECLINE, and it does not
+need to: there is an exact correction.
+
+**The arithmetic.** A passing endpoint of an edge carrying `m` of the requested types is counted `m`
+times by the bucket sums and belongs once (**`m - 1`**); a SELF-LOOP additionally sits in both boxes
+(**`2m - 1`**). At `m = 1` these collapse to 0 and 1 — item 1076's formula is the one-type case of
+this one. `edgesOfTypes` dedupes across buckets (`edgesOfManyTypes` carries a `seen` set), which is
+the fact the correction rests on and was checked, not assumed.
+
+```text
+  SUBJECTS                                              PRE      POST
+    untyped     -[]-(x) WHERE a.age > 60              254.07 ->  25.94    9.79x
+    two-types   -[:KNOWS|LIKES]-(x) WHERE a.age > 60  331.53 ->  30.58   10.84x
+  CONTROLS
+    clause      -[:KNOWS]-(x) WHERE a.age > 60         24.49 ->  24.89    0.98x  ← the sound path
+    directed    -[:KNOWS]->(x) WHERE a.age > 60         7.42 ->   7.78    0.96x
+    far-pred    -[:KNOWS]-(x) WHERE x.age > 60        910.25 -> 875.58    1.04x
+    bare        no constraint                           0.00 ->   0.00
+```
+
+One shape per process, alternated POST/PRE/POST, arms asserted by symbol count before being built,
+all four answers identical in every round. `untyped` now costs what the typed spelling costs.
+
+### ➡️ `perf-gate-needs-its-own-test` earned again, and it unified SEVEN open-coded copies
+
+`never-sound` (forcing every count through the correction) SURVIVED 20 differential tests at 0
+failures — a route choice is answer-equivalent. So the condition is now one pure exported function,
+**`bucketSumsAreSound(types, multiTypeEdgeCount)`**, asserted as a decision in
+`bucket-sum-soundness.test.ts` (`[]` included: `length === 1` must not be `length <= 1`). It had
+been open-coded at **seven sites**. Seven mutants of the extracted gate: all caught.
+`gate-always-false` fails 5 tests where `never-sound` survived — at least one of the seven sites
+treats "unsound" as a wrong ANSWER, not a slower route.
+
+Also: restoring item 1076's own early return now FAILS 3 tests. With the decline removed it would
+have been a wrong answer, not merely a conservative one.
+
+## 1078b — 🔶 OPEN, found while clearing item 1078's spelling flags: a REDUNDANT start label costs 15 ms where an ABSENT one costs 0.00
+
+```text
+  MATCH (a:P)-[:E]->(b) RETURN count(*)    15.0 ms      ← same answer
+  MATCH (a)-[:E]->(b)   RETURN count(*)     0.00 ms     ← the O(1) bucket size
+```
+
+Flagged by `bun run spelling` at 1541x and **isolated on BOTH arms across six POST and three PRE
+rounds at identical readings**, so it is NOT item 1078's doing — but it is a real defect in this
+file's usual shape, not a harness artifact. `vacuousLabel` exists to fold a label that constrains
+nothing and is not reaching this spelling. NOT fixed at 1078: a different route, and bundling it
+would have made both unmeasurable.
+
+(The other two flags in the same run are already-explained harness artifacts — `a product's
+one-sided predicate` was refuted at item 1073, and `a trailing FILTER vs a clause WHERE` isolates
+to 3.80 against 3.77, 0 groups over 2x, on both arms.)

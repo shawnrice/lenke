@@ -103,10 +103,19 @@ describe('a constrained undirected hop count equals the general path', () => {
   }
 });
 
-describe('the shapes the arm must still decline', () => {
-  // Each asserts the ANSWER, which is what a wrongly-admitted shape gets wrong — and `both`
-  // compares against the general path on every one, so a decline that is not really a decline is
-  // caught too.
+/**
+ * Item 1078: the MULTI-TYPE and UNTYPED spellings, which item 1076 declined outright.
+ *
+ * Its stated reason was wrong — `multiTypeEdgeCount === 0` is readable inside the closure, and the
+ * branch beside this one already reads it there. So the arm now subtracts the overcount exactly:
+ * a passing endpoint of an edge carrying `m` of the requested types is counted `m` times by the
+ * bucket sums where it belongs once, and `2m` times when that edge is a SELF-LOOP.
+ *
+ * The `m >= 2` LOOP is the shape neither of item 1076's fixtures could reach — a loop carrying two
+ * requested types is counted FOUR times and belongs once, so the correction is 3 and every simpler
+ * formula (`m - 1`, `1`, `2m`) gets it wrong. It has its own cases below for that reason.
+ */
+describe('the multi-type and untyped spellings', () => {
   test('a multi-type alternation is not summed per bucket', () => {
     const g = new Graph();
     const a = g.addVertex({ id: 'a', labels: ['P'], properties: { k: 0 } });
@@ -116,11 +125,80 @@ describe('the shapes the arm must still decline', () => {
     g.addEdge({ id: 'tonly', labels: ['T'], from: b, to: a, properties: { w: 1 } });
 
     // ONE edge carries both types and must not be counted once per bucket. This is the assertion
-    // the first cut of the arm failed, at 6 against 4.
+    // the first cut of item 1076's arm failed, at 6 against 4 — and the arm declined this spelling
+    // rather than get it right until item 1078.
     expect(both(g, '(a:P)-[:T|S]-(x)', 'WHERE a.k >= 0')).toBe(4);
     expect(both(g, '(a:P)-[:T]-(x)', 'WHERE a.k >= 0')).toBe(4);
     expect(both(g, '(a:P)-[:S]-(x)', 'WHERE a.k >= 0')).toBe(2);
+    // The UNTYPED spelling spans every bucket, so it is the same question with `m = |labels|`.
+    expect(both(g, '(a:P)-[]-(x)', 'WHERE a.k >= 0')).toBe(4);
   });
+
+  test('a SELF-LOOP carrying two requested types is corrected by 3, not 1', () => {
+    const g = new Graph();
+    const a = g.addVertex({ id: 'a', labels: ['P'], properties: { k: 0 } });
+    const b = g.addVertex({ id: 'b', labels: ['P'], properties: { k: 1 } });
+
+    g.addEdge({ id: 'plain', labels: ['T'], from: a, to: b, properties: { w: 1 } });
+    // Four bucket appearances — `adjFrom[T]`, `adjFrom[S]`, `adjTo[T]`, `adjTo[S]` — and ONE row.
+    g.addEdge({ id: 'twoloop', labels: ['T', 'S'], from: a, to: a, properties: { w: 1 } });
+
+    expect(both(g, '(a:P)-[:T|S]-(x)', 'WHERE a.k >= 0')).toBe(3);
+    expect(both(g, '(a:P)-[]-(x)', 'WHERE a.k >= 0')).toBe(3);
+    // The loop is on `a`, so a filter that excludes `a` must drop the correction with it.
+    expect(both(g, '(a:P)-[:T|S]-(x)', 'WHERE a.k = 1')).toBe(1);
+    expect(both(g, '(a:P)-[:T|S]-(x)', 'WHERE a.k = 0')).toBe(2);
+    // ONE of the two types still sees the loop twice in the boxes and once in the answer.
+    expect(both(g, '(a:P)-[:T]-(x)', 'WHERE a.k >= 0')).toBe(3);
+    expect(both(g, '(a:P)-[:S]-(x)', 'WHERE a.k >= 0')).toBe(1);
+  });
+
+  test('a multi-type NON-loop edge is corrected at BOTH endpoints', () => {
+    const g = new Graph();
+    const vs = Array.from({ length: 3 }, (_, i) =>
+      g.addVertex({ id: `v${i}`, labels: ['P'], properties: { k: i } }),
+    );
+
+    g.addEdge({ id: 'both', labels: ['T', 'S'], from: vs[0], to: vs[1], properties: { w: 1 } });
+    g.addEdge({ id: 'also', labels: ['T', 'S'], from: vs[1], to: vs[2], properties: { w: 1 } });
+
+    // Each endpoint of each two-type edge is overcounted by one, and a filter that passes only
+    // ONE endpoint must subtract only that one — which is why the correction asks each separately.
+    expect(both(g, '(a:P)-[:T|S]-(x)', 'WHERE a.k >= 0')).toBe(4);
+    expect(both(g, '(a:P)-[:T|S]-(x)', 'WHERE a.k = 0')).toBe(1);
+    expect(both(g, '(a:P)-[:T|S]-(x)', 'WHERE a.k = 1')).toBe(2);
+    expect(both(g, '(a:P)-[:T|S]-(x)', 'WHERE a.k > 0')).toBe(3);
+  });
+
+  test('an INLINE start property on the multi-type spelling', () => {
+    const g = new Graph();
+    const a = g.addVertex({ id: 'a', labels: ['P'], properties: { k: 0 } });
+    const b = g.addVertex({ id: 'b', labels: ['P'], properties: { k: 1 } });
+
+    g.addEdge({ id: 'both', labels: ['T', 'S'], from: a, to: b, properties: { w: 1 } });
+    g.addEdge({ id: 'loop', labels: ['T', 'S'], from: b, to: b, properties: { w: 1 } });
+
+    expect(both(g, '(a:P {k: 0})-[:T|S]-(x)', 'WHERE true')).toBe(1);
+    expect(both(g, '(a:P {k: 1})-[:T|S]-(x)', 'WHERE true')).toBe(2);
+  });
+
+  test('the UNTYPED spelling on the shared fixture, loop-free and looped', () => {
+    for (const loops of [0, 1, 3]) {
+      const g = fixture(loops);
+
+      // Every edge here carries ONE label, so `multiTypeEdgeCount === 0` and the untyped sum is
+      // sound on its own — only the loop correction applies. The `-[:S]-` edge is counted too.
+      expect(both(g, '(a:P)-[]-(x)', 'WHERE a.k >= 0')).toBe(
+        { 0: 10, 1: 11, 3: 13 }[loops] as number,
+      );
+    }
+  });
+});
+
+describe('the shapes the arm must still decline', () => {
+  // Each asserts the ANSWER, which is what a wrongly-admitted shape gets wrong — and `both`
+  // compares against the general path on every one, so a decline that is not really a decline is
+  // caught too.
 
   test('a FAR constraint, which a degree sum cannot apply', () => {
     const g = fixture(0);
@@ -140,11 +218,5 @@ describe('the shapes the arm must still decline', () => {
 
     expect(both(g, '(a:P)-[r:T]-(x)', 'WHERE r.w = 1')).toBe(8);
     expect(both(g, '(a:P)-[r:T]-(x)', 'WHERE r.w = 9')).toBe(0);
-  });
-
-  test('an UNTYPED undirected hop', () => {
-    const g = fixture(0);
-
-    expect(both(g, '(a:P)-[]-(x)', 'WHERE a.k >= 0')).toBe(10);
   });
 });

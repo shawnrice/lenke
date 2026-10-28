@@ -163,7 +163,7 @@ const undirectedHopCount = (
   const b = vacuousLabel(graph, bLabel) ? undefined : bLabel;
   // Summing per-type buckets is sound only when no edge sits in two of them — the same
   // condition the directed arm uses, and one type can never collide with itself.
-  const perType = types !== undefined && (types.length === 1 || graph.multiTypeEdgeCount === 0);
+  const perType = types !== undefined && bucketSumsAreSound(types, graph.multiTypeEdgeCount);
 
   if (a === undefined && b === undefined && perType) {
     return types.reduce(
@@ -843,6 +843,30 @@ const inlineHolds = (
 // parity, so what is left is the property-bag read — structural, like the filtered scan of
 // item 132.
 /**
+ * Can per-type bucket SIZES be summed for `types`, or does one edge sit in two of the buckets?
+ *
+ * An edge carries a SET of types and every index buckets it under each one, so `|bucket(T)| +
+ * |bucket(S)|` counts a `T,S` edge twice. One type can never collide with itself, and
+ * `multiTypeEdgeCount === 0` says no edge in the graph carries two labels at all — so either is
+ * enough. `types === undefined` means EVERY type, which only the second can license.
+ *
+ * ONE COPY OF THE RULE, and it was open-coded in SEVEN places before item 1078 — in a file whose
+ * own warning is that "drift between two copies of one rule is precisely how the far endpoint
+ * ended up on the per-edge tally". Each site reads the count off its own `graph`, so the rule
+ * itself is pure and takes the count.
+ *
+ * EXPORTED FOR ITS OWN TEST, because no result-based test can reach it: every site that asks it
+ * has an always-correct alternative route, so choosing wrongly is SLOW and not WRONG and a mutant
+ * of the choice survives the differential suite (`never-sound` did, item 1078). That is the shape
+ * `perf-gate-needs-its-own-test` describes — extract the decision as a pure function and assert
+ * the decision.
+ */
+export const bucketSumsAreSound = (
+  types: readonly string[] | undefined,
+  multiTypeEdgeCount: number,
+): boolean => types?.length === 1 || multiTypeEdgeCount === 0;
+
+/**
  * One vertex's degree summed across the hop's edge types, given its row of the edge index.
  *
  * Module scope and shared by both hop-count walks. The per-edge call cost this file records
@@ -1030,26 +1054,44 @@ const undirectedStartOnlyCount = (scan: HopScan, startVar: string | undefined): 
   const forward = startOnlyHopCount({ ...scan, out: true }, startVar);
   const backward = startOnlyHopCount({ ...scan, out: false }, startVar);
 
-  if (!loopsOfTypes(graph, types)) {
+  // ONE EDGE CAN BE COUNTED TWICE BY THOSE SUMS, for two independent reasons, and this is the
+  // whole of the arithmetic that is not the directed walk's:
+  //
+  //   - a SELF-LOOP sits in `adjFrom` and `adjTo` both, while `expand` emits it once; and
+  //   - an edge carrying `m` of the requested types sits in `m` of the per-type buckets, while it
+  //     is still ONE edge.
+  //
+  // So a passing endpoint `v` of an edge `e` is counted `m` times where it should be counted once
+  // (a non-loop), or `2m` times where it should be counted once (a loop) — an overcount of
+  // `m - 1` and `2m - 1`. With one requested type `m` is always 1 and the first collapses to
+  // zero and the second to the familiar 1, which is exactly what item 1076 subtracted.
+  // `multiTypeEdgeCount === 0` is the half of this condition item 1076 believed the closure could
+  // not ask (item 1078): every edge then carries exactly one label, so `m` is 1 for every edge the
+  // buckets yielded whatever `types` asked for. `bucketSumsAreSound` is the rule, shared with the
+  // six other sites that had open-coded it.
+  const sound = bucketSumsAreSound(types, graph.multiTypeEdgeCount);
+
+  if (sound && !loopsOfTypes(graph, types)) {
     return forward + backward;
   }
 
-  // ONLY a graph with a self-loop of the type reaches here. One pass over the type's edges, which
-  // is still O(|E|) against the general path's binding-and-row per edge.
+  // ONLY a graph that can actually double-count reaches here. One pass over the type's edges,
+  // which is still O(|E|) against the general path's binding-and-row per edge — and the predicate
+  // is evaluated only on the edges that CAN be overcounted, which the `m === 1 && !loop` reject
+  // below makes free for every ordinary edge.
   const binding = new Map<string, unknown>();
   const env: EvalEnv = { binding, params, graph };
   const lifted = pred.startLifted;
-  let loops = 0;
-
-  for (const edge of edgesOfTypes(graph.edgesByLabel, types)) {
-    const v = edge.from;
-
-    if (edge.to !== v || !matchesLabel(v, pa)) {
-      continue;
+  // The per-candidate rule, in ONE place for the same reason the degree sums come from
+  // `startOnlyHopCount` itself: it has to be the same label check, inline constraint and
+  // predicate the walk applied, or the correction drifts from what it is correcting.
+  const passes = (v: Vertex): boolean => {
+    if (!matchesLabel(v, pa)) {
+      return false;
     }
 
     if (inNear !== undefined && !inlineHolds(inNear, v, binding, params, graph)) {
-      continue;
+      return false;
     }
 
     if (lifted !== undefined) {
@@ -1057,23 +1099,69 @@ const undirectedStartOnlyCount = (scan: HopScan, startVar: string | undefined): 
         binding.set(startVar, v);
       }
 
-      if (!satisfies(v, lifted, binding, params, graph)) {
-        continue;
-      }
-    } else {
-      if (startVar !== undefined) {
-        binding.set(startVar, v);
-      }
-
-      if (asTruth(pred.fn(env)) !== true) {
-        continue;
-      }
+      return satisfies(v, lifted, binding, params, graph);
     }
 
-    loops += 1;
+    if (startVar !== undefined) {
+      binding.set(startVar, v);
+    }
+
+    return asTruth(pred.fn(env)) === true;
+  };
+
+  let over = 0;
+
+  for (const edge of edgesOfTypes(graph.edgesByLabel, types)) {
+    const loop = edge.from === edge.to;
+    const m = sound ? 1 : requestedTypeCount(edge, types);
+
+    if (m === 1 && !loop) {
+      continue;
+    }
+
+    if (loop) {
+      if (passes(edge.from)) {
+        over += 2 * m - 1;
+      }
+
+      continue;
+    }
+
+    // BOTH endpoints are candidates for the start variable on an undirected hop, so both are
+    // asked — and separately, because the predicate reads the one that is bound.
+    if (passes(edge.from)) {
+      over += m - 1;
+    }
+
+    if (passes(edge.to)) {
+      over += m - 1;
+    }
   }
 
-  return forward + backward - loops;
+  return forward + backward - over;
+};
+
+/**
+ * How many of `types` one edge carries — `m` in {@link undirectedStartOnlyCount}'s arithmetic, and
+ * the number of per-type buckets a degree sum therefore met it in.
+ *
+ * `undefined` types means EVERY type, which is what the adjacency buckets were summed over, so the
+ * edge's own label count is the answer.
+ */
+const requestedTypeCount = (edge: Edge, types: string[] | undefined): number => {
+  if (types === undefined) {
+    return edge.labels.size;
+  }
+
+  let n = 0;
+
+  for (const t of types) {
+    if (edge.labels.has(t)) {
+      n += 1;
+    }
+  }
+
+  return n;
 };
 
 const startOnlyHopCount = (scan: HopScan, startVar: string | undefined): number => {
@@ -1249,7 +1337,7 @@ const startWalkFits = (scan: HopScan): boolean => {
     pb === undefined &&
     inFar === undefined &&
     // Summing per-type bucket sizes is sound only when no edge sits in two of them.
-    (types?.length === 1 || graph.multiTypeEdgeCount === 0)
+    bucketSumsAreSound(types, graph.multiTypeEdgeCount)
   );
 };
 
@@ -1267,7 +1355,7 @@ const farWalkFits = (scan: HopScan): boolean => {
     // where the twin requires the far side to be.
     pa === undefined &&
     inNear === undefined &&
-    (types?.length === 1 || graph.multiTypeEdgeCount === 0)
+    bucketSumsAreSound(types, graph.multiTypeEdgeCount)
   );
 };
 
@@ -1604,7 +1692,7 @@ const tallyEdges = (scan: HopScan, env: EvalEnv): Iterable<Edge> => {
 
   // A per-vertex bucket can hold one edge under several labels, so this source is sound only
   // where `degreeOfTypes` is: one concrete type, or no multi-type edge in the graph.
-  if (types?.length === 1 || graph.multiTypeEdgeCount === 0) {
+  if (bucketSumsAreSound(types, graph.multiTypeEdgeCount)) {
     const worthIt = (
       set: ReadonlySet<Vertex> | undefined,
       label: LabelExpr | undefined,
@@ -2717,25 +2805,19 @@ const buildOneHopCount = <T>(
     return null;
   }
 
-  // 🛑 EXACTLY ONE TYPE for the constrained undirected arm, and `undirected-hop-count.test.ts`
-  // caught the first cut without it: `degreeOfTypes` sums the per-type bucket SIZES, so an edge
-  // carrying both `T` and `S` is counted once per bucket and `(:P)-[:T|S]-(x) WHERE true` answered
-  // 6 against the unfiltered route's 4. `startWalkFits` carries the same condition for the directed
-  // walk — "summing per-type bucket sizes is sound only when no edge sits in two of them" — and
-  // this arm bypasses that rule by not going through it.
+  // A MULTI-TYPE alternation and an untyped `-[]-` used to decline here, and item 1076 gave the
+  // reason: `degreeOfTypes` sums the per-type bucket SIZES, so an edge carrying both `T` and `S`
+  // is counted once per bucket and `(:P)-[:T|S]-(x) WHERE true` answered 6 against the unfiltered
+  // route's 4. `startWalkFits` carries the same condition for the directed walk — "summing
+  // per-type bucket sizes is sound only when no edge sits in two of them".
   //
-  // The condition there is `types?.length === 1 || multiTypeEdgeCount === 0`; here it is only the
-  // first half, because the second is a RUNTIME property and this closure has no way to hand the
-  // query back once built. So a multi-type alternation and an untyped `-[]-` keep the old decline
-  // even on a graph where the sum would have been sound — conservative, and the wrong answer it
-  // replaces was the alternative.
-  if (
-    rel.direction === 'both' &&
-    (pred !== undefined || inNear !== undefined) &&
-    relTypeNames(rel.label)?.length !== 1
-  ) {
-    return null;
-  }
+  // That condition is `types?.length === 1 || multiTypeEdgeCount === 0`, and item 1076 took only
+  // the FIRST half, on the grounds that the second is a runtime property this closure cannot ask.
+  // IT CAN: the undirected branch below returns `(graph, params) => …` and the branch beside it
+  // already reads `graph.multiTypeEdgeCount` inside that closure. So there is no decline here at
+  // all now — `undirectedStartOnlyCount` asks the full condition per execution, and when it does
+  // not hold it SUBTRACTS the overcount exactly rather than declining (item 1078). The untyped
+  // spelling measured 257 ms as item 1076's own control.
 
   // An inline constraint that reached here but was not compiled into `inFar` would
   // be silently IGNORED, which is a wrong answer rather than a slow one. This is
@@ -2920,7 +3002,7 @@ const buildOneHopCount = <T>(
       a === undefined &&
       b === undefined &&
       types &&
-      (types.length === 1 || graph.multiTypeEdgeCount === 0)
+      bucketSumsAreSound(types, graph.multiTypeEdgeCount)
     ) {
       return rowOf(types.reduce((n, t) => n + (graph.edgesByLabel.get(t)?.size ?? 0), 0));
     }
@@ -8886,14 +8968,10 @@ export const detectGroupedHopCount = (clauses: readonly Clause[]): ReachFn | nul
     const { bump: add } = groups;
 
     // Summing per-type bucket sizes is sound only when no edge sits in two of them, and that
-    // is a RUNTIME property of the graph — so the O(V) degree walk is chosen per call, with
-    // the O(E) walk below as the always-correct alternative rather than a decline. (A
-    // `ReachFn` returns rows; it has no way to decline once built.)
-    // Summing per-type bucket sizes is sound only when no edge sits in two of them, and that
     // is a RUNTIME property of the graph — so the degree walk is chosen per call, with the
     // per-edge walk as the always-correct alternative rather than a decline. (A `ReachFn`
     // returns rows; it has no way to decline once built.)
-    const bucketSumSound = types?.length === 1 || graph.multiTypeEdgeCount === 0;
+    const bucketSumSound = bucketSumsAreSound(types, graph.multiTypeEdgeCount);
     const index = out ? graph.edgesFromByLabel : graph.edgesToByLabel;
     const farPb = vacuousLabel(graph, farLabel) ? undefined : farLabel;
 
