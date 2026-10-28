@@ -14496,8 +14496,38 @@ whatever the list says, and its boolean-context residual is narrow by design —
 Also established: **`nan` is not a fixture property at all**, so `n.nan` is an absent key → null;
 `nu` is 5/9/null. So the right operand is `5 * null` or `null * null`, which agree in isolation.
 
-**➡️ NEXT: bisect by removing one CLAUSE at a time from the ORIGINAL query against the ORIGINAL fuzz
-fixture.** Every refuted hypothesis above rebuilt a minimal fixture instead, and the divergence
+**✅ DIAGNOSED AT ITEM 1055 — a statement-position `OFFSET` must skip rows BEFORE the projection, and
+TS evaluates it anyway.** The missing piece was the FIXTURE: the fuzzer runs
+`SET n.nan = sin(1e400)` / `ln(-1)` before fuzzing, creating a **stored NaN** that NDJSON cannot
+express ("ingest coerces NaN and the infinities to null"). So item 1054's "`nan` is not a property
+at all" is **WRONG** — the grep was over the FILE, and the fixture is the file PLUS two setup
+statements. **A fixture is what the code builds, not what the literal says.**
+
+Only `n = 3` has BOTH `nu = 5` and the NaN, so only that row faults (`5 * NaN` → `true + NaN`);
+`n = 7` has the NaN but `nu` null, so `null * NaN` → null → no error. `ORDER BY` on an all-null key
+tiebreaks on `n.n`, so `OFFSET 1` drops exactly the faulting row:
+
+```text
+                                                      ts        native
+  STATEMENT position, OFFSET 1 drops the row        raises     5 rows     <- DIVERGES
+  CLAUSE position (projection first)                raises     raises
+  STATEMENT, OFFSET 0 (keeps the row)               raises     raises
+  STATEMENT, no OFFSET                              raises     raises
+  STATEMENT, OFFSET 1, the faulting node ALONE      raises     []         <- minimal repro
+```
+
+**Native is right**: in ISO GQL a statement-position `ORDER BY … OFFSET` transforms the binding
+table and the following `RETURN` projects what survives, so a skipped row cannot contribute a value
+— or an error. Same class as the recorded "faulting PER-REP predicate" divergence, but here the ISO
+ordering of the two statements settles it.
+
+**➡️ NEXT: make TS's statement-position paging skip rows before the projection is evaluated.** The
+CLAUSE-position path is already correct and is the CONTROL — it must keep raising. Regression test:
+`MATCH (n:T) WHERE n.n = 3 ORDER BY … OFFSET 1 RETURN <faulting expr> AS x` → `[]`. Integration
+check: `FUZZ_SEED=3076589914`.
+
+~~**bisect by removing one CLAUSE at a time from the ORIGINAL query against the ORIGINAL fuzz
+fixture.**~~ Done at 1055, and it worked — Every refuted hypothesis above rebuilt a minimal fixture instead, and the divergence
 needs something those dropped — most likely the full row set interacting with `OFFSET 1`, or the
 statement-position `ORDER BY`/`OFFSET` against the projection.
 
