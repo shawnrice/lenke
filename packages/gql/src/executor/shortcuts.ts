@@ -1279,8 +1279,130 @@ const edgesOfVertices = function* (
  */
 const TALLY_SEEK_MARGIN = 8;
 
+/** The edges of `seed` carrying one of `types` — the residual an EDGE-index seed must re-apply,
+ *  because an index bucket is keyed by the property and knows nothing about the label.
+ *
+ *  A generator rather than a materialized set: the type filter is per edge either way, and the
+ *  walks that consume this already take a lazy source on three of their four routes. */
+const edgesOfTypesIn = function* (
+  seed: ReadonlySet<Edge>,
+  types: string[] | undefined,
+): Iterable<Edge> {
+  for (const e of seed) {
+    if (types === undefined) {
+      yield e;
+
+      continue;
+    }
+
+    for (const t of types) {
+      if (e.labels.has(t)) {
+        yield e;
+
+        break;
+      }
+    }
+  }
+};
+
+/**
+ * The EDGE index as a seed for a one-hop walk (item 1035), or `undefined` to keep the scan.
+ *
+ * `graph.edgePropertyIndex` has existed and been declarable with
+ * `createIndex({ on: 'edge', … })` throughout, and `@lenke/gremlin`'s `executor/index-seed.ts`
+ * seeds `E()` from it — while NOTHING in `@lenke/gql` referenced it. Item 1031 priced that: one
+ * question, 100 of 100,000 edges, answered in 0.025 ms by `E().has('amount', 500)` and 1.0 ms by
+ * either GQL spelling, because GQL enumerated the whole type bucket. A declared index served one
+ * surface and was invisible to the other.
+ *
+ * EXPORTED so the choice can be tested directly, for `hopSeek`'s reason: seeding is
+ * answer-preserving, so no result-based test can tell a seek from a scan and a mutant that
+ * simply never seeds survives all of them.
+ *
+ * Both spellings of the predicate are read, because they are one question and this file's
+ * recurring defect is serving only one of them: the clause `WHERE e.k = v` arrives as
+ * `relLifted.eqProps` (item 1034) and the inline `-[e:T {k: v}]->` as `inRel.pred.props`.
+ *
+ * A NULL value is declined deliberately. `{k: null}` matches a stored null AND an absent key
+ * (see `satisfies`), where the index bucket for null holds only the edges that store one — so
+ * seeding it would drop rows. Declining a seed is always sound; admitting a narrow one is not.
+ */
+export const edgeSeek = (
+  graph: Graph,
+  /** The rel's INLINE constraint, whose `props`/`eqProps` are one of the two spellings. */
+  inRel: InlinePred | undefined,
+  /** The lifted clause `WHERE` on the rel, the other spelling (item 1034). */
+  relLifted: CPredicate | undefined,
+  types: string[] | undefined,
+  env: EvalEnv,
+): ReadonlySet<Edge> | undefined => {
+  const idx = graph.edgePropertyIndex;
+  let best: { count: number; build: () => ReadonlySet<Edge> } | undefined;
+
+  const offer = (key: string, value: CompiledExpr): void => {
+    if (!idx.isIndexed(key)) {
+      return;
+    }
+
+    const v = value(env);
+
+    if (v === null || typeof v === 'object' || (typeof v === 'number' && Number.isNaN(v))) {
+      return;
+    }
+
+    const count = idx.countEquals(key, v) ?? 0;
+
+    if (best === undefined || count < best.count) {
+      best = { count, build: () => idx.equals(key, v) ?? new Set<Edge>() };
+    }
+  };
+
+  for (const { key, value } of inRel?.pred.props ?? []) {
+    offer(key, value);
+  }
+
+  for (const { key, value } of inRel?.pred.eqProps ?? []) {
+    offer(key, value);
+  }
+
+  for (const { key, value } of relLifted?.eqProps ?? []) {
+    offer(key, value);
+  }
+
+  if (best === undefined) {
+    return undefined;
+  }
+
+  // The scan this replaces is the EDGE TYPE bucket, not a vertex label bucket, so
+  // `seekIsWorthIt` is the wrong oracle — its `candidateCount` counts vertices. The rule is the
+  // same shape with the right denominator, and `TALLY_SEEK_MARGIN` is reused rather than a fifth
+  // constant invented: this is the same choice that function already guards, with the seed
+  // measured in edges instead of in vertices whose whole degree then follows.
+  let bucket = 0;
+
+  if (types === undefined) {
+    bucket = graph.edgesById.size;
+  } else {
+    for (const t of types) {
+      bucket += graph.edgesByLabel.get(t)?.size ?? 0;
+    }
+  }
+
+  return best.count * TALLY_SEEK_MARGIN < bucket ? best.build() : undefined;
+};
+
 const tallyEdges = (scan: HopScan, env: EvalEnv): Iterable<Edge> => {
   const { graph, pa, pb, out, types, cstart, cfar } = scan;
+
+  // THE EDGE SEED FIRST (item 1035). Unlike the two vertex seeds below it yields exactly the
+  // candidate EDGES rather than every edge incident to a narrowed vertex set, so where it
+  // qualifies it is the narrower source by construction and there is nothing to compare: a
+  // vertex seed of k vertices still carries their whole degree.
+  const seeded = edgeSeek(graph, scan.inRel, scan.pred.relLifted, types, env);
+
+  if (seeded !== undefined) {
+    return edgesOfTypesIn(seeded, types);
+  }
 
   // A per-vertex bucket can hold one edge under several labels, so this source is sound only
   // where `degreeOfTypes` is: one concrete type, or no multi-type edge in the graph.

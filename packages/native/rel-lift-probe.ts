@@ -16,6 +16,7 @@
  */
 import { Graph as TsGraph } from '@lenke/core';
 import { query as tsQuery } from '@lenke/gql';
+import { E, count, has, toArray, traversal } from '@lenke/gremlin';
 
 const N = Number(process.env.EDGE_N ?? 100_000);
 const REPS = Number(process.env.EDGE_REPS ?? 14);
@@ -32,14 +33,22 @@ const SHAPES: Record<string, { q: string; reached: boolean }> = {
     q: 'MATCH (a)-[e:PAID]->(b) WHERE e.amount = 500 RETURN count(*) AS c',
     reached: true,
   },
-  // Also reached: the predicate reads only `e`. A key NO edge carries, so it is the selectivity
-  // extreme of the same route rather than a control.
-  unindexed: { q: 'MATCH ()-[e:PAID]->() WHERE e.other = 500 RETURN count(*) AS c', reached: true },
-  // CONTROLS. Neither can take the new walk: the inline spelling is an `InlinePred` on the tally,
-  // and a node-key clause routes to the START walk.
+  // A CONTROL since item 1035: `other` is not an indexed key, so the edge seed declines and this
+  // arm keeps the type-bucket scan. It is the arm that says the win is the INDEX rather than
+  // "edge filters got faster".
+  unindexed: {
+    q: 'MATCH ()-[e:PAID]->() WHERE e.other = 500 RETURN count(*) AS c',
+    reached: false,
+  },
+  // THE CEILING (item 1035). Gremlin has seeded `edgePropertyIndex` all along, so this arm says
+  // what the declared index is worth and neither arm above can beat it.
+  gremlin: { q: 'GREMLIN', reached: true },
+  // The INLINE spelling. A control for item 1034 (it is an `InlinePred` on the tally, which that
+  // item did not touch) and a SUBJECT for item 1035, which reads both spellings' keys — the two
+  // are one question and this file's recurring defect is serving only one of them.
   'named-inline': {
     q: 'MATCH (a)-[e:PAID {amount: 500}]->(b) RETURN count(*) AS c',
-    reached: false,
+    reached: true,
   },
   'node-key': { q: 'MATCH (a)-[e:PAID]->(b) WHERE a.n = 7 RETURN count(*) AS c', reached: false },
 };
@@ -76,7 +85,10 @@ let answer: unknown;
 for (let r = 0; r < REPS; r++) {
   const t = performance.now();
 
-  answer = tsQuery(g, shape.q)[0]?.c;
+  answer =
+    shape.q === 'GREMLIN'
+      ? toArray(traversal(E(), has('amount', 500), count()), g)[0]
+      : tsQuery(g, shape.q)[0]?.c;
   series.push(performance.now() - t);
 }
 

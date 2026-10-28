@@ -29272,10 +29272,34 @@ multiTypeEdgeCount === 0`) — one named type cannot double-count. Native's `Adj
   pushes an inline rel predicate into the adjacency walk), not a seek.
 - **THE GREMLIN ARM IS WHAT MAKES THAT READABLE (item 1031).** Without it, 1.1 ms for 100 of
   100,000 edges looks respectable rather than 38x off the index.
-- **➡️ (1) GQL EDGE SEEDING is feature-sized (item 1031).** Not a cheaper filter — a missing SEED:
-  the pattern enumerates every vertex and walks each adjacency, where the index would let it START
-  from the matching edges. New plan path plus a qualifying-shape question (both ends unbound, or
-  bound FROM the edge's endpoints).
+- **✅ DONE — GQL EDGE SEEDING, 27x, and "feature-sized" was WRONG (item 1035).** `edgeSeek` offers
+  one candidate per indexed equality on the rel, takes the narrowest, admits it at
+  `count * TALLY_SEEK_MARGIN < bucket` (the EDGE TYPE bucket — `seekIsWorthIt` counts vertices and
+  is the wrong oracle), and `tallyEdges` tries it before its two vertex seeds. One shape per
+  PROCESS, three alternated rounds: anon-clause 1.055/1.089/1.072 → 0.035/0.038/0.036;
+  named-clause 1.114/1.085/1.060 → 0.039/0.035/0.041; named-inline 1.045/1.073/0.967 →
+  0.038/0.043/0.039; **CONTROL unindexed key 0.976/1.010/0.957 → 1.010/1.029/0.994 and CONTROL
+  node-key both FLAT.** GQL now lands within **1.4x of the Gremlin ceiling** (0.023-0.028), from
+  40x off it.
+- **METHOD — the estimate was wrong because the SUBSTRATE moved (item 1035).** 1031 called this a
+  new plan path with its own extraction problem. Item 1034's rel lift put BOTH spellings' keys into
+  the scan descriptor, and what was left was a chooser — 40 lines. **An estimate of a missing path
+  ages against the items that ship in between; re-read the descriptor before re-pricing.**
+- **METHOD — a mutant survived because the FIXTURE could not reach the code (item 1035).**
+  `drop-type-residual` passed 2,828 tests: the correctness fixture had four edges, where
+  `count * TALLY_SEEK_MARGIN < bucket` is FALSE and the seed DECLINES, so every assertion measured
+  the old scan. Rebuilt at 8,001 edges with a `U` edge carrying the same key, and its FIRST test
+  asserts `edgeSeek(…)?.size === 9` — the premise checked rather than assumed. The mutant then
+  fails 3. **A correctness fixture for a GUARDED route has to clear the guard, and that is
+  checkable.**
+- **⚠️ OPEN — `spelling-probe.ts` CANNOT SEE the edge-seed route (item 1035).** It declares only
+  VERTEX indexes and its one edge property is `w = e % 5`, a fifth of 600,000 edges, which the
+  margin correctly declines. Giving it a selective edge key means adding a property to a SHARED
+  fixture, which items 287/471 are both about — its own re-baseline pass, not a side effect.
+- **⚠️ ITEM 1034's CI WENT RED FOR A SEQUENCING ERROR, NOT A CODE ONE (item 1035).** Its gates ran
+  BEFORE the audit entry and the `CLOSED.md` lines were appended, so `oxfmt` never saw them and
+  CI's `oxfmt --check` found one over-long line in `CLOSED.md`. Everything else in that run was
+  green. **The documents are part of the change: the gates come after them, not after the code.**
 - **⚠️ ~~(2) give `pushWhereIntoNode` a relationship twin~~ — BUILT AND REVERTED, it returns WRONG
   ANSWERS (item 1032).** Sixteen GQL tests failed as wrong ROWS, not route assertions:
   `WHERE r.w = 1` returned a row with `w: 2`, so a pushed `rel.where` is DROPPED on at least one
@@ -29317,7 +29341,7 @@ multiTypeEdgeCount === 0`) — one named type cannot double-count. Native's `Adj
   flat. The item-1033 verdict on the BRANCH still stands (that was a different shape of code); the
   2x figures in it do not. **`rel-lift-probe.ts` is the instrument for anything in this family.**
 - **METHOD — a surviving mutant that was a missing TEST, not dead code (item 1034).** `needsBind =
-  false` survived all 2,803 tests: it binds the rel variable for a predicate that leaves a RESIDUAL
+false` survived all 2,803 tests: it binds the rel variable for a predicate that leaves a RESIDUAL
   `where`, and the suite had no `count(*)` over a rel-only clause `WHERE` that leaves one.
   `liftedOwnPred` returns a `CPredicate` whatever `directEqProps` leaves behind, so the path is
   reachable. `rel-lift-count.test.ts` covers it (four residual shapes, each also checked against
