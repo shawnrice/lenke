@@ -30892,3 +30892,44 @@ Items 338/390: element materialization is 129x a scalar read, ablated as **47% p
 (1068, 1069). **The 37% is the remaining named target** — and item 392 already refuted the obvious
 attack (pre-sizing the property vector was 1.25x SLOWER), so the next attempt needs a different idea
 rather than a retry.
+
+## 1070 — ❌ REFUTED: `Value::Map(Arc<[_]>)` is SLOWER than `Arc<Vec<_>>` — +22.9 ns/row, in BOTH halves
+
+The second attack on item 390's "37% in two `Value::Map` allocations", priced before the cross-crate
+refactor it would need. `Map(Arc<Vec<_>>)` is two allocations where `Value::Record` in the same enum
+already uses the single-allocation `Arc<[(GStr, Value)]>`, so the floor looked like 2 per map
+instead of 4 per row.
+
+```text
+  outer 3-pair: Arc::new(vec![..])   (today)    min 26.7 ns/row
+  outer 3-pair: Arc::from_iter([..])            min 39.0           +12.3  SLOWER
+  props: pushes -> Arc::new(v)       (today)    min 44.6
+  props: pushes -> Arc::from_iter(v)            min 55.2           +10.6  SLOWER
+  CONTROL props: pushes only, no map            min 30.1
+```
+
+**The props half was predicted** — `Arc<[T]>` is one allocation only from an `ExactSizeIterator`, and
+`Arc::<[T]>::from(vec)` copies, so an accumulated `Vec` pays `Vec` + `Arc` + memcpy. **The outer half
+was not**: three pairs with a known length is the case `from_iter` should win, and it loses by more.
+`vec![a,b,c]` is one sized allocation and three moves; `from_iter` goes through the iterator protocol
+and a layout computation that costs more at N=3 than the allocation it removes. **Item 1069's lesson
+one item earlier, same shape: iterator machinery is not free, and at small N it can exceed what it
+saves.**
+
+### What the control priced
+
+`pushes only` 30.1 against `pushes -> Arc::new(v)` 44.6 ⇒ **the props map's `Arc` box is 14.5 ns/row**.
+So "37% in two map allocations" reads better as ~15 ns of `Arc` boxing plus ~60 ns of `Vec` + pair
+building across both maps, of ~338 ns/row.
+
+**🛑 And the first cut of the probe could not have said that**: its `pair()` used `format!`, so the
+control read 107.1 ns/row and the 14.5 was invisible under the fixture's own allocation. **A control
+is only useful if the effect is above the fixture's floor.**
+
+### ➡️ Element render, where the shares now stand
+
+- **12% labels — DONE** (1068, 1069).
+- **37% map allocations — TWO attacks refuted**: pre-sizing the property vector (392, 1.25x slower)
+  and the `Arc<[_]>` representation (this item). Close to its floor while each row's map is
+  independently owned.
+- **47% property loop — the largest share and unattacked.** That is where the next attempt belongs.
