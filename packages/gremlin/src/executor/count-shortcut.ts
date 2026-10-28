@@ -341,6 +341,34 @@ const hasChain = (rest: readonly Step[]): Extract<Step, { kind: 'has' }>[] | und
   const filters: Extract<Step, { kind: 'has' }>[] = [];
 
   for (const step of rest) {
+    // A SINGLE-KEY `hasKey` IS a `has` filter — item 1140.
+    //
+    // `has('k')` with one argument builds `{kind:'hasKey'}`, not `{kind:'has'}` (`steps/filters.ts`),
+    // so this loop declined it, every rung depending on this function declined with it, and the
+    // query fell to the general traversal stream. Item 1139 instrumented the decline and measured
+    // the cost: `out().has(age).count()` at 172-189 ms against `out().values(age).count()` at
+    // 104-108, a stable 1.64x between two spellings of ONE question, both answering correctly.
+    // That is the archetype CLAUDE.md names — "recognized one spelling of a predicate and scanned
+    // for another that meant exactly the same thing" — and historically cost 100-300x.
+    //
+    // Carried as a synthetic `has` with the `present` predicate rather than by widening the `kind`
+    // check, because every consumer reads `.key` and `.pred`. `{op:'present'}` exists for exactly
+    // this and is the ONE predicate that does not read a value; item 1139 records why synthesising
+    // a value predicate instead would be a silent WRONG ANSWER on a stored present-null.
+    //
+    // MULTI-KEY `hasKey` declines. It is ANY-of in both engines (the TS executor tests
+    // `keys.some(...)`, the Rust parser folds an `Or` of `PropertyExists`), and this chain is a
+    // CONJUNCTION — so admitting it as one filter would be wrong, and splitting it into several
+    // would be wrong the other way. Correct and merely slow, which is the right side to fail on.
+    if (step.kind === 'hasKey') {
+      if (step.keys.length !== 1) {
+        return undefined;
+      }
+
+      filters.push({ kind: 'has', key: step.keys[0], pred: { op: 'present' } });
+      continue;
+    }
+
     if (step.kind !== 'has') {
       return undefined;
     }

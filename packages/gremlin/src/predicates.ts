@@ -324,6 +324,15 @@ export const regex = (value: string): Predicate => {
  */
 export const matches = (pred: Predicate, value: unknown): boolean => {
   switch (pred.op) {
+    // Item 1140. PRESENCE — the one predicate that does not read the value. `undefined` is the
+    // ONLY absence marker a property read can produce: the numeric model converts a written
+    // `undefined` to `null` (and so does every ingest path), so a PRESENT key never reads back as
+    // `undefined` and a stored present-null reads `null` and is kept. That makes this exactly the
+    // `k in bag` test `dispatch.ts` applies for `hasKey`, which is the semantics this stands in
+    // for — NOT `!= null`, which would drop a present-null and is the precise error the Rust
+    // engine's `has_value_at`/`present_at` pair exists to keep apart (item 1136).
+    case 'present':
+      return value !== undefined;
     case 'eq':
       return valueEq(value, pred.value);
     case 'neq':

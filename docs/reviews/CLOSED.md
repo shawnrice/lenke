@@ -33500,3 +33500,45 @@ is PRESENCE-ONLY (the measured shape) take a dedicated arm testing `k in bag` pe
 the MIXED case declining (correct, merely slow). ⚠️ Deliberately NOT adding a per-row branch to the
 existing unrolled loops — this file records entering a call at ~65 ns a row (item 934) and the
 unrolls exist to remove exactly that. OPEN.
+
+## 1140 — ✅ SHIPPED **6.15x** on the TS `out().has(k).count()`: a `{op:'present'}` predicate, NOT the duplicated rung item 1139 designed — and the spelling pair is STILL unequal, now the other way
+
+Item 1139 diagnosed the cliff (`hasChain` declines the `hasKey` that `has(k)` builds) and planned a
+presence-only rung with its own copy of the vertex-driven loop. **The shipped fix is smaller and
+reaches more:** a new `Predicate` variant `{op:'present'}`, one arm in `matches`, one conversion in
+`hasChain` — three edits instead of ~40 duplicated lines, and every rung depending on `hasChain`
+(edge-hop seed and start-filtered form included) gets it.
+
+⚠️ **The accessor is `!== undefined`, NOT `!= null`** — the same distinction as the Rust engine's
+`present_at`/`has_value_at` (item 1136). A property read is `undefined` only for an ABSENT key (the
+numeric model converts a written `undefined` to `null`), so this IS `dispatch.ts`'s `k in bag` and a
+stored present-null is KEPT. `!= null` drops present-nulls silently.
+
+⚠️ **Multi-key `hasKey` DECLINES** — ANY-of in both engines, while this chain is a CONJUNCTION.
+
+Checked before writing: the type checker found exactly ONE site needing the variant (`matches`), and
+`seedForPred` has `default: return null` so a `present` pred cannot mis-seed the property index.
+
+Three alternated rounds, arm-asserted on the BUILT dist:
+
+```text
+  S1 out.has(age).count   PRE 202.4/193.4/188.8   POST 32.0/30.7/31.9    6.15x
+  S2 out.values(age) [ctl] PRE 105.6/107.3/104.8  POST 108.5/108.7/108.5  flat
+  C  out.count       [ctl]  0.0 both      ffi column flat (TS-only change)
+```
+
+⚠️ **The arm assertion FIRED on the first attempt** (`want 1 ... got 0`): the bundler emits DOUBLE
+quotes (`case "present"`), and **`grep -c` returns nothing for `dist/esm/index.mjs` at all** — the
+Unicode-skip — while python `str.count` finds 6. Without it this was a one-arm measurement. Assert on
+the BUILT dist, not the source.
+
+⚠️ **STILL UNEQUAL, sign flipped:** POST S1 30.7 vs S2 108.5 — `has` is now 3.5x FASTER. Same thing
+happened in Rust (1137 equalized one fixture, 1138 found 12x on another). The doctrine is cost
+EQUALITY, so **this family is open in BOTH engines and `values(k).count()` is now the lagging
+spelling in both.** OPEN.
+
+Mutation on a GREEN baseline: `present`→`!= null` CAUGHT (4 fails); multi-key guard removed CAUGHT —
+⚠️ only after the fixture gained a vertex carrying ONLY the second key (without it `hasKey(k,z)` ==
+`has(k)` and the mutant survived). Third time this session a survivor was a missing fixture row.
+Suites isolated: gremlin 926, gql 3117, native 933, core 370, serialization 144, sync 176 = **5,666
+pass / 0 fail**; root `bun test`'s 68 failures are the documented run-many flake. 7/7 fuzzers green.

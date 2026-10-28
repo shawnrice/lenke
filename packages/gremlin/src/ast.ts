@@ -27,6 +27,15 @@ export const Direction = { OUT: 'out', IN: 'in', BOTH: 'both' } as const;
 export type Orderable = number | string | Temporal;
 
 export type Predicate =
+  // Item 1140. PRESENCE, and the only variant that does not read a value: true iff the element
+  // carries the key at all, counting a STORED PRESENT-NULL. It is never produced by surface
+  // syntax — `has('k')` builds a `hasKey` step, which is what a user writes — and exists so the
+  // count shortcut's `hasChain` can carry a single-key `hasKey` through machinery that is keyed
+  // on `has`. See `count-shortcut.ts`: admitting the step without this was impossible because
+  // every OTHER predicate reads the value, and synthesising e.g. `neq(sentinel)` would drop a
+  // present-null through `predCmp`'s NaN path — the `present_at` vs `has_value_at` distinction
+  // that cost a mutant verdict in the Rust engine at item 1136.
+  | { op: 'present' }
   | { op: 'eq'; value: unknown }
   | { op: 'neq'; value: unknown }
   | { op: 'gt'; value: Orderable }
