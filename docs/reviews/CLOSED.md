@@ -14425,8 +14425,23 @@ stable. But:
 - The readers take `&self`, so any lazy rebuild needs interior mutability (the struct already uses a
   `RwLock` for `edge_prop_keys_cache`, so it is possible, not free).
 
-**The narrower fix the diagnosis actually points at:** the selective-type scan needs only a GLOBAL
-per-type edge list, not the whole CSR — appendable O(1) on `add_edge` and O(partition) on delete,
+**⚠️ AND THE OPT-IN EDGE-TYPE INDEX DOES NOT RESCUE IT (item 1041).** `out_typed`/`in_typed` have
+exactly ONE non-test consumer, `for_each_nbr` at `exec.rs:4417`, whose comment says the
+incrementally-maintained index answers when the CSR is stale — so a reader concludes
+`createIndex({on:'edge',kind:'type'})` cancels the penalty. Measured, 50k nodes / 150k edges / 1 in
+50, `MATCH ()-[:WANTED]->(b) RETURN count(*)`, three rounds: no index FRESH 0.003/0.004/0.004 →
+STALE 0.381/0.351/0.352 (**~90x**, sharper than the 24.07x above because this shape is answered
+from a `len()` when fresh); index DECLARED FRESH 0.008/0.006/0.007 → STALE 0.413/0.386/0.392 — **the
+stale column does not improve.** `typed_hop_count_from_size` and `try_edge_label_count` both end in
+`out_typed_flat(t)?`, so the `?` declines the whole fast path and neither consults the index. Wiring
+them up would not fix much either: **the index is PER NODE and the count wants a GLOBAL per-type
+total** (50,000 hash lookups instead of 150,000 edge visits, against a fresh answer that is one
+`len()`). Also observed, unattributed: declaring the index costs the FRESH path ~2x (3-4 µs absolute
+on an O(1) path), and it is NOT staleness — `create_edge_type_index` touches nothing CSR-related.
+
+**The narrower fix the diagnosis actually points at** — and item 1041 makes it the ONLY route that
+keeps the O(1) answer, having ruled out pointing the existing fast paths at the existing index: the
+selective-type scan needs only a GLOBAL per-type edge list, not the whole CSR — appendable O(1) on `add_edge` and O(partition) on delete,
 i.e. maintainable incrementally exactly as items 674-676 made the edge-type index's buckets
 maintainable. That would make the fresh/stale distinction vanish for this shape without any rebuild
 policy. Not costed yet; the maintenance price needs measuring before it is proposed.
