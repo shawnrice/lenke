@@ -260,7 +260,14 @@ graph, raw vs optimized, compared as multisets.
 ```
 cargo test --release --manifest-path crates/lenke-engine/Cargo.toml rewrite_fuzz
 LENKE_OPT_FUZZ_SEEDS=200000 cargo test --release ... rewrite_fuzz   # deeper sweep
+LENKE_OPT_FUZZ_SEEDS=500000 cargo test --release ... rewrite_fuzz   # ~100s; found a WRONG ANSWER
 ```
+
+**200000 is not deep enough, and that is measured.** At 500000 the sweep found an optimizer WRONG
+ANSWER that 200000 passes over: `hash_join` placed the `u32::MAX` OPTIONAL sentinel in a bucket a
+real node id could reach, so a join whose right keys were all NULL matched left id 0 and invented
+rows (audit items 1148-1150). The whole 500000 sweep costs ~100 seconds. Run it when you touch a
+rewrite, `hash_join`, or anything either of them reads.
 
 Three rules when you add or change a rewrite, all learned the hard way:
 

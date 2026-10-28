@@ -1991,6 +1991,51 @@ fn ordered_output(plan: &Plan) -> bool {
     }
 }
 
+/// Do the page's sort keys ACTUALLY order every row apart, on this store? — item 1151.
+///
+/// [`ordered_output`] decides from the PLAN, and cannot: it requires a key per slot, each reading
+/// something unique per node, which is necessary and not sufficient. The rows arriving at the page
+/// can already hold DUPLICATE key tuples — a chain that reaches the same endpoint pair by several
+/// paths emits one row per path, and the pair is what the keys read. The rows are then
+/// distinguishable in the OUTPUT (seed 1889763 separates them by a `PathAccess { Length }` column)
+/// while being tied on every sort key, so a stable sort leaves their relative order up to the
+/// arrival order, which optimizing is free to change.
+///
+/// That is the same class of oracle fault the seed-96445 note in `ordered_output` records, with a
+/// different cause: there the key EXPRESSION was not unique, here the key TUPLES are not distinct.
+/// A static check cannot see the second one, so this one runs the keys and looks.
+///
+/// Returns `false` — i.e. fall back to the bag comparison — when the keys cannot be evaluated or
+/// when any tuple repeats. Conservative in the right direction: a page whose keys really are total
+/// still gets the strictly stronger ordered assertion.
+fn sort_keys_are_total(plan: &Plan, store: &Store) -> bool {
+    fn page(p: &Plan) -> Option<(&Plan, &[crate::ir::SortKey])> {
+        match p {
+            Plan::OrderPage { input, keys, .. } => Some((input.as_ref(), keys)),
+            Plan::Project { input, .. } | Plan::Distinct { input } => page(input),
+            _ => None,
+        }
+    }
+    let Some((input, keys)) = page(plan) else {
+        return false;
+    };
+    let probe = Plan::Project {
+        input: Box::new(input.clone()),
+        items: keys
+            .iter()
+            .enumerate()
+            .map(|(i, k)| (format!("k{i}"), k.expr.clone()))
+            .collect(),
+    };
+    let Ok(rows) = crate::exec::try_run(&probe, store) else {
+        return false;
+    };
+    let mut seen = std::collections::HashSet::new();
+    rows.rows
+        .iter()
+        .all(|r| seen.insert(r.iter().map(|v| format!("{v:?};")).collect::<String>()))
+}
+
 /// Rows in order, for a plan whose order is part of its answer.
 fn seq(rows: &Rows) -> Vec<String> {
     rows.rows
@@ -2044,7 +2089,7 @@ fn check(seed: u64, store: &Store, indexed: bool) -> bool {
         // An ORDERED comparison where the order is specified, a multiset comparison
         // everywhere else. The ordered one is strictly stronger and catches a top-k
         // that returns the right rows in the wrong sequence, which a bag cannot.
-        (Ok(b), Ok(a)) if ordered_output(&plan) => assert_eq!(
+        (Ok(b), Ok(a)) if ordered_output(&plan) && sort_keys_are_total(&plan, store) => assert_eq!(
             seq(b),
             seq(a),
             "\noptimizing changed the ORDER (seed {seed}, indexed {indexed})\

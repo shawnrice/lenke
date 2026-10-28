@@ -33950,3 +33950,35 @@ Suite 1280+13+725; 7/7 byte-identity fuzzers.
 item 1147, refuted isolated both times (POST actually FASTER at 0.914x this time); spans
 2726.8-3137.6 alone (15%), and its in-sweep PRE (~2670) sits consistently below its isolated PRE
 (~3000). Known false positive alongside `query/gremlin/order(local) then hop`.
+
+## 1151 — ✅ the last 500k failure was the ORACLE: `ordered_output` cannot see DUPLICATE key tuples. **The whole sweep is now green** and the relaxation is proven to keep its teeth
+
+⚠️ `ordered_output`'s totality test — `keys.len() >= width(input) && keys.iter().all(unique)` — is
+**necessary and not sufficient**. At seed 1889763 both halves hold (two `name` keys over a
+two-column input) and all 25 rows are STILL tied, because **the rows arriving at the page already
+hold duplicate (slot0, slot1) tuples**: a chain reaching the same endpoint pair by several paths
+emits one row per path, and the pair is what the keys read. The output separates them by a
+`PathAccess{Length}` column, which is not a sort key. Same class as the seed-96445 note already in
+that function, different cause — there the key EXPRESSION was non-unique, here the key TUPLES are.
+**A static check sees the first, not the second.**
+
+**Fix:** `sort_keys_are_total(plan, store)` projects the page's keys over the page's input, runs it,
+and returns false if any tuple repeats — so a tied page falls back to the bag and a total page keeps
+the stronger sequence check.
+
+⚠️ **RELAXING AN ORACLE NEEDS TWO PROOFS, and both were taken:**
+
+1. **It still fires** — over 20,000 seeds: **1515 ORDERED vs 135 relaxed-to-bag** (8.2%). Not
+   quietly disabled.
+2. **It still catches a real order bug** — and note the oracle compares raw against OPTIMIZED, so an
+   `exec` order defect moves both arms equally and is invisible; the mutant must be in the OPTIMIZER.
+   Dropping `keys.is_empty()` from the "page that keeps everything" identity (so it elides an
+   order-BEARING page) is **CAUGHT at seed 150**, plus 2046 and 5279.
+
+```text
+  LENKE_OPT_FUZZ_SEEDS=500000:  10 passed, 0 failed  (~102 s)
+```
+
+✅ **CLAUDE.md now documents 500000**, with the reason and the cost: 200000 is NOT deep enough and
+that is measured — 500000 found the item-1150 wrong answer that 200000 passes over, for ~100 s.
+Suite 1281+13+725; 7/7 byte-identity fuzzers.
