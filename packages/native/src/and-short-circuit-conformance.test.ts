@@ -20,9 +20,14 @@ import { graphFromNdjson } from './graph.js';
 const NDJSON = [
   // `s` is a STRING, so coercing it to a truth value is a data exception — and it is
   // DYNAMICALLY typed, so neither engine's static boolean-context check can catch it.
-  '{"type":"node","id":"1","labels":["P"],"properties":{"n":1,"s":"a"}}',
-  '{"type":"node","id":"2","labels":["P"],"properties":{"n":2,"s":"b"}}',
-  '{"type":"node","id":"3","labels":["P"],"properties":{"n":3,"s":"c"}}',
+  // `m` is a RECORD, and it is here so the dotted cases below read a real value rather than an
+  // absent key. Without it `n.m.k = 99` would drop every row because `m` is MISSING — the
+  // assertion would hold for a reason that has nothing to do with bucket order, which is the
+  // vacuous-pass trap item 1162 was billed for. `deep` gives the two-level `pathOf` walk
+  // something to walk.
+  '{"type":"node","id":"1","labels":["P"],"properties":{"n":1,"s":"a","m":{"k":1,"deep":{"z":9}}}}',
+  '{"type":"node","id":"2","labels":["P"],"properties":{"n":2,"s":"b","m":{"k":2,"deep":{"z":8}}}}',
+  '{"type":"node","id":"3","labels":["P"],"properties":{"n":3,"s":"c","m":{"k":3,"deep":{"z":7}}}}',
   '{"type":"edge","id":"e1","labels":["E"],"from":"1","to":"2","properties":{"w":2}}',
 ].join('\n');
 
@@ -187,6 +192,38 @@ suite('AND short-circuit: the TS and native engines agree', () => {
     expect(agree('MATCH (n:P) RETURN n.n.k AS c ORDER BY c')).toStartWith('ok');
     expect(agree('MATCH (n:P) RETURN n.s.k AS c ORDER BY c')).toStartWith('ok');
     expect(agree('MATCH (n:P) RETURN n.zz.k.j AS c ORDER BY c')).toStartWith('ok');
+  });
+
+  test('a DOTTED conjunct settles the row BEFORE a coercing sibling raises (item 1169)', () => {
+    // A predicate attached to a MATCH never reaches `filterPredicate`: `compilePredicate` lifts
+    // each conjunct into a typed bucket and `residual` is always undefined, so the lifted lists
+    // are the only carriers and the order ACROSS buckets decides which conjunct runs first. The
+    // buckets are ordered NON-RAISING FIRST — `eqProps`/`cmpProps` read and compare, while
+    // `truthProps`/`notTruthProps` COERCE and raise on a non-boolean — and item 900 appended
+    // `pathProps` after the raising pair, so `n.s` coerced a string before the dotted conjunct
+    // could drop the row. The engine hoists it (its `can_raise` calls a `Compare` over a `Field`
+    // non-raising) and never faulted.
+    //
+    // Both orders, the FILTER spelling, two levels deep, the NEGATED truth bucket, and an
+    // ordering operator — `pathProps` carries any comparison, not just `=`.
+    for (const q of [
+      'MATCH (n:P) WHERE n.m.k = 99 AND n.s RETURN n.n AS x',
+      'MATCH (n:P) WHERE n.s AND n.m.k = 99 RETURN n.n AS x',
+      'MATCH (n:P) FILTER n.m.k = 99 AND n.s RETURN n.n AS x',
+      'MATCH (n:P) WHERE n.m.deep.z = 99 AND n.s RETURN n.n AS x',
+      'MATCH (n:P) WHERE n.m.k = 99 AND NOT n.s RETURN n.n AS x',
+      'MATCH (n:P) WHERE n.m.k > 1000 AND n.s RETURN n.n AS x',
+    ]) {
+      expect(agree(q)).toBe('ok []');
+    }
+
+    // CONTROLS the reorder must NOT reach: when the dotted conjunct MATCHES, the coercing sibling
+    // is essential and BOTH engines must still raise. Without these, moving a bucket that
+    // SUPPRESSED every raise would pass.
+    expect(agree('MATCH (n:P) WHERE n.m.k = 1 AND n.s RETURN n.n AS x')).toBe(
+      'ERR E_INVALID_VALUE',
+    );
+    expect(agree('MATCH (n:P) WHERE n.s RETURN n.n AS x')).toBe('ERR E_INVALID_VALUE');
   });
 
   test('WAS THE OTHER RESIDUAL: the REVERSED spelling now agrees', () => {

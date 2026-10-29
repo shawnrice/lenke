@@ -5853,6 +5853,32 @@ export const satisfies = (
     }
   }
 
+  // A DOTTED path, read straight off the element (item 900). `compareTruth` is the generic
+  // `compare` arm's own function — the same one `cmpProps` uses — so UNKNOWN (a null operand, a
+  // cross-type ordering, an absent segment) drops the row here exactly as it does there, and an
+  // `=` means the EXPRESSION reading rather than the inline one.
+  //
+  // BEFORE `truthProps`, NOT after it, and the position is load-bearing (item 1169). These blocks
+  // are ordered NON-RAISING FIRST: `eqProps` and `cmpProps` settle a row by reading a value and
+  // comparing it, while `truthProps`/`notTruthProps` COERCE one and so RAISE on a non-boolean.
+  // Item 900 appended this block at the end, which broke that invariant — and the engine's
+  // `can_raise` treats a `Compare` over a `Field` and a `Lit` as NON-raising (`Expr::Field` falls
+  // into its `_ => false`), so the engine hoists such a conjunct past a faulting sibling and this
+  // engine did not:
+  //
+  //     MATCH (n:P) WHERE n.m.k = 99 AND n.s   ->   ts raised, engine answered []
+  //
+  // `n.s` lifts into `truthProps` and the dotted conjunct into `pathProps`, so running the former
+  // first coerced a string before the latter could drop the row. Moving the block up is the whole
+  // fix; nothing about either block's own semantics changes.
+  if (pred.pathProps !== undefined) {
+    for (const { path, op, value } of pred.pathProps) {
+      if (compareTruth(op, COMPARE[op], pathOf(element, path), value(env)) !== true) {
+        return false;
+      }
+    }
+  }
+
   // A bare property standing alone as a boolean predicate (item 875). `asTruth` is the SAME
   // function the generic `where` below goes through, so this is a cheaper route to an identical
   // answer — including the RAISE on a non-boolean, which is the reason these are not lifted as
@@ -5873,18 +5899,6 @@ export const satisfies = (
   if (pred.notTruthProps !== undefined) {
     for (const key of pred.notTruthProps) {
       if (asTruth(propOf(element, key)) !== false) {
-        return false;
-      }
-    }
-  }
-
-  // A DOTTED path, read straight off the element (item 900). `compareTruth` is the generic
-  // `compare` arm's own function — the same one `cmpProps` uses — so UNKNOWN (a null operand, a
-  // cross-type ordering, an absent segment) drops the row here exactly as it does there, and an
-  // `=` means the EXPRESSION reading rather than the inline one.
-  if (pred.pathProps !== undefined) {
-    for (const { path, op, value } of pred.pathProps) {
-      if (compareTruth(op, COMPARE[op], pathOf(element, path), value(env)) !== true) {
         return false;
       }
     }
