@@ -2910,6 +2910,36 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   columns — cheaper to write, already covered by those arms' own oracles and mutation, and FASTER
   by item 471's measurement that N passes over one column each beat one interleaved pass (5.6 ms
   against 0.6). Separate function after the numeric entry, per item 1184.
+- ✅ **THE `Column::Num`-ONLY EXTREMUM FAMILY IS CLOSED (census at item 1191).** Six items came out
+  of applying "grep the pattern elsewhere" to the function next door: 1182 (frontier single), 1184
+  (frontier multi, via a wide twin), 1185/1186 (hop top-K, numeric then the rest), 1188 (scan multi,
+  by DELEGATION to the single-agg arms), 1190 (fused filtered hop) — plus 1189 REFUTED on its floor
+  and 1187 fixing a probe that had never measured a temporal column. The census is now exhausted:
+  every `try_*` with a `Num`-only destructure that admits `Min`/`Max` either has a wide twin or
+  sibling arms beside it, or was refuted by measurement.
+
+  ```text
+    try_scan_num_agg            siblings: try_scan_{str,bool,temporal}_agg  (1172/1175/841)
+    try_frontier_multi_agg      wide twin: try_frontier_multi_agg_wide      (1184)
+    try_scan_multi_agg          wide twin: try_scan_multi_agg_wide          (1188)
+    try_filtered_scan_num_agg   REFUTED at ~1.3x — the filter dominates     (1189)
+    try_fused_hop_mask_agg      widened in place + a route guard            (1190)
+    try_frontier_prop_agg       widened in place                            (1182)
+  ```
+
+  Everything else `Num`-only is numeric BY NATURE and not a candidate: `sum`/`avg`/`stddev`,
+  percentiles (ISO defines them over numerics), and the fused/stream count and projection paths
+  whose `Column::Num` is the column the **PREDICATE** compares against, not an aggregate's
+  (`try_fused_hop_project`, `try_fused_hop_num_count`, `try_stream_num_count`,
+  `try_num_conjunction`, `try_num_disjunction`, `try_filter_keep_arith`, `try_filter_keep_call`,
+  `try_edge_cross_count`).
+
+  ⚠️ **A NAIVE DETECTOR REPORTS TWO FALSE HOLES HERE.** "Destructures `Num` and nothing else, and
+  admits `Min`/`Max`" flags `try_frontier_multi_agg` (the NARROW entry — correct by design, its twin
+  serves the rest) and `try_scan_multi_agg_wide` (which IS the twin, and serves everything by
+  delegation so it has no `Column::Str` pattern to find). The heuristic cannot tell "narrow entry
+  beside a wide twin" from "unserved hole"; check for the twin before pricing anything.
+
 - ~~**The FUSED filtered-hop extremum serves `Column::Num` alone**~~ — **CLOSED by item 1190** at
   **3.16x (dict) / 2.58x (str) / 2.47x (bool)** over three alternated rounds, taking them from
   5.08x/5.07x/3.93x of their own `count(*)` floor to 1.60x/1.95x/1.58x; `num` 1.01x and `mixed`
