@@ -3908,8 +3908,16 @@ type CountedGroup = { rep: Binding; n: number };
  */
 const FOLDED = Symbol('lenke.foldedAggregates');
 
-/** A group whose foldable aggregates are already computed: size, representative, values. */
-const foldedGroupView = (
+/**
+ * A group whose foldable aggregates are already computed: size, representative, values.
+ *
+ * Exported for `shortcuts.ts` since item 1196, which needs the SAME channel to hand a streamed
+ * aggregate's value to an OUTER expression that wraps it (`size(collect(a.k))`). Keyed by the
+ * aggregate's AST node, which is the key `compileAggregate` already looks a pre-folded value up
+ * by — so the wrapping expression runs through the ordinary evaluator rather than a second
+ * implementation of it.
+ */
+export const foldedGroupView = (
   rep: Binding,
   n: number,
   folded: ReadonlyMap<object, { readonly v: unknown }>,

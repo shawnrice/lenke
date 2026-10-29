@@ -97,6 +97,36 @@ describe('every fast-path detector fires for its own shape', () => {
 
     // --- aggregates ---------------------------------------------------------------------
     ['node aggregate', 'MATCH (n:L) RETURN max(n.k) AS m', ['nodeAggregate']],
+    // ITEM 1197: a WRAPPED aggregate is claimed by the same detector. Before it, every one of
+    // these fell to the general path — which materializes a group of bindings — at 6.5-10.2x the
+    // bare spelling. These rows are the only thing that holds that, since the route is
+    // answer-equivalent: `node-aggregate.test.ts` asserts the answers and would pass either way.
+    [
+      'WRAPPED aggregate (size over collect)',
+      'MATCH (n:L) RETURN size(collect(n.k)) AS c',
+      ['nodeAggregate'],
+    ],
+    [
+      'WRAPPED aggregate (coalesce)',
+      'MATCH (n:L) RETURN coalesce(collect(n.k), 1) AS c',
+      ['nodeAggregate'],
+    ],
+    [
+      'WRAPPED aggregate over a LITERAL',
+      'MATCH (n:L) RETURN size(collect(1)) AS c',
+      ['nodeAggregate'],
+    ],
+    // THE NEGATIVE CASES, which matter as much (see this file's header). Two aggregates must still
+    // decline — the route carries ONE accumulator — and the FOLD path still requires the aggregate
+    // to BE the item, so `abs(min(n.k) - 10)` is unchanged. That second row is this file's record
+    // that the fold-path sibling was left deliberately: it is the same lever on `min`/`max`/`count`
+    // and is priced on its own rather than assumed to be worth the same.
+    [
+      'a wrapped aggregate plus a SECOND aggregate declines',
+      'MATCH (n:L) RETURN size(collect(n.k)) + count(*) AS c',
+      [],
+    ],
+    ['a wrapped FOLD aggregate still declines', 'MATCH (n:L) RETURN abs(min(n.k) - 10) AS c', []],
     ['hop aggregate', 'MATCH (a:L)-[:R]->(b:L) RETURN max(b.k) AS m', ['hopAggregate']],
     [
       'MULTI node aggregate (two items)',

@@ -74,6 +74,7 @@ import {
   compileExpr,
   compilePredicate,
   aggregateOverValues,
+  foldedGroupView,
   satisfies,
   sortsOnOutputOnly,
   countEdges,
@@ -93,7 +94,7 @@ import { indexCandidates, matchNode, seedVertices, seekIsWorthIt } from './match
 import type { SeedCandidate } from './matching.js';
 import type { ColSort, SortPlan } from './ordered-rows.js';
 import { boundedTopKeyed, outputColumnSorts, sortRowsByColumns } from './ordered-rows.js';
-import { AGGREGATES, asTruth, isNullish } from './scalars.js';
+import { AGGREGATES, asTruth, collectAggregates, isNullish } from './scalars.js';
 
 /**
  * Is `expr` satisfied by EVERY vertex in `graph`, so that testing it per element is pure
@@ -9885,7 +9886,7 @@ const unfilteredScan = (m: Clause): boolean => {
 const unfilteredScanAgg = (
   m: Clause,
   ret: Clause,
-): { name: string; frac: number }[] | undefined => {
+): { name: string; frac: number; expr: Extract<Expr, { kind: 'func' }> }[] | undefined => {
   if (!unfilteredScan(m) || ret.kind !== 'return') {
     return undefined;
   }
@@ -9897,9 +9898,20 @@ const unfilteredScanAgg = (
   }
 
   const [only] = items;
-  const e = only.expr;
+  // ITEM 1196: the aggregate need not BE the item. `collectAggregates` finds the one inside
+  // `size(collect(a.k))` / `coalesce(collect(a.k), 1)`, and requiring EXACTLY one keeps the
+  // single-accumulator contract the rest of this function is built on — a second aggregate
+  // (`size(collect(a.k)) + count(*)`) still falls to the general path. Matching `only.expr`
+  // directly, as this did, declined every wrapped spelling: measured at 6.65-7.97x the bare one.
+  const found = collectAggregates(only.expr);
 
-  if (e.kind !== 'func' || e.star || e.distinct) {
+  if (found.length !== 1) {
+    return undefined;
+  }
+
+  const [e] = found;
+
+  if (e.star || e.distinct) {
     return undefined;
   }
 
@@ -9912,7 +9924,7 @@ const unfilteredScanAgg = (
     return undefined;
   }
 
-  return [{ name: e.name, frac }];
+  return [{ name: e.name, frac, expr: e }];
 };
 
 export const detectNodeAggregate = (
@@ -9985,7 +9997,11 @@ export const detectNodeAggregate = (
     return null;
   }
 
-  const aggNode = item.expr;
+  // ITEM 1196: on the COLLECTING path the aggregate may be NESTED, so the node comes from
+  // `unfilteredScanAgg` (which searched inside the item) rather than being the item itself. The
+  // FOLD path above still requires identity — widening it is the same lever on `min`/`max`/`count`
+  // and is priced separately rather than assumed.
+  const aggNode = collect !== undefined ? collect[0].expr : item.expr;
 
   // The THIRD arity gate in this one function, and the last one a percentile had to pass.
   // `percentileFraction` is `0` for a well-formed one-argument aggregate and the clamped
@@ -9996,6 +10012,12 @@ export const detectNodeAggregate = (
   }
 
   const [argExpr] = aggNode.args;
+  // When the aggregate is WRAPPED, the item's own expression still has to run — but ONCE, over a
+  // one-row group view carrying the folded value under the aggregate's AST node. That is the key
+  // `compileAggregate` already looks a pre-folded value up by, so the wrapping expression goes
+  // through the SAME evaluator the general path uses instead of a second implementation of it.
+  // `null` for the bare spelling, which must keep returning the aggregate value untouched.
+  const outerFn = item.expr === aggNode ? null : compileExpr(item.expr);
   const outName = proj.items[0].name;
   // A name no GQL identifier can collide with: the synthetic column is read back by key below.
   const VALUE_COL = ' nodeagg';
@@ -10045,6 +10067,11 @@ export const detectNodeAggregate = (
         const { vertices, seeded } = scanCandidates(graph, cstart, label, labelName, env);
         const values: unknown[] = [];
 
+        // The group's SIZE, which is the row count and not `values.length` — a wrapping
+        // expression can read it (that is what `foldedGroupView` exposes as `length`), and the
+        // two differ exactly when the argument is null somewhere.
+        let rows = 0;
+
         for (const v of vertices) {
           if (seeded !== undefined && !matchesLabel(v, label)) {
             continue;
@@ -10055,6 +10082,7 @@ export const detectNodeAggregate = (
           }
 
           binding.set(sv, v);
+          rows += 1;
 
           const value = argFn(env);
 
@@ -10063,22 +10091,54 @@ export const detectNodeAggregate = (
           }
         }
 
-        return [{ [outName]: aggregateOverValues(aggName, values, frac) }];
+        const aggValue = aggregateOverValues(aggName, values, frac);
+
+        return [
+          {
+            [outName]:
+              outerFn === null
+                ? aggValue
+                : outerFn({
+                    binding,
+                    params,
+                    graph,
+                    group: foldedGroupView(binding, rows, new Map([[aggNode, { v: aggValue }]])),
+                  }),
+          },
+        ];
       };
     }
 
     return (graph, params) => {
       const values: unknown[] = [];
+      const binding = new Map<string, unknown>();
+      let rows = 0;
 
       for (const row of rowsFn(graph, params)) {
         const v = row[VALUE_COL];
+
+        rows += 1;
 
         if (!isNullish(v)) {
           values.push(v);
         }
       }
 
-      return [{ [outName]: aggregateOverValues(aggName, values, frac) }];
+      const aggValue = aggregateOverValues(aggName, values, frac);
+
+      return [
+        {
+          [outName]:
+            outerFn === null
+              ? aggValue
+              : outerFn({
+                  binding,
+                  params,
+                  graph,
+                  group: foldedGroupView(binding, rows, new Map([[aggNode, { v: aggValue }]])),
+                }),
+        },
+      ];
     };
   }
 

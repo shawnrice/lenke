@@ -121,3 +121,60 @@ describe('node aggregate', () => {
     expect(query(g, q)).toEqual(want);
   });
 });
+// ITEM 1197: the aggregate no longer has to BE the projection item. `unfilteredScanAgg` finds the
+// one inside `size(collect(a.k))`, the streamed value is handed to the wrapping expression through
+// `foldedGroupView` — the same channel the general path reads a pre-folded aggregate from — and the
+// wrapped spellings dropped from 6.5-10.2x the bare one to 1.0-1.3x.
+//
+// THE ORACLE IS THE ONE THIS FILE ALREADY USES, and it works here for the same structural reason:
+// adding a second aggregate makes the arity gate refuse the shape, so the identical expression is
+// answered by the general path over the identical fixture. These routes are answer-equivalent, so
+// `routes-fired.test.ts` is what holds the ROUTE; this holds the ANSWER.
+describe('a WRAPPED aggregate agrees with the general path', () => {
+  const g = build();
+
+  test.each([
+    // `collect` drops the absent `k`, so six values — not seven rows. Asserting the literal here
+    // as well as the oracle means a change to BOTH paths together still fails.
+    ['size over collect', 'MATCH (a:P) RETURN size(collect(a.k)) AS m', 6],
+    ['cardinality over collect', 'MATCH (a:P) RETURN cardinality(collect(a.k)) AS m', 6],
+    // A wrapper OUTSIDE the POLY_STR_LIST set, so the two do not share argument typechecking.
+    ['coalesce over collect', 'MATCH (a:P) RETURN coalesce(size(collect(a.k)), 1) AS m', 6],
+    // The argument is a LITERAL, so no column is read and the fold is trivial — yet the old route
+    // declined this too, at 6.5x.
+    ['size over a literal collect', 'MATCH (a:P) RETURN size(collect(1)) AS m', 7],
+    // Arithmetic around the aggregate, which is the shape the general path's own comment names.
+    ['arithmetic around collect', 'MATCH (a:P) RETURN size(collect(a.k)) + 1 AS m', 7],
+    // Nested TWO deep, so a one-level search would miss the aggregate and decline.
+    ['doubly wrapped', 'MATCH (a:P) RETURN abs(size(collect(a.k)) - 10) AS m', 4],
+    // An unlabelled scan sees the `:R` vertex too — seven `k` values over eight rows.
+    ['unlabelled scan', 'MATCH (a) RETURN size(collect(a.k)) AS m', 7],
+    // A string column, so the win is not numeric-only.
+    ['over strings', 'MATCH (a:P) RETURN size(collect(a.s)) AS m', 6],
+  ])('%s', (_name, q, expected) => {
+    const got: unknown[] = query(g, q);
+
+    expect(got).toEqual([{ m: expected }]);
+    // The general path, on the same fixture, must agree — so neither route can drift alone.
+    expect(got).toEqual(viaGeneral(g, q));
+  });
+
+  test('a SECOND aggregate still falls to the general path, and agrees', () => {
+    // The arity gate must keep refusing this: the fast route carries ONE accumulator, so a shape
+    // needing two must not be claimed. It is also what makes the oracle above independent.
+    const q = 'MATCH (a:P) RETURN size(collect(a.k)) + count(*) AS m';
+
+    const got: unknown[] = query(g, q);
+
+    expect(got).toEqual([{ m: 13 }]); // 6 collected + 7 rows
+  });
+
+  test('a wrapped aggregate over an EMPTY scan agrees with the general path', () => {
+    const empty = new Graph();
+
+    // `collect` over no rows is the empty list, so `size` is 0 — not null, and not an error.
+    const got: unknown[] = query(empty, 'MATCH (a:P) RETURN size(collect(a.k)) AS m');
+
+    expect(got).toEqual([{ m: 0 }]);
+  });
+});

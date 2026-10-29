@@ -2913,8 +2913,32 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
 - **REFUTED for TS: there is no `collect` egress rebuild there, so item 1195's Rust fix has no TS
   twin (1196).** TS `collect` costs **0.76-1.02x** its own materialization floor (`RETURN a.k`),
   i.e. the cost IS the output. Do not port the gate.
-- ⚠️ **OPEN, PRICED at 6.7-8x, and it is an EQUIVALENT-SPELLING break: in TS, wrapping an ungrouped
-  aggregate in ANY expression leaves the fast route (1196).** At 200,000 nodes, against a bare
+- **CLOSED by 1197 for the COLLECTING path: 10.22x `size`, 10.17x `cardinality`, 8.38x `coalesce`,
+  7.00x `reverse`, 6.52x over a literal — both estimators, three alternated rounds.** Two changes:
+  `unfilteredScanAgg` now finds the aggregate NESTED in the item via `collectAggregates` (it matched
+  `only.expr` directly, which declined every wrapped spelling), and the streamed value is handed to
+  the wrapping expression through `foldedGroupView` — **the same channel the general path already
+  reads a pre-folded aggregate from**, keyed by the aggregate's AST node, so the outer expression
+  runs through the ordinary evaluator rather than a second implementation of it.
+  Controls: `count(a.num)` **1.00x** (cannot be reached) and the BARE spelling 1.09x median — which
+  is reported as NEUTRAL, not as a gain, because these cheap rows drift (the identical bare
+  `collect` read 7.2ms and 4.7ms inside one process at 1196).
+  **Mutation 5/5, all predictions correct, and the route test is load-bearing**: reverting the
+  nested search is caught by `routes-fired.test.ts` and by NOTHING else, because the route is
+  answer-equivalent — `node-aggregate.test.ts`'s eleven new cases pass either way (their oracle is
+  the same expression plus a second aggregate, which the arity gate refuses, so the general path
+  answers it on the same fixture).
+  ⚠️ **STILL OPEN: the FOLD-path sibling.** `abs(min(n.k) - 10)` is the same lever on
+  `min`/`max`/`count` and still declines (asserted as a negative row in `routes-fired`). It is
+  deliberately NOT assumed to be worth the same multiple and needs its own pricing. Also recorded
+  there: a second aggregate (`size(collect(n.k)) + count(*)`) must keep declining, since the route
+  carries one accumulator.
+  ⚠️ The `rows` counter feeding the group view's `length` is **unread today** (only a second
+  aggregate in the outer expression could read it, and the arity gate forbids one) — kept
+  correct-by-construction, and mutating it to `values.length` SURVIVES, which is the honest record
+  of that.
+- ⚠️ ~~**OPEN, PRICED at 6.7-8x**~~ — closed by 1197 above; kept for the diagnosis.
+  **In TS, wrapping an ungrouped aggregate in ANY expression leaves the fast route (1196).** At 200,000 nodes, against a bare
   `collect(a.num)` at ~4.7ms: `size(collect(a.num))` **57.9ms (7.97x)**, `cardinality(...)` 53.7
   (7.40x), `reverse(...)` 49.1 (6.76x), `coalesce(..., 1)` 48.3 (6.65x); controls `count(a.num)`
   3.0ms and `size(collect(1))` 43.1ms.
