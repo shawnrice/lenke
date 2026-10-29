@@ -2910,6 +2910,29 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   columns — cheaper to write, already covered by those arms' own oracles and mutation, and FASTER
   by item 471's measurement that N passes over one column each beat one interleaved pass (5.6 ms
   against 0.6). Separate function after the numeric entry, per item 1184.
+- ⚠️ **OPEN, PRICED at 6.7x, AN EQUIVALENT-SPELLING GAP, and it CORRECTS item 1203's attribution
+  (1204): `WHERE a.num >= k RETURN count(*)` costs 617.5 µs where the same question with a second
+  bound costs 92.5 µs.** Same column, same type, same 99,835 rows, same answer — the only difference
+  is ONE bound against TWO, and the single-bound spelling is the slow one. Reproduced at two
+  different positions in the table (617.5 as the first row, 621.3 as the thirteenth), so it is not
+  cache ordering. This is the shape `spelling_probe` exists for, on one of the most common query
+  shapes there is.
+  **It also corrects 1203.** That item read the `count(*)` table as being about the FILTER and
+  concluded the unserved column types were fast. The discriminating experiment — the same predicates
+  with a PROJECTION, which no count fast path can serve — REVERSES the order: `a.date >= …` goes
+  from the fastest row (102.6 µs) to the SLOWEST (2051.8 µs, 1.98x of num), and `a.dict >= 'g4'`
+  lands at 1.01x of num. **So the spread was the COUNT ROUTE, not the comparison**, and 1203's
+  refutation ("no headroom in the comparison masks") still stands while its explanation of WHY the
+  rows differed was wrong. A plan dump confirms all four shapes are structurally identical
+  (`Project{Aggregate{Filter{Scan}}}`), so nothing in the plan accounts for it.
+  ⚠️ **NOT YET EXPLAINED, and deliberately not guessed at.** `try_filtered_count`
+  (`exec.rs:5175`) gates only on `count(*)` over `Filter{Scan}` — which both spellings are — and
+  `try_stream_num_count` ALREADY has a single-bound specialization (item 451, monomorphic closure
+  per op) that calls the same `sweep_num_count` the range arm does. So the served arm exists and
+  something upstream is not reaching it. **Next step: instrument `try_stream_num_count` to see
+  whether it returns `None` for a bare single compare** (the suspicion is `num_conj_on_slot`'s
+  returned `bounds` not matching the `[(op, t)]` pattern), rather than reading further.
+  Instrument: `crates/lenke-engine/examples/compare_mask_coltype_probe.rs`.
 - **REFUTED: the COMPARISON path's missing typed masks cost nothing — and the measurement INVERTED
   the hypothesis (1203).** `Expr::Compare` has exactly two typed masks (`typed_num_mask` for
   `Column::Num`, `typed_str_mask` for `Column::Str` every op and `Column::Dict` for **Eq/Ne only**),

@@ -128,6 +128,13 @@ fn main() {
             "a.date >= DATE'2000-01-01'",
             "no  temporal",
         ),
+        // ITEM 1204's pinpoint rows, in the COUNT table where the 6x lives.
+        (
+            "a.num RANGE (two bounds)",
+            "a.num >= 500000 AND a.num < 1000000",
+            "num range",
+        ),
+        ("a.num > 500000 (strict)", "a.num > 500000", "num strict"),
         (
             "a.date < DATE'2000-01-01'  [HOLE?]",
             "a.date < DATE'2000-01-01'",
@@ -156,6 +163,79 @@ fn main() {
             us / wtrue,
             &shape[..shape.len().min(58)]
         );
+    }
+
+    // ⚠️ THE DISCRIMINATING EXPERIMENT (item 1204). The `count(*)` table above cannot separate
+    // "the FILTER is faster for this type" from "the COUNT takes a different route for this type",
+    // and `num_conj_on_slot` admits only `Value::Num` literals — so the streaming filtered-count
+    // serves NUMERIC predicates, which is the OPPOSITE of what the table shows (num 636.8us
+    // against date 102.6us). One of those two readings is wrong.
+    //
+    // Replacing `count(*)` with a projection removes every count fast path, leaving only the
+    // filter. If the types CONVERGE here, the spread above was the count route; if date stays ~6x
+    // faster than num, it is the filter itself.
+    println!("\n  THE SAME PREDICATES WITH A PROJECTION (no count fast path can apply):\n");
+    println!("  predicate                               us    vs num   rows");
+
+    let (num_proj, _) = ask("MATCH (a:Person) WHERE a.num >= 500000 RETURN a.num AS x");
+
+    for (label, pred) in [
+        ("a.num >= 500000", "a.num >= 500000"),
+        ("a.str >= 'u00500000'", "a.str >= 'u00500000'"),
+        ("a.dict >= 'g4'", "a.dict >= 'g4'"),
+        ("a.flag = true", "a.flag = true"),
+        ("a.date >= DATE'2000-01-01'", "a.date >= DATE'2000-01-01'"),
+        ("[CTL] true", "true"),
+        // Does the STREAMING count need two bounds? `num_conj_on_slot` returns a Vec of bounds
+        // and its doc names "a same-column numeric range (`lo <= x AND x < hi`)" alongside the
+        // single compare, so a range must be admitted — if the RANGE is fast in the count table
+        // and the single bound is not, the gate is about bound count rather than type.
+        (
+            "a.num >= 500000 AND a.num < 1000000",
+            "a.num >= 500000 AND a.num < 1000000",
+        ),
+    ] {
+        let q = format!("MATCH (a:Person) WHERE {pred} RETURN a.num AS x");
+        let (us, _) = ask(&q);
+        // The projection returns MANY rows, so count them rather than reading a scalar.
+        let plan = lenke_engine::opt::optimize_indexed(
+            lenke_engine::gql::parse(&q).expect("parses"),
+            &store,
+        );
+        let n = lenke_engine::exec::try_run(&plan, &store).map_or(0, |r| r.rows.len());
+
+        println!("  {label:<36} {us:>9.1} {:>8.2}x   {n}", us / num_proj);
+    }
+
+    // ITEM 1204: the FULL plan for the three rows that disagree, because item 1203 left a date
+    // predicate running at ~0.5ns a row — FASTER than the served numeric mask at ~3.2ns — while
+    // falling through both typed masks to a boxed compare. That is not possible, so the plan is
+    // where the answer has to be.
+    println!("\n  FULL PLANS for the rows that disagree:\n");
+    for (label, q) in [
+        (
+            "num  >= (served, 636.8us)",
+            "MATCH (a:Person) WHERE a.num >= 500000 RETURN count(*) AS c",
+        ),
+        (
+            "date >= (unserved, 102.6us)",
+            "MATCH (a:Person) WHERE a.date >= DATE'2000-01-01' RETURN count(*) AS c",
+        ),
+        (
+            "dict >= (unserved, 111.6us)",
+            "MATCH (a:Person) WHERE a.dict >= 'g4' RETURN count(*) AS c",
+        ),
+        (
+            "flag =  (unserved, 653.0us)",
+            "MATCH (a:Person) WHERE a.flag = true RETURN count(*) AS c",
+        ),
+    ] {
+        let plan = lenke_engine::opt::optimize_indexed(
+            lenke_engine::gql::parse(q).expect("parses"),
+            &store,
+        );
+
+        println!("  {label}\n    {plan:?}\n");
     }
 
     println!(
