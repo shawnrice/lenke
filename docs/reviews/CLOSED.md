@@ -2929,7 +2929,26 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   **NOT caused by this session**: at `84f50e5f`, the commit before the first of this session's four
   `fastpath.rs` widenings, the same probe reads 6.65x (609.0 against 91.6). Checked because growing
   that file is exactly the documented hazard.
-  ⚠️ **THE WIN'S BREADTH IS NARROWER THAN THE SHAPE SUGGESTS, and this is unresolved.** The bench
+  ⚠️ ~~**THE WIN'S BREADTH IS NARROWER THAN THE SHAPE SUGGESTS**~~ — **RESOLVED BY 1206, AND IT IS
+  THE OTHER WAY ROUND: the win is BROADER, and the corpus row was fast because of a FIXTURE
+  ARTIFACT.** `social_store` writes `("age", Value::Num(f64::from(i % 100)))` — a PERIODIC column.
+  The slow arm is branchy (`if present[i] && cmp(data[i])`), so periodic values give it runs of 50
+  false then 50 true and the branch predicts almost perfectly; the vectorizing arm is branchless
+  and does not care. One dimension at a time at 200,000 nodes on the pre-fix engine:
+  **periodic 93.4us (1.00x against the two-bound spelling), random 623-626us (6.73-6.76x)** — with
+  property count and value range BOTH refuted first (all four random combinations slow, including a
+  replica of the corpus's three-property 0..100 shape).
+  **So `WHERE p.age > 50 RETURN count(*)` reading 90.5us was the fixture, not the engine**, and real
+  unpredictable data gets the full 6.7x.
+  ⚠️ **THE GENERAL HAZARD, now documented beside the generator: this repo's "match the fixture to
+  the claim" rule applies to the ORDER of a column's values, not only to its size, cardinality and
+  degree.** A branchy path measured against `i % 100` reads as fast as a branchless one — this one
+  did, for as long as the fixture has existed. Price such a path against a random-valued column.
+  The generator is deliberately NOT changed: every recorded figure in the corpus is against it, so
+  swapping it would invalidate them all at once.
+  Instrument: `crates/lenke-engine/examples/bound_fixture_shape_probe.rs` (run it on pre-1205 code;
+  after the fix every row reads ~92us and the question is invisible).
+  ~~**and this is unresolved.**~~ The bench
   corpus's own single-bound row — `MATCH (p:Person) WHERE p.age > 50 RETURN count(*)`, the identical
   shape — was ALREADY at 90.5 us before this change and reads 90.1 after. So not every single-bound
   filtered count was slow, and what distinguishes that fixture from the probe's (both 200,000 nodes,

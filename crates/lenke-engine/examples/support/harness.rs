@@ -217,6 +217,25 @@ pub fn social_store(nodes: u32, deg: u32) -> lenke_engine::store::Store {
             &["Person"],
             &[
                 ("name", Value::Str(format!("name{i}").into())),
+                // ⚠️ `i % 100` IS PERIODIC, AND THAT HID A 6.7x FOR AS LONG AS THIS FIXTURE HAS
+                // EXISTED (item 1206). A branchy filter — `if present[i] && cmp(data[i])` — costs
+                // what its BRANCH MISPREDICTIONS cost, and this column gives one runs of 50 false
+                // then 50 true, which predicts almost perfectly. `WHERE p.age > 50 RETURN
+                // count(*)` therefore measured 90.5us here while the identical shape over RANDOM
+                // values measured 620us, and item 1205 had to be diagnosed against a separate
+                // fixture because this one showed 1.00x.
+                //
+                // Measured, one dimension at a time at 200,000 nodes on the pre-fix engine:
+                // periodic 93.4us (1.00x against the two-bound spelling), random 623-626us
+                // (6.73-6.76x) — and property count and value range were BOTH refuted first (all
+                // four random combinations were slow).
+                //
+                // NOT CHANGED, deliberately: every recorded figure in this corpus is against this
+                // generator, so swapping it would invalidate them all at once. The rule to carry
+                // instead: **the repo's "match the fixture to the claim" applies to the ORDER of a
+                // column's values, not only to its size, cardinality and degree.** A branchy path
+                // measured here reads as fast as a branchless one, so price such a path against a
+                // random-valued column.
                 ("age", Value::Num(f64::from(i % 100))),
                 ("city", Value::Str(CITIES[(i % 8) as usize].into())),
                 ("dept", Value::Str(DEPTS[(i % 5) as usize].into())),
