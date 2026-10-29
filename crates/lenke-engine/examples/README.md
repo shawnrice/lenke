@@ -456,6 +456,14 @@ question in its module header — read the header before touching it.
   arm at ~3107x. `str` at 15x and `Gen` at 21x are NOT gaps of the same kind — comparing
   unique strings is real work and `Gen` holds boxed values.
 
+- `boolorder_plan_1178` — prints the OPTIMIZED PLAN for the GQL and Gremlin spellings of one
+  question, side by side, numeric and boolean. Reach for it whenever two surfaces of the same
+  engine disagree on cost: item 1178's probe showed `ORDER BY <bool> LIMIT 5` at 0.00 ms
+  through GQL and 2.31 through Gremlin, which reads as "Gremlin misses the arm" and is not
+  that — the plans differ three ways (an interposed `Filter{PropertyExists}` from `values(k)`
+  skipping absent keys, `nulls_first`, `fault_on_element`), and the numeric control reproduces
+  all three. Four lines of output turned a wrong diagnosis into the right one.
+
 ## Before trusting a number
 
 The hard-won rules live in the repo `CLAUDE.md` ("Benchmarks: look before you
