@@ -34646,7 +34646,14 @@ prices the fix rather than rediscovering the fact.
 byte-identity fuzzers green, with the differential fuzzer's percentile band now exercising BOTH
 engines' new folds against each other over `0, 0.25, 0.5, 1, 1.0001, 1.5, 2, 100`.
 
-## 1164 — 🔶 PRICED AND DIAGNOSED, not built: the `-0` cross-engine divergence has **FIVE** observable surfaces, and the probe that was meant to locate the fix answered a different question
+## 1164 — ⚠️ **RETRACTED BY ITEM 1165 — the divergence does not exist.** Kept for the method lesson only.
+
+## (as written) 🔶 PRICED AND DIAGNOSED, not built: the `-0` cross-engine divergence has **FIVE** observable surfaces, and the probe that was meant to locate the fix answered a different question
+
+> **Read item 1165 first.** The five "divergences" below are an artifact of the instrument: the
+> native rows cross the FFI boundary as JSON, where `-0` renders as `"0"`, so they compare TS's raw
+> values against native's JSON round-trip. Rendered output — the actual invariant — agrees on every
+> row. The conclusion "TS is the engine out of conformance" is WITHDRAWN.
 
 Follow-up to item 1163's incidental finding. `negzero-cross-probe.ts`, after `SET n.v = 0 * (0 - 1)`,
 comparing with `Object.is` because **`JSON.stringify(-0)` is `"0"`** and every renderer-based
@@ -34705,3 +34712,53 @@ capture hid that the whole sweep had run):
 ```
 
 Both percentiles now sit beside `min property` rather than ~7x above it, in both engines.
+
+## 1165 — ⚠️ **RETRACTED: item 1164's `-0` divergence does not exist.** The invariant holds at 0 of 10 rows; I had compared TS's RAW values against native's JSON ROUND-TRIP
+
+Item 1164 reported five observable `-0` divergences and concluded "TS is the engine out of
+conformance". **That conclusion was wrong, and the cause was the instrument.**
+
+Item 1164 itself recorded that it had NOT settled where native collapses, and said the next step
+was to read native's write path rather than infer it. Doing that is what broke the finding open:
+
+- `apply_set_prop` has **no** `-0` collapse. So native does not collapse on write — the value goes
+  straight into the column.
+- Grepping every collapse site instead found `json_fmt.rs:167`, whose own comment is
+  _"also normalizes -0.0 → \"0\" (JS drops the sign)"_. **Native collapses at JSON EGRESS.**
+- And the FFI query path crosses the boundary as JSON text and comes back through `JSON.parse`.
+
+So a native `-0` **could not reach the probe even if one were stored**: it is rendered as `"0"` and
+parsed back as `+0`. The probe was comparing TS's in-process JS values against native's JSON
+round-trip — two different things — and reading the difference as an engine divergence.
+
+**The invariant is defined on RENDERED OUTPUT, and it holds.** `JSON.stringify(-0)` is `"0"`, the
+same string native emits, so:
+
+```text
+  5 of 10 differ in RAW JS VALUES (by Object.is)
+  0 of 10 differ in RENDERED OUTPUT (the invariant)        <- the question that matters
+```
+
+The probe now measures both and labels which is which, so the next reader cannot repeat the
+mistake.
+
+### What is actually left, and it is not a bug
+
+A pure-TS in-process caller can observe a `-0` in a raw returned value where an FFI caller cannot,
+because the two engines have different egress layers (direct JS values vs JSON text) — structural,
+not a defect, and invisible the moment anything serializes. Native's `num_of` claim ("no operation
+ever observes a -0") is about its own internals and remains true of them. **Nothing to fix.**
+
+### The transferable lesson, which is the only reason this item exists
+
+**A cross-engine probe compares two TRANSPORTS as much as two engines, and a normalization anywhere
+in the transport is indistinguishable from agreement.** Every `Object.is`-level claim about native
+values through the FFI is a claim about JSON's value space, not the engine's: `-0`, `NaN` and `±∞`
+all normalize on that path, so none of them can be measured through it. The tell was available and
+I missed it for a tick — item 1164's own text says `JSON.stringify(-0)` is `"0"` while treating
+`Object.is` as the sharper instrument, without asking whether native's values had already been
+through a renderer before I got them. Sharper on the TS side; blind on the other.
+
+Related in shape to item 1162's `-0` guard, which is a REAL requirement — there the two values live
+inside one engine's sort and selection, with no renderer between them. The distinction is whether a
+serialization boundary sits in the middle.

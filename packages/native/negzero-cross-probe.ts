@@ -122,4 +122,25 @@ for (const [label, q] of QUERIES) {
   );
 }
 
-console.log(`\n  ${diverged} of ${QUERIES.length} diverged (by Object.is; JSON renders both as 0)`);
+console.log(`\n  ${diverged} of ${QUERIES.length} differ in RAW JS VALUES (by Object.is)`);
+
+// THE ACTUAL CONTRACT, measured separately (item 1165). Byte-identity between the engines is
+// defined on RENDERED OUTPUT, and `JSON.stringify(-0)` is `"0"` — the same string native's
+// `write_js_number` emits, whose comment says so in as many words ("also normalizes -0.0 -> \"0\"").
+// The native rows above arrive through `JSON.parse` on the FFI boundary, so a native `-0` could
+// not reach this probe even if one were stored. The rows above therefore compare TS's RAW values
+// against native's JSON ROUND-TRIP — two different things — and this block asks the question the
+// invariant actually poses.
+let renderDiverged = 0;
+
+for (const [label, q] of QUERIES) {
+  const a = JSON.stringify(tsQuery(ts, q));
+  const b = JSON.stringify(nat.query(q));
+
+  if (a !== b) {
+    renderDiverged += 1;
+    console.log(`  RENDER DIVERGE  ${label}\n    ts     ${a}\n    native ${b}`);
+  }
+}
+
+console.log(`  ${renderDiverged} of ${QUERIES.length} differ in RENDERED OUTPUT (the invariant)`);
