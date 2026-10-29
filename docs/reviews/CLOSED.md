@@ -2910,6 +2910,24 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   columns — cheaper to write, already covered by those arms' own oracles and mutation, and FASTER
   by item 471's measurement that N passes over one column each beat one interleaved pass (5.6 ms
   against 0.6). Separate function after the numeric entry, per item 1184.
+- ⚠️ **OPEN, PRICED: FIVE more branchy per-row paths, found by turning item 1206's finding into a
+  DETECTOR (1207).** "Periodic vs random, same query, same row count" is a test for whether a path's
+  cost depends on value ORDER — which it can only do if it branches per row, and a branchy path over
+  a ~50%-selective predicate pays ~50% mispredicts a branchless form would not. Applied across the
+  per-row paths at 200,000 nodes (ratio = random / periodic, i.e. how much the corpus fixture HIDES):
+  **`count` BOOLEAN equality 3.97x** (166.2 -> 660.1 us) · **`sum` under a filter 2.50x** (427.0 ->
+  1065.7) · **`count` THREE bounds 2.45x** (551.9 -> 1354.7, the general `Vec`-iterating arm past
+  the range arm) · **projection under a filter 2.14x** (522.3 -> 1119.8) · **`count` DICT equality
+  1.66x** (185.0 -> 306.5).
+  **Already branchless, nothing to recover:** single bound **1.00x** (item 1205's fix, confirmed
+  independently here), two bounds 1.00x, STRING bound 1.00x. Controls flat: unfiltered count 0.97x,
+  unfiltered projection 1.00x — so the instrument measures the engine and not itself.
+  ⚠️ The projection row's two fixtures answer 98,000 against 97,683 rows, so its 2.14x is
+  INDICATIVE and not a clean reading; the others match exactly.
+  The boolean row is the biggest and the most tractable — `WHERE flag = true RETURN count(*)` over a
+  `Column::Bool` is a branchless sum of the present-masked array, and the chain already has
+  `try_stream_dict_pred_count` and `try_stream_membership_count` as siblings to sit beside. Not
+  built. Instrument: `crates/lenke-engine/examples/branchy_path_census_probe.rs`.
 - **CLOSED by 1205 at 6.7x, by routing a single ORDERING bound through the two-bound arm: 618.4 ->
   92.4 us, ratio to the two-bound spelling exactly 1.00x.** `x >= lo` is paired with a VACUOUS
   companion (`x <= f64::INFINITY`) and handed to `try_stream_range_count`, whose closure vectorizes
