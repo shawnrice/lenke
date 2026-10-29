@@ -32,6 +32,17 @@ fn main() {
             "gql  num ",
             "MATCH (a:Person) RETURN a.age AS v ORDER BY a.age LIMIT 5",
         ),
+        // Does a GQL `WHERE` survive as a `Filter` NODE, or is it lifted into the scan? That is
+        // what decides whether item 1180's mutant M3 (treating any filter as a presence test) is
+        // reachable at all.
+        (
+            "gql  where=",
+            "MATCH (a:Person) WHERE a.flag = true RETURN a.flag AS v ORDER BY a.flag LIMIT 5",
+        ),
+        (
+            "gql  where>",
+            "MATCH (a:Person) WHERE a.age > 5 RETURN a.flag AS v ORDER BY a.flag LIMIT 5",
+        ),
     ] {
         let raw = lenke_engine::gql::parse(q).expect("parses");
         let plan = lenke_engine::opt::optimize_indexed(raw, &store);
@@ -42,6 +53,16 @@ fn main() {
     for (surface, q) in [
         ("grem bool", "g.V().values('flag').order().limit(5)"),
         ("grem num ", "g.V().values('age').order().limit(5)"),
+        // A presence filter on a DIFFERENT key than the sort key — the shape
+        // `scan_for_top_k`'s `fk == key` condition exists to refuse (item 1180, mutants M2/M3).
+        (
+            "grem has(other)",
+            "g.V().has('age').values('flag').order().limit(5)",
+        ),
+        (
+            "grem hasLabel",
+            "g.V().hasLabel('Person').values('flag').order().limit(5)",
+        ),
     ] {
         let raw = lenke_engine::gremlin::parse(q).expect("parses");
         let plan = lenke_engine::opt::optimize_indexed(raw, &store);

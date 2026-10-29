@@ -381,6 +381,40 @@ fn num_top_k_worthwhile(node_count: usize) -> bool {
 /// tracking, a non-`Scan` input, a multi-key / non-`Prop(slot 0)` sort, a non-numeric or
 /// null-bearing key column (the ordering with nulls goes through the general path), or a
 /// window that is not a small prefix (streaming buys nothing near a full sort).
+/// The bare `Scan` a streaming top-K can drive, seeing through the PRESENCE FILTER that Gremlin's
+/// `values(k)` inserts (item 1180).
+///
+/// WHY THIS EXISTS. `g.V().values('flag').order().limit(5)` lowers to
+/// `OrderPage{Project{Filter{Scan, PropertyExists}}}` — the filter is there because `values(k)`
+/// SKIPS rows lacking the key — while the GQL spelling of the same question lowers to
+/// `OrderPage{Project{Scan}}`. Both arms and the lift required a bare `Scan`, so the Gremlin
+/// spelling cost 2.31 ms where GQL cost 0.00 (item 1178's plan dump).
+///
+/// WHY SEEING THROUGH IT IS SOUND, which is the whole argument. The filter keeps
+/// `present || nulls` (a stored present-null satisfies `PropertyExists` — item 1135), while every
+/// streaming arm keeps `present` alone and records the difference:
+///
+///   - the NUMERIC arm sets `has_null` on any `!present` and declines outright;
+///   - the TEMPORAL and WIDE arms record `nulls_seen` and hand the query back when a null could
+///     fall inside the window.
+///
+/// So the arms already implement "the key is present", and the only rows the filter and the arm
+/// disagree about are stored nulls — which each arm's own null policy covers. A filter on a
+/// DIFFERENT key is refused: it constrains rows the arm would not skip, so the arm's scan would
+/// include rows the query excludes.
+fn scan_for_top_k<'a>(input: &'a Plan, key: &str) -> Option<&'a Option<String>> {
+    match input {
+        Plan::Scan { label } => Some(label),
+        Plan::Filter { input, pred } => match (input.as_ref(), pred) {
+            (Plan::Scan { label }, Expr::PropertyExists { slot: 0, key: fk }) if fk == key => {
+                Some(label)
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 pub(super) fn try_scan_top_k(
     input: &Plan,
     keys: &[crate::ir::SortKey],
@@ -397,9 +431,8 @@ pub(super) fn try_scan_top_k(
     let Expr::Prop { slot: 0, key } = &k.expr else {
         return None;
     };
-    let Plan::Scan { label } = input else {
-        return None;
-    };
+    // Seeing through a presence filter on the SORT KEY (item 1180) — see `scan_for_top_k`.
+    let label = scan_for_top_k(input, key)?;
     if !num_top_k_worthwhile(store.node_count()) {
         // Below the crossover the GENERIC path is faster; see `num_top_k_worthwhile`.
         return match store.column(key) {
@@ -596,17 +629,28 @@ fn try_scan_top_k_wide(
     limit: usize,
     store: &Store,
 ) -> Option<Batch> {
-    if k.nulls_first {
-        // A null outranks everything, including rows an early exit would never read. This guard
-        // is DEFENSIVE, and item 864 says so with evidence rather than claiming a test: removing
-        // it was the one mutant of six that survived, because no front end can currently reach
-        // this plan shape with nulls-first. GQL places nulls LAST always; Gremlin places them
-        // first but its `order().by(k).limit(n)` does not lower to `OrderPage{Scan}` at all (four
-        // spellings checked against an instrumented build, none entered this function). The guard
-        // stays because it is the precondition that makes skipping nulls sound, and it costs one
-        // branch per query — but it is unexercised, not verified.
-        return None;
-    }
+    // NO EARLY `nulls_first` RETURN ANY MORE (item 1180), and the replacement is strictly as
+    // strong. This bailed here because "a null outranks everything, including rows an early exit
+    // would never read" — correct, and the right conclusion was never "refuse the plan", it was
+    // "refuse it IF a null is actually there". The arm finds that out for free: it skips
+    // `!present[i]` and records `nulls_seen`, so the END guard now reads
+    //
+    //     nulls_seen && (k.nulls_first || buf.len() < kcap)
+    //
+    // Under nulls-LAST a null matters only when the window reaches it (`buf.len() < kcap`, the
+    // rule that was always there); under nulls-FIRST any null is inside the window, so any
+    // sighting hands the query back. O(1), in the pass the arm was making anyway — no pre-scan of
+    // the column's `nulls` bitset, which item 1179 had assumed would be needed and which would
+    // have cost O(n) on the DECLINE path too.
+    //
+    // WHAT IT UNBLOCKS: Gremlin's `values(k).order().limit(n)` carries `nulls_first: true`, so
+    // seeing through its presence filter bought nothing while this stood. The two are one
+    // condition read twice and had to land together.
+    //
+    // The old comment called itself "unexercised, not verified" because no front end reached this
+    // function with nulls-first. That is no longer true — the Gremlin spelling now does, which is
+    // why `a_bool_order_limit_with_stored_nulls_pins_both_null_placements` was written BEFORE
+    // this change rather than after it.
     let kcap = skip.unwrap_or(0).checked_add(limit)?;
     if kcap == 0 {
         return Some(Batch::of(vec![Col::Nodes(Vec::new())]));
@@ -730,7 +774,9 @@ fn try_scan_top_k_wide(
         _ => return None,
     }
 
-    if nulls_seen && buf.len() < kcap {
+    // `k.nulls_first ||` is the item-1180 half: under nulls-first EVERY null is inside the window,
+    // so one sighting disqualifies the fast answer however full the buffer is.
+    if nulls_seen && (k.nulls_first || buf.len() < kcap) {
         return None; // nulls are inside the window — the general path places them
     }
     let end = kcap.min(buf.len());
@@ -768,12 +814,14 @@ fn try_scan_top_k_wide(
 /// builds a 16-byte tuple per row and trims every 1024 pushes — about 195 partial sorts at 200k
 /// rows. Only the dictionary arm has the rank-bounded early exit that pays for streaming.
 fn top_k_liftable(pinput: &Plan, key_exprs: &[&Expr], store: &Store) -> bool {
-    if !matches!(pinput, Plan::Scan { .. }) {
-        return false;
-    }
     let [Expr::Prop { slot: 0, key }] = key_exprs else {
         return false;
     };
+    // The same see-through the arms got (item 1180): the gate has to admit exactly what they can
+    // drive, or the lift declines a plan they would have answered.
+    if scan_for_top_k(pinput, key).is_none() {
+        return false;
+    }
     // `Bool` joins `Dict` (item 1175) and for the SAME stated reason: the note on
     // `try_scan_top_k_wide`'s streaming arm says only a representation with a BOUNDED RANK can
     // have the early exit that pays for streaming. A boolean column has two values and their

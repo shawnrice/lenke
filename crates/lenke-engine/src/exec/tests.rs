@@ -31792,3 +31792,134 @@ fn a_bool_order_limit_with_stored_nulls_pins_both_null_placements() {
         "DESC also places them last (GQL)"
     );
 }
+
+/// The `nulls_first` disjunct item 1180 added is EXERCISED, not defensive — and the path that
+/// reaches it is not the one the design predicted.
+///
+/// Item 1180 sees through the `Filter{PropertyExists}` that Gremlin's `values(k)` inserts, which
+/// lets a `nulls_first: true` plan enter `try_scan_top_k_wide` for the first time, and replaces the
+/// old blanket bail with `nulls_seen && (k.nulls_first || buf.len() < kcap)`. So the question is
+/// what makes `nulls_seen` true on that path.
+///
+/// NOT a stored null: one promotes the column to `Column::Gen` (item 1142), which the wide arm's
+/// match declines outright — so the disjunct can never see one. It is an ABSENT key, and the reason
+/// is the asymmetry the see-through is built on: the FILTER removes absent-key rows, while the arm
+/// scans the label's nodes directly and therefore still visits them. It records them as
+/// `nulls_seen` and now hands the query back.
+///
+/// That is CONSERVATIVE rather than optimal — the filtered answer has no nulls in it, so the fast
+/// arm could in principle have answered — and it is the safe direction: the arm cannot know the
+/// filter removed exactly those rows, so it declines. The test pins both halves: the answer is
+/// right, and (via the timing-free structural check below) the column with NO absent keys is the
+/// one that gets the fast path.
+#[test]
+fn the_gremlin_presence_filter_order_limit_agrees_whether_or_not_keys_are_absent() {
+    let mut b = Builder::default();
+    // `full` is on EVERY node; `holey` is missing on a third of them. Same values otherwise, so a
+    // divergence cannot be the data.
+    for i in 0..300u32 {
+        let v = Value::Bool(i % 2 == 0);
+        // `num` exists so the GQL case below can use a NON-SEEKABLE predicate. `= <lit>` becomes
+        // an `IndexSeek` with no `Filter` node at all (plan-dumped), so it cannot exercise the
+        // see-through; `> <lit>` survives as `Filter{Scan, Compare}`, which is the shape that can.
+        let n = Value::Num(f64::from(i));
+        if i % 3 == 0 {
+            b.node(&["N"], &[("full", v.clone()), ("num", n)]);
+        } else {
+            b.node(&["N"], &[("full", v.clone()), ("holey", v), ("num", n)]);
+        }
+    }
+    let st = b.build();
+
+    let gremlin = |q: &str| -> Vec<String> {
+        let plan = crate::opt::optimize_indexed(crate::gremlin::parse(q).unwrap(), &st);
+        run(&plan, &st)
+            .rows
+            .iter()
+            .map(|r| format!("{:?}", r[0]))
+            .collect()
+    };
+
+    for key in ["full", "holey"] {
+        // The unlimited spelling is the reference: no `limit`, so no streaming arm, in both the
+        // before and after of item 1180.
+        let all = gremlin(&format!("g.V().values('{key}').order()"));
+
+        for limit in [1usize, 3, 10] {
+            let got = gremlin(&format!("g.V().values('{key}').order().limit({limit})"));
+
+            assert_eq!(
+                got,
+                all.iter().take(limit).cloned().collect::<Vec<_>>(),
+                "values('{key}').order().limit({limit}) must be a prefix of the full order"
+            );
+        }
+
+        // `values(k)` SKIPS absent keys, so the row count is the number of nodes CARRYING it —
+        // 300 for `full`, 200 for `holey`. Asserted because it is the fact that makes the
+        // see-through sound, and a regression here would mean the arm started answering from rows
+        // the filter removes.
+        let want = if key == "full" { 300 } else { 200 };
+
+        assert_eq!(
+            all.len(),
+            want,
+            "values('{key}') yields one row per carrying node"
+        );
+    }
+
+    // A FILTER THAT IS NOT A PRESENCE TEST must NOT be seen through (item 1180, mutant M3). GQL
+    // produces exactly that shape — `OrderPage{Project{Filter{Scan, Compare}}}` — and the arm
+    // scans the label's nodes directly, so eliding a `WHERE` would answer from rows the query
+    // excludes. The Gremlin surface cannot reach this: `values(k)` always contributes
+    // `PropertyExists(k)`, so any additional predicate arrives as an `And`, which the match
+    // refuses for a different reason.
+    let gql = |q: &str| -> Vec<String> {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &st);
+        run(&plan, &st)
+            .rows
+            .iter()
+            .map(|r| format!("{:?}", r[0]))
+            .collect()
+    };
+
+    // `num >= 150` keeps the upper half (150 of 300 rows), and of those the ones with `full =
+    // false` are the odd `i`. Ordering by `full` ASC puts `false` first, so eliding the filter
+    // would pull in `false` rows from the LOWER half — rows the query excludes — and the window
+    // would fill with them.
+    let reference = gql("MATCH (n:N) WHERE n.num >= 150 RETURN n.full AS v ORDER BY n.full");
+
+    assert_eq!(reference.len(), 150, "the filter keeps the upper half");
+
+    // LIMIT 100 is the one that can DISTINGUISH, and finding that took four tries. A small limit
+    // cannot: the filtered half's first rows are all `false` and so are the unfiltered graph's, so
+    // the two windows are the same STRING even when they are different ROWS. A limit of 200 cannot
+    // either: `kcap * 2 >= node_count` bails out before the scan, so the fast arm never runs. At
+    // 100 the filtered set (75 `false`, then 75 `true`) yields 75 + 25 while eliding the filter
+    // would yield 100 `false` from the whole graph — and 200 < 300 keeps it on the fast path.
+    for limit in [1usize, 3, 10, 100, 200] {
+        let filtered = gql(&format!(
+            "MATCH (n:N) WHERE n.num >= 150 RETURN n.full AS v ORDER BY n.full LIMIT {limit}"
+        ));
+
+        assert_eq!(
+            filtered,
+            reference.iter().take(limit).cloned().collect::<Vec<_>>(),
+            "LIMIT {limit}: a non-presence filter was elided, so the window drew on excluded rows"
+        );
+    }
+
+    // DESC too: the early exit keys off the opposite value, and nulls_first applies either way.
+    // The spelling is `order().by(desc)` — `order(desc)` does not parse (`expected RParen`), since
+    // the bare argument form is reserved for a SCOPE (`order(local)`).
+    for key in ["full", "holey"] {
+        let all = gremlin(&format!("g.V().values('{key}').order().by(desc)"));
+        let got = gremlin(&format!("g.V().values('{key}').order().by(desc).limit(3)"));
+
+        assert_eq!(
+            got,
+            all.iter().take(3).cloned().collect::<Vec<_>>(),
+            "desc {key}"
+        );
+    }
+}
