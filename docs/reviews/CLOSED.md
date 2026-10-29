@@ -2910,6 +2910,20 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   columns — cheaper to write, already covered by those arms' own oracles and mutation, and FASTER
   by item 471's measurement that N passes over one column each beat one interleaved pass (5.6 ms
   against 0.6). Separate function after the numeric entry, per item 1184.
+- **REFUTED: a TS extremum-PAIR gap. There is none — the pair costs what two folds should (1192).**
+  Item 1188 found `min(k), max(k)` unserved NATIVELY for every non-numeric representation (8332x a
+  single `min(k)` on a boolean). The question transfers even though the fix cannot (item 1176: TS
+  has no column representations). Measured against the only floor that matters, TWICE a single
+  aggregate: **num 1.05x, str 0.93x, dict 0.87x, bool 0.88x** — at or BELOW the floor, because the
+  two folds share one walk. **This CONFIRMS item 1183's prediction** that TS's extremum fold is
+  already free relative to its walk. Instrument: `packages/native/pair-agg-ts-probe.ts`.
+- ⚠️ **THE `Dir` AXIS WAS NEVER A SEAM, and a text census said otherwise (1192).** `CLOSED.md`'s own
+  note that the flat partition exists only for out-edges suggested an `Out`-served / `In`-unserved
+  asymmetry worth censusing. Counting `Dir::` occurrences per function flagged exactly one
+  `Out`-only path, `try_group_count` — and that occurrence is inside a COMMENT explaining slot
+  semantics, not a gate. `try_degree_algebra`, `typed_hop_count_from_size` and `peel_dir_hops` all
+  handle multiple directions. **Counting text does not distinguish a gate from a comment**, the same
+  class of detector artifact as item 1191's two false holes; read the hit before pricing it.
 - ✅ **THE `Column::Num`-ONLY EXTREMUM FAMILY IS CLOSED (census at item 1191).** Six items came out
   of applying "grep the pattern elsewhere" to the function next door: 1182 (frontier single), 1184
   (frontier multi, via a wide twin), 1185/1186 (hop top-K, numeric then the rest), 1188 (scan multi,
