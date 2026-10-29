@@ -2910,7 +2910,40 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   columns — cheaper to write, already covered by those arms' own oracles and mutation, and FASTER
   by item 471's measurement that N passes over one column each beat one interleaved pass (5.6 ms
   against 0.6). Separate function after the numeric entry, per item 1184.
-- ⚠️ **OPEN, PRICED at 6.7x, AN EQUIVALENT-SPELLING GAP, and it CORRECTS item 1203's attribution
+- **CLOSED by 1205 at 6.7x, by routing a single ORDERING bound through the two-bound arm: 618.4 ->
+  92.4 us, ratio to the two-bound spelling exactly 1.00x.** `x >= lo` is paired with a VACUOUS
+  companion (`x <= f64::INFINITY`) and handed to `try_stream_range_count`, whose closure vectorizes
+  while the single-bound one had stopped doing so. The pairing is exact for every f64 — an
+  INCLUSIVE infinite bound keeps `+inf`, and NaN fails both sides — and `Eq`/`Ne` have no range form
+  so they keep the original arm.
+  ⚠️ **FOUR HYPOTHESES REFUTED BEFORE THE FIX, each by instrumenting rather than reading:**
+  (a) the single bound not reaching its arm — `num_conj_on_slot` returns `[(Ge, 500000.0)]`, which
+  matches, and an `eprintln` confirmed the arm FIRES; (b) a different plan — both are
+  `Project{Aggregate{Filter{Scan}}}`; (c) item 375's "an arm went dead below one that claimed its
+  shape" — `try_scan_count` runs first but matches only `Scan`/`Expand`/`EdgeScan`, never `Filter`;
+  (d) **item 453's own fix, a separate `#[inline(never)]` function, which left the ratio at 6.75x
+  unchanged** — so it is not the layout hazard that comment describes. What remains is that
+  `scan_visit` is monomorphized per closure TYPE, so LLVM decides vectorization per arm, which is
+  what item 451 meant by "the single-bound sweep's monomorphic closure auto-vectorizes" — a property
+  that had quietly stopped holding for it while holding for its neighbour.
+  **NOT caused by this session**: at `84f50e5f`, the commit before the first of this session's four
+  `fastpath.rs` widenings, the same probe reads 6.65x (609.0 against 91.6). Checked because growing
+  that file is exactly the documented hazard.
+  ⚠️ **THE WIN'S BREADTH IS NARROWER THAN THE SHAPE SUGGESTS, and this is unresolved.** The bench
+  corpus's own single-bound row — `MATCH (p:Person) WHERE p.age > 50 RETURN count(*)`, the identical
+  shape — was ALREADY at 90.5 us before this change and reads 90.1 after. So not every single-bound
+  filtered count was slow, and what distinguishes that fixture from the probe's (both 200,000 nodes,
+  both `Column::Num`, both ~50% selective) is NOT identified. The 6.7x is verified on the measured
+  shape; it is not claimed for all of them.
+  Mutation 5/5, predictions correct. The three real mutants (exclusive upper, exclusive lower, a
+  FINITE companion) are caught by the new infinity/NaN fixture AND BY NOTHING ELSE — a random
+  fixture contains no infinities, so that is the test doing the whole job. Admitting `Eq` to the
+  pairing and swapping the pair's order both SURVIVE, correctly: the range arm classifies rather
+  than matching pairwise (item 453) and declines a non-ordering pair.
+  ⚠️ A test expectation of mine was wrong and the engine right: `NaN <> 5` is TRUE here, per this
+  repo's NaN policy (predicates keep NaN JS-unordered). Recorded in the test.
+- ⚠️ ~~**OPEN, PRICED at 6.7x**~~ — closed by 1205 above; kept for the diagnosis and the 1203
+  correction. **AN EQUIVALENT-SPELLING GAP, and it CORRECTS item 1203's attribution
   (1204): `WHERE a.num >= k RETURN count(*)` costs 617.5 µs where the same question with a second
   bound costs 92.5 µs.** Same column, same type, same 99,835 rows, same answer — the only difference
   is ONE bound against TWO, and the single-bound spelling is the slow one. Reproduced at two

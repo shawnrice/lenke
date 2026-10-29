@@ -33962,3 +33962,75 @@ fn coalesce_picks_the_first_non_null_per_row_after_the_move() {
         );
     }
 }
+
+/// Item 1205 routes a SINGLE ordering bound through the two-bound sweep by pairing it with a
+/// vacuous companion (`x >= lo` becomes `x >= lo AND x <= +inf`), because that arm vectorizes and
+/// the single-bound one had stopped doing so — 618.4us to 92.4us, exactly the two-bound cost.
+///
+/// The pairing is a REWRITE of the predicate, so the risk is not the speed but an answer that
+/// differs at the values where `+inf`, `-inf` and `NaN` behave unlike ordinary numbers. Those are
+/// precisely the rows a random fixture does not contain, so this one is built from them.
+#[test]
+fn a_single_bound_count_pairs_with_a_vacuous_companion_without_changing_the_answer() {
+    let mut b = Builder::default();
+    // Ordinary values, both infinities, and a NaN — the four classes the pairing has to preserve.
+    for v in [
+        -5.0_f64,
+        0.0,
+        5.0,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NAN,
+    ] {
+        b.node(&["N"], &[("k", Value::Num(v))]);
+    }
+    // And a node with NO `k` at all, which `present[i]` must keep excluding.
+    b.node(&["N"], &[]);
+    let st = b.build();
+
+    let count = |pred: &str| -> f64 {
+        let q = format!("MATCH (a:N) WHERE {pred} RETURN count(*) AS c");
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(&q).unwrap(), &st);
+        let rows = crate::exec::try_run(&plan, &st).expect("runs");
+        match rows.rows.iter().next().and_then(|r| r.first()) {
+            Some(Value::Num(n)) => *n,
+            other => panic!("{pred}: expected a count, got {other:?}"),
+        }
+    };
+
+    // ⚠️ EACH EXPECTATION IS WRITTEN OUT, not computed by the same rule the engine uses.
+    //   >= 0      : 0, 5, +inf                      = 3   (NaN fails; -inf and -5 are below)
+    //   > 0       : 5, +inf                          = 2
+    //   <= 0      : -5, 0, -inf                      = 3
+    //   < 0       : -5, -inf                         = 2
+    // NaN is excluded by every ordering comparison, which is what makes the +inf upper bound safe.
+    assert_eq!(count("a.k >= 0"), 3.0, ">= keeps +inf and excludes NaN");
+    assert_eq!(count("a.k > 0"), 2.0, "> keeps +inf");
+    assert_eq!(count("a.k <= 0"), 3.0, "<= keeps -inf");
+    assert_eq!(count("a.k < 0"), 2.0, "< keeps -inf");
+
+    // The INFINITE bound itself, which is where a vacuous companion could collide with a real one.
+    assert_eq!(
+        count("a.k >= -1e400"),
+        5.0,
+        "every non-NaN value is >= -inf"
+    );
+    assert_eq!(count("a.k <= 1e400"), 5.0, "every non-NaN value is <= +inf");
+
+    // `Eq`/`Ne` have no range form and must keep the original arm — pinned so a later widening of
+    // the pairing to them fails here rather than silently answering differently.
+    assert_eq!(count("a.k = 5"), 1.0, "equality is unpaired");
+    // ⚠️ FIVE, not four: `NaN <> 5` is TRUE here, which is this repo's documented NaN policy
+    // (predicates keep NaN JS-unordered, and `NaN != 5` is true in JS). My first expectation said
+    // four, assuming UNKNOWN — the engine was right and the test was wrong. The `Ne` arm is
+    // untouched by item 1205 either way: -5, 0, +inf, -inf and NaN all satisfy it.
+    assert_eq!(
+        count("a.k <> 5"),
+        5.0,
+        "inequality is unpaired and NaN <> 5 is TRUE"
+    );
+
+    // And the paired form must agree with the SPELLING it imitates, on this same fixture.
+    assert_eq!(count("a.k >= 0"), count("a.k >= 0 AND a.k <= 1e400"));
+    assert_eq!(count("a.k < 0"), count("a.k >= -1e400 AND a.k < 0"));
+}

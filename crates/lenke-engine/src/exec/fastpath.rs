@@ -1618,6 +1618,42 @@ pub(super) fn try_stream_date_count(
     Some(count)
 }
 
+/// The SINGLE-BOUND arm of [`try_stream_num_count`] — reached by `Eq`/`Ne`, which have no range
+/// form, and as the fallback when the paired range declines (item 1205).
+///
+/// Item 451 measured this arm at **0.459 ms per 1,000,000 nodes** and said why: "the single-bound
+/// sweep's monomorphic closure auto-vectorizes". Item 453 then brought the RANGE to 0.431 ms,
+/// "landing exactly on the single-bound cost". Those two figures scale to ~92 us at 200,000 nodes,
+/// and the range still measures 91.6-102 us there — but the single bound measured **609-680 us**,
+/// 6.6x the range and 7.4x its own recorded cost, with the two spellings returning the identical
+/// count. So the arm had lost its vectorization while the arm beside it kept it.
+///
+/// ⚠️ NOT CAUSED BY THE GROWTH OF THIS FILE DURING THIS SESSION, which was the first suspicion:
+/// measured at `84f50e5f`, the commit before this session's first `fastpath.rs` widening, the same
+/// probe reads 6.65x (609.0 us against 91.6). The regression is long-standing.
+///
+/// ⚠️ ITEM 453'S FIX WAS TRIED HERE FIRST AND DID NOTHING: a separate `#[inline(never)]` function
+/// left the ratio at 6.75x, unchanged. So this is NOT the layout hazard that comment describes, and
+/// the caller routes an ORDERING bound through the two-bound arm instead — see the note there.
+#[inline(never)]
+fn stream_single_bound_count(
+    store: &Store,
+    label: &Option<String>,
+    data: &[f64],
+    present: &[bool],
+    op: CompareOp,
+    t: f64,
+) -> u64 {
+    match op {
+        CompareOp::Eq => sweep_num_count(store, label, data, present, |x| x == t),
+        CompareOp::Ne => sweep_num_count(store, label, data, present, |x| x != t),
+        CompareOp::Lt => sweep_num_count(store, label, data, present, |x| x < t),
+        CompareOp::Le => sweep_num_count(store, label, data, present, |x| x <= t),
+        CompareOp::Gt => sweep_num_count(store, label, data, present, |x| x > t),
+        CompareOp::Ge => sweep_num_count(store, label, data, present, |x| x >= t),
+    }
+}
+
 /// The TWO-BOUND arm of [`try_stream_num_count`], in its own function so that one stays small
 /// (item 453).
 ///
@@ -1701,17 +1737,40 @@ pub(super) fn try_stream_num_count(
     // path that materializes a 200,000-id batch AND a 91,000-entry keep-list is the tell that the
     // per-element cost, not the allocation, was deciding it.
     if let [(op, t)] = bounds.as_slice() {
-        let t = *t;
-        let count = match op {
-            CompareOp::Eq => sweep_num_count(store, label, data, present, |x| x == t),
-            CompareOp::Ne => sweep_num_count(store, label, data, present, |x| x != t),
-            CompareOp::Lt => sweep_num_count(store, label, data, present, |x| x < t),
-            CompareOp::Le => sweep_num_count(store, label, data, present, |x| x <= t),
-            CompareOp::Gt => sweep_num_count(store, label, data, present, |x| x > t),
-            CompareOp::Ge => sweep_num_count(store, label, data, present, |x| x >= t),
+        // ⚠️ A SINGLE ORDERING BOUND IS ROUTED THROUGH THE TWO-BOUND ARM, by pairing it with a
+        // VACUOUS companion (item 1205). That looks backwards — the range closure does strictly
+        // MORE work — and it is what the measurement says: `x >= 500000` cost 618.4us where
+        // `x >= 500000 AND x < 1000000` over the identical 99,835 matching rows cost 91.6, a
+        // 6.75x gap between two closures handed to the SAME `sweep_num_count`. Both arms were
+        // confirmed to fire by instrumenting them, both plans are identical, and the gap is
+        // present at `84f50e5f` too, so it is neither a route problem nor new.
+        //
+        // Item 451 named the mechanism when it built this arm — "the single-bound sweep's
+        // monomorphic closure auto-vectorizes" — and that is what has stopped being true for it
+        // while remaining true for its neighbour: `scan_visit` is monomorphized per closure TYPE,
+        // so whether LLVM vectorizes is decided per arm. Extracting this arm into its own
+        // `#[inline(never)]` function (item 453's fix for the range) was tried FIRST and changed
+        // nothing — 6.75x before, 6.75x after — so the fix is not layout.
+        //
+        // THE PAIRING IS EXACT FOR EVERY f64, which is the only reason this is sound rather than
+        // nearly sound: `x >= lo` <=> `x >= lo && x <= f64::INFINITY` (an infinite upper bound,
+        // INCLUSIVE, so `+inf` still matches; NaN fails both sides either way), and `x < hi` <=>
+        // `x >= f64::NEG_INFINITY && x < hi`. `Eq`/`Ne` have no range form and keep the arm below.
+        let paired = match op {
+            CompareOp::Gt | CompareOp::Ge => Some([(*op, *t), (CompareOp::Le, f64::INFINITY)]),
+            CompareOp::Lt | CompareOp::Le => Some([(CompareOp::Ge, f64::NEG_INFINITY), (*op, *t)]),
+            CompareOp::Eq | CompareOp::Ne => None,
         };
 
-        return Some(count);
+        if let Some(pair) = paired {
+            if let Some(count) = try_stream_range_count(store, label, &pair, data, present) {
+                return Some(count);
+            }
+        }
+
+        return Some(stream_single_bound_count(
+            store, label, data, present, *op, *t,
+        ));
     }
     if let Some(count) = try_stream_range_count(store, label, &bounds, data, present) {
         return Some(count);
