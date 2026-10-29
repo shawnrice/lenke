@@ -2910,6 +2910,33 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   columns — cheaper to write, already covered by those arms' own oracles and mutation, and FASTER
   by item 471's measurement that N passes over one column each beat one interleaved pass (5.6 ms
   against 0.6). Separate function after the numeric entry, per item 1184.
+- **CLOSED by 1213 — the THREE-bound count, the last of item 1207's census rows: 1079.4 -> 204.5 us
+  on unpredictable data (5.28x), 388.4 -> 185.5 periodic (2.09x), data-dependence 2.78x -> 1.10x.**
+  A conjunction of numeric bounds on one column now reduces to a canonical range plus exclusions
+  (`canonical_num_conj`), so three bounds reach a vectorizing sweep instead of the general arm's
+  `bounds.iter().all(|&(op, t)| num_pred(op, data[i], t))` — a `Vec` walk plus a runtime op match
+  PER BOUND PER ROW, which is item 451's own diagnosis of what it left in place above two bounds.
+  `=` folds to a one-point range, so `k = 5 AND k > 0` reaches the range sweep too.
+  ⚠️ **THE OBVIOUS FORM WAS BUILT FIRST AND IS ON THE RECORD AS WORSE**: one closure
+  `|v| v > lo && v < hi && v != x` gave periodic 112.4us (3.44x, BETTER than the two-pass form's
+  185.5) but left random at 680.7 — still 6.1x data-dependent, because a THIRD term breaks the
+  auto-vectorization a two-term closure gets. Split into two vectorized passes (range count minus
+  the excluded value's own count) it is 204.5 random. **Two passes lose on predictable data and win
+  5.3x on unpredictable, so the choice is which data is realistic** — item 471's "N passes over one
+  column each BEAT one interleaved pass", applied to a predicate rather than to aggregates.
+  Sound because the range already excludes NaN: inside `[lo, hi]` every value is non-NaN, so
+  `v != x` is exactly `!(v == x)` and the subtraction cannot over-count.
+  ⚠️ **TWO GUARDS THE SUITE DEMANDED, both found by a failing test rather than by reasoning:**
+  an EMPTY conjunction declines (a bare `has(k)` yields no bounds, and the general arm counts
+  `present || nulls` — a stored present-null included — where a canonical full range counts only
+  typed values); and a NaN literal declines (`x > NaN` is false for every x while `x <> NaN` is TRUE
+  for every x, so it does not fold into a min/max).
+  ⚠️ **A NaN LITERAL TURNS OUT TO BE UNREACHABLE FROM A QUERY**: `0/0.0` RAISES "division by zero"
+  rather than evaluating to NaN, so that guard is covered by the pure-function test only and exists
+  as a total function's obligation, not because a query can reach it.
+  Mutation 4/4, all caught. Every other census row and both controls flat at 1.00-1.01x;
+  `query_bench` flat. **Item 1207's census is now fully closed except the dict row (1.66x, two
+  causes refuted at 1208 and 1209).**
 - ⚠️ **OPEN, PRICED at ~1.2x and NOT fixable at the query level: in the TS engine a property beyond
   roughly the 5th position on the node costs ~1.2x more to read (1212).** One graph, 100,000 nodes x
   20 properties ALL HOLDING IDENTICAL VALUES, read one at a time by position: positions 0/1/2/4 read

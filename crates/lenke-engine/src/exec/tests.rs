@@ -34281,3 +34281,130 @@ fn the_branchless_keep_list_keeps_exactly_the_same_rows() {
         "[[Num(1.0)], [Num(2.0)], [Num(3.0)], [Num(2.0)], [Num(-1.0)]]"
     );
 }
+
+/// Item 1213 reduces a conjunction of numeric bounds to a canonical range plus exclusions, so a
+/// THREE-bound count reaches a vectorizing sweep instead of the general arm's per-row `Vec` walk.
+/// Tested directly because it is a pure total function and the route it chooses is
+/// answer-equivalent (item 1137's rule).
+#[test]
+fn a_numeric_conjunction_canonicalizes_to_a_range_and_exclusions() {
+    use crate::exec::fastpath::{canonical_num_conj, NumConj};
+    use crate::ir::CompareOp::{Eq, Ge, Gt, Le, Lt, Ne};
+
+    let c = |bs: &[(crate::ir::CompareOp, f64)]| canonical_num_conj(bs);
+
+    // The shape the item was built for.
+    assert_eq!(
+        c(&[(Gt, 50.0), (Lt, 100.0), (Ne, 73.0)]),
+        Some(NumConj {
+            lo: 50.0,
+            lo_incl: false,
+            hi: 100.0,
+            hi_incl: false,
+            ne: vec![73.0]
+        })
+    );
+
+    // TIGHTENING: the strictest bound wins, and at an EQUAL threshold the EXCLUSIVE one does
+    // (`k >= 5 AND k > 5` is `k > 5`) — in both written orders, since a canonical form that
+    // depended on order would make two spellings of one predicate cost differently.
+    assert!(!c(&[(Ge, 5.0), (Gt, 5.0)]).unwrap().lo_incl);
+    assert!(!c(&[(Gt, 5.0), (Ge, 5.0)]).unwrap().lo_incl);
+    assert!(!c(&[(Le, 9.0), (Lt, 9.0)]).unwrap().hi_incl);
+    assert_eq!(c(&[(Gt, 1.0), (Gt, 7.0)]).unwrap().lo, 7.0);
+    assert_eq!(c(&[(Lt, 9.0), (Lt, 2.0)]).unwrap().hi, 2.0);
+
+    // `=` collapses to a one-point INCLUSIVE range, so it reaches the range sweep too.
+    let eq = c(&[(Eq, 5.0), (Gt, 0.0)]).unwrap();
+    assert_eq!(
+        (eq.lo, eq.lo_incl, eq.hi, eq.hi_incl),
+        (5.0, true, 5.0, true)
+    );
+    // Two DIFFERENT equalities leave lo > hi, which matches nothing — the same answer the per-row
+    // conjunction gives, reached by arithmetic instead of by a special case.
+    let both = c(&[(Eq, 5.0), (Eq, 6.0)]).unwrap();
+    assert!(
+        both.lo > both.hi,
+        "contradictory equalities must not match: {both:?}"
+    );
+
+    // ⚠️ A NaN LITERAL DECLINES. `x > NaN` is false for every x and `x <> NaN` is TRUE for every x
+    // (NaN stays JS-unordered here — item 1205), so a NaN bound does not fold into a min/max at
+    // all; folding it would silently admit or reject the whole column.
+    assert_eq!(c(&[(Gt, 1.0), (Lt, f64::NAN)]), None);
+    assert_eq!(c(&[(Ne, f64::NAN)]), None);
+
+    // ⚠️ AN EMPTY CONJUNCTION DECLINES, and the suite caught this: a bare `has(k)` yields no
+    // bounds, and the caller's general arm counts `present || nulls` — a stored present-null
+    // included — where the canonical full range counts only typed values.
+    assert_eq!(c(&[]), None);
+
+    // Infinities are ordinary bounds, not sentinels.
+    let inf = c(&[(Ge, f64::NEG_INFINITY), (Le, f64::INFINITY)]).unwrap();
+    assert_eq!(
+        (inf.lo, inf.hi, inf.ne.len()),
+        (f64::NEG_INFINITY, f64::INFINITY, 0)
+    );
+}
+
+/// The ANSWER half: a three-bound count must agree with the same question counted another way.
+/// The oracle is the PROJECTION of the same filter, which takes the keep-list route rather than
+/// this streaming sink, so the two are independent implementations of one predicate.
+#[test]
+fn a_three_bound_count_agrees_with_the_projection_route() {
+    let mut b = Builder::default();
+    for v in [0.0_f64, 50.0, 51.0, 73.0, 99.0, 100.0, f64::NAN, -0.0] {
+        b.node(&["N"], &[("k", Value::Num(v))]);
+    }
+    b.node(&["N"], &[]); // no `k`
+    let st = b.build();
+
+    let counted = |pred: &str| -> f64 {
+        let q = format!("MATCH (a:N) WHERE {pred} RETURN count(*) AS c");
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(&q).unwrap(), &st);
+        match crate::exec::try_run(&plan, &st)
+            .expect("runs")
+            .rows
+            .iter()
+            .next()
+            .and_then(|r| r.first())
+        {
+            Some(Value::Num(n)) => *n,
+            other => panic!("{pred}: {other:?}"),
+        }
+    };
+    let projected = |pred: &str| -> f64 {
+        let q = format!("MATCH (a:N) WHERE {pred} RETURN a.k AS x");
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(&q).unwrap(), &st);
+        crate::exec::try_run(&plan, &st).expect("runs").rows.len() as f64
+    };
+
+    for (pred, want) in [
+        // The excluded value is INSIDE the range, so the subtraction pass runs: 51 and 99 survive.
+        ("a.k > 50 AND a.k < 100 AND a.k <> 73", 2.0),
+        // OUTSIDE the range, so the second pass is skipped and must not change the answer.
+        ("a.k > 50 AND a.k < 100 AND a.k <> 7", 3.0),
+        // Inclusive ends, and a signed zero at the boundary. ⚠️ SIX, not five: `-0.0 >= 0` is
+        // TRUE (signed zeros compare equal), so the fixture's `-0.0` survives alongside `0.0`.
+        // My first expectation said five and the engine was right — which is the reason the
+        // fixture carries a `-0.0` at all, since the subtraction pass counts `v == x` and a
+        // signed zero is exactly where `==` and a range check could disagree.
+        ("a.k >= 0 AND a.k <= 100 AND a.k <> 50", 6.0),
+        // `=` folded into the range, plus an exclusion that cannot matter.
+        ("a.k = 51 AND a.k > 0 AND a.k <> 73", 1.0),
+        // Contradictory equalities.
+        ("a.k = 51 AND a.k = 73", 0.0),
+        // ⚠️ NO NaN-LITERAL ROW HERE, AND THAT IS THE FINDING: a NaN literal is not expressible
+        // in a query at all. `0/0.0` RAISES ("division by zero") rather than evaluating to NaN,
+        // so the canonicalizer's NaN guard is reachable only from the pure function, which tests
+        // it directly. The guard stays because it is a total function's obligation, not because a
+        // query can reach it.
+    ] {
+        assert_eq!(counted(pred), want, "{pred}: counted");
+        assert_eq!(
+            projected(pred),
+            want,
+            "{pred}: the projection route must agree"
+        );
+    }
+}

@@ -1789,6 +1789,105 @@ fn try_stream_range_count(
     Some(count)
 }
 
+/// A conjunction of numeric bounds on ONE column, reduced to its canonical shape (item 1213).
+///
+/// `lo`/`hi` are the tightest surviving range and `ne` the values excluded by `<>`. Every
+/// conjunction of `<`, `<=`, `>`, `>=`, `=` and `<>` on one column reduces to this, which is what
+/// lets a THREE-bound predicate reach a monomorphic sweep instead of the general arm's
+/// `bounds.iter().all(|&(op, t)| num_pred(op, data[i], t))` — a `Vec` walk plus a runtime op match
+/// PER BOUND PER ROW, which is item 451's own diagnosis of the cost it left in place above two
+/// bounds. Measured: `k > 50 AND k < 100 AND k <> 73` counted in 1074.9us where the two-bound
+/// spelling of the same scan costs 92.8, about 11.6x for one extra comparison.
+#[derive(Debug, PartialEq)]
+pub(super) struct NumConj {
+    pub lo: f64,
+    pub lo_incl: bool,
+    pub hi: f64,
+    pub hi_incl: bool,
+    pub ne: Vec<f64>,
+}
+
+/// Reduce `bounds` to a [`NumConj`], or `None` when the reduction is not sound.
+///
+/// ⚠️ A NaN LITERAL DECLINES, and that is the one case worth stating. `num_pred(Gt, x, NaN)` is
+/// false for every `x`, and `num_pred(Ne, x, NaN)` is TRUE for every `x` (this repo's predicates
+/// keep NaN JS-unordered — item 1205), so a NaN bound does not fold into a `min`/`max` at all:
+/// tightening `hi` with it would silently admit or reject the whole column. The general arm stays
+/// the only implementation of that.
+///
+/// `=` collapses to `[t, t]` inclusive, so `k = 5 AND k > 0` canonicalizes to a range and reaches
+/// the range sweep too — a shape the old arm also walked per row.
+pub(super) fn canonical_num_conj(bounds: &[(CompareOp, f64)]) -> Option<NumConj> {
+    // ⚠️ AN EMPTY CONJUNCTION DECLINES, AND A TEST CAUGHT THIS. `num_conj_on_slot` returns NO
+    // bounds for a bare presence atom (`has(k)`), and the general arm then counts
+    // `present[i] || nulls[i]` — a STORED PRESENT-NULL included. The canonical form of no bounds
+    // is the full range `[-inf, +inf]`, which the range sweep gates on `present[i]` ALONE and so
+    // undercounts exactly those cells. A different question, so not this one.
+    if bounds.is_empty() {
+        return None;
+    }
+
+    let mut c = NumConj {
+        lo: f64::NEG_INFINITY,
+        lo_incl: true,
+        hi: f64::INFINITY,
+        hi_incl: true,
+        ne: Vec::new(),
+    };
+
+    for &(op, t) in bounds {
+        if t.is_nan() {
+            return None;
+        }
+
+        match op {
+            // Tighten the lower bound. An EQUAL threshold that is EXCLUSIVE wins over an
+            // inclusive one (`k >= 5 AND k > 5` is `k > 5`), which is why the `==` case updates
+            // the flag rather than being skipped.
+            CompareOp::Gt | CompareOp::Ge => {
+                let incl = op == CompareOp::Ge;
+
+                if t > c.lo {
+                    c.lo = t;
+                    c.lo_incl = incl;
+                } else if t == c.lo && !incl {
+                    c.lo_incl = false;
+                }
+            }
+            CompareOp::Lt | CompareOp::Le => {
+                let incl = op == CompareOp::Le;
+
+                if t < c.hi {
+                    c.hi = t;
+                    c.hi_incl = incl;
+                } else if t == c.hi && !incl {
+                    c.hi_incl = false;
+                }
+            }
+            // `=` is a range of one point. Two different equalities leave `lo > hi`, which the
+            // sweep then matches nothing for — the same answer the per-row conjunction gives.
+            CompareOp::Eq => {
+                if t > c.lo {
+                    c.lo = t;
+                    c.lo_incl = true;
+                } else if t == c.lo {
+                    c.lo_incl = true;
+                }
+
+                if t < c.hi {
+                    c.hi = t;
+                    c.hi_incl = true;
+                } else if t == c.hi {
+                    c.hi_incl = true;
+                }
+            }
+            CompareOp::Ne => c.ne.push(t),
+        }
+    }
+
+    Some(c)
+}
+
 pub(super) fn try_stream_num_count(
     store: &Store,
     label: &Option<String>,
@@ -1852,6 +1951,91 @@ pub(super) fn try_stream_num_count(
     }
     if let Some(count) = try_stream_range_count(store, label, &bounds, data, present) {
         return Some(count);
+    }
+    // THREE OR MORE BOUNDS, reduced to a canonical range plus exclusions (item 1213), so they reach
+    // a monomorphic sweep instead of the general arm below. `canonical_num_conj` declines a NaN
+    // literal, which is the one reduction that would not be sound; everything else folds.
+    if let Some(c) = canonical_num_conj(&bounds) {
+        // NO exclusions: the canonical range IS a two-bound predicate, so hand it to the arm that
+        // already vectorizes. `k = 5 AND k > 0` lands here too, as `[5, 5]`.
+        if c.ne.is_empty() {
+            let pair = [
+                (
+                    if c.lo_incl {
+                        CompareOp::Ge
+                    } else {
+                        CompareOp::Gt
+                    },
+                    c.lo,
+                ),
+                (
+                    if c.hi_incl {
+                        CompareOp::Le
+                    } else {
+                        CompareOp::Lt
+                    },
+                    c.hi,
+                ),
+            ];
+
+            if let Some(count) = try_stream_range_count(store, label, &pair, data, present) {
+                return Some(count);
+            }
+        }
+        // ONE exclusion, as TWO VECTORIZED PASSES rather than one three-term closure: count the
+        // range, then subtract the excluded value's own count.
+        //
+        // ⚠️ THE OBVIOUS FORM WAS BUILT FIRST AND MEASURED, which is why this one exists. A single
+        // closure `|v| v > lo && v < hi && v != x` took the periodic fixture from 386.9us to 112.4
+        // (3.44x) but left the RANDOM one at 680.7 — still 6.1x data-dependent, where the plain
+        // two-bound range arm beside it is FLAT at 92.5/92.9. A third term breaks the
+        // auto-vectorization the two-term closure gets, and item 451 already named that mechanism
+        // ("the single-bound sweep's monomorphic closure auto-vectorizes").
+        //
+        // So the predicate is split into two closures that each vectorize. That is item 471's
+        // measured rule — N passes over one column each BEAT one interleaved pass — applied to a
+        // predicate instead of to a set of aggregates.
+        //
+        // SOUND BECAUSE THE RANGE ALREADY EXCLUDES NaN: within `[lo, hi]` every value is non-NaN,
+        // so `v != x` is exactly `!(v == x)` there and the subtraction cannot over-count. A NaN
+        // cell fails the range test itself (every ordering comparison is false for it), so it is
+        // in neither count. `-0.0 == 0.0` holds in both directions, so a signed zero is treated
+        // identically by the two passes.
+        if let [x] = c.ne.as_slice() {
+            let x = *x;
+            let pair = [
+                (
+                    if c.lo_incl {
+                        CompareOp::Ge
+                    } else {
+                        CompareOp::Gt
+                    },
+                    c.lo,
+                ),
+                (
+                    if c.hi_incl {
+                        CompareOp::Le
+                    } else {
+                        CompareOp::Lt
+                    },
+                    c.hi,
+                ),
+            ];
+
+            if let Some(total) = try_stream_range_count(store, label, &pair, data, present) {
+                // The excluded value only needs counting when it is INSIDE the range; outside it,
+                // the range count already omits it and the second pass would be pure cost.
+                let inside = (if c.lo_incl { x >= c.lo } else { x > c.lo })
+                    && (if c.hi_incl { x <= c.hi } else { x < c.hi });
+                let excluded = if inside {
+                    sweep_num_count(store, label, data, present, |v| v == x)
+                } else {
+                    0
+                };
+
+                return Some(total - excluded);
+            }
+        }
     }
     let mut count = 0u64;
     scan_visit(store, label, |i| {
