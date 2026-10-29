@@ -37220,10 +37220,23 @@ TS ok, and every row carrying a null) — narrow-ish, not airtight.
 closed the 2026-10-09 residual on the TS side (`filterPredicate` now tests `!== true`). It
 changes which queries raise, so it is a conformance change, not a bug fix.
 
-RATE, measured rather than guessed: 2 failures observed in roughly 3 early random draws, then 0 in
-12 fresh seeds (six small, six large) of 20,000 queries each. So on the order of 1 run in 10 — CI
-will go red occasionally, not usually. Both known seeds are recorded: `FUZZ_SEED=2382646283` and
-`FUZZ_SEED=2079407469`.
+RATE: 3 failures in roughly 35 draws of 20,000 queries, so about 9% — on the order of 1 run in 10.
+That figure is now measured rather than inferred from the early cluster. THREE reproducible seeds:
+`FUZZ_SEED=2382646283` (CI on `fb71eb01`), `FUZZ_SEED=2079407469` (a local full `bun run fuzz`) and
+`FUZZ_SEED=1013729799` (CI on `63bb2ac1`). All three reproduce deterministically IN ISOLATION.
+
+⚠️ AND THE CLUSTERING MISLED ME ONCE, WHICH IS WORTH RECORDING BECAUSE I ALMOST FILED A CORRECTION I
+DID NOT NEED. Two CI runs failed back to back while 12 seeds I had chosen all passed, and the natural
+reading was that the 1-in-10 estimate was far too optimistic. Four further rounds say otherwise: 12
+cryptographically random seeds (0 fail), 4 through the rebuilding runner (0 fail), and 2 full
+seven-fuzzer suites (0 fail). Two consecutive reds at a ~9% rate is a 1-in-120 coincidence, which is
+unremarkable once it has happened. The hypotheses those rounds ruled out are worth keeping, because
+each sounded better than chance: a STALE native artifact (refuted — both the `.so` and the wasm were
+rebuilt minutes earlier, and the runner that rebuilds them agrees) and an interaction with the rest
+of the suite (refuted — the full suite passes twice, and all three bad seeds fail in isolation).
+
+The lesson is the one this file keeps relearning in the other direction: a run of reds is evidence
+about the RATE only in proportion to how many runs you have seen, and two is not many.
 
 PINNED, so it cannot change silently while the decision is open: two tests in
 `and-short-circuit-conformance.test.ts` assert each engine's current behaviour separately (`agree`
