@@ -111,6 +111,39 @@ pub(super) fn try_fused_hop_num_count(input: &Plan, store: &Store) -> Option<u64
         };
     }
 
+    // TWO OR MORE BOUNDS reduce to ONE RANGE, so the hop arm gets what the scan family has had
+    // since items 1213/1214 (item 1227). `canonical_num_conj` is the SAME reduction, reused rather
+    // than reimplemented: it already declines the cases that are not a range — an empty
+    // conjunction (a bare `has(k)` presence atom, which counts stored present-nulls the range
+    // sweep would miss) and a NaN literal (which does not fold into a `min`/`max` at all, because
+    // this repo's predicates keep NaN JS-unordered). A `<>` bound lands in `ne`, which this arm
+    // declines too — answering an exclusion over a CSR hop would need the two-pass trick item 1213
+    // used on a sequential column, and that needs its own measurement.
+    //
+    // ⚠️ ITEM 1224 MEASURED WHAT THIS IS WORTH BEFORE IT WAS BUILT, as its own control: the
+    // two-bound spelling read 4887.7us against the one-bound arm's 772.4 on the identical fixture,
+    // 6.3x, purely because it still walked `bounds` and dispatched `num_pred` per EDGE.
+    if let Some(c) = canonical_num_conj(&bounds) {
+        if c.ne.is_empty() {
+            let (lo, hi) = (c.lo, c.hi);
+
+            return match (c.lo_incl, c.hi_incl) {
+                (false, false) => {
+                    hop_num_count(store, label, w, data, present, |x| (x > lo) & (x < hi))
+                }
+                (false, true) => {
+                    hop_num_count(store, label, w, data, present, |x| (x > lo) & (x <= hi))
+                }
+                (true, false) => {
+                    hop_num_count(store, label, w, data, present, |x| (x >= lo) & (x < hi))
+                }
+                (true, true) => {
+                    hop_num_count(store, label, w, data, present, |x| (x >= lo) & (x <= hi))
+                }
+            };
+        }
+    }
+
     let mut count = 0u64;
     for_each_typed_out(store, label, w, |nbr| {
         let j = nbr as usize;

@@ -34691,3 +34691,99 @@ fn edge_cross_count_over_every_operator_and_absent_endpoints() {
         "all six edges exist, including the two with an absent endpoint"
     );
 }
+
+/// A TWO-BOUND hop count — `(a)-[:R]->(b) WHERE b.k > lo AND b.k < hi` — which had no coverage at
+/// all until item 1227, found by mutation. Reducing the conjunction to one range left THREE mutants
+/// alive against the whole suite: dropping the upper bound, flipping the lower bound's
+/// inclusivity, and turning the conjunction into a disjunction. Each is a wrong answer.
+///
+/// ⚠️ EVERY ASSERTION BELOW IS CHOSEN TO SEPARATE ONE OF THOSE. A fixture whose values all sit
+/// strictly inside the range cannot see a dropped bound; one with no value AT a bound cannot see an
+/// inclusivity flip; one with nothing outside the range cannot see `&` become `|`. So `k` runs
+/// 1..=5 and the bounds land ON values, with counts that differ for every mutation:
+///
+/// ```text
+///   k > 2 AND k < 5    -> {3,4}     = 2      drop the upper bound -> {3,4,5} = 3
+///                                            `>` becomes `>=`     -> {2,3,4} = 3
+///   k >= 2 AND k <= 4  -> {2,3,4}   = 3      `&` becomes `|`      -> all     = 5
+/// ```
+///
+/// ⚠️ AND A `<>` BOUND MUST STILL BE RIGHT, because `canonical_num_conj` puts it in `ne` and this
+/// arm DECLINES a non-empty `ne` — so the general per-edge arm answers it. That is the path a
+/// mutant removing the `ne` gate would break, and nothing else here exercises it.
+#[test]
+fn two_bound_hop_count_reduces_to_a_range_without_changing_the_answer() {
+    let mut b = Builder::default();
+
+    for k in 1..=5u32 {
+        b.node(&["P"], &[("k", Value::Num(f64::from(k)))]);
+    }
+    // One source with an out-edge to EVERY node, so each `k` is a neighbour exactly once and the
+    // counts above are the predicate's answer rather than an artifact of the adjacency.
+    b.node(&["S"], &[("tag", Value::Num(0.0))]);
+
+    for t in 0..5u32 {
+        b.edge(5, t, "R");
+    }
+
+    let store = b.build();
+    let n = |q: &str| -> f64 {
+        match crate::exec::try_run(&opt_plan(q, &store), &store)
+            .unwrap()
+            .rows
+            .iter()
+            .next()
+            .expect("one row")[0]
+        {
+            Value::Num(x) => x,
+            ref o => panic!("count returns a number, got {o:?}"),
+        }
+    };
+    let hop = |pred: &str| -> f64 {
+        n(&format!(
+            "MATCH (s:S)-[:R]->(b) WHERE {pred} RETURN count(*) AS c"
+        ))
+    };
+
+    // EXCLUSIVE/EXCLUSIVE — the arm whose mutants dropped a bound and flipped inclusivity.
+    assert_eq!(hop("b.k > 2 AND b.k < 5"), 2.0, "k in {{3,4}}");
+    // INCLUSIVE/INCLUSIVE — a different arm of the same match, and the one a `|` mutation widens.
+    assert_eq!(hop("b.k >= 2 AND b.k <= 4"), 3.0, "k in {{2,3,4}}");
+    // The two MIXED arms, so all four (lo_incl, hi_incl) combinations are reached.
+    assert_eq!(hop("b.k > 2 AND b.k <= 4"), 2.0, "k in {{3,4}}");
+    assert_eq!(hop("b.k >= 2 AND b.k < 4"), 2.0, "k in {{2,3}}");
+    // THE BOUNDS ARE REACHABLE INDIVIDUALLY, which is what makes the pairs above diagnostic: if a
+    // single bound and its pair answered the same number, a dropped bound would be invisible.
+    assert_eq!(
+        hop("b.k > 2"),
+        3.0,
+        "k in {{3,4,5}} — and NOT 2, so dropping `< 5` shows"
+    );
+    assert_eq!(hop("b.k >= 2"), 4.0, "k in {{2,3,4,5}}");
+    // A `<>` BOUND lands in `ne`, so the range arm declines and the general arm answers.
+    assert_eq!(
+        hop("b.k > 1 AND b.k <> 3"),
+        3.0,
+        "k in {{2,4,5}} — the `ne` path"
+    );
+    assert_eq!(
+        hop("b.k >= 1 AND b.k <= 5 AND b.k <> 3"),
+        4.0,
+        "a range AND an exclusion together"
+    );
+    // THREE bounds, which canonicalize to the tightest range — the arm serves more than two.
+    assert_eq!(
+        hop("b.k > 1 AND b.k > 2 AND b.k < 5"),
+        2.0,
+        "the tighter `lo` wins"
+    );
+    // A range that admits NOTHING, and one that admits EVERYTHING: the degenerate ends.
+    assert_eq!(hop("b.k > 5 AND b.k < 1"), 0.0, "empty range");
+    assert_eq!(hop("b.k >= 1 AND b.k <= 5"), 5.0, "every neighbour");
+    // CONTROL the reduction cannot reach: the unfiltered hop.
+    assert_eq!(
+        n("MATCH (s:S)-[:R]->(b) RETURN count(*) AS c"),
+        5.0,
+        "five edges exist"
+    );
+}

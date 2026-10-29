@@ -37249,3 +37249,70 @@ bound and the registry-covered plain-match twin for contrast.
 already prescribes the remedy — `FUZZ_ITERATIONS=200000` for a deliberate pre-push sweep, because
 "a 20,000-query sample with a fresh seed each time means local green and CI green are different
 claims". Adopted from here.
+
+### Item 1227 — the two-bound hop count: 5.31x, and 4.0x of it was `&&` INSIDE the closure, not the dispatch (DONE)
+
+Item 1224 hoisted the operator for a SINGLE-bound hop count (5.28x) and left the two-bound spelling
+as its control, measuring it at 4887.7us against 772.4 — a 6.3x gap it had not spent. This spends it,
+and the decomposition is the result.
+
+`try_fused_hop_num_count` now reduces two or more bounds to ONE RANGE through `canonical_num_conj`,
+the same reduction the scan family has used since items 1213/1214 — reused rather than
+reimplemented, so the declines come with it: an empty conjunction (a bare `has(k)`, which counts
+stored present-nulls a range sweep would miss) and a NaN literal (which does not fold into a
+`min`/`max` because this repo keeps NaN JS-unordered). A `<>` bound lands in `ne` and this arm
+declines that too.
+
+200,000 nodes, degree 4 (800,000 edges), min of 7, three order-alternated rounds, binaries
+hash-asserted (PRE `73708cf8`, POST `c3dbf6b6`):
+
+```text
+  step                                   us     gain
+  general per-edge dispatch arm       4920.5        —
+  operator hoisted, `&&` closure      3725.0    1.31x
+  closure made `&`                     925.9    5.31x
+```
+
+```text
+  fixture               PRE     POST    gain
+  PERIODIC (i % 100) 4920.5    925.9   5.31x
+  RANDOM             4936.9    924.2   5.34x
+```
+
+⚠️ **THE DISPATCH WAS THE SMALL HALF. `&&` INSIDE THE CLOSURE WAS WORTH 4.0x ON ITS OWN** — three
+times the hoist. Written `|x| x > lo && x < hi`, the closure carries a BRANCH into a sweep whose
+accumulation item 1220 had already made branchless, and that branch blocks the vectorization the
+accumulation was made branchless to enable. `|x| (x > lo) & (x < hi)` is answer-identical (both
+operands are pure compares; NaN fails both forms the same way) and lets the loop vectorize. After it
+the two-bound row is 925.9 against the one-bound row's 780 — 1.2x, which is what ONE extra compare
+should cost, where before it was 6.3x.
+
+THE RULE, which extends item 1220 one level inward: **when a monomorphic closure is handed to a
+vectorizable sweep, a `&&` in the CLOSURE BODY blocks vectorization exactly as a branch in the
+accumulation does.** Item 451's long-unexplained "6.75x gap between two closures handed to the SAME
+`sweep_num_count`" is this phenomenon, and this is the first time it has been isolated and priced
+rather than observed.
+
+CONTROLS all flat, including the sharpest: the ONE-bound hop arm, which item 1224 wrote and item
+1227 does not touch (765.3 against 774.9, overlapping ranges), plus the unfiltered hop (0.3 both)
+and a scan filter count (28.1-28.6 both). Both fixtures agree to 0.3%, as a dispatch/vectorization
+win must. Answers identical (312,151 and 311,198).
+
+⚠️ TWO SWEEP ROWS MOVED 1.21-1.24x AND ARE NOT REACHABLE FROM THIS CHANGE — reasoned, not assumed.
+`pred AND exists` read 509.5 to 633.1 and `project bool AND` 862.4 to 1046.7. Both moved **0.85x in
+the OPPOSITE direction** in item 1225's sweep, on a change that also could not reach them, so they
+belong to the layout-sensitive family `counts|filtered` is already recorded in. Structurally, this
+arm is gated on `fused_hop_shape` AND `num_conj_on_slot(pred, 1)` AND a `Column::Num` endpoint: an
+EXISTS subquery does not match the shape and a boolean projection has no numeric conjunction, so
+neither row can enter it. NO ISOLATED INSTRUMENT EXISTS for either row, so that is a gate argument
+plus an oscillation history rather than a measurement — stated as such. The other 71 rows are within
+1.07x and several land at 0.88-0.95x.
+
+Teeth: FOUR mutants, all compiled, all CAUGHT, each failing exactly one test — the new one. Dropping
+the upper bound, flipping the lower bound's inclusivity, `&` to `|`, and removing the `ne` gate. All
+three of the first batch SURVIVED before the test was written: the two-bound hop count had no
+coverage at all, the same hole items 1222 and 1225 found in their arms.
+
+⚠️ AND THE PROBE'S LABELS WERE CHANGED WITH THE ROLES. Item 1224's target row is item 1227's
+control and vice versa; `hop_filter_count_probe`'s header now says so. Item 1218 spent a tick
+reading a table whose column names had stopped being true.

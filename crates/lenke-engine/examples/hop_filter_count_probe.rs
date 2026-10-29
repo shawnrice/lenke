@@ -24,6 +24,13 @@
 //!   - the same hop count with NO filter, a different function entirely;
 //!   - a SCAN filter count, which goes through `sweep_num_count` (item 1220) and never enters this.
 //!
+//! ⚠️ THE TWO ROWS SWAPPED ROLES AT ITEM 1227, and the labels were changed with them. Item 1224
+//! hoisted the operator for a SINGLE bound and used the two-bound spelling as its control; item 1227
+//! then reduced two or more bounds to one range through `canonical_num_conj`, which makes the
+//! two-bound row the TARGET and the one-bound row — whose arm 1227 does not touch — the control.
+//! Item 1218 spent a tick reading a table whose column names had stopped being true; this note is
+//! cheaper than that.
+//!
 //!   cargo run --release --example hop_filter_count_probe
 
 #[path = "support/harness.rs"]
@@ -83,11 +90,11 @@ fn main() {
 
         for (what, q) in [
             (
-                "hop + ONE bound  (target)",
+                "[CTL] hop + ONE bound (item 1224, untouched by 1227)",
                 "MATCH (a:Person)-[:KNOWS]->(b) WHERE b.age > 50 RETURN count(*) AS c",
             ),
             (
-                "[CTL] hop + TWO bounds (arm untouched)",
+                "hop + TWO bounds (item 1227 target)",
                 "MATCH (a:Person)-[:KNOWS]->(b) WHERE b.age > 50 AND b.age < 90 RETURN count(*) AS c",
             ),
             (
