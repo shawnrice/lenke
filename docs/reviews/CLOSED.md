@@ -2828,6 +2828,22 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   the frontier path, and item 841 had placed the temporal one there expressly against the day this
   widening happened, so the trap line 2764 warns about was pre-defused. A single run read `bool` at
   4.77x and `mixed`'s scan at 1.58x; both were instrument, not effect.
+- **A TS distinct-frontier collapse for `min`/`max` over a hop is REFUTED — the fold is already free
+  (1183).** Item 1182's 3.8-8.3x native win was the DISTINCT-NODE collapse, which is gated on query
+  SHAPE rather than on a column representation, so unlike item 1176 it was not foreclosed. Measured
+  at 50k nodes / degree 5 against the floor that must actually walk (`count(<key>)` over the same
+  hop): `min` is **0.89x** (num), 1.09x (bool), 1.18x (dict), 1.69x (str) — so the extremum fold
+  costs nothing over a presence-reading walk, bounding the win at ~41% of ONE representation.
+  **And the mechanism is a wash there:** Rust's `frontier_counts` dedupes into a dense id-indexed
+  array, while TS must pay a `Set` insert per PATH to save a property read per path. **The gate
+  transferred and the DATA STRUCTURE did not** — a third category beside item 1176's
+  representation-gated one. Instrument: `packages/native/hop-extremum-ts-probe.ts`.
+- ⚠️ **In TS, `count(*)` over a hop is NOT a floor for anything that walks (1183).** It is answered
+  by a closed form — `shortcuts.ts`'s bare DEGREE SUM, which adds `v.adjFrom.get(type).size` and
+  never enumerates an edge — so it measured **0.0 ms for a 250,000-edge hop** and made the probe
+  report a **9338x-14325x** target that does not exist. A per-path cost needs a floor that must read
+  a property (`count(<key>)`). The giveaway was a ratio too good to be true, and the fix was reading
+  `shortcuts.ts` rather than trusting the zero.
 - **A fixture that pins WHICH ROWS are read can be structurally unable to pin HOW they are compared
   (1182).** Inverting the boolean arm's `want` — which swaps `min` and `max` outright — SURVIVED both
   boolean fixtures, because **stranding an extreme to prove frontier-awareness forces the frontier to
