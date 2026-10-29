@@ -35982,3 +35982,58 @@ window where both hold is the work.
 mutants: `has('age').values('flag')` → `And(...)`, `hasLabel('Person').values('flag')` → the label
 moves INTO the `Scan` so the filter is still the sort key's own presence, and the two GQL `WHERE`
 forms showing seek-vs-filter. Reach for it before theorising about a cross-surface cost.
+
+## 1181 — ✅ item 1180's guard is a ROUTE TEST, not a corpus row — and adding it took two mutants from SURVIVED to CAUGHT, including one that is answer-equivalent by construction
+
+Item 1180's win had no regression guard. The obvious move — a bench corpus row, as item 1177 added
+for items 1172/1175 — turns out to be the wrong one here, and both benches say why:
+
+- **`bench-gremlin.ts` builds ONE shared graph** from a doc carrying only `age`. Item 1180's arm
+  serves `Column::Dict` and `Column::Bool`; `age` is `Column::Num` and takes the numeric path, so a
+  row against this fixture cannot reach the code. Adding a boolean property would widen a fixture
+  every row shares — and the `[bare]` row's comment records a specific 266.98 ms measured against
+  the current per-node property count, so widening would invalidate figures already written down
+  (item 1130's hazard, item 1177's reason for a separate `boolDoc`).
+- **`bench.ts` has per-row fixtures and already has `boolDoc`**, but its engine interface exposes
+  only `query` (GQL). Adding a `gremlin` entry point means extending the interface across native,
+  ts and wasm — where the TS Gremlin surface is a different package — for one guard row.
+
+### The right instrument was already in the file
+
+`top_k_lift_route` exists because of the standing rule that **a route choice is answer-equivalent,
+so no differential test can police it** — the predicate gets a direct test instead. Item 1180's
+change IS a route widening, so its guard belongs there. Four assertions added:
+
+```text
+  presence filter on the SORT KEY      must lift      <- the Gremlin shape
+  presence filter on a DIFFERENT key   must NOT lift  <- constrains rows the arm would not skip
+  a non-presence predicate (Compare)   must NOT lift  <- the GQL `WHERE` shape
+  a filter over a non-bare scan        must NOT lift  <- one level only
+```
+
+### What that bought, measured by re-running item 1180's mutants
+
+```text
+  mutant                                    before route test   after
+  M1 drop the nulls_first disjunct          SURVIVED            SURVIVED  (defensive — item 1180)
+  M2 see through a filter on ANY key        SURVIVED            CAUGHT
+  M3 see through ANY filter predicate       CAUGHT              CAUGHT
+  M4 lift gate narrows to the old shape     SURVIVED            CAUGHT
+```
+
+**M2 was unreachable through either surface** — `values(k)` always contributes
+`PropertyExists(k)`, so an extra `has()` arrives as an `And` — so no answer test could ever have
+seen it. The route test asserts the predicate directly and does.
+
+**M4 is the one worth dwelling on.** Narrowing the gate back to `matches!(pinput, Plan::Scan)` is
+_answer-equivalent by construction_: the Gremlin plan simply declines and the general path returns
+the identical rows, only slower. It survived every answer test and every fuzzer, and it is exactly
+the regression this item exists to prevent — the win silently reverting. **A perf change whose only
+symptom is slowness needs a test whose subject is the ROUTE**, and that is now what guards it.
+
+So the corpus-row reflex from item 1177 was right about the need and wrong about the instrument
+here. The distinction: item 1177's wins changed what an EXISTING row measures (a bench row could
+see them), while this one changes WHICH PLAN is chosen for a shape no row has a fixture for.
+
+Final: 3 of 4 mutants caught, the survivor documented as defensive with its mechanism. 2,037 Rust
+tests green; clippy and fmt 0.

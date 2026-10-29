@@ -1149,6 +1149,61 @@ mod top_k_lift_route {
         // a property of a slot OTHER than the scanned element is not this shape
         let c1 = prop("c", 1);
         assert!(!top_k_liftable(&scan, &[&c1], &st), "slot 1 must not lift");
+
+        // THE PRESENCE-FILTER SEE-THROUGH (item 1180). This is the ROUTE guard for the Gremlin
+        // win: `values(k).order().limit(n)` lowers to `OrderPage{Project{Filter{Scan,
+        // PropertyExists}}}`, so the gate has to admit a filter-interposed scan — and ONLY when
+        // the filter tests the SORT KEY's presence. A route choice is answer-equivalent, so no
+        // differential test can police it; this is the instrument that can.
+        let presence = |key: &str| Plan::Filter {
+            input: Box::new(scan.clone()),
+            pred: Expr::PropertyExists {
+                slot: 0,
+                key: key.to_string(),
+            },
+        };
+
+        assert!(
+            top_k_liftable(&presence("c"), &[&c], &st),
+            "a presence filter on the SORT KEY must lift — this is the Gremlin shape"
+        );
+        assert!(
+            !top_k_liftable(&presence("s"), &[&c], &st),
+            "a presence filter on a DIFFERENT key must NOT lift: it constrains rows the arm \
+             would not skip, so the arm's own scan would include rows the query excludes"
+        );
+        // A NON-PRESENCE predicate must not lift either — the shape GQL produces for a
+        // non-seekable `WHERE` (`Filter{Scan, Compare}`), where eliding the filter draws the
+        // window from excluded rows. Mutant M3 of item 1180.
+        let compare = Plan::Filter {
+            input: Box::new(scan.clone()),
+            pred: Expr::Compare {
+                op: crate::ir::CompareOp::Gt,
+                left: Box::new(Expr::Prop {
+                    slot: 0,
+                    key: "a".to_string(),
+                }),
+                right: Box::new(Expr::Lit(Value::Num(5.0))),
+            },
+        };
+
+        assert!(
+            !top_k_liftable(&compare, &[&c], &st),
+            "a non-presence filter must NOT be seen through"
+        );
+        // And a filter over something that is NOT a bare scan stays out, however it is predicated.
+        let nested = Plan::Filter {
+            input: Box::new(presence("c")),
+            pred: Expr::PropertyExists {
+                slot: 0,
+                key: "c".to_string(),
+            },
+        };
+
+        assert!(
+            !top_k_liftable(&nested, &[&c], &st),
+            "only ONE filter level is seen through, and only over a bare scan"
+        );
         // an unknown property has no column
         let missing = prop("nope", 0);
         assert!(
