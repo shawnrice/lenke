@@ -34546,3 +34546,102 @@ green. The differential fuzzer was VERIFIED to reach the new path rather than as
 percentile band emits `MATCH (n:T) RETURN percentile_<kind>(<expr>, <frac>) AS x` — a bare scan,
 sole aggregate — over `0, 0.25, 0.5, 1, 1.0001, 1.5, 2, 100`, so clamp and interpolation are both
 checked against TS.
+
+## 1163 — ✅ SHIPPED **17.9x** on the TS percentile fold / **4.5x** end to end: an INTERPRETED O(n) selection beat V8's NATIVE sort by 5.3x. ⚠️ Plus an **18,000x** property no answer test can see, and 🔶 a cross-engine `-0` divergence found by READING
+
+Item 1162's open TS target. The design transferred from the Rust side; **the algorithm did not
+transfer for free**, and assuming it would have been the item-234 mistake in a new language.
+`percentile-arm-probe.ts`, 200,000 values, median of 14 dropping three, three order-alternated
+rounds, all arms checked to AGREE before any was timed:
+
+```text
+  A current      map + filter + sort((a, b) => a - b)   26.8  24.7  25.3 ms
+  B typed sort   Float64Array + native .sort()           8.0   8.0   8.0    3.4x
+  C quickselect  Float64Array + hand-written select      1.4   1.4   1.5   17.9x   <- ships
+  D gather only                                          0.1   0.1   0.1   the floor
+```
+
+**The interpreted O(n) selection beats the native C++ O(n log n) typed sort by 5.3x at this size** —
+the constant favours the sort and only the exponent favours the selection, so this was genuinely
+open before it was measured.
+
+`%TypedArray%.prototype.sort` was also wrong for a SECOND reason: **it orders `-0` before `+0` by
+specification**, where `(a, b) => a - b` ties them and V8's stable sort keeps input order — item
+1162's hazard exactly. It cannot arise here because `numArg` collapses `-0` first, so **the TS fast
+path needs NO negative-zero guard where the native one does.** That asymmetry is a fact about
+`numArg`, not a liberty.
+
+```text
+                     PRE      POST (3 rounds)
+  percentile_disc   31.2  ->  6.9  7.0  6.3    ~4.5x
+  percentile_cont   30.2  ->  7.0  7.0  6.3    ~4.3x
+  controls flat: count 3.3->3.2, sum 6.8->6.6, collect_list 4.3->4.8, min/max/avg/stddev/count(*)
+```
+
+Fold 17.9x but query 4.5x, because ~4.3 ms of the 31 is the group materialization `collect_list`
+also pays and this cannot touch. The CONTROLLED measurement is the fold-level alternation; the
+end-to-end figure is three POST rounds against same-session PRE, quoted as the weaker of the two
+on purpose.
+
+### ⚠️ An 18,000x property INVISIBLE to every answer test
+
+`selectNth` uses a **median-of-three** pivot. A first-element pivot is equally CORRECT, so it
+passes everything (mutant M6, predicted to survive, did):
+
+```text
+  over 200,000 ALREADY-SORTED values:  median-of-three 0.3 ms, first element 5517.2 ms  (~18,000x)
+  control, median-of-three over random input: 1.5 ms
+```
+
+**An ascending column is the ORDINARY case for a percentile, not an adversarial one.** Per the
+standing rule that a route choice is answer-equivalent and so invisible to differential tests, the
+property got its own instrument: sorted AND descending input, 2-second budget against a 0.3 ms
+expectation — ~6,000x headroom so no machine reaches it, while the mutant exceeds it by 2.7x. The
+one timing assertion this suite permits, justified by the five-orders-of-magnitude gap.
+
+### Mutation: 8 mutants, 7 caught, survivor PROVABLY equivalent
+
+M1 non-finite filter, M2/M3/M4 the `cont` interpolation and its tail-min, M5 the disc index clamp,
+M8 `numArg` applied to every element (keeping a FAULT where a fault was — a one-pass rewrite is
+exactly where that goes missing silently), M6 only after the timing test above.
+
+**M7 (`return a[lo]` for `return a[k]`) is an IDENTITY, and I mispredicted it as catchable.** The
+loop maintains `lo <= k <= hi` (it sets `hi = j` only when `k <= j`, `lo = i` only when `k >= i`)
+and exits on `lo >= hi`, so `lo == k == hi` and `a[lo]` IS `a[k]`. A survivor with a proof is
+documentation; a survivor without one is a gap.
+
+**Oracle = the code this replaced.** `percentile-select.test.ts` carries the old map/filter/sort as
+a REFERENCE, so "agrees" means "answers what it answered before". 6,363 assertions over hand-built
+edge cases and randomized inputs with **the SIZE swept** (1/2/3/5/9/17/33/64/129/512/2048, 40
+trials each, 7 fractions, both kinds) — the sweep is there because of item 1162's M1, since a small
+input never leaves the first partition. Narrow value range so DUPLICATES are common (a selection
+and a sort can only disagree on ties). `Object.is` throughout, the only comparison that separates
+`-0` from `+0` and makes `NaN` equal itself.
+
+### 🔶 OPEN, found by READING `numArg`'s comment: a cross-engine `-0` divergence predating all of this
+
+After `SET n.v = 0 * (0 - 1)`:
+
+```text
+  the stored value itself   ts -0  native +0   DIVERGE
+  min(n.v)                  ts -0  native +0   DIVERGE
+  ORDER BY n.v [first row]  ts -0  native +0   DIVERGE
+  percentile_disc/cont, sum        both +0     agree
+```
+
+**Direction is the OPPOSITE of my prediction.** Native collapses on the WRITE path (`num_of`); TS
+collapses only in the numeric-FUNCTION path, so a `SET`-computed `-0` survives into TS storage and
+out through `min` and `ORDER BY`. By the model's own stated rule ("no negative zero in the numeric
+model") **TS is the engine out of conformance.**
+
+**Why no fuzzer caught it: `JSON.stringify(-0)` is `"0"`.** The differential fuzzer compares
+rendered JSON, so the two are the same string to it; `Object.is` is the only instrument that sees
+it, hence `negzero-cross-probe.ts` walks raw row values. NOT fixed here — a write-path numeric-model
+question, not an optimization, and the percentile rows are unaffected. Probe kept so the next tick
+prices the fix rather than rediscovering the fact.
+
+### Gates
+
+5,695 TS tests green across every package, isolated; 2,030 Rust tests green (unchanged); 7/7
+byte-identity fuzzers green, with the differential fuzzer's percentile band now exercising BOTH
+engines' new folds against each other over `0, 0.25, 0.5, 1, 1.0001, 1.5, 2, 100`.

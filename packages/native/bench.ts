@@ -455,6 +455,28 @@ const CASES: Case[] = [
     ),
   },
   {
+    // The ORDERED-SET aggregates, added once BOTH engines answered them with one order statistic
+    // instead of a sort (native 9.5x at item 1162, TS 17.9x on the fold at item 1163). The corpus
+    // had no percentile row at all, so the sweep that was supposed to catch a regression in them
+    // could not see them — and a win with no row is a win that quietly comes undone.
+    //
+    // `disc` and `cont` BOTH, because they take different paths: `disc` is one selection, `cont`
+    // is a selection plus a tail-minimum scan for the adjacent statistic, and a change can break
+    // the interpolation while leaving the selection correct.
+    name: 'query: percentile_disc [one order statistic]',
+    ...onGraph(
+      () => nodesDoc,
+      (e, g) => void e.query(g, 'MATCH (n:Person) RETURN percentile_disc(n.age, 0.5) AS a'),
+    ),
+  },
+  {
+    name: 'query: percentile_cont [interpolates two]',
+    ...onGraph(
+      () => nodesDoc,
+      (e, g) => void e.query(g, 'MATCH (n:Person) RETURN percentile_cont(n.age, 0.5) AS a'),
+    ),
+  },
+  {
     name: 'query: min property [fused-scan aggregate]',
     ...onGraph(
       () => nodesDoc,

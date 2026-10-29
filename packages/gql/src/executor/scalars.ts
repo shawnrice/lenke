@@ -519,6 +519,101 @@ export const scalarArityOk = (name: string, argc: number): boolean | undefined =
 };
 
 /**
+ * The median of three values — `selectNth`'s pivot.
+ *
+ * A NAMED function rather than a nested ternary inline, for two reasons. It is what the linter
+ * asks for, and it makes the pivot ARITHMETIC unit-testable on its own: the pivot CHOICE is
+ * answer-equivalent (a first-element pivot is equally correct — item 1163, mutant M6), so no
+ * differential test can pin it, and the standing remedy for that is to extract the arithmetic as
+ * a pure function and test it directly.
+ */
+const medianOfThree = (x: number, y: number, z: number): number => {
+  if (x < y) {
+    if (y < z) {
+      return y;
+    }
+
+    return x < z ? z : x;
+  }
+
+  if (x < z) {
+    return x;
+  }
+
+  return y < z ? z : y;
+};
+
+/**
+ * In-place Hoare quickselect: on return `a[k]` holds the k-th smallest of `a[0..n]`, with every
+ * earlier element `<= a[k]` and every later one `>= a[k]`.
+ *
+ * WHY A SELECTION AND NOT A SORT, measured rather than assumed (item 1163). Three arms over
+ * 200,000 values, median of 14 dropping three, three order-alternated rounds:
+ *
+ * ```text
+ *   map + filter + sort((a, b) => a - b)   26.8 ms   what this replaced
+ *   Float64Array + native .sort()           8.0       3.4x
+ *   Float64Array + this quickselect         1.5      17.9x
+ *   the gather alone                        0.1       the floor both sit on
+ * ```
+ *
+ * The interesting result is the middle row: an INTERPRETED O(n) selection beats V8's NATIVE C++
+ * O(n log n) typed-array sort by 5.3x at this size. That was not obvious going in — the constant
+ * favours the native sort and only the exponent favours this — which is exactly why the arms were
+ * measured before one was built.
+ *
+ * `%TypedArray%.prototype.sort` was also the WRONG answer for a second reason: it orders `-0`
+ * before `+0` by specification, where `(a, b) => a - b` returns 0 and V8's stable sort keeps them
+ * in input order. That difference cannot arise here, because {@link numArg} collapses `-0` to
+ * `+0` before anything is compared — but it is the trap the native twin needed a guard for
+ * (item 1162), and it is worth knowing which side of it this function sits on.
+ *
+ * MEDIAN-OF-THREE PIVOT, not first-element: a percentile over an already-ordered column is the
+ * ordinary case, not the adversarial one, and a first-element pivot degrades to O(n^2) on exactly
+ * that input.
+ */
+const selectNth = (a: Float64Array, n: number, k: number): number => {
+  let lo = 0;
+  let hi = n - 1;
+
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    const pivot = medianOfThree(a[lo], a[mid], a[hi]);
+    let i = lo;
+    let j = hi;
+
+    while (i <= j) {
+      while (a[i] < pivot) {
+        i += 1;
+      }
+
+      while (a[j] > pivot) {
+        j -= 1;
+      }
+
+      if (i <= j) {
+        const t = a[i];
+
+        a[i] = a[j];
+        a[j] = t;
+        i += 1;
+        j -= 1;
+      }
+    }
+
+    if (k <= j) {
+      hi = j;
+    } else if (k >= i) {
+      lo = i;
+    } else {
+      return a[k];
+    }
+  }
+
+  return a[k];
+};
+
+/**
  * ISO ordered-set percentile over a group's numeric values. `cont`
  * (`percentile_cont`) interpolates linearly between the two ranks bracketing
  * `frac·(n−1)`; otherwise (`percentile_disc`) it returns the value at the smallest
@@ -530,13 +625,22 @@ export const percentileOf = (
   frac: number,
   cont: boolean,
 ): number | null => {
-  // `numArg` (strict) — a non-null non-numeric value is a data exception, matching the
-  // native `percentile` and `sum`/`avg`; values are already null-filtered by the caller.
-  const nums = values
-    .map(numArg)
-    .filter((x) => Number.isFinite(x))
-    .sort((a, b) => a - b);
-  const n = nums.length;
+  // ONE PASS into a Float64Array, replacing `map(numArg).filter(isFinite).sort((a, b) => a - b)`
+  // — two intermediate arrays and a comparator-closure sort, 26.8 ms of a 31 ms query at 200,000
+  // rows. See {@link selectNth} for why a selection and not a sort.
+  const buf = new Float64Array(values.length);
+  let n = 0;
+
+  for (const v of values) {
+    // `numArg` on EVERY element, in order, including ones about to be dropped — that is where
+    // the old `map(numArg)` raised its data exception and a one-pass rewrite must keep it.
+    const x = numArg(v);
+
+    if (Number.isFinite(x)) {
+      buf[n] = x;
+      n += 1;
+    }
+  }
 
   if (n === 0) {
     return null;
@@ -546,11 +650,27 @@ export const percentileOf = (
     const rn = frac * (n - 1);
     const lo = Math.floor(rn);
     const hi = Math.ceil(rn);
+    const loVal = selectNth(buf, n, lo);
 
-    return lo === hi ? nums[lo] : nums[lo] + (rn - lo) * (nums[hi] - nums[lo]);
+    if (lo === hi) {
+      return loVal;
+    }
+
+    // The NEXT adjacent order statistic, with no second selection: `selectNth` leaves every
+    // element after `lo` greater than or equal to `buf[lo]`, so the (lo+1)-th smallest is the
+    // minimum of that tail. O(n), one scan — the same trick the native fast path uses.
+    let hiVal = Infinity;
+
+    for (let i = lo + 1; i < n; i += 1) {
+      if (buf[i] < hiVal) {
+        hiVal = buf[i];
+      }
+    }
+
+    return loVal + (rn - lo) * (hiVal - loVal);
   }
 
-  return nums[Math.min(n - 1, Math.max(0, Math.ceil(frac * n) - 1))];
+  return selectNth(buf, n, Math.min(n - 1, Math.max(0, Math.ceil(frac * n) - 1)));
 };
 
 /**
