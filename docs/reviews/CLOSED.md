@@ -2910,6 +2910,28 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   columns — cheaper to write, already covered by those arms' own oracles and mutation, and FASTER
   by item 471's measurement that N passes over one column each beat one interleaved pass (5.6 ms
   against 0.6). Separate function after the numeric entry, per item 1184.
+- ⚠️ **CORRECTION, and it makes two earlier refutations VACUOUS: the dict-equality row's 1.66x is
+  NOT in `try_stream_dict_pred_count`, so items 1208 and 1209 both rewrote the wrong function
+  (1215).** `d = 'g3' RETURN count(*)` is claimed by `try_stream_membership_count`, which runs
+  BEFORE the dict arm in `try_filtered_count`'s chain. Confirmed by instrumenting both: the dict arm
+  is entered only by the 100-distinct STRING column's range rows (`dict.len()=100`, ~49 hits), never
+  by the equality. So 1208's branchless accumulation and 1209's table-slot rewrite each measured
+  "1.66x unchanged" for the trivial reason that neither touched the code under test — their
+  measurements were real and their CONCLUSIONS ("the cause is elsewhere in this arm") were about a
+  function the row never reaches.
+  **Four causes are now ruled out for this row**, the first two vacuously and the third and fourth
+  in the right place: a single-target code comparison (replacing `targets.contains(&codes[i])`'s
+  linear scan) plus branchless accumulation measured **187.9/319.9 against 201.4/335.9 — inside this
+  session's noise**, so neither the membership test nor the branch is the cause. That change was
+  REVERTED and only the located finding kept, as a comment on the arm itself.
+  What remains unexplained is what differs between a periodic and a random code sequence for two
+  SEQUENTIAL loads and a branchless add — not a branch, not a dependent load, not the membership
+  test. Unmeasured, so unclaimed.
+  ⚠️ **THE PROCEDURAL LESSON: I checked that my arm fired BEFORE believing the measurement, and
+  that is the only reason this was caught.** An `eprintln` showed the new arm never firing while the
+  function around it was entered twelve times. Item 1209 learned the same thing one way (a test that
+  never called its function); this is the other way (a FIX that never ran). Both are invisible to a
+  green suite and to a flat A/B.
 - **CLOSED by 1214 — the FILTER path's conjunction arm, which items 1210 and 1213 each fixed one
   neighbour of: projection under TWO bounds 1030.1 -> 448.1 us (2.30x, and now 1.00x
   periodic-vs-random, from 2.34x), projection under THREE bounds 1853.8 -> 1085.0 (1.71x random,

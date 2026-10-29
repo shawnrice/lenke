@@ -1153,6 +1153,25 @@ pub(super) fn try_stream_membership_count(
                     targets.push(c as u32);
                 }
             }
+            // ⚠️ THIS IS WHERE THE DICT-EQUALITY ROW LIVES, and items 1208 and 1209 both looked
+            // in the wrong function (item 1215). Item 1207's detector prices `d = 'g3' RETURN
+            // count(*)` at 1.66-1.70x on random values against the corpus's periodic ones, and
+            // both of those items rewrote `try_stream_dict_pred_count` and measured the ratio
+            // UNCHANGED — correctly, because `= 'g3'` never reaches that function: THIS arm runs
+            // before it in `try_filtered_count`'s chain and claims the shape. Confirmed by
+            // instrumenting both: the dict arm is entered only by the 100-distinct STRING
+            // column's range rows (`dict.len()=100`). So those two refutations were vacuous, not
+            // informative, and the ruled-out list for this row is now:
+            //
+            //   1208  branchless accumulation            (in the WRONG function)
+            //   1209  absent reading as a table slot     (in the WRONG function)
+            //   1215  single-target code compare + branchless accumulation, HERE — no change
+            //         (187.9/319.9 against 201.4/335.9, inside this session's noise), so neither
+            //         the `Vec::contains` scan nor the branch is the cause
+            //
+            // What is left is whatever differs between a periodic and a random code sequence for
+            // two sequential loads and a branchless add — not a branch, not a dependent load, and
+            // not the membership test. Unmeasured, so unclaimed.
             scan_visit(store, label, |i| {
                 if present[i] && targets.contains(&codes[i]) {
                     count += 1;
