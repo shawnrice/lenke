@@ -34270,3 +34270,42 @@ and the first time the trace caught it before a number was attributed.
 proven in the Gremlin executor; a `types === undefined` all-buckets degree sum ALSO already exists in
 the GQL file (`shortcuts.ts:886`). **NOT KNOWN:** which rung declines the untyped shape first. Next
 step is a claim trace over the one-hop count dispatch, not another guess at a plausible gate. OPEN.
+
+## 1160 — ✅ SHIPPED, TS cross-language gap CLOSED: **`types &&` is a truthiness test and "every type" is falsy.** 106-115 ms → 0.0
+
+Item 1159 priced this and could not find the declining rung (its fix went into `bareDegreeSum`,
+which a trace proved unreachable here). Found by reading the chain rung by rung:
+`detectCountShortcut` → `patternCountOf` → `buildOneHopCount`, one line in its vacuous-endpoint
+branch:
+
+```js
+    if (a === undefined && b === undefined && types && bucketSumsAreSound(...)) {
+```
+
+⚠️ **`types === undefined` IS the untyped spelling and means EVERY type — but it is FALSY**, so
+`-[]->` fell past the O(1) arm into the degree walk. New arm returns `graph.edgeCount`, which is
+what the GREMLIN surface of this same engine always did (`adjacentCount`, `labels.length === 0`).
+
+⚠️ **`edgeCount`, NOT a bucket sum, and a MULTI-LABEL edge is why.** An edge with two labels sits in
+two buckets, so a sum counts it twice — that is what `bucketSumsAreSound` guards. The total counts
+each edge ONCE regardless, so the new arm needs no soundness condition. **The test turns on it:** a
+5-edge fixture with one `KNOWS,FOLLOWS` edge has buckets of 4 and 2, so a bucket sum says **6** and
+the answer is **5**. A single-label fixture cannot tell the formulas apart.
+
+```text
+  A4 -[]-> untyped   PRE 108.5/115.2/110.0   POST 0.0/0.0/0.0
+  A1/A2/A3  [ctl]    0.0 flat
+```
+
+Arm-asserted at SOURCE **and DIST** level, counting `rowOf(graph.edgeCount)` in the built bundle via
+python `str.count` — items 1141/1151: the bundler strips comments (a comment marker reads 0 in BOTH
+arms and passes vacuously) and `grep` returns nothing for that file. Every row also asserts
+ts === native.
+
+Mutation on a GREEN baseline, both CAUGHT: vacuous-endpoint guard dropped (a labelled endpoint would
+get the whole graph — `MATCH (a:Q)-[]->(x)` is 0, not 5); bucket sum substituted for `edgeCount`
+(double-counts the multi-label edge). Suites isolated: **5,673 pass / 0 fail**; 7/7 fuzzers.
+
+✅ **The shape worth remembering:** the gap was never between the two ENGINES but between the two
+SURFACE LANGUAGES of one engine, with a working implementation one package away. "Grep the pattern
+elsewhere" paid twice, and the second time "elsewhere" was not where I expected.

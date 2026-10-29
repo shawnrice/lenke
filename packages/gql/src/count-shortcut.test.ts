@@ -563,3 +563,63 @@ describe('count(*) shortcut correctness (vs independent enumeration)', () => {
     );
   });
 });
+
+// ITEM 1160. `MATCH (a)-[]->(x) RETURN count(*)` — an UNTYPED one-hop count — took the degree walk
+// because the vacuous-endpoint arm tested `types &&`, which is falsy for "every type". It cost
+// 106-110 ms against its typed twin's 0.0 at 200,000 nodes / 800,000 edges (item 1159), while the
+// GREMLIN surface of this same engine answered it from `graph.edgeCount` all along.
+//
+// The arm now returns `graph.edgeCount`, and the case that makes that the RIGHT formula rather than
+// a convenient one is a MULTI-LABEL edge: `edgeCount` counts it once, where summing the per-type
+// buckets would count it twice. A single-label fixture cannot tell those apart.
+describe('an untyped one-hop count', () => {
+  const twoTypeGraph = (): Graph => {
+    const g = new Graph();
+    const v = Array.from({ length: 6 }, (_, i) =>
+      g.addVertex({ id: `v${i}`, labels: ['P'], properties: {} }),
+    );
+
+    g.addEdge({ id: 'k1', labels: ['KNOWS'], from: v[0], to: v[1], properties: {} });
+    g.addEdge({ id: 'k2', labels: ['KNOWS'], from: v[1], to: v[2], properties: {} });
+    g.addEdge({ id: 'f1', labels: ['FOLLOWS'], from: v[2], to: v[3], properties: {} });
+    g.addEdge({ id: 's1', labels: ['KNOWS'], from: v[4], to: v[4], properties: {} }); // self-loop
+    // A DOUBLY-LABELLED edge: one edge, two buckets. This is the row that separates
+    // `graph.edgeCount` from a per-type bucket sum.
+    g.addEdge({ id: 'm1', labels: ['KNOWS', 'FOLLOWS'], from: v[3], to: v[5], properties: {} });
+
+    return g;
+  };
+
+  const c = (g: Graph, q: string): unknown => query(g, q)[0].c;
+
+  test('counts every edge once, including a multi-label one', () => {
+    const g = twoTypeGraph();
+
+    // FIVE edges. The per-type buckets hold 4 KNOWS and 2 FOLLOWS = 6, so a bucket sum would
+    // answer 6 and `edgeCount` answers 5.
+    expect(c(g, 'MATCH (a)-[]->(x) RETURN count(*) AS c')).toBe(5);
+    // And it equals the rows the general path yields for the same pattern.
+    expect((query(g, 'MATCH (a)-[]->(x) RETURN a, x') as unknown[]).length).toBe(5);
+  });
+
+  test('a typed spelling still answers its own type, multi-label edge included', () => {
+    const g = twoTypeGraph();
+
+    expect(c(g, 'MATCH (a)-[:KNOWS]->(x) RETURN count(*) AS c')).toBe(4);
+    expect(c(g, 'MATCH (a)-[:FOLLOWS]->(x) RETURN count(*) AS c')).toBe(2);
+  });
+
+  test('a LABELLED endpoint is a degree sum over that bucket, not the whole graph', () => {
+    const g = twoTypeGraph();
+
+    g.addVertex({ id: 'q1', labels: ['Q'], properties: {} });
+
+    // No Q vertex has an out-edge, so the answer is 0 — not `edgeCount`. This is what the
+    // `a === undefined && b === undefined` guard protects, and without it this reads 5.
+    expect(c(g, 'MATCH (a:Q)-[]->(x) RETURN count(*) AS c')).toBe(0);
+  });
+
+  test('an empty graph counts zero rather than falling over', () => {
+    expect(c(new Graph(), 'MATCH (a)-[]->(x) RETURN count(*) AS c')).toBe(0);
+  });
+});

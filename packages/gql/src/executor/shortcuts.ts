@@ -3130,6 +3130,31 @@ const buildOneHopCount = <T>(
       return rowOf(types.reduce((n, t) => n + (graph.edgesByLabel.get(t)?.size ?? 0), 0));
     }
 
+    // AN UNTYPED REL IS EVERY TYPE, AND ITS TOTAL IS `edgeCount` — item 1160.
+    //
+    // The `types &&` above is a TRUTHINESS test, so `types === undefined` — the untyped
+    // spelling — fell through it and took the degree walk below. `MATCH (a)-[]->(x) RETURN
+    // count(*)` therefore cost 106-110 ms where its typed twin cost 0.0, measured at 200,000
+    // nodes / 800,000 edges over two types (item 1159).
+    //
+    // THE GREMLIN SURFACE OF THIS SAME ENGINE ALREADY HAD IT: `adjacentCount` answers
+    // `labels.length === 0` from `graph.edgeCount`, so `g.V().out().count()` read 0.0 ms on the
+    // same graph while this read 109.7. One engine, one question, two surface languages —
+    // the spelling cliff this file keeps re-learning, crossing a LANGUAGE boundary this time.
+    //
+    // NO `bucketSumsAreSound` CONDITION, and that is the point of using the total rather than a
+    // sum: `edgeCount` counts each edge ONCE however many labels it carries, so the multi-label
+    // hazard that gates the per-type sum above cannot arise here. (`bucketSumsAreSound`'s own
+    // header says `types === undefined` means every type and only `multiTypeEdgeCount === 0`
+    // could license SUMMING the buckets — this does not sum them.)
+    //
+    // Both endpoints must still be vacuous, which is what `a === undefined && b === undefined`
+    // already established above: a real label on either end makes the answer a degree sum over
+    // that bucket, not the whole graph.
+    if (a === undefined && b === undefined && types === undefined) {
+      return rowOf(graph.edgeCount);
+    }
+
     // THE SAME TWO RUNGS the other two branches have, which this one never had (item 286).
     // Delegated to a MODULE-SCOPE function, not written inline — see `labelOnlyHopCount`.
     const byDegree = labelOnlyHopCount(graph, params, out, types, { a, b, cstart, cfar });
