@@ -2917,7 +2917,27 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   `Project{ <wrapper>, Aggregate{ <agg> } }`, so `exec/fastpath.rs` matches the `Aggregate` and
   never sees the wrapper — the planner's split already does what TS needed two items to build by
   hand. **Do not port 1197/1198.** Instrument: `crates/lenke-engine/examples/wrapped_agg_probe.rs`.
-- ⚠️ **OPEN, PRICED at 4.06-4.16x, and found as the ONE row of that refutation that was not 1.00x:
+- **CLOSED by 1200 for the UNARY half: `reverse(collect(a.num))` over 200,000 elements is 3.27x,
+  and `head([a.num, a.num])` per row is 1.21x.** The COLUMN-level borrow was already there
+  (`Cow::Borrowed(batch.slot(k))`); the remaining half was the CELL — `buf.extend(cols.iter().map(|c|
+c.value_at(i)))`, and `Col::value_at` is `Col::Gen(v) => v[i].clone()`. `std::slice::from_ref`
+  builds the one-element `&[Value]` `call_scalar_checked` wants with no owned buffer, so the unary
+  case needed NOTHING from the scalar library.
+  Controls flat: `coalesce(max(a.num), 1)` 1.00x, `abs(max(a.num))` 1.00x, `a.num` 1.00x,
+  `upper(a.str)` 1.00x.
+  ⚠️ **STILL OPEN: the n-ARY half.** `coalesce(collect(a.num), 1)` is binary, cannot use the
+  one-element slice, and still pays the clone. Generalizing means re-typing `scalar.rs`'s **113
+  `args[..]` reads** as `&Value` (or `Cow`), which is the cost estimated at 1199 and is a real
+  refactor. Its A/B row read 0.88x median, but it is a path the change provably cannot enter
+  (`nargs == 1` is false) and POST's own spread there was 3480-4041 µs — 16%, so a 12% gap is not
+  resolvable on that row.
+  The gate is the pure `unary_boxed_cell_can_be_borrowed(nargs, first, rows)` — item 1137's rule,
+  since borrowing and cloning return the same value. Mutation 4/4 with all predictions correct, and
+  **"never borrow" SURVIVED**, which is the record that only an A/B can see this change. The
+  wrong-cell mutant was caught by the new row-by-row test AND by two pre-existing ones, so that
+  case had incidental cover; the LENGTH gate is the predicate test's alone.
+- ⚠️ ~~**OPEN, PRICED at 4.06-4.16x**~~ — unary half closed by 1200 above; n-ary half still open.
+  **Found as the ONE row of that refutation that was not 1.00x:
   a scalar function over a LIST-valued aggregate DEEP-COPIES the list to evaluate its argument
   (1199).** `coalesce(collect(a.num), 1)` 4.06x and `reverse(collect(a.num))` 4.16x the bare
   `collect`, while `size`/`cardinality` read **0.42x** because `evaluator.rs:2130` gave exactly

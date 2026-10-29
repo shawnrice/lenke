@@ -187,6 +187,54 @@ fn main() {
         println!("  {label:<34} {us:>10.1} {:>8.2}x   {short}", us / base);
     }
 
+    // ITEM 1200's TARGET ROWS. The cell-level borrow is in the PER-ROW loop, so the one-row
+    // aggregate shape above is its smallest case; a list-valued column read per row is where the
+    // clone is paid N times. There is no stored list column, so a per-row list is built with
+    // `[a.num]` — which makes this the honest shape for the general case rather than only the
+    // aggregate one.
+    //
+    // The CONTROLS are unary functions over a NON-container cell (a number, a string): they go
+    // through the identical new arm, so they say whether borrowing a cell costs anything where
+    // there is nothing big to copy.
+    println!("\n  A unary function over a per-row CONTAINER, and over non-containers [CTL]:\n");
+    println!("  shape                                      us   answer");
+
+    for (label, q) in [
+        (
+            "reverse([a.num])            per row",
+            "MATCH (a:Person) RETURN reverse([a.num]) AS c",
+        ),
+        (
+            "size([a.num, a.num])        per row",
+            "MATCH (a:Person) RETURN size([a.num, a.num]) AS c",
+        ),
+        (
+            "head([a.num, a.num])        per row",
+            "MATCH (a:Person) RETURN head([a.num, a.num]) AS c",
+        ),
+        (
+            "[CTL] abs(a.num)            per row",
+            "MATCH (a:Person) RETURN abs(a.num) AS c",
+        ),
+        (
+            "[CTL] upper(a.str)          per row",
+            "MATCH (a:Person) RETURN upper(a.str) AS c",
+        ),
+        (
+            "[CTL] a.num                 per row",
+            "MATCH (a:Person) RETURN a.num AS c",
+        ),
+    ] {
+        let (us, answer) = ask(q);
+        let short = if answer.len() > 24 {
+            format!("{}...", &answer[..21])
+        } else {
+            answer
+        };
+
+        println!("  {label:<34} {us:>10.1}   {short}");
+    }
+
     println!(
         "\n  Every ratio near 1.0 => the planner's Project/Aggregate split already separates the\n  \
          wrapper from the fold, and the TS routing hole has no Rust twin."

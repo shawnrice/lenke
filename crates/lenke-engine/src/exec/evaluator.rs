@@ -637,6 +637,24 @@ fn fused_prop_field(store: &Store, batch: &Batch, base: &Expr, key: &str) -> Opt
     ))
 }
 
+/// May a UNARY scalar call read its argument cell BY REFERENCE instead of cloning it?
+///
+/// Extracted as a pure function for item 1137's stated reason, which applies to every route
+/// choice in this engine: borrowing and cloning produce the SAME value, so a condition written
+/// inline survives every differential and answer test there is (item 1122), and as a total
+/// function a mutant has somewhere to fail.
+///
+/// True only when there is exactly one argument whose column is BOXED (`Col::Gen` — the only kind
+/// whose `value_at` clones a stored `Value` rather than constructing a fresh one) and whose length
+/// matches the batch, so row `i` is in range for every row the caller will ask for.
+pub(super) fn unary_boxed_cell_can_be_borrowed(
+    nargs: usize,
+    first: Option<&Col>,
+    rows: usize,
+) -> bool {
+    nargs == 1 && matches!(first, Some(Col::Gen(vals)) if vals.len() == rows)
+}
+
 pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, String> {
     // No rows → no values to produce, and nothing to evaluate: a constant faulting
     // expression (`1/0` under `… LIMIT 0 RETURN 1/0`) must not error over an empty
@@ -2193,6 +2211,38 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
                 })
                 .collect::<Result<_, String>>()?;
             let n = batch.rows();
+            // CELL-level borrow for a UNARY function over a boxed column (item 1200). The
+            // column-level borrow just above avoids copying the COLUMN; this avoids copying the
+            // CELL, which is the remaining half when the cell is a CONTAINER: `Col::value_at` is
+            // `Col::Gen(v) => v[i].clone()`, so a cell holding a `Value::List` of N elements is
+            // deep-copied in full before the function sees it.
+            //
+            // `std::slice::from_ref` builds the one-element `&[Value]` `call_scalar_checked`
+            // wants WITHOUT an owned buffer, so this needs nothing from the scalar library — an
+            // n-ary version would have to re-type its 113 `args[..]` reads as `&Value`, which is
+            // why that half is priced on its own and not folded in here.
+            //
+            // Observationally identical: the `Gen` arm of `value_at` does nothing but clone the
+            // cell, so the function receives the same value, and an out-of-range row still
+            // panics in the same place (the length is checked first, and a column shorter than
+            // the batch falls through to the generic loop exactly as before).
+            //
+            // Measured over a 200,000-element `collect` result: `reverse(collect(a.num))` cost
+            // 4.16x the bare aggregate (item 1199). `coalesce(collect(a.num), 1)` is BINARY and
+            // still pays it.
+            if unary_boxed_cell_can_be_borrowed(args.len(), cols.first().map(AsRef::as_ref), n) {
+                if let Some(Col::Gen(vals)) = cols.first().map(std::convert::AsRef::as_ref) {
+                    if vals.len() == n {
+                        let mut out: Vec<Value> = Vec::with_capacity(n);
+
+                        for v in vals {
+                            out.push(call_scalar_checked(name, std::slice::from_ref(v))?);
+                        }
+
+                        return Ok(Col::Gen(out));
+                    }
+                }
+            }
             // Reuse ONE argument buffer across rows instead of heap-allocating a fresh
             // `Vec<Value>` per row — a general win for every multi-arg scalar function
             // (concat, substring, replace, …), which otherwise paid `n` allocations.

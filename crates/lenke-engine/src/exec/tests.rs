@@ -33762,3 +33762,116 @@ fn a_container_with_nothing_to_resolve_keeps_every_cell() {
         "the clean path must preserve row order: {nums}"
     );
 }
+/// Item 1200 let a UNARY scalar call read its argument cell by REFERENCE instead of cloning it, so
+/// a cell holding a container is no longer deep-copied before the function sees it
+/// (`reverse(collect(a.num))` over 200,000 elements: 3.27x). Borrowing and cloning produce the SAME
+/// value, so this is a route choice — and the pure predicate is the only place a mutant can fail.
+#[test]
+fn a_unary_boxed_cell_is_borrowable_exactly_when_the_column_is_boxed_and_full_length() {
+    use crate::exec::evaluator::unary_boxed_cell_can_be_borrowed as ok;
+    use crate::exec::Col;
+
+    let gen = Col::Gen(vec![Value::Num(1.0), Value::Num(2.0)]);
+
+    assert!(ok(1, Some(&gen), 2), "one arg, a boxed column, full length");
+
+    // ARITY: the one-element `&[Value]` trick only builds for a single argument; a binary call
+    // needs an owned buffer, so it must keep the generic path (this is what leaves
+    // `coalesce(collect(x), 1)` paying the clone, priced separately).
+    assert!(
+        !ok(2, Some(&gen), 2),
+        "two args cannot use a one-element slice"
+    );
+    assert!(!ok(0, Some(&gen), 2), "a niladic call has no argument cell");
+
+    // LENGTH: a column shorter than the batch would index out of range, and the generic path's
+    // `value_at` is what defines behaviour there — so it must fall through, not panic here.
+    assert!(
+        !ok(1, Some(&gen), 3),
+        "a column shorter than the batch must fall through"
+    );
+    assert!(
+        !ok(1, Some(&gen), 0),
+        "an empty batch over a non-empty column"
+    );
+    assert!(ok(1, Some(&Col::Gen(vec![])), 0), "empty and empty agree");
+
+    // REPRESENTATION: only `Col::Gen` stores `Value`s to borrow. Every other kind CONSTRUCTS its
+    // value (`Col::Num(v) => Value::Num(v[i])`), so there is nothing to borrow and no clone to
+    // save — admitting them would be a pointless second code path over the same work.
+    assert!(
+        !ok(1, Some(&Col::Num(vec![1.0, 2.0])), 2),
+        "a numeric column builds its value"
+    );
+    assert!(
+        !ok(1, Some(&Col::Bool(vec![true, false])), 2),
+        "a bool column builds its value"
+    );
+    assert!(
+        !ok(1, Some(&Col::Str(vec!["a".into(), "b".into()])), 2),
+        "a string column clones only a cheap Arc"
+    );
+    assert!(
+        !ok(1, Some(&Col::Nodes(vec![0, 1])), 2),
+        "an element frontier is not a value column"
+    );
+    assert!(!ok(1, None, 2), "no argument column at all");
+}
+
+/// The ANSWER half: the borrowed arm must return exactly what the clone returned, for every row and
+/// for the error cases. A mutant that reads the WRONG CELL (`vals[0]` for every row) is invisible to
+/// a fixture whose rows agree, so every row here carries a DIFFERENT value.
+#[test]
+fn a_unary_function_over_a_boxed_column_agrees_row_by_row() {
+    let mut b = Builder::default();
+    for i in 0..4u32 {
+        b.node(&["N"], &[("n", Value::Num(f64::from(i)))]);
+    }
+    let st = b.build();
+
+    let ask = |q: &str| -> String {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &st);
+        match crate::exec::try_run(&plan, &st) {
+            Ok(r) => format!("{:?}", r.rows.iter().collect::<Vec<_>>()),
+            Err(e) => format!("ERR {e}"),
+        }
+    };
+
+    // `[a.n, a.n + 1]` is a per-row LIST, so the argument column is `Col::Gen` and each row's cell
+    // differs — the shape the new arm is for, and the one a wrong-cell mutant fails.
+    let rev = ask("MATCH (a:N) RETURN reverse([a.n, a.n + 1]) AS c");
+    for i in 0..4 {
+        assert!(
+            rev.contains(&format!("Num({}.0), Num({}.0)", i + 1, i)),
+            "row {i} must be reversed with its OWN values: {rev}"
+        );
+    }
+
+    // `head` and `size` over the same per-row list, and `head` is the one that returns an element
+    // of the container rather than a new container.
+    let head = ask("MATCH (a:N) RETURN head([a.n, a.n + 1]) AS c");
+    for i in 0..4 {
+        assert!(
+            head.contains(&format!("Num({i}.0)")),
+            "head of row {i}: {head}"
+        );
+    }
+    assert_eq!(
+        ask("MATCH (a:N) RETURN size([a.n, a.n + 1]) AS c"),
+        "[[Num(2.0)], [Num(2.0)], [Num(2.0)], [Num(2.0)]]"
+    );
+
+    // THE ERROR PATH must raise identically — the borrowed call goes through the same
+    // `call_scalar_checked`, so a wrong-typed argument is still a data exception and not a null.
+    let bad = ask("MATCH (a:N) RETURN size([a.n][0]) AS c");
+    assert!(
+        bad.starts_with("ERR") || bad.contains("Null"),
+        "size of a number is an error or null, never a silent answer: {bad}"
+    );
+
+    // And over an aggregate's list, which is the one-row case the 3.27x was measured on.
+    assert_eq!(
+        ask("MATCH (a:N) RETURN reverse(collect(a.n)) AS c"),
+        "[[List([Num(3.0), Num(2.0), Num(1.0), Num(0.0)])]]"
+    );
+}
