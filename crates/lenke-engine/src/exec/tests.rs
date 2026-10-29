@@ -30897,3 +30897,193 @@ fn the_per_type_counts_sum_to_the_live_edge_count_after_every_mutation() {
     st.add_node(&["P"], &[]);
     assert_eq!(agree(&st, "after add_node"), 2);
 }
+
+/// A stored NaN is the GREATEST value in the contract's total order (`cmp_num_total`: NaN last,
+/// all NaNs tie), so `max` over a group containing one must BE NaN — in EVERY spelling.
+///
+/// Until item 1161 it was not. `scan_fold_minmax` folded with a plain `x > mx` on the stated
+/// premise that "stored Nums are finite"; they are not (`SET n.v = sqrt(0 - 1)` stores one from
+/// the surface language, and `stored_infinity_is_a_value` already settled ±∞), so the NaN was
+/// skipped and the MULTI-aggregate spelling answered 5.0 where the SINGLE-aggregate spelling of
+/// the same query answered NaN. Two spellings of one question, both plausible, one wrong.
+///
+/// `ORDER BY ... DESC` is the reference rather than a hand-written expectation: it is the
+/// contract's own order, decided in one place, so the assertion cannot drift from it.
+#[test]
+fn a_stored_nan_is_the_maximum_in_every_agg_spelling() {
+    let mut b = Builder::default();
+    b.node(&["N"], &[("v", Value::Num(1.0))]);
+    b.node(&["N"], &[("v", Value::Num(f64::NAN))]);
+    b.node(&["N"], &[("v", Value::Num(5.0))]);
+    let st = b.build();
+
+    let ask = |q: &str| -> Vec<Value> {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &st);
+        run(&plan, &st).rows[0].to_vec()
+    };
+    let is_nan = |v: &Value| matches!(v, Value::Num(x) if x.is_nan());
+    let num = |v: &Value| match v {
+        Value::Num(x) => *x,
+        other => panic!("not a number: {other:?}"),
+    };
+
+    // The reference: the first row descending IS the maximum under the total order.
+    let top = ask("MATCH (n:N) RETURN n.v AS c ORDER BY n.v DESC");
+    assert!(is_nan(&top[0]), "ORDER BY DESC puts NaN first: {top:?}");
+
+    // SINGLE aggregate — `try_scan_num_agg`'s extremum block.
+    let one = ask("MATCH (n:N) RETURN max(n.v) AS c");
+    assert!(is_nan(&one[0]), "single-agg max: {one:?}");
+    assert_eq!(num(&ask("MATCH (n:N) RETURN min(n.v) AS c")[0]), 1.0);
+
+    // MULTI aggregate — `scan_fold_minmax`, the arm that was wrong.
+    let two = ask("MATCH (n:N) RETURN min(n.v) AS a, max(n.v) AS b");
+    assert_eq!(num(&two[0]), 1.0, "multi-agg min: {two:?}");
+    assert!(is_nan(&two[1]), "multi-agg max: {two:?}");
+
+    // `scan_fold_all` — the arm that wants sum AND an extremum off one column.
+    let three = ask("MATCH (n:N) RETURN sum(n.v) AS a, max(n.v) AS b, min(n.v) AS c");
+    assert!(is_nan(&three[0]), "sum NaN-poisons: {three:?}");
+    assert!(is_nan(&three[1]), "scan_fold_all max: {three:?}");
+    assert_eq!(num(&three[2]), 1.0, "scan_fold_all min: {three:?}");
+}
+
+/// Every NaN ties under the total order, so a group whose present values are ALL NaN has NaN as
+/// its MINIMUM too — the one case where the extremum fold cannot read its `<`/`>` accumulator,
+/// because no comparison ever displaced the sentinel. Guards the `cnt == nan_cnt` arm, which a
+/// mixed group cannot reach.
+#[test]
+fn an_all_nan_group_has_nan_for_both_extrema() {
+    let mut b = Builder::default();
+    b.node(&["N"], &[("v", Value::Num(f64::NAN))]);
+    b.node(&["N"], &[("v", Value::Num(f64::NAN))]);
+    let st = b.build();
+
+    let ask = |q: &str| -> Vec<Value> {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &st);
+        run(&plan, &st).rows[0].to_vec()
+    };
+    let is_nan = |v: &Value| matches!(v, Value::Num(x) if x.is_nan());
+
+    for q in [
+        "MATCH (n:N) RETURN min(n.v) AS c",
+        "MATCH (n:N) RETURN max(n.v) AS c",
+    ] {
+        assert!(is_nan(&ask(q)[0]), "{q}");
+    }
+    let both = ask("MATCH (n:N) RETURN min(n.v) AS a, max(n.v) AS b");
+    assert!(is_nan(&both[0]) && is_nan(&both[1]), "multi-agg: {both:?}");
+}
+
+/// The extremum fold against the contract's order over EVERY numeric edge case the sentinel
+/// start could get wrong, each spelled three ways (single agg, multi agg, and `ORDER BY` as the
+/// reference). The fixtures that matter and why:
+///
+/// - `±INFINITY` — the sentinels ARE ±∞, so a stored one must still be returned rather than
+///   read as "nothing seen".
+/// - `-0.0` / `0.0` — `cmp_num_total` ties them deliberately, so either is a correct VALUE but
+///   only one is the correct BYTES; both folds must keep the incumbent, i.e. the first seen.
+/// - a single value, and a column present on only some nodes.
+#[test]
+fn the_extremum_fold_matches_the_contract_order_on_every_numeric_edge_case() {
+    let cases: &[(&str, &[f64])] = &[
+        ("one value", &[7.5]),
+        ("plus infinity alone", &[f64::INFINITY]),
+        ("minus infinity alone", &[f64::NEG_INFINITY]),
+        (
+            "both infinities and a finite",
+            &[f64::INFINITY, 2.5, f64::NEG_INFINITY],
+        ),
+        ("negative zero first", &[-0.0, 0.0]),
+        ("positive zero first", &[0.0, -0.0]),
+        ("nan among finites", &[3.0, f64::NAN, -1.0]),
+        (
+            "nan and both infinities",
+            &[f64::INFINITY, f64::NAN, f64::NEG_INFINITY],
+        ),
+        ("descending", &[9.0, 4.0, 1.0]),
+    ];
+
+    for (name, vals) in cases {
+        let mut b = Builder::default();
+        for &x in *vals {
+            b.node(&["N"], &[("v", Value::Num(x))]);
+        }
+        // A node with the key ABSENT, so `present` is not all-true and the labelled walk and the
+        // whole-column walk are both exercised across the case list.
+        b.node(&["N"], &[]);
+        let st = b.build();
+
+        let ask = |q: &str| -> Vec<Value> {
+            let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &st);
+            run(&plan, &st).rows[0].to_vec()
+        };
+        // The reference: ORDER BY decides the order in ONE place, so sorting the values through
+        // the engine gives the expected extrema without restating `cmp_num_total` here. NULLs
+        // sort somewhere in that order, so read the extrema off the non-null ends.
+        let sorted = {
+            let plan = crate::opt::optimize_indexed(
+                crate::gql::parse("MATCH (n:N) WHERE n.v IS NOT NULL RETURN n.v AS c ORDER BY n.v")
+                    .unwrap(),
+                &st,
+            );
+            run(&plan, &st)
+                .rows
+                .iter()
+                .map(|r| r[0].clone())
+                .collect::<Vec<_>>()
+        };
+        let (lo, hi) = (sorted[0].clone(), sorted[sorted.len() - 1].clone());
+        let num = |v: &Value| match v {
+            Value::Num(x) => *x,
+            other => panic!("{name}: not a number: {other:?}"),
+        };
+        // TWO assertions per extremum, because one oracle cannot carry both halves.
+        //
+        // AGAINST THE CONTRACT, by `cmp_num_total` and NOT by `==`: `NaN != NaN` under `==`, so
+        // an equality check would pass vacuously on the case this test exists for. It is also
+        // not a BIT check, because `cmp_num_total` ties `-0.0` with `0.0` deliberately — both
+        // are a correct maximum of `{-0.0, 0.0}`, so ORDER BY's tie order is unspecified and
+        // cannot be a bit-exact oracle. (Asserting bits here is what this test did first, and
+        // the `-0.0` case failed against a fold that was right.)
+        let agrees = |got: f64, want: &Value, which: &str| {
+            assert_eq!(
+                crate::value::cmp_num_total(got, num(want)),
+                std::cmp::Ordering::Equal,
+                "{name}: {which} is {got:?}, contract order says {want:?}"
+            );
+        };
+        // ACROSS THE SPELLINGS, by BITS: whichever of a tied pair the fold keeps, every path
+        // claiming the query must keep the SAME one, or two spellings of it return different
+        // bytes. That is the half that was broken — the single-agg path answered NaN and the
+        // multi-agg path 5.0 — and it holds for ties too, where the contract has no preference
+        // but byte-identity still does.
+        let one_min = num(&ask("MATCH (n:N) RETURN min(n.v) AS c")[0]);
+        let one_max = num(&ask("MATCH (n:N) RETURN max(n.v) AS c")[0]);
+        agrees(one_min, &lo, "single-agg min");
+        agrees(one_max, &hi, "single-agg max");
+
+        let two = ask("MATCH (n:N) RETURN min(n.v) AS a, max(n.v) AS b");
+        let all = ask("MATCH (n:N) RETURN sum(n.v) AS a, min(n.v) AS b, max(n.v) AS c");
+        for (which, got) in [
+            ("multi-agg min", num(&two[0])),
+            ("scan_fold_all min", num(&all[1])),
+        ] {
+            assert_eq!(
+                got.to_bits(),
+                one_min.to_bits(),
+                "{name}: {which} is {got:?}, single-agg min is {one_min:?}"
+            );
+        }
+        for (which, got) in [
+            ("multi-agg max", num(&two[1])),
+            ("scan_fold_all max", num(&all[2])),
+        ] {
+            assert_eq!(
+                got.to_bits(),
+                one_max.to_bits(),
+                "{name}: {which} is {got:?}, single-agg max is {one_max:?}"
+            );
+        }
+    }
+}

@@ -400,6 +400,24 @@ question in its module header — read the header before touching it.
   equality on a range-indexed key, and `NOT (k <= v)`, which scans where `k > v` seeks
   and CANNOT be rewritten naively — see the audit for the NaN reason.
 
+- `agg_kind_probe` — the AGGREGATE-KIND enum: what each `AggFn` variant costs over the
+  SAME dense numeric column, so any spread is the aggregate's own dispatch rather than
+  the data it reads. `count(*)` is the control no column fold can reach. Item 1161 found
+  `min`/`max` at 3.6-3.9x `sum`'s cost here — and the point of the probe is that the
+  `AggFn` MENTION CENSUS says the opposite: `Min` and `Max` have the most matches in
+  `fastpath.rs` of any value-reading variant and were the slow ones. Count how often a
+  variant is NAMED and you learn nothing about how well it is SERVED. `percentile_cont`
+  stays on the list as a known 30x that is mostly inherent (a percentile needs a sort).
+
+- `minmax_nan_probe` — whether a `Column::Num` can hold a NaN, and whether the min/max
+  folds AGREE on one. Not a benchmark: a PREMISE CHECK, and the reason it exists is that
+  `scan_fold_minmax` justified a plain `x < mn` with the comment "stored Nums are
+  finite". They are not — `SET n.v = sqrt(0 - 1)` stores a live NaN — and the fast fold
+  was skipping it, so the multi-aggregate spelling of `max` answered the largest finite
+  where the single-aggregate spelling answered NaN (item 1161). It prints both spellings
+  beside `ORDER BY DESC`, which is the contract's own order and therefore the reference.
+  Run it before trusting any comment that tells you what a column cannot contain.
+
 ## Before trusting a number
 
 The hard-won rules live in the repo `CLAUDE.md` ("Benchmarks: look before you

@@ -834,6 +834,53 @@ const AGG = [
   'stddev_samp',
 ] as const;
 
+/**
+ * An aggregate query: ONE aggregate as before, or — the item-1161 addition — SEVERAL IN ONE
+ * `RETURN`, which nothing here generated and whose
+ * omission hid a WRONG ANSWER for as long as the fuzzer has existed. Native routes a
+ * multi-aggregate scan to its own folds (`scan_fold_minmax` / `scan_fold_all`), reachable ONLY
+ * with two or more aggregates over one column, so a one-aggregate generator could not enter that
+ * code at all. `max(n.nanmix)` answered the largest finite there while the single-aggregate
+ * spelling of the same query answered NaN.
+ *
+ * This is the fuzzer's own "the value and the shape never met" lesson (see the `n.nan` note in
+ * `genPred`) one level up, with a third term: a value needs the SHAPE that reaches the code AND
+ * the NEIGHBOURS that make the difference observable at egress. `n.nan` holds only NaNs, and a
+ * skipped NaN falls back to an INFINITY sentinel that renders as `null` exactly as NaN does — so
+ * adding the shape alone left the suite green. `n.nanmix` mixes one NaN with finite values, where
+ * the wrong answer reads as a number against a null.
+ *
+ * Both column layouts are generated, because they take different native folds: ONE key for every
+ * aggregate groups them onto a single column pass (the arm that was wrong), while TWO keys
+ * exercise the one-pass-per-column fan-out instead. `n.nu`/`n.zz` keep a partly-absent and a
+ * wholly-absent column in play, since the extremum folds decide NULL-vs-value off the present
+ * count.
+ */
+const genAggQuery = (r: () => number): string => {
+  if (r() >= 0.34) {
+    const distinct = r() < 0.5 ? 'DISTINCT ' : '';
+
+    return `MATCH (n:T) RETURN ${pick(r, AGG)}(${distinct}${genExpr(r, 2)}) AS x`;
+  }
+
+  const keys = ['n.n', 'n.x', 'n.nan', 'n.nanmix', 'n.nu', 'n.zz'] as const;
+  const one = pick(r, keys);
+  const howMany = r() < 0.4 ? 3 : 2;
+  const items = Array.from({ length: howMany }, (_, i) => {
+    const key = r() < 0.6 ? one : pick(r, keys);
+
+    return `${pick(r, AGG)}(${key}) AS x${i}`;
+  });
+
+  // `count(*)` alongside them: it reads no column, so it is the arm that must still answer the
+  // scan's row count when every other aggregate has been grouped onto a column pass.
+  if (r() < 0.3) {
+    items.push('count(*) AS xc');
+  }
+
+  return `MATCH (n:T) RETURN ${items.join(', ')}`;
+};
+
 // An inline `CALL (scope) { … }` query. Nothing here generated one before, so the
 // whole correlated-subquery surface — the lateral join, OPTIONAL left-outer null-fill,
 // `RETURN *`, the per-outer-row `UNION`/`EXCEPT`/`INTERSECT` combine (scope-var AND
@@ -1504,9 +1551,7 @@ const genQuery = (r: () => number): string => {
   }
 
   if (p < 0.2) {
-    const distinct = r() < 0.5 ? 'DISTINCT ' : '';
-
-    return `MATCH (n:T) RETURN ${pick(r, AGG)}(${distinct}${genExpr(r, 2)}) AS x`;
+    return genAggQuery(r);
   }
 
   if (p < 0.26) {
@@ -2135,9 +2180,20 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
   // NaN from a literal call, and item 55's (the executor's copy of the same mistake, reached
   // only when the NaN arrives from a PROPERTY) could not be caught here at all — reverting that
   // fix left this suite green.
+  //
+  // `nanmix` is a SECOND NaN column, and it exists because `nan` alone cannot expose an
+  // extremum bug (item 1161). Every present value of `nan` IS a NaN, so a `max` that wrongly
+  // skips NaN falls back to its `f64::NEG_INFINITY` sentinel — and ±INFINITY and NaN BOTH render
+  // as `null` at egress, so the wrong answer and the right one are the same JSON. `nanmix` mixes
+  // one NaN with finite values, which makes the difference a number against a null: with the bug
+  // native answered `2` where the contract says NaN. The lesson is the `n.nan` note in `genPred`
+  // once more — a value needs the shape AND the neighbours that make it observable.
   for (const q of [
     'MATCH (n:T) WHERE n.n = 3 SET n.nan = sin(1e400) RETURN count(*) AS c',
     'MATCH (n:T) WHERE n.n = 7 SET n.nan = ln(-1) RETURN count(*) AS c',
+    'MATCH (n:T) WHERE n.n = 3 SET n.nanmix = sin(1e400) RETURN count(*) AS c',
+    'MATCH (n:T) WHERE n.n = 7 SET n.nanmix = 2 RETURN count(*) AS c',
+    'MATCH (n:T) WHERE n.n = 5 SET n.nanmix = 0 - 4 RETURN count(*) AS c',
   ]) {
     tsQuery(tsGraph, q);
     nativeGraph.query(q);

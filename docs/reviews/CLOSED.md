@@ -34309,3 +34309,137 @@ get the whole graph — `MATCH (a:Q)-[]->(x)` is 0, not 5); bucket sum substitut
 ✅ **The shape worth remembering:** the gap was never between the two ENGINES but between the two
 SURFACE LANGUAGES of one engine, with a working implementation one package away. "Grep the pattern
 elsewhere" paid twice, and the second time "elsewhere" was not where I expected.
+
+## 1161 — ✅ SHIPPED **3.84x / 4.20x** (`min`/`max` over a numeric column) and ⚠️🔧 **FIXED a cross-engine WRONG ANSWER** in the fold I was about to copy. Plus TWO fuzzer blindnesses, both closed
+
+Priced the AGGREGATE-KIND enum after item 1160 closed label-arity in both engines. At 200k nodes on
+one dense numeric column: `count` 121.5us, `sum` 122.0, `avg` 122.0, `stddev_pop` 122.2 — and
+**`min` 435.0, `max` 472.7**. `percentile_cont` 3674.5 (30x, but a percentile needs a SORT, so most
+of it is inherent and it is NOT a target).
+
+**The `AggFn` mention census CANNOT find this, and item 844 drew the opposite inference from it.**
+`Min` has 36 matches in `fastpath.rs` and `Max` 24 — the most of any value-reading variant — and
+they were the slow ones. A census counts how often a variant is NAMED, not how well it is SERVED.
+Price the variants.
+
+**Cause (diagnosed, not assumed): not the comparator.** The single-agg fold carried
+`best: Option<f64>` through the loop, so every row paid a `match` on `None`, and tested the
+loop-invariant `want_min` inside the same closure. The `Option` is what stops it auto-vectorizing.
+
+### ⚠️ The fast sibling was WRONG, and a stale doc comment had been licensing it
+
+`scan_fold_minmax` already folded with a plain `x < mn`, justified as _"stored Nums are finite, so
+`x < mn` == `cmp_num_total`"_. **Checked instead of believed (item 1142's precedent), and it is
+false:**
+
+```text
+  three nodes 1.0 / NaN / 5.0        (NaN is GREATEST under cmp_num_total)
+  single-agg max      NaN   correct      ORDER BY DESC   NaN   the contract's own order
+  multi-agg  min,max  1.0, 5.0  WRONG — the NaN is skipped
+  SET n.v = sqrt(0 - 1)  ->  stores Num(NaN), _is_nan true   (reachable from the surface language)
+```
+
+TS was right all along (`extremumFold` uses `compareValues`, the total order), so this was a LIVE
+TS-vs-native divergence. `cmp_num_total` IS `partial_cmp` for two non-NaN operands (it ties `-0.0`
+with `0.0` deliberately), so NaN is the whole of the exception.
+
+**The claim traces to a test whose NAME asserts the opposite of the truth.**
+`a_numeric_column_cannot_hold_a_nan` cited `Value::finite_only` — **which does not exist anywhere in
+this workspace.** It lived in the retired `lenke-core` and was never ported; the sentence stayed.
+The test could not notice: it asserts the column terminal AGREES WITH THE WALK and never that the
+value is null, so it passes either way — the item-1158 tautology shape, believed long enough to be
+cited as a licence. Renamed `the_column_terminals_agree_with_the_walk_on_a_stored_nan` and kept,
+because that agreement is a real guard now that NaN is known reachable.
+**`stored_infinity_is_a_value` already made "finite" false for ±∞ before NaN came up.**
+
+### The fix gets BOTH: count the NaNs instead of comparing them
+
+`nan_cnt += u64::from(x != x)` is a compare-and-add that vectorizes with the loop; the finish reads
+it (`min` is NaN only when `cnt == nan_cnt`, `max` whenever `nan_cnt > 0`). **The sentinels need no
+special case for a stored ±∞ because the sentinel IS the fold's identity.** `MIN` is a const
+parameter, not a runtime flag. Early-return block, per item 844's measured reason (a shared live
+range cost `min` 1.6x there), so the sum/avg loop is byte-for-byte untouched. Same `nan_cnt` in
+`scan_fold_minmax` and `scan_fold_all`.
+**Grepped elsewhere: NO other site.** Every other min/max fold (frontier, filtered, varlen, string,
+dict) already uses `cmp_num_total`. One bug, two functions.
+
+```text
+  A3 min  [394.0,396.7,409.8] -> [102.6,103.2,103.1]   3.84x
+  A4 max  [431.0,444.9,432.3] -> [102.6,103.6,104.0]   4.20x
+  SIX controls flat: count(a.n) 1.01x, sum 1.00x, avg 1.00x, stddev_pop 1.00x,
+                     percentile_cont 0.99x, count(*) 1.00x
+```
+
+min/max now BEAT `sum` (103 vs 111) — an extremum is a max-reduce with no dependent accumulator
+chain. **The alternation earned itself again:** a plain before/after read the untouched `count(a.n)`
+control at 121.5 -> 101.5 and would have needed explaining; alternated it is 1.01x. The machine
+drifted between runs and visibly within round 3. The ratio survives, the raw numbers do not.
+
+### ⚠️ Why seven byte-identity fuzzers missed a cross-engine wrong answer — TWO reasons
+
+Revert the fix, run the differential fuzzer: **green.** Both causes are now closed, and the second
+is the one worth remembering:
+
+1. **It generated exactly ONE aggregate per query.** The native multi-aggregate folds are reachable
+   only with two or more aggregates over one column, so the functions holding the bug were
+   **unreachable by construction** for as long as the fuzzer has existed.
+2. **Its `nan` column holds ONLY NaNs** — so fixing (1) alone LEFT IT GREEN. Every present value
+   being NaN means a `max` that skips them falls back to its `NEG_INFINITY` sentinel, and
+   **±INFINITY and NaN both render as `null` at egress**: the wrong answer and the right one are the
+   same JSON. Observable only with a NaN AMONG FINITES, where it reads as a number against a null.
+
+Fixed with a multi-aggregate arm (one key so they group onto a single column pass, two keys for the
+fan-out, plus `count(*)`) and a new `nanmix` column (one NaN, two finites). Teeth verified by
+reverting the engine fix — caught on the first seed tried.
+
+**→ RULE: a fuzzer value needs the SHAPE that reaches the code AND the NEIGHBOURS that make the
+difference observable at egress.** The fuzzer's own `genPred` note already says value-plus-shape
+("the value and the shape never met"); this adds the third term. The first fix felt like the whole
+fix and the suite was still green.
+
+### Mutation: 5 mutants, 5 caught, no survivors
+
+Harness proven to kill first (bomb -> SIGKILL, `while true` -> 124); every mutant under
+`timeout 900` + `MemoryMax=16G` + `MemorySwapMax=0`, restored BEFORE the next.
+
+**⚠️ The DID-NOT-RUN check caught a harness bug on the first pass** (third time that rule has paid;
+items 767, 772-773 wrote it): all five came back `rc=1, result-lines=0` because **`cargo test` takes
+ONE TESTNAME** and rejects a second — four filters passed directly ran NOTHING. Filters go after
+`--`. `rc=1` with no result line is indistinguishable from a real failure by exit code alone; only
+the execution evidence separates them, and a bare exit code would have read as five confident
+CAUGHTs on a harness that never compiled a test.
+
+**⚠️ An oracle also had to be WEAKENED, correctly.** `the_extremum_fold_matches_the_contract_order`
+first asserted BITS against `ORDER BY`'s extreme rows, and the `-0.0` case failed against a fold
+that was RIGHT: `cmp_num_total` ties `-0.0` with `0.0`, so ORDER BY's tie order is unspecified and
+cannot be a bit-exact oracle. Now two instruments: the VALUE against the contract via
+`cmp_num_total` (not `==`, which `NaN != NaN` makes vacuous), and the BITS across the three
+spellings — the half that was broken, and which holds for ties too, where the contract has no
+preference but byte-identity still does.
+
+### ✅ NEGATIVE RESULT: the TS engine has NO aggregate-kind gap
+
+TS at 200k: `count` 3.2 ms, `sum` 6.9, **`min` 4.4, `max` 3.6**, `avg` 9.9, `stddev_pop` 8.2,
+`min,max` multi 8.5, `count(*)` 0.0. `min`/`max` are the FASTEST value-reading aggregates — ahead
+of `sum` and `avg` — so **nothing to close.** `extremumFold` starts from `undefined` and tests it
+per value, the same shape that cost native 3.8x, and it does not matter: the TS fold is not
+competing with an auto-vectorized sibling, so that test is not the marginal cost. Item 1156's
+pattern — the transferable thing is the QUESTION, not the answer — and the per-row `ts === native`
+assertion independently exercised the NaN counting shipped here, from an engine that gets the same
+answer by comparing rather than counting.
+
+### Still open from this enum
+
+`percentile_cont` / `percentile_disc` at **30x** (3674us vs 122 on the same column). Mostly
+inherent — a percentile needs a sort — but an O(n) selection (quickselect / `select_nth_unstable`)
+would answer `percentile_disc` without one. NOT priced against that alternative, so not yet a
+target. `collect`/`collect_list` are correctly excluded: they must materialize the list.
+
+### Regression sweep
+
+`query_bench` both arms, 80 rows above the quantization floor: worst **1.08x**, best 0.85x — a
+symmetric band inside the sweep's documented ~10% noise floor, and every top row is in a path the
+change cannot reach (shortest-k, distinct node, varlen+path, gremlin dedup). `order(local) then
+hop` read 0.86x, consistent with its standing false-positive note. 2,027 Rust tests green;
+`LENKE_OPT_FUZZ_SEEDS=500000` green (103 s); 7/7 byte-identity fuzzers green with the widened
+generator.

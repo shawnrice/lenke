@@ -4403,6 +4403,68 @@ pub(super) fn try_scan_count_prop(
     Some(scalar_num(cnt as f64))
 }
 
+/// One extremum over a `Num` column, branch-free in the loop: returns `(best, cnt, nan_cnt)`
+/// where `best` is the plain `<`/`>` extremum, `cnt` the present values and `nan_cnt` how many
+/// of those were NaN. The caller turns that into the contract's answer — see the long note in
+/// [`try_scan_num_agg`] for why NaN is counted rather than compared, and why the sentinel start
+/// needs no special case for a stored ±INFINITY.
+///
+/// `MIN` is a const parameter, not a runtime flag: the direction is loop-invariant, and the fold
+/// this replaced tested it per row. `#[inline(never)]` for the reason items 453, 459 and 462 each
+/// measured — an arm inlined into this chain perturbs the shapes that never enter it.
+#[inline(never)]
+fn scan_extremum<const MIN: bool>(
+    store: &Store,
+    label: &Option<String>,
+    data: &[f64],
+    present: &[bool],
+    whole: bool,
+) -> (f64, u64, u64) {
+    let mut best = if MIN {
+        f64::INFINITY
+    } else {
+        f64::NEG_INFINITY
+    };
+    let (mut cnt, mut nan_cnt) = (0u64, 0u64);
+    let mut take = |x: f64| {
+        cnt += 1;
+        nan_cnt += u64::from(x.is_nan());
+        if MIN {
+            if x < best {
+                best = x;
+            }
+        } else if x > best {
+            best = x;
+        }
+    };
+    if whole {
+        // The raw-slice walk: no per-row id indirection, so this is the arm that vectorizes.
+        for (i, &x) in data.iter().enumerate() {
+            if present[i] {
+                take(x);
+            }
+        }
+    } else {
+        let mut visit = |i: usize| {
+            if present[i] {
+                take(data[i]);
+            }
+        };
+        match label {
+            Some(l) => store
+                .nodes_with_label(l)
+                .iter()
+                .for_each(|&id| visit(id as usize)),
+            None => (0..store.node_count()).for_each(|i| {
+                if store.is_alive(i as u32) {
+                    visit(i);
+                }
+            }),
+        }
+    }
+    (best, cnt, nan_cnt)
+}
+
 pub(super) fn try_scan_num_agg(
     input: &Plan,
     keys: &[(String, Expr)],
@@ -4518,8 +4580,64 @@ pub(super) fn try_scan_num_agg(
         )])]));
     }
 
+    // THE MIN/MAX PATH IS ALSO WHOLLY SEPARATE, and for the reason the stddev block above
+    // records: an accumulator declared at the shared scope stays live across the loop that
+    // never reads it. `best: Option<f64>` used to sit beside `total`/`cnt` here and the fold
+    // below carried a `matches!(Min | Max)` arm; returning early leaves the sum/avg loop
+    // byte-for-byte what it was, so that question cannot arise rather than being answered.
+    //
+    // WHY THE `Option` HAD TO GO (item 1161). Pricing the `AggFn` enum put `min` at 435us and
+    // `max` at 472 against `sum`/`avg`/`stddev_pop` at 122 on the SAME column at 200,000 nodes —
+    // 3.6-3.9x, and the variants with the MOST matches in this file were the slow ones, so the
+    // mention census that found the stddev gap at item 844 would never have found this one. The
+    // cost was not `cmp_num_total`: it was carrying an `Option` through the loop, whose per-row
+    // `match` on `None` stops it auto-vectorizing, plus a per-row `want_min` test. Both are
+    // loop-invariant facts evaluated per element.
+    //
+    // THE SENTINELS ARE THE IDENTITY, SO PLAIN `<`/`>` IS EXACT — and this is the one thing here
+    // that is subtle. `cmp_num_total` is `partial_cmp` for two non-NaN operands (it ties -0.0
+    // with 0.0 deliberately), so for everything but NaN a plain comparison IS the contract's
+    // order, and `<`/`>` keeping the incumbent on a tie preserves first-wins. ±INFINITY needs no
+    // special case either: a stored +∞ is a present value (`stored_infinity_is_a_value`), and
+    // `mn` starting at +∞ returns it correctly because the sentinel is the fold's identity.
+    //
+    // NaN IS THE EXCEPTION AND IT IS COUNTED, NOT COMPARED. Under `cmp_num_total` NaN is
+    // GREATEST and all NaNs tie, so `max` over a group containing one must BE NaN. A plain
+    // `x > mx` skips it silently — which is exactly the WRONG ANSWER item 1161 found in
+    // `scan_fold_minmax`, whose comment claimed "stored Nums are finite". They are not: `SET
+    // n.v = sqrt(0 - 1)` stores one from the surface language. So the loop counts NaNs with
+    // `nan_cnt += u64::from(x.is_nan())` — a compare-and-add that vectorizes with the rest — and the
+    // finish reads the count:
+    //
+    //   min: NaN never wins unless EVERY value is one   -> `cnt == nan_cnt` => NaN
+    //   max: any NaN wins outright                      -> `nan_cnt > 0`    => NaN
+    //
+    // That is the contract's answer with no branch in the loop, so correctness here costs one
+    // add per row rather than the `Option` it replaces.
+    if matches!(agg.func, AggFn::Min | AggFn::Max) {
+        let want_min = agg.func == AggFn::Min;
+        // Specialized on the direction OUTSIDE the loop: `want_min` is loop-invariant, and the
+        // old fold tested it per row inside the closure that also unwrapped the `Option`.
+        let (best, cnt, nan_cnt) = if want_min {
+            scan_extremum::<true>(store, label, data, present, whole_sd)
+        } else {
+            scan_extremum::<false>(store, label, data, present, whole_sd)
+        };
+        let v = if cnt == 0 {
+            Value::Null // an empty set has no extremum (distinct from sum's 0.0, K0a)
+        } else if if want_min {
+            cnt == nan_cnt
+        } else {
+            nan_cnt > 0
+        } {
+            Value::Num(f64::NAN)
+        } else {
+            Value::Num(best)
+        };
+        return Some(Batch::of(vec![Col::Gen(vec![v])]));
+    }
+
     let (mut total, mut cnt) = (0f64, 0u64);
-    let mut best: Option<f64> = None;
     // Whole-column fast path: when the scan covers EVERY live node (an unlabelled
     // scan, or a label all nodes carry) with nothing deleted, sum the raw
     // `data`/`present` slices directly — no per-row id indirection, so the loop
@@ -4536,50 +4654,7 @@ pub(super) fn try_scan_num_agg(
     // the one being added, inside the loop whose whole point is that it auto-vectorizes.
     // Splitting leaves the sum/avg body byte-for-byte what it was, so the question does not
     // arise rather than being answered.
-    if matches!(agg.func, AggFn::Min | AggFn::Max) {
-        // min/max fold in the value contract's TOTAL order (`cmp_num_total`: NaN last,
-        // NaN == NaN), identical to `try_frontier_prop_agg`'s fold. A plain `f64::min`/`max`
-        // here would be byte-identity divergence between two paths answering one query —
-        // and it is `-0.0` vs `0.0`, not NaN, where that would bite first.
-        let want_min = agg.func == AggFn::Min;
-        let mut take = |x: f64| {
-            best = Some(match best {
-                None => x,
-                Some(b) => {
-                    let ord = value::cmp_num_total(x, b);
-                    if (want_min && ord.is_lt()) || (!want_min && ord.is_gt()) {
-                        x
-                    } else {
-                        b
-                    }
-                }
-            });
-        };
-        if whole {
-            for (i, &x) in data.iter().enumerate() {
-                if present[i] {
-                    take(x);
-                }
-            }
-        } else {
-            let mut visit = |i: usize| {
-                if present[i] {
-                    take(data[i]);
-                }
-            };
-            match label {
-                Some(l) => store
-                    .nodes_with_label(l)
-                    .iter()
-                    .for_each(|&id| visit(id as usize)),
-                None => (0..store.node_count()).for_each(|i| {
-                    if store.is_alive(i as u32) {
-                        visit(i);
-                    }
-                }),
-            }
-        }
-    } else if whole {
+    if whole {
         for (i, &x) in data.iter().enumerate() {
             if present[i] {
                 total += x;
@@ -4606,9 +4681,6 @@ pub(super) fn try_scan_num_agg(
         }
     }
     let result = match agg.func {
-        // An empty set has no extremum, so NULL — the same answer `try_frontier_prop_agg`
-        // gives, and distinct from `sum`'s 0.0 (K0a).
-        AggFn::Min | AggFn::Max => best.map_or(Value::Null, Value::Num),
         AggFn::Sum if agg.null_on_empty && cnt == 0 => Value::Null, // Gremlin sum() of nothing
         AggFn::Sum => Value::Num(total), // 0.0 over an empty/all-null set (K0a)
         _ => {
@@ -5633,7 +5705,7 @@ fn scan_fold_cnt(
     store: &Store,
     label: &Option<String>,
     present: &[bool],
-) -> (f64, u64, f64, f64, u64) {
+) -> (f64, u64, f64, f64, u64, u64) {
     let (mut cnt, mut rows) = (0u64, 0u64);
     scan_visit(store, label, |i| {
         rows += 1;
@@ -5641,7 +5713,7 @@ fn scan_fold_cnt(
             cnt += 1;
         }
     });
-    (0.0, cnt, f64::INFINITY, f64::NEG_INFINITY, rows)
+    (0.0, cnt, f64::INFINITY, f64::NEG_INFINITY, rows, 0)
 }
 
 #[inline(never)]
@@ -5650,7 +5722,7 @@ fn scan_fold_sum(
     label: &Option<String>,
     data: &[f64],
     present: &[bool],
-) -> (f64, u64, f64, f64, u64) {
+) -> (f64, u64, f64, f64, u64, u64) {
     let (mut sum, mut cnt, mut rows) = (0.0f64, 0u64, 0u64);
     scan_visit(store, label, |i| {
         rows += 1;
@@ -5659,7 +5731,7 @@ fn scan_fold_sum(
             cnt += 1;
         }
     });
-    (sum, cnt, f64::INFINITY, f64::NEG_INFINITY, rows)
+    (sum, cnt, f64::INFINITY, f64::NEG_INFINITY, rows, 0)
 }
 
 #[inline(never)]
@@ -5668,13 +5740,15 @@ fn scan_fold_minmax(
     label: &Option<String>,
     data: &[f64],
     present: &[bool],
-) -> (f64, u64, f64, f64, u64) {
-    let (mut cnt, mut mn, mut mx, mut rows) = (0u64, f64::INFINITY, f64::NEG_INFINITY, 0u64);
+) -> (f64, u64, f64, f64, u64, u64) {
+    let (mut cnt, mut mn, mut mx, mut rows, mut nan_cnt) =
+        (0u64, f64::INFINITY, f64::NEG_INFINITY, 0u64, 0u64);
     scan_visit(store, label, |i| {
         rows += 1;
         if present[i] {
             let x = data[i];
             cnt += 1;
+            nan_cnt += u64::from(x.is_nan());
             if x < mn {
                 mn = x;
             }
@@ -5683,7 +5757,7 @@ fn scan_fold_minmax(
             }
         }
     });
-    (0.0, cnt, mn, mx, rows)
+    (0.0, cnt, mn, mx, rows, nan_cnt)
 }
 
 #[inline(never)]
@@ -5692,15 +5766,16 @@ fn scan_fold_all(
     label: &Option<String>,
     data: &[f64],
     present: &[bool],
-) -> (f64, u64, f64, f64, u64) {
-    let (mut sum, mut cnt, mut mn, mut mx, mut rows) =
-        (0.0f64, 0u64, f64::INFINITY, f64::NEG_INFINITY, 0u64);
+) -> (f64, u64, f64, f64, u64, u64) {
+    let (mut sum, mut cnt, mut mn, mut mx, mut rows, mut nan_cnt) =
+        (0.0f64, 0u64, f64::INFINITY, f64::NEG_INFINITY, 0u64, 0u64);
     scan_visit(store, label, |i| {
         rows += 1;
         if present[i] {
             let x = data[i];
             sum += x;
             cnt += 1;
+            nan_cnt += u64::from(x.is_nan());
             if x < mn {
                 mn = x;
             }
@@ -5709,7 +5784,7 @@ fn scan_fold_all(
             }
         }
     });
-    (sum, cnt, mn, mx, rows)
+    (sum, cnt, mn, mx, rows, nan_cnt)
 }
 
 pub(super) fn try_scan_multi_agg(
@@ -5772,21 +5847,21 @@ pub(super) fn try_scan_multi_agg(
         // Per distinct column: (sum, cnt, mn, mx). `rows` is the same for every pass — it is
         // the scan, not the column — so the last one answers `count(*)`.
         let mut rows = 0u64;
-        let folded: Vec<(f64, u64, f64, f64)> = groups
+        let folded: Vec<(f64, u64, f64, f64, u64)> = groups
             .iter()
             .map(|&(ptr, want_sum, want_minmax)| {
                 let (data, present) = specs
                     .iter()
                     .find_map(|(c, _)| c.filter(|(d, _)| d.as_ptr() == ptr))
                     .expect("group came from a spec");
-                let (sum, cnt, mn, mx, r) = match (want_sum, want_minmax) {
+                let (sum, cnt, mn, mx, r, nan_cnt) = match (want_sum, want_minmax) {
                     (false, false) => scan_fold_cnt(store, label, present),
                     (true, false) => scan_fold_sum(store, label, data, present),
                     (false, true) => scan_fold_minmax(store, label, data, present),
                     (true, true) => scan_fold_all(store, label, data, present),
                 };
                 rows = r;
-                (sum, cnt, mn, mx)
+                (sum, cnt, mn, mx, nan_cnt)
             })
             .collect();
         let cols: Vec<Col> = specs
@@ -5799,15 +5874,24 @@ pub(super) fn try_scan_multi_agg(
                     .iter()
                     .position(|(p, _, _)| *p == data.as_ptr())
                     .expect("spec has a group");
-                let (sum, cnt, mn, mx) = folded[i];
+                let (sum, cnt, mn, mx, nan_cnt) = folded[i];
+                // NaN is COUNTED, not compared — `try_scan_num_agg`'s long note has the whole
+                // argument. Until item 1161 these two arms read `mn`/`mx` straight out of a
+                // plain `<`/`>` fold whose comment claimed "stored Nums are finite", and a
+                // stored NaN (`SET n.v = sqrt(0 - 1)`) was silently skipped: `max` answered 5.0
+                // where the single-agg spelling of the same query answered NaN.
                 let v = match func {
                     AggFn::Count => Value::Num(cnt as f64),
                     AggFn::Sum => Value::Num(sum),
                     AggFn::Avg if cnt == 0 => Value::Null,
                     AggFn::Avg => Value::Num(sum / cnt as f64),
                     AggFn::Min if cnt == 0 => Value::Null,
+                    // All NaN and nothing else: every NaN ties, so the min IS NaN.
+                    AggFn::Min if cnt == nan_cnt => Value::Num(f64::NAN),
                     AggFn::Min => Value::Num(mn),
                     AggFn::Max if cnt == 0 => Value::Null,
+                    // One NaN is enough: NaN is the greatest value in the total order.
+                    AggFn::Max if nan_cnt > 0 => Value::Num(f64::NAN),
                     _ => Value::Num(mx),
                 };
                 Col::Gen(vec![v])

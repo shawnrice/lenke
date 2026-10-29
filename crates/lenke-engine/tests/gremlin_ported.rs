@@ -10193,22 +10193,29 @@ fn an_is_filter_after_values_matches_the_walk() {
     }
 }
 
-/// The lowered column terminals are safe because a numeric column CANNOT hold a
-/// NaN — not because they each handle one.
+/// The lowered column terminals must agree with the stream walk ON A STORED NaN, because a
+/// numeric column CAN hold one.
 ///
-/// They read `Column::Num` straight out of the store and answer `min`/`max`/an
-/// ordering `is` from it, skipping the stream's comparator entirely. That is
-/// only sound while the column has no NaN in it, and the store now guarantees
-/// that: every write coerces a non-finite to null (`Value::finite_only`), so the
-/// question the fast paths skip cannot arise. `Column::Num` already relied on
-/// this in the other direction, using NaN as its own ABSENT sentinel.
+/// THIS TEST USED TO CLAIM THE OPPOSITE, and the claim cost a wrong answer (item 1161). Its
+/// doc said "every write coerces a non-finite to null (`Value::finite_only`), so the question
+/// the fast paths skip cannot arise" — and `Value::finite_only` does not exist anywhere in this
+/// workspace. Whatever enforced that lived in the retired `lenke-core` and was never ported, so
+/// the invariant quietly stopped holding while the sentence asserting it stayed. Measured, not
+/// argued: `MATCH (n:N) SET n.v = sqrt(0 - 1)` stores a live NaN that `_is_nan` reports as true,
+/// and `stored_infinity_is_a_value` separately settles that a stored ±∞ is a present value.
 ///
-/// Before that coercion the guarantee did not hold — `SET x = sqrt(-1)` stored a
-/// live NaN — and this test used to construct one and assert each terminal
-/// declined. Asserting the invariant is the stronger statement: it is what makes
-/// the declines unnecessary.
+/// The cost: `scan_fold_minmax` cited exactly this premise ("stored Nums are finite") to fold
+/// `min`/`max` with a plain `x < mn`, which SKIPS a NaN, so the multi-aggregate spelling of
+/// `max` answered 5.0 where the single-aggregate spelling answered NaN. Both read correct-looking
+/// numbers out of one column.
+///
+/// Note what the old test could and could not see. It asserts the column terminal agrees with
+/// the walk — it never asserted the value was null — so it passed either way, exactly like the
+/// tautology caught at item 1158. The name was the only thing carrying the claim. It is kept and
+/// renamed rather than deleted, because column-vs-walk agreement over a NaN is a real guard now
+/// that NaN is known to be reachable.
 #[test]
-fn a_numeric_column_cannot_hold_a_nan() {
+fn the_column_terminals_agree_with_the_walk_on_a_stored_nan() {
     let mut graph = decode(
         &[
             r#"{"type":"node","id":"a","labels":["P"],"properties":{"n":3}}"#,
@@ -10222,13 +10229,11 @@ fn a_numeric_column_cannot_hold_a_nan() {
     graph.set_prop(1, "n", Value::Num(f64::NAN));
     graph.set_prop(0, "n", Value::Num(f64::INFINITY));
 
-    // Non-finite normalization to null happens on the write path (`set_prop` above,
-    // the route a query cannot take). The engine stores no non-finite numeric — its
-    // column-representation invariant is a private storage detail with no engine
-    // analogue to the now-removed lenke-core's `Column::Num`/`Mixed` probe that stood here; the OBSERVABLE
-    // consequence is checked below: it reads back as null, not as a stale value.
-
-    // And it reads back as null, not as an absent property with a stale value.
+    // What is actually checked below is that the LOWERED COLUMN TERMINAL and the STREAM WALK
+    // answer the same thing over this column. That is the whole of it — nothing here asserts the
+    // non-finites became null, and as of item 1161 they do not: the write path has no coercion.
+    // Agreement is still worth pinning, because it is what keeps `min`/`max` answering one value
+    // per query no matter which path claims it.
     for t in [
         g().v_ids(&[]).values(&["n"]).count(),
         g().v_ids(&[]).values(&["n"]).min(),
