@@ -2910,6 +2910,24 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   columns — cheaper to write, already covered by those arms' own oracles and mutation, and FASTER
   by item 471's measurement that N passes over one column each beat one interleaved pass (5.6 ms
   against 0.6). Separate function after the numeric entry, per item 1184.
+- ⚠️ **LOCATED AT LAST, and it was never a sweep: the dict-equality row is an `IndexSeek`, and
+  `count(*)` over one is NOT answered from the index (1216). OPEN, priced at ~600x.** The plan is
+  `Project{Aggregate{IndexSeek{label: "Person", key: "d", value: Str("g3")}}}` — so
+  `WHERE p.d = 'g3' RETURN count(*)` never enters `try_filtered_count` at all (instrumenting its
+  whole chain showed 30 predicates entering and NONE on the `d` column). `try_scan_count` has arms
+  for `Plan::Scan`, `Plan::Expand` and `Plan::EdgeScan` and **none for `Plan::IndexSeek`**, so the
+  seek runs `index_lookup`, which ALLOCATES a `Vec<u32>` of every matching id (25,000 here, ~100KB)
+  and the aggregate then counts it. `count(*)` over a `Scan` is **0.3 us** by comparison, O(1) from
+  the label bucket.
+  **The fix is an `IndexSeek` arm plus a non-allocating `index_count`**, and `deleted_count` is a
+  CACHED field, so `deleted_count == 0` is an O(1) test after which `ids.len()` is the exact answer
+  — a true O(1) count for the common case, with an O(matches) no-allocation fallback when
+  tombstones exist. **187-320 us -> ~0.3 us.** Not built.
+  ⚠️ **FIVE HYPOTHESES WERE SPENT ON SWEEP CODE THIS QUERY NEVER EXECUTES** (items 1208, 1209 and
+  three in 1215/1216), and the plan dump that settled it costs one line. **The rule: before pricing
+  WHY a shape is slow, dump its PLAN to find out WHAT answers it.** Item 1204 learned the same
+  thing from the other side — identical plans meant the difference had to be inside the operator —
+  and here differing plans meant the operator under suspicion was never reached.
 - ⚠️ **CORRECTION, and it makes two earlier refutations VACUOUS: the dict-equality row's 1.66x is
   NOT in `try_stream_dict_pred_count`, so items 1208 and 1209 both rewrote the wrong function
   (1215).** `d = 'g3' RETURN count(*)` is claimed by `try_stream_membership_count`, which runs

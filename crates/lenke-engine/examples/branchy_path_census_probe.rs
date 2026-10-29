@@ -158,6 +158,27 @@ fn main() {
         );
     }
 
+    // ITEM 1216: the dict-equality row's PLAN, because five hypotheses about which sweep serves it
+    // were all wrong — instrumenting the whole `try_filtered_count` chain showed 30 predicates
+    // entering it and NONE on the `d` column, so the query is answered before it ever gets there.
+    for (label, q) in [
+        (
+            "DICT equality",
+            "MATCH (p:Person) WHERE p.d = 'g3' RETURN count(*) AS c",
+        ),
+        (
+            "STRING bound",
+            "MATCH (p:Person) WHERE p.s > 'u0050' RETURN count(*) AS c",
+        ),
+    ] {
+        let plan = lenke_engine::opt::optimize_indexed(
+            lenke_engine::gql::parse(q).expect("parses"),
+            &periodic,
+        );
+
+        println!("\n  PLAN [{label}]\n    {plan:?}");
+    }
+
     println!(
         "\n  ratio > ~1.3x => that path is BRANCHY and pays ~50% mispredicts on unpredictable\n  \
          data, which the corpus fixture hides. ~1.0x => already branchless, nothing to recover.\n  \
