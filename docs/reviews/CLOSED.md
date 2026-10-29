@@ -37359,3 +37359,72 @@ value's count). The PROJECTION and SUM equivalents still run the branchy general
 between periodic and random values is the misprediction signature — the same one item 1206 found
 hiding a 6.7x. That is the next well-formed target, and unlike this item's two it comes with a
 measured data-dependence rather than a pattern match.
+
+### Item 1229 — item 1228's attribution CONFIRMED by a discriminating test; the `ne` fix is a TRADE, not a win, so it is priced and NOT taken; and a separate 11.9x cliff found (OPEN x2)
+
+Item 1228 recorded the `ne` arm's 2.3-3.2x periodic-vs-random as "the misprediction signature".
+That was an attribution, not a measurement, and a second explanation fit the same three numbers:
+with `k = i % 100` the rows passing a range form long CONTIGUOUS runs of ids, so everything
+downstream reads `data[id]` sequentially, while random values make the same reads a GATHER.
+
+THE DISCRIMINATOR, built rather than argued (`ne_arm_mechanism_probe`): a count with TWO
+exclusions. Item 1213's two-pass trick handles exactly one, so `<> a AND <> b` falls to the general
+branchy arm — a branchy predicate with NO gather and no materialization.
+
+```text
+  shape                                       periodic    random   ratio
+  count, TWO exclusions [branchy, NO gather]     608.8    1254.7   2.06x   <- branchy, no gather
+  projection, range only [gathers, no ne]        444.3     447.1   1.01x   <- gathers, not branchy
+  sum, range only [gathers, no ne]               247.5     251.2   1.01x   <- gathers, not branchy
+  count, ONE exclusion [1213 two-pass]            51.2      51.4   1.00x
+```
+
+The data-dependence tracks the EXCLUSION and not the gather: a branchy predicate with no gather is
+2.06x data-dependent, and two gathering shapes with no exclusion are FLAT. **Item 1228's
+attribution stands, and now it is measured.**
+
+### The fix is a TRADE, so it is not taken
+
+Making the exclusion closures non-short-circuit — `(v >= lo) & (v <= hi) & (v != x)` — removes the
+data-dependence and costs on predictable data. Three order-alternated rounds, binaries
+hash-asserted (PRE `e9dd2914`, POST `7ac31902`):
+
+```text
+  row                        PRE periodic  PRE random  POST periodic  POST random
+  sum, ONE exclusion                269.5       852.2          348.6        358.2
+  projection, ONE exclusion         455.5      1066.6          547.6        551.7
+```
+
+So the WORST case improves 1.93-2.38x and the BEST case degrades 1.20-1.29x, because `&` always
+evaluates three compares where `&&` exits early on a column whose predicate outcome runs in long
+blocks. Controls (the range-only rows, the two-pass count, the unfiltered projection) are flat.
+
+NOT SHIPPED. The standing instruction for this work is to optimize WITHOUT REGRESSIONS, and a
+measurable 1.20-1.29x loss on a real (if synthetic) distribution is a regression, whichever way the
+average goes. It is a product call — a 2.4x data-dependent cliff is arguably worse than a 1.3x
+constant, and no real column is a perfect repeating ramp — so it is recorded here with its numbers
+for whoever makes it, rather than taken unilaterally.
+
+⚠️ WHY THREE TERMS AND NOT TWO: item 1228 refuted `&&` -> `&` on the two-term RANGE closure in this
+same function (flat), and `projection, range only` is 1.01x data-dependent, so LLVM evidently
+if-converts a two-term chain and does NOT if-convert a three-term one. That is a threshold in the
+compiler, not a property of the predicate, which is why the same rewrite is worth nothing at two
+terms and 2.4x at three.
+
+### A SEPARATE, UNAMBIGUOUS TARGET: the one-vs-two exclusion cliff is 11.9x
+
+```text
+  count, ONE exclusion [1213 two-pass]     51.2 us
+  count, TWO exclusions [general arm]     608.8 us     11.9x
+```
+
+Item 1213 answers ONE exclusion as two vectorized passes (a range count minus the excluded value's
+count) and k > 1 falls all the way back to the fully general arm, which walks `bounds` and
+dispatches `num_pred` per row. Extending the trick to k exclusions is k+1 vectorized passes, is
+exact (counts are integers, so there is no association-order question), and has NO trade of the
+kind above — both arms are branchless. That is the next target.
+
+⚠️ AND THE SUM EQUIVALENT IS BARRED, which is worth stating so it is not attempted: `sum(range)
+minus the excluded value times its count` is arithmetically exact but changes the ASSOCIATION ORDER
+of a floating-point reduction, and byte-identity across the two engines is a hard invariant here.
+The count is safe for exactly the reason the sum is not.
