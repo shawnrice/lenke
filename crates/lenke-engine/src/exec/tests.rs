@@ -34034,3 +34034,95 @@ fn a_single_bound_count_pairs_with_a_vacuous_companion_without_changing_the_answ
     assert_eq!(count("a.k >= 0"), count("a.k >= 0 AND a.k <= 1e400"));
     assert_eq!(count("a.k < 0"), count("a.k >= -1e400 AND a.k < 0"));
 }
+
+/// Item 1208 gave `try_filtered_count` a BOOLEAN arm — the last column representation its chain had
+/// no entry for — folding the predicate once per possible reading (`true`, `false`, absent) and
+/// sweeping a lookup with a branchless accumulation. 652.8us to 133.8 on unpredictable data.
+///
+/// The ORACLE is an independent route, not a hand-count alone: the same filter under a PROJECTION
+/// goes through the keep-list path instead of this streaming sink, so the two must agree row for
+/// row. A new counting arm that miscounts by one, or mishandles the absent cell, disagrees here.
+#[test]
+fn the_boolean_filtered_count_agrees_with_the_projection_route() {
+    let mut b = Builder::default();
+    // Deliberately UNEVEN, so an arm that counted the wrong branch cannot pass by symmetry:
+    // five true, three false, two with no `flag` at all.
+    for i in 0..10u32 {
+        if i < 5 {
+            b.node(
+                &["N"],
+                &[("flag", Value::Bool(true)), ("n", Value::Num(f64::from(i)))],
+            );
+        } else if i < 8 {
+            b.node(
+                &["N"],
+                &[
+                    ("flag", Value::Bool(false)),
+                    ("n", Value::Num(f64::from(i))),
+                ],
+            );
+        } else {
+            b.node(&["N"], &[("n", Value::Num(f64::from(i)))]);
+        }
+    }
+    let st = b.build();
+
+    let counted = |pred: &str| -> f64 {
+        let q = format!("MATCH (a:N) WHERE {pred} RETURN count(*) AS c");
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(&q).unwrap(), &st);
+        match crate::exec::try_run(&plan, &st)
+            .expect("runs")
+            .rows
+            .iter()
+            .next()
+            .and_then(|r| r.first())
+        {
+            Some(Value::Num(n)) => *n,
+            other => panic!("{pred}: expected a count, got {other:?}"),
+        }
+    };
+    // The INDEPENDENT route: the same filter, projected, counted by row.
+    let projected = |pred: &str| -> f64 {
+        let q = format!("MATCH (a:N) WHERE {pred} RETURN a.n AS x");
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(&q).unwrap(), &st);
+        crate::exec::try_run(&plan, &st).expect("runs").rows.len() as f64
+    };
+
+    for (pred, want) in [
+        ("a.flag = true", 5.0),
+        ("a.flag = false", 3.0),
+        // `<>` must NOT pick up the two absent cells: a comparison against an absent property is
+        // UNKNOWN, not true, so this is the three `false` rows only.
+        ("a.flag <> true", 3.0),
+        ("a.flag <> false", 5.0),
+        // A predicate that is TRUE for every reading including absent, and one false for all.
+        ("a.flag = true OR a.flag <> true OR a.flag IS NULL", 10.0),
+        ("a.flag IS NULL", 2.0),
+        ("a.flag IS NOT NULL", 8.0),
+    ] {
+        assert_eq!(counted(pred), want, "{pred}: counted");
+        assert_eq!(
+            projected(pred),
+            want,
+            "{pred}: the projection route must agree with the counting arm"
+        );
+    }
+
+    // An EMPTY label still owes one row holding zero, not no rows.
+    let empty = Builder::default().build();
+    let plan = crate::opt::optimize_indexed(
+        crate::gql::parse("MATCH (a:N) WHERE a.flag = true RETURN count(*) AS c").unwrap(),
+        &empty,
+    );
+    assert_eq!(
+        format!(
+            "{:?}",
+            crate::exec::try_run(&plan, &empty)
+                .expect("runs")
+                .rows
+                .iter()
+                .collect::<Vec<_>>()
+        ),
+        "[[Num(0.0)]]"
+    );
+}

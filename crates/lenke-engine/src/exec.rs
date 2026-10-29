@@ -5208,6 +5208,12 @@ fn try_filtered_count(
     if let Some(c) = try_stream_date_count(store, label, pred) {
         return Some(scalar_num(c as f64));
     }
+    // The BOOLEAN arm (item 1208), the last representation this chain had no entry for — it fell
+    // through to materializing a batch and running the general keep-filter, at 3.97x on
+    // unpredictable data.
+    if let Some(c) = try_stream_bool_count(store, label, pred) {
+        return Some(scalar_num(c as f64));
+    }
     // Fallback: materialize the scan and run the general vectorized filter (string /
     // disjunction / NOT predicates the streaming path does not special-case).
     let batch = pull(scan, store, false).ok()?;

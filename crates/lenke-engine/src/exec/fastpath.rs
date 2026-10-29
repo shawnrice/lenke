@@ -1008,6 +1008,64 @@ pub(super) fn subst_prop(e: &Expr, slot: usize, key: &str, value: &Value) -> Exp
 /// pass — never materializing rows. Covers `STARTS WITH … OR …`, `CONTAINS`, ranges, and
 /// arbitrary boolean combinations over a categorical column. Byte-identical: a row is
 /// counted iff the predicate is definitely TRUE for its value (or NULL, evaluated once).
+/// Count nodes of `label` whose single-property predicate holds over a `Column::Bool`, by folding
+/// the predicate ONCE for each of the column's three possible readings and then sweeping a lookup
+/// (item 1208).
+///
+/// This is `try_stream_dict_pred_count`'s twin, and the dictionary case already explains why the
+/// shape works: a predicate over a column with few distinct values can be evaluated per DISTINCT
+/// VALUE instead of per row. A boolean column has the fewest possible — `true`, `false`, and
+/// absent — so the fold is three evaluations whatever the row count, and the sweep is a table
+/// lookup.
+///
+/// ⚠️ WHY IT EXISTS AT ALL: `try_filtered_count`'s chain had arms for num, membership, dict and
+/// date but NONE for bool, so `WHERE flag = true RETURN count(*)` fell through to materializing a
+/// batch and running `try_filter_keep` over it. Item 1207 priced that at **3.97x on unpredictable
+/// data** (166.2us against 660.1 at 200,000 nodes), measured by the periodic-vs-random detector
+/// item 1206 established — the corpus's own fixture hid it, because a predictable column makes the
+/// fallback's branch almost free.
+///
+/// The accumulation is `count += u64::from(hit)` and NOT `if hit { count += 1 }`: the whole point
+/// is to stop paying a mispredict per row, and a branch here would hand it straight back.
+pub(super) fn try_stream_bool_count(
+    store: &Store,
+    label: &Option<String>,
+    pred: &Expr,
+) -> Option<u64> {
+    let key = sole_prop_key(pred, 0)?;
+    let Some(Column::Bool { data, present, .. }) = store.column(&key) else {
+        return None;
+    };
+    // Fold the predicate for each reading the column can present. `None` from any of the three
+    // means the predicate is not a constant-foldable single-property one (it faults, or yields a
+    // non-boolean), and the caller's general path stays the only implementation of that.
+    let eval_const = |v: &Value| -> Option<bool> {
+        let e = subst_prop(pred, 0, &key, v);
+        let col = eval(&e, store, &Batch::single(Col::Num(vec![0.0]))).ok()?;
+        Some(matches!(col.value_at(0), Value::Bool(true)))
+    };
+    let on_true = eval_const(&Value::Bool(true))?;
+    let on_false = eval_const(&Value::Bool(false))?;
+    let on_null = eval_const(&Value::Null)?;
+    let mut count = 0u64;
+
+    scan_visit(store, label, |i| {
+        let hit = if present[i] {
+            if data[i] {
+                on_true
+            } else {
+                on_false
+            }
+        } else {
+            on_null
+        };
+
+        count += u64::from(hit);
+    });
+
+    Some(count)
+}
+
 pub(super) fn try_stream_dict_pred_count(
     store: &Store,
     label: &Option<String>,
@@ -1040,6 +1098,13 @@ pub(super) fn try_stream_dict_pred_count(
         } else {
             null_match
         };
+        // ⚠️ `count += u64::from(hit)` WAS TRIED HERE AND MEASURED NOTHING (item 1208). This arm
+        // reads 1.66x slower on random values than on the corpus's periodic ones (201.4us against
+        // 335.2), so it IS data-dependent — but the accumulation is not where that comes from, and
+        // rewriting it branchless left the ratio at exactly 1.66x. The same rewrite was decisive
+        // for the boolean twin, so the difference is elsewhere in this arm (the `present[i]`
+        // branch, or the `codes[i]` indirection the lookup needs and the boolean one does not).
+        // Left as it was; the 1.66x stays open with that one cause ruled out.
         if hit {
             count += 1;
         }

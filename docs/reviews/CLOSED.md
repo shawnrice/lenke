@@ -2910,8 +2910,35 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   columns — cheaper to write, already covered by those arms' own oracles and mutation, and FASTER
   by item 471's measurement that N passes over one column each beat one interleaved pass (5.6 ms
   against 0.6). Separate function after the numeric entry, per item 1184.
-- ⚠️ **OPEN, PRICED: FIVE more branchy per-row paths, found by turning item 1206's finding into a
-  DETECTOR (1207).** "Periodic vs random, same query, same row count" is a test for whether a path's
+- **CLOSED by 1208 for the BOOLEAN row, the biggest of the five: 652.8 -> 133.8 us on unpredictable
+  data, 4.88x — and 1.25x even on the corpus's predictable fixture.** `try_filtered_count`'s chain
+  had arms for num, membership, dict and date but NONE for bool, so `WHERE flag = true RETURN
+count(*)` fell through to materializing a batch and running the general keep-filter. The new
+  `try_stream_bool_count` is `try_stream_dict_pred_count`'s twin — fold the predicate once per
+  possible reading (`true`, `false`, absent), then sweep a lookup — with `count += u64::from(hit)`
+  rather than `if hit { count += 1 }`, since a branch there would hand the mispredict straight back.
+  Every other row flat at 1.00x, both controls flat.
+  ⚠️ **A NEGATIVE RESULT, recorded next to the code: making the DICT arm's accumulation branchless
+  measured NOTHING.** Its ratio stayed at exactly 1.66x, so the edit was reverted. The identical
+  rewrite was decisive for the boolean twin, so the dict arm's data-dependence is elsewhere in it
+  (the `present[i]` branch, or the `codes[i]` indirection the boolean lookup does not need) — one
+  cause ruled out, the 1.66x still open.
+  ⚠️ **AND A 1.26-1.37x IMPROVEMENT ON THE THREE-BOUND ROW THAT IS NOT ATTRIBUTABLE.** That shape
+  declines the new arm (its column is `Num`), so the change cannot reach it: this is the code-layout
+  effect item 453's comment names — "a fast path can cost a shape it never runs, through code layout
+  alone" — with the opposite sign. Not claimed as a win; it can swing back on the next edit.
+  Mutation: the absent-cell, count-every-row and inverted-present mutants are each caught by the new
+  oracle and two pre-existing tests; **writing the accumulation branchy again SURVIVES**, which is
+  the record that only the periodic-vs-random detector can see this change.
+  ⚠️ **TWO MUTATION-HARNESS LESSONS.** The inverted-present mutant first ABORTED on the changed-line
+  guard — `let hit = if present[i] {` occurs in BOTH the dict and bool arms, so the sed hit two
+  sites (item 1198's guard working as designed); re-run address-ranged it is caught by three tests.
+  And **a changed-line expectation of 0 is never valid**: one mutant was written with `want=0`, the
+  guard compared 0 against 0, and the harness happily ran UNMUTATED code and reported SURVIVED. The
+  expectation must always be the positive count of lines the mutant changes.
+- ⚠️ ~~**OPEN, PRICED: FIVE more branchy per-row paths**~~ — the boolean one closed by 1208 above;
+  `sum` 2.50x, three bounds 2.45x, projection 2.14x and dict 1.66x remain.
+  **Found by turning item 1206's finding into a DETECTOR (1207).** "Periodic vs random, same query, same row count" is a test for whether a path's
   cost depends on value ORDER — which it can only do if it branches per row, and a branchy path over
   a ~50%-selective predicate pays ~50% mispredicts a branchless form would not. Applied across the
   per-row paths at 200,000 nodes (ratio = random / periodic, i.e. how much the corpus fixture HIDES):
