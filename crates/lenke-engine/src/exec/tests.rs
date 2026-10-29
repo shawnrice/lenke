@@ -34408,3 +34408,100 @@ fn a_three_bound_count_agrees_with_the_projection_route() {
         );
     }
 }
+
+/// Item 1214 gave the FILTER path's conjunction arm the two things items 1210 and 1213 gave their
+/// neighbours: `canonical_num_conj` (so three bounds are served, not just two) and `keep_num_cmp`
+/// (so the keep list is built branchlessly). A two-bound projection went 1030.1us to 448.1 on
+/// unpredictable data.
+///
+/// ⚠️ IT ALSO WIDENS WHAT THE ARM ACCEPTS, which is the part that needs a test rather than a
+/// measurement. The old block required one LOWER and one UPPER bound and declined anything else —
+/// `x >= 5 AND x >= 10` fell to the general path. Canonicalization tightens instead, so that shape
+/// is now served as `x >= 10`, and two-equality and exclusion shapes are served too. Each of those
+/// is a new ANSWER produced by new code, so each is pinned against the projection route's
+/// independent counterpart.
+#[test]
+fn a_canonicalized_conjunction_filter_keeps_exactly_the_same_rows() {
+    let mut b = Builder::default();
+    // `k` is the filtered column; `j` is a SECOND column, so a cross-key conjunction can be shown
+    // to decline (the arm compares column pointers and must not fold across two keys).
+    for v in [0.0_f64, 5.0, 10.0, 50.0, 73.0, 99.0, 100.0, f64::NAN] {
+        b.node(
+            &["N"],
+            &[("k", Value::Num(v)), ("j", Value::Num(100.0 - v))],
+        );
+    }
+    b.node(&["N"], &[("j", Value::Num(1.0))]); // no `k`
+    let st = b.build();
+
+    let rows = |pred: &str| -> String {
+        let q = format!("MATCH (a:N) WHERE {pred} RETURN a.k AS x");
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(&q).unwrap(), &st);
+
+        format!(
+            "{:?}",
+            crate::exec::try_run(&plan, &st)
+                .expect("runs")
+                .rows
+                .iter()
+                .collect::<Vec<_>>()
+        )
+    };
+    // The independent route: the same filter counted, which goes through the streaming count sink
+    // rather than the keep list.
+    let counted = |pred: &str| -> f64 {
+        let q = format!("MATCH (a:N) WHERE {pred} RETURN count(*) AS c");
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(&q).unwrap(), &st);
+        match crate::exec::try_run(&plan, &st)
+            .expect("runs")
+            .rows
+            .iter()
+            .next()
+            .and_then(|r| r.first())
+        {
+            Some(Value::Num(n)) => *n,
+            other => panic!("{pred}: {other:?}"),
+        }
+    };
+
+    for (pred, want) in [
+        // The shapes the old block served: one lower, one upper, in both orders.
+        (
+            "a.k > 5 AND a.k < 100",
+            "[[Num(10.0)], [Num(50.0)], [Num(73.0)], [Num(99.0)]]",
+        ),
+        (
+            "a.k < 100 AND a.k > 5",
+            "[[Num(10.0)], [Num(50.0)], [Num(73.0)], [Num(99.0)]]",
+        ),
+        // ⚠️ NEWLY SERVED: two bounds on the SAME side, which the old block declined. Tightening
+        // makes this `k >= 10`.
+        (
+            "a.k >= 5 AND a.k >= 10",
+            "[[Num(10.0)], [Num(50.0)], [Num(73.0)], [Num(99.0)], [Num(100.0)]]",
+        ),
+        // NEWLY SERVED: three bounds with an exclusion.
+        (
+            "a.k > 5 AND a.k < 100 AND a.k <> 73",
+            "[[Num(10.0)], [Num(50.0)], [Num(99.0)]]",
+        ),
+        // NEWLY SERVED: `=` folded to a one-point range.
+        ("a.k = 50 AND a.k > 0", "[[Num(50.0)]]"),
+        // Contradictory equalities keep nothing.
+        ("a.k = 50 AND a.k = 73", "[]"),
+        // An exclusion OUTSIDE the range changes nothing.
+        (
+            "a.k > 5 AND a.k < 100 AND a.k <> 1000",
+            "[[Num(10.0)], [Num(50.0)], [Num(73.0)], [Num(99.0)]]",
+        ),
+        // ⚠️ TWO DIFFERENT KEYS must DECLINE the fold (the pointer check) and still answer: `k > 5`
+        // and `j > 50` together keep 10 and 5... j = 100 - k, so j > 50 means k < 50.
+        ("a.k > 5 AND a.j > 50", "[[Num(10.0)]]"),
+    ] {
+        assert_eq!(rows(pred), want, "{pred}");
+        // NaN is in no range and the absent row has no `k`, so the counted total is the row count.
+        let n = want.matches("Num(").count() as f64;
+
+        assert_eq!(counted(pred), n, "{pred}: the counting route must agree");
+    }
+}

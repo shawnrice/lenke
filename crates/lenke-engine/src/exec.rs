@@ -6503,48 +6503,61 @@ fn try_num_conjunction(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec<
     //     (`id == row`), to drop the `d0[ids[row]]` gather: no change.
     //   - Mask-then-compact: the default release target has no SIMD gather, so it would
     //     not vectorize either.
-    if specs.len() == 2 {
-        let (d0, p0, op0, t0) = specs[0];
-        let (d1, _, op1, t1) = specs[1];
-        if std::ptr::eq(d0.as_ptr(), d1.as_ptr()) {
-            let bound = |op, t| match op {
-                CompareOp::Ge => Some((true, t, true)), // (is_lower, value, inclusive)
-                CompareOp::Gt => Some((true, t, false)),
-                CompareOp::Le => Some((false, t, true)),
-                CompareOp::Lt => Some((false, t, false)),
-                _ => None, // Eq/Ne is not a range bound
-            };
-            if let (Some((lo_a, va, ia)), Some((lo_b, vb, ib))) = (bound(op0, t0), bound(op1, t1)) {
-                // One bound must be lower and the other upper (else e.g. `x>=5 AND x>=10`,
-                // not a range — fall through to the general path).
-                let lohi = match (lo_a, lo_b) {
-                    (true, false) => Some(((va, ia), (vb, ib))),
-                    (false, true) => Some(((vb, ib), (va, ia))),
-                    _ => None,
-                };
-                if let Some(((lo, lo_inc), (hi, hi_inc))) = lohi {
-                    macro_rules! range_loop {
-                        ($lo_cmp:tt, $hi_cmp:tt) => {{
-                            let mut keep = Vec::new();
-                            for (row, &id) in ids.iter().enumerate() {
-                                if id == u32::MAX {
-                                    continue; // NULL element → UNKNOWN → dropped
-                                }
-                                let i = id as usize;
-                                let x = d0[i];
-                                if p0[i] && x $lo_cmp lo && x $hi_cmp hi {
-                                    keep.push(row);
-                                }
-                            }
-                            keep
-                        }};
-                    }
-                    let keep = match (lo_inc, hi_inc) {
-                        (true, true) => range_loop!(>=, <=),
-                        (true, false) => range_loop!(>=, <),
-                        (false, true) => range_loop!(>, <=),
-                        (false, false) => range_loop!(>, <),
+    // ALL BOUNDS ON ONE COLUMN, canonicalized, with the keep list built BRANCHLESSLY (item 1214).
+    //
+    // This replaces a 2-bound-only block whose four monomorphic arms each ended in
+    // `if … { keep.push(row) }` over a `Vec::new()` — the two costs item 1210 removed from the
+    // SINGLE-compare arm one function over, and which item 1207's detector prices here: a
+    // projection under TWO bounds read 438.6us periodic against 1023.4 random (**2.33x**), where
+    // the single-bound projection beside it is flat at 1.02x since 1210.
+    //
+    // Two changes, both reuse rather than new code:
+    //   - `canonical_num_conj` (item 1213) folds ANY number of bounds on one column into a range
+    //     plus exclusions, so THREE bounds are served too — they previously fell through here
+    //     entirely, at 1039.5/1825.7us.
+    //   - `keep_num_cmp` (item 1210) writes the row index unconditionally and advances the cursor
+    //     by the predicate, so the push is not a branch and the buffer does not reallocate.
+    //
+    // ⚠️ ONE EXCLUSION IS A THREE-TERM CLOSURE, which item 1213 measured as NOT auto-vectorizing.
+    // That is accepted here and not worked around: the subtraction trick it used needs only a
+    // COUNT, while a keep list needs the surviving rows themselves. Branchlessness is the dominant
+    // term for this path anyway (item 1210 measured 2.58x from it alone).
+    if specs.len() >= 2 {
+        let (d0, p0, _, _) = specs[0];
+
+        // Every atom must read the SAME column — compared by pointer, as the old 2-bound block
+        // did. A conjunction across two different keys is a different question and keeps the
+        // general path below.
+        if specs
+            .iter()
+            .all(|&(d, _, _, _)| std::ptr::eq(d.as_ptr(), d0.as_ptr()))
+        {
+            let bounds: Vec<(CompareOp, f64)> =
+                specs.iter().map(|&(_, _, op, t)| (op, t)).collect();
+
+            if let Some(c) = crate::exec::fastpath::canonical_num_conj(&bounds) {
+                let (lo, hi) = (c.lo, c.hi);
+
+                if c.ne.is_empty() {
+                    let keep = match (c.lo_incl, c.hi_incl) {
+                        (true, true) => keep_num_cmp(ids, d0, p0, |x| x >= lo && x <= hi),
+                        (true, false) => keep_num_cmp(ids, d0, p0, |x| x >= lo && x < hi),
+                        (false, true) => keep_num_cmp(ids, d0, p0, |x| x > lo && x <= hi),
+                        (false, false) => keep_num_cmp(ids, d0, p0, |x| x > lo && x < hi),
                     };
+
+                    return Some(keep);
+                }
+
+                if let [x] = c.ne.as_slice() {
+                    let x = *x;
+                    let keep = match (c.lo_incl, c.hi_incl) {
+                        (true, true) => keep_num_cmp(ids, d0, p0, |v| v >= lo && v <= hi && v != x),
+                        (true, false) => keep_num_cmp(ids, d0, p0, |v| v >= lo && v < hi && v != x),
+                        (false, true) => keep_num_cmp(ids, d0, p0, |v| v > lo && v <= hi && v != x),
+                        (false, false) => keep_num_cmp(ids, d0, p0, |v| v > lo && v < hi && v != x),
+                    };
+
                     return Some(keep);
                 }
             }

@@ -105,6 +105,22 @@ fn main() {
             "sum under the same filter",
             "MATCH (p:Person) WHERE p.k > 50 RETURN sum(p.k) AS s",
         ),
+        // ITEM 1214's CANDIDATES. Item 1210 made the SINGLE-compare keep-list branchless and item
+        // 1213 canonicalized a multi-bound conjunction for the COUNT path — but the FILTER path's
+        // own conjunction arm (`try_num_conjunction` in exec.rs) got neither, so a projection or
+        // aggregate under two or three bounds may still walk a `Vec` of them per row.
+        (
+            "projection, TWO bounds",
+            "MATCH (p:Person) WHERE p.k > 50 AND p.k < 100 RETURN p.k AS x",
+        ),
+        (
+            "projection, THREE bounds",
+            "MATCH (p:Person) WHERE p.k > 50 AND p.k < 100 AND p.k <> 73 RETURN p.k AS x",
+        ),
+        (
+            "sum, THREE bounds",
+            "MATCH (p:Person) WHERE p.k > 50 AND p.k < 100 AND p.k <> 73 RETURN sum(p.k) AS s",
+        ),
         // CONTROLS: no data-dependent branch. If these move, the instrument is wrong.
         (
             "[CTL] unfiltered count",

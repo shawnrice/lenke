@@ -2910,6 +2910,29 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   columns — cheaper to write, already covered by those arms' own oracles and mutation, and FASTER
   by item 471's measurement that N passes over one column each beat one interleaved pass (5.6 ms
   against 0.6). Separate function after the numeric entry, per item 1184.
+- **CLOSED by 1214 — the FILTER path's conjunction arm, which items 1210 and 1213 each fixed one
+  neighbour of: projection under TWO bounds 1030.1 -> 448.1 us (2.30x, and now 1.00x
+  periodic-vs-random, from 2.34x), projection under THREE bounds 1853.8 -> 1085.0 (1.71x random,
+  2.05x periodic), `sum` under three bounds 1570.0 -> 877.1 (1.79x random, 2.77x periodic).**
+  Both changes are reuse, not new code: `canonical_num_conj` (item 1213) folds ANY number of bounds
+  on one column into a range plus exclusions — three bounds previously fell through this arm
+  entirely — and `keep_num_cmp` (item 1210) builds the keep list branchlessly, replacing a
+  `Vec::new()` plus `if … { keep.push(row) }` that the old 2-bound block still carried inside its
+  four monomorphic arms.
+  ⚠️ **IT WIDENS WHAT THE ARM ACCEPTS, which is an answer change and not just a speed one.** The old
+  block required one LOWER and one UPPER bound, so `x >= 5 AND x >= 10` fell to the general path;
+  canonicalization tightens instead and serves it as `x >= 10`. Two-equality and exclusion shapes
+  are newly served too. Each new shape is pinned against the counting route, and a conjunction
+  across TWO DIFFERENT KEYS must still decline (the column-pointer check) — mutating that check
+  away is caught.
+  The three-bound rows stay partly data-dependent (POST 468.0/1085.0 = 2.32x) because a three-term
+  `&&` short-circuits per row, which item 1213 had already measured as not auto-vectorizing; its
+  subtraction trick does not transfer because a keep list needs the surviving ROWS, not a count.
+  Every other census row and both controls flat (0.97-1.00x); `query_bench` flat.
+  Mutation 3/3 valid mutants caught. ⚠️ Two earlier attempts at one of them DID NOT COMPILE and so
+  produced no verdict — the second because a `sed` insertion landed inside a match-arm list. A
+  non-compiling mutant is not a caught mutant, and the fix was to check for a `test result:` line
+  before reading anything, per this repo's own stdout/stderr rule.
 - **CLOSED by 1213 — the THREE-bound count, the last of item 1207's census rows: 1079.4 -> 204.5 us
   on unpredictable data (5.28x), 388.4 -> 185.5 periodic (2.09x), data-dependence 2.78x -> 1.10x.**
   A conjunction of numeric bounds on one column now reduces to a canonical range plus exclusions
