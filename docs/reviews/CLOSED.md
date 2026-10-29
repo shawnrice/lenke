@@ -2928,7 +2928,34 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   answer-equivalent — `node-aggregate.test.ts`'s eleven new cases pass either way (their oracle is
   the same expression plus a second aggregate, which the arity gate refuses, so the general path
   answers it on the same fixture).
-  ⚠️ **STILL OPEN: the FOLD-path sibling.** `abs(min(n.k) - 10)` is the same lever on
+  ⚠️ ~~**STILL OPEN: the FOLD-path sibling.**~~ **CLOSED by 1198** — priced at 8.12-9.46x first, then
+  built: `coalesce(max(a.num), 0)` **10.22x**, `abs(min(a.num) - 10)` 9.13x, `min(a.num) + 1` 8.25x,
+  `count(a.num) * 2` 5.38x, `upper(max(a.str))` 5.44x.
+  ⚠️ **THE METHOD NOTE IS THE DURABLE PART: A NULL A/B MUST DIFFER IN A WAY THAT CANNOT MATTER, OR
+  IT MEASURES NOTHING ABOUT CODE LAYOUT.** The first build threaded the wrapping through the four
+  streaming loops and all three BARE controls moved against it (`max` 0.84x, `count` 0.89x, the
+  `min` floor 0.95x). Restructuring to a POST-PROCESSOR (`applyOuter`, loops byte-identical —
+  item 1184's rule) recovered `max` to 1.02x but left `count` at 0.84x, on a path the change
+  provably cannot reach: for a bare aggregate `unfilteredScanAgg` is not even called (`foldedAggs`
+  is defined), and `aggNode`/`outerFn` are two identity compares, so a 16% RUNTIME cost is
+  mechanically impossible.
+  A PRE-vs-PRE null read 1.00-1.07x — **and that null was worthless**, because byte-identical source
+  bundles byte-identically, so it measured machine noise and not layout. The valid null is PRE vs
+  PRE-plus-DEAD-CODE (two different bundles, semantically identical): it read the `min` floor at
+  **1.51x** and `max` at **0.85x**. So these 3.5-6ms bare-aggregate rows cannot resolve anything
+  below ~1.5x on this instrument, the control movement is not attributable, and the 5.4-10.2x wins
+  are far outside it. **A cheap row is not a usable control just because it is a control.**
+  The restructure was KEPT even though its justification turned out to be noise: leaving the loops
+  untouched is the better shape regardless, and it removed the need for a row counter (so
+  `foldedGroupView` is module-private again and `foldedAggOnlyView` — whose `length` THROWS, since
+  a streaming route has no row count — replaced it).
+  Mutation 5/5 once M4 was isolated. ⚠️ **M4 first reported CAUGHT because the `sed` pattern
+  `if (prop === 'length')` occurs in all three group views, so it mutated `countedGroupView` too and
+  the failures were about someone else's code.** Asserting only that SOMETHING changed is not
+  enough: assert the CHANGED-LINE COUNT (an address-ranged sed plus `diff | grep -c '^[<>]'` = 2).
+  Isolated, it survives — the size-throw is unreachable while the arity gate holds.
+  ⚠️ **Still open after this: nothing on the aggregate-wrapping lever.** Both paths are done.
+- ~~**STILL OPEN: the FOLD-path sibling** (superseded above).~~ `abs(min(n.k) - 10)` is the same lever on
   `min`/`max`/`count` and still declines (asserted as a negative row in `routes-fired`). It is
   deliberately NOT assumed to be worth the same multiple and needs its own pricing. Also recorded
   there: a second aggregate (`size(collect(n.k)) + count(*)`) must keep declining, since the route

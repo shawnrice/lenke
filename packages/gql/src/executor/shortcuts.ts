@@ -74,7 +74,7 @@ import {
   compileExpr,
   compilePredicate,
   aggregateOverValues,
-  foldedGroupView,
+  foldedAggOnlyView,
   satisfies,
   sortsOnOutputOnly,
   countEdges,
@@ -9993,15 +9993,13 @@ export const detectNodeAggregate = (
   // same, and that shape needs the folded value substituted back into a group view. The
   // collecting path checks the same thing inside `unfilteredScanAgg`, which matched the item
   // itself rather than searching inside it.
-  if (agg !== undefined && item.expr !== agg.expr) {
-    return null;
-  }
-
-  // ITEM 1196: on the COLLECTING path the aggregate may be NESTED, so the node comes from
-  // `unfilteredScanAgg` (which searched inside the item) rather than being the item itself. The
-  // FOLD path above still requires identity — widening it is the same lever on `min`/`max`/`count`
-  // and is priced separately rather than assumed.
-  const aggNode = collect !== undefined ? collect[0].expr : item.expr;
+  // THE AGGREGATE NEED NOT BE THE PROJECTION ITEM, on either path (items 1197 and 1198). The node
+  // comes from whichever descriptor found it — `unfilteredScanAgg` searched inside the item for the
+  // collecting path, `foldedAggs` for the fold path — and the folded value is handed to the
+  // wrapping expression by `emit` below. Requiring identity here declined every wrapped spelling:
+  // measured at 6.52-10.22x the bare one on the collecting path, and 8.12-9.46x on the fold path
+  // (`upper(max(a.str))` 47.8ms against `min(a.num)`'s 3.9).
+  const aggNode = collect !== undefined ? collect[0].expr : (agg?.expr ?? item.expr);
 
   // The THIRD arity gate in this one function, and the last one a percentile had to pass.
   // `percentileFraction` is `0` for a well-formed one-argument aggregate and the clamped
@@ -10019,6 +10017,46 @@ export const detectNodeAggregate = (
   // `null` for the bare spelling, which must keep returning the aggregate value untouched.
   const outerFn = item.expr === aggNode ? null : compileExpr(item.expr);
   const outName = proj.items[0].name;
+  /**
+   * Apply the wrapping expression to a streaming closure's single row — or hand the closure back
+   * untouched when there is nothing to wrap.
+   *
+   * ⚠️ A POST-PROCESSOR, not a change inside the loops, and that is MEASURED. The first build of
+   * this item threaded the wrapping through each of the four streaming arms, which grew their
+   * returned closures' captured environment and cost all three BARE controls in the same
+   * direction — `max(a.num)` 0.84x, `count(a.num)` 0.89x and the `min(a.num)` floor 0.95x over
+   * three alternated rounds — and making the row counter conditional did NOT recover it. That is
+   * this repo's "TS closure size is load-bearing" hazard, and item 1184's measured rule that a
+   * widening in place taxes the path it widened. Wrapping from OUTSIDE leaves all four loops
+   * byte-identical, so the bare spelling is a path this change cannot reach at all.
+   *
+   * The group view's SIZE is deliberately unavailable: the arity gate above admits exactly ONE
+   * aggregate, so nothing in the wrapping expression can read `group.length` — only a second
+   * aggregate would. Rather than invent a number, the view THROWS if its length is ever read, so
+   * widening that gate fails loudly instead of silently reporting a wrong count.
+   */
+  const applyOuter = (
+    inner: (graph: Graph, params: Params) => Row[],
+  ): ((graph: Graph, params: Params) => Row[]) => {
+    if (outerFn === null) {
+      return inner;
+    }
+
+    return (graph, params) => {
+      const [row] = inner(graph, params);
+
+      return [
+        {
+          [outName]: outerFn({
+            binding: new Map<string, unknown>(),
+            params,
+            graph,
+            group: foldedAggOnlyView(aggNode, row[outName]),
+          }),
+        },
+      ];
+    };
+  };
   // A name no GQL identifier can collide with: the synthetic column is read back by key below.
   const VALUE_COL = ' nodeagg';
   const synthRet: Clause = {
@@ -10061,16 +10099,11 @@ export const detectNodeAggregate = (
     if (vs !== null) {
       const { nodeVar: sv, label, labelName, cstart, gate, argFn } = vs;
 
-      return (graph, params) => {
+      return applyOuter((graph, params) => {
         const binding = new Map<string, unknown>();
         const env = { binding, params, graph };
         const { vertices, seeded } = scanCandidates(graph, cstart, label, labelName, env);
         const values: unknown[] = [];
-
-        // The group's SIZE, which is the row count and not `values.length` — a wrapping
-        // expression can read it (that is what `foldedGroupView` exposes as `length`), and the
-        // two differ exactly when the argument is null somewhere.
-        let rows = 0;
 
         for (const v of vertices) {
           if (seeded !== undefined && !matchesLabel(v, label)) {
@@ -10082,7 +10115,6 @@ export const detectNodeAggregate = (
           }
 
           binding.set(sv, v);
-          rows += 1;
 
           const value = argFn(env);
 
@@ -10091,55 +10123,23 @@ export const detectNodeAggregate = (
           }
         }
 
-        const aggValue = aggregateOverValues(aggName, values, frac);
-
-        return [
-          {
-            [outName]:
-              outerFn === null
-                ? aggValue
-                : outerFn({
-                    binding,
-                    params,
-                    graph,
-                    group: foldedGroupView(binding, rows, new Map([[aggNode, { v: aggValue }]])),
-                  }),
-          },
-        ];
-      };
+        return [{ [outName]: aggregateOverValues(aggName, values, frac) }];
+      });
     }
 
-    return (graph, params) => {
+    return applyOuter((graph, params) => {
       const values: unknown[] = [];
-      const binding = new Map<string, unknown>();
-      let rows = 0;
 
       for (const row of rowsFn(graph, params)) {
         const v = row[VALUE_COL];
-
-        rows += 1;
 
         if (!isNullish(v)) {
           values.push(v);
         }
       }
 
-      const aggValue = aggregateOverValues(aggName, values, frac);
-
-      return [
-        {
-          [outName]:
-            outerFn === null
-              ? aggValue
-              : outerFn({
-                  binding,
-                  params,
-                  graph,
-                  group: foldedGroupView(binding, rows, new Map([[aggNode, { v: aggValue }]])),
-                }),
-        },
-      ];
-    };
+      return [{ [outName]: aggregateOverValues(aggName, values, frac) }];
+    });
   }
 
   const { fold } = agg!;
@@ -10147,7 +10147,7 @@ export const detectNodeAggregate = (
   if (vs !== null) {
     const { nodeVar: sv, label, labelName, cstart, gate, argFn } = vs;
 
-    return (graph, params) => {
+    return applyOuter((graph, params) => {
       const binding = new Map<string, unknown>();
       const env = { binding, params, graph };
       const { vertices, seeded } = scanCandidates(graph, cstart, label, labelName, env);
@@ -10174,10 +10174,10 @@ export const detectNodeAggregate = (
       // The same `fold.finish` over an untouched accumulator that gives an EMPTY scan its one
       // row holding null, which is what an ungrouped aggregate owes ISO.
       return [{ [outName]: fold.finish(acc) }];
-    };
+    });
   }
 
-  return (graph, params) => {
+  return applyOuter((graph, params) => {
     const rows = rowsFn(graph, params);
     let acc = fold.init();
 
@@ -10195,7 +10195,7 @@ export const detectNodeAggregate = (
     // null, which is what an ungrouped aggregate owes ISO — and it is the same `finish` the
     // general path calls, so the two cannot drift.
     return [{ [outName]: fold.finish(acc) }];
-  };
+  });
 };
 
 /**

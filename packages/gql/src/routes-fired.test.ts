@@ -126,7 +126,37 @@ describe('every fast-path detector fires for its own shape', () => {
       'MATCH (n:L) RETURN size(collect(n.k)) + count(*) AS c',
       [],
     ],
-    ['a wrapped FOLD aggregate still declines', 'MATCH (n:L) RETURN abs(min(n.k) - 10) AS c', []],
+    // ⚠️ ITEM 1198 RE-ROUTED THIS DELIBERATELY, and this row is how that showed up: item 1197 left
+    // the FOLD path declining and asserted it here, so widening it failed this test rather than
+    // passing silently. That is the whole point of the file (its header: "if a future change
+    // deliberately re-routes a shape, update the row and say why in the audit"). Priced at
+    // 8.12-9.46x before the change — `upper(max(a.str))` 47.8ms against `min(a.num)`'s 3.9 — so
+    // the fold sibling was worth what the collecting path was, which was NOT knowable from the
+    // collecting measurement.
+    [
+      'WRAPPED fold aggregate (arithmetic)',
+      'MATCH (n:L) RETURN abs(min(n.k) - 10) AS c',
+      ['nodeAggregate'],
+    ],
+    ['WRAPPED fold aggregate (count)', 'MATCH (n:L) RETURN count(n.k) * 2 AS c', ['nodeAggregate']],
+    [
+      'WRAPPED fold aggregate (string extremum)',
+      'MATCH (n:L) RETURN upper(max(n.s)) AS c',
+      ['nodeAggregate'],
+    ],
+    // The arity gate still holds on the fold path too: one accumulator, so a second aggregate
+    // anywhere in the item must fall to the general path.
+    [
+      'a wrapped fold plus a SECOND aggregate declines',
+      'MATCH (n:L) RETURN abs(min(n.k)) + count(*) AS c',
+      [],
+    ],
+    // And the MULTI-aggregate route is untouched — two items still go to their own detector.
+    [
+      'two aggregate ITEMS still take the multi route',
+      'MATCH (n:L) RETURN min(n.k) AS a, max(n.k) AS b',
+      ['multiNodeAggregate'],
+    ],
     ['hop aggregate', 'MATCH (a:L)-[:R]->(b:L) RETURN max(b.k) AS m', ['hopAggregate']],
     [
       'MULTI node aggregate (two items)',

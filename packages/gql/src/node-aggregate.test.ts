@@ -178,3 +178,38 @@ describe('a WRAPPED aggregate agrees with the general path', () => {
     expect(got).toEqual([{ m: 0 }]);
   });
 });
+// ITEM 1198: the FOLD path (`min`/`max`/`count` via `foldFor`) gets the same nested-aggregate
+// route item 1197 gave the collecting one, priced first at 8.12-9.46x rather than assumed to be
+// worth the same — item 1189 is the precedent for why ("same lever" measured ~1.3x where its
+// sibling paid 8332x; here it measured the same, which is the point of checking).
+describe('a WRAPPED fold aggregate agrees with the general path', () => {
+  const g = build();
+
+  test.each([
+    ['arithmetic after min', 'MATCH (a:P) RETURN abs(min(a.k) - 10) AS m', 10],
+    ['arithmetic after max', 'MATCH (a:P) RETURN max(a.k) + 1 AS m', 6],
+    ['coalesce over max', 'MATCH (a:P) RETURN coalesce(max(a.k), 0) AS m', 5],
+    // `count` folds too, and counts only the PRESENT values — six, not the seven rows.
+    ['arithmetic after count', 'MATCH (a:P) RETURN count(a.k) * 2 AS m', 12],
+    // A STRING extremum, so the route is not numeric-only.
+    ['upper over a string max', 'MATCH (a:P) RETURN upper(max(a.s)) AS m', 'S5'],
+    // Nested two deep.
+    ['doubly wrapped', 'MATCH (a:P) RETURN abs(min(a.k) - 10) + 1 AS m', 11],
+  ])('%s', (_name, q, expected) => {
+    const got: unknown[] = query(g, q);
+
+    expect(got).toEqual([{ m: expected }]);
+    expect(got).toEqual(viaGeneral(g, q));
+  });
+
+  // ⚠️ THE EMPTY-SCAN CASE IS THE ONE THE WRAPPING CHANGES. A bare `min` over no rows owes ONE row
+  // holding null; wrapped, the null must flow THROUGH the outer expression rather than short out,
+  // so `coalesce` gets to replace it and arithmetic propagates it. A route that returned the raw
+  // folded null would pass the non-empty rows above and fail only here.
+  test('an empty scan flows its null THROUGH the wrapping expression', () => {
+    const empty = new Graph();
+
+    expect(query(empty, 'MATCH (a:P) RETURN coalesce(max(a.k), 42) AS m')).toEqual([{ m: 42 }]);
+    expect(query(empty, 'MATCH (a:P) RETURN min(a.k) + 1 AS m')).toEqual([{ m: null }]);
+  });
+});

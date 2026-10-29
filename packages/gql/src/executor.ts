@@ -3268,7 +3268,14 @@ export type CProjection = {
    * `undefined` when any aggregate must see the whole group.
    */
   foldedAggs?: readonly {
-    readonly expr: object;
+    /**
+     * The aggregate's own AST node. Narrowed from `object` to the func node it has always been
+     * (`foldableOf` pushes straight from `collectAggregates`) because item 1198 READS it — the
+     * streaming route needs the node's `args` to lower the argument, and its identity to tell a
+     * bare aggregate from a wrapped one. It is still used as a `Map` key, which an opaque
+     * `object` served, but a key is not all it is any more.
+     */
+    readonly expr: Extract<Expr, { kind: 'func' }>;
     readonly fold: AggFold;
     readonly argFn: CompiledExpr;
   }[];
@@ -3494,8 +3501,10 @@ const compileProjection = (projection: Projection): CProjection => {
   // the slot — the same node the closure in `compileAggregate` looks itself up by.
   const foldableOf = (
     expr: Expr,
-  ): { expr: object; fold: AggFold; argFn: CompiledExpr }[] | undefined => {
-    const out: { expr: object; fold: AggFold; argFn: CompiledExpr }[] = [];
+  ):
+    | { expr: Extract<Expr, { kind: 'func' }>; fold: AggFold; argFn: CompiledExpr }[]
+    | undefined => {
+    const out: { expr: Extract<Expr, { kind: 'func' }>; fold: AggFold; argFn: CompiledExpr }[] = [];
 
     for (const a of collectAggregates(expr)) {
       const fold = foldFor(a.name, a.star, a.distinct);
@@ -3512,12 +3521,12 @@ const compileProjection = (projection: Projection): CProjection => {
   };
   const foldedAggs = (():
     | typeof undefined
-    | { expr: object; fold: AggFold; argFn: CompiledExpr }[] => {
+    | { expr: Extract<Expr, { kind: 'func' }>; fold: AggFold; argFn: CompiledExpr }[] => {
     if (!aggregating || countedGroups || having !== undefined) {
       return undefined;
     }
 
-    const all: { expr: object; fold: AggFold; argFn: CompiledExpr }[] = [];
+    const all: { expr: Extract<Expr, { kind: 'func' }>; fold: AggFold; argFn: CompiledExpr }[] = [];
 
     for (const e of [
       ...projection.items.map((i) => i.expr),
@@ -3911,13 +3920,12 @@ const FOLDED = Symbol('lenke.foldedAggregates');
 /**
  * A group whose foldable aggregates are already computed: size, representative, values.
  *
- * Exported for `shortcuts.ts` since item 1196, which needs the SAME channel to hand a streamed
- * aggregate's value to an OUTER expression that wraps it (`size(collect(a.k))`). Keyed by the
- * aggregate's AST node, which is the key `compileAggregate` already looks a pre-folded value up
- * by — so the wrapping expression runs through the ordinary evaluator rather than a second
- * implementation of it.
+ * Keyed by the aggregate's AST node, which is the key `compileAggregate` already looks a
+ * pre-folded value up by. Item 1197 exported this for `shortcuts.ts`; item 1198 replaced that use
+ * with `foldedAggOnlyView` (a streaming route has no row count to pass without counting rows,
+ * which taxed the bare spelling), so it is module-private again.
  */
-export const foldedGroupView = (
+const foldedGroupView = (
   rep: Binding,
   n: number,
   folded: ReadonlyMap<object, { readonly v: unknown }>,
@@ -3943,6 +3951,40 @@ export const foldedGroupView = (
       return Reflect.get(target, prop, recv) as unknown;
     },
   });
+
+/**
+ * A one-row group view carrying ONE already-folded aggregate, whose SIZE IS AN ERROR TO READ.
+ *
+ * `shortcuts.ts`'s streaming aggregate routes admit exactly one aggregate (their arity gate), so a
+ * wrapping expression over the folded value — `abs(min(n.k) - 10)`, `size(collect(n.k))` — can only
+ * ever look up THAT aggregate, never the group's length; only a second aggregate would need it, and
+ * that shape falls to the general path. Those routes stream, so they do not have a row count to
+ * hand over without counting rows, which measurably taxed the bare spelling (item 1198).
+ *
+ * So rather than invent a number, reading `length` THROWS. If the arity gate is ever widened, the
+ * shape that needs a count fails loudly here instead of silently reporting a wrong one.
+ */
+export const foldedAggOnlyView = (aggNode: object, value: unknown): Binding[] => {
+  const folded = new Map<object, { readonly v: unknown }>([[aggNode, { v: value }]]);
+
+  return new Proxy<Binding[]>([new Map<string, unknown>()], {
+    get(target, prop, recv) {
+      if (prop === FOLDED) {
+        return folded;
+      }
+
+      if (prop === 'length') {
+        throw new LenkeError(
+          'lenke: a streamed single-aggregate group view was asked for its SIZE, which it does ' +
+            'not know — the shape should have fallen to the general path (see `foldedAggOnlyView`)',
+          { code: ErrorCode.Unsupported },
+        );
+      }
+
+      return Reflect.get(target, prop, recv) as unknown;
+    },
+  });
+};
 
 const countedGroupView = (rep: Binding, n: number): Binding[] =>
   new Proxy<Binding[]>([rep], {
