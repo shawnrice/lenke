@@ -111,6 +111,54 @@ fn main() {
         println!("  {key:<10} {mn:>10.1} {mx:>11.1} {cnt:>12.1}      {short}");
     }
 
+    // THE SORT/TOP-K SIBLING of the same enum (item 1175). `exec/order.rs` mentions `Column::Num`,
+    // `Dict` and `Temporal` twice each and `Str` once, and `Column::Bool` NOT AT ALL — the same
+    // hole item 1172 closed in the extremum dispatch, one function over. Item 864's
+    // `try_scan_top_k_wide` claims to serve "every other representation", so whether that is a
+    // real gap is a measurement and not a reading.
+    //
+    // `ORDER BY … LIMIT 10` is the shape with a dedicated path; the floor is the same `count(k)`
+    // column above, and `ORDER BY` with NO limit is the second control — it cannot take a top-k
+    // path at all, so it should be flat across representations in a way the limited form need not.
+    println!();
+    println!("  column       top-k(us)   order-all(us)      first value");
+
+    for key in ["num", "str", "dict", "bool", "date", "mixed"] {
+        let ask = |q: &str| -> (f64, String) {
+            match time_query(q, false, &store, cfg.reps) {
+                Ok((us, _)) => {
+                    let plan = lenke_engine::opt::optimize_indexed(
+                        lenke_engine::gql::parse(q).expect("parses"),
+                        &store,
+                    );
+                    let first = lenke_engine::exec::try_run(&plan, &store)
+                        .ok()
+                        .and_then(|r| r.rows.iter().next().and_then(|row| row.first()).cloned())
+                        .map_or_else(|| "<none>".to_string(), |v| format!("{v:?}"));
+
+                    (us, first)
+                }
+                Err(e) => (f64::NAN, format!("ERR {e}")),
+            }
+        };
+
+        let (topk, first) = ask(&format!(
+            "MATCH (a:Person) RETURN a.{key} AS v ORDER BY a.{key} LIMIT 10"
+        ));
+        let (all, _) = ask(&format!(
+            "MATCH (a:Person) RETURN a.{key} AS v ORDER BY a.{key}"
+        ));
+        let short = if first.len() > 22 {
+            format!("{}...", &first[..19])
+        } else {
+            first
+        };
+
+        println!("  {key:<10} {topk:>10.1} {all:>15.1}      {short}");
+    }
+
+    println!();
+
     match time_query(
         "MATCH (a:Person) RETURN count(*) AS c",
         false,

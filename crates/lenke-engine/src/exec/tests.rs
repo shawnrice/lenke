@@ -31492,3 +31492,208 @@ fn the_boolean_extremum_respects_the_label_and_liveness() {
         assert_eq!(format!("{fast:?}"), format!("{:?}", Value::Bool(true)));
     }
 }
+
+/// The boolean top-K arm against the GENERAL sort, over the arrangements its early exit can get
+/// wrong (item 1175).
+///
+/// The oracle is the SAME query without `LIMIT`: `try_scan_top_k` needs a limit (`let limit =
+/// limit?`), so the unlimited form cannot take the streaming arm and is the general path. The
+/// limited answer must be a PREFIX of it — which also pins the tie-break, and ties are the whole
+/// difficulty here: a boolean column has two distinct values, so a `LIMIT 10` over many rows is
+/// almost all tied and WHICH rows come back is the question. The streaming buffer carries an
+/// `arrival` counter for exactly that, so the order is scan-stable.
+#[test]
+fn the_boolean_top_k_is_a_prefix_of_the_general_sort() {
+    #[allow(clippy::option_option)]
+    let cases: &[(&str, &[Option<Option<bool>>])] = &[
+        ("all false", &[Some(Some(false)); 6]),
+        ("all true", &[Some(Some(true)); 6]),
+        (
+            "false first then true",
+            &[
+                Some(Some(false)),
+                Some(Some(false)),
+                Some(Some(true)),
+                Some(Some(true)),
+            ],
+        ),
+        (
+            "true first then false",
+            &[
+                Some(Some(true)),
+                Some(Some(true)),
+                Some(Some(false)),
+                Some(Some(false)),
+            ],
+        ),
+        (
+            "interleaved",
+            &[
+                Some(Some(true)),
+                Some(Some(false)),
+                Some(Some(true)),
+                Some(Some(false)),
+                Some(Some(true)),
+                Some(Some(false)),
+            ],
+        ),
+        // NULLS and ABSENT cells, which the arm does not push and instead records via
+        // `nulls_seen` — the flag that makes it hand the whole query back when a null could fall
+        // inside the window. Both placements relative to the values.
+        (
+            "nulls first",
+            &[Some(None), Some(None), Some(Some(false)), Some(Some(true))],
+        ),
+        (
+            "nulls last",
+            &[Some(Some(false)), Some(Some(true)), Some(None), Some(None)],
+        ),
+        (
+            "absent mixed in",
+            &[None, Some(Some(true)), None, Some(Some(false))],
+        ),
+        ("a single row", &[Some(Some(true))]),
+    ];
+
+    for (name, cells) in cases {
+        let mut b = Builder::default();
+        for cell in *cells {
+            match cell {
+                None => b.node(&["N"], &[]),
+                Some(None) => b.node(&["N"], &[("f", Value::Null)]),
+                Some(Some(x)) => b.node(&["N"], &[("f", Value::Bool(*x))]),
+            };
+        }
+        let st = b.build();
+
+        let rows = |q: &str| -> Vec<String> {
+            let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &st);
+            run(&plan, &st)
+                .rows
+                .iter()
+                .map(|r| format!("{:?}", r[0]))
+                .collect()
+        };
+
+        for dir in ["", " DESC"] {
+            // The general path: no LIMIT, so `try_scan_top_k` declines on its `limit?`.
+            let all = rows(&format!("MATCH (n:N) RETURN n.f AS v ORDER BY n.f{dir}"));
+
+            for limit in 1..=cells.len() + 1 {
+                let got = rows(&format!(
+                    "MATCH (n:N) RETURN n.f AS v ORDER BY n.f{dir} LIMIT {limit}"
+                ));
+                let want: Vec<String> = all.iter().take(limit).cloned().collect();
+
+                assert_eq!(got, want, "{name}{dir} LIMIT {limit}");
+            }
+
+            // And with SKIP, which the arm applies after trimming its buffer.
+            for skip in 1..=2 {
+                let got = rows(&format!(
+                    "MATCH (n:N) RETURN n.f AS v ORDER BY n.f{dir} SKIP {skip} LIMIT 2"
+                ));
+                let want: Vec<String> = all.iter().skip(skip).take(2).cloned().collect();
+
+                assert_eq!(got, want, "{name}{dir} SKIP {skip} LIMIT 2");
+            }
+        }
+    }
+}
+
+/// The `nulls_seen` FALLBACK, which needs a fixture my first sweep could not build (item 1175).
+///
+/// The arm hands the whole query back when a null could fall inside the window
+/// (`nulls_seen && buf.len() < kcap`). Reaching that needs TWO things at once, and the
+/// arrangement sweep above has neither:
+///
+///   - `kcap * 2 < node_count` — the window must be a small PREFIX, or the function bails before
+///     the scan. With a 4-node fixture only `LIMIT 1` gets past it.
+///   - `buf.len() < kcap` — FEWER present rows than the window, so the pushed buffer is short.
+///
+/// A small fixture cannot satisfy both: at `LIMIT 1` the buffer is already long enough. So a
+/// mutant deleting `nulls_seen = true` SURVIVED the sweep. This fixture is 200 nodes of which only
+/// three carry a boolean, with a window of ten — the buffer holds 3 against a `kcap` of 10, and the
+/// fallback is the only thing that keeps the answer right.
+///
+/// (A STORED null cannot be used here: it promotes the column to `Column::Gen` — item 1142 — so
+/// the arm declines for a different reason and the fallback is still not reached. The nulls here
+/// are ABSENT cells, which leave the column `Bool` with `present[i]` false.)
+#[test]
+fn the_boolean_top_k_hands_back_when_a_null_is_inside_the_window() {
+    let mut b = Builder::default();
+    for i in 0..200u32 {
+        if i % 64 == 0 {
+            b.node(&["N"], &[("f", Value::Bool(i % 128 == 0))]);
+        } else {
+            b.node(&["N"], &[]); // ABSENT, so the column stays `Bool`
+        }
+    }
+    let st = b.build();
+
+    let rows = |q: &str| -> Vec<String> {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &st);
+        run(&plan, &st)
+            .rows
+            .iter()
+            .map(|r| format!("{:?}", r[0]))
+            .collect()
+    };
+
+    for dir in ["", " DESC"] {
+        let all = rows(&format!("MATCH (n:N) RETURN n.f AS v ORDER BY n.f{dir}"));
+
+        for limit in [5usize, 10, 20] {
+            let got = rows(&format!(
+                "MATCH (n:N) RETURN n.f AS v ORDER BY n.f{dir} LIMIT {limit}"
+            ));
+            let want: Vec<String> = all.iter().take(limit).cloned().collect();
+
+            assert_eq!(
+                got.len(),
+                limit.min(all.len()),
+                "{dir} LIMIT {limit}: row count"
+            );
+            assert_eq!(got, want, "{dir} LIMIT {limit}");
+        }
+    }
+}
+
+/// The boolean top-K arm under a PARTIAL label, which is the other walk `scan_visit_while`
+/// chooses between — and where the early exit is most dangerous, since stopping on an
+/// out-of-label row would answer from a row the query excludes.
+#[test]
+fn the_boolean_top_k_respects_the_label() {
+    let mut b = Builder::default();
+    // The `false` rows — which ASC wants first — are all OUT of the label.
+    b.node(&["Other"], &[("f", Value::Bool(false))]);
+    b.node(&["Other"], &[("f", Value::Bool(false))]);
+    b.node(&["N"], &[("f", Value::Bool(true))]);
+    b.node(&["N"], &[("f", Value::Bool(true))]);
+    let st = b.build();
+
+    let rows = |q: &str| -> Vec<String> {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &st);
+        run(&plan, &st)
+            .rows
+            .iter()
+            .map(|r| format!("{:?}", r[0]))
+            .collect()
+    };
+
+    let limited = rows("MATCH (n:N) RETURN n.f AS v ORDER BY n.f LIMIT 2");
+    let all = rows("MATCH (n:N) RETURN n.f AS v ORDER BY n.f");
+
+    assert_eq!(
+        limited, all,
+        "a label-blind early exit would return the Other rows"
+    );
+    assert_eq!(
+        limited,
+        vec![
+            format!("{:?}", Value::Bool(true)),
+            format!("{:?}", Value::Bool(true))
+        ],
+        "only the in-label `true` rows exist under :N"
+    );
+}

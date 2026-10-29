@@ -674,6 +674,51 @@ fn try_scan_top_k_wide(
                 true
             });
         }
+        // THE BOOLEAN ARM (item 1175), and it is here because the `Str` note below names exactly
+        // what qualifies a representation for this path: a BOUNDED RANK, so the early exit can
+        // fire. A `Bool` column is a two-entry dictionary whose ranks are the values themselves
+        // (`false < true`, checked in `value.rs`), so it needs no dictionary sort at all — the
+        // rank IS `usize::from(data[i])`.
+        //
+        // WHY IT WAS MISSING: `exec/order.rs` mentioned `Column::Num`, `Dict` and `Temporal`
+        // twice each and `Str` once, and `Bool` NOT AT ALL — the same hole item 1172 found in the
+        // extremum dispatch, one function over. Priced before building, `ORDER BY <k> LIMIT 10`
+        // at 200,000 nodes:
+        //
+        //     dict 0.7 us   bool 1741.4   num 2299.6   str 2141.7   date 2128.1
+        //
+        // `dict` is three orders of magnitude below everything else BECAUSE of the early exit,
+        // and `bool` has strictly MORE rank structure than `dict` (two values, ranks known a
+        // priori) while getting none of the benefit.
+        Column::Bool { data, present, .. } => {
+            // ASC wants `false` first, DESC wants `true` — and unlike the dictionary case the
+            // extreme rank is known without inspecting the column.
+            let best_val = desc;
+            let mut at_best = 0usize;
+            fastpath::scan_visit_while(store, label, |i| {
+                if !present[i] {
+                    nulls_seen = true;
+
+                    return true;
+                }
+                let r = u32::from(data[i]);
+
+                buf.push((r, arrival, u32::try_from(i).unwrap_or(u32::MAX)));
+                arrival += 1;
+                if data[i] == best_val {
+                    at_best += 1;
+                    if at_best >= kcap {
+                        return false; // settled: nothing later can displace these
+                    }
+                }
+                if buf.len() >= trim {
+                    buf.select_nth_unstable_by(kcap - 1, cmp);
+                    buf.truncate(kcap);
+                }
+
+                true
+            });
+        }
         // NO `Column::Str` ARM, and that is a measured decision, not an omission. One was
         // written and REFUTED at item 864: streaming a string key means the surviving buffer
         // carries row INDICES and every comparison loads `data[idx]` at random, which is the
@@ -729,7 +774,15 @@ fn top_k_liftable(pinput: &Plan, key_exprs: &[&Expr], store: &Store) -> bool {
     let [Expr::Prop { slot: 0, key }] = key_exprs else {
         return false;
     };
-    matches!(store.column(key), Some(Column::Dict { .. }))
+    // `Bool` joins `Dict` (item 1175) and for the SAME stated reason: the note on
+    // `try_scan_top_k_wide`'s streaming arm says only a representation with a BOUNDED RANK can
+    // have the early exit that pays for streaming. A boolean column has two values and their
+    // ranks a priori, so it qualifies more cleanly than a dictionary does — no dictionary sort.
+    // The numeric exclusion above stands unchanged and for its own measured reason.
+    matches!(
+        store.column(key),
+        Some(Column::Dict { .. } | Column::Bool { .. })
+    )
 }
 
 pub(super) fn try_late_materialize(

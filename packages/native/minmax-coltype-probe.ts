@@ -100,3 +100,41 @@ for (const key of ['num', 'str', 'dict', 'bool', 'date']) {
       `${cnt.ms.toFixed(1).padStart(12)}   ${shown}`,
   );
 }
+
+// THE SORT/TOP-K SIBLING (item 1175). Natively, `ORDER BY <bool> LIMIT 10` cost 1755 us against
+// the dictionary arm's 0.7, because `exec/order.rs` had no `Column::Bool` arm and so no
+// rank-bounded early exit — a boolean column is a two-entry dictionary whose ranks ARE the values.
+// A dedicated arm took it to 0.3 us (~5851x). The TS engine has no column representations, so the
+// question is whether its streaming heap already short-circuits on a two-valued key or pays the
+// same full pass as for a numeric one.
+console.log('\n  column       top-k(ms)   order-all(ms)   first (ts === native, asserted)');
+
+for (const key of ['num', 'str', 'dict', 'bool', 'date']) {
+  const timed = (q: string): { ms: number; answer: string } => {
+    const answer = JSON.stringify(tsQuery(g, q));
+    const natAnswer = JSON.stringify(nat.query(q));
+
+    if (answer !== natAnswer) {
+      throw new Error(`${q}: ts and native DISAGREE\n  ts     ${answer}\n  native ${natAnswer}`);
+    }
+
+    const series: number[] = [];
+
+    for (let r = 0; r < REPS; r += 1) {
+      const t = performance.now();
+
+      tsQuery(g, q);
+      series.push(performance.now() - t);
+    }
+
+    return { ms: med(series), answer };
+  };
+
+  const topk = timed(`MATCH (a:Person) RETURN a.${key} AS v ORDER BY a.${key} LIMIT 10`);
+  const all = timed(`MATCH (a:Person) RETURN a.${key} AS v ORDER BY a.${key}`);
+  const first = topk.answer.length > 26 ? `${topk.answer.slice(0, 23)}...` : topk.answer;
+
+  console.log(
+    `  ${key.padEnd(10)} ${topk.ms.toFixed(1).padStart(9)} ${all.ms.toFixed(1).padStart(15)}   ${first}`,
+  );
+}
