@@ -2910,7 +2910,30 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   columns — cheaper to write, already covered by those arms' own oracles and mutation, and FASTER
   by item 471's measurement that N passes over one column each beat one interleaved pass (5.6 ms
   against 0.6). Separate function after the numeric entry, per item 1184.
-- ⚠️ **LOCATED AT LAST, and it was never a sweep: the dict-equality row is an `IndexSeek`, and
+- ⚠️ **ITEM 1216's ~600x IS RETRACTED, and the real finding is the opposite sign: with a hash index
+  actually present, `count(*)` over an indexed equality is 0.66x — SLOWER than the same query with
+  NO index (1217).** Three things, each only visible by building it:
+  **(a) The census row has no index at all.** `index_seek_count` returned `None` on all six calls:
+  `optimize_indexed` plans an `IndexSeek` for an equality regardless, and `index_seek_ids` then
+  falls to its THIRD arm, which degrades to a label scan. So that row's 187-304 us was never an
+  index lookup, and 1216's pricing assumed a bucket that does not exist.
+  **(b) The primitive already existed, as `index_bucket_len`** — and it is ESTIMATE-GRADE by design,
+  its own doc saying "it may count a few tombstoned ids, which is fine for an estimate". It is used
+  by `cost.rs` and `opt.rs` for SELECTIVITY. An exact `count(*)` cannot reuse it, which is the real
+  reason this arm does not already exist; I nearly shipped a duplicate accessor.
+  **(c) With an index created, the shape gets SLOWER**: 465.5 us against 311.2 unindexed, and the
+  projection likewise 448.4 against 315.2. The label intersection is ~25,756 binary searches over a
+  200,000-id bucket, which costs more than the sequential scan it replaces — the same trade-off
+  `index_seek_ids`'s own comments warn about from the other direction. An O(1) whole-label shortcut
+  (`bucket.len() == live_node_count()`) did NOT move it either, so the cost is not the intersection
+  alone.
+  **So the open question is a COST-MODEL one, not a missing fast path**: should the planner prefer a
+  scan over a seek when the label covers every live node? That is `cost.rs`'s business and is not
+  priced here. The count arm was REVERTED — it fires, it is correct, and it demonstrated no win.
+  Instrument: `crates/lenke-engine/examples/indexed_count_probe.rs` (the census probe cannot show
+  this: its fixture has no index).
+- ⚠️ ~~**LOCATED AT LAST ... priced at ~600x**~~ — the LOCATION stands, the PRICE is retracted by
+  1217 above. **The dict-equality row is an `IndexSeek`, and
   `count(*)` over one is NOT answered from the index (1216). OPEN, priced at ~600x.** The plan is
   `Project{Aggregate{IndexSeek{label: "Person", key: "d", value: Str("g3")}}}` — so
   `WHERE p.d = 'g3' RETURN count(*)` never enters `try_filtered_count` at all (instrumenting its
