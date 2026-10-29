@@ -33592,3 +33592,173 @@ fn the_labelled_hop_extremum_routes_by_representation() {
         );
     }
 }
+/// Item 1195 gated `resolve_elem`'s three CONTAINER arms on `holds_element`, so a container with
+/// nothing to resolve is returned untouched instead of rebuilt.
+///
+/// ⚠️ THIS IS A DIRECT TEST OF THE PURE FUNCTION, and the end-to-end version it replaces was
+/// WORTHLESS — it passed for the wrong reason and mutation is what exposed that. Blinding
+/// `holds_element` completely (`Node | Edge => false`, and `List => false`) SURVIVED all 2,047
+/// tests, because every shape that reaches egress with elements inside a container has already
+/// resolved them earlier: `collect(a)` hands the fold a `Col::Nodes`, and the `movable` arm calls
+/// `render_nodes` there, so the list holds element MAPS before `resolve_elem` ever sees it. The
+/// same is true of `g.V().fold()`, `aggregate().cap()` and the heterogeneous
+/// `union(values("n"), identity()).fold()` that `resolve_elem`'s own doc names as its reason to
+/// recurse. So that recursion is not reachable from the suite at all — which means the gate is as
+/// covered as the code it guards, and the ONLY way to give either teeth is to test the predicate
+/// itself. Item 1137's rule, for the same reason: a condition with no pure form has nowhere for a
+/// mutant to fail.
+#[test]
+fn holds_element_finds_an_element_ref_at_every_depth_it_guards() {
+    use crate::exec::holds_element;
+    use std::sync::Arc;
+
+    let node = Value::Node(7);
+    let edge = Value::Edge(3);
+    let clean = Value::Str("x".into());
+
+    // Bare, and one level down in each of the three containers the gate wraps.
+    assert!(holds_element(&node), "a bare node ref");
+    assert!(holds_element(&edge), "a bare edge ref");
+    assert!(
+        holds_element(&Value::List(vec![clean.clone(), node.clone()])),
+        "an element in a LIST — the shape `collect`/`fold` builds"
+    );
+    assert!(
+        holds_element(&Value::Map(Arc::new(vec![(clean.clone(), node.clone())]))),
+        "an element as a map VALUE"
+    );
+    assert!(
+        holds_element(&Value::Map(Arc::new(vec![(node.clone(), clean.clone())]))),
+        "an element as a map KEY — `resolve_elem` rewrites keys too, so the gate must see them"
+    );
+    assert!(
+        holds_element(&Value::Record(vec![("k".into(), edge.clone())].into())),
+        "an element in a RECORD field"
+    );
+
+    // NESTED, which only the recursive case reaches — a gate that checked one level would miss it.
+    assert!(
+        holds_element(&Value::List(vec![Value::List(vec![node.clone()])])),
+        "an element two lists deep"
+    );
+    assert!(
+        holds_element(&Value::List(vec![Value::Map(Arc::new(vec![(
+            clean.clone(),
+            node.clone()
+        )]))])),
+        "an element in a map inside a list"
+    );
+
+    // And it must NOT over-report, or every container pays the rebuild the gate exists to skip.
+    for v in [
+        Value::Null,
+        Value::Num(1.0),
+        Value::Str("s".into()),
+        Value::Bool(true),
+        Value::List(vec![]),
+        Value::List(vec![Value::Num(1.0), Value::Str("s".into())]),
+        Value::List(vec![Value::List(vec![Value::Num(1.0)])]),
+        Value::Map(Arc::new(vec![(Value::Str("k".into()), Value::Num(1.0))])),
+        Value::Record(vec![("k".into(), Value::Num(1.0))].into()),
+    ] {
+        assert!(
+            !holds_element(&v),
+            "nothing to resolve, so the gate must say so: {v:?}"
+        );
+    }
+}
+
+/// The end-to-end half: an element that reaches egress still renders as its element map. This
+/// does NOT exercise the gate (see above — resolution happens before egress for every shape the
+/// suite can build), but it does pin that the rendering itself survives the change.
+#[test]
+fn an_element_still_renders_as_its_element_map_at_egress() {
+    let mut b = Builder::default();
+    for i in 0..4u32 {
+        b.node(&["N"], &[("n", Value::Num(f64::from(i)))]);
+    }
+    let st = b.build();
+
+    for q in [
+        "MATCH (a:N) RETURN a AS c",
+        "MATCH (a:N) RETURN collect(a) AS c",
+        "MATCH (a:N) RETURN collect([a]) AS c",
+    ] {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &st);
+        let rows = crate::exec::try_run(&plan, &st).expect("runs");
+        let rendered = format!("{:?}", rows.rows.iter().collect::<Vec<_>>());
+        assert!(
+            !rendered.contains("Node("),
+            "{q}: an UNRESOLVED element ref reached the output: {rendered}"
+        );
+        assert!(
+            rendered.contains("Map("),
+            "{q}: expected a resolved element map in the output, got {rendered}"
+        );
+    }
+}
+
+/// The other half of the same contract: a container with NO element in it must come back
+/// cell-for-cell identical to what the ungated rebuild produced. A gate that over-reports is
+/// merely slow and cannot be caught by an answer, but a gate that MANGLES the clean path can,
+/// and this pins what `collect` returns on the fast `movable` arm (`aggregation.rs`).
+///
+/// ⚠️ THE SUBTLE PART, and the premise this test was first written with BACKWARDS: an ABSENT
+/// property is not a stored NULL. `collect(a.s)` over a node that simply has no `s` returns two
+/// cells, not three — and that is correct, not a dropped null, because this repo's model is
+/// that null is a stored, PRESENT value. Both engines agree on it (checked against the TS
+/// engine: `[{"c":["a","c"]}]`), so `AggFn::Collect`'s "nulls are kept" is about a null that was
+/// actually written. That is the distinction from `CollectList`, so it is what gets asserted.
+#[test]
+fn a_container_with_nothing_to_resolve_keeps_every_cell() {
+    let mut b = Builder::default();
+    b.node(
+        &["N"],
+        &[("n", Value::Num(1.0)), ("s", Value::Str("a".into()))],
+    );
+    // A STORED null — `collect` keeps this one, `collect_list` drops it.
+    b.node(&["N"], &[("n", Value::Num(2.0)), ("s", Value::Null)]);
+    b.node(
+        &["N"],
+        &[("n", Value::Num(3.0)), ("s", Value::Str("c".into()))],
+    );
+    // No `s` AT ALL — absent, not null, and dropped by both (see above).
+    b.node(&["N"], &[("n", Value::Num(4.0))]);
+    let st = b.build();
+
+    let ask = |q: &str| -> String {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &st);
+        let rows = crate::exec::try_run(&plan, &st).expect("runs");
+        format!("{:?}", rows.rows.iter().collect::<Vec<_>>())
+    };
+
+    // ⚠️ `collect` and `collect_list` BOTH drop the null here — see the doc comment above and
+    // the OPEN conformance question recorded in CLOSED.md. This test deliberately asserts only
+    // what is true today and what the egress gate could actually break, and pins the two arms
+    // to EACH OTHER so that whichever way that question is settled, a change to one of them
+    // without the other fails here.
+    let kept = ask("MATCH (a:N) RETURN collect(a.s) AS c");
+    let dropped = ask("MATCH (a:N) RETURN collect_list(a.s) AS c");
+    assert_eq!(
+        kept, dropped,
+        "collect and collect_list disagree about nulls; the open question in CLOSED.md has been \
+         settled one way without updating the other arm or this test"
+    );
+    for (name, out) in [("collect", &kept), ("collect_list", &dropped)] {
+        assert!(
+            out.contains("\"a\"") && out.contains("\"c\""),
+            "{name} lost a present cell on the clean path: {out}"
+        );
+    }
+
+    // Numbers survive in row order, so a gate that returned an empty or reordered list fails.
+    let nums = ask("MATCH (a:N) RETURN collect(a.n) AS c");
+    let at = |s: &str| {
+        nums.find(s)
+            .expect("every numeric cell must survive: {nums}")
+    };
+    assert!(
+        at("1.0") < at("2.0") && at("2.0") < at("3.0") && at("3.0") < at("4.0"),
+        "the clean path must preserve row order: {nums}"
+    );
+}

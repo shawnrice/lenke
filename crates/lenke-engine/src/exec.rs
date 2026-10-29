@@ -383,27 +383,79 @@ fn try_run_inner(plan: &Plan, store: &Store) -> Result<Rows, String> {
 /// Resolve any UNBOXED element ref (`Value::Node`/`Value::Edge`, from a heterogeneous
 /// branch/inject) to its element map at EGRESS — including refs nested inside a list/map/record
 /// (`inject(v).fold()` → a list of maps). A plain scalar passes through untouched.
+/// Does `v` hold an UNBOXED element ref anywhere inside it — the only thing
+/// [`resolve_elem`] rewrites?
+///
+/// This is the gate that makes a container egress free when there is nothing to resolve
+/// (item 1195). `resolve_elem` is correct without it, but it REBUILDS every container it
+/// walks: a list is moved cell by cell into a fresh `Vec`, and a map/record is CLONED key
+/// and value. A `collect`/`fold` result is one `Value::List` of N cells, so that rebuild
+/// is a second full materialization of the whole aggregate at egress — measured at
+/// 730-1334 us over 200,000 rows, against 66-185 us for the fold that produced it, i.e.
+/// the egress cost MORE than computing the answer (item 1194's flat per-row gap, which was
+/// identical across all six column representations because by this point every cell is
+/// already a `Value`).
+///
+/// A read-only scan allocates nothing and moves nothing, so when it comes back `false` the
+/// container is returned untouched. Byte-identity is preserved because `resolve_elem`
+/// changes `Node`/`Edge` and nothing else: if neither occurs anywhere inside, the rebuilt
+/// container is cell-for-cell identical to the original.
+fn holds_element(v: &Value) -> bool {
+    match v {
+        Value::Node(_) | Value::Edge(_) => true,
+        Value::List(xs) => xs.iter().any(holds_element),
+        Value::Map(pairs) => pairs
+            .iter()
+            .any(|(k, val)| holds_element(k) || holds_element(val)),
+        Value::Record(fs) => fs.iter().any(|(_, val)| holds_element(val)),
+        _ => false,
+    }
+}
+
 fn resolve_elem(v: Value, store: &Store) -> Value {
     match v {
         Value::Node(id) => node_result_value(store, id),
         Value::Edge(id) => edge_result_value(store, id),
-        Value::List(xs) => Value::List(xs.into_iter().map(|x| resolve_elem(x, store)).collect()),
-        Value::Map(pairs) => Value::Map(std::sync::Arc::new(
-            pairs
+        // The three CONTAINER arms rebuild, so each is gated on actually having something to
+        // rebuild for. See [`holds_element`] — this is the whole of item 1195.
+        Value::List(xs) => {
+            if xs.iter().any(holds_element) {
+                Value::List(xs.into_iter().map(|x| resolve_elem(x, store)).collect())
+            } else {
+                Value::List(xs)
+            }
+        }
+        Value::Map(pairs) => {
+            if pairs
                 .iter()
-                .map(|(k, val)| {
-                    (
-                        resolve_elem(k.clone(), store),
-                        resolve_elem(val.clone(), store),
-                    )
-                })
-                .collect(),
-        )),
-        Value::Record(fs) => Value::Record(
-            fs.iter()
-                .map(|(k, val)| (k.clone(), resolve_elem(val.clone(), store)))
-                .collect(),
-        ),
+                .any(|(k, val)| holds_element(k) || holds_element(val))
+            {
+                Value::Map(std::sync::Arc::new(
+                    pairs
+                        .iter()
+                        .map(|(k, val)| {
+                            (
+                                resolve_elem(k.clone(), store),
+                                resolve_elem(val.clone(), store),
+                            )
+                        })
+                        .collect(),
+                ))
+            } else {
+                Value::Map(pairs)
+            }
+        }
+        Value::Record(fs) => {
+            if fs.iter().any(|(_, val)| holds_element(val)) {
+                Value::Record(
+                    fs.iter()
+                        .map(|(k, val)| (k.clone(), resolve_elem(val.clone(), store)))
+                        .collect(),
+                )
+            } else {
+                Value::Record(fs)
+            }
+        }
         other => other,
     }
 }

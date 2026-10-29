@@ -118,7 +118,7 @@ fn main() {
     }
 
     println!(
-        "\n  column     collect   coll_list   count(k)   materialize   collect/mat   collect/count"
+        "\n  column     collect   size(coll)   count(k)   materialize   collect/mat   NO-EGRESS gap"
     );
 
     for key in ["num", "str", "dict", "bool", "date", "mixed"] {
@@ -127,15 +127,32 @@ fn main() {
             "MATCH (a:Person) RETURN collect_list(a.{key}) AS c"
         ));
         let count = ask(&format!("MATCH (a:Person) RETURN count(a.{key}) AS c"));
+        // ⚠️ THE DISCRIMINATING QUERY (item 1195). The aggregation still builds the whole
+        // N-element `Value::List`; only the EGRESS differs, because a scalar output never
+        // reaches `resolve_elem`'s list recursion. If the per-row gap is at egress this
+        // collapses toward the floor; if it is in the fold it stays at `collect`.
+        let sized = ask(&format!(
+            "MATCH (a:Person) RETURN size(collect(a.{key})) AS c"
+        ));
         // THE MATERIALIZATION FLOOR: the same N values, produced through the projection path.
         let mat = ask(&format!("MATCH (a:Person) RETURN a.{key} AS c"));
 
+        let _ = clist;
         println!(
-            "  {key:<8} {collect:>9.1} {clist:>11.1} {count:>10.1} {mat:>13.1} {:>13.2}x {:>14.2}x",
+            "  {key:<8} {collect:>9.1} {sized:>12.1} {count:>10.1} {mat:>13.1} {:>13.2}x {:>13.1}us",
             collect / mat,
-            collect / count
+            collect - sized
         );
     }
+
+    // THE CONTROLS THE CHANGE CANNOT REACH (item 1195). `collect(a)` folds a NODE frontier, so
+    // every cell IS an unboxed element ref: the gate's scan finds one immediately and the rebuild
+    // happens exactly as before. It must not gain — and it is the row that prices the scan's own
+    // tax, since it pays the scan AND the rebuild. `count(*)` reads no column at all.
+    let node_collect = ask("MATCH (a:Person) RETURN collect(a) AS c");
+    let count_star = ask("MATCH (a:Person) RETURN count(*) AS c");
+    println!("\n  [CTL] collect(a) over NODES (must rebuild) {node_collect:>10.1}us");
+    println!("  [CTL] count(*)                            {count_star:>10.1}us");
 
     println!(
         "\n  collect/mat near 1.0 => no target: the cost IS the output, and no arm can remove it."

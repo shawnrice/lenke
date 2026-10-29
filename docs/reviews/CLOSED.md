@@ -2910,8 +2910,46 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   columns — cheaper to write, already covered by those arms' own oracles and mutation, and FASTER
   by item 471's measurement that N passes over one column each beat one interleaved pass (5.6 ms
   against 0.6). Separate function after the numeric entry, per item 1184.
-- ⚠️ **OPEN, PRICED at 3.6x (200k) rising to 4.6x (400k): ungrouped `collect` pays a PER-ROW cost
-  above the floor of producing its own output (1194).** A new enum census — `AggFn`, eleven
+- **CLOSED by 1195 (partly), and the headroom was RE-PRICED down on the way: the container egress
+  gate ships at 1.25x num/bool, 1.04-1.11x str/dict/date, neutral on `Gen`.** Item 1194's 842us
+  "egress gap" was measured against `size(collect(k))`, and `evaluator.rs:2130` gives `size`/
+  `cardinality` a BORROW-not-clone path that reads `len()` without a pass — so that floor skipped
+  work the real egress cannot, and the gap it implied was ~3.5x too big. **The true cost was
+  `resolve_elem` REBUILDING every container it walks** (a list moved cell by cell into a fresh
+  `Vec`; a map/record deep-CLONED key and value) purely to rewrite unboxed `Node`/`Edge` refs that
+  are usually not there. Gating the three container arms on a new pure `holds_element` replaces
+  [read + write + alloc + dealloc] with [read], which recovers ~240us of ~490us; the residual IS
+  the scan, and removing it needs a static channel from the fold, not a dynamic check.
+  Six alternated rounds, two estimators: **num 1.22/1.25x, bool 1.24/1.25x, str 1.05/1.04x, dict
+  1.06/1.05x, date 1.05/1.11x**; controls `collect(a)` over NODES (must still rebuild) 1.00-1.01x
+  and `count(*)` 1.00x. **`Gen` is NEUTRAL and its two estimators DISAGREE (min 0.82x, median
+  1.03x)** — PRE spans 2425-4734us against POST's 2961-3136us, so min read a lucky tail of an
+  erratic arm. The erraticism has the same cause as the win: PRE makes a 200k-element allocation
+  per run and POST makes none, so the gate also removes the variance.
+  ⚠️ **The suite CANNOT reach the code this gate guards**, and mutation is what proved it: blinding
+  `holds_element` entirely survived all 2,047 tests, because every shape that reaches egress with
+  elements inside a container resolved them earlier (`collect(a)` hands the fold a `Col::Nodes` and
+  the `movable` arm calls `render_nodes` there; same for `g.V().fold()`, `aggregate().cap()` and the
+  heterogeneous `union(values("n"), identity()).fold()` that `resolve_elem`'s own doc cites as its
+  reason to recurse). So the end-to-end test written first passed for the wrong reason. The teeth
+  are a DIRECT test of the pure predicate — item 1137's rule — and it catches 4/4 mutants including
+  the always-true one, which no answer-level test can.
+- ⚠️ **OPEN CONFORMANCE QUESTION, found at 1195 and NOT a divergence: `collect` drops NULLs, which
+  contradicts its own doc and erases its distinction from `collect_list`.** `MATCH (a:N) RETURN
+collect(a.s)` over four nodes — one string, one STORED `Value::Null`, one string, one with no `s`
+  — returns a TWO-cell list. The nulls are genuinely present (`RETURN a.s` gives
+  `[Str("a")], [Null], [Null]`, and `WHERE a.s IS NULL` counts them), so this is not the
+  absent-vs-null distinction. `AggFn::Collect`'s doc says "Nulls are kept — this is a faithful fold
+  of the stream, not a null-skipping numeric aggregate" and names that as what separates it from
+  `CollectList`; today both behave as `CollectList`. **Both engines agree** (TS returns
+  `[{"c":["a","c"]}]`), so byte-identity is intact and the seven fuzzers are not wrong — this is a
+  semantics question to settle against ISO, NOT against Cypher, and `collect` vs ISO's
+  `COLLECT_LIST` is the first thing to check. Pre-dates 1195 (the unchanged binary drops it
+  identically). `exec/tests.rs` pins the two arms to EACH OTHER so settling one without the other
+  fails loudly. Probe: `packages/native/collect-null-divergence-probe.ts`.
+- ⚠️ ~~**OPEN, PRICED at 3.6x (200k) rising to 4.6x (400k)**~~ — superseded by 1195 above, which
+  re-priced the floor; kept for the AggFn census that justified the build.
+  **Ungrouped `collect` pays a PER-ROW cost above the floor of producing its own output (1194).** A new enum census — `AggFn`, eleven
   variants — found `Collect` and `CollectList` are the ONLY two with zero mentions in
   `exec/fastpath.rs` (`Count` 45, `Min` 41, `Max` 29, `Sum` 18, `Avg` 12, and the four middling
   counts for stddev/percentile were READ, not trusted: `fastpath.rs:5053` and `:5203` are ADMITTING
