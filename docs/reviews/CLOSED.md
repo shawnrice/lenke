@@ -35674,3 +35674,65 @@ The band is uniform, but ~6-9 ms for a `LIMIT 10` is still ~3.6 ms of `count` fl
 sort-and-materialize, and nothing here says that remainder is irreducible. What it says is that the
 _rank-bounded_ attack is unavailable. A different attack — on the per-row cost the heap pays, or on
 the materialization the floor represents — is untouched by this retraction and unpriced.
+
+## 1177 — ✅ corpus rows for items 1172/1175 (the two biggest wins of the session had NONE), and ❌ the spelling probe's top flag is NOT a target — I built two theories before reading the comment beside it
+
+### The rows, which is the shipped part
+
+Items 1172 (`min(<bool>)`, ~3107x) and 1175 (`ORDER BY <bool> LIMIT k`, ~5851x) had **no bench
+corpus row**, which is the gap item 1167 found for the percentiles: the ts/ffi/wasm sweep that is
+supposed to catch a regression in them could not see them, and a win with no row is a win that
+quietly comes undone. Added, measured one case per process (`BENCH_ONLY`), with their non-boolean
+twins as the reference:
+
+```text
+  query: min boolean [short-circuits]        ts 4.6   ffi 0.0   wasm 0.0   1595.58x / 100.05x
+  query: top-k by boolean [short-circuits]   ts 5.0   ffi 0.0   wasm 0.0   1398.05x / 113.10x
+  query: min property [fused-scan]   [twin]  ts 4.7   ffi 0.1   wasm 0.1     44.87x /  32.39x
+  query: top-k by property           [twin]  ts 5.1   ffi 1.0   wasm 1.3      5.00x /   3.90x
+```
+
+**A DEDICATED fixture (`boolDoc`), not a widening of `nodesDoc`.** That document is shared by a
+dozen rows and adding a property to it moves every one of their per-node property counts — "widening
+a fixture several benches share is how item 1130's comparisons went bad". `graphDoc` was the
+precedent for a fixture of its own. `flag` alternates so both values appear early and the
+short-circuit is actually exercised; a single-valued column would enter the arm but could not
+distinguish "stopped at the first `false`" from "scanned everything".
+
+Two rows rather than one, because they are different code — an aggregate fold and a streaming
+top-K — and a change can break either alone.
+
+### ⚠️ The spelling probe found nothing, and the way I got there is the lesson
+
+`bun run spelling` at `SPELL_N=200000 SPELL_REPS=9` flagged two groups: `1517.6x label on start:
+redundant vs absent`, and `2.4x a product's one-sided predicate` (already attributed to item 285).
+I spent most of this tick on the first and it is **not a target**. Worse, I reached two successive
+wrong readings before the right one:
+
+1. **"The 1517x is real."** I replicated the probe's fixture to check whether the two spellings
+   return the same answer — and omitted the FOUR extra `:S`/`:Univ` vertices the real fixture adds.
+   On my incomplete graph `|P| == vertexCount`, so `:P` looked vacuous and the gap looked genuine.
+   **Checking a fixture you rebuilt yourself is checking a different fixture.**
+2. **"It is a false positive of item 325's class."** On the REAL fixture `|P| = 200000` against
+   `vertexCount = 200004`, so `:P` is NOT vacuous, `:Univ` is (0.00 ms against `:P`'s 12.37, all
+   three spellings answering 600000). I concluded the group names the wrong label and should use
+   `:Univ`, as item 325 did for the three-hop group.
+3. **The truth was in the comment directly above the group**, which I had not read:
+
+   > AND THAT IS CORRECT RATHER THAN OUTSTANDING. These two members are NOT equivalent work: the
+   > untyped spelling needs no vertex visits at all (one bucket size), while the labelled one must
+   > visit every `P` to sum its degree. O(|label|) against O(1) cannot converge, so no amount of
+   > further work closes this pair — it is here as a REGRESSION guard on the 54ms, not as a target.
+
+So the flag is EXPECTED OUTPUT of a deliberate non-convergent guard. **The probe reports no new
+actionable gap**, which is a clean negative result for the search — and the rule for next time is
+blunt: read the comment attached to a flag before building a theory about it. Both of my theories
+were constructed from measurements while the answer sat in prose six lines up.
+
+### 🔶 Worth someone's attention: that guard has IMPROVED and nobody recorded it
+
+The comment calls itself "a REGRESSION guard on the 54ms". The labelled member now reads **12.37 ms
+in isolation and 15.18 in the probe** — a 3.5-4.4x improvement since the note was written. Not
+attributed here because I did not establish which change caused it (item 1160's untyped arm is the
+obvious candidate but it serves the OTHER member of the pair, so that is a guess). The guard worked:
+it caught an improvement rather than a regression, and the number in its comment is now stale.

@@ -132,6 +132,24 @@ const nodesDoc = Array.from(
   (_, i) =>
     `{"type":"node","id":"v${i}","labels":["Person"],"properties":{"name":"person${i}","city":"Springfield","age":${i % 90}}}`,
 ).join('\n');
+/**
+ * A BOOLEAN property, in its own document (items 1172/1175).
+ *
+ * NOT added to `nodesDoc`, deliberately: that document is shared by a dozen rows, and widening a
+ * fixture several benches share is how item 1130's comparisons went bad — every row's per-node
+ * property count would move and their recorded numbers with it. `graphDoc` below is the precedent
+ * for a fixture of its own.
+ *
+ * `flag` alternates, so BOTH values are present early and the short-circuiting arms these rows
+ * guard reach their early exit the way a real query would. A fixture with one value throughout
+ * would still exercise the arm but could not distinguish "stopped at the first `false`" from
+ * "scanned everything".
+ */
+const boolDoc = Array.from(
+  { length: N },
+  (_, i) =>
+    `{"type":"node","id":"v${i}","labels":["Person"],"properties":{"age":${i % 90},"flag":${i % 2 === 0}}}`,
+).join('\n');
 const graphDoc = (() => {
   const lines = Array.from(
     { length: N },
@@ -481,6 +499,30 @@ const CASES: Case[] = [
     ...onGraph(
       () => nodesDoc,
       (e, g) => void e.query(g, 'MATCH (n:Person) RETURN min(n.age) AS a'),
+    ),
+  },
+  {
+    // THE BOOLEAN TWINS of this row and of `top-k by property` (items 1172 and 1175). Both arms
+    // SHORT-CIRCUIT — `false < true`, so `min` settles on the first present `false` and the
+    // windowed sort on the first `limit` of them — which took the native engine from 932 us to
+    // 0.3 (~3107x) and from 1755 us to 0.3 (~5851x).
+    //
+    // They are here because neither win had a corpus row, which is the gap item 1167 found for
+    // the percentiles: the sweep that is supposed to catch a regression in them could not see
+    // them, and a win with no row is a win that quietly comes undone. Separate rows rather than
+    // one, because they are different code — an aggregate fold and a streaming top-K — and a
+    // change can break either alone.
+    name: 'query: min boolean [short-circuits]',
+    ...onGraph(
+      () => boolDoc,
+      (e, g) => void e.query(g, 'MATCH (n:Person) RETURN min(n.flag) AS a'),
+    ),
+  },
+  {
+    name: 'query: top-k by boolean [short-circuits]',
+    ...onGraph(
+      () => boolDoc,
+      (e, g) => void e.query(g, 'MATCH (n:Person) RETURN n.flag AS a ORDER BY a LIMIT 5'),
     ),
   },
   {
