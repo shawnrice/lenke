@@ -35138,7 +35138,96 @@ built the wrong way so the path declined, here a fixture missing the value the p
 **Mutation:** moving `pathProps` back to item 900's position — after `notTruthProps` — fails the
 suite (`13 pass 1 fail`, rc=1). Restored and green.
 
+### Grep the pattern elsewhere: `satisfies` is the ONLY order-sensitive consumer
+
+`dotted-predicate-routes.test.ts` names five consumers that must know about a lifted bucket, so the
+obvious worry is that the same append-after-the-raising-pair mistake sits in the others. Checked,
+and it does not — for a reason worth recording, since it is what bounds this fix:
+
+- **`satisfies`** (executor.ts) is the only one that EVALUATES the buckets in sequence, so it is the
+  only one where order is observable. Fixed.
+- **`rejectedByElementDirect`** carries `eqProps` and `cmpProps` only — both non-raising — which its
+  own doc gives as the soundness argument for judging without a binding.
+- **`mergeFarPreds`** (hop-projection.ts) MERGES buckets into an object and appends within each; the
+  object's key order has no bearing on evaluation, which happens back in `satisfies`.
+- **`closedFarPred`**'s use of `lifted.*` is an existence test (did anything lift at all?), not an
+  evaluation.
+- **the two `preFilter` gates** (matching.ts) and **`shortcuts.ts`' `InlinePred`** touch
+  `eqProps`/`cmpProps` only.
+
+So the invariant "non-raising buckets first" has exactly one enforcement site, and the note now sits
+on the block that moved rather than on the function, which is where a future lift will be written.
+
 ### Verification
 
 4,429 tests green across `gql`/`native`/`core`; 7/7 byte-identity fuzzers; **CI's seed
 1433311152 plus nine further random seeds, zero divergences**.
+
+## 1170 — 🔶 item 1111's element-egress target SURVIVES re-measurement and is now the TWO BIGGEST ROWS in the gql group. ⚠️ My own hypothesis about its cause was REFUTED by a trace, and the decomposition points somewhere a tick cannot reach
+
+Re-measured before building, per the standing rule. It survives, larger than recorded:
+
+```text
+  hop node, NO distinct   177510 us / 1,000,000 rows = 177.5 ns/row
+  hop prop, NO distinct     7382 us / 1,000,000      =   7.4 ns/row    24x
+  scan node                63996 us /   200,000      = 320.0 ns/row
+  scan prop                  564 us /   200,000      =   2.8 ns/row   113x
+  distinct node            96356 us /   198,672      = 485.0 ns/row
+```
+
+(Item 1111 recorded scan node 151 and hop node 328 ns/row — the two are REVERSED on today's build
+and fixture. The target is unchanged in kind and larger in size, but the per-row figures from that
+item should not be quoted.)
+
+### ⚠️ REFUTED: my hypothesis that the hop misses the shared render path
+
+`render_nodes_shared` dedups ids and clones one `Value::Map(Arc<..>)` per repeat, so a `Map` clone
+is one refcount bump. From that I computed backwards — 199k maps at the `scan node` rate is ~64 ms,
+leaving ~113 ns per remaining row, which is far too slow for an atomic increment — and concluded
+the hop must be falling through to the per-row `node_result_value` instead.
+
+**It is not.** A trace, asserted into the BINARY before it was trusted (`strings` on the example,
+all four markers present — the item-1168 quote-rewriting lesson applied up front):
+
+```text
+  hop node        TRACE1170_RENDER_NODES n=1000000   TRACE1170_SHARED_TOOK n=1000000
+  scan node       TRACE1170_RENDER_NODES n=200000    TRACE1170_SHARED_DECLINED n=200000
+  distinct node   TRACE1170_RENDER_NODES n=198672    TRACE1170_SHARED_DECLINED n=198672
+  per-row path    TRACE1170_PER_ROW count=0          (entered once in the whole group)
+```
+
+The hop DOES share; the two all-distinct rows decline, correctly, on the 1-in-8 repeat gate. So the
+dedup layer is working as designed and is not the gap. Three deductive steps from a correct premise
+produced a wrong conclusion that one trace settled — and the trace cost less than the deduction.
+
+### What it is instead, and what it is NOT
+
+**It is not JSON serialization.** `time_query` calls `try_run` and reads `rows.len()`; nothing
+renders. So the cost is producing and dropping the `Rows` themselves.
+
+Decomposed against the two rows that bracket it:
+
+```text
+  199k distinct element maps        ~64 ms     (320 ns each — exactly the `scan node` rate)
+  the remaining 1M rows            ~115 ms     = 115 ns/row
+  the same 1M rows as a NUMBER       7.4 ms    =   7.4 ns/row   <- the floor
+```
+
+So ~115 ns a row to turn a shared map into an output `Value` and later drop it, against 7.4 for a
+numeric cell. Each rep creates 1M `Value::Map` clones (1M atomic increments), collects them into a
+1M-element `Vec<Value>` (~32 MB), and then DROPS all of it inside the timed region — 1M atomic
+decrements plus freeing ~199k pair vectors. That accounting is consistent with the gap; it is not
+proven term by term, and is labelled as consistent rather than established.
+
+### Why this is recorded and not built
+
+The fix item 1111 already named is the right one and it is architectural: keep the node column
+COLUMNAR (`Col::Nodes(Vec<u32>)`) through to egress and expand it per consumer, instead of
+`col_into_values` expanding it into a full element map per row. That changes the row type and every
+consumer of it. Half-building that at the end of a tick is how items 1102/1146/1159 happened, and
+this tick has already spent its budget refuting one hypothesis properly.
+
+**What the next tick has that this one did not:** the target re-measured, the dedup layer cleared of
+suspicion by trace, serialization ruled out, a 7.4 ns/row floor from a sibling row in the same
+group, and the knowledge that `scan node` and `distinct node` DECLINE sharing by design — so a
+columnar egress would help all three rows rather than only the hop.
