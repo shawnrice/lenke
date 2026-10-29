@@ -1172,11 +1172,27 @@ pub(super) fn try_stream_membership_count(
             // What is left is whatever differs between a periodic and a random code sequence for
             // two sequential loads and a branchless add — not a branch, not a dependent load, and
             // not the membership test. Unmeasured, so unclaimed.
-            scan_visit(store, label, |i| {
-                if present[i] && targets.contains(&codes[i]) {
-                    count += 1;
-                }
-            });
+            // A SINGLE target needs no membership test: the code is in a register, so
+            // `codes[i] == want` replaces a `Vec::contains` call — a loop with a bounds check —
+            // per row, and the accumulation is branchless.
+            //
+            // ⚠️ ITEM 1215 WROTE THIS SAME SPECIALIZATION AND RECORDED IT AS MEASURING NOTHING.
+            // That verdict was VACUOUS: it was measured on the census fixture, which has no index,
+            // so the planner emits an `IndexSeek` and THIS FUNCTION NEVER RUNS. Instrumenting the
+            // chain against an INDEXED store shows it serving the equality 18 times (item 1219) —
+            // because with an index the planner declines to seed above ~1.6% and emits
+            // `Filter+Scan`, which is what reaches here.
+            if let [want] = targets.as_slice() {
+                let want = *want;
+
+                scan_visit(store, label, |i| {
+                    count += u64::from(present[i] && codes[i] == want);
+                });
+            } else {
+                scan_visit(store, label, |i| {
+                    count += u64::from(present[i] && targets.contains(&codes[i]));
+                });
+            }
         }
         Column::Str { data, present, .. } => {
             let mut targets: Vec<&str> = Vec::with_capacity(vals.len());

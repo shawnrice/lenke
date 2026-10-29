@@ -36895,3 +36895,28 @@ see them), while this one changes WHICH PLAN is chosen for a shape no row has a 
 
 Final: 3 of 4 mutants caught, the survivor documented as defensive with its mechanism. 2,037 Rust
 tests green; clippy and fmt 0.
+
+### Item 1219 — dict-equality `count(*)` on a `Filter+Scan`: `Vec::contains` in the sweep, 2.75-7.07x (DONE)
+
+`try_stream_membership_count`'s dict branch called `targets.contains(&codes[i])` per row inside a
+conditional increment. A single-literal equality — the common case — now compares one code in a
+register and accumulates branchlessly. 200k nodes, index on the key: 931.9us to 131.9 at 49.8%
+selectivity (7.07x), 368.6 to 133.9 at 3.1% (2.75x). The curve goes from rising-with-matches to
+FLAT at ~132us, i.e. O(nodes) as a streaming count should be. Controls flat: the degraded-seek
+column, both seeded rows, bare `count(*)`.
+
+ANSWERS item 1218's open question. Its ratio column had `Filter+Scan` 1.10-2.38x SLOWER than an
+index-less `IndexSeek`'s degraded scan; it is now 0.16-0.86x, below 1.00 everywhere.
+
+RETRACTS item 1215's refutation of this same change. 1215 measured it on the census fixture, which
+has no index, so the planner emits an `IndexSeek` and the function never runs. A vacuous refutation
+retires a target — it is not a neutral outcome.
+
+OPEN, priced by it: eleven more conditional-increment `count += 1;` sweeps in `fastpath.rs` against
+six already-branchless sites. The 49.8%-selectivity row is the instrument.
+
+METHOD, and it generalizes beyond this repo: a marker count on the SOURCE does not prove the arm
+you benchmarked. `cp` sets mtime to now, cargo can judge the artifact fresh within the same
+filesystem tick and skip the rebuild, and both arms then come out as the same binary — which reads
+as a clean 1.00x null. `touch` the swapped file, hash the BINARY per arm, and assert the hashes
+differ AND reproduce on a second build. Here: PRE `30fd3630`, POST `451b04dd`, twice each.
