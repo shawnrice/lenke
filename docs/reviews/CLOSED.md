@@ -2910,6 +2910,30 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   columns — cheaper to write, already covered by those arms' own oracles and mutation, and FASTER
   by item 471's measurement that N passes over one column each beat one interleaved pass (5.6 ms
   against 0.6). Separate function after the numeric entry, per item 1184.
+- **REFUTED: the COMPARISON path's missing typed masks cost nothing — and the measurement INVERTED
+  the hypothesis (1203).** `Expr::Compare` has exactly two typed masks (`typed_num_mask` for
+  `Column::Num`, `typed_str_mask` for `Column::Str` every op and `Column::Dict` for **Eq/Ne only**),
+  and across both functions `Column::Bool` and `Column::Temporal` are mentioned **ZERO** times. Item
+  1191 closed this census for FOLDS, never for comparisons, so three candidate holes: dict with an
+  ordering op, bool, temporal.
+  Against the `WHERE true` floor at matched ~50% selectivity, every unserved row is AT OR BELOW it:
+  `a.date >= DATE'…'` **0.15x**, `a.dict >= 'g4'` **0.16x**, `a.flag = true` 0.97x — while the
+  SERVED rows read `a.num >= 500000` 0.94x and `a.str >= 'u00500000'` **2.11x**. **The slowest
+  comparison in the table is a served one.** There is no headroom to recover, and the `str` row's
+  2.11x is high-cardinality string compare being inherently dearer than an integer or date one, not
+  a hole.
+  **The generalized rule: "unserved" does not mean slow and "served" does not mean fast.** Item 1189
+  said the fold's SHARE predicts the win rather than the signature; this is the same point one step
+  further — a text census locates a missing arm, and only a floor says whether the arm would buy
+  anything. (The per-row mechanism behind the temporal row's 0.15x is NOT explained here and is not
+  claimed to be; the refutation does not depend on it.)
+  ⚠️ **TWO INSTRUMENT ERRORS, both already written down elsewhere in this file, both made again.**
+  (a) The first floor was `count(*)` with no predicate — which has its own O(1) shortcut and read
+  **0.3 µs**, so the printed ratios were 353x-4505x: item 1196's own rule that a ratio is
+  meaningless when the denominator sits at the timer's resolution. (b) `a.num = 500000` matched
+  **0 of 200,000** random values, so that row timed a different question than its `>=` twin. The
+  `rows` column now prints on every row for exactly that reason.
+  Instrument: `crates/lenke-engine/examples/compare_mask_coltype_probe.rs`.
 - **VERIFIED, no code change: the six changes of items 1195-1201 introduced NO spelling cliff and
   no bench regression on either engine (1202).** Six items in a row shipped new ROUTES, and a route
   that claims a shape it serves worse is exactly what `spelling_probe` and `bun run spelling` exist
