@@ -428,6 +428,15 @@ question in its module header — read the header before touching it.
   written first, the columnar gather would have shipped ~115us of a 3,595us problem and
   measured like a win.
 
+- `algo_stale_csr_probe` — does an ALGORITHM care whether the CSR overlay is fresh? It drives
+  ONE store through FRESH → STALE → REBUILT → STALE AGAIN, which is the point: the first
+  draft built a store per arm and reported a 1.08x stale penalty that was its three
+  separate heaps, not the overlay. The answer is no — rebuilt and stale are
+  indistinguishable, a rebuild costs ~80% of the PageRank it precedes, and item 1166
+  refuted widening `rearm_if_warranted` to the algo surface on these numbers. Read its
+  header before pricing any other consumer of this overlay: the up-to-24x cliff is a
+  TYPED-PARTITION effect, so a read that is not type-selective has nothing to recover.
+
 ## Before trusting a number
 
 The hard-won rules live in the repo `CLAUDE.md` ("Benchmarks: look before you

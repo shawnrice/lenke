@@ -1136,9 +1136,27 @@ pub unsafe extern "C" fn lnk_command(
             // statements got none of its 1.68x/2.74x. Both probes behind 1122 drive `g.query(…)`,
             // which is `lnk_query`, so no benchmark could have caught it.
             //
-            // NOT widened to the rest of `lnk_command`: the algo commands read adjacency heavily
-            // and a re-arm would be safe there too (taken while `&mut` is held, before `algo.rs`
-            // takes `&Store` under the rayon pool), but that surface has no measurement behind it.
+            // NOT widened to the rest of `lnk_command`, and item 1166 MEASURED why rather than
+            // leaving it open. A re-arm would be safe on the algo surface (taken while `&mut` is
+            // held, before `algo.rs` takes `&Store` under the rayon pool) — it is simply worth
+            // nothing. One store driven through the states, 200k nodes at degree 4, PageRank x10,
+            // min of 7, three rounds:
+            //
+            //     A FRESH 30.9/28.4/28.8    B STALE 34.4/34.4/34.7
+            //     C REBUILT 34.5/34.0/34.2  D STALE AGAIN 34.5/34.5/34.3
+            //     one rebuild_csr: 23.8-25.1 ms      degree control: 0.99x flat
+            //
+            // B == C == D: fresh and stale are INDISTINGUISHABLE, and C-vs-D differ in nothing but
+            // `csr_fresh`. Only A — the first measurement on a freshly built store — is faster,
+            // and a rebuild does not get back to it, so that gap is not staleness. Meanwhile a
+            // rebuild costs ~80% of the PageRank it would precede.
+            //
+            // THE REASON, which generalizes to the next consumer: the up-to-24x cliff is a
+            // TYPED-PARTITION effect (fresh, `out_typed_flat` scans one type's partition; stale,
+            // the hop walks every edge and filters). An algorithm sweeps every edge by
+            // construction, so it has no partition to lose — only the flat CSR's locality, which
+            // is immaterial against its own arithmetic. A read that is not TYPE-SELECTIVE should
+            // not be expected to recover anything from a re-arm.
             store.rearm_if_warranted();
             let plan = crate::opt::optimize_indexed(plan, store);
             // JSON rows (default) or an Arrow carrier (raw ARW1 / IPC), so a prepared
