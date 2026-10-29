@@ -37428,3 +37428,43 @@ kind above — both arms are branchless. That is the next target.
 minus the excluded value times its count` is arithmetically exact but changes the ASSOCIATION ORDER
 of a floating-point reduction, and byte-identity across the two engines is a hard invariant here.
 The count is safe for exactly the reason the sum is not.
+
+### Item 1230 — the `ne` trade is WORSE than its two points suggested: the predictor copes with runs of 10, so the "best case" is five regimes out of six (REFUTED as a lever)
+
+Item 1229 priced making the exclusion closures branchless as a trade — worst case 1.93-2.38x
+better, best case 1.20-1.29x worse — and asked how often each occurs. Two points cannot answer
+that, and the question matters because the predictable case is NOT merely synthetic: a column of
+sorted ids, or timestamps inserted in order, gives a filter long predictable runs exactly as a
+periodic one does.
+
+So the RUN LENGTH was swept — the number of consecutive rows whose predicate outcome is the same —
+holding the value range, the selectivity (~49%, where misprediction is maximal) and the row count
+fixed, so only the ORDER changes (`ne_predictability_curve_probe`):
+
+```text
+  regime                         PRE sum / proj      POST sum / proj
+  sorted (one block per value)    274.0 /  463.7      335.5 /  539.4
+  blocks of 1000                  432.3 /  475.4      339.8 /  543.0
+  blocks of 100                   271.1 /  466.5      344.6 /  539.3
+  blocks of 10                    280.6 /  474.2      346.7 /  545.3
+  periodic i % 100 (corpus)       273.3 /  469.7      341.7 /  539.5
+  random                          885.1 / 1079.9      345.7 /  537.8
+```
+
+**THE BRANCH PREDICTOR COPES WITH RUNS AS SHORT AS 10.** Every regime from sorted down to blocks of
+ten is within noise of the periodic figure, and only a genuinely SHUFFLED column pays the penalty.
+So the current `&&` form wins on five of the six regimes and the branchless form wins on one.
+
+REFUTED AS A LEVER. The POST column is admirably flat — it does remove the data-dependence — but it
+buys that by making every predictable case pay what it currently avoids. Item 1229's framing of
+"worst case versus best case" was right arithmetically and misleading in proportion: the best case
+is the ordinary case, not the lucky one. Reverted and closed; the numbers are here so the trade is
+not re-priced from two points again.
+
+⚠️ ONE ROW IS UNEXPLAINED AND SAID SO RATHER THAN SMOOTHED: `blocks of 1000` reads 432.3 us on the
+PRE sum against ~271-280 for both its neighbours, which no account of run length predicts. It
+reproduces within the run but has not been isolated, and nothing here depends on it.
+
+WHAT THIS LEAVES, unchanged and still the better target: the one-vs-two exclusion cliff at 11.9x
+(item 1229). Extending item 1213's two-pass trick to k exclusions is branchless in BOTH arms, so it
+carries no trade of this kind at all.
