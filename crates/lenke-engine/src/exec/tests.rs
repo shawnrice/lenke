@@ -33875,3 +33875,90 @@ fn a_unary_function_over_a_boxed_column_agrees_row_by_row() {
         "[[List([Num(3.0), Num(2.0), Num(1.0), Num(0.0)])]]"
     );
 }
+/// Item 1201 made `coalesce`'s column path ask whether a candidate is null BY REFERENCE and then
+/// MOVE the survivor out of its column instead of cloning it (`coalesce(collect(a.num), 1)` over a
+/// 200,000-element list: 3.56x). Moving leaves `Value::Null` behind in the column, which is sound
+/// only because that loop is the column's last use — so the risk this test exists for is not the
+/// speed but a row reading a cell another row already  moved away.
+#[test]
+fn coalesce_picks_the_first_non_null_per_row_after_the_move() {
+    let mut b = Builder::default();
+    // A `Gen` column needs a type per row to avoid de-opting to typed: `first` is a STRING on
+    // even rows and absent on odd ones, so coalesce falls through to `second` on exactly half.
+    for i in 0..6u32 {
+        if i % 2 == 0 {
+            b.node(
+                &["N"],
+                &[
+                    ("first", Value::Str(format!("f{i}").into())),
+                    ("second", Value::Num(f64::from(i * 10))),
+                    ("n", Value::Num(f64::from(i))),
+                ],
+            );
+        } else {
+            b.node(
+                &["N"],
+                &[
+                    ("second", Value::Num(f64::from(i * 10))),
+                    ("n", Value::Num(f64::from(i))),
+                ],
+            );
+        }
+    }
+    let st = b.build();
+
+    let ask = |q: &str| -> String {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &st);
+        match crate::exec::try_run(&plan, &st) {
+            Ok(r) => format!("{:?}", r.rows.iter().collect::<Vec<_>>()),
+            Err(e) => format!("ERR {e}"),
+        }
+    };
+
+    // EVERY ROW gets its OWN value, which is what a move-out-of-column bug breaks: a row that
+    // read a moved cell would come back `Null`, and a loop that moved the wrong index would
+    // shuffle them.
+    let got = ask("MATCH (a:N) RETURN coalesce(a.first, a.second) AS c");
+    for i in 0..6u32 {
+        let want = if i % 2 == 0 {
+            format!("Str(\"f{i}\")")
+        } else {
+            format!("Num({}.0)", i * 10)
+        };
+
+        assert!(
+            got.contains(&want),
+            "row {i} must coalesce to {want}, got {got}"
+        );
+    }
+    // No row may come back NULL — both columns together cover every row.
+    assert!(
+        !got.contains("Null"),
+        "a NULL here means a cell was moved away before its row read it: {got}"
+    );
+
+    // THE SAME EXPRESSION TWICE. `eval` returns an owned column per argument, so the two are
+    // separate buffers and moving out of the first cannot empty the second — but if they ever
+    // shared one, this is the shape that would read `Null` from the second.
+    let twice = ask("MATCH (a:N) RETURN coalesce(a.first, a.first) AS c");
+    assert_eq!(
+        twice.matches("Str(").count(),
+        3,
+        "the three even rows keep their string: {twice}"
+    );
+
+    // ALL-NULL must still produce one row per input holding NULL, not an empty result.
+    assert_eq!(
+        ask("MATCH (a:N) RETURN coalesce(a.missing, a.alsomissing) AS c"),
+        "[[Null], [Null], [Null], [Null], [Null], [Null]]"
+    );
+
+    // A CONTAINER cell is the case the move was built for: it must arrive whole, per row.
+    let lists = ask("MATCH (a:N) RETURN coalesce([a.n, a.n], a.second) AS c");
+    for i in 0..6u32 {
+        assert!(
+            lists.contains(&format!("List([Num({i}.0), Num({i}.0)])")),
+            "row {i}'s list must arrive whole: {lists}"
+        );
+    }
+}

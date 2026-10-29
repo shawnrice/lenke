@@ -2925,8 +2925,29 @@ c.value_at(i)))`, and `Col::value_at` is `Col::Gen(v) => v[i].clone()`. `std::sl
   case needed NOTHING from the scalar library.
   Controls flat: `coalesce(max(a.num), 1)` 1.00x, `abs(max(a.num))` 1.00x, `a.num` 1.00x,
   `upper(a.str)` 1.00x.
-  ⚠️ **STILL OPEN: the n-ARY half.** `coalesce(collect(a.num), 1)` is binary, cannot use the
-  one-element slice, and still pays the clone. Generalizing means re-typing `scalar.rs`'s **113
+  ⚠️ ~~**STILL OPEN: the n-ARY half**~~ — **REFUTED AS A GENERAL TARGET and the one real case CLOSED
+  by 1201 at 3.56x, which is not the same lever.** Measuring the breadth BEFORE the 113-site
+  refactor is what caught this: the other multi-arg list functions do NOT pay a clone worth having —
+  `list_contains(collect(a.num), 5)` **1.06x** the bare aggregate and
+  `intersection(collect(a.num), [1])` **1.14x**. So `coalesce`'s 3.64x was never the generic
+  argument buffer; `coalesce` has its OWN column path (`evaluator.rs:2032`) which boxed every
+  candidate with `value_at` just to ask whether it was null.
+  Two changes there, neither touching the scalar library: ask with `is_null_at` (off the
+  representation, no boxing), then MOVE the survivor with `std::mem::replace` instead of cloning it
+  — sound because `eval` returns an OWNED column per argument and that loop is its last use.
+  `coalesce(collect(a.num), 1)` 3416.3 → 958.5 µs, **3.56x min / 4.12x median**, landing on the bare
+  aggregate's own cost. Seven controls flat at 1.00x. `size`/`cardinality(collect)` read 0.96x on a
+  path that returns before this arm — within build-layout noise per 1198.
+  **So the `&[&Value]` refactor of `scalar.rs`'s 113 `args[..]` reads is NOT justified by any
+  measurement**, and the 1199/1200 framing of "the generic path's argument clone" was too broad: it
+  is real (item 1200's unary half shipped 3.27x on it) but the `coalesce` row that motivated the
+  n-ary half was a different bug in a different function.
+  Mutation 4/4 with all predictions correct; "clone again instead of moving" SURVIVED, which is the
+  record that only an A/B sees this. The move's real risk is a row reading a cell another row
+  already moved away, so the test gives every row a different value and asserts no row comes back
+  NULL; `coalesce_over_columns_matches_the_boxed_reading` already covered it too.
+  ~~`coalesce(collect(a.num), 1)` is binary, cannot use the one-element slice, and still pays the
+  clone.~~ Generalizing means re-typing `scalar.rs`'s **113
   `args[..]` reads** as `&Value` (or `Cow`), which is the cost estimated at 1199 and is a real
   refactor. Its A/B row read 0.88x median, but it is a path the change provably cannot enter
   (`nargs == 1` is false) and POST's own spread there was 3480-4041 µs — 16%, so a 12% gap is not

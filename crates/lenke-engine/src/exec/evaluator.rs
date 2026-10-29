@@ -2030,7 +2030,7 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
             // loop, so a later argument that faults raises there, and skipping it here would be
             // a divergence rather than an optimization.
             if name == "coalesce" && !args.is_empty() {
-                let cols = args
+                let mut cols = args
                     .iter()
                     .map(|a| eval(a, store, batch))
                     .collect::<Result<Vec<_>, String>>()?;
@@ -2042,16 +2042,36 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
                 let n = batch.rows();
                 let mut out: Vec<Value> = Vec::with_capacity(n);
 
+                // ASK BY REFERENCE, THEN MOVE (item 1201). This loop used to box every candidate
+                // with `value_at` just to ask whether it was null — and `Col::Gen(v)` boxes by
+                // CLONING the stored `Value`, so a cell holding a container was deep-copied
+                // before the null check, and again nothing reclaimed it. `is_null_at` answers
+                // the same question off the representation with no boxing at all.
+                //
+                // Then the surviving candidate MOVES rather than clones: `cols` is owned here
+                // (every arm of `eval` returns an owned `Col`, a `Slot` included — it clones the
+                // column) and this loop is its last use, so leaving `Value::Null` behind in a
+                // column about to be dropped costs nothing. A typed column has nothing to move
+                // (`Col::Num(v) => Value::Num(v[i])` CONSTRUCTS its value) so it keeps
+                // `value_at`.
+                //
+                // Measured: `coalesce(collect(a.num), 1)` over a 200,000-element list was 3.64x
+                // the bare aggregate — item 1200's unary borrow could not reach it because a
+                // multi-argument call needs an owned buffer. This path is `coalesce`'s own, so it
+                // never needed the scalar library's signature to change.
                 for i in 0..n {
                     let mut v = Value::Null;
 
-                    for c in &cols {
-                        let cand = c.value_at(i);
-
-                        if !cand.is_null() {
-                            v = cand;
-                            break;
+                    for c in &mut cols {
+                        if c.is_null_at(i) {
+                            continue;
                         }
+
+                        v = match c {
+                            Col::Gen(vals) => std::mem::replace(&mut vals[i], Value::Null),
+                            typed => typed.value_at(i),
+                        };
+                        break;
                     }
 
                     out.push(v);

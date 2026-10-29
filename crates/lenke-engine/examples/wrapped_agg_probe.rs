@@ -235,6 +235,54 @@ fn main() {
         println!("  {label:<34} {us:>10.1}   {short}");
     }
 
+    // THE n-ARY HALF'S BREADTH (item 1201), measured before deciding whether a 113-site signature
+    // change is worth it. Item 1200 closed the UNARY case with `std::slice::from_ref`, which a
+    // multi-argument call cannot use — it needs an owned buffer, so every LIST argument is still
+    // deep-copied before the function sees it.
+    //
+    // These are the multi-arg functions that actually take a list: `list_contains` is the purest
+    // case (it only READS the list, so the copy is 100% waste), while `append` must build a new
+    // list anyway (`out = v.clone()` inside), so borrowing can only remove ONE of its two copies.
+    // The CONTROL is the same function over a SHORT literal list, where there is nothing big to
+    // copy — if that moves too, the cost is not the copy.
+    println!("\n  n-ARY over a LIST-valued aggregate [item 1201's open half]:\n");
+    println!("  shape                                      us    vs bare   answer");
+
+    for (label, q) in [
+        (
+            "list_contains(collect(a.num), 5)",
+            "MATCH (a:Person) RETURN list_contains(collect(a.num), 5) AS c",
+        ),
+        (
+            "append(collect(a.num), 1)",
+            "MATCH (a:Person) RETURN append(collect(a.num), 1) AS c",
+        ),
+        (
+            "intersection(collect(a.num), [1])",
+            "MATCH (a:Person) RETURN intersection(collect(a.num), [1]) AS c",
+        ),
+        (
+            "concat(collect(a.num), [1])",
+            "MATCH (a:Person) RETURN concat(collect(a.num), [1]) AS c",
+        ),
+        (
+            "[CTL] list_contains([1, 2], 1)",
+            "MATCH (a:Person) RETURN list_contains([1, 2], 1) AS c",
+        ),
+    ] {
+        let (us, answer) = ask(q);
+        let short = if answer.len() > 24 {
+            format!("{}...", &answer[..21])
+        } else {
+            answer
+        };
+
+        println!(
+            "  {label:<34} {us:>10.1} {:>8.2}x   {short}",
+            us / bare_list
+        );
+    }
+
     println!(
         "\n  Every ratio near 1.0 => the planner's Project/Aggregate split already separates the\n  \
          wrapper from the fold, and the TS routing hole has no Rust twin."
