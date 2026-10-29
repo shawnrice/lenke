@@ -36920,3 +36920,38 @@ you benchmarked. `cp` sets mtime to now, cargo can judge the artifact fresh with
 filesystem tick and skip the rebuild, and both arms then come out as the same binary — which reads
 as a clean 1.00x null. `touch` the swapped file, hash the BINARY per arm, and assert the hashes
 differ AND reproduce on a second build. Here: PRE `30fd3630`, POST `451b04dd`, twice each.
+
+### Item 1220 — `sweep_num_count`, the shared numeric count sweep: branchless, ~3.0x on both surfaces (DONE)
+
+`sweep_num_count` is reached from ELEVEN call sites — all six single-bound numeric compares, all four
+range forms, item 1213's exclusion arm — and accumulated with `if present[i] && cmp(data[i]) {
+count += 1 }`. That vectorizes only when LLVM elects to mask the increment, and the election is
+PER-CLOSURE, so one helper could be fast for one caller and slow for its neighbour. Now
+`count += u64::from(present[i] & cmp(data[i]))`, with the `data`/`present` length precondition as one
+loop-invariant test outside the sweep and the old code kept as an unreachable defensive arm.
+
+Isolated: 101.8us to 30.8 (3.30x), identical answers, flat per-rep series, binaries hash-asserted.
+Corpus (`query_bench`, 73 rows): `filter age>50` 103.2 to 32.3 (3.19x), Gremlin `has age>50` 92.0 to
+29.0 (3.17x), `counts|filtered` 89.7 to 30.9 (2.90x). Both surfaces, because one `ir::Plan` and one
+`exec`. `spelling_probe`: NO PERF CLIFFS on both arms.
+
+⚠️ DISCOUNT TO ~3.0x. The intended control — string-membership rows this change does not touch —
+moved 1.09x in the change's favour (131.6 to 120.2), while the seeded rows, the degraded-seek column
+and bare `count(*)` stayed flat. That is the filtered-count cluster's documented 1.08-1.24x layout
+drift with the sign flipped, which is a reason to discount rather than to claim. Worst movement in
+the 73-row screen is 1.05x and bidirectional (rows at 0.91-0.93x), consistent with drift that size.
+
+Teeth: three mutants, all compiled, all caught, 14-15 failures each (vs item 1219's 2 — the
+consequence of eleven call sites).
+
+DOES NOT YET EXPLAIN the 6.6-7.4x single-vs-range gap recorded in `stream_single_bound_count`'s
+header, though it is the first mechanism whose SHAPE fits (a per-closure vectorization election
+explains a gap between two closures handed to one function). Unproven because item 1205's workaround
+still routes ordering bounds through the two-bound arm, so the arm that exhibited it is bypassed.
+Removing that routing and re-measuring is the open test.
+
+OPEN, nine sites left, now with a measured mechanism: `sweep_date_count` (six call sites),
+`try_stream_membership_count`'s `Column::Str` arm (the string twin of item 1219), the two
+`for_each_typed_out` hop sweeps, and `try_stream_range_count`'s arm, which also tests the
+loop-invariant `bounds.is_empty()` inside its sweep. Line 1122's recorded "measured nothing"
+(item 1208) needs re-checking against a fixture that reaches it — the item 1215 failure mode.

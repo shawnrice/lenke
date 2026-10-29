@@ -1594,11 +1594,33 @@ fn sweep_num_count<F: Fn(f64) -> bool>(
     cmp: F,
 ) -> u64 {
     let mut count = 0u64;
-    scan_visit(store, label, |i| {
-        if present[i] && cmp(data[i]) {
-            count += 1;
-        }
-    });
+
+    // ⚠️ THE ACCUMULATION IS BRANCHLESS, AND THAT IS THE POINT (item 1220). Written as
+    // `if present[i] && cmp(data[i]) { count += 1 }` this sweep vectorizes only when LLVM
+    // chooses to mask the increment, and WHETHER IT DOES DEPENDS ON THE CLOSURE: the header of
+    // `stream_single_bound_count` records a 6.6-7.4x gap between two closures handed to THIS
+    // function, with the cause unfound and the caller routing ordering bounds through the
+    // two-bound arm to dodge it. Accumulating unconditionally removes the choice for all eleven
+    // call sites at once.
+    //
+    // `&` not `&&`: the short-circuit is what reintroduces the branch. It costs an evaluation of
+    // `cmp` on an absent cell's slot, which is a well-formed `f64` (zero or stale, never
+    // uninitialized) whose verdict is then ANDed away — so the answer is unchanged, and `cmp` is a
+    // pure comparison at every call site.
+    if data.len() >= present.len() {
+        scan_visit(store, label, |i| {
+            count += u64::from(present[i] & cmp(data[i]));
+        });
+    } else {
+        // Defensive: a shorter `data` would make the unconditional `data[i]` panic where the
+        // short-circuit skipped it. No caller does this (both slices come from one column), so
+        // this arm is unreached - but the cost of keeping it is one loop-invariant test.
+        scan_visit(store, label, |i| {
+            if present[i] && cmp(data[i]) {
+                count += 1;
+            }
+        });
+    }
     count
 }
 
@@ -1748,6 +1770,15 @@ pub(super) fn try_stream_date_count(
 /// ⚠️ ITEM 453'S FIX WAS TRIED HERE FIRST AND DID NOTHING: a separate `#[inline(never)]` function
 /// left the ratio at 6.75x, unchanged. So this is NOT the layout hazard that comment describes, and
 /// the caller routes an ORDERING bound through the two-bound arm instead — see the note there.
+///
+/// ⚠️ ITEM 1220 IS THE FIRST MECHANISM THAT FITS, THOUGH IT IS NOT YET PROVEN TO BE THIS ONE.
+/// `sweep_num_count` accumulated with `if present[i] && cmp(data[i]) { count += 1 }`, which
+/// vectorizes only when LLVM elects to mask the increment — and that election is per-closure, which
+/// is exactly the shape of a gap between two closures handed to the same function. Making the
+/// accumulation unconditional took the filtered count from 101.8us to 30.8 (3.30x isolated, 3.19x
+/// and 3.17x on the GQL and Gremlin corpus rows). NOT VERIFIED as the cause of the 6.75x, because
+/// this caller still routes ordering bounds through the two-bound arm, so the arm that exhibited it
+/// is still bypassed. Removing that workaround and re-measuring is the open follow-up.
 #[inline(never)]
 fn stream_single_bound_count(
     store: &Store,
