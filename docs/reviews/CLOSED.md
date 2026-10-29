@@ -2910,6 +2910,25 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   columns — cheaper to write, already covered by those arms' own oracles and mutation, and FASTER
   by item 471's measurement that N passes over one column each beat one interleaved pass (5.6 ms
   against 0.6). Separate function after the numeric entry, per item 1184.
+- **REFUTED: `SEEK_MAX_FRACTION` is NOT admitting a losing band — the planner declines correctly
+  (1218).** Item 1217's single point suggested the seek's per-row cost was 18.1 ns rather than the
+  documented 12.2, which would move the crossover from 15.4% to 10.4%. A selectivity sweep with a
+  PLAN column refutes it: **with an index the planner emits `Filter+Scan` for every selectivity at
+  or above 3.1% and only seeds below ~1.6%**, where the seek is 0.39x and 0.14x — a 2.5-7x win. The
+  constant is doing its job.
+  ⚠️ **AND MY COLUMN LABELS INVERTED THE READING UNTIL THE PLAN COLUMN ARRIVED.** The probe called
+  its arms "scan" and "seek"; they are "no index" and "indexed". The planner emits an `IndexSeek`
+  for an equality EVEN WITH NO INDEX (the operator's third arm then degrades to a label scan), so
+  above 3.1% the table was comparing a DEGRADED SEEK against the general filter path, and neither
+  column was what its name said. Relabelled, with the hazard in the probe's header.
+  ⚠️ **WHAT THE SWEEP ACTUALLY FOUND, and it is a target: the `Filter+Scan` path is 1.11-2.36x
+  SLOWER than the index-less `IndexSeek`'s own degraded scan**, over 49.8% / 24.9% / 12.4% / 8.3% /
+  6.2% / 3.1% selectivity (923.0 vs 835.3, 648.3 vs 508.8, 481.8 vs 295.4, 437.0 vs 230.1, 408.0 vs
+  198.5, 369.0 vs 156.4 us). The degraded arm scans the label bucket and tests the property in a
+  tight typed loop and MATERIALIZES every matching id; the `Filter+Scan` count still loses to it.
+  So a dict-equality count has a faster implementation already in the tree, in the operator that is
+  not supposed to be the fast one. Not priced further here.
+  Instrument: `crates/lenke-engine/examples/seek_crossover_probe.rs`.
 - ⚠️ **ITEM 1216's ~600x IS RETRACTED, and the real finding is the opposite sign: with a hash index
   actually present, `count(*)` over an indexed equality is 0.66x — SLOWER than the same query with
   NO index (1217).** Three things, each only visible by building it:
