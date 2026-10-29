@@ -2910,6 +2910,28 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   columns — cheaper to write, already covered by those arms' own oracles and mutation, and FASTER
   by item 471's measurement that N passes over one column each beat one interleaved pass (5.6 ms
   against 0.6). Separate function after the numeric entry, per item 1184.
+- **REFUTED for RUST: the TS wrapped-aggregate hole (items 1197/1198) has NO Rust twin on any fold
+  shape — every one is 1.00x (1199).** `abs(min(a.num) - 10)`, `max(a.num) + 1`,
+  `coalesce(max(a.num), 0)`, `count(a.num) * 2`, `upper(max(a.str))` all cost exactly their bare
+  spelling at 200,000 nodes. The structural reason: Rust lowers a wrapped aggregate to
+  `Project{ <wrapper>, Aggregate{ <agg> } }`, so `exec/fastpath.rs` matches the `Aggregate` and
+  never sees the wrapper — the planner's split already does what TS needed two items to build by
+  hand. **Do not port 1197/1198.** Instrument: `crates/lenke-engine/examples/wrapped_agg_probe.rs`.
+- ⚠️ **OPEN, PRICED at 4.06-4.16x, and found as the ONE row of that refutation that was not 1.00x:
+  a scalar function over a LIST-valued aggregate DEEP-COPIES the list to evaluate its argument
+  (1199).** `coalesce(collect(a.num), 1)` 4.06x and `reverse(collect(a.num))` 4.16x the bare
+  `collect`, while `size`/`cardinality` read **0.42x** because `evaluator.rs:2130` gave exactly
+  those two a BORROW-not-clone path. **Controls pin the mechanism**: the same functions over a
+  SCALAR aggregate (`coalesce(max(a.num), 1)`, `abs(max(a.num))`) are flat at 1.00x, so the cost is
+  copying the container and not calling the function.
+  This is not a new discovery so much as an unfinished one — `evaluator.rs:2121`'s own comment ends
+  "that clone is on the path of every function over a boxed column, not just this one".
+  **Two candidate fixes, both sized:** (a) borrow the argument in the generic scalar path when it is
+  a bare slot — narrow, but needs a `&Value`-taking call path through the scalar library; (b) make
+  `Value::List` share its buffer, which would fix every list clone at once — `Record(Arc<[…]>)` and
+  `Map(Arc<Vec<…>>)` are ALREADY shared and `List(Vec<Value>)` is the lone exception, but it has
+  **207 construction sites** plus every mutation site needing `Arc::make_mut`, so it is a refactor
+  and not an afternoon. Neither built.
 - **REFUTED for TS: there is no `collect` egress rebuild there, so item 1195's Rust fix has no TS
   twin (1196).** TS `collect` costs **0.76-1.02x** its own materialization floor (`RETURN a.k`),
   i.e. the cost IS the output. Do not port the gate.
