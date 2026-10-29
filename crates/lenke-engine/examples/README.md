@@ -437,6 +437,14 @@ question in its module header — read the header before touching it.
   header before pricing any other consumer of this overlay: the up-to-24x cliff is a
   TYPED-PARTITION effect, so a read that is not type-selective has nothing to recover.
 
+- `egress_split_probe` — of a per-row egress cost, how much is CREATING the values and how
+  much is DROPPING them? Times the same query with and without `mem::forget`, with a NUMERIC
+  column as the control that validates the leak arm (a number has nothing to free, so if
+  `forget` measured anything else the control would move too; it does not). Item 1171 found
+  **52% of element egress is the drop** — the half items 338/390/392/1068/1069/1070 all
+  missed, because each of those ablated construction only. Reach for this before attributing
+  any per-row cost to construction.
+
 ## Before trusting a number
 
 The hard-won rules live in the repo `CLAUDE.md` ("Benchmarks: look before you
