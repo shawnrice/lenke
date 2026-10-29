@@ -296,6 +296,36 @@ const CASES: Case[] = [
     ),
   },
   {
+    // THE BARE PROPERTY-FILTERED NODE COUNT, which had NO ROW IN EITHER CORPUS until item 1221 -
+    // every other filtered-count case here is a HOP count with a filter, a different cost class.
+    // It is about as common as a query gets, and it is the shape items 1219 and 1220 made 3.19x
+    // faster on the Rust side, so without this row that win is invisible to the sweep.
+    //
+    // `> 45` against `age = i % 90` selects ~49%, which is deliberate: a branchy filter's
+    // misprediction cost is MAXIMAL near 50/50 and vanishes at the extremes, so a selective
+    // threshold would measure the best case and call it the cost.
+    //
+    // ⚠️ THE FIXTURE IS PERIODIC (`i % 90`) AND THAT FLATTERS A BRANCHY FILTER. Item 1206 found a
+    // periodic generator hiding a 6.7x because the branch predictor learns the cycle; the twin row
+    // below varies the same question's selectivity so a reading that depends on periodicity is
+    // visible here rather than inferred later.
+    name: 'count + prop filter ~49%',
+    ...onGraph(
+      () => nodesDoc,
+      (e, g) => void e.query(g, 'MATCH (n:Person) WHERE n.age > 45 RETURN count(*) AS c'),
+    ),
+  },
+  {
+    // The same shape at ~2% selectivity (ages 88 and 89 of 90). Together with the row above this is a two-point
+    // selectivity curve: a count that scales with MATCHES moves between them, one that scales with
+    // NODES does not, and that distinction is what items 1219 and 1220 turned on.
+    name: 'count + prop filter ~2%',
+    ...onGraph(
+      () => nodesDoc,
+      (e, g) => void e.query(g, 'MATCH (n:Person) WHERE n.age > 87 RETURN count(*) AS c'),
+    ),
+  },
+  {
     name: 'query: project 3 columns',
     ...onGraph(
       () => nodesDoc,

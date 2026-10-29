@@ -36955,3 +36955,30 @@ OPEN, nine sites left, now with a measured mechanism: `sweep_date_count` (six ca
 `for_each_typed_out` hop sweeps, and `try_stream_range_count`'s arm, which also tests the
 loop-invariant `bounds.is_empty()` inside its sweep. Line 1122's recorded "measured nothing"
 (item 1208) needs re-checking against a fixture that reaches it — the item 1215 failure mode.
+
+### Item 1221 — bare property-filtered node count: no corpus row existed; TS is 38.6x (OPEN, diagnosed)
+
+Every filtered-count case in `bench.ts` was a HOP count with a filter — a different cost class.
+`MATCH (n:Person) WHERE n.age > 45 RETURN count(*)` had no row in either corpus, so item 1220's
+3.19x was invisible to the sweep. Two rows added, at 48.9% and 2.2% selectivity (the pair separates
+a count scaling with matches from one scaling with nodes, and 48.9% is where branch misprediction is
+maximal):
+
+```
+  count + prop filter ~49%   ts 3.8   ffi 0.1   wasm 0.2   38.63x / 19.49x
+  count + prop filter ~2%    ts 3.6   ffi 0.1   wasm 0.2   37.14x / 18.43x
+```
+
+TS is FLAT across a 22x selectivity change, so it scales with NODES: ~19ns per vertex against Rust's
+~0.5ns.
+
+NOT A MISSING PATH — the first guess, and wrong. `shortcuts.ts:4288` compiles the clause WHERE and
+hands it to `buildNodeCount`, so the tally IS reached; the 19ns is the general predicate machinery
+inside it (a binding-Map write per vertex plus a boxed property lookup, for one f64 compare).
+
+OPEN TARGET: a specialized closure for `<var>.<key> <cmp> <literal>` bypassing both. Measuring it
+needs the bimodal protocol (14 reps, drop three, median, min of three order-alternated rounds) and
+must not compare two different property KEYS, which is worth up to 1.66x on its own (item 1211).
+
+⚠️ Fixture periodicity (`age = i % 90`) is recorded ON the rows: item 1206 found a periodic
+generator hiding a 6.7x. The generator is shared by a dozen rows and deliberately not changed.
