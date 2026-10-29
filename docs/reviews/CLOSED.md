@@ -2910,6 +2910,25 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   columns — cheaper to write, already covered by those arms' own oracles and mutation, and FASTER
   by item 471's measurement that N passes over one column each beat one interleaved pass (5.6 ms
   against 0.6). Separate function after the numeric entry, per item 1184.
+- **REFUTED for TS: items 1206-1210's branchiness finding does NOT transfer — and the reason is a
+  NEW INSTRUMENT RULE for this repo (1211). ⚠️ IN THE TS ENGINE, WHICH PROPERTY KEY A QUERY READS IS
+  WORTH UP TO 1.66x WITH IDENTICAL DATA**, so any TS A/B that compares two different property keys
+  is confounded. Measured with a key-position control: two columns holding the SAME periodic values,
+  one first in the property object and one last, over `sum` — **1.66x**. On the filtered-count path
+  the same control is 1.02x, so counts are comparable and aggregates are not.
+  ⚠️ **THREE PROBE DESIGNS FAILED THEIR OWN CONTROL BEFORE THAT WAS CLEAR**, and each failure is the
+  finding: (a) two `Graph` objects timed in one process put `[CTL] unfiltered projection` — a query
+  with NO filter and so no data-dependent branch — at **1.46x**; (b) one fixture per process (item
+  762's rule) only brought it to **1.34x**; (c) one graph carrying both column orders fixed the
+  projection control (1.02x) but left `[CTL] unfiltered sum` at **1.49x**, which the key-position
+  control then explained. Two graphs in one JS heap share a string table, hidden-class history and
+  GC state; the Rust twin got away with two `Store`s because native code has no such coupling, and
+  its controls read 1.00x.
+  On the rows that ARE valid (filtered counts): single bound 1.28x — below the 1.3x threshold —
+  string bound 1.01x, and dict 0.30x and boolean 0.66x, i.e. **random FASTER**, which is not branch
+  prediction and is not interpreted here. So there is no TS branchiness target.
+  Instrument: `packages/native/branchy-path-census-ts-probe.ts` (read the two controls first; it
+  carries all three failed designs in its header).
 - **CLOSED by 1210 — the keep-list build, which was the cause behind BOTH remaining census rows:
   `sum` under a filter 931.9 -> 240.0 us (3.88x) and a projection 1126.6 -> 437.2 (2.58x) on
   unpredictable data, with the data-dependence ELIMINATED (both POST rows 1.01x periodic-vs-random,
