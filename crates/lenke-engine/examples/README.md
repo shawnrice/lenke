@@ -445,6 +445,17 @@ question in its module header — read the header before touching it.
   missed, because each of those ablated construction only. Reach for this before attributing
   any per-row cost to construction.
 
+- `minmax_coltype_probe` — does `min`/`max` cost the same over every COLUMN REPRESENTATION?
+  One column of each (Num, Str, Dict, Bool, Temporal, and a per-node-typed one that forces
+  `Gen`) on the SAME nodes, so only the representation differs. The instrument that makes it
+  readable is the second control: `count(<key>)` on the same column reads only the presence
+  mask, so it is flat everywhere and gives each representation its OWN floor — a column where
+  `count` is flat but `min` is slow has a FOLD problem, one where both are slow has a column
+  problem. Item 1172 found `Bool` at 10x its own floor (the simplest representation in the
+  store, and the slowest of the three that should be trivial) and shipped a short-circuiting
+  arm at ~3107x. `str` at 15x and `Gen` at 21x are NOT gaps of the same kind — comparing
+  unique strings is real work and `Gen` holds boxed values.
+
 ## Before trusting a number
 
 The hard-won rules live in the repo `CLAUDE.md` ("Benchmarks: look before you

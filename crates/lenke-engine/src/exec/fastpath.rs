@@ -4844,6 +4844,92 @@ pub(super) fn try_scan_num_agg(
 /// type. The order is `GStr::cmp`, which is exactly what `value::cmp_total` dispatches to for
 /// `(Str, Str)` — the same single home for order the numeric arm uses `cmp_num_total` from, so
 /// two paths answering one query cannot disagree.
+/// `MATCH (n:L) RETURN min(n.flag)` over a `Column::Bool` — the representation the extremum enum
+/// did not serve, and the only one that can answer WITHOUT finishing the scan.
+///
+/// WHY IT IS A TARGET (item 1172). Pricing `min`/`max` across all six column representations at
+/// 200,000 nodes, against `count(<key>)` on the SAME column as the per-representation floor (it
+/// reads only the presence mask, so it should be flat everywhere):
+///
+/// ```text
+///   column   min(us)   count(k)(us)   min/count
+///   num       111.9       101.5          1.10
+///   dict      178.9       202.3          0.88
+///   date      112.0       101.4          1.10
+///   bool     1016.2       101.4         10.0x     <- this
+///   str      1524.3       101.6         15.0x     (comparing unique strings is real work)
+///   mixed    3162.5       147.9         21.4x     (`Gen` holds boxed `Value`s; not a target)
+/// ```
+///
+/// `Bool` is the SIMPLEST representation in the store — a `Vec<bool>` beside its masks — and it was
+/// the slowest of the three that should be trivial, at 9x the numeric arm and 10x its own floor,
+/// because it had no arm at all and fell to the general grouped fold, which boxes every cell into a
+/// `Value::Bool` and compares through `cmp_total` (200,000 boxed comparisons at ~5 ns).
+///
+/// THE SHORT CIRCUIT, which is why this is not merely "one more arm". `bool::cmp` gives
+/// `false < true` (checked in `value.rs`, not assumed), so over a boolean column:
+///
+///   - `min` is `false` the moment ANY present `false` is seen — nothing later can beat it;
+///   - `max` is `true` the moment ANY present `true` is seen.
+///
+/// So the answer is usually available in the first few cells and the walk stops, which no other
+/// representation permits. The fallback when the sought value never appears is one pass, and it
+/// still beats the boxed fold.
+///
+/// NULL is the same contract the numeric arm uses: an empty or all-null group has no extremum, so
+/// NULL — distinct from `sum`'s 0.0 (K0a). A present-null does not participate (`present[i]` is
+/// false for one), matching `count(<key>)` and every other extremum arm.
+pub(super) fn try_scan_bool_agg(
+    input: &Plan,
+    keys: &[(String, Expr)],
+    aggs: &[Agg],
+    store: &Store,
+) -> Option<Batch> {
+    let agg = sole_agg(keys, aggs)?;
+    if agg.distinct || !matches!(agg.func, AggFn::Min | AggFn::Max) {
+        return None;
+    }
+    let Plan::Scan { label } = input else {
+        return None;
+    };
+    let Some(Expr::Prop { slot: 0, key }) = agg.arg.as_ref() else {
+        return None;
+    };
+    let Some(Column::Bool { data, present, .. }) = store.column(key) else {
+        return None;
+    };
+
+    // `want` is the value that ENDS the search: `false` for `min`, `true` for `max`.
+    let want = agg.func == AggFn::Max;
+    let mut saw_want = false;
+    let mut saw_other = false;
+
+    scan_visit_while(store, label, |i| {
+        if present[i] {
+            if data[i] == want {
+                saw_want = true;
+
+                return false; // the extremum cannot be beaten — stop the walk
+            }
+
+            saw_other = true;
+        }
+
+        true
+    });
+
+    let v = if saw_want {
+        Value::Bool(want)
+    } else if saw_other {
+        // Every present cell was the OTHER value, so that is the extremum.
+        Value::Bool(!want)
+    } else {
+        Value::Null // no present cell at all
+    };
+
+    Some(Batch::of(vec![Col::Gen(vec![v])]))
+}
+
 pub(super) fn try_scan_str_agg(
     input: &Plan,
     keys: &[(String, Expr)],

@@ -31312,3 +31312,183 @@ fn the_percentile_fast_path_declines_what_it_cannot_answer() {
         assert!(rows.is_ok() || q.contains("n.s"), "{q}: {rows:?}");
     }
 }
+
+/// The boolean extremum arm against the GENERAL grouped fold, over every arrangement its SHORT
+/// CIRCUIT can get wrong (item 1172).
+///
+/// `try_scan_bool_agg` stops the walk the moment it sees the value that ends the search — `false`
+/// for `min`, `true` for `max` — so unlike every other extremum arm its answer depends on WHICH
+/// cells it reached, not merely on what the column holds. That makes the arrangement the thing to
+/// sweep: the sought value first, last, only, absent, and interleaved with absent cells and stored
+/// nulls.
+///
+/// `LET g = 1 ... GROUP BY g` is the oracle because it is one group — the same question — and it
+/// routes to the general fold, since the fast path requires a SOLE aggregate over a bare `Scan`
+/// with no grouping keys.
+#[test]
+fn the_boolean_extremum_agrees_with_the_grouped_fold_for_every_arrangement() {
+    // `None` is an ABSENT key; `Some(None)` is a STORED null; `Some(Some(b))` is a value.
+    #[allow(clippy::option_option)]
+    let cases: &[(&str, &[Option<Option<bool>>])] = &[
+        ("empty", &[]),
+        ("one false", &[Some(Some(false))]),
+        ("one true", &[Some(Some(true))]),
+        ("all false", &[Some(Some(false)), Some(Some(false))]),
+        ("all true", &[Some(Some(true)), Some(Some(true))]),
+        // The sought value FIRST, which is where the short circuit fires immediately.
+        (
+            "false first",
+            &[Some(Some(false)), Some(Some(true)), Some(Some(true))],
+        ),
+        (
+            "true first",
+            &[Some(Some(true)), Some(Some(false)), Some(Some(false))],
+        ),
+        // And LAST, which is the arrangement where it never fires early.
+        (
+            "false last",
+            &[Some(Some(true)), Some(Some(true)), Some(Some(false))],
+        ),
+        (
+            "true last",
+            &[Some(Some(false)), Some(Some(false)), Some(Some(true))],
+        ),
+        ("all absent", &[None, None]),
+        ("all stored null", &[Some(None), Some(None)]),
+        // A present-null must NOT participate, and must not be mistaken for a value either way.
+        ("null then false", &[Some(None), Some(Some(false))]),
+        ("null then true", &[Some(None), Some(Some(true))]),
+        ("absent then true", &[None, Some(Some(true))]),
+        (
+            "value, null, absent mixed",
+            &[Some(Some(true)), Some(None), None, Some(Some(false))],
+        ),
+    ];
+
+    for (name, cells) in cases {
+        let mut b = Builder::default();
+        for cell in *cells {
+            match cell {
+                None => b.node(&["N"], &[]),
+                Some(None) => b.node(&["N"], &[("f", Value::Null)]),
+                Some(Some(x)) => b.node(&["N"], &[("f", Value::Bool(*x))]),
+            };
+        }
+        let st = b.build();
+
+        // The FIRST row, or `None` when the query produced none. Both happen here, and which is
+        // which is the point of the `empty` case below.
+        let ask = |q: &str| -> Option<Value> {
+            let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &st);
+            run(&plan, &st).rows.iter().next().map(|r| r[0].clone())
+        };
+
+        for kind in ["min", "max"] {
+            let fast = ask(&format!("MATCH (n:N) RETURN {kind}(n.f) AS c"));
+
+            if cells.is_empty() {
+                // THE ORACLE DOES NOT APPLY HERE, and the reason is GQL and not a defect: a
+                // scalar aggregate over zero rows yields ONE row (the identity — NULL for an
+                // extremum), while `GROUP BY` over zero rows yields NO GROUPS and therefore no
+                // rows at all. Comparing them would assert the two spellings answer the same
+                // question when they do not. So the empty fixture is checked against the contract
+                // directly, and the grouped oracle is used for every fixture that has a row.
+                assert_eq!(
+                    format!("{fast:?}"),
+                    format!("{:?}", Some(Value::Null)),
+                    "{name} / {kind}: an extremum over zero rows is one NULL row"
+                );
+
+                continue;
+            }
+
+            let general = ask(&format!(
+                "MATCH (n:N) LET g = 1 RETURN {kind}(n.f) AS c GROUP BY g"
+            ));
+
+            assert_eq!(
+                format!("{fast:?}"),
+                format!("{general:?}"),
+                "{name} / {kind}: fast {fast:?} vs grouped fold {general:?}"
+            );
+        }
+    }
+}
+
+/// The boolean arm over a PARTIAL label and over DELETED nodes — the two walks `scan_visit_while`
+/// chooses between, which the arrangement sweep above never leaves the `whole` branch to exercise.
+///
+/// The short circuit makes this sharper than it is for the other arms: a walk that visited a node
+/// it should not have could STOP on that node's value and answer from a row the query excludes.
+#[test]
+fn the_boolean_extremum_respects_the_label_and_liveness() {
+    let mut b = Builder::default();
+    // The only `true` sits on a node the label does NOT cover, so a label-blind walk would stop
+    // there and answer `true` for `max` where the answer is `false`.
+    b.node(&["Other"], &[("f", Value::Bool(true))]);
+    b.node(&["N"], &[("f", Value::Bool(false))]);
+    b.node(&["N"], &[("f", Value::Bool(false))]);
+    let mut st = b.build();
+
+    let ask = |st: &Store, q: &str| -> Value {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), st);
+        run(&plan, st).rows[0][0].clone()
+    };
+
+    assert_eq!(
+        format!("{:?}", ask(&st, "MATCH (n:N) RETURN max(n.f) AS c")),
+        format!("{:?}", Value::Bool(false)),
+        "a label-blind walk would find the `Other` node's true"
+    );
+
+    // THE NO-PRESENT-CELL CASE, and it took a surviving mutant to find a fixture that REACHES it.
+    // The arrangement sweep's "all absent" and "all stored null" fixtures do not: with no node
+    // carrying the key the column does not exist (`store.column` is None), and a stored
+    // present-null promotes the column to `Column::Gen` (item 1142) — so both decline before the
+    // boolean arm is entered and its NULL branch was never exercised. A mutant answering `false`
+    // there SURVIVED.
+    //
+    // This reaches it: the column EXISTS as `Column::Bool` because an out-of-label node carries a
+    // value, while every node the label covers lacks the key — so the walk visits only cells whose
+    // `present` bit is false and must answer NULL rather than a default.
+    let mut b2 = Builder::default();
+    b2.node(&["Other"], &[("f", Value::Bool(true))]);
+    b2.node(&["N"], &[]);
+    b2.node(&["N"], &[]);
+    let st2 = b2.build();
+
+    for kind in ["min", "max"] {
+        let got = ask(&st2, &format!("MATCH (n:N) RETURN {kind}(n.f) AS c"));
+
+        assert_eq!(
+            format!("{got:?}"),
+            format!("{:?}", Value::Null),
+            "{kind} over a Bool column with no present cell under the label"
+        );
+    }
+
+    // AND LIVENESS: delete the only `false`-carrying node that the label covers, leaving one.
+    st.add_node(&["N"], &[("f", Value::Bool(true))]);
+    let before = ask(&st, "MATCH (n:N) RETURN min(n.f) AS c");
+
+    assert_eq!(format!("{before:?}"), format!("{:?}", Value::Bool(false)));
+
+    st.delete_node(1);
+    st.delete_node(2);
+
+    // Only the live `true` node remains under `:N`, so both extrema are now `true`.
+    for kind in ["min", "max"] {
+        let fast = ask(&st, &format!("MATCH (n:N) RETURN {kind}(n.f) AS c"));
+        let general = ask(
+            &st,
+            &format!("MATCH (n:N) LET g = 1 RETURN {kind}(n.f) AS c GROUP BY g"),
+        );
+
+        assert_eq!(
+            format!("{fast:?}"),
+            format!("{general:?}"),
+            "after deletes / {kind}"
+        );
+        assert_eq!(format!("{fast:?}"), format!("{:?}", Value::Bool(true)));
+    }
+}

@@ -1694,6 +1694,13 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
                         // numeric arm's with `Column::Str`/`Column::Dict` in place of
                         // `Column::Num`, so the two never contend for one shape (421).
                         .or_else(|| try_scan_str_agg(input, keys, aggs, store))
+                        // Its BOOLEAN twin (item 1172), beside the other per-representation
+                        // extremum arms for the reason items 421/375/422 all record: these entries
+                        // own the bare-`Scan` sole-aggregate shape between them, and an arm below a
+                        // path that claims the shape is dead. Disjoint by COLUMN TYPE — each
+                        // destructures the one representation it serves and declines the rest — so
+                        // no ordering among them can shadow another.
+                        .or_else(|| try_scan_bool_agg(input, keys, aggs, store))
                         // The TEMPORAL twin, placed beside the other two for the same reason:
                         // a bare `Scan` is a trivial frontier, so `try_frontier_prop_agg` below
                         // would claim the shape — it declines on `Column::Temporal` today, but

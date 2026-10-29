@@ -35295,3 +35295,116 @@ discovering it halfway in.
 `examples/egress_split_probe.rs` — the only instrument in the corpus that separates building a row
 from tearing it down, with the numeric column as the control that validates `mem::forget`. Reach for
 it before attributing any per-row cost to construction.
+
+## 1172 — ✅ SHIPPED **~3107x**: `min`/`max` over a `Column::Bool`, the one representation the extremum enum did not serve — and the only one that can answer WITHOUT finishing the scan
+
+Item 1161 made the numeric extremum 3.8-4.2x faster, so the next question is whether the fast path
+covers the store's SIX column representations or only the one that got attention. Priced with
+`count(<key>)` on the SAME column as each representation's floor — it reads only the presence mask,
+so it should be flat everywhere, and a representation where `count` is flat but `min` is slow has a
+FOLD problem rather than a column problem:
+
+```text
+  column   min(us)   count(k)(us)   min/count
+  num       111.9       101.5          1.10
+  dict      178.9       202.3          0.88
+  date      112.0       101.4          1.10
+  bool     1016.2       101.4         10.0x    <- the gap
+  str      1524.3       101.6         15.0x    (comparing unique strings is real work)
+  mixed    3162.5       147.9         21.4x    (`Gen` holds boxed `Value`s; not a target)
+```
+
+**`Bool` is the simplest representation in the store** — a `Vec<bool>` beside its masks — and was
+the slowest of the three that should be trivial, because it had no arm at all: reading first found
+`try_scan_num_agg`, `try_scan_str_agg` and `try_scan_temporal_agg`, and nothing for `Bool`, so it
+fell to the general grouped fold, which boxes every cell into a `Value::Bool` and compares through
+`cmp_total` (200,000 boxed comparisons at ~5 ns).
+
+### The short circuit, which is why this is not merely "one more arm"
+
+`bool::cmp` gives `false < true` — checked in `value.rs`, not assumed — so over a boolean column
+`min` is `false` the moment ANY present `false` is seen, and `max` is `true` on the first present
+`true`. Nothing later can beat it, so the walk stops. No other representation permits that.
+
+```text
+  bool   PRE [978.6, 932.1, 936.6]   POST [0.3, 0.3, 0.3]   ~3107x
+  CONTROLS, all flat: num 1.00x, str 0.99x, dict 1.00x, date 1.01x, mixed 0.99x
+```
+
+Three order-alternated rounds, each arm asserted to BE its code before being built. **The
+alternation earned itself a third time this session:** a single PRE reading against the POST runs
+showed every control ~9% faster, which alternated is 1.00-1.01x — machine drift, not the change.
+
+### ⚠️ Mutation found a branch my fixtures could not REACH
+
+Six mutants, and M5 — making the no-present-cell case answer `false` instead of NULL — SURVIVED.
+The arrangement sweep has "all absent" and "all stored null" fixtures, and **neither enters the
+arm**: with no node carrying the key `store.column` is `None`, and a stored present-null promotes
+the column to `Column::Gen` (item 1142). So the NULL branch was never exercised.
+
+It IS reachable, and the fixture that does it is worth stating: a column that exists as
+`Column::Bool` because an OUT-OF-LABEL node carries a value, while every node the label covers
+lacks the key — so the walk sees only cells whose `present` bit is false. Added; M5 now caught.
+That is the fourth costume of one trap this session — item 1162's fixture too small to leave the
+first partition, 1136/1142's built the wrong way so the path declined, 1169's missing the value the
+predicate reads, and now one that cannot construct the representation at all.
+
+M6 also reported **ANCHOR COUNT 6** rather than a verdict: its first anchor (the `matches!` gate)
+appears six times in the file, so the mutant was never applied and the harness said so instead of
+scoring it. Re-anchored on the column destructure, then caught.
+
+Final: **5 caught, 1 survivor, and the survivor is answer-equivalent by construction** — removing
+the `return false` that stops the walk reaches the same verdict, only slower. Predicted to survive.
+
+### Correctness oracle
+
+The general grouped fold (`LET g = 1 … GROUP BY g`), over 15 arrangements the short circuit could
+get wrong: the sought value first, last, only, absent, interleaved with absent cells and stored
+nulls — plus a partial label and a post-delete store, which are the two walks `scan_visit_while`
+chooses between (and where a label-blind walk could STOP on a row the query excludes, so the
+fixture puts the only `true` on an out-of-label node).
+
+**One case needed the oracle withdrawn, for a GQL reason and not a defect:** over ZERO rows a
+scalar aggregate yields one NULL row while `GROUP BY` yields NO GROUPS and no rows at all.
+Comparing them would assert that two spellings answer the same question when they do not, so the
+empty fixture is checked against the contract directly and the grouped oracle is used for every
+fixture that has a row.
+
+### ✅ NEGATIVE RESULT: the TS engine has no such gap
+
+```text
+  TS, 200k nodes:  num 4.4 / 4.0   str 8.6 / 3.4   dict 6.6 / 3.5   bool 5.6 / 3.5   date 4.3 / 3.3
+                   (min ms / count(k) ms)
+```
+
+`bool` is 1.6x its own floor — in the same band as `dict` (1.9x) and BETTER than `str` (2.5x) — so
+the gap was specific to a columnar store having a `Bool` representation with no arm. TS keeps
+property bags per vertex, so every type goes through one `extremumFold` and there is nothing to
+miss. A boolean short circuit there would cap at ~1.6x (the scan floor is 3.5 of the 5.6) and risks
+the documented closure-size hazard, so it is **priced and declined**, not deferred. Every row of
+the probe asserts `ts === native`, which independently exercises the arm shipped here.
+
+### ⚠️ A rare fuzzer failure, STRUCTURALLY ruled out rather than counted
+
+One `bun run fuzz` pass reported `1 fail`; a re-run was clean. The standing rule is to rule a
+suspect out structurally, not by counting re-runs, so six further passes identified it by name — 1
+in 6 — as `differential fuzz: gremlin`, with the traversal:
+
+```text
+  [seed 2150414400223868] g.V().union(has('name', gt('nope')).out('KNOWS', 'NOPE'), out('NOPE'))
+                               .order().skip(1).inE('KNOWS').values('weight')
+    ts: ERR E_SYNTAX      native: []
+```
+
+**Structurally independent of this change, decisively:** `try_scan_bool_agg` is entered only for a
+sole `Min`/`Max` over a bare `Scan` whose column is `Column::Bool`, and the gremlin fuzzer's
+fixture carries ONLY `age`/`weight` (num) and `lang`/`name` (str) — **no boolean property at all** —
+and generates **no `min`/`max`** (zero occurrences). It cannot reach the arm. The 500k optimizer
+sweep and the other six fuzzers are green.
+
+This is the known `gremlin-fuzz-families` residual, and the shape above is an improvement on its
+standing description ("1 in 30, seed replays clean"): it is a `union(...)` traversal where the two
+engines disagree about whether the thing even PARSES. An attempt to isolate it here failed on my
+own harness error (I guessed the TS entry point and got `gremlin is not a function`), so the shape
+is identified from the fuzzer's own output and **not yet reduced** — recorded as open, with the seed,
+rather than claimed as diagnosed.
