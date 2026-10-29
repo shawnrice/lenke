@@ -115,4 +115,32 @@ fn main() {
 
         println!("  {key:<10} {hop_min:>11.1} {hop_cnt:>15.1} {scan_min:>14.1}       {short}");
     }
+
+    // THE MULTI-AGGREGATE SIBLING (item 1184). `try_frontier_multi_agg` serves TWO OR MORE
+    // scalar aggregates over one frontier and admits `count`/`min`/`max` — but its `MinMax` spec
+    // destructures `Column::Num` exactly as the single-aggregate path did before item 1182, so
+    // the same hole should be here one function over. Unlike that path it declines `Plan::Scan`
+    // outright, so there is no bare-scan case to steal and no ordering question.
+    //
+    // `count(*), count(b.k)` is the control: BOTH are served for every representation (a count
+    // folds the present mask, item 376), so that row prices the two-aggregate machinery itself
+    // and must be flat across types. A representation where the count pair is flat but the
+    // min/max pair is slow has the `MinMax` hole; one where both are slow has something else.
+    println!();
+    println!("  column      min+max(us)   cnt*+cnt(k)(us)   min+max ÷ counts");
+
+    for key in ["num", "str", "dict", "bool", "mixed"] {
+        let ask = |q: &str| -> f64 {
+            time_query(q, false, &store, cfg.reps).map_or(f64::NAN, |(us, _)| us)
+        };
+
+        let pair = ask(&format!(
+            "MATCH (a:Person)-[:KNOWS]->(b) RETURN min(b.{key}) AS lo, max(b.{key}) AS hi"
+        ));
+        let ctl = ask(&format!(
+            "MATCH (a:Person)-[:KNOWS]->(b) RETURN count(*) AS n, count(b.{key}) AS c"
+        ));
+
+        println!("  {key:<10} {pair:>11.1} {ctl:>17.1} {:>17.2}x", pair / ctl);
+    }
 }

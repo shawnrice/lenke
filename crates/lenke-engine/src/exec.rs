@@ -1729,6 +1729,15 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
                         // the load-bearing one. See
                         // `the_single_aggregate_frontier_entries_all_decline_a_two_aggregate_shape`.
                         .or_else(|| try_frontier_multi_agg(input, keys, aggs, store))
+                        // Its NON-NUMERIC twin (item 1184), and it must sit AFTER the entry
+                        // above rather than replace it. Widening that one in place served the
+                        // same shapes and cost its own `count(*), count(b.k)` control 1.10x over
+                        // three alternated rounds, because `match spec` grew from three arms to
+                        // seven and every query through the function pays that dispatch. The
+                        // entry above is byte-identical to before, so its control is untouched by
+                        // construction; this one receives only what that one declines, since a
+                        // non-`Column::Num` extremum is exactly its decline condition.
+                        .or_else(|| try_frontier_multi_agg_wide(input, keys, aggs, store))
                         .or_else(|| try_filtered_scan_num_agg(input, keys, aggs, store))
                         // Its STRING twin. Beside it rather than anywhere else, for the reason
                         // 421 and 375 both record: these entries own the `Filter(Scan)` shape

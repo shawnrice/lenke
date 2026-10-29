@@ -4465,6 +4465,265 @@ pub(super) fn try_frontier_multi_agg(
         .collect();
     Some(Batch::of(cols))
 }
+/// The NON-NUMERIC twin of [`try_frontier_multi_agg`], for a two-or-more-aggregate frontier whose
+/// `min`/`max` argument is a `Str`, `Dict`, `Bool` or `Temporal` column (item 1184).
+///
+/// WHY A SEPARATE FUNCTION, and it is a MEASUREMENT rather than taste. Widening the entry above
+/// in place served the same shapes and cost its own `count(*), count(b.k)` control **1.10x** over
+/// three order-alternated rounds — a path that reads none of the new arms. Two causes, found in
+/// order: the shared accumulator grew from `(f64, Option<f64>)` to a struct carrying an index,
+/// two flags and a `Vec`, so the count arms indexed a far larger stride for state they never read
+/// (1.16x); splitting that into side state recovered part of it (1.10x); and the residue is the
+/// DISPATCH — `match spec` grew from three arms to seven, which every query through the function
+/// pays. The control moved 1.10x on four representations and only 0.98x on `mixed`, whose per-node
+/// work is the most expensive, which is what a fixed per-node cost looks like.
+///
+/// So this is item 375's "a shared body taxes both folds" a third time, and the structural answer
+/// is item 1162's: a separate function, reached only by the shapes it serves. The entry above is
+/// left BYTE-IDENTICAL, so its control is untouched by construction rather than by re-measurement.
+///
+/// Placed AFTER it in the chain. That entry already declines when a `min`/`max` column is not
+/// `Column::Num`, so this one receives exactly those shapes and no others — and it re-checks every
+/// gate itself, so it cannot serve something the chain did not intend.
+pub(super) fn try_frontier_multi_agg_wide(
+    input: &Plan,
+    keys: &[(String, Expr)],
+    aggs: &[Agg],
+    store: &Store,
+) -> Option<Batch> {
+    if !keys.is_empty() || aggs.len() < 2 || matches!(input, Plan::Scan { .. }) {
+        return None;
+    }
+    let width = chain_width(input)?;
+    // Per agg: what to accumulate. `Rows` is `count(*)`, which reads no column.
+    //
+    // ONE VARIANT PER REPRESENTATION rather than a column-type test inside `MinMax` (item 1184).
+    // The fold already dispatches on `spec` once per (node, agg), so extra variants cost the
+    // existing `Num` arm nothing — the same jump table gains entries. A shared body behind a
+    // type test would tax every arm, which is what item 375 measured at 1.09x on its `sum`
+    // control before splitting the folds restored parity.
+    enum FSpec<'a> {
+        Rows,
+        CountProp(&'a Column),
+        MinMax(&'a [f64], &'a [bool], bool),
+        MinMaxStr(&'a [GStr], &'a [bool], bool),
+        MinMaxDict(&'a [GStr], &'a [u32], &'a [bool], bool),
+        MinMaxBool(&'a [bool], &'a [bool], bool),
+        MinMaxTemporal(&'a [crate::temporal::Temporal], &'a [bool], bool),
+    }
+    let mut specs: Vec<FSpec> = Vec::with_capacity(aggs.len());
+    for agg in aggs {
+        if agg.distinct {
+            return None;
+        }
+        match (agg.func, agg.arg.as_ref()) {
+            (AggFn::Count, None) => specs.push(FSpec::Rows),
+            (AggFn::Count | AggFn::Min | AggFn::Max, Some(Expr::Prop { slot, key })) => {
+                if *slot != width - 1 {
+                    return None; // arg must be a property of the chain frontier
+                }
+                if agg.func == AggFn::Count {
+                    specs.push(FSpec::CountProp(store.column(key)?));
+                } else {
+                    let want_min = agg.func == AggFn::Min;
+                    // Each arm mirrors its single-aggregate twin in `try_frontier_prop_agg`
+                    // (item 1182), so the one-aggregate and two-aggregate spellings of one
+                    // question cannot disagree. `Gen` declines: a mixed column's extremum
+                    // crosses type ranks and belongs to the general fold.
+                    specs.push(match store.column(key)? {
+                        Column::Num { data, present, .. } => {
+                            FSpec::MinMax(data.as_slice(), present.as_slice(), want_min)
+                        }
+                        Column::Str { data, present, .. } => {
+                            FSpec::MinMaxStr(data.as_slice(), present.as_slice(), want_min)
+                        }
+                        Column::Dict {
+                            dict,
+                            codes,
+                            present,
+                            ..
+                        } => FSpec::MinMaxDict(
+                            dict.as_slice(),
+                            codes.as_slice(),
+                            present.as_slice(),
+                            want_min,
+                        ),
+                        Column::Bool { data, present, .. } => {
+                            FSpec::MinMaxBool(data.as_slice(), present.as_slice(), want_min)
+                        }
+                        Column::Temporal { data, present, .. } => {
+                            FSpec::MinMaxTemporal(data.as_slice(), present.as_slice(), want_min)
+                        }
+                        Column::Gen { .. } => return None,
+                    });
+                }
+            }
+            _ => return None, // sum/avg (item 376) and everything else
+        }
+    }
+    let counts = frontier_counts(input, store)?;
+    // (weighted total, best) per agg — one or the other is used, never both.
+    let mut acc: Vec<(f64, Option<f64>)> = vec![(0.0, None); specs.len()];
+    // SIDE STATE for the non-numeric extremum arms, deliberately NOT folded into `acc`
+    // (item 1184). Widening the shared accumulator to carry an index, two flags and a `Vec`
+    // measured **1.16x on the `count(*), count(k)` control** — consistently across all five
+    // representations — because the `Rows`/`CountProp`/`MinMax` arms then index a far larger
+    // stride for state they never read. That is item 375's "a shared body taxes both folds"
+    // expressed in the DATA rather than the code, and splitting it restores the control. Keeping
+    // `acc` byte-identical is what makes the numeric path provably unchanged.
+    #[derive(Clone, Default)]
+    struct Ext {
+        best_i: Option<usize>,
+        saw_want: bool,
+        saw_other: bool,
+        // The dictionary arm's per-code mark. Every other arm leaves it empty, and an empty
+        // `Vec` does not allocate, so this is one allocation per DICT agg and none otherwise.
+        seen: Vec<bool>,
+    }
+    let mut ext: Vec<Ext> = specs
+        .iter()
+        .map(|s| match s {
+            FSpec::MinMaxDict(dict, ..) => Ext {
+                seen: vec![false; dict.len()],
+                ..Ext::default()
+            },
+            _ => Ext::default(),
+        })
+        .collect();
+    counts.for_each(|v, c| {
+        let i = v as usize;
+        for (k, spec) in specs.iter().enumerate() {
+            match spec {
+                FSpec::Rows => acc[k].0 += c,
+                FSpec::CountProp(col) => {
+                    if col.has_value_at(i) {
+                        acc[k].0 += c;
+                    }
+                }
+                FSpec::MinMax(data, present, want_min) => {
+                    if present[i] {
+                        let x = data[i];
+                        acc[k].1 = Some(match acc[k].1 {
+                            None => x,
+                            Some(b) => {
+                                let ord = value::cmp_num_total(x, b);
+                                if (*want_min && ord.is_lt()) || (!*want_min && ord.is_gt()) {
+                                    x
+                                } else {
+                                    b
+                                }
+                            }
+                        });
+                    }
+                }
+                // Tracked as an INDEX rather than a borrow: `for_each` takes an `FnMut`, and a
+                // `&GStr` is not a borrow the closure can hold across iterations.
+                FSpec::MinMaxStr(data, present, want_min) => {
+                    if present[i] {
+                        ext[k].best_i = Some(match ext[k].best_i {
+                            None => i,
+                            Some(b) => {
+                                let ord = data[i].cmp(&data[b]);
+                                if (*want_min && ord.is_lt()) || (!*want_min && ord.is_gt()) {
+                                    i
+                                } else {
+                                    b
+                                }
+                            }
+                        });
+                    }
+                }
+                // Pass one of two: WHICH codes the frontier reaches. No string is compared per
+                // node; the extremum over `dict` is taken once, below.
+                FSpec::MinMaxDict(_, codes, present, _) => {
+                    if present[i] {
+                        ext[k].seen[codes[i] as usize] = true;
+                    }
+                }
+                FSpec::MinMaxBool(data, present, want_min) => {
+                    if present[i] {
+                        // `want` — the value that ENDS the search — is `!want_min`: `min` seeks
+                        // `false`, `max` seeks `true`. So "is this cell the sought value" is
+                        // `data[i] == !want_min`, which is the same predicate as this one and is
+                        // how the finish stage below still spells it.
+                        if data[i] != *want_min {
+                            ext[k].saw_want = true;
+                        } else {
+                            ext[k].saw_other = true;
+                        }
+                    }
+                }
+                FSpec::MinMaxTemporal(data, present, want_min) => {
+                    if present[i] {
+                        ext[k].best_i = Some(match ext[k].best_i {
+                            None => i,
+                            Some(b) => {
+                                let ord = data[i].cmp_total(&data[b]);
+                                if (*want_min && ord.is_lt()) || (!*want_min && ord.is_gt()) {
+                                    i
+                                } else {
+                                    b
+                                }
+                            }
+                        });
+                    }
+                }
+            }
+        }
+    });
+    let cols: Vec<Col> = specs
+        .iter()
+        .enumerate()
+        .map(|(k, spec)| {
+            let (total, best) = acc[k];
+            let a = &ext[k];
+            let v = match spec {
+                FSpec::Rows | FSpec::CountProp(_) => Value::Num(total),
+                FSpec::MinMax(..) => best.map_or(Value::Null, Value::Num),
+                FSpec::MinMaxStr(data, ..) => a
+                    .best_i
+                    .map_or(Value::Null, |i| Value::Str(data[i].clone())),
+                // Pass two: over `dict.len()` rather than over the frontier, which is the point
+                // of the dictionary arm.
+                FSpec::MinMaxDict(dict, _, _, want_min) => {
+                    let mut best_c: Option<usize> = None;
+                    for (c, &used) in a.seen.iter().enumerate() {
+                        if used {
+                            best_c = Some(match best_c {
+                                None => c,
+                                Some(b) => {
+                                    let ord = dict[c].cmp(&dict[b]);
+                                    if (*want_min && ord.is_lt()) || (!*want_min && ord.is_gt()) {
+                                        c
+                                    } else {
+                                        b
+                                    }
+                                }
+                            });
+                        }
+                    }
+                    best_c.map_or(Value::Null, |c| Value::Str(dict[c].clone()))
+                }
+                FSpec::MinMaxBool(_, _, want_min) => {
+                    let want = !*want_min;
+
+                    if a.saw_want {
+                        Value::Bool(want)
+                    } else if a.saw_other {
+                        Value::Bool(!want)
+                    } else {
+                        Value::Null
+                    }
+                }
+                FSpec::MinMaxTemporal(data, ..) => {
+                    a.best_i.map_or(Value::Null, |i| Value::Temporal(data[i]))
+                }
+            };
+            Col::Gen(vec![v])
+        })
+        .collect();
+    Some(Batch::of(cols))
+}
 
 /// `count(<property>)` over a bare `Scan` — a presence scan, with no column materialized.
 ///

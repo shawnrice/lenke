@@ -32339,3 +32339,332 @@ fn the_frontier_extremum_handles_a_frontier_with_nothing_to_compare() {
         );
     }
 }
+
+/// The MULTI-aggregate frontier extremum against the general grouped fold, for every column
+/// representation (item 1184).
+///
+/// `try_frontier_multi_agg` serves two or more scalar aggregates over one frontier and admits
+/// `count`/`min`/`max`, but its `MinMax` spec destructured `Column::Num` exactly as the
+/// single-aggregate path did before item 1182 — so `min(b.k), max(b.k)` over a non-numeric column
+/// fell to the general fold, measured at 4.5-12.7x its own `count(*), count(b.k)` control.
+///
+/// WHY A SEPARATE TEST from the single-aggregate sweep, rather than another column there: the two
+/// paths are different functions with different gates (this one declines `Plan::Scan` outright,
+/// so it has no bare-scan case to steal and no chain-ordering question), and the risk here is
+/// specific — the PAIR must agree with the pair the general fold produces, including when the two
+/// aggregates read the SAME column and must not share accumulator state.
+///
+/// The `bool-mixed` row carries item 1182's M3 lesson forward: a homogeneous boolean frontier
+/// cannot observe the comparison's DIRECTION, because over one value `min` and `max` agree. It is
+/// here from the start rather than after a mutant found its absence.
+#[test]
+fn the_multi_aggregate_frontier_extremum_agrees_with_the_grouped_fold() {
+    use crate::temporal::{Date, Temporal};
+
+    let vnum = |x: f64| Value::Num(x);
+    let vstr = |x: &str| Value::Str(x.into());
+    let vdate = |iso: &str| Value::Temporal(Temporal::Date(Date::parse(iso).unwrap()));
+    let tt = Value::Bool(true);
+    let ff = Value::Bool(false);
+
+    // (name, ten values, expected representation). Index 0 and 9 are stranded extremes the hop
+    // does not reach; indices 1-3 are the frontier.
+    let reps: Vec<(&str, Vec<Value>, &str)> = vec![
+        (
+            "num",
+            vec![
+                vnum(0.0),
+                vnum(10.0),
+                vnum(20.0),
+                vnum(30.0),
+                vnum(15.0),
+                vnum(25.0),
+                vnum(35.0),
+                vnum(45.0),
+                vnum(55.0),
+                vnum(99.0),
+            ],
+            "Num",
+        ),
+        (
+            "str",
+            vec![
+                vstr("a0"),
+                vstr("b1"),
+                vstr("b2"),
+                vstr("b3"),
+                vstr("c4"),
+                vstr("c5"),
+                vstr("c6"),
+                vstr("c7"),
+                vstr("c8"),
+                vstr("z9"),
+            ],
+            "Str",
+        ),
+        (
+            "dict",
+            vec![
+                vstr("g0"),
+                vstr("g3"),
+                vstr("g4"),
+                vstr("g5"),
+                vstr("g3"),
+                vstr("g4"),
+                vstr("g5"),
+                vstr("g3"),
+                vstr("g4"),
+                vstr("g9"),
+            ],
+            "Dict",
+        ),
+        (
+            "bool-mixed",
+            vec![
+                tt.clone(),
+                tt.clone(),
+                ff.clone(),
+                tt.clone(),
+                tt.clone(),
+                tt.clone(),
+                tt.clone(),
+                tt.clone(),
+                tt.clone(),
+                tt.clone(),
+            ],
+            "Bool",
+        ),
+        (
+            "bool-homog",
+            vec![
+                ff.clone(),
+                tt.clone(),
+                tt.clone(),
+                tt.clone(),
+                tt.clone(),
+                tt.clone(),
+                tt.clone(),
+                tt.clone(),
+                tt.clone(),
+                tt.clone(),
+            ],
+            "Bool",
+        ),
+        (
+            "date",
+            vec![
+                vdate("2000-01-01"),
+                vdate("2010-01-01"),
+                vdate("2011-01-01"),
+                vdate("2012-01-01"),
+                vdate("2015-01-01"),
+                vdate("2016-01-01"),
+                vdate("2017-01-01"),
+                vdate("2018-01-01"),
+                vdate("2019-01-01"),
+                vdate("2099-01-01"),
+            ],
+            "Temporal",
+        ),
+    ];
+
+    for (name, vals, want_repr) in reps {
+        let mut b = Builder::default();
+        let ids: Vec<u32> = vals
+            .iter()
+            .map(|v| b.node(&["N"], &[("k", v.clone())]))
+            .collect();
+        let s0 = b.node(&["S"], &[]);
+        let s1 = b.node(&["S"], &[]);
+        b.edge(s0, ids[1], "E");
+        b.edge(s0, ids[2], "E");
+        b.edge(s1, ids[2], "E"); // reached TWICE: the multiplicity the collapse discards
+        b.edge(s1, ids[3], "E");
+        let st = b.build();
+
+        let repr = match st.column("k") {
+            Some(crate::store::Column::Num { .. }) => "Num",
+            Some(crate::store::Column::Str { .. }) => "Str",
+            Some(crate::store::Column::Dict { .. }) => "Dict",
+            Some(crate::store::Column::Bool { .. }) => "Bool",
+            Some(crate::store::Column::Temporal { .. }) => "Temporal",
+            Some(crate::store::Column::Gen { .. }) => "Gen",
+            None => "none",
+        };
+        assert_eq!(
+            repr, want_repr,
+            "{name}: the fixture must BUILD the representation it claims, or the arm is untested"
+        );
+
+        // Three two-aggregate shapes: the extremum PAIR over one column (where sharing
+        // accumulator state would show), a count beside an extremum, and the pair in the
+        // opposite order (the spec vector is built in written order, so order is observable).
+        for proj in [
+            "min(b.k) AS lo, max(b.k) AS hi",
+            "max(b.k) AS hi, min(b.k) AS lo",
+            "count(*) AS n, min(b.k) AS lo",
+            "count(b.k) AS c, max(b.k) AS hi",
+        ] {
+            let q = format!("MATCH (a:S)-[:E]->(b:N) RETURN {proj}");
+            let plan = crate::opt::optimize_indexed(crate::gql::parse(&q).unwrap(), &st);
+
+            // The arm must be REACHED, not merely willing (items 371/375).
+            let Plan::Project { input, .. } = &plan else {
+                panic!("{name}/{proj}: expected a Project over the Aggregate");
+            };
+            let Plan::Aggregate {
+                input: ain,
+                keys,
+                aggs,
+            } = input.as_ref()
+            else {
+                panic!("{name}/{proj}: expected an Aggregate");
+            };
+            assert_eq!(
+                aggs.len(),
+                2,
+                "{name}/{proj}: the fixture must present TWO aggregates"
+            );
+            let orig = crate::exec::fastpath::try_frontier_multi_agg(ain, keys, aggs, &st);
+            let wide = crate::exec::fastpath::try_frontier_multi_agg_wide(ain, keys, aggs, &st);
+
+            if want_repr == "Num" {
+                assert!(
+                    orig.is_some(),
+                    "{name}/{proj}: the numeric entry must serve its own shape"
+                );
+            } else {
+                // THE CHAIN CONTRACT, and both halves are load-bearing. The numeric entry must
+                // DECLINE, which is the only reason the wide twin is reached at all; and the wide
+                // twin must serve. Asserting only the second would still pass if the numeric
+                // entry had quietly started serving these shapes — which is precisely the
+                // in-place widening that cost the count control 1.10x (item 1184).
+                assert!(
+                    orig.is_none(),
+                    "{name}/{proj}: the NUMERIC entry claimed a non-numeric shape; the wide twin \
+                     is then unreachable and the dispatch cost is back on the count control"
+                );
+                assert!(
+                    wide.is_some(),
+                    "{name}/{proj}: try_frontier_multi_agg_wide declined the shape it serves"
+                );
+            }
+
+            let fast = run(&plan, &st).rows[0].to_vec();
+            let general = run(
+                &crate::opt::optimize_indexed(
+                    crate::gql::parse(&format!(
+                        "MATCH (a:S)-[:E]->(b:N) LET g = 1 RETURN {proj} GROUP BY g"
+                    ))
+                    .unwrap(),
+                    &st,
+                ),
+                &st,
+            )
+            .rows[0]
+                .to_vec();
+
+            assert_eq!(
+                format!("{fast:?}"),
+                format!("{general:?}"),
+                "{name}/{proj}: fast {fast:?} vs grouped fold {general:?}"
+            );
+        }
+    }
+}
+
+/// The WIDE multi-aggregate arm over frontier cells that hold no value (item 1184).
+///
+/// The representation sweep above gives every frontier node a value, so a `present`-blind arm in
+/// `try_frontier_multi_agg_wide` would answer correctly there and survive. Absence has to be its
+/// own fixture, and it must use a NON-NUMERIC column — a numeric one is served by the entry above,
+/// which is byte-identical to before and not what this guards.
+#[test]
+fn the_wide_multi_aggregate_arm_handles_absent_frontier_cells() {
+    let v = |x: &str| Value::Str(x.into());
+
+    // (name, which frontier nodes carry `k`). The hop reaches ids[1..=2] in both fixtures.
+    for (name, carries) in [
+        ("partly absent", [true, false]),
+        ("all absent", [false, false]),
+    ] {
+        let mut b = Builder::default();
+        // A node OUTSIDE the frontier always carries `k`, so the column exists in the store even
+        // when no frontier cell does — without it `store.column` is None and the arm declines
+        // before any null branch runs.
+        b.node(&["N"], &[("k", v("zzz"))]);
+        let ids: Vec<u32> = carries
+            .iter()
+            .map(|c| {
+                if *c {
+                    b.node(&["N"], &[("k", v("mmm"))])
+                } else {
+                    b.node(&["N"], &[])
+                }
+            })
+            .collect();
+        let s = b.node(&["S"], &[]);
+        for id in &ids {
+            b.edge(s, *id, "E");
+        }
+        let st = b.build();
+
+        assert!(
+            st.column("k").is_some(),
+            "{name}: the column must EXIST or the arm declines before its null branch"
+        );
+
+        for proj in [
+            "min(b.k) AS lo, max(b.k) AS hi",
+            "count(*) AS n, min(b.k) AS lo",
+        ] {
+            let q = format!("MATCH (a:S)-[:E]->(b:N) RETURN {proj}");
+            let plan = crate::opt::optimize_indexed(crate::gql::parse(&q).unwrap(), &st);
+            let Plan::Project { input, .. } = &plan else {
+                panic!("{name}/{proj}: expected a Project over the Aggregate");
+            };
+            let Plan::Aggregate {
+                input: ain,
+                keys,
+                aggs,
+            } = input.as_ref()
+            else {
+                panic!("{name}/{proj}: expected an Aggregate");
+            };
+
+            // The WIDE arm must RUN here. If it declined, the answer below would come from the
+            // general fold and the branch under test would be untouched while the test passed —
+            // the hole item 1182 found in its own null-branch oracle.
+            assert!(
+                crate::exec::fastpath::try_frontier_multi_agg_wide(ain, keys, aggs, &st).is_some(),
+                "{name}/{proj}: the wide arm must run on an absent frontier, not decline"
+            );
+
+            let fast = run(&plan, &st).rows[0].to_vec();
+            let general = run(
+                &crate::opt::optimize_indexed(
+                    crate::gql::parse(&format!(
+                        "MATCH (a:S)-[:E]->(b:N) LET g = 1 RETURN {proj} GROUP BY g"
+                    ))
+                    .unwrap(),
+                    &st,
+                ),
+                &st,
+            )
+            .rows[0]
+                .to_vec();
+
+            assert_eq!(
+                format!("{fast:?}"),
+                format!("{general:?}"),
+                "{name}/{proj}: fast {fast:?} vs grouped fold {general:?}"
+            );
+
+            // And the stranded `zzz` must never reach the answer: it is outside the frontier.
+            assert!(
+                !format!("{fast:?}").contains("zzz"),
+                "{name}/{proj}: a cell the hop does not reach leaked into {fast:?}"
+            );
+        }
+    }
+}

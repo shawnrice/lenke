@@ -150,6 +150,36 @@ const boolDoc = Array.from(
   (_, i) =>
     `{"type":"node","id":"v${i}","labels":["Person"],"properties":{"age":${i % 90},"flag":${i % 2 === 0}}}`,
 ).join('\n');
+/**
+ * A hop fixture with a STRING and a DICTIONARY property on the far endpoint (item 1184).
+ *
+ * In its own document for the reason `boolDoc` above records: `graphDoc` is shared by a dozen
+ * rows, and widening a shared fixture moves every one of their recorded numbers (item 1130).
+ *
+ * `name` is unique per node, so it stays a plain string column; `city` takes eight values, which
+ * clears the dictionary encoder's "distinct at most half the rows" cap. The two differ ONLY in
+ * cardinality, which is what makes them separate rows worth having — the dictionary arm folds over
+ * the dictionary rather than the frontier, so it is the faster of the two and a regression in just
+ * one of them is a real possibility.
+ *
+ * Five edges per node with ids, matching `graphDoc`: a sparse or id-less fixture understates
+ * everything on the edge path.
+ */
+const hopPairDoc = (() => {
+  const lines = Array.from(
+    { length: N },
+    (_, i) =>
+      `{"type":"node","id":"v${i}","labels":["Person"],"properties":{"age":${i % 90},"name":"person${i}","city":"city${i % 8}"}}`,
+  );
+
+  for (let k = 0; k < N * 5; k++) {
+    lines.push(
+      `{"type":"edge","id":"e${k}","labels":["KNOWS"],"from":"v${(k * 7919) % N}","to":"v${(k * 104_729) % N}","properties":{}}`,
+    );
+  }
+
+  return lines.join('\n');
+})();
 const graphDoc = (() => {
   const lines = Array.from(
     { length: N },
@@ -523,6 +553,56 @@ const CASES: Case[] = [
     ...onGraph(
       () => boolDoc,
       (e, g) => void e.query(g, 'MATCH (n:Person) RETURN n.flag AS a ORDER BY a LIMIT 5'),
+    ),
+  },
+  {
+    // THE TWO-AGGREGATE FRONTIER EXTREMUM over a non-numeric column (item 1184).
+    //
+    // `try_frontier_multi_agg` admitted `count`/`min`/`max` over a hop but its `MinMax` spec
+    // destructured `Column::Num` alone, so these shapes fell to the general fold at 11.66x
+    // (dict) / 7.71x (str) their own count-pair control. The fix is a separate
+    // `try_frontier_multi_agg_wide` AFTER it in the chain, because widening the numeric entry in
+    // place cost that control 1.10x over three alternated rounds.
+    //
+    // THESE ROWS EXIST FOR A SPECIFIC MUTANT. Deleting the chain's `or_else` call for the wide
+    // function is ANSWER-EQUIVALENT — the general fold returns identical rows, only slower — so it
+    // SURVIVED every unit test and every fuzzer (item 1184's W6). The oracle asserts the two
+    // functions hand off correctly by calling them directly, which cannot see a missing chain
+    // entry. A number that moves is the only instrument that can, which is item 1177's lesson:
+    // a win with no row is a win that quietly comes undone.
+    name: 'query: hop min+max over a string [wide multi-agg]',
+    ...onGraph(
+      () => hopPairDoc,
+      (e, g) =>
+        void e.query(
+          g,
+          'MATCH (a:Person)-[:KNOWS]->(x) RETURN min(x.name) AS lo, max(x.name) AS hi',
+        ),
+    ),
+  },
+  {
+    // The DICTIONARY twin. Separate because it is different code — the arm marks which codes the
+    // frontier reaches and then folds over the dictionary, comparing no string per node — and it
+    // measured the faster of the two, so a regression in one need not show in the other.
+    name: 'query: hop min+max over a dict [wide multi-agg]',
+    ...onGraph(
+      () => hopPairDoc,
+      (e, g) =>
+        void e.query(
+          g,
+          'MATCH (a:Person)-[:KNOWS]->(x) RETURN min(x.city) AS lo, max(x.city) AS hi',
+        ),
+    ),
+  },
+  {
+    // THE REFERENCE the change cannot reach: the same shape over a NUMERIC column, which the
+    // byte-identical numeric entry still serves. If this row moves while the two above do not,
+    // the cause is not item 1184.
+    name: 'query: hop min+max over a number [ctl numeric multi-agg]',
+    ...onGraph(
+      () => graphDoc,
+      (e, g) =>
+        void e.query(g, 'MATCH (a:Person)-[:KNOWS]->(x) RETURN min(x.age) AS lo, max(x.age) AS hi'),
     ),
   },
   {

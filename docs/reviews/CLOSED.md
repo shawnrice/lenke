@@ -2844,6 +2844,39 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   report a **9338x-14325x** target that does not exist. A per-path cost needs a floor that must read
   a property (`count(<key>)`). The giveaway was a ratio too good to be true, and the fix was reading
   `shortcuts.ts` rather than trusting the zero.
+- ~~**The MULTI-aggregate frontier extremum had item 1182's hole too, at up to 12.7x**~~ — **CLOSED
+  by item 1184.** `try_frontier_multi_agg` admits `count`/`min`/`max` over a frontier but its
+  `MinMax` spec destructured `Column::Num` alone, so `min(b.k), max(b.k)` over a non-numeric column
+  fell to the general fold at **6.59x (bool) / 11.88x (str) / 12.69x (dict)** of its own
+  `count(*), count(b.k)` control (flat at 2114-2269us, so the two-aggregate machinery was never the
+  cost). Shipped as a SEPARATE `try_frontier_multi_agg_wide` after it in the chain, measuring
+  **11.66x / 7.71x / 3.78x** over three alternated rounds with every control flat. Unlike the
+  single-aggregate path this family declines `Plan::Scan`, so it has no bare-scan case to steal.
+- ⚠️ **THE SHARED-BODY TAX HAS THREE HIDING PLACES, and only the first is visible by inspection
+  (1184).** Item 375 found it in the loop BODY (1.09x on its `sum` control). Item 1184 hit the other
+  two in one change, both caught by the `count(*), count(b.k)` control: the shared ACCUMULATOR
+  (**1.16x** — widening `(f64, Option<f64>)` to a struct with an index, two flags and a `Vec` made
+  the count arms index a far larger stride for state they never read) and the DISPATCH TABLE
+  (**1.10x** — `match spec` grew from three arms to seven and every query through the function pays
+  it). The accumulator half splits out into side state; the dispatch half CANNOT be fixed in place,
+  because the cost is the widened function itself — hence a separate function, with the original
+  left byte-identical (verified, 3243 bytes) so its control is untouched by construction. **The tell
+  that it was mechanical and not noise: the control moved 1.10x on four representations and only
+  0.98x on `mixed`, whose per-node work is dearest — the signature of a fixed per-node cost.**
+- **An answer-equivalent CHAIN entry needs a BENCH ROW, because a route test on the predicate cannot
+  see it (1184).** Deleting `.or_else(|| try_frontier_multi_agg_wide(…))` returns identical rows
+  through the general fold, so it survived every unit test and fuzzer. The oracle's chain-contract
+  assertion calls both functions DIRECTLY — it proves the hand-off is correct and is blind to
+  whether it is wired. Item 1181's route test guards a predicate; chain MEMBERSHIP needs a number
+  that moves. Three rows on a dedicated `hopPairDoc`, **verified against the mutant they exist for**
+  (wired 0.8/0.6 vs unwired 6.2/6.2, numeric reference 0.7 both ways) — a guard never tested against
+  what it guards is the same class of object as a generative test whose teeth were never verified.
+- ⚠️ **A bench run right after a hand Rust build can measure a STALE `.so`, with no loud failure
+  (1184).** `cargo build --example …` does not rebuild the C ABI artifact (the `capi` feature is
+  off by default), and the old library still has its symbols — so `bun run bench` silently compares
+  the change against an old copy of itself. It read the UNWIRED numbers and produced a wrong theory
+  about the FFI surface not reaching the new path. Rebuild with `--features capi`, or via
+  `bun run build` / `bun run fuzz`, before believing a cross-engine number.
 - **A fixture that pins WHICH ROWS are read can be structurally unable to pin HOW they are compared
   (1182).** Inverting the boolean arm's `want` — which swaps `min` and `max` outright — SURVIVED both
   boolean fixtures, because **stranding an extreme to prove frontier-awareness forces the frontier to
