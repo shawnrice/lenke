@@ -2910,6 +2910,30 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   columns — cheaper to write, already covered by those arms' own oracles and mutation, and FASTER
   by item 471's measurement that N passes over one column each beat one interleaved pass (5.6 ms
   against 0.6). Separate function after the numeric entry, per item 1184.
+- ⚠️ **OPEN, PRICED at 3.6x (200k) rising to 4.6x (400k): ungrouped `collect` pays a PER-ROW cost
+  above the floor of producing its own output (1194).** A new enum census — `AggFn`, eleven
+  variants — found `Collect` and `CollectList` are the ONLY two with zero mentions in
+  `exec/fastpath.rs` (`Count` 45, `Min` 41, `Max` 29, `Sum` 18, `Avg` 12, and the four middling
+  counts for stddev/percentile were READ, not trusted: `fastpath.rs:5053` and `:5203` are ADMITTING
+  gates, so those four are genuinely served).
+  **A missing path is not a target, and `collect` is the variant where that matters most**, because
+  its output is O(N) — unlike `min`, which returns one value and so paid 4444x at item 1188. So the
+  floor was the cost of producing the output itself: `RETURN a.k`, the identical N values through the
+  projection path. Its validity is self-evidencing — it reads 345us (num) against 1281us (str), so
+  it is doing real per-representation value production and is not deferring the work.
+  `collect / materialize` = **3.47x num / 3.57x bool / 1.79-1.83x str,dict,date / 1.75x Gen**, and
+  the ABSOLUTE gap is flat at 840-1060us across all six representations. **So this is NOT a
+  per-representation hole** — the shape of all six wins in 1182-1190 — but one per-row cost of
+  ~4.5ns that every representation pays, `Gen` included.
+  An N sweep classifies it: num gap 480.7us (100k) / 972.9us (200k) / 2526.9us (400k) — per-row, and
+  SUPER-linear past cache residency, so the ratio rises to 4.59x at 400k.
+  ⚠️ **The obvious build is already there**: `aggregation.rs:93-105` has a `movable` arm that MOVES
+  cells of an ungrouped `Collect` into the list instead of cloning them. So the gap is not
+  per-element cloning, and the remaining suspect is the intermediate `Col` — `eval` builds an
+  N-sized column and `col_into_values` then builds an N-sized `Vec<Value>` from it, two passes and
+  two N-sized allocations where the projection path appears to make one. NOT YET CONFIRMED; that
+  read is the next step, and a grouped `collect` is the control the change cannot reach.
+  Instrument: `crates/lenke-engine/examples/collect_agg_probe.rs`.
 - ⚠️ **OPEN, DIAGNOSED, and the obvious reading of it is WRONG: the TS multi-hop count is 67.7x
   native, and it is NOT a missing fast path (1193).** The bench sweep's largest ts/ffi ratio with a
   meaningful absolute time is `count 3-hop` at **ts 326.5ms against ffi 4.8ms**; the family runs
