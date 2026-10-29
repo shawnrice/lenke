@@ -2910,6 +2910,25 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   columns — cheaper to write, already covered by those arms' own oracles and mutation, and FASTER
   by item 471's measurement that N passes over one column each beat one interleaved pass (5.6 ms
   against 0.6). Separate function after the numeric entry, per item 1184.
+- **REFUTED for TS: there is no `collect` egress rebuild there, so item 1195's Rust fix has no TS
+  twin (1196).** TS `collect` costs **0.76-1.02x** its own materialization floor (`RETURN a.k`),
+  i.e. the cost IS the output. Do not port the gate.
+- ⚠️ **OPEN, PRICED at 6.7-8x, and it is an EQUIVALENT-SPELLING break: in TS, wrapping an ungrouped
+  aggregate in ANY expression leaves the fast route (1196).** At 200,000 nodes, against a bare
+  `collect(a.num)` at ~4.7ms: `size(collect(a.num))` **57.9ms (7.97x)**, `cardinality(...)` 53.7
+  (7.40x), `reverse(...)` 49.1 (6.76x), `coalesce(..., 1)` 48.3 (6.65x); controls `count(a.num)`
+  3.0ms and `size(collect(1))` 43.1ms.
+  **It is the WRAPPING, not the function, and two controls say so**: `coalesce` is outside `size`'s
+  `POLY_STR_LIST` set so it is not the argument typecheck, and `size(collect(1))` folds a CONSTANT
+  yet still pays 43ms so it is not the fold.
+  **The gate is `packages/gql/src/executor/shortcuts.ts:9985**: `if (agg !== undefined && item.expr
+  !== agg.expr) return null`— a bare aggregate has`item.expr === agg.expr`and takes the fast
+route; a nested one is declined and falls to the general path, which MATERIALIZES A GROUP OF
+BINDINGS. That is the identical cost item 465 removed for`sum`/`avg`(priced there at 4.6x,
+43.7-48.0ms against 9.4-10.2), applied then only to the bare spelling. The function's own comment
+names the missing work: the folded value has to be substituted back into a one-row group view.
+⚠️ **Trust the multiple, not the digits**: the cheap rows drift (the identical bare`collect`measured 7.2 and 4.7ms in one process), so 6.7-8x is the finding and the second decimal is not.
+Probes:`packages/native/collect-egress-ts-probe.ts`, `size-over-aggregate-ts-probe.ts`.
 - **CLOSED by 1195 (partly), and the headroom was RE-PRICED down on the way: the container egress
   gate ships at 1.25x num/bool, 1.04-1.11x str/dict/date, neutral on `Gen`.** Item 1194's 842us
   "egress gap" was measured against `size(collect(k))`, and `evaluator.rs:2130` gives `size`/
