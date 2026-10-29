@@ -71,6 +71,23 @@ fn main() {
     let store = store_of(nodes);
 
     println!("\n# {nodes} nodes, min of {} reps\n", cfg.reps);
+    // WHICH VARIANT MAKES THE ENUM 40 BYTES (item 1224). A sum type is as wide as its widest
+    // member, so one oversized variant taxes every temporal column including a date-only one.
+    {
+        use lenke_engine::temporal::{DateTime, Duration, Time, ZonedDateTime, ZonedTime};
+        use std::mem::size_of;
+
+        println!(
+            "  variants: Date {} | Time {} | DateTime {} | ZonedTime {} | ZonedDateTime {} | Duration {}",
+            size_of::<Date>(),
+            size_of::<Time>(),
+            size_of::<DateTime>(),
+            size_of::<ZonedTime>(),
+            size_of::<ZonedDateTime>(),
+            size_of::<Duration>()
+        );
+    }
+
     // THE COLUMN WIDTH, which is what item 1223 found the date path's remaining cost to be.
     println!(
         "  size_of::<Temporal>() = {} bytes, size_of::<f64>() = {}

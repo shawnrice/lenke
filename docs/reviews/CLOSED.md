@@ -37057,3 +37057,55 @@ needing its own measurement; it is not inherited from this one.
 construction" among the questions that cannot be asked from an example. It can — `lib.rs`
 re-exports `lenke_engine_core::temporal`, `Temporal::Date` is public and `Date { days: i32 }` has a
 public field. `date_count_probe` is that instrument, and it is what priced the lever above.
+
+### Item 1224 — the hop count's bound test dispatched the OPERATOR per edge: 5.28x, the same on a periodic and a random fixture (DONE)
+
+`try_fused_hop_num_count` answers `MATCH (a:P)-[:T]->(b) WHERE b.k <op> <lit> RETURN count(*)` by
+streaming the per-type CSR, and its bound test was
+`if present[j] && bounds.iter().all(|&(op, t)| num_pred(op, data[j], t))`. That pays THREE things
+per EDGE that do not depend on the edge: an iterator over `bounds`, a closure call, and `num_pred`'s
+six-way match on `op`. A single bound now matches the operator ONCE and hands a new `hop_num_count`
+a monomorphic comparison — `sweep_num_count`'s hop twin, the move `stream_single_bound_count`
+already makes for the scan family.
+
+200,000 nodes, degree 4 (800,000 edges), min of 7, three order-alternated rounds, binaries
+hash-asserted (PRE `2b7384ff`, POST `54ce9028`, each reproduced on a second build):
+
+```text
+  fixture               PRE     POST    gain
+  PERIODIC (i % 100)  4074.3   772.4   5.28x
+  RANDOM              4053.3   777.1   5.22x
+```
+
+CONTROLS, all in-process and all flat: the TWO-BOUND spelling of the same hop count, whose arm is
+deliberately untouched (4951.6 to 4887.7, 1.01x); the same hop with NO filter (0.3 both); and a SCAN
+filter count through `sweep_num_count` (28.1 both). Answers identical in every arm.
+
+⚠️ TWO FIXTURES, AND THEIR AGREEMENT IS THE MECHANISM. `social_store`'s `age = i % 100` is periodic,
+which the harness's own note records as having hidden a 6.7x (item 1206), so a branchy path must be
+priced against random values. Here periodic and random agree to within 0.5% in BOTH arms — which
+proves the win is the per-edge DISPATCH, which no value order can hide, and not misprediction. The
+precaution was still right to take: it is what licenses the claim.
+
+⚠️ A SWEEP ROW CONTRADICTED THE ISOLATED ONE, AND THE ISOLATED ONE WAS RIGHT. `query_bench` read
+`filter age>50` at 1.23x SLOWER (27.7 to 34.0) — a scan path this change does not touch. The tell:
+`counts|filtered`, the SAME shape in another group, moved the opposite way (34.9 to 27.9), the two
+rows almost exchanging values. Re-measured isolated, three alternated rounds: PRE 27.8-29.0, POST
+28.1-28.9, overlapping, 1.01x. In-sweep interference, exactly as item 737 records. Worst genuine
+movement across 73 rows is ~1.08x and bidirectional.
+
+OPEN, and now priced by its own control: the TWO-BOUND hop arm is 6.3x the one-bound arm it sits
+beside (4887.7 against 772.4). Matching the operator PAIR once is the same move again, but item 451
+found a range sweep 3.9x its single-bound twin for reasons that did not transfer, so it needs its own
+measurement.
+
+OPEN: the `bounds.iter().all(|&(op, t)| num_pred(op, ...))` per-row dispatch appears SIX times in
+`fastpath.rs` (three on `data[j]`, three on `data[i]`). This fixed one. The others include the
+edge-property counts and `try_stream_range_count`, which additionally tests the loop-invariant
+`bounds.is_empty()` INSIDE its sweep.
+
+OPEN: NO corpus row exercises a hop count with a far-end filter, which is how a 5.28x sat
+unmeasured — the same gap item 1221 found and closed for the scan shape.
+
+Teeth: four mutants, all compiled, all CAUGHT (7, 8, 7 and 1 failures), with execution confirmed
+from stdout AND stderr rather than from the exit code alone.

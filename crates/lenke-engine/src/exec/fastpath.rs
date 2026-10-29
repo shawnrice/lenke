@@ -88,6 +88,29 @@ pub(super) fn try_fused_hop_num_count(input: &Plan, store: &Store) -> Option<u64
     if reverse_seed_decide(pred, exp, store, false).is_some() {
         return None;
     }
+    // A SINGLE BOUND MATCHES THE OPERATOR ONCE, instead of per edge (item 1224).
+    //
+    // `bounds.iter().all(|&(op, t)| num_pred(op, data[j], t))` pays three things PER EDGE that do
+    // not depend on the edge: an iterator over `bounds`, a closure call, and `num_pred`'s six-way
+    // match on `op`. One bound is the overwhelmingly common case, and hoisting the match hands
+    // `hop_num_count` a MONOMORPHIC comparison that inlines into the sweep — the same move
+    // `stream_single_bound_count` makes for the scan family, and the one item 451 measured there.
+    //
+    // The multi-bound arm is left exactly as it was: it would need its own measurement, and item
+    // 451 found a range sweep 3.9x its single-bound twin for reasons that did not transfer.
+    if let [(op, t)] = bounds.as_slice() {
+        let t = *t;
+
+        return match op {
+            CompareOp::Eq => hop_num_count(store, label, w, data, present, |x| x == t),
+            CompareOp::Ne => hop_num_count(store, label, w, data, present, |x| x != t),
+            CompareOp::Lt => hop_num_count(store, label, w, data, present, |x| x < t),
+            CompareOp::Le => hop_num_count(store, label, w, data, present, |x| x <= t),
+            CompareOp::Gt => hop_num_count(store, label, w, data, present, |x| x > t),
+            CompareOp::Ge => hop_num_count(store, label, w, data, present, |x| x >= t),
+        };
+    }
+
     let mut count = 0u64;
     for_each_typed_out(store, label, w, |nbr| {
         let j = nbr as usize;
@@ -95,6 +118,45 @@ pub(super) fn try_fused_hop_num_count(input: &Plan, store: &Store) -> Option<u64
             count += 1;
         }
     })?;
+    Some(count)
+}
+
+/// Count the typed-out neighbours whose column cell is present and satisfies `cmp`, with `cmp`
+/// MONOMORPHIC so it inlines into the edge sweep — [`sweep_num_count`]'s hop twin (item 1224).
+///
+/// The accumulation is branchless for the reason item 1220 established on the scan family: this is
+/// an `f64` compare, so evaluating it on an absent cell's slot is a free lane rather than wasted
+/// work, and the `&` is what lets the increment be masked. (Item 1222's string arm keeps its
+/// short-circuit, because a `memcmp` is not free; item 1223's date sweep got no gain at all,
+/// because a 40-byte column is memory-bound. Which of the three applies depends on the cost of the
+/// operation being guarded.)
+fn hop_num_count<F: Fn(f64) -> bool>(
+    store: &Store,
+    label: &Option<String>,
+    w: u32,
+    data: &[f64],
+    present: &[bool],
+    cmp: F,
+) -> Option<u64> {
+    let mut count = 0u64;
+
+    if data.len() >= present.len() {
+        for_each_typed_out(store, label, w, |nbr| {
+            let j = nbr as usize;
+
+            count += u64::from(present[j] & cmp(data[j]));
+        })?;
+    } else {
+        // Defensive, and unreached: both slices come from one column. Without it the
+        // unconditional `data[j]` could panic where the short-circuit skipped it.
+        for_each_typed_out(store, label, w, |nbr| {
+            let j = nbr as usize;
+
+            if present[j] && cmp(data[j]) {
+                count += 1;
+            }
+        })?;
+    }
     Some(count)
 }
 
