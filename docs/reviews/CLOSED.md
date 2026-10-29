@@ -2910,6 +2910,22 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   columns — cheaper to write, already covered by those arms' own oracles and mutation, and FASTER
   by item 471's measurement that N passes over one column each beat one interleaved pass (5.6 ms
   against 0.6). Separate function after the numeric entry, per item 1184.
+- **REFUTED: a wide twin for the FILTERED scan extremum. ~1.3-1.7x, because the FILTER dominates
+  (1189).** `try_filtered_scan_num_agg` has the same `Column::Num`-only signature that paid 8332x at
+  item 1188, so it looked like the fourth repetition. Against the only valid floor — `count(*)` with
+  the same predicate, i.e. the filter with no value read, FLAT at ~622us across all six rows — a
+  SERVED numeric arm costs 1.72x and the unserved representations 1.54-2.86x, capping the win at
+  ~1.66x (date) / ~1.31x (bool) / ~1.07x (str) and making `dict` NEGATIVE: its general path (1.54x)
+  is already cheaper than the numeric fast path (1.72x). **The rule: the same `Num`-only signature
+  is worth 8332x where the fold is ALL the cost and ~1.3x where something else dominates.** The
+  census finds candidates; only the floor says which are targets.
+- ⚠️ **TWO INSTRUMENTS WRONG BEFORE THE RIGHT ONE, both diagnosable from inside the table (1189).**
+  (a) `filtered ÷ unfiltered` is not a ratio of anything — the filtered query does strictly more
+  work — and the giveaway was that `num`, which IS served, read 10.46x its own unfiltered self while
+  unserved `dict` came in FASTER than served `num`. **A served path losing to an unserved one on the
+  same instrument means the instrument measures something else.** (b) The obvious floor,
+  `count(prop)` under the same filter, is `Num`-only INSIDE THE FUNCTION UNDER TEST — item 1187's
+  trap exactly, caught only because it had just been written down.
 - ⚠️ **ITS GATE ADMITS MORE THAN INTENDED, so the oracle covers that too (1188).** `count(k)` over a
   non-numeric column also sets `any_wide`, so COUNT PAIRS route there and got **11-16x** faster
   (str 1424.6→91.9, dict 1461.3→112.2, bool 1061.9→93.6, date 1519.9→93.2). Sound —

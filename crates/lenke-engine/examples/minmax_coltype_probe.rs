@@ -200,6 +200,38 @@ fn main() {
     }
 
     println!();
+    // THE FILTERED SCAN EXTREMUM (item 1189). `try_filtered_scan_num_agg` serves
+    // `sum`/`avg`/`min`/`max`/`count(prop)` over a `Filter{Scan}` — the `has(..).values(k).min()`
+    // shape — and destructures `Column::Num` alone, so a filtered extremum over any other
+    // representation falls to the general path.
+    //
+    // FLOOR: the UNFILTERED `min(a.k)`, which items 1172/1175/841 serve for every representation.
+    // NOT `count(a.k)` under the same filter — that is `Num`-only in the very function under test,
+    // which is exactly how item 1187's control came to be subject to the hole it measured.
+    println!();
+    println!("  column    filtered min(us)   unfiltered min(us)   filter only   ÷ filter");
+
+    for key in ["num", "str", "dict", "bool", "date", "mixed"] {
+        let ask = |q: &str| -> f64 {
+            time_query(q, false, &store, cfg.reps).map_or(f64::NAN, |(us, _)| us)
+        };
+        let filtered = ask(&format!(
+            "MATCH (a:Person) WHERE a.num > 500000 RETURN min(a.{key}) AS c"
+        ));
+        // THE TRUE FLOOR: the same filter with NO value read, so it prices the predicate alone.
+        // `filtered ÷ unfiltered` is not a valid ratio — the filtered query does strictly more
+        // work — and the giveaway was that `num`, which IS served here, read 10.46x its own
+        // unfiltered self while `dict`, which is NOT served, came in faster than served `num`.
+        let filter_only = ask("MATCH (a:Person) WHERE a.num > 500000 RETURN count(*) AS c");
+        let plain = ask(&format!("MATCH (a:Person) RETURN min(a.{key}) AS c"));
+
+        println!(
+            "  {key:<10} {filtered:>14.1} {plain:>20.1} {filter_only:>12.1} {:>12.2}x",
+            filtered / filter_only
+        );
+    }
+
+    println!();
     match time_query(
         "MATCH (a:Person) RETURN count(*) AS c",
         false,
