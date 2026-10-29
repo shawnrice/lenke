@@ -418,6 +418,16 @@ question in its module header — read the header before touching it.
   beside `ORDER BY DESC`, which is the contract's own order and therefore the reference.
   Run it before trusting any comment that tells you what a column cannot contain.
 
+- `percentile_floor_probe` — the FLOOR for an ordered-set aggregate, and which of its three
+  costs is the big one. `percentile_of` boxes every value, sorts with a comparator closure,
+  and sorts when ONE order statistic would do; the arms separate all three (`sum` as the
+  scan floor, a columnar gather alone, that gather plus `select_nth`, that gather plus a
+  full sort, `collect_list` as materialization-only). Item 1162 built it because the
+  diagnosis carried in from item 844's recorded numbers — that the boxing owned the 30x —
+  was WRONG: the gather is nearly free and the sort is 97% of it. Had the probe not been
+  written first, the columnar gather would have shipped ~115us of a 3,595us problem and
+  measured like a win.
+
 ## Before trusting a number
 
 The hard-won rules live in the repo `CLAUDE.md` ("Benchmarks: look before you

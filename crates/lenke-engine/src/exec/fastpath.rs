@@ -4465,6 +4465,127 @@ fn scan_extremum<const MIN: bool>(
     (best, cnt, nan_cnt)
 }
 
+/// `MATCH (n:L) RETURN percentile_cont(n.k, f)` over a `Num` column — the ordered-set aggregate
+/// `try_scan_num_agg`'s gate declines, answered with ONE order statistic instead of a sort.
+///
+/// WHY THIS IS A TARGET AT ALL, measured before it was built (item 1162). Item 1161 priced the
+/// aggregate-kind enum and left both percentiles at 3674us against `sum`'s 122 on the same
+/// column — 30x — and DECLINED to call it a target, because a percentile needs an order statistic
+/// and `sum` does not. `percentile_floor_probe` separated the three costs and the inference drawn
+/// from item 844's recorded numbers (that the per-row `Value` boxing owned the ratio) was WRONG:
+///
+/// ```text
+///   sum                       122.0 us   the scan+column floor
+///   columnar gather alone     156.6      so a boxing-free gather is nearly free
+///   gather + select_nth       397.8      the SELECTION costs ~241
+///   gather + full sort       3602.8      the SORT costs ~3446
+///   percentile_disc          3717.4      the full sort is 97% of it
+/// ```
+///
+/// So the sort owns it, the gather does not, and the floor is 9.3x. Item 234 is why that was
+/// measured rather than argued — a floor per shape retracted two of three targets there.
+///
+/// EXACTNESS, which decides the one guard here. `percentile_of` sorts with
+/// `partial_cmp(..).unwrap_or(Equal)` and indexes the result, so this must return the value that
+/// sort would have put at the same index. For finite f64 "equal under `partial_cmp`" implies
+/// IDENTICAL BITS — with exactly one exception, `-0.0` and `0.0`, which tie under `partial_cmp`
+/// and differ in bits. A stable sort keeps such a tied run in input order; an unstable selection
+/// may return either member. So a negative zero is DETECTED IN THE GATHER and the whole path
+/// DECLINES, which leaves those columns answering exactly as before. Same shape as item 1161's
+/// `nan_cnt`: note the fact in the loop, decide at the finish.
+///
+/// NaN and ±INFINITY need no guard because the gather DROPS them, which is not a choice made here
+/// — `percentile_of` keeps only `x.is_finite()` values, and a fast path that kept them would be
+/// answering a different question.
+///
+/// A SEPARATE FUNCTION rather than another block inside `try_scan_num_agg`, deliberately. That
+/// function's own notes record what a shared live range cost twice (item 844's stddev draft moved
+/// the `min` control 1.6x, and item 1161's extremum block returns early for the same reason), and
+/// its sum/avg/min/max arms were just measured flat. Nothing here can reach them.
+pub(super) fn try_scan_percentile(
+    input: &Plan,
+    keys: &[(String, Expr)],
+    aggs: &[Agg],
+    store: &Store,
+) -> Option<Batch> {
+    let agg = sole_agg(keys, aggs)?;
+    if agg.distinct || !matches!(agg.func, AggFn::PercentileCont | AggFn::PercentileDisc) {
+        return None;
+    }
+    let Plan::Scan { label } = input else {
+        return None;
+    };
+    let Some(Expr::Prop { slot: 0, key }) = agg.arg.as_ref() else {
+        return None;
+    };
+    let Some(Column::Num { data, present, .. }) = store.column(key) else {
+        return None; // a non-numeric column raises in the general path; let it
+    };
+
+    let mut vals: Vec<f64> = Vec::with_capacity(data.len());
+    let mut saw_neg_zero = false;
+    scan_visit(store, label, |i| {
+        if present[i] {
+            let x = data[i];
+            if x.is_finite() {
+                saw_neg_zero |= x == 0.0 && x.is_sign_negative();
+                vals.push(x);
+            }
+        }
+    });
+    if saw_neg_zero {
+        // LOAD-BEARING, and measured rather than assumed. A standalone search over both
+        // algorithms found 1,454,911 of 5,916,000 (input, index) pairs differ in bits, the
+        // minimal case being `n = 2, idx = 1` over `[-0.0, 0.0]`: the stable sort gives `0.0`,
+        // the selection `-0.0`. A mutant removing this line first SURVIVED, because the test
+        // guarding it used three values and `select_nth_unstable_by` insertion-sorts a slice
+        // that short — stably. See the test's own note.
+        return None;
+    }
+    if vals.is_empty() {
+        return Some(Batch::of(vec![Col::Gen(vec![Value::Null])])); // percentile of nothing
+    }
+
+    // CLAMPED AT THE POINT OF USE, exactly as `percentile_of` does and for its recorded reason:
+    // an unclamped fraction indexed past the end and PANICKED (item 530). The two must agree for
+    // every fraction, in range or not.
+    let frac = agg.frac.unwrap_or(0.0).clamp(0.0, 1.0);
+    let n = vals.len();
+    // The comparator is `percentile_of`'s, not `total_cmp`: `total_cmp` orders `-0.0` BEFORE
+    // `0.0` where this ties them, which would be a different order statistic on a column the
+    // gate above has already refused — but keeping the comparators identical means the two paths
+    // cannot drift apart if that gate is ever loosened.
+    let cmp = |a: &f64, b: &f64| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal);
+
+    let result = if agg.func == AggFn::PercentileCont {
+        let rn = frac * (n - 1) as f64;
+        let lo = rn.floor() as usize;
+        let hi = rn.ceil() as usize;
+        let (_, nth, right) = vals.select_nth_unstable_by(lo, cmp);
+        let lo_val = *nth;
+        if lo == hi {
+            lo_val
+        } else {
+            // `select_nth_unstable_by` leaves everything `>= nth` in `right`, so the NEXT order
+            // statistic is its minimum — O(n), no second selection. `right` cannot be empty
+            // here: `lo != hi` forces `rn` off an integer, so `lo < n - 1`.
+            let hi_val = right.iter().copied().fold(f64::INFINITY, f64::min);
+            lo_val + (rn - lo as f64) * (hi_val - lo_val)
+        }
+    } else {
+        // `.min(n - 1)` is DEFENSIVE and measured so: `frac` is clamped to `<= 1` above, hence
+        // `ceil(frac * n) - 1 <= n - 1` always, and a mutant removing it SURVIVES the suite
+        // (item 1162, M6). Kept because it is what `percentile_of` does and the two must not
+        // drift, but the clamp is the load-bearing guard — removing THAT is caught (M3).
+        let idx = ((frac * n as f64).ceil() as usize)
+            .saturating_sub(1)
+            .min(n - 1);
+        let (_, nth, _) = vals.select_nth_unstable_by(idx, cmp);
+        *nth
+    };
+    Some(Batch::of(vec![Col::Gen(vec![Value::Num(result)])]))
+}
+
 pub(super) fn try_scan_num_agg(
     input: &Plan,
     keys: &[(String, Expr)],

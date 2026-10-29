@@ -34443,3 +34443,106 @@ change cannot reach (shortest-k, distinct node, varlen+path, gremlin dedup). `or
 hop` read 0.86x, consistent with its standing false-positive note. 2,027 Rust tests green;
 `LENKE_OPT_FUZZ_SEEDS=500000` green (103 s); 7/7 byte-identity fuzzers green with the widened
 generator.
+
+## 1162 — ✅ SHIPPED **9.5x / 9.3x** on the percentiles, by measuring the FLOOR first — the cost was NOT where item 844's numbers implied. ⚠️ Plus a mutant that exposed a test passing for the wrong reason, and a NEW TS target
+
+The one row item 1161 priced and refused to call a target. `percentile_floor_probe` separated
+`percentile_of`'s three costs before anything was built (item 234's precedent: a floor per shape
+retracted two of three targets there), and **the carried-in diagnosis was wrong**:
+
+```text
+  sum                    122.0 us   the scan+column floor / control
+  columnar gather alone  156.6      a boxing-free gather is NEARLY FREE
+  gather + select_nth    397.8      the SELECTION costs ~241
+  gather + full sort    3602.8      the SORT costs ~3446
+  percentile_disc       3717.4      the full sort is 97% of it
+  collect_list          1450.8
+```
+
+**I had inferred BOXING from item 844's recorded numbers** (`collect_list` 2,999 vs percentile
+5,588 reads as "materialization is most of it"). It is the SORT. Building the columnar gather alone
+would have shipped ~115us of a 3,595us problem and looked like a win.
+
+**Build:** columnar f64 gather + `select_nth_unstable_by`. `percentile_cont` needs the NEXT
+adjacent order statistic and gets it free — `select_nth_unstable_by` leaves everything `>= nth` in
+its right partition, so it is that partition's MINIMUM, O(n), no second selection. A SEPARATE
+function, not another block in `try_scan_num_agg`, because that function's sum/avg/min/max arms
+were measured flat one tick ago and item 844 + 1161 both record what a shared live range costs.
+
+```text
+  percentile_disc  3717.4 -> 389.8   9.5x        A5 floor 397.8 — both arms land ON it
+  percentile_cont  3718.3 -> 400.4   9.3x
+  controls flat: sum 122.0 -> 113.9, columnar gather 156.6 -> 142.2
+```
+
+### The one exactness guard, and why it is `-0.0`
+
+`percentile_of` sorts with `partial_cmp` and indexes the result. For finite f64 "equal under
+`partial_cmp`" implies IDENTICAL BITS — except `-0.0` vs `0.0`, which tie but differ in bits, and a
+stable sort keeps a tied run in input order where an unstable selection may not. So a negative zero
+is noted in the gather and the path DECLINES (item 1161's `nan_cnt` shape: observe in the loop,
+decide at the finish). NaN/±INFINITY need no guard — `percentile_of` keeps only finite values and
+the gather replicates that.
+
+**Oracle: the general grouped fold** (`LET g = 1 … GROUP BY g` — one group, same question, and it
+routes to `percentile_of` because the fast path needs a sole aggregate over a bare `Scan`).
+Compared as BITS over 12 fixtures x 9 fractions x 2 kinds = **216 cross-path comparisons**,
+out-of-range fractions included (item 530's panic). Note for anyone writing one: the fraction must
+be a numeric LITERAL, so a negative one is `-1`, not `0 - 1`.
+
+### ⚠️ M1 SURVIVED the first mutation run — the TEST was passing for the wrong reason
+
+The negative-zero guard is the purely-correctness part of this change, and the mutant removing it
+passed. Settled by taking the engine out of it — a standalone search over BOTH algorithms with the
+SIZE swept:
+
+```text
+  checked 5,916,000 (input, index) pairs; 1,454,911 differed in bits
+  minimal case:  n=2 idx=1 over [-0.0, 0.0]  ->  stable 0.0, selection -0.0
+```
+
+Guard is load-bearing. The test used THREE values and fractions up to 0.5, and
+**`select_nth_unstable_by` on a slice that short falls into an INSERTION SORT, which is stable** —
+so selection and sort agreed and the assertion held for a reason unrelated to the code under test.
+Rebuilt from the search's counterexample (two values at fraction 1, plus 64 values to clear the
+regime, both input orders); M1 now caught.
+
+**→ RULE: a size-dependent algorithm needs the SIZE swept, and a fixture small enough to be
+convenient can sit entirely inside the branch that cannot fail.** Sibling of items 1136/1142, where
+a fixture built the wrong way made the path DECLINE so the mutant survived — there the fixture
+missed the code, here it reached the code but only its stable regime. Both look identical from
+outside: a green test and a surviving mutant.
+
+### Mutation: 7 mutants, 5 caught, 2 survivors BOTH predicted and explained
+
+M2 (`total_cmp` for `partial_cmp`) survives because the two differ only on `-0.0` vs `0.0`, which
+the gate already declines — answer-equivalent, a route choice, and PREDICTED before the run, which
+is what separates a documented equivalence from a hole. M6 (`.min(n - 1)` on the disc index)
+survives because `frac` is clamped to `<= 1`, so `ceil(frac * n) - 1 <= n - 1` always; **I
+mispredicted this one.** M3 (removing the clamp) IS caught, so the clamp is load-bearing and the
+`.min` is belt-and-braces — kept, because `percentile_of` has it and the two must not drift, and now
+labelled defensive in the code with M6 cited.
+
+Process note: editing `fastpath.rs` to record these findings WHILE the mutation script ran got the
+edits wiped — the script's pristine copy is taken at its START, so the tree is not yours until it
+finishes.
+
+### 🔶 OPEN, newly priced: the TS engine HAS this gap (item 1161's negative result does NOT transfer)
+
+```text
+  TS: percentile_disc 31.2 ms, percentile_cont 30.2, against collect_list 4.3 (same materialization)
+      and count 3.7 / min 4.5 / max 3.6 / sum 6.8 / avg 9.9 / stddev_pop 8.2
+```
+
+The TS fold sorts too, and the sort is ~7x its gather — exactly native's shape before this change.
+A **~4-6x TS target with the design already proven on the Rust side.** Not built this tick on
+purpose: the Rust change is complete and verified, and bundling an unbuilt second engine in would
+make neither reviewable.
+
+### Gates
+
+2,030 Rust tests green; `LENKE_OPT_FUZZ_SEEDS=500000` green (102 s); 7/7 byte-identity fuzzers
+green. The differential fuzzer was VERIFIED to reach the new path rather than assumed to: its
+percentile band emits `MATCH (n:T) RETURN percentile_<kind>(<expr>, <frac>) AS x` — a bare scan,
+sole aggregate — over `0, 0.25, 0.5, 1, 1.0001, 1.5, 2, 100`, so clamp and interpolation are both
+checked against TS.

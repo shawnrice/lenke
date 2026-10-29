@@ -67,6 +67,11 @@ for (const [label, q] of [
   ['A5 avg(a.n)', 'MATCH (a:Person) RETURN avg(a.n) AS c'],
   ['A6 stddev_pop(a.n)', 'MATCH (a:Person) RETURN stddev_pop(a.n) AS c'],
   ['A7 min(a.n), max(a.n)  MULTI', 'MATCH (a:Person) RETURN min(a.n) AS a, max(a.n) AS b'],
+  // The ORDERED-SET pair, added at item 1162 once native answered them with ONE order statistic
+  // instead of a sort (3717 -> 390 us, 9.5x). The question is whether the TS fold sorts too.
+  ['A9 percentile_disc', 'MATCH (a:Person) RETURN percentile_disc(a.n, 0.5) AS c'],
+  ['A10 percentile_cont', 'MATCH (a:Person) RETURN percentile_cont(a.n, 0.5) AS c'],
+  ['A11 collect_list   materialize', 'MATCH (a:Person) RETURN collect_list(a.n) AS c'],
   ['A8 count(*)              [ctl]', 'MATCH (a:Person) RETURN count(*) AS c'],
 ] as const) {
   const answer = JSON.stringify(tsQuery(g, q));
@@ -85,5 +90,10 @@ for (const [label, q] of [
     series.push(performance.now() - t);
   }
 
-  console.log(`  ${label.padEnd(34)} ${med(series).toFixed(1).padStart(7)}   ${answer}`);
+  // TRUNCATED: `collect_list` over 200,000 rows answers with the whole column, and printing it
+  // buried the table in 1.3 MB of numbers. The equality assertion above still compares the FULL
+  // strings — only the display is shortened.
+  const shown = answer.length > 60 ? `${answer.slice(0, 57)}...` : answer;
+
+  console.log(`  ${label.padEnd(34)} ${med(series).toFixed(1).padStart(7)}   ${shown}`);
 }

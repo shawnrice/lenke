@@ -1680,6 +1680,13 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
                         // this entry `Min`/`Max` without moving it would have left the arm
                         // DEAD below the frontier path, item 371 over again (375).
                         .or_else(|| try_scan_num_agg(input, keys, aggs, store))
+                        // Its ORDERED-SET twin, beside it for the reason items 421, 375 and 422
+                        // all record: these entries own the bare-`Scan` sole-aggregate shape
+                        // between them, and an arm placed below a path that claims the shape is
+                        // dead. No shadowing is possible in either direction — the entry above
+                        // declines both percentiles by its `matches!` gate, and this one declines
+                        // everything else by the same means.
+                        .or_else(|| try_scan_percentile(input, keys, aggs, store))
                         // The STRING twin of the entry above, and placed beside it for the same
                         // reason: a bare `Scan` is a trivial frontier, so `try_frontier_prop_agg`
                         // would claim a scan `min`/`max` over a string column and answer it at

@@ -31087,3 +31087,228 @@ fn the_extremum_fold_matches_the_contract_order_on_every_numeric_edge_case() {
         }
     }
 }
+
+/// The percentile fast path against the GENERAL grouped fold, for every fraction and every
+/// numeric fixture shape — a cross-path differential, which is the strongest oracle available
+/// in-process: both spellings answer one question, one takes `try_scan_percentile` and the other
+/// `aggregation::percentile_of`, and they must agree in BITS.
+///
+/// `LET g = 1 ... GROUP BY g` is the general-path spelling (one group, so the answer is the same
+/// question) because `try_scan_percentile` requires a SOLE aggregate over a bare `Scan` with no
+/// grouping keys. GROUP BY takes a bound name, hence the `LET`.
+///
+/// The fractions include OUT-OF-RANGE ones on purpose: `percentile_of` clamps at the point of use
+/// and an unclamped fraction once PANICKED by indexing past the end (item 530), so the fast path
+/// has to clamp identically rather than merely not crash.
+#[test]
+fn the_percentile_fast_path_agrees_with_the_grouped_fold() {
+    let cases: &[(&str, &[Option<f64>])] = &[
+        ("one value", &[Some(7.5)]),
+        ("two values", &[Some(1.0), Some(2.0)]),
+        ("odd count", &[Some(3.0), Some(1.0), Some(2.0)]),
+        ("even count", &[Some(4.0), Some(1.0), Some(3.0), Some(2.0)]),
+        ("duplicates", &[Some(5.0), Some(5.0), Some(5.0), Some(1.0)]),
+        (
+            "negatives",
+            &[Some(-10.0), Some(0.5), Some(-3.0), Some(8.0)],
+        ),
+        ("descending", &[Some(9.0), Some(7.0), Some(4.0), Some(1.0)]),
+        // A column that is present on only some nodes, so the gather's `present` test matters.
+        (
+            "some absent",
+            &[Some(2.0), None, Some(6.0), None, Some(4.0)],
+        ),
+        // DROPPED by both paths (`percentile_of` keeps only finite values), so these check the
+        // fast path drops exactly the same ones rather than folding them in.
+        (
+            "a NaN among finites",
+            &[Some(1.0), Some(f64::NAN), Some(9.0)],
+        ),
+        (
+            "both infinities among finites",
+            &[
+                Some(f64::INFINITY),
+                Some(2.0),
+                Some(f64::NEG_INFINITY),
+                Some(6.0),
+            ],
+        ),
+        (
+            "every value non-finite",
+            &[Some(f64::NAN), Some(f64::INFINITY)],
+        ),
+        ("all absent", &[None, None]),
+    ];
+
+    for (name, vals) in cases {
+        let mut b = Builder::default();
+        for v in *vals {
+            match v {
+                Some(x) => b.node(&["N"], &[("v", Value::Num(*x))]),
+                None => b.node(&["N"], &[]),
+            };
+        }
+        let st = b.build();
+
+        // OUT-OF-RANGE in both directions. The fraction must be a numeric LITERAL ("percentile
+        // fraction must be a numeric constant"), so a negative one is `-1` and not `0 - 1`.
+        for frac in ["-1", "0", "0.001", "0.25", "0.5", "0.75", "0.999", "1", "2"] {
+            for kind in ["percentile_cont", "percentile_disc"] {
+                let ask = |q: &str| -> Value {
+                    let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &st);
+                    run(&plan, &st).rows[0][0].clone()
+                };
+                let fast = ask(&format!("MATCH (n:N) RETURN {kind}(n.v, {frac}) AS c"));
+                let general = ask(&format!(
+                    "MATCH (n:N) LET g = 1 RETURN {kind}(n.v, {frac}) AS c GROUP BY g"
+                ));
+                let bits = |v: &Value| match v {
+                    Value::Num(x) => Some(x.to_bits()),
+                    Value::Null => None,
+                    other => panic!("{name}/{kind}/{frac}: {other:?}"),
+                };
+                assert_eq!(
+                    bits(&fast),
+                    bits(&general),
+                    "{name} / {kind}(v, {frac}): fast {fast:?} vs general {general:?}"
+                );
+            }
+        }
+    }
+}
+
+/// A `-0.0` in the column makes the fast path DECLINE, and the answer is then the general fold's.
+///
+/// This is the one exactness guard in `try_scan_percentile` and the only case an unstable
+/// selection can get bit-wrong: `-0.0` and `0.0` TIE under `partial_cmp` (the comparator
+/// `percentile_of` sorts with) but differ in bits, so a stable sort keeps a tied run in input
+/// order where a selection may return either member. The assertion is on BITS, because on VALUES
+/// `-0.0 == 0.0` and the whole question is invisible.
+///
+/// THE FIXTURES ARE A MUTANT'S DOING, and the first version of this test was worthless. With the
+/// guard removed the test PASSED (item 1162, mutant M1) — it used three values and fractions up
+/// to 0.5, and `select_nth_unstable_by` on a slice that short falls into an INSERTION SORT, which
+/// is stable, so the selection and the sort agree and the test passed for the wrong reason.
+///
+/// A standalone search over both algorithms then settled how real the divergence is: **1,454,911
+/// of 5,916,000 (input, index) pairs differ in bits**, and the minimal case is `n = 2, idx = 1`
+/// over `[-0.0, 0.0]` — stable gives `0.0`, selection gives `-0.0`. So the cases below are built
+/// FROM that counterexample: the two-value fixture at fraction 1 (which is exactly `idx = 1`),
+/// plus a 64-value fixture to clear the insertion-sort regime entirely. Both now fail with the
+/// guard removed.
+///
+/// The lesson generalizes past this test: a size-dependent algorithm needs the size swept, and a
+/// fixture small enough to be convenient can sit entirely inside the branch that cannot fail.
+#[test]
+fn a_negative_zero_declines_the_percentile_fast_path() {
+    // THE MINIMAL DISTINGUISHING CASE, in both input orders: two tied zeros, and the fraction
+    // that selects the second of them.
+    for order in [[-0.0f64, 0.0], [0.0, -0.0]] {
+        let mut b = Builder::default();
+        b.node(&["N"], &[("v", Value::Num(order[0]))]);
+        b.node(&["N"], &[("v", Value::Num(order[1]))]);
+        let st = b.build();
+        agree_on_bits(
+            &st,
+            &format!("two zeros {order:?}"),
+            &["1", "0.75", "0.5", "0"],
+        );
+    }
+
+    // AND WELL CLEAR OF THE INSERTION-SORT REGIME: 64 values, the zeros scattered among finites
+    // so a pivot choice actually moves them.
+    for &zeros_first in &[true, false] {
+        let mut b = Builder::default();
+        for i in 0..64u32 {
+            let x = match i % 4 {
+                0 => {
+                    if zeros_first {
+                        -0.0
+                    } else {
+                        0.0
+                    }
+                }
+                1 => {
+                    if zeros_first {
+                        0.0
+                    } else {
+                        -0.0
+                    }
+                }
+                2 => f64::from(i),
+                _ => -f64::from(i),
+            };
+            b.node(&["N"], &[("v", Value::Num(x))]);
+        }
+        let st = b.build();
+        agree_on_bits(
+            &st,
+            &format!("64 values, zeros_first={zeros_first}"),
+            &["0", "0.25", "0.5", "0.51", "0.75", "1"],
+        );
+    }
+}
+
+/// Both percentile spellings, over every fraction given, compared as BITS — the fast path against
+/// the general grouped fold. Shared by the negative-zero test's fixtures.
+fn agree_on_bits(st: &Store, name: &str, fracs: &[&str]) {
+    let ask = |q: &str| -> u64 {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), st);
+        match run(&plan, st).rows[0][0] {
+            Value::Num(x) => x.to_bits(),
+            ref v => panic!("{name}: not a number: {v:?}"),
+        }
+    };
+    for kind in ["percentile_cont", "percentile_disc"] {
+        for frac in fracs {
+            assert_eq!(
+                ask(&format!("MATCH (n:N) RETURN {kind}(n.v, {frac}) AS c")),
+                ask(&format!(
+                    "MATCH (n:N) LET g = 1 RETURN {kind}(n.v, {frac}) AS c GROUP BY g"
+                )),
+                "{name} / {kind}(v, {frac}): the fast path and the grouped fold differ in BITS"
+            );
+        }
+    }
+}
+
+/// The fast path must not claim a shape it cannot answer: a DISTINCT percentile, a percentile
+/// over a non-`Num` column, one over a non-bare-`Scan` input, and a second aggregate beside it.
+/// Each must still answer, which it only can if the entry declined and the general path ran.
+#[test]
+fn the_percentile_fast_path_declines_what_it_cannot_answer() {
+    let mut b = Builder::default();
+    for i in 0..6u32 {
+        b.node(
+            &["N"],
+            &[
+                ("v", Value::Num(f64::from(i))),
+                ("s", Value::Str(format!("s{i}").into())),
+            ],
+        );
+    }
+    for i in 0..5u32 {
+        b.edge(i, i + 1, "E");
+    }
+    let st = b.build();
+
+    for q in [
+        // DISTINCT — a different question, so claiming it would be a wrong answer.
+        "MATCH (n:N) RETURN percentile_disc(DISTINCT n.v, 0.5) AS c",
+        // A STRING column: the general path's own error or coercion rule, not this path's.
+        "MATCH (n:N) RETURN percentile_disc(n.s, 0.5) AS c",
+        // Not a bare `Scan`.
+        "MATCH (n:N) WHERE n.v > 1 RETURN percentile_disc(n.v, 0.5) AS c",
+        "MATCH (a:N)-[:E]->(b) RETURN percentile_disc(b.v, 0.5) AS c",
+        // A second aggregate beside it, which `sole_agg` refuses.
+        "MATCH (n:N) RETURN percentile_disc(n.v, 0.5) AS c, count(*) AS d",
+        // Grouped.
+        "MATCH (n:N) LET g = n.v RETURN percentile_disc(n.v, 0.5) AS c GROUP BY g",
+    ] {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &st);
+        // Answering at all is the assertion: an entry that claimed one of these and could not
+        // answer it would panic or return the wrong arity here.
+        let rows = crate::exec::try_run(&plan, &st);
+        assert!(rows.is_ok() || q.contains("n.s"), "{q}: {rows:?}");
+    }
+}
