@@ -2910,6 +2910,24 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   columns — cheaper to write, already covered by those arms' own oracles and mutation, and FASTER
   by item 471's measurement that N passes over one column each beat one interleaved pass (5.6 ms
   against 0.6). Separate function after the numeric entry, per item 1184.
+- **VERIFIED, no code change: the six changes of items 1195-1201 introduced NO spelling cliff and
+  no bench regression on either engine (1202).** Six items in a row shipped new ROUTES, and a route
+  that claims a shape it serves worse is exactly what `spelling_probe` and `bun run spelling` exist
+  to catch — so this is the check, run rather than assumed.
+  `spelling_probe` (Rust): **NO PERF CLIFFS**, every equivalent spelling converging on plan or cost.
+  `bun run spelling` at SPELL_N=200000 SPELL_REPS=9 (TS): 0 groups disagree on the ANSWER, and all
+  **three** flagged groups are PRE-EXISTING and already recorded — `label on start: redundant vs
+absent` at 1549.86x against its documented 1545x (real and explained at item 1067), the product's
+  one-sided predicate (item 285) and the two-conjunct seek (item 578). **A flag matching its
+  recorded magnitude is the useful signal here**: it says the instrument and the engine both still
+  read what they read before.
+  `query_bench` (Rust): seek 677.6x, `count(DISTINCT p.name)` 17043.7x, and BOTH controls
+  (`avg(p.age)`, `count(*)`) at exactly 1.0x. `repeat-group head(b)` reads **78.3ms** where item
+  1200's own comment records 97.8ms after the COLUMN-level borrow — consistent with the 1.21x
+  measured for the cell-level half, so that win shows up independently in the corpus rather than
+  only in its own probe.
+  TS bench: `count 3-hop` 321.5ms (was 326.5), `count 4-hop` 341.5 (365.2), `count var-length 1-2`
+  234.8 (250.7), `top-k by boolean` 5.3 (5.2) — every row at or better than its recorded value.
 - **REFUTED for RUST: the TS wrapped-aggregate hole (items 1197/1198) has NO Rust twin on any fold
   shape — every one is 1.00x (1199).** `abs(min(a.num) - 10)`, `max(a.num) + 1`,
   `coalesce(max(a.num), 0)`, `count(a.num) * 2`, `upper(max(a.str))` all cost exactly their bare
