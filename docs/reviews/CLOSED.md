@@ -34236,3 +34236,37 @@ ceasing to decrement `etype_counts` — the drift the new formula now depends on
 one timer tick on the corpus's two fastest rows. Isolated at 15 reps x 3 alternated rounds: flat
 (min 0.2 vs 0.2). **A ratio from two sub-microsecond readings is a quantization artefact, not a
 measurement** — don't chase these.
+
+## 1159 — 🔶 PRICED at **106-110 ms vs 0.0**, and it is a CROSS-LANGUAGE gap: one engine answers an untyped hop count instantly through Gremlin and not at all through GQL. ⚠️ My first fix was in the WRONG FUNCTION, caught by a trace
+
+The TS follow-up to items 1157-1158. `packages/native/label-arity-probe.ts`, 200k nodes / degree 4
+over TWO types, every row asserting ts === native:
+
+```text
+  A1 -[:KNOWS]->          one      0.0 ms   400,000
+  A2 -[:FOLLOWS]->        one      0.0      400,000
+  A3 -[:KNOWS|FOLLOWS]->  MANY     0.0      800,000   <- TS HAS the variant native lacked
+  A4 -[]->            untyped    106.2      800,000   <- and lacks the one native had
+```
+
+⚠️ **It is a gap between the two SURFACE LANGUAGES of ONE engine:**
+
+```text
+  GQL     untyped  MATCH (a)-[]->(x) RETURN count(*)   109.7 ms
+  GREMLIN untyped  g.V().out().count()                   0.0      <- same graph, same answer
+```
+
+`adjacentCount` in the Gremlin executor answers `labels.length === 0` from `graph.edgeCount`. **The
+implementation already exists one package over.** Looking for the pattern in "the other engine"
+found it in the other _surface_.
+
+⚠️ **DO NOT fix this in `bareDegreeSum`.** Its `types?.length !== 1` gate reads exactly like the
+culprit; widening it to admit `types === undefined` measured **111.7 ms — no change**, and a
+`TRACE1159` at its entry printed NOTHING on either a 200k or a 2-node fixture. It is never called
+for this shape. Third time this session an edit landed in an unreachable path (items 1102, 1146),
+and the first time the trace caught it before a number was attributed.
+
+**KNOWN:** real, reproducible, answer-identical across both engines and surfaces; the O(1) formula is
+proven in the Gremlin executor; a `types === undefined` all-buckets degree sum ALSO already exists in
+the GQL file (`shortcuts.ts:886`). **NOT KNOWN:** which rung declines the untyped shape first. Next
+step is a claim trace over the one-hop count dispatch, not another guess at a plausible gate. OPEN.
