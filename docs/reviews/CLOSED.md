@@ -34981,3 +34981,85 @@ is for.
 Note for anyone quoting `CLAUDE.md`'s serving-path figure: "interleaving a write with a traversal
 already costs ~2.5x" and the up-to-24x type-selectivity figure are both about the STALE read. This
 table is the orthogonal axis — how many reads per write — and the two multiply.
+
+## 1168 — ✅ FIXED a cross-engine divergence CI caught: a DOTTED conjunct was raising here and non-raising in the engine, so only the engine could hoist it past a faulting sibling. ⚠️ Plus a RELATED shape that is still open, found by my own probe
+
+**CI went red on `f54c9045`** — the differential fuzzer, `FUZZ_SEED=1433311152`, reproducible:
+
+```text
+  MATCH (n:T) WHERE ((CAST(n.nan AS BOOLEAN) IS UNKNOWN) AND (n.m.k = 3)) RETURN n.n AS x
+    ts:     err E_INVALID_VALUE
+    native: ok [{"x":5}]
+```
+
+Pre-existing, not caused by item 1161's generator widening — but newly REACHABLE, because adding
+`r()` calls shifted the RNG stream into seed space the old generator never visited. That is the
+third time this session that the generator change was the thing that exposed a standing bug.
+
+### Diagnosis, which took two wrong turns worth recording
+
+**The cast is NOT the divergence.** Isolating it over 7 values x 4 targets — NaN, ±INFINITY, 0, 1,
+2.5, -3 against BOOLEAN/INTEGER/FLOAT/STRING — gave **0 of 28 divergences**: both engines raise on
+`CAST(<NaN> AS BOOLEAN)`, both answer `null` for `AS FLOAT`, identically throughout. The fuzzer's
+query faults only because the fixture stores NaN on SOME rows, so whether the cast is REACHED
+depends on conjunct order.
+
+Confirmed by swapping the conjuncts, which is what named the real question:
+
+```text
+  CAST first, m.k second (as generated)   ts err   native ok   DIVERGE
+  m.k first,  CAST second (swapped)       both ok
+  CAST alone, no conjunct                 both err
+  the cast projected, not filtered        both err
+```
+
+**The cause is the ORDERING KEY, and it is not shared.** The engine's `can_raise` lists
+`Arith | Call | Cast` as raising and recurses through `And`/`Or`/`Not`/`Compare`/`In`, so
+`Expr::Field` falls into its `_ => false`: a dotted access is non-raising there, unconditionally
+and without recursing into the base. This engine's `valueCannotRaise` whitelist had **no `field`
+arm**, so `n.m.k = 3` was classified raising, `filterPredicate` saw no safe conjunct to hoist, and
+evaluation reached the cast. The engine hoisted it and never visited a NaN row.
+
+This is the same bill the `compare` arm (41 divergences) and the `isTruth` arm (item 322, one seed
+in three) were each handed, in the same function, with the lesson written above both of them: **a
+narrower key here is not caution, it is disagreement.** The fix matches the engine exactly —
+unconditionally non-raising, no recursion into the base — and is sound on this engine's own terms
+as well: a field access on a record, a NUMBER, a STRING, an absent key and three levels deep all
+answer `null` in both engines and raise in neither.
+
+**Seed 1433311152 now passes.** 7/7 fuzzers green, 8 further random seeds clean, 4,428 tests green
+across `gql`/`core`/`native`, and the shape is pinned in
+`and-short-circuit-conformance.test.ts` — the file whose whole job is to say the contract is
+SHARED.
+
+### ⚠️ Two wrong turns, both the same mistake
+
+1. I checked the dist for the new arm with `str.count("=== 'field'")` and got **0**, and nearly
+   concluded the build had not picked it up. The bundler had rewritten it to `=== "field"` —
+   double quotes. Item 1151 recorded that the bundler strips comments so a comment marker passes
+   vacuously; this is the same hazard on QUOTE STYLE. **Assert on a token the bundler cannot
+   rewrite, or read the surrounding line.**
+2. I assumed `filterPredicate` governed my hand-written repro shapes and spent three calls
+   reasoning about why the fix "had not worked" on them. A `TRACE1168` print settled it in one
+   run: **`filterPredicate` is never called for those shapes at all** — they work (where they
+   work) through `compileExpr`'s `AND` FALSE short-circuit instead. The fix was already correct
+   for the fuzzer's shape, which does reach `filterPredicate`. Items 1102/1146/1159 are three
+   edits that landed in unreachable paths; this is the fourth time a trace was the cheap answer to
+   "which arm actually owns this?", and I reached for it third rather than first.
+
+### 🔶 STILL OPEN, and my repro probe is what found it
+
+The hand-written shapes are a DIFFERENT divergence, unfixed:
+
+```text
+  MATCH (n:P) WHERE n.m.k = 99 AND n.s   ts err E_INVALID_VALUE   native ok []
+  MATCH (n:P) WHERE n.s AND n.m.k = 99   ts err E_INVALID_VALUE   native ok []
+  MATCH (n:P) FILTER n.m.k = 99 AND n.s  ts err E_INVALID_VALUE   native ok []
+```
+
+The plain-prop twins AGREE (`WHERE n.n > 1000000 AND n.s` → `ok []` both engines, both orders), so
+it is specific to a dotted conjunct beside a bare property in truth position — and it is NOT the
+ordering key, which now matches, but the fact that these shapes never reach `filterPredicate`. The
+route that compiles them is the next thing to identify. Note the registry may NOT excuse this:
+`divergence-registry.ts`'s standing rule is that an error against a non-empty result cannot be
+declared, and the conformance file records that rule being enforced before.

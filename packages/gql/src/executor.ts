@@ -7046,7 +7046,26 @@ const valueCannotRaise = (e: Expr): boolean =>
   // skips — four of the five divergences left in a 20,000-query differential run after the
   // comparison arm was widened, all of them this. Only a numeric LITERAL: `-n.s` negates a
   // string and faults, which is why this is not `neg` of anything value-safe.
-  (e.kind === 'neg' && e.expr.kind === 'lit' && typeof e.expr.value === 'number');
+  (e.kind === 'neg' && e.expr.kind === 'lit' && typeof e.expr.value === 'number') ||
+  // A DOTTED FIELD ACCESS (`n.m.k`), unconditionally and WITHOUT recursing into the base, because
+  // that is exactly what the engine does: `can_raise` lists `Arith | Call | Cast` as raising and
+  // recurses through `And`/`Or`/`Not`/`Compare`/`In`, so `Expr::Field` falls into its `_ => false`
+  // however its base is built. The ordering key has to be the SAME key on both sides — the lesson
+  // the `compare` and `isTruth` arms above were each billed for — and a narrower key here is not
+  // caution, it is disagreement.
+  //
+  // MEASURED, not reasoned: a field access on a record, on a NUMBER, on a STRING, on an absent
+  // key and three levels deep on a number all answer `null` in BOTH engines and raise in neither,
+  // so classifying it non-raising is also true of this engine on its own terms.
+  //
+  // WHAT IT COST (item 1168): CI's differential fuzzer at `FUZZ_SEED=1433311152` hit
+  // `WHERE ((CAST(n.nan AS BOOLEAN) IS UNKNOWN) AND (n.m.k = 3))` — TS raised E_INVALID_VALUE
+  // where the engine answered `[{"x":5}]`. The CAST conjunct is correctly raising in both; the
+  // divergence was that the engine could hoist `n.m.k = 3` ahead of it and filter the NaN-bearing
+  // rows out first, while this engine could not, because a field access was not in this list.
+  // Two further shapes diverged the same way (`WHERE n.s AND n.m.k = 99`, and the reversed
+  // spelling), both TS raising against the engine's `ok []`.
+  e.kind === 'field';
 
 /**
  * Whether evaluating `e` as a TRUTH VALUE cannot raise — the question a conjunct of a filter

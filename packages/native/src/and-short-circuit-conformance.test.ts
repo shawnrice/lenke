@@ -159,6 +159,36 @@ suite('AND short-circuit: the TS and native engines agree', () => {
     expect(agree("MATCH (n:P) WHERE n.zz = 'a' AND n.s RETURN n.n AS x")).toBe('ok []');
   });
 
+  test('A DOTTED conjunct is non-raising in BOTH engines (item 1168)', () => {
+    // CI's differential fuzzer found this at `FUZZ_SEED=1433311152`:
+    //
+    //     WHERE ((CAST(n.nan AS BOOLEAN) IS UNKNOWN) AND (n.m.k = 3))
+    //       ts:     err E_INVALID_VALUE        native: ok [{"x":5}]
+    //
+    // The CAST conjunct is correctly RAISING in both (`CAST(<NaN> AS BOOLEAN)` raises in both —
+    // 28 value/target pairs checked, zero divergences). The divergence was the SIBLING: the
+    // engine's `can_raise` lists `Arith | Call | Cast` and recurses through
+    // `And`/`Or`/`Not`/`Compare`/`In`, so `Expr::Field` falls into its `_ => false` and the
+    // engine may hoist `n.m.k = 3` ahead of the cast, filtering the NaN-bearing rows out before
+    // it ever runs. This engine's `valueCannotRaise` had no `field` arm, so it could not, and it
+    // reached the fault.
+    //
+    // The ordering key has to be the SAME key on both sides — the lesson the `compare` and
+    // `isTruth` arms were each billed for — so the arm matches the engine exactly:
+    // unconditionally non-raising, WITHOUT recursing into the base.
+    expect(
+      agree(
+        'MATCH (n:P) WHERE ((CAST(n.zz AS BOOLEAN) IS UNKNOWN) AND (n.m.k = 3)) RETURN n.n AS x',
+      ),
+    ).toStartWith('ok');
+    // A field access cannot raise ON ITS OWN TERMS either, which is what makes the arm sound here
+    // and not merely shared: a record, a NUMBER, a STRING, an absent key and three levels deep
+    // all answer null in both engines.
+    expect(agree('MATCH (n:P) RETURN n.n.k AS c ORDER BY c')).toStartWith('ok');
+    expect(agree('MATCH (n:P) RETURN n.s.k AS c ORDER BY c')).toStartWith('ok');
+    expect(agree('MATCH (n:P) RETURN n.zz.k.j AS c ORDER BY c')).toStartWith('ok');
+  });
+
   test('WAS THE OTHER RESIDUAL: the REVERSED spelling now agrees', () => {
     // `WHERE <raising> AND <seekable>`, the error-against-a-NON-EMPTY-result shape the
     // registry was not permitted to declare and the differential fuzzer does not generate.
