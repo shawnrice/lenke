@@ -1666,23 +1666,125 @@ pub(super) fn try_edge_cross_count(
         }
         b
     });
+    // THE OPERATOR IS MATCHED ONCE, not per edge (item 1225). `num_pred(*op, ..)` is a six-way
+    // match, and `op` is fixed for the whole query — so every edge paid a jump table and lost the
+    // chance to inline the comparison. Item 1224 measured that exact substitution at 5.28x on the
+    // hop count; this is the endpoint-compare twin.
+    let count = match op {
+        CompareOp::Eq => cross_count(
+            store,
+            label,
+            *dir,
+            &want,
+            &nbr_bits,
+            (*ls, *rs),
+            (ld, lp),
+            (rd, rp),
+            |a, b| a == b,
+        ),
+        CompareOp::Ne => cross_count(
+            store,
+            label,
+            *dir,
+            &want,
+            &nbr_bits,
+            (*ls, *rs),
+            (ld, lp),
+            (rd, rp),
+            |a, b| a != b,
+        ),
+        CompareOp::Lt => cross_count(
+            store,
+            label,
+            *dir,
+            &want,
+            &nbr_bits,
+            (*ls, *rs),
+            (ld, lp),
+            (rd, rp),
+            |a, b| a < b,
+        ),
+        CompareOp::Le => cross_count(
+            store,
+            label,
+            *dir,
+            &want,
+            &nbr_bits,
+            (*ls, *rs),
+            (ld, lp),
+            (rd, rp),
+            |a, b| a <= b,
+        ),
+        CompareOp::Gt => cross_count(
+            store,
+            label,
+            *dir,
+            &want,
+            &nbr_bits,
+            (*ls, *rs),
+            (ld, lp),
+            (rd, rp),
+            |a, b| a > b,
+        ),
+        CompareOp::Ge => cross_count(
+            store,
+            label,
+            *dir,
+            &want,
+            &nbr_bits,
+            (*ls, *rs),
+            (ld, lp),
+            (rd, rp),
+            |a, b| a >= b,
+        ),
+    };
+    Some(scalar_num(count as f64))
+}
+
+/// [`try_edge_cross_count`]'s per-edge sweep, with `cmp` MONOMORPHIC so the endpoint comparison
+/// inlines instead of going through `num_pred`'s six-way match on every edge (item 1225).
+///
+/// `slots` is `(ls, rs)`, each 0 for the source or 1 for the neighbour. Those are loop-invariant
+/// too, and the `if` on them is LEFT IN PLACE deliberately: it is perfectly predicted, and
+/// monomorphizing over them as well would be 2 x 2 x 6 = 24 instantiations of this body for a
+/// branch the predictor already gets right. The dispatch is the part that is never free
+/// (item 1224's ranking: a per-row DISPATCH outranks a per-row BRANCH).
+#[allow(clippy::too_many_arguments)]
+fn cross_count<F: Fn(f64, f64) -> bool>(
+    store: &Store,
+    label: &Option<String>,
+    dir: crate::ir::Dir,
+    want: &[u32],
+    nbr_bits: &Option<Vec<bool>>,
+    slots: (usize, usize),
+    left: (&[f64], &[bool]),
+    right: (&[f64], &[bool]),
+    cmp: F,
+) -> u64 {
+    let (ls, rs) = slots;
+    let (ld, lp) = left;
+    let (rd, rp) = right;
     let mut count = 0u64;
+
     scan_visit(store, label, |src| {
         let src = src as u32;
-        for_each_nbr(store, src, *dir, &want, false, |nbr, _| {
-            if let Some(bits) = &nbr_bits {
+
+        for_each_nbr(store, src, dir, want, false, |nbr, _| {
+            if let Some(bits) = nbr_bits {
                 if !bits[nbr as usize] {
                     return; // neighbour fails its `(b:Label)` constraint
                 }
             }
-            let li = if *ls == 0 { src } else { nbr } as usize;
-            let ri = if *rs == 0 { src } else { nbr } as usize;
-            if lp[li] && rp[ri] && num_pred(*op, ld[li], rd[ri]) {
+
+            let li = if ls == 0 { src } else { nbr } as usize;
+            let ri = if rs == 0 { src } else { nbr } as usize;
+
+            if lp[li] && rp[ri] && cmp(ld[li], rd[ri]) {
                 count += 1;
             }
         });
     });
-    Some(scalar_num(count as f64))
+    count
 }
 
 /// Count the scanned nodes whose column cell is present and satisfies `cmp`, with `cmp`

@@ -34599,3 +34599,95 @@ fn string_membership_count_over_a_high_cardinality_column() {
         "the unfiltered count includes the row with the key absent"
     );
 }
+
+/// `try_edge_cross_count`'s endpoint compare, over every operator and with an endpoint ABSENT on
+/// each side — coverage it did not have until item 1225, found by mutation rather than by reading.
+/// Specializing the operator left two mutants ALIVE against the whole suite: swapping the
+/// comparison's arguments (which turns `>` into `<`) and dropping the RIGHT endpoint's presence
+/// test. Both are wrong answers.
+///
+/// ⚠️ THE COUNTS ARE DELIBERATELY ASYMMETRIC, which is the whole design. With a symmetric fixture
+/// `b.k > a.k` and `b.k < a.k` return the SAME number, so an argument swap is invisible — that is
+/// exactly why the first mutant survived. Here `>` is 2 and `<` is 1.
+///
+/// ⚠️ AND NO COUNT MAY EQUAL HALF THE PRESENT-PAIR TOTAL, or negating the predicate is invisible
+/// too: there are 4 edges with both endpoints present, so a row answering 2 is useless against a
+/// negation mutant. `>=` answers 3 against its complement's 1, which is what catches it.
+///
+/// The absent-endpoint edges are what catch a dropped presence test: an absent cell reads as the
+/// column's zero placeholder, so `v0 -> v3` (right absent, left 1) is counted by `<` only if `rp`
+/// is not checked, and `v3 -> v0` (left absent, right 1) is counted by `>` only if `lp` is not.
+#[test]
+fn edge_cross_count_over_every_operator_and_absent_endpoints() {
+    let mut b = Builder::default();
+
+    b.node(&["P"], &[("k", Value::Num(1.0))]); // v0
+    b.node(&["P"], &[("k", Value::Num(5.0))]); // v1
+    b.node(&["P"], &[("k", Value::Num(5.0))]); // v2
+    b.node(&["P"], &[("other", Value::Num(0.0))]); // v3 — `k` ABSENT
+    b.node(&["P"], &[("k", Value::Num(9.0))]); // v4
+
+    // (a) -[:R]-> (b)
+    b.edge(0, 1, "R"); // a=1 b=5
+    b.edge(1, 0, "R"); // a=5 b=1
+    b.edge(2, 2, "R"); // a=5 b=5   (v2 -> v2, both present and equal)
+    b.edge(0, 3, "R"); // a=1 b=ABSENT
+    b.edge(3, 0, "R"); // a=ABSENT b=1
+    b.edge(0, 4, "R"); // a=1 b=9
+
+    let store = b.build();
+    let n = |q: &str| -> f64 {
+        match crate::exec::try_run(&opt_plan(q, &store), &store)
+            .unwrap()
+            .rows
+            .iter()
+            .next()
+            .expect("one row")[0]
+        {
+            Value::Num(x) => x,
+            ref o => panic!("count returns a number, got {o:?}"),
+        }
+    };
+    let cross = |op: &str| -> f64 {
+        n(&format!(
+            "MATCH (a:P)-[:R]->(b) WHERE b.k {op} a.k RETURN count(*) AS c"
+        ))
+    };
+
+    // The four edges with BOTH endpoints present are (1,5), (5,1), (5,5) and (1,9).
+    assert_eq!(cross(">"), 2.0, "5>1 and 9>1");
+    assert_eq!(
+        cross("<"),
+        1.0,
+        "1<5 only — and NOT equal to `>`, so a swap is visible"
+    );
+    assert_eq!(cross("<="), 2.0, "1<=5 and 5<=5");
+    assert_eq!(
+        cross(">="),
+        3.0,
+        "5>=1, 5>=5, 9>=1 — its complement is 1, so a negation shows"
+    );
+    assert_eq!(cross("="), 1.0, "5=5 only");
+    assert_eq!(cross("<>"), 3.0, "every present pair but (5,5)");
+
+    // The two absent-endpoint edges must never be counted, by any operator. Summed over the
+    // complementary pair this is the sharpest statement of it: `<` and `>=` partition the
+    // present pairs exactly, so they sum to 4 and not to 5 or 6.
+    assert_eq!(
+        cross("<") + cross(">="),
+        4.0,
+        "complementary operators partition the PRESENT pairs — an absent endpoint is in neither"
+    );
+    assert_eq!(
+        cross(">") + cross("<="),
+        4.0,
+        "and the other complementary pair agrees"
+    );
+    // The unfiltered hop sees all six edges, which pins that the fixture really has them and the
+    // counts above are a filter result rather than a missing-edge artifact.
+    assert_eq!(
+        n("MATCH (a:P)-[:R]->(b) RETURN count(*) AS c"),
+        6.0,
+        "all six edges exist, including the two with an absent endpoint"
+    );
+}
