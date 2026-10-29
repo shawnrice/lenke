@@ -1709,6 +1709,28 @@ fn date_conj_on_slot(pred: &Expr, slot: usize) -> Option<(String, Vec<(CompareOp
     Some((key0?, bounds))
 }
 
+/// ⚠️ REJECTED HERE: ITEM 1220'S BRANCHLESS ACCUMULATION, WHICH IS 1.04x SLOWER ON THIS SWEEP
+/// (item 1223). Folding the three nested branches into one match yielding a `(is_date, days)` pair
+/// plus `count += u64::from(present[i] & is_date & cmp(days))` measured, over three
+/// order-alternated rounds with the binaries hash-asserted and the numeric control flat at
+/// 30.7-31.1 us:
+///
+/// ```text
+///   PRE   113.1  113.5  114.5
+///   POST  118.1  118.2  118.6      disjoint, consistently worse
+/// ```
+///
+/// The mechanism, and why the transfer fails: `size_of::<Temporal>()` is **40 bytes** against an
+/// `f64`'s 8, because the enum is sized by its largest variant while a `Date` payload is 4. At
+/// 200,000 rows this sweep streams 8 MB to read 800 KB of days, and it costs 102.9 us against the
+/// numeric twin's 29.2 on the IDENTICAL row count — a 3.5x ratio BELOW the 5x width ratio, which is
+/// the signature of a loop already bound by memory rather than by branches. Item 1220's rewrite
+/// wins where the compare is the cost; here it only adds an unconditional `cmp` call.
+///
+/// THE REAL LEVER IS THE COLUMN, not the loop: `Column::Temporal` is already homogeneous by
+/// `kind` (the caller checks it once), so it could store the PAYLOAD rather than the enum — 4 bytes
+/// a row instead of 40, which would put 200,000 dates in L2. That is a storage change and needs its
+/// own measurement; it is not inherited from this one.
 fn sweep_date_count<F: Fn(i32) -> bool>(
     store: &Store,
     label: &Option<String>,
