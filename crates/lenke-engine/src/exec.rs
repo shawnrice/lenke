@@ -6539,6 +6539,13 @@ fn try_num_conjunction(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec<
                 let (lo, hi) = (c.lo, c.hi);
 
                 if c.ne.is_empty() {
+                    // ⚠️ REJECTED HERE TOO: item 1227's `&&` -> `&` (item 1228).
+                    // `keep_num_cmp` GATHERS through `ids`, so this looked like the hop sweep
+                    // rather than the sequential one and the mechanism PREDICTED a win. It
+                    // measures nothing: `projection, TWO bounds` 459.1/417.5 us against
+                    // 458.8/420.4, and the single-bound projection 476.9/428.2 against
+                    // 475.6/426.4 — three alternated rounds, binaries hash-asserted. Reverted.
+                    // So iteration shape alone does NOT predict it; only the measurement does.
                     let keep = match (c.lo_incl, c.hi_incl) {
                         (true, true) => keep_num_cmp(ids, d0, p0, |x| x >= lo && x <= hi),
                         (true, false) => keep_num_cmp(ids, d0, p0, |x| x >= lo && x < hi),

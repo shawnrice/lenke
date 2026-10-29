@@ -2103,6 +2103,16 @@ fn try_stream_range_count(
         .or_else(|| lower(*op2, *t2).zip(upper(*op1, *t1)))?;
     // Any other PAIR — two equalities, a `<>`, two lower bounds — declines to the caller's
     // general arm rather than getting a half-measure here.
+    // ⚠️ REJECTED HERE: ITEM 1227'S `&&` -> `&`, WHICH MEASURES NOTHING ON THIS SWEEP (item 1228).
+    // Item 1227 found a `&&` inside the closure worth 4.0x on the HOP sweep, by blocking the
+    // vectorization item 1220's branchless accumulation exists to enable. The same substitution on
+    // these four arms, three order-alternated rounds with the binaries hash-asserted: PRE
+    // 30.8-30.9 us against POST 30.6-31.2 — flat and overlapping. Reverted.
+    //
+    // WHY IT DOES NOT TRANSFER, which is the useful half: `sweep_num_count` walks a CONTIGUOUS
+    // label bucket, so the index is sequential and LLVM folds the `&&` into the mask anyway — at
+    // 28-31 us for 200,000 rows (0.15 ns a row) this loop is already vectorized. `hop_num_count`
+    // walks a per-type CSR, where the indices are a GATHER, and there the branch stops it.
     let count = match (lo_incl, hi_incl) {
         (false, false) => sweep_num_count(store, label, data, present, |x| x > lo && x < hi),
         (false, true) => sweep_num_count(store, label, data, present, |x| x > lo && x <= hi),
