@@ -2910,6 +2910,41 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   columns — cheaper to write, already covered by those arms' own oracles and mutation, and FASTER
   by item 471's measurement that N passes over one column each beat one interleaved pass (5.6 ms
   against 0.6). Separate function after the numeric entry, per item 1184.
+- ~~**The FUSED filtered-hop extremum serves `Column::Num` alone**~~ — **CLOSED by item 1190** at
+  **3.16x (dict) / 2.58x (str) / 2.47x (bool)** over three alternated rounds, taking them from
+  5.08x/5.07x/3.93x of their own `count(*)` floor to 1.60x/1.95x/1.58x; `num` 1.01x and `mixed`
+  1.01x. `dict` and `bool` end up BEATING served `num`, since an integer rank compare and a bool
+  compare are cheaper than `cmp_num_total` through an `Option`. **In-place widening is safe HERE**,
+  unlike item 1184: that function's `match` sat INSIDE the per-node loop, this one is a `sole_agg`
+  path matching ONCE per query with each arm owning its loop — argued from structure and then
+  CONFIRMED by the `num` control at 1.01x, the first such argument this session not to be refuted.
+- ⚠️⚠️ **A FAR-ENDPOINT LABEL COMPILES TO A `Filter`, so a labelled hop is a FILTERED hop (1190).**
+  `MATCH (a:L)-[:T]->(b:L)` becomes `Filter{IsLabeled{slot: 1}, Expand{Scan}}` and therefore reaches
+  `try_fused_hop_mask_agg` at exec.rs:1650 — **SIXTY-TWO LINES BEFORE** `try_frontier_prop_agg` at 1712. Widening the fused arm to non-numeric columns diverted that shape off item 1182's cheap
+  frontier collapse and onto the mask, which materializes every out-neighbour plus a dummy column:
+  **`str` 3064.0 → 4480.8, a 1.47x REGRESSION** on an entirely ordinary query. **This is item 375's
+  rule in reverse** — that entry records an arm going DEAD below one that claims its shape; this is
+  widening an EARLIER arm to steal shapes a LATER, better arm was serving. Fixed by
+  `nonnumeric_extremum_belongs_to_the_frontier_fold`, which declines a bare frontier `IsLabeled`
+  under a NON-numeric extremum (numeric excluded deliberately — the mask is genuinely better there,
+  and the refactor made it 1.43x faster).
+- ⚠️ **EVERY OTHER INSTRUMENT WAS GREEN, and no probe measured the shape (1190).** The oracle passed
+  over 10 comparisons, six of eight mutants were caught, the probe read 2.47-3.16x with flat
+  controls. The labelled-far-endpoint-with-no-`WHERE` shape fell BETWEEN the frontier table
+  (unlabelled `(b)`) and the filtered table (explicit predicate). It was found only by following a
+  mutation survivor five steps: survivor → why → dump the plan → the label is a `Filter` → check the
+  chain order → measure. **A probe corpus has gaps exactly where two instruments meet.**
+- **A route guard is answer-equivalent, so only a ROUTE TEST can hold it (1190).** Mutation settles
+  it: deleting the guard call is caught by `the_labelled_hop_extremum_routes_by_representation` and
+  by NOTHING else, while inverting its `numeric`, changing its slot, or widening it to `Count` are
+  caught by the pure-predicate test. That test asserts FIVE cases, three of them against an
+  OVER-broad guard — numeric must stay on the mask, a non-label predicate must stay (that is the
+  whole win), slot 0 is not a frontier predicate, and `count`/`sum`/`avg` are item 1137's business.
+- **A FILTERED shape needs the fixture's anti-correlation on the SURVIVING rows (1190).** A mutant
+  comparing node ids instead of strings SURVIVED a fixture built from globally-unsorted values
+  (`e5, a1, i9, c3, g7`), because the predicate narrowed the survivors to ids {4, 5} — `c3` and
+  `g7` — where string order and id order AGREE. Item 702's hazard, sharpened: globally unsorted is
+  not enough when the predicate picks the subset that reaches the fold.
 - **REFUTED: a wide twin for the FILTERED scan extremum. ~1.3-1.7x, because the FILTER dominates
   (1189).** `try_filtered_scan_num_agg` has the same `Column::Num`-only signature that paid 8332x at
   item 1188, so it looked like the fourth repetition. Against the only valid floor — `count(*)` with

@@ -33234,3 +33234,361 @@ fn the_scan_multi_aggregate_wide_dispatcher_agrees_with_the_grouped_fold() {
         }
     }
 }
+
+/// The FUSED filtered-hop extremum against the general grouped fold, for every representation
+/// (item 1190).
+///
+/// `try_fused_hop_mask_agg` serves `count(*)`/`sum`/`min`/`max` over
+/// `Filter(<endpoint pred>, Expand(Scan))` for predicates the inline numeric count cannot take —
+/// an OR, a mixed-key disjunction, a string search — and destructured `Column::Num` alone, so a
+/// filtered-hop extremum over any other representation fell to the general path at 4.04-5.14x its
+/// own `count(*)` floor (item 1190 priced it).
+///
+/// THE PREDICATE MUST BE ONE THIS ARM TAKES. A bare comparison is claimed by the inline numeric
+/// count, and a bare frontier `PropertyExists` is DECLINED on purpose (item 1137, because the
+/// frontier fold answers that one with an O(1) presence test per distinct node instead of
+/// materializing every out-neighbour). An OR is the shape that reaches here, so the fixture uses
+/// one — and the reachability assertion below is what proves it rather than assuming it.
+///
+/// ORACLE: the same query grouped by a constant, which `sole_agg` declines, so it runs the general
+/// path on the identical question.
+#[test]
+fn the_fused_filtered_hop_extremum_agrees_with_the_grouped_fold() {
+    use crate::temporal::{Date, Temporal};
+
+    let vstr = |x: &str| Value::Str(x.into());
+    let vdate = |iso: &str| Value::Temporal(Temporal::Date(Date::parse(iso).unwrap()));
+
+    // (name, per-node value for `k` with None = ABSENT, expected representation)
+    let reps: Vec<(&str, Vec<Option<Value>>, &str)> = vec![
+        (
+            "num",
+            vec![
+                Some(Value::Num(5.0)),
+                Some(Value::Num(1.0)),
+                None,
+                Some(Value::Num(9.0)),
+                Some(Value::Num(3.0)),
+                Some(Value::Num(7.0)),
+            ],
+            "Num",
+        ),
+        (
+            "str",
+            vec![
+                // `z9` on node 0 deliberately: with `(3, 0)` making it a target, the surviving
+                // set is {0: z9, 4: c3, 5: g7}, whose string order (c3 < g7 < z9) disagrees with
+                // id order (0 < 4 < 5) at BOTH ends — so a node-id comparison is wrong for `min`
+                // AND for `max`.
+                Some(vstr("z9")),
+                Some(vstr("a1")),
+                None,
+                Some(vstr("i9")),
+                Some(vstr("c3")),
+                Some(vstr("g7")),
+            ],
+            "Str",
+        ),
+        (
+            "dict",
+            vec![
+                Some(vstr("g1")),
+                Some(vstr("g0")),
+                None,
+                Some(vstr("g1")),
+                Some(vstr("g0")),
+                Some(vstr("g1")),
+            ],
+            "Dict",
+        ),
+        (
+            "bool",
+            vec![
+                Some(Value::Bool(true)),
+                Some(Value::Bool(false)),
+                None,
+                Some(Value::Bool(true)),
+                Some(Value::Bool(false)),
+                Some(Value::Bool(true)),
+            ],
+            "Bool",
+        ),
+        (
+            "date",
+            vec![
+                Some(vdate("2015-01-01")),
+                Some(vdate("2010-01-01")),
+                None,
+                Some(vdate("2020-01-01")),
+                Some(vdate("2012-01-01")),
+                Some(vdate("2018-01-01")),
+            ],
+            "Temporal",
+        ),
+    ];
+
+    for (name, vals, want_repr) in reps {
+        let mut b = Builder::default();
+        // `sel` drives the PREDICATE and is numeric for every fixture, so the only thing varying
+        // between rows is the aggregate's column.
+        let ids: Vec<u32> = vals
+            .iter()
+            .enumerate()
+            .map(|(i, v)| match v {
+                Some(x) => b.node(&["N"], &[("k", x.clone()), ("sel", Value::Num(i as f64))]),
+                None => b.node(&["N"], &[("sel", Value::Num(i as f64))]),
+            })
+            .collect();
+        // Several sources, and one target reached twice, so the mask is per PATH.
+        for (f, to) in [
+            (0usize, 1usize),
+            (0, 2),
+            (0, 3),
+            (1, 3),
+            (1, 4),
+            (2, 5),
+            (4, 5),
+            // ⚠️ `(3, 0)` IS LOAD-BEARING. Without it node 0 is only ever a SOURCE, so the
+            // predicate leaves surviving targets {4, 5} — and for `str` those were `c3` and
+            // `g7`, where string order and ID order AGREE (c3 < g7 and 4 < 5). A mutant
+            // comparing node ids instead of their strings therefore answered correctly and
+            // SURVIVED (item 1190's F1).
+            //
+            // THE LESSON, sharper than item 702's: with a FILTER in the shape, the fixture's
+            // anti-correlation must hold on the SURVIVING rows, not on the whole column.
+            // Globally unsorted values are not enough when the predicate picks the subset that
+            // reaches the fold.
+            (3, 0),
+        ] {
+            b.edge(ids[f], ids[to], "E");
+        }
+        let st = b.build();
+
+        let repr = match st.column("k") {
+            Some(crate::store::Column::Num { .. }) => "Num",
+            Some(crate::store::Column::Str { .. }) => "Str",
+            Some(crate::store::Column::Dict { .. }) => "Dict",
+            Some(crate::store::Column::Bool { .. }) => "Bool",
+            Some(crate::store::Column::Temporal { .. }) => "Temporal",
+            Some(crate::store::Column::Gen { .. }) => "Gen",
+            None => "none",
+        };
+        assert_eq!(
+            repr, want_repr,
+            "{name}: the fixture must BUILD the representation it claims"
+        );
+
+        for agg in ["min", "max"] {
+            // An OR on the ENDPOINT, which is the shape that reaches this arm.
+            let pred = "WHERE c.sel > 3 OR c.sel < 1";
+            let q = format!("MATCH (a:N)-[:E]->(c:N) {pred} RETURN {agg}(c.k) AS v");
+            let plan = crate::opt::optimize_indexed(crate::gql::parse(&q).unwrap(), &st);
+            let Plan::Project { input, .. } = &plan else {
+                panic!("{name}/{agg}: expected a Project over the Aggregate");
+            };
+            let Plan::Aggregate {
+                input: ain,
+                keys,
+                aggs,
+            } = input.as_ref()
+            else {
+                panic!("{name}/{agg}: expected an Aggregate");
+            };
+
+            // REACHED, not merely willing. Without this the test could be comparing the general
+            // path with itself — which is exactly what item 1185's first oracle did.
+            assert!(
+                crate::exec::fastpath::try_fused_hop_mask_agg(ain, keys, aggs, &st).is_some(),
+                "{name}/{agg}: try_fused_hop_mask_agg declined the shape it is meant to serve"
+            );
+
+            let fast = run(&plan, &st).rows[0].to_vec();
+            let general = run(
+                &crate::opt::optimize_indexed(
+                    crate::gql::parse(&format!(
+                        "MATCH (a:N)-[:E]->(c:N) {pred} LET g = 1 RETURN {agg}(c.k) AS v GROUP BY g"
+                    ))
+                    .unwrap(),
+                    &st,
+                ),
+                &st,
+            )
+            .rows[0]
+                .to_vec();
+
+            assert_eq!(
+                format!("{fast:?}"),
+                format!("{general:?}"),
+                "{name}/{agg}: fast {fast:?} vs grouped fold {general:?}"
+            );
+        }
+
+        // `sum` must stay NUMERIC: it reads a value per row and only a numeric column can answer
+        // it, so the arm declines a non-numeric column rather than inventing a meaning.
+        let sq = "MATCH (a:N)-[:E]->(c:N) WHERE c.sel > 3 OR c.sel < 1 RETURN sum(c.k) AS v";
+        let splan = crate::opt::optimize_indexed(crate::gql::parse(sq).unwrap(), &st);
+        if let Plan::Project { input, .. } = &splan {
+            if let Plan::Aggregate {
+                input: ain,
+                keys,
+                aggs,
+            } = input.as_ref()
+            {
+                let served =
+                    crate::exec::fastpath::try_fused_hop_mask_agg(ain, keys, aggs, &st).is_some();
+                assert_eq!(
+                    served,
+                    want_repr == "Num",
+                    "{name}: sum must be served for Num and declined for every other \
+                     representation"
+                );
+            }
+        }
+    }
+}
+
+/// The ROUTE guard for item 1190, asserted on the pure predicate AND end to end.
+///
+/// ⚠️ THIS EXISTS BECAUSE ITEM 1190 NEARLY SHIPPED A 1.47x REGRESSION. A far-endpoint label
+/// compiles to `Filter{IsLabeled{slot: 1}, Expand}`, so `MATCH (a:L)-[:T]->(b:L) RETURN min(b.k)`
+/// is a FILTERED hop and reaches `try_fused_hop_mask_agg` at exec.rs:1650 — sixty-two lines BEFORE
+/// `try_frontier_prop_agg` at 1712. Widening the fused arm to non-numeric columns diverted that
+/// shape off item 1182's cheap frontier collapse and onto the mask, which materializes every
+/// out-neighbour plus a dummy column:
+///
+/// ```text
+///   labelled hop min, three alternated rounds
+///     str   collapse 3064.0   mask 4480.8   0.68x — 1.47x SLOWER
+/// ```
+///
+/// Every other instrument was green: the oracle passed, six of eight mutants were caught, and the
+/// probe read 2.47-3.16x with flat controls. No probe measured a LABELLED far endpoint with no
+/// `WHERE` — the shape fell between the frontier table (unlabelled) and the filtered table
+/// (explicit predicate), and it is an entirely ordinary query.
+///
+/// A route choice is ANSWER-EQUIVALENT, so nothing but a direct assertion can guard it — item
+/// 1181's lesson, and item 1137's reason for extracting its own sibling predicate.
+#[test]
+fn the_fused_hop_declines_a_bare_label_under_a_non_numeric_extremum() {
+    use crate::exec::fastpath::nonnumeric_extremum_belongs_to_the_frontier_fold as belongs;
+    use crate::ir::{Agg, AggFn, Expr};
+
+    let agg = |func: AggFn| Agg {
+        func,
+        arg: Some(Expr::Prop {
+            slot: 1,
+            key: "k".to_string(),
+        }),
+        distinct: false,
+        name: "v".to_string(),
+        frac: None,
+        null_on_empty: false,
+        numeric_only: false,
+    };
+    let labelled = Expr::IsLabeled {
+        slot: 1,
+        labels: vec!["N".to_string()],
+    };
+    let labelled_slot0 = Expr::IsLabeled {
+        slot: 0,
+        labels: vec!["N".to_string()],
+    };
+    let other = Expr::PropertyExists {
+        slot: 1,
+        key: "k".to_string(),
+    };
+
+    // THE CASE THE GUARD IS FOR: a non-numeric extremum behind a bare frontier label.
+    for f in [AggFn::Min, AggFn::Max] {
+        assert!(
+            belongs(&agg(f), &labelled, false),
+            "{f:?} over a NON-numeric column behind a bare frontier label belongs to the \
+             frontier fold — this is the 1.47x"
+        );
+        // NUMERIC is excluded deliberately: the mask is genuinely better for it (the fused arm
+        // served it before and after, and the refactor made it 1.43x FASTER). A guard that
+        // declined numeric too would hand back a real win.
+        assert!(
+            !belongs(&agg(f), &labelled, true),
+            "{f:?} over a NUMERIC column must STAY on the mask"
+        );
+        // A predicate that is not a bare frontier label is the fused arm's actual target — the
+        // 1.59-1.93x this item ships. Declining it would give the whole win back.
+        assert!(
+            !belongs(&agg(f), &other, false),
+            "{f:?} behind a NON-label predicate is the fused arm's own shape"
+        );
+        // A label on the SOURCE is not a frontier predicate at all.
+        assert!(
+            !belongs(&agg(f), &labelled_slot0, false),
+            "{f:?} behind a label on slot 0 is not a frontier label"
+        );
+    }
+    // Not an extremum: `count` is item 1137's predicate's business, not this one's.
+    for f in [AggFn::Count, AggFn::Sum, AggFn::Avg] {
+        assert!(
+            !belongs(&agg(f), &labelled, false),
+            "{f:?} is not an extremum and must not be diverted by this guard"
+        );
+    }
+}
+
+/// The same guard END TO END: the labelled shape must leave the fused arm and land on the
+/// frontier collapse, for a non-numeric column but NOT for a numeric one (item 1190).
+///
+/// The pure-predicate test above pins the CONDITION; this pins that the condition is actually
+/// consulted on a real plan, which is the half a refactor could silently drop.
+#[test]
+fn the_labelled_hop_extremum_routes_by_representation() {
+    let mut b = Builder::default();
+    for i in 0..8u32 {
+        b.node(
+            &["N"],
+            &[
+                ("s", Value::Str(format!("v{}", 7 - i).into())),
+                ("n", Value::Num(f64::from(i))),
+            ],
+        );
+    }
+    for i in 0..7u32 {
+        b.edge(i, i + 1, "E");
+    }
+    let st = b.build();
+
+    for (key, numeric) in [("s", false), ("n", true)] {
+        let q = format!("MATCH (a:N)-[:E]->(c:N) RETURN min(c.{key}) AS v");
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(&q).unwrap(), &st);
+        let Plan::Project { input, .. } = &plan else {
+            panic!("{key}: expected a Project over the Aggregate");
+        };
+        let Plan::Aggregate {
+            input: ain,
+            keys,
+            aggs,
+        } = input.as_ref()
+        else {
+            panic!("{key}: expected an Aggregate");
+        };
+
+        // The far label really does become a `Filter`, which is the whole reason this shape
+        // reaches the fused arm at all. Asserted so a planner change that stopped doing it would
+        // show up here rather than silently making this test vacuous.
+        assert!(
+            matches!(ain.as_ref(), Plan::Filter { .. }),
+            "{key}: a far-endpoint label must compile to a Filter over the Expand"
+        );
+
+        let fused = crate::exec::fastpath::try_fused_hop_mask_agg(ain, keys, aggs, &st).is_some();
+        let frontier = crate::exec::fastpath::try_frontier_prop_agg(ain, keys, aggs, &st).is_some();
+
+        assert_eq!(
+            fused, numeric,
+            "{key}: the fused mask must serve the NUMERIC labelled hop and decline the others"
+        );
+        assert!(
+            frontier,
+            "{key}: the frontier collapse must be able to serve it — it is what the decline \
+             hands the shape to"
+        );
+    }
+}

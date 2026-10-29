@@ -260,11 +260,92 @@ pub(super) fn try_fused_hop_project(
 /// differential and end-to-end test there is, which is item 1122's rule ("a perf gate needs its
 /// own observable") and the reason item 1136's own M2 verdict is unresolvable. As a total function
 /// of two arguments it can be asserted directly, so a mutant has somewhere to fail.
+/// Does this NON-NUMERIC extremum belong to the frontier fold rather than the materialized mask?
+/// (item 1190)
+///
+/// ⚠️ MEASURED, and it is a regression this very item nearly shipped. A far-endpoint LABEL compiles
+/// to `Filter{IsLabeled{slot: 1}, Expand}` — so `MATCH (a:L)-[:T]->(b:L) RETURN min(b.k)` is a
+/// FILTERED hop and reaches `try_fused_hop_mask_agg` at exec.rs:1650, SIXTY-TWO LINES BEFORE
+/// `try_frontier_prop_agg` at 1712. Before item 1190 the fused arm declined non-numeric columns
+/// and the shape fell through to item 1182's frontier collapse; widening it diverted the shape
+/// onto the mask, which materializes every out-neighbour plus a dummy column:
+///
+/// ```text
+///   LABELLED hop min, three alternated rounds
+///     str    frontier collapse 3064.0   fused mask 4480.8   0.68x — 1.47x SLOWER
+///     dict                     1865.7              1985.8   0.94x
+///     bool                     1909.4              1854.0   1.03x
+///     num    [fused served it in BOTH arms]                 1.43x FASTER
+/// ```
+///
+/// That is item 375's rule in reverse: widening an EARLIER arm steals shapes a LATER, better arm
+/// was serving. So a bare frontier `IsLabeled` under a non-numeric extremum declines here, exactly
+/// as item 1137 declined a bare `PropertyExists` under `count(*)` for the same reason.
+///
+/// `num` is EXCLUDED from the decline because the mask is genuinely better for it — the fused arm
+/// served it before and after, and the refactor made it 1.43x faster.
+///
+/// EXTRACTED as a pure predicate on purpose, for item 1137's stated reason: the decision is a
+/// ROUTE choice and both routes return the same answer, so a mutation of the condition written
+/// inline survives every differential and end-to-end test there is (item 1122). As a total
+/// function it can be asserted directly, so a mutant has somewhere to fail.
+pub(super) fn nonnumeric_extremum_belongs_to_the_frontier_fold(
+    agg: &Agg,
+    pred: &Expr,
+    numeric: bool,
+) -> bool {
+    matches!(agg.func, AggFn::Min | AggFn::Max)
+        && !numeric
+        && matches!(pred, Expr::IsLabeled { slot: 1, .. })
+}
+
 pub(super) fn bare_present_count_belongs_to_the_frontier_fold(agg: &Agg, pred: &Expr) -> bool {
     matches!(agg.func, AggFn::Count)
         && agg.arg.is_none()
         && !agg.distinct
         && matches!(pred, Expr::PropertyExists { slot: 1, .. })
+}
+
+/// The masked extremum behind [`try_fused_hop_mask_agg`], shared by every representation
+/// (item 1190).
+///
+/// ONE copy of the loop for all five arms, with each supplying the cheapest comparable KEY for its
+/// representation — the same shape as item 1186's `hop_top_k_window`, and for the same two
+/// reasons: a `Str` column would otherwise clone a `GStr` per surviving row, and a second copy of
+/// a selection loop is a second home for the class of bug item 1185 shipped in one.
+///
+/// Returns the winning TARGET NODE index, or `None` when no surviving row has a present cell.
+fn mask_extremum<K, G, F>(
+    targets: &[u32],
+    mask: &[Option<bool>],
+    present: &[bool],
+    want_min: bool,
+    key_of: G,
+    cmp: F,
+) -> Option<usize>
+where
+    G: Fn(u32) -> K,
+    F: Fn(&K, &K) -> std::cmp::Ordering,
+{
+    let mut best: Option<(usize, K)> = None;
+    for (i, &tgt) in targets.iter().enumerate() {
+        let j = tgt as usize;
+        if mask.get(i) != Some(&Some(true)) || !present[j] {
+            continue;
+        }
+        let k = key_of(tgt);
+        let take = match &best {
+            None => true,
+            Some((_, b)) => {
+                let ord = cmp(&k, b);
+                (want_min && ord.is_lt()) || (!want_min && ord.is_gt())
+            }
+        };
+        if take {
+            best = Some((j, k));
+        }
+    }
+    best.map(|(j, _)| j)
 }
 
 pub(super) fn try_fused_hop_mask_agg(
@@ -315,15 +396,57 @@ pub(super) fn try_fused_hop_mask_agg(
     if bare_present_count_belongs_to_the_frontier_fold(agg, pred) {
         return None;
     }
+    // Its NON-NUMERIC extremum sibling (item 1190), declined for the same reason and measured at
+    // 1.47x on `str` before this guard existed.
+    if nonnumeric_extremum_belongs_to_the_frontier_fold(
+        agg,
+        pred,
+        matches!(
+            arg_key.map(|k| store.column(k)),
+            Some(Some(Column::Num { .. }))
+        ),
+    ) {
+        return None;
+    }
     // The agg property must be a plain Num column (min/max/sum semantics; a NULL cell is
     // skipped, matching the general aggregate).
-    let agg_col: Option<(&[f64], &[bool])> = match arg_key {
+    // One variant per representation. `Sum` is numeric BY NATURE and keeps its own arm below;
+    // `Min`/`Max` are served for all five (item 1190). `Gen` declines: a mixed column's extremum
+    // crosses type ranks and belongs to the general fold, as in every other arm.
+    //
+    // WIDENING IN PLACE IS SAFE HERE, unlike item 1184's frontier multi-agg: that function's
+    // `match` sat INSIDE the per-node loop, so extra arms taxed every row (1.10x on a control).
+    // This one is a `sole_agg` path whose tail matches ONCE per query and whose arms each own
+    // their loop, so the dispatch cost is paid once. Measured below with `num` as the control
+    // rather than argued.
+    enum AggCol<'a> {
+        Rows,
+        Num(&'a [f64], &'a [bool]),
+        Str(&'a [GStr], &'a [bool]),
+        Dict(&'a [GStr], &'a [u32], &'a [bool]),
+        Bool(&'a [bool], &'a [bool]),
+        Temporal(&'a [crate::temporal::Temporal], &'a [bool]),
+    }
+    let acol = match arg_key {
         Some(k) => match store.column(k)? {
-            Column::Num { data, present, .. } => Some((data, present)),
-            _ => return None,
+            Column::Num { data, present, .. } => AggCol::Num(data, present),
+            Column::Str { data, present, .. } => AggCol::Str(data, present),
+            Column::Dict {
+                dict,
+                codes,
+                present,
+                ..
+            } => AggCol::Dict(dict, codes, present),
+            Column::Bool { data, present, .. } => AggCol::Bool(data, present),
+            Column::Temporal { data, present, .. } => AggCol::Temporal(data, present),
+            Column::Gen { .. } => return None,
         },
-        None => None,
+        None => AggCol::Rows,
     };
+    // `Sum` reads a value per row and only a numeric column can answer it.
+    if matches!(agg.func, AggFn::Sum) && !matches!(acol, AggCol::Num(..)) {
+        return None;
+    }
     if reverse_seed_decide(pred, exp, store, false).is_some() {
         return None;
     }
@@ -337,12 +460,12 @@ pub(super) fn try_fused_hop_mask_agg(
         return None;
     };
     let is_true = |i: usize| mask.get(i) == Some(&Some(true));
-    match (&agg.func, agg_col) {
+    match (&agg.func, &acol) {
         (AggFn::Count, _) => {
             let c = (0..targets.len()).filter(|&i| is_true(i)).count();
             Some(scalar_num(c as f64))
         }
-        (AggFn::Sum, Some((data, present))) => {
+        (AggFn::Sum, AggCol::Num(data, present)) => {
             let mut total = 0f64;
             for (i, &t) in targets.iter().enumerate() {
                 let j = t as usize;
@@ -352,29 +475,70 @@ pub(super) fn try_fused_hop_mask_agg(
             }
             Some(scalar_num(total))
         }
-        (AggFn::Min | AggFn::Max, Some((data, present))) => {
+        // ONE extremum shape per representation, each handing `mask_extremum` the cheapest
+        // comparable key: the f64, the dictionary RANK (integer compares, no string compares),
+        // the value, or the node id for `Str` where caching a `GStr` would clone an Arc per
+        // surviving row.
+        (AggFn::Min | AggFn::Max, _) => {
             let want_min = matches!(agg.func, AggFn::Min);
-            let mut best: Option<f64> = None;
-            for (i, &t) in targets.iter().enumerate() {
-                let j = t as usize;
-                if is_true(i) && present[j] {
-                    let x = data[j];
-                    best = Some(match best {
-                        None => x,
-                        Some(b) => {
-                            let ord = value::cmp_num_total(x, b);
-                            if (want_min && ord.is_lt()) || (!want_min && ord.is_gt()) {
-                                x
-                            } else {
-                                b
-                            }
-                        }
-                    });
+            let v = match &acol {
+                AggCol::Rows => return None,
+                AggCol::Num(data, present) => mask_extremum(
+                    targets,
+                    &mask,
+                    present,
+                    want_min,
+                    |n| data[n as usize],
+                    |a: &f64, b: &f64| value::cmp_num_total(*a, *b),
+                )
+                .map_or(Value::Null, |j| Value::Num(data[j])),
+                AggCol::Str(data, present) => mask_extremum(
+                    targets,
+                    &mask,
+                    present,
+                    want_min,
+                    |n| n,
+                    |a: &u32, b: &u32| data[*a as usize].cmp(&data[*b as usize]),
+                )
+                .map_or(Value::Null, |j| Value::Str(data[j].clone())),
+                AggCol::Dict(dict, codes, present) => {
+                    // RANKS over the dictionary, computed once, so the fold compares integers.
+                    let mut order: Vec<u32> = (0..dict.len() as u32).collect();
+                    order.sort_unstable_by(|x, y| dict[*x as usize].cmp(&dict[*y as usize]));
+                    let mut rank = vec![0u32; dict.len()];
+                    for (r, c) in order.iter().enumerate() {
+                        rank[*c as usize] = r as u32;
+                    }
+                    mask_extremum(
+                        targets,
+                        &mask,
+                        present,
+                        want_min,
+                        |n| rank[codes[n as usize] as usize],
+                        u32::cmp,
+                    )
+                    .map_or(Value::Null, |j| Value::Str(dict[codes[j] as usize].clone()))
                 }
-            }
-            Some(Batch::single(Col::Gen(vec![
-                best.map_or(Value::Null, Value::Num)
-            ])))
+                AggCol::Bool(data, present) => mask_extremum(
+                    targets,
+                    &mask,
+                    present,
+                    want_min,
+                    |n| data[n as usize],
+                    bool::cmp,
+                )
+                .map_or(Value::Null, |j| Value::Bool(data[j])),
+                AggCol::Temporal(data, present) => mask_extremum(
+                    targets,
+                    &mask,
+                    present,
+                    want_min,
+                    |n| data[n as usize],
+                    |a: &crate::temporal::Temporal, b: &crate::temporal::Temporal| a.cmp_total(b),
+                )
+                .map_or(Value::Null, |j| Value::Temporal(data[j])),
+            };
+            Some(Batch::single(Col::Gen(vec![v])))
         }
         _ => None,
     }

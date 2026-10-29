@@ -202,4 +202,39 @@ fn main() {
             topk / floor
         );
     }
+
+    // THE FUSED FILTERED-HOP AGGREGATE (item 1190). `try_fused_hop_mask_agg` serves
+    // `count(*)`/`sum`/`min`/`max` over `Filter(<endpoint pred>, Expand(Scan))` for predicates the
+    // inline numeric count cannot take — an OR, a mixed-key disjunction, a string search — and
+    // destructures `Column::Num` alone.
+    //
+    // ⚠️ IT IS THE SAME STRUCTURAL FAMILY AS ITEM 1189 (a FILTERED shape), where the filter's own
+    // cost left only ~1.3-1.7x. So the floor is chosen FIRST this time, which is the lesson from
+    // 1187 and 1189 both: `count(*)` over the IDENTICAL filtered hop — same walk, same mask, no
+    // value read. `count(*)` reads no column at all, so unlike `count(<key>)` it cannot be
+    // unserved for the representations under test.
+    //
+    // The predicate is held FIXED on `num` while the aggregate's column varies, so the only thing
+    // changing between rows is the fold.
+    println!();
+    println!("  column   filtered min(us)   count(*) floor(us)   ÷ floor");
+
+    const PRED: &str = "WHERE b.num > 500000 OR b.num < 100";
+
+    for key in ["num", "str", "dict", "bool", "mixed"] {
+        let ask = |q: &str| -> f64 {
+            time_query(q, false, &store, cfg.reps).map_or(f64::NAN, |(us, _)| us)
+        };
+        let filtered = ask(&format!(
+            "MATCH (a:Person)-[:KNOWS]->(b) {PRED} RETURN min(b.{key}) AS c"
+        ));
+        let floor = ask(&format!(
+            "MATCH (a:Person)-[:KNOWS]->(b) {PRED} RETURN count(*) AS c"
+        ));
+
+        println!(
+            "  {key:<10} {filtered:>13.1} {floor:>19.1} {:>11.2}x",
+            filtered / floor
+        );
+    }
 }
