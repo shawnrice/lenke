@@ -31697,3 +31697,98 @@ fn the_boolean_top_k_respects_the_label() {
         "only the in-label `true` rows exist under :N"
     );
 }
+
+/// `order().limit()` over a boolean key WITH STORED NULLS, in both null placements — the oracle a
+/// future relaxation of `try_scan_top_k_wide`'s `nulls_first` guard will have to keep passing
+/// (item 1179).
+///
+/// WHY THIS EXISTS BEFORE THE CHANGE IT GUARDS. That guard's own comment says it is "unexercised,
+/// not verified": no front end currently reaches the arm with `nulls_first`, because Gremlin's
+/// `values(k).order().limit(n)` lowers to `OrderPage{Project{Filter{Scan}}}` and the lift requires
+/// a bare `Scan` under the projection (item 1178). So the guard is a precondition nothing tests.
+///
+/// Item 1151's rule is that relaxing an oracle needs two proofs — that it still fires, and that it
+/// still catches a real bug — and the cheapest way to have the second is to pin the ANSWERS first,
+/// while the slow general path is the one producing them. Then a relaxation that reaches the arm
+/// either reproduces these rows or is wrong, and the test says which.
+///
+/// A STORED null is the only kind that matters here: an ABSENT key is dropped by the
+/// `PropertyExists` filter that `values(k)` inserts, while a stored present-null survives it — so
+/// it is the row that can land inside a top-K window and the one the guard is about. (A stored
+/// null on a bool property promotes the column to `Column::Gen`, item 1142, which is itself part
+/// of what the relaxation must handle rather than assume away.)
+#[test]
+fn a_bool_order_limit_with_stored_nulls_pins_both_null_placements() {
+    let mut b = Builder::default();
+    // Interleaved so neither placement can be satisfied by luck of scan order.
+    for (i, cell) in [
+        Some(true),
+        None,
+        Some(false),
+        Some(true),
+        None,
+        Some(false),
+        Some(false),
+        Some(true),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let _ = i;
+        match cell {
+            Some(x) => b.node(&["N"], &[("f", Value::Bool(*x))]),
+            None => b.node(&["N"], &[("f", Value::Null)]),
+        };
+    }
+    let st = b.build();
+
+    let rows = |q: &str| -> Vec<String> {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &st);
+        run(&plan, &st)
+            .rows
+            .iter()
+            .map(|r| format!("{:?}", r[0]))
+            .collect()
+    };
+
+    // The unlimited sort is the reference: it cannot take the streaming arm (`limit?` declines),
+    // so it is the general path both today and after any relaxation.
+    for dir in ["", " DESC"] {
+        let all = rows(&format!("MATCH (n:N) RETURN n.f AS v ORDER BY n.f{dir}"));
+
+        assert_eq!(all.len(), 8, "every row is returned{dir}");
+
+        for limit in 1..=8 {
+            let got = rows(&format!(
+                "MATCH (n:N) RETURN n.f AS v ORDER BY n.f{dir} LIMIT {limit}"
+            ));
+
+            assert_eq!(
+                got,
+                all.iter().take(limit).cloned().collect::<Vec<_>>(),
+                "{dir} LIMIT {limit} must be a prefix of the full sort"
+            );
+        }
+    }
+
+    // AND THE PLACEMENT ITSELF, stated rather than merely compared: GQL places nulls LAST, so a
+    // `LIMIT` that stops short of them never sees one, and the DESC spelling does not move them to
+    // the front. A relaxation that got placement wrong would still pass the prefix checks above if
+    // it broke BOTH spellings consistently, so this pins the direction.
+    let asc = rows("MATCH (n:N) RETURN n.f AS v ORDER BY n.f");
+    let desc = rows("MATCH (n:N) RETURN n.f AS v ORDER BY n.f DESC");
+    let nulls_at = |v: &[String]| -> Vec<usize> {
+        v.iter()
+            .enumerate()
+            .filter(|(_, s)| s.contains("Null"))
+            .map(|(i, _)| i)
+            .collect()
+    };
+
+    assert_eq!(nulls_at(&asc), vec![6, 7], "ASC places the two nulls last");
+    assert_eq!(
+        nulls_at(&desc),
+        vec![6, 7],
+        "DESC also places them last (GQL)"
+    );
+}

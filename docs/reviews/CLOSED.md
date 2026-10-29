@@ -35815,3 +35815,75 @@ it still fires and that it still catches a real bug).
 the same question side by side, numeric and boolean. It is the instrument that turned "Gremlin
 misses the arm" into "the two surfaces hand the optimizer different plans", and the same four lines
 answer that question for any future cross-surface gap.
+
+## 1179 — 🔧 item 1178's widening DESIGNED and found CHEAPER than it looked (no stored-null pre-scan needed), ✅ its oracle shipped FIRST, and ⚠️ the change is ATOMIC so no partial win exists
+
+Item 1178 located the route: see through the `Filter{PropertyExists}` that Gremlin's `values(k)`
+inserts, and admit `nulls_first` when the key's column has no stored nulls. This tick worked the
+design out against the code and one assumption was wrong in a useful direction.
+
+### The stored-null check does not need a scan — the arm already finds them
+
+Item 1178 proposed reading the column's `nulls` bitset to license the relaxation. There is **no
+`null_count` in the store** (checked: no such field, and `presence_bits` hands back the raw
+`Vec<bool>`), so that would be an O(n) pre-scan on both the win and the decline path.
+
+It is unnecessary. `try_scan_top_k_wide` ALREADY discovers nulls during its single pass —
+`nulls_seen` — and already hands the query back through `nulls_seen && buf.len() < kcap`. So the
+whole relaxation is one disjunct:
+
+```text
+  if nulls_seen && (k.nulls_first || buf.len() < kcap) { return None; }
+```
+
+Under nulls-LAST a null only matters if the window reaches it (`buf.len() < kcap`, the existing
+rule); under nulls-FIRST any null is inside the window, so any sighting bails. **O(1), discovered
+in-pass, no pre-scan.**
+
+### One condition licenses both halves, which is why the shape fits
+
+The interposed filter keeps `present || nulls` while the arm keeps `present` only — so the two
+agree exactly when there is no stored null, and that is the SAME fact the nulls-first relaxation
+needs. The filter see-through and the guard relaxation are not two changes sharing a tick; they are
+one condition read twice.
+
+### The three sites, and the one that must NOT move
+
+```text
+  order.rs:455  numeric path   declines on ANY null, whatever the placement  <- leave alone
+  order.rs:533  temporal arm   nulls_first guard + the buf.len() fallback
+  order.rs:599  wide arm       nulls_first guard + the buf.len() fallback    <- the target
+  order.rs:770  top_k_liftable requires `matches!(pinput, Plan::Scan)`       <- the see-through
+```
+
+### ⚠️ ATOMIC: there is no safe partial, which is why this tick did not ship it
+
+Seeing through the filter delivers **nothing on its own** — Gremlin's plan carries
+`nulls_first: true`, so the guard still declines and the measured 2.31 ms does not move. And
+relaxing the guard alone delivers nothing either, because the filter still blocks entry. The win
+requires both, which means the first measurable moment is also the moment a soundness guard is
+weakened. A guard whose own comment calls it "the precondition that makes skipping nulls sound" is
+not one to relax against a clock.
+
+### ✅ What shipped instead: the oracle, before the change it guards
+
+Item 1151's rule is that relaxing an oracle needs two proofs — that it still fires, and that it
+still catches a real bug. The cheapest way to hold the second is to pin the ANSWERS while the
+general path is still the one producing them. So
+`a_bool_order_limit_with_stored_nulls_pins_both_null_placements` records, for a boolean key with
+interleaved STORED nulls:
+
+- every `LIMIT 1..8` is a prefix of the unlimited sort, in both directions (the unlimited form
+  cannot take the arm, so it is the general path today AND after any relaxation);
+- and the PLACEMENT itself, stated rather than compared: **GQL puts nulls last in `DESC` too** —
+  asserted at indices 6 and 7 for both spellings. A relaxation that broke placement consistently
+  in both directions would pass the prefix checks and fail this.
+
+A stored null is the only kind that matters: an ABSENT key is removed by the `PropertyExists`
+filter, while a stored present-null survives it — so it is the row that can land in a window. (And
+it promotes a bool column to `Column::Gen` per item 1142, which the relaxation must handle rather
+than assume away — now visible in the fixture instead of discovered later.)
+
+**Next tick builds the two edits against this oracle**, with the prediction written down first:
+the Gremlin row moves 2.31 ms -> ~0, the GQL row and the numeric control stay flat, and the new
+disjunct is exercised by the stored-null fixture rather than defensive.
