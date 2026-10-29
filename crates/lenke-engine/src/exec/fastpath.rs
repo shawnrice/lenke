@@ -3617,32 +3617,150 @@ pub(super) fn try_frontier_prop_agg(
     if *slot != width - 1 {
         return None; // arg must be a property of the chain frontier
     }
-    let Some(Column::Num { data, present, .. }) = store.column(key) else {
-        return None; // non-numeric / absent-everywhere → general path
-    };
+    let col = store.column(key)?;
+    // The column gate sits BEFORE `frontier_counts` deliberately: an unserved representation
+    // must not pay to build a frontier it then declines. `Column::Gen` is the one that reaches
+    // here (a mixed column), and building the frontier first cost it ~6% on the hop `min` row
+    // for nothing (item 1182).
+    if matches!(col, Column::Gen { .. }) {
+        return None; // a mixed column's extremum crosses type ranks → general fold
+    }
     let counts = frontier_counts(input, store)?;
     let want_min = agg.func == AggFn::Min;
-    let mut best: Option<f64> = None;
-    counts.for_each(|v, _c| {
-        let i = v as usize;
-        if present[i] {
-            let x = data[i];
-            best = Some(match best {
-                None => x,
-                Some(b) => {
-                    let ord = value::cmp_num_total(x, b);
-                    if (want_min && ord.is_lt()) || (!want_min && ord.is_gt()) {
-                        x
+    // ONE arm per representation, each mirroring its bare-`Scan` twin
+    // (`try_scan_num_agg`/`str`/`bool`/`temporal`) so the hop and scan spellings of one
+    // question cannot disagree. The frontier is collapsed to DISTINCT nodes, which is what
+    // makes this cheaper than the general fold: min/max over a multiset equals min/max over
+    // its distinct set, so per-node multiplicity is irrelevant (and is exactly why `sum`/`avg`
+    // stay on `try_frontier_aggregate` — see this function's note above).
+    let v = match col {
+        Column::Num { data, present, .. } => {
+            let mut best: Option<f64> = None;
+            counts.for_each(|v, _c| {
+                let i = v as usize;
+                if present[i] {
+                    let x = data[i];
+                    best = Some(match best {
+                        None => x,
+                        Some(b) => {
+                            let ord = value::cmp_num_total(x, b);
+                            if (want_min && ord.is_lt()) || (!want_min && ord.is_gt()) {
+                                x
+                            } else {
+                                b
+                            }
+                        }
+                    });
+                }
+            });
+            best.map_or(Value::Null, Value::Num)
+        }
+        // The extremum is tracked as an INDEX, not a borrow: `for_each` takes an `FnMut` and a
+        // `&GStr` cannot be held across iterations. Same reason `try_scan_str_agg` does it.
+        Column::Str { data, present, .. } => {
+            let mut best_i: Option<usize> = None;
+            counts.for_each(|v, _c| {
+                let i = v as usize;
+                if present[i] {
+                    best_i = Some(match best_i {
+                        None => i,
+                        Some(b) => {
+                            let ord = data[i].cmp(&data[b]);
+                            if (want_min && ord.is_lt()) || (!want_min && ord.is_gt()) {
+                                i
+                            } else {
+                                b
+                            }
+                        }
+                    });
+                }
+            });
+            best_i.map_or(Value::Null, |i| Value::Str(data[i].clone()))
+        }
+        // Two passes, and the second is over `dict.len()` rather than the frontier — the whole
+        // point of the dictionary arm. No string is compared per node.
+        Column::Dict {
+            dict,
+            codes,
+            present,
+            ..
+        } => {
+            let mut seen = vec![false; dict.len()];
+            counts.for_each(|v, _c| {
+                let i = v as usize;
+                if present[i] {
+                    seen[codes[i] as usize] = true;
+                }
+            });
+            let mut best_c: Option<usize> = None;
+            for (c, &used) in seen.iter().enumerate() {
+                if used {
+                    best_c = Some(match best_c {
+                        None => c,
+                        Some(b) => {
+                            let ord = dict[c].cmp(&dict[b]);
+                            if (want_min && ord.is_lt()) || (!want_min && ord.is_gt()) {
+                                c
+                            } else {
+                                b
+                            }
+                        }
+                    });
+                }
+            }
+            best_c.map_or(Value::Null, |c| Value::Str(dict[c].clone()))
+        }
+        // `try_scan_bool_agg`'s SHORT CIRCUIT does not transfer: `Counts::for_each` has no
+        // early exit, and the frontier has to be built before any value is read anyway. The
+        // win here is the distinct-node collapse, not stopping early.
+        Column::Bool { data, present, .. } => {
+            let want = !want_min;
+            let mut saw_want = false;
+            let mut saw_other = false;
+            counts.for_each(|v, _c| {
+                let i = v as usize;
+                if present[i] {
+                    if data[i] == want {
+                        saw_want = true;
                     } else {
-                        b
+                        saw_other = true;
                     }
                 }
             });
+            if saw_want {
+                Value::Bool(want)
+            } else if saw_other {
+                Value::Bool(!want)
+            } else {
+                Value::Null
+            }
         }
-    });
-    Some(Batch::single(Col::Gen(vec![
-        best.map_or(Value::Null, Value::Num)
-    ])))
+        Column::Temporal { data, present, .. } => {
+            let mut best_i: Option<usize> = None;
+            counts.for_each(|v, _c| {
+                let i = v as usize;
+                if present[i] {
+                    best_i = Some(match best_i {
+                        None => i,
+                        Some(b) => {
+                            let ord = data[i].cmp_total(&data[b]);
+                            if (want_min && ord.is_lt()) || (!want_min && ord.is_gt()) {
+                                i
+                            } else {
+                                b
+                            }
+                        }
+                    });
+                }
+            });
+            best_i.map_or(Value::Null, |i| Value::Temporal(data[i]))
+        }
+        // DEFENSIVE: the `matches!` above already sent `Gen` to the general fold, so this is
+        // unreachable today. It is kept so that a representation added to `Column` later
+        // declines here rather than being served by whichever arm its fields happen to fit.
+        _ => return None,
+    };
+    Some(Batch::single(Col::Gen(vec![v])))
 }
 
 /// Answer a scalar `count(*)` over a bare labelled/unlabelled `Scan` in O(1) (a

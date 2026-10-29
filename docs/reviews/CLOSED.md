@@ -2810,6 +2810,33 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   — noise both ways, so the gate is about ownership, not speed. Kept anyway (this region gets
   reordered) and **pinned by a direct assertion**, which is what then caught the mutant that deletes
   it; no behavioural test can, since both paths return the same count.
+- ~~**The frontier extremum served `Column::Num` ALONE, and the other four representations paid
+  3.8-8.3x**~~ — **CLOSED by item 1182.** `try_frontier_prop_agg` gated `Min | Max` but destructured
+  only `Column::Num`, so a one-hop `min` over `Str`/`Dict`/`Bool`/`Temporal` fell to the general
+  fold: against each representation's own `count(<key>)` floor (FLAT at ~1.7ms, so the walk is not
+  the variable) `num` cost 1.30x and `bool`/`dict`/`str` cost 5.0x/8.4x/8.9x. Five arms, each
+  mirroring its bare-`Scan` twin so the HOP and SCAN spellings cannot disagree, measured
+  **8.25x (dict) / 4.76x (str) / 3.77x (bool)** over three order-alternated rounds, with `num`
+  (untouched arm) at 1.01x, `mixed`/`Gen` (declines) at 1.02x, all five hop floors at 0.98-1.02x and
+  **all five scan rows at 0.99-1.05x** — the last being the control that proves no scan case was
+  stolen. `dict` and `bool` now sit ON the walk's floor. **The win is the DISTINCT-NODE collapse,
+  not the representation** (min/max over a multiset equals min/max over its distinct set), so
+  `sum`/`avg` remain refuted here per 376. Two gates earned their keep: the column check stays
+  BEFORE `frontier_counts`, because building a frontier only to decline it cost the `Gen` row ~6%;
+  and `try_scan_bool_agg`'s short circuit does NOT transfer, since `Counts::for_each` has no early
+  exit. **Chain position was already right for once** — item 375 had moved all four scan arms above
+  the frontier path, and item 841 had placed the temporal one there expressly against the day this
+  widening happened, so the trap line 2764 warns about was pre-defused. A single run read `bool` at
+  4.77x and `mixed`'s scan at 1.58x; both were instrument, not effect.
+- **A fixture that pins WHICH ROWS are read can be structurally unable to pin HOW they are compared
+  (1182).** Inverting the boolean arm's `want` — which swaps `min` and `max` outright — SURVIVED both
+  boolean fixtures, because **stranding an extreme to prove frontier-awareness forces the frontier to
+  be homogeneous, and over a single value `min` and `max` agree whichever direction the comparison
+  runs.** This is the mirror of item 1180's rule (a mutant changing which rows are chosen needs wrong
+  rows carrying different values): the two requirements pull one fixture in opposite directions, and
+  over a LOW-CARDINALITY column they collide, so two fixtures are needed. A `bool-mixed` entry whose
+  window holds both values takes it to CAUGHT. The other representations escaped only because their
+  frontier values happen to be distinct and ascending — luck, not design.
 
 - **A 5-hop `max` OOM-KILLED the TS engine where native answered in 38 ms, and the TIME was a
   different bug from the MEMORY (377).** Item 297 made `count(*)` O(groups) and recorded what it

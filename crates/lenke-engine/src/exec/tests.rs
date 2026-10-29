@@ -31923,3 +31923,419 @@ fn the_gremlin_presence_filter_order_limit_agrees_whether_or_not_keys_are_absent
         );
     }
 }
+
+/// The frontier extremum arms against the GENERAL grouped fold, for EVERY column representation,
+/// over a frontier that does NOT cover the column (item 1182).
+///
+/// `try_frontier_prop_agg` destructured `Column::Num` alone until item 1182; `Str`, `Dict`, `Bool`
+/// and `Temporal` fell to the general fold at 4.8-8.4x on a one-hop `min`. Each new arm mirrors
+/// its bare-`Scan` twin (`try_scan_str_agg` and friends), so the risk is not that an arm is wrong
+/// on its own — it is that the HOP and SCAN spellings of one question disagree, and that
+/// collapsing the frontier to DISTINCT nodes reads a cell the query never visits.
+///
+/// THREE things are asserted per representation, because each catches a different mistake:
+///
+/// 1. **The column really IS that representation.** `dict_encode` encodes only when the distinct
+///    values are at most half the rows, so a fixture can silently build `Str` where the test
+///    claims `Dict` and leave that arm unexercised — item 1172's M5 trap, which cost four fixture
+///    attempts there.
+/// 2. **The arm is REACHED**, by calling it directly on the plan's `Aggregate` node. A fast path
+///    can be correct, willing and unreachable (items 371/375).
+/// 3. **The answer matches the grouped fold AND a hand-written literal.** Agreement alone would
+///    pass if BOTH paths read the whole column; the literal is what pins it to the frontier.
+///
+/// The fixture strands the column's global MIN and global MAX on nodes the hop does not reach, so
+/// a frontier-blind arm answers with a cell the query excludes. `bool` needs TWO entries for that:
+/// its domain holds two values, so one fixture can only strand one extreme — `bool` strands the
+/// `false` (which distinguishes `min`) and `bool-inv` strands the `true` (which distinguishes
+/// `max`).
+#[test]
+fn the_frontier_extremum_agrees_with_the_grouped_fold_for_every_representation() {
+    use crate::temporal::{Date, Temporal};
+
+    let vnum = |x: f64| Value::Num(x);
+    let vstr = |x: &str| Value::Str(x.into());
+    let vdate = |iso: &str| Value::Temporal(Temporal::Date(Date::parse(iso).unwrap()));
+    let tt = Value::Bool(true);
+    let ff = Value::Bool(false);
+
+    // (name, ten values, expected representation, expected hop min, expected hop max). Index 0
+    // and index 9 are the stranded extremes; indices 1-3 are the frontier.
+    let reps: Vec<(&str, Vec<Value>, &str, Value, Value)> = vec![
+        (
+            "num",
+            vec![
+                vnum(0.0),
+                vnum(10.0),
+                vnum(20.0),
+                vnum(30.0),
+                vnum(15.0),
+                vnum(25.0),
+                vnum(35.0),
+                vnum(45.0),
+                vnum(55.0),
+                vnum(99.0),
+            ],
+            "Num",
+            vnum(10.0),
+            vnum(30.0),
+        ),
+        (
+            // TEN distinct values over twelve nodes, so `dict_encode`'s "distinct at most half
+            // the rows" cap is MISSED and the column stays `Str`.
+            "str",
+            vec![
+                vstr("a0"),
+                vstr("b1"),
+                vstr("b2"),
+                vstr("b3"),
+                vstr("c4"),
+                vstr("c5"),
+                vstr("c6"),
+                vstr("c7"),
+                vstr("c8"),
+                vstr("z9"),
+            ],
+            "Str",
+            vstr("b1"),
+            vstr("b3"),
+        ),
+        (
+            // FIVE distinct values over twelve nodes, which clears the same cap, so this one
+            // dictionary-encodes. The two differ only in cardinality, by design.
+            "dict",
+            vec![
+                vstr("g0"),
+                vstr("g3"),
+                vstr("g4"),
+                vstr("g5"),
+                vstr("g3"),
+                vstr("g4"),
+                vstr("g5"),
+                vstr("g3"),
+                vstr("g4"),
+                vstr("g9"),
+            ],
+            "Dict",
+            vstr("g3"),
+            vstr("g5"),
+        ),
+        (
+            // The only `false` is STRANDED, so the whole column's `min` is `false` while the
+            // frontier's is `true`.
+            "bool",
+            vec![
+                ff.clone(),
+                tt.clone(),
+                tt.clone(),
+                tt.clone(),
+                tt.clone(),
+                tt.clone(),
+                tt.clone(),
+                tt.clone(),
+                tt.clone(),
+                tt.clone(),
+            ],
+            "Bool",
+            tt.clone(),
+            tt.clone(),
+        ),
+        (
+            // The mirror: the only `true` is stranded, so the whole column's `max` is `true`
+            // while the frontier's is `false`.
+            "bool-inv",
+            vec![
+                tt.clone(),
+                ff.clone(),
+                ff.clone(),
+                ff.clone(),
+                ff.clone(),
+                ff.clone(),
+                ff.clone(),
+                ff.clone(),
+                ff.clone(),
+                ff.clone(),
+            ],
+            "Bool",
+            ff.clone(),
+            ff.clone(),
+        ),
+        (
+            // A MIXED frontier, and it is load-bearing: the two entries above strand an extreme,
+            // which forces their frontier to be homogeneous — and over one value `min` and `max`
+            // agree whichever direction the comparison runs. Inverting the arm's `want` therefore
+            // SURVIVED both of them (item 1182's M3). Only a frontier holding `true` AND `false`
+            // observes the direction. The other representations get this for free, since their
+            // frontier values are distinct and ascending.
+            "bool-mixed",
+            vec![
+                tt.clone(),
+                tt.clone(),
+                ff.clone(),
+                tt.clone(),
+                tt.clone(),
+                tt.clone(),
+                tt.clone(),
+                tt.clone(),
+                tt.clone(),
+                tt.clone(),
+            ],
+            "Bool",
+            ff.clone(),
+            tt.clone(),
+        ),
+        (
+            "date",
+            vec![
+                vdate("2000-01-01"),
+                vdate("2010-01-01"),
+                vdate("2011-01-01"),
+                vdate("2012-01-01"),
+                vdate("2015-01-01"),
+                vdate("2016-01-01"),
+                vdate("2017-01-01"),
+                vdate("2018-01-01"),
+                vdate("2019-01-01"),
+                vdate("2099-01-01"),
+            ],
+            "Temporal",
+            vdate("2010-01-01"),
+            vdate("2012-01-01"),
+        ),
+    ];
+
+    for (name, vals, want_repr, exp_min, exp_max) in reps {
+        let mut b = Builder::default();
+        let ids: Vec<u32> = vals
+            .iter()
+            .map(|v| b.node(&["N"], &[("k", v.clone())]))
+            .collect();
+        let s0 = b.node(&["S"], &[]);
+        let s1 = b.node(&["S"], &[]);
+        // The frontier is {N1, N2, N3}. N2 is reached TWICE, which is the multiplicity the
+        // distinct-node collapse discards — sound for an extremum and not for `sum`.
+        b.edge(s0, ids[1], "E");
+        b.edge(s0, ids[2], "E");
+        b.edge(s1, ids[2], "E");
+        b.edge(s1, ids[3], "E");
+        let st = b.build();
+
+        let repr = match st.column("k") {
+            Some(crate::store::Column::Num { .. }) => "Num",
+            Some(crate::store::Column::Str { .. }) => "Str",
+            Some(crate::store::Column::Dict { .. }) => "Dict",
+            Some(crate::store::Column::Bool { .. }) => "Bool",
+            Some(crate::store::Column::Temporal { .. }) => "Temporal",
+            Some(crate::store::Column::Gen { .. }) => "Gen",
+            None => "none",
+        };
+        assert_eq!(
+            repr, want_repr,
+            "{name}: the fixture must BUILD the representation it claims, or the arm is untested"
+        );
+
+        for (kind, expected) in [("min", &exp_min), ("max", &exp_max)] {
+            let q = format!("MATCH (a:S)-[:E]->(b:N) RETURN {kind}(b.k) AS c");
+            let plan = crate::opt::optimize_indexed(crate::gql::parse(&q).unwrap(), &st);
+
+            // The arm must be REACHED for this shape, not merely willing.
+            let Plan::Project { input, .. } = &plan else {
+                panic!("{name}/{kind}: expected a Project over the Aggregate");
+            };
+            let Plan::Aggregate {
+                input: ain,
+                keys,
+                aggs,
+            } = input.as_ref()
+            else {
+                panic!("{name}/{kind}: expected an Aggregate");
+            };
+            assert!(
+                crate::exec::fastpath::try_frontier_prop_agg(ain, keys, aggs, &st).is_some(),
+                "{name}/{kind}: try_frontier_prop_agg declined the shape it is meant to serve"
+            );
+
+            let fast = run(&plan, &st).rows[0][0].clone();
+
+            // The hand-written literal: this is what pins the answer to the FRONTIER rather
+            // than to the whole column, which agreement alone cannot do.
+            assert_eq!(
+                format!("{fast:?}"),
+                format!("{expected:?}"),
+                "{name}/{kind}: the stranded extremes must not reach the answer"
+            );
+
+            // And the grouped fold, which is the same question routed away from every fast path.
+            let general = run(
+                &crate::opt::optimize_indexed(
+                    crate::gql::parse(&format!(
+                        "MATCH (a:S)-[:E]->(b:N) LET g = 1 RETURN {kind}(b.k) AS c GROUP BY g"
+                    ))
+                    .unwrap(),
+                    &st,
+                ),
+                &st,
+            )
+            .rows[0][0]
+                .clone();
+
+            assert_eq!(
+                format!("{fast:?}"),
+                format!("{general:?}"),
+                "{name}/{kind}: fast {fast:?} vs grouped fold {general:?}"
+            );
+        }
+    }
+}
+
+/// The frontier extremum over cells that hold NO value — an absent key, an all-absent frontier,
+/// an empty frontier, and a stored null (item 1182).
+///
+/// The representation sweep above gives every frontier node a value, so it never reaches any arm's
+/// `Value::Null` branch. That branch is where item 1172's boolean mutant SURVIVED, and for the
+/// same reason it is awkward to reach: a store with no node carrying the key has no column at all
+/// (`store.column` returns `None`, so the arm declines before it runs), and a STORED null promotes
+/// the column to `Column::Gen` (item 1142), which the `matches!` gate sends to the general fold.
+/// So the only way in is a column that EXISTS, carried by nodes the hop does not reach, with every
+/// frontier cell absent.
+#[test]
+fn the_frontier_extremum_handles_a_frontier_with_nothing_to_compare() {
+    // Four nodes carry `k`; two do not. The hop reaches only the two WITHOUT it, so the column
+    // exists and every frontier cell is absent — each arm's "nothing present" branch.
+    let cases: &[(&str, Value)] = &[
+        ("num", Value::Num(7.0)),
+        ("str", Value::Str("v".into())),
+        ("bool", Value::Bool(true)),
+    ];
+
+    for (name, val) in cases {
+        let mut b = Builder::default();
+        let with0 = b.node(&["N"], &[("k", val.clone())]);
+        let with1 = b.node(&["N"], &[("k", val.clone())]);
+        let without0 = b.node(&["N"], &[]);
+        let without1 = b.node(&["N"], &[]);
+        let s0 = b.node(&["S"], &[]);
+        b.edge(s0, without0, "E");
+        b.edge(s0, without1, "E");
+        let st = b.build();
+
+        assert!(
+            st.column("k").is_some(),
+            "{name}: the column must EXIST, or the arm declines before its null branch"
+        );
+
+        for kind in ["min", "max"] {
+            let q = format!("MATCH (a:S)-[:E]->(b:N) RETURN {kind}(b.k) AS c");
+            let plan = crate::opt::optimize_indexed(crate::gql::parse(&q).unwrap(), &st);
+
+            // The arm must be ENTERED here, not merely produce the right answer: if it declined,
+            // the NULL below would come from the general fold and the branch under test would be
+            // untouched. Asserting the column exists is not the same claim.
+            let Plan::Project { input, .. } = &plan else {
+                panic!("{name}/{kind}: expected a Project over the Aggregate");
+            };
+            let Plan::Aggregate {
+                input: ain,
+                keys,
+                aggs,
+            } = input.as_ref()
+            else {
+                panic!("{name}/{kind}: expected an Aggregate");
+            };
+            assert!(
+                crate::exec::fastpath::try_frontier_prop_agg(ain, keys, aggs, &st).is_some(),
+                "{name}/{kind}: the arm must RUN on an all-absent frontier, not decline"
+            );
+
+            let fast = run(&plan, &st).rows[0][0].clone();
+
+            assert_eq!(
+                format!("{fast:?}"),
+                format!("{:?}", Value::Null),
+                "{name}/{kind}: an all-absent frontier has no extremum"
+            );
+
+            let general = run(
+                &crate::opt::optimize_indexed(
+                    crate::gql::parse(&format!(
+                        "MATCH (a:S)-[:E]->(b:N) LET g = 1 RETURN {kind}(b.k) AS c GROUP BY g"
+                    ))
+                    .unwrap(),
+                    &st,
+                ),
+                &st,
+            )
+            .rows[0][0]
+                .clone();
+
+            assert_eq!(
+                format!("{fast:?}"),
+                format!("{general:?}"),
+                "{name}/{kind}: fast {fast:?} vs grouped fold {general:?}"
+            );
+        }
+
+        // A frontier that is PARTLY absent still answers from the cells that are present — the
+        // mask must gate the read rather than the whole arm.
+        let mut b2 = Builder::default();
+        let v0 = b2.node(&["N"], &[("k", val.clone())]);
+        let gap = b2.node(&["N"], &[]);
+        let s = b2.node(&["S"], &[]);
+        b2.edge(s, gap, "E");
+        b2.edge(s, v0, "E");
+        let st2 = b2.build();
+
+        for kind in ["min", "max"] {
+            let plan = crate::opt::optimize_indexed(
+                crate::gql::parse(&format!("MATCH (a:S)-[:E]->(b:N) RETURN {kind}(b.k) AS c"))
+                    .unwrap(),
+                &st2,
+            );
+            assert_eq!(
+                format!("{:?}", run(&plan, &st2).rows[0][0]),
+                format!("{val:?}"),
+                "{name}/{kind}: an absent cell beside a present one must not erase the answer"
+            );
+        }
+
+        // Unreachable `with0`/`with1` exist only to put the column in the store; naming them
+        // keeps the intent legible rather than relying on `_`.
+        let _ = (with0, with1);
+    }
+
+    // A STORED null promotes the column to `Column::Gen`, which the gate declines. Asserted here
+    // rather than assumed, because the decline is what keeps the arms' "present means comparable"
+    // reading true (item 1142).
+    let mut b = Builder::default();
+    let a = b.node(&["N"], &[("k", Value::Num(3.0))]);
+    let nul = b.node(&["N"], &[("k", Value::Null)]);
+    let s = b.node(&["S"], &[]);
+    b.edge(s, a, "E");
+    b.edge(s, nul, "E");
+    let st = b.build();
+
+    assert!(
+        matches!(st.column("k"), Some(crate::store::Column::Gen { .. })),
+        "a stored null must promote the column to Gen, or this case tests nothing"
+    );
+
+    for kind in ["min", "max"] {
+        let q = format!("MATCH (a:S)-[:E]->(b:N) RETURN {kind}(b.k) AS c");
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(&q).unwrap(), &st);
+        let Plan::Project { input, .. } = &plan else {
+            panic!("expected a Project over the Aggregate");
+        };
+        let Plan::Aggregate {
+            input: ain,
+            keys,
+            aggs,
+        } = input.as_ref()
+        else {
+            panic!("expected an Aggregate");
+        };
+        assert!(
+            crate::exec::fastpath::try_frontier_prop_agg(ain, keys, aggs, &st).is_none(),
+            "{kind}: a Gen column must fall to the general fold"
+        );
+    }
+}
