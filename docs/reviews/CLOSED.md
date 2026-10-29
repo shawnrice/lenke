@@ -2888,6 +2888,26 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   `late_materialize`. The `str`/`dict` controls moved 1.33-1.42x on paths the gate cannot reach —
   LAYOUT (`bool`/`mixed` flat, POST series unstable where PRE is tight), the same effect as
   `pull-alignment-is-load-bearing`.
+- ⚠️ **`minmax_coltype_probe`'s `date` ROW WAS NUMERIC from item 1172 to 1187 — the probe never
+  measured a temporal column at all.** Header said `Column::Temporal`, fixture said
+  `Value::Num(n % 30_000)`, so the row duplicated `num` for fourteen items and item 1172's "all six
+  representations" was wrong about one. **The giveaway printed every run**: `answer of min` read
+  `Num(0.0)`. Fixing it re-priced three figures — the temporal single extremum is **552.6us (5.5x
+  the numeric arm)**, not 111.9; its scan top-K is **5074.8us**, not 2114; and the min+max pair is
+  unserved at 4082.7. A fixture that asserts a representation it does not BUILD is the vacuous-
+  fixture trap in a probe rather than a test, and the rule that catches it is the existing one:
+  check the fixture's own statistics, not just its output.
+- ⚠️ **A CONTROL CAN BE SUBJECT TO THE HOLE IT MEASURES (1187).** `count(*), count(n.k)` is served
+  for every representation in the FRONTIER family (376) and is NOT on the scan: it read 6.1us for
+  num against 1059-1353us for str/dict/bool, because the pair goes through `try_scan_multi_agg`,
+  which destructures `Column::Num`. The ratio column then divided one unserved number by another.
+  **The valid floor was the SINGLE-aggregate path**, served everywhere since 1172/1175/841.
+- **OPEN, priced (1187): the SCAN multi-aggregate extremum serves `Column::Num` alone**, so
+  `min(k), max(k)` costs **3.40x (str) / 7.39x (date) / 31.8x (dict) / 8332x (bool)** the
+  single-aggregate `min(k)` that is already fast — about 1.5x/3.7x/11x/4000x after allowing a pair
+  its 2x. Same answer either way, which is the shape of every index-seeding bug the spelling probe
+  exists to catch. Recipe is item 1184's: a separate wide twin AFTER the numeric entry, never a
+  widening in place (that cost a control 1.10x there).
 - ~~**The hop top-K served only `Column::Num`**~~ — **CLOSED by item 1186.** The remaining four
   arms measure **6.78x (bool) / 5.77x (dict) / 2.72x (str)** over three alternated rounds, taking
   them from 8.92x/8.39x/7.43x of their walk floor to **1.22x/1.40x/2.52x**; `mixed`/`Gen` flat at

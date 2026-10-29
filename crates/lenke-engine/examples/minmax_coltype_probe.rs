@@ -58,7 +58,23 @@ fn store_of(nodes: u32) -> Store {
                 // EIGHT distinct values over 200,000 nodes, so this dictionary-encodes.
                 ("dict", Value::Str(format!("g{}", n % 8).into())),
                 ("bool", Value::Bool(n.is_multiple_of(2))),
-                ("date", Value::Num(f64::from(n % 30_000))),
+                // ⚠️ THIS WAS `Value::Num` from item 1172 until item 1187 — a NUMERIC column
+                // in a row the header calls `Column::Temporal`. So this probe never once
+                // measured a temporal column, the `date` row duplicated `num` for fourteen
+                // items, and the giveaway was printed in its own output every run: the
+                // `answer of min` column read `Num(0.0)`, not a date.
+                (
+                    "date",
+                    Value::Temporal(lenke_engine::temporal::Temporal::Date(
+                        lenke_engine::temporal::Date::parse(&format!(
+                            "{:04}-{:02}-{:02}",
+                            1950 + (n % 70),
+                            1 + (n % 12),
+                            1 + (n % 28)
+                        ))
+                        .expect("a valid date"),
+                    )),
+                ),
                 ("mixed", mixed),
             ],
         );
@@ -159,6 +175,31 @@ fn main() {
 
     println!();
 
+    // THE MULTI-AGGREGATE SCAN (item 1187). `try_scan_multi_agg` admits `Min`/`Max` beside
+    // `Sum`/`Avg` and destructures `Column::Num` ALONE, so `min(n.k), max(n.k)` over a
+    // non-numeric column falls to the general fold — item 1184's frontier hole, one rung down on
+    // the bare scan.
+    //
+    // CONTROL: `count(*), count(n.k)`, served for every representation, so it prices the
+    // two-aggregate machinery itself and must be flat across types.
+    println!();
+    println!("  column      min+max(us)   cnt*+cnt(k)(us)   min+max ÷ counts");
+
+    for key in ["num", "str", "dict", "bool", "date", "mixed"] {
+        let ask = |q: &str| -> f64 {
+            time_query(q, false, &store, cfg.reps).map_or(f64::NAN, |(us, _)| us)
+        };
+        let pair = ask(&format!(
+            "MATCH (a:Person) RETURN min(a.{key}) AS lo, max(a.{key}) AS hi"
+        ));
+        let ctl = ask(&format!(
+            "MATCH (a:Person) RETURN count(*) AS n, count(a.{key}) AS c"
+        ));
+
+        println!("  {key:<10} {pair:>11.1} {ctl:>17.1} {:>17.2}x", pair / ctl);
+    }
+
+    println!();
     match time_query(
         "MATCH (a:Person) RETURN count(*) AS c",
         false,
