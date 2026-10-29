@@ -2888,6 +2888,22 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   `late_materialize`. The `str`/`dict` controls moved 1.33-1.42x on paths the gate cannot reach —
   LAYOUT (`bool`/`mixed` flat, POST series unstable where PRE is tight), the same effect as
   `pull-alignment-is-load-bearing`.
+- ~~**The hop top-K served only `Column::Num`**~~ — **CLOSED by item 1186.** The remaining four
+  arms measure **6.78x (bool) / 5.77x (dict) / 2.72x (str)** over three alternated rounds, taking
+  them from 8.92x/8.39x/7.43x of their walk floor to **1.22x/1.40x/2.52x**; `mixed`/`Gen` flat at
+  1.00x. ⚠️ **`num` is 3% SLOWER**, the price of ONE shared selection rather than a specialized
+  numeric copy — paid deliberately, because item 1185's halving bug lived in that selection and a
+  second copy is a second home for it. **THE KEY IS THE ARM'S CHOICE, and that is measured:** keying
+  every candidate by node id to share the code cost the numeric arm **17%** (3636→4258us) because
+  every comparison then re-reads the column; making the helper generic over the KEY TYPE recovered
+  it to 3%. Each arm caches the cheapest comparable thing — the f64, the dictionary RANK (integer
+  compares, no string compares, which makes `dict` the fastest of the four), the value, or the node
+  id for `Str` where caching a `GStr` would clone an Arc per candidate.
+- ⚠️ **A STALE CONTROL LABEL IS A MISREPORTED RESULT, and so is the wrong baseline (1186).** The A/B
+  script was copied from item 1185, where `str`/`dict`/`bool` genuinely were controls the gate could
+  not reach; they are served arms now, so only `mixed` is a control. And PRE must be item 1185 AS
+  SHIPPED: against the pre-1185 baseline the same code reads as a 4.7x win on `num` while being
+  slightly SLOWER than main. Same code, two framings, one false.
 - ⚠️ **ITEM 1065's "do not re-attempt it on the hop rung" IS FIXTURE-SPECIFIC (1185).** It measured
   `hop min` 11.87 vs `hop top-10` 11.91 and concluded rows and selection cost nothing on a hop.
   Holding nodes at 200,000 and varying only degree: top-10 ÷ hop-min is **1.47x at degree 1** and

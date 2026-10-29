@@ -867,6 +867,126 @@ fn top_k_liftable(pinput: &Plan, key_exprs: &[&Expr], store: &Store) -> bool {
 ///
 /// NULL placement follows `row_cmp` exactly, including the part that is easy to get wrong: it is
 /// decided BEFORE the total order and is NOT reversed by `descending`.
+/// The weighted selection behind [`try_hop_top_k`], shared by every representation (item 1186).
+///
+/// Candidates are keyed by NODE ID and compared through `cmp_vals`, not carried as values. Two
+/// reasons, and the second is the important one: a `Str` column would otherwise clone a `GStr` per
+/// candidate (an atomic increment each, ~180,000 of them on a degree-5 200k fixture); and there is
+/// ONE selection and emission implementation for all five arms rather than five copies. Item
+/// 1185's halving bug lived in exactly this code, so a second copy of it is a second place for
+/// that class of mistake.
+///
+/// Returns the window as `(is_null, node)` in output order, multiplicity already expanded.
+fn hop_top_k_window<K, G, F>(
+    counts: &super::Counts,
+    present: &[bool],
+    k: &crate::ir::SortKey,
+    skip: Option<usize>,
+    limit: usize,
+    key_of: G,
+    cmp_vals: F,
+) -> Vec<(bool, u32)>
+where
+    G: Fn(u32) -> K,
+    F: Fn(&K, &K) -> std::cmp::Ordering,
+{
+    use std::cmp::Ordering;
+
+    // (is_null, node, multiplicity) per DISTINCT frontier vertex. An absent cell is a NULL ROW,
+    // not a missing one — `RETURN b.k` over a node without `k` yields NULL and the row still
+    // exists — so absent vertices are kept with their multiplicity rather than skipped.
+    //
+    // Each arm supplies `key_of`, so the key is CACHED per candidate and chosen as the cheapest
+    // comparable thing for that representation: the f64 for `Num`, the dictionary RANK for
+    // `Dict`, the value itself for `Bool`/`Temporal`, and the node id for `Str` (where caching
+    // the `GStr` would mean an Arc clone per candidate). Keying everything by node id instead
+    // cost the numeric arm 17% — 3636us to 4258us — because every comparison then re-reads the
+    // column. One implementation, but the key is the arm's choice.
+    // `None` IS the absent cell: the null flag and the key are one thing, so no arm can read a
+    // key that does not exist and no representation needs a `Default` that means nothing.
+    let mut cand: Vec<(Option<K>, u32, f64)> = Vec::new();
+    counts.for_each(|v, c| {
+        let key = if present[v as usize] {
+            Some(key_of(v))
+        } else {
+            None
+        };
+        cand.push((key, v, c));
+    });
+
+    // NULL placement follows `row_cmp` exactly, including the part that is easy to get wrong: it
+    // is decided BEFORE the total order and is NOT reversed by `descending`.
+    let cmp = |x: &(Option<K>, u32, f64), y: &(Option<K>, u32, f64)| match (&x.0, &y.0) {
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => {
+            if k.nulls_first {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            }
+        }
+        (Some(_), None) => {
+            if k.nulls_first {
+                Ordering::Greater
+            } else {
+                Ordering::Less
+            }
+        }
+        (Some(a), Some(b)) => {
+            let o = cmp_vals(a, b);
+            if k.descending {
+                o.reverse()
+            } else {
+                o
+            }
+        }
+    };
+
+    // At most `skip + limit` candidates can contribute a row, since each carries at least one.
+    let want = skip.unwrap_or(0).saturating_add(limit);
+    let take = want.min(cand.len());
+    if take == 0 {
+        return Vec::new();
+    }
+    if cand.len() > take {
+        // `take - 1` is the MINIMAL correct index, not a correctness boundary: `select_nth(k)`
+        // guarantees the first `k` elements are the `k` smallest, so `take` would leave the same
+        // set after the truncate. Item 1185's H6 mutant proved that by surviving.
+        cand.select_nth_unstable_by(take - 1, cmp);
+        cand.truncate(take);
+    }
+    cand.sort_unstable_by(cmp);
+
+    let to_skip = skip.unwrap_or(0);
+    let mut dropped = 0usize;
+    let mut out: Vec<(bool, u32)> = Vec::with_capacity(limit.min(1024));
+
+    for (key, node, c) in cand {
+        let is_null = key.is_none();
+        // A multiplicity is a COUNT; `frontier_counts` carries it as f64 because the aggregate
+        // folds sum it, so round once here rather than trusting the float in a loop bound.
+        let mut reps = c as usize;
+        if reps == 0 {
+            continue;
+        }
+        if dropped < to_skip {
+            let d = reps.min(to_skip - dropped);
+            dropped += d;
+            reps -= d;
+        }
+        // ONE counter (`out.len()`). The first version summed three quantities, two of which
+        // counted the same rows, and emitted HALF the window (item 1185).
+        while reps > 0 && out.len() < limit {
+            out.push((is_null, node));
+            reps -= 1;
+        }
+        if out.len() >= limit {
+            break;
+        }
+    }
+    out
+}
+
 pub(super) fn try_hop_top_k(
     input: &Plan,
     keys: &[crate::ir::SortKey],
@@ -874,8 +994,6 @@ pub(super) fn try_hop_top_k(
     limit: Option<usize>,
     store: &Store,
 ) -> Option<Batch> {
-    use std::cmp::Ordering;
-
     let limit = limit?;
     let [k] = keys else {
         return None; // one key only; a composite order is the general path's
@@ -905,109 +1023,111 @@ pub(super) fn try_hop_top_k(
     if *slot != width - 1 {
         return None; // the key must be a property of the chain FRONTIER
     }
-    let Some(Column::Num { data, present, .. }) = store.column(key) else {
-        return None; // the numeric arm only, for now
-    };
-    let want = skip.unwrap_or(0).checked_add(limit)?;
+    let col = store.column(key)?;
+    // The gate sits BEFORE `frontier_counts` so an unserved representation does not pay to build
+    // a frontier it then declines (item 1184 measured that at ~6% on the `Gen` row).
+    if matches!(col, Column::Gen { .. }) {
+        return None; // a mixed column's order crosses type ranks → the general sort
+    }
     let counts = super::frontier_counts(pinput, store)?;
 
-    // (is_null, value, multiplicity) per DISTINCT frontier vertex. An absent cell is a NULL ROW,
-    // not a missing one — `RETURN b.k` over a node without `k` yields NULL and the row still
-    // exists — so absent vertices are kept with their multiplicity rather than skipped.
-    let mut cand: Vec<(bool, f64, f64)> = Vec::new();
-    counts.for_each(|v, c| {
-        let i = v as usize;
-        if present[i] {
-            cand.push((false, data[i], c));
-        } else {
-            cand.push((true, 0.0, c));
-        }
-    });
-
-    let cmp = |x: &(bool, f64, f64), y: &(bool, f64, f64)| match (x.0, y.0) {
-        (true, true) => Ordering::Equal,
-        (true, false) => {
-            if k.nulls_first {
-                Ordering::Less
-            } else {
-                Ordering::Greater
+    let win = match col {
+        Column::Num { data, present, .. } => hop_top_k_window(
+            &counts,
+            present,
+            k,
+            skip,
+            limit,
+            |n| data[n as usize],
+            |a: &f64, b: &f64| value::cmp_num_total(*a, *b),
+        ),
+        Column::Str { data, present, .. } => hop_top_k_window(
+            &counts,
+            present,
+            k,
+            skip,
+            limit,
+            |n| n,
+            |a: &u32, b: &u32| data[*a as usize].cmp(&data[*b as usize]),
+        ),
+        Column::Dict {
+            dict,
+            codes,
+            present,
+            ..
+        } => {
+            // RANKS over the dictionary, computed ONCE, so the selection compares integers rather
+            // than strings. That is the dictionary arm's whole advantage, the same one items
+            // 1182/1184 take by folding over `dict.len()` instead of the frontier.
+            let mut order: Vec<u32> = (0..dict.len() as u32).collect();
+            order.sort_unstable_by(|x, y| dict[*x as usize].cmp(&dict[*y as usize]));
+            let mut rank = vec![0u32; dict.len()];
+            for (r, c) in order.iter().enumerate() {
+                rank[*c as usize] = r as u32;
             }
+            hop_top_k_window(
+                &counts,
+                present,
+                k,
+                skip,
+                limit,
+                |n| rank[codes[n as usize] as usize],
+                u32::cmp,
+            )
         }
-        (false, true) => {
-            if k.nulls_first {
-                Ordering::Greater
-            } else {
-                Ordering::Less
-            }
-        }
-        (false, false) => {
-            let o = value::cmp_num_total(x.1, y.1);
-            if k.descending {
-                o.reverse()
-            } else {
-                o
-            }
-        }
+        Column::Bool { data, present, .. } => hop_top_k_window(
+            &counts,
+            present,
+            k,
+            skip,
+            limit,
+            |n| data[n as usize],
+            bool::cmp,
+        ),
+        Column::Temporal { data, present, .. } => hop_top_k_window(
+            &counts,
+            present,
+            k,
+            skip,
+            limit,
+            |n| data[n as usize],
+            |a: &crate::temporal::Temporal, b: &crate::temporal::Temporal| a.cmp_total(b),
+        ),
+        // DEFENSIVE: the `matches!` above already sent `Gen` to the general sort.
+        _ => return None,
     };
 
-    // At most `want` candidates can contribute a row to the window.
-    let take = want.min(cand.len());
-    if take == 0 {
-        return Some(Batch::of(vec![Col::Num(Vec::new())]));
-    }
-    if cand.len() > take {
-        cand.select_nth_unstable_by(take - 1, cmp);
-        cand.truncate(take);
-    }
-    cand.sort_unstable_by(cmp);
-
-    // Emit weighted copies, dropping `skip` rows and taking `limit`.
-    let mut dropped = 0usize;
-    let to_skip = skip.unwrap_or(0);
-    let mut vals: Vec<f64> = Vec::with_capacity(limit.min(1024));
-    let mut boxed: Vec<crate::value::Value> = Vec::new();
-    let mut any_null = false;
-    // ONE counter. The first version tested `vals.len() + nulls + boxed.len() < limit`, but
-    // `boxed` grows for null AND non-null rows, so that sum double-counts and the loop emitted
-    // HALF the window — `ORDER BY x DESC LIMIT 2` returned one row. The corpus caught it
-    // (`tests_f.jsonl::walked_frame_14`); the probe could not, because its top-K table times
-    // without asserting an answer.
-    let mut emitted = 0usize;
-
-    for (is_null, v, c) in cand {
-        // A multiplicity is a COUNT: `frontier_counts` carries it as f64 because the aggregate
-        // folds sum it, so round once here rather than trusting the float in a loop bound.
-        let mut reps = c as usize;
-        if reps == 0 {
-            continue;
+    let any_null = win.iter().any(|(n, _)| *n);
+    // Match the column representation the general PROJECTION yields: a typed column while every
+    // emitted row carries a value, `Gen` as soon as one does not. `Col` has no temporal variant,
+    // so a temporal column is always `Gen` — and the oracle compares the column TYPE, not just
+    // the values, because a mismatch here renders identically and would otherwise go unseen.
+    Some(Batch::of(vec![match col {
+        Column::Num { data, .. } if !any_null => {
+            Col::Num(win.iter().map(|(_, i)| data[*i as usize]).collect())
         }
-        if dropped < to_skip {
-            let d = reps.min(to_skip - dropped);
-            dropped += d;
-            reps -= d;
+        Column::Str { data, .. } if !any_null => {
+            Col::Str(win.iter().map(|(_, i)| data[*i as usize].clone()).collect())
         }
-        while reps > 0 && emitted < limit {
-            if is_null {
-                any_null = true;
-                boxed.push(crate::value::Value::Null);
-            } else {
-                vals.push(v);
-                boxed.push(crate::value::Value::Num(v));
-            }
-            emitted += 1;
-            reps -= 1;
+        Column::Dict { dict, codes, .. } if !any_null => Col::Str(
+            win.iter()
+                .map(|(_, i)| dict[codes[*i as usize] as usize].clone())
+                .collect(),
+        ),
+        Column::Bool { data, .. } if !any_null => {
+            Col::Bool(win.iter().map(|(_, i)| data[*i as usize]).collect())
         }
-        if emitted >= limit {
-            break;
-        }
-    }
-
-    // A column carrying a NULL cannot be `Col::Num`; without one, stay numeric so the column's
-    // representation matches what projecting the numeric column yields.
-    Some(Batch::of(vec![if any_null {
-        Col::Gen(boxed)
-    } else {
-        Col::Num(vals)
+        _ => Col::Gen(
+            win.iter()
+                .map(|(n, i)| {
+                    if *n {
+                        crate::value::Value::Null
+                    } else {
+                        col.read(*i as usize)
+                    }
+                })
+                .collect(),
+        ),
     }]))
 }
 

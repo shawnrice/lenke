@@ -32847,3 +32847,211 @@ fn the_hop_top_k_agrees_with_the_general_sort_over_every_arrangement() {
         }
     }
 }
+
+/// The hop top-K for EVERY column representation (item 1186).
+///
+/// Item 1185 shipped the numeric arm alone; `str`, `dict`, `bool` and `date` stayed on the general
+/// sort at 7.2-10.5x their walk floor. The arms share one selection (`hop_top_k_window`), each
+/// supplying the cheapest comparable KEY for its representation — the f64, the dictionary RANK,
+/// the value, or the node id for `Str` where caching a `GStr` would clone an Arc per candidate.
+///
+/// The sweep in the test above is all numeric, so without this one the four new arms would be
+/// covered only incidentally by the corpus. Each fixture carries absences AND multiplicity,
+/// because those are the two ways the weighted collapse loses rows.
+///
+/// ORACLE: the two-item spelling (`RETURN c.k AS v, c.k AS w`), which the gate declines because
+/// soundness rests on there being exactly one item. Only column 0 is compared.
+///
+/// The COLUMN VARIANT is asserted self-consistently (typed iff the window holds no null) rather
+/// than against the general path: `run` returns `Rows`, which flattens, so the `Col` variant is
+/// not observable through it. It still matters for a NESTED `OrderPage`, whose parent may compare
+/// cells in place via `cmp_cell`.
+#[test]
+fn the_hop_top_k_agrees_for_every_representation() {
+    use crate::temporal::{Date, Temporal};
+
+    let vnum = |x: f64| Value::Num(x);
+    let vstr = |x: &str| Value::Str(x.into());
+    let vdate = |iso: &str| Value::Temporal(Temporal::Date(Date::parse(iso).unwrap()));
+
+    // (name, values with None = ABSENT, expected representation)
+    let reps: Vec<(&str, Vec<Option<Value>>, &str)> = vec![
+        (
+            "num",
+            vec![
+                Some(vnum(5.0)),
+                Some(vnum(1.0)),
+                None,
+                Some(vnum(9.0)),
+                Some(vnum(3.0)),
+                None,
+                Some(vnum(7.0)),
+                Some(vnum(2.0)),
+            ],
+            "Num",
+        ),
+        (
+            // Eight distinct over nine nodes MISSES `dict_encode`'s "distinct at most half the
+            // rows" cap, so this stays a plain `Str` column.
+            "str",
+            vec![
+                Some(vstr("e5")),
+                Some(vstr("a1")),
+                None,
+                Some(vstr("i9")),
+                Some(vstr("c3")),
+                None,
+                Some(vstr("g7")),
+                Some(vstr("b2")),
+            ],
+            "Str",
+        ),
+        (
+            // Three distinct over nine CLEARS the cap, so this dictionary-encodes — the arm that
+            // compares dictionary RANKS instead of strings.
+            "dict",
+            vec![
+                Some(vstr("g1")),
+                Some(vstr("g0")),
+                None,
+                Some(vstr("g2")),
+                Some(vstr("g1")),
+                None,
+                Some(vstr("g2")),
+                Some(vstr("g0")),
+            ],
+            "Dict",
+        ),
+        (
+            "bool",
+            vec![
+                Some(Value::Bool(true)),
+                Some(Value::Bool(false)),
+                None,
+                Some(Value::Bool(true)),
+                Some(Value::Bool(false)),
+                None,
+                Some(Value::Bool(true)),
+                Some(Value::Bool(false)),
+            ],
+            "Bool",
+        ),
+        (
+            "date",
+            vec![
+                Some(vdate("2015-01-01")),
+                Some(vdate("2010-01-01")),
+                None,
+                Some(vdate("2020-01-01")),
+                Some(vdate("2012-01-01")),
+                None,
+                Some(vdate("2018-01-01")),
+                Some(vdate("2011-01-01")),
+            ],
+            "Temporal",
+        ),
+    ];
+
+    for (name, vals, want_repr) in reps {
+        let mut b = Builder::default();
+        let ids: Vec<u32> = vals
+            .iter()
+            .map(|v| match v {
+                Some(x) => b.node(&["N"], &[("k", x.clone())]),
+                None => b.node(&["N"], &[]),
+            })
+            .collect();
+        // MULTIPLICITY: ids[1] is reached three times and ids[2] (absent) twice, so both a value
+        // and a NULL own several rows. A node outside the edge set (ids[7]) is stranded.
+        for (f, to) in [
+            (0usize, 1usize),
+            (3, 1),
+            (4, 1),
+            (0, 2),
+            (3, 2),
+            (0, 3),
+            (0, 4),
+            (4, 5),
+            (5, 6),
+        ] {
+            b.edge(ids[f], ids[to], "E");
+        }
+        let st = b.build();
+
+        let repr = match st.column("k") {
+            Some(crate::store::Column::Num { .. }) => "Num",
+            Some(crate::store::Column::Str { .. }) => "Str",
+            Some(crate::store::Column::Dict { .. }) => "Dict",
+            Some(crate::store::Column::Bool { .. }) => "Bool",
+            Some(crate::store::Column::Temporal { .. }) => "Temporal",
+            Some(crate::store::Column::Gen { .. }) => "Gen",
+            None => "none",
+        };
+        assert_eq!(
+            repr, want_repr,
+            "{name}: the fixture must BUILD the representation it claims, or the arm is untested"
+        );
+
+        for desc in [false, true] {
+            let dir = if desc { " DESC" } else { "" };
+
+            for (skip, limit) in [(None, 1usize), (None, 3), (None, 20), (Some(2usize), 3)] {
+                let tail = match skip {
+                    Some(s) => format!(" SKIP {s} LIMIT {limit}"),
+                    None => format!(" LIMIT {limit}"),
+                };
+                let fast_q =
+                    format!("MATCH (a:N)-[:E]->(c:N) RETURN c.k AS v ORDER BY v{dir}{tail}");
+                let gen_q = format!(
+                    "MATCH (a:N)-[:E]->(c:N) RETURN c.k AS v, c.k AS w ORDER BY v{dir}{tail}"
+                );
+                let fplan = crate::opt::optimize_indexed(crate::gql::parse(&fast_q).unwrap(), &st);
+                let gplan = crate::opt::optimize_indexed(crate::gql::parse(&gen_q).unwrap(), &st);
+
+                let Plan::OrderPage {
+                    input,
+                    keys,
+                    skip: s,
+                    limit: l,
+                    ..
+                } = &fplan
+                else {
+                    panic!("{name}: expected an OrderPage for {fast_q}");
+                };
+                let got = crate::exec::order::try_hop_top_k(input, keys, *s, *l, &st);
+                assert!(
+                    got.is_some(),
+                    "{name}/{fast_q}: the arm must REACH this representation"
+                );
+
+                // Typed column iff no NULL survived into the window.
+                if let Some(batch) = &got {
+                    let col = &batch.slots[0];
+                    let has_null = (0..col.len()).any(|i| col.value_at(i).is_null());
+                    let typed = !matches!(col, crate::batch::Col::Gen(_));
+                    // `Col` has NO temporal variant, so a temporal column is `Gen` whether or
+                    // not a null survived. Written as a comment first and then contradicted by
+                    // this assertion — the test caught that, which is the assertion earning its
+                    // place even before it guards the arms.
+                    let can_be_typed = want_repr != "Temporal";
+                    assert_eq!(
+                        typed,
+                        !has_null && can_be_typed,
+                        "{name}/{fast_q}: column variant and null content disagree"
+                    );
+                }
+
+                let fast = run(&fplan, &st);
+                let general = run(&gplan, &st);
+                assert_eq!(
+                    fast.rows.len(),
+                    general.rows.len(),
+                    "{name}/{fast_q}: row COUNT differs"
+                );
+                let fv: Vec<String> = fast.rows.iter().map(|r| format!("{:?}", r[0])).collect();
+                let gv: Vec<String> = general.rows.iter().map(|r| format!("{:?}", r[0])).collect();
+                assert_eq!(fv, gv, "{name}/{fast_q}: fast {fv:?} vs general {gv:?}");
+            }
+        }
+    }
+}
