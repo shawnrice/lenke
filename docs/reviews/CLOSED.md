@@ -2910,6 +2910,23 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   columns — cheaper to write, already covered by those arms' own oracles and mutation, and FASTER
   by item 471's measurement that N passes over one column each beat one interleaved pass (5.6 ms
   against 0.6). Separate function after the numeric entry, per item 1184.
+- ⚠️ **OPEN, DIAGNOSED, and the obvious reading of it is WRONG: the TS multi-hop count is 67.7x
+  native, and it is NOT a missing fast path (1193).** The bench sweep's largest ts/ffi ratio with a
+  meaningful absolute time is `count 3-hop` at **ts 326.5ms against ffi 4.8ms**; the family runs
+  38.9x (2-hop) to 67.7x (3-hop) with 4-hop at 365.2ms. `shortcuts.ts` HAS the chain closed forms
+  (`threeHopSide`, `productCountOf`, `threeSegmentCount`, `walkLevelCount`), so "TS is walking"
+  needed testing rather than assuming.
+  **THE DISCRIMINATING EXPERIMENT IS A DEGREE SWEEP AT FIXED N**, because the hypotheses scale
+  differently in degree and identically in N — closed form ∝ N, walk ∝ N·deg³, so degree 2→5 is
+  flat vs 15.6x. Measured at 50,000 nodes: **1.00x / 0.90x / 1.49x**. TS is CLOSED-FORM.
+  So the gap is the per-vertex CONSTANT FACTOR of the two closed forms: TS ~1us per start vertex
+  against native's ~24ns. That points at Map/boxed adjacency access per vertex per level versus
+  native's dense arrays — meaning the fix is a DATA-STRUCTURE change (a dense per-edge-type degree
+  array, with write invalidation) and not a new detector. Largest open TS target found this session;
+  not built. Instrument: `packages/native/hopcount-degree-ts-probe.ts`.
+  ⚠️ Also discard `query: top-k by boolean` at 2560x from any such shortlist: `ffi` is **0.0ms**
+  there (item 1175's short circuit), so the ratio is division by ~zero and TS's own 5.2ms is
+  unremarkable. **A ts/ffi ratio is meaningless when the denominator is at the timer's floor.**
 - **REFUTED: a TS extremum-PAIR gap. There is none — the pair costs what two folds should (1192).**
   Item 1188 found `min(k), max(k)` unserved NATIVELY for every non-numeric representation (8332x a
   single `min(k)` on a boolean). The question transfers even though the fix cannot (item 1176: TS
