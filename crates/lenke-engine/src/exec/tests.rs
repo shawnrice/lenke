@@ -34126,3 +34126,100 @@ fn the_boolean_filtered_count_agrees_with_the_projection_route() {
         "[[Num(0.0)]]"
     );
 }
+
+/// Item 1209 split the filtered scan aggregate's fold into one loop per aggregate FAMILY, because
+/// the single loop maintained `best` for a `sum` and a `total` for an extremum — and compared
+/// `agg.func` against `Min` and `Max` once per row. 433.9us to 288.9 on the predictable fixture.
+///
+/// The split is answer-equivalent BY ARGUMENT (each family reads only its own accumulator), which
+/// is exactly why it needs a test: nothing about the answer changes if the argument is right, and
+/// nothing warns you if it is wrong for one aggregate out of five. So all five are pinned here,
+/// against an INDEPENDENT route — the same question with a second aggregate, which the arity gate
+/// refuses, so the general path answers it over the same fixture.
+#[test]
+fn every_filtered_scan_aggregate_survives_the_fold_split() {
+    let mut b = Builder::default();
+    // Values chosen so that the filter keeps a MIXTURE, and so that NaN placement matters: the
+    // ordering is `cmp_num_total`'s (NaN last), which the split must not disturb.
+    for v in [1.0_f64, 5.0, 3.0, f64::NAN, 9.0, 2.0, -4.0] {
+        b.node(&["N"], &[("k", Value::Num(v)), ("g", Value::Num(1.0))]);
+    }
+    // A node whose `k` is ABSENT but which the filter's own column admits — the `present[i]` skip
+    // inside the fold is the only thing that excludes it, and both loops must keep doing so.
+    b.node(&["N"], &[("g", Value::Num(1.0))]);
+    let st = b.build();
+
+    let one = |agg: &str| -> String {
+        let q = format!("MATCH (a:N) WHERE a.k <> 1e9 RETURN {agg} AS m");
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(&q).unwrap(), &st);
+        format!(
+            "{:?}",
+            crate::exec::try_run(&plan, &st)
+                .expect("runs")
+                .rows
+                .iter()
+                .next()
+                .and_then(|r| r.first())
+                .cloned()
+        )
+    };
+    // THE INDEPENDENT ROUTE: a second aggregate makes the single-aggregate arm decline, so the
+    // general fold answers the identical question over the identical rows.
+    let two = |agg: &str| -> String {
+        let q = format!("MATCH (a:N) WHERE a.k <> 1e9 RETURN {agg} AS m, {agg} AS m2");
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(&q).unwrap(), &st);
+        format!(
+            "{:?}",
+            crate::exec::try_run(&plan, &st)
+                .expect("runs")
+                .rows
+                .iter()
+                .next()
+                .and_then(|r| r.first())
+                .cloned()
+        )
+    };
+
+    for agg in ["sum(a.k)", "count(a.k)", "avg(a.k)", "min(a.k)", "max(a.k)"] {
+        assert_eq!(
+            one(agg),
+            two(agg),
+            "{agg}: the split fold must agree with the general one"
+        );
+    }
+
+    // ⚠️ THE FILTER IS `<> 1e9` AND NOT `> -100` FOR A REASON. An ordering comparison EXCLUDES
+    // NaN (`NaN > -100` is false), so the fold never saw it and the extremum's NaN placement was
+    // not exercised at all — the first version of this test asserted a NaN max and got 9.0.
+    // `<>` admits NaN, because this repo's predicates keep NaN JS-unordered (item 1205), so all
+    // seven present values reach the fold and `cmp_num_total`'s NaN-last ordering is live.
+    //
+    // Pinned literally as well as against the other route, because the two routes agreeing would
+    // not catch a change that broke BOTH.
+    assert_eq!(one("min(a.k)"), "Some(Num(-4.0))");
+    assert_eq!(one("max(a.k)"), "Some(Num(NaN))");
+    assert_eq!(one("count(a.k)"), "Some(Num(7.0))");
+
+    // AN EMPTY SURVIVOR SET still owes what each aggregate owes: a count of zero, and NULL for the
+    // rest. The `cnt == 0` and `best.is_none()` arms live outside both loops, so this is what says
+    // the split did not strand them.
+    let none = |agg: &str| -> String {
+        let q = format!("MATCH (a:N) WHERE a.k > 1e9 RETURN {agg} AS m");
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(&q).unwrap(), &st);
+        format!(
+            "{:?}",
+            crate::exec::try_run(&plan, &st)
+                .expect("runs")
+                .rows
+                .iter()
+                .next()
+                .and_then(|r| r.first())
+                .cloned()
+        )
+    };
+
+    assert_eq!(none("count(a.k)"), "Some(Num(0.0))");
+    assert_eq!(none("min(a.k)"), "Some(Null)");
+    assert_eq!(none("max(a.k)"), "Some(Null)");
+    assert_eq!(none("avg(a.k)"), "Some(Null)");
+}

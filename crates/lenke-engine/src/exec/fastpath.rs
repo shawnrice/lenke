@@ -1091,6 +1091,19 @@ pub(super) fn try_stream_dict_pred_count(
         matches.push(eval_const(&Value::Str(dv.clone()))?);
     }
     let null_match = eval_const(&Value::Null)?;
+    // ⚠️ TWO BRANCHLESS REWRITES OF THE SWEEP BELOW HAVE BEEN TRIED AND BOTH MEASURED NOTHING.
+    // Item 1207's periodic-vs-random detector prices this arm at 1.66x — it IS data-dependent —
+    // and the obvious causes are both now ruled out:
+    //
+    //   item 1208  `count += u64::from(hit)` instead of `if hit { count += 1 }`   1.66x -> 1.66x
+    //   item 1209  the absent reading as the table's LAST SLOT, so `present[i]`
+    //              becomes an index computation rather than a branch                1.66x -> 1.64x
+    //
+    // The identical pair of rewrites took the BOOLEAN twin (`try_stream_bool_count`) from 3.97x to
+    // 1.00x, so the mechanism is real and this arm's data-dependence is somewhere else: the
+    // `codes[i]` indirection the boolean lookup does not need is the remaining suspect, and the
+    // bounds check on a runtime-sized `matches` is another. Both rewrites were REVERTED rather
+    // than kept as neutral changes carrying a claim they did not earn.
     let mut count = 0u64;
     scan_visit(store, label, |i| {
         let hit = if present[i] {
@@ -4437,27 +4450,55 @@ pub(super) fn try_filtered_scan_num_agg(
     let Col::Nodes(sids) = batch.slot(0) else {
         return None;
     };
+    // ONE LOOP PER AGGREGATE FAMILY (item 1209), because the single loop below did every
+    // aggregate's work for every aggregate. A `sum` maintained `best` through an `Option<f64>`
+    // match it then discarded, AND compared `agg.func` against `Min` and `Max` ONCE PER ROW —
+    // loop-invariant tests of the kind items 457 and 459 hoisted out of the scalar paths for the
+    // same reason. An extremum, conversely, accumulated a `total` nothing reads.
+    //
+    // Exactly equivalent rather than nearly so: `Sum`/`Count`/`Avg` read only `total` and `cnt`,
+    // and `Min`/`Max` read only `best`, so neither loop drops anything its own result depends on.
+    // The `present[i]` skip and the `cmp_num_total` ordering are unchanged in both, which is what
+    // keeps the answer (and the NaN placement that ordering defines) identical.
     let (mut total, mut cnt, mut best): (f64, u64, Option<f64>) = (0.0, 0, None);
-    for &row in &keep {
-        let i = sids[row] as usize;
-        if !present[i] {
-            continue; // the agg's own prop may be NULL even when the filter passed
-        }
-        let x = data[i];
-        total += x;
-        cnt += 1;
-        best = Some(match best {
-            None => x,
-            Some(b) => {
-                let keep_new = (agg.func == AggFn::Min && value::cmp_num_total(x, b).is_lt())
-                    || (agg.func == AggFn::Max && value::cmp_num_total(x, b).is_gt());
-                if keep_new {
-                    x
-                } else {
-                    b
-                }
+    let want_extremum = matches!(agg.func, AggFn::Min | AggFn::Max);
+
+    if want_extremum {
+        let want_min = agg.func == AggFn::Min;
+
+        for &row in &keep {
+            let i = sids[row] as usize;
+
+            if !present[i] {
+                continue; // the agg's own prop may be NULL even when the filter passed
             }
-        });
+
+            let x = data[i];
+
+            best = Some(match best {
+                None => x,
+                Some(b) => {
+                    let ord = value::cmp_num_total(x, b);
+
+                    if (want_min && ord.is_lt()) || (!want_min && ord.is_gt()) {
+                        x
+                    } else {
+                        b
+                    }
+                }
+            });
+        }
+    } else {
+        for &row in &keep {
+            let i = sids[row] as usize;
+
+            if !present[i] {
+                continue; // the agg's own prop may be NULL even when the filter passed
+            }
+
+            total += data[i];
+            cnt += 1;
+        }
     }
     let result = match agg.func {
         AggFn::Sum if agg.null_on_empty && cnt == 0 => Value::Null,

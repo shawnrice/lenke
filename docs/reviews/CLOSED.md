@@ -2910,6 +2910,35 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   columns — cheaper to write, already covered by those arms' own oracles and mutation, and FASTER
   by item 471's measurement that N passes over one column each beat one interleaved pass (5.6 ms
   against 0.6). Separate function after the numeric entry, per item 1184.
+- **CLOSED by 1209 for the `sum` row's DEAD WORK (1.50x periodic / 1.16x random) — but NOT for its
+  branchiness, which is elsewhere; and the DICT row's second cause is refuted too.**
+  `try_filtered_scan_num_agg` ran ONE loop for every aggregate: a `sum` maintained `best` through an
+  `Option<f64>` match it discarded AND compared `agg.func` against `Min` and `Max` **once per row**
+  (loop-invariant tests of the kind items 457/459 hoisted out of the scalar paths), while an
+  extremum accumulated a `total` nothing reads. Split into one loop per family — exactly equivalent,
+  since each family reads only its own accumulator. **`sum` 433.9 -> 288.9 us periodic, 1076.3 ->
+  931.6 random; every other row 1.00x including both controls.**
+  The random case gains less because `try_filter_keep`'s branchy keep-list still dominates it: the
+  sum row is still 3.22x data-dependent after this, so **the keep-list build is now the single
+  biggest remaining branchy path** and is what both the `sum` (2.50x) and projection (2.14x) census
+  rows were really measuring.
+  ⚠️ **DICT, SECOND CAUSE REFUTED: the absent reading as the table's last slot (so `present[i]`
+  becomes an index computation, not a branch) left it at 1.64x against 1.66x.** Reverted, like item
+  1208's accumulation rewrite. The identical pair of rewrites took the BOOLEAN twin from 3.97x to
+  1.00x, so the mechanism is real and this arm's data-dependence is elsewhere — the `codes[i]`
+  indirection the boolean lookup does not need, or the bounds check on a runtime-sized table. Both
+  refutations are recorded on the function so neither gets re-tried.
+  ⚠️ **MY ORACLE WAS VACUOUS FOR THE CODE I CHANGED, AND MUTATION IS WHAT SAID SO.** The
+  five-aggregate test first filtered on a DIFFERENT column than it aggregated (`WHERE a.g = 1 RETURN
+sum(a.k)`), which never reaches this function at all — an `eprintln` printed NOTHING. The mutant
+  that made `Max` take the sum loop SURVIVED, which is the only reason I looked. Reshaped to filter
+  and aggregate the SAME column, the function is reached 12 times and that mutant is CAUGHT.
+  **A test written for a function it never calls passes for the same reason an empty test does.**
+  ⚠️ And the NaN half needed a second fix: `WHERE a.k > -100` EXCLUDES NaN (an ordering comparison
+  is false for it), so the extremum's NaN placement was not exercised and the test asserted a NaN
+  max against 9.0. `<>` admits NaN (item 1205's policy), so all seven present values reach the fold.
+  Mutation 4/4 after the reshape; two mutants first ABORTED on the changed-line guard because
+  `want_min` and `cnt += 1` occur in many arms — address-ranged, both caught.
 - **CLOSED by 1208 for the BOOLEAN row, the biggest of the five: 652.8 -> 133.8 us on unpredictable
   data, 4.88x — and 1.25x even on the corpus's predictable fixture.** `try_filtered_count`'s chain
   had arms for num, membership, dict and date but NONE for bool, so `WHERE flag = true RETURN
