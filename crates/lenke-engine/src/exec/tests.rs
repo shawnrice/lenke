@@ -34505,3 +34505,97 @@ fn a_canonicalized_conjunction_filter_keeps_exactly_the_same_rows() {
         assert_eq!(counted(pred), n, "{pred}: the counting route must agree");
     }
 }
+
+/// A STRING membership count over a high-cardinality column, which had NO TEST AT ALL until
+/// item 1222 — found by mutation, not by reading: specializing
+/// `try_stream_membership_count`'s `Column::Str` arm left two mutants ALIVE against the whole
+/// 2,060-test suite. Dropping the second target (`s == a || s == b` to `s == a`) passed, and
+/// negating the compare (to `!= a`) passed. Both are wrong answers on this shape.
+///
+/// ⚠️ THE COLUMN MUST BE HIGH-CARDINALITY, which is the reason this fixture is built here rather
+/// than reusing `count_prop_fixture`. A low-cardinality string column is DICTIONARY-encoded and
+/// takes the dict branch (the one item 1219 fixed); only distinct values reach the `Str` branch,
+/// so a test over a handful of repeated strings would pass no matter what this arm does.
+///
+/// ⚠️ AND A SINGLE TARGET DOES NOT REACH THIS FUNCTION AT ALL. `= 'x'` and `IN ['x']` are both
+/// planned as an `IndexSeek`, whose third arm degrades to a label scan when no index exists. The
+/// one-target case is asserted anyway, because it is the ANSWER that matters here and a future
+/// routing change could send it this way.
+#[test]
+fn string_membership_count_over_a_high_cardinality_column() {
+    let mut b = Builder::default();
+
+    // 40 distinct names, so the column cannot be dictionary-encoded.
+    for i in 0..40u32 {
+        b.node(&["P"], &[("name", Value::Str(format!("n{i}").into()))]);
+    }
+    // One row with the key ABSENT, to pin that `present[i]` still gates the compare: an arm that
+    // dropped the presence test would read a vacant cell and could count it.
+    b.node(&["P"], &[("other", Value::Num(1.0))]);
+
+    let store = b.build();
+    let n = |q: &str| -> f64 {
+        match crate::exec::try_run(&opt_plan(q, &store), &store)
+            .unwrap()
+            .rows
+            .iter()
+            .next()
+            .expect("one row")[0]
+        {
+            Value::Num(x) => x,
+            ref o => panic!("count returns a number, got {o:?}"),
+        }
+    };
+
+    // TWO TARGETS — the case with no coverage, and the one both surviving mutants broke. Each
+    // name is distinct, so the answer is exactly 2; `s == a` alone would say 1.
+    assert_eq!(
+        n("MATCH (p:P) WHERE p.name IN ['n3', 'n17'] RETURN count(*) AS c"),
+        2.0,
+        "both targets must count"
+    );
+    // The OR spelling of the same question. Equivalent spellings must agree on the ANSWER here;
+    // that they also agree on COST is what `spelling_probe` is for.
+    assert_eq!(
+        n("MATCH (p:P) WHERE p.name = 'n3' OR p.name = 'n17' RETURN count(*) AS c"),
+        2.0,
+        "the OR spelling is the same question"
+    );
+    // A target that matches NOTHING, paired with one that does: an arm that ignored the second
+    // target would still say 1 here, so this pins WHICH of the two is being read.
+    assert_eq!(
+        n("MATCH (p:P) WHERE p.name IN ['n3', 'nope'] RETURN count(*) AS c"),
+        1.0,
+        "a non-matching target adds nothing"
+    );
+    assert_eq!(
+        n("MATCH (p:P) WHERE p.name IN ['nope', 'n3'] RETURN count(*) AS c"),
+        1.0,
+        "and the order of the targets cannot matter"
+    );
+    // THREE targets, so the general iterator arm is exercised too and not only the unrolled ones.
+    assert_eq!(
+        n("MATCH (p:P) WHERE p.name IN ['n0', 'n3', 'n39'] RETURN count(*) AS c"),
+        3.0,
+        "the general arm, above the unrolled sizes"
+    );
+    // ONE target: the answer, whichever route serves it.
+    assert_eq!(
+        n("MATCH (p:P) WHERE p.name IN ['n3'] RETURN count(*) AS c"),
+        1.0,
+        "one target, one row"
+    );
+    // NEGATION over the same column, which is NOT a membership predicate and must not be
+    // confused with one — 40 present rows minus the one match, and the absent row satisfies no
+    // string comparison.
+    assert_eq!(
+        n("MATCH (p:P) WHERE p.name <> 'n3' RETURN count(*) AS c"),
+        39.0,
+        "`<>` counts the present rows that differ, and never the absent one"
+    );
+    assert_eq!(
+        n("MATCH (p:P) RETURN count(*) AS c"),
+        41.0,
+        "the unfiltered count includes the row with the key absent"
+    );
+}

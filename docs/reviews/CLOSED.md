@@ -36982,3 +36982,41 @@ must not compare two different property KEYS, which is worth up to 1.66x on its 
 
 ⚠️ Fixture periodicity (`age = i % 90`) is recorded ON the rows: item 1206 found a periodic
 generator hiding a 6.7x. The generator is shared by a dozen rows and deliberately not changed.
+
+### Item 1222 — string membership count 1.93x; item 1221's TS fix RETRACTED as already-closed; the arm had NO TEST (DONE)
+
+**RETRACTION FIRST.** Item 1221 proposed a specialized TS closure bypassing "a binding-Map write per
+vertex plus a boxed property lookup". Every part of that is already settled in this file: the Map
+write is GONE since item 803 (`bindVar` only when the predicate reads the binding), the per-call
+iterator allocation is REFUTED at item 241 (ladder said 64%, fix was 2.4x cheaper, A/B read 1.02x,
+reverted), `CONST` vs `DYN` key is REFUTED at 805, and a dense vertex array is PRICED AND DECLINED
+at 805 (~1.08x end to end). Item 805's decomposition is the answer: walk ~2ns, read ~2ns, together
+~10 — ~6ns lives only in the PAIRING (`v.properties` is a dependent load into a separate bag). So TS's
+38.6x is DATA LAYOUT; the remaining lever is contiguous property storage (342/806, structural).
+Item 1221's measurement stands, its proposed fix does not.
+
+**THE CHANGE.** `try_stream_membership_count`'s `Column::Str` arm paid an iterator plus a closure per
+row; `match targets.as_slice()` now unrolls one and two targets. 200k nodes, all names distinct, three
+alternated rounds, binaries hash-asserted: `IN [two]` 611.4 to 316.7 and `= a OR = b` 611.5 to 317.0,
+both **1.93x**, with FOUR controls flat (the `IndexSeek` rows 302.4, the non-membership `<>` 444.8,
+the numeric `sweep_num_count` row 31.0, bare `count(*)` 0.3) and the two spellings agreeing to 0.3us
+in both arms.
+
+⚠️ THE SHORT-CIRCUIT STAYS HERE, opposite to item 1220. A string compare is a length test plus a
+memcmp, so running it on an absent cell is real wasted work, not a free lane. The guarded
+operation's cost decides whether branchless wins — same mechanism, opposite conclusion.
+
+⚠️ CORRECTS item 1220's open list: a SINGLE-target string equality is UNREACHABLE here. `= 'x'` and
+`IN ['x']` both plan as an `IndexSeek` that degrades to a label scan with no index. The arm serves
+`IN [a, b]` and `= a OR = b` only.
+
+⚠️ MUTATION FOUND NO TEST COVERAGE: `s == a` (dropping a target) and `!= a` both SURVIVED all 2,060
+tests. The new test needs its OWN fixture because a low-cardinality string column is
+dictionary-encoded and takes the other branch entirely — 40 distinct names, one row with the key
+absent, exact counts for 1/2/3 targets, both spellings, a non-matching target in both orders. All
+three mutants now fail with exactly one failing test each.
+
+OPEN: eight sweep sites left from item 1220. `sweep_date_count` (six callers) is next by reach but
+its inner `if let Temporal::Date(d)` is an enum DISCRIMINANT test, so 1220's rewrite does not
+transfer unchanged. And NO corpus row exercises a multi-target string membership count — which is
+how a 1.93x sat unmeasured.

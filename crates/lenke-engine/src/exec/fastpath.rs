@@ -1200,11 +1200,50 @@ pub(super) fn try_stream_membership_count(
                 let Value::Str(s) = v else { return None };
                 targets.push(s.as_ref());
             }
-            scan_visit(store, label, |i| {
-                if present[i] && targets.iter().any(|t| data[i].as_ref() == *t) {
-                    count += 1;
+            // Small target sets get the comparison UNROLLED, so the common membership pays no
+            // iterator and no closure per row (item 1222).
+            //
+            // ⚠️ THE SHORT-CIRCUIT STAYS HERE, unlike `sweep_num_count`'s (item 1220). There the
+            // branch cost more than the `f64` compare it guarded, so evaluating unconditionally
+            // won. A string compare is a length test plus a `memcmp`: running it on an absent
+            // cell is real wasted work, not a free lane, so `&&` is correct for this column type.
+            //
+            // ⚠️ AND A SINGLE TARGET IS UNREACHABLE FROM A QUERY, which is why `[a]` is written
+            // for completeness rather than for speed. A lone string equality - `= 'x'` and
+            // `IN ['x']` alike - is planned as an `IndexSeek`, whose third arm degrades to a label
+            // scan when no index exists; it never enters this function. Measured: the arm serves
+            // `IN [a, b]` and `= a OR = b`, and nothing with one target.
+            match targets.as_slice() {
+                [a] => {
+                    let a = *a;
+
+                    scan_visit(store, label, |i| {
+                        if present[i] && data[i].as_ref() == a {
+                            count += 1;
+                        }
+                    });
                 }
-            });
+                [a, b] => {
+                    let (a, b) = (*a, *b);
+
+                    scan_visit(store, label, |i| {
+                        if present[i] {
+                            let s = data[i].as_ref();
+
+                            if s == a || s == b {
+                                count += 1;
+                            }
+                        }
+                    });
+                }
+                _ => {
+                    scan_visit(store, label, |i| {
+                        if present[i] && targets.iter().any(|t| data[i].as_ref() == *t) {
+                            count += 1;
+                        }
+                    });
+                }
+            }
         }
         _ => return None,
     }
