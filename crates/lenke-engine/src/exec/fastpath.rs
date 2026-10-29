@@ -6553,6 +6553,80 @@ pub(super) fn try_scan_multi_agg(
     Some(Batch::of(cols))
 }
 
+/// The NON-NUMERIC twin of [`try_scan_multi_agg`] (item 1188): two or more aggregates over a bare
+/// `Scan` where at least one `min`/`max` reads a `Str`, `Dict`, `Bool` or `Temporal` column.
+///
+/// WHY IT EXISTS. The entry above admits `Min`/`Max` beside `Sum`/`Avg` and destructures
+/// `Column::Num` alone, so adding a second extremum to a query made it **3.40x (str) / 7.39x
+/// (date) / 31.80x (dict) / 8332x (bool)** the SINGLE-aggregate `min(k)` that items 1172/1175/841
+/// already answer fast (item 1187 measured it). Same answer either way — the shape of every
+/// index-seeding bug the spelling probe exists to catch.
+///
+/// HOW: by DISPATCHING each aggregate to the single-aggregate arm that already serves it, then
+/// assembling the columns. No new fold code at all, which matters twice over — those arms are
+/// already covered by their own oracles and mutation passes, and item 471 measured that **N passes
+/// over one column each BEAT one interleaved pass** (5.6 ms against 0.6 for `sum(age), max(w2)` at
+/// 1,000,000 nodes), because each pass is a sequential walk of a single slice whose work is known
+/// before it starts. So splitting is the faster shape here as well as the cheaper one to write.
+///
+/// A SEPARATE FUNCTION rather than a widening of the entry above, for item 1184's measured reason:
+/// widening in place grows that function's `match` and taxes the numeric path even for queries
+/// that use none of the new arms — 1.10x on a control the change could not reach. Placed AFTER it
+/// in the chain, and it requires at least one NON-numeric extremum so the two never contend.
+pub(super) fn try_scan_multi_agg_wide(
+    input: &Plan,
+    keys: &[(String, Expr)],
+    aggs: &[Agg],
+    store: &Store,
+) -> Option<Batch> {
+    if !keys.is_empty() || aggs.len() < 2 || !matches!(input, Plan::Scan { .. }) {
+        return None;
+    }
+    // `any_wide` is the gate that keeps this off the numeric entry's shapes: an all-numeric pair
+    // is answered above, in one pass per distinct column.
+    let mut any_wide = false;
+    for agg in aggs {
+        if agg.distinct {
+            return None;
+        }
+        match (agg.func, agg.arg.as_ref()) {
+            (AggFn::Count, None) => {} // count(*)
+            (AggFn::Count | AggFn::Min | AggFn::Max, Some(Expr::Prop { slot: 0, key })) => {
+                match store.column(key)? {
+                    Column::Num { .. } => {}
+                    // A mixed column's extremum crosses type ranks and belongs to the general
+                    // fold, exactly as in the single-aggregate arms.
+                    Column::Gen { .. } => return None,
+                    _ => any_wide = true,
+                }
+            }
+            // `Sum`/`Avg` are numeric BY NATURE, so they stay with the entry above rather than
+            // being declined for a representation reason.
+            _ => return None,
+        }
+    }
+    if !any_wide {
+        return None;
+    }
+    let mut cols: Vec<Col> = Vec::with_capacity(aggs.len());
+    for agg in aggs {
+        let one = [agg.clone()];
+        let b = try_scan_num_agg(input, keys, &one, store)
+            .or_else(|| try_scan_str_agg(input, keys, &one, store))
+            .or_else(|| try_scan_bool_agg(input, keys, &one, store))
+            .or_else(|| try_scan_temporal_agg(input, keys, &one, store))
+            .or_else(|| try_scan_count_prop(input, keys, &one, store))
+            .or_else(|| try_scan_count(input, keys, &one, store))?;
+        // Each arm answers a SOLE aggregate, so a batch of any other width means an arm changed
+        // shape under us; decline rather than assemble something misaligned.
+        if b.slots.len() != 1 {
+            return None;
+        }
+        cols.push(b.slots.into_iter().next()?);
+    }
+    Some(Batch::of(cols))
+}
+
 /// Peel `n` frontier hops off a chain plan, WITH A PER-HOP DIRECTION: each hop reports its edge
 /// labels and whether it reads the OUT index or the IN one.
 ///

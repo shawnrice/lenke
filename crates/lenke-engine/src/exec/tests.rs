@@ -33055,3 +33055,182 @@ fn the_hop_top_k_agrees_for_every_representation() {
         }
     }
 }
+
+/// The SCAN multi-aggregate wide dispatcher against the general grouped fold (item 1188).
+///
+/// `try_scan_multi_agg` admits `Min`/`Max` beside `Sum`/`Avg` and destructures `Column::Num` alone,
+/// so a second extremum made a query 3.40x (str) / 7.39x (date) / 31.80x (dict) / 8332x (bool) the
+/// SINGLE-aggregate `min(k)` that is already fast (item 1187 measured it).
+/// `try_scan_multi_agg_wide` dispatches each aggregate to the single-aggregate arm that already
+/// serves it and assembles the columns — no new fold code, which is why this test's job is the
+/// ASSEMBLY and the GATE rather than the folds themselves.
+///
+/// TWO SHAPES are swept, because the gate admits more than the extremum pair it was written for:
+/// `count(k)` over a non-numeric column also sets `any_wide`, so count pairs route here too and
+/// got 11-16x faster as a side effect. Scope I did not intend is scope I have not verified, so it
+/// is covered here explicitly rather than taken on trust.
+///
+/// THE CHAIN CONTRACT is asserted in BOTH directions. An all-numeric pair must be claimed by the
+/// entry above and DECLINED here; a pair touching a non-numeric column must be the reverse. Only
+/// the first half is visible to an answer test — the second half is the one that keeps the numeric
+/// path off this function, which is the 1.10x item 1184 measured.
+#[test]
+fn the_scan_multi_aggregate_wide_dispatcher_agrees_with_the_grouped_fold() {
+    use crate::temporal::{Date, Temporal};
+
+    let vstr = |x: &str| Value::Str(x.into());
+    let vdate = |iso: &str| Value::Temporal(Temporal::Date(Date::parse(iso).unwrap()));
+
+    // (name, values with None = ABSENT, expected representation)
+    let reps: Vec<(&str, Vec<Option<Value>>, &str)> = vec![
+        (
+            "num",
+            vec![
+                Some(Value::Num(5.0)),
+                Some(Value::Num(1.0)),
+                None,
+                Some(Value::Num(9.0)),
+                Some(Value::Num(3.0)),
+            ],
+            "Num",
+        ),
+        (
+            "str",
+            vec![
+                Some(vstr("e5")),
+                Some(vstr("a1")),
+                None,
+                Some(vstr("i9")),
+                Some(vstr("c3")),
+            ],
+            "Str",
+        ),
+        (
+            // Two distinct over six rows CLEARS `dict_encode`'s "distinct at most half" cap.
+            "dict",
+            vec![
+                Some(vstr("g1")),
+                Some(vstr("g0")),
+                None,
+                Some(vstr("g1")),
+                Some(vstr("g0")),
+            ],
+            "Dict",
+        ),
+        (
+            "bool",
+            vec![
+                Some(Value::Bool(true)),
+                Some(Value::Bool(false)),
+                None,
+                Some(Value::Bool(true)),
+                Some(Value::Bool(false)),
+            ],
+            "Bool",
+        ),
+        (
+            "date",
+            vec![
+                Some(vdate("2015-01-01")),
+                Some(vdate("2010-01-01")),
+                None,
+                Some(vdate("2020-01-01")),
+                Some(vdate("2012-01-01")),
+            ],
+            "Temporal",
+        ),
+    ];
+
+    for (name, vals, want_repr) in reps {
+        let mut b = Builder::default();
+        for v in &vals {
+            match v {
+                Some(x) => b.node(&["N"], &[("k", x.clone())]),
+                None => b.node(&["N"], &[]),
+            };
+        }
+        // A node OUTSIDE the label, so a label-blind fold would pick up its value.
+        b.node(&["Other"], &[("k", vals[0].clone().unwrap())]);
+        let st = b.build();
+
+        let repr = match st.column("k") {
+            Some(crate::store::Column::Num { .. }) => "Num",
+            Some(crate::store::Column::Str { .. }) => "Str",
+            Some(crate::store::Column::Dict { .. }) => "Dict",
+            Some(crate::store::Column::Bool { .. }) => "Bool",
+            Some(crate::store::Column::Temporal { .. }) => "Temporal",
+            Some(crate::store::Column::Gen { .. }) => "Gen",
+            None => "none",
+        };
+        assert_eq!(
+            repr, want_repr,
+            "{name}: the fixture must BUILD the representation it claims"
+        );
+
+        for proj in [
+            "min(n.k) AS lo, max(n.k) AS hi",
+            "max(n.k) AS hi, min(n.k) AS lo",
+            "count(*) AS c, min(n.k) AS lo",
+            "count(n.k) AS c, max(n.k) AS hi",
+            // The COUNT PAIR, which the gate admits for a non-numeric column.
+            "count(*) AS n, count(n.k) AS c",
+            "min(n.k) AS lo, max(n.k) AS hi, count(*) AS c",
+        ] {
+            let q = format!("MATCH (n:N) RETURN {proj}");
+            let plan = crate::opt::optimize_indexed(crate::gql::parse(&q).unwrap(), &st);
+            let Plan::Project { input, .. } = &plan else {
+                panic!("{name}/{proj}: expected a Project over the Aggregate");
+            };
+            let Plan::Aggregate {
+                input: ain,
+                keys,
+                aggs,
+            } = input.as_ref()
+            else {
+                panic!("{name}/{proj}: expected an Aggregate");
+            };
+
+            let narrow = crate::exec::fastpath::try_scan_multi_agg(ain, keys, aggs, &st);
+            let wide = crate::exec::fastpath::try_scan_multi_agg_wide(ain, keys, aggs, &st);
+
+            if want_repr == "Num" {
+                // THE OTHER HALF of the contract: an all-numeric pair stays with the entry above,
+                // and the wide dispatcher must DECLINE it. No answer test can see this, and it is
+                // what keeps the numeric path off a function it does not need.
+                assert!(
+                    wide.is_none(),
+                    "{name}/{proj}: the wide dispatcher claimed an ALL-NUMERIC shape, which puts \
+                     the numeric path through a function built for the others"
+                );
+            } else {
+                assert!(
+                    narrow.is_none(),
+                    "{name}/{proj}: the NUMERIC entry claimed a non-numeric shape; the wide \
+                     dispatcher is then unreachable"
+                );
+                assert!(
+                    wide.is_some(),
+                    "{name}/{proj}: try_scan_multi_agg_wide declined the shape it serves"
+                );
+            }
+
+            let fast = run(&plan, &st).rows[0].to_vec();
+            let general = run(
+                &crate::opt::optimize_indexed(
+                    crate::gql::parse(&format!("MATCH (n:N) LET g = 1 RETURN {proj} GROUP BY g"))
+                        .unwrap(),
+                    &st,
+                ),
+                &st,
+            )
+            .rows[0]
+                .to_vec();
+
+            assert_eq!(
+                format!("{fast:?}"),
+                format!("{general:?}"),
+                "{name}/{proj}: fast {fast:?} vs grouped fold {general:?}"
+            );
+        }
+    }
+}

@@ -2902,12 +2902,32 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   num against 1059-1353us for str/dict/bool, because the pair goes through `try_scan_multi_agg`,
   which destructures `Column::Num`. The ratio column then divided one unserved number by another.
   **The valid floor was the SINGLE-aggregate path**, served everywhere since 1172/1175/841.
-- **OPEN, priced (1187): the SCAN multi-aggregate extremum serves `Column::Num` alone**, so
-  `min(k), max(k)` costs **3.40x (str) / 7.39x (date) / 31.8x (dict) / 8332x (bool)** the
-  single-aggregate `min(k)` that is already fast — about 1.5x/3.7x/11x/4000x after allowing a pair
-  its 2x. Same answer either way, which is the shape of every index-seeding bug the spelling probe
-  exists to catch. Recipe is item 1184's: a separate wide twin AFTER the numeric entry, never a
-  widening in place (that cost a control 1.10x there).
+- ~~**The SCAN multi-aggregate extremum serves `Column::Num` alone**~~ — **CLOSED by item 1188**,
+  and every representation now pays ~2x a single aggregate, which is the FLOOR for two folds:
+  **bool 2499.5→0.5 (4999x), dict 5159.0→324.9 (15.9x), date 4082.7→1138.3 (3.59x), str
+  4634.6→2755.0 (1.68x)**, with `num` and `mixed` flat. **The build writes NO new fold code**: it
+  DISPATCHES each aggregate to the single-aggregate arm that already serves it and assembles the
+  columns — cheaper to write, already covered by those arms' own oracles and mutation, and FASTER
+  by item 471's measurement that N passes over one column each beat one interleaved pass (5.6 ms
+  against 0.6). Separate function after the numeric entry, per item 1184.
+- ⚠️ **ITS GATE ADMITS MORE THAN INTENDED, so the oracle covers that too (1188).** `count(k)` over a
+  non-numeric column also sets `any_wide`, so COUNT PAIRS route there and got **11-16x** faster
+  (str 1424.6→91.9, dict 1461.3→112.2, bool 1061.9→93.6, date 1519.9→93.2). Sound —
+  `try_scan_count_prop` serves any column type (376) — but unintended scope is UNVERIFIED scope, so
+  count pairs are swept explicitly. It also explains item 1187's broken control after the fact: that
+  control was slow for exactly the reason this change fixes.
+- **A CHAIN CONTRACT HAS TWO DIRECTIONS AND ONLY ONE IS OBSERVABLE (1188).** Asserting that the wide
+  dispatcher SERVES a non-numeric pair is visible to any answer test; asserting it DECLINES an
+  all-numeric pair is not, because both routes return identical rows — yet that is the half which
+  keeps the numeric path on its own one-pass-per-column fold, the 1.10x item 1184 measured.
+  Mutation settles it: dropping the `any_wide` gate is caught ONLY by that assertion. Three other
+  mutants (admitting `Gen`, dropping the width check, reordering the dispatch) survive as
+  answer-equivalent and are labelled so — the arms are disjoint by column type and all decline
+  `Gen`, so none of those three can change a result.
+- ~~**OPEN, priced (1187): the SCAN multi-aggregate extremum serves `Column::Num` alone**, so
+  `min(k), max(k)` cost **3.40x (str) / 7.39x (date) / 31.8x (dict) / 8332x (bool)** the
+  single-aggregate `min(k)`~~ — **superseded by the 1188 entry above, which closed it.** Kept for
+  the PRICING, which is what justified the build; the numbers above are the before-column.
 - ~~**The hop top-K served only `Column::Num`**~~ — **CLOSED by item 1186.** The remaining four
   arms measure **6.78x (bool) / 5.77x (dict) / 2.72x (str)** over three alternated rounds, taking
   them from 8.92x/8.39x/7.43x of their walk floor to **1.22x/1.40x/2.52x**; `mixed`/`Gen` flat at

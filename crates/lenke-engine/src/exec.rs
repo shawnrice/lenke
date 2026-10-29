@@ -1745,6 +1745,12 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
                         // dead (422).
                         .or_else(|| try_filtered_scan_str_agg(input, keys, aggs, store))
                         .or_else(|| try_scan_multi_agg(input, keys, aggs, store))
+                        // Its NON-NUMERIC twin (item 1188), AFTER it for item 1184's measured
+                        // reason: widening the entry above in place grows its `match` and taxes
+                        // the numeric path even for queries using none of the new arms (1.10x on
+                        // a control there). This one requires at least one non-numeric extremum,
+                        // so the two never contend for a shape.
+                        .or_else(|| try_scan_multi_agg_wide(input, keys, aggs, store))
                         // The INDEX answer first (item 369): O(1) from the hash index's key
                         // count where the scan below is O(live nodes). Identical gates, so the
                         // two never disagree about a shape; this one additionally requires an
