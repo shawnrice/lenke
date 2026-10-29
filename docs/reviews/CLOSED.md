@@ -2910,6 +2910,27 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   columns — cheaper to write, already covered by those arms' own oracles and mutation, and FASTER
   by item 471's measurement that N passes over one column each beat one interleaved pass (5.6 ms
   against 0.6). Separate function after the numeric entry, per item 1184.
+- ⚠️ **OPEN, PRICED at ~1.2x and NOT fixable at the query level: in the TS engine a property beyond
+  roughly the 5th position on the node costs ~1.2x more to read (1212).** One graph, 100,000 nodes x
+  20 properties ALL HOLDING IDENTICAL VALUES, read one at a time by position: positions 0/1/2/4 read
+  1.00/1.05/1.00/1.01x and positions 7/11/15/19 read **1.28/1.23/1.18/1.18x** under `sum`, with the
+  filtered count agreeing (1.21/1.19/1.17/1.19x). A step, not a slope — flat beyond it, consistent
+  with V8's in-object slot limit for literal-created objects. It also quantifies the position
+  component of item 1211's 1.66x; the rest of that figure was something else, and 1211's rule (do
+  not compare two property keys in a TS A/B) stands.
+  **No query can express which property is cheap and no user can see it**, so a fix means changing
+  the TS store's per-vertex property objects to per-key columns — the large refactor item 1193 also
+  points at. Not built.
+  ⚠️ **TWO NEW TS MEASUREMENT RULES, each from a design this probe's own control rejected:**
+  (a) **Dropping warm-up REPS inside a query does not remove PROCESS-level warm-up**, which lands
+  entirely on whichever query runs FIRST — the first design normalized against exactly that query
+  and reported a 1.3-2.7x "curve" that was JIT tiering, with its before/after control at 0.71x. The
+  fix is round-robin across the queries, discarding round 1 whole, not more reps within one.
+  (b) **In a round-robin design a before/after control fails by construction**: it captures the
+  run's whole downward drift (3.4ms -> 2.1ms, 0.61x) while the table is internally consistent. The
+  control must live INSIDE the round — the same key measured first and last within it, which reads
+  0.97x and is what makes the table above believable.
+  Instrument: `packages/native/property-position-ts-probe.ts`.
 - **REFUTED for TS: items 1206-1210's branchiness finding does NOT transfer — and the reason is a
   NEW INSTRUMENT RULE for this repo (1211). ⚠️ IN THE TS ENGINE, WHICH PROPERTY KEY A QUERY READS IS
   WORTH UP TO 1.66x WITH IDENTICAL DATA**, so any TS A/B that compares two different property keys
