@@ -1870,6 +1870,12 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
             } else if let Some(b) = try_scan_top_k(input, keys, *skip, *limit, store, track) {
                 // Streaming bounded top-K over a bare scan — no full frontier/idx array.
                 b
+            } else if let Some(b) = try_hop_top_k(input, keys, *skip, *limit, store) {
+                // The HOP spelling of the same question (item 1185). ABOVE `try_late_materialize`
+                // because that entry CLAIMS this shape — its generic arm pulls the whole
+                // expansion and sorts it, which is the 8.18x this replaces — and an entry below a
+                // path that claims the plan is dead (items 371/375, three times over).
+                b
             } else if let Some(b) = try_late_materialize(input, keys, *skip, *limit, store, track)?
             {
                 // Sorted top-K over a projection: project only the surviving rows.

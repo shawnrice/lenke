@@ -2877,6 +2877,40 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   the change against an old copy of itself. It read the UNWIRED numbers and produced a wrong theory
   about the FFI surface not reaching the new path. Rebuild with `--features capi`, or via
   `bun run build` / `bun run fuzz`, before believing a cross-engine number.
+- ~~**`ORDER BY <hop property> LIMIT k` had NO fast path — 8.2-10.5x its own walk floor**~~ —
+  **numeric arm CLOSED by item 1185, the other three OPEN with numbers.** Every top-K entry is a
+  `try_scan_top_k*` wanting a bare `Scan` and `top_k_liftable` rejects an `Expand`, so the hop fell
+  to `try_late_materialize`'s generic arm (pull the whole expansion, sort, project survivors).
+  `try_hop_top_k` answers it from `frontier_counts` with multiplicity as a REPEAT COUNT: **4.88x**
+  over three alternated rounds, 10.22x → **2.10x** of floor. **Still open: `str` 7.20x, `dict`
+  8.14x, `bool` 8.53x** of their floors — same collapse, different comparator and output column.
+  ⚠️ `mixed`/`Gen` is **3% slower**, the cost of the declining gate running before
+  `late_materialize`. The `str`/`dict` controls moved 1.33-1.42x on paths the gate cannot reach —
+  LAYOUT (`bool`/`mixed` flat, POST series unstable where PRE is tight), the same effect as
+  `pull-alignment-is-load-bearing`.
+- ⚠️ **ITEM 1065's "do not re-attempt it on the hop rung" IS FIXTURE-SPECIFIC (1185).** It measured
+  `hop min` 11.87 vs `hop top-10` 11.91 and concluded rows and selection cost nothing on a hop.
+  Holding nodes at 200,000 and varying only degree: top-10 ÷ hop-min is **1.47x at degree 1** and
+  **6.63x at degree 5**. Its sweep was degree 1, where its own ~250 ns per START VERTEX swamps the
+  row count. The prohibition was also scoped to item 1064's "select during the scan" lever, not to a
+  bounded selection. **A conclusion of the form "X costs nothing here" inherits the fixture's
+  edge:node ratio** — re-run the degree sweep before trusting one.
+- ⚠️ **A PERF PROBE THAT ASSERTS NO ANSWER WILL REPORT A SPEEDUP FOR A WRONG ONE (1185).** A
+  double-counted loop bound made the new arm emit HALF the window (`DESC LIMIT 2` → one row). The
+  corpus caught it; the probe sat on that exact row and read 4.06x, because the wrongness and the
+  speedup were the same event. Probes now assert row counts beside their timings. Same tick, same
+  shape one level up: the first ORACLE used `ORDER BY c.k` as the general-path spelling, but the
+  optimizer CANONICALIZES a property key into `Slot(0)` when it matches a projected item, so the
+  oracle took the fast path too and would have compared it with itself. **Both instruments were
+  fixed by an assertion about the INSTRUMENT** — the row count is right, and the two spellings
+  really route differently.
+- **A TWO-ELEMENT fixture cannot distinguish an ASYMMETRIC comparator from a correct one (1185).**
+  Swapping only the `(null, non-null)` arm leaves `(non-null, null)` intact, so the comparator is
+  asymmetric rather than reversed, and a fixture with one null and one value makes a single
+  comparison — the broken arm is hit or missed depending on arrival order, so the wrong code answers
+  correctly about half the time. Four candidates with two interleaved nulls force both directions.
+  This is item 1182's "a homogeneous frontier cannot observe direction" sharpened: **both ORDERINGS
+  OF THE SAME PAIR TYPE must be evaluated, not merely two distinct values.**
 - **A fixture that pins WHICH ROWS are read can be structurally unable to pin HOW they are compared
   (1182).** Inverting the boolean arm's `want` — which swaps `min` and `max` outright — SURVIVED both
   boolean fixtures, because **stranding an extreme to prove frontier-awareness forces the frontier to

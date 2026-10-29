@@ -833,6 +833,184 @@ fn top_k_liftable(pinput: &Plan, key_exprs: &[&Expr], store: &Store) -> bool {
     )
 }
 
+/// `MATCH (a:L)-[:T]->(b) RETURN b.k AS v ORDER BY v LIMIT n` — the HOP spelling of the top-K,
+/// which had no fast path at all (item 1185).
+///
+/// Every other top-K entry is a `try_scan_top_k*` requiring a bare `Scan`, and `top_k_liftable`
+/// rejects an `Expand`, so this shape fell to `try_late_materialize`'s generic arm: `pull` the
+/// whole expansion, sort it, project the survivors. Measured at 200,000 nodes / degree 5 against
+/// the floor that must also walk (`count(b.k)` over the same hop): **8.18x (num) / 9.77x (str) /
+/// 10.49x (dict) / 8.30x (bool)**.
+///
+/// ⚠️ ITEM 1065 MEASURED THIS COMPARISON AND REFUTED A LEVER ON IT — "hop min 11.87 vs hop top-10
+/// 11.91, so the rows and the selection cost about zero; do not re-attempt it on the hop rung."
+/// That holds in ITS fixture and not on this rung. Holding the node count at 200,000 and varying
+/// only the degree: top-10 ÷ hop-min is **1.47x at degree 1** and **6.63x at degree 5**. Item
+/// 1065's sweep was degree 1, where its own finding (~250 ns per START VERTEX) swamps the row
+/// count, so "rows cost nothing" was true of that fixture. Its prohibition was also scoped to item
+/// 1064's "select during the scan" lever; a bounded selection over the collapsed frontier is a
+/// different mechanism.
+///
+/// HOW IT IS SOUND. `frontier_counts` collapses the expansion to (vertex, multiplicity), which
+/// loses row order and keeps the multiset. For `min`/`max` that is free (items 1182/1184). For an
+/// ORDERED WINDOW it is NOT free in general — a node reached twice contributes two rows, and which
+/// of two tied rows is kept is observable as soon as the projection has a second column. So the
+/// gate requires **exactly one projection item, which is also the sort key**: every tied row then
+/// carries the SAME value, so which copies are kept and in what order cannot be observed, and
+/// multiplicity is a pure repeat count. (`sort_idx` is in any case unstable under a limit —
+/// "partition + partial sort" — so tie ORDER is already unspecified here; this gate does not rely
+/// on that.)
+///
+/// At most `skip + limit` candidates can contribute, since every candidate carries at least one
+/// row — so the selection is O(n) with `select_nth_unstable_by` plus a sort of that window, never
+/// a sort of the frontier.
+///
+/// NULL placement follows `row_cmp` exactly, including the part that is easy to get wrong: it is
+/// decided BEFORE the total order and is NOT reversed by `descending`.
+pub(super) fn try_hop_top_k(
+    input: &Plan,
+    keys: &[crate::ir::SortKey],
+    skip: Option<usize>,
+    limit: Option<usize>,
+    store: &Store,
+) -> Option<Batch> {
+    use std::cmp::Ordering;
+
+    let limit = limit?;
+    let [k] = keys else {
+        return None; // one key only; a composite order is the general path's
+    };
+    if !matches!(k.expr, Expr::Slot(0)) {
+        return None;
+    }
+    let Plan::Project {
+        input: pinput,
+        items,
+    } = input
+    else {
+        return None;
+    };
+    // EXACTLY ONE item, and `Slot(0)` above pins it as the sort key. This is the gate the
+    // soundness argument rests on, not a convenience.
+    let [(_, item_expr)] = items.as_slice() else {
+        return None;
+    };
+    let Expr::Prop { slot, key } = item_expr else {
+        return None;
+    };
+    let width = super::chain_width(pinput)?;
+    if width < 2 {
+        return None; // a bare scan belongs to `try_scan_top_k` and its measured gates
+    }
+    if *slot != width - 1 {
+        return None; // the key must be a property of the chain FRONTIER
+    }
+    let Some(Column::Num { data, present, .. }) = store.column(key) else {
+        return None; // the numeric arm only, for now
+    };
+    let want = skip.unwrap_or(0).checked_add(limit)?;
+    let counts = super::frontier_counts(pinput, store)?;
+
+    // (is_null, value, multiplicity) per DISTINCT frontier vertex. An absent cell is a NULL ROW,
+    // not a missing one — `RETURN b.k` over a node without `k` yields NULL and the row still
+    // exists — so absent vertices are kept with their multiplicity rather than skipped.
+    let mut cand: Vec<(bool, f64, f64)> = Vec::new();
+    counts.for_each(|v, c| {
+        let i = v as usize;
+        if present[i] {
+            cand.push((false, data[i], c));
+        } else {
+            cand.push((true, 0.0, c));
+        }
+    });
+
+    let cmp = |x: &(bool, f64, f64), y: &(bool, f64, f64)| match (x.0, y.0) {
+        (true, true) => Ordering::Equal,
+        (true, false) => {
+            if k.nulls_first {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            }
+        }
+        (false, true) => {
+            if k.nulls_first {
+                Ordering::Greater
+            } else {
+                Ordering::Less
+            }
+        }
+        (false, false) => {
+            let o = value::cmp_num_total(x.1, y.1);
+            if k.descending {
+                o.reverse()
+            } else {
+                o
+            }
+        }
+    };
+
+    // At most `want` candidates can contribute a row to the window.
+    let take = want.min(cand.len());
+    if take == 0 {
+        return Some(Batch::of(vec![Col::Num(Vec::new())]));
+    }
+    if cand.len() > take {
+        cand.select_nth_unstable_by(take - 1, cmp);
+        cand.truncate(take);
+    }
+    cand.sort_unstable_by(cmp);
+
+    // Emit weighted copies, dropping `skip` rows and taking `limit`.
+    let mut dropped = 0usize;
+    let to_skip = skip.unwrap_or(0);
+    let mut vals: Vec<f64> = Vec::with_capacity(limit.min(1024));
+    let mut boxed: Vec<crate::value::Value> = Vec::new();
+    let mut any_null = false;
+    // ONE counter. The first version tested `vals.len() + nulls + boxed.len() < limit`, but
+    // `boxed` grows for null AND non-null rows, so that sum double-counts and the loop emitted
+    // HALF the window — `ORDER BY x DESC LIMIT 2` returned one row. The corpus caught it
+    // (`tests_f.jsonl::walked_frame_14`); the probe could not, because its top-K table times
+    // without asserting an answer.
+    let mut emitted = 0usize;
+
+    for (is_null, v, c) in cand {
+        // A multiplicity is a COUNT: `frontier_counts` carries it as f64 because the aggregate
+        // folds sum it, so round once here rather than trusting the float in a loop bound.
+        let mut reps = c as usize;
+        if reps == 0 {
+            continue;
+        }
+        if dropped < to_skip {
+            let d = reps.min(to_skip - dropped);
+            dropped += d;
+            reps -= d;
+        }
+        while reps > 0 && emitted < limit {
+            if is_null {
+                any_null = true;
+                boxed.push(crate::value::Value::Null);
+            } else {
+                vals.push(v);
+                boxed.push(crate::value::Value::Num(v));
+            }
+            emitted += 1;
+            reps -= 1;
+        }
+        if emitted >= limit {
+            break;
+        }
+    }
+
+    // A column carrying a NULL cannot be `Col::Num`; without one, stay numeric so the column's
+    // representation matches what projecting the numeric column yields.
+    Some(Batch::of(vec![if any_null {
+        Col::Gen(boxed)
+    } else {
+        Col::Num(vals)
+    }]))
+}
+
 pub(super) fn try_late_materialize(
     input: &Plan,
     keys: &[crate::ir::SortKey],

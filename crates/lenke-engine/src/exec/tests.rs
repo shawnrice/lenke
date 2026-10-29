@@ -32668,3 +32668,182 @@ fn the_wide_multi_aggregate_arm_handles_absent_frontier_cells() {
         }
     }
 }
+
+/// The HOP top-K against the general sort, over the arrangements its weighted collapse can get
+/// wrong (item 1185).
+///
+/// `try_hop_top_k` answers `MATCH (a)-[:T]->(b) RETURN b.k AS v ORDER BY v LIMIT n` from
+/// `frontier_counts` — (vertex, multiplicity) pairs — instead of materializing one row per PATH.
+/// That makes the arrangement the thing to sweep, because multiplicity is the whole mechanism: a
+/// vertex reached three times must contribute three rows, and an ABSENT cell must contribute NULL
+/// rows rather than none.
+///
+/// THE ORACLE adds a SECOND projection item carrying the same cell (`RETURN b.k AS v, b.k AS w`),
+/// which the gate declines because soundness rests on there being exactly one item. Only column 0
+/// is compared.
+///
+/// ⚠️ The first oracle tried was the PROPERTY spelling of the sort key (`ORDER BY b.k` instead of
+/// `ORDER BY v`), on the reasoning that the gate wants `Expr::Slot(0)`. The optimizer
+/// CANONICALIZES that into `Slot(0)` when it matches a projected item, so the "oracle" took the
+/// fast path too — the test would have compared the fast path with itself and passed while proving
+/// nothing. The routing-split assertion below is what caught it, and is why it is asserted rather
+/// than assumed.
+///
+/// A HALVING BUG shipped here and the corpus caught it, not this test and not the probe: the
+/// emission loop's bound double-counted and `DESC LIMIT 2` returned one row. Hence `limit` is
+/// swept, including values larger than the number of distinct frontier vertices.
+#[test]
+fn the_hop_top_k_agrees_with_the_general_sort_over_every_arrangement() {
+    // (name, per-node value or None for an ABSENT key, edges as (from, to))
+    #[allow(clippy::type_complexity)]
+    let cases: &[(&str, &[Option<f64>], &[(usize, usize)])] = &[
+        ("one edge", &[Some(5.0), Some(1.0)], &[(0, 1)]),
+        // MULTIPLICITY: node 1 is reached three times, so its value owns three rows.
+        (
+            "one vertex reached three times",
+            &[Some(5.0), Some(1.0), Some(9.0)],
+            &[(0, 1), (2, 1), (0, 1)],
+        ),
+        // The frontier does NOT cover the column: node 3 holds the global minimum and is
+        // unreachable, so a column-wide selection would answer with a row the query excludes.
+        (
+            "stranded minimum",
+            &[Some(5.0), Some(7.0), Some(8.0), Some(-99.0)],
+            &[(0, 1), (0, 2)],
+        ),
+        // ABSENT cells are NULL ROWS, not missing ones.
+        (
+            "absent in the frontier",
+            &[Some(5.0), None, Some(2.0)],
+            &[(0, 1), (0, 2)],
+        ),
+        (
+            "every frontier cell absent",
+            &[Some(5.0), None, None],
+            &[(0, 1), (0, 2)],
+        ),
+        // ⚠️ NULLS AND VALUES INTERLEAVED, and this case exists because a mutant survived
+        // without it (item 1185's H2). Swapping only the `(null, non-null)` arm of the
+        // comparator leaves `(non-null, null)` correct, which makes the comparator ASYMMETRIC
+        // rather than reversed — so a fixture with ONE null and ONE value performs a single
+        // comparison and gets the right answer whenever arrival order happens to exercise the
+        // intact direction. Four candidates with two nulls force comparisons in BOTH directions
+        // whatever order `frontier_counts` yields.
+        (
+            "nulls interleaved with values",
+            &[Some(9.0), None, Some(1.0), None, Some(5.0)],
+            &[(0, 1), (0, 2), (0, 3), (0, 4)],
+        ),
+        // The same, with the nulls arriving FIRST — the arrangement that let H2 through.
+        (
+            "nulls before values",
+            &[Some(9.0), None, None, Some(1.0), Some(5.0)],
+            &[(0, 1), (0, 2), (0, 3), (0, 4)],
+        ),
+        // Ties, which the collapse reorders freely — sound only because the single projected
+        // column makes tied rows identical.
+        (
+            "all tied",
+            &[Some(3.0), Some(3.0), Some(3.0)],
+            &[(0, 1), (0, 2), (1, 2)],
+        ),
+        (
+            "ties plus a distinct",
+            &[Some(3.0), Some(3.0), Some(1.0), Some(3.0)],
+            &[(0, 1), (0, 2), (0, 3), (1, 3)],
+        ),
+        ("no edges at all", &[Some(5.0), Some(1.0)], &[]),
+        (
+            "negative zero beside zero",
+            &[Some(0.0), Some(-0.0), Some(1.0)],
+            &[(0, 1), (0, 2), (2, 1)],
+        ),
+    ];
+
+    for (name, vals, edges) in cases {
+        let mut b = Builder::default();
+        let ids: Vec<u32> = vals
+            .iter()
+            .map(|v| match v {
+                Some(x) => b.node(&["N"], &[("k", Value::Num(*x))]),
+                None => b.node(&["N"], &[]),
+            })
+            .collect();
+        for (f, to) in *edges {
+            b.edge(ids[*f], ids[*to], "E");
+        }
+        let st = b.build();
+
+        for desc in [false, true] {
+            let dir = if desc { " DESC" } else { "" };
+
+            for limit in [1usize, 2, 3, 10, 100] {
+                for skip in [None, Some(1usize)] {
+                    let tail = match skip {
+                        Some(s) => format!(" SKIP {s} LIMIT {limit}"),
+                        None => format!(" LIMIT {limit}"),
+                    };
+                    let fast_q =
+                        format!("MATCH (a:N)-[:E]->(c:N) RETURN c.k AS v ORDER BY v{dir}{tail}");
+                    // The PROPERTY spelling of the same sort — declines the gate, so it is the
+                    // general path answering the identical question.
+                    let gen_q = format!(
+                        "MATCH (a:N)-[:E]->(c:N) RETURN c.k AS v, c.k AS w ORDER BY v{dir}{tail}"
+                    );
+
+                    let fplan =
+                        crate::opt::optimize_indexed(crate::gql::parse(&fast_q).unwrap(), &st);
+                    let gplan =
+                        crate::opt::optimize_indexed(crate::gql::parse(&gen_q).unwrap(), &st);
+
+                    // THE ROUTING SPLIT, asserted rather than assumed: without it this test could
+                    // be comparing the general path with itself and prove nothing.
+                    if let Plan::OrderPage {
+                        input,
+                        keys,
+                        skip: s,
+                        limit: l,
+                        ..
+                    } = &fplan
+                    {
+                        assert!(
+                            crate::exec::order::try_hop_top_k(input, keys, *s, *l, &st).is_some(),
+                            "{name} {fast_q}: the alias spelling must REACH the hop top-K"
+                        );
+                    } else {
+                        panic!("{name}: expected an OrderPage for {fast_q}");
+                    }
+                    if let Plan::OrderPage {
+                        input,
+                        keys,
+                        skip: s,
+                        limit: l,
+                        ..
+                    } = &gplan
+                    {
+                        assert!(
+                            crate::exec::order::try_hop_top_k(input, keys, *s, *l, &st).is_none(),
+                            "{name} {gen_q}: the property spelling must DECLINE, or the oracle is \
+                             the fast path compared with itself"
+                        );
+                    }
+
+                    let fast = run(&fplan, &st);
+                    let general = run(&gplan, &st);
+
+                    assert_eq!(
+                        fast.rows.len(),
+                        general.rows.len(),
+                        "{name} / {fast_q}: row COUNT differs (the halving bug's signature)"
+                    );
+
+                    let fv: Vec<String> = fast.rows.iter().map(|r| format!("{:?}", r[0])).collect();
+                    let gv: Vec<String> =
+                        general.rows.iter().map(|r| format!("{:?}", r[0])).collect();
+
+                    assert_eq!(fv, gv, "{name} / {fast_q}: fast {fv:?} vs general {gv:?}");
+                }
+            }
+        }
+    }
+}

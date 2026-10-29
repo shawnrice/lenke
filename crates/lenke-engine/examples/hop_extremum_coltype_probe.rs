@@ -143,4 +143,63 @@ fn main() {
 
         println!("  {key:<10} {pair:>11.1} {ctl:>17.1} {:>17.2}x", pair / ctl);
     }
+
+    // THE TOP-K SIBLING, which has NO hop entry at all (item 1185). Every top-K fast path in
+    // `exec/order.rs` is a `try_scan_top_k*` requiring `Plan::Scan`, so `ORDER BY <hop prop>
+    // LIMIT k` materializes every PATH and sorts it. Items 1175/1180 fixed the scan spelling of
+    // this question; the hop spelling was never asked.
+    //
+    // NOTE the collapse that paid for items 1182/1184 is NOT available here: `min`/`max` ignore
+    // multiplicity, but an ORDERED WINDOW does not — a node reached by two paths contributes two
+    // rows. So any win must come from a bounded heap over the walk, not from deduplicating it.
+    //
+    // FLOOR: `count(b.k)` over the same hop, NOT `count(*)` — item 1183 found `count(*)` over a
+    // hop is answered by a closed form (a degree sum) and so cannot floor anything that walks.
+    // CONTROL: the same `ORDER BY` with NO limit, which no top-K path can take, so it should be
+    // flat whatever happens to the limited form.
+    println!();
+    println!("  column     top-k(us)   order-all(us)   count(k)(us)   top-k ÷ floor");
+
+    for key in ["num", "str", "dict", "bool", "mixed"] {
+        let ask = |q: &str| -> f64 {
+            time_query(q, false, &store, cfg.reps).map_or(f64::NAN, |(us, _)| us)
+        };
+
+        // ASSERT THE ANSWER, not just the time. The first version of this table timed only, and
+        // item 1185's emission loop emitted HALF the window — a bug the corpus caught and this
+        // probe could not have, while sitting directly on the row it was measuring. A perf probe
+        // that cannot see a wrong answer will happily report a speedup for one.
+        let check = |q: &str, want: usize| {
+            let plan = lenke_engine::opt::optimize_indexed(
+                lenke_engine::gql::parse(q).expect("parses"),
+                &store,
+            );
+            let got = lenke_engine::exec::try_run(&plan, &store).map_or(0, |r| r.rows.len());
+            assert!(got == want, "{q}\n  returned {got} rows, want {want}");
+        };
+
+        check(
+            &format!("MATCH (a:Person)-[:KNOWS]->(b) RETURN b.{key} AS v ORDER BY v LIMIT 10"),
+            10,
+        );
+        check(
+            &format!("MATCH (a:Person)-[:KNOWS]->(b) RETURN b.{key} AS v ORDER BY v DESC LIMIT 2"),
+            2,
+        );
+
+        let topk = ask(&format!(
+            "MATCH (a:Person)-[:KNOWS]->(b) RETURN b.{key} AS v ORDER BY v LIMIT 10"
+        ));
+        let all = ask(&format!(
+            "MATCH (a:Person)-[:KNOWS]->(b) RETURN b.{key} AS v ORDER BY v"
+        ));
+        let floor = ask(&format!(
+            "MATCH (a:Person)-[:KNOWS]->(b) RETURN count(b.{key}) AS c"
+        ));
+
+        println!(
+            "  {key:<10} {topk:>9.1} {all:>15.1} {floor:>14.1} {:>15.2}x",
+            topk / floor
+        );
+    }
 }
