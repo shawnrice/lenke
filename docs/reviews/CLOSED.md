@@ -34645,3 +34645,63 @@ prices the fix rather than rediscovering the fact.
 5,695 TS tests green across every package, isolated; 2,030 Rust tests green (unchanged); 7/7
 byte-identity fuzzers green, with the differential fuzzer's percentile band now exercising BOTH
 engines' new folds against each other over `0, 0.25, 0.5, 1, 1.0001, 1.5, 2, 100`.
+
+## 1164 — 🔶 PRICED AND DIAGNOSED, not built: the `-0` cross-engine divergence has **FIVE** observable surfaces, and the probe that was meant to locate the fix answered a different question
+
+Follow-up to item 1163's incidental finding. `negzero-cross-probe.ts`, after `SET n.v = 0 * (0 - 1)`,
+comparing with `Object.is` because **`JSON.stringify(-0)` is `"0"`** and every renderer-based
+comparison — the differential fuzzer included — is blind to it:
+
+```text
+  computed, not stored                   ts -0   native +0   DIVERGE
+  computed via negation                  ts -0   native +0   DIVERGE
+  the stored value itself                ts -0   native +0   DIVERGE
+  min(n.v)                               ts -0   native +0   DIVERGE
+  ORDER BY n.v  [first row]              ts -0   native +0   DIVERGE
+  percentile_disc / percentile_cont      both +0             agree
+  sum over the zero alone                both +0             agree
+  atan2(0, stored) / atan2(0, computed)  both +0             agree
+```
+
+**Settled:** TS keeps the sign bit through a BARE PROJECTION, through `min` and through `ORDER BY`;
+it loses it only on entering a numeric FUNCTION. Both engines collapse at that function gate
+(`numArg` / `num_of`), which is why the `atan2` rows agree. By the model's own stated rule — native
+`num_of`: _"the numeric model has NO negative zero… no operation ever observes a -0"_ — **TS is the
+engine out of conformance**, and the divergence is wider than the write path, since a computed `-0`
+that is never stored diverges too.
+
+**⚠️ NOT settled, and this is the part worth recording: WHERE native collapses.** An early reading
+of `min` returning `+0` was taken as evidence that native collapses on the WRITE path. It is not —
+an EGRESS collapse looks identical from every one of these rows. The `atan2` rows were added
+specifically to separate the two and **cannot**, because `atan2` collapses its own operand in both
+engines: the instrument answers a different question than the one it was built for. (The first
+instrument tried, `1 / n.v < 0`, is unavailable at all — division by zero is a data exception here,
+not an infinity.) Write-collapse and egress-collapse want the fix in DIFFERENT places, so the next
+step is to read native's write path directly rather than infer it from the surface. This is the
+items 1102 / 1146 / 1159 failure mode — three edits that landed in unreachable paths — caught this
+time BEFORE the edit.
+
+Candidate TS sites, once that is known: `normalizePropertyValue` in `packages/core/src/core/validate.ts`
+is the single write chokepoint (and a `typeof value === 'number'` early return there would also
+short-circuit four checks — `fromTaggedJson`, `Array.isArray`, `instanceof LenkeRecord` and the
+plain-object test — for the most common property type, so the conformance fix and a hot-path
+shortcut are the same edit). `packages/core/src/numeric.ts` is the established home for exactly this
+kind of "the obvious built-in differs between JS and Rust" helper and already holds `mathSign` for
+the signed-zero reason. The computed-but-unstored rows need a second site regardless.
+
+NOT built: a numeric-model change across a write chokepoint and an arithmetic result is not an
+optimization, and half-building one at the end of a tick is how the wrong-path edits above happened.
+
+### Bench corpus baseline recorded for item 1163
+
+The two percentile rows item 1163 added, measured one case per process (`BENCH_ONLY`, which is the
+right instrument — the positional filter this was first run with does not exist, and a `tail` on the
+capture hid that the whole sweep had run):
+
+```text
+  query: percentile_disc [one order statistic]   ts 5.9 ms   ffi 0.4   wasm 0.7   14.32x / 8.35x
+  query: percentile_cont [interpolates two]      ts 5.9      ffi 0.4   wasm 0.9   14.25x / 6.95x
+  query: min property [fused-scan aggregate]     ts 4.4      ffi 0.1   wasm 0.1   42.04x / 29.85x
+```
+
+Both percentiles now sit beside `min property` rather than ~7x above it, in both engines.

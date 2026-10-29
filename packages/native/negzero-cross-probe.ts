@@ -14,6 +14,19 @@
  * comparing serialized rows, and it is very likely why no fuzzer has caught it: the differential
  * fuzzer compares rendered JSON.
  *
+ * WHAT THIS PROBE HAS SETTLED, and what it has NOT (item 1164). Settled: TS keeps the sign bit
+ * through a BARE PROJECTION, through `min`, and through `ORDER BY`, and native shows `+0` on all
+ * three — five divergent surfaces in total. Also settled: BOTH engines collapse at the
+ * numeric-FUNCTION gate (`numArg` / `num_of`), which is why the `atan2` rows agree.
+ *
+ * NOT settled: WHERE native collapses. The `atan2` rows were added to decide between "native
+ * collapses on write" and "native collapses at egress", and they cannot, because `atan2` itself
+ * collapses its operand in both engines — so the instrument answers a different question than the
+ * one it was built for. An earlier reading of `min` returning `+0` was taken as evidence for the
+ * write path; it is not, since an egress collapse looks identical. The two possibilities want the
+ * fix in different places, so the next step is to read the native write path directly rather than
+ * infer it from the surface.
+ *
  *   cd packages/native && bun negzero-cross-probe.ts
  */
 import { Graph as TsGraph } from '@lenke/core';
@@ -69,12 +82,25 @@ const show = (v: unknown): string => {
 };
 
 const QUERIES: [string, string][] = [
+  // COMPUTED BUT NEVER STORED, which asks whether the write path is the only site: native's
+  // `num_of` collapses on the operand gate, so an expression that produces -0 should come back
+  // +0 from a pure projection too.
+  ['computed, not stored', 'MATCH (n:T) WHERE n.v = 2 RETURN 0 * (0 - 1) AS c'],
+  ['computed via negation', 'MATCH (n:T) WHERE n.v = 2 RETURN -(0) AS c'],
   ['the stored value itself', 'MATCH (n:T) WHERE n.v = 0 RETURN n.v AS c'],
   ['min(n.v)', 'MATCH (n:T) RETURN min(n.v) AS c'],
   ['percentile_disc(n.v, 0)', 'MATCH (n:T) RETURN percentile_disc(n.v, 0) AS c'],
   ['percentile_cont(n.v, 0)', 'MATCH (n:T) RETURN percentile_cont(n.v, 0) AS c'],
   ['ORDER BY n.v  [first row]', 'MATCH (n:T) RETURN n.v AS c ORDER BY n.v'],
   ['sum over the zero alone', 'MATCH (n:T) WHERE n.v = 0 RETURN sum(n.v) AS c'],
+  // DECISIVE: does the STORED value carry the sign bit, or does only the egress hide it?
+  // `atan2(0, -0)` is pi and `atan2(0, +0)` is 0 — sign-revealing AND finite, so it renders as a
+  // real number. (Division was the first instrument tried and is unavailable: `1 / 0` is a data
+  // exception in this engine, not an infinity.) Without a row like this, "native collapses on
+  // write" and "native collapses at egress" are indistinguishable, and they want the fix in
+  // different places.
+  ['atan2(0, stored)  [the sign bit]', 'MATCH (n:T) WHERE n.v = 0 RETURN atan2(0, n.v) AS c'],
+  ['atan2(0, computed)', 'MATCH (n:T) WHERE n.v = 2 RETURN atan2(0, 0 * (0 - 1)) AS c'],
 ];
 
 console.log('\n  query                              ts      native   agree?');
