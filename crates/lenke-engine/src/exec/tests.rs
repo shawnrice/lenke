@@ -34223,3 +34223,61 @@ fn every_filtered_scan_aggregate_survives_the_fold_split() {
     assert_eq!(none("max(a.k)"), "Some(Null)");
     assert_eq!(none("avg(a.k)"), "Some(Null)");
 }
+
+/// Item 1210 rebuilt the numeric keep list branchlessly — the row index is written unconditionally
+/// and the cursor advances by the predicate — and hoisted the `match op` out of the row loop.
+/// `sum` under a filter went 931.9us to 240.0 on unpredictable data (3.88x) and a projection
+/// 1126.6 to 437.2 (2.58x), with the data-dependence gone rather than reduced (1.01x).
+///
+/// The rewrite changes WHICH rows land in the list if it is wrong by one, so every operator is
+/// pinned here over a fixture built from the values a random one does not contain: a NaN, an
+/// absent cell, and duplicates around the threshold. The EXPECTED SETS ARE WRITTEN OUT rather than
+/// computed by the same comparison the engine uses.
+#[test]
+fn the_branchless_keep_list_keeps_exactly_the_same_rows() {
+    let mut b = Builder::default();
+    // Index:        0     1    2     3           4     5
+    for v in [1.0_f64, 2.0, 3.0, f64::NAN, 2.0, -1.0] {
+        b.node(&["N"], &[("k", Value::Num(v))]);
+    }
+    // No `k` at all — dropped by `present[i]`, which the branchless loop still `continue`s on.
+    b.node(&["N"], &[("other", Value::Num(0.0))]);
+    let st = b.build();
+
+    // Project the VALUES the filter keeps, in row order, so the assertion is about the keep list
+    // itself and not about some later aggregation collapsing it.
+    let kept = |pred: &str| -> String {
+        let q = format!("MATCH (a:N) WHERE {pred} RETURN a.k AS x");
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(&q).unwrap(), &st);
+        let rows = crate::exec::try_run(&plan, &st).expect("runs");
+
+        format!("{:?}", rows.rows.iter().collect::<Vec<_>>())
+    };
+
+    // ⚠️ NaN IS DROPPED BY EVERY ORDERING COMPARISON (it is false for all four) and KEPT by `<>`
+    // (this repo's predicates keep NaN JS-unordered — item 1205). The absent row is dropped by
+    // every one of them. Both are exactly what the `continue`s and the comparison itself decide,
+    // so a cursor that advanced on the wrong value would show up here first.
+    assert_eq!(kept("a.k > 2"), "[[Num(3.0)]]");
+    assert_eq!(kept("a.k >= 2"), "[[Num(2.0)], [Num(3.0)], [Num(2.0)]]");
+    assert_eq!(kept("a.k < 2"), "[[Num(1.0)], [Num(-1.0)]]");
+    assert_eq!(
+        kept("a.k <= 2"),
+        "[[Num(1.0)], [Num(2.0)], [Num(2.0)], [Num(-1.0)]]"
+    );
+    assert_eq!(kept("a.k = 2"), "[[Num(2.0)], [Num(2.0)]]");
+    assert_eq!(
+        kept("a.k <> 2"),
+        "[[Num(1.0)], [Num(3.0)], [Num(NaN)], [Num(-1.0)]]"
+    );
+
+    // A predicate NOTHING satisfies must give an empty result, not a panic and not every row —
+    // the `truncate(n)` with `n == 0` is what that exercises.
+    assert_eq!(kept("a.k > 1e9"), "[]");
+    // And one EVERYTHING satisfies (except NaN and the absent cell), so the cursor advances on
+    // every iteration and the buffer is filled to its pre-sized length.
+    assert_eq!(
+        kept("a.k > -1e9"),
+        "[[Num(1.0)], [Num(2.0)], [Num(3.0)], [Num(2.0)], [Num(-1.0)]]"
+    );
+}

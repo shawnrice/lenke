@@ -7232,6 +7232,49 @@ fn try_filter_keep_bool_prop(pred: &Expr, store: &Store, batch: &Batch) -> Optio
     )
 }
 
+/// Build a keep list for one numeric compare over a node frontier, BRANCHLESSLY (item 1210).
+///
+/// The row index is written unconditionally and the cursor advances by the predicate's own
+/// boolean, so the data-dependent `if hit { push }` that this replaces — a mispredict per row on
+/// unpredictable values — becomes a store and an add. The buffer is pre-sized to the frontier, so
+/// nothing reallocates while it fills, and `truncate` returns the survivors.
+///
+/// ⚠️ THE TWO `continue`s STAY BRANCHES ON PURPOSE. They test the OPTIONAL-miss sentinel and the
+/// column's presence mask, neither of which depends on the predicate's value: for a plain scan over
+/// a dense column both are perfectly predicted, and folding them into the cursor arithmetic would
+/// mean writing a row index for a cell that must not be read at all.
+///
+/// Semantics are the caller's, unchanged: ascending row order, the `u32::MAX` sentinel dropped (an
+/// OPTIONAL miss has no property, so the comparison is UNKNOWN), an absent cell dropped, and a NaN
+/// cell dropped by the comparison itself being false.
+fn keep_num_cmp<F: Fn(f64) -> bool>(
+    ids: &[u32],
+    data: &[f64],
+    present: &[bool],
+    cmp: F,
+) -> Vec<usize> {
+    let mut keep = vec![0usize; ids.len()];
+    let mut n = 0usize;
+
+    for (row, &id) in ids.iter().enumerate() {
+        if id == u32::MAX {
+            continue;
+        }
+
+        let i = id as usize;
+
+        if !present[i] {
+            continue;
+        }
+
+        keep[n] = row;
+        n += usize::from(cmp(data[i]));
+    }
+
+    keep.truncate(n);
+    keep
+}
+
 fn try_filter_keep(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec<usize>> {
     // A boolean `CASE` wrapping a predicate this function can already answer (item 450). First,
     // because it is a pure rewrite: it adds no evaluation of its own, it just unwraps.
@@ -7444,32 +7487,27 @@ fn try_filter_keep(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec<usiz
     // being false on NaN); equality via `==`/`!=`.
     if let (Column::Num { data, present, .. }, Value::Num(t)) = (column, lit) {
         let t = *t;
-        for (row, &id) in ids.iter().enumerate() {
-            // A NULL element (the `u32::MAX` sentinel an OPTIONAL hop lands on a
-            // miss) has no property, so the comparison is UNKNOWN and the row drops —
-            // the same answer the general `eval_mask` path gives. Without this the
-            // typed fast paths indexed the column BY the sentinel and panicked.
-            if id == u32::MAX {
-                continue;
-            }
-            let i = id as usize;
-            if !present[i] {
-                continue; // NULL → UNKNOWN → dropped
-            }
-            let x = data[i];
-            let hit = match op {
-                CompareOp::Eq => x == t,
-                CompareOp::Ne => x != t,
-                CompareOp::Lt => x < t,
-                CompareOp::Le => x <= t,
-                CompareOp::Gt => x > t,
-                CompareOp::Ge => x >= t,
-            };
-            if hit {
-                keep.push(row);
-            }
-        }
-        return Some(keep);
+        // THE OP IS MATCHED ONCE, NOT PER ROW, AND THE KEEP IS BUILT BRANCHLESSLY (item 1210).
+        // This loop had three costs stacked on each other, all of which this repo has priced
+        // before on other paths:
+        //
+        //   1. `match op` INSIDE the loop — the loop-invariant dispatch items 451, 457 and 459
+        //      hoisted out of the counting and scalar paths.
+        //   2. `Vec::new()` with no capacity, so the keep list reallocates as it grows.
+        //   3. `if hit { keep.push(row) }` — a data-dependent BRANCH per row. Item 1207's
+        //      periodic-vs-random detector priced this path at 2.14x (projection) and left the
+        //      `sum` row 3.22x data-dependent after item 1209, which is what pointed here.
+        //
+        // `keep_num_cmp` takes a monomorphic closure, pre-sizes the buffer and writes the row
+        // index ALWAYS, advancing the cursor by the predicate instead of branching on it.
+        return Some(match op {
+            CompareOp::Eq => keep_num_cmp(ids, data, present, |x| x == t),
+            CompareOp::Ne => keep_num_cmp(ids, data, present, |x| x != t),
+            CompareOp::Lt => keep_num_cmp(ids, data, present, |x| x < t),
+            CompareOp::Le => keep_num_cmp(ids, data, present, |x| x <= t),
+            CompareOp::Gt => keep_num_cmp(ids, data, present, |x| x > t),
+            CompareOp::Ge => keep_num_cmp(ids, data, present, |x| x >= t),
+        });
     }
     // Typed fast path: a Str column vs a Str literal compares `&str` directly — no
     // per-cell `Value` boxing. `=`/`<>` are byte equality (== `value::equals`);

@@ -2910,6 +2910,28 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   columns — cheaper to write, already covered by those arms' own oracles and mutation, and FASTER
   by item 471's measurement that N passes over one column each beat one interleaved pass (5.6 ms
   against 0.6). Separate function after the numeric entry, per item 1184.
+- **CLOSED by 1210 — the keep-list build, which was the cause behind BOTH remaining census rows:
+  `sum` under a filter 931.9 -> 240.0 us (3.88x) and a projection 1126.6 -> 437.2 (2.58x) on
+  unpredictable data, with the data-dependence ELIMINATED (both POST rows 1.01x periodic-vs-random,
+  from 3.22x and 2.33x).** The numeric keep arm in `try_filter_keep` had three costs stacked:
+  `match op` INSIDE the row loop (the loop-invariant dispatch items 451/457/459 hoisted elsewhere),
+  a `Vec::new()` with no capacity so it reallocated as it grew, and `if hit { keep.push(row) }` —
+  the data-dependent branch. The new `keep_num_cmp` takes a monomorphic closure per operator,
+  pre-sizes the buffer to the frontier, and writes the row index ALWAYS while advancing the cursor
+  by `usize::from(cmp(x))`.
+  The two `continue`s stay branches deliberately — they test the OPTIONAL-miss sentinel and the
+  presence mask, neither of which depends on the predicate's value, and folding them in would mean
+  writing a row index for a cell that must not be read.
+  Every other census row and both controls flat at 1.00x; `query_bench` flat (`filter age>50` 91.6,
+  `filtered` 91.9, controls 1.0x).
+  Mutation 5/5, all predictions correct. **The sentinel mutant is caught by a PRE-EXISTING test**
+  (`filter_over_an_optional_null_slot_drops_rather_than_panics`), as that code's own comment
+  implies, so this hot path already had cover and the new oracle corroborates rather than carries
+  it — the opposite of item 1209, where the oracle was the sole catcher.
+  ⚠️ **What remains of item 1207's census: `count` THREE bounds (2.45x, the general `Vec`-iterating
+  arm inside `try_stream_num_count`, untouched here — it does not use the keep list) and `count`
+  DICT equality (1.66x, two causes refuted at 1208 and 1209).** The branchy-path axis is otherwise
+  closed.
 - **CLOSED by 1209 for the `sum` row's DEAD WORK (1.50x periodic / 1.16x random) — but NOT for its
   branchiness, which is elsewhere; and the DICT row's second cause is refuted too.**
   `try_filtered_scan_num_agg` ran ONE loop for every aggregate: a `sum` maintained `best` through an
