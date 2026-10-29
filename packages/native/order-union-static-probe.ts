@@ -177,3 +177,23 @@ run(
   T(V(), has('name', gt('nope')), out('KNOWS', 'NOPE')),
   "g.V().has('name', gt('nope')).out('KNOWS', 'NOPE')",
 );
+
+// THE TINKERPOP CASES (item 1174). Ground truth from `gremlin-console:3.7.3` on the modern graph,
+// which settles what the reduction above could not:
+//
+//   V().order()                              [v1..v6]      TinkerPop ORDERS VERTICES
+//   V().out('nope').order()                  []            an empty stream orders to empty
+//   union(..).order()                        []
+//   FULL (union, order, skip, inE, values)   []            <- native's answer, not TS's error
+//   V().order().skip(1).inE.values           [0.5, 1.0]    <- BOTH lenke engines say E_SYNTAX
+//   V().limit(1).union(identity, values)     [29, v[1]]    orders ACROSS TYPES without faulting
+//
+// So `order()` never faults in TinkerPop for any of these. The question stops being which lenke
+// engine is right about an error and becomes: neither supports ordering ELEMENTS at all.
+run('TP1 order() over vertices', T(V(), order()), 'g.V().order()');
+run('TP2 order() over an empty stream', T(V(), out('NOPE'), order()), "g.V().out('NOPE').order()");
+run(
+  'TP5 order().skip(1).inE.values',
+  T(V(), order(), skip(1), inE('KNOWS'), values('weight')),
+  "g.V().order().skip(1).inE('KNOWS').values('weight')",
+);
