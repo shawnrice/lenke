@@ -34784,7 +34784,10 @@ failure the list exists to prevent, so the corrections live here rather than bei
 | 1162's "OPEN: the TS engine HAS this gap"                     | **1163**                | the TS percentile fold, 17.9x (4.5x end to end)                                                          |
 | 1163's "OPEN: a cross-engine `-0` divergence"                 | **1165**                | ⚠️ **RETRACTED** — it was the instrument, not the engines; rendered output agrees on every row           |
 
-**Still genuinely open**, and the ranking a reader wants:
+**Still genuinely open**, and the ranking a reader wants (⚠️ one correction already: this table shipped carrying item 1120's filtered-typed-count 6x as
+open, and **item 1167 closed it the same day** — it is a four-read-per-write transient, not a
+standing cost, and item 1120 simply predates the fix. A status pass is itself a measurement and
+can be stale on arrival):
 
 - **1116 / 1117 / 1119 — the stale-CSR typed count, re-reproduced at 85x.** The largest open target
   in the repo, and the one `CLAUDE.md` leads with: `rebuild_csr` runs only at LOAD and every
@@ -34890,3 +34893,91 @@ at degree 4 that is worth nothing measurable against PageRank's own arithmetic.
 **So "a stale overlay costs up to 24x" is a claim about TYPE-SELECTIVE reads, and reads that are
 not type-selective should not be expected to recover anything by re-arming.** That is the rule for
 pricing the next consumer of this overlay, and it is what the `algo` surface failed.
+
+## 1167 — ✅ item 1120's "standing 6x" is CLOSED and REFRAMED: it is exactly **4 stale reads per write**, by design, and here is the whole curve. ⚠️ Plus I hid the heal behind a median on my own first pass
+
+Item 1120 priced a FILTERED typed count at **6.0x** after one adjacency write and left it open as
+"the half item 1118 did not fix". It has been carried as open ever since — including through item
+1166's status pass, which missed it. **Item 1120 predates items 1121/1122**, which measured the
+rebuild's break-even (~2 reads) and shipped `rearm_if_warranted` at the query boundary with
+`REARM_AFTER = 4`. So the question was never re-asked after the fix landed.
+
+Re-asked now, on the exact shape `reverse.rs` names — 200,000 nodes / 80,000 sparse `F` edges /
+`MATCH (a)-[:F]->(b) WHERE b.age >= 77 RETURN count(*)` — **through the FFI**, which is the only
+path with the re-arm wired in. (An in-process Rust probe measures the engine WITHOUT it, which is
+why item 1120's number reads as permanent: its instrument could not see the fix that did not yet
+exist.)
+
+### The PER-READ series, which is where a heal is visible and an aggregate is not
+
+```text
+  FRESH baseline    0.3 ms      answer 19172
+  cycle 1 reads 1..12:  2.3  1.7  1.7  3.7  0.3  0.3  0.3  0.3  0.3  0.3  0.3  0.3
+  cycle 2 reads 1..12:  3.2  2.3  1.8  3.9  0.3  0.3  0.3  0.3  0.3  0.3  0.3  0.3
+```
+
+Reads 1-3 pay the stale cost (~6x, reproducing item 1120's 1556.9us against 257.9us almost
+exactly). **Read 4 pays the stale cost PLUS the rebuild** — the 3.7/3.9 spike, so the rebuild is
+~2 ms here, consistent with item 1121's "a rebuild costs ~2x one stale read". Read 5 onward is back
+at the baseline to the decimal, and cycle 2 reproduces the whole step, so the heal re-arms per
+write rather than once per session.
+
+### The whole curve, which nobody had measured
+
+```text
+  reads/write    mean      x baseline   % of reads at baseline      (baseline 0.28 ms)
+       1        1.67 ms       6.0x            0%
+       2        1.66          6.0x            0%
+       4        2.03          7.3x            0%
+       8        1.18          4.3x           50%
+      16        0.72          2.6x           75%
+      32        0.45          1.6x           88%
+      64        0.33          1.2x           94%
+```
+
+The baseline is a MEDIAN of nine reads, and that detail earned itself: with a single sample as the
+denominator the ratio column wobbled run to run (5.1x against 6.0x for the same mean) while the
+`% at baseline` column was bit-identical across rounds — the giveaway that the noise was in the
+divisor, not the measurement. Fixing it was cheaper than writing the caveat. Stable across three
+rounds afterwards: 1.52/1.54/1.52 ms at ratio 1, 0.64/0.65/0.65 at 16, 0.33/0.33/0.35 at 64.
+
+The `% at baseline` column makes the mechanism legible: **exactly four reads per write are stale**,
+so the healed fraction is `(ratio - 4) / ratio` — 50% at 8, 75% at 16, 88% at 32, 94% at 64, which
+is what the column reads. The mean follows it down to the baseline.
+
+**So item 1120's 6x is real and is not standing.** It is a fixed four-read transient per write. At
+≤4 reads per write the re-arm deliberately never fires and the full ~5x applies; by ~64 reads per
+write the shape is at its fresh cost. This is the DESIGNED trade, not a defect: item 1121 measured a
+rebuild at ~2x a stale read, so rebuilding to serve one or two reads loses, and `REARM_AFTER = 4`
+is that break-even plus margin. Item 1122 stated the same boundary from the other side ("nothing
+measurable below five") as a limit on its win; this states it as the cost it is, per ratio.
+
+### ⚠️ I hid the heal behind a median, in the exact way the house rules warn about
+
+The first version of the ratio table reported a MEDIAN and read **5.8-6.1x at every ratio from 1 to
+8** — i.e. it said the re-arm does nothing, while the per-read series printed six lines above it
+showed the step plainly.
+
+The cause is that each cycle is **bimodal by construction**: four stale reads then `ratio - 4` fast
+ones. At a ratio of 8 that is exactly 50/50, so the median sits on the boundary and returns the
+SLOW mode. _"Print the per-rep series before trusting any summary of it"_ is in `CLAUDE.md` for
+precisely this, and the tell was in the output: **a summary that does not move when the thing it
+summarizes does.** 5.8, 5.9, 6.1, 5.8 across a ratio sweep is not a measurement, it is a constant.
+
+Amortized cost per read IS the mean, and it is also the decision-relevant number — what a workload
+at that ratio actually pays. The `% at baseline` column was added at the same time so the shape is
+legible without trusting any single statistic.
+
+### What is left, and its price is now exact
+
+The four stale reads per write exist because a whole-graph rebuild is `O(E + types x N)` for a
+one-edge write. **Incremental per-type CSR maintenance** — item 852's "only undisproven design" —
+would make the update cheap enough to apply eagerly and remove the transient entirely. Its prize is
+now quantified rather than asserted: **~5x on workloads at ≤4 reads per write, decaying as
+`(ratio - 4) / ratio` and worth nothing past ~64.** A design whose benefit is concentrated at low
+read-per-write ratios should be priced against a fixture at those ratios, which is what this table
+is for.
+
+Note for anyone quoting `CLAUDE.md`'s serving-path figure: "interleaving a write with a traversal
+already costs ~2.5x" and the up-to-24x type-selectivity figure are both about the STALE read. This
+table is the orthogonal axis — how many reads per write — and the two multiply.
