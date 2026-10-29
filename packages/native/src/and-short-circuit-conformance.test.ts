@@ -356,4 +356,70 @@ suite('AND short-circuit: the TS and native engines agree', () => {
     expect(agree("MATCH (n:P) RETURN (n.zz = 'a' AND n.s) AS x")).toBe('ERR E_INVALID_VALUE');
     expect(agree('MATCH (n:P) RETURN (n.s AND n.n = 99) AS x')).toBe('ERR E_INVALID_VALUE');
   });
+
+  // ⚠️ OPEN DIVERGENCE, PINNED RATHER THAN DECLARED (item 1226). Found by the differential fuzzer
+  // drawing a random seed in CI (FUZZ_SEED=2382646283), at roughly 1 per 120,000 generated
+  // queries. PRE-EXISTING: the same seed fails identically with `fastpath.rs` restored to
+  // `87052afe`, so items 1219-1225 are not the cause.
+  //
+  // The MECHANISM is this file's own subject: TS keeps only a clean TRUE, so the UNKNOWN conjunct
+  // (`x.m.absent > 'Infinity'`) settles the row and the raising sibling is never evaluated, while
+  // native evaluates it and raises. ISO US008/UA004 make both conformant.
+  //
+  // WHAT IS NEW is the OPTIONAL MATCH. It preserves the outer rows with NULLs, so the TS side is
+  // NON-EMPTY — and `divergence-registry.ts`'s one entry is deliberately narrow to "an
+  // `E_INVALID_VALUE` against an EMPTY result, never against rows", with the header stating that an
+  // error against a non-empty result "is a different thing entirely and is NOT covered here".
+  // So the fuzzer fails rather than accepting it, which is the registry working as designed.
+  //
+  // NOT DECLARED HERE EITHER, because declaring it is a product decision: the rows TS returns are
+  // CORRECT (the optional part legitimately matches nothing and contributes only nulls), so the
+  // divergence still cannot produce wrong DATA — but widening the entry to "an error against a
+  // result whose optional part contributed nothing" is a conformance call, and that file's header
+  // says to record the reasoning in the audit first. This test records the behaviour so it cannot
+  // change silently in the meantime.
+  test('OPEN: an OPTIONAL hop makes the TS side NON-EMPTY, so the known fault divergence is not registry-covered (item 1226)', () => {
+    const q =
+      "MATCH (t:P) OPTIONAL MATCH (t)-[:E]->(x WHERE ((x.m.absent > 'Infinity') AND (('a' - 100) IS UNKNOWN))) RETURN t.n AS a, x.n AS b ORDER BY a, b";
+
+    // Each side asserted SEPARATELY and on purpose: `agree` would assert equality, and the point
+    // of this case is that they do not agree yet.
+    expect(outcome('ts', q)).toBe('ok [{"a":1,"b":null}|{"a":2,"b":null}|{"a":3,"b":null}]');
+    expect(outcome('native', q)).toBe('ERR E_INVALID_VALUE');
+
+    // THE BOUND, and it is what makes the mechanism legible: with NO candidate at the far end the
+    // two AGREE, because neither engine evaluates a predicate it never reaches. So the divergence
+    // needs a real candidate AND an optional hop — not merely an optional hop.
+    expect(
+      outcome(
+        'ts',
+        "MATCH (t:P) OPTIONAL MATCH (t)-[:NOSUCH]->(x WHERE ((x.m.absent > 'Infinity') AND (('a' - 100) IS UNKNOWN))) RETURN t.n AS a, x.n AS b ORDER BY a, b",
+      ),
+    ).toBe(
+      outcome(
+        'native',
+        "MATCH (t:P) OPTIONAL MATCH (t)-[:NOSUCH]->(x WHERE ((x.m.absent > 'Infinity') AND (('a' - 100) IS UNKNOWN))) RETURN t.n AS a, x.n AS b ORDER BY a, b",
+      ),
+    );
+
+    // AND THE REGISTRY-COVERED TWIN, for contrast: the same predicate on a PLAIN match leaves the
+    // TS side EMPTY, which is exactly the shape the one registry entry admits.
+    const plain =
+      "MATCH (t:P)-[:E]->(x WHERE ((x.m.absent > 'Infinity') AND (('a' - 100) IS UNKNOWN))) RETURN t.n AS a ORDER BY a";
+
+    expect(outcome('ts', plain)).toBe('ok []');
+    expect(outcome('native', plain)).toBe('ERR E_INVALID_VALUE');
+  });
+
+  // ⚠️ A SEPARATE GAP, found while minimising the above (item 1226): a clause `WHERE` attached to
+  // an OPTIONAL MATCH is NOT IMPLEMENTED in the Rust engine, where the TS engine answers it. That
+  // is not an evaluation-order difference at all — it is a missing feature, and it is recorded here
+  // because the minimisation walked into it and nothing else pins it.
+  test('OPEN: a clause WHERE on an OPTIONAL MATCH is unimplemented in the Rust engine (item 1226)', () => {
+    const q =
+      "MATCH (t:P) OPTIONAL MATCH (t)-[:E]->(x) WHERE ((x.m.absent > 'Infinity') AND (('a' - 100) IS UNKNOWN)) RETURN t.n AS a, x.n AS b ORDER BY a, b";
+
+    expect(outcome('ts', q)).toBe('ok [{"a":1,"b":null}|{"a":2,"b":null}|{"a":3,"b":null}]');
+    expect(outcome('native', q)).toBe('ERR E_NOT_IMPLEMENTED');
+  });
 });
