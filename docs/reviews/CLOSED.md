@@ -38822,3 +38822,48 @@ never applying, PAGING admitted (which would slice before sorting), and an unres
 taking the first output column.
 
 Gates: 21 projects green, all seven byte-identity fuzzers green, `bun run check` 0.
+
+### Item 1251 — `ORDER BY … LIMIT` over unbounded reachability: the gap item 1250 recorded, closed, and its pinned test FLIPPED (DONE)
+
+Item 1250 admitted `ORDER BY` on `detectReachableShortcut` but declined a WINDOW, for a correctness
+reason: `runReach` applies `skip`/`limit` itself, so a sort layered on its output would slice BEFORE
+ordering and return the wrong rows. That left the top-N-reachable shape — the most natural query of
+the family — still throwing:
+
+```text
+  ... RETURN DISTINCT x.n AS n LIMIT 5                  OK     5 rows
+  ... RETURN DISTINCT x.n AS n ORDER BY n LIMIT 5       THROW  E_RESOURCE_EXHAUSTED
+```
+
+The window is now ordered FIRST and sliced SECOND: `specWindow` hands the spec NO window when a
+sort is active, and `reachSortApplier` does both in that order. All three forms answer — `LIMIT`,
+`DESC LIMIT`, and `OFFSET … LIMIT` — and the first five are the five SMALLEST rather than the first
+five the BFS happened to reach.
+
+**A PARAMETERIZED window works rather than declining**, which is the one design choice worth stating:
+`LIMIT $k` cannot be resolved when the shape is COMPILED because the value lives in `params`, and
+`outputColumnSorts` declines exactly that case for exactly that reason. But this sort runs inside
+the per-QUERY closure, where `params` exist, so `resolveCount(limit, params)` resolves it there.
+Declining would have sent it back to the general path, which THROWS on an unbounded pattern — so
+the choice is between resolving at run time and leaving a parameterized top-N broken.
+
+### ⚠️ THE PINNED TEST FLIPPED, which is what the pin was for
+
+Item 1250 wrote `expect(() => …).toThrow()` for the window case and said in the audit that a future
+fix would have "an assertion that must flip rather than a comment to notice." Applying this change
+made that test FAIL — the query stopped throwing — and the test now asserts the sorted, sliced
+answer. **A recorded gap with a failing assertion attached is worth more than a TODO**, and this is
+the first time in this run that mechanism has paid off.
+
+### Teeth
+
+Three mutants, all caught, and the first is the wrong-answer risk this change introduces:
+`slice-before-sort` (the spec pages itself again, so `runReach` slices before the order exists),
+`window-ignored` (the slice is dropped after sorting, so `LIMIT` returns everything), and
+`offset-ignored`. The `LIMIT 5` case asserts the five smallest, so slicing the BFS-order prefix
+fails rather than passing with five plausible rows.
+
+`detectReachableShortcut` hit 36 of the 35 complexity cap again, and `specWindow` is the extraction
+— the fourth time in this run that cap has pushed back and been right.
+
+Gates: 21 projects green, all seven byte-identity fuzzers green, `bun run check` 0.

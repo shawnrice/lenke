@@ -95,13 +95,35 @@ describe('ORDER BY over unbounded reachability (item 1250)', () => {
     ).toThrow();
   });
 
-  test('⚠️ ORDER BY with a WINDOW still declines, and still throws — the recorded gap', () => {
-    // `runReach` applies `skip`/`limit` ITSELF, so a sort layered on its output would slice BEFORE
-    // ordering and return the WRONG ROWS. Declining is therefore correct, not lazy — but it leaves
-    // the top-N-reachable shape erroring, which is the most natural query of this family. Pinned so
-    // the gap is visible and so a future fix has a test that must FLIP.
-    expect(() =>
+  test('ORDER BY with a WINDOW is ordered FIRST and sliced second (item 1251)', () => {
+    // ⚠️ THIS TEST WAS WRITTEN AT ITEM 1250 ASSERTING A THROW, and item 1251 FLIPPED it. That is
+    // what the pin was for: a recorded gap with an assertion that must change, rather than a
+    // comment someone has to notice.
+    //
+    // The slice must come AFTER the order, so the first five are the five SMALLEST — not the first
+    // five the BFS happened to reach, which is what the unordered spelling returns.
+    expect(
       query(graph(), 'MATCH (a:P)-[:T]->*(x) RETURN DISTINCT x.n AS n ORDER BY n LIMIT 5'),
-    ).toThrow();
+    ).toEqual([{ n: 0 }, { n: 1 }, { n: 2 }, { n: 3 }, { n: 4 }]);
+
+    expect(
+      query(graph(), 'MATCH (a:P)-[:T]->*(x) RETURN DISTINCT x.n AS n ORDER BY n DESC LIMIT 3'),
+    ).toEqual([{ n: 399 }, { n: 398 }, { n: 397 }]);
+
+    // OFFSET too, and the order still comes first.
+    expect(
+      query(graph(), 'MATCH (a:P)-[:T]->*(x) RETURN DISTINCT x.n AS n ORDER BY n OFFSET 2 LIMIT 2'),
+    ).toEqual([{ n: 2 }, { n: 3 }]);
+  });
+
+  test('a PARAMETERIZED window resolves at run time rather than declining (item 1251)', () => {
+    // `LIMIT $k` cannot be resolved when the shape is compiled — the value lives in `params` — so
+    // `resolveCount` is called inside the per-query closure. Declining instead would have put this
+    // back on the general path, which THROWS on an unbounded pattern.
+    expect(
+      query(graph(), 'MATCH (a:P)-[:T]->*(x) RETURN DISTINCT x.n AS n ORDER BY n LIMIT $k', {
+        k: 3,
+      }),
+    ).toEqual([{ n: 0 }, { n: 1 }, { n: 2 }]);
   });
 });

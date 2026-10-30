@@ -7779,6 +7779,22 @@ const keyedClausePred = (
 };
 
 /**
+ * The window the `ReachSpec` may apply itself — NONE when a sort is active (item 1251).
+ *
+ * ⚠️ `runReach` slices its own output, so with an `ORDER BY` in play it would drop rows BEFORE the
+ * order was established and return the wrong ones. `reachSortApplier` does both, in that order, so
+ * the spec must be handed no window at all.
+ *
+ * Its own function because admitting the sort pushed `detectReachableShortcut` to 36 of the 35
+ * complexity cap; the cap has been right in this file every time it has pushed back.
+ */
+const specWindow = (
+  projection: { skip?: CountValue; limit?: CountValue },
+  ordered: boolean,
+): { skip: CountValue; limit?: CountValue } =>
+  ordered ? { skip: 0 } : { skip: projection.skip ?? 0, limit: projection.limit };
+
+/**
  * `ORDER BY` for the REACHABILITY rung, resolved to its own output columns (item 1250).
  *
  * ⚠️ THIS ONE IS NOT A SLOWDOWN, IT IS AN ERROR. `detectReachableShortcut` refused every
@@ -7803,24 +7819,23 @@ const keyedClausePred = (
  * `outputColumnSorts` matches names ONLY, and item 1062 measured the asymmetry that creates at
  * 3.8x — here it would be answer-versus-error, which is worse than 3.8x.
  *
- * ⚠️ PAGING DECLINES, and that is a correctness boundary rather than caution: `runReach` applies
- * `skip`/`limit` ITSELF, so a sort layered on top of its output would slice BEFORE ordering and
- * return the wrong rows. Ordering with a window needs the slice moved inside, which is a different
- * change and is not made here.
+ * ⚠️ A WINDOW IS ORDERED FIRST AND SLICED SECOND (item 1251), which is why the caller must keep
+ * `skip`/`limit` OUT of the `ReachSpec` whenever a sort is active: `runReach` applies them itself,
+ * and a sort layered on top of its output would slice BEFORE ordering and return the WRONG ROWS.
+ * Item 1250 declined that case for exactly this reason and left `ORDER BY … LIMIT` — the top-N
+ * reachable shape, the most natural query of the family — still THROWING. The slice is resolved
+ * here instead, through `resolveCount` against `params`, so a PARAMETERIZED window (`LIMIT $n`)
+ * works rather than declining: this runs per QUERY, where params exist, not at compile time.
  */
 const reachSortApplier = (
   ret: Extract<Clause, { kind: 'return' }>,
   cols: readonly CReturnItem[],
   exprs: readonly Expr[],
-): ((rows: Row[]) => Row[]) | null => {
+): ((rows: Row[], params: Params) => Row[]) | null => {
   const keys = ret.projection.orderBy ?? [];
 
   if (keys.length === 0) {
     return (rows) => rows;
-  }
-
-  if (ret.projection.skip !== undefined || ret.projection.limit !== undefined) {
-    return null;
   }
 
   const names = new Set(cols.map((c) => c.name));
@@ -7845,8 +7860,16 @@ const reachSortApplier = (
   }
 
   // At most one row per REACHED node, which is at most the graph — and far less than the trails
-  // the general path was enumerating to answer the same question.
-  return (rows) => sortGroupRows(rows, out);
+  // the general path was enumerating to answer the same question. The window is applied HERE, so
+  // the order is established before anything is dropped.
+  const { skip, limit } = ret.projection;
+
+  return (rows, params) =>
+    sortRowsByColumns(rows, {
+      sorts: out,
+      skip: resolveCount(skip ?? 0, params) ?? 0,
+      limit: resolveCount(limit, params),
+    });
 };
 
 /**
@@ -9960,6 +9983,7 @@ export const detectReachableShortcut = (
     return null;
   }
 
+  const ordered = (projection.orderBy?.length ?? 0) > 0;
   const spec: ReachSpec = {
     cstart: cm.patterns[0].start,
     items: cret.projection.items,
@@ -9970,8 +9994,7 @@ export const detectReachableShortcut = (
     minZero: q.min === 0,
     isCount: count !== null,
     countArg: count?.countArg,
-    skip: projection.skip ?? 0,
-    limit: projection.limit,
+    ...specWindow(projection, ordered),
   };
 
   const applySort = reachSortApplier(
@@ -9984,7 +10007,7 @@ export const detectReachableShortcut = (
     return null;
   }
 
-  return (graph, params) => applySort(runReach(spec, graph, params));
+  return (graph, params) => applySort(runReach(spec, graph, params), params);
 };
 
 /**
