@@ -42436,3 +42436,60 @@ Gates: 3259 gql tests green, 17 in the cross-engine AND file at 175 assertions (
 21 projects green, all seven byte-identity fuzzers green, `bun run lint` 0, `bun run typecheck` 0,
 `bun run check` 0. One extraction (`typedTestsHold`) forced by `satisfies`' complexity cap, the
 sixth across items 1284-1298.
+
+### Item 1299 — item 1298's surviving mutant is PROVEN unreachable, and the reason closes a three-way consistency chain (correction: inference replaced by mechanism)
+
+Item 1298 shipped the `IS TYPED` lift with 6 of 7 mutants caught. The survivor was
+`merge-drops-family` — dropping `typedTests` from `mergeFarPreds` — and that item said plainly: "I
+did not verify non-reachability directly; the inference is from the mutant's own behaviour." This is
+that verification, and the inference was right for a better reason than it knew.
+
+### Two structural facts, either of which alone is decisive
+
+**1. `splitFarConjuncts` requires a conjunct LEFT BEHIND.** It returns `undefined` when
+`rest.length === 0`, with its own note: "Nothing to hoist, or nothing left behind — the second is
+item 781's whole-clause lift". Item 1298's hop test has exactly ONE clause conjunct, all far-only,
+so it takes item 781's path and never enters `mergeFarPreds` at all. That explains the survival but
+not whether the line is reachable by some OTHER query.
+
+**2. `truthCannotRaise` does not admit `isTyped`, and must not.** The far bucket is gated on it, and
+it admits only `lit` (boolean/null), `property_exists`, `isLabeled`, `isNull` (when its value cannot
+raise) and `isTruth` — the last **only** for the `IS [NOT] UNKNOWN` form. There is no `isTyped` arm,
+so an `IS TYPED` conjunct can never reach the far bucket, from any query. **The merge line is
+unreachable, structurally, and `mergeFarPreds` cannot be given a `typedTests` list today.**
+
+### ⚠️ AND IT MUST STAY THAT WAY — the three facts are one fact
+
+The `isTruth` arm carries the reason, in its own words: it admits only `IS UNKNOWN` "because that is
+the only one the engine's key admits — and the ordering key has to be the SAME key, in BOTH
+directions. A first version of this arm returned `valueCannotRaise(e.expr)` for all three truth
+values and introduced TWO NEW divergences."
+
+So the chain closes:
+
+```text
+  item 1297  the ENGINE hoists no form of IS TYPED            (measured against native)
+  item 1298  so TS applies it in the LATE group, after truthProps
+  item 1299  so `truthCannotRaise` must NOT admit it          (the key is the same key)
+             so it never reaches the far bucket
+             so `mergeFarPreds`' typedTests line is unreachable
+```
+
+Three independent-looking facts in three files are the same fact, and adding `isTyped` to
+`truthCannotRaise` to "fix" the surviving mutant would reintroduce precisely the divergence the
+`isTruth` arm records paying for once already. **The survivor is correct behaviour, not a gap**, and
+the merge line is a correctness precondition for the day the engine's key changes — the same
+disposition `mergeFarPreds` records for `truthProps`/`notTruthProps`, which survive their own
+mutants for their own reasons.
+
+### What this is worth as method
+
+Item 1298's inference ("the test still answers 1, so the filter arrives another way") was sound and
+reached the right conclusion from one observation. The mechanism is better, because it answers a
+question the inference could not: whether ANY query reaches the line. An inference from a mutant's
+behaviour bounds what that mutant saw; only the gate tells you what the code admits.
+
+Labelling a survivor is cheap and leaving it unlabelled is how a later pass "fixes" it. This one now
+carries its reason in the entry and the chain that makes it load-bearing.
+
+Gates: no code change. `bun run check` 0.
