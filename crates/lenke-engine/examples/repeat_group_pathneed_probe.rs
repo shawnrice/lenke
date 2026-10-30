@@ -46,6 +46,10 @@ fn main() {
             "MATCH ((a)-[:KNOWS]->(b)){1,2} RETURN size(b) AS k",
         ),
         (
+            "nested group + path (item 1236 question)",
+            "MATCH p = ((x)-[:KNOWS]->(m)<-[:KNOWS]-(y)){1,2} RETURN path_length(p) AS len",
+        ),
+        (
             "[CTL] varlen + path (marked before this change)",
             "MATCH p = (x:Person)-[:KNOWS]->{1,2}(y) RETURN path_length(p) AS len",
         ),
@@ -61,15 +65,31 @@ fn main() {
         } else {
             "no path_need in plan"
         };
-        let op = if s.contains("RepeatGroup") {
-            "RepeatGroup"
-        } else if s.contains("VarLength") {
-            "VarLength"
-        } else {
-            "other"
-        };
+        // ⚠️ NAME EVERY path-producing operator, not two of them. The first version of this
+        // classifier knew only RepeatGroup and VarLength, so a NestedGroup printed as "other" —
+        // which reads as "no operator" rather than "an operator I did not list". Item 1218 lost a
+        // tick to a column whose label had stopped being true.
+        let op = [
+            "RepeatGroup",
+            "NestedGroup",
+            "VarLength",
+            "ShortestPath",
+            "Trail",
+        ]
+        .iter()
+        .find(|n| s.contains(**n))
+        .copied()
+        .unwrap_or("none of the known producers");
 
         println!("  {what:<48} {op:<12} {marked}");
+
+        // ⚠️ THE PLAN SHAPE AND A SAMPLE VALUE, because `nested.rs` contains no `Lineage` at all:
+        // either the path is built somewhere else, or `path_length(p)` is answering with nulls and
+        // the question is a CONFORMANCE one rather than a performance one. A substring search for
+        // an operator name cannot tell those apart.
+        if std::env::var_os("PROBE_PLAN").is_some() {
+            println!("      plan: {}", &s[..s.len().min(260)]);
+        }
     }
 
     println!("\n  --- COST ---");
