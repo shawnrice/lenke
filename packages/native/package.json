@@ -35,6 +35,7 @@
     "bench": "bun bench.ts",
     "bench:usage": "bun bench-usage.ts",
     "spelling": "bun spelling-probe.ts",
+    "seek": "bun seek-match-probe.ts",
     "delete:width": "bun delete-width-probe.ts",
     "addedge:cost": "bun addedge-cost-probe.ts",
     "bench:gremlin": "bun bench-gremlin.ts",
