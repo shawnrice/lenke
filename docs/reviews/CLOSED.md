@@ -41600,3 +41600,110 @@ a function-call operand and an arithmetic operand.
 
 Gates: 3238 gql tests green (up from 3231), 17 in the cross-engine AND file, 21 projects green, all
 seven byte-identity fuzzers green, `bun run lint` 0, `bun run typecheck` 0, `bun run check` 0.
+
+### Item 1289 — `IS LABELED` lifts, 1.94x; the lifted-family pattern hit its structural limit; and TWO mutants survived first (DONE)
+
+Item 1288 priced this at 2.61x and had already measured the engine's hoisting for it, so the
+measurement work was done and this item is the build. It is the ninth lifted family and the first
+with no `key`.
+
+### ⚠️ THE FIRST FAMILY WHOSE SUBJECT IS THE ELEMENT, NOT A PROPERTY
+
+Every other lifted family reads `propOf(element, key)`. `IS LABELED` reads `element.labels`, so
+`CLabelTest` carries no key and `liftLabelTest` is the only arm in `directEqProps`' loop that matches
+a `var` rather than a `prop`. It is total and non-raising — `case 'isLabeled'` yields
+`isElement(el) ? labelsMatch(el.labels, label) : false`, a plain boolean — and the whole `LabelExpr`
+is carried rather than a name, so `P | Q`, `P & Q` and `!P` go through the same `labelsMatch` the
+generic arm uses.
+
+```text
+  shape                                  pre      post     three alternated rounds
+  typed    (n:P) WHERE n IS LABELED P   4.53 ->  2.33      1.94x, consistent 3/3
+  untyped  (n)   WHERE n IS LABELED P   9.85 ->  5.38      1.83x in 2 of 3 — see below
+  [CTL] (n) WHERE n.a >= 0              3.72 ->  3.96      flat
+  [CTL] (n:P) WHERE n.a >= 0            1.56 ->  1.48      flat
+  [CTL] bare count                      0.00 ->  0.00      flat
+```
+
+The claim is **1.9x** on the typed shape, which is clean in every round. Both spellings are measured
+rather than one standing for the other, because item 1283 established that a VACUOUS label is
+dropped by a pre-pass and can change the rung.
+
+### ⚠️ THE UNTYPED SHAPE IS BIMODAL, AND A MEDIAN HID IT
+
+The first A/B read the post arm at 2.376 / 5.398 / 9.330 across three rounds of the identical
+binary, and the untyped row had two of three post rounds SLOWER than every pre round. On that data
+there is no win to claim, and I nearly recorded one.
+
+Printing the PER-REP SERIES settled it — the trap this repo records for the TS per-row path, where
+"a median hid a bimodal series" and "`nullif` swings between a ~45 and a ~82 mode inside one
+process":
+
+```text
+  pre   34.8 16.7 12.0 11.8 16.7 10.9 10.6 10.0 9.8 9.5 9.6 9.5 9.4 9.2
+  post  26.8 13.7  8.1  8.0  7.8  5.4  5.2  5.6 5.2 5.1 5.1 5.0 5.0 4.9
+```
+
+Both arms tier down and converge — pre at ~9.2-9.7, post at ~4.9-5.4 — so the gap is real. The
+earlier scatter was **machine load from the concurrent mutation builds**, which is a measurement
+hazard worth naming: do not run an A/B while a build or a mutation sweep is running on the same box.
+Even so, one later round still read 11.89 against pre's 11.19, so the bimodality is recorded rather
+than averaged away: the ROUTE is deterministic (a compile-time decision, pinned by the route test),
+so the variance is runtime and not a sometimes-missing lift.
+
+### The pattern hit its structural limit, and `mergeFarPreds` got better for it
+
+Adding the ninth family took THREE functions over the complexity cap at once — `directEqProps`,
+`satisfies` and `mergeFarPreds`. That is the signal that the repetition had become load-bearing in
+the wrong way.
+
+`mergeFarPreds` spelled out the same three-line ternary nine times ("both undefined -> omit, else
+concat"). One `mergeList` helper replaces all nine, each family keeping its own comment — which is
+what matters there, since forgetting a family is the silent-SUPERSET failure item 901 named. A tenth
+family is now one line instead of three plus a complexity budget.
+
+`directEqProps` and `satisfies` got extractions instead (`liftLabelTest`, `liftMembership`,
+`labelTestsHold`), matching `liftNullTest`/`liftTruthTest`. **`satisfies` was deliberately NOT
+restructured into a list of appliers**, which is the obvious way to stop paying a branch per family:
+it is the hottest function in this file, and a per-family dynamic dispatch per element is exactly
+the shape this repo has measured as a regression elsewhere. Recorded as a known structural cost, not
+fixed by making the hot path polymorphic.
+
+### Teeth: 6 mutants, 6 caught — but TWO SURVIVED the first run
+
+```text
+  negated-ignored        CAUGHT  the ROUTE test
+  never-rejects          CAUGHT  11 failures
+  sense-inverted         CAUGHT  13 failures
+  arm-declines           CAUGHT  the ROUTE test (answer-equivalent otherwise)
+  haspredicate-blind     SURVIVED all 4,200 tests -> then CAUGHT
+  merge-drops-family     SURVIVED all 4,200 tests -> then CAUGHT
+```
+
+Both survivors were real gaps in my own tests, and each needed a different fix:
+
+- **`haspredicate-blind`** removes `labelTests` from `hasPredicate`, which is the item 277 class — a
+  gate asking "is this node constrained?" then sees nothing. No query in the file reached such a
+  gate, including the `EXISTS { MATCH (n WHERE …) }` case written for exactly that purpose. The
+  sibling lift tests all carry an explicit `expect(hasPredicate(pred)).toBe(true)`, and item 1269's
+  own note says that assertion is what catches theirs. Added, plus a product-count case that pins
+  the ANSWER side (an unconstrained factor is answered from a bucket SIZE).
+- **`merge-drops-family`** drops the family from the far-hop merge. My hop test never entered
+  `mergeFarPreds` at all: that function merges an INLINE far constraint with the lifted clause
+  predicate, and my query had no inline half. `null-props-lift.test.ts`'s merge case carries
+  `{s: 'xx'}` for precisely this reason. Rewritten with an inline `{nm: 'x'}` on the far node and
+  two far nodes that satisfy it, only one satisfying the clause — so a dropped list answers 2 where
+  1 is right.
+
+Two mutants also APPLY-FAILED on the first run, because the label loop had moved into
+`labelTestsHold` between writing the script and running it. The assertion refused to write rather
+than mutating nothing and reporting a pass.
+
+### Still open
+
+The dotted negated compare at **1.83x** (item 1288's number, against the dotted positive form), and
+unpriced: `graphPred`, `isTyped`, `letIn`, `xor`, a function-call operand, an arithmetic operand.
+
+Gates: 3246 gql tests green (up from 3238), 17 in the cross-engine AND file with the `IS LABELED`
+hoisting case added, 21 projects green, all seven byte-identity fuzzers green, `bun run lint` 0,
+`bun run typecheck` 0, `bun run check` 0.

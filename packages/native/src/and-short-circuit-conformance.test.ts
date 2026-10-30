@@ -265,6 +265,14 @@ suite('AND short-circuit: the TS and native engines agree', () => {
     // `not3` of a membership cannot raise, and the engine hoists it. The tail is FALSE for every
     // row here, which is what makes the line informative rather than vacuous.
     expect(agree('MATCH (n:P) WHERE n.s AND n.n NOT IN [1, 2, 3] RETURN n.n AS x')).toBe('ok []');
+    // `IS LABELED` joined the lifted families at item 1289 and is in the same hoisted group: it is
+    // total (`isElement(el) ? labelsMatch(...) : false`) and the engine hoists it. `Q` is not one of
+    // this fixture's labels, so the tail is FALSE for every row — which is what makes it
+    // informative; the `P` spelling below is TRUE and settles nothing, so it must still raise.
+    expect(agree('MATCH (n:P) WHERE n.s AND n IS LABELED Q RETURN n.n AS x')).toBe('ok []');
+    expect(agree('MATCH (n:P) WHERE n.s AND n IS LABELED P RETURN n.n AS x')).toBe(
+      'ERR E_INVALID_VALUE',
+    );
     // CONTROL: a tail that is TRUE settles nothing, so the raising sibling stays essential.
     expect(agree('MATCH (n:P) WHERE n.s AND n.n NOT IN [99] RETURN n.n AS x')).toBe(
       'ERR E_INVALID_VALUE',

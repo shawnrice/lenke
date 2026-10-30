@@ -512,7 +512,8 @@ const liftFarOnlyClause = (where: Expr, farVar: string): CPredicate | undefined 
     (lifted.pathProps?.length ?? 0) > 0 ||
     (lifted.memberProps?.length ?? 0) > 0 ||
     (lifted.nullProps?.length ?? 0) > 0 ||
-    (lifted.truthTestProps?.length ?? 0) > 0
+    (lifted.truthTestProps?.length ?? 0) > 0 ||
+    (lifted.labelTests?.length ?? 0) > 0
     ? lifted
     : undefined;
 };
@@ -527,28 +528,35 @@ const liftFarOnlyClause = (where: Expr, farVar: string): CPredicate | undefined 
  * that has one: `satisfies` evaluates `where` LAST, so there is no way to keep it ahead of a
  * lifted clause conjunct. Dropping it silently would answer a different question.
  */
+/**
+ * Concatenate two optional lifted-predicate lists, or `undefined` when neither side has one.
+ *
+ * ⚠️ ONE MECHANISM FOR NINE FAMILIES (item 1289). Each family used to spell this out as its own
+ * three-line ternary, and adding the ninth took this function over the complexity cap — which is
+ * the signal that the repetition was load-bearing in the wrong way. The per-family COMMENTS are
+ * what matter here and they stay; only the mechanism is shared.
+ *
+ * Forgetting a family is the silent-SUPERSET failure item 901 named: a dropped list simply does not
+ * filter, and no correctness test on a count would see it. With one helper there is one place to
+ * get it right, and a new family is one line.
+ */
+const mergeList = <T>(
+  a: readonly T[] | undefined,
+  b: readonly T[] | undefined,
+): readonly T[] | undefined =>
+  a === undefined && b === undefined ? undefined : [...(a ?? []), ...(b ?? [])];
+
 const mergeFarPreds = (inline: CPredicate, clause: CPredicate): CPredicate => ({
   props: inline.props,
-  ...(inline.eqProps === undefined && clause.eqProps === undefined
-    ? {}
-    : { eqProps: [...(inline.eqProps ?? []), ...(clause.eqProps ?? [])] }),
-  ...(inline.cmpProps === undefined && clause.cmpProps === undefined
-    ? {}
-    : { cmpProps: [...(inline.cmpProps ?? []), ...(clause.cmpProps ?? [])] }),
+  eqProps: mergeList(inline.eqProps, clause.eqProps),
+  cmpProps: mergeList(inline.cmpProps, clause.cmpProps),
   // `memberProps` merged for the reason the `truthProps` note below gives, and it is the half of
   // item 1269 that could be a WRONG ANSWER rather than a slow one: a dropped list returns a
   // SUPERSET, and no correctness test on a count would see it.
-  ...(inline.memberProps === undefined && clause.memberProps === undefined
-    ? {}
-    : { memberProps: [...(inline.memberProps ?? []), ...(clause.memberProps ?? [])] }),
-  ...(inline.truthTestProps === undefined && clause.truthTestProps === undefined
-    ? {}
-    : {
-        truthTestProps: [...(inline.truthTestProps ?? []), ...(clause.truthTestProps ?? [])],
-      }),
-  ...(inline.nullProps === undefined && clause.nullProps === undefined
-    ? {}
-    : { nullProps: [...(inline.nullProps ?? []), ...(clause.nullProps ?? [])] }),
+  memberProps: mergeList(inline.memberProps, clause.memberProps),
+  labelTests: mergeList(inline.labelTests, clause.labelTests),
+  truthTestProps: mergeList(inline.truthTestProps, clause.truthTestProps),
+  nullProps: mergeList(inline.nullProps, clause.nullProps),
   // `truthProps` is merged here because forgetting it would be the exact failure `hasPredicate`'s
   // doc records: a dropped predicate list returns a SUPERSET, and no correctness test on a
   // fixture lacking the spelling can see it. Added with the list itself (item 875) rather than
@@ -564,20 +572,14 @@ const mergeFarPreds = (inline: CPredicate, clause: CPredicate): CPredicate => ({
   // suite and `clause.truthProps` is `undefined` every time, and three hand-built inline spellings
   // did not enter it at all. So this is a correctness precondition kept live for when the lift
   // widens, not a line any current query depends on.
-  ...(inline.truthProps === undefined && clause.truthProps === undefined
-    ? {}
-    : { truthProps: [...(inline.truthProps ?? []), ...(clause.truthProps ?? [])] }),
+  truthProps: mergeList(inline.truthProps, clause.truthProps),
   // `notTruthProps` merged for the same reason and with the same caveat as `truthProps` above
   // (item 984): forgetting a carrier here is the silent-superset failure item 901 named.
-  ...(inline.notTruthProps === undefined && clause.notTruthProps === undefined
-    ? {}
-    : { notTruthProps: [...(inline.notTruthProps ?? []), ...(clause.notTruthProps ?? [])] }),
+  notTruthProps: mergeList(inline.notTruthProps, clause.notTruthProps),
   // `pathProps` merged for the same reason as `truthProps` above and with the same caveat: a
   // dropped predicate list returns a SUPERSET, and no correctness test on a fixture lacking the
   // spelling can see it. Added with the list itself (item 900), not left for a later reader.
-  ...(inline.pathProps === undefined && clause.pathProps === undefined
-    ? {}
-    : { pathProps: [...(inline.pathProps ?? []), ...(clause.pathProps ?? [])] }),
+  pathProps: mergeList(inline.pathProps, clause.pathProps),
 });
 
 /**

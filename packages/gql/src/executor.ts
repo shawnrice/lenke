@@ -4614,6 +4614,20 @@ export type CPredicate = {
   truthTestProps?: readonly CTruthTestProp[];
 
   /**
+   * `WHERE n IS LABELED Person` and its family (item 1289) — the `isLabeled` leaf item 1272 listed
+   * as declined, priced at item 1288.
+   *
+   * 200,000 vertices against `n.a >= 0`, a `compare` every row satisfies, so both answer an
+   * identical 200000 and the gap is pure route cost:
+   *
+   * ```text
+   *   n.a >= 0              4.076 ms
+   *   n IS LABELED P       10.656      2.61x
+   * ```
+   */
+  labelTests?: readonly CLabelTest[];
+
+  /**
    * The same lift for a DOTTED path — `WHERE n.meta.city = 'nyc'` (item 900).
    *
    * A fourth list for a blunt reason: `asPropCompare` matches a plain `prop` only, so a dotted
@@ -4912,6 +4926,23 @@ type CTruthTestProp = {
   negated: boolean;
 };
 
+/**
+ * One lifted `<ownVar> IS [NOT] LABELED <label expr>` conjunct (item 1289).
+ *
+ * ⚠️ THE SUBJECT IS THE ELEMENT, NOT A PROPERTY, which is what makes this the first lifted family
+ * with no `key`. Every other one reads `propOf(element, key)`; this one reads `element.labels`.
+ *
+ * TOTAL AND NON-RAISING, like `CNullProp` and `CMemberProp`: `case 'isLabeled'` yields
+ * `isElement(el) ? labelsMatch(el.labels, label) : false` — a plain boolean with no UNKNOWN to
+ * settle and nothing that can fault. The native engine HOISTS it past a faulting sibling, measured
+ * at item 1288, so it belongs in the non-raising group.
+ */
+type CLabelTest = {
+  label: LabelExpr;
+  /** `true` for the `IS NOT LABELED` spelling, mirroring the AST's own flag. */
+  negated: boolean;
+};
+
 /** One lifted `<ownVar>.<key> IN <closed list>` conjunct (item 1269). */
 type CMemberProp = {
   key: string;
@@ -5082,6 +5113,93 @@ const liftTruthTest = (
   return true;
 };
 
+/**
+ * `<ownVar> IS [NOT] LABELED <label expr>` as a liftable conjunct, or null (item 1289).
+ *
+ * `NOT (x IS LABELED L)` folds by FLIPPING `negated`, the same way `asNullTest` and `asTruthTest`
+ * fold their `NOT (…)` spellings — both of this file's earlier two-pass mistakes (items 1261 then
+ * 1262) came from handling one spelling and noticing the other later.
+ */
+/**
+ * File one lifted `IS [NOT] LABELED` conjunct, returning whether it claimed the conjunct.
+ *
+ * The same shape as `liftNullTest` and `liftTruthTest`, and extracted for the same reason: this is
+ * the third family added to a `directEqProps` that sits at its complexity cap, so each arm is one
+ * branch in the loop and the matching lives in here.
+ *
+ * ⚠️ THE SUBJECT IS A `var`, NOT A `prop` — the one arm in that loop which matches the bare
+ * variable, because `IS LABELED` asks about the ELEMENT rather than about one of its properties.
+ */
+/**
+ * File one lifted membership conjunct: `'taken'`, `'stop'` (decline the rest of the chain), or
+ * `'skip'` (not this family).
+ *
+ * ⚠️ `NOT IN` LIFTS TOO SINCE ITEM 1288, and it stays in the NON-RAISING group: `not3` of a
+ * membership cannot raise, and the native engine HOISTS it past a faulting sibling — the
+ * measurement item 1286 established as the authority on that question:
+ *
+ * ```text
+ *   WHERE n.s AND n.n NOT IN [1, 2]   native ok []   FALSE for every row, so hoisted
+ *   WHERE n.s AND n.n NOT IN [99]     native ERR     TRUE, settles nothing, uninformative
+ * ```
+ *
+ * ⚠️ THE OR SPELLING IS FOLDED BY `asMembershipNode`, not received already folded — item 1269's
+ * first cut assumed otherwise and left `OR` on the generic path at 6.042 while `IN` went to 3.699.
+ *
+ * Extracted at item 1289 because `directEqProps` sits at its complexity cap and this arm carries
+ * four conditions; the three-way result keeps the chain-declining case explicit at the call site
+ * rather than hiding it in a boolean.
+ */
+const liftMembership = (
+  conjunct: Expr,
+  ownVar: string,
+  out: CMemberProp[],
+): 'taken' | 'stop' | 'skip' => {
+  const node = asMembershipNode(conjunct);
+
+  if (node?.kind !== 'in' || node.expr.kind !== 'prop' || node.expr.variable !== ownVar) {
+    return 'skip';
+  }
+
+  const test = membershipTest(node.list);
+
+  // A haystack that varies per row cannot be lifted — and declining the rest of the chain here
+  // matches what the loop does with every other conjunct it cannot read.
+  if (test === null) {
+    return 'stop';
+  }
+
+  out.push({ key: node.expr.key, test, negated: node.negated });
+
+  return 'taken';
+};
+
+const liftLabelTest = (conjunct: Expr, ownVar: string, out: CLabelTest[]): boolean => {
+  const test = asLabelTest(conjunct);
+
+  if (test?.expr.kind !== 'var' || test.expr.name !== ownVar) {
+    return false;
+  }
+
+  out.push({ label: test.label, negated: test.negated });
+
+  return true;
+};
+
+const asLabelTest = (e: Expr): { expr: Expr; label: LabelExpr; negated: boolean } | null => {
+  if (e.kind === 'isLabeled') {
+    return { expr: e.expr, label: e.label, negated: e.negated };
+  }
+
+  if (e.kind === 'not' && e.expr.kind === 'isLabeled') {
+    const inner = e.expr;
+
+    return { expr: inner.expr, label: inner.label, negated: !inner.negated };
+  }
+
+  return null;
+};
+
 const directEqProps = (
   where: Expr,
   ownVar: string | undefined,
@@ -5098,6 +5216,8 @@ const directEqProps = (
   nulls: CNullProp[];
   /** `<ownVar>.<key> IS [NOT] TRUE|FALSE|UNKNOWN` conjuncts (item 1286). */
   truthTests: CTruthTestProp[];
+  /** `<ownVar> IS [NOT] LABELED <label expr>` conjuncts (item 1289). */
+  labelTests: CLabelTest[];
   residual: Expr | undefined;
 } | null => {
   if (ownVar === undefined) {
@@ -5130,6 +5250,7 @@ const directEqProps = (
   const member: CMemberProp[] = [];
   const nulls: CNullProp[] = [];
   const truthTests: CTruthTestProp[] = [];
+  const labelTests: CLabelTest[] = [];
 
   // ⚠️ AN UNADMITTED CONJUNCT STOPS THE LOOP, it no longer forfeits the chain (item 1284).
   // `stop` is the index of the first conjunct this loop could not read; everything from there on
@@ -5237,6 +5358,11 @@ const directEqProps = (
       continue;
     }
 
+    // `WHERE n IS LABELED P` (item 1289).
+    if (liftLabelTest(conjunct, ownVar, labelTests)) {
+      continue;
+    }
+
     // `WHERE n.k IN [..]` AND the `n.k = a OR n.k = b` spelling (item 1269).
     //
     // ⚠️ THE OR SPELLING HAS TO BE FOLDED HERE, and the first cut of this item assumed it arrived
@@ -5250,29 +5376,15 @@ const directEqProps = (
     // NEGATED IS LEFT OUT, deliberately. `NOT IN` is `not3` of this test, and `not3` of UNKNOWN is
     // UNKNOWN, so lifting it would be sound — but it is unmeasured, so it stays on the generic
     // path rather than being added untested.
-    const asMembership = asMembershipNode(conjunct);
+    // `WHERE n.k IN [..]`, `NOT IN`, and the `n.k = a OR n.k = b` spelling.
+    const mem = liftMembership(conjunct, ownVar, member);
 
-    // ⚠️ `NOT IN` LIFTS TOO SINCE ITEM 1288, and it stays in the NON-RAISING group: `not3` of a
-    // membership cannot raise, and the native engine HOISTS it past a faulting sibling, which is
-    // the measurement item 1286 established as the authority on that question:
-    //
-    //     WHERE n.s AND n.n NOT IN [1, 2]   native ok []   <- FALSE for every row, so hoisted
-    //     WHERE n.s AND n.n NOT IN [99]     native ERR     <- TRUE, settles nothing, uninformative
-    if (
-      asMembership?.kind === 'in' &&
-      asMembership.expr.kind === 'prop' &&
-      asMembership.expr.variable === ownVar
-    ) {
-      const test = membershipTest(asMembership.list);
+    if (mem === 'stop') {
+      stop = i;
+      break;
+    }
 
-      // A haystack that varies per row cannot be lifted — and declining the whole chain here
-      // matches what this loop does with every other conjunct it cannot read.
-      if (test === null) {
-        stop = i;
-        break;
-      }
-
-      member.push({ key: asMembership.expr.key, test, negated: asMembership.negated });
+    if (mem === 'taken') {
       continue;
     }
 
@@ -5350,7 +5462,8 @@ const directEqProps = (
     path.length === 0 &&
     member.length === 0 &&
     nulls.length === 0 &&
-    truthTests.length === 0
+    truthTests.length === 0 &&
+    labelTests.length === 0
   ) {
     return null;
   }
@@ -5384,7 +5497,7 @@ const directEqProps = (
   //
   // A FULLY-ADMITTED chain is untouched by this — it has no residual, every conjunct lifts, and
   // item 259 covers the ordering among families.
-  return { eq, cmp, truth, notTruth, path, member, nulls, truthTests, residual };
+  return { eq, cmp, truth, notTruth, path, member, nulls, truthTests, labelTests, residual };
 };
 
 /**
@@ -5410,6 +5523,34 @@ const directEqProps = (
  * constrained" must go through here, so a FOURTH place to carry a constraint cannot
  * reintroduce the bug by being forgotten at six call sites.
  */
+/**
+ * Do the lifted `IS [NOT] LABELED` conjuncts hold for this element (item 1289)?
+ *
+ * ⚠️ READS THE ELEMENT'S LABELS, not a property — the one lifted family with no key. `labelsMatch`
+ * is the SAME function `case 'isLabeled'` goes through, so the lift cannot change what `IS LABELED`
+ * means; and `satisfies` is only ever handed an element, so the `isElement` guard that arm needs
+ * for an arbitrary expression is not a question here.
+ *
+ * Extracted because `satisfies` is at its complexity cap, and because this family's loop is the
+ * only one that does not read `propOf`.
+ */
+const labelTestsHold = (
+  element: Vertex | Edge,
+  tests: readonly CLabelTest[] | undefined,
+): boolean => {
+  if (tests === undefined) {
+    return true;
+  }
+
+  for (const { label, negated } of tests) {
+    if (labelsMatch(element.labels, label) === negated) {
+      return false;
+    }
+  }
+
+  return true;
+};
+
 export const hasPredicate = (pred: CPredicate): boolean =>
   pred.props.length > 0 ||
   pred.where !== undefined ||
@@ -5420,7 +5561,8 @@ export const hasPredicate = (pred: CPredicate): boolean =>
   (pred.pathProps?.length ?? 0) > 0 ||
   (pred.memberProps?.length ?? 0) > 0 ||
   (pred.nullProps?.length ?? 0) > 0 ||
-  (pred.truthTestProps?.length ?? 0) > 0;
+  (pred.truthTestProps?.length ?? 0) > 0 ||
+  (pred.labelTests?.length ?? 0) > 0;
 
 export const compilePredicate = (
   properties: readonly PropertyConstraint[] | undefined,
@@ -5454,6 +5596,7 @@ export const compilePredicate = (
     ...(direct === null || direct.truthTests.length === 0
       ? {}
       : { truthTestProps: direct.truthTests }),
+    ...(direct === null || direct.labelTests.length === 0 ? {} : { labelTests: direct.labelTests }),
   };
 };
 
@@ -6506,6 +6649,10 @@ export const satisfies = (
         return false;
       }
     }
+  }
+
+  if (!labelTestsHold(element, pred.labelTests)) {
+    return false;
   }
 
   // A bare property standing alone as a boolean predicate (item 875). `asTruth` is the SAME
