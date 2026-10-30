@@ -4826,6 +4826,29 @@ const asNullTest = (e: Expr): { expr: Expr; negated: boolean } | null => {
 };
 
 /**
+ * `NOT (<prop> = <v>)` / `NOT (<prop> <> <v>)` as the equivalent compare with the operator flipped,
+ * or `null` for anything else (item 1272).
+ *
+ * ONLY `=` and `<>` are in the table, and that is a correctness boundary rather than laziness: an
+ * ordering operator has a NaN hole. `NOT (x >= 2)` is TRUE for a NaN `x` (every ordering comparison
+ * against NaN is FALSE here, so its negation is TRUE) where `x < 2` is FALSE. Equality has no such
+ * hole — it is FALSE for NaN and its negation is TRUE, which is what `<>` answers too.
+ */
+const NEGATED_COMPARE: Partial<Record<CompareOp, CompareOp>> = { '=': '<>', '<>': '=' };
+
+const asNegatedCompare = (
+  e: Expr,
+): { kind: 'compare'; op: CompareOp; left: Expr; right: Expr } | null => {
+  if (e.kind !== 'not' || e.expr.kind !== 'compare') {
+    return null;
+  }
+
+  const flipped = NEGATED_COMPARE[e.expr.op];
+
+  return flipped === undefined ? null : { ...e.expr, op: flipped };
+};
+
+/**
  * Flatten an `and` tree into its conjuncts, depth-first and left to right (item 1271).
  *
  * `a AND b AND c` already arrives as one flat `items` list; this exists for the PARENTHESISED
@@ -4924,6 +4947,45 @@ const directEqProps = (
       conjunct.expr.variable === ownVar
     ) {
       notTruth.push(conjunct.expr.key);
+      continue;
+    }
+
+    // `WHERE NOT (n.k = v)` is `n.k <> v`, and `NOT (n.k <> v)` is `n.k = v` (item 1272). Before
+    // this, `NOT` of a compare was neither a bare `prop` nor a `compare` and declined the whole
+    // chain, while the `<>` spelling of the same question lifted into `cmpProps`. 200,000 vertices,
+    // both answering an identical 198000:
+    //
+    //   a <> 50          3.859 ms   19.3 ns a vertex
+    //   NOT (a = 50)     6.467      32.3            1.68x
+    //
+    // ⚠️ EQUALITY ONLY, AND THE RESTRICTION IS NaN. `NOT (x >= 2)` is NOT `x < 2`: this repo keeps
+    // NaN JS-unordered, so every ordering comparison against NaN is FALSE, making the negation TRUE
+    // where the flipped operator is FALSE. `=`/`<>` have no such hole — they are exact complements
+    // on every value this engine stores:
+    //
+    //   present and equal      `=` TRUE,    NOT -> FALSE   `<>` FALSE
+    //   present and unequal    `=` FALSE,   NOT -> TRUE    `<>` TRUE
+    //   null or absent cell    `=` UNKNOWN, NOT -> UNKNOWN  `<>` UNKNOWN   (a filter drops both)
+    //
+    // This is the same restriction `opt::normalize_pred` carries in the Rust engine, and the reason
+    // item 1262's rewrite there is equality-only.
+    const negated = asNegatedCompare(conjunct);
+
+    if (negated !== null) {
+      const npc = asPropCompare(negated);
+
+      // A dotted or non-closed negated compare declines the chain — which is exactly what happened
+      // to EVERY negated compare before this arm existed, so nothing regresses by declining here.
+      if (npc === null || npc.variable !== ownVar) {
+        return null;
+      }
+
+      if (npc.op === '=') {
+        eq.push({ key: npc.key, value: compileExpr(npc.value) });
+      } else {
+        cmp.push({ key: npc.key, op: npc.op, value: compileExpr(npc.value) });
+      }
+
       continue;
     }
 
