@@ -38566,3 +38566,57 @@ PRE must build a dist WITHOUT the change and POST one WITH it — which is also 
 nx-cached build serving the wrong artifact.
 
 Gates: 39/39 test tasks green, all seven byte-identity fuzzers green, `bun run check` 0.
+
+### Item 1247 — item 1246 CREATED an equivalent-spelling inversion, found by grepping its own pattern: asking for ONE aggregate cost 1.42x asking for TWO (DONE)
+
+Item 1246 wired the per-endpoint extremum fold into `detectMultiHopAggregate`. `detectHopAggregate`
+runs EARLIER in the ladder and claims every ONE-item projection, so it kept the per-row walk — and
+the result was the bug class this repo is organised around, introduced by the previous item:
+
+```text
+  RETURN min(x.name)                 145333 / 147313 / 149023 us
+  RETURN min(x.name), max(x.name)    102463 / 105407 / 106737        1.42x FASTER for asking MORE
+```
+
+200,000 nodes / 1,000,000 edges, one shape per process, three alternated rounds, disjoint by a wide
+margin. **This file's own note warns the single-aggregate row is bimodal ACROSS BUILDS (125-180 for
+one source)**, which is why the two spellings were alternated WITHIN one build rather than compared
+across two — a cross-build comparison here can read disjoint by luck.
+
+Two spellings of one question, costing differently, both answering correctly: no correctness test
+can see it, which is what `bun run spelling` exists for. It was found by the loop's own rule —
+**grep the pattern elsewhere** — applied to item 1246 itself rather than to older code.
+
+### The fix, and what it measured
+
+`withPrimedEndpointExtremum` wraps the single rung's walk the same way, with the same refusals
+(`fold === undefined` excludes the percentiles outright, and `EXTREMA.has(name)` is what admits only
+`min`/`max`).
+
+```text
+  row                                     before     after    ratio
+  RETURN min(x.name)                     145333.3   99284.2   1.46x
+  [CTL] RETURN min(x.name), max(x.name)  102462.6  104534.2   1.02x  flat, within its 102-107 band
+```
+
+The single spelling is now slightly CHEAPER than the pair, which is the natural ordering — one
+accumulator against two. The inversion is gone rather than reduced.
+
+### Two gate pushbacks, both taken rather than suppressed
+
+- `eslint(complexity)`: `detectHopAggregate` hit **37 of 35** with the wiring inline. The file
+  records `hopAccFor` being extracted for exactly this reason, so the branching moved into
+  `withPrimedEndpointExtremum` and the detector gained one call. The cap was right.
+- `eslint(max-params)`: that helper then took **7 of 6**. The expression and its compiled closure
+  became ONE parameter — which is the shape `primedEndpointExtremum` already takes internally, so
+  the bundle is the honest signature rather than a workaround.
+
+### Teeth
+
+All four of item 1246's mutants are caught through this rung too (they live in the shared module). A
+FIFTH, specific to the new wiring — forcing `isExtremum` to `true`, which would let `count(x.k)`
+ride a fold that discarded the multiplicity — is also caught. Two cases were added beside the code
+anyway: `count(x.k)` answering 4 over 3 distinct endpoints, and the two spellings of one extremum
+asserted to AGREE, which is the invariant this item restored. 9 tests.
+
+Gates: 21 projects green, all seven byte-identity fuzzers green, `bun run check` 0.

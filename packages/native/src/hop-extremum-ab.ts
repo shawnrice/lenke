@@ -51,6 +51,11 @@ const CASES: readonly [string, string][] = [
     'number  min+max over x',
     'MATCH (a:Person)-[:KNOWS]->(x) RETURN min(x.age) AS lo, max(x.age) AS hi',
   ],
+  // The SINGLE-aggregate spelling of the same question. Item 1246 wired the per-endpoint fold into
+  // `detectMultiHopAggregate` only; `detectHopAggregate` runs EARLIER in the ladder and claims a
+  // one-item projection, so these are the "grep the pattern elsewhere" check.
+  ['single  min over x', 'MATCH (a:Person)-[:KNOWS]->(x) RETURN min(x.name) AS v'],
+  ['single  max over x', 'MATCH (a:Person)-[:KNOWS]->(x) RETURN max(x.age) AS v'],
   [
     '[CTL] count(*) + max',
     'MATCH (a:Person)-[:KNOWS]->(x) RETURN count(*) AS c, max(x.name) AS hi',

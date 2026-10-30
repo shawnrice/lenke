@@ -33,7 +33,7 @@ import {
 } from '../executor.js';
 import { candidateCount, candidateVertexSource, expand, matchesLabel } from '../graph-queries.js';
 import type { Adjacency } from '../graph-queries.js';
-import { primedEndpointExtremum } from './hop-endpoint-extremum.js';
+import { primedEndpointExtremum, withPrimedEndpointExtremum } from './hop-endpoint-extremum.js';
 import { indexCandidates } from './matching.js';
 import type { SortPlan } from './ordered-rows.js';
 import { outputColumnSorts, sortRowsByColumns, sortedRows } from './ordered-rows.js';
@@ -3998,7 +3998,7 @@ export const detectHopAggregate = (
   const { walks, noSelfLoops, looped } = turned;
   const fold = agg?.fold;
 
-  return (graph, params) => {
+  const walkRows: RowsFn = (graph, params) => {
     // A self-loop would be met by BOTH turned walks; `expand` yields it once. The single
     // undirected walk handles that itself, so a looped graph switches to it instead of
     // declining — chosen per CALL, which costs the row loop nothing (item 481).
@@ -4066,6 +4066,34 @@ export const detectHopAggregate = (
 
     return [{ [outName]: fold.finish(acc) }];
   };
+
+  // ⚠️ ITEM 1247 EXISTS BECAUSE ITEM 1246 CREATED AN EQUIVALENT-SPELLING INVERSION. That item
+  // wired the per-endpoint extremum fold into `detectMultiHopAggregate` only, and this rung runs
+  // EARLIER in the ladder and claims every ONE-item projection — so asking for one aggregate cost
+  // MORE than asking for two. Measured at 200,000 nodes / 1,000,000 edges, one shape per process,
+  // three alternated rounds:
+  //
+  // ```text
+  //   RETURN min(x.name)                 145333-149023 us
+  //   RETURN min(x.name), max(x.name)    102463-106737        1.42x FASTER for asking MORE
+  // ```
+  //
+  // Disjoint by a wide margin, and this file's own note warns the single-aggregate row is bimodal
+  // ACROSS BUILDS (125-180 for one source), which is why it was alternated within ONE build
+  // rather than compared across two. That inversion is the bug class this repo is organised
+  // around — two spellings of one question costing differently, both answering correctly — so the
+  // fold is wired here on the same terms.
+  //
+  // A PERCENTILE never reaches it: `fold === undefined` there, and `primedEndpointExtremum` would
+  // refuse the non-extremum name anyway. The `EXTREMA` test is what admits only `min`/`max`.
+  return withPrimedEndpointExtremum(
+    walkRows,
+    m,
+    outName,
+    fold,
+    { expr: argExpr, fn: agg?.argFn ?? compileExpr(argExpr) },
+    EXTREMA.has(aggNode.name),
+  );
 };
 
 /**

@@ -193,6 +193,41 @@ export const primedEndpointExtremum = (
   };
 };
 
+/**
+ * Wrap a per-ROW walk so the per-ENDPOINT fold is consulted first, for the SINGLE-aggregate rung
+ * (item 1247).
+ *
+ * ⚠️ A FUNCTION RATHER THAN FOUR LINES AT THE CALL SITE, because `detectHopAggregate` is already
+ * at the complexity cap and this pushed it to 37 of 35. That cap has been right here before — the
+ * file records `hopAccFor` being extracted for the same reason — so the branching lives here and
+ * the detector gains one call.
+ *
+ * A declining shape gets `walkRows` ITSELF, not a wrapper: item 1246 measured a wrapper costing an
+ * unreachable shape 1.06x with disjoint ranges.
+ */
+export const withPrimedEndpointExtremum = (
+  walkRows: RowsFn,
+  m: Clause,
+  out: string,
+  fold: AggFold | undefined,
+  // The expression AND its compiled closure as ONE parameter, which is also the shape
+  // `primedEndpointExtremum` takes: proving the argument reads only the far endpoint needs the
+  // expression, and the walk needs the closure.
+  arg: { readonly expr: Expr; readonly fn: CompiledExpr },
+  isExtremum: boolean,
+): RowsFn => {
+  const primed =
+    fold === undefined
+      ? null
+      : primedEndpointExtremum(m, [{ kind: 'fold', out, fold }], [arg], isExtremum);
+
+  if (primed === null) {
+    return walkRows;
+  }
+
+  return (graph, params) => primed(graph, params) ?? walkRows(graph, params);
+};
+
 /** Does `byType` hold any edge of `types` (any type when `undefined`)? A SIZE read, no edge touched. */
 const hasAnyOfTypes = (
   byType: Map<string, Set<Edge>>,

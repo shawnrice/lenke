@@ -72,6 +72,24 @@ describe('the per-endpoint extremum fold (item 1246)', () => {
     ).toEqual([{ c: 4, hi: 30 }]);
   });
 
+  test('a SINGLE non-extremum aggregate keeps the multiplicity too (item 1247)', () => {
+    // The single-aggregate rung got the fold at item 1247, so it needs `count`'s refusal asserted
+    // on its own terms: `count(x.k)` is foldable but NOT idempotent. 4 rows over 3 distinct
+    // endpoints — a mutant forcing `isExtremum` true answers 3.
+    expect(query(graph(), 'MATCH (a:P)-[:KNOWS]->(x) RETURN count(x.k) AS c')).toEqual([{ c: 4 }]);
+  });
+
+  test('the two SPELLINGS of one extremum cost the same shape (item 1247)', () => {
+    // Not a timing test — an ANSWER test that the two rungs agree, which is the invariant behind
+    // the 1.42x inversion item 1247 fixed: `min(x.k)` alone was claimed by `detectHopAggregate`
+    // and `min(x.k), max(x.k)` by `detectMultiHopAggregate`, and only the second had the fold.
+    const one = query(graph(), 'MATCH (a:P)-[:KNOWS]->(x) RETURN min(x.k) AS lo');
+    const pair = query(graph(), 'MATCH (a:P)-[:KNOWS]->(x) RETURN min(x.k) AS lo, max(x.k) AS hi');
+
+    expect(one).toEqual([{ lo: 10 }]);
+    expect((pair as { lo: unknown }[])[0].lo).toEqual((one as { lo: unknown }[])[0].lo);
+  });
+
   test('an extremum over the START vertex is not folded per endpoint', () => {
     // The per-endpoint walk binds only `x`, so reading `a` must take the row walk. `s1` appears on
     // three rows and `s2` on one; the extremes are over the SOURCES, not the endpoints.
