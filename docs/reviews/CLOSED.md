@@ -38410,12 +38410,15 @@ string-keyed adjacency. Every route from an edge to its target's degree goes thr
 string maps — id -> vertex, or id -> bucket map — and both cost the lookup this row cannot afford.
 A route that wins has to carry a dense ordinal on the EDGE, which is the CSR by another name.
 
-### Item 1245 — the TS hop extremum folds PER ROW where it could fold per DISTINCT ENDPOINT: 2.90x priced, and TWO wrong premises caught on the way (OPEN, priced)
+### Item 1245 — the TS hop extremum folds PER ROW where it could fold per DISTINCT ENDPOINT: 2.90x priced, and TWO wrong premises caught on the way (PRICED — BUILT BY ITEMS 1246/1247, see item 1295)
 
 `MATCH (a:Person)-[:KNOWS]->(x) RETURN min(x.name), max(x.name)` is 131-165 ms in TS against
-native's 2.4-3.4 (item 1244's sweep). This item diagnoses it and prices the fix. **It is not yet
-built** — what follows is the pricing and, more usefully, the two premises that had to be discarded
-first.
+native's 2.4-3.4 (item 1244's sweep). This item diagnoses it and prices the fix. **It was not yet
+built when this entry was written** — item 1246 then wired the per-endpoint fold into
+`detectMultiHopAggregate` and item 1247 extended it to the single-aggregate rung after 1246 created
+a spelling inversion. Item 1295 confirmed the rung is live (the accepted shape reads 80.5 ms against
+692.9 for a spelling the gate refuses, 8.6x). What follows is the pricing and, more usefully, the
+two premises that had to be discarded first.
 
 ### ⚠️ WRONG PREMISE 1: "there is no ungrouped hop aggregate detector"
 
@@ -42139,3 +42142,66 @@ family by a different route.
 Gates: `bun run typecheck` 0, `bun run lint` 0, `bun run check` 0, 21 projects green. No engine code
 changed — one probe added. (One `bun run test` exit 1 did NOT reproduce on an isolated re-run: the
 known `run-many` timing flake, as at item 1283.)
+
+### Item 1295 — item 1245's "OPEN, priced" target was BUILT two items later, and that is the fifth stale line this run (correction + route confirmation)
+
+With the TS cheap levers spent at item 1294, I went looking for a target that was already priced
+rather than hunting fresh, and `CLOSED.md` offered one: **item 1245, headed "(OPEN, priced)" at
+2.90x**, with the admission conditions stated, the traps named (the per-distinct-endpoint fold ALONE
+is a regression) and the pricing probe already written. An ideal pick.
+
+It is built. Item 1246 wired the per-endpoint extremum fold into `detectMultiHopAggregate`; item
+1247 extended it to the single-aggregate rung after 1246 created an equivalent-spelling inversion
+(asking for ONE aggregate cost 1.42x MORE than asking for two). The code says so in a comment two
+screens long. Item 1245's heading still said OPEN and its body still said "It is not yet built".
+
+### The rung is live, and that is measured rather than read off the code
+
+The discriminator is a spelling the gate MUST refuse — `primedEndpointExtremum` returns null when
+`m.where !== undefined`. 200,000 nodes / 1,000,000 edges, min of warm reps, all three answering
+identically:
+
+```text
+  ACCEPTED (gate satisfiable)         80.5 ms
+  REFUSED (WHERE present)            692.9        8.6x slower
+  REFUSED (rel variable)             130.2        a different, still-fast rung
+  [CTL] count(*), a different rung     0.0
+```
+
+So the fold is worth **8.6x** against the general path on this shape. Item 1245's own pricing probe
+still runs (`packages/native/src/hop-extremum-price.ts`) and its arms now read A 107973.6 us,
+B 333090.7, C 185384.1, D 59632.7 — C still a 1.72x REGRESSION against A, which is the trap that
+item preserved and which is still worth preserving.
+
+### What is actually left, stated so it is not mistaken for the old target
+
+The hand-written D (59632.7) is still **1.35x** ahead of the engine's A (80.5 ms here, 107973.6 us
+in the probe's own process). That residual is implementation headroom INSIDE a rung that already
+fires, not a missing path — and item 1245 priced its own elimination instrument's drift at ~25%, so
+a 1.35x read off it is not a target yet. Recorded as such, not queued.
+
+### ⚠️ THE FIFTH STALE `OPEN` LINE THIS RUN, AND THE FIRST THAT COST A TARGET-SELECTION CYCLE
+
+The tally: items 1224's two-bound hop arm (closed by 1227), item 1222's `sweep_date_count`
+nomination (refuted by 1223, the very next entry), item 1288's two priced leaves (taken by 1289 and
+1290 — mine), and now item 1245 (built by 1246/1247). Four were corrected in passing; this one
+selected the work.
+
+**The pattern is structural and the remedy is a rule, not more care.** An entry that PRICES a target
+and the entry that TAKES it are written at different times, and the repo's standing rule —
+"`CLOSED.md` current in the same commit" — is satisfied by the taking item writing ITS OWN entry.
+Nothing obliges it to edit the PRICING item's heading, so the heading keeps advertising a target
+that no longer exists.
+
+So, stated as a rule: **an item that takes a priced target must edit the pricing item's heading in
+the same commit.** Not add a line further down — edit the heading, because the heading is what a
+reader scanning for work actually sees. Item 1245's heading now reads "PRICED — BUILT BY ITEMS
+1246/1247", and the "It is not yet built" sentence in its body is corrected in place with a pointer
+to the measurement above.
+
+That rule would have saved this cycle, and it is cheaper than the alternative, which is to re-verify
+every "OPEN" heading before trusting it. I did eventually do that verification — by reading the code
+and then measuring the route — and it is the only reason this item is a correction rather than a
+duplicate implementation of something already shipped.
+
+Gates: no code change. `bun run check` 0.
