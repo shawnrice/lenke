@@ -5292,6 +5292,50 @@ pub(super) fn whole_graph_scan(plan: &Plan, store: &Store) -> bool {
     }
 }
 
+/// Count the rows an UNINDEXED `IndexSeek { key, value }` would produce over a `Num` column, by
+/// sweeping the column — no id vector (item 1267).
+///
+/// Equality semantics match `value::equals`, which is what the seek itself applies: a present cell
+/// of the literal's type matches, a NULL cell never does. `sweep_num_count` masks on `present[i]`,
+/// and a `Column::Num` cannot hold a stored present-null (writing one promotes the column to
+/// `Gen`), so `present` IS "has a usable number here" — the same representation invariant
+/// `num_conj_on_slot` documents at length. A `Gen` or `Temporal` column declines and keeps the
+/// boxed path.
+///
+/// DECLINES a dotted key (the column is the record, not the path) and a NaN literal. NaN would in
+/// fact answer 0 either way — `x == NaN` is false for every cell and `index_seek_ids` returns empty
+/// for a NaN value at its first line — but the agreement is a coincidence of two separate rules, so
+/// it is not relied on here.
+///
+/// ⚠️ THE STRING CASE IS NOT DONE, deliberately. A `Str`/`Dict` column under an unindexed `k = 'v'`
+/// seek materializes ids exactly the same way and is presumably the same 4x; it needs its own
+/// measurement and its own equality argument (`Arc<str>` compare, dict code resolution), so it is
+/// recorded rather than guessed at here.
+fn seek_eq_num_count(
+    store: &Store,
+    label: &Option<String>,
+    key: &str,
+    value: &Value,
+) -> Option<u64> {
+    if key.contains('.') {
+        return None;
+    }
+
+    let Value::Num(v) = value else {
+        return None;
+    };
+
+    if v.is_nan() {
+        return None;
+    }
+
+    let Some(Column::Num { data, present, .. }) = store.column(key) else {
+        return None;
+    };
+
+    Some(stream_eq_set_count(store, label, data, present, &[*v]))
+}
+
 pub(super) fn try_scan_count(
     input: &Plan,
     keys: &[(String, Expr)],
@@ -5317,6 +5361,38 @@ pub(super) fn try_scan_count(
         // engine answered from a size. `live_edge_count` is that length by construction
         // (audit item 412).
         Plan::EdgeScan => store.live_edge_count(),
+        // THE SEEK TWIN (item 1267). A bare `k = v` is rewritten by the optimizer into an
+        // `IndexSeek`, NOT a `Filter` over a `Scan` — so `try_filtered_count`'s whole chain is
+        // unreachable for it and the shape fell to the general materializing aggregate, which
+        // gathers the survivors' columns into a Batch and immediately discards them for a count.
+        //
+        // That is the entire cost of the 4.1x item 1265 chased into the wrong function: `= 50` read
+        // 0.145 ms where its own explicit range spelling `>= 50 AND <= 50` — strictly more work, and
+        // a `Filter(Scan)` that DOES reach a streaming count — read 0.035, on identical answers.
+        //
+        // `index_seek_ids` is the seek's row producer and already does the right thing per store
+        // (a hash bucket intersected with the label, else a range index's point probe, else a typed
+        // column scan), so the count is its length and nothing here needs to know which. Reached
+        // through `super::`: a child module sees its parent's private items.
+        Plan::IndexSeek { label, key, value } => {
+            // ⚠️ WITH NO INDEX, DO NOT ASK FOR THE IDS. Calling `index_seek_ids` and taking its
+            // length was the first cut and measured NOTHING (0.145 ms -> 0.140, inside noise):
+            // the cost is not the Batch the general aggregate gathers, it is the seek
+            // MATERIALIZING a `Vec<u32>` of matches — a push per hit, through the label's id list
+            // — where a count needs no id at all. `seek_eq_num_count` sweeps the typed column
+            // instead, which is the same primitive item 1264's membership passes use.
+            //
+            // THE REAL INDEX WINS WHEN THERE IS ONE, so it is asked first: a hash bucket is
+            // O(matches) and a sweep is O(label), and the indexed row must not get slower. Only
+            // the SCAN FALLBACK is replaced.
+            if store.has_hash_index(key) || store.has_range_index(key) {
+                super::index_seek_ids(store, label.as_deref(), key, value).len()
+            } else if let Some(c) = seek_eq_num_count(store, label, key, value) {
+                c as usize
+            } else {
+                super::index_seek_ids(store, label.as_deref(), key, value).len()
+            }
+        }
         _ => return None,
     };
     Some(scalar_num(n as f64))

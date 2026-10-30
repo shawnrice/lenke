@@ -36070,3 +36070,204 @@ fn a_non_numeric_member_declines_the_numeric_arm() {
         other => panic!("not a number: {other:?}"),
     }
 }
+
+/// `count(*)` over an UNINDEXED equality seek must answer what the general path answers, on the
+/// cells where equality is subtle (item 1267).
+///
+/// The seek's own contract is `value::equals`: a present cell of the literal's type matches, a NULL
+/// cell never does, and a cross-type literal matches nothing. The sweep that now answers the count
+/// masks on `present[i]` instead, and the two agree only because of a representation invariant — a
+/// `Column::Num` cannot hold a stored present-null, since writing one promotes the column to `Gen`.
+/// So the fixture deliberately contains the cases that would break if that were not so.
+#[test]
+fn an_unindexed_equality_count_matches_the_general_path() {
+    let mut b = Builder::default();
+
+    // ⚠️ BIG ENOUGH TO PLAN AN `IndexSeek`, and the plan is ASSERTED below. The first version of
+    // this test had five nodes, which plans as a `Filter(Scan)` instead — so it never reached the
+    // new arm and every mutant of that arm SURVIVED while the test passed. A fixture too small to
+    // route is the same error as a measurement that emitted no row.
+    for i in 0..200 {
+        b.node(&["P"], &[("k", n(f64::from(1000 + i)))]);
+    }
+
+    b.node(&["P"], &[("k", n(50.0))]);
+    b.node(&["P"], &[("k", n(50.0))]);
+    b.node(&["P"], &[("k", n(7.0))]);
+    // ⚠️ A ZERO CELL, AND IT IS LOAD-BEARING. A mutant that accepts a non-numeric literal by
+    // defaulting it to 0.0 is answer-equivalent on a fixture with no zero — it survived until this
+    // node existed. With it, `k = 'fifty'` would count this row instead of nothing.
+    b.node(&["P"], &[("k", n(0.0))]);
+    b.node(&["P"], &[]); // k ABSENT — never equals anything
+    b.node(&["Q"], &[("k", n(50.0))]); // the right value, the WRONG label
+    let st = b.build();
+
+    let plans_as_a_seek = |q: &str| {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &st);
+        let Plan::Project { input, .. } = &plan else {
+            panic!("expected a Project");
+        };
+        let Plan::Aggregate { input: ain, .. } = input.as_ref() else {
+            panic!("expected an Aggregate");
+        };
+        assert!(
+            matches!(ain.as_ref(), Plan::IndexSeek { .. }),
+            "this test is about the IndexSeek shape, and {q} did not plan as one"
+        );
+    };
+
+    plans_as_a_seek("MATCH (a:P) WHERE a.k = 50 RETURN count(*) AS x");
+    plans_as_a_seek("MATCH (a) WHERE a.k = 50 RETURN count(*) AS x");
+
+    // ⚠️ THE OPTIMIZED PLAN, NOT THE PARSED ONE. `run(&parse(q), ..)` — what the answer tests in
+    // this file normally use — never performs the rewrite this item is about, so the new arm was
+    // NEVER CALLED and every mutant of it survived while these assertions passed. Verified by
+    // printing from inside the arm: no output at all until this changed.
+    let scalar = |q: &str| -> f64 {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &st);
+        match &run(&plan, &st).rows.iter().next().expect("one row")[0] {
+            Value::Num(x) => *x,
+            other => panic!("not a number: {other:?}"),
+        }
+    };
+
+    // The seek spelling, the range spelling that stays a `Filter(Scan)`, and the label-respecting
+    // answer must all be 2 — the two `P` nodes holding 50.
+    assert_eq!(
+        scalar("MATCH (a:P) WHERE a.k = 50 RETURN count(*) AS x"),
+        2.0
+    );
+    assert_eq!(
+        scalar("MATCH (a:P) WHERE a.k >= 50 AND a.k <= 50 RETURN count(*) AS x"),
+        2.0
+    );
+    // Unlabelled: the `Q` node counts too, so the label is genuinely applied above.
+    assert_eq!(scalar("MATCH (a) WHERE a.k = 50 RETURN count(*) AS x"), 3.0);
+    // A value nothing carries, and a value only the absent/other rows could supply.
+    assert_eq!(
+        scalar("MATCH (a:P) WHERE a.k = 999 RETURN count(*) AS x"),
+        0.0
+    );
+    // A cross-type literal matches nothing on a typed column — the seek's schema rule, which the
+    // sweep must DECLINE rather than reimplement.
+    assert_eq!(
+        scalar("MATCH (a:P) WHERE a.k = 'fifty' RETURN count(*) AS x"),
+        0.0
+    );
+    // The zero cell itself, so the fixture's guard value is also a live assertion rather than
+    // only a trap for the mutant above.
+    assert_eq!(
+        scalar("MATCH (a:P) WHERE a.k = 0 RETURN count(*) AS x"),
+        1.0
+    );
+}
+
+/// ⚠️ A STORED PRESENT-NULL PROMOTES THE COLUMN TO `Gen`, and the count must still be right
+/// (item 1267).
+///
+/// This is the fixture that makes `seek_eq_num_count`'s `present`-only mask safe: it is reached
+/// only for a `Column::Num`, and a column carrying a present-null is not one. If that invariant
+/// ever changes, the sweep would count the present-null's slot as a match for whatever number its
+/// `data` cell happens to hold, so the decline is load-bearing rather than tidy.
+#[test]
+fn an_equality_count_over_a_present_null_column_is_still_right() {
+    let mut b = Builder::default();
+
+    // Enough nodes to plan an `IndexSeek` (see the sibling test), so the DECLINE in
+    // `seek_eq_num_count` is actually exercised rather than skipped by a plan that never reaches
+    // it. The first value is a real number so the column is inferred numeric and then PROMOTED by
+    // the null, which is the representation this test is about.
+    b.node(&["P"], &[("k", n(50.0))]);
+    b.node(&["P"], &[("k", Value::Null)]); // a PRESENT null -> the column becomes `Gen`
+    b.node(&["P"], &[("k", n(50.0))]);
+
+    for i in 0..200 {
+        b.node(&["P"], &[("k", n(f64::from(1000 + i)))]);
+    }
+
+    let st = b.build();
+
+    // The fixture must BE the representation the argument depends on.
+    assert!(
+        !matches!(st.column("k"), Some(crate::store::Column::Num { .. })),
+        "a present-null must promote the column off `Num`; if it does not, \
+         `seek_eq_num_count`'s present-only mask needs revisiting"
+    );
+
+    // The OPTIMIZED plan — see the sibling test; the parsed one does not reach the seek arm.
+    let plan = crate::opt::optimize_indexed(
+        crate::gql::parse("MATCH (a:P) WHERE a.k = 50 RETURN count(*) AS x").unwrap(),
+        &st,
+    );
+
+    match &run(&plan, &st).rows.iter().next().expect("one row")[0] {
+        Value::Num(x) => assert_eq!(*x, 2.0, "the present null is not 50"),
+        other => panic!("not a number: {other:?}"),
+    }
+}
+
+/// `count(*)` over an `IndexSeek` must REACH `try_scan_count` (item 1267).
+///
+/// A route assertion, because the change is answer-equivalent: before it, the shape fell to the
+/// general materializing aggregate and answered correctly, 4.75x slower. Items 1258, 1260, 1262 and
+/// 1265 each paid for learning that only a route check sees this, and 1265 paid twice — it
+/// implemented a sound pairing in a function the shape never reaches, and three rounds of timing
+/// said "no change" without saying why.
+///
+/// Both stores are checked: with no index the count comes from the column sweep, with a hash index
+/// from the seek's own bucket, and `try_scan_count` claims it either way.
+#[test]
+fn an_equality_count_reaches_the_seek_shortcut() {
+    for indexed in [false, true] {
+        let mut b = Builder::default();
+
+        for i in 0..200 {
+            b.node(&["P"], &[("k", n(f64::from(i % 10)))]);
+        }
+
+        let mut st = b.build();
+
+        if indexed {
+            st.create_index("k");
+        }
+
+        assert_eq!(
+            st.has_hash_index("k"),
+            indexed,
+            "the fixture must be the store it claims"
+        );
+
+        let q = "MATCH (a:P) WHERE a.k = 3 RETURN count(*) AS x";
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &st);
+
+        let Plan::Project { input, .. } = &plan else {
+            panic!("expected a Project over the Aggregate");
+        };
+        let Plan::Aggregate {
+            input: ain,
+            keys,
+            aggs,
+        } = input.as_ref()
+        else {
+            panic!("expected an Aggregate");
+        };
+
+        assert!(
+            matches!(ain.as_ref(), Plan::IndexSeek { .. }),
+            "a bare equality must plan as an IndexSeek; this test is about that shape"
+        );
+
+        let got = crate::exec::fastpath::try_scan_count(ain, keys, aggs, &st);
+
+        assert!(
+            got.is_some(),
+            "count(*) over an IndexSeek must reach try_scan_count (indexed={indexed})"
+        );
+
+        // And it must be the RIGHT count, not merely a claimed one: 20 of the 200 hold 3.
+        match &run(&plan, &st).rows.iter().next().expect("one row")[0] {
+            Value::Num(x) => assert_eq!(*x, 20.0, "indexed={indexed}"),
+            other => panic!("not a number: {other:?}"),
+        }
+    }
+}
