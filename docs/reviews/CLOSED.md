@@ -40601,3 +40601,72 @@ That last point is why item 402's "not a pure seek" verdict is half right: as a 
 predicate it is not, and as a SEED with the predicate retained it is — for two of the four spellings.
 
 Gates: measurement only, no code change — `bun run check` 0.
+
+### Item 1278 — item 1277's "two of the four are sound" is REFUTED: the seed was built, measured at 12.7x/16.6x, and the NaN test rejected it. Item 402 is right for a DEEPER reason than it recorded (REVERTED, guard kept)
+
+Item 1277 priced item 402's 10.7x gap and argued a way past its trap: a SEED only needs a SUPERSET,
+and the range index is a `BTreeMap` keyed by `cmp_total` where NaN sorts LAST — so an upward seek
+sweeps the tail that holds the NaN rows. That was verified at the STORE level and is true:
+
+```text
+  range_lookup(Gt, 5)   -> [9.0, +inf, NaN]     the NaN row IS returned
+```
+
+The seed was built on that basis, with the predicate kept above the seek (the same shape
+`prefix_interval`'s arm uses), and it WORKED as a cost change — 200,000 nodes, a range index on `k`,
+min of 9 over three alternated rounds:
+
+```text
+  shape                         PRE      POST    answer
+  NOT (k <= 199000)   SOUND?   0.293 ms  0.023    999      12.7x
+  NOT (k < 199000)    SOUND?   0.381     0.023   1000      16.6x
+  [CTL] k > 199000   (exact)   0.017     0.019    999
+  [CTL] NOT (k >= 1000) refused 0.281    0.307   1000      unchanged, by design
+  [CTL] bare count(*)          0.002     0.002
+```
+
+### ⚠️ AND IT IS WRONG. The operator filters the NaN rows back out, ON PURPOSE.
+
+The NaN test caught it immediately: the INDEXED store answered **2** where the UNINDEXED oracle
+answers **3**. `range_seek_ids` re-checks every candidate the index hands it, and its own comment
+states the rule:
+
+> The index orders by the TOTAL order (cross-type by rank), but the OPERATOR is three-valued
+> (cross-type → UNKNOWN → drop). Re-check each candidate with `range_pass` so an indexed seek
+> returns exactly the scan-filter rows (the equivalent-spellings invariant).
+
+A NaN cell under `Gt` is UNKNOWN there, so it drops. **No `RangeSeek` can produce a NaN row**, which
+means the superset argument is unavailable no matter what the index's order does — and item 402's
+"do not fix this in one line" is right for a stronger reason than it gave. It is not that a range
+seek _happens_ to miss those rows; it is that the operator is _designed_ to return exactly the
+scan-filter set, and the NaN rows are not in it.
+
+That also closes the entry's suggested shape. `(k > v) OR isNaN(k)` cannot be a seek plus a filter:
+it needs a UNION of a `RangeSeek` with a separate seek for the NaN bucket, which is a different and
+much larger change than the 10.7x justifies.
+
+### What I got wrong, and the layer I skipped
+
+Item 1277 verified `range_lookup` — the STORE API — and inferred the operator from it. The operator
+is a layer up and does not inherit that behaviour. This is the same error as items 1260, 1264, 1267
+and 1269 in a new place: **verify the layer that actually serves the query, not the one below it.**
+The difference this time is that the error was caught by a test written BEFORE the measurement was
+trusted, rather than by a reviewer or by CI.
+
+### The guard is kept, and it has teeth
+
+`a_not_range_predicate_is_not_seeded_from_a_range_index` asserts both halves:
+
+- the ANSWERS, with the unindexed store as the oracle — `NOT (k <= 5)` is 3 (9.0, +inf and NaN)
+  against the exact twin's 2, which is the whole difference a seed would erase;
+- the ROUTE — both sound-looking spellings must stay on a `Filter(Scan)` even with a range index
+  present, because re-introducing the seed is ANSWER-EQUIVALENT on any fixture without a NaN.
+
+Verified in both directions: with the seed re-applied the test FAILS at the route assertion; without
+it, it passes. Three lines of fixture (a NaN, a `+inf`, a null and an absent cell) is what the next
+attempt will run into, and the next attempt is likely — the index's order genuinely does carry NaN,
+so the idea looks sound right up to the operator.
+
+Gates: 1348 + 13 + 725 Rust tests green, `clippy -D warnings` 0, `cargo fmt --check` 0,
+`bun run check` 0. `rewrite_fuzz` not re-run: `opt.rs`'s net diff is EMPTY (verified with
+`git diff --stat`), so there is no rewrite to fuzz — the only change is the test.

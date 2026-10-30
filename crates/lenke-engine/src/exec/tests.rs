@@ -36393,3 +36393,103 @@ fn the_seek_count_gate_is_answer_equivalent_on_both_sides() {
         }
     }
 }
+
+/// ⚠️ `NOT (k <= v)` MUST NOT BE SEEDED FROM A RANGE INDEX — the guard for a fix that LOOKS
+/// sound and is not (items 402, 1277, 1278).
+///
+/// `CLOSED.md` records item 402's 10.7x gap with "do not fix this in one line", because a NaN cell
+/// satisfies `NOT (k <= v)` while `k > v` is FALSE for it. Item 1277 thought it had a way round
+/// that: a SEED only needs a SUPERSET, and the range index is a `BTreeMap` keyed by `cmp_total`
+/// where NaN sorts LAST — so `range_lookup(Gt, 5)` genuinely DOES return the NaN row (measured:
+/// `[9.0, +inf, NaN]`).
+///
+/// ⚠️ AND IT IS FILTERED BACK OUT ONE LAYER UP, ON PURPOSE. `range_seek_ids` re-checks every
+/// candidate with `range_pass`, and its comment says why: "the index orders by the TOTAL order
+/// (cross-type by rank), but the OPERATOR is three-valued (cross-type → UNKNOWN → drop) … so an
+/// indexed seek returns exactly the scan-filter rows (the equivalent-spellings invariant)". A NaN
+/// cell under `Gt` is UNKNOWN there, so it drops. **No `RangeSeek` can produce a NaN row**, which
+/// makes the superset argument unavailable and item 402's verdict right for a deeper reason than it
+/// recorded.
+///
+/// The seed was BUILT and MEASURED first — 12.7x and 16.6x — and this test is what rejected it: the
+/// indexed store answered 2 where the unindexed oracle answers 3. It is kept as the guard, because
+/// the next person to notice that the index's order carries NaN will have the same idea.
+///
+/// A NaN cell is a PRESENT, non-null `Num` here — verified, not assumed: `Builder` keeps
+/// `data = [1.0, 9.0, NaN]` with `present = [t, t, t]`. Both stores are asserted, the UNINDEXED one
+/// being the oracle the general path computes.
+#[test]
+fn a_not_range_predicate_is_not_seeded_from_a_range_index() {
+    let mut b = Builder::default();
+
+    b.node(&["P"], &[("k", n(1.0))]);
+    b.node(&["P"], &[("k", n(9.0))]);
+    b.node(&["P"], &[("k", n(f64::NAN))]);
+    b.node(&["P"], &[("k", n(f64::INFINITY))]);
+    b.node(&["P"], &[("k", Value::Null)]);
+    b.node(&["P"], &[]);
+
+    let plain = b.build();
+    let mut indexed = plain.clone();
+
+    indexed.create_range_index("k");
+
+    assert!(
+        indexed.has_range_index("k"),
+        "the fixture must be the store it claims"
+    );
+    assert!(!plain.has_range_index("k"));
+
+    let scalar = |q: &str, st: &Store| -> f64 {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), st);
+
+        match &run(&plan, st).rows.iter().next().expect("one row")[0] {
+            Value::Num(x) => *x,
+            other => panic!("not a number: {other:?}"),
+        }
+    };
+
+    // THE ROUTE ASSERTION, which is the half no answer can give: the sound-LOOKING spellings must
+    // stay on a `Filter(Scan)` even with a range index present. Without it, re-introducing the seed
+    // is answer-equivalent on any fixture without a NaN, and nothing would notice.
+    for q in [
+        "MATCH (a:P) WHERE NOT (a.k <= 5) RETURN count(*) AS x",
+        "MATCH (a:P) WHERE NOT (a.k < 5) RETURN count(*) AS x",
+    ] {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &indexed);
+        let Plan::Project { input, .. } = &plan else {
+            panic!("expected a Project");
+        };
+        let Plan::Aggregate { input: ain, .. } = input.as_ref() else {
+            panic!("expected an Aggregate");
+        };
+        let Plan::Filter { input: src, .. } = ain.as_ref() else {
+            panic!("expected a Filter: {q}");
+        };
+
+        assert!(
+            matches!(src.as_ref(), Plan::Scan { .. }),
+            "a NOT-range predicate must stay on a Scan, not a RangeSeek: {q}"
+        );
+    }
+
+    for (q, want) in [
+        // `NOT (k <= 5)` keeps 9.0, +inf AND NaN; a null and an absent cell are UNKNOWN under
+        // the inner compare, so `NOT UNKNOWN` is UNKNOWN and both drop. The NaN is the row a seed
+        // would lose, and 3 here against the exact twin's 2 below is the whole difference.
+        ("MATCH (a:P) WHERE NOT (a.k <= 5) RETURN count(*) AS x", 3.0),
+        ("MATCH (a:P) WHERE NOT (a.k < 5) RETURN count(*) AS x", 3.0),
+        // The exact twins, which do NOT match the NaN — this is the difference the seed must not
+        // erase, and asserting it here is what makes the rows above meaningful.
+        ("MATCH (a:P) WHERE a.k > 5 RETURN count(*) AS x", 2.0),
+        ("MATCH (a:P) WHERE a.k >= 5 RETURN count(*) AS x", 2.0),
+        // The downward spellings, where a seek would drop the NaN even more plainly.
+        ("MATCH (a:P) WHERE NOT (a.k >= 5) RETURN count(*) AS x", 2.0),
+        ("MATCH (a:P) WHERE NOT (a.k > 5) RETURN count(*) AS x", 2.0),
+        // Both operand orders, since `range_seek_target` normalizes them and the flip rides along.
+        ("MATCH (a:P) WHERE NOT (5 >= a.k) RETURN count(*) AS x", 3.0),
+    ] {
+        assert_eq!(scalar(q, &indexed), want, "INDEXED: {q}");
+        assert_eq!(scalar(q, &plain), want, "UNINDEXED (the oracle): {q}");
+    }
+}
