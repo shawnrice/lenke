@@ -1391,6 +1391,35 @@ const farWalkFits = (scan: HopScan): boolean => {
  * The caller guarantees what this cannot see: the START side is unconstrained (`pa`
  * vacuous and no `inNear`), because an in-degree counts edges from ANY source; and no
  * edge sits in two of the summed type buckets.
+ *
+ * ⚠️ REJECTED LEVER — "the far walk is ~4x its start twin" (item 1263). A filtered hop count read
+ * 46.1 ms filtering the far end against 10.7 ms filtering the start, at 200k nodes / 800k edges,
+ * which looked like this function still owing what item 137 paid its twin. It owes nothing: the
+ * two bodies are already identical, and the gap is MEMORY LOCALITY in the fixture.
+ *
+ * The route was verified before the time was trusted (items 1185, 1242, 1260), without
+ * instrumenting: a predicate that keeps NOTHING costs a vertex walk 200k visits and an edge scan
+ * 800k, and BOTH ends read 4.1-4.6 ms — ~20ns a vertex, matching item 164's 29ns. So this walk is
+ * running, and the whole gap is in the survivor degree sum: 200k identical `degreeOfTypes` calls,
+ * 6.1 ms through `adjFrom` against 42.0 ms through `adjTo`.
+ *
+ * Not caching, which both accessors do alike (`Vertex.adjFrom`/`adjTo`, `??=`). The fixture built
+ * edges with `from = k % N` (sequential) and `to = (k * 7919) % N` (a permutation), so the reverse
+ * index's `Set` objects were ALLOCATED in scrambled order and reading `.size` is a pointer chase
+ * to a random address — which survives caching the box, because the box is not what is scattered.
+ *
+ * The control: ingest the SAME graph with the edge list sorted by TARGET. The asymmetry FLIPS,
+ * cleanly, which no code-side cause can produce:
+ *
+ * ```text
+ *                      far filter   start filter
+ *   edges in SOURCE order   45.4 ms      10.3
+ *   edges in TARGET order   13.7         44.5
+ * ```
+ *
+ * So there is nothing here to make faster, and a future reading of "the far side is slower" is
+ * this fixture. The question worth asking instead is whether the scattered `Set` is worth
+ * replacing with a per-vertex count, which is a STORAGE change and not a change to this walk.
  */
 const farOnlyHopCount = (scan: HopScan, farVar: string | undefined): number => {
   // The mirror of the twin's first line — see there for why it is here and not at the call site.

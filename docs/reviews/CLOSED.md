@@ -39457,3 +39457,96 @@ target rather than attempted here.
 Gates: 1337 + 13 + 725 Rust tests green, `LENKE_OPT_FUZZ_SEEDS=500000 rewrite_fuzz` green (100.3s —
 this is an OPTIMIZER rewrite, so that sweep is the one that matters), all seven byte-identity
 fuzzers green, 21 projects green, `clippy -D warnings` 0, `cargo fmt` 0, `bun run check` 0.
+
+### Item 1263 — item 1262's TS presence target REFUTED, and the "far walk is 4x" it led to is the fixture's ingest order (RETRACTED)
+
+Item 1262 closed with a target: TS is 44x / 166x native on a presence count (`scan IS NOT NULL`
+9751.6 µs, `hop IS NOT NULL` 48408.1 against native's 222.2 / 290.9), "comparable to the largest
+query-side gaps in the field", never ranked because the cross-engine sweep has no presence row.
+Both halves of that framing are now refuted. No code change beyond three comment corrections.
+
+### Presence is not the variable — rows KEPT is
+
+The control is the one `CLOSED.md` already names for this question (item 570: `WHERE true` is THE
+control for "why is the filtered version slower"). `IS NOT NULL` keeps all 800k rows; `age > 50`
+keeps 392k, so the comparison item 1262 drew was between two different amounts of work. A bounded
+predicate that keeps the SAME rows settles it:
+
+```text
+  shape                      kept        ms
+  hop IS NOT NULL            800,000    46.3
+  hop age >= 0               800,000    45.6     <- the same, within noise
+  hop age > 50               392,000    26.5
+  hop age > 999                    0     4.1
+  scan IS NOT NULL           200,000     8.9
+  scan age >= 0              200,000     8.9     <- the same, exactly
+```
+
+So there is no presence-specific gap in TS, and nothing to fix for `IS NOT NULL` there. The cost
+decomposes cleanly instead: ~4.1 ms for 800k hops plus the predicate (≈5 ns an edge), and ~53 ns
+per row KEPT on top. A bare `count(*)` is ~0 ms, an O(1) tally. **Adding a presence row to
+`bench.ts` would have measured selectivity, not presence** — so it is not added.
+
+### The 4x that remained, and why it is not in the code
+
+What the control did expose is a 4x between the two ENDS of one hop — 46.1 ms filtering the far
+endpoint against 10.7 ms filtering the start — which is exactly the asymmetry `farOnlyHopCount`
+exists to have removed (item 137). Four spellings ruled out the obvious gate: the start label is
+vacuous here, so `pa` is undefined and `farWalkFits` is satisfied, and all four read ~40 ms.
+
+**Route verified before the time was trusted** (items 1185, 1242, 1260) and without instrumenting
+anything. A predicate that keeps NOTHING costs a vertex walk its 200k visits and an edge scan its
+800k, which are far apart enough to tell apart:
+
+```text
+  far   keeps NONE    4.1 ms        start keeps NONE    4.6 ms
+```
+
+Both are ~20 ns a vertex, matching item 164's 29 ns/vertex. So `farOnlyHopCount` IS running, and
+the entire gap sits in the survivor degree sum: 200k identical `degreeOfTypes` calls, 6.1 ms
+through `adjFrom` against 42.0 ms through `adjTo` — 30 ns against 210 ns for the same function.
+
+Not caching: `Vertex.adjFrom` and `adjTo` are the same `??=` accessor over the same map shape. The
+cause is allocation order. The fixture emitted `from = k % N` (sequential) and `to = (k*7919) % N`
+(a permutation), so the reverse index's per-vertex `Set` objects were created in scrambled order
+and reading `.size` is a pointer chase to a random address — which caching the BOX does not help,
+because the box is not the scattered thing.
+
+The control that settles it: ingest the same graph with the edge list sorted by TARGET. Same
+degrees, same answers, only the order changed.
+
+```text
+                           far filter   start filter
+  edges in SOURCE order       45.4 ms       10.3
+  edges in TARGET order       13.7          44.5
+```
+
+It FLIPS. No code-side cause can do that, so "the far walk is slower" does not exist.
+
+### ⚠️ The bench's own two rows carry a stale claim, and one inflated number
+
+`traverse 1-hop + start filter` says the two rows are "a different COST CLASS: a start-only
+predicate can be decided once per vertex and multiplied by that vertex's degree, so it scales with
+the vertex count where the row above scales with the edge count." True when item 114 wrote it;
+item 137 gave the far side the same per-vertex walk and the comment was never updated — so it has
+been stale for ~1100 items, and it is the explanation a reader would have reached for first.
+
+And `graphDoc` scatters BOTH endpoints, which puts both rows in the worst-case locality regime.
+Min-of-3, alternated rounds, same graph size and the same answers throughout:
+
+```text
+  fixture                      far filter   start filter
+  bench-like (both scrambled)     42.4 ms       38.5
+  source-ordered                  39.8           9.8
+```
+
+The scatter is kept — it is the shape a reloaded snapshot has, and it prices both ends alike — but
+the TS column should not be read as pure interpreter cost. A source-grouped ingest, which is what
+a CSV or an export sorted by subject produces, is 3.9x cheaper on the side being filtered.
+
+Recorded in three places rather than here alone, per CLAUDE.md's rule that a refuted lever lives
+next to the code it would have changed: the rejected lever on `farOnlyHopCount`'s header, and a
+note on each of the two bench rows.
+
+Gates: comment-only in both engines — `bun run check` 0 (typecheck + lint + fmt:check), 21 projects
+green.

@@ -786,6 +786,20 @@ const CASES: Case[] = [
     //
     // This row survives the correction — native is flat because it scans the `age` column once
     // either way — but its TWIN below did not, so both move to `> 45` to keep them comparable.
+    //
+    // ⚠️ PART OF THE TS NUMBER IS THIS FIXTURE'S INGEST ORDER, not engine overhead (item 1263).
+    // `graphDoc` scatters BOTH endpoints, so neither adjacency index is in vertex creation order
+    // and both per-vertex walks chase a scattered `Set` per survivor. Re-ingesting the SAME graph
+    // — same degrees, same answers, only the edge order changed — moves the filtered side 3.9x:
+    //
+    //            edges in SOURCE order    edges scattered (this fixture)
+    //   far        39.8 ms                  42.4
+    //   start       9.8                      38.5
+    //
+    // Keep the scatter: it is the shape a reloaded snapshot has, and it prices both ends alike.
+    // But do not read the TS column as pure interpreter cost — a source-grouped ingest, which is
+    // what a CSV or an export sorted by subject produces, is four times cheaper on the side being
+    // filtered. The ~40 ms is a real number for THIS layout and an overstatement of the floor.
     name: 'traverse 1-hop + filter',
     ...onGraph(
       () => graphDoc,
@@ -794,12 +808,21 @@ const CASES: Case[] = [
     ),
   },
   {
-    // The same question with the predicate on the START node instead of the far one. It looks
-    // like a near-duplicate of the row above and is a different COST CLASS: a start-only
-    // predicate can be decided once per vertex and multiplied by that vertex's degree, so it
-    // scales with the vertex count where the row above scales with the edge count. The table had
-    // no row of this shape, which is why the TS engine evaluated it per edge unnoticed (item
+    // The same question with the predicate on the START node instead of the far one. The table
+    // had no row of this shape, which is why the TS engine evaluated it per edge unnoticed (item
     // 114). Keep both: a change can help one and not the other.
+    //
+    // ⚠️ THIS IS NO LONGER A DIFFERENT COST CLASS, and the line that said so was stale for ~1100
+    // items (item 1263). It read: "a start-only predicate can be decided once per vertex and
+    // multiplied by that vertex's degree, so it scales with the vertex count where the row above
+    // scales with the edge count." True when item 114 wrote it; item 137 then gave the FAR side
+    // the same per-vertex walk (`farOnlyHopCount`), so both rows are O(V + survivor degree) now.
+    //
+    // Measured rather than reasoned, on a predicate that keeps NOTHING — which costs a vertex
+    // walk its 200k visits and an edge scan its 800k: far 4.1 ms, start 4.6 ms. Both are the
+    // vertex walk. What still separates the two rows in `graphDoc` is adjacency LOCALITY, and it
+    // FLIPS when the edges are ingested in target order, so it is a property of the fixture and
+    // not of either side. See the note on the row above.
     //
     // THIS is the row the `> 500` threshold was misreporting (audit item 163). Deciding a
     // start-only predicate per vertex and multiplying by degree means native's cost scales with
