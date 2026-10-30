@@ -38399,3 +38399,81 @@ first time the residual has been attributed to a specific pair of instructions.
 string-keyed adjacency. Every route from an edge to its target's degree goes through one of two
 string maps — id -> vertex, or id -> bucket map — and both cost the lookup this row cannot afford.
 A route that wins has to carry a dense ordinal on the EDGE, which is the CSR by another name.
+
+### Item 1245 — the TS hop extremum folds PER ROW where it could fold per DISTINCT ENDPOINT: 2.90x priced, and TWO wrong premises caught on the way (OPEN, priced)
+
+`MATCH (a:Person)-[:KNOWS]->(x) RETURN min(x.name), max(x.name)` is 131-165 ms in TS against
+native's 2.4-3.4 (item 1244's sweep). This item diagnoses it and prices the fix. **It is not yet
+built** — what follows is the pricing and, more usefully, the two premises that had to be discarded
+first.
+
+### ⚠️ WRONG PREMISE 1: "there is no ungrouped hop aggregate detector"
+
+The detector index at the top of `executor/shortcuts.ts` lists `detectNodeAggregate` (one, scan),
+`detectMultiNodeAggregate` (two or more, scan) and
+`detectGroupedNodeAggregate`/`detectGroupedHopAggregate` (grouped) — and nothing for the ungrouped
+hop. **That comment is incomplete.** `detectHopAggregate` and `detectMultiHopAggregate` both exist
+and are wired in `executor.ts`. A new detector written on the strength of that comment would have
+added a second claimant for a shape that already has one, into a ladder whose own notes record a
+branch ahead of a hot dispatch costing the shape it does NOT claim 1.12x (items 418, 469).
+
+### ⚠️ WRONG PREMISE 2: "fold over the distinct endpoints and it gets faster"
+
+The licensing algebra is real and extremum-specific: **min/max over a multiset equals min/max over
+its distinct support**, so ~200,000 distinct endpoints can answer what ~1,000,000 edges are asked.
+`count(*)` cannot (it needs the multiplicity) and neither can `sum`/`avg`.
+
+Priced in ONE process on the bench fixture (200,000 nodes, 1,000,000 edges, min of 7) before any
+detector was written — `packages/native/src/hop-extremum-price.ts`:
+
+```text
+  A engine (general path)            173698.3 us
+  B per-edge fold          [CTL]     336675.0        1.94x WORSE
+  C per-distinct-endpoint fold       186070.9        1.07x WORSE
+  D C + universal-label shortcut      59851.6        2.90x BETTER
+```
+
+All four answers agree. **C on its own is a REGRESSION**, and a detector built from the premise
+would have shipped 1.07x slower with correct answers — the exact bug class `bun run spelling`
+exists for, invisible to every correctness test.
+
+What makes D work is the second half, not the first: C still resolved `e.from` per in-edge to test
+the start label. When the start label is carried by EVERY live node, a non-empty bucket already
+proves a qualifying edge and nothing has to be resolved. `vacuousLabel` has been exported for this
+since item 167, and native's `for_each_typed_out` makes the identical test.
+
+### What the gap actually is, stated precisely
+
+The claiming rung was identified by ELIMINATION rather than by reading, each arm rebuilding the
+dists:
+
+```text
+  BASELINE (all rungs)                       149.8 ms
+  multiHopAggregate DISABLED                 654.3        4.37x slower -> it CLAIMS the shape
+  hopAggregate DISABLED  [CTL, expect flat]  188.7        1.26x        -> see the caveat below
+```
+
+So `detectMultiHopAggregate` claims it and is already worth 4.37x. The residual is narrower than
+"no fast path": that detector reduces the aggregate to a hop PROJECTION (`synthRet`) and folds the
+projected rows, so it still emits one row per EDGE and takes ~1,000,000 fold steps where 200,000
+would give the same extremum. Its `idempotent: allExtrema` flag is NOT this optimization — it only
+decides self-loop safety across two undirected walks. Item 481's far-driven walk is adjacent prior
+art (118 ns a row against 375) and explains why the measured ~150-174 ns a row sits between them.
+
+**The open lever:** fold once per distinct FAR endpoint instead of once per row, admitted only when
+every aggregate is `min`/`max`, every argument reads only the far variable, and the start label is
+absent or vacuous. Everything else must fall through — C's number is what happens otherwise.
+
+### ⚠️ Two instrument failures, both caught, both worth the rules they produce
+
+1. **A VOID run is not a NULL result.** The first elimination run invoked `bun run bench` from the
+   repo ROOT, where that script does not exist (it is `packages/native`'s). Every arm emitted
+   nothing, which reads exactly like "disabling the rung changed nothing". The script had asserted
+   that the MUTATION applied (`grep -c` on the sed) and never that the MEASUREMENT produced a row.
+   Items 767 and 772-773 are the same family in the other direction; this is the third variant, and
+   the probe now prints `NO ROW EMITTED - the measurement is VOID, not a null result`.
+2. **The control moved 1.26x when it should have been flat.** Disabling the SINGLE-aggregate rung
+   cannot change which rung answers a two-item projection, yet the row read 188.7 against 149.8.
+   Either single-arm noise or item 762's call-site redistribution. It does not threaten a 4.37x
+   conclusion, but it DOES price this instrument's drift at ~25%, so nothing small may be read off
+   it — the in-process A/B/C/D probe above is the instrument for the fix itself.
