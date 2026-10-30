@@ -818,6 +818,29 @@ fn normalize_pred(e: Expr, input: &Plan) -> Expr {
                         right,
                     }
                 }
+                // NOT (x IS NULL) -> x IS NOT NULL, and the reverse (item 1262).
+                //
+                // ⚠️ SOUND BECAUSE `IS NULL` IS TOTAL, which is the whole of why this is safe
+                // where the ORDERING rewrite above is not. `ir.rs` states it: a null test is 2VL
+                // — "`NULL IS NULL` is TRUE, not NULL" — so the predicate never yields UNKNOWN
+                // and `NOT` of it is its exact complement. The NaN hazard that sank
+                // `NOT (x >= 2)` cannot arise: there is no comparison here to be unordered.
+                //
+                // WHY IT MATTERS: item 1261 admitted `IS NOT NULL` to the presence fast paths and
+                // made it ~4x faster, and this spelling did not follow — measured at 200,000
+                // nodes / 800,000 edges, identical answers:
+                //
+                //   scan  NOT (age IS NULL)  844.8 us  against  IS NOT NULL  222.2   3.80x
+                //   hop   NOT (age IS NULL) 1238.3            IS NOT NULL  290.9   4.26x
+                //
+                // Fixing it HERE rather than in the matcher is the repo's own rule: speed is a
+                // property of the optimized PLAN, not the surface syntax, so two spellings that
+                // canonicalize to one plan cannot differ. Every consumer gets it, not just the
+                // two presence sweeps.
+                Expr::IsNull { expr, negated } => Expr::IsNull {
+                    expr,
+                    negated: !negated,
+                },
                 other => Expr::Not(Box::new(other)),
             }
         }

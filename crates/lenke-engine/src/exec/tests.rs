@@ -35504,6 +35504,24 @@ fn is_not_null_reaches_the_presence_fast_path() {
         }
     };
 
+    // ⚠️ AND THE THIRD SPELLING (item 1262), which `normalize_pred` canonicalizes to the same
+    // `IsNull { negated: true }`. Reverting that canonicalization is ANSWER-EQUIVALENT — the
+    // spelling merely gets ~4x slower — so only a ROUTE assertion can see it, the same reason
+    // item 1258's level cap needed a pure test rather than a timing one.
+    let nq = "MATCH (a:P)-[:T]->(c) WHERE NOT (c.k IS NULL) RETURN count(*) AS x";
+    let nplan = crate::opt::optimize_indexed(crate::gql::parse(nq).unwrap(), &st);
+    let Plan::Project { input: nin, .. } = &nplan else {
+        panic!("expected a Project over the Aggregate");
+    };
+    let Plan::Aggregate { input: nain, .. } = nin.as_ref() else {
+        panic!("expected an Aggregate");
+    };
+
+    assert!(
+        crate::exec::fastpath::try_fused_hop_present_count(nain, &st).is_some(),
+        "NOT (k IS NULL) must canonicalize onto the same presence path as IS NOT NULL (item 1262)"
+    );
+
     assert_eq!(scalar(hq), 40.0, "every edge lands on a node carrying k");
     assert_eq!(
         scalar("MATCH (c:P) WHERE c.k IS NOT NULL RETURN count(*) AS x"),
@@ -35655,5 +35673,83 @@ fn property_exists_and_is_not_null_differ_on_a_present_null() {
         cnt("MATCH (a:S)-[:T]->(b:P) WHERE b.k IS NOT NULL RETURN count(*) AS c"),
         4.0,
         "the predicate is on the TARGET: both targets carry k, so every row survives"
+    );
+}
+
+/// `NOT (x IS NULL)` canonicalizes to `x IS NOT NULL` (item 1262).
+///
+/// ⚠️ SOUND BECAUSE A NULL TEST IS TOTAL. `ir.rs`: "`NULL IS NULL` is TRUE, not NULL", so the
+/// predicate never yields UNKNOWN and `NOT` of it is its exact complement. That is precisely why
+/// this rewrite is safe where the ORDERING one is not — `NOT (NaN >= 2)` is TRUE while `NaN < 2` is
+/// FALSE, and `normalize_pred` restricts its comparison rewrite to equality for that reason.
+///
+/// ⚠️ AND THE PRESENT-NULL CASE IS THE ONE WORTH ASSERTING, since item 1261 is about exactly that
+/// distinction: a STORED present-null is null-valued, so both spellings must EXCLUDE it, while
+/// `has(k)` (PropertyExists) includes it.
+#[test]
+fn not_is_null_is_the_same_question_as_is_not_null() {
+    let mut b = Builder::default();
+    let src = b.node(&["S"], &[]);
+    let a = b.node(&["P"], &[("k", n(1.0))]);
+    let p_null = b.node(&["P"], &[("k", Value::Null)]); // PRESENT null
+    let c = b.node(&["P"], &[("k", n(3.0))]);
+    // ⚠️ A THIRD REAL VALUE SO THE TWO POLARITIES DIFFER. With two of each, `IS NULL` and
+    // `IS NOT NULL` both answered 2 and the double-negation assertion below held for either
+    // polarity — item 702's trap: an answer invariant to the thing being varied validates nothing.
+    let e = b.node(&["P"], &[("k", n(5.0))]);
+    let absent = b.node(&["P"], &[]); // ABSENT
+
+    for t in [a, p_null, c, e, absent] {
+        b.edge(src, t, "T");
+    }
+    let st = b.build();
+    let cnt = |q: &str| -> f64 {
+        match &run(&crate::gql::parse(q).unwrap(), &st)
+            .rows
+            .iter()
+            .next()
+            .expect("one row")[0]
+        {
+            Value::Num(x) => *x,
+            other => panic!("not a number: {other:?}"),
+        }
+    };
+
+    for (a_q, b_q) in [
+        (
+            "MATCH (x:P) WHERE x.k IS NOT NULL RETURN count(*) AS c",
+            "MATCH (x:P) WHERE NOT (x.k IS NULL) RETURN count(*) AS c",
+        ),
+        (
+            "MATCH (s:S)-[:T]->(x) WHERE x.k IS NOT NULL RETURN count(*) AS c",
+            "MATCH (s:S)-[:T]->(x) WHERE NOT (x.k IS NULL) RETURN count(*) AS c",
+        ),
+    ] {
+        assert_eq!(cnt(a_q), cnt(b_q), "the two spellings must agree: {b_q}");
+    }
+
+    // The ANSWER, so declining everywhere would not also pass: two real values, and the
+    // present-null and the absent property both excluded.
+    assert_eq!(
+        cnt("MATCH (x:P) WHERE NOT (x.k IS NULL) RETURN count(*) AS c"),
+        3.0
+    );
+    assert_eq!(
+        cnt("MATCH (s:S)-[:T]->(x) WHERE NOT (x.k IS NULL) RETURN count(*) AS c"),
+        3.0
+    );
+
+    // And the double negation still collapses, which the same `Not` arm owns.
+    assert_eq!(
+        cnt("MATCH (x:P) WHERE NOT (NOT (x.k IS NULL)) RETURN count(*) AS c"),
+        2.0,
+        "NOT NOT (k IS NULL) counts the null-valued and the absent cell"
+    );
+    // THREE against TWO is the point: the polarities now answer differently, so the assertion
+    // above cannot pass for either one.
+    assert_eq!(
+        cnt("MATCH (x:P) WHERE x.k IS NULL RETURN count(*) AS c"),
+        2.0,
+        "the plain positive spelling must agree with the double negation"
     );
 }
