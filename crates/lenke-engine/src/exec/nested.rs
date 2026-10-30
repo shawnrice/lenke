@@ -648,7 +648,11 @@ pub(super) fn nested_group(
     bind_slots: &[usize],
     per_rep_pred: Option<&Expr>,
     track: bool,
+    path_need: crate::ir::PathNeed,
 ) -> Batch {
+    // `CountOnly` records the path's SIZE and not its elements (item 1239). The walk is identical
+    // either way — the chain is the traversal state — so what this saves is copying it out.
+    let count_only = matches!(path_need, crate::ir::PathNeed::CountOnly);
     let empty = || {
         let mut slots: Vec<Col> = batch.slots.iter().map(|_| Col::Nodes(vec![])).collect();
         slots.push(Col::Nodes(vec![]));
@@ -691,15 +695,30 @@ pub(super) fn nested_group(
                 // A k-hop path has k + 1 nodes: the first hop's SOURCE, then every target. With no
                 // hops at all (a `{0,n}` group matching zero repetitions) the path is the seed node
                 // alone, which is `end` — the walk never left it.
-                match slf.steps.first() {
-                    Some(first) => {
-                        lin.values.push(Value::Num(f64::from(first.source)));
-                        for s in &slf.steps {
-                            lin.values.push(Value::Num(f64::from(s.target)));
-                            lin.edges.push(Value::Num(f64::from(s.edge)));
+                let hops = slf.steps.len();
+
+                if count_only {
+                    // SIZES ONLY. `values`/`edges` stay empty and the offsets therefore stay equal,
+                    // so every row's span is empty — which is what `Lineage::elem_counts`'s own doc
+                    // requires: non-zero offsets over an empty `values` is an out-of-range slice,
+                    // not a compact encoding, and `gather` rebuilds through `path_at`.
+                    let nodes = if hops == 0 { 1 } else { hops + 1 };
+
+                    lin.elem_counts.push((
+                        u32::try_from(nodes).unwrap_or(u32::MAX),
+                        u32::try_from(hops).unwrap_or(u32::MAX),
+                    ));
+                } else {
+                    match slf.steps.first() {
+                        Some(first) => {
+                            lin.values.push(Value::Num(f64::from(first.source)));
+                            for s in &slf.steps {
+                                lin.values.push(Value::Num(f64::from(s.target)));
+                                lin.edges.push(Value::Num(f64::from(s.edge)));
+                            }
                         }
+                        None => lin.values.push(Value::Num(f64::from(end))),
                     }
-                    None => lin.values.push(Value::Num(f64::from(end))),
                 }
                 lin.offsets.push(lin.values.len());
                 lin.edge_offsets.push(lin.edges.len());

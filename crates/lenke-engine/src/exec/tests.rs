@@ -9082,6 +9082,64 @@ fn repeat_group_path_need(p: &Plan) -> Option<crate::ir::PathNeed> {
     }
 }
 
+/// `NestedGroup`'s own `path_need` (item 1239), the twin of `repeat_group_path_need`.
+fn nested_group_path_need(p: &Plan) -> Option<crate::ir::PathNeed> {
+    match p {
+        Plan::NestedGroup { path_need, .. } => Some(*path_need),
+        Plan::Project { input, .. }
+        | Plan::Filter { input, .. }
+        | Plan::Aggregate { input, .. }
+        | Plan::Distinct { input }
+        | Plan::OrderPage { input, .. }
+        | Plan::VarLength { input, .. }
+        | Plan::RepeatGroup { input, .. }
+        | Plan::Expand { input, .. } => nested_group_path_need(input),
+        _ => None,
+    }
+}
+
+/// A NESTED group's path, read for its size only, must be marked `CountOnly` (item 1239) — and
+/// must NOT be when its elements are read.
+///
+/// ⚠️ SAME REASON THE `RepeatGroup` TWIN EXISTS: marking is ANSWER-EQUIVALENT, so no correctness
+/// test can see it stop firing. Item 1235 verified that by mutation; this is the gate for the
+/// nested operator, which only became markable once item 1238 gave it a lineage to suppress.
+#[test]
+fn nested_group_path_size_only_is_marked_count_only() {
+    let store = crate::store::Builder::default().build();
+    let need =
+        |q: &str| -> Option<crate::ir::PathNeed> { nested_group_path_need(&opt_plan(q, &store)) };
+    let unit = "((x)-[:KNOWS]->(m)<-[:KNOWS]-(y)){1,2}";
+
+    assert_eq!(
+        need(&format!("MATCH p = {unit} RETURN path_length(p) AS x")),
+        Some(crate::ir::PathNeed::CountOnly),
+        "path_length reads only the size"
+    );
+    assert_eq!(
+        need(&format!("MATCH p = {unit} RETURN cardinality(p) AS x")),
+        Some(crate::ir::PathNeed::CountOnly),
+        "cardinality too"
+    );
+    // ELEMENTS READ — suppressing here is the wrong answer `opt::mark`'s comment warns about.
+    assert_eq!(
+        need(&format!("MATCH p = {unit} RETURN nodes(p) AS x")),
+        Some(crate::ir::PathNeed::Full),
+        "nodes(p) reads the elements"
+    );
+    assert_eq!(
+        need(&format!("MATCH p = {unit} RETURN edges(p) AS x")),
+        Some(crate::ir::PathNeed::Full),
+        "edges(p) too"
+    );
+    // No path read at all: `mark` returns early.
+    assert_eq!(
+        need(&format!("MATCH {unit} RETURN count(*) AS c")),
+        Some(crate::ir::PathNeed::Full),
+        "no path is read, so nothing is marked"
+    );
+}
+
 /// A quantified group whose path is read for its SIZE ONLY must be marked `CountOnly` (item 1235),
 /// and one whose elements or group lists are read must NOT be.
 ///

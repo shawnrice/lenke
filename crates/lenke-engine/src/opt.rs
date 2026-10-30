@@ -500,6 +500,7 @@ fn drop_unread_group_binds(plan: Plan) -> Plan {
                 mode,
                 endpoint_slot,
                 bind_slots,
+                path_need,
                 per_rep_pred,
             } => {
                 let unread = !bind_slots.is_empty()
@@ -515,6 +516,7 @@ fn drop_unread_group_binds(plan: Plan) -> Plan {
                     mode,
                     endpoint_slot,
                     bind_slots: if unread { Vec::new() } else { bind_slots },
+                    path_need,
                     per_rep_pred,
                 }
             }
@@ -582,7 +584,8 @@ fn set_path_need(plan: Plan) -> Plan {
             // measured 58,891us -> 22,662us at 599,998 rows.)
             Plan::ShortestPath { path_need, .. }
             | Plan::VarLength { path_need, .. }
-            | Plan::RepeatGroup { path_need, .. } => {
+            | Plan::RepeatGroup { path_need, .. }
+            | Plan::NestedGroup { path_need, .. } => {
                 *path_need = crate::ir::PathNeed::CountOnly;
             }
             Plan::Project { input, .. }
@@ -1251,6 +1254,7 @@ fn map_children(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
             mode,
             endpoint_slot,
             bind_slots,
+            path_need,
             per_rep_pred,
         } => {
             let (i, c) = rewrite(*input, idx);
@@ -1264,6 +1268,7 @@ fn map_children(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
                     mode,
                     endpoint_slot,
                     bind_slots,
+                    path_need,
                     per_rep_pred,
                 },
                 c,

@@ -874,6 +874,13 @@ pub enum Plan {
         endpoint_slot: usize,
         /// Every bound inner-variable slot, ascending — the trailing list columns.
         bind_slots: Vec<usize>,
+        /// Whether anything reads the path's ELEMENTS, or only its size (item 1239).
+        ///
+        /// Item 1238 gave this operator a lineage at all; before that there was no chain to
+        /// suppress and the flag would have been meaningless. `Full` stays the DEFAULT for the
+        /// reason `opt::mark` gives: not marking costs performance, marking under an operator that
+        /// materializes the path is a wrong answer.
+        path_need: PathNeed,
         /// A PER-REPETITION `WHERE` (`( <unit> WHERE pred ){c,d}`), evaluated at each
         /// OUTER-rep completion over that rep's variables in the PER-REP view — a
         /// variable one nesting level shallower than globally (an outer-depth var is a

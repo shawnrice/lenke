@@ -4312,6 +4312,7 @@ impl Parser {
             mode: self.path_mode,
             endpoint_slot: node_slot,
             bind_slots,
+            path_need: crate::ir::PathNeed::Full,
             per_rep_pred: per_rep_pred.map(Box::new),
         };
         if let Some(pred) = landing_label_filter(t_label, t_le, node_slot) {

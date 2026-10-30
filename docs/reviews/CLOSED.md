@@ -37943,3 +37943,66 @@ group bindings, blind to the path mode (item 1237).
 2,066 Rust tests green; `rewrite_fuzz` at `LENKE_OPT_FUZZ_SEEDS=500000` green in 99.2 s; all seven
 cross-engine fuzzers green — which they can be because the nested-plus-path INTERSECTION is still
 ungenerated (item 1236); `clippy -D warnings` and `bun run check` each 0.
+
+### Item 1239 — `NestedGroup` gets `PathNeed`: 1.12x, which recovers item 1238's correctness cost down to ~1.02x (DONE)
+
+Item 1234 priced this and item 1236 found it unavailable — there was no chain to suppress. Item 1238
+built the lineage, which made the flag meaningful; this adds it. The same move item 1235 made for
+`RepeatGroup`, with one extra piece: the nested walker now has to choose a REPRESENTATION, not just
+skip a copy.
+
+`CountOnly` records `Lineage::elem_counts` — the `(node, edge)` pair per row — and leaves `values`
+and `edges` empty, which keeps the offsets equal so every row's span is empty. That is what
+`elem_counts`'s own doc requires: "non-zero offsets over an empty `values` is an out-of-range slice,
+not a compact encoding", because `gather` rebuilds through `path_at`.
+
+REACH FIRST, and it matters because a marking rewrite changes no ANSWER when it fails to fire:
+
+```text
+  repeat-group + path                              RepeatGroup  CountOnly
+  nested group + path                              NestedGroup  CountOnly   <- new
+  [CTL] repeat-group, lists READ                   RepeatGroup  Full
+  [CTL] varlen + path                              VarLength    CountOnly
+```
+
+COST, three order-alternated rounds, binaries hash-asserted (PRE `d5b9eb9b`, POST `b6eb7797`):
+
+```text
+  nested group + path   753252.5 -> 673951.9   1.12x   (-79,300 us)
+```
+
+Row counts identical (1,261,238). Controls: `repeat-group + path` 0.92x, its lists-read twin 0.97x,
+`varlen + path` 1.07x, and `query_bench`'s nested/k2/varlen COUNT rows 1.01-1.05x — all of them
+counts or other operators the change cannot reach, drifting in both directions. In ABSOLUTE terms
+the target moved −79,300 us against a largest control movement of +2,000, an order of magnitude
+apart.
+
+### ⚠️ THE NUMBER THAT MATTERS IS THE THREE-ITEM ARC
+
+```text
+  661704 us   before item 1238   — and ANSWERING NULL, doing no path work at all
+  758129     after item 1238     — correct, 1.13x the wrong-answer version
+  673952     after item 1239     — correct, ~1.02x the wrong-answer version
+```
+
+So the price of answering correctly is now about 2%, not 13%. Quoting item 1238's 1.13x as the cost
+of correctness would have been true for one tick and misleading after this one.
+
+TEETH: three mutants, all compiled, all CAUGHT, each by the RIGHT test:
+
+```text
+  suppress elements always      CAUGHT  by the lineage test (element accessors)
+  node count loses its +1       CAUGHT  by the lineage test (cardinality)
+  marking disabled              CAUGHT  by the new plan test
+```
+
+The third needed a new plan assertion for the same reason item 1235's did: marking is
+answer-equivalent, so no correctness test can see it stop firing. Item 1235 verified that by a
+survivor; this one inherits the lesson rather than re-earning it.
+
+2,067 Rust tests green; `rewrite_fuzz` at `LENKE_OPT_FUZZ_SEEDS=500000` green in 101.2 s; all seven
+cross-engine fuzzers green; `clippy -D warnings` and `bun run check` each 0.
+
+Still open: TS's nested-group-with-path handling (item 1237) — wrong endpoint slot, dropped group
+bindings, blind to the path mode — and the fuzzer's ungenerated nested-plus-path intersection
+(item 1236), which cannot be closed until TS is fixed.

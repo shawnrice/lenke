@@ -1419,6 +1419,7 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
             mode,
             endpoint_slot: _,
             bind_slots,
+            path_need,
             per_rep_pred,
         } => nested_group(
             &pull(input, store, track)?,
@@ -1431,6 +1432,7 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
             bind_slots,
             per_rep_pred.as_deref(),
             track,
+            *path_need,
         ),
         Plan::ShortestPath {
             input,
