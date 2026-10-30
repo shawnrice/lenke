@@ -40981,3 +40981,191 @@ presence one.
 
 (One `bun run test` exit 1 during the gate sweep did NOT reproduce on an isolated re-run — the known
 `run-many` timing flake recorded in `sync-test-flake-is-timing`.)
+
+### Item 1284 — a mixed AND chain lifts its PREFIX instead of forfeiting the whole chain, 1.8x (DONE)
+
+`directEqProps` returned `null` on any conjunct it could not read, which forfeited the lift of every
+conjunct BESIDE it. Its own closing comment had already named the fix and why it was now available:
+"item 259 made reordering a FILTER's conjuncts unobservable, so lifting the equalities and leaving
+the rest is now sound where it previously was not, and that is the next step rather than this one."
+`residual` was dead plumbing kept for exactly this.
+
+This subsumes the seven leaf variants item 1272 listed as unpriced (`xor`, `isTruth`, `isLabeled`, a
+function call, an arithmetic operand, a dotted negated compare, `NOT IN`) — the cost was never in
+the leaf, it was in what the leaf did to its siblings.
+
+200,000 vertices, ONE SHAPE PER PROCESS, min of three alternated rounds, each arm asserting its own
+marker count before running. The unliftable conjunct is `n.a >= n.a`: true for every present row, so
+answers are identical, and it cannot raise.
+
+```text
+  shape                               pre      post     two isolated runs
+  target   a=50 AND <unliftable>     9.353 ->  4.053    2.31x
+                                     6.966 ->  3.806    1.83x
+                                     9.127 ->  3.981    2.29x
+                                     9.030 ->  3.887    2.32x
+  [CTL]    <unliftable> AND a=50    11.946 -> 12.159    flat (nothing lifts either way)
+                                    11.494 -> 11.227    flat
+  [CTL]    <unliftable> alone       14.995 -> 14.819    flat
+  [CTL]    a=50 alone (all-lift)     3.049 ->  3.013    flat
+```
+
+The claim is the conservative **1.8x** against a typical 2.3x. The spread across the four isolated
+runs is the PRE arm's noise (one of them read 10.1/6.97/8.49), not a disagreement about the POST
+arm, which is 3.8-4.3 in every round of every run.
+
+### ⚠️ THE PREFIX RULE ALONE IS A WRONG ANSWER, and the cross-engine test found it
+
+The first cut lifted any prefix, on the argument that the lifted families run before the residual so
+executed order IS written order. That argument is sound and the conclusion was still wrong, because
+the generic route does not evaluate in written order either — it lets FALSE dominate. So a bare
+`prop`, whose truth-reading RAISES on a non-boolean, raises once lifted where the whole-chain route
+suppressed it. `packages/native/src/and-short-circuit-conformance.test.ts` caught it as a TS-vs-native
+divergence, which is precisely the guard item 259 left behind:
+
+```text
+  MATCH (n:P) WHERE n.s AND false             native ok []   TS ok []  ->  ERR E_INVALID_VALUE
+  MATCH (n:P) WHERE n.s AND n.n IS UNKNOWN    native ok []   TS ok []  ->  ERR E_INVALID_VALUE
+```
+
+So with a residual present, only the families that CANNOT raise may lift: `eq` (equality is total —
+a cross-type `=` answers no-match), `nulls` (`isNullish` returns a plain boolean) and `member` (built
+on equality). `truth`, `notTruth`, `cmp` and `path` are held back, `cmp`/`path` because an ordering
+comparison DOES throw on a cross-type pair, so a residual that would have settled the row to FALSE
+first is load-bearing there too.
+
+A fully-admitted chain is untouched: it has no residual, every conjunct lifts, and item 259 covers
+the ordering among families. The guard is therefore conditioned on `residual !== undefined`, and a
+mutant that drops that condition is caught by a control asserting the families still lift when the
+chain is complete.
+
+**This is where the 1.8-2.3x actually lives anyway** — the target shape is an `eq` prefix — so the
+restriction costs nothing measured. But it is the second time in two items that the instrument was
+right and the reasoning was not.
+
+### Only a PREFIX lifts, and a tail that reads another variable still declines
+
+Two further restrictions, each with a test that fails if it is widened:
+
+- **Prefix only.** The lifted families run before the residual, so lifting a prefix cannot make any
+  conjunct overtake another — executed order IS written order. Lifting out of the middle would
+  reorder, so that is a separate item, not a wider `stop`.
+- **The tail must read only `ownVar`.** Callers pass an `ownVar` having PROVED the predicate
+  element-local, so a tail reading `m` should not arrive — but the three sites that evaluate a
+  residual (`relOnlyHopCount` and the two `startLifted` gates) bind only the element's own variable,
+  so such a tail would be evaluated against a binding with no `m`. Keeping the old route there costs
+  nothing measured, because the 1.8x is a tail on the element's OWN variable.
+
+The second restriction is why `direct-eq-props-param.test.ts`'s existing guard — "a conjunct on
+ANOTHER variable declines the WHOLE chain" — **passes unchanged**. That it kept its teeth without
+being rewritten is the evidence the restriction is the right shape; only the `upper(n.s)` test was
+superseded, updated the way item 278 updated two of its neighbours.
+
+### ⚠️ THIS ENGINE ALREADY DOES NOT PRESERVE RAISE ORDER, measured on both arms
+
+The ordering test was written expecting `CAST(n.s AS INTEGER) = 1 AND n.a = 999` to throw, since the
+raiser is first. It does not — it answers `[]`, identically on both arms:
+
+```text
+  CAST(s) = 1 AND a = 999    pre []     post []     an empty seed pre-empts the scan
+  a = 999 AND CAST(s) = 1    pre []     post []
+  a = 50  AND CAST(s) = 1    pre THROW  post THROW  rows survive, so the cast is reached
+  CAST(s) = 1                pre THROW  post THROW
+```
+
+`a = 999` matches nothing, the seed is empty, the scan never runs and the cast is never reached. So
+the prefix rule is MORE conservative than what already holds, not less, and the test now pins the
+four actual behaviours as a cross-arm invariant rather than asserting a guarantee this engine does
+not make.
+
+### Teeth: 7 mutants, 7 caught — but one SURVIVED first and found a real hole
+
+Final verdict against the code that ships (the anchors were re-pointed and the whole set re-run
+after the `residualOf` extraction below, because a mutation verdict against pre-refactor code is
+evidence about code that no longer exists):
+
+```text
+  residual-dropped           CAUGHT  11 failures, Kleene-law fuzz first
+  residual-off-by-one        CAUGHT  10 failures
+  and-residual-truncated     CAUGHT   2 failures
+  othervar-guard-removed     CAUGHT   the existing ANOTHER-variable guard
+  prefix-becomes-anywhere    CAUGHT   the three nested-site tests added below
+  raise-guard-removed        CAUGHT   the raise-capable-family route test
+  raise-guard-too-wide       CAUGHT   its CONTROL — the families still lift when fully admitted
+```
+
+The last two are caught in BOTH directions, which is what the control in that test buys: removing
+the guard is a wrong answer, and widening it to every chain is a silent performance loss.
+
+On the first run `prefix-becomes-anywhere` **SURVIVED all 3217 tests**.
+
+`prefix-becomes-anywhere` replaces `stop = i; break;` with `continue;` at the three decline sites
+that sit inside an inner `if` — a negated compare on another variable, a per-row membership
+haystack, and a dotted compare on another variable. `continue` makes the conjunct **vanish**: it is
+neither lifted nor left in the residual, so the predicate answers a SUPERSET. Nothing noticed,
+because the control added with this item (`upper(n.s) = 'X'` first) reaches the NON-nested site and
+the other three had no test of their own.
+
+Four tests close it — a route assertion per nested site plus an answer test where a dropped conjunct
+shows as an extra row — and the mutant is now caught by all three route tests. That is the second
+time in this file that mutation found an untested decline site rather than a wrong line of code.
+
+### Still open, with its number
+
+The reverse order, `<unliftable> AND a=50`, measured 11.5-12.2 ms against the 3.0 all-lift floor and
+would need the suffix lifted — a genuine reorder, which the raise table above says is observable
+whenever the seed does NOT pre-empt the scan. Recorded, not built.
+
+**And the pricing run measured the wrong layer first.** `MATCH (n:P) WHERE … RETURN count(*)` does
+not reach `directEqProps` at all: it routes `nodeScanOf` -> `nodeScanGate` -> `nodeWhereOf` ->
+`inlineHolds`, and `nodeWhereOf` has the SAME forfeit — one unreadable conjunct returns `'decline'`
+and the whole count shortcut is abandoned. That is where the first numbers of this item came from
+(1.94x and 2.62x on `count(*)`), and it is a separate target in a separate layer, now recorded.
+Same cross-layer shape as item 1283.
+
+### Two instrument failures, both caught by an assertion rather than by luck
+
+1. **A file-global replacement matched 10 sites where the loop holds 5.** The apply script asserted
+   the expected count per indentation and refused to write. The fix was to carve the file into
+   head/loop/tail so the replacement cannot escape the loop.
+2. **`@lenke/gql` resolves to the BUILT DIST**, so the first two pricing runs executed PRE code in
+   both arms and reported "nothing moved" — and the compile-layer probe that used a relative `src`
+   import contradicted them, which is what exposed it. Every probe in this item imports
+   `../gql/src/index.js`.
+
+Gates: 3222 gql tests green (up from 3214: one superseded, nine added), 21 projects green,
+`bun run lint` 0, `bun run typecheck` 0, `bun run check` 0.
+
+### ⚠️ ONE FUZZ FAILURE, UNREPRODUCED, AND ITS SEED WAS LOST TO THE HARNESS
+
+One `bun run fuzz` reported 12 pass / 1 fail. It has not recurred in **14 subsequent runs** (11 with
+`--no-build`, 3 with the rebuild), and the differential fuzzer — the only one of the seven that
+exercises the TS GQL executor against Rust, and so the only one this change can reach — passed every
+one of them, including a run with 4825 generated predicates.
+
+That is 14 clean runs against 1 failure, which is **counting, not a rule-out**, and this file's own
+rule is to rule a suspect out STRUCTURALLY. The structural argument is only half available: of the
+seven fuzzers, `gremlin` (a separate package, with a recorded rare 1-in-30 residual whose seed
+replays clean), `parity` (wasm against FFI, Rust only), `codec`, `algo` and `write` are not reachable
+from `packages/gql/src/executor.ts`. But I cannot name WHICH fuzzer failed, because the invocation
+piped its output through `grep` to extract the result line and the seed went with the rest.
+
+**So the lesson is the harness one, not the fuzzer one:** a fuzz run's output goes to a FILE and the
+result line is read from the file afterwards. Piping it to `grep` discards exactly the thing a rare
+failure exists to give you. Every run after this one in this item redirected to a log first — which
+is why I can say the 14 were clean rather than merely that they exited 0.
+
+Recorded as unexplained rather than closed. CI runs the fuzzers again.
+
+### `residualOf`, because the lint gate refused the first shape
+
+Three real lint errors, all in the new code: `directEqProps` went to a complexity of 39 against a
+cap of 35, the residual was a nested ternary, and a blank line was missing. Extracting the tail into
+`residualOf` fixed all three at once and gave the other-variable rule a name and ONE site, which is
+better than the inline version it replaced. `bun run lint` and `bun run typecheck` are separate
+commands here and the lint one is what caught it.
+
+Adding the raise-guard then pushed it to 37, and the fix was to fold that check INTO `residualOf`
+(where the residual's existence is already known) rather than invent a second gate beside it — so
+`directEqProps` keeps ONE decision about its tail. A function already at its complexity cap is a
+useful constraint: it rejected the shape where the two rules were spelled out twice.

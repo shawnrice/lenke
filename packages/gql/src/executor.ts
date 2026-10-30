@@ -4879,6 +4879,77 @@ type CMemberProp = {
   test: (needle: unknown, env: EvalEnv) => Truth;
 };
 
+/**
+ * Did the prefix lift a family whose reading can RAISE where the whole-chain route would not?
+ *
+ * `truth`/`notTruth` coerce a value to a boolean and raise on a non-boolean; `cmp`/`path` apply an
+ * ordering comparison, which throws on a cross-type pair. `eq`, `nulls` and `member` cannot raise —
+ * equality is total (a cross-type `=` answers no-match), `isNullish` returns a plain boolean, and
+ * membership is built on equality.
+ *
+ * Named rather than inlined because the four-way test put `directEqProps` over the complexity cap,
+ * and because the question it asks deserves a sentence of its own.
+ */
+const raisesWhereTheChainWouldNot = (lists: {
+  truth: readonly string[];
+  notTruth: readonly string[];
+  cmp: readonly CCmpProp[];
+  path: readonly CPathProp[];
+}): boolean =>
+  lists.truth.length > 0 ||
+  lists.notTruth.length > 0 ||
+  lists.cmp.length > 0 ||
+  lists.path.length > 0;
+
+/**
+ * The tail `directEqProps` could not read, as one expression — or `'decline'`, meaning the chain
+ * keeps its old whole-predicate route (item 1284).
+ *
+ * ⚠️ A TAIL THAT READS ANOTHER VARIABLE DECLINES, as it always did. The callers that pass an
+ * `ownVar` have PROVED the predicate element-local, so such a tail should not arrive here at all —
+ * but the three sites that evaluate a residual (`relOnlyHopCount` and the two `startLifted` gates)
+ * bind only the element's OWN variable, so a residual reading `m` would be evaluated against a
+ * binding that has no `m`. Declining there costs nothing measured: the 1.8x this item bought is a
+ * tail on the element's own variable (`n.a >= n.a`, `upper(n.s)`), not on another one.
+ *
+ * `direct-eq-props-param.test.ts`'s `a conjunct on ANOTHER variable declines the WHOLE chain` is
+ * the guard, and it keeps its teeth UNCHANGED rather than being rewritten to match a wider rule.
+ */
+const residualOf = (
+  rest: readonly Expr[],
+  ownVar: string,
+  lifted: {
+    truth: readonly string[];
+    notTruth: readonly string[];
+    cmp: readonly CCmpProp[];
+    path: readonly CPathProp[];
+  },
+): Expr | undefined | 'decline' => {
+  // A RAISE-CAPABLE family must not lift ahead of a residual — see `raisesWhereTheChainWouldNot`.
+  // Checked here, where the residual's existence is already known, so `directEqProps` keeps ONE
+  // decision instead of two: it sits at the complexity cap and each extra branch there has to earn
+  // its place.
+  if (rest.length > 0 && raisesWhereTheChainWouldNot(lifted)) {
+    return 'decline';
+  }
+
+  for (const conjunct of rest) {
+    for (const free of freePredicateVars(conjunct)) {
+      if (free !== ownVar) {
+        return 'decline';
+      }
+    }
+  }
+
+  if (rest.length === 0) {
+    return undefined;
+  }
+
+  // ONE expression when a single conjunct is left, an `and` of the rest otherwise — rebuilt from
+  // the FLATTENED list, so a two-conjunct residual is flat even if the source parenthesised it.
+  return rest.length === 1 ? rest[0] : { kind: 'and', items: rest };
+};
+
 const directEqProps = (
   where: Expr,
   ownVar: string | undefined,
@@ -4925,7 +4996,33 @@ const directEqProps = (
   const member: CMemberProp[] = [];
   const nulls: CNullProp[] = [];
 
-  for (const conjunct of conjuncts) {
+  // ⚠️ AN UNADMITTED CONJUNCT STOPS THE LOOP, it no longer forfeits the chain (item 1284).
+  // `stop` is the index of the first conjunct this loop could not read; everything from there on
+  // is the residual and keeps WRITTEN ORDER. Lifting a PREFIX is what makes that sound without a
+  // reordering argument: the lifted families run before the residual, and a prefix is already
+  // before it in the source, so no conjunct overtakes another. The forfeit was expensive —
+  // 200,000 vertices, the unliftable conjunct `n.a >= n.a` (true for every row, so the answers
+  // are identical and it cannot raise):
+  //
+  //   a=50 alone, lifts                 4.160 ms   20.8 ns a vertex
+  //   a=50 AND b=0, both lift           4.083      20.4
+  //   a=50 AND <unliftable>             8.072      40.4            1.94x
+  //   a=50 AND b=0 AND <unliftable>    10.686      53.4            2.62x
+  //   [CTL] <unliftable> alone         12.496      62.5            nothing lifts either way
+  //
+  // The unliftable conjunct runs only on the 1% that survive `a = 50`, so nearly all of that is
+  // the SIBLINGS' forfeited lift rather than its own cost.
+  //
+  // ⚠️ THE REVERSE ORDER IS DELIBERATELY NOT DONE. `<unliftable> AND a=50` measured 13.750 and a
+  // lift would take it to ~4.3 (3.2x), but only by running `a = 50` FIRST — which is observable
+  // when the unliftable conjunct can RAISE, because short-circuiting on FALSE would then skip a
+  // throw that happens today. It needs its own argument and its own item; the test
+  // `a declining conjunct is not overtaken` pins the boundary so it cannot be taken by accident.
+  let stop = conjuncts.length;
+
+  for (let i = 0; i < conjuncts.length; i++) {
+    const conjunct = conjuncts[i];
+
     // A BARE PROPERTY standing alone as the predicate (`WHERE n.flag`), which this used to
     // decline along with the whole chain — it is not a `compare`. Item 874 counted the cost of
     // that: the generic evaluator does a binding `Map` lookup and a closure call per scanned
@@ -4977,7 +5074,8 @@ const directEqProps = (
       // A dotted or non-closed negated compare declines the chain — which is exactly what happened
       // to EVERY negated compare before this arm existed, so nothing regresses by declining here.
       if (npc === null || npc.variable !== ownVar) {
-        return null;
+        stop = i;
+        break;
       }
 
       if (npc.op === '=') {
@@ -5026,7 +5124,8 @@ const directEqProps = (
       // A haystack that varies per row cannot be lifted — and declining the whole chain here
       // matches what this loop does with every other conjunct it cannot read.
       if (test === null) {
-        return null;
+        stop = i;
+        break;
       }
 
       member.push({ key: asMembership.expr.key, test });
@@ -5034,7 +5133,8 @@ const directEqProps = (
     }
 
     if (conjunct.kind !== 'compare') {
-      return null;
+      stop = i;
+      break;
     }
 
     // `asPropCompare` is the seed-hint extractor's own reader: it handles both operand orders
@@ -5047,7 +5147,8 @@ const directEqProps = (
 
     if (pathc !== null) {
       if (pathc.variable !== ownVar) {
-        return null;
+        stop = i;
+        break;
       }
 
       path.push({ path: pathc.path, op: pathc.op, value: compileExpr(pathc.value) });
@@ -5057,7 +5158,8 @@ const directEqProps = (
     const pc = asPropCompare(conjunct);
 
     if (pc === null || pc.variable !== ownVar) {
-      return null;
+      stop = i;
+      break;
     }
 
     // AN ORDERING COMPARISON LIFTS TOO, which this used to decline — "merely unimplemented",
@@ -5108,14 +5210,36 @@ const directEqProps = (
     return null;
   }
 
-  // `residual` is ALWAYS undefined now, and the plumbing for it is gone rather than left looking
-  // live. Every admitted conjunct lifts (the param and null-literal exceptions were the only
-  // things that ever stayed behind), and a conjunct this does NOT admit declines the whole chain
-  // above — so there is no partial outcome left to express. `compilePredicate` keeps reading
-  // `direct.residual` because the shape is what a future MIXED chain would need: item 259 made
-  // reordering a FILTER's conjuncts unobservable, so lifting the equalities and leaving the rest
-  // is now sound where it previously was not, and that is the next step rather than this one.
-  return { eq, cmp, truth, notTruth, path, member, nulls, residual: undefined };
+  // `residual` is the tail the loop could not read — what the note that used to stand here called
+  // "the next step rather than this one". It is `undefined` for a fully-admitted chain, ONE
+  // expression when a single conjunct is left, and an `and` of the rest otherwise, rebuilt from
+  // the FLATTENED list so that a two-conjunct residual is flat even if the source parenthesised
+  // it.
+  const residual = residualOf(conjuncts.slice(stop), ownVar, { truth, notTruth, cmp, path });
+
+  if (residual === 'decline') {
+    return null;
+  }
+
+  // ⚠️ WITH A RESIDUAL, ONLY THE NON-RAISING FAMILIES MAY LIFT — and this is a WRONG ANSWER rather
+  // than a missed optimisation. `truthProps` reads a value and coerces it to a boolean, which
+  // RAISES on a non-boolean; the generic `and` arm does not, because FALSE dominates and settles
+  // the row first. So lifting a bare `prop` ahead of a residual exposes a raise the whole-chain
+  // route suppresses. Measured, as a TS-vs-native divergence that
+  // `packages/native/src/and-short-circuit-conformance.test.ts` caught:
+  //
+  //   MATCH (n:P) WHERE n.s AND false             native ok []   TS ok [] -> ERR E_INVALID_VALUE
+  //   MATCH (n:P) WHERE n.s AND n.n IS UNKNOWN    native ok []   TS ok [] -> ERR E_INVALID_VALUE
+  //
+  // `cmp` and `path` are held back for the same reason one step removed: an ordering comparison
+  // throws on a cross-type pair (an `=` does not — it answers no-match), so a residual that would
+  // have settled the row to FALSE first is load-bearing there too. `eq`, `nulls` and `member`
+  // cannot raise: equality is total, `isNullish` returns a plain boolean, and membership is built
+  // on equality. They are also where the 1.8-2.3x is, so the restriction costs nothing measured.
+  //
+  // A FULLY-ADMITTED chain is untouched by this — it has no residual, every conjunct lifts, and
+  // item 259 covers the ordering among families.
+  return { eq, cmp, truth, notTruth, path, member, nulls, residual };
 };
 
 /**

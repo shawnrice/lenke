@@ -80,12 +80,77 @@ describe('the lift fires, and only where it is element-local', () => {
     expect((pred.cmpProps ?? []).map((c) => `${c.key}${c.op}`)).toEqual(['k>']);
   });
 
-  test('a conjunct that is not a comparison at all still declines the WHOLE chain', () => {
+  // UPDATED at item 1284, the same way item 278 updated the two above it. This used to assert
+  // that an unreadable conjunct declined the WHOLE chain; it now lifts the PREFIX and leaves the
+  // unreadable tail as the residual `where`, which measured 2.31x on a 200,000-vertex scan. What
+  // it protects — nothing silently unapplied — is asserted by the answer tests in
+  // `mixed-chain-lift.test.ts`, which check a dropped residual as a SUPERSET of rows.
+  test('a conjunct that is not a comparison lifts the PREFIX and leaves a residual', () => {
     const pred = compilePredicate(undefined, parsePredicate("n.k = 1 AND upper(n.s) = 'X'"), 'n');
+
+    expect((pred.eqProps ?? []).map((e) => e.key)).toEqual(['k']);
+    expect(pred.cmpProps).toBeUndefined();
+    // The tail is STILL THERE. If this ever reads `undefined`, the function call has been dropped
+    // and the predicate answers a superset.
+    expect(pred.where).not.toBeUndefined();
+  });
+
+  test('CONTROL: the unreadable conjunct FIRST still declines the whole chain', () => {
+    // Only a PREFIX lifts, so a chain that opens with the unreadable conjunct lifts nothing — the
+    // boundary that keeps executed order equal to written order.
+    const pred = compilePredicate(undefined, parsePredicate("upper(n.s) = 'X' AND n.k = 1"), 'n');
 
     expect(pred.eqProps).toBeUndefined();
     expect(pred.cmpProps).toBeUndefined();
     expect(pred.where).not.toBeUndefined();
+  });
+
+  // ⚠️ THE THREE **NESTED** DECLINE SITES, each of which a surviving mutant proved untested.
+  // Item 1284's mutation run replaced `stop = i; break;` with `continue;` at the three sites that
+  // sit inside an inner `if` — a negated compare on another variable, a per-row membership
+  // haystack, and a dotted compare on another variable. `continue` makes the conjunct VANISH: it
+  // is neither lifted nor left in the residual, so the predicate answers a SUPERSET. All 3217
+  // tests passed. These are the assertions that make it fail.
+  //
+  // Each one checks the ROUTE (nothing lifted, the tail still compiled) and then the ANSWER, since
+  // the route alone would not show what dropping the conjunct costs.
+  test('⚠️ a NEGATED compare on another variable declines, and is not dropped', () => {
+    const pred = compilePredicate(undefined, parsePredicate('NOT (m.k = 1) AND n.k = 1'), 'n');
+
+    expect(pred.eqProps).toBeUndefined();
+    expect(pred.where).not.toBeUndefined();
+  });
+
+  test('⚠️ a PER-ROW membership haystack declines, and is not dropped', () => {
+    // A list whose members are not closed cannot be lifted — the haystack differs per row.
+    const pred = compilePredicate(undefined, parsePredicate('n.k IN [n.j] AND n.k = 1'), 'n');
+
+    expect(pred.eqProps).toBeUndefined();
+    expect(pred.memberProps).toBeUndefined();
+    expect(pred.where).not.toBeUndefined();
+  });
+
+  test('⚠️ a DOTTED compare on another variable declines, and is not dropped', () => {
+    const pred = compilePredicate(
+      undefined,
+      parsePredicate("m.meta.city = 'nyc' AND n.k = 1"),
+      'n',
+    );
+
+    expect(pred.eqProps).toBeUndefined();
+    expect(pred.pathProps).toBeUndefined();
+    expect(pred.where).not.toBeUndefined();
+  });
+
+  test('⚠️ ANSWERS: a dropped conjunct would be visible as a superset of rows', () => {
+    // The route assertions above are on `compilePredicate`; these run the engine, so a conjunct
+    // that vanished anywhere between the two shows up as an extra row. `one` has k=1; `nulled`
+    // stores null and `absent` has no `k`, so both are UNKNOWN under every spelling here and drop.
+    expect(countOf('MATCH (n:P) WHERE n.k IN [n.k] AND n.k = 1 RETURN count(*) AS c')).toBe(1);
+    expect(countOf('MATCH (n:P) WHERE n.k = 1 AND n.k IN [n.k] RETURN count(*) AS c')).toBe(1);
+    // A conjunct that is FALSE for every row: if it were dropped this answers 1, not 0.
+    expect(countOf('MATCH (n:P) WHERE n.k = 1 AND n.k IN [n.k + 1] RETURN count(*) AS c')).toBe(0);
+    expect(countOf('MATCH (n:P) WHERE n.k IN [n.k + 1] AND n.k = 1 RETURN count(*) AS c')).toBe(0);
   });
 });
 
