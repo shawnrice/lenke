@@ -3414,6 +3414,7 @@ impl Parser {
                         endpoint_slot: node_slot,
                         group_binds,
                         k,
+                        path_need: crate::ir::PathNeed::Full,
                         per_rep_pred: g.per_rep_pred.map(Box::new),
                     }
                 };
@@ -3529,6 +3530,7 @@ impl Parser {
                         endpoint_slot: node_slot,
                         group_binds,
                         k: 1,
+                        path_need: crate::ir::PathNeed::Full,
                         per_rep_pred: pred.map(Box::new),
                     };
                 } else {

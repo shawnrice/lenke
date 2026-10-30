@@ -1391,6 +1391,7 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
             endpoint_slot: _,
             group_binds,
             k,
+            path_need,
             per_rep_pred,
         } => var_length(
             &pull(input, store, track)?,
@@ -1407,8 +1408,7 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
             None,
             None,
             false,
-            // `RepeatGroup` has no `path_need` of its own yet, so it materializes.
-            crate::ir::PathNeed::Full,
+            *path_need,
         )?,
         Plan::NestedGroup {
             input,

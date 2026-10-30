@@ -370,6 +370,7 @@ fn drop_unread_group_binds(plan: Plan) -> Plan {
                 endpoint_slot,
                 group_binds,
                 k,
+                path_need,
                 per_rep_pred,
             } => {
                 let unread = !group_binds.is_empty()
@@ -388,6 +389,7 @@ fn drop_unread_group_binds(plan: Plan) -> Plan {
                         endpoint_slot,
                         group_binds,
                         k,
+                        path_need,
                         per_rep_pred,
                     };
                 }
@@ -467,6 +469,7 @@ fn drop_unread_group_binds(plan: Plan) -> Plan {
                     endpoint_slot,
                     group_binds: Vec::new(),
                     k,
+                    path_need,
                     per_rep_pred,
                 }
             }
@@ -577,7 +580,9 @@ fn set_path_need(plan: Plan) -> Plan {
             // `Full`. (`VarLength` still WALKS its chain either way — the DFS stacks are the
             // traversal state — so what `CountOnly` saves there is copying them out, which
             // measured 58,891us -> 22,662us at 599,998 rows.)
-            Plan::ShortestPath { path_need, .. } | Plan::VarLength { path_need, .. } => {
+            Plan::ShortestPath { path_need, .. }
+            | Plan::VarLength { path_need, .. }
+            | Plan::RepeatGroup { path_need, .. } => {
                 *path_need = crate::ir::PathNeed::CountOnly;
             }
             Plan::Project { input, .. }
@@ -1215,6 +1220,7 @@ fn map_children(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
             endpoint_slot,
             group_binds,
             k,
+            path_need,
             per_rep_pred,
         } => {
             let (i, c) = rewrite(*input, idx);
@@ -1230,6 +1236,7 @@ fn map_children(plan: Plan, idx: &dyn IndexOracle) -> (Plan, bool) {
                     endpoint_slot,
                     group_binds,
                     k,
+                    path_need,
                     per_rep_pred,
                 },
                 c,

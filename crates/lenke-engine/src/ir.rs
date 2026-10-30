@@ -841,6 +841,16 @@ pub enum Plan {
         /// two-hop body, etc. `min`/`max` above are HOP counts (`reps * k`); an
         /// endpoint is emitted only at a rep boundary (`hops % k == 0`).
         k: u32,
+        /// Whether anything reads the path's ELEMENTS, or only its size (item 1235).
+        ///
+        /// `ShortestPath` and `VarLength` have carried this since the `CountOnly` rewrite;
+        /// this operator did not, so `exec` passed a hardcoded `PathNeed::Full` and every
+        /// chain was copied out even for `RETURN path_length(p)`. It routes through the same
+        /// `var_length` walker, which already honours the flag, so the field is all that was
+        /// missing. `Full` stays the DEFAULT for the reason `opt::mark` gives: not marking
+        /// costs performance, marking under an operator that materializes the path is a wrong
+        /// answer.
+        path_need: PathNeed,
         /// A PER-REPETITION `WHERE` (`((x)-[e]->(y) WHERE pred){…}`) — a predicate
         /// over the rep's SCALAR variables at fixed mini-scope slots (source=0,
         /// edge=1, target=2), evaluated at each hop; a hop that fails it is pruned.

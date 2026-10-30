@@ -8932,16 +8932,86 @@ fn any_count_only(p: &Plan) -> bool {
         }
         | Plan::VarLength {
             path_need, input, ..
+        }
+        // Markable since item 1235; before that this arm descended THROUGH a `RepeatGroup`
+        // without reading its flag, which was right while it had none.
+        | Plan::RepeatGroup {
+            path_need, input, ..
         } => matches!(path_need, crate::ir::PathNeed::CountOnly) || any_count_only(input),
         Plan::Project { input, .. }
         | Plan::Filter { input, .. }
         | Plan::Aggregate { input, .. }
         | Plan::Distinct { input }
         | Plan::OrderPage { input, .. }
-        | Plan::Expand { input, .. }
-        | Plan::RepeatGroup { input, .. } => any_count_only(input),
+        | Plan::Expand { input, .. } => any_count_only(input),
         _ => false,
     }
+}
+
+/// `RepeatGroup`'s own `path_need`, for the test below — `any_count_only` cannot answer it, because
+/// a plan with a marked operator ANYWHERE says yes.
+fn repeat_group_path_need(p: &Plan) -> Option<crate::ir::PathNeed> {
+    match p {
+        Plan::RepeatGroup { path_need, .. } => Some(*path_need),
+        Plan::Project { input, .. }
+        | Plan::Filter { input, .. }
+        | Plan::Aggregate { input, .. }
+        | Plan::Distinct { input }
+        | Plan::OrderPage { input, .. }
+        | Plan::VarLength { input, .. }
+        | Plan::Expand { input, .. } => repeat_group_path_need(input),
+        _ => None,
+    }
+}
+
+/// A quantified group whose path is read for its SIZE ONLY must be marked `CountOnly` (item 1235),
+/// and one whose elements or group lists are read must NOT be.
+///
+/// ⚠️ THIS TEST EXISTS BECAUSE THE CHANGE IS INVISIBLE TO EVERY OTHER KIND OF TEST, and that was
+/// verified rather than assumed. Marking is ANSWER-EQUIVALENT: a mutant that resets the flag in
+/// `opt`'s unread-bindings rebuild — silently undoing the marking and costing 1.37x — SURVIVED the
+/// whole suite plus 200,000 `rewrite_fuzz` seeds. The opposite mutant, suppressing the chain
+/// regardless of what reads it, IS caught, because that one changes answers. So the dangerous
+/// direction has teeth and the wasteful direction needs this assertion.
+#[test]
+fn repeat_group_path_size_only_is_marked_count_only() {
+    let store = crate::store::Builder::default().build();
+    let need =
+        |q: &str| -> Option<crate::ir::PathNeed> { repeat_group_path_need(&opt_plan(q, &store)) };
+
+    // SIZE ONLY — the chain is never read, so it need never be copied out.
+    assert_eq!(
+        need("MATCH p = ((a)-[:KNOWS]->(b)){1,2} RETURN path_length(p) AS len"),
+        Some(crate::ir::PathNeed::CountOnly),
+        "path_length reads only the size"
+    );
+    assert_eq!(
+        need("MATCH p = ((a)-[:KNOWS]->(b)){1,2} RETURN cardinality(p) AS c"),
+        Some(crate::ir::PathNeed::CountOnly),
+        "cardinality too"
+    );
+    // ELEMENTS READ — marking here is the wrong answer `opt::mark`'s comment warns about, and the
+    // raw-vs-optimized fuzzer caught exactly that at seed 632 for a `VarLength` over a
+    // `ShortestPath`.
+    assert_eq!(
+        need("MATCH p = ((a)-[:KNOWS]->(b)){1,2} RETURN nodes(p) AS ns"),
+        Some(crate::ir::PathNeed::Full),
+        "nodes(p) reads the elements"
+    );
+    assert_eq!(
+        need("MATCH p = ((a)-[:KNOWS]->(b)){1,2} RETURN edges(p) AS rs"),
+        Some(crate::ir::PathNeed::Full),
+        // `edges`, not `relationships`: the ISO name is `edges` and the Cypherism is
+        // deliberately NOT accepted (gql.rs says so). Using it here made this test panic in
+        // `parse().unwrap()`, which is the parser being right.
+        "edges(p) reads the elements too"
+    );
+    // NOTHING reads the path at all: `mark` returns early, so the operator stays `Full`.
+    assert_eq!(
+        need("MATCH ((a)-[:KNOWS]->(b)){1,2} RETURN size(b) AS k"),
+        Some(crate::ir::PathNeed::Full),
+        "no path is read, so nothing is marked"
+    );
 }
 
 /// The `path_need` of the plan's `ShortestPath`, specifically. `any_count_only` cannot say

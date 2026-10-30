@@ -1333,6 +1333,11 @@ fn gen_chain(rng: &mut Lcg, hops: usize) -> Gen {
                 max: 1 + rng.below(3).min(reps as usize) as u32,
                 mode: *rng.pick(&[PathMode::Walk, PathMode::Trail, PathMode::Simple]),
                 endpoint_slot,
+                // FULL, deliberately: `opt::mark` is what sets `CountOnly`, so generating the
+                // unmarked form is what makes the raw-vs-optimized comparison able to see the
+                // marking at all. A generator that emitted `CountOnly` here would compare a
+                // marked plan against a marked plan and pass without testing the rewrite.
+                path_need: crate::ir::PathNeed::Full,
                 group_binds,
                 // Single-hop unit only; multi-hop bodies lower elsewhere.
                 k: 1,
