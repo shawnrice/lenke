@@ -34787,3 +34787,123 @@ fn two_bound_hop_count_reduces_to_a_range_without_changing_the_answer() {
         "five edges exist"
     );
 }
+
+/// A count with k EXCLUSIONS, answered as k+1 vectorized passes (item 1231). Every assertion here
+/// kills a mutant that SURVIVED the whole suite before it existed, and each corresponds to
+/// something that is new at k > 1 and therefore untested when only `[x]` was admitted:
+///
+/// ```text
+///   dedup removed          `<> 5 AND <> 5` subtracts twice   -> 4 instead of 5
+///   `inside` gate removed  `<> 1` (outside the range) subtracts -> 5 instead of 6
+///   break after one pass   `<> 5 AND <> 6` applies only `<> 5` -> 5 instead of 4
+///   subtraction -> addition                                   (already caught by the k=1 tests)
+/// ```
+///
+/// ⚠️ THE FIXTURE PUTS ONE NODE AT EVERY VALUE 1..=10, so each count is small and exact and every
+/// mutation moves it by at least one. A fixture with no value OUTSIDE the range could not see the
+/// `inside` gate, and one with no REPEATED exclusion could not see the dedup — both were the
+/// reason those mutants lived.
+#[test]
+fn count_with_k_exclusions_subtracts_each_distinct_in_range_value_once() {
+    let mut b = Builder::default();
+
+    for k in 1..=10u32 {
+        b.node(&["P"], &[("k", Value::Num(f64::from(k)))]);
+    }
+
+    let store = b.build();
+    let n = |pred: &str| -> f64 {
+        let q = format!("MATCH (p:P) WHERE {pred} RETURN count(*) AS c");
+
+        match crate::exec::try_run(&opt_plan(&q, &store), &store)
+            .unwrap()
+            .rows
+            .iter()
+            .next()
+            .expect("one row")[0]
+        {
+            Value::Num(x) => x,
+            ref o => panic!("count returns a number, got {o:?}"),
+        }
+    };
+
+    // The range alone: k in {3,4,5,6,7,8}.
+    assert_eq!(
+        n("p.k > 2 AND p.k < 9"),
+        6.0,
+        "the range, with no exclusion"
+    );
+    // ONE exclusion — the case that already worked, asserted so the generalization cannot regress
+    // it silently.
+    assert_eq!(n("p.k > 2 AND p.k < 9 AND p.k <> 5"), 5.0, "one exclusion");
+    // TWO exclusions: the arm that did not exist. A `break` after the first pass answers 5.
+    assert_eq!(
+        n("p.k > 2 AND p.k < 9 AND p.k <> 5 AND p.k <> 6"),
+        4.0,
+        "both exclusions apply"
+    );
+    // THREE, so the loop runs more than twice.
+    assert_eq!(
+        n("p.k > 2 AND p.k < 9 AND p.k <> 4 AND p.k <> 5 AND p.k <> 6"),
+        3.0,
+        "three exclusions"
+    );
+    // A REPEATED exclusion must be subtracted ONCE. Without dedup this answers 4.
+    assert_eq!(
+        n("p.k > 2 AND p.k < 9 AND p.k <> 5 AND p.k <> 5"),
+        5.0,
+        "a duplicate counts once"
+    );
+    assert_eq!(
+        n("p.k > 2 AND p.k < 9 AND p.k <> 5 AND p.k <> 5 AND p.k <> 5"),
+        5.0,
+        "and three copies still count once"
+    );
+    // An exclusion OUTSIDE the range changes nothing — the range already omits it. Without the
+    // `inside` gate this subtracts the node at k = 1 and answers 5.
+    assert_eq!(
+        n("p.k > 2 AND p.k < 9 AND p.k <> 1"),
+        6.0,
+        "an exclusion below the range"
+    );
+    assert_eq!(
+        n("p.k > 2 AND p.k < 9 AND p.k <> 10"),
+        6.0,
+        "an exclusion above the range"
+    );
+    // MIXED: one inside, one outside.
+    assert_eq!(
+        n("p.k > 2 AND p.k < 9 AND p.k <> 5 AND p.k <> 1"),
+        5.0,
+        "only the in-range exclusion is subtracted"
+    );
+    // An exclusion exactly ON an exclusive bound is OUTSIDE it, so it subtracts nothing.
+    assert_eq!(
+        n("p.k > 2 AND p.k < 9 AND p.k <> 2"),
+        6.0,
+        "on the excluded lower bound"
+    );
+    assert_eq!(
+        n("p.k > 2 AND p.k < 9 AND p.k <> 9"),
+        6.0,
+        "on the excluded upper bound"
+    );
+    // And ON an INCLUSIVE bound it is inside, so it does.
+    assert_eq!(
+        n("p.k >= 3 AND p.k <= 8 AND p.k <> 3"),
+        5.0,
+        "on the included lower bound"
+    );
+    assert_eq!(
+        n("p.k >= 3 AND p.k <= 8 AND p.k <> 8"),
+        5.0,
+        "on the included upper bound"
+    );
+    // Excluding EVERY value in the range leaves nothing, which pins that the subtraction cannot
+    // run past zero into a wrap-around on the unsigned count.
+    assert_eq!(
+        n("p.k > 2 AND p.k < 9 AND p.k <> 3 AND p.k <> 4 AND p.k <> 5 AND p.k <> 6 AND p.k <> 7 AND p.k <> 8"),
+        0.0,
+        "every in-range value excluded"
+    );
+}

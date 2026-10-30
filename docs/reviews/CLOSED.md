@@ -37468,3 +37468,63 @@ reproduces within the run but has not been isolated, and nothing here depends on
 WHAT THIS LEAVES, unchanged and still the better target: the one-vs-two exclusion cliff at 11.9x
 (item 1229). Extending item 1213's two-pass trick to k exclusions is branchless in BOTH arms, so it
 carries no trade of this kind at all.
+
+### Item 1231 — k exclusions as k+1 vectorized passes: 8.65-17.6x, flat across fixtures, and no crossover up to k=32 (DONE)
+
+Item 1213 answered ONE exclusion as two vectorized passes (count the range, subtract the excluded
+value's own count); `if let [x] = c.ne.as_slice()` admitted exactly one and everything beyond fell
+to the fully general arm, which walks `bounds` and dispatches `num_pred` PER ROW. Item 1229 measured
+that as a cliff: one exclusion 51.2 us, TWO exclusions 608.8 — **11.9x for one more literal**. The
+gate is now `!c.ne.is_empty()` and the trick runs k+1 passes, which is the same soundness argument
+with no dependence on k.
+
+200,000 nodes, min of 7, binaries hash-asserted (PRE `7b4e8eba`, POST `f6eed0a4`):
+
+```text
+  k   PRE periodic   PRE random   POST (both)   gain periodic / random
+  0         28.2         28.2          27.8     control — the `ne.is_empty()` branch
+  1         50.8         50.6          49.9     1.02x / 1.01x — item 1213's arm, unchanged
+  2        624.8       1269.0          72.2     8.65x / 17.57x
+  4        779.1       1429.2         116.7     6.67x / 12.25x
+  8       1042.6       1729.1         206.0     5.06x /  8.39x
+ 16       1615.0       2365.5         384.4     4.20x /  6.15x
+ 32       2194.8       3122.3         741.0     2.96x /  4.21x
+```
+
+POST IS FLAT ACROSS THE TWO FIXTURES AT EVERY k (1.00x) where PRE was 1.42-2.03x data-dependent —
+that is the signature that the rewrite replaced a branchy pass with vectorized ones, not merely that
+it got faster. Answers identical between arms at every k.
+
+⚠️ NO CROSSOVER, AND IT WAS MEASURED RATHER THAN CAPPED ON A GUESS. k+1 passes each cost something,
+so for large enough k one branchy pass must eventually win — that is the obvious objection, and the
+honest answer is a sweep. POST's slope is ~23 us per exclusion against PRE's ~50-60, so POST's cost
+grows MORE SLOWLY and the lines never cross; at k=32 it is still 2.96-4.21x ahead. No cap was added,
+because adding one would have been an arbitrary number defended by nothing.
+
+⚠️ TWO THINGS ARE NEW AT k > 1 AND BOTH ARE WRONG ANSWERS IF MISSED:
+
+- **Duplicates must be subtracted once.** `k <> 73 AND k <> 73` reduces to `ne = [73, 73]`, and
+  `canonical_num_conj` does not deduplicate (the general arm is idempotent in `ne`, so it had no
+  reason to). Dedup uses `contains`, i.e. `PartialEq` on `f64` — the SAME `==` the counting pass
+  uses, so a signed zero cannot slip between them. NaN cannot appear: `canonical_num_conj`
+  declines a NaN literal outright.
+- **An exclusion outside the range must be skipped**, or it subtracts rows the range count never
+  included.
+
+TEETH: four mutants, all compiled. THREE SURVIVED before the test existed — dedup removed, the
+`inside` gate removed, and a `break` after the first pass — i.e. nothing tested k≥2 exclusions, a
+repeated exclusion, or an out-of-range exclusion, which are exactly the three things that are new.
+All four now fail, three by exactly one test (the new one) and the sign flip by six.
+
+CONTROLS: the range-only count and a STRING bound, flat in both arms. `query_bench`'s worst rows are
+`counts|filtered` 1.13x and `gremlin|has age>50` 1.10x — both the single-bound scan path this change
+does not touch, and both re-measured ISOLATED at PRE 28.0-28.2 against POST 27.9-28.1, flat. That is
+the bimodal row item 1225 recorded, behaving as recorded.
+
+⚠️ NO CORPUS ROW EXERCISES k≥2 EXCLUSIONS, which is how an 11.9x cliff sat unmeasured until item
+1229 went looking. Same gap item 1221 found and closed for the bare filtered count; this one is
+still open.
+
+THE SUM EQUIVALENT REMAINS BARRED: `sum(range)` minus `excluded value x its count` is arithmetically
+exact but changes the ASSOCIATION ORDER of a floating-point reduction, and byte-identity across the
+engines is a hard invariant. The count is safe for exactly the reason the sum is not.

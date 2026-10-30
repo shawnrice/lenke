@@ -2335,8 +2335,20 @@ pub(super) fn try_stream_num_count(
         // cell fails the range test itself (every ordering comparison is false for it), so it is
         // in neither count. `-0.0 == 0.0` holds in both directions, so a signed zero is treated
         // identically by the two passes.
-        if let [x] = c.ne.as_slice() {
-            let x = *x;
+        // ⚠️ k EXCLUSIONS, NOT ONE (item 1231). `[x]` admitted exactly one and everything else fell
+        // to the general arm, which walks `bounds` and dispatches `num_pred` PER ROW — measured at
+        // item 1229 as a cliff: one exclusion 51.2us, TWO exclusions 608.8us, 11.9x, for one more
+        // literal. k+1 passes is the same trick with the same soundness argument, which does not
+        // depend on k.
+        //
+        // ⚠️ DUPLICATES MUST BE SUBTRACTED ONCE, which is new at k > 1 and is a WRONG ANSWER if
+        // missed: `k <> 73 AND k <> 73` reduces to `ne = [73, 73]`, and two subtractions would
+        // under-count by the number of 73s. `canonical_num_conj` does not deduplicate (it has no
+        // reason to — the general arm is idempotent in `ne`), so this does. The comparison used for
+        // dedup is `contains`, i.e. `PartialEq` on `f64` — the SAME `==` the counting pass uses, so
+        // a signed zero is treated identically by both and cannot slip between them. (NaN cannot
+        // appear in `ne` at all: `canonical_num_conj` declines a NaN literal outright.)
+        if !c.ne.is_empty() {
             let pair = [
                 (
                     if c.lo_incl {
@@ -2357,15 +2369,20 @@ pub(super) fn try_stream_num_count(
             ];
 
             if let Some(total) = try_stream_range_count(store, label, &pair, data, present) {
-                // The excluded value only needs counting when it is INSIDE the range; outside it,
-                // the range count already omits it and the second pass would be pure cost.
-                let inside = (if c.lo_incl { x >= c.lo } else { x > c.lo })
-                    && (if c.hi_incl { x <= c.hi } else { x < c.hi });
-                let excluded = if inside {
-                    sweep_num_count(store, label, data, present, |v| v == x)
-                } else {
-                    0
-                };
+                let mut excluded = 0u64;
+                let mut counted: Vec<f64> = Vec::with_capacity(c.ne.len());
+
+                for &x in &c.ne {
+                    // An excluded value only needs counting when it is INSIDE the range; outside
+                    // it the range count already omits it and the pass would be pure cost.
+                    let inside = (if c.lo_incl { x >= c.lo } else { x > c.lo })
+                        && (if c.hi_incl { x <= c.hi } else { x < c.hi });
+
+                    if inside && !counted.contains(&x) {
+                        counted.push(x);
+                        excluded += sweep_num_count(store, label, data, present, |v| v == x);
+                    }
+                }
 
                 return Some(total - excluded);
             }
