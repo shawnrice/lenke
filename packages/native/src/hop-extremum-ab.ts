@@ -56,6 +56,18 @@ const CASES: readonly [string, string][] = [
   // one-item projection, so these are the "grep the pattern elsewhere" check.
   ['single  min over x', 'MATCH (a:Person)-[:KNOWS]->(x) RETURN min(x.name) AS v'],
   ['single  max over x', 'MATCH (a:Person)-[:KNOWS]->(x) RETURN max(x.age) AS v'],
+  // The two sites item 1246 DECLINED, priced before either is touched (item 1248).
+  // Undirected: `-[:T]-` tests both buckets and has its own self-loop arithmetic (items 480-483).
+  [
+    'undirected min+max',
+    'MATCH (a:Person)-[:KNOWS]-(x) RETURN min(x.name) AS lo, max(x.name) AS hi',
+  ],
+  // Grouped: min/max over a multiset is per-GROUP idempotent too, but the group key changes which
+  // endpoints share a fold.
+  [
+    'grouped by far prop',
+    'MATCH (a:Person)-[:KNOWS]->(x) RETURN x.city AS c, min(x.age) AS lo ORDER BY c',
+  ],
   [
     '[CTL] count(*) + max',
     'MATCH (a:Person)-[:KNOWS]->(x) RETURN count(*) AS c, max(x.name) AS hi',

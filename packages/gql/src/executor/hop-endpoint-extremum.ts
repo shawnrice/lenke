@@ -95,12 +95,6 @@ export const primedEndpointExtremum = (
     return null;
   }
 
-  // UNDIRECTED is declined, not unsound: `-[:T]-` would test both buckets, and it has its own
-  // self-loop arithmetic (items 480-483) that this has not been measured against.
-  if (rel.direction === 'both') {
-    return null;
-  }
-
   const farVar = far.variable;
 
   if (farVar === undefined) {
@@ -127,6 +121,13 @@ export const primedEndpointExtremum = (
   const startLabel = start.label;
   const farLabel = far.label;
   const outward = rel.direction === 'out';
+  // ⚠️ UNDIRECTED NEEDS NO SELF-LOOP CORRECTION HERE, which is why it is admitted (item 1248)
+  // after item 1246 declined it for lacking one. The counting paths need the arithmetic items
+  // 480-483 built because a loop sits in BOTH adjacency maps and would be counted twice. This
+  // fold asks only "is x reached at all" — a BOOLEAN — and then folds x's value ONCE. A loop
+  // makes the answer true via either bucket, and `min`/`max` do not care how many times a value
+  // would have arrived. So `-[:T]-` is the union of the two buckets and nothing is subtracted.
+  const bothDirections = rel.direction === 'both';
 
   return (graph, params) => {
     // THE RUN-TIME ADMISSION. A start label no vertex fails costs nothing to drop; any other
@@ -138,7 +139,10 @@ export const primedEndpointExtremum = (
     const binding = new Map<string, unknown>();
     const env = { binding, params, graph };
     const state: unknown[] = accs.map((a) => (a.kind === 'fold' ? a.fold.init() : undefined));
+    // An undirected hop reads BOTH; a directed one reads the side the far endpoint is on.
     const index = outward ? graph.edgesToByLabel : graph.edgesFromByLabel;
+    const opposite = outward ? graph.edgesFromByLabel : graph.edgesToByLabel;
+    const other = bothDirections ? opposite : undefined;
 
     // `candidateVertexSource` seeds from the far label's own index when it can and falls back to
     // every vertex for a compound expression, which is why the recheck below still runs.
@@ -151,8 +155,15 @@ export const primedEndpointExtremum = (
       // label vacuous that is the whole of the pattern's reachability test, and a bucket SIZE
       // answers it without touching an edge.
       const byType = index.get(x.id);
+      let reached = byType !== undefined && hasAnyOfTypes(byType, types);
 
-      if (byType === undefined || !hasAnyOfTypes(byType, types)) {
+      if (!reached && other !== undefined) {
+        const alt = other.get(x.id);
+
+        reached = alt !== undefined && hasAnyOfTypes(alt, types);
+      }
+
+      if (!reached) {
         continue;
       }
 

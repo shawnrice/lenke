@@ -112,6 +112,36 @@ describe('the per-endpoint extremum fold (item 1246)', () => {
     ]);
   });
 
+  test('an UNDIRECTED hop reaches the sources too, and needs no loop correction (item 1248)', () => {
+    // `-[:KNOWS]-` reaches every endpoint of a KNOWS edge: {s1,s2,m1,m2,m3} with k 50,51,10,20,30.
+    // So min stays 10 but max becomes 51, NOT the directed 30 — which is what makes this fixture
+    // able to tell the two directions apart at all.
+    //
+    // ⚠️ NO SELF-LOOP CORRECTION IS NEEDED, unlike the counting paths (items 480-483): this fold
+    // asks only whether x is reached, as a boolean, then folds x's value once. A loop sitting in
+    // both adjacency maps cannot double-count a value `min`/`max` ignore the multiplicity of.
+    expect(
+      query(graph(), 'MATCH (a:P)-[:KNOWS]-(x) RETURN min(x.k) AS lo, max(x.k) AS hi'),
+    ).toEqual([{ lo: 10, hi: 51 }]);
+
+    // The isolated extremes stay out: `lo`/`hi` carry -999/999 and have NO edge in either
+    // direction, so a reach test that ignored the buckets would show up here.
+    expect(
+      query(graph(), 'MATCH (a:P)-[:KNOWS]-(x) RETURN min(x.n) AS lo, max(x.n) AS hi'),
+    ).toEqual([{ lo: 'm1', hi: 's2' }]);
+  });
+
+  test('a SELF-LOOP is reached once and folded once (item 1248)', () => {
+    // A loop on `hi` (k=999) puts it in BOTH adjacency maps. Undirected must reach it exactly
+    // once; a correction that subtracted it would drop 999 from the max.
+    const looped = `${NDJSON}\n{"type":"edge","id":"e6","labels":["KNOWS"],"from":"hi","to":"hi","properties":{}}`;
+    const g = deserialize(looped, 'ndjson', new Graph());
+
+    expect(query(g, 'MATCH (a:P)-[:KNOWS]-(x) RETURN max(x.k) AS hi')).toEqual([{ hi: 999 }]);
+    // Directed sees the loop too - `hi` is its own in-neighbour.
+    expect(query(g, 'MATCH (a:P)-[:KNOWS]->(x) RETURN max(x.k) AS hi')).toEqual([{ hi: 999 }]);
+  });
+
   test('a far LABEL still filters the endpoints', () => {
     // m2 keeps the label, m1/m3 lose it, so a labelled far end answers 20/20 rather than 10/30.
     const relabelled = NDJSON.replace(
