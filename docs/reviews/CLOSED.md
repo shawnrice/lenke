@@ -2878,7 +2878,8 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   about the FFI surface not reaching the new path. Rebuild with `--features capi`, or via
   `bun run build` / `bun run fuzz`, before believing a cross-engine number.
 - ~~**`ORDER BY <hop property> LIMIT k` had NO fast path — 8.2-10.5x its own walk floor**~~ —
-  **numeric arm CLOSED by item 1185, the other three OPEN with numbers.** Every top-K entry is a
+  **numeric arm CLOSED by item 1185, ~~the other three OPEN with numbers~~ — the other three CLOSED
+  by item 1186 (6.78x bool / 5.77x dict / 2.72x str).** Every top-K entry is a
   `try_scan_top_k*` wanting a bare `Scan` and `top_k_liftable` rejects an `Expand`, so the hop fell
   to `try_late_materialize`'s generic arm (pull the whole expansion, sort, project survivors).
   `try_hop_top_k` answers it from `frontier_counts` with multiplicity as a REPEAT COUNT: **4.88x**
@@ -2953,7 +2954,9 @@ RETURN p.k LIMIT 1` costs **2519.6 us** against the uncapped join's 2738.2 — t
   this: its fixture has no index).
 - ⚠️ ~~**LOCATED AT LAST ... priced at ~600x**~~ — the LOCATION stands, the PRICE is retracted by
   1217 above. **The dict-equality row is an `IndexSeek`, and
-  `count(*)` over one is NOT answered from the index (1216). OPEN, priced at ~600x.** The plan is
+  `count(*)` over one is NOT answered from the index (1216). ~~OPEN, priced at ~600x~~ — CLOSED BY
+  ITEM 1267, which added the `IndexSeek` arm and went further: it refuses the index above ~1%
+  selectivity, because the sweep is O(label) and vectorized.** The plan is
   `Project{Aggregate{IndexSeek{label: "Person", key: "d", value: Str("g3")}}}` — so
   `WHERE p.d = 'g3' RETURN count(*)` never enters `try_filtered_count` at all (instrumenting its
   whole chain showed 30 predicates entering and NONE on the `d` column). `try_scan_count` has arms
@@ -3490,7 +3493,8 @@ collect(a.s)` over four nodes — one string, one STORED `Value::Null`, one stri
   two N-sized allocations where the projection path appears to make one. NOT YET CONFIRMED; that
   read is the next step, and a grouped `collect` is the control the change cannot reach.
   Instrument: `crates/lenke-engine/examples/collect_agg_probe.rs`.
-- ⚠️ **OPEN, DIAGNOSED, and the obvious reading of it is WRONG: the TS multi-hop count is 67.7x
+- ⚠️ **OPEN (⚠️ RECLASSIFIED AT 1276: a CONSTANT FACTOR, not a missing path), DIAGNOSED, and the
+  obvious reading of it is WRONG: the TS multi-hop count is 67.7x
   native, and it is NOT a missing fast path (1193).** The bench sweep's largest ts/ffi ratio with a
   meaningful absolute time is `count 3-hop` at **ts 326.5ms against ffi 4.8ms**; the family runs
   38.9x (2-hop) to 67.7x (3-hop) with 4-hop at 365.2ms. `shortcuts.ts` HAS the chain closed forms
@@ -4751,7 +4755,8 @@ Three things to not re-derive:
 - **A guard has two mutation directions and only one is unsafe.** Mutating the subquery guard to
   `true` makes it more conservative and survives, which momentarily reads as a missing test.
 
-OPEN, and now measured rather than described: `filteredHopWalk` binds no edge, so a far predicate,
+~~OPEN~~ **CLOSED at 447** (2.6x), and now measured rather than described: `filteredHopWalk` binds
+no edge, so a far predicate,
 a carried clause `WHERE`, or a start-reading item still declines when the rel is read —
 `WHERE r.w < 100 RETURN b` stays at ~772 ns/row. It is a `spelling-probe` group reporting **2.7x**,
 labelled expected-over-threshold with the item number so it is not chased as a regression.
@@ -4884,7 +4889,8 @@ caseinv_450 -- <case>` prints them. The question was which RUNTIME fast path eac
 - **A streaming count with no allocation losing to a path that materializes a 200,000-id batch AND
   a 91,000-entry keep-list is the tell** that per-element cost, not allocation, is deciding.
 
-STILL OPEN: **two bounds cost 3.9x one bound** (1.774 against 0.459 ms at 1M), because the
+~~STILL OPEN~~ **CLOSED at 453** (3.9x): **two bounds cost 3.9x one bound** (1.774 against 0.459 ms
+at 1M), because the
 multi-bound arm still iterates the `Vec` per node. Specializing it means either 36 operator pairs
 or getting the bounds onto the stack; neither is written.
 
@@ -5055,7 +5061,8 @@ matching the function NAME as a STRING against dozens of arms, and pushing a box
 `Col::Gen`. The per-row `Vec` allocation is ALREADY GONE (one reused buffer), so that lever is
 spent. The fix shape is to resolve the name to a function pointer once before the row loop.
 
-OPEN with numbers, both from `cargo run --example exprpred_437`:
+~~OPEN~~ **BOTH HALVES CLOSED — 458** (`coalesce` over columns, 8.9x) **and 459** (resolving a
+scalar function's NAME once, 2.6x) — with numbers, both from `cargo run --example exprpred_437`:
 
 - **The generic scalar-call path, ~33 ns/row / ~9x**, for every scalar function lacking a
   vectorized arm.
@@ -5356,7 +5363,7 @@ guard is vacuous.
 Also: `sum`/`avg` moved out of `node-aggregate.test.ts`'s "REFUSED shapes" list, which named a
 routing that is no longer true. **A stale test name is a claim like any other.**
 
-## 469 — TWO aggregates over one scan: CLOSED at 2.7-4.3x (TS). The same step is OPEN in native
+## 469 — TWO aggregates over one scan: CLOSED at 2.7-4.3x (TS). ~~The same step is OPEN in native~~ — **CLOSED at 470** (3.7-4.4x), and the SCAN multi-aggregate arc finished at 1187/1188 (`try_scan_multi_agg` + `_wide`)
 
 Every rung that could claim an aggregating scan refused `proj.items.length !== 1`, so a projection
 with two aggregates fell to the general path whole — a `Binding` per row for one row of output.
@@ -5374,7 +5381,8 @@ tuple per accumulator per row. The tell: `min, max` sat at 32.7 ms where two sep
 9.8 each, which no accumulator loop can explain. Index loops only in a per-row body; this is the
 fourth entry (453, 459, 462, 469) where the hot loop's LAYOUT, not its logic, was the measurement.
 
-**OPEN: native shows the same step** — 0.1 ms for one aggregate against 0.4-0.5 for two, all four
+**~~OPEN~~ CLOSED AT 470 (3.7-4.4x, a different cause): native shows the same step** — 0.1 ms for
+one aggregate against 0.4-0.5 for two, all four
 pairs, same fixture. Same question, not yet the same answer.
 
 Mutation: five of eight caught. The survivor is item 468's — `sum`/`avg` under a filter — for the
@@ -5452,7 +5460,8 @@ which no fixture reached until one built the graph that provokes a decline — m
 index on the far key, a selective inline constraint. **A run-time decline is reachable only by
 building the graph that causes it.**
 
-**OPEN: native shows the same cliff** — `max(b.age)` 2.4 ms against 6.4 and 8.1 for the pairs.
+**~~OPEN~~ CLOSED AT 473 (2.5-2.8x; tabled by 1080, but this line itself was missed): native shows
+the same cliff** — `max(b.age)` 2.4 ms against 6.4 and 8.1 for the pairs.
 
 ## 473 — two aggregates over one frontier (native): CLOSED at 2.5-2.8x. Item 472's twin, both halves now done
 
@@ -5999,7 +6008,9 @@ survivors are equivalent BY CONSTRUCTION and the argument is in the code**: `ext
 `from` forward, so a GQL body is a single chain and the slot-chain check cannot fire; the
 anchor-slot check is subsumed by the slot read on the next line.
 
-**OPEN, measured, 151x:** the TS engine caps its degree path at TWO segments
+**~~OPEN, measured, 151x~~ CLOSED AT 497 (10.3x), the very next item — and nothing later in the file
+mentioned it, so only the CODE said so (`segments.length === 3` and `>= 4` arms now exist):** the TS
+engine caps its degree path at TWO segments
 (`degreeCountSubquery` returns `null` above that), so a three-hop `COUNT { … }` costs **6097 ms
 against native's 40.4**. The recursion added here is the shape the TS twin needs.
 
@@ -6113,7 +6124,7 @@ Mutation 2 of 4; `distinct: true` on the wrapper is equivalent (DISTINCT applies
 standing in for the outer row, outer-slot references). `rewrite_fuzz` generates top-level plans
 only and needs widening first.
 
-## 502 — OPEN, measured: TS re-runs an uncorrelated subquery body ONCE PER OUTER ROW
+## 502 — ~~OPEN, measured~~ **CLOSED at 503**: TS re-runs an uncorrelated subquery body ONCE PER OUTER ROW
 
 `COUNT { MATCH (:Person)-[:KNOWS]->(b) }` with no correlation: **4,102.8 ms at PN=2,000 and
 18,620.2 at PN=4,000** (2x the rows, 4.5x the time — quadratic), and it DID NOT FINISH in nine
@@ -6683,7 +6694,8 @@ Prop list 95.2 / 159.7 / 99.9 → 25.2 / 23.7 / 24.0 (~4.0x); constant list 93.2
 26.2 / 21.1 / 20.6 (~4.4x); the no-`FOR` control flat at 9.8-11.7 → 9.6-10.9. Three alternated
 rounds with a rebuild between each, disjoint.
 
-**OPEN on the other side now: native's `FOR` projection**, which these numbers beat (24 and 21
+**~~OPEN on the other side now~~ RETRACTED AT 529 (item 528 read the carrier): native's `FOR`
+projection**, which these numbers beat (24 and 21
 against 50.8 and 40.1).
 
 Mutation 7 of 7 (null control clean). One mutant MISAPPLIED first — the label-bucket line is
@@ -8090,7 +8102,7 @@ or nested group" is FALSE — it generates them in quantity, with a coverage flo
 memory summary whose own note body corrects it. The engine-corpus note's gap is about NESTED
 groups specifically.
 
-### A seventh cross-engine divergence — group bindings are NULL in TS clause expressions — OPEN
+### A seventh cross-engine divergence — group bindings are NULL in TS clause expressions — ~~OPEN~~ **CLOSED at 571** (it was four wrong answers, not one)
 
 A quantified group's per-rep binding resolves correctly in a RETURN item and to NULL everywhere
 else in TS — a clause `WHERE`, a standalone `FILTER`, an `ORDER BY` key — where native sees the
@@ -8478,7 +8490,7 @@ The index seek IS taken: 93.1k ops/s against a 3.4k scan reference, 27x. 200 mat
 1.8x is the data-layout per-row constant that item 566 established, not a missing route. Swapping
 the conjuncts changes nothing (88.9k against 90.0k), so no written-order cliff either.
 
-### A TS spelling gap that no instrument was watching — OPEN
+### A TS spelling gap that no instrument was watching — ~~OPEN~~ **REFUTED at item 1293** at this item's own prescribed fixture (1.02x)
 
 ```
 MATCH (u:User) WHERE u.score = $s AND u.active = true   clause
@@ -8585,7 +8597,7 @@ records a group reported at 1.5-2.1x across two audit items "with no engine caus
 is why it times every spelling in both positions. **Use the probe (add a group) rather than a new
 ad-hoc harness when the effect is under ~2x.**
 
-### Item 581 — TS's top-k pays 4.5x its OWN floor — OPEN, specified, and watched
+### Item 581 — TS's top-k pays 4.5x its OWN floor — ~~OPEN, specified, and watched~~ **RETRACTED at 582**: items 424-426 had already done it
 
 A fresh enum (`ORDER BY`). The rung EXISTS and is bounded: the full sort is 294ms against 31 for
 `LIMIT 1/5/100`, and it is FLAT in k. `aliasDefinition` (145, 213) is what keeps it — it rewrites
@@ -10954,7 +10966,8 @@ alternated, min-of-3×7, 20,000 nodes / 100,000 edges:
 | NEAR-side node id (617 seeds it) — control | 1.78       | 1.56      | 1.14x     |
 | label-scan count — control                 | 1.54       | 1.46      | 1.06x     |
 
-**STILL OPEN: half (1) of 619, the actual seed**, which needs slot surgery because an edge
+**~~STILL OPEN~~ ALREADY BUILT IN BOTH ENGINES — see item 650, which found three doc comments saying
+otherwise for weeks: half (1) of 619, the actual seed**, which needs slot surgery because an edge
 pattern binds its endpoints. The remaining gap is **2.1x to the edge-property floor** (399
 against 195) — a string compare against a raw f64 one over the same walk, which is this half's
 honest ceiling.
@@ -11089,7 +11102,7 @@ seed.
 one a 0.2 → 0.3 µs timer-floor cell. Zero over 1.10x. **Twenty-three** false positives from this
 screen in this loop.
 
-### OPEN: the TS twin is NOT the same shape of problem
+### ~~OPEN~~ **BUILT AT 621** (8,054x): the TS twin is NOT the same shape of problem
 
 TS's GQL edge-id lookup remains **28,888 µs**. Its seed layer takes hints per NODE
 (`indexCandidates` is called from `seedVertices`), so pinning a hop by its EDGE id has no hook
@@ -11164,7 +11177,7 @@ Survived, both recorded in the code rather than left as mysteries:
 - **`count: 1` unconditionally** — `count` is an ESTIMATE, not a guard: with no edge, `build`
   yields EMPTY either way, so only the candidate choice and `orient`'s estimate differ.
 
-### OPEN
+### ~~OPEN~~ WITHDRAWN AT 622
 
 ~~`MATCH ()-[r:R]->(b) … RETURN b.k` and friends are answered by a far-side SHORTCUT that
 seeds its own way and never consults the pin — so those spellings still scan.~~ **WITHDRAWN at
@@ -22271,7 +22284,9 @@ identical machinery, so that is the libm bodies, not the dispatch. Not a dispatc
 
 ## 786 — NATIVE: the two-arg numeric table is worth 18-25 ns/row. `nullif` at 28.4 ns is the one name left, and its arm must take UNFOLDED operands
 
-**OPEN TARGET, priced, with its hazard identified (no change).** Item 785 left a question: the same
+**~~OPEN TARGET~~ BUILT AT 787 (`nullif` typed arm, 3.26x; the two-arg numeric band is now closed,
+and the `-0.0` trap predicted here was real), priced, with its hazard identified (no change).**
+Item 785 left a question: the same
 `round` body cost 35.0 ns general and 10.1 in the table, while `left` — also two-arg, also general —
 cost 8.3. Measured instead of reasoned:
 
@@ -30399,7 +30414,9 @@ multiTypeEdgeCount === 0`) — one named type cannot double-count. Native's `Adj
 - **A BIMODAL ROW IMPERSONATED A REGRESSION FOR THE SECOND TIME THIS SESSION (item 1028).** The
   unselective-interval control read 1.402 → 2.129 on a single pair; alternated, PRE spans 1.27-3.10
   and POST 1.90-2.15 — overlapping. Item 1022 was the first. **Alternation settles it both times.**
-- **⚠️ OPEN, PRICED — an EDGE property index is UNREACHABLE from GQL: 38-150x (item 1031).**
+- **⚠️ ~~OPEN, PRICED~~ CLOSED — an EDGE property index is UNREACHABLE from GQL: 38-150x (item
+  1031).** Item 1034 closed it: the clause spelling lands at 1.06 against the inline spelling's
+  1.00, "so item 1031's gap is gone".
   `graph.edgePropertyIndex` exists and `@lenke/gremlin`'s `executor/index-seed.ts` seeds from it;
   **nothing in `@lenke/gql` references it.** 100,000 edges, one `amount` value = 0.1%, edge hash
   index declared: `E().has('amount', 500)` **0.030 ms**, GQL inline 1.088-1.164, GQL clause
@@ -30448,7 +30465,9 @@ multiTypeEdgeCount === 0`) — one named type cannot double-count. Native's `Adj
   scan floors differ by ~10x, so the same missing index is a millisecond problem in TS and a
   microsecond one in Rust. After item 1035's 27x, **native still answers this question faster by
   SCANNING than TS does by SEEKING.** Always measure the other engine before porting a win to it.
-- **⚠️ OPEN, PRICED, NEXT — the PROJECTION form of item 1035's question is 130-180x off, and it is
+- **⚠️ ~~OPEN, PRICED, NEXT~~ DONE AT 1038 (the edge-seeded projection walk, 100-190x, both
+  spellings — see the bullet below) — the PROJECTION form of item 1035's question is 130-180x off,
+  and it is
   a SCAN (item 1037).** `hop-projection.ts` references `edgeSeek` nowhere;
   `relBoundFilteredHopWalk` drives `candidateVertexSource` and iterates each vertex's bucket. Three
   rounds, each shape in its own process: `proj-gremlin` (the ceiling) **0.061/0.049/0.055 ms**;
@@ -32215,7 +32234,9 @@ retracted — three of them by the very next item:**
 
 Two were settled **against the engine source, not another document** — both are phrased as live work
 and only `hop-projection.ts` settles them. 469's "the same step is OPEN in native" is LEFT ALONE: not
-verified either way this tick, and asserting it closed is the same error mirrored.
+verified either way this tick, and asserting it closed is the same error mirrored. ⚠️ **VERIFIED AND
+CORRECTED AT ITEM 1301**: it was closed at 470, and the SCAN multi-aggregate arc finished at
+1187/1188 — so the caution was right and the line was stale, for five hundred items.
 
 **The lag is not in the entries — 473, 478, 776 and 481 all exist and all say what they did. It is in
 the superseded HEADLINE, which is what a search for open work reads.** CLAUDE.md: "A list that lags is
@@ -32534,7 +32555,7 @@ reading the replacement against the arm it was meant to break — not the exit c
 8/12 caught; the four survivors are three answer-equivalent decline-restorations plus item 1087's
 documented dead branch.
 
-### 🔶 STILL OPEN: the `bothE` SEED
+### 🔶 ~~STILL OPEN~~ **SHIPPED AT 1089** (24.5x bare / 5.1x labelled): the `bothE` SEED
 
 `outE` seeded on an indexed key is **9.17 ms** against `bothE`'s **435.09** (47x; forced decline
 431.56). The bare form is `2 x` the seeded count, but `hasLabel(P).bothE(T)` counts an edge twice
@@ -32704,7 +32725,8 @@ import broke ten call sites, and one new test pasted GQL pattern syntax into the
 
 ## 1093 — ❌ REVERTED, premise wrong: the filtered two-hop undirected count does NOT reach `buildFilteredTwoHopCount`
 
-The target is real and STILL OPEN:
+The target is real and ~~STILL OPEN~~ **SHIPPED AT 1094, REVERSING THIS ITEM** (5.9-8.5x; 1093
+reverted it on two artefacts of a stale dist):
 
 ```text
   (a:P)-[:T]-(b)-[:T]-(c) WHERE a.age > 60     755.89 ms   ← target
@@ -34127,7 +34149,9 @@ counts non-null via `has_value_at`. The two existing paths do agree with each ot
 
 `Filter{PropertyExists}` defeats the tally, and it is a **no-op when the column is present on every
 live node** — which item 1132 measured the cost of knowing at 130.5-142.5 us, 1% of this row. The
-rewrite worth building is the FILTER drop, with 1132's presence check as its enabling fact. OPEN.
+rewrite worth building is the FILTER drop, with 1132's presence check as its enabling fact.
+~~OPEN.~~ **REFUTED AT 1134**: either node alone blocks the tally, so only removing BOTH unlocks it
+— which is why this half measured a regression.
 
 ## 1134 — 🔶 PRICED at **33.57x**: item 1133's "the filter is the 23.7x" is REFUTED; either node alone blocks the tally and only removing BOTH unlocks it — which is why 1133's half measured a regression
 
@@ -34197,7 +34221,7 @@ this is the documented `exec.rs`-alignment toll (1.08-1.24x, never gains) landin
 Filter{PropertyExists{slot:1}} / Expand / Scan`, guard satisfied, and T3 is the same shape one hop
 deeper and DOES gain. So an earlier arm claims the one-hop case before `try_frontier_count` is
 consulted — item 375's "a path that merely sits earlier silently claims another's shape". Possibly
-another ~3x on `out().has(k).count()`. OPEN.
+another ~3x on `out().has(k).count()`. ~~OPEN.~~ **SHIPPED AT 1136.**
 
 **NOT COMMITTED.** An exec/fastpath change needs the byte-identity fuzzers, `rewrite_fuzz` and
 mutation verification first; a measured win does not invert that order. POST arm under `target/`.
@@ -34357,7 +34381,8 @@ every predicate drops missing-or-incomparable via the NaN path.
 is PRESENCE-ONLY (the measured shape) take a dedicated arm testing `k in bag` per candidate; leave
 the MIXED case declining (correct, merely slow). ⚠️ Deliberately NOT adding a per-row branch to the
 existing unrolled loops — this file records entering a call at ~65 ns a row (item 934) and the
-unrolls exist to remove exactly that. OPEN.
+unrolls exist to remove exactly that. ~~OPEN.~~ **SHIPPED AT 1140 (6.15x)**, though as a
+`{op:'present'}` predicate rather than the duplicated rung designed here.
 
 ## 1140 — ✅ SHIPPED **6.15x** on the TS `out().has(k).count()`: a `{op:'present'}` predicate, NOT the duplicated rung item 1139 designed — and the spelling pair is STILL unequal, now the other way
 
@@ -34393,7 +34418,8 @@ the BUILT dist, not the source.
 ⚠️ **STILL UNEQUAL, sign flipped:** POST S1 30.7 vs S2 108.5 — `has` is now 3.5x FASTER. Same thing
 happened in Rust (1137 equalized one fixture, 1138 found 12x on another). The doctrine is cost
 EQUALITY, so **this family is open in BOTH engines and `values(k).count()` is now the lagging
-spelling in both.** OPEN.
+spelling in both.** OPEN. ⚠️ **The GREMLIN half is now closed**: item 1282 located it (2.8x, one
+detector of four) and item 1283 fixed it at 3.0x. The TS half stands.
 
 Mutation on a GREEN baseline: `present`→`!= null` CAUGHT (4 fails); multi-key guard removed CAUGHT —
 ⚠️ only after the fixture gained a vertex carrying ONLY the second key (without it `hasKey(k,z)` ==
@@ -34690,7 +34716,7 @@ pair with no keyless bare-count aggregate. **CLAUDE.md's documented depth is 200
 so nobody had run it deeper. A "changed the answer" is an optimizer WRONG ANSWER and outranks perf
 work. OPEN, seeds recorded for replay.
 
-## 1148 — ⚠️🔶 OPEN, PRE-EXISTING OPTIMIZER **WRONG ANSWER**: at `rewrite_fuzz` seed 383127, filter-pushdown through a `Join` turns 0 rows into 6 — and the remap arithmetic is CORRECT
+## 1148 — ⚠️🔶 ~~OPEN~~ **ROOT-CAUSED AND FIXED AT 1149** (`hash_join`'s NULL sentinel shared a bucket with a real node id; the residual is this item's separate tied-sort ORDER question, see 1150), PRE-EXISTING OPTIMIZER **WRONG ANSWER**: at `rewrite_fuzz` seed 383127, filter-pushdown through a `Join` turns 0 rows into 6 — and the remap arithmetic is CORRECT
 
 Found by item 1147 running the fuzzer deeper than CLAUDE.md's documented 200000. Pre-existing
 (pristine `opt.rs` fails identically). Reproduce:
@@ -35059,7 +35085,7 @@ code; item 1137 is the precedent for extracting such a decision, declined here b
 like an O(1) fact**, and `live_node_count` directly below it is documented as O(1) _because_ it is
 maintained. Item 1118's `etype_counts` already holds the pieces (their sum is the live edge count,
 O(#types)). Not bundled: `live_edge_count` has callers beyond this arm and wants its own item with a
-recount oracle. OPEN at 90x.
+recount oracle. ~~OPEN at 90x.~~ **SHIPPED AT 1158 — ~112x**, the very next item.
 
 ## 1158 — ✅ SHIPPED **~112x**: `live_edge_count` was **O(nodes)**. All four label-arity arms now 0.3us — and ⚠️ I caught my own test becoming a TAUTOLOGY
 
@@ -35385,7 +35411,7 @@ Process note: editing `fastpath.rs` to record these findings WHILE the mutation 
 edits wiped — the script's pristine copy is taken at its START, so the tree is not yours until it
 finishes.
 
-### 🔶 OPEN, newly priced: the TS engine HAS this gap (item 1161's negative result does NOT transfer)
+### 🔶 ~~OPEN, newly priced~~ **CLOSED at 1163** (the TS percentile fold, 17.9x / 4.5x end to end): the TS engine HAS this gap (item 1161's negative result does NOT transfer)
 
 ```text
   TS: percentile_disc 31.2 ms, percentile_cont 30.2, against collect_list 4.3 (same materialization)
@@ -35476,7 +35502,7 @@ input never leaves the first partition. Narrow value range so DUPLICATES are com
 and a sort can only disagree on ties). `Object.is` throughout, the only comparison that separates
 `-0` from `+0` and makes `NaN` equal itself.
 
-### 🔶 OPEN, found by READING `numArg`'s comment: a cross-engine `-0` divergence predating all of this
+### 🔶 ~~OPEN~~ **RETRACTED AT 1165 — THE DIVERGENCE DOES NOT EXIST** (I had compared TS's RAW values against native's JSON round-trip), found by READING `numArg`'s comment: a cross-engine `-0` divergence predating all of this
 
 After `SET n.v = 0 * (0 - 1)`:
 
@@ -35905,9 +35931,11 @@ SHARED.
    edits that landed in unreachable paths; this is the fourth time a trace was the cheap answer to
    "which arm actually owns this?", and I reached for it third rather than first.
 
-### 🔶 STILL OPEN, and my repro probe is what found it
+### 🔶 ~~STILL OPEN~~ FIXED AT 1169, and my repro probe is what found it
 
-The hand-written shapes are a DIFFERENT divergence, unfixed:
+The hand-written shapes are a DIFFERENT divergence, ~~unfixed~~ — **item 1169 identified the route
+and fixed it**: `pathProps` was APPENDED after the two buckets that can RAISE, so a dotted conjunct
+could not settle a row before a coercing sibling faulted:
 
 ```text
   MATCH (n:P) WHERE n.m.k = 99 AND n.s   ts err E_INVALID_VALUE   native ok []
@@ -36950,13 +36978,15 @@ explains a gap between two closures handed to one function). Unproven because it
 still routes ordering bounds through the two-bound arm, so the arm that exhibited it is bypassed.
 Removing that routing and re-measuring is the open test.
 
-OPEN, nine sites left, now with a measured mechanism: `sweep_date_count` (six call sites),
+OPEN, nine sites left (⚠️ **SIX OF THE NINE ARE `sweep_date_count` AND ARE REFUTED AT 1223** — 1.04x
+SLOWER, reverted, because the date path is memory-bound), now with a measured mechanism:
+`sweep_date_count` (six call sites),
 `try_stream_membership_count`'s `Column::Str` arm (the string twin of item 1219), the two
 `for_each_typed_out` hop sweeps, and `try_stream_range_count`'s arm, which also tests the
 loop-invariant `bounds.is_empty()` inside its sweep. Line 1122's recorded "measured nothing"
 (item 1208) needs re-checking against a fixture that reaches it — the item 1215 failure mode.
 
-### Item 1221 — bare property-filtered node count: no corpus row existed; TS is 38.6x (OPEN, diagnosed)
+### Item 1221 — bare property-filtered node count: no corpus row existed; TS is 38.6x (~~OPEN, diagnosed~~ **MEASUREMENT STANDS, LEVER RETRACTED AT 1222** — the 38.6x is DATA LAYOUT, and item 1292 reclassified the family as a constant factor)
 
 Every filtered-count case in `bench.ts` was a HOP count with a filter — a different cost class.
 `MATCH (n:Person) WHERE n.age > 45 RETURN count(*)` had no row in either corpus, so item 1220's
@@ -36976,7 +37006,10 @@ NOT A MISSING PATH — the first guess, and wrong. `shortcuts.ts:4288` compiles 
 hands it to `buildNodeCount`, so the tally IS reached; the 19ns is the general predicate machinery
 inside it (a binding-Map write per vertex plus a boxed property lookup, for one f64 compare).
 
-OPEN TARGET: a specialized closure for `<var>.<key> <cmp> <literal>` bypassing both. Measuring it
+~~OPEN TARGET~~ **RETRACTED AT 1222 — every part of it is already settled in this file** (the Map
+write gone since 803, the iterator allocation refuted at 241, `CONST`/`DYN` refuted at 805, the
+dense vertex array priced and declined at 805): a specialized closure for `<var>.<key> <cmp>
+<literal>` bypassing both. Measuring it
 needs the bimodal protocol (14 reps, drop three, median, min of three order-alternated rounds) and
 must not compare two different property KEYS, which is worth up to 1.66x on its own (item 1211).
 
@@ -37370,7 +37403,7 @@ between periodic and random values is the misprediction signature — the same o
 hiding a 6.7x. That is the next well-formed target, and unlike this item's two it comes with a
 measured data-dependence rather than a pattern match.
 
-### Item 1229 — item 1228's attribution CONFIRMED by a discriminating test; the `ne` fix is a TRADE, not a win, so it is priced and NOT taken; and a separate 11.9x cliff found (OPEN x2)
+### Item 1229 — item 1228's attribution CONFIRMED by a discriminating test; the `ne` fix is a TRADE, not a win, so it is priced and NOT taken; and a separate 11.9x cliff found (~~OPEN x2~~ **BOTH CLOSED: the `ne` trade REFUTED at 1230, the 11.9x cliff DONE at 1231** — k exclusions as k+1 vectorized passes, 8.65-17.6x)
 
 Item 1228 recorded the `ne` arm's 2.3-3.2x periodic-vs-random as "the misprediction signature".
 That was an attribution, not a measurement, and a second explanation fit the same three numbers:
@@ -38676,7 +38709,7 @@ that is NOT needed, pinned so nobody adds one.
 Five mutants, all caught, including one specific to this item: never consulting the opposite bucket,
 which makes an undirected hop under-reach.
 
-### ⚠️ OPEN, priced: the GROUPED hop extremum at 664932 us, 6.35x the directed pair
+### ⚠️ OPEN, priced: the GROUPED hop extremum at 664932 us, 6.35x the directed pair — **RE-PRICED AND VERIFIED LIVE AT 5.1x BY ITEM 1296**, which states the admission conditions and the trap; start from 1296, not from this number
 
 `MATCH (a:P)-[:T]->(x) RETURN x.city, min(x.age)` — the largest remaining gap in this family and
 the biggest absolute number measured in it. The same identity licenses it: each distinct endpoint
@@ -39065,7 +39098,7 @@ changes no answer anywhere. The reason to leave it is PARITY: native's gate is
 large cyclic graph — exactly what the table above shows for the TRAIL and SIMPLE rows today. A free
 perf win is not worth buying a divergence.
 
-### ⚠️ OPEN, measured: native's `Trail => max <= 1` is CONSERVATIVE
+### ⚠️ ~~OPEN, measured~~ **DONE AT 1256**: native's `Trail => max <= 1` is CONSERVATIVE
 
 That gate declines an UNBOUNDED trail pattern, so native throws on `MATCH (x)-[:R]->*(y) RETURN
 count(DISTINCT y)` at 400 nodes while TS answers 400. But item 1252's own argument shows the BFS is
@@ -39291,7 +39324,12 @@ times (items 1220/1224/1227/1231): the PRESENCE counts at `try_fused_hop_present
 second also evaluates `bounds.is_empty()` INSIDE its per-element closure — a loop-invariant branch
 of exactly the kind item 1220 hoisted out of a sweep.
 
-### Item 1260 — `IS NOT NULL` is ~4x slower than Gremlin's `has(k)` for the same question, and a probe that measured the WRONG PATH three times before the route check caught it (OPEN, priced)
+### Item 1260 — `IS NOT NULL` is ~4x slower than Gremlin's `has(k)` for the same question, and a probe that measured the WRONG PATH three times before the route check caught it (OPEN, priced — ⚠️ **THE 4x IS NOW A FLOOR, RE-MEASURE BEFORE QUOTING IT**)
+
+⚠️ **STILL OPEN, and the gap has WIDENED since these numbers.** Item 1287 took the SCAN presence
+count — the `PropertyExists` sweep, which is the FAST arm here — from 190.9 us to 6.0 (31.8x), and
+item 1283 took Gremlin's `has(k)` presence count 3.0x. Both moved the side this item measured as
+already faster, while `IS NOT NULL` still falls to the general path.
 
 Item 1259 nominated the two PRESENCE-count sweeps as the Rust target. Pricing them found something
 bigger and a different kind of defect:
@@ -42533,3 +42571,93 @@ mechanical, and six items in a row treated an unclear case as no case.
 
 Gates: `bun run typecheck` 0, `bun run lint` 0, `bun run check` 0, 21 projects green. (One
 `bun run test` exit 1 did not reproduce on an isolated re-run — the known `run-many` flake.)
+
+### Item 1301 — all 265 `OPEN` lines audited: 40 corrected, 35 of them advertising work already done, and 22 of those closed by the VERY NEXT item (clerical, no code change)
+
+Item 1295 named the rule and item 1080 had already swept four stale headlines, so this is the first
+pass to check the WHOLE list rather than whatever a target hunt happened to touch. The rule is now
+in CLAUDE.md beside the "same commit" rule it extends, because satisfying that one is exactly what
+leaves this one unsatisfied.
+
+### The method, and what it cannot see
+
+Three tiers, cheapest first:
+
+1. **Self-marked** — 49 of the 265 already carried `~~OPEN~~ CLOSED at N`. Skipped.
+2. **Cross-reference** — for each remaining line, every item number it mentions, then every LATER
+   heading mentioning that number beside a closure word. This flagged 35 of 178 body lines and
+   settled most of the 39 headings.
+3. **Source** — for what tier 2 could not settle, read the code.
+
+**⚠️ TIER 2 IS NOT SUFFICIENT, AND THAT IS THE LOAD-BEARING FINDING.** A closure that lives only in
+the code leaves no later entry to grep:
+
+```text
+  2956  item 1216  "600x, Not built"       -> built at 1267; `try_scan_count` HAS an `IndexSeek` arm
+  6002  item 496   "151x, caps at TWO"     -> closed at 497;  `segments.length === 3` / `>= 4` exist
+```
+
+Neither is mentioned again anywhere in 42,546 lines. Both were found by opening the file instead.
+So the rule in CLAUDE.md says to verify a heading against the SOURCE before trusting its number —
+cross-referencing finds the common case, not all of it.
+
+### The tally
+
+**40 lines corrected. 35 asserted open work that was done**, and the lag is overwhelmingly ONE item:
+
+```text
+  closed by the very next item   22   446 457 469 472 496 502 528 581 620 786 1088 1093
+                                      1133 1135 1139 1148 1157 1162 1168 1221 1229 1255
+  closed later                   11   451->453  569->571  619->650  1031->1034  1035->1038
+                                      1163->1165  1216->1267  1220->1223  2881->1186  578->1293
+  reclassified/annotated          5   3493 (1276)  1248 (1296)  1140 (1282/1283)  1260  1080's note
+```
+
+Twenty-two of thirty-five closed by the adjacent item is not forgetfulness, it is the structure item
+1295 described: the taking item writes its own entry and has no reason to walk back one heading.
+
+### Five that were LIVE but whose NUMBER had rotted — the class I had not expected
+
+A stale number misleads as effectively as a stale status, and three of these five were made stale by
+THIS session's own work:
+
+- **Item 1260's "~4x"** (`IS NOT NULL` against Gremlin's `has(k)`) is now a FLOOR. Item 1283 took
+  Gremlin's `has(k)` presence count 3.0x and item 1287 took the SCAN presence sweep 190.9 us -> 6.0
+  (31.8x) — both on the arm 1260 measured as the already-faster side, while `IS NOT NULL` still
+  falls to the general path. Marked "re-measure before quoting".
+- **Item 1248's 6.35x** grouped hop extremum — re-priced and verified live at 5.1x by item 1296,
+  which also states the admission conditions and the trap. A reader starting from 1248 starts from
+  the wrong number and without the trap.
+- **Item 3493's 67.7x** TS multi-hop count — reclassified by item 1276 as a CONSTANT FACTOR, not a
+  missing path. "67.7x, OPEN, DIAGNOSED" reads as a missing rung.
+- **Item 1140's "open in BOTH engines"** — the Gremlin half closed at 1282/1283; the TS half stands.
+- **Item 1080's own note** deliberately left 469 unverified ("asserting it closed is the same error
+  mirrored"). The caution was right and the line was stale — for five hundred items.
+
+### ⚠️ THREE FALSE POSITIVES, and they are why the tier-2 flags were read rather than applied
+
+The flagger proposed corrections to item 1224's two-bound hop arm, its `bounds.iter().all` dispatch
+note, and item 1287's reference to the first. **All three were already correct**: item 1287 had
+corrected them in place, the dispatch half genuinely IS still open (1225 measured the neighbouring
+arms flat), and item 1232's corpus work did not add a far-end-filter hop count row. Applying a
+flagger's output unread would have un-corrected a correction — the mirror of the error this item
+exists to fix, and the reason each of the 40 was read in context first.
+
+### What is actually open, after the sweep
+
+Verified still open and left alone: the far-end hop seed (554), the eighth and ninth cross-engine
+divergences (569, 572), the non-terminating deep WALK count (587), citation rot (614), duplicate
+external edge ids (615), `add_node`'s O(distinct keys) 29x (825), the top-k route boundary (1060),
+the cross-surface GQL/Gremlin node-count gap (797), `coalesce` over a NODE column and `cot` at zero
+(458, 459), the grouped-hop arity gap (475), `k IS NOT NULL` as a whole-index seed (4444), CASE in
+an aggregate argument (5213), the `OPTIONAL MATCH` conformance decision (1226), the ~89 ms
+`PathNeed` headroom (1234), the nested-group path bugs (1236, 1237), the grouped hop extremum
+(1248/1296), and `IS NOT NULL` against `has(k)` (1260).
+
+The two largest live numbers are unchanged by this pass and both are architectural: **Gremlin's
+index seed fires only at the source step (550-650x, item 1043** — `index-seed.ts` destructures
+`const [source, ...rest] = plan.steps` and returns unless step 0 is a bare `V()`/`E()`), and **GROUP
+BY can never seed (600x, item 1050**, whose own entry raises the fourth-rung-versus-edge-driven-source
+choice and does not take it).
+
+Gates: no code change.

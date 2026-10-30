@@ -242,6 +242,26 @@ So: match the store to the kind of fact.
 When a change refutes a lever or settles a question, add its line to `CLOSED.md` **in the same
 commit**. A list that lags is the failure it exists to prevent.
 
+**And when a change TAKES a target that an earlier entry priced, edit that earlier entry's HEADING
+in the same commit.** Writing your own entry satisfies the rule above and still leaves the pricing
+entry advertising work that no longer exists: the heading is what a reader scanning for open work
+actually sees, so a correction added further down does not reach them. Strike the superseded phrase
+and point at the item that closed it — one line, no reorganization, audit untouched. That is item
+1080's format; item 1295 is why it is a rule rather than a reminder to be careful.
+
+The cost is measured, not hypothetical. A sweep of all 265 `OPEN` lines (2026-10-30, item 1301)
+corrected **40**, of which **35 advertised work that was already done** — and **22 of those were
+closed by the VERY NEXT item** (497 after 496, 503 after 502, 529 after 528, 1089 after 1088, 1222
+after 1221, 1256 after 1255, …). An earlier run caught five in passing and one of those cost a whole
+target-selection cycle. The remaining five corrections were live targets whose NUMBER had gone stale,
+which misleads just as effectively: item 1260's "~4x" is now a floor, because items 1283 and 1287
+each sped up the arm it was measured against.
+
+**Cross-referencing cannot find all of them, so verify a heading against the SOURCE before trusting
+its number.** A closure that lives only in the code leaves no later entry to grep: item 1216's
+"600x, not built" survived item 1267 building it, and item 496's "151x" survived item 497, because
+nothing later in the file mentioned them.
+
 ## Gates
 
 `bun run lint` and `cargo clippy --all-targets -- -D warnings` are separate from
