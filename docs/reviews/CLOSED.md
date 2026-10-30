@@ -42271,3 +42271,75 @@ Not built in this tick, and the reason is scope rather than doubt — the same r
 which is honest but worth saying plainly rather than leaving as an implication.
 
 Gates: no code change. `bun run check` 0.
+
+### Item 1297 — `IS TYPED` priced at 2.97x, its hoisting resolved against the engine, and an asymmetry found in passing (priced + specified)
+
+Item 1294 established by READING that `isTyped` is the last structurally liftable leaf — `{ expr,
+ty, notNull, negated }` with `valueIsTypedTy` returning a plain boolean, so a prop subject, total
+and non-raising, exactly `isTruth`'s shape (item 1286). It also called the spelling niche, which was
+a reason to price it rather than build on structure alone.
+
+200,000 nodes, selectivity matched by construction — half the rows carry a NUMBER in `v` and half a
+STRING, and `marker` marks the same half, so every row answers 100000:
+
+```text
+  [BASE] n.marker = true (lifts, eqProps)    4.367 ms
+  n.v IS TYPED INTEGER                      12.976      2.97x
+  n.v IS NOT TYPED INTEGER                   6.971      1.60x
+  [CTL] bare count                           0.001
+```
+
+**2.97x, which is larger than "niche" suggested** and in the same band as the lifts items 1286-1290
+took (2.1x-2.6x).
+
+### ⚠️ AND THE NEGATED FORM IS 1.86x FASTER THAN THE POSITIVE ONE
+
+`IS TYPED INTEGER` is 12.976 and `IS NOT TYPED INTEGER` is 6.971, on a 50/50 split where both
+answer 100000. Two complementary spellings of one question, costing differently — which is this
+repo's named defect class, and it is NOT explained by the lift being absent, because the lift is
+absent from both. Something routes the negated form differently. Recorded as a second, separate
+question; it needs its own diagnosis and may well be the more interesting of the two.
+
+### The hoisting question is answered, and the answer is the non-obvious one
+
+Item 1286 established the engine as the authority on which lifted family may run before
+`truthProps`, and items 1288-1290 made that check standing practice BEFORE implementing. `n.s` is a
+string, so coercing it is a data exception; a tail FALSE for every row settles it IF hoisted:
+
+```text
+  WHERE n.s AND n.n IS TYPED STRING        native ERR   FALSE every row and STILL raises
+  WHERE n.s AND n.s IS TYPED INTEGER       native ERR   FALSE every row and STILL raises
+  WHERE n.s AND n.n IS NOT TYPED STRING    native ERR   TRUE — uninformative
+  WHERE n.s AND n.n IS TYPED INTEGER       native ERR   TRUE — uninformative
+```
+
+**The engine hoists NO form of `IS TYPED`**, including the two informative ones. So despite being
+total and non-raising — the property that puts `nulls`, `member` and `labelTests` in the hoisted
+group — `IS TYPED` belongs in the LATE group with `truthTestProps`, after `truthProps`. That is the
+same split item 1286 had to measure for `IS TRUE`/`IS FALSE` against `IS UNKNOWN`, and it is why
+"non-raising ⇒ hoisted" is not a rule in this engine.
+
+### The build, fully specified
+
+A ninth-and-tenth family on the pattern items 1286 and 1289 established, and the late-group slot
+means it can sit beside `truthTestProps` rather than needing its own ordering argument:
+
+- `CTypedTestProp = { key, ty, notNull, negated }`, mirroring `CTruthTestProp`;
+- `asTypedTest` folding `NOT (x IS TYPED T)` by flipping `negated`, as `asNullTest`/`asTruthTest`
+  /`asLabelTest` all do — both of this file's two-pass mistakes (items 1261 then 1262) came from
+  handling one spelling and noticing the other later;
+- `liftTypedTest(conjunct, ownVar, out)` returning whether it claimed the conjunct, because
+  `directEqProps` is at its complexity cap and this is the fifth arm to be extracted for that
+  reason (items 1284-1290);
+- applied in `satisfies` through `valueIsTypedTy` — the SAME function `case 'isTyped'` uses, so the
+  lift cannot change what `IS TYPED` means — placed in the LATE group per the table above;
+- `hasPredicate`, `compilePredicate`'s spread, `directEqProps`' return type/accumulator/guard, and
+  `mergeFarPreds`' `mergeList` line. Item 1289's surviving mutants are the warning here: a missing
+  `hasPredicate` entry needs an explicit assertion to catch, and a merge test needs an INLINE far
+  constraint or it never enters `mergeFarPreds` at all.
+
+Not built in this tick for budget reasons, stated plainly: the remaining margin would not cover the
+mutation pass the standing method requires, and a lift shipped without verified teeth is worse than
+one specified and left.
+
+Gates: no code change. `bun run check` 0.
