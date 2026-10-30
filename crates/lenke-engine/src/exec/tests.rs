@@ -35349,3 +35349,82 @@ fn open_trail_above_one_hop_is_not_walk_reachability() {
         0.0
     );
 }
+
+/// The level cap for the `min >= 2` frontier walk (item 1258).
+///
+/// ⚠️ A PURE TEST FOR A PERF FIX, because reverting the cap changes no ANSWER — it only makes an
+/// unbounded pattern spin. Measured before the cap: `MATCH WALK (x)-[:R]->{2,}(y) RETURN
+/// count(DISTINCT y)` on ONE node with ONE self-loop took **29,253 ms**, because the loop's only
+/// exit was an empty frontier and a cyclic graph never empties one — 4.29 billion levels over a
+/// one-edge graph. Item 1253 is why this is not a timing assertion.
+#[test]
+fn level_cap_bounds_an_open_upper_bound() {
+    use crate::exec::fastpath::level_cap;
+
+    // An OPEN upper bound is capped at `min + n`.
+    assert_eq!(level_cap(2, u32::MAX, 1), 3, "self-loop: 2 + 1");
+    assert_eq!(level_cap(2, u32::MAX, 400), 402);
+    assert_eq!(level_cap(9, u32::MAX, 4), 13);
+
+    // A REAL upper bound is untouched — it is always the smaller of the two.
+    assert_eq!(level_cap(2, 9, 400), 9);
+    assert_eq!(level_cap(2, 2, 400), 2);
+    assert_eq!(level_cap(0, 5, 10), 5);
+
+    // The cap only ever LOWERS the work, never raises it above `max`.
+    for &(min, max, n) in &[(2, 7, 1), (3, 100, 2), (0, 1, 1000)] {
+        assert!(
+            level_cap(min, max, n) <= max,
+            "{min}/{max}/{n} must not exceed max"
+        );
+    }
+
+    // No overflow on a pathological node count.
+    assert_eq!(level_cap(u32::MAX, u32::MAX, usize::MAX), u32::MAX);
+}
+
+/// The ANSWER guard for item 1258's cap: a too-TIGHT cap drops endpoints.
+///
+/// A lollipop (`a -> b -> c -> d -> b`) at `min = 2` with an open bound reaches `{b, c, d}` = 3.
+/// With a cap of `min + 1` the union would be `S_2 ∪ S_3` = `{c} ∪ {d}` = 2, so the correct cap is
+/// what makes this 3 — the truth table above cannot catch a cap that is merely too small in a way
+/// that still type-checks.
+#[test]
+fn open_lower_bound_walk_reaches_the_whole_cycle() {
+    let mut b = Builder::default();
+    let ids: Vec<u32> = (0..4)
+        .map(|i| b.node(&["P"], &[("n", n(f64::from(i)))]))
+        .collect();
+
+    for &(f, t) in &[(0, 1), (1, 2), (2, 3), (3, 1)] {
+        b.edge(ids[f], ids[t], "R");
+    }
+    let st = b.build();
+    let scalar = |q: &str| -> f64 {
+        match &run(&crate::gql::parse(q).unwrap(), &st)
+            .rows
+            .iter()
+            .next()
+            .expect("one row")[0]
+        {
+            Value::Num(x) => *x,
+            other => panic!("not a number: {other:?}"),
+        }
+    };
+
+    // The open spelling (capped walk) must equal a BOUNDED oracle wide enough to be exact.
+    for min in [2, 3] {
+        let open = scalar(&format!(
+            "MATCH WALK (x:P)-[:R]->{{{min},}}(y) RETURN count(DISTINCT y) AS c"
+        ));
+        let oracle = scalar(&format!(
+            "MATCH WALK (x:P)-[:R]->{{{min},12}}(y) RETURN count(DISTINCT y) AS c"
+        ));
+
+        assert_eq!(
+            open, oracle,
+            "min {min}: open {open} vs bounded oracle {oracle}"
+        );
+        assert_eq!(open, 3.0, "min {min}: the cycle's three nodes");
+    }
+}

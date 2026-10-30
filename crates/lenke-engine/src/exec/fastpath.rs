@@ -4037,6 +4037,19 @@ pub(super) fn set_reachability_is_exact(mode: PathMode, min: u32, max: u32) -> b
     }
 }
 
+/// How many levels the `min >= 2` frontier walk must run — `max`, or `min + n` when `max` is open.
+///
+/// ⚠️ ITS OWN FUNCTION SO THE ARITHMETIC CAN BE TESTED, because reverting the cap is
+/// ANSWER-EQUIVALENT: it only makes the query slower, and no result assertion can see that. Item
+/// 1253 is why this is not a timing test instead — a verdict that depends on how fast the machine
+/// runs is not a verdict. This is the "extract the decision and unit-test it" pattern the repo
+/// already uses for route choices no output reveals.
+///
+/// See the call site for the proof that `min + n` loses nothing.
+pub(super) fn level_cap(min: u32, max: u32, nodes: usize) -> u32 {
+    max.min(min.saturating_add(u32::try_from(nodes).unwrap_or(u32::MAX)))
+}
+
 pub(super) fn varlen_distinct_endpoint_count(
     store: &Store,
     src: &[u32],
@@ -4058,7 +4071,23 @@ pub(super) fn varlen_distinct_endpoint_count(
             }
         }
         let mut next: Vec<u32> = Vec::new();
-        for hop in 1..=max {
+        // ⚠️ THE LEVEL COUNT IS CAPPED AT `min + n`, AND WITHOUT IT AN UNBOUNDED PATTERN SPINS
+        // (item 1258). The loop's only exit was an EMPTY frontier, which on a cyclic graph never
+        // happens — so `max = u32::MAX` meant 4.29 BILLION levels. Measured on one node with one
+        // self-loop: `MATCH WALK (x)-[:R]->{2,}(y) RETURN count(DISTINCT y)` took **29,253 ms**,
+        // against 0 ms for the bounded `{2,9}` and for `->*`. The answer was right; the cost was
+        // four billion iterations over a one-edge graph.
+        //
+        // WHY `min + n` IS EXACT, not a heuristic: if `y` has a walk of length `h >= min`, take
+        // the SHORTEST such walk. Suppose `h > min + n`. A walk with more than `n - 1` edges must
+        // repeat a node, so it contains a cycle of length `c <= n`; excising that cycle leaves a
+        // walk of length `h - c > min`, which is still `>= min` and shorter — contradicting
+        // minimality. So the smallest qualifying length is at most `min + n`, and unioning the
+        // level-sets past that can add no node the union does not already hold.
+        //
+        // A BOUNDED pattern is untouched: `max` is smaller than the cap whenever it is real.
+        let cap = level_cap(min, max, n);
+        for hop in 1..=cap {
             if frontier.is_empty() {
                 break;
             }
