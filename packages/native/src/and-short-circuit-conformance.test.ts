@@ -242,6 +242,52 @@ suite('AND short-circuit: the TS and native engines agree', () => {
     expect(agree('MATCH (n:P) WHERE n.s AND n.n = 1 RETURN n.n AS x')).toBe('ERR E_INVALID_VALUE');
   });
 
+  test('⚠️ THE LIFTED FAMILIES SHARE IT TOO, and two of them did NOT (item 1286)', () => {
+    // The cases above exercise the GENERIC route's ordering key. These exercise the LIFTED one:
+    // `satisfies` applies `eqProps`, `cmpProps`, `memberProps`, `nullProps` and friends by reading
+    // the property straight off the element, in a fixed block order, and that order is an ordering
+    // key of its own. It has to agree with the engine's for the same reason.
+    //
+    // It did not. Items 1269 (`memberProps`) and 1270 (`nullProps`) each placed their family LAST
+    // among the lifted blocks, on an explicit argument: "running the non-raising family first would
+    // let a FALSE membership return before a sibling conjunct that the generic path would have
+    // raised on, changing WHICH queries error. Running it last cannot: every family that can raise
+    // has already run." The last sentence is false — the generic route does not raise when a
+    // sibling SETTLES the row — so running them last exposed a raise the engine does not produce.
+    // Both were a live TS-vs-native divergence from the day they shipped until item 1286 moved
+    // them into the hoisted group.
+    //
+    // THE SAFE CONJUNCT IS WRITTEN SECOND, for the reason the test above gives: written first, the
+    // FALSE short-circuit settles the row in written order and the ordering key is never consulted.
+    expect(agree('MATCH (n:P) WHERE n.s AND n.z IS NOT NULL RETURN n.n AS x')).toBe('ok []');
+    expect(agree('MATCH (n:P) WHERE n.s AND n.n IN [99] RETURN n.n AS x')).toBe('ok []');
+
+    // `IS TRUE`/`IS FALSE` are the OPPOSITE case and the reason the lifted family is split. They
+    // cannot raise either, so the argument above would hoist them — but the engine does NOT, and
+    // byte-identity is the contract, so the TS block for them runs after `truthProps`. Both tails
+    // are FALSE for every row, which is what makes these informative rather than vacuous.
+    expect(agree('MATCH (n:P) WHERE n.s AND n.n IS TRUE RETURN n.n AS x')).toBe(
+      'ERR E_INVALID_VALUE',
+    );
+    expect(agree('MATCH (n:P) WHERE n.s AND n.n IS FALSE RETURN n.n AS x')).toBe(
+      'ERR E_INVALID_VALUE',
+    );
+
+    // While `IS UNKNOWN` IS hoisted — which is why item 1286 folds it into `nullProps` instead of
+    // keeping it with its own kind. One AST node, two destinations, decided by this measurement.
+    expect(agree('MATCH (n:P) WHERE n.s AND n.n IS UNKNOWN RETURN n.n AS x')).toBe('ok []');
+    expect(agree('MATCH (n:P) WHERE n.s AND n.z IS NOT UNKNOWN RETURN n.n AS x')).toBe('ok []');
+
+    // CONTROLS: tails that are TRUE settle nothing in a filter, so the raising sibling stays
+    // essential and BOTH engines raise. These are not failures of the arm, they bound it.
+    expect(agree('MATCH (n:P) WHERE n.s AND n.z IS NULL RETURN n.n AS x')).toBe(
+      'ERR E_INVALID_VALUE',
+    );
+    expect(agree('MATCH (n:P) WHERE n.s AND n.n IS NOT UNKNOWN RETURN n.n AS x')).toBe(
+      'ERR E_INVALID_VALUE',
+    );
+  });
+
   test('THE ORDERING KEY IS SHARED: each of these was a divergence until it was', () => {
     // A filter reorders its conjuncts in BOTH engines, so the two must agree on WHICH conjuncts
     // cannot raise. They did not, three times, and each mismatch was found by the differential

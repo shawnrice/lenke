@@ -511,7 +511,8 @@ const liftFarOnlyClause = (where: Expr, farVar: string): CPredicate | undefined 
     (lifted.notTruthProps?.length ?? 0) > 0 ||
     (lifted.pathProps?.length ?? 0) > 0 ||
     (lifted.memberProps?.length ?? 0) > 0 ||
-    (lifted.nullProps?.length ?? 0) > 0
+    (lifted.nullProps?.length ?? 0) > 0 ||
+    (lifted.truthTestProps?.length ?? 0) > 0
     ? lifted
     : undefined;
 };
@@ -540,6 +541,11 @@ const mergeFarPreds = (inline: CPredicate, clause: CPredicate): CPredicate => ({
   ...(inline.memberProps === undefined && clause.memberProps === undefined
     ? {}
     : { memberProps: [...(inline.memberProps ?? []), ...(clause.memberProps ?? [])] }),
+  ...(inline.truthTestProps === undefined && clause.truthTestProps === undefined
+    ? {}
+    : {
+        truthTestProps: [...(inline.truthTestProps ?? []), ...(clause.truthTestProps ?? [])],
+      }),
   ...(inline.nullProps === undefined && clause.nullProps === undefined
     ? {}
     : { nullProps: [...(inline.nullProps ?? []), ...(clause.nullProps ?? [])] }),

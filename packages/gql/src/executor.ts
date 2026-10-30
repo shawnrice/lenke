@@ -4591,6 +4591,29 @@ export type CPredicate = {
   nullProps?: readonly CNullProp[];
 
   /**
+   * `WHERE n.flag IS TRUE` and its family (item 1286) — the `isTruth` leaf item 1272 listed as
+   * declined and unpriced.
+   *
+   * Priced at 200,000 vertices against `n.marker = true`, a `compare` arranged to keep EXACTLY the
+   * same rows so the two answer an identical 20000 and a per-survivor cost cannot explain the gap:
+   *
+   * ```text
+   *   n.marker = true    4.473 ms   lifts into eqProps
+   *   n.flag IS TRUE    10.379      2.32x, no arm for it
+   *   n.k IS NULL        4.616      lifts into nullProps (item 1270)
+   * ```
+   *
+   * The `IS NULL` row is why this is the right layer: `isNull` and `isTruth` are BOTH refused by
+   * `rowLocal`'s allowlist, so the node-count gate declines both — and `isNull` is fast anyway,
+   * because `pushWhereIntoNode` routes a clause `WHERE` through `compilePredicate`, where item 1270
+   * gave it an arm. The allowlist was a red herring; the missing arm was the whole cost.
+   *
+   * Applied beside `nullProps` because it shares the property that matters: it cannot raise, so it
+   * is safe even ahead of a residual.
+   */
+  truthTestProps?: readonly CTruthTestProp[];
+
+  /**
    * The same lift for a DOTTED path — `WHERE n.meta.city = 'nyc'` (item 900).
    *
    * A fourth list for a blunt reason: `asPropCompare` matches a plain `prop` only, so a dotted
@@ -4873,6 +4896,22 @@ type CNullProp = {
   negated: boolean;
 };
 
+/**
+ * One lifted `<ownVar>.<key> IS [NOT] TRUE|FALSE|UNKNOWN` conjunct (item 1286).
+ *
+ * ⚠️ TOTAL AND NON-RAISING, which is what makes this the easiest of the lifted families to get
+ * right — the same property `CNullProp` has. `case 'isTruth'` says it outright: the test is an
+ * EXACT three-valued comparison, not a truthiness coercion, so a non-boolean is simply "no"
+ * rather than a fault, and it yields a plain boolean with no UNKNOWN to settle.
+ */
+type CTruthTestProp = {
+  key: string;
+  /** `true`/`false` for IS TRUE / IS FALSE; `null` for IS UNKNOWN, mirroring the AST. */
+  truth: boolean | null;
+  /** `true` for the `IS NOT …` spelling, mirroring the AST's own flag. */
+  negated: boolean;
+};
+
 /** One lifted `<ownVar>.<key> IN <closed list>` conjunct (item 1269). */
 type CMemberProp = {
   key: string;
@@ -4950,6 +4989,83 @@ const residualOf = (
   return rest.length === 1 ? rest[0] : { kind: 'and', items: rest };
 };
 
+/**
+ * `<ownVar>.<key> IS [NOT] TRUE|FALSE|UNKNOWN` as a liftable conjunct, or null (item 1286).
+ *
+ * `NOT (x IS TRUE)` is folded by FLIPPING `negated`, the same way `asNullTest` folds
+ * `NOT (… IS NULL)` — the native engine needed two passes for its two null spellings (items 1261
+ * then 1262) because the second was not noticed until the first shipped, and the cheap way not to
+ * repeat that is to handle both the moment the arm is written.
+ */
+const asTruthTest = (e: Expr): { expr: Expr; truth: boolean | null; negated: boolean } | null => {
+  if (e.kind === 'isTruth') {
+    return { expr: e.expr, truth: e.truth, negated: e.negated };
+  }
+
+  if (e.kind === 'not' && e.expr.kind === 'isTruth') {
+    const inner = e.expr;
+
+    return { expr: inner.expr, truth: inner.truth, negated: !inner.negated };
+  }
+
+  return null;
+};
+
+/**
+ * File one lifted `IS [NOT] TRUE|FALSE|UNKNOWN` conjunct into the list its ORDERING requires.
+ *
+ * ⚠️ `IS UNKNOWN` GOES INTO `nulls`, NOT INTO `truthTests`, and the split is measured rather than
+ * reasoned. `case 'isTruth'` routes `truth === null` through `isNullish` — the very function
+ * `case 'isNull'` uses — so the two are one question; and the NATIVE engine agrees, by hoisting
+ * `IS UNKNOWN` past a faulting sibling exactly as it hoists `IS NULL`, while refusing to hoist
+ * `IS TRUE`/`IS FALSE`. The two lists are applied in different places for that reason, so putting
+ * a conjunct in the wrong one is a cross-engine divergence, not a style question. The table is
+ * above the `truthTestProps` block in `satisfies`.
+ *
+ * Returns whether it claimed the conjunct, so the caller carries ONE branch for this family:
+ * the match test is in here too, because `directEqProps` sits at the complexity cap.
+ */
+/**
+ * File one lifted `IS [NOT] NULL` conjunct, returning whether it claimed the conjunct.
+ *
+ * The same shape as `liftTruthTest` — and extracted for the same reason, that `directEqProps` sits
+ * at its complexity cap. The two families end up in the SAME list, since `IS UNKNOWN` is `IS NULL`.
+ */
+const liftNullTest = (conjunct: Expr, ownVar: string, nulls: CNullProp[]): boolean => {
+  const test = asNullTest(conjunct);
+
+  if (test?.expr.kind !== 'prop' || test.expr.variable !== ownVar) {
+    return false;
+  }
+
+  nulls.push({ key: test.expr.key, negated: test.negated });
+
+  return true;
+};
+
+const liftTruthTest = (
+  conjunct: Expr,
+  ownVar: string,
+  nulls: CNullProp[],
+  truthTests: CTruthTestProp[],
+): boolean => {
+  const test = asTruthTest(conjunct);
+
+  if (test?.expr.kind !== 'prop' || test.expr.variable !== ownVar) {
+    return false;
+  }
+
+  if (test.truth === null) {
+    nulls.push({ key: test.expr.key, negated: test.negated });
+
+    return true;
+  }
+
+  truthTests.push({ key: test.expr.key, truth: test.truth, negated: test.negated });
+
+  return true;
+};
+
 const directEqProps = (
   where: Expr,
   ownVar: string | undefined,
@@ -4964,6 +5080,8 @@ const directEqProps = (
   member: CMemberProp[];
   /** `<ownVar>.<key> IS [NOT] NULL` conjuncts (item 1270). */
   nulls: CNullProp[];
+  /** `<ownVar>.<key> IS [NOT] TRUE|FALSE|UNKNOWN` conjuncts (item 1286). */
+  truthTests: CTruthTestProp[];
   residual: Expr | undefined;
 } | null => {
   if (ownVar === undefined) {
@@ -4995,6 +5113,7 @@ const directEqProps = (
   const path: CPathProp[] = [];
   const member: CMemberProp[] = [];
   const nulls: CNullProp[] = [];
+  const truthTests: CTruthTestProp[] = [];
 
   // ⚠️ AN UNADMITTED CONJUNCT STOPS THE LOOP, it no longer forfeits the chain (item 1284).
   // `stop` is the index of the first conjunct this loop could not read; everything from there on
@@ -5091,10 +5210,14 @@ const directEqProps = (
     // spelling, canonicalized by FLIPPING the flag rather than by a separate list. The native
     // engine fixed its own two spellings in two passes (items 1261 then 1262) because the second
     // was not noticed until the first shipped; both are here at once.
-    const nullTest = asNullTest(conjunct);
+    if (liftNullTest(conjunct, ownVar, nulls)) {
+      continue;
+    }
 
-    if (nullTest?.expr.kind === 'prop' && nullTest.expr.variable === ownVar) {
-      nulls.push({ key: nullTest.expr.key, negated: nullTest.negated });
+    // `WHERE n.flag IS TRUE` and its family (item 1286), including the `NOT (… IS TRUE)`
+    // spelling. Measured at 2.32x against the `= true` spelling of the same question, with the
+    // selectivity matched by construction so both answer an identical 20000.
+    if (liftTruthTest(conjunct, ownVar, nulls, truthTests)) {
       continue;
     }
 
@@ -5205,7 +5328,8 @@ const directEqProps = (
     notTruth.length === 0 &&
     path.length === 0 &&
     member.length === 0 &&
-    nulls.length === 0
+    nulls.length === 0 &&
+    truthTests.length === 0
   ) {
     return null;
   }
@@ -5239,7 +5363,7 @@ const directEqProps = (
   //
   // A FULLY-ADMITTED chain is untouched by this — it has no residual, every conjunct lifts, and
   // item 259 covers the ordering among families.
-  return { eq, cmp, truth, notTruth, path, member, nulls, residual };
+  return { eq, cmp, truth, notTruth, path, member, nulls, truthTests, residual };
 };
 
 /**
@@ -5274,7 +5398,8 @@ export const hasPredicate = (pred: CPredicate): boolean =>
   (pred.cmpProps?.length ?? 0) > 0 ||
   (pred.pathProps?.length ?? 0) > 0 ||
   (pred.memberProps?.length ?? 0) > 0 ||
-  (pred.nullProps?.length ?? 0) > 0;
+  (pred.nullProps?.length ?? 0) > 0 ||
+  (pred.truthTestProps?.length ?? 0) > 0;
 
 export const compilePredicate = (
   properties: readonly PropertyConstraint[] | undefined,
@@ -5305,6 +5430,9 @@ export const compilePredicate = (
     ...(direct === null || direct.path.length === 0 ? {} : { pathProps: direct.path }),
     ...(direct === null || direct.member.length === 0 ? {} : { memberProps: direct.member }),
     ...(direct === null || direct.nulls.length === 0 ? {} : { nullProps: direct.nulls }),
+    ...(direct === null || direct.truthTests.length === 0
+      ? {}
+      : { truthTestProps: direct.truthTests }),
   };
 };
 
@@ -6320,6 +6448,43 @@ export const satisfies = (
     }
   }
 
+  // ⚠️ THE NON-RAISING FAMILIES RUN **BEFORE** `truthProps`, AND ITEMS 1269/1270 HAD THIS BACKWARDS.
+  // Both placed their family LAST on an explicit argument: "running the non-raising family first
+  // would let a FALSE membership return before a sibling conjunct that the generic path would have
+  // raised on, changing WHICH queries error. Running it last cannot: every family that can raise
+  // has already run."
+  //
+  // The second sentence is false, and it was a TS-vs-native divergence for as long as those items
+  // have been in. The generic route does NOT raise when a sibling settles the row — FALSE dominates
+  // — so running a non-raising family LAST is what exposes a raise the whole-chain route suppresses.
+  // Measured on both arms of item 1286's diff, so it pre-dates that item:
+  //
+  //     WHERE n.s AND false              ts ok []  native ok []   AGREE
+  //     WHERE n.s AND n.z IS NOT NULL    ts ERR    native ok []   DIVERGE  (nullProps, item 1270)
+  //     WHERE n.s AND n.n IN [99]        ts ERR    native ok []   DIVERGE  (memberProps, item 1269)
+  //     WHERE n.s AND n.n = 99           ts ok []  native ok []   AGREE    (eqProps — runs FIRST)
+  //     WHERE n.s AND n.n > 99           ts ok []  native ok []   AGREE    (cmpProps — runs FIRST)
+  //
+  // The two that agree are exactly the two already in this group, which item 1169 put here for the
+  // same reason under a different shape ("ordered NON-RAISING FIRST"). So the file held two opposite
+  // conventions and the evidence picks 1169's: a family that cannot raise settles the row before one
+  // that can, which is what FALSE dominance does on the generic route.
+  if (pred.memberProps !== undefined) {
+    for (const { key, test } of pred.memberProps) {
+      if (test(propOf(element, key), env) !== true) {
+        return false;
+      }
+    }
+  }
+
+  if (pred.nullProps !== undefined) {
+    for (const { key, negated } of pred.nullProps) {
+      if (isNullish(propOf(element, key)) === negated) {
+        return false;
+      }
+    }
+  }
+
   // A bare property standing alone as a boolean predicate (item 875). `asTruth` is the SAME
   // function the generic `where` below goes through, so this is a cheaper route to an identical
   // answer — including the RAISE on a non-boolean, which is the reason these are not lifted as
@@ -6345,29 +6510,32 @@ export const satisfies = (
     }
   }
 
-  // ⚠️ LAST AMONG THE LIFTED FAMILIES, AND THAT IS THE CONSERVATIVE PLACE (item 1269). A
-  // membership test cannot RAISE — `hashedIn`/`inList` only compare — while `truthProps` and
-  // `notTruthProps` raise on a non-boolean and `cmpProps`/`pathProps` can too. Running the
-  // non-raising family first would let a FALSE membership return before a sibling conjunct that
-  // the generic path would have raised on, changing WHICH queries error. Running it last cannot:
-  // every family that can raise has already run.
-  if (pred.memberProps !== undefined) {
-    for (const { key, test } of pred.memberProps) {
-      if (test(propOf(element, key), env) !== true) {
-        return false;
-      }
-    }
-  }
-
-  // BESIDE `memberProps`, AFTER EVERYTHING THAT CAN RAISE, for the reason given there. A null test
-  // is total and cannot raise either, so the two non-raising families may run in any order
-  // relative to each other.
+  // ⚠️ `IS TRUE`/`IS FALSE` RUN **AFTER** `truthProps`, UNLIKE EVERY OTHER NON-RAISING FAMILY, and
+  // the reason is measured rather than reasoned. This test cannot raise, so the argument above
+  // would put it in the hoisted group — but the NATIVE engine does not hoist it, and byte-identity
+  // is the contract. `n.s` is a string, so coercing it is a data exception; each tail below is
+  // FALSE for every row unless noted:
   //
-  // `isNullish(…) === negated` IS the rejection: for `IS NULL` (`negated` false) a row survives
-  // only when the cell IS nullish, and for `IS NOT NULL` only when it is not.
-  if (pred.nullProps !== undefined) {
-    for (const { key, negated } of pred.nullProps) {
-      if (isNullish(propOf(element, key)) === negated) {
+  //     WHERE n.s AND n.n IS TRUE        native ERR    FALSE and STILL raises: not hoisted
+  //     WHERE n.s AND n.n IS FALSE       native ERR    likewise
+  //     WHERE n.s AND n.n IS UNKNOWN     native ok []  hoisted — which is why it folds into
+  //                                                    `nulls` above instead of living here
+  //     WHERE n.s AND n.z IS NOT NULL    native ok []  hoisted
+  //     WHERE n.s AND n.n IN [99]        native ok []  hoisted
+  //     WHERE n.s AND n.n = 99           native ok []  hoisted
+  //     WHERE n.s AND n.n IS NOT TRUE    native ERR    tail is TRUE here, so uninformative
+  //
+  // So the split is `truth === null` (hoisted, folded into `nulls`) against `truth !== null` (not
+  // hoisted, here). Running this block any earlier makes TS answer `ok []` where native raises.
+  //
+  // The arithmetic is `case 'isTruth'`'s own: an EXACT three-valued comparison, so a non-boolean is
+  // simply "no" rather than a fault, and `IS UNKNOWN` tests nullishness.
+  if (pred.truthTestProps !== undefined) {
+    for (const { key, truth, negated } of pred.truthTestProps) {
+      const v = propOf(element, key);
+      const matches = truth === null ? isNullish(v) : v === truth;
+
+      if (!(negated ? !matches : matches)) {
         return false;
       }
     }

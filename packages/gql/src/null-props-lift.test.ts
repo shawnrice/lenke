@@ -78,20 +78,27 @@ describe('IS NULL / IS NOT NULL lift into nullProps (item 1270)', () => {
     expect(countOf("MATCH (n:P) WHERE n.k IS NULL AND n.s IN ['yy'] RETURN count(*) AS c")).toBe(1);
   });
 
-  test('⚠️ a sibling conjunct that RAISES still raises, which is why the lift runs LAST', () => {
-    // `n.s` is a string in boolean context and must RAISE. A null test cannot raise, so running it
-    // before the raising families would let a FALSE null test return early and swallow that raise —
-    // changing WHICH queries error.
+  test('⚠️ a sibling that SETTLES the row suppresses a raise, as it does on the generic route', () => {
+    // ⚠️ REWRITTEN AT ITEM 1286, AND THE BEHAVIOUR IT USED TO ASSERT WAS A CROSS-ENGINE DIVERGENCE.
+    // The original argument was that running a non-raising family FIRST "would let a FALSE test
+    // return early and swallow that raise — changing WHICH queries error", so this family ran LAST
+    // among the lifted blocks. The premise is right and the conclusion was backwards: the GENERIC
+    // route does not raise when a sibling SETTLES the row (FALSE dominates), so running last is
+    // what produced a raise the engine never produces. Measured on both engines:
     //
-    // ⚠️ THE NULL TEST MUST REJECT EVERY VERTEX, and the first version of this test did not make it
-    // so: with `n.k IS NOT NULL` one vertex PASSES the null test and then reaches the raising
-    // conjunct, so the query raises whatever the order is — and the mutation run proved it by
-    // SURVIVING `nulls-run-before-raising-families`. `n.s IS NULL` matches nothing (every vertex
-    // carries `s`), so under the wrong order every row is rejected first and the raise is
-    // swallowed: 0 rows instead of an error.
-    expect(() => query(g, 'MATCH (n:P) WHERE n.s AND n.s IS NULL RETURN count(*) AS c')).toThrow();
-    expect(() => query(g, 'MATCH (n:P) WHERE n.s IS NULL AND n.s RETURN count(*) AS c')).toThrow();
-    // And the original pair, which is still worth asserting — it just cannot see the ordering.
+    //     WHERE n.s AND n.s IS NULL        ts ok 0   native ok 0   <- was ts THROW
+    //     WHERE n.s IS NULL AND n.s        ts ok 0   native ok 0   <- was ts THROW
+    //     WHERE n.s AND n.k IN [999]       ts ok 0   native ok 0   <- was ts THROW
+    //     WHERE n.k IN [999] AND n.s       ts ok 0   native ok 0   <- was ts THROW
+    //     WHERE n.s AND n.k IS NOT NULL    ts ERR    native ERR    <- unchanged, and why
+    //
+    // The last line is the one that still throws, and it is the control: one vertex PASSES
+    // `k IS NOT NULL`, so the raising sibling is reached for that row whatever the order is. The
+    // cross-engine guard now lives in `packages/native/src/and-short-circuit-conformance.test.ts`,
+    // which is strictly stronger than this file could be — it compares against the engine instead
+    // of pinning one engine's choice.
+    expect(countOf('MATCH (n:P) WHERE n.s AND n.s IS NULL RETURN count(*) AS c')).toBe(0);
+    expect(countOf('MATCH (n:P) WHERE n.s IS NULL AND n.s RETURN count(*) AS c')).toBe(0);
     expect(() =>
       query(g, 'MATCH (n:P) WHERE n.s AND n.k IS NOT NULL RETURN count(*) AS c'),
     ).toThrow();

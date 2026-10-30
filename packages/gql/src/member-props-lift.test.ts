@@ -92,17 +92,27 @@ describe('IN / OR lift into memberProps (item 1269)', () => {
     expect(countOf('MATCH (n:P) WHERE n.k IN $p RETURN count(*) AS c', { p: 2 })).toBe(0);
   });
 
-  test('⚠️ a sibling conjunct that RAISES still raises, which is why the lift runs LAST', () => {
-    // `n.s` is a string in boolean context, which must RAISE. If `memberProps` were applied before
-    // the raising families, a FALSE membership would return early and swallow that raise — changing
-    // WHICH queries error, not just how fast they run. `matchesPredicate` applies `memberProps`
-    // after `truthProps`/`notTruthProps`/`cmpProps`/`pathProps` for exactly this reason.
+  test('⚠️ a sibling that SETTLES the row suppresses a raise, as it does on the generic route', () => {
+    // ⚠️ REWRITTEN AT ITEM 1286, AND THE BEHAVIOUR IT USED TO ASSERT WAS A CROSS-ENGINE DIVERGENCE.
+    // The original argument was that running a non-raising family FIRST "would let a FALSE test
+    // return early and swallow that raise — changing WHICH queries error", so this family ran LAST
+    // among the lifted blocks. The premise is right and the conclusion was backwards: the GENERIC
+    // route does not raise when a sibling SETTLES the row (FALSE dominates), so running last is
+    // what produced a raise the engine never produces. Measured on both engines:
     //
-    // `n.k IN [999]` matches NOTHING, so an early return is the tempting behaviour and the wrong
-    // one.
-    expect(() => query(g, 'MATCH (n:P) WHERE n.s AND n.k IN [999] RETURN count(*) AS c')).toThrow();
-    // And the same predicate with the conjuncts written the other way round must behave alike.
-    expect(() => query(g, 'MATCH (n:P) WHERE n.k IN [999] AND n.s RETURN count(*) AS c')).toThrow();
+    //     WHERE n.s AND n.s IS NULL        ts ok 0   native ok 0   <- was ts THROW
+    //     WHERE n.s IS NULL AND n.s        ts ok 0   native ok 0   <- was ts THROW
+    //     WHERE n.s AND n.k IN [999]       ts ok 0   native ok 0   <- was ts THROW
+    //     WHERE n.k IN [999] AND n.s       ts ok 0   native ok 0   <- was ts THROW
+    //     WHERE n.s AND n.k IS NOT NULL    ts ERR    native ERR    <- unchanged, and why
+    //
+    // The last line is the one that still throws, and it is the control: one vertex PASSES
+    // `k IS NOT NULL`, so the raising sibling is reached for that row whatever the order is. The
+    // cross-engine guard now lives in `packages/native/src/and-short-circuit-conformance.test.ts`,
+    // which is strictly stronger than this file could be — it compares against the engine instead
+    // of pinning one engine's choice.
+    expect(countOf('MATCH (n:P) WHERE n.s AND n.k IN [999] RETURN count(*) AS c')).toBe(0);
+    expect(countOf('MATCH (n:P) WHERE n.k IN [999] AND n.s RETURN count(*) AS c')).toBe(0);
   });
 
   test('an AND chain mixing a membership with the other lifted families is complete', () => {
