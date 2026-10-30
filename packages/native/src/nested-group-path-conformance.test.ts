@@ -107,6 +107,42 @@ suite('a path bound over a NESTED subpath group', () => {
     expect(outcome('native', nodesQ)).toBe('ok [{"x":null}|{"x":null}]');
   });
 
+  test('OPEN: with a path bound, TS answers a DIFFERENT QUERY — wrong endpoint, lost bindings, and MODE-INSENSITIVE (item 1237)', () => {
+    // The unit is `(x)->(m)<-(y)`, so the pattern's endpoint is `y`. Without a path both engines
+    // say `{1, 3}` — those are the `y` values, and they are what a hand enumeration gives. WITH a
+    // path bound, TS says `{2, 2, 4}`, which are the MIDDLE nodes: it has stopped treating the
+    // unit as nested and ends at `m`.
+    const endpoint = `MATCH p = ${UNIT} (t) RETURN t.n AS n`;
+
+    expect(outcome('ts', endpoint)).toBe('ok [{"n":2}|{"n":2}|{"n":4}]');
+    expect(outcome('native', endpoint)).toBe('ok [{"n":1}|{"n":3}]');
+    // And the group's inner lists vanish on the TS side, where native still binds them.
+    const lists = `MATCH p = ${UNIT} RETURN size(x) AS sx, size(y) AS sy`;
+
+    expect(outcome('ts', lists)).toBe(
+      'ok [{"sx":null,"sy":null}|{"sx":null,"sy":null}|{"sx":null,"sy":null}]',
+    );
+    expect(outcome('native', lists)).toBe('ok [{"sx":1,"sy":1}|{"sx":1,"sy":1}]');
+
+    // ⚠️ THE DECISIVE EVIDENCE, and the reason this is recorded as TS being wrong rather than as a
+    // disagreement: with a path bound, TS returns THE SAME THREE ROWS under WALK and under TRAIL.
+    // WALK permits edge reuse and TRAIL forbids it, so no correct implementation can be
+    // insensitive to the difference on this fixture — and native is not, answering 18 against 2.
+    const walk = 'MATCH p = WALK ((x)-[:KNOWS]->(m)<-[:KNOWS]-(y)){1,2} (t) RETURN t.n AS n';
+    const trail = 'MATCH p = TRAIL ((x)-[:KNOWS]->(m)<-[:KNOWS]-(y)){1,2} (t) RETURN t.n AS n';
+
+    expect(outcome('ts', walk)).toBe(outcome('ts', trail));
+    expect(outcome('native', walk)).not.toBe(outcome('native', trail));
+    expect(outcome('native', trail)).toBe('ok [{"n":1}|{"n":3}]');
+
+    // AGREEMENT that bounds the whole thing: at exactly TWO repetitions both engines answer NO
+    // rows, because every continuing edge is already used. So the engines agree about the shape of
+    // the search and disagree only once a path is bound.
+    const two = 'MATCH p = ((x)-[:KNOWS]->(m)<-[:KNOWS]-(y)){2,2} (t) RETURN t.n AS n';
+
+    expect(agree(two)).toBe('ok []');
+  });
+
   test('CONTROL: the same accessors over a FLAT group and a var-length hop AGREE', () => {
     // So the defect is specific to the NESTED walker, not to path accessors in general — and
     // these are the shapes the differential fuzzer does generate, which is why it stayed green.
