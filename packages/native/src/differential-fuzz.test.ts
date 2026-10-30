@@ -1369,6 +1369,17 @@ const genAbbrevQuantified = (r: () => number): string => {
     // so a `min > 1` with `max = null` had no coverage at all. WALK is excluded for these by
     // construction: this line carries no mode.
     `MATCH (a:T)${hop}${pick(r, ['+', '{1,}', '{2,}'])}${end} RETURN count(*) AS x`,
+    // ⚠️ THE SAME QUANTIFIERS UNDER A **DISTINCT-ENDPOINT** PROJECTION, which is what item 1253
+    // found missing after item 1252 fixed a WRONG ANSWER this fuzzer had not caught.
+    //
+    // `count(*)` above cannot reach `detectReachableShortcut` at all: `reachCount` refuses
+    // `first.star` and requires `count(DISTINCT <endpoint>)`, and the rows form requires a
+    // `DISTINCT` projection reading only the endpoint. So `{2,}` WAS generated, and the rung that
+    // mishandled it was never the rung that answered. The fixture was always adequate — checked
+    // directly: with the pre-fix code `:F ->{2,}` answered 2 against its bounded oracle's 1 — so
+    // the gap was purely this pairing.
+    `MATCH (a:T)${hop}${pick(r, ['+', '{1,}', '{2,}', '*'])}${end} RETURN count(DISTINCT b) AS x`,
+    `MATCH (a:T)${hop}${pick(r, ['+', '{1,}', '{2,}', '*'])}${end} RETURN DISTINCT b.n AS x ORDER BY x`,
     // A PATH VARIABLE over the abbreviated form, which is the only thing that makes
     // `trailEnds` reconstruct the walk (`wantPath`) rather than yield bare ends. Totalised by
     // the ORDER BY, since several paths share a length.
