@@ -35428,3 +35428,74 @@ fn open_lower_bound_walk_reaches_the_whole_cycle() {
         assert_eq!(open, 3.0, "min {min}: the cycle's three nodes");
     }
 }
+
+/// ROUTE check: `IS NOT NULL` does NOT reach the presence fast paths, while Gremlin's `has(k)`
+/// does — a ~4x spelling gap (item 1260).
+///
+/// ```text
+///   GQL   scan  WHERE age IS NOT NULL    890.3 us      GREM  scan  has('age')   228.9 us   3.89x
+///   GQL   hop   WHERE b.age IS NOT NULL 1216.5         GREM  hop   has('age')   286.4     4.25x
+/// ```
+///
+/// Same answers (200,000 / 800,000) at 200,000 nodes / 800,000 edges. The cause is a predicate
+/// SHAPE mismatch: `has(k)` lowers to `PropertyExists`, which the matchers accept, while
+/// `IS NOT NULL` lowers to `IsNull { negated: true }`, which they do not.
+///
+/// ⚠️ THE TWO PREDICATES ARE NOT INTERCHANGEABLE, which is why this is pinned rather than patched
+/// in the same breath. `ir.rs` states it: `PropertyExists` is true for a PRESENT value "regardless
+/// of that value", and it is "the one predicate that separates an absent property from a present
+/// `Null` … which `IS NOT NULL` cannot". So the masks differ — `PropertyExists` is
+/// `present || nulls`, `IS NOT NULL` is `present` alone — and treating one as the other would be a
+/// wrong answer on any column that stores a present-null.
+///
+/// ⚠️ THIS TEST ASSERTS THE GAP, so a fix MUST FLIP IT. That mechanism has paid off three times in
+/// this run (items 1251, 1255, 1257): a recorded gap with a failing assertion attached beats a
+/// comment nobody re-reads.
+#[test]
+fn is_not_null_does_not_reach_the_presence_fast_path() {
+    let mut b = Builder::default();
+
+    for i in 0..40u32 {
+        b.node(&["P"], &[("k", n(f64::from(i % 10)))]);
+    }
+    for i in 0..40u32 {
+        b.edge(i, (i + 7) % 40, "T");
+    }
+    let st = b.build();
+
+    // The fixture must be a PACKED column: the coincidence argument above holds only there.
+    assert!(
+        matches!(st.column("k"), Some(crate::store::Column::Num { .. })),
+        "fixture must build a Num column, or the semantics of the two predicates diverge"
+    );
+
+    let hq = "MATCH (a:P)-[:T]->(c) WHERE c.k IS NOT NULL RETURN count(*) AS x";
+    let hplan = crate::opt::optimize_indexed(crate::gql::parse(hq).unwrap(), &st);
+
+    assert!(
+        crate::exec::fastpath::try_fused_hop_present_count(&hplan, &st).is_none(),
+        "IS NOT NULL now reaches the hop presence path - if this is deliberate, the masks must \
+         differ per spelling (present||nulls for PropertyExists, present alone for IS NOT NULL) \
+         and this assertion should become is_some()"
+    );
+
+    // Both spellings must agree on the ANSWER whatever path they take — that is the invariant the
+    // fast-path routing must not break, and it holds today.
+    let scalar = |q: &str| -> f64 {
+        match &run(&crate::gql::parse(q).unwrap(), &st)
+            .rows
+            .iter()
+            .next()
+            .expect("one row")[0]
+        {
+            Value::Num(x) => *x,
+            other => panic!("not a number: {other:?}"),
+        }
+    };
+
+    assert_eq!(scalar(hq), 40.0, "every edge lands on a node carrying k");
+    assert_eq!(
+        scalar("MATCH (c:P) WHERE c.k IS NOT NULL RETURN count(*) AS x"),
+        40.0
+    );
+}

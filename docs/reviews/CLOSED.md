@@ -39277,3 +39277,58 @@ times (items 1220/1224/1227/1231): the PRESENCE counts at `try_fused_hop_present
 `try_stream_num_count`, where the per-element cost is one or two bool reads with no data load. The
 second also evaluates `bounds.is_empty()` INSIDE its per-element closure — a loop-invariant branch
 of exactly the kind item 1220 hoisted out of a sweep.
+
+### Item 1260 — `IS NOT NULL` is ~4x slower than Gremlin's `has(k)` for the same question, and a probe that measured the WRONG PATH three times before the route check caught it (OPEN, priced)
+
+Item 1259 nominated the two PRESENCE-count sweeps as the Rust target. Pricing them found something
+bigger and a different kind of defect:
+
+```text
+  GQL   scan  WHERE age IS NOT NULL     890.3 us      GREM  scan  has('age')   228.9 us   3.89x
+  GQL   hop   WHERE b.age IS NOT NULL  1216.5         GREM  hop   has('age')   286.4     4.25x
+```
+
+200,000 nodes / 800,000 edges, identical answers. Two spellings of "count the elements carrying
+`k`", ~4x apart — the defect class this repo is organised around.
+
+**The cause is a predicate SHAPE mismatch.** `has(k)` lowers to `PropertyExists`, which the
+fast-path matchers accept; `IS NOT NULL` lowers to `IsNull { negated: true }`, which they do not, so
+it falls to the general path.
+
+### ⚠️ THE OBVIOUS FIX WOULD BE A WRONG ANSWER
+
+`ir.rs` is explicit: `PropertyExists` is true for a PRESENT value "regardless of that value", and it
+is "the one predicate that separates an absent property from a present `Null` … which
+`<var>.<key> IS NOT NULL` cannot." The masks genuinely differ — `PropertyExists` is
+`present || nulls`, `IS NOT NULL` is `present` ALONE — so accepting one as the other would miscount
+any column storing a present-null.
+
+The route is available but needs the mask to follow the spelling, not the site. On a `Column::Num`
+the two coincide (a present-null promotes the column to `Gen`, which the matcher's own comment calls
+load-bearing at exactly one line), so the scan numeric path could accept the spelling outright; the
+hop path serves ANY column type and would need `present` alone for the `IS NOT NULL` form. Pinned
+with an assertion that a fix must FLIP — the mechanism that has paid off three times in this run
+(items 1251, 1255, 1257).
+
+### ⚠️ THE PROBE MEASURED THE WRONG PATH THREE TIMES, and each was a different fixture trap
+
+Worth recording in full, because the timings looked perfectly reasonable throughout.
+
+1. **First value null → a `Gen` column.** The fixture nulled node 0, so the column had no kind to
+   infer and was built as `Gen`; every numeric fast path declined. The bounded CONTROL read
+   **765.4us against 26,056** and I nearly wrote that up as "a present-null costs 34x".
+2. **Any null → still not `Num`, via the Builder.** Moving the null off node 0 did not help. A
+   `Column::Num` `accepts` a `Null` in place ("no de-opt"), but that describes mutation, not the
+   build path — so the with-nulls arm could not be constructed at all this way, and the
+   `has_nulls` branch it was meant to price stayed untested. Added a column-representation
+   assertion to the probe, which is what said so.
+3. **And the shape never reached the target anyway.** A route check printed the plan:
+   `Filter { pred: IsNull { negated: true } }`, and
+   `try_fused_hop_present_count reached: **false**`. All the earlier numbers were the general path.
+
+THE RULE, which items 1185 and 1242 both state and this is a third instance of: **verify the route
+before trusting the time.** Three rounds of plausible measurement priced a function that was never
+called, and the one-line `is_some()` check settled it instantly. A probe that cannot say WHICH code
+it ran is measuring the engine, not the change.
+
+Gates: 1335 + 13 + 725 Rust tests green, `clippy -D warnings` 0, `cargo fmt` 0.
