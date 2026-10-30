@@ -40895,3 +40895,89 @@ answer-equivalent, so a route test per rung is what gives it teeth), and the mea
 the part worth having first. Recorded with the location so the next tick is implementation.
 
 Gates: measurement only, no code change — `bun run check` 0.
+
+### Item 1283 — Gremlin's `has(k)` presence count, 3.0x, and the fix was in the ONE rung I had not suspected (DONE)
+
+Item 1282 priced this at 2.8x with selectivity matched and located `hasKey` as the cause: `has('k')`
+with one argument builds `{kind:'hasKey'}`, not `{kind:'has'}`, and item 1140 taught exactly ONE
+detector (`hasChain`) to convert it while five siblings tested `step.kind !== 'has'` against raw
+steps and declined.
+
+So the conversion is now ONE shared reader, `asHasFilter`, called by all six — `hasChain`,
+`filterChainCount`, two inline `VertexFilter` loops, `collectVertexFilters` and `collectHasFilters`.
+The drift is the defect: `collectVertexFilters` already exists in that file because two rungs needed
+the same loop, and the copies predating it are what went stale.
+
+### ⚠️ AND THAT FIXED NOTHING MEASURABLE. The rung was `vertexStepCount`.
+
+With all six sites converted the benchmark did not move — `has(k)` still read 7.543 against the
+value-predicate control's 2.573. Instrumenting `countShortcut`'s entry (after two false starts, below)
+printed the answer:
+
+```text
+  ZZ countShortcut ENTER steps= V,hasKey,count
+```
+
+Three steps, not four: a VACUOUS label is dropped by a pre-pass, so on a single-label graph
+`V().hasLabel(L).has(k).count()` reduces to `mid.length === 1` and lands on the SINGLE-STEP arm,
+`vertexStepCount` — which knew `hasLabel`, `out`/`in`, `outE`/`inE`, `has` and `both`/`bothE`, and
+not `hasKey`. None of the six chain sites is ever consulted for that shape. The benchmark fixture is
+all-`Person`, so it took exactly that path.
+
+The six-site extraction is still right and still shipped: with a SELECTIVE label the chain stays two
+steps and `filterChainCount` serves it, which is the case those sites fix. But the measured gap lived
+in the arm I had not suspected, and only instrumentation said so.
+
+```text
+  V().hasLabel(L).has('age', gt(-1)).count()   2.573 -> 2.560   control, took the rung already
+  V().hasLabel(L).has('age').count()           7.543 -> 2.496   3.0x, now within 3% of the control
+  V().hasLabel(L).has('age', 50).count()       2.548 -> 2.613   control
+  V().hasLabel(L).count()                      0.001 -> 0.001   control
+```
+
+### The bench had NO presence row, which is why a 3.0x survived
+
+Every `has` row in `bench-gremlin.ts` passes a VALUE predicate (`gt(44)`) — there is no
+single-argument `has('k')` anywhere in the file, so nothing was looking at the step kind that
+reaches a different rung. Same shape as item 1312 ("the serving bench had no Gremlin rows — which is
+WHY 361's gap survived 43 items"). A row is added, and it carries its own before/after:
+
+```text
+  V().hasLabel().has(k) [presence]    ts 9.3 -> 3.1 ms    3.0x
+  V().hasLabel().has().count()  CTL   ts 2.6 -> 2.5       flat
+  (native column, both arms)          0.26 -> 0.26        a TS change cannot reach it
+```
+
+### Teeth: 4 mutants, 4 caught
+
+```text
+  haskey-arm-removed           CAUGHT  the ROUTE test (+ the seekable test)
+  reader-never-converts        CAUGHT  the ROUTE test
+  multikey-admitted            CAUGHT  item 1140's OWN existing multi-key decline test
+  present-becomes-value-pred   CAUGHT  item 1140's test — this is the silent wrong answer item
+                                       1139 warned about, on a stored present-null
+```
+
+Route assertions were checked in both directions: on the pre arm `countShortcut` returns `undefined`
+where the test expects a number. They are the tests that matter here for the reason
+`has-count-shortcut.test.ts` already states — "a count shortcut is ANSWER-PRESERVING by design, so a
+mutant that never claims the shape passes every row assertion in the package".
+
+### ⚠️ TWO PROCESS FAILURES, both of which I had the warning for
+
+1. **`grep` lied about the built dist and I believed it.** Checking whether my change reached
+   `packages/gremlin/dist/esm/index.mjs`, `grep -c asHasFilter` printed nothing and I concluded the
+   build had not run — then `nx build --skip-nx-cache` "confirmed" it by printing nothing again.
+   `python3 str.count` says the dist had **7 occurrences all along**. The memory note is explicit:
+   _verify absence with python, never grep._ I lost two rebuilds and a wrong conclusion to it.
+2. **`bench-gremlin.ts`'s header warns that `@lenke/gremlin` is a BUILT DIST needing `nx build`**, and
+   I read that header at the start of this item and still spent a cycle on exactly that. The warning
+   was right; `bun run build` does cover it, which is what made the grep lie so convincing.
+
+Gates: 935 gremlin tests green, 21 projects green, all seven byte-identity fuzzers green (the Gremlin
+differential against Rust included), `bun run lint` 0, `bun run typecheck` 0, `bun run check` 0.
+`bench:gremlin` A/B'd post/pre/post across all 22 rows: no row moved outside noise except the new
+presence one.
+
+(One `bun run test` exit 1 during the gate sweep did NOT reproduce on an isolated re-run — the known
+`run-many` timing flake recorded in `sync-test-flake-is-timing`.)

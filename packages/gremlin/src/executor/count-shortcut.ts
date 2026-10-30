@@ -337,6 +337,49 @@ const unrollSlots = (
  * have undone the change: item 934 measured entering a call at ~65 ns a row, which is the whole
  * of the step the unrolls exist to remove.
  */
+/**
+ * A step as a `has` FILTER, with a single-key `hasKey` converted — `undefined` for anything else.
+ *
+ * ⚠️ ONE READER, BECAUSE THE DRIFT IS THE DEFECT (item 1283). `has('k')` with one argument builds
+ * `{kind:'hasKey'}`, not `{kind:'has'}`, and item 1140 taught exactly ONE detector (`hasChain`) to
+ * convert it. Its five siblings each tested `step.kind !== 'has'` against RAW steps and declined, so
+ * a presence filter fell to the general traversal stream in every rung but one. Measured at 200,000
+ * vertices with SELECTIVITY MATCHED — `has(k)` and `has(k, gt(-1))` both keep every row and answer
+ * identically:
+ *
+ * ```text
+ *   V().hasLabel(L).has('age', gt(-1)).count()   2.453 ms    takes the rung
+ *   V().hasLabel(L).has('age').count()           6.842       declines it      2.8x
+ *   V().hasLabel(L).values('age').count()        9.857                        4.0x
+ * ```
+ *
+ * Item 1140's own comment names the class it belongs to ("recognized one spelling of a predicate and
+ * scanned for another that meant exactly the same thing") and then left five places unfixed, which
+ * makes it an instance of itself. So this is a shared reader rather than a sixth copy of the block:
+ * `collectVertexFilters` already exists in this file because two rungs needed the same loop, and the
+ * copies that predate it are what went stale.
+ *
+ * The synthetic step carries `{op:'present'}` — the ONE predicate that reads no value, which is why
+ * item 1139 records that synthesising a VALUE predicate instead would be a silent wrong answer on a
+ * stored present-null. Every consumer reads `.key` and `.pred`, so a synthetic step is accepted
+ * wherever a real one is.
+ *
+ * MULTI-KEY `hasKey` returns `undefined`, for the reason item 1140 gives: it is ANY-of in both
+ * engines while these chains are CONJUNCTIONS, so admitting it as one filter would be wrong and
+ * splitting it would be wrong the other way.
+ */
+const asHasFilter = (step: Step): Extract<Step, { kind: 'has' }> | undefined => {
+  if (step.kind === 'has') {
+    return step;
+  }
+
+  if (step.kind === 'hasKey' && step.keys.length === 1) {
+    return { kind: 'has', key: step.keys[0], pred: { op: 'present' } };
+  }
+
+  return undefined;
+};
+
 const hasChain = (rest: readonly Step[]): Extract<Step, { kind: 'has' }>[] | undefined => {
   const filters: Extract<Step, { kind: 'has' }>[] = [];
 
@@ -389,20 +432,13 @@ const hasChain = (rest: readonly Step[]): Extract<Step, { kind: 'has' }>[] | und
     // `keys.some(...)`, the Rust parser folds an `Or` of `PropertyExists`), and this chain is a
     // CONJUNCTION — so admitting it as one filter would be wrong, and splitting it into several
     // would be wrong the other way. Correct and merely slow, which is the right side to fail on.
-    if (step.kind === 'hasKey') {
-      if (step.keys.length !== 1) {
-        return undefined;
-      }
+    const asHas = asHasFilter(step);
 
-      filters.push({ kind: 'has', key: step.keys[0], pred: { op: 'present' } });
-      continue;
-    }
-
-    if (step.kind !== 'has') {
+    if (asHas === undefined) {
       return undefined;
     }
 
-    filters.push(step);
+    filters.push(asHas);
   }
 
   return filters.length === 0 ? undefined : filters;
@@ -993,11 +1029,13 @@ const filterChainCount = (mid: readonly Step[], graph: Graph): number | undefine
       continue;
     }
 
-    if (step.kind !== 'has' || seedForStep(step, graph.vertexPropertyIndex) !== null) {
+    const asHas = asHasFilter(step);
+
+    if (asHas === undefined || seedForStep(asHas, graph.vertexPropertyIndex) !== null) {
       return undefined;
     }
 
-    propTests.push(step);
+    propTests.push(asHas);
   }
 
   // The first SINGLE-label test becomes the source; the rest stay predicates.
@@ -1174,17 +1212,19 @@ const hopChainShape = (
   const vfilters: VertexFilter[] = [];
 
   for (const step of filters) {
-    if (step.kind !== 'hasLabel' && step.kind !== 'has') {
+    const vf = step.kind === 'hasLabel' ? step : asHasFilter(step);
+
+    if (vf === undefined) {
       return undefined;
     }
 
     // A seekable `has` is the index's job, not this rung's — the same refusal the one-hop
     // rung makes, so the two cannot disagree about which shapes they take.
-    if (step.kind === 'has' && seedForStep(step, graph.vertexPropertyIndex) !== null) {
+    if (vf.kind === 'has' && seedForStep(vf, graph.vertexPropertyIndex) !== null) {
       return undefined;
     }
 
-    vfilters.push(step);
+    vfilters.push(vf);
   }
 
   const [first] = vfilters;
@@ -1803,15 +1843,17 @@ const startFilteredHopCount = (mid: readonly Step[], graph: Graph): number | und
   const filters: VertexFilter[] = [];
 
   for (const step of mid.slice(0, -1)) {
-    if (step.kind !== 'hasLabel' && step.kind !== 'has') {
+    const vf = step.kind === 'hasLabel' ? step : asHasFilter(step);
+
+    if (vf === undefined) {
       return undefined;
     }
 
-    if (step.kind === 'has' && seedForStep(step, graph.vertexPropertyIndex) !== null) {
+    if (vf.kind === 'has' && seedForStep(vf, graph.vertexPropertyIndex) !== null) {
       return undefined;
     }
 
-    filters.push(step);
+    filters.push(vf);
   }
 
   const [first] = filters;
@@ -1901,15 +1943,17 @@ const collectVertexFilters = (steps: readonly Step[], graph: Graph): VertexFilte
   const out: VertexFilter[] = [];
 
   for (const step of steps) {
-    if (step.kind !== 'hasLabel' && step.kind !== 'has') {
+    const vf = step.kind === 'hasLabel' ? step : asHasFilter(step);
+
+    if (vf === undefined) {
       return undefined;
     }
 
-    if (step.kind === 'has' && seedForStep(step, graph.vertexPropertyIndex) !== null) {
+    if (vf.kind === 'has' && seedForStep(vf, graph.vertexPropertyIndex) !== null) {
       return undefined;
     }
 
-    out.push(step);
+    out.push(vf);
   }
 
   return out;
@@ -1922,11 +1966,13 @@ const collectHasFilters = (
   const out: Extract<Step, { kind: 'has' }>[] = [];
 
   for (const step of steps) {
-    if (step.kind !== 'has') {
+    const asHas = asHasFilter(step);
+
+    if (asHas === undefined) {
       return undefined;
     }
 
-    out.push(step);
+    out.push(asHas);
   }
 
   return out;
@@ -2149,8 +2195,28 @@ const vertexStepCount = (step: Step, graph: Graph): number | undefined => {
     return adjacentCount(step.labels, graph);
   }
 
-  if (step.kind === 'has') {
-    return propertyCount(step, graph);
+  // ⚠️ `hasKey` REACHES THIS ARM TOO, and until item 1283 it did not — which is where the whole
+  // presence gap actually lived. The chain rungs were the obvious suspects and are fixed above, but
+  // a VACUOUS label is dropped by a pre-pass, so `V().hasLabel(L).has(k).count()` on a
+  // single-label graph reduces to `V, hasKey, count` and lands HERE, on the single-step arm, with
+  // `mid.length === 1`. This arm knew `hasLabel`, `out`/`in`, `outE`/`inE`, `has` and
+  // `both`/`bothE` — and not `hasKey`, so the query fell to the general traversal stream.
+  //
+  // Measured at 200,000 vertices with SELECTIVITY MATCHED (`has(k)` and `has(k, gt(-1))` both keep
+  // every row and answer identically), which is what rules out a per-survivor cost masquerading as
+  // a presence gap:
+  //
+  // ```text
+  //   V().hasLabel(L).has('age', gt(-1)).count()   2.573 ms    took this arm already
+  //   V().hasLabel(L).has('age').count()           7.543       fell to the stream
+  // ```
+  //
+  // `propertyCount` serves it unchanged: `matches` handles `{op:'present'}` (`predicates.ts`), and
+  // its own decline-when-seedable condition applies to the synthetic step exactly as to a real one.
+  const asHas = asHasFilter(step);
+
+  if (asHas !== undefined) {
+    return propertyCount(asHas, graph);
   }
 
   // `both` IS TWICE THE BUCKET (item 1087). This used to decline, saying "a self-loop is incident

@@ -103,6 +103,16 @@ const SHAPES: [string, Plan][] = [
   // excludes nothing and the pair is an EQUIVALENT-SPELLING guard as much as a perf row: these
   // two ask the same question and must stay close.
   ['V().hasLabel().has().count()', traversal(V(), hasLabel('Person'), has('age', gt(44)), count())],
+  // ⚠️ THE PRESENCE FORM, AND ITS ABSENCE IS WHY A 3.0x GAP SURVIVED (item 1283). Every `has` row
+  // above passes a VALUE predicate, so none of them exercises `has('k')` with ONE argument — which
+  // builds a different step (`{kind:'hasKey'}`) and reached only one of six count rungs. The row
+  // read 7.543 ms against the value-predicate form's 2.573 at 200,000 vertices, both keeping every
+  // row, and nothing in this file was looking. Same shape as item 1312: the gap survived because
+  // the harness had no row for it.
+  //
+  // KEPT AS A PAIR with the row above, which is the control: they answer different counts but take
+  // the same rung, so a change that helps one and not the other shows up here as a split.
+  ['V().hasLabel().has(k) [presence]', traversal(V(), hasLabel('Person'), has('age'), count())],
   ['V().has().has().count()', traversal(V(), has('age', gt(44)), has('age', gt(-1)), count())],
   // The ROW-RETURNING twin of the row above, which item 538 is about: a chain tally cannot help
   // a terminal that emits rows, so the fix there was to make a single-label `hasLabel` SEED its
