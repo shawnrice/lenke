@@ -40787,3 +40787,54 @@ is a hole to re-check whenever a sweep is made faster, not a one-off.
 Recorded as the rule rather than as a TS target, since there is no TS change to make.
 
 Gates: measurement only, no code change — `bun run check` 0.
+
+### Item 1281 — `IN $p` costs 1.34x `IN [literal]`, and both candidate fixes are rejected: the faster one can be silently WRONG (priced, declined)
+
+Item 1269 left this open in its own table and this prices it properly. Both spellings lift into
+`memberProps`; the difference is inside `membershipTest`, which hashes an all-LITERAL haystack once
+at COMPILE time but a closed non-literal one once per EXECUTION. 200,000 vertices, TS estimator rule,
+three alternated rounds, every row answering 2000 or 8000:
+
+```text
+  shape                      ms     ns/vertex   vs literal
+  IN [50]       literal     3.978     19.9        —
+  IN $p         param       5.344     26.7       1.34x
+  IN [$a]       list-of-param 4.312   21.6       1.08x
+  IN [50..53]   literal     4.290     21.5        —
+  IN $p4        param       5.063     25.3       1.18x
+  [CTL] age = 50            3.328     16.6        —
+  [CTL] age = $a            3.458     17.3       1.04x
+```
+
+⚠️ THE `eqProps` CONTROL IS WHAT MAKES THIS A FINDING: a parameter costs the EQUALITY path 1.04x,
+i.e. nothing. So the penalty is not "params are slower" — it is specific to the membership path's
+per-execution arm, whose per-element closure reads three captured mutables (`epoch`, `hay`,
+`hashed`) and branches, where the literal arm reads one captured constant and calls `hashedIn`.
+
+Item 184 is why it is worth pricing at all: "binding the list keeps values out of the query text, so
+`IN $names` is the injection-safe form and `IN […]` with inline literals is the rare one." The
+faster spelling is the one nobody should write.
+
+### Both fixes rejected, and the second one is the interesting rejection
+
+**(a) Micro-optimise the closure.** There is nothing to remove. The cost IS the epoch test and the
+captured reads, and they exist to detect that the parameter changed. Specialising the inner call
+after resolution (assigning a monomorphic `test`) keeps the epoch test and adds an indirect call.
+Identity-keying the param array instead of the epoch is the same compare in a different type — and
+item 269 already refuted identity-keying for the LIST form at 2.9x, because `case 'list'` rebuilds
+its array per row.
+
+**(b) Resolve ONCE per scan, via a `prepare(env)` hook on `CPredicate`.** This is the fix that would
+work: the per-element closure would then be identical to the literal arm's. It is rejected because
+of what it would cost in correctness, not in effort. `execEpoch` is bumped once per plan invocation
+and the memo is keyed on it, so the current design **cannot go stale** — a predicate re-used across
+executions re-resolves automatically. A `prepare` hook moves that obligation onto every caller that
+applies a predicate in a loop, which is the same multi-consumer set items 1269 and 1270 had to audit
+(`satisfies`, `inlineHolds`, `mergeFarPreds`, two `preFilter` gates, `rejectedByElementDirect`) — and
+a caller that forgets the call reads a haystack from a PREVIOUS execution. That is a silent WRONG
+ANSWER on a shape that returns a plausible count, traded for 1.34x on one spelling.
+
+A self-healing memo that is 1.34x slow beats a faster one that can be forgotten. Recorded so the
+gap is not re-priced as an oversight.
+
+Gates: measurement only, no code change — `bun run check` 0.
