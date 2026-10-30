@@ -33,6 +33,7 @@ import {
 } from '../executor.js';
 import { candidateCount, candidateVertexSource, expand, matchesLabel } from '../graph-queries.js';
 import type { Adjacency } from '../graph-queries.js';
+import { primedEndpointExtremum } from './hop-endpoint-extremum.js';
 import { indexCandidates } from './matching.js';
 import type { SortPlan } from './ordered-rows.js';
 import { outputColumnSorts, sortRowsByColumns, sortedRows } from './ordered-rows.js';
@@ -4198,6 +4199,7 @@ export const detectMultiHopAggregate = (
   const accs: HopAcc[] = [];
   const synthItems: { expr: Expr; alias: string }[] = [];
   const synthCols: CReturnItem[] = [];
+  const primedArgs: { expr: Expr; fn: CompiledExpr }[] = [];
   // Every item an extremum? Then a self-loop met twice changes nothing — see `EXTREMA`. A
   // `count(*)` row counter is NOT one, so one of those re-arms the self-loop decline.
   let allExtrema = true;
@@ -4228,9 +4230,13 @@ export const detectMultiHopAggregate = (
     }
 
     const [argExpr] = e.args;
+    const argFn = lowered.get(e) ?? compileExpr(argExpr);
 
     synthItems.push({ expr: argExpr, alias: col });
-    synthCols.push({ name: col, fn: lowered.get(e) ?? compileExpr(argExpr), isAgg: false });
+    synthCols.push({ name: col, fn: argFn, isAgg: false });
+    // Carried for `primedEndpointExtremum`, which needs the EXPRESSION (to prove it reads only
+    // the far endpoint) as well as the closure. One per non-`rows` acc, in acc order.
+    primedArgs.push({ expr: argExpr, fn: argFn });
   }
 
   // All-`count(*)` projects nothing, and the walk needs an item to produce.
@@ -4294,7 +4300,7 @@ export const detectMultiHopAggregate = (
 
   const { walks, noSelfLoops, looped } = turned;
 
-  return (graph, params) => {
+  const walkRows: RowsFn = (graph, params) => {
     // See the single-aggregate twin: two walks meet a self-loop twice, and the single
     // undirected walk does not.
     const chosen = noSelfLoops && graph.selfLoopCount !== 0 ? looped : undefined;
@@ -4362,5 +4368,28 @@ export const detectMultiHopAggregate = (
     }
 
     return [out];
+  };
+
+  // Item 1246's per-ENDPOINT fold, consulted before the per-ROW walk above.
+  //
+  // ⚠️ A SHAPE THAT DECLINES GETS `walkRows` ITSELF, not a wrapper around it, and that is
+  // load-bearing rather than tidy. The first version always returned the wrapper and tested
+  // `primed !== null` inside it — one closure-captured null check per QUERY, which cannot cost
+  // anything. It cost 1.06x with DISJOINT ranges on `min(a.name), max(a.name)`, a shape this fold
+  // refuses outright (243633 -> 258711 us, min of three alternated rounds). That is item 762's
+  // shape: a branch added to a hot closure moves the code that does not use it. Returning the bare
+  // closure makes the declining path byte-identical to what it was.
+  const primed = primedEndpointExtremum(m, accs, primedArgs, allExtrema);
+
+  if (primed === null) {
+    return walkRows;
+  }
+
+  return (graph, params) => {
+    // Still a RUN-TIME decline: vacuity is a property of the GRAPH (see
+    // `primedEndpointExtremum`), so an admitted shape can still fall back per query.
+    const rows = primed(graph, params);
+
+    return rows ?? walkRows(graph, params);
   };
 };
