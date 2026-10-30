@@ -326,6 +326,48 @@ const CASES: Case[] = [
     ),
   },
   {
+    // A FILTERED COUNT WITH EXCLUSIONS, which had no row in either corpus until item 1232 — and
+    // that absence is how an 11.9x cliff in the Rust engine went unmeasured until item 1229 went
+    // looking for it (items 1213, 1229 and 1231 are the arc).
+    //
+    // ONE exclusion AND TWO, because the one-exclusion case has had a vectorized two-pass answer
+    // since item 1213 while everything beyond it fell to a per-row dispatch arm until item 1231. A
+    // single row at k=1 would have measured the fast case and called it the shape's cost.
+    //
+    // `age` is `i % 90`, so `> 45` keeps 44 of 90 values and each `<>` removes one more: the
+    // selectivity barely moves across these three rows, which is what makes their times
+    // comparable to each other and to the plain `~49%` row above.
+    name: 'count + filter, 1 exclusion',
+    ...onGraph(
+      () => nodesDoc,
+      (e, g) =>
+        void e.query(g, 'MATCH (n:Person) WHERE n.age > 45 AND n.age <> 60 RETURN count(*) AS c'),
+    ),
+  },
+  {
+    name: 'count + filter, 2 exclusions',
+    ...onGraph(
+      () => nodesDoc,
+      (e, g) =>
+        void e.query(
+          g,
+          'MATCH (n:Person) WHERE n.age > 45 AND n.age <> 60 AND n.age <> 61 RETURN count(*) AS c',
+        ),
+    ),
+  },
+  {
+    // FOUR, so the row shows whether the cost grows per exclusion or steps once.
+    name: 'count + filter, 4 exclusions',
+    ...onGraph(
+      () => nodesDoc,
+      (e, g) =>
+        void e.query(
+          g,
+          'MATCH (n:Person) WHERE n.age > 45 AND n.age <> 60 AND n.age <> 61 AND n.age <> 62 AND n.age <> 63 RETURN count(*) AS c',
+        ),
+    ),
+  },
+  {
     name: 'query: project 3 columns',
     ...onGraph(
       () => nodesDoc,
