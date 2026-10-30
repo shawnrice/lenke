@@ -37621,3 +37621,60 @@ engine is **25x FASTER** than native there, and `project the edge` 0.20x (5x fas
 `[ts lazy]`. A ranking that only reads the head would miss that the comparison runs both ways.
 
 No engine change (instrument and analysis only).
+
+### Item 1234 — three Rust targets examined: two REFUTED by existing records, one PRICED with up to ~89 ms of headroom and the reason it is an IR change (OPEN, diagnosed)
+
+Item 1233 pointed away from TS, so the Rust corpus was ranked by ABSOLUTE cost. Three candidates,
+in the order they presented themselves.
+
+**1. `project the edge` at ffi 925.6 ms — REFUTED before measuring, by the row's own comment.**
+It is the largest single number in the corpus and the TS side is 5x faster, which reads like a
+renderer problem. `bench.ts` says otherwise, and item 289 settled it: "the ts-vs-ffi gap on any
+row-returning query is the JSON CARRIER — the same fixture with the same work and ONE row out runs
+30.8x the OTHER way. Anyone reading these four rows as a renderer comparison should read
+`queryArrowIpc` and item 289 first." Reading 925.6 ms as a Rust target is the exact mistake that
+comment exists to prevent.
+
+**2. The nested/k2 group counts at 147-152 ms — REFUTED as GUARD rows.** `nested count :label`
+152,460 us and `nested-group count` 147,687 against `repeat-group count`'s 783 is 189x, carrier-free
+(one row out), and the biggest absolute cost in the Rust corpus. But these rows exist to GUARD a fix
+that already landed: "863,818us -> 146,402us once the walk got a counting sink of its own; ~665ms
+means the lists came back and ~860ms means the rows did." Today's 147,687 is that guard holding. The
+residual is genuine path enumeration over a nested unit with a reversed hop, and the group's own
+header already warns "the win may simply not be there".
+
+**3. `RepeatGroup`/`NestedGroup` lack `PathNeed` entirely — PRICED, and this one is real.**
+
+```text
+  repeat-group control      70849.4 us    (RETURN size(b))
+  repeat-group + path      104343.0 us    (RETURN path_length(p))     +33493.6, 1.47x
+  repeat-group unread       15418.2 us    (nothing reads the lists)   <- THE FLOOR
+  varlen control            15535.4 us
+  varlen + path             25167.3 us    +9631.9, 1.62x
+```
+
+`opt.rs`'s `mark` descends to set `PathNeed::CountOnly`, and its match arm names exactly two
+producers: `ShortestPath` and `VarLength`. `RepeatGroup` and `NestedGroup` have NO `path_need` FIELD
+in the IR, so they cannot be marked and always materialize their chains.
+
+THE PRIZE IS BOUNDED BY A ROW THAT ALREADY EXISTS. `repeat-group unread` at 15,418 us is what the
+same traversal costs when nothing reads the group's lists — so the list-building alone is
+70,849 - 15,418 = ~55,431 us, and `+ path` adds another ~33,494 on top. A shape that reads ONLY
+`path_length(p)` needs neither the lists nor the chain, which puts the headroom at up to ~89 ms
+against today's 104,343. The precedent for the size is `VarLength`'s own marking, recorded in
+`opt.rs`: 58,891us -> 22,662us at 599,998 rows, 2.6x.
+
+WHY IT IS NOT A ONE-TICK CHANGE, stated so the next tick budgets for it rather than discovering it:
+
+- a new `path_need` field on TWO `ir::Plan` variants, which touches every construction site
+  including `reverse.rs` and the fuzzer's generators;
+- threading it through two separate walkers (`NestedGroup` has its own, not `run_varlen`);
+- the correctness argument `opt.rs` spells out — "marking under an operator that MATERIALIZES the
+  path is a wrong answer ... that is exactly what the raw-vs-optimized fuzzer caught at seed 632",
+  so the allow-list must stay a whitelist and the suppression must be proved, not assumed;
+- `rewrite_fuzz`'s generator must be WIDENED to emit these shapes with path reads, or the fuzzer
+  passes for the same reason an empty test does (CLAUDE.md records two historical rewrites that
+  needed exactly this).
+
+No engine change this item. The value is three targets examined, two closed with their reasons, and
+the third priced against a floor that already exists in the corpus.
