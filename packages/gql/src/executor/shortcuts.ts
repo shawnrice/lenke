@@ -7779,6 +7779,77 @@ const keyedClausePred = (
 };
 
 /**
+ * `ORDER BY` for the REACHABILITY rung, resolved to its own output columns (item 1250).
+ *
+ * ⚠️ THIS ONE IS NOT A SLOWDOWN, IT IS AN ERROR. `detectReachableShortcut` refused every
+ * `ORDER BY`, so an ordered query fell to the general path — which ENUMERATES TRAILS over an
+ * UNBOUNDED pattern and dies on the trail budget. 3,000 nodes / 15,000 edges:
+ *
+ * ```text
+ *   MATCH (a:P)-[:T]->*(x) RETURN count(DISTINCT x) AS c            OK     58 ms, 1 row
+ *   ... ORDER BY c                                                  THROW  E_RESOURCE_EXHAUSTED
+ *   MATCH (a:P)-[:T]->*(x) RETURN DISTINCT x.n AS n                 OK     29 ms, 3000 rows
+ *   ... ORDER BY n                                                  THROW  E_RESOURCE_EXHAUSTED
+ * ```
+ *
+ * Two spellings of one question where one ANSWERS and the other FAILS — and on the count form the
+ * `ORDER BY` is a no-op, because one row is already in order. That is worse than the cost gaps
+ * items 1247 and 1249 fixed: a user who adds a sort to a working query gets an error telling them
+ * to "add a tighter bound".
+ *
+ * EVERY KEY MUST RESOLVE TO AN OUTPUT COLUMN, by name or by BEING that column's expression. The
+ * first half is the tally's own argument (item 190): an output column's value is already computed,
+ * so nothing is left unevaluated and no raise can be swallowed. The second half is there because
+ * `outputColumnSorts` matches names ONLY, and item 1062 measured the asymmetry that creates at
+ * 3.8x — here it would be answer-versus-error, which is worse than 3.8x.
+ *
+ * ⚠️ PAGING DECLINES, and that is a correctness boundary rather than caution: `runReach` applies
+ * `skip`/`limit` ITSELF, so a sort layered on top of its output would slice BEFORE ordering and
+ * return the wrong rows. Ordering with a window needs the slice moved inside, which is a different
+ * change and is not made here.
+ */
+const reachSortApplier = (
+  ret: Extract<Clause, { kind: 'return' }>,
+  cols: readonly CReturnItem[],
+  exprs: readonly Expr[],
+): ((rows: Row[]) => Row[]) | null => {
+  const keys = ret.projection.orderBy ?? [];
+
+  if (keys.length === 0) {
+    return (rows) => rows;
+  }
+
+  if (ret.projection.skip !== undefined || ret.projection.limit !== undefined) {
+    return null;
+  }
+
+  const names = new Set(cols.map((c) => c.name));
+
+  // Two items sharing one output NAME make a name ambiguous — the same refusal the tally makes.
+  if (names.size !== cols.length) {
+    return null;
+  }
+
+  const out: ColSort[] = [];
+
+  for (const k of keys) {
+    const byName = k.expr.kind === 'var' && names.has(k.expr.name) ? k.expr.name : undefined;
+    const at = exprs.findIndex((e) => sameGroupingExpr(k.expr, e));
+    const col = byName ?? (at >= 0 ? cols[at].name : undefined);
+
+    if (col === undefined) {
+      return null;
+    }
+
+    out.push({ col, descending: k.descending, nullsFirst: k.nullsFirst });
+  }
+
+  // At most one row per REACHED node, which is at most the graph — and far less than the trails
+  // the general path was enumerating to answer the same question.
+  return (rows) => sortGroupRows(rows, out);
+};
+
+/**
  * `colSortsOf` for a GROUPED AGGREGATE's N output columns rather than the tally's two (item 1249).
  *
  * ⚠️ THIS EXISTS BECAUSE BOTH GROUPED AGGREGATE RUNGS REFUSED EVERY `ORDER BY` WHILE THEIR TALLY
@@ -9864,7 +9935,9 @@ export const detectReachableShortcut = (
   const types = relTypeNames(rel.label);
 
   // Unbounded (`->+` / `->*`) directed segment, no edge var / props / WHERE, a bare
-  // labelled endpoint bound to a variable, a buildable rel type, no ORDER BY.
+  // labelled endpoint bound to a variable, a buildable rel type. An `ORDER BY` is resolved below
+  // rather than refused here (item 1250) — refusing it sent the query to the general path, which
+  // enumerates trails over an unbounded pattern and THROWS on the trail budget.
   if (
     q?.max !== null ||
     rel.variable !== undefined ||
@@ -9874,8 +9947,7 @@ export const detectReachableShortcut = (
     bVar === undefined ||
     (node.properties?.length ?? 0) > 0 ||
     node.where !== undefined ||
-    types === null ||
-    (ret.projection.orderBy?.length ?? 0) > 0
+    types === null
   ) {
     return null;
   }
@@ -9902,7 +9974,17 @@ export const detectReachableShortcut = (
     limit: projection.limit,
   };
 
-  return (graph, params) => runReach(spec, graph, params);
+  const applySort = reachSortApplier(
+    ret,
+    cret.projection.items,
+    ret.projection.items.map((it) => it.expr),
+  );
+
+  if (applySort === null) {
+    return null;
+  }
+
+  return (graph, params) => applySort(runReach(spec, graph, params));
 };
 
 /**

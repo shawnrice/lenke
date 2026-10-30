@@ -38762,3 +38762,63 @@ its survival could only mean a missing test.
 Gates: 21 projects green, all seven byte-identity fuzzers green, `bun run check` 0 (after extracting
 `keyedClausePred`, since admitting the sort pushed `detectGroupedHopAggregate` to 36 of the 35
 complexity cap — the cap has been right in this file every time).
+
+### Item 1250 — adding `ORDER BY` to a working reachability query made it THROW, and this one is not a slowdown (DONE)
+
+Items 1247 and 1249 found `ORDER BY` costing 1.42x, 2.15x and 11.90x on rungs that refused it.
+Grepping that refusal across the executor turned up one more — `detectReachableShortcut`, the
+unbounded var-length + DISTINCT rung — **and there the consequence is not a cost at all.**
+
+Falling off that rung sends an UNBOUNDED pattern to the general path, which enumerates TRAILS and
+dies on the trail budget. 3,000 nodes / 15,000 edges:
+
+```text
+  MATCH (a:P)-[:T]->*(x) RETURN count(DISTINCT x) AS c        OK     58 ms, 1 row
+  ... ORDER BY c                                              THROW  E_RESOURCE_EXHAUSTED
+  MATCH (a:P)-[:T]->*(x) RETURN DISTINCT x.n AS n             OK     29 ms, 3000 rows
+  ... ORDER BY n                                              THROW  E_RESOURCE_EXHAUSTED
+```
+
+**Two spellings of one question where one ANSWERS and the other FAILS** — and on the count form the
+`ORDER BY` is a NO-OP, because one row is already in order. The user is told to "add a tighter
+bound" for a query that worked before they sorted it. That is worse than any of the cost gaps above.
+
+### The fix
+
+`reachSortApplier` resolves every `ORDER BY` key to one of the rung's own output columns — by name,
+or by BEING that column's expression — and sorts `runReach`'s rows. The name half is the tally's
+argument (item 190): an output column's value is already computed, so nothing is left unevaluated
+and no raise can be swallowed. The expression half is there because `outputColumnSorts` matches
+names ONLY and item 1062 measured the asymmetry that creates at 3.8x — here it would be
+answer-versus-error, which is worse than 3.8x.
+
+After, on the same fixture: the count form answers in 46 ms, the rows form in 37 ms against the
+unordered 39 ms — the sort of a reached SET is free next to the BFS, and both key spellings return
+identical rows.
+
+### ⚠️ `ORDER BY` with a WINDOW still declines, and still throws — recorded, not hidden
+
+`runReach` applies `skip`/`limit` ITSELF, so a sort layered on its output would slice BEFORE
+ordering and return the WRONG ROWS. Declining is therefore correct rather than lazy:
+
+```text
+  ... RETURN DISTINCT x.n AS n LIMIT 5                        OK     5 rows
+  ... RETURN DISTINCT x.n AS n ORDER BY n LIMIT 5             THROW  E_RESOURCE_EXHAUSTED
+```
+
+**That leaves the top-N-reachable shape erroring, which is the most natural query of this family.**
+It is not fixed here for a stated reason rather than an unstated one: `ReachSpec` carries
+`skip`/`limit` as `CountValue`, which may be a PARAMETER, while `SortPlan` needs plain numbers — so
+moving the slice inside needs parameter handling and its own test surface, and this item had already
+run long. A test PINS the throw, so a future fix has an assertion that must flip rather than a
+comment to notice.
+
+### Teeth
+
+`reach-order.test.ts` asserts ORDER rather than row sets, and carries its own control: the
+unordered spelling is asserted NOT to be ascending, because if BFS order happened to be sorted the
+ordering test would pass with no sort at all and prove nothing. Three mutants, all caught — the sort
+never applying, PAGING admitted (which would slice before sorting), and an unresolved key silently
+taking the first output column.
+
+Gates: 21 projects green, all seven byte-identity fuzzers green, `bun run check` 0.

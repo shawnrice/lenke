@@ -75,6 +75,15 @@ const CASES: readonly [string, string][] = [
   // The grouped NODE twin, which shares the hop rung's body AND its blanket `orderBy` refusal.
   ['node grouped no order', 'MATCH (x:Person) RETURN x.city AS c, min(x.age) AS lo'],
   ['node grouped ordered', 'MATCH (x:Person) RETURN x.city AS c, min(x.age) AS lo ORDER BY c'],
+  // `detectReachableShortcut` refuses every ORDER BY, and its COUNT form returns ONE ROW - so
+  // ordering is a no-op there and could be admitted free, as the single-row aggregate rungs do.
+  // ⚠️ MEASURED UNDER A HARD TIMEOUT: falling off an UNBOUNDED reachability shortcut enumerates
+  // trails, which is not a 2x risk.
+  ['reach count', 'MATCH (a:Person)-[:KNOWS]->*(x) RETURN count(DISTINCT x) AS c'],
+  [
+    'reach count ordered',
+    'MATCH (a:Person)-[:KNOWS]->*(x) RETURN count(DISTINCT x) AS c ORDER BY c',
+  ],
   [
     '[CTL] count(*) + max',
     'MATCH (a:Person)-[:KNOWS]->(x) RETURN count(*) AS c, max(x.name) AS hi',
