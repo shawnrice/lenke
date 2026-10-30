@@ -934,8 +934,27 @@ export const matchPattern = function* (
       // Path (`allWalk`); over a fixed-length pattern the walk itself is the path, so
       // `walkSegments` accumulates its steps (`pathAcc`) and binds the Path at the end.
       // Otherwise the plain endpoint walk.
+      // ⚠️ A SINGLE QUANTIFIED SEGMENT IS NOT THE SAME AS A SINGLE-HOP ONE (item 1240).
+      // `allWalk` walks ONE hop per repetition, so it is right only for `(a)-[:R]->{m,n}(b)`.
+      // A multi-element unit — `((x)-[:R]->(m)<-[:R]-(y)){1,2}` — is ALSO one segment, with
+      // `unitRest` carrying the hops beyond the first, and a nested subpath is one segment too
+      // (`nested`), as is a unit whose first hop has its own quantifier (`innerQ`). Sending any of
+      // those to `allWalk` walked a single hop and stopped: items 1236/1237 measured the result as
+      // the endpoint being the unit's MIDDLE node, the group's lists coming back null, and the
+      // same three rows under WALK and TRAIL — one wrong branch, three symptoms.
+      //
+      // The no-path case has always used `walkSegments`, which handles the unit correctly (both
+      // engines agree on the rows when no path is bound), so the fix is to let the bound-path case
+      // take the same walker with its `pathAcc`.
+      // The fields to test are the COMPILED ones: a `CSegment` is `{ rel, node, unit? }`, and a
+      // quantified GROUP compiles to a segment carrying a `CUnit` whose `elems` are hops or nested
+      // `sub`s. (The AST's `unitRest`/`nested`/`innerQ` do not survive compilation — reaching for
+      // them was the first attempt here and does not typecheck.)
+      const [seg] = path.segments;
+      const unit = seg?.unit;
+      const singleHopUnit = unit === undefined || (unitIsFlat(unit) && unit.elems.length === 1);
       const singleVarlen =
-        path.segments.length === 1 && path.segments[0].rel.quantifier !== undefined;
+        path.segments.length === 1 && seg?.rel.quantifier !== undefined && singleHopUnit;
 
       if (path.pathVar !== undefined && singleVarlen) {
         yield* allWalk(graph, path, seed, seeded, params);

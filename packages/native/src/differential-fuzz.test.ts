@@ -1991,7 +1991,21 @@ const genQuery = (r: () => number): string => {
       'elements(pp)',
     ]);
 
-    return `MATCH pp = (a:T)((x)-[:E]->(m))${q}(b:T) RETURN ${acc} AS x, b.n AS t ORDER BY t, x`;
+    // ⚠️ THE UNIT IS NOW SOMETIMES MULTI-ELEMENT, which closes the gap item 1236 named. This arm
+    // generated a FLAT one-hop unit only, and the nested-UNIT arm (item 244) reads no path — so
+    // paths-over-flat-groups was covered, nested units were covered, and their INTERSECTION was
+    // not. That is precisely where items 1236/1237 found a silent wrong answer in BOTH engines:
+    // native built no lineage at all, and TS sent a multi-element unit to `allWalk`, a walker that
+    // advances one hop per repetition. Adding this arm before item 1240 would have turned the
+    // fuzzer red; adding it after is the guard that keeps it fixed.
+    const unit = pick(r, [
+      '((x)-[:E]->(m))',
+      '((x)-[:E]->(m))',
+      '((x)-[:E]->(m)<-[:E]-(y))',
+      '((x)-[:E]->(m)-[:F]->(y))',
+    ]);
+
+    return `MATCH pp = (a:T)${unit}${q}(b:T) RETURN ${acc} AS x, b.n AS t ORDER BY t, x`;
   }
 
   if (p < 0.89) {
