@@ -9940,9 +9940,30 @@ const reachCount = (proj: Projection, bVar: string): { countArg?: CompiledExpr }
 const reachQuantifierIsExact = (q: Quantifier | undefined): boolean =>
   q?.max === null && (q.min ?? 0) <= 1;
 
+/**
+ * ⚠️ `WALK` IS ADMITTED ALONGSIDE THE DEFAULT (item 1255), and `SIMPLE`/`ACYCLIC` are not.
+ *
+ * This rung answers from a BFS over the reached SET, which is WALK reachability by definition — so
+ * `WALK` is the mode it serves most exactly of all, and native says so outright
+ * (`set_reachability_is_exact`: `Walk => true`). Refusing it sent an explicit `MATCH WALK` to
+ * enumeration, and a WALK over a cyclic graph has INFINITELY many paths, so it THROWS
+ * `E_RESOURCE_EXHAUSTED` on a ONE-NODE graph whose answer is plainly 1. Item 1252 measured that and
+ * left it open.
+ *
+ * `ACYCLIC` STAYS REFUSED, and that is measured rather than cautious: on one node with one
+ * self-loop, `MATCH ACYCLIC (x)-[:R]->+(y)` is **0** — a self-loop repeats a node — while TRAIL and
+ * SIMPLE answer 1 and a BFS would too. So ACYCLIC genuinely diverges from set reachability inside
+ * the region `reachQuantifierIsExact` still admits.
+ *
+ * `SIMPLE` stays refused for a weaker reason, stated so the next pass can price it rather than
+ * re-derive it: it agreed with TRAIL on every fixture checked here (a self-loop and a chain with a
+ * back-edge, at both `->*` and `->+`), and the cycle-removal argument that makes TRAIL exact
+ * applies to it too — but that argument was not verified against a fixture that could separate
+ * them, and an unverified soundness argument is how item 1252's wrong answer got in.
+ */
 const needsGeneralMatcher = (p: PathPattern): boolean =>
   (p.selector ?? 'walk') !== 'walk' ||
-  (p.mode ?? 'trail') !== 'trail' ||
+  !['trail', 'walk'].includes(p.mode ?? 'trail') ||
   p.segments.some((s) => s.rel.quantifier !== undefined && relHasPredicate(s.rel));
 
 export const detectReachableShortcut = (

@@ -195,3 +195,48 @@ describe('the reachability shortcut must be EXACT for its quantifier (item 1252)
     ]);
   });
 });
+
+describe('explicit WALK reaches the reachability rung (item 1255)', () => {
+  // A BFS over the reached SET *is* WALK reachability, so WALK is the mode this rung serves most
+  // exactly — native says so outright (`set_reachability_is_exact`: `Walk => true`). Refusing it
+  // sent an explicit `MATCH WALK` to enumeration, and a WALK over a cycle has INFINITELY many
+  // paths, so it threw `E_RESOURCE_EXHAUSTED` on graphs this small.
+  const LOOP = [
+    '{"type":"node","id":"a","labels":["P"],"properties":{"n":1}}',
+    '{"type":"edge","id":"e1","labels":["R"],"from":"a","to":"a","properties":{}}',
+  ].join('\n');
+  const CHAIN = [
+    '{"type":"node","id":"a","labels":["P"],"properties":{"n":1}}',
+    '{"type":"node","id":"b","labels":["P"],"properties":{"n":2}}',
+    '{"type":"node","id":"c","labels":["P"],"properties":{"n":3}}',
+    '{"type":"edge","id":"f1","labels":["R"],"from":"a","to":"b","properties":{}}',
+    '{"type":"edge","id":"f2","labels":["R"],"from":"b","to":"c","properties":{}}',
+    '{"type":"edge","id":"f3","labels":["R"],"from":"c","to":"b","properties":{}}',
+  ].join('\n');
+  const c = (doc: string, q: string): unknown =>
+    query(deserialize(doc, 'ndjson', new Graph()), q)[0]?.c;
+
+  test('WALK answers, and agrees with the DEFAULT mode where the sets coincide', () => {
+    // At `min <= 1` with an unbounded max, walk- and trail-reachability COINCIDE: strip the cycles
+    // from any walk and a trail remains. So these must be equal, and neither may throw.
+    for (const doc of [LOOP, CHAIN]) {
+      for (const quant of ['->*', '->+']) {
+        expect(c(doc, `MATCH WALK (x:P)-[:R]${quant}(y) RETURN count(DISTINCT y) AS c`)).toBe(
+          c(doc, `MATCH (x:P)-[:R]${quant}(y) RETURN count(DISTINCT y) AS c`),
+        );
+      }
+    }
+
+    expect(c(CHAIN, 'MATCH WALK (x:P)-[:R]->*(y) RETURN count(DISTINCT y) AS c')).toBe(3);
+    expect(c(CHAIN, 'MATCH WALK (x:P)-[:R]->+(y) RETURN count(DISTINCT y) AS c')).toBe(2);
+  });
+
+  test('ACYCLIC must NOT be admitted — it diverges from set reachability', () => {
+    // ⚠️ THE REASON THE OTHER MODES STAY REFUSED, asserted rather than asserted-in-a-comment. One
+    // node, one self-loop: `ACYCLIC ->+` is 0 because a self-loop repeats a node, while TRAIL and
+    // WALK are 1 and a BFS would be too. If ACYCLIC were ever admitted to this rung, this flips.
+    expect(c(LOOP, 'MATCH ACYCLIC (x:P)-[:R]->+(y) RETURN count(DISTINCT y) AS c')).toBe(0);
+    expect(c(LOOP, 'MATCH TRAIL (x:P)-[:R]->+(y) RETURN count(DISTINCT y) AS c')).toBe(1);
+    expect(c(LOOP, 'MATCH WALK (x:P)-[:R]->+(y) RETURN count(DISTINCT y) AS c')).toBe(1);
+  });
+});
