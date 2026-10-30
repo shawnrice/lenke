@@ -38143,3 +38143,46 @@ divergence, measured there at ~9% of runs and still awaiting a conformance decis
 contains no quantified group, so this change is structurally unreachable from it.
 
 943 TS tests green; the other six fuzzers green; `bun run check` and `clippy -D warnings` each 0.
+
+### Item 1242 — the shape matrix becomes a TEST, and mutating it found that item 1241 had shipped with NO regression test at all (DONE)
+
+Item 1241's 3x12 matrix found a wrong answer six items of fuzzing had missed. That is a property of
+the INSTRUMENT, not of that one bug: an exhaustive small matrix and a random large sample fail
+differently — the fuzzer explores wide and shallow, a matrix explores a chosen INTERSECTION
+exhaustively, and item 1236's gap was precisely an intersection (paths over flat groups generated,
+nested units generated, their overlap not).
+
+So it was widened and committed: 9 pattern families (var-length directed/undirected/multi-type, flat
+/ two-hop / reversed / inner-edge-var groups, ANY SHORTEST, fixed two hops) x 6 projection forms x
+with and without a bound path, plus the 4 path accessors where a path exists. **0 differ of 144**
+when first run — no new bugs.
+
+### ⚠️ AND THEN MUTATION FOUND THE TEST WORTHLESS FOR THE BUG THAT MOTIVATED IT
+
+Reverting item 1241's fix left all 144 comparisons GREEN. So did
+`nested-group-path-conformance.test.ts` — its group-list case uses a NESTED unit, which item 1240
+routes to `walkSegments`, so it never exercises `allWalk` at all.
+
+**Item 1241 had therefore shipped with no regression test whatsoever**, and nothing but reverting
+the fix would have revealed it. The matrix read endpoints and path accessors and never an inner
+GROUP LIST — which is exactly what that bug returned null for.
+
+With a group-list form added for the 4 families that bind an inner variable, the reverted fix fails
+2 of 10 tests (the two FLAT families, which are the ones routing through `allWalk`). 152
+comparisons, 154 assertions, all green with the fix in place.
+
+THE LESSON, which this file has in other words at items 1209 and 1222 and now has in the sharpest
+form: **a matrix is only as good as its FORMS.** Crossing nine patterns with six projections looks
+like coverage and was blind to an entire class of read — the group variables — because none of the
+six happened to read one. The count of comparisons (144) said nothing about that, and the test's own
+size assertion would have kept 144 honest while the blindness persisted.
+
+The matrix also asserts its own SIZE, for the reason a shrunk matrix looks exactly like a passing
+one.
+
+⚠️ AGREEMENT IS WHAT IT ASSERTS, NOT CORRECTNESS. Where the engines agree, this says they agree —
+item 1237 needed a separate argument (mode-insensitivity) to establish which was right when they did
+not. A failure here means "one of these is wrong". The hand-verified expectations stay in
+`nested-group-path-conformance.test.ts`.
+
+953 TS tests green (up from 943); `bun run check` and `clippy -D warnings` each 0.
