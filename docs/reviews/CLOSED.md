@@ -39065,3 +39065,53 @@ Teeth: three mutants on the mode gate, two caught (`walk-refused-again`, `acycli
 `simple-admitted` surviving for the reason stated above.
 
 Gates: 21 projects green, all seven byte-identity fuzzers green, `bun run check` 0.
+
+### Item 1256 — the RUST side: native's `Trail => max <= 1` was conservative, so it THREW where it could answer (DONE)
+
+Item 1255's parity table left this as the Rust-side target. `set_reachability_is_exact` refused an
+UNBOUNDED trail, so `MATCH (x)-[:R]->*(y) RETURN count(DISTINCT y)` fell to enumeration and
+exhausted the trail budget — 400 nodes / 2,000 edges, native THREW `E_RESOURCE_EXHAUSTED` while TS
+answered 400 from its own BFS.
+
+**The old reasoning was right about edge reuse and priced only the BOUNDED case.** Its note said a
+trail is exact at `max <= 1` because no edge can repeat, and that beyond that "the walk set can
+strictly contain the trail set" — true when a LENGTH constraint is in play. With no upper bound and
+`min <= 1` there is no length constraint left to violate: take any walk from `x` to `y`, delete its
+cycles, and what remains visits each node at most once, so it reuses no edge and is a trail of
+length `>= 1 >= min`. The sets COINCIDE.
+
+`min >= 2` stays refused, by the same self-loop counterexample that caught the TS engine at item
+1252: `a -> a -> a` is a 2-hop WALK, a 2-hop trail needs two distinct edges, so the trail answer is
+0 and a BFS says 1.
+
+### Nine rows, all SAME — the family's divergences are closed
+
+```text
+  shape                        ts        native (before)   native (after)
+  400n  ->*                    400       THROW             400
+  400n  ->+                    400       THROW             400
+  400n  WALK ->*               400       400               400
+  400n  TRAIL ->*              400       THROW             400
+  400n  SIMPLE ->*             THROW     THROW             THROW
+  400n  ACYCLIC ->*            THROW     THROW             THROW
+  loop  TRAIL ->*              1         1                 1
+  loop  TRAIL ->+              1         1                 1
+  loop  TRAIL ->{2,}           0         0                 0
+```
+
+### ⚠️ TWO MUTANTS SURVIVED THE WHOLE RUST SUITE, one of them a WRONG ANSWER
+
+Reverting the refinement survived — it only turns an answer back into a THROW, which no result
+asserts. Worse, **dropping the `min` bound also survived**, and that re-admits the unsound case:
+an open trail at `min >= 2` taking a walk BFS. A wrong answer with nothing to catch it, in the
+engine whose gate had been RIGHT about this all along.
+
+The gate is a pure predicate, so it now has a pure test: `set_reachability_exactness_truth_table`
+asserts every mode against the bounds that matter — including the four that must stay REFUSED —
+which is the "extract the decision and unit-test it" pattern this repo already uses for route
+choices that no output reveals. Alongside it, `open_trail_above_one_hop_is_not_walk_reachability`
+asserts the ANSWER on the self-loop (1, 1, 0, 0). Four mutants now, all caught, including
+`walk-refused` as a control in the other direction.
+
+Gates: 1330 + 13 + 725 Rust tests green, `LENKE_OPT_FUZZ_SEEDS=500000 rewrite_fuzz` green (100.9s),
+all seven byte-identity fuzzers green, `clippy -D warnings` 0, `cargo fmt` 0, `bun run check` 0.

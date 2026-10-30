@@ -3861,7 +3861,7 @@ pub(super) fn try_varlen_distinct_count(
     // `max <= 1` is the whole safe region for a trail: with at most one hop no edge can be reused,
     // so walk and trail reachability coincide. Anything larger needs per-path edge sets, which is
     // not a BFS.
-    if !set_reachability_is_exact(*mode, *max) {
+    if !set_reachability_is_exact(*mode, *min, *max) {
         return None;
     }
     let want = match want_etypes(store, edge_label) {
@@ -3929,8 +3929,12 @@ pub(super) fn try_varlen_distinctby_count(
             double_loops: _, // a distinct endpoint set is blind to edge multiplicity
             ..
         } => {
-            // See the note on `set_reachability_is_exact`: a TRAIL is only safe here at one hop.
-            if until.is_some() || body_filter.is_some() || !set_reachability_is_exact(*mode, *max) {
+            // See the note on `set_reachability_is_exact`: a TRAIL is safe here at one hop, or
+            // with an OPEN upper bound and `min <= 1` (item 1256).
+            if until.is_some()
+                || body_filter.is_some()
+                || !set_reachability_is_exact(*mode, *min, *max)
+            {
                 return None;
             }
             (vl_inner.as_ref(), *from, *dir, edge_label, *min, *max)
@@ -3990,13 +3994,34 @@ pub(super) fn try_varlen_distinctby_count(
 /// Is BFS set-reachability the exact answer for this mode and hop bound?
 ///
 /// [`varlen_distinct_endpoint_count`] computes the nodes reachable by a WALK, so it is exact for
-/// `Walk` at any bound. For a `Trail` it is exact only at `max <= 1`, where no edge can be reused;
-/// beyond that the walk set can strictly contain the trail set. `Simple` and `Acyclic` forbid node
-/// reuse, which a BFS frontier permits, so they never qualify.
-fn set_reachability_is_exact(mode: PathMode, max: u32) -> bool {
+/// `Walk` at any bound. `Simple` and `Acyclic` forbid node reuse, which a BFS frontier permits, so
+/// they never qualify — and `Acyclic` is not merely unproven there: one node with one self-loop
+/// answers 0 for `ACYCLIC (x)-[:R]->+(y)` (the loop repeats a node) where a BFS says 1.
+///
+/// ⚠️ A TRAIL IS ALSO EXACT WHEN THE UPPER BOUND IS OPEN AND `min <= 1` (item 1256), which the
+/// previous `max <= 1` refused. The reasoning that produced `max <= 1` is right about edge reuse
+/// but priced only the BOUNDED case: with at most one hop no edge can repeat, and above that "the
+/// walk set can strictly contain the trail set" — true when a LENGTH constraint is in play.
+///
+/// With no upper bound and `min <= 1` there is no length constraint left to violate, and the two
+/// sets COINCIDE: take any walk from `x` to `y`, delete its cycles, and what remains is a path
+/// visiting each node at most once — so it reuses no edge, and it is a trail of length >= 1 >= min.
+/// Hence walk-reachable implies trail-reachable, and the converse is immediate.
+///
+/// `min >= 2` stays refused, and the counterexample is the same self-loop: `a -> a -> a` is a
+/// 2-hop WALK, while a 2-hop trail would need two distinct edges, so the trail answer is 0 and the
+/// BFS says 1. That is the shape the TS engine got WRONG until item 1252, which is why the bound is
+/// spelled out here rather than left to the caller.
+///
+/// WHAT THIS IS WORTH: `MATCH (x)-[:R]->*(y) RETURN count(DISTINCT y)` over 400 nodes / 2,000 edges
+/// THREW `E_RESOURCE_EXHAUSTED` before this — the pattern fell to enumeration and exhausted the
+/// trail budget — where the TS engine answered 400 from its own BFS. So this is an
+/// answer-instead-of-an-error, and it CLOSES that cross-engine divergence (item 1255's parity
+/// table).
+pub(super) fn set_reachability_is_exact(mode: PathMode, min: u32, max: u32) -> bool {
     match mode {
         PathMode::Walk => true,
-        PathMode::Trail => max <= 1,
+        PathMode::Trail => max <= 1 || (max == u32::MAX && min <= 1),
         PathMode::Simple | PathMode::Acyclic => false,
     }
 }

@@ -35236,3 +35236,100 @@ fn fused_hop_project_is_reached() {
         );
     }
 }
+
+/// The TRUTH TABLE for `set_reachability_is_exact` (item 1256).
+///
+/// ⚠️ THIS EXISTS BECAUSE TWO MUTANTS SURVIVED THE WHOLE SUITE. Reverting item 1256's refinement
+/// survived (the open-bound trail declining again is answer-equivalent — it only changes a THROW
+/// into an answer), and so did dropping the `min` bound, which re-admits the UNSOUND case: an open
+/// trail at `min >= 2` taking a walk BFS. The second is a WRONG ANSWER with nothing to catch it.
+///
+/// The gate is a pure predicate, so it gets a pure test: every mode against the bounds that matter.
+/// The end-to-end guard below covers the answer; this covers the DECISION, which no output reveals.
+#[test]
+fn set_reachability_exactness_truth_table() {
+    use crate::exec::fastpath::set_reachability_is_exact as exact;
+    use crate::ir::PathMode;
+
+    // WALK is the BFS's own semantics — exact at every bound.
+    for &(min, max) in &[(0, 1), (0, u32::MAX), (2, u32::MAX), (2, 9), (3, 3)] {
+        assert!(exact(PathMode::Walk, min, max), "walk {min}..={max}");
+    }
+
+    // TRAIL: at most one hop (no edge can repeat), or an OPEN bound with `min <= 1` (cycle
+    // removal turns any walk into a trail of length >= 1).
+    assert!(exact(PathMode::Trail, 0, 1), "trail 0..=1");
+    assert!(exact(PathMode::Trail, 1, 1), "trail 1..=1");
+    assert!(exact(PathMode::Trail, 0, u32::MAX), "trail 0..=open");
+    assert!(exact(PathMode::Trail, 1, u32::MAX), "trail 1..=open");
+
+    // ⚠️ AND THE CASES THAT MUST STAY REFUSED. `min >= 2` with an open bound is the self-loop
+    // counterexample (`a -> a -> a` is a 2-hop WALK; a 2-hop trail needs two distinct edges), which
+    // is the wrong answer the TS engine shipped until item 1252. A BOUNDED trail above one hop is
+    // the original `max <= 1` reasoning, unchanged.
+    assert!(
+        !exact(PathMode::Trail, 2, u32::MAX),
+        "trail 2..=open must refuse"
+    );
+    assert!(
+        !exact(PathMode::Trail, 9, u32::MAX),
+        "trail 9..=open must refuse"
+    );
+    assert!(!exact(PathMode::Trail, 0, 2), "trail 0..=2 must refuse");
+    assert!(!exact(PathMode::Trail, 1, 9), "trail 1..=9 must refuse");
+
+    // SIMPLE and ACYCLIC forbid NODE reuse, which a BFS frontier permits. ACYCLIC is not merely
+    // unproven: one node with one self-loop answers 0 for `->+` where a BFS says 1.
+    for mode in [PathMode::Simple, PathMode::Acyclic] {
+        for &(min, max) in &[(0, 1), (0, u32::MAX), (1, u32::MAX), (2, 9)] {
+            assert!(!exact(mode, min, max), "{mode:?} {min}..={max} must refuse");
+        }
+    }
+}
+
+/// The ANSWER guard for item 1256: an open trail at `min >= 2` over a SELF-LOOP.
+///
+/// One node, one self-loop — the smallest graph where walk and trail reachability differ. A 2-hop
+/// trail needs two DISTINCT edges and only one exists, so the answer is 0. A BFS says 1, and that
+/// is what the refused half of the gate above prevents.
+#[test]
+fn open_trail_above_one_hop_is_not_walk_reachability() {
+    let mut b = Builder::default();
+    let a = b.node(&["P"], &[("n", n(1.0))]);
+
+    b.edge(a, a, "R");
+    let st = b.build();
+
+    let scalar = |q: &str| -> f64 {
+        match &run(&crate::gql::parse(q).unwrap(), &st)
+            .rows
+            .iter()
+            .next()
+            .expect("one row")[0]
+        {
+            Value::Num(x) => *x,
+            other => panic!("not a number: {other:?}"),
+        }
+    };
+
+    // Served by the BFS (min <= 1): the loop makes `a` reachable from itself.
+    assert_eq!(
+        scalar("MATCH (x:P)-[:R]->*(y) RETURN count(DISTINCT y) AS c"),
+        1.0
+    );
+    assert_eq!(
+        scalar("MATCH (x:P)-[:R]->+(y) RETURN count(DISTINCT y) AS c"),
+        1.0
+    );
+
+    // REFUSED (min >= 2), and the enumeration it falls back to answers 0 — which is correct, and
+    // which the BFS would have answered 1.
+    assert_eq!(
+        scalar("MATCH (x:P)-[:R]->{2,}(y) RETURN count(DISTINCT y) AS c"),
+        0.0
+    );
+    assert_eq!(
+        scalar("MATCH (x:P)-[:R]->{3,}(y) RETURN count(DISTINCT y) AS c"),
+        0.0
+    );
+}
