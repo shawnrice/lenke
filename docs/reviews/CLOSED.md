@@ -39206,3 +39206,74 @@ removed, cap too tight, cap ignoring `max` — all caught.
 Gates: 1334 + 13 + 725 Rust tests green, `LENKE_OPT_FUZZ_SEEDS=500000 rewrite_fuzz` green (99.3s),
 all seven byte-identity fuzzers green, 21 projects green, `clippy -D warnings` 0, `cargo fmt` 0,
 `bun run check` 0.
+
+### Item 1259 — the biggest absolute gap in the field is already-closed territory, and my reason for doubting that was REFUTED by phase attribution (CONFIRMED, no change)
+
+Eight consecutive items had been one family, so the field was re-priced before picking another
+target. Ranked by ABSOLUTE gap (item 1244's rule — ratio picks the wrong row by 60x), the top five
+rows are all DECODE:
+
+```text
+  gap(ms)   ratio      ts    native  shape
+   3035.3    9.59x  3388.5   353.2   decode pg-text (5 edges/node)
+   2700.5    8.24x  3073.6   373.1   decode csv
+   2377.7    5.67x  2887.1   509.4   decode ndjson
+   2149.9    4.26x  2808.9   659.0   decode pg-json
+   1818.3    2.52x  3016.9  1198.6   decode graphson
+    337.2   52.55x   343.7     6.5   count 4-hop  (the CSR target, declined at item 300)
+```
+
+### ⚠️ I ARGUED THE CLOSED EXPLANATION COULD NOT COVER THIS, AND THE MEASUREMENT SAID OTHERWISE
+
+The ingest family is closed as a CONSTANT FACTOR (item 312: `JSON.parse` + allocation + freeze,
+`addVertex` withdrawn at 7.4%, `addEdge` ~85%). My argument against it: pg-text and csv are **not
+JSON**, and they have the WORST ratios — if `JSON.parse` dominated, the JSON formats would be the
+slowest, not the fastest. That reasoning is wrong, and phase attribution is what showed it.
+200,000 nodes / 1,000,000 edges, min of 5:
+
+```text
+  split('\n')                      32 ms
+  + tokenize, DISCARD               61
+  + tokenize and BUFFER             78      <- what `decode` actually does
+  full deserialize               3385
+  ---------------------------------------
+  APPLY phase                    3306      97.7% of the total
+```
+
+**The parse side is 78 ms of 3385.** The two-phase buffering item 1244 flagged as a candidate —
+`decode` tokenizes every line into a `string[]` and holds them all before applying — costs **17 ms**,
+not the seconds the gap is made of.
+
+Split further, which confirms item 312 rather than contradicting it:
+
+```text
+  addVertex x200,000      181 ms   (0.91 us each)    5.5% of apply
+  addEdge   x1,000,000   2398 ms   (2.40 us each)    73% of apply
+```
+
+So TS's apply cost is essentially FORMAT-INDEPENDENT, and the ratio spread comes from the other
+side: **native's parse speed varies by format** (pg-text 353 ms, graphson 1198), so the format
+native parses fastest shows the biggest ratio. The ordering I read as evidence of a TS pathology is
+a fact about the Rust decoders.
+
+### What this means for target selection
+
+The five largest absolute gaps in the whole field are one closed finding wearing five hats. The
+sixth row — `count 4-hop` at 337 ms — is item 300's dense-adjacency target, re-confirmed and priced
+to a specific pair of instructions at item 1244.
+
+⚠️ AND A LIMIT OF THIS INSTRUMENT, worth stating because it nearly misdirected the next tick: a
+TS-vs-native sweep ranks TS gaps and **cannot rank a RUST-side improvement at all** — native is the
+fast column by construction. The open Rust target (the remaining conditional-increment sweeps in
+`fastpath.rs`, from item 1219) does not appear anywhere in this table, and choosing from this table
+alone would have retired it by omission. Rust work needs the Rust bench as its instrument.
+
+Enumerated while here, since item 1219's "eleven more" is stale: **13 conditional-increment sites
+remain, 7 are already branchless.** Most of the 13 are DELIBERATE — the three string sites keep
+their short-circuit because `memcmp` is not free (item 1222), the `ls`/`rs` pair was left as
+perfectly predicted (item 1225), the `bounds.iter().all` arms are declined-canonical fallbacks item
+1228 measured flat, and one is an unreachable defensive arm. Two match the profile that won four
+times (items 1220/1224/1227/1231): the PRESENCE counts at `try_fused_hop_present_count` and
+`try_stream_num_count`, where the per-element cost is one or two bool reads with no data load. The
+second also evaluates `bounds.is_empty()` INSIDE its per-element closure — a loop-invariant branch
+of exactly the kind item 1220 hoisted out of a sweep.
