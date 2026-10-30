@@ -42053,3 +42053,89 @@ per-row cost, not a missing path.
 
 Gates: `bun run typecheck` 0, `bun run lint` 0 (one error of my own fixed first — the cross-package
 relative import), `bun run check` 0, 21 projects green.
+
+### Item 1294 — the TS per-row constant factor, DECOMPOSED: ~45% pointer chase, and both cheap levers refuted (REFUTED x2 + instrument added)
+
+Items 1292 and 1293 left both spelling probes clean and `bench:usage`'s one suspicious row refuted,
+so the remaining TS/Rust gaps are all the per-row constant factor that items 1221 and 1276
+ATTRIBUTED and neither decomposed — "TS is FLAT across a 22x selectivity change, so it scales with
+NODES: ~19ns per vertex against Rust's ~0.5ns". It is the biggest absolute gap in the corpus, so it
+is worth knowing what it is made of before concluding it is immovable.
+
+`bun run row-cost` is that decomposition, at 200,000 vertices:
+
+```text
+  1. Map iteration only                  1.50 ns/v
+  2. + label test (v.labels.has)        24.29        <- the most expensive single operation
+  3. + property read                    11.76
+  4. + property read by VARIABLE key    10.68
+  5. + matches() on that value          10.98
+```
+
+It accounts for the Gremlin row exactly: `V().has(age,gt).count()` is 2.6ms at 200,000 vertices =
+13 ns/v = 1.5 iteration + ~10 property read + ~1 predicate.
+
+### The property read is a POINTER CHASE, not a slow object
+
+```text
+  plain object literal, array-held             1.60 ns/v
+  engine `v.properties`, array-held            7.38
+  engine `.properties` HOISTED into an array   1.53   <- the bag is as fast as a literal
+```
+
+The bag is as fast as an object literal once you hold it; ~5.8 ns a vertex is reaching it through
+`vertex -> box -> bag`, three heap objects per vertex. That indirection is the DELIBERATE box design
+(`Graph.elementProperties`, items 162 and 321) — a stable box is what keeps a re-write off the map
+and what preserves a detached element's throw — so removing it is a storage-layout decision, not a
+micro-fix, and not taken here.
+
+The label test at 24.29 is the same indirection plus a `Set<string>.has` hash probe. Its getter
+allocates only on the detached path (`this.#lbox?.set ?? new Set()`), so there is no per-read
+allocation to remove. `filterChainCount` already avoids it where it can, by SEEDING from the label
+bucket for the first single-label test.
+
+### ⚠️ TWO OBVIOUS LEVERS, BOTH REFUTED WITH NUMBERS
+
+**1. Compile `matches()` into a closure.** Its 20-way switch on `pred.op` runs per value, and this
+is precisely the substitution items 1224, 1225, 1227 and 1231 made in the Rust engine for 5.28x,
+1.08x, 5.31x and 8.65-17.6x. Measured over 200,000 values:
+
+```text
+  matches(pred, v) per value   1.11 ns   (0.50 above the loop floor)
+  monomorphic closure          0.83      (0.22 above)
+  [CTL] bare loop              0.61
+```
+
+It does halve the dispatch — and the dispatch is 1.11 ns of a 13 ns budget, so the whole change
+buys about **2%**. Refuted on size, not on mechanism: the Rust twin paid because there the dispatch
+WAS the loop body, and here it is 8% of it.
+
+**2. Reorder `get properties` so the cached-box path comes first** — one check and one hop instead
+of four checks and two. Mocked both shapes over 200,000 instances, three runs:
+
+```text
+  current     6.44 / 9.22 / 6.85
+  reordered   6.54 / 8.35 / 6.22
+```
+
+FLAT, with the rounds disagreeing on the sign. And `Vertex.ts` already records the same outcome for
+the same kind of change — bypassing the `id` getter — with the reason: "JSC inlines a getter whose
+whole body is a private-field read." Reading that note first would have predicted this result; I
+measured it anyway because `get properties` is not just a field read, and the answer is that its
+branches still are not the cost.
+
+### What this leaves
+
+The TS constant factor is roughly **45% indirection, 8% predicate dispatch, and the rest iteration
+plus the `Set<string>.has` label probe.** The two cheap levers are spent and recorded, so the next
+person does not re-derive them; what remains is the box layout, which is a design decision with
+correctness obligations (the detached-element throw) rather than a perf bug.
+
+That is also the honest answer to "why is TS 40-60x Rust on a filtered count": Rust reads a packed
+column with a vectorized sweep (item 1287 took one such sweep to 0.2 ns a vertex), and TS chases
+three pointers per vertex. The gap is the data layout, which is what item 1276 concluded for the hop
+family by a different route.
+
+Gates: `bun run typecheck` 0, `bun run lint` 0, `bun run check` 0, 21 projects green. No engine code
+changed — one probe added. (One `bun run test` exit 1 did NOT reproduce on an isolated re-run: the
+known `run-many` timing flake, as at item 1283.)
