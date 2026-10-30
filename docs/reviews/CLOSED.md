@@ -39859,3 +39859,101 @@ unmeasured assumption rather than an obvious one.
 Gates: 1345 + 13 + 725 Rust tests green, `LENKE_OPT_FUZZ_SEEDS=500000 rewrite_fuzz` green (101.1s),
 all seven byte-identity fuzzers green, `clippy -D warnings` 0, `cargo fmt --check` 0,
 `bun run check` 0.
+
+### Item 1268 — two TS suspicions refuted by the right estimator, and a 1.84x spelling spread found and located (measurement only)
+
+Four native items in a row (1261, 1262, 1264, 1267) left the TS side unexamined, so this prices the
+TS twin of item 1267's question: does the TS engine seed an index for a filtered count, and is any
+spelling of an equality count left out?
+
+### It does seek, and every equality spelling reaches it
+
+200,000 nodes, `age` with 100 distinct values, `min`-of-9 over three alternated rounds:
+
+```text
+  shape                  no index   HASH INDEX
+  = 50       (count)       3.158      0.205
+  {age: 50}  (count)       2.998      0.207
+  = $p       (count)       3.305      0.209
+  IN [50,51] (count)       5.717      0.552
+  [CTL] bare count(*)      0.001      0.000
+```
+
+So the clause, inline and PARAMETER spellings all seed, and they agree within 2% — the
+equivalent-spelling invariant holding in TS, measured rather than assumed.
+
+### ⚠️ REFUTED: `<> 50` is NOT slowed down by creating an index
+
+That first pass read `<> 50` at 4.134 unindexed against 7.303 indexed and looked like a 1.77x
+REGRESSION from merely creating an index the predicate cannot use — which would have been a real
+bug. It is an artefact of `min`-of-N on a bimodal series, which is precisely what this repo's TS
+estimator rule exists for. The series:
+
+```text
+  unindexed  21.6 16.2 8.5 8.4 8.8 4.1 4.2 4.1 3.9 3.9 3.8 3.8 3.9 3.9
+  INDEXED     4.2  4.3 4.1 4.0 3.9 3.8 3.6 3.6 3.7 3.7 3.7 3.7 3.7 3.8
+```
+
+The unindexed arm's first five reps are the JIT tiering up; `min` over 9 reps caught one low rep in
+one arm only. With 14 reps, the first three dropped, the MEDIAN of the rest, min over three
+alternated rounds:
+
+```text
+  <> 50        unindexed 3.930   INDEXED 3.725    flat (indexed marginally FASTER)
+  [CTL] > 50   unindexed 3.970   INDEXED 3.873    flat
+  [CTL] = 50   unindexed 3.493   INDEXED 0.146    23.9x — the index works
+  [CTL] bare   unindexed 0.001   INDEXED 0.001
+```
+
+No regression. Three rows that the wrong estimator would have mis-signed, one of them as a bug.
+
+### ⚠️ REFUTED: a TS `IN [..]` count is NOT linear in k, so item 1264's design does not transfer
+
+Native's membership count is k VECTORIZED PASSES, which wins there because each pass vectorizes.
+In TS there is nothing to vectorize, so the same shape would be pure k-fold cost — worth checking
+before assuming the fix is symmetric. It is already a single pass:
+
+```text
+  k            1      2      4      8     16     [CTL] >= 1 AND <= 16
+  ms         5.942  5.484  5.872  5.253  5.220        5.036
+```
+
+Flat. So the TS engine does one scan with a membership test, which is the right design for it, and
+the lever that paid 12.1x natively does not exist here.
+
+### FOUND: three spellings of one question, 1.84x apart — and the cause is already written down
+
+The k=1 row is the tell: `IN [50]` costs what `IN [16 values]` costs. Measured in ONE PROCESS
+(item 762: a two-process A/B flatters whichever arm it likes), 14 reps / drop 3 / median, min over
+three rounds, all four answering an identical 2000:
+
+```text
+  {age: 50} inline          3.195 ms   [3.23 3.20 3.21]
+  age = 50                  3.358      [3.39 3.36 3.36]
+  age IN [50]               5.884      [6.37 5.89 5.88]
+  age = 50 OR age = 50      5.885      [8.67 5.88 5.92]   <- IN and OR are one shape
+  [CTL] age > 50            4.006      [7.14 4.01 4.01]
+  [CTL] bare count(*)       0.001
+```
+
+LOCATED, not just measured. All of these DO reach `buildNodeCount` — the node-count rung admits a
+clause `WHERE` deliberately, and its comment says why ("tallying one while declining the other
+would create exactly the equivalent-spelling gap the probe exists to catch"). What differs is the
+per-vertex evaluation, and the per-vertex numbers name it exactly:
+
+```text
+  3.358 ms / 200,000 = 16.8 ns a vertex      (= 50)
+  5.884 ms / 200,000 = 29.4 ns a vertex      (IN [50] / the OR chain)
+```
+
+Item 230 measured that same pair as **17.2 ns against 29.0** and attributed it: a predicate passed
+with the node's OWN variable lets `directEqProps` read the element DIRECTLY, where anything it does
+not recognize goes through the binding. So `directEqProps` recognizes `=` and not the membership
+form, and the gap is one matcher wide.
+
+Recorded as the next target rather than attempted here. Predicted outcome if admitted: `IN`/`OR`
+at ~17 ns a vertex, i.e. ~5.9 ms -> ~3.4, for every arity (the k-sweep above is flat, so the win
+does not shrink with k) — and it closes a spelling gap rather than only a cost, which is the
+stronger reason.
+
+Gates: measurement only, no code change — `bun run check` 0.
