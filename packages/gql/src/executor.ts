@@ -4916,6 +4916,22 @@ type CTruthTestProp = {
 type CMemberProp = {
   key: string;
   test: (needle: unknown, env: EvalEnv) => Truth;
+  /**
+   * `true` for the `NOT IN` spelling (item 1288), applied as `not3` of the test — the SAME
+   * composition `case 'in'` uses, so the two routes cannot drift on the three-valued rule.
+   *
+   * Item 1269 left this out deliberately and said why: "`NOT IN` is `not3` of this test, and
+   * `not3` of UNKNOWN is UNKNOWN, so lifting it would be sound — but it is unmeasured, so it stays
+   * on the generic path rather than being added untested." Now measured, at 200,000 vertices with
+   * the selectivity matched by construction so both spellings answer an identical 180000:
+   *
+   * ```text
+   *   n.keep = true                     3.542 ms   the lifted twin
+   *   n.a NOT IN [0..9]                 9.409      2.66x
+   *   n.a IN [0..9]                     3.823      already lifted — the instrument's control
+   * ```
+   */
+  negated: boolean;
 };
 
 /**
@@ -5236,9 +5252,14 @@ const directEqProps = (
     // path rather than being added untested.
     const asMembership = asMembershipNode(conjunct);
 
+    // ⚠️ `NOT IN` LIFTS TOO SINCE ITEM 1288, and it stays in the NON-RAISING group: `not3` of a
+    // membership cannot raise, and the native engine HOISTS it past a faulting sibling, which is
+    // the measurement item 1286 established as the authority on that question:
+    //
+    //     WHERE n.s AND n.n NOT IN [1, 2]   native ok []   <- FALSE for every row, so hoisted
+    //     WHERE n.s AND n.n NOT IN [99]     native ERR     <- TRUE, settles nothing, uninformative
     if (
       asMembership?.kind === 'in' &&
-      !asMembership.negated &&
       asMembership.expr.kind === 'prop' &&
       asMembership.expr.variable === ownVar
     ) {
@@ -5251,7 +5272,7 @@ const directEqProps = (
         break;
       }
 
-      member.push({ key: asMembership.expr.key, test });
+      member.push({ key: asMembership.expr.key, test, negated: asMembership.negated });
       continue;
     }
 
@@ -6470,8 +6491,10 @@ export const satisfies = (
   // conventions and the evidence picks 1169's: a family that cannot raise settles the row before one
   // that can, which is what FALSE dominance does on the generic route.
   if (pred.memberProps !== undefined) {
-    for (const { key, test } of pred.memberProps) {
-      if (test(propOf(element, key), env) !== true) {
+    for (const { key, test, negated } of pred.memberProps) {
+      const r = test(propOf(element, key), env);
+
+      if ((negated ? not3(r) : r) !== true) {
         return false;
       }
     }

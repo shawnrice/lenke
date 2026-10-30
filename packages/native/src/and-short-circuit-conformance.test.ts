@@ -261,6 +261,14 @@ suite('AND short-circuit: the TS and native engines agree', () => {
     // FALSE short-circuit settles the row in written order and the ordering key is never consulted.
     expect(agree('MATCH (n:P) WHERE n.s AND n.z IS NOT NULL RETURN n.n AS x')).toBe('ok []');
     expect(agree('MATCH (n:P) WHERE n.s AND n.n IN [99] RETURN n.n AS x')).toBe('ok []');
+    // `NOT IN` joined the lifted families at item 1288, and it belongs in the SAME hoisted group:
+    // `not3` of a membership cannot raise, and the engine hoists it. The tail is FALSE for every
+    // row here, which is what makes the line informative rather than vacuous.
+    expect(agree('MATCH (n:P) WHERE n.s AND n.n NOT IN [1, 2, 3] RETURN n.n AS x')).toBe('ok []');
+    // CONTROL: a tail that is TRUE settles nothing, so the raising sibling stays essential.
+    expect(agree('MATCH (n:P) WHERE n.s AND n.n NOT IN [99] RETURN n.n AS x')).toBe(
+      'ERR E_INVALID_VALUE',
+    );
 
     // `IS TRUE`/`IS FALSE` are the OPPOSITE case and the reason the lifted family is split. They
     // cannot raise either, so the argument above would hoist them — but the engine does NOT, and
