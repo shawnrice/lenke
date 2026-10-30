@@ -40056,3 +40056,80 @@ assertion on the compiler can, but its comment now says which guard actually liv
 Gates: 21 projects green (including 11 new tests), all seven byte-identity fuzzers green,
 `bun run lint` 0 (two of my own errors fixed first — a nested ternary became a named helper),
 `bun run check` 0.
+
+### Item 1270 — `IS NULL` / `IS NOT NULL` / `NOT (… IS NULL)` lift into `nullProps`: 1.66-1.93x, and all three spellings at once (DONE)
+
+Item 1269 left `directEqProps` admitting a bare prop, a `NOT` prop, a compare, a dotted compare and
+a membership. `isNull` is an `Expr` kind of its own and was not among them, so it declined the WHOLE
+chain — while the INLINE spelling of the same question, `(n {k: null})`, which this engine reads AS
+`IS NULL`, landed in `props` and was already element-direct.
+
+The native engine had the identical omission in its own matcher and paid for it twice: item 1261 for
+`IS NOT NULL` and item 1262 for the `NOT (… IS NULL)` spelling that was only noticed after the
+first shipped. Both are folded here in one pass for that reason.
+
+200,000 vertices, one process, TS estimator rule (14 reps, first three dropped, median, min over
+three order-alternated rounds). The first two rows answer an identical 2000:
+
+```text
+  shape                   before    after    ns/vertex          ratio
+  nk IS NULL               5.683 ms  2.956    28.4 -> 14.8       1.92x
+  nk IS NOT NULL           5.549     3.351    27.7 -> 16.8       1.66x
+  NOT (nk IS NULL)         6.438     3.332    32.2 -> 16.7       1.93x
+  [CTL] {nk: null} inline  3.317     3.219    16.6 -> 16.1       already lifted
+  [CTL] age = 50           3.514     3.453    17.6 -> 17.3       already lifted
+  [CTL] age IN [50]        3.876     3.857    19.4 -> 19.3       item 1269's family
+  [CTL] bare count(*)      0.001     0.001
+```
+
+The spread across the null spellings closes from **1.94x to 1.13x**, and `IS NULL` now reads FASTER
+than the inline spelling it was being compared against — the lift is one `isNullish` where the
+inline form goes through `structuralEq`.
+
+A by-product worth recording: this fixture tests item 1263's claim directly. `IS NOT NULL` keeps
+198,000 rows at 27.7 ns a vertex while `= 50` keeps 2,000 at 17.6 — so a TS filtered COUNT costs per
+SCANNED node, not per kept row, which is what makes these rows comparable at all.
+
+### `NOT` is folded by FLIPPING the flag, and the flip is exact
+
+`asNullTest` reads `isNull` as itself and `NOT (… IS NULL)` with `negated` inverted. Exact because a
+null test is TWO-VALUED — `null IS NULL` is TRUE, never UNKNOWN — so `NOT` of it is its exact
+complement. The NaN hazard that makes `NOT (x >= 2)` unequal to `x < 2` cannot arise: there is no
+comparison here to be unordered. (`opt::normalize_pred` canonicalizes the same pair in the Rust
+engine for the same reason.)
+
+### Consumers: the same seven as item 1269, same dispositions
+
+`satisfies` and `hasPredicate` patched; `mergeFarPreds` patched and pinned by a test that answers 1
+where a dropped list answers 2; `hop-projection`'s lift check patched; `rejectedByElementDirect` and
+the two `matching.ts` `preFilter` gates deliberately left alone, because that pre-filter runs before
+the binding is built and may only ever say "not decided" (item 644's revert is the precedent).
+`shortcuts.ts`' `InlinePred` is covered through `inlineHolds` -> `satisfies`.
+
+The lift runs LAST among the lifted families, beside `memberProps`: a null test cannot raise, so
+running it before the families that can would let a FALSE test return early and swallow a sibling's
+raise.
+
+### Teeth: 7 mutants, 7 caught — after the ordering mutant exposed a flaw in my own test
+
+```text
+  merge-drops-nulls                   CAUGHT  the far-hop MERGE test
+  satisfies-skips-nulls               CAUGHT  existing Kleene-law fuzz tests
+  reject-condition-inverted           CAUGHT  existing Kleene-law fuzz tests
+  negated-not-flipped                 CAUGHT  existing Kleene-law fuzz tests
+  has-predicate-omits-nulls           CAUGHT  the ROUTE test's `hasPredicate` assertion
+  not-arm-removed                     CAUGHT  the ROUTE test (answer-equivalent otherwise)
+  nulls-run-before-raising-families   CAUGHT  the raise-order test — after it was FIXED
+```
+
+⚠️ THE ORDERING MUTANT SURVIVED THE FIRST RUN, and the reason is worth keeping. The raise-order test
+used `WHERE n.s AND n.k IS NOT NULL`, where ONE vertex passes the null test and then reaches the
+raising conjunct — so the query raises whatever the order is, and the test could not see the move.
+The discriminating shape needs the null test to reject EVERY vertex: `WHERE n.s AND n.s IS NULL`
+matches nothing, so under the wrong order every row is rejected before the raise and the query
+answers 0 instead of erroring. Same lesson as item 1267's product case — a guard needs the fixture
+that makes it load-bearing, and only mutation says whether it has one.
+
+Gates: 21 projects green (19 tests across this item and 1269), all seven byte-identity fuzzers
+green, `bun run lint` 0 (one error of my own fixed first — a missed optional chain),
+`bun run check` 0.

@@ -510,7 +510,8 @@ const liftFarOnlyClause = (where: Expr, farVar: string): CPredicate | undefined 
     (lifted.truthProps?.length ?? 0) > 0 ||
     (lifted.notTruthProps?.length ?? 0) > 0 ||
     (lifted.pathProps?.length ?? 0) > 0 ||
-    (lifted.memberProps?.length ?? 0) > 0
+    (lifted.memberProps?.length ?? 0) > 0 ||
+    (lifted.nullProps?.length ?? 0) > 0
     ? lifted
     : undefined;
 };
@@ -539,6 +540,9 @@ const mergeFarPreds = (inline: CPredicate, clause: CPredicate): CPredicate => ({
   ...(inline.memberProps === undefined && clause.memberProps === undefined
     ? {}
     : { memberProps: [...(inline.memberProps ?? []), ...(clause.memberProps ?? [])] }),
+  ...(inline.nullProps === undefined && clause.nullProps === undefined
+    ? {}
+    : { nullProps: [...(inline.nullProps ?? []), ...(clause.nullProps ?? [])] }),
   // `truthProps` is merged here because forgetting it would be the exact failure `hasPredicate`'s
   // doc records: a dropped predicate list returns a SUPERSET, and no correctness test on a
   // fixture lacking the spelling can see it. Added with the list itself (item 875) rather than

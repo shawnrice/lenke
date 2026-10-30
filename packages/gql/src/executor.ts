@@ -4564,6 +4564,33 @@ export type CPredicate = {
   memberProps?: readonly CMemberProp[];
 
   /**
+   * `WHERE n.k IS NULL` / `IS NOT NULL`, and the `NOT (n.k IS NULL)` spelling — read off the
+   * ELEMENT instead of through the binding (item 1270).
+   *
+   * A sixth list for the same reason as the fifth: `isNull` is an `Expr` kind of its own, so
+   * `directEqProps` declined its WHOLE chain on it while the INLINE spelling of the same question
+   * — `(n {k: null})`, which this engine reads AS `IS NULL` — landed in `props` and was already
+   * element-direct. Measured at 200,000 vertices, the first two answering an identical 2000:
+   *
+   * ```text
+   *   {nk: null} inline        3.317 ms   16.6 ns a vertex
+   *   nk IS NULL               5.683      28.4            1.71x
+   *   nk IS NOT NULL           5.549      27.7
+   *   NOT (nk IS NULL)         6.438      32.2            worse still
+   * ```
+   *
+   * The native engine had this same omission in its own matcher and it cost ~4x twice over (items
+   * 1261 and 1262) — including the `NOT (… IS NULL)` spelling, which is why that one is folded here
+   * rather than left for a second pass.
+   *
+   * ⚠️ A NULL TEST IS TOTAL, which is what makes this lift simple where the others needed care:
+   * `isNullish` returns a plain boolean, there is no UNKNOWN to settle, and nothing here can RAISE.
+   * It applies `isNullish` — the SAME function `case 'isNull'` uses — so absent and stored-null
+   * cells are classified identically on both routes rather than by re-deriving the rule.
+   */
+  nullProps?: readonly CNullProp[];
+
+  /**
    * The same lift for a DOTTED path — `WHERE n.meta.city = 'nyc'` (item 900).
    *
    * A fourth list for a blunt reason: `asPropCompare` matches a plain `prop` only, so a dotted
@@ -4776,6 +4803,35 @@ const asMembershipNode = (e: Expr): Expr | null => {
   return e.kind === 'or' ? membershipFromEqChain(e) : null;
 };
 
+/**
+ * A conjunct as a null test, or `null` — `isNull` as itself, `NOT (… IS NULL)` with the flag
+ * FLIPPED (item 1270).
+ *
+ * The flip is exact, and that is worth stating because the sibling rewrite on ordering comparisons
+ * is NOT: a null test is two-valued — `null IS NULL` is TRUE, never UNKNOWN — so `NOT` of it is its
+ * exact complement. The NaN hazard that makes `NOT (x >= 2)` unequal to `x < 2` cannot arise here,
+ * because there is no comparison to be unordered. (`opt::normalize_pred` canonicalizes the same
+ * pair in the Rust engine for the same reason — item 1262.)
+ */
+const asNullTest = (e: Expr): { expr: Expr; negated: boolean } | null => {
+  if (e.kind === 'isNull') {
+    return { expr: e.expr, negated: e.negated };
+  }
+
+  if (e.kind === 'not' && e.expr.kind === 'isNull') {
+    return { expr: e.expr.expr, negated: !e.expr.negated };
+  }
+
+  return null;
+};
+
+/** One lifted `<ownVar>.<key> IS [NOT] NULL` conjunct (item 1270). */
+type CNullProp = {
+  key: string;
+  /** `true` for `IS NOT NULL`, mirroring the AST's own `negated` flag. */
+  negated: boolean;
+};
+
 /** One lifted `<ownVar>.<key> IN <closed list>` conjunct (item 1269). */
 type CMemberProp = {
   key: string;
@@ -4794,6 +4850,8 @@ const directEqProps = (
   path: CPathProp[];
   /** `<ownVar>.<key> IN <closed list>` conjuncts (item 1269). */
   member: CMemberProp[];
+  /** `<ownVar>.<key> IS [NOT] NULL` conjuncts (item 1270). */
+  nulls: CNullProp[];
   residual: Expr | undefined;
 } | null => {
   if (ownVar === undefined) {
@@ -4811,6 +4869,7 @@ const directEqProps = (
   const notTruth: string[] = [];
   const path: CPathProp[] = [];
   const member: CMemberProp[] = [];
+  const nulls: CNullProp[] = [];
 
   for (const conjunct of conjuncts) {
     // A BARE PROPERTY standing alone as the predicate (`WHERE n.flag`), which this used to
@@ -4834,6 +4893,17 @@ const directEqProps = (
       conjunct.expr.variable === ownVar
     ) {
       notTruth.push(conjunct.expr.key);
+      continue;
+    }
+
+    // `WHERE n.k IS NULL` / `IS NOT NULL` (item 1270), and `NOT (n.k IS NULL)` — the third
+    // spelling, canonicalized by FLIPPING the flag rather than by a separate list. The native
+    // engine fixed its own two spellings in two passes (items 1261 then 1262) because the second
+    // was not noticed until the first shipped; both are here at once.
+    const nullTest = asNullTest(conjunct);
+
+    if (nullTest?.expr.kind === 'prop' && nullTest.expr.variable === ownVar) {
+      nulls.push({ key: nullTest.expr.key, negated: nullTest.negated });
       continue;
     }
 
@@ -4939,7 +5009,8 @@ const directEqProps = (
     truth.length === 0 &&
     notTruth.length === 0 &&
     path.length === 0 &&
-    member.length === 0
+    member.length === 0 &&
+    nulls.length === 0
   ) {
     return null;
   }
@@ -4951,7 +5022,7 @@ const directEqProps = (
   // `direct.residual` because the shape is what a future MIXED chain would need: item 259 made
   // reordering a FILTER's conjuncts unobservable, so lifting the equalities and leaving the rest
   // is now sound where it previously was not, and that is the next step rather than this one.
-  return { eq, cmp, truth, notTruth, path, member, residual: undefined };
+  return { eq, cmp, truth, notTruth, path, member, nulls, residual: undefined };
 };
 
 /**
@@ -4985,7 +5056,8 @@ export const hasPredicate = (pred: CPredicate): boolean =>
   (pred.notTruthProps?.length ?? 0) > 0 ||
   (pred.cmpProps?.length ?? 0) > 0 ||
   (pred.pathProps?.length ?? 0) > 0 ||
-  (pred.memberProps?.length ?? 0) > 0;
+  (pred.memberProps?.length ?? 0) > 0 ||
+  (pred.nullProps?.length ?? 0) > 0;
 
 export const compilePredicate = (
   properties: readonly PropertyConstraint[] | undefined,
@@ -5015,6 +5087,7 @@ export const compilePredicate = (
     ...(direct === null || direct.notTruth.length === 0 ? {} : { notTruthProps: direct.notTruth }),
     ...(direct === null || direct.path.length === 0 ? {} : { pathProps: direct.path }),
     ...(direct === null || direct.member.length === 0 ? {} : { memberProps: direct.member }),
+    ...(direct === null || direct.nulls.length === 0 ? {} : { nullProps: direct.nulls }),
   };
 };
 
@@ -6064,6 +6137,20 @@ export const satisfies = (
   if (pred.memberProps !== undefined) {
     for (const { key, test } of pred.memberProps) {
       if (test(propOf(element, key), env) !== true) {
+        return false;
+      }
+    }
+  }
+
+  // BESIDE `memberProps`, AFTER EVERYTHING THAT CAN RAISE, for the reason given there. A null test
+  // is total and cannot raise either, so the two non-raising families may run in any order
+  // relative to each other.
+  //
+  // `isNullish(…) === negated` IS the rejection: for `IS NULL` (`negated` false) a row survives
+  // only when the cell IS nullish, and for `IS NOT NULL` only when it is not.
+  if (pred.nullProps !== undefined) {
+    for (const { key, negated } of pred.nullProps) {
+      if (isNullish(propOf(element, key)) === negated) {
         return false;
       }
     }
