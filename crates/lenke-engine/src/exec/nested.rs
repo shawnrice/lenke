@@ -628,6 +628,15 @@ pub(super) fn nested_group_count(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// `track` builds the per-row NODE/EDGE path (item 1238). Before it, this operator built no
+/// lineage at all, so `path_length(p)` / `nodes(p)` / `edges(p)` over a nested group answered
+/// NULL — a silent wrong answer, pinned at items 1236 and 1237.
+///
+/// The chain is already walked: `M::steps` holds one `StepRec { source, edge, target }` per hop in
+/// traversal order, which `bind_nested` reads for the group's inner lists. So this records what the
+/// walk already knows rather than changing what it walks — which matters, because item 1237
+/// established that the ROWS are right (both engines agree with no path bound) and only the path
+/// was missing.
 pub(super) fn nested_group(
     batch: &Batch,
     store: &Store,
@@ -638,6 +647,7 @@ pub(super) fn nested_group(
     mode: PathMode,
     bind_slots: &[usize],
     per_rep_pred: Option<&Expr>,
+    track: bool,
 ) -> Batch {
     let empty = || {
         let mut slots: Vec<Col> = batch.slots.iter().map(|_| Col::Nodes(vec![])).collect();
@@ -645,12 +655,25 @@ pub(super) fn nested_group(
         for _ in bind_slots {
             slots.push(Col::Gen(vec![]));
         }
-        Batch::of(slots)
+        let mut b = Batch::of(slots);
+        if track {
+            // An EMPTY lineage, not an absent one: a zero-row batch that reads a path must still
+            // present the sidecar, or a downstream accessor sees "no lineage" rather than "no rows".
+            b.lineage = Some(crate::batch::Lineage::empty());
+        }
+        b
     };
 
     let mut keep: Vec<usize> = Vec::new();
     let mut ends: Vec<u32> = Vec::new();
     let mut cols: Vec<Vec<Value>> = vec![Vec::new(); bind_slots.len()];
+    // The lineage sidecar, accumulated in Arrow-style list layout exactly as `Lineage` expects:
+    // `offsets` carries rows + 1 entries and `offsets[0] == 0`.
+    let mut lin = crate::batch::Lineage::default();
+    if track {
+        lin.offsets.push(0);
+        lin.edge_offsets.push(0);
+    }
 
     let ok = drive_nested(
         batch,
@@ -664,6 +687,23 @@ pub(super) fn nested_group(
         &mut |slf, row, end| {
             keep.push(row);
             ends.push(end);
+            if track {
+                // A k-hop path has k + 1 nodes: the first hop's SOURCE, then every target. With no
+                // hops at all (a `{0,n}` group matching zero repetitions) the path is the seed node
+                // alone, which is `end` — the walk never left it.
+                match slf.steps.first() {
+                    Some(first) => {
+                        lin.values.push(Value::Num(f64::from(first.source)));
+                        for s in &slf.steps {
+                            lin.values.push(Value::Num(f64::from(s.target)));
+                            lin.edges.push(Value::Num(f64::from(s.edge)));
+                        }
+                    }
+                    None => lin.values.push(Value::Num(f64::from(end))),
+                }
+                lin.offsets.push(lin.values.len());
+                lin.edge_offsets.push(lin.edges.len());
+            }
             let mut pairs: Vec<(usize, Value)> = Vec::new();
             bind_nested(unit, &[], 0, &slf.steps, &mut pairs);
             for (ci, &want_slot) in bind_slots.iter().enumerate() {
@@ -685,5 +725,9 @@ pub(super) fn nested_group(
     for c in cols {
         slots.push(Col::Gen(c));
     }
-    Batch::of(slots)
+    let mut out = Batch::of(slots);
+    if track {
+        out.lineage = Some(lin);
+    }
+    out
 }

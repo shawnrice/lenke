@@ -8922,6 +8922,124 @@ fn an_anchored_shortest_path_is_unaffected_by_the_ceiling() {
     );
 }
 
+/// A path bound over a NESTED subpath group must carry a real lineage (item 1238).
+///
+/// ⚠️ THE EXPECTATIONS ARE HAND-ENUMERATED, and that is not a stylistic choice: item 1237
+/// established that the TS engine is WRONG on this shape (it ends at the unit's middle node and
+/// cannot tell `WALK` from `TRAIL`), so the differential fuzzer would reject the correct answer.
+/// A cross-engine comparison is the usual oracle here and is unavailable; this is the substitute.
+///
+/// Fixture `1 -> 2`, `3 -> 2`, `3 -> 4`, all `KNOWS`. Unit `(x)-[:KNOWS]->(m)<-[:KNOWS]-(y)`,
+/// quantifier `{1,2}`, default TRAIL. One repetition:
+///
+/// ```text
+///   from 1:  1 -(e1)-> 2 ,  then 2 <-(e2)- 3     (2 <-(e1)- 1 would reuse e1)
+///   from 3:  3 -(e2)-> 2 ,  then 2 <-(e1)- 1
+///            3 -(e3)-> 4 ,  then 4 <-(e3)- 3     reuses e3, excluded
+///   from 2, 4: no out-edges
+/// ```
+///
+/// Two repetitions: every continuing edge is already used, so none. TWO paths, each of three
+/// nodes and two edges.
+#[test]
+fn nested_group_path_carries_a_real_lineage() {
+    let mut b = Builder::default();
+
+    for n in 1..=4u32 {
+        b.node(&["P"], &[("n", Value::Num(f64::from(n)))]);
+    }
+    b.edge(0, 1, "KNOWS"); // 1 -> 2
+    b.edge(2, 1, "KNOWS"); // 3 -> 2
+    b.edge(2, 3, "KNOWS"); // 3 -> 4
+
+    let store = b.build();
+    let vals = |q: &str| -> Vec<f64> {
+        let mut out: Vec<f64> = crate::exec::try_run(&opt_plan(q, &store), &store)
+            .unwrap()
+            .rows
+            .iter()
+            .map(|r| match r[0] {
+                Value::Num(x) => x,
+                ref o => panic!("expected a number, got {o:?}"),
+            })
+            .collect();
+
+        out.sort_by(f64::total_cmp);
+        out
+    };
+    let unit = "((x)-[:KNOWS]->(m)<-[:KNOWS]-(y)){1,2}";
+
+    // THE HOP COUNT is 2 for both paths — not 1, which is what an engine ending at the unit's
+    // middle node answers.
+    assert_eq!(
+        vals(&format!("MATCH p = {unit} RETURN path_length(p) AS x")),
+        vec![2.0, 2.0],
+        "two paths, two hops each"
+    );
+    // CARDINALITY is nodes + edges = 3 + 2.
+    assert_eq!(
+        vals(&format!("MATCH p = {unit} RETURN cardinality(p) AS x")),
+        vec![5.0, 5.0],
+        "three nodes and two edges"
+    );
+    // The ELEMENT lists, which is what distinguishes a recorded chain from a recorded SIZE.
+    assert_eq!(
+        vals(&format!("MATCH p = {unit} RETURN size(nodes(p)) AS x")),
+        vec![3.0, 3.0],
+        "three nodes"
+    );
+    assert_eq!(
+        vals(&format!("MATCH p = {unit} RETURN size(edges(p)) AS x")),
+        vec![2.0, 2.0],
+        "two edges"
+    );
+    // ⚠️ IDENTITY, NOT ONLY SIZE — and mutation is what forced this. With size-only assertions,
+    // two mutants SURVIVED the whole suite: making the first node the hop's TARGET instead of its
+    // SOURCE, and reversing the chain. Both preserve every count, so only the element IDENTITIES
+    // can tell them apart. Path A runs 1, 2, 3 and path B runs 3, 2, 1, so the two ENDS pin both:
+    // the target-instead-of-source mutant moves `head` to 2, and the reversal moves `last` to 2.
+    assert_eq!(
+        vals(&format!("MATCH p = {unit} RETURN head(nodes(p)).n AS x")),
+        vec![1.0, 3.0],
+        "the paths START at 1 and at 3"
+    );
+    assert_eq!(
+        vals(&format!("MATCH p = {unit} RETURN last(nodes(p)).n AS x")),
+        vec![1.0, 3.0],
+        "and END at 3 and at 1 — the same multiset, which is why BOTH ends are asserted"
+    );
+    // ⚠️ THE ROWS MUST NOT CHANGE. Item 1237's structural argument is that binding a path NAMES a
+    // match rather than filtering or multiplying it, so the count with a path must equal the count
+    // without one. This is the assertion that pins it.
+    let with_path = crate::exec::try_run(
+        &opt_plan(&format!("MATCH p = {unit} RETURN 1 AS one"), &store),
+        &store,
+    )
+    .unwrap()
+    .rows
+    .len();
+    let without = crate::exec::try_run(
+        &opt_plan(&format!("MATCH {unit} RETURN 1 AS one"), &store),
+        &store,
+    )
+    .unwrap()
+    .rows
+    .len();
+
+    assert_eq!(
+        with_path, without,
+        "binding a path must not change the row count"
+    );
+    assert_eq!(with_path, 2, "and the count is two");
+    // THE GROUP'S OWN LISTS still bind with a path in play — the lineage is an addition, not a
+    // replacement, and dropping them is one of the things TS does wrong here.
+    assert_eq!(
+        vals(&format!("MATCH p = {unit} RETURN size(x) AS x")),
+        vec![1.0, 1.0],
+        "one repetition, so each inner list holds one element"
+    );
+}
+
 // --- PathNeed::CountOnly (sizes recorded, chains never built) ---
 
 /// Is any path-producing operator in this plan marked `CountOnly`?

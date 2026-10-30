@@ -1430,6 +1430,7 @@ fn pull(plan: &Plan, store: &Store, track: bool) -> Result<Batch, String> {
             *mode,
             bind_slots,
             per_rep_pred.as_deref(),
+            track,
         ),
         Plan::ShortestPath {
             input,

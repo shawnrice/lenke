@@ -85,26 +85,32 @@ suite('a path bound over a NESTED subpath group', () => {
     expect(outcome('native', q)).toBe('ok [{"one":1}|{"one":1}]');
   });
 
-  test('OPEN: every path accessor is NULL in the Rust engine (item 1236)', () => {
-    // `path_length`, `cardinality`, `nodes` and `edges` all read a lineage the nested walker
-    // never builds, so they come back null rather than erroring — a silent wrong answer, which
-    // is the kind this repo's registry refuses to excuse.
-    for (const [acc, tsExpected] of [
-      ['path_length(p)', 'ok [{"x":1}|{"x":1}|{"x":1}]'],
-      ['cardinality(p)', 'ok [{"x":3}|{"x":3}|{"x":3}]'],
-    ] as const) {
-      const q = `MATCH p = ${UNIT} RETURN ${acc} AS x`;
+  test('FIXED in the Rust engine, verified by hand because TS is the wrong oracle (item 1238)', () => {
+    // Item 1236 found every accessor NULL here; item 1238 built the lineage in `nested_group`.
+    // ⚠️ THE DIFFERENTIAL FUZZER CANNOT VERIFY THIS FIX, because item 1237 established TS is wrong
+    // on this shape — comparing against it would reject the correct answer. The oracle is a hand
+    // enumeration of the fixture under TRAIL:
+    //
+    //   path A:  1 -(e1)-> 2 <-(e2)- 3     nodes 1,2,3   edges e1,e2
+    //   path B:  3 -(e2)-> 2 <-(e1)- 1     nodes 3,2,1   edges e2,e1
+    //
+    // so `path_length` (the HOP count) is 2 and `cardinality` (nodes + edges) is 3 + 2 = 5.
+    const len = `MATCH p = ${UNIT} RETURN path_length(p) AS x`;
+    const card = `MATCH p = ${UNIT} RETURN cardinality(p) AS x`;
 
-      expect(outcome('ts', q)).toBe(tsExpected);
-      expect(outcome('native', q)).toBe('ok [{"x":null}|{"x":null}]');
-    }
+    expect(outcome('native', len)).toBe('ok [{"x":2}|{"x":2}]');
+    expect(outcome('native', card)).toBe('ok [{"x":5}|{"x":5}]');
+    // The ELEMENT accessors agree with the same enumeration: three nodes, two edges.
+    const sizes = `MATCH p = ${UNIT} RETURN size(nodes(p)) AS n, size(edges(p)) AS e`;
 
-    // The ELEMENT accessors, where a missing lineage shows hardest: TS renders real element
-    // maps, the Rust engine renders null.
-    const nodesQ = `MATCH p = ${UNIT} RETURN nodes(p) AS x`;
+    expect(outcome('native', sizes)).toBe('ok [{"n":3,"e":2}|{"n":3,"e":2}]');
 
-    expect(outcome('ts', nodesQ)).toContain('"labels":["P"]');
-    expect(outcome('native', nodesQ)).toBe('ok [{"x":null}|{"x":null}]');
+    // AND TS STILL DISAGREES, which is recorded rather than asserted away: it answers a ONE-hop
+    // path (`len` 1, two nodes, one edge) because it ends at the unit's middle node — item 1237's
+    // finding, now visible as a straight contradiction of the hand count rather than as two
+    // engines both being odd.
+    expect(outcome('ts', len)).toBe('ok [{"x":1}|{"x":1}|{"x":1}]');
+    expect(outcome('ts', sizes)).toBe('ok [{"n":2,"e":1}|{"n":2,"e":1}|{"n":2,"e":1}]');
   });
 
   test('OPEN: with a path bound, TS answers a DIFFERENT QUERY — wrong endpoint, lost bindings, and MODE-INSENSITIVE (item 1237)', () => {

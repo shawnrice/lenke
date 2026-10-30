@@ -37869,3 +37869,77 @@ without and 3 with, so TS is inconsistent with ITSELF, independent of which numb
 
 Pinned in `nested-group-path-conformance.test.ts` (five tests now), including the two AGREEMENTS and
 the mode-insensitivity pair, so none of it can change silently.
+
+### Item 1238 — the nested-group wrong answer is FIXED: lineage built in `nested_group`, verified by HAND because the usual oracle is itself wrong (DONE)
+
+Item 1236 found every path accessor returning NULL over a nested subpath group; item 1237 established
+TS is wrong on the same shape. The chosen direction was to build the lineage, and this does it.
+
+THE FIX IS SMALL BECAUSE THE WALK ALREADY KNOWS THE CHAIN. `M::steps` holds one
+`StepRec { source, edge, target }` per hop in traversal order — `bind_nested` already reads it for
+the group's inner lists. So `nested_group` now records what the walk already knows rather than
+changing what it walks, which matters: item 1237 established the ROWS are right (both engines agree
+with no path bound) and only the path was missing. A k-hop path is the first hop's SOURCE followed by
+every target, with the edges in parallel; a zero-hop match is the seed node alone.
+
+### ⚠️ THE DIFFERENTIAL FUZZER CANNOT VERIFY THIS FIX
+
+The usual oracle for a Rust answer here is the TS engine, and item 1237 showed it is WRONG on this
+shape — comparing against it would REJECT the correct result. So the expectations are hand-enumerated
+from the fixture (`1->2`, `3->2`, `3->4`, all `KNOWS`; unit `(x)-[:KNOWS]->(m)<-[:KNOWS]-(y)`;
+default TRAIL):
+
+```text
+  path A:  1 -(e1)-> 2 <-(e2)- 3     nodes 1,2,3   edges e1,e2
+  path B:  3 -(e2)-> 2 <-(e1)- 1     nodes 3,2,1   edges e2,e1
+```
+
+so `path_length` (hops) is 2, `cardinality` (nodes + edges) is 5, and the element lists are 3 and 2.
+The engine now answers exactly that. TS answers 1 hop / 2 nodes / 1 edge — a straight contradiction
+of the hand count, which is item 1237's finding seen from the other side.
+
+### ⚠️ MUTATION FORCED THE TEST TO ASSERT IDENTITY, NOT SIZE
+
+With size-only assertions, two of four mutants SURVIVED the whole suite:
+
+```text
+  first node dropped            CAUGHT
+  edges dropped                 CAUGHT
+  first node is the TARGET      SURVIVED  -> then CAUGHT
+  chain REVERSED                SURVIVED  -> then CAUGHT
+```
+
+Both survivors preserve every count, so only element IDENTITIES separate them. Path A runs 1,2,3 and
+path B runs 3,2,1, so asserting BOTH ENDS pins both: the target-instead-of-source mutant moves `head`
+to 2, and the reversal moves `last` to 2. All four now fail with exactly one failing test. A
+size-only test here would have been the "passes for the same reason an empty test does" case.
+
+### Cost
+
+```text
+  nested-group COUNT rows (no path read)   153931.5 -> 153228.7   1.00x
+                                           149422.5 -> 148359.3   0.99x
+  nested group + PATH read                 661704.0 -> 758129.2   1.13x
+```
+
+FLAT where no path is read, because `track` is false and no lineage is built. 1.13x where a path IS
+read — and that is the price of answering CORRECTLY, not a regression: the same query previously
+returned nulls, doing no path work at all. Row counts unchanged (1,261,238).
+
+⚠️ AND IT NEARLY LOOKED BROKEN, for the reason `CLAUDE.md` documents: the first check after the fix
+still showed nulls, because `cargo build --release --tests` does NOT rebuild the `capi` `.so` the TS
+harness `dlopen`s. One `--features capi` build later the real values appeared. A stale artifact and a
+non-working fix are indistinguishable from the output.
+
+### What this unblocks
+
+Item 1234's `PathNeed` headroom for `NestedGroup` is now REAL rather than hypothetical: there is
+finally a chain to suppress, and `path_length(p)` reads only its size. Adding `path_need` to
+`NestedGroup` (as item 1235 did for `RepeatGroup`) should recover most of the 1.13x and more.
+
+TS's nested-group-with-path handling remains the larger open defect — wrong endpoint slot, dropped
+group bindings, blind to the path mode (item 1237).
+
+2,066 Rust tests green; `rewrite_fuzz` at `LENKE_OPT_FUZZ_SEEDS=500000` green in 99.2 s; all seven
+cross-engine fuzzers green — which they can be because the nested-plus-path INTERSECTION is still
+ungenerated (item 1236); `clippy -D warnings` and `bun run check` each 0.
