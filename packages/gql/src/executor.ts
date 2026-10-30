@@ -4614,6 +4614,26 @@ export type CPredicate = {
   truthTestProps?: readonly CTruthTestProp[];
 
   /**
+   * `WHERE n.v IS TYPED INTEGER` and its family (item 1298) — the last structurally liftable leaf
+   * item 1272 listed as declined, priced at item 1297.
+   *
+   * 200,000 nodes against `n.marker = true`, a `compare` marking exactly the rows the test keeps,
+   * so both answer an identical 100000:
+   *
+   * ```text
+   *   n.marker = true            4.367 ms
+   *   n.v IS TYPED INTEGER      12.976      2.97x
+   *   n.v IS NOT TYPED INTEGER   6.971      1.60x
+   * ```
+   *
+   * ⚠️ THE TWO SPELLINGS COST DIFFERENTLY BEFORE THIS LIFT (12.976 against 6.971 on a 50/50 split
+   * answering the same count), and item 1297 recorded that as its own open question since the lift
+   * was absent from BOTH. If they still differ after this, that asymmetry is a second defect and
+   * not this one.
+   */
+  typedTests?: readonly CTypedTestProp[];
+
+  /**
    * `WHERE n IS LABELED Person` and its family (item 1289) — the `isLabeled` leaf item 1272 listed
    * as declined, priced at item 1288.
    *
@@ -4918,6 +4938,30 @@ type CNullProp = {
  * EXACT three-valued comparison, not a truthiness coercion, so a non-boolean is simply "no"
  * rather than a fault, and it yields a plain boolean with no UNKNOWN to settle.
  */
+/**
+ * One lifted `<ownVar>.<key> IS [NOT] TYPED <value type> [NOT NULL]` conjunct (item 1298).
+ *
+ * TOTAL AND NON-RAISING, like `CTruthTestProp`: `valueIsTypedTy` returns a plain boolean and
+ * `case 'isTyped'` composes it with `negated ? !m : m`, so there is no UNKNOWN to settle.
+ *
+ * ⚠️ AND YET IT RUNS IN THE **LATE** GROUP, after `truthProps`, exactly as `truthTestProps` does.
+ * Non-raising does NOT imply hoistable in this engine — the engine is the authority (item 1286) and
+ * it hoists no form of this test, measured at item 1297 with `n.s` as the faulting sibling:
+ *
+ * ```text
+ *   WHERE n.s AND n.n IS TYPED STRING      native ERR   FALSE every row and STILL raises
+ *   WHERE n.s AND n.s IS TYPED INTEGER     native ERR   FALSE every row and STILL raises
+ * ```
+ */
+type CTypedTestProp = {
+  key: string;
+  ty: TypeTest;
+  /** The `NOT NULL` suffix, mirroring the AST. */
+  notNull: boolean;
+  /** `true` for the `IS NOT TYPED` spelling, mirroring the AST's own flag. */
+  negated: boolean;
+};
+
 type CTruthTestProp = {
   key: string;
   /** `true`/`false` for IS TRUE / IS FALSE; `null` for IS UNKNOWN, mirroring the AST. */
@@ -5086,6 +5130,46 @@ const liftNullTest = (conjunct: Expr, ownVar: string, nulls: CNullProp[]): boole
   }
 
   nulls.push({ key: test.expr.key, negated: test.negated });
+
+  return true;
+};
+
+/**
+ * `<ownVar>.<key> IS [NOT] TYPED <type>` as a liftable conjunct, or null (item 1298).
+ *
+ * `NOT (x IS TYPED T)` folds by FLIPPING `negated`, as `asNullTest`, `asTruthTest` and
+ * `asLabelTest` all do — both of this file's two-pass mistakes (items 1261 then 1262) came from
+ * handling one spelling and noticing the other later.
+ */
+const asTypedTest = (
+  e: Expr,
+): { expr: Expr; ty: TypeTest; notNull: boolean; negated: boolean } | null => {
+  if (e.kind === 'isTyped') {
+    return { expr: e.expr, ty: e.ty, notNull: e.notNull, negated: e.negated };
+  }
+
+  if (e.kind === 'not' && e.expr.kind === 'isTyped') {
+    const inner = e.expr;
+
+    return { expr: inner.expr, ty: inner.ty, notNull: inner.notNull, negated: !inner.negated };
+  }
+
+  return null;
+};
+
+/**
+ * File one lifted `IS [NOT] TYPED` conjunct, returning whether it claimed the conjunct.
+ *
+ * The fifth arm extracted because `directEqProps` sits at its complexity cap (items 1284-1290).
+ */
+const liftTypedTest = (conjunct: Expr, ownVar: string, out: CTypedTestProp[]): boolean => {
+  const test = asTypedTest(conjunct);
+
+  if (test?.expr.kind !== 'prop' || test.expr.variable !== ownVar) {
+    return false;
+  }
+
+  out.push({ key: test.expr.key, ty: test.ty, notNull: test.notNull, negated: test.negated });
 
   return true;
 };
@@ -5289,6 +5373,8 @@ const directEqProps = (
   nulls: CNullProp[];
   /** `<ownVar>.<key> IS [NOT] TRUE|FALSE|UNKNOWN` conjuncts (item 1286). */
   truthTests: CTruthTestProp[];
+  /** `<ownVar>.<key> IS [NOT] TYPED <type>` conjuncts (item 1298). */
+  typedTests: CTypedTestProp[];
   /** `<ownVar> IS [NOT] LABELED <label expr>` conjuncts (item 1289). */
   labelTests: CLabelTest[];
   residual: Expr | undefined;
@@ -5323,6 +5409,7 @@ const directEqProps = (
   const member: CMemberProp[] = [];
   const nulls: CNullProp[] = [];
   const truthTests: CTruthTestProp[] = [];
+  const typedTests: CTypedTestProp[] = [];
   const labelTests: CLabelTest[] = [];
 
   // ⚠️ AN UNADMITTED CONJUNCT STOPS THE LOOP, it no longer forfeits the chain (item 1284).
@@ -5419,6 +5506,11 @@ const directEqProps = (
     // spelling. Measured at 2.32x against the `= true` spelling of the same question, with the
     // selectivity matched by construction so both answer an identical 20000.
     if (liftTruthTest(conjunct, ownVar, nulls, truthTests)) {
+      continue;
+    }
+
+    // `WHERE n.v IS TYPED INTEGER` (item 1298).
+    if (liftTypedTest(conjunct, ownVar, typedTests)) {
       continue;
     }
 
@@ -5527,6 +5619,7 @@ const directEqProps = (
     member.length === 0 &&
     nulls.length === 0 &&
     truthTests.length === 0 &&
+    typedTests.length === 0 &&
     labelTests.length === 0
   ) {
     return null;
@@ -5561,7 +5654,19 @@ const directEqProps = (
   //
   // A FULLY-ADMITTED chain is untouched by this — it has no residual, every conjunct lifts, and
   // item 259 covers the ordering among families.
-  return { eq, cmp, truth, notTruth, path, member, nulls, truthTests, labelTests, residual };
+  return {
+    eq,
+    cmp,
+    truth,
+    notTruth,
+    path,
+    member,
+    nulls,
+    truthTests,
+    typedTests,
+    labelTests,
+    residual,
+  };
 };
 
 /**
@@ -5598,6 +5703,31 @@ const directEqProps = (
  * Extracted because `satisfies` is at its complexity cap, and because this family's loop is the
  * only one that does not read `propOf`.
  */
+/**
+ * Do the lifted `IS [NOT] TYPED` conjuncts hold for this element (item 1298)?
+ *
+ * Extracted because `satisfies` is at its complexity cap — the same reason `labelTestsHold` below
+ * was, one item earlier.
+ */
+const typedTestsHold = (
+  element: Vertex | Edge,
+  tests: readonly CTypedTestProp[] | undefined,
+): boolean => {
+  if (tests === undefined) {
+    return true;
+  }
+
+  for (const { key, ty, notNull, negated } of tests) {
+    const m = valueIsTypedTy(propOf(element, key), ty, notNull);
+
+    if (!(negated ? !m : m)) {
+      return false;
+    }
+  }
+
+  return true;
+};
+
 const labelTestsHold = (
   element: Vertex | Edge,
   tests: readonly CLabelTest[] | undefined,
@@ -5626,7 +5756,8 @@ export const hasPredicate = (pred: CPredicate): boolean =>
   (pred.memberProps?.length ?? 0) > 0 ||
   (pred.nullProps?.length ?? 0) > 0 ||
   (pred.truthTestProps?.length ?? 0) > 0 ||
-  (pred.labelTests?.length ?? 0) > 0;
+  (pred.labelTests?.length ?? 0) > 0 ||
+  (pred.typedTests?.length ?? 0) > 0;
 
 export const compilePredicate = (
   properties: readonly PropertyConstraint[] | undefined,
@@ -5660,6 +5791,7 @@ export const compilePredicate = (
     ...(direct === null || direct.truthTests.length === 0
       ? {}
       : { truthTestProps: direct.truthTests }),
+    ...(direct === null || direct.typedTests.length === 0 ? {} : { typedTests: direct.typedTests }),
     ...(direct === null || direct.labelTests.length === 0 ? {} : { labelTests: direct.labelTests }),
   };
 };
@@ -6764,6 +6896,14 @@ export const satisfies = (
   //
   // The arithmetic is `case 'isTruth'`'s own: an EXACT three-valued comparison, so a non-boolean is
   // simply "no" rather than a fault, and `IS UNKNOWN` tests nullishness.
+  // BESIDE `truthTestProps` AND FOR THE SAME MEASURED REASON (item 1298): the engine hoists no
+  // form of `IS TYPED`, so this may not run before `truthProps` however total it is. `valueIsTypedTy`
+  // is the SAME function `case 'isTyped'` goes through, so the lift cannot change what the test
+  // means.
+  if (!typedTestsHold(element, pred.typedTests)) {
+    return false;
+  }
+
   if (pred.truthTestProps !== undefined) {
     for (const { key, truth, negated } of pred.truthTestProps) {
       const v = propOf(element, key);

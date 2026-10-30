@@ -513,7 +513,8 @@ const liftFarOnlyClause = (where: Expr, farVar: string): CPredicate | undefined 
     (lifted.memberProps?.length ?? 0) > 0 ||
     (lifted.nullProps?.length ?? 0) > 0 ||
     (lifted.truthTestProps?.length ?? 0) > 0 ||
-    (lifted.labelTests?.length ?? 0) > 0
+    (lifted.labelTests?.length ?? 0) > 0 ||
+    (lifted.typedTests?.length ?? 0) > 0
     ? lifted
     : undefined;
 };
@@ -555,6 +556,7 @@ const mergeFarPreds = (inline: CPredicate, clause: CPredicate): CPredicate => ({
   // SUPERSET, and no correctness test on a count would see it.
   memberProps: mergeList(inline.memberProps, clause.memberProps),
   labelTests: mergeList(inline.labelTests, clause.labelTests),
+  typedTests: mergeList(inline.typedTests, clause.typedTests),
   truthTestProps: mergeList(inline.truthTestProps, clause.truthTestProps),
   nullProps: mergeList(inline.nullProps, clause.nullProps),
   // `truthProps` is merged here because forgetting it would be the exact failure `hasPredicate`'s

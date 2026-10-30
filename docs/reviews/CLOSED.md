@@ -42292,7 +42292,14 @@ STRING, and `marker` marks the same half, so every row answers 100000:
 **2.97x, which is larger than "niche" suggested** and in the same band as the lifts items 1286-1290
 took (2.1x-2.6x).
 
-### ⚠️ AND THE NEGATED FORM IS 1.86x FASTER THAN THE POSITIVE ONE
+### ⚠️ AND THE NEGATED FORM IS 1.86x FASTER THAN THE POSITIVE ONE — RETRACTED BY ITEM 1298
+
+**This did not reproduce.** Item 1298's PRE arm, same fixture and same matched twin, reads
+`IS TYPED` 9.128 and `IS NOT TYPED` 8.678 — near-equal, where this item measured 12.976 against
+6.971. The difference between the two runs is the import (`@lenke/gql`, a built dist, against a
+relative `src` import for the A/B), so the figures below are a dist-vs-src comparison and the
+"asymmetry" was an artifact of reading one number from each. There is no second defect. The
+paragraph is kept because the retraction is the point.
 
 `IS TYPED INTEGER` is 12.976 and `IS NOT TYPED INTEGER` is 6.971, on a 50/50 split where both
 answer 100000. Two complementary spellings of one question, costing differently — which is this
@@ -42343,3 +42350,89 @@ mutation pass the standing method requires, and a lift shipped without verified 
 one specified and left.
 
 Gates: no code change. `bun run check` 0.
+
+### Item 1298 — `IS TYPED` lifts, 2.40x; the enum is now exhausted; and item 1297's asymmetry is RETRACTED (DONE)
+
+Item 1297 priced this at 2.97x and resolved its hoisting against the engine, so this item is the
+build. It is the tenth lifted family and the last structurally liftable leaf of the enum item 1272
+listed.
+
+```text
+  shape                         pre     post    min of three alternated rounds
+  n.v IS TYPED INTEGER         9.128 -> 3.814   2.40x
+  n.v IS NOT TYPED INTEGER     8.678 -> 4.385   1.98x
+  [CTL] n.marker = true        4.199 -> 4.083   flat (eqProps, unreachable)
+```
+
+Both spellings land ON the matched twin (3.814 and 4.385 against 4.083), which is the property that
+matters rather than the ratio.
+
+### ⚠️ ITEM 1297'S 1.86x ASYMMETRY IS RETRACTED, and the cause is instructive
+
+That item measured `IS TYPED` at 12.976 against `IS NOT TYPED` at 6.971 on a 50/50 split answering
+the same count, and recorded it as "a second, separate question… it needs its own diagnosis and may
+well be the more interesting of the two."
+
+It does not reproduce. This item's PRE arm reads 9.128 and 8.678 — near-equal. The difference
+between the runs is the IMPORT: item 1297's probe used `@lenke/gql` (the built dist) and this A/B
+uses a relative `src` import, so its two numbers came from different code. Same family as item
+1293's stale-dist reading (0.3523 against 0.2238, 1.56x) and item 1284's two pricing runs that
+reported "nothing moved". **A single number read from the dist and compared against one read from
+src is not a comparison**, and the asymmetry was that and nothing else. Item 1297's paragraph is
+corrected in place rather than deleted, because the retraction is the content.
+
+### The LATE group, and the guard that proves it
+
+`valueIsTypedTy` returns a plain boolean, so this family is total and non-raising — the property
+that puts `nulls`, `member` and `labelTests` in the HOISTED group. It still runs LATE, after
+`truthProps`, because item 1297 measured that the engine hoists no form of `IS TYPED`, including a
+tail that is FALSE for every row. "Non-raising implies hoistable" is not a rule in this engine.
+
+Two cross-engine cases now pin it, and they are the only thing that can:
+
+```text
+  WHERE n.s AND n.n IS TYPED STRING     both engines ERR E_INVALID_VALUE
+  WHERE n.s AND n.s IS TYPED INTEGER    both engines ERR E_INVALID_VALUE
+```
+
+### Teeth: 7 mutants, 6 caught — and the 7th is item 1289's documented survivor
+
+```text
+  negated-ignored         CAUGHT  2 failures
+  notnull-ignored         CAUGHT  the NOT NULL answer test
+  arm-declines            CAUGHT  the ROUTE test
+  haspredicate-blind      CAUGHT  the explicit hasPredicate assertion
+  never-rejects           CAUGHT  3 failures
+  typed-hoisted           CAUGHT  ONLY by the new cross-engine cases (gql suite passes it)
+  merge-drops-family      SURVIVED
+```
+
+`typed-hoisted` moves the block into the hoisted group and the whole 3259-test gql suite passes it;
+the conformance file catches it with exactly the predicted `ok []` against the engine's raise. That
+is item 1289's lesson paying off a second time, and the reason the guard was added before the
+mutant was run rather than after.
+
+`merge-drops-family` survived, and the evidence says why: the hop test still answers 1 under the
+mutant, so the far-end filter reaches the endpoint by a route other than `mergeFarPreds`. That makes
+the merge entry unreachable TODAY for this family — the same disposition `mergeFarPreds` records for
+`truthProps`/`notTruthProps`, which are kept as correctness preconditions "for when the lift widens"
+with surviving mutants of their own. Kept on those terms, and labelled rather than left for someone
+to find. I did not verify non-reachability directly; the inference is from the mutant's own
+behaviour.
+
+### The enum, after seven items
+
+`directEqProps` now admits: a bare `prop`, `NOT prop`, a `compare` (equality and ordering), a dotted
+compare, `NOT` of an equality (flat and dotted), a membership (`IN`, `NOT IN`, the `=`-OR-chain), a
+null test (`IS [NOT] NULL`, `NOT (… IS NULL)`, `IS [NOT] UNKNOWN`), `IS TRUE`/`IS FALSE`,
+`IS [NOT] LABELED`, `IS [NOT] TYPED`, and a nested `and` — plus a mixed chain lifting its prefix.
+
+What remains declined is now only what is structurally unliftable, per item 1294's reading: `xor`
+(n-ary boolean, not a per-key test), `graphPred` (can yield UNKNOWN, multiple args), `letIn` (scoped
+binding), and a function-call or arithmetic operand (not a property read). **The enum is
+exhausted.**
+
+Gates: 3259 gql tests green, 17 in the cross-engine AND file at 175 assertions (up from 171),
+21 projects green, all seven byte-identity fuzzers green, `bun run lint` 0, `bun run typecheck` 0,
+`bun run check` 0. One extraction (`typedTestsHold`) forced by `satisfies`' complexity cap, the
+sixth across items 1284-1298.

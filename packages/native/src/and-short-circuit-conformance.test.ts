@@ -366,6 +366,16 @@ suite('AND short-circuit: the TS and native engines agree', () => {
     // this arm to all three truth values introduced two NEW divergences the other way round —
     // these answered `ok []` here while the engine raised. Being WIDER in one engine is the same
     // mistake as being narrower.
+    // `IS TYPED` joined the lifted families at item 1298 and is in the LATE group for the same
+    // measured reason: the engine hoists NO form of it, including one whose tail is FALSE for
+    // every row (`n.n` is a number, so `IS TYPED STRING` is false and STILL raises). A mutant that
+    // moved the block into the hoisted group answers `ok []` here, and only this file can see it.
+    expect(agree('MATCH (n:P) WHERE n.s AND n.n IS TYPED STRING RETURN n.n AS x')).toBe(
+      'ERR E_INVALID_VALUE',
+    );
+    expect(agree('MATCH (n:P) WHERE n.s AND n.s IS TYPED INTEGER RETURN n.n AS x')).toBe(
+      'ERR E_INVALID_VALUE',
+    );
     expect(agree('MATCH (n:P) WHERE n.s AND n.n IS TRUE RETURN n.n AS x')).toBe(
       'ERR E_INVALID_VALUE',
     );
