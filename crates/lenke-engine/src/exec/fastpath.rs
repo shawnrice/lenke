@@ -193,6 +193,57 @@ fn hop_num_count<F: Fn(f64) -> bool>(
     Some(count)
 }
 
+/// Collect the typed-out neighbours whose column cell is present and satisfies `cmp`, in expand
+/// order — [`hop_num_count`]'s projecting twin (item 1243).
+///
+/// ⚠️ THE BRANCHLESS MOVE IS A COMPACTION HERE, NOT AN ACCUMULATION, and that is why it had to be
+/// measured separately rather than read off item 1224. A `count += 1` can be masked outright; a
+/// `Vec::push` cannot, because the write's ADDRESS depends on the predicate. What can be masked is
+/// the INDEX: write the candidate unconditionally and advance the cursor by the mask, so a rejected
+/// edge is simply overwritten by the next one. The branch that remains is the capacity grow
+/// (`n == out.len()`), taken a logarithmic number of times and predicted every other time.
+///
+/// The buffer therefore still ends up proportional to the SURVIVORS (rounded up to a power of two),
+/// not to the edge count — which is the property this whole arm exists for, so the branchless form
+/// is not bought back with the memory the general path was avoiding.
+fn hop_num_survivors<F: Fn(f64) -> bool>(
+    store: &Store,
+    label: &Option<String>,
+    w: u32,
+    data: &[f64],
+    present: &[bool],
+    cmp: F,
+) -> Option<Vec<u32>> {
+    if data.len() < present.len() {
+        // Defensive, and unreached: both slices come from one column. Without it the
+        // unconditional `data[j]` could panic where the short-circuit skipped it.
+        let mut out: Vec<u32> = Vec::new();
+
+        for_each_typed_out(store, label, w, |nbr| {
+            let j = nbr as usize;
+            if present[j] && cmp(data[j]) {
+                out.push(nbr);
+            }
+        })?;
+        return Some(out);
+    }
+
+    let mut out: Vec<u32> = vec![0; 64];
+    let mut n = 0usize;
+
+    for_each_typed_out(store, label, w, |nbr| {
+        let j = nbr as usize;
+
+        if n == out.len() {
+            out.resize(n * 2, 0);
+        }
+        out[n] = nbr;
+        n += usize::from(present[j] & cmp(data[j]));
+    })?;
+    out.truncate(n);
+    Some(out)
+}
+
 /// `V().out(T).has(k).count()` for a column of ANY type — item 1143.
 ///
 /// The sibling above, [`try_fused_hop_num_count`], already answers this shape when `k` is a packed
@@ -322,13 +373,59 @@ pub(super) fn try_fused_hop_project(
     }
     // Stream the type's edges, collecting just the surviving TARGET ids (output-proportional,
     // never the `[src, nbr]` intermediate); then evaluate the projection over that frontier.
-    let mut survivors: Vec<u32> = Vec::new();
-    for_each_typed_out(store, label, w, |nbr| {
-        let j = nbr as usize;
-        if present[j] && bounds.iter().all(|&(op, t)| num_pred(op, data[j], t)) {
-            survivors.push(nbr);
+    //
+    // THE OPERATOR IS MATCHED ONCE AND THE COMPACTION IS BRANCHLESS (item 1243) — the same two
+    // moves items 1224 and 1227 made for the COUNT twin, reusing `canonical_num_conj` for the
+    // multi-bound reduction rather than reimplementing it. The arms are spelled out rather than
+    // factored into one closure-returning helper, because two `match` arms are two closure TYPES
+    // and unifying them costs the monomorphic comparison this exists to get.
+    //
+    // ⚠️ THE SECOND MOVE IS THE LARGER ONE HERE, which item 1243 measured BEFORE building either:
+    // at 200,000 nodes the half-selective spelling (`age > 50`, 6544.0us) was SLOWER than the one
+    // that keeps every edge (`age >= 0`, 5503.2us). No amount of survivor work explains that
+    // ordering and a mispredicted branch per edge does — so the count twin's result does not
+    // transfer here, it is a different lever that happens to live in the same loop.
+    let survivors = if let [(op, t)] = bounds.as_slice() {
+        let t = *t;
+
+        match op {
+            CompareOp::Eq => hop_num_survivors(store, label, w, data, present, |x| x == t)?,
+            CompareOp::Ne => hop_num_survivors(store, label, w, data, present, |x| x != t)?,
+            CompareOp::Lt => hop_num_survivors(store, label, w, data, present, |x| x < t)?,
+            CompareOp::Le => hop_num_survivors(store, label, w, data, present, |x| x <= t)?,
+            CompareOp::Gt => hop_num_survivors(store, label, w, data, present, |x| x > t)?,
+            CompareOp::Ge => hop_num_survivors(store, label, w, data, present, |x| x >= t)?,
         }
-    })?;
+    } else if let Some(c) = canonical_num_conj(&bounds).filter(|c| c.ne.is_empty()) {
+        let (lo, hi) = (c.lo, c.hi);
+
+        match (c.lo_incl, c.hi_incl) {
+            (false, false) => {
+                hop_num_survivors(store, label, w, data, present, |x| (x > lo) & (x < hi))?
+            }
+            (false, true) => {
+                hop_num_survivors(store, label, w, data, present, |x| (x > lo) & (x <= hi))?
+            }
+            (true, false) => {
+                hop_num_survivors(store, label, w, data, present, |x| (x >= lo) & (x < hi))?
+            }
+            (true, true) => {
+                hop_num_survivors(store, label, w, data, present, |x| (x >= lo) & (x <= hi))?
+            }
+        }
+    } else {
+        // A `<>` bound, a NaN literal, or a bare presence atom — the forms `canonical_num_conj`
+        // declines, left on the general test exactly as the count twin leaves them.
+        let mut survivors: Vec<u32> = Vec::new();
+
+        for_each_typed_out(store, label, w, |nbr| {
+            let j = nbr as usize;
+            if present[j] && bounds.iter().all(|&(op, t)| num_pred(op, data[j], t)) {
+                survivors.push(nbr);
+            }
+        })?;
+        survivors
+    };
     // Evaluate the projection over the survivor frontier (endpoint at slot 1).
     let cols = vec![
         Col::Nodes(vec![0u32; survivors.len()]),

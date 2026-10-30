@@ -1199,6 +1199,43 @@ fn fused_hop_projection_matches_general() {
     );
     up.sort();
     assert_eq!(up, vec!["A", "C", "E"]);
+
+    // EVERY BOUND SHAPE THE ARM DISPATCHES, because item 1243 hoisted the operator out of the
+    // per-edge loop into ten `match` arms and a wrong arm is a wrong ANSWER, not a slow one.
+    //
+    // ⚠️ THE FOUR RANGE ARMS WERE ADDED BY MUTATION, NOT BY DESIGN. Swapping the
+    // `(lo_incl, hi_incl) = (true, false)` arm's `<` for a `<=` SURVIVED the whole suite: nothing
+    // anywhere asked this path for a `>= lo AND < hi` range, so four of the arms were reachable and
+    // unasserted. The scores below are chosen so all four combinations answer DIFFERENTLY — with
+    // the bounds off a boundary value they would agree and this would be decoration.
+    let keeps = |q: &str| -> Vec<String> {
+        let mut got = names_of(&run(&crate::gql::parse(q).unwrap(), &st), 0);
+
+        got.sort();
+        got
+    };
+    let base = "MATCH (a:Person)-[:F]->(b) WHERE";
+    let hop = "RETURN b.name AS n";
+
+    // scores: a=10, e=20, c=30, b=60, d=90 — so 20 and 60 are both ON a boundary.
+    for (pred, want) in [
+        ("b.score > 20 AND b.score < 60", vec!["c"]),
+        ("b.score >= 20 AND b.score < 60", vec!["c", "e"]),
+        ("b.score > 20 AND b.score <= 60", vec!["b", "c"]),
+        ("b.score >= 20 AND b.score <= 60", vec!["b", "c", "e"]),
+        ("b.score = 30", vec!["c"]),
+        ("b.score <> 30", vec!["a", "b", "d", "e"]),
+        ("b.score > 60", vec!["d"]),
+        ("b.score >= 60", vec!["b", "d"]),
+        ("b.score < 20", vec!["a"]),
+        ("b.score <= 20", vec!["a", "e"]),
+    ] {
+        assert_eq!(
+            keeps(&format!("{base} {pred} {hop}")),
+            want,
+            "{pred}: the fused projection's bound arm disagrees with the predicate"
+        );
+    }
 }
 
 /// The fused mask-aggregate (count/sum/min/max over a complex-predicate typed hop) returns
@@ -35152,4 +35189,50 @@ fn count_with_k_exclusions_subtracts_each_distinct_in_range_value_once() {
         0.0,
         "every in-range value excluded"
     );
+}
+
+/// The ROUTE guard for `try_fused_hop_project` (item 1243).
+///
+/// ⚠️ A FASTPATH ROUTE IS ANSWER-EQUIVALENT, so nothing else in this file can see it stop firing —
+/// item 1235's lesson, and the reason this is a PLAN assertion rather than a result comparison.
+/// The arm hoists the bound operator out of the per-edge loop, which no output can reveal.
+#[test]
+fn fused_hop_project_is_reached() {
+    let mut b = crate::store::Builder::default();
+
+    for i in 0..40u32 {
+        b.node(
+            &["P"],
+            &[("k", crate::value::Value::Num(f64::from(i % 10)))],
+        );
+    }
+    for i in 0..40u32 {
+        b.edge(i, (i + 7) % 40, "T");
+    }
+    let st = b.build();
+
+    for (what, q) in [
+        (
+            "one bound",
+            "MATCH (a:P)-[:T]->(c) WHERE c.k > 3 RETURN c.k AS v",
+        ),
+        (
+            "two bounds",
+            "MATCH (a:P)-[:T]->(c) WHERE c.k > 3 AND c.k < 8 RETURN c.k AS v",
+        ),
+        (
+            "equality",
+            "MATCH (a:P)-[:T]->(c) WHERE c.k = 5 RETURN c.k AS v",
+        ),
+    ] {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &st);
+        let Plan::Project { input, items } = &plan else {
+            panic!("{what}: expected a Project");
+        };
+
+        assert!(
+            crate::exec::fastpath::try_fused_hop_project(input, items, &st, false).is_some(),
+            "{what}: try_fused_hop_project declined the shape it is meant to serve"
+        );
+    }
 }

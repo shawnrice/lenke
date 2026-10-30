@@ -38186,3 +38186,147 @@ not. A failure here means "one of these is wrong". The hand-verified expectation
 `nested-group-path-conformance.test.ts`.
 
 953 TS tests green (up from 943); `bun run check` and `clippy -D warnings` each 0.
+
+### Item 1243 — the fused hop PROJECTION gets a branchless compaction, 2.33x, and the lever is NOT the one item 1224 found (DONE)
+
+`try_fused_hop_project` serves `MATCH (a:P)-[:T]->(b) WHERE b.k <op> <lit> RETURN b.k` by streaming
+the per-type CSR and collecting the surviving target ids. Its bound test was the one items 1224 and
+1227 hoisted out of the COUNT twin — `bounds.iter().all(|&(op, t)| num_pred(op, data[j], t))` — and
+this arm still paid it per edge.
+
+**The obvious read was that item 1224's 5.28x would repeat here, and that read was wrong.** Item
+1224's own ranking rule says to price the removal against the loop's PER-ELEMENT cost, and this
+loop's element cost includes a `Vec::push`, which cannot be masked the way a `count += 1` can. So
+the PRE probe swept SELECTIVITY before anything was built, and the sweep said something the
+dispatch story does not explain at all (200,000 nodes, degree 4, random ages):
+
+```text
+  project, ONE bound, k > 98 (selective)      1844.5 us
+  project, ONE bound, k > 50 (half)           6544.0
+  project, ONE bound, k >= 0 (everything)     5503.2
+```
+
+**The half-selective spelling is SLOWER than the one that keeps every edge**, while pushing half as
+many survivors. No amount of survivor work orders those three that way; a mispredicted branch per
+edge does. The dominant cost was the BRANCH, not the dispatch — a different lever that happens to
+live in the same loop.
+
+### Both levers, and what each is worth
+
+The operator is now matched once (ten `match` arms, a single bound dispatched directly and two or
+more reduced to a range through `canonical_num_conj`, exactly as the count twin does), and the
+compaction is branchless in the new `hop_num_survivors`:
+
+```rust
+if n == out.len() {
+    out.resize(n * 2, 0);
+}
+out[n] = nbr;
+n += usize::from(present[j] & cmp(data[j]));
+```
+
+A `Vec::push` cannot be masked because the write's ADDRESS depends on the predicate. What CAN be
+masked is the INDEX: write the candidate unconditionally and advance the cursor by the mask, so a
+rejected edge is overwritten by the next one. The buffer still ends up proportional to the SURVIVORS
+(rounded to a power of two), not to the edge count — which is the property this whole arm exists
+for, so the branchless form is not bought back with the memory the general path was avoiding.
+
+Three alternated rounds, binaries hashed per arm and reproduced (item 1219), min of each:
+
+```text
+  row                                         PRE      POST    ratio
+  project, ONE bound, k > 98 (selective)     1898.6   1613.1   1.18x
+  project, ONE bound, k > 50 (half)          6590.7   2831.1   2.33x
+  project, ONE bound, k >= 0 (everything)    5433.8   4894.8   1.11x
+  project, TWO bounds, 50 < k < 90           7385.1   2709.3   2.73x
+  [CTL] hop COUNT, one bound                  768.1    770.8   1.00x
+  [CTL] SCAN project, one bound                436.1    435.0   1.00x
+```
+
+**THE `k >= 0` ROW IS THE INTERNAL CONTROL THAT SPLITS THE TWO LEVERS, and it is why the mechanism
+is established rather than assumed.** That predicate is true for every edge, so its branch never
+mispredicts and only the dispatch removal can reach it: 1.11x. The 2.33x lands exactly where the
+branch is maximally unpredictable. Both external controls — the count twin (already hoisted at
+1224/1227) and a scan projection (never enters this arm) — are flat to within 0.4%.
+
+### The route is asserted, because a fastpath route is answer-equivalent
+
+`fused_hop_project_is_reached` asserts `try_fused_hop_project(..).is_some()` for one bound, two
+bounds and an equality — item 1235's lesson, and the reason it is a PLAN assertion: no output can
+reveal that the arm stopped firing.
+
+### ⚠️ Four of the ten arms were reachable and UNASSERTED, which only mutation found
+
+Five mutants, each on a fresh copy under `timeout 600 systemd-run --user --scope -q -p
+MemoryMax=16G -p MemorySwapMax=0`, the cap's teeth proven first with an allocator bomb (137) and a
+bare spin loop (124). Four were caught at once. The fifth — swapping the
+`(lo_incl, hi_incl) = (true, false)` arm's `<` for a `<=` — **SURVIVED the entire 1330-test suite**:
+nothing anywhere asked this path for a `>= lo AND < hi` range, so four of the ten arms were
+reachable with no assertion behind them.
+
+`fused_hop_projection_matches_general` now asserts all ten bound shapes, with the fixture's scores
+placed so the four inclusivity combinations answer DIFFERENTLY (bounds ON a boundary value: 20 and
+60 against scores 10/20/30/60/90). With bounds off a boundary the four would agree and the
+assertion would be decoration. All five mutants are now caught; the range one fails that test alone.
+
+### ⚠️ A harness bug nearly turned four caught mutants into "does not compile"
+
+The verdict's compile-error detector matched `^error:` — which also matches cargo's own
+`error: test failed, to rerun pass ...`. The first run therefore reported four mutants as compile
+failures when they were being CAUGHT by named tests. Items 767 and 772-773 are the same shape in
+the other direction; the rule stands and gets a third instance: **read the result lines before the
+exit code, and make sure a diagnostic pattern cannot match the thing it is meant to distinguish
+itself from.**
+
+### The TypeScript engine has no twin for either lever, and that is checked, not assumed
+
+TS compiles its hop predicate to a closure through `compilePredicate` (`executor/hop-projection.ts`),
+so the per-row operator dispatch this item removed does not exist there. The branchless half is a
+branch-prediction effect with no JS analogue — `n += keep ? 1 : 0` is not reliably branchless
+through the JIT. The TS filtered-hop gap is data layout and was priced and declined at item 805.
+
+Gates: 1330 + 13 + 725 tests green, `LENKE_OPT_FUZZ_SEEDS=500000 rewrite_fuzz` green (103.6s), all
+seven byte-identity fuzzers green with both artifacts confirmed newer than the edit, `clippy
+-D warnings` 0, `cargo fmt` 0.
+
+### Item 1243's regression pass: the sweep flagged 16 cells and EVERY ONE was an artifact
+
+`bench_all` was run on both arms (POST then PRE, the PRE run restoring the POST tree on any exit
+path). 417 cells parsed from each, 365 comparable above 1us, and **16 read more than 10% slower
+after**, topping out at 1.55x:
+
+```text
+  1.55x    186.50 ->   290.00   query/perrow | element r | ns/row
+  1.51x  44512.50 -> 67283.70   query/perrow | element p | best_us
+  1.48x  44775.30 -> 66377.10   query/gql    | scan node | best_us
+  1.33x  69248.20 -> 91854.60   query/gql    | distinct node | best_us
+  1.17x 146999.70 ->171757.70   query/gql    | hop node, NO distinct | best_us
+```
+
+**THE SWEEP REFUTES ITSELF, and the row that does it is `scan node`.** A bare node scan has no hop
+and no filter, so `try_fused_hop_project` cannot be reached by it under any plan — and it moved
+1.48x, more than three of the four "targets". A control moving as far as the targets is item 762's
+giveaway, and item 737 already priced this exact failure (a phantom 1.66x from in-sweep
+interference, refuted at 25.2 against 24.7 by an isolated A/B).
+
+So the two flagged groups plus that control went on an isolated three-round alternated A/B, binaries
+hashed per arm and each reproducing exactly across its three rounds (`4b31c15c` for PRE,
+`289d81e9` for POST):
+
+```text
+  row                                   PRE(min)   POST(min)  ratio
+  query/perrow | element r             272639.8   276531.1   1.01x
+  query/perrow | element p              67492.0    66559.6   0.99x
+  query/gql    | scan node              63030.1    62357.4   0.99x   <- the control
+  query/gql    | distinct node          90320.6    89175.4   0.99x
+  query/gql    | hop node, NO distinct 174526.5   172853.7   0.99x
+```
+
+Every flag is gone and the control sits with them at 0.99x. **No regression.**
+
+⚠️ ONE DETAIL WORTH KEEPING, because it is the opposite of what item 737 observed: the isolated PRE
+readings are HIGHER in absolute terms than the sweep's (63030 against 44775 for `scan node`), since
+this harness ran two groups per arm rather than one row. That is why the ratio is the claim and the
+absolute number is not — and why the arms must alternate. Item 747's correction stands: a full sweep
+is not inherently untrustworthy and remains the regression pass it exists for, but a cell it flags
+is a QUESTION, never a verdict.
