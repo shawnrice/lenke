@@ -522,6 +522,40 @@ const GROUPS: [string, readonly string[]][] = [
   // O(1) cannot converge, so no amount of further work closes this pair — it is here as a
   // REGRESSION guard on the 54ms, not as a target. Read the four-spelling group below for the
   // comparison that IS between equivalent plans.
+  // ⚠️ THE PREDICATE FORMS ITEMS 1286-1298 LIFTED, which should have been added with each one.
+  // CLAUDE.md is explicit — "When adding a predicate form to the planner, add its spellings there"
+  // — and six forms shipped (items 1284, 1286, 1288, 1289, 1290, 1298) before item 1300 noticed
+  // none of them had. Each pair below is LOGICALLY IDENTICAL regardless of null or type, so a
+  // disagreement is a real defect and not a semantics question:
+  //
+  //   `NOT IN` is `not3` of `IN`, so the two spellings are one question by definition (item 1288).
+  //   `IS LABELED` is total, so the doubly-negated form is the same test (item 1289).
+  //   `IS TYPED` is total, so the doubly-negated form is the same test (item 1298).
+  //
+  // They are also the pairs a future change to those families would split FIRST, which is the
+  // point of having them here rather than only in the unit tests: those assert the answer, and this
+  // asserts the COST.
+  [
+    'NOT IN vs NOT (IN) — the negated membership (item 1288)',
+    [
+      'MATCH (n:P) WHERE n.k NOT IN [1, 2] RETURN count(*) AS c',
+      'MATCH (n:P) WHERE NOT (n.k IN [1, 2]) RETURN count(*) AS c',
+    ],
+  ],
+  [
+    'IS LABELED vs the doubly-negated form (item 1289)',
+    [
+      'MATCH (n:P) WHERE n IS LABELED P RETURN count(*) AS c',
+      'MATCH (n:P) WHERE NOT (n IS NOT LABELED P) RETURN count(*) AS c',
+    ],
+  ],
+  [
+    'IS TYPED vs the doubly-negated form (item 1298)',
+    [
+      'MATCH (n:P) WHERE n.k IS TYPED INTEGER RETURN count(*) AS c',
+      'MATCH (n:P) WHERE NOT (n.k IS NOT TYPED INTEGER) RETURN count(*) AS c',
+    ],
+  ],
   [
     'label on start: redundant vs absent',
     ['MATCH (a:P)-[:E]->(b) RETURN count(*) AS c', 'MATCH (a)-[:E]->(b) RETURN count(*) AS c'],
