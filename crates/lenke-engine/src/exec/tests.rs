@@ -36271,3 +36271,125 @@ fn an_equality_count_reaches_the_seek_shortcut() {
         }
     }
 }
+
+/// The seek-count cost gate, as ARITHMETIC (item 1274).
+///
+/// A pure unit test because the choice is ANSWER-EQUIVALENT — both routes return the same count, so
+/// every answer and differential test passes whichever is picked, and a mutant of the threshold
+/// survives all of them. `CLOSED.md` prescribes exactly this remedy for a route choice
+/// (`perf-gate-needs-its-own-test`): extract the arithmetic and test it directly.
+///
+/// The boundary is pinned at N and N-1, because a threshold whose exact position is untested is a
+/// knob rather than a measurement.
+#[test]
+fn seek_count_cost_gate_boundary() {
+    let sweeps = crate::exec::fastpath::seek_count_sweeps;
+
+    // The measured crossover: 2,000 matches in a 200,000-node label. 200,000/96 = 2,083, and 2,000
+    // is not above it, so the index is kept — and the measurement says the two TIE there, so either
+    // answer is right at exactly this point.
+    assert!(!sweeps(Some(2_000), 200_000));
+    // N and N-1 around the boundary itself.
+    assert!(sweeps(Some(2_084), 200_000));
+    assert!(!sweeps(Some(2_083), 200_000));
+
+    // The ends the measurement covers: the index wins by 5-11x below, the sweep by 2-9x above.
+    assert!(!sweeps(Some(1), 200_000));
+    assert!(!sweeps(Some(200), 200_000));
+    assert!(sweeps(Some(4_000), 200_000));
+    assert!(sweeps(Some(20_000), 200_000));
+
+    // An EMPTY bucket never sweeps: the index path returns 0 without touching a node.
+    assert!(!sweeps(Some(0), 200_000));
+    assert!(!sweeps(Some(0), 0));
+
+    // ⚠️ NO INDEX AT ALL SWEEPS, and this assertion is what the mutation run demanded: mapping
+    // `None` to "use the seek" is answer-equivalent and SURVIVED the whole suite while that choice
+    // was made inline in the caller. It carries item 1267's 4.75x.
+    assert!(sweeps(None, 200_000));
+    assert!(sweeps(None, 0));
+
+    // A SMALL graph: the ratio is scale-free, so a 1-node label with a 1-row bucket sweeps. Harmless
+    // (both are one node), asserted so the behaviour at tiny scale is not a surprise.
+    assert!(sweeps(Some(1), 1));
+
+    // ⚠️ NO OVERFLOW, AND THE CORNER IS RIGHT. This assertion rejected the first implementation:
+    // `bucket.saturating_mul(96) > label` saturates both sides to `usize::MAX` here, compares
+    // false, and so answers "use the index" for a bucket that is the whole graph. Dividing the
+    // label instead cannot overflow and answers "sweep", which is correct.
+    assert!(sweeps(Some(usize::MAX), usize::MAX));
+}
+
+/// The gate must not change any ANSWER, on either side of it and on either store (item 1274).
+#[test]
+fn the_seek_count_gate_is_answer_equivalent_on_both_sides() {
+    // Value 0 has 1 row, value 1 has 500, value 2 has 40,000 — the first two below and the third
+    // ABOVE the threshold for this 50,000-node label (50,000/96 = 520).
+    let mut b = Builder::default();
+
+    b.node(&["P"], &[("k", n(0.0))]);
+
+    for _ in 0..500 {
+        b.node(&["P"], &[("k", n(1.0))]);
+    }
+
+    for _ in 0..40_000 {
+        b.node(&["P"], &[("k", n(2.0))]);
+    }
+
+    for _ in 0..9_499 {
+        b.node(&["P"], &[("k", n(3.0))]);
+    }
+
+    // ⚠️ A STRICT SUBSET, AND THE MUTATION RUN DEMANDED IT. With every node labelled `P` the graph
+    // count and the label count are the SAME number, so the assertion below could not see
+    // `label-len-uses-whole-graph` and it SURVIVED. These 1,000 `Q` nodes make the two differ.
+    for _ in 0..1_000 {
+        b.node(&["Q"], &[("k", n(1.0))]);
+    }
+
+    let plain = b.build();
+    let mut indexed = plain.clone();
+
+    indexed.create_index("k");
+
+    assert!(
+        indexed.has_hash_index("k"),
+        "the fixture must be the store it claims"
+    );
+    assert!(!plain.has_hash_index("k"));
+
+    let sweeps = crate::exec::fastpath::seek_count_sweeps;
+
+    // The gate picks DIFFERENT routes either side of the threshold, which is what makes the answer
+    // equivalence below worth asserting.
+    assert!(!sweeps(Some(500), 50_000));
+    assert!(sweeps(Some(40_000), 50_000));
+
+    // ⚠️ THE DENOMINATOR IS THE LABEL BUCKET, NOT THE WHOLE GRAPH, and `label-len-uses-whole-graph`
+    // survived until this was asserted. It matters whenever the label is a strict subset: a sweep
+    // visits the LABEL, so pricing it against the graph would over-estimate the sweep and keep the
+    // index past the crossover.
+    let label_len = crate::exec::fastpath::label_len;
+
+    assert_eq!(label_len(&indexed, &Some("P".to_string())), 50_000);
+    assert_eq!(label_len(&indexed, &Some("Q".to_string())), 1_000);
+    // The whole graph is LARGER than the `P` label, which is what makes the first assertion a real
+    // test of the denominator rather than a coincidence.
+    assert_eq!(label_len(&indexed, &None), 51_000);
+
+    for (v, want) in [(0.0, 1.0), (1.0, 500.0), (2.0, 40_000.0), (9.0, 0.0)] {
+        let q = format!("MATCH (a:P) WHERE a.k = {v} RETURN count(*) AS x");
+
+        for st in [&plain, &indexed] {
+            let plan = crate::opt::optimize_indexed(crate::gql::parse(&q).unwrap(), st);
+
+            match &run(&plan, st).rows.iter().next().expect("one row")[0] {
+                Value::Num(x) => {
+                    assert_eq!(*x, want, "k = {v}, indexed = {}", st.has_hash_index("k"));
+                }
+                other => panic!("not a number: {other:?}"),
+            }
+        }
+    }
+}

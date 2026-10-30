@@ -5292,6 +5292,54 @@ pub(super) fn whole_graph_scan(plan: &Plan, store: &Store) -> bool {
     }
 }
 
+/// How many times more expensive one index CANDIDATE is than one swept node (item 1274).
+///
+/// Derived from the measurement in `try_scan_count`'s `IndexSeek` arm rather than chosen: the sweep
+/// reads 0.028 ms over 200,000 nodes (0.14 ns a node, flat in how many match, because it is
+/// O(label) and vectorized), and the index path grows from 0.029 ms at 2,000 matches to 0.268 at
+/// 20,000 — 13.3 ns a candidate, which is a binary search of the label plus a `Vec` push. 13.3/0.14
+/// is ~95, so the two cost the same at a bucket of label/95, and the measured tie is at 2,000 of
+/// 200,000. 96 is that ratio, not a tuned knob.
+const SEEK_COUNT_CANDIDATE_COST: usize = 96;
+
+/// Should a `count(*)` over an equality seek SWEEP the column instead of reading the index bucket?
+///
+/// A PURE function with its own unit test, because the choice is ANSWER-EQUIVALENT: both routes
+/// return the same count, so every differential and answer test passes whichever is picked and a
+/// mutant of the arithmetic survives all of them. That is the remedy `CLOSED.md` prescribes for a
+/// route choice (`perf-gate-needs-its-own-test`).
+///
+/// ⚠️ DIVIDES RATHER THAN MULTIPLIES, and the first cut did the opposite. `bucket * 96 > label`
+/// needs a `saturating_mul` to be overflow-free, and saturating is then WRONG in the corner it is
+/// there for: at `bucket == label == usize::MAX` both sides become `usize::MAX`, the comparison is
+/// false, and it answers "use the index" for a bucket that is the whole graph — where the sweep is
+/// obviously right. Dividing the label cannot overflow at all and gets that corner right. The two
+/// forms agree everywhere reachable (a bucket is a subset of the label, so `bucket <= label`), and
+/// the unit test pins the boundary either way.
+///
+/// ⚠️ THE `None` CASE IS PART OF THE DECISION, not a caller's detail, and the mutation run is why it
+/// lives here: `no-index-stops-sweeping` — mapping "no index" to "use the seek" — SURVIVED while
+/// the arm made that choice inline, because it is answer-equivalent and item 1267's route test only
+/// asserts that `try_scan_count` CLAIMS the shape, which it still does via the slower branch. With
+/// the mapping inside this function a unit test pins it.
+pub(super) fn seek_count_sweeps(bucket: Option<usize>, label: usize) -> bool {
+    match bucket {
+        // No index of either kind: the seek degrades to a scan that MATERIALIZES ids, so a sweep
+        // that can answer the same count always wins. This is item 1267's 4.75x.
+        None => true,
+        Some(bucket) => bucket > label / SEEK_COUNT_CANDIDATE_COST,
+    }
+}
+
+/// How many nodes a `Scan`/`IndexSeek` over `label` would visit — the denominator for the cost
+/// comparison above.
+pub(super) fn label_len(store: &Store, label: &Option<String>) -> usize {
+    match label {
+        Some(l) => store.nodes_with_label(l).len(),
+        None => store.live_node_count(),
+    }
+}
+
 /// Count the rows an UNINDEXED `IndexSeek { key, value }` would produce over a `Num` column, by
 /// sweeping the column — no id vector (item 1267).
 ///
@@ -5385,12 +5433,49 @@ pub(super) fn try_scan_count(
             // THE REAL INDEX WINS WHEN THERE IS ONE, so it is asked first: a hash bucket is
             // O(matches) and a sweep is O(label), and the indexed row must not get slower. Only
             // the SCAN FALLBACK is replaced.
-            if store.has_hash_index(key) || store.has_range_index(key) {
-                super::index_seek_ids(store, label.as_deref(), key, value).len()
-            } else if let Some(c) = seek_eq_num_count(store, label, key, value) {
-                c as usize
+            // ⚠️ AN INDEX IS NOT ALWAYS THE RIGHT ROUTE FOR A COUNT, and item 1267 left that as a
+            // KNOWN UNMEASURED ASSUMPTION ("the preference stays index-first — but it is now a
+            // known unmeasured assumption rather than an obvious one"). Measured now, and it is
+            // wrong above ~1% selectivity: the sweep is FLAT in matches because it is O(label) and
+            // vectorized, while the index path pays a label binary-search and a `Vec` push per
+            // candidate. 200,000 nodes, the same query against two stores differing only by the
+            // index:
+            //
+            // ```text
+            //   matches     sweep    index seek
+            //         1     0.029       0.003     index 11.4x
+            //       200     0.028       0.005     index  5.3x
+            //      2000     0.028       0.029     tie
+            //      4000     0.028       0.056     SWEEP  2.0x
+            //     20000     0.028       0.268     SWEEP  9.5x
+            // ```
+            //
+            // So merely CREATING an index made a 10%-selectivity count 9.5x slower. The optimizer
+            // has a selectivity gate of its own and it declines a seek at 50% (verified by dumping
+            // the plan: `k = <50% value>` is a `Filter`, `k = <10% value>` an `IndexSeek`), so this
+            // band was the hole between the two.
+            //
+            // THE DECISION LIVES HERE RATHER THAN IN THAT GATE, deliberately: the optimizer's gate
+            // also serves row-PRODUCING queries, where a seek avoids touching the rows it skips and
+            // the trade is different. Nothing about those shapes was measured, so nothing about
+            // them changes.
+            // `index_bucket_len` is O(1) and prices a RANGE index as well as a hash one (its bucket
+            // for one key IS the equality bucket), so one call covers both — and `None` means no
+            // index of either kind, which `seek_count_sweeps` reads as "sweep".
+            let sweep_is_better =
+                seek_count_sweeps(store.index_bucket_len(key, value), label_len(store, label));
+
+            // `seek_eq_num_count` is tried ONLY when the sweep is wanted: it performs the sweep, so
+            // calling it to find out would pay for the route not taken.
+            let swept = if sweep_is_better {
+                seek_eq_num_count(store, label, key, value)
             } else {
-                super::index_seek_ids(store, label.as_deref(), key, value).len()
+                None
+            };
+
+            match swept {
+                Some(c) => c as usize,
+                None => super::index_seek_ids(store, label.as_deref(), key, value).len(),
             }
         }
         _ => return None,
