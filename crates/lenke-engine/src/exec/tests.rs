@@ -35452,7 +35452,7 @@ fn open_lower_bound_walk_reaches_the_whole_cycle() {
 /// this run (items 1251, 1255, 1257): a recorded gap with a failing assertion attached beats a
 /// comment nobody re-reads.
 #[test]
-fn is_not_null_does_not_reach_the_presence_fast_path() {
+fn is_not_null_reaches_the_presence_fast_path() {
     let mut b = Builder::default();
 
     for i in 0..40u32 {
@@ -35472,11 +35472,22 @@ fn is_not_null_does_not_reach_the_presence_fast_path() {
     let hq = "MATCH (a:P)-[:T]->(c) WHERE c.k IS NOT NULL RETURN count(*) AS x";
     let hplan = crate::opt::optimize_indexed(crate::gql::parse(hq).unwrap(), &st);
 
+    // ⚠️ THE ARGUMENT MUST BE WHAT `exec.rs` PASSES — the AGGREGATE'S INPUT, not the whole plan.
+    // The first version of this test handed over `Project{Aggregate{Filter{…}}}` and read the
+    // resulting `None` as "the route declines", which was a statement about the test. Same class
+    // as item 1260's three wrong-path measurements: a harness that does not mirror the real call
+    // is measuring itself.
+    let Plan::Project { input, .. } = &hplan else {
+        panic!("expected a Project over the Aggregate");
+    };
+    let Plan::Aggregate { input: ain, .. } = input.as_ref() else {
+        panic!("expected an Aggregate");
+    };
+
     assert!(
-        crate::exec::fastpath::try_fused_hop_present_count(&hplan, &st).is_none(),
-        "IS NOT NULL now reaches the hop presence path - if this is deliberate, the masks must \
-         differ per spelling (present||nulls for PropertyExists, present alone for IS NOT NULL) \
-         and this assertion should become is_some()"
+        crate::exec::fastpath::try_fused_hop_present_count(ain, &st).is_some(),
+        "IS NOT NULL must reach the hop presence path (item 1261); the masks differ per \
+         spelling - present||nulls for PropertyExists, present alone for IS NOT NULL"
     );
 
     // Both spellings must agree on the ANSWER whatever path they take — that is the invariant the
@@ -35497,5 +35508,152 @@ fn is_not_null_does_not_reach_the_presence_fast_path() {
     assert_eq!(
         scalar("MATCH (c:P) WHERE c.k IS NOT NULL RETURN count(*) AS x"),
         40.0
+    );
+}
+
+/// The two presence predicates must still DIFFER where they genuinely should (item 1261).
+///
+/// ⚠️ THIS IS THE TEST THAT MAKES THE FAST PATH SAFE. Item 1261 admitted `IS NOT NULL` to the
+/// presence sweeps, and the only way that is correct is if the MASK follows the spelling:
+/// `PropertyExists` counts `present || nulls` (a stored present-null IS a present property), and
+/// `IS NOT NULL` counts `present` alone (a present-null is not a non-null value). Treating them as
+/// interchangeable would be a silent wrong answer on exactly this fixture.
+///
+/// The column here holds a real number, a STORED PRESENT-NULL, another number, and an ABSENT
+/// property — so the two spellings must answer 2 and 3.
+#[test]
+fn property_exists_and_is_not_null_differ_on_a_present_null() {
+    let mut b = Builder::default();
+
+    b.node(&["P"], &[("k", n(1.0))]);
+    b.node(&["P"], &[("k", Value::Null)]); // a PRESENT null
+    b.node(&["P"], &[("k", n(3.0))]);
+    b.node(&["P"], &[]); // k ABSENT
+    let st = b.build();
+
+    let scalar = |q: &str| -> f64 {
+        match &run(&crate::gql::parse(q).unwrap(), &st)
+            .rows
+            .iter()
+            .next()
+            .expect("one row")[0]
+        {
+            Value::Num(x) => *x,
+            other => panic!("not a number: {other:?}"),
+        }
+    };
+
+    // `IS NOT NULL` — the two real numbers only.
+    assert_eq!(
+        scalar("MATCH (x:P) WHERE x.k IS NOT NULL RETURN count(*) AS c"),
+        2.0,
+        "IS NOT NULL must exclude the stored present-null"
+    );
+
+    // `has(k)` — PRESENT, whatever the value, so the present-null counts too.
+    let g = crate::gremlin::parse("g.V().has('k').count()").unwrap();
+    let got = match &run(&crate::opt::optimize_indexed(g, &st), &st)
+        .rows
+        .iter()
+        .next()
+        .expect("one row")[0]
+    {
+        Value::Num(x) => *x,
+        other => panic!("not a number: {other:?}"),
+    };
+
+    assert_eq!(
+        got, 3.0,
+        "has(k) is PropertyExists: present||nulls, so the present-null counts"
+    );
+
+    // ⚠️ AND THE SAME DISTINCTION OVER A HOP, which the mutation run is why this exists: merging
+    // the masks at the HOP site SURVIVED the whole suite when only the scan case was asserted.
+    // Two sites, two sweeps, two tests — the scan case cannot speak for the hop.
+    let mut hb = Builder::default();
+    let src = hb.node(&["S"], &[]);
+    let a = hb.node(&["P"], &[("k", n(1.0))]);
+    let b2 = hb.node(&["P"], &[("k", Value::Null)]); // PRESENT null
+    let c = hb.node(&["P"], &[("k", n(3.0))]);
+    let d = hb.node(&["P"], &[]); // ABSENT
+
+    for t in [a, b2, c, d] {
+        hb.edge(src, t, "T");
+    }
+    let hst = hb.build();
+    let hop = |q: &str| -> f64 {
+        match &run(&crate::gql::parse(q).unwrap(), &hst)
+            .rows
+            .iter()
+            .next()
+            .expect("one row")[0]
+        {
+            Value::Num(x) => *x,
+            other => panic!("not a number: {other:?}"),
+        }
+    };
+
+    assert_eq!(
+        hop("MATCH (s:S)-[:T]->(x) WHERE x.k IS NOT NULL RETURN count(*) AS c"),
+        2.0,
+        "hop IS NOT NULL must exclude the stored present-null"
+    );
+
+    let hg = crate::gremlin::parse("g.V().hasLabel('S').out('T').has('k').count()").unwrap();
+    let hgot = match &run(&crate::opt::optimize_indexed(hg, &hst), &hst)
+        .rows
+        .iter()
+        .next()
+        .expect("one row")[0]
+    {
+        Value::Num(x) => *x,
+        other => panic!("not a number: {other:?}"),
+    };
+
+    assert_eq!(
+        hgot, 3.0,
+        "hop has(k) is PropertyExists, so the present-null counts"
+    );
+
+    // ⚠️ AND THE PREDICATE'S SLOT MUST MATTER, which the mutation run is also why this exists:
+    // dropping the `*s == slot` check from `is_not_null_on_slot` SURVIVED the suite. A predicate on
+    // the SOURCE is a different question from one on the target, and a presence sweep over
+    // neighbours cannot answer it.
+    //
+    // Two sources, one carrying `k` and one not, each with two targets that both carry `k`. A
+    // predicate on the SOURCE keeps 2 rows; one on the TARGET keeps all 4.
+    let mut sb = Builder::default();
+    let s_with = sb.node(&["S"], &[("k", n(1.0))]);
+    let s_without = sb.node(&["S"], &[]);
+    let t1 = sb.node(&["P"], &[("k", n(2.0))]);
+    let t2 = sb.node(&["P"], &[("k", n(3.0))]);
+
+    for src in [s_with, s_without] {
+        for dst in [t1, t2] {
+            sb.edge(src, dst, "T");
+        }
+    }
+    let sst = sb.build();
+    let cnt = |q: &str| -> f64 {
+        match &run(&crate::gql::parse(q).unwrap(), &sst)
+            .rows
+            .iter()
+            .next()
+            .expect("one row")[0]
+        {
+            Value::Num(x) => *x,
+            other => panic!("not a number: {other:?}"),
+        }
+    };
+
+    assert_eq!(
+        cnt("MATCH (a:S)-[:T]->(b:P) WHERE a.k IS NOT NULL RETURN count(*) AS c"),
+        2.0,
+        "the predicate is on the SOURCE: only the source carrying k contributes"
+    );
+    assert_eq!(
+        cnt("MATCH (a:S)-[:T]->(b:P) WHERE b.k IS NOT NULL RETURN count(*) AS c"),
+        4.0,
+        "the predicate is on the TARGET: both targets carry k, so every row survives"
     );
 }

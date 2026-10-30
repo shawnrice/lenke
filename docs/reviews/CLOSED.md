@@ -39332,3 +39332,61 @@ called, and the one-line `is_some()` check settled it instantly. A probe that ca
 it ran is measuring the engine, not the change.
 
 Gates: 1335 + 13 + 725 Rust tests green, `clippy -D warnings` 0, `cargo fmt` 0.
+
+### Item 1261 — `IS NOT NULL` reaches the presence fast paths, ~4x, and the mutation run found a WRONG ANSWER in my own change (DONE)
+
+Item 1260 priced the gap and pinned it. `is_not_null_on_slot` now admits the GQL spelling to both
+presence sweeps, with the MASK following the spelling rather than the site: `PropertyExists` counts
+`present || nulls` (a stored present-null IS a present property), `IS NOT NULL` counts `present`
+alone. Three alternated rounds, the `.so` rebuilt and HASHED per arm (two hashes, each reproducing):
+
+```text
+  row                        PRE(min)  POST(min)  ratio
+  scan IS NOT NULL             847.6     213.7    3.97x
+  hop  IS NOT NULL            1205.6     295.0    4.09x
+  [CTL] gremlin has(age)       223.5     222.4    1.00x
+  [CTL] hop age > 50           697.0     695.2    flat
+  [CTL] bare count(*)            5.0       5.7    flat
+```
+
+The two spellings now agree to within 2% where they were ~4x apart.
+
+### ⚠️ ITEM 1260'S PINNED ASSERTION WAS INVALID, and it gave the right verdict for the wrong reason
+
+It called `try_fused_hop_present_count(&whole_plan, …)`, while `exec.rs` passes the AGGREGATE'S
+INPUT. The `None` it observed was a fact about the test. It was caught only because the assertion
+failed to FLIP when the fix landed. Rewritten to destructure the plan as the real call site does,
+then checked both ways: **PRE → not reached (fails), POST → reached (passes).** So item 1260's
+diagnosis holds on evidence now rather than on luck.
+
+That is the third harness-shape error in two items, all the same family — the harness not mirroring
+the real call. Item 1260's own rule, extended: **verify the route, and verify the route CHECK.**
+
+### ⚠️ THE MUTATION RUN FOUND A WRONG ANSWER IN THIS CHANGE
+
+`masks-merged-hop` survived while only the SCAN half of the semantic test existed. Writing the hop
+half the mutant demanded produced a **failing test on the shipped code**: a hop `IS NOT NULL` over a
+column with a stored present-null answered **3** where it must answer **2**.
+
+The premise was wrong. `has_value_at`'s own note says why: "for every typed variant the `present` bit
+IS this question; only `Gen` keeps its null in `data` and has to look." So `present` alone is the
+right mask for a TYPED column and the wrong one for `Gen`, where a present-null has `present = true`
+and its null lives in the value. `IS NOT NULL` now DECLINES a `Gen` column — the de-optimized
+representation takes the general path rather than making the sweep read values.
+
+### The two surviving mutants, explained rather than patched
+
+- `masks-merged-hop` — still survives, and is now EQUIVALENT code: typed columns have an empty
+  `nulls` (a present-null promotes to `Gen`) so `has_nulls` is false, and `Gen` declines. The real
+  guard is the decline, and `gen-decline-removed` is CAUGHT.
+- `slot-unchecked` — survives because predicate PUSHDOWN makes it redundant. Dumped both plans: a
+  source-side `IsNull { slot: 0 }` is pushed BELOW the `Expand` onto the `Scan`, so the Filter above
+  the hop carries only the label and the matcher never sees a slot-0 pred. Kept so correctness does
+  not depend on the optimizer — the same disposition this file already took for its defensive
+  `nulls` half.
+
+Caught: `masks-merged-scan`, `gen-decline-removed`, `negation-ignored`, `route-reverted`.
+
+Gates: 1336 + 13 + 725 Rust tests green, `LENKE_OPT_FUZZ_SEEDS=500000 rewrite_fuzz` green (99.2s),
+all seven byte-identity fuzzers green, 21 projects green, `clippy -D warnings` 0, `cargo fmt` 0,
+`bun run check` 0.

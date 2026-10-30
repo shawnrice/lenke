@@ -310,11 +310,33 @@ pub(super) fn try_fused_hop_present_count(input: &Plan, store: &Store) -> Option
         other => other,
     };
     let (label, w, pred, exp) = fused_hop_shape(input, store)?;
-    let (key, bounds) = num_conj_on_slot(pred, 1)?;
-    if !bounds.is_empty() {
-        return None; // a bounded conjunction belongs to the numeric sibling
-    }
+    // EITHER SPELLING (item 1261). `PropertyExists` counts a stored present-null; `IS NOT NULL`
+    // does not — so the spelling decides the mask, and `nulls_count` carries that decision into
+    // the sweep below instead of the sweep guessing.
+    let (key, nulls_count) = match num_conj_on_slot(pred, 1) {
+        Some((key, bounds)) => {
+            if !bounds.is_empty() {
+                return None; // a bounded conjunction belongs to the numeric sibling
+            }
+            (key, true)
+        }
+        None => (is_not_null_on_slot(pred, 1)?, false),
+    };
     let col = store.column(&key)?; // absent everywhere -> no rows; the general path answers 0
+                                   // ⚠️ `IS NOT NULL` DECLINES A `Gen` COLUMN, and this cost a WRONG ANSWER before it was here.
+                                   // The sweep below reads the `present` BIT, and `has_value_at`'s own note says why that is only
+                                   // the right question for a TYPED variant: "for every typed variant the `present` bit IS this
+                                   // question; only `Gen` keeps its null in `data` and has to look." So on a `Gen` column
+                                   // `present[j]` is true for a stored present-null, and counting it answered 3 where
+                                   // `IS NOT NULL` must answer 2 — caught by the hop half of
+                                   // `property_exists_and_is_not_null_differ_on_a_present_null`, which exists because merging the
+                                   // masks SURVIVED the suite while only the scan half was asserted.
+                                   //
+                                   // `PropertyExists` needs no such gate: a present-null IS a present property, so `present[j]`
+                                   // is exactly its question on every variant.
+    if !nulls_count && matches!(col, Column::Gen { .. }) {
+        return None;
+    }
     if reverse_seed_decide(pred, exp, store, false).is_some() {
         return None;
     }
@@ -333,7 +355,7 @@ pub(super) fn try_fused_hop_present_count(input: &Plan, store: &Store) -> Option
     let mut count = 0u64;
     for_each_typed_out(store, label, w, |nbr| {
         let j = nbr as usize;
-        if present[j] || (has_nulls && nulls[j]) {
+        if present[j] || (nulls_count && has_nulls && nulls[j]) {
             count += 1;
         }
     })?;
@@ -747,6 +769,43 @@ pub(super) fn try_fused_hop_mask_agg(
 /// SAME property of one `slot` — `prop OP num` (either operand order) — returning
 /// `(key, bounds)`. Shared by the streaming node/edge count fast paths; `None` for a
 /// string / disjunction / multi-slot / multi-key / non-numeric predicate.
+/// `<slot>.<key> IS NOT NULL` as a presence gate — the OTHER spelling of "this element carries a
+/// usable value for `key`" (item 1261).
+///
+/// ⚠️ IT IS NOT `PropertyExists`, AND THE DIFFERENCE IS THE MASK. `ir.rs` states it: `PropertyExists`
+/// is true for a PRESENT value "regardless of that value", and it is "the one predicate that
+/// separates an absent property from a present `Null` … which `<var>.<key> IS NOT NULL` cannot". So
+/// `PropertyExists` counts `present || nulls` and this counts `present` ALONE. Admitting one as the
+/// other would miscount a stored present-null.
+///
+/// WHY THIS EXISTS: `has(k)` lowers to `PropertyExists` and reached the presence fast paths, while
+/// the GQL spelling lowered to `IsNull { negated: true }` and did not — so it fell to the general
+/// path and the same question cost ~4x more (item 1260, 200,000 nodes / 800,000 edges, identical
+/// answers):
+///
+/// ```text
+///   GQL   scan  WHERE age IS NOT NULL     890.3 us      GREM  scan  has('age')   228.9 us   3.89x
+///   GQL   hop   WHERE b.age IS NOT NULL  1216.5         GREM  hop   has('age')   286.4     4.25x
+/// ```
+///
+/// A SEPARATE matcher rather than an arm inside `num_conj_on_slot`, because that function has five
+/// callers and returns `(key, bounds)` with no room to say which spelling produced an empty bound
+/// list — and the mask has to follow the SPELLING, not the call site.
+fn is_not_null_on_slot(pred: &Expr, slot: usize) -> Option<String> {
+    let Expr::IsNull {
+        expr,
+        negated: true,
+    } = pred
+    else {
+        return None;
+    };
+
+    match expr.as_ref() {
+        Expr::Prop { slot: s, key } if *s == slot => Some(key.clone()),
+        _ => None,
+    }
+}
+
 pub(super) fn num_conj_on_slot(
     pred: &Expr,
     slot: usize,
@@ -2324,7 +2383,12 @@ pub(super) fn try_stream_num_count(
     label: &Option<String>,
     pred: &Expr,
 ) -> Option<u64> {
-    let (key, bounds) = num_conj_on_slot(pred, 0)?;
+    // EITHER SPELLING (item 1261) — see `is_not_null_on_slot`. `nulls_count` is false for the
+    // `IS NOT NULL` form, whose mask is `present` alone.
+    let (key, bounds, nulls_count) = match num_conj_on_slot(pred, 0) {
+        Some((key, bounds)) => (key, bounds, true),
+        None => (is_not_null_on_slot(pred, 0)?, Vec::new(), false),
+    };
     let Some(Column::Num {
         data,
         present,
@@ -2491,7 +2555,7 @@ pub(super) fn try_stream_num_count(
         // present-null included (`present || nulls`). A bounded compare counts only
         // typed values (`present`): a null satisfies no numeric predicate.
         if bounds.is_empty() {
-            if present[i] || nulls[i] {
+            if present[i] || (nulls_count && nulls[i]) {
                 count += 1;
             }
         } else if present[i] && bounds.iter().all(|&(op, t)| num_pred(op, data[i], t)) {
