@@ -5150,6 +5150,79 @@ const liftTruthTest = (
  * four conditions; the three-way result keeps the chain-declining case explicit at the call site
  * rather than hiding it in a boolean.
  */
+/**
+ * File one lifted NEGATED compare: `'taken'`, `'stop'` (decline the rest of the chain) or `'skip'`.
+ *
+ * `NOT (n.k = v)` is `n.k <> v` and `NOT (n.k <> v)` is `n.k = v`, so the lift is a flip of the
+ * operator (item 1272).
+ *
+ * ⚠️ EQUALITY ONLY, AND THE RESTRICTION IS NaN. `NOT (x >= 2)` is NOT `x < 2`: this repo keeps NaN
+ * JS-unordered, so every ordering comparison against NaN is FALSE, making the negation TRUE where
+ * the flipped operator is FALSE. `=`/`<>` have no such hole — they are exact complements on every
+ * value this engine stores. `NEGATED_COMPARE` enforces this, and
+ * `negated-compare-lift.test.ts` demonstrates what widening it would cost with a NaN PARAM, which
+ * is not coerced the way a stored NaN is. Same restriction `opt::normalize_pred` carries natively.
+ *
+ * ⚠️ THE DOTTED FORM LIFTS TOO SINCE ITEM 1290. `asPropCompare` matches a plain `prop` only, so
+ * `NOT (n.m.k = 5)` used to decline — while `n.m.k <> 5`, the same question, lifted into
+ * `pathProps` (item 900). Measured at 200,000 vertices against that positive form, which is the
+ * right twin because item 899 measured the dotted field step at 101.5 ns/row against a flat 26.5:
+ *
+ * ```text
+ *   n.m.k <> 5           8.613 ms
+ *   NOT (n.m.k = 5)     15.783      1.83x
+ * ```
+ *
+ * The engine hoists both spellings past a faulting sibling, so this adds nothing to `pathProps`'
+ * existing ordering:
+ *
+ * ```text
+ *   WHERE n.s AND n.m.k = 99          native ok []   FALSE every row -> hoisted
+ *   WHERE n.s AND NOT (n.m.k <> 99)   native ok []   folds to `=`, FALSE every row -> hoisted
+ *   WHERE n.s AND NOT (n.m.k = 99)    native ERR     TRUE every row -> uninformative
+ * ```
+ */
+const liftNegatedCompare = (
+  conjunct: Expr,
+  ownVar: string,
+  eq: CProp[],
+  cmp: CCmpProp[],
+  path: CPathProp[],
+): 'taken' | 'stop' | 'skip' => {
+  const negated = asNegatedCompare(conjunct);
+
+  if (negated === null) {
+    return 'skip';
+  }
+
+  const npc = asPropCompare(negated);
+
+  if (npc?.variable === ownVar) {
+    if (npc.op === '=') {
+      eq.push({ key: npc.key, value: compileExpr(npc.value) });
+    } else {
+      cmp.push({ key: npc.key, op: npc.op, value: compileExpr(npc.value) });
+    }
+
+    return 'taken';
+  }
+
+  // The DOTTED form, tried only after the flat one — the same order the positive arm uses, and for
+  // the same reason: `asPathCompare` is the broader matcher.
+  const npath = asPathCompare(negated);
+
+  if (npath?.variable === ownVar) {
+    path.push({ path: npath.path, op: npath.op, value: compileExpr(npath.value) });
+
+    return 'taken';
+  }
+
+  // A negated compare on ANOTHER variable, or one whose value side is not closed, declines the rest
+  // of the chain — which is what happened to EVERY negated compare before item 1272, so nothing
+  // regresses by declining here.
+  return 'stop';
+};
+
 const liftMembership = (
   conjunct: Expr,
   ownVar: string,
@@ -5322,24 +5395,15 @@ const directEqProps = (
     //
     // This is the same restriction `opt::normalize_pred` carries in the Rust engine, and the reason
     // item 1262's rewrite there is equality-only.
-    const negated = asNegatedCompare(conjunct);
+    // `WHERE NOT (n.k = v)`, `NOT (n.k <> v)`, and since item 1290 the DOTTED forms.
+    const neg = liftNegatedCompare(conjunct, ownVar, eq, cmp, path);
 
-    if (negated !== null) {
-      const npc = asPropCompare(negated);
+    if (neg === 'stop') {
+      stop = i;
+      break;
+    }
 
-      // A dotted or non-closed negated compare declines the chain — which is exactly what happened
-      // to EVERY negated compare before this arm existed, so nothing regresses by declining here.
-      if (npc === null || npc.variable !== ownVar) {
-        stop = i;
-        break;
-      }
-
-      if (npc.op === '=') {
-        eq.push({ key: npc.key, value: compileExpr(npc.value) });
-      } else {
-        cmp.push({ key: npc.key, op: npc.op, value: compileExpr(npc.value) });
-      }
-
+    if (neg === 'taken') {
       continue;
     }
 

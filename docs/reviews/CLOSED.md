@@ -41707,3 +41707,88 @@ unpriced: `graphPred`, `isTyped`, `letIn`, `xor`, a function-call operand, an ar
 Gates: 3246 gql tests green (up from 3238), 17 in the cross-engine AND file with the `IS LABELED`
 hoisting case added, 21 projects green, all seven byte-identity fuzzers green, `bun run lint` 0,
 `bun run typecheck` 0, `bun run check` 0.
+
+### Item 1290 — the DOTTED negated compare lifts, 1.97x, and the enum `directEqProps` declines is now down to five unpriced leaves (DONE)
+
+Item 1272 added the operator flip for FLAT compares and recorded the dotted one as still declining;
+item 1288 priced it at 1.83x. `asPropCompare` matches a plain `prop` only, so `NOT (n.m.k = 5)` took
+the whole chain to the generic evaluator while `n.m.k <> 5` — the same question — lifted into
+`pathProps` (item 900).
+
+```text
+  shape                      pre       post     three alternated rounds
+  NOT (n.m.k = 5)           19.84 ->  10.06     1.97x
+  [CTL] n.m.k <> 5          10.18 ->  10.98     flat — the matched twin
+  [CTL] NOT (n.a = 5)        4.80 ->   4.29     flat — the FLAT form, lifted at item 1272
+  [CTL] n.m.k = 5           10.68 ->  10.88     flat — dotted equality, lifted at item 900
+  [CTL] bare count           0.00 ->   0.00     flat
+```
+
+Every post round sits below every pre round, and the target lands ON its twin (10.06-11.90 against
+10.18-12.57) — so the two spellings now cost the same where they were ~2x apart, which is the
+property this engine is organised around rather than just a speedup.
+
+**The twin is the DOTTED positive form, deliberately.** Item 899 measured the dotted field step at
+101.5 ns/row against a flat 26.5, so pricing this against a flat spelling would have measured the
+field walk and called it a missing arm. Item 1288 made that choice when it priced the row and this
+item keeps it.
+
+### Equality only, and the restriction is the same NaN hole
+
+`NOT (x >= 2)` is not `x < 2` — every ordering comparison against NaN is FALSE here, so the negation
+is TRUE where the flip is FALSE. `NEGATED_COMPARE` already enforces this for the flat form and the
+dotted form inherits it unchanged; the route test asserts that all four ordering operators stay on
+the generic path, and `negated-compare-lift.test.ts` demonstrates what widening it costs using a NaN
+PARAM, which is not coerced the way a stored NaN is.
+
+### The native hoisting question, asked before implementing
+
+The standing discipline since item 1286, applied for the second item running:
+
+```text
+  WHERE n.s AND n.m.k = 99          native ok []   FALSE every row -> hoisted
+  WHERE n.s AND NOT (n.m.k <> 99)   native ok []   folds to `=`, FALSE every row -> hoisted
+  WHERE n.s AND NOT (n.m.k = 99)    native ERR     TRUE every row -> settles nothing
+  WHERE n.s AND n.m.k <> 99         native ERR     TRUE every row -> settles nothing
+```
+
+`pathProps` is already in the hoisted group (item 1169 moved it there), so this adds nothing to the
+ordering. TS and native agree on **10 of 10** probed shapes, answers and raises alike, including the
+equivalent-spelling pairs (`NOT (n.m.k = 1)` and `n.m.k <> 1` both answer `[{"x":2}]`).
+
+### `liftNegatedCompare`, because the cap bites again
+
+`directEqProps` is at its complexity cap, so the arm became a helper with the same three-way result
+as `liftMembership` — `'taken' | 'stop' | 'skip'` — which keeps the chain-declining case explicit at
+the call site instead of hiding it in a boolean. That is the fourth extraction forced by the cap
+across items 1284-1290, and item 1289 records the structural observation.
+
+### Teeth: 5 mutants, 5 caught — two by EARLIER items' tests
+
+```text
+  dotted-arm-removed      CAUGHT  this item's ROUTE test
+  flip-dropped            CAUGHT  6 failures, route and answers
+  ownvar-check-dropped    CAUGHT  the another-variable case
+  decline-becomes-skip    CAUGHT  item 1284's NESTED-decline tests
+  dotted-tried-first      CAUGHT  item 1272's own ROUTE test
+```
+
+The last two are the payoff for writing those: `decline-becomes-skip` turns a chain-decline into a
+silently DROPPED conjunct, which is exactly the hole item 1284's surviving mutant exposed, and
+`dotted-tried-first` would route a FLAT compare through the path matcher, which item 1272's route
+test pins. Neither needed a new assertion.
+
+### The enum, after six items
+
+`directEqProps` now admits: a bare `prop`, `NOT prop`, a `compare` (equality and ordering), a dotted
+compare, `NOT` of an equality (flat and dotted), a membership (`IN`, `NOT IN`, and the `=`-OR-chain),
+a null test (`IS [NOT] NULL`, `NOT (… IS NULL)`, and `IS [NOT] UNKNOWN`), `IS TRUE`/`IS FALSE`,
+`IS [NOT] LABELED`, and a nested `and`. Plus a mixed chain lifts its prefix.
+
+What it still declines, all unpriced: `graphPred`, `isTyped`, `letIn`, `xor`, a function-call operand
+and an arithmetic operand. `xor` was measured once and RETRACTED at item 1288 for an unmatched
+comparison, so it is unpriced rather than cheap.
+
+Gates: 3253 gql tests green (up from 3247), 17 in the cross-engine AND file with three dotted cases
+added, 21 projects green, all seven byte-identity fuzzers green, `bun run lint` 0,
+`bun run typecheck` 0, `bun run check` 0.

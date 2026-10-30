@@ -270,6 +270,16 @@ suite('AND short-circuit: the TS and native engines agree', () => {
     // this fixture's labels, so the tail is FALSE for every row — which is what makes it
     // informative; the `P` spelling below is TRUE and settles nothing, so it must still raise.
     expect(agree('MATCH (n:P) WHERE n.s AND n IS LABELED Q RETURN n.n AS x')).toBe('ok []');
+    // The DOTTED negated compare joined `pathProps` at item 1290, which is already in this group
+    // (item 1169 moved it here). `NOT (n.m.k <> 99)` folds to `= 99`, FALSE for every row, so it
+    // settles — and the engine agrees, which is what this line pins.
+    expect(agree('MATCH (n:P) WHERE n.s AND NOT (n.m.k <> 99) RETURN n.n AS x')).toBe('ok []');
+    // CONTROL: the un-negated spelling of the same question, already lifted since item 900.
+    expect(agree('MATCH (n:P) WHERE n.s AND n.m.k = 99 RETURN n.n AS x')).toBe('ok []');
+    // CONTROL: TRUE for every row, so it settles nothing and the raising sibling stays essential.
+    expect(agree('MATCH (n:P) WHERE n.s AND NOT (n.m.k = 99) RETURN n.n AS x')).toBe(
+      'ERR E_INVALID_VALUE',
+    );
     expect(agree('MATCH (n:P) WHERE n.s AND n IS LABELED P RETURN n.n AS x')).toBe(
       'ERR E_INVALID_VALUE',
     );
