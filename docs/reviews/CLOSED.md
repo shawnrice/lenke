@@ -39550,3 +39550,117 @@ note on each of the two bench rows.
 
 Gates: comment-only in both engines — `bun run check` 0 (typecheck + lint + fmt:check), 21 projects
 green.
+
+### Item 1264 — a numeric `IN` / `=`-OR-chain count had no streaming arm at all: 12.1x, and the first implementation of it was a 2.4x REGRESSION (DONE)
+
+Pricing the predicate-spelling enum that paid at items 1261 and 1262 found the one CLAUDE.md names
+by hand as a historical 100-300x class: "`k = $a OR k = $b` vs `k IN [$a, $b]`". `num_conj_on_slot`
+admits `PropertyExists`, a `Compare` against a Num literal in either operand order, and AND-chains
+of those on one key — and neither `Expr::Or` nor `Expr::In`, because it returns a CONJUNCTION of
+bounds and a disjunction has no such shape.
+
+### The control is what made it a finding rather than a selectivity reading
+
+On a contiguous set, `k IN [1,2,3]` selects the IDENTICAL rows as `k >= 1 AND k <= 3` — same
+answer, one spelling a disjunction and the other the AND-chain the fast path already took. That
+equivalence is the whole instrument; item 1263 had just retracted a target for comparing two
+spellings that kept different numbers of rows. 200,000 nodes / 800,000 edges, all three answering
+6000:
+
+```text
+  shape                      native before   after     TS
+  scan IN [1,2,3]                0.85 ms     0.07     5.90
+  scan = 1 OR = 2 OR = 3         0.84        0.07     5.82     12.1x
+  scan >= 1 AND <= 3             0.03        0.03     5.03     <- the control
+  [CTL] scan age >= 0            0.03        0.03     4.72
+  [CTL] hop rows (untouched)     3.55/0.78   3.54/0.77
+```
+
+So this is a NATIVE gap — TS shows 1.17x between the same spellings and is not the lever here.
+
+### k VECTORIZED PASSES, not one k-term closure, and no arity cap
+
+Item 1231's rule applied in a new place: k passes that each auto-vectorize beat one closure
+carrying k terms, because a third term stops LLVM vectorizing (item 451 named the mechanism, item
+1229 measured the cliff — one exclusion 51.2µs, two 608.8). `k IN {v..}` is the sum of k equality
+passes, and `sweep_num_count(|x| x == v)` already is that primitive; the k-exclusion arm in the
+same function does exactly this and has no cap either.
+
+A cap was still looked for rather than assumed, because k passes must eventually lose to the
+general path's single pass. It is not in range — the general path grows with k too, so the route
+wins at every arity tried, with identical answers at every k:
+
+```text
+  k          2      4      8     16     32     48     64
+  before  0.709  1.131  1.735  2.752  4.735  6.557  6.766   ms, 200,000 nodes
+  after   0.056  0.107  0.209  0.415  0.830  1.206  1.622
+  ratio   12.7x  10.6x   8.3x   6.6x   5.7x   5.4x   4.2x
+```
+
+(k=1 is flat at 0.147/0.148 — a one-element list is not a disjunction after normalization, so it
+is an in-shape control. See the open target below: 0.147 for a single `=` is itself wrong.)
+
+### ⚠️ THE FIRST IMPLEMENTATION WAS A REGRESSION, and only a control the change should not have
+reached caught it
+
+`eq_disjunction_on_slot` already existed and already matched the desugared OR form — the pattern
+grep I should have done before writing a duplicate matcher, and did not. Reusing it exposed the
+real shape: `try_stream_membership_count` calls itself "the string sibling of
+`try_stream_num_count`", handles `Dict` and `Str`, and sends `Num` to `_ => return None`. The
+numeric case was a MISSING SIBLING ARM, not a missing function.
+
+Then I widened that shared matcher to accept `Expr::In` as well, reasoning that `normalize_pred`
+desugars `IN` only up to 32 items, so 32-against-33 was a PLAN boundary — this engine's named bug
+class. **For strings that reasoning is false and the change made them slower.** A dict column has a
+fallback the numeric one does not: `try_stream_dict_pred_count` evaluates an arbitrary predicate
+ONCE PER DISTINCT VALUE, strictly better than a per-row membership test, and it handles the
+undesugared `In` already. Diverting that shape cost up to 2.4x on identical answers:
+
+```text
+  k (Str column)      8     31     32     33     40
+  shared matcher   0.704  1.022  0.477  0.496  0.739   ms  <- REJECTED
+  numeric-only     0.618  1.055  0.404  0.278  0.311       <- shipped, PRE-equal
+  before           0.626  1.062  0.428  0.281  0.306
+```
+
+There was never a string cliff: the string cost is not even monotonic in k (33 is cheaper than
+31). The `Expr::In` matcher is therefore numeric-only and `eq_disjunction_on_slot` is untouched —
+and the rejected form is pinned as a route test, because nothing about any ANSWER can see that
+decision.
+
+### Teeth: 4 mutants, 4 caught — after the run found a vacuous assertion of mine
+
+```text
+  dedup-removed                       CAUGHT  repeated_membership_values_are_counted_once
+  eq-becomes-ne                       CAUGHT  repeated_membership_values_are_counted_once
+  in-admitted-to-the-shared-matcher   CAUGHT  an_undesugared_string_in_is_left_to_the_dict_…
+  non-numeric-member-skipped          CAUGHT  a_non_numeric_member_declines_the_numeric_arm
+```
+
+The last one SURVIVED twice first, for two different reasons, and both are the same family as item
+1260's invalid pin — an assertion that does not execute:
+
+1. It was written as a nested `if let Plan::Filter { … } = … { if let Plan::Scan … { assert!(…) } }`,
+   so an unexpected plan shape SKIPPED the assertion silently. Now `let … else { panic!() }`.
+2. Still survived, because the test's list was `[1,'x']` — two items, which `normalize_pred`
+   desugars to an `Or`, so it exercises the `Column::Num` arm's type check while the mutant edits
+   `num_in_list_on_slot`'s, reachable only ABOVE 32 items. The test now pins BOTH arities.
+
+Declining a non-numeric member rather than skipping it is not cosmetic: skipping would answer a
+different question, and would turn any throwing cross-type comparison into a silent answer.
+
+The route pin was checked in both directions (item 1261's rule): PRE → fails ("the desugared OR
+form must reach the streaming membership count"), POST → passes.
+
+### ⚠️ FOUND while sweeping the arities: a single `k = v` count is ~5x slower than a range
+
+k=1 reads 0.147 ms where `k >= 1 AND k <= 3` — strictly more work, more rows — reads 0.03. The
+mechanism is already written down in this file: `try_stream_num_count` pairs a single ORDERING
+bound with a vacuous companion to reach the vectorizing two-bound arm (item 1205), and the pairing
+match says `CompareOp::Eq | CompareOp::Ne => None` — "Eq/Ne have no range form". `Eq` does have
+one: `x = t` is exactly `x >= t AND x <= t` for every f64, NaN included (both sides false, and
+`x = NaN` is also false), and `-0.0`/`0.0` compare equal under both spellings. Recorded as the next
+target, not attempted here.
+
+Gates: 1342 + 13 + 725 Rust tests green, `LENKE_OPT_FUZZ_SEEDS=500000 rewrite_fuzz` green (101.9s),
+all seven byte-identity fuzzers green, `clippy -D warnings` 0, `cargo fmt` 0, `bun run check` 0.

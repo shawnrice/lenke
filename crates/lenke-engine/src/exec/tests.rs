@@ -35753,3 +35753,320 @@ fn not_is_null_is_the_same_question_as_is_not_null() {
         "the plain positive spelling must agree with the double negation"
     );
 }
+
+/// The three spellings of one membership question must answer the same thing (item 1264).
+///
+/// `k IN [1,2,3]`, `k = 1 OR k = 2 OR k = 3` and `k >= 1 AND k <= 3` select the IDENTICAL rows
+/// whenever the set is contiguous, which is what makes them a usable A/B: the conjunction already
+/// reached a streaming count and the two disjunctions did not, so the 28x between them could not
+/// be explained by selectivity. (Item 1263 retracted an entire target for being exactly that
+/// confusion, so the equivalence is asserted here rather than assumed.)
+///
+/// The fixture carries a STORED PRESENT-NULL and an ABSENT cell as well as the numbers, because a
+/// null satisfies no numeric predicate and all three spellings have to agree about that too.
+#[test]
+fn numeric_membership_spellings_are_one_question() {
+    let mut b = Builder::default();
+
+    b.node(&["P"], &[("k", n(1.0))]);
+    b.node(&["P"], &[("k", n(2.0))]);
+    b.node(&["P"], &[("k", n(3.0))]);
+    b.node(&["P"], &[("k", n(9.0))]); // outside every spelling
+    b.node(&["P"], &[("k", Value::Null)]); // a PRESENT null
+    b.node(&["P"], &[]); // k ABSENT
+    let st = b.build();
+
+    let scalar = |q: &str| -> f64 {
+        match &run(&crate::gql::parse(q).unwrap(), &st)
+            .rows
+            .iter()
+            .next()
+            .expect("one row")[0]
+        {
+            Value::Num(x) => *x,
+            other => panic!("not a number: {other:?}"),
+        }
+    };
+
+    for q in [
+        "MATCH (a:P) WHERE a.k IN [1,2,3] RETURN count(*) AS x",
+        "MATCH (a:P) WHERE a.k = 1 OR a.k = 2 OR a.k = 3 RETURN count(*) AS x",
+        "MATCH (a:P) WHERE a.k >= 1 AND a.k <= 3 RETURN count(*) AS x",
+    ] {
+        assert_eq!(scalar(q), 3.0, "spelling disagreed: {q}");
+    }
+}
+
+/// ⚠️ THE WRONG-ANSWER GUARD for the k-pass counter (item 1264).
+///
+/// `stream_eq_set_count` counts ONE VECTORIZED PASS PER VALUE, so a repeated literal would run two
+/// passes over the same value and report twice its size. `k IN [2,2]` and `k = 2 OR k = 2` are
+/// each exactly one row set, and neither `normalize_pred` nor either matcher deduplicates — so the
+/// dedup in the counter is load-bearing, and this is the test that says so.
+#[test]
+fn repeated_membership_values_are_counted_once() {
+    let mut b = Builder::default();
+
+    for _ in 0..4 {
+        b.node(&["P"], &[("k", n(2.0))]);
+    }
+
+    b.node(&["P"], &[("k", n(5.0))]);
+    let st = b.build();
+
+    let scalar = |q: &str| -> f64 {
+        match &run(&crate::gql::parse(q).unwrap(), &st)
+            .rows
+            .iter()
+            .next()
+            .expect("one row")[0]
+        {
+            Value::Num(x) => *x,
+            other => panic!("not a number: {other:?}"),
+        }
+    };
+
+    assert_eq!(
+        scalar("MATCH (a:P) WHERE a.k = 2 RETURN count(*) AS x"),
+        4.0
+    );
+    assert_eq!(
+        scalar("MATCH (a:P) WHERE a.k IN [2,2] RETURN count(*) AS x"),
+        4.0,
+        "a repeated literal must not be counted twice"
+    );
+    assert_eq!(
+        scalar("MATCH (a:P) WHERE a.k = 2 OR a.k = 2 RETURN count(*) AS x"),
+        4.0,
+        "a repeated OR arm must not be counted twice"
+    );
+    assert_eq!(
+        scalar("MATCH (a:P) WHERE a.k IN [2,5,2,5] RETURN count(*) AS x"),
+        5.0,
+        "two repeated literals, interleaved"
+    );
+}
+
+/// The numeric membership count must be REACHED, in both spellings and on both sides of the 32
+/// boundary (item 1264).
+///
+/// A route assertion, not a timing one: admitting a spelling to a fast path is ANSWER-EQUIVALENT,
+/// so reverting the route leaves every answer test passing and only the cost changes. That is the
+/// lesson items 1258, 1260 and 1262 each paid for, and item 1260 paid twice — its first pinned
+/// assertion called the fast path with the WHOLE plan where `exec.rs` passes the AGGREGATE'S
+/// INPUT, so it observed a `None` that was a fact about the test. This destructures the plan the
+/// way `try_filtered_count` does.
+///
+/// 33 ITEMS IS THE POINT OF THE SECOND HALF. `normalize_pred` desugars `IN` to an OR-chain at 32
+/// or fewer and leaves it as `Expr::In` above that, so the two sides of that boundary reach this
+/// function by different matchers and both have to be checked.
+#[test]
+fn numeric_membership_reaches_the_streaming_count() {
+    let mut b = Builder::default();
+
+    for i in 0..60 {
+        b.node(&["P"], &[("k", n(f64::from(i)))]);
+    }
+
+    let st = b.build();
+
+    let pred_of = |q: &str| -> (Option<String>, Expr) {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &st);
+        let Plan::Project { input, .. } = &plan else {
+            panic!("expected a Project over the Aggregate");
+        };
+        let Plan::Aggregate { input: ain, .. } = input.as_ref() else {
+            panic!("expected an Aggregate");
+        };
+        let Plan::Filter { input: scan, pred } = ain.as_ref() else {
+            panic!("expected a Filter over the Scan");
+        };
+        let Plan::Scan { label } = scan.as_ref() else {
+            panic!("expected a Scan");
+        };
+        (label.clone(), pred.clone())
+    };
+
+    let big = (0..33).map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+
+    for (what, q) in [
+        (
+            "the desugared OR form",
+            "MATCH (a:P) WHERE a.k IN [1,2,3] RETURN count(*) AS x".to_string(),
+        ),
+        (
+            "an explicit OR chain",
+            "MATCH (a:P) WHERE a.k = 1 OR a.k = 2 OR a.k = 3 RETURN count(*) AS x".to_string(),
+        ),
+        (
+            "the UNDESUGARED Expr::In, above 32 items",
+            format!("MATCH (a:P) WHERE a.k IN [{big}] RETURN count(*) AS x"),
+        ),
+    ] {
+        let (label, pred) = pred_of(&q);
+
+        assert!(
+            crate::exec::fastpath::try_stream_membership_count(&st, &label, &pred).is_some(),
+            "{what} must reach the streaming membership count (item 1264)"
+        );
+    }
+}
+
+/// ⚠️ THE REJECTED FORM, PINNED AS A ROUTE RULE (item 1264).
+///
+/// Teaching the SHARED matcher `eq_disjunction_on_slot` to accept `Expr::In` was written first, on
+/// the theory that 32 against 33 was a plan boundary for every column kind. For a dict column that
+/// theory is false and the change was a REGRESSION of up to 2.4x on identical answers, because
+/// `try_stream_dict_pred_count` runs later in the chain and evaluates an arbitrary predicate ONCE
+/// PER DISTINCT VALUE — strictly better than a per-row membership test, and it handles the
+/// undesugared `In` perfectly well.
+///
+/// So an undesugared `In` over a STRING column must NOT be claimed here. Nothing about the answer
+/// can see that decision, which is exactly why it is pinned: the next person to notice that
+/// `eq_disjunction_on_slot` "forgot" `Expr::In` would otherwise re-introduce the 2.4x and every
+/// test would still pass.
+#[test]
+fn an_undesugared_string_in_is_left_to_the_dict_predicate_arm() {
+    let mut b = Builder::default();
+
+    for i in 0..60 {
+        b.node(&["P"], &[("s", Value::Str(format!("c{i}").into()))]);
+    }
+
+    let st = b.build();
+
+    let big = (0..33)
+        .map(|i| format!("'c{i}'"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let q = format!("MATCH (a:P) WHERE a.s IN [{big}] RETURN count(*) AS x");
+    let plan = crate::opt::optimize_indexed(crate::gql::parse(&q).unwrap(), &st);
+
+    let Plan::Project { input, .. } = &plan else {
+        panic!("expected a Project over the Aggregate");
+    };
+    let Plan::Aggregate { input: ain, .. } = input.as_ref() else {
+        panic!("expected an Aggregate");
+    };
+    let Plan::Filter { input: scan, pred } = ain.as_ref() else {
+        panic!("expected a Filter over the Scan");
+    };
+    let Plan::Scan { label } = scan.as_ref() else {
+        panic!("expected a Scan");
+    };
+
+    assert!(
+        crate::exec::fastpath::try_stream_membership_count(&st, label, pred).is_none(),
+        "an undesugared string IN must be left to the dict-predicate arm, which is 2.4x better \
+         at it (item 1264)"
+    );
+
+    // And the answer is still the right one, by whatever route does claim it.
+    match &run(&crate::gql::parse(&q).unwrap(), &st)
+        .rows
+        .iter()
+        .next()
+        .expect("one row")[0]
+    {
+        Value::Num(x) => assert_eq!(*x, 33.0),
+        other => panic!("not a number: {other:?}"),
+    }
+}
+
+/// A non-numeric literal anywhere in the list DECLINES the numeric arm rather than being skipped
+/// (item 1264). Skipping one would answer a different question; declining hands the whole
+/// predicate to the general path, which knows what `k = 'x'` means. The answer must be unchanged
+/// either way, so this is a route assertion with an answer check behind it.
+#[test]
+fn a_non_numeric_member_declines_the_numeric_arm() {
+    let mut b = Builder::default();
+
+    b.node(&["P"], &[("k", n(1.0))]);
+    b.node(&["P"], &[("k", n(2.0))]);
+    let st = b.build();
+
+    // ⚠️ BOTH ARITIES, BECAUSE THERE ARE TWO CHECKS AND ONE LIST REACHES ONLY ONE OF THEM. A
+    // 2-item `IN` is desugared by `normalize_pred` into an `Or`, so it exercises the `Column::Num`
+    // arm's check; only a list ABOVE 32 items survives as `Expr::In` and reaches
+    // `num_in_list_on_slot`'s. The mutation run is what established this: with the short list
+    // alone, `non-numeric-member-skipped` SURVIVED, because the mutant edits a check that list
+    // cannot reach.
+    let long = (0..33)
+        .map(|i| {
+            if i == 7 {
+                "'x'".to_string()
+            } else {
+                i.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+
+    for q in [
+        "MATCH (a:P) WHERE a.k IN [1,'x'] RETURN count(*) AS x".to_string(),
+        format!("MATCH (a:P) WHERE a.k IN [{long}] RETURN count(*) AS x"),
+    ] {
+        let plan = crate::opt::optimize_indexed(crate::gql::parse(&q).unwrap(), &st);
+
+        let Plan::Project { input, .. } = &plan else {
+            panic!("expected a Project over the Aggregate");
+        };
+        let Plan::Aggregate { input: ain, .. } = input.as_ref() else {
+            panic!("expected an Aggregate");
+        };
+        let Plan::Filter { input: scan, pred } = ain.as_ref() else {
+            panic!("expected a Filter over the Scan");
+        };
+        let Plan::Scan { label } = scan.as_ref() else {
+            panic!("expected a Scan");
+        };
+
+        assert!(
+            crate::exec::fastpath::try_stream_membership_count(&st, label, pred).is_none(),
+            "a mixed-type list must not reach the numeric membership count: {q}"
+        );
+    }
+
+    let q = "MATCH (a:P) WHERE a.k IN [1,'x'] RETURN count(*) AS x";
+    let plan = crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &st);
+
+    let Plan::Project { input, .. } = &plan else {
+        panic!("expected a Project over the Aggregate");
+    };
+    let Plan::Aggregate { input: ain, .. } = input.as_ref() else {
+        panic!("expected an Aggregate");
+    };
+
+    // ⚠️ `let … else { panic!() }`, NOT `if let`. Written as a nested `if let` this assertion was
+    // SILENTLY SKIPPED whenever the plan was not the expected shape, and the mutation run proved
+    // it: `non-numeric-member-skipped` SURVIVED against the `if let` form and is caught by this
+    // one. A pinned assertion that does not execute is item 1260's error in new clothes — there
+    // the call passed the wrong plan node, here it was never reached at all.
+    let Plan::Filter { input: scan, pred } = ain.as_ref() else {
+        panic!("expected a Filter over the Scan");
+    };
+    let Plan::Scan { label } = scan.as_ref() else {
+        panic!("expected a Scan");
+    };
+
+    assert!(
+        crate::exec::fastpath::try_stream_membership_count(&st, label, pred).is_none(),
+        "a mixed-type list must not reach the numeric membership count: declining hands the whole \
+         predicate to the general path, which knows what `k = 'x'` means, where SKIPPING the \
+         member would answer a different question (and would turn any throwing cross-type \
+         comparison into a silent answer)"
+    );
+
+    match &run(&crate::gql::parse(q).unwrap(), &st)
+        .rows
+        .iter()
+        .next()
+        .expect("one row")[0]
+    {
+        Value::Num(x) => assert_eq!(
+            *x, 1.0,
+            "only k = 1 matches; the string member matches nothing"
+        ),
+        other => panic!("not a number: {other:?}"),
+    }
+}

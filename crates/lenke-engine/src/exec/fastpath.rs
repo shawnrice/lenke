@@ -986,6 +986,68 @@ pub(super) fn case_dict_lookup(
     Some((slot, key, code_to_branch))
 }
 
+/// `slot.key IN [nums]` UNDESUGARED, as the numbers it selects (item 1264).
+///
+/// `opt::normalize_pred` rewrites `x IN [literals]` to an OR-chain at 32 items or fewer and LEAVES
+/// it as `Expr::In` above that, so [`eq_disjunction_on_slot`] — which matches only the desugared
+/// form — sees nothing above 32. For a `Num` column that meant no streaming arm at all there, and
+/// it is worth 4.2-5.4x (item 1264's sweep: k=48 6.557ms -> 1.206, k=64 6.766 -> 1.622).
+///
+/// ⚠️ NUMERIC ONLY, AND SEPARATE FROM THE SHARED MATCHER FOR A MEASURED REASON. Teaching
+/// `eq_disjunction_on_slot` itself to accept `Expr::In` was written first, on the theory that 32
+/// against 33 was a PLAN boundary for every column kind — this engine's named bug class. For
+/// strings that theory is FALSE and the change was a REGRESSION, because a dict column already has
+/// a fallback that the numeric one does not: `try_stream_dict_pred_count` evaluates an arbitrary
+/// predicate ONCE PER DISTINCT VALUE, which is strictly better than a per-row membership test, and
+/// it claims the undesugared `In` perfectly well. Diverting that shape to the membership arm cost
+/// up to 2.4x, on identical answers, with the k <= 32 rows flat as expected (200,000 nodes, a
+/// 100-value `Str` column):
+///
+/// ```text
+///   k            8     31     32     33     40
+///   shared     0.704  1.022  0.477  0.496  0.739   ms   <- the REJECTED form
+///   separate   0.626  1.062  0.428  0.281  0.306        <- unchanged, and faster at 33 and 40
+/// ```
+///
+/// So there was never a string cliff to fix — the string cost is not even monotonic in k — and the
+/// numbers above are why this matcher is numeric and why [`eq_disjunction_on_slot`] is untouched.
+fn num_in_list_on_slot(pred: &Expr, slot: usize) -> Option<(String, Vec<f64>)> {
+    let Expr::In { needle, haystack } = pred else {
+        return None;
+    };
+
+    let Expr::Prop { slot: s, key } = needle.as_ref() else {
+        return None;
+    };
+
+    if *s != slot {
+        return None;
+    }
+
+    // A literal list only: a parameter or an expression haystack is not a known value set here.
+    let Expr::Lit(Value::List(items)) = haystack.as_ref() else {
+        return None;
+    };
+
+    if items.is_empty() {
+        return None; // `k IN []` is FALSE for every row; the general path answers 0 by rule
+    }
+
+    let mut vals = Vec::with_capacity(items.len());
+
+    for v in items {
+        match v {
+            // A NULL term makes the non-matching rows UNKNOWN rather than FALSE, which is the same
+            // reason `eq_disjunction_on_slot` declines one. Any non-number cannot equal a packed
+            // `Num` cell, and a count is the wrong place to re-derive cross-type comparison.
+            Value::Num(n) => vals.push(*n),
+            _ => return None,
+        }
+    }
+
+    Some((key.clone(), vals))
+}
+
 /// Is `pred` a disjunction (or a single term) of `slot.key == <literal>`, all on ONE
 /// key? Returns that key and the literal values — the shape `x IN [a, b, …]` desugars to.
 pub(super) fn eq_disjunction_on_slot(pred: &Expr, slot: usize) -> Option<(String, Vec<Value>)> {
@@ -1386,6 +1448,17 @@ pub(super) fn try_stream_membership_count(
     label: &Option<String>,
     pred: &Expr,
 ) -> Option<u64> {
+    // THE UNDESUGARED `Expr::In`, NUMERIC ONLY (item 1264) — its own early return rather than a
+    // widening of the shared matcher, because widening that matcher regressed the string path by
+    // up to 2.4x. `num_in_list_on_slot` carries the measurement.
+    if let Some((key, nums)) = num_in_list_on_slot(pred, 0) {
+        let Some(Column::Num { data, present, .. }) = store.column(&key) else {
+            return None;
+        };
+
+        return Some(stream_eq_set_count(store, label, data, present, &nums));
+    }
+
     let (key, vals) = eq_disjunction_on_slot(pred, 0)?;
     let mut count = 0u64;
     match store.column(&key)? {
@@ -1496,9 +1569,95 @@ pub(super) fn try_stream_membership_count(
                 }
             }
         }
+        // THE NUMERIC SIBLING (item 1264). This function's own header calls itself "the string
+        // sibling of `try_stream_num_count`", and a `Num` column fell through to `_` — so a
+        // NUMERIC membership count had no streaming arm while the string one had two.
+        // `num_conj_on_slot` cannot cover it: it returns a CONJUNCTION of bounds, all of which
+        // must hold, and a disjunction has no such shape.
+        //
+        // Measured at 200,000 nodes, all three spellings answering an identical 6000:
+        //
+        // ```text
+        //   scan IN [1,2,3]           0.85 ms  ->  0.07      scan >= 1 AND <= 3   0.03 ms
+        //   scan = 1 OR = 2 OR = 3    0.84     ->  0.07                            12.1x
+        // ```
+        //
+        // The conjunction is what showed the gap: on a contiguous set `k >= 1 AND k <= 3` selects
+        // the IDENTICAL rows as `k IN [1,2,3]`, so the 28x could not be selectivity — which is
+        // the trap item 1263 retracted a whole target for.
+        Column::Num { data, present, .. } => {
+            let mut targets: Vec<f64> = Vec::with_capacity(vals.len());
+
+            for v in &vals {
+                match v {
+                    Value::Num(n) => targets.push(*n),
+                    _ => return None,
+                }
+            }
+
+            count = stream_eq_set_count(store, label, data, present, &targets);
+        }
         _ => return None,
     }
     Some(count)
+}
+
+/// `k IN {vals}` over a packed `Num` column, as ONE VECTORIZED PASS PER DISTINCT VALUE.
+///
+/// The mirror of the k-exclusion arm in [`try_stream_num_count`], and item 1231's measured rule in
+/// a new place: k passes that each auto-vectorize beat one closure carrying k terms, because a
+/// third term is enough to stop LLVM vectorizing it (item 451 named the mechanism; item 1229
+/// measured the cliff — one exclusion 51.2us, two 608.8, 11.9x for one more literal).
+///
+/// NO ARITY CAP, and that is measured rather than assumed. k passes must eventually lose to the
+/// general path's single k-term pass, so the crossover was looked for and is not in range: the
+/// general path grows with k too, so this wins at every arity tried — 12.7x at k=2 down to 4.2x at
+/// k=64 — with identical answers at every k.
+///
+/// ```text
+///   k          2      4      8     16     32     64
+///   before  0.709  1.131  1.735  2.752  4.735  6.766   ms, 200,000 nodes
+///   after   0.056  0.107  0.209  0.415  0.830  1.622
+/// ```
+///
+/// ⚠️ DISTINCT VALUES, OR IT DOUBLE-COUNTS. `k IN [7, 7]` and `k = 7 OR k = 7` are each one row
+/// set, and two passes over `7` would report twice its size — a WRONG ANSWER, not a slow one.
+/// Neither `normalize_pred` nor either matcher deduplicates (they have no reason to: the general
+/// arm is idempotent in the disjunction), so it happens here, with the same `contains` the
+/// k-exclusion arm uses — `PartialEq` on `f64`, the SAME `==` the counting pass applies, so a
+/// signed zero cannot slip between the dedup and the count.
+///
+/// NaN NEEDS NO SPECIAL CASE, unlike the range reductions in this file. `k = NaN` is never TRUE,
+/// and the pass is `x == v`, false for every `x` when `v` is NaN and false for a NaN cell against
+/// every `v` — so a NaN in the list contributes exactly 0, which is the answer. (The dedup's
+/// `contains` never folds two NaNs, and does not need to: each contributes 0.)
+/// `canonical_num_conj` must decline a NaN literal because it folds literals into a RANGE; nothing
+/// is folded here.
+///
+/// Its own `#[inline(never)]` function for the reason `try_stream_range_count` is one: this file
+/// has measured a fast path costing a shape it never runs, through code layout alone, when an arm
+/// was written inline and the enclosing function grew.
+#[inline(never)]
+fn stream_eq_set_count(
+    store: &Store,
+    label: &Option<String>,
+    data: &[f64],
+    present: &[bool],
+    vals: &[f64],
+) -> u64 {
+    let mut count = 0u64;
+    let mut counted: Vec<f64> = Vec::with_capacity(vals.len());
+
+    for &v in vals {
+        if counted.contains(&v) {
+            continue;
+        }
+
+        counted.push(v);
+        count += sweep_num_count(store, label, data, present, |x| x == v);
+    }
+
+    count
 }
 
 /// `DISTINCT`/`dedup()` over `values(<col>)`: emit the distinct values in FIRST-SEEN order,
