@@ -38678,3 +38678,87 @@ detector-index comment, and the `ORDER BY` in the priced query above has not bee
 `sortsOnOutputOnly`.
 
 Gates: 21 projects green, all seven byte-identity fuzzers green, `bun run check` 0.
+
+### Item 1249 — `ORDER BY` on a grouped aggregate cost 2.15x (hop) and 11.90x (node) because BOTH rungs refused it outright (DONE)
+
+Item 1248 recorded the grouped hop extremum at 664932 us and told the next pass to check that
+query's `ORDER BY` against `sortsOnOutputOnly`. **Doing so first showed the `ORDER BY` was HALF the
+number**, so that figure was an overstatement by 2.1x — priced on a spelling I had not validated.
+The corrected gap for the grouped extremum itself is **313718 us**, and the ordering is its own
+defect:
+
+```text
+  HOP   RETURN x.city AS c, min(x.age) AS lo              313718.8 us
+  HOP   ... ORDER BY c                                    670623.3        2.14x
+  NODE  RETURN x.city AS c, min(x.age) AS lo                8038.1
+  NODE  ... ORDER BY c                                     94934.9        11.81x
+```
+
+Eight groups do not take 357 ms to sort, let alone 87. **ELIMINATION found the cause**: with the hop
+rung disabled the UNORDERED spelling went 313718 -> 702617 (it reaches the rung) while the ORDERED
+one did not move at all (it never did). `detectGroupedHopAggregate` and
+`detectGroupedNodeAggregate` both refused `proj.orderBy.length > 0` outright and fell to the general
+path, which sorts one row per input ELEMENT.
+
+**The refusal was not an oversight**, which is why the fix is a resolver and not a deleted line. The
+single-row aggregate rungs admit an `ORDER BY` for free through `sortsOnOutputOnly` — ordering one
+row is a no-op. These two return one row per GROUP, so admitting it means SORTING. The `count(*)`
+tally sibling already does exactly that through `sortGroupRows`, whose own note carries the
+argument: the sort is over the GROUPS, at most what the query returns.
+
+### Both rungs, because fixing one would have been item 1247 again
+
+The node twin shares the hop rung's body AND its refusal — found when a `return slots.map(...)`
+anchor matched TWICE. Fixing only the hop would have left a sibling inversion, which is exactly what
+item 1247 had to come back and repair. Measured after, three alternated rounds, one shape per
+process:
+
+```text
+  row                        before     after    ratio
+  HOP   ... ORDER BY c      670623.3  312337.7   2.15x
+  HOP   no order   [CTL]    313718.8  306399.3   1.02x  flat
+  NODE  ... ORDER BY c       94934.9    7977.3  11.90x
+  NODE  no order   [CTL]      8038.1    7950.8  1.01x  flat
+```
+
+Ordering is now within 2% of not ordering on both rungs — the spellings have CONVERGED rather than
+merely narrowed.
+
+**BOTH SPELLINGS of a key resolve**, which is why this reuses the tally's `colSortsOf` rule instead
+of `outputColumnSorts`: that one matches an output NAME only, and item 1062 measured the asymmetry
+it creates at 3.8x on `bun run spelling`. A key may name any output column or BE the grouping
+expression, and a test asserts `ORDER BY x.city` answers exactly what `ORDER BY c` answers.
+
+### NULL sorts LAST in both directions, verified rather than assumed
+
+The first DESC expectation written here was wrong — NULLS do not move to the front. Three spellings
+were checked (the alias, the key expression, and a filtered variant that routes differently) and all
+agree: null last. That is `compareSort`'s policy, which `sortGroupRows` uses rather than re-deriving
+one, so the fast path cannot drift from the general path on it.
+
+### ⚠️ Teeth, and the SIXTH guard bug — the first to give a FALSE SURVIVED
+
+`grouped-aggregate-order.test.ts` asserts ROW ORDER with `toEqual` on the full array, never a
+multiset: the defect this guards is not a wrong row SET but a sort that silently does not apply. The
+fixture's first vertex carries the LAST city alphabetically, so a rung returning groups in discovery
+order fails rather than passing by luck.
+
+Four mutants, all caught: the sort never applying, DESC dropped, any unresolved key silently sorting
+by the group key, and duplicate output names no longer declining.
+
+**But the first run reported `sort-never-applies` as SURVIVED, and it was a harness lie.** Run
+directly, the test failed 3 of 5; the root runner exited 1. The cause: `local out=$(cmd)` followed
+by `local code=$?` captures the exit status of the **`local` builtin**, not the command. Item 1246's
+script happened to write that assignment without `local` and worked; adding it here produced a false
+SURVIVED — **the dangerous direction**, since it invents a test gap and sends you writing redundant
+tests for a phantom. Declare first, assign second.
+
+Two further anchor failures were caught rather than mis-scored: two mutants matched the tally's
+`colSortsOf`, whose lines are textually identical, and one re-anchored mutant turned out VACUOUS
+(adding an unused name to a Set), whose survival meant nothing. The rule stands and has now cost six
+instances: **verify an assertion can FAIL before trusting that it passed**, and for a mutant, that
+its survival could only mean a missing test.
+
+Gates: 21 projects green, all seven byte-identity fuzzers green, `bun run check` 0 (after extracting
+`keyedClausePred`, since admitting the sort pushed `detectGroupedHopAggregate` to 36 of the 35
+complexity cap — the cap has been right in this file every time).

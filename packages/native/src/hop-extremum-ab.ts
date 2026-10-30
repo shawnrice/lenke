@@ -68,6 +68,13 @@ const CASES: readonly [string, string][] = [
     'grouped by far prop',
     'MATCH (a:Person)-[:KNOWS]->(x) RETURN x.city AS c, min(x.age) AS lo ORDER BY c',
   ],
+  // Is the ORDER BY what disqualifies the grouped rung, or is the rung slow? Item 1248 priced the
+  // ordered spelling at 664932 us and left this unchecked against `sortsOnOutputOnly`.
+  ['grouped no order', 'MATCH (a:Person)-[:KNOWS]->(x) RETURN x.city AS c, min(x.age) AS lo'],
+  ['grouped count only', 'MATCH (a:Person)-[:KNOWS]->(x) RETURN x.city AS c, count(*) AS n'],
+  // The grouped NODE twin, which shares the hop rung's body AND its blanket `orderBy` refusal.
+  ['node grouped no order', 'MATCH (x:Person) RETURN x.city AS c, min(x.age) AS lo'],
+  ['node grouped ordered', 'MATCH (x:Person) RETURN x.city AS c, min(x.age) AS lo ORDER BY c'],
   [
     '[CTL] count(*) + max',
     'MATCH (a:Person)-[:KNOWS]->(x) RETURN count(*) AS c, max(x.name) AS hi',

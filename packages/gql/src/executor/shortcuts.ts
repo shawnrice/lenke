@@ -7751,6 +7751,103 @@ const colSortsOf = (
 };
 
 /**
+ * The clause `WHERE` as an inline predicate on the KEYED end — `null` to decline, `undefined` when
+ * there is none.
+ *
+ * Extracted from `detectGroupedHopAggregate` because admitting `ORDER BY` there (item 1249) pushed
+ * it to 36 of the 35 complexity cap, and this block is the cheapest honest thing to lift out: the
+ * decision reads only the clause and the keyed variable. Same reason `hopAccFor` and item 1247's
+ * wiring were extracted; the cap has been right in this file every time.
+ *
+ * A predicate reading ANY other variable declines, because this walk binds only the keyed end.
+ */
+const keyedClausePred = (
+  where: Expr | undefined,
+  keyedVar: string | undefined,
+): InlinePred | null | undefined => {
+  if (where === undefined) {
+    return undefined;
+  }
+
+  for (const nameRead of freePredicateVars(where)) {
+    if (nameRead !== keyedVar) {
+      return null;
+    }
+  }
+
+  return predFor(compilePredicate(undefined, where, keyedVar), keyedVar, true);
+};
+
+/**
+ * `colSortsOf` for a GROUPED AGGREGATE's N output columns rather than the tally's two (item 1249).
+ *
+ * ⚠️ THIS EXISTS BECAUSE BOTH GROUPED AGGREGATE RUNGS REFUSED EVERY `ORDER BY` WHILE THEIR TALLY
+ * SIBLING ADMITTED THEM, which made two spellings of one question cost far apart. Measured at
+ * 200,000 nodes / 1,000,000 edges, one shape per process:
+ *
+ * ```text
+ *   HOP   RETURN x.city AS c, min(x.age) AS lo              313718.8 us
+ *   HOP   ... ORDER BY c                                    670623.3     2.14x
+ *   NODE  RETURN x.city AS c, min(x.age) AS lo                8038.1
+ *   NODE  ... ORDER BY c                                     94934.9     11.81x
+ * ```
+ *
+ * Eight groups do not take 357 ms to sort, let alone 87. Disabling the hop rung confirmed the cause
+ * by ELIMINATION: the UNORDERED spelling went 313718 -> 702617 (it reaches the rung) while the
+ * ORDERED one did not move at all (it never did).
+ *
+ * THE REFUSAL WAS NOT AN OVERSIGHT, which is why this is a resolver and not a deleted line. The
+ * single-row aggregate rungs admit an `ORDER BY` for free through `sortsOnOutputOnly` — ordering
+ * one row is a no-op. These two return one row per GROUP, so admitting it means SORTING. The tally
+ * already does exactly that via `sortGroupRows`, whose note gives the argument: the sort is over
+ * the GROUPS, which is at most what the query returns.
+ *
+ * BOTH SPELLINGS of a key resolve, which is why this reuses the tally's rule instead of
+ * `outputColumnSorts`: that one matches an output NAME only, and item 1062 measured the asymmetry
+ * it creates at 3.8x on `bun run spelling`. A key may name any output column, or BE the grouping
+ * expression (`ORDER BY x.city` beside `RETURN x.city AS c`).
+ */
+const groupedSortApplier = (
+  keys: readonly SortItem[],
+  cols: readonly string[],
+  keyCol: string,
+  keyExpr: Expr,
+): ((rows: Row[]) => Row[]) | null => {
+  // THE IDENTITY when there is no `ORDER BY`, so each rung spends ONE branch (the decline) rather
+  // than three — a ternary here, a null test, and a second ternary at the return.
+  // `detectGroupedHopAggregate` was at 37 of 35 with the inline form, and this file's cap has been
+  // right before (`hopAccFor`, and item 1247's own extraction).
+  if (keys.length === 0) {
+    return (rows) => rows;
+  }
+
+  // Two items sharing one output NAME collapse into one row key, so which column a name refers to
+  // is ambiguous and cannot be resolved — the tally refuses the same case.
+  if (new Set(cols).size !== cols.length) {
+    return null;
+  }
+
+  const names = new Set(cols);
+  const out: ColSort[] = [];
+
+  for (const k of keys) {
+    const byName = k.expr.kind === 'var' && names.has(k.expr.name) ? k.expr.name : undefined;
+    const col = byName ?? (sameGroupingExpr(k.expr, keyExpr) ? keyCol : undefined);
+
+    if (col === undefined) {
+      return null;
+    }
+
+    out.push({ col, descending: k.descending, nullsFirst: k.nullsFirst });
+  }
+
+  // One row per GROUP, so this sorts at most what the query returns — the tally's own argument
+  // (`sortGroupRows`), which uses `compareSort` so DESC and NULLS placement match the engine
+  // rather than being re-derived here.
+  return (rows) => sortGroupRows(rows, out);
+};
+
+/**
  * Does this page keep NO rows whatever the data? Then the tally must not run at all.
  *
  * `LIMIT 0` emits nothing, and the general path returns `[]` from `applyProjection` BEFORE
@@ -10707,7 +10804,6 @@ export const detectGroupedNodeAggregate = (
     proj.distinct ||
     proj.items.length < 2 ||
     proj.having !== undefined ||
-    proj.orderBy.length > 0 ||
     proj.skip !== undefined ||
     proj.limit !== undefined
   ) {
@@ -10752,6 +10848,20 @@ export const detectGroupedNodeAggregate = (
 
   const { key } = keyExpr;
   const keyAt = ret.projection.items.findIndex((i) => i.expr === keyExpr);
+  // Resolved HERE rather than in the gate, because it needs the output columns and the grouping
+  // expression. `null` declines the whole rung; otherwise it is the sort to apply, which is the
+  // IDENTITY when the query has no `ORDER BY`.
+  const applySort = groupedSortApplier(
+    ret.projection.orderBy ?? [],
+    proj.items.map((i) => i.name),
+    keyCol,
+    keyExpr,
+  );
+
+  if (applySort === null) {
+    return null;
+  }
+
   // The start node's INLINE constraint and the clause `WHERE` are the two spellings of one
   // filter, and both go through the general path's own `inlineHolds` / `compilePredicate`.
   const preds: InlinePred[] = [];
@@ -10852,7 +10962,7 @@ export const detectGroupedNodeAggregate = (
       }
     }
 
-    return slots.map((slot) => {
+    const rows = slots.map((slot) => {
       const row: Row = {};
 
       for (let i = 0; i < accs.length; i += 1) {
@@ -10871,6 +10981,11 @@ export const detectGroupedNodeAggregate = (
 
       return row;
     });
+
+    // One row per GROUP, so this sorts at most what the query returns — the tally's own argument
+    // (`sortGroupRows`), and it uses `compareSort` so DESC and NULLS placement match the engine
+    // rather than being re-derived here.
+    return applySort(rows);
   };
 };
 
@@ -10951,7 +11066,6 @@ export const detectGroupedHopAggregate = (
     proj.distinct ||
     proj.items.length < 2 ||
     proj.having !== undefined ||
-    proj.orderBy.length > 0 ||
     proj.skip !== undefined ||
     proj.limit !== undefined
   ) {
@@ -11026,16 +11140,14 @@ export const detectGroupedHopAggregate = (
     preds.push(inKeyed);
   }
 
-  const { where } = m;
+  const wherePred = keyedClausePred(m.where, keyed.variable);
 
-  if (where !== undefined) {
-    for (const nameRead of freePredicateVars(where)) {
-      if (nameRead !== keyed.variable) {
-        return null;
-      }
-    }
+  if (wherePred === null) {
+    return null;
+  }
 
-    preds.push(predFor(compilePredicate(undefined, where, keyed.variable), keyed.variable, true));
+  if (wherePred !== undefined) {
+    preds.push(wherePred);
   }
 
   // THE SEED HAZARD, checked here rather than at the `groupedAccs` call because `preds` is what
@@ -11063,6 +11175,20 @@ export const detectGroupedHopAggregate = (
   const { key } = keyExpr;
   const keyVar = keyExpr.variable;
   const keyAt = ret.projection.items.findIndex((i) => i.expr === keyExpr);
+  // Resolved HERE rather than in the gate, because it needs the output columns and the grouping
+  // expression. `null` declines the whole rung; otherwise it is the sort to apply, which is the
+  // IDENTITY when the query has no `ORDER BY`.
+  const applySort = groupedSortApplier(
+    ret.projection.orderBy ?? [],
+    proj.items.map((i) => i.name),
+    keyCol,
+    keyExpr,
+  );
+
+  if (applySort === null) {
+    return null;
+  }
+
   const farLabel = far.label;
   const adjacency: Adjacency = {
     direction: rel.direction,
@@ -11135,7 +11261,7 @@ export const detectGroupedHopAggregate = (
       }
     }
 
-    return slots.map((slot) => {
+    const rows = slots.map((slot) => {
       const row: Row = {};
 
       for (let i = 0; i < accs.length; i += 1) {
@@ -11154,5 +11280,10 @@ export const detectGroupedHopAggregate = (
 
       return row;
     });
+
+    // One row per GROUP, so this sorts at most what the query returns — the tally's own argument
+    // (`sortGroupRows`), and it uses `compareSort` so DESC and NULLS placement match the engine
+    // rather than being re-derived here.
+    return applySort(rows);
   };
 };
