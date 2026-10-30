@@ -38080,3 +38080,66 @@ green.
 Both engines now answer this shape identically and correctly, and the fuzzer generates it. 2,068
 Rust tests green; 943 TS tests green; all seven cross-engine fuzzers green; `clippy -D warnings` and
 `bun run check` each 0.
+
+### Item 1241 — grepping item 1240's bug CLASS found one more wrong answer, and the obvious fix for it was a 1.19x regression (DONE)
+
+Item 1240's defect was a guard testing a weaker condition than it meant: `segments.length === 1`
+standing in for "a single HOP". That is a CLASS, so it was grepped. Eight single-segment guards
+exist in the TS executor; `hop-projection`'s is already protected (`plainUnnamedRel` ->
+`plainRel` requires `quantifier === undefined`), and reading the rest one by one is slower and less
+reliable than asking the engines.
+
+So the unit shapes were SWEPT across query forms instead — 3 units (flat, reversed, two-hop) x 12
+forms (counts, endpoints, aggregates, group lists, anchored ends, WALK, `{0,2}`, with and without a
+bound path). **One divergence of 36, and on the FLAT unit — the shape item 1240's fix does not
+touch:**
+
+```text
+  MATCH p = ((x)-[:KNOWS]->(m)){1,2} RETURN size(x) AS x
+    ts:     x = null, null, null
+    native: x = 1, 1, 1
+```
+
+Row counts agreed, so the rows were right: `allWalk` binds the endpoint and the Path and NONE of the
+unit's group variables. Item 1237 saw the same symptom for nested units; routing those away fixed
+them, and left this.
+
+⚠️ **THE OBVIOUS FIX WAS A REGRESSION, AND MEASURING IT IS WHY IT IS NOT IN THE TREE.** `allWalk`'s
+doc says it serves "a single quantified segment (`p = (a)-[:R]->{m,n}(b)`)" — a plain quantified HOP
+— so excluding every unit looks like the principled change, and it does fix the bug. It also costs
+**1.19x** on `MATCH p = ((x)-[:KNOWS]->(m)){1,2} RETURN path_length(p)`, a shape whose answer was
+ALREADY CORRECT. Reverted.
+
+THE FIX THAT SHIPPED binds the group variables inside `allWalk` instead — the same two lines every
+other walk site uses:
+
+```js
+const withGroups =
+  unit && unitExposes(unit) && unitIsFlat(unit)
+    ? bindGroupVarsFlat(binding, unit, walk.verts, walk.edges)
+    : binding;
+```
+
+Only the FLAT branch is needed, because the caller's guard sends a non-flat unit to `walkSegments`.
+After it the sweep is **0 of 36**.
+
+COST, three order-alternated rounds (min of 5 per round, 20,000 nodes, degree 3):
+
+```text
+  flat group + path                 234.1 -> 262.1   1.12x
+  flat group + path, lists read     239.1 -> 270.2   1.13x   (was WRONG before: null)
+  [CTL] plain quantified hop        243.5 -> 243.0   1.00x
+  [CTL] flat group, NO path           5.7 ->   5.7   1.00x
+```
+
+1.12x, controls flat. AND IT IS THE ENGINE'S EXISTING POLICY, not a new tax: `walkSegments` already
+binds exposed group variables unconditionally, so the no-path case has always paid this and
+`allWalk` was the inconsistent one. The guard is `unitExposes`, so a unit that NAMES no variables
+still skips the work.
+
+⚠️ A FUZZER FAILURE IN THIS RUN IS THE KNOWN ONE. `FUZZ_SEED=1558963448` hit
+`MATCH (t:T) OPTIONAL MATCH (t)-[:E]->(n WHERE …faulting…)` — item 1226's evaluation-order
+divergence, measured there at ~9% of runs and still awaiting a conformance decision. The query
+contains no quantified group, so this change is structurally unreachable from it.
+
+943 TS tests green; the other six fuzzers green; `bun run check` and `clippy -D warnings` each 0.

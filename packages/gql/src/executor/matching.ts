@@ -952,6 +952,11 @@ export const matchPattern = function* (
       // them was the first attempt here and does not typecheck.)
       const [seg] = path.segments;
       const unit = seg?.unit;
+      // A FLAT SINGLE-HOP UNIT KEEPS `allWalk` (item 1240's boundary, kept deliberately at
+      // item 1241). Routing every group to `walkSegments` also fixes the group-variable bug
+      // below, and was measured at 1.19x on `MATCH p = ((x)-[:KNOWS]->(m)){1,2} RETURN
+      // path_length(p)` — a shape whose answer was ALREADY CORRECT. So the binding is fixed
+      // inside `allWalk` instead, which costs nothing.
       const singleHopUnit = unit === undefined || (unitIsFlat(unit) && unit.elems.length === 1);
       const singleVarlen =
         path.segments.length === 1 && seg?.rel.quantifier !== undefined && singleHopUnit;
@@ -1005,7 +1010,7 @@ export const allWalk = function* (
   binding: Binding,
   params: Params,
 ): Iterable<Binding> {
-  const [{ rel }] = pattern.segments;
+  const [{ rel, unit }] = pattern.segments;
 
   for (const walk of trailEnds(graph, seed, rel, rel.quantifier!, {
     mode: pattern.mode ?? 'trail',
@@ -1013,7 +1018,17 @@ export const allWalk = function* (
     params,
     wantPath: true,
   })) {
-    const row = bindEndAndPath(graph, pattern, walk, binding, params);
+    // ⚠️ THE UNIT'S GROUP VARIABLES, which this walker used to drop (item 1241).
+    // `bindEndAndPath` binds the endpoint and the Path and nothing else, so
+    // `MATCH p = ((x)-[:KNOWS]->(m)){1,2} RETURN size(x)` answered NULL where native answered 1 —
+    // a silent wrong answer on a FLAT group, which item 1240's fix did not reach because a flat
+    // unit still routes here. The same two lines every other walk site uses; only the FLAT branch
+    // is needed, because the caller's guard sends a non-flat unit to `walkSegments`.
+    const withGroups =
+      unit && unitExposes(unit) && unitIsFlat(unit)
+        ? bindGroupVarsFlat(binding, unit, walk.verts, walk.edges)
+        : binding;
+    const row = bindEndAndPath(graph, pattern, walk, withGroups, params);
 
     if (row) {
       yield row;
