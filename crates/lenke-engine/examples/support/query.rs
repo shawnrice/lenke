@@ -562,6 +562,19 @@ pub fn run(cfg: &Cfg) {
                     "filtered",
                     "MATCH (p:Person) WHERE p.age > 50 RETURN count(*) AS c",
                 ),
+                // ⚠️ NO CORPUS ROW EXERCISED A PRESENCE COUNT, which is how a 31.8x sat unmeasured
+                // (item 1287) — the same gap items 1221 and 1312 found for other shapes. Every
+                // count row here carries a BOUND or no predicate at all, and a bare presence atom
+                // takes a different arm of `try_stream_num_count`: the one whose per-element
+                // closure re-tested `bounds.is_empty()`. Hoisting that let the sweep vectorize
+                // into a bandwidth-bound scan, 191.9us -> 6.0 on 200,000 nodes.
+                //
+                // The row beside it is the CONTROL the change cannot reach: `filtered` above takes
+                // the bounded arm, which items 1220/1224 already made branchless.
+                (
+                    "presence",
+                    "MATCH (p:Person) WHERE p.age IS NOT NULL RETURN count(*) AS c",
+                ),
                 (
                     "1-hop",
                     "MATCH (p:Person)-[:KNOWS]->() RETURN count(*) AS c",

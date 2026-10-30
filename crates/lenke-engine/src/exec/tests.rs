@@ -35540,6 +35540,77 @@ fn is_not_null_reaches_the_presence_fast_path() {
 /// The column here holds a real number, a STORED PRESENT-NULL, another number, and an ABSENT
 /// property — so the two spellings must answer 2 and 3.
 #[test]
+fn a_presence_count_over_a_num_column_with_absent_cells_is_right() {
+    // ⚠️ THE FIXTURE THAT REACHES THE HOISTED SWEEP (item 1287), and the reason it is separate from
+    // `property_exists_and_is_not_null_differ_on_a_present_null`: that one stores a present-null,
+    // which PROMOTES the column to `Gen` (item 1142), and every numeric fast path then declines. So
+    // it cannot see `try_stream_num_count`'s presence arm at all.
+    //
+    // Here the column stays `Num` and the cells are merely ABSENT, which is the shape the 30x was
+    // measured on. The count must be a STRICT SUBSET of the label — the probe's own fixture has
+    // every node carrying the key, so its answer is the whole label and is INVARIANT to the
+    // predicate, which cannot validate a predicate change (the trap this repo records at item 702).
+    let mut b = Builder::default();
+
+    b.node(&["P"], &[("k", n(1.0))]);
+    b.node(&["P"], &[("k", n(2.0))]);
+    b.node(&["P"], &[]); // k ABSENT
+    b.node(&["P"], &[]); // k ABSENT
+    b.node(&["Q"], &[("k", n(9.0))]); // another label, so the sweep's label gate is load-bearing
+    let st = b.build();
+
+    // THE REPRESENTATION MUST BE WHAT THE TEST CLAIMS. A `Gen` column routes elsewhere and the
+    // assertions below would hold for a reason that has nothing to do with the hoisted arm.
+    assert!(
+        matches!(st.column("k"), Some(crate::store::Column::Num { .. })),
+        "fixture must build a Num column or it exercises a different path"
+    );
+
+    let scalar = |q: &str| -> f64 {
+        match &run(
+            &crate::opt::optimize_indexed(crate::gql::parse(q).unwrap(), &st),
+            &st,
+        )
+        .rows
+        .iter()
+        .next()
+        .expect("one row")[0]
+        {
+            Value::Num(x) => *x,
+            other => panic!("not a number: {other:?}"),
+        }
+    };
+
+    // 2 of 4 `P` nodes carry `k`. A hoist that counted the whole label would answer 4.
+    assert_eq!(
+        scalar("MATCH (x:P) WHERE x.k IS NOT NULL RETURN count(*) AS c"),
+        2.0,
+        "IS NOT NULL must count only the P nodes carrying k"
+    );
+    // The label gate: `Q`'s node carries `k` too and must not be counted.
+    assert_eq!(
+        scalar("MATCH (x:Q) WHERE x.k IS NOT NULL RETURN count(*) AS c"),
+        1.0
+    );
+    // And the `has(k)` spelling, which takes the OTHER arm of the hoist (`nulls_count` true).
+    let g = crate::gremlin::parse("g.V().hasLabel('P').has('k').count()").unwrap();
+    let got = match &run(&crate::opt::optimize_indexed(g, &st), &st)
+        .rows
+        .iter()
+        .next()
+        .expect("one row")[0]
+    {
+        Value::Num(x) => *x,
+        other => panic!("not a number: {other:?}"),
+    };
+
+    assert_eq!(
+        got, 2.0,
+        "has(k) counts the same two: no present-nulls here"
+    );
+}
+
+#[test]
 fn property_exists_and_is_not_null_differ_on_a_present_null() {
     let mut b = Builder::default();
 

@@ -352,6 +352,18 @@ pub(super) fn try_fused_hop_present_count(input: &Plan, store: &Store) -> Option
     // sibling. Same disposition as item 1118's `pop_last_node`.
     let (present, nulls) = col.presence_bits();
     let has_nulls = !nulls.is_empty();
+    // ⚠️ HOISTING THESE TWO INVARIANTS OUT MEASURED FLAT, AND THAT IS RECORDED RATHER THAN DONE
+    // (item 1287). `nulls_count` is fixed by the SPELLING and `has_nulls` by the COLUMN, so neither
+    // depends on `nbr`, and the same hoist on the SCAN twin below is 30x. Here it is nothing:
+    //
+    //     HOP presence count    pre 313.0-313.9us    post 315.0-317.9    flat (three rounds)
+    //     SCAN presence count   pre 185.6-191.9      post   6.0-6.2      30x
+    //
+    // The difference is the access pattern, and it is item 1225's finding in a new place. The scan
+    // reads `present[i]` SEQUENTIALLY, so hoisting lets it vectorize into a bandwidth-bound sweep.
+    // This loop reads `present[j]` at edge TARGETS — a random-access gather, latency-bound, where
+    // the branch was never the cost. So the invariant test stays, and the shape that pays 3-17x on
+    // a sequential sweep pays zero here.
     let mut count = 0u64;
     for_each_typed_out(store, label, w, |nbr| {
         let j = nbr as usize;
@@ -2708,19 +2720,32 @@ pub(super) fn try_stream_num_count(
             }
         }
     }
+    // A bare presence gate (`has(k)`, no bounds) counts PRESENCE — a stored present-null included
+    // (`present || nulls`). A bounded compare counts only typed values (`present`): a null
+    // satisfies no numeric predicate.
+    //
+    // ⚠️ `bounds.is_empty()` IS LOOP-INVARIANT AND WAS TESTED PER ELEMENT (item 1287) — the shape
+    // item 1220 hoisted out of a sweep, nominated by item 1259 and left open by item 1260. The
+    // three arms are the same predicate the single closure expressed, split on the two invariants
+    // it re-read per row.
     let mut count = 0u64;
-    scan_visit(store, label, |i| {
-        // A bare presence gate (`has(k)`, no bounds) counts PRESENCE — a stored
-        // present-null included (`present || nulls`). A bounded compare counts only
-        // typed values (`present`): a null satisfies no numeric predicate.
-        if bounds.is_empty() {
-            if present[i] || (nulls_count && nulls[i]) {
+    if bounds.is_empty() {
+        if nulls_count {
+            scan_visit(store, label, |i| {
+                count += u64::from(present[i] || nulls[i]);
+            });
+        } else {
+            scan_visit(store, label, |i| {
+                count += u64::from(present[i]);
+            });
+        }
+    } else {
+        scan_visit(store, label, |i| {
+            if present[i] && bounds.iter().all(|&(op, t)| num_pred(op, data[i], t)) {
                 count += 1;
             }
-        } else if present[i] && bounds.iter().all(|&(op, t)| num_pred(op, data[i], t)) {
-            count += 1;
-        }
-    });
+        });
+    }
     Some(count)
 }
 

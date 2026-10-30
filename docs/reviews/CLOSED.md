@@ -37094,15 +37094,20 @@ rows almost exchanging values. Re-measured isolated, three alternated rounds: PR
 28.1-28.9, overlapping, 1.01x. In-sweep interference, exactly as item 737 records. Worst genuine
 movement across 73 rows is ~1.08x and bidirectional.
 
-OPEN, and now priced by its own control: the TWO-BOUND hop arm is 6.3x the one-bound arm it sits
+CLOSED BY ITEM 1227 — this line predates the fix and item 1287 corrected it in place. It read:
+"OPEN, and now priced by its own control: the TWO-BOUND hop arm is 6.3x the one-bound arm it sits
 beside (4887.7 against 772.4). Matching the operator PAIR once is the same move again, but item 451
 found a range sweep 3.9x its single-bound twin for reasons that did not transfer, so it needs its own
-measurement.
+measurement." Item 1227 did exactly that, reusing `canonical_num_conj`, and measured 5.31x.
 
-OPEN: the `bounds.iter().all(|&(op, t)| num_pred(op, ...))` per-row dispatch appears SIX times in
-`fastpath.rs` (three on `data[j]`, three on `data[i]`). This fixed one. The others include the
+PARTLY OPEN: the `bounds.iter().all(|&(op, t)| num_pred(op, ...))` per-row dispatch appears SIX times
+in `fastpath.rs` (three on `data[j]`, three on `data[i]`). This fixed one. The others include the
 edge-property counts and `try_stream_range_count`, which additionally tests the loop-invariant
-`bounds.is_empty()` INSIDE its sweep.
+`bounds.is_empty()` INSIDE its sweep — **that half is CLOSED by item 1287 at 31.8x**: hoisting it let
+the sequential presence sweep vectorize into a bandwidth-bound scan, while the HOP twin of the same
+hoist measured FLAT and was reverted, because a gather has nothing to vectorize. The DISPATCH half is
+still open, and item 1228 measured the neighbouring `bounds.iter().all` arms flat, so it is not a
+safe bet.
 
 OPEN: NO corpus row exercises a hop count with a far-end filter, which is how a 5.28x sat
 unmeasured — the same gap item 1221 found and closed for the scan shape.
@@ -41377,3 +41382,93 @@ Gates: 3231 gql tests green, 17 in the cross-engine AND file (up from 16), 21 pr
 seven byte-identity fuzzers green, `bun run lint` 0, `bun run typecheck` 0, `bun run check` 0.
 Three extractions (`liftTruthTest`, `liftNullTest`, `asTruthTest`) were forced by the complexity cap
 on `directEqProps`, which rejected two shapes before this one.
+
+### Item 1287 — the presence-count sweep vectorizes once its invariant is hoisted: 31.8x; the HOP twin is FLAT and reverted (DONE)
+
+Item 1259 nominated the two presence-count sweeps, item 1260 priced the spelling gap instead (and
+item 1261 fixed that at ~4x), leaving the loop-invariant hoist itself open. Both sites are now
+measured, and they disagree by a factor of 30.
+
+```text
+  row                               pre(min)   post(min)  ratio
+  SCAN presence count                 190.9       6.0      31.8x
+  HOP  presence count                 311.8     313.4      flat — REVERTED
+  [CTL] hop count with a BOUND        768.5     771.3      flat (items 1220/1224's arm)
+  [CTL] bare hop count(*)               0.3       0.3      flat (a different function)
+  [CTL] both rows, with-nulls fixture 838.1     847.7      flat (a `Gen` column — unreachable)
+```
+
+200,000 nodes / 800,000 edges, min of 7 per rep, three order-alternated rounds, each arm asserting
+its own marker count before the build.
+
+### Why one is 31.8x and the other is nothing
+
+`present[i]` is read SEQUENTIALLY by the scan, so hoisting `bounds.is_empty()` and `nulls_count` out
+of the closure leaves a body of one bool read and a branchless add — which LLVM vectorizes. The
+result is bandwidth-bound and the arithmetic says so: 200,000 bools is 200 KB, and 200 KB in 6.0us
+is ~33 GB/s, which is memory and not instructions. The branch was not costing a mispredict, it was
+costing the vectorization.
+
+The hop sweep reads `present[j]` at edge TARGETS — a random-access gather, latency-bound, with
+nothing to vectorize. So the hoist buys nothing there and the invariant test stays. **That is item
+1225's finding in a new place** ("this loop is memory-bound", 1.08-1.14x where the same substitution
+had paid 5.28x), and it is the second time the same shape has split this way on access pattern. The
+flat arm is reverted rather than kept: it measured nothing, and the note above it now says so with
+the numbers, so the next reader does not re-derive it.
+
+### ⚠️ THE PROBE'S OWN ANSWER CANNOT VALIDATE THE CHANGE
+
+`presence_count_probe`'s fixture gives every node an `age`, so `IS NOT NULL` keeps all 200,000 and
+the answer is the WHOLE LABEL — invariant to the predicate, which is exactly what item 702 records
+as unable to validate a fixture. Both arms printing `rows=200000` is therefore not evidence.
+
+The non-vacuous test had to be written, and the existing one could not be reused:
+`property_exists_and_is_not_null_differ_on_a_present_null` stores a present-null, which PROMOTES the
+column to `Gen` (item 1142) — so every numeric fast path declines and it never reaches this sweep at
+all. The new test keeps the column `Num` with merely ABSENT cells (2 of 4 `P` nodes carry `k`, plus a
+`Q` node that carries it and must not be counted), and asserts the representation before the counts,
+because a `Gen` column would make the assertions pass for the wrong reason.
+
+### No corpus row existed, which is how a 31.8x stayed invisible
+
+Every count row in `query/counts` carries a bound or no predicate, and a bare presence atom takes a
+different arm. Same gap as items 1221 and 1312. A `presence` row is added beside `filtered` — which
+is its control, since that one takes the bounded arm items 1220/1224 already made branchless:
+
+```text
+  filtered    32.3 us
+  presence     5.9 us   <- new row, post-change
+```
+
+### Teeth: 5 mutants, 5 caught
+
+```text
+  counts-whole-label        CAUGHT  the new non-vacuous test (and 2 more)
+  presence-gate-negated     CAUGHT  the new test
+  bounds-branch-inverted    CAUGHT  a_multi_key_presence_test_is_any_of_them
+  nulls-arm-dropped         CAUGHT  a_multi_key_presence_test_is_any_of_them
+  spelling-split-dropped    CAUGHT  present_null_semantics_characterization
+```
+
+`nulls-arm-dropped` is worth contrasting: the HOP site's equivalent half is documented as
+unreachable with a SURVIVING mutant ("no fixture can distinguish keeping it from dropping it"),
+because a present-null promotes that column to `Gen`. On the SCAN site the same mutant is caught, so
+the two halves are not in the same state and the hop site's note should not be read as covering both.
+
+### Two stale `OPEN` lines corrected, found by checking the list first
+
+- The **two-bound hop arm** (6.3x, 4887.7 against 772.4) is recorded as OPEN at item 1224's entry.
+  It was closed by **item 1227**; the line predates the fix. Corrected in place.
+- The **`bounds.iter().all` per-row dispatch** entry names `try_stream_range_count`'s arm "which
+  additionally tests the loop-invariant `bounds.is_empty()` INSIDE its sweep". That half is this
+  item. The dispatch half is untouched and stays open — and item 1228 measured the neighbouring
+  `bounds.iter().all` arms FLAT, which is the reason not to assume it pays.
+
+Also checked and closed negatively, cheaply: there is no `IsTruth` twin to fix in the Rust engine for
+item 1286's TS win. Native has no such `Expr` variant — it lowers `IS TRUE` to
+`coalesce(x = true, false)` — which is also why its `can_raise` refuses to hoist it, the fact item
+1286 had to measure from the other side.
+
+Gates: 1349 + 13 + 725 Rust tests green, `LENKE_OPT_FUZZ_SEEDS=500000 rewrite_fuzz` green (99.4s),
+all seven byte-identity fuzzers green, `cargo clippy --all-targets -- -D warnings` 0 (two warnings of
+my own fixed first — the revert left a duplicate `let mut count`), `cargo fmt` 0, `bun run check` 0.
