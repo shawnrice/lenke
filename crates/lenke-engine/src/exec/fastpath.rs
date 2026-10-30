@@ -4021,8 +4021,19 @@ pub(super) fn try_varlen_distinctby_count(
 pub(super) fn set_reachability_is_exact(mode: PathMode, min: u32, max: u32) -> bool {
     match mode {
         PathMode::Walk => true,
-        PathMode::Trail => max <= 1 || (max == u32::MAX && min <= 1),
-        PathMode::Simple | PathMode::Acyclic => false,
+        // SIMPLE shares TRAIL's condition (item 1257). It forbids NODE reuse where a trail
+        // forbids EDGE reuse, but the cycle-removal argument is the same and lands on the same
+        // place: strip the cycles from any walk and what remains visits each node at most once,
+        // which is a SIMPLE path. The closed case resolves too — a closed walk decomposes into
+        // simple cycles, at least one through the source — so reaching the source itself at
+        // `min = 1` agrees as well. Checked against a bounded oracle on nine shapes (self-loop,
+        // 2-cycle, 3-cycle, chain, chain+back-edge, lollipop, two joined cycles, in-tree,
+        // diamond) at both `->*` and `->+`: 18 of 18 agreed.
+        PathMode::Trail | PathMode::Simple => max <= 1 || (max == u32::MAX && min <= 1),
+        // ⚠️ ACYCLIC ALONE STAYS REFUSED, and it is the one that genuinely diverges: it forbids
+        // first = last, so one node with one self-loop answers 0 for `ACYCLIC (x)-[:R]->+(y)`
+        // where every other mode — and a BFS — answers 1.
+        PathMode::Acyclic => false,
     }
 }
 

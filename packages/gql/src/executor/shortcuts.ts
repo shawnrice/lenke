@@ -9955,15 +9955,20 @@ const reachQuantifierIsExact = (q: Quantifier | undefined): boolean =>
  * SIMPLE answer 1 and a BFS would too. So ACYCLIC genuinely diverges from set reachability inside
  * the region `reachQuantifierIsExact` still admits.
  *
- * `SIMPLE` stays refused for a weaker reason, stated so the next pass can price it rather than
- * re-derive it: it agreed with TRAIL on every fixture checked here (a self-loop and a chain with a
- * back-edge, at both `->*` and `->+`), and the cycle-removal argument that makes TRAIL exact
- * applies to it too — but that argument was not verified against a fixture that could separate
- * them, and an unverified soundness argument is how item 1252's wrong answer got in.
+ * `SIMPLE` IS NOW ADMITTED TOO (item 1257). Item 1255 left it out for PARITY — native refused it,
+ * so admitting it here alone would have answered where native threw. Item 1256 refined native's
+ * gate and item 1257 gives SIMPLE the same condition on BOTH sides, so the two move together.
+ *
+ * Its soundness is TRAIL's argument: strip the cycles from any walk and what remains visits each
+ * node at most once, which is a SIMPLE path. The closed case resolves too — a closed walk
+ * decomposes into simple cycles, at least one through the source — so reaching the source itself at
+ * `min = 1` agrees as well. Checked against a BOUNDED oracle (which enumerates, so it is exact) on
+ * nine shapes: self-loop, 2-cycle, 3-cycle, chain, chain with a back-edge, lollipop, two joined
+ * cycles, in-tree and diamond, at both `->*` and `->+` — 18 of 18 agreed.
  */
 const needsGeneralMatcher = (p: PathPattern): boolean =>
   (p.selector ?? 'walk') !== 'walk' ||
-  !['trail', 'walk'].includes(p.mode ?? 'trail') ||
+  !['trail', 'walk', 'simple'].includes(p.mode ?? 'trail') ||
   p.segments.some((s) => s.rel.quantifier !== undefined && relHasPredicate(s.rel));
 
 export const detectReachableShortcut = (

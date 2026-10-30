@@ -35278,12 +35278,28 @@ fn set_reachability_exactness_truth_table() {
     assert!(!exact(PathMode::Trail, 0, 2), "trail 0..=2 must refuse");
     assert!(!exact(PathMode::Trail, 1, 9), "trail 1..=9 must refuse");
 
-    // SIMPLE and ACYCLIC forbid NODE reuse, which a BFS frontier permits. ACYCLIC is not merely
-    // unproven: one node with one self-loop answers 0 for `->+` where a BFS says 1.
-    for mode in [PathMode::Simple, PathMode::Acyclic] {
-        for &(min, max) in &[(0, 1), (0, u32::MAX), (1, u32::MAX), (2, 9)] {
-            assert!(!exact(mode, min, max), "{mode:?} {min}..={max} must refuse");
-        }
+    // ⚠️ SIMPLE MOVED INTO TRAIL'S CONDITION AT ITEM 1257, and this assertion is how that change
+    // announced itself: it previously required SIMPLE to be refused at every bound, so admitting
+    // it made this test FAIL rather than slide through. Same cycle-removal argument — strip the
+    // cycles from a walk and what remains visits each node at most once, which is a SIMPLE path —
+    // verified against a bounded oracle on nine shapes at `->*` and `->+`, 18 of 18 agreeing.
+    assert!(exact(PathMode::Simple, 0, u32::MAX), "simple 0..=open");
+    assert!(exact(PathMode::Simple, 1, u32::MAX), "simple 1..=open");
+    assert!(exact(PathMode::Simple, 0, 1), "simple 0..=1");
+    assert!(
+        !exact(PathMode::Simple, 2, u32::MAX),
+        "simple 2..=open must refuse"
+    );
+    assert!(!exact(PathMode::Simple, 0, 2), "simple 0..=2 must refuse");
+
+    // ACYCLIC ALONE IS REFUSED AT EVERY BOUND, and it is the one that genuinely diverges rather
+    // than being merely unproven: one node with one self-loop answers 0 for `ACYCLIC ->+` — it
+    // forbids first = last — where every other mode, and a BFS, answers 1.
+    for &(min, max) in &[(0, 1), (0, u32::MAX), (1, u32::MAX), (2, 9)] {
+        assert!(
+            !exact(PathMode::Acyclic, min, max),
+            "acyclic {min}..={max} must refuse"
+        );
     }
 }
 
