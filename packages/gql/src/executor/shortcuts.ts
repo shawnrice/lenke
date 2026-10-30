@@ -46,6 +46,7 @@ import type {
   NodePattern,
   PathPattern,
   Projection,
+  Quantifier,
   RelPattern,
   Segment,
   SortItem,
@@ -9913,6 +9914,32 @@ const reachCount = (proj: Projection, bVar: string): { countArg?: CompiledExpr }
  * (`ANY`/`ALL SHORTEST`), a non-default mode (`SIMPLE`/`ACYCLIC`/`WALK`), or a
  * per-hop edge predicate on a quantified segment. The count/vectorized shortcuts
  * enumerate or count trails without the predicate, which is wrong for any. */
+/**
+ * Is the BFS an EXACT answer for this quantifier? (item 1252)
+ *
+ * UNBOUNDED max only — a bounded one has a length constraint this set walk does not track — and a
+ * lower bound of at most 1.
+ *
+ * ⚠️ A LOWER BOUND ABOVE 1 IS UNSOUND FOR THIS BFS, and admitting it was a WRONG ANSWER
+ * (item 1252). `ReachSpec` records only `minZero`, so `{2,}` was executed as if it had no
+ * lower bound at all — and the BFS computes WALK reachability while the default mode here is
+ * TRAIL, which forbids EDGE reuse. One node with one self-loop, `MATCH TRAIL (x)-[:R]->{2,}(y)
+ * RETURN count(DISTINCT y)`: a 2-hop trail needs two DISTINCT edges and only one exists, so the
+ * answer is 0 — the shortcut said 1, while the BOUNDED spelling `->{2,9}`, which cannot reach
+ * this rung, said 0. Its own oracle, disagreeing.
+ *
+ * Declining sends `{2,}` to enumeration, which THROWS on a cyclic graph. That is the right
+ * trade and it is not a new limitation: the native engine declines the identical case through
+ * `set_reachability_is_exact` (`Trail => max <= 1`, recorded there from `fastpath_fuzz` seed
+ * 3249, item 68) and throws too — so this also CLOSES a cross-engine divergence rather than
+ * opening one. A wrong answer is worse than an error.
+ *
+ * Its own function because the extra condition pushed `detectReachableShortcut` past the 35
+ * complexity cap; that cap has pushed back four times in this run and been right every time.
+ */
+const reachQuantifierIsExact = (q: Quantifier | undefined): boolean =>
+  q?.max === null && (q.min ?? 0) <= 1;
+
 const needsGeneralMatcher = (p: PathPattern): boolean =>
   (p.selector ?? 'walk') !== 'walk' ||
   (p.mode ?? 'trail') !== 'trail' ||
@@ -9962,7 +9989,8 @@ export const detectReachableShortcut = (
   // rather than refused here (item 1250) — refusing it sent the query to the general path, which
   // enumerates trails over an unbounded pattern and THROWS on the trail budget.
   if (
-    q?.max !== null ||
+    q === undefined ||
+    !reachQuantifierIsExact(q) ||
     rel.variable !== undefined ||
     rel.direction === 'both' ||
     (rel.properties?.length ?? 0) > 0 ||

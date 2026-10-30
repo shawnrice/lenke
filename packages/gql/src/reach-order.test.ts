@@ -127,3 +127,44 @@ describe('ORDER BY over unbounded reachability (item 1250)', () => {
     ).toEqual([{ n: 0 }, { n: 1 }, { n: 2 }]);
   });
 });
+
+describe('the reachability shortcut must be EXACT for its quantifier (item 1252)', () => {
+  // ⚠️ ONE NODE, ONE SELF-LOOP, and that is the whole fixture: it is the smallest graph on which
+  // WALK reachability and TRAIL reachability differ. A 2-hop TRAIL needs two DISTINCT edges and
+  // there is only one, so anything with `min >= 2` matches NOTHING — while the BFS, which permits
+  // edge reuse, walks a->a->a and reports one endpoint.
+  const LOOP = [
+    '{"type":"node","id":"a","labels":["P"],"properties":{"n":1}}',
+    '{"type":"edge","id":"e1","labels":["R"],"from":"a","to":"a","properties":{}}',
+  ].join('\n');
+  const loop = (): Graph => deserialize(LOOP, 'ndjson', new Graph());
+  const c = (q: string): unknown => query(loop(), q)[0]?.c;
+
+  test('a lower bound above 1 agrees with its BOUNDED oracle', () => {
+    // The UNBOUNDED spelling is the only one that can reach the shortcut (the rung requires
+    // `max === null`), so the bounded spelling is an independent oracle for the same question.
+    // Before item 1252 these disagreed — 1 against 0 — which is a WRONG ANSWER, not a slow one.
+    expect(c('MATCH TRAIL (x:P)-[:R]->{2,}(y) RETURN count(DISTINCT y) AS c')).toBe(
+      c('MATCH TRAIL (x:P)-[:R]->{2,9}(y) RETURN count(DISTINCT y) AS c'),
+    );
+    expect(c('MATCH TRAIL (x:P)-[:R]->{2,}(y) RETURN count(DISTINCT y) AS c')).toBe(0);
+
+    expect(c('MATCH TRAIL (x:P)-[:R]->{3,}(y) RETURN count(DISTINCT y) AS c')).toBe(
+      c('MATCH TRAIL (x:P)-[:R]->{3,9}(y) RETURN count(DISTINCT y) AS c'),
+    );
+  });
+
+  test('min 0 and min 1 are still SERVED, so the fix did not disable the rung', () => {
+    // The control for the test above: declining too much would also make it pass. `->*` and `->+`
+    // are the shapes items 1250 and 1251 serve, and they must keep answering.
+    expect(c('MATCH TRAIL (x:P)-[:R]->*(y) RETURN count(DISTINCT y) AS c')).toBe(1);
+    expect(c('MATCH TRAIL (x:P)-[:R]->+(y) RETURN count(DISTINCT y) AS c')).toBe(1);
+  });
+
+  test('the ROWS form agrees with the count form', () => {
+    expect(query(loop(), 'MATCH TRAIL (x:P)-[:R]->{2,}(y) RETURN DISTINCT y.n AS n')).toEqual([]);
+    expect(query(loop(), 'MATCH TRAIL (x:P)-[:R]->+(y) RETURN DISTINCT y.n AS n')).toEqual([
+      { n: 1 },
+    ]);
+  });
+});
