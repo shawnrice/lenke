@@ -40528,3 +40528,76 @@ chain, the degree product is exact for it, and the `reusedTrailsAt3` correction 
 QUANTIFIED shapes the sweep lists separately.
 
 Gates: measurement only, no code change — `bun run check` 0.
+
+### Item 1277 — item 402's "do not fix this in one line" is right about the trap and wrong about the conclusion: TWO of the four spellings are a sound pure SEED, because the range index carries NaN at the top (measurement only)
+
+`CLOSED.md` §5 carries this as open, priced at 10.7x:
+
+> **OPEN, with the trap named — `NOT (k <= v)` scans where `k > v` seeks, 10.7x (402).** The obvious
+> rewrite is WRONG under this engine's NaN rule: with `k = NaN`, `NaN <= v` is false so the `NOT`
+> form is TRUE, while `k > v` is FALSE. A range seek would silently drop those rows. A correct
+> rewrite is `(k > v) OR isNaN(k)`, which is not a pure seek. Do not "fix" this in one line.
+
+Everything in that is correct except the last inference, and the thing that changes it is a property
+of the INDEX rather than of the predicate.
+
+### First: the trap is real, and reachable, and I had the wrong reason for doubting it
+
+The hypothesis worth testing was that a NaN CELL cannot exist — this project's numeric model coerces
+`NaN`/`Inf`/`undefined` to null. That is the HOST ingest path, not the native store:
+
+```text
+  Builder: node k = NaN  ->  Column::Num  present=[t,t,t]  nulls=[f,f,f]  data=[1.0, 9.0, NaN]
+  MATCH (a:P) WHERE NOT (a.k <= 5) RETURN count(*)  ->  2      (the 9.0 AND the NaN)
+  MATCH (a:P) WHERE a.k > 5        RETURN count(*)  ->  1      (the 9.0 alone)
+```
+
+So a NaN sits in a `Num` column as a PRESENT, non-null cell, and the two spellings genuinely differ.
+Item 402's trap stands on its own numbers.
+
+### Then: a SEED only needs a SUPERSET, and the range index's total order supplies one
+
+A range index is a `BTreeMap<OrdVal, _>` ordered by `cmp_total`, where NaN sorts LAST. So an UPWARD
+seek already returns the NaN rows. Measured, ids 0=1.0 1=9.0 2=NaN 3=+inf:
+
+```text
+  range_lookup(Gt, 5)    -> [1, 3, 2]    the NaN row IS returned
+  range_lookup(Ge, 5)    -> [1, 3, 2]
+  range_lookup(Lt, 5)    -> [0]          NaN excluded — correct, it sorts after 5
+  range_lookup(Le, 5)    -> [0]
+  range_lookup(Gt, NaN)  -> []           EMPTY, and this is the case a seed must decline
+```
+
+That makes the four spellings split, and the split is the result:
+
+```text
+  spelling          match set              seed    sound?
+  NOT (k <= v)      {k > v}  ∪ {NaN}       Gt v    YES — and EXACTLY equal, not merely a superset
+  NOT (k < v)       {k >= v} ∪ {NaN}       Ge v    YES
+  NOT (k >= v)      {k < v}  ∪ {NaN}       Lt v    NO — the seek drops the NaN rows
+  NOT (k > v)       {k <= v} ∪ {NaN}       Le v    NO
+```
+
+The asymmetry is entirely NaN's position in the total order: the upward seeks sweep the tail that
+holds it, the downward ones stop before it. `NOT (k <= v)` — the spelling item 402 names — is one of
+the two sound ones.
+
+### What implementing it requires, decided but NOT built here
+
+- Admit `Not(Compare { Le | Lt })` to `range_seek_target`'s family, mapping to `Gt`/`Ge`. REFUSE
+  `Not(Compare { Ge | Gt })`: those are the two that drop NaN.
+- DECLINE A NaN BOUND. `range_lookup(Gt, NaN)` is empty, so seeding a NaN bound turns "every row
+  matches" into "no rows" — the same hazard in the other direction. A literal is checkable at plan
+  time; a param is not, which likely means declining the param spelling or resolving per execution.
+- ⚠️ KEEP THE CONJUNCT IN THE RESIDUAL. `seed_from_conjuncts` DROPS the picked conjunct
+  (`filter(|(i, _)| *i != pick)`) because an ordinary `k > v` seek is exact, and this seed must not
+  inherit that. The match sets above are exactly equal for a pure `Num` column, but a range index
+  also holds STRINGS, and a cross-type `NOT (k <= 5)` on a string cell is a THROW in this engine
+  rather than a match — so dropping the predicate would swallow an error the general path raises.
+  Re-validating is cheap (the seed is selective) and it is what makes the change a seed rather than
+  a rewrite.
+
+That last point is why item 402's "not a pure seek" verdict is half right: as a REWRITE of the
+predicate it is not, and as a SEED with the predicate retained it is — for two of the four spellings.
+
+Gates: measurement only, no code change — `bun run check` 0.
