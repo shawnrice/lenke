@@ -509,7 +509,8 @@ const liftFarOnlyClause = (where: Expr, farVar: string): CPredicate | undefined 
     (lifted.cmpProps?.length ?? 0) > 0 ||
     (lifted.truthProps?.length ?? 0) > 0 ||
     (lifted.notTruthProps?.length ?? 0) > 0 ||
-    (lifted.pathProps?.length ?? 0) > 0
+    (lifted.pathProps?.length ?? 0) > 0 ||
+    (lifted.memberProps?.length ?? 0) > 0
     ? lifted
     : undefined;
 };
@@ -532,6 +533,12 @@ const mergeFarPreds = (inline: CPredicate, clause: CPredicate): CPredicate => ({
   ...(inline.cmpProps === undefined && clause.cmpProps === undefined
     ? {}
     : { cmpProps: [...(inline.cmpProps ?? []), ...(clause.cmpProps ?? [])] }),
+  // `memberProps` merged for the reason the `truthProps` note below gives, and it is the half of
+  // item 1269 that could be a WRONG ANSWER rather than a slow one: a dropped list returns a
+  // SUPERSET, and no correctness test on a count would see it.
+  ...(inline.memberProps === undefined && clause.memberProps === undefined
+    ? {}
+    : { memberProps: [...(inline.memberProps ?? []), ...(clause.memberProps ?? [])] }),
   // `truthProps` is merged here because forgetting it would be the exact failure `hasPredicate`'s
   // doc records: a dropped predicate list returns a SUPERSET, and no correctness test on a
   // fixture lacking the spelling can see it. Added with the list itself (item 875) rather than

@@ -540,6 +540,65 @@ const hashedIn = (v: unknown, { set, hasNull }: Haystack): Truth => {
  * waste, and it is why the inline spelling measured ~3x the `$param` one at every
  * length (item 268) before this existed.
  */
+/**
+ * `<needle> IN <list>` as a test on the needle VALUE, or `null` when the haystack varies per row.
+ *
+ * Extracted from `case 'in'` so the generic evaluator and the LIFTED path (`memberProps`, item
+ * 1269) share one implementation. Two copies of a three-valued membership rule is the drift this
+ * file keeps paying for elsewhere, and the two call sites differ only in where the needle comes
+ * from — the binding for `case 'in'`, the element itself for the lift.
+ *
+ * A CLOSED all-literal haystack is hashed ONCE, at compile time. That removes BOTH costs the linear
+ * form paid per row: `case 'list'` rebuilding the array and calling an element closure per item,
+ * and `inList` then scanning it. Measured at 200,000 rows on an unindexed key, `IN` over 500 inline
+ * literals went 312.98ms -> 7.07ms (item 268).
+ *
+ * A CLOSED haystack that is not all-literal — a `$ids` param, or an inline list whose items are
+ * params — has a value that is constant WITHIN an execution but not across executions.
+ * `closedList` is the same predicate the seeding path uses for exactly this set of shapes (item
+ * 184). Hash it ONCE per execution, keyed on `execEpoch`. Evaluating the haystack against the first
+ * row's env and reusing it is sound precisely BECAUSE it is closed: a `lit`/`param` tree never
+ * reads the binding, so every row would compute the same value.
+ *
+ * ⚠️ KEYING ON THE ARRAY'S IDENTITY INSTEAD WAS A 2.9x REGRESSION, and it is worth saying why,
+ * because identity looks like the obvious key. `case 'list'` rebuilds its array per ROW, so for an
+ * inline list of params the identity check missed on every row and re-hashed the whole haystack
+ * each time — strictly worse than the linear scan it replaced. Measured at 100 terms, 200,000 rows:
+ * `IN [$a, …]` went 203.73ms (pre-268) -> 587.42ms (identity memo) -> hashed here. An
+ * execution-scoped key cannot have that failure mode, because it never hashes anything that varies
+ * per row.
+ */
+const membershipTest = (list: Expr): ((needle: unknown, env: EvalEnv) => Truth) | null => {
+  const closed = closedListValues(list);
+  const constHay = closed === null ? null : hashValues(closed);
+
+  if (constHay !== null) {
+    return (needle) => hashedIn(needle, constHay);
+  }
+
+  if (closedList(list)) {
+    const compiled = compileExpr(list);
+    let epoch = -1;
+    let hay: unknown;
+    let hashed: Haystack | null = null;
+
+    return (needle, env) => {
+      if (epoch !== execEpoch) {
+        epoch = execEpoch;
+        hay = compiled(env);
+        hashed = Array.isArray(hay) ? hashValues(hay) : null;
+      }
+
+      // `hashed` is null for a non-array binding (`$ids` bound to a number → the whole predicate
+      // is UNKNOWN) or a non-hashable element (a NaN param), and both keep `inList` over the
+      // cached value.
+      return hashed === null ? inList(needle, hay) : hashedIn(needle, hashed);
+    };
+  }
+
+  return null;
+};
+
 const closedListValues = (e: Expr): readonly unknown[] | null => {
   if (e.kind !== 'list') {
     return null;
@@ -1004,67 +1063,22 @@ export const compileExpr = (expr: Expr): CompiledExpr => {
     case 'in': {
       const e = compileExpr(expr.expr);
       const { negated } = expr;
+      const test = membershipTest(expr.list);
 
-      // A CLOSED all-literal haystack is hashed ONCE, here at compile time. That
-      // removes BOTH costs the linear form paid per row: `case 'list'` rebuilding
-      // the array and calling an element closure per item, and `inList` then
-      // scanning it. Measured at 200,000 rows on an unindexed key, `IN` over 500
-      // inline literals went 312.98ms -> 7.07ms (item 268).
-      const closed = closedListValues(expr.list);
-      const constHay = closed === null ? null : hashValues(closed);
-
-      if (constHay !== null) {
+      if (test !== null) {
         return (env) => {
-          const r = hashedIn(e(env), constHay);
+          const r = test(e(env), env);
 
           return negated ? not3(r) : r;
         };
       }
 
-      const list = compileExpr(expr.list);
-
-      // A CLOSED haystack that is not all-literal — a `$ids` param, or an inline list
-      // whose items are params — has a value that is constant WITHIN an execution but
-      // not across executions. `closedList` is the same predicate the seeding path
-      // uses for exactly this set of shapes (item 184). Hash it ONCE per execution,
-      // keyed on `execEpoch`.
-      //
-      // Evaluating the haystack against the first row's env and reusing it is sound
-      // precisely BECAUSE it is closed: a `lit`/`param` tree never reads the binding,
-      // so every row would compute the same value.
-      //
-      // KEYING ON THE ARRAY'S IDENTITY INSTEAD WAS A 2.9x REGRESSION, and it is worth
-      // saying why, because identity looks like the obvious key. `case 'list'` rebuilds
-      // its array per ROW, so for an inline list of params the identity check missed on
-      // every row and re-hashed the whole haystack each time — strictly worse than the
-      // linear scan it replaced. Measured at 100 terms, 200,000 rows:
-      // `IN [$a, …]` went 203.73ms (pre-268) -> 587.42ms (identity memo) -> hashed here.
-      // An execution-scoped key cannot have that failure mode, because it never hashes
-      // anything that varies per row.
-      if (closedList(expr.list)) {
-        let epoch = -1;
-        let hay: unknown;
-        let hashed: Haystack | null = null;
-
-        return (env) => {
-          if (epoch !== execEpoch) {
-            epoch = execEpoch;
-            hay = list(env);
-            hashed = Array.isArray(hay) ? hashValues(hay) : null;
-          }
-
-          // `hashed` is null for a non-array binding (`$ids` bound to a number → the
-          // whole predicate is UNKNOWN) or a non-hashable element (a NaN param), and
-          // both keep `inList` over the cached value.
-          const result = hashed === null ? inList(e(env), hay) : hashedIn(e(env), hashed);
-
-          return negated ? not3(result) : result;
-        };
-      }
-
       // A haystack that genuinely varies per row — a property, a function result. It is
       // re-evaluated and scanned linearly, which is the right answer for it: hashing a
-      // fresh list per row could only add work.
+      // fresh list per row could only add work. `membershipTest` declines exactly this
+      // case, and it is the one shape that cannot be lifted either.
+      const list = compileExpr(expr.list);
+
       return (env) => {
         const result = inList(e(env), list(env));
 
@@ -4524,6 +4538,32 @@ export type CPredicate = {
   notTruthProps?: readonly string[];
 
   /**
+   * `WHERE n.k IN [..]`, and the `n.k = a OR n.k = b` spelling that `membershipFromEqChain` folds
+   * into the same `in` node — read off the ELEMENT instead of through the binding (item 1269).
+   *
+   * A fifth list for the same blunt reason as the others: `directEqProps` admits a bare `prop`, a
+   * `NOT prop` and a `compare`, and declined its WHOLE chain on anything else — so an `in` conjunct
+   * took the entire predicate to the generic evaluator. Three spellings of one question, measured
+   * at 200,000 vertices on an unindexed key, all answering 2000:
+   *
+   * ```text
+   *   {age: 50} inline        3.195 ms   16.0 ns a vertex
+   *   age = 50                3.358      16.8
+   *   age IN [50]             5.884      29.4
+   *   age = 50 OR age = 50    5.885      29.4      <- IN and OR are already one shape
+   * ```
+   *
+   * 1.84x, and item 230 had already measured and attributed that exact pair (17.2 ns against 29.0):
+   * a predicate passed with the node's OWN variable lets the lift read the element directly, where
+   * anything `directEqProps` does not recognize pays a binding `Map` write and read per element.
+   *
+   * Carries a `test` built by `membershipTest` — the SAME function `case 'in'` uses, so the two
+   * spellings agree on three-valued membership by construction rather than by re-deriving it. A
+   * haystack that varies per row declines the lift, exactly as it declines hoisting there.
+   */
+  memberProps?: readonly CMemberProp[];
+
+  /**
    * The same lift for a DOTTED path — `WHERE n.meta.city = 'nyc'` (item 900).
    *
    * A fourth list for a blunt reason: `asPropCompare` matches a plain `prop` only, so a dotted
@@ -4720,6 +4760,28 @@ const compileProps = (props: readonly PropertyConstraint[] | undefined): CProp[]
  * leaving a raising residual behind is sound. Telling the two apart conjunct-by-conjunct is the
  * next step, not a property this avoids.
  */
+/**
+ * A conjunct as a membership node, or `null` — `in` as itself, an `=`-OR-chain folded (item 1269).
+ *
+ * `membershipFromEqChain` is applied HERE rather than read off the AST for the reason its own note
+ * gives: it runs inside `compileExpr`'s `case 'or'` so that every ANALYSIS pass still sees the
+ * original `or` and `collectHints`' seeding keeps firing. `directEqProps` is one of those passes,
+ * so it has to fold for itself — and folding a local copy changes nothing for the others.
+ */
+const asMembershipNode = (e: Expr): Expr | null => {
+  if (e.kind === 'in') {
+    return e;
+  }
+
+  return e.kind === 'or' ? membershipFromEqChain(e) : null;
+};
+
+/** One lifted `<ownVar>.<key> IN <closed list>` conjunct (item 1269). */
+type CMemberProp = {
+  key: string;
+  test: (needle: unknown, env: EvalEnv) => Truth;
+};
+
 const directEqProps = (
   where: Expr,
   ownVar: string | undefined,
@@ -4730,6 +4792,8 @@ const directEqProps = (
   /** Keys of `NOT <ownVar>.<key>` conjuncts — the negated twin of `truth` (item 984). */
   notTruth: string[];
   path: CPathProp[];
+  /** `<ownVar>.<key> IN <closed list>` conjuncts (item 1269). */
+  member: CMemberProp[];
   residual: Expr | undefined;
 } | null => {
   if (ownVar === undefined) {
@@ -4746,6 +4810,7 @@ const directEqProps = (
   const truth: string[] = [];
   const notTruth: string[] = [];
   const path: CPathProp[] = [];
+  const member: CMemberProp[] = [];
 
   for (const conjunct of conjuncts) {
     // A BARE PROPERTY standing alone as the predicate (`WHERE n.flag`), which this used to
@@ -4769,6 +4834,39 @@ const directEqProps = (
       conjunct.expr.variable === ownVar
     ) {
       notTruth.push(conjunct.expr.key);
+      continue;
+    }
+
+    // `WHERE n.k IN [..]` AND the `n.k = a OR n.k = b` spelling (item 1269).
+    //
+    // ⚠️ THE OR SPELLING HAS TO BE FOLDED HERE, and the first cut of this item assumed it arrived
+    // already folded. It does not: `membershipFromEqChain` is applied inside `compileExpr`'s
+    // `case 'or'` — deliberately, so that every ANALYSIS pass still sees the original `or` and
+    // `collectHints`' seeding keeps firing — which is a stage this loop runs BEFORE. The two
+    // spellings had measured identically (5.884 against 5.885), and that was two shapes costing
+    // the same rather than one shape, so lifting `in` alone left `OR` at 6.042 while `IN` went to
+    // 3.699. Folding here reads the same function and still does not touch the AST.
+    //
+    // NEGATED IS LEFT OUT, deliberately. `NOT IN` is `not3` of this test, and `not3` of UNKNOWN is
+    // UNKNOWN, so lifting it would be sound — but it is unmeasured, so it stays on the generic
+    // path rather than being added untested.
+    const asMembership = asMembershipNode(conjunct);
+
+    if (
+      asMembership?.kind === 'in' &&
+      !asMembership.negated &&
+      asMembership.expr.kind === 'prop' &&
+      asMembership.expr.variable === ownVar
+    ) {
+      const test = membershipTest(asMembership.list);
+
+      // A haystack that varies per row cannot be lifted — and declining the whole chain here
+      // matches what this loop does with every other conjunct it cannot read.
+      if (test === null) {
+        return null;
+      }
+
+      member.push({ key: asMembership.expr.key, test });
       continue;
     }
 
@@ -4840,7 +4938,8 @@ const directEqProps = (
     cmp.length === 0 &&
     truth.length === 0 &&
     notTruth.length === 0 &&
-    path.length === 0
+    path.length === 0 &&
+    member.length === 0
   ) {
     return null;
   }
@@ -4852,7 +4951,7 @@ const directEqProps = (
   // `direct.residual` because the shape is what a future MIXED chain would need: item 259 made
   // reordering a FILTER's conjuncts unobservable, so lifting the equalities and leaving the rest
   // is now sound where it previously was not, and that is the next step rather than this one.
-  return { eq, cmp, truth, notTruth, path, residual: undefined };
+  return { eq, cmp, truth, notTruth, path, member, residual: undefined };
 };
 
 /**
@@ -4885,7 +4984,8 @@ export const hasPredicate = (pred: CPredicate): boolean =>
   (pred.truthProps?.length ?? 0) > 0 ||
   (pred.notTruthProps?.length ?? 0) > 0 ||
   (pred.cmpProps?.length ?? 0) > 0 ||
-  (pred.pathProps?.length ?? 0) > 0;
+  (pred.pathProps?.length ?? 0) > 0 ||
+  (pred.memberProps?.length ?? 0) > 0;
 
 export const compilePredicate = (
   properties: readonly PropertyConstraint[] | undefined,
@@ -4914,6 +5014,7 @@ export const compilePredicate = (
     ...(direct === null || direct.truth.length === 0 ? {} : { truthProps: direct.truth }),
     ...(direct === null || direct.notTruth.length === 0 ? {} : { notTruthProps: direct.notTruth }),
     ...(direct === null || direct.path.length === 0 ? {} : { pathProps: direct.path }),
+    ...(direct === null || direct.member.length === 0 ? {} : { memberProps: direct.member }),
   };
 };
 
@@ -5949,6 +6050,20 @@ export const satisfies = (
   if (pred.notTruthProps !== undefined) {
     for (const key of pred.notTruthProps) {
       if (asTruth(propOf(element, key)) !== false) {
+        return false;
+      }
+    }
+  }
+
+  // ⚠️ LAST AMONG THE LIFTED FAMILIES, AND THAT IS THE CONSERVATIVE PLACE (item 1269). A
+  // membership test cannot RAISE — `hashedIn`/`inList` only compare — while `truthProps` and
+  // `notTruthProps` raise on a non-boolean and `cmpProps`/`pathProps` can too. Running the
+  // non-raising family first would let a FALSE membership return before a sibling conjunct that
+  // the generic path would have raised on, changing WHICH queries error. Running it last cannot:
+  // every family that can raise has already run.
+  if (pred.memberProps !== undefined) {
+    for (const { key, test } of pred.memberProps) {
+      if (test(propOf(element, key), env) !== true) {
         return false;
       }
     }

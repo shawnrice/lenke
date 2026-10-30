@@ -39957,3 +39957,102 @@ does not shrink with k) — and it closes a spelling gap rather than only a cost
 stronger reason.
 
 Gates: measurement only, no code change — `bun run check` 0.
+
+### Item 1269 — `IN` and the `=`-OR-chain lift into `memberProps`: 1.53-1.61x, and the spelling spread closes from 1.84x to 1.24x (DONE)
+
+Item 1268 found and located this: three spellings of one question, 1.84x apart in the TS engine, all
+reaching `buildNodeCount` but not all reaching the element-direct lift. `directEqProps` admits a
+bare `prop`, a `NOT prop`, a dotted compare and a plain compare, and declines its WHOLE chain on
+anything else — so an `in` conjunct took the entire predicate to the generic evaluator, which reads
+its element back out of the binding `Map`.
+
+```text
+  shape                      before     after    ns/vertex before -> after
+  age IN [50]                 5.884 ms   3.839     29.4 -> 19.2     1.53x
+  age = 50 OR age = 50        5.885      3.815     29.4 -> 19.1     1.54x
+  age IN [50,51,52,53]        5.872      3.713     29.4 -> 18.6
+  age IN $p (param haystack)  ~5.88      5.032               25.2
+  [CTL] age = 50              3.358      3.340     16.8 -> 16.7     already lifted
+  [CTL] {age: 50} inline      3.195      3.108     16.0 -> 15.5     already lifted
+  [CTL] age > 50              4.006      4.289                      cmpProps, untouched
+  [CTL] bare count(*)         0.001      0.001
+```
+
+200,000 vertices, one process (item 762), and the TS estimator rule throughout: 14 reps, first three
+dropped as warm-up, MEDIAN of the rest, min over three order-alternated rounds. Item 1268 is the
+reason that rule is not optional here — a `min`-of-9 summary mis-signed one of its rows as a bug.
+
+Item 230 had already measured and attributed this exact pair (17.2 ns against 29.0): a predicate
+passed with the node's OWN variable lets the lift read the element directly. The gap was one matcher
+wide.
+
+### ⚠️ ITEM 1268'S READING WAS WRONG IN ONE DETAIL, and the first cut inherited it
+
+That item recorded "IN and OR are already one shape", because they measured 5.884 against 5.885.
+They are not: `membershipFromEqChain` is applied inside `compileExpr`'s `case 'or'` — deliberately,
+so every ANALYSIS pass still sees the original `or` and `collectHints`' seeding keeps firing — which
+is a stage AFTER `directEqProps`. Two shapes costing the same is not one shape. Lifting `in` alone
+took it to 3.699 and left the OR spelling at **6.042**, which is how the mistake surfaced. The fold
+is now done inside `directEqProps` as well, reading the same function and still not touching the AST.
+
+### `membershipTest`, extracted so the two paths cannot drift
+
+`case 'in'`'s three arms — a compile-time hash for an all-literal haystack, a per-execution hash for
+a closed one, a linear scan for a per-row one — are now one function, used by the generic evaluator
+and by the lift. Two copies of a three-valued membership rule is the drift this file keeps paying
+for, and the call sites differ only in where the needle comes from. A per-row haystack declines the
+lift, exactly as it declines hoisting there.
+
+### The consumer audit, which `dotted-predicate-routes.test.ts` demands in writing
+
+A successful lift EMPTIES `where`, so the lifted list becomes the ONLY carrier of that conjunct —
+and that file names five consumers, "none discoverable from the list's own definition", where a miss
+returns a silent SUPERSET. All five, plus two more:
+
+- **`satisfies`** — patched. The applier.
+- **`shortcuts.ts`' `InlinePred`** — covered: `inlineHolds` calls `satisfies`.
+- **`mergeFarPreds`** — patched, and this is the one that would be a WRONG ANSWER rather than a slow
+  one. Pinned by a test that answers 1 where a dropped list answers 2.
+- **`rejectedByElementDirect`** — deliberately NOT extended. Its own comment records why (item 644
+  was reverted here): this pre-filter runs BEFORE the binding is built, so rejecting a candidate
+  skips a binding that would otherwise RAISE. It is an optimization that may only ever say
+  "not decided", so omitting a family costs speed and cannot cost correctness.
+- **the two `preFilter` gates in `matching.ts`** — not extended, same reasoning: they gate that
+  pre-filter alone.
+- **`hasPredicate`** — patched. Its doc is explicit that a new carrier forgotten there reintroduces
+  the bug the function exists to prevent.
+- **`hop-projection`'s "did anything lift" check** — patched, which is what lets the hop shapes win.
+
+### Raise order: the lift runs LAST among the lifted families, and that is deliberate
+
+A membership test cannot raise — `hashedIn`/`inList` only compare — while `truthProps`/`notTruthProps`
+raise on a non-boolean and `cmpProps`/`pathProps` can too. Running the non-raising family FIRST would
+let a FALSE membership return before a sibling conjunct the generic path would have raised on,
+changing WHICH queries error rather than how fast they run. Running it last cannot.
+
+### Teeth: 6 mutants, 6 caught — and two of them needed tests that did not exist yet
+
+```text
+  merge-drops-member                   CAUGHT  the far-hop MERGE test (would answer 2 for 1)
+  satisfies-skips-member               CAUGHT  existing Kleene-law + seed-hint fuzz tests
+  member-test-keeps-unknown            CAUGHT  existing Kleene-law fuzz tests
+  member-runs-before-raising-families   CAUGHT  the raise-order test
+  has-predicate-omits-member           CAUGHT  the ROUTE test's explicit `hasPredicate` assertion
+  or-fold-removed                      CAUGHT  the ROUTE test
+```
+
+The last two SURVIVED the first run, both because admitting a spelling to a lifted family is
+ANSWER-EQUIVALENT — every answer test passes with the lift reverted and only the cost changes. The
+remedy is the one `CLOSED.md` already prescribes for a route choice: assert the PURE decision.
+`compilePredicate` is exported, so the route test builds the two `where` trees by hand and checks
+`memberProps.length`, that `where` is EMPTIED (a lift that left it would apply the conjunct twice),
+and that `hasPredicate` sees it.
+
+⚠️ AND ONE CLAIM IN MY OWN TEST WAS WRONG AND IS CORRECTED IN PLACE. The product-count case was
+written as the thing that catches `has-predicate-omits-member`. It is not — the route test's explicit
+assertion is. The case still earns its place, because it pins the product shape's ANSWER where no
+assertion on the compiler can, but its comment now says which guard actually lives where.
+
+Gates: 21 projects green (including 11 new tests), all seven byte-identity fuzzers green,
+`bun run lint` 0 (two of my own errors fixed first — a nested ternary became a named helper),
+`bun run check` 0.
