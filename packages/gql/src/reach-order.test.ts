@@ -87,12 +87,39 @@ describe('ORDER BY over unbounded reachability (item 1250)', () => {
 
   test('an ORDER BY the rung cannot resolve declines rather than answering wrongly', () => {
     // `ORDER BY x.n + 1` is neither an output column nor an item's expression, so the rung declines
-    // and the general path takes it — which on an UNBOUNDED pattern exhausts the trail budget.
-    // ⚠️ THIS ASSERTS THE ERROR, which is the honest state: declining is correct (the rung must not
-    // guess), and the resulting throw is the gap recorded for `ORDER BY` + a window below.
-    expect(() =>
-      query(graph(), 'MATCH (a:P)-[:T]->*(x) RETURN DISTINCT x.n AS n ORDER BY x.n + 1'),
-    ).toThrow();
+    // and the general path answers. Declining is correct — the rung must not guess — and what
+    // matters is that the ANSWER is still right.
+    //
+    // ⚠️ ITS OWN TINY ACYCLIC FIXTURE, AND THAT IS A BUG FIX. This test first asserted a THROW,
+    // because on the dense cyclic fixture above the general path exhausts the trail budget. That
+    // passed locally in ~1 s and FAILED IN CI at 5087 ms — bun's default test timeout is 5000 ms,
+    // so it was timing out rather than asserting. A test whose verdict depends on how fast the
+    // machine exhausts a budget is a test that fails on a slower runner. A three-node CHAIN
+    // enumerates in microseconds and lets the real claim be asserted: the correct rows, in the
+    // order asked for.
+    const chain = [
+      '{"type":"node","id":"c1","labels":["P"],"properties":{"n":3}}',
+      '{"type":"node","id":"c2","labels":["P"],"properties":{"n":1}}',
+      '{"type":"node","id":"c3","labels":["P"],"properties":{"n":2}}',
+      '{"type":"edge","id":"ce1","labels":["T"],"from":"c1","to":"c2","properties":{}}',
+      '{"type":"edge","id":"ce2","labels":["T"],"from":"c2","to":"c3","properties":{}}',
+    ].join('\n');
+    const g = deserialize(chain, 'ndjson', new Graph());
+
+    // `->*` from every start reaches every node (including itself at zero hops), so the DISTINCT
+    // endpoints are all three, ordered by `n + 1` — which is the same order as by `n`.
+    expect(query(g, 'MATCH (a:P)-[:T]->*(x) RETURN DISTINCT x.n AS n ORDER BY x.n + 1')).toEqual([
+      { n: 1 },
+      { n: 2 },
+      { n: 3 },
+    ]);
+
+    // And the resolvable spelling agrees, which is what makes the decline invisible in the answer.
+    expect(query(g, 'MATCH (a:P)-[:T]->*(x) RETURN DISTINCT x.n AS n ORDER BY n')).toEqual([
+      { n: 1 },
+      { n: 2 },
+      { n: 3 },
+    ]);
   });
 
   test('ORDER BY with a WINDOW is ordered FIRST and sliced second (item 1251)', () => {
