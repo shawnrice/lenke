@@ -4825,6 +4825,24 @@ const asNullTest = (e: Expr): { expr: Expr; negated: boolean } | null => {
   return null;
 };
 
+/**
+ * Flatten an `and` tree into its conjuncts, depth-first and left to right (item 1271).
+ *
+ * `a AND b AND c` already arrives as one flat `items` list; this exists for the PARENTHESISED
+ * spellings, which arrive nested and which `directEqProps` used to decline outright.
+ */
+const flattenAnd = (e: Expr, out: Expr[]): void => {
+  if (e.kind === 'and') {
+    for (const item of e.items) {
+      flattenAnd(item, out);
+    }
+
+    return;
+  }
+
+  out.push(e);
+};
+
 /** One lifted `<ownVar>.<key> IS [NOT] NULL` conjunct (item 1270). */
 type CNullProp = {
   key: string;
@@ -4858,11 +4876,24 @@ const directEqProps = (
     return null;
   }
 
-  // A nested `and` under an `and` is not flattened here — it declines below as a non-`compare`
-  // conjunct. The parser produces one flat `items` list for `a AND b AND c`, so the nested shape
+  // ⚠️ A NESTED `and` IS FLATTENED (item 1271), and the note that used to stand here said why it
+  // was not: "the parser produces one flat `items` list for `a AND b AND c`, so the nested shape
   // arrives only from parenthesisation, and declining it is a missed optimisation, not a wrong
-  // answer.
-  const conjuncts = where.kind === 'and' ? where.items : [where];
+  // answer." Both halves are true and the conclusion was still wrong — a missed optimisation that
+  // PARENTHESES alone turn on is this engine's named bug class, and it was the most expensive
+  // decline left in this function. 200,000 vertices, all three answering an identical 2000:
+  //
+  //   a=50 AND b=0 AND c=0        3.558 ms   17.8 ns a vertex
+  //   (a=50 AND b=0) AND c=0      7.615      38.1            2.14x
+  //   a=50 AND (b=0 AND c=0)      6.732      33.7            1.89x
+  //
+  // DEPTH-FIRST, LEFT TO RIGHT, so the flattened list is the conjuncts in WRITTEN order — the same
+  // order the flat spelling produces. That matters beyond tidiness: this loop groups what it lifts
+  // into families, so the order conjuncts arrive in is the order a RAISE is reached in, and a
+  // flatten that reordered them could change which query errors.
+  const conjuncts: Expr[] = [];
+
+  flattenAnd(where, conjuncts);
   const eq: CProp[] = [];
   const cmp: CCmpProp[] = [];
   const truth: string[] = [];
