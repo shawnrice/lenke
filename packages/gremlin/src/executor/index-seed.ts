@@ -29,7 +29,7 @@
 
 import type { Edge, Graph, IndexableValue, PropertyIndex, RangeBound, Vertex } from '@lenke/core';
 
-import type { Plan, Predicate, Step } from '../ast.js';
+import type { ID, Plan, Predicate, Step } from '../ast.js';
 import { startTraverser, type Traverser } from './runtime.js';
 
 /** Filter steps that only narrow the source set, so reordering them is safe. */
@@ -268,11 +268,86 @@ const labelSeed = <E>(
   return { count: bucket.size, build: () => bucket, removable: true };
 };
 
+/**
+ * `hasId(a, b, …)` seeded from the ID MAP instead of scanned (item 1306).
+ *
+ * This is the most selective seed there is — the candidate set is at most the number of ids
+ * written — and it was missing, so the one spelling whose cost should be independent of graph size
+ * grew with it. Measured on the Gremlin spelling probe at 200,000 vertices / 400,000 edges, three
+ * isolated runs each, both spellings answering identically:
+ *
+ * ```text
+ *   V('v137').count()              0.008 ms      vs  V().hasId('v137').count()      5.79 ms
+ *   E('e137').count()              0.008 ms      vs  E().hasId('e137').count()     12.0 ms
+ *   V('v137').values('age')                      vs  V().hasId('v137').values('age')
+ * ```
+ *
+ * 757-930x on vertices, 1462-1796x on edges, 625-713x projected. `hasId` is the spelling a user
+ * reaches for when the id arrives as a FILTER rather than as a seed — from a `where`, or after a
+ * hop — so it is not an exotic form.
+ *
+ * ⚠️ THE SELECTION MUST MATCH `hasId`'s FILTER EXACTLY, and two details decide it.
+ *
+ * **Equality.** `dispatch.ts` filters with `step.ids.includes(v.id)`, which is SameValueZero;
+ * `Map.get` is also SameValueZero, so a map lookup selects precisely the elements the filter keeps.
+ *
+ * **A NON-STRING id must NOT raise here.** Element ids in this engine are strings, and
+ * `applySource`'s `asStringId` THROWS for `V(5)` — deliberately, matching TinkerPop's string id
+ * manager. But `V().hasId(5)` does not throw: `includes` simply never matches, and the answer is
+ * empty. So this seed goes through the raw id MAP with an explicit `typeof` guard, never through
+ * `getVertexById`/`asStringId`, or it would convert an empty result into a fault. That asymmetry
+ * is also why `V() + hasId(ids)` is NOT rewritten into the seeded source `V(ids)`, which would
+ * have reached every rung at once: besides the raise, `sourceFromIds` does not DEDUPE, so
+ * `V('a','a')` yields the element twice where `hasId('a','a')` yields it once. Two different
+ * answers, and the faster-looking rewrite is the wrong one.
+ *
+ * Hence `removable: true` only because the `Set` below dedupes and the lookup is exact: the seeded
+ * set IS the filter's output, so dropping the step cannot change the answer.
+ *
+ * `hasId()` with NO ids seeds the empty set, which is the right answer — `includes` is false for
+ * every element — and cheaper than a scan that rejects all of them. `count` is `ids.length`, an
+ * UPPER bound (ids may repeat or be absent), which is what a selectivity estimate wants.
+ */
+const idSeed = <E>(
+  step: Step,
+  byId: ((id: ID) => E | undefined) | undefined,
+): Candidate<E> | null => {
+  // EXACTLY ONE ID, and the restriction is about ORDER rather than about mechanism.
+  //
+  // `hasId` is a FILTER over the source, so it emits in the source's order. With several ids the
+  // seed would emit in the order they were WRITTEN, and `hasId.test.ts`'s "we can filter by ids
+  // out of order" asserts precisely the opposite: `hasId('6','2','1','4')` must come back
+  // `['1','2','4','6']`. That test is named for the behaviour, so it is a pinned contract and not
+  // an incidental assertion — the general "an unordered result's order is WON'T-FIX" policy does
+  // not license an optimization to quietly overturn a case someone wrote down on purpose.
+  //
+  // With ONE id the question cannot arise: one element has one position, so the seeded output and
+  // the scanned output are identical sequences, and this is the shape the whole measured win is in
+  // (the spelling probe's lookups are single-id).
+  //
+  // THE MULTI-ID CASE IS THEREFORE A DELIBERATE DECLINE, not an oversight, and it is worth the
+  // same 757-1796x if it is ever taken. Taking it needs a decision about that order — made against
+  // TinkerPop ground truth (`podman run -i docker.io/tinkerpop/gremlin-console:3.7.3`), not as a
+  // side effect of a perf change — and then that test updated in the same commit.
+  if (byId === undefined || step.kind !== 'hasId' || step.ids.length !== 1) {
+    return null;
+  }
+
+  const element = byId(step.ids[0]);
+
+  // An id nothing carries seeds the EMPTY set, which is the right answer and cheaper than a scan
+  // that will reject every element — the same shape as `labelSeed`'s missing-bucket case.
+  return element === undefined
+    ? { count: 0, build: () => EMPTY, removable: true }
+    : { count: 1, build: () => new Set<E>([element]), removable: true };
+};
+
 const seedRest = <E>(
   rest: readonly Step[],
   index: PropertyIndex<E>,
   tracksPath: boolean,
   bucketOf?: (label: string) => ReadonlySet<E> | undefined,
+  byId?: (id: ID) => E | undefined,
 ): SeededPlan | null => {
   // Estimate each seedable leading filter's cardinality (no set built yet) and
   // pick the most selective. The other filters stay in the plan as residuals,
@@ -288,7 +363,7 @@ const seedRest = <E>(
       break;
     }
 
-    const candidate = seedForStep(step, index) ?? labelSeed(step, bucketOf);
+    const candidate = seedForStep(step, index) ?? labelSeed(step, bucketOf) ?? idSeed(step, byId);
 
     if (candidate && candidate.count < (best?.count ?? Infinity)) {
       best = candidate;
@@ -325,8 +400,14 @@ export const seedFromIndex = (plan: Plan, graph: Graph, tracksPath: boolean): Se
   }
 
   if (source.kind === 'V' && !source.ids) {
-    return seedRest<Vertex>(rest, graph.vertexPropertyIndex, tracksPath, (l) =>
-      graph.verticesByLabel.get(l),
+    return seedRest<Vertex>(
+      rest,
+      graph.vertexPropertyIndex,
+      tracksPath,
+      (l) => graph.verticesByLabel.get(l),
+      // The RAW map, not `getVertexById`: see `idSeed` on why a non-string id must come back
+      // empty here rather than raising the way `V(5)` does.
+      (id) => (typeof id === 'string' ? graph.verticesById.get(id) : undefined),
     );
   }
 
@@ -345,8 +426,12 @@ export const seedFromIndex = (plan: Plan, graph: Graph, tracksPath: boolean): Se
     //   E().values('w')                                47.43   (500,000 rows)
     //   E().hasLabel('KNOWS').values('w')              64.58   (250,000 rows — HALF the rows
     //                                                           and more time)
-    return seedRest<Edge>(rest, graph.edgePropertyIndex, tracksPath, (l) =>
-      graph.edgesByLabel.get(l),
+    return seedRest<Edge>(
+      rest,
+      graph.edgePropertyIndex,
+      tracksPath,
+      (l) => graph.edgesByLabel.get(l),
+      (id) => (typeof id === 'string' ? graph.edgesById.get(id) : undefined),
     );
   }
 
