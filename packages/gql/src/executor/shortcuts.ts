@@ -11228,6 +11228,296 @@ const plainOneHop = (
  * trade — `groupedProjection` is shared with the NODE tally, and widening it would change two
  * hot detectors at once — but it means a guard fixed here must be fixed there too.
  */
+/**
+ * The accumulator shape {@link primedGroupedExtremum} needs, stated structurally so the helper does
+ * not depend on the full grouped-acc union: only the `fold` arm can ride the per-endpoint path, and
+ * the caller's extremum test is what guarantees every accumulator is one.
+ */
+type GroupedAccLike =
+  | {
+      readonly kind: 'fold';
+      readonly out: string;
+      readonly fold: AggFold;
+      readonly argFn: CompiledExpr;
+    }
+  | { readonly kind: 'rows' | 'values'; readonly out: string };
+
+/** Only `min`/`max` license the per-endpoint fold — see {@link primedGroupedExtremum}. */
+const GROUPED_EXTREMA = new Set(['min', 'max']);
+
+/**
+ * Does `byType` hold at least one edge of a wanted type? A bucket SIZE answers it, so nothing is
+ * resolved per edge — which is the whole point of the walk below.
+ *
+ * An empty `types` means the relationship was untyped, i.e. EVERY type, so any non-empty bucket
+ * counts.
+ */
+const reachedOnSide = (
+  byType: ReadonlyMap<string, ReadonlySet<Edge>> | undefined,
+  types: readonly string[],
+): boolean => {
+  if (byType === undefined) {
+    return false;
+  }
+
+  if (types.length === 0) {
+    for (const set of byType.values()) {
+      if (set.size > 0) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  for (const t of types) {
+    if ((byType.get(t)?.size ?? 0) > 0) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
+/**
+ * The GROUPED per-endpoint extremum fold (item 1310) — `MATCH (a)-[:T]->(x) RETURN x.city,
+ * min(x.age)` folded once per DISTINCT ENDPOINT rather than once per edge.
+ *
+ * Items 1248, 1296 priced this and specified it; this is that specification built. The identity is
+ * the one `primedEndpointExtremum` uses for the UNGROUPED case, extended by one step: min/max over
+ * a multiset equal min/max over its distinct SUPPORT, and when the GROUP KEY reads only the far
+ * endpoint each distinct endpoint belongs to exactly ONE group, so folding it once into that
+ * group's accumulator is the same answer. ~200,000 endpoints answer what 1,000,000 edges are asked.
+ *
+ * ⚠️ HALF OF THIS IDEA IS A REGRESSION ON ITS OWN, which is why the run-time test below is not
+ * optional. Item 1245 priced the parts separately:
+ *
+ * ```text
+ *   the per-edge walk                  173698.3 us
+ *   per-distinct-endpoint fold         186070.9     1.07x WORSE   <- the dedup ALONE loses
+ *   the same + universal-label test     59851.6     2.90x BETTER
+ * ```
+ *
+ * Folding per endpoint only pays once the START label costs nothing to test. Without that, proving
+ * "x has a qualifying in-edge from a qualifying start" has to resolve `e.from` per in-edge and
+ * gives back more than the multiplicity saved. When the label is carried by EVERY live node a
+ * non-empty bucket IS the proof, so nothing is resolved — hence `vacuousLabel`, and hence the test
+ * is at RUN time: vacuity is a property of the GRAPH, not of the query.
+ *
+ * ROW ORDER. This walk iterates the FAR side where the per-edge walk iterates the start side, so
+ * groups can come out in a different order. Item 1296 established that this is not observable: the
+ * differential fuzzer compares a grouped result as a row MULTISET because "intra-group row order in
+ * a CALL without ORDER BY is unspecified", which matches the repo's settled policy, and item 1249
+ * gave this rung a real `sortGroupRows` path for when the user does ask for an order. The caller
+ * applies that sort to whichever walk ran, so an ordered query is unaffected either way.
+ *
+ * `null` means "not admissible on this graph", and the caller falls through to the per-edge walk —
+ * a branch inside one closure rather than a second rung, because `clauses.ts` would otherwise fall
+ * past the whole rung instead of to its walk.
+ */
+const primedGroupedExtremum = (o: {
+  readonly accs: readonly GroupedAccLike[];
+  readonly types: readonly string[];
+  readonly outward: boolean;
+  readonly bothDirections: boolean;
+  readonly startLabel: LabelExpr | undefined;
+  readonly farLabel: LabelExpr | undefined;
+  readonly keyVar: string;
+  readonly key: string;
+  readonly keyCol: string;
+  readonly keyAt: number;
+  readonly gate: InlineGate | undefined;
+}): ((graph: Graph, params: Params) => Row[] | null) => {
+  const { accs, types, outward, bothDirections, startLabel, farLabel } = o;
+  const { keyVar, key, keyCol, keyAt, gate } = o;
+
+  return (graph, params) => {
+    // THE RUN-TIME ADMISSION — see the regression table above.
+    if (startLabel !== undefined && !vacuousLabel(graph, startLabel)) {
+      return null;
+    }
+
+    const slots: { readonly key: unknown; readonly state: unknown[] }[] = [];
+    const bySeen = new Map<unknown, (typeof slots)[number]>();
+    const binding = new Map<string, unknown>();
+    const env = { binding, params, graph };
+    // An undirected hop reads BOTH sides; a directed one reads the side the far endpoint is on.
+    const index = outward ? graph.edgesToByLabel : graph.edgesFromByLabel;
+    const opposite = outward ? graph.edgesFromByLabel : graph.edgesToByLabel;
+    const farPb = vacuousLabel(graph, farLabel) ? undefined : farLabel;
+
+    for (const x of candidateVertexSource(graph, farLabel)) {
+      if (farPb !== undefined && !matchesLabel(x, farPb)) {
+        continue;
+      }
+
+      // ⚠️ A SELF-LOOP NEEDS NO CORRECTION HERE, for `primedEndpointExtremum`'s reason: this asks
+      // only "is x reached at all", a BOOLEAN, and then folds x's value ONCE. A loop sits in both
+      // adjacency maps and makes the answer true either way, and min/max do not care how many
+      // times a value would have arrived.
+      let reached = reachedOnSide(index.get(x.id), types);
+
+      if (!reached && bothDirections) {
+        reached = reachedOnSide(opposite.get(x.id), types);
+      }
+
+      if (!reached) {
+        continue;
+      }
+
+      if (gate !== undefined && !gate(x, binding, params, graph)) {
+        continue;
+      }
+
+      const raw = propOf(x, key);
+      const id = raw === null || typeof raw !== 'object' ? raw : valueKey(raw);
+      let slot = bySeen.get(id);
+
+      if (slot === undefined) {
+        slot = {
+          key: raw,
+          state: accs.map((a) => (a.kind === 'fold' ? a.fold.init() : undefined)),
+        };
+        bySeen.set(id, slot);
+        slots.push(slot);
+      }
+
+      binding.set(keyVar, x);
+
+      // An INDEX loop, not `.entries()` — item 469 measured that iterator's per-accumulator tuple
+      // at 40-55% of a multi-aggregate scan.
+      for (let i = 0; i < accs.length; i += 1) {
+        const a = accs[i];
+
+        if (a.kind !== 'fold') {
+          continue;
+        }
+
+        const value = a.argFn(env);
+
+        if (isNullish(value)) {
+          continue;
+        }
+
+        slot.state[i] = a.fold.step(slot.state[i], value);
+      }
+    }
+
+    return slots.map((slot) => {
+      const row: Row = {};
+
+      for (let i = 0; i < accs.length; i += 1) {
+        const a = accs[i];
+
+        if (i === keyAt) {
+          row[keyCol] = slot.key;
+        } else if (a.kind === 'fold') {
+          // `finish` over an untouched accumulator gives the general path's answer for a group
+          // whose every value was null.
+          row[a.out] = a.fold.finish(slot.state[i]);
+        }
+      }
+
+      return row;
+    });
+  };
+};
+
+/**
+ * The per-endpoint extremum fold for a grouped hop, or `undefined` when the shape is not admitted
+ * (item 1310), specified by item 1296.
+ *
+ * A FREE FUNCTION rather than a dozen lines in the detector, and for the reason this file keeps
+ * re-learning: inlined, it took `detectGroupedHopAggregate` to a complexity of 40 against a cap of
+ * 35 — the same wall item 1249 hit when it admitted `ORDER BY` there, and the same reason
+ * `groupedSortApplier` lives outside it. This decides a route ONCE PER QUERY, where the walk it
+ * selects runs once per endpoint.
+ *
+ * Four conditions, each load-bearing and each with its own mutant:
+ *   * the KEY reads only the far variable (`!onStart`), which is what makes each distinct endpoint
+ *     belong to exactly ONE group. A start-keyed group does not, so folding it is a wrong answer;
+ *   * every non-key projection item is `min`/`max` with one argument. This is the half that does
+ *     the work: `foldFor` admits count/min/max, so `count(x)` builds a `fold` acc that ONLY the
+ *     name test refuses;
+ *   * every accumulator is a streaming `fold`. ⚠️ THIS GUARD'S MUTANT SURVIVES, and it is kept as
+ *     a precondition rather than deleted. Every shape that would expose it — a `values` acc from
+ *     `collect`/`percentile`, or a DISTINCT extremum — is refused by the RUNG upstream, which
+ *     `compileLinear` shows directly: `routes()` returns `[]` for
+ *     `RETURN x.grp, min(DISTINCT x.n)`, so no rung fires and the general path answers. Two
+ *     wrong guesses preceded that measurement (first "redundant with the name test", then "a test
+ *     gap"), which is why the route check is recorded here rather than the reasoning;
+ *   * the relationship's label is a plain type list, so reachability is a bucket read. ⚠️ THIS
+ *     GUARD'S MUTANT ALSO SURVIVES, for the same reason: `relTypeNames` does return `null` for a
+ *     negated label, but `routes()` returns `[]` for `-[:!T]->` and for `-[:%]->`, so the rung
+ *     declines a non-plain relationship label before the fold is consulted. Kept because the
+ *     three-way meaning of `relTypeNames` is easy to collapse — the first cut of this extraction
+ *     did collapse it, and only the typechecker caught that;
+ *   * the aggregate arguments read the keyed end only — enforced by the caller.
+ *
+ * ⚠️ THE KEY'S SLOT IS A `{kind:'rows'}` PLACEHOLDER that `groupedAccs` pushes so the column can be
+ * written by index, so it is EXCLUDED from the acc-kind test rather than required to be a fold. The
+ * first cut required every acc to be a fold, which no admissible query can satisfy — the rung
+ * stayed green and the target did not move, which is the silent-decline failure that looks exactly
+ * like the lever not existing.
+ *
+ * The START-label condition is deliberately NOT here: vacuity is a property of the GRAPH, not of
+ * the query, so it is tested at run time inside the returned closure, which is also where the
+ * regression table that justifies it lives.
+ */
+const groupedEndpointFold = (o: {
+  readonly onStart: boolean;
+  readonly accs: readonly GroupedAccLike[];
+  readonly keyAt: number;
+  readonly items: readonly { readonly expr: Expr }[];
+  readonly keyExpr: Expr;
+  readonly rel: RelPattern;
+  readonly startLabel: LabelExpr | undefined;
+  readonly farLabel: LabelExpr | undefined;
+  readonly keyVar: string;
+  readonly key: string;
+  readonly keyCol: string;
+  readonly gate: InlineGate | undefined;
+}): ((graph: Graph, params: Params) => Row[] | null) | undefined => {
+  // ⚠️ `relTypeNames` HAS THREE MEANINGS and they must not be collapsed: `undefined` is an UNTYPED
+  // relationship, i.e. EVERY type, which `reachedOnSide` handles as an empty list; `null` is a
+  // label expression that is not a plain type list, which must DECLINE; and an array is the types.
+  // Declining on `undefined` would silently refuse `-[]->`, and admitting `null` would read the
+  // wrong buckets — a wrong answer either way.
+  const types = relTypeNames(o.rel.label);
+
+  if (o.onStart || types === null) {
+    return undefined;
+  }
+
+  if (!o.accs.every((a, i) => i === o.keyAt || a.kind === 'fold')) {
+    return undefined;
+  }
+
+  const extremaOnly = o.items.every(
+    (it) =>
+      it.expr === o.keyExpr ||
+      (it.expr.kind === 'func' && GROUPED_EXTREMA.has(it.expr.name) && it.expr.args.length === 1),
+  );
+
+  if (!extremaOnly) {
+    return undefined;
+  }
+
+  return primedGroupedExtremum({
+    accs: o.accs,
+    types: types ?? [],
+    outward: o.rel.direction === 'out',
+    bothDirections: o.rel.direction === 'both',
+    startLabel: o.startLabel,
+    farLabel: o.farLabel,
+    keyVar: o.keyVar,
+    key: o.key,
+    keyCol: o.keyCol,
+    keyAt: o.keyAt,
+    gate: o.gate,
+  });
+};
+
 export const detectGroupedHopAggregate = (
   clauses: readonly Clause[],
   compiled: readonly CClause[],
@@ -11383,7 +11673,31 @@ export const detectGroupedHopAggregate = (
     ...(rel.label ? { label: rel.label } : {}),
   };
 
+  const primed = groupedEndpointFold({
+    onStart,
+    accs,
+    keyAt,
+    items: ret.projection.items,
+    keyExpr,
+    rel,
+    startLabel,
+    farLabel,
+    keyVar,
+    key,
+    keyCol,
+    gate,
+  });
+
   return (graph, params) => {
+    const fast = primed?.(graph, params);
+
+    // `[]` is a legitimate answer (a hop matching nothing), so this tests for null/undefined and
+    // not for truthiness — and the sort is applied to whichever walk ran, so an ORDER BY query is
+    // unaffected by which one that was.
+    if (fast !== undefined && fast !== null) {
+      return applySort(fast);
+    }
+
     const slots: { readonly key: unknown; n: number; readonly state: unknown[] }[] = [];
     const bySeen = new Map<unknown, (typeof slots)[number]>();
     const binding = new Map<string, unknown>();

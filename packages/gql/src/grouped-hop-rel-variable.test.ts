@@ -40,9 +40,24 @@ describe('an unread rel variable in a grouped hop (item 488)', () => {
     expect(query(g, 'MATCH (:P)-[r:T]->(b) RETURN b.k AS k, max(b.n) AS m')).toEqual(
       query(g, 'MATCH (:P)-[:T]->(b) RETURN b.k AS k, max(b.n) AS m'),
     );
-    expect(query(g, 'MATCH (:P)-[r:T]->(b) RETURN b.k AS k, max(b.n) AS m')).toEqual([
-      { k: 'b', m: 2 },
+    // ⚠️ THE ROW ORDER IS NO LONGER ASSERTED, and that is deliberate as of item 1310. This shape
+    // now takes the per-ENDPOINT extremum fold, which iterates the FAR side where the per-edge walk
+    // iterates the start side, so the groups come out in a different order. Grouped row order
+    // without `ORDER BY` is unspecified here — the differential fuzzer compares a grouped result as
+    // a row MULTISET for exactly this reason, and item 1296 established it BEFORE the fold was
+    // built — so the rows are compared sorted by key.
+    //
+    // Only the ordering assumption is dropped. The assertion above, that an unread rel variable
+    // changes nothing, is what this test is FOR and is untouched; so is the `count(*)` case above,
+    // which keeps the start-side order because `count` is not admitted to the fold.
+    const byKey = (rows: readonly unknown[]): unknown[] =>
+      [...rows].sort((l, r) =>
+        String((l as { k: string }).k).localeCompare(String((r as { k: string }).k)),
+      );
+
+    expect(byKey(query(g, 'MATCH (:P)-[r:T]->(b) RETURN b.k AS k, max(b.n) AS m'))).toEqual([
       { k: 'a', m: 1 },
+      { k: 'b', m: 2 },
     ]);
   });
 
