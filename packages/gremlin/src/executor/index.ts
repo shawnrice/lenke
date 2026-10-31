@@ -910,6 +910,64 @@ export const fuseUnionBoth = (plan: Plan): Plan => {
 };
 
 /**
+ * `values(k).is(p).count()` becomes `has(k, p).count()` (item 1314).
+ *
+ * Item 1305's probe measured the pair at ~3.8x net of its null control: `values` materialises one
+ * value per element and `is` filters the value stream, where `has` is a filter the count rungs
+ * recognise.
+ *
+ * ⚠️ THE TWO SPELLINGS RETURN DIFFERENT THINGS, which is the whole reason the tail is `count` and
+ * nothing else. `values(k).is(p)` emits VALUES; `has(k, p)` emits ELEMENTS. They agree on HOW MANY
+ * only, and only because this surface's properties are single-valued — verified rather than
+ * assumed: `values('k')` over four vertices (one holding `5`, one an ARRAY `[1,2,3]`, one with the
+ * key absent, one holding `null`) emits exactly `[5, [1,2,3], null]`, so an array is ONE value, a
+ * null IS a value, and a missing key emits nothing. `values(k).count()` and `has(k).count()` both
+ * read 3.
+ *
+ * Three conditions, each refusing a measured non-equivalence rather than an unusual spelling:
+ *
+ *   * **ONE key.** `values(k, j)` emits one row PER KEY per element, so the pair reads 4 against 2.
+ *   * **The tail is exactly `count`.** A `dedupe` before it is observable: distinct VALUES is 1
+ *     where distinct ELEMENTS is 2 on a fixture where two elements share a value. That is the
+ *     difference from item 1311, where `dedupe, count` IS admitted — there both spellings emit the
+ *     same elements, so a coarser view stays equal; here the rewrite changes WHAT FLOWS.
+ *   * **`count` is LAST.** Anything after it reads the count, not the stream, but a `count` that is
+ *     not the terminal means the plan does something else with it and is not this shape.
+ *
+ * The predicate carries over unchanged because it means the same thing in both positions: `has(k,
+ * p)` applies `p` to the property value and `is(p)` applies it to the value that `values` just
+ * emitted, which IS the property value.
+ */
+// EXPORTED for its own assertion, like the other rewrites in this file.
+export const fuseValuesIsCount = (plan: Plan): Plan => {
+  const { steps } = plan;
+
+  for (let i = 0; i + 2 < steps.length; i += 1) {
+    const vals = steps[i];
+    const test = steps[i + 1];
+    const tail = steps[i + 2];
+
+    if (
+      vals.kind !== 'values' ||
+      vals.keys.length !== 1 ||
+      test.kind !== 'is' ||
+      tail.kind !== 'count' ||
+      i + 3 !== steps.length
+    ) {
+      continue;
+    }
+
+    const next = [...steps];
+
+    next.splice(i, 2, { kind: 'has', key: vals.keys[0], pred: test.pred });
+
+    return { ...plan, steps: next };
+  }
+
+  return plan;
+};
+
+/**
  * The plan the rungs actually see.
  *
  * Both rewrites here exist for the same reason — every shortcut matches a plan PREFIX beginning at
@@ -930,7 +988,10 @@ export const fuseUnionBoth = (plan: Plan): Plan => {
 export const effectivePlan = (plan: Plan, graph: Graph, tracksPath: boolean): Plan =>
   tracksPath
     ? plan
-    : dropVacuousLabels(fuseUnionBoth(fuseEdgeHop(flattenFilterWrappers(plan))), graph);
+    : dropVacuousLabels(
+        fuseUnionBoth(fuseEdgeHop(flattenFilterWrappers(fuseValuesIsCount(plan)))),
+        graph,
+      );
 
 /**
  * `outE(T).inV()` becomes `out(T)`, and `inE(T).outV()` becomes `in(T)` (item 1307).
