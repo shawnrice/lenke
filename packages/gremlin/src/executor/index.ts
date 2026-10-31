@@ -561,12 +561,113 @@ const ELEMENT_STEP_ON_PATH = new Set([
  *   - skipping the empty graph — survives, since every query over one answers empty anyway.
  */
 /**
+ * Steps that keep or drop an element and NEVER replace it, add to the path, or run a sub-plan.
+ *
+ * This is deliberately narrower than `PRESERVE_STEPS` above, which also admits `where`, `and`,
+ * `or`, `not`, barriers and pass-through writes. Splicing is only sound for steps whose entire
+ * effect is "keep this element or do not", because a spliced step operates on the OUTER traverser
+ * rather than inside a sub-traversal.
+ */
+const PURE_ELEMENT_FILTERS = new Set<Step['kind']>([
+  'has',
+  'hasLabel',
+  'hasLabelAnd',
+  'hasId',
+  'hasKey',
+  'hasNot',
+  'hasValue',
+]);
+
+/** A plan's steps when every one of them is a pure element filter, else `null`. */
+const pureFilterSteps = (plan: Plan): readonly Step[] | null =>
+  plan.steps.length > 0 && plan.steps.every((s) => PURE_ELEMENT_FILTERS.has(s.kind))
+    ? plan.steps
+    : null;
+
+/**
+ * `filter(has(…))` becomes `has(…)`, and `and(has(…), hasLabel(…))` becomes the two steps chained
+ * (item 1308).
+ *
+ * ONE CAUSE BEHIND SEVERAL FLAGS. Item 1305's probe flagged six small groups, and the per-arm
+ * numbers at 200,000 vertices show they are the same defect wearing different spellings — every
+ * WRAPPED filter is slower than the flat chain that means the same thing, because wrapping puts the
+ * filters in a SUB-PLAN and the flat rungs (`filterChainCount` and the rest) stop matching, so the
+ * whole query drops to the traverser pipeline:
+ *
+ * ```text
+ *   has('age', gte(45))                 2.904 ms   vs  filter(has('age', gte(45)))  36.675 ms  12.6x
+ *   has('k', gte(2)).hasLabel('Q')      6.364      vs  and(has(…), hasLabel(…))     58.731      9.2x
+ * ```
+ *
+ * WHY SPLICING IS SOUND, and it rests on `PURE_ELEMENT_FILTERS` rather than on `filter`'s
+ * semantics in general. `filter(body)` keeps a traverser when `body` yields at least one result.
+ * If every step in `body` only keeps-or-drops the element, then `body` yields the element itself or
+ * nothing, so "keeps a traverser when body yields something" IS "the element passed every filter"
+ * — which is what the spliced chain computes, in the same order. `and(plans)` is the same argument
+ * once per branch, and chaining the branches preserves the written order.
+ *
+ * A body that is NOT filter-only must decline, and `filter(out('T'))` is the case that shows why:
+ * it keeps vertices that HAVE an outgoing `T` edge, where splicing `out('T')` would REPLACE each
+ * vertex with its neighbours. Verified: `filter(out('T'))` answers `["v0"]` on a fixture where the
+ * spliced form would answer the neighbour.
+ *
+ * `or` is NOT flattened and cannot be: a disjunction is not a chain. Its probe group (`within`
+ * against an `or`-chain of equalities, 4.0x) needs a different mechanism — recognising the
+ * disjunction as a membership — and is left open.
+ *
+ * RAISE PARITY was checked rather than assumed, because a splice that short-circuits where the
+ * wrapper did not would change a fault into a row. On this surface a cross-type comparison returns
+ * FALSE rather than raising — `has('s', gte(5))` on a string property answers empty, and the
+ * chained, `and`-wrapped and `filter`-wrapped spellings all agree — so there is no fault to
+ * reorder. (That differs from the GQL side's cross-type policy, which is why it was measured here
+ * instead of carried over.)
+ */
+// EXPORTED for its own assertion, like `fuseEdgeHop` and `effectivePlan` beside it, and not
+// from the package barrel.
+export const flattenFilterWrappers = (plan: Plan): Plan => {
+  const steps: Step[] = [];
+  let changed = false;
+
+  for (const step of plan.steps) {
+    if (step.kind === 'filter') {
+      const inner = pureFilterSteps(step.plan);
+
+      if (inner !== null) {
+        steps.push(...inner);
+        changed = true;
+        continue;
+      }
+    }
+
+    if (step.kind === 'and') {
+      const parts = step.plans.map(pureFilterSteps);
+
+      // EVERY branch must be filter-only: splicing some and leaving others would conjoin a chain
+      // with a residual `and`, which is still correct but is not what this rewrite claims, and the
+      // partial form has not been measured.
+      if (parts.length > 0 && parts.every((p) => p !== null)) {
+        for (const part of parts) {
+          steps.push(...part);
+        }
+
+        changed = true;
+        continue;
+      }
+    }
+
+    steps.push(step);
+  }
+
+  return changed ? { ...plan, steps } : plan;
+};
+
+/**
  * The plan the rungs actually see.
  *
  * Both rewrites here exist for the same reason — every shortcut matches a plan PREFIX beginning at
  * the source, so one extra step in front of a hop makes all of them decline — and they compose in
- * this order deliberately: `fuseEdgeHop` runs INSIDE `dropVacuousLabels` so the label drop sees a
- * ONE-step hop. A shortcut wanting `[V, hasLabel, out]` would still decline if the hop were two
+ * this order deliberately: `flattenFilterWrappers` is innermost so the filters it splices are
+ * visible to everything after it, then `fuseEdgeHop`, so the label drop sees a ONE-step hop. A shortcut wanting `[V, hasLabel, out]` would still decline if the hop were two
  * steps at the moment the vacuous label was removed.
  *
  * ONE GUARD FOR BOTH, and it is why this is a function rather than two calls at the use site: a
@@ -579,7 +680,7 @@ const ELEMENT_STEP_ON_PATH = new Set([
  * slow walk, which is the shape item 1303 measured.
  */
 export const effectivePlan = (plan: Plan, graph: Graph, tracksPath: boolean): Plan =>
-  tracksPath ? plan : dropVacuousLabels(fuseEdgeHop(plan), graph);
+  tracksPath ? plan : dropVacuousLabels(fuseEdgeHop(flattenFilterWrappers(plan)), graph);
 
 /**
  * `outE(T).inV()` becomes `out(T)`, and `inE(T).outV()` becomes `in(T)` (item 1307).

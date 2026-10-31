@@ -43398,12 +43398,122 @@ hashing `git diff` across a second run, `bun run check --skip-nx-cache` 0.
 
 ### What is open after this
 
-- **`union(out(T), in(T))` is not normalised to `both(T)`** — item 1305 measured 228822x, now the
-  largest remaining Gremlin spelling gap, and `union(outE, inE)` against `bothE` at 148043x beside
-  it. NOT the same rewrite as this one: `union` takes sub-plans, so the question is whether two
-  branch bodies can be recognised as the two halves of a `both`, and the ORDER a union emits in
-  (all of the first branch, then all of the second) is not the order `both` emits in. Check that
-  before assuming, the way this item checked `path()`.
+- **`union(out(T), in(T))` is not normalised to `both(T)`** — item 1305 measured 128659x net. ITEM
+  1308 CHECKED THE ORDER and it DIFFERS: same multiset, different sequence, so a general
+  normalisation is unsound. The sound form is a rung confined to order-insensitive terminals; see 1308.
 - **A `repeat()` body is not rewritten**, so `repeat(outE(T).inV())` keeps the long walk.
 - The eight remaining item-1305 groups at 2.8x-6.9x, each still needing its own isolated three
   runs before it is a finding.
+
+## 1308 — every WRAPPED filter was slower than the flat chain that means the same thing; one rewrite fixes it
+
+Item 1305's probe flagged six small groups at 2.8x-6.9x and they looked like six items. The
+per-arm numbers at 200,000 vertices say they are mostly ONE defect in several spellings: a wrapped
+filter puts its filters in a SUB-PLAN, the flat rungs (`filterChainCount` and the rest) stop
+matching, and the whole query drops to the traverser pipeline.
+
+```text
+  has('age', gte(45))              2.904 ms   filter(has('age', gte(45)))   36.675 ms   12.6x
+  has('k', gte(2)).hasLabel('Q')   6.364      and(has(…), hasLabel(…))      58.731       9.2x
+  has('age')                       2.516      hasKey('age')                  2.551       — same step
+                                              not(hasNot('age'))            43.123      17x
+  has('k', within(7,8,9))          8.985      or(has, has, has)             35.775       4.0x
+  has('age', gte(45))              2.523      values('age').is(gte(45))     23.277       9.2x
+  hasLabel('Mgr').has(…)           2.199      has('Mgr','age',gte(45))       8.981       4.1x
+```
+
+Reading the group ratios alone would have hidden this: `presence` reported 5.68x as a three-arm
+group, where in fact `has(k)` and `hasKey(k)` are the SAME step — `has` with one argument builds
+`{kind:'hasKey'}` — and the whole spread came from the double-negation arm. Per-arm numbers are
+what turned six targets into one.
+
+### What was built
+
+`flattenFilterWrappers` splices `filter(body)` and `and(bodies)` into the enclosing step list when
+every step in the body only keeps-or-drops the element. After it:
+
+```text
+  filter(has('age', gte(45)))   36.675 -> 2.558 ms   (the flat twin reads 2.564)   14.3x
+  and(has(…), hasLabel(…))      58.731 -> 6.227      (the flat twin reads 6.185)    9.4x
+```
+
+Both spellings now land on the same rung, which is the claim — not "faster", but "the same plan".
+
+### Why splicing is sound, and the case that makes the rule
+
+It rests on `PURE_ELEMENT_FILTERS` — `has`, `hasLabel`, `hasLabelAnd`, `hasId`, `hasKey`,
+`hasNot`, `hasValue` — deliberately NARROWER than the `PRESERVE_STEPS` set already in the file,
+which also admits `where`, `and`, `or`, `not`, barriers and pass-through writes.
+
+`filter(body)` keeps a traverser when `body` yields at least one result. If every step in `body`
+only keeps-or-drops, then `body` yields the element itself or nothing, so "keeps when the body
+yields" IS "the element passed every filter" — which is what the spliced chain computes, in the
+same order. `and(plans)` is the same argument once per branch.
+
+**`filter(out('T'))` is the case that makes the purity check necessary rather than merely
+cautious.** It keeps the vertices that HAVE an outgoing `T` edge; splicing `out('T')` would
+REPLACE each vertex with its neighbours. Asserted as an answer (`['v0','v2']`), not only as a plan
+shape, and its mutant — dropping the purity check — fails 8 tests.
+
+RAISE PARITY was measured rather than carried over, because a splice that short-circuits where the
+wrapper did not would turn a fault into a row. On THIS surface a cross-type comparison returns
+FALSE rather than raising: `has('s', gte(5))` on a string property answers empty, and the chained,
+`and`-wrapped and `filter`-wrapped spellings all agree. That differs from the GQL side's
+cross-type policy (`cross-type-comparison-no-error`), which is exactly why it was checked here.
+
+### What is deliberately NOT done
+
+- **`or` is not flattened and cannot be** — a disjunction is not a chain. Its group (`within`
+  against an `or`-chain of equalities, 4.0x) needs the disjunction recognised as a MEMBERSHIP,
+  which is a different mechanism; the mutant that extends this rewrite to `or` turns a disjunction
+  into a conjunction and is caught.
+- **`not(hasNot(k))` at 17x** is a double negation; it is real but nobody writes it, so it is
+  recorded rather than built.
+- **Nesting is not recursive.** `filter(filter(has(…)))` declines, because a `filter` is not a
+  pure element filter. One level is what was measured; a recursive version would be its own item
+  with its own numbers.
+- **`has(label, key, pred)` at 4.1x is NOT a wrapper** — it is a single `hasLabelAnd` step, so
+  this rewrite cannot reach it and its group stays open.
+
+### Teeth
+
+7 mutants, 6 caught, every result as predicted:
+
+```text
+  flatten-unwired         CAUGHT  1 fail     or-also-flattened        CAUGHT  1 fail
+  purity-check-dropped    CAUGHT  8 fail     filter-arm-removed       CAUGHT  2 fail
+  and-partial-splice      CAUGHT  1 fail     identity-return-dropped  CAUGHT  1 fail
+  empty-body-admitted     SURVIVED
+```
+
+`flatten-unwired` is caught only by the `effectivePlan` wiring assertion that item 1307 had to add
+for the same reason — asserting the rewrite FUNCTION leaves alive the mutant that stops calling
+it.
+
+**The survivor is PROVEN unreachable, and the check is kept.** The `plan.steps.length > 0` guard
+in `pureFilterSteps` can only matter for an EMPTY body, and neither route reaches one: `filter()`
+with no body faults at run time (`step.fn is not a function`), so it is not a usable plan at all,
+and `and()` with no branches is declined by the separate `parts.length > 0` test rather than by
+this one. Kept as a precondition for the same reason item 1303 keeps its selector guard — if the
+surface ever admits an empty body, splicing nothing would silently DELETE the step.
+
+### Verification
+
+`packages/gremlin` 1002 pass / 0 fail (985 before, +17 new in `executor/filter-flatten.test.ts`).
+All seven byte-identity fuzzers 13 pass / 0 fail. Gates as separate commands with exit codes read
+unpiped: `bun run typecheck` 0, `bun run lint` 0, `bun run fmt` 0 AND verified idempotent by
+hashing `git diff` across a second run, `bun run check --skip-nx-cache` 0.
+
+### What is open after this
+
+- **`union(out(T), in(T))` -> `both(T)`**, item 1305's remaining giant at 128659x net, and
+  MEASURED HERE AS MULTISET-ONLY: `both('T')` emits `["b","a","a","c","a","b"]` where
+  `union(out('T'), in('T'))` emits `["b","a","c","a","a","b"]` on the same fixture — same six
+  elements, different SEQUENCE, because `both` finishes each vertex before moving on and `union`
+  does not. So a general normalisation would change observable order. The measured 128659x was on
+  a `count()` terminal, where order is irrelevant, so the sound version is a rung confined to
+  order-insensitive terminals rather than a plan rewrite. Do not take it as a normalisation.
+- **`or`-chain -> `within`**, 4.0x, needing membership recognition.
+- **`has(label, key, pred)`** at 4.1x, a single step this rewrite cannot reach.
+- **`not(hasNot(k))`** at 17x, real but unidiomatic.
+- A `repeat()` body is still not rewritten by any of 1307/1308.
