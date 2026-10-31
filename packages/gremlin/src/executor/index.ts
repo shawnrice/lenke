@@ -561,6 +561,63 @@ const ELEMENT_STEP_ON_PATH = new Set([
  *   - skipping the empty graph — survives, since every query over one answers empty anyway.
  */
 /**
+ * `or(has(k, a), has(k, b), …)` as the single step `has(k, within(a, b, …))`, or `undefined`
+ * (item 1312).
+ *
+ * ⚠️ THIS IS ONE OF THE FOUR CANONICAL INDEX-SEEDING BUGS CLAUDE.md NAMES BY EXAMPLE —
+ * "`k = $a OR k = $b` vs `k IN [$a, $b]`" — and it is the cross-surface asymmetry this repo keeps
+ * paying for: ISO-GQL has folded it since item 1269 (`membershipFromEqChain`) and the Gremlin
+ * surface never did. A user picks one language, so the gap cost half of them, exactly as items
+ * 1035/1038 then 1043/1044 did for their lever.
+ *
+ * Item 1305's probe measured the pair at 7.15x net of its null control: the `or` runs a sub-plan
+ * per branch per element where the membership form is one step the filter rungs recognise.
+ *
+ * EVERY BRANCH must be exactly one `has` on the SAME key with an `eq` predicate. Each condition
+ * refuses a real non-equivalence rather than an unusual spelling: a branch on a different key is a
+ * disjunction across keys and not a membership; a non-`eq` predicate (`gt`, `within`, a regex) does
+ * not reduce to a value list; and a branch of two steps is a conjunction inside the disjunction.
+ *
+ * Equivalence verified against the or-chain on a fixture covering the cases that usually break a
+ * value list — `null`, `NaN`, `0` against `false` (no coercion), mixed string/number, a
+ * single-value `or`, and under `count()`. All nine agreed, which also confirms `within` and `eq`
+ * share one equality: `has(k, v)` routes a bare value through `eq()` itself, so the step's
+ * predicate is always a predicate object and never a raw value.
+ */
+const membershipFromOrChain = (step: Step): Step | undefined => {
+  if (step.kind !== 'or' || step.plans.length < 2) {
+    return undefined;
+  }
+
+  let key: string | undefined;
+  const values: unknown[] = [];
+
+  for (const branch of step.plans) {
+    if (branch.steps.length !== 1) {
+      return undefined;
+    }
+
+    const [only] = branch.steps;
+
+    if (only.kind !== 'has' || only.pred?.op !== 'eq') {
+      return undefined;
+    }
+
+    const { key: branchKey, pred } = only;
+
+    if (key === undefined) {
+      key = branchKey;
+    } else if (key !== branchKey) {
+      return undefined;
+    }
+
+    values.push(pred.value);
+  }
+
+  return key === undefined ? undefined : { kind: 'has', key, pred: { op: 'within', values } };
+};
+
+/**
  * Steps that keep or drop an element and NEVER replace it, add to the path, or run a sub-plan.
  *
  * This is deliberately narrower than `PRESERVE_STEPS` above, which also admits `where`, `and`,
@@ -578,11 +635,36 @@ const PURE_ELEMENT_FILTERS = new Set<Step['kind']>([
   'hasValue',
 ]);
 
-/** A plan's steps when every one of them is a pure element filter, else `null`. */
-const pureFilterSteps = (plan: Plan): readonly Step[] | null =>
-  plan.steps.length > 0 && plan.steps.every((s) => PURE_ELEMENT_FILTERS.has(s.kind))
-    ? plan.steps
-    : null;
+/**
+ * A wrapper branch's steps after the other two rewrites have been applied to them, or `null` when
+ * what comes out is not filter-only.
+ *
+ * It also owns the EMPTY-BODY guard that `pureFilterSteps` used to carry (`plan.steps.length === 0`
+ * declines). That guard's mutant survives and is kept anyway: `filter()` with no body faults at run
+ * time so it is not a usable plan, and `and()` with no branches is declined by the separate
+ * `parts.length > 0` test — but if the surface ever admits an empty body, splicing nothing would
+ * silently DELETE the step.
+ *
+ * ⚠️ THIS EXISTS BECAUSE A COMMENT OF MINE WAS FALSE. The `or`-to-membership fold was added to the
+ * same loop as the wrapper flattening, with a comment claiming that an `or` nested inside an `and`
+ * would therefore fold too. It would not have: the `and` arm tested branch PURITY first, and an
+ * `or` is not a pure element filter, so such a branch was rejected before anything folded. Its own
+ * test said so. Composing the rewrites per branch here is what makes the claim true — a branch is
+ * normalised, THEN judged.
+ */
+const normalizedBranch = (plan: Plan): readonly Step[] | null => {
+  if (plan.steps.length === 0) {
+    return null;
+  }
+
+  const out: Step[] = [];
+
+  for (const step of plan.steps) {
+    pushSplit(out, membershipFromOrChain(step) ?? step);
+  }
+
+  return out.every((s) => PURE_ELEMENT_FILTERS.has(s.kind)) ? out : null;
+};
 
 /**
  * `filter(has(…))` becomes `has(…)`, and `and(has(…), hasLabel(…))` becomes the two steps chained
@@ -667,29 +749,38 @@ export const flattenFilterWrappers = (plan: Plan): Plan => {
 
   for (const step of plan.steps) {
     if (step.kind === 'filter') {
-      const inner = pureFilterSteps(step.plan);
+      const inner = normalizedBranch(step.plan);
 
       if (inner !== null) {
-        for (const s of inner) {
-          pushSplit(steps, s);
-        }
+        steps.push(...inner);
+        changed = true;
+        continue;
+      }
+    }
 
+    // `or(has(k,a), has(k,b))` is not a chain — it is a MEMBERSHIP (item 1312). Handled here
+    // rather than in its own pass so that an `or` nested inside an `and` is folded too: the `and`
+    // arm below splices its branches through `pushSplit`, and a folded membership is a plain `has`
+    // by then.
+    if (step.kind === 'or') {
+      const membership = membershipFromOrChain(step);
+
+      if (membership !== undefined) {
+        steps.push(membership);
         changed = true;
         continue;
       }
     }
 
     if (step.kind === 'and') {
-      const parts = step.plans.map(pureFilterSteps);
+      const parts = step.plans.map(normalizedBranch);
 
       // EVERY branch must be filter-only: splicing some and leaving others would conjoin a chain
       // with a residual `and`, which is still correct but is not what this rewrite claims, and the
       // partial form has not been measured.
       if (parts.length > 0 && parts.every((p) => p !== null)) {
         for (const part of parts) {
-          for (const s of part) {
-            pushSplit(steps, s);
-          }
+          steps.push(...part);
         }
 
         changed = true;

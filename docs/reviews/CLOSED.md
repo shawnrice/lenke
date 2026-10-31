@@ -43514,7 +43514,9 @@ hashing `git diff` across a second run, `bun run check --skip-nx-cache` 0.
   does not. So a general normalisation would change observable order. The measured 128659x was on
   a `count()` terminal, where order is irrelevant, so the sound version is a rung confined to
   order-insensitive terminals rather than a plan rewrite. Do not take it as a normalisation.
-- **`or`-chain -> `within`**, 4.0x, needing membership recognition.
+- ~~**`or`-chain -> `within`**~~ — **BUILT at item 1312** at 4.15x (35.775 -> 8.65 ms). It is one
+  of the four canonical index-seeding shapes CLAUDE.md names, and ISO-GQL had folded it since item
+  1269 while Gremlin had not.
 - **`has(label, key, pred)`** at 4.1x, a single step this rewrite cannot reach.
 - **`not(hasNot(k))`** at 17x, real but unidiomatic.
 - A `repeat()` body is still not rewritten by any of 1307/1308.
@@ -43620,7 +43622,9 @@ run, `bun run check --skip-nx-cache` 0.
   `hop-projection.ts` has; measure on 1,000,000 edges, not 200,000, or the lever is invisible.
 - **`union(out(T), in(T))` -> `both(T)`**, multiset-only (item 1308 measured the order), so a rung
   confined to order-insensitive terminals rather than a normalisation.
-- **`or`-chain -> `within`** at 4.0x, needing membership recognition.
+- ~~**`or`-chain -> `within`**~~ — **BUILT at item 1312** at 4.15x (35.775 -> 8.65 ms). It is one
+  of the four canonical index-seeding shapes CLAUDE.md names, and ISO-GQL had folded it since item
+  1269 while Gremlin had not.
 - **`values(k).is(p)` vs `has(k, p)`** at 9.2x, and NOT a safe rewrite as it stands: `values`
   emits one row per VALUE, so the two agree only while every element has at most one value for the
   key. This surface has a `Cardinality` concept, so that must be established BEFORE the rewrite.
@@ -43783,7 +43787,9 @@ hashing `git diff` across a second run, `bun run check --skip-nx-cache` 0.
   multiplier beats the per-edge walk is a separate question with its own arithmetic, and item
   1245's table is the warning: the dedup alone loses.
 - **`union(out(T), in(T))` -> `both(T)`**, multiset-only (item 1308 measured the order).
-- **`or`-chain -> `within`** at 4.0x on the Gremlin side, needing membership recognition.
+- ~~**`or`-chain -> `within`**~~ — **BUILT at item 1312** at 4.15x (35.775 -> 8.65 ms). It is one
+  of the four canonical index-seeding shapes CLAUDE.md names, and ISO-GQL had folded it since item
+  1269 while Gremlin had not.
 - **`values(k).is(p)` vs `has(k, p)`** at 9.2x, unsafe as a rewrite until single-valuedness is
   established.
 
@@ -43871,7 +43877,9 @@ fmt` 0 AND verified idempotent by hashing `git diff` across a second run, `bun r
 - **A row-returning `union(out, in)`** is still the slow spelling, and deliberately so. Making it
   fast needs `both`'s emission order to be the union's, or the union's to be `both`'s — a semantic
   decision against TinkerPop ground truth, not an optimization.
-- **`or`-chain -> `within`** at 4.0x, needing the disjunction recognised as a membership.
+- ~~**`or`-chain -> `within`**~~ — **BUILT at item 1312** at 4.15x (35.775 -> 8.65 ms). It is one
+  of the four canonical index-seeding shapes CLAUDE.md names, and ISO-GQL had folded it since item
+  1269 while Gremlin had not.
 - **`values(k).is(p)` vs `has(k, p)`** at 9.2x: equal only under `count()`, since `values` emits
   one row per VALUE and `has` one per ELEMENT, and then only while every element has at most one
   value for the key.
@@ -43880,3 +43888,104 @@ fmt` 0 AND verified idempotent by hashing `git diff` across a second run, `bun r
   identity; a per-endpoint walk plus a DEGREE multiplier is a separate question with its own
   arithmetic, and item 1245's table warns that the dedup alone loses.
 - **A `repeat()` body** is rewritten by none of 1307/1308/1311.
+
+## 1312 — `or(has(k,a), has(k,b))` folds to `has(k, within(a,b))`, one of the four canonical seeding bugs
+
+⚠️ **THIS IS ONE OF THE FOUR SHAPES CLAUDE.md NAMES BY EXAMPLE.** Its "equivalent spellings must
+cost the same" section lists the forms every index-seeding bug the old engine had took, and `k =
+$a OR k = $b` vs `k IN [$a, $b]` is one of them. ISO-GQL has folded it since item 1269
+(`membershipFromEqChain`). The Gremlin surface never did, and nothing was looking until item 1305
+gave that surface a spelling probe.
+
+So this is also the cross-surface asymmetry this repo keeps paying for — a user picks GQL xor
+Gremlin, so the gap cost half of them, exactly as items 1035/1038 then 1043/1044 did for their
+lever.
+
+Measured on item 1305's probe at 200,000 vertices, both arms answering an identical 12000:
+
+```text
+  has('k', within(7, 8, 9))                   8.287-9.089 ms
+  or(has('k',7), has('k',8), has('k',9))      35.775  ->  8.610-8.712     4.15x
+```
+
+The `or` ran a sub-plan per branch per element; the membership form is one step the filter rungs
+already recognise.
+
+### Equivalence first, on the cases that break a value list
+
+Checked before the rewrite was written, because item 1306's lesson is that an "obviously
+equivalent" pair can differ twice over. Nine pairs, all agreeing: plain numbers, strings, a MIXED
+string/number list, a list containing `null`, **`0` against `true`** (the pair that catches a fold
+doing loose comparison), a list containing `NaN`, an explicit `eq()` against a bare value, a
+single-value `or`, and the whole thing under `count()`.
+
+The `NaN` case is the interesting one: `within(NaN, 1)` and `or(has(k,NaN), has(k,1))` BOTH keep
+only the `1`, so neither spelling matches `NaN` against itself and the fold preserves that.
+`has(k, v)` routes a bare value through `eq()` itself, so a step's predicate is always a predicate
+object and never a raw value — which is why one equality serves both spellings.
+
+Every branch must be exactly one `has` on the SAME key with an `eq` predicate. Each condition
+refuses a real non-equivalence: a branch on another key is a disjunction ACROSS keys, a
+`gt`/`within` /regex branch does not reduce to a value, and a two-step branch is a conjunction
+inside the disjunction.
+
+### ⚠️ A COMMENT OF MINE WAS FALSE FOR THE THIRD TIME IN THIS RUN, and its test caught it
+
+The fold was added to `flattenFilterWrappers`' loop with a comment claiming that an `or` nested
+inside an `and` would therefore fold too. **It would not have.** The `and` arm tested branch
+PURITY first, and an `or` is not a `PURE_ELEMENT_FILTERS` member, so such a branch was rejected
+before anything folded.
+
+The fix was to make the code match the claim rather than soften the claim: `normalizedBranch`
+normalises a branch — folding an `or` to a membership and splitting a `hasLabelAnd` — and THEN
+judges whether what came out is filter-only. That also makes `filter(or(…))` fold, which the
+purity-first order could not. The bug is now its own mutant (`branch-composition-reverted`), and
+the helper's doc says plainly that it exists because a comment was false.
+
+This is the same shape as item 1309's `pushSplit` and item 1307's wiring assertion. Three for
+three: every time a comment claimed a composition this run, the composition was not there until a
+test asked for it.
+
+The lint gate then found `pureFilterSteps` had become dead — `normalizedBranch` replaced it — so
+it is removed, and its empty-body guard migrated with its proven-unreachable note intact.
+
+### Teeth
+
+7 mutants, 6 caught, every result as predicted:
+
+```text
+  membership-unwired           CAUGHT  4 fail    single-branch-admitted       CAUGHT  1 fail
+  key-equality-dropped         CAUGHT  1 fail    branch-composition-reverted  CAUGHT  2 fail
+  eq-only-dropped              CAUGHT  2 fail    empty-body-admitted          SURVIVED
+  branch-length-dropped        CAUGHT  1 fail
+```
+
+The survivor is the migrated empty-body guard, PROVEN unreachable and kept for the reason item
+1308 recorded: `filter()` with no body faults at run time so it is not a usable plan, and `and()`
+with no branches is declined by the separate `parts.length > 0` test — but if the surface ever
+admits an empty body, splicing nothing would silently DELETE the step.
+
+### Verification
+
+`packages/gremlin` 1051 pass / 0 fail (1031 before, +20 new in `executor/or-membership.test.ts`).
+All seven byte-identity fuzzers 13 pass / 0 fail. Gates as separate commands with exit codes read
+unpiped: `bun run typecheck` 0, `bun run lint` 0, `bun run fmt` 0 AND verified idempotent by
+hashing `git diff` across a second run, `bun run check --skip-nx-cache` 0.
+
+### Where the Gremlin probe now stands
+
+From 15 flagged groups at item 1305 to 2:
+
+```text
+  presence: has(k) vs hasKey(k) vs not(hasNot(k))        6.22x net
+  values(k).is(p) vs has(k, p)                           3.78x net
+```
+
+- **`not(hasNot(k))`** is the whole of the presence group's spread — `has(k)` and `hasKey(k)` are
+  the SAME step, since `has` with one argument builds `{kind:'hasKey'}`. A double negation is real
+  but unidiomatic, and folding `not(hasNot(k))` to `hasKey(k)` would be sound; it is left recorded
+  rather than built because nobody writes it.
+- **`values(k).is(p)` vs `has(k, p)`** is equal only under `count()`: `values` emits one row per
+  VALUE and `has` one per ELEMENT, so the two agree only while every element has at most one value
+  for the key. This surface has a `Cardinality` concept, so single-valuedness must be ESTABLISHED
+  before that rewrite, not assumed.
