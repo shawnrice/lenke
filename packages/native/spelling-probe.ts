@@ -557,6 +557,33 @@ const GROUPS: [string, readonly string[]][] = [
     ],
   ],
   [
+    // A label on the far node of a counted hop, written two ways. OPEN (item 1302, located and
+    // priced, NOT built) — but ⚠️ THE SIZE OF THE GAP IS FIXTURE-DEPENDENT AND THIS FIXTURE
+    // COMPRESSES IT, so do not read a small spread here as the gap being small.
+    //
+    // On `gql-far-label-probe.ts` (200,000 nodes, 1 `T` edge each, all single-label):
+    //
+    //   MATCH (a)-[:T]->(b:Employee)                      18.08 ns/v
+    //   MATCH (a)-[:T]->(b) WHERE b IS LABELED Employee  215.89        11.9x, same answer
+    //
+    // and 12-22x at every size from 20,000 up, with or without a start label on `a` — so neither
+    // scale nor the start is the variable. ON THIS FIXTURE the pair reads 3.37ms against 4.51ms,
+    // just 1.34x, because the PATTERN arm here is itself slow: 22x this probe's pattern arm at the
+    // same node count. The untested suspect is this fixture's MULTI-LABEL edges (`F` on 1 in 11),
+    // which is what disables the analogous Gremlin fast path via `multiTypeEdgeCount`. Left as the
+    // next reader's question rather than guessed at.
+    //
+    // It is labels ONLY. The same probe measured far-end `IN` at 0.82x (the lifted spelling is
+    // FASTER) and far-end `IS NOT NULL` at 1.13x, so the first hypothesis — that the count path
+    // was missing seven of the nine lifted families, read off a grep of family names in
+    // `shortcuts.ts` — is REFUTED. A grep of family names predicted nothing.
+    'a far-end label: in the PATTERN vs in a clause WHERE (item 1302, OPEN)',
+    [
+      'MATCH (a:P)-[:E]->(b:Q) RETURN count(*) AS c',
+      'MATCH (a:P)-[:E]->(b) WHERE b IS LABELED Q RETURN count(*) AS c',
+    ],
+  ],
+  [
     'label on start: redundant vs absent',
     ['MATCH (a:P)-[:E]->(b) RETURN count(*) AS c', 'MATCH (a)-[:E]->(b) RETURN count(*) AS c'],
   ],

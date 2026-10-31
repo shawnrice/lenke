@@ -444,6 +444,110 @@ const hasChain = (rest: readonly Step[]): Extract<Step, { kind: 'has' }>[] | und
   return filters.length === 0 ? undefined : filters;
 };
 
+/** A far-side filter chain: label tests (each an OR, ANDed together) and `has` predicates. */
+type FarFilters = {
+  labelSets: readonly (readonly string[])[];
+  filters: readonly Extract<Step, { kind: 'has' }>[];
+};
+
+/**
+ * `rest` as a chain of filters on the FAR END of a vertex hop — `hasLabel` tests and `has`
+ * predicates — or `undefined` if anything else appears.
+ *
+ * ⚠️ THE FAR SIDE REFUSED `hasLabel` WHILE THE START SIDE HAS ALWAYS ACCEPTED IT (item 1302), and
+ * that asymmetry was the whole defect. `collectVertexFilters` admits `hasLabel` for the steps
+ * BEFORE the hop, so `hasLabel(P).out(T).has(k,p)` took a rung; the two far-side readers
+ * (`hasChain` and `collectHasFilters`) admitted only `has`, so moving the label test ACROSS the hop
+ * — same kind of test, one position different — fell off every rung to the general traversal.
+ * Measured at 200,000 vertices / 200,000 `T` edges, min of three rounds:
+ *
+ * ```text
+ *   V().out(T).has(age, gt(44)).count()       90.13 ns/v   served by `filteredHopCount`
+ *   V().out(T).hasLabel(E).count()           612.45        declined every rung      6.40x
+ *   hand-written loop, the same work         119.70        the floor                5.12x off
+ * ```
+ *
+ * The property arm sits AT that floor (0.80x — the rung beats the loop, because it is far-driven
+ * and tests each far vertex once instead of once per edge). The label arm was 5.12x above it. Two
+ * far-end filters of the same shape, 6.40x apart, both answering correctly — the spelling-cliff
+ * class CLAUDE.md names.
+ *
+ * ONE READER FOR BOTH VERTEX-HOP RUNGS, which is item 1282's prescription rather than a third copy
+ * of the block: that item found item 1140's `hasKey` conversion had reached ONE detector of five
+ * and the four siblings kept declining, and recorded that the drift IS the defect.
+ *
+ * ⚠️ NOT WIDENED INTO `hasChain`, whose other caller is `edgeHopSeededCount`. After `outE`, a
+ * `hasLabel` filters the EDGE's label, not the far vertex's — the same step kind asking a different
+ * question — so admitting vertex labels there would be a wrong answer. `hasChain` keeps the
+ * edge-side semantics and this reader owns the vertex side.
+ *
+ * The `values`-must-be-LAST rule is `hasChain`'s and is kept verbatim: `[values(k), hasLabel(X)]`
+ * would apply the label test to a SCALAR, so anything after a trailing `values` declines.
+ */
+const farFilters = (rest: readonly Step[]): FarFilters | undefined => {
+  const labelSets: (readonly string[])[] = [];
+  const filters: Extract<Step, { kind: 'has' }>[] = [];
+
+  for (let i = 0; i < rest.length; i += 1) {
+    const step = rest[i];
+
+    if (step.kind === 'hasLabel') {
+      labelSets.push(step.labels);
+      continue;
+    }
+
+    // A trailing single-key `values(k)` IS a presence filter (item 1141), and only in the LAST
+    // position — see `hasChain`, from which this rule is carried unchanged.
+    if (step.kind === 'values') {
+      if (step.keys.length !== 1 || i !== rest.length - 1) {
+        return undefined;
+      }
+
+      filters.push({ kind: 'has', key: step.keys[0], pred: { op: 'present' } });
+      continue;
+    }
+
+    const asHas = asHasFilter(step);
+
+    if (asHas === undefined) {
+      return undefined;
+    }
+
+    filters.push(asHas);
+  }
+
+  // Nothing to filter is not this shape — `[hop, dedupe]` must still reach `distinctHopCount`,
+  // and a bare `[hop]` is `vertexStepCount`'s.
+  return labelSets.length === 0 && filters.length === 0 ? undefined : { labelSets, filters };
+};
+
+/**
+ * Does `v` pass every far-side label test — each step an OR over its labels, the steps ANDed?
+ *
+ * ⚠️ `hasLabel()` WITH NO LABELS KEEPS NOTHING, because `some` over an empty list is false. That is
+ * not a choice made here: it is exactly what the START side has always done
+ * (`step.labels.some((l) => v.labels.has(l))` in `bothFilteredHopCount` and `bothChainCount`), and
+ * the two sides agreeing is the property this function exists to guarantee.
+ */
+const passesLabels = (v: Vertex, labelSets: readonly (readonly string[])[]): boolean => {
+  for (const labels of labelSets) {
+    let any = false;
+
+    for (const l of labels) {
+      if (v.labels.has(l)) {
+        any = true;
+        break;
+      }
+    }
+
+    if (!any) {
+      return false;
+    }
+  }
+
+  return true;
+};
+
 /** An edge-index seed candidate: an estimate, a thunk, and whether its step may be dropped. */
 export type EdgeCandidate = {
   count: number;
@@ -732,12 +836,16 @@ const filteredHopCount = (hop: Step, rest: readonly Step[], graph: Graph): numbe
   // written, so the cliff was this rung's arity limit alone and not a semantic obstacle. It is the
   // same class as the spelling cliffs CLAUDE.md names: two conjuncts after a hop mean exactly what
   // one conjunction means, and cost 11x.
-  const filters = hasChain(rest);
+  // `farFilters` rather than `hasChain` since item 1302: this rung's far side is a VERTEX, so a
+  // `hasLabel` here is a far-end label test and belongs in the chain. `hasChain` keeps the
+  // edge-side reading for `edgeHopSeededCount`, where the same step filters the EDGE's label.
+  const farChain = farFilters(rest);
 
-  if (filters === undefined) {
+  if (farChain === undefined) {
     return undefined;
   }
 
+  const { labelSets, filters } = farChain;
   const forward = hop.kind === 'out';
   // THE KEYS AND PREDICATES ARE EXTRACTED ONCE, not read off the `Step` objects per row. Item 934
   // measured this as the whole of the 1->2 arity step: a two-filter count read 54.81 ms against a
@@ -795,6 +903,9 @@ const filteredHopCount = (hop: Step, rest: readonly Step[], graph: Graph): numbe
   // strictly less work and because it matches the step-by-step walk, so a predicate that CAN fault
   // would not silently diverge. Item 930 proved this rather than asserting it: a mutant removing
   // the short-circuit SURVIVED all 844 tests, exactly as predicted.
+  // Hoisted out of the per-vertex loop below for the reason `tallyFarEnds` records.
+  const anyLabels = labelSets.length !== 0;
+
   if (hop.labels.length === 1 || graph.multiTypeEdgeCount === 0) {
     let n = 0;
 
@@ -820,6 +931,19 @@ const filteredHopCount = (hop: Step, rest: readonly Step[], graph: Graph): numbe
       // A vertex with no edge of this type is not a far endpoint of this hop, so it must not be
       // tested — that is what keeps the evaluated set identical.
       if (deg === 0) {
+        continue;
+      }
+
+      // THE FAR-END LABEL TESTS (item 1302), before the property chain. The ORDER between the two
+      // groups is unobservable — neither a label test nor a `matches` can fault (item 930 proved
+      // the latter by a mutant removing the short-circuit, which SURVIVED) — so this is a cost
+      // choice, and it is the cheaper one only when the labels are selective. A label test is the
+      // DEARER of the two per element: item 1294's probe prices `v.labels.has` at ~22.8 ns/v
+      // against ~10.3 for a property read, because it is the same box chase plus a
+      // `Set<string>.has` string hash. Labels first anyway, because a label is the more selective
+      // test in every fixture here and the written order of the realistic spelling
+      // (`out(T).hasLabel(X).has(k,p)`) puts it first.
+      if (anyLabels && !passesLabels(v, labelSets)) {
         continue;
       }
 
@@ -889,35 +1013,22 @@ const filteredHopCount = (hop: Step, rest: readonly Step[], graph: Graph): numbe
     return undefined;
   }
 
+  // ⚠️ `tallyFarEnds` RATHER THAN A SECOND COPY OF THE WIDTH CHAIN (item 1302). This arm used to
+  // spell out the same `width === 1/2/3/else` dispatch over `far.properties` that `tallyFarEnds`
+  // already contains — two copies of one rule, which is the drift item 1282 recorded as the defect
+  // and which the far-end label test would have made three. Collapsing them also took
+  // `filteredHopCount` back under the complexity cap, the way item 993's `unrollSlots` extraction
+  // did; a per-BUCKET call costs nothing per row, unlike the per-row call item 934 priced at ~65 ns.
+  //
+  // This arm is reached only for an UNTYPED hop on a graph carrying a multi-label edge — the far
+  // driven arm above takes `labels.length === 1 || multiTypeEdgeCount === 0`, and `bucketsFor`
+  // declines a multi-type hop whenever a two-type edge exists. A far vertex is therefore tested
+  // once per incident edge here, which is strictly more evaluations than the far-driven arm and
+  // still fault-equivalent.
   let n = 0;
 
   for (const bucket of buckets) {
-    for (const edge of bucket) {
-      const far = forward ? edge.to : edge.from;
-
-      let hit: boolean;
-
-      if (width === 1) {
-        hit = matches(p0, far.properties[k0]);
-      } else if (width === 2) {
-        hit = matches(p0, far.properties[k0]) && matches(p1, far.properties[k1]);
-      } else if (width === 3) {
-        hit =
-          matches(p0, far.properties[k0]) &&
-          matches(p1, far.properties[k1]) &&
-          matches(p2, far.properties[k2]);
-      } else {
-        hit = true;
-
-        for (let i = 0; i < width && hit; i += 1) {
-          hit = matches(preds[i], far.properties[keys[i]]);
-        }
-      }
-
-      if (hit) {
-        n += 1;
-      }
-    }
+    n += tallyFarEnds(bucket, forward, keys, preds, labelSets);
   }
 
   return n;
@@ -1959,24 +2070,12 @@ const collectVertexFilters = (steps: readonly Step[], graph: Graph): VertexFilte
   return out;
 };
 
-/** Every step as a `has`, or `undefined` if any step is something else. */
-const collectHasFilters = (
-  steps: readonly Step[],
-): Extract<Step, { kind: 'has' }>[] | undefined => {
-  const out: Extract<Step, { kind: 'has' }>[] = [];
-
-  for (const step of steps) {
-    const asHas = asHasFilter(step);
-
-    if (asHas === undefined) {
-      return undefined;
-    }
-
-    out.push(asHas);
-  }
-
-  return out;
-};
+// `collectHasFilters` was here and is GONE (item 1302): it was the far-side reader for
+// `bothFilteredHopCount` and `farFilters` replaces it, so keeping it would leave a second far-side
+// reader that admits only `has` — which is precisely the drift item 1282 recorded as the defect
+// (one detector of five converted, four siblings left declining). Its only behaviour not carried
+// over is the absence of the `values`-must-be-last rule, which `farFilters` adds and which is
+// strictly more correct.
 
 /**
  * How many edges in one adjacency bucket have a far end passing every far filter.
@@ -1988,10 +2087,14 @@ const collectHasFilters = (
  * module scope. The parameter list is the price of not allocating.
  */
 const tallyFarEnds = (
-  set: ReadonlySet<Edge>,
+  // `Iterable` rather than `ReadonlySet` since item 1302: `filteredHopCount`'s edge-driven arm now
+  // calls this, and `bucketsFor` can yield `graph.edges` itself for an untyped hop. Only `for...of`
+  // is used below, so nothing here wanted a `Set`.
+  set: Iterable<Edge>,
   forward: boolean,
   keys: readonly string[],
   preds: readonly Predicate[],
+  labelSets: readonly (readonly string[])[],
 ): number => {
   const width = keys.length;
   const [k0] = keys;
@@ -2000,10 +2103,29 @@ const tallyFarEnds = (
   const p1 = width > 1 ? preds[1] : preds[0];
   const k2 = width > 2 ? keys[2] : '';
   const p2 = width > 2 ? preds[2] : preds[0];
+  // HOISTED out of the per-EDGE loop (item 1302), because read as `labelSets.length !== 0` inside
+  // it this is a property load per edge and this walk is the per-edge one. Item 934 found that what
+  // costs on these walks is exactly that — the per-row property load off a wider object, not the
+  // comparison — so the hoist is principled rather than speculative.
+  //
+  // ⚠️ IT IS NOT A MEASURED WIN, and the honest version matters more than the flattering one. A full
+  // sweep read the no-far-label both-sides shape at 0.94x against a 1.00x control band, which is
+  // what prompted this; but an ISOLATED 5-round A/B then put it at 1.09x the other way with a
+  // within-arm spread of 1.26-1.39x and the CONTROL's own spread at 1.46x. So the arm is
+  // indistinguishable from flat at this instrument's resolution and neither reading is outside
+  // noise. The hoist stays on the argument above, not on a number.
+  const anyLabels = labelSets.length !== 0;
   let n = 0;
 
   for (const edge of set) {
     const far = forward ? edge.to : edge.from;
+
+    // The far-end label tests (item 1302). Before the property chain for the same reason the
+    // far-driven rung gives: the order between the groups is unobservable because neither can
+    // fault, and a label is the more selective test on these shapes.
+    if (anyLabels && !passesLabels(far, labelSets)) {
+      continue;
+    }
 
     let hit: boolean;
 
@@ -2101,7 +2223,10 @@ const bothFilteredHopCount = (mid: readonly Step[], graph: Graph): number | unde
   }
 
   const starts = collectVertexFilters(mid.slice(0, at), graph);
-  const fars = collectHasFilters(mid.slice(at + 1));
+  // `farFilters` rather than `collectHasFilters` since item 1302 — the far side of a vertex hop
+  // takes `hasLabel` exactly as `collectVertexFilters` has always taken it on the start side. That
+  // asymmetry between the two sides of one hop was the defect; see `farFilters` for the numbers.
+  const fars = farFilters(mid.slice(at + 1));
 
   if (starts === undefined || fars === undefined) {
     return undefined;
@@ -2119,8 +2244,9 @@ const bothFilteredHopCount = (mid: readonly Step[], graph: Graph): number | unde
   const forward = hop.kind === 'out';
   // Extracted ONCE, for item 934's reason: `f.key` / `f.pred` off a `Step` is a polymorphic load,
   // and this one feeds a loop that runs per EDGE rather than per vertex.
-  const farKeys = fars.map((f) => f.key);
-  const farPreds = fars.map((f) => f.pred);
+  const farKeys = fars.filters.map((f) => f.key);
+  const farPreds = fars.filters.map((f) => f.pred);
+  const farLabels = fars.labelSets;
   let n = 0;
 
   for (const v of source) {
@@ -2153,7 +2279,7 @@ const bothFilteredHopCount = (mid: readonly Step[], graph: Graph): number | unde
     // the same condition.
     if (hop.labels.length === 0) {
       for (const set of byType.values()) {
-        n += tallyFarEnds(set, forward, farKeys, farPreds);
+        n += tallyFarEnds(set, forward, farKeys, farPreds, farLabels);
       }
 
       continue;
@@ -2163,7 +2289,7 @@ const bothFilteredHopCount = (mid: readonly Step[], graph: Graph): number | unde
       const set = byType.get(t);
 
       if (set !== undefined) {
-        n += tallyFarEnds(set, forward, farKeys, farPreds);
+        n += tallyFarEnds(set, forward, farKeys, farPreds, farLabels);
       }
     }
   }

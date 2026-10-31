@@ -42661,3 +42661,216 @@ BY can never seed (600x, item 1050**, whose own entry raises the fourth-rung-ver
 choice and does not take it).
 
 Gates: no code change.
+
+### Item 1302 — a far-end `hasLabel` after a Gremlin vertex hop: 1.90-6.02x, and the cross-surface check found a GQL spelling gap it did not fix (DONE + located)
+
+The start side of a hop has always admitted `hasLabel`; the far side never did.
+`collectVertexFilters` takes `hasLabel` for the steps BEFORE the hop, so
+`hasLabel(P).out(T).has(k,p)` took a rung — while the two far-side readers (`hasChain`,
+`collectHasFilters`) admitted only `has`, so moving the label test ACROSS the hop, the same kind
+of test one position later, fell off every rung to the general traversal.
+
+### How it was found, which is the part worth keeping
+
+Not by looking for it. The user asked what could speed up the TS per-row cost without giving up
+O(1)-by-id lookup or fast mutations, and two layout levers were priced for that question:
+
+- **A label BITMASK on the `LabelBox`** (intern labels, answer `hasLabel` as `(mask & bit) !==
+0`). A micro-arm says 19.6x. **REFUTED ON REACHABILITY**: the engine never runs that loop. Real
+  queries at 200,000 vertices — `V().hasLabel(P).count()` **0.05 ns/v** and
+  `V().hasLabel(P).hasLabel(E).count()` **0.06** — are answered from `verticesByLabel` without
+  visiting a vertex, and adding a label test to a property filter costs nothing measurable (12.26
+  -> 12.77, inside the 1.11x round spread). I had predicted the two-label AND could NOT be seeded.
+  It is. There is no scan shape where the per-vertex `Set<string>.has` is on the hot path. - **A
+  parallel box ARRAY**, one sequential load instead of two dependent ones. Real, modest: the
+  middle shape item 1294 never measured reads 4.49 ns/v against the current 10.71 (2.39x), of
+  which 1.28 is array-vs-Map iteration — so **the hop itself is ~4.94 ns** and removing one
+  removes ~5, which confirms the dependent-load-latency reading over cache misses. End to end on a
+  property count that is 12.26 -> ~7.3, about 1.7x, against a 4x ceiling that needs the box gone.
+
+Pricing the mask meant asking where a far-end label test IS paid, and that is what surfaced the
+defect. ⚠️ **Both arms of lever 1 were measured on a hand-written loop first and the loop was not
+the engine.** Third time this file records that shape (items 591 and 1294 are the others): take
+ratios from an A/B of the real thing.
+
+### The gap, measured against a FLOOR rather than against its unfiltered twin
+
+200,000 vertices / 200,000 `T` edges, one shape per process, min of three rounds:
+
+```text
+  V().out(T).has(age, gt(44)).count()      95.76 ns/v   served by `filteredHopCount`
+  V().out(T).hasLabel(Employee).count()   612.45        declined every rung        6.40x
+  hand-written loop, the same work        119.70        the floor                  5.12x off
+```
+
+The property arm sits **at** that floor — 0.80x, the rung BEATS the loop, because it is far-driven
+and tests each far vertex once instead of once per edge. The label arm was 5.12x above it.
+
+⚠️ **`V().out(T).count()` at 0.05 ns/v is NOT the comparison**, and quoting the ~11,000x against
+it would have been dishonest: that is a closed-form degree sum that never visits a far end. A
+query that must visit far ends needs a floor that visits them too, and the hand-written loop is
+it.
+
+### The fix: one far-side reader, and NOT a widening of the shared one
+
+`farFilters` splits the far chain into label sets (each an OR, ANDed across steps) and `has`
+filters, and replaces `hasChain` in `filteredHopCount` and `collectHasFilters` in
+`bothFilteredHopCount`. `collectHasFilters` is deleted rather than left beside it — item 1282's
+prescription, after that item found item 1140's conversion had reached one detector of five.
+
+⚠️ **`hasChain` is NOT widened, and that distinction is load-bearing.** Its other caller is
+`edgeHopSeededCount`, where the frontier is EDGES: after `outE`, a `hasLabel` filters the edge's
+own label, not the far vertex's — the same step kind asking a different question. Admitting vertex
+labels there would be a wrong answer, so `hasChain` keeps the edge reading and `farFilters` owns
+the vertex side. The test that holds this is `V().outE(T).hasLabel(E).has(w, 1).count()` = 0,
+where a dropped label test answers 1.
+
+`filteredHopCount`'s far-driven arm tests labels per far VERTEX and adds its whole degree; its
+edge-driven arm and `tallyFarEnds` test per EDGE, which is more evaluations and still
+fault-equivalent, since neither a label test nor `matches` can fault (item 930).
+
+### The A/B: HEAD against the change, same fixture, controls named up front
+
+```text
+  arm                    PRE ns/v       POST  speedup  answer
+  q-in-label               773.14     128.48    6.02x  n=100000
+  q-both-label            1661.55     312.74    5.31x  n=200000
+  q-hop-label-prop         630.57     213.44    2.95x  n=48884
+  q-hop-label              462.43     190.06    2.43x  n=100000
+  q-hop-label-start        212.09     111.38    1.90x  n=33333
+  q-hop-prop                85.19      91.20    0.93x  n=99990   no far label: see below
+  reg-bothsides-noflabel    54.37      54.26    1.00x  n=33330   no far label: see below
+  ctl-scan-prop             10.48      10.58    0.99x  [CONTROL]
+  ctl-label1                 0.04       0.04    1.00x  [CONTROL]
+  ctl-label2                 0.06       0.06    1.00x  [CONTROL]
+  ctl-hop                    0.04       0.04    1.00x  [CONTROL]
+```
+
+⚠️ THIS IS THE THIRD A/B, AND THE EARLIER TWO ARE VOID. The first measured 2.67-6.81x; then the
+LINT gate's complexity cap forced the edge-driven arm to be collapsed into `tallyFarEnds` — a code
+change AFTER the measurement. The second measured 2.51-5.84x and exposed a 0.94x on
+`reg-bothsides-noflabel`, which forced the `anyLabels` hoist — another change after a measurement.
+Each time the A/B and the WHOLE mutation pass were re-run rather than the numbers kept. A number
+measured against code that no longer exists is the same failure as an arm that is not the code it
+claims.
+
+### ⚠️ The arms this change can only COST are FLAT, and saying so honestly took a third instrument
+
+`q-hop-prop` and `reg-bothsides-noflabel` carry no far-end label, so the guard is pure overhead
+there. Across the three full sweeps `q-hop-prop` read **1.02x, 0.99x and 0.93x** — a ~10% bounce,
+which is exactly the band CLAUDE.md says needs its own harness. An ISOLATED 5-round A/B on only
+the three no-far-label arms:
+
+```text
+  arm                      PRE min  POST min  POST/PRE   within-arm spread
+  q-hop-prop                 88.58     86.91     0.98x   PRE 1.05  POST 1.12
+  reg-bothsides-noflabel     51.44     55.88     1.09x   PRE 1.39  POST 1.26
+  ctl-scan-prop  [CONTROL]   10.41     10.21     0.98x   PRE 1.08  POST 1.46
+```
+
+**The CONTROL's own spread reaches 1.46x here, which bounds what any of these rows can claim.** So
+all three are indistinguishable from flat — and, the part worth recording, **the 0.94x that
+prompted the hoist was never outside noise either.** The hoist is kept on its mechanism (a
+property load per edge becomes a captured boolean, which is the cost item 934 measured on these
+walks) and NOT on a number; its comment in the source says exactly that. The targets at
+1.90-6.02x are the only readings here that clear their instrument.
+
+Every answer identical PRE and POST. The arms assert they ARE the code they claim before timing —
+PRE must contain no `farFilters`, POST at least three — because `cp` with one of two files never
+written leaves the previous arm in place and the "after" reading is the "before" code.
+
+⚠️ **ONE MEASUREMENT WAS INVALID AND MUTATION-STYLE SUSPICION CAUGHT IT.** The start-filtered arm
+was first timed as `hasLabel(Person).out(T).hasLabel(Employee)` on a fixture where EVERY vertex
+was a `Person` — and `dropVacuousLabels` (item 540) deletes a `hasLabel` whose bucket holds every
+live element, so the arm was silently the bare plan. The giveaway was the two arms agreeing to
+within 3%. Re-run with a non-vacuous `Mgr` label (1 in 3) it answers 33333 and reads 1.86x. Every
+label used as a filter in the new tests is non-vacuous for the same reason.
+
+### Teeth: 10 mutants, 9 caught, 1 expected survivor — and two of the kills needed new fixtures
+
+```text
+  labels-never-filter          caught (11 fail)
+  or-becomes-negated           caught (9)
+  farfilters-drops-labels      caught (10)
+  haschain-widened-to-labels   caught (1)     <- survived TWICE first; see below
+  tallyfarends-skips-labels    caught (3)
+  far-driven-skips-labels      caught (9)
+  edge-driven-drops-labelsets  caught (1)     <- survived first, in another form; see below
+  bothsides-drops-labelsets    caught (2)     <- both call sites, declared count 2
+  values-last-rule-dropped     caught (2)
+  empty-guard-removed          SURVIVED        [expected: answer-equivalent perf guard]
+```
+
+Two mutants went stale against the refactor and reported ANCHOR rather than a verdict — the
+`passesLabels` rewrite to `for...of` removed `labels[j]`, and the collapsed arm turned a deleted
+label test into a dropped argument. A stale anchor is NOT a survivor, and the harness
+distinguishes them: it asserts the anchor count before applying and prints the mismatch, so a
+mutant that never landed cannot be read as a passing suite. Both were rewritten and both are
+caught above.
+
+Two survivors were real test gaps and both needed a fixture that did not exist:
+
+- **`edge-driven-skips-labels`** survived all 948 tests because nothing in the suite had a
+  two-type edge. `filteredHopCount`'s edge-driven arm needs `hop.labels.length !== 1 &&
+multiTypeEdgeCount !== 0` to pass the far-driven arm, and then `bucketsFor` declines a
+  MULTI-type hop whenever a two-type edge exists — so **the only reachable combination is an
+  UNTYPED hop on a graph carrying a multi-label edge.** Half of my change was untested until that
+  fixture existed. - **`haschain-widened-to-labels`** survived twice. First because `hasChain`
+  returns `undefined` on an empty filter list either way, so a single `hasLabel` cannot show it;
+  then because `edgeHopSeededCount` declines at `if (!best)` without a seekable filter. Observing
+  it needs all three of a non-empty `has` chain, an EDGE index, and an equality predicate a hash
+  index can serve.
+
+A fixture comment also had the semantics backwards and the test caught it: `out(T, S)` yields a
+two-type edge ONCE, not twice — which is `bucketsFor`'s own stated reason for declining ("summing
+across types would visit it twice while the walk yields it once").
+
+### The Rust engine already had this shape, so nothing was ported
+
+Recorded in this file at item 1100's reachability markers: `C2  out().hasLabel('Person').count()
+->  try_fused_hop_mask_agg`. The native path claims it. This was a TS-only gap, and the asymmetry
+is the opposite of the usual direction.
+
+### ⚠️ The cross-surface check found a GQL gap, and this item does NOT fix it
+
+CLAUDE.md requires the pattern be grepped elsewhere, because a user picks GQL xor Gremlin. GQL's
+**pattern-level** far label is already fast and has no twin defect — 18.08 ns/v, faster than the
+far-end property's 84.60. But the CLAUSE spelling of the same question is not:
+
+```text
+  MATCH (a)-[:T]->(b:Employee)                      18.08 ns/v
+  MATCH (a)-[:T]->(b) WHERE b IS LABELED Employee  215.89        11.9x, same answer (100000)
+```
+
+12-22x at every size from 20,000 up, with and without a start label on `a`, so neither scale nor
+the start is the variable. **LABELS ONLY** — the same probe reads far-end `IN` at 0.82x (the
+lifted spelling is FASTER) and far-end `IS NOT NULL` at 1.13x.
+
+⚠️ **A HYPOTHESIS FROM GREP COUNTS, REFUTED BY MEASUREMENT.** `shortcuts.ts` mentions only
+`eqProps` and `cmpProps` where `hop-projection.ts` carries six families, and I was one step from
+recording "seven of nine lifted families are missing from the GQL count path". The two arms above
+refute it. A grep of family names predicted nothing.
+
+⚠️ **AND THE GAP IS FIXTURE-DEPENDENT, which the spelling probe caught.** Added as a group there,
+the pair reads 3.37ms against 4.51ms — just **1.34x** — because that fixture's PATTERN arm is
+itself slow (22x this probe's pattern arm at the same node count). The untested suspect is its
+MULTI-LABEL edges (`F` on 1 in 11), which is exactly what disables the analogous Gremlin path via
+`multiTypeEdgeCount`. Left as a stated question rather than guessed at. The probe group carries
+both numbers so a small spread there is not read as a small gap.
+
+### What is open after this
+
+- **The GQL far-end `IS LABELED` clause spelling**, above: located, priced on one fixture, and the
+  fixture dependence un-diagnosed. The next tick is why the spelling probe's fixture compresses
+  it. - **The box-array lever** (~1.7x on a property count), whose cost is delete bookkeeping:
+  tombstones, because swap-remove reorders and Gremlin observably reproduces TinkerPop's order
+  (item 1043). - **The label bitmask is CLOSED, refuted on reachability** — do not re-price it.
+  Its only live target is the far-end label test, where the dominant cost was the missing rung
+  this item built, and within the hand-written floor the label probe is ~20 of 119 ns, about 1.2x.
+
+### Verification
+
+`bun test` in `packages/gremlin` 951 pass / 0 fail (935 before, +16 new). Gates as separate
+commands: `bun run typecheck` 0, `bun run lint` 0, `bun run fmt` 0, `bun run check` 0. Probes
+added: `box-cost-probe.ts` (the layout micro-arms, both controls), `box-cost-real.ts` (the engine
+shapes that refuted lever 1), `gql-far-label-probe.ts` (the cross-surface check).
