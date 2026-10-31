@@ -704,6 +704,121 @@ export const flattenFilterWrappers = (plan: Plan): Plan => {
 };
 
 /**
+ * The `both`-family step an ordered `(out, in)` or `(outE, inE)` pair collapses to, or `undefined`.
+ *
+ * MODULE SCOPE because it captures nothing — the linter asks for that, and it is right: this was a
+ * closure rebuilt on every call inside {@link bothFromUnion}, which runs once per union step.
+ */
+const pairedBoth = (x: Step, y: Step): 'both' | 'bothE' | undefined => {
+  if (x.kind === 'out' && y.kind === 'in') {
+    return 'both';
+  }
+
+  if (x.kind === 'outE' && y.kind === 'inE') {
+    return 'bothE';
+  }
+
+  return undefined;
+};
+
+/**
+ * The step `union(out(L), in(L))` collapses to, or `undefined` — `both` for the vertex pair,
+ * `bothE` for the edge pair (item 1311).
+ *
+ * Both branches must be EXACTLY one step, one `out`/`outE` and one `in`/`inE` in either written
+ * order, carrying the IDENTICAL label list. Each condition refuses a real non-equivalence:
+ * `union(out(T), in(S))` is not a `both` of anything, `union(out(T), out(T))` doubles one side, and
+ * a branch with a second step is a different walk. Label order is compared positionally, which
+ * declines a reordered pair — conservative, and cheaper than proving set equality.
+ */
+const bothFromUnion = (step: Step): Step | undefined => {
+  if (step.kind !== 'union' || step.plans.length !== 2) {
+    return undefined;
+  }
+
+  const [first, second] = step.plans;
+
+  if (first.steps.length !== 1 || second.steps.length !== 1) {
+    return undefined;
+  }
+
+  const [a] = first.steps;
+  const [b] = second.steps;
+  const kind = pairedBoth(a, b) ?? pairedBoth(b, a);
+
+  if (kind === undefined) {
+    return undefined;
+  }
+
+  const la = (a as Extract<Step, { labels: readonly string[] }>).labels;
+  const lb = (b as Extract<Step, { labels: readonly string[] }>).labels;
+
+  if (la.length !== lb.length || la.some((l, i) => l !== lb[i])) {
+    return undefined;
+  }
+
+  return { kind, labels: la };
+};
+
+/**
+ * Tails after which the union's EMISSION ORDER cannot be observed, so `union(out, in)` may become
+ * `both` (item 1311).
+ *
+ * ⚠️ THIS LIST IS THE WHOLE SOUNDNESS ARGUMENT, and it is short on purpose. `both` and
+ * `union(out, in)` are NOT sequence-equal — item 1308 measured it: on one fixture `both` emits
+ * `["b","a","a","c","a","b"]` where the union emits `["b","a","c","a","a","b"]`, because `both`
+ * finishes each vertex before moving on and the union does not. They ARE multiset-equal, so only a
+ * tail that reads the multiset and not the sequence may ride this.
+ *
+ * `count` reads the multiset. `dedupe` then `count` reads the SET, which is coarser still — and
+ * both were verified on a fixture carrying PARALLEL edges, a MULTI-LABEL edge and a SELF-LOOP,
+ * where the pair agrees at 8 and 3 respectively, typed, untyped and multi-type.
+ *
+ * `sum` and `mean` are deliberately ABSENT even though they look order-free: this repo records
+ * them as order-sensitive in the last ulp (`foldFor`'s own note), so a reordering is observable in
+ * floating point. `min`/`max` would be safe but are not in the measured shape, so they are not
+ * admitted on a guess.
+ */
+const ORDER_FREE_TAILS: readonly (readonly Step['kind'][])[] = [['count'], ['dedupe', 'count']];
+
+const tailIsOrderFree = (tail: readonly Step[]): boolean =>
+  ORDER_FREE_TAILS.some(
+    (want) => want.length === tail.length && want.every((k, i) => tail[i].kind === k),
+  );
+
+/**
+ * `union(out(T), in(T)).count()` becomes `both(T).count()` (item 1311).
+ *
+ * Item 1305's Gremlin spelling probe measured the pair at 128659x net of its null control — the
+ * largest gap it found — because `both(T).count()` is answered from degree sums while the union
+ * materialises one traverser per branch per vertex.
+ *
+ * ⚠️ IT IS NOT A GENERAL NORMALISATION, and item 1308 is why: the two spellings are multiset-equal
+ * but NOT sequence-equal, so rewriting a row-returning traversal would change observable output
+ * order. The win was measured on a `count()` terminal, where order is not observable at all, so
+ * that is exactly what is admitted — see {@link ORDER_FREE_TAILS}.
+ *
+ * Only the TOP-LEVEL step list is rewritten, like `fuseEdgeHop` beside it; a `repeat()` body is
+ * left for its own item.
+ */
+// EXPORTED for its own assertion, like `fuseEdgeHop` and `flattenFilterWrappers` beside it.
+export const fuseUnionBoth = (plan: Plan): Plan => {
+  for (let i = 0; i < plan.steps.length; i += 1) {
+    const fused = bothFromUnion(plan.steps[i]);
+
+    if (fused !== undefined && tailIsOrderFree(plan.steps.slice(i + 1))) {
+      const steps = [...plan.steps];
+
+      steps[i] = fused;
+
+      return { ...plan, steps };
+    }
+  }
+
+  return plan;
+};
+
+/**
  * The plan the rungs actually see.
  *
  * Both rewrites here exist for the same reason — every shortcut matches a plan PREFIX beginning at
@@ -722,7 +837,9 @@ export const flattenFilterWrappers = (plan: Plan): Plan => {
  * slow walk, which is the shape item 1303 measured.
  */
 export const effectivePlan = (plan: Plan, graph: Graph, tracksPath: boolean): Plan =>
-  tracksPath ? plan : dropVacuousLabels(fuseEdgeHop(flattenFilterWrappers(plan)), graph);
+  tracksPath
+    ? plan
+    : dropVacuousLabels(fuseUnionBoth(fuseEdgeHop(flattenFilterWrappers(plan))), graph);
 
 /**
  * `outE(T).inV()` becomes `out(T)`, and `inE(T).outV()` becomes `in(T)` (item 1307).
