@@ -10849,7 +10849,8 @@ candidate auction (`indexCandidates` yields `SeedCandidate { count, build() }`,
 `seedVertices` takes the cheapest), but a clause `WHERE` reaches it only through
 `collectHints`, whose `asPropCompare` matches `prop <op> const` — so `element_id(n) = $x`,
 whose operand is a `func`, produced no hint at all. New `{ kind: 'id' }` hint, an `asIdCompare`
-matcher (either operand order, `=` only), and an `indexCandidates` arm that runs BEFORE the
+matcher (either operand order, `=` only — the LIST spellings arrived at item 1315), and an
+`indexCandidates` arm that runs BEFORE the
 `isIndexed(hint.key)` gate, because an id hint has no key: **`verticesById` IS its index, so it
 needs no `createIndex`.**
 
@@ -43299,7 +43300,10 @@ hashing `git diff` across a second run, `bun run check --skip-nx-cache` 0.
 ### What is open after this
 
 - **The multi-id `hasId` seed**, above: 6.5-7.1 ms against 0.020, blocked on an order decision and
-  not on a mechanism.
+  not on a mechanism. **Still blocked — and item 1315 is NOT a precedent against it.** The GQL
+  twin (`element_id(n) IN [...]`) shipped there at 614x/1276x precisely because a GQL seed is a
+  SUPERSET re-validated by `matchNode`, while a Gremlin `hasId` seed replaces the traversal's
+  source and so DEFINES the output order.
 - ~~**`outE(T).inV()` is not normalised to `out(T)`**~~ — **BUILT at item 1307** for both edge-hop
   pairs (`outE.inV` -> `out`, `inE.outV` -> `in`): 144.175ms -> 0.009 and 160.127 -> 0.009, with
   two far-end groups converging as well. The `union(out, in)` -> `both` half is still OPEN and is
@@ -44167,3 +44171,161 @@ From 15 at item 1305 to 1: `not(hasNot(k))` at ~6x, which is the entire spread o
 group because `has(k)` and `hasKey(k)` are the SAME step. Folding a double negation over a total
 predicate is sound and trivial; it is left recorded rather than built because nobody writes it,
 and a rewrite nobody's queries reach is cost without a number behind it.
+
+## 1315 — `element_id(n) IN [...]` and the id `=`-chain both seed: 614x and 1276x
+
+**Found by checking the standing O(1)-by-id constraint rather than by a probe.** Both spelling
+probes were exhausted (the Gremlin one down to a single group at item 1314, the GQL one reporting
+no answer disagreements), so the next question was the one the loop is under instruction to
+protect: is point lookup by id still O(1) in every spelling a caller writes? It was not. Item 618
+gave the single `=` a seed and scoped itself "`=` only"; the two LIST spellings had no hint at all
+and scanned the label bucket.
+
+This is CLAUDE.md's equivalent-spelling class exactly — _"the planner recognized one spelling of a
+predicate and scanned for another that meant exactly the same thing"_ — and `k = $a OR k = $b` vs
+`k IN [$a, $b]` is one of the four it names. Both list spellings returned the correct rows, so no
+correctness test could have found it.
+
+### Measured
+
+A/B against HEAD, both files swapped as one arm, three order-alternated rounds, min of rounds,
+200,000 vertices. FOUR controls the change cannot reach: the single `=` (already seeded at 618),
+an un-indexed property `=`, an un-indexed property `IN`, and a bare label scan.
+
+```text
+  arm                    PRE ms      POST ms     speedup  rows
+  q-in-ids              7.54313      0.01228     614.26x  rows=3
+  q-or-ids             18.50733      0.01450    1276.37x  rows=3
+  ctl-one-id            0.00612      0.00613       1.00x  rows=1        [CONTROL]
+  ctl-prop-eq           3.21936      3.24124       0.99x  rows=2222     [CONTROL]
+  ctl-prop-in           3.95558      3.76905       1.05x  rows=6669     [CONTROL]
+  ctl-label-scan        7.95792      7.98653       1.00x  rows=200000   [CONTROL]
+
+  CONTROL BAND: 0.99x .. 1.05x
+```
+
+Row counts identical in both arms on every row. A single pre-A/B run had shown `ctl-prop-eq` at
+3.7492 → 4.1888 (1.12x) and that is why the full A/B was run rather than the numbers quoted off
+the probe: it was noise, and a control moving more than a target is item 762's signature for a
+measurement artifact, so it had to be ruled out rather than explained away.
+
+**Fixing `IN` alone would have been the wrong half.** The `=`-chain was the SLOWEST of the three
+spellings before (18.5 ms against `IN`'s 10.9 and the single id's 0.0078), so an `IN`-only fix
+leaves the two list spellings 1.6x apart — the gap the `or` arm of that switch exists to close.
+
+### Why a reordering seed is sound here, where Gremlin's is not
+
+Item 1306 declined the multi-id Gremlin `hasId` seed and that decline STANDS; this is not a
+reversal of it. The two surfaces differ in what a seed IS:
+
+- A GQL seed hint produces a **superset** which `matchNode` and the residual `WHERE` then
+  re-validate, and `seedVertices` is free to ignore it entirely at the `seekIsWorthIt` gate. The
+  existing `{kind: 'within'}` property seed already seeds a union of index buckets, so seeding a
+  union of id lookups introduces no new freedom.
+- A Gremlin `hasId` seed replaces the traversal's source and therefore DEFINES the output order,
+  which `hasId.test.ts` pins in a case named "we can filter by ids out of order".
+
+So there is in-engine precedent on this side and an order contract on that one.
+
+### What it is
+
+Four pieces. On the producer side in `executor.ts`: a `{kind: 'idIn'; values}` variant on
+`CSeedHint`; an id arm in `collectHints`' `case 'in'` (the property arm tests `kind === 'prop'`
+and an `element_id` call is a `func`, which is the whole reason the list form had no hint); and
+`uniformIdEqChain` — the id twin of `uniformEqChain`, which matches a property key and so cannot
+see this shape — feeding an id arm in `case 'or'`. On the consumer side in `executor/matching.ts`,
+an `idIn` arm resolving each string id through `graph.getVertexById`.
+
+A NON-STRING entry is skipped rather than refused, and that is correct and not merely safe:
+`element_id` yields a string, so no vertex can equal a number and the scan this replaces would
+keep nothing for it either. Skipping keeps the seed a superset.
+
+The candidate is built EAGERLY, unlike the indexed ones: the work is one `Map.get` per id and
+`orient` needs the count before it can choose a start, so deferring would hide a cost already
+paid. That choice is what cost a mutant below.
+
+### Teeth: 8 mutants, 2 rounds, and both round-1 survivors were MINE
+
+```text
+  in-arm-unwired         CAUGHT   9 fail      or-mixed-admitted       CAUGHT   1 fail
+  or-arm-unwired         CAUGHT   3 fail      or-cross-variable       CAUGHT   1 fail
+  consumer-unwired       CAUGHT  12 fail      nonstring-admitted      CAUGHT   1 fail
+  dedup-dropped          SURVIVED (round 1)   dedup-dropped-for-real  CAUGHT   1 fail
+  count-mis-estimated    SURVIVED (round 1)   count-mis-estimated     CAUGHT   2 fail (round 2)
+  count-zeroed           SURVIVED — reachable but cost-equivalent, see below
+```
+
+The three NARROWING mutants are the ones that matter, and all three are caught: a seed is
+answer-equivalent, so `in-arm-unwired`, `or-arm-unwired` and `consumer-unwired` each return
+perfectly correct rows and are visible ONLY through the `getVertexById` call counts. Without the
+count assertions this file would be a rows-only test that every one of them passes.
+
+**`count-mis-estimated` surviving round 1 exposed a flaw in the INSTRUMENT, not a test gap, and
+the diagnosis is the item's most transferable result.** Because the ids are resolved eagerly
+inside `indexCandidates`, `getVertexById` runs even when `seedVertices` then declines the seek at
+`seekIsWorthIt` and scans. So the lookup counter witnesses "the hint was produced and resolved" —
+the right signal for every DECLINE case, and the signal that catches the three narrowings — but it
+CANNOT distinguish a taken seek from a resolved-then-declined one. Accepting the survivor as
+"answer-equivalent, nothing to do" would have left the file claiming a route assertion it does not
+make.
+
+`spyFullScan` is the missing half: `candidateVertices` reaches an unlabelled pattern through
+`graph.verticesById.values()`, which a taken seek never calls, so counting it IS "was the seek
+chosen". It has a null control asserting it DOES fire on a declined shape, without which a spy
+that never fires would make both assertions pass while proving nothing. With it, the mutant is
+caught by exactly those two tests.
+
+`dedup-dropped` survived round 1 because the mutant was a NO-OP — it swapped the `Set` for an
+array and then handed `build` a `new Set(hits)`, re-deduplicating on the way out. The fourth
+harness error of this run, and the same shape as item 1314's. Mutated properly it is caught;
+note that `bun run build` does not typecheck, so it compiled and the duplicate-id TEST caught it
+rather than the `ReadonlySet<Vertex>` return type.
+
+`count-zeroed` is a deliberate survivor, and it is a KNOWN class in this exact file rather than a
+loose end. Under-reporting the count keeps the seek (0 passes `seekIsWorthIt` as readily as 3) and
+changes only which node `orient` drives in a multi-node pattern — and since the true count is at
+most `|ids|`, both values are smaller than any label bucket the gate would accept. It is
+reachable in principle (two id-seeded nodes in one pattern) and cost-equivalent in practice.
+
+The `edgeEnd` hint twenty lines above carries the same note from item 621 — _"`count` is an
+ESTIMATE, not a guard … Mutation confirms it (`count: 1` unconditionally survives) — recorded so
+the zero is not later read as load-bearing"_ — so this is the second instance of one documented
+class, not a new gap. `hits.size` is the exact count rather than an estimate, so there is no
+arithmetic to extract and unit-test in the sense CLAUDE.md's rule intends.
+
+### What this opens: the EDGE id list
+
+Item 621 gave a single edge id an `edgeEnd` hint that pins a hop to one endpoint. The LIST form
+has no equivalent — the same gap as this item's, one level up — and `id-list-seed.test.ts` pins
+only that it ANSWERS correctly, deliberately not that it seeds. The mechanism is the same shape:
+resolve each edge id, collect the chosen endpoint of each, seed the node with that set; sound by
+the same superset argument, since the residual `WHERE` re-validates the edge identity. Unmeasured
+as of this item, and the next target.
+
+### Round 3: the teeth survive the `idSetFrom` extraction
+
+The `lint` gate rejected the consumer at `max-depth` 6 > 5, so the id resolution moved to a
+module-scope `idSetFrom` AFTER rounds 1 and 2 had run — which left every mutant pointing at
+text that had moved. A pure extraction should preserve the teeth and "should" is not evidence,
+so the three moved mutants were re-run against the refactored file: `nonstring-admitted`,
+`dedup-dropped` and `count-mis-estimated` all CAUGHT, 3/3, no anchor failures.
+
+Worth recording that `typecheck` is what caught the fixture helper returning `Vertex | null`
+while `bun run build` compiled it happily — the same split that made `dedup-dropped` a test
+catch rather than a type catch.
+
+### Verification
+
+`packages/gql` 3339 pass / 0 fail (3315 before, +24 new in `id-list-seed.test.ts`), of which six
+DECLINE cases assert zero lookups: a negated list, an `OR` with one non-id branch, an `OR` across
+two variables, `<>`, a property `IN`, and an edge id list. All seven byte-identity fuzzers 13
+pass / 0 fail. Gates as separate commands with exit codes read unpiped: `bun run typecheck` 0,
+`bun run lint` 0, `bun run fmt` 0 AND verified idempotent by hashing `git diff` across a second
+run, `bun run check --skip-nx-cache` 0.
+
+The full cross-package suite reads 6442 pass / 68 fail, and those 68 are the known run-many
+flake rather than this change: all of them land in `examples/explorer`, `packages/core`
+(reactive), `packages/sync` and `packages/native`, every one of those files is GREEN run in
+isolation, and none of them import `@lenke/gql`. `packages/gql` itself is 0 fail. Three reasons
+rather than one, because "the count matched what I expected" is how a real regression gets
+waved through.

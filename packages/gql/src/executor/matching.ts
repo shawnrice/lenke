@@ -107,6 +107,31 @@ export const evalBound = (bound: CRangeBound, env: EvalEnv): RangeBound | null =
 export type SeedCandidate = { count: number; build: () => ReadonlySet<Vertex> };
 
 /**
+ * The vertices an id LIST resolves to (item 1315), as a `Set` so a repeated id yields one row.
+ *
+ * A NON-STRING entry is skipped rather than refused, and that is correct and not merely safe:
+ * `element_id` yields a string, so no vertex can equal a number, and the scan this replaces would
+ * keep nothing for it either. Skipping keeps the seed a SUPERSET, which is the invariant every
+ * hint here relies on.
+ *
+ * At module scope rather than inline because the inline form nested six blocks deep, one past the
+ * `max-depth` gate — and a seed walk belongs out of the hot block regardless.
+ */
+const idSetFrom = (graph: Graph, list: readonly unknown[]): ReadonlySet<Vertex> => {
+  const hits = new Set<Vertex>();
+
+  for (const raw of list) {
+    const hit = typeof raw === 'string' ? graph.getVertexById(raw) : null;
+
+    if (hit) {
+      hits.add(hit);
+    }
+  }
+
+  return hits;
+};
+
+/**
  * Every index seek a node pattern offers: its ISO equality constraints
  * (`(n {k: v})`) plus the seed hints lifted from WHERE / inline predicates.
  * Each candidate carries a cardinality estimate (computed without touching a
@@ -175,6 +200,34 @@ export const indexCandidates = function* (
         const hit = graph.getVertexById(v);
 
         yield { count: hit ? 1 : 0, build: () => (hit ? new Set([hit]) : EMPTY) };
+      }
+
+      continue;
+    }
+
+    // The LIST form (item 1315), resolved the same way and for the same reason: `verticesById` IS
+    // the index, so no `createIndex` is needed and the candidate set is at most `|ids|`.
+    //
+    // A NON-STRING entry is skipped rather than refused, and that is correct and not merely safe:
+    // `element_id` yields a string, so no vertex can equal a number, and the scan this replaces
+    // would keep nothing for it either. Skipping keeps the seed a SUPERSET, which is the invariant
+    // every hint here relies on.
+    if (hint.kind === 'idIn') {
+      const list = hint.values(env);
+
+      if (Array.isArray(list)) {
+        const hits = idSetFrom(graph, list);
+
+        // Built EAGERLY, unlike the indexed candidates below: the work is one `Map.get` per id and
+        // `orient` needs the count to compare this against a label bucket, so deferring it would
+        // only hide a cost that is already paid.
+        //
+        // `count` here is the EXACT size, not an estimate — but it is still not a guard. Mutation
+        // (item 1315) confirms both directions: over-reporting makes `seekIsWorthIt` decline the
+        // seek and is caught by the scan-side assertions, while `count: 0` survives, since the
+        // true count is at most `|ids|` and both clear the gate identically. The same note sits on
+        // the `edgeEnd` hint above, from item 621.
+        yield { count: hits.size, build: () => hits };
       }
 
       continue;

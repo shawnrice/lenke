@@ -4701,6 +4701,27 @@ type CSeedHint =
    */
   | { kind: 'id'; value: CompiledExpr }
   /**
+   * `element_id(n) IN ['a', 'b']` — the LIST form of the hint above, and the `=`-chain spelling
+   * of it (item 1315). At most `|ids|` vertices, resolved straight from `verticesById`, so like
+   * its single-id twin it needs no `createIndex`.
+   *
+   * Item 618 gave the single id a seed and the list kept scanning, which is the canonical pair
+   * CLAUDE.md names — `k = $a OR k = $b` vs `k IN [$a, $b]` — on IDS rather than on a property.
+   * Measured at 200,000 vertices before this existed:
+   *
+   * ```text
+   *   element_id(n) = 'v137'                       0.0078 ms   seeded
+   *   element_id(n) IN ['v137','v9000','v4242']   10.8884      1396x
+   *   element_id(n) = a OR = b OR = c             17.8057      2283x
+   * ```
+   *
+   * Sound for the reason every hint here is: it only narrows the SEED, and `matchNode` plus the
+   * residual `WHERE` re-validate, so a seed may be a superset and never a subset. A non-string
+   * entry resolves to nothing, which is correct rather than merely safe — `element_id` yields a
+   * string, so no vertex can equal a number.
+   */
+  | { kind: 'idIn'; values: CompiledExpr }
+  /**
    * The node at one END of the edge whose external id is `value` — the single node a hop
    * can start from when its REL variable's id is pinned (`MATCH (a)-[r:R]->(b) WHERE
    * element_id(r) = $x`). `sourceEnd` picks which end: an `out` hop starts at the edge's
@@ -6077,6 +6098,59 @@ const BOUND_OF: Partial<Record<CompareOp, keyof CRangeBound>> = {
  * `k = a OR j = b` selects vertices a `k`-only seek would miss, so a partial seed would be a
  * SUBSET of the matches — the one thing a seed may not be.
  */
+/**
+ * `element_id(n) = a OR element_id(n) = b` as one id list (item 1315) — the ID twin of
+ * {@link uniformEqChain}, which matches a property key and so cannot see this shape.
+ *
+ * Every branch must be an id equality on the SAME variable. A branch on another variable is a
+ * disjunction across bindings and not a membership; anything that is not an id `=` declines.
+ */
+const uniformIdEqChain = (e: Expr): { variable: string; values: Expr[] } | undefined => {
+  const branches: Expr[] = [];
+  const flatten = (x: Expr): void => {
+    if (x.kind === 'or') {
+      for (const item of x.items) {
+        flatten(item);
+      }
+
+      return;
+    }
+
+    branches.push(x);
+  };
+
+  flatten(e);
+
+  if (branches.length < 2) {
+    return undefined;
+  }
+
+  let variable: string | undefined;
+  const values: Expr[] = [];
+
+  for (const branch of branches) {
+    if (branch.kind !== 'compare') {
+      return undefined;
+    }
+
+    const ic = asIdCompare(branch);
+
+    if (ic === null) {
+      return undefined;
+    }
+
+    if (variable === undefined) {
+      ({ variable } = ic);
+    } else if (ic.variable !== variable) {
+      return undefined;
+    }
+
+    values.push(ic.value);
+  }
+
+  return variable === undefined ? undefined : { variable, values };
+};
+
 export const uniformEqChain = (
   e: Expr,
 ): { variable: string; key: string; values: Expr[] } | undefined => {
@@ -6299,16 +6373,32 @@ const collectHints = (where: Expr, into: HintMap): void => {
 
       return;
     }
-    case 'in':
-      if (!where.negated && where.expr.kind === 'prop' && closedList(where.list)) {
+    case 'in': {
+      if (where.negated || !closedList(where.list)) {
+        return;
+      }
+
+      if (where.expr.kind === 'prop') {
         pushHint(into, where.expr.variable, {
           kind: 'within',
           key: where.expr.key,
           values: compileExpr(where.list),
         });
+
+        return;
+      }
+
+      // `element_id(n) IN [...]` (item 1315). The property arm above tests `kind === 'prop'`, and
+      // an `element_id` call is a `func`, so the list spelling had no hint at all while the single
+      // `=` spelling seeded — 1396x on 200,000 vertices.
+      const idVar = idArgVariable(where.expr);
+
+      if (idVar !== null) {
+        pushHint(into, idVar, { kind: 'idIn', values: compileExpr(where.list) });
       }
 
       return;
+    }
     case 'or': {
       // A UNIFORM same-key `=`-chain is ONE multi-value seek, not a disjunction the seed layer
       // has to give up on. `k = a OR k = b` and `k IN [a, b]` are one question — `CLAUDE.md`
@@ -6329,6 +6419,21 @@ const collectHints = (where: Expr, into: HintMap): void => {
           kind: 'within',
           key: chain.key,
           values: compileExpr({ kind: 'list', items: chain.values }),
+        });
+
+        return;
+      }
+
+      // The ID twin, for the same reason and with the same argument (item 1315). Without it the
+      // `=`-chain spelling of an id list was the SLOWEST of the three — 17.8 ms against the `IN`
+      // spelling's 10.9 and the single id's 0.0078 — so fixing `IN` alone would have left the two
+      // list spellings 1.6x apart, which is the gap this switch exists to close.
+      const idChain = uniformIdEqChain(where);
+
+      if (idChain) {
+        pushHint(into, idChain.variable, {
+          kind: 'idIn',
+          values: compileExpr({ kind: 'list', items: idChain.values }),
         });
       }
 
