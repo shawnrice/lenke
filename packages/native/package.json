@@ -55,7 +55,8 @@
     "probe:nativehopchain": "bun native-hop-filter-chain-probe.ts",
     "probe:arity": "bun cross-surface-arity-probe.ts",
     "probe:elemread": "bun elemread-probe.ts",
-    "probe:adjlayout": "bun adjlayout-probe.ts"
+    "probe:adjlayout": "bun adjlayout-probe.ts",
+    "spelling:gremlin": "bun gremlin-spelling-probe.ts"
   },
   "dependencies": {
     "@lenke/core": "workspace:*",
