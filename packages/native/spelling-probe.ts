@@ -569,22 +569,52 @@ const GROUPS: [string, readonly string[]][] = [
     // and 12-22x at every size from 20,000 up, with or without a start label on `a` — so neither
     // scale nor the start is the variable. ON THIS FIXTURE the pair reads 3.37ms against 4.51ms,
     // just 1.34x, because the PATTERN arm here is itself slow: 22x this probe's pattern arm at the
-    // same node count. The untested suspect is this fixture's MULTI-LABEL edges (`F` on 1 in 11),
-    // which is what disables the analogous Gremlin fast path via `multiTypeEdgeCount`. Left as the
-    // next reader's question rather than guessed at.
+    // same node count.
+    //
+    // ⚠️ THAT SUSPECT IS NOW REFUTED (item 1303). It read "the untested suspect is this fixture's
+    // MULTI-LABEL edges (`F` on 1 in 11), which is what disables the analogous Gremlin fast path
+    // via `multiTypeEdgeCount`". Tested by putting a second edge label on every 11th edge of the
+    // single-label fixture and moving NOTHING else — same arms, same size, 3 alternated rounds:
+    // the clause/pattern ratio went 8.99x to 10.30x, i.e. it did not collapse, with a far-end
+    // PROPERTY control flat at 1.03x and every answer identical.
+    //
+    // Start-label vacuity is a real variable (10.4x vacuous against 1.47x non-vacuous on one
+    // graph) but does NOT explain this fixture either: every vertex here carries `P`, so `(a:P)`
+    // is vacuous and this pair belongs in the 10.4x row. What is actually odd is the CLAUSE arm,
+    // not the pattern one — 4.51ms here against 39ms for the same shape on a start-label-free
+    // fixture, where the two PATTERN arms agree at ~3.4ms. So the cause is unfound and no third
+    // suspect is named; this is a question about this fixture, not about the engine's rungs.
     //
     // It is labels ONLY. The same probe measured far-end `IN` at 0.82x (the lifted spelling is
     // FASTER) and far-end `IS NOT NULL` at 1.13x, so the first hypothesis — that the count path
     // was missing seven of the nine lifted families, read off a grep of family names in
     // `shortcuts.ts` — is REFUTED. A grep of family names predicted nothing.
-    'a far-end label: in the PATTERN vs in a clause WHERE (item 1302, OPEN)',
+    // CLOSED by item 1303, which folds a clause `IS LABELED` into the node's pattern label so the
+    // two spellings become one plan. Kept as the REGRESSION check for that fold: if the rewrite
+    // ever stops firing, this group separates again and the probe says so.
+    'a far-end label: in the PATTERN vs in a clause WHERE (built, item 1303)',
     [
       'MATCH (a:P)-[:E]->(b:Q) RETURN count(*) AS c',
       'MATCH (a:P)-[:E]->(b) WHERE b IS LABELED Q RETURN count(*) AS c',
     ],
   ],
   [
-    'label on start: redundant vs absent',
+    // ⚠️ THIS GROUP IS A LIVE 1500x FINDING, not a passing check (item 1303 measured it; the
+    // target is OPEN and unbuilt). `P` is on EVERY vertex here, so the label is semantically free,
+    // and yet:
+    //
+    //   MATCH (a:P)-[:E]->(b) RETURN count(*)    15.45ms
+    //   MATCH (a)-[:E]->(b) RETURN count(*)       0.00ms    1545x, same answer
+    //
+    // Unlabelled endpoints are answered from the edge bucket SIZES, O(1) per type; adding any
+    // start label routes the same question to a per-vertex degree sum over that label's bucket.
+    // `vacuousLabel` exists precisely to drop a label every vertex carries, so the question is why
+    // it does not reach this spelling.
+    //
+    // It PREDATES item 1303 and that was measured, not assumed — the fold cannot touch either
+    // member (neither has a clause `WHERE`, so the pass returns the same array): HEAD read 1561.92x
+    // and 1536.74x against POST's 1492.95x, 1545.21x and 1546.55x, three isolated runs each.
+    'label on start: redundant vs absent (1545x, OPEN — item 1303 measured, unbuilt)',
     ['MATCH (a:P)-[:E]->(b) RETURN count(*) AS c', 'MATCH (a)-[:E]->(b) RETURN count(*) AS c'],
   ],
   // An ANONYMOUS end node against a NAMED one, when the projection reads neither (item 775).

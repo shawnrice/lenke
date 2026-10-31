@@ -24,6 +24,7 @@ import type {
   Expr,
   LabelExpr,
   LinearQuery,
+  MatchClause,
   NodePattern,
   PathPattern,
   PathMode,
@@ -9698,6 +9699,284 @@ const dropVacuousQuantifier = (clauses: readonly Clause[]): readonly Clause[] =>
 };
 
 /**
+ * One conjunct as itself, several as an `and` — the inverse of {@link flattenConjuncts}.
+ *
+ * `hop-projection.ts` carries its own two-line copy of this. Deliberately not shared: that module
+ * and this one already import from each other, and reaching across a two-way cycle to save two
+ * lines buys a load-order hazard for nothing.
+ */
+const andExprOf = (items: readonly Expr[]): Expr =>
+  items.length === 1 ? items[0] : { kind: 'and', items: [...items] };
+
+/**
+ * A node position this clause's `WHERE` may fold a label test INTO: the variable appears at
+ * exactly one node position in the clause and nowhere else.
+ *
+ * `count > 1` is kept as its own state rather than dropped on sight, because a second sighting has
+ * to POISON the first — a `Map` that only ever records the first occurrence would happily fold
+ * `MATCH (n)-[:T]->(n) WHERE n IS LABELED L` into one of the two `n`s and leave the other
+ * unconstrained. That is answer-equivalent HERE (the same element is tested either way, and the
+ * pattern re-checks both positions against the same binding), but it is equivalent by an argument
+ * about the walk rather than by construction, and the next reader should not have to re-derive it.
+ */
+type FoldSite = { node: NodePattern; count: number; poisoned: boolean };
+
+/**
+ * Can this PATTERN's node positions take a folded label at all?
+ *
+ * A pattern label is not only a filter — it participates in MATCHING — so the two spellings part
+ * company wherever something downstream chooses among the paths the pattern admits:
+ *
+ *   - **A path SELECTOR.** `ANY SHORTEST (a)-[:T]->*(b) WHERE b IS LABELED L` picks the shortest
+ *     path satisfying the PATTERN and only then filters. Fold `L` inward and the selector chooses
+ *     among a different set of paths, which is a WRONG ANSWER, not a slower one.
+ *
+ *     ⚠️ THIS CONDITION IS CURRENTLY UNREACHABLE AND IS KEPT ANYWAY — measured, not assumed: the
+ *     mutant that deletes it SURVIVES the whole gql suite. The reason is that this engine accepts
+ *     a selector only with a single VARIABLE-LENGTH segment (`ANY SHORTEST (a)-[:T]->(m)-[:T]->(b)`
+ *     is a syntax error, "currently support a single variable-length segment"), so a non-`walk`
+ *     selector always implies a quantifier and the condition below declines it first.
+ *
+ *     It stays because the thing making it unreachable is a PARSER limitation the error message
+ *     itself calls temporary, and the unsoundness it guards is not the endpoint case: for a filter
+ *     on an INTERMEDIATE node of a fixed-length selector pattern, the selector keeps one path per
+ *     endpoint PAIR, so filtering before the selector can keep a pair that filtering after would
+ *     drop. Same shape as `mergeFarPreds`' `truthProps` — a correctness precondition held live for
+ *     when the surface grows into it.
+ *   - **A QUANTIFIER anywhere in the pattern.** A node inside a repetition binds a GROUP variable
+ *     (a list), so `IS LABELED` on it is a test on the list's elements after the walk, where a
+ *     pattern label is a per-repetition constraint that prunes the walk. Different questions.
+ * The path MODE is deliberately NOT a condition, and the distinction is the whole reason a selector
+ * is one. A mode (`trail`, `acyclic`, …) is a FILTER on walks: it removes the walks that repeat an
+ * element. A label is also a filter on walks. Filters COMMUTE, so applying the label inside the
+ * pattern or outside it leaves the same surviving set. A SELECTOR does not commute, because it
+ * picks an EXTREMUM of the surviving set and so depends on what survived. Requiring
+ * `mode === undefined` would also decline everything in practice: the parser defaults `mode` to
+ * `'trail'` and `selector` to `'walk'`, never leaving either unset — which is exactly how the first
+ * cut of this pass silently folded nothing at all, with the empty fold looking like a measurement
+ * that said the lever was not there.
+ *
+ * Each condition is declined for the whole pattern rather than per position: a quantifier three
+ * segments away still decides which walks reach this node, so a position-local test would be the
+ * wrong unit.
+ */
+const patternTakesFold = (pattern: PathPattern): boolean =>
+  (pattern.selector === undefined || pattern.selector === 'walk') &&
+  pattern.segments.every(
+    (seg) =>
+      seg.rel.quantifier === undefined &&
+      seg.innerQ === undefined &&
+      seg.nested === undefined &&
+      (seg.unitRest === undefined || seg.unitRest.length === 0) &&
+      seg.subpathWhere === undefined,
+  );
+
+/** Record one node position, poisoning the site if the variable has been seen before. */
+const noteNodeSite = (sites: Map<string, FoldSite>, node: NodePattern): void => {
+  const name = node.variable;
+
+  if (name === undefined) {
+    return;
+  }
+
+  const seen = sites.get(name);
+
+  if (seen === undefined) {
+    sites.set(name, { node, count: 1, poisoned: false });
+
+    return;
+  }
+
+  seen.count += 1;
+  seen.poisoned = true;
+};
+
+/**
+ * The foldable node positions of one `MATCH` clause, keyed by variable.
+ *
+ * A variable used at a RELATIONSHIP position poisons it outright. An edge's pattern label is its
+ * TYPE and `IS LABELED` on an edge asks about its label set, and while those coincide today, a
+ * fold that quietly assumes it would be the kind of surface-specific guess CLAUDE.md asks not to
+ * reason from. The node case is the measured one; the edge case can be its own item with its own
+ * ground truth.
+ */
+const foldSitesOf = (clause: MatchClause): Map<string, FoldSite> => {
+  const sites = new Map<string, FoldSite>();
+
+  for (const pattern of clause.patterns) {
+    if (!patternTakesFold(pattern)) {
+      continue;
+    }
+
+    noteNodeSite(sites, pattern.start);
+
+    for (const seg of pattern.segments) {
+      noteNodeSite(sites, seg.node);
+
+      if (seg.rel.variable !== undefined) {
+        sites.set(seg.rel.variable, {
+          node: seg.node,
+          count: 2,
+          poisoned: true,
+        });
+      }
+    }
+  }
+
+  return sites;
+};
+
+/**
+ * `MATCH (n) WHERE n IS LABELED L` → `MATCH (n:L)` (item 1303).
+ *
+ * The two are the same question by CONSTRUCTION, not by an equivalence argument: a pattern label
+ * is tested with `matchesLabel` and `IS LABELED` with `labelsMatch`, and both are one call to the
+ * same `evalLabelExpr` over the same `LabelExpr` and the same label set. `IS LABELED` is also
+ * TOTAL on an element — it yields TRUE or FALSE, never UNKNOWN — so there is no three-valued
+ * `WHERE` row-drop for the pattern form to lose, and nothing here can raise, so raise parity
+ * (items 139-145) is untouched.
+ *
+ * WHY IT IS WORTH A REWRITE RATHER THAN A NEW RUNG. The clause spelling reaches the general walk
+ * and the pattern spelling reaches a bucket, and the spread is not a constant factor:
+ *
+ * ```text
+ *                                                        ns/vertex   answer
+ *   MATCH (n:Employee) RETURN count(*)                        0.01   100000   ← bucket SIZE
+ *   MATCH (n) WHERE n IS LABELED Employee RETURN count(*)   119.46    100000   ← walks all 200k
+ *   a hand-written `v.labels.has('Employee')` loop            22.51   100000   ← the FLOOR
+ * ```
+ *
+ * So the clause spelling is 5.31x off its own floor where the property twin (`n.age >= 45`,
+ * selectivity matched by construction) is only 1.93x off its, and the pattern spelling does not
+ * visit a vertex at all. On a one-hop count the same pair reads 196.12 against 16.61 (11.8x),
+ * because `bareDegreeSum` is a closed-form degree sum over the far label's bucket and declines
+ * outright when `farLifted !== undefined` — which the clause spelling always sets.
+ *
+ * ⚠️ THE 11.8x IS FIXTURE-DEPENDENT AND ITEM 1302'S OPEN QUESTION IS STILL OPEN. Start-label
+ * vacuity is ONE variable and it is measured — a 2x2 on one graph, one shape per process, answers
+ * identical within each row:
+ *
+ * ```text
+ *                              pattern   clause    ratio   answer
+ *   vacuous start (:Person)      18.77   195.73    10.4x   100000
+ *   non-vacuous start (:Mgr)     55.91    82.42     1.47x    33333
+ * ```
+ *
+ * With a start label the planner cannot drop, both spellings fail `bareDegreeSum`'s precondition
+ * and converge. BUT THAT DOES NOT EXPLAIN THE SPELLING PROBE'S 1.34x, and a first version of this
+ * note claimed it did. That fixture labels EVERY vertex `P`, so its `(a:P)` start label is vacuous
+ * too and it belongs in the top row, where the gap is 10.4x. So a second variable is doing the
+ * work there and the suspect item 1302 recorded — MULTI-LABEL EDGES, `["E","F"]` on 1 in 11, which
+ * is what disables the analogous Gremlin path through `multiTypeEdgeCount` — survives untested,
+ * because every edge in the 2x2 above is single-label.
+ *
+ * None of this changes the fold: after it, the clause spelling IS the pattern spelling, so the two
+ * converge whatever the fixture does. It changes only what may be claimed about WHY the unfolded
+ * gap varies, which is why the number above is reported per-fixture and not as one ratio.
+ *
+ * Done as a CLAUSE REWRITE and not as a tenth lifted family on purpose. Every rung already handles
+ * a pattern label — scans, one/two/three-hop counts, the fused hop projection, the endpoint
+ * extremum — so folding reaches all of them at once, where a `labelTests` route would have to be
+ * taught to each. It is also why this is cheap to get right: `plainNode` tests `properties` and
+ * `where` and NOT `label`, so a folded label cannot make a rung's `plainNode` guard decline.
+ *
+ * The detector is `asLabelTest`, shared with `liftLabelTest` rather than re-written here, so the
+ * `NOT (n IS LABELED L)` spelling folds too and the two cannot drift on what counts as a label
+ * test. A negated test folds to a `not` LabelExpr, which `seedLabel` refuses to seed from — so it
+ * becomes a plain scan with `matchesLabel` instead of a scan with a lifted predicate, still a gain
+ * and never a seek that could hand back a superset.
+ */
+// EXPORTED for its own assertion, the way `compileLinear`, `predFor` and `selectiveFirst` already
+// are, and deliberately not from `index.ts` — the package's public surface is unchanged.
+//
+// It needs one because a ROUTE assertion is too blunt to see it: `countShortcut` fires for the
+// clause spelling as well as the pattern one (it handles a clause `WHERE` through `farLifted`,
+// just slowly), so "which detector fired" is IDENTICAL either way and an assertion on that passes
+// with the fold disabled. Measured, not assumed — with the fold turned off, five of six route
+// twins still passed and only the projection twin failed. The rewrite has to be asserted as a
+// rewrite: the label lands on the node and the `WHERE` is gone.
+export const foldLabelTestsIntoPatterns = (clauses: readonly Clause[]): readonly Clause[] => {
+  // `optional` is excluded, and it is the one exclusion that is about a question rather than a
+  // mechanism: moving a filter into an OPTIONAL pattern changes which rows are PRESERVED with
+  // nulls, and item 1226's `OPTIONAL MATCH` conformance decision is still open. An optimization
+  // must not be the thing that settles it.
+  const foldable = clauses.some(
+    (clause) => clause?.kind === 'match' && !clause.optional && clause.where !== undefined,
+  );
+
+  if (!foldable) {
+    return clauses;
+  }
+
+  return clauses.map((clause) =>
+    clause?.kind === 'match' && !clause.optional && clause.where !== undefined
+      ? foldOneMatch(clause)
+      : clause,
+  );
+};
+
+/** Rewrite one `MATCH` clause, or hand it back unchanged when no conjunct folds. */
+const foldOneMatch = (clause: MatchClause): MatchClause => {
+  const sites = foldSitesOf(clause);
+
+  if (sites.size === 0) {
+    return clause;
+  }
+
+  const kept: Expr[] = [];
+  // The label each site gains, accumulated so that TWO tests on the same variable both land —
+  // `WHERE n IS LABELED A AND n IS LABELED B` folds to `(n:A&B)`, which `seedLabel` can still
+  // seed from (it takes either side of an `and`).
+  const gained = new Map<NodePattern, LabelExpr>();
+
+  for (const conjunct of flattenConjuncts(clause.where!)) {
+    const test = asLabelTest(conjunct);
+    const site = test?.expr.kind === 'var' ? sites.get(test.expr.name) : undefined;
+
+    if (test === null || site === undefined || site.poisoned) {
+      kept.push(conjunct);
+      continue;
+    }
+
+    const add: LabelExpr = test.negated ? { kind: 'not', expr: test.label } : test.label;
+    const already = gained.get(site.node) ?? site.node.label;
+
+    gained.set(site.node, already === undefined ? add : { kind: 'and', left: already, right: add });
+  }
+
+  if (gained.size === 0) {
+    return clause;
+  }
+
+  const relabel = (n: NodePattern): NodePattern => {
+    const label = gained.get(n);
+
+    return label === undefined ? n : { ...n, label };
+  };
+
+  // `where` is DESTRUCTURED OFF rather than overwritten with `undefined`, so that a clause whose
+  // every conjunct folded is structurally identical to the same query written with the label in the
+  // pattern — no `where` key at all, not a `where` key holding `undefined`.
+  //
+  // ⚠️ IT IS NOT A MEASURED WIN, and the first version of this comment claimed it was. With the key
+  // present the folded hop read 24.30 ns/v against the pattern spelling's 17.06, which looked like
+  // the key costing something; after the change the PATTERN arm — which this cannot touch — read
+  // 27.57 against the folded clause's 23.25, so that shape simply bounces ~1.6x run to run and the
+  // original gap was inside it. The destructure stays on the argument that the two spellings must
+  // become ONE clause object and not two that differ in a key, which is this pass's whole claim.
+  const { where: _folded, ...rest } = clause;
+  const patterns = clause.patterns.map((pattern) => ({
+    ...pattern,
+    start: relabel(pattern.start),
+    segments: pattern.segments.map((seg) => ({ ...seg, node: relabel(seg.node) })),
+  }));
+
+  // Every conjunct folded means the clause has no `WHERE` left at all, which is the state that
+  // lets `pred.fn === alwaysTrue` and so lets `bareDegreeSum` take the hop.
+  return kept.length === 0 ? { ...rest, patterns } : { ...rest, patterns, where: andExprOf(kept) };
+};
+
+/**
  * Fold a trailing page STATEMENT into the `RETURN` that follows it (item 969).
  *
  * `MATCH … ORDER BY k LIMIT n RETURN items` and `MATCH … RETURN items ORDER BY k LIMIT n` are the
@@ -10073,7 +10352,14 @@ export const compileLinear = (linear: LinearQuery): CLinear => {
                 // removed first and only a page that actually does something is folded — the
                 // two would otherwise race to claim the same clause (item 969).
                 foldPageIntoReturn(
-                  dropUnreadGroupBinds(dropVacuousPage(dropVacuousQuantifier(linear.clauses))),
+                  // `foldLabelTestsIntoPatterns` runs FIRST of the three (item 1303): it can empty
+                  // a clause's `WHERE` entirely, and the rungs it is aiming at are selected on
+                  // `pred.fn === alwaysTrue`, so a later pass must see the clause already folded.
+                  dropUnreadGroupBinds(
+                    dropVacuousPage(
+                      dropVacuousQuantifier(foldLabelTestsIntoPatterns(linear.clauses)),
+                    ),
+                  ),
                 ),
               ),
             ),

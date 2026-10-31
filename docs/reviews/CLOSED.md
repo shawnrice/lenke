@@ -42855,14 +42855,19 @@ refute it. A grep of family names predicted nothing.
 the pair reads 3.37ms against 4.51ms — just **1.34x** — because that fixture's PATTERN arm is
 itself slow (22x this probe's pattern arm at the same node count). The untested suspect is its
 MULTI-LABEL edges (`F` on 1 in 11), which is exactly what disables the analogous Gremlin path via
-`multiTypeEdgeCount`. Left as a stated question rather than guessed at. The probe group carries
+`multiTypeEdgeCount`. Left as a stated question rather than guessed at. **REFUTED at item 1303**:
+putting a second edge label on every 11th edge and moving nothing else took the clause/pattern
+ratio from 8.99x to 10.30x — it did not collapse — with a far-end property control flat at 1.03x.
+Start-label vacuity is a real variable (10.4x vacuous against 1.47x non-vacuous) but cannot explain
+this fixture either, whose `P` is on every vertex. The cause is still unfound. The probe group carries
 both numbers so a small spread there is not read as a small gap.
 
 ### What is open after this
 
-- **The GQL far-end `IS LABELED` clause spelling**, above: located, priced on one fixture, and the
-  fixture dependence un-diagnosed. The next tick is why the spelling probe's fixture compresses
-  it. - **The box-array lever** (~1.7x on a property count), whose cost is delete bookkeeping:
+- ~~**The GQL far-end `IS LABELED` clause spelling**~~ — **BUILT at item 1303**, which folds the
+  clause test into the node's pattern label so the two spellings become one plan (scan 119.46 ->
+  0.01 ns/v, one-hop 196.12 -> 23.25). Its fixture dependence is still un-diagnosed and both
+  suspects recorded here are now exhausted; see 1303. - **The box-array lever** (~1.7x on a property count), whose cost is delete bookkeeping:
   tombstones, because swap-remove reorders and Gremlin observably reproduces TinkerPop's order
   (item 1043). - **The label bitmask is CLOSED, refuted on reachability** — do not re-price it.
   Its only live target is the far-end label test, where the dominant cost was the missing rung
@@ -42874,3 +42879,225 @@ both numbers so a small spread there is not read as a small gap.
 commands: `bun run typecheck` 0, `bun run lint` 0, `bun run fmt` 0, `bun run check` 0. Probes
 added: `box-cost-probe.ts` (the layout micro-arms, both controls), `box-cost-real.ts` (the engine
 shapes that refuted lever 1), `gql-far-label-probe.ts` (the cross-surface check).
+
+## 1303 — `WHERE n IS LABELED L` folds into the pattern, and the two spellings become one plan
+
+Item 1302 located a GQL gap and did not take it: a far-end label costs 11.9x more written as a
+clause `WHERE b IS LABELED Q` than as a pattern label `(b:Q)`. This takes it, and the scan form
+turned out to be the larger half by three orders of magnitude.
+
+### What the gap actually was
+
+Two causes, and only one of them is the one item 1302 named.
+
+`bareDegreeSum` (`executor/shortcuts.ts`) is a closed-form degree sum over a label BUCKET, and it
+declines outright when `lifted !== undefined`. The pattern spelling carries no clause `WHERE` at
+all, so `pred.fn === alwaysTrue`, nothing is lifted, and it takes that path. The clause spelling
+populates `farLifted` and falls to the full `farOnlyHopCount` walk over every vertex. That is the
+hop case.
+
+The SCAN case is bigger and was not recorded anywhere: `MATCH (n:Employee) RETURN count(*)` is a
+`verticesByLabel` bucket SIZE, and the clause spelling of the same question walks 200,000
+vertices.
+
+Measured against hand-written floors, 200,000 vertices, one shape per process, selectivity matched
+by construction (`age = i % 90` keeps half, `Employee` on even `i` keeps half), every arm
+answering the same 100000:
+
+```text
+                                                         ns/vertex   off its floor
+  MATCH (n:Employee) RETURN count(*)                          0.01   — bucket size
+  MATCH (n) WHERE n IS LABELED Employee RETURN count(*)     119.46   5.31x
+  a hand-written `v.labels.has('Employee')` loop             22.51   — THE FLOOR
+  MATCH (n) WHERE n.age >= 45 RETURN count(*)                20.07   1.93x
+  a hand-written `v.properties.age >= 45` loop               10.39   — its floor
+```
+
+So the label spelling sits 5.31x off its own floor where the property twin sits 1.93x off its, and
+the pattern spelling never visits a vertex. On a one-hop count the same pair reads 196.12 against
+16.61.
+
+**REFUTED on the way, so it is not re-priced:** the `labels` GETTER is not the cost. Hoisting it
+out of the floor loop reads 22.20 against 22.51 — inside the noise.
+
+### The fix is a clause rewrite, not a tenth lifted family
+
+`foldLabelTestsIntoPatterns` runs in `compileLinear`'s rewrite chain, before
+`dropVacuousQuantifier`, and turns `MATCH (n) WHERE n IS LABELED L` into `MATCH (n:L)`.
+
+The two are the same question BY CONSTRUCTION rather than by an equivalence argument: a pattern
+label is tested with `matchesLabel` and `IS LABELED` with `labelsMatch`, and both are one call to
+the same `evalLabelExpr` over the same `LabelExpr` and the same label set. `IS LABELED` is TOTAL
+on an element — TRUE or FALSE, never UNKNOWN — so there is no three-valued row-drop for the
+pattern form to lose, and nothing in it can raise, so raise parity (items 139-145) is untouched.
+
+A rewrite rather than a route because every rung already handles a pattern label — scans, one/two/
+three-hop counts, the fused hop projection, the endpoint extremum — so folding reaches all of them
+at once where a `labelTests` route would have to be taught to each. It is also cheap to get right
+for a reason worth recording: `plainNode` tests `properties` and `where` and NOT `label`, so a
+folded label cannot make any rung's `plainNode` guard decline.
+
+The detector is `asLabelTest`, SHARED with `liftLabelTest` rather than rewritten, so the `NOT (n
+IS LABELED L)` spelling folds too and the two cannot drift on what a label test is.
+
+Exclusions, each for a stated reason: `OPTIONAL MATCH` (moving a filter in changes which rows are
+preserved with nulls, and item 1226's conformance decision is open — an optimization must not be
+the thing that settles it); a path SELECTOR; any quantified, nested or multi-element segment; a
+variable at more than one node position; and a variable that names a RELATIONSHIP.
+
+A path MODE is deliberately NOT an exclusion, and that distinction is load-bearing. A mode
+(`trail`, `acyclic`) is a FILTER on walks, a label is a filter on walks, and filters COMMUTE. A
+SELECTOR picks an EXTREMUM of the surviving set and does not commute. **The first cut required
+`mode === undefined` and therefore folded NOTHING**, because the parser defaults `mode` to
+`'trail'` and `selector` to `'walk'` and never leaves either unset — it typechecked, built, and
+measured flat, which is a null that looks exactly like "the lever is not there". It was found by
+instrumenting the pass, not by reasoning about why the number had not moved.
+
+### What it bought
+
+A/B against the pre-change file, same fixture, one shape per process:
+
+```text
+                                   PRE      POST       note
+  scan, clause label            119.46      0.01   now a bucket size
+  one-hop, clause far label     196.12     23.25
+  one-hop, vacuous start        195.73     19.50
+  one-hop, non-vacuous start     82.42     55.64
+  scan, clause property          20.07     19.44   CONTROL, flat
+  hand-written label floor        22.51     22.59   CONTROL, flat
+  scan, PATTERN label              0.01      0.01   CONTROL, flat
+```
+
+⚠️ **The one-hop pair bounces ~1.6x run to run** — the PATTERN arm, which this change cannot
+touch, read 17.06 and 27.57 in consecutive runs. So the hop numbers are reported as convergence,
+not to two significant figures, and one intermediate change here was kept on its mechanism after
+an apparent improvement turned out to be inside that bounce.
+
+### Item 1302's fixture-dependence question is STILL OPEN, and both its suspects are exhausted
+
+This is the part of 1302 this item did NOT close, and the earlier claim that it had is withdrawn.
+
+Start-label vacuity is a real variable, measured as a 2x2 on one graph, answers identical per row:
+
+```text
+                              pattern   clause    ratio   answer
+  vacuous start (:Person)       18.77   195.73    10.4x   100000
+  non-vacuous start (:Mgr)      55.91    82.42     1.47x   33333
+```
+
+With a start label the planner cannot drop, both spellings fail `bareDegreeSum`'s precondition and
+converge. **But that does not explain the spelling probe's 1.34x**, which is the number the open
+question was about: that fixture labels EVERY vertex `P`, so its `(a:P)` is vacuous too and it
+belongs in the top row.
+
+The other recorded suspect — MULTI-LABEL EDGES, `["E","F"]` on 1 in 11, which is what disables the
+analogous Gremlin path through `multiTypeEdgeCount` — is now REFUTED. One variable moved, same
+arms, same size, 3 alternated rounds:
+
+```text
+                     ml=0     ml=11   ml/single
+  hop-label-pattern  22.31    18.74      0.84x
+  hop-label-clause  200.66   193.08      0.96x
+  hop-prop-clause    81.77    83.97      1.03x   CONTROL, flat
+  clause/pattern      8.99x   10.30x            — it did NOT collapse
+```
+
+So the cause of that fixture's compression is unfound. No third suspect is named here; the next
+tick is to read the group's number out of the probe directly rather than infer it.
+
+None of this affects the fold: afterwards the clause spelling IS the pattern spelling, so they
+converge whatever the fixture does.
+
+### Teeth
+
+A ROUTE assertion is too blunt for this, and that is measured. `countShortcut` fires for the
+clause spelling as well as the pattern one, so "which detector fired" is identical either way:
+with the fold disabled, **five of six route twins still passed** and only the projection twin
+failed. So `foldLabelTestsIntoPatterns` is exported for its own assertion — the way
+`compileLinear`, `predFor` and `selectiveFirst` already are, and not from `index.ts` — and the
+rewrite is asserted AS a rewrite: the label lands on the right node, the `where` KEY is absent
+rather than holding `undefined`, and each exclusion is left untouched.
+
+10 mutants, 9 caught, 1 survivor:
+
+```text
+  fold-disabled                CAUGHT     negation-ignored         CAUGHT
+  quantifier-guard-removed     CAUGHT     existing-label-dropped   CAUGHT
+  optional-guard-removed-BOTH  CAUGHT     residual-dropped         CAUGHT
+  rel-poison-removed           CAUGHT     where-key-kept           CAUGHT
+  repeat-poison-removed        CAUGHT     selector-guard-removed   SURVIVED
+```
+
+**The survivor is PROVEN unreachable and the condition is kept anyway.** This engine accepts a
+path selector only with a single variable-length segment (`ANY SHORTEST (a)-[:T]->(m)-[:T]->(b)`
+is a syntax error), so a non-`walk` selector always implies a quantifier and the quantifier guard
+declines it first. It stays because the thing making it unreachable is a parser limitation whose
+own error message calls itself temporary, and because the unsoundness it guards is not the
+endpoint case: for a filter on an INTERMEDIATE node of a fixed-length selector pattern, the
+selector keeps one path per endpoint PAIR, so filtering before it can keep a pair that filtering
+after would drop. Same shape as `mergeFarPreds`' `truthProps` — a correctness precondition held
+live for when the surface grows.
+
+Three results in the FIRST mutation round were the harness being wrong, not the code, and each is
+the kind that reads as a clean result:
+
+- `selector-guard-removed` anchored on a line `vacuousQuantifier` also carries, so it appeared 2x
+  and never landed. Reporting ANCHOR rather than a verdict is what kept it from reading as a
+  survivor.
+- `where-key-kept` anchored at 0x: the ternary written across three lines is one line in the file.
+- Both `optional` mutants SURVIVED correctly — the guard lives at two call sites and removing
+  either leaves the other enforcing it. A single-site mutant of a duplicated guard tests nothing.
+
+And one that was NOT a harness bug: `rel-poison-removed` survived because the plain edge-variable
+case is declined by ABSENCE — a rel variable never reaches the site map — so the poisoning only
+matters when the name COLLIDES with a node variable. `MATCH (a)-[a]->(b)` parses here and `a`
+binds the RELATIONSHIP: `WHERE a IS LABELED T` answers 1 where `WHERE a IS LABELED P` answers 0,
+so folding onto the node would answer the second question. A FIXTURE gap, not dead code. The
+fixture also gained a self-loop, so the two-node-positions exclusion is no longer asserted against
+an empty answer.
+
+### No regressions, measured rather than argued
+
+The full suite reports 68 failures from the repo root, and they are PRE-EXISTING: HEAD 6250 pass /
+68 fail / 7 errors against POST 6250 / 68 / 7, delta 0, and no failing suite in POST that was not
+already failing at HEAD. Every package passes ISOLATED (6010 tests, 0 fail). Of the 68, 7 come
+from `examples/` and from stale A/B snapshots under `crates/lenke-engine/target/a597` and `p597`
+that `bun test` picks up from the root; the rest are the run-many timing flakes
+(`sync-test-flake-is-timing`).
+
+### What is open after this
+
+- **Why the spelling probe's fixture compresses the UNFOLDED gap** — both recorded suspects are
+  now exhausted (vacuity measured but insufficient, multi-label edges refuted) and no third is
+  named. Academic for the clause spelling now that it folds, but it is a live question about that
+  fixture.
+- **There is NO Gremlin equivalent-spelling probe.** `spelling-probe.ts` is GQL-only — 207 `MATCH`
+  queries and zero `g.V()` — so the surface that gets `bun run bench:gremlin` has no check of the
+  one property every index-seeding bug in this engine's history violated. CLAUDE.md's "equivalent
+  spellings must cost the same" is enforced for one of the two languages.
+- **A VACUOUS START LABEL COSTS 1545x on a hop count** — found by this item's spelling-probe run,
+  measured, and NOT built. `P` is on every vertex of that fixture, so the label is semantically
+  free, yet `MATCH (a:P)-[:E]->(b) RETURN count(*)` reads 15.45ms against `MATCH (a)-[:E]->(b)`'s
+  0.00ms, same answer. Unlabelled endpoints are answered from the edge bucket SIZES, O(1) per
+  type; any start label routes the same question to a per-vertex degree sum. `vacuousLabel` exists
+  to drop a label every vertex carries, so the question is why it does not reach this spelling. It
+  PREDATES this item and that was measured rather than argued: the fold cannot touch either
+  member, and HEAD read 1561.92x / 1536.74x against POST's 1492.95x / 1545.21x / 1546.55x, three
+  isolated runs each.
+- **The box-array lever** (~1.7x on a property count), unchanged by this item: cost is delete
+  bookkeeping, because swap-remove reorders and Gremlin observably reproduces TinkerPop's order.
+
+### Verification
+
+`packages/gql` 3291 pass / 0 fail (3259 before, +32 new in `label-test-fold.test.ts`). All seven
+byte-identity fuzzers 13 pass / 0 fail. The TS spelling probe at `SPELL_N=200000 SPELL_REPS=9`
+reports **0 groups disagreeing on the ANSWER**, and the item-1302 far-end-label group no longer
+appears among the flagged groups — it converged.
+
+Gates as separate commands, each exit code read unpiped: `bun run typecheck` 0, `bun run lint` 0,
+`bun run fmt` 0 AND verified idempotent by hashing `git diff` before and after a second run, `bun
+run check --skip-nx-cache` 0.
+
+Instruments added: `packages/native/label-test-floor-probe.ts` (13 arms — the hand-written floors,
+the scan/hop pairs, the start-label vacuity 2x2, and `PRED_MLEDGE` as a fixture knob so the
+multi-label suspect could be varied on its own).
