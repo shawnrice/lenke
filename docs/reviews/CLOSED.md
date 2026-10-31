@@ -43183,9 +43183,10 @@ concluded a label was vacuous, and missed four nodes appended a thousand lines f
   id map (5.79ms -> 0.018 on vertices, 12.0 -> 0.015 on edges, projected 0.015). The MULTI-id case
   is a deliberate decline worth 6.5-7.1ms against 0.020, blocked on a decision about emission
   order rather than on a mechanism; see 1306.
-- **`outE(T).inV()` is not normalised to `out(T)`** (and `inE.outV` to `in`, `union(out, in)` to
-  `both`), 95600x-228822x. The same SHAPE as item 1303's fold: a plan rewrite that makes two
-  spellings one plan, so every rung already built for `out` reaches the long spelling too.
+- ~~**`outE(T).inV()` is not normalised to `out(T)`**~~ — **BUILT at item 1307** for both edge-hop
+  pairs (`outE.inV` -> `out`, `inE.outV` -> `in`): 144.175ms -> 0.009 and 160.127 -> 0.009, with
+  two far-end groups converging as well. The `union(out, in)` -> `both` half is still OPEN and is
+  a different rewrite; see 1307.
 - The remaining ten groups at 2.8x-6.9x, each confirmed only by the sweep so far and each needing
   its own isolated three runs before it is a finding.
 
@@ -43299,8 +43300,110 @@ hashing `git diff` across a second run, `bun run check --skip-nx-cache` 0.
 
 - **The multi-id `hasId` seed**, above: 6.5-7.1 ms against 0.020, blocked on an order decision and
   not on a mechanism.
-- **`outE(T).inV()` is not normalised to `out(T)`** (and `inE.outV` to `in`, `union(out, in)` to
-  `both`) — item 1305 measured 95600x-228822x, the largest remaining Gremlin gap. This item is a
-  warning for it: check whether the long and short spellings agree on RAISING and on DUPLICATES
-  before assuming a rewrite is sound, because here they did not.
+- ~~**`outE(T).inV()` is not normalised to `out(T)`**~~ — **BUILT at item 1307** for both edge-hop
+  pairs (`outE.inV` -> `out`, `inE.outV` -> `in`): 144.175ms -> 0.009 and 160.127 -> 0.009, with
+  two far-end groups converging as well. The `union(out, in)` -> `both` half is still OPEN and is
+  a different rewrite; see 1307.
 - The ten smaller item-1305 groups at 2.8x-6.9x, each still needing its own isolated three runs.
+
+## 1307 — `outE(T).inV()` fuses to `out(T)`, so the long spelling of a hop reaches every rung the short one has
+
+Item 1305's Gremlin spelling probe flagged this as the largest gap on that surface. The long
+spelling is what a user writes when the edge is interesting on the way through, and it had no rung
+at all: `out(T).count()` is a closed-form degree sum while `outE(T).inV().count()` materialised
+one traverser per edge.
+
+A/B against the pre-change file, same fixture, one shape per process, min of three alternated
+rounds, every answer identical:
+
+```text
+  arm                   PRE ms    POST ms    speedup
+  q-long-hop           144.175      0.009  16199x
+  q-long-in            160.127      0.009  16855x
+  q-long-farlabel      237.110     45.246      5.24x
+  q-long-farprop       200.319     26.986      7.42x
+  ctl-short-hop          0.006      0.006      0.94x   CONTROL
+  ctl-short-farlabel    42.870     43.913      0.98x   CONTROL
+  ctl-scan               2.148      2.043      1.05x   CONTROL
+```
+
+Control band 0.94x-1.05x, so the controls held. **That A/B exists because the probe could not
+answer the question it raised.** After the fusion the far-end-label group reads ~47ms on BOTH
+arms, which is equally consistent with the long arm falling to meet the short one and with the
+SHORT arm having risen — and a spelling probe compares spellings inside one run, so it cannot
+distinguish them. `ctl-short-farlabel` settles it at 0.98x: the long arm fell 237 to 45, the short
+arm did not move. Claiming "no regression" from the probe alone would have been the same
+argument-instead-of-a- measurement this session already had to retract once.
+
+Four probe groups converged, not two: the far-end label and far-end property pairs came along
+because the long spelling now reaches item 1302's far-label rung and the property rung behind it.
+
+### Equivalence was MEASURED first, because item 1306 is the cautionary tale
+
+There, the analogous-looking rewrite of `V() + hasId(ids)` into `V(ids)` was unsound twice over —
+it RAISED where the filter did not, and it did not DEDUPE. So before writing this one, both
+spellings were run on a fixture built to break them: PARALLEL `a->b` edges, a MULTI-LABEL
+`['T','S']` edge, and a SELF-LOOP `a->a`. They agree on the same multiset AND the same ORDER for
+`count()`, for the elements, for `values(k)`, for the untyped `outE()`/`out()` pair, and for the
+incoming mirror.
+
+⚠️ **THEY DO NOT AGREE ON `path()`**, and that is the whole guard: the long spelling puts the EDGE
+in the traverser's path and `out` does not. `planReadsPath` is the test and it is conservative in
+the right direction — it recurses every plan-bearing field, covers `path`, `tree`, `simplePath`,
+`cyclicPath`, `otherV` and the closure steps, and returns true when in doubt.
+
+ADJACENCY is the second guard and it does more than it looks: any step between the two —
+`as_('e')`, `aggregate`, `sack`, a filter on the edge — stops the match, which is exactly right,
+because those are the plans where the edge is observable for a reason other than the path and a
+fused hop would have no edge to give them.
+
+`bothE(T).otherV()` is deliberately NOT fused. It looks like the third member of the family, but
+`otherV` is itself path-dependent, so the guard already excludes it, and folding it to `both(T)`
+needs its own argument rather than this one. A `repeat()` body is left for its own item too: only
+the TOP-LEVEL step list is rewritten.
+
+### Teeth
+
+The fusion is answer-equivalent where it applies, so the mutant that matters most cannot change an
+answer — it just stops CALLING the rewrite.
+
+**The first cut of the tests could not see that mutant**, and that is worth recording. 22
+assertions called `fuseEdgeHop` directly, so unwiring it from the pipeline left every one of them
+passing while the suite answered identically by the slow walk — the same hole item 1303 found in
+its route assertions. The fix was to extract the rewrite composition as an exported
+`effectivePlan(plan, graph, tracksPath)` and assert the WIRING and its GUARD separately: it fuses
+when nothing reads the path, and it does not fuse when the path is tracked. That also puts one
+guard in one place instead of spelled out at the call site, where it could be remembered for one
+rewrite and forgotten for the next.
+
+7 mutants, 7 caught, no survivors:
+
+```text
+  fusion-unwired            CAUGHT   1 fail     mirror-pair-confused     CAUGHT   2 fail
+  path-guard-removed        CAUGHT   5 fail     adjacency-not-consumed   CAUGHT  16 fail
+  wrong-far-end             CAUGHT  13 fail     identity-return-dropped  CAUGHT   1 fail
+  labels-dropped            CAUGHT   3 fail
+```
+
+`fusion-unwired` is caught only by the wiring assertion added above; before it, that mutant
+survived by construction. `identity-return-dropped` was expected to survive and did not — the
+`toBe` identity assertion sees it, which is what that assertion is for.
+
+### Verification
+
+`packages/gremlin` 985 pass / 0 fail (961 before, +24 new in `executor/edge-hop-fusion.test.ts`).
+All seven byte-identity fuzzers 13 pass / 0 fail. Gates as separate commands with exit codes read
+unpiped: `bun run typecheck` 0, `bun run lint` 0, `bun run fmt` 0 AND verified idempotent by
+hashing `git diff` across a second run, `bun run check --skip-nx-cache` 0.
+
+### What is open after this
+
+- **`union(out(T), in(T))` is not normalised to `both(T)`** — item 1305 measured 228822x, now the
+  largest remaining Gremlin spelling gap, and `union(outE, inE)` against `bothE` at 148043x beside
+  it. NOT the same rewrite as this one: `union` takes sub-plans, so the question is whether two
+  branch bodies can be recognised as the two halves of a `both`, and the ORDER a union emits in
+  (all of the first branch, then all of the second) is not the order `both` emits in. Check that
+  before assuming, the way this item checked `path()`.
+- **A `repeat()` body is not rewritten**, so `repeat(outE(T).inV())` keeps the long walk.
+- The eight remaining item-1305 groups at 2.8x-6.9x, each still needing its own isolated three
+  runs before it is a finding.

@@ -560,6 +560,106 @@ const ELEMENT_STEP_ON_PATH = new Set([
  *     so the branch stays.
  *   - skipping the empty graph — survives, since every query over one answers empty anyway.
  */
+/**
+ * The plan the rungs actually see.
+ *
+ * Both rewrites here exist for the same reason — every shortcut matches a plan PREFIX beginning at
+ * the source, so one extra step in front of a hop makes all of them decline — and they compose in
+ * this order deliberately: `fuseEdgeHop` runs INSIDE `dropVacuousLabels` so the label drop sees a
+ * ONE-step hop. A shortcut wanting `[V, hasLabel, out]` would still decline if the hop were two
+ * steps at the moment the vacuous label was removed.
+ *
+ * ONE GUARD FOR BOTH, and it is why this is a function rather than two calls at the use site: a
+ * plan that reads the traverser PATH must keep the spelling it was given, because the long hop puts
+ * the EDGE in the path and the fused one does not. Had the guard been spelled out at the call site
+ * it could be remembered for one rewrite and forgotten for the next.
+ *
+ * EXPORTED so the WIRING is assertable and not just the rewrites. Asserting `fuseEdgeHop` alone
+ * leaves the mutant that simply stops CALLING it alive — the suite then answers identically by the
+ * slow walk, which is the shape item 1303 measured.
+ */
+export const effectivePlan = (plan: Plan, graph: Graph, tracksPath: boolean): Plan =>
+  tracksPath ? plan : dropVacuousLabels(fuseEdgeHop(plan), graph);
+
+/**
+ * `outE(T).inV()` becomes `out(T)`, and `inE(T).outV()` becomes `in(T)` (item 1307).
+ *
+ * The long spelling is what a user writes when the edge is interesting on the way through, and it
+ * is the same walk: for each vertex, for each incident edge of those types, the edge's far end.
+ * Written the long way it had no rung at all, so the cost was not a constant factor:
+ *
+ * ```text
+ *   V().out('T').count()               0.009 ms   <- a closed-form degree sum
+ *   V().outE('T').inV().count()      ~204 ms      <- 400,000 materialised traversers
+ * ```
+ *
+ * 18936-24433x on three isolated runs of item 1305's Gremlin spelling probe, and the twin
+ * `union(out, in)` against `both` reads 228822x. Normalising rather than teaching the rungs about
+ * the pair is the same choice item 1303 made on the GQL side: every rung already built for `out` —
+ * the count shortcut, `hopValuesShortcut`, the seeded walks — reaches the long spelling at once.
+ *
+ * EQUIVALENCE IS MEASURED, NOT ASSUMED, because item 1306 is the cautionary tale: there the
+ * analogous-looking rewrite of `V() + hasId(ids)` into `V(ids)` was unsound twice over (it raised
+ * where the filter did not, and it did not dedupe). Checked on a fixture carrying PARALLEL edges
+ * `a->b` twice, a MULTI-LABEL edge `['T','S']`, and a SELF-LOOP `a->a`, the two spellings agree on
+ * the same multiset AND the same order for `count()`, for the elements themselves, for
+ * `values(k)`, for the untyped `outE()`/`out()` pair, and for the incoming mirror.
+ *
+ * ⚠️ THEY DO NOT AGREE ON `path()`, and that is why this runs only when nothing reads the path.
+ * The long spelling puts the EDGE in the traverser's path and `out` does not, so a plan that can
+ * observe the path must keep the spelling it was given. `planReadsPath` is the test, and it is
+ * conservative in the right direction: it recurses through every plan-bearing field and covers
+ * `path`, `tree`, `simplePath`, `cyclicPath`, `otherV` and the closure steps, returning true when
+ * in doubt. The caller applies this in the same `ctx.tracksPath` slot `dropVacuousLabels` uses, so
+ * the guard cannot be forgotten at one call site and not the other.
+ *
+ * ADJACENCY is the second half of the guard, and it does more work than it looks. Any step between
+ * the two — `as_('e')`, `aggregate`, `sack`, a filter on the edge — stops the match, which is
+ * exactly right: those are the plans where the EDGE is observable for a reason other than the
+ * path, and a fused hop would no longer have an edge to give them.
+ *
+ * `bothE(T).otherV()` is deliberately NOT fused, even though it looks like the third member of the
+ * family: `otherV` is itself path-dependent (it reads the path to know which end it came from), so
+ * it is already excluded by the guard above, and folding it to `both(T)` would need its own
+ * argument rather than this one.
+ *
+ * Only the TOP-LEVEL step list is rewritten. A `repeat(outE(T).inV())` body is the same question
+ * and is left for its own item: the body is reached through `subPlansOf`, and the win there is the
+ * per-repetition walk rather than a shortcut this rewrite would unlock.
+ */
+// EXPORTED for its own assertion, the way `compileLinear` and `seedFromIndex` are on their
+// sides, and not from the package barrel — the public surface is unchanged. It needs one
+// because the fusion is answer-equivalent where it applies: with it disabled the suite
+// returns identical rows by the slow walk, so only an assertion on the REWRITTEN PLAN can
+// tell "it fused" from "it answered anyway" (item 1303 measured that distinction).
+export const fuseEdgeHop = (plan: Plan): Plan => {
+  const steps: Step[] = [];
+  let fused = false;
+
+  for (let i = 0; i < plan.steps.length; i += 1) {
+    const step = plan.steps[i];
+    const next = plan.steps[i + 1];
+
+    if (next !== undefined && step.kind === 'outE' && next.kind === 'inV') {
+      steps.push({ kind: 'out', labels: step.labels });
+      fused = true;
+      i += 1;
+      continue;
+    }
+
+    if (next !== undefined && step.kind === 'inE' && next.kind === 'outV') {
+      steps.push({ kind: 'in', labels: step.labels });
+      fused = true;
+      i += 1;
+      continue;
+    }
+
+    steps.push(step);
+  }
+
+  return fused ? { ...plan, steps } : plan;
+};
+
 const dropVacuousLabels = (plan: Plan, graph: Graph): Plan => {
   const vertexSource = plan.steps[0]?.kind === 'V';
   const edgeSource = plan.steps[0]?.kind === 'E';
@@ -666,7 +766,7 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
   // matches a plan PREFIX that begins at the source, so one extra step in front of the hop makes
   // all of them decline — and a label every element carries is exactly such a step while
   // excluding nothing. See `dropVacuousLabels` (item 540).
-  const effective = ctx.tracksPath ? sliced : dropVacuousLabels(sliced, graph);
+  const effective = effectivePlan(sliced, graph, ctx.tracksPath);
 
   // A `count()` the graph already keeps a counter or bucket for is a READ, not a
   // walk — see `countShortcut`. Checked before seeding because it answers the
