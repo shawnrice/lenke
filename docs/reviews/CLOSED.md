@@ -43989,3 +43989,98 @@ From 15 flagged groups at item 1305 to 2:
   VALUE and `has` one per ELEMENT, so the two agree only while every element has at most one value
   for the key. This surface has a `Cardinality` concept, so single-valuedness must be ESTABLISHED
   before that rewrite, not assumed.
+
+## 1313 — the far-key grouped-count degree walk is REFUTED again, and "no SKIP/LIMIT" is not the narrowing
+
+No speedup shipped. This item built the 3.5x walk, had it refuted by two tests, reverted it, and
+spent its value on making a fourth attempt cheaper than this third one.
+
+### The target, and why it looked open
+
+`detectGroupedHopCount` has two walks and the key's end picks them: a START key reads the property
+ONCE per start vertex and adds that vertex's whole matching degree, O(V); a FAR key reads each
+edge's own endpoint, O(E). Priced on this build at 200,000 nodes / 1,000,000 edges:
+
+```text
+  FAR-key grouped count   [TARGET]    304.8 ms   rows=8
+  START-key grouped count [degree]     87.3      rows=8   <- the same question, other end
+  [CTL] global hop count                0.0
+  [CTL] grouped NODE count              7.6
+  FAR-key + LIMIT 3                   336.9      rows=3
+```
+
+**3.5x, not the 7.4x the audit records.** Item 138 measured 1065 -> 144.8 ms; the far walk has
+since been changed to go through `expand` (which costs it 17% and is correct for multi-label
+edges), so the old figure is stale as a prize. Quoting it would have oversold this by 2x.
+
+Item 138 rejected the far-key degree walk because "group order is first-seen and observable". The
+narrowing that looked available: a WINDOW is what makes group order decide which groups come back,
+an `ORDER BY` sorts whatever order arrived (item 1249's `sortGroupRows`), and item 1296
+established that a grouped result without `ORDER BY` is compared as a row MULTISET — the same
+policy that licensed item 1310's per-endpoint extremum fold. So admit the walk only when `skip ===
+undefined && limit === undefined`.
+
+The paging half of that is TRUE and was verified rather than assumed: `LIMIT 1` over the far-key
+count returns exactly `unpaged.slice(0, 1)` and `SKIP 1 LIMIT 1` returns `slice(1, 2)`, so a
+window really does select by position in first-seen order.
+
+### Why it is still wrong
+
+Built, it failed TWO tests, neither of which has a window:
+
+- `grouped-hop-rel-variable.test.ts` — a case named **"the TALLY answers as it does without the
+  name, IN ORDER"**. A test named for the ordering pins it deliberately; that is item 1306's rule,
+  applied here against my own change rather than for it.
+- `grouped-hop-extremum.test.ts` — item 1310's own route instrument, which uses the grouped
+  COUNT's start-side order as the "declined" signal. A far-driven count invalidates that signal.
+
+And `paged-count.test.ts` states the contract directly: first-seen group order is **"the pinned
+contract both engines keep"**. So it is a CONTRACT, not a consequence of windowing — which also
+means changing TS's order would diverge from the native engine on a property the differential
+fuzzer CANNOT SEE, because it compares grouped results as multisets. An undetected divergence is
+worse than a caught regression.
+
+### Far-driving preserves that order in NO iteration order — measured, not argued
+
+Item 138's rejection names `edgesToByLabel` as the problem (it keys a far vertex at its first
+IN-EDGE, so iterating it is edge-insertion order). That invites the reading that a different
+source would be fine. It would not:
+
+```text
+  fixture: a -> z inserted before b -> y, with y created before z
+  general / current (start-driven)   [KZ, KY]      LIMIT 1 -> KZ
+  far-driven via edgesToByLabel      [KZ, KY]      agrees HERE, by coincidence
+  far-driven via creation order      [KY, KZ]      <- disagrees
+```
+
+So the rejection generalises past its own source, and the first fixture I tried (where creation
+order happened to agree) would have hidden that. One fixture is not a check.
+
+### What was kept
+
+The rejection comment at the walk site now carries all of it: that "no SKIP/LIMIT" is NOT a
+sufficient narrowing, the two pinning tests BY NAME, the 3.5x so nobody re-prices it, the
+three-way order measurement, and the cross-engine argument. It ends "do not re-derive this a
+fourth time" — item 138 built and rejected it, item 713 re-derived it, this is the third.
+
+Also removed while there: a `rel.direction !== 'both'` condition written into the first cut. It is
+DEAD — `rel.direction` is already narrowed to `'out' | 'in'` at that point, and TypeScript
+rejected the comparison as having no overlap. A dead guard reads as a live one, so the proof is
+recorded in its place rather than the guard.
+
+### Verification
+
+`packages/gql` 3315 pass / 0 fail after the revert, identical to before the attempt. `bun run
+typecheck` 0, `bun run lint` 0, `bun run fmt` 0. Item 1310's `primedGroupedExtremum` is untouched
+— checked explicitly, since both live in the same file.
+
+### What is open after this
+
+- **The far-key grouped count stays O(E) at 304.8 ms**, and closing it needs first-seen group
+  order to stop being a contract — a cross-engine semantic decision against the native engine, not
+  an optimization. The start-key walk at 87.3 ms is the floor it would reach.
+- **Grouped hop `sum`/`avg`** cannot ride a degree multiplier either: value x degree against
+  repeated addition differs in the last ulp, and byte-identity is a hard invariant.
+- **`values(k).is(p)` vs `has(k, p)`** on the Gremlin side at ~3.8x, equal only under `count()`
+  and only while every element has at most one value for the key.
+- **`not(hasNot(k))`** at ~6x, sound to fold and unidiomatic.

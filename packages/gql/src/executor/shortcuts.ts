@@ -9680,6 +9680,28 @@ export const detectGroupedHopCount = (clauses: readonly Clause[]): ReachFn | nul
     // bucket — the order the general path uses. Group order is FIRST-SEEN and observable, so
     // it is not enough to count the right edges; they have to be met in the same order. See
     // the rejected far-end degree walk recorded on this function.
+    //
+    // ⚠️ "NO SKIP/LIMIT" IS NOT A SUFFICIENT NARROWING, and that was tried and REFUTED at item
+    // 1313. The reasoning that invites it is sound as far as it goes: a window is what makes group
+    // order decide WHICH groups come back, an `ORDER BY` sorts whatever order arrived, and item
+    // 1296 established that a grouped result without `ORDER BY` is compared as a row MULTISET. So
+    // a far-key degree walk admitted only when `skip === undefined && limit === undefined` looks
+    // safe, and it is worth 3.5x (304.8 ms against the start-key walk's 87.3 on 200,000 nodes /
+    // 1,000,000 edges).
+    //
+    // It is not safe, because first-seen group order is a CONTRACT and not merely a consequence.
+    // `paged-count.test.ts` calls it "the pinned contract both engines keep", and
+    // `grouped-hop-rel-variable.test.ts` has a case named "the TALLY answers as it does without
+    // the name, IN ORDER" — a test named for the ordering pins it deliberately. Both failed on the
+    // narrowed walk, with no window in sight. Changing TS's order would also diverge from the
+    // native engine on a contract the differential fuzzer cannot see, because it compares grouped
+    // results as multisets.
+    //
+    // And far-driving preserves that order in NO iteration order, which item 1313 measured rather
+    // than argued: with `a -> z` inserted before `b -> y` and `y` created first, the general path
+    // emits `KZ` first, `edgesToByLabel` order gives `KZ` too, and far-vertex CREATION order gives
+    // `KY`. So item 138's rejection generalises past its own source. Do not re-derive this a
+    // fourth time.
     for (const v of candidateVertexSource(graph, startLabel)) {
       const byType = index.get(v.id);
 
