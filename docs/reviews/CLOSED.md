@@ -43075,15 +43075,17 @@ that `bun test` picks up from the root; the rest are the run-many timing flakes
   queries and zero `g.V()` — so the surface that gets `bun run bench:gremlin` has no check of the
   one property every index-seeding bug in this engine's history violated. CLAUDE.md's "equivalent
   spellings must cost the same" is enforced for one of the two languages.
-- **A VACUOUS START LABEL COSTS 1545x on a hop count** — found by this item's spelling-probe run,
-  measured, and NOT built. `P` is on every vertex of that fixture, so the label is semantically
-  free, yet `MATCH (a:P)-[:E]->(b) RETURN count(*)` reads 15.45ms against `MATCH (a)-[:E]->(b)`'s
-  0.00ms, same answer. Unlabelled endpoints are answered from the edge bucket SIZES, O(1) per
-  type; any start label routes the same question to a per-vertex degree sum. `vacuousLabel` exists
-  to drop a label every vertex carries, so the question is why it does not reach this spelling. It
-  PREDATES this item and that was measured rather than argued: the fold cannot touch either
-  member, and HEAD read 1561.92x / 1536.74x against POST's 1492.95x / 1545.21x / 1546.55x, three
-  isolated runs each.
+- ~~**A VACUOUS START LABEL COSTS 1545x on a hop count**~~ — **WITHDRAWN at item 1304, it was a
+  misread fixture.** This entry claimed `P` is on every vertex of the spelling probe's fixture. It
+  is not: that fixture appends four `s0..s3` nodes labelled `["S","Univ"]`, so `P` covers 200000
+  of 200004 vertices and `vacuousLabel` correctly declines to drop it. The two spellings agreed on
+  the answer only because those four nodes have no edges, which is a property of this fixture and
+  not an equivalence — so the pair was two different questions and the 1545x measured nothing.
+  `Univ` IS on all 200004, and anchored there the pair reads 0.822ms against 0.192ms, both
+  sub-millisecond, while the real label `P` reads 24.379ms. `vacuousLabel` works, and there is no
+  target here. The lesson is the one CLAUDE.md already states and this item failed to apply to
+  someone else's fixture: CHECK THE FIXTURE'S OWN STATISTICS — the four extra nodes sit ~1000
+  lines from the label template that was read.
 - **The box-array lever** (~1.7x on a property count), unchanged by this item: cost is delete
   bookkeeping, because swap-remove reorders and Gremlin observably reproduces TinkerPop's order.
 

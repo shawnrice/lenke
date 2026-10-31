@@ -149,6 +149,17 @@ const ARMS: Record<string, () => number> = {
   // The vacuous twin of that same pair, as the control for it.
   'vac-pattern': q('MATCH (a:Person)-[:T]->(b:Employee) RETURN count(*) AS c'),
   'vac-clause': q('MATCH (a:Person)-[:T]->(b) WHERE b IS LABELED Employee RETURN count(*) AS c'),
+
+  // ── ITEM 1304: A VACUOUS START LABEL, ALONE. `Person` is on every vertex here, so the label
+  // constrains nothing and `vacuousLabel` exists to drop it — yet the spelling probe measures this
+  // pair 1545x apart on its own fixture. These arms ask the question on a fixture whose edges are
+  // single-label BY DEFAULT, so `PRED_MLEDGE` decides whether `multiTypeEdgeCount` — which gates
+  // `bucketSumsAreSound`, the condition guarding the O(1) bucket-sum answer — is what separates
+  // them. All three answer the FULL edge count, so a differing answer voids the comparison.
+  'vstart-labelled': q('MATCH (a:Person)-[:T]->(b) RETURN count(*) AS c'),
+  'vstart-absent': q('MATCH (a)-[:T]->(b) RETURN count(*) AS c'),
+  // The NON-vacuous twin: shows whether the fast path is about VACUITY or about any label at all.
+  'vstart-real': q('MATCH (a:Mgr)-[:T]->(b) RETURN count(*) AS c'),
 };
 
 const run = ARMS[arm];

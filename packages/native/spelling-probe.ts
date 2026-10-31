@@ -599,23 +599,31 @@ const GROUPS: [string, readonly string[]][] = [
     ],
   ],
   [
-    // ⚠️ THIS GROUP IS A LIVE 1500x FINDING, not a passing check (item 1303 measured it; the
-    // target is OPEN and unbuilt). `P` is on EVERY vertex here, so the label is semantically free,
-    // and yet:
+    // ⚠️ THIS GROUP ANCHORED ON THE WRONG LABEL, and read as a 1545x finding because of it
+    // (found and corrected at item 1304; item 1303 reported the bad number first).
     //
-    //   MATCH (a:P)-[:E]->(b) RETURN count(*)    15.45ms
-    //   MATCH (a)-[:E]->(b) RETURN count(*)       0.00ms    1545x, same answer
+    // The group's claim is that a REDUNDANT start label costs the same as no label. `P` is not
+    // redundant: this fixture appends four `s0..s3` nodes labelled `["S","Univ"]` with no `P`, so
+    // `verticesByLabel.get('P').size` is 200000 against a `vertexCount` of 200004 and
+    // `vacuousLabel` correctly declines to drop it. The two members then returned the same answer
+    // only because those four nodes happen to have no edges — a property of this fixture, not an
+    // equivalence — so the pair was two different questions and its spread meant nothing.
     //
-    // Unlabelled endpoints are answered from the edge bucket SIZES, O(1) per type; adding any
-    // start label routes the same question to a per-vertex degree sum over that label's bucket.
-    // `vacuousLabel` exists precisely to drop a label every vertex carries, so the question is why
-    // it does not reach this spelling.
+    // `Univ` IS on all 200004, and with it the group tests what it says and `vacuousLabel` is
+    // shown working:
     //
-    // It PREDATES item 1303 and that was measured, not assumed — the fold cannot touch either
-    // member (neither has a clause `WHERE`, so the pass returns the same array): HEAD read 1561.92x
-    // and 1536.74x against POST's 1492.95x, 1545.21x and 1546.55x, three isolated runs each.
-    'label on start: redundant vs absent (1545x, OPEN — item 1303 measured, unbuilt)',
-    ['MATCH (a:P)-[:E]->(b) RETURN count(*) AS c', 'MATCH (a)-[:E]->(b) RETURN count(*) AS c'],
+    //   MATCH (a:Univ)-[:E]->(b) RETURN count(*)    0.822ms   label dropped
+    //   MATCH (a)-[:E]->(b) RETURN count(*)         0.192ms
+    //   MATCH (a:P)-[:E]->(b) RETURN count(*)      24.379ms   a REAL label, legitimately a
+    //                                                         degree sum over its bucket
+    //
+    // So there is no target here, and the residual Univ-vs-absent spread is sub-millisecond on
+    // both sides — under this probe's own `FLOOR_MS`, which is why it is not a finding either.
+    // DO NOT re-price "a start label makes a hop count slow": for a label the engine cannot prove
+    // vacuous, the degree sum IS the right algorithm, and proving it vacuous for the edge-source
+    // set costs the same O(V) walk it would save unless maintained on every write.
+    'label on start: redundant vs absent',
+    ['MATCH (a:Univ)-[:E]->(b) RETURN count(*) AS c', 'MATCH (a)-[:E]->(b) RETURN count(*) AS c'],
   ],
   // An ANONYMOUS end node against a NAMED one, when the projection reads neither (item 775).
   // `->()` and `->(b)` ask the same question here — one row per edge, 200,000 either way,
