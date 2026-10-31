@@ -4730,7 +4730,8 @@ type CSeedHint =
    * Item 621, the TS twin of 620. Like every hint here it only narrows a SEED — `matchNode`
    * and the residual `WHERE` re-validate — so it may be a superset and never a subset.
    */
-  | { kind: 'edgeEnd'; value: CompiledExpr; sourceEnd: boolean };
+  | { kind: 'edgeEnd'; value: CompiledExpr; sourceEnd: boolean }
+  | { kind: 'edgeEndIn'; values: CompiledExpr; sourceEnd: boolean };
 
 export type CNode = {
   variable?: string;
@@ -8417,13 +8418,30 @@ const compileClause = (rawClause: Clause): CClause => {
           // An `out` hop runs source -> target, an `in` hop target -> source.
           const sourceEnd = direction === 'out' ? wantSource : !wantSource;
 
-          return (hints.get(relVar) ?? [])
-            .filter((h) => h.kind === 'id')
-            .map((h) => ({
-              kind: 'edgeEnd' as const,
-              value: (h as { value: CompiledExpr }).value,
-              sourceEnd,
-            }));
+          // Item 1316 pins an id LIST the same way, and the only reason it needed any code is
+          // that this filter DROPPED it. `collectHints` keys hints by variable with rel
+          // variables included, so item 1315's `idIn` hint was already being collected for
+          // `element_id(r) IN [...]` and then discarded here — the same way a pinned single
+          // edge id was collected and dropped before item 621.
+          //
+          // The declines above carry over untouched: `both` and a quantified rel are refused by
+          // the direction check and `pinnableSegment`, before either kind reaches this map.
+          //
+          // A `flatMap` with narrowing `if`s rather than `filter`+`map`: the old form needed a
+          // `(h as { value: CompiledExpr })` cast because `filter` does not narrow the union,
+          // and a cast that silently covers two shapes is how the second one gets read off the
+          // wrong field.
+          return (hints.get(relVar) ?? []).flatMap((h): CSeedHint[] => {
+            if (h.kind === 'id') {
+              return [{ kind: 'edgeEnd' as const, value: h.value, sourceEnd }];
+            }
+
+            if (h.kind === 'idIn') {
+              return [{ kind: 'edgeEndIn' as const, values: h.values, sourceEnd }];
+            }
+
+            return [];
+          });
         };
 
         for (let i = 0; i < patterns.length; i++) {

@@ -117,6 +117,31 @@ export type SeedCandidate = { count: number; build: () => ReadonlySet<Vertex> };
  * At module scope rather than inline because the inline form nested six blocks deep, one past the
  * `max-depth` gate — and a seed walk belongs out of the hot block regardless.
  */
+/**
+ * The endpoint vertices an EDGE id list resolves to, on one chosen side (item 1316).
+ *
+ * The id-list twin of item 621's single-edge pin, and it skips a non-string entry for the same
+ * reason {@link idSetFrom} does. Two vertices can share an endpoint, so the `Set` is doing real
+ * work here and not only guarding against a duplicated id.
+ */
+const edgeEndSetFrom = (
+  graph: Graph,
+  list: readonly unknown[],
+  sourceEnd: boolean,
+): ReadonlySet<Vertex> => {
+  const ends = new Set<Vertex>();
+
+  for (const raw of list) {
+    const edge = typeof raw === 'string' ? graph.getEdgeById(raw) : null;
+
+    if (edge) {
+      ends.add(sourceEnd ? edge.from : edge.to);
+    }
+  }
+
+  return ends;
+};
+
 const idSetFrom = (graph: Graph, list: readonly unknown[]): ReadonlySet<Vertex> => {
   const hits = new Set<Vertex>();
 
@@ -188,6 +213,26 @@ export const indexCandidates = function* (
         // and `orient`'s estimate see the difference. Mutation confirms it (`count: 1`
         // unconditionally survives) — recorded so the zero is not later read as load-bearing.
         yield { count: end ? 1 : 0, build: () => (end ? new Set([end]) : EMPTY) };
+      }
+
+      continue;
+    }
+
+    // The LIST form of that pin (item 1316): each edge id names one endpoint on the chosen side,
+    // so a list of edge ids names a SET of endpoint vertices. Measured 30.2 ms / 40.2 ms against
+    // the single pinned edge id's 0.024 — 1233x and 1644x — because the list spellings had no pin
+    // and drove the whole hop.
+    //
+    // Sound for the same reason the single pin is: the seed is a SUPERSET that `matchNode` and the
+    // residual `WHERE` re-validate, so a duplicate id, a missing one and a shared endpoint are all
+    // handled by the `Set` plus that re-check rather than by arithmetic here.
+    if (hint.kind === 'edgeEndIn') {
+      const list = hint.values(env);
+
+      if (Array.isArray(list)) {
+        const ends = edgeEndSetFrom(graph, list, hint.sourceEnd);
+
+        yield { count: ends.size, build: () => ends };
       }
 
       continue;
