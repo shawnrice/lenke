@@ -15,7 +15,7 @@ import type { Plan, Step } from '../ast.js';
 import { countShortcut } from './count-shortcut.js';
 import { applyStep } from './dispatch.js';
 import { hopValuesShortcut } from './hop-values.js';
-import { seedFromIndex } from './index-seed.js';
+import { seedFromIndex, tailIsOrderFree } from './index-seed.js';
 import { groupCountShortcut } from './projection.js';
 import { newContext, planReadsPath, startTraverser, type Traverser, unwrap } from './runtime.js';
 import { applySource } from './sources.js';
@@ -870,12 +870,9 @@ const bothFromUnion = (step: Step): Step | undefined => {
  * floating point. `min`/`max` would be safe but are not in the measured shape, so they are not
  * admitted on a guess.
  */
-const ORDER_FREE_TAILS: readonly (readonly Step['kind'][])[] = [['count'], ['dedupe', 'count']];
-
-const tailIsOrderFree = (tail: readonly Step[]): boolean =>
-  ORDER_FREE_TAILS.some(
-    (want) => want.length === tail.length && want.every((k, i) => tail[i].kind === k),
-  );
+// MOVED to `index-seed.ts` at item 1317, which needs the same question answered for a different
+// reason — see {@link tailIsOrderFree} there. One list, because two copies of "which tails are
+// order-free" would drift apart and each would look authoritative.
 
 /**
  * `union(out(T), in(T)).count()` becomes `both(T).count()` (item 1311).

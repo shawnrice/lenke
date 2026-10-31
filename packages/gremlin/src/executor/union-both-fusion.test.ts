@@ -12,7 +12,20 @@ import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@lenke/core';
 
-import { V, both, bothE, count, dedupe, inE, in_, out, outE, union, values } from '../steps.js';
+import {
+  V,
+  both,
+  bothE,
+  count,
+  dedupe,
+  inE,
+  in_,
+  limit,
+  out,
+  outE,
+  union,
+  values,
+} from '../steps.js';
 import { traversal } from '../traversal.js';
 import { effectivePlan, fuseUnionBoth, toArray } from './index.js';
 
@@ -162,4 +175,17 @@ describe('the fused and unfused spellings answer identically under the tail', ()
       expect(toArray(long, g)).toEqual(toArray(short, g));
     });
   }
+
+  test('a WINDOWED union is NOT fused — the shared order-free list must reject `take`', () => {
+    // `ORDER_FREE_TAILS` lives in `index-seed.ts` since item 1317 and is shared with the
+    // multi-id `hasId` seed. A mutation adding `['take']` to it was caught by item 1317's
+    // `limit` test and by NOTHING in this file, because no case here windows a union — so the
+    // shared list was guarded from one side only. This is the other side.
+    //
+    // It must stay unfused for this file's own reason: the two spellings are multiset-equal but
+    // NOT sequence-equal, so a window selects different elements from each.
+    const windowed = traversal(V(), union(out('T'), in_('T')), limit(2));
+
+    expect(fuseUnionBoth(windowed).steps.map((s) => s.kind)).toEqual(['V', 'union', 'take']);
+  });
 });

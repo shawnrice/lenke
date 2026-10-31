@@ -308,9 +308,76 @@ const labelSeed = <E>(
  * every element — and cheaper than a scan that rejects all of them. `count` is `ids.length`, an
  * UPPER bound (ids may repeat or be absent), which is what a selectivity estimate wants.
  */
+/**
+ * The step-kind sequences whose observable does not depend on the order of what feeds them.
+ *
+ * ONE list serving TWO callers with DIFFERENT premises, which is worth stating because the
+ * premises are not interchangeable:
+ *
+ * - `fuseUnionBoth` (item 1311) rewrites `union(out, in)` to `both`, which is MULTISET-equal but
+ *   not sequence-equal — `both` finishes each vertex before moving on and the union does not. Only
+ *   a tail that reads the multiset rather than the sequence may ride that.
+ * - `idSeed`'s multi-id arm (item 1317) seeds from a SET of ids, which is SET-equal to the scan it
+ *   replaces and merely reordered. That is a stronger relation than multiset-equal, so every tail
+ *   admissible for the union is admissible here too.
+ *
+ * `count` reads the multiset. `dedupe` then `count` reads the SET, coarser still. Both were
+ * verified for item 1311 on a fixture carrying PARALLEL edges, a MULTI-LABEL edge and a SELF-LOOP.
+ *
+ * `sum` and `mean` are deliberately ABSENT even though they look order-free: this repo records
+ * them as order-sensitive in the last ulp (`foldFor`'s own note), so a reordering IS observable in
+ * floating point. `min`/`max` would be safe but are not in either measured shape, so they are not
+ * admitted on a guess.
+ *
+ * A tail like `[out, count]` is also order-free on the same reasoning and is NOT admitted here:
+ * it is priced (item 1317 measured it at 213x) and left for its own item, because "any hop then a
+ * count" is a broader claim than either caller has evidence for.
+ */
+const ORDER_FREE_TAILS: readonly (readonly Step['kind'][])[] = [['count'], ['dedupe', 'count']];
+
+/**
+ * Does the run of `steps` starting at `from` match an order-free tail?
+ *
+ * Takes an INDEX rather than a sliced array deliberately: `seedRest` asks this once per leading
+ * filter of every traversal, so a `slice` would allocate on a path every query takes, and
+ * comparing in place costs nothing.
+ *
+ * Structural, NOT a measured win. The first cut did slice, and a declined arm read 3.70 then 6.04
+ * ms across runs — which looked like the allocation and was not: removing it left the same number.
+ * Those were single runs either side of the noise floor, and the A/B's control band is what
+ * settles whether anything moved. Kept because allocating per filter per query is worth avoiding
+ * on its own terms, with no performance claim attached.
+ */
+export const tailIsOrderFreeFrom = (steps: readonly Step[], from: number): boolean => {
+  for (const want of ORDER_FREE_TAILS) {
+    if (want.length !== steps.length - from) {
+      continue;
+    }
+
+    let all = true;
+
+    for (let k = 0; k < want.length; k++) {
+      if (steps[from + k].kind !== want[k]) {
+        all = false;
+        break;
+      }
+    }
+
+    if (all) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
+/** The whole-array form, for `fuseUnionBoth`, which already holds a slice. */
+export const tailIsOrderFree = (tail: readonly Step[]): boolean => tailIsOrderFreeFrom(tail, 0);
+
 const idSeed = <E>(
   step: Step,
   byId: ((id: ID) => E | undefined) | undefined,
+  tailOrderFree: boolean,
 ): Candidate<E> | null => {
   // EXACTLY ONE ID, and the restriction is about ORDER rather than about mechanism.
   //
@@ -329,17 +396,41 @@ const idSeed = <E>(
   // same 757-1796x if it is ever taken. Taking it needs a decision about that order — made against
   // TinkerPop ground truth (`podman run -i docker.io/tinkerpop/gremlin-console:3.7.3`), not as a
   // side effect of a perf change — and then that test updated in the same commit.
-  if (byId === undefined || step.kind !== 'hasId' || step.ids.length !== 1) {
+  // ITEM 1317 NARROWS THAT DECLINE RATHER THAN REVERSING IT. The blocker above is about ORDER, so
+  // it does not apply where the order is not observable: under an order-free tail the seeded and
+  // scanned paths yield the same SET and differ only in sequence, and the tail reads neither.
+  // `hasId('6','2','1','4').count()` is 4 either way, so no TinkerPop ground-truth decision is
+  // needed and `hasId.test.ts`'s "out of order" case keeps its contract untouched — it has no such
+  // tail. The bare multi-id `hasId` remains declined, exactly as above.
+  //
+  // Measured at 200,000 vertices, against the single id this already seeded (0.01739 ms):
+  //   hasId(3 ids).count()            6.28732 ms   362x
+  //   hasId(3 ids).dedupe().count()   3.63495      209x
+  if (byId === undefined || step.kind !== 'hasId') {
     return null;
   }
 
-  const element = byId(step.ids[0]);
+  if (step.ids.length !== 1 && !(tailOrderFree && step.ids.length > 1)) {
+    return null;
+  }
 
-  // An id nothing carries seeds the EMPTY set, which is the right answer and cheaper than a scan
-  // that will reject every element — the same shape as `labelSeed`'s missing-bucket case.
-  return element === undefined
+  // An id nothing carries contributes nothing, which is the right answer and cheaper than a scan
+  // that will reject every element — the same shape as `labelSeed`'s missing-bucket case. The
+  // `Set` also collapses a REPEATED id, so `hasId('a','a').count()` is 1 rather than 2, matching
+  // the filter it replaces.
+  const found = new Set<E>();
+
+  for (const id of step.ids) {
+    const element = byId(id);
+
+    if (element !== undefined) {
+      found.add(element);
+    }
+  }
+
+  return found.size === 0
     ? { count: 0, build: () => EMPTY, removable: true }
-    : { count: 1, build: () => new Set<E>([element]), removable: true };
+    : { count: found.size, build: () => found, removable: true };
 };
 
 const seedRest = <E>(
@@ -363,7 +454,14 @@ const seedRest = <E>(
       break;
     }
 
-    const candidate = seedForStep(step, index) ?? labelSeed(step, bucketOf) ?? idSeed(step, byId);
+    // The tail is judged from AFTER this step, which is what the seed would reorder. Residual
+    // filters that remain ahead of the tail preserve order, so they cannot make an order-free
+    // tail order-sensitive — but they are not in `ORDER_FREE_TAILS`, so such a plan simply
+    // declines rather than relying on that reasoning.
+    const candidate =
+      seedForStep(step, index) ??
+      labelSeed(step, bucketOf) ??
+      idSeed(step, byId, tailIsOrderFreeFrom(rest, i + 1));
 
     if (candidate && candidate.count < (best?.count ?? Infinity)) {
       best = candidate;

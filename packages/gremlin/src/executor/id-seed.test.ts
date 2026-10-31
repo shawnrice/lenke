@@ -20,7 +20,7 @@ import { describe, expect, test } from 'bun:test';
 import { Graph } from '@lenke/core';
 
 import { run, toArray } from '../executor.js';
-import { E, V, count, has, hasId, hasLabel, values } from '../steps.js';
+import { E, V, count, dedupe, has, hasId, hasLabel, limit, out, values } from '../steps.js';
 import { traversal } from '../traversal.js';
 import { seedFromIndex } from './index-seed.js';
 
@@ -129,12 +129,66 @@ describe('the semantics that make the seed sound', () => {
 describe('the multi-id DECLINE, which is about order', () => {
   test('several ids are NOT seeded, so the source order survives', () => {
     const g = build();
-    const seeded = seedFromIndex(traversal(V(), hasId('c', 'a'), count()), g, false);
+    // The plan here carries NO order-free tail, which is the whole point of the case: item 1317
+    // admits the multi-id seed only where the order cannot be observed, so the decline has to be
+    // asserted on a plan where it CAN be. The original wrote this with a `count()` tail, which
+    // was incidental scaffolding rather than the contract — the second assertion always used the
+    // bare form, and it is the one that pins the behaviour the test is named for.
+    const seeded = seedFromIndex(traversal(V(), hasId('c', 'a')), g, false);
 
     // Declining is the point: seeding would emit in the order the ids were WRITTEN, and
     // `hasId.test.ts`'s "we can filter by ids out of order" pins the opposite.
     expect(seeded).toBeNull();
     expect(ids(toArray(traversal(V(), hasId('c', 'a')), g))).toEqual(['a', 'c']);
+  });
+
+  test('a LIMIT after the ids still declines — the window makes order observable', () => {
+    const g = build();
+
+    expect(seedFromIndex(traversal(V(), hasId('c', 'a'), limit(1)), g, false)).toBeNull();
+  });
+
+  test('an order-free tail ADMITS the multi-id seed (item 1317)', () => {
+    // The narrowing, asserted as a route and not only as an answer: under `count()` the seeded
+    // and scanned paths yield the same SET and the tail reads neither sequence, so there is no
+    // order to preserve and no TinkerPop decision to make.
+    const g = build();
+    const seeded = seedFromIndex(traversal(V(), hasId('c', 'a'), count()), g, false);
+
+    expect(seeded).not.toBeNull();
+    // `hasId` is REMOVED from the residual plan — the seed replaced it rather than narrowing it.
+    expect(seeded?.steps.map((s) => s.kind)).toEqual(['count']);
+    expect(Number(toArray(traversal(V(), hasId('c', 'a'), count()), g)[0])).toBe(2);
+  });
+
+  test('`dedupe().count()` is admitted too, and agrees', () => {
+    const g = build();
+    const seeded = seedFromIndex(traversal(V(), hasId('c', 'a'), dedupe(), count()), g, false);
+
+    expect(seeded).not.toBeNull();
+    expect(Number(toArray(traversal(V(), hasId('c', 'a'), dedupe(), count()), g)[0])).toBe(2);
+  });
+
+  test('a seeded multi-id count agrees with the scanned one on every shape', () => {
+    // The equivalence the narrowing rests on, checked rather than argued: a missing id, a
+    // repeated id, and ids written out of order must each give the filter's own answer.
+    const g = build();
+
+    for (const [arg, want] of [
+      [['c', 'a'], 2],
+      [['a', 'c'], 2],
+      [['a', 'a'], 1],
+      [['a', 'nope'], 1],
+      [['nope', 'gone'], 0],
+    ] as const) {
+      expect(Number(toArray(traversal(V(), hasId(...arg), count()), g)[0])).toBe(want);
+    }
+  });
+
+  test('a HOP after the ids is not admitted yet — priced at 213x, its own item', () => {
+    const g = build();
+
+    expect(seedFromIndex(traversal(V(), hasId('c', 'a'), out('R'), count()), g, false)).toBeNull();
   });
 
   test('the single-id path cannot disturb order, which is why it is allowed', () => {
