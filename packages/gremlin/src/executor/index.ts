@@ -624,6 +624,43 @@ const pureFilterSteps = (plan: Plan): readonly Step[] | null =>
  */
 // EXPORTED for its own assertion, like `fuseEdgeHop` and `effectivePlan` beside it, and not
 // from the package barrel.
+/**
+ * Append `step`, SPLITTING `has(label, key, pred)` into `hasLabel(label).has(key, pred)` (item
+ * 1309). Returns whether it split.
+ *
+ * The three-argument `has` exists to say "this label AND this property" in one step, and it is
+ * SLOWER than writing the two steps it fuses — 8.981 ms against 2.199 at 200,000 vertices, 4.1x,
+ * both answering 33330. It builds a single `hasLabelAnd` step, and the rungs that answer a filter
+ * CHAIN do not recognise it, so the shorthand drops the query to the traverser pipeline while the
+ * longhand is served.
+ *
+ * Splitting rather than teaching the rungs a third shape is the choice items 1303, 1307 and 1308
+ * made, and it is sound by construction: the step's whole meaning is the conjunction of a
+ * single-label test and one property predicate, which is exactly those two steps. Verified at the
+ * boundaries as well as the middle — a label no element carries, an absent key, and a projection
+ * off the end all agree between the spellings.
+ *
+ * A FUNCTION rather than a branch in the loop below, because the splice paths must use it too. The
+ * first cut put the split inline and CLAIMED in a comment that a `hasLabelAnd` coming out of an
+ * `and(…)` branch would be split as well. It would not have been: the splice pushes branch steps
+ * straight into the list without re-examining them, so the claim was false and its own test caught
+ * it. Routing every push through here is what makes the claim true.
+ */
+const pushSplit = (steps: Step[], step: Step): boolean => {
+  if (step.kind !== 'hasLabelAnd') {
+    steps.push(step);
+
+    return false;
+  }
+
+  steps.push(
+    { kind: 'hasLabel', labels: [step.label] },
+    { kind: 'has', key: step.key, pred: step.pred },
+  );
+
+  return true;
+};
+
 export const flattenFilterWrappers = (plan: Plan): Plan => {
   const steps: Step[] = [];
   let changed = false;
@@ -633,7 +670,10 @@ export const flattenFilterWrappers = (plan: Plan): Plan => {
       const inner = pureFilterSteps(step.plan);
 
       if (inner !== null) {
-        steps.push(...inner);
+        for (const s of inner) {
+          pushSplit(steps, s);
+        }
+
         changed = true;
         continue;
       }
@@ -647,7 +687,9 @@ export const flattenFilterWrappers = (plan: Plan): Plan => {
       // partial form has not been measured.
       if (parts.length > 0 && parts.every((p) => p !== null)) {
         for (const part of parts) {
-          steps.push(...part);
+          for (const s of part) {
+            pushSplit(steps, s);
+          }
         }
 
         changed = true;
@@ -655,7 +697,7 @@ export const flattenFilterWrappers = (plan: Plan): Plan => {
       }
     }
 
-    steps.push(step);
+    changed = pushSplit(steps, step) || changed;
   }
 
   return changed ? { ...plan, steps } : plan;

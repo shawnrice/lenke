@@ -95,6 +95,68 @@ describe('a wrapped filter flattens into the chain', () => {
   });
 });
 
+describe('has(label, key, pred) splits into the two steps it fuses (item 1309)', () => {
+  test('the three-argument has becomes hasLabel + has', () => {
+    const flat = flattenFilterWrappers(traversal(V(), has('Q', 'k', gte(2)), count()));
+
+    expect(kinds(flat.steps)).toEqual(['V', 'hasLabel', 'has', 'count']);
+  });
+
+  test('it is WIRED into effectivePlan', () => {
+    const flat = effectivePlan(traversal(V(), has('Q', 'k', gte(2)), count()), build(), false);
+
+    expect(kinds(flat.steps)).toEqual(['V', 'hasLabel', 'has', 'count']);
+  });
+
+  test('a hasLabelAnd inside an and() is flattened AND split', () => {
+    // The split lives in the same pass as the wrapper flattening so this composes: the `and`
+    // splices its branches, and the `hasLabelAnd` that comes out is then split.
+    const flat = flattenFilterWrappers(
+      traversal(V(), and(has('Q', 'k', gte(2)), hasKey('s')), count()),
+    );
+
+    expect(kinds(flat.steps)).toEqual(['V', 'hasLabel', 'has', 'hasKey', 'count']);
+  });
+
+  const SPLIT_PAIRS: ReadonlyArray<
+    readonly [string, ReturnType<typeof traversal>, ReturnType<typeof traversal>]
+  > = [
+    [
+      'the middle case',
+      traversal(V(), hasLabel('Q'), has('k', gte(2))),
+      traversal(V(), has('Q', 'k', gte(2))),
+    ],
+    [
+      'counted',
+      traversal(V(), hasLabel('Q'), has('k', gte(2)), count()),
+      traversal(V(), has('Q', 'k', gte(2)), count()),
+    ],
+    [
+      'a label NO element carries',
+      traversal(V(), hasLabel('Nope'), has('k', gte(0))),
+      traversal(V(), has('Nope', 'k', gte(0))),
+    ],
+    [
+      'an ABSENT key',
+      traversal(V(), hasLabel('Q'), has('zz', gte(0))),
+      traversal(V(), has('Q', 'zz', gte(0))),
+    ],
+    [
+      'projected off the end',
+      traversal(V(), hasLabel('Q'), has('k', gte(2)), values('k')),
+      traversal(V(), has('Q', 'k', gte(2)), values('k')),
+    ],
+  ];
+
+  for (const [name, flat, fused] of SPLIT_PAIRS) {
+    test(`${name} agrees`, () => {
+      const g = build();
+
+      expect(ids(toArray(fused, g))).toEqual(ids(toArray(flat, g)));
+    });
+  }
+});
+
 describe('bodies that are NOT keep-or-drop must decline', () => {
   test('filter(out(T)) does not flatten, and keeps its EXISTENCE meaning', () => {
     const g = build();
