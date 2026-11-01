@@ -16,13 +16,13 @@ Each of these was built because a violation was FOUND. A violation is a planner 
 for a reason other than cost, and it is invisible to every correctness test, because both routes
 return the same rows.
 
-| probe                        | the property                                            | last run                                                                               |
-| ---------------------------- | ------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| `spelling-probe.ts`          | equivalent GQL spellings of one predicate cost the same | clean; its one flag is item 644's BUILT-AND-REVERTED product lever                     |
-| `gremlin-spelling-probe.ts`  | the same for Gremlin (item 1305)                        | zero flagged AT `SPELL_N=200000`; **1M flagged a new 2.00x group** (item 1332)         |
-| `surface-parity-probe.ts`    | GQL and Gremlin cost the same for ONE question          | **FOUND item 1322's 5.78x pathology**; leaves `two-hop-count` open at GQL 1.84x slower |
-| `index-never-hurts-probe.ts` | adding an index never makes a query slower (item 1324)  | holds on 17 shapes, both surfaces                                                      |
-| `id-lookup-is-o1-probe.ts`   | lookup by id is FLAT in graph size (item 1326)          | holds on 8 arms over a 16x range                                                       |
+| probe                        | the property                                            | last run                                                                                |
+| ---------------------------- | ------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `spelling-probe.ts`          | equivalent GQL spellings of one predicate cost the same | clean; its one flag is item 644's BUILT-AND-REVERTED product lever                      |
+| `gremlin-spelling-probe.ts`  | the same for Gremlin (item 1305)                        | zero flagged AT `SPELL_N=200000`; **1M flagged a new 2.00x group** (item 1332)          |
+| `surface-parity-probe.ts`    | GQL and Gremlin cost the same for ONE question          | found 1322's 5.78x and 1334's 1.92x; `two-hop-count` now GQL 1.35x FASTER, gap reversed |
+| `index-never-hurts-probe.ts` | adding an index never makes a query slower (item 1324)  | holds on 17 shapes, both surfaces                                                       |
+| `id-lookup-is-o1-probe.ts`   | lookup by id is FLAT in graph size (item 1326)          | holds on 8 arms over a 16x range                                                        |
 
 `surface-parity-probe.ts` is the one that earned its keep: the gap it catches is invisible to every
 other harness here, because `bench:usage` runs GQL rows plus two native-only Gremlin rows,
@@ -48,12 +48,30 @@ one surface.
 | `enumeration-surface-probe.ts` | WHICH enumeration surface a route actually walks (item 1329)                                 |
 | `pinned-chain-count-probe.ts`  | does an id-pinned START avoid the sweep for a 3+-segment count (item 1329)                   |
 | `notfold-soundness-check.ts`   | are `hasKey(k)` and `not(hasNot(k))` equivalent off an ELEMENT stream? (item 1331)           |
+| `two-hop-surface-probe.ts`     | the GQL/Gremlin two-hop count gap, swept by DEGREE, cold rep and warm median (item 1334)     |
+| `product-inline-seed-probe.ts` | ⚠️ NEVER reproduced the gap it was built for — see item 1333 before trusting it              |
 
 `notfold-soundness-check.ts` is not a timing probe — it answers whether a rewrite is ALLOWED. Item
 1331 folds `not(hasNot(k))` into `hasKey(k)` for 16.9x, and the two are exact duals on elements but
 NOT on anything else: after `properties()` they give 1 and 3, after `values()` 0 and 2, because
 `hasNot` returns false for a non-element. Run it before widening that fold's allow-list, and in
 general whenever a rewrite's soundness depends on what the stream carries.
+
+**⚠️ A BESPOKE PROBE CAN FAIL TO REPRODUCE WHAT A SHARED ONE SHOWS.**
+`product-inline-seed-probe.ts` was built to bisect item 1333's 2x and matched the spelling probe's
+fixture on TEN dimensions — N, edge count, labels, property richness, the NDJSON load path,
+index-build order, the second index, one-process multi-shape timing, two-pass min, the per-rep
+`JSON.stringify` — and never showed the gap, before OR after the fix. So its flatness is not
+evidence a change does nothing, and the cause is still open (`ts-closure-size-is-load-bearing` is
+the standing suspect: that probe is ~1,500 lines, this one ~250). Item 1334 is the contrast worth
+copying: when a gap shows on one instrument and not another, READ THE DECLINE in the planner rather
+than bisecting the fixture further — the guard answered in one look what ten measured arms could not.
+
+**⚠️ AND SWEEP THE DEGREE, NOT JUST THE SIZE.** `two-hop-surface-probe.ts` exists because the parity
+probe's fixture is a degree-1 CHAIN, where a two-hop degree product has nothing to multiply. The gap
+held at degree 2 and 3 so the target was real — but the RATIO is locality-sensitive (1.81x on the
+sequential chain, 1.42x on scattered targets, absolute costs 2.7x apart), so quote the fixture with
+the number.
 
 **⚠️ RUN THE SPELLING PROBES AT MORE THAN ONE `SPELL_N`.** Item 1331 closed the last flagged group
 at 200,000 and item 1332 found a new one worth 2.00x by changing nothing but the size — the group

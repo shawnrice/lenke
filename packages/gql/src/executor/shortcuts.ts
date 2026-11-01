@@ -4218,9 +4218,28 @@ const buildTwoHopCount = <T>(
         continue;
       }
 
+      // ITEM 1334: the DIRECTED arms read the middle's OWN adjacency box rather than looking it
+      // up by id string. `side(graph, b.id, …)` does `edgesFromByLabel.get(bId)` — a string-keyed
+      // `Map.get`, ~190 ns by item 194's measurement — and this loop calls it TWICE per middle, so
+      // an unfiltered two-hop count over 200,000 middles pays 400,000 string hashes.
+      //
+      // `Vertex.adjFrom` is a LAZY MEMO over exactly that lookup (`#adjFrom ??= graph
+      // .edgesFromByLabel.get(this.id)`), so the first access costs what `side` costs and every
+      // later one is a private-field read. The memo lives on the vertex and survives across
+      // queries until an adjacency write clears it, which makes this free on a cold graph and a
+      // saving on every repeat.
+      //
+      // ⚠️ `twoHopSide`'s own header records the box read as MEASURED FLAT (369.9/384.4/367.7
+      // against 384.1/364.2/372.0) and that is NOT a contradiction: there the middle is revisited
+      // once per incoming EDGE, so the box is already warm within one query and the memo has
+      // nothing left to save. Here each middle is visited EXACTLY ONCE per query, which is the
+      // condition item 355 names.
+      //
+      // The `both` arms are left on `undirectedSide` deliberately: they are a different shape
+      // (two sides plus a loop correction) and have not been measured here.
       const ways = aBoth
         ? undirectedSide(graph, b.id, t1, aEff, aLoops)
-        : side(graph, b.id, toAOut, t1, aEff);
+        : sideOfVertex(b, toAOut, t1, aEff);
 
       if (ways === 0) {
         continue;
@@ -4230,7 +4249,7 @@ const buildTwoHopCount = <T>(
         ways *
         (cBoth
           ? undirectedSide(graph, b.id, t2, cEff, cLoops)
-          : side(graph, b.id, fromCOut, t2, cEff));
+          : sideOfVertex(b, fromCOut, t2, cEff));
     }
 
     return rowOf(count);
