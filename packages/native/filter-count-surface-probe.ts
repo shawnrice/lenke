@@ -22,7 +22,7 @@
  */
 import { Graph } from '@lenke/core';
 import { query } from '@lenke/gql';
-import { count, gt, has, hasLabel, toArray, traversal, V } from '@lenke/gremlin';
+import { count, gt, has, hasLabel, lt, toArray, traversal, V } from '@lenke/gremlin';
 
 const N = Number(process.env.N ?? 200_000);
 const REPS = Number(process.env.REPS ?? 14);
@@ -55,6 +55,9 @@ const GQL: Record<string, string> = {
   trueConst: 'MATCH (n:P) WHERE true RETURN count(*) AS c',
   vacuous: 'MATCH (n:P) WHERE n.age > -1 RETURN count(*) AS c',
   real: 'MATCH (n:P) WHERE n.age > 45 RETURN count(*) AS c',
+  // CONTROL for item 1338: TWO comparisons, which `specializeCmpProp`'s single-entry guard
+  // refuses, so the specialization cannot reach this row. It must stay flat.
+  twoPred: 'MATCH (n:P) WHERE n.age > 45 AND n.age < 80 RETURN count(*) AS c',
 };
 
 // `has('age', gt(-1))` is the Gremlin vacuous arm: age is `i % 90` so it CANNOT fail, which keeps
@@ -67,6 +70,7 @@ const GRM: Record<string, ReturnType<typeof traversal>> = {
   trueConst: traversal(V(), hasLabel('P'), count()),
   vacuous: traversal(V(), hasLabel('P'), has('age', gt(-1)), count()),
   real: traversal(V(), hasLabel('P'), has('age', gt(45)), count()),
+  twoPred: traversal(V(), hasLabel('P'), has('age', gt(45)), has('age', lt(80)), count()),
 };
 
 const series: number[] = [];

@@ -6828,6 +6828,71 @@ const compilePath = (pattern: PathPattern): CPath => {
  * either one paying. Item 454's ladder is the reason: 4 ns of the ~24 ns a vertex is the binding
  * `Map` write and ~10 is the property read, so the loop header is not where the time is.
  */
+/**
+ * `satisfies` PRE-RESOLVED for the one shape a filtered count almost always has: a single ordering
+ * comparison on one property, `WHERE n.age > 45`. Returns `undefined` for anything else, and the
+ * caller then uses `satisfies` exactly as before.
+ *
+ * WHY (item 1338). `satisfies` is reached once per ELEMENT and does the same work every time before
+ * it can get to the comparison: allocate an `EvalEnv`, then test eleven other carriers. Item 1337
+ * ablated the whole call out of `buildNodeCount`'s tally and measured **2.23x** (3.84 -> 1.72 ms at
+ * 200,000 vertices), with the ceiling BELOW Gremlin's 2.16 rather than level with it.
+ *
+ * ⚠️ AND THE COST IS DISTRIBUTED, which is why this is a specialization and not a fix to one term.
+ * Item 802 refuted the env allocation and the scaffolding by micro-benchmark; item 1338 re-tested
+ * by ablation and agreed — the env reads 3.69 against 4.01 reused (overlapping), and hoisting the
+ * right-hand side reads 1.09x against a measured ~1.11x noise floor on the same shape. No single
+ * term is resolvable; the aggregate is 2.23x.
+ *
+ * ⚠️ THE GUARD IS AN ALLOW-LIST OVER THE PREDICATE'S OWN KEYS, and that is not a stylistic choice —
+ * it is the fix for a WRONG ANSWER this function already caused. The first version listed the
+ * carriers to refuse by hand, and the list was short: `CPredicate` has TWELVE
+ * (`props`, `where`, `eqProps`, `cmpProps`, `truthProps`, `notTruthProps`, `memberProps`,
+ * `nullProps`, `pathProps`, `labelTests`, `truthTestProps`, `typedTests`) and four were missed, so
+ * `WHERE p.meta.city = 'NYC' AND p.n > 2` specialized to the `p.n > 2` half and answered 5 instead
+ * of 2. `dotted-predicate-routes.test.ts` caught it.
+ *
+ * Iterating the keys PRESENT on the predicate inverts that failure mode: a carrier this function
+ * has never heard of makes it refuse, where a hand-written deny-list makes it ignore. The cost of
+ * being wrong here is a wrong answer, which is item 1328's argument for allow-lists, applied to a
+ * type's fields rather than a step kind.
+ *
+ * SEMANTICS ARE NOT RE-DERIVED. The closure calls `compareTruth` with `COMPARE[op]` and `propOf` —
+ * the very functions `satisfies`'s own `cmpProps` loop calls, in the same order — so UNKNOWN still
+ * drops the row (item 259) and a cross-type ordering still settles it. The tally's comment requires
+ * that the two spellings "agree by construction"; this keeps `satisfies` as the only implementation
+ * and binds its arm rather than writing a second one.
+ */
+export const specializeCmpProp = (
+  pred: CPredicate,
+): ((element: Bound, env: EvalEnv) => boolean) | undefined => {
+  for (const [carrier, held] of Object.entries(pred)) {
+    // The one being specialized, and anything absent, are fine.
+    if (carrier === 'cmpProps' || held === undefined) {
+      continue;
+    }
+
+    // An EMPTY array carries nothing. Anything else — a populated array, or a non-array carrier
+    // such as `where` being present at all — means `satisfies` would apply work this closure does
+    // not, so refuse.
+    if (!Array.isArray(held) || held.length > 0) {
+      return undefined;
+    }
+  }
+
+  const carried = pred.cmpProps;
+
+  // Exactly ONE comparison. Two would need a loop, which is the thing being removed.
+  if (carried?.length !== 1) {
+    return undefined;
+  }
+
+  const [{ key, op, value }] = carried;
+  const cmp = COMPARE[op];
+
+  return (element, env) => compareTruth(op, cmp, propOf(element, key), value(env)) === true;
+};
+
 export const satisfies = (
   element: Bound,
   pred: CPredicate,

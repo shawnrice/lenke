@@ -77,6 +77,7 @@ import {
   aggregateOverValues,
   foldedAggOnlyView,
   satisfies,
+  specializeCmpProp,
   sortsOnOutputOnly,
   countEdges,
   outNeighbors,
@@ -262,6 +263,28 @@ const buildNodeCount = <T>(
     return (graph) => rowOf(graph.verticesByLabel.get(name)?.size ?? 0);
   }
 
+  // ITEM 1338: the per-element predicate PRE-RESOLVED, once per query, for the one shape a
+  // filtered count almost always has — a single ordering comparison on one property. `undefined`
+  // for everything else, and the loop then calls `inlineHolds` exactly as before.
+  //
+  // `bindVar` must be absent: it means something in the predicate reads the binding back (item
+  // 803), and the fast closure never writes one.
+  //
+  // ⚠️ MUTATION SAYS THIS GUARD IS UNREACHABLE FROM HERE, and it is kept anyway. Dropping it
+  // SURVIVED item 1338's pass, because every `InlinePred` reaching `buildNodeCount` comes from
+  // `predFor`, which sets `bindVar` only when `where` is present or `props` is non-empty — and
+  // `specializeCmpProp` already refuses both. So the check cannot change an answer today.
+  //
+  // It stays because the invariant is NOT global: the two-hop middle gate builds an `InlinePred`
+  // directly (`{ pred: compilePredicate(...), bindVar }`) with `bindVar` set unconditionally, so a
+  // predicate CAN carry one while every carrier the allow-list inspects is empty. Should that
+  // construction ever feed this tally, the guard is what keeps the fast closure from evaluating
+  // against a binding it never wrote. The cost is one comparison PER QUERY, not per element.
+  const fastPred =
+    preds.length === 1 && preds[0].bindVar === undefined
+      ? specializeCmpProp(preds[0].pred)
+      : undefined;
+
   // CONSTRAINED: tally the bucket. O(bucket) rather than O(1), but it is the same
   // walk the general path makes with none of the row building — and it is what lets
   // `productCountOf` take a constrained pattern as a factor at all.
@@ -322,6 +345,11 @@ const buildNodeCount = <T>(
       }
     }
 
+    // ONE env for the whole tally, where `satisfies` allocates one per element. Sound because
+    // `binding`, `params` and `graph` are fixed for the call — and reachable only from
+    // `fastPred`, which never writes the binding.
+    const fastEnv = { binding, params, graph };
+
     const vertices: Iterable<Vertex> =
       seeded ??
       (name === undefined ? graph.verticesById.values() : (graph.verticesByLabel.get(name) ?? []));
@@ -331,6 +359,14 @@ const buildNodeCount = <T>(
       // A seek returns vertices by VALUE, not by label, so the label has to be applied here.
       // The bucket path inherits it from the seed and must not pay for it again.
       if (seeded !== undefined && !matchesLabel(v, label)) {
+        continue;
+      }
+
+      if (fastPred !== undefined) {
+        if (fastPred(v, fastEnv)) {
+          n += 1;
+        }
+
         continue;
       }
 
