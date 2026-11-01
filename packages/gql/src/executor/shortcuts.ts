@@ -4034,6 +4034,21 @@ const buildThreeHopCount = <T>(
 
       // Hoisted: the `a` side depends only on `b`, so it is one lookup per VERTEX rather than one
       // per middle edge. Zero here prunes the whole inner loop.
+      //
+      // ❌ REJECTED LEVER, with its numbers (item 1335): reading `b`'s OWN adjacency box here —
+      // `sideOfVertex(b, toAOut, t1, aEff)` — instead of the id-string lookup. That is item 1334's
+      // lever, and it is worth 1.92x on this loop's UNFILTERED twin, where two such lookups per
+      // middle ARE the whole loop body. Here it bought nothing: at 200,000 vertices and degree 3,
+      // `WHERE b.age > 45`, three processes each —
+      //
+      //     id-string lookup   24.15 / 25.44 / 25.50 ms   median 25.44
+      //     vertex box read    25.68 / 26.57 / 25.61      median 25.68   0.99x
+      //
+      // with the unfiltered shape flat beside it as the control. The condition item 355 names
+      // (each `b` visited exactly once) DOES hold here, so the memo is available — it simply has
+      // nothing to save against this loop's real work: a gate evaluation and an inner per-edge
+      // walk amortize the one lookup away. The lever is sound and the ratio is the amortization,
+      // which is why it has to be measured per loop rather than inferred from 1334.
       const waysToA = aBoth
         ? undirectedSide(graph, b.id, t1, aEff, aLoops)
         : side(graph, b.id, toAOut, t1, aEff);

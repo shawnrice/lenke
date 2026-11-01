@@ -62,7 +62,15 @@ for (const edge of graph.edgesById.values()) {
   targets.add(edge.to.id);
 }
 
-const GQL = 'MATCH (a:P)-[:E]->()-[:E]->(c) RETURN count(*) AS c';
+// SHAPE=plain is the unfiltered product (item 1334's target). SHAPE=filtered carries a MIDDLE
+// predicate, which routes to the FILTERED two-hop builder — a different loop that pays the same
+// per-vertex `side(graph, b.id, …)` string lookup (item 1335's question).
+const SHAPE = process.env.SHAPE ?? 'plain';
+
+const GQL =
+  SHAPE === 'filtered'
+    ? 'MATCH (a:P)-[:E]->(b)-[:E]->(c) WHERE b.age > 45 RETURN count(*) AS c'
+    : 'MATCH (a:P)-[:E]->()-[:E]->(c) RETURN count(*) AS c';
 const GRM = traversal(V(), hasLabel('P'), out('E'), out('E'), count());
 
 const series: number[] = [];
@@ -87,6 +95,6 @@ const [first] = series;
 const kept = series.slice(3).sort((a, b) => a - b);
 
 console.log(
-  `${SURFACE}\tDEG=${DEG}\tE=${e}\tdistinct-targets=${targets.size}\t` +
+  `${SURFACE}\t${SHAPE}\tDEG=${DEG}\tE=${e}\tdistinct-targets=${targets.size}\t` +
     `answer=${answer}\tFIRST ${first.toFixed(4)}\tMEDIAN ${kept[Math.floor(kept.length / 2)].toFixed(4)} ms`,
 );
