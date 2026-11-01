@@ -38,12 +38,12 @@
 // PROBE and not a test — time is the only signal available, so a threshold in CI would be flaky.
 import { Graph as TsGraph } from '@lenke/core';
 import {
-  E,
-  V,
   and,
   both,
   bothE,
   count,
+  dedupe,
+  E,
   eq,
   filter,
   gte,
@@ -64,6 +64,7 @@ import {
   toArray,
   traversal,
   union,
+  V,
   values,
   within,
 } from '@lenke/gremlin';
@@ -153,10 +154,47 @@ const GROUPS: readonly Group[] = [
     'id lookup, projected: seeded vs hasId',
     [traversal(V('v137'), values('age')), traversal(V(), hasId('v137'), values('age'))],
   ],
+  // MULTI-ID, added at item 1319 because items 1317/1318 made one side of these pairs fast and
+  // the probe had no multi-id group at all — so a regression on either side would have been
+  // invisible to the instrument whose whole job is to see it.
+  //
+  // Measured converged when added: 0.01292 vs 0.01911 (1.48x) for the count, 0.01765 vs 0.01635
+  // (1.08x) with a hop. Both sit under the 1ms floor, so the probe will report them as "not
+  // compared" while they are BOTH fast — and that is the useful property, not a limitation: the
+  // group only becomes comparable when one side regresses to a scan, which is the case worth
+  // catching. Before item 1317 the `hasId` side was ~6 ms.
+  [
+    'multi-id lookup: V(ids) vs hasId(ids)',
+    [
+      traversal(V('v137', 'v9000', 'v4242'), count()),
+      traversal(V(), hasId('v137', 'v9000', 'v4242'), count()),
+    ],
+  ],
+  [
+    'multi-id lookup, then a hop: V(ids) vs hasId(ids)',
+    [
+      traversal(V('v137', 'v9000', 'v4242'), out('KNOWS'), count()),
+      traversal(V(), hasId('v137', 'v9000', 'v4242'), out('KNOWS'), count()),
+    ],
+  ],
+  [
+    'multi-id lookup, dedupe tail: V(ids) vs hasId(ids)',
+    [
+      traversal(V('v137', 'v9000', 'v4242'), dedupe(), count()),
+      traversal(V(), hasId('v137', 'v9000', 'v4242'), dedupe(), count()),
+    ],
+  ],
   // An EDGE by id, the same question on the other element type.
   [
     'edge id lookup: seeded E(id) vs hasId',
     [traversal(E('e137'), count()), traversal(E(), hasId('e137'), count())],
+  ],
+  [
+    'multi-id EDGE lookup: E(ids) vs hasId(ids)',
+    [
+      traversal(E('e137', 'e9000', 'e4242'), count()),
+      traversal(E(), hasId('e137', 'e9000', 'e4242'), count()),
+    ],
   ],
 
   // ── LABEL SPELLINGS.
