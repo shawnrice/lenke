@@ -45223,3 +45223,53 @@ warmed by the probe measuring it). Two points cannot establish a slope.
 The full projection is **~42 ns/row in GQL against ~62 in Gremlin, a 1.5x constant factor** — GQL
 returns `{v: …}` row objects and Gremlin raw values, so the allocation profiles differ. Linear in
 both, so there is no asymptotic lever here; recorded so the next pass does not re-derive it.
+
+## 1326 — "O(1) access by id" is now a CHECKED invariant, not a single-size measurement
+
+Keeping good O(1) access to a vertex or edge by id is a standing requirement, and items 1315-1319
+optimized those paths — but every one was measured at a SINGLE size, which cannot tell O(1) from
+O(log N) or from a cliff. `id-lookup-is-o1-probe.ts` checks the property instead: per-lookup cost
+must be FLAT in N.
+
+Eight arms, three sizes, ONE arm and ONE size per process, 2,000 lookups per timing with the target
+id moving across the keyspace — a FIXED id measures a single hash bucket and would report O(1) for
+anything:
+
+```text
+  arm                          25k ns    100k ns    400k ns   16x drift
+  core-getVertexById            114.5      108.2      121.5       1.06x
+  core-getEdgeById               86.7       98.4      116.0       1.34x
+  gql-node-eq                  1467.4     1509.3     1467.7       1.00x
+  gql-node-in                  2332.1     2308.3     2396.3       1.03x
+  gql-edge-in                  6094.1     7759.9     7895.2       1.30x
+  grm-hasId-one                3412.2     3298.3     3167.6       0.93x
+  grm-hasId-many-count         3599.4     3325.1     3144.6       0.87x
+  grm-E-hasId-count            3782.6     3171.2     3215.6       0.85x
+```
+
+**The constraint holds** — including the id-LIST paths added at items 1315/1316 and the multi-id
+Gremlin form item 1317 admitted under an order-free tail, none of which existed when the
+requirement was last considered. 400,000 sits inside the 200k-1M cache transition this repo warns
+about, and the arms are flat across it.
+
+### What the absolute numbers say
+
+Recorded because they are the useful part once the scaling question is settled:
+
+- the engine primitive is **~100-115 ns**; everything above it is query machinery.
+- **GQL single-id is ~1.47 us**, about 13x the primitive (parse cache, plan, bind, row build) and
+  ~2.3x cheaper than **Gremlin's ~3.3 us** for the same question.
+- `gql-edge-in` at ~7.9 us is the most expensive id path measured — though it is a HOP query
+  binding two nodes and an edge, so it is not like-for-like against `gql-node-in`'s 2.3 us.
+
+### The invariant pattern, which is what this run actually produced
+
+Five properties are now probed rather than assumed, and the pattern paid for itself at item 1322:
+
+| invariant                                    | probe                                      | outcome                     |
+| -------------------------------------------- | ------------------------------------------ | --------------------------- |
+| equivalent spellings cost the same           | `spelling-probe`, `gremlin-spelling-probe` | both clean                  |
+| both surfaces cost the same for one question | `surface-parity-probe`                     | **FOUND item 1322's 5.78x** |
+| an index never makes a query slower          | `index-never-hurts-probe`                  | holds, 17 shapes            |
+| `LIMIT k` costs O(k)                         | item 1325                                  | holds, both surfaces        |
+| id lookup is flat in N                       | `id-lookup-is-o1-probe`                    | holds, 8 arms over 16x      |
