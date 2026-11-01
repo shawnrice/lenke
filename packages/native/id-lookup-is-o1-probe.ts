@@ -13,7 +13,6 @@
 import { Graph } from '@lenke/core';
 import { query } from '@lenke/gql';
 import { E, V, count, hasId, toArray, traversal, values } from '@lenke/gremlin';
-import type { Plan } from '@lenke/gremlin';
 
 const N = Number(process.argv[3] ?? 50_000);
 const REPS = Number(process.env.PROBE_REPS ?? 2_000);
@@ -50,10 +49,10 @@ const ARMS: Record<string, (i: number) => unknown> = {
     }),
 
   // Gremlin: single id, and the multi-id form item 1317 admitted under an order-free tail.
-  'grm-hasId-one': (i) => toArray(traversal(V(), hasId(vid(i)), values('n')) as Plan, g),
+  'grm-hasId-one': (i) => toArray(traversal(V(), hasId(vid(i)), values('n')), g),
   'grm-hasId-many-count': (i) =>
-    toArray(traversal(V(), hasId(vid(i), vid(i + 1), vid(i + 2)), count()) as Plan, g),
-  'grm-E-hasId-count': (i) => toArray(traversal(E(), hasId(eid(i)), count()) as Plan, g),
+    toArray(traversal(V(), hasId(vid(i), vid(i + 1), vid(i + 2)), count()), g),
+  'grm-E-hasId-count': (i) => toArray(traversal(E(), hasId(eid(i)), count()), g),
 };
 
 const arm = process.argv[2] ?? '';
