@@ -451,10 +451,97 @@ const idSeed = <E>(
     : { count: found.size, build: () => found, removable: true };
 };
 
+/** Native's `SEEK_MAX_FRACTION` and GQL's twin of it; see {@link seekIsWorthIt}. */
+const SEEK_MAX_FRACTION = 1 / 8;
+
+/** Native's floor, and GQL's: below this, keep the existing behaviour rather than churn plans. */
+const SEEK_FLOOR_ELEMENTS = 4_096;
+
+/**
+ * Is materializing an index seek of `count` elements worth it against a `scan` of that many?
+ *
+ * **THE THIRD COPY OF ONE RULE, and Gremlin was the one missing it (item 1322).** Native has had
+ * `SEEK_MAX_FRACTION` throughout; GQL's `seekIsWorthIt` was added at item 409 as "the missing
+ * twin"; `seedRest` had NO selectivity gate at all and took any seek that was merely the most
+ * selective candidate, however unselective that was in absolute terms.
+ *
+ * That is not a missed optimization but a PATHOLOGY: adding an index made a query slower. Measured
+ * at 200,000 vertices, `V().hasLabel('P').has('age', gt(45)).count()` where the predicate keeps
+ * ~49% of rows:
+ *
+ *     with an index on `age`     14.457 ms      the seek is taken and materialized
+ *     with NO index               2.891 ms      the scan runs
+ *     GQL, same question, index   3.853 ms      its gate declines the seek
+ *
+ * So the index cost 5x. Item 409's own seek/scan table predicted exactly this — `1% 0.06, 8% 0.23,
+ * 30% 1.96, 60% 5.02` — and its note says "with no gate at all the seek was still chosen at 60%,
+ * where it is 5.02x SLOWER".
+ *
+ * Sound by construction, the same way GQL's is: the seed only has to be a SUPERSET, because the
+ * declined filters stay in the plan as residuals and re-validate every element. So this changes
+ * which plan runs and never which rows come back.
+ */
+const seekIsWorthIt = (count: number, scan: number, total: number): boolean => {
+  // GQL's twin opens with a `count > scan` refusal here (item 176's rule). IT IS DEAD CODE IN
+  // THIS COPY, proved by mutation: deleting it changed no test, and the reason is structural
+  // rather than a coverage gap.
+  //
+  //   - When `seedRest` has an EXACT alternative, `scan` is that candidate's count, and the guard
+  //     fires only for `count > exact.count` — a case the later `exact.count < best.count`
+  //     comparison already resolves in the bucket's favour.
+  //   - When there is no exact alternative, `scan` is the whole source, and a seek cannot return
+  //     more elements than exist, so the condition is unreachable.
+  //
+  // GQL needs it because `seedVertices` has no such second comparison: it takes `best` or scans.
+  // Carried as a comment rather than as a branch, because a dead guard reads as a live one
+  // (item 1313).
+
+  // BELOW THE FLOOR the choice is unmeasurable, so keep the existing behaviour rather than churn
+  // the plan. GQL records that omitting this flipped NINE of its tests, on fixtures of a handful
+  // of elements where two matches are 20% of the bucket and the ratio means nothing.
+  if (total < SEEK_FLOOR_ELEMENTS) {
+    return true;
+  }
+
+  return count <= scan * SEEK_MAX_FRACTION;
+};
+
+/**
+ * Would an index seek on `step` actually be TAKEN, rather than merely being possible?
+ *
+ * `count-shortcut.ts` declines its own fast path wherever a leading filter is seedable, on the
+ * assumption that the seed is the better plan. Once {@link seekIsWorthIt} can refuse an
+ * unselective seek that assumption breaks: the shortcut bows out, the seed declines too, and the
+ * query lands on the GENERAL path — slower than the shortcut it just gave up. Measured at 200,000
+ * vertices on `V().has('age', gt(45)).count()`, ~49% selective:
+ *
+ *     no index                      2.179 ms   the count shortcut runs
+ *     indexed, seek ungated        14.457      the seek is materialized
+ *     indexed, seek gated only      5.433      neither fast path runs
+ *
+ * So the gate has to be asked the same question in both places, and `seedForStep(...) !== null`
+ * is the wrong question. An index on a key the query does NOT filter costs 1.03x, which is how
+ * the cost was localized here rather than to heap or cache pressure.
+ *
+ * The scan is the whole source at these call sites: the shortcut's own fallback walks
+ * `verticesById`, not a label bucket.
+ */
+export const seekWorthTaking = <E>(
+  step: Step,
+  index: PropertyIndex<E>,
+  sourceSize: number,
+): boolean => {
+  const candidate = seedForStep(step, index);
+
+  return candidate !== null && seekIsWorthIt(candidate.count, sourceSize, sourceSize);
+};
+
 const seedRest = <E>(
   rest: readonly Step[],
   index: PropertyIndex<E>,
   tracksPath: boolean,
+  // How many elements the source would iterate if nothing seeds — the denominator the gate needs.
+  sourceSize: number,
   bucketOf?: (label: string) => ReadonlySet<E> | undefined,
   byId?: (id: ID) => E | undefined,
 ): SeededPlan | null => {
@@ -464,6 +551,13 @@ const seedRest = <E>(
   // winner is materialized.
   let bestAt = -1;
   let best: Candidate<E> | null = null;
+  // Tracked SEPARATELY from `best` because the gate applies to an index SEEK and not to a label
+  // bucket or an id lookup: those are EXACT and cost one map read, so they are worth taking at any
+  // selectivity — and one of them is also the fallback an unworthy seek is judged against.
+  let exactAt = -1;
+  let exact: Candidate<E> | null = null;
+  let seekAt = -1;
+  let seek: Candidate<E> | null = null;
 
   for (let i = 0; i < rest.length; i++) {
     const step = rest[i];
@@ -472,19 +566,44 @@ const seedRest = <E>(
       break;
     }
 
+    const fromIndex = seedForStep(step, index);
+
+    if (fromIndex !== null && fromIndex.count < (seek?.count ?? Infinity)) {
+      seek = fromIndex;
+      seekAt = i;
+      continue;
+    }
+
+    if (fromIndex !== null) {
+      continue;
+    }
+
     // The tail is judged from AFTER this step, which is what the seed would reorder. Residual
     // filters that remain ahead of the tail preserve order, so they cannot make an order-free
     // tail order-sensitive — but they are not in `ORDER_FREE_TAILS`, so such a plan simply
     // declines rather than relying on that reasoning.
     const candidate =
-      seedForStep(step, index) ??
-      labelSeed(step, bucketOf) ??
-      idSeed(step, byId, tailIsOrderFreeFrom(rest, i + 1));
+      labelSeed(step, bucketOf) ?? idSeed(step, byId, tailIsOrderFreeFrom(rest, i + 1));
 
-    if (candidate && candidate.count < (best?.count ?? Infinity)) {
-      best = candidate;
-      bestAt = i;
+    if (candidate && candidate.count < (exact?.count ?? Infinity)) {
+      exact = candidate;
+      exactAt = i;
     }
+  }
+
+  // The scan an unworthy seek falls back to: the cheapest EXACT seed if there is one, else the
+  // whole source. Not `sourceSize` unconditionally, because a `hasLabel` beside the seek means
+  // the fallback is that bucket rather than every element.
+  const scan = exact?.count ?? sourceSize;
+
+  if (seek !== null && seekIsWorthIt(seek.count, scan, sourceSize)) {
+    best = seek;
+    bestAt = seekAt;
+  }
+
+  if (exact !== null && exact.count < (best?.count ?? Infinity)) {
+    best = exact;
+    bestAt = exactAt;
   }
 
   if (!best) {
@@ -520,6 +639,7 @@ export const seedFromIndex = (plan: Plan, graph: Graph, tracksPath: boolean): Se
       rest,
       graph.vertexPropertyIndex,
       tracksPath,
+      graph.verticesById.size,
       (l) => graph.verticesByLabel.get(l),
       // The RAW map, not `getVertexById`: see `idSeed` on why a non-string id must come back
       // empty here rather than raising the way `V(5)` does.
@@ -546,6 +666,7 @@ export const seedFromIndex = (plan: Plan, graph: Graph, tracksPath: boolean): Se
       rest,
       graph.edgePropertyIndex,
       tracksPath,
+      graph.edgesById.size,
       (l) => graph.edgesByLabel.get(l),
       (id) => (typeof id === 'string' ? graph.edgesById.get(id) : undefined),
     );

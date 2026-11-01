@@ -44825,6 +44825,12 @@ rather than rebuilding it — including the per-process estimator, the null-cont
 
 ## 1321 — the filtered-count family's 40-85x against native is the LAYOUT FLOOR, measured linear, and my own "superlinear" reading was the harness
 
+> **⚠️ "No lever" was true of the UNINDEXED path only — item 1322 found a 5.78x one in this very
+> family.** The sweep below ran without an index, where the cost genuinely is linear and
+> constant-factor. WITH an index on the filtered key, Gremlin took an unselective seek and the
+> same shape cost 13.10 ms instead of 2.18 — a pathology, not a ceiling. Read 1322 before quoting
+> this entry's conclusion.
+
 No speedup, and no lever. Item 573 records that a big TS/native ratio may be ALGORITHMIC rather
 than the layout ceiling, so the largest remaining ratios in `bench:gremlin` were checked instead of
 attributed. They are the ceiling.
@@ -44889,3 +44895,130 @@ where TS loses.
 `has.has.count()` costs ~36-44 ns/vertex where one `has` costs ~13, so a second predicate adds more
 than the first. That is the same `props`-evaluation family item 1320 established has no clean lever
 (five refutations, one of them harmful), so it is not reopened here.
+
+## 1322 — Gremlin gets the seek-vs-scan gate it was the only engine missing: an index made a query 5.78x SLOWER
+
+**Not a missed optimization. A pathology: adding an index made a query slower.** Native has had
+`SEEK_MAX_FRACTION` throughout, GQL's `seekIsWorthIt` arrived at item 409 as "the missing twin",
+and `seedRest` had NO selectivity gate at all — it took any seek that was merely the most selective
+CANDIDATE, however unselective in absolute terms.
+
+### Found by the one comparison nothing ran: the SAME question in both TS surfaces
+
+Users pick GQL xor Gremlin, so a surface that is slower for an identical question costs half of
+them — and nothing measured that. `bench:usage` runs GQL rows plus two native-only Gremlin rows,
+`bench:gremlin` compares Gremlin against native, and both spelling probes compare spellings WITHIN
+a surface. A cross-surface probe at 200,000 vertices, answers compared per pair:
+
+```text
+  question              GQL ms  Gremlin ms     ratio
+  count-all             0.0015      0.0047     3.07x  gremlin slower
+  filter-count          3.9513     13.4546     3.41x  gremlin slower   <- this item
+  seek-count            0.1621      0.0843     1.92x  gql slower
+  hop-count             0.0016      0.0076     4.71x  gremlin slower
+  both-count            0.0016      0.0078     5.03x  gremlin slower
+  two-hop-count        18.1685      9.8534     1.84x  gql slower       <- OPEN, own item
+```
+
+GQL answering the identical question 3.41x faster is what proved Gremlin was not at the layout
+floor item 1321 had just established — the same engine already had a faster path.
+
+### Measured
+
+A/B against HEAD, both files as one arm, three order-alternated rounds, one shape per process:
+
+```text
+  arm                       PRE ms     POST ms    speedup  answer
+  unsel-indexed            13.1042      2.2659      5.78x  SAME
+  unsel-e-indexed          18.2914      6.6246      2.76x  SAME
+  sel-indexed               0.0529      0.0599      0.88x  SAME  [CONTROL]
+  sel-values-indexed        0.2117      0.2107      1.00x  SAME  [CONTROL]
+  unsel-plain               2.1621      2.2586      0.96x  SAME  [CONTROL]
+  sel-plain                 2.1539      2.0166      1.07x  SAME  [CONTROL]
+  ctl-bare-count            0.0042      0.0036      1.19x  SAME  [CONTROL]
+```
+
+`sel-indexed` is the control that decides whether this is a fix at all: a ~1.1% selective seek is
+STILL taken, at 0.06 ms against its unindexed twin's 2.15. A gate that merely stopped seeding would
+"fix" the pathology and be a far worse bug. The `ctl-bare-count` flag is 4.2 us against 3.6 us —
+0.6 us on a microsecond arm, with POST the faster side.
+
+Re-verified after the dead-code removal below, three processes a side:
+
+```text
+  plain    2.4745 / 2.2175 / 2.2306      indexed  2.3336 / 2.1769 / 2.1833     0.98x
+```
+
+So an index on the filtered key now costs nothing, which is the correct answer.
+
+### EITHER HALF ALONE IS WORSE THAN NEITHER
+
+`count-shortcut.ts` declines its own fast path wherever a leading filter is SEEDABLE, assuming the
+seed is better. Once the gate can refuse a seek, that assumption breaks: the shortcut bows out, the
+seed declines, and the query lands on the GENERAL path.
+
+```text
+  no index                      2.179 ms   the count shortcut runs
+  indexed, seek ungated        13.104      the seek is materialized
+  indexed, seek gated ONLY      5.433      neither fast path runs  <- half the change
+  indexed, both halves          2.266
+```
+
+So `seedForStep(...) !== null` was the wrong question at five sites, and `seekWorthTaking` is the
+right one. `seedForStep` going 9 -> 4 in that file is the arm assertion that exactly five changed.
+
+### How it was localized, and two explanations that died
+
+An index on a key the query does NOT filter costs **1.03x**. That one reading ruled out heap and
+cache pressure and pointed at a second index consumer, which is how `count-shortcut.ts` was found.
+Also refuted: `countRange` as the cost (0.0072 ms — cheap; it walks DISTINCT VALUES in range, ~44
+of 90 here, not the 97,768 matches), and a warming artifact, which separate processes showed was
+real but only part of it.
+
+### Teeth: 6 mutants, 5 caught, and the survivor was MY DEAD CODE
+
+```text
+  seed-gate-unwired          CAUGHT  3 fail   seek-gate.test.ts
+  shortcut-gate-reverted     CAUGHT  1 fail   seek-gate.test.ts   <- answer-equivalent
+  fraction-widened           CAUGHT  6 fail   seek-gate.test.ts
+  floor-removed              CAUGHT  9 fail   index-seed.test.ts
+  denominator-always-source  SURVIVED -> CAUGHT once a targeted test was added
+  wider-than-scan-dropped    SURVIVED -> the GUARD WAS DEAD; removed
+```
+
+**`shortcut-gate-reverted` is caught only by the `countShortcut` route assertions**, which were
+added for it: the mutant returns identical rows and is merely slower, so no answer test can see the
+half of this change whose loss is worst. `floor-removed` fails NINE tests, the same count GQL
+records for omitting its own floor.
+
+**`wider-than-scan-dropped` survived even after a test was written for it, and the test was not the
+problem — my reasoning was.** GQL's twin opens with a `count > scan` refusal (item 176's rule) and
+this copy does not need it:
+
+- with an EXACT alternative, `scan` is that candidate's count, so the guard fires only for
+  `count > exact.count` — which the later `exact.count < best.count` comparison already resolves
+  in the bucket's favour;
+- with no exact alternative, `scan` is the whole source, and a seek cannot return more elements
+  than exist, so the condition is unreachable.
+
+GQL needs it because `seedVertices` has no second comparison. Removed as dead code with the proof
+in its place (item 1313's rule: a dead guard reads as a live one), and the test kept with its
+comment corrected to say it pins the OUTCOME rather than the guard.
+
+### Verification
+
+`packages/gremlin` 1100 pass / 0 fail (1079 before, +21 in `executor/seek-gate.test.ts`),
+`packages/gql` 3359 / 0 unchanged. All seven byte-identity fuzzers 13 pass / 0 fail. Gates as
+separate commands with exit codes read unpiped: `bun run typecheck` 0, `bun run lint` 0, `bun run
+fmt` 0 AND verified idempotent by hashing `git diff` across a second run, `bun run check
+--skip-nx-cache` 0.
+
+The boundary pair is the assertion worth keeping if only one could be: `lt(11)` admitted at ~12.2%
+and `lt(12)` refused at ~13.3% pins the 1/8 fraction exactly, so a change to `SEEK_MAX_FRACTION`
+cannot drift silently.
+
+### Open from the probe that found this
+
+**`two-hop-count` with GQL 1.84x SLOWER than Gremlin** (18.17 ms against 9.85) — the other
+direction, unexamined, its own item. The cross-surface probe that found both is worth re-running
+whenever either planner changes.

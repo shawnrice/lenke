@@ -2,7 +2,7 @@ import type { Edge, Graph, Vertex } from '@lenke/core';
 
 import type { Plan, Predicate, Step } from '../ast.js';
 import { matches } from '../predicates.js';
-import { seedForStep } from './index-seed.js';
+import { seedForStep, seekWorthTaking } from './index-seed.js';
 
 /**
  * `g.…count()` answered from the graph's counters instead of by enumerating.
@@ -1142,7 +1142,10 @@ const filterChainCount = (mid: readonly Step[], graph: Graph): number | undefine
 
     const asHas = asHasFilter(step);
 
-    if (asHas === undefined || seedForStep(asHas, graph.vertexPropertyIndex) !== null) {
+    if (
+      asHas === undefined ||
+      seekWorthTaking(asHas, graph.vertexPropertyIndex, graph.verticesById.size)
+    ) {
       return undefined;
     }
 
@@ -1331,7 +1334,10 @@ const hopChainShape = (
 
     // A seekable `has` is the index's job, not this rung's — the same refusal the one-hop
     // rung makes, so the two cannot disagree about which shapes they take.
-    if (vf.kind === 'has' && seedForStep(vf, graph.vertexPropertyIndex) !== null) {
+    if (
+      vf.kind === 'has' &&
+      seekWorthTaking(vf, graph.vertexPropertyIndex, graph.verticesById.size)
+    ) {
       return undefined;
     }
 
@@ -1960,7 +1966,10 @@ const startFilteredHopCount = (mid: readonly Step[], graph: Graph): number | und
       return undefined;
     }
 
-    if (vf.kind === 'has' && seedForStep(vf, graph.vertexPropertyIndex) !== null) {
+    if (
+      vf.kind === 'has' &&
+      seekWorthTaking(vf, graph.vertexPropertyIndex, graph.verticesById.size)
+    ) {
       return undefined;
     }
 
@@ -2060,7 +2069,10 @@ const collectVertexFilters = (steps: readonly Step[], graph: Graph): VertexFilte
       return undefined;
     }
 
-    if (vf.kind === 'has' && seedForStep(vf, graph.vertexPropertyIndex) !== null) {
+    if (
+      vf.kind === 'has' &&
+      seekWorthTaking(vf, graph.vertexPropertyIndex, graph.verticesById.size)
+    ) {
       return undefined;
     }
 
@@ -2394,7 +2406,7 @@ const vertexStepCount = (step: Step, graph: Graph): number | undefined => {
  * rather than throwing.)
  */
 const propertyCount = (step: Extract<Step, { kind: 'has' }>, graph: Graph): number | undefined => {
-  if (seedForStep(step, graph.vertexPropertyIndex) !== null) {
+  if (seekWorthTaking(step, graph.vertexPropertyIndex, graph.verticesById.size)) {
     return undefined;
   }
 
