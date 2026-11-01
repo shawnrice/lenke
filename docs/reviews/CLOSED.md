@@ -44822,3 +44822,70 @@ and the measured prize does not justify touching them.
 **`keyed-dedup-probe.ts` is committed with this item** so the next attempt inherits the instrument
 rather than rebuilding it — including the per-process estimator, the null-control arm, the
 `all-inline` discriminator, and a fixture that asserts its own match count.
+
+## 1321 — the filtered-count family's 40-85x against native is the LAYOUT FLOOR, measured linear, and my own "superlinear" reading was the harness
+
+No speedup, and no lever. Item 573 records that a big TS/native ratio may be ALGORITHMIC rather
+than the layout ceiling, so the largest remaining ratios in `bench:gremlin` were checked instead of
+attributed. They are the ceiling.
+
+`bench:gremlin` at 200,000 vertices / 1,000,000 edges, `BENCH_ENGINES=ts`, all 23 rows answering
+`same` (a clean regression pass over items 1315-1320):
+
+```text
+  V().has().has().count()          3.6    0.04    85.2x
+  V().has(age,gt).count()          2.7    0.04    61.5x
+  V().hasLabel().has().count()     2.3    0.04    58.3x
+  V().out().out().out().count()  275.0    4.91    56.0x
+  V().out().has().count()         41.9    0.85    49.4x
+  V().out()x4.count()            284.3    6.58    43.2x
+  V().out() [bare]               186.3  332.43     0.6x   <- TS is FASTER here
+```
+
+### Linear, so there is nothing to take
+
+One case and one size PER PROCESS, 9 reps, median:
+
+```text
+  case                   ns/vertex at 25k / 100k / 400k      trend 25k->400k
+  V().count() [CTL]      0.2   0.1   0.0                     0.0x
+  has(age,gt).count()   13.2   4.7  13.7                     1.0x
+  hasLabel.has.count()  12.4   5.3  12.6                     1.0x
+  has.has.count()       36.2  19.1  43.7                     1.2x
+```
+
+Flat per-vertex cost across a 16x size range, so the filtered count is LINEAR in N and the 40-85x
+is a constant factor: ~13 ns/vertex for one `has`, ~36-44 for two, against a native column scan
+that answers 200,000 vertices in 0.04 ms and so plainly is not scanning per-element at all. Item
+573's caution is now CHECKED for this family rather than assumed, and the filed explanation holds.
+
+### 🛑 My first sweep said SUPERLINEAR, and that was the harness
+
+The first cut ran every case and every size in ONE process and reported `hasLabel.has.count()`
+rising 3.8 -> 24.8 ns/vertex, a 6.5x per-vertex climb, which I wrote up as a possible algorithmic
+lever. It is not real.
+
+**What caught it was an internal contradiction, not a second opinion.** `dropVacuousLabels` fires
+for an all-`P` fixture — verified, `effective=["V","has","count"]` at both 25k and 400k — so
+`hasLabel.has.count()` and `has(age,gt).count()` are THE SAME PLAN. One cannot scale flat while the
+other climbs. Two trends for one plan means at least one is the instrument, and re-run one-per-
+process they agree to within noise (12.4/5.3/12.6 against 13.2/4.7/13.7).
+
+This is item 1320's own lesson — one shape per PROCESS, because rounds in a shared process warm
+unequally — applied two items later to a sweep I had just built, and missed. It is recorded here
+because the failure mode is not "noisy numbers": it is a clean, monotonic, plausible trend that
+invites exactly the wrong conclusion.
+
+A second artifact from the same cut, for completeness: comparing the two spellings inside one
+process gave `hasLabel+has` 2.28 ms against `has` 0.84 at 25k. Same plan, 2.7x apart, because the
+first call of the pair paid the cold cost. No warm-up, no comparison.
+
+### What is left in that table, and why it is not a target
+
+`V().out() [bare]` is the row worth remembering: TS is 0.6x — FASTER than native — because the
+traversal returns elements rather than a count, so FFI marshalling dominates. The hop itself is not
+where TS loses.
+
+`has.has.count()` costs ~36-44 ns/vertex where one `has` costs ~13, so a second predicate adds more
+than the first. That is the same `props`-evaluation family item 1320 established has no clean lever
+(five refutations, one of them harmful), so it is not reopened here.
