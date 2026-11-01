@@ -20,7 +20,20 @@ import { describe, expect, test } from 'bun:test';
 import { Graph } from '@lenke/core';
 
 import { run, toArray } from '../executor.js';
-import { E, V, count, dedupe, has, hasId, hasLabel, limit, out, values } from '../steps.js';
+import {
+  E,
+  V,
+  both,
+  count,
+  dedupe,
+  has,
+  hasId,
+  hasLabel,
+  in_,
+  limit,
+  out,
+  values,
+} from '../steps.js';
 import { traversal } from '../traversal.js';
 import { seedFromIndex } from './index-seed.js';
 
@@ -185,10 +198,82 @@ describe('the multi-id DECLINE, which is about order', () => {
     }
   });
 
-  test('a HOP after the ids is not admitted yet — priced at 213x, its own item', () => {
+  test('a SINGLE HOP before the count is admitted (item 1318)', () => {
+    // Sound because applying a hop elementwise sums each element's own neighbours, so the result
+    // multiset is the sum over the input multiset and does not depend on the input's ORDER.
     const g = build();
 
-    expect(seedFromIndex(traversal(V(), hasId('c', 'a'), out('R'), count()), g, false)).toBeNull();
+    for (const hop of [out('R'), in_('R'), both('R')]) {
+      expect(seedFromIndex(traversal(V(), hasId('c', 'a'), hop, count()), g, false)).not.toBeNull();
+    }
+  });
+
+  test('a hop then a WINDOW still declines — the window reads the sequence', () => {
+    const g = build();
+
+    expect(seedFromIndex(traversal(V(), hasId('c', 'a'), out('R'), limit(1)), g, false)).toBeNull();
+  });
+
+  test('a hop then a dedupe is NOT admitted — sound but unmeasured', () => {
+    // The list only grows on evidence; `[hop, dedupe, count]` has none yet.
+    const g = build();
+
+    expect(
+      seedFromIndex(traversal(V(), hasId('c', 'a'), out('R'), dedupe(), count()), g, false),
+    ).toBeNull();
+  });
+
+  test('the seeded hop count agrees with the scanned one on every shape', () => {
+    // The equivalence the admission rests on, checked rather than argued.
+    const g = build();
+
+    for (const step of [out('R'), in_('R'), both('R')]) {
+      const multi = Number(toArray(traversal(V(), hasId('c', 'a'), step, count()), g)[0]);
+      // The same question asked two ways: one id at a time, summed, must equal the pair.
+      const apart =
+        Number(toArray(traversal(V(), hasId('c'), step, count()), g)[0]) +
+        Number(toArray(traversal(V(), hasId('a'), step, count()), g)[0]);
+
+      expect(multi).toBe(apart);
+    }
+  });
+});
+
+describe('item 1317 generalized to the EDGE source, which item 1318 puts under test', () => {
+  // `idSeed` is generic and `seedFromIndex` calls `seedRest<Edge>` for `E()`, so the order-free
+  // multi-id admission reached edges with no extra code. That was UNTESTED coverage rather than a
+  // feature until this item — found by probing it instead of assuming the generic path worked.
+  //
+  //   E().hasId('e137').count()                      0.01508 ms   (item 1306)
+  //   E().hasId('e137','e9000','e4242').count()      0.01777     already seeded
+  //   E().hasId('e137','e9000','e4242')              6.61027     correctly still declined
+
+  test('an order-free tail admits the multi-id EDGE seed', () => {
+    const g = build();
+    const seeded = seedFromIndex(traversal(E(), hasId('e1', 'e2'), count()), g, false);
+
+    expect(seeded).not.toBeNull();
+    expect(seeded?.steps.map((s) => s.kind)).toEqual(['count']);
+  });
+
+  test('the bare multi-id EDGE form is still declined, like its vertex twin', () => {
+    const g = build();
+
+    expect(seedFromIndex(traversal(E(), hasId('e1', 'e2')), g, false)).toBeNull();
+  });
+
+  test('a seeded multi-id edge count agrees with the scanned one', () => {
+    const g = build();
+
+    for (const [arg, want] of [
+      [['e1', 'e2'], 2],
+      [['e2', 'e1'], 2],
+      [['e1', 'e1'], 1],
+      [['e1', 'nope'], 1],
+      [['nope'], 0],
+    ] as const) {
+      expect(Number(toArray(traversal(E(), hasId(...arg), count()), g)[0])).toBe(want);
+    }
   });
 
   test('the single-id path cannot disturb order, which is why it is allowed', () => {

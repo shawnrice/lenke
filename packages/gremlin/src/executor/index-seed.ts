@@ -329,11 +329,29 @@ const labelSeed = <E>(
  * floating point. `min`/`max` would be safe but are not in either measured shape, so they are not
  * admitted on a guess.
  *
- * A tail like `[out, count]` is also order-free on the same reasoning and is NOT admitted here:
- * it is priced (item 1317 measured it at 213x) and left for its own item, because "any hop then a
- * count" is a broader claim than either caller has evidence for.
+ * A SINGLE HOP before the count is admitted at item 1318, and the argument is one line: applying
+ * a hop elementwise sums each element's own neighbours, so the result multiset is the sum over the
+ * input multiset and does not depend on the input's ORDER. `count` then reads that multiset. This
+ * holds for both callers' premises — multiset-equal is enough, which is why the union caller can
+ * ride it too.
+ *
+ * Measured per hop rather than as a family, item 1318, 200,000 vertices, against the single-id
+ * seed that already feeds a hop at 0.0108 ms:
+ *
+ *     hasId(3 ids).out(T).count()    6.64524 ms   616x
+ *     hasId(3 ids).in(T).count()     4.11208      381x
+ *     hasId(3 ids).both(T).count()   3.96934      368x
+ *
+ * `[hop, dedupe, count]` is NOT admitted. It would be sound by the same reasoning, but it is
+ * unmeasured and this list only ever grows on evidence.
  */
-const ORDER_FREE_TAILS: readonly (readonly Step['kind'][])[] = [['count'], ['dedupe', 'count']];
+const ORDER_FREE_TAILS: readonly (readonly Step['kind'][])[] = [
+  ['count'],
+  ['dedupe', 'count'],
+  ['out', 'count'],
+  ['in', 'count'],
+  ['both', 'count'],
+];
 
 /**
  * Does the run of `steps` starting at `from` match an order-free tail?

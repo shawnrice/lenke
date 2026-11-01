@@ -44529,12 +44529,14 @@ and each would look authoritative. The premises are NOT interchangeable and the 
 `tailIsOrderFreeFrom(steps, from)` takes an index rather than a slice because `seedRest` asks the
 question once per leading filter of every traversal. Structural, not a measured win.
 
-### `[out, count]` is priced and NOT admitted: 213x
+### ~~`[out, count]` is priced and NOT admitted: 213x~~ — BUILT at item 1318
 
-The same reasoning extends to a hop before the count, and it is deliberately left out. "Any hop
-then a count" is a broader claim than either caller has evidence for, and `ids-out-count` serves
-as a CONTROL in the A/B above precisely because it is not admitted. Measured at 213x against the
-seeded single id, with its own decline test. Its own item.
+**All three hop tails were admitted at item 1318** (195x / 197x / 146x), with the evidence this
+entry asked for: measured per hop rather than as a family. It also turned up an 8.28x win on the
+OTHER caller of the shared list, and found that item 1317 had generalized to the EDGE source
+silently. The original note read: "any hop then a count" is a broader claim than either caller has
+evidence for, and `ids-out-count` serves as a CONTROL in the A/B above precisely because it is not
+admitted.
 
 ### Teeth: 6 mutants, and one survivor was a VACUOUS MUTANT, not a gap
 
@@ -44586,3 +44588,114 @@ on a plan with a `count()` tail — the exact shape this item admits. Its SECOND
 untouched, which is what shows the `count()` was incidental scaffolding rather than the
 contract. The decline assertion now points at an order-OBSERVABLE plan, which is what the test's
 own name describes, and a `limit(1)` decline case was added beside it.
+
+## 1318 — a single HOP before the count joins the order-free tails: 195x, 197x, 146x — and 8.28x on the OTHER caller
+
+Item 1317 priced `[out, count]` at 213x and declined it, because "any hop then a count" was a
+broader claim than the evidence supported. This is that evidence, measured per hop rather than as
+a family.
+
+The argument is one line: applying a hop elementwise sums each element's own neighbours, so the
+result multiset is the sum over the input multiset and does not depend on the input's ORDER.
+`count` then reads that multiset. This holds on BOTH callers' premises — multiset-equal is enough,
+which is why the union caller rides it too.
+
+### Measured
+
+A/B against HEAD, one file, three order-alternated rounds, min of rounds, 200,000 vertices:
+
+```text
+  arm                      PRE ms      POST ms     speedup  rows
+  ids-out-count           5.93032      0.03046     194.69x  rows=1
+  ids-in-count            5.99662      0.03046     196.87x  rows=1
+  ids-both-count          5.99768      0.04112     145.86x  rows=1
+  union-hop-count       211.15580     25.50156       8.28x  rows=1
+  one-id-out-count        0.02845      0.02502       1.14x  rows=1  [CONTROL]
+  ids-plain               5.89176      3.57668       1.65x  rows=3  [CONTROL]  <- MOVED
+  ids-out-limit           0.46695      0.56878       0.82x  rows=2  [CONTROL]  <- MOVED
+  ctl-prop-count          2.07829      2.00873       1.03x  rows=1  [CONTROL]
+```
+
+**`union-hop-count` is an UNPLANNED SECOND WIN and was predicted before it was measured.** The
+three entries go into the list SHARED with `fuseUnionBoth`, so that caller newly fuses a union
+with a hop before a count: 211.16 -> 25.50 ms. It was put in the A/B as its own arm rather than
+folded into the headline, because a win on a shape the item was not targeting is a different
+claim.
+
+### The two moved controls are NOISE, and `min` is why
+
+Both were re-measured on their own at SIX rounds, one shape per process:
+
+```text
+  ids-plain        median 6.090 -> 6.215 = 0.98x    min 6.008 -> 5.921 = 1.01x   ranges overlap
+  ids-out-limit    median 0.573 -> 0.581 = 0.99x    min 0.532 -> 0.431 = 1.23x   ranges overlap
+```
+
+`ids-out-limit` **flipped sign** between runs — 0.82x then 1.23x — and a real effect does not
+change direction. `min`-of-rounds is the culprit: on a sub-millisecond arm it picks the luckiest
+rep of six, which is why the min reads 1.23x where the median reads 0.99x. CLAUDE.md's warning
+about `min` on the TS path, reproduced from the other side.
+
+There is also a structural reason it had to be noise, and it is worth stating because it was NOT
+treated as sufficient on its own: for both arms PRE and POST execute the same code — both decline
+— so the only difference is iterating a 5-entry array instead of a 2-entry one, once per query.
+That cannot cost 2.3 ms on a 200,000-vertex scan. The reasoning was right this time; it was still
+checked, because two plausible explanations died on contact with a measurement earlier in this run
+(the generator-creation hypothesis at item 1316 and the allocation hypothesis at item 1317).
+
+### Item 1317 had generalized to the EDGE source, silently
+
+`idSeed` is generic and `seedFromIndex` calls `seedRest<Edge>` for `E()`, so item 1317's order-free
+multi-id admission reached edges with no extra code:
+
+```text
+  E().hasId('e137').count()                   0.01508 ms   (item 1306)
+  E().hasId('e137','e9000','e4242').count()   0.01777      already seeded
+  E().hasId('e137','e9000','e4242')           6.61027      correctly still declined
+```
+
+That was shipped coverage with no test naming it — found by PROBING the generic path rather than
+assuming it worked. Three tests now cover it: the admission, the bare-form decline, and agreement
+across a reordered list, a duplicate, a miss and an all-miss.
+
+### Two declines shipped WITH the admission
+
+- `[hop, window]` — declined because a window reads the SEQUENCE. Unsound for both callers, so
+  both now guard it.
+- `[hop, dedupe, count]` — declined because it is UNMEASURED. It would be sound; the list only
+  ever grows on evidence.
+
+### Teeth: 5 mutants, 5 caught, and the per-file attribution did real work
+
+```text
+  hop-tails-unwired         CAUGHT  2 fail   in: id-seed.test.ts AND union-both-fusion.test.ts
+  out-tail-only             CAUGHT  1 fail   in: id-seed.test.ts
+  hop-then-window-admitted  CAUGHT  2 fail   in: id-seed.test.ts AND union-both-fusion.test.ts
+  hop-then-dedupe-admitted  CAUGHT  1 fail   in: id-seed.test.ts
+  wrong-hop-kind            CAUGHT  2 fail   in: id-seed.test.ts AND union-both-fusion.test.ts
+```
+
+The harness now reports WHICH test files catch each mutant, because item 1317 found a shared-list
+widening guarded from one side only. That reporting immediately earned itself twice.
+
+**First, it justified a route assertion added mid-item.** The union cases were AGREEMENT tests, and
+fusion is answer-equivalent — so `hop-tails-unwired` would have left every one of them green and
+merely 8.28x slower. The 211 -> 25.50 ms win had no route assertion at all. There is now one per
+caller, and this mutant failing in both files is that second assertion catching something.
+
+**Second, it exposed `hop-then-window-admitted` as caught on ONE side only**, because the windowed
+union case has tail `[take]` and never exercises a two-step windowed tail like `[out, take]`. A
+`union(out,in).out(T).limit(2)` guard was added, and the mutant re-run now fails in both files.
+
+`hop-then-dedupe-admitted` stays one-sided DELIBERATELY, and the distinction is the point:
+`[out, take]` is UNSOUND, so every caller must reject it and every caller should assert that.
+`[out, dedupe, count]` is SOUND but unmeasured, so the only thing to protect is the evidence rule,
+and one test does that. A second would be symmetry for its own sake.
+
+### Verification
+
+`packages/gremlin` 1079 pass / 0 fail (1069 before: +7 in `executor/id-seed.test.ts`, +3 in
+`executor/union-both-fusion.test.ts`). All seven byte-identity fuzzers 13 pass / 0 fail. Gates as
+separate commands with exit codes read unpiped: `bun run typecheck` 0, `bun run lint` 0, `bun run
+fmt` 0 AND verified idempotent by hashing `git diff` across a second run, `bun run check
+--skip-nx-cache` 0.

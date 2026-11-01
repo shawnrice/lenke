@@ -166,6 +166,20 @@ describe('the fused and unfused spellings answer identically under the tail', ()
       traversal(V(), both('T'), dedupe(), count()),
       traversal(V(), union(out('T'), in_('T')), dedupe(), count()),
     ],
+    // Item 1318 added `[hop, count]` to the shared `ORDER_FREE_TAILS`, so this caller newly
+    // fuses a union with a hop before the count. Sound on this caller's own premise: the two
+    // spellings are MULTISET-equal, and applying a hop elementwise sums each element's own
+    // neighbours, so the result multiset does not depend on the input's order.
+    [
+      'hop then count',
+      traversal(V(), both('T'), out('T'), count()),
+      traversal(V(), union(out('T'), in_('T')), out('T'), count()),
+    ],
+    [
+      'in-hop then count',
+      traversal(V(), both('T'), in_('T'), count()),
+      traversal(V(), union(out('T'), in_('T')), in_('T'), count()),
+    ],
   ];
 
   for (const [name, short, long] of PAIRS) {
@@ -175,6 +189,26 @@ describe('the fused and unfused spellings answer identically under the tail', ()
       expect(toArray(long, g)).toEqual(toArray(short, g));
     });
   }
+
+  test('a union with a HOP before the count IS fused — the route, not just the answer', () => {
+    // The agreement cases above cannot see this: fusion is answer-equivalent, so unwiring it
+    // leaves them all green and only 8.28x slower. Measured 211.16 -> 25.50 ms at item 1318,
+    // a win that arrived because `ORDER_FREE_TAILS` is shared with the multi-id seed.
+    const fused = fuseUnionBoth(traversal(V(), union(out('T'), in_('T')), out('T'), count()));
+
+    expect(fused.steps.map((s) => s.kind)).toEqual(['V', 'both', 'out', 'count']);
+  });
+
+  test('a union with a HOP then a WINDOW is NOT fused either', () => {
+    // Guards the shared list from THIS side for a hop-length tail. Mutation showed that adding
+    // `['out', 'take']` to `ORDER_FREE_TAILS` was caught only by the id-seed tests, because the
+    // windowed case below has tail `[take]` and never exercises a two-step windowed tail. The
+    // list is protected either way, but this caller's own behaviour under such a widening was
+    // not asserted.
+    const windowed = traversal(V(), union(out('T'), in_('T')), out('T'), limit(2));
+
+    expect(fuseUnionBoth(windowed).steps.map((s) => s.kind)).toEqual(['V', 'union', 'out', 'take']);
+  });
 
   test('a WINDOWED union is NOT fused — the shared order-free list must reject `take`', () => {
     // `ORDER_FREE_TAILS` lives in `index-seed.ts` since item 1317 and is shared with the
