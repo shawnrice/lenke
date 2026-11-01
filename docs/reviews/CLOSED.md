@@ -46106,3 +46106,63 @@ Two sites were considered and NOT tried, with reasons:
 
 `packages/gql` 3,432 pass / 0 fail with the revert in place. `typecheck` 0, `lint` 0, `fmt:check` 0,
 `check --skip-nx-cache` 0.
+
+## 1336 — ✅ the session's REGRESSION PASS, with a real before/after: reads **1.14-1.33x**, no regression, and TWO phantom write regressions refuted
+
+Six items shipped since `bc035b6b` (1329, 1330, 1331, 1332, 1333, 1334) and the per-operation
+bench had not been run. Item 1276 is on record for running its sweep AFTER its changes with no
+same-session baseline, so this one builds the pre-session commit in a WORKTREE and runs the
+identical `bench:usage` there — a genuine diff rather than "no row is out of line with what is
+written down".
+
+### The serving rows moved the way the items predicted
+
+Indexed column, operations per second, higher is better:
+
+```text
+  workload                              bc035b6b      after     ratio
+  read: 2-hop recommendation               438.1k     551.3k    1.26x
+  interleaved: write + point read          254.8k     338.4k    1.33x
+  read: permission check                   420.7k     482.3k    1.15x
+  read: keyed dedup lookup [inline]         59.1k      67.2k    1.14x
+  read: keyed dedup lookup                  75.4k      84.0k    1.11x
+  read: permission check (inline anchor)   436.7k     476.7k    1.09x
+  write: 100 updates in one transaction    353.4k     387.1k    1.10x
+  read: point lookup                        1.02M      1.03M    1.01x   <- the O(1) control
+  analytic: cycle detection 2-4 hops       218.1k     230.4k    1.06x
+  analytic: fan-out spread 1-3 hops        177.3k     168.4k    0.95x
+```
+
+`read: 2-hop recommendation` at 1.26x is item 1334's degree-product change arriving on a serving
+row, and `read: point lookup` flat at 1.01x is the invariant item 1326 guards, unmoved by six
+planner changes.
+
+### ⚠️ TWO WRITE ROWS READ AS REGRESSIONS IN THE SWEEP AND ARE REFUTED IN ISOLATION
+
+```text
+  row                        sweep    isolated (3 rounds, medians)
+  write: append node         0.86x    150.9k -> 173.2k   1.15x FASTER
+  write: append then delete  0.76x    369.7k -> 365.7k   0.99x FLAT
+```
+
+Every change this session is read-path planner work — nothing touches `addVertex` or delete — so a
+24% write regression was implausible, and two signs said noise before the re-measurement: the
+UNINDEXED column barely moved on those same rows (0.98x, 0.95x) and `append node [params]` was flat
+at 1.00x.
+
+**The noise is visible once the row is isolated**: the baseline's own three readings for
+`write: append node` were 132.9k / 150.9k / 174.8k — a **1.32x spread for identical code**. That is
+the floor CLAUDE.md records ("some rows range 2x for the same binary"), and it is why in-sweep write
+rows manufacture phantom regressions — items 737 and 1130's pattern, one family along.
+
+So the rule earns another instance: **a sweep row is a screening instrument, and anything it flags
+gets its own isolated A/B before it is believed in either direction.** `BENCH_ONLY=<substring>` is
+what makes that cheap, and it is the second time this session that isolating a row reversed the
+sign of its reading (item 1332 was the first, where a single in-group reading would have claimed a
+1.75x win for a spelling that compiles to the same step).
+
+### Verification
+
+No code changed in this item. `bench:usage` baseline built in a worktree at `bc035b6b` with its own
+`bun install` + `bun run build`, since a fresh worktree resolves `@lenke/*` to dist. The worktree is
+removed and the tree is clean.
