@@ -4368,7 +4368,7 @@ const patternCountOf = <T>(
   // for a start pinned to a handful of elements that is 1550x the two-segment form of the same
   // question. See {@link startIsPinnedById}.
   if (sweepableSegmentCount(segments, cstart) === 3) {
-    const swept = endGatedChainCount(start, segments, where, rowOf);
+    const swept = endGatedChainCount(start, segments, where, rowOf, cstart);
 
     if (swept !== null) {
       return swept;
@@ -4622,7 +4622,7 @@ const patternCountOf = <T>(
       return null;
     }
 
-    return longChainCount(start, segments, rowOf, clauseGates);
+    return longChainCount(start, segments, rowOf, clauseGates, cstart);
   }
 
   return null;
@@ -4678,6 +4678,8 @@ const endGatedChainCount = <T>(
   segments: readonly Segment[],
   where: Expr | undefined,
   rowOf: (n: number) => T,
+  /** Forwarded to the sweep so it can seed its start set from an index (item 1330). */
+  cstart?: CNode,
 ): CountOf<T> | null => {
   const endNode = segments[segments.length - 1].node;
   const clauses = where === undefined ? undefined : chainGatesOf(where, start, segments);
@@ -4702,7 +4704,7 @@ const endGatedChainCount = <T>(
 
   // `null` from the sweep is it declining on its own terms (a shared node variable, a bound edge,
   // an undirected hop, an OPEN constraint), and the products below still get their chance.
-  return longChainCount(start, segments, rowOf, clauses ?? undefined);
+  return longChainCount(start, segments, rowOf, clauses ?? undefined, cstart);
 };
 
 /**
@@ -4807,6 +4809,12 @@ const longChainCount = <T>(
   rowOf: (n: number) => T,
   /** Clause-`WHERE` conjuncts bucketed by the node variable each one reads (item 305). */
   clauseGates?: ReadonlyMap<string, Expr[]>,
+  /**
+   * The compiled START node, carried ONLY so the sweep can seed its start set from an index
+   * (item 1330). It is not consulted for anything else, and when the seek is not worth making
+   * the sweep enumerates the label bucket exactly as before.
+   */
+  cstart?: CNode,
 ): CountOf<T> | null => {
   // `both` USED TO DECLINE HERE (item 1097). Measured at 60,000 vertices x degree 3:
   // `(a:P)-[:T]-(b)-[:T]-(c)-[:T]-(d) WHERE a.age > 60` **2420.76 ms** against the directed twin's
@@ -4944,7 +4952,25 @@ const longChainCount = <T>(
         ? reversed
         : forward;
 
-    return rowOf(sweepChain({ graph, params, ...pick }));
+    // A SEEDED START AND A FLIPPED READING CANNOT CO-OCCUR, so this is unconditional and the
+    // `pick === forward` guard it replaced was DEAD CODE. The proof is two lines above and one
+    // below: `labelMayFlip` requires `allGates[0] === undefined` — no constraint on the start —
+    // while `sweepStartSeed` returns a set only when the start HAS one, inline or clause. So
+    // `reversed` is `undefined` exactly when a seed is possible, and `pick` is already `forward`.
+    //
+    // Found by mutation, not by reading: `seeds-flipped-reading-too` survived three passes, which
+    // looked like a coverage gap and was twice treated as one. It is answer-equivalent in every
+    // REACHABLE state, so no test can kill it. Confirmed by making the impossible state throw and
+    // running the suite — 3,390 tests over 207 files, no throw — before deleting the branch.
+    //
+    // The guard's reasoning was still right and is kept, because it becomes live the moment the
+    // flip is priced: `pick` chooses by comparing LABEL BUCKET sizes, which knows nothing about
+    // how selective a seed would be. Items 172 and 173 are that same mistake one family along,
+    // where `orient` reversed away from a selective start. Anyone making the flip seed-aware must
+    // re-introduce a guard here, or seed a reading that was chosen for the wrong reason.
+    const startSource = sweepStartSeed(graph, params, cstart, pick.startLabel);
+
+    return rowOf(sweepChain({ graph, params, ...pick, startSource }));
   };
 };
 
@@ -4993,6 +5019,63 @@ type Sweep = {
   legs: readonly Leg[];
   startLabel: LabelExpr | undefined;
   startGate: InlinePred | undefined;
+  /**
+   * The START set, when an index seek beat the label bucket (item 1330). `undefined` means the
+   * sweep enumerates the bucket exactly as it always has, so the unindexed path is untouched.
+   */
+  startSource?: ReadonlySet<Vertex>;
+};
+
+/**
+ * Item 1330: the sweep's START source — an index seek when one is available AND selective, else
+ * `undefined` so the caller keeps the label bucket.
+ *
+ * The depth ladder that found this: an INDEXED `a.k = 7` start is seeded at 0, 1 and 2 hops
+ * (0.005-0.007 ms at 200,000 vertices) and then costs 5.63 ms at three and 5.73 at four, because
+ * the chain rungs hand the whole label bucket to the sweep and let `startGate` filter it. The id
+ * pin reads 0.038 at the same depth.
+ *
+ * WHY THIS IS A RUN-TIME DECISION AND NOT A COMPILE-TIME DECLINE. Item 1329 fixed the id-pinned
+ * twin by declining the rung outright, which works because an id hint is selective on every
+ * graph. A property hint is not: whether `k` is indexed is a property of the GRAPH, and plans are
+ * cached across graphs, so a compile-time decline would have to assume. Measured what assuming
+ * costs — admitting `eq` to item 1329's pin and declining unconditionally:
+ *
+ *     prop3 with an index      5.4341 -> 0.0380 ms   143x FASTER
+ *     prop3 with NO index      5.6257 -> 16.5443      0.34x, a 2.9x REGRESSION
+ *
+ * So the indexed column alone would have shipped a regression. Seeding the sweep instead keeps
+ * both: a seek when there is one to make, and byte-for-byte today's enumeration when there is not.
+ *
+ * `seedVertices` is not used despite doing the same choosing, for the reason recorded at the
+ * `seeded` site above: it hides WHETHER it seeded, and here the difference is exactly what the
+ * caller needs. The ceiling itself is NOT duplicated — `seekIsWorthIt` is the shared rule, which
+ * is what item 407's drift was about.
+ */
+const sweepStartSeed = (
+  graph: Graph,
+  params: Params,
+  cstart: CNode | undefined,
+  startLabel: LabelExpr | undefined,
+): ReadonlySet<Vertex> | undefined => {
+  if (cstart === undefined) {
+    return undefined;
+  }
+
+  const env: EvalEnv = { binding: new Map(), params, graph };
+  let best: SeedCandidate | undefined;
+
+  for (const candidate of indexCandidates(graph, cstart, env)) {
+    if (!best || candidate.count < best.count) {
+      best = candidate;
+    }
+  }
+
+  if (!best || !seekIsWorthIt(graph, startLabel, best.count)) {
+    return undefined;
+  }
+
+  return best.build();
 };
 
 /**
@@ -5230,7 +5313,7 @@ const sameLegTypes = (a: string[] | undefined, b: string[] | undefined): boolean
     ? a === b
     : a.length === b.length && a.every((t, i) => t === b[i]);
 
-const sweepChain = ({ graph, params, legs, startLabel, startGate }: Sweep): number => {
+const sweepChain = ({ graph, params, legs, startLabel, startGate, startSource }: Sweep): number => {
   const slotOf = new Map<string, number>();
   // Reused across every gate evaluation: `inlineHolds` binds the node's own variable into it, and
   // an inline constraint is proved element-local by `inlineOf` before it is carried, so nothing
@@ -5258,7 +5341,7 @@ const sweepChain = ({ graph, params, legs, startLabel, startGate }: Sweep): numb
   let ways = new Float64Array(cap);
   let frontier: number[] = [];
 
-  for (const v of candidateVertexSource(graph, startLabel)) {
+  for (const v of startSource ?? candidateVertexSource(graph, startLabel)) {
     if (!matchesLabel(v, startLabel) || !inlineHolds(startGate, v, binding, params, graph)) {
       continue;
     }

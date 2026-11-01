@@ -208,13 +208,37 @@ describe('the guard predicate itself', () => {
     expect(startIsPinnedById(hints(['id']))).toBe(true);
     expect(startIsPinnedById(hints(['idIn']))).toBe(true);
     // item 1315's list form must be covered as well as item 618's single id.
-    expect(startIsPinnedById(hints(['equals', 'idIn']))).toBe(true);
+    expect(startIsPinnedById(hints(['eq', 'idIn']))).toBe(true);
   });
 
+  /**
+   * EVERY kind here is spelled as `CSeedHint` actually spells it, and that is the point. The first
+   * version of this test asserted over `'equals'`, which is NOT a hint kind — the real one is
+   * `'eq'` — so it asserted that an invented string does not pin, which is true of every string
+   * and tells you nothing about the property hint. A test over a misspelled enum member is the
+   * same vacuity this whole item was about, and it passed just as happily.
+   */
   test('a property, range or edge-end seed does NOT pin', () => {
-    expect(startIsPinnedById(hints(['equals']))).toBe(false);
+    expect(startIsPinnedById(hints(['eq']))).toBe(false);
     expect(startIsPinnedById(hints(['range', 'within']))).toBe(false);
-    expect(startIsPinnedById(hints(['edgeEnd']))).toBe(false);
+    expect(startIsPinnedById(hints(['edgeEnd', 'edgeEndIn']))).toBe(false);
+  });
+
+  test('the kind list is exhaustive, so a NEW hint kind cannot be forgotten here', () => {
+    // If a kind is added to `CSeedHint`, it belongs in exactly one of these two lists. Keeping
+    // them side by side is what makes an omission visible rather than silently non-pinning.
+    const pins = ['id', 'idIn'];
+    const doesNot = ['eq', 'within', 'range', 'edgeEnd', 'edgeEndIn'];
+
+    for (const k of pins) {
+      expect(startIsPinnedById(hints([k]))).toBe(true);
+    }
+
+    for (const k of doesNot) {
+      expect(startIsPinnedById(hints([k]))).toBe(false);
+    }
+
+    expect(pins.length + doesNot.length).toBe(7);
   });
 
   test('no hints at all, and no node at all, do not pin', () => {
