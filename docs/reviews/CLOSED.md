@@ -45022,3 +45022,59 @@ cannot drift silently.
 **`two-hop-count` with GQL 1.84x SLOWER than Gremlin** (18.17 ms against 9.85) — the other
 direction, unexamined, its own item. The cross-surface probe that found both is worth re-running
 whenever either planner changes.
+
+## 1323 — the 2-hop count's "5.2x degree-product floor" DOES NOT EXIST: my floor warmed the memo item 355 warns about
+
+No change. Item 1322's cross-surface probe left `two-hop-count` open with GQL 1.84x SLOWER than
+Gremlin (18.33 ms against 10.44), so a degree-product route was priced. The price was wrong twice
+over and the recorded answer was already in the file being optimized.
+
+```text
+  GQL   2-hop count     18.328 ms   -> 199998
+  Grm   2-hop count     10.438      -> 199998
+  "FLOOR" degree product 3.512      -> 199998      <- INVALID, see below
+```
+
+### The degree product ALREADY EXISTS and already fires
+
+`productCountOf` / `twoHopSide` answer `(a)-[:T1]->(b)-[:T2]->(c)` as `Σ_b (edges reaching a valid
+a) × (edges reaching a valid c)`, with a three-segment sibling beside it. The admission is "both
+rels anonymous + directed and the node variables distinct", which the measured query satisfies. So
+there was no missing rung to add — the question was only why the existing one costs 18 ms.
+
+### 🛑 Why the 3.512 ms floor is not a floor
+
+**It ignored EDGE-TYPE filtering.** `twoHopSide` counts edges "of `types`" whose far endpoint
+matches, where the hand-written floor read `adjTo.size × adjFrom.size`. The fixture carries ONE
+edge type, so type filtering was free in it and is not free in general — a typed degree needs
+either a per-type adjacency count or a scan. "Match the fixture to the claim."
+
+**And it warmed a MEMO, which item 355 documents in this exact function.** That item already
+measured the same lookup — passing the `Vertex` so the first read is `v.adjFrom` (item 321's
+adjacency box) instead of hashing an id into a 200,000-entry Map — and REJECTED it:
+
+```text
+  vertex in hand, today   (v.id -> 200k map)     first 203.4   warm 171.3
+  vertex in hand, box     (v.adjFrom)            first 247.0   warm 127.1
+```
+
+The box is **1.21x WORSE on first touch** (it pays the same hash AND the memo write) and 1.35x
+better warm — and **five of the six sites visit each vertex exactly ONCE per query**, so first
+touch is the case that matters. Item 355's own note names the trap: _"the box memoizes, so any
+variant that touches it warms the box for every variant measured after it — the first version of
+this probe had exactly that defect."_
+
+The floor measured here had that defect: 20 reps on ONE graph, median of the warm half. It measured
+the warmed memo, not what a query pays. Corrected, the "floor" is SLOWER than what ships.
+
+**Third time in this run that warming inverted a reading** — item 1320 (rounds in one process
+flipped a 2.5x sign), item 1321 (a shared-process sweep produced a clean monotonic "superlinear"
+trend), and now a memoizing field. The tell differs each time; the cure does not: one shape per
+process, on a FRESH fixture, and read the distribution.
+
+### What stays open
+
+**`two-hop-count`, GQL 1.84x slower than Gremlin** (18.33 against 10.44, same answer). Both
+enumerate ~200,000 paths — 92 ns/path against 52 — so this is a per-path constant factor inside
+two different implementations of one question, not a missing route. Unexplained, priced, and NOT a
+degree-product problem. `surface-parity-probe.ts` watches it.
