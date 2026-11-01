@@ -46166,3 +46166,53 @@ sign of its reading (item 1332 was the first, where a single in-group reading wo
 No code changed in this item. `bench:usage` baseline built in a worktree at `bc035b6b` with its own
 `bun install` + `bun run build`, since a fresh worktree resolves `@lenke/*` to dist. The worktree is
 removed and the tree is clean.
+
+## 1337 — ✅ item 801's open question ANSWERED by in-situ ablation: the whole filtered-count gap is `inlineHolds` per vertex, and the ceiling is **2.23x** — BELOW Gremlin, not level with it
+
+Item 801 priced the TS filtered node count at ~2.1x Gremlin (re-priced ~1.71-1.85x at 929) and
+diagnosed it as INSIDE `buildNodeCount`'s tally, at the per-vertex `inlineHolds` -> `satisfies`
+call. It then said what to do next: **"Next step is a COMPARISON, not a change."** Item 802 tried
+that by micro-benchmarking the scaffolding's parts and **refuted both halves** — recording the
+reason in its own title, "a part measured dearer than the whole is an instrument result". Item 803
+removed the one term it could isolate (the binding `Map` write, 1.11-1.34x).
+
+This is the comparison 801 asked for, done the way item 1105 prescribes when a micro-benchmark
+fails: ABLATE IN SITU. The tally's predicate call was replaced, behind an env flag, with the
+hardcoded predicate the bench asks (`v.properties.age > 45`) and the whole query timed.
+
+```text
+  through `inlineHolds`        3.78 / 3.89 / 3.84 ms   median 3.84
+  hardcoded predicate          1.72 / 1.81 / 1.72      median 1.72   2.23x
+  Gremlin's twin (reference)                            median 2.16
+```
+
+**The entire gap is in that one call, and the ceiling beats Gremlin rather than matching it**:
+1.72 against Gremlin's 2.16 is 1.25x the other way. So the surface is not paying for a worse data
+layout or a worse scan — item 1336's decomposition already showed GQL's bare iteration and bucket
+read are FASTER — it is paying for how a per-element predicate reaches its own variable.
+
+### Why the micro-benchmarks could not see this
+
+802's parts summed to more than the whole, so the parts could not be trusted individually. An
+ablation asks a different question: not "what does this part cost" but "what does the whole cost
+WITHOUT it", which is immune to the part being hard to isolate. That distinction is the reusable
+result here, and it is why 801's open question survived two items.
+
+### What is NOT yet done, stated plainly
+
+**This item measures; it does not fix.** The fix is the re-derivation the tally's own comment
+refuses — "the predicate goes through `satisfies` so the two spellings of a constrained node count
+agree by construction rather than by re-deriving inline-pattern semantics here" — and that refusal
+is a correctness argument, not an oversight. A shippable version has to keep `satisfies` as the
+semantic source while pre-resolving WHICH arm applies at compile time, so the per-vertex call
+becomes a bound closure rather than a dispatch. The architecture already has the carriers it would
+bind to (`eqProps`, `cmpProps`, and items 1269/1270's `memberProps`/`nullProps`).
+
+It also needs a differential test of the specialized closure against `inlineHolds` over a wide
+input set — the shape of `side-of-vertex-equivalence.test.ts` from item 1334, where the risk was
+likewise that a faster path answers differently rather than slower. Item 801 said as much: "A
+change to a path whose stated reason is cross-spelling agreement deserves its own tick with the
+differential fuzzers."
+
+**OPEN, priced at 2.23x with the ceiling measured.** No code changed in this item; the ablation was
+reverted and the suite re-run (3,432 pass / 0 fail).
