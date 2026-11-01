@@ -4245,6 +4245,46 @@ const buildTwoHopCount = <T>(
  * `where` is the clause `WHERE`, which only the 1-hop tally can answer; the product
  * caller passes `undefined` because it refuses a clause `WHERE` outright.
  */
+/**
+ * Is this pattern's START pinned to a handful of elements by an id seed?
+ *
+ * Item 1329. `patternCountOf` sends a THREE-segment count to `sweepChain` before anything else
+ * gets a say, because the sweep is the only route that can carry an END constraint (item 306).
+ * That is right for an end-gated chain and wrong when the START is pinned: the sweep walks the
+ * whole graph to answer a question about one vertex.
+ *
+ * Measured at 200,000 vertices, `MATCH (a:P)-[:E]->(b)-[:E]->(c)-[:E]->(d) … RETURN count(*)`:
+ *
+ *     WHERE element_id(a) = $id          13.0146 ms   the sweep
+ *     WHERE element_id(a) IN [3 ids]     12.7397      the sweep
+ *     the same at TWO segments             0.0084      seeded, no sweep
+ *     the same returning ROWS              0.0314      seeded enumeration
+ *     the same as count(d.k)               0.0538      fires NO rung at all
+ *
+ * 1550x against the two-segment form, and the cliff is at 3+ segments. It hits the SINGLE-id seed
+ * (item 618) as much as item 1315's id list, so it long predates both.
+ *
+ * DECLINING IS ANSWER-SAFE BY CONSTRUCTION, which is the whole argument: this file's own contract
+ * is that "a fast path is a performance decision, never a semantic one", so refusing one falls to
+ * the general matcher — the oracle every rung here is checked against. And the fallback is not a
+ * guess: `count(d.k)` already fires no rung and answers the same question 247x faster, so the
+ * route being declined to is measured, not hoped for.
+ */
+export const startIsPinnedById = (cstart: CNode | undefined): boolean =>
+  cstart?.seedHints?.some((h) => h.kind === 'id' || h.kind === 'idIn') ?? false;
+
+/**
+ * The segment count the SWEEP rungs are allowed to see: the real count, or 0 when the start is
+ * pinned and the sweep must be declined.
+ *
+ * This exists to hold `patternCountOf`'s complexity at its budget (35). Spelling the guard inline
+ * at both rungs read better and cost two decision points, which took the function to 37 — so the
+ * decision moves here and the call sites spend none. A guard that cannot be added without
+ * breaking the budget is a signal about the function, not about the guard.
+ */
+const sweepableSegmentCount = (segments: readonly unknown[], cstart: CNode | undefined): number =>
+  startIsPinnedById(cstart) ? 0 : segments.length;
+
 const patternCountOf = <T>(
   pattern: PathPattern,
   where: Expr | undefined,
@@ -4323,7 +4363,11 @@ const patternCountOf = <T>(
 
   // AN END CONSTRAINT ON A SHORT CHAIN GOES TO THE SWEEP (item 306), before the degree products
   // get a say, because it is the one position they cannot carry.
-  if (segments.length === 3) {
+  //
+  // NOT WHEN THE START IS PINNED BY AN ID SEED (item 1329): the sweep walks the whole graph, and
+  // for a start pinned to a handful of elements that is 1550x the two-segment form of the same
+  // question. See {@link startIsPinnedById}.
+  if (sweepableSegmentCount(segments, cstart) === 3) {
     const swept = endGatedChainCount(start, segments, where, rowOf);
 
     if (swept !== null) {
@@ -4561,7 +4605,14 @@ const patternCountOf = <T>(
   // no shared node variable, resolvable types — so the sweep subsumes it exactly, and item 290's
   // 27 tests in `four-hop-count.test.ts` now exercise the sweep. That makes them an INDEPENDENT
   // oracle for it, written against a different implementation before this one existed.
-  if (segments.length >= 4) {
+  if (sweepableSegmentCount(segments, cstart) >= 4) {
+    // A PINNED START DECLINES HERE TOO (item 1329). This is the SECOND route to the sweep:
+    // the three-segment branch above reaches it through `endGatedChainCount`, and four-or-more
+    // segments reach it here through `longChainCount`. Guarding only the first left a pinned
+    // 5-hop count at 12.6682 ms while the 3-hop it had just fixed read 0.0358 — found by
+    // instrumenting which rung fired at each depth rather than assuming one guard covered the
+    // family.
+    //
     // A clause `WHERE` is split across positions (item 305). `null` means one of its conjuncts is
     // not a per-vertex test on a position — a correlation, a constant, or a name this pattern does
     // not bind — and the whole family declines, as it did for every clause `WHERE` before.

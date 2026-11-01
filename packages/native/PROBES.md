@@ -41,10 +41,23 @@ one surface.
 
 ## Bespoke probes worth knowing about
 
-| probe                  | question                                                                                     |
-| ---------------------- | -------------------------------------------------------------------------------------------- |
-| `keyed-dedup-probe.ts` | the clause-vs-inline keyed count (item 1320), and the per-PROCESS estimator that resolved it |
-| `branch-cost-probe.ts` | what a `choose`/`coalesce`/`union` branch costs per row                                      |
+| probe                          | question                                                                                     |
+| ------------------------------ | -------------------------------------------------------------------------------------------- |
+| `keyed-dedup-probe.ts`         | the clause-vs-inline keyed count (item 1320), and the per-PROCESS estimator that resolved it |
+| `branch-cost-probe.ts`         | what a `choose`/`coalesce`/`union` branch costs per row                                      |
+| `enumeration-surface-probe.ts` | WHICH enumeration surface a route actually walks (item 1329)                                 |
+| `pinned-chain-count-probe.ts`  | does an id-pinned START avoid the sweep for a 3+-segment count (item 1329)                   |
+
+`enumeration-surface-probe.ts` is the one to reach for before asserting anything about which route
+was taken. **A spy on ONE surface that reads zero has NOT shown there is nothing to find.** Item
+1329's first spy wrapped `verticesById.values()`, read 0 for both arms at 2k / 8k / 50k / 200k, and
+was believed — it was the wrong surface, and the swept route was walking the LABEL index the whole
+time. This probe wraps `values`, `keys`, `entries`, `forEach` and `Symbol.iterator` on both vertex
+maps plus the Sets behind `verticesByLabel.get`, and prints every counter that moved.
+
+Two sweeps in the same engine use DIFFERENT surfaces: a pinned chain's swept route walks the label
+set, an end-gated chain's sweep walks `verticesById.values()`. A route assertion that watches one
+of them silently loses half its teeth.
 
 ## HOW TO RUN ONE, which is not optional detail
 
