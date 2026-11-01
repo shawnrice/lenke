@@ -19,7 +19,7 @@ return the same rows.
 | probe                        | the property                                            | last run                                                                               |
 | ---------------------------- | ------------------------------------------------------- | -------------------------------------------------------------------------------------- |
 | `spelling-probe.ts`          | equivalent GQL spellings of one predicate cost the same | clean; its one flag is item 644's BUILT-AND-REVERTED product lever                     |
-| `gremlin-spelling-probe.ts`  | the same for Gremlin (item 1305)                        | down to `not(hasNot(k))` from 15 flagged groups                                        |
+| `gremlin-spelling-probe.ts`  | the same for Gremlin (item 1305)                        | **ZERO flagged** as of item 1331, from 15 at 1305; 13 sub-ms groups still not compared |
 | `surface-parity-probe.ts`    | GQL and Gremlin cost the same for ONE question          | **FOUND item 1322's 5.78x pathology**; leaves `two-hop-count` open at GQL 1.84x slower |
 | `index-never-hurts-probe.ts` | adding an index never makes a query slower (item 1324)  | holds on 17 shapes, both surfaces                                                      |
 | `id-lookup-is-o1-probe.ts`   | lookup by id is FLAT in graph size (item 1326)          | holds on 8 arms over a 16x range                                                       |
@@ -47,6 +47,13 @@ one surface.
 | `branch-cost-probe.ts`         | what a `choose`/`coalesce`/`union` branch costs per row                                      |
 | `enumeration-surface-probe.ts` | WHICH enumeration surface a route actually walks (item 1329)                                 |
 | `pinned-chain-count-probe.ts`  | does an id-pinned START avoid the sweep for a 3+-segment count (item 1329)                   |
+| `notfold-soundness-check.ts`   | are `hasKey(k)` and `not(hasNot(k))` equivalent off an ELEMENT stream? (item 1331)           |
+
+`notfold-soundness-check.ts` is not a timing probe — it answers whether a rewrite is ALLOWED. Item
+1331 folds `not(hasNot(k))` into `hasKey(k)` for 16.9x, and the two are exact duals on elements but
+NOT on anything else: after `properties()` they give 1 and 3, after `values()` 0 and 2, because
+`hasNot` returns false for a non-element. Run it before widening that fold's allow-list, and in
+general whenever a rewrite's soundness depends on what the stream carries.
 
 `enumeration-surface-probe.ts` is the one to reach for before asserting anything about which route
 was taken. **A spy on ONE surface that reads zero has NOT shown there is nothing to find.** Item

@@ -45661,3 +45661,98 @@ Item 1329's heading is annotated rather than struck in the same commit: its fix 
 measured for the id pin, and this item does not supersede it — the two use DIFFERENT mechanisms
 (decline vs seed) for the same cliff, and the decline remains the right one where the hint is
 selective on every graph.
+
+## 1331 — ✅ SHIPPED: `not(hasNot(k))` folds to `hasKey(k)` on an element stream — **16.9x**, and the GREMLIN SPELLING SURFACE IS NOW AT ZERO FLAGGED GROUPS
+
+The last group `gremlin-spelling-probe` flagged. `not` applies a whole sub-plan PER TRAVERSER
+(`!hasAny(applyPlanToStream(step.plan, [t], …))`), so this spelling paid 200,000 sub-plan
+applications where its twins read a property bag.
+
+### The sweep UNDERSTATED it by 3.4x, which is the opposite of the usual direction
+
+```text
+  in the full sweep                       4.95x
+  the group ALONE, three runs   16.96x / 17.21x / 17.05x
+```
+
+Isolated, `has(k)` 2.529 / `hasKey(k)` 2.505 / `not(hasNot(k))` **42.5 ms**. The sweep's dispatch
+pollution slows the FAST arms, so the ratio compresses — the recorded trap is in-sweep inflation
+making things look worse, and this is the same mechanism running the other way. A 4.95x flag was
+worth three times what it advertised. After the fold, 2.513 ms and the group converges; two further
+runs read 2.733/2.533/2.564 and 2.582/2.530/2.550, and the whole probe reports **0 groups over 2x**.
+
+### ⚠️ THE FOLD IS A WRONG ANSWER OFF AN ELEMENT STREAM, and that is MEASURED, not reasoned
+
+`hasKey` is `keys.some(k => k in bag)` and `hasNot` is `keys.every(k => !(k in bag))`, so "not all
+absent" IS "at least one present" — exact duals at ANY key count, so no single-key restriction is
+needed (unlike `hasChain`'s, item 1140). But `hasNot` returns FALSE for a non-element, so
+`not(hasNot(k))` PASSES what `hasKey(k)` filters:
+
+```text
+  stream          hasKey(k)   not(hasNot(k))
+  element                 1                1   agree
+  properties()            1                3   DIFFER
+  values()                0                2   DIFFER
+```
+
+`notfold-soundness-check.ts` is that measurement, kept because the gate is only justified by it.
+The fold is therefore gated on the stream carrying elements, tracked through an ALLOW-LIST over the
+92 `Step` kinds: the two sources, every hop, the element-local filters and the windows. Anything
+else ends the element stream BY DEFAULT — item 1328's argument, and here being wrong costs a wrong
+answer rather than a slow plan.
+
+Both directions fold (`not(hasKey(k))` → `hasNot(k)` by the same duality) and both are measured: a
+new `absence:` probe group reads 13.118/13.047, 12.821/12.782, 12.956/12.755 across three runs. ⚠️
+Its FIRST reading was 11.837 against 6.817 — a 1.74x that would have looked like the folded
+spelling beating the direct one, in a group where both arms become the SAME step. Repeating the
+process refuted it; one reading of a converged group is still one reading.
+
+### A test of mine was changed, and item 1327's distinction is why
+
+`filter-flatten.test.ts` asserted `not(hasNot(k))` was LEFT ALONE, under "or and not are left
+alone — a disjunction is not a chain". That recorded a CONDITION of the pass (it did not handle
+`not`), not a CONTRACT someone chose, and its stated reason is untouched: the fold does not SPLICE
+a wrapper body into the chain, it replaces the whole step with the single filter that means the
+same thing. The decline is still asserted, now on bodies that genuinely cannot fold — `not(out(T))`
+and a two-step body.
+
+### Teeth: 8 mutants, 8 caught — and the EDGE source was a blind spot the tests shared
+
+```text
+  fold-unwired               CAUGHT   2 fail
+  gate-removed               CAUGHT   1 fail   the WRONG-ANSWER mutant
+  multi-step-body-admitted   CAUGHT   1 fail
+  reverse-direction-dropped  CAUGHT   1 fail
+  forward-direction-dropped  CAUGHT   3 fail
+  allow-list-becomes-deny    CAUGHT   3 fail
+  tracker-pinned-true        CAUGHT   1 fail   through the lint-extracted helper
+  edge-source-dropped        CAUGHT   1 fail   <- SURVIVED pass 1
+```
+
+`edge-source-dropped` removes `'E'` from `ELEMENT_SOURCES` and survived a pass where all six other
+mutants died, because every case used a VERTEX source. Edges are elements too — `hasKey` and
+`hasNot` both test `isVertex(v) || isEdge(v)` and read the same bag — so the duality holds
+identically and the gap was in the tests, not the rule. Covered now via `E()` and via `outE()`.
+
+### ⚠️ THE LINT BUDGET MOVED THE CODE AFTER MUTATION PASSED, for the second time this session
+
+`prefer-destructuring` and `no-nested-ternary` failed AFTER the 7/7, and the fix extracted
+`streamStaysElements`. That invalidated the verdict exactly as item 1330's helper did: a mutation
+result against a spelling that no longer ships is not a result about what ships. Re-run at the
+shipped anchors, 8/8, with `tracker-pinned-true` added because the extracted helper is a NEW way to
+reach `gate-removed`'s wrong answer.
+
+The process lesson, now twice: **run `lint` BEFORE mutation, not after.** Both times the gate forced
+a refactor that cost a full re-run.
+
+### Verification
+
+`packages/gremlin` 1,114 pass / 0 fail (1,109 before; +5 in `executor/filter-flatten.test.ts`).
+`packages/gql` 3,390 pass / 0 fail. All seven byte-identity fuzzers 13 pass / 0 fail. Gates as
+separate commands, each status read into a variable: `typecheck` 0, `lint` 0, `fmt:check` 0,
+`check --skip-nx-cache` 0.
+
+The Gremlin spelling surface is now clean: item 1305 built the probe and found 15 flagged groups,
+items 1306-1312 took it to 2, item 1322 closed one, and this closes the last. That is a claim about
+the PROBE's groups and not about the surface entire — the 13 sub-millisecond groups are still
+not compared, and raising `SPELL_N` is the way to find out whether they hide anything.

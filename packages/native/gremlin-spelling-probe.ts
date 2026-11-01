@@ -259,6 +259,19 @@ const GROUPS: readonly Group[] = [
       traversal(V(), not(hasNot('age')), count()),
     ],
   ],
+  // ABSENCE, the reverse of the fold item 1331 added: `not(hasKey(k))` is `hasNot(k)`. Measured
+  // here because the fold goes BOTH ways and only one direction had a group — the untested
+  // direction of a two-way rewrite is where the next gap would be.
+  [
+    'absence: hasNot(k) vs not(hasKey(k))',
+    [
+      traversal(V(), hasNot('absent_key'), count()),
+      traversal(V(), not(hasKey('absent_key')), count()),
+    ],
+  ],
+  // The fold must NOT apply once the stream stops carrying elements, so these two are NOT
+  // equivalent and are deliberately kept out of a group: after `properties()`, `hasKey(k)` reads
+  // the property object's own key while `not(hasNot(k))` passes everything, measured at 1 vs 3.
   [
     'a value predicate reached through values(): has(k,p) vs values(k).is(p)',
     [

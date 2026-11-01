@@ -743,11 +743,141 @@ const pushSplit = (steps: Step[], step: Step): boolean => {
   return true;
 };
 
+/**
+ * Step kinds that leave an ELEMENT stream an element stream: the two sources, every hop, and the
+ * element-local filters and windows. ANYTHING ELSE ends the element stream by default, which is
+ * the entire safety argument for {@link presenceFoldOf} — a deny-list would silently admit a new
+ * step kind, and the cost of being wrong here is a WRONG ANSWER, not a slow plan.
+ *
+ * `values`, `properties`, `valueMap`, `id`, `label`, `select`, `project`, `path`, `fold`, `group`
+ * and the branch steps are all absent on purpose.
+ */
+const ELEMENT_SOURCES: ReadonlySet<Step['kind']> = new Set<Step['kind']>(['V', 'E']);
+
+const ELEMENT_PRESERVING: ReadonlySet<Step['kind']> = new Set<Step['kind']>([
+  // hops — every one lands on a vertex or an edge
+  'out',
+  'in',
+  'both',
+  'outE',
+  'inE',
+  'bothE',
+  'outV',
+  'inV',
+  'otherV',
+  'bothV',
+  // element-local filters — they drop traversers, never change what one carries
+  'has',
+  'hasId',
+  'hasKey',
+  'hasLabel',
+  'hasLabelAnd',
+  'hasNot',
+  'hasValue',
+  'simplePath',
+  'cyclicPath',
+  'dedupe',
+  'identity',
+  'not',
+  'and',
+  'or',
+  'where',
+  'filter',
+  // windows and ordering — a subset, or a permutation, of the same traversers
+  'order',
+  'range',
+  'skip',
+  'take',
+  'tail',
+  'sample',
+  'barrier',
+  // labelling only
+  'as',
+]);
+
+/**
+ * `not(hasNot(k))` is `hasKey(k)`, and `not(hasKey(k))` is `hasNot(k)` — ON AN ELEMENT STREAM.
+ *
+ * Item 1331. The `not` step applies a whole sub-plan PER TRAVERSER
+ * (`!hasAny(applyPlanToStream(step.plan, [t], …))`), so this spelling paid 200,000 sub-plan
+ * applications where its twins read a property bag. Measured at 200,000 vertices, the group alone,
+ * three runs: `has(k)` 2.529 / `hasKey(k)` 2.505 / `not(hasNot(k))` **42.5 ms** — 16.96x, 17.21x,
+ * 17.05x. In the full sweep the same group reads only 4.95x, because the sweep's dispatch
+ * pollution slows the fast arms and compresses the ratio.
+ *
+ * WHY IT IS EXACTLY DUAL, AND ONLY ON ELEMENTS. `hasKey` is `keys.some(k => k in bag)` and
+ * `hasNot` is `keys.every(k => !(k in bag))`, so "not all absent" IS "at least one present" at any
+ * key count — no single-key restriction is needed. But `hasNot` returns FALSE for a non-element,
+ * so `not(hasNot(k))` PASSES what `hasKey(k)` filters. That is not theoretical; it is measured:
+ *
+ *     stream          hasKey(k)   not(hasNot(k))
+ *     element                 1                1   agree
+ *     properties()            1                3   DIFFER
+ *     values()                0                2   DIFFER
+ *
+ * So the fold is gated on the stream carrying elements, and the gate is a measured requirement
+ * rather than caution. `notfold-soundness-check.ts` is that measurement.
+ */
+/**
+ * Does the stream still carry ELEMENTS after `step`? A source makes it so, an element-preserving
+ * step leaves it as it was, and anything else ends it — the allow-list default that makes
+ * {@link presenceFoldOf} safe.
+ */
+const streamStaysElements = (step: Step, elements: boolean): boolean => {
+  if (ELEMENT_SOURCES.has(step.kind)) {
+    return true;
+  }
+
+  return ELEMENT_PRESERVING.has(step.kind) ? elements : false;
+};
+
+export const presenceFoldOf = (step: Step): Step | undefined => {
+  if (step.kind !== 'not') {
+    return undefined;
+  }
+
+  const inner = step.plan.steps;
+
+  // Exactly one step: `not(hasNot(k).something())` is a different question and declines.
+  if (inner.length !== 1) {
+    return undefined;
+  }
+
+  const [only] = inner;
+
+  if (only.kind === 'hasNot') {
+    return { kind: 'hasKey', keys: only.keys };
+  }
+
+  if (only.kind === 'hasKey') {
+    return { kind: 'hasNot', keys: only.keys };
+  }
+
+  return undefined;
+};
+
 export const flattenFilterWrappers = (plan: Plan): Plan => {
   const steps: Step[] = [];
   let changed = false;
+  // Whether the stream carries ELEMENTS at this position. Read BEFORE the step is applied, since
+  // a fold replaces the step whose own input it depends on.
+  let elements = false;
 
   for (const step of plan.steps) {
+    const atElements = elements;
+
+    elements = streamStaysElements(step, elements);
+
+    if (atElements) {
+      const presence = presenceFoldOf(step);
+
+      if (presence !== undefined) {
+        steps.push(presence);
+        changed = true;
+        continue;
+      }
+    }
+
     if (step.kind === 'filter') {
       const inner = normalizedBranch(step.plan);
 

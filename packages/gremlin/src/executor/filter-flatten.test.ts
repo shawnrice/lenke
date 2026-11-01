@@ -18,9 +18,11 @@ import { Graph } from '@lenke/core';
 
 import { gte } from '../predicates.js';
 import {
+  E,
   V,
   and,
   count,
+  dedupe,
   filter,
   has,
   hasKey,
@@ -29,6 +31,8 @@ import {
   not,
   or,
   out,
+  outE,
+  properties,
   values,
 } from '../steps.js';
 import { traversal } from '../traversal.js';
@@ -182,12 +186,95 @@ describe('bodies that are NOT keep-or-drop must decline', () => {
     expect(kinds(flattenFilterWrappers(plan).steps)).toEqual(['V', 'filter', 'count']);
   });
 
-  test('or and not are left alone — a disjunction is not a chain', () => {
+  /**
+   * ⚠️ THIS CASE USED TO ASSERT `not(hasNot(k))` WAS LEFT ALONE, and item 1331 changed it
+   * deliberately. The distinction item 1327 draws applies: the assertion recorded a CONDITION of
+   * this pass (it did not handle `not`), not a CONTRACT someone chose. Its stated reason — a
+   * wrapper body must not be SPLICED into the chain, because a disjunction is not a chain — is
+   * untouched: item 1331 does not splice the body, it replaces the whole step with the single
+   * filter that means the same thing.
+   *
+   * So the decline is still asserted, on a body that genuinely cannot fold.
+   */
+  test('or is left alone, and so is a not whose body is not a presence test', () => {
     const orPlan = traversal(V(), or(has('k', gte(4)), hasLabel('Q')), count());
-    const notPlan = traversal(V(), not(hasNot('k')), count());
+    const notPlan = traversal(V(), not(out('T')), count());
 
     expect(kinds(flattenFilterWrappers(orPlan).steps)).toEqual(['V', 'or', 'count']);
     expect(kinds(flattenFilterWrappers(notPlan).steps)).toEqual(['V', 'not', 'count']);
+  });
+
+  test('a not whose body is MORE than one step is left alone', () => {
+    // `not(hasNot(k).dedupe())` is a different question: the fold claims nothing about a body
+    // that filters and then does something else.
+    const plan = traversal(V(), not(traversal(hasNot('k'), dedupe())), count());
+
+    expect(kinds(flattenFilterWrappers(plan).steps)).toEqual(['V', 'not', 'count']);
+  });
+
+  test('not(hasNot(k)) folds to hasKey, and not(hasKey(k)) folds to hasNot', () => {
+    // Item 1331's 17x. The `not` step applies a whole sub-plan PER TRAVERSER, so this spelling
+    // paid 200,000 sub-plan applications where `hasKey` reads a property bag.
+    expect(kinds(flattenFilterWrappers(traversal(V(), not(hasNot('k')), count())).steps)).toEqual([
+      'V',
+      'hasKey',
+      'count',
+    ]);
+    expect(kinds(flattenFilterWrappers(traversal(V(), not(hasKey('k')), count())).steps)).toEqual([
+      'V',
+      'hasNot',
+      'count',
+    ]);
+  });
+
+  test('the fold DECLINES once the stream is no longer elements', () => {
+    /**
+     * The soundness gate, and it is a MEASURED requirement rather than caution. `hasKey` is
+     * `keys.some(k => k in bag)` and `hasNot` is `keys.every(k => !(k in bag))`, so on elements
+     * "not all absent" IS "at least one present". On a non-element `hasNot` returns false, so
+     * `not(hasNot(k))` PASSES what `hasKey(k)` filters — measured at 1 vs 3 after `properties()`
+     * and 0 vs 2 after `values()`. Folding there would be a WRONG ANSWER.
+     */
+    const afterProperties = traversal(V(), properties(), not(hasNot('k')), count());
+    const afterValues = traversal(V(), values('k'), not(hasNot('k')), count());
+
+    expect(kinds(flattenFilterWrappers(afterProperties).steps)).toEqual([
+      'V',
+      'properties',
+      'not',
+      'count',
+    ]);
+    expect(kinds(flattenFilterWrappers(afterValues).steps)).toEqual([
+      'V',
+      'values',
+      'not',
+      'count',
+    ]);
+  });
+
+  test('a hop keeps the stream elements, so the fold still applies after one', () => {
+    const plan = traversal(V(), out('T'), not(hasNot('k')), count());
+
+    expect(kinds(flattenFilterWrappers(plan).steps)).toEqual(['V', 'out', 'hasKey', 'count']);
+  });
+
+  /**
+   * EDGES are elements too, and nothing here said so. Mutation found it: `edge-source-dropped`
+   * removes `'E'` from `ELEMENT_SOURCES` and SURVIVED a pass where all six other mutants died,
+   * because every case used a vertex source. `hasKey` and `hasNot` both test
+   * `isVertex(v) || isEdge(v)` and read the same property bag, so the duality holds identically
+   * for an edge — the gap was in the tests, not the rule.
+   */
+  test('an EDGE source is elements as well, so the fold applies to E() too', () => {
+    expect(kinds(flattenFilterWrappers(traversal(E(), not(hasNot('w')), count())).steps)).toEqual([
+      'E',
+      'hasKey',
+      'count',
+    ]);
+    // And through an edge hop, which lands on edges rather than vertices.
+    expect(
+      kinds(flattenFilterWrappers(traversal(V(), outE('T'), not(hasNot('w')), count())).steps),
+    ).toEqual(['V', 'outE', 'hasKey', 'count']);
   });
 });
 
