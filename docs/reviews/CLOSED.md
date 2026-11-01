@@ -45017,6 +45017,36 @@ The boundary pair is the assertion worth keeping if only one could be: `lt(11)` 
 and `lt(12)` refused at ~13.3% pins the 1/8 fraction exactly, so a change to `SEEK_MAX_FRACTION`
 cannot drift silently.
 
+### The 1/8 is MEASURED for Gremlin, not merely mirrored (added after the fact)
+
+This item set `SEEK_MAX_FRACTION = 1 / 8` by mirroring native and GQL, whose ~18% break-even item
+409 measured for GQL's own seek and scan. That is not evidence about Gremlin, so the curve was
+measured here afterwards — with the gate TEMPORARILY OPENED (`fraction = 1`) and restored, because
+with the gate in place both columns run the same scan above 12.5% and the measurement reads as a
+tie that proves nothing:
+
+```text
+     keep%    seek ms    scan ms  seek/scan
+      0.5%     0.1515     2.2936       0.07   seek wins
+      2.0%     0.3016     2.7608       0.11
+      5.0%     0.7404     2.2657       0.33
+      8.0%     0.7956     2.2988       0.35
+     12.5%     2.4334     2.3308       1.04   <- TIE: the gate sits exactly here
+     18.0%     3.1955     2.2962       1.39   SCAN wins
+     25.0%     4.2343     2.4194       1.75
+     40.0%     9.0522     2.2392       4.04
+     60.0%    16.2684     2.2617       7.19
+```
+
+**Gremlin's break-even is ~12.5%, which is where the gate already is** — so 1/8 is the measured
+optimum here and not a conservative margin. **The constant was right and my reason for it was
+wrong:** I took 1/8 to be a safe margin below an 18% break-even, when Gremlin's own break-even
+simply IS ~12.5%, lower than GQL's. Recorded because "mirrored from the other engine" would have
+read as justification and was not one.
+
+The 60% row corroborates item 409 from the other side: it measured GQL's ungated seek at 5.02x
+slower there, and Gremlin's is 7.19x.
+
 ### Open from the probe that found this
 
 **`two-hop-count` with GQL 1.84x SLOWER than Gremlin** (18.17 ms against 9.85) — the other
