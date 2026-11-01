@@ -45078,3 +45078,65 @@ process, on a FRESH fixture, and read the distribution.
 enumerate ~200,000 paths — 92 ns/path against 52 — so this is a per-path constant factor inside
 two different implementations of one question, not a missing route. Unexplained, priced, and NOT a
 degree-product problem. `surface-parity-probe.ts` watches it.
+
+## 1324 — "an index never makes a query slower" becomes a CHECKED invariant: 17 shapes, and item 1322 fixed the CLASS
+
+Item 1322 found a shape where adding an index made a Gremlin query 5.78x slower, and found it BY
+ACCIDENT through a cross-surface comparison. The invariant it violated is checkable directly:
+
+    for any query Q and index I,  time(Q with I) <= time(Q without I) * tolerance
+
+A violation is a planner choosing a route because an index EXISTS rather than because it is
+cheaper, and it is invisible to every answer test since both routes return the same rows.
+`index-never-hurts-probe.ts` is committed for it.
+
+### The invariant HOLDS on all 17 shapes
+
+Both surfaces, 100,000 vertices, one shape per process on a fresh graph, `plain` against `indexed`:
+
+```text
+  sel-count.gql        1.3563 -> 0.1515   0.11x        unsel-count.gql     1.5932 -> 1.6278  1.02x
+  sel-count.grm        0.7327 -> 0.0620   0.08x        unsel-count.grm     0.7062 -> 0.8096  1.15x
+  sel-values.gql       1.2825 -> 0.1827   0.14x        unsel-values.gql    3.0627 -> 3.1511  1.03x
+  sel-values.grm       3.6907 -> 0.2106   0.06x        unsel-values.grm    4.7991 -> 7.2911  1.52x*
+  boundary-count.gql   1.8408 -> 1.9086   1.04x        unsel-hop.gql       4.0108 -> 4.0026  1.00x
+  boundary-count.grm   1.6279 -> 1.5209   0.93x        unsel-hop.grm       4.9037 -> 4.9799  1.02x
+  edge-count.gql       1.3947 -> 1.3694   0.98x        unsel-dedupe.grm    6.3680 -> 4.7528  0.75x
+  edge-count.grm       0.0099 -> 0.0133   1.35x*       unsel-order.gql     3.5386 -> 3.8656  1.09x
+                                                       unsel-order.grm     7.8865 -> 6.7990  0.86x
+```
+
+Every answer SAME. The four selective shapes are the CONTROLS and the index is still worth 7-17x
+on them, so item 1322's gate discriminates rather than having quietly disabled seeking.
+
+**Both starred flags EVAPORATED on repeat**, with fully overlapping ranges:
+
+```text
+  unsel-values.grm   plain [4.658, 4.837, 4.765]   indexed [4.941, 4.638, 4.916]   1.52x -> 1.03x
+  edge-count.grm     plain [0.010, 0.012, 0.019]   indexed [0.013, 0.014, 0.012]   1.35x -> 1.08x
+```
+
+So there is no second instance of item 1322's class on this surface: that fix addressed the CLASS,
+not only the shape it was found on. The probe's header says to treat one reading as a hypothesis.
+
+### 🛑 Two harness errors of mine, both of which produced a FALSE PASS
+
+**A vacuous PASS.** The first run printed "NONE — the invariant holds on all shapes" against an
+EMPTY table. The probe exits 2 when listing its arms, so `ARMS=$(...) && for ...` short-circuited
+and the loop never ran; the summary then reported a pass for zero measurements. CLAUDE.md's rule —
+a verdict needs evidence of EXECUTION — now sits in the summary itself, which exits non-zero with
+`DID-NOT-RUN` when there are no result rows. That guard caught the very next failure.
+
+**A zsh word-splitting trap.** `for a in $ARMS` iterated ONCE with all 17 names as a single string,
+because zsh does NOT word-split unquoted expansions the way bash does. The giveaway was the log
+holding 34 lines of ARM NAMES (17 x 2 modes) rather than 34 results. Use `while IFS= read -r`.
+
+**And a defect in the probe itself:** `edge-count.gql` filtered `r.w > 45` while `edge-count.grm`
+ran an unfiltered hop — not a pair at all, and it would have read as a cross-surface gap that does
+not exist. Corrected to an `E()` source with the same filter, which also exercises item 1322's
+EDGE gate rather than the vertex one: 4.65 -> 3.73 ms, 0.80x, answer 48884 both sides.
+
+### Verification
+
+`typecheck` 0, `lint` 0, `fmt` 0. No engine code changed — this item adds an instrument and the
+run it produced.
