@@ -2,12 +2,12 @@ import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@lenke/core';
 
-import { satisfies, specializeCmpProp } from './executor.js';
+import { satisfies, specializeSingleProp } from './executor.js';
 import { query } from './index.js';
 import { parse } from './parser.js';
 
 /**
- * Item 1338: `specializeCmpProp` pre-resolves `satisfies` for a single ordering comparison on one
+ * Item 1338: `specializeSingleProp` pre-resolves `satisfies` for a single ordering comparison on one
  * property, so `buildNodeCount`'s tally stops paying the whole per-element dispatch.
  *
  * Measured at 200,000 vertices, `MATCH (n:P) WHERE n.age > 45 RETURN count(*)`:
@@ -118,6 +118,19 @@ describe('the specialized closure agrees with satisfies, element by element', ()
     'n.mixed > 100',
     'n.mixed <= 100',
     "n.mixed > 'x0'",
+    /**
+     * ITEM 1340's EQUALITY arm (`eqProps`). The null rejection is the whole subtlety: `propOf`
+     * returns `null` for an ABSENT key and for a STORED null alike, so `structuralEq` alone gives
+     * the INLINE reading where `=` must give the EXPRESSION one — item 210's "route two". These
+     * cases put a stored null, an absent key and a list value through the fast arm.
+     */
+    'n.n = 3',
+    "n.s = 's2'",
+    'n.flag = true',
+    'n.nulled = 0',
+    'n.sometimes = 11',
+    'n.missing_entirely = 1',
+    'n.odd = 0',
   ];
 
   for (const where of SPECIALIZABLE) {
@@ -191,11 +204,61 @@ describe('predicates that must NOT specialize', () => {
   }
 });
 
+describe('the equality arm keeps = and IS NULL distinct (item 210 route two)', () => {
+  /**
+   * The case the null rejection exists for. A NULL parameter must match NOTHING through `=`, where
+   * the INLINE spelling `{k: null}` matches a stored null. Dropping the rejection would make the
+   * fast arm answer the inline reading for a clause `=`, which is a wrong answer rather than a
+   * slow one — and it is invisible to every test that never passes a null param.
+   */
+  test('a NULL param matches nothing, while the inline spelling matches stored nulls', () => {
+    const viaParam = query(g, 'MATCH (n:P) WHERE n.nulled = $v RETURN count(*) AS c', {
+      v: null,
+    });
+
+    expect(Number(viaParam[0]?.c)).toBe(0);
+
+    // The inline spelling of "the same" question is NOT the same question, and still is not.
+    const viaInline = query(g, 'MATCH (n:P {nulled: null}) RETURN count(*) AS c', {});
+
+    expect(Number(viaInline[0]?.c)).toBeGreaterThan(0);
+  });
+
+  test('a non-null param through the fast arm agrees with the row form', () => {
+    const counted = Number(
+      query(g, 'MATCH (n:P) WHERE n.s = $v RETURN count(*) AS c', { v: 's2' })[0]?.c,
+    );
+    const rows = query(g, 'MATCH (n:P) WHERE n.s = $v RETURN n.n AS v', { v: 's2' });
+
+    expect(counted).toBe(rows.length);
+    expect(counted).toBeGreaterThan(0);
+  });
+
+  test('a LIST value still matches a stored list structurally (GENERAL path, not the fast arm)', () => {
+    /**
+     * ⚠️ THIS DOES NOT EXERCISE THE FAST ARM, and saying so matters. It was written believing it
+     * did, and the `reference-equality` mutant — JS `===` for `structuralEq` in the specialized
+     * closure — SURVIVED with it green. A throw on a non-scalar right-hand side then showed why:
+     * no list ever reaches that closure, because a list literal does not lift into `eqProps`.
+     *
+     * So this is a test of the GENERAL path's equality, which is worth having and is not what its
+     * first comment implied. The fast arm's own contract is recorded at `specializeSingleProp`.
+    const withList = new Graph();
+
+    withList.addVertex({ id: 'a', labels: ['P'], properties: { tags: [1, 2] } });
+    withList.addVertex({ id: 'b', labels: ['P'], properties: { tags: [3] } });
+
+    expect(
+      Number(query(withList, 'MATCH (n:P) WHERE n.tags = [1, 2] RETURN count(*) AS c', {})[0]?.c),
+    ).toBe(1);
+  });
+});
+
 describe('the specializer refuses anything it does not recognise', () => {
   test('an empty predicate does not specialize', () => {
-    const empty = { props: [] } as unknown as Parameters<typeof specializeCmpProp>[0];
+    const empty = { props: [] } as unknown as Parameters<typeof specializeSingleProp>[0];
 
-    expect(specializeCmpProp(empty)).toBeUndefined();
+    expect(specializeSingleProp(empty)).toBeUndefined();
   });
 
   test('a carrier the function has never heard of makes it REFUSE, not ignore', () => {
@@ -209,9 +272,9 @@ describe('the specializer refuses anything it does not recognise', () => {
       props: [],
       cmpProps: [{ key: 'n', op: '>', value: () => 2 }],
       someFutureCarrier: [{ anything: true }],
-    } as unknown as Parameters<typeof specializeCmpProp>[0];
+    } as unknown as Parameters<typeof specializeSingleProp>[0];
 
-    expect(specializeCmpProp(withUnknown)).toBeUndefined();
+    expect(specializeSingleProp(withUnknown)).toBeUndefined();
   });
 
   test('the same predicate WITHOUT the unknown carrier does specialize', () => {
@@ -220,18 +283,18 @@ describe('the specializer refuses anything it does not recognise', () => {
     const ok = {
       props: [],
       cmpProps: [{ key: 'n', op: '>', value: () => 2 }],
-    } as unknown as Parameters<typeof specializeCmpProp>[0];
+    } as unknown as Parameters<typeof specializeSingleProp>[0];
 
-    expect(specializeCmpProp(ok)).toBeDefined();
+    expect(specializeSingleProp(ok)).toBeDefined();
   });
 
   test('a populated non-cmpProps carrier refuses', () => {
     const withProps = {
       props: [{ key: 's', value: () => 's1' }],
       cmpProps: [{ key: 'n', op: '>', value: () => 2 }],
-    } as unknown as Parameters<typeof specializeCmpProp>[0];
+    } as unknown as Parameters<typeof specializeSingleProp>[0];
 
-    expect(specializeCmpProp(withProps)).toBeUndefined();
+    expect(specializeSingleProp(withProps)).toBeUndefined();
   });
 
   test('TWO cmpProps entries refuse', () => {
@@ -241,9 +304,9 @@ describe('the specializer refuses anything it does not recognise', () => {
         { key: 'n', op: '>', value: () => 2 },
         { key: 'n', op: '<', value: () => 5 },
       ],
-    } as unknown as Parameters<typeof specializeCmpProp>[0];
+    } as unknown as Parameters<typeof specializeSingleProp>[0];
 
-    expect(specializeCmpProp(two)).toBeUndefined();
+    expect(specializeSingleProp(two)).toBeUndefined();
   });
 });
 
@@ -257,8 +320,8 @@ describe('the closure and satisfies give the same verdict per element', () => {
     const pred = {
       props: [],
       cmpProps: [{ key: 'n', op: '>', value: () => 2 }],
-    } as unknown as Parameters<typeof specializeCmpProp>[0];
-    const fast = specializeCmpProp(pred);
+    } as unknown as Parameters<typeof specializeSingleProp>[0];
+    const fast = specializeSingleProp(pred);
 
     expect(fast).toBeDefined();
 

@@ -58,6 +58,11 @@ const GQL: Record<string, string> = {
   // CONTROL for item 1338: TWO comparisons, which `specializeCmpProp`'s single-entry guard
   // refuses, so the specialization cannot reach this row. It must stay flat.
   twoPred: 'MATCH (n:P) WHERE n.age > 45 AND n.age < 80 RETURN count(*) AS c',
+  // EQUALITY, which lifts to `eqProps` rather than `cmpProps` — so items 1338/1339's specializer
+  // refuses it and the full `satisfies` dispatch is still paid per element. `tag` is NOT indexed
+  // here, so this scans all 200,000 rather than seeking, which is where the dispatch shows.
+  eqReal: "MATCH (n:P) WHERE n.tag = 't3' RETURN count(*) AS c",
+  eqParam: 'MATCH (n:P) WHERE n.tag = $t RETURN count(*) AS c',
 };
 
 // `has('age', gt(-1))` is the Gremlin vacuous arm: age is `i % 90` so it CANNOT fail, which keeps
@@ -71,6 +76,8 @@ const GRM: Record<string, ReturnType<typeof traversal>> = {
   vacuous: traversal(V(), hasLabel('P'), has('age', gt(-1)), count()),
   real: traversal(V(), hasLabel('P'), has('age', gt(45)), count()),
   twoPred: traversal(V(), hasLabel('P'), has('age', gt(45)), has('age', lt(80)), count()),
+  eqReal: traversal(V(), hasLabel('P'), has('tag', 't3'), count()),
+  eqParam: traversal(V(), hasLabel('P'), has('tag', 't3'), count()),
 };
 
 const series: number[] = [];
@@ -80,7 +87,7 @@ for (let r = 0; r < REPS; r++) {
   const t0 = performance.now();
 
   if (SURFACE === 'gql') {
-    answer = Number(query(graph, GQL[ARM], {})[0]?.c);
+    answer = Number(query(graph, GQL[ARM], { t: 't3' })[0]?.c);
   } else {
     answer = Number(toArray(GRM[ARM], graph)[0]);
   }

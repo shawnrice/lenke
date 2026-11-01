@@ -6863,80 +6863,138 @@ const compilePath = (pattern: PathPattern): CPath => {
  * that the two spellings "agree by construction"; this keeps `satisfies` as the only implementation
  * and binds its arm rather than writing a second one.
  */
-export const specializeCmpProp = (
+/** The two carriers {@link specializeSingleProp} can answer; exactly one may be populated. */
+const SPECIALIZABLE: ReadonlySet<string> = new Set(['eqProps', 'cmpProps']);
+
+export const specializeSingleProp = (
   pred: CPredicate,
 ): ((element: Bound, env: EvalEnv) => boolean) | undefined => {
+  let only: 'eqProps' | 'cmpProps' | undefined;
+
   for (const [carrier, held] of Object.entries(pred)) {
-    // The one being specialized, and anything absent, are fine.
-    if (carrier === 'cmpProps' || held === undefined) {
+    if (held === undefined) {
       continue;
     }
 
-    // An EMPTY array carries nothing. Anything else — a populated array, or a non-array carrier
-    // such as `where` being present at all — means `satisfies` would apply work this closure does
-    // not, so refuse.
-    if (!Array.isArray(held) || held.length > 0) {
-      return undefined;
+    // An EMPTY array carries nothing.
+    if (Array.isArray(held) && held.length === 0) {
+      continue;
     }
+
+    // A populated array is fine ONLY if it is one of the two this function answers, and only if
+    // it is the only one — `eqProps` AND `cmpProps` together need a loop, which is the thing being
+    // removed. Everything else, including any non-array carrier such as `where`, refuses.
+    if (Array.isArray(held) && SPECIALIZABLE.has(carrier) && only === undefined) {
+      only = carrier as 'eqProps' | 'cmpProps';
+
+      continue;
+    }
+
+    return undefined;
   }
 
-  const carried = pred.cmpProps;
+  if (only === 'cmpProps') {
+    const carried = pred.cmpProps;
 
-  // Exactly ONE comparison. Two would need a loop, which is the thing being removed.
+    if (carried?.length !== 1) {
+      return undefined;
+    }
+
+    const [{ key, op, value }] = carried;
+
+    // ORDERING ops only: an equality is routed to `compareTruth` instead.
+    //
+    // ⚠️ AND `cmpProps` DOES CARRY EQUALITIES, which is the opposite of what this comment first
+    // claimed. `satisfies`'s own loop describes `cmpProps` as "the ORDERING comparisons `eqProps`
+    // cannot carry", so I wrote this off as belt-and-braces — then made the branch THROW and ran
+    // the suite: SEVEN tests fired. The refusal is reached, not defensive.
+    //
+    // Dropping it nonetheless SURVIVES mutation, because for a NUMBER PAIR `COMPARE['=']` and
+    // `structuralEq` agree, so the two routes coincide on every input the suite has. They are not
+    // proven to agree in general — NaN and ±0 are where equality notions part company — so the
+    // refusal stays and the question stays unasked. One comparison per QUERY buys that.
+    if (op === '=' || op === '<>') {
+      return undefined;
+    }
+
+    const cmp = COMPARE[op];
+
+    /**
+     * ITEM 1339: the numeric pair is answered by `cmp` DIRECTLY, skipping the `compareTruth` CALL.
+     *
+     * ⚠️ READ `compareTruth`'s HEADER BEFORE TOUCHING THIS — it refutes a NEIGHBOURING lever and
+     * the difference is the whole point. That header records adding
+     * `if (op !== '=' && … typeof lv === 'number' …) return fn(lv, rv)` INSIDE `compareTruth`: "It
+     * was written and measured and it moved NOTHING", across five shapes, twice over. This is not
+     * that change. That one short-circuits WITHIN the function and still pays the call; this one
+     * removes the call at the site. Measured in the specialized closure, 200,000 vertices:
+     *
+     *     through `compareTruth`     median 2.95 ms
+     *     `cmp` called directly      median 2.09      1.41x
+     *     `propOf` replaced instead  median 3.01      0.98x — REFUTED
+     *
+     * SEMANTICS ARE TAKEN FROM THAT HEADER, NOT RE-DERIVED: it states the numeric arm is
+     * "byte-identical, NaN included", and `cmp` here IS the `COMPARE[op]` that header passes.
+     */
+    return (element, env) => {
+      const lhs = propOf(element, key);
+      const rhs = value(env);
+
+      return typeof lhs === 'number' && typeof rhs === 'number'
+        ? (cmp as (a: number, b: number) => boolean)(lhs, rhs)
+        : compareTruth(op, cmp, lhs, rhs) === true;
+    };
+  }
+
+  const carried = pred.eqProps;
+
   if (carried?.length !== 1) {
     return undefined;
   }
 
-  const [{ key, op, value }] = carried;
-
-  // ORDERING ops only: an equality is routed to `compareTruth` instead.
-  //
-  // ⚠️ AND `cmpProps` DOES CARRY EQUALITIES, which is the opposite of what this comment first
-  // claimed. `satisfies`'s own loop describes `cmpProps` as "the ORDERING comparisons `eqProps`
-  // cannot carry", so I wrote this off as belt-and-braces — then made the branch THROW and ran the
-  // suite: SEVEN tests fired. The refusal is reached, not defensive.
-  //
-  // Dropping it nonetheless SURVIVES mutation, because for a NUMBER PAIR `COMPARE['=']` and
-  // `structuralEq` agree, so the two routes coincide on every input the suite has. They are not
-  // proven to agree in general — NaN and ±0 are where equality notions usually part company, and
-  // `compareTruth` reaches `structuralEq` for `=` while the arm below would call `cmp` — so the
-  // refusal stays and the question stays unasked. One comparison per QUERY buys that.
-  if (op === '=' || op === '<>') {
-    return undefined;
-  }
-
-  const cmp = COMPARE[op];
+  const [{ key, value }] = carried;
 
   /**
-   * ITEM 1339: the numeric pair is answered by `cmp` DIRECTLY, skipping the `compareTruth` CALL.
+   * ITEM 1340: the EQUALITY arm, the same lever one carrier along. `eqProps` is what
+   * `WHERE n.tag = 't3'` lifts into, so items 1338/1339's specializer refused it and the full
+   * dispatch was still paid per element. Measured unindexed at 200,000 vertices, GQL ~4.45 ms
+   * against Gremlin's ~3.46 — 1.29x.
    *
-   * ⚠️ READ `compareTruth`'s HEADER BEFORE TOUCHING THIS — it refutes a NEIGHBOURING lever and the
-   * difference is the whole point. That header records adding
-   * `if (op !== '=' && … typeof lv === 'number' …) return fn(lv, rv)` INSIDE `compareTruth`: "It
-   * was written and measured and it moved NOTHING", across five shapes, twice over. This is not
-   * that change. That one short-circuits WITHIN the function and still pays the call; this one
-   * removes the call at the site. Measured in the specialized closure, 200,000 vertices, three
-   * processes each:
+   * THE NULL REJECTION IS REPLICATED EXACTLY, and it is not incidental: `propOf` returns `null`
+   * for an absent key AND for a stored null, so `structuralEq` alone cannot tell them apart and
+   * gives the INLINE reading (`{k: null}` matches both). Rejecting a null right-hand side gives
+   * the EXPRESSION reading instead, which is what `satisfies`'s own `eqProps` loop does and what
+   * lets a `$param` be lifted at all — item 210's "route two". Dropping it would make
+   * `WHERE n.k = $p` with a null param match stored nulls, which `=` must not.
    *
-   *     through `compareTruth`     3.35 / 2.95 / 2.84 ms   median 2.95
-   *     `cmp` called directly      2.09 / 2.15 / 2.02      median 2.09   1.41x
-   *     `propOf` replaced instead  3.42 / 2.85 / 3.01      median 3.01   0.98x — REFUTED
+   * `structuralEq` is CALLED, not re-implemented, so a list-valued equality still matches a stored
+   * list exactly as the clause spelling does (the bug item 210 records: JS `!==` made an inline
+   * list constraint never match).
    *
-   * so `propOf` is not the term (which is also what that header's ladder says) and the call is.
+   * ⚠️ THE ARM'S INPUT CONTRACT IS MEASURED, NOT ASSUMED, and it explains two surviving mutants.
+   * Making this closure THROW on an `undefined` right-hand side, and again on a non-scalar one,
+   * left all 3,477 tests green — so only SCALARS arrive here, never `undefined` and never a list
+   * or map. Hence:
    *
-   * SEMANTICS ARE TAKEN FROM THAT HEADER, NOT RE-DERIVED. It states the numeric arm is
-   * "byte-identical, NaN included", because `isNullish` is null/undefined only so a NaN is not
-   * nullish, a number is not a temporal, and `typeof lv === typeof rv === 'number'` IS its own
-   * `orderable` test. And `cmp` here IS `COMPARE[op]` — the same `fn` that header passes — so no
-   * operator is rewritten. Anything not a number pair falls through to `compareTruth` unchanged.
+   *   - `undefined`-rejection: unreachable today. Kept because nothing ENFORCES that contract; the
+   *     check is one comparison and an unbound param arriving here would otherwise compare
+   *     structurally against a property.
+   *   - `structuralEq` versus JS `===`: indistinguishable today, because the two agree on every
+   *     scalar (NaN false both ways, ±0 true both ways). `structuralEq` stays because it is the
+   *     function `satisfies` uses, so the day a list DOES lift into `eqProps` this arm is already
+   *     right rather than silently wrong.
+   *
+   * Both are defence in depth over a contract this file cannot see enforced — which is a different
+   * thing from dead code, and the distinction is why neither was deleted.
    */
   return (element, env) => {
-    const lhs = propOf(element, key);
     const rhs = value(env);
 
-    return typeof lhs === 'number' && typeof rhs === 'number'
-      ? (cmp as (a: number, b: number) => boolean)(lhs, rhs)
-      : compareTruth(op, cmp, lhs, rhs) === true;
+    if (rhs === null || rhs === undefined) {
+      return false;
+    }
+
+    return structuralEq(propOf(element, key), rhs);
   };
 };
 

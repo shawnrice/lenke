@@ -77,7 +77,7 @@ import {
   aggregateOverValues,
   foldedAggOnlyView,
   satisfies,
-  specializeCmpProp,
+  specializeSingleProp,
   sortsOnOutputOnly,
   countEdges,
   outNeighbors,
@@ -273,7 +273,7 @@ const buildNodeCount = <T>(
   // ⚠️ MUTATION SAYS THIS GUARD IS UNREACHABLE FROM HERE, and it is kept anyway. Dropping it
   // SURVIVED item 1338's pass, because every `InlinePred` reaching `buildNodeCount` comes from
   // `predFor`, which sets `bindVar` only when `where` is present or `props` is non-empty — and
-  // `specializeCmpProp` already refuses both. So the check cannot change an answer today.
+  // `specializeSingleProp` already refuses both. So the check cannot change an answer today.
   //
   // It stays because the invariant is NOT global: the two-hop middle gate builds an `InlinePred`
   // directly (`{ pred: compilePredicate(...), bindVar }`) with `bindVar` set unconditionally, so a
@@ -282,7 +282,7 @@ const buildNodeCount = <T>(
   // against a binding it never wrote. The cost is one comparison PER QUERY, not per element.
   const fastPred =
     preds.length === 1 && preds[0].bindVar === undefined
-      ? specializeCmpProp(preds[0].pred)
+      ? specializeSingleProp(preds[0].pred)
       : undefined;
 
   // CONSTRAINED: tally the bucket. O(bucket) rather than O(1), but it is the same
