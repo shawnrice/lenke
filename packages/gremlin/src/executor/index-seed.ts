@@ -342,8 +342,20 @@ const labelSeed = <E>(
  *     hasId(3 ids).in(T).count()     4.11208      381x
  *     hasId(3 ids).both(T).count()   3.96934      368x
  *
- * `[hop, dedupe, count]` is NOT admitted. It would be sound by the same reasoning, but it is
- * unmeasured and this list only ever grows on evidence.
+ * `[hop, dedupe, count]` JOINED AT ITEM 1327, which is the evidence item 1318 asked for before
+ * growing this list. It had been left out as "sound but unmeasured", and the decline cost 328x:
+ *
+ *     hasId(3 ids).out(T).count()            0.0210 ms   admitted at item 1318
+ *     hasId(3 ids).out(T).dedupe().count()   6.8937      the decline, 328x
+ *     hasId(3 ids).both(T).dedupe().count()  6.8622
+ *     hasId(1 id).out(T).dedupe().count()    0.0260      a single id never needed the tail
+ *
+ * Sound, and the argument finishes where item 1314's rule points: the seeded and scanned frontiers
+ * are the same SET, a hop sums each element's own neighbours irrespective of input order, `dedupe`
+ * reduces that multiset to a SET, and `count` reads only its size. `dedupe` keeps the FIRST
+ * occurrence, so the surviving elements' ORDER does differ between the two spellings — and a
+ * `count` tail cannot observe that, which is exactly what "the tail may only observe what both
+ * spellings agree on" requires.
  */
 const ORDER_FREE_TAILS: readonly (readonly Step['kind'][])[] = [
   ['count'],
@@ -351,6 +363,9 @@ const ORDER_FREE_TAILS: readonly (readonly Step['kind'][])[] = [
   ['out', 'count'],
   ['in', 'count'],
   ['both', 'count'],
+  ['out', 'dedupe', 'count'],
+  ['in', 'dedupe', 'count'],
+  ['both', 'dedupe', 'count'],
 ];
 
 /**

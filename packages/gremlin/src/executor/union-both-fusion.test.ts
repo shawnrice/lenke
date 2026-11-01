@@ -180,6 +180,16 @@ describe('the fused and unfused spellings answer identically under the tail', ()
       traversal(V(), both('T'), in_('T'), count()),
       traversal(V(), union(out('T'), in_('T')), in_('T'), count()),
     ],
+    // Item 1327 added `[hop, dedupe, count]` to the shared `ORDER_FREE_TAILS`, so this caller
+    // newly fuses a union with a hop AND a dedupe before the count. Sound on this caller's own
+    // premise: the two spellings are MULTISET-equal, a hop sums each element's own neighbours
+    // irrespective of order, and `dedupe` then reduces that multiset to a SET — which `count`
+    // reads the size of and nothing else.
+    [
+      'hop then dedupe then count',
+      traversal(V(), both('T'), out('T'), dedupe(), count()),
+      traversal(V(), union(out('T'), in_('T')), out('T'), dedupe(), count()),
+    ],
   ];
 
   for (const [name, short, long] of PAIRS) {
@@ -197,6 +207,33 @@ describe('the fused and unfused spellings answer identically under the tail', ()
     const fused = fuseUnionBoth(traversal(V(), union(out('T'), in_('T')), out('T'), count()));
 
     expect(fused.steps.map((s) => s.kind)).toEqual(['V', 'both', 'out', 'count']);
+  });
+
+  test('a union with a hop then a dedupe IS fused — the route, not just the answer', () => {
+    // The agreement case above cannot see this: fusion is answer-equivalent, so unwiring it
+    // leaves the rows right and only the route changes. Item 1327's mutants were caught by
+    // id-seed.test.ts alone, which is the one-sided guarding item 1318 warned about.
+    const fused = fuseUnionBoth(
+      traversal(V(), union(out('T'), in_('T')), out('T'), dedupe(), count()),
+    );
+
+    expect(fused.steps.map((s) => s.kind)).toEqual(['V', 'both', 'out', 'dedupe', 'count']);
+  });
+
+  test('a union with a hop, a dedupe and then a WINDOW is NOT fused', () => {
+    // Item 1318's rule applied consistently: an UNSOUND entry should be rejected by every caller
+    // AND asserted at each, unlike a sound-but-unmeasured one where a single guard suffices. A
+    // window reads the SEQUENCE, so `[hop, dedupe, take]` is unsound for both callers — and the
+    // windowed case below has tail `[out, take]`, which never exercises the dedupe variant.
+    const windowed = traversal(V(), union(out('T'), in_('T')), out('T'), dedupe(), limit(2));
+
+    expect(fuseUnionBoth(windowed).steps.map((s) => s.kind)).toEqual([
+      'V',
+      'union',
+      'out',
+      'dedupe',
+      'take',
+    ]);
   });
 
   test('a union with a HOP then a WINDOW is NOT fused either', () => {

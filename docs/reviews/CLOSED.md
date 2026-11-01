@@ -44670,8 +44670,10 @@ across a reordered list, a duplicate, a miss and an all-miss.
 
 - `[hop, window]` — declined because a window reads the SEQUENCE. Unsound for both callers, so
   both now guard it.
-- `[hop, dedupe, count]` — declined because it is UNMEASURED. It would be sound; the list only
-  ever grows on evidence.
+- ~~`[hop, dedupe, count]` — declined because it is UNMEASURED.~~ — **ADMITTED at item 1327**,
+  225x: the measurement arrived and the decline was costing 328x. The rule held exactly as written
+  — the list grew on evidence, and the test asserting this decline was flipped there because
+  "unmeasured" is a CONDITION rather than a contract.
 
 ### Teeth: 5 mutants, 5 caught, and the per-file attribution did real work
 
@@ -45273,3 +45275,75 @@ Five properties are now probed rather than assumed, and the pattern paid for its
 | an index never makes a query slower          | `index-never-hurts-probe`                  | holds, 17 shapes            |
 | `LIMIT k` costs O(k)                         | item 1325                                  | holds, both surfaces        |
 | id lookup is flat in N                       | `id-lookup-is-o1-probe`                    | holds, 8 arms over 16x      |
+
+## 1327 — `[hop, dedupe, count]` joins the order-free tails: 225x, and it is the evidence item 1318 asked for
+
+Item 1318 added `[hop, count]` to `ORDER_FREE_TAILS` and deliberately left `[hop, dedupe, count]`
+out, recording it as "sound but unmeasured — the list only grows on evidence". This is that
+evidence. The decline was costing **328x**.
+
+```text
+  hasId(3 ids).out(T).count()             0.0210 ms   admitted at item 1318
+  hasId(3 ids).out(T).dedupe().count()    6.8937      the decline
+  hasId(3 ids).both(T).dedupe().count()   6.8622
+  hasId(1 id).out(T).dedupe().count()     0.0260      a single id never needed the tail
+```
+
+After admitting `['out'|'in'|'both', 'dedupe', 'count']`, with the controls beside them:
+
+```text
+  ids-out-dedupe-count       6.8937 -> 0.0307   225x   answer 3
+  ids-both-dedupe-count      6.8622 -> 0.0322   213x   answer 6
+  ids-in-dedupe-count                  0.0294          answer 3
+  ctl-ids-out-count                    0.0285          item 1318's admission, unchanged
+  ctl-ids-out-dedupe-limit             0.2270          still DECLINES (the window)
+  ctl-ids-plain                        6.6717          still DECLINES, rows=3
+```
+
+`ctl-ids-plain` is the one that matters most: the bare multi-id form is still refused, so item
+1306's "we can filter by ids out of order" contract is untouched.
+
+### Why it is sound, finishing where item 1314's rule points
+
+The seeded and scanned frontiers are the same SET; a hop applied elementwise sums each element's
+own neighbours and so does not depend on the input's ORDER; `dedupe` reduces that multiset to a
+SET; and `count` reads only its size.
+
+`dedupe` keeps the FIRST occurrence, so the surviving elements' ORDER genuinely does differ between
+the two spellings — and a `count` tail cannot observe that. "The tail may only observe what both
+spellings agree on" is satisfied exactly, not approximately.
+
+### A test of mine was flipped, and the distinction is the point
+
+`id-seed.test.ts` asserted this DECLINE, with the stated reason "sound but unmeasured". That is a
+CONDITION, not a contract — unlike `hasId.test.ts`'s "we can filter by ids out of order", which is
+named for behaviour someone chose on purpose and which item 1317 refused to touch. The condition
+changed, so the test changed; it now carries the 328x and an agreement check that the ids written
+in either order give the same count.
+
+### Teeth: 3 mutants, 3 caught, and the per-file attribution did real work AGAIN
+
+```text
+  hop-dedupe-tails-unwired   CAUGHT  2 fail   id-seed AND union-both
+  out-dedupe-only            CAUGHT  1 fail   id-seed
+  dedupe-window-admitted     CAUGHT  2 fail   id-seed AND union-both
+```
+
+The first run caught all three in `id-seed.test.ts` ALONE — the one-sided guarding item 1318 warns
+about, since `ORDER_FREE_TAILS` is shared with `fuseUnionBoth` and a union with a hop+dedupe+count
+tail now fuses too. Two guards were added on that side: an agreement case and a route assertion
+(fusion is answer-equivalent, so the agreement case cannot see an unwiring). Re-run,
+`hop-dedupe-tails-unwired` fails in both files.
+
+`dedupe-window-admitted` was given a second guard as well, and the reason is item 1318's own
+distinction applied consistently: an UNSOUND entry — a window reads the sequence — should be
+rejected by every caller AND asserted at each, where a sound-but-unmeasured one needs only the
+single test that protects the evidence rule. The existing windowed union case has tail
+`[out, take]` and never exercises the dedupe variant.
+
+### Verification
+
+`packages/gremlin` 1105 pass / 0 fail (1100 before: +3 in `executor/id-seed.test.ts`, +2 in
+`executor/union-both-fusion.test.ts`). All seven byte-identity fuzzers 13 pass / 0 fail. Gates as
+separate commands, each status read into a variable before anything else ran: `typecheck` 0,
+`lint` 0, `fmt:check` 0, `check --skip-nx-cache` 0.

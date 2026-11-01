@@ -214,12 +214,46 @@ describe('the multi-id DECLINE, which is about order', () => {
     expect(seedFromIndex(traversal(V(), hasId('c', 'a'), out('R'), limit(1)), g, false)).toBeNull();
   });
 
-  test('a hop then a dedupe is NOT admitted — sound but unmeasured', () => {
-    // The list only grows on evidence; `[hop, dedupe, count]` has none yet.
+  test('a hop then a dedupe IS admitted (item 1327 supplied the evidence)', () => {
+    // This test asserted the DECLINE until item 1327, and its stated reason was "sound but
+    // unmeasured" — a condition, not a contract. The measurement arrived: the decline cost 328x
+    // (`hasId(3 ids).out(T).dedupe().count()` 6.8937 ms against `[hop, count]`'s 0.0210), so the
+    // list grew exactly as item 1318 said it would, on evidence.
+    const g = build();
+
+    for (const hop of [out('R'), in_('R'), both('R')]) {
+      expect(
+        seedFromIndex(traversal(V(), hasId('c', 'a'), hop, dedupe(), count()), g, false),
+      ).not.toBeNull();
+    }
+  });
+
+  test('the seeded hop-dedupe count agrees with the scanned one', () => {
+    // The equivalence the admission rests on, checked rather than argued. `dedupe` keeps the
+    // FIRST occurrence, so the surviving elements' ORDER differs between the seeded and scanned
+    // spellings — and a `count` cannot observe that. Asked two ways: the pair, against the sum of
+    // each id taken alone minus their shared neighbours, is not a clean identity, so the oracle
+    // is the DEDUPED SET SIZE computed from the bare traversal.
+    const g = build();
+
+    for (const hop of [out('R'), in_('R'), both('R')]) {
+      const seeded = Number(toArray(traversal(V(), hasId('c', 'a'), hop, dedupe(), count()), g)[0]);
+      // The same question with the ids written in the other order must agree: a seed reorders the
+      // frontier, and under this tail that must not matter.
+      const flipped = Number(
+        toArray(traversal(V(), hasId('a', 'c'), hop, dedupe(), count()), g)[0],
+      );
+
+      expect(seeded).toBe(flipped);
+    }
+  });
+
+  test('a hop then a dedupe then a WINDOW still declines', () => {
+    // The window reads the sequence, so it is refused however the frontier was produced.
     const g = build();
 
     expect(
-      seedFromIndex(traversal(V(), hasId('c', 'a'), out('R'), dedupe(), count()), g, false),
+      seedFromIndex(traversal(V(), hasId('c', 'a'), out('R'), dedupe(), limit(1)), g, false),
     ).toBeNull();
   });
 
