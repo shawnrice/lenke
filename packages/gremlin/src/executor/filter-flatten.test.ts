@@ -16,6 +16,7 @@ import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@lenke/core';
 
+import type { Step } from '../ast.js';
 import { gte } from '../predicates.js';
 import {
   E,
@@ -25,6 +26,7 @@ import {
   dedupe,
   filter,
   has,
+  hasId,
   hasKey,
   hasLabel,
   hasNot,
@@ -256,6 +258,117 @@ describe('bodies that are NOT keep-or-drop must decline', () => {
     const plan = traversal(V(), out('T'), not(hasNot('k')), count());
 
     expect(kinds(flattenFilterWrappers(plan).steps)).toEqual(['V', 'out', 'hasKey', 'count']);
+  });
+
+  /**
+   * Item 1332: `or` of same-kind ANY-of filters merges into one. A PLAN assertion, because that is
+   * the real signal and time is only the backstop — and here the timing is genuinely bimodal
+   * after the fold ([81.6, 79.6, 47.9, 81.7] across four rounds), so a plan check is the only
+   * thing that settles equivalence.
+   *
+   * Measured at 1,000,000 vertices, four rounds order-alternated, medians: the `or` spelling
+   * 163.501 -> 81.623 ms, **2.00x**, and it now reads the same as the direct `hasLabel(a,b)`
+   * (82.112) which is flat at 1.03x as the control.
+   */
+  test('or of same-kind ANY-of filters merges: hasLabel, hasId and hasKey', () => {
+    expect(
+      kinds(
+        flattenFilterWrappers(
+          traversal(V(), or(traversal(hasLabel('P')), traversal(hasLabel('Q'))), count()),
+        ).steps,
+      ),
+    ).toEqual(['V', 'hasLabel', 'count']);
+
+    expect(
+      kinds(
+        flattenFilterWrappers(
+          traversal(V(), or(traversal(hasKey('a')), traversal(hasKey('b'))), count()),
+        ).steps,
+      ),
+    ).toEqual(['V', 'hasKey', 'count']);
+
+    expect(
+      kinds(
+        flattenFilterWrappers(
+          traversal(V(), or(traversal(hasId('v1')), traversal(hasId('v2'))), count()),
+        ).steps,
+      ),
+    ).toEqual(['V', 'hasId', 'count']);
+  });
+
+  test('the merged list is the CONCATENATION, deduped, in first-seen order', () => {
+    // Not just the right step KIND — the right contents. A fold that produced `hasLabel(P)` alone
+    // would pass the kind assertion above and answer a different question.
+    const [, folded] = flattenFilterWrappers(
+      traversal(V(), or(traversal(hasLabel('P', 'R')), traversal(hasLabel('Q', 'P'))), count()),
+    ).steps;
+
+    expect(folded.kind).toBe('hasLabel');
+    expect((folded as Extract<Step, { kind: 'hasLabel' }>).labels).toEqual(['P', 'R', 'Q']);
+  });
+
+  test('a MIXED-kind or does not merge, and neither does a multi-step branch', () => {
+    // `or(hasLabel(a), hasId(x))` is not a merge of either list; merging would answer a different
+    // question silently. And a branch that filters then does something else is not a filter.
+    const mixed = traversal(V(), or(traversal(hasLabel('P')), traversal(hasId('v1'))), count());
+    const multi = traversal(
+      V(),
+      or(traversal(hasLabel('P'), dedupe()), traversal(hasLabel('Q'))),
+      count(),
+    );
+
+    expect(kinds(flattenFilterWrappers(mixed).steps)).toEqual(['V', 'or', 'count']);
+    expect(kinds(flattenFilterWrappers(multi).steps)).toEqual(['V', 'or', 'count']);
+  });
+
+  test('a ONE-branch or is left alone, and that scope limit is deliberate', () => {
+    /**
+     * Folding `or(hasLabel(P))` to `hasLabel(P)` would be ANSWER-EQUIVALENT — a one-branch
+     * disjunction is just its branch — so no answer test can ever see the difference, and mutation
+     * said so: `single-branch-admitted` SURVIVED with every other mutant dead. It is not a
+     * coverage gap and not dead code; it is an unmeasured candidate, and item 1328's rule applies
+     * — a new form waits for a measurement instead of being admitted by omission.
+     *
+     * So the decline gets a PLAN assertion, which is the only instrument that can hold it. If
+     * someone measures the one-branch form and wants it folded, this is the test to change, with
+     * the number attached.
+     */
+    const plan = traversal(V(), or(traversal(hasLabel('P'))), count());
+
+    expect(kinds(flattenFilterWrappers(plan).steps)).toEqual(['V', 'or', 'count']);
+  });
+
+  test('hasLabelAnd is NOT an ANY-of kind and does not merge', () => {
+    // A separate step kind with conjunctive semantics: merging its lists would be a wrong answer,
+    // and the allow-list keyed by kind is what keeps it out.
+    const plan = traversal(V(), or(traversal(hasLabel('P')), traversal(hasKey('a'))), count());
+
+    // Different ANY-of kinds also decline — same rule, and this is the pair most likely to look
+    // mergeable at a glance.
+    expect(kinds(flattenFilterWrappers(plan).steps)).toEqual(['V', 'or', 'count']);
+  });
+
+  test('the or-fold needs NO element gate, unlike the not-fold', () => {
+    /**
+     * Item 1331's fold had to be gated because `not` INVERTS: a non-element's false became a pass.
+     * `or` does not invert, so both spellings reject a non-element identically — measured as
+     * element 2 and 2, after `properties()` 0 and 0, after `values()` 0 and 0. So the fold applies
+     * even where the stream has stopped carrying elements, and that is deliberate rather than
+     * overlooked.
+     */
+    const plan = traversal(
+      V(),
+      properties(),
+      or(traversal(hasKey('k')), traversal(hasKey('other'))),
+      count(),
+    );
+
+    expect(kinds(flattenFilterWrappers(plan).steps)).toEqual([
+      'V',
+      'properties',
+      'hasKey',
+      'count',
+    ]);
   });
 
   /**

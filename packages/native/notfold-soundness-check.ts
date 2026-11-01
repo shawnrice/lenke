@@ -13,8 +13,10 @@ import { Graph } from '@lenke/core';
 import {
   count,
   hasKey,
+  hasLabel,
   hasNot,
   not,
+  or,
   properties,
   toArray,
   traversal,
@@ -26,6 +28,10 @@ const graph = new Graph();
 
 graph.addVertex({ id: 'a', labels: ['P'], properties: { k: 1, other: 'x' } });
 graph.addVertex({ id: 'b', labels: ['P'], properties: { other: 'y' } });
+
+const run2 = (label: string, make: () => unknown): void => {
+  show(label, make);
+};
 
 const show = (label: string, make: () => unknown): void => {
   try {
@@ -47,6 +53,39 @@ show('V().properties().hasKey(k).count()', () =>
 );
 show('V().properties().not(hasNot(k)).count()', () =>
   toArray(traversal(V(), properties(), not(traversal(hasNot('k'))), count()), graph),
+);
+
+console.log('\nOR-OF-ANY-OF folds (item 1332) — does `or` need the element gate too?');
+console.log("  `not` INVERTS, so a non-element's false became a pass. `or` does not, so both");
+console.log('  spellings should agree even off an element stream. Measured, not assumed:');
+run2('V().hasLabel(P,Q).count()', () =>
+  toArray(traversal(V(), hasLabel('P', 'Q'), count()), graph),
+);
+run2('V().or(hasLabel(P),hasLabel(Q)).count()', () =>
+  toArray(traversal(V(), or(traversal(hasLabel('P')), traversal(hasLabel('Q'))), count()), graph),
+);
+run2('V().properties().hasLabel(P,Q).count()', () =>
+  toArray(traversal(V(), properties(), hasLabel('P', 'Q'), count()), graph),
+);
+run2('V().properties().or(hasLabel..).count()', () =>
+  toArray(
+    traversal(V(), properties(), or(traversal(hasLabel('P')), traversal(hasLabel('Q'))), count()),
+    graph,
+  ),
+);
+run2('V().values(other).hasKey(k,other).count()', () =>
+  toArray(traversal(V(), values('other'), hasKey('k', 'other'), count()), graph),
+);
+run2('V().values(other).or(hasKey(k),hasKey(other))', () =>
+  toArray(
+    traversal(
+      V(),
+      values('other'),
+      or(traversal(hasKey('k')), traversal(hasKey('other'))),
+      count(),
+    ),
+    graph,
+  ),
 );
 
 console.log('\nSCALAR stream:');

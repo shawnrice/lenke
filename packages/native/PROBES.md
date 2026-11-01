@@ -19,7 +19,7 @@ return the same rows.
 | probe                        | the property                                            | last run                                                                               |
 | ---------------------------- | ------------------------------------------------------- | -------------------------------------------------------------------------------------- |
 | `spelling-probe.ts`          | equivalent GQL spellings of one predicate cost the same | clean; its one flag is item 644's BUILT-AND-REVERTED product lever                     |
-| `gremlin-spelling-probe.ts`  | the same for Gremlin (item 1305)                        | **ZERO flagged** as of item 1331, from 15 at 1305; 13 sub-ms groups still not compared |
+| `gremlin-spelling-probe.ts`  | the same for Gremlin (item 1305)                        | zero flagged AT `SPELL_N=200000`; **1M flagged a new 2.00x group** (item 1332)         |
 | `surface-parity-probe.ts`    | GQL and Gremlin cost the same for ONE question          | **FOUND item 1322's 5.78x pathology**; leaves `two-hop-count` open at GQL 1.84x slower |
 | `index-never-hurts-probe.ts` | adding an index never makes a query slower (item 1324)  | holds on 17 shapes, both surfaces                                                      |
 | `id-lookup-is-o1-probe.ts`   | lookup by id is FLAT in graph size (item 1326)          | holds on 8 arms over a 16x range                                                       |
@@ -54,6 +54,13 @@ one surface.
 NOT on anything else: after `properties()` they give 1 and 3, after `values()` 0 and 2, because
 `hasNot` returns false for a non-element. Run it before widening that fold's allow-list, and in
 general whenever a rewrite's soundness depends on what the stream carries.
+
+**⚠️ RUN THE SPELLING PROBES AT MORE THAN ONE `SPELL_N`.** Item 1331 closed the last flagged group
+at 200,000 and item 1332 found a new one worth 2.00x by changing nothing but the size — the group
+had been UNDER the 1 ms floor and reported as "not compared", which is not the same as clean. The
+sweep-the-size rule was already written for benchmarks; it applies here too. Note what raising N
+canNOT fix: the 13 id-lookup groups are O(1) by design (item 1326), so they stay under the floor at
+any size and need more REPS or a finer timer instead.
 
 `enumeration-surface-probe.ts` is the one to reach for before asserting anything about which route
 was taken. **A spy on ONE surface that reads zero has NOT shown there is nothing to find.** Item

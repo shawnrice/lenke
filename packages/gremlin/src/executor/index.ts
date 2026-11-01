@@ -584,6 +584,90 @@ const ELEMENT_STEP_ON_PATH = new Set([
  * share one equality: `has(k, v)` routes a bare value through `eq()` itself, so the step's
  * predicate is always a predicate object and never a raw value.
  */
+/**
+ * `or(hasLabel(a), hasLabel(b))` is `hasLabel(a, b)` — and the same for `hasId` and `hasKey`.
+ *
+ * Item 1332, the same mechanism as item 1331 one step along: `or` applies a sub-plan PER TRAVERSER
+ * PER BRANCH, so the spread spelling pays that machinery where the merged one runs a single
+ * element-local filter. Measured at 1,000,000 vertices, the group alone, three runs:
+ * `hasLabel(a,b)` ~86 ms against `or(hasLabel, hasLabel)` ~158-163 — **~1.85x**. In the full sweep
+ * it reads 2.02x, and at 200,000 it sat under the probe's 1 ms floor and was never compared at all.
+ *
+ * ALL THREE ARE ANY-OF, which is what makes merging them a concatenation:
+ *
+ *     hasLabel   labels.some(l => v.labels.has(l))
+ *     hasId      ids.includes(v.id)
+ *     hasKey     keys.some(k => k in bag)
+ *
+ * so "matches a, or matches b" IS "matches one of [a, b]". `hasLabelAnd` is a DIFFERENT step kind
+ * and is not eligible; nor is `has`, whose own `or`-chain fold is {@link membershipFromOrChain}
+ * beside this one.
+ *
+ * ⚠️ AND UNLIKE ITEM 1331, THIS NEEDS NO ELEMENT-STREAM GATE — measured, not assumed. All three
+ * filters return FALSE for a non-element, and `or` does not INVERT that false the way `not` does,
+ * so both spellings reject a non-element identically. `notfold-soundness-check.ts` carries the
+ * reading: element 2 and 2, after `properties()` 0 and 0, after `values()` 0 and 0. The fold that
+ * DID need a gate inverted; this one does not, and that is the whole difference.
+ */
+const ANY_OF_FIELD = {
+  hasLabel: 'labels',
+  hasId: 'ids',
+  hasKey: 'keys',
+} as const;
+
+type AnyOfKind = keyof typeof ANY_OF_FIELD;
+
+const isAnyOfKind = (kind: Step['kind']): kind is AnyOfKind => kind in ANY_OF_FIELD;
+
+const anyOfFoldFromOr = (step: Step): Step | undefined => {
+  if (step.kind !== 'or' || step.plans.length < 2) {
+    return undefined;
+  }
+
+  let kind: AnyOfKind | undefined;
+  const merged: unknown[] = [];
+  const seen = new Set<unknown>();
+
+  for (const branch of step.plans) {
+    if (branch.steps.length !== 1) {
+      return undefined;
+    }
+
+    const [only] = branch.steps;
+
+    if (!isAnyOfKind(only.kind)) {
+      return undefined;
+    }
+
+    // Every branch must be the SAME kind: `or(hasLabel(a), hasId(x))` is not a merge of either
+    // list, and mixing them would silently answer a different question.
+    const { kind: branchKind } = only;
+
+    if (kind === undefined) {
+      kind = branchKind;
+    } else if (kind !== branchKind) {
+      return undefined;
+    }
+
+    const values = (only as unknown as Record<string, readonly unknown[]>)[ANY_OF_FIELD[only.kind]];
+
+    for (const value of values) {
+      // Duplicates are harmless to `some`/`includes` but cost a comparison each, and dropping
+      // them keeps the merged list the size the spelling implies.
+      if (!seen.has(value)) {
+        seen.add(value);
+        merged.push(value);
+      }
+    }
+  }
+
+  if (kind === undefined) {
+    return undefined;
+  }
+
+  return { kind, [ANY_OF_FIELD[kind]]: merged } as unknown as Step;
+};
+
 const membershipFromOrChain = (step: Step): Step | undefined => {
   if (step.kind !== 'or' || step.plans.length < 2) {
     return undefined;
@@ -897,6 +981,16 @@ export const flattenFilterWrappers = (plan: Plan): Plan => {
 
       if (membership !== undefined) {
         steps.push(membership);
+        changed = true;
+        continue;
+      }
+
+      // Item 1332. Tried AFTER the `has`/`eq` membership above, because that fold is the narrower
+      // claim on the same step kind and the two cannot both apply: `has` is not an ANY-of kind.
+      const anyOf = anyOfFoldFromOr(step);
+
+      if (anyOf !== undefined) {
+        steps.push(anyOf);
         changed = true;
         continue;
       }

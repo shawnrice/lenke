@@ -45662,7 +45662,7 @@ measured for the id pin, and this item does not supersede it — the two use DIF
 (decline vs seed) for the same cliff, and the decline remains the right one where the hint is
 selective on every graph.
 
-## 1331 — ✅ SHIPPED: `not(hasNot(k))` folds to `hasKey(k)` on an element stream — **16.9x**, and the GREMLIN SPELLING SURFACE IS NOW AT ZERO FLAGGED GROUPS
+## 1331 — ✅ SHIPPED: `not(hasNot(k))` folds to `hasKey(k)` on an element stream — **16.9x**, and the GREMLIN SPELLING SURFACE IS NOW AT ZERO FLAGGED GROUPS ~~AT `SPELL_N=200000`~~ — ⚠️ CORRECTED BY 1332: raising `SPELL_N` to 1,000,000 flagged a NEW group (2.00x), so "zero flagged" is a claim about the N it was run at; and the "raise `SPELL_N`" advice for the 13 sub-ms groups is wrong — they are O(1) id lookups and need more REPS
 
 The last group `gremlin-spelling-probe` flagged. `not` applies a whole sub-plan PER TRAVERSER
 (`!hasAny(applyPlanToStream(step.plan, [t], …))`), so this spelling paid 200,000 sub-plan
@@ -45756,3 +45756,107 @@ The Gremlin spelling surface is now clean: item 1305 built the probe and found 1
 items 1306-1312 took it to 2, item 1322 closed one, and this closes the last. That is a claim about
 the PROBE's groups and not about the surface entire — the 13 sub-millisecond groups are still
 not compared, and raising `SPELL_N` is the way to find out whether they hide anything.
+
+## 1332 — ✅ SHIPPED: `or(hasLabel(a), hasLabel(b))` merges into `hasLabel(a, b)` — **2.00x**; found only by RAISING `SPELL_N`, and it needs NO element gate (unlike 1331) for a reason worth stating
+
+Item 1331's mechanism one step along: `or` applies a sub-plan PER TRAVERSER PER BRANCH, so the
+spread spelling pays that machinery where the merged one runs a single element-local filter. The
+fold generalizes to all three ANY-of filters.
+
+### ⚠️ INVISIBLE AT 200,000 AND REAL AT 1,000,000, which is a gap in how the probe was being run
+
+At `SPELL_N=200000` this group sat UNDER the probe's 1 ms floor and was reported as
+"not compared" — not clean, simply never measured. At 1,000,000 it flagged at 2.02x, and alone,
+three runs, `hasLabel(a,b)` ~86 ms against `or(hasLabel, hasLabel)` ~158-163.
+
+**So "0 groups flagged" is a statement about the N the probe was run at.** Item 1331 closed the
+last flag at 200k and this item found a new one by changing nothing but the size. The sweep-the-size
+rule was already written down for benchmarks; it applies to the spelling probes too.
+
+### The A/B: 2.00x, with the DISTRIBUTION printed because the folded shape is bimodal
+
+Whole-file arms, four rounds, order alternated, at 1,000,000 vertices:
+
+```text
+  arm    reading                                        median
+  pre    direct      [84.6, 85.8, 79.2, 79.1]           84.638
+  pre    or-spelled  [163.5, 170.2, 154.6, 155.1]      163.501
+  post   direct      [82.0, 80.0, 83.8, 82.1]           82.112
+  post   or-spelled  [81.6, 79.6,  47.9, 81.7]          81.623
+
+  OR spelling    163.501 -> 81.623   2.00x
+  direct (ctl)    84.638 -> 82.112   1.03x
+```
+
+The two spellings now CONVERGE (81.6 against 82.1). ⚠️ The post arm shows a ~48 ms low mode once in
+four while the pre arm is tight — so the bimodality appears only AFTER the fold, and three earlier
+isolated runs caught it twice, reading 45.8 and 47.0 against the direct arm's 80. Quoting those
+would have claimed ~1.75x in the WRONG DIRECTION (the folded arm beating a step it compiles to).
+The repo already records `nullif` swinging between ~45 and ~82 modes; this is the same thing, and
+the median across four rounds is the honest number.
+
+Because of that, the equivalence claim rests on a PLAN assertion and not on time — "a plan mismatch
+is the real signal; the time is the backstop", applied as written.
+
+### ✅ AND IT NEEDS NO ELEMENT GATE, which is the interesting contrast with item 1331
+
+All three merged kinds are ANY-of, which is what makes merging a concatenation:
+
+```text
+  hasLabel   labels.some(l => v.labels.has(l))
+  hasId      ids.includes(v.id)
+  hasKey     keys.some(k => k in bag)
+```
+
+All three return FALSE for a non-element — and `or` does NOT INVERT that false the way `not` does,
+so both spellings reject a non-element identically. Measured, not assumed: element 2 and 2, after
+`properties()` 0 and 0, after `values()` 0 and 0. **The fold that needed a gate inverted; this one
+does not.** That is the whole difference between the two items, and it is recorded so the next fold
+is classified by whether it inverts rather than by analogy.
+
+`hasLabelAnd` is a separate step kind with conjunctive semantics and is not eligible. `has` has its
+own `or`-chain fold (`membershipFromOrChain`) beside this one, tried first because it is the
+narrower claim.
+
+### Teeth: 6 mutants, 5 caught, 1 TYPE-INVALID, no survivors
+
+```text
+  fold-unwired             CAUGHT        3 fail
+  mixed-kinds-merged       CAUGHT        2 fail   the WRONG-ANSWER mutant
+  any-of-check-dropped     TYPE-INVALID  never a live mutation
+  merge-keeps-first-only   CAUGHT        1 fail
+  haskey-field-swapped     CAUGHT        2 fail
+  single-branch-admitted   CAUGHT        1 fail   <- SURVIVED pass 1
+```
+
+`merge-keeps-first-only` is why the contents are asserted and not just the step KIND: it folds to
+`hasLabel(P)` alone, which satisfies a kind-only assertion and answers a different question. The
+test pins the deduped concatenation in first-seen order, `['P', 'R', 'Q']`.
+
+⚠️ `single-branch-admitted` SURVIVED pass 1, and it is neither a coverage gap nor dead code:
+folding `or(hasLabel(P))` to `hasLabel(P)` is ANSWER-EQUIVALENT, so no answer test can ever see it.
+The `plans.length < 2` guard is a deliberate scope limit on an UNMEASURED form — item 1328's rule,
+a new form waits for a measurement rather than being admitted by omission — and a PLAN assertion is
+the only instrument that can hold it. It has one now, named as the test to change if the one-branch
+form is ever measured.
+
+This is the third survivor this session whose diagnosis was the question "missing test, vacuous
+test, or equivalent code?" — and the first where equivalence was checked FIRST. Item 1330 cost two
+wasted passes by assuming a coverage gap twice.
+
+### ⚠️ Correcting item 1331's closing line, in the same commit
+
+That entry said raising `SPELL_N` is the way to learn whether the 13 sub-millisecond groups hide
+anything. **That is wrong for those groups.** They are id lookups, which are O(1) by design (item
+1326's checked invariant), so no graph size brings them into range — at 1,000,000 the same 13 are
+still under the floor. They need more REPS or a finer timer, not a bigger graph. Raising `SPELL_N`
+did work for the label and hop groups, which is how this item surfaced, so the advice was right for
+the wrong set.
+
+### Verification
+
+`packages/gremlin` 1,120 pass / 0 fail (1,114 before; +6 in `executor/filter-flatten.test.ts`).
+`packages/gql` 3,390 pass / 0 fail. All seven byte-identity fuzzers 13 pass / 0 fail. Gates run
+BEFORE mutation this time — the lesson from items 1330 and 1331, where a lint-driven refactor landed
+after a passing verdict and invalidated it twice. `typecheck` 0, `lint` 0, `fmt:check` 0,
+`check --skip-nx-cache` 0.
