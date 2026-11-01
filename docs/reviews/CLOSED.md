@@ -45347,3 +45347,71 @@ single test that protects the evidence rule. The existing windowed union case ha
 `executor/union-both-fusion.test.ts`). All seven byte-identity fuzzers 13 pass / 0 fail. Gates as
 separate commands, each status read into a variable before anything else ran: `typecheck` 0,
 `lint` 0, `fmt:check` 0, `check --skip-nx-cache` 0.
+
+## 1328 — the order-free tail becomes a RULE instead of a list: 113x/245x/239x on multi-hop counts
+
+Items 1318 and 1327 grew `ORDER_FREE_TAILS` to eight enumerated entries, and the measured family
+kept extending past it:
+
+```text
+  hasId(3 ids).out(T).count()                   0.0193 ms   admitted
+  hasId(3 ids).out(T).out(T).count()            4.3231      224x, declining
+  hasId(3 ids).out(T).out(T).out(T).count()     6.8018      352x, declining
+  hasId(3 ids).out(T).out(T).dedupe().count()   7.0489      declining
+  hasId(1 id).out(T).out(T).count()             0.0223      a single id never needed a tail
+```
+
+Enumerating those is combinatorial, so the list is replaced by a RULE: **a tail is order-free when
+every step in it is order-insensitive AND it ENDS in `count`.**
+
+```text
+  ids-out-out-count          4.3231 -> 0.0383   113x   answer 3
+  ids-out3-count             6.8018 -> 0.0278   245x   answer 3
+  ids-out-out-dedupe-count   7.0489 -> 0.0295   239x   answer 3
+  ids-mixed-count                      0.0329          answer 6  (out, in, both)
+  ctl-ids-out-count                    0.0188          unchanged
+  ctl-ids-out-out-limit                0.4310          still DECLINES (window)
+  ctl-ids-out-values                   6.1867          still DECLINES (values)
+  ctl-ids-plain                        6.0206          still DECLINES, rows=3
+```
+
+All 1,105 existing tests passed unchanged before any new ones were added, including every decline.
+
+### An ALLOW-LIST, not a deny-list, and that is the whole safety argument
+
+`ORDER_FREE_STEPS` lists `out`/`in`/`both`/`dedupe`; anything else declines by DEFAULT. A deny-list
+would admit an unknown or newly added step kind SILENTLY, and the cost of being wrong is a
+reordering no answer test can see.
+
+The test that pins it: **`[out, has, count]` is SOUND** — `has` preserves order — **and it still
+DECLINES**, because `has` is not listed. A new step kind therefore waits for a measurement instead
+of being admitted by omission. Mutation confirms that test is the ONLY thing holding the property:
+`allow-list-becomes-deny` is caught by it alone (1 failure), where every other mutant fails 3-14
+tests across both callers.
+
+This is the honest resolution of item 1318's caution that "any hop then a count is a broader claim
+than either caller has evidence for". It now has evidence at one hop, two, three, mixed kinds and
+with dedupe — so the generalization is earned, and the allow-list keeps the blast radius of being
+wrong at zero new kinds.
+
+### Teeth: 5 mutants, 5 caught
+
+```text
+  rule-unwired                 CAUGHT  14 fail   id-seed AND union-both
+  count-terminal-check-dropped CAUGHT  10 fail   id-seed AND union-both
+  allow-list-becomes-deny      CAUGHT   1 fail   id-seed only
+  dedupe-dropped-from-list     CAUGHT   5 fail   id-seed AND union-both
+  both-dropped-from-list       CAUGHT   3 fail   id-seed
+```
+
+`count-terminal-check-dropped` is the soundness one: without the `count` terminal a tail returning
+ELEMENTS would be admitted and its order WOULD be observable. 10 failures across both callers.
+
+The mutation script failed loudly first — a `NameError` from an assertion referencing the constant
+this item deleted — which is the right failure mode for a harness: unambiguous, not a silent skip.
+
+### Verification
+
+`packages/gremlin` 1109 pass / 0 fail (1105 before, +4 in `executor/id-seed.test.ts`). All seven
+byte-identity fuzzers 13 pass / 0 fail. Gates as separate commands, each status read into a
+variable: `typecheck` 0, `lint` 0, `fmt:check` 0, `check --skip-nx-cache` 0.

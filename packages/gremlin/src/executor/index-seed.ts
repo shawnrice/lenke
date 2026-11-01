@@ -357,16 +357,35 @@ const labelSeed = <E>(
  * `count` tail cannot observe that, which is exactly what "the tail may only observe what both
  * spellings agree on" requires.
  */
-const ORDER_FREE_TAILS: readonly (readonly Step['kind'][])[] = [
-  ['count'],
-  ['dedupe', 'count'],
-  ['out', 'count'],
-  ['in', 'count'],
-  ['both', 'count'],
-  ['out', 'dedupe', 'count'],
-  ['in', 'dedupe', 'count'],
-  ['both', 'dedupe', 'count'],
-];
+/**
+ * The step kinds that cannot observe the ORDER of what feeds them, as an ALLOW-LIST.
+ *
+ * ITEM 1328 REPLACED AN ENUMERATED LIST WITH THIS RULE, because the list was turning
+ * combinatorial: items 1318 and 1327 had grown it to eight entries and the measured family kept
+ * extending — `[out, out, count]` at 224x and `[out, out, out, count]` at 352x were both still
+ * declining, and `[out, out, dedupe, count]` with them.
+ *
+ * THE RULE: a tail is order-free when every step in it is listed here AND it ENDS in `count`.
+ *
+ * - a HOP (`out`/`in`/`both`) applied elementwise sums each element's own neighbours, so the
+ *   result multiset is the sum over the input multiset and does not depend on its order
+ *   (item 1318, measured per hop);
+ * - `dedupe` reduces a multiset to a SET, coarser still (item 1327, 225x);
+ * - `count` reads only a size.
+ *
+ * AN ALLOW-LIST AND NOT A DENY-LIST, and that is the whole safety argument: an unknown or newly
+ * added step kind DECLINES by default. A deny-list would admit it silently, and the cost of being
+ * wrong here is a reordering that no answer test can see. `take`/`range`/`order` read the
+ * SEQUENCE; `values` emits per value rather than per element (item 1314); a path-dependent step
+ * observes the walk itself. None are listed, so all of them decline — as do order-preserving
+ * FILTERS such as `has`, which would be sound and have no measurement behind them yet.
+ */
+const ORDER_FREE_STEPS: ReadonlySet<Step['kind']> = new Set<Step['kind']>([
+  'out',
+  'in',
+  'both',
+  'dedupe',
+]);
 
 /**
  * Does the run of `steps` starting at `from` match an order-free tail?
@@ -382,26 +401,19 @@ const ORDER_FREE_TAILS: readonly (readonly Step['kind'][])[] = [
  * on its own terms, with no performance claim attached.
  */
 export const tailIsOrderFreeFrom = (steps: readonly Step[], from: number): boolean => {
-  for (const want of ORDER_FREE_TAILS) {
-    if (want.length !== steps.length - from) {
-      continue;
-    }
+  // A tail must END in `count`: that is what makes the order unobservable rather than merely
+  // reordered. An empty tail is not order-free — it returns the elements themselves.
+  if (from >= steps.length || steps[steps.length - 1].kind !== 'count') {
+    return false;
+  }
 
-    let all = true;
-
-    for (let k = 0; k < want.length; k++) {
-      if (steps[from + k].kind !== want[k]) {
-        all = false;
-        break;
-      }
-    }
-
-    if (all) {
-      return true;
+  for (let k = from; k < steps.length - 1; k++) {
+    if (!ORDER_FREE_STEPS.has(steps[k].kind)) {
+      return false;
     }
   }
 
-  return false;
+  return true;
 };
 
 /** The whole-array form, for `fuseUnionBoth`, which already holds a slice. */

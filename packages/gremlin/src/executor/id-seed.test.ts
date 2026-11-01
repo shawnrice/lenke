@@ -248,6 +248,59 @@ describe('the multi-id DECLINE, which is about order', () => {
     }
   });
 
+  test('MULTIPLE hops before the count are admitted (item 1328 made it a rule)', () => {
+    // Items 1318 and 1327 enumerated tails and the list was going combinatorial:
+    // `[out, out, count]` measured 224x and `[out, out, out, count]` 352x, both still declining.
+    // The rule is now "every step order-insensitive AND the tail ends in count".
+    const g = build();
+
+    for (const steps of [
+      [out('R'), out('R')],
+      [out('R'), out('R'), out('R')],
+      [out('R'), out('R'), dedupe()],
+      [out('R'), in_('R'), both('R')],
+    ]) {
+      expect(
+        seedFromIndex(traversal(V(), hasId('c', 'a'), ...steps, count()), g, false),
+      ).not.toBeNull();
+    }
+  });
+
+  test('AN UNLISTED STEP DECLINES even where it would be sound — the allow-list is the safety', () => {
+    // THE MOST IMPORTANT TEST OF THE RULE. `has` is an order-PRESERVING filter, so
+    // `[out, has, count]` is sound and a deny-list would have admitted it. It is not on the
+    // allow-list, so it declines. That default is what makes a NEW step kind safe: it declines
+    // until someone measures it, rather than being admitted silently by omission.
+    const g = build();
+
+    expect(
+      seedFromIndex(traversal(V(), hasId('c', 'a'), out('R'), has('k', 1), count()), g, false),
+    ).toBeNull();
+  });
+
+  test('a tail that does NOT end in count declines, however order-free its steps', () => {
+    // `[out, dedupe]` is made of listed steps but returns ELEMENTS, so the order is observable.
+    const g = build();
+
+    expect(seedFromIndex(traversal(V(), hasId('c', 'a'), out('R'), dedupe()), g, false)).toBeNull();
+  });
+
+  test('multi-hop counts agree whichever order the ids are written in', () => {
+    // The equivalence the rule rests on, across the shapes it newly admits.
+    const g = build();
+
+    for (const steps of [
+      [out('R'), out('R')],
+      [out('R'), out('R'), dedupe()],
+      [out('R'), in_('R'), both('R')],
+    ]) {
+      const a = Number(toArray(traversal(V(), hasId('c', 'a'), ...steps, count()), g)[0]);
+      const b = Number(toArray(traversal(V(), hasId('a', 'c'), ...steps, count()), g)[0]);
+
+      expect(a).toBe(b);
+    }
+  });
+
   test('a hop then a dedupe then a WINDOW still declines', () => {
     // The window reads the sequence, so it is refused however the frontier was produced.
     const g = build();
