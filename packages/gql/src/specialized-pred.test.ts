@@ -44,6 +44,15 @@ const build = (): Graph => {
         n: i % 7,
         s: `s${i % 5}`,
         flag: i % 2 === 0,
+        // ITEM 1339's numeric arm branches on `typeof`, so the fixture carries the values that
+        // decide it: NaN (not nullish, so it reaches the comparison and must settle UNKNOWN),
+        // both zeroes, and both infinities.
+        ...(i % 17 === 0 ? { odd: Number.NaN } : {}),
+        ...(i % 19 === 0 ? { odd: i % 38 === 0 ? 0 : -0 } : {}),
+        ...(i % 23 === 0 ? { odd: i % 46 === 0 ? Infinity : -Infinity } : {}),
+        // A STRING under the same key some vertices give a number, so one query meets both and
+        // the fallback arm runs beside the fast one in a single scan.
+        ...(i % 29 === 0 ? { mixed: `x${i}` } : { mixed: i }),
         ...(i % 11 === 0 ? { sometimes: i } : {}),
         ...(i % 13 === 0 ? { nulled: null } : {}),
         meta: { city: i % 4 === 0 ? 'NYC' : 'LDN' },
@@ -93,6 +102,22 @@ describe('the specialized closure agrees with satisfies, element by element', ()
     'n.missing_entirely > 5',
     // A cross-type ordering, which settles rather than throws for `<=` per the recorded policy.
     "n.n > 's2'",
+    /**
+     * ITEM 1339's numeric arm: `cmp` is called directly when BOTH sides are numbers, and
+     * `compareTruth` otherwise. These are the values that decide which arm runs.
+     *
+     * `odd` is NaN on some vertices, ±0 on others, ±Infinity on others and ABSENT on most — so one
+     * scan exercises the fast arm, the UNKNOWN-from-NaN case and the nullish-from-absent case.
+     * `mixed` is a number on most vertices and a STRING on others, so the fast and fallback arms
+     * both run within a single query.
+     */
+    'n.odd > 0',
+    'n.odd >= 0',
+    'n.odd < 0',
+    'n.odd <= 0',
+    'n.mixed > 100',
+    'n.mixed <= 100',
+    "n.mixed > 'x0'",
   ];
 
   for (const where of SPECIALIZABLE) {

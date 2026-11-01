@@ -6888,9 +6888,56 @@ export const specializeCmpProp = (
   }
 
   const [{ key, op, value }] = carried;
+
+  // ORDERING ops only: an equality is routed to `compareTruth` instead.
+  //
+  // ⚠️ AND `cmpProps` DOES CARRY EQUALITIES, which is the opposite of what this comment first
+  // claimed. `satisfies`'s own loop describes `cmpProps` as "the ORDERING comparisons `eqProps`
+  // cannot carry", so I wrote this off as belt-and-braces — then made the branch THROW and ran the
+  // suite: SEVEN tests fired. The refusal is reached, not defensive.
+  //
+  // Dropping it nonetheless SURVIVES mutation, because for a NUMBER PAIR `COMPARE['=']` and
+  // `structuralEq` agree, so the two routes coincide on every input the suite has. They are not
+  // proven to agree in general — NaN and ±0 are where equality notions usually part company, and
+  // `compareTruth` reaches `structuralEq` for `=` while the arm below would call `cmp` — so the
+  // refusal stays and the question stays unasked. One comparison per QUERY buys that.
+  if (op === '=' || op === '<>') {
+    return undefined;
+  }
+
   const cmp = COMPARE[op];
 
-  return (element, env) => compareTruth(op, cmp, propOf(element, key), value(env)) === true;
+  /**
+   * ITEM 1339: the numeric pair is answered by `cmp` DIRECTLY, skipping the `compareTruth` CALL.
+   *
+   * ⚠️ READ `compareTruth`'s HEADER BEFORE TOUCHING THIS — it refutes a NEIGHBOURING lever and the
+   * difference is the whole point. That header records adding
+   * `if (op !== '=' && … typeof lv === 'number' …) return fn(lv, rv)` INSIDE `compareTruth`: "It
+   * was written and measured and it moved NOTHING", across five shapes, twice over. This is not
+   * that change. That one short-circuits WITHIN the function and still pays the call; this one
+   * removes the call at the site. Measured in the specialized closure, 200,000 vertices, three
+   * processes each:
+   *
+   *     through `compareTruth`     3.35 / 2.95 / 2.84 ms   median 2.95
+   *     `cmp` called directly      2.09 / 2.15 / 2.02      median 2.09   1.41x
+   *     `propOf` replaced instead  3.42 / 2.85 / 3.01      median 3.01   0.98x — REFUTED
+   *
+   * so `propOf` is not the term (which is also what that header's ladder says) and the call is.
+   *
+   * SEMANTICS ARE TAKEN FROM THAT HEADER, NOT RE-DERIVED. It states the numeric arm is
+   * "byte-identical, NaN included", because `isNullish` is null/undefined only so a NaN is not
+   * nullish, a number is not a temporal, and `typeof lv === typeof rv === 'number'` IS its own
+   * `orderable` test. And `cmp` here IS `COMPARE[op]` — the same `fn` that header passes — so no
+   * operator is rewritten. Anything not a number pair falls through to `compareTruth` unchanged.
+   */
+  return (element, env) => {
+    const lhs = propOf(element, key);
+    const rhs = value(env);
+
+    return typeof lhs === 'number' && typeof rhs === 'number'
+      ? (cmp as (a: number, b: number) => boolean)(lhs, rhs)
+      : compareTruth(op, cmp, lhs, rhs) === true;
+  };
 };
 
 export const satisfies = (
