@@ -45860,3 +45860,109 @@ the wrong set.
 BEFORE mutation this time — the lesson from items 1330 and 1331, where a lint-driven refactor landed
 after a passing verdict and invalidated it twice. `typecheck` 0, `lint` 0, `fmt:check` 0,
 `check --skip-nx-cache` 0.
+
+## 1333 — ✅ SHIPPED: inline props on ANY pattern of a multi-pattern `MATCH` lift to the clause `WHERE` — **1.86x**, found by READING after seven timing experiments failed; ⚠️ and the mechanism I first claimed was WRONG
+
+The GQL spelling probe flags `a product's one-sided predicate` right at its 2x threshold. Five
+separate processes show why the group ratio flickers while the effect does not — the braces arm is
+rock steady and the others vary:
+
+```text
+  , (b:P) WHERE b.k = 7      14.20 14.23 14.12 12.21 14.22   median 14.20
+  MATCH … MATCH … WHERE      11.39 12.83 10.37 10.88 13.11   median 11.39
+  , (b:P WHERE b.k = 7)      11.48 11.85 11.82 12.26 11.64   median 11.82
+  , (b:P {k: 7})             23.72 24.69 24.78 25.35 23.64   median 24.69   <- 2.09x
+```
+
+`liftStartProps` opened with `if (c.kind !== 'match' || c.where !== undefined ||
+c.patterns.length !== 1) return c;` — so a comma product (`patterns.length === 2`) refused the lift
+outright. That refusal was listed in the function's header with NO REASON beside it, unlike the
+no-segments one next to it ("already served by the scan rungs and would gain nothing", which
+measurement confirms for a single bare node at 3.36 against 3.55 ms). An unmeasured scope limit,
+the same shape as item 1332's one-branch `or`.
+
+After the lift, eight processes: **24.69 -> 13.29 ms, 1.86x, and the group no longer flags in any
+run.**
+
+### ⚠️ SEVEN TIMING EXPERIMENTS FAILED TO REPRODUCE IT, and reading the code took one
+
+A standalone probe was built to match the shared fixture and bisect the cause. It matched on N,
+edge count, labels, property richness, the NDJSON load path, index-build order, the second index,
+one-process multi-shape timing, two-pass min, and the per-rep `JSON.stringify` — **every candidate
+refuted**, reading braces 8.78 against inlineWhere 8.66 both before and after the change. The
+absolute costs differ 2.7x from the probe's (8.8 against 23.8) on a fixture matched on every
+dimension I could find.
+
+So `product-inline-seed-probe.ts` CANNOT validate this change and its flatness is NOT evidence the
+change does nothing. **Why the shared fixture shows a 2x that a matched one does not is OPEN.** The
+`ts-closure-size-is-load-bearing` note is the standing suspect — the spelling probe is a ~1,500-line
+module, the standalone one ~250 — but that is a hypothesis, not a finding.
+
+The lesson is cheaper than the seven experiments were: when a gap is reproducible on one instrument
+and not another, READ THE DECLINE before bisecting the fixture. `liftStartProps`'s guard answered in
+one look what ten measured arms could not.
+
+### ⚠️ AND THE MECHANISM I FIRST CLAIMED IS REFUTED — it is NOT the seed hint
+
+The first version of this entry, and of the code comment, said the braces form "had no seed hint at
+all". **Mutation refuted it**: restoring the `patterns.length !== 1` refusal left ALL 3,401 tests
+green, including route assertions that count vertex pulls from both vertex sources. That is only
+possible if the seek happens either way — and it does: `indexCandidates` reads `node.pred.props`
+DIRECTLY, so inline props seed whether or not they are lifted (item 1330 established that path).
+
+So a seeding assertion cannot see this lift at all, the measurement stands, and **what the lifted
+form actually saves is unidentified.** Recorded as open rather than guessed at, because the guess
+was already wrong once here.
+
+### ⚠️ A SEMANTIC REGRESSION the suite caught: a query that must RAISE answered 0
+
+`MATCH p = (a:P {k: 1}), (p:P {k: 2}) RETURN count(*)` collides a PATH variable with a node
+variable and must raise. It raises only because the product-of-counts shortcut DECLINES and the
+general path gets there; a lifted `where` routed the shortcut elsewhere and it answered 0 — a query
+that must error returning a row, which is the one regression a performance rewrite must never
+cause. Clauses binding a path variable now refuse the lift.
+
+This is item 778's recorded hazard one case along: "one rung's admission gate is another rung's
+disqualifier, which is the real hazard in rewriting a clause list and is not visible from the gate
+being opened."
+
+### Teeth: 5 mutants, 5 caught — after a first pass where TWO survived
+
+```text
+  multi-pattern-refused-again   CAUGHT   2 fail   <- SURVIVED pass 1
+  pathvar-refusal-dropped       CAUGHT   3 fail   the WRONG-ANSWER mutant
+  bare-node-now-lifts-always    CAUGHT   1 fail   <- SURVIVED pass 1
+  null-literal-lifts            CAUGHT   4 fail   IS NULL becomes UNKNOWN (item 260)
+  rebuilds-when-nothing-lifted  CAUGHT  33 fail   across FOUR files
+```
+
+The two survivors were the whole item and one of its refusals, so nothing held either. The fix is
+the repo's own prescription for an answer-equivalent rewrite (`perf-gate-needs-its-own-test`):
+`liftStartProps` is now exported and `lift-start-props.test.ts` tests the TRANSFORMATION directly —
+eleven cases, seven of them refusals with a mutant each.
+
+`rebuilds-when-nothing-lifted` failing 33 tests across four files is the useful surprise: clause
+IDENTITY is load-bearing for the neighbouring rewrites in `compileLinear`, which was a guess in the
+code comment and is now measured.
+
+### ⚠️ Two process failures of mine, both worth the note
+
+**Mutation ran with RED gates.** `lint` and `check` were 1 and the mutation run was chained into the
+same command, so it ran anyway — the exact mistake item 1332's entry records a lesson about two
+items earlier. Running gates first only helps if the run is not chained past their exit code.
+
+**An assertion claimed a contract the function never had.** The identity test asserted
+`liftStartProps(before)).toBe(before` — but the function is `clauses.map(...)` and has ALWAYS
+returned a new array. What the guard preserves is each untouched CLAUSE's identity, which is what
+the test asserts now.
+
+### Verification
+
+`packages/gql` 3,412 pass / 0 fail (3,390 before; +11 in `lift-start-props.test.ts`, +11 in
+`product-inline-lift.test.ts`). `packages/gremlin` 1,120 pass / 0 fail. All seven byte-identity
+fuzzers 13 pass / 0 fail. `typecheck` 0, `lint` 0, `fmt:check` 0, `check --skip-nx-cache` 0.
+
+Also here: `SPELL_ONLY` takes `|`-separated patterns in BOTH spelling probes, so a confirmation run
+can include a NULL CONTROL beside the group it confirms. The probes already warned that an isolated
+run is ungated ("NOTHING BELOW IS GATED. Every ratio here may be instrument noise") with no way to
+act on it — hit twice, at item 1332's `absence` group and this item's product group.

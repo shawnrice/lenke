@@ -371,7 +371,12 @@ const timeOf = (plan: Plan): number => {
   return warm[Math.floor(warm.length / 2)] ?? 0;
 };
 
-const selected = GROUPS.filter(([name]) => name.includes(ONLY));
+// `SPELL_ONLY` takes ONE OR MORE substrings separated by `|` (item 1333), so a confirmation run can
+// include a NULL CONTROL alongside the group being confirmed — without one, the ratios are ungated
+// and the probe says so.
+const selected = GROUPS.filter(([name]) =>
+  ONLY === '' ? true : ONLY.split('|').some((pattern) => name.includes(pattern.trim())),
+);
 
 if (selected.length === 0) {
   console.error(`SPELL_ONLY=${ONLY} matched no group`);

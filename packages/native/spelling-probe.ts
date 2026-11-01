@@ -1147,7 +1147,21 @@ const runGroup = (
   }
 };
 
-const wanted = (n: string): boolean => ONLY === undefined || n.includes(ONLY);
+/**
+ * `SPELL_ONLY` takes ONE OR MORE substrings, separated by `|`, so a confirmation run can include a
+ * NULL CONTROL alongside the group it is confirming.
+ *
+ * Item 1333, and the probe already knew it needed this: an isolated run prints "NULL CONTROLS: none
+ * ran (filtered out...) — NOTHING BELOW IS GATED. Every ratio here may be instrument noise", which
+ * is sound advice with no way to act on it, because a single substring cannot match both a group
+ * and a control whose names share nothing. The result is that the prescribed confirmation — re-run
+ * the group ALONE, three times — produces exactly the ungated ratios the warning disowns. Hit
+ * twice: item 1332's `absence` group and the GQL product group this flag came from.
+ *
+ *     SPELL_ONLY='one-sided predicate|NULL CONTROL' bun run spelling
+ */
+const wanted = (n: string): boolean =>
+  ONLY === undefined || ONLY.split('|').some((pattern) => n.includes(pattern.trim()));
 
 for (const [name, spellings] of GROUPS.filter(([n]) => wanted(n))) {
   runGroup(name, spellings);

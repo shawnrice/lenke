@@ -9463,45 +9463,97 @@ const fuse = (a: Clause, b: Clause): Clause | undefined => {
  *   - a clause with more than one pattern, or a pattern with no segments (a bare node, which is
  *     already served by the scan rungs and would gain nothing).
  */
-const liftStartProps = (clauses: readonly Clause[]): readonly Clause[] =>
+/**
+ * EXPORTED for its own unit test, per `perf-gate-needs-its-own-test`. The rewrite is
+ * answer-equivalent by construction, so no answer test can see it — mutation proved exactly that:
+ * restoring the `patterns.length !== 1` refusal left all 3,401 tests green, including route
+ * assertions that count vertex pulls. Those were vacuous here because inline props ALREADY seed
+ * through `indexCandidates`'s `node.pred.props` path whether they are lifted or not, so the lift
+ * is not what enables the seek and a seeding assertion cannot detect its absence.
+ */
+export const liftStartProps = (clauses: readonly Clause[]): readonly Clause[] =>
   clauses.map((c) => {
-    if (c.kind !== 'match' || c.where !== undefined || c.patterns.length !== 1) {
+    if (c.kind !== 'match' || c.where !== undefined) {
       return c;
     }
 
-    const [pattern] = c.patterns;
-    const { start } = pattern;
-    const props = start.properties ?? [];
-    const name = start.variable;
-
-    if (
-      name === undefined ||
-      props.length === 0 ||
-      pattern.segments.length === 0 ||
-      // A QUANTIFIED segment stays inline, and this one was found by the suite rather than
-      // reasoned out. Lifting is not free: a clause `WHERE` DISQUALIFIES the unbounded
-      // var-length BFS rung, so `MATCH (a:N {k: 1})-[:E]->+(b) RETURN DISTINCT b` stopped
-      // taking it and fell to the general path, which then FAULTED on the trail budget —
-      // `reachability.test.ts` turned two passes into two errors. One rung's admission gate is
-      // another rung's disqualifier, which is the real hazard in rewriting a clause list and
-      // is not visible from the gate being opened.
-      pattern.segments.some((seg) => seg.rel.quantifier !== undefined) ||
-      // A NULL literal means IS NULL and a param could BE null — neither lifts (item 260).
-      !props.every((pc) => pc.value.kind === 'lit' && pc.value.value !== null)
-    ) {
+    // MULTI-PATTERN CLAUSES LIFT TOO (item 1333). This refusal used to be `patterns.length !== 1`,
+    // listed in the header above with no reason beside it — an unmeasured scope limit rather than a
+    // decision, and the GQL spelling probe was measuring what it cost. On that probe's fixture,
+    // the group alone: `MATCH (a:S), (b:P {k: 7})` read ~24.7 ms against ~11.9 for the inline
+    // `WHERE` that means the same thing, and 13.29 after this change — 1.86x, flag cleared, five
+    // processes before and eight after.
+    //
+    // ⚠️ THE MECHANISM IS NOT SEEDING, and the first version of this comment said it was. Inline
+    // props ALREADY seed: `indexCandidates` reads `node.pred.props` directly, lifted or not.
+    // Mutation proved it — restoring the old refusal left all 3,401 tests green INCLUDING route
+    // assertions that count vertex pulls, which is only possible if the seek happens either way.
+    // What the lifted form actually saves is NOT YET IDENTIFIED; the measurement is solid and the
+    // explanation is open, so anyone extending this should not assume the seed hint is the reason.
+    // ⚠️ A CLAUSE BINDING A PATH VARIABLE DOES NOT LIFT, and the suite found this rather than the
+    // reasoning: `MATCH p = (a:P {k: 1}), (p:P {k: 2}) RETURN count(*)` must RAISE on the
+    // collision between the path variable `p` and the node variable `p`, and it raises only
+    // because the product-of-counts shortcut DECLINES and the general path gets there. Adding a
+    // `where` routed the shortcut elsewhere and it answered 0 instead — a query that must error
+    // returning a row, which is the one kind of regression a performance rewrite must never cause.
+    //
+    // This is the same hazard item 778 records one case along: "one rung's admission gate is
+    // another rung's disqualifier, which is the real hazard in rewriting a clause list and is not
+    // visible from the gate being opened."
+    if (c.patterns.some((pattern) => pattern.pathVar !== undefined)) {
       return c;
     }
 
-    const conjuncts: Expr[] = props.map((pc) => ({
-      kind: 'compare',
-      op: '=',
-      left: { kind: 'prop', variable: name, key: pc.key },
-      right: pc.value,
-    }));
+    const single = c.patterns.length === 1;
+    const conjuncts: Expr[] = [];
+
+    const patterns = c.patterns.map((pattern) => {
+      const { start } = pattern;
+      const props = start.properties ?? [];
+      const name = start.variable;
+
+      if (
+        name === undefined ||
+        props.length === 0 ||
+        // A BARE NODE in a SINGLE-pattern clause still stays inline, exactly as before: the scan
+        // rungs already serve it and the lift gains nothing — measured equal at 3.36 against 3.55
+        // ms. In a PRODUCT a bare node is NOT served that way, which is the whole point here.
+        (single && pattern.segments.length === 0) ||
+        // A QUANTIFIED segment stays inline, and this one was found by the suite rather than
+        // reasoned out. Lifting is not free: a clause `WHERE` DISQUALIFIES the unbounded
+        // var-length BFS rung, so `MATCH (a:N {k: 1})-[:E]->+(b) RETURN DISTINCT b` stopped
+        // taking it and fell to the general path, which then FAULTED on the trail budget —
+        // `reachability.test.ts` turned two passes into two errors. One rung's admission gate is
+        // another rung's disqualifier, which is the real hazard in rewriting a clause list and
+        // is not visible from the gate being opened.
+        pattern.segments.some((seg) => seg.rel.quantifier !== undefined) ||
+        // A NULL literal means IS NULL and a param could BE null — neither lifts (item 260).
+        !props.every((pc) => pc.value.kind === 'lit' && pc.value.value !== null)
+      ) {
+        return pattern;
+      }
+
+      for (const pc of props) {
+        conjuncts.push({
+          kind: 'compare',
+          op: '=',
+          left: { kind: 'prop', variable: name, key: pc.key },
+          right: pc.value,
+        });
+      }
+
+      return { ...pattern, start: { ...start, properties: undefined } };
+    });
+
+    // Nothing lifted: return the ORIGINAL clause, not a rebuilt one. A rebuilt-but-identical
+    // clause would defeat the identity checks the caller's other rewrites rely on.
+    if (conjuncts.length === 0) {
+      return c;
+    }
 
     return {
       ...c,
-      patterns: [{ ...pattern, start: { ...start, properties: undefined } }],
+      patterns,
       where: conjuncts.length === 1 ? conjuncts[0] : { kind: 'and', items: conjuncts },
     };
   });
