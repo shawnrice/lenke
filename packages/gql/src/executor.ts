@@ -6863,13 +6863,13 @@ const compilePath = (pattern: PathPattern): CPath => {
  * that the two spellings "agree by construction"; this keeps `satisfies` as the only implementation
  * and binds its arm rather than writing a second one.
  */
-/** The two carriers {@link specializeSingleProp} can answer; exactly one may be populated. */
-const SPECIALIZABLE: ReadonlySet<string> = new Set(['eqProps', 'cmpProps']);
+/** The three carriers {@link specializeSingleProp} can answer; exactly one may be populated. */
+const SPECIALIZABLE: ReadonlySet<string> = new Set(['eqProps', 'cmpProps', 'nullProps']);
 
 export const specializeSingleProp = (
   pred: CPredicate,
 ): ((element: Bound, env: EvalEnv) => boolean) | undefined => {
-  let only: 'eqProps' | 'cmpProps' | undefined;
+  let only: 'eqProps' | 'cmpProps' | 'nullProps' | undefined;
 
   for (const [carrier, held] of Object.entries(pred)) {
     if (held === undefined) {
@@ -6885,7 +6885,7 @@ export const specializeSingleProp = (
     // it is the only one — `eqProps` AND `cmpProps` together need a loop, which is the thing being
     // removed. Everything else, including any non-array carrier such as `where`, refuses.
     if (Array.isArray(held) && SPECIALIZABLE.has(carrier) && only === undefined) {
-      only = carrier as 'eqProps' | 'cmpProps';
+      only = carrier as 'eqProps' | 'cmpProps' | 'nullProps';
 
       continue;
     }
@@ -6944,6 +6944,42 @@ export const specializeSingleProp = (
         ? (cmp as (a: number, b: number) => boolean)(lhs, rhs)
         : compareTruth(op, cmp, lhs, rhs) === true;
     };
+  }
+
+  if (only === 'nullProps') {
+    const nulls = pred.nullProps;
+
+    if (nulls?.length !== 1) {
+      return undefined;
+    }
+
+    const [{ key, negated }] = nulls;
+
+    /**
+     * ITEM 1347: the NULL carrier, the same lever one carrier further along.
+     *
+     * Item 1346 re-priced item 1260's `IS NOT NULL` against Gremlin's `has(k)` and found the cause
+     * by CONTROL rather than inference: on one instrument at 200,000 vertices, the carrier items
+     * 1338-1340 specialized measures 1.06x its Gremlin twin (parity) and this one measures
+     * **1.57x** (GQL 3.5265 against 2.2393, ranges disjoint). A presence test rides `nullProps`,
+     * which `SPECIALIZABLE` refused, so it still paid the whole `satisfies` dispatch per element.
+     *
+     * SEMANTICS ARE BOUND, NOT RE-DERIVED — the same rule as the two arms above. `satisfies`'s own
+     * `nullProps` loop is `if (isNullish(propOf(element, key)) === negated) return false`, so
+     * passing is exactly `isNullish(...) !== negated`, with `negated` true for `IS NOT NULL`. This
+     * calls the same `isNullish` and the same `propOf`.
+     *
+     * ⚠️ NO `env`. Unlike the ordering and equality arms there is no right-hand side to evaluate,
+     * so this closure reads the element alone — which is most of why it is cheaper.
+     *
+     * ⚠️ THE ORDERING QUESTION DOES NOT ARISE HERE, and that is worth stating because the arm this
+     * binds sits inside a careful ordering argument. `satisfies` runs `nullProps` late precisely
+     * because it CANNOT RAISE, and the file records a live TS-vs-native divergence that turns on
+     * that placement (`WHERE n.s AND n.z IS NOT NULL`, item 1270). It cannot be reached from here:
+     * the single-carrier guard above admits this branch only when `nullProps` is the ONLY populated
+     * carrier, so there is no sibling conjunct whose raise could be suppressed or exposed.
+     */
+    return (element) => isNullish(propOf(element, key)) !== negated;
   }
 
   const carried = pred.eqProps;

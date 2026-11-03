@@ -131,6 +131,22 @@ describe('the specialized closure agrees with satisfies, element by element', ()
     'n.sometimes = 11',
     'n.missing_entirely = 1',
     'n.odd = 0',
+    /**
+     * ITEM 1347's NULL arm (`nullProps`). `isNullish(propOf(...))` does not distinguish an ABSENT
+     * key from a STORED null — both are nullish — so these cases pin that reading rather than
+     * assume it, across all three populations the fixture carries: always-present (`n`), stored
+     * null on some (`nulled`), absent on most (`sometimes`), and absent on all
+     * (`missing_entirely`). Both polarities, because `negated` is the only thing the closure
+     * branches on and an inverted flag must fail here.
+     */
+    'n.n IS NOT NULL',
+    'n.n IS NULL',
+    'n.nulled IS NULL',
+    'n.nulled IS NOT NULL',
+    'n.sometimes IS NULL',
+    'n.sometimes IS NOT NULL',
+    'n.missing_entirely IS NULL',
+    'n.missing_entirely IS NOT NULL',
   ];
 
   for (const where of SPECIALIZABLE) {
@@ -338,5 +354,89 @@ describe('the closure and satisfies give the same verdict per element', () => {
     }
 
     expect(compared).toBe(N);
+  });
+});
+
+describe('item 1347 — the NULL carrier arm', () => {
+  const env = {
+    binding: new Map<string, unknown>(),
+    params: {},
+    graph: g,
+  } as unknown as Parameters<NonNullable<ReturnType<typeof specializeSingleProp>>>[1];
+
+  const predOf = (key: string, negated: boolean) =>
+    ({ props: [], nullProps: [{ key, negated }] }) as unknown as Parameters<
+      typeof specializeSingleProp
+    >[0];
+
+  // Every population the fixture carries, against both polarities. `nulled` is a STORED null on
+  // some vertices and absent on the rest, which is the distinction `isNullish` deliberately does
+  // not draw — pinned here rather than assumed.
+  for (const key of ['n', 'nulled', 'sometimes', 'missing_entirely']) {
+    for (const negated of [false, true]) {
+      test(`${key} ${negated ? 'IS NOT NULL' : 'IS NULL'} — same verdict on every vertex`, () => {
+        const pred = predOf(key, negated);
+        const fast = specializeSingleProp(pred);
+
+        expect(fast).toBeDefined();
+
+        let compared = 0;
+        let trues = 0;
+
+        for (const v of vertices) {
+          const got = fast?.(v, env);
+
+          expect(got).toBe(satisfies(v, pred, new Map(), {}, g));
+          compared += 1;
+          trues += got === true ? 1 : 0;
+        }
+
+        expect(compared).toBe(N);
+
+        // NOT VACUOUS in the direction that matters: `sometimes` is present on some vertices and
+        // absent on others, so BOTH polarities must split the fixture rather than answering
+        // uniformly. An all-true or all-false column would let an inverted flag agree by accident.
+        if (key === 'sometimes') {
+          expect(trues).toBeGreaterThan(0);
+          expect(trues).toBeLessThan(N);
+        }
+      });
+    }
+  }
+
+  test('the two polarities are COMPLEMENTS on every vertex', () => {
+    // The sharpest statement of what `negated` means, and it fails for any closure that ignores
+    // the flag or reads it the wrong way round.
+    const isNull = specializeSingleProp(predOf('sometimes', false));
+    const notNull = specializeSingleProp(predOf('sometimes', true));
+
+    expect(isNull).toBeDefined();
+    expect(notNull).toBeDefined();
+
+    for (const v of vertices) {
+      expect(isNull?.(v, env)).toBe(!notNull?.(v, env));
+    }
+  });
+
+  test('TWO nullProps entries refuse — the single-entry guard still holds', () => {
+    const two = {
+      props: [],
+      nullProps: [
+        { key: 'n', negated: true },
+        { key: 'nulled', negated: true },
+      ],
+    } as unknown as Parameters<typeof specializeSingleProp>[0];
+
+    expect(specializeSingleProp(two)).toBeUndefined();
+  });
+
+  test('nullProps BESIDE another carrier refuses', () => {
+    const mixed = {
+      props: [],
+      nullProps: [{ key: 'n', negated: true }],
+      cmpProps: [{ key: 'n', op: '>', value: () => 2 }],
+    } as unknown as Parameters<typeof specializeSingleProp>[0];
+
+    expect(specializeSingleProp(mixed)).toBeUndefined();
   });
 });

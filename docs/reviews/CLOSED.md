@@ -39333,7 +39333,7 @@ times (items 1220/1224/1227/1231): the PRESENCE counts at `try_fused_hop_present
 second also evaluates `bounds.is_empty()` INSIDE its per-element closure — a loop-invariant branch
 of exactly the kind item 1220 hoisted out of a sweep.
 
-### Item 1260 — `IS NOT NULL` is ~4x slower than Gremlin's `has(k)` for the same question, and a probe that measured the WRONG PATH three times before the route check caught it (OPEN, priced — ⚠️ **THE 4x IS NOW A FLOOR, RE-MEASURE BEFORE QUOTING IT**)
+### Item 1260 — ~~`IS NOT NULL` is ~4x slower than Gremlin's `has(k)`~~ **CLOSED by item 1347: re-priced at 1.57x (1346), then specialized to 1.05x — PARITY** — `IS NOT NULL` was 4x slower than Gremlin's `has(k)` for the same question, and a probe that measured the WRONG PATH three times before the route check caught it (OPEN, priced — ⚠️ **THE 4x IS NOW A FLOOR, RE-MEASURE BEFORE QUOTING IT**)
 
 ⚠️ **STILL OPEN, and the gap has WIDENED since these numbers.** Item 1287 took the SCAN presence
 count — the `PropertyExists` sweep, which is the FAST arm here — from 190.9 us to 6.0 (31.8x), and
@@ -46618,3 +46618,23 @@ without it a "cold" arm that skipped warmup would read as a penalty that is real
 - ⚠️ **An unfiltered `count(*)` is NOT a floor on EITHER surface** — 0.0018 ms GQL / 0.0091 Gremlin,
   both at the timer's floor, since it is a closed form over bucket sizes. Item 1183's trap, now
   confirmed on the Gremlin side too.
+
+### Item 1347 — the specializer reaches the NULL carrier: DONE, 1.45x, cross-surface gap CLOSED
+
+- **CLOSES item 1260** (re-priced at 1346). `SPECIALIZABLE` gains `'nullProps'`; the closure is
+  `isNullish(propOf(element, key)) !== negated`, BINDING `satisfies`'s own arm rather than
+  re-deriving it. A/B over three alternated rounds: **notNull 3.2997 -> 2.2764, 1.45x, ranges
+  disjoint**; controls `real` (cmpProps) 1.06x, `twoPred` 0.98x, `eqReal` 1.01x, all overlapping.
+  **Cross-surface GQL 2.2764 against Gremlin 2.1621 = 1.05x**, from 1.57x — the same parity the
+  already-specialized carriers sit at, confirming item 1346's named mechanism.
+- **No `env` in this arm** (no right-hand side to evaluate), and `isNullish` does NOT distinguish an
+  absent key from a stored null — inherited, and pinned by tests rather than assumed. The late
+  placement of `nullProps` in `satisfies` (non-raising, item 1270's divergence) cannot be reached:
+  the single-carrier guard means there is no sibling conjunct.
+- ⚠️ **A ROUTE DECISION THAT IS A RETURNED VALUE IS ORDINARILY TESTABLE — the counter-case to
+  `perf-gate-needs-its-own-test`.** I declared `carrier-unadmitted` an answer-equivalent survivor by
+  analogy with item 1345's M5 and was WRONG: it was CAUGHT by 9 tests, because
+  `specializeSingleProp` RETURNS the closure and a test can assert it is defined. Item 1345's gate
+  only influenced which internal branch ran, which is why that one needed a bench row. Check which
+  kind you have before concluding a gate is untestable.
+- The arm was ALREADY REACHED before any new test: a `throw` in it fired 6 existing tests.
