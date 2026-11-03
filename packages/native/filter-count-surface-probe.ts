@@ -63,6 +63,13 @@ const GQL: Record<string, string> = {
   // here, so this scans all 200,000 rather than seeking, which is where the dispatch shows.
   eqReal: "MATCH (n:P) WHERE n.tag = 't3' RETURN count(*) AS c",
   eqParam: 'MATCH (n:P) WHERE n.tag = $t RETURN count(*) AS c',
+  // ITEM 1260's SHAPE, re-measured. That entry priced `IS NOT NULL` at ~4x Gremlin's `has(k)` for
+  // the same question and its own heading says the 4x is NOW A FLOOR, because items 1283 and 1287
+  // each sped up the arm it was measured against. A presence test rides `nullProps`, which items
+  // 1338-1340's `SPECIALIZABLE` set (`eqProps`, `cmpProps`) REFUSES — so the specializer did not
+  // touch this row and whatever gap remains is still live. Both surfaces answer N here, since every
+  // vertex carries `age`: the question is the predicate machinery, not selectivity.
+  notNull: 'MATCH (n:P) WHERE n.age IS NOT NULL RETURN count(*) AS c',
 };
 
 // `has('age', gt(-1))` is the Gremlin vacuous arm: age is `i % 90` so it CANNOT fail, which keeps
@@ -78,6 +85,8 @@ const GRM: Record<string, ReturnType<typeof traversal>> = {
   twoPred: traversal(V(), hasLabel('P'), has('age', gt(45)), has('age', lt(80)), count()),
   eqReal: traversal(V(), hasLabel('P'), has('tag', 't3'), count()),
   eqParam: traversal(V(), hasLabel('P'), has('tag', 't3'), count()),
+  // Single-argument `has` is the PRESENCE spelling, the twin of `IS NOT NULL` above.
+  notNull: traversal(V(), hasLabel('P'), has('age'), count()),
 };
 
 const series: number[] = [];

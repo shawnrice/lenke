@@ -22699,7 +22699,7 @@ last component is two nested-map lookups; only a flat per-type index removes the
 surface is swept** — each of the three carries a snapshot-format or public-API consequence and is a
 decision, not a 60-second iteration.
 
-## 797 — ⚠️ OPEN, RE-PRICED TWICE — at item 926 (the scaffolding it blames is **9.16 ns a vertex, not 18-20**) and at item 929 (the gap itself is **~1.71-1.85x, not 2.24x**, and is NOT node-scan-specific): TS **GQL** is 2.24x its own **Gremlin** twin on a filtered node count, both on their fast paths. And the TS spelling probe has NO cross-language group
+## 797 — ~~⚠️ OPEN, RE-PRICED TWICE~~ **CLOSED by items 1337-1340; re-measured at 1.06x (parity) at item 1346** — RE-PRICED TWICE — at item 926 (the scaffolding it blames is **9.16 ns a vertex, not 18-20**) and at item 929 (the gap itself is **~1.71-1.85x, not 2.24x**, and is NOT node-scan-specific): TS **GQL** is 2.24x its own **Gremlin** twin on a filtered node count, both on their fast paths. And the TS spelling probe has NO cross-language group
 
 **OPEN TARGET, diagnosed and located (no change).** The fourth instrument, `bun run bench:gremlin`,
 was the last unrun this session — and unlike items 789-796's six candidates, this one is not already
@@ -46600,3 +46600,21 @@ without it a "cold" arm that skipped warmup would read as a penalty that is real
   a PURE EXPORTED function with its own 11-case test, and why `bun run bench` gained
   `query: hop min+max at degree 1 [gate declines fold]` on a new sparse fixture: it reads 70.9 ms
   against the five-edge rows' 106.9-113.6, and convergence means the gate stopped declining.
+
+### Item 1346 — the audit of what items 1337-1345 invalidated: 797 CLOSED at parity, 1260 still open at 1.57x
+
+- **CLOSED: item 797's GQL-vs-Gremlin filtered node count.** Its heading advertised ~1.71-1.85x;
+  items 1337-1340 closed it. Re-measured at the SOURCE rather than trusting my own item 1339's
+  parity claim — six order-alternated runs, 14 reps, one shape per process: **GQL 2.2937 against
+  Gremlin 2.1731, 1.06x**. The arc is 2.24x (797) -> 1.71-1.85x (929) -> 1.06x, and the residual
+  5.6% is under the ~10% noise floor. Heading struck and repointed.
+- ⚠️ **STILL OPEN, RE-PRICED: item 1260's `IS NOT NULL` is 1.57x Gremlin's `has(k)`, not ~4x** —
+  that entry's own heading had already flagged the 4x as a floor after items 1283/1287. GQL 3.5265
+  against 2.2393, ranges disjoint. **The cause is named and controlled**: items 1338-1340's
+  `SPECIALIZABLE` set is `['eqProps','cmpProps']`, so a presence test rides `nullProps`, is REFUSED,
+  and still pays the full `satisfies` dispatch per element. The specialized carrier measures 1.06x
+  on the same instrument and the unspecialized one 1.57x — each is the other's control. Fix: extend
+  `specializeSingleProp` to the null carrier; its allow-list structure (item 1338) is additive.
+- ⚠️ **An unfiltered `count(*)` is NOT a floor on EITHER surface** — 0.0018 ms GQL / 0.0091 Gremlin,
+  both at the timer's floor, since it is a closed form over bucket sizes. Item 1183's trap, now
+  confirmed on the Gremlin side too.
