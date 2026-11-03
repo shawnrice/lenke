@@ -46743,3 +46743,22 @@ values)`, a named function taking the value as a PARAMETER. A/B: **within(1) 8.7
   exported `compilePredicate` and checks for one `memberProps` entry. Without them this would have
   shipped with a watcher that could not fire (item 1345's M5), avoidable because item 1347
   established when a route decision is observable.
+
+### Item 1353 — item 1351's four spelling flags: ONE real, THREE harness (all REFUTED here)
+
+- ⚠️ **ONE FLAG IN FOUR WAS REAL.** The sweep's flag list is a CANDIDATE list, not a findings list —
+  the probe says so and this item puts a number on it. Confirming four groups costs ~12 isolated
+  runs; acting on one phantom costs a build, tests, a mutation pass and a wrong entry here.
+- **REFUTED: `SEEK: a param equality alone`** — flagged 3.59x, measures **1.16x** isolated
+  (3.17/3.07/3.07 clause, 3.52/3.49/3.45 inline, 3.19/3.26/3.04 inline-WHERE), `0 groups over 2x`.
+  Corroborates item 579, which measured the NUMERIC key at 1.3-1.6x and noted the string twin
+  converges — this is the string key.
+- **REFUTED: `node count: inline vs clause WHERE`** — flagged 2.73x, measures **1.17x** isolated.
+  ⚠️ Small but CONSISTENT with DISJOINT ranges (3.18-3.26 inline against 2.76-2.82 clause), so a real
+  difference, just far under the 2x threshold and under what this repo prices. Recorded, not chased.
+- **REFUTED: Gremlin `absence: hasNot(k) vs not(hasKey(k))`** — flagged 2.01x, `0 groups over 2x` in
+  all three runs. **Item 1331's fold has no missing inverse** (it folded `not(hasNot(k))` into
+  `hasKey(k)` at 16.9x; a gap on the sibling spelling would have been a symmetrical hole — there is
+  none).
+- **The counter-example that keeps the probe valuable is item 1352**: real, 2.8x, identical answers,
+  and invisible to all 4,662 tests.
