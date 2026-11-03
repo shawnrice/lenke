@@ -56,6 +56,14 @@ const Q: Record<string, string> = {
   // property over the same label with NO hop at all. If it costs the same, the per-vertex constant
   // is the scan and the fold, the hop is free, and there is no hop target here.
   'scan-str': 'MATCH (a:Person) RETURN max(a.name) AS hi',
+  // IS ITEM 1246's PER-ENDPOINT FOLD ACTUALLY FIRING ON THIS FIXTURE? That rung admits only a
+  // DIRECTED, PLAIN hop with NO EDGE VARIABLE (plus a vacuous-or-absent start label, tested at run
+  // time because vacuity is a property of the graph). So naming the edge is a spelling the gate
+  // REFUSES, falling to the per-ROW walk. Item 1295 measured that inversion at 8.6x on the bench
+  // fixture (80.5 ms accepted against 692.9 refused). If the same inversion appears here, the rung
+  // is live on this fixture and the accepted arm's cost is the POST-1246/1247 state - not a new
+  // lever. This is the structural check item 1183 asks for, in place of inferring from one number.
+  'refused-edgevar': 'MATCH (a:Person)-[e:KNOWS]->(x) RETURN max(x.name) AS hi',
 };
 
 const gql = Q[ARM];

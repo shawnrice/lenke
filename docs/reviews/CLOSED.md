@@ -46542,7 +46542,7 @@ No code changed in this item; the arms were swapped for measurement and POST res
 `cold-box-memo-probe.ts` is kept, with a guard that exits non-zero if the JIT warmup never ran —
 without it a "cold" arm that skipped warmup would read as a penalty that is really tiering.
 
-### Item 1343 — the hop multi-aggregate: route CONFIRMED fine in TS, a per-vertex hop constant PRICED
+### Item 1343 — the hop multi-aggregate: route CONFIRMED fine in TS, ~~a per-vertex hop constant PRICED~~ **that "constant" is items 1244-1247/1295's worked residual, NOT a new lever — CORRECTED at item 1344, which found the real one: the rung is a 1.22x PESSIMIZATION at degree 1**
 
 - **REFUTED for TS: item 1184's native `try_frontier_multi_agg_wide` hole has NO TS twin.**
   `detectMultiHopAggregate` (472) serves `min,max` over a string / dict / numeric column at
@@ -46564,3 +46564,19 @@ without it a "cold" arm that skipped warmup would read as a penalty that is real
   vertices and the same property where one hop reads **89.25-111.98** — so the scan and fold are
   ~40 ns a vertex and the hop adds 10-13x that, none of it the edge walk. Native answers the whole
   query in 2.5-3.4 ms. Localize the constant STRUCTURALLY (1183), not from timing.
+
+### Item 1344 — the per-endpoint extremum rung has NO DEGREE GATE and loses 1.22x at degree 1 (OPEN)
+
+- ⚠️ **Item 1343's "open per-vertex constant" was items 1244/1245/1246/1247/1295's residual and
+  cited none of them.** 1244 priced the shape, 1245 priced the fix AND warned the per-endpoint fold
+  alone loses 1.07x, 1246 built it, 1247 extended it, 1295 confirmed it live. 1343's mechanism was
+  also wrong: the O(vertices) behaviour is `primedEndpointExtremum`, not `farDrivenHopWalk` (which
+  is per-EDGE). Item 1341's failure, repeated one tick later.
+- **OPEN, MEASURED: `primedEndpointExtremum` gates on label vacuity but NEVER on the edge:endpoint
+  ratio, so at one edge per endpoint it pays its overhead for no multiplicity to collapse.** Six
+  order-alternated runs at N=200,000 DEG=1: accepted 87.68 against the refused spelling's per-row
+  walk at 71.89, **1.22x, ranges disjoint** — and conservative, since the refused arm also binds an
+  unused edge variable. At DEG=5 the same rung WINS 1.36x. Fix: a run-time ratio test beside the
+  vacuity test. `Graph.edgeCount`/`vertexCount` are a cheap proxy, exact on one edge type.
+- **The route is identified by EDGE-SCALING, not by one number.** Accepted 88.52 -> 110.31 across
+  DEG=1 -> 5 (flat); refused 76.23 -> 150.14 (scales). A single ratio cannot tell which route ran.
