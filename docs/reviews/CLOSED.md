@@ -45967,7 +45967,7 @@ can include a NULL CONTROL beside the group it confirms. The probes already warn
 run is ungated ("NOTHING BELOW IS GATED. Every ratio here may be instrument noise") with no way to
 act on it — hit twice, at item 1332's `absence` group and this item's product group.
 
-## 1334 — ✅ SHIPPED: the unfiltered two-hop count reads each middle's OWN adjacency box instead of looking it up by id string — **1.92x**, and GQL goes from 1.42x SLOWER than Gremlin to 1.35x FASTER
+## 1334 — ✅ SHIPPED: the unfiltered two-hop count reads each middle's OWN adjacency box instead of looking it up by id string — **1.92x WARM** (⚠️ **1.23x SLOWER COLD** — corrected at item 1341, which also finds the prior refutation this entry failed to cite), and GQL goes from 1.42x SLOWER than Gremlin to 1.35x FASTER
 
 `surface-parity-probe` has had `two-hop-count` open as the largest ABSOLUTE cross-surface gap in the
 field. `buildTwoHopCount` iterates middles and multiplies two degrees — the right algorithm — but
@@ -46480,3 +46480,64 @@ the only thing that found it was a mutant.
 
 `packages/gql` 3,475 pass / 0 fail (3,467 before; +8 in `specialized-pred.test.ts`, which also
 gained the equality cases). `typecheck` 0, `lint` 0, `fmt:check` 0, `check --skip-nx-cache` 0.
+\n
+
+## 1341 — ⚠️ CORRECTING ITEM 1334: the box read is **1.23x SLOWER on a cold graph**, the prior refutation I never cited was RIGHT, and the trade pays back on the SECOND query
+
+Item 1334 shipped the adjacency-box read at 1.92x and stated "cold improves too (1.13-1.19x), so
+there is no first-query cost traded away". **That claim was wrong**, and `CLOSED.md` already held the
+refutation I failed to find:
+
+> "giving the product the cached per-vertex adjacency box ... is ALREADY REFUTED at the site:
+> `sideOfVertex` exists for exactly that ... **item 355 measured it, and the box is a MEMO, so first
+> touch is 1.21x WORSE** (the same hash plus the memo write) while warm is 1.35x better. The two-hop
+> product visits each middle exactly ONCE per query, so cold is all it would ever get."
+
+I cited `twoHopSide`'s weaker "measured flat" header instead and reasoned around that. This is the
+failure CLAUDE.md names — "searched something first and searched the wrong store" — committed by the
+same session that had already been saved from it four times.
+
+### What was wrong, and what was right
+
+**WRONG: item 1334's cold evidence.** It quoted the FIRST OF FOURTEEN REPS (79-97 ms against a 23 ms
+steady state) as the cold case. That number is dominated by JIT tiering, not by the memo write, so it
+never isolated a cold penalty and could not have refuted one. `cold-box-memo-probe.ts` isolates it
+properly: warm the JIT on a throwaway graph, then time ONE query against a FRESH one.
+
+```text
+  arm        pre (id hash)    post (box)    ratio
+  cold             48.2756       59.5181    0.81x   post SLOWER by 1.23x
+  warm             49.7718       27.8883    1.78x   post FASTER
+```
+
+**The instrument validates itself**: the PRE arm reads cold 48.28 against warm 49.77 — no
+distinction, because an id hash has no memo to be cold. Only POST has a gap, so the gap IS the memo.
+
+**RIGHT: the 1.21x.** Measured 1.23x. Item 355's number was accurate and this entry says so.
+
+**STILL WRONG in the refutation: its premise.** "The two-hop product visits each middle exactly ONCE
+per query, so cold is all it would ever get" treats the memo as per-query. It is not:
+`Vertex.adjFrom` memoizes on the VERTEX and survives until an adjacency write clears it, so only the
+FIRST query on a graph is cold. That is a reading of the code, and the 1.78x warm column is the
+measurement of it.
+
+### The trade, stated as a break-even rather than a ratio
+
+Serving n queries against one graph: `48.28n` against `59.52 + 27.89(n - 1)`. They cross at
+**n ≈ 1.55**, so the box read LOSES the first query and WINS from the second onward. A graph serving
+two queries is already ahead (96.6 against 87.4 ms).
+
+**KEPT, deliberately.** The serving case is repeated queries on a long-lived graph — which is what
+`bench:usage` measures and where item 1336 recorded `read: 2-hop recommendation` at 1.25x. A
+one-shot query against a freshly loaded graph is now 1.23x slower and that is the cost. Anyone whose
+workload is load-then-single-query should know it; the alternative would be populating the boxes at
+load time, which is a storage change and not attempted here.
+
+⚠️ **The honest reading of item 1334's 1.92x is "warm", not "unqualified"** — its heading is amended
+to say so.
+
+### Verification
+
+No code changed in this item; the arms were swapped for measurement and POST restored (box-read=1).
+`cold-box-memo-probe.ts` is kept, with a guard that exits non-zero if the JIT warmup never ran —
+without it a "cold" arm that skipped warmup would read as a penalty that is really tiering.
