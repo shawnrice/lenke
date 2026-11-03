@@ -695,8 +695,26 @@ const CASES: Case[] = [
     //
     // Identical query to the string row above, on a fixture with ONE edge per node. The gate must
     // DECLINE the per-endpoint fold here and take the row walk: 87.49 -> 66.37 ms, 1.32x, with the
-    // five-edge rows above as the controls it must not move (they measured 0.97x, flat). If this
-    // row ever converges on the five-edge one, the gate has stopped declining.
+    // five-edge rows above as the controls it must not move (they measured 0.97x, flat).
+    //
+    // ⚠️ TWO WAYS TO MISREAD THIS ROW, BOTH FOUND BY MISREADING IT (item 1351).
+    //
+    // 1. ITS ABSOLUTE VALUE IS ONLY COMPARABLE WITHIN THE SAME `BENCH_ONLY` SELECTION. The same
+    //    binary reads 74.0 among these four rows, 89.2 in the full sweep and 97.0 run ALONE — it
+    //    gets SLOWER with fewer rows, because the siblings above exercise the same `min`/`max` hop
+    //    code at degree 5 and warm it first. That is the opposite direction from the in-sweep
+    //    inflation item 737 records, so neither correction applies to the other. Compare like
+    //    selection with like, or the row reports a regression that is not there.
+    //
+    // 2. "CONVERGING ON THE FIVE-EDGE ROWS" IS NOT THE DISCRIMINATOR, though an earlier version of
+    //    this comment said it was. The fold is nearly flat in degree (87.7 at degree 1 against
+    //    110.3 at degree 5), so if the gate stopped declining this row would read ~87-89 — still
+    //    well BELOW the five-edge rows' ~105-115. Being below them proves nothing.
+    //
+    //    THE CHECK THAT DISCRIMINATES is `hop-multi-agg-floor-probe` at `DEG=1`, comparing
+    //    `ARM=single-str` (the accepted spelling) against `ARM=refused-edgevar` (which the gate's
+    //    own admission rules force onto the row walk). Declining means the two agree, ~66-75 ms;
+    //    a gate that stopped declining puts the accepted arm at the fold's ~87-89 instead.
     name: 'query: hop min+max at degree 1 [gate declines fold]',
     ...onGraph(
       () => hopSparseDoc,

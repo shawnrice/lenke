@@ -46702,3 +46702,23 @@ values)`, a named function taking the value as a PARAMETER. A/B: **within(1) 8.7
 - **Teeth 5/5 caught, no survivor** — and P5 `carrier-unadmitted` was DECLARED a catch and was one,
   the prediction item 1347 corrected. Pre-1347 reasoning would have called it an answer-equivalent
   survivor by analogy with item 1345's gate.
+
+### Item 1351 — the sweep after items 1342-1350: gains HELD, plus a phantom regression and two instrument defects
+
+- **Every gain held.** Against the session's opening table: `count + filter, 1 exclusion` 6.0 -> 5.0,
+  `2 exclusions` 6.3 -> 5.1, `4 exclusions` 7.0 -> 5.8, `~49%` 3.2 -> 3.1, `hop min+max` string
+  127.4 -> 114.9 / dict 121.9 -> 109.6 / number 112.6 -> 100.6. Unreachable rows flat.
+- ⚠️ **A BENCH ROW'S ABSOLUTE VALUE IS ONLY COMPARABLE WITHIN THE SAME `BENCH_ONLY` SELECTION.** The
+  degree-1 gate row reads **74.0 among its four siblings, 89.2 in the full sweep, 97.0 run ALONE** —
+  SLOWER with fewer rows, because the siblings warm the same `min`/`max` hop code at degree 5. That
+  is the OPPOSITE direction from item 737's in-sweep inflation, so neither correction substitutes
+  for the other. Read like selection against like.
+- ⚠️ **ITEM 1345'S OWN DISCRIMINATOR WAS WRONG and could never have fired.** Its comment said the
+  gate reverting would make the degree-1 row "converge on the five-edge one". The fold is nearly
+  flat in degree (87.7 at degree 1 vs 110.3 at degree 5), so reverting puts the row at ~87-89 —
+  still well BELOW the five-edge rows' ~105-115. **The check that discriminates** is
+  `hop-multi-agg-floor-probe` at `DEG=1`: accepted `single-str` against refused `refused-edgevar`.
+  Declining means they agree (~66-75); reverted puts the accepted arm at the fold's ~87-89. Verified
+  this way, the gate IS still declining (75.47 against 66.63).
+- **A watcher with a broken reading rule is worse than none, because it is believed** — the same
+  argument as a generative test whose teeth were never verified.
