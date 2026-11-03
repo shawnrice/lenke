@@ -46639,7 +46639,7 @@ without it a "cold" arm that skipped warmup would read as a penalty that is real
   kind you have before concluding a gate is untestable.
 - The arm was ALREADY REACHED before any new test: a `throw` in it fired 6 existing tests.
 
-### Item 1348 — the remaining carriers priced: GQL `memberProps` 1.58x, and a NEW Gremlin spelling gap at 3.90x (both OPEN)
+### Item 1348 — the remaining carriers priced: GQL `memberProps` 1.58x (OPEN), and a NEW Gremlin spelling gap at 3.90x ~~(both OPEN)~~ **the GREMLIN half CLOSED by item 1349 at 3.44-3.90x; its NaN objection REFUTED there**
 
 - ⚠️ **GQL is 2.44x FASTER than Gremlin on membership, so the cross-surface comparison points the
   OTHER WAY here** — `IN [1,3,5]` 4.2011 ms against `within(1,3,5)` 10.2405, both answering 6,669.
@@ -46658,3 +46658,27 @@ without it a "cold" arm that skipped warmup would read as a penalty that is real
   where `v === NaN` is FALSE. So `within(NaN)` and `has(k, NaN)` DISAGREE and a blanket fold changes
   an answer. `±0` agrees under both. Item 1312's entry already flagged NaN as "the interesting
   case". Discharge by reading both implementations, not from the spec.
+
+### Item 1349 — `within`'s per-element CLOSURE: DONE, 3.44-3.90x, and item 1348's NaN objection refuted
+
+- **CLOSES the Gremlin half of item 1348.** `pred.values.some((x) => valueEq(value, x))` CAPTURED
+  `value`, allocating a closure per ELEMENT (200,000 per scan). Replaced by `anyValueEq(value,
+values)`, a named function taking the value as a PARAMETER. A/B: **within(1) 8.7597 -> 2.5499
+  (3.44x), within(1,3,5) 9.9671 -> 2.5554 (3.90x)**, ranges wildly disjoint; controls `eq` 0.97x and
+  `gt` 1.05x, overlapping. `within` now at 2.55 against `eq`'s 2.28 — parity.
+- ⚠️ **REFUTED: item 1348's claim that `within(NaN)` and `has(k, NaN)` must disagree.** `valueEq` is
+  `a === b` and BOTH `eq` and `within` call it; `Array.prototype.includes`/SameValueZero is not in
+  the engine. The objection was a spec inference about code that does not exist. **And it changed the
+  fix**: since per-element semantics were already identical, the cost had to be the closure, so the
+  remedy helps EVERY list length rather than only a single-element fold.
+- ⚠️ **`within` and `without` are NOT symmetric about presence** (found by a failing assertion of
+  mine). An absent key reads `undefined`, so `within(..)` matches nothing while `without(..)` is
+  vacuously TRUE: `without(5)` selects 7 of 8 vertices INCLUDING the key-less one, where `has('k')`
+  reports 7 carriers. PRE-EXISTING, untouched by this item. Whether it should hold is a Gremlin
+  CONFORMANCE question (TinkerPop documents `has(k, P)` as requiring the key) — needs its own item.
+- ⚠️ **Reverting to `.some()` is ANSWER-EQUIVALENT and passes all 21 new tests and all 4 mutants** —
+  item 1345's M5 class. Hence `bench:gremlin` gains `V().has(k, within(3 vals)).count()` PAIRED with
+  an equality control: the claim is parity between two spellings, so the PAIR diverging is the
+  regression. Reads 3.2 against 2.9.
+- ⚠️ **Lint picked the final shape** (complexity 38 > 35, plus `prefer-for-of`), so the shipped code
+  differs from what was first measured — re-measured after the refactor rather than assumed.

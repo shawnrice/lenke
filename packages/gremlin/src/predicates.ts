@@ -319,6 +319,36 @@ export const regex = (value: string): Predicate => {
 };
 
 /**
+ * Does `value` equal ANY of `values`? The membership test behind `within` / `without`.
+ *
+ * ⚠️ A NAMED FUNCTION TAKING `value` AS A PARAMETER, NOT `values.some((x) => valueEq(value, x))`,
+ * and the difference is measured rather than stylistic. That arrow CAPTURES `value`, so a closure
+ * is allocated on every call to `matches` — once per ELEMENT, so 200,000 closures for a
+ * 200,000-vertex scan, plus the callback dispatch. Item 1348 priced the consequence as an
+ * equivalent-spelling gap: `has('age', within(1))` cost **8.8421 ms against `has('age', 1)`'s
+ * 2.2678, 3.90x**, for a question that reaches the SAME `valueEq` through the SAME step
+ * (`steps/filters.ts` lifts a bare value with `eq`, so both spellings are predicates and no
+ * planner fold is involved).
+ *
+ * SEMANTICS ARE UNCHANGED and that is checkable rather than asserted: the same `valueEq`, the same
+ * iteration order, the same short-circuit on first match. In particular this is NOT the
+ * `Array.prototype.includes` / SameValueZero comparison item 1348 feared from reading the spec —
+ * the engine never used it, so NaN behaves here exactly as it does under `eq`.
+ *
+ * Helping EVERY list length is why this is the fix rather than canonicalizing a single-element
+ * `within` into an `eq` at plan time.
+ */
+const anyValueEq = (value: unknown, values: readonly unknown[]): boolean => {
+  for (const x of values) {
+    if (valueEq(value, x)) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
+/**
  * Evaluate a predicate against a value. Used by executors; not part of the
  * AST surface.
  */
@@ -356,9 +386,9 @@ export const matches = (pred: Predicate, value: unknown): boolean => {
     case 'outside':
       return value != null && (predCmp(value, pred.min) < 0 || predCmp(value, pred.max) > 0);
     case 'within':
-      return pred.values.some((x) => valueEq(value, x));
+      return anyValueEq(value, pred.values);
     case 'without':
-      return !pred.values.some((x) => valueEq(value, x));
+      return !anyValueEq(value, pred.values);
     case 'startsWith':
       return typeof value === 'string' && value.startsWith(pred.value);
     case 'endingWith':

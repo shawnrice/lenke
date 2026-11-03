@@ -27,13 +27,14 @@ import {
   has,
   hasLabel,
   id,
-  out,
   order,
+  out,
   planToGremlin,
   repeat,
   toArray,
   traversal,
   values,
+  within,
 } from '@lenke/gremlin';
 import type { Plan } from '@lenke/gremlin';
 import { deserialize as tsDeserialize } from '@lenke/serialization';
@@ -114,6 +115,26 @@ const SHAPES: [string, Plan][] = [
   // the same rung, so a change that helps one and not the other shows up here as a split.
   ['V().hasLabel().has(k) [presence]', traversal(V(), hasLabel('Person'), has('age'), count())],
   ['V().has().has().count()', traversal(V(), has('age', gt(44)), has('age', gt(-1)), count())],
+  // ITEM 1349's MEMBERSHIP ROW, and it exists for an ANSWER-EQUIVALENT mutant.
+  //
+  // `within` evaluated its list with `pred.values.some((x) => valueEq(value, x))`, whose arrow
+  // CAPTURES `value` and so allocated a closure per ELEMENT. Item 1348 priced the consequence as an
+  // equivalent-spelling gap: `has('age', within(1))` cost 8.84 ms against `has('age', 1)`'s 2.27,
+  // 3.90x, for a question reaching the same `valueEq` through the same step. Item 1349 replaced it
+  // with a named function taking `value` as a parameter: 3.44x on one value, 3.90x on three.
+  //
+  // Putting `.some()` back is SEMANTICALLY INERT — same comparator, same order, same short-circuit
+  // — so all 21 cases in `within-membership.test.ts` and all four mutants pass either way. Only a
+  // number can see it, which is item 1177's lesson and the same reason item 1345 shipped a bench
+  // row beside its degree gate.
+  //
+  // READ IT AGAINST THE EQUALITY ROW BELOW, not alone: the claim is PARITY between the two
+  // spellings, so the pair diverging is the regression, not either row moving on its own.
+  [
+    'V().has(k, within(3 vals)).count()',
+    traversal(V(), hasLabel('Person'), has('age', within(3, 17, 61)), count()),
+  ],
+  ['V().has(k, eq) [within ctl]', traversal(V(), hasLabel('Person'), has('age', 3), count())],
   // The ROW-RETURNING twin of the row above, which item 538 is about: a chain tally cannot help
   // a terminal that emits rows, so the fix there was to make a single-label `hasLabel` SEED its
   // bucket and drop the step. Without a row here that is unguarded.
