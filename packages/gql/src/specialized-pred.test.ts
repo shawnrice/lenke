@@ -147,6 +147,26 @@ describe('the specialized closure agrees with satisfies, element by element', ()
     'n.sometimes IS NOT NULL',
     'n.missing_entirely IS NULL',
     'n.missing_entirely IS NOT NULL',
+    /**
+     * ITEM 1350's MEMBERSHIP arm (`memberProps`), both polarities. `NOT IN` is `not3` of the same
+     * test, and `not3` of UNKNOWN is UNKNOWN, so an absent or stored-null cell must DROP under both
+     * spellings rather than passing under the negated one — which is the case a hand-written
+     * negation gets wrong. Mixed types are included because the test is a membership over a list
+     * the parser lifted, not a numeric comparison.
+     */
+    'n.n IN [1, 3, 5]',
+    'n.n IN [1]',
+    'n.n NOT IN [1, 3, 5]',
+    'n.n NOT IN [1]',
+    'n.sometimes IN [11]',
+    'n.sometimes NOT IN [11]',
+    'n.nulled IN [0]',
+    'n.nulled NOT IN [0]',
+    'n.missing_entirely IN [1]',
+    'n.missing_entirely NOT IN [1]',
+    "n.s IN ['s2', 's3']",
+    "n.mixed IN [0, 'x0']",
+    'n.odd IN [0]',
   ];
 
   for (const where of SPECIALIZABLE) {
@@ -428,6 +448,57 @@ describe('item 1347 — the NULL carrier arm', () => {
     } as unknown as Parameters<typeof specializeSingleProp>[0];
 
     expect(specializeSingleProp(two)).toBeUndefined();
+  });
+
+  test('TWO memberProps entries refuse', () => {
+    const two = {
+      props: [],
+      memberProps: [
+        { key: 'n', test: () => true, negated: false },
+        { key: 's', test: () => true, negated: false },
+      ],
+    } as unknown as Parameters<typeof specializeSingleProp>[0];
+
+    expect(specializeSingleProp(two)).toBeUndefined();
+  });
+
+  test('a memberProps entry is SPECIALIZED, and the negated one takes the other closure', () => {
+    // Both polarities must specialize — if only one did, the A/B's `notIn` gain would be an
+    // accident of the generic path rather than this branch.
+    for (const negated of [false, true]) {
+      const pred = {
+        props: [],
+        memberProps: [{ key: 'n', test: () => true, negated }],
+      } as unknown as Parameters<typeof specializeSingleProp>[0];
+
+      expect(specializeSingleProp(pred)).toBeDefined();
+    }
+  });
+
+  test('a memberProps entry whose test returns UNKNOWN drops the row under BOTH polarities', () => {
+    // `not3(UNKNOWN)` is UNKNOWN, and a filter keeps only TRUE (item 259), so neither spelling may
+    // pass. This is the assertion a hand-written `!` instead of `not3` would fail.
+    //
+    // ⚠️ UNKNOWN IS `null`, NOT `undefined` — `Truth = boolean | null`. This test first used
+    // `undefined` and FAILED, which is worth keeping as a note: `not3` is `t === null ? null : !t`,
+    // so an out-of-type `undefined` falls to `!undefined === true` and the negated spelling PASSES
+    // the row. The sentinel matters, and the type is the thing that says which one.
+    const env = {
+      binding: new Map<string, unknown>(),
+      params: {},
+      graph: g,
+    } as unknown as Parameters<NonNullable<ReturnType<typeof specializeSingleProp>>>[1];
+
+    for (const negated of [false, true]) {
+      const pred = {
+        props: [],
+        memberProps: [{ key: 'n', test: () => null, negated }],
+      } as unknown as Parameters<typeof specializeSingleProp>[0];
+      const fast = specializeSingleProp(pred);
+
+      expect(fast).toBeDefined();
+      expect(fast?.(vertices[0], env)).toBe(false);
+    }
   });
 
   test('nullProps BESIDE another carrier refuses', () => {

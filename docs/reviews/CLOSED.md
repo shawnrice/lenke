@@ -46639,7 +46639,7 @@ without it a "cold" arm that skipped warmup would read as a penalty that is real
   kind you have before concluding a gate is untestable.
 - The arm was ALREADY REACHED before any new test: a `throw` in it fired 6 existing tests.
 
-### Item 1348 — the remaining carriers priced: GQL `memberProps` 1.58x (OPEN), and a NEW Gremlin spelling gap at 3.90x ~~(both OPEN)~~ **the GREMLIN half CLOSED by item 1349 at 3.44-3.90x; its NaN objection REFUTED there**
+### Item 1348 — the remaining carriers priced ~~(both OPEN)~~ **BOTH CLOSED: the GREMLIN half by item 1349 at 3.44-3.90x (its NaN objection REFUTED there), the GQL `memberProps` half by item 1350 at 1.32-1.48x**
 
 - ⚠️ **GQL is 2.44x FASTER than Gremlin on membership, so the cross-surface comparison points the
   OTHER WAY here** — `IN [1,3,5]` 4.2011 ms against `within(1,3,5)` 10.2405, both answering 6,669.
@@ -46682,3 +46682,23 @@ values)`, a named function taking the value as a PARAMETER. A/B: **within(1) 8.7
   regression. Reads 3.2 against 2.9.
 - ⚠️ **Lint picked the final shape** (complexity 38 > 35, plus `prefer-for-of`), so the shipped code
   differs from what was first measured — re-measured after the refactor rather than assumed.
+
+### Item 1350 — the specializer reaches the MEMBERSHIP carrier: DONE, 1.32-1.48x
+
+- **CLOSES the GQL half of item 1348**, so all four of `satisfies`'s specializable arms are now
+  done: `cmpProps` (1339), `eqProps` (1340), `nullProps` (1347), `memberProps` (here). A/B over
+  three alternated rounds: **`IN [1]` 3.9285 -> 2.9678 (1.32x), `IN [1,3,5]` 4.0635 -> 2.7539
+  (1.48x), `NOT IN [1]` 4.5009 -> 3.3265 (1.35x)**, all ranges disjoint. The three CONTROLS are the
+  other three carriers of the same function — `eqProps` 0.97x, `nullProps` 1.08x, `cmpProps` 0.98x,
+  all flat — which is what shows a growing allow-list does not cost the carriers already on it.
+- **Not parity, and say so:** `IN [1]` lands at 2.9678 against the `eqProps` floor's 2.5413, so the
+  carrier gap closes **1.58x -> 1.17x**. The residual is the `test` closure the floor does not pay.
+- `negated` is decided at SPECIALIZATION time (two closures), item 1339's "answer at the call site"
+  applied to a branch. `not3` of UNKNOWN is UNKNOWN, so `NOT IN` over an absent or stored-null cell
+  still drops the row — item 1288's composition reused.
+- ⚠️ **UNKNOWN IS `null`, NOT `undefined` (`Truth = boolean | null`), and guessing cost a test.**
+  Mine used `undefined`; `not3` is `t === null ? null : !t`, so an out-of-type `undefined` falls to
+  `!undefined === true` and the NEGATED spelling PASSES the row. The test failed and caught it.
+- **Teeth 5/5 caught, no survivor** — and P5 `carrier-unadmitted` was DECLARED a catch and was one,
+  the prediction item 1347 corrected. Pre-1347 reasoning would have called it an answer-equivalent
+  survivor by analogy with item 1345's gate.

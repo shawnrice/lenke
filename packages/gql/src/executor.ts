@@ -6863,13 +6863,18 @@ const compilePath = (pattern: PathPattern): CPath => {
  * that the two spellings "agree by construction"; this keeps `satisfies` as the only implementation
  * and binds its arm rather than writing a second one.
  */
-/** The three carriers {@link specializeSingleProp} can answer; exactly one may be populated. */
-const SPECIALIZABLE: ReadonlySet<string> = new Set(['eqProps', 'cmpProps', 'nullProps']);
+/** The four carriers {@link specializeSingleProp} can answer; exactly one may be populated. */
+const SPECIALIZABLE: ReadonlySet<string> = new Set([
+  'eqProps',
+  'cmpProps',
+  'nullProps',
+  'memberProps',
+]);
 
 export const specializeSingleProp = (
   pred: CPredicate,
 ): ((element: Bound, env: EvalEnv) => boolean) | undefined => {
-  let only: 'eqProps' | 'cmpProps' | 'nullProps' | undefined;
+  let only: 'eqProps' | 'cmpProps' | 'nullProps' | 'memberProps' | undefined;
 
   for (const [carrier, held] of Object.entries(pred)) {
     if (held === undefined) {
@@ -6885,7 +6890,7 @@ export const specializeSingleProp = (
     // it is the only one — `eqProps` AND `cmpProps` together need a loop, which is the thing being
     // removed. Everything else, including any non-array carrier such as `where`, refuses.
     if (Array.isArray(held) && SPECIALIZABLE.has(carrier) && only === undefined) {
-      only = carrier as 'eqProps' | 'cmpProps' | 'nullProps';
+      only = carrier as 'eqProps' | 'cmpProps' | 'nullProps' | 'memberProps';
 
       continue;
     }
@@ -6944,6 +6949,38 @@ export const specializeSingleProp = (
         ? (cmp as (a: number, b: number) => boolean)(lhs, rhs)
         : compareTruth(op, cmp, lhs, rhs) === true;
     };
+  }
+
+  if (only === 'memberProps') {
+    const members = pred.memberProps;
+
+    if (members?.length !== 1) {
+      return undefined;
+    }
+
+    const [{ key, test, negated }] = members;
+
+    /**
+     * ITEM 1350: the MEMBERSHIP carrier, the last of the four `satisfies` arms worth specializing.
+     *
+     * Item 1348 isolated it against the right floor — same column, same selectivity, ONE element,
+     * differing only in which carrier it lifts into: `n.age = 1` (`eqProps`, specialized at 1340)
+     * **2.4889 ms** against `n.age IN [1]` (`memberProps`) **3.9441**, ranges disjoint. A
+     * one-element list is the fair pairing because item 1268 refuted linearity in k — a TS `IN`
+     * count is flat in list length.
+     *
+     * SEMANTICS ARE BOUND, NOT RE-DERIVED. `satisfies`'s own loop is
+     * `(negated ? not3(r) : r) !== true -> false`, so passing is `(negated ? not3(r) : r) === true`
+     * over the same `test` and the same `propOf`. `not3` of UNKNOWN is UNKNOWN, so a `NOT IN` over
+     * an absent or null cell still drops the row — item 1288's composition, reused rather than
+     * rewritten.
+     *
+     * ⚠️ `negated` IS DECIDED HERE, NOT PER ELEMENT — item 1339's "answer it at the call site"
+     * applied to a branch instead of a comparison. Two closures, each with the test it needs.
+     */
+    return negated
+      ? (element, env) => not3(test(propOf(element, key), env)) === true
+      : (element, env) => test(propOf(element, key), env) === true;
   }
 
   if (only === 'nullProps') {

@@ -22,7 +22,18 @@
  */
 import { Graph } from '@lenke/core';
 import { query } from '@lenke/gql';
-import { count, gt, has, hasLabel, lt, toArray, traversal, V, within } from '@lenke/gremlin';
+import {
+  count,
+  gt,
+  has,
+  hasLabel,
+  lt,
+  toArray,
+  traversal,
+  V,
+  within,
+  without,
+} from '@lenke/gremlin';
 
 const N = Number(process.env.N ?? 200_000);
 const REPS = Number(process.env.REPS ?? 14);
@@ -88,6 +99,9 @@ const GQL: Record<string, string> = {
   // predicate despite appearances.
   eqNum: 'MATCH (n:P) WHERE n.age = 1 RETURN count(*) AS c',
   memberOne: 'MATCH (n:P) WHERE n.age IN [1] RETURN count(*) AS c',
+  // The NEGATED spelling, which rides the same carrier with `negated: true`. Item 1288 lifted it
+  // and measured 2.66x against its own twin, so it is a second target on the same branch.
+  notIn: 'MATCH (n:P) WHERE n.age NOT IN [1] RETURN count(*) AS c',
 };
 
 // `has('age', gt(-1))` is the Gremlin vacuous arm: age is `i % 90` so it CANNOT fail, which keeps
@@ -108,6 +122,7 @@ const GRM: Record<string, ReturnType<typeof traversal>> = {
   member: traversal(V(), hasLabel('P'), has('age', within(1, 3, 5)), count()),
   eqNum: traversal(V(), hasLabel('P'), has('age', 1), count()),
   memberOne: traversal(V(), hasLabel('P'), has('age', within(1)), count()),
+  notIn: traversal(V(), hasLabel('P'), has('age', without(1)), count()),
 };
 
 const series: number[] = [];
