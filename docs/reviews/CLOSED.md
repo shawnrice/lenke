@@ -32011,7 +32011,7 @@ A dense vertex index maintained BY the graph — so a frontier accumulator is a 
 counts. That is a core-data-structure question, not a planner arm, and nothing here prices adding or
 maintaining it.
 
-## 1075 — ➡️ PRICED at 11-19x (not built): the count rung DECLINES a constrained undirected hop by construction
+## 1075 — ~~➡️ PRICED at 11-19x (not built)~~ **CLOSED by item 1076 at 10.1-23.0x (`undirectedStartOnlyCount`)** — the count rung DECLINED a constrained undirected hop by construction
 
 ```text
   MATCH (a:Person)-[:KNOWS]-(x) WHERE a.age > 60 RETURN count(*)   ts 242.78   native 2.29   106x
@@ -32840,7 +32840,7 @@ all now fixed.
 > A ROW-RETURNING query cannot be answered by a count shortcut. When the two sides must differ in
 > ROUTE, trace the route — do not trust the spelling.
 
-## 1096 — 🔶 PRICED AND LOCATED at **35x**: the filtered THREE-hop undirected count. Planner path verified BEFORE any code
+## 1096 — ~~🔶 PRICED AND LOCATED at **35x**~~ **CLOSED by item 1097 at 15.1-21.7x** — the filtered THREE-hop undirected count. Planner path verified BEFORE any code
 
 ```text
   (a:P)-[:T]->(b)-[:T]->(c)-[:T]->(d) WHERE a.age > 60     68.69 ms  ← has a rung
@@ -35130,7 +35130,7 @@ one timer tick on the corpus's two fastest rows. Isolated at 15 reps x 3 alterna
 (min 0.2 vs 0.2). **A ratio from two sub-microsecond readings is a quantization artefact, not a
 measurement** — don't chase these.
 
-## 1159 — 🔶 PRICED at **106-110 ms vs 0.0**, and it is a CROSS-LANGUAGE gap: one engine answers an untyped hop count instantly through Gremlin and not at all through GQL. ⚠️ My first fix was in the WRONG FUNCTION, caught by a trace
+## 1159 — ~~🔶 PRICED at **106-110 ms vs 0.0**~~ **CLOSED by item 1160 (`types &&` is a truthiness test and "every type" is falsy); 106-115 ms -> 0.0** — a CROSS-LANGUAGE gap: one engine answers an untyped hop count instantly through Gremlin and not at all through GQL. ⚠️ My first fix was in the WRONG FUNCTION, caught by a trace
 
 The TS follow-up to items 1157-1158. `packages/native/label-arity-probe.ts`, 200k nodes / degree 4
 over TWO types, every row asserting ts === native:
@@ -46779,3 +46779,43 @@ values)`, a named function taking the value as a PARAMETER. A/B: **within(1) 8.7
   reports it "under 1ms, not compared" (count shortcut); `bench:gremlin` has no `outE().inV()` row
   at any shape. Item 1145's own table is why that matters — its count row was 3120x and its has /
   values rows ~29-30x, so a count shortcut hides exactly one of the three.
+
+### Item 1355 — the PRICED headings audited: THREE more advertising work the VERY NEXT item did
+
+Item 1354 went to this file's priced-but-unbuilt list for a target and found the largest entry
+(1145) had been closed by item 1146. That was not bad luck. Cross-checking every numbered heading
+that still advertises `PRICED` or `OPEN` against the text after it:
+
+| heading | claims                          | reality                                             |
+| ------- | ------------------------------- | --------------------------------------------------- |
+| 1075    | PRICED at 11-19x, "(not built)" | **item 1076 SHIPPED it, 10.1-23.0x**                |
+| 1096    | PRICED AND LOCATED at 35x       | **item 1097 SHIPPED it, 15.1-21.7x**                |
+| 1145    | PRICED at 29x-3120x             | **item 1146 SHIPPED it, 2944x** (corrected at 1354) |
+| 1159    | PRICED at 106-110 ms vs 0.0     | **item 1160 SHIPPED it, 106-115 ms -> 0.0**         |
+
+**Four of the list's numbered entries, every one closed by the item IMMEDIATELY after it.** With
+item 568 (closed by 569) that is five found this session, on top of the 22 item 1301 already
+counted. The failure is structural rather than careless: a priced entry's heading is written BEFORE
+the work, the next item does the work, and nothing makes that item revisit its predecessor's
+heading — which is exactly what the heading rule exists to force, and what item 1343 of mine needed
+correcting for at 1344.
+
+Also checked and NOT stale, so the sweep is not vacuous:
+
+- **1152** (55.9x, TS 3-hop count) — item 1153 shipped a DIFFERENT target (the mirror spelling of a
+  1-hop count, 1507x). 1152's own residual claim stands and today's `bench:gremlin` still shows that
+  row as the largest, at 362.9 ms. **Genuinely open; needs its own reading.**
+- **1104** -> 1105 "ABLATED (the step 1104 called for)" — followed up, not obviously closed.
+- **1131** — native Gremlin, out of this loop's scope; 1132 measured its presence check.
+
+### Why this matters more than the four headings
+
+A reader scanning for work takes the biggest number. Three times in two ticks that number was
+already banked, and the only reason no cycle was burnt is that verifying at the SOURCE is cheap —
+one `grep` for "item NNNN's target" plus the next heading. Item 1301 measured the same thing at
+scale: 40 of 265 lines corrected, 35 advertising done work. **Treat any `PRICED` heading as a claim
+to check, not a target to take.**
+
+### Gates
+
+Docs only. `oxfmt --check` 0.
