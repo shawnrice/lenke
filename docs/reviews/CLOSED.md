@@ -46819,3 +46819,52 @@ to check, not a target to take.**
 ### Gates
 
 Docs only. `oxfmt --check` 0.
+
+### Item 1356 — the TS multi-hop field reduces to ONE root cause, and the only lever left is a DESIGN DECISION
+
+Items 1354 and 1355 cleared the priced list of stale headings, leaving 1152 as the one genuinely
+open TS-side entry. Reading it alongside 1104/1105 shows they are not three targets but one.
+
+**The single root cause: TS has no dense vertex ordinal.** Every multi-hop walk interns the far
+vertex through a `Map<Vertex, number>.get` per edge touched.
+
+- **1105** ablated it: the per-edge `Map.get` is **24% of the TS sweep, ~46 ns an edge** (and item
+  1104's micro UNDERSTATED it at ~28 ns, the usual direction for a probe whose working set is
+  smaller than the engine's).
+- **1152** traced the same cost to the 3-hop count's **55.9x**, which is still the largest row in
+  `bench:gremlin` (362.9 ms today), and confirmed by ablation that item 1110's memo is load-bearing
+  (1.53x / 2.04x) — so the residual is specifically the **COLD** first touch of each slot, which no
+  memo can reach.
+- Native pays none of it: its vertices ARE dense `u32` ids, so interning is identity.
+
+### Both of item 1105's named levers are resolved, so nothing local remains
+
+1. **~24%, "pass 1 records an `Int32Array` of neighbour slots so passes 2-3 skip the lookup"** —
+   **this is item 1110's memo, and it is BUILT.** 1152's ablation is what confirms it carries
+   1.53-2.04x. What it cannot do is help a slot's first expansion, which is the residual.
+2. **~5.9%, split the loop body per direction** — open, and a **bad trade**: it is below the ~10%
+   threshold this repo requires a dedicated harness for, in a walk where items 159, 1033 and 1091
+   each measured unrelated shapes paying for changes to it — 1091 at **1.54x on an UNREACHABLE
+   control**. `pull-alignment-is-load-bearing` is the same lesson one function over.
+
+Also already refuted, so it is not a third way out: keying the intern on the vertex's `id` STRING
+instead. This file records that both string-map shapes "cost the lookup this row cannot afford. A
+route that wins has to carry a dense ordinal on the EDGE, which is the CSR by another name."
+
+### What is actually left, stated as the decision it is
+
+Closing this means **giving `Vertex` an internal dense slot/ordinal**, or a CSR-equivalent that
+carries one on the edge. That is cross-cutting, touches a USER-VISIBLE object, and bears directly on
+the one invariant this project's standing instruction names explicitly — O(1) access to a vertex or
+edge by id. 1152 already called it "a design decision not a local optimization", and this item
+agrees after checking the alternatives rather than by deferring to it.
+
+**So the autonomous-local field is exhausted, and that is a finding rather than a stopping excuse.**
+The session's own evidence for it: items 1342-1355 took every local lever that measured (1345's
+degree gate 1.32x, 1347's null carrier 1.45x, 1349's `within` closure 3.44-3.90x, 1350's membership
+carrier 1.32-1.48x, 1352's `NOT (…)` lift 2.8x) and every remaining candidate was either already
+built, refuted, or this one design fork.
+
+### Gates
+
+Docs only; no code changed. `oxfmt --check` 0.
