@@ -30,6 +30,48 @@ type FoldAcc =
 type RowsFn = (graph: Graph, params: Params) => Row[] | null;
 
 /**
+ * Edges per vertex below which the per-endpoint fold LOSES to the row walk it replaces.
+ *
+ * Item 1344 measured both routes at N=200,000 over degrees 1 to 5. The fold is FLAT (86.9-89.3 ms,
+ * because it is O(candidate endpoints) and does not read an edge) while the walk scales with edge
+ * count, so they cross at an average degree of two:
+ *
+ * ```text
+ *   degree   fold     walk     winner
+ *        1   87.68    71.89    walk, 1.22x   <- the rung was a PESSIMIZATION here
+ *        2   89.29    88.66    tie,  1.007x
+ *        3   87.54   104.61    fold, 1.19x
+ *        4   86.90   117.64    fold, 1.35x
+ *        5  110.31   150.14    fold, 1.36x
+ * ```
+ *
+ * Admitting AT two is deliberate: that row is a tie, so the boundary costs nothing either way, and
+ * putting it here keeps every measured WIN (degree 3 and up) on the fold.
+ */
+const MIN_EDGES_PER_VERTEX = 2;
+
+/**
+ * Does the per-endpoint fold beat the per-row walk on a graph of this shape?
+ *
+ * ⚠️ A PURE FUNCTION, EXPORTED, AND THAT IS THE POINT. This gate picks between two routes that
+ * return IDENTICAL rows, so no differential or answer test can see it being wrong — the repo's
+ * `perf-gate-needs-its-own-test` rule, learned from a gate whose every mutant survived the suite.
+ * The arithmetic is therefore unit-tested directly in `endpoint-fold-degree-gate.test.ts`.
+ *
+ * ⚠️ IT IS A PROXY, NOT THE QUANTITY IT WANTS. The relevant ratio is edges OF THE WANTED TYPES per
+ * CANDIDATE endpoint; `Graph` carries no per-type edge count, and both `edgeCount` and
+ * `vertexCount` are O(1) (`edgesById.size` / `verticesById.size`), which is why they are used. On a
+ * single-edge-type graph with one label the proxy is EXACT. Where it is not, it errs in both
+ * directions and the limits are worth stating: a graph of average degree 10 spread over ten types
+ * reads 10 where the wanted type's own degree may be 1, so the fold is still admitted where it
+ * loses; and a selective far label makes the true candidate count far below `vertexCount`, so the
+ * fold is declined where it would have won. Narrowing either needs a per-type count, which is a
+ * storage change and not this gate's business.
+ */
+export const endpointFoldBeatsRowWalk = (edgeCount: number, vertexCount: number): boolean =>
+  edgeCount >= vertexCount * MIN_EDGES_PER_VERTEX;
+
+/**
  * `MATCH (a)-[:T]->(x) RETURN min(<x expr>), max(<x expr>)` folded ONCE PER DISTINCT ENDPOINT
  * rather than once per ROW (item 1246).
  *
@@ -133,6 +175,14 @@ export const primedEndpointExtremum = (
     // THE RUN-TIME ADMISSION. A start label no vertex fails costs nothing to drop; any other
     // declines to the row walk, which item 1245 measured as the better plan there.
     if (startLabel !== undefined && !vacuousLabel(graph, startLabel)) {
+      return null;
+    }
+
+    // THE SECOND RUN-TIME ADMISSION (item 1345), and it is a property of the GRAPH for the same
+    // reason vacuity is. This fold costs O(candidate endpoints) and the row walk it replaces costs
+    // O(rows) = O(edges), so the fold wins only where there is multiplicity to collapse. Item
+    // 1344 measured the crossover at an average degree of TWO.
+    if (!endpointFoldBeatsRowWalk(graph.edgeCount, graph.vertexCount)) {
       return null;
     }
 

@@ -46565,7 +46565,7 @@ without it a "cold" arm that skipped warmup would read as a penalty that is real
   ~40 ns a vertex and the hop adds 10-13x that, none of it the edge walk. Native answers the whole
   query in 2.5-3.4 ms. Localize the constant STRUCTURALLY (1183), not from timing.
 
-### Item 1344 — the per-endpoint extremum rung has NO DEGREE GATE and loses 1.22x at degree 1 (OPEN)
+### Item 1344 — the per-endpoint extremum rung has NO DEGREE GATE and loses 1.22x at degree 1 ~~(OPEN)~~ **CLOSED by item 1345 at 1.32x, controls flat**
 
 - ⚠️ **Item 1343's "open per-vertex constant" was items 1244/1245/1246/1247/1295's residual and
   cited none of them.** 1244 priced the shape, 1245 priced the fix AND warned the per-endpoint fold
@@ -46580,3 +46580,23 @@ without it a "cold" arm that skipped warmup would read as a penalty that is real
   vacuity test. `Graph.edgeCount`/`vertexCount` are a cheap proxy, exact on one edge type.
 - **The route is identified by EDGE-SCALING, not by one number.** Accepted 88.52 -> 110.31 across
   DEG=1 -> 5 (flat); refused 76.23 -> 150.14 (scales). A single ratio cannot tell which route ran.
+
+### Item 1345 — the per-endpoint extremum fold gets a DEGREE gate: DONE, 1.32x at degree 1
+
+- **CLOSES item 1344.** `endpointFoldBeatsRowWalk(edgeCount, vertexCount)` is a second run-time
+  admission beside the vacuity test, declining the fold below 2 edges per vertex. Crossover measured
+  at N=200,000 over degrees 1-5: the fold is FLAT (86.9-89.3 ms, O(candidate endpoints), reads no
+  edge) while the walk scales with edges, so they cross at degree 2 — admitted AT 2 because that row
+  is a tie. A/B: **deg1 87.49 -> 66.37, 1.32x, ranges disjoint**; deg5 control 0.97x (overlapping,
+  flat — the gate is one comparison per QUERY); no-hop null control flat. The 1.32x exceeds 1344's
+  1.22x because that entry's stand-in spelling bound an unused edge variable, as it said.
+- ⚠️ **THE GATE IS A PROXY and errs BOTH ways.** It wants edges of the WANTED TYPES per CANDIDATE
+  endpoint; `Graph` has no per-type edge count (`edgeCount`/`vertexCount` are O(1) `Map.size`, hence
+  used, and EXACT on a single-edge-type one-label graph). Average degree 10 over ten types reads 10
+  where the wanted type's is 1 (admits where it loses); a selective far label puts true candidates
+  far below `vertexCount` (declines where it would win). Narrowing wants a per-type count.
+- ⚠️ **Unwiring this gate is ANSWER-EQUIVALENT and survived all 3,486 tests (M5).** Four other
+  mutants died (threshold to 1, threshold to 3, `>=` to `>`, inverted). That is why the decision is
+  a PURE EXPORTED function with its own 11-case test, and why `bun run bench` gained
+  `query: hop min+max at degree 1 [gate declines fold]` on a new sparse fixture: it reads 70.9 ms
+  against the five-edge rows' 106.9-113.6, and convergence means the gate stopped declining.

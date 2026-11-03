@@ -180,6 +180,30 @@ const hopPairDoc = (() => {
 
   return lines.join('\n');
 })();
+
+// THE SPARSE TWIN of `hopPairDoc` — same columns, ONE edge per node instead of five.
+//
+// It exists for item 1345's degree gate. The per-endpoint extremum fold (1246/1247) costs
+// O(candidate endpoints) and the row walk it replaces costs O(edges), so the fold needs
+// multiplicity to collapse before it pays. On THIS fixture there is none, and before the gate the
+// rung took the fold anyway and lost 1.32x. Unwiring that gate is ANSWER-EQUIVALENT and survived
+// all 3,486 tests (item 1345's M5), so a number is the only instrument that can see it - item
+// 1177's lesson, the same one the `[wide multi-agg]` rows above were added for.
+const hopSparseDoc = (() => {
+  const lines = Array.from(
+    { length: N },
+    (_, i) =>
+      `{"type":"node","id":"v${i}","labels":["Person"],"properties":{"age":${i % 90},"name":"person${i}","city":"city${i % 8}"}}`,
+  );
+
+  for (let k = 0; k < N; k++) {
+    lines.push(
+      `{"type":"edge","id":"e${k}","labels":["KNOWS"],"from":"v${(k * 7919) % N}","to":"v${(k * 104_729) % N}","properties":{}}`,
+    );
+  }
+
+  return lines.join('\n');
+})();
 const graphDoc = (() => {
   const lines = Array.from(
     { length: N },
@@ -663,6 +687,23 @@ const CASES: Case[] = [
         void e.query(
           g,
           'MATCH (a:Person)-[:KNOWS]->(x) RETURN min(x.city) AS lo, max(x.city) AS hi',
+        ),
+    ),
+  },
+  {
+    // THE DEGREE-1 TWIN, and it watches item 1345's gate rather than a column type.
+    //
+    // Identical query to the string row above, on a fixture with ONE edge per node. The gate must
+    // DECLINE the per-endpoint fold here and take the row walk: 87.49 -> 66.37 ms, 1.32x, with the
+    // five-edge rows above as the controls it must not move (they measured 0.97x, flat). If this
+    // row ever converges on the five-edge one, the gate has stopped declining.
+    name: 'query: hop min+max at degree 1 [gate declines fold]',
+    ...onGraph(
+      () => hopSparseDoc,
+      (e, g) =>
+        void e.query(
+          g,
+          'MATCH (a:Person)-[:KNOWS]->(x) RETURN min(x.name) AS lo, max(x.name) AS hi',
         ),
     ),
   },
