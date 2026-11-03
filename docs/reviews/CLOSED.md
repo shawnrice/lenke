@@ -34601,7 +34601,7 @@ and 1.16x at item 1137; isolated both times it is flat (here PRE 15930.6/14701.5
 
 Suite 1279+13+725; `rewrite_fuzz` 10; 7/7 byte-identity fuzzers 13 pass / 0 fail.
 
-## 1145 — 🔶 PRICED at **29x-3120x** and GROUND-TRUTHED: the other spelling of the same hop, `outE(T).inV()`, costs 29x to 3120x what `out(T)` costs
+## 1145 — ~~🔶 PRICED at **29x-3120x**~~ **CLOSED by item 1146 at 2944x (NATIVE); and REFUTED for TS at item 1354 — 1.00x at every shape, do not port** — GROUND-TRUTHED: the other spelling of the same hop, `outE(T).inV()`, cost 29x to 3120x what `out(T)` costs
 
 ⚠️ **Equivalence confirmed in a real TinkerPop console first** (`podman run -i
 docker.io/tinkerpop/gremlin-console:3.7.3`, modern toy graph), not assumed and not read off lenke:
@@ -46762,3 +46762,20 @@ values)`, a named function taking the value as a PARAMETER. A/B: **within(1) 8.7
   none).
 - **The counter-example that keeps the probe valuable is item 1352**: real, 2.8x, identical answers,
   and invisible to all 4,662 tests.
+
+### Item 1354 — item 1145's `outE(T).inV()` gap has NO TS twin: REFUTED at 1.00x
+
+- ⚠️ **DO NOT PORT ITEM 1146 TO TS.** 200,000 vertices at degree 5, the same three shapes item 1145
+  priced: `has(age,44).count()` **33.3153 against 33.1988 (1.00x)**, `values(age).count()` **36.8457
+  against 36.6535 (0.99x)**, and `count()` sub-millisecond in BOTH spellings (0.0131/0.0174 — a
+  shortcut, not a walk, so not readable as a ratio). Answers identical throughout. Instrument:
+  `packages/native/edge-spelling-probe.ts`.
+- **Structural reason it does not transfer:** item 1146's gap was a PLAN-WIDTH gate — a stray
+  `bind_edge: true` kept the chain three slots wide so `try_scan_count` declined. TS has no
+  plan-width notion, and its count shortcut already serves the edge spelling.
+- ⚠️ **ITEM 1145's HEADING WAS STALE TWICE OVER**: item 1146 closed it (the VERY NEXT item, 2944x)
+  and the body still ended "OPEN.". Corrected in place.
+- ⚠️ **THE EXISTING INSTRUMENTS COULD NOT SEE THIS.** `spelling:gremlin` carries the group but
+  reports it "under 1ms, not compared" (count shortcut); `bench:gremlin` has no `outE().inV()` row
+  at any shape. Item 1145's own table is why that matters — its count row was 3120x and its has /
+  values rows ~29-30x, so a count shortcut hides exactly one of the three.
