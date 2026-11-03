@@ -46868,3 +46868,71 @@ built, refuted, or this one design fork.
 ### Gates
 
 Docs only; no code changed. `oxfmt --check` 0.
+
+### Item 1357 — what a dense vertex ordinal would cost WRITES: 0% on realistic shapes, <=2.4% worst case; DELETES are the real question and are NOT measured
+
+Item 1356 left one lever: giving `Vertex` an internal dense slot. The first thing to know is the
+write-side penalty, so it was measured rather than estimated.
+
+### Where writes would pay, structurally
+
+- **`addVertex`** — one counter read-increment, one field write. `Vertex` already carries six
+  private fields (`#id`, `#graph`, `#box`, `#lbox`, `#adjFrom`, `#adjTo`), so `#slot` adds nothing
+  to the public surface, and the constructor is four assignments. Around it `addVertex` already pays
+  `validateElementNames`, an id lookup, three constraint gates, map inserts, label indexing, events
+  and undo recording.
+- **`addEdge`** — nothing; edges get no ordinal in this design.
+- **DELETES** — the real cost, and a DESIGN sub-decision rather than a throughput one: tombstones
+  (free delete, ordinal space grows without bound and slot-indexed arrays go sparse), a free list
+  (O(1), but an ordinal is recycled onto a different vertex so anything cached by slot needs
+  invalidation), or compaction (O(n), unacceptable). **NOT MEASURED HERE.**
+
+### The add-path penalty, measured
+
+Prototype: `public vtxSeq = 0` on `Graph`, `#slot` on `Vertex` assigned in the constructor, plus a
+getter so the field cannot be dead-code eliminated. Three order-alternated rounds, 14 reps each
+dropping the first 3, median, one shape per process:
+
+| arm                                                | N       | pre ms | post ms | penalty   |
+| -------------------------------------------------- | ------- | ------ | ------- | --------- |
+| `bare` — one label, no properties (thinnest write) | 200,000 | 198.66 | 203.46  | **+2.4%** |
+| `props` — three properties (real ingest shape)     | 200,000 | 219.46 | 219.30  | **-0.1%** |
+| `withEdges` — vertices + 5 edges each              | 50,000  | 531.91 | 541.47  | **+1.8%** |
+
+**All three are at or under this repo's ~10% "needs its own harness" threshold**, and `props` — the
+shape ingest actually has — is indistinguishable from zero. The `bare` arm's +2.4% is the worst case
+by construction (a per-vertex constant is the largest FRACTION of the thinnest write) and is partly
+one outlier rep: its POST series is 256.88 / 200.31 / 203.46 against a PRE of 198.66 / 196.72 /
+199.01, so the ranges very nearly overlap.
+
+⚠️ **Do not quote the ns/vertex column.** It reads 24.0 ns for `bare` and **-0.8 ns** for `props` —
+a negative cost is the tell that these are differences of noisy totals, not a per-vertex
+measurement. A counter increment and a field write cannot cost 24 ns. The PERCENTAGES are the
+result; the per-vertex derivation is not.
+
+### ⚠️ `bench:usage` CANNOT answer this question, and that is worth recording
+
+It was the obvious instrument and it is unusable here. Between two builds differing by one integer
+field it moved `read: point lookup` **+26%** and `write: 100 updates in one statement` **-34%** —
+rows the change cannot reach by anything like that much. Its write rows are ops/sec over 250 ms
+batches, best of 3, and that variance swamps a 2% effect. A per-row question needs a per-row
+instrument: `packages/native/vertex-ordinal-write-probe.ts`.
+
+### 🛑 TWO harness faults, and the second nearly produced a confidently wrong answer
+
+1. **The `withEdges` arm was OOM-KILLED** (exit -9) at N=200,000 x 14 reps — fourteen 1,000,000-edge
+   graphs against the 16G cap. The cap did its job; the probe was too heavy. Fixed with per-arm
+   sizing (50,000 x 8), which still carries 250,000 edges — ample for an arm whose only purpose is
+   dilution.
+2. **The arm assertion REFUSED a pristine-vs-pristine run.** The previous run's `finally` had
+   restored pristine, so copying "the current tree" into the POST slot made POST pristine. Without
+   the assertion this would have measured identical code twice and reported a **0% write penalty** —
+   CLAUDE.md's named trap ("the 'after' reading is then the 'before' code — a null that looks like a
+   result"), and the worst possible failure for a question specifically about write cost. The script
+   now CONSTRUCTS post from pristine by applying the patch with each anchor asserted unique, so the
+   drift is impossible rather than merely detected.
+
+### Status
+
+The prototype is REVERTED; only the probe is kept. The add-path cost is answered; the delete
+strategy is not, and that is the half that needs a decision.
