@@ -46541,3 +46541,26 @@ to say so.
 No code changed in this item; the arms were swapped for measurement and POST restored (box-read=1).
 `cold-box-memo-probe.ts` is kept, with a guard that exits non-zero if the JIT warmup never ran —
 without it a "cold" arm that skipped warmup would read as a penalty that is really tiering.
+
+### Item 1343 — the hop multi-aggregate: route CONFIRMED fine in TS, a per-vertex hop constant PRICED
+
+- **REFUTED for TS: item 1184's native `try_frontier_multi_agg_wide` hole has NO TS twin.**
+  `detectMultiHopAggregate` (472) serves `min,max` over a string / dict / numeric column at
+  **1.08x / 1.07x / 1.10x** its own single-aggregate floor, against the 7-12x the native spec cost.
+  **Do not port 1184.** `count(x.name)`, the cheapest per-edge fold, costs as much as the pair
+  (119.02 against 118.74), so the fold is free whatever it folds.
+- ⚠️ **The three `hop min+max ... [wide multi-agg]` bench rows are NATIVE watchers (1184) and their
+  TS column has no floor beside it.** Read as a TS target the 37-49x is unreadable; the
+  single-aggregate hop row the ratio needs is not in the bench. Instrument:
+  `packages/native/hop-multi-agg-floor-probe.ts`.
+- ⚠️ **A hop `min`/`max` in TS is FLAT IN EDGE COUNT — only a DEGREE sweep shows it.** At fixed
+  N=200,000, 200k edges reads 89.98 ms and 2M edges reads 109.36, non-monotonic; marginal per-edge
+  cost ~11 ns. The N sweep looks linear and proves nothing, because at DEG=5 it moves vertices and
+  edges together. I had already written the opposite conclusion ("the walk is everything, ~110 ns
+  an edge") when the sweep refuted it. Cause: the far-driven walk visits each distinct far vertex
+  once for an idempotent fold.
+- **OPEN, PRICED: the far-driven hop's PER-VERTEX constant, ~400-520 ns.** Null control
+  (`MATCH (a:Person) RETURN max(a.name)`, no hop) reads **7.49-8.63 ms** over the same 200,000
+  vertices and the same property where one hop reads **89.25-111.98** — so the scan and fold are
+  ~40 ns a vertex and the hop adds 10-13x that, none of it the edge walk. Native answers the whole
+  query in 2.5-3.4 ms. Localize the constant STRUCTURALLY (1183), not from timing.

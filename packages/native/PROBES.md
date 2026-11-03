@@ -113,3 +113,22 @@ empty table is worse than no probe. `index-never-hurts-probe.ts`'s caller exits 
 `DID-NOT-RUN` when there are no result rows, after exactly that false pass (item 1324). Note also
 that zsh does NOT word-split unquoted `$VAR`, so `for a in $ARMS` iterates ONCE over the whole
 string; use `while IFS= read -r`.
+
+### `hop-multi-agg-floor-probe.ts` — the single-aggregate FLOOR the bench does not carry
+
+`ARM=pair-str|single-str|pair-num|single-num|pair-dict|single-dict|countkey|scan-str N= DEG=`
+
+The three `hop min+max over a string / dict / number [wide multi-agg]` bench rows are **native
+watchers** (item 1184) with no TS floor beside them, so their 37-49x is not readable as a TS target.
+This probe supplies the floor and the null control. It established, at item 1343, that the TS
+multi-aggregate ROUTE IS FINE (a pair costs 1.07-1.10x its single, so item 1184 must not be ported)
+and that the real lever is a **per-vertex hop constant** of ~400-520 ns.
+
+Two traps it exists to defuse, both of which caught me:
+
+- **Sweep DEG, not just N.** A hop `min`/`max` is FLAT IN EDGE COUNT (far-driven: one visit per
+  distinct far vertex). An N sweep at fixed degree moves vertices and edges together and cannot
+  tell a per-edge cost from a per-node one. I recorded the wrong mechanism before the DEG sweep.
+- **`count(*)` is not a floor here.** It is answered by a degree sum that never enumerates an edge
+  (item 1183). The probe warns on any sub-millisecond median for that reason; a per-edge floor must
+  read a property, which is what the `countkey` arm is for.
