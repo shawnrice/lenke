@@ -8045,7 +8045,7 @@ answer-preserving (declining to canonicalize is only slower), so the test assert
 _The TS engine has had vacuous-label elision since item 221; this is the same class on the other
 engine, found by pricing the native optional-hop enum rather than by porting anything._
 
-## 568 — the quantified-group count: TWO targets priced, NEITHER built (the fuzzer does not cover this shape)
+## 568 — the quantified-group count: TWO targets priced, ~~NEITHER built (the fuzzer does not cover this shape)~~ **BOTH SINCE CLOSED — target 1 (TS group-binding elision) by item 569 at 2.10x; target 2 (native per-rep predicate) by items 570/572 at 16.9-20.6x, PATH SOURCE still open. The fuzzer blocker never existed (corrected in-body at 569).**
 
 Item 567 fixed one predicate position the native optimizer never normalized. Grepping the other
 three found no second instance — `Hop.edge_pred` and `ShortestPath.edge_pred` are over an EDGE
