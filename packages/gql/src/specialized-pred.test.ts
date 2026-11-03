@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@lenke/core';
 
-import { satisfies, specializeSingleProp } from './executor.js';
+import { compilePredicate, satisfies, specializeSingleProp } from './executor.js';
 import { query } from './index.js';
 import { parse } from './parser.js';
 
@@ -167,6 +167,19 @@ describe('the specialized closure agrees with satisfies, element by element', ()
     "n.s IN ['s2', 's3']",
     "n.mixed IN [0, 'x0']",
     'n.odd IN [0]',
+    /**
+     * ITEM 1352's `NOT (…)` SPELLINGS. Found by `bun run spelling`, not by a test: these answered
+     * identically to their `NOT IN` twins while costing 2.8x more, because `asMembershipNode` did
+     * not unwrap a `not` the way `asNullTest` and `asLabelTest` do. The recursion also folds the
+     * `=`-OR-chain spelling, so that is covered here too.
+     */
+    'NOT (n.n IN [1, 3, 5])',
+    'NOT (n.n IN [1])',
+    'NOT (n.sometimes IN [11])',
+    'NOT (n.nulled IN [0])',
+    'NOT (n.missing_entirely IN [1])',
+    'NOT (n.n = 1 OR n.n = 3)',
+    'NOT (n.n NOT IN [1, 3])',
   ];
 
   for (const where of SPECIALIZABLE) {
@@ -499,6 +512,58 @@ describe('item 1347 — the NULL carrier arm', () => {
       expect(fast).toBeDefined();
       expect(fast?.(vertices[0], env)).toBe(false);
     }
+  });
+
+  /**
+   * ITEM 1352: the two spellings must LIFT THE SAME WAY, not merely agree.
+   *
+   * ⚠️ THE ANSWER CANNOT SEE THIS. `NOT (n.k IN [..])` and `n.k NOT IN [..]` returned identical
+   * rows both before and after the lift — the gap was 8.58 ms against 3.01 and no correctness test
+   * could notice. So the assertion has to be on the COMPILED SHAPE, which is item 1347's lesson
+   * about a decision being observable: `predicateOf` hands back the clause, and a lifted membership
+   * leaves exactly one `memberProps` entry where an unlifted one leaves a general `where`.
+   */
+  const memberOf = (where: string): { memberProps?: unknown[]; where?: unknown } => {
+    // `predicateOf` hands back the AST clause; `memberProps` only exists on the COMPILED
+    // predicate, so the clause's `where` is run through the same `compilePredicate` the tally
+    // uses, with `n` as the proved own-variable.
+    const clause = predicateOf(where) as { where?: Parameters<typeof compilePredicate>[1] };
+
+    return compilePredicate(undefined, clause.where, 'n') as unknown as {
+      memberProps?: unknown[];
+      where?: unknown;
+    };
+  };
+
+  test('both spellings lift into ONE memberProps entry', () => {
+    for (const where of ['n.n NOT IN [1, 3]', 'NOT (n.n IN [1, 3])']) {
+      const m = memberOf(where);
+
+      expect(m.memberProps).toHaveLength(1);
+    }
+  });
+
+  test('the `=`-OR-chain under a NOT lifts too, via the recursion', () => {
+    // `NOT (n.n = 1 OR n.n = 3)` is `n.n NOT IN [1, 3]` — one of the four canonical seeding
+    // spellings. Matching `e.expr.kind === 'in'` directly would miss it.
+    expect(memberOf('NOT (n.n = 1 OR n.n = 3)').memberProps).toHaveLength(1);
+  });
+
+  test('the negated flag is FLIPPED, not copied', () => {
+    const plain = memberOf('n.n IN [1, 3]').memberProps as { negated: boolean }[];
+    const notted = memberOf('NOT (n.n IN [1, 3])').memberProps as { negated: boolean }[];
+
+    expect(plain[0].negated).toBe(false);
+    expect(notted[0].negated).toBe(true);
+  });
+
+  test('a DOUBLE negation returns to the positive sense', () => {
+    // `NOT (n.n NOT IN [..])` is `n.n IN [..]`. The recursion handles it; a single-level unwrap
+    // would leave the inner `negated` untouched and answer the complement.
+    const twice = memberOf('NOT (n.n NOT IN [1, 3])').memberProps as { negated: boolean }[];
+
+    expect(twice).toHaveLength(1);
+    expect(twice[0].negated).toBe(false);
   });
 
   test('nullProps BESIDE another carrier refuses', () => {

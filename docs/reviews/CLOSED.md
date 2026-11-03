@@ -46722,3 +46722,24 @@ values)`, a named function taking the value as a PARAMETER. A/B: **within(1) 8.7
   this way, the gate IS still declining (75.47 against 66.63).
 - **A watcher with a broken reading rule is worse than none, because it is believed** — the same
   argument as a generative test whose teeth were never verified.
+
+### Item 1352 — `NOT (n.k IN [..])` lifts like its twin: DONE, 2.8x, and item 1350 had WIDENED the gap
+
+- **A SPELLING GAP MY OWN ITEM 1350 WIDENED.** It pre-dates that item (1288 lifted `NOT IN` and left
+  `NOT (…)` on the generic evaluator, ~1.9x); specializing `memberProps` took the lifted spelling to
+  ~3.0 ms and the spread to **~2.8x**. Making ONE spelling faster widened the distance between two
+  spellings of one question — every carrier specialization in 1338-1350 carries that risk, and the
+  remedy is to lift the other spelling, never to unwind the win.
+- **FOUND BY `bun run spelling`, NOT BY A TEST, and confirmed in 3 isolated runs** (3.01/3.08/2.91
+  against 8.62/8.58/6.51). Both spellings answered identically throughout, so nothing in 4,662 tests
+  could see it. After: 3.08/3.03/3.07 against 3.07/3.04/2.85 — `0 groups over 2x`.
+- **Cause: `asMembershipNode` did not unwrap a `not`**, where `asNullTest` (1270) and `asLabelTest`
+  do, and `CMemberProp.negated` has existed since 1288 — only the recogniser was missing. FOURTH in
+  a series: items 984, 1270, 1272 each closed a 1.68-2.20x gap the same way. The flip is EXACT
+  (`not3` of UNKNOWN is UNKNOWN; no ordering comparison, so no NaN hazard). It RECURSES, so
+  `NOT (n.k = 1 OR n.k = 3)` folds through `membershipFromEqChain` too.
+- ⚠️ **TWO OF THREE MUTANTS ARE ANSWER-EQUIVALENT** (`no-recursion`, `branch-removed`) and are caught
+  ONLY by assertions on the COMPILED SHAPE — the helper runs the clause's `where` through the
+  exported `compilePredicate` and checks for one `memberProps` entry. Without them this would have
+  shipped with a watcher that could not fire (item 1345's M5), avoidable because item 1347
+  established when a route decision is observable.

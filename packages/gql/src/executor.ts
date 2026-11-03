@@ -4880,6 +4880,37 @@ const asMembershipNode = (e: Expr): Expr | null => {
     return e;
   }
 
+  /**
+   * ITEM 1352: `NOT (n.k IN [..])` with the flag FLIPPED, the third sibling of this shape.
+   * `asNullTest` has done it for `NOT (… IS NULL)` since item 1270 and `asLabelTest` for labels;
+   * this recogniser did not, so the `NOT (…)` spelling was neither an `in` nor an `or` and
+   * declined the whole chain to the generic evaluator while `NOT IN` lifted.
+   *
+   * ⚠️ FOUND BY `bun run spelling`, NOT BY A TEST, and it had the defect class's signature: both
+   * spellings answered identically, so nothing in 4,662 tests could see it. Three isolated
+   * confirmation runs read `n.k NOT IN [1,2]` at 3.01/3.08/2.91 ms against
+   * `NOT (n.k IN [1,2])` at 8.62/8.58/6.51.
+   *
+   * ⚠️ AND ITEM 1350 WIDENED IT. The gap pre-dates that item (item 1288 created it by lifting
+   * `NOT IN`), which measured ~1.9x; specializing `memberProps` took the lifted spelling to ~3.0 ms
+   * and the gap to ~2.8x. Making one spelling faster widened the spread — which is why the fix is
+   * to lift the OTHER spelling rather than to unwind anything.
+   *
+   * THE FLIP IS EXACT, by the same argument `asNullTest`'s note makes for its own case and item
+   * 1288's `negated` field makes for this carrier: membership is `not3` of the test, and `not3` of
+   * UNKNOWN is UNKNOWN, so a filter drops the row under both spellings. The NaN hazard that makes
+   * `NOT (x >= 2)` unequal to `x < 2` cannot arise, because there is no ordering comparison here.
+   *
+   * Recursing rather than matching `e.expr.kind === 'in'` directly also takes
+   * `NOT (n.k = 1 OR n.k = 2)` through `membershipFromEqChain`, the `=`-OR-chain spelling of the
+   * same question — one of the four canonical seeding bugs CLAUDE.md names.
+   */
+  if (e.kind === 'not') {
+    const inner = asMembershipNode(e.expr);
+
+    return inner?.kind === 'in' ? { ...inner, negated: !inner.negated } : null;
+  }
+
   return e.kind === 'or' ? membershipFromEqChain(e) : null;
 };
 
