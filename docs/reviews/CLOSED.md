@@ -46638,3 +46638,23 @@ without it a "cold" arm that skipped warmup would read as a penalty that is real
   only influenced which internal branch ran, which is why that one needed a bench row. Check which
   kind you have before concluding a gate is untestable.
 - The arm was ALREADY REACHED before any new test: a `throw` in it fired 6 existing tests.
+
+### Item 1348 — the remaining carriers priced: GQL `memberProps` 1.58x, and a NEW Gremlin spelling gap at 3.90x (both OPEN)
+
+- ⚠️ **GQL is 2.44x FASTER than Gremlin on membership, so the cross-surface comparison points the
+  OTHER WAY here** — `IN [1,3,5]` 4.2011 ms against `within(1,3,5)` 10.2405, both answering 6,669.
+  Pricing before building reversed the expected direction.
+- **OPEN, TARGET 1 (GQL, 1.58x): `memberProps` is lifted (1269) but NOT specialized**, so it still
+  pays the full `satisfies` dispatch per element. Carrier isolated — same column, same selectivity,
+  ONE element, differing only in carrier: `= 1` (eqProps, specialized at 1340) **2.4889** against
+  `IN [1]` (memberProps) **3.9441**, ranges disjoint. A one-element list is the fair pairing because
+  item 1268 refuted linearity in k (`IN [50]` costs what `IN [16 values]` costs).
+- **OPEN, TARGET 2 (GREMLIN, 3.90x) — A CANONICAL SPELLING BUG.** `has('age', within(1))` **8.8421**
+  against `has('age', 1)` **2.2678** for the IDENTICAL question. This is CLAUDE.md's named class.
+  Item 1312 folded `or(has,has)` into `has(k, within(..))` and measured `within` at 8.287-9.089 there
+  (matching), but `within` was the FAST side of that fold, so the single-element case went unmeasured.
+- ⚠️ **THE SINGLE-ELEMENT FOLD IS NOT UNCONDITIONALLY SOUND — NaN.** A list membership uses
+  SameValueZero, where `[NaN].includes(NaN)` is TRUE; predicate equality keeps NaN JS-unordered,
+  where `v === NaN` is FALSE. So `within(NaN)` and `has(k, NaN)` DISAGREE and a blanket fold changes
+  an answer. `±0` agrees under both. Item 1312's entry already flagged NaN as "the interesting
+  case". Discharge by reading both implementations, not from the spec.

@@ -22,7 +22,7 @@
  */
 import { Graph } from '@lenke/core';
 import { query } from '@lenke/gql';
-import { count, gt, has, hasLabel, lt, toArray, traversal, V } from '@lenke/gremlin';
+import { count, gt, has, hasLabel, lt, toArray, traversal, V, within } from '@lenke/gremlin';
 
 const N = Number(process.env.N ?? 200_000);
 const REPS = Number(process.env.REPS ?? 14);
@@ -70,6 +70,24 @@ const GQL: Record<string, string> = {
   // touch this row and whatever gap remains is still live. Both surfaces answer N here, since every
   // vertex carries `age`: the question is the predicate machinery, not selectivity.
   notNull: 'MATCH (n:P) WHERE n.age IS NOT NULL RETURN count(*) AS c',
+  // THE NEXT UNSPECIALIZED CARRIER (priced at item 1348). `IN` lifts into `memberProps`, which
+  // `SPECIALIZABLE` still refuses after item 1347 added the null carrier. Uses the EXISTING `age`
+  // column deliberately: adding a property to the fixture would widen every vertex object and move
+  // every other arm, so the comparison with earlier runs of this probe would be lost.
+  //
+  // Selectivity here is ~3 of 90 values against `real`'s ~49%, which item 926 established is NOT a
+  // confound for a filtered COUNT — measured there against expectation.
+  member: 'MATCH (n:P) WHERE n.age IN [1, 3, 5] RETURN count(*) AS c',
+  // THE CARRIER ISOLATED. These two ask the same question of the same column at the same
+  // selectivity (1 value of 90) and differ ONLY in which carrier they lift into: `= 1` into
+  // `eqProps`, SPECIALIZED at item 1340, and `IN [1]` into `memberProps`, which is NOT.
+  //
+  // A one-element list is the right comparison because item 1268 REFUTED linearity in k: a TS `IN`
+  // count is flat in list length (`IN [50]` costs what `IN [16 values]` costs), so a three-element
+  // list does not do three comparisons' worth of work and `member` above is comparable to a single
+  // predicate despite appearances.
+  eqNum: 'MATCH (n:P) WHERE n.age = 1 RETURN count(*) AS c',
+  memberOne: 'MATCH (n:P) WHERE n.age IN [1] RETURN count(*) AS c',
 };
 
 // `has('age', gt(-1))` is the Gremlin vacuous arm: age is `i % 90` so it CANNOT fail, which keeps
@@ -87,6 +105,9 @@ const GRM: Record<string, ReturnType<typeof traversal>> = {
   eqParam: traversal(V(), hasLabel('P'), has('tag', 't3'), count()),
   // Single-argument `has` is the PRESENCE spelling, the twin of `IS NOT NULL` above.
   notNull: traversal(V(), hasLabel('P'), has('age'), count()),
+  member: traversal(V(), hasLabel('P'), has('age', within(1, 3, 5)), count()),
+  eqNum: traversal(V(), hasLabel('P'), has('age', 1), count()),
+  memberOne: traversal(V(), hasLabel('P'), has('age', within(1)), count()),
 };
 
 const series: number[] = [];
