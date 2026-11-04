@@ -52706,3 +52706,57 @@ Same reasoning as `STRIDE` at item 1427. The chosen value is echoed in the outpu
 
 `bun run check` 0 (read unpiped). No engine code changed; `shortcuts.ts` verified free of the
 instrumentation and still at `passes > 2`.
+
+### Item 1436 — **`hopDrivesFar` is SOUND**: forcing the far-driven FILTERED walk is 64.93 against 60.90-64.41 at degree 1 and 123.06 against 116.87 at degree 4 — no better, slightly worse. Item 1434's flip was specific to the walk item 1407 rebuilt, not general staleness
+
+### The suspicion, and why it was reasonable
+
+Item 1434 moved `FAR_DRIVEN_MIN_DEGREE` 3 → 1 because item 1407's row builder had reversed three
+earlier readings. `hopfiltyield` is now the heaviest OPEN GQL row (64.41 ms, **644 ns/row** — the
+highest per-row cost in the bench) and it has the identical structural setup: a far-driven route
+exists (`farDrivenFilteredHopWalk`) and is gated off.
+
+`hopDrivesFar` is `candidateCount(far) < candidateCount(start)` — **strictly** smaller. With `P` on
+every vertex both counts are `vertexCount`, so the gate never fires on this fixture and the
+start-driven general closure always serves it.
+
+### The measurement
+
+Forced by relaxing `<` to `<=`, so the vacuous-label case takes the far-driven route:
+
+| row                 | fanout | shipped       | forced far-driven |
+| ------------------- | ------ | ------------- | ----------------- |
+| `hopfiltyield`      | 1      | 60.90 - 64.41 | **64.93**         |
+| `hopfiltyield`      | 4      | 116.87        | **123.06**        |
+| `hopstartonlyyield` | 1      | 57.12 - 63.35 | **59.90**         |
+| `hopstartonlyyield` | 4      | 102.50        | 101.96            |
+
+**No gain anywhere, and 5% worse at degree 4.** Digests identical in every cell, which is the check
+that the forced arm really is the other route and still correct. The gate stands.
+
+### Why this one did NOT flip, which is the useful part
+
+Item 1434's multi-type gate flipped because `startDrivenMany` does **per-vertex bucket bookkeeping**
+— two `Map.get`s, an array of buckets, a size sort, and an earlier-buckets test — that the far-driven
+walk skips entirely. Item 1407 made the far-driven row builder cheap enough that skipping the
+bookkeeping became the dominant term.
+
+The single-type FILTERED start-driven closure has no such bookkeeping: it is already one `Map.get`
+and a tight edge loop. **There was no structural overhead for the far-driven route to remove**, so
+the cheaper row builder buys nothing and the extra far-end indirection costs a little.
+
+So "item 1407 invalidated the gates" is **too broad a reading of item 1434**. It invalidated the gate
+on the walk whose alternative had per-vertex overhead. Two consecutive re-checks (item 1435's
+`passes > 2`, this one) found their constants sound — which is the right prior for the rest of them.
+
+### What that leaves on the heaviest open row
+
+`hopfiltyield` at 644 ns/row is not a routing problem. Item 1429's ablation of the related undirected
+shape put the engine at 1.45-1.51x a hand floor with the adjacency walk 43-63% of that floor, and
+item 1415's attempt at the per-row machinery measured 2.3% against controls moving 3.4-5.6%. The
+`hop-projection.ts` toll (item 1415) still demands ~10% on the row itself.
+
+### Gates
+
+`bun run check` 0 (read unpiped). No engine code changed; `hop-projection.ts` restored and verified
+at the strict `<`.
