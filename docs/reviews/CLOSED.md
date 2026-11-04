@@ -51805,3 +51805,64 @@ repetition. `PROBES.md` now says `gcMs` needs more repeats than `p25`, not fewer
 ### Gates
 
 `bun run check` 0 (read unpiped). No engine code changed.
+
+### Item 1422 — **the zero-answer flag was WRONG TWICE, and verifying its FIRING path is what found it**: version 1 false-positived on four live rows, version 2 then missed a real zero count. Both are arrays; the discriminator is the ROW COUNT plus the value's type
+
+### Version 1 cried wolf
+
+Item 1417 added `VACUOUS_ZERO_ANSWER` to both benches so a dead fixture announces itself. The Gremlin
+side tested `answer === 0`. Ranking the Gremlin rows, **four of fourteen came back flagged** —
+`hoporder`, `hopyieldsingle`, `hopyieldmulti`, `hopyieldmultirev`.
+
+All four are live. They are `values('k')` projections, and `answer` is the **first element**, which is
+the first vertex's `k` — legitimately **0**. A flag that cries wolf is worse than no flag, because it
+trains the reader to ignore it.
+
+### Version 2 went silent
+
+Split on `Array.isArray(rows)`: array → flag when empty, scalar → flag when 0. Verified by
+temporarily adding `hasLabel('ZZZ').count()`, a shape whose answer is 0 by construction:
+
+|                           | answer | flag        |
+| ------------------------- | ------ | ----------- |
+| `hasLabel('ZZZ').count()` | 0      | **MISSING** |
+
+**`toArray` returns `[0]` for a count**, so a count IS an array — `Array.isArray` cannot separate a
+scalar aggregate from a projection, and version 2 took the array branch, found one row, and said
+nothing.
+
+### The discriminator
+
+```js
+rowCount === 0 || (rowCount === 1 && typeof answer === 'number' && answer === 0);
+```
+
+Row count plus the value's type, with `rowCount` captured beside `answer` rather than derived from
+it. Verified in all four directions:
+
+| shape                            | answer | flag          |
+| -------------------------------- | ------ | ------------- |
+| `hasLabel('ZZZ').count()`        | 0      | **VACUOUS** ✓ |
+| `labelsingle`                    | 1000   | — ✓           |
+| `hopyieldsingle` (`values('k')`) | **0**  | — ✓           |
+| `hopcount3`                      | 1000   | — ✓           |
+
+A projection returning exactly one row whose single value is 0 would still be flagged. That is a rare
+shape, and a false alarm there costs a second look where a missed dead fixture costs a whole
+measurement — item 1416 lost a ranking to one.
+
+### ⚠️ The lesson is about the order of verification
+
+Item 1417 checked the flag by confirming it FIRED on a known-dead GQL row and stayed silent on a live
+one — the right test, on the GQL bench. The Gremlin side got the same code and **no equivalent
+check**, because no shape in its list answers 0, so there was nothing to point it at. Verifying the
+negative direction alone passed both broken versions.
+
+_A generative or diagnostic check whose teeth were never verified is worse than none, because it is
+believed_ — already this repo's rule for fuzzers and mutation harnesses. This is the same rule for a
+one-line diagnostic, and the cost of obeying it was adding a deliberately-dead shape for one run.
+
+### Gates
+
+`bun run check` 0 (read unpiped). The temporary `tmpdead` shape was added from a copy under
+`crates/lenke-engine/target/`, used for one reading, and removed — verified absent.

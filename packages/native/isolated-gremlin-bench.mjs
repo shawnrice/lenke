@@ -189,6 +189,7 @@ obs.observe({ entryTypes: ['gc'] });
 const series = [];
 let sink = 0;
 let answer;
+let rowCount = 0;
 
 /**
  * ⚠️ WINDOWED, so a profile of this bench is of the TRAVERSAL and not of the fixture build (1392).
@@ -208,6 +209,10 @@ const measure = () => {
     series.push(dt);
     sink += Array.isArray(rows) ? rows.length : 1;
     answer = Array.isArray(rows) ? rows[0] : rows;
+    // ⚠️ THE ROW COUNT, kept separately from `answer`, which is only the FIRST ELEMENT. A first
+    // element of 0 is a perfectly good answer for a projection (item 1421), so the dead-fixture
+    // check below needs the count and not the value.
+    rowCount = Array.isArray(rows) ? rows.length : 1;
   }
 
   return sink;
@@ -238,7 +243,25 @@ if (sink === 0) {
  * A zero count is a legitimate answer for some fixtures, so this FLAGS rather than throws — the
  * `sink === 0` guard above is the one that can be certain.
  */
-const zeroAnswer = answer === 0 || (Array.isArray(answer) && answer.length === 0);
+/**
+ * A row found NOTHING when it emitted no rows at all, or when it emitted exactly ONE numeric row
+ * equal to 0 — which is what `count()` on a dead fixture looks like.
+ *
+ * ⚠️ BOTH CASES ARE ARRAYS, and getting that wrong broke this check twice (item 1421). `toArray`
+ * returns `[0]` for a count, so `Array.isArray` cannot separate "a scalar aggregate" from "a
+ * projection", and neither can the first element's value on its own:
+ *
+ *   * version 1 tested `answer === 0` and FALSE-POSITIVED on every `values('k')` row, because the
+ *     first vertex's `k` is legitimately 0 — four rows flagged dead that were fine.
+ *   * version 2 split on `Array.isArray` and then MISSED a real zero count, because a count is an
+ *     array too — verified by temporarily adding `hasLabel('ZZZ').count()`, which answered 0 and
+ *     raised nothing.
+ *
+ * So the discriminator is the ROW COUNT plus the value's type. A projection returning exactly one
+ * row whose single value is 0 would still be flagged; that is a rare shape and a false alarm there
+ * costs a second look, where a missed dead fixture costs a whole measurement.
+ */
+const zeroAnswer = rowCount === 0 || (rowCount === 1 && typeof answer === 'number' && answer === 0);
 
 const kept = series.slice(DROP).sort((a, b) => a - b);
 const at = (f) => kept[Math.min(kept.length - 1, Math.floor(f * kept.length))];
