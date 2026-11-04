@@ -53976,7 +53976,11 @@ measured without a single hand arm. The spelling pair was sitting in the bench t
 `bun run check` 0 (read unpiped), gql 3669/0 before the revert and after it. Engine file reverted and
 verified at `farSpec` count 0; nothing of this item is committed but its record.
 
-### Item 1449 — ⚠️ THE OPTIMIZATION IS SUPERADDITIVE, which is why items 1447 and 1448 measured nothing: predicate alone **+1.4%**, projection alone **~0%**, BOTH together **32.8%** (41.5 ms against 61.7, spread 1.011x). Item 1448's "the components do not transfer" is CORRECTED — the total transfers, the halves individually do not
+### Item 1449 — ⚠️ **ITS 32.8% WAS AN IMPOSSIBLE FLOOR — CORRECTED AT ITEM 1450**: the ablation
+
+constant-folded the property keys, and a parameterized implementation measures **+1.3%/+2.7%**. The
+superadditivity below is real; the NUMBER is not reachable without code generation. Original
+heading: THE OPTIMIZATION IS SUPERADDITIVE, which is why items 1447 and 1448 measured nothing: predicate alone **+1.4%**, projection alone **~0%**, BOTH together **32.8%** (41.5 ms against 61.7, spread 1.011x). Item 1448's "the components do not transfer" is CORRECTED — the total transfers, the halves individually do not
 
 Items 1447 and 1448 each specialized the PROJECTION half of `hopfiltyield` and measured ~0. Item 1448
 concluded the hand-floor decomposition was non-predictive and that the projection "is not a term in
@@ -54056,3 +54060,99 @@ precisely the failure CLAUDE.md describes: "a heredoc on one line and the comman
 on the next line are two statements; the first failing does not stop the second." Caught because the
 numbers matched the baseline rather than the hypothesis, then redone with `&&` and a post-mutation
 `grep -c` assertion.
+
+### Item 1450 — ❌ the FUSED specialization is BUILT, correct, and worth **+1.3% / +2.7%**. Item 1449's 32.8% ablation was an IMPOSSIBLE FLOOR: the whole win came from CONSTANT property keys (`far.properties['n']` ~35 ms, `far.properties[predKey]` ~55), which a parameterized implementation cannot have
+
+Built item 1449's both-halves specialization: `farPropSpec` for the projection, `farNumericPred` for
+the predicate, fused into one sibling returned closure taken only when both fire.
+
+The detectors are right and the route is right. Verified by making the fused push throw:
+
+```text
+  WHERE b.n > 5  RETURN b.n AS n    fires
+  WHERE 5 < b.n  RETURN b.n AS n    fires   <- the REVERSED spelling, same route
+  WHERE b.n >= 9                    fires
+  WHERE b.n > 5  RETURN b.k AS n    fires
+  WHERE b.n = 9                     declines (equality is structural; not taken)
+  WHERE a.n > 0                     declines (START variable)
+  RETURN b.n AS n, b.k AS k         declines (two items)
+```
+
+The predicate reduction was read off `compareTruth` rather than assumed: for an ordering op against a
+NUMBER, nullish gives UNKNOWN and temporal/string/boolean all fail its `typeof` check and return null
+— "NOT a fault", in its own words — so the predicate is TRUE **iff `typeof v === 'number' && (v <op>
+lit)`**, with NaN keeping JS's unordered behaviour because the native compare is what runs.
+
+### And it is worth nothing
+
+Three rounds, arms asserted each round, 100k nodes, `STRIDE=random`:
+
+```text
+  src    row                   PRE     POST   change  concord  note
+  probe  engine              55.82    55.11     1.3%   5/9   TARGET
+  bench  hopfiltyield        60.67    59.02     2.7%   7/9   TARGET
+  probe  engine-bare         25.06    25.36    -1.2%   1/9   CONTROL, far-driven
+  bench  hopstartonlyyield   59.08    58.96     0.2%   4/9   CONTROL, start-only
+  bench  hoprelfiltyield     56.03    56.87    -1.5%   3/9   CONTROL, rel-bound
+  bench  hopoptyield         60.59    59.58     1.7%   7/9   CONTROL, optional
+  bench  hopsingleyield      26.74    26.95    -0.8%   3/9   CONTROL, unfiltered
+  bench  chain3              94.00    88.73     5.6%   6/9   CONTROL, a different route
+```
+
+**`chain3` — a control on a wholly different route — moved more than either target.** Reverted.
+
+### ⚠️ WHY, AND IT INVALIDATES THE 32.8%
+
+Item 1449's ablation hardcoded the key and the literal into the source: `far.properties?.['n']`,
+`lv > 5`, `{ n: … }`. The implementation must read them from the detected spec:
+`far.properties?.[predKey]`, a branch on `opCode`, `{ [rowName]: … }`. **A constant property key is a
+monomorphic inline-cached load; a variable key is a keyed lookup** — a different instruction
+sequence, not a different constant.
+
+Measured directly, the SAME sibling closure with only the keys and literal made constant again:
+
+```text
+  literal keys      ~35.1 ms   30.79  35.10  37.72
+  parameterized     ~55.1
+  PRE baseline      ~55.8
+```
+
+So the entire 32.8% was constant-key folding. **Item 1449's ablation was an impossible floor** — it
+measured a program the engine cannot be, and I read it as the value of a change the engine could make.
+
+⚠️ **RULE, and it is the third layer of the same lesson. An ablation is only a price if the real
+implementation can reproduce HOW it got the number, not just WHAT it computed.** The progression this
+session:
+
+- item 1444-1446: a hand FLOOR brackets but does not attribute.
+- item 1449: a PARTIAL ablation of a shared-machinery path is not an ablation of that path.
+- this item: an ablation that CONSTANT-FOLDS what the implementation must parameterize is not an
+  ablation of the implementation. **Hardcode the shape, never the values.**
+
+Had item 1449's ablation taken its key from a hoisted `const predKey = 'n'` instead of writing `'n'`
+inline, it would have reported ~0% and items 1450's build would never have been attempted. One line
+of discipline, three ticks.
+
+### Is the 20 ms reachable at all?
+
+Only by giving the engine constant keys, which means generating the closure at compile time —
+`new Function` per (key, op, literal) shape, cached. That is a real technique and the measurement says
+it is worth **~36%** on this row. It is also a decision with consequences well beyond performance: CSP
+and `unsafe-eval` in embedded hosts, the wasm/CLI target, review surface, and a code-generation path in
+an engine that currently has none. **Flagged, not taken** — it is the user's call, not a loop tick's.
+
+The cheaper half-measure (a per-key closure cache keyed on the property name, so a hot query reuses one
+monomorphic closure) does NOT help: the closure body still reads `properties[predKey]` through a
+variable unless the body itself is generated. The constant has to be in the code.
+
+### What this leaves on `hopfiltyield`
+
+Nothing actionable without codegen. The row is ~1.9x a hand floor, and the gap is now fully
+attributed: constant-key property access the engine cannot express. Items 1436, 1437, 1444-1450 have
+between them ruled out routing, the read count, the projection machinery, the predicate call, and both
+halves fused. **Stop looking here**; the next lever on this row is a language-level one.
+
+### Gates
+
+`bun run check` 0 (read unpiped), gql 3669/0 before the revert and after it. Engine file reverted and
+verified at 0 markers, `git diff --stat` empty for it; nothing committed but this record.
