@@ -326,3 +326,76 @@ describe('partially overlapping type buckets dedupe exactly (item 1377)', () => 
     expect(mixed('MATCH (x:P)-[:Z|W]->(y:P) RETURN count(*) AS n')).toEqual([{ n: 0 }]);
   });
 });
+
+/**
+ * THE GLOBAL-BUCKET UNION (item 1386). `MATCH ()-[:E]->()` answers from a global bucket SIZE in
+ * 0.003 ms; `-[:E|F]->` cost **6.44 ms** because `bucketSumsAreSound` correctly refuses to sum
+ * overlapping buckets and the query fell through to the deduping walk. Counting the UNION instead is
+ * 87% (7.7x) and order-symmetric.
+ *
+ * THE FIXTURE MAKES A SUM WRONG: `|E|` = 4 and `|F|` = 3, so the sum is 7 where the union is 5.
+ * `e4` is a self-loop carrying both labels and `e5` ends at a `Q`, which is what lets the two
+ * ADMISSION cases below bite — the union route is only valid when BOTH endpoints are vacuous, and a
+ * real label on either end must send the query somewhere else entirely.
+ */
+const unionEdges = (): Graph => {
+  const g = new Graph();
+
+  for (const id of ['a', 'b', 'c']) {
+    g.addVertex({ id, labels: ['P'], properties: {} });
+  }
+
+  g.addVertex({ id: 'q', labels: ['Q'], properties: {} });
+
+  const v = (id: string) => g.getVertexById(id)!;
+
+  g.addEdge({ id: 'e1', from: v('a'), to: v('b'), labels: ['E', 'F'] });
+  g.addEdge({ id: 'e2', from: v('a'), to: v('c'), labels: ['E'] });
+  g.addEdge({ id: 'e3', from: v('b'), to: v('c'), labels: ['F'] });
+  g.addEdge({ id: 'e4', from: v('a'), to: v('a'), labels: ['E', 'F'] });
+  g.addEdge({ id: 'e5', from: v('a'), to: v('q'), labels: ['E'] });
+
+  return g;
+};
+
+const u = (src: string): unknown => query<{ c: number }>(unionEdges(), src)[0]?.c;
+
+describe('a multi-type edge count is the UNION of global buckets (item 1386)', () => {
+  test('the single-type buckets are 4 and 3, so a SUM would answer 7', () => {
+    expect(u('MATCH ()-[:E]->() RETURN count(*) AS c')).toBe(4);
+    expect(u('MATCH ()-[:F]->() RETURN count(*) AS c')).toBe(3);
+  });
+
+  test('the disjunction counts the union, not the sum', () => {
+    expect(u('MATCH ()-[:E|F]->() RETURN count(*) AS c')).toBe(5);
+  });
+
+  test('type ORDER does not change it', () => {
+    expect(u('MATCH ()-[:F|E]->() RETURN count(*) AS c')).toBe(5);
+  });
+
+  test('a DUPLICATE type names one bucket twice and counts it once', () => {
+    expect(u('MATCH ()-[:E|E]->() RETURN count(*) AS c')).toBe(4);
+  });
+
+  test('an ABSENT type contributes nothing', () => {
+    expect(u('MATCH ()-[:E|Z]->() RETURN count(*) AS c')).toBe(4);
+    expect(u('MATCH ()-[:Z|W]->() RETURN count(*) AS c')).toBe(0);
+  });
+
+  test('an UNTYPED rel is every edge once, whatever labels it carries', () => {
+    expect(u('MATCH ()-[]->() RETURN count(*) AS c')).toBe(5);
+  });
+
+  // THE ADMISSION CASES. The union is over the WHOLE graph, so it is only the answer when neither
+  // endpoint is really labelled — otherwise the question is a degree sum over that endpoint's
+  // bucket. Only `e5` reaches a `Q`, and nothing leaves one.
+  test('a REAL label on an endpoint declines the whole-graph route', () => {
+    expect(u('MATCH ()-[:E|F]->(x:Q) RETURN count(*) AS c')).toBe(1);
+    expect(u('MATCH (x:Q)-[:E|F]->() RETURN count(*) AS c')).toBe(0);
+  });
+
+  test('past the type CAP it declines and the answer is unchanged', () => {
+    expect(u('MATCH ()-[:E|F|Z1|Z2|Z3|Z4|Z5|Z6|Z7]->() RETURN count(*) AS c')).toBe(5);
+  });
+});

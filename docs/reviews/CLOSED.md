@@ -48473,7 +48473,7 @@ n=24 interleaved number; the bench row is a regression check, not the measuremen
 
 Engine change (one file, `packages/gremlin/src/executor/count-shortcut.ts`). Everything above green.
 
-### Item 1375 — a multi-type hop count costs **16.056 ms against 0.003** where a single-type one is free, the guard is CORRECT (proved by the MULTILABEL=0 arm), my "spelling gap" framing was WRONG, and the real lever is the dedupe Set — **the dedupe Set lever is now ABLATED at 60.7% and SHIPPED at 62.5% (items 1376-1377); `types.map` is REFUTED at nothing**
+### Item 1375 — a multi-type hop count costs **16.056 ms against 0.003** where a single-type one is free, the guard is CORRECT (proved by the MULTILABEL=0 arm), my "spelling gap" framing was WRONG, and the real lever is the dedupe Set — **the dedupe Set lever is now ABLATED at 60.7% and SHIPPED at 62.5% (items 1376-1377); `types.map` is REFUTED at nothing** — and the RESIDUAL that survived the dedupe is CLOSED at **1386**: the walk itself was avoidable, the union of global buckets answers it, **87.0% / 7.7x**. The guard is still correct about SUMMING; it was never a reason to walk
 
 Item 1374 shipped the single-label allocation fix on the Gremlin walk and I went looking for the GQL
 twin. **There is none**: item 324 already made `edgesOfTypes` return the bucket `Set` directly for a
@@ -49135,3 +49135,67 @@ reports green for a reason that has nothing to do with the engine being correct.
 
 Probe annotation only; no engine or core code changed, `LARGEST_BUCKET_FIRST` still x1 and both
 extracted arm files deleted by the driver's `finally`. `bun run check` 0 (read unpiped).
+
+### Item 1386 — GQL's multi-type hop count declined to a deduping walk where the UNION of global buckets answers it: **87.0%** (7.7x) on both orders, 64/64 concordance, both controls flat
+
+`MATCH ()-[:E]->() RETURN count(*)` answers in **0.003 ms** from one global bucket's `.size`.
+`MATCH ()-[:E|F]->()` measured **6.44 ms** — two thousand times more — not because the answer is
+harder but because `bucketSumsAreSound` correctly refuses to SUM overlapping buckets and the query
+then fell through to the deduping walk. The sum is unsound; the **union** is not, and it is cheap.
+
+### The measurement
+
+`isolated-row-bench.mjs`, `NODES=200000`, `MULTILABEL=3` (`['E','F']` on every 3rd edge),
+`REPS=14 DROP=3`, p25 within a process and the median across 8 processes per arm, two
+order-alternated rounds (BASE/UNION, UNION/BASE). Both arms asserted to be the code they claim
+(`globalBucketUnion` x0 vs x2) before each build.
+
+| shape                   | BASE p25 | UNION      | change    | concordance |
+| ----------------------- | -------- | ---------- | --------- | ----------- |
+| `hopmulti` (`:E\|F`)    | 6.4350   | **0.8385** | **87.0%** | 64/64       |
+| `hopmultirev` (`:F\|E`) | 6.1870   | **0.8240** | **86.7%** | 64/64       |
+| `hopsingle` [CONTROL]   | 0.0030   | 0.0030     | 0.0%      | 0/64        |
+| `hopfilter` [CONTROL]   | 3.6170   | 3.6430     | −0.7%     | 27/64       |
+
+64/64 on both targets; `hopfilter` at 27/64 is the coin-flip this session has learned to expect from
+a control, and `hopsingle` cannot move because it never reaches this branch. Answers identical per
+shape across every arm and process (the driver fails the run otherwise).
+
+### The third instance of one pattern, and the sort was in from the start
+
+Items 1379 (Gremlin `adjacentCount`, 110x) and 1382 (`labelledCount`, 91.5%) replaced the same
+decline with the same union over the same kind of label index. An edge belongs to exactly one FIRST
+bucket, so count it where it first appears: bucket 0 contributes `.size` untouched, bucket `i` pays
+`i` membership tests. **No overlap counter is needed**, which is the whole point — the engine already
+maintains `multiTypeEdgeCount`, and the union needs nothing from it.
+
+**⚠️ LARGEST BUCKET FIRST, and this time before shipping.** Items 1382 and 1384 each shipped this
+walk unsorted and each created an equivalent-spelling gap — 3.53x on `outE('F','E')` and 1.42x on
+`-[:F|E]->` — that had to be found and fixed afterwards. `globalBucketUnion` sorts descending in its
+first version, and `hopmultirev` above is the row that proves it (86.7% against 87.0%, a 1.02x
+residual).
+
+### A deliberate third copy, cross-referenced in both engines
+
+This repo's stance is that GQL and Gremlin are parallel implementations sharing only `@lenke/core`'s
+data types; `bucketSumsAreSound` is "one copy of the rule" _within_ GQL, not across engines. But the
+ORDER defect **did** drift across the two copies and cost two items to fix twice, two items apart
+(1382 then 1384). So `globalBucketUnion` and Gremlin's `unionOfBuckets` now each carry a pointer to
+the other naming that history, rather than relying on a future reader noticing the parallel.
+
+### Teeth, by two mutants
+
+8 tests added to `packages/gql/src/multi-label-edges.test.ts` on a fixture where the buckets are 4
+and 3 and the union is 5 — so a SUM answers 7 and is visibly wrong.
+
+- **Mutant A, sum instead of union:** 3 of the 8 new tests fail. Those three guard the union itself.
+- **Mutant B, drop the `a === undefined && b === undefined` admission guard:** my test plus **33
+  tests across the gql package** fail. That guard is why a hop with a bound endpoint cannot take
+  this route, and the remaining 5 new tests pin the behaviour it protects — far endpoint LABELLED
+  answers **1, not 5**, and start endpoint LABELLED answers **0**.
+
+### Gates
+
+gql 3545/0, gremlin 1148/0, core 370/0, serialization 144/0, `bun run fuzz` 20/0, `bun run check` 0
+(read unpiped). The arm file is the committed code; the pristine copy was restored and deleted by
+the driver's `finally`.

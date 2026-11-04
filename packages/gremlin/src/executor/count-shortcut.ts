@@ -2486,6 +2486,11 @@ const UNION_COUNT_MAX_LABELS = 8;
  * vertex-label buckets (`labelledCount`) — ONE copy of the rule, the drift item 1078 records as the
  * defect when a soundness condition was open-coded in seven places.
  *
+ * ⚠️ THE GQL TWIN IS `globalBucketUnion` in `gql/src/executor/shortcuts.ts` (item 1386), and these
+ * two ARE a deliberate pair of copies — this repo treats the surfaces as parallel implementations
+ * sharing only core's data types. **But the order defect below drifted across them and had to be
+ * fixed twice, two items apart (1382 then 1384).** If you change one, read the other.
+ *
  * ⚠️ SORTED DESCENDING, and item 1382 is why. Bucket 0 is FREE and every later bucket is iterated,
  * so an unsorted walk costs whatever order the query happened to name: item 1379 shipped that and
  * `outE('E','F')` measured **1.781 ms** against `outE('F','E')`'s **6.468**, 3.63x, both answering

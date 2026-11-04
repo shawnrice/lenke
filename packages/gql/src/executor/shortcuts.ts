@@ -899,6 +899,75 @@ const inlineHolds = (
  * `perf-gate-needs-its-own-test` describes — extract the decision as a pure function and assert
  * the decision.
  */
+/**
+ * `|union of the named global edge buckets|`, or `undefined` when there are too many names to be
+ * worth it.
+ *
+ * WHY THIS EXISTS BESIDE {@link bucketSumsAreSound} rather than inside it: that rule answers "may I
+ * SUM these buckets", and when the answer is no the union is still the right number and still cheap.
+ * An edge belongs to exactly one FIRST bucket, so count it where it first appears — bucket 0
+ * contributes its `.size` untouched and bucket `i` counts only what no earlier bucket holds. No
+ * overlap counter is needed, which is the whole point.
+ *
+ * ⚠️ SORTED DESCENDING. Bucket 0 is free and later buckets are iterated, so an unsorted walk costs
+ * whatever order the query named its types — items 1382 and 1384 each shipped that and measured
+ * 3.53x and 1.42x equivalent-spelling gaps before fixing it.
+ *
+ * ⚠️ THE GREMLIN TWIN IS `unionOfBuckets` in `gremlin/src/executor/count-shortcut.ts`, and these two
+ * ARE a deliberate pair of copies — this repo treats the surfaces as parallel implementations
+ * sharing only core's data types. **But the order defect above drifted across them and had to be
+ * fixed twice, two items apart (1382 then 1384).** If you change one, read the other.
+ *
+ * Capped for the same reason the Gremlin side is: bucket `i` pays `i` membership tests per edge, so
+ * the work is `O(k x |E|)` for `k` types — far under the walk at the two or three a query names, and
+ * unmeasured above that.
+ */
+const UNION_MAX_TYPES = 8;
+
+const globalBucketUnion = (types: readonly string[], graph: Graph): number | undefined => {
+  if (types.length === 0 || types.length > UNION_MAX_TYPES) {
+    return undefined;
+  }
+
+  const buckets: ReadonlySet<Edge>[] = [];
+
+  for (const t of types) {
+    const bucket = graph.edgesByLabel.get(t);
+
+    if (bucket !== undefined && bucket.size > 0) {
+      buckets.push(bucket);
+    }
+  }
+
+  if (buckets.length === 0) {
+    return 0;
+  }
+
+  buckets.sort((x, y) => y.size - x.size);
+
+  let n = buckets[0].size;
+
+  for (let i = 1; i < buckets.length; i += 1) {
+    for (const e of buckets[i]) {
+      let earlier = false;
+
+      for (let j = 0; j < i; j += 1) {
+        if (buckets[j].has(e)) {
+          earlier = true;
+
+          break;
+        }
+      }
+
+      if (!earlier) {
+        n += 1;
+      }
+    }
+  }
+
+  return n;
+};
+
 export const bucketSumsAreSound = (
   types: readonly string[] | undefined,
   multiTypeEdgeCount: number,
@@ -3195,6 +3264,17 @@ const buildOneHopCount = <T>(
       bucketSumsAreSound(types, graph.multiTypeEdgeCount)
     ) {
       return rowOf(types.reduce((n, t) => n + (graph.edgesByLabel.get(t)?.size ?? 0), 0));
+    }
+
+    // THE UNION, where the sum above is unsound (item 1386). Overlapping buckets cannot be SUMMED,
+    // but they can still be counted: `-[:E|F]->` was **5.96 ms** against `-[:E]->`'s 0.003 purely
+    // because this fell through to the deduping walk.
+    if (a === undefined && b === undefined && types !== undefined) {
+      const union = globalBucketUnion(types, graph);
+
+      if (union !== undefined) {
+        return rowOf(union);
+      }
     }
 
     // AN UNTYPED REL IS EVERY TYPE, AND ITS TOTAL IS `edgeCount` — item 1160.
