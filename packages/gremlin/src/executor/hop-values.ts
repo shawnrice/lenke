@@ -21,10 +21,21 @@ import { adjacentEdges, otherEndpoint } from './movement.js';
  * results ORDERED, so item 167's vertex-side flip is unavailable — which is exactly why this is
  * a fused walk rather than a reordering.
  *
- * LAZY on purpose. `run` returns an iterable and the engines already differ on laziness under a
- * zero-row slice, so returning an eager array would change observable behaviour for a caller
- * that takes one value. One generator for the whole walk costs 10ns/row over the eager form,
- * which is the price of not touching that.
+ * LAZY on purpose, and that half still holds. `run` returns an iterable and the engines already
+ * differ on laziness under a zero-row slice, so returning an eager array would change observable
+ * behaviour for a caller that takes one value.
+ *
+ * ⚠️ BUT THE PRICE WAS WRONG BY 38x, and the wrong number is what kept the lever shut. This said
+ * "one generator for the whole walk costs 10ns/row over the eager form, which is the price of not
+ * touching that". Re-measured at item 1411 on a three-arm floor — the same body as a loop, as a
+ * generator, and the real engine — the generator protocol is **1.9-2.2x**, not 4%: 416 ns/row
+ * against 795 at 1,000,000 edges, holding at scale rather than vanishing into it. And the engine
+ * sat at **1.00x** that generator, so the protocol was the entire gap.
+ *
+ * The argument's other half was also narrower than it read. It is about `run`, which stays exactly
+ * as lazy as it was. `toArray` is defined as `[...run(plan, graph)]` and therefore ALREADY drains
+ * the walk in full, so an eager fill there is the same answer by a cheaper route — see `drain`
+ * below, item 1412, measured at 53.8% on `V().out(E)` and 49.1% on the projected form.
  *
  * ORDER AND ENDPOINT COME FROM THE ENGINE'S OWN HELPERS — `adjacentEdges` and `otherEndpoint`, the
  * same two `movement.ts` uses — rather than from a second derivation here. That is what makes
@@ -51,7 +62,28 @@ import { adjacentEdges, otherEndpoint } from './movement.js';
  * here would have had to re-derive — and re-deriving a comparator is the one thing byte-identity
  * cannot survive (item 606 had just finished removing one such duplicate).
  */
-export type HopValues = { values: Iterable<unknown>; rest: readonly Step[] };
+/**
+ * An EAGER drain for a walk that is already going to be drained in full (item 1412).
+ *
+ * ⚠️ `drain` NEVER REPLACES THE ITERABLE. `run` returns an `Iterable` and callers may `break` out of
+ * it, so making the walk eager would change observable behaviour — this file's own header says so
+ * ("LAZY on purpose") and `eager-tail-cache` records a **473x** and a **3680x** from filling eagerly
+ * under a LIMIT. The iterable stays exactly as it was.
+ *
+ * `toArray` is a different question. It is defined as `[...run(plan, graph)]`, so it ALREADY drains
+ * the whole walk — eagerness there is not a behaviour change, it is the same answer by a cheaper
+ * route. And because `drain` is only read when the shortcut left `rest.length === 0`, there is no
+ * downstream step to reason about: a trailing `limit` would appear in `rest` and the route is not
+ * taken at all. So the step allowlist this seemed to need does not exist.
+ *
+ * ⚠️ IT MUST YIELD THE SAME ROWS IN THE SAME ORDER as the generator beside it, which is why each
+ * `drain` is written as the same loop over the same helpers rather than as a second derivation —
+ * item 169's lesson, and Gremlin results are compared ORDERED by the differential fuzzer, so a
+ * reordering here is a cross-engine failure rather than an unspecified-order liberty.
+ */
+export type HopWalk = Iterable<unknown> & { drain?: () => unknown[] };
+
+export type HopValues = { values: HopWalk; rest: readonly Step[] };
 
 export const hopValuesShortcut = (plan: Plan, graph: Graph): HopValues | undefined => {
   const { steps } = plan;
@@ -201,6 +233,59 @@ export const hopValuesShortcut = (plan: Plan, graph: Graph): HopValues | undefin
             }
           }
         },
+        // The same loop, eager — including the earlier-buckets dedupe and the label-arg ORDER,
+        // which is a TinkerPop contract the differential fuzzer compares ordered. Read only by
+        // `toArray`, and only when `rest` is empty.
+        drain() {
+          const acc: unknown[] = [];
+          const buckets: (ReadonlySet<Edge> | undefined)[] = [];
+
+          for (const v of graph.vertices) {
+            const byLabel = forward ? v.adjFrom : v.adjTo;
+
+            if (byLabel === undefined) {
+              continue;
+            }
+
+            buckets.length = 0;
+
+            for (const t of manyTypes) {
+              buckets.push(byLabel.get(t));
+            }
+
+            for (let i = 0; i < buckets.length; i += 1) {
+              const bucket = buckets[i];
+
+              if (bucket === undefined) {
+                continue;
+              }
+
+              for (const edge of bucket) {
+                let earlier = false;
+
+                for (let j = 0; j < i; j += 1) {
+                  if (buckets[j]?.has(edge) === true) {
+                    earlier = true;
+
+                    break;
+                  }
+                }
+
+                if (earlier) {
+                  continue;
+                }
+
+                const value = pick(forward ? edge.to : edge.from);
+
+                if (!drops || value !== undefined) {
+                  acc.push(value);
+                }
+              }
+            }
+          }
+
+          return acc;
+        },
       },
     };
   }
@@ -232,6 +317,28 @@ export const hopValuesShortcut = (plan: Plan, graph: Graph): HopValues | undefin
               }
             }
           }
+        },
+        // The same loop, eager. Read only by `toArray`, and only when `rest` is empty.
+        drain() {
+          const acc: unknown[] = [];
+
+          for (const v of graph.vertices) {
+            const bucket = (forward ? v.adjFrom : v.adjTo)?.get(oneType);
+
+            if (bucket === undefined) {
+              continue;
+            }
+
+            for (const edge of bucket) {
+              const value = pick(forward ? edge.to : edge.from);
+
+              if (!drops || value !== undefined) {
+                acc.push(value);
+              }
+            }
+          }
+
+          return acc;
         },
       },
     };

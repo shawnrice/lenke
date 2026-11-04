@@ -1474,7 +1474,18 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
  * because the intent ("I want the answer as an array, not a lazy iterable")
  * is common enough to deserve a name.
  */
-export const toArray = (plan: Plan, graph: Graph): unknown[] => [...run(plan, graph)];
+export const toArray = (plan: Plan, graph: Graph): unknown[] => {
+  const it = run(plan, graph);
+  // AN ALREADY-EAGER TERMINAL TAKES AN EAGER WALK (item 1412). `toArray` is defined as draining the
+  // whole iterable, so an eager fill is the same answer by a cheaper route rather than a change in
+  // behaviour — and `run` is left exactly as lazy as it was, which is what a caller that `break`s
+  // out of it depends on. Only the fused hop walk offers `drain`, and only when it consumed the
+  // whole plan (`rest.length === 0`), so there is no downstream step to reason about: a trailing
+  // `limit` lands in `rest` and this route is never reached.
+  const { drain } = it as { drain?: () => unknown[] };
+
+  return typeof drain === 'function' ? drain() : [...it];
+};
 
 /**
  * Eager terminal: run the plan and collect emitted values into a Set, dropping

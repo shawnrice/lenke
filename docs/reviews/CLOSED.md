@@ -50938,7 +50938,22 @@ for the optional row that is a real check rather than a formality, per the NULL-
 assertion); both fixed by extraction, which is the fourth time this session the gate has caught
 something the suites did not.
 
-### Item 1411 — **MEASURED, no code change**: the Gremlin hop pipeline costs **0%** over a hand-written generator with the same body. The entire **2.1x** gap to an array loop is the GENERATOR PROTOCOL, which is what `limit()` is built on — so the lever is a drain route, not a faster pipeline
+### Item 1411 — ~~MEASURED, no code change~~ ⟶ **BUILT at item 1412 (53.8% / 49.1%)**: the Gremlin hop pipeline costs **0%** over a hand-written generator with the same body. The entire ~~**2.1x**~~ **1.9-2.2x** gap to an array loop is the GENERATOR PROTOCOL, which is what `limit()` is built on — so the lever is a drain route, not a faster pipeline
+
+> ⚠️ **TWO CORRECTIONS from item 1412, which both built this and re-measured it.**
+>
+> 1. **The `values`-shape ratio below is quoted as a point and is a RANGE.** Repeated as four
+>    independent processes per shape: the bare hop is tight at **2.11-2.21x**, but the values shape
+>    runs **1.44-1.99x** because its eager floor swings 29.6-40.8 ms — the far-vertex property read
+>    is a cache-order-sensitive pointer chase. The 2.03x recorded below is the top of that range
+>    reported as a figure. `engine/genfloor` held at **0.98-1.03x** across all eight processes, so
+>    the pipeline-is-free finding is the robust one.
+> 2. **The probe was missing an arm and had a defect, both found at 1412.** `floor` drained with
+>    `push` and `genfloor` with SPREAD, so the ratio conflated two differences; the added `genpush`
+>    arm CONFIRMED rather than refuted it (332 against 334 ns/row). And `floor` carried a
+>    `wantsValue ?` branch on the hot path that the engine does not have, which showed up as the
+>    engine measuring **0.74x the floor** once it took the eager route — a floor the real code beats
+>    is not a floor. Hoisted to a `pick`-shaped closure.
 
 ### The nomination
 
@@ -51014,3 +51029,113 @@ not a one-liner to append to a measurement item.
 `PROBES.md`. The three arms are asserted to agree on the ROW COUNT, and deliberately not on row
 order — all three walk the same adjacency in the same order, but the engine is free to reorder and
 the probe must not pretend otherwise.
+
+### Item 1412 — **SHIPPED, 53.8% / 49.1%** (81/81 both): `toArray` is `[...run(…)]`, so it ALREADY drains the fused hop walk in full — an eager fill there is the same answer by a cheaper route. **And it refutes a number in this repo's own code by 38x**, which is what had kept the lever shut
+
+### The number that was wrong
+
+`hop-values.ts`'s header has said since item 170:
+
+> LAZY on purpose. … One generator for the whole walk costs **10ns/row** over the eager form, which
+> is the price of not touching that.
+
+Item 1411's three-arm floor says **1.9-2.2x**, not 4%. The decisive reading is at item 170's own
+fixture size — 1,000,000 edges, where the property read is most dominant and the protocol's share
+should be smallest if the 10 ns were right:
+
+| arm                                        | 1M edges                            |
+| ------------------------------------------ | ----------------------------------- |
+| `floor` (array loop)                       | 416 ns/row                          |
+| `genfloor` (same body, generator)          | 795 ns/row                          |
+| `genpush` (generator, same drain as floor) | 811 ns/row                          |
+| **`engine`**                               | **783 ns/row** — **0.99x genfloor** |
+
+The protocol does not vanish into scale: **1.91x at 1M**. That header is corrected in this commit,
+where it lives — a wrong price in a comment is worse than no price, because it reads as settled.
+
+### The gate I had budgeted an item for does not exist
+
+The other half of item 170's argument is sound and I kept it: `run` returns an `Iterable`, callers
+`break` out of it, and `eager-tail-cache` records **473x** and **3680x** from filling eagerly under a
+LIMIT. **`run` is untouched and exactly as lazy as it was.**
+
+But the argument is about `run`. `toArray` is _defined_ as `[...run(plan, graph)]` — it already
+drains everything — so eagerness there is not a behaviour change. And `drain` is only read when the
+shortcut consumed the whole plan (`rest.length === 0`), so there is no downstream step to reason
+about: a trailing `limit` lands in `rest` and `run` returns a traverser stream instead, making the
+route structurally unreachable. **No step allowlist.** I had priced that allowlist as the whole risk
+of this change at item 1411 and it was not needed.
+
+`drain` is therefore an ADDITION to the walk object, never a replacement for its iterator, on both
+hand walks — the single-type one and the multi-type one, the latter keeping its earlier-buckets
+dedupe and its **label-arg order**, which is a TinkerPop contract the differential fuzzer compares
+ORDERED.
+
+| shape                                              | BASE   | DRAIN     | change    | concordance |
+| -------------------------------------------------- | ------ | --------- | --------- | ----------- |
+| **`hopbare`** (`V().out(E)`)                       | 35.70  | **16.50** | **53.8%** | **81/81**   |
+| **`hopyieldsingle`**                               | 58.98  | **30.02** | **49.1%** | **81/81**   |
+| `hopyieldmulti`                                    | 73.61  | 63.16     | 14.2%     | 72/81       |
+| `hopyieldmultirev`                                 | 71.26  | 62.54     | 12.2%     | 66/81       |
+| `hoporder` [CONTROL — residual, route unreachable] | 89.25  | 88.40     | 1.0%      | 40/81       |
+| `hopcount3` [CONTROL — count shortcut]             | 109.78 | 105.81    | 3.6%      | 54/81       |
+| `hopcount2` [CONTROL — count shortcut]             | 30.01  | 29.66     | 1.1%      | 52/81       |
+
+**The controls are the load-bearing part**, because this edit is inside `toArray` itself — a path
+every row in the bench passes through, so a `typeof drain === 'function'` test that cost anything
+would show up on all three. `hoporder` reads 40/81 against a chance of 40.5.
+
+**The multi-type walk gains far less (14% against 49%)**, and that is the expected shape rather than
+a disappointment: its per-edge earlier-buckets dedupe is work the protocol saving does not touch, so
+the protocol is a smaller fraction of a bigger row. Same reason the `values` shape gains less than
+the bare one.
+
+### The probe had a defect, and the engine beating its own floor is what exposed it
+
+Once the drain route was in, `engine` measured **0.74x `floor`** on the values shape. A floor the
+real code beats is not a floor. Cause: the probe's arms did
+`acc.push(wantsValue ? edge.to.properties['k'] : edge.to)` — a branch on the hot path the engine does
+not have, since its `pick` is a monomorphic closure chosen once per plan. Hoisted to a `pick`-shaped
+closure, so all three arms now differ only in how they are driven. Item 1411's entry is corrected
+with this and with the missing-`genpush` arm.
+
+### ⚠️ Three kinds of test, because no one kind is sufficient
+
+`eager-drain-route.test.ts`, 29 tests:
+
+1. **Equivalence** — `toArray` against `[...run]` on ten shapes, compared with `toEqual` on the
+   whole array rather than lengths or sorted copies, because row order here is a TinkerPop contract.
+   Includes the empty graph, a graph with vertices but no edges, a self-loop, a far vertex missing
+   the projected key (the `drops` path), and an edge carrying BOTH labels so the dedupe is exercised
+   rather than merely present.
+2. **The decision** — `drain` present on the six shapes that take the route and absent on `both` and
+   the three residual shapes. An eager route is answer-preserving, so **a mutant that never offers
+   `drain` passes every equivalence test in the package**; item 1289 had two such mutants survive
+   until the route was asserted directly.
+3. **Laziness** — a poisoned `drain` that throws, followed by iterating: if the iterator path ever
+   consulted it, the test fails. Plus a `break` after one element, and re-iterability.
+
+| mutant                         | verdict                  | evidence         |
+| ------------------------------ | ------------------------ | ---------------- |
+| M1 `toArray` IGNORES `drain`   | **SURVIVES — by design** | 29/0             |
+| M2 both drains return `[]`     | **CAUGHT**               | 20 pass / 9 fail |
+| M3 eager drain, no dedupe      | **CAUGHT**               | 28 / 1           |
+| M4 eager drain ignores `drops` | **CAUGHT**               | 26 / 3           |
+| M5 `toArray` ALWAYS drains     | **CAUGHT**               | 25 / 4           |
+
+M1 surviving is the finding: it is the old code, correct and 2x slower, so no correctness test can
+catch it and the bench rows are its only guard.
+
+**The driver caught one of my own errors before any mutant ran.** The dedupe block appears **twice** —
+once in the generator and once in its eager twin, which is the copy being faithful — so the
+"unique anchor" assertion fired. Mutating the LAZY walk instead would have been caught for entirely
+the wrong reason and recorded as a pass. The driver now asserts each anchor's multiplicity and
+carries an explicit first/last/all policy rather than assuming uniqueness.
+
+### Gates
+
+gremlin **1186/0**, gql 3610/0, core 383/0, serialization 144/0, `bun run fuzz` **20/0** (the
+byte-identity sweep is the real gate here, since row order is compared ordered), `bun run check` 0
+(read unpiped). Answers identical across both arms for all seven cases. The A/B driver restored both
+files and verified them. `bun run check` caught a `prefer-destructuring` error the suites did not —
+the fifth time this session.

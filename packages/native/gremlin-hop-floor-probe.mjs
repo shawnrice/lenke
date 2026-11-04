@@ -73,6 +73,16 @@ const g = build();
 
 // `bare` yields the far VERTEX; `vals` yields `far.properties.k`, which is where `pick` appears.
 const wantsValue = SHAPE === 'vals';
+/**
+ * ⚠️ HOISTED OUT OF THE LOOPS, and the probe was wrong until it was (item 1412).
+ *
+ * `acc.push(wantsValue ? edge.to.properties['k'] : edge.to)` puts a branch on the HOT PATH that the
+ * engine does not have — its `pick` is a monomorphic closure chosen once per plan. The giveaway was
+ * the engine measuring **0.74x the floor** on the `vals` shape once it took the eager route: a floor
+ * the real code beats is not a floor. Same `pick` shape here, so all three arms differ only in how
+ * they are driven.
+ */
+const pickFar = wantsValue ? (edge) => edge.to.properties['k'] : (edge) => edge.to;
 const plan = wantsValue ? traversal(V(), out('E'), values('k')) : traversal(V(), out('E'));
 
 const engine = () => toArray(plan, g);
@@ -89,7 +99,7 @@ const floor = () => {
     }
 
     for (const edge of bucket) {
-      acc.push(wantsValue ? edge.to.properties['k'] : edge.to);
+      acc.push(pickFar(edge));
     }
   }
 
@@ -107,7 +117,7 @@ const genBody = {
       }
 
       for (const edge of bucket) {
-        yield wantsValue ? edge.to.properties['k'] : edge.to;
+        yield pickFar(edge);
       }
     }
   },
@@ -115,7 +125,30 @@ const genBody = {
 
 const genfloor = () => [...genBody];
 
-const ARMS = { engine, floor, genfloor };
+/**
+ * ⚠️ THE ARM THIS PROBE WAS MISSING, added at item 1412 after its absence was spotted.
+ *
+ * `floor` drains with `push` and `genfloor` with SPREAD, so `genfloor/floor` conflated two
+ * differences and the 2.14x it reported could have been spread-vs-push rather than the generator.
+ * `genpush` is the generator drained with the same `push` as `floor`, which isolates one variable.
+ *
+ * It CONFIRMED rather than refuted: 332 ns/row against `genfloor`'s 334, with `arrpush` at 122 and
+ * an array-source spread at 149 (1.22x). So spread costs something small on an array and nothing
+ * detectable on a generator, and the gap really is the protocol. Kept because a confound ruled out
+ * by measurement is worth more than one never considered — and because the next person to doubt the
+ * number will doubt it the same way.
+ */
+const genpush = () => {
+  const acc = [];
+
+  for (const x of genBody) {
+    acc.push(x);
+  }
+
+  return acc;
+};
+
+const ARMS = { engine, floor, genfloor, genpush };
 
 const time = (fn) => {
   const series = [];
@@ -183,10 +216,15 @@ console.log(
 
 const f = med(got['floor'].map((r) => r.p25));
 const gf = med(got['genfloor'].map((r) => r.p25));
+const gp = med(got['genpush'].map((r) => r.p25));
 const e = med(got['engine'].map((r) => r.p25));
 
 console.log(`\n  rows ${rows}`);
 console.log(`  floor     ${f.toFixed(2)} ms   ${((f * 1e6) / rows).toFixed(0)} ns/row`);
+console.log(
+  `  genpush   ${gp.toFixed(2)} ms   ${((gp * 1e6) / rows).toFixed(0)} ns/row   ` +
+    `${(gp / f).toFixed(2)}x floor  <- generator, SAME drain as floor (the confound control)`,
+);
 console.log(
   `  genfloor  ${gf.toFixed(2)} ms   ${((gf * 1e6) / rows).toFixed(0)} ns/row   ` +
     `${(gf / f).toFixed(2)}x floor  <- the generator PROTOCOL alone`,
