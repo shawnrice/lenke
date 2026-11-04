@@ -16,7 +16,7 @@
 import { describe, expect, test } from 'bun:test';
 import { existsSync } from 'node:fs';
 
-import { Edge, isElement } from '@lenke/core';
+import { Edge, Graph, isElement } from '@lenke/core';
 import {
   isTsOnly,
   cyclicPath,
@@ -65,6 +65,7 @@ import {
   union,
   type Plan,
 } from '@lenke/gremlin';
+import { deserialize as tsDeserialize } from '@lenke/serialization';
 
 import { createFfiEngineBackend } from './backend-ffi-engine.js';
 
@@ -991,4 +992,102 @@ suite('differential fuzz: gremlin (TS engine vs Rust ENGINE)', () => {
 
     expect(report).toBe('no divergences');
   });
+});
+
+/**
+ * THE DENSE MULTI-HOP ROUTE, which nothing above this line can reach (item 1371).
+ *
+ * `slotChainCount` — the 3+ hop chain count over dense slots with a per-slot neighbour memo (items
+ * 1110, 1152) — is DECLINED unless the seed is wider than `max(graph.vertexCount >> 4, 1024)`. The
+ * suite above runs on the TinkerPop "modern" graph, about fourteen vertices, so the route is declined
+ * on every seed of every run. Item 1370 proved that by mutation: `next[to] += m * 2`, which doubles
+ * every 3+ hop count, SURVIVED all seven byte-identity fuzzers while `slot-chain-count.test.ts`
+ * caught it. The largest row in `bench:gremlin` had no TS-versus-native coverage at all.
+ *
+ * This arm is ADDITIVE on purpose. The 400-plan random sweep keeps the small fixture, where it is
+ * fast and where every one of its coverage floors was calibrated; widening that fixture would have
+ * re-calibrated all of them and multiplied the sweep's cost by the same factor. The dense route
+ * instead gets a fixed, small set of traversals on a graph just wide enough to admit it.
+ *
+ * ONE SOURCE OF TRUTH for the fixture, because the suite above records what two definitions cost:
+ * its TS side is built by `createTestTinkerGraph()` and its native side from `MODERN`, and "the two
+ * definitions could drift and any drift read as a divergence — which is exactly what happened when
+ * the multi-label vertex was added to only one of them". So this generates NDJSON once and
+ * deserializes BOTH engines from it.
+ */
+const DENSE_N = 1100;
+
+/** Past `max(n >> 4, 1024)` — for n under 16384 that cut is a flat 1024, so 1100 admits the route. */
+const DENSE_DOC = (() => {
+  const lines: string[] = [];
+
+  for (let i = 0; i < DENSE_N; i += 1) {
+    lines.push(`{"type":"node","id":"w${i}","labels":["P"],"properties":{"k":${i % 7}}}`);
+  }
+
+  // Fanout 2 so a 3-hop count is a real product rather than a chain, and a MINORITY second edge
+  // type so a labelled hop and an unlabelled one are different questions — without that, `out('T')`
+  // and `out()` would agree for the wrong reason.
+  for (let k = 0; k < DENSE_N * 2; k += 1) {
+    const t = k % 5 === 0 ? 'U' : 'T';
+
+    lines.push(
+      `{"type":"edge","id":"we${k}","labels":["${t}"],` +
+        `"from":"w${(k * 7) % DENSE_N}","to":"w${(k * 13 + 3) % DENSE_N}","properties":{}}`,
+    );
+  }
+
+  return lines.join('\n');
+})();
+
+suite('differential fuzz: gremlin DENSE multi-hop route (TS engine vs Rust ENGINE)', () => {
+  const tsDense = tsDeserialize(DENSE_DOC, 'ndjson', new Graph());
+  const denseBytes = new TextEncoder().encode(DENSE_DOC);
+
+  const nativeDense = (text: string): unknown[] => {
+    const handle = backend!.graphFromNdjson(denseBytes);
+
+    try {
+      return JSON.parse(decoder.decode(backend!.gremlinJson(handle, text))) as unknown[];
+    } finally {
+      backend!.graphFree(handle);
+    }
+  };
+
+  // THE FIXTURE MUST ADMIT THE ROUTE, asserted rather than assumed: this whole arm exists because
+  // the suite above silently did not, and a fixture that drifted under the cut would make every
+  // case below pass by taking the same generic route in both engines.
+  test('the fixture is wide enough to admit the dense route', () => {
+    expect(tsDense.vertexCount).toBe(DENSE_N);
+    expect(tsDense.vertexCount).toBeGreaterThan(Math.max(tsDense.vertexCount >> 4, 1024));
+  });
+
+  const CASES: readonly [string, Plan][] = [
+    ['out(T) x3', traversal(V(), out('T'), out('T'), out('T'), count())],
+    ['out(T) x4', traversal(V(), out('T'), out('T'), out('T'), out('T'), count())],
+    ['out() x3 [every type]', traversal(V(), out(), out(), out(), count())],
+    ['in(T) x3', traversal(V(), in_('T'), in_('T'), in_('T'), count())],
+    [
+      'out(T,U) x3 [multi-type]',
+      traversal(V(), out('T', 'U'), out('T', 'U'), out('T', 'U'), count()),
+    ],
+    // The CONTROL: two hops are answered by the degree inner product, a different rung that this
+    // arm is not about. It must agree too, and if only this one ever diverges the cause is not the
+    // dense walk.
+    ['out(T) x2 [CONTROL: inner product]', traversal(V(), out('T'), out('T'), count())],
+  ];
+
+  for (const [name, plan] of CASES) {
+    test(`${name} agrees across the engines`, () => {
+      const text = planToGremlin(plan);
+      const ts = canonJson(toArray(plan, tsDense));
+      const native = canonJson(nativeDense(text));
+
+      expect({ case: name, gremlin: text, result: ts }).toEqual({
+        case: name,
+        gremlin: text,
+        result: native,
+      });
+    });
+  }
 });

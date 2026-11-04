@@ -48155,3 +48155,83 @@ fuzzers. Gap #2 (deletes) is untouched. The 12.9% stands and the prototype remai
 Both prototypes REVERTED. Tree restored, `git status --porcelain` empty, `ORDINAL_READ_ARM` and
 `TEETH_MUTANT` at 0 in all three files, `slotOf` back to its 6 occurrences. All arm files under
 `target/` deleted by each driver's `finally`. `bun run check` 0 (read unpiped).
+
+### Item 1371 — the dense multi-hop route now HAS byte-identity coverage: an additive 1,100-vertex fuzzer arm, teeth VERIFIED by the mutant that survived before, for **+0.02s** of suite time
+
+Item 1370 found the hole and proved it by mutation: `slotChainCount` is declined unless the seed
+exceeds `max(graph.vertexCount >> 4, 1024)`, the gremlin differential fuzzer runs on the TinkerPop
+"modern" graph of about fourteen vertices, and a mutant doubling every 3+ hop count (`next[to] += m *
+2`) **SURVIVED all seven byte-identity fuzzers** while the unit suite caught it. The largest row in
+`bench:gremlin` — items 1110 and 1152's work — had no TS-versus-native coverage at all.
+
+### What was added, and why ADDITIVE rather than a wider fixture
+
+A second suite in `gremlin-fuzz.test.ts` on a **1,100-vertex / 2,200-edge** graph: past the flat
+1,024 cut (for n under 16,384 `n >> 4` is smaller, so the cut is 1,024), with fanout 2 so a 3-hop
+count is a real product rather than a chain, and a minority second edge type so a labelled hop and an
+unlabelled one are genuinely different questions — without that, `out('T')` and `out()` would agree
+for the wrong reason.
+
+**The 400-plan random sweep keeps the small fixture.** Widening the shared one would have
+re-calibrated every coverage floor in that file — `order(local)` generated/non-empty/with-a-null,
+the skip counters, all of them measured across thirteen seeds — and multiplied the sweep's cost by
+the same factor, to cover a route six fixed traversals cover exactly.
+
+**ONE SOURCE OF TRUTH for the fixture**, because the suite above records what two cost: its TS side
+is built by `createTestTinkerGraph()` and its native side from the `MODERN` NDJSON, and "the two
+definitions could drift and any drift read as a divergence — which is exactly what happened when the
+multi-label vertex was added to only one of them". So this arm generates NDJSON once and
+deserializes BOTH engines from it.
+
+Six cases plus a fixture-width assertion:
+
+```text
+  out(T) x3                          out() x3 [every type]
+  out(T) x4                          in(T) x3
+  out(T,U) x3 [multi-type]           out(T) x2  [CONTROL: inner product, a different rung]
+```
+
+The width assertion is there because this entire item exists for a suite that silently failed it: a
+fixture that drifted under the cut would make every case pass by taking the same generic route in
+both engines — green, and meaningless.
+
+### TEETH VERIFIED, with the mutant that survived before
+
+Re-applied item 1370's mutant (`next[to] += m * 2`) and re-ran the file:
+
+| outcome    | before (1370) | with this arm      |
+| ---------- | ------------- | ------------------ |
+| the mutant | **SURVIVED**  | **CAUGHT, 5 fail** |
+
+The split is exactly right. All five dense-route cases fail (the diff reads `8800` against `17600` —
+a doubled count), while the three that pass are the fixture-width check, the **CONTROL** (`out(T) x2`,
+answered by the degree inner product, correctly unmoved), and the original 400-plan sweep — which
+confirms a second time, from the other direction, that the old suite never reached this route.
+
+A generative test whose teeth were never verified is worse than no test because it is believed; this
+one's teeth were verified against a known-surviving mutant, which is the strongest form available.
+
+### Cost
+
+|        | tests  | suite time |
+| ------ | ------ | ---------- |
+| before | 13     | 2.46 s     |
+| after  | **20** | **2.48 s** |
+
+**+7 tests for +0.02 s.** `bun run fuzz` green across all seven. `bun run check` 0 (read unpiped).
+
+### What this does and does not close
+
+- **CLOSED**: the dense multi-hop route has TS-versus-native byte-identity coverage, and a wrong
+  answer there now fails `bun run fuzz`. That is a hole in the project's hard invariant, open since
+  item 1110 built the route, and it is closed independently of anything about the ordinal.
+- **Item 1369's gap #1 is now REACHABLE.** The ordinal arm could not be byte-identity-tested before
+  because no fuzzer saw the code; it can be now. Re-running it against this arm is the next step and
+  is NOT done here — this item ships the instrument, not a verdict on the change it was built for.
+- **Gap #2 (deletes) is untouched**, and remains the other disqualifier.
+
+### Gates
+
+`bun run fuzz` 20 pass / 0 fail across all seven; `bun test packages/native/src/gremlin-fuzz.test.ts`
+8 pass / 0 fail; mutant re-applied and CAUGHT, then reverted with `TEETH2` asserted at 0 and `slotOf`
+back to its 6 occurrences. `bun run check` 0 (read unpiped).
