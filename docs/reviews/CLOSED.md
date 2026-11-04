@@ -52508,3 +52508,51 @@ assertion as the MULTI-TYPE case, which still declines. 1212 → 1218 tests.
 gremlin **1218/0**, gql 3638/0, core 383/0, serialization 144/0, `bun run fuzz` 20/0, `bun run
 check` 0 (read unpiped). Answers identical across both arms. A fourth guessed-count slip in the A/B
 driver (7 occurrences asserted, 6 present) was replaced with a relation.
+
+### Item 1433 — **DECLINED, ~1%**: replacing the residual wrapper's `function*` with a hand-rolled iterator. ⚠️ And it corrects how I had been reading item 1411: its **2.1x was a generator against a PLAIN LOOP**, not against another iterator protocol
+
+### The nomination
+
+After item 1432, `hoporder` (`V().out('E').values('k').order()`) is the heaviest Gremlin row at
+~88 ms. It takes the RESIDUAL path: the hop shortcut fires but `rest = [order]`, so item 1412's
+`drain` is unavailable and `run` must hand `applyStep` a lazy stream. That wrapper was a `function*`,
+putting a SECOND generator layer on top of the walk's own — every value paying two `yield`/`next`
+round trips.
+
+Its profile supports the framing: `values` 36.7%, `pick` 19.7%, `sortByBys` 14.6% — the walk
+dominates, and the wrapper rides on every value it produces.
+
+### The measurement
+
+|                            | readings                                   | median |
+| -------------------------- | ------------------------------------------ | ------ |
+| HEAD (generator wrapper)   | 88.92, 89.66, 87.06                        | ~88.9  |
+| ARM (hand-rolled iterator) | 86.88 - 88.39, five runs, spread **1.02x** | 87.82  |
+
+**~1%, inside the overlap.** Declined and reverted; `index.ts` verified back to the `function*` form.
+
+### ⚠️ The correction, which is worth more than the change
+
+I reached for this because item 1411 measured the generator protocol at **2.1x**. But that comparison
+was a generator against a **plain `for` loop pushing into an array** — no per-item object at all. A
+hand-rolled iterator still allocates `{ done, value }` on every `next()`: **the protocol is intact,
+only the frame is gone.** V8 optimises a hot monomorphic generator well enough that the frame alone
+is not the cost.
+
+So item 1411's number licenses **removing the protocol** (which is what item 1412's `drain` does, for
+53.8%, and what items 1431 and 1432 do by walking directly) and does **not** license swapping one
+protocol implementation for another. Every win this session in that family removed iteration
+overhead entirely; this one only moved it, and measured accordingly.
+
+### What that leaves on this row
+
+`hoporder`'s ~56% walk-plus-`pick` is already the hand-walked path items 1389 and 1412 built, and its
+~15% sort is `sortByBys` doing the work the query asks for. The lever that WOULD apply is extending
+`drain` to residual shapes whose steps are **fully buffering** — `order` cannot emit anything until
+its input is exhausted, so eager draining is unobservable there. That needs a per-step
+"buffers-everything" classification, which is the allowlist item 1412 was glad to avoid, and
+`eager-tail-cache`'s 3680x is what being wrong about one step costs. Priced, not taken.
+
+### Gates
+
+`bun run check` 0 (read unpiped), gremlin 1218/0. No engine code changed.
