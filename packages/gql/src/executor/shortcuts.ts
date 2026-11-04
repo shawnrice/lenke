@@ -7124,6 +7124,26 @@ const degreeCountShape = (pattern: PathPattern): boolean => {
  * QUERY-TIME value — it calls `vacuousLabel(graph, …)` — and `walkLevelCount` returns a number with
  * no way to decline once chosen. So this refuses on the SYNTAX, which is stricter than necessary: a
  * label every node happens to carry would be vacuous at runtime and is refused here anyway.
+ *
+ * ⚠️ THAT "STRICTER THAN NECESSARY" IS NOW PRICED AT 11-13x (item 1398), on a 100,000-vertex graph
+ * where every vertex carries `P` so the label rejects nothing. Same answer, 400,000, every row:
+ *
+ *   MATCH ()-[:E]->{1,4}()           43.2 ms   closed form
+ *   MATCH (a:P)-[:E]->{1,4}()        32.2 ms   closed form — a START label is fine
+ *   MATCH ()-[:E]->{1,4}(b:P)       433.7 ms   DECLINED to the general matcher
+ *   MATCH (a:P)-[:E]->{1,4}(b:P)    478.9 ms   DECLINED
+ *   MATCH (a:P)-[:E]->{1,3}(b:P)     20.8 ms   depth 3 takes it WITH the far label
+ *
+ * A windowed profile of the declined row confirms the route, not just the cost: no
+ * `walkLevelCount`, no `varLengthDegreeCount`, no `trailsAt4From` — it is `flatAdj` 36.6%,
+ * `evalLabelExpr` 15.6%, `trailEnds` 14.6%, `walkSegments` 8.1%.
+ *
+ * THE GATE ITSELF IS CORRECT and must not be relaxed on its own: the depth-4 terms are derived for a
+ * trivial mask, and item 692 already shipped that mistake once — the walk count, 450,000 against the
+ * trail's 449,998, caught by printing answers beside times. Fixing this needs a way to DECLINE AFTER
+ * CHOOSING, so the closure can test `vacuousLabel` with the graph in hand and fall back when the
+ * label really does filter. That is an architecture change to how detectors hand back work, not a
+ * predicate tweak, which is why it is priced here rather than taken.
  */
 const depth4Admissible = (
   max: number,

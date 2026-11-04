@@ -50101,3 +50101,80 @@ first; the entries that described it as "parked" are annotated.
 
 Documentation only — **no code changed**, and nothing was re-measured that the record already held.
 `bun run check` 0 (read unpiped).
+
+### Item 1398 — quantified paths screened for the first time, and the find is a **11-13x routing cliff on a VACUOUS far label**: `{1,4}(b:P)` costs **433.7 ms against 43.2** for the identical 400,000 answer. The code already documented the conservatism; what was missing was the number
+
+Quantified paths (`-[:E]->{n,m}`) are a major GQL surface with **no row in the isolated bench and no
+windowed profile ever taken**. Six rows added, and the depth sweep is where it starts:
+
+| shape                      | p25 at `NODES=200000`                                           |
+| -------------------------- | --------------------------------------------------------------- |
+| `hopcount` (plain one hop) | 0.004 ms                                                        |
+| `{1,1}`                    | **0.00 ms** — the degenerate quantifier takes the O(1) shortcut |
+| `{1,2}`                    | 37.8                                                            |
+| `{1,3}`                    | 39.9                                                            |
+| `{1,4}`                    | **1081.1**                                                      |
+
+### The screen itself is clean; the pairs are where the finding is
+
+Windowed, `{1,2}` and `{1,3}` are `walkLevelCount` 60.9%/58.7% and `varLengthDegreeCount`
+23.0%/22.4%, with trail machinery (`buildTrailMasks`, `trailCorrectionAt`, `reusedTrailsAt3`) at
+~7-9% and **no unpriced frame over 2%**. All four frames are in `CLOSED.md` (6, 9, 2, 3 mentions) and
+the family was worked at item 585 and after. So nothing new there.
+
+Then the equivalent-spelling pairs nobody had measured — the quantifier against the explicit chain,
+verified to agree exactly on this fixture (20,000 at depths 1, 2 and 3; out-degree 1 and no cycle
+short enough for TRAIL semantics to separate them). ⚠️ They are NOT equivalent in general: a
+quantified path may not repeat an edge and a chain may, so a 2-cycle would separate them legitimately.
+
+| depth | quantified | explicit chain | winner               |
+| ----- | ---------- | -------------- | -------------------- |
+| 2     | 37.19      | **26.26**      | chain 1.42x          |
+| 3     | **39.99**  | 115.79         | quantifier **2.90x** |
+| 4     | 776.90     | **192.82**     | chain **4.03x**      |
+
+**Neither spelling dominates and the ordering is non-monotonic** — which refuted the reading I had
+formed from the first two points, that the quantified route is flat in depth. It is flat from 2 to 3
+(37 → 40) and then 19x worse at 4.
+
+### The cliff is not depth, it is a VACUOUS FAR LABEL
+
+Depth 4 _is_ implemented — item 692 built `trailsAt4From` and `Trail4Tables`, validated by a
+brute-force oracle. Isolating my query clause by clause, on 100,000 vertices where **every vertex
+carries `P`**, so the label rejects nothing. Every row answers **400,000**:
+
+| query                          | ms        | route                               |
+| ------------------------------ | --------- | ----------------------------------- |
+| `MATCH ()-[:E]->{1,4}()`       | **43.2**  | closed form                         |
+| `MATCH (a:P)-[:E]->{1,4}()`    | **32.2**  | closed form — a START label is fine |
+| `MATCH ()-[:E]->{1,4}(b:P)`    | **433.7** | **declined**                        |
+| `MATCH (a:P)-[:E]->{1,4}(b:P)` | 478.9     | **declined**                        |
+| `MATCH (a:P)-[:E]->{1,3}(b:P)` | 20.8      | depth 3 takes it WITH the far label |
+
+A windowed profile of the declined row confirms the route rather than inferring it from the cost: no
+`walkLevelCount`, no `varLengthDegreeCount`, no `trailsAt4From` — `flatAdj` 36.6%, `evalLabelExpr`
+15.6%, `trailEnds` 14.6%, `walkSegments` 8.1%. It is the general matcher.
+
+### The code had already written this down, without a number
+
+`depth4Admissible`'s own doc: _"The test has to be STATIC. `passesIsVacuous` is the flag that
+actually matters, but it is a QUERY-TIME value — it calls `vacuousLabel(graph, …)` — and
+`walkLevelCount` returns a number with no way to decline once chosen. So this refuses on the SYNTAX,
+which is stricter than necessary: **a label every node happens to carry would be vacuous at runtime
+and is refused here anyway.**"_
+
+So this is a **known, documented conservatism, not an oversight** — and it had never been priced.
+11-13x is a large number to sit behind the words "stricter than necessary", and it is now recorded
+next to the code.
+
+**NOT TAKEN, and the gate must not be relaxed on its own.** The depth-4 terms are derived for a
+trivial endpoint mask; item 692 already shipped that mistake once and it answered the WALK count
+(450,000 against the trail's 449,998), caught by printing answers beside times. A correct fix needs a
+way to **decline after choosing**, so the closure can test `vacuousLabel` with the graph in hand and
+fall back when the label really does filter — an architecture change to how detectors hand back work,
+not a predicate tweak. That is its own item and arguably its own design decision.
+
+### Gates
+
+Bench rows and one priced comment — **no engine behaviour changed**. gql 3570/0, `bun run check` 0
+(read unpiped).

@@ -78,6 +78,29 @@ const SHAPES = {
   // per-call disparity is a degree rather than a whole index and may not be measurable at all.
   hopmultirev: 'MATCH (a:P)-[:F|E]->(b:P) RETURN count(*) AS c',
   hopcount: 'MATCH (a:P)-[:E]->(b:P) RETURN count(*) AS c',
+  // QUANTIFIED PATHS (item 1398), a major GQL surface with NO row here and never screened with a
+  // windowed profile. `{1,2}` and `{1,3}` share a start and differ only in depth, so the pair prices
+  // what each extra hop costs; `varlen11` is the degenerate quantifier, which must cost about what
+  // the plain one-hop count does and is the control that separates "quantified paths are expensive"
+  // from "this quantifier is expensive".
+  varlen11: 'MATCH (a:P)-[:E]->{1,1}(b:P) RETURN count(*) AS c',
+  varlen12: 'MATCH (a:P)-[:E]->{1,2}(b:P) RETURN count(*) AS c',
+  varlen13: 'MATCH (a:P)-[:E]->{1,3}(b:P) RETURN count(*) AS c',
+  // AN EQUIVALENT-SPELLING PAIR ACROSS THE QUANTIFIER (item 1398). `{2,2}` is "exactly two hops",
+  // which is what the explicit chain spells, and on this fixture they agree exactly (20,000 both, and
+  // `{3,3}` against the three-link chain likewise) — each vertex has out-degree 1 and no cycle short
+  // enough for TRAIL semantics to separate them, so a cost difference here is a routing difference
+  // and not different work. ⚠️ They are NOT equivalent in general: a quantified path is a TRAIL under
+  // ISO semantics and may not repeat an edge, while the chain may, so a fixture with a 2-cycle would
+  // make the answers diverge legitimately. The pair is a spelling probe for THIS fixture only.
+  quant22: 'MATCH (a:P)-[:E]->{2,2}(b:P) RETURN count(*) AS c',
+  chain2: 'MATCH (a:P)-[:E]->()-[:E]->(b:P) RETURN count(*) AS c',
+  quant33: 'MATCH (a:P)-[:E]->{3,3}(b:P) RETURN count(*) AS c',
+  chain3: 'MATCH (a:P)-[:E]->()-[:E]->()-[:E]->(b:P) RETURN count(*) AS c',
+  varlen14: 'MATCH (a:P)-[:E]->{1,4}(b:P) RETURN count(*) AS c',
+  varlen24: 'MATCH (a:P)-[:E]->{2,4}(b:P) RETURN count(*) AS c',
+  quant44: 'MATCH (a:P)-[:E]->{4,4}(b:P) RETURN count(*) AS c',
+  chain4: 'MATCH (a:P)-[:E]->()-[:E]->()-[:E]->()-[:E]->(b:P) RETURN count(*) AS c',
   // THE YIELD TWIN of the hopsingle/hopmulti pair (item 1387). Items 1377/1384/1386 all landed on
   // the COUNT path, where the answer is a number and the union of buckets can replace the walk
   // outright. A projection cannot take that route - every selected edge must actually be produced -
