@@ -223,13 +223,32 @@ export type Temporal = LocalDate | LocalTime | LocalDateTime | ZonedTime | Zoned
  */
 export type Clock = () => LocalDate | LocalDateTime;
 
+/**
+ * Is `v` one of the six temporal types?
+ *
+ * ONE `typeof` BEFORE SIX `instanceof`s (item 1393), and it is worth a comment because the guard
+ * looks redundant: `instanceof` on a primitive already returns false. The cost is that it does so
+ * SIX times, each walking the right-hand side's prototype, for every number and string that reaches
+ * a comparison — and that is nearly every value the engine compares.
+ *
+ * The windowed screen put this frame at 3.5% of `sortedpage`, 4.1% of `hopfilter` and 5.1% of
+ * `point`. Ablating the whole predicate to `false` bounded the lever at **13.7% of `point` (36/36
+ * concordance)**, 6.7% of `hopfilter` and 5.8% of `sortedpage` — while `hopsingleyield` read 18/36,
+ * exactly chance, which is the control confirming the yield path never calls this.
+ *
+ * SOUND because every Temporal is a class instance, so it is always a non-null `object`: a value
+ * failing this guard cannot be any of the six. `typeof` also excludes functions, which none of them
+ * are.
+ */
 export const isTemporal = (v: unknown): v is Temporal =>
-  v instanceof LocalDate ||
-  v instanceof LocalTime ||
-  v instanceof LocalDateTime ||
-  v instanceof ZonedTime ||
-  v instanceof ZonedDateTime ||
-  v instanceof Duration;
+  typeof v === 'object' &&
+  v !== null &&
+  (v instanceof LocalDate ||
+    v instanceof LocalTime ||
+    v instanceof LocalDateTime ||
+    v instanceof ZonedTime ||
+    v instanceof ZonedDateTime ||
+    v instanceof Duration);
 
 // --- civil calendar (Hinnant) ------------------------------------------------
 

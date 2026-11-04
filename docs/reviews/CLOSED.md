@@ -49756,3 +49756,87 @@ Instrument and documentation only — **no engine or core code changed**, and th
 restored by each driver's `finally` (verified: `hop-values.ts` identical to HEAD, zero `ABLATION_ARM`
 marks). gremlin 1157/0, gql 3570/0, `bun run check` 0 (read unpiped). `FANIN` indexed in `PROBES.md`
 with both items' numbers, next to the one-shape-per-process rule.
+
+### Item 1393 — **SHIPPED, 12.4%** on `point` (144/144) from one `typeof` before six `instanceof`s, bounded by ablation BEFORE it was built. The screen's first candidate was a lever already refuted in its own source comment, and I did not build it
+
+A fresh windowed screen over five GQL shapes, at `REPS=200` because the 20-rep version resolved to
+1.1 ms a sample and could not be read at all. Two candidates came out of it and they ended
+differently, which is the point of this entry.
+
+### The one NOT built: `RegExp: [\uD800-\uDBFF]` at 4.9% of `sortedpage`
+
+A regex executing per string comparison looks like free money. `compareCodePoints`' own doc already
+records the whole investigation, next to the code, exactly as CLAUDE.md asks:
+
+- a manual charCode loop — **REFUTED**: 1.08x on ASCII, and **3.6x WORSE** on keys with a long
+  shared prefix, because V8's character-class match beats a hand-written loop;
+- deciding from the first differing code UNIT — **REFUTED ON CORRECTNESS**, premise and all: equal
+  unit prefixes do not imply equal code-POINT prefixes;
+- hoisting the guard out of the comparator — **SOUND but DECLINED** at "~1.07x at best for an
+  invasive change", ending "if you come back to this, the hoist is the only live option".
+
+I came back to it and the note was sufficient: 4.9% is consistent with that 1.07x ceiling. **Nothing
+was built and nothing was re-measured.** Recording this because the screen WILL nominate it again.
+
+### The one built: `isTemporal`, bounded first
+
+`isTemporal` is six sequential `instanceof` checks, at 3.5% of `sortedpage`, 4.1% of `hopfilter` and
+5.1% of `point`. Those are 3-5% shares on rows whose noise floor is ~10%, so the ablation came
+first — replace the whole predicate with `false`, answer-identical on these fixtures and wrong in
+general, to read the ceiling:
+
+| shape                      | BASE p25 | ablated | BOUND     | concordance        |
+| -------------------------- | -------- | ------- | --------- | ------------------ |
+| `point`                    | 4.2765   | 3.6900  | **13.7%** | **36/36**          |
+| `hopfilter`                | 3.6330   | 3.3895  | 6.7%      | 34/36              |
+| `sortedpage`               | 10.2755  | 9.6760  | 5.8%      | 24/36              |
+| `hopsingleyield` [CONTROL] | 38.8800  | 36.8965 | 5.1%      | **18/36 — chance** |
+
+The control is what made the three positives trustworthy: `hopsingleyield` at exactly 18/36 confirms
+the yield path never calls this, so the readings are not a global drift. Digests agreed across arms,
+which checks rather than assumes that the fixtures hold no temporal values.
+
+### What shipped, and what it captured
+
+One `typeof v === 'object' && v !== null` before the six `instanceof`s. The guard looks redundant —
+`instanceof` on a primitive already returns false — and the point is that it does so SIX times, each
+walking the right-hand side's prototype, for nearly every value the engine compares. Sound because
+every Temporal is a class instance, hence always a non-null `object`.
+
+| shape                      | BASE p25 | TYPEOF     | change    | concordance         | of the bound |
+| -------------------------- | -------- | ---------- | --------- | ------------------- | ------------ |
+| `point`                    | 4.2845   | **3.7520** | **12.4%** | **144/144**         | 90%          |
+| `hopfilter`                | 3.6885   | **3.4210** | **7.3%**  | 115/144             | ~100%        |
+| `sortedpage`               | 10.2085  | **9.5365** | **6.6%**  | 108/144             | ~100%        |
+| `hopsingleyield` [CONTROL] | 35.9325  | 37.5420    | −4.5%     | **69/144 — chance** | —            |
+
+n=12 per arm, 3 order-alternated rounds. **The control read +5.1% in the ablation run and −4.5%
+here, both at chance** — both signs appearing across two experiments on the same row is better
+evidence of noise than either reading alone, and there is no mechanism for it to be real.
+
+### The tests it did not have, and the comment the mutants refuted
+
+`isTemporal` had **no direct tests** — 370 core tests covered it indirectly. That matters because a
+wrong guard fails SILENTLY: a temporal misclassified as non-temporal does not throw, it takes the
+other comparison branch, and this repo's cross-type comparison policy (string-vs-temporal `=` is
+no-match, `<=` throws) would quietly change. 13 tests added, both directions.
+
+Three mutants, and **one survived and refuted a claim I had written in the test's own comment**:
+
+| mutant                                              | verdict           |
+| --------------------------------------------------- | ----------------- |
+| M1 guard inverted (`=== 'object'` → `!== 'object'`) | CAUGHT 7/6        |
+| M2 the `v !== null` half dropped                    | **SURVIVED 13/0** |
+| M3 the guard swallows everything                    | CAUGHT 7/6        |
+
+I had written that the guard's two halves are "both load-bearing". **They are not.** Dropping
+`v !== null` leaves every test green, because `typeof null === 'object'` lets null through to
+`null instanceof LocalDate`, which is false anyway. It stays as a PERFORMANCE guard — this engine
+treats null as a stored, present value, so nulls reach comparisons routinely and without that half
+each one pays all six checks — and the comment now says that instead of the thing the mutant
+disproved.
+
+### Gates
+
+core **383/0** (13 new), gql 3570/0, gremlin 1157/0, serialization 144/0, `bun run fuzz` 20/0,
+`bun run check` 0 (read unpiped). Both drivers restored their arm in a `finally` and verified it.
