@@ -8945,22 +8945,59 @@ export const edgesOfTypes = (
   return edgesOfManyTypes(byType, types);
 };
 
-/** The deduping multi-bucket tail of {@link edgesOfTypes}, which genuinely wants to be lazy. */
+/**
+ * The deduping multi-bucket tail of {@link edgesOfTypes}, which genuinely wants to be lazy.
+ *
+ * NO `seen` SET, and that is the point (item 1377). An edge can only be yielded twice if it sits in
+ * two of the buckets being walked, so for bucket `i` a duplicate is exactly an edge already present
+ * in some bucket `j < i` — and those buckets already exist, so asking them directly replaces a Set
+ * that grew to the full edge count. Bucket 0 yields with ZERO tests; bucket `i` pays at most `i`.
+ *
+ * EARLIER_BUCKETS. Item 1376 ablated the old `seen` Set at **60.7%** of a multi-type hop count
+ * (15.015 ms to 5.902 with dedupe removed outright) while the `types.map` array it also replaced
+ * measured at **nothing** (-1.8%, noise) — so the Set's has+add traffic was the whole cost and the
+ * allocation was not. Bucket count is the distinct edge types on ONE vertex, and
+ * {@link edgesOfTypes} has already taken every single-bucket case before this is reached, so `i` is
+ * bounded by something tiny.
+ *
+ * Order is unchanged — bucket 0's edges, then bucket 1's non-duplicates — which matters because
+ * unordered result order is still BYTES for cross-engine identity.
+ */
 const edgesOfManyTypes = function* (
   byType: Map<string, Set<Edge>>,
   types: string[] | undefined,
 ): Iterable<Edge> {
-  const seen = new Set<Edge>();
+  const buckets: Set<Edge>[] = [];
 
-  for (const set of types ? types.map((t) => byType.get(t)) : byType.values()) {
-    for (const e of set ?? []) {
-      if (seen.has(e)) {
-        continue;
+  if (types === undefined) {
+    for (const set of byType.values()) {
+      buckets.push(set);
+    }
+  } else {
+    for (const t of types) {
+      const set = byType.get(t);
+
+      if (set !== undefined) {
+        buckets.push(set);
+      }
+    }
+  }
+
+  for (let i = 0; i < buckets.length; i += 1) {
+    for (const e of buckets[i]) {
+      let earlier = false;
+
+      for (let j = 0; j < i; j += 1) {
+        if (buckets[j].has(e)) {
+          earlier = true;
+
+          break;
+        }
       }
 
-      seen.add(e);
-
-      yield e;
+      if (!earlier) {
+        yield e;
+      }
     }
   }
 };

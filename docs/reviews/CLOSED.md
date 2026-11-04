@@ -48473,7 +48473,7 @@ n=24 interleaved number; the bench row is a regression check, not the measuremen
 
 Engine change (one file, `packages/gremlin/src/executor/count-shortcut.ts`). Everything above green.
 
-### Item 1375 — a multi-type hop count costs **16.056 ms against 0.003** where a single-type one is free, the guard is CORRECT (proved by the MULTILABEL=0 arm), my "spelling gap" framing was WRONG, and the real lever is the dedupe Set
+### Item 1375 — a multi-type hop count costs **16.056 ms against 0.003** where a single-type one is free, the guard is CORRECT (proved by the MULTILABEL=0 arm), my "spelling gap" framing was WRONG, and the real lever is the dedupe Set — **the dedupe Set lever is now ABLATED at 60.7% and SHIPPED at 62.5% (items 1376-1377); `types.map` is REFUTED at nothing**
 
 Item 1374 shipped the single-label allocation fix on the Gremlin walk and I went looking for the GQL
 twin. **There is none**: item 324 already made `edgesOfTypes` return the bucket `Set` directly for a
@@ -48552,3 +48552,77 @@ looks. It gets its own item with its own A/B on this new row.
 ### Gates
 
 Instrument only — one bench file; no engine or core code changed. `bun run check` 0 (read unpiped).
+
+### Items 1376-1377 — the multi-type hop's dedupe `Set` ablated at **60.7%**, `types.map` refuted at nothing, and the `seen` Set REMOVED by asking the earlier buckets: **SHIPPED, 62.5% (2.67x), 144/144 concordance**
+
+Item 1375 built the row (`hopmulti` at 16.056 ms against `hopsingle`'s 0.003) and named two levers:
+the dedupe `Set` and `types.map`'s per-call array. Both were GUESSES, and 1375's own lesson was about
+guessing, so they were ablated before anything was patched.
+
+### 1376 — the ablation, which killed half the proposal
+
+At 200,000 / MULTILABEL=3, `hopsingle` as the control:
+
+| arm       | `hopmulti` p25 | saving    | control | answer     |
+| --------- | -------------- | --------- | ------- | ---------- |
+| BASE      | 15.015         | —         | 0.0030  | 200000     |
+| `NO-SEEN` | **5.902**      | **60.7%** | 0.0030  | **266667** |
+| `NO-MAP`  | 15.285         | **-1.8%** | 0.0030  | 200000     |
+
+**The dedupe `Set` is 60.7%. `types.map` is worth NOTHING** — so item 1374's allocation pattern does
+not transfer here, and that half of 1375's proposal is refuted. `NO-SEEN`'s 266667 is exactly
+200000 + the 66,667 edges carrying both labels, which confirms the fixture does what it claims.
+
+### 1377 — the fix, and it needs no Set at all
+
+1375 proposed guarding the dedupe on `e.labels.size > 1`. There is something better: **an edge can
+only be yielded twice if it sits in two of the buckets being walked, so for bucket `i` a duplicate is
+exactly an edge already present in some bucket `j < i`** — and those buckets already exist. Asking
+them directly removes the `seen` Set outright:
+
+- bucket 0 yields every edge with **zero** membership tests;
+- bucket `i` pays at most `i` tests, against Sets that were already built.
+
+For two types that is |E| edges free plus |F| edges at one `has`, against BASE's |E|+|F| `has` **plus**
+|E|+|F| `add` on a Set growing to the full edge count. Bucket count is the distinct edge types on ONE
+vertex, and `edgesOfTypes` has already taken every single-bucket case before this is reached.
+
+| shape                 | BASE p25 | EARLIER   | change    | concordance           |
+| --------------------- | -------- | --------- | --------- | --------------------- |
+| `hopmulti`            | 15.418   | **5.776** | **62.5%** | **144/144 (100%)**    |
+| `hopsingle` [CONTROL] | 0.003    | 0.003     | 0.0%      | every value identical |
+
+**Complete separation**: the slowest of 12 EARLIER processes (7.274) beats the fastest of 12 BASE
+(14.281). And **5.776 sits at the 5.902 no-dedupe ceiling**, so the membership tests cost essentially
+nothing and the rewrite captured the whole lever rather than a fraction of it — unlike item 1374,
+where the shippable form kept only two thirds of its ablation.
+
+Order is unchanged (bucket 0's edges, then bucket 1's non-duplicates), which matters because
+`column-order-is-observable` and the row-order rules make iteration order part of cross-engine bytes.
+
+### Verification
+
+- `bun test`: **gql 3537 / 0**, gremlin 1141 / 0, core 370 / 0, serialization 144 / 0.
+- `bun run fuzz` **20 / 0** across all seven byte-identity fuzzers — this function is shared by the
+  GQL sweep and `outNeighbors`, and the gremlin differential fixture carries a two-label edge, so
+  the dedupe is exercised against the Rust engine.
+- Seven adjacent cases checked directly, all correct: the untyped multi-bucket walk, `T|U`, `U|T`,
+  `T` alone, `U` alone, **`T|T`** and **`T|Z`**.
+
+### The tests, and an honest note on their teeth
+
+`[:X|X]` appeared in **zero** gql tests, so the duplicate-bucket case this rewrite handles by a new
+mechanism was uncovered. Added five cases to `multi-label-edges.test.ts` on a PARTIALLY overlapping
+fixture — the existing `twoLabelChain` makes every edge both `R` and `S`, so a walk that deduped
+nothing and one that deduped everything would agree on it.
+
+**Teeth verified by mutation** (`if (!earlier)` → `if (true)`): 10 failures, of which **two are new
+cases** — "counts the union, not the sum of buckets" and "a DUPLICATE type names the same bucket
+twice". **The other three do not have teeth for the dedupe and should not be read as if they do**:
+the untyped walk appears to route somewhere other than this function on that fixture, and
+absent-type and bucket-order cannot detect a disabled dedupe. They document adjacent behaviour,
+which is worth having, but the dedupe's guard is those two.
+
+### Gates
+
+Engine change (`packages/gql/src/executor.ts`) plus tests. `bun run check` 0 (read unpiped).

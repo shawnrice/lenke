@@ -264,3 +264,65 @@ describe('labels() of an edge is its type set', () => {
     expect(ask('MATCH ()-[e:S]->() RETURN size(labels(e)) AS x')).toEqual([{ x: 2 }]);
   });
 });
+
+/**
+ * A MIXED fixture, which `twoLabelChain` above cannot provide: it makes every edge both `R` and
+ * `S`, so a bucket walk that deduped nothing and one that deduped everything would agree on it.
+ * Here `e1` carries both types while `e2` and `e3` carry one each, so the three buckets OVERLAP
+ * PARTIALLY and the dedupe has to be exactly right rather than merely present.
+ *
+ * Item 1377 rewrote that dedupe — `edgesOfManyTypes` no longer builds a `seen` Set and instead asks
+ * the EARLIER buckets directly, which was 62.5% on a 200,000-edge multi-type hop. The three cases
+ * below are the ones that rewrite changes the MECHANISM for and which nothing in this package
+ * covered: a DUPLICATE type (the same bucket appears twice in the walk), an ABSENT type (no bucket
+ * at all), and the untyped walk over several buckets. `[:X|X]` appeared in zero gql tests.
+ */
+const mixedLabels = (): Graph => {
+  const g = new Graph();
+
+  for (const id of ['a', 'b', 'c']) {
+    g.addVertex({ id, labels: ['P'], properties: {} });
+  }
+
+  const v = (id: string) => g.getVertexById(id)!;
+
+  g.addEdge({ id: 'e1', from: v('a'), to: v('b'), labels: ['T', 'U'] });
+  g.addEdge({ id: 'e2', from: v('a'), to: v('c'), labels: ['T'] });
+  g.addEdge({ id: 'e3', from: v('b'), to: v('c'), labels: ['U'] });
+
+  return g;
+};
+
+const mixed = (src: string): unknown[] => query(mixedLabels(), src);
+
+describe('partially overlapping type buckets dedupe exactly (item 1377)', () => {
+  test('a disjunction counts the union, not the sum of buckets', () => {
+    // |T| = 2, |U| = 2, and e1 is in both, so the SUM is 4 and the UNION is 3.
+    expect(mixed('MATCH (x:P)-[:T]->(y:P) RETURN count(*) AS n')).toEqual([{ n: 2 }]);
+    expect(mixed('MATCH (x:P)-[:U]->(y:P) RETURN count(*) AS n')).toEqual([{ n: 2 }]);
+    expect(mixed('MATCH (x:P)-[:T|U]->(y:P) RETURN count(*) AS n')).toEqual([{ n: 3 }]);
+  });
+
+  test('bucket ORDER does not change the union', () => {
+    expect(mixed('MATCH (x:P)-[:U|T]->(y:P) RETURN count(*) AS n')).toEqual(
+      mixed('MATCH (x:P)-[:T|U]->(y:P) RETURN count(*) AS n'),
+    );
+  });
+
+  test('an untyped walk over SEVERAL buckets counts each edge once', () => {
+    // `types === undefined` with more than one bucket is the branch item 1377 restructured most,
+    // and it is the one a single-type fixture can never reach.
+    expect(mixed('MATCH (x:P)-[]->(y:P) RETURN count(*) AS n')).toEqual([{ n: 3 }]);
+  });
+
+  test('a DUPLICATE type names the same bucket twice and still counts it once', () => {
+    // The walk now holds the same `Set` at two positions, so position 1 must recognise position 0.
+    expect(mixed('MATCH (x:P)-[:T|T]->(y:P) RETURN count(*) AS n')).toEqual([{ n: 2 }]);
+    expect(mixed('MATCH (x:P)-[:T|U|T]->(y:P) RETURN count(*) AS n')).toEqual([{ n: 3 }]);
+  });
+
+  test('an ABSENT type contributes no bucket and changes nothing', () => {
+    expect(mixed('MATCH (x:P)-[:T|Z]->(y:P) RETURN count(*) AS n')).toEqual([{ n: 2 }]);
+    expect(mixed('MATCH (x:P)-[:Z|W]->(y:P) RETURN count(*) AS n')).toEqual([{ n: 0 }]);
+  });
+});
