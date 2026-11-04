@@ -50316,3 +50316,61 @@ answer-equivalent change, exactly as at item 1391's sort mutant; its guard is a 
 gql **3580/0** (one new oracle test, 2,478 assertions), gremlin 1157/0, core 383/0, `bun run fuzz`
 20/0, `bun run check` 0 (read unpiped). Both hand-applied mutants were restored and the restore
 verified byte-identical before anything was committed; the working tree held only the test file.
+
+### Item 1401 — **every GQL number this session came from a degree-1 fixture**, because the GQL bench never had a `FANOUT` knob. Added, and the audit is a POSITIVE: the equivalent-spelling symmetry from items 1382-1388 **holds at degree 4** (1.01x, 1.02x), and the quantifier-vs-chain pair stops being a spelling pair there — **799,996 against 800,000**, measured
+
+Item 1400 found that a degenerate fixture can hide a **correctness** difference, not merely a cost
+one: removing the depth-4 endpoint-mask gate measured "correct and 9.9x faster" on the isolated bench
+and answers **−3** on randomized multigraphs, because the structures the trail correction exists for
+— self-loops, parallel edges, reverse edges — were all absent. That makes the fixture itself the thing
+to audit, and the audit has a specific gap: **the Gremlin bench has had `FANOUT` since it was written
+and the GQL bench never did.** Out-degree was exactly 1, one permutation cycle, for every GQL
+measurement in items 1386-1400.
+
+### `FANOUT=1` reproduces the old fixture byte-for-byte
+
+Verified by digest rather than asserted — `hopcount` 200,000, `hopsingleyield` and `hopmultiyield`
+200,000 rows and digest 19999900000 at `FANOUT=1`, identical to the pre-knob runs. So the knob costs
+nothing to leave alone, which is the only way an added dimension is safe to put under existing rows.
+
+### The audit: the session's own spelling fixes, at degree 4
+
+Items 1382, 1384, 1386 and 1388 each closed an equivalent-spelling gap by sorting buckets
+largest-first, and **every one of them was validated at out-degree 1 only** — where a vertex has at
+most one bucket per type and the asymmetry the sort removes is at its smallest.
+
+| pair                                 | `FANOUT=1`    | `FANOUT=4`      | symmetry  |
+| ------------------------------------ | ------------- | --------------- | --------- |
+| `hopmulti` / `hopmultirev` (count)   | 0.42 / 0.42   | 1.81 / 1.79     | **1.01x** |
+| `hopmultiyield` / `hopmultiyieldrev` | 26.31 / 26.76 | 139.38 / 136.83 | **1.02x** |
+
+**They hold.** Digests match within each setting and the counts scale exactly (400,000 = 4 x
+100,000). This is the first evidence for those four fixes at a degree where the sort has something to
+do, and it is a positive result rather than a correction — worth recording for that reason, since the
+three fixture surprises before it all went the other way.
+
+### And one asserted caveat becomes a measured fact
+
+Item 1398 compared the quantifier against the explicit chain and wrote that they are "NOT equivalent
+in general: a quantified path is a TRAIL and may not repeat an edge, while the chain may, so a
+fixture with a 2-cycle would make the answers diverge legitimately". At degree 4 that is no longer
+hypothetical:
+
+|                     | `FANOUT=1`      | `FANOUT=4`                 |
+| ------------------- | --------------- | -------------------------- |
+| `{2,2}` vs `chain2` | 50,000 = 50,000 | **799,996 vs 800,000**     |
+| `{3,3}` vs `chain3` | 50,000 = 50,000 | **3,199,944 vs 3,200,000** |
+
+4 two-paths and 56 three-paths revisit an edge, so the trail correction is doing real work. The bench
+rows are now bounded to `FANOUT=1` for the spelling comparison and documented as a semantics
+demonstration above it — a pair that silently becomes two different questions is exactly the kind of
+row that produces a confident wrong conclusion later.
+
+Item 1398's routing finding survives the change of fixture: at degree 4 the chain is **2.98x** faster
+at depth 2 and the quantifier **3.01x** faster at depth 3, the same non-monotonic crossover.
+
+### Gates
+
+Bench knob and documentation — **no engine or core code changed**. `bun run check` 0 (read unpiped);
+suites unchanged from item 1400 (gql 3580/0, gremlin 1157/0, core 383/0, serialization 144/0).
+`FANOUT` is indexed in `PROBES.md` beside `FANIN`, with what each has already settled.

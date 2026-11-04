@@ -61,6 +61,21 @@ const MULTILABEL = Number(process.env.MULTILABEL ?? 3);
  */
 const FANIN = Number(process.env.FANIN ?? 1);
 
+/**
+ * Out-edges per vertex (item 1401). `FANOUT=1` is the original fixture, byte-for-byte.
+ *
+ * ⚠️ EVERY GQL NUMBER THIS SESSION CAME FROM A DEGREE-1 FIXTURE, and item 1400 is why that is now a
+ * knob. One out-edge per vertex, a single permutation cycle, no self-loops and no parallel edges —
+ * and at item 1399 that degeneracy hid a CORRECTNESS difference, not just a cost one: removing the
+ * depth-4 endpoint-mask gate measured "correct and 9.9x faster" here and answers **-3** on
+ * randomized multigraphs, because the structures the trail correction exists for were all absent.
+ *
+ * The Gremlin bench has had `FANOUT` since it was written; this one did not, so its hop rows could
+ * only ever say what a degree-1 graph does. A per-vertex cost and a per-edge cost scale differently
+ * (CLAUDE.md), and so do a walk that dedupes and one that never meets a duplicate.
+ */
+const FANOUT = Number(process.env.FANOUT ?? 1);
+
 const SHAPES = {
   hopfilter: 'MATCH (a:P)-[:E]->(b:P) WHERE a.k = 5 RETURN count(*) AS c',
   // AN EQUIVALENT-SPELLING PAIR (item 1375). A third of the edges carry BOTH `E` and `F`, and every
@@ -86,13 +101,18 @@ const SHAPES = {
   varlen11: 'MATCH (a:P)-[:E]->{1,1}(b:P) RETURN count(*) AS c',
   varlen12: 'MATCH (a:P)-[:E]->{1,2}(b:P) RETURN count(*) AS c',
   varlen13: 'MATCH (a:P)-[:E]->{1,3}(b:P) RETURN count(*) AS c',
-  // AN EQUIVALENT-SPELLING PAIR ACROSS THE QUANTIFIER (item 1398). `{2,2}` is "exactly two hops",
-  // which is what the explicit chain spells, and on this fixture they agree exactly (20,000 both, and
-  // `{3,3}` against the three-link chain likewise) — each vertex has out-degree 1 and no cycle short
-  // enough for TRAIL semantics to separate them, so a cost difference here is a routing difference
-  // and not different work. ⚠️ They are NOT equivalent in general: a quantified path is a TRAIL under
-  // ISO semantics and may not repeat an edge, while the chain may, so a fixture with a 2-cycle would
-  // make the answers diverge legitimately. The pair is a spelling probe for THIS fixture only.
+  // AN EQUIVALENT-SPELLING PAIR ACROSS THE QUANTIFIER (item 1398), **AT `FANOUT=1` ONLY**. `{2,2}` is
+  // "exactly two hops", which is what the explicit chain spells, and at out-degree 1 they agree
+  // exactly — no cycle is short enough for TRAIL semantics to separate them — so a cost difference
+  // is a routing difference and not different work.
+  //
+  // ⚠️ AT `FANOUT=4` THEY ARE DIFFERENT QUESTIONS, and item 1401 measured it rather than leaving the
+  // caveat asserted: `{2,2}` answers **799,996** against the chain's **800,000**, and `{3,3}`
+  // **3,199,944** against **3,200,000**. A quantified path is a TRAIL and may not repeat an edge
+  // while the chain may, so at degree 4 those 4 and 56 paths revisit one — which is the trail
+  // correction doing real work. Compare these as a SPELLING pair only at `FANOUT=1`; above it they
+  // are a semantics demonstration. (The routing crossover holds either way: at degree 4 the chain is
+  // 2.98x faster at depth 2 and the quantifier 3.01x faster at depth 3.)
   quant22: 'MATCH (a:P)-[:E]->{2,2}(b:P) RETURN count(*) AS c',
   chain2: 'MATCH (a:P)-[:E]->()-[:E]->(b:P) RETURN count(*) AS c',
   quant33: 'MATCH (a:P)-[:E]->{3,3}(b:P) RETURN count(*) AS c',
@@ -133,22 +153,25 @@ const build = () => {
     });
   }
 
-  for (let i = 0; i < NODES; i += 1) {
+  const pool = FANIN >= 1 ? NODES : Math.max(Math.floor(NODES * FANIN), 1);
+
+  for (let k = 0; k < NODES * FANOUT; k += 1) {
+    const i = k % NODES;
+    // The FANOUT-th edge out of `i` lands somewhere else, so degree rises without the targets
+    // collapsing onto one vertex — `FANIN` is the knob for that and the two stay independent.
+    const hop = Math.floor(k / NODES);
+
     g.addEdge({
-      id: `e${i}`,
+      id: `e${k}`,
       from: g.getVertexById(`v${i}`),
-      // FANIN=1 keeps the original `(i * 7 + 3) % NODES`, byte-for-byte; a smaller fraction
-      // concentrates the far endpoints into the first `NODES * FANIN` vertices.
-      to: g.getVertexById(
-        FANIN >= 1
-          ? `v${(i * 7 + 3) % NODES}`
-          : `v${(i * 7 + 3) % Math.max(Math.floor(NODES * FANIN), 1)}`,
-      ),
+      // FANIN=1 keeps the original `(i * 7 + 3) % NODES`, byte-for-byte at FANOUT=1; a smaller
+      // fraction concentrates the far endpoints into the first `NODES * FANIN` vertices.
+      to: g.getVertexById(`v${(i * 7 + 3 + hop * 2_654_435_761) % pool}`),
       // A THIRD carry both types, so `:E` and `:E|F` select the identical edge set and the
       // multi-bucket path actually has something to DEDUPE — without the overlap it would be a
       // concatenation and would not exercise the `Set` the dedupe allocates.
-      labels: MULTILABEL > 0 && i % MULTILABEL === 0 ? ['E', 'F'] : ['E'],
-      properties: { w: i % 13 },
+      labels: MULTILABEL > 0 && k % MULTILABEL === 0 ? ['E', 'F'] : ['E'],
+      properties: { w: k % 13 },
     });
   }
 
@@ -241,6 +264,7 @@ console.log(
   JSON.stringify({
     shape: SHAPE,
     nodes: NODES,
+    fanout: FANOUT,
     reps: REPS,
     drop: DROP,
     answer,

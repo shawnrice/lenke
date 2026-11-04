@@ -331,6 +331,17 @@ can be measuring the wrong thing entirely.** It sets how many DISTINCT far endpo
 So: sweep `FANIN` for anything that touches a far endpoint, exactly as CLAUDE.md says to sweep the
 SIZE. A per-vertex cost and a per-edge cost scale differently, and so do a hot far pool and a cold one.
 
+**`FANOUT` IS THE OTHER HALF, and the GQL bench did not have it until item 1401** — so every GQL
+number before that item came from a fixture with out-degree exactly 1, one permutation cycle, no
+self-loops and no parallel edges. That degeneracy hid a CORRECTNESS difference, not merely a cost
+one: at item 1399 removing the depth-4 endpoint-mask gate measured "correct and 9.9x faster" on it and
+answers **−3** on randomized multigraphs (item 1400), because the structures the trail correction
+exists for were all absent. `FANOUT=1` reproduces the old fixture byte-for-byte (verified by digest),
+so the knob costs nothing to leave alone — and anything about a hop, a dedupe or a path quantifier
+should be read at `FANOUT=4` as well. Two things it has already settled: the equivalent-spelling
+symmetry from items 1382-1388 HOLDS at degree 4 (1.01x and 1.02x), and the quantifier-vs-chain pair
+stops being a spelling pair there (799,996 against 800,000 — trail semantics, legitimately).
+
 ## HOW TO RUN ONE, which is not optional detail
 
 **ASSERT THE ARM FROM THE FILE ON DISK, not from the variable you just built — and do it before you
