@@ -5396,7 +5396,7 @@ const sweepOneDirection = (
  * built in cannot change it, and duplicates are kept in the remembered list exactly as parallel
  * edges produce them.
  */
-const sweepSlotCached = (st: SweepState, leg: Leg, slotNbrs: (Int32Array | undefined)[]): void => {
+const sweepSlotCached = (st: SweepState, leg: Leg, memo: SlotMemo): void => {
   const { cache, cached, idOf, slotOf, frontier, nextFrontier } = st;
   const { out } = leg;
   // Reused across slots, so the walk allocates one `Int32Array` per slot and nothing else.
@@ -5405,10 +5405,17 @@ const sweepSlotCached = (st: SweepState, leg: Leg, slotNbrs: (Int32Array | undef
   for (const slot of frontier) {
     // Nonzero by construction — a slot joins a frontier only on its 0 -> w transition.
     const w = st.ways[slot];
-    const known = slotNbrs[slot];
+    const n0 = memo.len[slot];
 
-    if (known !== undefined) {
-      for (const to of known) {
+    if (n0 !== undefined) {
+      // A CONTIGUOUS RUN of the one buffer, not a per-slot array: an index walk rather than a
+      // pointer chase, and the whole memo is one allocation instead of ~100,000.
+      const base = memo.off[slot];
+      const { flat } = memo;
+
+      for (let i = 0; i < n0; i += 1) {
+        const to = flat[base + i];
+
         if (st.next[to] === 0) {
           nextFrontier.push(to);
         }
@@ -5453,23 +5460,81 @@ const sweepSlotCached = (st: SweepState, leg: Leg, slotNbrs: (Int32Array | undef
       st.next[to] += w;
     }
 
-    // ⚠️ A MANUAL COPY, NOT `Int32Array.from` (item 1417). `from` goes through the iterator
-    // protocol even for a plain array; the constructor takes an array-like directly and a hand
-    // loop skips both. Screened over 100,000 small arrays: `from` 8.99 ms, `new Int32Array(a)`
-    // 7.26 (1.24x), the hand loop **1.85 (4.85x)** — and this allocates ONE array per slot, which
-    // is ~100,000 of them on the 4-hop chain and the 11.8% GC in its profile.
-    //
-    // Screening only decided it was worth an A/B: item 300's micro predicted 2.30x for a change in
-    // this very function and the in-situ reading was 1.27x.
+    // APPENDED TO THE ONE BUFFER (item 1418), where item 1417 built a per-slot `Int32Array` here.
+    // The hand copy it introduced stays — `Int32Array.from` went through the iterator protocol and
+    // measured 4.85x slower over 100,000 small arrays — it just writes into a shared run now.
     const n = scratch.length;
-    const nbrs = new Int32Array(n);
+
+    memoReserve(memo, n);
+
+    const base = memo.used;
 
     for (let i = 0; i < n; i += 1) {
-      nbrs[i] = scratch[i];
+      memo.flat[base + i] = scratch[i];
     }
 
-    slotNbrs[slot] = nbrs;
+    memo.used = base + n;
+    memo.off[slot] = base;
+    memo.len[slot] = n;
   }
+};
+
+/**
+ * THE REMEMBERED FAR SLOTS, FLAT (item 1418).
+ *
+ * Item 1106 held this as one `Int32Array` per slot. That is ~100,000 typed arrays on a 4-hop chain
+ * over 100,000 vertices, every one of them RETAINED for the whole query — so they are promoted
+ * rather than collected cheaply, and `chain4`'s profile still showed the garbage collector at
+ * **14.2%** after item 1417 removed the `Int32Array.from` from building them.
+ *
+ * So: ONE growable buffer, with each slot's run recorded as an offset and a length. No per-slot
+ * object exists at all, and the replay pass reads a contiguous run instead of chasing a pointer per
+ * slot.
+ *
+ * `len[slot] === undefined` is "not resolved yet" — the same sentinel the array-of-arrays used, kept
+ * so the branch in the walk is unchanged.
+ */
+export type SlotMemo = {
+  flat: Int32Array;
+  used: number;
+  readonly off: number[];
+  readonly len: number[];
+};
+
+/**
+ * Room for `need` more entries, doubling as needed.
+ *
+ * ⚠️ EXPORTED FOR ITS OWN UNIT TEST, which is the only thing that guards it (item 1418).
+ *
+ * Five mutants were run against this memo's offset arithmetic and four were caught by the query
+ * suite. The fifth — `grown.set(m.flat.subarray(0, m.used))` shortened by one — SURVIVED every
+ * black-box attempt: a 4,096-slot fixture (growth fires 3 times, verified by counter), a cycle, a
+ * path with sinks, and an out-degree-2 graph. Its effect is confined to a couple of entries whose
+ * read depends on frontier ordering, so no query shape reached it.
+ *
+ * Two theories were wrong along the way, each refuted by a counter rather than by argument: that the
+ * fixtures were too small to grow the buffer (growth ran 3 times), and that a path never reads the
+ * memo back (it reads it 8,189 times).
+ *
+ * So the guard is a DIRECT test of the arithmetic, which is this repo's recorded answer to a mutant
+ * the differential tests cannot see: extract the arithmetic as a pure function and unit-test it.
+ * `memo-reserve.test.ts` asserts every previously written entry survives each growth.
+ */
+export const memoReserve = (m: SlotMemo, need: number): void => {
+  if (m.used + need <= m.flat.length) {
+    return;
+  }
+
+  let cap = m.flat.length === 0 ? 1024 : m.flat.length;
+
+  while (cap < m.used + need) {
+    cap *= 2;
+  }
+
+  const grown = new Int32Array(cap);
+
+  grown.set(m.flat.subarray(0, m.used));
+  m.flat = grown;
 };
 
 /** Do two legs accept the same edge types? `undefined` is "any type" and matches only itself. */
@@ -5565,7 +5630,7 @@ const sweepChain = ({ graph, params, legs, startLabel, startGate, startSource }:
   // `count 3-hop + start filter` (3 legs, 2 passes) read 162.0 ms against 165.7 over three
   // alternated rounds, consistently the wrong way. At three passes two are refunded and
   // `count 4-hop` goes 550.5 -> 297.5, **1.85x**.
-  const slotNbrs: (Int32Array | undefined)[] | undefined =
+  const slotNbrs: SlotMemo | undefined =
     uniform &&
     passes > 2 &&
     legs.every(
@@ -5574,7 +5639,7 @@ const sweepChain = ({ graph, params, legs, startLabel, startGate, startSource }:
         l.gate === undefined &&
         effectiveLabel(graph, l.label) === undefined,
     )
-      ? []
+      ? { flat: new Int32Array(0), used: 0, off: [], len: [] }
       : undefined;
 
   for (let i = 0; i < passes; i++) {

@@ -51571,3 +51571,87 @@ under a timeout and a cgroup cap, since a loop-bound mutant can stop terminating
 
 gql **3610/0**, gremlin 1197/0, core 383/0, serialization 144/0, `bun run fuzz` 20/0, `bun run
 check` 0 (read unpiped). Answers identical across both arms in every cell.
+
+### Item 1418 — **SHIPPED, 25.7%** (81/81): the slot memo's ~100,000 per-slot `Int32Array`s become ONE flat buffer with per-slot offsets. And its growth copy needed a DIRECT unit test, because four black-box attempts could not catch a mutant of it
+
+### Re-profiling after item 1417 showed the GC was NOT fixed
+
+Item 1417 replaced `Int32Array.from` with a hand copy and won 10.1%. But `chain4`'s profile still
+read the garbage collector at **14.2%** — up from 11.8%, not down. Item 1417 made the per-slot arrays
+cheaper to BUILD; it did not change that there are ~100,000 of them and they are **retained for the
+whole query**, so they are promoted rather than collected cheaply. The construction cost was never
+the GC cost.
+
+So the memo is now one growable buffer plus per-slot `(offset, length)`:
+
+```ts
+type SlotMemo = { flat: Int32Array; used: number; off: number[]; len: number[] };
+```
+
+No per-slot object exists at all, and the replay pass — two of three passes on a 4-hop chain — reads
+a **contiguous run** instead of chasing a pointer per slot. Item 1417's hand copy survives inside it,
+writing into a shared run.
+
+| shape                | fanout | BASE  | FLAT      | change    | concordance |
+| -------------------- | ------ | ----- | --------- | --------- | ----------- |
+| **`chain4`**         | 1      | 69.98 | **52.01** | **25.7%** | **81/81**   |
+| **`chain4`**         | 2      | 71.22 | **63.18** | **11.3%** | **81/81**   |
+| `chain3` [CONTROL]   | 1      | 47.34 | 47.76     | −0.9%     | 46/81       |
+| `varlen24` [CONTROL] | 1      | 30.36 | 30.84     | −1.5%     | 46/81       |
+| `quant44` [CONTROL]  | 1      | 28.34 | 28.46     | −0.4%     | 44/81       |
+
+Controls chosen on the CONDITION rather than by eye: the memo needs `passes > 2` (item 1106's
+measured threshold), so `chain3` at 2 passes routes around it and the other two use
+`walkLevelCount`. All three flat at chance.
+
+### ⚠️ Four black-box attempts could not catch one mutant, and both theories were wrong
+
+Five mutants against the offset arithmetic. Four were caught by the query suite at once. The fifth —
+`grown.set(m.flat.subarray(0, m.used))` shortened by one, which silently drops the last entry **on
+every doubling** — survived:
+
+| attempt               | why it should have worked                                              | what measurement said                                                        |
+| --------------------- | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| 4,096-slot fixture    | "too small to grow the buffer"                                         | a counter in the growth branch: it fires **3 times**, 2 with entries to copy |
+| path instead of cycle | "a cycle is symmetric, so misrouted weight leaves the total unchanged" | still survived                                                               |
+| counted the reads     | "a path never reads the memo back"                                     | a 4,096-vertex path reads it **8,189 times**                                 |
+| out-degree 2          | "runs of length 1 hide an off-by-one within a run"                     | still survived                                                               |
+
+Each theory was plausible and each was refuted by **one counter** rather than by argument — which is
+the only reason I know they were wrong. The actual reason is narrower: the dropped entry belongs to
+whichever slot was written immediately before a growth, and whether it is ever read depends on
+frontier ordering. A query shape that reliably reads it would be a test of the arithmetic wearing a
+query costume.
+
+### So the guard is the arithmetic itself
+
+`memoReserve` and `SlotMemo` are exported, and `memo-reserve.test.ts` tests the one invariant
+directly: **growth preserves every entry already written.** 5,000 single-entry slots with
+recognisable values, runs of length 3 over 1,200 slots, a single reserve larger than the whole
+buffer, monotone capacity, and the no-op cases.
+
+That is this repo's own recorded answer for this shape — _a route choice is answer-equivalent, so
+every mutant survives the differential tests; extract the arithmetic as a pure fn and unit-test it_ —
+arriving from a new direction: not a route choice this time, but a data path whose corruption is
+real and whose observability depends on scheduling.
+
+**Re-run: ALL FIVE CAUGHT.** M5 dies by 2 tests.
+
+| mutant                  | verdict                                      |
+| ----------------------- | -------------------------------------------- |
+| M1 `off = base + 1`     | CAUGHT (30 fail)                             |
+| M2 `len = n - 1`        | CAUGHT (42 fail)                             |
+| M3 `used` not advanced  | CAUGHT (35 fail)                             |
+| M4 no reserve           | CAUGHT (42 fail)                             |
+| **M5 growth loses one** | **CAUGHT (2 fail)** — by the unit test alone |
+
+The six path-fixture tests in `slot-memo-growth.test.ts` stay: they are real coverage of a growth
+path that had none, even though they were not what caught M5. Their header records the cycle-vs-path
+reasoning, which is sound in general — item 702's invariance trap — and simply was not the cause
+here.
+
+### Gates
+
+gql **3622/0**, gremlin 1197/0, core 383/0, serialization 144/0, `bun run fuzz` 20/0, `bun run
+check` 0 (read unpiped; it caught seven unnecessary type assertions in the new tests). Answers
+identical across both arms in every cell.
