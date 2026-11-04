@@ -53885,7 +53885,11 @@ share.
 `bun run check` 0 (read unpiped), gql 3669/0 before the revert and after it. Engine file reverted and
 verified at `farRow` count 0; the only committed change is the probe arm.
 
-### Item 1448 — ❌ REFUTED, and so is item 1447's diagnosis: the sibling closure with the read fully INLINE also measures **−1.7% / +2.2%**. `propOf` stays at **21.80%** after the projection stops calling it, because that share was always the PREDICATE's. ⚠️ The floor arms' COMPONENT split does not transfer to engine changes — and I trusted it for three items
+### Item 1448 — ❌ REFUTED — ⚠️ **AND ITS OWN CONCLUSION IS CORRECTED AT ITEM 1449: the effect is
+
+SUPERADDITIVE.** Each half alone is noise; both together are **32.8%**. "The components do not
+transfer" should read "the halves are not separable". Original heading follows — and so is item
+1447's diagnosis: the sibling closure with the read fully INLINE also measures **−1.7% / +2.2%**. `propOf` stays at **21.80%** after the projection stops calling it, because that share was always the PREDICATE's. ⚠️ The floor arms' COMPONENT split does not transfer to engine changes — and I trusted it for three items
 
 Item 1447's specialization measured −4.8%/+0.7% and I diagnosed the wiring: a hoisted local holding
 one of two closures makes one shared bytecode site polymorphic. Rebuilt it the way the rest of the
@@ -53971,3 +53975,84 @@ measured without a single hand arm. The spelling pair was sitting in the bench t
 
 `bun run check` 0 (read unpiped), gql 3669/0 before the revert and after it. Engine file reverted and
 verified at `farSpec` count 0; nothing of this item is committed but its record.
+
+### Item 1449 — ⚠️ THE OPTIMIZATION IS SUPERADDITIVE, which is why items 1447 and 1448 measured nothing: predicate alone **+1.4%**, projection alone **~0%**, BOTH together **32.8%** (41.5 ms against 61.7, spread 1.011x). Item 1448's "the components do not transfer" is CORRECTED — the total transfers, the halves individually do not
+
+Items 1447 and 1448 each specialized the PROJECTION half of `hopfiltyield` and measured ~0. Item 1448
+concluded the hand-floor decomposition was non-predictive and that the projection "is not a term in
+this row". **Both of those were premature, and this item is the ablation that shows it.**
+
+Ablations IN THE ENGINE, same route and same walk, each verified by digest (4999949985) and row count
+(99,994) so the answer never changed:
+
+```text
+  BASE (pristine)                                61.73 ms   59.31 61.73 63.17
+  predicate inlined only                         60.88      56.76 60.88 61.62   +1.4%, 7/9
+  projection inlined only (items 1447, 1448)     ~61.5      -1.7% / +2.2%
+  BOTH inlined together                          41.48      41.48 41.41 41.87   32.8%
+```
+
+**Each half alone is noise; the two together are 32.8% of the row** and the three readings span
+1.011x, which is the tightest measurement on this row all session.
+
+### Why, and it is the useful part
+
+As long as EITHER half still goes through the generic path, it keeps `propOf` and the
+`satisfies`/`compareTruth` chain live and hot — so the inlined half saves its own call and inherits
+nothing, because the shared machinery it was supposed to escape is still being entered every row by
+its sibling. Only when both are gone does the chain leave the loop.
+
+That resolves the apparent contradiction item 1448 recorded. Item 1446's `floor-engine-shaped-poly`
+arm removed BOTH halves and measured ~90.9% of the engine-to-floor gap; the engine, with both halves
+removed, takes 61.7 → 41.5, which is **62% of that gap** (the gap being ~32.7 ms over a 29 ms floor).
+So the TOTAL transfers and the SPLIT does not — not because the arms are unrepresentative, but because
+the quantity they bracket is not separable. **A decomposition that is accurate in total can still be
+meaningless term-by-term when the terms interact**, and nothing in the probe could have revealed that:
+it takes two engine ablations and then a third doing both at once.
+
+⚠️ **RULE: before concluding a specialization is worthless, ablate it TOGETHER WITH the sibling paths
+that share its machinery.** Two items were spent concluding the opposite, and item 1448's framing —
+"an ablation in a hand floor is still only a nomination for the engine" — is right about hand floors
+and wrong as applied here: the single-half engine ablations were just as misleading. The honest
+version is that **a partial ablation of a shared-machinery path is not an ablation of that path.**
+
+### Also corrected: my own closing claim at item 1448
+
+Item 1448 ended by saying `hopfiltyield` against `hopsingleyield` (61.47 against 26.78) gives the
+predicate's price as "57% of the row" and "needed no hand arm at all". **That comparison is not a
+predicate ablation**: `hopsingleyield` has no carried `WHERE`, so it takes the far-driven walk with
+item 167's template clone (item 1438 established exactly that), and the 57% conflates the predicate
+with a route change. The real predicate-alone figure is **+1.4%**, measured here by replacing the call
+in place.
+
+### What to build, now justified
+
+One sibling closure that specializes BOTH halves for the shape
+`MATCH (a:L)-[:T]->(b:L) WHERE b.<k> <op> <literal> RETURN b.<k2> AS n`:
+
+- the projection from `farPropSpec`'s `{ name, key }` (written at item 1448, reverted, recoverable
+  from that commit) — `rows.push({ [name]: far.properties?.[key] ?? null })`.
+- the predicate as a compiled-once comparison against a literal, the analogue of what items 1339 and
+  1340 shipped on the node-scan side (1.38x and 1.17-1.21x there). It must preserve `compareTruth`'s
+  semantics, including the NaN/cross-type rules the engine is byte-identical on.
+- `binding.set(farVar, far)` can only be dropped if NEITHER the specialized predicate nor the gate
+  reads the binding — worth checking, because the ablation above kept it and still got 32.8%, so it is
+  not required for the win.
+
+Expected: ~32.8% on `hopfiltyield`, which clears this file's 3.4-5.8% toll by ~6x. The ablation is the
+upper bound — a general implementation pays a detection cost per compile and must decline more shapes.
+
+### Gates
+
+`bun run check` 0 (read unpiped), gql 3669/0. Engine file restored from a pristine copy and verified
+at 0 ablation markers, `git diff --stat` empty for it; nothing of this item is committed but its
+record.
+
+One harness note worth keeping: the first attempt at the both-halves ablation had its `python3 - <<PY`
+heredoc **newline-separated** from the build-and-measure that followed, so when the mutator's
+assertion failed (the projection push is 73 lines below the predicate, not within the 40 I guessed)
+the measurement ran anyway — against the PRISTINE file — and printed three plausible readings. That is
+precisely the failure CLAUDE.md describes: "a heredoc on one line and the command that reads the file
+on the next line are two statements; the first failing does not stop the second." Caught because the
+numbers matched the baseline rather than the hypothesis, then redone with `&&` and a post-mutation
+`grep -c` assertion.
