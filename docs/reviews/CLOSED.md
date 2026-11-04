@@ -47443,12 +47443,21 @@ note for the same reason (JSC inlines a getter whose body is a private-field rea
 measured flat with the rounds disagreeing on sign).
 
 So the growth is in what `propOf` does THROUGH it: `element.properties[key]` on a **frozen plain
-object with arbitrary keys**. That is V8 dictionary mode, and with 200,000 distinct bags the call
+object with arbitrary keys**. ~~That is V8 dictionary mode, and with 200,000 distinct bags the call
 site's inline caches are megamorphic — a hash lookup per read instead of an inline-cached field
 access, and one that misses cache more often the bigger the heap. It is the same cliff
 `ts-set-is-o-width` records at 128 -> 256 keys, reached from the element count instead of the bag
-width. **NOT MEASURED HERE as a separate hypothesis** — named, with the mechanism stated, so the next
+width.~~ **NOT MEASURED HERE as a separate hypothesis** — named, with the mechanism stated, so the next
 tick can price it in isolation rather than infer it from a share.
+
+> ⚠️ **THE MECHANISM ABOVE IS REFUTED AT 1363, BY THE TICK THAT WAS MEANT TO CONFIRM IT.** Measured in
+> isolation at 200,000 elements: 8 distinct key sets (megamorphic) cost **0.95x** a single hidden
+> class, and `Object.freeze` costs **1.04x**. So neither dictionary mode nor megamorphism is the
+> cause — the fixture's uniform keys make the read site monomorphic by construction, which should
+> have been obvious before the story was written down. **It is a plain cache-miss curve**: 0.84 ns a
+> read at 1,000 against 9.24 at 200,000, identical code and identical shapes. The GROWTH this item
+> measured stands; the explanation does not. 1363 also refutes the `Map`-bag fix (**3.18x WORSE**)
+> and prices the layout lever (`Float64Array` column: **3.30x faster and FLAT in size**).
 
 ### What this re-prices, and what it does not
 
@@ -47468,3 +47477,82 @@ should carry its size the way it carries its fixture.
 Probes and instrument only; no engine or core code changed. `bun run check` 0 (read unpiped). The CPU
 analyzer re-run against the stored 20k GQL, Gremlin and write profiles after both fixes: same
 verdicts, same ms values, with the harness line now reported separately.
+
+### Item 1363 — item 1362's "dictionary mode / megamorphic" mechanism is REFUTED, the `Map`-bag fix is REFUTED at 3.18x WORSE, and the layout lever is priced at **3.30x and FLAT in size**
+
+Item 1362 found the property-read path grows 2.5-4x from 20,000 to 200,000 elements, named a
+mechanism — `element.properties[key]` on a frozen plain object is V8 dictionary mode, megamorphic
+across 200,000 distinct bags — and explicitly did not measure it. **The mechanism is wrong.** It was
+suspect on its own terms and this item says so with numbers: the engine fixture gives every vertex
+the SAME three keys, so all 200,000 bags share one hidden class and the read site is MONOMORPHIC.
+
+Five arms in `prop-bag-regime-probe.mjs`, 2,000,000 reads of one key through a shared
+LCG-shuffled index (sequential access measures the prefetcher, not the engine's pattern), 9 reps
+dropping 2, median, three processes:
+
+```text
+    size   locality     shapes     frozen     mapbag   columnar   ns/read (locality)
+    1000        1.7        8.1        7.7       10.2        1.1   0.84 ns
+   20000       11.6       10.6       12.0       18.4        5.6   5.78 ns
+  200000       18.5       17.6       19.2       58.9        5.6   9.24 ns
+```
+
+| at 200,000                         | ratio to `locality` | verdict                                     |
+| ---------------------------------- | ------------------- | ------------------------------------------- |
+| `shapes` (8 key sets, megamorphic) | **0.95x**           | **polymorphism costs NOTHING at scale**     |
+| `frozen` (`Object.freeze`)         | 1.04x               | freeze is **not** on the read path at scale |
+| `mapbag` (`Map` per element)       | **3.18x WORSE**     | the obvious fix is REFUTED                  |
+| `columnar` (`Float64Array` column) | **3.30x FASTER**    | the layout lever, and FLAT in size          |
+
+### What it actually is
+
+**A cache-miss curve, nothing more exotic.** `locality` is 0.84 ns a read at 1,000 and 9.24 at
+200,000 — 11x on identical code with identical shapes, which is random access into 200,000 heap
+objects falling out of L2. Item 1362's growth is real; its explanation was V8 trivia that the
+measurement does not support.
+
+The counterfactual is the useful half. A `Float64Array` column is **5.6 ms at both 20,000 and
+200,000 — flat** — because 200,000 f64s is 1.6 MB and stays cache-resident, while the object-bag
+array grows 11.6 -> 18.5 over the same range. So the layout lever is worth **3.30x on a property
+read at 200,000 and widens with size**, where every local lever is worth nothing.
+
+That re-prices a lever already in this file: the **box-array lever, recorded at "~1.7x on a property
+count, whose cost is delete bookkeeping"**. At 200,000 the ceiling is 3.30x, not 1.7x — consistent
+with item 1362's conclusion that effect sizes measured in the cache-resident regime understate
+anything on this path, and this is the first concrete instance of that re-pricing. It is also why the
+TS/native property-read gap is a LAYOUT difference, not an overhead one: native's columns already
+are typed arrays.
+
+**Still not a recommendation.** Columnar property storage changes `properties` — public, read-only,
+returns a `Record` — and bears on delete bookkeeping, which item 1357 flagged as the unmeasured and
+consequential half of the ordinal question, and on O(1)-by-id, which the standing instruction names.
+It is the same class of cross-cutting change as the dense ordinal the user declined, and it should be
+declined or taken on the same grounds. What this item adds is the number: **3.30x and growing**, not
+1.7x.
+
+### THREE levers closed, which is the point of running it
+
+- **Dictionary mode / megamorphism: REFUTED.** 0.95x. Do not re-derive it; the fixture's uniform keys
+  make the read site monomorphic by construction.
+- **`Object.freeze` on the read path: REFUTED at scale.** 1.04x at 200,000. (But see the open
+  observation below — it is NOT free at small sizes.)
+- **A `Map` per element: REFUTED, and badly.** 3.18x WORSE at 200,000, 1.8x worse at 1,000, worse at
+  every size measured. A `Map` adds an indirection and a hash to a path whose cost is already the
+  miss that fetches the entry. Worth recording because "use a Map instead of a plain object" is the
+  reflex fix for this shape of problem and it is the wrong one here.
+
+### AN OPEN OBSERVATION, deliberately NOT explained
+
+The 1,000-element column inverts: `frozen` is **4.6x** `locality` (7.7 against 1.7) and `shapes` is
+**4.8x** (8.1), where at 200,000 both are ~1.0x. So in the cache-resident regime `Object.freeze` and
+shape polymorphism each cost ~4.7x on a property read, and the cache miss at 200,000 swamps them.
+
+**I am not naming a mechanism for this**, because naming one unmeasured is exactly what item 1362 got
+wrong one item ago. It is reproducible across three processes (7.6 / 7.7 / 7.8 for `frozen`) and it
+matters: a small graph is a real workload, and the engine freezes every bag. It needs its own item
+with its own isolated arms — in particular ruling out that the `locality` arm at 1,000 is being
+optimized in a way the others are not, which a 0.84 ns read invites.
+
+### Gates
+
+Probe only; no engine or core code changed. `bun run check` 0 (read unpiped).
