@@ -54136,10 +54136,14 @@ of discipline, three ticks.
 ### Is the 20 ms reachable at all?
 
 Only by giving the engine constant keys, which means generating the closure at compile time —
-`new Function` per (key, op, literal) shape, cached. That is a real technique and the measurement says
-it is worth **~36%** on this row. It is also a decision with consequences well beyond performance: CSP
-and `unsafe-eval` in embedded hosts, the wasm/CLI target, review surface, and a code-generation path in
-an engine that currently has none. **Flagged, not taken** — it is the user's call, not a loop tick's.
+`new Function` per (key, op, literal) shape, cached. The measurement says that is worth **~36%** on
+this row.
+
+⚠️ **DECLINED BY THE USER, FIRMLY, AND IT IS NOT TO BE RE-RAISED: "having users add unsafe eval to a
+CSP is a non-starter."** Runtime code generation requires `unsafe-eval` in any host with a Content
+Security Policy, and that cost is paid by every embedder of the library, not by the engine. No
+performance figure on one row outweighs it. So `hopfiltyield`'s remaining ~36% is **unreachable**, not
+pending — which closes the row rather than leaving it open, and that is the useful outcome.
 
 The cheaper half-measure (a per-key closure cache keyed on the property name, so a hot query reuses one
 monomorphic closure) does NOT help: the closure body still reads `properties[predKey]` through a
@@ -54404,7 +54408,7 @@ on an unnecessary assertion in the test — neither visible to any suite). Suite
 (3669 + 8), gremlin 1228/0, core 383/0, serialization 144/0, native 961/0. `bun run fuzz` 20/0 —
 byte-identity intact, which matters because this changes a COUNT the Rust engine also computes.
 
-### Item 1454 — the quantified path's remaining cost is its CSR BUILD: **604-662 ms of a 903-1493 ms query at 1M**, and inside it a per-edge OBJECT-KEYED `Map.get` worth **~268 ms**. A `Vertex` ordinal would take that plus the ~50 ms map fill — ~28% of the row — and it is a CORE change, so it is priced and FLAGGED
+### Item 1454 — the quantified path's remaining cost is its CSR BUILD: **604-662 ms of a 903-1493 ms query at 1M**, and inside it a per-edge OBJECT-KEYED `Map.get` worth **~268 ms**. ⚠️ **THE FIX I PROPOSED IS ALREADY DECLINED ON NUMBERS — the dense `Vertex` ordinal was BUILT and measured at items 1369-1372 and disqualified by deletes at 6.18x/11.34x under churn (item 1397). I am the SEVENTH arrival at that lever and I did not search for it.** The measurement below stands; the recommendation does not
 
 Item 1453 took `pairMultiplicities` and left GC at 23.77% (259.2 ms, 32 collections) with
 `walkLevelCount` at 48.96%. Phase timers inside `walkLevelCount`, 1M nodes, four reps:
@@ -54460,10 +54464,39 @@ object-keyed `Map.get` but it is not free, so **the realizable win is less than 
 figure to carry forward is "up to ~28%", not "28%". Item 1450 spent three ticks learning this by
 reading an ablation as a price; the number above is deliberately stated as a bound.
 
-### Why it is flagged rather than built
+### ⚠️ CORRECTION: the ordinal is DECLINED, not flagged, and this item should never have proposed it
 
-An ordinal on `Vertex` is a change to `@lenke/core`, not to a query route, and it has consequences
-this loop should not decide alone:
+The user asked "didn't we already reject the vertex ordinal change?" — and they are right. It was not
+parked, it was **built, measured and disqualified**:
+
+- **item 1369** priced the read side at **+12.9%** on the largest Gremlin row (63/64 concordance,
+  control flat) and named two disqualifying gaps.
+- **items 1370-1371** closed the coverage gap, including a fuzzer arm with VERIFIED teeth.
+- **item 1372** closed both gaps: byte-identity green, and **deletes DISQUALIFY the cheap ordinal at
+  6.18x / 11.34x under churn**. Its own heading records "The user's objection was right, and this is
+  why" — the user objected at the time and the measurement vindicated them.
+- **item 1397** then wrote it up as **"DECLINED ON NUMBERS, not parked"**, and noted it was the SIXTH
+  item to arrive at this same lever (310, 350, 352, 358, 1397) — "at some point that is itself the
+  finding."
+
+**I am the seventh, and I got there by not looking.** This item's own text claimed "item 688 is the
+only prior note here", which was false: I searched `CLOSED.md` for `688` and for the CSR, and never
+for the FIX. That is exactly the failure CLAUDE.md describes — "three passes in one session
+re-derived a closed target; each pass searched something first and searched the wrong store" — and the
+rule it gives is to match the store to the kind of fact: _"has this lever been tried?" → `CLOSED.md`,
+then the audit item it cites._ A measurement of a COST does not license skipping that search for the
+CURE.
+
+**RULE: price the cost and search the cure, as two separate steps.** A new measurement makes the
+problem feel new. It says nothing about whether the fix is new, and the fix is what gets built.
+
+So the admissible conclusion from the numbers above is narrower and worth stating plainly: **the
+quantified-path CSR build is at its floor given the current data model.** The ~268 ms per-edge lookup
+is real, and the only mechanisms that remove it are a dense ordinal (declined on deletes) or a cached
+CSR (whose hazard is below). Nothing else in this route reaches it.
+
+The original "consequences" list is kept because it is why the ordinal lost, independently of the
+numbers:
 
 - **Footprint.** One more field on every vertex, on a type the engine allocates by the million.
 - **Holes after deletion.** The ordinal is dense only if nothing is deleted; afterwards the CSR
