@@ -46820,13 +46820,18 @@ to check, not a target to take.**
 
 Docs only. `oxfmt --check` 0.
 
-### Item 1356 — the TS multi-hop field reduces to ONE root cause, and the only lever left is a DESIGN DECISION
+### Item 1356 — the TS multi-hop field reduces to ONE root cause, and the only lever left is a DESIGN DECISION ~~and the autonomous-local field is exhausted~~ (the exhaustion claim is WRONG — see 1358; the ordinal fork is DECLINED at 1358)
 
 Items 1354 and 1355 cleared the priced list of stale headings, leaving 1152 as the one genuinely
 open TS-side entry. Reading it alongside 1104/1105 shows they are not three targets but one.
 
 **The single root cause: TS has no dense vertex ordinal.** Every multi-hop walk interns the far
 vertex through a `Map<Vertex, number>.get` per edge touched.
+
+> ⚠️ **CORRECTED at 1358.** It is `Map<string, number>`, keyed on the edge's `farId` STRING, and the
+> slot is a **PER-QUERY** dense index assigned lazily as the walk discovers vertices — which is what
+> lets `ways`/`next` be sized to the TOUCHED set rather than to |V|. The 24% / ~46 ns ablation numbers
+> stand; the structure described above does not. Item 1152 carries the same wrong phrasing.
 
 - **1105** ablated it: the per-edge `Map.get` is **24% of the TS sweep, ~46 ns an edge** (and item
   1104's micro UNDERSTATED it at ~28 ns, the usual direction for a probe whose working set is
@@ -46859,7 +46864,11 @@ the one invariant this project's standing instruction names explicitly — O(1) 
 edge by id. 1152 already called it "a design decision not a local optimization", and this item
 agrees after checking the alternatives rather than by deferring to it.
 
-**So the autonomous-local field is exhausted, and that is a finding rather than a stopping excuse.**
+~~**So the autonomous-local field is exhausted, and that is a finding rather than a stopping excuse.**~~
+**WRONG, retracted at 1358.** What was exhausted is the LIST this item was reading — the priced/open
+headings — and that was generalised to the implementation. Item 1358 found the largest frame in three of
+five profiled GQL shapes sitting in code with zero or near-zero mentions, and the Gremlin runtime path
+had never been screened at all. The sentence should have read "the priced list is exhausted".
 The session's own evidence for it: items 1342-1355 took every local lever that measured (1345's
 degree gate 1.32x, 1347's null carrier 1.45x, 1349's `within` closure 3.44-3.90x, 1350's membership
 carrier 1.32-1.48x, 1352's `NOT (…)` lift 2.8x) and every remaining candidate was either already
@@ -46936,3 +46945,111 @@ instrument: `packages/native/vertex-ordinal-write-probe.ts`.
 
 The prototype is REVERTED; only the probe is kept. The add-path cost is answered; the delete
 strategy is not, and that is the half that needs a decision.
+
+### Item 1358 — item 921's UNPRICED-frame screen was laundering "could not check" into "already recorded", and it was hiding the LARGEST frame in three of five shapes
+
+The user challenged item 1356's "the autonomous-local field is exhausted" directly — _"Have you really
+exhausted the entire optimization of the typescript implementation? This feels hard to believe."_ The
+challenge was correct, and the specific way it was correct is worth more than the targets it turned up.
+
+**First, the honest part: re-running a profile was not a new idea.** Item 919 established that a CPU
+profile finds what hand-placed timers cannot, and item 921 generalised that into a target GENERATOR
+(`runtime-profile-probe.mjs` + `runtime-profile-analyze.mjs`) and ran it over five GQL shapes, reporting
+a **negative**: "not one of the five profiles has an unpriced frame above 2%... the next TS win is
+unlikely to come from profiling the runtime path." So "profile first" was already repo practice, and
+pitching it as the unexplored method was partly the re-derivation CLAUDE.md warns about.
+
+**What was actually wrong is the screen's verdict logic.** Item 921 found a false-POSITIVE class — V8
+synthesises names for anonymous closures (`variable.variable`, `RegExp: <pattern>`), those strings can
+never appear in a document, so "ZERO mentions" was meaningless for them and the screen "will manufacture
+a target every time it runs". It fixed that by reporting them `n/a`. That was right, and it
+**over-corrected into a false NEGATIVE**: `n/a` means _could not check_, and the verdict line then printed
+"every hot frame is already recorded". Unknown had been laundered into checked.
+
+The cost of that wording, measured by re-running the unchanged instrument on today's engine:
+
+| shape        | largest frame                  | share     | old screen said |
+| ------------ | ------------------------------ | --------- | --------------- |
+| `sortedpage` | `(anonymous) @ index.mjs:8648` | **24.8%** | `n/a`           |
+| `grouped`    | `(anonymous) @ index.mjs:8843` | **41.9%** | `n/a`           |
+| `point`      | `(anonymous) @ index.mjs:8784` | **18.0%** | `n/a`           |
+
+**The largest frame in three of the five shapes was invisible to the screen that declared the field
+clean.** And the frames are not obscure: V8 reports such a closure at its ENCLOSING declaration's line,
+because the hot code is the `return (graph, params) => {...}` of a compile-time builder. The nearest
+`const <name> =` at or above that line names it, and THAT name is a real identifier a document can
+mention. So the fix is mechanical: resolve the enclosing declaration, cross-check that, and report what
+is still unnameable in its own bucket rather than folding it into the all-clear.
+
+### What the screen reports after the fix
+
+Shape wall-clock first, 2,000 reps each over one 20,000-node / 20,000-edge fixture, one shape per process
+(item 762): `control` 8.7 ms, `grouped` 503.9, `hopfilter` 547.5, `point` 817.3, **`sortedpage` 1734.0**.
+The `ORDER BY … LIMIT` shape is 2-3x every other shape and nobody had profiled it since 921.
+
+- **`topKNodeWalk` — 463.2 ms, 24.8% of `sortedpage`, ZERO mentions in either store.** The returned
+  closure of the `ORDER BY`+`LIMIT` node-scan shortcut. A second frame in the same builder (its `project`
+  closure) adds 44.4 ms / 2.4%. Genuinely unpriced.
+- **`beatsRoot` — 40.1 ms, 2.2% of `sortedpage`, ZERO mentions.** The bounded-top-k heap's admission
+  test. Worth recording that the top-k path is NOT a full sort then slice: `boundedTopKeyed` and
+  `heapBeatsSort` are both there and both chosen at run time.
+- **`detectGroupedNodeCount`'s closure — 265.0 ms, 41.9% of `grouped`, but SEVEN mentions.** Not
+  formally unpriced, and that exposes the screen's second limitation: its signal is binary (ZERO vs
+  mentioned), so a frame can be 41.9% of its shape and seven passing references are enough to retire it.
+  **"Has mentions" is not "is optimized."** The `GROUP BY` path is 66% of its shape across this closure
+  and `bump` (153.8 ms, 24.3%) and has never had a tick of its own.
+
+After the fix the residual NOT-CHECKABLE bucket over 2% is only `(garbage collector)`, `(idle)`, Node's
+`compileSourceTextModule` loader, and `RegExp: [\uD800-\uDBFF]` (item 921's own `compareCodePoints`
+find) — none of which is engine code. That is the honest floor, and it is a much smaller claim than the
+one the screen used to make.
+
+### TWO faults in my own fix, both caught only because the frames it was built for were still printed
+
+1. **The enclosing-declaration pass was a NO-OP on its first run.** Node reports frame URLs as
+   `file:///abs/path`; the guard required a leading `/`, so every lookup returned `undefined` and the
+   output was byte-identical to before. It was caught only because the three frames the pass exists for
+   were still listed as NOT CHECKABLE — i.e. by having an expected occurrence to check against, which is
+   the same discipline as asserting an A/B arm IS the code it claims.
+2. **The backward scan misattributed accessor frames.** `get properties` is a class member, so the scan
+   walked out of the class body and landed on `WIDE_BAG$1`, an unrelated bag of keys, reporting it as an
+   unpriced 2-3% frame in FOUR of the five shapes. An accessor frame already carries a checkable
+   identifier — the property — so it is now matched directly and never reaches the scan. A screen that
+   invents a plausible name is worse than one that admits `n/a`, which is item 921's lesson arriving a
+   second time from the opposite direction.
+
+### The third blind spot, NOT fixed here and squarely in scope
+
+**The screen is GQL-only.** `runtime-profile-probe.mjs` imports `@lenke/core` and `@lenke/gql` and
+contains zero references to Gremlin, so the Gremlin runtime path has never been through an unpriced-frame
+screen at all — despite the standing instruction covering both surfaces and despite `bench:gremlin`'s
+3-hop count being the largest row in either suite. Next tick.
+
+### Corrections to earlier entries, per the heading rule
+
+- **Item 1356's "the autonomous-local field is exhausted"** was true of the LIST it was reading — the
+  priced/open headings — and was generalised to the implementation, which the evidence above refutes.
+  The scope of items 1342-1357 is itself the tell: nearly all of them are predicate evaluation (four
+  `CPredicate` carriers, the `NOT (…)` lift, Gremlin `within`) plus hop-shortcut routing. Aggregation,
+  `ORDER BY`/`LIMIT`, projection, the cold parse/plan path, the Gremlin step library beyond `has`, path
+  and quantifier machinery, property-access floor, and serialization were never instrumented in that
+  run. The structural cause: every one of those items started from an audit heading or an existing bench
+  row, so **a cost that is not already a row was unreachable by the method**.
+- **Item 1356's `Map<Vertex, number>`** (and item 1152's same phrasing) is inaccurate. `slotOf` is
+  `Map<string, number>` keyed on the edge's `farId` STRING, and the "slot" is a **PER-QUERY** dense index
+  assigned lazily as the walk discovers vertices — which is exactly what lets `ways`/`next` be
+  `Float64Array`s sized to the TOUCHED set rather than to |V|. The ablation numbers (24%, ~46 ns an edge)
+  are unaffected; the structure described is not what is there.
+- **The dense-vertex-ordinal fork (1356/1357) is DECLINED**, on the user's reasoning rather than mine: a
+  global ordinal buys one field read in exchange for a durable second structure — ordinal space, a free
+  list, `vertexBySlot`, |V|-sized buffers — that must stay aligned with `verticesById` across every add,
+  remove and reload, forever. I had argued it on memory cost; the alignment burden is the stronger
+  objection and it is decisive. Recorded separately: the variant that avoids it entirely is per-Vertex
+  query-scoped scratch (`#qgen`/`#qslot` + a per-walk generation counter), which keeps slots per-query
+  and dense over the touched set, needs no delete strategy, and leaves summation order unchanged — gated
+  on proving no two live walks share a generation counter (nested `CALL`, subqueries,
+  `primedEndpointExtremum` folding while a sweep is live). NOT built, NOT measured.
+
+### Gates
+
+Instrument only; no engine or core code changed. `bun run check` 0 (read unpiped).
