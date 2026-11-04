@@ -48708,7 +48708,7 @@ the economical choice.
 Instrument only — one bench file; `graph-queries.ts` restored with `ABLATED_ITERLABELED` at 0 and
 both arm files under `target/` deleted by the driver's `finally`. `bun run check` 0 (read unpiped).
 
-### Item 1379 — **SHIPPED, 110x**: the multi-label edge/hop count is the UNION of buckets instead of a decline. 198.139 ms → 1.798, 64/64 concordance, answers identical on 12 shapes
+### Item 1379 — **SHIPPED, 110x**: the multi-label edge/hop count is the UNION of buckets instead of a decline. 198.139 ms → 1.798, 64/64 concordance, answers identical on 12 shapes (its ~~unresolved −1.8%~~ control is REFUTED at 1380 — n=24 flips the sign to +0.96%, significant in neither direction)
 
 Item 1378 located the gap and priced it analytically at ~100x, then declined to build it. This builds
 it, and the estimate held: **99.1%, 110x**.
@@ -48788,3 +48788,60 @@ across all seven byte-identity fuzzers. `bun run check` 0 (read unpiped).
   `UNION_COUNT_MAX_LABELS` from a comment and leaving "Nine labels exceeds , so". Caught by reading
   the file back. `no-backticks-in-git-commit-m` names this for `-m`; it applies to any
   double-quoted shell argument, and the fourth quoting slip of this session.
+
+### Item 1380 — item 1379's unresolved `-1.8%` control is REFUTED: at n=24 the sign FLIPS to `+0.96%` and neither reading is significant. **On this row n=8 is sign-unstable below ~3%**, now three times over
+
+Item 1379 shipped the union count at 110x and flagged one number it had not settled: the
+`hopcount3` control read **-1.8%** with concordance 16/64, which is not centred on chance. It was
+recorded as UNRESOLVED rather than as noise or as a regression. This resolves it.
+
+### The measurement
+
+BASE taken from `git show HEAD~1:...` rather than reconstructed by patch — item 1379 is the union
+commit and HEAD~1 is a bench-only item, so that file is the pre-union engine verbatim. **Both arms
+were asserted to carry item 1374's `walkBucket` (x4)**, without which this would have been measuring
+two changes at once. 24 processes per arm, four alternated rounds, `p25` per process:
+
+| arm  | n   | median p25  | min     | max     |
+| ---- | --- | ----------- | ------- | ------- |
+| BASE | 24  | 301.656     | 293.767 | 320.172 |
+| HEAD | 24  | **298.764** | 289.814 | 350.312 |
+
+**HEAD +0.96% FASTER, concordance 351/576 (60.9%).** The sign FLIPPED from the n=8 reading.
+
+And +0.96% is not a win either. Mann-Whitney on those counts: U = 351 against an expected 288, SD
+`sqrt(24*24*49/12)` = 48.5, so z = 1.30 and p ~ 0.19 two-tailed. **Not significant in either
+direction.** The honest verdict is NO DETECTABLE DIFFERENCE, which is what the mechanism predicted
+all along — `hopcount3` is served by `slotChainCount` and never calls `adjacentCount`.
+
+So item 1379's shipped 110x stands with a control that is genuinely flat, and the `-1.8%` is struck.
+
+### n=8 IS SIGN-UNSTABLE ON THIS ROW BELOW ~3%, and that is now three independent demonstrations
+
+| item | thing measured                  | n=8       | n=24       |
+| ---- | ------------------------------- | --------- | ---------- |
+| 1367 | `FAST1`, the target             | **+2.6%** | **-0.3%**  |
+| 1374 | `walkBucket`'s control          | **-0.7%** | chance     |
+| 1380 | the union's `hopcount3` control | **-1.8%** | **+0.96%** |
+
+Three times, in both directions, on both targets and controls. **The rule this earns: on a ~300 ms
+row, n=8 per arm cannot establish the SIGN of an effect under about 3%, let alone its size.** Item
+1367 had already found the noise is PROCESS-level and no within-process estimator removes it; this
+adds the magnitude below which the process count itself is inadequate.
+
+Also worth keeping: HEAD's series carried outliers at 350.31 and 324.15 where BASE's largest was
+320.17. A MEAN would have read those as a HEAD regression; `p25` within a process plus a median
+across processes ignores them, which is why the estimator is specified that way and why reporting
+the distribution beside the summary is not optional.
+
+### What it cost and what it bought
+
+Roughly fourteen minutes of machine time and four loop ticks of waiting, to convert one shipped
+"unresolved" into a struck number — and to get a third data point on where this harness's floor
+actually is, which is reusable for every future A/B on this row. The alternative was leaving a
+shipped change carrying an unexplained control, which is how a real regression hides.
+
+### Gates
+
+Measurement only; the tree is unchanged from item 1379 (`UNION_COUNT` x3, `walkBucket` x4,
+`git status --porcelain` empty) and both extracted arm files were deleted by the driver's `finally`.
