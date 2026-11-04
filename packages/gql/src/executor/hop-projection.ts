@@ -2175,10 +2175,51 @@ export const detectHopProjection = (
         return rows;
       };
 
-      return sorted(startDrivenMany);
+      // THE SAME PER-CALL CHOICE the single-type branch makes below (item 1390). The far-driven
+      // walk cannot apply a START label - it iterates the far end - so it runs only where no
+      // vertex could fail that label, and an ORDER BY forces the start-driven arm.
+      // ⚠️ BUILT LAZILY, ON FIRST USE. Constructed eagerly it is a closure that every multi-type
+      // compile allocates and the DECLINING path never calls — and the A/B read the gate-declines
+      // control at **-3.7% (23/64, away from chance in the regression direction)**. That is the same
+      // defect item 1388 fixed for `startDrivenMany`, reintroduced one item later, which is why the
+      // control is in this A/B at all: the route that wins 74% at high fan-in must cost nothing at
+      // the fan-in where it is refused.
+      let farDrivenMany: ((graph: Graph, params: Params) => Row[]) | undefined;
+      const manyTypes = types;
+
+      return sorted((graph, params) => {
+        if (startDrivenForOrder || !(startLabel === undefined || vacuousLabel(graph, startLabel))) {
+          return startDrivenMany(graph, params);
+        }
+
+        let edges = 0;
+
+        for (const t of manyTypes) {
+          edges += graph.edgesByLabel.get(t)?.size ?? 0;
+        }
+
+        // The far end of an `out` hop is the edge's TARGET, so the vertices this walk can produce
+        // rows for are the keys of the REVERSE index.
+        const endpoints = (out ? graph.edgesToByLabel : graph.edgesFromByLabel).size;
+
+        if (!farDrivenPaysForMultiType(edges, endpoints)) {
+          return startDrivenMany(graph, params);
+        }
+
+        farDrivenMany ??= farDrivenHopWalk({
+          types,
+          typeName,
+          out,
+          farVar,
+          farLabel,
+          proj: walkProj,
+        });
+
+        return farDrivenMany(graph, params);
+      });
     }
 
-    const farDriven = farDrivenHopWalk({ typeName, out, farVar, farLabel, proj: walkProj });
+    const farDriven = farDrivenHopWalk({ types, typeName, out, farVar, farLabel, proj: walkProj });
 
     // Which walk is chosen is a PER-CALL decision, not a per-row one, so the branch costs the
     // inner loop nothing. The far-driven walk cannot apply a START label — it iterates the far
@@ -2238,14 +2279,190 @@ export const detectHopProjection = (
  * would show. Measured over 1,000,000 rows: a shared-object push would be 91ns, a spread copy
  * 126ns, and this key-loop form 116ns.
  */
+/**
+ * `|union of these buckets|` for ONE vertex, where only the count is wanted (item 1390).
+ *
+ * EXTRACTED from `farDrivenHopWalk` rather than inlined: the nested walk put that loop at depth 6
+ * against a cap of 5, and this file's precedent is to extract. It takes a plain `Set[]` so its one
+ * call site stays monomorphic — the polymorphism hazard `ts-closure-size-is-load-bearing` and item
+ * 159 describe applies to a shared walk called with every compile's SHAPES, not to a leaf counter
+ * over one concrete type.
+ *
+ * `sumIsExact` is `graph.multiTypeEdgeCount === 0`: with no edge carrying two types the union IS
+ * the sum and not one membership test is needed, the same soundness rule `bucketSumsAreSound`
+ * states for the whole-graph count. Otherwise it is earlier-buckets dedupe (item 1377) over
+ * largest-first buckets (item 1384) — and uniquely in this walk the bucket ORDER is unobservable,
+ * because the caller emits `n` identical rows per far vertex.
+ */
+/**
+ * The least average far-end in-degree at which the MULTI-TYPE far-driven walk is worth its
+ * per-vertex cost (item 1390).
+ *
+ * MEASURED, not chosen. The far-driven walk exists to hoist `projectRow` to once per far VERTEX,
+ * so its gain is proportional to how many rows share that call — and its multi-type form pays a
+ * per-vertex price the single-type one does not: one `Map.get` per named type, a scratch array, and
+ * the union count. At in-degree 1 that price has one row to amortize over and the route LOSES:
+ * **86.1 ms against the start-driven walk's 69.3** over 200,000 edges. At in-degree ~100 it wins,
+ * **17.2 against 69.3**. So the choice is the degree, and the threshold sits between.
+ *
+ * See `farDrivenPaysForMultiType` for the arithmetic and `hop-projection-route.test.ts` for its
+ * unit tests — a route choice is ANSWER-EQUIVALENT, so no differential test can fail when it is
+ * wrong, which is why the decision is a pure function with its own tests rather than an inline
+ * comparison (the rule `perf-gate-needs-its-own-test` records from an earlier item).
+ */
+const FAR_DRIVEN_MIN_DEGREE = 8;
+
+/**
+ * Should a multi-type plain hop take the FAR-driven walk rather than the start-driven one?
+ *
+ * ⚠️ THE DENOMINATOR IS VERTICES THAT ACTUALLY RECEIVE EDGES, not label matches, and getting that
+ * wrong made the first version of this gate choose BACKWARDS. `candidateCount(graph, farLabel)`
+ * counts vertices carrying the label — on a fixture where every vertex is `:P` that is all of them
+ * whatever the fan-in is, so the estimated degree read 1.33 at a REAL in-degree of 133 and the gate
+ * declined the route exactly where it wins: 55.7 ms measured, against 17.2 for the route it refused
+ * to take. `edgesToByLabel`/`edgesFromByLabel` are keyed by vertex id, so their `.size` is the
+ * number of vertices with at least one edge in that direction — O(1), and the quantity the hoist
+ * actually divides by.
+ *
+ * Nothing is iterated: the named types' GLOBAL bucket sizes are a `Map.get` each, so this is O(k)
+ * per CALL for `k` types. The sum over-counts an edge carrying two types, which makes the estimated
+ * degree slightly high — harmless, because it is compared against a threshold rather than used as
+ * a row count, and the error is bounded by the overlap.
+ *
+ * ⚠️ PURE, and exported for its tests. It must stay independent of `graph` mutation order so the
+ * route a query takes is a function of the data and not of when it was asked.
+ */
+export const farDrivenPaysForMultiType = (typeEdgeCount: number, farEndpoints: number): boolean =>
+  farEndpoints > 0 && typeEdgeCount >= farEndpoints * FAR_DRIVEN_MIN_DEGREE;
+
+const unionCount = (buckets: ReadonlySet<Edge>[], sumIsExact: boolean): number => {
+  if (sumIsExact || buckets.length === 1) {
+    let n = 0;
+
+    for (const bucket of buckets) {
+      n += bucket.size;
+    }
+
+    return n;
+  }
+
+  // SORTED IN PLACE, and the caller's array is scratch it reuses per vertex. `[...buckets].sort()`
+  // read cleaner and allocated ONCE PER FAR VERTEX: at fan-in 1 that is one array per vertex for a
+  // single row, and it took the whole route from 69.3 ms to 92.2 against item 1388's start-driven
+  // walk — a regression introduced by a defensive copy, not by the algorithm.
+  buckets.sort((x, y) => y.size - x.size);
+
+  let n = buckets[0].size;
+
+  for (let i = 1; i < buckets.length; i += 1) {
+    for (const e of buckets[i]) {
+      if (!inEarlier(buckets, i, e)) {
+        n += 1;
+      }
+    }
+  }
+
+  return n;
+};
+
+/** Is `e` in one of `buckets[0..i)`? Its own function so {@link unionCount} stays under the depth cap. */
+const inEarlier = (buckets: readonly ReadonlySet<Edge>[], i: number, e: Edge): boolean => {
+  for (let j = 0; j < i; j += 1) {
+    if (buckets[j].has(e)) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
 const farDrivenHopWalk = (w: {
+  types: readonly string[];
   typeName: string;
   out: boolean;
   farVar: string;
   farLabel: LabelExpr | undefined;
   proj: CProjection;
 }): ((graph: Graph, params: Params) => Row[]) => {
-  const { typeName, out, farVar, farLabel, proj } = w;
+  const { types, typeName, out, farVar, farLabel, proj } = w;
+
+  // THE MULTI-TYPE FORM (item 1390), and it is cheap for a reason specific to this walk: the edges
+  // are never READ here, only COUNTED, so a disjunction needs the per-vertex UNION COUNT and
+  // nothing else. Item 1388 gave the multi-type hop the START-driven walk and left this one
+  // declining, which cost it the `projectRow` hoist this walk exists for — GQL's multi-type row
+  // then sat at 1.94x its single-type twin while item 1389 priced the dedupe itself at only 1.13x,
+  // so ~1.7x of that was this missing route rather than any real work.
+  //
+  // ⚠️ BUCKET ORDER IS UNOBSERVABLE HERE, unlike in every other walk in this family. Each far
+  // vertex emits `n` IDENTICAL rows, so the sequence depends on the far-vertex order alone and not
+  // on which bucket a given edge was counted in. Largest-bucket-first is therefore a free win
+  // rather than the equivalent-spelling fix it had to be at items 1382/1384 — and `-[:F|E]->`
+  // cannot differ from `-[:E|F]->` by construction.
+  //
+  // TWO CLOSURES chosen once, not a branch in one loop: this file has measured that arrangement
+  // three ways and a shared module-scope walk goes polymorphic across compiles while a branch in
+  // the hot loop costs the single-type shape 1.6x (item 159).
+  if (types.length > 1) {
+    const many = types;
+
+    return (graph, params) => {
+      const rows: Row[] = [];
+      const binding = new Map<string, unknown>();
+      // When NO edge carries two types, the union IS the sum and no membership test is needed at
+      // all — the same soundness rule `bucketSumsAreSound` states for the whole-graph count.
+      const sumIsExact = graph.multiTypeEdgeCount === 0;
+      const buckets: ReadonlySet<Edge>[] = [];
+      let keys: string[] | undefined;
+
+      for (const far of candidateVertexSource(graph, farLabel)) {
+        const byType = out ? far.adjTo : far.adjFrom;
+
+        if (byType === undefined) {
+          continue;
+        }
+
+        buckets.length = 0;
+
+        for (const t of many) {
+          const bucket = byType.get(t);
+
+          if (bucket !== undefined && bucket.size > 0) {
+            buckets.push(bucket);
+          }
+        }
+
+        if (buckets.length === 0) {
+          continue;
+        }
+
+        let n = unionCount(buckets, sumIsExact);
+
+        if (farLabel !== undefined && !matchesLabel(far, farLabel)) {
+          continue;
+        }
+
+        binding.set(farVar, far);
+
+        const template = projectRow(proj, binding, params, graph);
+
+        keys ??= Object.keys(template);
+
+        const vals = keys.map((k) => template[k]);
+
+        for (; n > 0; n -= 1) {
+          const row: Row = {};
+
+          for (let c = 0; c < keys.length; c += 1) {
+            row[keys[c]] = vals[c];
+          }
+
+          rows.push(row);
+        }
+      }
+
+      return rows;
+    };
+  }
 
   return (graph, params) => {
     const rows: Row[] = [];

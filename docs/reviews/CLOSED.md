@@ -49200,7 +49200,7 @@ gql 3545/0, gremlin 1148/0, core 370/0, serialization 144/0, `bun run fuzz` 20/0
 (read unpiped). The arm file is the committed code; the pristine copy was restored and deleted by
 the driver's `finally`.
 
-### Item 1387 — the multi-type hop's YIELD side, which no union can fix: GQL **9.8x** (38.9 ms against 379.6) and Gremlin **1.50x** for the same edges and the same rows. The profile says GQL's is a ROUTING miss, and the Gremlin figure PRICES it at ~~~85%~~ **nothing — that premise is WRONG, see 1388**: Gremlin's 1.50x is its OWN single-label fast arm skipping two generator layers, not a floor. **BUILT at 1388: 80.7%**, and the estimate landing near it was luck. **The 1.50x is now TAKEN at 1389 for 25.1%, and the dedupe PRICED at 1.13x** — so 1387's reference was ~75% delegation
+### Item 1387 — the multi-type hop's YIELD side, which no union can fix: GQL **9.8x** (38.9 ms against 379.6) and Gremlin **1.50x** for the same edges and the same rows. The profile says GQL's is a ROUTING miss, and the Gremlin figure PRICES it at ~~~85%~~ **nothing — that premise is WRONG, see 1388**: Gremlin's 1.50x is its OWN single-label fast arm skipping two generator layers, not a floor. **BUILT at 1388: 80.7%**, and the estimate landing near it was luck. **The 1.50x is now TAKEN at 1389 for 25.1%, and the dedupe PRICED at 1.13x** — so 1387's reference was ~75% delegation. The GQL counterpart of the leftover route gap is 1390
 
 Items 1377, 1379, 1382, 1384 and 1386 all landed on the COUNT path, where the answer is a number and
 the union of buckets replaces the walk outright. A projection cannot take that route — every selected
@@ -49360,7 +49360,7 @@ near the realized 80.7% was luck, not sound reasoning.
 
 Two consequences:
 
-- **The remaining 1.94x on the GQL side (69.3 against 36.2) is not established as dedupe cost** — and item 1389 settled it: the dedupe costs **1.13x**, so ~1.7x of this is the route. The
+- **The remaining 1.94x on the GQL side (69.3 against 36.2) is not established as dedupe cost** — and item 1389 settled it: the dedupe costs **1.13x**, so ~1.7x of this is the route. **That route is BUILT at 1390: 74.2% at fan-in 133** — and it LOSES at fan-in 1, so it ships behind a cost gate. The
   single-type arm runs the FAR-DRIVEN walk, whose own comment prices its `projectRow` hoist at 2.3x,
   and the multi-type arm has no far-driven form. The comparison that would separate route from cost
   is multi-start-driven against single-START-driven, which no row measures.
@@ -49473,3 +49473,133 @@ hole by mutation; this is the same question and it is open.
 gremlin **1157/0** (27 in `hop-values.test.ts`), gql 3557/0, core 370/0, serialization 144/0,
 `bun run fuzz` 20/0, `bun run check` 0 (read unpiped). The A/B driver restored its arm and deleted
 both arm files in a `finally`.
+
+### Item 1390 — **SHIPPED, 74.2%** at fan-in 133, behind a cost gate because the route is **SIGNED**: it LOSES at fan-in 1. 64/64, answers identical — and the gate's first version chose BACKWARDS with the whole suite green
+
+Item 1389 priced the multi-type dedupe at **1.13x**, which left item 1388's residual **1.94x** unexplained
+by any real work: the single-type arm takes the FAR-DRIVEN walk, whose own comment prices its
+`projectRow` hoist at 2.3x, and the multi-type arm had no far-driven form. This builds it.
+
+### Why a disjunction is cheap in THIS walk specifically
+
+`farDrivenHopWalk` never reads edges — it takes `bucket.size` and emits that many identical rows. So
+a disjunction needs only the per-vertex UNION COUNT, and when `graph.multiTypeEdgeCount === 0` the
+union IS the sum, so not one membership test runs.
+
+**⚠️ And uniquely here, BUCKET ORDER IS UNOBSERVABLE.** Every row for a far vertex is identical, so
+the sequence depends on far-vertex order alone. Largest-bucket-first is a free win rather than the
+equivalent-spelling fix it had to be at items 1382 and 1384, and `-[:F|E]->` cannot differ from
+`-[:E|F]->` by construction.
+
+### The effect is SIGNED, which is the whole shape of this item
+
+| FANIN | est. in-degree | route taken                  | `hopmultiyield` |
+| ----- | -------------- | ---------------------------- | --------------- |
+| 1     | 1.33           | start-driven (gate declines) | 70.8            |
+| 0.1   | ~13            | far-driven                   | 29.1            |
+| 0.01  | ~133           | far-driven                   | **16.1**        |
+
+Unconditionally far-driven, fan-in 1 measured **86.1 ms against the start-driven 69.3** — the hoist
+has one row to amortize and the per-vertex union machinery is pure cost. **The bench had no degree
+knob at all**, so `FANIN` was added (default 1 reproduces the original fixture byte-for-byte). This
+is CLAUDE.md's "match the fixture to the claim" inverted: a change that only helps HIGH-degree
+vertices, judged on a degree-1 fixture, can only lose.
+
+### The gate, and the fact that its first version chose backwards
+
+`farDrivenPaysForMultiType(typeEdgeCount, farEndpoints)` — O(k) per call, nothing iterated.
+
+**The first version used `candidateCount(graph, farLabel)`, which counts LABEL MATCHES.** Every
+vertex in the fixture is `:P`, so it read an estimated degree of 1.33 at a real in-degree of 133 and
+declined the route exactly where it wins: **55.7 ms measured, against the 17.2 it refused to take.**
+The denominator has to be vertices that actually RECEIVE these edges —
+`edgesToByLabel`/`edgesFromByLabel` are keyed by vertex id, so `.size` is O(1) and is the quantity
+the hoist divides by.
+
+**The entire 3,566-test suite stayed green through that**, because a route choice is
+ANSWER-EQUIVALENT. Only the bench caught it. So the gate is a pure exported function with **9 unit
+tests of its own** (`hop-projection-route.test.ts`) pinning the backwards case, the threshold, the
+divide-by-zero and monotonicity — the pattern `perf-gate-needs-its-own-test` records.
+
+### The measurement
+
+`isolated-row-bench.mjs`, `NODES=200000`, `MULTILABEL=3`, `REPS=14 DROP=3`, p25 within a process,
+median across processes, order-alternated rounds, BOTH regimes measured.
+
+| shape                               | fanin | BASE p25 | FAR        | change    | concordance |
+| ----------------------------------- | ----- | -------- | ---------- | --------- | ----------- |
+| `hopmultiyield`                     | 0.01  | 57.833   | **14.919** | **74.2%** | 64/64       |
+| `hopmultiyieldrev`                  | 0.01  | 57.544   | **14.638** | 74.6%     | 64/64       |
+| `hopsingleyield` [CONTROL]          | 0.01  | 7.654    | 7.685      | −0.4%     | 28/64       |
+| `hopsingleyield` [CONTROL]          | 1     | 36.200   | 36.318     | −0.3%     | 35/64       |
+| `hopmulti` (1386's count) [CONTROL] | 1     | 0.832    | 0.830      | 0.3%      | 36/64       |
+
+The gate-declines control, re-measured at **n=24** after the fix below:
+
+| shape                     | fanin | BASE p25 | FAR        | change    | concordance |
+| ------------------------- | ----- | -------- | ---------- | --------- | ----------- |
+| `hopmultiyield` [CONTROL] | 1     | 71.087   | 70.444     | **+0.9%** | 312/576     |
+| `hopmultiyield`           | 0.01  | 56.348   | **14.825** | **73.7%** | **576/576** |
+
+### The gate-declines control caught a defect I had REINTRODUCED one item later
+
+`hopmultiyield` at FANIN=1 — the regime where the gate refuses the route — first read **−3.7% at
+23/64**, away from chance in the regression direction. The cause was not noise: `farDrivenMany` was
+constructed on every multi-type compile and never called on the declining path. **That is exactly the
+defect item 1388 fixed for `startDrivenMany`, reintroduced two items later.** It is now built lazily
+(`??=` on the first accepting call), so a declining compile never allocates it.
+
+That control existed because a route winning 74% where it is accepted must cost nothing where it is
+refused. It is the second time in three items that a control, not a target, carried the finding.
+
+### Three instrument defects this item, all mine
+
+1. **The A/B's answer check compared the FIRST ROW**, which a legitimately-reordering route must
+   change — `{"n": 3}` on BASE against `{"n": 0}` on FAR. It aborted the run and threw away a
+   complete 4-arm timing table. Verified properly against `-[r:E|F]->` (which binds the rel, so
+   `MULTI_TYPE_PLAIN_ONLY` declines it to the general matcher as an oracle): 20,000 rows both,
+   multiset identical, sequence identical. The bench now reports `rowCount` and an
+   ORDER-INDEPENDENT digest, and its comment records why the obvious check is wrong here.
+2. **`[...buckets].sort()` allocated once per far vertex** — a defensive copy over an array the
+   caller already owns as scratch. Sorted in place.
+3. **A unit test's comment asserted the opposite of its own assertion** (`4 >= 1 * 8` declines; the
+   comment said "the gate accepts"). Corrected, and the test renamed to what it actually checks.
+
+### The Gremlin twin CANNOT be built, and that is a licence difference not an untried lever
+
+GQL's far-driven walk is sound only because an unordered GQL result's row order is unspecified —
+`farDrivenHopWalk`'s header says so, and `hopOrderPlan` forces the start-driven arm under `ORDER BY`
+(which this branch inherits through `startDrivenForOrder`, covered by
+`ordered-node-projection.test.ts`). **Gremlin has no such licence**: stream order is a TinkerPop
+contract and the differential fuzzer compares ORDERED, so hoisting `pick(far)` to once per far vertex
+would reorder rows. It would otherwise look like a ~100x-fewer-property-reads lever on Gremlin's
+hottest yield row. Recorded so it is not priced again.
+
+### Gates
+
+gql **3570/0**, gremlin 1157/0, core 370/0, serialization 144/0, `bun run fuzz` 20/0,
+`bun run check` 0 (read unpiped). Three A/B drivers restored their arm and deleted both arm files in
+a `finally`.
+
+### Teeth, by four mutants — and one SURVIVED, which found a real hole
+
+| mutant                      | verdict                             | caught by                                      |
+| --------------------------- | ----------------------------------- | ---------------------------------------------- |
+| M1 the gate inverted        | CAUGHT 49/8                         | 8 tests, including every arithmetic case       |
+| M2 sum instead of union     | CAUGHT 53/4                         | the fan-in-30 rows and the compound-label pair |
+| M3 `sumIsExact` always true | CAUGHT 53/4                         | the same four                                  |
+| M4 no far-label test        | **SURVIVED at first** → CAUGHT 55/2 | the two tests written for it                   |
+
+**M4 removed the `matchesLabel(far, farLabel)` check from the far-driven multi-type walk and the
+whole suite stayed green.** The hole is reachable and specific: `hopEnds` constrains the START label
+to a simple one, but the FAR label may be any expression, and `candidateVertexSource` seeds from a
+label bucket only for a SIMPLE label — for anything else it yields every vertex and leaves the
+filtering to its caller. So on `:A&B` that one check is the only thing doing the work. A fixture with
+fan-in 20 (over the gate's threshold, so it genuinely takes this route), one endpoint carrying both
+labels and one carrying only `A`, answers **20 where a walk skipping the test answers 40**. Four
+tests added; M4 is now caught by two of them.
+
+That is the fourth time in three items that the finding came from a CONTROL or a mutant rather than
+the target — 1388's single-type control, 1389's vacuity check, this item's declining-regime control,
+and now M4. The targets have been straightforwardly large; everything subtle was in a row that was
+supposed to not move.

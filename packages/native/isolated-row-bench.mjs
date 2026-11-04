@@ -42,6 +42,23 @@ const DROP = Number(process.env.DROP ?? 3);
  */
 const MULTILABEL = Number(process.env.MULTILABEL ?? 3);
 
+/**
+ * How many DISTINCT far endpoints the edges point into, as a fraction of `NODES` (item 1390).
+ *
+ * `FANIN=1` (the default) is the original fixture: `(i * 7 + 3) % NODES`, so every vertex is a far
+ * endpoint exactly once and far-end in-degree is 1. That is the WRONG fixture for any change to
+ * `farDrivenHopWalk`, whose whole purpose is hoisting `projectRow` to once per far VERTEX — at
+ * in-degree 1 there is nothing to amortize and the route can only lose. Item 1390 measured its
+ * multi-type arm at 85.7 ms against the start-driven 69.3 here, which says nothing about the lever
+ * until the degree is varied.
+ *
+ * `FANIN=0.01` points every edge into one of `NODES/100` vertices, so far-end in-degree is ~100 and
+ * the hoist has 100 rows to spread one `projectRow` over. CLAUDE.md's rule, stated the other way
+ * round: a change that only helps HIGH-degree vertices judged against a degree-1 fixture can only
+ * lose.
+ */
+const FANIN = Number(process.env.FANIN ?? 1);
+
 const SHAPES = {
   hopfilter: 'MATCH (a:P)-[:E]->(b:P) WHERE a.k = 5 RETURN count(*) AS c',
   // AN EQUIVALENT-SPELLING PAIR (item 1375). A third of the edges carry BOTH `E` and `F`, and every
@@ -95,7 +112,13 @@ const build = () => {
     g.addEdge({
       id: `e${i}`,
       from: g.getVertexById(`v${i}`),
-      to: g.getVertexById(`v${(i * 7 + 3) % NODES}`),
+      // FANIN=1 keeps the original `(i * 7 + 3) % NODES`, byte-for-byte; a smaller fraction
+      // concentrates the far endpoints into the first `NODES * FANIN` vertices.
+      to: g.getVertexById(
+        FANIN >= 1
+          ? `v${(i * 7 + 3) % NODES}`
+          : `v${(i * 7 + 3) % Math.max(Math.floor(NODES * FANIN), 1)}`,
+      ),
       // A THIRD carry both types, so `:E` and `:E|F` select the identical edge set and the
       // multi-bucket path actually has something to DEDUPE — without the overlap it would be a
       // concatenation and would not exercise the `Set` the dedupe allocates.
@@ -124,6 +147,13 @@ obs.observe({ entryTypes: ['gc'] });
 const series = [];
 let sink = 0;
 let answer;
+// ⚠️ `answer` IS THE FIRST ROW, AND A ROUTE MAY LEGITIMATELY REORDER (item 1390). An unordered GQL
+// result's row order is unspecified and `farDrivenHopWalk` reorders deliberately, so comparing the
+// first row across A/B arms reports a difference that is licensed — it fired on item 1390's run,
+// which had verified the multiset separately and still lost its timing table to the check. The
+// invariant a driver should compare is `rowCount` plus the digest below.
+let rowCount = 0;
+let digest = 0;
 
 for (let r = 0; r < REPS; r += 1) {
   const t0 = performance.now();
@@ -133,6 +163,23 @@ for (let r = 0; r < REPS; r += 1) {
   series.push(dt);
   sink += rows.length;
   [answer] = rows;
+  rowCount = rows.length;
+  // An ORDER-INDEPENDENT digest of the whole result: summed per row, so a permutation cannot change
+  // it while a changed VALUE or a dropped row can. Cheap enough not to disturb the timing (it runs
+  // outside the measured window) and it is the check the first row cannot make.
+  digest = 0;
+
+  for (const row of rows) {
+    for (const k of Object.keys(row)) {
+      const v = row[k];
+
+      if (typeof v === 'number') {
+        digest += v;
+      } else if (v !== null && v !== undefined) {
+        digest += JSON.stringify(v).length;
+      }
+    }
+  }
 }
 
 // ⚠️ DRAIN before reading: `PerformanceObserver` delivers in a queued callback, so a synchronous
@@ -156,6 +203,8 @@ console.log(
     reps: REPS,
     drop: DROP,
     answer,
+    rowCount,
+    digest,
     median: Number(at(0.5).toFixed(3)),
     p25: Number(at(0.25).toFixed(3)),
     p75: Number(at(0.75).toFixed(3)),
