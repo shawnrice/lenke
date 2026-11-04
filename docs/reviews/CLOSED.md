@@ -48934,3 +48934,74 @@ a different and more expensive question than counting one. The citation was the 
 
 `bun test` gremlin **1148 / 0**, gql 3537 / 0, core 370 / 0. `bun run fuzz` **20 / 0**. `bun run
 bench:gremlin` — **25 rows, every one `answers same`**. `bun run check` 0 (read unpiped).
+
+### Item 1383 — two disjunction-ORDER groups added to the Gremlin spelling probe, and the honest part: **they would NOT have caught item 1379's gap**, because that gap is on the EDGE side and this fixture has no multi-label edge
+
+Item 1382 found that I shipped an equivalent-spelling gap at 1379 — `outE('E','F')` 1.781 ms against
+`outE('F','E')`'s 6.468, 3.53x, same answer — and that it survived six items because **no group in
+this probe compared a disjunction against its own reversal**. This adds that comparison.
+
+### What was added, and why only the ORDER pairs
+
+```text
+  label disjunction order: (Person, Mgr) vs (Mgr, Person)
+  label disjunction order, wide size gap: (Univ, Mgr) vs (Mgr, Univ)
+```
+
+A union is COMMUTATIVE, so these are equivalent **unconditionally**, not merely on this fixture —
+which is what makes them a legitimate group. The size disparity in the second is the point: `Univ` is
+every vertex and `Mgr` every third, so an unsorted walk pays 3x more one way round.
+
+**Deliberately NOT added: `hasLabel('Person','Mgr')` against `hasLabel('Person')`.** Those also answer
+identically here — `Person` is vacuous and `Mgr` is a subset — but only on this DATA, which the
+engine cannot know. Item 1375 nearly filed a 5000x bug against a correct planner on exactly that
+confusion, so a fixture-conditional pair is a false-flag generator, not a guard.
+
+### They need `SPELL_N=1000000`, and converge there
+
+Under the 200,000 default both groups land beneath the 1 ms floor and report as "not compared" — the
+same property the multi-id groups have, and not a defect (a group becomes comparable precisely when
+one side regresses). At 1,000,000:
+
+| group                          | arm 1    | arm 2    | ratio |
+| ------------------------------ | -------- | -------- | ----- |
+| (Person, Mgr) vs (Mgr, Person) | 10.633ms | 9.926ms  | 1.07x |
+| (Univ, Mgr) vs (Mgr, Univ)     | 10.493ms | 12.374ms | 1.18x |
+
+Both answering 1000000. Inside the probe's 2x tolerance, so item 1382's sort has made the order
+unobservable where it was 3.53x on the edge twin. The 1.18x is noise at ~10 ms over 9 reps — after
+sorting, the two arms produce the SAME bucket order and differ only in an input array's order, which
+nothing downstream reads.
+
+### THE LIMITATION, which is the point of writing this down
+
+**These groups would not have caught the bug they were built for.** Before item 1382 the vertex-label
+path declined UNCONDITIONALLY (`labels.length !== 1`), so both orders were equally slow — item 1382
+measured `labelmulti` 9.6700 against `labelmultirev` 9.6570, **1.00x**. The order sensitivity existed
+only on the EDGE side, and this fixture gives every edge exactly one label (`T`), so
+`multiTypeEdgeCount === 0`, the disjunction takes the order-insensitive SUM path, and no edge group
+here can expose it.
+
+So what this buys is a REGRESSION guard: if someone un-sorts `unionOfBuckets`, the vertex groups now
+flag at N=1M. What it does NOT buy is coverage of the surface where the gap actually was.
+
+### What the missing group would cost, priced rather than deferred silently
+
+An edge-order group needs a second edge label on a MINORITY of edges, to make `multiTypeEdgeCount`
+non-zero and reach the union. That is a fixture change with a KNOWN routing side-effect, not a free
+addition: `filteredHopCount`'s far-driven arm admits on `labels.length === 1 || multiTypeEdgeCount
+=== 0`, so making the count non-zero flips every UNTYPED hop to the edge-driven walk — and this probe
+has an untyped-hop group (`label, VACUOUS, before a hop: hasLabel(Univ).out vs out`). Item 1303
+already measured this exact fixture change on the GQL side and found a calibrated ratio moved 8.99x
+to 10.30x, so the effect is real and tolerable but it re-calibrates groups.
+
+Not done here. The edge-order regression IS guarded in the meantime by
+`isolated-gremlin-bench.mjs`'s `edgemulti`/`edgemultirev` pair (item 1382), which is where the 3.53x
+was measured — but that bench is run deliberately, where `bun run spelling:gremlin` is the routine
+check, so the gap in routine coverage is real and named.
+
+### Gates
+
+Probe only; no engine or core code changed. `bun run check` 0 (read unpiped). `bun run
+spelling:gremlin` runs clean at the default N (both new groups under the floor) and at
+`SPELL_N=1000000` (both compared, both converged).

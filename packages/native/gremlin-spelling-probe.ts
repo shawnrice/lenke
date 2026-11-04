@@ -146,6 +146,35 @@ const GROUPS: readonly Group[] = [
   // Both token arms WERE in the first cut, and the ANSWER CHECK caught them immediately: the
   // token form answered 0 where `hasLabel('Mgr')` answered 667, which reads exactly like a silent
   // wrong answer until the signature is checked. Answers first, then typecheck, then a verdict.
+  // LABEL-DISJUNCTION ORDER (item 1383), and item 1382 is why it exists. The union walk behind a
+  // multi-label `hasLabel` reads bucket 0's size FREE and iterates every later bucket, so before
+  // item 1382 sorted them largest-first it cost whatever order the query named. On the EDGE twin
+  // that measured 3.53x — `outE('E','F')` 1.781 ms against `outE('F','E')`'s 6.468, both answering
+  // 400000 — which is precisely the class this probe exists to catch, and it survived six items
+  // because no group here compared a disjunction against its own reversal.
+  //
+  // A union is COMMUTATIVE, so these pairs are equivalent unconditionally — not merely on this
+  // fixture. That matters: `hasLabel('Person','Mgr')` against `hasLabel('Person')` would ALSO answer
+  // identically here (Person is vacuous and Mgr is a subset) and is NOT a legitimate group, because
+  // the two are only equal on this data and the engine cannot know that. Item 1375 nearly filed a
+  // 5000x bug against a correct planner on exactly that confusion.
+  //
+  // The size disparity is the point of the second pair: `Univ` is every vertex and `Mgr` every
+  // third, so an unsorted walk pays 3x more one way round than the other.
+  [
+    'label disjunction order: (Person, Mgr) vs (Mgr, Person)',
+    [
+      traversal(V(), hasLabel('Person', 'Mgr'), count()),
+      traversal(V(), hasLabel('Mgr', 'Person'), count()),
+    ],
+  ],
+  [
+    'label disjunction order, wide size gap: (Univ, Mgr) vs (Mgr, Univ)',
+    [
+      traversal(V(), hasLabel('Univ', 'Mgr'), count()),
+      traversal(V(), hasLabel('Mgr', 'Univ'), count()),
+    ],
+  ],
   [
     'id lookup: seeded V(id) vs hasId',
     [traversal(V('v137'), count()), traversal(V(), hasId('v137'), count())],
