@@ -53132,3 +53132,94 @@ figures are fixture-bound; quote the stride.
 `bun run check` 0 (read unpiped). No engine code changed. Default fixture verified unchanged by
 answer and timing (`hopcount3` 100000 at 90.65 against the ranking's 85.34/86.05), `small` verified to
 change the timing while preserving the answer, and a bad `STRIDE` verified to throw.
+
+### Item 1440 — ❌ DECLINED, and the CONTROL moved 16.3% while no target cleared 8%: the multi-type yield walk's per-vertex bucket array is NOT the 1.86x. But the 1.86x is REAL and newly visible, because `hopyieldmulti` was being used as a CONTROL
+
+Item 1439 made the Gremlin bench emit `rowCount`. With real per-row numbers the ranking showed an
+equivalent-spelling gap that p25 alone had hidden for as long as both rows have existed:
+
+```text
+  hopyieldmulti   out('E','F')   10.19 ms small / 56.37 random   101.9 ns/row
+  hopyieldsingle  out('E')        5.59 ms small / 30.25 random    55.9 ns/row
+```
+
+At `MULTILABEL=0` `edgeLabels` returns `['E']` for every edge, so **no `F` exists**: the two
+spellings traverse an identical edge set, both answer 100,000 rows, and they are **1.82x apart at
+small stride and 1.86x at random**. That is CLAUDE.md's equivalent-spelling class, on the Gremlin
+yield side, whose GQL twin was 9.8x before items 1391/1434.
+
+⚠️ **AND `hopyieldmulti` AT `MULTILABEL=0` IS WHAT THIS REPO HAS BEEN USING AS A CONTROL** — it
+appears as `[CONTROL — F bucket empty]` in items 1413's and 1432's tables. A row chosen as a control
+because a change cannot reach it was never asked whether it costs twice its own twin. Emitting
+`rowCount` is what surfaced it; the p25 ranking cannot, because the two rows return different
+answers' worth of work only when normalized.
+
+### The hypothesis, which was specific and wrong
+
+Item 1413 already refuted skipping the DEDUPE when `graph.multiTypeEdgeCount === 0` (−0.5% on the
+target). That is consistent with reading the loop: at `ML=0` the dedupe scan is `for (j = 0; j < i)`
+with `i = 0`, so it never executes. The cost had to be elsewhere, and the candidate was the
+per-vertex bucket array — `for (const t of manyTypes) buckets.push(byLabel.get(t))` pushes
+**`undefined`** for every type the vertex lacks, so each vertex pays two `Map.get`s, two pushes and a
+two-entry outer loop with an `undefined` test, where `oneType` pays one `Map.get` and walks.
+
+Built: collect only PRESENT, non-empty buckets, and when exactly one survives, run a tight loop with
+no dedupe scan and no index arithmetic. Order is preserved — dropping absent buckets does not reorder
+the present ones — which matters because Gremlin stream order is a TinkerPop contract the
+differential fuzzer compares ORDERED. Applied to both the generator and `drain` so the two arms stay
+structurally identical.
+
+### The measurement, which is the whole point
+
+Isolated per-row A/B, two rounds, arms copied from staged files and each asserted to BE its code
+before being built (marker count 2 for POST, 0 for PRE), 100k nodes, `FANOUT=1`, p25 of 9 reps
+dropping 3:
+
+```text
+  shape            ML  stride      PRE     POST   change  concordance
+  hopyieldmulti     0  small     10.61    10.28     3.2%   2/4
+  hopyieldmulti    -1  small     11.06    11.03     0.3%   2/4
+  hopyieldmulti     3  small     14.03    12.94     7.8%   2/4
+  hopyieldmulti     0  random    60.64    58.03     4.3%   3/4
+  hopyieldsingle    0  small      6.59     5.51    16.3%   4/4   [CONTROL]
+  hopbare           0  small      2.86     2.82     1.2%   2/4   [CONTROL]
+```
+
+**`hopyieldsingle` is the `oneType` branch. The change does not touch it. It moved 16.3% at 4/4 —
+more than every target, all of which sit at chance-level 2/4 concordance.** That is the giveaway
+CLAUDE.md names explicitly, and item 1413 recorded the same effect in this same file in the opposite
+direction (its controls REGRESSED 3.5% and 5.8%). So the file-perturbation term here is ~16% and
+signed arbitrarily, which swamps everything in the table.
+
+**Reverted.** The hypothesis is refuted: the per-vertex bucket array is not the 1.86x. The one row
+that might be real is `ML=3` at 7.8% — where the empty-bucket skip genuinely removes dedupe work —
+and it is both below the perturbation term and at chance concordance, so it is not evidence either.
+
+### What this leaves, stated so it is not re-derived
+
+- **DO NOT re-attempt the bucket-array shape.** Priced here at 0.3-3.2% on the targets it was built
+  for, against a 16% perturbation term. Item 1413 priced the dedupe skip at −0.5%. Two of the three
+  obvious structural candidates in this walk are now refuted.
+- **The 1.86x itself is OPEN and now measured**, and it is neither the dedupe nor the bucket array.
+  The remaining difference between the two branches is that `oneType` is a tight monomorphic loop over
+  one `ReadonlySet<Edge>` while `manyTypes` walks `buckets[i]` out of an array — the shape
+  `ts-closure-size-is-load-bearing` and item 1391 both touched on. **Pricing it needs an instrument
+  that can separate a branch's own cost from this file's ~16% perturbation**, which neither the bench
+  nor a two-arm A/B in one file can currently do. That is the actual blocker, and it is the same one
+  item 1413 hit from the other direction.
+- **An isolated A/B in a perturbing file needs a control it cannot reach ON EVERY RUN**, not as a
+  final sanity check. Both of this file's items were saved by one, and in opposite directions.
+
+### Also corrected here
+
+`isolated-gremlin-bench.mjs`'s `hopbothyield` comment claimed "`hopValuesShortcut` admits `both` but
+has no hand walk for it, so it falls to the general `adjacentEdges` tail". **Stale since item 1432**,
+which built `bothOneType` and took that row 181 → 61 ms (64.6%). Struck and pointed at 1432, with the
+reason the edge-index trick is unavailable on this surface (Gremlin stream order is a TinkerPop
+contract; GQL row order is unspecified) recorded next to it.
+
+### Gates
+
+`bun run check` 0 (read unpiped). gremlin 1218/0 both before the revert and after it. Engine file
+reverted and verified at marker count 0 with `git diff --stat` empty for it; the only committed change
+is the bench comment.

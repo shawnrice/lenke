@@ -165,9 +165,18 @@ const SHAPES = {
   hopyieldmulti: () => traversal(V(), hasLabel('P'), out('E', 'F'), values('k')),
   hopyieldmultirev: () => traversal(V(), hasLabel('P'), out('F', 'E'), values('k')),
   // THE `both` HOP — the twin of GQL's undirected hop, which item 1431 took from 53.02 to 15.57 ms
-  // by iterating the EDGE index once instead of every vertex twice. `hopValuesShortcut` admits
-  // `both` but has no hand walk for it (`oneType` and `manyTypes` both exclude it), so it falls to
-  // the general `adjacentEdges` tail — the same per-vertex shape GQL had. No row existed for it.
+  // by iterating the EDGE index once instead of every vertex twice.
+  //
+  // ~~`hopValuesShortcut` admits `both` but has no hand walk for it, so it falls to the general
+  // `adjacentEdges` tail~~ — ✅ STALE, FIXED AT ITEM 1432, which built `bothOneType` (a hand walk
+  // with its own `drain`, out-bucket then in-bucket per vertex) and took 181 → 61 ms, **64.6%**.
+  // The single-type `both` is no longer the general tail; the MULTI-type `both` still is, since
+  // `manyTypes` excludes `both`. This row measures the hand walk now, not the tail.
+  //
+  // ⚠️ And `both` canNOT take item 1431's edge-index trick, for a reason specific to this surface:
+  // GQL row order is unspecified, so the undirected walk may reorder, while Gremlin stream order is
+  // a TinkerPop contract the differential fuzzer compares ORDERED. Same trick, available on one
+  // surface and not the other.
   hopbothyield: () => traversal(V(), hasLabel('P'), both('E'), values('k')),
   hopbothcount: () => traversal(V(), hasLabel('P'), both('E'), count()),
 };
