@@ -47827,3 +47827,87 @@ Measurement only; the tree is restored and `git status --porcelain` is empty, wi
 four arm files under `target/` were DELETED** — a stale arm file is the hazard that bit this session
 once already (a cold A/B restored a copy predating three later items and silently stripped a
 specializer), and the pristine baseline is the most dangerous of them because it looks authoritative.
+
+### Item 1367 — the noise on a 200k row is PROCESS-level, not rep-level; an isolated harness built for it; and `FAST1` REFUTED properly — **n=8 said +2.6% faster, n=24 said −0.3%**
+
+Item 1366 left two things: `degreeOfTypes` priced at ~15.6% of a 200k hop-filter count, and the
+observation that the probe's floor on that row is **12% for the same binary**, which is above most
+candidates worth testing. `FAST1` — the answer-preserving single-type fast path — was "refuted" there
+only in the sense of _not large_. This builds the harness CLAUDE.md asks for and resolves it.
+
+### Why the old probe was noisy, and the fix that did NOT work
+
+`runtime-profile-probe.mjs` times the WHOLE rep loop and reports the total, so one GC pause anywhere
+in 120 reps lands in the number. The obvious fix is CLAUDE.md's own estimator — per-rep timing, drop
+the warmup, take the median — and `isolated-row-bench.mjs` does that, plus prints the full
+distribution, accounts GC inside the measured window (drained before reading, item 1361), asserts the
+answer, and runs one shape per process.
+
+**It barely helped, and that is the finding.** Same binary, six processes, 200k `hopfilter`:
+
+| estimator | spread across 6 processes |
+| --------- | ------------------------- |
+| `median`  | **13.2%** (3.702 - 4.192) |
+| `p25`     | **5.4%** (3.489 - 3.676)  |
+| `min`     | 7.2% (3.381 - 3.624)      |
+
+The old probe's loop-total was 12% and the new median-of-14 is 13.2% — **no better**. So the noise is
+not rep-level jitter that an estimator can reject; it is **PROCESS-level**: each process builds a
+fresh 200,000-element fixture, gets its own heap layout, and that offset applies to every rep in it.
+`p25` helps (5.4%) only because it discards the GC-hit tail within a process.
+
+**The consequence for method: the unit of sampling has to be the PROCESS.** `p25` within a process,
+many processes per arm, arms interleaved across rounds. No amount of reps inside one process buys
+what another process buys.
+
+### `FAST1` resolved, and the way it resolved is the lesson
+
+```ts
+if (types.length === 1) {
+  return byType.get(types[0])?.size ?? 0;
+}
+```
+
+Answer-preserving (one type cannot collide with itself — `bucketSumsAreSound`'s own first clause),
+four lines, skips the iterator on the common single-type hop. Measured twice on the new harness, arms
+interleaved, `p25` per process, **answer asserted identical in every process** (`{c: 2062}`):
+
+| n per arm | BASE median p25 | FAST1 median p25 | verdict            |
+| --------- | --------------- | ---------------- | ------------------ |
+| **8**     | 3.647           | 3.554            | **+2.6% FASTER**   |
+| **24**    | 3.536           | 3.545            | **−0.3%, REFUTED** |
+
+**The n=8 reading would have shipped a no-op.** It was not obviously wrong on its face: a 2.6% gain,
+tight-looking summaries, a four-line answer-preserving change — the kind of thing that ships on
+"obviously correct so it must be faster", which CLAUDE.md names as not-evidence. What stopped it was
+checking CONCORDANCE rather than the summary: at n=8, 43 of 64 arm pairs favoured `FAST1` (67%,
+against 50% for chance), which for two samples of eight is nowhere near significant. Tripling n
+collapsed it to −0.3%.
+
+**Record the concordance, not just the ratio.** Two medians differing by 2.6% with overlapping
+distributions is one number; "43 of 64 pairs, where 32 is chance" is the same data saying it is not
+resolved. The first invites shipping and the second does not.
+
+### What the harness can and cannot resolve, measured
+
+- **Within one interleaved run, n=24 per arm resolves a ratio to ~1%.** BASE 3.536 against FAST1
+  3.545 is a real "no difference", not an absence of power.
+- **Across runs the absolute level moves ~3%** (BASE median p25 3.647 in the n=8 run, 3.536 in the
+  n=24 run). So compare arms WITHIN a run; never compare a number from one run against another run's.
+- An outlier process still shows: `FAST1`'s series carried one 4.908 against a 3.27-3.676 body, which
+  is why the median is the summary and the series is printed beside it.
+
+### Where this leaves `degreeOfTypes`
+
+Unchanged by this item and now tested at the resolution it deserves. Item 1366 located the ~15.6% in
+the per-vertex `byType.get(t)` lookup itself — not the `Set` deref, not the iterator — and `FAST1`
+was the only candidate that touched neither of those and could still ship. It does nothing. **So the
+row's cost is reachable only by not doing a per-vertex hash lookup to learn a degree**, which is
+degrees in a flat array indexed by a dense ordinal: the design declined at item 1358. This item does
+not reopen it.
+
+### Gates
+
+The harness is new; no engine or core code changed. Tree restored, `git status --porcelain` shows only
+the new probe, `FAST_ONE_TYPE` at 0 and `degreeOfTypes` present. Both arm files under `target/` were
+DELETED by the driver's `finally`. `bun run check` 0 (read unpiped).
