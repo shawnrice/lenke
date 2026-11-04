@@ -212,14 +212,15 @@ builds graphs in a tight loop is measuring a different heap than it thinks.
 
 ## The ISOLATED ROW BENCHES — for a sub-10% question on ONE row
 
-| file                                | surface                                                                             |
-| ----------------------------------- | ----------------------------------------------------------------------------------- |
-| `isolated-row-bench.mjs`            | one GQL row (`SHAPE=hopfilter NODES= REPS= DROP=`)                                  |
-| `isolated-gremlin-bench.mjs`        | one Gremlin row (item 1368)                                                         |
-| `gremlin-hop-floor-probe.mjs`       | the Gremlin hop FLOOR, three arms (item 1411)                                       |
-| `gremlin-multitype-floor-probe.mjs` | why `out('E','F')` costs 1.86x `out('E')` — six arms, `ARM=` (item 1441)            |
-| `gql-filtered-hop-floor-probe.mjs`  | how far the FILTERED GQL hop is above a hand floor — seven arms, `ARM=` (item 1444) |
-| `id-lookup-scaling-probe.mjs`       | is get-by-id O(1)? engine vs a raw `Map`, `MODE=hit                                 | seq | miss` (item 1451) |
+| file                                | surface                                                                                |
+| ----------------------------------- | -------------------------------------------------------------------------------------- |
+| `isolated-row-bench.mjs`            | one GQL row (`SHAPE=hopfilter NODES= REPS= DROP=`)                                     |
+| `isolated-gremlin-bench.mjs`        | one Gremlin row (item 1368)                                                            |
+| `gremlin-hop-floor-probe.mjs`       | the Gremlin hop FLOOR, three arms (item 1411)                                          |
+| `gremlin-multitype-floor-probe.mjs` | why `out('E','F')` costs 1.86x `out('E')` — six arms, `ARM=` (item 1441)               |
+| `gql-filtered-hop-floor-probe.mjs`  | how far the FILTERED GQL hop is above a hand floor — seven arms, `ARM=` (item 1444)    |
+| `id-lookup-scaling-probe.mjs`       | is get-by-id O(1)? engine vs a raw `Map`, `MODE=hit                                    | seq | miss` (item 1451) |
+| `write-floor-probe.mjs`             | is a TS write's cost the QUERY LAYER or the CORE? three arms, `ARM=`/`OP=` (item 1457) |
 
 ⚠️ **A HAND FLOOR BRACKETS; IT DOES NOT ATTRIBUTE** (item 1448). `gql-filtered-hop-floor-probe.mjs`
 correctly says `hopfiltyield` is ~1.9x off and that `engine-bare` is AT its floor — both useful, and
@@ -587,3 +588,17 @@ for 22-28%.
 
 So: **when GC looks like a target, ask whether the collection count grows faster than N.** If it does
 not, the extra milliseconds are heap size, not garbage the code can stop making.
+
+⚠️ **A WRITE PROBE IS NOT A READ PROBE, and both obvious windowings are wrong** (item 1457).
+A write is not idempotent, so the fixture is rebuilt every rep and it dominates the process: profiled
+UNWINDOWED, `write-floor-probe`'s top frames were `indexEdgeLabel` 11.71%, `build` 6.00%,
+`insertEdge` 3.74%, `addVertex` 3.35% — all construction. Windowed around a SINGLE rep it is worse:
+~11 samples (every share a multiple of 1/11) and `profileWindow` inflated the median from 14.70 ms to
+**66.08, a 4.5x perturbation** on a 15 ms window. The shape that works is to build EVERY fixture
+first, then put one window around all the mutations, timing each rep individually inside it — 117
+samples, median 11.772 profiled against 11.79 not.
+
+⚠️ And that fixture change MOVED THE ANSWER: a build per rep gave engine/floor **2.96x**, nine
+graphs resident gives **1.83x**. `REPS` is load-bearing on this probe in a way it is not on the read
+probes, because nine 20,000-node graphs alive at once is a different memory regime. Quote the
+non-perturbing instrument (1.83x) and state the reps.

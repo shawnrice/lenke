@@ -54591,3 +54591,91 @@ problem. **No lever found, and the sweep's alarming number is accounted for.**
 ### Gates
 
 `bun run check` 0 (read unpiped). No code changed.
+
+### Item 1457 — a WRITE FLOOR at last: a TS edge delete is **1.83x** a hand loop making the same core calls, so ~46% is the query layer and ~54% is the core. The biggest single frame is `deIndexEdgeLabel` at **27.35%**, and it is CORE — shared by both arms. Plus two instrument failures a write probe has to avoid
+
+`write-gap-probe.ts` screens TS against native and reports `DELETE edges` at **25.5x** and `SET on an
+edge` at 16.2x. Those are cross-engine ratios, and the repo's own lesson is that a big one is often
+DATA LAYOUT rather than overhead — item 234 built a per-shape floor and it retracted two of three
+targets on exactly that basis. A ratio against a columnar Rust store cannot say whether there is
+anything to remove. A floor against the SAME core can, and writes had none.
+
+### First, two things that were NOT the finding
+
+**`SET on an edge` is not an anomaly against `SET one prop`.** 7.8 ms against 2.7 looks like 2.9x for
+the same operation, but the probe's cases are `MATCH (a:P) SET a.k = 99` (a scan over the 2,000 `:P`
+nodes of 20,000) and `MATCH (a:P)-[e:E]->(b) SET e.w = 42` (a HOP over ~4,000 edges). Per element that
+is 1950 against 1350 ns, and the edge case does a traversal the node case does not — so the two are
+not comparable at all. That is the same conflation item 1448 made (`hopfiltyield` against
+`hopsingleyield` mixing a predicate with a route change), caught this time before it became a target.
+
+**The TS write path is also not un-instrumented**, which is what I assumed when I started. `addedge:cost`,
+`delete:width`, `probe:writes` and `bench:usage` all exist, and the TS-side levers are largely taken:
+`addVertex` withdrawn at item 312 (7.4%), `addEdge` split at 1397, and `removeEdge`/`removeVertex`'s
+eager `[...labels]`/`{...properties}` rollback copies removed at item 334 for 1.3-1.9x on DELETE.
+
+### The floor
+
+`write-floor-probe.mjs`, three arms over the identical mutation, 20,000 nodes at degree 2 so
+`MATCH (a:P)-[e:E]->(b) DELETE e` removes 4,000 edges, every arm verified at 36,000 edges remaining:
+
+```text
+  arm        median ms   share   what it is
+  floorPre        6.41     54%   the core `removeEdge` loop alone, edge list collected outside
+  floor           6.43            + finding the edges (0.02 ms — nothing)
+  engine         11.79            the GQL query
+
+  engine / floor  1.83x    so ~46% is the query layer above the same core calls
+```
+
+Dense windowed profile of the mutation (117 samples, and the profiling is NOT perturbing — median
+11.772 with it against 11.79 without):
+
+```text
+  deIndexEdgeLabel   27.35%   CORE — in BOTH arms
+  expand             10.26%   query layer
+  removeEdge         10.26%   core
+  (garbage collector) 5.98%
+  walkSegments        5.13%   query layer
+  withBinding         4.27%   query layer
+  runDelete           3.42%   query layer
+  recordTail          2.56%   query layer
+  matchPattern        2.56%   query layer
+```
+
+**So the 25.5x against native decomposes into ~1.8x of addressable query layer and the rest core and
+layout.** The cross-engine ratio was not a TS target; item 234's lesson holds for writes as it did for
+reads.
+
+**And the largest single frame is not in the query layer at all.** `deIndexEdgeLabel` at 27.35% runs
+inside `removeEdge`, so it is paid by the hand floor too — it is the biggest term on a TS edge delete
+and it is core work. That is the nomination to take next, and per item 1455's rule the FIRST step is
+to search `CLOSED.md` for its cure rather than to price it again: item 1397 already split `addEdge`'s
+label-index cost three ways and found the two adjacency maps were all of it.
+
+### ⚠️ TWO INSTRUMENT FAILURES, because a write probe is not a read probe
+
+Both were mine, in this item, and both produced a plausible-looking profile that measured the wrong
+thing:
+
+1. **Unwindowed, the profile is the FIXTURE.** A write is not idempotent so the graph is rebuilt every
+   rep, and the top frames came out `indexEdgeLabel` 11.71%, `build` 6.00%, `insertEdge` 3.74%,
+   `addVertex` 3.35% — all construction, none of it the mutation.
+2. **Windowed around ONE rep, the profile is too thin AND perturbing.** ~11 samples (every share a
+   multiple of 1/11) and `profileWindow` inflated the median from 14.70 ms to **66.08 — a 4.5x
+   perturbation** on a 15 ms window.
+
+The shape that works: build EVERY fixture first, then put one window around all the mutations, taking
+the per-rep timings individually inside it. 117 samples, no perturbation.
+
+⚠️ **AND THE FIXTURE CHANGE MOVED THE ANSWER**: with a build per rep the ratio read **2.96x**, with all
+nine graphs resident it reads **1.83x**, and "finding the edges" went from 0.50 ms to 0.02. Nine
+20,000-node graphs alive at once is a different memory regime, so `REPS` is now load-bearing on this
+probe in a way it is not on the read probes. The 1.83x is the figure from the instrument that is not
+perturbing itself; both are recorded so neither looks like a measurement error later.
+
+### Gates
+
+`bun run check` 0 (read unpiped). No engine code changed — one probe added. The probe's own first run
+also died on `v.labels.includes` because `labels` is a `Set`, which is the kind of thing a floor built
+from assumption gets wrong before it gets anything right.
