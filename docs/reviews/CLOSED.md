@@ -47245,8 +47245,21 @@ appear in a document so it is always `n/a`. That is not a new finding so much as
 confirmation of `ts-ingest-is-constant-factor`'s conclusion (the 4x native gap is JSON.parse + alloc +
 freeze, with `addEdge` ~85% of it, and `addVertex` WITHDRAWN as a target at item 312 at 7.4%). The
 useful part is the direction it points: **the write path's remaining headroom is allocation, not
-arithmetic**, so the instrument for it is an allocation profile (`--heap-prof`), not a CPU one. Not run
+arithmetic**, so the instrument for it is an allocation profile (~~`--heap-prof`~~), not a CPU one. Not run
 here; named as the next instrument rather than guessed at.
+
+> ⚠️ **BOTH HALVES CORRECTED AT 1361, and the GC figure above is CONFIRMED rather than refuted.**
+>
+> 1. **`--heap-prof` is UNFIT for this** — calibrated at 1361, it reports **0.7 MiB for a process that
+>    allocates 128 MiB through one named function**, never naming that function, identically in a
+>    retained and a garbage arm. Do not reach for it without re-running `heap-prof-calibrate.mjs`. The
+>    instrument that works is `PerformanceObserver` on `'gc'` entries (`gc-cost-probe.mjs`), which puts
+>    this shape at **17.6%** against the CPU profile's 18.6% — two instruments agreeing within a point.
+> 2. **"headroom is allocation" is too loose.** 1361 measured the split: **93% of the GC is MINOR
+>    scavenge** (151.4 ms of 161.9), and minor cost scales with what SURVIVES the nursery. When the
+>    thing being built is a graph the caller keeps, almost everything survives by construction — so
+>    this is PROMOTION OF THE DATA STRUCTURE, not eliminable churn. The headroom is in objects-per-
+>    element, which is a data-model change, not a local optimization.
 
 ### An instrument defect this run exposed: the screen was flagging ITS OWN probe
 
@@ -47261,6 +47274,107 @@ and the `file://` no-op; 1359: short accessor properties and substring counting)
 naming: **a cross-checking screen is only as good as the surfaces it has been run against, and each
 new surface has found a fresh way for it to lie.** Its negatives are worth proportionately less than
 its positives until the next surface has been tried.
+
+### Gates
+
+Probes and instrument only; no engine or core code changed. `bun run check` 0 (read unpiped).
+
+### Item 1361 — `--heap-prof` is UNUSABLE for this question (calibrated: 0.7 MiB reported for 128 MiB allocated), item 1360's GC figure is CONFIRMED by a second instrument, and the cost is 93% MINOR scavenge
+
+Item 1360 ended by naming the sampling heap profiler as the instrument for the write path's
+12.4-20.7% `(garbage collector)` share, since a CPU profile cannot attribute a synthesized frame with
+no source location. **That recommendation was wrong, and this item retracts it.**
+
+### The instrument does not measure what it is for, proved before any number from it was used
+
+The first two runs reported **1.7-1.9 MiB total allocated for a process that creates 200,000 vertices
+and 300,000 edges**, dominated by Node's module loader, and dropping the sampling interval 16x
+(16384 -> 1024 bytes) did not raise the total at all. One of those two facts had to be the instrument
+lying, so it was calibrated against a known quantity in `heap-prof-calibrate.mjs` — 128 MiB allocated
+in ~64-byte objects through ONE named function `burn`, in a retained arm and a garbage arm:
+
+```text
+  cal-retained.heapprofile   0.7 MiB reported   (128 MiB allocated, `burn` not in the top 18 frames)
+  cal-garbage.heapprofile    0.7 MiB reported   (128 MiB allocated, `burn` not in the top 18 frames)
+```
+
+**0.5% of the bytes, and the allocating function never named**, identically in both arms — so it is
+not a live-versus-garbage artifact either. `node --heap-prof` as invoked here cannot answer "where
+does this process allocate". The analyzer built for it (`runtime-heap-analyze.mjs`) is kept, because
+the format reading is correct and the defect is upstream of it, but **nothing should be concluded from
+it until someone establishes a configuration that passes the calibration.** Same discipline as
+proving a mutation harness kills before trusting it with a mutant — and this is the first time in
+this session that the discipline caught an instrument that was wholly unfit rather than subtly biased.
+
+### The instrument that DOES work, and it confirms item 1360 rather than refuting it
+
+`PerformanceObserver` on `'gc'` entries measures the quantity directly: GC pauses with duration and
+kind. Built as `gc-cost-probe.mjs`. For `addVertexProps` at the same 45 reps item 1360's CPU profile
+used:
+
+| arm                            | GC share  | heap used        | minor (scavenge)    | major (mark-sweep) |
+| ------------------------------ | --------- | ---------------- | ------------------- | ------------------ |
+| `YIELD=0` (item 1360's shape)  | **17.6%** | 6.1 -> 610.7 MiB | 49 pauses, 151.4 ms | 3 pauses, 10.0 ms  |
+| `YIELD=1` (graphs collectable) | **14.2%** | 6.1 -> 56.7 MiB  | 43 pauses, 104.8 ms | 6 pauses, 24.1 ms  |
+
+**17.6% against the CPU profile's 18.6% for the same shape** — two independent instruments on one
+quantity agreeing within a point, which is the check that makes either trustworthy. **Item 1360's
+12.4-20.7% stands.** Mid-item I hypothesised it was a harness artifact of retention; the measurement
+refuted that and the hypothesis is recorded here only because the retraction is the finding.
+
+### What the GC share MEANS, which is the part item 1360 got only half right
+
+**93% of it is MINOR scavenge** (151.4 ms of 161.9), not major collection. That changes the reading.
+Item 1360 concluded "the write path's remaining headroom is allocation, not arithmetic", which
+implied wasteful garbage. Minor GC cost is proportional to objects that SURVIVE the nursery, and when
+the thing being built is a graph that the caller keeps, almost everything survives by construction —
+so this is **promotion of the data structure itself**, not churn that could be eliminated. The
+`Vertex`, its property bag, its label set and its adjacency maps all have to exist and all have to be
+promoted. That is the `ts-ingest-is-constant-factor` ceiling (alloc + freeze) seen from the GC side,
+and it is why `addVertex` was WITHDRAWN as a target at item 312 at 7.4%.
+
+So the honest statement is narrower than 1360's: the headroom is in **how many objects per element**
+the write path creates, not in garbage it needlessly produces. Reducing object COUNT per vertex is a
+data-model change (the box-array lever, already recorded as costing delete bookkeeping), not a
+local optimization.
+
+### A GENUINE engine behaviour found on the way: a `Graph` keeps itself alive until the host yields
+
+`YIELD=0` grows the heap to **610.7 MiB against 56.7**, linearly in reps (148 / 614 / 1242 MiB at
+10 / 45 / 90), and a 256 MiB `--max-old-space-size` cap OOM-crashes outright. The cause is real and
+is in the engine, not the probe: a `Graph` schedules `queueMicrotask(drainMutations)` on its first
+write and `setTimeout(this.notify, 1)` through `scheduleNotify`, and **a pending timer holds
+`this.notify`, which holds the Graph.** A synchronous loop never yields, so neither ever runs and
+every graph stays live.
+
+This is not a leak — one macrotask drains it, and the single-graph case every real host has is
+unaffected. It is worth recording for two reasons: a benchmark that builds many graphs in a tight
+loop retains all of them and will OOM or measure a different heap than it thinks (item 1357's
+`withEdges` arm was OOM-killed at exit -9, and this is a plausible contributor nobody checked), and
+anything that creates short-lived graphs synchronously — a fuzzer, a test suite, a request handler
+that builds a scratch graph — holds each one until it returns to the event loop.
+
+### The FIFTH instrument defect, this time in the probe written THIS item
+
+`PerformanceObserver` delivers entries in a QUEUED callback. A fully synchronous rep loop buffers
+every `'gc'` entry and none is delivered before `disconnect()`, so the probe's first version reported
+**0 pauses and 0.0% GC** for the `YIELD=0` run — a confident, clean-looking zero, for a run whose CPU
+profile shows 18.6%. It was caught only because the two instruments disagreed and the disagreement was
+chased rather than resolved in favour of the newer number. The probe now yields twice before reading.
+
+Running total for this screen: 1358 (`n/a` laundering; the `file://` no-op), 1359 (short accessor
+properties; substring counting), 1360 (flagging its own probe), 1361 (the observer drain, plus
+`--heap-prof` being unfit entirely). **Every single one was found by pointing an instrument at a new
+surface or by two instruments disagreeing. None was found by reading the code.**
+
+### Also this item: the shared cross-check is now ONE module
+
+`profile-frames.mjs` holds the frame cross-checking (`mentions`, the word-boundary identifier count,
+the accessor rule, `enclosingName`, `isHarnessFrame`, the two verdict buckets) and both
+`runtime-profile-analyze.mjs` and `runtime-heap-analyze.mjs` import it. Extracted rather than copied
+because this logic has now had four defects, and duplicating it is how the fifth gets fixed in only
+one copy. The CPU analyzer was re-run against the stored GQL, Gremlin and write profiles after the
+extraction and reports the same verdicts.
 
 ### Gates
 
