@@ -54228,3 +54228,87 @@ Recorded so that a future profile showing `getVertexById` has the constant in ha
 `bun run check` 0 (read unpiped; it failed three times first — `prefer-for-of`, then
 `no-unnecessary-template-expression`, then `prefer-template` on the fix for the previous one, which is
 a sign the printing wanted restructuring rather than patching). No engine code changed.
+
+### Item 1452 — ⚠️ EVERY FIGURE THIS SESSION IS A 100k FIGURE, and per-row cost rises **1.2-3.1x** at 1M. The sweep nominates a NEW target the whole session missed: `quant44`'s GC is **401.9 ms of 1489 (27%)** at 1M against 7 ms at 100k
+
+Both engines' heaviest rows are now closed — `hopfiltyield` (items 1436-1450), `chain3` (item 1416
+counted `bucketSize`'s calls on this exact row and found "no lever, and the 89.4% that looked like one
+is accounted for"), `hoporder` and `hopcount3` (items 1392/1394, 1418/1423/1425), `hopbothyield`
+(item 1443). So this item applies CLAUDE.md's FIRST rule, which I had not honoured once in sixteen
+items: **sweep the size. Cache-resident and not are different questions; the transition is between
+200k and 1M.**
+
+### The sweep
+
+`FANOUT=1 MULTILABEL=0 STRIDE=random`, p25 of 7 reps dropping 2, under a 24G cap:
+
+```text
+  shape            100k ms     1M ms    ratio   per-row growth
+  hopfiltyield       68.65    829.16   12.08x      1.21x
+  hopsingleyield     26.69    472.66   17.71x      1.77x
+  chain3             90.40   1580.90   17.49x      1.75x
+  chain4             78.51   1590.86   20.26x      2.03x
+  quant44            50.92   1590.98   31.25x      3.12x
+  grouped             1.92     18.41    9.57x      linear
+  sortedpage          4.77     50.11   10.51x      linear
+```
+
+A 10x size increase costs 9.6x to 31.3x. **So every absolute ns/row figure recorded this session is a
+100k figure and understates a 1M graph by 1.2-3.1x.** A/B ratios are unaffected (both arms share the
+fixture), which is why the session's conclusions stand — but the numbers quoted in them are
+fixture-bound and should be read as "at 100k".
+
+### First the correctness check, because three shapes converging is suspicious
+
+`chain3`, `chain4` and `quant44` are 90/79/51 ms at 100k and all ~1580-1591 at 1M. Three different
+shapes landing on one number is what a shared cap looks like (`one-knob-two-quantities`: `limits.trail`
+is a per-source hop budget AND a global row cap), and a truncated answer would be a wrong answer.
+
+It is not a cap. The answers scale exactly: `chain3` 100,000 → 1,000,000, `chain4` the same, `quant44`
+99,920 → 999,920 — and the 80-path shortfall is the TRAIL correction, identical in absolute terms at
+both sizes because it depends on the permutation's short-cycle structure rather than on N. The
+convergence is real behaviour: at 1M every one of these is footprint-bound, so hop count stops
+mattering.
+
+**Which means `quant44`'s 1.54x advantage over `chain4` at 100k is entirely gone at 1M.** Item 1398
+recorded the quantifier beating the explicit chain at depth 3+ and item 1401 measured the crossover;
+both were at 100k or below, and the crossover does not survive the size sweep. Not a defect — but any
+routing decision between those two forms that was tuned at 100k is tuned on the wrong side of the
+transition.
+
+### The new nomination: it is GC, and it is a SHARE not yet a price
+
+`quant44` profiled at both sizes:
+
+```text
+  N=100k  (p25 47.7, gcMs 7.0)        N=1M  (p25 1489.5, gcMs 401.9)
+  walkLevelCount        46.29%        walkLevelCount        32.10%
+  pairMultiplicities     8.95%        (anon):5332           22.91%
+  (anon):5332            8.52%        (garbage collector)   17.32%
+  edgesOfTypes           7.64%        pairMultiplicities     5.66%
+  get to                 5.68%        reusedTrailsAt3        5.44%
+  varLengthDegreeCount   4.80%        varLengthDegreeCount   4.79%
+```
+
+**GC goes from 7.0 ms to 401.9 — 57x for a 10x size increase — and from absent in the profile to
+17.32%.** The closure at `:5332`, next to `pairMultiplicities`, grows 8.52% → 22.91% alongside it.
+That is allocation volume, and it is the one term in this session's sweep that is superlinear for a
+reason other than cache.
+
+**Precedented and specific**: item 1424 established that V8's GC tracks object COUNT and promotion,
+not bytes — removing ~100,000 small arrays moved `gcMs` 148 → 14.2, while removing 1.6 MB in two large
+typed arrays moved nothing. So the target is a per-vertex or per-level allocation in the
+quantified-path route, and the fix shape is the one items 1417/1418/1423 already took three times: a
+flat reusable buffer instead of many small objects.
+
+⚠️ **STATED AS A NOMINATION.** This session has refuted five profile shares (items 1413, 1416, 1425,
+1447/1448, 1450) and the standing rule is that a share is a nomination and an ablation is the price.
+The specific trap to avoid here is item 1450's: the ablation must not hardcode what an implementation
+would have to parameterize. The right first step is to COUNT THE ALLOCATIONS at both sizes — the
+instrument item 1416 used on `bucketSize` — before touching code.
+
+### Gates
+
+`bun run check` 0 (read unpiped). No code changed; the sweep used existing rows and existing knobs.
+Ran under `timeout … systemd-run -p MemoryMax=24G -p MemorySwapMax=0` because a 1M-node TS fixture
+with properties is the largest graph built in this session.

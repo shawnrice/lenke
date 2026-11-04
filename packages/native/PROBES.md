@@ -551,3 +551,23 @@ reads **3.35x `out('E')` per row at `small` and 0.98x at `random`**, with the en
 hand floor in both. Same-direction comparisons (`out` vs `out`) stay sound either way; it is only the
 cross-DIRECTION ones the fixture biases. Item 1392 found the same locality effect over fan-in and
 closed it as having no per-row lever.
+
+⚠️ **EVERY FIGURE IN THIS DIRECTORY'S RECORDS IS A 100k FIGURE UNLESS IT SAYS OTHERWISE** (item 1452).
+A 10x size increase costs **9.6x to 31.3x** depending on the row, i.e. per-row cost rises **1.2-3.1x**
+from 100k to 1M nodes:
+
+| row                      | 100k  | 1M      | ratio     | per-row |
+| ------------------------ | ----- | ------- | --------- | ------- |
+| `hopfiltyield`           | 68.65 | 829.16  | 12.08x    | 1.21x   |
+| `hopsingleyield`         | 26.69 | 472.66  | 17.71x    | 1.77x   |
+| `chain3`                 | 90.40 | 1580.90 | 17.49x    | 1.75x   |
+| `chain4`                 | 78.51 | 1590.86 | 20.26x    | 2.03x   |
+| `quant44`                | 50.92 | 1590.98 | 31.25x    | 3.12x   |
+| `grouped` / `sortedpage` |       |         | 9.6-10.5x | linear  |
+
+A/B RATIOS are unaffected (both arms share the fixture), so conclusions hold; ABSOLUTE ns/row does
+not. Two consequences worth knowing before quoting either: `chain3`/`chain4`/`quant44` all converge on
+~1585 ms at 1M because they become footprint-bound, so **`quant44`'s 1.54x advantage over `chain4` at
+100k does not survive the sweep** — a routing choice tuned at 100k is tuned on the wrong side of the
+cache transition. And `quant44`'s growth is the outlier because its **GC goes 7.0 → 401.9 ms**, the one
+superlinear term in the sweep that is allocation rather than cache.
