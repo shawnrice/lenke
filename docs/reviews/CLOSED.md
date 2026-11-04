@@ -48472,3 +48472,83 @@ n=24 interleaved number; the bench row is a regression check, not the measuremen
 ### Gates
 
 Engine change (one file, `packages/gremlin/src/executor/count-shortcut.ts`). Everything above green.
+
+### Item 1375 — a multi-type hop count costs **16.056 ms against 0.003** where a single-type one is free, the guard is CORRECT (proved by the MULTILABEL=0 arm), my "spelling gap" framing was WRONG, and the real lever is the dedupe Set
+
+Item 1374 shipped the single-label allocation fix on the Gremlin walk and I went looking for the GQL
+twin. **There is none**: item 324 already made `edgesOfTypes` return the bucket `Set` directly for a
+single type, with a shared `NO_EDGES` for the empty case, priced at 8.4 ns an edge — and item 1108
+says so in as many words ("GQL fixed exactly this shape at item 324... The Gremlin twin never got
+it"). I planned around a twin the audit had already told me did not exist; verifying cost one read.
+
+What the read did turn up is `edgesOfManyTypes`, the deduping multi-bucket tail, which does
+`types.map((t) => byType.get(t))` — the same per-vertex array allocation item 1374 just removed —
+plus a dedupe `Set` per vertex. **No bench row anywhere covered a multi-type hop**, so this built one.
+
+### The instrument: an equivalent-spelling PAIR on one fixture
+
+`isolated-row-bench.mjs` gains `hopsingle` (`-[:E]->`) and `hopmulti` (`-[:E|F]->`) plus a
+`MULTILABEL` knob controlling how often an edge carries BOTH labels. Every edge carries `E`, so on
+this fixture the two spellings select the identical edge set and both answer **200000** — which makes
+the routing difference, not the question, the only thing that varies.
+
+|                                       | `-[:E]->` | `-[:E\|F]->`  |
+| ------------------------------------- | --------- | ------------- |
+| `MULTILABEL=0` (no edge has 2 labels) | 0.003 ms  | **0.003 ms**  |
+| `MULTILABEL=3` (every 3rd has both)   | 0.003 ms  | **16.056 ms** |
+
+### MY FRAMING WAS WRONG, and the measurement is what says so
+
+I called this a 5000x equivalent-spelling gap — the class CLAUDE.md says costs 100-300x and returns
+the correct answer. **It is not one, and the `MULTILABEL=0` arm is the proof.** With no multi-label
+edges `graph.multiTypeEdgeCount` is 0, `bucketSumsAreSound` licenses the degree-sum route for the
+disjunction too, and `:E|F` is **just as fast as `:E`**. The guard works exactly as item 1078
+documents it.
+
+The 16 ms appears only when buckets genuinely OVERLAP, where summing them would double-count and the
+dedupe is required for correctness. And the two spellings are not equivalent in general — they are
+equal here only because every edge carries `E`, which the engine cannot know. **So this is a
+legitimate cost difference between two different questions, not a planner failing to recognise one
+question in two spellings.**
+
+I was also wrong that the spelling probe is blind here. Its `'edge type disjunction order'` group
+compares `:E|F` against `:F|E`, which is an ORDER test and its stated purpose; both arms take the
+same route and agreeing is the correct outcome. Nothing is missing from that probe.
+
+**Worth recording as the general lesson**: a pair that differs by 5000x and answers identically looks
+exactly like the bug class this repo hunts, and the thing that distinguished them was a one-line
+fixture knob. **Vary the property the guard keys on before calling a cost difference a gap** — had
+`MULTILABEL=0` not been run, this would have been filed as a 5000x spelling bug and sent someone
+after a planner that is behaving correctly.
+
+### The real lever, named and NOT yet priced
+
+Inside the overlapping case, `edgesOfManyTypes` dedupes EVERY edge through a `Set` that grows to the
+full edge count, when **only a multi-labelled edge can ever be yielded twice**. A single-label edge
+sits in exactly one bucket and cannot repeat, so it needs no `Set` traffic at all:
+
+```ts
+for (const e of set) {
+  if (e.labels.size > 1) {
+    // only these can be double-yielded
+    if (seen.has(e)) {
+      continue;
+    }
+    seen.add(e);
+  }
+  yield e;
+}
+```
+
+Conservative and correct — an edge labelled `{E, Z}` appears once among requested `{E, F}` and would
+pay a needless `Set` op, which is cheaper than testing requested-type membership per edge. At this
+fixture's 1-in-3 overlap it removes two thirds of the `Set` traffic; `types.map`'s array is the
+second, smaller allocation on the same path.
+
+**NOT MEASURED.** Item 1374's own lesson is that the ablation (3.7%) and the shippable rewrite (2.5%)
+are different numbers, and this one is a generator so the restructuring is less trivial than it
+looks. It gets its own item with its own A/B on this new row.
+
+### Gates
+
+Instrument only — one bench file; no engine or core code changed. `bun run check` 0 (read unpiped).

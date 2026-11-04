@@ -35,9 +35,23 @@ const SHAPE = process.env.SHAPE ?? 'hopfilter';
 const NODES = Number(process.env.NODES ?? 200_000);
 const REPS = Number(process.env.REPS ?? 14);
 const DROP = Number(process.env.DROP ?? 3);
+/**
+ * How often an edge carries BOTH `E` and `F`. 0 = never, so `graph.multiTypeEdgeCount` is 0 and
+ * `bucketSumsAreSound` should license the degree-sum fast path for `:E|F` as well as `:E`.
+ * 3 = every third edge, so the sums would double-count and the dedupe is genuinely required.
+ */
+const MULTILABEL = Number(process.env.MULTILABEL ?? 3);
 
 const SHAPES = {
   hopfilter: 'MATCH (a:P)-[:E]->(b:P) WHERE a.k = 5 RETURN count(*) AS c',
+  // AN EQUIVALENT-SPELLING PAIR (item 1375). A third of the edges carry BOTH `E` and `F`, and every
+  // edge carries `E`, so these two count the SAME edges — but `:E` takes `edgesOfTypes`' single-bucket
+  // fast path (item 324, which returns the Set and allocates nothing) while `:E|F` falls to
+  // `edgesOfManyTypes`, which allocates a `types.map` array AND a dedupe Set per vertex. CLAUDE.md's
+  // rule is that equivalent spellings must cost the same; this is the instrument for that claim on a
+  // multi-type hop, which no bench row covered.
+  hopsingle: 'MATCH (a:P)-[:E]->(b:P) RETURN count(*) AS c',
+  hopmulti: 'MATCH (a:P)-[:E|F]->(b:P) RETURN count(*) AS c',
   hopcount: 'MATCH (a:P)-[:E]->(b:P) RETURN count(*) AS c',
   sortedpage: 'MATCH (n:P) WHERE n.k < 50 RETURN n.s AS s ORDER BY s LIMIT 10',
   grouped: 'MATCH (n:P) RETURN n.k AS k, count(*) AS c',
@@ -68,7 +82,10 @@ const build = () => {
       id: `e${i}`,
       from: g.getVertexById(`v${i}`),
       to: g.getVertexById(`v${(i * 7 + 3) % NODES}`),
-      labels: ['E'],
+      // A THIRD carry both types, so `:E` and `:E|F` select the identical edge set and the
+      // multi-bucket path actually has something to DEDUPE — without the overlap it would be a
+      // concatenation and would not exercise the `Set` the dedupe allocates.
+      labels: MULTILABEL > 0 && i % MULTILABEL === 0 ? ['E', 'F'] : ['E'],
       properties: { w: i % 13 },
     });
   }
