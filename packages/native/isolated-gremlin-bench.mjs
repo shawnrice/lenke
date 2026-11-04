@@ -226,6 +226,20 @@ if (sink === 0) {
   throw new Error(`${SHAPE} produced NOTHING across ${REPS} reps — measuring nothing`);
 }
 
+/**
+ * ⚠️ AND THE GUARD ABOVE DOES NOT CATCH A ZERO COUNT (item 1416).
+ *
+ * `sink` adds `rows.length` for an array but `1` for a scalar, so a `count()` that answers **0**
+ * increments it and sails past — the row ran, found nothing, and reported a time for a dead path.
+ * The GQL twin was ranked that way for a whole tick before anyone read the answer: `MULTILABEL=-1`
+ * halves the `E` edges, so multi-hop chains answer 0 at out-degree 1, and `chain3` read 21.5 ms
+ * dead against 47.1 ms live.
+ *
+ * A zero count is a legitimate answer for some fixtures, so this FLAGS rather than throws — the
+ * `sink === 0` guard above is the one that can be certain.
+ */
+const zeroAnswer = answer === 0 || (Array.isArray(answer) && answer.length === 0);
+
 const kept = series.slice(DROP).sort((a, b) => a - b);
 const at = (f) => kept[Math.min(kept.length - 1, Math.floor(f * kept.length))];
 
@@ -237,6 +251,7 @@ console.log(
     fanin: FANIN,
     reps: REPS,
     answer: typeof answer === 'object' ? JSON.stringify(answer) : answer,
+    ...(zeroAnswer ? { VACUOUS_ZERO_ANSWER: true } : {}),
     median: Number(at(0.5).toFixed(3)),
     p25: Number(at(0.25).toFixed(3)),
     p75: Number(at(0.75).toFixed(3)),

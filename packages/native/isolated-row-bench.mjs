@@ -310,6 +310,26 @@ if (sink === 0) {
 const kept = series.slice(DROP).sort((a, b) => a - b);
 const at = (f) => kept[Math.min(kept.length - 1, Math.floor(f * kept.length))];
 
+/**
+ * ⚠️ DID THIS FIXTURE ACTUALLY PRODUCE AN ANSWER? (item 1416)
+ *
+ * A count of 0, or zero rows, means the query found NOTHING — so the timing is of a path that
+ * matched nothing, and optimizing against it is optimizing a dead branch. That is not hypothetical:
+ * `MULTILABEL=-1` halves the `E` edges, so every multi-hop chain row answers 0 at out-degree 1, and
+ * a whole ranking of the non-hop rows was taken that way before anyone read the `answer` field.
+ * `chain3` read 21.5 ms dead against 47.1 ms live — so the dead reading was not merely useless, it
+ * ranked the rows wrongly.
+ *
+ * Printed as a FLAG rather than left for a reader to infer, because the field was already there and
+ * being looked straight past. A driver can refuse on it; a human sees it next to the number.
+ */
+const zeroAnswer =
+  rowCount === 0 ||
+  (rowCount === 1 &&
+    answer !== null &&
+    typeof answer === 'object' &&
+    Object.values(answer).every((v) => v === 0 || v === null));
+
 console.log(
   JSON.stringify({
     shape: SHAPE,
@@ -321,6 +341,7 @@ console.log(
     answer,
     rowCount,
     digest,
+    ...(zeroAnswer ? { VACUOUS_ZERO_ANSWER: true } : {}),
     median: Number(at(0.5).toFixed(3)),
     p25: Number(at(0.25).toFixed(3)),
     p75: Number(at(0.75).toFixed(3)),

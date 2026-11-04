@@ -5453,7 +5453,22 @@ const sweepSlotCached = (st: SweepState, leg: Leg, slotNbrs: (Int32Array | undef
       st.next[to] += w;
     }
 
-    slotNbrs[slot] = Int32Array.from(scratch);
+    // ⚠️ A MANUAL COPY, NOT `Int32Array.from` (item 1417). `from` goes through the iterator
+    // protocol even for a plain array; the constructor takes an array-like directly and a hand
+    // loop skips both. Screened over 100,000 small arrays: `from` 8.99 ms, `new Int32Array(a)`
+    // 7.26 (1.24x), the hand loop **1.85 (4.85x)** — and this allocates ONE array per slot, which
+    // is ~100,000 of them on the 4-hop chain and the 11.8% GC in its profile.
+    //
+    // Screening only decided it was worth an A/B: item 300's micro predicted 2.30x for a change in
+    // this very function and the in-situ reading was 1.27x.
+    const n = scratch.length;
+    const nbrs = new Int32Array(n);
+
+    for (let i = 0; i < n; i += 1) {
+      nbrs[i] = scratch[i];
+    }
+
+    slotNbrs[slot] = nbrs;
   }
 };
 

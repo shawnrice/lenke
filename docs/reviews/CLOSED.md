@@ -51478,3 +51478,96 @@ before the profile was taken seriously.
 `bun run check` 0 (read unpiped). The instrumentation was applied to a copy kept under
 `crates/lenke-engine/target/` and reverted from it; `shortcuts.ts` is verified free of `__bs` and
 `__b1`, and the build was re-run so no instrumented artifact survives.
+
+### Item 1417 — **SHIPPED, 10.1% / 8.5%**: `Int32Array.from` per slot on the 4-hop chain, replaced by a hand copy. Plus the benches now ANNOUNCE a dead fixture, which is what made the row findable at all
+
+### The row was never measured until the fixture flag existed
+
+Item 1416 found that `MULTILABEL=-1` zeroes every multi-hop count. The durable fix is not a note —
+both benches now emit **`VACUOUS_ZERO_ANSWER: true`** when a row finds nothing, because the `answer`
+field was already there and being looked straight past. It closed a real hole in the Gremlin bench
+too: that one throws on `sink === 0`, but `sink` adds `1` for a scalar, so a `count()` answering **0**
+incremented it and sailed past the guard.
+
+With that, a live ranking of the non-hop GQL rows — and **`chain4` at 73.18 ms is the heaviest row in
+the bench**, 1.5x `chain3`. It had never appeared in any ranking this session because I had omitted
+it from the shape list.
+
+### The nomination, read the right way round
+
+| frame               | share     | mentions                                           |
+| ------------------- | --------- | -------------------------------------------------- |
+| `sweepSlotCached`   | 32.4%     | **5**                                              |
+| `bucketSize`        | 27.8%     | 18 — **already proven misattributed at item 1416** |
+| `sweepChain`        | 18.4%     | 24                                                 |
+| (garbage collector) | **11.8%** | —                                                  |
+
+The `mentions` column went first this time, which is what item 1416 said it should have. GC at 11.8%
+was the second signal, and it points at one line:
+
+```ts
+slotNbrs[slot] = Int32Array.from(scratch);
+```
+
+**One typed-array allocation per slot** — ~100,000 on this row.
+
+### Screened, then measured in situ
+
+`Int32Array.from` goes through the iterator protocol even for a plain array. Over 100,000 small
+arrays:
+
+|                      | ms       | vs `from` |
+| -------------------- | -------- | --------- |
+| `Int32Array.from(a)` | 8.99     | 1.00x     |
+| `new Int32Array(a)`  | 7.26     | 1.24x     |
+| **hand loop**        | **1.85** | **4.85x** |
+
+Screening ONLY decided it was worth an A/B — item 300's micro predicted 2.30x for a change in this
+very function and the in-situ reading was 1.27x.
+
+| shape                | fanout | BASE  | I32       | change    | concordance |
+| -------------------- | ------ | ----- | --------- | --------- | ----------- |
+| **`chain4`**         | 1      | 74.02 | **66.56** | **10.1%** | **70/81**   |
+| **`chain4`**         | 2      | 80.75 | **73.85** | **8.5%**  | 67/81       |
+| `chain3` [CONTROL]   | 1      | 46.08 | 46.20     | −0.3%     | 39/81       |
+| `varlen24` [CONTROL] | 1      | 31.07 | 30.62     | 1.4%      | 39/81       |
+| `quant44` [CONTROL]  | 1      | 27.80 | 29.63     | **−6.6%** | 20/81       |
+
+**The controls are same-file and route elsewhere** — `chain3` through `buildThreeHopCount`,
+`varlen24` and `quant44` through `walkLevelCount` — so a file-perturbation toll of the kind items
+1413 and 1415 measured would have moved them. Two are dead flat at 39/81 against a chance of 40.5,
+which says there is no toll here.
+
+### ⚠️ `quant44`'s −6.6% is inside its own noise, and that was checked rather than argued
+
+Its profile confirms no `sweepSlotCached`, so it is a real control — but `varlen24` is on the SAME
+code path and read flat, which is the inconsistency that made the reading suspect. Six processes on
+one build:
+
+| row        | min   | median | max   | spread    |
+| ---------- | ----- | ------ | ----- | --------- |
+| `quant44`  | 27.54 | 29.96  | 30.74 | **1.12x** |
+| `varlen24` | 28.67 | 30.20  | 31.40 | 1.10x     |
+| `chain4`   | 66.78 | 69.30  | 70.45 | **1.06x** |
+
+A 6.6% arm difference sits well inside `quant44`'s own 12% run-to-run spread, so the 20/81 came from
+sampling rather than an effect. And `chain4`'s 10.1% is comfortably above its own 6%.
+
+### Mutation — a hand loop over a typed array is where an off-by-one lives
+
+| mutant                       | verdict                  | evidence |
+| ---------------------------- | ------------------------ | -------- |
+| M1 `i <= n`                  | **SURVIVES**             | 3610/0   |
+| M2 `i < n - 1`               | **CAUGHT**               | 29 fail  |
+| M3 `new Int32Array(n + 1)`   | **CAUGHT**               | 35 fail  |
+| M4 back to `Int32Array.from` | **SURVIVES — by design** | 3610/0   |
+
+**M1 surviving is worth recording rather than glossing**: an out-of-bounds write to a typed array is
+**silently dropped**, so the upper bound is not self-checking — only the _lower_ side of it is
+covered. M4 is the old code, answer-equivalent, so the bench row is its only guard. All mutants ran
+under a timeout and a cgroup cap, since a loop-bound mutant can stop terminating.
+
+### Gates
+
+gql **3610/0**, gremlin 1197/0, core 383/0, serialization 144/0, `bun run fuzz` 20/0, `bun run
+check` 0 (read unpiped). Answers identical across both arms in every cell.
