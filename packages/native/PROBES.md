@@ -212,14 +212,15 @@ builds graphs in a tight loop is measuring a different heap than it thinks.
 
 ## The ISOLATED ROW BENCHES — for a sub-10% question on ONE row
 
-| file                                | surface                                                                  |
-| ----------------------------------- | ------------------------------------------------------------------------ |
-| `isolated-row-bench.mjs`            | one GQL row (`SHAPE=hopfilter NODES= REPS= DROP=`)                       |
-| `isolated-gremlin-bench.mjs`        | one Gremlin row (item 1368)                                              |
-| `gremlin-hop-floor-probe.mjs`       | the Gremlin hop FLOOR, three arms (item 1411)                            |
-| `gremlin-multitype-floor-probe.mjs` | why `out('E','F')` costs 1.86x `out('E')` — six arms, `ARM=` (item 1441) |
-| `gql-undirected-floor-probe.mjs`    | the GQL undirected hop, five-arm ablation (1414)                         |
-| `cross-engine-chain3-probe.mjs`     | GQL vs Gremlin, one graph, one arm per process (1426)                    |
+| file                                | surface                                                                             |
+| ----------------------------------- | ----------------------------------------------------------------------------------- |
+| `isolated-row-bench.mjs`            | one GQL row (`SHAPE=hopfilter NODES= REPS= DROP=`)                                  |
+| `isolated-gremlin-bench.mjs`        | one Gremlin row (item 1368)                                                         |
+| `gremlin-hop-floor-probe.mjs`       | the Gremlin hop FLOOR, three arms (item 1411)                                       |
+| `gremlin-multitype-floor-probe.mjs` | why `out('E','F')` costs 1.86x `out('E')` — six arms, `ARM=` (item 1441)            |
+| `gql-filtered-hop-floor-probe.mjs`  | how far the FILTERED GQL hop is above a hand floor — seven arms, `ARM=` (item 1444) |
+| `gql-undirected-floor-probe.mjs`    | the GQL undirected hop, five-arm ablation (1414)                                    |
+| `cross-engine-chain3-probe.mjs`     | GQL vs Gremlin, one graph, one arm per process (1426)                               |
 
 ⚠️ **`hop-projection.ts` CHARGES A TOLL, so price a target against ~10% before attempting it**
 (items 1413 and 1415). Two independent changes there — a dedupe skip and a per-row `EvalEnv` hoist —

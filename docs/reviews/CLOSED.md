@@ -52787,7 +52787,7 @@ arms at 100k nodes, `FANOUT=1 MULTILABEL=0 STRIDE=random`, p25 of 14 reps droppi
 
 Read the last two first, because they are the question I set out to answer: predicate and projection
 on the **same** property is 587.8 ns/row and on **different** properties is 545.1 — different is
-_cheaper_. **Nothing shares the read, and a CSE has nothing to win.** (The per-row normalisation is
+_cheaper_. **Nothing shares the read** — and ⚠️ "a CSE has nothing to win" is a SEPARATE claim these two arms do not establish, since BOTH of them read twice. It is true, measured at **2.6%** by item 1444's `floor-tworead` arm, but it was not measured here. (The per-row normalisation is
 load-bearing: the two arms return 99,994 and 100,000 rows, so the raw 58.78-against-54.51 is not
 comparable until divided.)
 
@@ -53520,3 +53520,88 @@ is open on it.
 `bun run check` 0 (read unpiped). No engine code changed — this item adds three probe arms and a
 per-GROUP digest field, because the `both` arms answer twice as many rows and a pooled digest check
 would have reported a false disagreement.
+
+### Item 1444 — the FILTERED hop row is **1.87x a hand floor (46.5% headroom)** while its UNFILTERED twin BEATS its floor at 0.94x. A second, larger instance of item 1429's named target — and item 1437's CSE conclusion was right on evidence that did not support it (the second read is **2.6%**)
+
+`hopfiltyield` is the heaviest open row in the GQL bench and its two obvious levers are closed —
+routing (item 1436: forcing the far-driven filtered walk measured no better) and the double read
+(item 1437). What it never had is a FLOOR: item 1429 floored the UNDIRECTED hop, not this one, so
+"587 ns/row" had never been compared against what the work costs.
+`gql-filtered-hop-floor-probe.mjs` is that floor, built the way items 1441 and 1443 worked — outside
+`hop-projection.ts`, whose own edits move unrelated rows 3.4-5.8% (item 1415).
+
+100k nodes, `FANOUT=1 STRIDE=random`, median of three order-alternated rounds, digests checked PER
+GROUP (the filtered arms answer 99,994 rows and the unfiltered 100,000, so a pooled check reports a
+false disagreement — the trap item 1443 had to design around):
+
+```text
+  arm              median     rows   ns/row
+  floor-bare        24.10   100000    241.0   the adjacency walk alone
+  floor-nopred      27.91   100000    279.1   + the row object
+  floor-noalloc     29.59    99994    296.0   + the predicate, no object
+  floor             33.72    99994    337.3   + both
+  engine-bare       26.15   100000    261.5   the UNFILTERED query
+  engine            63.06    99994    630.7   the FILTERED query
+```
+
+```text
+  the row object        4.13 ms   12.2% of the hand floor
+  the predicate         5.81 ms
+  engine-bare / floor-nopred   0.94x   -- the engine BEATS its floor
+  engine / floor               1.87x   -- 46.5% headroom
+```
+
+**The unfiltered twin is at or below its hand floor and the filtered one is 1.87x above it.** That is
+the sharpest statement of this row's problem yet, and it is consistent with everything already
+closed: items 1436 and 1437 each tested a specific mechanism and correctly found it was not the
+cause. The floor says there IS something to take; it just is not routing and it is not the read
+count.
+
+### ⚠️ ITEM 1437's CSE CONCLUSION WAS RIGHT, ON EVIDENCE THAT DID NOT SUPPORT IT
+
+Item 1437 wrote "nothing shares the read, and a CSE has nothing to win" from two ENGINE arms:
+predicate and projection on the SAME property (587.8 ns/row) against DIFFERENT properties (545.1).
+That pair establishes the engine does not share the read — both arms read twice — and says nothing
+about what sharing would be worth. **Two questions run together, and only the first was measured.**
+
+`floor-tworead` is the arm that answers the second, four rounds:
+
+```text
+  floor            29.45 ms   294.6 ns/row    28.29 28.29 30.62 33.60
+  floor-tworead    30.95      309.5           29.91 30.80 31.10 32.58
+  engine           57.90      579.0           56.48 57.26 58.53 63.35
+
+  the second read: 1.50 ms = 15.0 ns/row = 2.6% of the engine row
+```
+
+**2.6%**, under the ~10% this file's toll demands. So the conclusion stands and the lever is still
+declined — but it now rests on a measurement of the thing it claims rather than on an inference from
+a different comparison. Recording it because "the engine does not do X" and "doing X would not help"
+are separate claims, and collapsing them is the kind of reasoning error that survives precisely
+because the bottom line happens to be correct.
+
+### The target is item 1429's, and this is its second and larger instance
+
+Item 1429 priced the undirected row at **~27-36%** available and named the fix: _a SPECIALIZED
+projection closure for the single-far-property case — the same `pick`-shaped monomorphic closure the
+Gremlin hop walk already uses_. It was not taken "for scope rather than doubt", because `projectRow`
+is shared by every walk.
+
+The mechanism is exactly what separates these arms: the engine sets a `binding` entry and calls
+`projectRow`, which evaluates the projection through the generic `propOf` path; the floor does
+`rows.push({ n: edge.to.properties['n'] })`. The engine's own profile puts `propOf` + `get properties`
+at **34.8%** of this row — ~110 ns per read where the hand read is ~15 ns, a ~7x gap on the accessor
+chain, which is where the 46.5% lives rather than in the number of reads.
+
+So the same target now has two rows priced: **27-36% undirected (item 1429), 46.5% filtered directed
+(here)** — and a third data point saying the specialization is the right shape, since `engine-bare`
+reaches 0.94x of its floor precisely because item 167's far-driven template clone already specializes
+it, and a carried `WHERE` makes a row ineligible for that clone (item 1438).
+
+### Gates
+
+`bun run check` 0 (read unpiped). No engine code changed — this item adds one probe with seven arms.
+
+One harness note: the first analysis of this probe died on a `KeyError` from nested quoting inside a
+`python3 -c` f-string, not on anything about the data. Analysis scripts for a multi-arm probe go in a
+FILE; the readings were already on disk and were re-analysed unchanged.
