@@ -54403,3 +54403,84 @@ distinguish from the real one, and it fails five tests.
 on an unnecessary assertion in the test — neither visible to any suite). Suites: gql **3677**/0
 (3669 + 8), gremlin 1228/0, core 383/0, serialization 144/0, native 961/0. `bun run fuzz` 20/0 —
 byte-identity intact, which matters because this changes a COUNT the Rust engine also computes.
+
+### Item 1454 — the quantified path's remaining cost is its CSR BUILD: **604-662 ms of a 903-1493 ms query at 1M**, and inside it a per-edge OBJECT-KEYED `Map.get` worth **~268 ms**. A `Vertex` ordinal would take that plus the ~50 ms map fill — ~28% of the row — and it is a CORE change, so it is priced and FLAGGED
+
+Item 1453 took `pairMultiplicities` and left GC at 23.77% (259.2 ms, 32 collections) with
+`walkLevelCount` at 48.96%. Phase timers inside `walkLevelCount`, 1M nodes, four reps:
+
+```text
+  PHASE csr=662.3  rest=830.6   total=1492.9
+  PHASE csr=626.5  rest=769.9   total=1396.5
+  PHASE csr=613.1  rest=746.1   total=1359.2
+  PHASE csr=604.5  rest=298.9   total= 903.4
+```
+
+**The CSR build is 604-662 ms — 45-67% of the query — and it is far more STABLE than the recurrence**
+(604.5/613.1/626.5/662.3 against 298.9-830.6). A term that holds steady while everything around it
+swings by 2.8x is the one worth attacking.
+
+Item 688 is the only prior note here and it does NOT close this: it flagged the ASYMMETRY — "Rust's
+CSR is a persistent overlay, TS rebuilds per query, so the build cost lands differently" — without
+ever measuring the TS side. This is that measurement, for the first time.
+
+### Decomposed, because the build is three things
+
+```text
+  spread  `[...graph.verticesById.values()]`        1.3 -  12.2 ms   negligible
+  idxfill 1,000,000 `Map<Vertex, number>.set`      47.8 -  90.7 ms
+  csrfill the fill loop                           393.5 - 628.3 ms  <- dominates
+```
+
+And `csrfill` is itself three things per edge — a `Set` iterator per vertex, an object-keyed
+`idx.get(e.to)`, and an `Int32Array` write — so it was ablated rather than attributed (this session
+has refuted six profile shares; attributing without ablating is how five of them happened). Dropping
+the `idx.get` from the loop:
+
+```text
+  csrfill WITH the lookup       393.5 - 628.3 ms   median ~571
+  csrfill WITHOUT it            248.1 - 324.8 ms   median ~303
+```
+
+**So the per-edge object-keyed `Map.get` is ~268 ms, about 47% of the fill and ~25% of the whole
+query.** The residual ~300 ms is iterating 1,000,000 `Set`s plus the endpoint reads and array writes —
+that is the adjacency representation, not something this route can change.
+
+### The fix is a `Vertex` ordinal, and ⚠️ THE ABLATION IS AN UPPER BOUND, NOT THE PRICE
+
+`idx` exists only because a `Vertex` carries no index: its fields are
+`#adjFrom #adjTo #box #graph #id #lbox code graph id labels next previous properties vertex` — no
+ordinal, slot or sequence. Given one, the fill becomes a field read and `idxfill` disappears
+entirely, so the two together are **~318 ms, ~28% of this row at 1M** — and the same CSR is built by
+every row in the quantified-path family (`quant*`, `varlen*`).
+
+**Applying item 1450's lesson prospectively this time**: the ablation above REMOVED the lookup, which
+no implementation can do — it must still read something. A field read is much cheaper than an
+object-keyed `Map.get` but it is not free, so **the realizable win is less than 268 ms** and the
+figure to carry forward is "up to ~28%", not "28%". Item 1450 spent three ticks learning this by
+reading an ablation as a price; the number above is deliberately stated as a bound.
+
+### Why it is flagged rather than built
+
+An ordinal on `Vertex` is a change to `@lenke/core`, not to a query route, and it has consequences
+this loop should not decide alone:
+
+- **Footprint.** One more field on every vertex, on a type the engine allocates by the million.
+- **Holes after deletion.** The ordinal is dense only if nothing is deleted; afterwards the CSR
+  arrays are sized to `maxOrdinal + 1` and carry gaps, which trades memory for the lookup and needs a
+  compaction policy.
+- **Who maintains it.** `Graph` assigns it at insert, which means every construction path — `addVertex`,
+  NDJSON reload, `_MERGE`, the fork/diff round-trip — has to agree on it.
+- **The alternative is a cached CSR**, which is the shape native already has and whose hazard the repo
+  has measured: `rebuild_csr` runs only at LOAD and every adjacency write clears `csr_fresh` with
+  nothing to re-arm it, so ONE `add_edge` demotes every later read — up to 24.07x at 1 edge in 50.
+  Replicating that in TS would import a known defect pattern, so if a cache is the answer it needs the
+  re-arming native lacks.
+
+Both options are real; neither is a tick's work, and the second is a design decision about write/read
+balance. **Priced and flagged.**
+
+### Gates
+
+`bun run check` 0 (read unpiped), gql 3677/0. All instrumentation reverted and verified at 0 markers,
+`git diff --stat` empty; nothing committed but this record.
