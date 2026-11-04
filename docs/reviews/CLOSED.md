@@ -52645,3 +52645,64 @@ being retargeted.
 gql **3638/0**, gremlin 1218/0, core 383/0, serialization 144/0, `bun run fuzz` 20/0, `bun run
 check` 0 (read unpiped). `rowCount` and `digest` identical across both arms in every cell. Items
 1404 and 1405-1406's headings are corrected in this commit.
+
+### Item 1435 — **item 1106's `passes > 2` memo gate is SOUND and nearly MOOT**: the 2-pass sweep is reachable only via a NARROWING label, and a narrowing label makes the whole query ~1 ms. The bench had no row for that route at all; it does now, behind an opt-in knob
+
+### Why look: item 1434's pattern, applied to another constant
+
+Item 1434 found that items 1390, 1404 and 1406 had all priced one gate against code item 1407 then
+changed. The obvious next question is which other measured route constant is stale the same way, and
+the strongest candidate was the slot memo's `passes > 2` — item 1106 measured the memo a small LOSS
+at exactly two passes (162.0 against 165.7), and items 1417-1418 made that memo substantially
+cheaper (hand copy, then one flat buffer; `gcMs` 148 → 14.2).
+
+### The first attempt measured nothing, for a reason worth recording
+
+Forcing the gate to `passes > 1` and running `chain3` moved it 49.07 against ~47-49 — nothing.
+**Because `chain3` never enters `sweepChain` at all**: item 1420 established it takes the degree
+PRODUCT, so the memo gate is unreachable from that row. Same shape as items 1416 and 1428 — a
+reading that barely moves because the code path is not taken.
+
+Settled by counting instead of reasoning. A histogram inside `sweepChain`, keyed by pass count:
+
+| shape                   | answer | `sweepChain` calls |
+| ----------------------- | ------ | ------------------ |
+| chain3, vacuous labels  | 20000  | **none**           |
+| chain3, SELECTIVE start | 400    | `passes=2` × 1     |
+| chain3, SELECTIVE end   | 400    | `passes=2` × 1     |
+| chain4, vacuous         | 20000  | `passes=3` × 1     |
+| chain4, SELECTIVE end   | 400    | `passes=3` × 1     |
+
+**The 2-pass sweep is reached only by a 3-segment chain with a label that NARROWS** — which is
+exactly the condition `threeSegmentRoute` uses to prefer the sweep over the product (item 1420).
+
+### And that makes the gate low-stakes
+
+With `SELECTIVE=50` (an `S` label on every 50th vertex), at 100,000 vertices and random stride:
+
+| row                        | p25         | answer |
+| -------------------------- | ----------- | ------ |
+| `chain3sel` (2-pass sweep) | **0.97 ms** | 2000   |
+| `chain4sel` (3-pass sweep) | **0.84 ms** | 2000   |
+| `chain3` (product)         | 84.46       | 100000 |
+
+A narrowing label seeds the sweep from a small set, so the whole query is ~1 ms. **The memo gate
+governs a path that is never expensive**, in either direction — so item 1106's reading stands, and
+re-tuning it could win at most a fraction of a millisecond. Recorded so the next reader does not
+repeat this tick: the constant looks exactly as stale as item 1434's did, and is not worth the same
+effort.
+
+### What is kept
+
+`SELECTIVE` on the GQL bench, **default 0 = OFF**, plus `chain3sel` and `chain4sel`. Every vertex in
+this fixture was `P` and nothing else, so no row could reach a route gated on a narrowing label — a
+whole class of route was uncovered.
+
+⚠️ **Off by default because it is not free**: adding a second label to 2% of vertices moved `chain3`
+from 90.49 to 94.17 ms, which would silently shift every absolute figure recorded against this bench.
+Same reasoning as `STRIDE` at item 1427. The chosen value is echoed in the output.
+
+### Gates
+
+`bun run check` 0 (read unpiped). No engine code changed; `shortcuts.ts` verified free of the
+instrumentation and still at `passes > 2`.

@@ -93,6 +93,20 @@ const DISJOINT = MULTILABEL === -1;
  * recorded against this bench. Sweep it when claiming a general result; a real graph is unlikely to
  * have a strided successor.
  */
+/**
+ * ⚠️ A SELECTIVE SECOND LABEL `S`, on every Nth vertex. **DEFAULT 0 = OFF** (item 1435).
+ *
+ * Every vertex in this fixture was `P` and nothing else, so NO row could reach a route gated on a
+ * label that NARROWS — and `threeSegmentRoute` picks the way-count SWEEP over the degree product
+ * exactly when one does (item 1420 verified that choice). The 2-pass sweep therefore had no row at
+ * all, which is why item 1106's `passes > 2` memo gate had never been re-measured against it.
+ *
+ * It is OFF by default because turning it on is not free: adding a second label to 2% of vertices
+ * moved `chain3` from 90.49 to 94.17 ms, which would silently shift every absolute figure recorded
+ * against this bench. `SELECTIVE=50` turns it on for the `*sel` rows.
+ */
+const SELECTIVE = Number(process.env.SELECTIVE ?? 0);
+
 const STRIDE = process.env.STRIDE ?? 'small';
 
 if (STRIDE !== 'small' && STRIDE !== 'random') {
@@ -157,6 +171,11 @@ const SHAPES = {
   chain2: 'MATCH (a:P)-[:E]->()-[:E]->(b:P) RETURN count(*) AS c',
   quant33: 'MATCH (a:P)-[:E]->{3,3}(b:P) RETURN count(*) AS c',
   chain3: 'MATCH (a:P)-[:E]->()-[:E]->()-[:E]->(b:P) RETURN count(*) AS c',
+  // THE 2-PASS SWEEP, which no row reached before item 1435. A selective end label sends
+  // `threeSegmentRoute` to `longChainCount` instead of the degree product (item 1420 verified that
+  // choice), and a 3-segment chain is 2 passes — the exact boundary item 1106's memo gate sits on.
+  chain3sel: 'MATCH (a:P)-[:E]->()-[:E]->()-[:E]->(b:S) RETURN count(*) AS c',
+  chain4sel: 'MATCH (a:P)-[:E]->()-[:E]->()-[:E]->()-[:E]->(b:S) RETURN count(*) AS c',
   varlen14: 'MATCH (a:P)-[:E]->{1,4}(b:P) RETURN count(*) AS c',
   varlen24: 'MATCH (a:P)-[:E]->{2,4}(b:P) RETURN count(*) AS c',
   quant44: 'MATCH (a:P)-[:E]->{4,4}(b:P) RETURN count(*) AS c',
@@ -222,7 +241,7 @@ const build = () => {
   for (let i = 0; i < NODES; i += 1) {
     g.addVertex({
       id: `v${i}`,
-      labels: ['P'],
+      labels: SELECTIVE > 0 && i % SELECTIVE === 0 ? ['P', 'S'] : ['P'],
       properties: { k: i % 97, s: `s${i % 1000}`, n: i },
     });
   }
@@ -363,6 +382,7 @@ console.log(
     fanout: FANOUT,
     disjoint: DISJOINT,
     stride: STRIDE,
+    selective: SELECTIVE,
     reps: REPS,
     drop: DROP,
     answer,
