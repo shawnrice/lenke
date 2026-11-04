@@ -75,6 +75,30 @@ const DISJOINT = MULTILABEL === -1;
  * round: a change that only helps HIGH-degree vertices judged against a degree-1 fixture can only
  * lose.
  */
+/**
+ * ⚠️ HOW FAR A VERTEX'S SUCCESSOR SITS, which is worth ~2x at the SAME DEGREE (item 1426).
+ *
+ * `small` (the default, and byte-for-byte what every reading before item 1426 used) is
+ * `to = (i * 7 + 3) % NODES`: a vertex points ~7 slots along, so the successor is partly
+ * cache-resident. `random` is `from = (k * 7919) % NODES`, `to = (k * 104729) % NODES` — both
+ * large-stride permutations, so a successor is effectively random across the whole range.
+ *
+ * Both give out-degree and in-degree exactly 1 at `FANOUT=1` (each multiplier is coprime with
+ * `NODES`, so each mapping is a permutation) and both answer `NODES` for a chain count. They differ
+ * in NOTHING but locality, and item 1426 measured that at **1.93x (GQL), 2.06x (Gremlin)** — two
+ * instruments in this directory disagreed 1.91x on the identical query until this was the
+ * explanation.
+ *
+ * The DEFAULT IS UNCHANGED on purpose: switching it would silently invalidate every absolute figure
+ * recorded against this bench. Sweep it when claiming a general result; a real graph is unlikely to
+ * have a strided successor.
+ */
+const STRIDE = process.env.STRIDE ?? 'small';
+
+if (STRIDE !== 'small' && STRIDE !== 'random') {
+  throw new Error(`STRIDE must be 'small' or 'random', got ${STRIDE}`);
+}
+
 const FANIN = Number(process.env.FANIN ?? 1);
 
 /**
@@ -213,10 +237,12 @@ const build = () => {
 
     g.addEdge({
       id: `e${k}`,
-      from: g.getVertexById(`v${i}`),
+      from: g.getVertexById(`v${STRIDE === 'random' ? (k * 7919) % NODES : i}`),
       // FANIN=1 keeps the original `(i * 7 + 3) % NODES`, byte-for-byte at FANOUT=1; a smaller
       // fraction concentrates the far endpoints into the first `NODES * FANIN` vertices.
-      to: g.getVertexById(`v${(i * 7 + 3 + hop * 2_654_435_761) % pool}`),
+      to: g.getVertexById(
+        `v${STRIDE === 'random' ? (k * 104_729) % pool : (i * 7 + 3 + hop * 2_654_435_761) % pool}`,
+      ),
       // A THIRD carry both types, so `:E` and `:E|F` select the identical edge set and the
       // multi-bucket path actually has something to DEDUPE — without the overlap it would be a
       // concatenation and would not exercise the `Set` the dedupe allocates.
@@ -336,6 +362,7 @@ console.log(
     nodes: NODES,
     fanout: FANOUT,
     disjoint: DISJOINT,
+    stride: STRIDE,
     reps: REPS,
     drop: DROP,
     answer,

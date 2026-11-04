@@ -52135,3 +52135,54 @@ Gremlin. All three answer 100,000.
 
 `bun run check` 0 (read unpiped). No engine code changed; the probe is the deliverable, indexed in
 `PROBES.md`.
+
+### Item 1427 — **item 1418's win is LOCALITY-INDEPENDENT**: the flat memo measures **20.2% at random stride and 20.3% at small**, so the figure item 1426 put in doubt survives. `STRIDE` is now a knob on the GQL bench, default unchanged
+
+### The doubt, and why it was reasonable
+
+Item 1426 found the bench's successor function worth ~2x and flagged item 1418's 25.7% as measured
+only on the cache-friendly fixture. That change is specifically about **memory layout** — ~100,000
+pointer-chased per-slot arrays replaced by contiguous runs — so it could have read either way on a
+random successor: larger if the chase it removes is costlier when nothing is cached, smaller if the
+row is dominated by misses the memo does not touch.
+
+### The answer
+
+Both strides in ONE run and one machine state, so the re-verification and the original are not
+compared across sessions — the exact mistake item 1426 was about:
+
+| shape                                               | stride | BASE (per-slot) | FLAT      | change    | concordance |
+| --------------------------------------------------- | ------ | --------------- | --------- | --------- | ----------- |
+| **`chain4`**                                        | random | 105.38          | **84.13** | **20.2%** | 30/36       |
+| **`chain4`**                                        | small  | 69.19           | **55.12** | **20.3%** | **36/36**   |
+| `chain3` [CONTROL — 2 passes, never reads the memo] | random | 89.94           | 90.17     | −0.3%     | 15/36       |
+
+**20.2% against 20.3%** — the benefit does not depend on locality at all, across a 1.52x spread in
+the baseline itself (105.38 against 69.19 for the same arm and query). The control is flat at 15/36
+against a chance of 18.
+
+That is consistent with item 1424's finding rather than a coincidence: the memo's cost was **object
+count and promotion**, not bytes and not cache behaviour, so changing how the successors are laid out
+in memory moves the row's absolute time and leaves the memo's share of it alone.
+
+### `STRIDE` on the GQL bench
+
+`small` (default, byte-for-byte what every prior reading used) is `to = (i * 7 + 3) % NODES`;
+`random` is `from = (k * 7919) % NODES`, `to = (k * 104729) % NODES`. Both are permutations at
+`FANOUT=1`, so degree is exactly 1 either way and a chain count still answers `NODES`. **The default
+is unchanged on purpose** — switching it would silently invalidate every absolute figure recorded
+against this bench — and the chosen value is now printed in the output so a reading cannot be
+misattributed later. On `chain4` the knob reproduces item 1426's effect: 58.00 against 76.85.
+
+### ⚠️ The arms were REVERSED, which needed its own driver
+
+Item 1418 is shipped, so HEAD **is** the arm and the baseline had to come from `ff9025f3~1`. Every
+A/B driver this session asserts "HEAD is the baseline and must not already carry the mark" — which
+here would pass for entirely the wrong reason. The derived driver refused with `HEAD already carries
+the arm - wrong baseline`, which is that guard working in a direction it was not written for, and the
+purpose-built replacement asserts the pre-1418 copy IS the per-slot form before trusting it as BASE.
+
+### Gates
+
+`bun run check` 0 (read unpiped). `shortcuts.ts` restored and verified identical; answers
+(`rowCount` + `digest`) identical across both arms in every cell.
