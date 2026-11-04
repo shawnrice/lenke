@@ -303,6 +303,23 @@ zero-initialised typed array is in the pages you TOUCH, not the pages you alloca
 that keeps the touched set contiguous reports slot-space growth as free. `SPREAD=0` restores the old
 layout so the difference stays visible rather than taken on trust.
 
+**`FANIN` IS A LOAD-BEARING KNOB ON BOTH ISOLATED BENCHES, and a row measured only at the default
+can be measuring the wrong thing entirely.** It sets how many DISTINCT far endpoints the edges reach:
+`FANIN=1` (the default on both) gives every vertex in-degree 1, `FANIN=0.01` concentrates them onto
+`NODES/100`. Two items needed it for opposite reasons and neither could have been settled without it.
+
+- Item 1390 priced `farDrivenHopWalk`'s `projectRow` hoist, which has NOTHING to amortize at
+  in-degree 1: unconditionally far-driven it measured **86.1 ms against the start-driven 69.3** at
+  `FANIN=1` and **16.1** at `FANIN=0.01`. Judged on the default fixture alone it is a refutation.
+- Item 1392 separated the per-row property read's two possible mechanisms. At `FANIN=1` the
+  `far.properties` accessor is **42.967 ms** of a 61.197 ms read; at `FANIN=0.01` it is **1.990 ms**
+  — **21.6x** — while the no-read control arm is FLAT across both (77.6 against 79.7). So the cost is
+  the pointer chase to a cold far vertex, not the accessor's code, and there is no per-row lever
+  there at all. Item 1066 had measured the same family at 9.3x from the other direction.
+
+So: sweep `FANIN` for anything that touches a far endpoint, exactly as CLAUDE.md says to sweep the
+SIZE. A per-vertex cost and a per-edge cost scale differently, and so do a hot far pool and a cold one.
+
 ## HOW TO RUN ONE, which is not optional detail
 
 **ASSERT THE ARM FROM THE FILE ON DISK, not from the variable you just built — and do it before you

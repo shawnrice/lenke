@@ -49374,7 +49374,7 @@ Two consequences:
 gql **3557/0**, gremlin 1148/0, core 370/0, serialization 144/0, `bun run fuzz` 20/0, `bun run check`
 0 (read unpiped). Both A/B drivers restored their arm and deleted both arm files in a `finally`.
 
-### Item 1389 — **SHIPPED, 25.1%**: Gremlin's multi-label hop projection gets the hand walk its single-label twin already had. 64/64, sequence identity ASSERTED, all three controls at chance — and the dedupe is now PRICED at 1.13x, which re-reads item 1387's 1.50x
+### Item 1389 — **SHIPPED, 25.1%** ~~(nominated by a 33.1% profile share)~~ — **that share was measured UNWINDOWED, so the fixture load was in its denominator; corrected at 1392**: Gremlin's multi-label hop projection gets the hand walk its single-label twin already had. 64/64, sequence identity ASSERTED, all three controls at chance — and the dedupe is now PRICED at 1.13x, which re-reads item 1387's 1.50x
 
 Item 1388 found that item 1387's pricing premise was wrong: Gremlin's 1.50x multi-label yield gap was
 not "the work a multi-type hop genuinely owes" but its own `hop-values.ts` single-label fast arm
@@ -49680,3 +49680,79 @@ test-shaped hole with a named instrument rather than left to look like coverage.
 
 gql 3570/0, gremlin 1157/0, core 370/0, serialization 144/0, `bun run fuzz` 20/0, `bun run check` 0
 (read unpiped). The A/B driver restored its arm and deleted both arm files in a `finally`.
+
+### Item 1392 — the per-row property read is **44.1%** of the Gremlin yield row and there is **NO LEVER IN IT**: the `far.properties` accessor costs **42.967 ms spread and 1.990 ms concentrated, 21.6x**, so it is the pointer chase to a cold far vertex and not the accessor's code. The Gremlin bench had no windowing either, which means item 1389's 33.1% was measured with the fixture load in the denominator
+
+Item 1391 gave the GQL bench profile windowing. This gave the Gremlin bench the same, and the first
+consequence is retroactive: **item 1389's nomination — `iterLabeled` 20.3% + `iterByLabel` 7.9% +
+`outEdgesOf` 4.9% = 33.1% — was read off an UNWINDOWED profile**, so the fixture build was in the
+denominator. It was directionally right (the change delivered 25.1%) but the number was not the one
+it claimed to be. Both benches now take `PROF_OUT`.
+
+### Windowed, item 1389 is confirmed and the residual is the same on both surfaces
+
+| arm              | engine | top frames                                           |
+| ---------------- | ------ | ---------------------------------------------------- |
+| `hopyieldmulti`  | 881 ms | `values` 66.1%, `pick` 19.6%, `get properties` 8.0%  |
+| `hopyieldsingle` | 782 ms | `values` 59.1%, `pick` 19.4%, `get properties` 13.6% |
+
+`iterLabeled`/`iterByLabel`/`outEdgesOf` are **gone** from the multi arm — item 1389 landed. 881/782 =
+**1.13x**, independently reproducing that item's dedupe price. What is left on both arms, and on the
+GQL twin (`get properties` 17.4% + `propOf` 9.7% at item 1391), is the per-row property read.
+
+### A constant ablation is NOT a price, and checking that was right even though the worry was wrong
+
+Replacing the picker with `() => 1` read **49.2%** of `hopyieldsingle` (and 43.8% of the multi arm),
+with `hopcount3` — which reads no property at all — at 0.5%. But 49.2% of 155.3 ms over 200,000 rows
+is **~382 ns a row**, and `edge.to` caches `#toV` on the Edge while `properties` caches `#box` on the
+Vertex, so the warm chain is two private-field reads. An ablation to a CONSTANT also lets the
+optimizer collapse work downstream of the picker, so it bounds the lever from above.
+
+**So it was decomposed into four arms, each keeping strictly more work than the last** — `CONST`,
+`BAG` (touch the accessor, return 1), `READ` (full read, constant output), `BASE`. The worry about
+dead-code elimination turned out to be **wrong on the specifics**: `BASE − READ` is 0.573 ms, so a
+varied value flowing into the result costs nothing and the 44% is real. It just is not where it
+looked.
+
+### The decomposition, and the knob that settled the mechanism
+
+`isolated-gremlin-bench.mjs`, `hopyieldsingle`, `NODES=200000`, median of 3 (spread) / 2
+(concentrated) processes per arm, order-alternated rounds. `FANIN` added to this bench for the
+purpose — the GQL twin got it at item 1390.
+
+| term                          | `FANIN=1` (in-degree 1) | `FANIN=0.01` (in-degree ~100) |
+| ----------------------------- | ----------------------- | ----------------------------- |
+| the `far.properties` ACCESSOR | **42.967 ms**           | **1.990 ms**                  |
+| the key index `[k]`           | 17.657 ms               | 2.610 ms                      |
+| the varied value              | 0.573 ms                | −1.244 ms                     |
+| **total**                     | **61.197 ms = 44.1%**   | **3.356 ms = 4.0%**           |
+
+**The accessor is 21.6x cheaper when the far pool is cache-resident.** And the internal control is
+what makes this conclusive rather than suggestive: the no-read `CONST` arm is **77.631 ms spread
+against 79.674 concentrated — FLAT**. So the entire fan-in sensitivity of this row (136.8 → 82.8,
+1.65x) is the property read, and none of it is the walk.
+
+### What that closes, and what it opens
+
+- **CLOSED: there is no per-row lever in the accessor.** `pick` is already a per-compile closure
+  capturing the key (`far.properties[valueKey]`), `get properties` is `#box ??= …` with the
+  `Map.get` already removed at item 162, and the cost is memory latency reached through both. Nothing
+  about the code path can be rewritten to avoid a cold-object dereference. Do not re-price `pick`,
+  `get properties`, or "specialize the property read" on this row.
+- **It is the same family item 1066 measured from the other direction**: holding the scan, the edges
+  and the row count fixed and varying ONLY how many distinct far vertices the edges reach moved a
+  far-end projection **9.3x** (14.16 ms over a 50,000-wide far pool against 1.52 over a 100-wide
+  one). This item reaches that conclusion by ablation instead of by fixture shape, on a different
+  surface, and the two agree.
+- **OPEN, and better justified than before**: the columnar property layout, priced at **3.55x**
+  (items 1363-1364). It is the only thing that addresses a cold dereference, because it replaces the
+  dereference rather than shortening it. It **changes the public `properties` contract** — the getter
+  returns the graph's live frozen bag — so it is a deliberate API decision and not an optimization to
+  slip into a loop. The number to beat is now concrete: **44.1% of a yield row at in-degree 1**.
+
+### Gates
+
+Instrument and documentation only — **no engine or core code changed**, and the ablation arms were
+restored by each driver's `finally` (verified: `hop-values.ts` identical to HEAD, zero `ABLATION_ARM`
+marks). gremlin 1157/0, gql 3570/0, `bun run check` 0 (read unpiped). `FANIN` indexed in `PROBES.md`
+with both items' numbers, next to the one-shape-per-process rule.

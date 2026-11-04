@@ -38,9 +38,30 @@ import {
   values,
 } from '@lenke/gremlin';
 
+import { profileWindow } from './windowed-profile.mjs';
+
 const SHAPE = process.env.SHAPE ?? 'hopcount3';
 const NODES = Number(process.env.NODES ?? 200_000);
 const FANOUT = Number(process.env.FANOUT ?? 1);
+
+/**
+ * How many DISTINCT far endpoints the edges reach, as a fraction of `NODES` (item 1392).
+ *
+ * The GQL twin got this at item 1390 for a different reason — pricing `farDrivenHopWalk`'s hoist —
+ * and this one needs it to separate two explanations of the SAME number. Item 1392 decomposed the
+ * per-row property read on this row and found the `far.properties` ACCESSOR is 70% of it (43.0 ms of
+ * 61.2), which is ~215 ns a row for what should be two cached private-field reads. Either the
+ * accessor's code is slow, or the cost is the POINTER CHASE to a cold far vertex — and those differ
+ * in exactly one observable way: concentrating the edges onto a few endpoints makes the chase
+ * cache-resident and leaves the code identical.
+ *
+ * `FANIN=1` (default) keeps `(k * 104729) % NODES` byte-for-byte. A smaller fraction points every
+ * edge into the first `NODES * FANIN` vertices. Item 1066 already measured this family at **9.3x**
+ * over a 50,000-wide far pool against a 100-wide one, holding the scan, the edges and the row count
+ * fixed.
+ */
+const FANIN = Number(process.env.FANIN ?? 1);
+const FAR_POOL = FANIN >= 1 ? NODES : Math.max(Math.floor(NODES * FANIN), 1);
 /**
  * How often an edge carries BOTH `E` and `F`. 0 = never. Item 1375 is why this knob exists: a
  * fixture where every edge carries both labels cannot tell a walk that deduped nothing from one
@@ -119,7 +140,7 @@ const build = () => {
     g.addEdge({
       id: `e${k}`,
       from: vs[(k * 7919) % NODES],
-      to: vs[(k * 104_729) % NODES],
+      to: vs[(k * 104_729) % FAR_POOL],
       labels: MULTILABEL > 0 && k % MULTILABEL === 0 ? ['E', 'F'] : ['E'],
       properties: { w: k % 13 },
     });
@@ -147,15 +168,30 @@ const series = [];
 let sink = 0;
 let answer;
 
-for (let r = 0; r < REPS; r += 1) {
-  const t0 = performance.now();
-  const rows = toArray(plan, g);
-  const dt = performance.now() - t0;
+/**
+ * ⚠️ WINDOWED, so a profile of this bench is of the TRAVERSAL and not of the fixture build (1392).
+ *
+ * The GQL twin got this at item 1391 and this one did not, which matters retroactively: item 1389's
+ * nomination — `iterLabeled` 20.3% + `iterByLabel` 7.9% + `outEdgesOf` 4.9% = 33.1% — was read off an
+ * UNWINDOWED profile, so the load was in the denominator. It was directionally right (the change
+ * delivered 25.1%) but the number was not the one it claimed to be. Set `PROF_OUT` and the profile
+ * covers only the rep loop; leave it unset and `profileWindow` just runs the body.
+ */
+const measure = () => {
+  for (let r = 0; r < REPS; r += 1) {
+    const t0 = performance.now();
+    const rows = toArray(plan, g);
+    const dt = performance.now() - t0;
 
-  series.push(dt);
-  sink += Array.isArray(rows) ? rows.length : 1;
-  answer = Array.isArray(rows) ? rows[0] : rows;
-}
+    series.push(dt);
+    sink += Array.isArray(rows) ? rows.length : 1;
+    answer = Array.isArray(rows) ? rows[0] : rows;
+  }
+
+  return sink;
+};
+
+await profileWindow(process.env.PROF_OUT, measure);
 
 // ⚠️ DRAIN before reading: `PerformanceObserver` delivers in a queued callback, so a synchronous
 // loop buffers every entry and reports 0 pauses (item 1361's fifth instrument defect).
@@ -176,6 +212,7 @@ console.log(
     shape: SHAPE,
     nodes: NODES,
     fanout: FANOUT,
+    fanin: FANIN,
     reps: REPS,
     answer: typeof answer === 'object' ? JSON.stringify(answer) : answer,
     median: Number(at(0.5).toFixed(3)),
