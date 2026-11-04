@@ -51997,3 +51997,75 @@ asymmetry is not an oversight in the Gremlin code; it simply does not matter.
 
 `bun run check` 0 (read unpiped), gremlin 1212/0. `count-shortcut.ts` reverted and verified: `spare`
 absent, `st.next = new Float64Array(n)` restored. Answers identical across both arms.
+
+### Item 1425 — **`hopcount3` CLOSED at its floor**, and `degreeOfTypes`' 26% is misattribution — the third frame this session to top a profile and be O(1). ⚠️ But it exposes a CROSS-ENGINE gap: the Gremlin sweep takes **85 ms** where the GQL sweep does the same work in **62**
+
+### After item 1423, the profile is one loop
+
+| frame               | share | mentions   |
+| ------------------- | ----- | ---------- |
+| `degreeOfTypes`     | 26.0% | 55         |
+| `walkBucket`        | 24.9% | **6**      |
+| `expandSlot`        | 21.0% | 12         |
+| `slotChainCount`    | 18.3% | 14         |
+| (garbage collector) | —     | below 1.2% |
+
+GC has left the top of the profile entirely (13.5 ms), and four frames carry **90.2%**.
+
+`degreeOfTypes` with one label is a single line — `byType.get(t)?.size ?? 0`. Counted rather than
+believed, twice:
+
+|                                      |             |
+| ------------------------------------ | ----------- |
+| whole query                          | 124-141 ms  |
+| `degreeOfTypes` calls                | **100,000** |
+| ns/call if it were 100% of the query | 1244-1409   |
+| ns/call at the profile's 26%         | **~325**    |
+
+A string-keyed `Map.get` is 20-50 ns. **~325 is 6-16x too much**, so the 26% is the final frontier's
+degree sum in `slotChainCount` being credited to its inlined callee — item 1104's shape, and the
+third time this session: `bucketSize` at 72.6% (item 1416), `bucketSize` again at 41% (item 1419),
+`degreeOfTypes` here.
+
+### The algorithm is right
+
+Same check that closed the GQL twin at item 1419 — the sweep is O(V × passes) regardless of the
+answer, so the sparse end is where it could lose to enumeration:
+
+| fanout | answer  | engine | naive  | engine / naive |
+| ------ | ------- | ------ | ------ | -------------- |
+| 1      | 100,000 | 84.87  | 126.74 | **0.67x**      |
+| 2      | 800,000 | 80.11  | 137.55 | **0.58x**      |
+
+Both arms asserted to agree on the answer. The sweep wins 1.5-1.7x, so the route is correct and this
+row's remaining 90% is work the algorithm requires.
+
+### ⚠️ The finding is the CROSS-ENGINE gap, and it is a new nomination
+
+The same question — an unfiltered 3-hop count over 100,000 vertices at out-degree 1 — measured on
+both engines this session:
+
+| engine  | route                                          | ms        |
+| ------- | ---------------------------------------------- | --------- |
+| GQL     | degree PRODUCT (`buildThreeHopCount`, shipped) | **46-49** |
+| GQL     | sweep (`longChainCount`, forced at item 1420)  | **62**    |
+| Gremlin | sweep (`slotChainCount`, shipped)              | **85**    |
+
+Two separate gaps, and they are different problems:
+
+1. **Gremlin's sweep is 1.37x the GQL sweep** for the same algorithm on the same shape. Both are
+   forward way-count passes; they should not differ by a third. That is a like-for-like comparison
+   with no route choice in it, so it is the cleaner target.
+2. **Gremlin has no product route at all.** Item 1420 measured the product beating the sweep by
+   1.3x on exactly this shape and re-verified it on today's code — so Gremlin is on the route GQL
+   measured as the slower one. Closing that is a new code path, not a tune.
+
+Taking (1) first is the right order: if the Gremlin sweep closes to the GQL sweep's 62 ms, the
+product's remaining margin is ~1.3x rather than ~1.8x, and (2) may not be worth a new path at all.
+Priced here, built in neither.
+
+### Gates
+
+`bun run check` 0 (read unpiped), gremlin 1212/0. The call-counting instrumentation was applied to a
+copy kept under `crates/lenke-engine/target/` and reverted from it; `count-shortcut.ts` verified free
+of `__dg` and rebuilt.
