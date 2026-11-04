@@ -213,8 +213,22 @@ const sortByBys = <T>(
   // So 879's ATTRIBUTION is refuted, which is the useful part: the wrapper objects and the extra
   // passes are ~11% of the residual, and the other ~89% is elsewhere — `evalBy` plus `project`
   // being 2M closure/switch calls, `[...stream]` materializing 1M traversers, and `compareTotal`
-  // over two `unknown` loads ~20M times are the unpriced candidates. Do not re-attempt this
-  // rewrite; price those first. See packages/native/order-cost-probe.ts.
+  // over two `unknown` loads ~20M times are the ~~unpriced candidates. Do not re-attempt this
+  // rewrite; price those first~~ candidates. See packages/native/order-cost-probe.ts.
+  //
+  // ⚠️ ALL THREE ARE NOW PRICED AND ALL THREE ARE CLOSED (item 1394), off a WINDOWED profile of
+  // `hoporder` — the Gremlin bench had no windowing until item 1392, which is why they stayed
+  // unpriced this long:
+  //
+  //   `evalBy` plus `project`   0.1%  REFUTED — listed first, and it is not a cost at all
+  //   the comparator          ~4.3%  `compareTotal` is inlined into the `sortByBys` closure
+  //   `[...stream]`           ~5.0%  startTraverser 1.4 + unwrap 1.9 + toArray 1.8
+  //
+  // A share overstates a realizable change by ~2.5x here, so the latter two are ~2% each — under
+  // what this row resolves even at 106 ms a rep. And the row's dominant term is not the sort:
+  // **36% of what `values(k).order()` adds over a bare hop is FAR-VERTEX LOCALITY** (115.9 ms at
+  // fan-in 1 against 73.5 at fan-in 100, with the bare-hop control flat at 75.9/77.6), which item
+  // 1392 closed as having no per-row lever. Nothing is open on this row.
   if (bys.length === 1) {
     const [by] = bys;
     const descending = (by.direction ?? (desc ? 'desc' : 'asc')) === 'desc';

@@ -49840,3 +49840,65 @@ disproved.
 
 core **383/0** (13 new), gql 3570/0, gremlin 1157/0, serialization 144/0, `bun run fuzz` 20/0,
 `bun run check` 0 (read unpiped). Both drivers restored their arm in a `finally` and verified it.
+
+### Item 1394 — the windowed GREMLIN screen finds **no unpriced frame over 2%** in four shapes, and prices the **three candidates item 879 left open**: `evalBy` **0.1%** (refuted), the comparator **~4.3%**, the stream materialization **~5%**. `hoporder` is **36% far-vertex locality**, which item 1392 closed
+
+Items 1391 and 1392 gave both isolated benches profile windowing. This is the first windowed screen
+over the Gremlin shapes that are not yields: `filterchain`, `grouped`, `hopdedupe`, `hoporder`.
+
+### The screen is clean, and three of the four rows are tiny
+
+| shape         | engine      | top frames                                                                                      | unpriced over 2% |
+| ------------- | ----------- | ----------------------------------------------------------------------------------------------- | ---------------- |
+| `filterchain` | 54 ms       | `propertyCount` 67.7%, `matches` 13.7%                                                          | none             |
+| `grouped`     | 71 ms       | `tallyGroupCount` 48.1%, `groupCountShortcut` 41.1%                                             | none             |
+| `hopdedupe`   | 79 ms       | `hasAny` 78.3%, `distinctHopCount` 12.2%                                                        | none             |
+| `hoporder`    | **3599 ms** | `values` 38.9%, `pick` 18.9%, `get properties` 10.9%, `sortByBys` 10.5% (+4.3% in its closures) | none             |
+
+Each of the first three is dominated by ONE frame that is the shortcut doing its job — the screen
+working as designed, with nothing to nominate. `hoporder` is 45x the next row and the only one worth
+decomposing.
+
+### `hoporder`, decomposed against a control it cannot reach
+
+`isolated-gremlin-bench.mjs`, `NODES=200000`, `REPS=14 DROP=3`, p25. `hopbare` is the same hop with
+no property read and no sort.
+
+| row                               | `FANIN=1` | `FANIN=0.01` |
+| --------------------------------- | --------- | ------------ |
+| `hoporder`                        | 191.80    | **151.09**   |
+| `hopbare` [CONTROL]               | 75.92     | 77.55 — flat |
+| **what `values(k).order()` ADDS** | **115.9** | **73.5**     |
+
+So **~42 ms, 36% of what the projection-and-sort adds, is far-vertex locality** — the cost item 1392
+measured at 21.6x on the accessor and closed as having no per-row lever. The control being flat
+across both fan-ins is what licenses attributing the whole difference to the read.
+
+### The three candidates item 879 named, now priced
+
+`sortByBys`' own doc refutes the index-permutation rewrite ("do not re-attempt this rewrite; price
+those first") and names exactly three unpriced candidates for the residual. The windowed profile
+prices all three:
+
+| candidate (item 879's words)                            | profile share                                                                                                                      | verdict                              |
+| ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
+| "`evalBy` plus `project` being 2M closure/switch calls" | `evalBy` **0.1%**, `isElement` 0.1%                                                                                                | **REFUTED** — it is not there at all |
+| "`compareTotal` over two `unknown` loads ~20M times"    | ~**4.3%** (inside `(anonymous) in sortByBys`; `compareTotal` never appears as its own frame, so it is inlined into the comparator) | priced, small                        |
+| "`[...stream]` materializing 1M traversers"             | ~**5%** (`startTraverser` 1.4% + `unwrap` 1.9% + `toArray` 1.8%)                                                                   | priced, small                        |
+
+`evalBy` at 0.1% is the useful one: item 879 listed it first among the candidates and the profile says
+it is not a cost. The other two are ~4-5% shares, and this session's own prior is that a share
+overstates a realizable change by ~2.5x — so ~2% each, under what this row can resolve even at 106 ms
+a rep. **All three are closed, and none is worth a change.**
+
+### What that leaves
+
+`hoporder` is now accounted for: ~36% of the added cost is the closed locality floor, the sort
+scaffolding is ~15.5% of the row with its three named candidates priced at 0.1-5%, and the one-`by`
+specialization (item 879) plus the refuted permutation rewrite (item 890) already took what was
+there. **Nothing is open on this row.** Do not re-screen it for the sort.
+
+### Gates
+
+Screen and documentation only — **no code changed**. `bun run check` 0 (read unpiped); the suites are
+unchanged from item 1393 (core 383/0, gql 3570/0, gremlin 1157/0, serialization 144/0).
