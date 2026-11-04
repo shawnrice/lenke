@@ -52433,3 +52433,78 @@ against itself.
 gql **3638/0**, gremlin 1212/0, core 383/0, serialization 144/0, `bun run fuzz` 20/0, `bun run check`
 0 (read unpiped). `rowCount` and `digest` identical across both arms in every cell and at both
 strides.
+
+### Item 1432 — **SHIPPED, 64.6%** (36/36): `both(T)` by hand, the last walk in `hop-values.ts` still going through the helpers. **181 → 61 ms on the heaviest row in either bench, which had no bench row at all.** And item 1431's edge-index trick is UNAVAILABLE here, for a TinkerPop ordering contract
+
+### The row did not exist
+
+`hopValuesShortcut` admits `both` but had no hand walk — `oneType` and `manyTypes` both exclude it —
+so it fell to the general `adjacentEdges` tail. Adding `hopbothyield` to the Gremlin bench put it at
+**181.03 ms at 100,000 vertices: the heaviest row in either bench**, 5.8x `hopyieldsingle`. Its
+sibling `hopbothcount` is 0.01 ms, already answered by a count shortcut.
+
+Its profile is the four-deep generator chain this file's own header warned about:
+
+| frame                    | share     |
+| ------------------------ | --------- |
+| `iterLabeled`            | 33.0%     |
+| `iterByLabel`            | 11.5%     |
+| `bothEdgesOf`            | 9.9%      |
+| `iterBoth`               | 2.5%      |
+| **the delegation chain** | **56.9%** |
+| `otherEndpoint`          | 12.4%     |
+
+The header had already priced this for the single-direction case — "going through the helpers
+measured 375.6 ms where the hand walk measured 251, because `iterByLabel` `yield*`s into
+`iterLabeled`" — and item 1411 measured ONE generator layer at 2.1x. This shape has four.
+
+| shape                      | BASE   | BOTHWALK  | change    | concordance |
+| -------------------------- | ------ | --------- | --------- | ----------- |
+| **`hopbothyield`**         | 172.39 | **61.02** | **64.6%** | **36/36**   |
+| `hopyieldsingle` [CONTROL] | 30.70  | 31.84     | −3.7%     | 14/36       |
+| `hopyieldmulti` [CONTROL]  | 63.24  | 62.29     | 1.5%      | 19/36       |
+| `hopbare` [CONTROL]        | 16.80  | 16.82     | −0.1%     | 17/36       |
+
+### ⚠️ Item 1431's edge-index route is UNAVAILABLE, and that is semantics not oversight
+
+Item 1431 took GQL's undirected hop from 53.02 to 15.57 ms by iterating `edgesByLabel` ONCE. That
+emits rows in **edge** order. `iterBoth`'s contract is **out-edges then in-edges, per vertex** — its
+own comment says "to match TinkerPop's `both`/`bothE` ordering" — and the differential fuzzer
+compares Gremlin results ORDERED where GQL row order is unspecified. So the structure worth 3.4x
+there cannot be used here, exactly as item 167's vertex-side flip could not.
+
+What IS available is removing the delegation while keeping that order, which is what shipped.
+
+### The mutation run corrected TWO of my predictions, in opposite directions
+
+| mutant                         | predicted | measured       |
+| ------------------------------ | --------- | -------------- |
+| M1 in-bucket before out-bucket | CAUGHT    | **CAUGHT** (2) |
+| M2 self-loops skipped in-pass  | CAUGHT    | **SURVIVED**   |
+| M3 in-pass takes `edge.to`     | CAUGHT    | **CAUGHT** (5) |
+| M4 route never taken           | SURVIVES  | **CAUGHT** (1) |
+| M5 taken for multi-type too    | CAUGHT    | **CAUGHT** (1) |
+
+**M4 was wrong in my favour.** I expected an answer-equivalent route change to survive with only the
+bench row guarding it — as it does in items 1412, 1417, 1418, 1423 and 1431. It is caught, by the
+`drain`-is-offered assertion added to `eager-drain-route.test.ts` this item. That is item 1289's
+lesson working: assert the ROUTE and an answer-preserving change stops being invisible.
+
+**M2 was a real hole.** Skipping self-loops in the in-pass survived all 1,214 tests, so nothing
+covered a self-loop under `both`. `both-self-loop.test.ts` (4 tests) now pins it, and the contract is
+the OPPOSITE of GQL's: `iterBoth` yields `from`-bucket then `to`-bucket with no filter, and a loop
+`a -> a` is in both, so **it is yielded twice** — where GQL's undirected hop emits it ONCE (item
+1431's skip, and `shortcuts.ts`'s "a SELF-LOOP contributes one"). Two engines, two deliberate
+contracts, and carrying the GQL rule across is precisely what M2 did. Re-run: **M2 CAUGHT by 4**.
+
+### An existing test failed, correctly
+
+`eager-drain-route.test.ts` asserted `both` offers no `drain` — true when item 1412 wrote it, and it
+broke the moment that stopped being true. Moved `both('E')` into the TAKES set and kept the
+assertion as the MULTI-TYPE case, which still declines. 1212 → 1218 tests.
+
+### Gates
+
+gremlin **1218/0**, gql 3638/0, core 383/0, serialization 144/0, `bun run fuzz` 20/0, `bun run
+check` 0 (read unpiped). Answers identical across both arms. A fourth guessed-count slip in the A/B
+driver (7 occurrences asserted, 6 present) was replaced with a relation.

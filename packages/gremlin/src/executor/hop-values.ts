@@ -179,6 +179,102 @@ export const hopValuesShortcut = (plan: Plan, graph: Graph): HopValues | undefin
   // 60.7% of a multi-type hop count; item 1378 measured it at NOTHING on the Gremlin COUNT path,
   // which is a different function from this one.
   const manyTypes = labels.length > 1 && kind !== 'both' ? labels : undefined;
+  /**
+   * `both(T)` BY HAND — the third walk, and the only one left going through the helpers (item 1432).
+   *
+   * `both` is admitted by this shortcut but had no hand walk: `oneType` and `manyTypes` both exclude
+   * it, so it fell to the general `adjacentEdges` tail and paid a FOUR-DEEP generator chain.
+   * `hopbothyield` is **181 ms at 100,000 vertices — the heaviest row in either bench**, and it had
+   * no bench row at all until this item. Its profile:
+   *
+   *   `iterLabeled` 33.0% + `iterByLabel` 11.5% + `bothEdgesOf` 9.9% + `iterBoth` 2.5% = **56.9%**
+   *   in the delegation chain, plus `otherEndpoint` 12.4% resolving the far end.
+   *
+   * This file's own header already priced that chain for the single-direction case: going through
+   * the helpers measured 375.6 ms where the hand walk measured 251, "because `iterByLabel` `yield*`s
+   * into `iterLabeled`". Item 1411 then measured ONE generator layer at 2.1x; this shape has four.
+   *
+   * ⚠️ THE EDGE-INDEX ROUTE IS UNAVAILABLE HERE, and that is a semantic limit rather than an
+   * oversight. Item 1431 took GQL's undirected hop from 53.02 to 15.57 ms by iterating
+   * `edgesByLabel` ONCE — but that emits rows in EDGE order, and `iterBoth`'s contract is
+   * **out-edges then in-edges, per vertex**, matching TinkerPop's `both` ordering. GQL row order is
+   * unspecified; Gremlin stream order is a TinkerPop contract the differential fuzzer compares
+   * ORDERED. So the structure that won 3.4x there cannot be used here, exactly as item 167's
+   * vertex-side flip could not.
+   *
+   * What IS available is removing the delegation while keeping that order: out-bucket then
+   * in-bucket, per vertex, which is what `iterBoth` produces and nothing more. A SELF-LOOP is in
+   * both buckets and is yielded TWICE, which is what the helpers do and what TinkerPop does — the
+   * GQL walk's single-emission rule is ITS contract, not this one.
+   */
+  const bothOneType = labels.length === 1 && kind === 'both' ? labels[0] : undefined;
+
+  if (bothOneType !== undefined) {
+    return {
+      rest,
+      values: {
+        *[Symbol.iterator]() {
+          for (const v of graph.vertices) {
+            const outBucket = v.adjFrom?.get(bothOneType);
+
+            if (outBucket !== undefined) {
+              for (const edge of outBucket) {
+                const value = pick(edge.to);
+
+                if (!drops || value !== undefined) {
+                  yield value;
+                }
+              }
+            }
+
+            const inBucket = v.adjTo?.get(bothOneType);
+
+            if (inBucket !== undefined) {
+              for (const edge of inBucket) {
+                const value = pick(edge.from);
+
+                if (!drops || value !== undefined) {
+                  yield value;
+                }
+              }
+            }
+          }
+        },
+        // The same loop, eager — read only by `toArray` (item 1412).
+        drain() {
+          const acc: unknown[] = [];
+
+          for (const v of graph.vertices) {
+            const outBucket = v.adjFrom?.get(bothOneType);
+
+            if (outBucket !== undefined) {
+              for (const edge of outBucket) {
+                const value = pick(edge.to);
+
+                if (!drops || value !== undefined) {
+                  acc.push(value);
+                }
+              }
+            }
+
+            const inBucket = v.adjTo?.get(bothOneType);
+
+            if (inBucket !== undefined) {
+              for (const edge of inBucket) {
+                const value = pick(edge.from);
+
+                if (!drops || value !== undefined) {
+                  acc.push(value);
+                }
+              }
+            }
+          }
+
+          return acc;
+        },
+      },
+    };
+  }
 
   if (manyTypes !== undefined) {
     const forward = kind === 'out';

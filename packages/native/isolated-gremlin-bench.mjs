@@ -24,6 +24,7 @@ import { PerformanceObserver } from 'node:perf_hooks';
 import { Graph } from '@lenke/core';
 import {
   V,
+  both,
   count,
   dedupe,
   groupCount,
@@ -135,6 +136,12 @@ const SHAPES = {
   hopyieldsingle: () => traversal(V(), hasLabel('P'), out('E'), values('k')),
   hopyieldmulti: () => traversal(V(), hasLabel('P'), out('E', 'F'), values('k')),
   hopyieldmultirev: () => traversal(V(), hasLabel('P'), out('F', 'E'), values('k')),
+  // THE `both` HOP — the twin of GQL's undirected hop, which item 1431 took from 53.02 to 15.57 ms
+  // by iterating the EDGE index once instead of every vertex twice. `hopValuesShortcut` admits
+  // `both` but has no hand walk for it (`oneType` and `manyTypes` both exclude it), so it falls to
+  // the general `adjacentEdges` tail — the same per-vertex shape GQL had. No row existed for it.
+  hopbothyield: () => traversal(V(), hasLabel('P'), both('E'), values('k')),
+  hopbothcount: () => traversal(V(), hasLabel('P'), both('E'), count()),
 };
 
 const make = SHAPES[SHAPE];

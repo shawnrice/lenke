@@ -81,11 +81,18 @@ const TAKES = {
   'bare out, two types': () => traversal(V(), out('E', 'F')),
   'two types + values': () => traversal(V(), out('E', 'F'), values('k')),
   'two types REVERSED': () => traversal(V(), out('F', 'E'), values('k')),
+  // `both` with ONE type, added at item 1432 — out-bucket then in-bucket per vertex, which is
+  // `iterBoth`'s TinkerPop ordering without its four-deep generator chain.
+  'both, one type': () => traversal(V(), both('E'), values('k')),
 };
 
 const DECLINES = {
-  // `both` uses the shared helpers rather than a hand walk, so it has no drain.
-  both: () => traversal(V(), both('E'), values('k')),
+  // ⚠️ `both('E')` MOVED TO `TAKES` at item 1432, which gave it a hand walk. This assertion used to
+  // read "`both` uses the shared helpers rather than a hand walk, so it has no drain" — true when
+  // written, and it failed the moment that stopped being true, which is the test doing its job.
+  // Kept as the MULTI-TYPE case, which still falls to the general tail: `bothOneType` requires
+  // exactly one label.
+  'both, two types': () => traversal(V(), both('E', 'F'), values('k')),
   // A RESIDUAL: the shortcut still fires but `rest` is non-empty, so `run` wraps the values in
   // traversers and the route must not be offered.
   'residual order': () => traversal(V(), out('E'), values('k'), order()),
