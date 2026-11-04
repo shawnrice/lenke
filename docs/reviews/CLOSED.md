@@ -55157,3 +55157,110 @@ the well-measured one is where everyone already looked.**
 `bun run check` 0 (read unpiped). gql **3691**/0 (3686 + 5), gremlin 1241/0, core 383/0,
 serialization 144/0. `bun run fuzz` 20/0 plus the differential fuzzer three more times on random
 seeds — the same instrument item 1462 leaned on for its row-order claim, which these changes share.
+
+### Item 1464 — the unmeasured-surface sweep, continued: **nothing quadratic left**, and the one structural finding is that `tracksPath` turns OFF every fast walk this session built. `simplePath`/`cyclicPath` run at **2583 ns/row** on the general tail
+
+Items 1462-1463 found 33-56x by asking "which shipped surface has no bench row?". This applies the same
+question to the rest of both surfaces, and the answer is mostly clean — which is worth recording,
+because a negative sweep is what stops the next pass re-asking.
+
+### GQL: twelve unmeasured shapes, nothing superlinear
+
+Two sizes, 10,000 and 40,000 vertices (a 4x step, so 4.0x is linear):
+
+```text
+  map value            5.78 ->  31.79   5.50x     <- highest, a mild allocation term
+  EXCEPT               4.61 ->  15.97   3.46x
+  UNION                4.13 ->  12.98   3.14x
+  INTERSECT            6.23 ->  13.59   2.18x
+  OPTIONAL MATCH      10.42 ->  21.78   2.09x
+  percentile_cont      0.53 ->   1.10   2.08x
+  sum + avg            2.27 ->   4.55   2.00x
+  EXISTS subquery     17.31 ->  33.62   1.94x
+  collect              0.79 ->   1.54   1.94x
+  COUNT subquery      23.62 ->  31.50   1.33x
+  stddev_pop          0.76 ->   0.92   1.21x
+  DISTINCT prop       1.62 ->   0.73   0.45x
+```
+
+`UNION`, `EXCEPT`, `INTERSECT`, `EXISTS`/`COUNT` subqueries, `DISTINCT`, `collect`, the moment
+aggregates, percentiles, `OPTIONAL MATCH` and map values all scale at or below linear. **No second
+`ANY SHORTEST` on the GQL side.** `map value`'s 5.50x against 4.0x is one map object per row and is
+the only thing above linear at all; at 31.79 ms for 40,000 rows it is 795 ns/row, which is not a
+target against the rows this bench already closed.
+
+### Gremlin: nine unmeasured steps, and two that looked superlinear are not
+
+```text
+  cyclicPath 3 hops     9.17 ->  87.07   9.50x
+  simplePath 3 hops    11.45 ->  81.53   7.12x
+  repeat().times(3)     4.96 ->  26.86   5.42x
+  path() after 2 hops  17.59 ->  65.31   3.71x
+  as + select           8.67 ->  30.56   3.52x
+  dedupe after hop      0.75 ->   2.10   2.81x
+  where(out)           24.88 ->  20.94   0.84x
+  order + limit         7.39 ->   5.56   0.75x
+  groupCount by k       0.91 ->   0.63   0.70x
+```
+
+The two path predicates looked like a find. Taken to four sizes they are not:
+
+```text
+  N        simplePath   cyclicPath
+  10,000       17.53       12.47
+  20,000       54.23       34.50
+  40,000       77.09       65.21
+  80,000      206.67      232.10
+```
+
+10,000 → 80,000 is an 8x size step for **11.8x and 18.6x** — above linear, but that is the per-row
+cache term item 1452 measured at 1.2-3.1x over a 10x step, not an algorithmic one. **A two-point ratio
+was not enough to tell those apart**, which is the same lesson as item 1456's `gcMs`: the second point
+makes a ratio and the fourth makes a trend.
+
+### The structural finding: `tracksPath` disables every fast walk
+
+The absolute cost is the signal instead. At 80,000, `simplePath` is 206.67 ms over ~80,000 rows =
+**2583 ns/row**, against `hopbare`'s 30. A profile says why — the top frames are the GENERAL TAIL:
+
+```text
+  iterLabeled        20.96%        otherEndpoint      4.59%
+  outEdgesOf          5.68%        extend             6.33%   (path extension)
+  traverseToVertex    5.68%        filterTraverser    2.18%   (simplePath's own filter)
+  iterByLabel         5.24%
+```
+
+`simplePath`'s own predicate is **2.18%**. The cost is the hop chain, and the reason is one gate:
+
+```ts
+export const effectivePlan = (plan: Plan, graph: Graph, tracksPath: boolean): Plan =>
+  tracksPath ? plan : dropVacuousLabels(fuseUnionSameDir(fuseUnionBoth(fuseEdgeHop(…))), graph);
+const projected = ctx.tracksPath ? undefined : hopValuesShortcut(effective, graph);
+```
+
+**With `tracksPath` set, the plan is returned UNREWRITTEN and `hopValuesShortcut` is skipped entirely**
+— so `path()`, `simplePath()`, `cyclicPath()` and `as`/`select` run the four-deep generator chain that
+items 1389, 1412, 1432 and 1442 removed everywhere else. Four of the nine steps above pay it, and the
+gate is correct as written: the fused walks emit bare values and build no path, so a plan that reads
+one cannot ride them.
+
+**The design question, flagged not built.** `simplePath` and `cyclicPath` need the path only to CHECK
+it, never to emit it — so a fused walk that maintained a small fixed-length path array could serve
+them while still skipping the traverser chain. That is a new walk variant with its own correctness
+surface (the path contents must match what the general tail would have built, or `path()` and
+`select` would disagree with `simplePath` on the same graph), and it is worth roughly the gap between
+2583 ns/row and the ~30-200 the fused walks reach. Not a tick's work, and the measurement above is
+the case for doing it.
+
+### Two instrument notes
+
+- **The profile above is NOT windowed**, and it shows: `indexEdgeLabel` 3.06%, `commitElementLabels`
+  2.40% and `getVertexById` 3.06% are fixture construction. Item 1457 recorded the fix for write
+  probes and the same applies to an ad-hoc read profile built in one script. The RANKING among query
+  frames is unaffected, which is why the conclusion stands, but the shares are diluted.
+- **`times` is not a standalone export** — the spelling is `repeat(out('E')).times(3)`, a method on the
+  repeat step. My first sweep died on `times is not a function`, which cost one run.
+
+### Gates
+
+`bun run check` 0 (read unpiped). No code changed — this item is a sweep and a flag.
