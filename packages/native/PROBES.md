@@ -212,10 +212,11 @@ builds graphs in a tight loop is measuring a different heap than it thinks.
 
 ## The ISOLATED ROW BENCHES — for a sub-10% question on ONE row
 
-| file                         | surface                                            |
-| ---------------------------- | -------------------------------------------------- |
-| `isolated-row-bench.mjs`     | one GQL row (`SHAPE=hopfilter NODES= REPS= DROP=`) |
-| `isolated-gremlin-bench.mjs` | one Gremlin row (item 1368)                        |
+| file                          | surface                                            |
+| ----------------------------- | -------------------------------------------------- |
+| `isolated-row-bench.mjs`      | one GQL row (`SHAPE=hopfilter NODES= REPS= DROP=`) |
+| `isolated-gremlin-bench.mjs`  | one Gremlin row (item 1368)                        |
+| `gremlin-hop-floor-probe.mjs` | the Gremlin hop FLOOR, three arms (item 1411)      |
 
 Per-rep timing, `p25` headline, full distribution, GC accounted, answer in the output so a driver can
 assert the arms agree.
@@ -407,3 +408,17 @@ Two traps it exists to defuse, both of which caught me:
 - **`count(*)` is not a floor here.** It is answered by a degree sum that never enumerates an edge
   (item 1183). The probe warns on any sub-millisecond median for that reason; a per-edge floor must
   read a property, which is what the `countkey` arm is for.
+
+**`gremlin-hop-floor-probe.mjs` — the three-arm floor, and why the middle arm is the point.** An
+`engine`-vs-`floor` probe tells you a traversal is 2.1x a hand-written loop and leaves you unable to
+say what to fix. The third arm — the identical body as a GENERATOR, drained — splits that number in
+two: `genfloor/floor` is the generator PROTOCOL and `engine/genfloor` is the pipeline on top of it.
+At item 1411 those read **2.14x** and **1.00x**, which closed the pipeline as a target in one
+reading. Build the middle arm whenever a profile blames a frame that is a generator body; without it
+the share and the floor agree and still name nothing.
+
+⚠️ **And re-run a suspiciously exact tie as separate PROCESSES.** That run first reported engine and
+genfloor at 35.73 against 35.73 — identical to 0.01 ms, which reads like the two arms being the same
+code. Three independent processes gave 34.02/34.58, 33.91/33.39 and 36.00/34.77: the tie was p25
+luck. Cheaper than reasoning about it, and the alternative is reporting an aliasing bug that is not
+there — or missing one that is.

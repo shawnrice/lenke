@@ -50937,3 +50937,80 @@ for the optional row that is a real check rather than a formality, per the NULL-
 `bun run check` caught two lint errors in the new test file (a nested ternary and an unnecessary
 assertion); both fixed by extraction, which is the fourth time this session the gate has caught
 something the suites did not.
+
+### Item 1411 — **MEASURED, no code change**: the Gremlin hop pipeline costs **0%** over a hand-written generator with the same body. The entire **2.1x** gap to an array loop is the GENERATOR PROTOCOL, which is what `limit()` is built on — so the lever is a drain route, not a faster pipeline
+
+### The nomination
+
+A windowed profile of `V().out('E')` at 100k nodes puts **86.2%** in one frame: `values @
+index.mjs:4083`, the single-type hop's `*[Symbol.iterator]()` generator body.
+`V().hasLabel('P').out('E').values('k')` puts 59.0% there with `pick` at 23.8%. Three Gremlin rows
+profiled and this one frame tops all three.
+
+First check was the obvious one, and it came back negative: `graph.vertices` is **not** a generator.
+It is `{ [Symbol.iterator]: () => this.verticesById.values() }` — a re-iterable wrapper allocated
+once per ACCESS, handing back the Map iterator directly. So this is not audit item 217's trap (a
+`yield*`-delegating generator, measured at 1.6x), and that explanation is closed.
+
+### The floor, because a share is a nomination and a floor is the price
+
+Item 234 built floors for three Gremlin shapes and **two of the three targets did not survive** —
+the big ratio was data layout, not step overhead. So `gremlin-hop-floor-probe.mjs` was written
+BEFORE anything was built. Three arms, so the gap can be attributed rather than merely observed:
+
+| arm        | what it is                                                  |
+| ---------- | ----------------------------------------------------------- |
+| `engine`   | the real traversal through `toArray`                        |
+| `floor`    | the identical walk as a plain nested `for`, array push      |
+| `genfloor` | the identical walk as a **generator**, drained with `[...]` |
+
+`genfloor` is the load-bearing one. `engine`-vs-`floor` mixes the protocol with everything else the
+pipeline does; **`genfloor`-vs-`floor` isolates the protocol alone**, and `engine`-vs-`genfloor` is
+then what the pipeline costs on top of a generator.
+
+100k nodes, out-degree 1, 100,000 rows, p25 within a process and the median across three
+order-alternated rounds:
+
+| shape          | floor                 | genfloor       | engine         | protocol  | pipeline on top |
+| -------------- | --------------------- | -------------- | -------------- | --------- | --------------- |
+| `V().out('E')` | 16.67 ms (167 ns/row) | 35.73 ms (357) | 35.73 ms (357) | **2.14x** | **1.00x**       |
+| `…values('k')` | 29.25 ms (292)        | 59.46 ms (595) | 58.29 ms (583) | **2.03x** | **0.98x**       |
+
+**The pipeline is free.** Every step, the plan dispatch, `pick`, `toArray` — all of it together adds
+nothing measurable over a bare generator doing the same work. The whole 2.1x is the protocol: one
+`yield` and one `.next()` per row.
+
+That first table's `35.73` against `35.73` was too clean to believe, so it was re-run as three
+INDEPENDENT processes rather than reported: engine/genfloor came back 34.02/34.58, 33.91/33.39 and
+36.00/34.77 — within 2% each time, with `floor` at 12.82-16.01. The exact coincidence was p25 luck;
+the conclusion is not.
+
+### What this does and does not license
+
+It **retires** two explanations at once: the pipeline is not the cost (so there is nothing to shave
+off the steps), and `pick` is not the cost either — which independently confirms item 1392's decline
+of `pick` on self-time-misattribution grounds, now with a floor instead of an argument.
+
+It **does not** license replacing the generator. The generator is what makes `out('E').limit(10)`
+stop after ten edges, and `eager-tail-cache` records **473x** and **3680x** regressions from filling
+eagerly under a LIMIT. An eager walk is a bound on what any lazy restructuring could win, never a
+candidate implementation.
+
+### The lever it does point at, priced but NOT built
+
+**A drain route.** When a traversal is terminated by `toArray` or `count` and no step downstream can
+short-circuit, laziness buys nothing — the stream is drained in full regardless. An eager array walk
+on exactly that shape is worth the 2.1x, and it is the same kind of plan-level route choice the
+existing `countShortcut` / `groupCountShortcut` / `haskey-count-shortcut` family already makes.
+
+Not built here, and the reason is the gate rather than the walk: it has to refuse **every** step that
+can stop early, and `eager-tail-cache`'s 3680x is what being wrong about one of them costs. That is
+a allowlist-shaped change needing its own item, its own fuzzer pass and byte-identity confirmation —
+not a one-liner to append to a measurement item.
+
+### Gates
+
+`bun run check` 0 (read unpiped). No engine code changed; the probe is the deliverable, indexed in
+`PROBES.md`. The three arms are asserted to agree on the ROW COUNT, and deliberately not on row
+order — all three walk the same adjacency in the same order, but the engine is free to reorder and
+the probe must not pretend otherwise.
