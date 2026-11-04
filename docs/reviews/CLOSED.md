@@ -50414,9 +50414,8 @@ mechanism — the previous time (item 1390's −3.7%) there WAS one.
 
 ### What is bracketed and what is not
 
-**The crossover is in (2.67, 4.00] and is not pinned.** Below 4 both arms take the same route, so the
-bench cannot see whether 3 or 2 would capture more without a third arm. That is named, not silently
-left: it is the next question on this gate, and it is cheap.
+~~**The crossover is in (2.67, 4.00] and is not pinned.** Below 4 both arms take the same route, so the
+bench cannot see whether 3 or 2 would capture more without a third arm.~~ **CLOSED at 1404: `min=2` is 7.2% faster at 142/144 and is DECLINED, because the estimate's 2x bias would make it accept at a TRUE degree of 1, where this route loses 1.24x. The fix is the estimate, not the threshold.**
 
 **And the estimate is biased HIGH**, which is the argument against dropping further on a hunch:
 `typeEdgeCount` sums the named buckets, so a two-type edge counts twice — the estimate reads 1.33x
@@ -50440,3 +50439,57 @@ gql **3580/0**, gremlin 1157/0, core 383/0, serialization 144/0, `bun run fuzz` 
 0 (read unpiped). Confirming read on the shipped build: `FANOUT=1` 27.80 ms and `FANOUT=4` 82.44 ms,
 with row counts and digests matching the sweep's. Both A/B drivers restored their arm and verified it
 byte-identical.
+
+### Item 1404 — the bracket is CLOSED: `min=2` is **7.2% faster at 142/144** and is **DECLINED**, because the estimate's bias would make it accept at a TRUE degree of 1 — where item 1390 measured this route losing **1.24x**. The fix is the estimate, not the threshold
+
+Item 1403 shipped `FAR_DRIVEN_MIN_DEGREE = 4` and left one thing open rather than silently: the
+crossover was bracketed in **(2.67, 4.00]**, and below 4 both arms take the same route so the bench
+could not see further without a third arm. This is that arm, run now rather than named — because
+`CLOSED.md`'s own sweep found 35 entries advertising work already done, and a follow-up deferred is a
+follow-up that lingers.
+
+### The measurement
+
+One decisive cell plus three controls, n=12 each, three order-alternated rounds. Cross-arm `rowCount`
+and digest identical throughout.
+
+| cell                                        | est. degree | min=4 | min=2     | change   | concordance |
+| ------------------------------------------- | ----------- | ----- | --------- | -------- | ----------- |
+| `hopmultiyield`                             | 2.67        | 63.57 | **59.02** | **7.2%** | **142/144** |
+| `hopmultiyield` [CONTROL — both decline]    | 1.33        | 28.52 | 27.20     | 4.6%     | 73/144      |
+| `hopmultiyield` [CONTROL — both accept]     | 5.33        | 83.03 | 82.70     | 0.4%     | 71/144      |
+| `hopsingleyield` [CONTROL — never reads it] | 2.67        | 23.21 | 23.00     | 0.9%     | 80/144      |
+
+**The win is real** — 142/144 is as close to unanimous as this harness gets — and the three controls
+sit at chance, which is exactly the signature of a threshold change that differs from its baseline
+only where the two values straddle the data.
+
+### Why it is declined anyway
+
+**The estimate is biased high, and the bias is unbounded in the wrong direction.** `typeEdgeCount`
+sums the named buckets, so an edge carrying two of them counts twice: the estimate reads **1.33x**
+the true degree at `MULTILABEL=3` and **2x** when every edge carries both types.
+
+So `min=2` accepts at a **true degree of 1** on a densely multi-labelled graph — and that is
+precisely where item 1390 measured this route **losing 1.24x** (86.1 ms against the start-driven
+69.3). `min=4` cannot reach below true degree 2, which is where the win is actually measured.
+
+Trading a measured 7.2% in a narrow band for a measured 1.24x regression on a shape this engine is
+built for is the wrong trade. Recorded with its number next to the constant, per the standing rule
+about rejected optimizations, so the next person to sweep this gate finds the 7.2% and the reason
+together.
+
+### The real follow-up, priced
+
+**Fix the estimate, not the threshold.** `sumIsExact` already exists for "no edge carries two types"
+(`graph.multiTypeEdgeCount === 0`), and a gate consulting it could drop to 2 exactly when the sum is
+unbiased — capturing the 7.2% with no exposure at true degree 1. Not taken here because it adds a
+second condition to a gate whose whole value is being O(k) and obvious, and because the ceiling is
+7.2% rather than the 32-43.5% item 1403 already took. Priced, named, and left for a deliberate
+decision instead of a reflex.
+
+### Gates
+
+gql 3580/0, `bun run check` 0 (read unpiped). No engine behaviour changed — the threshold stays at 4
+and the arm was restored and verified byte-identical; the commit carries the declined measurement and
+nothing else.

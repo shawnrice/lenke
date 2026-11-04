@@ -2363,12 +2363,24 @@ export const detectHopProjection = (
  * 103/144); its first reading was −2.8% at 16/64 and the SIGN FLIPPED at n=24, which is the n=8
  * instability this repo documents rather than a real effect.
  *
- * ⚠️ THE CROSSOVER IS BRACKETED, NOT PINNED: it lies in (2.67, 4.00]. Whether a threshold of 3 or 2
- * would capture more is UNMEASURED, because below 4 both arms take the same route and the bench
- * cannot see the difference without a third arm. And the estimate is biased HIGH by the multi-label
- * factor — `typeEdgeCount` counts a two-type edge twice, so it reads 1.33x the true degree at
- * `MULTILABEL=3` and would approach 2x if every edge carried both types. That bias errs toward
- * ACCEPTING, which is the argument for not dropping the threshold further on a hunch.
+ * ⚠️ 2 IS FASTER AND IS DECLINED — the bracket is CLOSED at item 1404, with a number. A third arm
+ * at `min=2` reads **7.2% at 142/144** on the one cell where the two differ (est 2.67), with all
+ * three controls flat at chance: est 1.33 (both decline), est 5.33 (both accept), and the
+ * single-type row that never reads this constant. The win is real.
+ *
+ * It is declined because the ESTIMATE IS BIASED HIGH and the bias is unbounded in the wrong
+ * direction. `typeEdgeCount` sums the named buckets, so an edge carrying two of them counts twice:
+ * the estimate reads **1.33x** the true degree at `MULTILABEL=3` and **2x** when every edge carries
+ * both types. So `min=2` accepts at a TRUE degree of 1 on a densely multi-labelled graph — which is
+ * precisely where item 1390 measured this route LOSING **1.24x** (86.1 ms against the start-driven
+ * 69.3). `min=4` cannot reach below true degree 2, where the win is measured.
+ *
+ * Trading a measured 7.2% in a narrow band for a measured 1.24x regression on a shape this engine
+ * is built for is the wrong trade. **The fix is the estimate, not the threshold**: `sumIsExact`
+ * already exists for "no edge carries two types" (`graph.multiTypeEdgeCount === 0`), and a gate that
+ * consulted it could drop to 2 exactly when the sum is unbiased. That is a real follow-up with a
+ * priced ceiling of 7.2%, and it is not taken here because it adds a second condition to a gate
+ * whose whole value is being O(k) and obvious.
  *
  * See `farDrivenPaysForMultiType` for the arithmetic and `hop-projection-route.test.ts` for its
  * unit tests — a route choice is ANSWER-EQUIVALENT, so no differential test can fail when it is
