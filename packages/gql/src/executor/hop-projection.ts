@@ -2144,14 +2144,23 @@ export const detectHopProjection = (
     // `ts-closure-size-is-load-bearing` is about exactly this and the allocation buys nothing. The
     // single-type compile now never sees it.
     //
-    // Its only difference from `startDriven` is the edge source: `edgesOfTypes` unions the vertex's buckets with item
-    // 1377's earlier-buckets dedupe and item 1384's largest-bucket-first sort, so an edge carrying
-    // two of the named types yields exactly ONE row — which is what the general matcher it replaces
-    // did, verified at 20,000 rows for `:E`, `:E|F` and `:F|E` alike before any of this was built.
+    // Its only difference from `startDriven` is the edge source: the vertex's buckets are unioned
+    // with item 1377's earlier-buckets dedupe and item 1384's largest-bucket-first sort, so an edge
+    // carrying two of the named types yields exactly ONE row — which is what the general matcher it
+    // replaces did, verified at 20,000 rows for `:E`, `:E|F` and `:F|E` alike before any of this
+    // was built.
     //
-    // NO FAR-DRIVEN FORM. `farDrivenHopWalk` hoists `projectRow` to once per far vertex and reads
-    // one bucket by name; giving it a union is a separate change with its own measurement, and the
-    // start-driven walk is what the 9.8x was measured against.
+    // ⚠️ A HAND WALK, not `edgesOfTypes` (item 1391). Delegating to that generator put
+    // `edgesOfManyTypes` at **17.8% of a windowed profile** of this row — a frame the single-type
+    // arm has no equivalent of, because it iterates one `Set` directly. Same lever item 1389 took
+    // on the Gremlin side, where removing two generator-delegation layers was worth **25.1%**, and
+    // `edgesOfTypes`' own doc already prices a generator frame at 8.4 ns an edge (item 324). The
+    // dedupe and the sort are DUPLICATED from `edgesOfManyTypes` rather than called — change the
+    // rule in one and change it in the other.
+    //
+    // ~~NO FAR-DRIVEN FORM~~ — there is one, built at item 1390 behind `farDrivenPaysForMultiType`,
+    // because the hoist LOSES at low fan-in (86.1 ms against 69.3 at in-degree 1) and wins 74% at
+    // in-degree 133. This walk is what the gate falls back to.
     if (types.length > 1) {
       const startDrivenMany = (graph: Graph, params: Params): Row[] => {
         const rows: Row[] = [];
@@ -2159,16 +2168,49 @@ export const detectHopProjection = (
         const fl = vacuousLabel(graph, farLabel) ? undefined : farLabel;
         const ts = types as string[];
 
+        // ⚠️ A HAND WALK, not `edgesOfTypes` (item 1391). Delegating to that generator put
+        // `edgesOfManyTypes` at 17.8% of a windowed profile of this row — a frame the single-type
+        // arm has no equivalent of, because it iterates one `Set` directly. The dedupe and the sort
+        // are DUPLICATED from `edgesOfManyTypes` rather than called; change the rule in one and
+        // change it in the other.
+        const buckets: ReadonlySet<Edge>[] = [];
+
         for (const v of candidateVertexSource(graph, startLabel)) {
-          for (const edge of edgesOfTypes(out ? v.adjFrom : v.adjTo, ts)) {
-            const far: Vertex = out ? edge.to : edge.from;
+          const byType = out ? v.adjFrom : v.adjTo;
 
-            if (fl !== undefined && !matchesLabel(far, fl)) {
-              continue;
+          if (byType === undefined) {
+            continue;
+          }
+
+          buckets.length = 0;
+
+          for (const t of ts) {
+            const bucket = byType.get(t);
+
+            if (bucket !== undefined && bucket.size > 0) {
+              buckets.push(bucket);
             }
+          }
 
-            binding.set(farVar, far);
-            rows.push(projectRow(walkProj, binding, params, graph));
+          if (buckets.length > 1) {
+            buckets.sort((x, y) => y.size - x.size);
+          }
+
+          for (let i = 0; i < buckets.length; i += 1) {
+            for (const edge of buckets[i]) {
+              if (i > 0 && inEarlier(buckets, i, edge)) {
+                continue;
+              }
+
+              const far: Vertex = out ? edge.to : edge.from;
+
+              if (fl !== undefined && !matchesLabel(far, fl)) {
+                continue;
+              }
+
+              binding.set(farVar, far);
+              rows.push(projectRow(walkProj, binding, params, graph));
+            }
           }
         }
 

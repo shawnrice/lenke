@@ -305,6 +305,18 @@ layout so the difference stays visible rather than taken on trust.
 
 ## HOW TO RUN ONE, which is not optional detail
 
+**ASSERT THE ARM FROM THE FILE ON DISK, not from the variable you just built — and do it before you
+measure anything.** Every A/B driver here checks the marker count after copying an arm into place,
+and that rule has caught the mistake it exists for. The gap it did NOT cover, until item 1391, is the
+in-place edit that PRECEDES the driver: a patch script that applies several replacements to a string
+and writes once at the end discards all of them if any later assertion throws. At item 1391 a doc
+anchor failed after the code replacement had already succeeded in memory, so nothing reached disk —
+and the next twenty minutes were spent measuring HEAD against itself, reading a 1.10x asymmetry out
+of it and drafting a refutation. Two things caught it and neither was attention: a `grep -c` of the
+new symbol returned 0, and the DRIVER refused to start ("working tree is not the HAND arm"). So:
+write, read the file back, count the marker, and only then build. A patch script should assert on
+what it can re-read, not on what it computed.
+
 **One shape per PROCESS, and repeat the PROCESS rather than adding rounds.** Four separate readings
 in a single pass were inverted by ignoring this:
 

@@ -31,6 +31,8 @@ import { PerformanceObserver } from 'node:perf_hooks';
 import { Graph } from '@lenke/core';
 import { query } from '@lenke/gql';
 
+import { profileWindow } from './windowed-profile.mjs';
+
 const SHAPE = process.env.SHAPE ?? 'hopfilter';
 const NODES = Number(process.env.NODES ?? 200_000);
 const REPS = Number(process.env.REPS ?? 14);
@@ -155,32 +157,48 @@ let answer;
 let rowCount = 0;
 let digest = 0;
 
-for (let r = 0; r < REPS; r += 1) {
-  const t0 = performance.now();
-  const rows = query(g, q);
-  const dt = performance.now() - t0;
+/**
+ * ⚠️ WINDOWED, so a profile of this bench is of the QUERY and not of the fixture build (item 1391).
+ *
+ * `node --cpu-prof` profiles start to exit, and at `NODES=100000` with `REPS=6` the load dominates:
+ * a profile of the post-1390 yield path put `getVertexById` 10.4%, `indexEdgeLabel` 7.3%,
+ * `commitElementLabels` 4.9% and `addVertex` 2.4% near the top — every one of them the LOAD, none of
+ * them the query — exactly the inversion `windowed-profile.mjs` was built for at item 1362 and the
+ * family of defect item 1360 recorded. Set `PROF_OUT` to a path and the profile covers only the rep
+ * loop; leave it unset and `profileWindow` just runs the body, so timing runs are unaffected.
+ */
+const measure = () => {
+  for (let r = 0; r < REPS; r += 1) {
+    const t0 = performance.now();
+    const rows = query(g, q);
+    const dt = performance.now() - t0;
 
-  series.push(dt);
-  sink += rows.length;
-  [answer] = rows;
-  rowCount = rows.length;
-  // An ORDER-INDEPENDENT digest of the whole result: summed per row, so a permutation cannot change
-  // it while a changed VALUE or a dropped row can. Cheap enough not to disturb the timing (it runs
-  // outside the measured window) and it is the check the first row cannot make.
-  digest = 0;
+    series.push(dt);
+    sink += rows.length;
+    [answer] = rows;
+    rowCount = rows.length;
+    // An ORDER-INDEPENDENT digest of the whole result: summed per row, so a permutation cannot
+    // change it while a changed VALUE or a dropped row can. It runs outside the timed window and it
+    // is the check the first row cannot make.
+    digest = 0;
 
-  for (const row of rows) {
-    for (const k of Object.keys(row)) {
-      const v = row[k];
+    for (const row of rows) {
+      for (const k of Object.keys(row)) {
+        const v = row[k];
 
-      if (typeof v === 'number') {
-        digest += v;
-      } else if (v !== null && v !== undefined) {
-        digest += JSON.stringify(v).length;
+        if (typeof v === 'number') {
+          digest += v;
+        } else if (v !== null && v !== undefined) {
+          digest += JSON.stringify(v).length;
+        }
       }
     }
   }
-}
+
+  return sink;
+};
+
+await profileWindow(process.env.PROF_OUT, measure);
 
 // ⚠️ DRAIN before reading: `PerformanceObserver` delivers in a queued callback, so a synchronous
 // loop buffers every entry and reports 0 pauses (item 1361's fifth instrument defect).

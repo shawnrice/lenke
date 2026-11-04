@@ -49603,3 +49603,80 @@ That is the fourth time in three items that the finding came from a CONTROL or a
 the target — 1388's single-type control, 1389's vacuity check, this item's declining-regime control,
 and now M4. The targets have been straightforwardly large; everything subtle was in a row that was
 supposed to not move.
+
+### Item 1391 — **SHIPPED, 12.8%**: the multi-type start-driven walk stops delegating to the `edgesOfManyTypes` generator. The bench had no PROFILE WINDOWING, so the frame that nominated this was invisible — and I measured HEAD against itself for twenty minutes first
+
+Items 1388-1390 all ran against `isolated-row-bench.mjs` and none of them could profile it honestly:
+`node --cpu-prof` covers start to exit, so at `NODES=100000` with `REPS=6` the fixture LOAD dominated.
+An unwindowed profile of the post-1390 yield path put `getVertexById` 10.4%, `indexEdgeLabel` 7.3%,
+`commitElementLabels` 4.9% and `addVertex` 2.4% near the top — every one of them the load, none of
+them the query. That is the inversion `windowed-profile.mjs` was built for at item 1362 and the
+family of defect item 1360 recorded; the bench now takes `PROF_OUT` and profiles only the rep loop.
+
+### What the windowed profile actually said
+
+| arm              | engine | top frames                                                                                                 |
+| ---------------- | ------ | ---------------------------------------------------------------------------------------------------------- |
+| `hopsingleyield` | 277 ms | `farDrivenHopWalk` **65.5%**, GC 13.8% — a tight loop with nothing to pick off                             |
+| `hopmultiyield`  | 480 ms | GC **27.4%**, **`edgesOfManyTypes` 17.8%**, `get properties` 17.4%, `startDrivenMany` 11.9%, `propOf` 9.7% |
+
+`edgesOfManyTypes` is a generator the single-type arm has no equivalent of, because `edgesOfTypes`
+returns one `Set` directly for a single name (item 324). **The property-read frames were deliberately
+NOT read as a multi-arm problem**: the single arm's 65.5% walk frame almost certainly absorbs its own
+`projectRow` work by inlining, which is precisely the self-time trap the analyzer's own header
+records from item 1104 (`edgesOfTypes` read 37.9% self for a single `Map.get`).
+
+### The measurement
+
+`startDrivenMany` now walks the vertex's buckets by hand — the dedupe and the sort DUPLICATED from
+`edgesOfManyTypes` rather than called. Same lever item 1389 took on the Gremlin side for 25.1%.
+`FANIN=1` is the only regime this change can reach, because item 1390's gate sends high fan-in to the
+far-driven walk.
+
+| shape                      | fanin | BASE p25 | HAND       | change    | concordance |
+| -------------------------- | ----- | -------- | ---------- | --------- | ----------- |
+| `hopmultiyield`            | 1     | 72.776   | **63.458** | **12.8%** | 551/576     |
+| `hopmultiyieldrev`         | 1     | 74.163   | **64.559** | 12.9%     | 504/576     |
+| `hopsingleyield` [CONTROL] | 1     | 37.681   | 38.735     | −2.8%     | 285/576     |
+
+A 17.8% nominal share became **12.8% realized** — better than this session's own ~2.5x
+overstatement prior, which would have predicted ~7%. The control sits at exactly chance (288/576 is
+0.5). The two spellings agree to 0.1 points, which is the sort working.
+
+### ⚠️ I MEASURED HEAD AGAINST ITSELF FOR TWENTY MINUTES, AND NEITHER THE TESTS NOR THE GATES NOTICED
+
+The patch script applied two replacements to a string and wrote once at the end. A doc anchor failed
+AFTER the code replacement had already succeeded in memory, so the assertion threw and **nothing
+reached disk**. I then ran the bench and read 73.7 / 80.8, repeated it four times, reasoned about a
+1.10x spelling asymmetry, and drafted a refutation — from numbers that could not contain the change.
+`bun run check` was 0 and 3,570 tests passed throughout, because the tree was simply unmodified.
+
+Two things caught it and neither was attention: a `grep -c` of the new symbol returned 0, and the A/B
+DRIVER refused to start — _"working tree is not the HAND arm"_. That is CLAUDE.md's "assert each A/B
+arm IS the code it claims" doing its job. The rule was applied to drivers and not to the in-place
+edit that precedes them; `PROBES.md` now carries the gap: **write, read the file back, count the
+marker, and only then build. A patch script should assert on what it can re-read, not on what it
+computed.**
+
+Note what this says about the earlier reading: the 1.10x "asymmetry" and the "refutation" were both
+noise on an unchanged binary, and the real answer is a clean 12.8% win. An unverified arm does not
+merely waste time — it produces a confident wrong conclusion in whichever direction the noise falls.
+
+### Teeth, by three mutants — one SURVIVES BY DESIGN
+
+| mutant                             | verdict                | caught by                                               |
+| ---------------------------------- | ---------------------- | ------------------------------------------------------- |
+| M1 no earlier-buckets dedupe       | CAUGHT 52/5            | the union, duplicate-type, far-label and fan-in-1 tests |
+| M2 the scratch array never cleared | CAUGHT 51/6            | the same five plus the absent-type test                 |
+| M3 no largest-bucket-first sort    | **SURVIVED, expected** | nothing — and nothing can                               |
+
+**M3 is answer-equivalent, so no test can guard it**, the same situation as item 1390's route gate
+but without an arithmetic helper to extract. Its guard is the `hopmultiyieldrev` bench row, which is
+why that row exists: 12.9% against 12.8% is the sort working, and an unsorted walk would show the
+spelling asymmetry items 1382 and 1384 each shipped (3.53x and 1.42x). Recorded as a known
+test-shaped hole with a named instrument rather than left to look like coverage.
+
+### Gates
+
+gql 3570/0, gremlin 1157/0, core 370/0, serialization 144/0, `bun run fuzz` 20/0, `bun run check` 0
+(read unpiped). The A/B driver restored its arm and deleted both arm files in a `finally`.
