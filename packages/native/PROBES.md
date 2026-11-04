@@ -212,11 +212,12 @@ builds graphs in a tight loop is measuring a different heap than it thinks.
 
 ## The ISOLATED ROW BENCHES — for a sub-10% question on ONE row
 
-| file                          | surface                                            |
-| ----------------------------- | -------------------------------------------------- |
-| `isolated-row-bench.mjs`      | one GQL row (`SHAPE=hopfilter NODES= REPS= DROP=`) |
-| `isolated-gremlin-bench.mjs`  | one Gremlin row (item 1368)                        |
-| `gremlin-hop-floor-probe.mjs` | the Gremlin hop FLOOR, three arms (item 1411)      |
+| file                             | surface                                            |
+| -------------------------------- | -------------------------------------------------- |
+| `isolated-row-bench.mjs`         | one GQL row (`SHAPE=hopfilter NODES= REPS= DROP=`) |
+| `isolated-gremlin-bench.mjs`     | one Gremlin row (item 1368)                        |
+| `gremlin-hop-floor-probe.mjs`    | the Gremlin hop FLOOR, three arms (item 1411)      |
+| `gql-undirected-floor-probe.mjs` | the GQL undirected hop, five-arm ablation (1414)   |
 
 Per-rep timing, `p25` headline, full distribution, GC accounted, answer in the output so a driver can
 assert the arms agree.
@@ -433,3 +434,16 @@ genfloor at 35.73 against 35.73 — identical to 0.01 ms, which reads like the t
 code. Three independent processes gave 34.02/34.58, 33.91/33.39 and 36.00/34.77: the tie was p25
 luck. Cheaper than reasoning about it, and the alternative is reporting an aliasing bug that is not
 there — or missing one that is.
+
+**`gql-undirected-floor-probe.mjs` — a five-arm ablation, and why the extra arms earn their keep.**
+Two arms (engine, floor) tell you a row is 1.39x a hand walk and leave you unable to say what to
+fix. Removing one thing per arm — the property read, then the row object, then the second pass —
+splits that floor into its parts, and at item 1414 the split CONTRADICTED the profile: `propOf` +
+`get properties` read 36.5% of engine time, but the property read is **25.2% of the floor** while
+the bare adjacency walk is **59.8%** — work no projection change can touch. Build the extra arms
+whenever a profile nominates a frame inside a loop you could also just write by hand.
+
+⚠️ **Check the arms that claim the same answer, and check the odd one against its own
+expectation.** This probe's `onePass` arm deliberately returns half the rows, so it cannot join the
+equality check — but "excluded from checking" is how an arm silently stops doing what it says. It is
+asserted to be a strict, non-empty subset instead.

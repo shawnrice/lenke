@@ -51233,3 +51233,93 @@ A self-inflicted detour worth one line: reframing the test header spliced `NEW +
 `t[:start] + NEW + t[end:]` and ate the import block. Eleven tests failed with
 `ReferenceError: Graph is not defined` — a loud failure, not a quiet one, which is the only reason it
 cost a minute rather than an item.
+
+### Item 1414 — **MEASURED, no code change**: the undirected hop is at **1.37-1.56x** a hand-written floor, and the ablation CORRECTS its own nomination — the property read is 25.2% of the floor, not the 36.5% the profile showed, while **60% of the floor is adjacency walking no engine change can touch**
+
+### Why this row again, after item 1408 already took 42% off it
+
+Ranking every GQL hop row by ns/row at `MULTILABEL=-1`, degree 1:
+
+| row                 | ns/row  |
+| ------------------- | ------- |
+| **`hopundiryield`** | **365** |
+| `hoprelfiltyield`   | 220     |
+| `hopsingleyield`    | 216     |
+| `hopstartonlyyield` | 186     |
+| `hopmultiyield`     | 179     |
+| `hopfiltyield`      | 165     |
+| `hopmultiyieldrev`  | 159     |
+| `hopoptyield`       | 150     |
+| `hoprelyield`       | 92      |
+
+Still the outlier at **1.66x the next row**, and the gap to the far-driven walk is stable across
+out-degree — **2.09x, 1.64x, 1.93x** at degree 1, 2, 4 — so it is not a degree artifact. That also
+rules out the easy explanation: the far-driven walk's cheap property read comes from item 167's
+hoist, which amortizes over a far vertex's IN-degree, and at `FANIN=1` there is none to amortize.
+
+Its post-1408 profile is clean of label frames (the drop worked) and reads `undirectedHopWalk`
+48.6%, `propOf` 20.2%, `get properties` 16.3%, `get from` 3.8%.
+
+### The ablation, five arms each removing one thing
+
+`gql-undirected-floor-probe.mjs`. 99,990 rows from 50,000 `E` edges (the undirected walk emits each
+edge from both ends), p25 within a process, median of three order-alternated rounds:
+
+| arm                                     | ms    | ns/row | vs floor  |
+| --------------------------------------- | ----- | ------ | --------- |
+| `engine`                                | 50.42 | 504    | **1.39x** |
+| `twoPass` — the floor                   | 36.38 | 364    | 1.00x     |
+| `noProp` — property read removed        | 27.22 | 272    | 0.75x     |
+| `countOnly` — rows removed too          | 21.77 | 218    | 0.60x     |
+| `onePass` — out-pass only (50,000 rows) | 16.13 | —      | —         |
+
+| what                            | cost     | share of the floor |
+| ------------------------------- | -------- | ------------------ |
+| the adjacency walk alone        | 21.77 ms | **59.8%**          |
+| the far-vertex property read    | 9.16 ms  | **25.2%**          |
+| building the row object         | 5.45 ms  | 15.0%              |
+| the in-pass (vs out-pass alone) | 20.25 ms | 55.7%              |
+
+### ⚠️ The nomination was wrong in a specific, useful way
+
+The profile's **36.5%** for the property read (`propOf` + `get properties`) is a share of ENGINE
+time. As a fraction of the achievable floor it is **25.2%** — and the single biggest component is
+the adjacency walk at **59.8%**, which no change to the projection path touches. So even a perfect
+engine could remove at most 40% of this row, and the profile's top non-walk frame was overstated by
+~1.4x as a target.
+
+That is the third time this session a profile share has needed an ablation to become a price, and
+the three outcomes were all different: the Gremlin generator's 86.2% was **real** (2.1x, shipped at
+item 1412), the multi-type dedupe's 60.1% was worth **−0.5%** (declined at 1413), and this one is
+**real but smaller than it looked**. A share is a nomination; an ablation is the price — and the
+nomination is wrong often enough that the rule has now earned itself three times in one session.
+
+### What IS the target, stated precisely for whoever takes it
+
+**`engine / twoPass`, which is 1.37-1.56x and stable across degree:**
+
+| degree | engine | floor | ratio     | adjacency share of floor | property share of floor |
+| ------ | ------ | ----- | --------- | ------------------------ | ----------------------- |
+| 1      | 50.42  | 36.38 | **1.39x** | 59.8%                    | 25.2%                   |
+| 2      | 71.04  | 51.99 | **1.37x** | 44.0%                    | 47.0%                   |
+| 4      | 112.17 | 71.86 | **1.56x** | 35.0%                    | 36.6%                   |
+
+So **~27-36% is available on this row** and the mechanism is the difference between what the two
+arms do per edge: the engine sets a `binding` entry and calls `projectRow`, which evaluates the
+projection through the generic `propOf` path; the floor does `rows.push({ n: e.to.properties['n'] })`
+directly. The precedented fix is a SPECIALIZED projection closure for the single-far-property case —
+the same `pick`-shaped monomorphic closure the Gremlin hop walk already uses, and the shape the TS
+spelling probe measured as flat (16.5-17.1 ms) where the general scalar path plateaus high and emits
+a rare fast rep.
+
+**Not taken here**, and the reason is scope rather than doubt: `projectRow` is shared by every walk
+in `hop-projection.ts`, so specializing it is not a one-line change to one walk, and item 1413 just
+measured that **editing this file costs unrelated rows 3.5-5.8%** even when the target is flat. It
+needs its own item with controls on walks it does not mean to reach.
+
+### Gates
+
+`bun run check` 0 (read unpiped). No engine code changed; the probe is the deliverable. The four
+arms that claim the same row set are asserted to agree on it, and `onePass` — which deliberately
+does not — is checked against its own expectation instead (a strict, non-empty subset) rather than
+excluded from checking.
