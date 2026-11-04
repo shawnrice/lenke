@@ -54305,10 +54305,101 @@ flat reusable buffer instead of many small objects.
 1447/1448, 1450) and the standing rule is that a share is a nomination and an ablation is the price.
 The specific trap to avoid here is item 1450's: the ablation must not hardcode what an implementation
 would have to parameterize. The right first step is to COUNT THE ALLOCATIONS at both sizes — the
-instrument item 1416 used on `bucketSize` — before touching code.
+instrument item 1416 used on `bucketSize` — before touching code. ✅ **DONE AND SHIPPED AT ITEM
+1453: 28.0%/27.0%/23.9%/22.1% at 4/4, GC 401.9 → 240.5 ms.** The count found a per-query `Map` of
+one BOXED DOUBLE key per edge with `dupes = 0`.
 
 ### Gates
 
 `bun run check` 0 (read unpiped). No code changed; the sweep used existing rows and existing knobs.
 Ran under `timeout … systemd-run -p MemoryMax=24G -p MemorySwapMax=0` because a 1M-node TS fixture
 with properties is the largest graph built in this session.
+
+### Item 1453 — ✅ SHIPPED, **28.0% / 27.0% / 23.9% / 22.1%** (4/4 each, two degrees): `pairMultiplicities`' per-query `Map` of one BOXED DOUBLE key per edge is replaced by a CSR neighbour-slice scan that allocates nothing. GC at a million nodes **401.9 → 240.5 ms**
+
+Item 1452's size sweep nominated `quant44`'s GC — 7.0 ms at 100k against **401.9 at 1M**, the one
+superlinear term in the sweep that was allocation rather than cache. Counted before touching code
+(item 1416's instrument, and item 1450's warning in hand):
+
+```text
+  N=100k, 3 reps:  builds=3  inserts=300,000  entries=300,000  dupes=0  keyMax=10^10
+  N=1M,   3 reps:  builds=3  inserts=3,000,000 entries=3,000,000 dupes=0 keyMax=10^12
+                   lookups > 5,000,000
+```
+
+Three findings in one table. The `Map` is **rebuilt per query** (one build per rep). It holds **one
+entry per edge** — 1,000,000 at 1M — keyed by `v * n + nbr[k]`, which reaches 10^12 and is therefore
+**outside SMI range, so every key is a boxed heap number**. And `dupes = 0`: every (u, v) pair is
+distinct, so every multiplicity is exactly 1.
+
+That is item 1424's shape precisely — V8's GC tracks object COUNT and promotion, not bytes (removing
+~100,000 small arrays moved `gcMs` 148 → 14.2; removing 1.6 MB in two typed arrays moved nothing).
+
+### The replacement
+
+The multiplicity of (u, v) is how many times `v` appears in `u`'s CSR neighbour slice, and the slice
+is already in hand. So the `Map` goes and the returned closure scans `nbr[off[u0] … off[u0+1]]`. No
+allocation at all, and the now-unused vertex count is dropped from the signature rather than
+underscored — it was the Map keying's only consumer.
+
+### Measured, and the degree sweep is the point
+
+The scan is O(degree) per lookup where the `Map` was O(1), so `FANOUT=1` is exactly the fixture where
+it can only win. Two rounds, arms asserted each round, 100k nodes, `STRIDE=random`:
+
+```text
+  shape       fanout      PRE      POST   change  concord  answers
+  quant44          1    48.21     34.71    28.0%   4/4     SAME
+  quant44          4   103.49     75.54    27.0%   4/4     SAME
+  varlen24         1    48.13     36.64    23.9%   4/4     SAME
+  varlen24         4   101.95     79.42    22.1%   4/4     SAME
+  chain4           1    80.27     84.82    -5.7%   0/4     SAME   CONTROL
+  chain4           4   102.22     97.72     4.4%   4/4     SAME   CONTROL
+  chain3           1    89.79     91.44    -1.8%   2/4     SAME   CONTROL
+```
+
+**The win holds at degree 4 (27.0%, 4/4)**, which was the risk. `chain3`/`chain4` are explicit chains
+rather than quantifiers and never reach `pairMultiplicities` — they scatter -5.7% to +4.4%, which is
+the band everything in this file moves in.
+
+**At 1M the win is larger but imprecisely measured** and should be quoted that way: single readings of
+780.83 and 1047.64 against baselines of 1489.54 and 1590.98, i.e. **34-51%**, with GC
+**401.9 → 240.5 ms**. The 100k A/B is the rigorous figure; the 1M numbers vary too much between
+processes to split finely, and the direction is not in doubt.
+
+### ⚠️ THE BENCH COULD NOT HAVE CAUGHT A STUB, AND THE MUTATION PROVES IT
+
+`dupes = 0` at both sizes means the bench fixture has **no parallel edges**, so every multiplicity is
+1 and **a scan replaced by `return 1` answers every bench row correctly while measuring the full
+win**. Nothing in this package exercised `{4,4}` or `{2,4}` either — `shortest.test.ts` was the only
+file that mentioned those quantifiers at all. So the function this item rewrote had no targeted
+coverage of the one case it exists for.
+
+`pair-multiplicity-trail.test.ts`, 8 tests, built the other way round: parallel edges and self-loops
+first, multiplicities 2 and 3, depths 1-4, two components, and the `{1,4}`/`{2,4}` ranges that pin
+item 602's per-LEVEL correction. **The oracle is an independent trail enumerator**, not another query
+— a quantified `{k,k}` and an explicit k-hop chain are SUPPOSED to disagree by exactly the trail rule
+(item 1401: `{2,2}` answers 799,996 where the chain answers 800,000), so comparing them tests nothing
+about the correction. `trails` tracks EDGE ids, which is what separates a trail from a simple path:
+`a -> a -> b -> c` is a trail, `a -> b -> a -> b` is not.
+
+Five mutants, all CAUGHT under `timeout 1500 systemd-run -p MemoryMax=16G -p MemorySwapMax=0`,
+pristine restored before each:
+
+```text
+  M1  the scan replaced by `return 1`      CAUGHT  64 pass  5 fail   <- the bench cannot see this one
+  M2  multiplicity collapsed to 1          CAUGHT  68 pass  1 fail
+  M3  slice end off by one                 CAUGHT  68 pass  1 fail
+  M4  the wrong vertex's slice             CAUGHT  68 pass  1 fail
+  M5  compared against the source endpoint CAUGHT  68 pass  1 fail
+```
+
+M1 is the whole argument for the file: it is the change a 28% measurement on this bench cannot
+distinguish from the real one, and it fails five tests.
+
+### Gates
+
+`bun run check` 0 (read UNPIPED; it failed once on the parameter left unused by the rewrite and once
+on an unnecessary assertion in the test — neither visible to any suite). Suites: gql **3677**/0
+(3669 + 8), gremlin 1228/0, core 383/0, serialization 144/0, native 961/0. `bun run fuzz` 20/0 —
+byte-identity intact, which matters because this changes a COUNT the Rust engine also computes.

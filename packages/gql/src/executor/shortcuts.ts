@@ -2430,21 +2430,21 @@ const trailsAt4From = (s: number, t: Trail4Tables): number => {
 const pairMultiplicities = (
   off: Int32Array,
   nbr: Int32Array,
-  n: number,
 ): ((u0: number, v0: number) => number) => {
-  const pairs = new Map<number, number>();
+  // ABLATION (item 1453): the multiplicity of (u, v) is how many times v appears in u's CSR
+  // neighbour slice, which the slice itself answers. No Map, no boxed keys, no allocation.
+  return (u0, v0) => {
+    let seen = 0;
+    const end = off[u0 + 1];
 
-  for (let v = 0; v < n; v += 1) {
-    const end = off[v + 1];
-
-    for (let k = off[v]; k < end; k += 1) {
-      const key = v * n + nbr[k];
-
-      pairs.set(key, (pairs.get(key) ?? 0) + 1);
+    for (let k = off[u0]; k < end; k += 1) {
+      if (nbr[k] === v0) {
+        seen += 1;
+      }
     }
-  }
 
-  return (u0, v0) => pairs.get(u0 * n + v0) ?? 0;
+    return seen;
+  };
 };
 
 /**
@@ -2656,7 +2656,7 @@ const walkLevelCount = (graph: Graph, spec: DegreeCountSpec): number => {
 
   // DEPTH 4's extra state, built only when `trail4` so no shallower depth pays for it. See
   // `pairMultiplicities` for why a Map is the right trade here and the wrong one for native.
-  const mult = trail4 ? pairMultiplicities(off, nbr, order.length) : undefined;
+  const mult = trail4 ? pairMultiplicities(off, nbr) : undefined;
   // `u` is swapped per level, so without this the depth-4 terms would read a vector that has
   // already been overwritten.
   let walk2Snap: Float64Array | undefined;
