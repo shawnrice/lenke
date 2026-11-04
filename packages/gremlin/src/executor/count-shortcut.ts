@@ -1748,38 +1748,71 @@ type SlotSweep = {
 };
 
 /**
+ * The per-bucket half of {@link expandSlot}, at module scope so the single-label case can skip
+ * `bucketsOf`'s array without duplicating this body (item 1374).
+ *
+ * One call per BUCKET, which is one or two per vertex — not per edge. State travels in the object
+ * for the reason {@link expandSlot} gives: item 1105 measured that as free per edge in the GQL twin
+ * (570.7 ms against 570.6 for the same walk reading locals).
+ *
+ * `st.next` is REASSIGNED once per pass by `slotChainCount`, so this destructures per call rather
+ * than capturing: it must read the pass's current frontier, not the one live when the walk started.
+ */
+const walkBucket = (st: SlotSweep, set: ReadonlySet<Edge>, m: number): void => {
+  const { forward, slotOf, vtx, next, nextFrontier, scratch } = st;
+
+  for (const e of set) {
+    const w = forward ? e.to : e.from;
+    let to = slotOf.get(w) ?? -1;
+
+    if (to < 0) {
+      to = vtx.length;
+      slotOf.set(w, to);
+      vtx.push(w);
+    }
+
+    scratch.push(to);
+
+    if (next[to] === 0) {
+      nextFrontier.push(to);
+    }
+
+    next[to] += m;
+  }
+};
+
+/**
  * Walk ONE slot's adjacency, accumulating `m` into each neighbour slot and REMEMBERING the slots.
  *
- * Its own function because inlining it trips both the nesting cap (a pass loop, a slot loop, a
- * bucket loop, an edge loop and the intern branch is six blocks) and the complexity cap. State
+ * Its own function because inlining it trips both the nesting cap and the complexity cap: a pass
+ * loop, a slot loop, a bucket loop and the per-edge body is already deep, and item 1374 moved that
+ * body out to {@link walkBucket} so the single-label case can skip `bucketsOf`'s array. State
  * travels in an object, which item 1105 measured as free per edge in the GQL twin — 570.7 ms
  * against 570.6 for the same walk reading locals instead.
  */
 const expandSlot = (st: SlotSweep, slot: number, m: number): void => {
-  const { forward, labels, slotOf, vtx, next, nextFrontier, scratch } = st;
+  const { forward, labels, vtx, scratch } = st;
   const byType = forward ? vtx[slot].adjFrom : vtx[slot].adjTo;
 
   scratch.length = 0;
 
   if (byType !== undefined) {
-    for (const set of labels.length === 0 ? byType.values() : bucketsOf(byType, labels)) {
-      for (const e of set) {
-        const w = forward ? e.to : e.from;
-        let to = slotOf.get(w) ?? -1;
+    if (labels.length === 0) {
+      for (const set of byType.values()) {
+        walkBucket(st, set, m);
+      }
+    } else {
+      // ITERATE THE LABELS, not an array of their buckets: `bucketsOf` would allocate a fresh
+      // array per vertex per pass to hold exactly these sets in exactly this order, and item 1368
+      // priced that allocation at 3.7% of this row. Sound for the same reason `bucketsOf` is —
+      // the multi-type guard has already cleared, so visiting each named bucket visits each edge
+      // once.
+      for (const t of labels) {
+        const set = byType.get(t);
 
-        if (to < 0) {
-          to = vtx.length;
-          slotOf.set(w, to);
-          vtx.push(w);
+        if (set !== undefined) {
+          walkBucket(st, set, m);
         }
-
-        scratch.push(to);
-
-        if (next[to] === 0) {
-          nextFrontier.push(to);
-        }
-
-        next[to] += m;
       }
     }
   }

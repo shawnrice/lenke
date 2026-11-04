@@ -47380,7 +47380,7 @@ extraction and reports the same verdicts.
 
 Probes and instrument only; no engine or core code changed. `bun run check` 0 (read unpiped).
 
-### Item 1362 — every profile in items 1358-1361 was taken INSIDE CACHE, and at 200k the property-read path is 2.5-4x more of the profile than it looked: the screen systematically understates it on BOTH surfaces
+### Item 1362 — every profile in items 1358-1361 was taken INSIDE CACHE, and at 200k the property-read path is ~~2.5-4x~~ **1.8-2.7x (corrected at 1365)** more of the profile than it looked: the screen systematically understates it on BOTH surfaces
 
 Items 1358-1361 screened GQL, Gremlin and the write path and found every nomination priced. **All of
 it ran at 20,000 elements**, and CLAUDE.md's first rule for trusting a number is the one that was
@@ -47487,7 +47487,7 @@ Probes and instrument only; no engine or core code changed. `bun run check` 0 (r
 analyzer re-run against the stored 20k GQL, Gremlin and write profiles after both fixes: same
 verdicts, same ms values, with the harness line now reported separately.
 
-### Item 1363 — item 1362's "dictionary mode / megamorphic" mechanism is REFUTED, the `Map`-bag fix is REFUTED at 3.18x WORSE, and the layout lever is priced at **3.30x and FLAT in size**
+### Item 1363 — ~~item 1362's "dictionary mode / megamorphic" mechanism is REFUTED~~ (**that refutation was itself WRONG — see 1364: polymorphism costs 3.8x, and 1362 was closer to right**), the `Map`-bag fix is REFUTED at 3.18x WORSE, and the layout lever is priced at ~~3.30x~~ **3.55x (1364)** and FLAT in size
 
 Item 1362 found the property-read path grows 2.5-4x from 20,000 to 200,000 elements, named a
 mechanism — `element.properties[key]` on a frozen plain object is V8 dictionary mode, megamorphic
@@ -47912,7 +47912,7 @@ The harness is new; no engine or core code changed. Tree restored, `git status -
 the new probe, `FAST_ONE_TYPE` at 0 and `degreeOfTypes` present. Both arm files under `target/` were
 DELETED by the driver's `finally`. `bun run check` 0 (read unpiped).
 
-### Item 1368 — an isolated GREMLIN row bench (floor **2.9%**, five times tighter than the GQL row), and `bucketsOf` re-priced against the body item 1110 built: **3.7% against 1108's 3.9% — unchanged, refutation STANDS**
+### Item 1368 — an isolated GREMLIN row bench (floor **2.9%**, five times tighter than the GQL row), and `bucketsOf` re-priced against the body item 1110 built: **3.7% against 1108's 3.9% — unchanged, refutation STANDS** ~~and NOT SHIPPED~~ (**a SAFE version of the same lever SHIPPED at 1374 for 2.5%** — the hazard was my arm, not the lever)
 
 Item 1367 built an isolated bench for a GQL row. It was GQL-only, which is the same gap item 1359
 found in the profile screen one layer up, and Gremlin is half the standing instruction. So:
@@ -48395,3 +48395,80 @@ missing names are present. `bun run check` 0 (read unpiped).
 ### Gates
 
 Documentation only; no engine, core or probe code changed.
+
+### Item 1374 — **SHIPPED, 2.5%** on the largest Gremlin row: the single-label hop skips `bucketsOf`'s per-vertex array, safely. 539/576 concordance, control at exactly chance, and the hot-walk refactor tax measured at 1.2 points
+
+Item 1368 ablated `bucketsOf`'s per-vertex array allocation at **3.7%** of
+`V().out().out().out().count()` — real, 92% concordance, control flat — and did not ship it for two
+reasons: the arm reused a module-scope array (item 1108's trick), which is unsafe under reentrancy,
+and a safe version looked like it needed the hot loop body duplicated.
+
+**The second reason was wrong.** Iterating `labels` and fetching each bucket is EQUIVALENT to
+iterating the array `bucketsOf` builds — same sets, same order, nothing allocated — and `bucketsOf`'s
+own doc states why it is sound: _"Only reached when the multi-type guard above has cleared, so
+iterating several of them visits each edge once."_ So `expandSlot` drops the array at its one site,
+and the per-edge body moves to a module-scope `walkBucket`, which `ts-closure-size-is-load-bearing`
+recommends regardless. **One call per BUCKET — one or two per vertex — not per edge.**
+
+`bucketsOf` is KEPT: four other call sites use it and none of them was measured here.
+
+### The number, and why n=8 was not enough to have it
+
+| shape                 | BASE p25 | WALK   | change   | concordance         |
+| --------------------- | -------- | ------ | -------- | ------------------- |
+| `hopcount3`           | 343.30   | 334.57 | **2.5%** | **539/576 (93.6%)** |
+| `hopcount2` [CONTROL] | 74.89    | 74.74  | 0.2%     | **284/576 (49.3%)** |
+
+Answers identical across all 48 processes (`hopcount3` 25,000,000, `hopcount2` 5,000,000). WALK's
+SLOWEST process (343.21) sits below BASE's median — a clean separation, not an overlap with a
+favourable summary.
+
+**At n=8 this read 1.5% with the control apparently moving 0.7%**, which is the pattern CLAUDE.md
+names as a suspect comparison. At n=24 the control lands at **49.3% concordance — exactly chance** —
+so the control's apparent movement was itself noise and the null control is working. Item 1367's
+lesson applied in the other direction: there it turned a +2.6% into a −0.3%, here it turned a
+doubtful 1.5% into a confident 2.5%. **The lesson is not "small effects are fake", it is "n=8 cannot
+tell you either way".**
+
+### THE HOT-WALK REFACTOR TAX, measured rather than asserted
+
+The ablation removed the allocation and nothing else: **3.7%**. This removes the allocation and also
+restructures the walk: **2.5%**. So the restructuring costs **~1.2 points of the 3.7**, about a
+third of the win.
+
+`pull-alignment-is-load-bearing` records that any edit to a hot walk cost the filtered-count cluster
+1.08-1.24x and never gained, and item 1368 declined partly on that risk. The risk was real and is now
+quantified for this walk: a third of the lever, not all of it, and the remainder still clears.
+**That is the first number this repo has for the tax itself**, and it is the thing to quote when the
+next hot-walk edit is being argued about.
+
+### Verification
+
+- `bun test packages/gremlin` **1141 pass / 0 fail**, `packages/gql` **3532 / 0**, `packages/core`
+  **370 / 0**.
+- `bun run fuzz` **20 pass / 0 fail** — including item 1371's dense-route arm, so this change is
+  byte-identity verified against the Rust engine **on the exact route it edits**. That arm exists
+  because item 1370 found the route had no such coverage; this is the first change to benefit.
+- `bun run bench:gremlin` at 200,000 / 1,000,000: **25 rows, every one `answers same`**, and the
+  two-hop control reads **53.0 ms against its historical 53.3** (item 1108) — so the breadth check
+  `pull-alignment-is-load-bearing` asks for is clean, not merely the single control row. The 3-hop
+  row reads **301.7 ms**.
+- `bun run check` 0 (read unpiped).
+
+⚠️ **Do not read 301.7 against item 1152's 362.9 as a 17% win from this change.** Across-run absolute
+levels drift (item 1367 measured ~3%, and other items have touched this row since). The 2.5% is the
+n=24 interleaved number; the bench row is a regression check, not the measurement.
+
+### Headings corrected in this commit, per the rule
+
+- **1368** advertised `bucketsOf` as NOT SHIPPED. It is shipped now, by a safe route — the hazard was
+  my arm, not the lever.
+- **1362** still said "2.5-4x" in its HEADING where 1365 corrected it to 1.8-2.7x in the body. Caught
+  by auditing my own headings while waiting on this A/B, which is how items 1301 and 1355 say these
+  are found.
+- **1363** still advertised "item 1362's mechanism is REFUTED" in its heading, where 1364 refuted that
+  refutation and restored 1362's mechanism; and "3.30x" where 1364 measured 3.55x.
+
+### Gates
+
+Engine change (one file, `packages/gremlin/src/executor/count-shortcut.ts`). Everything above green.
