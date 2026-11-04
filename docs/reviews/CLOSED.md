@@ -47745,3 +47745,85 @@ introduced it.
 ### Gates
 
 Measurement only; no engine or core code changed. `bun run check` 0 (read unpiped).
+
+### Item 1366 — `degreeOfTypes` CONFIRMED by ablation at ~15.6% of a 200k hop-filter count, the cost located in the per-vertex `Map.get`, and the one answer-preserving candidate REFUTED
+
+Item 1365 nominated `degreeOfTypes` at 16.5% of `hopfilter` at 200,000 and 7.2x size-sensitive — the
+largest multiplier the sweep found — and deliberately did not price it, because item 1364 had just
+shown a clean 3.8x micro landing at 1.11x in the engine. This prices it in the engine, by ablation,
+which is item 1105's method and the only instrument this file trusts for a share.
+
+### The share is real, and the profile was accurate
+
+`BASE` against `NO-DEG` (the body short-circuits to a constant, so answers are WRONG by construction
+— this prices an operation, not a result, exactly as item 1105's `NO-MAP` arm did), three
+order-alternated rounds, windowed probe so the fixture build is out of the timing:
+
+| nodes   | BASE  | NO-DEG | saving (round-paired median) | profile said |
+| ------- | ----- | ------ | ---------------------------- | ------------ |
+| 20,000  | 547.1 | 529.6  | **3.2%**                     | 2.3%         |
+| 200,000 | 520.2 | 414.0  | **~15.6%**                   | 16.5%        |
+
+All three rounds agree in sign at both sizes (200k round-paired: 15.6%, 11.9%, 20.4%). **Quote the
+round-paired median, not the 20.4% the raw medians give** — the 200k arms range 460-551 (BASE) and
+388-486 (NO-DEG) and those overlap, so an unpaired comparison of medians overstates it. The
+size-sensitivity holds too: ~4.9x from 20k to 200k against the profile's 7.2x.
+
+So an in-engine ablation confirms a profile share for once, which is worth recording after items 1104
+and 1364 both found the opposite. A share is still a nomination — but this nomination survived.
+
+### WHERE the cost is, by decomposition — and it is the `Map.get`
+
+Three arms at 200,000, four order-alternated rounds:
+
+| arm      | removes                                 | round-paired savings vs BASE | verdict    |
+| -------- | --------------------------------------- | ---------------------------- | ---------- |
+| `NO-DEG` | the `byType.get(t)` AND the `Set` deref | 15.6%, 11.9%, 20.4%          | **~15.6%** |
+| `NO-SET` | only the `Set` deref and `.size`        | -7.6%, 8.5%, -0.7%, 10.9%    | **NOISE**  |
+| `FAST1`  | only the iterator (ANSWER-PRESERVING)   | -2.7%, 10.3%, -4.8%, -6.6%   | **NOISE**  |
+
+Read together these are coherent rather than contradictory: removing the whole lookup is worth
+~15.6%, removing the `Set` dereference is worth nothing, and removing the iterator is worth nothing
+— **so the cost is the per-vertex `byType.get(t)` Map lookup itself.** The `Set` deref and `.size`
+are free beside it, and `for (const t of types)` over a one-element array is free.
+
+That also prices a design that was worth considering: **a cached per-type degree (`Map<string,
+number>` on the element, maintained by `addEdge`/`removeEdge`) would capture almost NOTHING**,
+because it replaces `Map<string, Set<Edge>>.get(t).size` with `Map<string, number>.get(t)` — it
+removes the free part and keeps the expensive one. Recorded so it is not designed and then measured.
+
+### `FAST1`: the one candidate that could have shipped, REFUTED
+
+```ts
+if (types.length === 1) {
+  return byType.get(types[0])?.size ?? 0;
+}
+```
+
+Answer-preserving (one type cannot collide with itself, which is `bucketSumsAreSound`'s own first
+clause), and it skips the iterator on the common single-type hop. **Refuted**: round-paired -2.7%,
++10.3%, -4.8%, -6.6%, mean ~-1%, signs disagreeing. Not shipped.
+
+### THE INSTRUMENT'S NOISE FLOOR ON THIS ROW IS ~12%, which bounds what can be asked here
+
+`BASE` alone ranges 452.2 / 506.2 / 490.2 / 494.4 across four rounds — **12%** for the same binary.
+So on this row, with this probe, nothing smaller than ~12% is measurable, and the two refuted arms
+are refuted only in the sense that they are not LARGE; a real 3% effect would be invisible. That is
+CLAUDE.md's "anything under ~10% needs its own isolated harness" arriving as a hard limit rather
+than a caution, and it is why `NO-DEG`'s ~15.6% is quotable while `FAST1`'s ~-1% is only "not big".
+
+### What is left, and it is the declined design again
+
+The per-vertex `Map.get` is the cost, so capturing it means not doing a per-vertex hash lookup to
+learn a degree — which means degrees in a flat array indexed by a dense ordinal. That is the CSR /
+dense-ordinal design the user declined at item 1358 on the alignment-burden argument, and this item
+does not reopen it. What it adds is the price on this row: **~15.6% of a 200,000-vertex hop-filter
+count, rising from 3.2% at 20,000.**
+
+### Gates
+
+Measurement only; the tree is restored and `git status --porcelain` is empty, with
+`degreeOfTypes` present and all three ablation markers at 0. `bun run check` 0 (read unpiped). **All
+four arm files under `target/` were DELETED** — a stale arm file is the hazard that bit this session
+once already (a cold A/B restored a copy predating three later items and silently stripped a
+specializer), and the pristine baseline is the most dangerous of them because it looks authoritative.
