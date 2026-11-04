@@ -46828,10 +46828,13 @@ open TS-side entry. Reading it alongside 1104/1105 shows they are not three targ
 **The single root cause: TS has no dense vertex ordinal.** Every multi-hop walk interns the far
 vertex through a `Map<Vertex, number>.get` per edge touched.
 
-> ⚠️ **CORRECTED at 1358.** It is `Map<string, number>`, keyed on the edge's `farId` STRING, and the
-> slot is a **PER-QUERY** dense index assigned lazily as the walk discovers vertices — which is what
-> lets `ways`/`next` be sized to the TOUCHED set rather than to |V|. The 24% / ~46 ns ablation numbers
-> stand; the structure described above does not. Item 1152 carries the same wrong phrasing.
+> ⚠️ **1358 "CORRECTED" THIS AND WAS ITSELF WRONG — see 1359.** The phrasing above is RIGHT for the
+> row 1152 and 1356 are about. **There are TWO slot maps, one per engine, and they differ:**
+> `packages/gremlin/src/executor/count-shortcut.ts:1741` (`SlotSweep.slotOf`) is `Map<Vertex, number>`
+> keyed on the VERTEX OBJECT, and that is `expandSlot`'s `slotOf.get(w)` — the Gremlin 3-hop row,
+> which is the 55.9x this entry cites; `packages/gql/src/executor/shortcuts.ts` is
+> `Map<string, number>` keyed on the edge's `farId` STRING. Both are per-query dense indexes sized to
+> the TOUCHED set. Item 1358 read only the GQL file and generalised across engines.
 
 - **1105** ablated it: the per-edge `Map.get` is **24% of the TS sweep, ~46 ns an edge** (and item
   1104's micro UNDERSTATED it at ~28 ns, the usual direction for a probe whose working set is
@@ -47035,11 +47038,13 @@ screen at all — despite the standing instruction covering both surfaces and de
   and quantifier machinery, property-access floor, and serialization were never instrumented in that
   run. The structural cause: every one of those items started from an audit heading or an existing bench
   row, so **a cost that is not already a row was unreachable by the method**.
-- **Item 1356's `Map<Vertex, number>`** (and item 1152's same phrasing) is inaccurate. `slotOf` is
-  `Map<string, number>` keyed on the edge's `farId` STRING, and the "slot" is a **PER-QUERY** dense index
-  assigned lazily as the walk discovers vertices — which is exactly what lets `ways`/`next` be
-  `Float64Array`s sized to the TOUCHED set rather than to |V|. The ablation numbers (24%, ~46 ns an edge)
-  are unaffected; the structure described is not what is there.
+- ~~**Item 1356's `Map<Vertex, number>`** (and item 1152's same phrasing) is inaccurate.~~
+  **THIS CORRECTION IS ITSELF WRONG — RETRACTED at 1359.** There are TWO slot maps, one per engine:
+  Gremlin's `SlotSweep.slotOf` IS `Map<Vertex, number>` keyed on the vertex object
+  (`count-shortcut.ts:1741`, `expandSlot`'s `slotOf.get(w)`), and that is the row 1152/1356 cite;
+  GQL's `shortcuts.ts` is `Map<string, number>` keyed on `farId`. I read only the GQL file and
+  generalised across engines, "correcting" a true statement. Both are per-query dense indexes sized
+  to the touched set, so that half of the observation holds for both.
 - **The dense-vertex-ordinal fork (1356/1357) is DECLINED**, on the user's reasoning rather than mine: a
   global ordinal buys one field read in exchange for a durable second structure — ordinal space, a free
   list, `vertexBySlot`, |V|-sized buffers — that must stay aligned with `verticesById` across every add,
@@ -47053,3 +47058,103 @@ screen at all — despite the standing instruction covering both surfaces and de
 ### Gates
 
 Instrument only; no engine or core code changed. `bun run check` 0 (read unpiped).
+
+### Item 1359 — the Gremlin runtime path screened for the FIRST time: a genuine negative, and item 1358's `Map<Vertex, number>` correction was itself wrong
+
+Item 1358 left the screen's third blind spot open: `runtime-profile-probe.mjs` imports only
+`@lenke/core` and `@lenke/gql`, so the Gremlin runtime path had never been through an unpriced-frame
+screen at all. Built `runtime-profile-gremlin-probe.mjs` as its twin — eight traversal shapes, one
+per process (item 762), on a 20,000-vertex / 100,000-edge fixture (5:1, because CLAUDE.md's
+fixture rule makes 1:1 the wrong shape for per-edge costs).
+
+Shape wall-clock, reps chosen per shape so each profile samples comparably:
+
+```text
+  control      V().count()                        2000 reps     3.1 ms   (O(1) bucket read)
+  filterchain  V().hasLabel().has(gt).count()     1900 reps   302.9 ms
+  grouped      V().groupCount(k)                  1800 reps   481.9 ms
+  hopdedupe    V().out().dedupe().count()          600 reps    89.7 ms
+  hopcount2    V().out().out().count()             250 reps   381.9 ms
+  hopbare      V().out()                            70 reps   674.7 ms
+  hopcount3    V().out().out().out().count()         50 reps  1038.4 ms
+  hoporder     V().out().values(k).order()           30 reps  1312.0 ms
+```
+
+### THE RESULT IS A NEGATIVE, and unlike item 921's it survives the n/a audit
+
+**No frame with ZERO mentions above 2% in any of the eight shapes.** After item 1358's fixes that
+verdict means what it says: the residual not-checkable bucket is `(garbage collector)`, `(idle)`,
+Node's loader, and one `(anonymous) in run` — no engine code hiding behind `n/a`.
+
+And the frames it nominates were checked individually rather than trusted to the mention count,
+because item 1358's own lesson is that "has mentions" is not "is optimized". The largest row:
+
+```text
+  g-hopcount3 (1370 ms sampled)
+    450.0  32.8%   3 mentions  expandSlot
+    243.2  17.7%   2 mentions  slotChainCount
+    121.8   8.9%  37 mentions  degreeOfTypes
+     96.6   7.1%   5 mentions  bucketsOf
+```
+
+**57.6% of the biggest Gremlin row in three frames with 2-5 mentions each** — which looks exactly
+like a near-unpriced target and is not one. Every mention resolves to work already done and measured:
+
+- `expandSlot`'s `slotOf.get(w)` is items 1104/1105's per-edge intern, ablated at **24% of the
+  sweep, ~46 ns an edge**, and item 1152's residual (**~2,000,000 COLD edge touches**, which no memo
+  can reach because it is a slot's FIRST expansion).
+- `bucketsOf`'s per-vertex array allocation was **REFUTED at 3-4%** (item 1108).
+- The memo whose cost I suspected — `Int32Array.from(scratch)`, ~400,000 typed-array allocations for
+  a 3-hop — was **ablated at item 1152 and is net POSITIVE 1.53x / 2.04x even counting them.** Priced
+  before I got there; recorded here so the suspicion is not re-derived a third time.
+- Both local levers are already taken: the walk reads `vtx[slot].adjFrom` (item 591, 1.80x) and the
+  per-slot neighbour memo is item 1106's GQL trick (1.69x there).
+
+So the Gremlin hop path is spent **short of the dense-ordinal design change**, which item 1358
+declined on the user's reasoning. That is the same wall from the other side, reached by an
+independent instrument instead of by reading item 1152 — which is the point of running the screen.
+
+### Item 1358's `Map<Vertex, number>` correction is RETRACTED: there are TWO slot maps
+
+Item 1358 declared items 1152/1356's `Map<Vertex, number>` phrasing inaccurate and "corrected" it to
+`Map<string, number>` keyed on `farId`. **That correction is wrong, and it corrected a true
+statement.** The two engines use different keys:
+
+| engine  | file                                          | type                  | key                |
+| ------- | --------------------------------------------- | --------------------- | ------------------ |
+| Gremlin | `gremlin/src/executor/count-shortcut.ts:1741` | `Map<Vertex, number>` | the VERTEX object  |
+| GQL     | `gql/src/executor/shortcuts.ts`               | `Map<string, number>` | the edge's `farId` |
+
+Items 1152 and 1356 cite the **55.9x Gremlin 3-hop row**, whose walk is `expandSlot` — so
+`Map<Vertex, number>` was correct there all along. I had read only `shortcuts.ts` and generalised
+across engines. The half of the observation that does hold for both: the slot space is a **per-query**
+dense index assigned lazily, sized to the TOUCHED set, not to |V|.
+
+**The lesson is narrower than "verify before correcting" and worth stating as the rule it is:** a
+claim about "the TS engine" can be true of one surface and false of the other, because GQL and
+Gremlin are separate implementations that share only `@lenke/core`. 1358 is the second time this
+session that a confident correction was the thing needing correcting — and both times the error was
+generalising from the one file I had open.
+
+### Two more instrument defects, found by the Gremlin run and fixed
+
+1. **A SHORT accessor property bypassed item 1358's accessor fix.** `get to` looks up `to`, which the
+   4-character guard rejects, so the frame fell through to the enclosing-declaration scan and was
+   attributed to `WIDE_BAG` — an unrelated bag of keys — at 3.1% in two Gremlin shapes. An accessor
+   whose property cannot be searched now reports `n/a`. Same failure as 1358's `get properties`, one
+   guard further in.
+2. **The mention count was a SUBSTRING search.** `pick` read 202 where only 53 are the identifier
+   (the rest are "picked", "picking"). Now word-boundary matched. **Measured before changing it,
+   because the obvious generalisation is wrong:** `values` reads 1118 substring / 1070 word-bound /
+   **974 inside backticks**, so its big number is genuine code coverage and not prose noise. The fix
+   re-ranks common-word frames and **overturned none of item 1358's conclusions** — which is why it
+   is recorded as hygiene rather than as a finding.
+
+Also worth recording as a property of the instrument, not a bug: **writing an item about a frame
+retires it from the screen.** `topKNodeWalk` had ZERO mentions when 1358 flagged it and has one now —
+1358's own entry. The ZERO signal is one-shot, so a flagged frame must be either taken or explicitly
+priced in the same pass, or the next run will show the field clean while the work is still open.
+
+### Gates
+
+Instrument and docs only; no engine or core code changed. `bun run check` 0 (read unpiped).

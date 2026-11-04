@@ -41,6 +41,27 @@ const docs = ['docs/reviews/CLOSED.md', 'docs/reviews/2026-08-31-ts-audit.md'].m
   readFileSync(join(ROOT, p), 'utf8'),
 );
 
+/** An accessor frame: `get properties`, `set labels`. */
+const ACCESSOR = /^(?:get|set) ([A-Za-z_$][\w$]*)$/;
+
+/**
+ * Count a name as an IDENTIFIER, not as a substring.
+ *
+ * A plain `split(name).length - 1` counts the English word inside prose, which inflated `pick` to
+ * 202 where only 53 are the identifier. Measured before changing it, because the inflation is NOT
+ * uniform and the obvious generalisation is wrong: `values` reads 1118 substring / 1070 word-bound
+ * / 974 inside backticks, so it is genuinely well-covered and not an artifact. This fix changes the
+ * ranking of common-word frames only; it overturned none of item 1358's conclusions.
+ */
+const countIdentifier = (name) => {
+  const re = new RegExp(
+    `(?<![A-Za-z0-9_$])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9_$])`,
+    'g',
+  );
+
+  return docs.reduce((acc, d) => acc + (d.match(re) ?? []).length, 0);
+};
+
 /** Self time per (functionName, file:line), summed over samples. */
 const selfTime = (profilePath) => {
   const prof = JSON.parse(readFileSync(profilePath, 'utf8'));
@@ -129,10 +150,14 @@ const mentions = (name) => {
   // identifier, so check it rather than falling through to the enclosing-declaration scan — which
   // walks out of the class body and lands on whatever unrelated `const` precedes it (it attributed
   // `get properties` to `WIDE_BAG$1`, a bag of keys it has nothing to do with).
-  const accessor = /^(?:get|set) ([A-Za-z_$][\w$]*)$/.exec(name);
+  const accessor = ACCESSOR.exec(name);
 
   if (accessor !== null) {
-    return mentions(accessor[1]);
+    // A SHORT property is not a usable search term — `get to` would look up `to`, which the length
+    // guard rejects, and the frame then fell through to the enclosing-declaration scan and was
+    // attributed to `WIDE_BAG`, an unrelated bag of keys, in two Gremlin shapes. An accessor whose
+    // property cannot be searched is honestly unknown, so say so rather than naming the wrong code.
+    return accessor[1].length < 4 ? -1 : countIdentifier(accessor[1]);
   }
 
   if (name.includes(' ') || NODE_INTERNAL.has(name)) {
@@ -146,7 +171,7 @@ const mentions = (name) => {
     return -1;
   }
 
-  return docs.reduce((acc, d) => acc + d.split(name).length - 1, 0);
+  return countIdentifier(name);
 };
 
 const tagFor = (m) => {
@@ -165,8 +190,13 @@ for (const f of profiles) {
   const rows = [...selfTime(join(DIR, f)).entries()]
     .map(([k, us]) => {
       const [name, where, url, lineStr] = k.split('\u0000');
-      // An unnameable frame gets one more chance: the enclosing declaration IS checkable.
-      const enclosing = mentions(name) === -1 ? enclosingName(url, Number(lineStr)) : undefined;
+      // An unnameable frame gets one more chance: the enclosing declaration IS checkable. An
+      // ACCESSOR is excluded — its enclosing declaration is whatever `const` precedes the class,
+      // which is not its code (the `get to` -> `WIDE_BAG` misattribution `mentions` describes).
+      const enclosing =
+        mentions(name) === -1 && !ACCESSOR.test(name)
+          ? enclosingName(url, Number(lineStr))
+          : undefined;
 
       return {
         name,
