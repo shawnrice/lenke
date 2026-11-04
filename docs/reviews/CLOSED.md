@@ -48072,3 +48072,86 @@ so the decision can be taken on two numbers instead of one, whichever way it goe
 Timing arm only — **the prototype is REVERTED**. Tree restored, `git status --porcelain` empty,
 `ORDINAL_READ_ARM`/`vtxSeq` at 0 in all three files and `slotOf` back to its 6 occurrences. All six
 arm files under `target/` deleted by the driver's `finally`. `bun run check` 0 (read unpiped).
+
+### Item 1370 — the ordinal arm is GREEN on 5,043 unit tests and all seven fuzzers, the teeth test says the unit green is REAL and the FUZZ green is VACUOUS, and that exposes a PRE-EXISTING hole: no byte-identity fuzzer can reach `slotChainCount` at all
+
+Item 1369 priced the dense ordinal at 12.9% on the largest Gremlin row and named byte-identity as the
+first of two disqualifying gaps: slot assignment moves from DISCOVERY order to CREATION order, so
+`st.next[to] += m` accumulates differently. This runs the suites against the arm, and then does the
+thing that makes a green run mean something.
+
+### The arm is green
+
+| suite                       | result                |
+| --------------------------- | --------------------- |
+| `bun test packages/gremlin` | **1141 pass, 0 fail** |
+| `bun test packages/gql`     | **3532 pass, 0 fail** |
+| `bun test packages/core`    | **370 pass, 0 fail**  |
+| `bun run fuzz` (all seven)  | **13 pass, 0 fail**   |
+
+Evidence of EXECUTION taken from stdout+stderr concatenated, not from the exit code — `bun test`
+reports to stderr and items 767 / 772-773 got that wrong in both directions.
+
+### THE TEETH TEST, and it splits
+
+A green first run is what a test that checks nothing also produces, and the specific worry was
+coverage: `slotChainCount` serves the **3+ hop** chain count only, and the route is declined unless
+the seed is wider than `max(n/16, 1024)`. So the arm was replaced with a MUTANT that doubles the
+propagated multiplicity (`next[to] += m * 2`), changing every 3+ hop count and nothing else:
+
+| suite                       | mutant verdict                 |
+| --------------------------- | ------------------------------ |
+| `bun test packages/gremlin` | **CAUGHT** — 1140 pass, 1 fail |
+| `bun run fuzz` (all seven)  | **SURVIVED** — 13 pass, 0 fail |
+
+The catch is `slot-chain-count.test.ts:41`, in the case named _"a seed wide enough for the dense
+route, which the small fixtures decline > a graph past max(n/16, 1024), so the slot walk and its memo
+actually run"_. That test exists because its author knew small fixtures decline the route, and it is
+the only thing in the repo that reaches it.
+
+**So the unit green is real and the fuzz green is vacuous.** Both facts matter and they point
+opposite ways.
+
+### What the unit green actually buys, which is more than item 1369 assumed
+
+`slot-chain-count.test.ts` guards by **route-vs-route agreement**: `agree()` runs the fast route and
+then the same question with a forced `identity()` decline, and asserts the two match. That is exactly
+the comparison a reordered summation would break — if creation-order slots changed the f64 result, the
+fast route would stop matching the declining one. It is green, including on the oversized fixture that
+actually triggers the dense route, and it demonstrably has teeth.
+
+The arm is also **TS-only**: native is untouched, so its answer cannot move. The question was only
+ever whether TS's answer moves, and the one instrument that can see this route says it does not.
+
+### THE PRE-EXISTING HOLE, which is the more important finding
+
+**No byte-identity fuzzer can reach `slotChainCount`, and the reason is structural.** The gremlin
+differential fuzzer runs on the TinkerPop "modern" graph — about fourteen vertices (ids 1, 2, 4, 6,
+13…) — while the dense route requires a seed past `max(n/16, 1024)`, i.e. **≥1024 vertices**. The
+fixture is ~70x too small, so the route is declined on every seed of every run.
+
+That means the dense multi-hop walk — items 1110 and 1152's work, the largest row in `bench:gremlin`
+at 362.9 ms, the thing this whole session kept arriving at — **has no TS-versus-native coverage at
+all.** A wrong answer there would pass `bun run fuzz` today, before and independently of anything in
+this session. Its only guard is one TS-internal route-vs-route test.
+
+This is not a reason to distrust item 1110 or 1152; `agree()` is a genuine equivalence check and the
+native engine computes the same identity by a different route. It IS a reason to say plainly that
+"byte-identity is fuzzed" does not cover this code, and that item 1369's gap #1 **cannot be closed by
+the existing instruments** — the fixture has to grow first.
+
+The shape of the fix: an ADDITIVE large-fixture arm on the gremlin fuzzer rather than widening the
+existing one, so the fast seed-sweep stays fast and the dense route gets its own coverage. Not built
+here — it is a change to a hard-invariant guard and to CI runtime, which is its own item.
+
+### Where this leaves the ordinal
+
+Item 1369's gap #1 is **narrowed, not closed**. The answer-equivalence risk is well covered and green
+with a verified-teeth test; the TS-vs-native byte-identity claim is unverifiable with today's
+fuzzers. Gap #2 (deletes) is untouched. The 12.9% stands and the prototype remains REVERTED.
+
+### Gates
+
+Both prototypes REVERTED. Tree restored, `git status --porcelain` empty, `ORDINAL_READ_ARM` and
+`TEETH_MUTANT` at 0 in all three files, `slotOf` back to its 6 occurrences. All arm files under
+`target/` deleted by each driver's `finally`. `bun run check` 0 (read unpiped).
