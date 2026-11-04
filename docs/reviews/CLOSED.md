@@ -47911,3 +47911,82 @@ not reopen it.
 The harness is new; no engine or core code changed. Tree restored, `git status --porcelain` shows only
 the new probe, `FAST_ONE_TYPE` at 0 and `degreeOfTypes` present. Both arm files under `target/` were
 DELETED by the driver's `finally`. `bun run check` 0 (read unpiped).
+
+### Item 1368 — an isolated GREMLIN row bench (floor **2.9%**, five times tighter than the GQL row), and `bucketsOf` re-priced against the body item 1110 built: **3.7% against 1108's 3.9% — unchanged, refutation STANDS**
+
+Item 1367 built an isolated bench for a GQL row. It was GQL-only, which is the same gap item 1359
+found in the profile screen one layer up, and Gremlin is half the standing instruction. So:
+`isolated-gremlin-bench.mjs`, same method — per-rep timing, `p25` headline, PROCESS as the unit of
+sampling, full distribution printed, GC accounted and the observer drained, one shape per process,
+deterministic fixture, answer in the output so a driver can assert the arms agree.
+
+### A LONG row measures far better than a short one, and that is worth knowing
+
+Same binary, five processes, `hopcount3` at 200,000:
+
+| estimator | spread                     | the GQL `hopfilter` row for comparison |
+| --------- | -------------------------- | -------------------------------------- |
+| `median`  | **2.9%** (297.11 - 305.75) | 13.2%                                  |
+| `p25`     | **3.2%** (295.02 - 304.44) | 5.4%                                   |
+| `min`     | 2.5% (292.02 - 299.29)     | 7.2%                                   |
+
+**Four to five times tighter, and the reason is the rep length**: `hopcount3` is ~300 ms a rep where
+`hopfilter` is ~3.5 ms, so timer and scheduler noise are a far smaller fraction of each sample. Item
+1367 established that the residual noise is PROCESS-level and no estimator removes it; this adds the
+other half — **choose a fixture size that makes the row long, and the process-level floor falls
+too.** A row at 3 ms wants a bigger graph before it wants more reps.
+
+### The re-pricing hypothesis, and it is REFUTED
+
+Item 1108 ablated `bucketsOf`'s per-vertex array allocation at 3.9% / 3.0% and declined it. Its own
+stated reason was the denominator: _"the body it feeds is ~200 ns an edge here... The same removal is
+worth 1.58x in one engine and 3% in the other, and the difference is what else the loop does."_ **That
+body no longer exists** — 1108 called the slot design "the next step rather than this one" and item
+1110 built it, so the frontier is now a `Float64Array` indexed by an interned slot with memoized
+neighbour slots. By 1108's own argument the fraction should have grown, and the windowed profile put
+`bucketsOf` at **9.2%** of `hopcount3` at 200k.
+
+Ablated with 1108's exact trick (single-label `bucketsOf` returns a module-scope reused array, so it
+allocates nothing — UNSAFE under reentrancy, a timing arm and never a shipping change), fanout 5 to
+match 1108's fixture, `p25` per process, eight processes per arm, arms interleaved:
+
+| shape                 | BASE p25 | NOALLOC | change   | concordance     |
+| --------------------- | -------- | ------- | -------- | --------------- |
+| `hopcount3`           | 343.47   | 330.75  | **3.7%** | **59/64 (92%)** |
+| `hopcount2` [CONTROL] | 73.91    | 74.95   | -1.4%    | 19/64 (30%)     |
+
+Answers identical in every process (`hopcount3` 25,000,000, `hopcount2` 5,000,000). The control — the
+two-hop count, which the degree inner product answers with no edge walk — does not improve, so the
+arm reached only what it was aimed at. 59 of 64 pairs is significant for two samples of eight, so
+**3.7% is a real number and not an absence of power**, which is exactly what item 1367's `FAST1` was
+not.
+
+**3.7% against 1108's 3.9%: unchanged. The hypothesis was wrong and the refutation stands.**
+
+### Why the denominator argument did not apply, which is the useful part
+
+`expandSlot` — and therefore `bucketsOf` — runs only on a **memo-cold** slot. Item 1110's memo
+removed the adjacency iteration on every later pass, so it cut the number of `bucketsOf` CALLS and the
+work they feed in the same proportion. The two shrank together and the ratio held. 1108's reasoning
+about denominators was sound in general and simply did not describe this change, which is only
+visible by measuring it.
+
+Also recorded: the windowed profile said **9.2%** and the ablation says **3.7%** — a 2.5x
+overstatement, the third instance this session after item 1104's `edgesOfTypes` (37.9% self for a
+single `Map.get` fast path) and item 1364's micro (3.8x isolated, 1.11x in-engine). **A share is a
+nomination; the ablation is the price.** That is now measured often enough to be a standing expectation
+rather than a caution.
+
+### Not shipped
+
+3.7% is inside the ~10% floor CLAUDE.md sets, 1108 declined the same lever at the same size for the
+same reason, and the arm measured here is unsafe under reentrancy so a shippable version would need
+the loop body extracted to handle the single-label case separately. That is a structural edit to a hot
+walk in a file whose neighbour carries `pull-alignment-is-load-bearing` ("any edit costs the
+filtered-count cluster 1.08-1.24x, never gains"), for 3.7%. The trade is worse than the number.
+
+### Gates
+
+The Gremlin bench is new; no engine or core code changed. Tree restored, `ABLATED_BUCKET_ALLOC` and
+`REUSED_ONE` at 0, `bucketsOf` present, both arm files under `target/` deleted by the driver's
+`finally`. `bun run check` 0 (read unpiped).
