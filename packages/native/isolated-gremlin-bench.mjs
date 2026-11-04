@@ -69,6 +69,28 @@ const FAR_POOL = FANIN >= 1 ? NODES : Math.max(Math.floor(NODES * FANIN), 1);
  */
 const MULTILABEL = Number(process.env.MULTILABEL ?? 0);
 /**
+ * ⚠️ `MULTILABEL=-1` IS DISJOINT: every other edge carries `F` INSTEAD of `E`, so both buckets are
+ * non-empty and NO edge is in two of them (item 1413).
+ *
+ * This knob could not express that before, and the gap invalidated a measurement. `0` means "no `F`
+ * at all", so a two-label hop at `MULTILABEL=0` walks an `E` bucket and an EMPTY `F` bucket — which
+ * cannot show the cost of anything that happens in the second bucket. Item 1413 priced the
+ * earlier-buckets dedupe against exactly that fixture and measured 5.5% with a control moving 4.8%,
+ * because in both arms the dedupe loop never executed at all.
+ *
+ * The GQL twin got this at item 1405 for the same reason and with the same spelling (`-1` rather
+ * than `0`, because `0` already means something the controls at items 1375 and 1390 rely on). Two
+ * benches, one missing fixture shape, found twice — the second time after it had already cost a
+ * reading.
+ */
+const edgeLabels = (k) => {
+  if (MULTILABEL === -1) {
+    return k % 2 === 0 ? ['E'] : ['F'];
+  }
+
+  return MULTILABEL > 0 && k % MULTILABEL === 0 ? ['E', 'F'] : ['E'];
+};
+/**
  * How often a VERTEX carries a second label `Q`. 0 = never. The vertex twin of MULTILABEL, for the
  * same reason: `labelledCount` declines EVERY multi-label `hasLabel` outright, and its own doc says
  * the right answer is the union of the buckets. Whether that decline costs anything needs a row.
@@ -141,7 +163,7 @@ const build = () => {
       id: `e${k}`,
       from: vs[(k * 7919) % NODES],
       to: vs[(k * 104_729) % FAR_POOL],
-      labels: MULTILABEL > 0 && k % MULTILABEL === 0 ? ['E', 'F'] : ['E'],
+      labels: edgeLabels(k),
       properties: { w: k % 13 },
     });
   }

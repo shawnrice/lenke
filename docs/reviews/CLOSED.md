@@ -51139,3 +51139,97 @@ byte-identity sweep is the real gate here, since row order is compared ordered),
 (read unpiped). Answers identical across both arms for all seven cases. The A/B driver restored both
 files and verified them. `bun run check` caught a `prefer-destructuring` error the suites did not —
 the fifth time this session.
+
+### Item 1413 — **DECLINED with numbers** (−0.5% on the target, **−7.5%** where it cannot help, and **two unreachable controls regressed**): skipping the multi-type dedupe when `multiTypeEdgeCount === 0`. The 60.1% that nominated it was a share of the WHOLE walk, not of the scan
+
+### The nomination, and why it was wrong
+
+Re-profiling after item 1412 put **60.1%** of `V().out(E,F).values(k)` in the multi-type walk,
+against 81.6% for the single-type twin whose walk has no inner loop at all — and the multi-type row
+had gained only 14.2% from 1412's eager route where the single-type one gained 49.1%. The
+earlier-buckets dedupe looked like the difference.
+
+`graph.multiTypeEdgeCount` is maintained on every add and remove and counts edges carrying more than
+one label, so **at zero no edge is in two buckets and the scan can never fire** — the same one-sided
+test GQL uses for `sumIsExact` (items 1386, 1405). Conservative by construction: the counter is
+global, so it says nothing about WHICH labels co-occur.
+
+### The measurement
+
+`MULTILABEL=-1` (disjoint, both buckets non-empty), n=9 per cell, three order-alternated rounds:
+
+| shape                                         | ML  | BASE  | SKIP  | change    | concordance |
+| --------------------------------------------- | --- | ----- | ----- | --------- | ----------- |
+| **`hopyieldmulti`** (target)                  | −1  | 58.72 | 58.99 | **−0.5%** | 35/81       |
+| **`hopyieldmultirev`** (target)               | −1  | 58.19 | 58.81 | **−1.1%** | 29/81       |
+| `hopyieldmulti` [CONTROL — dedupe still runs] | 3   | 60.77 | 65.34 | **−7.5%** | **6/81**    |
+| `hopyieldmulti` [CONTROL — `F` bucket empty]  | 0   | 61.18 | 59.49 | 2.8%      | 42/81       |
+| `hopbare` [CONTROL — single-type walk]        | 0   | 16.33 | 16.89 | **−3.5%** | 29/81       |
+| `hopyieldsingle` [CONTROL — single-type walk] | 0   | 28.31 | 29.94 | **−5.8%** | **12/81**   |
+
+**Three separate reasons this is a decline, and the third is the one worth keeping:**
+
+1. **No win on the target.** −0.5% at 35/81 against a chance of 40.5.
+2. **A real 7.5% regression at 6/81** where the dedupe still runs — the cost of one
+   register-resident boolean per edge, which is what the guard buys where it cannot help.
+3. **⚠️ Two single-type controls regressed** (−3.5% at 29/81, −5.8% at **12/81**) on a branch this
+   edit does not touch. That is the file-perturbation effect already on record for `exec::pull`
+   (1.08-1.24x on unrelated clusters, never a gain) and for a walk inlined in a returned closure (4x
+   on unrelated queries). **Editing `hop-values.ts` is not free**, and an item whose own target is
+   flat cannot pay for it.
+
+So the 60.1% was a share of the whole walk — adjacency iteration, the emit, `pick` — not of the
+scan, which is a small part of it. **A share is a nomination; an ablation is the price**, and the
+ablation came back at nothing. The engine change is reverted; `hop-values.ts` is byte-identical to
+its state after item 1412.
+
+### ⚠️ The first run of this A/B measured NOTHING, and the fixture is why
+
+It reported 5.5% on the target against a control moving 4.8% — this instrument's noise. Cause: at
+`MULTILABEL=0` every edge is `['E']`, so the `F` bucket is **empty on every vertex** and the
+earlier-buckets scan never executes in EITHER arm. The target cell was structurally incapable of
+showing the effect.
+
+I had also mis-compared before that: a single reading of `MULTILABEL=0` (55.5 ms) against
+`MULTILABEL=3` (67.2) looked like a 17% win, but those are **two different fixtures**, not one
+fixture before and after. That gap is the cost of HAVING multi-label edges, not the cost of the
+dedupe.
+
+**This is the same missing fixture shape the GQL bench had until item 1405 — found twice, in two
+benches, the second time after it had already cost a reading.** `MULTILABEL=-1` is now in the
+Gremlin bench with the GQL twin's spelling (`-1` rather than `0`, because `0` already means "no `F`
+at all", which the controls at items 1375 and 1390 rely on): every other edge carries `F` INSTEAD of
+`E`, so both buckets are non-empty and no edge is in two of them.
+
+| ML  | `hopyieldmulti` p25 | what it is                                 |
+| --- | ------------------- | ------------------------------------------ |
+| −1  | 58.16 ms            | disjoint, both buckets populated — **new** |
+| 0   | 57.95 ms            | `F` bucket empty everywhere                |
+| 3   | 64.08 ms            | edges in both buckets, dedupe required     |
+
+### What is kept, and why it is worth more than the change would have been
+
+- **The `MULTILABEL=-1` knob.** A bench that cannot build the ordinary schema shape cannot price
+  anything that happens in a second bucket.
+- **`multitype-dedupe-skip.test.ts`, 11 tests.** The multi-type dedupe had almost no coverage; these
+  fixtures differ in exactly one bit — whether one edge carries both labels — so a duplicated or
+  lost row shows as a changed MULTISET rather than a count. Reframed as that coverage plus the
+  record of the decline, with these numbers in the header **next to the code they would have
+  changed**, which is where a re-attempt will look. The per-CALL case is kept too: it is a real
+  property of `hopValuesShortcut` being consulted on every `run`, not an artifact of the declined
+  change.
+
+**Do not re-attempt without an isolated per-row instrument.** The three readings this went through
+(17% across fixtures, 5.5% on a dead cell, −0.5% done properly) are a straight line from a
+comparison error to a fixture defect to the answer.
+
+### Gates
+
+gremlin **1197/0**, `bun run check` 0 (read unpiped). `hop-values.ts` reverted and verified
+byte-identical to HEAD. Answers were identical across both arms in every cell, which is itself worth
+noting: the skip was **correct** throughout — it was simply not faster.
+
+A self-inflicted detour worth one line: reframing the test header spliced `NEW + t[end:]` instead of
+`t[:start] + NEW + t[end:]` and ate the import block. Eleven tests failed with
+`ReferenceError: Graph is not defined` — a loud failure, not a quiet one, which is the only reason it
+cost a minute rather than an item.

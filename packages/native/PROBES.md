@@ -355,6 +355,17 @@ Sweep `MULTILABEL=-1` alongside `3` for anything that reads a degree estimate or
 buckets. (`0` still means "no `F` at all", the control that separates a routing gap from a correct
 decline.)
 
+⚠️ **THE GREMLIN BENCH NEEDED THE SAME KNOB AND DID NOT HAVE IT UNTIL ITEM 1413 — and its absence
+cost a reading there too.** At `MULTILABEL=0` every edge is `['E']`, so a two-label hop walks an `E`
+bucket and an EMPTY `F` bucket: nothing that happens in a SECOND bucket can be measured at all.
+Item 1413 priced the multi-type walk's earlier-buckets dedupe against exactly that cell and got 5.5%
+with a control moving 4.8%, because in both arms the scan never executed. Re-run on `-1` it was
+**−0.5%** and the item was declined.
+
+So the rule is now a rule about both benches: **a two-label row measured at `MULTILABEL=0` is
+measuring one bucket.** Same missing shape, found twice, the second time after it had already cost a
+reading — which is the argument for sweeping the knob rather than picking a value.
+
 ## HOW TO RUN ONE, which is not optional detail
 
 **ASSERT THE ARM FROM THE FILE ON DISK, not from the variable you just built — and do it before you
