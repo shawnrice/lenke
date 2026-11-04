@@ -52186,3 +52186,60 @@ purpose-built replacement asserts the pre-1418 copy IS the per-slot form before 
 
 `bun run check` 0 (read unpiped). `shortcuts.ts` restored and verified identical; answers
 (`rowCount` + `digest`) identical across both arms in every cell.
+
+### Item 1428 — **the row RANKING changes materially at random stride** (`chain3` overtakes `chain4`, the hop rows are **2.4-6x** heavier, `hopundiryield` becomes #2) — and item 1420's route choice **holds at both**, product 0.78x small / 0.74x random
+
+### The first ranking anyone has taken at random stride
+
+Item 1427 gave the GQL bench a `STRIDE` knob. Every ranking before it used `small`:
+
+| shape               | small      | random         | factor    |
+| ------------------- | ---------- | -------------- | --------- |
+| **`chain3`**        | 43.99      | **91.29** (#1) | 2.08x     |
+| `chain4`            | 50.85 (#1) | 83.25          | 1.64x     |
+| **`hopundiryield`** | 36.52      | **86.84** (#2) | 2.38x     |
+| `hopmultiyield`     | 17.92      | 69.07          | **3.85x** |
+| `hopfiltyield`      | 8.23       | 60.56          | **7.36x** |
+| `hopstartonlyyield` | 9.32       | 57.39          | **6.16x** |
+| `hopsingleyield`    | 10.79      | 25.93          | 2.40x     |
+
+**Two things change, not one.** The ORDER changes — `chain3` overtakes `chain4`, and
+`hopundiryield` goes from mid-table to second — and the hop rows' absolute costs were understated by
+**2.4x to 7.4x**. A hop projection reads the FAR vertex's property, which at `small` lands ~7 slots
+along and at `random` is a chase across the whole range; the chain counts never touch a property, so
+they move by the smaller factor of adjacency locality alone.
+
+⚠️ **So every ns/row figure this session quoted for a hop row is a small-stride figure.** The A/B
+ratios are unaffected (both arms always shared a fixture, and item 1427 confirmed one of them
+explicitly at 20.2% against 20.3%), but the ranking that CHOSE those targets was taken on a fixture
+2.4-7.4x kinder than a random graph.
+
+### Item 1420's route choice holds, which was not obvious
+
+`chain3` is answered by the degree PRODUCT rather than the way-count SWEEP, and item 1420 verified
+that by forcing the route — at `small` stride only. The product's advantage comes from doing
+arithmetic where the sweep walks edges, so a change in memory locality could plausibly flip it.
+Forced again at both:
+
+| stride | product (shipped) | sweep (forced) | product / sweep |
+| ------ | ----------------- | -------------- | --------------- |
+| small  | 46.30             | 59.71          | **0.78x**       |
+| random | 91.29             | 123.39         | **0.74x**       |
+
+**The product wins by the same margin at both** — if anything slightly more at random stride. Item
+301's finding and item 1420's re-verification both stand, now across a 2x locality range.
+
+### What this re-opens
+
+`hopundiryield` at **86.84 ms / 434 ns per row** is the #2 row and its cost is dominated by the
+far-vertex property read — exactly what random stride makes expensive. Item 1414's ablation of it
+(engine at 1.39x a hand floor, the property read 25.2% of that floor, adjacency 59.8%) was run on a
+probe whose own fixture is ALREADY random-stride, so that ratio is sound — but the entry quotes the
+bench's 365 ns/row beside it, which is small-stride, and the two are not the same fixture. The
+available win there is worth re-pricing against the random-stride floor before anyone acts on
+"27-36%".
+
+### Gates
+
+`bun run check` 0 (read unpiped). `shortcuts.ts` restored and verified: the `!labelled` guard and the
+per-call `candidateCount` comparison are both back.
