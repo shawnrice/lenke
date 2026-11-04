@@ -8983,6 +8983,18 @@ const edgesOfManyTypes = function* (
     }
   }
 
+  // LARGEST_BUCKET_FIRST (item 1384). Bucket `i` pays `i` membership tests per edge, so the total is
+  // minimised by descending size — and WITHOUT this the walk costs whatever order the query named
+  // its types: `-[:E|F]->` measured 5.227 ms against `-[:F|E]->`'s 8.352, **1.60x**, both answering
+  // 200000. That is the equivalent-spelling class CLAUDE.md hunts, and item 1382 fixed the same
+  // defect on the Gremlin side at 3.53x.
+  //
+  // Sorting here is paid PER VERTEX, not once per query as in the Gremlin twin, over an array whose
+  // length is the number of edge types incident to ONE vertex — so it is two or three elements and
+  // V8 sorts that with insertion sort. A/B'd rather than assumed, because a per-vertex sort could
+  // have cost more than the asymmetry it removes.
+  buckets.sort((a, b) => b.size - a.size);
+
   for (let i = 0; i < buckets.length; i += 1) {
     for (const e of buckets[i]) {
       let earlier = false;

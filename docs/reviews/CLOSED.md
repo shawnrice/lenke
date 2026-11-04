@@ -49005,3 +49005,70 @@ check, so the gap in routine coverage is real and named.
 Probe only; no engine or core code changed. `bun run check` 0 (read unpiped). `bun run
 spelling:gremlin` runs clean at the default N (both new groups under the floor) and at
 `SPELL_N=1000000` (both compared, both converged).
+
+### Item 1384 — the SAME order gap was on the GQL side too (`-[:E|F]->` 5.227 ms against `-[:F|E]->`'s 8.352): **fixed, 29.3% on the reversed spelling, symmetry 1.42x → 1.04x**. And I never ran the spelling probe at item 1377
+
+Item 1382 found that item 1379's union walk was sensitive to the order a query names labels, and
+fixed the Gremlin side. **Item 1377 gave GQL's `edgesOfManyTypes` the same earlier-buckets dedupe, so
+it had the same defect**, and I went looking rather than waiting to be told:
+
+| spelling     | as shipped at 1377 | answer |
+| ------------ | ------------------ | ------ |
+| `-[:E\|F]->` | 5.227 ms           | 200000 |
+| `-[:F\|E]->` | **8.352 ms**       | 200000 |
+
+Bucket `i` pays `i` membership tests per edge, so the total is minimised by descending size — and
+without that the walk costs whatever order the query happened to name.
+
+### The fix is NOT the same fix, which is why it was A/B'd rather than copied
+
+Gremlin's `unionOfBuckets` runs ONCE per query over GLOBAL label buckets, so sorting is free. GQL's
+`edgesOfManyTypes` runs **per vertex** over one vertex's adjacency buckets — the sort is paid 200,000
+times and orders degrees, not indexes. It could easily have cost more than the asymmetry it removes.
+It does not:
+
+| shape                 | BASE p25 | SORT       | change    | concordance     |
+| --------------------- | -------- | ---------- | --------- | --------------- |
+| `hopmultirev`         | 8.7720   | **6.1995** | **29.3%** | **64/64**       |
+| `hopmulti`            | 6.1655   | 5.9590     | 3.3%      | 26/64 (neutral) |
+| `hopsingle` [CONTROL] | 0.0030   | 0.0030     | 0.0%      | 0/64            |
+| `hopfilter` [CONTROL] | 3.5595   | 3.5480     | 0.3%      | 35/64           |
+
+```text
+  BASE  E|F 6.1655  vs  F|E 8.7720   ratio 1.42x
+  SORT  E|F 5.9590  vs  F|E 6.1995   ratio 1.04x
+```
+
+`hopmulti` at 26/64 is the n=8 instability item 1380 documented — median up 3.3%, pair count below
+chance, so **neutral**: the per-vertex sort is free even on the order it cannot improve. Both controls
+flat, `hopfilter` at exactly chance.
+
+### THE PROCESS FAILURE, which is the part worth keeping
+
+CLAUDE.md says to run the spelling probe "when you touch the TS planner or add a predicate form".
+**I did not run it at item 1377, and the GQL probe has had an `'edge type disjunction order'` group —
+`:E|F` against `:F|E` — the whole time.** Had I run it, the defect was at least a candidate to be
+caught six items earlier, and item 1382's Gremlin twin might never have shipped.
+
+Run now, post-fix, that group reads **2.09 ms against 2.08 — 1.00x, converged.**
+
+⚠️ **WHETHER IT WOULD HAVE FLAGGED PRE-FIX IS UNMEASURED, and I am not claiming it would.** The
+probe's fixture carries `F` on 1 in 11 edges where the bench row above uses 1 in 3, so on most
+vertices `buckets.length === 1` and there is no asymmetry to see at all — the group may well have sat
+under its 2x threshold. That is a real question about the instrument's POWER, not a reason to skip
+running it, and it is the next tick's measurement rather than a guess here.
+
+### What is now guarded
+
+- **Answer** order-independence: `multi-label-edges.test.ts`'s "bucket ORDER does not change the
+  union" (item 1377), still valid.
+- **Cost** symmetry: `isolated-row-bench.mjs`'s `hopmulti`/`hopmultirev` (new here) and
+  `isolated-gremlin-bench.mjs`'s `edgemulti`/`edgemultirev` (item 1382).
+- **Routine** coverage: the GQL spelling probe's existing group, whose power at its own fixture is
+  the open question above; the Gremlin probe's two groups from item 1383, which need `SPELL_N=1000000`.
+
+### Verification
+
+`bun test` gql **3537 / 0**, gremlin 1148 / 0, core 370 / 0, serialization 144 / 0. `bun run fuzz`
+**20 / 0**. `bun run spelling` — the disjunction-order group converged at 1.00x. `bun run check` 0
+(read unpiped).

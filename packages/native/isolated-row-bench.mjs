@@ -52,6 +52,12 @@ const SHAPES = {
   // multi-type hop, which no bench row covered.
   hopsingle: 'MATCH (a:P)-[:E]->(b:P) RETURN count(*) AS c',
   hopmulti: 'MATCH (a:P)-[:E|F]->(b:P) RETURN count(*) AS c',
+  // THE ORDER-REVERSED TWIN (item 1384). `edgesOfManyTypes` iterates bucket `i` with `i` membership
+  // tests, so the total is minimised by putting the LARGEST bucket first — which means it is
+  // sensitive to the order the query names types, exactly as the Gremlin twin was at item 1382
+  // (3.53x there). Unlike that one, this runs PER VERTEX over a single vertex's buckets, so the
+  // per-call disparity is a degree rather than a whole index and may not be measurable at all.
+  hopmultirev: 'MATCH (a:P)-[:F|E]->(b:P) RETURN count(*) AS c',
   hopcount: 'MATCH (a:P)-[:E]->(b:P) RETURN count(*) AS c',
   sortedpage: 'MATCH (n:P) WHERE n.k < 50 RETURN n.s AS s ORDER BY s LIMIT 10',
   grouped: 'MATCH (n:P) RETURN n.k AS k, count(*) AS c',
